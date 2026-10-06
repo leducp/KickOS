@@ -10,7 +10,7 @@
 #
 # <outcome> IS WHAT THE REFUSAL COSTS, and it is carried by the caller because it is a per-
 # backend fact and not something to sniff: `contained` says the offending thread alone dies
-# and root outlives it, `terminated` says the whole system ends. A backend gaining containment
+# and main outlives it, `terminated` says the whole system ends. A backend gaining containment
 # changes its call site, so this gate never silently accepts the weaker outcome.
 #
 # MODE 5 IS THE OPPOSITE CLAIM and has its own clause set below. Its PSP is parked with
@@ -78,14 +78,14 @@ if [ "$mode" = 5 ]; then
     fi
     assert_no_panic "the syscall ran on the low-edge sp AND the system panicked"
     # The band, and BOTH directions are clauses. Corrupted names the privileged writes that
-    # went under the parked sp; a missing verdict line means root reached the readback and
+    # went under the parked sp; a missing verdict line means main reached the readback and
     # printed neither, which is the silent arm this pair exists to refuse.
     if has "lowband\] CORRUPTED"; then
         fail "mode=5: the syscall dispatch ran below the parked sp, through a PSP a thread chose"
     fi
     intact="$(line_of "\\[pspguard\\] \\[lowband\\] INTACT")"
     if [ -z "$intact" ]; then
-        fail "mode=5: root printed no band verdict, so nothing here witnessed the band at all:
+        fail "mode=5: main printed no band verdict, so nothing here witnessed the band at all:
     the readback is compiled out, or this is not the mode 5 image"
     fi
     if [ "$intact" -le "$accepted" ]; then
@@ -93,7 +93,7 @@ if [ "$mode" = 5 ]; then
     so it was read before the syscall it is meant to judge"
     fi
     if [ "$RC" -ne 0 ]; then
-        fail "mode=5: expected a clean exit 0 once root printed the verdict, got $RC"
+        fail "mode=5: expected a clean exit 0 once main printed the verdict, got $RC"
     fi
     echo "PASS: mode=5 accepted the low-edge sp at line $accepted and the band was intact at $intact"
     exit 0
@@ -118,7 +118,7 @@ fi
 # deeper than the room the leg reserves, which only a board that carves blocks and does not
 # enforce lets a thread reach. BOTH directions are clauses: CORRUPTED names the switcher's
 # callee block going through the block's lowest word into the neighbouring slot, and a missing
-# verdict means root never reached the readback.
+# verdict means main never reached the readback.
 if [ "$mode" = 6 ]; then
     if has "kcanary\] CORRUPTED"; then
         fail "mode=6: the block leg accepted a PSP with no room under it and the switcher saved
@@ -147,14 +147,14 @@ if [ "$mode" = 1 ]; then
     fi
 fi
 
-contained="\[pspguard\] contained: the wild thread was slain and root outlived it"
+contained="\[pspguard\] contained: the wild thread was slain and main outlived it"
 if [ "$outcome" = contained ]; then
     if ! has "$contained"; then
-        fail "the refusal was not contained: root never ran again, so the whole system paid
+        fail "the refusal was not contained: main never ran again, so the whole system paid
     for one thread's pointer"
     fi
     if [ "$RC" -ne 0 ]; then
-        fail "root outlived the refusal and the image still exited $RC"
+        fail "main outlived the refusal and the image still exited $RC"
     fi
 elif [ "$outcome" = terminated ]; then
     if has "$contained"; then

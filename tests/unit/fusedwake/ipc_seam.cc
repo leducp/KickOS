@@ -7,6 +7,7 @@
 
 #include <string.h>
 
+#include <kickos/aspace.h>
 #include <kickos/thread.h>
 
 #include <kickos/sys/abi.h>
@@ -31,7 +32,7 @@ namespace kickos
         return testfix::g_ipc_seam_refuse_rw == 0 or ptr != testfix::g_ipc_seam_refuse_rw;
     }
 
-    bool kaccess_from_user(void* kdst, struct arch_aspace*, uintptr_t usrc, size_t n)
+    bool kaccess_from_user(void* kdst, UserOwner, uintptr_t usrc, size_t n)
     {
         if (n != 0)
         {
@@ -40,7 +41,7 @@ namespace kickos
         return true;
     }
 
-    bool kaccess_to_user(struct arch_aspace*, uintptr_t udst, void const* ksrc, size_t n)
+    bool kaccess_to_user(UserOwner, uintptr_t udst, void const* ksrc, size_t n)
     {
         if (testfix::g_ipc_seam_refuse_write != 0 and udst == testfix::g_ipc_seam_refuse_write)
         {
@@ -53,8 +54,7 @@ namespace kickos
         return true;
     }
 
-    bool ep_copy(struct arch_aspace*, uintptr_t dst, struct arch_aspace*, uintptr_t src,
-                 size_t n)
+    bool ep_copy(UserOwner, uintptr_t dst, UserOwner, uintptr_t src, size_t n)
     {
         if (n != 0)
         {
@@ -63,7 +63,7 @@ namespace kickos
         return true;
     }
 
-    bool write_recv_info(struct arch_aspace* ospace, uintptr_t out, uint32_t badge, uint32_t cap)
+    bool write_recv_info(UserOwner ospace, uintptr_t out, uint32_t badge, uint32_t cap)
     {
         if (out == 0)
         {

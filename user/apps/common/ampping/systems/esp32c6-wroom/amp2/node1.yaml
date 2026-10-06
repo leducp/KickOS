@@ -19,6 +19,7 @@ tasks:
     entry: ampserve_main
     stack: 8192
     priority: 5
+    ceiling: 5
     devices: [/dev/timg1]
     serves: /amp/3
     maps: { /shm/ampbook: rw }

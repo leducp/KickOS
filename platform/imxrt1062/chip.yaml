@@ -52,6 +52,8 @@ devices:
   iomuxc_gpr: { window: [0x400AC000, 0x4000], owner: kernel, ref: "Table 3-2 AIPS-1 memory map, p.37" }
   # The diagnostic LED's port.
   gpio2: { window: [0x401BC000, 0x4000], owner: kernel, ref: "Table 3-3 AIPS-2 memory map, p.38" }
+  # The GPIO_AD_B0 and GPIO_AD_B1 pads' port, which a task may hold.
+  gpio1: { window: [0x401B8000, 0x4000], ref: "Table 3-3 AIPS-2 memory map, p.38" }
   # The bridges' own configuration: which masters are trusted and each slot's protection.
   aipstz1: { window: [0x4007C000, 0x4000], owner: kernel, ref: "Table 3-2 AIPS-1 memory map, p.37" }
   aipstz2: { window: [0x4017C000, 0x4000], owner: kernel, ref: "Table 3-3 AIPS-2 memory map, p.38" }
@@ -68,8 +70,11 @@ memory:
     ref: "Table 3-1 System memory map (CM7), p.36"
 
 # Pins are the RM's pad names. A selector other than `gpio` is the ALT mode the pad's
-# SW_MUX_CTL_PAD selects. GPIO_B0_03's `gpio` is GPIO2 while GPR27 leaves the pad to it.
+# SW_MUX_CTL_PAD selects, and `input_select` the DAISY value that hands the pad the function's
+# input. GPIO_B0_03's `gpio` is GPIO2 while GPR27 leaves the pad to it.
 pins:
-  GPIO_AD_B0_02: { alt2: lpuart6.tx }
-  GPIO_AD_B0_03: { alt2: lpuart6.rx }
+  GPIO_AD_B0_02: { alt2: lpuart6.tx, gpio: gpio1.2 }
+  GPIO_AD_B0_03:
+    alt2: { function: lpuart6.rx, input_select: 1, ref: "11.6.336 LPUART6_RX_SELECT_INPUT, p.855" }
+    gpio: gpio1.3
   GPIO_B0_03: { gpio: gpio2.3 }

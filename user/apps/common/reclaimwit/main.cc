@@ -8,9 +8,7 @@
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 #include <kickos/sys/cap_index.h>
-#include <kickos/sys/emit.h>
 #include <kickos/sys/errno.h>
-#include <kickos/sys/init.h>
 #include <kickos/libc/fmt.h>
 
 #include <stdint.h>
@@ -21,8 +19,6 @@
 #ifndef KICKOS_RW_RTT
 #define KICKOS_RW_RTT 0
 #endif
-
-using kickos::emit;
 
 namespace
 {
@@ -98,41 +94,10 @@ namespace
         kos::print("[reclaimwit] NOTE: the RTT stream carries kernel writes in every state.\n");
 #endif
     }
-
-    __attribute__((noreturn)) void refuse_published_console(void)
-    {
-        // emit() reaches the published driver through cap 0; kos_print would be dropped.
-        emit("[reclaimwit] REFUSE: this image already publishes a userspace console.\n");
-        emit("[reclaimwit] REFUSE: the witness needs to kill the console's driver, and here\n");
-        emit("[reclaimwit] REFUSE: that driver carries the terminal you are reading.\n");
-        emit("[reclaimwit] REFUSE: on a USB CDC console the kernel reclaims a DIFFERENT device\n");
-        emit("[reclaimwit] REFUSE: (arch_console_reclaim_window reports the chip UART), so the\n");
-        emit("[reclaimwit] REFUSE: post-death bytes would land on a wire nobody is watching.\n");
-        emit("[reclaimwit] REFUSE: rebuild with -DKICKOS_SERVICE_LIST=kickos_services_none.\n");
-        park_forever();
-    }
 }
-
-// KOS_AUTH_CONSOLE for kos_console_publish; KOS_AUTH_SYSTEM only on the drain arm, whose
-// main returns and takes root through kos_shutdown.
-#if KICKOS_RW_MODE == 1
-KICKOS_APP_AUTHORITY(KOS_AUTH_MEMORY | KOS_AUTH_SYSTEM | KOS_AUTH_CONSOLE);
-#else
-KICKOS_APP_AUTHORITY(KOS_AUTH_MEMORY | KOS_AUTH_CONSOLE);
-#endif
 
 int main(int, char**)
 {
-    // Root's slot 0 stays empty until something publishes, so -KOS_EBADF is the only
-    // answer an unpublished image can give. A zero-length send is the flush idiom, so this
-    // puts no byte on a live console's wire.
-    char const probe = '\0';
-    int32_t const seated = kos_send(KOS_CAP_STDOUT, &probe, 0);
-    if (seated != -KOS_EBADF)
-    {
-        refuse_published_console();
-    }
-
     print_reading_key();
 
     kos_cap_t ep = KOS_CAP_NONE;
@@ -161,7 +126,7 @@ int main(int, char**)
         park_forever();
     }
 
-    // Root's own WAIT-bearing cap must go, or the driver's death leaves recv_holders at 1
+    // Main's own WAIT-bearing cap must go, or the driver's death leaves recv_holders at 1
     // and no death is noted. The kernel's stdout ref keeps the endpoint alive.
     int const close_rc = kos_handle_close(ep);
 

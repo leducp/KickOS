@@ -9,7 +9,7 @@
 # No CTest gate: it answers a HARDWARE question (does the wide-counter monotonic clock survive
 # real wraps and idle) validated by the operator on the wire.
 add_executable(clocksoak main.cc)
-target_link_libraries(clocksoak PRIVATE kickos)
+target_link_libraries(clocksoak PRIVATE KickOS::kernel KickOS::system_default)
 kickos_emit_image(clocksoak)
 
 set(KICKOS_CLOCKSOAK_WRAP_MS 60000 CACHE STRING "clocksoak: counter wrap period in ms")

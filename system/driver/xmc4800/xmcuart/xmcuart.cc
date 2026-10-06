@@ -20,42 +20,17 @@
 #include <kickos/driver/uart.h>
 #include <kickos/sys/driver_service.h>
 #include <kickos/sys/service.h> // kos_service_cfg
+#include <kickos/sys/uart_service.h>
 
 #include <stdint.h>
 #include <stdlib.h>
 
 namespace drv = kickos::driver;
+namespace uart = kickos::uart;
 namespace declared = kickos::driver::declared::xmcuart;
 
 namespace
 {
-    // Per-byte cap on the retry, so a channel that never reports room costs a bounded delay
-    // rather than the driver thread, which would wedge every stdout client parked on send.
-    // On expiry the byte is dropped and the loop continues.
-    constexpr uint32_t TX_POLL_TIMEOUT = 1000000u;
-
-    // Returns false when the budget expired with the byte still unsent.
-    bool poll_put(struct kos_uart* dev, unsigned char v)
-    {
-        for (uint32_t i = 0; i < TX_POLL_TIMEOUT; i++)
-        {
-            if (kos_uart_write(dev, &v, 1u) == 1u)
-            {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    // Direct-to-device diagnostic, not stdio and not the endpoint.
-    void win_puts(struct kos_uart* dev, char const* s)
-    {
-        for (; *s != '\0'; s++)
-        {
-            (void)poll_put(dev, static_cast<unsigned char>(*s));
-        }
-    }
-
     void print_rate(char const* tag, uint32_t hz)
     {
         char buf[16];
@@ -100,8 +75,8 @@ namespace
                      .arg = drv::KOS_DRV_ARG_WINDOW,
                      .window_grant = true,
                      .cap_count = 1,
-                     // caps[0] lands at KOS_SPAWN_DELEGATED_CAP0, which the recv loop
-                     // below names directly; no class substrate checks it.
+                     // caps[0] lands at KOS_SPAWN_DELEGATED_CAP0, which
+                     // uart::polled_console_loop receives on; no class substrate checks it.
                      .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT, 0}}}},
         .block_init = nullptr
     };
@@ -140,32 +115,9 @@ void xmcuart_console_driver(void* arg)
     }
     print_rate("[xmcuart] U0C0 measured baud: ", static_cast<uint32_t>(rate));
 
-    win_puts(&dev, "[xmcuart] driver up (polled TX)\n");
+    uart::win_puts(&dev, "[xmcuart] driver up (polled TX)\n");
 
-    int const ep = KOS_SPAWN_DELEGATED_CAP0; // delegated recv cap
-    char buf[KOS_EP_MSG_MAX];
-    while (true)
-    {
-        // Info-less recv: the console hosts plain sends only, so a client kos_call
-        // bounces cleanly (-KOS_ENOTSUP) instead of minting a reply cap here.
-        struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, ep, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
-        long const n = kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts);
-        if (n < 0)
-        {
-            // Endpoint dead / EPIPE or a bad cap: unrecoverable. Exit and let root respawn
-            // + re-publish (D8). Do NOT diagnose via stdio here.
-            break;
-        }
-        for (long i = 0; i < n; i++)
-        {
-            (void)poll_put(&dev, static_cast<unsigned char>(buf[i]));
-        }
-    }
-
-    // FLUSH BEFORE CLOSE: close leaves ASC mode, which truncates a frame still shifting.
-    (void)kos_uart_flush(&dev);
-    (void)kos_uart_close(&dev);
+    uart::polled_console_loop(&dev);
     exit(0);
 }
 

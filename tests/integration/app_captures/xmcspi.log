@@ -1,0 +1,29 @@
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   xmc4800-relax
+   arch    armv7m
+   cpu     cortex-m4
+   mpu     enforce
+   sched   tickless
+   build   2026-10-04 12:00:00 +0200
+   app     Oct  4 2026 12:00:01 +0200
+   commit  65fa3473
+   heap    15 KiB available
+   kstack  1008 B x 9 = 9072 B
+
+[xmcspi] seam FDR: rc=0 wrote=0x80000167 read=0x80000167 LANDED
+[xmcspi] seam BRG: rc=0 wrote=0xd03f00 read=0xd03f00 LANDED
+[xmcspi] seam CCR: rc=0 wrote=0x9011 read=0x9011 LANDED
+[xmcspi] starting SSC loopback (blocking on the USIC0 line)
+[xmcspi] word 0: tx=0xa5 rx=0xa5 PASS
+[xmcspi] word 1: tx=0x3c rx=0x3c PASS
+[xmcspi] word 2: tx=0x0 rx=0x0 PASS
+[xmcspi] word 3: tx=0xff rx=0xff PASS
+[xmcspi] loopback PASS (all words echoed equal)
+[xmcspi] poking UNGRANTED SCU @ 0x50004648 (expect MPU FAULT)
+
+=== THREAD FAULT === thread 'xmcspi' killed, system continues
+  PC=0x08000abc
+  ADDR=0x50004648

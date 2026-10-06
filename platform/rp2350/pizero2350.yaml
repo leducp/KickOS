@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Values from the tree's chip_rp2350.cc and docs/reference/boards.md.
+# Values from docs/reference/boards.md and docs/flashing.md. UART0's pins are not brought out on
+# the Pi-Zero header, and the board has no LED the kernel can drive.
 
 version: 1
 board: pizero2350

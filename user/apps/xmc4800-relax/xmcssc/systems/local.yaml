@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# One task holding USIC0 channel 1's window and its line, linking the local SSC engine and clocking
+# the bus inline with no service and no IPC.
+
+version: 1
+stdout: kernel
+ends: client
+
+tasks:
+  - name: client
+    entry: xmcssc_main
+    priority: 9
+    ceiling: 9
+    devices: [/dev/usic0/ch1]
+    lines: { irq: /dev/usic0/sr1 }
+    core: 0

@@ -712,6 +712,16 @@ namespace
         }
         in.line_count = d.line_count;
         in.console = d.ep_posture == drv::KOS_DRV_EP_HANDOVER;
+        // What the tool emits for a driver at cfg_of's priority: it plus the highest offset.
+        int8_t top = d.threads[0].prio_delta;
+        for (uint8_t i = 1; i < d.thread_count; i++)
+        {
+            if (d.threads[i].prio_delta > top)
+            {
+                top = d.threads[i].prio_delta;
+            }
+        }
+        in.ceiling = static_cast<uint8_t>(8 + top);
         for (uint8_t i = 0; i < d.line_count; i++)
         {
             in.lines[i] = {static_cast<uint16_t>(d.lines[i].number), d.lines[i].index};
@@ -766,14 +776,16 @@ TEST_F(DrvInstance, a_retained_endpoint_takes_no_out_ep_and_is_not_narrowed)
     EXPECT_STREQ(kos_seam_trace(), "taskmem90 grant90/8/0 watch90/8/7 spawn50");
 }
 
-TEST_F(DrvInstance, the_ceiling_is_the_priority_plus_the_highest_thread_offset)
+TEST_F(DrvInstance, the_grant_is_the_ceiling_the_table_carries)
 {
     struct kos_driver_instance in = instance_of(k_three);
     in.core_mask = 1u << 2;
+    in.ceiling = 17u;
     struct kos_service_cfg cfg = cfg_with(&in);
     cfg.prio = 5u;
     EXPECT_EQ(drv::bring_up(k_three, &cfg, nullptr), 0);
-    EXPECT_PRED2(says, kos_seam_trace(), "grant90/6/4 ") << kos_seam_trace();
+    EXPECT_PRED2(says, kos_seam_trace(), "grant90/17/4 ") << "the instance's ceiling, not one the bring-up derives: "
+                                                          << kos_seam_trace();
 }
 
 TEST_F(DrvInstance, every_thread_runs_on_the_declared_core)

@@ -6,7 +6,7 @@
 # the spawn arm reached.
 foreach(_mode 0 1)
   add_executable(stackdepth${_mode} main.cc)
-  target_link_libraries(stackdepth${_mode} PRIVATE kickos)
+  target_link_libraries(stackdepth${_mode} PRIVATE KickOS::kernel KickOS::system_default)
   kickos_emit_image(stackdepth${_mode})
   target_compile_definitions(stackdepth${_mode} PRIVATE KICKOS_SD_MODE=${_mode})
 endforeach()

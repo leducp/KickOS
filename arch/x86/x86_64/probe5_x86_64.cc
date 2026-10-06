@@ -482,7 +482,7 @@ namespace
         arm("kernel_window_unmapped_in_a",
             aspace_frame_at_unchecked(g_space_a, kwin) == 0
                 and arch_aspace_frame_at(g_space_a, kwin) == 0
-                and arch_aspace_acquire(g_space_a, kwin) == nullptr);
+                and arch_aspace_acquire(g_space_a, kwin, nullptr) == nullptr);
 
         plant(g_frame_z, magic_z);
         arm("kernel_window_map", aspace_kernel_map(0, g_frame_z));
@@ -815,21 +815,22 @@ namespace
 
     void arm_acquire(void)
     {
-        void* const p = arch_aspace_acquire(g_space_a, g_va);
+        void* const p = arch_aspace_acquire(g_space_a, g_va, nullptr);
         arm("acquire_answers_the_frames_own_address",
             p == reinterpret_cast<void*>(static_cast<uintptr_t>(g_frame_a)));
         arm("acquire_reads_the_frame", p != nullptr and *static_cast<uint64_t*>(p) == magic_a);
-        void* const q = arch_aspace_acquire(g_space_a, g_va + 7);
+        void* const q = arch_aspace_acquire(g_space_a, g_va + 7, nullptr);
         arm("acquire_carries_the_offset",
             q == reinterpret_cast<void*>(static_cast<uintptr_t>(g_frame_a) + 7));
         arm("acquire_of_an_unmapped_page_is_null",
-            arch_aspace_acquire(g_space_a, g_va_unmapped) == nullptr);
-        arm("acquire_of_a_null_space_is_null", arch_aspace_acquire(nullptr, g_va) == nullptr);
+            arch_aspace_acquire(g_space_a, g_va_unmapped, nullptr) == nullptr);
+        arm("acquire_of_a_null_space_is_null",
+            arch_aspace_acquire(nullptr, g_va, nullptr) == nullptr);
         void* held[ARCH_ASPACE_ACQUIRE_MIN];
         bool all = true;
         for (unsigned i = 0; i < ARCH_ASPACE_ACQUIRE_MIN; i++)
         {
-            held[i] = arch_aspace_acquire(g_space_a, g_va);
+            held[i] = arch_aspace_acquire(g_space_a, g_va, nullptr);
             if (held[i] == nullptr)
             {
                 all = false;
@@ -841,7 +842,7 @@ namespace
             arch_aspace_release(g_space_a, g_va);
         }
         arm("acquire_after_release_still_answers",
-            arch_aspace_acquire(g_space_a, g_va) != nullptr);
+            arch_aspace_acquire(g_space_a, g_va, nullptr) != nullptr);
         arch_aspace_release(g_space_a, g_va);
         arch_aspace_release(g_space_a, g_va + 7);
         arch_aspace_release(g_space_a, g_va);

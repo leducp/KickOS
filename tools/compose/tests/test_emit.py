@@ -175,7 +175,7 @@ class Emitted(unittest.TestCase):
         self.assertEqual(text, None)
 
     def test_a_table_layout_the_tool_does_not_emit_is_refused(self):
-        edits = [("  table: 5\n", "  table: 4\n")]
+        edits = [("  table: 6\n", "  table: 5\n")]
         refusals, table, path, manifest = self.table("qemu-arm64.yaml", manifest_edits=edits)
         self.assertEqual(table, None)
         self.assertEqual([r.split(": ")[1] for r in refusals], ["form.version"])
@@ -229,6 +229,30 @@ class Emitted(unittest.TestCase):
         self.assertEqual(refusals, [])
         report, texts = emit.emit_system(path, manifest)
         return texts
+
+    def test_a_composition_naming_no_board_takes_what_it_leaves_out_from_the_board_default(self):
+        default = os.path.join("boards", "qemu-arm64", "composition.yaml")
+        os.makedirs(os.path.dirname(os.path.join(self.scratch, default)), exist_ok=True)
+        write(os.path.join(self.scratch, default), mutate(read(os.path.join(TREE, default)),
+                                                          [("heap: 65536\n", "heap: 12288\n"),
+                                                           ("    stack: 20480\n", "    stack: 24576\n")])[0])
+        refusals, table, path, manifest = self.table(
+            "qemu-arm64.yaml", [("board: qemu-arm64\n", ""), ("heap: 65536\n", ""), ("    stack: 8192\n", "")],
+            [("drivers:\n  xmcssc:", "default:\n  composition: %s\ndrivers:\n  xmcssc:" % default)])
+        self.assertEqual(refusals, [])
+        self.assertEqual([(t.name, t.stack) for t in table.tasks if t.name == "app"], [("app", 24576)])
+        report, (source, asserts, fragment, gate) = emit.emit_system(path, manifest)
+        self.assertIn("set(KICKOS_COMPOSE_HEAP 12288)\n", fragment)
+
+    def test_a_composition_naming_no_board_states_each_ceiling(self):
+        default = os.path.join("boards", "qemu-arm64", "composition.yaml")
+        os.makedirs(os.path.dirname(os.path.join(self.scratch, default)), exist_ok=True)
+        write(os.path.join(self.scratch, default), read(os.path.join(TREE, default)))
+        refusals, table, path, manifest = self.table(
+            "qemu-arm64.yaml", [("board: qemu-arm64\n", ""), ("    priority: 8\n    ceiling: 8\n", "    priority: 8\n")],
+            [("drivers:\n  xmcssc:", "default:\n  composition: %s\ndrivers:\n  xmcssc:" % default)])
+        self.assertEqual([r.split(": ")[1] for r in refusals], ["form.missing"])
+        self.assertIn("task `app` runs an `entry`, so it needs `ceiling`", refusals[0])
 
     def test_a_heap_of_zero_stays_zero(self):
         source, asserts, fragment, gate = self.system_heap([("heap: 65536\n", "heap: 0\n")])

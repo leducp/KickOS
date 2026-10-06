@@ -55,7 +55,7 @@ def run_manifest(paths):
 
 BIG = "1" * 5000
 # Thirty-two tasks above `health` in the x86 golden, each watched with `sensor` by WATCHES_33.
-WATCHED = ("\n  - name: health\n", "".join("\n  - name: w%d\n    entry: w%d_main\n    stack: 4096\n    priority: 7\n"
+WATCHED = ("\n  - name: health\n", "".join("\n  - name: w%d\n    entry: w%d_main\n    stack: 4096\n    priority: 7\n    ceiling: 7\n"
                                          % (n, n) for n in range(32)) + "\n  - name: health\n")
 WATCHES_33 = ", ".join(["sensor"] + ["w%d" % n for n in range(32)])
 WATCHES_32 = ", ".join(["w%d" % n for n in range(32)])
@@ -307,12 +307,25 @@ ARMS = [
      [("  device: /dev/uart0\n", "  device: /dev/uart0\n  pins: { tx: TX0 }\n")], False),
     ("board.pin-reused", "xmc4800/xmc4800-relax.yaml", [("pin: P5.8,", "pin: P1.4,")], False),
     ("board.pin-function", "stm32f411/f411disco.yaml", [("tx: PA2", "tx: PC13")], False),
+    ("board.led-owner", "xmc4800/xmc4800-relax.yaml",
+     [("led2: { pin: P5.8, active: high }", "led2: { pin: P5.8, active: high, owner: kernel }")], False),
+    ("form.inapplicable", "esp32/chip.yaml", [("  GPIO2: { gpio: gpio.2 }", "  GPIO2: { gpio: { function: gpio.2 } }")], False),
+    ("form.missing", "rp2040/chip.yaml", [("GPIO0: { f2: uart0.tx,", "GPIO0: { f2: { input_select: 1 },")], False),
+    (None, "rp2040/chip.yaml", [("GPIO0: { f2: uart0.tx,", "GPIO0: { f2: { function: uart0.tx, input_select: 1, ref: \"p.1\" },")],
+     False),
     (("board.pin-function", "board.pin-reused"), "mk64f/frdmk64f.yaml", [("[PTD1, PTD2, PTD3]", "[PTD1, PTD2, PTB16]")],
      False),
     ("board.pin-function", "xmc4800/xmc4800-relax.yaml", [("device: /dev/usic0/ch0", "device: /dev/usic0/ch1")], True),
     ("board.pin-function", "stm32f411/f411disco.yaml", [("pins: [PA5, PA6, PA7]", "pins: [PA5, PA6, PC13]")], False),
-    ("board.reserved-pin-used", "esp32c6/esp32c6-wroom.yaml",
-     [("# Pins the board", "leds:\n  rgb: { pin: GPIO8, active: high }\n\n# Pins the board")], False),
+    ("board.reserved-pin-used", "esp32c6/esp32c6-wroom.yaml", [("led2: { pin: GPIO8,", "led2: { pin: GPIO9,")], False),
+    ("form.inapplicable", "esp32c6/esp32c6-wroom.yaml", [("kind: addressable,", "kind: addressable, active: high,")],
+     False),
+    ("form.missing", "esp32/esp32-wroom.yaml", [("pin: GPIO2, active: high,", "pin: GPIO2,")], False),
+    ("board.led-kind", "esp32c6/esp32c6-wroom.yaml", [("kind: addressable,", "kind: level, active: high,")], False),
+    ("board.led-kind", "esp32/esp32-wroom.yaml", [("pin: GPIO2, active: high,", "pin: GPIO2, kind: addressable,")],
+     False),
+    ("form.enum", "esp32c6/esp32c6-wroom.yaml", [("kind: addressable,", "kind: rgb,")], False),
+    (None, "esp32/esp32-wroom.yaml", [("pin: GPIO2, active: high,", "pin: GPIO2, kind: level, active: high,")], False),
     ("chip.block-outside", "stm32f411/chip.yaml",
      [("  rcc: { window: [0x40023800, 0x400],", "  rcc: { window: [0x40023800, 0x400], blocks: { cr: 0x400 },")], False),
     (None, "stm32f411/chip.yaml",
@@ -565,7 +578,7 @@ COMPOSITION_ARMS = [
 # A manifest as tools/manifest/genmanifest.py writes it, beside a copy of platform/.
 MANIFEST = """version: 1
 abi:
-  table: 5
+  table: 6
   cap_reserved: 2
   symbol_prefix: ""
 target:
@@ -811,7 +824,7 @@ ADMISSION_ARMS = [
     ("scheduling.init-priority-range", "xmc4800-relax.yaml", [("heap: 16384\n", "heap: 16384\ninit: { priority: 0 }\n")], [],
      False),
     (None, "xmc4800-relax.yaml", [("heap: 16384\n", "heap: 16384\ninit: { priority: 31 }\n")], [], False),
-    (("scheduling.init-priority-range", "scheduling.priority"), "xmc4800-relax.yaml", [],
+    (("scheduling.init-priority-range", "scheduling.priority", "scheduling.ceiling"), "xmc4800-relax.yaml", [],
      [("  priority: [1, 31]\n", "  priority: [1, 1]\n")], True),
     (None, "xmc4800-relax.yaml", [("heap: 16384\n", "heap: 16384\ninit: { priority: 1 }\n")], [], False),
     ("form.unknown-field", "xmc4800-relax.yaml",
@@ -821,10 +834,23 @@ ADMISSION_ARMS = [
     (None, "xmc4800-relax.yaml", [("    priority: 12\n", "    priority: 30\n")], [], False),
     ("scheduling.priority", "xmc4800-relax.yaml", [("    priority: 8\n", "    priority: 0\n")], [], False),
     (None, "xmc4800-relax.yaml", [("    priority: 8\n", "    priority: 1\n")], [], False),
-    ("scheduling.stdout-priority", "xmc4800-relax.yaml", [("    priority: 10\n", "    priority: 13\n")], [], False),
-    (None, "xmc4800-relax.yaml", [("    priority: 10\n", "    priority: 12\n")], [], False),
+    ("scheduling.ceiling", "xmc4800-relax.yaml", [("    stack: 4096\n    priority: 8\n    ceiling: 8\n", "    stack: 4096\n    priority: 8\n    ceiling: 7\n")],
+     [], False),
+    (("scheduling.ceiling", "scheduling.stdout-priority"), "xmc4800-relax.yaml",
+     [("    stack: 4096\n    priority: 8\n    ceiling: 8\n", "    stack: 4096\n    priority: 8\n    ceiling: 32\n")], [], False),
+    ("scheduling.stdout-priority", "xmc4800-relax.yaml",
+     [("    stack: 4096\n    priority: 8\n    ceiling: 8\n", "    stack: 4096\n    priority: 8\n    ceiling: 13\n")], [], False),
+    (None, "xmc4800-relax.yaml", [("    stack: 4096\n    priority: 8\n    ceiling: 8\n", "    stack: 4096\n    priority: 8\n    ceiling: 12\n")],
+     [], False),
+    (None, "qemu-x86_64.yaml", [("    priority: 8\n    ceiling: 8\n", "    priority: 8\n    ceiling: 31\n")], [], False),
+    ("form.missing", "xmc4800-relax.yaml", [("    stack: 4096\n    priority: 8\n    ceiling: 8\n", "    stack: 4096\n    priority: 8\n")],
+     [], True),
+    ("form.inapplicable", "xmc4800-relax.yaml", [("    priority: 11\n    restart: { max: 3 }\n", "    priority: 11\n    ceiling: 12\n    restart: { max: 3 }\n")],
+     [], False),
+    ("scheduling.stdout-priority", "xmc4800-relax.yaml", [("    priority: 10\n    ceiling: 10\n", "    priority: 13\n    ceiling: 13\n")], [], False),
+    (None, "xmc4800-relax.yaml", [("    priority: 10\n    ceiling: 10\n", "    priority: 12\n    ceiling: 12\n")], [], False),
     ("scheduling.stdout-order", "xmc4800-relax.yaml",
-     [("\ntasks:\n", "\ntasks:\n  - name: early\n    entry: early_main\n    stack: 2048\n    priority: 5\n")], [], False),
+     [("\ntasks:\n", "\ntasks:\n  - name: early\n    entry: early_main\n    stack: 2048\n    priority: 5\n    ceiling: 5\n")], [], False),
     (("ownership.console", "scheduling.console-driver"), "xmc4800-relax.yaml", [("stdout: /svc/console", "stdout: kernel")],
      [], True),
     ("scheduling.console-driver", "xmc4800-relax.yaml", [], [("    console: true\n", "    console: false\n")], True),
@@ -875,7 +901,7 @@ ADMISSION_ARMS = [
      [("  cores: 1\n  kernel_cores: 1\n", "  cores: 2\n  kernel_cores: 2\n")], False),
     ("scheduling.core", "xmc4800-relax.yaml", [("    uses: [/svc/spi0]\n", "    uses: [/svc/spi0]\n    core: 1\n")], [], False),
     (None, "xmc4800-relax.yaml", [("    uses: [/svc/spi0]\n", "    uses: [/svc/spi0]\n    core: 0\n")], [], False),
-    (None, "xmc4800-relax.yaml", [("    priority: 10\n", "    priority: 13\n")], [("    receiver: service\n", "    receiver: uartirq\n")],
+    (None, "xmc4800-relax.yaml", [("    priority: 10\n    ceiling: 10\n", "    priority: 13\n    ceiling: 13\n")], [("    receiver: service\n", "    receiver: uartirq\n")],
      False),
     ("name.entry", "xmc4800-relax.yaml", [("entry: app_main", "entry: xmc_spi0_start")], [], False),
     ("supply.spawn-grants", "xmc4800-relax.yaml", [], [("  KICKOS_MAX_SPAWN_GRANTS: 6\n", "  KICKOS_MAX_SPAWN_GRANTS: 1\n")],
@@ -939,7 +965,7 @@ ADMISSION_ARMS = [
 # Minimal pairs on MANIFEST.
 MANIFEST_ARMS = [
     ("form.unknown-field", [("version: 1\n", "version: 1\nkernel: 0.5.1\n")], False),
-    ("form.unknown-field", [("  table: 5\n", "  table: 5\n  lookups: 1\n")], False),
+    ("form.unknown-field", [("  table: 6\n", "  table: 6\n  lookups: 1\n")], False),
     ("form.unknown-field", [("  arch: armv7m\n", "  arch: armv7m\n  fpu: true\n")], False),
     ("form.unknown-field", [("    nodes: 2\n", "    nodes: 2\n    peers: [1]\n")], False),
     ("form.unknown-field", [("  enforced: true\n", "  enforced: true\n  unit: pmsav7\n")], False),
@@ -986,7 +1012,7 @@ MANIFEST_ARMS = [
     ("form.enum", [("window_rule: pow2", "window_rule: napot")], False),
     ("form.enum", [("posture: retain", "posture: publish")], False),
     ("form.version", [("version: 1\n", "version: 2\n")], False),
-    ("form.version", [("  table: 5\n", "  table: 4\n")], False),
+    ("form.version", [("  table: 6\n", "  table: 5\n")], False),
     ("manifest.block-cache", [("    block: none\n    block_cache: cached\n", "    block: none\n    block_cache: uncached\n")],
      False),
     (None, [("    block: 1024\n    block_cache: cached\n", "    block: 1024\n    block_cache: uncached\n")], False),
@@ -1006,7 +1032,7 @@ MANIFEST_ARMS = [
     ("form.integer", [("    endpoints: 1\n    notifications: 1\n    block: 1024\n",
                        "    endpoints: 1\n    notifications: 1\n    block: 1_024\n")], False),
     ("form.integer", [("{ name: uartirq, priority: 1,", "{ name: uartirq, priority: -1,")], False),
-    ("form.range", [("  table: 5\n", "  table: 0x10000\n")], False),
+    ("form.range", [("  table: 6\n", "  table: 0x10000\n")], False),
     ("form.range", [("  thread_windows: 4\n", "  thread_windows: 256\n")], False),
     ("form.range", [("  isolated_cores: 0x0\n", "  isolated_cores: 0x100000000\n")], False),
     ("form.name", [("  board: xmc4800-relax\n", "  board: XMC4800\n")], False),
@@ -1203,14 +1229,17 @@ def console_on_instance(root):
         (board, line, "board.pin-function"), (board, line, "board.pin-function")]
 
 
-def without_gpio(chip, edits, board, prefix):
-    """A pin the chip lists without `gpio`, named where the board needs one."""
+def without_gpio(chip, edits, board, prefix, pin=None):
+    """A pin the chip lists without `gpio`, named where the board needs one, the refusal naming
+    `pin` where given."""
     def scenario(root):
         chip_path = os.path.join(root, chip)
         board_path = os.path.join(root, board)
         write(chip_path, mutate(read(chip_path), edits)[0])
-        expected = [(board_path, line_starting(board_path, prefix), "board.pin-not-gpio")]
-        return run([chip_path, board_path]), expected
+        expected = (board_path, line_starting(board_path, prefix), "board.pin-not-gpio")
+        if pin is not None:
+            expected += ("`%s`" % pin,)
+        return run([chip_path, board_path]), [expected]
     return scenario
 
 
@@ -1272,6 +1301,7 @@ tasks:
     entry: audio_main
     stack: 4096
     priority: 9
+    ceiling: 9
     devices: [/dev/sai5, /dev/sai6]
     lines: { irq: /dev/sai5/shared }
 """
@@ -1286,12 +1316,14 @@ tasks:
     entry: spi_main
     stack: 2048
     priority: 9
+    ceiling: 9
     devices: [/dev/dspi0]
     accepts: [device_not_isolated, coarse_gate]
   - name: leds
     entry: leds_main
     stack: 1024
     priority: 8
+    ceiling: 8
     devices: [/dev/gpio/1] # leds
     accepts: [device_not_isolated, coarse_gate]
 """
@@ -1311,6 +1343,7 @@ tasks:
     entry: blink_main
     stack: 1024
     priority: 9
+    ceiling: 9
     devices: [/dev/gpio]
     maps: { /shm/state: rw }
 """
@@ -1329,6 +1362,7 @@ tasks:
     entry: clock_main
     stack: 4096
     priority: 9
+    ceiling: 9
     devices: [/dev/rtc]
     maps: { /shm/state: rw }
 """
@@ -1382,12 +1416,32 @@ def on_arm64(edits, expect, chip_edits, manifest=None):
                     platform_edits=(("virt_arm64/chip.yaml", chip_edits),), manifest=manifest)
 
 
+# The C6 golden naming no board and leaving its heap, accepts and stack to the board's default.
+BOARD_LESS_C6 = [("board: esp32c6-wroom\n", ""), ("heap: 0\n", ""), ("accepts: [no_protection, no_privilege_split]\n", ""),
+                 ("    stack: 1024\n", "")]
+
+
+def defaulted(manifest, board):
+    """`manifest` naming `board`'s default composition."""
+    return mutate(manifest, [(MANIFEST_DEFAULT[0], MANIFEST_DEFAULT[1].replace("xmc4800-relax", board))])[0]
+
+
 def on_c6(edits, expect, chip_edits=(), names=None, manifest=C6_MANIFEST):
     platform_edits = ()
     if chip_edits:
         platform_edits = (("esp32c6/chip.yaml", chip_edits),)
     return composed("esp32c6-wroom.yaml", C6_SYSTEM, edits, expect, platform_edits=platform_edits, names=names,
                     manifest=manifest)
+
+
+C6BLINK = read(os.path.join(TREE, "user", "apps", "esp32c6-wroom", "c6blink", "system.yaml"))
+C6BLINK_COARSE = ("    authority: [pinmux]\n", "    authority: [pinmux]\n    accepts: [coarse_gate]\n")
+
+
+def c6blink(edits, expect, names=None):
+    """c6blink's own composition over the C6 board's default."""
+    return composed("esp32c6-wroom.yaml", C6BLINK, edits, expect, names=names,
+                    manifest=defaulted(C6_MANIFEST, "esp32c6-wroom"))
 
 
 ARM64_ALONE = """version: 1
@@ -1400,6 +1454,7 @@ tasks:
       entry: probe_main
       stack: 4096
       priority: 9
+      ceiling: 9
       devices: [/dev/rtc, /dev/gpio, /dev/virtio/31, /dev/virtio/23]
       accepts: [bus_master, coarse_gate]
 """
@@ -1419,10 +1474,12 @@ tasks:
       entry: probe_main
       stack: 4096
       priority: 9
+      ceiling: 9
     - name: watcher
       entry: watcher_main
       stack: 4096
       priority: 8
+      ceiling: 8
       devices: [/dev/rtc, /dev/gpio, /dev/virtio/31, /dev/virtio/23]
       accepts: [bus_master, coarse_gate]
       watches: [probe]
@@ -1522,8 +1579,8 @@ C6_OWNER_SLOTS = C6_MANIFEST.replace("  KICKOS_RAM_OWNER_SLOTS: 48\n", "  KICKOS
 # Two watchers of blink, each reserving and self-granting a status block of its own.
 C6_WATCHERS = [("    maps: { /shm/state: rw }\n",
                 "    maps: { /shm/state: rw }\n"
-                "  - name: first\n    entry: first_main\n    stack: 1024\n    priority: 8\n    watches: [blink]\n"
-                "  - name: second\n    entry: second_main\n    stack: 1024\n    priority: 8\n    watches: [blink]\n")]
+                "  - name: first\n    entry: first_main\n    stack: 1024\n    priority: 8\n    ceiling: 8\n    watches: [blink]\n"
+                "  - name: second\n    entry: second_main\n    stack: 1024\n    priority: 8\n    ceiling: 8\n    watches: [blink]\n")]
 LP_PROTECTED = [("{ unit: none, privilege: false }", "{ unit: pmp, covers_devices: true, memory_type: false }")]
 
 
@@ -1533,7 +1590,7 @@ def diagnostic_app(name, grants, expect):
     def scenario(root):
         path = golden(root, "xmc4800-relax.yaml")
         text = read(path)
-        task = "\n  - name: %s\n    entry: %s_main\n    stack: 2048\n    priority: 10\n%s" % (name, name, grants)
+        task = "\n  - name: %s\n    entry: %s_main\n    stack: 2048\n    priority: 10\n    ceiling: 10\n%s" % (name, name, grants)
         write(path, text + task)
         first = text.count("\n") + 1
         expected = []
@@ -1566,6 +1623,7 @@ def manifest_broken_board(root):
 
 
 def manifest_missing_default(root):
+    shutil.rmtree(os.path.join(os.path.dirname(root), "boards"))
     path = os.path.join(os.path.dirname(root), "manifest.yaml")
     write(path, mutate(MANIFEST, [MANIFEST_DEFAULT])[0])
     return run_manifest([path]), [(path, line_starting(path, "  composition: "), "manifest.default-unknown")]
@@ -1643,6 +1701,7 @@ tasks:
     entry: ping_main
     stack: %d
     priority: 9
+    ceiling: 9
     uses: [/amp/3]
     maps: { /shm/book: rw }
 """
@@ -1662,6 +1721,7 @@ tasks:
     entry: serve_main
     stack: %d
     priority: 9
+    ceiling: 9
     serves: /amp/3
     maps: { /shm/book: rw }
 """
@@ -1674,7 +1734,7 @@ IMX_PAIR = (PING % ("imx8mp-evk", "cluster: a53\naccepts: [no_protection]\n", "c
             PONG % ("imx8mp-evk", "cluster: m7\naccepts: [no_protection]\n", "cached", 8192))
 IMX_ACCEPT = ("accepts: [no_protection]", "accepts: [no_protection, cached_incoherent]")
 SPARE = ("    maps: { /shm/book: rw }\n", "    maps: { /shm/book: rw }\n  - name: spare\n    entry: spare_main\n"
-         "    stack: 8192\n    priority: 8\n    serves:  /amp/3\n")
+         "    stack: 8192\n    priority: 8\n    ceiling: 8\n    serves:  /amp/3\n")
 C6_HP_SMALL = [("regions: { value: 16,", "regions: { value: 2,")]
 # A node composition with neither crossing nor partition region.
 LONE = [("shared:\n  - name: /shm/book\n    size: 64\n    cache: cached\n    partition: true\n", ""),
@@ -1747,6 +1807,11 @@ SCENARIOS = [
                                         "stm32f411/f411disco.yaml", "    chip_select: ")),
     ("board.pin-not-gpio", without_gpio("mk64f/chip.yaml", [("PTC4: { gpio: gpio.2.4 }", "PTC4: {}")],
                                         "mk64f/frdmk64f.yaml", "    chip_selects: ")),
+    ("board.pin-not-gpio", without_gpio("stm32f411/chip.yaml", [("PA2: { af7: usart2.tx, gpio: gpio.0.2 }",
+                                                                 "PA2: { af7: usart2.tx }")],
+                                        "stm32f411/f411disco.yaml", "  pins: { tx", "PA2")),
+    ("board.pin-not-gpio", without_gpio("esp32/chip.yaml", [("GPIO6: { gpio: gpio.6 }", "GPIO6: {}")],
+                                        "esp32/esp32-wroom.yaml", "  GPIO6: ", "GPIO6")),
     ("form.layout", absent_composition),
     ("form.unreadable", unreadable_composition),
     ("form.unreadable", unreadable_board),
@@ -1761,7 +1826,7 @@ SCENARIOS = [
                                 [("    devices: ", "ownership.kernel")])),
     ("ownership.line", on_imx([("    lines: { irq: /dev/sai5/shared }\n",
                                 "    lines: { irq: /dev/sai5/shared }\n  - name: echo\n    entry: echo_main\n"
-                                "    stack: 4096\n    priority: 8\n    lines: { irq: /dev/sai6/shared }\n")],
+                                "    stack: 4096\n    priority: 8\n    ceiling: 8\n    lines: { irq: /dev/sai6/shared }\n")],
                               [("    lines: { irq: /dev/sai6", "ownership.line")])),
     (None, on_k64f([], [])),
     (None, on_k64f([("[/dev/dspi0]", "[/dev/gpio/0]")], [])),
@@ -1820,6 +1885,25 @@ SCENARIOS = [
     ("name.device-unknown", on_k64f([("[/dev/gpio/1] # leds", "[/dev/gpio/5] # leds")],
                                     [("    devices: [/dev/gpio/5]", "name.device-unknown")], manifest=K64F_MANIFEST)),
     ("manifest.target", on_k64f([], [("board: ", "manifest.target")], manifest=XMC_MANIFEST)),
+    (None, on_k64f([("board: frdmk64f\n", "")], [], manifest=K64F_MANIFEST)),
+    (None, on_c6([("board: esp32c6-wroom\n", "")], [])),
+    ("name.device-unknown", on_k64f([("board: frdmk64f\n", ""), ("[/dev/gpio/1] # leds", "[/dev/usic0/ch1] # leds")],
+                                    [("    devices: [/dev/usic0", "name.device-unknown")], manifest=K64F_MANIFEST)),
+    ("manifest.target", on_k64f([("board: frdmk64f\n", "")], [("version: ", "manifest.target")],
+                                manifest=mutate(K64F_MANIFEST, [("descriptions:\n  chip: platform/mk64f/chip.yaml\n"
+                                                                 "  board: platform/mk64f/frdmk64f.yaml\n", "")])[0])),
+    (None, on_c6(BOARD_LESS_C6, [], manifest=defaulted(C6_MANIFEST, "esp32c6-wroom"))),
+    ("form.missing", on_c6(BOARD_LESS_C6, [("version: ", "form.missing"), ("version: ", "enforcement.no-protection"),
+                                           ("version: ", "enforcement.no-privilege-split"),
+                                           ("  - name: blink", "form.missing")])),
+    ("enforcement.no-privilege-split", on_c6([("board: esp32c6-wroom\n", ""), ("heap: 0\n", ""),
+                                              ("[no_protection, no_privilege_split]", "[no_protection]")],
+                                             [("version: ", "enforcement.no-privilege-split")], names="every cluster's",
+                                             manifest=defaulted(C6_MANIFEST, "esp32c6-wroom"))),
+    ("form.missing", on_k64f([("heap: 0\n", "")], [("version: ", "form.missing")], manifest=K64F_MANIFEST)),
+    (None, on_imx([("board: imx8mp-evk\ncluster: a53\n", "")], [], manifest=defaulted(IMX_MANIFEST, "imx8mp-evk"))),
+    ("form.missing", on_imx([("board: imx8mp-evk\ncluster: a53\n", "")],
+                            [("version: ", "form.missing"), ("version: ", "manifest.window")], manifest=IMX_MANIFEST)),
     ("manifest.target", on_k64f([], [("board: ", "manifest.target")],
                                 manifest=mutate(K64F_MANIFEST, [("  chip: mk64f\n  arch", "  chip: stm32f411\n  arch"),
                                                                 ("descriptions:\n  chip: platform/mk64f/chip.yaml\n"
@@ -1834,6 +1918,9 @@ SCENARIOS = [
     ("enforcement.port-bank", on_c6([("accepts: [no_protection, no_privilege_split]\n", "")],
                                     [("    devices: [/dev/gpio]", "enforcement.port-bank")], LP_PROTECTED)),
     ("enforcement.unneeded", on_c6([C6_BANK], [("    accepts: [coarse_gate]", "enforcement.unneeded")], names="subsumes")),
+    (None, c6blink([], [])),
+    ("enforcement.unneeded", c6blink([C6BLINK_COARSE], [("    accepts: [coarse_gate]", "enforcement.unneeded")],
+                                     names="subsumes")),
     (None, on_rv64([], [])),
     ("memory.uncached", on_rv64([("cache: cached", "cache: uncached")], [("    cache: uncached", "memory.uncached")])),
     ("encoding.page", on_arm64([("devices: [/dev/rtc]", "devices: [/dev/rtc, /dev/scratch]")],
@@ -2083,6 +2170,7 @@ def run_cases():
             fresh = os.path.join(scratch, "fresh%d" % n, "platform")
             shutil.copytree(PLATFORM, fresh)
             shutil.copytree(SYSTEMS, systems_of(fresh))
+            shutil.copytree(os.path.join(TREE, "boards"), os.path.join(os.path.dirname(fresh), "boards"))
             refusals, expected = scenario(fresh)
             judge = lambda found, expected=expected: exact_fault(expected, found)
             cases.append(Case("%s %s" % (rule, scenario.__name__), rule, refusals, judge))

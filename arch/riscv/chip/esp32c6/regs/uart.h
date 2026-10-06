@@ -2,8 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // ESP32-C6 UART registers (TRM v1.2 ch.27, offsets from section 27.7.1). The board console
-// is UART0 (GPIO16/17), bridged to the host by the on-board CH343P. Transmitter and receiver
-// each own a 128 x 8-bit FIFO RAM (TRM section 27.4.2).
+// is UART0. Transmitter and receiver each own a 128 x 8-bit FIFO RAM (TRM section 27.4.2).
 
 #ifndef KICKOS_ARCH_RISCV_CHIP_ESP32C6_REGS_UART_H
 #define KICKOS_ARCH_RISCV_CHIP_ESP32C6_REGS_UART_H
@@ -63,6 +62,7 @@ namespace kickos::esp32c6::reg::uart
     // FSM_STATUS (TRM Register 27.24): ST_UTX_OUT [3:0] is the transmitter state machine,
     // ST_URX_OUT [7:4] the receiver's. The TRM prints the fields but not their encodings;
     // idle is taken to be the reset value 0.
+    constexpr uintptr_t OFF_TX_FSM = OFF_FSM_STATUS;
     constexpr uint32_t ST_UTX_OUT_S = 0u;
     constexpr uint32_t ST_UTX_OUT_MASK = 0xFu;
     constexpr uint32_t ST_UTX_OUT_IDLE = 0u;

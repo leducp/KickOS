@@ -148,9 +148,6 @@ namespace kickos::xmc::reg::usic
     constexpr uint32_t PSR_DLIF = 1u << 11; // data-lost (RX overrun)
     constexpr uint32_t ASC_ERR_MASK = PSR_RNS | PSR_FER0 | PSR_FER1 | PSR_DLIF;
 
-    // DX0CR.DSEL = 001B selects input line DX0B = P1.4 (console RX) (RM p.18-173).
-    constexpr uint32_t DX0_DSEL_B = 0x1u;
-
     // ---- SSC (SPI) mode field constants --------------------------------------
     // Users: system/driver/xmc4800/xmcssc and user/apps/xmc4800-relax/{xmcspi,xmccshold}.
 

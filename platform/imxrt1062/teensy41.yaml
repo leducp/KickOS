@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Values from IMXRT1060RM Table 10-1 and the tree's chip_imxrt1062.cc and
-# docs/reference/boards.md.
+# Values from IMXRT1060RM Table 10-1 and docs/reference/boards.md. That GPIO_B0_03 carries the
+# Teensy 4.1's LED is the board's claim, which no schematic in the reference set backs.
 
 version: 1
 board: teensy41

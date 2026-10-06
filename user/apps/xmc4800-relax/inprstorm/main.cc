@@ -305,7 +305,7 @@ namespace
     }
 }
 
-int main(int, char**)
+extern "C" void inprstorm_main(kos_self_t const* self)
 {
     kos::print("[inprstorm] XMC4800 console DoS probe via U0C1 INPR reroute onto SR0\n");
     kos::print("[inprstorm] MARKER: root up, spawning the U0C1 holder\n");
@@ -315,33 +315,34 @@ int main(int, char**)
         kos::print(s);
     }
 
-    // No register access from root: the attacker configures U0C1 itself, so the whole
-    // sequence is what a grant holder can reach.
+    // The entry holds the channel window its composition grants and re-delegates it to the storm
+    // thread.
+    kos_window_t const window = kos_grant_mmio(self, "/dev/usic0/ch1");
+    uintptr_t const win = reinterpret_cast<uintptr_t>(kos_window_addr(window));
+    if (win == 0u or kos_window_size(window) < U0C1_WINDOW)
+    {
+        kos_panic("[inprstorm] no /dev/usic0/ch1 window");
+    }
 
-    // Priority 1 (KICKOS_PRIO_MIN) is BELOW root's KICKOS_PRIO_MIN+1: the storm thread
-    // can never starve root by hogging the CPU, so a wedged console would isolate the
-    // foreign-SR0 interrupt storm as the cause.
-    kos_window const win = {U0C1_BASE, U0C1_WINDOW, KOS_WINDOW_DEVICE, 0};
-    auto const p = kos::thread::create(storm, reinterpret_cast<void*>(U0C1_BASE),
-                                       "inprstorm", 1, KOS_POLICY_FIFO, 0,
+    // Priority 1 (KICKOS_PRIO_MIN) is BELOW the task's, so the storm can never starve the entry by
+    // hogging the CPU: a wedged console then isolates the foreign-SR0 storm as the cause.
+    kos_window const grant = {win, U0C1_WINDOW, KOS_WINDOW_DEVICE, 0};
+    auto const p = kos::thread::create(storm, reinterpret_cast<void*>(win),
+                                       "inprstorm-dos", 1, KOS_POLICY_FIFO, 0,
                                        /*privileged=*/false,
                                        /*mem=*/nullptr, /*mem_size=*/0,
                                        /*stack=*/nullptr, /*stack_size=*/0,
-                                       /*windows=*/&win, 1);
+                                       /*windows=*/&grant, 1);
     if (not p.valid())
     {
-        // -KOS_EBUSY: a live domain already holds U0C1. Without the grant the attacker
-        // never reaches INPR, and the heartbeat below would read as "no DoS" on a probe that
-        // never fired. The errno goes out through the panic path because the kernel console
-        // path drops every byte once a driver has published.
         char e[64];
-        ksnprintf(e, sizeof(e), "[inprstorm] U0C1 spawn refused, errno %d", -p.error());
+        ksnprintf(e, sizeof(e), "[inprstorm] U0C1 storm spawn refused, errno %d", -p.error());
         kos_panic(e);
     }
 
-    // Heartbeat. A DoS kills the log outright; a rate the console merely SURVIVES shows up
-    // as dt drifting above the 300 ms nominal, which a bare beat counter cannot show. t is
-    // uptime and dt the interval since the previous beat, both ms from the monotonic clock.
+    // Heartbeat. A DoS kills the log outright; a rate the console merely SURVIVES shows up as dt
+    // drifting above the 300 ms nominal, which a bare beat counter cannot show. t is uptime and dt
+    // the interval since the previous beat, both ms from the monotonic clock.
     uint64_t const t0 = kos_clock_now();
     uint64_t prev = t0;
     uint32_t beat = 0;

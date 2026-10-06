@@ -223,18 +223,14 @@ endif()
 # The SPI class backend for this image, which is the image posture's decision and not any
 # app's: every backend defines the same four kos_spi_* symbols, so exactly one links.
 #
-# DEFAULT, the PROXY: the board service list brings the bus service up before main and a
-# client reaches the block over its endpoint. One library for every chip, because it speaks
-# the chip-agnostic wire protocol (docs/reference/bus-service.md).
+# DEFAULT, the PROXY: the bus service owns the block and a client reaches it over its
+# endpoint. One library for every chip, because it speaks the chip-agnostic wire protocol
+# (docs/reference/bus-service.md).
 #
-# KICKOS_SPI_LOCAL_ENGINE=ON, the VALIDATION posture: the client owns the peripheral's window
-# and its interrupt line and clocks the bus inline, with no service and no IPC. It needs a
-# service list that does NOT start the bus service, or the driver thread would already hold
-# the window and the grant would be refused (one owner per block):
-#   cmake -B <dir> --preset xmc4800-relax-st -DKICKOS_SPI_LOCAL_ENGINE=ON \
-#         -DKICKOS_SERVICE_LIST=kickos_services_xmc4800relax_console
-# The app source must carry a local arm; where it does not, the endpoint call it keeps making
-# is undefined at link time rather than silently absent at run time.
+# KICKOS_SPI_LOCAL_ENGINE=ON, the VALIDATION posture: the client owns the peripheral's window,
+# and its line where the engine is interrupt-paced, and clocks the bus inline, with no service
+# and no IPC. A composition naming the bus driver links the proxy as that driver's client
+# whatever this selects, so an app built both ways picks its composition on this same option.
 option(KICKOS_SPI_LOCAL_ENGINE
   "Answer the SPI class with the chip's LOCAL engine (the client owns the block) instead of the bus-service proxy"
   OFF)

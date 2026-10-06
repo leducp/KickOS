@@ -60,6 +60,7 @@ class TaskEntry:
         self.stack = 0
         self.block = 0
         self.priority = 0
+        self.ceiling = 0
         self.restart_max = 0
         self.console = False
         self.block_uncached = False
@@ -305,6 +306,11 @@ def build(admitted):
             entry.stack = task.stack
             entry.authority = [name for name in AUTHORITIES if name in task.authority]
         entry.priority = task.priority
+        entry.ceiling = task.priority
+        if task.ceiling is not None:
+            entry.ceiling = task.ceiling
+        if task.driver is not None and task.catalogue is not None and task.catalogue.threads:
+            entry.ceiling = task.priority + max(offset for _, offset, _ in task.catalogue.threads)
         entry.restart_max = task.restart_max
         if task.core is not None:
             entry.core_mask = 1 << task.core
@@ -545,6 +551,7 @@ def render(table, source, composition=None, output="table.c"):
             out.append("            .entry = { %s }," % entry)
             out.append("            .driver = %s," % none_or(task.driver))
             out.append("            .stack = %d," % task.stack)
+            out.append("            .ceiling = %d," % task.ceiling)
             out.append("            .priority = %d," % task.priority)
             out.append("            .restart_max = %d," % task.restart_max)
             flags = []
@@ -772,10 +779,10 @@ def dump(table):
         if task.block_uncached:
             names.append("block_uncached")
         flags = names_or_dash(names)
-        out.append("task %d name=%s entry=%s driver=%s stack=%d block=%d priority=%d restart_max=%d flags=%s "
+        out.append("task %d name=%s entry=%s driver=%s stack=%d block=%d priority=%d ceiling=%d restart_max=%d flags=%s "
                    "core_mask=0x%X authority=%s grants=%d+%d cap_grants=%d uses=%d+%d watches=%d+%d"
                    % (n, task.name, task.entry, none_text(task.driver), task.stack, task.block, task.priority,
-                      task.restart_max, flags, task.core_mask, names_or_dash(task.authority), task.first_grant, task.grant_count,
+                      task.ceiling, task.restart_max, flags, task.core_mask, names_or_dash(task.authority), task.first_grant, task.grant_count,
                       task.cap_grant_count, task.first_use, task.use_count, task.first_watch, task.watch_count))
     for n, grant in enumerate(table.grants):
         out.append("grant %d kind=%s flags=%s cap_slot=%s name=%s path=%s target=%s window=%s base=0x%X size=0x%X "

@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The bank holds the console's and the reserved pins too, and still no `coarse_gate`: the
+# platform-wide `no_protection` the LP core brings subsumes it, and admission refuses it as unneeded.
+
+version: 1
+stdout: kernel
+ends: c6blink
+
+tasks:
+  - name: c6blink
+    entry: c6blink_main
+    priority: 10
+    ceiling: 10
+    devices: [/dev/gpio]
+    authority: [pinmux]

@@ -66,7 +66,7 @@ namespace kickos
         // Every acquire in this file goes through these two, or the pairing count escapes.
         void const* acquire_page(struct arch_aspace* space, uintptr_t va)
         {
-            void const* const p = arch_aspace_acquire(space, va);
+            void const* const p = arch_aspace_acquire(space, va, nullptr);
 #if defined(KICKOS_ENABLE_SELFTEST)
             if (p != nullptr)
             {
@@ -89,6 +89,28 @@ namespace kickos
             }
 #endif
             arch_aspace_release(space, va);
+        }
+
+        // Ahead of a leaf of another memory type than the frames last had, and of a non-cacheable
+        // one: the kernel's cacheable view holds lines of them, dirty from the pool's clear or a
+        // cacheable mapping, or clean but stale after a non-cacheable one, and each is cleaned to
+        // memory then dropped. A frame outside the pool has no such view.
+        void sync_frames(arch_phys_addr_t pa, size_t pages)
+        {
+#if KICKOS_ALIAS_DCACHE
+            size_t const g = arch_aspace_granule();
+            for (size_t i = 0; i < pages; i++)
+            {
+                void const* const p = frame_pool_ptr(pa + static_cast<arch_phys_addr_t>(i * g));
+                if (p != nullptr)
+                {
+                    alias_sync(p, g);
+                }
+            }
+#else
+            (void)pa;
+            (void)pages;
+#endif
         }
 
         // volatile keeps each a relocated word; a plain constant folds back into every reader.
@@ -494,6 +516,10 @@ namespace kickos
         {
             return -KOS_EBUSY;
         }
+        if (aspace_grant_syncs(e, memtype))
+        {
+            sync_frames(aspace_frame_of(b), pages);
+        }
         if (arch_aspace_map(space, b, aspace_frame_of(b), pages, rights, type)
             != ARCH_ASPACE_OK)
         {
@@ -543,6 +569,10 @@ namespace kickos
             frame_run_release(run_obj);
             return -KOS_ENOMEM; // overlaps something this space already names, or the list is full
         }
+        if (type == ARCH_MAP_NOCACHE)
+        {
+            sync_frames(base, pages);
+        }
         if (arch_aspace_map(space, va, base, pages, rights, type) != ARCH_ASPACE_OK)
         {
             ranges->release(va);
@@ -581,9 +611,19 @@ namespace kickos
             return -KOS_EPERM;
         }
         uint32_t const pages = e->pages;
+        arch_phys_addr_t uncached_pa = 0;
+        if (e->memtype == static_cast<uint8_t>(ARCH_MAP_NOCACHE))
+        {
+            uncached_pa = arch_aspace_frame_at(space, va);
+        }
         if (arch_aspace_unmap(space, va, pages) != ARCH_ASPACE_OK)
         {
             return -KOS_ENOMEM;
+        }
+        // The run outlives the leaf, and its next mapping may be cacheable.
+        if (uncached_pa != 0)
+        {
+            sync_frames(uncached_pa, pages);
         }
         ranges->release(va);
         frame_run_release(run_obj);
@@ -621,6 +661,10 @@ namespace kickos
                                    donor_tag))
         {
             return -KOS_ENOMEM;
+        }
+        if (type == ARCH_MAP_NOCACHE)
+        {
+            sync_frames(pa, pages);
         }
         if (arch_aspace_map(space, va, pa, pages, rights, type) != ARCH_ASPACE_OK)
         {
@@ -700,6 +744,10 @@ namespace kickos
         if (not ranges->reserve(b, pages, VR_BORROWED))
         {
             return -KOS_ENOMEM;
+        }
+        if (type == ARCH_MAP_NOCACHE)
+        {
+            sync_frames(aspace_frame_of(b), pages);
         }
         if (arch_aspace_map(space, b, aspace_frame_of(b), pages, rights, type)
             != ARCH_ASPACE_OK)

@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# CI gate for the FRAMED arm of a published console endpoint. Builds the sim with
-# kickos_services_sim (a userspace console driver owns the wire) and requires that
-# driver to ANSWER every kos_call it is sent.
+# CI gate for the FRAMED arm of a published console endpoint. Runs simconabi, whose
+# composition names the packaged simcon as stdout (a userspace console driver owns the wire),
+# and requires that driver to ANSWER every kos_call it is sent.
 #
 # The defect is not a wrong answer, it is NO answer: a driver that does not separate the
 # two protocols leaves the caller blocked forever. A hang is indistinguishable from slow,
@@ -13,27 +13,13 @@
 # The sim driver answers on its own code, not on uart_service.h's serve_one, so this is its
 # only coverage; serve_one is the selftest's.
 #
-# usage: check_sim_conabi.sh <kickos-source-dir> <cmake>
+# usage: check_sim_conabi.sh <simconabi>
 
 set -eu
 . "$(dirname "$0")/../lib/gate.sh"
 
-KICKOS_SRC="$1"
-CMAKE="${2:-cmake}"
-
-scratch_dir
-
-echo "== configuring the sim with the publishing service list =="
-( cd "$KICKOS_SRC" && "$CMAKE" --preset sim -B "$TMP/build" \
-    -DKICKOS_SERVICE_LIST=kickos_services_sim >/dev/null ) \
-  || fail "configure with kickos_services_sim failed"
-
-echo "== building simconabi =="
-"$CMAKE" --build "$TMP/build" --target simconabi >/dev/null \
-  || fail "simconabi build failed"
-
-APP="$TMP/build/user/apps/common/simconabi/simconabi"
-[ -x "$APP" ] || fail "simconabi binary not produced at $APP"
+APP="${1:?usage: check_sim_conabi.sh <simconabi>}"
+[ -x "$APP" ] || fail "no simconabi image at $APP"
 
 echo "== running simconabi against the published console =="
 set +e

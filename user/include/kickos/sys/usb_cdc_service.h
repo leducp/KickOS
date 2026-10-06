@@ -106,6 +106,9 @@ struct Shared
     // IRQ thread is its only writer; it sits in the shared block because the flush protocol
     // runs on the SERVICE thread, which cannot see the Cdc class.
     Atomic<uint32_t, Order::RELAXED> tx_inflight;
+    // 1 while the last bulk IN packet was full-sized and no short one has closed its transfer:
+    // the host's read stays open until one does. IRQ thread only; the flush waits for 0.
+    Atomic<uint32_t, Order::RELAXED> tx_zlp;
     // Write policy for the unframed console arm, from kos_uart_flags. The service thread is
     // its only writer.
     Atomic<uint32_t, Order::RELAXED> mode;
@@ -210,7 +213,9 @@ private:
         config_ = 0;
         bulk_in_pid_ = 0;
         bulk_out_pid_ = 0;
+        zlp_inflight_ = false;
         sh_->tx_inflight = 0;
+        sh_->tx_zlp = 0;
         sh_->configured = 0;
         // `mode` is deliberately NOT reset: it is the caller's choice, not link state, so a
         // bus reset must not silently restore back-pressure a caller opted out of.
@@ -224,6 +229,8 @@ private:
         uint32_t const lost = sh_->tx_lost_link + sh_->tx_inflight;
         sh_->tx_lost_link = lost;
         sh_->tx_inflight = 0;
+        zlp_inflight_ = false;
+        sh_->tx_zlp = 0;
     }
 
     void on_bus_reset()
@@ -505,7 +512,15 @@ private:
         }
         if ((bits & bit_in(KOS_USB_CDC_EP_DATA)) != 0u)
         {
-            sh_->tx_inflight = 0;
+            if (zlp_inflight_)
+            {
+                zlp_inflight_ = false;
+                sh_->tx_zlp = 0;
+            }
+            else
+            {
+                sh_->tx_inflight = 0;
+            }
         }
         if ((bits & bit_out(KOS_USB_CDC_EP_DATA)) != 0u)
         {
@@ -588,21 +603,35 @@ private:
         {
             return; // no host has selected a configuration: the bytes wait in the ring
         }
-        if (sh_->tx_inflight != 0u)
+        if (sh_->tx_inflight != 0u or zlp_inflight_)
         {
             return; // one buffer is with the controller; its completion re-enters here
         }
         uint8_t buf[KOS_USB_CDC_BULK_MAX_PACKET];
-        uint32_t n = kos_byte_ring_pop(&sh_->tx, buf, sizeof(buf));
+        uint32_t const n = kos_byte_ring_peek(&sh_->tx, buf, sizeof(buf));
         if (n == 0u)
         {
+            if (sh_->tx_zlp != 0u)
+            {
+                dev_.ep_in(KOS_USB_CDC_EP_DATA, nullptr, 0u, bulk_in_pid_);
+                bulk_in_pid_ = static_cast<uint8_t>(bulk_in_pid_ ^ 1u);
+                zlp_inflight_ = true;
+            }
             return;
         }
         dev_.ep_in(KOS_USB_CDC_EP_DATA, buf, n, bulk_in_pid_);
         bulk_in_pid_ = static_cast<uint8_t>(bulk_in_pid_ ^ 1u);
         // One count carries both "a buffer is with the controller" and "how many bytes it
-        // holds", n being nonzero here.
+        // holds", n being nonzero here. Both stored BEFORE the drop: a flush that sees the
+        // bytes leave the ring must also see them in flight, and the transfer they leave open.
         sh_->tx_inflight = n;
+        uint32_t zlp = 0u;
+        if (n == KOS_USB_CDC_BULK_MAX_PACKET)
+        {
+            zlp = 1u;
+        }
+        sh_->tx_zlp = zlp;
+        kos_byte_ring_drop(&sh_->tx, n);
     }
 
     UsbDev& dev_;
@@ -621,6 +650,7 @@ private:
     uint8_t bulk_out_pid_ = 0;
     bool ep0_zlp_ = false;
     bool addr_pending_ = false;
+    bool zlp_inflight_ = false;
 };
 
 // ---------------------------------------------------------------------------------
@@ -661,14 +691,28 @@ void irq_loop(Cdc<UsbDev>& cdc, Shared* sh)
 // may never enumerate or read. Do not derive that mode from configured,
 // which does not clear on unplug.
 // Flush also waits for tx_inflight because an empty ring may leave a packet
-// in controller memory. Rechecking controller status recovers a missed IN
-// completion when the ring is full.
+// in controller memory: drained means the host acknowledged the last bulk IN packet, and the
+// zero-length packet closing a transfer that ended on a full one.
+// Rechecking controller status recovers a missed IN completion when the ring is full.
 struct Transport
 {
     static constexpr uint32_t MODE_REQUIRED = KOS_UART_F_NONBLOCK;
-    static Atomic<uint32_t, Order::RELAXED> const* inflight(Shared* sh)
+    static int32_t flush(Shared* sh)
     {
-        return &sh->tx_inflight;
+        if (console::flush(&sh->tx, &sh->tx_inflight) != 0u)
+        {
+            return -KOS_EBUSY;
+        }
+        for (uint32_t i = 0; i < console::KOS_CONSOLE_FLUSH_MAX and sh->tx_zlp != 0u; i++)
+        {
+            (void)kos_notify(console::KOS_CONSOLE_CAP_DOORBELL);
+            kos_sleep_ns(console::KOS_CONSOLE_FLUSH_SLEEP_NS);
+        }
+        if (sh->tx_zlp != 0u)
+        {
+            return -KOS_EBUSY;
+        }
+        return 0;
     }
     static uint32_t tx_lost(Shared const* sh) { return sh->tx_lost_link; }
 };

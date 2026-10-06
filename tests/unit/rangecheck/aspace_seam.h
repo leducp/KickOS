@@ -28,6 +28,18 @@ namespace kickos
         // Take the space away and leave the list behind. domain_ranges answers null after
         // this, which is the shape of a domain that holds no space at all.
         void drop_space(Domain* d);
+
+        // What arch_aspace_acquire answers in any space: [va, va + bytes) reached at `at`, the
+        // pages from `uncached_va` on reported mapped non-cacheable. Zero bytes backs nothing.
+        struct Backing
+        {
+            uintptr_t va;
+            unsigned char* at;
+            size_t bytes;
+            uintptr_t uncached_va;
+        };
+        extern Backing g_backing;
+        void seat_backing(uintptr_t va, unsigned char* at, size_t bytes, uintptr_t uncached_va);
     }
 }
 

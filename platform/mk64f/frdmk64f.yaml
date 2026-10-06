@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Values from the FRDM-K64F User's Guide and the tree's chip_mk64f.cc and the k64dspi
-# driver.
+# Values from the FRDM-K64F User's Guide, the K64 signal multiplexing table and the k64dspi
+# driver. The guide labels the OpenSDA port's UART "UART1"; PTB16 has no UART1 function, and the
+# multiplexing table makes PTB16/PTB17 UART0's.
 
 version: 1
 board: frdmk64f

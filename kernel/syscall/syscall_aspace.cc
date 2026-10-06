@@ -90,7 +90,7 @@ namespace kickos
         // took a hold whether the arm wanted the pointer or not, and arch.h counts calls.
         bool acquire_answers(struct arch_aspace* space, uintptr_t va)
         {
-            void* const p = arch_aspace_acquire(space, va);
+            void* const p = arch_aspace_acquire(space, va, nullptr);
             if (p == nullptr)
             {
                 return false;
@@ -115,7 +115,7 @@ namespace kickos
             {
                 trip = KOS_ASPACE_TRIP_MAPPED;
                 mapped = true;
-                void* const p = arch_aspace_acquire(space, va_a());
+                void* const p = arch_aspace_acquire(space, va_a(), nullptr);
                 if (p != nullptr)
                 {
                     *word_at(p) = PATTERN_A;
@@ -162,8 +162,8 @@ namespace kickos
                 arch_aspace_map(space, va_b(), frame, 1, ARCH_MAP_R | ARCH_MAP_W,
                                 ARCH_MAP_NORMAL) == ARCH_ASPACE_OK)
             {
-                void* const a = arch_aspace_acquire(space, va_a());
-                void* const b = arch_aspace_acquire(space, va_b());
+                void* const a = arch_aspace_acquire(space, va_a(), nullptr);
+                void* const b = arch_aspace_acquire(space, va_b(), nullptr);
                 // Compares the frame behind each page: a windowed backend can hand back
                 // two unequal slot addresses for one frame.
                 bool const same_frame = arch_aspace_frame_at(space, va_a()) == frame
@@ -611,13 +611,13 @@ namespace kickos
             {
                 // Holds at most two pages at once (first, and the one under test).
                 constexpr uintptr_t IN_PAGE = 0x40;
-                unsigned char* const first = static_cast<unsigned char*>(arch_aspace_acquire(space, span_va));
+                unsigned char* const first = static_cast<unsigned char*>(arch_aspace_acquire(space, span_va, nullptr));
                 uintptr_t const mask = static_cast<uintptr_t>(g - 1u);
                 bool contiguous = first != nullptr and arch_aspace_frame_at(space, span_va) == SPAN_PA;
                 for (size_t i = 1; i < span_pages and contiguous; i++)
                 {
                     uintptr_t const at_va = span_va + i * g + IN_PAGE;
-                    unsigned char* const at = static_cast<unsigned char*>(arch_aspace_acquire(space, at_va));
+                    unsigned char* const at = static_cast<unsigned char*>(arch_aspace_acquire(space, at_va, nullptr));
                     contiguous = at != nullptr and arch_aspace_frame_at(space, at_va) == SPAN_PA + static_cast<arch_phys_addr_t>(i * g);
                     if (contiguous)
                     {
@@ -672,8 +672,8 @@ namespace kickos
                 arch_aspace_map(space, dup_va_b(), DUP_PA + static_cast<arch_phys_addr_t>(g), 1,
                                 ARCH_MAP_R, ARCH_MAP_DEVICE) == ARCH_ASPACE_OK)
             {
-                void* const a = arch_aspace_acquire(space, dup_va_a());
-                void* const b = arch_aspace_acquire(space, dup_va_a());
+                void* const a = arch_aspace_acquire(space, dup_va_a(), nullptr);
+                void* const b = arch_aspace_acquire(space, dup_va_a(), nullptr);
                 if (a != nullptr and b != nullptr and a == b)
                 {
                     bits |= KOS_ASPACE_DUP_STABLE;
@@ -684,7 +684,7 @@ namespace kickos
                 {
                     arch_aspace_release(space, dup_va_a());
                 }
-                void* const c = arch_aspace_acquire(space, dup_va_b());
+                void* const c = arch_aspace_acquire(space, dup_va_b(), nullptr);
                 if (c != nullptr and a != nullptr and c != a)
                 {
                     bits |= KOS_ASPACE_DUP_DISTINCT;
@@ -736,13 +736,13 @@ namespace kickos
                     arch_aspace_map(sb, va_a() + g, rb + 2 * step, 1, rw, ARCH_MAP_NORMAL) ==
                         ARCH_ASPACE_OK;
                 unsigned char* const alo =
-                    static_cast<unsigned char*>(arch_aspace_acquire(sa, va_a()));
+                    static_cast<unsigned char*>(arch_aspace_acquire(sa, va_a(), nullptr));
                 unsigned char* const ahi =
-                    static_cast<unsigned char*>(arch_aspace_acquire(sa, va_a() + g));
+                    static_cast<unsigned char*>(arch_aspace_acquire(sa, va_a() + g, nullptr));
                 unsigned char* const blo =
-                    static_cast<unsigned char*>(arch_aspace_acquire(sb, va_a()));
+                    static_cast<unsigned char*>(arch_aspace_acquire(sb, va_a(), nullptr));
                 unsigned char* const bhi =
-                    static_cast<unsigned char*>(arch_aspace_acquire(sb, va_a() + g));
+                    static_cast<unsigned char*>(arch_aspace_acquire(sb, va_a() + g, nullptr));
                 // Reached by the pool's own route: never mapped in either space, so an
                 // access that lands there did not split.
                 unsigned char* const spill =
@@ -890,7 +890,7 @@ namespace kickos
                 arch_aspace_destroy(space);
                 return 0;
             }
-            void* const seed = arch_aspace_acquire(space, va_a());
+            void* const seed = arch_aspace_acquire(space, va_a(), nullptr);
             if (seed == nullptr)
             {
                 arch_aspace_destroy(space);
@@ -965,7 +965,7 @@ namespace kickos
                 kickos_frame_free(frame);
                 return 0;
             }
-            void* const seed = arch_aspace_acquire(space, va_u());
+            void* const seed = arch_aspace_acquire(space, va_u(), nullptr);
             if (seed == nullptr)
             {
                 (void)arch_aspace_unmap(space, va_u(), 1);
@@ -1361,6 +1361,10 @@ namespace kickos
                     return 0;
                 }
                 return reinterpret_cast<uintptr_t>(domain_space(task_domain(c->task)));
+            }
+            case KOS_ASPACE_OP_ALIAS_SYNCS:
+            {
+                return alias_sync_count();
             }
             case KOS_ASPACE_OP_SPACE_ID:
             {

@@ -87,7 +87,7 @@ namespace
     constexpr uint32_t DOORBELL_ROUNDS = KOS_BENCH_ROUNDS_MAX;
     // Bounds the walk only; the kernel's refusal ends it. A core set is a 32-bit mask.
     constexpr uint32_t CORE_WALK_MAX = 32;
-    // Bounded so main RETURNS: root's exit reaches kickos_terminate, and a board built with
+    // Bounded so main RETURNS: its task's end ends the system, and a board built with
     // KICKOS_SHUTDOWN_TO_BOOTLOADER re-enters its bootloader without a button press.
     constexpr unsigned THROUGHPUT_REPORTS = 3;
 #if KICKOS_KERNEL_CORES > 1
@@ -109,10 +109,10 @@ namespace
     }
 #endif
 
-    kos::Semaphore* g_a = nullptr;    // MAIN's caps
-    kos::Semaphore* g_b = nullptr;
-    kos::Semaphore* g_gate = nullptr;
-    kos::Semaphore* g_resume = nullptr;
+    // MAIN's caps, kept until the reporter is done: its table is a child's, too narrow to hold
+    // the players' A and B beside these and the end-to-end pair's.
+    kos_cap_t g_gate = KOS_CAP_NONE;
+    kos_cap_t g_resume = KOS_CAP_NONE;
     Atomic<uint32_t, Order::RELAXED> g_rounds{0};
     // Set for the dirty-vector window: each player writes every YMM register before each switch,
     // so each restore loads the SSE and AVX components rather than their initial state.
@@ -200,8 +200,12 @@ namespace
     // reporter's probes and sweeps take it off the players' core, and the pair runs there again.
     void player_b(void*) // caps: A@1, B@2, gate@3, resume@4
     {
+        // The reporter opens every burst through resume, the first included.
+        kos_sem_wait(CH_RESUME);
         while (true)
         {
+            vec_dirty();
+            kos_sem_post(CH_A);
             vec_dirty();
             kos_sem_wait(CH_B);
             uint32_t const round = g_rounds + 1;
@@ -214,13 +218,11 @@ namespace
                 player_b_dithered();
 #endif
             }
-            vec_dirty();
-            kos_sem_post(CH_A);
         }
     }
 
     // --- the end-to-end span ---------------------------------------------------
-    // Both ends are spawned threads of root's own task, so root can place either.
+    // Both ends are spawned threads of main's own task, so main can place either.
     // The waiter holds the line, so nothing else in the image may.
     constexpr int CH_E2E_IRQ = 1;   // waiter: the claimed line, WAIT only
     constexpr int CH_E2E_READY = 2; // waiter: posted once, after the tare, before the first park
@@ -228,7 +230,7 @@ namespace
     constexpr int CH_E2E_GO = 1;    // raiser: one post per pass
     constexpr int CH_E2E_PASS = 2;  // raiser: posted when a pass has run its samples
 
-    // Root attaches the line with an unbadged copy, so it raises bit 0.
+    // Main attaches the line with an unbadged copy, so it raises bit 0.
     constexpr uint32_t E2E_LINE_BIT = 1u << 0;
     // The core the line is claimed on and its waiter pinned to above one kernel core; 0 asks
     // for the default set, which is the only one at one kernel core.
@@ -259,7 +261,7 @@ namespace
             kos_sem_post(CH_E2E_READY);
             return;
         }
-        // Under an MPU, reachability is per thread, so root's own grant of this block does not
+        // Under an MPU, reachability is per thread, so main's own grant of this block does not
         // carry here; under translation it already does and this answers 0 again.
         g_e2e_grant_rc = kos_mem_self_grant(g_e2e_dev, E2E_DEV_BYTES, 0);
         if (g_e2e_grant_rc != 0)
@@ -303,7 +305,7 @@ namespace
                 break;
             }
             // The pass's own set-up is not a sample: the post that started it, and the placement
-            // that moved root off this core, settle before the first raise.
+            // that moved main off this core, settle before the first raise.
             int q = 0;
             while (q < E2E_TRIES and kos_bench(KOS_BENCH_OP_E2E_QUIET, 0, 0) == 0)
             {
@@ -336,7 +338,7 @@ namespace
         }
     }
 
-    // The waiter outranks both root and the raiser.
+    // The waiter outranks both main and the raiser.
     bool e2e_start()
     {
         g_e2e_dev = kos_ram_alloc(E2E_DEV_BYTES);
@@ -351,7 +353,7 @@ namespace
         }
         kos_cap_t irq = KOS_CAP_NONE;
 #if KICKOS_KERNEL_CORES > 1
-        // A line is claimed by a thread pinned where it runs; only the claim needs root there.
+        // A line is claimed by a thread pinned where it runs; only the claim needs main there.
         kos_thread_t const self = kos_thread_self();
         (void)kos_thread_set_affinity(self, E2E_LINE_CORES);
 #endif
@@ -412,6 +414,8 @@ namespace
             kickos::emit("  e2e: SKIP (the waiter cannot reach the device window)\n");
             return false;
         }
+        kos_handle_close(g_e2e_ready);
+        g_e2e_ready = KOS_CAP_NONE;
         if (kos_sem_create(0, &g_e2e_go) != 0 or kos_sem_create(0, &g_e2e_pass) != 0)
         {
             kickos::emit("  e2e: SKIP (no semaphore for the raiser handshake)\n");
@@ -483,8 +487,8 @@ namespace
         }
     }
 
-    // The reporter is the ROOT thread; the two players and the end-to-end pair are the only
-    // slots the bench adds to root's own.
+    // The reporter is the MAIN thread; the two players and the end-to-end pair are the only
+    // slots the bench adds to main's own.
     void reporter_loop()
     {
         int64_t const setup_rc = kos_bench(KOS_BENCH_OP_IRQ_SETUP, BENCH_IRQ_LINE, 0);
@@ -504,15 +508,8 @@ namespace
             // this release.
             uint32_t const prev_rounds = g_rounds;
             uint64_t const prev_ns = kos::clock_now();
-            if (rep == 0)
-            {
-                g_a->post();
-            }
-            else
-            {
-                g_resume->post();
-            }
-            g_gate->wait();
+            kos_sem_post(g_resume);
+            kos_sem_wait(g_gate);
 
             uint64_t now_ns = kos::clock_now();
             uint32_t rounds = g_rounds;
@@ -544,8 +541,8 @@ namespace
             // row above paid nothing for the dither and the rows below read only this burst.
             (void)kos_bench(KOS_BENCH_OP_RESET, 0, 0);
             g_switch_dither = 1;
-            g_resume->post();
-            g_gate->wait();
+            kos_sem_post(g_resume);
+            kos_sem_wait(g_gate);
             g_switch_dither = 0;
 #endif
 
@@ -577,20 +574,20 @@ namespace
         // One more window of the same ping-pong with the players' vector state dirty.
         g_vec_dirty = 1;
         (void)kos_bench(KOS_BENCH_OP_RESET, 0, 0);
-        g_resume->post();
-        g_gate->wait();
+        kos_sem_post(g_resume);
+        kos_sem_wait(g_gate);
         (void)kos_bench(KOS_BENCH_OP_DIST_PRINT, KOS_BENCH_DIST_SWITCH_VEC, 0);
         g_vec_dirty = 0;
 #endif
     }
 
-    // Both call/reply peers are SPAWNED, so the figure is worker-to-worker and not root's.
+    // Both call/reply peers are SPAWNED, so the figure is worker-to-worker and not main's.
     constexpr uint32_t CALLREPLY_REPS = 20000;
 
-    // A peer MUST outrank root (prio KICKOS_PRIO_MIN + 1 == 2): it posts `done` as its last
-    // act but reaches EXITED only afterwards, and root preempting it on that post leaves the
-    // peer READY, holding a slot ThreadPool::alloc cannot reclaim for the next sweep step: on
-    // a 3-slot pool that spawn is -KOS_ENOMEM.
+    // A peer MUST outrank main (priority 2, its composition's): it posts
+    // `done` as its last act but reaches EXITED only afterwards, and main preempting it on that
+    // post leaves the peer READY, holding a slot ThreadPool::alloc cannot reclaim for the next
+    // sweep step: on a 3-slot pool that spawn is -KOS_ENOMEM.
     constexpr uint8_t CR_PRIO = 4;
 
     // The caller's parameters travel in its thread argument, by value: a caller in another
@@ -710,7 +707,7 @@ namespace
     }
     // endpoint_call's D1 donation is guarded on caller_prio strictly greater than
     // server_prio, so an equal-priority step leaves that phase row with zero samples.
-    // Both must stay above root (see CR_PRIO).
+    // Both must stay above main (see CR_PRIO).
     void measure_callreply(uint32_t len, uint8_t caller_prio, uint8_t server_prio,
                            uint32_t generic, kos_task_t server_task = KOS_TASK_NONE,
                            kos_task_t caller_task = KOS_TASK_NONE)
@@ -776,7 +773,7 @@ namespace
     constexpr uint32_t CR_DONATE_SPAN = 32;
 
     // Every switch the cross-task rows drive goes from one task to another, which on a
-    // translating board is a change of address space; every row above stays in root's task.
+    // translating board is a change of address space; every row above stays in main's task.
     constexpr uint32_t XT_SPAN = 16;
     constexpr uint32_t XT_ROUNDS = 20000;
     // A spawn costs orders of magnitude more than a switch, so fewer reps carry it.
@@ -927,7 +924,7 @@ namespace
         row(s);
     }
 
-    // A spawn joined before the next, the child outranking root so it runs and exits at once:
+    // A spawn joined before the next, the child outranking main so it runs and exits at once:
     // the round trip is create, first entry, exit and join. The task row adds the task's
     // creation and its release, which on a translating board is a whole address space.
     void spawn_exit()
@@ -971,7 +968,7 @@ namespace
 {
     // --- the scheduler's workloads (docs/design-m9.4-rings.md, section G) ----------------
     // Every thread a workload spawns is joined before the next starts, and all of them outrank
-    // root.
+    // main.
     constexpr uint32_t W_ROUNDS = 5000;
     constexpr uint8_t W_PRIO = 3;
     constexpr uint8_t W_HOG_PRIO = 6;
@@ -985,8 +982,8 @@ namespace
     constexpr uint32_t W_SPIN_POLL = 1u << 16;
     constexpr uint32_t W_RESEAT_ROUNDS = 500;
 
-    // A ping-pong pair's caps: A@1, B@2. Root's own table is sized for the declared peak and
-    // not for every pair at once, so it closes its handles once the players hold theirs and
+    // A ping-pong pair's caps: A@1, B@2. Main's own table is a child's, sized for no more
+    // than a few pairs at once, so it closes its handles once the players hold theirs and
     // joins the players instead of waiting on a third semaphore.
     constexpr int W_A = 1;
     constexpr int W_B = 2;
@@ -1348,10 +1345,6 @@ namespace
 }
 #endif
 
-// KOS_AUTH_IRQ for the end-to-end span's line mint, KOS_AUTH_MEMORY for the device window
-// root reserves and grants, and KOS_AUTH_SYSTEM because main returns and root's exit is a
-// shutdown.
-KICKOS_APP_AUTHORITY(KOS_AUTH_MEMORY | KOS_AUTH_SYSTEM | KOS_AUTH_IRQ | KOS_AUTH_TASKS);
 
 int main(int, char**)
 {
@@ -1376,7 +1369,7 @@ int main(int, char**)
     (void)kos_bench(KOS_BENCH_OP_RESET, 0, 0); // the phase table below covers the sweep only
 
     // Each step joins BOTH its peers before the next starts, so two pool slots beside
-    // root's carry the whole sweep.
+    // main's carry the whole sweep.
     for (unsigned i = 0; i < sizeof(CR_SPANS) / sizeof(CR_SPANS[0]); i++)
     {
         measure_callreply(CR_SPANS[i], CR_PRIO, CR_PRIO, 0);
@@ -1399,25 +1392,30 @@ int main(int, char**)
 #endif
     kickos::emit("\n");
 
-    kos::Semaphore a(0), b(0), gate(0), resume(0);
-    g_a = &a;
-    g_b = &b;
-    g_gate = &gate;
-    g_resume = &resume;
+    kos_cap_t a = KOS_CAP_NONE;
+    kos_cap_t b = KOS_CAP_NONE;
+    if (kos_sem_create(0, &a) != 0 or kos_sem_create(0, &b) != 0
+        or kos_sem_create(0, &g_gate) != 0 or kos_sem_create(0, &g_resume) != 0)
+    {
+        kickos::emit("bench: FAILED to create the players' semaphores\n");
+        return 1;
+    }
 
-    // Players at prio 1 (KICKOS_PRIO_MIN), below root's prio 2, so the reporter preempts
+    // Players at prio 1 (KICKOS_PRIO_MIN), below main's prio 2, so the reporter preempts
     // them when player_b posts the gate.
-    kos_cap_grant acaps[] = {{a.id(), CH_FULL}, {b.id(), CH_FULL}}; // A@1, B@2
-    kos_cap_grant bcaps[] = {{a.id(), CH_FULL},
-                             {b.id(), CH_FULL},
-                             {gate.id(), CH_FULL},
-                             {resume.id(), CH_FULL}}; // +gate@3, resume@4
+    kos_cap_grant acaps[] = {{a, CH_FULL}, {b, CH_FULL}}; // A@1, B@2
+    kos_cap_grant bcaps[] = {{a, CH_FULL},
+                             {b, CH_FULL},
+                             {g_gate, CH_FULL},
+                             {g_resume, CH_FULL}}; // +gate@3, resume@4
     auto ra = kos::thread::create_caps(player_a, nullptr, "bench_a", 1, acaps, 2, KOS_POLICY_FIFO,
                                        0, /*privileged=*/false, nullptr, 0, 0, nullptr,
                                        KOS_TASK_NONE, nullptr, 0, PLAYER_CORES);
     auto rb = kos::thread::create_caps(player_b, nullptr, "bench_b", 1, bcaps, 4, KOS_POLICY_FIFO,
                                        0, /*privileged=*/false, nullptr, 0, 0, nullptr,
                                        KOS_TASK_NONE, nullptr, 0, PLAYER_CORES);
+    kos_handle_close(a);
+    kos_handle_close(b);
     if (not ra.valid() or not rb.valid())
     {
         // Do not park here: on a bootloader-handover board a parked app costs a physical
@@ -1427,6 +1425,10 @@ int main(int, char**)
     }
 
     reporter_loop();
+    kos_handle_close(g_gate);
+    kos_handle_close(g_resume);
+    g_gate = KOS_CAP_NONE;
+    g_resume = KOS_CAP_NONE;
 #if KICKOS_KERNEL_CORES > 1
     w2_pairs();
     w3_wide();

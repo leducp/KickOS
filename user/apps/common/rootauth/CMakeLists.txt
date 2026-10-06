@@ -2,5 +2,5 @@
 # Copyright (c) 2026 Philippe Leduc
 
 add_executable(rootauth main.cc)
-target_link_libraries(rootauth PRIVATE kickos)
+kickos_app_system(rootauth COMPOSITION system.yaml)
 kickos_emit_image(rootauth)

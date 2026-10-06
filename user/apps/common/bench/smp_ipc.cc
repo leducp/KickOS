@@ -30,7 +30,7 @@ namespace
     static_assert(REMOTE_PAIRS <= ACTIVE_PAIRS,
                   "remote IPC pairs must be a subset of active pairs");
     static_assert(KICKOS_MAX_THREADS >= 2 * ACTIVE_PAIRS + 1,
-                  "one root and two IPC peers per core must fit the thread pool");
+                  "main and two IPC peers per core must fit the thread pool");
     static_assert(KICKOS_MAX_ENDPOINTS >= ACTIVE_PAIRS,
                   "one independent endpoint per core must fit the endpoint pool");
 
@@ -125,7 +125,6 @@ namespace
         g_start = 0;
         line("ipc-pairs: active=%u guest=%u remote=%u\n",
              ACTIVE_PAIRS, KICKOS_KERNEL_CORES, REMOTE_PAIRS, 0);
-        kos_cap_t ep[ACTIVE_PAIRS] = {};
         kos_thread_t sid[ACTIVE_PAIRS] = {};
         kos_thread_t cid[ACTIVE_PAIRS] = {};
         for (uint32_t core = 0; core < ACTIVE_PAIRS; ++core)
@@ -144,14 +143,15 @@ namespace
             pair.server_error = 0;
             pair.first_ns = 0;
             pair.last_ns = 0;
-            int const erc = kos_endpoint_create(&ep[core]);
+            kos_cap_t ep = KOS_CAP_NONE;
+            int const erc = kos_endpoint_create(&ep);
             if (erc != 0)
             {
                 line("ipc-pairs: endpoint failed len=%u core=%u rc=%u\n",
                      len, core, static_cast<unsigned>(-erc), 0);
                 return false;
             }
-            kos_cap_grant grant = {ep[core], KOS_CAP_WAIT};
+            kos_cap_grant grant = {ep, KOS_CAP_WAIT};
             kos_thread_params args{};
             args.entry = server;
             args.arg = &pair;
@@ -164,6 +164,7 @@ namespace
             int const src = kos_thread_create(&args, &sid[core]);
             if (src != 0)
             {
+                kos_handle_close(ep);
                 line("ipc-pairs: server spawn failed len=%u core=%u rc=%u\n",
                      len, core, static_cast<unsigned>(-src), 0);
                 return false;
@@ -173,6 +174,12 @@ namespace
             args.name = "ipc_client";
             args.core_mask = 1u << pair.client_core;
             int const crc = kos_thread_create(&args, &cid[core]);
+            // The peers hold the endpoint now; main's table is a child's, too narrow to keep
+            // one endpoint per core.
+            if (kos_handle_close(ep) != 0)
+            {
+                return false;
+            }
             if (crc != 0)
             {
                 line("ipc-pairs: client spawn failed len=%u core=%u rc=%u\n",
@@ -293,18 +300,9 @@ namespace
         {
             return false;
         }
-        for (uint32_t core = 0; core < ACTIVE_PAIRS; ++core)
-        {
-            if (kos_handle_close(ep[core]) != 0)
-            {
-                return false;
-            }
-        }
         return true;
     }
 }
-
-KICKOS_APP_AUTHORITY(KOS_AUTH_SYSTEM);
 
 int main(int, char**)
 {

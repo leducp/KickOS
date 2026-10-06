@@ -15,7 +15,7 @@ endif()
 if(KICKOS_SIMCON_DIE_AT_BRINGUP)
   target_compile_definitions(kickos_simcon PRIVATE KICKOS_SIMCON_DIE_AT_BRINGUP=1)
 endif()
-# A second thread outside the driver's task holds the console's register window. The gate app
+# A second thread holds the console's register window past the receiver's death. The gate app
 # carries the same knob (user/apps/common/drvdeath).
 if(KICKOS_SIMCON_WINDOW_THREAD)
   target_compile_definitions(kickos_simcon PRIVATE KICKOS_SIMCON_WINDOW_THREAD=1)
@@ -23,11 +23,4 @@ endif()
 # An IRQ thread takes the register window and never sets the ready flag.
 if(KICKOS_SIMCON_IRQ_WEDGE)
   target_compile_definitions(kickos_simcon PRIVATE KICKOS_SIMCON_IRQ_WEDGE=1)
-endif()
-# Either window-thread posture makes its own endpoint, which no start under the init may, so the
-# build leaves simcon out of its catalogue.
-if(KICKOS_SIMCON_WINDOW_THREAD OR KICKOS_SIMCON_IRQ_WEDGE)
-  get_property(_catalogue GLOBAL PROPERTY KICKOS_DRIVER_CATALOGUE)
-  list(REMOVE_ITEM _catalogue simcon)
-  set_property(GLOBAL PROPERTY KICKOS_DRIVER_CATALOGUE "${_catalogue}")
 endif()

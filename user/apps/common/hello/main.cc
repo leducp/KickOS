@@ -67,7 +67,7 @@ int main(int, char**)
     kos::thread::create_caps(ping, nullptr, "ping", 10, caps, 2);
     kos::thread::create_caps(pong, nullptr, "pong", 10, caps, 2);
 
-    // A daemon: returning from main would exit, so root parks on a semaphore nobody posts
+    // A daemon: returning from main would exit, so main parks on a semaphore nobody posts
     // and the two players run until interrupted.
     kos::Semaphore idle(0);
     while (true)

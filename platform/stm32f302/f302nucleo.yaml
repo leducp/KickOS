@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Values from the tree's chip_stm32f302.cc and family_map.h, and docs/reference/boards.md.
+# Values from UM1724 and docs/reference/boards.md. LD2 is PB13 on this Nucleo, where most
+# Nucleo-64 boards wire it to PA5 (UM1724).
 
 version: 1
 board: f302nucleo

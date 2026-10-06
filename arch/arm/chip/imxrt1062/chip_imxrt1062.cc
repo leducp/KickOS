@@ -12,6 +12,7 @@
 // pins 0/1) baud assumes the reset UART clock root.
 
 #include <kickos/arch/arch.h>
+#include <kickos/arch/pin_guard.h>
 #include <kickos/config/limits.h>
 #include <kickos/diag.h>
 #include <kickos/arch/clk_q32.h> // shared Q32 tickless-clock reciprocal + multiply
@@ -20,6 +21,7 @@
 
 #include "regs.h" // arch/arm/common: kickos_armv7m_enable_fpu + core SCB regs
 #include <kickos/chip_mmap.h>
+#include "board_pins.h"
 #include "chip_layout.h"
 #include "irq.h"
 #include "regs/ccm.h"
@@ -353,13 +355,67 @@ namespace
         r32(reg::gpt::GPT1_CR) = cr | reg::gpt::CR_EN;
     }
 
+    static_assert(KICKOS_BOARD_CONSOLE_BASE == mmap::LPUART6_BASE,
+                  "the board's console is not the LPUART this backend drives");
+
+    // The GPIO bank a port base names, 0 for a bank the pad tables leave out.
+    constexpr uint32_t bank_of(uintptr_t base)
+    {
+        if (base == mmap::GPIO1_BASE)
+        {
+            return 1u;
+        }
+        if (base == mmap::GPIO2_BASE)
+        {
+            return 2u;
+        }
+        return 0u;
+    }
+
+    constexpr uint32_t TX_BANK = bank_of(KICKOS_BOARD_CONSOLE_TX_PORT_BASE);
+    constexpr uint32_t RX_BANK = bank_of(KICKOS_BOARD_CONSOLE_RX_PORT_BASE);
+    constexpr uint32_t LED_BANK = bank_of(KICKOS_BOARD_LED_PORT_BASE);
+    static_assert(TX_BANK != 0u and RX_BANK != 0u, "a console pad outside GPIO banks 1 and 2");
+    static_assert(LED_BANK == 2u, "this backend clocks and drives the LED through GPIO2 alone");
+    constexpr uint32_t LED_BIT = 1u << KICKOS_BOARD_LED_BIT;
+
+    constexpr uintptr_t led_out(bool level)
+    {
+        if (level)
+        {
+            return reg::gpio::GPIO2_DR_SET;
+        }
+        return reg::gpio::GPIO2_DR_CLEAR;
+    }
+
+    constexpr bool LED_LIT = KICKOS_BOARD_LED_ACTIVE_LOW == 0;
+
+#define KICKOS_RESERVED_RUN(port_base, first, last) or (bank_of(port_base) == port and pin >= (first) and pin <= (last))
+    constexpr bool imxrt_pin_kernel_owned(uint32_t port, uint32_t pin)
+    {
+        return (port == TX_BANK and pin == KICKOS_BOARD_CONSOLE_TX_BIT)
+               or (port == RX_BANK and pin == KICKOS_BOARD_CONSOLE_RX_BIT)
+               or (port == LED_BANK and pin == KICKOS_BOARD_LED_BIT)
+                   KICKOS_BOARD_RESERVED_RUNS(KICKOS_RESERVED_RUN);
+    }
+#undef KICKOS_RESERVED_RUN
+
+#define KICKOS_KERNEL_PIN(port_base, bit) or (bank_of(port_base) == port and pin == (bit))
+    constexpr bool imxrt_pin_listed(uint32_t port, uint32_t pin)
+    {
+        return false KICKOS_BOARD_KERNEL_PINS(KICKOS_KERNEL_PIN);
+    }
+#undef KICKOS_KERNEL_PIN
+    static_assert(kickos::refuses_exactly(imxrt_pin_kernel_owned, imxrt_pin_listed, 6u, 32u),
+                  "arch_pinmux_set refuses other pins than the board's kernel pins");
+
     void uart6_init()
     {
         r32(reg::ccm::CCGR3) |= reg::ccm::CCGR3_LPUART6; // clock LPUART6 (reset already enables it)
 
-        r32(reg::iomuxc::SW_MUX_AD_B0_02) = reg::iomuxc::MUX_ALT2; // TX
-        r32(reg::iomuxc::SW_MUX_AD_B0_03) = reg::iomuxc::MUX_ALT2; // RX
-        r32(reg::iomuxc::LPUART6_RX_SELECT_INPUT) = reg::iomuxc::RX_DAISY_AD_B0_03;
+        r32(reg::iomuxc::sw_mux(TX_BANK, KICKOS_BOARD_CONSOLE_TX_BIT)) = KICKOS_BOARD_CONSOLE_TX_SELECT;
+        r32(reg::iomuxc::sw_mux(RX_BANK, KICKOS_BOARD_CONSOLE_RX_BIT)) = KICKOS_BOARD_CONSOLE_RX_SELECT;
+        r32(reg::iomuxc::LPUART6_RX_SELECT_INPUT) = KICKOS_BOARD_CONSOLE_RX_INPUT_SELECT;
 
         r32(reg::lpuart::LPUART6_CTRL) = 0;                     // disable TX/RX while configuring
         r32(reg::lpuart::LPUART6_GLOBAL) = reg::lpuart::GLOBAL_RST; // module software reset
@@ -590,7 +646,7 @@ void arch_console_reclaim_window(uintptr_t* base, size_t* size)
 // RM 49.6.1.4: GLOBAL[RST] "resets all internal logic and registers, except the Global
 // Register", immediately and with "no minimum delay required before clearing", so one store
 // restores the whole register file and discards whatever a dead driver left queued.
-// The pin mux (arch_pinmux_set refuses GPIO1.IO02/03) and the CCGR3 gate in CCM are both out
+// The pin mux (arch_pinmux_set refuses the console pads) and the CCGR3 gate in CCM are both out
 // of any driver's reach, so neither needs restoring.
 void arch_console_reclaim(void)
 {
@@ -625,18 +681,17 @@ void arch_console_flush_sync(void)
     }
 }
 
-// Kernel diagnostic LED: GPIO2.IO03, pad GPIO_B0_03 at ALT5, active-high.
 void arch_diag_led_init(void)
 {
     r32(reg::ccm::CCGR0) |= reg::ccm::CCGR0_GPIO2;
     // GPIO2 and GPIO7 drive the SAME pad and GPR27 bit n picks which (RM 11.3.28); a write
     // to the instance that does not own the bit is silently ignored. Bit clear = GPIO2, the
     // instance regs/gpio.h maps.
-    r32(reg::iomuxc::GPR27) &= ~reg::gpio::DIAG_LED_BIT;
-    r32(reg::iomuxc::SW_MUX_B0_03) = reg::iomuxc::MUX_ALT5;
+    r32(reg::iomuxc::GPR27) &= ~LED_BIT;
+    r32(reg::iomuxc::sw_mux(LED_BANK, KICKOS_BOARD_LED_BIT)) = reg::iomuxc::MUX_ALT5;
     // Dark BEFORE the pin becomes an output, so bring-up never flashes it.
-    r32(reg::gpio::GPIO2_DR_CLEAR) = reg::gpio::DIAG_LED_BIT;
-    r32(reg::gpio::GPIO2_GDIR) |= reg::gpio::DIAG_LED_BIT;
+    r32(led_out(not LED_LIT)) = LED_BIT;
+    r32(reg::gpio::GPIO2_GDIR) |= LED_BIT;
 }
 
 // One absolute store to a write-only register: re-entrant, so it is callable from the dead
@@ -645,11 +700,11 @@ void arch_diag_led_set(int on)
 {
     if (on != 0)
     {
-        r32(reg::gpio::GPIO2_DR_SET) = reg::gpio::DIAG_LED_BIT;
+        r32(led_out(LED_LIT)) = LED_BIT;
     }
     else
     {
-        r32(reg::gpio::GPIO2_DR_CLEAR) = reg::gpio::DIAG_LED_BIT;
+        r32(led_out(not LED_LIT)) = LED_BIT;
     }
 }
 
@@ -676,18 +731,6 @@ static uintptr_t const imxrt_pad_mux[6][32] = {
 static uintptr_t const imxrt_daisy[] = {
     reg::iomuxc::LPUART6_RX_SELECT_INPUT, // index 0
 };
-
-// Kernel-owned pads arch_pinmux_set refuses for life, so a board map cannot dark the console
-// or steal the diagnostic LED. GPIO1.IO02/03 (= GPIO_AD_B0_02/03) are the LPUART6 console
-// pads; GPIO2.IO03 (= GPIO_B0_03) is the diag LED.
-static bool imxrt_pin_kernel_owned(uint32_t port, uint32_t pin)
-{
-    if (port == 1u and (pin == 2u or pin == 3u))
-    {
-        return true;
-    }
-    return port == 2u and pin == 3u;
-}
 
 // One-shot pin-function config (KOS_SYS_PINMUX_SET). func encoding:
 //   bits[4:0]  = MUX_MODE | SION (SION = bit4), written to SW_MUX_CTL_PAD

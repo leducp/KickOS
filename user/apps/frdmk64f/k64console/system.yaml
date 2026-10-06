@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The ceiling keeps every writer below the driver's priority.
+
+version: 1
+stdout: /svc/console
+ends: main
+
+tasks:
+  - name: k64uart
+    driver: k64uart
+    devices: [/dev/uart0]
+    accepts: [coarse_gate, device_not_isolated]
+    serves: /svc/console
+    priority: 12
+
+  - name: main
+    entry: kickos_main
+    priority: 2
+    ceiling: 11

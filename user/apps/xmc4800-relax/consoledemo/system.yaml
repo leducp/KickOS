@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The ceiling keeps every writer below the driver's priority.
+
+version: 1
+stdout: /svc/console
+ends: main
+
+tasks:
+  - name: xmcuart
+    driver: xmcuart
+    devices: [/dev/usic0/ch0]
+    serves: /svc/console
+    priority: 12
+
+  - name: main
+    entry: kickos_main
+    priority: 2
+    ceiling: 11

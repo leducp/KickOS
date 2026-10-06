@@ -37,6 +37,7 @@ tasks:
     entry: restart_sensor_main
     stack: 2048
     priority: 9
+    ceiling: 9
     serves: /svc/sensor
     maps: { /shm/history: rw }
     restart: { max: 2 }
@@ -45,11 +46,13 @@ tasks:
     entry: app_main
     stack: 4096
     priority: 8
+    ceiling: 8
     uses: [/svc/sensor]
 
   - name: health
     entry: health_main
     stack: 2048
     priority: 10
+    ceiling: 10
     watches: [spi0, sensor]
     maps: { /shm/history: ro }

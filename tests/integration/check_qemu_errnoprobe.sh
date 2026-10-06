@@ -25,10 +25,10 @@ if has "\[errnoprobe\] FAIL"; then
 fi
 # A VERDICT IS NOT COVERAGE. PASS is printed by whatever arms ran, so deleting one leaves the
 # gate green; each arm's own summary line is required by name. The letters are the app's
-# (main.cc): A the two workers plus root, B a reused slot, C an in-dispatch server, D a
+# (main.cc): A the two workers plus main, B a reused slot, C an in-dispatch server, D a
 # preempted pair, E threads ending with libc scratch on the heap.
 for _arm in \
-    'A root at' \
+    'A main at' \
     'B t[0-9] at' \
     'C srv' \
     'D lo' \
@@ -40,8 +40,8 @@ do
     fi
 done
 
-# F, where the board runs it: root entered by arch_start with no switch, on the core required,
-# libc's state the word at the FS base.
+# F, where the board runs it: root, which runs the app's constructors, entered by arch_start
+# with no switch, on the core required, libc's state the word at the FS base.
 if [ -n "$first_core" ]; then
     _core="$first_core"
     [ "$_core" = any ] && _core='[0-9][0-9]*'

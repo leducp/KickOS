@@ -1,23 +1,16 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-# XMC4800 console-reclaim test: an unprivileged holder of the U0C0 window garbles the
-# console UART and faults; the MPU FAULT dump must still reach the wire.
-#
-# An OPERATOR on silicon is the reader: PASS is the
-# "KERNEL PANIC: [conreclaim] PASS: the dead channel came back" line and the queued marker
-# above it, both written while the channel was dead. Witnessed on the XMC4800-relax;
-# main.cc records why kos_panic is the only terminal path left to an app here.
-
-# The window admits ONE holder, so a service list that publishes a userspace console driver
-# makes the grant unobtainable. The kernel-owned console leaves it free.
-if(NOT KICKOS_SERVICE_LIST STREQUAL "kickos_services_none")
-  message(STATUS
-    "KickOS: conreclaim skipped: KICKOS_SERVICE_LIST=${KICKOS_SERVICE_LIST} holds the U0C0 "
-    "window. It needs -DKICKOS_SERVICE_LIST=kickos_services_none.")
+# XMC4800 console-reclaim test: its composition names the test-owned testusic as stdout, and main
+# prints through it, has it scramble the channel and panics; the panic must still reach the wire.
+# Judged from a silicon capture.
+if(NOT KICKOS_TEST_DRIVERS)
+  message(STATUS "KickOS: conreclaim skipped: its composition names testusic, which "
+    "-DKICKOS_TEST_DRIVERS=ON builds")
   return()
 endif()
 
 add_executable(conreclaim main.cc)
-target_link_libraries(conreclaim PRIVATE kickos)
+kickos_app_system(conreclaim COMPOSITION system.yaml)
 kickos_emit_image(conreclaim)
+kickos_app_judge(conreclaim tests/integration/check_conreclaim.sh)

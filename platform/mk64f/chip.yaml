@@ -41,6 +41,11 @@ devices:
   uart3: { window: [0x4006D000, 0x20], ref: "Table 4-2 Peripheral bridge 0 slot assignments, p.178" }
   uart4: { window: [0x400EA000, 0x20], ref: "Table 4-3 Peripheral bridge 1 slot assignments, p.181" }
   dspi0: { window: [0x4002C000, 0x40], ref: "Table 4-2 Peripheral bridge 0 slot assignments, p.176" } # its service polls, so no line is taken
+  # Alone in its slot, clocked by SCGC5 bit 0.
+  lptmr0:
+    window: [0x40040000, 0x20]
+    ref: "Table 4-2 Peripheral bridge 0 slot assignments, p.177"
+    lines: { irq: { number: 58, ref: "Table 3-5 Interrupt vector assignments, p.75" } }
   # A crossbar slave behind no AIPS slot: every unprivileged thread reaches it ungranted.
   gpio: { window: [0x400FF000, 0x40], count: 5, stride: 0x40, symbol: GPIOA_BASE, ref: "GPIO memory map, p.1799" } # A to E
 

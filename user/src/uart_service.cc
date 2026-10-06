@@ -41,6 +41,30 @@ int ctx_init(Ctx* ctx, struct kos_service_cfg const* cfg, uint32_t fallback_baud
     return 0;
 }
 
+int32_t flush(Shared* sh)
+{
+    if (console::flush(&sh->tx, nullptr) != 0u)
+    {
+        return -KOS_EBUSY;
+    }
+    uint32_t const req = sh->flush_req + 1u;
+    sh->flush_req = req;
+    (void)kos_notify(KOS_UART_CAP_DOORBELL);
+    for (uint32_t i = 0; i < console::KOS_CONSOLE_FLUSH_MAX; i++)
+    {
+        if (sh->flush_ack == req)
+        {
+            return 0;
+        }
+        kos_sleep_ns(console::KOS_CONSOLE_FLUSH_SLEEP_NS);
+    }
+    if (sh->flush_ack == req)
+    {
+        return 0;
+    }
+    return -KOS_EBUSY;
+}
+
 size_t serve_one(Shared* sh, Atomic<uint32_t, Order::RELAXED>* mode, uint8_t* buf, size_t n)
 {
     return console::serve_one<Transport>(sh, mode, buf, n);

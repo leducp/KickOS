@@ -78,6 +78,11 @@ namespace kickos::uart
     {
     }
 
+    int32_t dev_flush(struct kos_uart*)
+    {
+        return 0;
+    }
+
     void win_puts(struct kos_uart*, char const*)
     {
     }

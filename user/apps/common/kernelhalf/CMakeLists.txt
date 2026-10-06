@@ -2,5 +2,5 @@
 # Copyright (c) 2026 Philippe Leduc
 
 add_executable(kernelhalf main.cc)
-target_link_libraries(kernelhalf PRIVATE kickos)
+target_link_libraries(kernelhalf PRIVATE KickOS::kernel KickOS::system_default)
 kickos_emit_image(kernelhalf)

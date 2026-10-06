@@ -9,18 +9,14 @@
 // 2016-07); no XMCLib/DAVE/CMSIS vendor source. "RM p.NN" citations are the
 // manual's printed page numbers.
 //
-// Target: the XMC4800 Relax Kit on-board J-Link-OB virtual COM port. Per the
-// board User Manual (Table 5): the debugger's UART TX line (PC_RX) is driven by
-// XMC pin P1.5 = U0C0.DOUT, and the debugger's RX line (PC_TX) feeds XMC pin
-// P1.4 = U0C0.DX0B. So the channel is USIC0 channel 0 (U0C0), TX on P1.5, RX on
-// P1.4. This matches the RM's ASC BootStrap-Loader mapping: "Port pins used are
-// P1.4 (U0C0_DX0B) for USIC RX and P1.5 (U0C0_DOUT0) for USIC" (RM p.19-*).
+// Target: USIC0 channel 0 (U0C0), on the DOUT0 and DX0 pins the board file names.
 //
 // Clock: fPERIPH = fCPU/2 = 72 MHz after the crystal PLL bring-up in
 // chip_xmc4800.cc clock_init() (runs before this). Baud is 115200.
 
 #include "usic.h"
 
+#include "board_pins.h"
 #include "irq.h"
 #include "regs/port.h"
 #include "regs/scu.h"
@@ -64,10 +60,22 @@ namespace
                       and u::off::TBCTR < CONSOLE_WIN_SIZE and u::off::RBCTR < CONSOLE_WIN_SIZE,
                   "arch_console_reclaim writes outside the window it reports");
 
-    // P1 IOCR4 controls P1.[7:4]; P1.5 = ALT2 U0C0.DOUT0 (TX), P1.4 = DX0B input (RX).
-    constexpr uintptr_t P1_IOCR4 = rp::base(1) + rp::iocr_off(5);
-    constexpr uint32_t PC4_SHIFT = rp::pc_shift(4);
-    constexpr uint32_t PC5_SHIFT = rp::pc_shift(5);
+    static_assert(KICKOS_BOARD_CONSOLE_BASE == U0C0, "the board's console is not the channel this backend drives");
+
+    constexpr uintptr_t TX_IOCR = KICKOS_BOARD_CONSOLE_DOUT0_PORT_BASE + rp::iocr_off(KICKOS_BOARD_CONSOLE_DOUT0_BIT);
+    constexpr uintptr_t RX_IOCR = KICKOS_BOARD_CONSOLE_DX0_PORT_BASE + rp::iocr_off(KICKOS_BOARD_CONSOLE_DX0_BIT);
+    constexpr uint32_t TX_SHIFT = rp::pc_shift(KICKOS_BOARD_CONSOLE_DOUT0_BIT);
+    constexpr uint32_t RX_SHIFT = rp::pc_shift(KICKOS_BOARD_CONSOLE_DX0_BIT);
+    constexpr uint32_t TX_PC = rp::pc_pp_alt(KICKOS_BOARD_CONSOLE_DOUT0_SELECT);
+
+    // A read-modify-write, so the other pins of each IOCR keep their fields.
+    void iocr_set(uintptr_t iocr, uint32_t clear, uint32_t set)
+    {
+        uint32_t v = u::reg32(iocr);
+        v &= ~clear;
+        v |= set;
+        u::reg32(iocr) = v;
+    }
 
     // Bounded so a misconfigured baud/enable NEVER hangs arch_console_write (it
     // feeds the kernel banner and every kos_print). The cap far exceeds any real
@@ -145,9 +153,9 @@ void kickos_xmc_usic_init(void)
     u::reg32(U0C0 + u::off::PCR) = ru::PCR_ASC_SP | ru::PCR_ASC_SMD | ru::PCR_ASC_TSTEN;
     u::reg32(U0C0 + u::off::PSCR) = 0xFFFFFFFFu; // clear any stale protocol status flags
 
-    // Route the RX input (P1.4 -> DX0B) into the ASC pre-processor. Input-stage
-    // config must be done while CCR.MODE=0 (RM p.18-57).
-    u::select_input(U0C0, u::off::DX0CR, ru::DX0_DSEL_B);
+    // Route the RX pin's DX0 input into the ASC pre-processor. Input-stage config must be
+    // done while CCR.MODE=0 (RM p.18-57).
+    u::select_input(U0C0, u::off::DX0CR, KICKOS_BOARD_CONSOLE_DX0_INPUT_SELECT);
 
     // Route the transmit-buffer interrupt to service-request output SR0 (NVIC
     // line 84); TBIEN stays clear, the console ring primes it on the first write.
@@ -157,14 +165,18 @@ void kickos_xmc_usic_init(void)
     // before this write).
     u::reg32(U0C0 + u::off::CCR) = ru::CCR_MODE_ASC;
 
-    // Pins LAST: P1.5 -> push-pull ALT2 (U0C0.DOUT0, TX); P1.4 -> input (RX). The
-    // RM (p.18-57/58) requires the output ALT function be enabled only AFTER the
-    // ASC mode is active, or the idle DOUT level can spike a spurious start bit.
-    // RMW so P1.6/P1.7 (PC6/PC7) in the same IOCR4 are left untouched.
-    uint32_t iocr = u::reg32(P1_IOCR4);
-    iocr &= ~((rp::PC_FIELD_MASK << PC4_SHIFT) | (rp::PC_FIELD_MASK << PC5_SHIFT));
-    iocr |= (rp::PC_INPUT_NOPULL << PC4_SHIFT) | (rp::PC_PP_ALT2 << PC5_SHIFT);
-    u::reg32(P1_IOCR4) = iocr;
+    // Pins LAST: the RM (p.18-57/58) requires the output ALT function be enabled only AFTER
+    // the ASC mode is active, or the idle DOUT level can spike a spurious start bit.
+    if constexpr (TX_IOCR == RX_IOCR)
+    {
+        iocr_set(TX_IOCR, (rp::PC_FIELD_MASK << RX_SHIFT) | (rp::PC_FIELD_MASK << TX_SHIFT),
+                 (rp::PC_INPUT_NOPULL << RX_SHIFT) | (TX_PC << TX_SHIFT));
+    }
+    else
+    {
+        iocr_set(RX_IOCR, rp::PC_FIELD_MASK << RX_SHIFT, rp::PC_INPUT_NOPULL << RX_SHIFT);
+        iocr_set(TX_IOCR, rp::PC_FIELD_MASK << TX_SHIFT, TX_PC << TX_SHIFT);
+    }
 }
 
 // USIC0 CH0, one channel of the module (RM Table 18-21). On xmcuartirq the IRQ thread
@@ -187,7 +199,7 @@ void arch_console_reclaim_window(uintptr_t* base, size_t* size)
 // Reclaim depth = every in-window writable register init sets (baud/mode/DMA/IRQ) plus
 // the ones init leaves at reset default that a hostile driver can set to cause SILENT
 // LOSS, here KSCFG.MODEN (module clock gate). Registers OUTSIDE the window
-// (SCU_CGATCLR0/PRCLR0 system clock gate, P1_IOCR4 pin mux) are privileged and out of
+// (SCU_CGATCLR0/PRCLR0 system clock gate, the pins' IOCR mux) are privileged and out of
 // the driver's reach.
 void arch_console_reclaim(void)
 {
@@ -216,7 +228,7 @@ void arch_console_reclaim(void)
     u::reg32(CONSOLE_WIN_BASE + u::off::SCTR) = ru::SCTR_WLE_8 | ru::SCTR_FLE_8 | ru::SCTR_TRM_ACTIVE | ru::SCTR_PDL;
     u::reg32(CONSOLE_WIN_BASE + u::off::TCSR) = ru::TCSR_TDEN_TDV | ru::TCSR_TDSSM;
     u::reg32(CONSOLE_WIN_BASE + u::off::PCR) = ru::PCR_ASC_SP | ru::PCR_ASC_SMD | ru::PCR_ASC_TSTEN;
-    u::select_input(CONSOLE_WIN_BASE, u::off::DX0CR, ru::DX0_DSEL_B); // DX0 RX input mux
+    u::select_input(CONSOLE_WIN_BASE, u::off::DX0CR, KICKOS_BOARD_CONSOLE_DX0_INPUT_SELECT); // DX0 RX input mux
     u::reg32(CONSOLE_WIN_BASE + u::off::INPR) = 0; // TBINP back to SR0, which a driver may have moved
 
     // (d) Drop a stale Transmit-Data-Valid word a hostile driver may have loaded into
@@ -231,7 +243,7 @@ void arch_console_reclaim(void)
     // polled, not IRQ-driven.
     //
     // KNOWN ARTIFACT: a driver that clears SCTR.PDL (passive level -> 0) drives the ASC
-    // TX pin (P1.5 ALT2 = DOUT) LOW; the line stays low across the fault and this reclaim
+    // TX pin (DOUT0) LOW; the line stays low across the fault and this reclaim
     // and only returns to idle-high at the SCTR (PDL=1) write above / this MODE re-enable.
     // The receiver frames that single low->high recovery edge as ONE spurious leading
     // byte (~0xC0) before the banner. It is a physical line-recovery transient, not a
@@ -293,7 +305,7 @@ void arch_console_retune(void)
 }
 
 // Non-blocking RX drain: copy up to n received words into buf, return the count
-// read. The DX0 input (P1.4) is already routed to the ASC pre-processor by
+// read. The DX0 input is already routed to the ASC pre-processor by
 // kickos_xmc_usic_init(). No FIFO: the standard receive buffer holds two words
 // (RDV0/RDV1), so a caller that does not keep up loses bytes.
 size_t kickos_xmc_usic_read(char* buf, size_t n)

@@ -20,12 +20,7 @@ namespace kickos::rp2040::reg::io_bank0
 
     constexpr uintptr_t gpio_ctrl(uint32_t n) { return mmap::IO_BANK0_BASE + n * STRIDE + CTRL_OFFSET; }
 
-    constexpr uintptr_t GPIO0_CTRL = gpio_ctrl(0);   // GP0 = UART0 TX
-    constexpr uintptr_t GPIO1_CTRL = gpio_ctrl(1);   // GP1 = UART0 RX
-    constexpr uintptr_t GPIO25_CTRL = gpio_ctrl(25); // GP25 = diag LED via SIO
-
-    constexpr uint32_t FUNCSEL_UART = 2u; // F2 = UART0 TX/RX
-    constexpr uint32_t FUNCSEL_SIO = 5u;  // F5 = SIO (software GPIO)
+    constexpr uint32_t FUNCSEL_SIO = 5u; // F5 = SIO (software GPIO)
 }
 
 #endif

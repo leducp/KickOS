@@ -87,7 +87,7 @@ metadata declares, as `lines: { irq: /dev/usic0/sr1 }`.
 | `interrupts` | mapping | yes | `count`, the controller's line count; `soft_only_from`, the first line no hardware raises; `free_from`, the first line no device uses; `vectors`, the RX's INTB table size; each a number or `{ value: <number>, ref: <ref> }`. On a multi-architecture part the lines are source numbers, and the generator adds the built cluster's `line_offset` to each; every device's line is below `count` |
 | `cycle_counter` | mapping | no | `hz: 0` where the counter has no fixed rate, `glitches: true` where a read can glitch, each a value or `{ value: <value>, ref: <ref> }` |
 | `reserved` | `none` | no | stated by a part whose protecting unit holds no window for the kernel, which the tool otherwise refuses: a protecting part marks the devices the kernel holds `owner: kernel` |
-| `c` | mapping | no | `namespace`, the C++ namespace of the generated headers where it is not `kickos::<chip>`, and `line_enum`, the line enum's declaration where it is not `irq_num`, as `node : int` |
+| `c` | mapping | no | `namespace`, the C++ namespace of the generated headers where it is not `kickos::<chip>`, `line_enum`, the line enum's declaration where it is not `irq_num`, as `node : int`, and `led: addressable` where the chip's code drives the kernel's LED as one sent its state as data rather than a `level` one |
 
 `protection` has a `unit` (`pmsav7`, `pmsav8`, `pmsav6`, `pmp`, `rxmpu`, `sysmpu`, `mprotect`,
 `mmu`, `none`), `covers_devices` and `memory_type` unless the unit is `none`, `page` on `mmu` and only
@@ -135,7 +135,14 @@ view.
 A pin entry maps each selector to the function it selects, as `<device>.<signal>`, and plain GPIO
 is the function whose selector is `gpio`, naming the device that holds the pin's port registers as
 `<device>.<k>.<bit>` for instance k of a repeated device and `<device>.<bit>` otherwise. Every pin
-a board file names is a pin of its chip, and an LED pin or a chip select has a `gpio` function.
+a board file names is a pin of its chip, and a console pin, an LED pin, a reserved pin or a chip
+select has a `gpio` function.
+A console pin's selector names the value its mux field takes, which reaches `board_pins.h`: the
+number it ends in (`af7`, `f2`, `psel11`, `remap0`), or, for a one-letter selector, its place from
+`a` = 0. A selector of more letters and no number, as `in`, names no value. A function may be a mapping,
+`{ function: <device>.<signal>, input_select: <value>, ref: <text> }`, where the device has an
+input-select register whose value picks this pin, as the i.MX RT's DAISY does; a `gpio`
+function is not.
 
 ## The board file
 
@@ -145,7 +152,7 @@ a board file names is a pin of its chip, and an LED pin or a chip select has a `
 | `board` | string | yes | the board's name |
 | `chip` | string | yes | the chip file it builds on |
 | `console` | mapping | yes | the kernel console's device and, where wired, its pins, each role the device's signal its pin carries (`tx`, or the USIC's `dout0`), or `semihosting: true` where the console is semihosting and so no device |
-| `leds` | mapping | no | each LED's pin, active level and owner |
+| `leds` | mapping | no | each LED's pin, `kind` and owner, at most one being `owner: kernel`, the LED the kernel drives, whose `kind` is the chip file's `c` `led`; `kind: level`, the default, states the `active` level that lights it, and `kind: addressable`, an LED sent its state as data, states none |
 | `parts` | mapping | no | a soldered part: the bus it hangs on, its chip select, its pins |
 | `buses` | mapping | no | a bus as this board wires it: device, pins, chip selects |
 | `reserved_pins` | mapping | no | pins the board has spent, with the reason |
@@ -160,18 +167,26 @@ both list.
 | field | type | required | meaning |
 | --- | --- | --- | --- |
 | `version` | integer | yes | schema version |
-| `board` | string | yes | the board, which names the chip |
-| `cluster` | string | on a multi-architecture part | the cluster this image runs on |
+| `board` | string | no | the board, which names the chip; absent, the board of the kernel build the composition is admitted against, so one file fits every board whose files define what it names, and a name the build's board lacks is refused as it is under a named board; a board's default composition names it |
+| `cluster` | string | on a multi-architecture part, unless `board` is absent | the cluster this image runs on |
 | `stdout` | path, or `kernel` | yes | where every task's standard output goes |
 | `ends` | `never`, or a task's name | yes | what ends the system |
 | `accepts` | list of names | no | platform-wide limitations the composition runs with knowingly |
-| `heap` | integer | yes | the image's libc heap, in bytes, which the link carries and no kernel figure sets; `heap: 0` carves none |
+| `heap` | integer | unless `board` is absent | the image's libc heap, in bytes, which the link carries and no kernel figure sets; `heap: 0` carves none |
 | `init` | mapping | no | the init's own: `priority`, which the init lowers itself to at boot, one above the kernel build's lowest when absent |
 | `shared` | list | no | shared regions: `name` (a `/shm` path), a nonzero `size` and `cache`, and `partition: true` for a partition region, which lives in the partition's user share and every node naming it maps |
 | `tasks` | list | yes | in declaration order; ready tasks start in that order |
 
+A composition naming no board takes what it leaves out of `cluster`, `heap` and `accepts`, and an
+`entry` task's `stack`, from the default composition of the build's board, the stack being that
+of the default's own `entry` task. What it states is admitted as it is under a named board, an
+empty `accepts` included, so the one file states only what its app adds to every board's default.
+An `entry` task's `ceiling` is never taken from the default: every such task states its own.
+
 A task has a `name`; exactly one of `entry` (a symbol in the user's sources) and `driver` (a
-driver the package ships); `stack` and `priority`; optionally `core`; `devices`, a list of
+driver the package ships); `stack` and `priority`; on an `entry` task `ceiling`, the highest
+priority the task's threads may take, at least its `priority` and within the kernel build's range,
+a packaged driver's being derived instead; optionally `core`; `devices`, a list of
 device paths, each a register window or a port range, so one task can hold a DMA engine beside
 its peripheral; `lines`, a mapping from the names the task looks up to line paths; `serves`, an
 endpoint path or a crossing `/amp/<port>` the partition names this node's; `uses`, endpoint paths
@@ -270,8 +285,9 @@ is a link error too, the kernel referencing a symbol whose name is the message, 
 is a duplicate symbol, so no system boots by accident. The checks that need the linked image
 become linker-script `ASSERT`s the system target brings, a post-build step being unable to ride a
 usage requirement. The file names a packaged entry, `entry: kickos_main`, which calls
-`main(argc, argv)`, and declares `ends:` on that task. It is minimal -- the kernel console and
-`main` -- so one file fits every preset of its board, and it is the file a user copies to start
+`main(argc, argv)`, runs `main` at priority 2 under `ceiling: 31`, so `main` may spawn threads
+above itself, and declares `ends:` on that task. It is minimal, the kernel console and `main`,
+so one file fits every preset of its board, and it is the file a user copies to start
 composing. A CI gate admits every board's default against that board's manifest.
 
 ## What the tool refuses
@@ -316,14 +332,16 @@ Each refusal names the rule it breaks, the rules of each class listed after it:
   `supply.pool`, `supply.budget`, `supply.cap-table`, `supply.spawn-grants`, `supply.stack`,
   `supply.init-windows`, `supply.reservations`, `supply.ranges`, `supply.arena`, `supply.size`.
 - **Scheduling**: a task, or a packaged driver's thread at its priority plus its offset, outside
-  the kernel build's priority range; a declared `core` the kernel build lacks; a task taking a
+  the kernel build's priority range; a `ceiling` below its task's `priority` or outside that
+  range, and one on a packaged driver, whose ceiling is its priority plus its threads' highest
+  offset; a declared `core` the kernel build lacks; a task taking a
   line not on exactly one core; `stdout` naming an endpoint no console driver serves, or a console
   driver whose endpoint `stdout` does not name; a stdout writer above the console's priority,
   which is that of the driver thread receiving on its endpoint; a task that writes standard
   output declared before the task `stdout` names; the init's priority, stated or defaulted,
   outside the kernel build's range. A thread at or above the init's priority that never blocks starves the init,
   which is the user's choice: the init then handles no death and does not end the system.
-  `scheduling.priority`, `scheduling.core`, `scheduling.line-core`, `scheduling.console-driver`,
+  `scheduling.priority`, `scheduling.ceiling`, `scheduling.core`, `scheduling.line-core`, `scheduling.console-driver`,
   `scheduling.stdout-priority`, `scheduling.stdout-order`, `scheduling.init-priority-range`.
 - **Memory type**: a shared region's `cache` against who shares it, as the composition section
   states. `memory.uncached`, `memory.cached-incoherent`.
@@ -364,7 +382,9 @@ header    magic u32, version u16, flags u16 (ends: never / on a task),
 
 task      name u32, block u32 (a packaged driver's ring block in bytes, or 0),
           entry (a pointer: user code, or a packaged driver's start),
-          driver u16 (catalogue index, or none), stack u32, priority u8, restart_max u8,
+          driver u16 (catalogue index, or none), ceiling u8 (the grant's priority ceiling: the
+          task's `ceiling`, or a packaged driver's priority plus its highest thread offset),
+          stack u32, priority u8, restart_max u8,
           flags u16 (console: a packaged driver that takes the console; block_uncached: its ring
           block is self-granted KOS_MEM_NOCACHE),
           core_mask u32, authority u32 (the word the spawn seats),

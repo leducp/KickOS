@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+version: 1
+stdout: kernel
+ends: rxdrv
+
+tasks:
+  - name: rxdrv
+    entry: rxdrv_main
+    priority: 10
+    ceiling: 10
+    devices: [/dev/port]
+    accepts: [coarse_gate]
+    authority: [pinmux]

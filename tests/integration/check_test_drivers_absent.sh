@@ -17,7 +17,7 @@ KICKOS_BUILD="${1:?$USAGE}"
 KICKOS_SRC="${2:?$USAGE}"
 CMAKE="${3:?$USAGE}"
 
-NAMES="$(sed -n 's/^kickos_add_driver(\([a-z0-9_]*\) .*/\1/p' "$KICKOS_SRC/tests/drivers/CMakeLists.txt")"
+NAMES="$(sed -n 's/^ *kickos_add_driver(\([a-z0-9_]*\) .*/\1/p' "$KICKOS_SRC/tests/drivers/CMakeLists.txt")"
 [ -n "$NAMES" ] || fail "tests/drivers/CMakeLists.txt declares no driver"
 MANIFEST="$KICKOS_BUILD/export/manifest.yaml"
 [ -f "$MANIFEST" ] || fail "no manifest at $MANIFEST"

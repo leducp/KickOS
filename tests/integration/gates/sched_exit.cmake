@@ -8,18 +8,10 @@ if(NOT TARGET sched_exit)
   return()
 endif()
 
-# The wait-until-last phase can only complete in an image whose service list spawns no driver
-# threads: a driver never exits, so kernel().live never reaches 1 and root parks forever.
-# main() skips that phase when SCHED_EXIT_SERVICE_THREADS is 1, which the app file derives from
-# this same service list, and a gate registered against a skipped phase witnesses nothing.
-if(KICKOS_SERVICE_LIST AND NOT KICKOS_SERVICE_LIST STREQUAL "kickos_services_none")
-  return()
-endif()
-
 set(_sched_exit_script "${PROJECT_SOURCE_DIR}/tests/integration/check_sched_exit.sh")
 
 # Through the same script as the QEMU boards: PASS_REGULAR_EXPRESSION is an OR, so it cannot
-# require the worker markers too, and root survives an exit that never happened.
+# require the worker markers too, and main survives an exit that never happened.
 if(KICKOS_ARCH STREQUAL "sim")
   add_test(NAME sim_sched_exit
     COMMAND "${_sched_exit_script}" "$<TARGET_FILE:sched_exit>")

@@ -44,6 +44,9 @@ if(_amp_st_artefact AND _amp_emulated)
     TIMEOUT 900)
   set_tests_properties(amp_peer_arms PROPERTIES RUN_SERIAL TRUE)
 endif()
+add_test(NAME amp_peer_arms_controls
+  COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_amp_peer_arms.sh" --controls)
+kickos_host_gate(amp_peer_arms_controls TIMEOUT 60)
 
 # Registers everywhere, which is why the emulator predicate is not wrapped around it: it boots
 # nothing. It reads every node's ELF, taking the peer ROOT and the width rather than one peer

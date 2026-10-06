@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// RX72M I/O-port register offsets + fields for the SCI6 console pins (PORTB) and the
-// diag LED (PORT8). From the RX72M Group User's Manual: Hardware (r01uh0804ej0120,
-// Rev.1.20) sec.22; hand-rolled, clean-room. Bases: mmap.h.
+// RX72M I/O-port register offsets + fields. From the RX72M Group User's Manual: Hardware
+// (r01uh0804ej0120, Rev.1.20) sec.22; hand-rolled, clean-room. Bases: mmap.h.
 
 #ifndef KICKOS_ARCH_RX_CHIP_RX72M_REGS_PORT_H
 #define KICKOS_ARCH_RX_CHIP_RX72M_REGS_PORT_H
@@ -27,16 +26,10 @@ namespace kickos::rx::reg::port
 
     constexpr uintptr_t pmr(uint32_t p) { return PMR_BASE + p; }
 
-    // Console pins on PORTB (port index 0x0B): PB1/TXD6, PB0/RXD6.
-    constexpr uintptr_t PORTB_PMR = PMR_BASE + 0x0B;
-    constexpr uint8_t PB0 = 1u << 0; // RXD6
-    constexpr uint8_t PB1 = 1u << 1; // TXD6
-
-    // Diag LED = LED6 on P80, active-low (board Table 5-9). PORT8 = port index 8.
-    constexpr uintptr_t PORT8_PDR = PDR_BASE + 8;
-    constexpr uintptr_t PORT8_PODR = PODR_BASE + 8;
-    constexpr uintptr_t PORT8_PMR = PMR_BASE + 8;
-    constexpr uint8_t LED6 = 1u << 0; // P80
+    // A pin's bit along the port rows, as the chip file's `gpio` functions number it: port
+    // index times 8 plus the pin.
+    constexpr uint32_t port_of(uint32_t row_bit) { return row_bit / 8u; }
+    constexpr uint8_t mask_of(uint32_t row_bit) { return static_cast<uint8_t>(1u << (row_bit % 8u)); }
 }
 
 #endif

@@ -1,0 +1,26 @@
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   f411disco
+   arch    armv7m
+   cpu     cortex-m4
+   mpu     enforce
+   sched   tickless
+   build   2026-10-04 12:00:00 +0200
+   app     Oct  4 2026 12:00:01 +0200
+   commit  65fa3473
+   heap    7 KiB available
+   kstack  1008 B x 9 = 9072 B
+
+[f411spi] starting loopback (blocking on the SPI1 line)
+[f411spi] word 0: tx=0xa5 rx=0xa5 PASS
+[f411spi] word 1: tx=0x3c rx=0x3c PASS
+[f411spi] word 2: tx=0x0 rx=0x0 PASS
+[f411spi] word 3: tx=0xff rx=0xff PASS
+[f411spi] loopback PASS (all words echoed equal)
+[f411spi] poking UNGRANTED GPIOB @ 0x40020400 (expect MPU FAULT)
+
+=== THREAD FAULT === thread 'f411spi' killed, system continues
+  PC=0x080002f4 CFSR=0x82
+  ADDR=0x40020400

@@ -9,7 +9,7 @@
 // A chip joins the family by aliasing its register namespace into kickos::espuart (its
 // regs/uart.h) and by spelling what this unit names: reg::uart's OFF_FIFO, OFF_INT_ST,
 // OFF_INT_ENA, OFF_INT_CLR, OFF_STATUS, TXFIFO_CNT_S / _MASK, RXFIFO_CNT_S / _MASK,
-// TXFIFO_LIMIT, and the RXFIFO_FULL / TXFIFO_EMPTY / PARITY_ERR / FRM_ERR / RXFIFO_OVF
+// TXFIFO_LIMIT, OFF_TX_FSM with ST_UTX_OUT_S / _MASK / _IDLE, and the RXFIFO_FULL / TXFIFO_EMPTY / PARITY_ERR / FRM_ERR / RXFIFO_OVF
 // interrupt bits.
 //
 // WHAT IS NOT SHARED, and must not become so: kos_uart_open. The LX6 keeps the framing and

@@ -146,7 +146,7 @@ further down: it binds every tracked file.
     refuses the width or because the observing loop would hoist. A two-writer word is neither:
     `Atomic` exposes no read-modify-write, so a contended cell is a lock problem or a
     hardware primitive being measured, and it is outside this mechanism rather than exempt
-    from it (`user/apps/esp32-wroom/lx6smp`).
+    from it.
     **NOTHING CHECKS EITHER UNIT, and the reason is the corpus rather than the rule.** Most
     tracked files carrying the keyword spell it inside an MMIO accessor body or on a spin
     bound the compiler must not elide, and almost none of them says which exception applies.

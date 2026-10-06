@@ -788,6 +788,26 @@ type against the requested one in both directions before taking the short circui
 families: where a REGION descriptor carries the type the descriptor is REPLACED rather than
 stacked, one block never carrying two of them. Witnessed by `self_grant_retype`.
 
+**THE KERNEL'S OWN VIEW IS THE ONE MAPPING THE RULE CANNOT BIND.** The kernel reaches every frame
+through a map of its own that stays cacheable: armv8a's static TTBR1 blocks map all RAM Normal
+write-back, and x86_64 reaches frames through the firmware's write-back identity map. A block a task
+maps non-cacheable therefore always has a cacheable alias, and the kernel uses it whenever it acts on
+the block for the task: the frame pool's clear at hand-out, and every copy into or out of a user
+buffer, IPC included. **The rule for that alias is maintenance, not agreement:** the kernel edits no
+mapping of its own. Before it reads or writes a non-cacheable page through its view it cleans the
+touched lines to memory then drops them, so no line fetched through the alias, speculatively
+included, is read or merged into a partial-line write, and after it writes it does so again, so no
+dirty line is evicted later over what the task or a device stores. Every change of a mapping's type
+is maintained the same way before the new leaf goes in, in both directions: a non-cacheable leaf
+drops the clear's zeroes and any dirty line a cacheable mapping left, and a retype back to cacheable
+drops the clean lines the kernel's reads left, which would be stale to it. The type is the leaf's, which `arch_aspace_acquire` reports from the walk it
+already makes, so a cacheable page costs the copy one test. rv64imac has no alias to maintain: it
+has no Svpbmt, and the PMAs type a frame for every view of it. A region board with a data cache over
+the arena has the same alias in its background map, through which the kernel reaches a block whose
+non-cacheable region belongs to a thread other than the one loaded, and its copies keep the same
+rule against that thread's region set, its grants and retypes the same sweep (`docs/reference/invariants.md`,
+`kernel-alias-maintained-over-uncached-memory`).
+
 ---
 
 ## 2. What the port gets for free, and it is more than the spike expected

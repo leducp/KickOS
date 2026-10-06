@@ -12,7 +12,7 @@ arch: rv32imac
 # No data cache sits over the SRAM: the part's cache serves external flash only, so memory
 # the two cores share is coherent by absence, and a region's cache attribute changes nothing.
 data_cache: false
-c: { line_enum: "kernel_line : int" }
+c: { line_enum: "kernel_line : int", led: addressable }
 
 # Two cores, two postures. An own-image AMP node per core, so a composition is per node.
 cores:

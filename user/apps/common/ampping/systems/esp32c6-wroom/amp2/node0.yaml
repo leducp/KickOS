@@ -19,6 +19,7 @@ tasks:
     entry: ampping_main
     stack: 8192
     priority: 5
+    ceiling: 5
     authority: [system]
     devices: [/dev/timg0]
     uses: [/amp/3]

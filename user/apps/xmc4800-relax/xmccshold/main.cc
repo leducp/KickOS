@@ -8,10 +8,9 @@
 // service: if the CS drops between software-paced words the slave sees N frames
 // instead of one, so a held CS must be proven, not assumed.
 //
-// Same U0C1 = 0x4003_0200 512 B window as xmcspi, with the driver bringing itself up and
-// FDR/BRG/CCR going through kos_periph_reg_write. WHAT THIS BENCH ANSWERS is the functional
-// CS-hold question alone; the enforcement proof is xmcspi's, which pokes an ungranted
-// register.
+// The task's entry holds the channel window its composition grants, brings the channel up itself
+// with FDR/BRG/CCR through kos_periph_reg_write, and answers the functional CS-hold question
+// alone; the enforcement proof is xmcspi's.
 //
 // The finding under test (RM 18.4.5.1, PCR.FEM description, printed 18-99):
 //   FEM = 0 (reset): "an end of frame is assumed if the transmit buffer TBUF does
@@ -31,8 +30,6 @@
 // Register addresses / bit fields are clean-room from the XMC4700/XMC4800
 // Reference Manual (V1.3, 2016-07); no XMCLib/DAVE/CMSIS vendor source. "RM p.NN"
 // citations are the manual's printed page numbers.
-//
-// Diagnostic app (kickos_add_diagnostic_apps): build-only, never a production image.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -41,9 +38,8 @@
 #include <regs/usic.h> // shared XMC USIC register offsets + SSC bit fields
 
 #include <stdint.h>
+#include <stdlib.h>
 
-// The driver runs unprivileged in a granted DEV window, which is only a real capability
-// under PMSA.
 #if !KICKOS_HAVE_MPU
 #error "xmccshold requires enforcement: build the board's base variant, not its flat one"
 #endif
@@ -52,12 +48,7 @@ using namespace kickos::xmc::reg::usic;
 
 namespace
 {
-    // The console owns U0C0 (0x4003_0000), so this bench uses the sibling channel U0C1.
-
-    // U0C1 window granted to the driver: base = channel base, size = 0x200 (512 B),
-    // R|W|DEV no-X. Every register the driver touches lies inside it, TBUF0 (0x080) being
-    // the highest.
-    constexpr uint32_t U0C1_WINDOW = 0x200u;
+    constexpr uint32_t WINDOW_BYTES = 0x200u;
 
     // TCSR frame-control base (start-on-TDV + single-shot); SOF/EOF are added per word.
     constexpr uint32_t TCSR_BASE = TCSR_TDEN_TDV | TCSR_TDSSM;
@@ -169,9 +160,6 @@ namespace
         return edges;
     }
 
-    // UNPRIVILEGED driver: granted app code+data (auto) and the U0C1 window (spawn MMIO
-    // grant). It polls PSR and keeps no file-scope mutable state: the window base arrives as
-    // the thread arg VALUE and the counters are locals.
     constexpr uint32_t FDR_WORD = FDR_DM_FRACTIONAL | FDR_STEP_367;
     constexpr uint32_t BRG_WORD = BRG_PDIV_13 | BRG_DCTQ_15 | BRG_PCTQ_0;
 
@@ -232,101 +220,72 @@ namespace
         return ok;
     }
 
-    void cs_hold_driver(void* arg)
-    {
-        uintptr_t const win = reinterpret_cast<uintptr_t>(arg);
-        volatile uint32_t* pcr = reinterpret_cast<volatile uint32_t*>(win + off::PCR);
-
-        if (not bring_up(win))
-        {
-            kos_panic("[xmccshold] bring-up FAILURE: a PV register did not take the seam write");
-        }
-
-        // Run 1: FEM=1 (PCR carries FEM from the bring-up above).
-        // Announce before the polling frame so a wedged board is diagnosable.
-        kos::print("[xmccshold] run 1 FEM=1: driving 4-word software-paced frame\n");
-        unsigned fem1_edges = run_frame(win);
-
-        char s[96];
-        char const* v1 = "FAIL";
-        if (fem1_edges == 2u)
-        {
-            v1 = "PASS";
-        }
-        ksnprintf(s, sizeof(s), "[xmccshold] FEM=1: MSLS edges = %u : %s\n",
-                  fem1_edges, v1);
-        kos::print(s);
-
-        // Reconfigure for run 2: flip FEM to 0 (PCR is U-writable, RM Table 18-20).
-        // The channel is idle (frame ended, MSLS forced inactive above), and this is
-        // a same-protocol parameter change, so no CCR MODE cycle is needed.
-        *pcr = PCR_SSC_BASE; // FEM bit cleared
-
-        kos::print("[xmccshold] run 2 FEM=0: driving 4-word software-paced frame\n");
-        unsigned fem0_edges = run_frame(win);
-
-        char const* v0 = "FAIL";
-        // FEM=0 pulses MSLS once per word: rise+fall x 4 words = 8 edges. Accept a
-        // window around 8 (edge capture can under-count by one on a very tight
-        // trailing delay); the discriminator is "clearly more than the held case".
-        if (fem0_edges >= 6u and fem0_edges <= 10u)
-        {
-            v0 = "PASS";
-        }
-        ksnprintf(s, sizeof(s), "[xmccshold] FEM=0: MSLS edges = %u : %s\n",
-                  fem0_edges, v0);
-        kos::print(s);
-
-        // Verdict: the HW CS-hold is usable ONLY if the bit provably governs:
-        // FEM=1 holds (2 edges = one bracket) AND FEM=0 pulses (~8 = per-word). A
-        // board that simply always holds (2 and 2) or always pulses would fail here.
-        char const* verdict = "hardware CS-hold NOT usable (FEM does not govern)";
-        if (fem1_edges == 2u and (fem0_edges >= 6u and fem0_edges <= 10u))
-        {
-            verdict = "hardware CS-hold USABLE (FEM=1 holds, FEM=0 pulses)";
-        }
-        ksnprintf(s, sizeof(s), "[xmccshold] VERDICT: %s\n", verdict);
-        kos::print(s);
-
-        while (true)
-        {
-            kos_sleep_ns(1000000000ull);
-        }
-    }
 }
 
-int main(int, char**)
+extern "C" void xmccshold_main(kos_self_t const* self)
 {
-    // No register access from root: the bring-up belongs to the thread that holds the
-    // window. USIC0's module clock is already ungated by the console (U0C0) bring-up.
-
-    kos_window const win = {U0C1_BASE, U0C1_WINDOW, KOS_WINDOW_DEVICE, 0};
-    auto drv = kos::thread::create(cs_hold_driver, reinterpret_cast<void*>(U0C1_BASE),
-                                   "xmccshold", 10, KOS_POLICY_FIFO, 0, /*privileged=*/false,
-                                   /*mem=*/nullptr, /*mem_size=*/0,
-                                   /*stack=*/nullptr, /*stack_size=*/0,
-                                   /*windows=*/&win, 1);
-    if (not drv.valid())
+    kos_window_t const window = kos_grant_mmio(self, "/dev/usic0/ch1");
+    uintptr_t const win = reinterpret_cast<uintptr_t>(kos_window_addr(window));
+    if (win == 0u or kos_window_size(window) < WINDOW_BYTES)
     {
-        // -KOS_EBUSY: a live domain already holds U0C1, which this bench needs exclusively,
-        // so no service list carrying an SSC/SPI entry may run alongside it. The errno goes
-        // out through the panic path because the kernel console path drops every byte once a
-        // driver has published.
-        char e[64];
-        ksnprintf(e, sizeof(e), "[xmccshold] U0C1 spawn refused, errno %d", -drv.error());
-        kos_panic(e);
+        kos::print("[xmccshold] ERROR: no /dev/usic0/ch1 window\n");
+        exit(1);
+    }
+    volatile uint32_t* pcr = reinterpret_cast<volatile uint32_t*>(win + off::PCR);
+
+    if (not bring_up(win))
+    {
+        kos::print("[xmccshold] ERROR: bring-up: a PV register did not take the seam write\n");
+        exit(1);
     }
 
-    kos_cap_t idle = KOS_CAP_NONE;
+    // Run 1: FEM=1 (PCR carries FEM from the bring-up above).
+    // Announce before the polling frame so a wedged board is diagnosable.
+    kos::print("[xmccshold] run 1 FEM=1: driving 4-word software-paced frame\n");
+    unsigned fem1_edges = run_frame(win);
 
-    (void)kos_sem_create(0, &idle);
-    while (true)
+    char s[96];
+    char const* v1 = "FAIL";
+    if (fem1_edges == 2u)
     {
-        if (idle == KOS_CAP_NONE)
-        {
-            kos_sleep_ns(1000000000ull);
-            continue;
-        }
-        kos_sem_wait(idle);
+        v1 = "PASS";
+    }
+    ksnprintf(s, sizeof(s), "[xmccshold] FEM=1: MSLS edges = %u : %s\n",
+              fem1_edges, v1);
+    kos::print(s);
+
+    // Reconfigure for run 2: flip FEM to 0 (PCR is U-writable, RM Table 18-20).
+    // The channel is idle (frame ended, MSLS forced inactive above), and this is
+    // a same-protocol parameter change, so no CCR MODE cycle is needed.
+    *pcr = PCR_SSC_BASE; // FEM bit cleared
+
+    kos::print("[xmccshold] run 2 FEM=0: driving 4-word software-paced frame\n");
+    unsigned fem0_edges = run_frame(win);
+
+    char const* v0 = "FAIL";
+    // FEM=0 pulses MSLS once per word: rise+fall x 4 words = 8 edges. Accept a
+    // window around 8 (edge capture can under-count by one on a very tight
+    // trailing delay); the discriminator is "clearly more than the held case".
+    if (fem0_edges >= 6u and fem0_edges <= 10u)
+    {
+        v0 = "PASS";
+    }
+    ksnprintf(s, sizeof(s), "[xmccshold] FEM=0: MSLS edges = %u : %s\n",
+              fem0_edges, v0);
+    kos::print(s);
+
+    // Verdict: the HW CS-hold is usable ONLY if the bit provably governs:
+    // FEM=1 holds (2 edges = one bracket) AND FEM=0 pulses (~8 = per-word). A
+    // board that simply always holds (2 and 2) or always pulses would fail here.
+    char const* verdict = "hardware CS-hold NOT usable (FEM does not govern)";
+    if (fem1_edges == 2u and (fem0_edges >= 6u and fem0_edges <= 10u))
+    {
+        verdict = "hardware CS-hold USABLE (FEM=1 holds, FEM=0 pulses)";
+    }
+    ksnprintf(s, sizeof(s), "[xmccshold] VERDICT: %s\n", verdict);
+    kos::print(s);
+    if (fem1_edges != 2u or fem0_edges < 6u or fem0_edges > 10u)
+    {
+        exit(1);
     }
 }

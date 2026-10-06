@@ -325,6 +325,11 @@ namespace kickos::init
             m.add("carries a ring block and runs no packaged driver");
             kos_panic(m.text());
         }
+        if (t.ceiling < t.priority)
+        {
+            m.add("has a ceiling ").add(t.ceiling).add(" below its priority ").add(t.priority);
+            kos_panic(m.text());
+        }
         if (t.cap_grant_count > KICKOS_MAX_SPAWN_GRANTS or windows > KICKOS_MAX_THREAD_WINDOWS)
         {
             m.add("is spawned with ").add(t.cap_grant_count).add(" capabilities and ").add(windows)
@@ -430,7 +435,7 @@ namespace kickos::init
             s.line_count = 0u;
             s.pinned = false;
             s.step = "kos_task_sched_grant";
-            rc = kos_task_sched_grant(handle, t.priority, t.core_mask);
+            rc = kos_task_sched_grant(handle, t.ceiling, t.core_mask);
             if (rc == 0)
             {
                 s.step = "kos_task_watch";

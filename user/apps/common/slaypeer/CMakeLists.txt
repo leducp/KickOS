@@ -6,5 +6,5 @@
 # main.cc pins by core mask and reads a printf formatter, neither of which is there below two
 # cores or without a libc.
 add_executable(slaypeer main.cc)
-target_link_libraries(slaypeer PRIVATE kickos)
+target_link_libraries(slaypeer PRIVATE KickOS::kernel KickOS::system_default)
 kickos_emit_image(slaypeer)

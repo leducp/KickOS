@@ -951,8 +951,12 @@ struct arch_aspace* arch_aspace_boot(void)
     return reinterpret_cast<struct arch_aspace*>(g_boot_root);
 }
 
-void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va)
+void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va, bool* uncached)
 {
+    if (uncached != nullptr)
+    {
+        *uncached = false;
+    }
     if (space == nullptr or g_window_leaves == nullptr)
     {
         return nullptr;

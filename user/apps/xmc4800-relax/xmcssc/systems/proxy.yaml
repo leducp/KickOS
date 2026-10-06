@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The packaged xmcssc serving the SSC bus over USIC0 channel 1, then the client using its endpoint.
+
+version: 1
+stdout: kernel
+ends: client
+
+tasks:
+  - name: xmcssc
+    driver: xmcssc
+    devices: [/dev/usic0/ch1]
+    lines: { irq: /dev/usic0/sr1 }
+    core: 0
+    serves: /svc/spi0
+    priority: 12
+
+  - name: client
+    entry: xmcssc_main
+    priority: 9
+    ceiling: 9
+    uses: [/svc/spi0]

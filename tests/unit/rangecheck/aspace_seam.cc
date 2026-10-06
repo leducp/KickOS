@@ -53,6 +53,16 @@ namespace kickos
         }
 
         void note_member_release() {}
+
+        Backing g_backing = {};
+
+        void seat_backing(uintptr_t va, unsigned char* at, size_t bytes, uintptr_t uncached_va)
+        {
+            g_backing.va = va;
+            g_backing.at = at;
+            g_backing.bytes = bytes;
+            g_backing.uncached_va = uncached_va;
+        }
     }
 
     struct arch_aspace* domain_space(Domain const* d)
@@ -129,10 +139,20 @@ extern "C"
         return 0;
     }
 
-    // Tests validate ranges without dereferencing them; acquisition must fail.
-    void* arch_aspace_acquire(struct arch_aspace*, uintptr_t)
+    // Fails outside the window seat_backing names, so a range check never dereferences.
+    void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va, bool* uncached)
     {
-        return nullptr;
+        using kickos::testfix::g_backing;
+        if (space == nullptr or g_backing.bytes == 0 or va < g_backing.va
+            or va - g_backing.va >= g_backing.bytes)
+        {
+            return nullptr;
+        }
+        if (uncached != nullptr)
+        {
+            *uncached = va >= g_backing.uncached_va;
+        }
+        return g_backing.at + (va - g_backing.va);
     }
 
     void arch_aspace_release(struct arch_aspace*, uintptr_t) {}

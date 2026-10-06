@@ -13,21 +13,24 @@
 # kickos_k64dspi is the SERVICE: the bring-up shim, the endpoint, the driver thread, and its OWN
 # private copy of the same engine. An image hosting this service may also hold a consumer that
 # reached the public class names through kickos_spi_proxy, and one ELF has one meaning per
-# symbol, so the service's four class symbols are RENAMED below. A fifth class call that
-# forgets its rename here is reported as a duplicate symbol ONLY where another definer of that
-# public name is in the same link; forgetting the rename on ALL FOUR is not reported at all,
-# and tests/static/check_class_backend.sh is what catches that. See k64dspi.cc.
+# symbol, so the service's four class symbols and the engine's bus mux are RENAMED below. A
+# fifth class call that forgets its rename here is reported as a duplicate symbol ONLY where
+# another definer of that public name is in the same link; forgetting the rename on ALL FOUR is
+# not reported at all, and tests/static/check_class_backend.sh is what catches that. See
+# k64dspi.cc.
 #
 # The DSPI RX-FIFO fill-level read is shared register logic, so both targets link the
-# kickos_class_mk64f leaf rather than carrying a local copy.
+# kickos_class_mk64f leaf rather than carrying a local copy. REGDIR puts the board's generated
+# board_buses.h on the engine's include path.
 
-kickos_add_driver(spi_k64dspi SOURCES spi_dspi.cc CLASS kickos_class_mk64f)
+kickos_add_driver(spi_k64dspi SOURCES spi_dspi.cc CLASS kickos_class_mk64f REGDIR arch/arm/chip/mk64f)
 
-kickos_add_driver(k64dspi SOURCES k64dspi.cc spi_dspi.cc CLASS kickos_class_mk64f
+kickos_add_driver(k64dspi SOURCES k64dspi.cc spi_dspi.cc CLASS kickos_class_mk64f REGDIR arch/arm/chip/mk64f
                   THREADS service:0:default:1:0 RECEIVER service WINDOWS regs
                   BLOCK none POSTURE retain BARRIER none START k64dspi_spi_start CLIENT kickos_spi_proxy)
 target_compile_definitions(kickos_k64dspi PRIVATE
   kos_spi_bus_open=k64dspi_bus_open
   kos_spi_device_open=k64dspi_device_open
   kos_spi_transfer=k64dspi_transfer
-  kos_spi_bus_close=k64dspi_bus_close)
+  kos_spi_bus_close=k64dspi_bus_close
+  k64dspi_bus_mux=k64dspi_service_bus_mux)

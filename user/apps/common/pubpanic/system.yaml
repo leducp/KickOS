@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The packaged simcon serving stdout, then main, whose terminal event the gate reads off the
+# driver's wire.
+
+version: 1
+stdout: /svc/console
+ends: main
+
+tasks:
+  - name: simcon
+    driver: simcon
+    serves: /svc/console
+    priority: 12
+
+  - name: main
+    entry: kickos_main
+    priority: 2
+    ceiling: 2
+    authority: [memory, system, tasks]

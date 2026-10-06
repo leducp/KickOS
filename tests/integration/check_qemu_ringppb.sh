@@ -11,10 +11,9 @@
 # witness, so the app's own "NOT confined" line is a failure marker in every posture.
 #
 # What a detected violation DOES is a property of the backend, so <outcome> is passed in.
-# The read happens in ROOT, which kmain spawns unprivileged in every posture, so on an
-# isolating backend the BusFault kills root instead of panicking. Root is the only thread
-# this image ever has, so exit_current ends the process either way and both arms can wait
-# for an exit.
+# The read happens in main, the default composition's task, unprivileged in every posture, so
+# on an isolating backend the BusFault kills main instead of panicking. Main's task ends with
+# it, and the init ends the system, so both arms can wait for an exit.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
@@ -34,24 +33,35 @@ fi
 if ! has "ok - control: a 32-bit volatile load"; then
     fail "the control load never succeeded (setup failed before the test)"
 fi
-# ...and root must have reached the deliberate read, so the trap cannot be credited to an
-# earlier unrelated fault during ctors or board bring-up.
-if ! has "root: reading privileged-only SCB->CPUID"; then
-    fail "root never reached the deliberate PPB read (faulted earlier?)"
+# ...and main must have reached the deliberate read, so the trap cannot be credited to an
+# earlier unrelated fault during ctors or the init's walk.
+if ! has "main: reading privileged-only SCB->CPUID"; then
+    fail "main never reached the deliberate PPB read (faulted earlier?)"
 fi
 case "$outcome" in
     panic)
         if ! has_e "=== (HARD|MPU) FAULT ==="; then
             fail "no fault dump (the read completed silently, or the image hung)"
         fi
+        # kfault_terminate's status, restated rather than computed.
+        if [ "$RC" -ne 132 ]; then
+            fail "the panic arm ended with status $RC, not kfault_terminate's 132"
+        fi
         ;;
     thread-kill)
-        if ! has_e "$(thread_fault_re root)"; then
-            fail "no thread-kill for 'root' (the read completed silently, or it hung?)"
+        if ! has_e "$(thread_fault_re main)"; then
+            fail "no thread-kill for 'main' (the read completed silently, or it hung?)"
         fi
         # The kill must be the WHOLE outcome: a redirect that fired and then escalated
         # anyway still prints the banner above.
-        assert_no_panic "the PPB refusal killed root AND panicked the system"
+        assert_no_panic "the PPB refusal killed main AND panicked the system"
+        if [ "$RC" -eq 124 ]; then
+            fail "the system never ended: the init did not act on main's fault"
+        fi
+        # KOS_EXIT_FAULT, restated rather than computed.
+        if [ "$RC" -ne 139 ]; then
+            fail "the system ended with status $RC, not KOS_EXIT_FAULT (139)"
+        fi
         ;;
     *)
         fail "$_usage"

@@ -22,3 +22,4 @@ tasks:
     entry: console_writer_main
     stack: 12288
     priority: 8
+    ceiling: 8

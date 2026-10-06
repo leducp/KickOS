@@ -59,7 +59,7 @@ namespace kickos::stm32::chip
         return (hi << 16) | lo;
     }
 
-    // Console: USART1 on PA9(TX)/PA10(RX), APB2, the classic SR/DR model.
+    // Console: USART1, APB2, the classic SR/DR model.
     constexpr uintptr_t USART_SR = mmap::USART1_BASE + 0x00;
     constexpr uintptr_t USART_DR = mmap::USART1_BASE + 0x04;
     constexpr uintptr_t USART_BRR = mmap::USART1_BASE + 0x08;

@@ -1,52 +1,45 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// K64F/DSPI0 silicon validation through the SPI class <kickos/driver/spi.h>. A CLIENT of the
-// DSPI0 service the board service list brings up before main: the linked backend is
-// kickos_spi_proxy, so this app touches no MMIO, no CS and no grant.
+// K64F/DSPI0 silicon validation through the SPI class <kickos/driver/spi.h>, run by the task's
+// entry over the grants its composition hands it. Built BOTH WAYS from this one source: with
+// KICKOS_SPI_LOCAL (KICKOS_SPI_LOCAL_ENGINE=ON) the client owns the DSPI0 window, muxes the bus
+// pins the board file wires and links the local engine, otherwise the same calls marshal onto
+// the packaged k64dspi service endpoint.
 //
-// Two build modes over the SAME service:
+// Two build modes over the same bus:
 //   DEFAULT: LAN9252 BYTE_TEST probe, EasyCAT shield on the Arduino header.
 //   K64DSPI_LOOPBACK=ON: SOUT(PTD2)->SIN(PTD3) loopback (jumper, no shield).
-//
-// Build-only diagnostic: the operator flashes and validates on silicon.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 #include <kickos/libc/fmt.h>
 
-#include <kickos/driver/k64dspi.h> // k64dspi_take_endpoint()
-#include <kickos/driver/spi.h>     // the SPI class: kos_spi_bus_open / device_open / transfer
+#include <kickos/driver/spi.h>
+#if KICKOS_SPI_LOCAL
+#include <kickos/chip_mmap.h>
+#include <kickos/driver/k64dspi.h>
+#endif
 
-#include <stdint.h>
 #include <stddef.h>
+#include <stdint.h>
+#include <stdlib.h>
 
-// Backstops the CMake enforcement-build gate: the MMIO-grant seam needs enforcement.
 #if !KICKOS_HAVE_MPU
 #error "k64dspi requires enforcement: build the board's base variant, not its flat one"
 #endif
 
 namespace
 {
-    // The delegated endpoint SIGNAL cap lands at the client's child table index 1.
-    constexpr kos_cap_t SPI_EP = KOS_SPAWN_DELEGATED_CAP0;
-
     // The single device on the bench's bus; a slot is per device and opened once.
     constexpr uint8_t SPI_SLOT = 0;
 
-    // Open the bus over the service endpoint and issue the one device handle this app uses.
-    // Returns the achieved bit clock, or a negative kos_errno; *dev is valid on success only.
-    int32_t open_device(struct kos_spi_bus* bus, struct kos_spi_device* dev, uint32_t hz,
-                        uint8_t cs_policy)
+    // Open the bus and issue the one device handle this app uses. Returns the achieved bit
+    // clock, or a negative kos_errno; *dev is valid on success only.
+    int32_t open_device(struct kos_spi_bus_config const* bcfg, struct kos_spi_bus* bus,
+                        struct kos_spi_device* dev, uint32_t hz, uint8_t cs_policy)
     {
-        struct kos_spi_bus_config bcfg;
-        bcfg.base = 0u; // a proxy reaches no register window
-        bcfg.ep = SPI_EP;
-        bcfg.irq = KOS_CAP_NONE;
-        bcfg.notify = KOS_CAP_NONE;
-        bcfg.notify_bit = 0;
-        bcfg.irq_index = 0u;
-        int32_t const brc = kos_spi_bus_open(bus, &bcfg);
+        int32_t const brc = kos_spi_bus_open(bus, bcfg);
         if (brc < 0)
         {
             return brc;
@@ -58,8 +51,7 @@ namespace
         dcfg.mode = 0u; // SPI mode 0, MSB first
         dcfg.word_bits = 8u;
         dcfg.cs_policy = cs_policy;
-        // ONE CS pin, PTC4. cs_index names a pin slot, and this engine drives exactly slot 0,
-        // so naming the pin number here would be refused rather than ignored.
+        // A position among the board bus's chip selects, not a pin number: 0 is D9/PTC4.
         dcfg.cs_index = 0u;
         dcfg.rsv[0] = 0u;
         dcfg.rsv[1] = 0u;
@@ -108,12 +100,12 @@ namespace
         return true;
     }
 
-    // UNPRIVILEGED client. No CS: the loopback jumper has none.
-    void spi_client(void*)
+    // No CS: the loopback jumper has none.
+    int run_client(struct kos_spi_bus_config const* bcfg)
     {
         struct kos_spi_bus bus;
         struct kos_spi_device dev;
-        int32_t const hz = open_device(&bus, &dev, /*hz=*/1000000u, KOS_BUS_CS_NONE);
+        int32_t const hz = open_device(bcfg, &bus, &dev, /*hz=*/1000000u, KOS_BUS_CS_NONE);
         {
             char s[80];
             ksnprintf(s, sizeof(s), "[k64dspi] device open rc=%d achieved=%lu Hz\n",
@@ -172,17 +164,11 @@ namespace
 
         if (g_fails == 0)
         {
-            kos::print("[k64dspi] loopback PASS (call/reply SPI service echoes tx==rx)\n");
+            kos::print("[k64dspi] loopback PASS (the SPI bus echoes tx == rx)\n");
+            return 0;
         }
-        else
-        {
-            kos::print("[k64dspi] loopback FAIL (see per-case lines above)\n");
-        }
-
-        while (true)
-        {
-            kos_sleep_ns(1000000000ull);
-        }
+        kos::print("[k64dspi] loopback FAIL (see per-case lines above)\n");
+        return 1;
     }
 
 #else // LAN9252 BYTE_TEST probe (default)
@@ -218,12 +204,12 @@ namespace
         return val;
     }
 
-    // UNPRIVILEGED client: open the device (10 MHz, GPIO CS) then the BYTE_TEST probe.
-    void spi_client(void*)
+    // Open the device (10 MHz, GPIO CS), then the BYTE_TEST probe.
+    int run_client(struct kos_spi_bus_config const* bcfg)
     {
         struct kos_spi_bus bus;
         struct kos_spi_device dev;
-        int32_t const hz = open_device(&bus, &dev, /*hz=*/10000000u, KOS_BUS_CS_GPIO);
+        int32_t const hz = open_device(bcfg, &bus, &dev, /*hz=*/10000000u, KOS_BUS_CS_GPIO);
         {
             char s[80];
             ksnprintf(s, sizeof(s), "[k64dspi] device open rc=%d achieved=%lu Hz\n",
@@ -259,61 +245,51 @@ namespace
 
         if (pass)
         {
-            kos::print("[k64dspi] LAN9252 BYTE_TEST PASS: ESC SPI link OK "
-                       "(read 0x87654321 through the call/reply SPI service)\n");
+            kos::print("[k64dspi] LAN9252 BYTE_TEST PASS: ESC SPI link OK (read 0x87654321)\n");
+            return 0;
         }
-        else
-        {
-            kos::print("[k64dspi] LAN9252 BYTE_TEST FAIL: no valid signature; check CS "
-                       "(D9/PTC4), baud/mode, or shield seating\n");
-        }
-
-        while (true)
-        {
-            kos_sleep_ns(1000000000ull);
-        }
+        kos::print("[k64dspi] LAN9252 BYTE_TEST FAIL: no valid signature; check CS "
+                   "(D9/PTC4), baud/mode, or shield seating\n");
+        return 1;
     }
 
 #endif
 }
 
-int main(int, char**)
+extern "C" void k64dspi_main(kos_self_t const* self)
 {
-    // DSPI0 is already up: take the endpoint the service list recorded.
-    kos_cap_t const ep = k64dspi_take_endpoint();
+    struct kos_spi_bus_config bcfg;
+    bcfg.irq = KOS_CAP_NONE; // the DSPI pump polls its FIFOs
+    bcfg.notify = KOS_CAP_NONE;
+    bcfg.notify_bit = 0;
+    bcfg.irq_index = 0u;
+#if KICKOS_SPI_LOCAL
+    kos_window_t const window = kos_grant_mmio(self, "/dev/dspi0");
+    uintptr_t const win = reinterpret_cast<uintptr_t>(kos_window_addr(window));
+    if (win == 0u or kos_window_size(window) < kickos::mk64f::mmap::DSPI0_SIZE)
+    {
+        kos::print("[k64dspi] ERROR: no /dev/dspi0 window\n");
+        exit(1);
+    }
+    int32_t const muxed = k64dspi_bus_mux(win);
+    if (muxed != 0)
+    {
+        char e[64];
+        ksnprintf(e, sizeof(e), "[k64dspi] ERROR: bus pins rc %d\n", static_cast<int>(muxed));
+        kos::print(e);
+        exit(1);
+    }
+    bcfg.base = win;
+    bcfg.ep = KOS_CAP_NONE;
+#else
+    kos_cap_t const ep = kos_grant_endpoint(self, "/svc/spi0");
     if (ep == KOS_CAP_NONE)
     {
-        kos::print("[k64dspi] ERROR: SPI service not up (endpoint unavailable)\n");
+        kos::print("[k64dspi] ERROR: no /svc/spi0 endpoint\n");
+        exit(1);
     }
-    else
-    {
-        // Delegate a SIGNAL-narrowed copy of E to the spawned client (child index 1).
-        kos_cap_grant const caps[1] = {
-            { .source_cap = ep, .rights_mask = KOS_CAP_SIGNAL },
-        };
-        auto const c = kos::thread::create_caps(spi_client, nullptr, "k64spi-cli", 9,
-                                                caps, /*cap_count=*/1);
-        if (not c.valid())
-        {
-            kos::print("[k64dspi] ERROR: client spawn failed\n");
-        }
-        else
-        {
-            // Drop root's own cap, its handout right with it, so the driver is the sole recv
-            // holder: its death then wakes the client refused instead of leaving it parked.
-            kos_handle_close(ep);
-        }
-    }
-
-    kos_cap_t idle = KOS_CAP_NONE;
-    (void)kos_sem_create(0, &idle);
-    while (true)
-    {
-        if (idle == KOS_CAP_NONE)
-        {
-            kos_sleep_ns(1000000000ull);
-            continue;
-        }
-        kos_sem_wait(idle);
-    }
+    bcfg.base = 0u;
+    bcfg.ep = ep;
+#endif
+    exit(run_client(&bcfg));
 }

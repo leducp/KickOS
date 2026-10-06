@@ -2,8 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // RP2350 UART1 register map (RP2350 datasheet RP-008373-DS-2, 12.1): ARM PL011.
-// The console is on UART1, not UART0 (the Pi-Zero header TX/RX pins land on
-// GP4/GP5, which mux only UART1). Offsets are UART1_BASE-relative (see mmap.h).
+// The console is on UART1. Offsets are UART1_BASE-relative (see mmap.h).
 
 #ifndef KICKOS_ARCH_ARM_CHIP_RP2350_REGS_UART_H
 #define KICKOS_ARCH_ARM_CHIP_RP2350_REGS_UART_H

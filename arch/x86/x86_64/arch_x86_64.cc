@@ -52,6 +52,23 @@ namespace
     using kickos::x86_64::read_cr2;
     using kickos::x86_64::trap_frame;
 
+    // Loads may pass a CLFLUSH, which the MFENCE closes.
+    void clflush_range(void const* addr, size_t bytes)
+    {
+        uintptr_t const a = reinterpret_cast<uintptr_t>(addr);
+        if (bytes == 0 or bytes > UINTPTR_MAX - a)
+        {
+            return;
+        }
+        uintptr_t const end = a + bytes;
+        uintptr_t const line = kickos::x86_64::CLFLUSH_LINE;
+        for (uintptr_t p = a & ~(line - 1u); p < end; p += line)
+        {
+            __asm__ volatile("clflush (%0)" ::"r"(p) : "memory");
+        }
+        __asm__ volatile("mfence" ::: "memory");
+    }
+
     // switch.S spells these as literal displacements, so a field moved on one side alone is a
     // silent wrong offset.
     constexpr size_t X86_64_FRAME_SIZE = KICKOS_X86_64_TRAP_FRAME;
@@ -535,17 +552,14 @@ bool arch_user_data_writable(uintptr_t ptr, size_t len)
 }
 
 // --- Data cache -------------------------------------------------------------
-// x86 keeps its caches coherent with bus masters in hardware.
 void arch_dcache_flush(void const* addr, size_t bytes)
 {
-    (void)addr;
-    (void)bytes;
+    clflush_range(addr, bytes);
 }
 
 void arch_dcache_invalidate(void* addr, size_t bytes)
 {
-    (void)addr;
-    (void)bytes;
+    clflush_range(addr, bytes);
 }
 
 // --- Interrupt controller ---------------------------------------------------

@@ -11,11 +11,13 @@
 #include <kickos/irqlock.h>
 #include <kickos/kernel.h>
 #include <kickos/kruntime.h>
+#include <kickos/mpuset.h>
 #include <kickos/sched.h>
 #include <kickos/task.h>
 #include <kickos/thread.h>
 
 #include <kickos/sys/abi.h>
+#include <kickos/sys/atomic.h>
 
 #include "syscall_internal.h"
 
@@ -465,6 +467,11 @@ namespace kickos
 
     namespace
     {
+#if defined(KICKOS_ENABLE_SELFTEST) and KICKOS_ALIAS_DCACHE
+        // One per core, written with interrupts masked: no increment is lost, and none is an RMW.
+        Atomic<uint32_t, Order::RELAXED> g_alias_syncs[KICKOS_KERNEL_CORES];
+#endif
+
 #if KICKOS_HAVE_ASPACE
         size_t granule_chunk(uintptr_t va, size_t left)
         {
@@ -476,21 +483,67 @@ namespace kickos
             }
             return left;
         }
+#elif KICKOS_ARCH_ARENA_DCACHE
+        // Whether [a, a + n) meets a non-cacheable region of the owner's set, which the kernel
+        // reaches through the cacheable background map whenever that set is not the one loaded.
+        bool region_uncached(UserOwner owner, uintptr_t a, size_t n)
+        {
+            if (owner == nullptr)
+            {
+                return false;
+            }
+            uintptr_t const last = a + n - 1u;
+            for (arch_mpu_region const& r : owner->mpu)
+            {
+                if ((r.attr & (ARCH_MPU_NOCACHE | ARCH_MPU_DEV)) == ARCH_MPU_NOCACHE
+                    and r.size != 0 and a <= r.base + (r.size - 1u) and r.base <= last)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+#endif
+
+#if KICKOS_ALIAS_DCACHE
+        // The dropping ahead of the write is owed too: a partial-line write merges into a stale
+        // line, and the clean after it writes the stale bytes back.
+        void chunk_copy(void* d, bool d_uncached, void const* s, bool s_uncached, size_t n)
+        {
+            if (s_uncached)
+            {
+                alias_sync(s, n);
+            }
+            if (d_uncached)
+            {
+                alias_sync(d, n);
+            }
+            kmemcpy(d, s, n);
+            if (d_uncached)
+            {
+                alias_sync(d, n);
+            }
+        }
 #endif
 
         // Acquire each granule separately and hold both ends during the copy.
         // Failure leaves the already-copied prefix in place.
-        bool access_copy(struct arch_aspace* dspace, uintptr_t dst,
-                         struct arch_aspace* sspace, uintptr_t src, size_t n)
+        bool access_copy(UserOwner dspace, uintptr_t dst, UserOwner sspace, uintptr_t src,
+                         size_t n)
         {
 #if KICKOS_HAVE_ASPACE
             while (n != 0)
             {
                 size_t chunk = n;
                 void* d = reinterpret_cast<void*>(dst);
+                bool d_uncached = false;
                 if (dspace != nullptr)
                 {
-                    d = arch_aspace_acquire(dspace, dst);
+#if KICKOS_ALIAS_DCACHE
+                    d = arch_aspace_acquire(dspace, dst, &d_uncached);
+#else
+                    d = arch_aspace_acquire(dspace, dst, nullptr);
+#endif
                     if (d == nullptr)
                     {
                         return false;
@@ -498,9 +551,14 @@ namespace kickos
                     chunk = granule_chunk(dst, chunk);
                 }
                 void const* s = reinterpret_cast<void const*>(src);
+                bool s_uncached = false;
                 if (sspace != nullptr)
                 {
-                    s = arch_aspace_acquire(sspace, src);
+#if KICKOS_ALIAS_DCACHE
+                    s = arch_aspace_acquire(sspace, src, &s_uncached);
+#else
+                    s = arch_aspace_acquire(sspace, src, nullptr);
+#endif
                     if (s == nullptr)
                     {
                         if (dspace != nullptr)
@@ -511,7 +569,13 @@ namespace kickos
                     }
                     chunk = granule_chunk(src, chunk);
                 }
+#if KICKOS_ALIAS_DCACHE
+                chunk_copy(d, d_uncached, s, s_uncached, chunk);
+#else
+                (void)d_uncached;
+                (void)s_uncached;
                 kmemcpy(d, s, chunk);
+#endif
                 if (sspace != nullptr)
                 {
                     arch_aspace_release(sspace, src);
@@ -525,6 +589,14 @@ namespace kickos
                 n -= chunk;
             }
             return true;
+#elif KICKOS_ARCH_ARENA_DCACHE
+            if (n != 0)
+            {
+                chunk_copy(reinterpret_cast<void*>(dst), region_uncached(dspace, dst, n),
+                           reinterpret_cast<void const*>(src), region_uncached(sspace, src, n),
+                           n);
+            }
+            return true;
 #else
             (void)dspace;
             (void)sspace;
@@ -534,8 +606,57 @@ namespace kickos
         }
     }
 
+#if KICKOS_ALIAS_DCACHE
+    void alias_sync(void const* p, size_t n)
+    {
+#if defined(KICKOS_ENABLE_SELFTEST)
+        arch_irq_state_t const s = arch_irq_save();
+        Atomic<uint32_t, Order::RELAXED>& mine = g_alias_syncs[kickos_kernel_core()];
+        mine.store(mine.load() + 1u);
+        arch_irq_restore(s);
+#endif
+        arch_dcache_invalidate(const_cast<void*>(p), n);
+    }
+#endif
+
+#if KICKOS_ARCH_ARENA_DCACHE and not KICKOS_HAVE_ASPACE
+    void grant_sync(MpuSet const* held, uintptr_t base, size_t size, uint32_t attr)
+    {
+        constexpr uint32_t TYPE = ARCH_MPU_NOCACHE | ARCH_MPU_DEV;
+        bool owed = (attr & TYPE) == ARCH_MPU_NOCACHE;
+        if (not owed and held != nullptr)
+        {
+            for (arch_mpu_region const& r : *held)
+            {
+                if (r.base == base and r.size == size and (r.attr & TYPE) == ARCH_MPU_NOCACHE)
+                {
+                    owed = true;
+                }
+            }
+        }
+        if (owed)
+        {
+            alias_sync(reinterpret_cast<void const*>(base), size);
+        }
+    }
+#endif
+
+#if defined(KICKOS_ENABLE_SELFTEST)
+    uint32_t alias_sync_count()
+    {
+        uint32_t sum = 0;
+#if KICKOS_ALIAS_DCACHE
+        for (Atomic<uint32_t, Order::RELAXED> const& n : g_alias_syncs)
+        {
+            sum += n.load();
+        }
+#endif
+        return sum;
+    }
+#endif
+
 #if KICKOS_HAVE_ASPACE
-    struct arch_aspace* user_space_of(Thread const* t)
+    UserOwner user_space_of(Thread const* t)
     {
         if (t == nullptr)
         {
@@ -543,8 +664,15 @@ namespace kickos
         }
         return domain_space(task_domain(t->task));
     }
+#elif KICKOS_ARCH_ARENA_DCACHE
+    UserOwner user_space_of(Thread const* t)
+    {
+        return t;
+    }
+#endif
 
-    struct arch_aspace* ipc_buf_space(Thread const* t)
+#if KICKOS_HAVE_ASPACE or KICKOS_ARCH_ARENA_DCACHE
+    UserOwner ipc_buf_space(Thread const* t)
     {
         if (t == nullptr)
         {
@@ -560,29 +688,61 @@ namespace kickos
 
     // kdst is kernel storage and usrc is user memory, so the two ends are disjoint by
     // construction.
-    bool kaccess_from_user(void* kdst, struct arch_aspace* sspace, uintptr_t usrc, size_t n)
+    bool kaccess_from_user(void* kdst, UserOwner sspace, uintptr_t usrc, size_t n)
     {
         return access_copy(nullptr, reinterpret_cast<uintptr_t>(kdst), sspace, usrc, n);
     }
 
     // ksrc is kernel storage, udst is user memory: disjoint for the same reason.
-    bool kaccess_to_user(struct arch_aspace* dspace, uintptr_t udst, void const* ksrc, size_t n)
+    bool kaccess_to_user(UserOwner dspace, uintptr_t udst, void const* ksrc, size_t n)
     {
         return access_copy(dspace, udst, nullptr, reinterpret_cast<uintptr_t>(ksrc), n);
     }
 
     // Copy one aligned pointer-sized word with one acquire. It cannot cross
     // a granule boundary. Use memcpy to preserve effective-type rules (reent.h).
-    bool kaccess_word_to_user(struct arch_aspace* dspace, uintptr_t udst, void const* kword)
+    bool kaccess_word_to_user(UserOwner dspace, uintptr_t udst, void const* kword)
     {
         if ((udst & static_cast<uintptr_t>(sizeof(void*) - 1u)) != 0)
         {
             return false;
         }
+#if KICKOS_ALIAS_DCACHE
+        void* d = reinterpret_cast<void*>(udst);
+        bool uncached = false;
 #if KICKOS_HAVE_ASPACE
         if (dspace != nullptr)
         {
-            void* const d = arch_aspace_acquire(dspace, udst);
+            d = arch_aspace_acquire(dspace, udst, &uncached);
+            if (d == nullptr)
+            {
+                return false;
+            }
+        }
+#else
+        uncached = region_uncached(dspace, udst, sizeof(void*));
+#endif
+        if (uncached)
+        {
+            alias_sync(d, sizeof(void*));
+        }
+        __builtin_memcpy(__builtin_assume_aligned(d, sizeof(void*)), kword, sizeof(void*));
+        if (uncached)
+        {
+            alias_sync(d, sizeof(void*));
+        }
+#if KICKOS_HAVE_ASPACE
+        if (dspace != nullptr)
+        {
+            arch_aspace_release(dspace, udst);
+        }
+#endif
+        return true;
+#else
+#if KICKOS_HAVE_ASPACE
+        if (dspace != nullptr)
+        {
+            void* const d = arch_aspace_acquire(dspace, udst, nullptr);
             if (d == nullptr)
             {
                 return false;
@@ -597,14 +757,19 @@ namespace kickos
         __builtin_memcpy(__builtin_assume_aligned(reinterpret_cast<void*>(udst), sizeof(void*)),
                          kword, sizeof(void*));
         return true;
+#endif
     }
 
-    // Compare overlap only within the same space. Return failure rather than
-    // asserting: user code can request overlap, and fault reporting uses this path.
-    bool ep_copy(struct arch_aspace* dspace, uintptr_t dst, struct arch_aspace* sspace,
-                 uintptr_t src, size_t n)
+    // Compare overlap only within the same space, which is every pair where the backend does
+    // not translate. Return failure rather than asserting: user code can request overlap, and
+    // fault reporting uses this path.
+    bool ep_copy(UserOwner dspace, uintptr_t dst, UserOwner sspace, uintptr_t src, size_t n)
     {
-        if (dspace == sspace and dst + n > src and src + n > dst)
+        bool one_space = true;
+#if KICKOS_HAVE_ASPACE
+        one_space = dspace == sspace;
+#endif
+        if (one_space and dst + n > src and src + n > dst)
         {
             return false;
         }
@@ -613,8 +778,7 @@ namespace kickos
 
     // `out` == 0 is an info-less recv, which answers true. KCAP_INVALID marks a plain send
     // and a real handle marks a call.
-    bool write_recv_info(struct arch_aspace* ospace, uintptr_t out, uint32_t badge,
-                         uint32_t reply_cap)
+    bool write_recv_info(UserOwner ospace, uintptr_t out, uint32_t badge, uint32_t reply_cap)
     {
         if (out == 0)
         {

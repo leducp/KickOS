@@ -87,6 +87,7 @@ namespace
         in.endpoint = 7u;
         in.watch = 8u;
         in.core_mask = 1u << 3;
+        in.ceiling = 9u;
         in.line_count = 1;
         in.lines[0] = {16u, 0u};
         struct kos_service_cfg cfg = cfg_of();
@@ -102,6 +103,7 @@ namespace
         in.endpoint = 7u;
         in.watch = 8u;
         in.core_mask = 1u << 3;
+        in.ceiling = 9u;
         in.line_count = 1;
         in.lines[0] = {16u, 0u};
         return in;

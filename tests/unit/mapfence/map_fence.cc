@@ -368,7 +368,7 @@ TEST_F(MapFence, AcquireOfAFrameOutsideTheKernelWindowSpendsASlot)
     seed(VA_DEEP, PA_A, RIGHTS_DATA);
 
     // Do not dereference the simulated slot address.
-    void* const p = arch_aspace_acquire(space, VA_DEEP + 0x40);
+    void* const p = arch_aspace_acquire(space, VA_DEEP + 0x40, nullptr);
     ASSERT_NE(p, nullptr);
 
     uintptr_t const slot0 =
@@ -393,7 +393,7 @@ TEST_F(MapFence, AcquireOfAFrameInsideTheKernelWindowSpendsNone)
               ARCH_ASPACE_OK);
     ops_clear();
 
-    void* const p = arch_aspace_acquire(space, VA_DEEP + 0x40);
+    void* const p = arch_aspace_acquire(space, VA_DEEP + 0x40, nullptr);
     ASSERT_NE(p, nullptr);
 
     EXPECT_EQ(ops_with(OP_SFENCE_PAGE), 0u);

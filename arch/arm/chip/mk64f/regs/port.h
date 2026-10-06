@@ -17,7 +17,6 @@ namespace kickos::mk64f::reg::port
     constexpr uint32_t PCR_MUX_SHIFT = 8u;
     constexpr uint32_t PCR_MUX_MASK = 7u;
     constexpr uint32_t PCR_MUX_GPIO = 1u << 8; // MUX=001 = GPIO (ALT1)
-    constexpr uint32_t PCR_MUX_ALT3 = 3u << 8; // MUX=011 = ALT3
 }
 
 #endif

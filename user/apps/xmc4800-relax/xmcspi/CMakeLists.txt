@@ -1,15 +1,11 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-# XMC4800 USIC0-CH1 SSC (SPI) internal-loopback driver over the MMIO-grant seam: the
-# PMSA-proven board-support / userspace-library SPI reference (the XMC counterpart of
-# user/apps/f411disco/f411spi), proven both ways (granted works, ungranted faults MemManage).
-# No CTest gate: it answers a HARDWARE question (PMSA peripheral enforcement) and is validated
-# by the operator on silicon.
+# XMC4800 USIC0 channel 1 SSC internal loopback over the window and line its composition grants,
+# then an ungranted SCU read that must fault. Judged from a silicon capture.
 add_executable(xmcspi main.cc)
-target_link_libraries(xmcspi PRIVATE kickos)
+kickos_app_system(xmcspi COMPOSITION system.yaml)
 kickos_emit_image(xmcspi)
-
-# The chip register dir carries regs/usic.h (the shared USIC offset plus bit-field header),
-# definitions only, no code.
+kickos_app_judge(xmcspi tests/integration/check_xmcspi.sh)
+# regs/usic.h: the shared USIC offsets and bit fields, definitions only.
 target_include_directories(xmcspi PRIVATE "${PROJECT_SOURCE_DIR}/arch/arm/chip/xmc4800")

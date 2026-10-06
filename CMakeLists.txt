@@ -1028,6 +1028,11 @@ if(KICKOS_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(capture_matchers PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
+  _add_test(NAME app_judges
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_app_judges.sh"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(app_judges PROPERTIES TIMEOUT 120 LABELS "host;tree")
+
   # The kernel-core seam against the machine's core identity. Corpus-wide source scan, so it
   # is registered from every board and reads no build output.
   _add_test(NAME kernel_core_index
@@ -1546,6 +1551,12 @@ if(TARGET kickos_kernel_leaf)
       target_link_libraries(${_kickos_leaf} INTERFACE "$<TARGET_OBJECTS:${_kickos_gate_name}>")
     endforeach()
   endif()
+  # The apps' own systems, which kickos_app_system (user/apps/CMakeLists.txt) records.
+  get_property(_kickos_app_systems GLOBAL PROPERTY KICKOS_APP_SYSTEMS)
+  foreach(_system IN LISTS _kickos_app_systems)
+    get_property(_composition GLOBAL PROPERTY KICKOS_APP_SYSTEM_${_system})
+    kickos_compose(${_system} "${_composition}")
+  endforeach()
 endif()
 if(KICKOS_BUILD_TESTS)
   _add_test(NAME platform_manifest

@@ -107,6 +107,9 @@ def check_priorities(f, tasks, manifest):
                          "%s runs at priority %d%s outside the kernel build's range [%d, %d]"
                          % (task.label(), task.priority, thread, lo, hi))
                 break
+        if task.ceiling is not None and not lo <= task.ceiling <= hi:
+            f.refuse(task.nodes["ceiling"], "scheduling.ceiling",
+                     "%s ceiling %d is outside the kernel build's range [%d, %d]" % (task.label(), task.ceiling, lo, hi))
 
 
 class Held:
@@ -456,18 +459,18 @@ def check_stack(f, task, manifest):
         return
     floor = manifest.min_stack
     if floor is not None and task.stack < floor:
-        f.refuse(task.nodes["stack"], "supply.stack",
+        f.refuse(task.nodes.get("stack", task.node), "supply.stack",
                  "%s has a %d-byte stack, below the %d bytes, KICKOS_MIN_STACK_SIZE, a thread's exit "
                  "needs" % (task.label(), task.stack, floor))
     stride = manifest.stack_stride
     if stride is not None and task.stack > stride:
-        f.refuse(task.nodes["stack"], "supply.stack",
+        f.refuse(task.nodes.get("stack", task.node), "supply.stack",
                  "%s asks for a %d-byte stack, and where the thread pointer is SP masked every stack is "
                  "one %d-byte stride, KICKOS_USER_STACK_SIZE rounded to a power of two"
                  % (task.label(), task.stack, stride))
     align = manifest.stack_align
     if align and task.stack % align:
-        f.refuse(task.nodes["stack"], "supply.stack",
+        f.refuse(task.nodes.get("stack", task.node), "supply.stack",
                  "%s has a %d-byte stack, which a spawn refuses unless it is a multiple of %d, "
                  "KICKOS_STACK_ALIGN" % (task.label(), task.stack, align))
 
@@ -575,7 +578,7 @@ def check_scheduling(f, top, tasks, stdout, manifest):
     if console is None or console.priority is None or console.catalogue.receiver is None:
         return
     name, offset, stack = console.catalogue.threads[console.catalogue.receiver]
-    ceiling = console.priority + offset
+    receiver_priority = console.priority + offset
     for task in tasks:
         if not task.entry:
             continue
@@ -583,8 +586,15 @@ def check_scheduling(f, top, tasks, stdout, manifest):
             f.refuse(task.node, "scheduling.stdout-order",
                      "%s writes standard output and is declared before %s, which serves `stdout`"
                      % (task.label(), console.label()))
-        if task.priority is not None and task.priority > ceiling:
-            f.refuse(task.nodes["priority"], "scheduling.stdout-priority",
-                     "%s writes standard output at priority %d, above the %d of thread `%s`, which "
-                     "receives on the console's endpoint with no priority inheritance"
-                     % (task.label(), task.priority, ceiling, name))
+        if task.priority is None:
+            continue
+        highest = task.priority
+        field = "priority"
+        if task.ceiling is not None and task.ceiling > task.priority:
+            highest = task.ceiling
+            field = "ceiling"
+        if highest > receiver_priority:
+            f.refuse(task.nodes[field], "scheduling.stdout-priority",
+                     "%s writes standard output from threads up to its %s %d, above the %d of thread "
+                     "`%s`, which receives on the console's endpoint with no priority inheritance"
+                     % (task.label(), field, highest, receiver_priority, name))

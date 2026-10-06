@@ -82,10 +82,13 @@ namespace
 #if defined(__x86_64__) && !KICKOS_ARCH_SIM
     // --- arm F: libc on a core's first thread, before any switch ------------------------
     // Root is a core's first thread, entered by arch_start with no switch, so only the FS base
-    // that path wrote can hand libc this thread's state. Everything here runs ahead of every
-    // call that can block: strtok and strtol out of newlib, then the two reads that say no
-    // switch-in has seated anything yet and which core entered root.
-    void arm_first_thread()
+    // that path wrote can hand libc this thread's state. The app's constructors run on root
+    // before the init it then runs switches anything in, so the arm is one: strtok and strtol
+    // out of newlib, then the two reads that say no switch-in has seated anything yet and which
+    // core entered root. Nothing here blocks, and its line waits for main to print it.
+    char g_first_line[96];
+
+    __attribute__((constructor)) void arm_first_thread()
     {
         char buf[] = "kick os";
         char const* const t0 = strtok(buf, " ");
@@ -125,9 +128,9 @@ namespace
         {
             g_bad++;
         }
-        ksnprintf(g_line, sizeof(g_line), "[errnoprobe] F first core %u switches %u %s\n",
-                  static_cast<unsigned>(core), static_cast<unsigned>(switches), verdict);
-        say(g_line);
+        ksnprintf(g_first_line, sizeof(g_first_line),
+                  "[errnoprobe] F first core %u switches %u %s\n", static_cast<unsigned>(core),
+                  static_cast<unsigned>(switches), verdict);
     }
 #endif
 
@@ -177,8 +180,8 @@ namespace
 
     void arm_cooperative()
     {
-        uintptr_t const root_addr = errno_addr();
-        int const root_provoked = provoke(0); // root takes ERANGE, like worker 0
+        uintptr_t const main_addr = errno_addr();
+        int const main_provoked = provoke(0); // main takes ERANGE, like worker 0
 
         kos::thread::Handle w[WORKERS];
         for (int k = 0; k < WORKERS; k++)
@@ -220,7 +223,7 @@ namespace
                 verdict = "LOST ITS OWN ERRNO ACROSS A SWITCH";
                 g_bad++;
             }
-            else if (g_report[k].addr == root_addr)
+            else if (g_report[k].addr == main_addr)
             {
                 verdict = "SHARES ROOT'S STATE";
                 g_bad++;
@@ -241,16 +244,16 @@ namespace
         {
             fault("[errnoprobe] A BOTH WORKERS READ THE SAME ERRNO\n");
         }
-        // Root provoked ERANGE before either worker ran and worker 1 then provoked EINVAL, so
-        // a shared state hands root the peer's value.
-        int const root_now = errno;
-        if (root_provoked != ERANGE or root_now != ERANGE)
+        // Main provoked ERANGE before either worker ran and worker 1 then provoked EINVAL, so
+        // a shared state hands main the peer's value.
+        int const main_now = errno;
+        if (main_provoked != ERANGE or main_now != ERANGE)
         {
             g_bad++;
         }
         ksnprintf(g_line, sizeof(g_line),
-                  "[errnoprobe] A root at %lx provoked %d now %d (want %d)\n",
-                  static_cast<unsigned long>(root_addr), root_provoked, root_now, ERANGE);
+                  "[errnoprobe] A main at %lx provoked %d now %d (want %d)\n",
+                  static_cast<unsigned long>(main_addr), main_provoked, main_now, ERANGE);
         say(g_line);
 
         for (int k = 0; k < WORKERS; k++)
@@ -338,7 +341,7 @@ namespace
     // kernel fastpath requires is met here BY CONSTRUCTION: both lengths are inside
     // KOS_CALL_REG_BYTES, the caller's priority is below the server's, and the server is
     // parked in an info-bearing recv before the caller exists (it posts `ready` at a
-    // priority the waiter cannot preempt, so it reaches the park before root runs again).
+    // priority the waiter cannot preempt, so it reaches the park before main runs again).
 
     struct Fast
     {
@@ -418,8 +421,8 @@ namespace
             fault("[errnoprobe] C SERVER SPAWN FAILED\n");
             return;
         }
-        // Returns only once the server has posted, and the server posts from a priority root
-        // cannot preempt, so by the time root runs again the server is parked in its recv.
+        // Returns only once the server has posted, and the server posts from a priority main
+        // cannot preempt, so by the time main runs again the server is parked in its recv.
         ready.wait();
 
         kos::thread::Handle const cl =
@@ -571,7 +574,7 @@ namespace
             fault("[errnoprobe] D SPAWN FAILED\n");
             return;
         }
-        // Neither spawn preempted root, so the high thread runs first and is parked in its
+        // Neither spawn preempted main, so the high thread runs first and is parked in its
         // sleep before the low one starts spinning.
         done.wait();
         done.wait();
@@ -624,7 +627,7 @@ namespace
     // prime overwrites the pointers, so whatever an exiting thread does not free itself is
     // lost. Every round starts a thread that touches each lazily built member it can reach
     // through ISO C within the board's flash and then ends, alternately by returning and by
-    // exiting; the heap's in-use bytes must not move across the rounds. Root touches none of
+    // exiting; the heap's in-use bytes must not move across the rounds. Main touches none of
     // that state meanwhile, and nothing else in this image allocates.
 
     constexpr unsigned RECLAIM_ROUNDS = 8;
@@ -728,10 +731,10 @@ namespace
 
 int main(int, char**)
 {
-#if defined(__x86_64__) && !KICKOS_ARCH_SIM
-    arm_first_thread();
-#endif
     kos::print("[errnoprobe] start\n");
+#if defined(__x86_64__) && !KICKOS_ARCH_SIM
+    say(g_first_line);
+#endif
 
     arm_cooperative();
     arm_slot_reuse();
@@ -747,6 +750,6 @@ int main(int, char**)
     {
         kos::print("[errnoprobe] FAIL\n");
     }
-    // Returning from main is a kos_shutdown(0), which is what ends the qemu run.
+    // Main's return ends its task, which ends the system and the qemu run.
     return 0;
 }

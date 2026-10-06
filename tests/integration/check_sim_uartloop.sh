@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# CI gate for the BUFFERED USERSPACE UART: build the sim with the loopback UART service
-# list (kickos_services_simuart) and require a client's bytes to come back through the
-# real two-thread driver.
+# CI gate for the BUFFERED USERSPACE UART: run uartloop, whose composition names the packaged
+# simuart over the sim's loopback line, and require its bytes to come back through the real
+# two-thread driver.
 #
 # This runs the ACTUAL two-thread driver, where the selftest's uart_service case covers the
 # wire ABI and the rings by driving kickos::uart::serve_one in a single thread:
@@ -20,26 +20,13 @@
 # the drain, asynchronous RX from a real line, and a TX-empty source that raises only on a
 # transition (a host write cannot fail to raise).
 #
-# usage: check_sim_uartloop.sh <kickos-source-dir> <cmake>
+# usage: check_sim_uartloop.sh <uartloop>
 
 set -eu
 . "$(dirname "$0")/../lib/gate.sh"
 
-KICKOS_SRC="$1"
-CMAKE="${2:-cmake}"
-
-scratch_dir
-
-echo "== configuring the sim with the loopback UART service list =="
-( cd "$KICKOS_SRC" && "$CMAKE" --preset sim -B "$TMP/build" \
-    -DKICKOS_SERVICE_LIST=kickos_services_simuart >/dev/null ) \
-  || fail "configure with kickos_services_simuart failed"
-
-echo "== building uartloop =="
-"$CMAKE" --build "$TMP/build" --target uartloop >/dev/null || fail "uartloop build failed"
-
-APP="$TMP/build/user/apps/common/uartloop/uartloop"
-[ -x "$APP" ] || fail "uartloop binary not produced at $APP"
+APP="${1:?usage: check_sim_uartloop.sh <uartloop>}"
+[ -x "$APP" ] || fail "no uartloop image at $APP"
 
 set +e
 OUT="$(timeout "${SIM_TIMEOUT:-30}" "$APP" 2>&1)"
@@ -50,7 +37,7 @@ printf '%s\n' "$OUT"
 # First: without the service the app reports a missing endpoint, which names the cause of
 # the missing payload below.
 has '\[simuart\] UART service up' \
-  || fail "the UART service never came up (bring-up failed, or the wrong service list linked)"
+  || fail "the UART service never came up (its start failed)"
 if has '\[uartloop\] ERROR'; then
     fail "the app could not reach the service: see its ERROR line above"
 fi

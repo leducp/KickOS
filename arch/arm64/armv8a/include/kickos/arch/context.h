@@ -11,6 +11,9 @@
 // sits at tp + 16, so the carve owes these bytes on top of .tdata + .tbss.
 #define KICKOS_ARCH_TLS_TCB 16
 
+// The kernel's own map of RAM is Normal write-back whatever a task's leaf says.
+#define KICKOS_ARCH_ALIAS_DCACHE 1
+
 #include <stdint.h>
 
 struct arch_context

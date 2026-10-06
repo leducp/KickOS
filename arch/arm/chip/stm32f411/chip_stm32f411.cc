@@ -9,7 +9,7 @@
 // HSI RC is too imprecise for reliable 115200 UART). clock_init() runs first in
 // arch_init and bounded-polls every ready flag, so a dead/missing crystal degrades
 // to the reset-default HSI 16 MHz instead of hanging (the BRR is recomputed from
-// whichever APB1 clock we end up on). Console = USART2 on PA2(TX)/PA3(RX), AF7,
+// whichever APB1 clock we end up on). Console = USART2, on the pins the board file names,
 // buffered TX drained by the USART2 TXE interrupt; arch_console_write_sync is the
 // polled writer for panic/fault. STM32 keeps peripheral clocks running in WFI, so the
 // TXE drain continues while the core sleeps (unlike the XMC). STM32 has no watchdog
@@ -23,13 +23,15 @@
 #include "regs/rcc.h"
 #include "regs/tim.h"
 #include "regs/usart.h"
+#include "board_pins.h"
+#include "stm32_gpio.h"
 
 #include <kickos/arch/arch.h>
+#include <kickos/arch/pin_guard.h>
 #include <kickos/arch/clk_anchor.h> // shared tickless-clock epoch anchor (B2)
 #include <kickos/board_config.h>
-// Board wiring (HSE freq + diag LED), unconditional and required: a board on this chip
-// that ships no boards/<board>/include/kickos/board_wiring.h fails here rather than
-// compiling against another board's crystal and LED port.
+// Required: a board on this chip that ships no boards/<board>/include/kickos/board_wiring.h
+// fails here rather than compiling against another board's crystal.
 #include <kickos/board_wiring.h>
 #include <kickos/config/limits.h>
 #include <kickos/console_tx.h>
@@ -45,6 +47,7 @@ namespace flash = kickos::stm32f411::reg::flash;
 namespace gpio = kickos::stm32f411::reg::gpio;
 namespace tim = kickos::stm32f411::reg::tim;
 namespace usart = kickos::stm32f411::reg::usart;
+namespace stm32 = kickos::stm32;
 
 namespace kickos
 {
@@ -93,9 +96,71 @@ namespace
     // crystal never comes up.
     uint32_t pclk1_hz = 16000000u;
 
-    // GPIOA MODER (2b/pin) + AFRL (4b/pin, pins 0-7); USART2 pins PA2/PA3 = AF7.
-    constexpr uintptr_t GPIOA_MODER = mmap::GPIOA_BASE + gpio::MODER;
-    constexpr uintptr_t GPIOA_AFRL = mmap::GPIOA_BASE + gpio::AFRL;
+    static_assert(KICKOS_BOARD_CONSOLE_BASE == mmap::USART2_BASE,
+                  "the board's console is not the USART this backend drives");
+
+    void console_pins_init()
+    {
+        constexpr uintptr_t tx = KICKOS_BOARD_CONSOLE_TX_PORT_BASE;
+        constexpr uintptr_t rx = KICKOS_BOARD_CONSOLE_RX_PORT_BASE;
+        constexpr uint32_t tx_pin = KICKOS_BOARD_CONSOLE_TX_BIT;
+        constexpr uint32_t rx_pin = KICKOS_BOARD_CONSOLE_RX_BIT;
+        constexpr uintptr_t tx_afr = stm32::nibble_reg(tx + gpio::AFRL, tx_pin);
+        constexpr uintptr_t rx_afr = stm32::nibble_reg(rx + gpio::AFRL, rx_pin);
+        constexpr uint32_t tx_af = stm32::nibble_shift(tx_pin);
+        constexpr uint32_t rx_af = stm32::nibble_shift(rx_pin);
+        if constexpr (tx == rx)
+        {
+            stm32::rmw(tx + gpio::MODER, (0x3u << (tx_pin * 2u)) | (0x3u << (rx_pin * 2u)),
+                       (gpio::MODER_AF << (tx_pin * 2u)) | (gpio::MODER_AF << (rx_pin * 2u)));
+        }
+        else
+        {
+            stm32::rmw(tx + gpio::MODER, 0x3u << (tx_pin * 2u), gpio::MODER_AF << (tx_pin * 2u));
+            stm32::rmw(rx + gpio::MODER, 0x3u << (rx_pin * 2u), gpio::MODER_AF << (rx_pin * 2u));
+        }
+        if constexpr (tx_afr == rx_afr)
+        {
+            stm32::rmw(tx_afr, (0xFu << tx_af) | (0xFu << rx_af),
+                       (uint32_t{KICKOS_BOARD_CONSOLE_TX_SELECT} << tx_af) | (uint32_t{KICKOS_BOARD_CONSOLE_RX_SELECT} << rx_af));
+        }
+        else
+        {
+            stm32::rmw(tx_afr, 0xFu << tx_af, uint32_t{KICKOS_BOARD_CONSOLE_TX_SELECT} << tx_af);
+            stm32::rmw(rx_afr, 0xFu << rx_af, uint32_t{KICKOS_BOARD_CONSOLE_RX_SELECT} << rx_af);
+        }
+    }
+
+    constexpr bool LED_LIT = KICKOS_BOARD_LED_ACTIVE_LOW == 0;
+
+#define KICKOS_RESERVED_RUN(port_base, first, last) \
+    or (mmap::GPIOA_BASE + port * mmap::GPIO_STRIDE == (port_base) and pin >= (first) and pin <= (last))
+    constexpr bool f411_pin_kernel_owned(uint32_t port, uint32_t pin)
+    {
+        if (port == KICKOS_BOARD_CONSOLE_TX_PORT and pin == KICKOS_BOARD_CONSOLE_TX_BIT)
+        {
+            return true;
+        }
+        if (port == KICKOS_BOARD_CONSOLE_RX_PORT and pin == KICKOS_BOARD_CONSOLE_RX_BIT)
+        {
+            return true;
+        }
+        if (port == KICKOS_BOARD_LED_PORT and pin == KICKOS_BOARD_LED_BIT)
+        {
+            return true;
+        }
+        return false KICKOS_BOARD_RESERVED_RUNS(KICKOS_RESERVED_RUN);
+    }
+#undef KICKOS_RESERVED_RUN
+
+#define KICKOS_KERNEL_PIN(port_base, bit) or (mmap::GPIOA_BASE + port * mmap::GPIO_STRIDE == (port_base) and pin == (bit))
+    constexpr bool f411_pin_listed(uint32_t port, uint32_t pin)
+    {
+        return false KICKOS_BOARD_KERNEL_PINS(KICKOS_KERNEL_PIN);
+    }
+#undef KICKOS_KERNEL_PIN
+    static_assert(kickos::refuses_exactly(f411_pin_kernel_owned, f411_pin_listed, 8u, 16u),
+                  "arch_pinmux_set refuses other pins than the board's kernel pins");
 
     // OVER8=0: baud = fPCLK1 / (16 * USARTDIV) (RM lines 28373-28378). The BRR
     // register value equals 16*USARTDIV = fPCLK1/baud, with BRR[15:4]=mantissa and
@@ -223,18 +288,9 @@ namespace
 
     void usart2_init()
     {
-        r32(rcc::AHB1ENR) |= rcc::AHB1ENR_GPIOAEN;
+        r32(rcc::AHB1ENR) |= (1u << KICKOS_BOARD_CONSOLE_TX_PORT) | (1u << KICKOS_BOARD_CONSOLE_RX_PORT);
         r32(rcc::APB1ENR) |= rcc::APB1ENR_USART2EN;
-
-        // PA2/PA3 -> alternate-function mode (0b10), AF7 (USART2).
-        uint32_t moder = r32(GPIOA_MODER);
-        moder &= ~(0xFu << 4);                             // clear MODER2/MODER3 (bits 4..7)
-        moder |= (gpio::MODER_AF << 4) | (gpio::MODER_AF << 6); // AF mode for PA2, PA3
-        r32(GPIOA_MODER) = moder;
-        uint32_t afrl = r32(GPIOA_AFRL);
-        afrl &= ~(0xFFu << 8);                             // clear AFRL2/AFRL3 (bits 8..15)
-        afrl |= (gpio::AF7 << 8) | (gpio::AF7 << 12);      // AF7 for PA2, PA3
-        r32(GPIOA_AFRL) = afrl;
+        console_pins_init();
 
         r32(usart::CR1) = 0;         // disable while configuring (OVER8=0)
         r32(usart::BRR) = usart_brr(pclk1_hz, usart::BAUD_115200);
@@ -370,9 +426,9 @@ void arch_console_reclaim_window(uintptr_t* base, size_t* size)
 //
 // Reclaim depth = what usart2_init sets (BRR, CR1) plus the registers init leaves at reset
 // default that a driver can set to cause SILENT LOSS, each cleared to 0 below with the
-// failure it prevents. The clock gate (RCC_APB1ENR.USART2EN) and the pin mux (GPIOA MODER
-// and AFRL for PA2/PA3) sit outside the window: RCC is an arch_reserved_blocks entry, and
-// arch_pinmux_set refuses PA2/PA3 as kernel-owned.
+// failure it prevents. The clock gate (RCC_APB1ENR.USART2EN) and the pin mux sit outside the
+// window: RCC is an arch_reserved_blocks entry, and arch_pinmux_set refuses the console pins
+// as kernel-owned.
 void arch_console_reclaim(void)
 {
     // FIRST, and the order is load-bearing: CR2's CPOL, CPHA and LBCL must not be written
@@ -394,53 +450,27 @@ void arch_console_reclaim(void)
     r32(usart::CR1) = usart::CR1_UE | usart::CR1_TE | usart::CR1_RE;
 }
 
-// Kernel diagnostic LED: the pin/port/polarity are board facts (KICKOS_DIAG_LED_*,
-// from board_wiring.h) so one stm32f411 backend drives the Disco's PD12
-// (active-high) and the Black Pill's PC13 (active-low) unchanged.
 void arch_diag_led_init(void)
 {
-    r32(rcc::AHB1ENR) |= (1u << KICKOS_DIAG_LED_RCC_AHB1_BIT);
-    uint32_t m = r32(KICKOS_DIAG_LED_GPIO + gpio::MODER);
-    m &= ~(0x3u << (KICKOS_DIAG_LED_PIN * 2));
-    m |= (gpio::MODER_OUTPUT << (KICKOS_DIAG_LED_PIN * 2)); // general-purpose output
-    r32(KICKOS_DIAG_LED_GPIO + gpio::MODER) = m;
+    r32(rcc::AHB1ENR) |= (1u << KICKOS_BOARD_LED_PORT);
+    uint32_t m = r32(KICKOS_BOARD_LED_PORT_BASE + gpio::MODER);
+    m &= ~(0x3u << (KICKOS_BOARD_LED_BIT * 2));
+    m |= (gpio::MODER_OUTPUT << (KICKOS_BOARD_LED_BIT * 2));
+    r32(KICKOS_BOARD_LED_PORT_BASE + gpio::MODER) = m;
 }
 
 void arch_diag_led_set(int on)
 {
-    constexpr uintptr_t bsrr = KICKOS_DIAG_LED_GPIO + gpio::BSRR; // [15:0]=set, [31:16]=reset
-    bool high = (on != 0);
-#if KICKOS_DIAG_LED_ACTIVE_LOW
-    high = not high; // lit when driven low
-#endif
+    constexpr uintptr_t bsrr = KICKOS_BOARD_LED_PORT_BASE + gpio::BSRR;
+    bool const high = (on != 0) == LED_LIT;
     if (high)
     {
-        r32(bsrr) = 1u << KICKOS_DIAG_LED_PIN;
+        r32(bsrr) = stm32::bsrr_word(KICKOS_BOARD_LED_BIT, true);
     }
     else
     {
-        r32(bsrr) = 1u << (KICKOS_DIAG_LED_PIN + 16);
+        r32(bsrr) = stm32::bsrr_word(KICKOS_BOARD_LED_BIT, false);
     }
-}
-
-// Board LED port index, derived from the LED's GPIO base at compile time (Disco PD12
-// -> port 3; Black Pill PC13 -> port 2). Refused so a board map cannot steal the LED.
-constexpr uint32_t LED_PORT_INDEX =
-    (KICKOS_DIAG_LED_GPIO - mmap::GPIOA_BASE) / mmap::GPIO_STRIDE;
-
-// Kernel-owned pins arch_pinmux_set refuses so a board map cannot dark the console or
-// steal the diag LED. PA2/PA3 = USART2 TX/RX; the LED port/pin is board-derived above.
-static bool f411_pin_kernel_owned(uint32_t port, uint32_t pin)
-{
-    if (port == 0u and (pin == 2u or pin == 3u))
-    {
-        return true;
-    }
-    if (port == LED_PORT_INDEX and pin == KICKOS_DIAG_LED_PIN)
-    {
-        return true;
-    }
-    return false;
 }
 
 // Preset an output pin high as part of the same call. Refused with -KOS_EINVAL when the

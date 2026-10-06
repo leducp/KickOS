@@ -1,18 +1,18 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// ROOT-confinement gate, in its own binary because the run ends in a trap: the child's
-// write is the control that must succeed, and ROOT's write is the one that must fault.
-// Root holds only [app code RX, app static data RW, its own stack], so region A
-// is in no region of root's: under enforcement the write traps. What that DOES depends
-// on the posture (KICKOS_FAULT_OUTCOME): with no fault isolation the kernel reports
-// "MPU FAULT: thread 'root' attempted write at <A>" and shuts down; where the arch opted
-// in, root itself is killed ("=== THREAD FAULT === thread 'root' killed") and the parked
-// child keeps the system alive. Without enforcement the write completes, and the run ends
-// with the "not confined" line and a clean exit.
+// Task-confinement gate on the default system, in its own binary because the run ends in a
+// trap: the child's write is the control that must succeed, and MAIN's write is the one that
+// must fault. Main holds only [app code RX, app static data RW, its own stack], so region A,
+// the domain of the task its child runs in, is in no region of main's: under enforcement the
+// write traps. What that DOES depends on the posture (KICKOS_FAULT_OUTCOME): with no fault
+// isolation the kernel reports "MPU FAULT: thread 'main' attempted write at <A>" and shuts
+// down; where the arch opted in, main is killed ("=== THREAD FAULT === thread 'main' killed"),
+// which ends its task, and the init ends the system with KOS_EXIT_FAULT. Without enforcement
+// the write completes, and the run ends with the "not confined" line and a clean exit.
 //
 // Region A is genuinely another DOMAIN's, not merely unmapped: the child is still
-// alive and parked when root writes it, so its region descriptor is live.
+// alive and parked when main writes it, so its region descriptor is live.
 //
 // The fault report survives a console handover either way: the panic arm goes through
 // kickos_isr_fault, whose kpanic_enter reclaims the UART from the userspace driver before
@@ -32,7 +32,7 @@ namespace
 {
     // The child's only cap (delegated cap 0 lands at child table index 1). It posts,
     // then waits again and parks: nobody posts twice, so its domain is still
-    // referenced when root makes the write below.
+    // referenced when main makes the write below.
     constexpr int CH_DONE = 1;
 
     void confined_child(void* arg)
@@ -49,14 +49,14 @@ namespace
         }
         emit("[rootfault] child: wrote my own granted region\n");
         kos_sem_post(CH_DONE);
-        kos_sem_wait(CH_DONE); // park: keep A's domain alive under root's write
+        kos_sem_wait(CH_DONE); // park: keep A's domain alive under main's write
         emit("[rootfault] ERROR: child unparked\n");
     }
 }
 
 int main(int, char**)
 {
-    // A refusal here means root's AUTH_MEMORY seat is missing, a different bug, so it
+    // A refusal here means main's AUTH_MEMORY seat is missing, a different bug, so it
     // is reported distinctly.
     void* rA = kos_ram_alloc(4096);
     kos_cap_t done = KOS_CAP_NONE;
@@ -67,8 +67,8 @@ int main(int, char**)
         return 1;
     }
 
-    // Hand A to an UNPRIVILEGED child: A becomes a live foreign domain's region, not
-    // a stray arena page. Root has not touched A at this point.
+    // Hand A to an UNPRIVILEGED child in a task of its own: A becomes a live foreign domain's
+    // region, not a stray arena page. Main has not touched A at this point.
     kos_cap_grant caps[] = {
         { done, KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER },
     };
@@ -88,13 +88,13 @@ int main(int, char**)
     // truncated pointer would not match the kernel's address.
     char msg[96];
     ksnprintf(msg, sizeof(msg),
-              "[rootfault] root: writing the child's granted region at %p (expect fault)\n",
+              "[rootfault] main: writing the child's granted region at %p (expect fault)\n",
               rA);
     emit(msg);
     *static_cast<volatile int*>(rA) = 0x2222;
 
     // Reached ONLY where nothing is enforced; "NOT confined" is the gate's FAIL marker.
-    emit("[rootfault] cross-domain write completed: root is NOT confined "
+    emit("[rootfault] cross-domain write completed: main is NOT confined "
          "(no enforcement)\n");
     return 0;
 }

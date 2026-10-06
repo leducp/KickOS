@@ -11,6 +11,7 @@
 
 #include "regs.h" // arch/arm/common: kickos_armv7m_enable_fpu + core SCB regs
 #include <kickos/chip_mmap.h>
+#include "board_pins.h"
 #include "regs/ccu4.h"
 #include "regs/flash.h"
 #include "regs/port.h"
@@ -18,6 +19,7 @@
 #include "regs/usic.h"
 
 #include <kickos/arch/arch.h>
+#include <kickos/arch/pin_guard.h>
 #include <kickos/arch/clk_anchor.h> // shared tickless-clock epoch anchor (B2)
 #include <kickos/console_tx.h>
 
@@ -369,6 +371,36 @@ namespace
         { ru::U0C1_BASE, ru::off::CCR, CCR_GRANT },
         { ru::U0C0_BASE, ru::off::CCR, CCR_CONSOLE_GRANT },
     };
+
+    constexpr uint32_t led_omr(bool level)
+    {
+        if (level)
+        {
+            return 1u << KICKOS_BOARD_LED_BIT;
+        }
+        return 1u << (KICKOS_BOARD_LED_BIT + rp::OMR_RESET_SHIFT);
+    }
+
+    constexpr bool LED_LIT = KICKOS_BOARD_LED_ACTIVE_LOW == 0;
+
+#define KICKOS_RESERVED_RUN(port_base, first, last) or (rp::base(port) == (port_base) and pin >= (first) and pin <= (last))
+    constexpr bool xmc_pin_kernel_owned(uint32_t port, uint32_t pin)
+    {
+        return (port == KICKOS_BOARD_CONSOLE_DX0_PORT and pin == KICKOS_BOARD_CONSOLE_DX0_BIT)
+               or (port == KICKOS_BOARD_CONSOLE_DOUT0_PORT and pin == KICKOS_BOARD_CONSOLE_DOUT0_BIT)
+               or (port == KICKOS_BOARD_LED_PORT and pin == KICKOS_BOARD_LED_BIT)
+                   KICKOS_BOARD_RESERVED_RUNS(KICKOS_RESERVED_RUN);
+    }
+#undef KICKOS_RESERVED_RUN
+
+#define KICKOS_KERNEL_PIN(port_base, bit) or (rp::base(port) == (port_base) and pin == (bit))
+    constexpr bool xmc_pin_listed(uint32_t port, uint32_t pin)
+    {
+        return false KICKOS_BOARD_KERNEL_PINS(KICKOS_KERNEL_PIN);
+    }
+#undef KICKOS_KERNEL_PIN
+    static_assert(kickos::refuses_exactly(xmc_pin_kernel_owned, xmc_pin_listed, 16u, 16u),
+                  "arch_pinmux_set refuses other pins than the board's kernel pins");
 }
 
 extern "C"
@@ -524,7 +556,7 @@ int arch_periph_reg_write(uintptr_t base, uintptr_t offset, uint32_t value)
     return -KOS_EINVAL;
 }
 
-// Native transport = USIC0 ASC on P1.5/P1.4 (the Relax Kit VCOM -> ttyACM0). RTT
+// Native transport = USIC0 ASC on the board's console pins (the Relax Kit VCOM). RTT
 // (if KICKOS_CONSOLE=both) is teed by the kernel console core, not here.
 // arch_console_write is buffered (the console ring drains on the TB interrupt);
 // arch_console_write_sync is the bounded polled writer used by panic/fault/pre-arm.
@@ -538,33 +570,24 @@ void arch_console_write_sync(char const* buf, size_t n)
     kickos_xmc_usic_write(buf, n);
 }
 
-// Kernel diagnostic LED: LED1 = P5.9, active-high. XMC ports are always clocked
-// (no per-port gate). OMR is set/reset in one write: PS9 (bit 9) drives high,
-// PR9 (bit 9+16) drives low.
+// XMC ports are always clocked (no per-port gate).
 void arch_diag_led_init(void)
 {
-    uintptr_t const P5_IOCR8 = rp::base(5) + rp::iocr_off(9);
-    r32(P5_IOCR8) = rp::PC_OUTPUT_PP_GP << rp::pc_shift(9); // PC9 output push-pull
+    uintptr_t const iocr = KICKOS_BOARD_LED_PORT_BASE + rp::iocr_off(KICKOS_BOARD_LED_BIT);
+    r32(iocr) = rp::PC_OUTPUT_PP_GP << rp::pc_shift(KICKOS_BOARD_LED_BIT);
 }
 
 void arch_diag_led_set(int on)
 {
-    uintptr_t const P5_OMR = rp::base(5) + rp::off::OMR;
+    uintptr_t const omr = KICKOS_BOARD_LED_PORT_BASE + rp::off::OMR;
     if (on)
     {
-        r32(P5_OMR) = 1u << 9;
+        r32(omr) = led_omr(LED_LIT);
     }
     else
     {
-        r32(P5_OMR) = 1u << (9 + rp::OMR_RESET_SHIFT);
+        r32(omr) = led_omr(not LED_LIT);
     }
-}
-
-// Kernel-owned pins arch_pinmux_set refuses so a board map cannot dark the console
-// or steal the diag LED. P1.4/P1.5 = console RX/TX; P5.9 = diag LED.
-static bool xmc_pin_kernel_owned(uint32_t port, uint32_t pin)
-{
-    return (port == 1u and (pin == 4u or pin == 5u)) or (port == 5u and pin == 9u);
 }
 
 // One-shot pin-function config (KOS_SYS_PINMUX_SET). IOCR address + PC-field encoding

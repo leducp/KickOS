@@ -64,7 +64,7 @@ namespace
             kos_panic("[k64dspi] bus bring-up refused (see the ERROR line above)");
         }
 
-        kickos::emit("[k64dspi] SPI service up (DSPI0, polled FIFO, GPIO CS on PTC4)\n");
+        kickos::emit("[k64dspi] SPI service up (DSPI0, polled FIFO, GPIO CS)\n");
 
         (void)spi::serve_loop(&bus);
 
@@ -120,6 +120,13 @@ extern "C"
     // SIGNAL-narrowed copy to each client.
     int k64dspi_spi_start(struct kos_service_cfg const* cfg)
     {
+        // Here, on the init's thread: the driver's threads hold no pinmux authority.
+        int32_t const muxed = k64dspi_bus_mux(cfg->mmio_base);
+        if (muxed != 0)
+        {
+            kickos::emit("[k64dspi] ERROR: the board bus over the DSPI window was not muxed\n");
+            return muxed;
+        }
         return drv::bring_up(k_desc, cfg, &g_spi0_ep);
     }
 }

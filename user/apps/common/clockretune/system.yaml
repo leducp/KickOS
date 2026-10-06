@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# Main declares pstate, which kos_cpu_clock_set needs.
+
+version: 1
+stdout: kernel
+ends: main
+
+tasks:
+  - name: main
+    entry: kickos_main
+    priority: 2
+    ceiling: 2
+    authority: [system, pstate]

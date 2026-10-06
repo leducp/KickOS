@@ -16,7 +16,7 @@
 #
 # What a detected violation DOES is a property of the backend, so <outcome> is passed in.
 # `panic' ends the system through kickos_isr_fault; `thread-kill' kills the worker alone, and
-# root then parks forever on a semaphore nobody can post, so that arm polls and stops QEMU
+# main then parks forever on a semaphore nobody can post, so that arm polls and stops QEMU
 # instead of waiting for an exit. The claim is the same either way: detected, and credited
 # to 'domainA'.
 

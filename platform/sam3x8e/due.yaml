@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Values from the SAM3X/SAM3A datasheet Table 9-2 and the tree's chip_sam3x8e.cc and
-# docs/flashing.md.
+# Values from the SAM3X/SAM3A datasheet Table 9-2 and docs/flashing.md.
 
 version: 1
 board: due

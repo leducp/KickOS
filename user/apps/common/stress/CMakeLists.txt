@@ -2,7 +2,7 @@
 # Copyright (c) 2026 Philippe Leduc
 
 add_executable(stress main.cc)
-target_link_libraries(stress PRIVATE kickos)
+target_link_libraries(stress PRIVATE KickOS::kernel KickOS::system_default)
 kickos_emit_image(stress)
 
 # Endurance soak: repeat the conservation round forever (heartbeat per round, freeze

@@ -7,12 +7,12 @@
 # amp_far_deliver_fault, and amp_share_crossing. Each decides at RUNTIME off the peer's own
 # serviced count, or off whether the ring toward that peer has room.
 #
-# THIS NAMED SET IS THE WHOLE ENFORCEMENT, and that is a residue rather than a design: the gate
-# does not read the run's own final verdict, so an arm failing OUTSIDE this list leaves the gate
-# green. An arm whose claim only holds in a merged partition therefore has to be added here, or
-# nothing enforces it anywhere.
+# Any `not ok` line in the capture fails the gate, listed arm or not, a `# TODO` failure being
+# the harness's permitted one. The named set adds what a `not ok` cannot show: that each of these
+# arms ran against the peer rather than skipping.
 #
 # usage: check_amp_peer_arms.sh <unused.elf> <cmake> <build-dir> <artefact>
+#        check_amp_peer_arms.sh --controls     judges planted captures only
 #
 # The own-image posture is ALLOWED to skip FOUR arms, amp_far_call, amp_far_reply_guard,
 # amp_far_reply_empty and amp_share_crossing (KICKOS_EXPECT_SKIPS in
@@ -42,33 +42,8 @@ here="$(dirname "$0")"
 . "$here/../lib/gate.sh"
 : "${QEMU_TIMEOUT:=120}"
 
-_unused="${1:?usage: check_amp_peer_arms.sh <unused.elf> <cmake> <build> <artefact>}"
-CMAKE="${2:?}"
-BUILD="${3:?}"
-ART="${4:?}"
-: "$_unused"
-
-need_qemu_machine
-
-echo "== building the selftest partition artefact =="
-"$CMAKE" --build "$BUILD" --target amp_partition_selftest >/dev/null 2>&1 \
-    || fail "the amp_partition_selftest target did not build"
-[ -f "$ART" ] || fail "no artefact at $ART"
-
-run_image "$ART"
-
-# The peer is witnessed through node 0's own reading and not through the peer's banner: both
-# nodes write one console with no lock across the two kernels, interleaved at byte granularity
-# by ruling, so a single line from the quieter node can be cut in half by the other's traffic.
-#
-# AND NODE 0'S OWN LINE IS SAFE HERE BECAUSE THE PEERS STOP WRITING EARLY, not because it is
-# node 0's. A peer of this artefact writes its kernel banner and one line naming the port it
-# echoes on, then nothing for the rest of the run, and every arm read below reports far past
-# that. Give a peer a print in its serving loop, or move one of these arms to the front of the
-# selftest order, and its line is back among the banners where it is cut in half on a draw.
-printf '%s\n' "$OUT" | grep -qE 'amp window: [1-9][0-9]* of [0-9]+ peer node\(s\) answered' \
-    || fail "no peer answered node 0 over the doorbell: the arms below would skip and mean
-  nothing. This is node 0's own reading of the peer's counters, not a line the peer printed."
+ARMS="amp_far_call amp_far_reply_guard amp_far_reply_empty amp_window amp_far_deliver_fault
+amp_share_crossing"
 
 # `ok N - <arm>` with no SKIP directive: a skipped arm reports `ok` too, so the directive is
 # what has to be excluded.
@@ -84,24 +59,91 @@ skipped() { # <arm>
     printf '%s\n' "$OUT" | grep -E "^ok [0-9]+ - $1 # SKIP" >/dev/null
 }
 
-# amp_far_deliver_fault is here for a reason of its own: its reply half parks a caller on a far
-# port and a publication into a ring no peer drains is spent for the life of the image, so in a
-# standalone run that half DECLINES for want of room. This artefact is where the peer drains,
-# and so the only place that half is ever exercised.
-#
-# The count in the PASS line is DERIVED from this list: a name added above and a literal left
-# below would report a set narrower than the one enforced.
-n_arms=0
-for arm in amp_far_call amp_far_reply_guard amp_far_reply_empty amp_window \
-           amp_far_deliver_fault amp_share_crossing; do
-    n_arms=$((n_arms + 1))
-    if skipped "$arm"; then
-        fail "$arm SKIPPED against a live peer.
+# The verdict over $OUT.
+judge() {
+    # The peer is witnessed through node 0's own reading and not through the peer's banner:
+    # both nodes write one console with no lock across the two kernels, interleaved at byte
+    # granularity by ruling, so a single line from the quieter node can be cut in half by the
+    # other's traffic.
+    #
+    # AND NODE 0'S OWN LINE IS SAFE HERE BECAUSE THE PEERS STOP WRITING EARLY, not because it is
+    # node 0's. A peer of this artefact writes its kernel banner and one line naming the port it
+    # echoes on, then nothing for the rest of the run, and every arm read below reports far past
+    # that. Give a peer a print in its serving loop, or move one of these arms to the front of
+    # the selftest order, and its line is back among the banners where it is cut in half on a
+    # draw.
+    printf '%s\n' "$OUT" | grep -qE 'amp window: [1-9][0-9]* of [0-9]+ peer node\(s\) answered' \
+        || fail "no peer answered node 0 over the doorbell: the arms below would skip and mean
+  nothing. This is node 0's own reading of the peer's counters, not a line the peer printed."
+
+    # Anywhere on a line, since a peer's byte may land ahead of node 0's.
+    _failing="$(printf '%s\n' "$OUT" | grep -E 'not ok [0-9]+' | grep -v ' # TODO ')"
+    if [ -n "$_failing" ]; then
+        printf '%s\n' "$_failing"
+        fail "an arm reported not ok in the merged partition"
+    fi
+
+    # amp_far_deliver_fault is here for a reason of its own: its reply half parks a caller on a
+    # far port and a publication into a ring no peer drains is spent for the life of the image,
+    # so in a standalone run that half DECLINES for want of room. This artefact is where the peer
+    # drains, and so the only place that half is ever exercised.
+    n_arms=0
+    for arm in $ARMS; do
+        n_arms=$((n_arms + 1))
+        if skipped "$arm"; then
+            fail "$arm SKIPPED against a live peer.
   This artefact exists to give it one, so a skip here means the arm cannot see the peer and the
   permission the standalone run carries has quietly become permanent."
-    fi
-    armed "$arm" || fail "$arm did not report ok against a live peer"
-    echo "== $arm: ok, not skipped"
-done
+        fi
+        armed "$arm" || fail "$arm did not report ok against a live peer"
+        echo "== $arm: ok, not skipped"
+    done
+}
 
-echo "PASS: $n_arms arm(s) that needed a running peer ran against one and none of them skipped"
+if [ "${1:-}" = "--controls" ]; then
+    good() {
+        echo "amp window: 1 of 1 peer node(s) answered"
+        _n=0
+        for _arm in amp_probe $ARMS; do
+            _n=$((_n + 1))
+            echo "ok $_n - $_arm"
+        done
+    }
+    # <name> <pass|refuse> <capture>
+    ctl() {
+        _ctl_out="$( (OUT="$3"; judge) 2>&1 )"
+        _ctl_rc=$?
+        if [ "$2" = pass ] && [ "$_ctl_rc" -ne 0 ]; then
+            fail "the '$1' control is REFUSED, and it is a capture this gate must accept:
+$_ctl_out"
+        fi
+        if [ "$2" = refuse ] && [ "$_ctl_rc" -eq 0 ]; then
+            fail "the '$1' control PASSES, so a capture carrying it reads as clean"
+        fi
+        echo "== $1: $2"
+    }
+    ctl 'every arm ok' pass "$(good)"
+    ctl 'an unlisted arm not ok' refuse "$(good; echo 'not ok 9 - amp_unlisted')"
+    ctl 'a not ok behind a peer byte' refuse "$(good; echo 'Knot ok 9 - amp_unlisted')"
+    ctl 'a TODO arm not ok' pass "$(good; echo 'not ok 9 - amp_unlisted # TODO owed')"
+    echo "PASS: the planted captures are judged as stated"
+    exit 0
+fi
+
+_unused="${1:?usage: check_amp_peer_arms.sh <unused.elf> <cmake> <build> <artefact>}"
+CMAKE="${2:?}"
+BUILD="${3:?}"
+ART="${4:?}"
+: "$_unused"
+
+need_qemu_machine
+
+echo "== building the selftest partition artefact =="
+"$CMAKE" --build "$BUILD" --target amp_partition_selftest >/dev/null 2>&1 \
+    || fail "the amp_partition_selftest target did not build"
+[ -f "$ART" ] || fail "no artefact at $ART"
+
+run_image "$ART"
+judge
+
+echo "PASS: no arm reported not ok, and $n_arms arm(s) that needed a running peer ran against one and none of them skipped"

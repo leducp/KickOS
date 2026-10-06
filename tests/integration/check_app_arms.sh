@@ -28,8 +28,8 @@ run_image "$elf"
 if has_e "\[$prefix\] (ERROR|FAIL)"; then
     fail "$prefix reported a failed arm"
 fi
-# The verdict prints before main returns, and that return can still panic (rootauth's
-# kos_shutdown is gated on KOS_AUTH_SYSTEM), so the marker alone is not the verdict.
+# The verdict prints before main returns, and the end that follows can still panic,
+# so the marker alone is not the verdict.
 assert_no_panic "$prefix panicked (before or after its verdict)"
 for absent in "$@"; do
     if has "$absent"; then

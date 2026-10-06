@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The packaged k64dspi serving the SPI bus over DSPI0, then the client using its endpoint.
+
+version: 1
+stdout: kernel
+ends: client
+
+tasks:
+  - name: k64dspi
+    driver: k64dspi
+    devices: [/dev/dspi0]
+    accepts: [coarse_gate, device_not_isolated]
+    serves: /svc/spi0
+    priority: 12
+
+  - name: client
+    entry: k64dspi_main
+    priority: 9
+    ceiling: 9
+    uses: [/svc/spi0]

@@ -1,0 +1,28 @@
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   frdmk64f
+   arch    armv7m
+   cpu     cortex-m4
+   mpu     enforce
+   sched   tickless
+   build   2026-10-04 12:00:00 +0200
+   app     Oct  4 2026 12:00:01 +0200
+   commit  65fa3473
+   heap    15 KiB available
+   kstack  1008 B x 9 = 9072 B
+
+[k64drv] LPTMR0 counting the 1 kHz LPO, compare every 250 ms
+[k64drv] tick 1
+[k64drv] tick 2
+[k64drv] tick 3
+[k64drv] tick 4
+[k64drv] tick 5
+[k64drv] tick 6
+[k64drv] tick 7
+[k64drv] tick 8
+[k64drv] tick 9
+[k64drv] tick 10
+[k64drv] a thread holding no window read CNR=137 through the open slot
+[k64drv] done

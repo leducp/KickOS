@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The handover fires on a TIMEOUT, so a board whose image is otherwise misbehaving still
-// comes back for a reflash without a button press. Root makes the call.
+// comes back for a reflash without a button press. Main makes the call.
 //
 // On a chip with a backend (rp2040 -> PICOBOOT/UF2, rp2350 -> BOOTSEL, imxrt1062 ->
 // HalfKay) the countdown is the last line printed and the board reappears as a flashing

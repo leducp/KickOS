@@ -16,9 +16,9 @@ provides two halves:
   linker script (which defines the user-RAM region `__kickos_ram_start/_end`), and
   `SystemCoreClock` (defined in the chip C, not the linker script). Optionally a
   chip may override `arch_diag_led_init`/`arch_diag_led_set` (the kernel
-  diagnostic LED, `kdiag_led_*`); both have no-op fallback TUs
-  (`arch/common/arch_diag_led_{init,set}_default.cc`), so a board with no known LED
-  just leaves them out.
+  diagnostic LED, `kdiag_led_*`), driving the pin its board file's `owner: kernel` LED names;
+  both have no-op fallback TUs (`arch/common/arch_diag_led_{init,set}_default.cc`), so a board
+  with no known LED just leaves them out.
 
 `arch/<family>/common/` is not a third layer. It holds what several backends of ONE ISA family
 share and would otherwise copy (`arch/arm64/common/`: the GIC backends, the architected-timer and
@@ -409,7 +409,13 @@ cores owes a per-thread answer of that kind**, and `reent_per_thread_cores` is i
    and the chip's constants and peripheral base addresses in its chip file
    `platform/<chip>/chip.yaml`, from which configure writes `kickos/chip_limits.h`,
    `kickos/chip_mmap.h`, `irq.h`, `chip_layout.h`, `chip_tables.h` and `chip.cmake`
-   into the build tree (`docs/design-m10-fleet.md` section 1.2). Configure REFUSES a
+   into the build tree (`docs/design-m10-fleet.md` section 1.2). **The chip code names no
+   board pin.** Configure also writes `board_pins.h` from the board file: the console device's
+   base, each console pin's port, bit and mux value, the kernel LED's port, bit and active
+   level or addressable kind, and the reserved pins (`docs/design-m10-fleet.md` section 2.2). The chip code muxes the console pins and drives
+   the LED from those values, `static_assert`s that the console is the device it drives, and
+   refuses the same pins in `arch_pinmux_set`. A mux value per pin that the selector does not
+   carry, such as the i.MX RT's daisy input, goes in the chip file's pin function. Configure REFUSES a
    chip with no chip file. CMake derives every path from the chip
    name, puts it on the include path, and installs it, so **no root-CMake edit is
    needed**.
@@ -418,11 +424,15 @@ cores owes a per-thread answer of that kind**, and `reent_per_thread_cores` is i
    ships none, and names the variants it does ship.
 6. `platform/<chip>/<board>.yaml` -- the board file: its console, LEDs, buses, parts, spent
    pins and soldered memory (`docs/design-m10-composition.md`, *The board file*). The
-   headers are generated from it and the chip file it names; configure REFUSES a board with
-   none.
+   headers are generated from it and the chip file it names: `board_pins.h`, the pins the
+   kernel holds, and `board_buses.h`, each bus's base, its pins' ports, bits and the mux value
+   of the selector carrying the bus's device, and its chip selects' ports and bits, for a driver
+   to mux; configure REFUSES a board with none. A wiring fact it has no field for, as the F411
+   pair's crystal, stays in `boards/<board>/include/kickos/board_wiring.h`.
 7. `boards/<board>/composition.yaml` -- the default composition `KickOS::system_default` is
-   built from: the kernel console, one task `main` with `entry: kickos_main`, `ends: main` and
-   the board's heap, fitting every preset of the board. Configure REFUSES a board with none.
+   built from: the kernel console, one task `main` with `entry: kickos_main`, `ends: main`,
+   priority 2 under `ceiling: 31` and the board's heap, fitting every preset of the board.
+   Configure REFUSES a board with none.
 
 `boards/<board>/` is also where a `<chip>.ld` linker override lives for a shared chip,
 and `boards/<board>/Kconfig` where its own options go -- proven on the `stm32f411` pair
@@ -674,7 +684,7 @@ silicon-proven unless the row says otherwise:
 | `q35` | qemu-x86_64 | x86_64 | -- | QEMU (runnable CI gate, the `qemu-x86_64` job), booted as a PE32+ UEFI application under OVMF firmware the job resolves rather than names, because `-kernel` cannot start such an image at all. The chip selects no memory family, so the map is flat and there is no enforcement gate to run (`../reference/boards.md`, *CI coverage*) |
 | `xmc4800` | xmc4800-relax | M4F | PMSAv7 | **hardware** (LED + USIC VCOM console over the buffered ring; enforcement + the canonical per-thread peripheral-isolation proof) |
 | `stm32f411` | f411disco / blackpill | M4F | PMSAv7 | **hardware** (LED + UART + ping-pong; enforcement selftest + `mpu_fault` MemManage denial + an unprivileged root, all on `f411disco` 2026-07-29). Witnessed on one of the two boards; `blackpill` shares this backend and was not re-run |
-| `stm32f302` | f302nucleo | M4 | -- | **hardware** (LED PB13 + console; the full suite at the `f302nucleo-st` provisioning -- 63 ok / 0 not ok / 5 skipped on 16 KiB SRAM, measured at `124b68c`). Not an enforcement target: the F302R8 line has no MPU, so `arch_mpu_min_region()` returns 0 (`arch/arm/chip/stm32f302/chip_stm32f302.cc:141`) |
+| `stm32f302` | f302nucleo | M4 | -- | **hardware** (LED PB13 + console; the full suite at the `f302nucleo-st` provisioning -- 63 ok / 0 not ok / 5 skipped on 16 KiB SRAM, measured at `124b68c`). Not an enforcement target: the F302R8 line has no MPU, so `arch_mpu_min_region()` returns 0 (`arch/arm/chip/stm32f302/chip_stm32f302.cc`) |
 | `stm32f103` | bluepill-c8 | M3 | -- | **hardware** (F103 port HW-proven on the now-retired 10 K clone, 2026-07-14; RAM-limited selftest; c8 build-only). No MPU: the degraded privilege-only build |
 | `rp2040` | picopi | M0+ | PMSAv6-M | **hardware** (selftest over UART0/GP0; v6-M cross-domain fault silicon-proven 2026-07-19) |
 | `rp2350` | pizero2350 | M33 | **PMSAv8** | **hardware** (enforcement selftest + `mpu_fault` MemManage denial + bench/soak). Reuses the `armv7m` backend verbatim; only the MPU descriptor shape differs |
@@ -724,7 +734,7 @@ pin, uint32_t func)`, reached from userspace as syscall `KOS_SYS_PINMUX_SET` (33
 gated on `AUTH_PINMUX`. `func` is a **chip-opaque** function code (the PORT/PCR/IOCR
 encoding), so the ABI `{port, pin, func}` stays vendor-neutral while each backend
 owns its own encoding. Returns 0, `-KOS_EINVAL` (out of range), or `-KOS_EBUSY` (a
-kernel-owned pin the backend refuses). The **declining fallback**
+kernel-owned pin: a console pin, the kernel LED's or a reserved pin, from `board_pins.h`). The **declining fallback**
 (`arch/common/arch_pinmux_set_default.cc`) **returns `-KOS_ENOSYS`**, so
 a non-empty board pin-map fails LOUD on a chip with no backend rather than silently
 mis-muxing.
@@ -750,7 +760,7 @@ service list; the init DAG is pinmux -> service list -> app.
 
 `stm32f411` encodes MODER verbatim in `[1:0]`, the AF number in `[7:4]`, and an
 output-preset-high arm in `[8]` (`PINMUX_OUT_HIGH`, chip-local at
-`arch/arm/chip/stm32f411/chip_stm32f411.cc:389`): the preset writes `BSRR` **before**
+`arch/arm/chip/stm32f411/chip_stm32f411.cc`): the preset writes `BSRR` **before**
 `MODER`, so a pin never drives the `ODR` reset level for even one cycle on its way to
 its idle level -- which is what an active-low chip select needs. The bit is refused
 `-KOS_EINVAL` on any non-output mode. `OSPEEDR` and `PUPDR` stay unreachable through
@@ -796,7 +806,7 @@ adding one must check this before the datasheet. The K64F PIT is the worked case
 `AIPS0` classifies per 4 KiB slot, so clearing SP for a granted channel-2 window
 (`0x40037120`) would also expose the chained ch0+ch1 pair `arch_clock_now` runs on --
 which `arch_reserved_blocks` protects by address. So the PIT gets no entry and
-`pit_clock_init` gates it at boot instead (`arch/arm/chip/mk64f/chip_mk64f.cc:498`).
+`pit_clock_init` gates it at boot instead (`arch/arm/chip/mk64f/chip_mk64f.cc`).
 
 Backends exist for **four** chips; every other chip keeps the fallback, deliberately
 including `esp32c6` (its one-time bus-side APM open is programmed by `arch_init`, not
@@ -1006,7 +1016,10 @@ the page splitting belongs above this seam.
 **There is no `arch/common/` fallback.** A port defines it when its first caller arrives and fails
 the LINK until then: a no-op default would report maintenance it never did, which is the one answer
 worse than a link error. armv8a cleans the boot-register block for cores that read it with their
-caches off. `kos_ram_alloc` on a region board cleans AND invalidates each block it has zeroed,
+caches off. A translating port defines it because the kernel's own view of a frame a task maps
+non-cacheable is a cacheable alias (the acquire pair below). x86_64 issues `CLFLUSH` over the
+range for both operations, stepping by the 64-byte line the floor requires (section 9 of
+`docs/design-m10-kernel-share.md`), then `MFENCE`, which loads do not pass. `kos_ram_alloc` on a region board cleans AND invalidates each block it has zeroed,
 through `arch_dcache_invalidate`, where the arch defines `KICKOS_ARCH_ARENA_DCACHE` in its
 `context.h`: a mapping of the block that bypasses the cache then reads the zeroes, and no line of
 the block is left in the cache to be read through a cached alias or evicted over what that mapping
@@ -1014,6 +1027,19 @@ stores. An arch defining it therefore provides `arch_dcache_invalidate` as a cle
 by address to the point of coherency over the whole range. A clean alone (`DCCMVAC`) leaves the
 lines valid and does not meet that contract. armv7m defines it with `DCCIMVAC` and maintains
 nothing while `CCR.DC` is clear, which leaves the Teensy 4.1's Cortex-M7 the one board it acts on.
+
+The same macro makes the kernel's copies into and out of user memory maintain an end the owning
+thread's region set holds non-cacheable, as the acquire pair below does under translation: the
+kernel reaches another thread's block through the cacheable background map, its own regions being
+the ones loaded.
+
+It also makes every change of a block's memory type maintained once, before the region takes
+effect: a grant that seats a non-cacheable region (a self-grant, a spawn window, a task's data)
+cleans the block's lines to memory then drops them, so no dirty line an earlier cacheable use left
+is evicted over what the region stores, and a self-grant that retypes a non-cacheable region back
+to cacheable does the same, so no clean line the kernel's reads left is served stale to the
+cacheable region. The task cannot do either itself, the Cortex-M7's maintenance registers being
+privileged.
 
 ### The map editor's acquire pair (`arch_aspace_acquire`, `arch_aspace_release`)
 
@@ -1029,6 +1055,24 @@ unless the backend counts references. `arch/riscv/rv64imac/aspace_rv64imac.cc` i
 windowed backend: `ACQUIRE_CAPACITY`, a per-core slot table, and the `static_assert` against this
 figure. `arch/arm64/armv8a/aspace_armv8a.cc` carries the assert in the shape an UNBOUNDED port
 fills in, its acquire being an addition and its release a no-op.
+
+**The acquire reports the page's type against the pointer's.** Where the returned pointer reaches
+the frame cacheably and the task's leaf maps it `ARCH_MAP_NOCACHE`, the backend says so through the
+acquire's `uncached` argument, read from the leaf the walk already holds: armv8a from `AttrIndx`,
+x86_64 from the leaf's PAT bits against the ones `ARCH_MAP_NOCACHE` selects. rv64imac answers false:
+it has no Svpbmt, the PMAs type a frame for every view of it, and there is no alias to maintain.
+
+**The kernel maintains the data cache around its access by address through that pointer**: before
+it reads or writes it cleans the lines to memory then drops them, so no line fetched through the
+alias, speculatively included, is read or merged into a partial-line write, and it does so again
+after it writes, so no dirty line of the alias is evicted later over what the task or a device
+stores. A cacheable page costs the caller one test. Every change of a mapping's memory type is
+maintained the same way through the frame pool's view, before the new leaf is installed: a
+non-cacheable leaf drops the pool's zeroes and any dirty line a cacheable mapping left, and a
+self-grant back to cacheable drops the clean lines the kernel's reads left, which would be stale to
+the cacheable mapping. Bytes that share a cache line with the copied range are read back and written
+back with it, so a task that writes them during the copy from another core races the kernel, as it
+races a device on any line it shares with a DMA buffer.
 
 **It is measured from the tree rather than chosen.** The deepest holder is the page-split access
 scenario behind `KOS_ASPACE_OP_SPLIT_ACCESS` (`kernel/syscall/syscall_aspace.cc`): four pages held
@@ -1501,7 +1545,7 @@ modes, keyed on `arch_mpu_min_region()` and `arch_mpu_region_pow2()`:
 
 | `min` | `pow2()` | size | geometry align | backends |
 |---|---|---|---|---|
-| 0 | n/a | 16-byte granular | 16 | the three no-MPU chips (`nrf51/chip_nrf51.cc:110`, `stm32f103/chip_stm32f103.cc:151`, `stm32f302/chip_stm32f302.cc:141`) and LX6 |
+| 0 | n/a | 16-byte granular | 16 | the three no-MPU chips (`nrf51/chip_nrf51.cc:110`, `stm32f103/chip_stm32f103.cc` and `stm32f302/chip_stm32f302.cc`, each `arch_mpu_min_region`) and LX6 |
 | != 0 | 1 | power of two, >= `min` | the size | ARM PMSAv7 (32), RISC-V PMP NAPOT (8) |
 | != 0 | 0 | multiple of `min` | `min` | ARM PMSAv8 (32), NXP SYSMPU (32), RX (16) |
 

@@ -3,10 +3,10 @@
 //
 // The fault-isolation witness: a fault must be contained to the faulting thread's TASK, and
 // the system must outlive it. The victim is spawned into a task of its OWN, which is what
-// makes the containment observable: root is the survivor and shares no space with it.
+// makes the containment observable: main is the survivor and shares no space with it.
 //
 // KICKOS_FS_MODE
-//   0  an unprivileged worker executes a trapping instruction; root must run AFTER it and end
+//   0  an unprivileged worker executes a trapping instruction; main must run AFTER it and end
 //      the system cleanly. The join is the ordering proof.
 //   1  the worker recurses off its own stack, producing no legitimate exception frame, so the
 //      fault must reach the PANIC dump and not the thread kill. Needs a guarded stack.
@@ -241,7 +241,7 @@ int main(int, char**)
     // the spawn below and the same admission predicate would then refuse it.
     if (kos_mem_self_grant(reinterpret_cast<void*>(lo - FS_BAND_SIZE), FS_BAND_SIZE, 0) != 0)
     {
-        emit("[fs] ERROR: root cannot reach the band it has to read back\n");
+        emit("[fs] ERROR: main cannot reach the band it has to read back\n");
         return 1;
     }
     volatile uint32_t* const band = reinterpret_cast<volatile uint32_t*>(lo - FS_BAND_SIZE);
@@ -255,8 +255,8 @@ int main(int, char**)
 #endif
     // THE FAULTER GETS A TASK OF ITS OWN, and that is the arm rather than a detail of it. A
     // fault ends the faulting thread's whole task, and a plain spawn is a thread OF THE
-    // CALLER'S task, so a victim spawned the plain way would take root with it and this would
-    // witness the fault reaching root instead of being contained.
+    // CALLER'S task, so a victim spawned the plain way would take main with it and this would
+    // witness the fault reaching main instead of being contained.
     kos_task_t victim = KOS_TASK_NONE;
     if (kos_task_create(nullptr, 0, 0, &victim) != 0)
     {
@@ -269,8 +269,8 @@ int main(int, char**)
                                                 nullptr, 0, stack, stack_size,
                                                 nullptr, 0, nullptr, 0, 0, nullptr, victim);
     int const rc = t.join(KOS_TIMEOUT_NONE);
-    // Drops root's hold on a group that is already empty, so the slot goes back here rather
-    // than at root's own exit.
+    // Drops main's hold on a group that is already empty, so the slot goes back here rather
+    // than at main's own exit.
     (void)kos_task_kill(victim);
     emit("[fs] survivor ran after the fault\n");
 #if KICKOS_FS_MODE == 4

@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The board's default composition with packaged driver `testfails` serving a service.
+
+version: 1
+board: xmc4800-relax
+stdout: kernel
+ends: main
+heap: 16384
+accepts: [no_protection] # for the -flat build alone
+
+tasks:
+  - name: main
+    entry: kickos_main
+    stack: 4096
+    priority: 2
+    ceiling: 2
+    authority: [memory, system, tasks]
+
+  - name: testfails
+    driver: testfails
+    serves: /svc/testfails
+    priority: 12

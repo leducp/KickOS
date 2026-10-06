@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Values from the Raspberry Pi Pico datasheet and the tree's chip_rp2040.cc and
-# docs/reference/boards.md.
+# Values from the Raspberry Pi Pico datasheet, docs/reference/boards.md and docs/flashing.md.
+# The Pico W's LED hangs off its wireless chip instead, so this file is the Pico's alone.
 
 version: 1
 board: picopi

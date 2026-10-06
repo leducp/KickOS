@@ -20,8 +20,8 @@
 # usage: check_reclaimwit.sh <reclaimwit.elf> <park|drain>
 #   park  the app never returns: polled to its last line, then killed. A poll that runs
 #         out is a FAILURE, never a pass.
-#   drain main returns into kickos_terminate: the app's LAST line must be the sentinel line
-#         intact, which is what a drain cut short by arch_shutdown cannot produce.
+#   drain main returns and its task's end ends the system: the app's LAST line must be the
+#         sentinel line intact, which is what a drain cut short by arch_shutdown cannot produce.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
@@ -45,10 +45,10 @@ n_of() { printf '%s\n' "$OUT" | grep -cF -- "$1" || true; }
 
 case "$arm" in
     park)
-        # The last line of each terminal path, as one ERE. The refusal and print_rc's failure
-        # prefix are in it because an early failure otherwise burns the whole poll and reports
-        # no-progress instead of its cause.
-        poll_image "$elf" '\[reclaimwit\] (park arm: the system stays up|REFUSE: this image already publishes|  FAIL )'
+        # The last line of each terminal path, as one ERE. print_rc's failure prefix is in it
+        # because an early failure otherwise burns the whole poll and reports no-progress
+        # instead of its cause.
+        poll_image "$elf" '\[reclaimwit\] (park arm: the system stays up|  FAIL )'
         if [ "$POLL_OK" -ne 1 ]; then
             fail "no terminal line reached the wire: the image did not boot, or the console never came back after the driver died"
         fi
@@ -56,7 +56,7 @@ case "$arm" in
     drain)
         run_image "$elf"
         if [ "$RC" -eq 124 ]; then
-            fail "the drain arm never ended the system (timed out in kickos_terminate?)"
+            fail "the drain arm never ended the system (timed out before or in the shutdown?)"
         fi
         ;;
     *)
@@ -69,9 +69,6 @@ assert_no_panic "the image panicked, so any reclaim cannot be credited to the dr
 # Premise, first: a capture that lost its head makes every absence assertion below vacuous.
 if [ "$(n_of "$KEY_LINE")" -eq 0 ]; then
     fail "the app's reading key never reached the wire, so this capture witnesses nothing"
-fi
-if has "\[reclaimwit\] REFUSE:"; then
-    fail "the app refused: this image already publishes a userspace console, so it cannot kill the console's own driver. Build with -DKICKOS_SERVICE_LIST=kickos_services_none"
 fi
 
 # The two arms are built from one source file and the wrong binary greps green on almost

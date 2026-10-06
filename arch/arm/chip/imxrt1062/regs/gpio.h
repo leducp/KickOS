@@ -23,12 +23,6 @@ namespace kickos::imxrt1062::reg::gpio
     constexpr uintptr_t GPIO2_DR_SET = mmap::GPIO2_BASE + 0x84u;
     constexpr uintptr_t GPIO2_DR_CLEAR = mmap::GPIO2_BASE + 0x88u;
     constexpr uintptr_t GPIO2_DR_TOGGLE = mmap::GPIO2_BASE + 0x8Cu;
-
-    // The diagnostic LED: GPIO2.IO03, pad GPIO_B0_03 at ALT5. The pad-to-function half
-    // (GPIO_B0_03 ALT5 = GPIO2_IO03) is the RM's (ch.11 mux table); that this pad is where the
-    // Teensy 4.1 puts its LED is a BOARD claim, backed by no schematic in the reference set.
-    constexpr uint32_t DIAG_LED_PIN = 3u;
-    constexpr uint32_t DIAG_LED_BIT = 1u << DIAG_LED_PIN;
 }
 
 #endif

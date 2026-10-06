@@ -17,7 +17,7 @@ if(KICKOS_ARCH STREQUAL "sim")
 endif()
 
 # Not armv8a: it builds the app and registers no arm today. Every emulated board runs newlib's
-# own exit(), which runs root's handler.
+# own exit(), which runs main's handler.
 if(NOT KICKOS_ARCH STREQUAL "armv8a")
   kickos_add_qemu_test(TARGET libc_exit SCRIPT "${_libc_exit_script}" ARGS --atexit)
 endif()

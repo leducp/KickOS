@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // Deliberate CPU-fault gate, in its own binary because it ends the process: main
-// (the root thread, which kmain spawns unprivileged in every posture) executes an
+// (the default composition's task, unprivileged in every posture) executes an
 // undefined/illegal instruction. The claim is that the DUMP comes out: on a chip whose
 // console ring is armed (the sim arms one), the reporter must force the synchronous
 // writer, or the dump is enqueued into a ring whose drain interrupt is masked and lost.

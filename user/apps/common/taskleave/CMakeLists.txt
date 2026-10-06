@@ -6,5 +6,5 @@
 # selftest scaffolding, so the selftest posture is required too. main.cc calls kos_aspace_probe
 # unconditionally, which is not declared where KICKOS_HAVE_ASPACE is 0.
 add_executable(taskleave main.cc)
-target_link_libraries(taskleave PRIVATE kickos)
+target_link_libraries(taskleave PRIVATE KickOS::kernel KickOS::system_default)
 kickos_emit_image(taskleave)
