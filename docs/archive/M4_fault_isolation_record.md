@@ -408,7 +408,7 @@ What does not work is standard `exit()`. It does not **link**: newlib's `exit` p
 (`user/apps/common/sched_exit/main.cc` states this).
 
 Every linker script already partitions the app `.fini_array` into its own section and then asserts
-it empty (`boards/qemu-m33/mps2.ld`, the `.fini_array` partition and its emptiness assert, and the same pair in every other chip script). So
+it empty (`arch/arm/chip/an505/an505.ld`, the `.fini_array` partition and its emptiness assert, and the same pair in every other chip script). So
 the array `__libc_fini_array` would walk is guaranteed empty, and an empty `_fini` is not a stub
 that hides something: it is the truth the linker already enforces. Defining it makes `exit()` link
 and behave exactly like `_exit`, with the assert left in place as the thing that keeps that true.

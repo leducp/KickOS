@@ -10,6 +10,12 @@
 # --- The AMP partition's geometry -------------------------------------------------------
 # arch/common/amp_partition.ld.h computes every address from a node index and these three
 # facts.
+#
+# The tasks' share as C reads it (<kickos/config/amp_ports.h>): zero where the image is no
+# own-image node or the partition states none.
+set(KICKOS_AMP_USER_SHARE_ADDR 0x0)
+set(KICKOS_AMP_USER_SHARE_BYTES 0x0)
+set(KICKOS_AMP_USER_SHARE_NC 0)
 if(KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
   foreach(_geo KICKOS_AMP_PARTITION_BASE KICKOS_AMP_NODE_SHARE KICKOS_AMP_SHARED_SIZE)
     # math() normalises every spelling of zero; a string test would pass 0x00.
@@ -26,6 +32,24 @@ if(KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
         "three in boards/<board>/configs/<variant>/defconfig.")
     endif()
   endforeach()
+
+  set(_amp_user_share 0)
+  if(NOT "${KICKOS_AMP_USER_SHARE_SIZE}" STREQUAL "")
+    math(EXPR _amp_user_share "${KICKOS_AMP_USER_SHARE_SIZE}")
+  endif()
+  math(EXPR _amp_shared_v "${KICKOS_AMP_SHARED_SIZE}")
+  include(amp_share)
+  kickos_amp_share_check(SHARE "${_amp_user_share}" WINDOW "${_amp_shared_v}"
+                         UNCACHED "${KICKOS_AMP_USER_SHARE_UNCACHED}"
+                         TRANSLATES "${KICKOS_HAVE_ASPACE}" ORIGIN "${KICKOS_DEFCONFIG}")
+  math(EXPR KICKOS_AMP_USER_SHARE_ADDR
+       "${KICKOS_AMP_PARTITION_BASE} + ${KICKOS_AMP_NODES} * ${KICKOS_AMP_NODE_SHARE} \
+        + ${_amp_shared_v} - ${_amp_user_share}"
+       OUTPUT_FORMAT HEXADECIMAL)
+  math(EXPR KICKOS_AMP_USER_SHARE_BYTES "${_amp_user_share}" OUTPUT_FORMAT HEXADECIMAL)
+  if(KICKOS_AMP_USER_SHARE_UNCACHED)
+    set(KICKOS_AMP_USER_SHARE_NC 1)
+  endif()
 
   # The second span is a pair or it is nothing. Half stated otherwise fails in the link, and
   # obscurely: ld reports a FLASH overflow that names neither knob.
@@ -114,6 +138,8 @@ if(KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
     KICKOS_AMP_PARTITION_BASE=${KICKOS_AMP_PARTITION_BASE}
     KICKOS_AMP_NODE_SHARE=${KICKOS_AMP_NODE_SHARE}
     KICKOS_AMP_SHARED_SIZE=${KICKOS_AMP_SHARED_SIZE}
+    KICKOS_AMP_USER_SHARE_SIZE=${_amp_user_share}
+    KICKOS_AMP_USER_SHARE_UNCACHED=${KICKOS_AMP_USER_SHARE_NC}
     KICKOS_AMP_NODE_ID=${KICKOS_AMP_NODE_ID}
     KICKOS_AMP_TEXT_BASE=${KICKOS_AMP_TEXT_BASE}
     KICKOS_AMP_TEXT_SHARE=${KICKOS_AMP_TEXT_SHARE})

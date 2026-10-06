@@ -12,10 +12,7 @@
 #ifndef KICKOS_SYS_IRQ_FREE_H
 #define KICKOS_SYS_IRQ_FREE_H
 
-// The chip's own constants. A sim build ships none (same guard as config/board.h).
-#if defined(__has_include) and __has_include(<kickos/chip_limits.h>)
 #include <kickos/chip_limits.h>
-#endif
 
 #ifndef KICKOS_IRQ_FREE_BASE
 #define KICKOS_IRQ_FREE_BASE 6

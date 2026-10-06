@@ -20,19 +20,7 @@
 
 // The chip's constants. They must stay out of the generated board_config.h, which would
 // otherwise shadow them.
-#if defined(__has_include) && __has_include(<kickos/chip_limits.h>)
 #include <kickos/chip_limits.h>
-#endif
-
-// The sim's value, not a fleet-wide fallback. A real chip whose chip_limits.h is off the
-// include path must fail here rather than silently size its IRQ table to 32.
-#ifndef KICKOS_MAX_IRQ
-#if defined(KICKOS_ARCH_SIM) && KICKOS_ARCH_SIM
-#define KICKOS_MAX_IRQ 32
-#else
-#error "no kickos/chip_limits.h on the include path: the chip's KICKOS_MAX_IRQ is missing"
-#endif
-#endif
 
 namespace kickos
 {

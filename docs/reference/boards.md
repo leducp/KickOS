@@ -329,9 +329,9 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
   `periph_reg_write_unheld`: `virt_arm64` names no MMIO window a driver could be granted -- its
   map keeps the device gigabyte EL1-only, and its `arch_mpu_region_encodable` answers false
   because protection here is a page table rather than a descriptor list -- so that arm's
-  free-window half finds nothing to take. Its reserved set is the GIC (`arch_reserved_blocks`,
-  `chip_virt_arm64.cc`): the timebase and the translation controls are system registers, so no
-  grant can name either. `EXPECT_SKIPS` is empty on this board, so any provisioning skip at all
+  free-window half finds nothing to take. Its reserved set is the GIC's frames, the ones
+  `platform/virt_arm64/chip.yaml` marks `owner: kernel`: the timebase and the translation controls
+  are system registers, so no grant can name either. `EXPECT_SKIPS` is empty on this board, so any provisioning skip at all
   is a failure rather than a posture. A vacuity skip (`# SKIP VACUOUS`) is permitted here as it
   is everywhere, sits in no list, and is reported by name in the gate's own output.
 - **`qemu-riscv64` AND `qemu-riscv64-sv48` ARE EMULATED ONLY, and nothing on this bench can change
@@ -583,7 +583,7 @@ because it rides into the link inside `startup.o` (already force-pulled by the a
 addition -- unlike RP2040.
 
 **Every APB peripheral base moved relative to the RP2040** (datasheet 2.2.4), so no RP2040
-address can be reused. Recomputed in `arch/arm/chip/rp2350/include/kickos/chip_mmap.h`:
+address can be reused. Stated in `platform/rp2350/chip.yaml`, which the generated `chip_mmap.h` reads:
 
 | Block | Base | Block | Base |
 |---|---|---|---|
@@ -763,8 +763,9 @@ the board".
   `build-boards-mpu` still matters and still runs: it covers the enforcement-only **link
   surface** of the boards QEMU cannot model -- the pow2 `.appdata`/`.appbss` window and its
   placement ASSERTs, the `archive:member` selectors, the app grant symbols, and
-  `arch_reserved_blocks`, which has no fallback TU on purpose, so an enforcing port that
-  forgets its reserved set fails to link. What is still NOT covered in CI is
+  `arch_reserved_blocks`: a chip file generates it, the host tool refusing a protecting file that
+  marks no kernel-owned window and does not say `reserved: none`, and a chip without one has no
+  fallback TU on purpose, so an enforcing port that forgets its reserved set fails to link. What is still NOT covered in CI is
   **chip-specific** trapping: SYSMPU (K64F), the M7 anti-speculation wrap (i.MX RT1062) and
   PMSAv6 (M0+) have no QEMU model, and stay silicon-proven (see the matrix above and
   `../m2-readiness.md`).

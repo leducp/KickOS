@@ -7,9 +7,9 @@
 // common and this unit cannot live in one. chip_rp2xxx.cc enters each CHIP archive instead,
 // named by that chip's family.cmake, and reads the configured chip's own regs/ headers.
 //
-// A chip joins the family by aliasing its register namespaces into kickos::rp2xxx (its
-// chip_mmap.h) and by spelling what this unit names: mmap::ATOMIC_SET / ATOMIC_CLR,
-// mmap::APB_ATOMIC_WINDOW, reg::uart::BASE and the reg::uart::IBRD_PLL / FBRD_PLL pair.
+// A chip joins the family by aliasing its register namespace into kickos::rp2xxx (its
+// family_map.h) and by spelling what this unit names: reg::uart::BASE and the
+// reg::uart::IBRD_PLL / FBRD_PLL pair.
 
 #ifndef KICKOS_ARCH_ARM_CHIP_RP2XXX_RP2XXX_H
 #define KICKOS_ARCH_ARM_CHIP_RP2XXX_RP2XXX_H
@@ -22,6 +22,12 @@ namespace kickos::rp2xxx
     {
         return *reinterpret_cast<volatile uint32_t*>(a);
     }
+
+    // Every APB register is mirrored at these offsets from its own address; SIO is not.
+    constexpr uintptr_t ATOMIC_SET = 0x2000u;
+    constexpr uintptr_t ATOMIC_CLR = 0x3000u;
+    // An APB device's slot: its registers and the three alias images above them.
+    constexpr uintptr_t APB_ATOMIC_WINDOW = 0x4000u;
 
     // Bounded so a dead or missing crystal, or a stuck peripheral, degrades instead of
     // hanging the boot forever. The cap is far longer than any legitimate wait.

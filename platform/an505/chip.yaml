@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# QEMU's AN505, an SSE-200 image whose Cortex-M33 comes out of reset Secure, so the image
+# sits at the Secure aliases of the code SRAM and of SSRAM1.
+
+version: 1
+chip: an505
+manual: "QEMU 11.1 `mps2-an505` machine (hw/arm/mps2-tz.c)"
+arch: armv7m
+protection: { unit: pmsav8, covers_devices: true, memory_type: true }
+data_cache: false
+reserved: none
+
+interrupts: { count: { value: 140, ref: "QEMU 11.1 `info qtree`: armv7m_nvic num-irq" } }
+
+devices: {}
+
+memory:
+  code: { base: 0x10000000, size: 0x400000, link: { region: FLASH, access: rx } }
+  ssram1: { base: 0x38000000, size: 0x200000, arena: true, link: { region: RAM, access: rwx } }

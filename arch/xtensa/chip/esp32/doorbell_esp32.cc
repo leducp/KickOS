@@ -24,7 +24,7 @@
 #include <stdint.h>
 
 #include <kickos/chip_mmap.h>
-#include "irq.h"
+#include "routing.h"
 #include "regs/dport.h"
 
 namespace reg = kickos::esp32::reg;

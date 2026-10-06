@@ -469,11 +469,9 @@ kickos_emit_image(app)
 ```
 
 **`KickOS::system_default`** is `kickos_compose` run by the kernel build on its export's default
-composition, after the manifest, on a board that has one. Its objects and script are installed and
-the target exported. On a board with none it is a stub linking `KickOS::kernel` whose link fails on
-the required symbol `kickos_no_default_composition_write_one_and_call_kickos_compose`, which
-names the remedy. The default composition names `entry: kickos_main` and `ends` on it, and
-states no heap, so it takes the kernel build's.
+composition, after the manifest. Its objects and script are installed and the target exported.
+Every board has a default composition, and the configure refuses one without it. The default
+composition names `entry: kickos_main` and `ends` on it, and states the board's heap.
 
 **x86_64** links as every other board does since M10.5 (`docs/design-m10-fleet.md`, section 7):
 `KickOS::kernel` carries the kernel's group without the old init and with the C++ runtime, and
@@ -512,7 +510,7 @@ Each message names the task or the figure and the knob that would have to grow, 
 composition by its path. The heap's says what a consumer can change: a smaller `heap` in the
 composition, or a package built to carve more; the one tying the link symbol to the system says to
 link exactly one system target and define no heap of the app's own. Every chip script
-that reads `KICKOS_USER_HEAP_SIZE`, about twenty of them and `boards/qemu-m33/mps2.ld`, reads it as
+that reads `KICKOS_USER_HEAP_SIZE`, about twenty of them, reads it as
 a link symbol rather than a preprocessor macro, and `arch/CMakeLists.txt` does not pass it to the
 preprocessor; the `kickos` leaves define the symbol from the knob until M10.5 deletes them.
 
@@ -642,7 +640,7 @@ ends with status 3, as does one whose `main` returns 3 while a thread it created
 `KICKOS_PRIO_MIN`, below the init's priority, which no default composition states and so is
 `KICKOS_PRIO_MIN + 1`; one that faults ends with `KOS_EXIT_FAULT`. Build-fail tests hold the link
 messages: no system target,
-two, a missing entry, and each assert's arm, and on a board with no default composition the stub's.
+two, a missing entry, and each assert's arm.
 
 **The Relax Kit.** `tools/bench/bench.sh` builds the example and the restart witness against the
 `xmc4800-relax` build's package and captures them through `tools/bench/bench-capture.sh`. With

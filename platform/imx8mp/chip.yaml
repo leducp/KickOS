@@ -30,7 +30,7 @@ cores:
   m7:
     arch: armv7m
     count: [1, 1]
-    protection: { unit: pmsav7, covers_devices: true, memory_type: true }
+    protection: { unit: pmsav7, covers_devices: true, memory_type: true, driven: false }
     line_offset: 0 # the NVIC takes source n as IRQ n
 
 # The RDC assigns each peripheral and memory region to a domain, one domain per cluster, and
@@ -39,7 +39,9 @@ cores:
 # partition's assignment.
 partition_gate: { kind: rdc, device: rdc }
 
-interrupts: { count: 160, free_from: 149, ref: "7.1.2 A53 Interrupts, Table 7-1, pp.947-955" }
+interrupts:
+  count: { value: 160, ref: "7.1.2 A53 Interrupts, p.947" }
+  free_from: { value: 149, ref: "Table 7-1 Arm Domain Interrupt Summary, p.955" }
 
 devices:
   uart1: { window: [0x30860000, 0x1000], ref: "Table 2-5 AIPS3 Memory Map, p.33" } # the A53 kernel's console
@@ -78,5 +80,3 @@ devices:
 memory:
   ocram: { size: 0x90000, at: { a53: 0x00900000, m7: 0x20200000 }, ref: "2.2, p.25; 2.3, p.28" }
   dtcm: { size: 0x20000, at: { a53: 0x00800000, m7: 0x20000000 }, arena: true, ref: "2.2, p.26; 2.3, p.28" }
-  # The span of the external DDR the A53 image is linked into.
-  dram: { base: 0x40000000, size: 0x4000000, cluster: a53, ref: "2.2 Cortex-A53 Memory Map" }

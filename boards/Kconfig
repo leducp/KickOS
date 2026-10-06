@@ -71,7 +71,7 @@ config BOARD_QEMU_M3
 
 config BOARD_QEMU_M33
 	bool "qemu-m33 (mps2-an505, Cortex-M33)"
-	select CHIP_MPS2
+	select CHIP_AN505
 
 config BOARD_QEMU_M7
 	bool "qemu-m7 (mps2-an500, Cortex-M7)"
@@ -94,7 +94,7 @@ config BOARD_RX72M
 
 config BOARD_SIM
 	bool "sim (host)"
-	select ARCH_SIM
+	select CHIP_SIM
 
 config BOARD_TEENSY41
 	bool "teensy41 (i.MX RT1062)"

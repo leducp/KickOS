@@ -29,7 +29,6 @@ namespace kickos::rtusb::reg
     // is 512 B (RM 42.7 addresses every register as "base + off + 512d * i"; OTG2 starts at
     // +0x200, USBNC at +0x800).
     constexpr uintptr_t USB1_BASE = 0x402E0000u;
-    constexpr uint32_t USB1_WINDOW = 0x200u;
 
     // Identification register (RM 42.7.1), read-only, reset E4A1_FA05.
     constexpr uintptr_t ID = 0x000u;

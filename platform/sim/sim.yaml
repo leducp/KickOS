@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The host simulator: the kernel console is the host process's standard output (arch/sim/sim.cc).
+
+version: 1
+board: sim
+chip: sim
+
+console:
+  device: /dev/console

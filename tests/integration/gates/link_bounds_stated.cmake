@@ -14,7 +14,7 @@
 # re-deriving it, so it can never disagree with what actually got linked.
 #
 # Two targets take no per-chip test here:
-#   - the sim has no chip and no linker script at all (KICKOS_LINKER_SCRIPT stays unset);
+#   - the sim has no chip backend and no linker script at all (KICKOS_LINKER_SCRIPT stays unset);
 #   - x86_64's PE32+ image links from arch/x86/x86_64/pe_image.ld by a raw
 #     `ld -m i386pep` custom command (cmake/x86_64_boot.cmake), never through the cpp
 #     step arch/CMakeLists.txt runs for every other chip, so pe_image.ld's own source IS

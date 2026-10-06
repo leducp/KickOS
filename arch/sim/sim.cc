@@ -10,6 +10,11 @@
 
 #include <fatal_status.ld.h>
 
+#include <kickos/chip_limits.h>
+
+#include "chip_layout.h"
+#include "irq.h"
+
 #include <new> // placement new (arch_context_init)
 
 #include <ucontext.h>
@@ -430,8 +435,8 @@ namespace
     // --- Buffered console TX backend (console_tx.h) ----------------------------
     enum
     {
-        TX_LINE = 30,       // < KICKOS_MAX_IRQ / SIM_IRQ_LINES; not used by any test/bench
-        TX_BUDGET = 8       // bytes drained per ISR delivery (synthetic slot budget)
+        TX_LINE = kickos::sim::irq::CONSOLE_TX,
+        TX_BUDGET = 8 // bytes drained per ISR delivery (synthetic slot budget)
     };
     // The same knob every chip carves its ring from. Shrinking it here to wrap the indices
     // more often trades that coverage for silence: below one CRLF-expanded kprintf line the
@@ -708,9 +713,8 @@ void arch_init(void)
     sim().pagesize = sysconf(_SC_PAGESIZE);
 
     // The user-RAM arena the MPU emulation governs. It must fit the whole thread pool at once
-    // on top of the domain-data allocs and the probe page. No kernel config header here, so the
-    // size cannot be derived.
-    sim().arena_size = 2 * 1024 * 1024;
+    // on top of the domain-data allocs and the probe page.
+    sim().arena_size = KICKOS_LAYOUT_ARENA_SIZE;
     sim().arena = static_cast<unsigned char*>(
         mmap(nullptr, sim().arena_size, PROT_READ | PROT_WRITE,
              MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
@@ -1414,13 +1418,6 @@ int arch_mpu_nocache_support(void)
     return ARCH_MPU_NOCACHE_ALREADY;
 }
 
-// Rule 7: the sim's "devices" are arena-backed fakes reached via a data grant, so it reserves
-// nothing and only the arena and encodability rules apply.
-struct arch_reserved_span arch_reserved_blocks(void)
-{
-    return {};
-}
-
 // No Cortex-M bit-band on the host.
 int arch_bitband_present(void)
 {
@@ -1564,6 +1561,7 @@ enum
 {
     SIM_IRQ_LINES = 32
 };
+static_assert(SIM_IRQ_LINES == KICKOS_MAX_IRQ, "the sim's line count is its chip file's");
 
 // Self-bracketed (arch_irq_save/restore) so the irq_masked/irq_pending RMWs are
 // atomic against a device ISR regardless of the caller: kos_irq_inject/unmask reach

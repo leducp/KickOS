@@ -81,17 +81,20 @@ metadata declares, as `lines: { irq: /dev/usic0/sr1 }`.
 | `partition_gate` | mapping | no | a bus-enforced assignment of devices to nodes (RDC, APM) |
 | `data_cache` | boolean | no | whether a data cache sits over the part's RAM; absent is read as `true` |
 | `devices` | mapping | yes | one entry per device, keyed by its name |
-| `memory` | mapping | on a part with a core that does not translate | ordinary memory windows -- on-chip RAM, flash, apertures -- each a `size` and either a `base` or, where clusters' maps differ, `at`, one base per cluster, and `cluster` on an entry one cluster alone reaches; for the part, or each of its clusters, that does not translate, exactly one entry it reaches is marked `arena: true`, the RAM its user arena is carved from |
+| `memory` | mapping | on a part with a core that does not translate | ordinary memory windows -- on-chip RAM, flash, apertures -- each a `size` and either a `base` or, where clusters' maps differ, `at`, one base per cluster, or neither for the arena of a part the host runs, which the host places and the link has no region for, and `cluster` on an entry one cluster alone reaches; for the part, or each of its clusters, that does not translate, exactly one entry it reaches is marked `arena: true`, the RAM its user arena is carved from |
 | `pins` | mapping | no | each pin's functions |
-| `interrupts` | mapping | yes | `count`, the controller's line count; `soft_only_from`, the first line no hardware raises; `free_from`, the first line no device uses; `vectors`, the RX's INTB table size; `ref`. On a multi-architecture part the lines are source numbers, and the generator adds the built cluster's `line_offset` to each; every device's line is below `count` |
-| `cycle_counter` | mapping | no | `hz: 0` where the counter has no fixed rate, `glitches: true` where a read can glitch, `ref` |
+| `interrupts` | mapping | yes | `count`, the controller's line count; `soft_only_from`, the first line no hardware raises; `free_from`, the first line no device uses; `vectors`, the RX's INTB table size; each a number or `{ value: <number>, ref: <ref> }`. On a multi-architecture part the lines are source numbers, and the generator adds the built cluster's `line_offset` to each; every device's line is below `count` |
+| `cycle_counter` | mapping | no | `hz: 0` where the counter has no fixed rate, `glitches: true` where a read can glitch, each a value or `{ value: <value>, ref: <ref> }` |
+| `reserved` | `none` | no | stated by a part whose protecting unit holds no window for the kernel, which the tool otherwise refuses: a protecting part marks the devices the kernel holds `owner: kernel` |
 | `c` | mapping | no | `namespace`, the C++ namespace of the generated headers where it is not `kickos::<chip>`, and `line_enum`, the line enum's declaration where it is not `irq_num`, as `node : int` |
 
-`protection` has a `unit` (`pmsav7`, `pmsav8`, `pmsav6`, `pmp`, `rxmpu`, `sysmpu`, `mmu`,
-`none`), `covers_devices` and `memory_type` unless the unit is `none`, `page` on `mmu` and only
+`protection` has a `unit` (`pmsav7`, `pmsav8`, `pmsav6`, `pmp`, `rxmpu`, `sysmpu`, `mprotect`,
+`mmu`, `none`), `covers_devices` and `memory_type` unless the unit is `none`, `page` on `mmu` and only
 there, and where they apply `device_gate` (a gate coarser than a
 window: kind, size, whether it is per thread), `bus_gate` (a second unit in series: kind, per
-thread, whether a denial traps), `privilege` and `io_ports`. A `device_gate` may list the
+thread, whether a denial traps), `privilege`, `io_ports`, and `driven: false` on a region unit no
+kernel build drives, which no build then enforces and Kconfig selects no `HAS_MPU` for. A
+`device_gate` may list the
 `ranges`, each `[base, size]`, that its gate fronts, and without them it gates every device
 window; a device window a range holds only in part is refused. The window encoding rule and the
 region budget belong to the unit and come from the kernel build's export, not from this file.
@@ -110,8 +113,9 @@ number (a line private to each core, as the GIC's below 32, is still one); `bus_
 when it writes memory by physical address; `owner: kernel` when the kernel holds it for life, in
 which case its `window` or `ports` is required, so its reserved range is checked from this file,
 and a device reached through system registers alone, as the generic timer is, says so with
-`sysreg: true` instead; `privileged_registers` for registers inside the window only privilege can
-write; and `cluster` on a multi-architecture part. Every limitation that makes a grant
+`sysreg: true` instead; `host: true` for a device the host reaches for it, with no window, which
+only a part the host runs has, its unit being `mprotect`; `privileged_registers` for registers
+inside the window only privilege can write; and `cluster` on a multi-architecture part. Every limitation that makes a grant
 unenforceable has a name here, which a refusal quotes and a composition's `accepts` lists.
 
 Any device, channel, line, block or memory entry may carry `ref`, where in the manual its value
@@ -119,7 +123,9 @@ is, which reaches the generated header as a comment beside its symbol, and `symb
 where today's differs from the derived one: a device's base `<DEVICE>_BASE`, a channel's
 `<DEVICE>_<CHANNEL>_BASE`, a block's `<DEVICE>_<BLOCK>_BASE`, a repeated device's first instance
 `<DEVICE>0_BASE` with `<DEVICE>_STRIDE`, a memory entry's `<ENTRY>_BASE`, and a line
-`<DEVICE>_<LINE>`; two entries one C name names are refused. A line or a block carrying either is
+`<DEVICE>_<LINE>`; two entries one C name names are refused. A `ref` or `manual` is printable
+ASCII with no `*/` and no backslash, since a C comment carries it, and a window or memory entry
+ends within the addresses its view's architecture reaches. A line or a block carrying either is
 a mapping, `{ number: <line> }` or `{ offset: <offset> }` beside them. A device's `blocks` names
 sub-blocks of its one `window`, each an offset inside it. A memory entry's `link` states the
 linker region it is and its access, `{ region: FLASH, access: rx }`, one entry per region in each
@@ -137,11 +143,16 @@ a board file names is a pin of its chip, and an LED pin or a chip select has a `
 | `version` | integer | yes | schema version |
 | `board` | string | yes | the board's name |
 | `chip` | string | yes | the chip file it builds on |
-| `console` | mapping | yes | the kernel console's device and, where wired, its pins, or `semihosting: true` where the console is semihosting and so no device |
+| `console` | mapping | yes | the kernel console's device and, where wired, its pins, each role the device's signal its pin carries (`tx`, or the USIC's `dout0`), or `semihosting: true` where the console is semihosting and so no device |
 | `leds` | mapping | no | each LED's pin, active level and owner |
 | `parts` | mapping | no | a soldered part: the bus it hangs on, its chip select, its pins |
 | `buses` | mapping | no | a bus as this board wires it: device, pins, chip selects |
 | `reserved_pins` | mapping | no | pins the board has spent, with the reason |
+| `memory` | mapping | no | memory soldered on the board, external flash, PSRAM or DRAM: each a `size`, a `base` in its chip's map, `cluster` where one cluster alone reaches it, and the `link` region the image is placed in, as a chip file's memory entry states them; it may overlap no window of its chip, link a region its chip already links, or take a C name its chip's headers already carry, and it joins the chip's in the headers generated for the board |
+
+A board spends each pin once: a pin named twice across the console, the LEDs, the parts and the
+buses is refused, as one also among `reserved_pins` is, but for a bus line two parts on one bus
+both list.
 
 ## The composition
 
@@ -430,7 +441,7 @@ installed beside the package's CMake files, where `kickos_compose` finds it.
 | section | contents | from |
 | --- | --- | --- |
 | `abi` | `table`, the version of the emitted table's layout; `cap_reserved`, the capability indices the kernel reserves in every table; `symbol_prefix`, what the link spells before a C name, `""` or rx-elf's `_` | declared in `cmake/manifest.cmake`, `KICKOS_CAP_FIRST_DYNAMIC` in `cmake/cap_geometry.cmake`, and the prefix in the toolchain file of an ABI that adds one |
-| `target` | board, chip, arch; cores, kernel cores, isolated cores; on an AMP node, its node, the partition's nodes and its ports | the resolved Kconfig, and the node and port list as `cmake/amp_partition.cmake` parses them |
+| `target` | board, chip, arch; cores, kernel cores, isolated cores; on an AMP node, its node, the partition's nodes, its ports and the bytes of its user share | the resolved Kconfig, and the node and port list as `cmake/amp_partition.cmake` parses them |
 | `protection` | whether the build enforces its unit; the window rule, `pow2` (a power of two, naturally aligned), `granule` (a multiple of the smallest window, 16 bytes on a region build whose seam states no unit) or `none` (a translating build, whose page is its chip file's), and the smallest window, as the seams state them whether or not the build enforces, the kernel rounding every arena block and checking every device window by them either way; `KICKOS_MAX_THREAD_WINDOWS` as `thread_windows`; whether a fault ends its task rather than the system, as `fault_isolation` | `KICKOS_MEMORY_ENFORCED`, `KICKOS_FAULT_ISOLATION`, `KICKOS_HAVE_ASPACE`, the `arch_mpu_min_region` and `arch_mpu_region_pow2` seams as `cmake/boot_arena.cmake` reads them, and the resolved Kconfig |
 | `pools` | every `KICKOS_MAX_*` but `KICKOS_MAX_THREAD_WINDOWS`, every `KICKOS_TASK_*_BUDGET`, `KICKOS_MAX_SPAWN_GRANTS`, `KICKOS_CAP_TABLE_SUPPLY`, `KICKOS_RAM_OWNER_SLOTS`, `KICKOS_ASPACE_RANGES` | the resolved Kconfig |
 | `threads` | the priority range; `KICKOS_MIN_STACK_SIZE` as `min_stack`; `KICKOS_USER_STACK_SIZE`, the stack a runtime spawn defaults to, as `user_stack`; the idle and root stacks; `KICKOS_STACK_ALIGN` as `stack_align`; `stack_stride`, the block every stack is where the thread pointer is SP masked, or `none` | declared in `cmake/sched_geometry.cmake` and `cmake/stack_geometry.cmake`, the stride as the top-level `CMakeLists.txt` derives it, and the resolved Kconfig |

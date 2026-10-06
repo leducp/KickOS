@@ -245,7 +245,7 @@ if(KICKOS_ARCH STREQUAL "sim")
   kickos_add_board_provider(services_simuart SOURCE init/sim/service_list_uart.cc
     RETAINED_CAPS 1 RETAINED_ENDPOINTS 1)
   target_include_directories(kickos_services_simuart PRIVATE
-    "${PROJECT_SOURCE_DIR}/user/include")
+    "${PROJECT_SOURCE_DIR}/user/include" "${PROJECT_BINARY_DIR}/generated/chip")
 endif()
 
 # ---------------------------------------------------------------------------

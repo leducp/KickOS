@@ -24,6 +24,7 @@
 #ifndef KICKOS_AMP_H
 #define KICKOS_AMP_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #include <kickos/config/amp_ports.h>
@@ -35,6 +36,27 @@
 
 // This image's own node index.
 #define KOS_AMP_SELF_NODE KICKOS_AMP_SELF_NODE
+
+// The partition's user share: the top of the region every node writes, which the kernel seats
+// in root as a reservation on every node before root's first instruction, at this address on
+// each. Root maps it as it maps a block it reserved: a memory window it hands a child names any
+// part of it on whole granules, a part granule refused with -KOS_EINVAL on a translating node,
+// and kos_mem_self_grant on a translating node maps the WHOLE share whatever part it names, as
+// it does any reservation. No other task can name it. A size of zero: the partition states
+// none.
+#define KOS_AMP_SHARE_BASE ((uintptr_t)KICKOS_AMP_USER_SHARE_ADDR)
+#define KOS_AMP_SHARE_SIZE ((size_t)KICKOS_AMP_USER_SHARE_SIZE)
+
+// The share's one memory type, which every mapping of it carries: a window or a self-grant
+// asking the other is refused with -KOS_EBUSY. The flags below are what each must pass.
+#define KOS_AMP_SHARE_UNCACHED KICKOS_AMP_USER_SHARE_UNCACHED
+#if KICKOS_AMP_USER_SHARE_UNCACHED
+#define KOS_AMP_SHARE_MEM_FLAGS KOS_MEM_NOCACHE
+#define KOS_AMP_SHARE_WINDOW_FLAGS KOS_WINDOW_UNCACHED
+#else
+#define KOS_AMP_SHARE_MEM_FLAGS 0u
+#define KOS_AMP_SHARE_WINDOW_FLAGS 0u
+#endif
 
 #if KICKOS_AMP_PORT_COUNT > 0
 

@@ -11314,6 +11314,10 @@ int main(int, char**)
     // Before every arm that spends one: they all rest on the derivation this drives.
     TAP_ADD("amp_port_seating", t_amp_port_seating);
     TAP_ADD("amp_port_unnamed", t_amp_port_unnamed);
+#if KICKOS_AMP_OWN_IMAGE && KICKOS_MEMORY_ENFORCED && KICKOS_AMP_USER_SHARE_SIZE != 0
+    TAP_ADD("amp_share_seated", t_amp_share_seated);
+    TAP_ADD("amp_share_window", t_amp_share_window);
+#endif
     // Both need a peer that is running: one waits for its answer, the other parks a caller on a
     // far endpoint for the whole forge. Registered unconditionally, each skipping by name where
     // no peer answers.
@@ -11323,6 +11327,10 @@ int main(int, char**)
     // After the guard, whose caller must park with no zero-length answer racing it.
     TAP_ADD("amp_far_reply_empty", t_amp_far_reply_empty);
     TAP_ADD("amp_far_service", t_amp_far_service);
+#if KICKOS_AMP_OWN_IMAGE
+    // Needs a peer that is running, and skips by name where none answers.
+    TAP_ADD("amp_share_crossing", t_amp_share_crossing);
+#endif
     // Before the two arms that count reply publications of their own: this node's reply ring
     // at the peer holds KOS_AMP_RING_SLOTS and nothing drains it on a node booted alone.
     TAP_ADD("amp_far_refusal_answered", t_amp_far_refusal_answered);

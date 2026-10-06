@@ -11,7 +11,7 @@ chip: xmc4800
 # USIC0 channel 0 on the debug probe's virtual COM port.
 console:
   device: /dev/usic0/ch0
-  pins: { tx: P1.5, rx: P1.4 }
+  pins: { dout0: P1.5, dx0b: P1.4 }
 
 leds:
   led1: { pin: P5.9, active: high, owner: kernel } # the kernel's diagnostic LED

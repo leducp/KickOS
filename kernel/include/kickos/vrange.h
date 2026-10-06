@@ -18,6 +18,7 @@
 #ifndef KICKOS_VRANGE_H
 #define KICKOS_VRANGE_H
 
+#include <kickos/ampshare.h>
 #include <kickos/arch/arch.h> // ARCH_MAP_*, which the width proofs below are over
 #include <kickos/config/system.h>
 #include <kickos/extent.h>
@@ -52,7 +53,10 @@ namespace kickos
         VR_USTACK = 1u << 3,
         // A spawn window, mapped where the kernel chose and held by ONE thread, named by the
         // `holder` field; its frames are a device's or a donor space's, so it is borrowed too.
-        VR_WINDOW = 1u << 4
+        VR_WINDOW = 1u << 4,
+        // The partition's user share (kickos/ampshare.h), reserved at boot in root's space. Its
+        // frames are no pool's: teardown unmaps them and frees none.
+        VR_SHARE = 1u << 5
     };
 
     // What the KERNEL placed rather than the caller: the process image, every thread stack
@@ -136,6 +140,9 @@ namespace kickos
     // force every translating board to provision for an app it does not run.
     constexpr size_t VR_APP_HEADROOM = 4u;
 
+    // The range root's space spends on the partition's user share (kickos/ampshare.h).
+    constexpr size_t VR_SHARE_SLOTS = KICKOS_AMP_SHARE;
+
 #if KICKOS_HAVE_ASPACE
     // A THREAD'S STACK TAKES A SLOT, so this budget scales with the thread count and the two
     // figures may not be configured independently. A task's siblings share its space, so the
@@ -144,10 +151,11 @@ namespace kickos
     // VR_APP_HEADROOM may not fall to zero: the self-grant arm reads the free-slot count LIVE
     // and takes one more, so at zero free slots it can seat nothing and has nothing to report.
     static_assert(KICKOS_ASPACE_RANGES
-                      >= VR_IMAGE_SLOTS + KICKOS_THREAD_SLOTS + VR_APP_HEADROOM,
-                  "KICKOS_ASPACE_RANGES is below 2 + (KICKOS_MAX_THREADS + 1) + 4: the image "
-                  "spends two slots, every live thread's stack spends one and returns it at "
-                  "thread exit, and the app needs the rest. Raise KICKOS_ASPACE_RANGES or "
+                      >= VR_IMAGE_SLOTS + KICKOS_THREAD_SLOTS + VR_APP_HEADROOM + VR_SHARE_SLOTS,
+                  "KICKOS_ASPACE_RANGES is below 2 + (KICKOS_MAX_THREADS + 1) + 4, plus 1 where "
+                  "root holds an AMP partition's user share: the image spends two slots, every "
+                  "live thread's stack spends one and returns it at thread exit, the share one "
+                  "in root's space, and the app needs the rest. Raise KICKOS_ASPACE_RANGES or "
                   "lower KICKOS_MAX_THREADS");
 #endif
 

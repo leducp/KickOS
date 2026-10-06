@@ -934,6 +934,30 @@ uint32_t arch_aspace_active_cores(struct arch_aspace* space)
     }
     return active_cores(space);
 }
+
+int arch_aspace_walk_memtype(uintptr_t va, bool user)
+{
+    arch_irq_state_t const s = arch_irq_save();
+    uint64_t const par = kickos_armv8a_at_read(va, user);
+    uint64_t const mair = kickos_armv8a_read_mair_el1();
+    arch_irq_restore(s);
+    if ((par & 1u) != 0)
+    {
+        return -1;
+    }
+    // PAR_EL1.ATTR is the MAIR_EL1 byte the walk selected.
+    uint64_t const attr = par >> 56;
+    enum arch_map_memtype const types[] = {ARCH_MAP_NORMAL, ARCH_MAP_NOCACHE, ARCH_MAP_DEVICE};
+    for (enum arch_map_memtype const t : types)
+    {
+        uint64_t desc = 0;
+        if (memtype_attr(t, &desc) and ((mair >> (8u * ((desc >> 2) & 7u))) & 0xFFu) == attr)
+        {
+            return t;
+        }
+    }
+    return -1;
+}
 #endif
 
 }

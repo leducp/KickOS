@@ -66,12 +66,6 @@ if(KICKOS_FAULT_ISOLATION)
     common/arch_fault_is_user_thread_default.cc
     common/arch_fault_redirect_to_exit_default.cc)
 endif()
-# A chip whose headers are generated reads its tables from chip_tables.h, unless its own sources
-# still define them.
-if(KICKOS_CHIP_GENERATED)
-  list(APPEND KICKOS_SEAM_DEFAULTS_COMMON common/arch_reserved_blocks_default.cc
-    common/arch_window_apertures_default.cc common/arch_port_apertures_default.cc)
-endif()
 # Swapped, not added: both TUs define kfault_terminate.
 if(KICKOS_CHIP_EXITS_ON_FAULT)
   list(REMOVE_ITEM KICKOS_SEAM_DEFAULTS_COMMON common/kfault_terminate_default.cc)
@@ -119,6 +113,7 @@ if(NOT KICKOS_ARCH_SOURCES)
     "empty and every seam it answers would resolve to a fallback or to nothing.")
 endif()
 
+list(APPEND KICKOS_ARCH_SOURCES common/arch_chip_tables.cc)
 add_library(kickos_arch_${KICKOS_ARCH} STATIC ${KICKOS_ARCH_SOURCES})
 if(KICKOS_ARCH_HOSTED)
   kickos_apply_hosted(kickos_arch_${KICKOS_ARCH})
@@ -136,9 +131,7 @@ endif()
 if(KICKOS_ARCH_LINK_LIBRARIES)
   target_link_libraries(kickos_arch_${KICKOS_ARCH} PUBLIC ${KICKOS_ARCH_LINK_LIBRARIES})
 endif()
-if(KICKOS_CHIP_GENERATED)
-  target_include_directories(kickos_arch_${KICKOS_ARCH} PRIVATE "${PROJECT_BINARY_DIR}/generated/chip")
-endif()
+target_include_directories(kickos_arch_${KICKOS_ARCH} PRIVATE "${PROJECT_BINARY_DIR}/generated/chip")
 kickos_export_targets(kickos_arch_${KICKOS_ARCH})
 set(KICKOS_ARCH_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/${_kos_arch_dir}/include" PARENT_SCOPE)
 
@@ -235,7 +228,7 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
   # archive, even if the glob turns recursive.
   list(FILTER _chip_src EXCLUDE REGEX "/class/")
 
-  # The PMSAv8 backend (set by a v8-M chip's mpu.cmake) goes into the chip archive, never the
+  # The PMSAv8 backend (a v8-M chip file's pmsav8 unit) goes into the chip archive, never the
   # armv7m arch list: v6-M/v7-M must never link it, and from the chip archive its
   # kickos_arch_mpu_commit and arch_mpu_region_encodable win over the arch fallbacks.
   if(KICKOS_HAVE_MPU AND KICKOS_ARM_PMSAV8_SOURCE)
@@ -361,11 +354,11 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
   if(KICKOS_CHIP STREQUAL "imxrt1062" AND KICKOS_IMXRT_DCACHE)
     target_compile_definitions(kickos_chip_${KICKOS_CHIP} PRIVATE KICKOS_IMXRT_DCACHE=1)
   endif()
-  # A v7-M chip that overrides arch_trace_now (mps2's semihosting clock) has it on the
-  # PendSV-tail emit path, so its TU must be FP-register-free too.
-  if(KICKOS_TELEMETRY_ON AND KICKOS_CHIP STREQUAL "mps2")
+  # A v7-M chip that overrides arch_trace_now (the MPS2 machines' semihosting clock) has it on
+  # the PendSV-tail emit path, so its TU must be FP-register-free too.
+  if(KICKOS_TELEMETRY_ON AND KICKOS_QEMU_MPS2)
     set_source_files_properties(
-      "${CMAKE_CURRENT_SOURCE_DIR}/arm/chip/${KICKOS_CHIP}/chip_${KICKOS_CHIP}.cc"
+      "${CMAKE_CURRENT_SOURCE_DIR}/arm/chip/mps2/chip_mps2.cc"
       PROPERTIES COMPILE_OPTIONS "-mgeneral-regs-only")
   endif()
   target_include_directories(kickos_chip_${KICKOS_CHIP} PRIVATE
@@ -381,9 +374,7 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
     "${CMAKE_CURRENT_SOURCE_DIR}/../system/include"
     # rtt.h, for an arch_shutdown that dumps the telemetry ring (mps2).
     "${CMAKE_CURRENT_SOURCE_DIR}/../lib/include")
-  if(KICKOS_CHIP_GENERATED)
-    target_include_directories(kickos_chip_${KICKOS_CHIP} PRIVATE "${PROJECT_BINARY_DIR}/generated/chip")
-  endif()
+  target_include_directories(kickos_chip_${KICKOS_CHIP} PRIVATE "${PROJECT_BINARY_DIR}/generated/chip")
   # Appended after the list above: a chip directory ahead of <family>/common would shadow
   # regs.h for every source in this archive. Only the configured chip's directory is on this
   # path, so a family TU's #include "regs/<periph>.h" resolves to that chip's copy.
@@ -413,9 +404,7 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
       PRIVATE
         "${CMAKE_SOURCE_DIR}/include"
         "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}")
-    if(KICKOS_CHIP_GENERATED)
-      target_include_directories(kickos_class_${KICKOS_CHIP} PRIVATE "${PROJECT_BINARY_DIR}/generated/chip")
-    endif()
+    target_include_directories(kickos_class_${KICKOS_CHIP} PRIVATE "${PROJECT_BINARY_DIR}/generated/chip")
     kickos_export_targets(kickos_class_${KICKOS_CHIP})
   endif()
 
@@ -450,9 +439,7 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
     # The generated script keeps the <chip>.ld name for the INSTALL_INTERFACE -T path.
     set(_ld_gen "${CMAKE_CURRENT_BINARY_DIR}/${KICKOS_CHIP}.ld")
     set(_ld_defs -DKICKOS_HAVE_MPU=${KICKOS_HAVE_MPU})
-    if(KICKOS_CHIP_GENERATED)
-      list(APPEND _ld_defs "-I${PROJECT_BINARY_DIR}/generated/chip")
-    endif()
+    list(APPEND _ld_defs "-I${PROJECT_BINARY_DIR}/generated/chip")
     # A chip whose boot handshake needs storage outside .bss carves it per hart, so its script
     # must know the count; at one core the carve is absent rather than empty.
     list(APPEND _ld_defs -DKICKOS_NUM_CORES=${KICKOS_NUM_CORES})
@@ -463,6 +450,7 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
         -DKICKOS_AMP_PARTITION_BASE=${KICKOS_AMP_PARTITION_BASE}
         -DKICKOS_AMP_NODE_SHARE=${KICKOS_AMP_NODE_SHARE}
         -DKICKOS_AMP_SHARED_SIZE=${KICKOS_AMP_SHARED_SIZE}
+        -DKICKOS_AMP_USER_SHARE_SIZE=${_amp_user_share}
         -DKICKOS_AMP_NODES=${KICKOS_AMP_NODES}
         -DKICKOS_AMP_NODE_ID=${KICKOS_AMP_NODE_ID})
       # The second span, for a part whose text does not live where its data does. Zero on
@@ -525,6 +513,12 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
     # Unset on the sim, which has no KICKOS_CHIP and never enters this block.
     set_property(GLOBAL PROPERTY KICKOS_MPU_MIN_REGION_CFG "${_mpu_min_region_cfg}")
     set_property(GLOBAL PROPERTY KICKOS_MPU_REGION_POW2_CFG "${_mpu_region_pow2_cfg}")
+    if(KICKOS_AMP_OWN_IMAGE)
+      include(amp_share)
+      kickos_amp_share_granule_check(SHARE "${_amp_user_share}" BASE "${KICKOS_AMP_USER_SHARE_ADDR}"
+        MIN_REGION "${_mpu_min_region_cfg}" POW2 "${_mpu_region_pow2_cfg}"
+        ORIGIN "${KICKOS_DEFCONFIG}")
+    endif()
     # The static regions arch_domain_static_regions seats in root's region set: the code its
     # script bounds, and the .appdata window the script carves only under KICKOS_HAVE_MPU.
     set(_root_statics 0)

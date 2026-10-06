@@ -700,6 +700,11 @@ uint64_t arch_aspace_tlbi_counts(void);
 // without per-core roots use bit zero for the active space.
 uint32_t arch_aspace_active_cores(struct arch_aspace* space);
 
+// The memory type the hardware's own walk answers for va, through the kernel's view or, with
+// `user`, the running task's: an enum arch_map_memtype, or -1 where nothing maps it. Defined by
+// the backends an own-image AMP node runs on.
+int arch_aspace_walk_memtype(uintptr_t va, bool user);
+
 // The calling core's kernel-private per-core block, which the trap entry reaches before any
 // kernel stack is loaded. Zero where the arch keeps none apart from the kernel's own data.
 uintptr_t arch_cpu_block_addr(void);

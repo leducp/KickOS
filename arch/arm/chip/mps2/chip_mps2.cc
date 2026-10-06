@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// mps2-an386 (QEMU Cortex-M4F) chip backend: the hardware edges the armv7m arch
-// layer leaves to the chip. QEMU semihosting stands in for a UART here (console +
-// exit code), so this target needs no peripheral driver.
+// The QEMU MPS2 machines' chip backend, compiled into the mps2 chip's archive and, as its
+// family, into the an505 chip's: the hardware edges the armv7m arch layer leaves to the chip.
+// QEMU semihosting carries the console and the exit code.
 //
 // The emulated CMSDK has no pin-function mux, so arch_pinmux_set is left to the
 // declining ENOSYS fallback.
@@ -31,13 +31,12 @@ extern "C"
 
     // PMSAv8 MPU backend (arch/arm/common/arch_arm_pmsav8.cc): one-time MAIR +
     // MemManage enable. Also the LINK ANCHOR that pulls the PMSAv8 archive member,
-    // so its commit/encodable replace the v7-M fallback TUs. Only the M33
-    // board (mps2-an505) defines KICKOS_MPS2_PMSAV8; see the chip's mpu.cmake.
-#if KICKOS_HAVE_MPU && defined(KICKOS_MPS2_PMSAV8)
+    // so its commit/encodable replace the v7-M fallback TUs.
+#if KICKOS_HAVE_MPU && KICKOS_ARM_MPU == KICKOS_ARM_MPU_PMSAV8
     void kickos_arm_pmsav8_init(void);
 #endif
 
-    // Linker-script symbols (mps2.ld).
+    // Linker-script symbols (mps2.ld, an505.ld).
     extern void (*__init_array_start[])();
     extern void (*__init_array_end[])();
 
@@ -96,7 +95,7 @@ extern "C"
 void arch_init(void)
 {
     // FPU is enabled earlier (Reset_Handler, before C++ ctors).
-#if KICKOS_HAVE_MPU && defined(KICKOS_MPS2_PMSAV8)
+#if KICKOS_HAVE_MPU && KICKOS_ARM_MPU == KICKOS_ARM_MPU_PMSAV8
     // MUST precede kickos_armv7m_init and MUST NOT be dropped: this reference pulls
     // the PMSAv8 backend into the link. Without it the build still succeeds, but the
     // PMSAv7 commit fallback stands and writes RASR values into what is RLAR on v8-M.
@@ -219,16 +218,6 @@ void arch_shutdown(int status)
         __asm volatile("wfi");
     }
 }
-
-#if KICKOS_HAVE_MPU
-// Rule 7 reserved set: empty. Console and time base are semihosting calls, and the
-// only registers touched (SysTick/NVIC/SCB) live in the PPB, which the MPU does not
-// govern.
-struct arch_reserved_span arch_reserved_blocks(void)
-{
-    return {};
-}
-#endif
 
 void Reset_Handler(void)
 {

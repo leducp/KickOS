@@ -8,7 +8,7 @@ if(NOT TARGET pspguard_svc)
   return()
 endif()
 
-if(NOT (KICKOS_CHIP STREQUAL "mps2" OR KICKOS_BOARD STREQUAL "microbit"))
+if(NOT (KICKOS_QEMU_MPS2 OR KICKOS_BOARD STREQUAL "microbit"))
   return()
 endif()
 

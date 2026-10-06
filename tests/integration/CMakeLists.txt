@@ -15,7 +15,8 @@
 #
 # Two board groupings recur, and both are arch/chip facts rather than lists to maintain:
 #   the four QEMU MPS2 FPGA images (an386/M4F, an505/M33, an500/M7, an385/M3) are exactly the
-#     boards on the `mps2` chip backend, KICKOS_CHIP STREQUAL "mps2";
+#     boards QEMU runs as an MPS2 machine, KICKOS_QEMU_MPS2, which the root derives from
+#     kickos_qemu_machine;
 #   the two emulatable arm64 boards (qemu-arm64, imx8mp-evk) are exactly the armv8a fleet,
 #     KICKOS_ARCH STREQUAL "armv8a".
 #

@@ -99,7 +99,8 @@ endif()
 # Far-reply guard tests need an unanswered port: a node binds all its ports but
 # serves only the first. Other nodes can use its spare; the owner cannot.
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
-  list(APPEND KICKOS_EXPECT_SKIPS amp_far_call amp_far_reply_guard amp_far_reply_empty)
+  list(APPEND KICKOS_EXPECT_SKIPS amp_far_call amp_far_reply_guard amp_far_reply_empty
+       amp_share_crossing)
 endif()
 
 # amp_far_deliver_fault copies a far arrival into a LOCAL thread's buffer and takes that page

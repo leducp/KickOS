@@ -5,6 +5,7 @@
 
 #if KICKOS_HAVE_MPU
 
+#include <kickos/ampshare.h>
 #include <kickos/arch/arch.h>
 #include <kickos/task.h> // task_handle: the owner's identity, index AND generation
 
@@ -100,6 +101,48 @@ namespace kickos
         }
         return false;
     }
+
+#if KICKOS_AMP_SHARE
+    bool ram_owner_seat(Task const* owner, uintptr_t base, size_t size)
+    {
+        kos_task_t const tag = task_handle(owner);
+        if (tag == KOS_TASK_NONE or size == 0 or arch_ram_region_size(size) != size
+            or size != static_cast<size_t>(static_cast<uint32_t>(size))
+            or not arch_ram_region_admissible(base, size))
+        {
+            return false;
+        }
+        for (RamBlock& b : g_blocks)
+        {
+            if (b.size == 0)
+            {
+                b.base = base;
+                b.size = static_cast<uint32_t>(size);
+                b.owner = tag;
+                return true;
+            }
+        }
+        return false;
+    }
+
+#if defined(KICKOS_ENABLE_SELFTEST)
+    bool ram_owner_extent(Task const* owner, uintptr_t addr, uintptr_t* base, size_t* size)
+    {
+        kos_task_t const tag = task_handle(owner);
+        for (RamBlock const& b : g_blocks)
+        {
+            if (tag != KOS_TASK_NONE and b.size != 0 and b.owner == tag and addr >= b.base
+                and addr <= b.base + (b.size - 1u))
+            {
+                *base = b.base;
+                *size = b.size;
+                return true;
+            }
+        }
+        return false;
+    }
+#endif
+#endif
 }
 
 #endif // KICKOS_HAVE_MPU

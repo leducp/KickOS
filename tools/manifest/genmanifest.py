@@ -33,7 +33,7 @@ class Refused(Exception):
 
 
 class Hex(int):
-    """An integer written in hex: a core mask."""
+    """An integer written in hex: a core mask, a byte count."""
 
 
 def read_config(path):
@@ -118,7 +118,11 @@ def manifest(facts, knobs):
             "node": facts["amp"]["node"],
             "nodes": knob(knobs, "KICKOS_AMP_NODES"),
             "ports": facts["amp"]["ports"],
+            "share": Hex(knob(knobs, "KICKOS_AMP_USER_SHARE_SIZE", 0)),
+            "share_cache": "cached",
         }
+        if knobs.get("KICKOS_AMP_USER_SHARE_UNCACHED") is True:
+            target["amp"]["share_cache"] = "uncached"
 
     # The rule the kernel applies whether or not the build enforces: it rounds every arena block and
     # checks every device window by it. A translating build has none, its page being the chip file's.

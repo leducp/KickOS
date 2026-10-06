@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+version: 1
+board: imx8mp-evk
+cluster: a53
+stdout: kernel
+ends: main
+heap: 65536
+
+tasks:
+  - name: main
+    entry: kickos_main
+    stack: 20480
+    priority: 2
+    authority: [memory, system, tasks]

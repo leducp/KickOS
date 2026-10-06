@@ -10,8 +10,6 @@
 #
 #   none      KickOS::kernel with no system target: the link names kickos_link_one_system_target,
 #             and no undefined symbol of the chip script's comes first
-#   stub      KickOS::system_default on a board with no default composition: the link names the
-#             symbol that says to write a composition and call kickos_compose
 #   two       two system targets: the symbol is defined twice
 #   entry     a composition naming an entry no source defines: the link names it
 #   stack     a stack at KICKOS_MIN_STACK_SIZE in an image with a thread-local object: the
@@ -32,7 +30,7 @@
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
 
-USAGE="usage: check_system_link.sh <kickos-build> <kickos-source> <cmake> none|stub|two|entry|stack|arena|heap|noheap|refused|notool|nocc|rerun"
+USAGE="usage: check_system_link.sh <kickos-build> <kickos-source> <cmake> none|two|entry|stack|arena|heap|noheap|refused|notool|nocc|rerun"
 KICKOS_BUILD="${1:?$USAGE}"
 KICKOS_SRC="${2:?$USAGE}"
 CMAKE="${3:?$USAGE}"
@@ -50,11 +48,7 @@ BOARD="$(sed -n 's/^KICKOS_BOARD:[A-Z]*=//p' "$KICKOS_BUILD/CMakeCache.txt")"
 PACKAGE="$TMP/prefix/lib/cmake/KickOS"
 MANIFEST="$PACKAGE/manifest.yaml"
 DEFAULT="$PACKAGE/boards/$BOARD/composition.yaml"
-if [ "$ARM" = stub ]; then
-    [ -f "$DEFAULT" ] && fail "the package installs a default composition at $DEFAULT, so it has no stub"
-else
-    [ -f "$DEFAULT" ] || fail "the package installs no default composition at $DEFAULT"
-fi
+[ -f "$DEFAULT" ] || fail "the package installs no default composition at $DEFAULT"
 
 manifest_number() { # <key>: the manifest's `<key>: <n>`, decimal or hexadecimal
     _mn="$(sed -n "s/^ *$1: *\\(0x[0-9a-fA-F]*\\|[0-9]*\\) *\$/\\1/p" "$MANIFEST" | head -n 1)"
@@ -106,16 +100,14 @@ case "$ARM" in
     none)
         PROBE_ARM=none
         EXPECT='required symbol [^ ]*kickos_link_one_system_target. not defined' ;;
-    stub)
-        PROBE_ARM=stub
-        EXPECT='required symbol [^ ]*kickos_no_default_composition_write_one_and_call_kickos_compose. not defined' ;;
     two)
         PROBE_ARM=two
         cp "$DEFAULT" "$COMPOSITION"
         EXPECT='multiple definition of [^ ]*kickos_link_one_system_target' ;;
     entry)
         edited '^( *entry: *)kickos_main' '\1kickos_absent_entry'
-        EXPECT='undefined reference to .kickos_absent_entry.' ;;
+        # ld names the symbol as C spells it, with no ABI prefix (rx-elf's `_` included).
+        EXPECT="undefined reference to [\`']kickos_absent_entry'" ;;
     stack)
         PROBE_ARM=tls
         edited '^( *stack: *)[0-9]+' "\\1$(manifest_number min_stack)"
@@ -127,7 +119,10 @@ case "$ARM" in
         # and ends below base + 2S, which is checked here, so the same stack lands at base + S or
         # later and ends past it.
         CHIP="$PACKAGE/$(sed -n 's/^  chip: *\(platform\/.*\)$/\1/p' "$MANIFEST" | head -n 1)"
-        LINE="$(grep -E 'arena: *true' "$CHIP" | head -n 1)"
+        # The memory entry marked `arena: true`, one line whether written flow or block style.
+        LINE="$(awk '/^memory:/ { m = 1; next } /^[^ #]/ { m = 0 } !m { next }
+                     /^  [a-z]/ { if (e ~ /arena: *true/) { print e; exit } e = "" }
+                     { e = e " " $0 } END { if (e ~ /arena: *true/) print e }' "$CHIP" | head -n 1)"
         BASE="$(printf '%s' "$LINE" | sed -n 's/.*base: *\(0x[0-9a-fA-F]*\|[0-9]*\).*/\1/p')"
         SIZE="$(printf '%s' "$LINE" | sed -n 's/.*size: *\(0x[0-9a-fA-F]*\|[0-9]*\).*/\1/p')"
         [ -n "$BASE" ] && [ -n "$SIZE" ] || fail "$CHIP states no arena base and size"

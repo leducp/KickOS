@@ -6,8 +6,9 @@
 // general-purpose TIM register map. The F2/F4/F7 line drives its PLL from RCC_PLLCFGR
 // and shares none of this.
 //
-// A chip joins by shipping family.cmake and family_map.h. family_map.h states, in
-// namespace kickos::stm32::chip, the values chip_stm32f1f3.cc reads: FLASH_LATENCY,
+// A chip joins by shipping family.cmake, family_map.h, and a chip file whose generated map and
+// lines are in namespace kickos::stm32. family_map.h states, in namespace kickos::stm32::chip,
+// the values chip_stm32f1f3.cc reads: FLASH_LATENCY,
 // PLL_SRC_ON, PLL_SRC_RDY, CFGR_CLEAR, CFGR_SET, POLL_LIMIT, CLK_TIMER_SR,
 // CLK_COUNTER_TEARS, clk_counter(), USART_SR, USART_TXE, USART_DR, USART_CR1,
 // CR1_TXEIE and CONSOLE_IRQ. That TU is compiled into the chip's OWN archive, once per
@@ -18,6 +19,8 @@
 
 #include "regs.h" // arch/arm/common: kickos::arm::reg32
 
+#include <kickos/chip_mmap.h>
+
 #include <stdint.h>
 
 namespace kickos::stm32
@@ -25,10 +28,9 @@ namespace kickos::stm32
     using arm::reg32;
 
     // RCC (RM0008 sec.7, RM0365 sec.9).
-    constexpr uintptr_t RCC_BASE = 0x40021000;
-    constexpr uintptr_t RCC_CR = RCC_BASE + 0x00;
-    constexpr uintptr_t RCC_CFGR = RCC_BASE + 0x04;
-    constexpr uintptr_t RCC_APB1ENR = RCC_BASE + 0x1C;
+    constexpr uintptr_t RCC_CR = mmap::RCC_BASE + 0x00;
+    constexpr uintptr_t RCC_CFGR = mmap::RCC_BASE + 0x04;
+    constexpr uintptr_t RCC_APB1ENR = mmap::RCC_BASE + 0x1C;
     constexpr uint32_t CR_PLLON = 1u << 24;
     constexpr uint32_t CR_PLLRDY = 1u << 25;
     constexpr uint32_t CFGR_SW_MASK = 0x3u << 0;
@@ -44,7 +46,7 @@ namespace kickos::stm32
         (0xFu << 4) | (0x7u << 8) | (0x7u << 11) | (0x1u << 16) | (0xFu << 18);
 
     // FLASH interface (RM0008 sec.3.3.3; the F3 shares the F0 layout).
-    constexpr uintptr_t FLASH_ACR = 0x40022000;
+    constexpr uintptr_t FLASH_ACR = mmap::FLASH_BASE + 0x00;
     constexpr uint32_t ACR_LATENCY_MASK = 0x7u << 0;
     constexpr uint32_t ACR_LATENCY_2WS = 0x2u << 0;
     constexpr uint32_t ACR_PRFTBE = 1u << 4;

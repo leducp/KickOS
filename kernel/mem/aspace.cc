@@ -5,6 +5,7 @@
 
 #if KICKOS_HAVE_ASPACE
 
+#include <kickos/ampshare.h>
 #include <kickos/domain.h>
 #include <kickos/frame_pool.h>
 #include <kickos/instance.h>
@@ -419,6 +420,17 @@ namespace kickos
     {
         size_t const g = arch_aspace_granule();
         arch_phys_addr_t const end = pa + static_cast<arch_phys_addr_t>(pages) * g;
+#if KICKOS_AMP_SHARE
+        uint8_t share_type = ARCH_MAP_NORMAL;
+        if (AMP_SHARE_UNCACHED)
+        {
+            share_type = ARCH_MAP_NOCACHE;
+        }
+        if (amp_share_meets(pa, end) and memtype != share_type)
+        {
+            return false;
+        }
+#endif
         for (int d = 0; d < KICKOS_MAX_DOMAINS; d++)
         {
             Domain const* const dom = &kernel().domains[d];
@@ -754,6 +766,16 @@ namespace kickos
                 // are freed by destroy; only their guard remains to release here.
                 continue;
             }
+#if KICKOS_AMP_SHARE
+            if ((e->flags & VR_SHARE) != 0)
+            {
+                if (e->state == VirtualState::Granted)
+                {
+                    (void)arch_aspace_unmap(space, e->base, e->pages);
+                }
+                continue;
+            }
+#endif
             if ((e->flags & VR_BORROWED) != 0)
             {
                 // Another space's frames: unmapped here, freed by their owner.

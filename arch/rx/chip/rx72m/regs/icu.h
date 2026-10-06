@@ -63,10 +63,6 @@ namespace kickos::rx::reg::icu
     constexpr int GROUPBL2_VECTOR = 107; // IER0D.IEN3, IPR107
     constexpr int GROUPAL0_VECTOR = 112; // IER0E.IEN0, IPR112
     constexpr int GROUPAL1_VECTOR = 113; // IER0E.IEN1, IPR113
-
-    // The reserved-block span has to cover the group registers, not just IR/IER/IPR. The
-    // last word the kernel touches is GENAL1 + 4 == 0x878, rounded up here.
-    constexpr uintptr_t SPAN = 0x880;
 }
 
 #endif

@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# Values from the tree's boards/blackpill/include/kickos/board_wiring.h, chip_stm32f411.cc and
+# docs/flashing.md.
+
+version: 1
+board: blackpill
+chip: stm32f411
+
+console:
+  device: /dev/usart2
+  pins: { tx: PA2, rx: PA3 }
+
+leds:
+  led: { pin: PC13, active: low, owner: kernel } # the kernel's diagnostic LED

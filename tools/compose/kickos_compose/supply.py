@@ -251,6 +251,13 @@ def init_reserved_blocks(tasks, shared, manifest):
     return reserved
 
 
+def share_seat(manifest):
+    """The reservation the kernel seats in root for the partition's user share before the init runs."""
+    if manifest.amp_share:
+        return 1
+    return 0
+
+
 def init_reservations(tasks, shared, manifest):
     """The bytes of each block the init reserves at boot, in the order it reserves them."""
     return [size for what, size, figure in init_reserved_blocks(tasks, shared, manifest)]
@@ -367,11 +374,13 @@ def check_supply(f, root, tasks, shared, chip, cluster, manifest, translating, r
                  "ring block, and root's region set, KICKOS_MPU_MAX_REGIONS less its static regions and its "
                  "stack, holds %d more" % (windows, manifest.free_regions))
     slots = manifest.pools.get("KICKOS_RAM_OWNER_SLOTS")
-    if manifest.enforced and slots is not None and len(reserved) > slots:
+    seat = share_seat(manifest)
+    if manifest.enforced and slots is not None and len(reserved) + seat > slots:
         f.refuse(root, "supply.reservations",
                  "the init reserves %d arena blocks, its private block, each watcher's status block, each "
-                 "shared region, each ring block and each stack, and the kernel records the owner of %d, so "
-                 "KICKOS_RAM_OWNER_SLOTS would have to grow" % (len(reserved), slots))
+                 "shared region, each ring block and each stack, beside the %d the kernel seats in root for "
+                 "the partition's user share, and the kernel records the owner of %d, so "
+                 "KICKOS_RAM_OWNER_SLOTS would have to grow" % (len(reserved), seat, slots))
     check_arena(f, root, shared, tasks, chip, cluster, manifest)
 
 
@@ -381,13 +390,15 @@ def check_ranges(f, root, tasks, reserved, manifest):
     ranges = manifest.pools.get("KICKOS_ASPACE_RANGES")
     if ranges is None:
         return
-    init = IMAGE_RANGES + 1 + len(reserved)
+    seat = share_seat(manifest)
+    init = IMAGE_RANGES + 1 + len(reserved) + seat
     if init > ranges:
         f.refuse(root, "supply.ranges",
-                 "the init's address space holds %d ranges, its image's %d, its stack's and one per "
-                 "reservation, its private block, each watcher's status block, each shared region, each ring "
-                 "block and each stack, and a space holds %d, so KICKOS_ASPACE_RANGES would have to grow"
-                 % (init, IMAGE_RANGES, ranges))
+                 "the init's address space holds %d ranges, its image's %d, its stack's, %d for the "
+                 "partition's user share the kernel seats in root, and one per reservation, its private "
+                 "block, each watcher's status block, each shared region, each ring block and each stack, "
+                 "and a space holds %d, so KICKOS_ASPACE_RANGES would have to grow"
+                 % (init, IMAGE_RANGES, seat, ranges))
     for task in tasks:
         held = space_of(task)
         if held is not None and held > ranges:
@@ -479,6 +490,11 @@ def check_arena(f, root, shared, tasks, chip, cluster, manifest):
     for view, (base, size) in sorted(chip.arena.items(), key=lambda item: str(item[0])):
         if cluster is not None and view != cluster:
             continue
+        where = "the host-placed arena"
+        if base is None:
+            base = 0
+        else:
+            where = "the arena at 0x%X" % base
         cursor = base
         for want in blocks:
             if not want:
@@ -487,11 +503,11 @@ def check_arena(f, root, shared, tasks, chip, cluster, manifest):
             cursor = -(-cursor // align) * align + ram_size(want, manifest)
         if cursor > base + size:
             f.refuse(root, "supply.arena",
-                     "the composition carves 0x%X bytes from the arena at 0x%X, its boot stacks, the init's "
+                     "the composition carves 0x%X bytes from %s, its boot stacks, the init's "
                      "private block, the watchers' status blocks, shared regions, ring blocks and stacks, and the "
                      "kernel's default stacks, each rounded and aligned as the allocator places them, and the "
                      "arena holds 0x%X"
-                     % (cursor - base, base, size))
+                     % (cursor - base, where, size))
             break
 
 

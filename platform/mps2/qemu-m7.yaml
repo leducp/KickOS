@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# QEMU `mps2-an500`. The kernel console is Arm semihosting (chip_mps2.cc).
+
+version: 1
+board: qemu-m7
+chip: mps2
+
+console:
+  semihosting: true

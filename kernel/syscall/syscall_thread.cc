@@ -3,6 +3,7 @@
 //
 // Thread and task lifecycle syscalls.
 
+#include <kickos/ampshare.h>
 #include <kickos/arch/arch.h>
 #include <kickos/cap.h>
 #include <kickos/config.h>
@@ -211,6 +212,13 @@ namespace kickos
                 }
                 size_t const g = arch_aspace_granule();
                 VirtualRanges const* const own = domain_ranges(task_domain(c->task));
+#if KICKOS_AMP_SHARE
+                int share_rc = 0;
+                if (amp_share_window(own, w, &share_rc))
+                {
+                    return share_rc;
+                }
+#endif
                 VirtualRange const* e = nullptr;
                 if (own != nullptr)
                 {

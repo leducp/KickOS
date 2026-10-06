@@ -6,9 +6,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 
-from kickos_compose import emit, supply
+from kickos_compose import descriptions, emit, supply
+from kickos_compose.subset import Report
 from kickos_compose.__main__ import REFUSED
 from test_arms import MANIFESTS, PLATFORM, SYSTEMS, TREE, VIRTIO, mutate, read, write
 
@@ -274,6 +276,19 @@ class Emitted(unittest.TestCase):
         self.assertIn("ASSERT(__kickos_system_arena_0 <= ___kickos_ram_end,", asserts)
         source, asserts, fragment = self.system("xmc4800-relax.yaml")
         self.assertIn("ALIGN(__kickos_ram_start, 0x200)", asserts)
+
+    def test_a_hosted_image_brings_no_chip_script_asserts(self):
+        report = Report()
+        path = os.path.join(TREE, "platform", "sim", "chip.yaml")
+        chip = descriptions.check_chip(path, read(path), report)
+        self.assertEqual([str(r) for r in report.refusals], [])
+        admitted = types.SimpleNamespace(chip=chip, heap=16384, manifest=None, tasks=[], shared=[],
+                                         translating=False)
+        asserts = emit.render_asserts(admitted, "composition.yaml")
+        self.assertIn("ASSERT(KICKOS_USER_HEAP_SIZE == 16384,", asserts)
+        for symbol in ("_kickos_heap_limit", "__kickos_ram_start", "__kickos_tls_carve"):
+            with self.subTest(symbol=symbol):
+                self.assertNotIn(symbol, asserts)
 
     def test_the_link_refuses_a_heap_symbol_other_than_the_systems(self):
         source, asserts, fragment = self.system_heap([("heap: 65536\n", "heap: 0\n")])

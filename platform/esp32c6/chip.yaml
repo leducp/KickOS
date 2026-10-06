@@ -29,7 +29,7 @@ cores:
     # this node is enforced within it. APM on the HP side bounds what the node can reach.
     protection: { unit: none, privilege: false }
 
-interrupts: { count: 32, soft_only_from: 26, ref: "10.3.2 CPU Interrupts, p.384" }
+interrupts: { count: { value: 32, ref: "10.3.2 CPU Interrupts, p.384" }, soft_only_from: 26 }
 
 devices:
   # Interrupts are routed: a peripheral's matrix source reaches a CPU interrupt, and the

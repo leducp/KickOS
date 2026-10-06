@@ -40,6 +40,10 @@ class Manifest:
         self.kernel_cores = None
         self.isolated_cores = 0
         self.amp_ports = 0
+        # Bytes of the partition's user share, the top of the region every node writes.
+        self.amp_share = 0
+        # Its one memory type, in a region's `cache` vocabulary.
+        self.amp_share_cache = "cached"
         self.cap_reserved = None
         # What the link spells before a C name.
         self.symbol_prefix = None
@@ -215,8 +219,16 @@ def check_target(f, node, manifest):
 
 
 def check_amp(f, node, manifest):
-    values = f.fields(node, "`target` amp", ("node", "nodes", "ports"), ("node", "nodes", "ports"))
-    if values is None or "nodes" not in values:
+    values = f.fields(node, "`target` amp", ("node", "nodes", "ports", "share", "share_cache"),
+                      ("node", "nodes", "ports", "share", "share_cache"))
+    if values is None:
+        return
+    if "share" in values:
+        manifest.amp_share = f.integer(values["share"], "`target` amp share", 32) or 0
+    if "share_cache" in values:
+        manifest.amp_share_cache = f.enum(values["share_cache"], "`target` amp share_cache",
+                                          ("cached", "uncached")) or "cached"
+    if "nodes" not in values:
         return
     nodes = f.integer(values["nodes"], "`target` amp nodes", 8)
     if "node" in values:

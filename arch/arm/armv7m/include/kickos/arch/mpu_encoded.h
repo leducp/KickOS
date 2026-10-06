@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The v7-M arch carries three MPU designs, because a chip may replace the core PMSAv7
-// backend (arch/arm/chip/<chip>/mpu.cmake): PMSAv8 on a Cortex-M33 and the K64F's
+// backend (the unit its chip file states): PMSAv8 on a Cortex-M33 and the K64F's
 // crossbar SYSMPU. Each writes a different descriptor, so each gets its own image.
 // KICKOS_ARM_MPU (CMakeLists.txt) names which one this build is; this header is only
 // included where KICKOS_HAVE_MPU (arch/include/kickos/arch/arch.h), so it never sees

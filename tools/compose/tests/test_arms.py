@@ -126,11 +126,25 @@ ARMS = [
     ("form.range", "stm32f411/chip.yaml", [("[0x40004400, 0x20]", "[0xFFFFFFFFFFFFFFF0, 0x20]")], False),
     ("form.range", "virt_arm64/chip.yaml", [("[0x0A000000, 0x200]", "[0xFFFFFFFFFFFFF000, 0x200]")], False),
     ("form.range", "stm32f411/chip.yaml", [("base: 0x20000000, size", "base: 0xFFFFFFFFFFFF0000, size")], False),
-    (None, "stm32f411/chip.yaml", [("[0x40004400, 0x20]", "[0xFFFFFFFFFFFFFFE0, 0x20]")], False),
+    ("chip.address-width", "stm32f411/chip.yaml", [("[0x40004400, 0x20]", "[0xFFFFFFFFFFFFFFE0, 0x20]")], False),
+    ("chip.address-width", "stm32f411/chip.yaml", [("base: 0x20000000, size: 0x20000", "base: 0xFFFF0000, size: 0x20000")],
+     False),
+    (None, "stm32f411/chip.yaml", [("[0x40004400, 0x20]", "[0xFFFFFFE0, 0x20]")], False),
+    (None, "virt_arm64/chip.yaml", [("[0x09030000, 0x1000]", "[0xFFFFFFFFFFFFE000, 0x1000]")], False),
+    ("chip.reserved", "virt_rv32/chip.yaml", [("owner: kernel, ", "")], True),
+    (None, "virt_rv32/chip.yaml", [("owner: kernel, ", ""), ("\ndevices:\n", "\nreserved: none\n\ndevices:\n")], False),
+    ("chip.reserved", "xmc4800/chip.yaml", [("\ndevices:\n", "\nreserved: none\n\ndevices:\n")], False),
+    ("form.enum", "virt_rv32/chip.yaml", [("\ndevices:\n", "\nreserved: all\n\ndevices:\n")], False),
+    ("form.text", "xmc4800/chip.yaml", [('ref: "Table 7-2 Memory Map, p.7-5"', 'ref: "Table 7-2 */ p.7-5"')], False),
+    ("form.text", "xmc4800/chip.yaml", [('ref: "Table 7-2 Memory Map, p.7-5"', 'ref: "Table 7-2 \\\\ p.7-5"')], False),
+    ("form.text", "xmc4800/chip.yaml", [('ref: "Table 7-2 Memory Map, p.7-5"', 'ref: "Table 7-2, p.7\u20135"')], False),
+    ("form.text", "xmc4800/chip.yaml", [('manual: "XMC4700', 'manual: "\\nXMC4700')], False),
     (None, "virt_arm64/chip.yaml", [("    count: 32\n", "    count: 0xFFFF\n")], False),
-    (None, "imx8mp/chip.yaml",
+    (None, "imx8mp/imx8mp-evk.yaml",
      [("dram: { base: 0x40000000, size: 0x4000000,", "dram: { base: 0x40000000, size: 0x100000000,")], False),
     ("form.inapplicable", "esp32c6/chip.yaml", [("data_cache: false\n", "data_cache: false\nclusters_coherent: false\n")], False),
+    ("form.inapplicable", "q35/chip.yaml", [("memory_type: true, io_ports: true }", "memory_type: true, io_ports: true, driven: false }")],
+     False),
     ("form.inapplicable", "esp32c6/chip.yaml", [("  hp:\n", "  hp:\n    line_offset: 0\n")], False),
     ("form.missing", "stm32f411/chip.yaml", [("unit: pmsav7, covers_devices: true,", "unit: pmsav7,")], False),
     ("form.missing", "stm32f411/chip.yaml", [(", memory_type: true }", " }")], False),
@@ -184,6 +198,27 @@ ARMS = [
     ("form.version", "stm32f411/chip.yaml", [("version: 1\n", "version: 2\n")], False),
     ("form.version", "stm32f411/f411disco.yaml", [("version: 1\n", "version: 0\n")], False),
     ("form.exclusive", "q35/chip.yaml", [("com1: { ports:", "com1: { window: [0x1000, 8], ports:")], False),
+    ("board.pin-reused", "rp2040/picopi.yaml", [("pin: GPIO25,", "pin: GPIO0,")], False),
+    (None, "stm32f411/f411disco.yaml",
+     [("    pins: [PA5, PA6, PA7]\n", "    pins: [PA5, PA6, PA7]\n  baro:\n    bus: /dev/spi1\n    chip_select: PC13\n"
+                                     "    pins: [PA5, PA6, PA7]\n")], False),
+    ("board.pin-reused", "stm32f411/f411disco.yaml",
+     [("    pins: [PA5, PA6, PA7]\n", "    pins: [PA5, PA6, PA7]\n  baro:\n    bus: /dev/spi1\n    chip_select: PE3\n"
+                                     "    pins: [PA5, PA6, PA7]\n")], False),
+    ("board.pin-signal", "stm32f302/f302nucleo.yaml", [("pins: { tx: PA2, rx: PA3 }", "pins: { tx: PA3, rx: PA2 }")], False),
+    ("board.pin-signal", "stm32f411/f411disco.yaml", [("pins: { tx: PA2, rx: PA3 }", "pins: { tx: PA3, rx: PA2 }")], False),
+    ("board.memory-overlap", "rp2040/picopi.yaml", [("    base: 0x10000000\n", "    base: 0x20000000\n")], False),
+    ("board.link-duplicate", "rp2040/picopi.yaml",
+     [("link: { region: FLASH, access: rx }", "link: { region: RAM, access: rx }")], False),
+    ("board.symbol-collision", "rp2040/picopi.yaml", [("  xip_flash:\n", "  sram:\n")], False),
+    ("form.exclusive", "sim/chip.yaml",
+     [("  console:\n    host: true\n", "  console:\n    host: true\n    window: [0x1000, 0x100]\n")], False),
+    ("form.inapplicable", "stm32f103/chip.yaml", [("  usart1:\n", "  console: { host: true }\n  usart1:\n")], False),
+    ("form.inapplicable", "sim/chip.yaml",
+     [("arena: { size: 0x200000, arena: true }",
+       "arena: { size: 0x200000, arena: true, link: { region: RAM, access: rwx } }")], False),
+    ("form.missing", "sim/chip.yaml", [("  arena: { size: 0x200000, arena: true }\n",
+                                        "  arena: { size: 0x200000, arena: true }\n  scratch: { size: 0x1000 }\n")], False),
     ("form.exclusive", "imx8mp/chip.yaml", [("ocram: { size: 0x90000,", "ocram: { size: 0x90000, base: 0x900000,")], False),
     ("form.exclusive", "imx8mp/chip.yaml", [("ocram: { size: 0x90000,", "ocram: { size: 0x90000, cluster: a53,")], False),
     ("form.exclusive", "imx8mp/chip.yaml",
@@ -264,11 +299,12 @@ ARMS = [
     ("board.pin-unknown", "esp32c6/esp32c6-wroom.yaml", [("GPIO15: strapping", "GPIO14: strapping")], False),
     ("board.pin-unknown", "virt_arm64/qemu-arm64.yaml",
      [("  device: /dev/uart0\n", "  device: /dev/uart0\n  pins: { tx: TX0 }\n")], False),
-    (None, "xmc4800/xmc4800-relax.yaml", [("pin: P5.8,", "pin: P1.4,")], False),
-    ("board.pin-function", "stm32f411/f411disco.yaml", [("tx: PA2", "tx: PA5")], False),
-    ("board.pin-function", "mk64f/frdmk64f.yaml", [("[PTD1, PTD2, PTD3]", "[PTD1, PTD2, PTB16]")], False),
+    ("board.pin-reused", "xmc4800/xmc4800-relax.yaml", [("pin: P5.8,", "pin: P1.4,")], False),
+    ("board.pin-function", "stm32f411/f411disco.yaml", [("tx: PA2", "tx: PC13")], False),
+    (("board.pin-function", "board.pin-reused"), "mk64f/frdmk64f.yaml", [("[PTD1, PTD2, PTD3]", "[PTD1, PTD2, PTB16]")],
+     False),
     ("board.pin-function", "xmc4800/xmc4800-relax.yaml", [("device: /dev/usic0/ch0", "device: /dev/usic0/ch1")], True),
-    ("board.pin-function", "stm32f411/f411disco.yaml", [("pins: [PA5, PA6, PA7]", "pins: [PA5, PA6, PA2]")], False),
+    ("board.pin-function", "stm32f411/f411disco.yaml", [("pins: [PA5, PA6, PA7]", "pins: [PA5, PA6, PC13]")], False),
     ("board.reserved-pin-used", "esp32c6/esp32c6-wroom.yaml",
      [("# Pins the board", "leds:\n  rgb: { pin: GPIO8, active: high }\n\n# Pins the board")], False),
     ("chip.block-outside", "stm32f411/chip.yaml",
@@ -295,14 +331,18 @@ ARMS = [
     (None, "virt_arm64/chip.yaml", [("    lines: { irq: 48 }\n", "    lines: { irq: 287 }\n")], False),
     ("chip.line-range", "esp32c6/chip.yaml", [("soft_only_from: 26", "soft_only_from: 32")], False),
     (None, "esp32c6/chip.yaml", [("soft_only_from: 26", "soft_only_from: 31")], False),
+    ("chip.line-range", "virt_arm64/chip.yaml", [("free_from: 200", "free_from: 288")], False),
+    (None, "virt_arm64/chip.yaml", [("free_from: 200", "free_from: 287")], False),
     (None, "stm32f411/chip.yaml",
      [("lines: { global: 35 }", "lines: { global: { number: 35, ref: p.3, symbol: SPI1_IRQ } }")], False),
     ("form.missing", "stm32f411/chip.yaml", [("lines: { global: 35 }", "lines: { global: { ref: p.3 } }")], False),
     ("form.missing", "stm32f411/chip.yaml", [('manual: "RM0383 STM32F411xC/E Reference Manual, Rev 4 (May 2025)"\n', "")],
      True),
-    ("form.missing", "stm32f411/chip.yaml", [('interrupts: { count: 86, ref: "Table 37 Vector table, p.205" }\n', "")],
+    ("form.missing", "stm32f411/chip.yaml", [('interrupts: { count: { value: 86, ref: "Table 37 Vector table, p.205" } }\n', "")],
      True),
-    ("form.missing", "stm32f411/chip.yaml", [("interrupts: { count: 86,", "interrupts: { ")], False),
+    ("form.missing", "stm32f411/chip.yaml", [('interrupts: { count: { value: 86, ref: "Table 37 Vector table, p.205" } }',
+                                          "interrupts: { }")], False),
+    ("form.missing", "stm32f411/chip.yaml", [("count: { value: 86,", "count: {")], False),
     ("chip.link-duplicate", "xmc4800/chip.yaml",
      [("\n# Pins are", "  dsram2: { base: 0x20020000, size: 0x20000, link: { region: RAM, access: rwx } }\n\n# Pins are")],
      False),
@@ -318,12 +358,20 @@ ARMS = [
     ("chip.symbol-collision", "stm32f411/chip.yaml",
      [("  sram: { base: 0x20000000,", "  sram: { symbol: TIM2_BASE, base: 0x20000000,")], False),
     ("chip.symbol-collision", "stm32f411/chip.yaml",
+     [("lines: { global: 35 }", "lines: { global: { number: 35, symbol: SPI_BASE } }"),
+      ("  tim2:\n", "  line_spi: { window: [0x40013400, 0x20] }\n  tim2:\n")],
+     False),
+    (None, "stm32f411/chip.yaml",
+     [("lines: { global: 35 }", "lines: { global: { number: 35, symbol: SPI_LINE } }"),
+      ("  tim2:\n", "  line_spi: { window: [0x40013400, 0x20] }\n  tim2:\n")],
+     False),
+    ("chip.symbol-collision", "stm32f411/chip.yaml",
      [("  sram: { base: 0x20000000,", "  gpio0: { base: 0x30000000, size: 0x1000 }\n  sram: { base: 0x20000000,")], False),
     (None, "stm32f411/chip.yaml",
      [("  sram: { base: 0x20000000,", "  gpio9: { base: 0x30000000, size: 0x1000 }\n  sram: { base: 0x20000000,")], False),
     (None, "stm32f411/chip.yaml",
      [("chip: stm32f411\n", "chip: stm32f411\nc: { namespace: kickos::stm, line_enum: \"irq_num : int\" }\n"
-       "cycle_counter: { hz: 0, glitches: true, ref: p.4 }\n")], False),
+       "cycle_counter: { hz: { value: 0, ref: p.4 }, glitches: { value: true, ref: p.5 } }\n")], False),
     ("form.name", "stm32f411/chip.yaml", [("chip: stm32f411\n", "chip: stm32f411\nc: { namespace: \"stm::x\" }\n")],
      False),
     ("form.name", "stm32f411/chip.yaml",
@@ -525,6 +573,8 @@ target:
     node: 0
     nodes: 2
     ports: [[0, 2], [1, 3]]
+    share: 0x4000
+    share_cache: uncached
 protection:
   enforced: true
   window_rule: pow2
@@ -584,16 +634,22 @@ drivers:
 """
 
 MANIFEST_DEFAULT = ("drivers:\n  xmcssc:", "default:\n  composition: boards/xmc4800-relax/composition.yaml\ndrivers:\n  xmcssc:")
-MANIFEST_AMP = "  amp:\n    node: 0\n    nodes: 2\n    ports: [[0, 2], [1, 3]]\n"
+MANIFEST_AMP = "  amp:\n    node: 0\n    nodes: 2\n    ports: [[0, 2], [1, 3]]\n    share: 0x4000\n    share_cache: uncached\n"
 
 XMC_TARGET = ("  board: xmc4800-relax\n  chip: xmc4800\n  arch: armv7m\n  cores: 2\n  kernel_cores: 1\n"
-              "  isolated_cores: 0x0\n  amp:\n    node: 0\n    nodes: 2\n    ports: [[0, 2], [1, 3]]\n")
+              "  isolated_cores: 0x0\n  amp:\n    node: 0\n    nodes: 2\n    ports: [[0, 2], [1, 3]]\n"
+              "    share: 0x4000\n    share_cache: uncached\n")
 XMC_PROTECTION = ("protection:\n  enforced: true\n  window_rule: pow2\n  smallest_window: 32\n  thread_windows: 4\n"
                   "  fault_isolation: true\n")
 XMC_POOLS = ("  KICKOS_MAX_THREADS: 8\n  KICKOS_TASK_ENDPOINT_BUDGET: 4\n  KICKOS_MAX_SPAWN_GRANTS: 6\n"
              "  KICKOS_CAP_TABLE_SUPPLY: 16\n")
 XMC_THREADS = "  min_stack: 960\n  user_stack: 4096\n  idle_stack: 512\n  root_stack: 4096\n  stack_align: 16\n  stack_stride: 4096\n"
 XMC_DESCRIPTIONS = "  chip: platform/xmc4800/chip.yaml\n  board: platform/xmc4800/xmc4800-relax.yaml\n"
+# A node of a two-node partition that names no crossing and states a user share.
+SHARE_AMP = "  amp:\n    node: 0\n    nodes: 2\n    ports: []\n    share: 0x4000\n    share_cache: cached\n"
+XMC_SHARE = [("  kernel_cores: 1\n  isolated_cores: 0x0\n", "  kernel_cores: 1\n  isolated_cores: 0x0\n" + SHARE_AMP)]
+ARM64_SHARE = [("  kernel_cores: 4\n  isolated_cores: 0x0\n", "  kernel_cores: 1\n  isolated_cores: 0x0\n" + SHARE_AMP)]
+ARM64_UNPINNED = [("    core: 1\n", ""), ("    core: 2\n", "")]
 TRANSLATING = "protection:\n  enforced: true\n  window_rule: none\n  thread_windows: 4\n  fault_isolation: true\n"
 
 
@@ -838,10 +894,21 @@ ADMISSION_ARMS = [
     (None, "xmc4800-relax.yaml", [("heap: 16384\n", "heap: 0x18000\n")], [], False),
     ("supply.reservations", "xmc4800-relax.yaml", [], [("  KICKOS_RAM_OWNER_SLOTS: 48\n", "  KICKOS_RAM_OWNER_SLOTS: 3\n")], True),
     (None, "xmc4800-relax.yaml", [], [("  KICKOS_RAM_OWNER_SLOTS: 48\n", "  KICKOS_RAM_OWNER_SLOTS: 4\n")], False),
+    # The partition's user share takes one slot more, seated in root before the init runs.
+    ("supply.reservations", "xmc4800-relax.yaml", [],
+     XMC_SHARE + [("  KICKOS_RAM_OWNER_SLOTS: 48\n", "  KICKOS_RAM_OWNER_SLOTS: 4\n")], True),
+    (None, "xmc4800-relax.yaml", [], XMC_SHARE + [("  KICKOS_RAM_OWNER_SLOTS: 48\n", "  KICKOS_RAM_OWNER_SLOTS: 5\n")],
+     False),
     (None, "xmc4800-relax.yaml", [NO_PROTECTION], UNENFORCED + [("  KICKOS_RAM_OWNER_SLOTS: 48\n", "  KICKOS_RAM_OWNER_SLOTS: 3\n")],
      False),
     ("supply.ranges", "qemu-arm64.yaml", [], [("  KICKOS_ASPACE_RANGES: 64\n", "  KICKOS_ASPACE_RANGES: 8\n")], True),
     (None, "qemu-arm64.yaml", [], [("  KICKOS_ASPACE_RANGES: 64\n", "  KICKOS_ASPACE_RANGES: 9\n")], False),
+    # The init's space holds the partition's user share, seated in root before the init runs.
+    (None, "qemu-arm64.yaml", ARM64_UNPINNED, [("  KICKOS_ASPACE_RANGES: 64\n", "  KICKOS_ASPACE_RANGES: 9\n")], False),
+    ("supply.ranges", "qemu-arm64.yaml", ARM64_UNPINNED,
+     ARM64_SHARE + [("  KICKOS_ASPACE_RANGES: 64\n", "  KICKOS_ASPACE_RANGES: 9\n")], True),
+    (None, "qemu-arm64.yaml", ARM64_UNPINNED,
+     ARM64_SHARE + [("  KICKOS_ASPACE_RANGES: 64\n", "  KICKOS_ASPACE_RANGES: 10\n")], False),
     ("supply.size", "qemu-arm64.yaml", [("    size: 64\n", "    size: 0xFFFFFFFF\n")], [], False),
     ("manifest.window", "xmc4800-relax.yaml", [], [("  window_rule: pow2\n  smallest_window: 32\n", "  window_rule: none\n")],
      True),
@@ -947,6 +1014,10 @@ MANIFEST_ARMS = [
      False),
     ("manifest.amp", [("    node: 0\n", "    node: 2\n")], False),
     ("manifest.amp", [("[[0, 2], [1, 3]]", "[[0, 2], [2, 3]]")], False),
+    ("form.missing", [("    share: 0x4000\n", "")], True),
+    ("form.range", [("    share: 0x4000\n", "    share: 0x100000000\n")], False),
+    ("form.missing", [("    share_cache: uncached\n", "")], True),
+    ("form.enum", [("    share_cache: uncached\n", "    share_cache: writeback\n")], False),
     ("manifest.window", [("  smallest_window: 32\n", "  smallest_window: 48\n")], False),
     ("manifest.window", [("  smallest_window: 32\n", "  smallest_window: 0\n")], False),
     (None, [("window_rule: pow2", "window_rule: granule")], False),

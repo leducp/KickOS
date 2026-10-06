@@ -258,6 +258,6 @@ if(KICKOS_NUM_CORES GREATER 1 AND KICKOS_CHIP STREQUAL "rp2350")
   add_test(NAME rp_node_vectors
     COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_rp_node_vectors.sh"
             "$<TARGET_FILE:hello>" "${CMAKE_NM}" "${CMAKE_OBJDUMP}" "${KICKOS_CHIP}"
-            "${PROJECT_SOURCE_DIR}")
+            "${KICKOS_CHIP_LIMITS_H}" "${PROJECT_BINARY_DIR}/generated/chip/chip_layout.h")
   kickos_host_gate(rp_node_vectors)
 endif()

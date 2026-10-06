@@ -215,6 +215,12 @@ void arch_init(void)
     // table the firmware owns.
     aspace_init(arch_ram_base(), arch_ram_size());
     apic_init();
+    // The reserved rows name the chip file's LAPIC page, so a relocated xAPIC would be grantable.
+    if (apic_mmio_base() != 0 and apic_mmio_base() != mmap::LAPIC_BASE)
+    {
+        com1_puts("\nx86_64 q35: the local APIC is not at the chip file's LAPIC_BASE\n");
+        arch_shutdown(KICKOS_FATAL_STATUS);
+    }
 #if KICKOS_KERNEL_CORES > 1
     if (not apic_is_x2())
     {

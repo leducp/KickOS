@@ -17,7 +17,7 @@ if(KICKOS_MEMORY_ENFORCED)
       COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_rootfault.sh" "$<TARGET_FILE:rootfault>"
               ${KICKOS_FAULT_OUTCOME})
     set_tests_properties(rootfault PROPERTIES TIMEOUT 15)
-  elseif(KICKOS_CHIP STREQUAL "mps2" OR KICKOS_BOARD STREQUAL "qemu-riscv"
+  elseif(KICKOS_QEMU_MPS2 OR KICKOS_BOARD STREQUAL "qemu-riscv"
          OR KICKOS_BOARD STREQUAL "qemu-riscv64")
     kickos_add_qemu_test(TARGET rootfault
       SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_rootfault.sh"

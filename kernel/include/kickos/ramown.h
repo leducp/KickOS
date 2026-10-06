@@ -49,6 +49,13 @@ namespace kickos
     //
     // A null owner, a task no handle names, size 0 and a window that wraps all answer false.
     bool ram_owner_nameable(Task const* owner, uintptr_t base, size_t size);
+
+    // Record [base, base + size), a block outside the arena, as `owner`'s. False where the
+    // table is full, `owner` no task, or the extent not one region describes exactly.
+    bool ram_owner_seat(Task const* owner, uintptr_t base, size_t size);
+
+    // The block `owner` reserved that holds `addr`. False where none does.
+    bool ram_owner_extent(Task const* owner, uintptr_t addr, uintptr_t* base, size_t* size);
 #else
     // No region descriptors: nothing is enforced here, so nothing is owned either. A
     // translating backend takes this arm too, its record being the range list.

@@ -18,17 +18,16 @@
 #include <kickos/sys/service.h>
 #include <kickos/chip_mmap.h>
 
+#include <stdint.h>
+
 extern "C"
 {
     int rpusb_console_start(struct kos_service_cfg const* cfg);
 
-    // USB DPRAM at 0x5010_0000 with the register block 0x10000 above it. The window is
-    // 128 KiB because PMSAv6 needs a power-of-two naturally aligned region; 0x50100000 is
-    // 128 KiB-aligned and the whole run stays inside the USB block's own AHB slot.
     static struct kos_service_cfg const rpusb_cfg = {
         .name = "rpusb",
         .mmio_base = kickos::rp2040::mmap::USBCTRL_DPRAM_BASE,
-        .mmio_window = kickos::rp2040::mmap::USBCTRL_WINDOW,
+        .mmio_window = kickos::rp2040::mmap::USBCTRL_SIZE,
         .hz = 0u,
         .addr = 0,
         .prio = 12,

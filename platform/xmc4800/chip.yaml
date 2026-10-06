@@ -15,7 +15,7 @@ c: { namespace: kickos::xmc, line_enum: "node : int" }
 # DWT CYCCNT reads can glitch on this part, and a glitched read only inflates a delta.
 cycle_counter: { glitches: true }
 
-interrupts: { count: 112, ref: "4.1 Features, p.4-4" }
+interrupts: { count: { value: 112, ref: "4.1 Features, p.4-4" } }
 
 devices:
   # USIC0 is a MODULE of two channels. Each channel is its own register window, but the
@@ -57,7 +57,6 @@ devices:
   port14: { window: [0x48028E00, 0x100], ref: "Table 26-2, p.26-12" } # P14 and P15 are inputs only
   port15: { window: [0x48028F00, 0x100], ref: "Table 26-2, p.26-12" }
 
-  # The monotonic time base.
   ccu40: { window: [0x4000C000, 0x4000], owner: kernel, ref: "Table 7-2 Memory Map, p.7-5" }
   # Clock gates, resets, PLL and RTC.
   scu:

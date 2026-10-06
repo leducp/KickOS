@@ -12,7 +12,7 @@
 # Board -> {arch, chip} resolution.
 #
 # A board's arch and chip come from one descriptor, boards/<board>/board.cmake, also included
-# pre-project by the cross toolchain file. The sim has no chip (KICKOS_CHIP == "").
+# pre-project by the cross toolchain file.
 #
 # KICKOS_BOARDS_DIR is captured at include time: a called function sees the caller's list
 # dir, not this file's. An installed package has no boards/ tree, hence the fallback below.
@@ -407,9 +407,7 @@ function(kickos_add_driver name)
   if(DEFINED DRV_REGDIR)
     target_include_directories(kickos_${name} PRIVATE
       "${PROJECT_SOURCE_DIR}/${DRV_REGDIR}")
-    if(KICKOS_CHIP_GENERATED)
-      target_include_directories(kickos_${name} PRIVATE "${PROJECT_BINARY_DIR}/generated/chip")
-    endif()
+    target_include_directories(kickos_${name} PRIVATE "${PROJECT_BINARY_DIR}/generated/chip")
   endif()
   if(DEFINED DRV_CLASS)
     target_link_libraries(kickos_${name} PRIVATE ${DRV_CLASS})
@@ -530,22 +528,17 @@ function(kickos_qemu_machine board out_env out_machine)
     # QEMU's nRF51 SoC exposes SRAM size as a QOM property and -m is ignored by a fixed-SoC
     # machine, so an image linked for the chip's real SRAM without this locks up on its first
     # push, before any vector table is live, as "can't escalate 3 to HardFault". The figure is
-    # scraped from nrf51.ld's own RAM LENGTH, in bytes, so it cannot drift from what the image
-    # was linked for.
-    set(_nrf51_ld "${CMAKE_SOURCE_DIR}/arch/arm/chip/nrf51/nrf51.ld")
-    file(STRINGS "${_nrf51_ld}" _nrf51_ram_line REGEX "^[ \t]*RAM[ \t]*\\(rwx\\)")
-    if(_nrf51_ram_line STREQUAL "")
-      message(FATAL_ERROR "kickos_qemu_machine: ${_nrf51_ld} names no 'RAM (rwx)' region to "
-        "scrape the microbit QEMU sram-size from")
+    # the RAM link region chip.cmake carries, so it cannot drift from what the image was
+    # linked for. Only the configured board's chip facts are at hand: asked for another
+    # board, this answers its machine alone.
+    if(board STREQUAL KICKOS_BOARD)
+      if(NOT DEFINED KICKOS_CHIP_LINK_RAM_LENGTH)
+        message(FATAL_ERROR "kickos_qemu_machine: the chip file states no RAM link region to "
+          "size the microbit QEMU sram-size from")
+      endif()
+      math(EXPR _nrf51_sram_bytes "${KICKOS_CHIP_LINK_RAM_LENGTH}" OUTPUT_FORMAT DECIMAL)
+      set(_env QEMU_EXTRA=-global\ nrf51-soc.sram-size=${_nrf51_sram_bytes})
     endif()
-    # The trailing anchor requires LENGTH's value to be the last thing on the line, so a K/M
-    # suffix fails this match rather than being read as its digits alone ("32K" as 32 bytes).
-    if(NOT _nrf51_ram_line MATCHES "LENGTH[ \t]*=[ \t]*[0-9]+[ \t]*$")
-      message(FATAL_ERROR "kickos_qemu_machine: could not read a trailing plain decimal RAM "
-        "LENGTH (no K/M suffix) out of '${_nrf51_ram_line}' in ${_nrf51_ld}")
-    endif()
-    string(REGEX REPLACE ".*LENGTH[ \t]*=[ \t]*([0-9]+)[ \t]*$" "\\1" _nrf51_sram_bytes "${_nrf51_ram_line}")
-    set(_env QEMU_EXTRA=-global\ nrf51-soc.sram-size=${_nrf51_sram_bytes})
     set(_machine microbit)
   elseif(board STREQUAL "qemu")
     set(_machine mps2-an386)
@@ -926,37 +919,4 @@ function(kickos_board_names out)
   endforeach()
   list(SORT _names)
   set(${out} "${_names}" PARENT_SCOPE)
-endfunction()
-
-# ---------------------------------------------------------------------------
-# kickos_enforcing_mpu_boards(<out>)
-#   The boards whose chip enforces memory protection, derived at configure time from the
-#   arch/*/chip/*/mpu.cmake opt-ins (KICKOS_CHIP_ENFORCES_MPU) reverse-mapped through the
-#   board descriptors, plus the sim. Reads each descriptor in this function's scope so the
-#   KICKOS_CHIP/ARCH it sets never leak into the caller's build.
-function(kickos_enforcing_mpu_boards out)
-  file(GLOB _mpus "${CMAKE_CURRENT_SOURCE_DIR}/arch/*/chip/*/mpu.cmake")
-  set(_chips "")
-  foreach(_m ${_mpus})
-    get_filename_component(_chipdir "${_m}" DIRECTORY)
-    get_filename_component(_chip "${_chipdir}" NAME)
-    list(APPEND _chips "${_chip}")
-  endforeach()
-  file(GLOB _descs "${KICKOS_BOARDS_DIR}/*/board.cmake")
-  set(_boards "")
-  foreach(_d ${_descs})
-    get_filename_component(_dir "${_d}" DIRECTORY)
-    get_filename_component(_b "${_dir}" NAME)
-    set(KICKOS_ARCH "")
-    set(KICKOS_CHIP "")
-    include("${_d}")
-    if(KICKOS_ARCH STREQUAL "sim")
-      list(APPEND _boards "${_b}")
-    elseif(KICKOS_CHIP AND KICKOS_CHIP IN_LIST _chips)
-      list(APPEND _boards "${_b}")
-    endif()
-  endforeach()
-  list(SORT _boards)
-  list(JOIN _boards ", " _joined)
-  set(${out} "${_joined}" PARENT_SCOPE)
 endfunction()

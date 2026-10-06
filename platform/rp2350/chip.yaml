@@ -1,0 +1,67 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# Values from the RP2350 datasheet.
+
+version: 1
+chip: rp2350
+manual: "RP2350 Datasheet, RP-008373-DS-2"
+arch: armv7m
+# The unit sits on the CPU's access path, so a device window is enforced per task.
+protection: { unit: pmsav8, covers_devices: true, memory_type: true }
+data_cache: false
+
+interrupts:
+  count: { value: 52, ref: "3.2 Interrupts, p.82" }
+  # Lines 46 to 51 are hardwired to zero, so only software ever pends them.
+  soft_only_from: { value: 46, ref: "3.2 Interrupts, p.83" }
+  # Clear of USBCTRL's line 14, which the default free block from 6 would cover.
+  free_from: 15
+
+devices:
+  # An APB window is a device's registers and the XOR, SET and CLR aliases above them.
+  uart1:
+    window: [0x40078000, 0x4000]
+    ref: "Table 13 Address map, p.32"
+    lines: { irq: { number: 34, ref: "Table 95 System-level interrupts, p.82" } }
+  # The DPRAM and, 64 KiB above it, the register block.
+  usbctrl:
+    window: [0x50100000, 0x20000]
+    symbol: USBCTRL_DPRAM_BASE
+    ref: "Table 14 Address map, p.33"
+    lines: { irq: { number: 14, ref: "Table 95 System-level interrupts, p.83" } }
+    blocks: { regs: { offset: 0x10000, symbol: USBCTRL_REGS_BASE, ref: "Table 14 Address map, p.33" } }
+
+  clocks: { window: [0x40010000, 0x4000], owner: kernel, ref: "Table 13 Address map, p.32" }
+  resets: { window: [0x40020000, 0x4000], owner: kernel, ref: "Table 13 Address map, p.32" }
+  # Every pin's function select and pad. A pin is muxed through kos_pinmux_set, never through a
+  # granted window.
+  io_bank0: { window: [0x40028000, 0x4000], owner: kernel, ref: "Table 13 Address map, p.32" }
+  pads_bank0: { window: [0x40038000, 0x4000], owner: kernel, ref: "Table 13 Address map, p.32" }
+  xosc: { window: [0x40048000, 0x4000], owner: kernel, ref: "Table 13 Address map, p.32" }
+  pll_sys: { window: [0x40050000, 0x4000], owner: kernel, ref: "Table 13 Address map, p.32" }
+  pll_usb: { window: [0x40058000, 0x4000], owner: kernel, ref: "Table 13 Address map, p.32" }
+  # The monotonic time base, and the tick generator that clocks it.
+  timer0: { window: [0x400B0000, 0x4000], owner: kernel, ref: "Table 13 Address map, p.32" }
+  ticks: { window: [0x40108000, 0x4000], owner: kernel, ref: "Table 13 Address map, p.32" }
+  # GPIO output, the inter-core FIFOs, the spinlocks and the doorbells. The doorbell line is
+  # core-local: each core's controller sees only its own.
+  sio:
+    window: [0xD0000000, 0x200]
+    owner: kernel
+    ref: "Table 15 Address map, p.34"
+    lines: { bell: { number: 26, symbol: SIO_IRQ_BELL, ref: "Table 95 System-level interrupts, p.83" } }
+
+memory:
+  # The striped SRAM. The two 4 KiB banks above it are left for per-core stacks.
+  sram:
+    base: 0x20000000
+    size: 0x80000
+    arena: true
+    link: { region: RAM, access: rwx }
+    ref: "Table 11 Address map, p.31"
+
+# Pins are GPIOn. A selector other than `gpio` is the function its CTRL.FUNCSEL selects.
+pins:
+  GPIO4: { f2: uart1.tx, gpio: sio.4 }
+  GPIO5: { f2: uart1.rx, gpio: sio.5 }

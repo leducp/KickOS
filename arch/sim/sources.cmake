@@ -7,7 +7,7 @@
 # sim.cc is the backend for arch_console_write_sync, arch_console_tx_backend,
 # arch_console_reclaim_window, kfault_terminate and arch_periph_reg_write, so those fallbacks
 # are dropped.
-# SystemCoreClock has no chip to define it here.
+# SystemCoreClock has no chip backend to define it here.
 set(_sim_defaults ${KICKOS_SEAM_DEFAULTS_COMMON})
 list(REMOVE_ITEM _sim_defaults
   common/arch_console_tx_backend_default.cc

@@ -7,7 +7,10 @@
 #ifndef KICKOS_ARCH_ARM_CHIP_STM32F302_FAMILY_MAP_H
 #define KICKOS_ARCH_ARM_CHIP_STM32F302_FAMILY_MAP_H
 
+#include "irq.h"
 #include "stm32f1f3.h"
+
+#include <kickos/chip_mmap.h>
 
 #include <stdint.h>
 
@@ -28,20 +31,18 @@ namespace kickos::stm32::chip
 
     // Monotonic time base (RM0365 sec.21): TIM2 is 32-bit here, free-running and
     // wrapping every ~67 s, and does not collide with the tickless SysTick.
-    constexpr uintptr_t TIM2_BASE = 0x40000000;
-    constexpr uintptr_t CLK_TIMER_SR = TIM2_BASE + TIM_SR;
+    constexpr uintptr_t CLK_TIMER_SR = mmap::TIM2_BASE + TIM_SR;
     constexpr bool CLK_COUNTER_TEARS = false;
-    constexpr int CLK_TIMER_IRQ = 28; // NVIC position 28 = TIM2 (RM0365)
+    constexpr int CLK_TIMER_IRQ = irq::TIM2_GLOBAL;
 
-    inline uint32_t clk_counter() { return reg32(TIM2_BASE + TIM_CNT); }
+    inline uint32_t clk_counter() { return reg32(mmap::TIM2_BASE + TIM_CNT); }
 
     // Console: USART2 on PA2/PA3 (AF7, the ST-LINK VCP), APB1. The NEWER USART
     // model (ISR/TDR), though CR1.TXEIE is bit 7 as on the classic one.
-    constexpr uintptr_t USART2_BASE = 0x40004400;
-    constexpr uintptr_t USART_CR1 = USART2_BASE + 0x00;
-    constexpr uintptr_t USART_BRR = USART2_BASE + 0x0C;
-    constexpr uintptr_t USART_SR = USART2_BASE + 0x1C; // ISR
-    constexpr uintptr_t USART_DR = USART2_BASE + 0x28; // TDR
+    constexpr uintptr_t USART_CR1 = mmap::USART2_BASE + 0x00;
+    constexpr uintptr_t USART_BRR = mmap::USART2_BASE + 0x0C;
+    constexpr uintptr_t USART_SR = mmap::USART2_BASE + 0x1C; // ISR
+    constexpr uintptr_t USART_DR = mmap::USART2_BASE + 0x28; // TDR
     constexpr uint32_t USART_TC = 1u << 6; // transmission complete: shift register idle too
     constexpr uint32_t USART_TXE = 1u << 7;
     constexpr uint32_t CR1_UE = 1u << 0;
@@ -50,7 +51,7 @@ namespace kickos::stm32::chip
     constexpr uint32_t CR1_TXEIE = 1u << 7;
     // USART2 global interrupt (RX/TX combined). Only TXEIE is armed, so the
     // drain ISR is the sole source.
-    constexpr int CONSOLE_IRQ = 38;
+    constexpr int CONSOLE_IRQ = irq::USART2_GLOBAL;
 }
 
 #endif

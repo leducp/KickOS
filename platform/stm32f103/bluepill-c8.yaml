@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# Values from RM0008 Table 54 and the tree's chip_stm32f103.cc and docs/flashing.md.
+
+version: 1
+board: bluepill-c8
+chip: stm32f103
+
+console:
+  device: /dev/usart1
+  pins: { tx: PA9, rx: PA10 }
+
+leds:
+  led: { pin: PC13, active: low, owner: kernel } # the kernel's diagnostic LED

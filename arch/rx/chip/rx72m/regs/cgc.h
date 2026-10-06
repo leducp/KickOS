@@ -43,8 +43,7 @@ namespace kickos::rx::reg::cgc
     constexpr uintptr_t HOCOCR2 = mmap::SYSTEM + 0x0037;  // 8-bit HOCO frequency select (sec.9.2.13)
     constexpr uintptr_t OSCOVFSR = mmap::SYSTEM + 0x003C; // 8-bit stabilization flags (sec.9.2.14)
     constexpr uintptr_t MOSCWTCR = mmap::SYSTEM + 0x00A2; // 8-bit main osc wait control (sec.9.2.17)
-    // MOFCR (main osc forced osc/drive, sec.9.2.19) is OUTSIDE the SYSTEM block.
-    constexpr uintptr_t MOFCR = 0x0008C293; // 8-bit
+    constexpr uintptr_t MOFCR = mmap::SYSTEM_LP_BASE + 0x13; // 8-bit main osc drive (sec.9.2.19)
 
     constexpr uint8_t OSCOVFSR_MOOVF = 1u << 0; // main clock oscillation stabilized
     constexpr uint8_t OSCOVFSR_PLOVF = 1u << 2; // PLL clock oscillation stabilized

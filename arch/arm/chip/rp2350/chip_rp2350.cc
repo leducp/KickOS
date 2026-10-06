@@ -42,8 +42,6 @@
 
 #include <fatal_status.ld.h>
 
-#include <kickos/chip_limits.h> // KICKOS_RP2350_SIO_IRQ_BELL: the doorbell's own NVIC line
-#include <kickos/chip_mmap.h>
 #include "irq.h"
 #include "regs/clocks.h"
 #include "regs/io_bank0.h"
@@ -57,10 +55,11 @@
 #include "regs/xosc.h"
 #include "../rp2xxx/rp2xxx.h"
 
-namespace mmap = kickos::rp2350::mmap;
 namespace reg = kickos::rp2350::reg;
 namespace irq = kickos::rp2350::irq;
 
+using kickos::rp2xxx::ATOMIC_CLR;
+using kickos::rp2xxx::ATOMIC_SET;
 using kickos::rp2xxx::pll_sys_lock;
 using kickos::rp2xxx::POLL_TIMEOUT;
 using kickos::rp2xxx::r32;
@@ -135,19 +134,19 @@ namespace
         {
             return;
         }
-        r32(reg::resets::RESET + mmap::ATOMIC_SET) = reg::resets::PLL_USB;
-        r32(reg::resets::RESET + mmap::ATOMIC_CLR) = reg::resets::PLL_USB;
+        r32(reg::resets::RESET + ATOMIC_SET) = reg::resets::PLL_USB;
+        r32(reg::resets::RESET + ATOMIC_CLR) = reg::resets::PLL_USB;
         wait_mask(reg::resets::RESET_DONE, reg::resets::PLL_USB);
 
         r32(reg::pll_usb::CS) = reg::pll::CS_REFDIV_1;
         r32(reg::pll_usb::FBDIV_INT) = reg::pll_usb::FBDIV_100;
-        r32(reg::pll_usb::PWR + mmap::ATOMIC_CLR) = reg::pll::PWR_PD | reg::pll::PWR_VCOPD;
+        r32(reg::pll_usb::PWR + ATOMIC_CLR) = reg::pll::PWR_PD | reg::pll::PWR_VCOPD;
         if (not wait_mask(reg::pll_usb::CS, reg::pll::CS_LOCK))
         {
             return; // the block stays in reset: an un-clocked controller never enumerates
         }
         r32(reg::pll_usb::PRIM) = reg::pll_usb::PRIM_POSTDIV;
-        r32(reg::pll_usb::PWR + mmap::ATOMIC_CLR) = reg::pll::PWR_POSTDIVPD;
+        r32(reg::pll_usb::PWR + ATOMIC_CLR) = reg::pll::PWR_POSTDIVPD;
 
         // clk_usb has no glitchless mux, so the source may only be changed with the
         // generator stopped (datasheet 8.1.3.2). Both writes are absolute values, never
@@ -211,7 +210,7 @@ namespace
         // Program the frequency range, THEN start the oscillator (datasheet 8.2.7): a
         // combined write is avoided so ENABLE never latches before FREQ_RANGE is set.
         r32(reg::xosc::CTRL) = reg::xosc::FREQ_1_15MHZ;
-        r32(reg::xosc::CTRL + mmap::ATOMIC_SET) = reg::xosc::ENABLE;
+        r32(reg::xosc::CTRL + ATOMIC_SET) = reg::xosc::ENABLE;
 
         bool xosc_ok = wait_mask(reg::xosc::STATUS, reg::xosc::STATUS_STABLE);
         if (xosc_ok)
@@ -267,9 +266,9 @@ namespace
         // ISOLATED (PAD_ISO set): clear it or the pad stays disconnected.
         r32(reg::io_bank0::GPIO4_CTRL) = reg::io_bank0::FUNCSEL_UART;
         r32(reg::io_bank0::GPIO5_CTRL) = reg::io_bank0::FUNCSEL_UART;
-        r32(reg::pads::GPIO4 + mmap::ATOMIC_CLR) = reg::pads::ISO | reg::pads::OD; // TX: connect, drive out
-        r32(reg::pads::GPIO5 + mmap::ATOMIC_CLR) = reg::pads::ISO;                 // RX: connect
-        r32(reg::pads::GPIO5 + mmap::ATOMIC_SET) = reg::pads::IE;                  // RX: input enable
+        r32(reg::pads::GPIO4 + ATOMIC_CLR) = reg::pads::ISO | reg::pads::OD; // TX: connect, drive out
+        r32(reg::pads::GPIO5 + ATOMIC_CLR) = reg::pads::ISO;                 // RX: connect
+        r32(reg::pads::GPIO5 + ATOMIC_SET) = reg::pads::IE;                  // RX: input enable
 
         // Divisors latch only on the subsequent LCR_H write, so order matters.
         r32(reg::uart::IBRD) = g_uart_ibrd;
@@ -478,11 +477,11 @@ namespace
     }
     void rp_tx_irq_enable(void)
     {
-        r32(reg::uart::IMSC + mmap::ATOMIC_SET) = reg::uart::IMSC_TXIM;
+        r32(reg::uart::IMSC + ATOMIC_SET) = reg::uart::IMSC_TXIM;
     }
     void rp_tx_irq_disable(void)
     {
-        r32(reg::uart::IMSC + mmap::ATOMIC_CLR) = reg::uart::IMSC_TXIM;
+        r32(reg::uart::IMSC + ATOMIC_CLR) = reg::uart::IMSC_TXIM;
     }
     char console_tx_buf[KICKOS_CONSOLE_TX_SIZE];
     console_tx_backend const rp_console_backend = {
@@ -540,14 +539,14 @@ void arch_init(void)
     // SIO_IRQ_BELL is CORE-LOCAL (datasheet 3.1.6), so every node opens its own. Through
     // arch_irq_unmask for the priority: the NVIC IPR resets to 0, and a doorbell above the
     // BASEPRI band runs its service inside a section holding IrqLock.
-    arch_irq_unmask(KICKOS_RP2350_SIO_IRQ_BELL);
+    arch_irq_unmask(irq::SIO_IRQ_BELL);
 #endif
 }
 
 bool arch_irq_line_kernel_owned(int line)
 {
 #if (KICKOS_NUM_CORES > 1 || KICKOS_AMP_NODE)
-    return line == KICKOS_RP2350_SIO_IRQ_BELL;
+    return line == irq::SIO_IRQ_BELL;
 #else
     (void)line;
     return false;
@@ -603,10 +602,10 @@ int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
     {
         clr |= reg::pads::OD;
     }
-    r32(reg::pads::gpio(pin) + mmap::ATOMIC_CLR) = clr;
+    r32(reg::pads::gpio(pin) + ATOMIC_CLR) = clr;
     if ((func & (1u << 8)) != 0u)
     {
-        r32(reg::pads::gpio(pin) + mmap::ATOMIC_SET) = reg::pads::IE;
+        r32(reg::pads::gpio(pin) + ATOMIC_SET) = reg::pads::IE;
     }
     if ((func & (1u << 16)) != 0u)
     {
@@ -659,24 +658,6 @@ int arch_reboot(void)
                             sizeof(kickos::diag::kRebootRp2350) - 1);
     arch_console_write_sync(REBOOT_RETURNED_NL, sizeof(REBOOT_RETURNED_NL) - 1);
     arch_shutdown(KICKOS_FATAL_STATUS);
-}
-#endif
-
-#if KICKOS_HAVE_MPU
-// Rule 7 reserved set (RP2350 datasheet). Owns-for-life: the 64-bit TIMER0 (monotonic
-// base), the TICKS block (its TIMER0 generator is the 1 MHz source), and the
-// RESETS + CLOCKS control blocks. Full 16 KB
-// windows each so the SET/CLR/XOR atomic aliases are covered. M33 (Arm) has no
-// bit-band -> the arch_bitband_present fallback 0 stands.
-struct arch_reserved_span arch_reserved_blocks(void)
-{
-    static struct arch_reserved_block const blocks[] = {
-        {mmap::TIMER0_BASE, mmap::APB_ATOMIC_WINDOW}, // TIMER0: 64-bit us monotonic (DS 12.8)
-        {mmap::TICKS_BASE, mmap::APB_ATOMIC_WINDOW},  // TICKS: TIMER0 tick generator, 1 MHz source (DS 8.5)
-        {mmap::RESETS_BASE, mmap::APB_ATOMIC_WINDOW}, // RESETS: peripheral reset control (DS 7.5)
-        {mmap::CLOCKS_BASE, mmap::APB_ATOMIC_WINDOW}, // CLOCKS: clock generators (DS 8.1)
-    };
-    return blocks;
 }
 #endif
 

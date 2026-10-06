@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# Values from the SAM3X/SAM3A datasheet Table 9-2 and the tree's chip_sam3x8e.cc and
+# docs/flashing.md.
+
+version: 1
+board: due
+chip: sam3x8e
+
+# The Programming port's USB bridge.
+console:
+  device: /dev/uart
+  pins: { tx: PA9, rx: PA8 }
+
+leds:
+  l: { pin: PB27, active: high, owner: kernel } # the "L" LED, the kernel's diagnostic LED

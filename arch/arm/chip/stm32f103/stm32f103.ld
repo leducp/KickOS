@@ -10,14 +10,15 @@
  *   SRAM  : 20 KiB @ 0x2000_0000
  */
 
+#include <chip_layout.h>
 #include <sections.ld.h>
 
 ENTRY(Reset_Handler)
 
 MEMORY
 {
-    FLASH (rx)  : ORIGIN = 0x08000000, LENGTH = 64K
-    RAM   (rwx) : ORIGIN = 0x20000000, LENGTH = 20K
+    KICKOS_LINK_FLASH
+    KICKOS_LINK_RAM
 }
 
 _estack = ORIGIN(RAM) + LENGTH(RAM);

@@ -9,14 +9,15 @@
  *                                   are usable as one region, NOT 64 KiB @ 0x2000_0000)
  */
 
+#include <chip_layout.h>
 #include <sections.ld.h>
 
 ENTRY(Reset_Handler)
 
 MEMORY
 {
-    FLASH (rx)  : ORIGIN = 0x00080000, LENGTH = 512K
-    RAM   (rwx) : ORIGIN = 0x20070000, LENGTH = 96K
+    KICKOS_LINK_FLASH
+    KICKOS_LINK_RAM
 }
 
 _estack = ORIGIN(RAM) + LENGTH(RAM);

@@ -405,8 +405,8 @@ leading byte (~`0xC0`) before the panic banner. It is a physical UART line-recov
 transient (not lost/garbled output); the banner and fault dump that follow are byte-clean.
 
 Still **not built**: a real `arch_console_reclaim` body on the chips that have none, which
-today are `mps2`, `nrf51`, `sam3x8e`, `stm32f103`, `stm32f302` and `virt`. Those keep the
-no-op fallback, so on their boards the reclaim is wiring with nothing behind it. The chips
+today are `an505`, `imx8mp`, `mps2`, `nrf51`, `q35`, `sam3x8e`, `stm32f103`, `stm32f302` and the
+three `virt_*` machines. Those keep the no-op fallback, so on their boards the reclaim is wiring with nothing behind it. The chips
 that do have one are what `grep -rn "^void arch_console_reclaim(void)" arch/` reports, minus
 the declaration in `arch/include/kickos/arch/arch.h`. The real bodies
 are silicon-only -- no emulated board carries one -- and the `xmc4800` one is witnessed by

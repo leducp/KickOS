@@ -11,6 +11,7 @@
 
 #if KICKOS_AMP_NODE && defined(KICKOS_ENABLE_SELFTEST)
 
+#include <kickos/ampshare.h>
 #include <kickos/ampwindow.h>
 #include <kickos/endpoint.h>
 #include <kickos/instance.h>
@@ -703,6 +704,45 @@ namespace kickos
                     return 0;
                 }
                 return 1;
+            }
+            case KOS_AMP_OP_SHARE:
+            {
+#if KICKOS_AMP_SHARE
+                IrqLock lock;
+                uintptr_t base = 0;
+                size_t size = 0;
+                if (not amp_share_seated(&base, &size))
+                {
+                    return 0;
+                }
+                if (a1 == 0)
+                {
+                    return base;
+                }
+                if (a1 == 1)
+                {
+                    return size;
+                }
+#if KICKOS_HAVE_ASPACE
+                if (a1 == 2)
+                {
+                    int const t = arch_aspace_walk_memtype(
+                        reinterpret_cast<uintptr_t>(amp_share_kernel_view()), false);
+                    return static_cast<uint64_t>(t + 1);
+                }
+#endif
+                return 0;
+#else
+                return 0;
+#endif
+            }
+            case KOS_AMP_OP_WALK:
+            {
+#if KICKOS_AMP_SHARE && KICKOS_HAVE_ASPACE
+                return static_cast<uint64_t>(arch_aspace_walk_memtype(a1, true) + 1);
+#else
+                return 0;
+#endif
             }
             case KOS_AMP_OP_FAR_PARKED:
             {

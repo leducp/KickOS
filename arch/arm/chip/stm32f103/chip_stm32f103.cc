@@ -39,7 +39,7 @@ namespace
 {
     using namespace kickos::stm32;
 
-    constexpr uintptr_t RCC_APB2ENR = RCC_BASE + 0x18;
+    constexpr uintptr_t RCC_APB2ENR = mmap::RCC_BASE + 0x18;
     constexpr uint32_t APB2ENR_AFIOEN = 1u << 0;
     constexpr uint32_t APB2ENR_IOPAEN = 1u << 2;
     constexpr uint32_t APB2ENR_USART1EN = 1u << 14;
@@ -47,8 +47,7 @@ namespace
     constexpr uint32_t APB1ENR_TIM3EN = 1u << 1;
 
     // GPIOA (sec.9), CRL/CRH model. USART1 TX=PA9, RX=PA10 live in CRH (pins 8-15).
-    constexpr uintptr_t GPIOA_BASE = 0x40010800;
-    constexpr uintptr_t GPIOA_CRH = GPIOA_BASE + 0x04;
+    constexpr uintptr_t GPIOA_CRH = mmap::GPIOA_BASE + 0x04;
     // PA9  = AF push-pull, 50 MHz : CNF=10 MODE=11 -> nibble 0xB, bits [7:4]
     // PA10 = input floating       : CNF=01 MODE=00 -> nibble 0x4, bits [11:8]
     constexpr uint32_t CRH_PA9 = 0xBu << 4;
@@ -56,18 +55,18 @@ namespace
     constexpr uint32_t CRH_PA9_PA10_MASK = (0xFu << 4) | (0xFu << 8);
 
     // --- Pin-mux (KOS_SYS_PINMUX_SET) -------------------------------------------
-    // GPIO ports: GPIOA + port*0x400. RCC_APB2ENR IOPxEN = bit (2+port); AFIOEN
+    // GPIO ports: GPIOA + port * GPIO_STRIDE. RCC_APB2ENR IOPxEN = bit (2+port); AFIOEN
     // (bit 0) also gated. func = the raw 4-bit CRL/CRH nibble (0xB = AF push-pull
     // 50 MHz, 0x3 = GP push-pull output 50 MHz, 0x4 = floating input); the nibble
     // sits at (pin%8)*4 in CRL (pin<8) / CRH (pin>=8). Sufficient for the
     // default-mapped peripherals only: alternate-function REMAP goes through
     // AFIO_MAPR (per-peripheral, out of scope here), and a pull-up/down input
     // (CNF=10) additionally needs an ODR write the 4-bit nibble cannot carry.
-    constexpr uintptr_t GPIO_STRIDE = 0x400;
     constexpr uintptr_t GPIO_CRL_OFF = 0x00;
     constexpr uintptr_t GPIO_CRH_OFF = 0x04;
     constexpr uint32_t APB2ENR_IOP_SHIFT = 2u;
     constexpr uint32_t PINMUX_PORT_MAX = 4u; // GPIOA..GPIOE
+    constexpr uintptr_t GPIOC_BASE = mmap::GPIOA_BASE + 2u * mmap::GPIO_STRIDE;
 
     // Kernel-owned pins arch_pinmux_set refuses so a board map cannot dark the
     // console or steal the diag LED. PA9/PA10 = USART1 console; PC13 = LED.
@@ -84,25 +83,25 @@ namespace
         reg32(RCC_APB1ENR) |= APB1ENR_TIM2EN | APB1ENR_TIM3EN;
 
         // TIM2 master: free-run 16-bit, emit TRGO on each overflow.
-        reg32(chip::TIM2_BASE + TIM_CR1) = 0;
-        reg32(chip::TIM2_BASE + TIM_PSC) = 0;
-        reg32(chip::TIM2_BASE + TIM_ARR) = 0x0000FFFFu;
-        reg32(chip::TIM2_BASE + TIM_CR2) = 0x2u << 4; // MMS=010: TRGO on update
-        reg32(chip::TIM2_BASE + TIM_EGR) = TIM_EGR_UG;
+        reg32(mmap::TIM2_BASE + TIM_CR1) = 0;
+        reg32(mmap::TIM2_BASE + TIM_PSC) = 0;
+        reg32(mmap::TIM2_BASE + TIM_ARR) = 0x0000FFFFu;
+        reg32(mmap::TIM2_BASE + TIM_CR2) = 0x2u << 4; // MMS=010: TRGO on update
+        reg32(mmap::TIM2_BASE + TIM_EGR) = TIM_EGR_UG;
 
         // TIM3 slave: clocked by TIM2's TRGO (ITR1), free-run 16-bit. Its overflow
         // (the 32-bit chain wrap) drives the idle wrap observer.
-        reg32(chip::TIM3_BASE + TIM_CR1) = 0;
-        reg32(chip::TIM3_BASE + TIM_PSC) = 0;
-        reg32(chip::TIM3_BASE + TIM_ARR) = 0x0000FFFFu;
-        reg32(chip::TIM3_BASE + TIM_SMCR) = (0x1u << 4) | (0x7u << 0); // TS=ITR1, SMS=ext clock 1
-        reg32(chip::TIM3_BASE + TIM_EGR) = TIM_EGR_UG;
+        reg32(mmap::TIM3_BASE + TIM_CR1) = 0;
+        reg32(mmap::TIM3_BASE + TIM_PSC) = 0;
+        reg32(mmap::TIM3_BASE + TIM_ARR) = 0x0000FFFFu;
+        reg32(mmap::TIM3_BASE + TIM_SMCR) = (0x1u << 4) | (0x7u << 0); // TS=ITR1, SMS=ext clock 1
+        reg32(mmap::TIM3_BASE + TIM_EGR) = TIM_EGR_UG;
         reg32(chip::CLK_TIMER_SR) = ~TIM_SR_UIF;   // drop the UG-induced UIF before arming the IRQ
-        reg32(chip::TIM3_BASE + TIM_DIER) = TIM_DIER_UIE; // wrap observer for the disarmed-timer idle case
+        reg32(mmap::TIM3_BASE + TIM_DIER) = TIM_DIER_UIE; // wrap observer for the disarmed-timer idle case
 
         // Enable the slave first so no master TRGO edge is missed, then the master.
-        reg32(chip::TIM3_BASE + TIM_CR1) = TIM_CR1_CEN;
-        reg32(chip::TIM2_BASE + TIM_CR1) = TIM_CR1_CEN;
+        reg32(mmap::TIM3_BASE + TIM_CR1) = TIM_CR1_CEN;
+        reg32(mmap::TIM2_BASE + TIM_CR1) = TIM_CR1_CEN;
         // No arch_irq_clear_pending: a pend latched here (latch-and-coalesce) redelivers
         // one benign kickos_isr_timer tick on enable, which the tickless handler tolerates.
         arch_irq_unmask(chip::CLK_TIMER_IRQ); // NVIC enable in the maskable device band
@@ -155,7 +154,7 @@ size_t arch_mpu_min_region(void)
 // Kernel diagnostic LED: PC13, active-LOW (lit when the pin is driven low).
 void arch_diag_led_init(void)
 {
-    constexpr uintptr_t GPIOC_CRH = 0x40011000 + 0x04;
+    constexpr uintptr_t GPIOC_CRH = GPIOC_BASE + 0x04;
     reg32(RCC_APB2ENR) |= (1u << 4); // IOPCEN (GPIOC)
     uint32_t crh = reg32(GPIOC_CRH);
     crh &= ~(0xFu << 20);          // clear PC13 nibble
@@ -165,7 +164,7 @@ void arch_diag_led_init(void)
 
 void arch_diag_led_set(int on)
 {
-    constexpr uintptr_t GPIOC_BSRR = 0x40011000 + 0x10;
+    constexpr uintptr_t GPIOC_BSRR = GPIOC_BASE + 0x10;
     if (on)
     {
         reg32(GPIOC_BSRR) = 1u << (13 + 16); // BR13 -> PC13 low -> LED on
@@ -191,7 +190,7 @@ int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
     }
     // AFIOEN is needed for any alternate-function pin; the port clock is per-port.
     reg32(RCC_APB2ENR) |= APB2ENR_AFIOEN | (1u << (APB2ENR_IOP_SHIFT + port));
-    uintptr_t const base = GPIOA_BASE + port * GPIO_STRIDE;
+    uintptr_t const base = mmap::GPIOA_BASE + port * mmap::GPIO_STRIDE;
     uintptr_t cr = base + GPIO_CRL_OFF;
     uint32_t shift = pin * 4u;
     if (pin >= 8u)

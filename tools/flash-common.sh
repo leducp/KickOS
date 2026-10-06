@@ -62,8 +62,7 @@ flash_resolve() {
         sim:*) die "'$FL_BOARD' is the host sim; run it: ctest --preset sim" ;;
     esac
     case "$FL_CHIP" in
-        mps2) die "'$FL_BOARD' is a QEMU target; run it: ctest --preset qemu" ;;
-        virt) die "'$FL_BOARD' is a QEMU target; run it: ctest --preset qemu-riscv" ;;
+        mps2|an505|virt_*|q35) die "'$FL_BOARD' is a QEMU target; run it: ctest --preset $FL_BOARD" ;;
     esac
 
     # Build dir defaults to build/<board>; override with FLASH_BUILD to flash a

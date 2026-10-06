@@ -6,8 +6,9 @@
 # cross toolchain file pre-project(), which then includes the chip's own cpu.cmake for
 # the flags left unset here. Side-effect free: set only these.
 #
-# The host sim: no chip backend, no cross CPU flags (it builds as a native ELF
-# via cmake/toolchain-host.cmake, which never includes this file).
+# The host sim: its chip is the host process, described by platform/sim/chip.yaml, and it has no
+# cross CPU flags (it builds as a native ELF via cmake/toolchain-host.cmake, which never includes
+# this file).
 set(KICKOS_BOARD_ID "sim")
 set(KICKOS_ARCH "sim")
-set(KICKOS_CHIP "")
+set(KICKOS_CHIP "sim")

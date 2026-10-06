@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 
 #include <kickos/kernel.h>
+#include <kickos/ampshare.h>
 #include <kickos/instance_local.h>
 #include <kickos/sched.h>
 #include <kickos/debug.h> // KICKOS_DEBUG_ASSERT
@@ -143,6 +144,13 @@ namespace kickos
     bool memory_type_free(uintptr_t base, size_t size, uint32_t attr, Thread const* except)
     {
         uintptr_t const last = base + size - 1u;
+#if KICKOS_AMP_SHARE
+        if (amp_share_meets(base, static_cast<uint64_t>(last) + 1u)
+            and ((attr & ARCH_MPU_NOCACHE) != 0) != AMP_SHARE_UNCACHED)
+        {
+            return false;
+        }
+#endif
         Kernel& k = kernel();
         // A task holds its data region with no member yet, so the held domains are asked too.
         // The kernel's own spans the arena and maps nothing for a task.

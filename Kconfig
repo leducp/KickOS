@@ -35,9 +35,9 @@ config KICKOS_HAVE_ASPACE
 	default 0
 	help
 	  HAS_ASPACE as a number the generated fragment can carry. The capability is
-	  stated twice: here, and by arch/<family>/chip/<chip>/aspace.cmake. This is
-	  the half CMake cannot compute, so it is what the agreement check in
-	  CMakeLists.txt compares against.
+	  stated twice: here, and by the chip file's `mmu` unit. This is the half CMake
+	  cannot compute, so it is what the agreement check in CMakeLists.txt compares
+	  against.
 
 config KICKOS_TRACE_CLOCK_DECLARED
 	int
@@ -263,6 +263,27 @@ config KICKOS_AMP_SHARED_SIZE
 	  Sits above every node's share and holds the window, the doorbell's rendezvous
 	  cells and the per-node counts. Sized so a part whose protection unit can
 	  describe the partition has one region to name.
+
+config KICKOS_AMP_USER_SHARE_SIZE
+	hex "Bytes at the top of that region the partition's tasks share"
+	depends on KICKOS_AMP_POSTURE_OWN_IMAGE
+	default 0x0
+	help
+	  Carved from the top of KICKOS_AMP_SHARED_SIZE, above the kernel's own objects,
+	  which the chip's link script holds below it. Every node's kernel seats it in root
+	  as a reservation at boot, so root maps it, or any whole-granule part of it, as it
+	  maps a block of its own. A whole number of the protection unit's granules, a page
+	  on a translating node. Zero seats nothing.
+
+config KICKOS_AMP_USER_SHARE_UNCACHED
+	bool "The tasks' share is uncached"
+	depends on KICKOS_AMP_POSTURE_OWN_IMAGE
+	help
+	  The share's one memory type, a fact of the whole partition. Every mapping of it
+	  carries it, the kernel's own included, and a window or a grant asking the other
+	  is refused. Only a translating build maps the kernel's view with a type of its
+	  own, so the configure refuses it elsewhere; on a translating node whose kernel
+	  maps in 2 MiB blocks an uncached share is a whole number of them.
 
 # Optional separate text span for XIP targets. Shared writable data stays
 # in the data span. Zero selects a single span.
