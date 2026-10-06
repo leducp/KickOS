@@ -20,10 +20,6 @@
 #include <kickos/arch/arch.h> // ARCH_MPU_NOCACHE, arch_mpu_nocache_support
 #include <kickos/config.h>    // the configuration umbrella
 
-// Fill target for arch_reserved_blocks: must stay >= the most blocks any chip declares
-// (imxrt1062 = 7 today). Every body truncates silently once it hits this cap.
-#define KICKOS_MAX_RESERVED 8u
-
 namespace kickos
 {
     // Overlap of [a_base,a_last] with [b_base,b_last]. Adjacency (a_last+1 == b_base) is

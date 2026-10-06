@@ -1,15 +1,15 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# QEMU's q35 PC. Values from the tree's chip_q35.cc, com1_q35.cc, chip_limits.h,
-# arch/x86/x86_64/arch_x86_64.cc, apic_x86_64.cc and arch_aspace_memtype_support in
-# aspace_x86_64.cc, the fixed PC assignments they rely on, and the map QEMU reports with
-# `info mtree`.
+# QEMU's q35 PC. Values from arch/x86/x86_64/arch_x86_64.cc, apic_x86_64.cc and
+# arch_aspace_memtype_support in aspace_x86_64.cc, the fixed PC assignments they rely on, and the
+# map QEMU reports with `info mtree`.
 #
 # No port parses ACPI or the MADT, so nothing here is read from them at run time.
 
 version: 1
 chip: q35
+manual: "QEMU 11.1 `q35` machine (hw/i386/pc_q35.c), ICH9"
 arch: x86_64
 
 # Port I/O is a second address space: a port range is granted as a window is, and a ring-3
@@ -17,6 +17,9 @@ arch: x86_64
 protection: { unit: mmu, page: 0x1000, covers_devices: true, memory_type: true, io_ports: true }
 
 cores: { count: [1, 12], smp: true }
+
+# The ICH9 I/O APIC's redirection entries.
+interrupts: { count: 24 }
 
 devices:
   # No device names a line: the kernel's interrupt controller is software and drives no I/O
@@ -30,7 +33,8 @@ devices:
   cmos_rtc:
     ports: [0x70, 2]
     privileged_registers: { index: 0x0 }
-  com1: { ports: [0x3F8, 8] } # 16550, the kernel console
+  # 16550, the kernel console, which the kernel also writes its exit line to whoever holds it.
+  com1: { ports: [0x3F8, 8] }
   com2: { ports: [0x2F8, 8] } # unpopulated unless QEMU is given a second serial port
   hpet: { window: [0xFED00000, 0x1000] }
 

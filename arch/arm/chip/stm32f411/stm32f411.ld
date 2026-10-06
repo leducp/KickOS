@@ -6,6 +6,7 @@
  *   SRAM  : 128 KiB @ 0x2000_0000
  */
 
+#include <chip_layout.h>
 #include <sections.ld.h>
 #include <app_heap.ld.h>
 #include <kernel_data_reserve.ld.h>
@@ -14,8 +15,8 @@ ENTRY(Reset_Handler)
 
 MEMORY
 {
-    FLASH (rx)  : ORIGIN = 0x08000000, LENGTH = 512K
-    RAM   (rwx) : ORIGIN = 0x20000000, LENGTH = 128K
+    KICKOS_LINK_FLASH
+    KICKOS_LINK_RAM
 }
 
 _estack = ORIGIN(RAM) + LENGTH(RAM);

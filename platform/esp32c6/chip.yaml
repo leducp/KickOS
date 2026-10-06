@@ -1,17 +1,18 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Values from the ESP32-C6 TRM v1.2 and the tree's chip_mmap.h, irq.h, chip_esp32c6.cc,
-# chip_esp32c6_lp.cc and esp32c6.ld under arch/riscv/chip/esp32c6/, the c6blink app, and
-# arch_mpu_nocache_support in arch/riscv/rv32imac/arch_rv32imac.cc.
+# Values from the ESP32-C6 TRM v1.2, the c6blink app, and arch_mpu_nocache_support in
+# arch/riscv/rv32imac/arch_rv32imac.cc.
 
 version: 1
 chip: esp32c6
+manual: "ESP32-C6 Technical Reference Manual, Version 1.2"
 arch: rv32imac
 
 # No data cache sits over the SRAM: the part's cache serves external flash only, so memory
 # the two cores share is coherent by absence, and a region's cache attribute changes nothing.
 data_cache: false
+c: { line_enum: "kernel_line : int" }
 
 # Two cores, two postures. An own-image AMP node per core, so a composition is per node.
 cores:
@@ -28,37 +29,55 @@ cores:
     # this node is enforced within it. APM on the HP side bounds what the node can reach.
     protection: { unit: none, privilege: false }
 
+interrupts: { count: 32, soft_only_from: 26, ref: "10.3.2 CPU Interrupts, p.384" }
+
 devices:
   # Interrupts are routed: a peripheral's matrix source reaches a CPU interrupt, and the
   # kernel posts it on a logical line. The number kos_irq_claim takes is the logical line.
-  uart0: { window: [0x60000000, 0x1000], lines: { uart0: 16 } }
+  uart0:
+    window: [0x60000000, 0x1000]
+    ref: "Table 5.3-2, p.175"
+    lines: { uart0: { number: 16, symbol: UART0_TX_LINE } }
 
   # The pin bank is one register block: its set/clear and direction registers are
   # whole-port, so whoever holds it drives the latch of every pin in the port. The unit of
   # isolation is the bank, not the pin, and two tasks cannot each hold one pin of it.
-  gpio: { window: [0x60091000, 0x40] }
+  gpio: { window: [0x60091000, 0x40], ref: "Table 5.3-2, p.176" }
+  # The general-purpose timer groups and the RTC watchdogs: each watchdog is disabled at boot.
+  timg0: { window: [0x60008000, 0x1000], ref: "Table 5.3-2, p.175" }
+  timg1: { window: [0x60009000, 0x1000], ref: "Table 5.3-2, p.175" }
+  rtc_wdt: { window: [0x600B1C00, 0x400], ref: "Table 5.3-2, p.176" }
+  usb_serial_jtag: { window: [0x6000F000, 0x1000], ref: "Table 5.3-2, p.175" }
 
   # The M-mode CLINT at +0x800 and the U-mode one at +0xC00, and at the base a view of the
   # CPU interrupt controller that the TRM does not document but the kernel drives.
-  clint: { window: [0x20001000, 0x1000], owner: kernel }
-  intmtx: { window: [0x60010000, 0x1000], owner: kernel }
+  clint:
+    window: [0x20001000, 0x1000]
+    owner: kernel
+    symbol: PLIC_MX_BASE
+    blocks:
+      m: { offset: 0x800, symbol: CLINT_BASE, ref: "1.7.5 Register Summary, p.61" }
+      u: { offset: 0xC00, ref: "1.7.5 Register Summary, p.61" }
+  # The diagnostic LED's driver.
+  rmt: { window: [0x60006000, 0x1000], owner: kernel, ref: "Table 5.3-2, p.175" }
+  intmtx: { window: [0x60010000, 0x1000], owner: kernel, ref: "Table 5.3-2, p.175" }
   # Pad functions, set through kos_pinmux_set only.
-  io_mux: { window: [0x60090000, 0x1000], owner: kernel }
-  pcr: { window: [0x60096000, 0x1000], owner: kernel }    # clock and reset gates
-  hp_tee: { window: [0x60098000, 0x1000], owner: kernel }
-  hp_apm: { window: [0x60099000, 0x1000], owner: kernel } # LP_APM0 sits at +0x800 inside it
-  intpri: { window: [0x600C5000, 0x1000], owner: kernel } # the inject doorbell's source
+  io_mux: { window: [0x60090000, 0x1000], owner: kernel, ref: "Table 5.3-2, p.176" }
+  pcr: { window: [0x60096000, 0x1000], owner: kernel, ref: "Table 5.3-2, p.176" }    # clock and reset gates
+  hp_tee: { window: [0x60098000, 0x1000], owner: kernel, ref: "Table 5.3-2, p.176" }
+  hp_apm: { window: [0x60099000, 0x1000], owner: kernel, ref: "Table 5.3-2, p.176" } # LP_APM0 sits at +0x800 inside it
+  intpri: { window: [0x600C5000, 0x1000], owner: kernel, ref: "Table 5.3-2, p.176" } # the inject doorbell's source
   # The LP node's power, boot, clock and bus gate, set by the HP kernel when it releases it.
-  pmu: { window: [0x600B0000, 0x400], owner: kernel }
-  rtc_timer: { window: [0x600B0C00, 0x400], owner: kernel }
-  lp_aon: { window: [0x600B1000, 0x400], owner: kernel }
-  lp_apm: { window: [0x600B3800, 0x400], owner: kernel }
+  pmu: { window: [0x600B0000, 0x400], owner: kernel, ref: "Table 5.3-2, p.176" }
+  rtc_timer: { window: [0x600B0C00, 0x400], owner: kernel, ref: "Table 5.3-2, p.176" }
+  lp_aon: { window: [0x600B1000, 0x400], owner: kernel, ref: "Table 5.3-2, p.176" }
+  lp_apm: { window: [0x600B3800, 0x400], owner: kernel, ref: "Table 5.3-2, p.176" }
 
 # Both cores reach both SRAMs. The LP node runs from its own slice of HP SRAM, so both
 # nodes' arenas are carved from it.
 memory:
-  hp_sram: { base: 0x40800000, size: 0x80000, arena: true }
-  lp_sram: { base: 0x50000000, size: 0x4000 }
+  hp_sram: { base: 0x40800000, size: 0x80000, arena: true, link: { region: RAM, access: rwx }, ref: "Table 5.3-1, p.171" }
+  lp_sram: { base: 0x50000000, size: 0x4000, ref: "Table 5.3-1, p.171" }
 
 # Pins are GPIOn. A selector other than `gpio` is the IO MUX function its MCU_SEL selects.
 pins:

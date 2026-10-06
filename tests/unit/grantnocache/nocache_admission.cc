@@ -43,7 +43,7 @@ extern "C"
     size_t arch_ram_size(void) { return ARENA_SIZE; }
 
     // Zero blocks and no bit-band alias, so geometry cannot decide an arm's verdict.
-    size_t arch_reserved_blocks(struct arch_reserved_block*, size_t) { return 0; }
+    struct arch_reserved_span arch_reserved_blocks(void) { return {}; }
     int arch_bitband_present(void) { return 0; }
 }
 

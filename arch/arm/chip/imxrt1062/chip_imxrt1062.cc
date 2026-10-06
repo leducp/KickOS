@@ -793,7 +793,7 @@ int arch_reboot(void)
 // the CCM (CCGR clock-gate roots). Bases are the constants above; sizes are the 4 KB
 // register block of each peripheral (an AIPS slot itself is 16 KiB). M7 has NO
 // bit-band, so arch_bitband_present keeps the fallback 0.
-size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
+struct arch_reserved_span arch_reserved_blocks(void)
 {
     static struct arch_reserved_block const blocks[] = {
         {mmap::GPT1_BASE, 0x1000u}, // GPT1: monotonic time base (RM ch.52, Table 3-3)
@@ -808,16 +808,7 @@ size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
         // and USBNC at +0x800, so arch_periph_enable necessarily opens those too.
         {mmap::USB1_BASE + 0x200u, 0x3E00u},
     };
-    size_t n = sizeof(blocks) / sizeof(blocks[0]);
-    if (n > max)
-    {
-        n = max;
-    }
-    for (size_t i = 0; i < n; i++)
-    {
-        out[i] = blocks[i];
-    }
-    return n;
+    return blocks;
 }
 #endif
 

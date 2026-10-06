@@ -37,8 +37,9 @@ ENTRY(_start)
 #define KICKOS_ARM64_DRAM_BASE  KICKOS_AMP_IMAGE_BASE
 #define KICKOS_ARM64_DRAM_SIZE  KICKOS_AMP_NODE_SHARE
 #else
-#define KICKOS_ARM64_DRAM_BASE  0x40000000      /* QEMU virt DRAM (ample) */
-#define KICKOS_ARM64_DRAM_SIZE  64M
+#include <chip_layout.h>
+#define KICKOS_ARM64_DRAM_BASE  KICKOS_LAYOUT_DRAM_BASE
+#define KICKOS_ARM64_DRAM_SIZE  KICKOS_LAYOUT_DRAM_SIZE
 #endif
 
 /* TCR_EL1.T1SZ is 25 (startup.S), which makes the high half the 39-bit range at this

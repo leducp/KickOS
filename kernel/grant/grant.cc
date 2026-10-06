@@ -39,8 +39,7 @@ namespace kickos
         {
             return true; // wraps 2^32; inadmissible, fail closed
         }
-        struct arch_reserved_block blocks[KICKOS_MAX_RESERVED];
-        std::span const reserved{blocks, arch_reserved_blocks(blocks, KICKOS_MAX_RESERVED)};
+        struct arch_reserved_span const reserved = arch_reserved_blocks();
         int const bitband = arch_bitband_present();
         for (struct arch_reserved_block const& b : reserved)
         {
@@ -78,9 +77,7 @@ namespace kickos
         {
             return false;
         }
-        struct arch_reserved_block apertures[KICKOS_MAX_RESERVED];
-        std::span const all{apertures, arch_window_apertures(apertures, KICKOS_MAX_RESERVED)};
-        for (struct arch_reserved_block const& a : all)
+        for (struct arch_reserved_block const& a : arch_window_apertures())
         {
             if (base >= a.base and last <= a.base + a.size - 1u)
             {
@@ -167,13 +164,7 @@ namespace kickos
 
     void grant_reserved_validate(void)
     {
-        struct arch_reserved_block blocks[KICKOS_MAX_RESERVED];
-        size_t const n = arch_reserved_blocks(blocks, KICKOS_MAX_RESERVED);
-        // A miswritten backend that returns more than it filled would make
-        // grant_hits_reserved read past the buffer; catch it at boot. A zero count
-        // (KICKOS_RESERVED_NONE, the sim) is legal, so there is NO count > 0 assert.
-        KICKOS_ASSERT(n <= KICKOS_MAX_RESERVED);
-        std::span const reserved{blocks, n};
+        struct arch_reserved_span const reserved = arch_reserved_blocks();
         // arch_ram_region_size and arch_ram_region_admissible mask with min - 1.
         size_t const min = arch_mpu_min_region();
         KICKOS_ASSERT(min == 0 or (min & (min - 1u)) == 0);

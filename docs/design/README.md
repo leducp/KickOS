@@ -77,6 +77,7 @@ different numbers; the current filenames use this order.
 | [`design-m10-kernel-share.md`](../design-m10-kernel-share.md) | M10.1's kernel contracts: x86_64 address spaces on q35, six ABI changes and their header touchpoints |
 | [`design-m10-toolchain.md`](../design-m10-toolchain.md) | M10.2's toolchain: the pinned sources, the six families and their multilibs, the Conan recipe and what it deletes |
 | [`design-m10-target.md`](../design-m10-target.md) | M10.4's target side: the init's walk against the kernel calls, packaged drivers under it, the cost model's corrections, the lookups, the system targets and their link-time asserts, the golden runs |
+| [`design-m10-fleet.md`](../design-m10-fleet.md) | M10.5's fleet: chip files with the kernel's chip headers generated from them, every board's default, every app on compositions, lines from the composition, the partition build, x86_64 through `add_executable` and the deletions |
 | [`design-m9-entry-envelope.md`](../design-m9-entry-envelope.md) | What the M8.12 entry metrics can support for M9; the full recomputation and capture audit are archived |
 
 ## EXPLORATORY

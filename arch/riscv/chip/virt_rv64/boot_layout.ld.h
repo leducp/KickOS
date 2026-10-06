@@ -6,10 +6,12 @@
 #ifndef KICKOS_ARCH_RISCV_CHIP_VIRT_RV64_BOOT_LAYOUT_LD_H
 #define KICKOS_ARCH_RISCV_CHIP_VIRT_RV64_BOOT_LAYOUT_LD_H
 
+#include <chip_layout.h>
+
 /* QEMU `virt` DRAM. The machine reports 128 MiB from this base; the value below is the
  * image's share of it. */
-#define KICKOS_RV64_DRAM_BASE 0x80000000
-#define KICKOS_RV64_DRAM_SIZE 0x04000000
+#define KICKOS_RV64_DRAM_BASE KICKOS_LAYOUT_DRAM_BASE
+#define KICKOS_RV64_DRAM_SIZE KICKOS_LAYOUT_DRAM_SIZE
 
 /* The physical extent this platform implements, in bits, and a BOARD fact: RISC-V publishes no
  * identity register reporting it, and the PTE's PPN field is 44 bits in every RV64 mode.
@@ -31,7 +33,7 @@
  * The paging mode is a Kconfig choice and lives in <kickos/arch/rv64_paging.h>, which this file
  * may not include: the linker script reads it with no arch include directory.
  */
-#define KICKOS_RV64_UART0_PA         0x10000000
+#define KICKOS_RV64_UART0_PA         KICKOS_LAYOUT_UART0_BASE
 
 /* The CLINT, whose msip word per hart IS the cross-hart doorbell. startup.S's machine-mode
  * trampoline lowers a raise on it to mip.SSIP, and arch_ipi_send writes a peer's word from
@@ -40,7 +42,7 @@
  * trampoline reaches it UNTRANSLATED, so this is the address it uses; a supervisor writer adds
  * the device window's base.
  */
-#define KICKOS_RV64_CLINT_PA         0x02000000
+#define KICKOS_RV64_CLINT_PA         KICKOS_LAYOUT_CLINT_BASE
 
 /* The boot/trap stack reservation below _estack, SPLIT PER HART: a secondary runs its early
  * supervisor C and its park loop on one of these before it reaches an idle thread's stack, and
@@ -50,7 +52,7 @@
 #define KICKOS_RV64_BOOT_STACK_SIZE 0x10000
 #define KICKOS_RV64_HART_STACK_STRIDE (KICKOS_RV64_BOOT_STACK_SIZE / KICKOS_NUM_CORES)
 #define KICKOS_RV64_UART_POLL_BOUND  100000
-#define KICKOS_RV64_TEST_FINISHER_PA 0x00100000
+#define KICKOS_RV64_TEST_FINISHER_PA KICKOS_LAYOUT_TEST_FINISHER_BASE
 #define KICKOS_RV64_FINISHER_PASS    0x5555
 #define KICKOS_RV64_FINISHER_FAIL    0x3333
 

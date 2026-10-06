@@ -405,12 +405,14 @@ cores owes a per-thread answer of that kind**, and `reent_per_thread_cores` is i
    section no rule names is a LINK failure printing a section name and no hint of
    what is owed, and configure refuses a script missing any of the four by name
    instead (`arch/CMakeLists.txt`),
-   `arch/arm/chip/<chip>/include/kickos/chip_limits.h` with the chip's own constants
-   (configure REFUSES a chip that ships none), and
-   `arch/arm/chip/<chip>/include/kickos/chip_mmap.h` with its peripheral base
-   addresses. CMake derives the dir from the chip name, puts it on the include path,
-   and installs it -- **no root-CMake edit needed** (this used to be a
-   silently-failing step).
+   and the chip's constants and peripheral base addresses: either its chip file
+   `platform/<chip>/chip.yaml`, from which configure writes `kickos/chip_limits.h`,
+   `kickos/chip_mmap.h`, `irq.h`, `chip_layout.h`, `chip_tables.h` and `chip.cmake`
+   into the build tree (`docs/design-m10-fleet.md` section 1.2), or a hand-written
+   `arch/arm/chip/<chip>/include/kickos/chip_limits.h` and `chip_mmap.h` beside it.
+   Configure REFUSES a chip that ships neither. CMake derives every path from the chip
+   name, puts it on the include path, and installs it, so **no root-CMake edit is
+   needed**.
 5. `boards/<board>/configs/<variant>/defconfig` -- the board's configuration, one
    complete statement per variant. At least a `base`; configure REFUSES a board that
    ships none, and names the variants it does ship.
@@ -430,8 +432,9 @@ the kernel IRQ table are **one fact** rather than the same number in two files) 
 the RX, `KICKOS_RX_INTB_ENTRIES`. Nothing configures these and no option's availability
 depends on them, which is exactly why they are not knobs: a smaller value would shrink
 the kernel table and the vector table together and strand the lines above it, with
-nothing to catch it. A configuration cannot set them, and a chip that ships no
-`chip_limits.h` is refused at configure rather than falling back on the sim's 32.
+nothing to catch it. A configuration cannot set them, and a chip that states no
+`chip_limits.h`, written or generated, is refused at configure rather than falling back on
+the sim's 32.
 
 `board_config.h` holds the provisioning KNOBS: `KICKOS_MAX_THREADS`, the idle/root/user
 stack sizes sized to the chip's SRAM (too big and the link fails on the linker-script
@@ -649,8 +652,8 @@ Status: eight arch backends (**armv7m** Cortex-M3/M4/M4F/M7/M33, **armv6m** Cort
 The count is the directory set under `arch/` that carries a backend: `arch/arm/armv6m`,
 `arch/arm/armv7m`, `arch/arm64/armv8a`, `arch/riscv/rv32imac`, `arch/riscv/rv64imac`,
 `arch/rx/rxv3`, `arch/xtensa/lx6` and `arch/x86/x86_64`.
-"MPU" is whether the chip ships an enforcement backend: `arch/<family>/chip/<chip>/mpu.cmake` on a
-region chip, `aspace.cmake` on a translating one. Where it does, cross-domain trapping is
+"MPU" is whether the chip ships an enforcement backend: a region unit or `mmu` in its chip file, or
+`arch/<family>/chip/<chip>/mpu.cmake` on a region chip and `aspace.cmake` on a translating one. Where it does, cross-domain trapping is
 silicon-proven unless the row says otherwise:
 
 | Chip | Board | Core | MPU | Validation |

@@ -361,7 +361,7 @@ int arch_reboot(void)
 // general watchdog exclusion), and the RESETS + CLOCKS blocks. Each is a full 16 KB window
 // so the SET/CLR/XOR atomic aliases (+0x1000/+0x2000/+0x3000) are covered too. M0+ has no
 // bit-band -> the arch_bitband_present fallback 0 stands.
-size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
+struct arch_reserved_span arch_reserved_blocks(void)
 {
     static struct arch_reserved_block const blocks[] = {
         {mmap::TIMER_BASE, 0x4000u},    // TIMER: 64-bit us monotonic (DS 4.6)
@@ -369,16 +369,7 @@ size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
         {mmap::RESETS_BASE, 0x4000u},   // RESETS: peripheral reset control (DS 2.14)
         {mmap::CLOCKS_BASE, 0x4000u},   // CLOCKS: clock generators (DS 2.15)
     };
-    size_t n = sizeof(blocks) / sizeof(blocks[0]);
-    if (n > max)
-    {
-        n = max;
-    }
-    for (size_t i = 0; i < n; i++)
-    {
-        out[i] = blocks[i];
-    }
-    return n;
+    return blocks;
 }
 #endif
 

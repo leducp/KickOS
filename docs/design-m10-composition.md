@@ -73,6 +73,7 @@ metadata declares, as `lines: { irq: /dev/usic0/sr1 }`.
 | --- | --- | --- | --- |
 | `version` | integer | yes | schema version |
 | `chip` | string | yes | the chip backend's name |
+| `manual` | string | yes | the document the values come from, with its version, which opens every header generated from the file |
 | `arch` | string | unless `cores` gives one per cluster | the kernel architecture |
 | `protection` | mapping | unless per cluster | see below |
 | `cores` | mapping | no | a core count range and `smp`; on a part whose cores are protected differently, one entry per cluster, each with its `protection`, and on a multi-architecture part also its `arch`, count range, `smp` and `line_offset`, the number its controller adds to a source number |
@@ -82,6 +83,9 @@ metadata declares, as `lines: { irq: /dev/usic0/sr1 }`.
 | `devices` | mapping | yes | one entry per device, keyed by its name |
 | `memory` | mapping | on a part with a core that does not translate | ordinary memory windows -- on-chip RAM, flash, apertures -- each a `size` and either a `base` or, where clusters' maps differ, `at`, one base per cluster, and `cluster` on an entry one cluster alone reaches; for the part, or each of its clusters, that does not translate, exactly one entry it reaches is marked `arena: true`, the RAM its user arena is carved from |
 | `pins` | mapping | no | each pin's functions |
+| `interrupts` | mapping | yes | `count`, the controller's line count; `soft_only_from`, the first line no hardware raises; `free_from`, the first line no device uses; `vectors`, the RX's INTB table size; `ref`. On a multi-architecture part the lines are source numbers, and the generator adds the built cluster's `line_offset` to each; every device's line is below `count` |
+| `cycle_counter` | mapping | no | `hz: 0` where the counter has no fixed rate, `glitches: true` where a read can glitch, `ref` |
+| `c` | mapping | no | `namespace`, the C++ namespace of the generated headers where it is not `kickos::<chip>`, and `line_enum`, the line enum's declaration where it is not `irq_num`, as `node : int` |
 
 `protection` has a `unit` (`pmsav7`, `pmsav8`, `pmsav6`, `pmp`, `rxmpu`, `sysmpu`, `mmu`,
 `none`), `covers_devices` and `memory_type` unless the unit is `none`, `page` on `mmu` and only
@@ -109,6 +113,17 @@ and a device reached through system registers alone, as the generic timer is, sa
 `sysreg: true` instead; `privileged_registers` for registers inside the window only privilege can
 write; and `cluster` on a multi-architecture part. Every limitation that makes a grant
 unenforceable has a name here, which a refusal quotes and a composition's `accepts` lists.
+
+Any device, channel, line, block or memory entry may carry `ref`, where in the manual its value
+is, which reaches the generated header as a comment beside its symbol, and `symbol`, its C name
+where today's differs from the derived one: a device's base `<DEVICE>_BASE`, a channel's
+`<DEVICE>_<CHANNEL>_BASE`, a block's `<DEVICE>_<BLOCK>_BASE`, a repeated device's first instance
+`<DEVICE>0_BASE` with `<DEVICE>_STRIDE`, a memory entry's `<ENTRY>_BASE`, and a line
+`<DEVICE>_<LINE>`; two entries one C name names are refused. A line or a block carrying either is
+a mapping, `{ number: <line> }` or `{ offset: <offset> }` beside them. A device's `blocks` names
+sub-blocks of its one `window`, each an offset inside it. A memory entry's `link` states the
+linker region it is and its access, `{ region: FLASH, access: rx }`, one entry per region in each
+view.
 
 A pin entry maps each selector to the function it selects, as `<device>.<signal>`, and plain GPIO
 is the function whose selector is `gpio`, naming the device that holds the pin's port registers as
@@ -447,7 +462,9 @@ node's line; the subset's own refusals are checked on those nodes. A refusal rea
 removed. A run that refuses exits 3, so a caller tells a refusal from a tool that did not run. The kernel build runs it on the board's default composition against its own manifest,
 so a build whose default no longer fits fails; `kickos_compose` runs it on the integrator's.
 Without a manifest it checks a composition against the descriptions alone and says that only their
-rules ran.
+rules ran. Its `chip` subcommand writes the kernel's chip headers, tables and link values from a
+chip file at configure, and with `--compare` asserts a hand-written header against them
+([`design-m10-fleet.md`](design-m10-fleet.md), section 1.2).
 
 ## The Kconfig split
 

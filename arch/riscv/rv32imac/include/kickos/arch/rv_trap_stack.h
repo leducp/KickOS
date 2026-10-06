@@ -31,10 +31,10 @@
  *   _TRAP  176 on the five non-bench presets, 208 on the two bench ones:
  *          kickos_isr_timer -> ktime_on_timer -> endpoint_wait_abort -> sched::wake
  *          -> pick_and_seat -> arch_ctx_redirect[32] -> arch_context_init[32]
- *   _SYS   784 on qemu-riscv-bench and 752 on esp32c6-wroom-bench, the arm that prints:
+ *   _SYS   768 on qemu-riscv-bench and 752 on esp32c6-wroom-bench, the arm that prints:
  *          syscall_dispatch[80]
  *          -> bench_irq_sweep[112] -> dist_print_fmt -> kprintf_paced[320] -> the console.
- *          704 off KICKOS_BENCH.
+ *          576 off KICKOS_BENCH, 512 on the two flat presets.
  *
  * FRAME_SYS + _SYS = 1168, and the lowest word of a block is its overflow canary, so
  * KICKOS_KERNEL_STACK_SIZE is 1184 here: 12 bytes above the canary word.
@@ -48,13 +48,14 @@
  * thread-stack figure being rounded up to the next multiple of 64, and for the posture:
  * KICKOS_BENCH adds a syscall arm nothing else compiles.
  *
- *   KICKOS_BENCH 0, 704 on qemu-riscv and esp32c6-wroom-st, at its bound:
- *     syscall_dispatch[32] -> syscall_body[144] -> thread_create_call[272] -> thread_create[96]
- *     -> task_for -> domain_for -> grant_region_admissible -> grant_hits_reserved[80]
- *   gcc inlines syscall_body into syscall_dispatch per board: esp32c6-wroom reads 608, the two
- *   flat presets 544.
- *   KICKOS_BENCH 1, 784 on qemu-riscv-bench and 752 on esp32c6-wroom-bench, down the console.
- *   C6 AMP node 0, 832 via the self-test diagnostic on exit; node 1 measures 624. */
+ *   KICKOS_BENCH 0, 576 on qemu-riscv and the two non-flat esp32c6-wroom presets:
+ *     syscall_dispatch[64] -> thread_create_call[272] -> thread_create[80] -> seat_windows[64]
+ *     -> MpuSet::add[16] -> MpuSet::encode -> arch_mpu_encode[80]
+ *   The two flat presets read 512:
+ *     syscall_dispatch[64] -> thread_create_call[272] -> thread_create[96] -> seat_windows[64]
+ *     -> arch_ram_region_size[16]
+ *   KICKOS_BENCH 1, 768 on qemu-riscv-bench and 752 on esp32c6-wroom-bench, down the console.
+ *   C6 AMP node 0, 800 via the self-test diagnostic on exit; node 1 measures 608. */
 #if KICKOS_BENCH || KICKOS_AMP_OWN_IMAGE
 #define KICKOS_RV_TRAP_KERNEL_DEPTH_SYSPRIV 832
 #else
@@ -71,7 +72,7 @@
  * arch_rv32imac.cc asserts it equals KICKOS_RV_TRAP_FRAME. */
 #define KICKOS_RV_TRAP_NEST_EXIT 128
 
-/* The fault and slay stubs on the thread's own KERNEL BLOCK. C6 AMP node 0 measures 640
+/* The fault and slay stubs on the thread's own KERNEL BLOCK. C6 AMP node 0 measures 624
  * through its self-test diagnostic; the other non-bench nodes are smaller. _SYS still wins
  * the block, so this class does not set its size. */
 #if KICKOS_AMP_OWN_IMAGE
@@ -80,10 +81,10 @@
 #define KICKOS_RV_TRAP_KERNEL_DEPTH_EXITK 576
 #endif
 
-/* kickos_thread_return on a privileged thread's own stack. C6 AMP node 0 measures 640
+/* kickos_thread_return on a privileged thread's own stack. C6 AMP node 0 measures 624
  * through its self-test diagnostic; the bench presets measure 384:
  *   kickos_thread_return -> exit_current[80] -> cap_teardown -> teardown_entry
- *   -> obj_close_protocol -> mutex_force_unlock -> sched::wake -> pick_and_seat
+ *   -> obj_close_protocol -> endpoint_rights_dropped -> sched::wake -> pick_and_seat
  *   -> arch_ctx_redirect[32] -> arch_context_init[32]
  * KICKOS_MIN_STACK_SIZE is set by NEED_SYSPRIV, not by this class. */
 #if KICKOS_AMP_OWN_IMAGE
@@ -113,7 +114,7 @@
  * A synchronous fault reuses the slot, which is sound because arch_fault_is_user_thread
  * refuses a frame off the running thread's kernel stack, so such a fault terminates.
  *
- * .Lfault's reporter sizes it: 576 on qemu-riscv-bench, kickos_rv_fault_report
+ * .Lfault's reporter sizes it: 560 on qemu-riscv-bench, kickos_rv_fault_report
  * -> kickos_isr_fault -> kprintf[320] -> the console; 544 elsewhere, down the formatter. An
  * accepted U-mode fault runs the same reporter on the kernel block, which the FAULT class
  * charges there. Deliberately above the measurement; do NOT tighten it. */
@@ -156,7 +157,7 @@
 
 /* The panic reporter's own array. Frame 0: the entry clears MIE before the move, and an
  * exception inside the reporter re-enters trap_entry, which builds its frame elsewhere.
- * 224 on qemu-riscv-bench, 176 on the other qemu-riscv presets, 144 to 192 on esp32c6; 448 is
+ * 208 on qemu-riscv-bench, 160 on the other qemu-riscv presets, 112 to 176 on esp32c6; 448 is
  * enforced above that, and arch_rv32imac.cc asserts KICKOS_PANIC_STACK_SIZE against the pair. */
 #define KICKOS_RV_PANIC_FRAME 0
 #define KICKOS_RV_PANIC_DEPTH 448

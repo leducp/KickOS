@@ -1,20 +1,23 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Values from the tree's chip_imx8mp.cc and the i.MX 8M Plus Reference Manual (IMX8MPRM
-# rev 3): the A53 and Cortex-M7 memory maps (ch. 2), the A53 and CM7 interrupt summaries
-# (ch. 7). The tree builds no M7 image, so the M7's values are the RM's alone, but for its
-# memory type, which arch/arm/common/arch_mpu_nocache_support_default.cc states for PMSAv7.
+# Values from the i.MX 8M Plus Reference Manual (IMX8MPRM rev 3): the A53 and Cortex-M7 memory
+# maps (ch. 2), the A53 and CM7 interrupt summaries (ch. 7). The tree builds no M7 image, so the
+# M7's values are the RM's alone, but for its memory type, which
+# arch/arm/common/arch_mpu_nocache_support_default.cc states for PMSAv7.
 # The A53's memory type is arch_aspace_memtype_support in arch/arm64/armv8a/aspace_armv8a.cc.
 
 version: 1
 chip: imx8mp
+manual: "i.MX 8M Plus Applications Processor Reference Manual, IMX8MPRM Rev. 3 (08/2024)"
 
 # One file, two clusters, each its own architecture, protection unit, interrupt controller
 # and kernel image, conversing over an AMP window. A composition is per cluster and names
 # which one it composes. The clusters' caches are not coherent with each other, so memory
 # both reach is shared uncached or with cache maintenance by its users.
 clusters_coherent: false
+# PMCCNTR_EL0 counts core cycles and the part reports no core clock to convert them by.
+cycle_counter: { hz: 0 }
 cores:
   a53:
     arch: armv8a
@@ -36,28 +39,35 @@ cores:
 # partition's assignment.
 partition_gate: { kind: rdc, device: rdc }
 
+interrupts: { count: 160, free_from: 149, ref: "7.1.2 A53 Interrupts, Table 7-1, pp.947-955" }
+
 devices:
-  uart1: { window: [0x30860000, 0x1000] } # the A53 kernel's console
+  uart1: { window: [0x30860000, 0x1000], ref: "Table 2-5 AIPS3 Memory Map, p.33" } # the A53 kernel's console
 
   # SAI5 and SAI6 raise the SAME source, 90: their eight interrupts are ORed onto one line.
   # Whoever holds the line hears both devices, so one holder takes the line and both.
-  sai5: { window: [0x30C50000, 0x1000], lines: { shared: 90 } }
-  sai6: { window: [0x30C60000, 0x1000], lines: { shared: 90 } }
+  sai5: { window: [0x30C50000, 0x1000], lines: { shared: 90 }, ref: "Table 2-7 AIPS5 Memory Map, p.36" }
+  sai6: { window: [0x30C60000, 0x1000], lines: { shared: 90 }, ref: "Table 2-7 AIPS5 Memory Map, p.36" }
 
   # Bus masters: each moves data to and from memory by physical address, which neither
   # cluster's unit sees.
-  sdma1: { window: [0x30BD0000, 0x1000], bus_master: true }
-  enet1: { window: [0x30BE0000, 0x1000], bus_master: true }
+  sdma1: { window: [0x30BD0000, 0x1000], bus_master: true, ref: "Table 2-5 AIPS3 Memory Map, p.32" }
+  enet1: { window: [0x30BE0000, 0x1000], bus_master: true, ref: "Table 2-5 AIPS3 Memory Map, p.32" }
 
   # The A53-M7 messaging unit, one side per cluster, each side interrupting its own cluster:
   # a line that exists for one cluster only. The AMP doorbell, so kernel-owned.
-  mu1_a: { window: [0x30AA0000, 0x1000], owner: kernel, cluster: a53, lines: { to_a53: 88 } }
-  mu1_b: { window: [0x30AB0000, 0x1000], owner: kernel, cluster: m7, lines: { to_m7: 97 } }
+  # Kernel-owned windows are the RM's whole 64 KiB slot.
+  mu1_a: { window: [0x30AA0000, 0x10000], owner: kernel, cluster: a53, lines: { to_a53: 88 }, ref: "Table 2-5, p.32" }
+  mu1_b: { window: [0x30AB0000, 0x10000], owner: kernel, cluster: m7, lines: { to_m7: 97 }, ref: "Table 2-5, p.32" }
 
-  rdc: { window: [0x303D0000, 0x1000], owner: kernel }
-  csu: { window: [0x303E0000, 0x1000], owner: kernel } # secure access policy per peripheral
+  rdc: { window: [0x303D0000, 0x10000], owner: kernel, ref: "Table 2-3 AIPS1 Memory Map, p.30" }
+  # Secure access policy per peripheral.
+  csu: { window: [0x303E0000, 0x10000], owner: kernel, ref: "Table 2-3 AIPS1 Memory Map, p.30" }
+  # The clock and reset controllers, which reach every peripheral on the die.
+  ccm: { window: [0x30380000, 0x10000], owner: kernel, ref: "Table 2-3 AIPS1 Memory Map, p.30" }
+  src: { window: [0x30390000, 0x10000], owner: kernel, ref: "Table 2-3 AIPS1 Memory Map, p.30" }
   # The RM gives only the 1 MiB GIC block at 0x38800000; the split is the GIC-500's.
-  gicd: { window: [0x38800000, 0x10000], owner: kernel, cluster: a53 }
+  gicd: { window: [0x38800000, 0x10000], owner: kernel, cluster: a53, ref: "2.2 Cortex-A53 Memory Map, p.24" }
   # Every A53's frame pair, released or not: a peer's banked state lives in them.
   gicr: { window: [0x38880000, 0x80000], owner: kernel, cluster: a53 }
   # No line: its ID is PPI 30, and a line here is a source number the GIC adds 32 to.
@@ -66,5 +76,7 @@ devices:
 # The same RAM sits at a different address in each cluster's map, so a window names its
 # address per cluster.
 memory:
-  ocram: { size: 0x90000, at: { a53: 0x00900000, m7: 0x20200000 } }
-  dtcm: { size: 0x20000, at: { a53: 0x00800000, m7: 0x20000000 }, arena: true }
+  ocram: { size: 0x90000, at: { a53: 0x00900000, m7: 0x20200000 }, ref: "2.2, p.25; 2.3, p.28" }
+  dtcm: { size: 0x20000, at: { a53: 0x00800000, m7: 0x20000000 }, arena: true, ref: "2.2, p.26; 2.3, p.28" }
+  # The span of the external DDR the A53 image is linked into.
+  dram: { base: 0x40000000, size: 0x4000000, cluster: a53, ref: "2.2 Cortex-A53 Memory Map" }

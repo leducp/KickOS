@@ -223,12 +223,10 @@ void arch_shutdown(int status)
 #if KICKOS_HAVE_MPU
 // Rule 7 reserved set: empty. Console and time base are semihosting calls, and the
 // only registers touched (SysTick/NVIC/SCB) live in the PPB, which the MPU does not
-// govern. KICKOS_RESERVED_NONE is legal per arch.h.
-size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
+// govern.
+struct arch_reserved_span arch_reserved_blocks(void)
 {
-    (void)out;
-    (void)max;
-    return KICKOS_RESERVED_NONE;
+    return {};
 }
 #endif
 

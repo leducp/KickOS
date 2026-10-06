@@ -35,16 +35,33 @@ include_directories("${PROJECT_SOURCE_DIR}/include")
 include_directories("${PROJECT_BINARY_DIR}/generated/include")
 
 # --- Board provisioning -----------------------------------------------------
+set(KICKOS_CHIP_GENERATED OFF)
+set(KICKOS_CHIP_LIMITS_H "")
 if(KICKOS_CHIP)
   set(KICKOS_CHIP_INCLUDE_DIR
       "${CMAKE_CURRENT_SOURCE_DIR}/arch/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/include")
-  if(NOT EXISTS "${KICKOS_CHIP_INCLUDE_DIR}/kickos/chip_limits.h")
-    message(FATAL_ERROR
-      "Chip '${KICKOS_CHIP}' ships no ${KICKOS_CHIP_INCLUDE_DIR}/kickos/chip_limits.h. "
-      "Every chip states its own interrupt-line count there, unconditionally; without "
-      "it config/board.h has no KICKOS_MAX_IRQ and refuses rather than guessing 32.")
+  set(KICKOS_CHIP_LIMITS_H "${KICKOS_CHIP_INCLUDE_DIR}/kickos/chip_limits.h")
+  if(NOT EXISTS "${KICKOS_CHIP_LIMITS_H}")
+    set(_chip_description "${CMAKE_CURRENT_SOURCE_DIR}/platform/${KICKOS_CHIP}/chip.yaml")
+    if(NOT EXISTS "${_chip_description}")
+      message(FATAL_ERROR
+        "Chip '${KICKOS_CHIP}' ships neither ${KICKOS_CHIP_LIMITS_H} nor ${_chip_description}. "
+        "Every chip states its own interrupt-line count, unconditionally; without it "
+        "config/board.h has no KICKOS_MAX_IRQ and refuses rather than guessing 32.")
+    endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/platform/${KICKOS_CHIP}/${KICKOS_BOARD}.yaml")
+      set(_chip_description "${CMAKE_CURRENT_SOURCE_DIR}/platform/${KICKOS_CHIP}/${KICKOS_BOARD}.yaml")
+    endif()
+    include(chip_generate)
+    kickos_chip_generate("${_chip_description}" "${KICKOS_ARCH}")
+    set(KICKOS_CHIP_GENERATED ON)
+    set(KICKOS_CHIP_LIMITS_H "${PROJECT_BINARY_DIR}/generated/include/kickos/chip_limits.h")
   endif()
-  include_directories("${KICKOS_CHIP_INCLUDE_DIR}")
+  if(EXISTS "${KICKOS_CHIP_INCLUDE_DIR}")
+    include_directories("${KICKOS_CHIP_INCLUDE_DIR}")
+  else()
+    set(KICKOS_CHIP_INCLUDE_DIR "")
+  endif()
 endif()
 
 set(KICKOS_BOARD_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/boards/${KICKOS_BOARD}/include")
@@ -489,10 +506,23 @@ if(NOT KICKOS_HAVE_TRACE_CLOCK EQUAL KICKOS_TRACE_CLOCK_DECLARED)
     "above. A chip that gained or lost arch_trace_now has to be stated in both.")
 endif()
 
-# A chip declares an enforcing MPU by shipping arch/<family>/chip/<chip>/mpu.cmake, which
+# A generated chip.cmake states the chip's region unit and whether it translates; Kconfig's
+# HAS_MPU and HAS_ASPACE are checked against every chip file by tests/static/check_chip_kconfig.sh.
+# Any other chip declares an enforcing MPU by shipping arch/<family>/chip/<chip>/mpu.cmake, which
 # also picks the PMSAv8 backend source; the sim enforces via host mprotect.
 set(KICKOS_CHIP_ENFORCES_MPU OFF)
-if(KICKOS_ARCH STREQUAL "sim")
+set(KICKOS_CHIP_TRANSLATES OFF)
+if(KICKOS_CHIP_GENERATED)
+  include("${PROJECT_BINARY_DIR}/generated/chip/chip.cmake")
+  set(KICKOS_CHIP_ENFORCES_MPU ${KICKOS_HAVE_MPU})
+  if(KICKOS_HAVE_MPU AND KICKOS_ARCH_FAMILY STREQUAL "arm")
+    if(KICKOS_CHIP_REGION_UNIT STREQUAL "sysmpu")
+      set(KICKOS_ARM_MPU_BACKEND SYSMPU)
+    elseif(KICKOS_CHIP_REGION_UNIT STREQUAL "pmsav8")
+      set(KICKOS_ARM_MPU_BACKEND PMSAV8)
+    endif()
+  endif()
+elseif(KICKOS_ARCH STREQUAL "sim")
   set(KICKOS_CHIP_ENFORCES_MPU ON)
 elseif(KICKOS_CHIP)
   set(_mpu_optin "${CMAKE_CURRENT_SOURCE_DIR}/arch/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/mpu.cmake")
@@ -519,8 +549,7 @@ add_compile_definitions(KICKOS_HAVE_MPU=${KICKOS_HAVE_MPU})
 
 # A chip declares a translating backend by shipping arch/<family>/chip/<chip>/aspace.cmake.
 # No chip ships both that and mpu.cmake.
-set(KICKOS_CHIP_TRANSLATES OFF)
-if(KICKOS_CHIP)
+if(KICKOS_CHIP AND NOT KICKOS_CHIP_GENERATED)
   set(_aspace_optin
       "${CMAKE_CURRENT_SOURCE_DIR}/arch/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/aspace.cmake")
   if(EXISTS "${_aspace_optin}")
@@ -1014,7 +1043,7 @@ if(KICKOS_BUILD_TESTS)
     add_test(NAME rv32_trap_gp_anchor
       COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_rv32_trap_gp_anchor.sh"
               "${CMAKE_OBJDUMP}"
-              "${KICKOS_CHIP_INCLUDE_DIR}/kickos/chip_limits.h"
+              "${KICKOS_CHIP_LIMITS_H}"
               "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>"
               "$<TARGET_FILE:hello>"
               "$<TARGET_FILE:selftest>")
@@ -1098,6 +1127,12 @@ if(KICKOS_BUILD_TESTS)
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_kconfig_reach.sh"
                     "${_kconfig_py}" "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(kconfig_reach PROPERTIES TIMEOUT 300 LABELS "host;tree")
+
+  _add_test(NAME chip_kconfig
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_chip_kconfig.sh"
+                    "${_kconfig_py}" "${PROJECT_BINARY_DIR}"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(chip_kconfig PROPERTIES TIMEOUT 300 LABELS "host;tree")
 
   _add_test(NAME driver_metadata
             COMMAND "${CMAKE_COMMAND}" "-DKICKOS_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
@@ -1558,6 +1593,11 @@ install(FILES "${PROJECT_BINARY_DIR}/generated/include/kickos/board_config.h"
 if(KICKOS_CHIP_INCLUDE_DIR)
   install(DIRECTORY "${KICKOS_CHIP_INCLUDE_DIR}/"
           DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
+endif()
+if(KICKOS_CHIP_GENERATED)
+  install(FILES "${PROJECT_BINARY_DIR}/generated/include/kickos/chip_mmap.h"
+                "${PROJECT_BINARY_DIR}/generated/include/kickos/chip_limits.h"
+          DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/kickos")
 endif()
 
 if(KICKOS_BOARD_INCLUDE_DIR)

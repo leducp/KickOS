@@ -1337,7 +1337,7 @@ deliberate flood, so the counter is proven live rather than merely present.
 
 Confirmed from the fleet survey: on **most** chips the console UART's RX and TX share one
 interrupt line -- mk64f UART0 = **31** ("UART0 status sources (RX/TX combined)",
-`arch/arm/chip/mk64f/irq.h` (`UART0_RXTX_IRQ`)), **though on that chip the RX ERROR sources
+`platform/mk64f/chip.yaml` (`UART0_RXTX_IRQ`)), **though on that chip the RX ERROR sources
 (OR/NF/FE/PF) sit on a SEPARATE vector, IRQ 32** (RM Rev.4 3.2.2.3, Table 3-5), which the
 "combined" wording covers only for RX and TX. A driver that binds 31 alone therefore recovers
 from an overrun on its next TX or RX wake rather than promptly; the fix, if a bench run shows a

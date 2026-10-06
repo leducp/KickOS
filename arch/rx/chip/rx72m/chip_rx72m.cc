@@ -714,7 +714,7 @@ void arch_shutdown(int status)
 // The ICU window must reach past GENAL1 @0x87874, not stop at IR/IER/IPR: short of that,
 // an AUTH_MEMORY holder could be granted GENBL0 and arm or disarm any group source behind
 // the kernel's back.
-size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
+struct arch_reserved_span arch_reserved_blocks(void)
 {
     static struct arch_reserved_block const blocks[] = {
         {mmap::CMTW0, 0x100u}, // CMTW0 + CMTW1: time base + bench clock (UM sec.32)
@@ -722,16 +722,7 @@ size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
         {mmap::MPU, 0x140u},   // MPU: RSPAGE/REPAGE + MPEN/MPBAC/MPOPI register file (UM sec.17)
         {mmap::SYSTEM, 0x100u}, // SYSTEM: MSTPCR / SCKCR / PLLCR clock+reset gates (UM sec.9/11)
     };
-    size_t n = sizeof(blocks) / sizeof(blocks[0]);
-    if (n > max)
-    {
-        n = max;
-    }
-    for (size_t i = 0; i < n; i++)
-    {
-        out[i] = blocks[i];
-    }
-    return n;
+    return blocks;
 }
 #endif
 

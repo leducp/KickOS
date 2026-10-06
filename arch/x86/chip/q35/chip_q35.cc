@@ -14,6 +14,7 @@
 #include <kickos/arch/portio.h>
 #include <kickos/arch/ring3.h>
 #include <kickos/chip_com1.h>
+#include <kickos/chip_mmap.h>
 #include <kickos/chip_q35.h>
 
 #if KICKOS_KERNEL_CORES > 1
@@ -32,10 +33,10 @@ namespace
     using namespace kickos::x86_64;
 
     // The i8259 pair.
-    constexpr uint16_t pic1_command = 0x20;
-    constexpr uint16_t pic1_data = 0x21;
-    constexpr uint16_t pic2_command = 0xa0;
-    constexpr uint16_t pic2_data = 0xa1;
+    constexpr uint16_t pic1_command = mmap::PIC_MASTER_BASE;
+    constexpr uint16_t pic1_data = mmap::PIC_MASTER_BASE + 1u;
+    constexpr uint16_t pic2_command = mmap::PIC_SLAVE_BASE;
+    constexpr uint16_t pic2_data = mmap::PIC_SLAVE_BASE + 1u;
     // ICW1: initialise, expect ICW4. ICW4: 8086 mode.
     constexpr uint8_t icw1_init_icw4 = 0x11;
     constexpr uint8_t icw4_8086 = 0x01;
@@ -46,8 +47,8 @@ namespace
 
     // The i8254, channel 0. Its gate is tied high here, so the counter runs with no port 0x61
     // involvement, and its output reaches only the controller masked above.
-    constexpr uint16_t pit_channel0 = 0x40;
-    constexpr uint16_t pit_command = 0x43;
+    constexpr uint16_t pit_channel0 = mmap::PIT_BASE;
+    constexpr uint16_t pit_command = mmap::PIT_BASE + 3u;
     // Channel 0, latch the current count.
     constexpr uint8_t pit_latch_ch0 = 0x00;
     // Channel 0, access lo then hi, mode 2 (rate generator), binary.
@@ -64,7 +65,7 @@ namespace
     // The q35 ACPI PM1a control block. BOTH FIGURES ARE HARDCODED FOR THIS EMULATED CHIP: real
     // ACPI takes the S5 sleep type from the DSDT's \_S5 object and this register's address from
     // the FADT, and nothing here reads either.
-    constexpr uint16_t pm1a_control = 0x604;
+    constexpr uint16_t pm1a_control = mmap::ACPI_PM_BASE + 4u;
     constexpr uint16_t pm1a_soft_off = (0u << 10) | (1u << 13);
 
     uintptr_t g_ram_base = 0;
@@ -142,29 +143,6 @@ namespace
         return lo | (hi << 8);
     }
 }
-
-// The port ranges a user window may name: the CMOS pair, and COM2, which this machine leaves
-// unpopulated. Every other port is the chipset's or the kernel's: the DMA controllers write
-// memory, and the PICs, the PIT, the keyboard controller's reset, PCI configuration, the ACPI
-// block, the debug exit and COM1 are driven from here.
-size_t arch_port_apertures(struct arch_reserved_block* out, size_t max)
-{
-    static struct arch_reserved_block const apertures[] = {
-        {0x70u, 2u},
-        {0x2f8u, 8u},
-    };
-    size_t n = sizeof(apertures) / sizeof(apertures[0]);
-    if (n > max)
-    {
-        n = max;
-    }
-    for (size_t i = 0; i < n; i++)
-    {
-        out[i] = apertures[i];
-    }
-    return n;
-}
-
 
 int arch_port_reg_write(uint16_t port, uint8_t value)
 {
@@ -336,35 +314,6 @@ void arch_frame_pool_bounds(uintptr_t* base, uintptr_t* top)
     {
         *top = lo;
     }
-}
-
-// Rule 7 (arch.h). Only the local APIC window, and only on the xAPIC path: in x2APIC mode the
-// block is MSRs, and every other device here sits in the port-I/O space, which an MMIO grant
-// cannot name.
-size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
-{
-    uintptr_t const lapic = apic_mmio_base();
-    if (lapic == 0 or max == 0)
-    {
-        return 0;
-    }
-    out[0].base = lapic;
-    out[0].size = 0x1000u;
-    return 1;
-}
-
-// The device page a user window may name: the HPET, which the kernel does not drive. The I/O
-// APIC and the local APIC next to it steer interrupts, and the rest of the space is firmware or
-// PCI, so none of them is here.
-size_t arch_window_apertures(struct arch_reserved_block* out, size_t max)
-{
-    if (max == 0)
-    {
-        return 0;
-    }
-    out[0].base = 0xFED00000u;
-    out[0].size = 0x1000u;
-    return 1;
 }
 
 // --- Termination ------------------------------------------------------------

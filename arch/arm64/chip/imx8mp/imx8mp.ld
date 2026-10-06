@@ -36,8 +36,9 @@ ENTRY(_start)
 /* The part's external DDR window. The EVK populates 6 GiB of it and QEMU's machine defaults
  * to the same; only the first 64 MiB is carved here, so a smaller `-m` than that is what
  * would overflow. */
-#define KICKOS_ARM64_DRAM_BASE  0x40000000
-#define KICKOS_ARM64_DRAM_SIZE  64M
+#include <chip_layout.h>
+#define KICKOS_ARM64_DRAM_BASE  KICKOS_LAYOUT_DRAM_BASE
+#define KICKOS_ARM64_DRAM_SIZE  KICKOS_LAYOUT_DRAM_SIZE
 
 /* TCR_EL1.T1SZ is 25 (startup.S), which makes the high half the 39-bit range at this
  * base. VA is PA plus this, so the kernel window and the map of physical RAM are one set

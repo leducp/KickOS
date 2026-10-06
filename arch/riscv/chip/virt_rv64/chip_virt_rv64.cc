@@ -112,10 +112,6 @@ namespace
     // boot_layout.ld.h is where the address lives because startup.S needs it too.
     constexpr uintptr_t CLINT_PA = KICKOS_RV64_CLINT_PA;
 
-    // QEMU `virt` interrupt controller, named for arch_reserved_blocks and driven by nothing
-    // here, the console being polled and the timebase a CSR pair.
-    constexpr uintptr_t PLIC_PA = 0x0c000000;
-
     // The `virt` timebase, which both mtime and the time CSR are driven from.
     constexpr uint64_t TIME_HZ = 10000000ull;
     constexpr uint64_t NS_PER_TICK = kickos::KICKOS_NS_PER_SEC / TIME_HZ;
@@ -285,50 +281,6 @@ void kickos_rv64_doorbell_send(uint32_t cores)
     }
 }
 #endif
-
-// Rule 7. Only the CLINT is here: the console is the UART a driver may be granted, and the
-// timebase and the translation controls are CSRs, so none of those is nameable by a grant.
-// The PLIC is absent from this list and out of every window aperture below, which is what keeps
-// a grant off it: the register file's length follows the hart count and lives in a device tree
-// this port does not parse, so no entry here could be sized against the machine.
-//
-// PHYSICAL, not the alias the kernel reads a register through: what a grant names on a
-// translating backend is an output address.
-size_t arch_window_apertures(struct arch_reserved_block* out, size_t max)
-{
-    // The device pages a user window may name: the goldfish RTC and the console UART.
-    static struct arch_reserved_block const apertures[] = {
-        {0x00101000u, 0x1000u},
-        {UART0_PA, 0x1000u},
-    };
-    size_t n = sizeof(apertures) / sizeof(apertures[0]);
-    if (n > max)
-    {
-        n = max;
-    }
-    for (size_t i = 0; i < n; i++)
-    {
-        out[i] = apertures[i];
-    }
-    return n;
-}
-
-size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
-{
-    static struct arch_reserved_block const blocks[] = {
-        {CLINT_PA, 0x10000u}, // msip + mtimecmp + mtime, all machine-mode
-    };
-    size_t n = sizeof(blocks) / sizeof(blocks[0]);
-    if (n > max)
-    {
-        n = max;
-    }
-    for (size_t i = 0; i < n; i++)
-    {
-        out[i] = blocks[i];
-    }
-    return n;
-}
 
 int arch_console_write(char const* buf, size_t n)
 {

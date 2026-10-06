@@ -15,6 +15,8 @@
 
 #include <stdint.h>
 
+#include <kickos/chip_mmap.h>
+
 namespace kickos
 {
     int kmain(int argc, char** argv);
@@ -63,7 +65,7 @@ namespace
     inline volatile uint32_t* r32p(uintptr_t a) { return reinterpret_cast<volatile uint32_t*>(a); }
 
     // QEMU `virt` CLINT (hart 0).
-    constexpr uintptr_t CLINT_BASE = 0x02000000;
+    using kickos::virt_rv32::mmap::CLINT_BASE;
     constexpr uintptr_t CLINT_MSIP = CLINT_BASE + 0x0000;
     constexpr uintptr_t CLINT_MTIMECMP = CLINT_BASE + 0x4000; // 64-bit
     constexpr uintptr_t CLINT_MTIME = CLINT_BASE + 0xBFF8;     // 64-bit
@@ -199,26 +201,6 @@ void arch_shutdown(int status)
         __asm volatile("wfi");
     }
 }
-
-#if KICKOS_HAVE_MPU
-// Rule 7 reserved set (QEMU virt memory map + RISC-V Privileged ISA).
-size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
-{
-    static struct arch_reserved_block const blocks[] = {
-        {0x02000000u, 0x10000u}, // CLINT: msip + mtimecmp (tickless) + mtime
-    };
-    size_t n = sizeof(blocks) / sizeof(blocks[0]);
-    if (n > max)
-    {
-        n = max;
-    }
-    for (size_t i = 0; i < n; i++)
-    {
-        out[i] = blocks[i];
-    }
-    return n;
-}
-#endif
 
 // --- C-runtime bring-up (the reset entry) ----------------------------------
 void Reset_Handler(void)
