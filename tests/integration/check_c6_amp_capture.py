@@ -50,6 +50,12 @@ def main() -> None:
     require(0x4083c000 <= (vector & ~3) < 0x40878000 and (vector & 3) == 1,
             f"LP mtvec {vector:#x} is outside its HP-SRAM image or not vectored")
     one(r"^ampping: 2 of 2 node app\(s\) alive on the port the partition names, own row 1$", log)
+    own, held, foreign = (int(v, 16) for v in one(
+        r"^ampping: gate: node 0 read 0x([0-9a-f]+) from its timg0, "
+        r"node 1 read 0x([0-9a-f]+) from its timg1 and 0x([0-9a-f]+) from node 0's timg0$", log))
+    require(own != 0, "node 0 read zero from the timg0 it holds")
+    require(held != 0, "the LP read zero from the timg1 it holds")
+    require(foreign == 0, f"the LP read {foreign:#x} from node 0's timg0, which the APM must deny it")
     one(r"^ampping: node 0 calls node 1 port 3$", log)
     for n in range(1, 5):
         one(rf"^  ping {n} -> pong {n + 1} from node 1 \(4 byte\(s\)\)$", log)
@@ -68,7 +74,8 @@ def main() -> None:
         bells, drains = map(int, one(rf"^# ampdiag: node={node} core={node} bells=([0-9]+) drains=([0-9]+)$", log))
         require(bells > 0 and drains > 0, f"node {node} did not service its doorbell")
     require("Kernel panic" not in log and "FAULT" not in log, "panic or fault in capture")
-    print(f"PASS: ESP32-C6 HP/LP AMP, four far replies and LP served record {served}")
+    print(f"PASS: ESP32-C6 HP/LP AMP, four far replies, LP served record {served}, "
+          f"LP timg1 {held:#x} and node 0's timg0 denied")
 
 
 if __name__ == "__main__":

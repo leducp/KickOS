@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from kickos_compose import composition, descriptions, emit, manifest, subset, supply
+from kickos_compose import composition, descriptions, emit, manifest, partition, subset, supply
 from kickos_compose.composition import admit, region_size
 from kickos_compose.descriptions import check_platform
 from kickos_compose.manifest import check_manifests
@@ -20,7 +20,7 @@ PLATFORM = os.path.join(TREE, "platform")
 SYSTEMS = os.path.join(TREE, "examples", "composition", "systems")
 XMC_DEFAULT = os.path.join("boards", "xmc4800-relax", "composition.yaml")
 SOURCES = tuple(os.path.realpath(module.__file__)
-                for module in (composition, descriptions, emit, manifest, subset, supply))
+                for module in (composition, descriptions, emit, manifest, partition, subset, supply))
 
 
 def mutate(text, edits):
@@ -61,6 +61,8 @@ WATCHES_33 = ", ".join(["sensor"] + ["w%d" % n for n in range(32)])
 WATCHES_32 = ", ".join(["w%d" % n for n in range(32)])
 
 ARMS = [
+    ("chip.line-order", "xmc4800/chip.yaml", [("      sr1: 85\n      sr2: 86\n", "      sr2: 86\n      sr1: 85\n")], False),
+    (None, "rx72m/chip.yaml", [("      rxi: { number: 86", "      rx0: { number: 86")], False),
     ("form.unknown-field", "stm32f411/chip.yaml", [("chip: stm32f411\n", "chip: stm32f411\nvendor: st\n")], False),
     ("form.unknown-field", "stm32f411/chip.yaml",
      [("protection: { unit: pmsav7, covers_devices: true, memory_type: true }",
@@ -75,6 +77,10 @@ ARMS = [
     ("form.unknown-field", "imx8mp/chip.yaml", [("ocram: { size: 0x90000,", "ocram: { size: 0x90000, ecc: true,")], False),
     ("form.unknown-field", "imx8mp/chip.yaml",
      [("partition_gate: { kind: rdc, device: rdc }", "partition_gate: { kind: rdc, device: rdc, domains: 4 }")], False),
+    ("chip.gate-straddle", "esp32c6/chip.yaml", [("ranges: [[0x60000000, 0xB0000]]", "ranges: [[0x60000800, 0xAF800]]")],
+     True),
+    ("chip.gate-register", "rp2350/chip.yaml", [("    gate_register: 0xA0\n", "    gate_register: 0xA4\n")], False),
+    ("chip.gate-register", "rp2350/chip.yaml", [("    gate_register: 0x48\n", "    gate_register: 0xA0\n")], False),
     ("form.unknown-field", "q35/chip.yaml",
      [("cores: { count: [1, 12], smp: true }", "cores: { count: [1, 12], smp: true, threads: 2 }")], False),
     ("form.unknown-field", "stm32f411/f411disco.yaml", [("chip: stm32f411\n", "chip: stm32f411\nrevision: 2\n")], False),
@@ -162,7 +168,7 @@ ARMS = [
                                            "ocram: { size: 0x90000,")], False),
     ("form.missing", "imx8mp/chip.yaml", [("at: { a53: 0x00900000, m7: 0x20200000 }", "at: {}")], False),
     ("form.missing", "mk64f/chip.yaml", [("    per_thread: false\n", "")], True),
-    ("form.missing", "imx8mp/chip.yaml", [("partition_gate: { kind: rdc, device: rdc }", "partition_gate: { kind: rdc }")], False),
+    ("form.missing", "imx8mp/chip.yaml", [("partition_gate: { kind: rdc, device: rdc }", "partition_gate: { device: rdc }")], False),
     ("form.exclusive", "imx8mp/chip.yaml", [("chip: imx8mp\n", "chip: imx8mp\narch: armv8a\n")], True),
     ("form.type", "stm32f411/chip.yaml", [("[0x40004400, 0x20]", "[usart, 0x20]")], False),
     ("form.type", "stm32f411/chip.yaml", [("[0x40004400, 0x20]", "['0x40004400', 0x20]")], False),
@@ -559,7 +565,7 @@ COMPOSITION_ARMS = [
 # A manifest as tools/manifest/genmanifest.py writes it, beside a copy of platform/.
 MANIFEST = """version: 1
 abi:
-  table: 4
+  table: 5
   cap_reserved: 2
   symbol_prefix: ""
 target:
@@ -783,6 +789,10 @@ ADMISSION_ARMS = [
     ("driver.line-role", "xmc4800-relax.yaml",
      [("lines: { irq: /dev/usic0/sr1 }", "lines: { irq: /dev/usic0/sr1, rx: /dev/usic0/sr2 }")], [], False),
     ("driver.line-role", "xmc4800-relax.yaml", [("    lines: { irq: /dev/usic0/sr1 }\n", "")], [], True),
+    ("driver.line-name", "xmc4800-relax.yaml", [("lines: { irq: /dev/usic0/sr1 }", "lines: { sr2: /dev/usic0/sr1 }")],
+     [("  xmcssc:\n    windows: [regs]\n    lines: [irq]\n", "  xmcssc:\n    windows: [regs]\n    lines: [sr2]\n")], False),
+    (None, "xmc4800-relax.yaml", [("lines: { irq: /dev/usic0/sr1 }", "lines: { sr1: /dev/usic0/sr1 }")],
+     [("  xmcssc:\n    windows: [regs]\n    lines: [irq]\n", "  xmcssc:\n    windows: [regs]\n    lines: [sr1]\n")], False),
     ("driver.window-role", "xmc4800-relax.yaml",
      [("devices: [/dev/usic0/ch1]", "devices: [/dev/usic0/ch1, /dev/port/3]")], [], False),
     ("driver.window-role", "xmc4800-relax.yaml", [("    devices: [/dev/usic0/ch1]\n", "")], [], True),
@@ -929,7 +939,7 @@ ADMISSION_ARMS = [
 # Minimal pairs on MANIFEST.
 MANIFEST_ARMS = [
     ("form.unknown-field", [("version: 1\n", "version: 1\nkernel: 0.5.1\n")], False),
-    ("form.unknown-field", [("  table: 4\n", "  table: 4\n  lookups: 1\n")], False),
+    ("form.unknown-field", [("  table: 5\n", "  table: 5\n  lookups: 1\n")], False),
     ("form.unknown-field", [("  arch: armv7m\n", "  arch: armv7m\n  fpu: true\n")], False),
     ("form.unknown-field", [("    nodes: 2\n", "    nodes: 2\n    peers: [1]\n")], False),
     ("form.unknown-field", [("  enforced: true\n", "  enforced: true\n  unit: pmsav7\n")], False),
@@ -976,7 +986,7 @@ MANIFEST_ARMS = [
     ("form.enum", [("window_rule: pow2", "window_rule: napot")], False),
     ("form.enum", [("posture: retain", "posture: publish")], False),
     ("form.version", [("version: 1\n", "version: 2\n")], False),
-    ("form.version", [("  table: 4\n", "  table: 3\n")], False),
+    ("form.version", [("  table: 5\n", "  table: 4\n")], False),
     ("manifest.block-cache", [("    block: none\n    block_cache: cached\n", "    block: none\n    block_cache: uncached\n")],
      False),
     (None, [("    block: 1024\n    block_cache: cached\n", "    block: 1024\n    block_cache: uncached\n")], False),
@@ -996,7 +1006,7 @@ MANIFEST_ARMS = [
     ("form.integer", [("    endpoints: 1\n    notifications: 1\n    block: 1024\n",
                        "    endpoints: 1\n    notifications: 1\n    block: 1_024\n")], False),
     ("form.integer", [("{ name: uartirq, priority: 1,", "{ name: uartirq, priority: -1,")], False),
-    ("form.range", [("  table: 4\n", "  table: 0x10000\n")], False),
+    ("form.range", [("  table: 5\n", "  table: 0x10000\n")], False),
     ("form.range", [("  thread_windows: 4\n", "  thread_windows: 256\n")], False),
     ("form.range", [("  isolated_cores: 0x0\n", "  isolated_cores: 0x100000000\n")], False),
     ("form.name", [("  board: xmc4800-relax\n", "  board: XMC4800\n")], False),
@@ -1598,6 +1608,123 @@ U0C1 = "    devices: [/dev/usic0/ch1]\n"
 VIRTIO_WIDE = [("    count: 32\n", "    count: 0xFFFF\n")]
 
 
+def amp_of(text, kernel_cores, ports, share, cache, slices, window):
+    """`text`, a manifest, as node 0's build of a partition of two writes it."""
+    return mutate(text, [("  kernel_cores: %d\n  isolated_cores: 0x0\n" % kernel_cores,
+                          "  kernel_cores: 1\n  isolated_cores: 0x0\n  amp:\n    node: 0\n    nodes: 2\n"
+                          "    ports: %s\n    share: %s\n    share_cache: %s\n    slices: %s\n    window: %s\n"
+                          % (ports, share, cache, slices, window))])[0]
+
+
+ARM64_AMP = amp_of(MANIFESTS["qemu-arm64.yaml"], 4, "[[0, 2], [1, 3], [1, 4]]", "0x200000", "uncached",
+                   "[0x40000000, 0x4000000]", "[0x48000000, 0x400000]")
+C6_AMP = amp_of(C6_MANIFEST, 1, "[[0, 2], [1, 3]]", "0x4000", "cached", "[0x40800000, 0x3C000]",
+                "[0x40878000, 0x8000]")
+RP_MANIFEST = manifest_of("pizero2350", "rp2350", "armv7m", XMC_PROTECTION, 1, REGION_POOLS,
+                          (960, 8192, 512, 8192, "none"))
+RP_AMP = amp_of(RP_MANIFEST, 1, "[[0, 2], [1, 3]]", "0x4000", "cached", "[0x20000000, 0x3C000]",
+                "[0x20078000, 0x8000]")
+IMX_AMP = amp_of(manifest_of("imx8mp-evk", "imx8mp", "armv8a", XMC_PROTECTION.replace("enforced: true", "enforced: false"),
+                             1, ARM64_POOLS, (2816, 12288, 4096, 20480, "none")),
+                 1, "[[0, 2], [1, 3]]", "0x10000", "cached", "[0x40000000, 0x4000000]", "[0x48000000, 0x20000]")
+
+PING = """version: 1
+board: %s
+stdout: kernel
+ends: main
+heap: 0
+%sshared:
+  - name: /shm/book
+    size: 64
+    cache: %s
+    partition: true
+tasks:
+  - name: main
+    entry: ping_main
+    stack: %d
+    priority: 9
+    uses: [/amp/3]
+    maps: { /shm/book: rw }
+"""
+
+PONG = """version: 1
+board: %s
+stdout: kernel
+ends: never
+heap: 0
+%sshared:
+  - name: /shm/book
+    size: 64
+    cache: %s
+    partition: true
+tasks:
+  - name: serve
+    entry: serve_main
+    stack: %d
+    priority: 9
+    serves: /amp/3
+    maps: { /shm/book: rw }
+"""
+
+C6_ACCEPTS = "accepts: [no_protection, no_privilege_split]\n"
+ARM64_PAIR = (PING % ("qemu-arm64", "", "uncached", 8192), PONG % ("qemu-arm64", "", "uncached", 8192))
+C6_PAIR = (PING % ("esp32c6-wroom", C6_ACCEPTS, "cached", 1024), PONG % ("esp32c6-wroom", C6_ACCEPTS, "cached", 1024))
+RP_PAIR = (PING % ("pizero2350", "", "cached", 1024), PONG % ("pizero2350", "", "cached", 1024))
+IMX_PAIR = (PING % ("imx8mp-evk", "cluster: a53\naccepts: [no_protection]\n", "cached", 8192),
+            PONG % ("imx8mp-evk", "cluster: m7\naccepts: [no_protection]\n", "cached", 8192))
+IMX_ACCEPT = ("accepts: [no_protection]", "accepts: [no_protection, cached_incoherent]")
+SPARE = ("    maps: { /shm/book: rw }\n", "    maps: { /shm/book: rw }\n  - name: spare\n    entry: spare_main\n"
+         "    stack: 8192\n    priority: 8\n    serves:  /amp/3\n")
+C6_HP_SMALL = [("regions: { value: 16,", "regions: { value: 2,")]
+# A node composition with neither crossing nor partition region.
+LONE = [("shared:\n  - name: /shm/book\n    size: 64\n    cache: cached\n    partition: true\n", ""),
+        ("    uses: [/amp/3]\n", ""), ("    maps: { /shm/book: rw }\n", "")]
+
+
+def partitioned(name, texts, edits, expect, manifest, platform_edits=(), paths=None):
+    """Node compositions written beside the golden ones and admitted together against `manifest`,
+    node 0's. `edits` maps a node to its (old, new) list; `expect` names each refusal as (node, the
+    prefix of its line, rule), a node of None naming the manifest's first line."""
+    def scenario(root):
+        for target, target_edits in platform_edits:
+            target_path = os.path.join(root, target)
+            write(target_path, mutate(read(target_path), target_edits)[0])
+        written = []
+        for k, text in enumerate(texts):
+            path = golden(root, "%s-node%d.yaml" % (name, k))
+            write(path, mutate(text, edits.get(k, []))[0])
+            written.append(path)
+        manifest_path = os.path.join(os.path.dirname(root), "manifest.yaml")
+        write(manifest_path, manifest)
+        expected = []
+        for k, prefix, rule in expect:
+            if k is None:
+                expected.append((manifest_path, 1, rule))
+            else:
+                expected.append((written[k], line_starting(written[k], prefix), rule))
+        if paths is not None:
+            return paths(written, manifest_path), expected
+        report, found = partition.admit_partition(written, manifest_path, 0)
+        return report.refusals, expected
+    scenario.__name__ = "partitioned_%s" % name
+    return scenario
+
+
+def single_emit(written, manifest_path):
+    report, texts = emit.emit_system(written[0], manifest_path)
+    return report.refusals
+
+
+def gate_emit(written, manifest_path):
+    report, text = emit.emit_gate(manifest_path)
+    return report.refusals
+
+
+def three_nodes(written, manifest_path):
+    report, found = partition.admit_partition(written + [written[1]], manifest_path, 0)
+    return report.refusals
+
+
 SCENARIOS = [
     ("form.unreadable", unreadable_manifest),
     ("form.unknown-field", manifest_broken_board),
@@ -1777,6 +1904,76 @@ SCENARIOS = [
     ("ownership.device", diagnostic_app("xmccshold", U0C1, [("    devices: ", "ownership.device")])),
     ("ownership.device", diagnostic_app("pvprobe", U0C1, [("    devices: ", "ownership.device")])),
     ("ownership.device", diagnostic_app("inprstorm", U0C1, [("    devices: ", "ownership.device")])),
+    (None, partitioned("arm64", ARM64_PAIR, {}, [], ARM64_AMP)),
+    ("partition.device", partitioned("arm64", ARM64_PAIR,
+                                     {0: [("    uses: [/amp/3]\n", "    uses: [/amp/3]\n    devices: [/dev/rtc]\n")],
+                                      1: [("    serves: /amp/3\n", "    serves: /amp/3\n    devices: [/dev/rtc]\n")]},
+                                     [(1, "    devices: ", "partition.device")], ARM64_AMP)),
+    ("partition.port", partitioned("arm64", ARM64_PAIR, {0: [("uses: [/amp/3]", "uses: [/amp/9]")]},
+                                   [(0, "    uses: ", "partition.port")], ARM64_AMP)),
+    ("partition.port", partitioned("arm64", ARM64_PAIR, {0: [("uses: [/amp/3]", "uses: [/amp/1]")]},
+                                   [(0, "    uses: ", "partition.port")], ARM64_AMP)),
+    (None, partitioned("arm64", ARM64_PAIR, {0: [("uses: [/amp/3]", "uses: [/amp/0, /amp/3]")]}, [],
+                       ARM64_AMP.replace("[[0, 2], [1, 3], [1, 4]]", "[[0, 2], [1, 0], [1, 3], [1, 4]]")
+                       .replace("KICKOS_TASK_ENDPOINT_BUDGET: 3", "KICKOS_TASK_ENDPOINT_BUDGET: 4"))),
+    ("partition.port", partitioned("arm64", ARM64_PAIR, {1: [("serves: /amp/3", "serves: /amp/2")]},
+                                   [(1, "    serves: ", "partition.port")], ARM64_AMP)),
+    ("partition.port", partitioned("arm64", ARM64_PAIR, {1: [SPARE]}, [(1, "    serves:  /amp/3", "partition.port")],
+                                   ARM64_AMP)),
+    ("partition.port", partitioned("arm64", ARM64_PAIR, {}, [(0, "    uses: ", "partition.port"),
+                                                             (1, "    serves: ", "partition.port")],
+                                   ARM64_AMP.replace("[[0, 2], [1, 3], [1, 4]]", "[[0, 3], [1, 3]]"))),
+    ("partition.port", composed("xmc4800-relax.yaml", read(os.path.join(SYSTEMS, "xmc4800-relax.yaml")),
+                                [("    serves: /svc/spi0\n", "    serves: /amp/3\n"), ("    uses: [/svc/spi0]\n", "")],
+                                [("    serves: /amp/3", "partition.port")])),
+    ("partition.unserved", partitioned("arm64", ARM64_PAIR, {1: [("    serves: /amp/3\n", "")]},
+                                       [(0, "    uses: ", "partition.unserved")], ARM64_AMP)),
+    ("partition.region", partitioned("arm64", ARM64_PAIR, {1: [("size: 64", "size: 128")]},
+                                     [(1, "    size: ", "partition.region")], ARM64_AMP)),
+    ("partition.region", partitioned("arm64", ARM64_PAIR, {0: [("size: 64", "size: 0x300000")],
+                                                           1: [("size: 64", "size: 0x300000")]},
+                                     [(0, "  - name: /shm/book", "partition.region"),
+                                      (1, "  - name: /shm/book", "partition.region")], ARM64_AMP)),
+    (None, partitioned("arm64", ARM64_PAIR, {0: [("size: 64", "size: 0x200000")], 1: [("size: 64", "size: 0x200000")]},
+                       [], ARM64_AMP)),
+    ("partition.region", partitioned("arm64", ARM64_PAIR, {0: [("cache: uncached", "cache: cached")]},
+                                     [(0, "    cache: ", "partition.region")], ARM64_AMP)),
+    ("partition.cached-incoherent", partitioned("imx", IMX_PAIR, {},
+                                                [(0, "    cache: ", "partition.cached-incoherent"),
+                                                 (1, "    cache: ", "partition.cached-incoherent")], IMX_AMP)),
+    (None, partitioned("imx", IMX_PAIR, {0: [IMX_ACCEPT], 1: [IMX_ACCEPT]}, [], IMX_AMP)),
+    ("partition.cached-incoherent", partitioned("imx", IMX_PAIR, {0: [IMX_ACCEPT]},
+                                                [(1, "    cache: ", "partition.cached-incoherent")], IMX_AMP)),
+    (None, partitioned("c6", C6_PAIR, {}, [], C6_AMP)),
+    ("partition.gate-budget", partitioned("c6", C6_PAIR, {1: [("    serves: /amp/3\n",
+                                                                "    serves: /amp/3\n    devices: [/dev/lp_uart]\n")]},
+                                          [(1, "    devices: ", "partition.gate-budget")], C6_AMP)),
+    (None, partitioned("c6", C6_PAIR, {1: [("    serves: /amp/3\n", "    serves: /amp/3\n    devices: [/dev/timg1]\n")]},
+                       [], C6_AMP)),
+    ("partition.gate-budget", partitioned("c6", C6_PAIR, {}, [(0, "version: ", "partition.gate-budget")], C6_AMP,
+                                          [("esp32c6/chip.yaml", C6_HP_SMALL)])),
+    ("partition.gate-budget", partitioned("c6", C6_PAIR, {0: LONE}, [(0, "version: ", "partition.gate-budget")],
+                                          C6_AMP, [("esp32c6/chip.yaml", C6_HP_SMALL)], paths=single_emit)),
+    (None, partitioned("c6", C6_PAIR, {0: LONE}, [], C6_AMP, paths=single_emit)),
+    ("partition.lone", partitioned("c6", C6_PAIR, {0: [("    uses: [/amp/3]\n", "")]},
+                                   [(0, "  - name: /shm/book", "partition.lone")], C6_AMP, paths=single_emit)),
+    ("partition.lone", partitioned("c6", C6_PAIR, {0: [LONE[0], LONE[2]]},
+                                   [(0, "    uses: ", "partition.lone")], C6_AMP, paths=single_emit)),
+    ("partition.port", partitioned("c6", C6_PAIR, {1: [("    serves: /amp/3\n", "    serves: /amp/3\n    uses: [/amp/3]\n")]},
+                                   [(1, "    uses: ", "partition.port")], C6_AMP)),
+    ("partition.region", partitioned("arm64", ARM64_PAIR, {0: [("    uses: [/amp/3]\n", "")]},
+                                     [(0, "  - name: /shm/book", "partition.region")], MANIFESTS["qemu-arm64.yaml"],
+                                     paths=single_emit)),
+    ("partition.gate-budget", partitioned("c6", C6_PAIR, {}, [(None, "", "partition.gate-budget")], C6_AMP,
+                                          [("esp32c6/chip.yaml", C6_HP_SMALL)], paths=gate_emit)),
+    (None, partitioned("rp", RP_PAIR, {0: [("    uses: [/amp/3]\n", "    uses: [/amp/3]\n    devices: [/dev/uart0]\n")]},
+                       [], RP_AMP)),
+    ("partition.gate-budget", partitioned("rp", RP_PAIR,
+                                          {0: [("    uses: [/amp/3]\n", "    uses: [/amp/3]\n    devices: [/dev/uart0]\n")]},
+                                          [(0, "    devices: ", "partition.gate-budget")], RP_AMP,
+                                          [("rp2350/chip.yaml", [("    gate_register: 0xA0\n", "")])])),
+    ("manifest.amp", partitioned("arm64", ARM64_PAIR, {}, [(0, "version: ", "manifest.amp")], ARM64_AMP,
+                                 paths=three_nodes)),
 ]
 
 
@@ -1935,6 +2132,19 @@ class Arms(unittest.TestCase):
             if not reddened:
                 unarmed.append("%s:%d" % (os.path.basename(site[0]), site[1]))
         self.assertEqual(unarmed, [])
+
+
+class NeverAssigned(unittest.TestCase):
+    def test_the_chip_file_and_the_chip_code_name_the_same_registers(self):
+        report = descriptions.Report()
+        path = os.path.join(PLATFORM, "rp2350", "chip.yaml")
+        chip = descriptions.check_chip(path, read(path), report)
+        self.assertEqual([str(r) for r in report.refusals], [])
+        code = read(os.path.join(TREE, "arch", "arm", "chip", "rp2350", "regs", "accessctrl.h"))
+        listed = code[code.index("NEVER_ASSIGNED[] = {"):]
+        listed = listed[:listed.index("};")]
+        constants = [int(word[:-1], 16) for word in listed.replace(",", " ").split() if word.startswith("0x")]
+        self.assertEqual(sorted(constants), sorted(chip.partition_gate.never_assigned))
 
 
 class Rounding(unittest.TestCase):

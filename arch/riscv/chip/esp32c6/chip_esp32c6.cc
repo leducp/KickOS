@@ -35,6 +35,7 @@
 #include <stdint.h>
 
 #include <kickos/chip_mmap.h>
+#include "apm_rows.h"
 #include "irq.h"
 #include "mtime_conv.h"
 #include "regs/apm.h"
@@ -825,38 +826,67 @@ uint32_t arch_periph_clock_hz(uintptr_t base)
     return src / (div_num + 1u);
 }
 
-// HP_APM background permit for security mode REE0, which is what U-mode is by reset
-// (HP_TEE_M0_MODE_CTRL = 0), so no HP_TEE write is needed. The reset posture DENIES
-// every REE access to every HP peripheral (region 0 catch-all: START=0, END=0xFFFFFFFF,
-// ATTR=0), which would make even a granted MMIO window unreachable from an
-// unprivileged thread. Region 0 stays, and regions 1..3 re-permit its complement
-// outside the HP-bus blocks of the Rule 7 set (INTMTX, then the contiguous
-// PCR..HP_APM span); an overlap resolves to the permit (TRM 16.3.2.3). PMP is the
-// per-thread authority; APM cannot be, it is per security mode and its denial does
-// not trap (regs/apm.h).
-static void apm_open_ree0(void)
+static void apm_write(uintptr_t at, uint32_t value)
 {
-    constexpr uint32_t BLOCK = 0x1000u;
-    struct permit
+    r32(at) = value;
+}
+
+static void c6_refuse(char const* msg)
+{
+    size_t n = 0;
+    while (msg[n] != '\0')
     {
-        uint32_t start;
-        uint32_t end;
-    };
-    static permit const permits[] = {
-        {0x00000000u, mmap::INTMTX_BASE - 1u},
-        {mmap::INTMTX_BASE + BLOCK, mmap::PCR_BASE - 1u},
-        {mmap::HP_APM_BASE + BLOCK, 0xFFFFFFFFu},
-    };
-    uint32_t en = r32(reg::apm::FILTER_EN);
-    for (uint32_t i = 0; i < sizeof(permits) / sizeof(permits[0]); i++)
-    {
-        uint32_t const n = i + 1u;
-        r32(reg::apm::region_addr_start(n)) = permits[i].start;
-        r32(reg::apm::region_addr_end(n)) = permits[i].end;
-        r32(reg::apm::region_attr(n)) = reg::apm::R0_R | reg::apm::R0_W;
-        en |= reg::apm::region_en(n);
+        n++;
     }
-    r32(reg::apm::FILTER_EN) = en;
+    arch_console_write_sync(msg, n);
+    arch_shutdown(1);
+}
+
+// Every node's rows at once: node 1's stay inert until arch_amp_release_peers moves the LP
+// CPU to their mode.
+static void apm_program_gate(void)
+{
+    namespace apm = kickos::esp32c6::apm;
+    apm::Image image;
+    apm::Refusal const refusal = apm::image_of(kickos_gate_rows, kickos_gate_row_count, image);
+    char const* why = nullptr;
+    switch (refusal)
+    {
+        case apm::Refusal::NONE:
+        {
+            break;
+        }
+        case apm::Refusal::GATE:
+        {
+            why = "KickOS: ESP32-C6 partition gate: a row names no APM gate\n";
+            break;
+        }
+        case apm::Refusal::NODE:
+        {
+            why = "KickOS: ESP32-C6 partition gate: a row names a node with no security mode\n";
+            break;
+        }
+        case apm::Refusal::BUDGET:
+        {
+            why = "KickOS: ESP32-C6 partition gate: more rows than an APM gate has regions\n";
+            break;
+        }
+        case apm::Refusal::RANGE:
+        {
+            why = "KickOS: ESP32-C6 partition gate: a row's range is not an APM region\n";
+            break;
+        }
+        case apm::Refusal::ACCESS:
+        {
+            why = "KickOS: ESP32-C6 partition gate: a row's access is not R, W and X\n";
+            break;
+        }
+    }
+    if (why != nullptr)
+    {
+        c6_refuse(why);
+    }
+    apm::program(image, apm_write);
     __asm volatile("fence" ::: "memory");
 }
 
@@ -880,7 +910,7 @@ void arch_init(void)
     r32(reg::clint::MTIMECTL) = reg::clint::MTIMECTL_MTCE | reg::clint::MTIMECTL_MTIE; // start the counter + enable
 
     kickos_rv32_init();  // vectored mtvec + mie(MSIE|MTIE|SSIE) + PMP (no mcounteren here)
-    apm_open_ree0();     // bus-side gate: REE0 permit outside the Rule 7 HP blocks
+    apm_program_gate();
     c6_early_mark('F');  // mtvec + mie + permissive bootstrap PMP installed
     inject_doorbell_init(); // wire the interrupt matrix FROM_CPU doorbell (device IRQs)
     c6_early_mark('G');  // inject doorbell wired
@@ -971,8 +1001,6 @@ void arch_amp_release_peers(void)
     uintptr_t const stub_begin = reinterpret_cast<uintptr_t>(kickos_c6_amp_lp_stub_start);
     uintptr_t const stub_end = reinterpret_cast<uintptr_t>(kickos_c6_amp_lp_stub_end);
     uintptr_t const image_base = KICKOS_AMP_PARTITION_BASE + KICKOS_AMP_NODE_SHARE;
-    uintptr_t const shared_base = KICKOS_AMP_PARTITION_BASE
-                                  + KICKOS_AMP_NODES * KICKOS_AMP_NODE_SHARE;
     uintptr_t const stub_size = stub_end - stub_begin;
     // The ESP32-C6 ROM placed both node LOAD segments from the one flashed
     // partition image. Node 0 copies only the small reset vector into LP SRAM.
@@ -1010,7 +1038,6 @@ void arch_amp_release_peers(void)
     kickos_c6_amp_rtc_hz = rtc_hz;
     kickos::kprintf("# c6amp: LP RTC %u Hz\n", static_cast<unsigned>(rtc_hz));
     constexpr uintptr_t lp_mem = 0x50000000u;
-    constexpr uintptr_t lp_apm = 0x600B3800u;
     for (uintptr_t i = 0; i < stub_size; i += 4u)
     {
         r32(lp_mem + i) = r32(stub_begin + i);
@@ -1019,27 +1046,8 @@ void arch_amp_release_peers(void)
     r32(lp_mem + 0x208u) = 0;
     r32(lp_mem + 0x20Cu) = 0;
     __asm volatile("fence iorw, iorw" ::: "memory");
-    // LP_APM has four regions and region 0 is the reset catch-all, so these three
-    // grants are every page the LP kernel may reach outside HP SRAM: the PMU page,
-    // the 1 KiB reset vector and the LP timer page. LP_CLKRST and eFuse stay out.
-    r32(lp_apm + 0x10u) = 0x600B0000u;
-    r32(lp_apm + 0x14u) = 0x600B03FFu;
-    r32(lp_apm + 0x18u) = 0x600u;
-    r32(lp_apm + 0x1Cu) = 0x70000000u;
-    r32(lp_apm + 0x20u) = 0x700003FFu;
-    r32(lp_apm + 0x24u) = 0x700u;
-    r32(lp_apm + 0x28u) = 0x600B0C00u;
-    r32(lp_apm + 0x2Cu) = 0x600B0FFFu;
-    r32(lp_apm + 0x30u) = 0x600u;
-    r32(lp_apm) |= 0xEu;
-    // The LP can fetch/write only its node slice and the shared ring in HP SRAM.
-    r32(reg::apm::region_addr_start(4u)) = image_base;
-    r32(reg::apm::region_addr_end(4u)) = image_base + KICKOS_AMP_NODE_SHARE - 1u;
-    r32(reg::apm::region_attr(4u)) = 0x700u;
-    r32(reg::apm::region_addr_start(5u)) = shared_base;
-    r32(reg::apm::region_addr_end(5u)) = shared_base + KICKOS_AMP_SHARED_SIZE - 1u;
-    r32(reg::apm::region_attr(5u)) = 0x600u;
-    r32(reg::apm::FILTER_EN) |= reg::apm::region_en(4u) | reg::apm::region_en(5u);
+    // Before the wake: node 1's rows are at its NODE_MODE, and no row grants its reset REE2.
+    r32(reg::apm::LP_TEE_M0_MODE_CTRL) = kickos::esp32c6::apm::NODE_MODE[1];
     r32(0x600B1048u) = (r32(0x600B1048u) & ~(1u << 31)) | (1u << 30);
     r32(0x600B0174u) |= 1u << 31;
     r32(0x600B017Cu) |= 3u << 30;

@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The board's default composition with packaged driver `testpl011` serving the console.
+
+version: 1
+board: qemu-arm64
+stdout: /svc/console
+ends: main
+heap: 65536
+
+tasks:
+  - name: testpl011
+    driver: testpl011
+    devices: [/dev/uart0]
+    serves: /svc/console
+    priority: 12
+
+  - name: main
+    entry: kickos_main
+    stack: 20480
+    priority: 2
+    authority: [memory, system, tasks]

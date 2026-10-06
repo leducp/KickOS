@@ -262,7 +262,7 @@ userspace, as the composition design leaves for when each board moves:
 | `xmc4800-relax`, `frdmk64f` | `KICKOS_SERVICE_LIST`, defaulted on the enforcing posture | userspace | deleted with the service lists (section 6): a service is a task of a composition |
 | `xmc4800-relax`, `frdmk64f`, `picopi`, `f302nucleo` | `KICKOS_BOARD_PINMAP` | userspace | deleted with the pin maps (section 6): a task muxes its own pins and the board file states the wiring |
 | `imx8mp-evk`, `qemu-arm64`, `qemu-riscv64` | `KICKOS_USER_HEAP_SIZE`, 65536 | userspace | stays until the heap knob is deleted (section 6); the figure is already their default composition's `heap` |
-| `microbit` | `KICKOS_MICROBIT_FULL_NEWLIB`, which C library the package links | kernel | stays: it is what the kernel package is built with, a fact of the export every image links |
+| `microbit` | its full-newlib choice, which C library the package links | kernel | generalised in M10.5.5: the board descriptor names the nano profile (`KICKOS_BOARD_NEWLIB`, also on `f302nucleo` and `bluepill-c8`) and the fleet's `KICKOS_FULL_NEWLIB` chooses the full one; it is what the kernel package is built with, a fact of the export every image links |
 | `picopi`, `pizero2350`, `teensy41` | none yet; the USB console's clock tree is derived from a list's name | kernel | `KICKOS_USB_CONSOLE` becomes their Kconfig option, set by a `usbcdc` defconfig variant: it is chip init the kernel runs |
 | `blackpill`, `bluepill-c8`, `due`, `esp32-wroom`, `esp32c6-wroom`, `f411disco`, `qemu`, `qemu-m3`, `qemu-m7`, `qemu-m33`, `qemu-riscv`, `qemu-x86_64`, `rx72m`, `sim` | none | | nothing to classify |
 
@@ -613,12 +613,13 @@ partition build:
 
 | rule | refuses | arm |
 | --- | --- | --- |
-| `partition.device` | a device, or a gate around it, two nodes grant | two node compositions granting `/dev/uart0`, in the tool's tests |
-| `partition.port` | an `/amp` port the manifest does not list, port 1, a `serves` on a node not its server, a port two tasks of one node serve | a mutated node composition each |
+| `partition.device` | a device, or a gate around it, two nodes grant | two node compositions granting `/dev/rtc` on `qemu-arm64`, in the tool's tests |
+| `partition.port` | an `/amp` port the manifest does not list or lists for two nodes, port 1, a `serves` on a node not its server, a port two tasks of one node serve, a task that serves and uses one port, a packaged driver serving one | a mutated node composition each |
 | `partition.unserved` | an `/amp` port a node uses that no task of its server serves | the server's `serves` removed |
-| `partition.region` | a partition region two nodes declare with different sizes or caches, or the regions past the user share | a size changed on one node |
+| `partition.region` | a partition region two nodes declare with different sizes, one whose `cache` is not the share's one type (so two nodes never differ in it), the regions past the user share, or one where the kernel build states no AMP shared window | a size changed on one node; a `cache` changed on one; a size past the share on both; a node composition emitted alone against a build stating no window |
+| `partition.lone` | on an AMP build, a crossing or a partition region in a composition admitted apart from its partition, whose system target no other node's admission sees | a node composition emitted alone against node 0's manifest, once holding its region and once its crossing |
 | `partition.cached-incoherent` | a `cached` partition region shared by nodes that are not coherent, unless every node that maps it accepts `cached_incoherent` | the i.MX 8M Plus's clusters as a two-node fixture, refused, admitted with the acceptance on both, refused with it on one |
-| `partition.gate-budget` | a gate's derived assignment past the regions it holds | the C6's LP node granted the LP UART, which coalesces with none of the LP kernel's pages |
+| `partition.gate-budget` | a gate's derived assignment past the regions it holds, and a device granted where a per-peripheral gate states no register for it | the C6's LP node granted the LP UART, which coalesces with none of the LP kernel's pages; the C6's HP_APM cut to two regions, refused by the partition, by a node composition holding no crossing and no region emitted alone, and by the assignment of no composition; the RP2350's UART0 with its register removed |
 
 Nodes are coherent when they run on one cluster the chip file states `smp`, or where no data cache
 sits over the region (`data_cache: false`, as the C6's file states), where both cache values are
@@ -627,33 +628,48 @@ admitted.
 ### 9.5 The partition gate
 
 The assignment is derived: each device's node is the node whose composition grants it, so no file
-can disagree with the compositions. Every system target built for node 0 of an AMP build emits it
-as one C source, empty where the image is no partition's, so the gate's owner reads a definition
-in every node-0 link and no weak symbol stands in for one. The chip code programs exactly the
-emitted assignment, and the literals it programs today move into it.
+can disagree with the compositions. Every system target built for node 0 of an AMP build, and every
+one built on a chip stating a gate, emits it as one C source, empty where the chip states no gate,
+and an image linking no system target links the assignment of no composition, the kernel's own
+rows alone, so the gate's owner reads a definition in every link that programs it and no weak
+symbol stands in for one. The chip code programs exactly the emitted assignment, and the literals
+it programmed move into it. Which gate fronts a device is stated once, by the gate's `ranges` in
+the chip file, a window crossing a range's edge being `chip.gate-straddle`; a per-peripheral gate
+names each device's register as the device's `gate_register`.
 
 **The ESP32-C6's APM** (TRM v1.2 chapter 16). The chip file states two gates. HP_APM holds 16
 regions and fronts the HP peripherals (0x6000_0000 to 0x600A_FFFF), the CPU peripherals
 (0x600C_0000 to 0x600C_FFFF) and HP SRAM as the LP CPU reaches it. LP_APM holds 4 and fronts the LP
 peripherals (0x600B_0000 to 0x600B_FFFF) and LP SRAM in low-speed mode (Table 5.3-2, Figure
 16.3-1). Region 0 of each is the reset catch-all that denies, permissions OR across regions, and a
-denial reads zero and drops a write without a trap (16.3.2.3, 16.5). The HP CPU's user mode is
-REE0 and the LP CPU, at reset, REE2 (16.3.1). The derived set per gate, each range coalesced with
-its neighbours, counted against the gate's regions less its catch-all:
+denial reads zero and drops a write without a trap (16.3.2.3, 16.5). A permission is per security
+mode and never per master: the HP CPU's user mode is REE0, and the LP CPU is REE2 at reset
+(16.3.1, Reg 16.56), which every other bus master shares at power-up (the note of 16.3.2, p.564),
+so node 0 moves the LP CPU to REE1 (`LP_TEE_M0_MODE_CTRL`) before it wakes it and no DMA master
+holds what the LP node is given. The derived set per gate, each range coalesced with the ranges it
+touches, counted against the gate's regions less its catch-all:
 
-| gate | REE0, the HP node's tasks | REE2, the LP node | kernel ranges kept in the set |
+| gate | REE0, the HP node's tasks | REE1, the LP node | kernel ranges kept in the set |
 | --- | --- | --- | --- |
-| HP_APM | every HP and CPU peripheral but the kernel-owned blocks and the devices the LP node's composition grants | the LP node's slice and the shared ring in HP SRAM, and each HP device its composition grants | the three REE0 permits `apm_open_ree0` writes today become the derived REE0 set; the slice and ring permits `arch_amp_release_peers` writes become the derived REE2 rows |
-| LP_APM | each LP device the HP node's composition grants | the LP kernel's own pages (the PMU page, its reset vector, the LP timer page) and each LP device its composition grants | the three permits `arch_amp_release_peers` writes today, which are the derived set before any grant |
+| HP_APM | each HP device the HP node's composition grants, and nothing else: none where an image links no composition; no CPU peripheral, which no composition grants and among which INTPRI is the kernel's doorbell | the LP node's slice and the shared window in HP SRAM, and each HP device its composition grants | the slice and window rows |
+| LP_APM | each LP device the HP node's composition grants | the LP kernel's own pages (the PMU page, its reset vector, the LP timer page) and each LP device its composition grants | the LP kernel's three pages, which are the derived set before any grant |
 
 So an LP grant is admitted only where it coalesces with one of the LP kernel's three pages, and
 refused otherwise: the LP kernel's pages are part of the derived set rather than fixed regions the
 grants must fit around, and none is dropped to make room. As the pages stand, none coalesces: the
 LP UART, which the chip file gains from Table 5.3-2, sits past LP_AON, which is the kernel's, so
-every LP peripheral granted to the LP node is refused, and M10.5.9 reports that rather than taking
-a region from the kernel. HP_APM has nine regions to spare on a two-node partition. The LP reset-vector permit
-programs 0x7000_0000, which the TRM's map leaves reserved, LP SRAM sitting at 0x5000_0000 (Table
-5.3-1): M10.5.9 checks it against the manual before it becomes a row.
+every LP peripheral granted to the LP node is refused rather than taking a region from the kernel.
+With no grant, HP_APM holds the LP node's two REE1 rows alone, leaving thirteen. Each gate's
+FILTER_EN is written whole, so a region no row names stays disabled whatever enabled it before;
+`c6lpprobe`, which programs HP_APM's regions 14 and 15 and every LP_APM region past the catch-all
+itself, refuses an image whose rows hold any of them.
+
+The literals the chip code programmed before the derivation opened more than this set: REE0 held
+read and write on RMT and IO_MUX, which are the kernel's, on HP SRAM and on every CPU peripheral
+including INTPRI, and the LP node's slice and window were REE2's, so every DMA master reached them.
+The LP reset-vector row stays at 0x7000_0000, which Table 5.3-1 leaves reserved: LP_APM sees the
+LP CPU's reset fetch from LP SRAM (0x5000_0000) at that alias, as the archived probe capture
+`docs/archive/M9.9_lp_probe_captures/m99probe12.log` shows, and the chip file cites it.
 
 **The RP2350's ACCESSCTRL** (RP2350 datasheet, 10.6). One register per peripheral at 0x4006_0000
 plus the offsets of Table 911. Node 0, Secure and privileged, writes each before it launches the
@@ -672,27 +688,37 @@ A peripheral no composition grants keeps its reset value, and **LOCK is never wr
 lock bit holds until reset (Table 912, p.830). **Never assigned**, because both kernels need them
 or they are not per-peripheral at all: SIO, the PPB, BOOTRAM and ACCESSCTRL itself, which no
 register gates (10.6.2.3, p.826); ROM and the boot path through which node 0 launches the peer;
-XIP_MAIN, XIP_CTRL, XIP_QMI and XIP_AUX, both images running from flash; SRAM0 to SRAM9, whose
-banks 0 to 3 and 4 to 7 are word-striped (2.2.3, p.31), so a bank is never one node's range;
+XIP_MAIN, XIP_CTRL, XIP_QMI and XIP_AUX, both images running from flash; SRAM0 to SRAM7, whose
+banks 0 to 3 and 4 to 7 are word-striped (2.2.3, p.31), so a bank is never one node's range, and
+SRAM8 and SRAM9, which are not striped and hold the cores' stacks; DMA, deferred;
 RESETS, CLOCKS, XOSC, PLL_SYS, PLL_USB, TICKS and WATCHDOG; TIMER0, which both kernels read; UART1,
 the console both nodes write under their claim; and IO_BANK0 with PADS_BANK0, whose pins the
-consoles and the boot share. The chip file marks each `owner: kernel`, which admission already
-refuses to grant, and so is every other block it marks so. A blocked access is a bus
-error and so a fault, unlike the APM's (10.6.2, p.824).
+consoles and the boot share. The chip file's `never_assigned` names each of their registers, and
+the tool refuses a device whose `gate_register` it names, or one two devices name
+(`chip.gate-register`); node 0 refuses the same before it writes any register, a row naming a
+register of that list or one an earlier row names. Each the chip file describes is
+`owner: kernel` but UART1, the board's console, which a kernel `stdout` keeps from any task
+(`ownership.console`); the rest are no device of it at all. A blocked access is a bus error and so
+a fault, unlike the APM's (10.6.2, p.824).
 
 **The i.MX 8M Plus's RDC** has no consumer: no M7 image is built, so no partition of the part
 exists to program. The A53 `virt` machine states no gate and emits none.
 
 **Witnessed on silicon**:
 
-- `esp32c6-wroom-amp2`: an LP task reads UART0's version register (UART_DATE), nonzero where the
-  LP node's composition grants UART0 and zero where the HP node's console driver holds it, a
-  denial that does not trap, judged by `tests/integration/check_c6_amp_capture.py`.
-- `pizero2350-amp2`, when the bench holds the board: node 0's task holds UART0, enables it through
-  `kos_periph_enable`, which the RP2350 gains for UART0's reset bit, and reads UARTPERIPHID0 at
-  offset 0xFE0, 0x11 on a PL011; node 1's task reads the same register and faults, its death
-  reported with `KOS_EXIT_FAULT`. The control is the same pair with no assignment written, where
-  node 1 reads 0x11.
+- `esp32c6-wroom-amp2`: `ampping`'s LP task reads TIMG_NTIMERS_DATE (0xF8, TRM Register 14.25)
+  through the timer group its composition grants, TIMG1, nonzero, and from TIMG0, which the HP
+  node's composition grants, zero, a denial that does not trap; node 0 reads its own TIMG0
+  nonzero. Judged by `tests/integration/check_c6_amp_capture.py`, through
+  `tests/integration/check_c6_amp_gate.sh` as `bench.sh`'s `JUDGE`.
+- `pizero2350-amp2`, when the bench holds the board: node 0 reads back UART0's ACCESSCTRL register
+  as its own core's alone, its task holds UART0, enables it through `kos_periph_enable`, which the
+  RP2350 gains for UART0's reset bit, and reads UARTPERIPHID0 at offset 0xFE0, 0x11 on a PL011;
+  node 1's probe task then asks its kernel for the same register (`KOS_AMP_OP_GATE_PROBE`, a
+  selftest op), which reads it privileged with the fault caught and prints the fault's CFSR and
+  BFAR. The read is privileged, so no MPU region stands before ACCESSCTRL, and the gate is
+  witnessed by that denial alone: `tests/integration/check_pizero_amp_gate.sh` demands a precise
+  BusFault at 0x4007_0FE0 with no MemManage bit, and no thread fault in the boot.
 
 The partition region and the crossings run in CI on `qemu-arm64-amp2`, `ampping`'s nodes calling
 across and exchanging through one region.
@@ -739,9 +765,9 @@ the generated tables, the RP2350's and the K64F's `kos_periph_enable` bases, and
 the root-only wait.
 
 ```c
-/* user/include/kickos/sys/table.h, KICKOS_TABLE_VERSION 4 */
+/* user/include/kickos/sys/table.h, KICKOS_TABLE_VERSION 5 */
 KOS_GRANT_PORT = 8,          /* an /amp crossing: flags carry serve (WAIT) or use (SIGNAL) */
-uint32_t offset;             /* kos_table_region, a reserved field named: a partition region's
+uint32_t offset;             /* kos_table_region, growing it to 16 bytes: a partition region's
                                 offset in the partition's user share */
 KOS_TABLE_REGION_PARTITION   /* kos_table_region flags */
 

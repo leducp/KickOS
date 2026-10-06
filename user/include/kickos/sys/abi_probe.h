@@ -140,7 +140,8 @@ enum kos_aspace_op
 };
 
 // KOS_SYS_AMP_PROBE selectors. Interpret results as signed first to detect
-// -KOS_EINVAL; the syscall stub returns an unsigned word.
+// -KOS_EINVAL; the syscall stub returns an unsigned word. "Root only" admits any
+// thread of root's task and any thread holding KOS_AUTH_SYSTEM.
 enum kos_amp_op
 {
     // (node) -> send one echo request and ring the peer. Zero means accepted;
@@ -173,13 +174,6 @@ enum kos_amp_op
     // record; 4 token changed; 8 stale token releases no slot; 16 test completed.
     // Zero means the scenario could not run.
     KOS_AMP_OP_RESET_RECORD = 14,
-    // (node) -> configured port + 1 after the node's app announces startup;
-    // zero before startup or for an out-of-range node. Requires no traffic.
-    KOS_AMP_OP_APP_ALIVE = 15,
-    // (port) -> announce this node's app startup. Root only. Validate port
-    // against the partition's first port for this node; never accept a peer ID.
-    // Return 0 or -KOS_EINVAL.
-    KOS_AMP_OP_APP_ALIVE_SET = 16,
     // (hold) -> withhold the first peer's doorbell seat, or restore it when zero.
     // Publications remain unserviced while held, keeping remote callers parked.
     // Root only. Return 1 if moved, or 0 when unsupported (skip the test).
@@ -219,15 +213,6 @@ enum kos_amp_op
     // receive-info to a local buffer failed. Count once per arrival; separate
     // from REPLY_UNSENT, which reports malformed peers.
     KOS_AMP_OP_DELIVER_FAULT = 27,
-    /* (node) -> calls a thread on that node received and answered itself; zero
-     * for an out-of-range node. Apart from TOOK and SENT, which both move for a
-     * call the kernel answered with its own empty reply.
-     */
-    KOS_AMP_OP_APP_SERVED = 28,
-    /* () -> count one call this node's app answered. Root only. The row is this
-     * node's, derived in the kernel; never accept a node ID. Return 0.
-     */
-    KOS_AMP_OP_APP_SERVED_BUMP = 29,
     /* () -> call slots from the first peer this node still holds: taken and not yet
      * released. A delivered call is held until its receiver has landed it and, where no
      * reply capability reached that receiver, answered it. Root only.
@@ -248,6 +233,11 @@ enum kos_amp_op
      * mapping at va, or zero where nothing maps it or no walk answers.
      */
     KOS_AMP_OP_WALK = 33,
+    /* () -> this node's kernel reads, privileged and with the fault caught, a device the
+     * partition gate gives another node's core alone, and prints what it got: 1 when the read
+     * faulted, 0 when it returned, -KOS_ENOSYS where this node has no such device.
+     */
+    KOS_AMP_OP_GATE_PROBE = 34,
     /* Invalid-op test selector, never dispatched. Keep last so new ops cannot
      * turn the rejection test into a valid request.
      */

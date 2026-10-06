@@ -127,12 +127,12 @@ namespace kickos
             return amp::PORT_MAX;
         }
 
-        // True for any thread of root's TASK, not root's thread alone. A null root task
-        // refuses rather than matching: a caller mid-exit has a null task of its own, and
-        // equality alone would open the gate exactly then.
+        // True for any thread of root's TASK, not root's thread alone. A null root task refuses
+        // rather than matching: a caller mid-exit has a null task of its own, and equality alone
+        // would open the gate exactly then.
         //
         // Caller holds IrqLock: the field is another thread's and thread exit writes it there.
-        bool amp_probe_caller_ok(Thread const* c)
+        bool amp_probe_caller_ok(Thread* c)
         {
             if (c == nullptr)
             {
@@ -144,6 +144,12 @@ namespace kickos
                 return false;
             }
             return c->task == root;
+        }
+
+        // KOS_AMP_OP_DEFER's gate alone.
+        bool amp_probe_defer_ok(Thread* c)
+        {
+            return amp_probe_caller_ok(c) or (c != nullptr and cap_check_authority(c, AUTH_SYSTEM));
         }
 
         // What a HOLD took off the peer. Put back rather than cleared: an unpublished affinity
@@ -517,7 +523,7 @@ namespace kickos
             {
                 IrqLock lock;
                 Thread* const c = sched::current();
-                if (not amp_probe_caller_ok(c))
+                if (not amp_probe_defer_ok(c))
                 {
                     return 0;
                 }
@@ -589,49 +595,13 @@ namespace kickos
                 // live peer's traffic on it.
                 return amp::forge_reset_record(amp_peer_node());
             }
-            case KOS_AMP_OP_APP_ALIVE:
+            case KOS_AMP_OP_GATE_PROBE:
             {
-                return amp::counts(static_cast<uint32_t>(a1)).app_alive.load();
-            }
-            case KOS_AMP_OP_APP_ALIVE_SET:
-            {
-                IrqLock lock;
-                if (not amp_probe_caller_ok(sched::current()))
-                {
-                    return static_cast<uint64_t>(-KOS_EPERM);
-                }
-                // The row is this node's, derived here and never taken from the caller: one
-                // writer per row is what lets a row sit where a peer reads it.
-                uint32_t const port = amp_first_port_of(amp::self());
-                if (port >= amp::PORT_MAX)
-                {
-                    return static_cast<uint64_t>(-KOS_EINVAL);
-                }
-                // The caller's argument is a CLAIM about the port it bound, checked against
-                // the list rather than stored: what lands in the shared region below is this
-                // derivation, so no word an app supplies ever crosses.
-                if (port != static_cast<uint32_t>(a1))
-                {
-                    return static_cast<uint64_t>(-KOS_EINVAL);
-                }
-                amp::app_alive_set(port + 1u);
-                return 0;
-            }
-            case KOS_AMP_OP_APP_SERVED:
-            {
-                return amp::counts(static_cast<uint32_t>(a1)).app_served.load();
-            }
-            case KOS_AMP_OP_APP_SERVED_BUMP:
-            {
-                IrqLock lock;
-                if (not amp_probe_caller_ok(sched::current()))
-                {
-                    return static_cast<uint64_t>(-KOS_EPERM);
-                }
-                // No argument at all: the row is this node's, so nothing a caller supplies can
-                // make it speak for a peer.
-                amp::app_served_bump();
-                return 0;
+#if KICKOS_AMP_OWN_IMAGE
+                return static_cast<uint64_t>(static_cast<int64_t>(arch_amp_gate_probe()));
+#else
+                return static_cast<uint64_t>(-KOS_ENOSYS);
+#endif
             }
             case KOS_AMP_OP_PEER_HOLD:
             {
@@ -680,7 +650,7 @@ namespace kickos
                 }
                 uint32_t cap = KCAP_INVALID;
                 int const rc =
-                    amp_endpoint_mint(c, amp_peer_node(), static_cast<uint32_t>(a1), &cap);
+                    amp_endpoint_mint(c, amp_peer_node(), static_cast<uint32_t>(a1), CAP_SIGNAL, &cap);
                 if (rc == 0)
                 {
                     // The table is as it was whatever the answer: this reads the mint's own

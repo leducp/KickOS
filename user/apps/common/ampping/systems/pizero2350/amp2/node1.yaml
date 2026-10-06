@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+version: 1
+board: pizero2350
+stdout: kernel
+ends: never
+heap: 16384
+
+shared:
+  - name: /shm/ampbook
+    size: 256
+    cache: cached
+    partition: true
+
+tasks:
+  - name: serve
+    entry: ampserve_main
+    stack: 8192
+    priority: 5
+    serves: /amp/3
+    maps: { /shm/ampbook: rw }
+
+  # Asks its kernel to read the device node 0 holds, which ACCESSCTRL gives node 0's core alone.
+  - name: probe
+    entry: ampprobe_main
+    stack: 4096
+    priority: 4
+    maps: { /shm/ampbook: rw }

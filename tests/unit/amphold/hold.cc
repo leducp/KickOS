@@ -574,7 +574,7 @@ namespace kickos
                 attach_caps(c, KICKOS_CAP_CHILD_WIDTH);
                 IrqLock lock;
                 sched::reschedule();
-                EXPECT_EQ(amp_endpoint_mint(c, PEER, PORT_FAR, out_far), 0);
+                EXPECT_EQ(amp_endpoint_mint(c, PEER, PORT_FAR, CAP_SIGNAL, out_far), 0);
                 return c;
             }
 

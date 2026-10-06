@@ -69,8 +69,9 @@ if(NOT _kernel_members STREQUAL _expected)
 endif()
 
 # Apart from that group, the heap size symbol, which KickOS::kernel leaves to its system target,
-# the system target's symbol KickOS::kernel requires and the script giving the heap a value
-# until it fails on that symbol, the two leaves carry the same link line and C++ flags.
+# the system target's symbol KickOS::kernel requires, the script giving the heap a value until it
+# fails on that symbol, and the old leaf's gate assignment, which a system target emits its own
+# of, the two leaves carry the same link line and C++ flags.
 foreach(_prop INTERFACE_LINK_LIBRARIES INTERFACE_LINK_OPTIONS INTERFACE_COMPILE_OPTIONS)
   get_property(_cxx TARGET KickOS::kickos_cxx PROPERTY ${_prop})
   get_property(_kernel TARGET KickOS::kernel PROPERTY ${_prop})
@@ -90,6 +91,7 @@ foreach(_prop INTERFACE_LINK_LIBRARIES INTERFACE_LINK_OPTIONS INTERFACE_COMPILE_
   endif()
   if(_prop STREQUAL "INTERFACE_LINK_LIBRARIES")
     string(REGEX REPLACE ";[^;]*/kernel_leaf\\.ld" "" _kernel "${_kernel}")
+    string(REPLACE ";$<TARGET_OBJECTS:KickOS::kickos_gate>" "" _cxx "${_cxx}")
   endif()
   string(REPLACE "${_kernel_group}" "<group>" _kernel "${_kernel}")
   if(NOT _cxx STREQUAL _kernel)

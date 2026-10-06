@@ -4,11 +4,11 @@
 #
 # The packaged-driver line witness: the system of tests/integration/driver_witness under
 # <composition>, built against the build's installed package, whose catalogue carries
-# tests/drivers, and run under QEMU. testline's descriptor numbers its line as one no claim
-# takes, and the composition binds its role to a real one; its client raises the composition's
-# line until the driver, which answers again only once that line reached it, answers. The run
-# passes on the driver's report of its line, the client's answer and the system ending with
-# status 0.
+# tests/drivers, and run under QEMU. testline's descriptor numbers its two lines as none a claim
+# takes and states another index for its line 0; the composition binds line 0 to a line at index
+# 2 of its device. Its IRQ thread prints the index its spawn handed it, and its client raises the
+# line the table gives line 0 until the driver reports it. The run passes on index 2, the
+# driver's report of its line and the system ending with status 0.
 #
 #   check_driver_line.sh <kickos-build> <kickos-source> <cmake> <composition>
 
@@ -39,13 +39,12 @@ assert_no_panic "a panic in the line witness"
 if has '^=== THREAD FAULT ==='; then
     fail "a thread faulted"
 fi
-require_on_wire 'testline: its line was raised' "testline never saw the line its composition binds"
-LINE="$(printf '%s\n' "$OUT" | sed -n 's/^\(line: served [0-9][0-9]* once line [0-9][0-9]* was raised\)$/\1/p' | head -n 1)"
-[ -n "$LINE" ] || fail "the client was never served"
+require_on_wire 'testline: line 0 is index 2 of its device' "testline's IRQ thread was not handed line 0's index, 2"
+require_on_wire 'testline: line 0 was raised' "testline never saw the line its composition binds"
 if [ "$RC" -eq 124 ]; then
     fail "the system never ended (timed out)"
 fi
 if [ "$RC" -ne 0 ]; then
     fail "the system ended with status $RC, not 0"
 fi
-echo "PASS: testline claimed the line its composition binds, not the one its descriptor numbers ($LINE)"
+echo "PASS: testline claimed the lines its composition binds and was handed line 0's index"

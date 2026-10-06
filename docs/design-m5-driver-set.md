@@ -47,9 +47,10 @@ Two rows deserve their own reading rather than a count.
 ## 3. The finding that matters most: a contract with one consumer, and it is simulated
 
 **`KOS_SVC_UART`, the general bidirectional UART PORT service kind, has exactly one consumer in
-the entire tree, and it is a host loopback.** `system/init/sim/service_list_uart.cc` is the only
-file that assigns it; its own comment says "This list deliberately publishes NO console. It is a
-`KOS_SVC_UART` port", and its device is host fd 1 with TX fed back into RX.
+the entire tree, and it is a host loopback.** `system/driver/sim/simuart/simuart.cc` is the only
+driver that serves it, through the list in `system/init/sim/service_list_uart.cc`, whose comment
+says "This list deliberately publishes NO console. It is a `KOS_SVC_UART` port", and its device
+is host fd 1 with TX fed back into RX.
 
 Every UART driver on real silicon (`mk64f`, `xmc4800`, `stm32f411`, `rx72m`, `esp32c6`, `esp32`)
 runs as `KOS_SVC_CONSOLE` instead. They share the `<kickos/driver/uart.h>` register backend and the

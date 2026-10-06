@@ -957,11 +957,11 @@ The Cortex-M family carries a small-memory `nano` profile beside the full one in
 multilib, which `--specs=nano.specs` on the compile flags selects: the nano `newlib.h`, and
 `libc_nano.a` and `libstdc++_nano.a` at the link. Use a fresh CMake build directory after
 switching profiles; configure refuses one whose cached flags name the other. Nano reduces the per-thread `_reent` footprint and uses smaller formatted I/O and malloc
-implementations. Its formatted I/O omits C99 and long-long formats; floating-point
-`printf`/`scanf` require the app to link with `-u _printf_float`/`-u _scanf_float`,
-respectively. The package's nano C++ archives unwind as its full ones do, so `KickOS::kickos_cxx`
-exists on either profile: `cxxtest` passed every check on `qemu-m3` built nano (M10.2). Other
-cross targets carry the full profile only.
+implementations. Its formatted I/O omits C99 and long-long formats, and without `-u
+_printf_float` at the link a floating-point conversion in `printf` prints nothing for that
+argument; `scanf` takes `-u _scanf_float` the same way. The package's nano C++ archives unwind
+as its full ones do, so `KickOS::kickos_cxx` exists on either profile: `cxxtest` passed every
+check on `qemu-m3` built nano (M10.2). Other cross targets carry the full profile only.
 
 Nano's per-thread `_reent` holds pointers where the full profile holds storage. A thread's
 first `strtok`, `localtime`, `asctime`, `rand`, `strsignal` or floating-point conversion
@@ -976,11 +976,18 @@ reclaims nothing from the heap. The ESP32 newlib allocates the same scratch and 
 exit path, but every thread's entry return goes through the kernel there, so only an explicit
 exit returns it.
 
-The `microbit` QEMU test board defaults to nano, which its toolchain file selects. Its
-32 KiB emulated SRAM is larger than a physical micro:bit v1's 16 KiB. For a full-profile
-comparison, set `-DKICKOS_MICROBIT_FULL_NEWLIB=ON` in another build directory. An installed `microbit`
-package links only the profile it was built with and refuses a consumer that asks for the
-other one. Pico keeps the full profile.
+`microbit`, `f302nucleo` and `bluepill-c8` link nano on every preset: each board descriptor
+names it as `KICKOS_BOARD_NEWLIB`, which the toolchain file reads. `microbit`'s 32 KiB emulated
+SRAM is larger than a physical micro:bit v1's 16 KiB. For a full-profile comparison, set
+`-DKICKOS_FULL_NEWLIB=ON` in another build directory. An installed package of such a board links
+only the profile it was built with and refuses a consumer that asks for the other one. Pico and
+the other Cortex-M boards keep the full profile.
+
+On the two STM32 parts the base presets' heaps, 1,536 and 2,048 bytes, hold a thread's scratch,
+and the `-st` presets carve none, so a thread there that calls `strtok`, `localtime`, `rand` or a
+floating-point conversion fails the assertion; the selftest calls none of them. No app these
+boards build prints a floating-point value. Neither board has an emulator, so an integer `printf`
+and a `strtok` on their nano images are untested here.
 
 Under nano, `microbit` defaults `KICKOS_USER_HEAP_SIZE` to 1,024 bytes; the full-profile
 build keeps the scratch inline and carves none. One thread's `strtok`, `localtime`,

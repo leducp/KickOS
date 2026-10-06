@@ -24,9 +24,11 @@
 #                 one file or one board's chip changed, and must refuse it
 #   manifest      one export manifest, and the chip and board files it names
 #   golden        one composition, admitted against a build's manifest and the descriptions it names
-#   drivers       every tracked composition under tools/compose/tests/drivers/<board>/, each the
-#                 board's default with one packaged driver of its catalogue added, admitted
-#                 against that board's build's manifest
+#   drivers       every packaged driver of a build's catalogue has its composition,
+#                 tools/compose/tests/drivers/<board>/<driver>.yaml, the board's default with that
+#                 driver added, and each is admitted against that build's manifest; a composition of
+#                 a driver the catalogue does not list is not admitted; the rule is run again with
+#                 one composition dropped, and must refuse it
 #   installed     the tool an installed package carries, run from <tool-dir> on the manifest the
 #                 package installs and, when given, the default composition installed beside it
 #   tables        tools/compose/tests/round_trip.py: each golden's table emitted twice, compiled
@@ -165,10 +167,44 @@ if [ "$MODE" = manifest ]; then
     # Its own environment per manifest, so two manifests checked at once share no venv.
     STATE="$BUILD/compose/manifest-$(printf '%s' "$MANIFEST" | cksum | cut -d ' ' -f 1)"
 fi
+# The drivers of the catalogue with no composition in a list of tracked paths, one per line.
+missing_compositions() { # <catalogue> <paths> <board>
+    while IFS= read -r _mc_driver; do
+        grep -qxF "tools/compose/tests/drivers/$3/$_mc_driver.yaml" "$2" || echo "$_mc_driver"
+    done < "$1"
+}
+
+# The tracked compositions of the drivers the catalogue lists, one path per line.
+catalogued_compositions() { # <catalogue> <paths> <board>
+    while IFS= read -r _cc_path; do
+        _cc_driver="${_cc_path#tools/compose/tests/drivers/$3/}"
+        grep -qxF "${_cc_driver%.yaml}" "$1" && echo "$_cc_path"
+    done < "$2"
+}
+
 if [ "$MODE" = drivers ]; then
     MANIFEST="$3"
+    BOARD="$4"
     [ -f "$MANIFEST" ] || fail "no manifest at $MANIFEST"
-    corpus "$TMP/files" "driver composition of board $4" "tools/compose/tests/drivers/$4/*.yaml"
+    sed -n '/^drivers:/,/^[^ ]/p' "$MANIFEST" | sed -n 's/^  \([a-z][a-z0-9_]*\):$/\1/p' > "$TMP/catalogue"
+    git ls-files -- "tools/compose/tests/drivers/$BOARD/*.yaml" > "$TMP/tracked" \
+        || fail "git ls-files failed; the driver compositions are UNKNOWN"
+    missing_compositions "$TMP/catalogue" "$TMP/tracked" "$BOARD" > "$TMP/missing"
+    if [ -s "$TMP/missing" ]; then
+        sed "s|^|FAIL: no tools/compose/tests/drivers/$BOARD/|; s|$|.yaml for a driver of the catalogue|" "$TMP/missing" >&2
+        fail "a packaged driver of the catalogue has no composition, see above"
+    fi
+    catalogued_compositions "$TMP/catalogue" "$TMP/tracked" "$BOARD" > "$TMP/files"
+    if [ -s "$TMP/catalogue" ]; then
+        read -r first < "$TMP/catalogue"
+        grep -vxF "tools/compose/tests/drivers/$BOARD/$first.yaml" "$TMP/tracked" > "$TMP/arm_files"
+        missing_compositions "$TMP/catalogue" "$TMP/arm_files" "$BOARD" | grep -qxF "$first" \
+            || fail "the coverage rule accepts the catalogue with $first's composition dropped"
+    fi
+    cp "$TMP/tracked" "$TMP/arm_files"
+    echo "tools/compose/tests/drivers/$BOARD/kickos_no_driver.yaml" >> "$TMP/arm_files"
+    catalogued_compositions "$TMP/catalogue" "$TMP/arm_files" "$BOARD" | grep -q 'kickos_no_driver' \
+        && fail "the composition of a driver the catalogue does not list is admitted"
 fi
 if [ "$MODE" = golden ] || [ "$MODE" = installed ] || [ "$MODE" = table ]; then
     MANIFEST="$3"
@@ -231,9 +267,12 @@ elif [ "$MODE" = drivers ]; then
     while IFS= read -r f; do
         set -- "$@" "$ROOT/$f"
     done < "$TMP/files"
-    uv run --project "$TOOL" --locked --quiet python -m kickos_compose admit "$@" --manifest "$MANIFEST"
-    rc=$?
-    [ "$rc" -ne 0 ] || echo "   $# driver composition(s) admitted"
+    rc=0
+    if [ "$#" -ne 0 ]; then
+        uv run --project "$TOOL" --locked --quiet python -m kickos_compose admit "$@" --manifest "$MANIFEST"
+        rc=$?
+    fi
+    [ "$rc" -ne 0 ] || echo "   $(wc -l < "$TMP/catalogue") catalogue driver(s), $# composition(s) admitted"
 elif [ "$MODE" = installed ]; then
     uv run --project "$TOOL" --locked --quiet python -m kickos_compose manifest "$MANIFEST"
     rc=$?

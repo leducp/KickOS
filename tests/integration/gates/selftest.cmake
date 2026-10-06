@@ -16,6 +16,17 @@ get_target_property(_selftest_elf selftest KICKOS_IMAGE_ELF)
 get_target_property(_selftest_map selftest KICKOS_IMAGE_MAP)
 get_target_property(_selftest_arms selftest KICKOS_TAP_ARMS)
 
+# The selftest creates no exception, so no image of it links the exception runtime.
+if(NOT KICKOS_ARCH STREQUAL "sim")
+  get_property(_selftest_eh_images GLOBAL PROPERTY KICKOS_SELFTEST_IMAGES)
+  foreach(_img IN LISTS _selftest_eh_images)
+    get_target_property(_img_map ${_img} KICKOS_IMAGE_MAP)
+    add_test(NAME ${_tag}_${_img}_no_eh_runtime
+      COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_no_eh_runtime.sh" "${_img_map}")
+    kickos_host_gate(${_tag}_${_img}_no_eh_runtime TIMEOUT 60)
+  endforeach()
+endif()
+
 # The expected-skip list every gate below carries; checked by name in
 # tests/integration/check_tap_stream.sh.
 set(KICKOS_EXPECT_SKIPS "")

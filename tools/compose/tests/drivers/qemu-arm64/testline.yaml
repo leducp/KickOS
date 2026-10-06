@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# The board's default composition with packaged driver `testline` serving a service.
+
+version: 1
+board: qemu-arm64
+stdout: kernel
+ends: main
+heap: 65536
+
+tasks:
+  - name: main
+    entry: kickos_main
+    stack: 20480
+    priority: 2
+    authority: [memory, system, tasks]
+
+  - name: testline
+    driver: testline
+    lines: { routed: /dev/pcie/intc, held: /dev/gpio/global }
+    core: 0
+    serves: /svc/testline
+    priority: 12

@@ -108,9 +108,6 @@ namespace
         0x40000000u, 0x100000000ull, 0x400000000ull, 0x10000000000ull, 0x100000000000ull,
     };
     constexpr uint32_t SIMCON_WIN = 0x10000u;
-    // NO LINE HERE, AND THAT IS THE POINT. This thread only has to hold a window and be
-    // cancellable, and a bare notification is parkable: a line claimed for a board with no
-    // device on it was the price the old per-line notification word charged.
 
     // Root's wait for the window thread to reach its park, in 1 ms steps.
     constexpr uint32_t WIN_READY_MAX = 500u;
@@ -163,8 +160,8 @@ namespace
     {
         kos::thread::Handle const h =
             drv::spawn_one(k_desc.threads[0], cfg, /*blk=*/nullptr, ep, /*line=*/nullptr,
-                           /*line0_index=*/0u, /*note=*/KOS_CAP_NONE, task, /*core_mask=*/0u,
-                           /*under_init=*/false);
+                           drv::LineIndex{drv::KOS_DRV_LINE_INDEX_NONE}, /*note=*/KOS_CAP_NONE,
+                           task, /*core_mask=*/0u, /*under_init=*/false);
         if (not h.valid())
         {
             // CLOSE BEFORE PRINTING: the console is USER_OWNED from the publish on, and the
@@ -546,19 +543,13 @@ extern "C"
 #endif
 
     // kos_console_publish seats the CALLER's cap 0 too, so init and the app print through
-    // the driver; the parent's cap is dropped so the driver is the sole receiver. The two
-    // window-thread postures make their own endpoint, which an instance does not admit.
+    // the driver; the parent's cap is dropped so the driver is the sole receiver.
     int simcon_console_start(struct kos_service_cfg const* cfg)
     {
 #if defined(SIMCON_START_WEDGE) || defined(SIMCON_START_WINDOWED)
         if (cfg == nullptr or cfg->kind != KOS_SVC_CONSOLE)
         {
             return -1; // cfg authored for another service class
-        }
-        if (cfg->instance != nullptr)
-        {
-            kos::print("[simcon] ERROR: a window-thread posture runs on a service list only\n");
-            return -1;
         }
 #endif
 #ifdef SIMCON_START_WEDGE

@@ -301,7 +301,7 @@ namespace kickos
 
 #if KICKOS_AMP_NODE
     // Caller holds IrqLock and must check privilege.
-    int amp_endpoint_mint(Thread* c, uint32_t node, uint32_t port, uint32_t* out_cap)
+    int amp_endpoint_mint(Thread* c, uint32_t node, uint32_t port, uint8_t rights, uint32_t* out_cap)
     {
         *out_cap = KCAP_INVALID;
         // port_minted validates both arguments. PORT_REPLY is reserved for replies.
@@ -319,8 +319,8 @@ namespace kickos
         ep->far_port = static_cast<uint8_t>(port);
         kernel().endpoint_refs[i] = 1;
         int const obj = kernel().endpoints.handle_for(i);
-        // Far endpoints have CAP_SIGNAL only, so receive and server binding are refused.
-        int const rc = cap_install(c, obj, CapType::CAP_ENDPOINT, CAP_SIGNAL, out_cap);
+        // Never CAP_WAIT: receive and server binding on a far endpoint are refused.
+        int const rc = cap_install(c, obj, CapType::CAP_ENDPOINT, rights, out_cap);
         if (rc != 0)
         {
             kernel().endpoint_refs[i] = 0;
@@ -343,7 +343,7 @@ namespace kickos
         {
             return -KOS_EPERM;
         }
-        return amp_endpoint_mint(c, node, port, out_cap);
+        return amp_endpoint_mint(c, node, port, CAP_SIGNAL, out_cap);
 #else
         (void)node;
         (void)port;
@@ -1280,7 +1280,7 @@ namespace kickos
         // a slot index, so the binding must keep that slot alive after the cap closes.
         kernel().endpoint_refs[i] = 2;
         int const obj = kernel().endpoints.handle_for(i);
-        int const rc = cap_install(c, obj, CapType::CAP_ENDPOINT, CAP_WAIT | CAP_SIGNAL, out_cap);
+        int const rc = cap_install(c, obj, CapType::CAP_ENDPOINT, CAP_WAIT | CAP_SIGNAL | CAP_TRANSFER, out_cap);
         if (rc != 0)
         {
             kernel().endpoint_refs[i] = 0;
@@ -1313,7 +1313,7 @@ namespace kickos
             }
             else
             {
-                rc = amp_endpoint_mint(root, node, port, &cap);
+                rc = amp_endpoint_mint(root, node, port, CAP_SIGNAL | CAP_TRANSFER, &cap);
             }
             if (rc != 0)
             {

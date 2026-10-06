@@ -1,23 +1,48 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-# The own-image AMP partition's demo: one root per node, each its own image with its own init
-# provider, service list and app, talking over the shared window.
+# The own-image AMP partition's demo, one composition per node under
+# systems/<board>/<variant>/, every node's build admitting them all together and linking its
+# own node's. Every node preset builds both images; which one a node runs is decided where the
+# partition is assembled (tools/amp/build-partition.sh), by node order.
 #
-# Every target here is built by EVERY node preset; which one belongs to which node is decided
-# where the partition is assembled (tools/amp/merge-partition.sh), by node order. Neither
-# serving source names a node index, each deriving the port it binds from the partition's list
-# and its own KOS_AMP_SELF_NODE, so one serving app covers every peer at any width.
-#
-# Sources stay .c: the consumer posture is a plain add_executable linking `kickos` with a pure
-# C main, and a C++ file would quietly stop demonstrating it.
-add_executable(ampping_n0 main_n0.c)
-target_link_libraries(ampping_n0 PRIVATE kickos)
-kickos_emit_image(ampping_n0)
+# Sources stay .c: a C task entry over the plain C API is part of what this demonstrates.
+if(KICKOS_AMP_NODES LESS 2)
+  message(FATAL_ERROR
+    "KickOS: KICKOS_AMP_NODES is ${KICKOS_AMP_NODES}, so this own-image partition names no "
+    "peer at all. There is nothing to merge into an artefact and no crossing to exercise; "
+    "docs/design-multicore.md N6c makes a partition of two the smallest useful one. State "
+    "KICKOS_AMP_NODES=2 or more in boards/<board>/configs/<variant>/defconfig.")
+endif()
 
-add_executable(ampserve main_serve.c)
-target_link_libraries(ampserve PRIVATE kickos)
-kickos_emit_image(ampserve)
+set(_ampping_systems "${CMAKE_CURRENT_SOURCE_DIR}/systems/${KICKOS_BOARD}/${KICKOS_CONFIG_VARIANT}")
+set(_ampping_nodes "")
+math(EXPR _amp_last_node "${KICKOS_AMP_NODES} - 1")
+foreach(_amp_node RANGE 0 ${_amp_last_node})
+  list(APPEND _ampping_nodes "${_ampping_systems}/node${_amp_node}.yaml")
+endforeach()
+# The partition is admitted against this build's manifest, which the root writes once every
+# directory is read.
+set_property(GLOBAL PROPERTY KICKOS_AMPPING_NODES "${_ampping_nodes}")
+function(_ampping_compose)
+  get_property(_nodes GLOBAL PROPERTY KICKOS_AMPPING_NODES)
+  kickos_compose(ampping_system PARTITION ${_nodes})
+endfunction()
+cmake_language(DEFER DIRECTORY "${PROJECT_SOURCE_DIR}" CALL _ampping_compose)
+
+# A board whose partition states a gate witnesses it from systems/<board>/<variant>/gate.c.
+set(_ampping_gate gate_none.c)
+if(EXISTS "${_ampping_systems}/gate.c")
+  set(_ampping_gate "${_ampping_systems}/gate.c")
+endif()
+add_library(ampping_app OBJECT main_n0.c main_serve.c crossing.c "${_ampping_gate}")
+target_include_directories(ampping_app PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(ampping_app PRIVATE KickOS::kernel)
+foreach(_ampping ampping_n0 ampserve)
+  add_executable(${_ampping} $<TARGET_OBJECTS:ampping_app>)
+  target_link_libraries(${_ampping} PRIVATE KickOS::kernel ampping_system)
+  kickos_emit_image(${_ampping})
+endforeach()
 # One CONCURRENTLY parked far caller: the peer's call is held on this node's table while the
 # service thread answers it.
 kickos_declare_app_capabilities(ampserve ${KICKOS_CAP_APP_PEAK_DEFAULT} 0 1)
@@ -28,15 +53,6 @@ add_executable(ampecho main_echo.c)
 target_link_libraries(ampecho PRIVATE kickos)
 kickos_emit_image(ampecho)
 kickos_declare_app_capabilities(ampecho ${KICKOS_CAP_APP_PEAK_DEFAULT} 0 1)
-
-# --- What this demo serves, at whatever width the partition states -------------------------
-if(KICKOS_AMP_NODES LESS 2)
-  message(FATAL_ERROR
-    "KickOS: KICKOS_AMP_NODES is ${KICKOS_AMP_NODES}, so this own-image partition names no "
-    "peer at all. There is nothing to merge into an artefact and no crossing to exercise; "
-    "docs/design-multicore.md N6c makes a partition of two the smallest useful one. State "
-    "KICKOS_AMP_NODES=2 or more in boards/<board>/configs/<variant>/defconfig.")
-endif()
 
 # One entry per peer node in node order, which is the order build-partition.sh assigns them.
 # The same target repeats: what makes two peers different images is the node index their build
@@ -71,15 +87,17 @@ if(KICKOS_AMP_NODE_ID EQUAL 0)
   add_custom_target(amp_partition DEPENDS "${_amp_artefact}")
   set_target_properties(ampping_n0 PROPERTIES KICKOS_AMP_ARTEFACT "${_amp_artefact}")
 
+  # The flashers take an image by its base name.
+  set(_amp_base "${CMAKE_BINARY_DIR}/kickos-partition")
+  add_custom_command(OUTPUT "${_amp_base}"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${_amp_artefact}" "${_amp_base}"
+    DEPENDS "${_amp_artefact}"
+    VERBATIM)
+  add_custom_target(amp_partition_base DEPENDS "${_amp_base}")
+  add_dependencies(amp_partition amp_partition_base)
+
   if(KICKOS_CHIP STREQUAL "esp32c6")
     set(_c6_amp_flash "${CMAKE_BINARY_DIR}/kickos-partition.app.bin")
-    set(_c6_amp_base "${CMAKE_BINARY_DIR}/kickos-partition")
-    add_custom_command(OUTPUT "${_c6_amp_base}"
-      COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${_amp_artefact}" "${_c6_amp_base}"
-      DEPENDS "${_amp_artefact}"
-      VERBATIM)
-    add_custom_target(c6_amp_partition_base DEPENDS "${_c6_amp_base}")
-    add_dependencies(amp_partition c6_amp_partition_base)
     # Only the bench flash reads the ROM image, so a missing esptool skips it as it
     # does every other C6 image's .app.bin.
     find_program(KICKOS_ESPTOOL NAMES esptool esptool.py)

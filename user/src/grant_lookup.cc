@@ -120,7 +120,12 @@ extern "C"
 
 kos_cap_t kos_grant_endpoint(kos_self_t const* self, char const* name)
 {
-    return cap_of(self, name, KOS_GRANT_ENDPOINT_SERVE, KOS_GRANT_ENDPOINT_USE);
+    kos_cap_t const cap = cap_of(self, name, KOS_GRANT_ENDPOINT_SERVE, KOS_GRANT_ENDPOINT_USE);
+    if (cap != KOS_CAP_NONE)
+    {
+        return cap;
+    }
+    return cap_of(self, name, KOS_GRANT_PORT, KOS_GRANT_PORT);
 }
 
 kos_cap_t kos_grant_notify(kos_self_t const* self, char const* name)

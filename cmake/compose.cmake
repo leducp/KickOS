@@ -2,18 +2,24 @@
 # Copyright (c) 2026 Philippe Leduc
 
 # kickos_compose(<system> <composition.yaml> [EXPORT_NAME <name>])
-#   Turns a composition into a system target (docs/design-m10-target.md, section 5). At configure
+# kickos_compose(<system> PARTITION <node0.yaml> <node1.yaml>... [EXPORT_NAME <name>])
+#   Turns a composition into a system target (docs/design-m10-target.md, section 5), or with
+#   PARTITION the composition of this build's node, admitted with every node's (docs/
+#   design-m10-fleet.md, section 9.1). At configure
 #   it runs the host tool against KICKOS_MANIFEST, the package's manifest or the build's, and a
 #   refusal fails the configure with the tool's `<file>:<line>: <rule>: <message>` lines. The
 #   tool runs again only when the composition, the manifest, a description beside it or the tool
 #   itself changed. It defines:
 #     <system>_table  an object library of the emitted table, compiled as C;
 #     <system>        an interface library linking KickOS::kernel, carrying ahead of the kernel's
-#                     group the table's objects, KickOS::init's, KickOS::main's where the
+#                     group the table's objects, KickOS::init's, KickOS::init_drivers' where
+#                     the composition names a packaged driver and KickOS::init_no_drivers'
+#                     where it names none, KickOS::main's where the
 #                     composition names kickos_main, each named packaged driver's archive and
 #                     the libraries its CLIENT declares for the tasks using it, the
 #                     link-time asserts script as a link input, and KICKOS_USER_HEAP_SIZE from
-#                     the composition's `heap`.
+#                     the composition's `heap`; on node 0 of a partition, or on a chip stating a
+#                     partition gate, the gate assignment's object too.
 #   EXPORT_NAME installs both under KickOS::<name> and KickOS::<name>_table.
 #
 #   Requires uv on PATH, which runs the tool under a Python of 3.12 or newer with the ruamel.yaml
@@ -28,10 +34,20 @@ else()
 endif()
 set_property(GLOBAL PROPERTY KICKOS_COMPOSE_TOOL "${_kickos_compose_tool}")
 
-function(kickos_compose system composition)
-  cmake_parse_arguments(KC "" "EXPORT_NAME" "" ${ARGN})
-  if(KC_UNPARSED_ARGUMENTS)
-    message(FATAL_ERROR "kickos_compose(${system}): unexpected arguments ${KC_UNPARSED_ARGUMENTS}")
+function(kickos_compose system)
+  cmake_parse_arguments(KC "" "EXPORT_NAME" "PARTITION" ${ARGN})
+  set(_named ${KC_UNPARSED_ARGUMENTS})
+  if(KC_PARTITION)
+    if(_named)
+      message(FATAL_ERROR "kickos_compose(${system}): unexpected arguments ${_named} beside PARTITION")
+    endif()
+    set(_named ${KC_PARTITION})
+  else()
+    list(LENGTH _named _count)
+    if(NOT _count EQUAL 1)
+      message(FATAL_ERROR "kickos_compose(${system}): takes one composition, or PARTITION and the node "
+        "compositions in node order, not '${_named}'")
+    endif()
   endif()
   get_property(_languages GLOBAL PROPERTY ENABLED_LANGUAGES)
   if(NOT "C" IN_LIST _languages)
@@ -39,9 +55,20 @@ function(kickos_compose system composition)
       "emitted table is compiled as. Name C in project(... LANGUAGES ...).")
   endif()
   get_property(_tool GLOBAL PROPERTY KICKOS_COMPOSE_TOOL)
-  get_filename_component(_composition "${composition}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
-  if(NOT EXISTS "${_composition}")
-    message(FATAL_ERROR "kickos_compose(${system}): no composition at ${_composition}")
+  set(_compositions "")
+  foreach(_named_one IN LISTS _named)
+    get_filename_component(_one "${_named_one}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+    if(NOT EXISTS "${_one}")
+      message(FATAL_ERROR "kickos_compose(${system}): no composition at ${_one}")
+    endif()
+    list(APPEND _compositions "${_one}")
+  endforeach()
+  list(GET _compositions 0 _composition)
+  set(_what "${_composition}")
+  set(_source_args "${_composition}")
+  if(KC_PARTITION)
+    string(REPLACE ";" " " _what "the partition ${_compositions}")
+    set(_source_args --partition ${_compositions})
   endif()
   if(NOT KICKOS_MANIFEST OR NOT EXISTS "${KICKOS_MANIFEST}")
     message(FATAL_ERROR "kickos_compose(${system}): KICKOS_MANIFEST names no manifest "
@@ -55,7 +82,7 @@ function(kickos_compose system composition)
   get_filename_component(_manifest_dir "${KICKOS_MANIFEST}" DIRECTORY)
   file(GLOB_RECURSE _descriptions CONFIGURE_DEPENDS "${_manifest_dir}/platform/*.yaml")
   file(GLOB_RECURSE _tool_sources CONFIGURE_DEPENDS "${_tool}/kickos_compose/*.py")
-  set(_inputs "${_composition}" "${KICKOS_MANIFEST}" ${_descriptions} ${_tool_sources}
+  set(_inputs ${_compositions} "${KICKOS_MANIFEST}" ${_descriptions} ${_tool_sources}
               "${_tool}/pyproject.toml" "${_tool}/uv.lock")
   set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${_inputs})
   set(_hashes "")
@@ -97,9 +124,9 @@ function(kickos_compose system composition)
               UV_PYTHON_DOWNLOADS=never "PYTHONPATH=${_tool}" PYTHONDONTWRITEBYTECODE=1
               "TMPDIR=${_fresh}/tmp"
               "${KICKOS_UV}" run --project "${_tool}" --locked --quiet
-              python -m kickos_compose emit "${_composition}" --manifest "${KICKOS_MANIFEST}"
+              python -m kickos_compose emit ${_source_args} --manifest "${KICKOS_MANIFEST}"
               -o "${_fresh}/table.c" --asserts "${_fresh}/asserts.ld"
-              --fragment "${_fresh}/system.cmake"
+              --fragment "${_fresh}/system.cmake" --gate "${_fresh}/gate.c"
       RESULT_VARIABLE _rc OUTPUT_VARIABLE _out ERROR_VARIABLE _err
       TIMEOUT 600)
     # Indented, so CMake prints each of the tool's lines as it wrote it.
@@ -108,11 +135,11 @@ function(kickos_compose system composition)
     # The tool exits 3 when it refused the composition, as kickos_compose/__main__.py's REFUSED
     # states; any other failure is the tool not running.
     if(_rc STREQUAL "3")
-      message(FATAL_ERROR "kickos_compose(${system}): the host tool refused ${_composition} "
+      message(FATAL_ERROR "kickos_compose(${system}): the host tool refused ${_what} "
         "against ${KICKOS_MANIFEST}:\n  ${_said}")
     elseif(NOT _rc STREQUAL "0")
       message(FATAL_ERROR "kickos_compose(${system}): could not run the host tool (uv and Python >= 3.12 "
-        "required, with the ruamel.yaml its uv.lock pins) on ${_composition} (${_rc}):\n  ${_said}")
+        "required, with the ruamel.yaml its uv.lock pins) on ${_what} (${_rc}):\n  ${_said}")
     endif()
     if(NOT _said STREQUAL "")
       message(STATUS "kickos_compose(${system}): the host tool says:\n  ${_said}")
@@ -120,18 +147,31 @@ function(kickos_compose system composition)
     foreach(_file IN LISTS _outputs)
       file(COPY_FILE "${_fresh}/${_file}" "${_dir}/${_file}" ONLY_IF_DIFFERENT)
     endforeach()
+    if(EXISTS "${_fresh}/gate.c")
+      file(COPY_FILE "${_fresh}/gate.c" "${_dir}/gate.c" ONLY_IF_DIFFERENT)
+    else()
+      file(REMOVE "${_dir}/gate.c")
+    endif()
     file(WRITE "${_dir}/inputs.sha256" "${_hash}")
-    message(STATUS "kickos_compose(${system}): emitted ${_composition}")
+    message(STATUS "kickos_compose(${system}): emitted ${_what}")
   else()
-    message(STATUS "kickos_compose(${system}): ${_composition} and its inputs unchanged")
+    message(STATUS "kickos_compose(${system}): ${_what} and its inputs unchanged")
   endif()
   include("${_dir}/system.cmake")
   if(NOT KICKOS_COMPOSE_HEAP MATCHES "^[0-9]+$")
     message(FATAL_ERROR "kickos_compose(${system}): ${_dir}/system.cmake states no heap, which is the "
-      "`heap:` of ${_composition}")
+      "`heap:` of ${_what}")
   endif()
 
-  add_library(${system}_table OBJECT "${_dir}/table.c")
+  set(_table_sources "${_dir}/table.c")
+  if(KICKOS_COMPOSE_GATE)
+    if(NOT EXISTS "${_dir}/gate.c")
+      message(FATAL_ERROR "kickos_compose(${system}): ${_dir}/system.cmake states a gate assignment and "
+        "${_dir}/gate.c holds none")
+    endif()
+    list(APPEND _table_sources "${_dir}/gate.c")
+  endif()
+  add_library(${system}_table OBJECT ${_table_sources})
   # The include directories and definitions an app TU sees.
   target_link_libraries(${system}_table PRIVATE KickOS::kernel)
   add_library(${system} INTERFACE)
@@ -152,6 +192,11 @@ function(kickos_compose system composition)
   endif()
 
   set(_objects ${_table_name} KickOS::init)
+  if(KICKOS_COMPOSE_DRIVERS)
+    list(APPEND _objects KickOS::init_drivers)
+  else()
+    list(APPEND _objects KickOS::init_no_drivers)
+  endif()
   if(KICKOS_COMPOSE_MAIN)
     list(APPEND _objects KickOS::main)
   endif()
@@ -171,4 +216,62 @@ function(kickos_compose system composition)
   kickos_heap_defsym(_heap "${KICKOS_COMPOSE_HEAP}")
   target_link_options(${system} INTERFACE "LINKER:${_heap}")
   set_property(TARGET ${system} APPEND PROPERTY INTERFACE_LINK_DEPENDS ${_asserts_link})
+endfunction()
+
+# kickos_compose_gate(<target>)
+#   The gate assignment of an image linking no system target, its kernel's own ranges alone: an
+#   object library <target> where the build carries one (node 0 of a partition, or a chip stating a
+#   partition gate), and no target otherwise. Runs the host tool at configure as kickos_compose
+#   does, on KICKOS_MANIFEST.
+function(kickos_compose_gate target)
+  get_property(_tool GLOBAL PROPERTY KICKOS_COMPOSE_TOOL)
+  if(NOT KICKOS_MANIFEST OR NOT EXISTS "${KICKOS_MANIFEST}")
+    message(FATAL_ERROR "kickos_compose_gate(${target}): KICKOS_MANIFEST names no manifest "
+      "('${KICKOS_MANIFEST}')")
+  endif()
+  get_filename_component(_manifest_dir "${KICKOS_MANIFEST}" DIRECTORY)
+  file(GLOB_RECURSE _descriptions CONFIGURE_DEPENDS "${_manifest_dir}/platform/*.yaml")
+  file(GLOB_RECURSE _tool_sources CONFIGURE_DEPENDS "${_tool}/kickos_compose/*.py")
+  set(_inputs "${KICKOS_MANIFEST}" ${_descriptions} ${_tool_sources} "${_tool}/pyproject.toml" "${_tool}/uv.lock")
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${_inputs})
+  set(_hashes "")
+  foreach(_input IN LISTS _inputs)
+    file(SHA256 "${_input}" _input_hash)
+    string(APPEND _hashes "${_input} ${_input_hash}\n")
+  endforeach()
+  string(SHA256 _hash "${_hashes}")
+  set(_dir "${CMAKE_CURRENT_BINARY_DIR}/kickos_compose/${target}")
+  set(_recorded "")
+  if(EXISTS "${_dir}/inputs.sha256")
+    file(READ "${_dir}/inputs.sha256" _recorded)
+  endif()
+  if(NOT _recorded STREQUAL _hash)
+    find_program(KICKOS_UV uv)
+    if(NOT KICKOS_UV)
+      message(FATAL_ERROR "kickos_compose_gate(${target}): uv not found on PATH; the host tool runs "
+        "under uv (https://docs.astral.sh/uv/)")
+    endif()
+    file(REMOVE_RECURSE "${_dir}")
+    file(MAKE_DIRECTORY "${_dir}/tmp")
+    execute_process(
+      COMMAND "${CMAKE_COMMAND}" -E env
+              "UV_PROJECT_ENVIRONMENT=${CMAKE_BINARY_DIR}/kickos_compose/venv"
+              UV_PYTHON_DOWNLOADS=never "PYTHONPATH=${_tool}" PYTHONDONTWRITEBYTECODE=1
+              "TMPDIR=${_dir}/tmp"
+              "${KICKOS_UV}" run --project "${_tool}" --locked --quiet
+              python -m kickos_compose gate --manifest "${KICKOS_MANIFEST}" -o "${_dir}/gate.c"
+      RESULT_VARIABLE _rc OUTPUT_VARIABLE _out ERROR_VARIABLE _err
+      TIMEOUT 600)
+    string(STRIP "${_out}\n${_err}" _said)
+    string(REPLACE "\n" "\n  " _said "${_said}")
+    if(NOT _rc STREQUAL "0")
+      message(FATAL_ERROR "kickos_compose_gate(${target}): the host tool refused or did not run on "
+        "${KICKOS_MANIFEST} (${_rc}):\n  ${_said}")
+    endif()
+    file(WRITE "${_dir}/inputs.sha256" "${_hash}")
+  endif()
+  if(EXISTS "${_dir}/gate.c")
+    add_library(${target} OBJECT "${_dir}/gate.c")
+    target_link_libraries(${target} PRIVATE KickOS::kernel)
+  endif()
 endfunction()

@@ -29,8 +29,9 @@ RULES = (
     "chip.name-mismatch", "chip.name-collision", "chip.overlap", "chip.cluster-unknown",
     "chip.kernel-window", "chip.memory-required", "chip.arena", "chip.page-unit", "chip.page-size",
     "chip.core-count", "chip.zero-size", "chip.device-unknown", "chip.register-outside", "chip.gate-straddle",
+    "chip.gate-register",
     "chip.block-outside", "chip.line-range", "chip.link-duplicate", "chip.symbol-collision", "chip.reserved",
-    "chip.address-width", "form.text",
+    "chip.address-width", "chip.line-order", "form.text",
     "board.name-mismatch", "board.name-collision", "board.chip-unknown", "board.chip-unreadable",
     "board.chip-folder", "board.device-unknown",
     "board.pin-unknown", "board.pin-function", "board.pin-not-gpio", "board.reserved-pin-used",
@@ -46,7 +47,7 @@ RULES = (
     "enforcement.no-protection", "enforcement.no-privilege-split", "enforcement.device-not-isolated",
     "enforcement.coarse-gate", "enforcement.port-bank", "enforcement.bus-master", "enforcement.unneeded",
     "memory.uncached", "memory.cached-incoherent",
-    "name.driver-unknown", "name.entry", "driver.line-role", "driver.window-role", "driver.port-window",
+    "name.driver-unknown", "name.entry", "driver.line-role", "driver.line-name", "driver.window-role", "driver.port-window",
     "driver.authority",
     "scheduling.priority", "scheduling.core", "scheduling.line-core", "scheduling.stdout-priority",
     "scheduling.stdout-order", "scheduling.console-driver", "scheduling.init-priority-range",
@@ -56,6 +57,8 @@ RULES = (
     "manifest.description-path", "manifest.description-unknown", "manifest.default-path", "manifest.default-unknown",
     "manifest.bound", "manifest.console", "manifest.block-cache",
     "manifest.target", "manifest.receiver",
+    "partition.device", "partition.port", "partition.unserved", "partition.region", "partition.cached-incoherent",
+    "partition.gate-budget", "partition.lone",
 )
 
 HEX = re.compile(r"0x[0-9A-Fa-f]+")

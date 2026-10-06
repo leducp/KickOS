@@ -16,6 +16,19 @@ if(KICKOS_ARCH STREQUAL "rxv3")
   kickos_host_gate(${_tag}_sysdefault_fault_instruction TIMEOUT 60)
 endif()
 
+# A plain C main creates no exception, so its image links none of the exception runtime.
+if(NOT KICKOS_ARCH STREQUAL "sim")
+  add_test(NAME ${_tag}_sysdefault_no_eh_runtime
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_no_eh_runtime.sh"
+            "$<TARGET_FILE:sysdefault>.map")
+  kickos_host_gate(${_tag}_sysdefault_no_eh_runtime TIMEOUT 60)
+  # The default composition names no packaged driver.
+  add_test(NAME ${_tag}_sysdefault_no_driver_path
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_no_driver_path.sh"
+            "$<TARGET_FILE:sysdefault>.map")
+  kickos_host_gate(${_tag}_sysdefault_no_driver_path TIMEOUT 60)
+endif()
+
 set(_sysdefault_script "${PROJECT_SOURCE_DIR}/tests/integration/check_system_default.sh")
 set(_sysdefault_runs
   "sysdefault|sysdefault: main returns 3|3"

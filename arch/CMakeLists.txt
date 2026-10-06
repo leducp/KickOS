@@ -60,6 +60,9 @@ set(KICKOS_SEAM_DEFAULTS_COMMON
 if(KICKOS_ENABLE_SELFTEST)
   list(APPEND KICKOS_SEAM_DEFAULTS_COMMON common/arch_reboot_default.cc
     common/arch_cpu_block_addr_default.cc)
+  if(KICKOS_AMP_OWN_IMAGE)
+    list(APPEND KICKOS_SEAM_DEFAULTS_COMMON common/arch_amp_gate_probe_default.cc)
+  endif()
 endif()
 if(KICKOS_FAULT_ISOLATION)
   list(REMOVE_ITEM KICKOS_SEAM_DEFAULTS_COMMON

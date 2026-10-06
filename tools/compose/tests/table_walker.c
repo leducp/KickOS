@@ -35,13 +35,16 @@ static struct bit_name const authority_names[] = {
     {KOS_AUTH_TASKS, "tasks"},   {0, NULL}};
 static struct bit_name const grant_flag_names[] = {
     {KOS_WINDOW_RO, "ro"}, {KOS_WINDOW_UNCACHED, "uncached"}, {0, NULL}};
-static struct bit_name const region_flag_names[] = {{KOS_MEM_NOCACHE, "uncached"}, {0, NULL}};
+static struct bit_name const port_flag_names[] = {{KOS_CAP_WAIT, "wait"}, {KOS_CAP_SIGNAL, "signal"}, {0, NULL}};
+static struct bit_name const region_flag_names[] = {
+    {KOS_MEM_NOCACHE, "uncached"}, {KOS_TABLE_REGION_PARTITION, "partition"}, {0, NULL}};
 static struct bit_name const header_flag_names[] = {{KOS_TABLE_ENDS_TASK, "ends_task"}, {0, NULL}};
 static struct bit_name const task_flag_names[] = {
     {KOS_TABLE_TASK_CONSOLE, "console"}, {KOS_TABLE_TASK_BLOCK_UNCACHED, "block_uncached"}, {0, NULL}};
 
 static char const* const kind_names[] = {"endpoint_serve", "endpoint_use", "notification", "window",
-                                         "ports",          "region",       "line",         "status"};
+                                         "ports",          "region",       "line",         "status",
+                                         "port"};
 
 static int faults = 0;
 
@@ -180,7 +183,14 @@ int main(void)
         {
             printf("kind%u", (unsigned)g->kind);
         }
-        print_bits("flags", g->flags, grant_flag_names);
+        if (g->kind == KOS_GRANT_PORT)
+        {
+            print_bits("flags", g->flags, port_flag_names);
+        }
+        else
+        {
+            print_bits("flags", g->flags, grant_flag_names);
+        }
         if (g->cap_slot == KOS_TABLE_NONE)
         {
             printf(" cap_slot=none");
@@ -224,7 +234,8 @@ int main(void)
     for (unsigned n = 0; n < h->region_count; ++n)
     {
         struct kos_table_region const* r = &regions[n];
-        printf("region %u name=%s size=0x%" PRIX32, n, text_at(strings, h->strings_size, r->name), r->size);
+        printf("region %u name=%s size=0x%" PRIX32 " offset=0x%" PRIX32, n, text_at(strings, h->strings_size, r->name),
+               r->size, r->offset);
         print_bits("flags", r->flags, region_flag_names);
         printf("\n");
         if (r->rsv0[0] != 0 or r->rsv0[1] != 0 or r->rsv0[2] != 0)

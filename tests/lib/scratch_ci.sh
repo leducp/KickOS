@@ -30,8 +30,8 @@ KOS_CI_TAG="${KOS_CI_TAG:-scratch_ci}"
 # baseline in CMAKE_<LANG>_FLAGS_INIT, and a -D on the command line REPLACES the cache value
 # that comes from it; CFLAGS/CXXFLAGS are combined with it instead.
 _scratch_ci_configure() { # <extra cmake arg>...
-    if [ "$_KOS_CI_PRESET" = microbit ] && [ "${KICKOS_MICROBIT_FULL_NEWLIB:-OFF}" = ON ]; then
-        set -- "$@" -DKICKOS_MICROBIT_FULL_NEWLIB=ON
+    if [ "${KICKOS_FULL_NEWLIB:-OFF}" = ON ]; then
+        set -- "$@" -DKICKOS_FULL_NEWLIB=ON
     fi
     CFLAGS="$KOS_CI_FLAGS" CXXFLAGS="$KOS_CI_FLAGS" \
     "$_KOS_CI_CMAKE" -S "$_KOS_CI_SRC" -B "$_KOS_CI_BUILD" --preset "$_KOS_CI_PRESET" "$@" \
@@ -88,12 +88,15 @@ _scratch_ci_flags_ok() {
     # a board with nothing to check.
     grep -q '^KICKOS_MCPU_FLAGS:INTERNAL=' "$_KOS_CI_BUILD/CMakeCache.txt" \
         || { echo "$KOS_CI_TAG: scratch tree has no KICKOS_MCPU_FLAGS" >&2; return 1; }
-    if [ "$_KOS_CI_PRESET" = microbit ]; then
-        _profile=${KICKOS_MICROBIT_FULL_NEWLIB:-OFF}
-        grep -q "^KICKOS_MICROBIT_FULL_NEWLIB:BOOL=$_profile\$" \
+    if grep -q '^KICKOS_FULL_NEWLIB:BOOL=' "$_KOS_CI_BUILD/CMakeCache.txt"; then
+        _profile=${KICKOS_FULL_NEWLIB:-OFF}
+        grep -q "^KICKOS_FULL_NEWLIB:BOOL=$_profile\$" \
             "$_KOS_CI_BUILD/CMakeCache.txt" \
-            || { echo "$KOS_CI_TAG: scratch tree has the wrong microbit libc profile" >&2
+            || { echo "$KOS_CI_TAG: scratch tree has the wrong libc profile" >&2
                  return 1; }
+    elif [ "${KICKOS_FULL_NEWLIB:-OFF}" = ON ]; then
+        echo "$KOS_CI_TAG: KICKOS_FULL_NEWLIB=ON, and the scratch tree has no newlib profile choice" >&2
+        return 1
     fi
     _mcpu="$(sed -n 's/^KICKOS_MCPU_FLAGS:INTERNAL=//p' "$_KOS_CI_BUILD/CMakeCache.txt" \
              | head -n1 | tr ';' ' ')"

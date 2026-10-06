@@ -49,8 +49,10 @@ while that thread spins. Its diagnostics go through `kickos::emit`, never stdio.
    one, so a caller gets `-KOS_EAGAIN` until a server receives, and the endpoint outlives every
    instance of its server;
 4. creates each watching task's notification;
-5. holds the AMP ports the kernel seated in root's table on a node of a partition. It delegates
-   none: a composition has no field for a crossing until M10.5's partition build.
+5. holds the AMP ports the kernel seated in root's table on a node of a partition, each carrying
+   `KOS_CAP_TRANSFER`, and delegates the one a crossing names at the spawn of each task serving or
+   using it, WAIT to its server and SIGNAL to a user; it maps a partition region at the user
+   share's base plus the region's offset and reserves none.
 
 Then it scans.
 
@@ -237,18 +239,20 @@ counts three pointers, and the bring-up refuses a cfg whose reserved bytes are n
 list leaves the instance null; M10.5 deletes the lists. The instance, `struct kos_driver_instance`
 in `<kickos/sys/driver_service.h>`, is filled at each start from the init's record of the task
 and its table entry, so it adds nothing to the private record: the endpoint the init created at
-boot and the ring block of 1.1, both kept across restarts in the record, the table's line numbers
-by role, the core mask, whether the table names it the console driver, which the bring-up refuses
-unless its descriptor hands the console over, the badged copy of this start, and the task handle the bring-up writes
+boot and the ring block of 1.1 with its memory type, both kept across restarts in the record, the
+table's lines by role, each as its number and its index among its device's lines, the core mask,
+whether the table names it the console driver, which the bring-up refuses unless its descriptor
+hands the console over, the badged copy of this start, and the task handle the bring-up writes
 back as soon as it creates it. The badged copy is not kept: the init passes it for that one start
 and closes it when `START` returns.
 
 The table carries what the init needs of a driver that its catalogue entry states: the task's
 `block`, the ring block's bytes, which the init reserves at boot, and its `flags`, whose
 `KOS_TABLE_TASK_CONSOLE` names the driver that takes the console, whose endpoint the init narrows
-at the end of its handover rather than at boot and drains at the ending (1.5). A driver task's
-line grants are emitted in the order of its line roles, which is the order its descriptor numbers
-its lines in.
+at the end of its handover rather than at boot and drains at the ending (1.5), and whose
+`KOS_TABLE_TASK_BLOCK_UNCACHED` types the ring block `KOS_MEM_NOCACHE` in the init's self-grant. A
+driver task's line grants are emitted in the order of its line roles, which is the order of its
+descriptor's lines.
 
 `bring_up` in `user/src/driver_service.cc`, given an instance, runs in the init's thread and:
 
@@ -257,10 +261,9 @@ its lines in.
    grant to the declared core;
 2. arms the watch with the badged copy of this start, the ready endpoint being the instance's;
 3. under handover, publishes the instance's endpoint (2.1);
-4. pins itself to the instance's core and claims the table's lines at the descriptor's trigger,
-   refusing a line its descriptor numbers differently; M10.5 removes the number from driver
-   source. A claim answered `-KOS_EAGAIN`, the line retiring from the instance before, is tried
-   again as 1.6 states;
+4. pins itself to the instance's core and claims the instance's lines at the descriptor's trigger,
+   whatever numbers the descriptor states. A claim answered `-KOS_EAGAIN`, the line retiring from
+   the instance before, is tried again as 1.6 states;
 5. creates the notification and binds each line to it;
 6. spawns each thread pinned to the declared core, with its window and its descriptor
    capabilities, the endpoint coming from the instance;
@@ -270,8 +273,8 @@ its lines in.
 
 The endpoint is the instance's under either posture, so given an instance `out_ep` is neither
 checked nor written. Before step 1 the bring-up refuses an instance that is not its descriptor's:
-a ring block of another size, a block its descriptor types (the init's self-grant carries no
-memory type), or lines its descriptor numbers differently. A step that fails closes what
+a ring block of another size or memory type than its descriptor's, or another count of lines. A
+thread that routes its device's events onto a line takes line 0's index from the instance. A step that fails closes what
 `bring_up` made, leaves the task and the endpoint to the init, and returns its code, a failed
 start (1.6). A driver's first descriptor thread is its entry thread.
 
@@ -447,10 +450,12 @@ does not. It then defines:
 
 - `<system>_table`, an object library of the emitted table;
 - `<system>`, an interface library that depends on `KickOS::kernel` and carries, ahead of the
-  kernel's group on the link line: the table's objects; the init's objects (`KickOS::init`); those
-  of `KickOS::main` where `kickos_main` is named; each named packaged driver's archive, and the
-  libraries its `CLIENT` declares for the tasks that use it; the heap as `--defsym=KICKOS_USER_HEAP_SIZE=<heap>`, the
-  composition's `heap`; and the asserts script as a link input.
+  kernel's group on the link line: the table's objects; the init's objects (`KickOS::init`); the
+  walk's driver path, `KickOS::init_drivers` where a packaged driver is named and the trivial
+  `KickOS::init_no_drivers` where none is; those of `KickOS::main` where `kickos_main` is named;
+  each named packaged driver's archive, and the libraries its `CLIENT` declares for the tasks
+  that use it; the heap as `--defsym=KICKOS_USER_HEAP_SIZE=<heap>`, the composition's `heap`; and
+  the asserts script as a link input.
 
 Objects rather than archives make a second system target a duplicate definition. A missing entry
 fails the link naming it, the table declaring each entry `extern`. A packaged driver's client

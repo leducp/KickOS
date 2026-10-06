@@ -39,15 +39,25 @@ add_custom_command(
   COMMENT "Emitting the init walk tests' systems"
   VERBATIM)
 
+set(_walk_sources
+  "${PROJECT_SOURCE_DIR}/system/init/compose/walk.cc"
+  "${PROJECT_SOURCE_DIR}/system/init/compose/message.cc"
+  "${PROJECT_SOURCE_DIR}/user/src/driver_service.cc"
+  "${PROJECT_SOURCE_DIR}/user/src/init_status.cc"
+  "${PROJECT_SOURCE_DIR}/user/src/task_trampoline.cc")
+set(_walk_includes "${CMAKE_CURRENT_SOURCE_DIR}" "${PROJECT_SOURCE_DIR}/system/init/compose"
+  "${PROJECT_SOURCE_DIR}/user/include" "${PROJECT_SOURCE_DIR}/system/include"
+  "${PROJECT_SOURCE_DIR}/include" "${PROJECT_SOURCE_DIR}/lib/include"
+  "${PROJECT_BINARY_DIR}/generated/include")
 kickos_add_unit_test(NAME init_walk
   SOURCES walk_rules.cc walk_cost.cc fake_rules.cc driver_rules.cc harness.cc drivers.cc fake_kernel.cc ${_outputs}
-          "${PROJECT_SOURCE_DIR}/system/init/compose/walk.cc"
-          "${PROJECT_SOURCE_DIR}/system/init/compose/driver_path.cc"
-          "${PROJECT_SOURCE_DIR}/system/init/compose/message.cc"
-          "${PROJECT_SOURCE_DIR}/user/src/driver_service.cc"
-          "${PROJECT_SOURCE_DIR}/user/src/init_status.cc"
-          "${PROJECT_SOURCE_DIR}/user/src/task_trampoline.cc"
-  INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}" "${PROJECT_SOURCE_DIR}/system/init/compose"
-           "${PROJECT_SOURCE_DIR}/user/include" "${PROJECT_SOURCE_DIR}/system/include"
-           "${PROJECT_SOURCE_DIR}/include" "${PROJECT_SOURCE_DIR}/lib/include"
-           "${PROJECT_BINARY_DIR}/generated/include")
+          ${_walk_sources} "${PROJECT_SOURCE_DIR}/system/init/compose/driver_path.cc"
+  INCLUDES ${_walk_includes}
+  DEFINITIONS KICKOS_INITWALK_NO_DRIVERS=0)
+# The systems naming no driver, walked against the trivial driver path a system target links
+# for them.
+kickos_add_unit_test(NAME init_walk_no_drivers TEST_PREFIX no_drivers_
+  SOURCES walk_cost.cc harness.cc drivers.cc fake_kernel.cc ${_outputs}
+          ${_walk_sources} "${PROJECT_SOURCE_DIR}/system/init/compose/driver_path_none.cc"
+  INCLUDES ${_walk_includes}
+  DEFINITIONS KICKOS_INITWALK_NO_DRIVERS=1)

@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// A packaged driver whose one thread holds the line its composition binds: it answers a call,
-// waits until that line is raised, then answers another. Its descriptor numbers the line as one
-// no claim takes, so a start that claimed the descriptor's number would fail.
+// A packaged driver holding the two lines its composition binds: its IRQ thread prints the index
+// line 0 has among its device's lines, as its spawn hands it, then waits until line 0 is raised
+// and says so; its service thread answers calls. Its descriptor numbers both lines as none a claim
+// takes and states another index, so a start claiming the descriptor's numbers fails and a thread
+// handed the descriptor's index prints that one.
 
 #include <kickos/driver/declared/testline.h>
 #include <kickos/kos.h>
 #include <kickos/sys/driver_service.h>
 
-#include <kickos/sys/errno.h>
+#include "serve.h"
 
 namespace drv = kickos::driver;
 namespace declared = kickos::driver::declared::testline;
@@ -18,55 +20,49 @@ namespace
 {
     // Past every interrupt controller's lines.
     constexpr int NO_LINE = 0x7FFF;
+    constexpr uint16_t DESCRIPTOR_INDEX = 0u;
 
+    constexpr kos_cap_t NOTE = KOS_SPAWN_DELEGATED_CAP0;
     constexpr kos_cap_t EP = KOS_SPAWN_DELEGATED_CAP0;
-    constexpr kos_cap_t NOTE = KOS_SPAWN_DELEGATED_CAP0 + 1;
     constexpr uint32_t LINE_WAIT_US = 20000000u;
 
-    // Answers one call with `value`: 0, or the failing call's answer. A reply the caller is no
-    // longer there to take is not an answer.
-    int answer(uint32_t value)
+    void print_index(uint16_t index)
     {
-        while (true)
+        char digits[6] = {};
+        size_t at = sizeof(digits) - 1u;
+        uint32_t value = index;
+        do
         {
-            struct kos_reply_recv_opts opts;
-            kos_reply_recv_opts_init(&opts, EP, 0u, KOS_TIMEOUT_NONE);
-            opts.info.reply_cap = KOS_CAP_NONE;
-            int32_t const n = kos_reply_recv(KOS_CAP_NONE, nullptr, kos_call_lens_pack(0u, 0u), &opts);
-            if (n < 0)
-            {
-                return n;
-            }
-            if (opts.info.reply_cap == KOS_CAP_NONE)
-            {
-                continue;
-            }
-            int const rc = kos_reply(opts.info.reply_cap, &value, sizeof(value));
-            if (rc != -KOS_ESRCH)
-            {
-                return rc;
-            }
-        }
+            at--;
+            digits[at] = static_cast<char>('0' + value % 10u);
+            value /= 10u;
+        } while (value != 0u);
+        kos::print("testline: line 0 is index ");
+        kos::print(&digits[at]);
+        kos::print(" of its device\n");
     }
 
-    // Answers 1, waits for its line, then answers 2: the first wait arms the line.
-    void service(void* arg)
+    void irq(void* arg)
     {
-        (void)drv::thread_start(arg); // records the posture; the thread takes no arg
-        if (answer(1u) < 0)
-        {
-            drv::trap_under_init();
-            kos_exit(1);
-        }
+        print_index(drv::line_index_of(drv::thread_start(arg)));
         uint32_t bits = 0;
         if (kos_notify_bind(NOTE) != 0 or kos_notify_wait(NOTE, 1u, LINE_WAIT_US, &bits) != 0)
         {
-            kos::print("testline: the line was never raised\n");
+            kos::print("testline: line 0 was never raised\n");
             drv::trap_under_init();
             kos_exit(1);
         }
-        kos::print("testline: its line was raised\n");
-        if (answer(2u) < 0)
+        kos::print("testline: line 0 was raised\n");
+        while (true)
+        {
+            (void)kos_notify_wait(NOTE, 1u, KOS_TIMEOUT_NONE, &bits);
+        }
+    }
+
+    void service(void* arg)
+    {
+        (void)drv::thread_start(arg); // records the posture; the thread takes no arg
+        if (testdrivers::serve(EP) < 0)
         {
             drv::trap_under_init();
         }
@@ -84,16 +80,23 @@ namespace
         .line_count = declared::k_declared.line_count,
         .thread_count = declared::k_declared.thread_count,
         .barrier_after = declared::k_declared.barrier_after,
-        .lines = {{NO_LINE, KOS_IRQ_EDGE}},
-        .threads = {{.entry = service,
+        .lines = {{NO_LINE, KOS_IRQ_EDGE, DESCRIPTOR_INDEX}, {NO_LINE, KOS_IRQ_EDGE}},
+        .threads = {{.entry = irq,
                      .name = declared::k_declared.thread_name[0],
                      .prio_delta = declared::k_declared.prio_delta[0],
-                     .arg = drv::KOS_DRV_ARG_NONE,
+                     .arg = drv::KOS_DRV_ARG_LINE0_INDEX,
                      .window_grant = false,
                      .cap_count = 3,
-                     .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT, 0},
-                              {drv::KOS_DRV_RES_NOTIFY, KOS_CAP_WAIT, 0},
-                              {drv::KOS_DRV_RES_LINE0, KOS_CAP_WAIT, 0}}}},
+                     .caps = {{drv::KOS_DRV_RES_NOTIFY, KOS_CAP_WAIT, 0},
+                              {drv::KOS_DRV_RES_LINE0, KOS_CAP_WAIT, 0},
+                              {drv::KOS_DRV_RES_LINE1, KOS_CAP_WAIT, 0}}},
+                    {.entry = service,
+                     .name = declared::k_declared.thread_name[1],
+                     .prio_delta = declared::k_declared.prio_delta[1],
+                     .arg = drv::KOS_DRV_ARG_NONE,
+                     .window_grant = false,
+                     .cap_count = 1,
+                     .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT, 0}}}},
         .block_init = nullptr
     };
 

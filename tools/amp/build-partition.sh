@@ -53,7 +53,8 @@ shift 14
 # and read by the linker script. Loaded as -D, so applied after the seed; genconfig.py refuses a
 # configure where a name present in both disagrees.
 #
-# KICKOS_AMP_NODE_ID is left out of both, being the only thing a node may differ in.
+# KICKOS_AMP_NODE_ID is left out of both, being the only thing a node may differ in, and so is
+# KICKOS_MANIFEST, the path of the manifest node 0's build wrote, which a peer writes its own of.
 NODE0_BUILD="$(dirname "$WORK")"
 [ -f "$NODE0_BUILD/CMakeCache.txt" ] || {
     echo "build-partition.sh: no CMakeCache.txt at $NODE0_BUILD: this script takes the peer" >&2
@@ -63,7 +64,7 @@ NODE0_BUILD="$(dirname "$WORK")"
 # One KEY=VALUE per line, kept unflattened all the way to the argument list below: a cache
 # value carrying whitespace, a build path among them, re-splits into several -D arguments and
 # the peer silently takes its own default for whatever the split mangled.
-INHERIT_LINES="$(sed -n -e '/^KICKOS_AMP_NODE_ID:/d' \
+INHERIT_LINES="$(sed -n -e '/^KICKOS_AMP_NODE_ID:/d' -e '/^KICKOS_MANIFEST:/d' \
     -e 's/^\(KICKOS_[A-Z0-9_]*\):[A-Z]*=\(.*\)$/\1=\2/p' "$NODE0_BUILD/CMakeCache.txt")"
 
 SEED="$NODE0_BUILD/generated/amp-peer-seed.cmake"

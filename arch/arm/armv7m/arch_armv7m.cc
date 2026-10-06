@@ -15,6 +15,8 @@
 #include <kickos/arch/armv7m_trap_stack.h> // the figures switch.S's PSP guard enforces
 #include <kickos/trace/record.h> // ArchId: pin this build's trace-arch id to this backend
 
+#include <kickos/sys/atomic.h>
+
 #include <stddef.h> // offsetof
 #include <stdint.h>
 
@@ -445,6 +447,60 @@ void arch_fault_redirect_to_exit(void* frame)
     __asm volatile("isb" ::: "memory");
 }
 
+#if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_AMP_OWN_IMAGE
+// Its first instruction is the load a fault on which kickos_armv7m_probe_caught resumes past.
+uint32_t kickos_armv7m_probe_word(uintptr_t at);
+__asm__(".pushsection .text.kickos_armv7m_probe_word,\"ax\",%progbits\n"
+        ".global kickos_armv7m_probe_word\n"
+        ".type kickos_armv7m_probe_word, %function\n"
+        ".thumb_func\n"
+        "kickos_armv7m_probe_word:\n"
+        "    ldr.n r0, [r0]\n"
+        "    bx lr\n"
+        ".size kickos_armv7m_probe_word, . - kickos_armv7m_probe_word\n"
+        ".popsection\n");
+
+static kickos::Atomic<uint32_t, kickos::Order::RELAXED> g_probe_cfsr = 0;
+static kickos::Atomic<uint32_t, kickos::Order::RELAXED> g_probe_bfar = 0;
+
+static bool kickos_armv7m_probe_caught(uint32_t* frame)
+{
+    uint32_t const load = reinterpret_cast<uint32_t>(&kickos_armv7m_probe_word) & ~1u;
+    if ((frame[6] & ~1u) != load)
+    {
+        return false;
+    }
+    uint32_t const cfsr = kickos::arm::reg32(0xE000ED28);
+    uint32_t bfar = 0u;
+    if (cfsr & (1u << 15))
+    {
+        bfar = kickos::arm::reg32(0xE000ED38);
+    }
+    g_probe_bfar.store(bfar);
+    g_probe_cfsr.store(cfsr);
+    // Write-1-to-clear, as on every other fault path.
+    kickos::arm::reg32(0xE000ED28) = cfsr;
+    kickos::arm::reg32(0xE000ED2C) = kickos::arm::reg32(0xE000ED2C);
+    frame[6] = load + 2u;
+    return true;
+}
+
+// 0 with the word in `*value`, or the CFSR of the fault the read took with its BFAR, zero where
+// the fault left none valid, in `*value`.
+uint32_t kickos_armv7m_probe_read(uintptr_t at, uint32_t* value)
+{
+    g_probe_cfsr.store(0u);
+    uint32_t const word = kickos_armv7m_probe_word(at);
+    uint32_t const cfsr = g_probe_cfsr.load();
+    *value = word;
+    if (cfsr != 0u)
+    {
+        *value = g_probe_bfar.load();
+    }
+    return cfsr;
+}
+#endif
+
 // `frame` points at the hardware-stacked exception frame {r0,r1,r2,r3,r12,lr,pc,xPSR};
 // `exc_return` is the EXC_RETURN in LR, whose bit 2 selects the pre-fault stack.
 void kickos_armv7m_fault_report(uint32_t* frame, uint32_t exc_return)
@@ -452,6 +508,12 @@ void kickos_armv7m_fault_report(uint32_t* frame, uint32_t exc_return)
     // HardFault_Handler reaches here by a plain `b`, so this function's own return IS the
     // exception return. Nothing may print above this: kpanic_enter's console reclaim is
     // permanent and this fault is survivable.
+#if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_AMP_OWN_IMAGE
+    if (kickos_armv7m_probe_caught(frame))
+    {
+        return;
+    }
+#endif
     if (kickos_fault_kill_thread(frame))
     {
         return;

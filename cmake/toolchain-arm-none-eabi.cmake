@@ -21,29 +21,29 @@ list(APPEND CMAKE_TRY_COMPILE_PLATFORM_VARIABLES KICKOS_BOARD)
 kickos_toolchain_board_descriptor("arm")
 kickos_toolchain_cpu_baseline("arm" "arm")
 
-# After the descriptor: an installed package's descriptor states KICKOS_MICROBIT_PACKAGE_NEWLIB,
-# the profile its libraries were built with. They size per-thread newlib state by that
-# profile's struct _reent, so the package links no other.
-if(KICKOS_BOARD STREQUAL "microbit")
-  set(_kos_microbit_full_default OFF)
-  if(KICKOS_MICROBIT_PACKAGE_NEWLIB STREQUAL "full")
-    set(_kos_microbit_full_default ON)
+# After the descriptor, which names the newlib profile a board links where it is not the full
+# one: KICKOS_BOARD_NEWLIB. An installed package's descriptor also states KICKOS_PACKAGE_NEWLIB,
+# the profile its libraries were built with. They size per-thread newlib state by that profile's
+# struct _reent, so the package links no other.
+if(KICKOS_BOARD_NEWLIB STREQUAL "nano")
+  set(_kos_full_newlib_default OFF)
+  if(KICKOS_PACKAGE_NEWLIB STREQUAL "full")
+    set(_kos_full_newlib_default ON)
   endif()
-  set(KICKOS_MICROBIT_FULL_NEWLIB ${_kos_microbit_full_default} CACHE BOOL
-      "Use full newlib instead of microbit's default nano profile")
-  list(APPEND CMAKE_TRY_COMPILE_PLATFORM_VARIABLES KICKOS_MICROBIT_FULL_NEWLIB)
-  if(KICKOS_MICROBIT_FULL_NEWLIB)
-    set(_kos_microbit_flavor full)
+  set(KICKOS_FULL_NEWLIB ${_kos_full_newlib_default} CACHE BOOL
+      "Use full newlib instead of the board's nano profile")
+  list(APPEND CMAKE_TRY_COMPILE_PLATFORM_VARIABLES KICKOS_FULL_NEWLIB)
+  if(KICKOS_FULL_NEWLIB)
+    set(_kos_board_flavor full)
   else()
-    set(_kos_microbit_flavor nano)
+    set(_kos_board_flavor nano)
   endif()
-  if(DEFINED KICKOS_MICROBIT_PACKAGE_NEWLIB
-     AND NOT _kos_microbit_flavor STREQUAL KICKOS_MICROBIT_PACKAGE_NEWLIB)
+  if(DEFINED KICKOS_PACKAGE_NEWLIB AND NOT _kos_board_flavor STREQUAL KICKOS_PACKAGE_NEWLIB)
     message(FATAL_ERROR
-      "KickOS microbit: this KickOS package was built with ${KICKOS_MICROBIT_PACKAGE_NEWLIB} "
-      "newlib, but KICKOS_MICROBIT_FULL_NEWLIB=${KICKOS_MICROBIT_FULL_NEWLIB} asks for "
-      "${_kos_microbit_flavor}. Leave it unset in a fresh build directory, or build against "
-      "a KickOS package built with the ${_kos_microbit_flavor} profile.")
+      "KickOS ${KICKOS_BOARD}: this KickOS package was built with ${KICKOS_PACKAGE_NEWLIB} "
+      "newlib, but KICKOS_FULL_NEWLIB=${KICKOS_FULL_NEWLIB} asks for ${_kos_board_flavor}. "
+      "Leave it unset in a fresh build directory, or build against a KickOS package built with "
+      "the ${_kos_board_flavor} profile.")
   endif()
 endif()
 
@@ -68,8 +68,8 @@ if(NOT _kos_multi MATCHES "^thumb/")
     "'${_kos_multi}', no Cortex-M one")
 endif()
 set(_kos_newlib_flavor "")
-if(KICKOS_BOARD STREQUAL "microbit")
-  set(_kos_newlib_flavor FLAVOR ${_kos_microbit_flavor})
+if(DEFINED _kos_board_flavor)
+  set(_kos_newlib_flavor FLAVOR ${_kos_board_flavor})
 endif()
 include("${CMAKE_CURRENT_LIST_DIR}/cross_newlib.cmake")
 kickos_require_toolchain_newlib("arm" "${CMAKE_C_COMPILER}" static ${_kos_newlib_flavor}

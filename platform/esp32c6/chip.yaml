@@ -29,6 +29,25 @@ cores:
     # this node is enforced within it. APM on the HP side bounds what the node can reach.
     protection: { unit: none, privilege: false }
 
+# The APM in series with each core's own unit (16.3, Figure 16.3-1, Table 16.3-1): a region's
+# permission is per security mode, never per master, and region 0 of each is the reset catch-all.
+partition_gate:
+  kind: apm
+  gates:
+    hp_apm:
+      regions: { value: 16, ref: "Table 16.3-1, p.562" }
+      ranges: [[0x60000000, 0xB0000]]
+      memory: [[0x40800000, 0x80000]]
+    lp_apm:
+      regions: { value: 4, ref: "Table 16.3-1, p.562" }
+      ranges: [[0x600B0000, 0x10000]]
+      kernel:
+        - { window: [0x600B0000, 0x400], access: rw, ref: "PMU, Table 5.3-2, p.176" }
+        # LP_APM sees the LP CPU's reset fetch from LP SRAM at this alias, which Table 5.3-1
+        # leaves reserved (docs/archive/M9.9_lp_probe_captures/m99probe12.log).
+        - { window: [0x70000000, 0x400], access: rwx }
+        - { window: [0x600B0C00, 0x400], access: rw, ref: "RTC_TIMER, Table 5.3-2, p.176" }
+
 interrupts: { count: { value: 32, ref: "10.3.2 CPU Interrupts, p.384" }, soft_only_from: 26 }
 
 devices:
@@ -72,6 +91,7 @@ devices:
   rtc_timer: { window: [0x600B0C00, 0x400], owner: kernel, ref: "Table 5.3-2, p.176" }
   lp_aon: { window: [0x600B1000, 0x400], owner: kernel, ref: "Table 5.3-2, p.176" }
   lp_apm: { window: [0x600B3800, 0x400], owner: kernel, ref: "Table 5.3-2, p.176" }
+  lp_uart: { window: [0x600B1400, 0x400], ref: "Table 5.3-2, p.176" }
 
 # Both cores reach both SRAMs. The LP node runs from its own slice of HP SRAM, so both
 # nodes' arenas are carved from it.

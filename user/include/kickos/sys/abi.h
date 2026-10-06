@@ -161,7 +161,8 @@ enum kos_syscall_nr
                               //   (self-test only: the dispatch arm is compiled out unless
                               //   KICKOS_ENABLE_SELFTEST, so a production image returns -KOS_EINVAL)
     KOS_SYS_PERIPH_ENABLE = 39, // (base) -> 0, -KOS_EPERM (caller holds no window at that base),
-                                //   -KOS_EINVAL (no table entry), -KOS_ENOSYS (no backend).
+                                //   -KOS_EINVAL (no table entry), -KOS_EIO (the block never left
+                                //   reset), -KOS_ENOSYS (no backend).
                                 //   Gated on possession, not on an authority bit.
     KOS_SYS_CAP_NARROW = 40,   // (cap, mask) -> 0, -KOS_EBADF (the caller holds no authority
                                //   to give up, or the cap names nothing). Intersects the

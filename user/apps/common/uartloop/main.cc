@@ -3,7 +3,7 @@
 //
 // End-to-end exercise of the buffered userspace UART: a client drives the
 // <kickos/sys/uart.h> wire ABI against the REAL two-thread driver, over the sim's loopback
-// "device" (system/init/sim/service_list_uart.cc).
+// "device" (system/driver/sim/simuart/simuart.cc).
 //
 // The client must be a spawned thread: a kos_call parks its caller, and root has to stay
 // alive to report the verdict.

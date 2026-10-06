@@ -47,6 +47,9 @@ elif [ -n "$DEPTH" ]; then
 fi
 echo "== building the driver witness against the installed package =="
 package_image "$KICKOS_BUILD" "$CMAKE" "$KICKOS_SRC/tests/integration/driver_witness" driver_witness "$@"
+# Its composition names packaged drivers, so its system links the init's driver path.
+"$(dirname "$0")/check_no_driver_path.sh" --control "$IMAGE.map" \
+    || fail "the driver witness's system does not link the init's driver path alone"
 
 # A driver's second-death line may follow its client's refusal.
 all_ended() { # <log>

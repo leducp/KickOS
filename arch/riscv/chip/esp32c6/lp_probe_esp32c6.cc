@@ -9,8 +9,11 @@
 
 #if !KICKOS_HAVE_MPU && !KICKOS_AMP_OWN_IMAGE
 
+#include <kickos/sys/partition_gate.h>
+
 #include <stdint.h>
 
+#include "apm_rows.h"
 #include "regs/apm.h"
 
 namespace reg = kickos::esp32c6::reg;
@@ -55,6 +58,13 @@ extern "C" void kickos_c6_lp_probe_boot(void)
     {
         return;
     }
+    if (not kickos::esp32c6::apm::lp_probe_fits(kickos_gate_rows, kickos_gate_row_count))
+    {
+        static char const why[] = "KickOS: c6lpprobe: the partition gate's rows hold the APM regions the "
+                                  "LP probe programs\n";
+        arch_console_write_sync(why, sizeof(why) - 1u);
+        arch_shutdown(1);
+    }
     uint32_t const count = static_cast<uint32_t>(size / 4u);
     uint32_t const payload_count = static_cast<uint32_t>(payload_size / 4u);
     r32(marker) = 0;
@@ -94,14 +104,14 @@ extern "C" void kickos_c6_lp_probe_boot(void)
     r32(lp_apm + 0x30u) = 0x400u; // LPPERI REE2 read
     r32(lp_apm + 0x00u) |= (1u << 1) | (1u << 3);
     // The HP APM gates the LP CPU's HP SRAM store.
-    r32(reg::apm::region_addr_start(4u)) = marker;
-    r32(reg::apm::region_addr_end(4u)) = marker + 0x3Fu;
-    r32(reg::apm::region_attr(4u)) = 0x600u; // REE2 R/W
-    r32(reg::apm::FILTER_EN) |= reg::apm::region_en(4u);
-    r32(reg::apm::region_addr_start(5u)) = lp_image;
-    r32(reg::apm::region_addr_end(5u)) = lp_image + 0x3FFu;
-    r32(reg::apm::region_attr(5u)) = 0x500u; // REE2 R/X
-    r32(reg::apm::FILTER_EN) |= reg::apm::region_en(5u);
+    r32(reg::apm::region_addr_start(14u)) = marker;
+    r32(reg::apm::region_addr_end(14u)) = marker + 0x3Fu;
+    r32(reg::apm::region_attr(14u)) = 0x600u; // REE2 R/W
+    r32(reg::apm::FILTER_EN) |= reg::apm::region_en(14u);
+    r32(reg::apm::region_addr_start(15u)) = lp_image;
+    r32(reg::apm::region_addr_end(15u)) = lp_image + 0x3FFu;
+    r32(reg::apm::region_attr(15u)) = 0x500u; // REE2 R/X
+    r32(reg::apm::FILTER_EN) |= reg::apm::region_en(15u);
     r32(pwr0) = r32(pwr0) | (3u << 30);
     r32(pwr1) = r32(pwr1) | 1u;
     r32(0x600B0174u) |= 1u << 31; // HP trigger -> LP IRQ 30

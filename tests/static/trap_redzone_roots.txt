@@ -385,6 +385,7 @@ root    armv7m RET    kickos_thread_return
 # way into the console tail.
 root    armv7m PANIC  kickos_panic_report
 unsized armv7m kickos_panic_stack_enter 0 reason: switch.S, four instructions that write no stack; bl leaves the return address in LR and the body never spills it
+unsized armv7m kickos_armv7m_probe_word 0 reason: arch_armv7m.cc's top-level asm, a load and bx lr that write no stack
 
 # The AEABI 64-bit divide helpers are libgcc, so they have no .ci entry and neither does
 # __udivmoddi4 below them; measured from libgcc.a for this multilib (thumb/v7e-m+fp/softfp).

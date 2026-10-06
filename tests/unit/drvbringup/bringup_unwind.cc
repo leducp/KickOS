@@ -315,7 +315,34 @@ namespace
         .block_init = nullptr
     };
 
+    // k_routed with no index stated for its line, which a service list would hand the thread.
+    constexpr drv::Descriptor k_routed_unindexed = {
+        .tag = "[drvroute1] ",
+        .expected_base = K_BASE,
+        .block_size = 0,
+        .block_flags = 0,
+        .ready_offset = drv::KOS_DRV_READY_NONE,
+        .ep_posture = drv::KOS_DRV_EP_RETAIN,
+        .svc_kind = KOS_SVC_SPI,
+        .line_count = 1,
+        .thread_count = 1,
+        .barrier_after = 1,
+        .lines = {{21, KOS_IRQ_EDGE}},
+        .threads = {{.entry = t_irq,
+                     .name = nullptr,
+                     .prio_delta = 0,
+                     .arg = drv::KOS_DRV_ARG_LINE0_INDEX,
+                     .window_grant = true,
+                     .cap_count = 3,
+                     .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT, 0},
+                              {drv::KOS_DRV_RES_NOTIFY, KOS_CAP_WAIT, 0},
+                              {drv::KOS_DRV_RES_LINE0, KOS_CAP_WAIT, 0}}}},
+        .block_init = nullptr
+    };
+
     static_assert(drv::valid(k_routed), "the routed gate descriptor is not a driver shape");
+    static_assert(not drv::valid_l2(k_routed_unindexed),
+                  "L2 must refuse a line index a service list leaves unstated");
     static_assert(not drv::valid_l2(k_routed_lineless), "L2 must refuse a line index of no line");
 
     struct kos_service_cfg cfg_of(uint8_t kind, uintptr_t base)

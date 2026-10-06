@@ -125,7 +125,7 @@ constexpr uint32_t KOS_UART_IRQ_SEG = 64;
 void irq_pass(struct kos_uart* dev, Shared* sh);
 
 // The arm for a backend that carries a service_irq() method instead of the class API: the
-// sim loopback in system/init/sim/service_list_uart.cc.
+// sim loopback in system/driver/sim/simuart/simuart.cc.
 template <typename Uart>
 inline void irq_pass(Uart* dev, Shared*)
 {

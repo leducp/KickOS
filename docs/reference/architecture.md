@@ -690,7 +690,7 @@ per-thread. (Narrative + the worked K64F bring-up: `../book/peripheral-isolation
 | Chip / unit | MPU covers MMIO? | Separate peripheral gate | Per-thread MMIO isolation | Evidence |
 |---|---|---|---|---|
 | XMC4800 -- ARM v7-M PMSA (CPU-side) | yes | none per-thread (some peripheral registers are PV-write-only at the bus -- a kernel/user split, not a per-master gate) | **yes** | silicon-proven: a granted USIC-SSC DEV window works + an ungranted peripheral poke faults MemManage (xmcspi loopback, 2026-07-17) |
-| RISC-V PMP (qemu-riscv; ESP32-C6) | yes | ESP32-C6 APM/PMS (per security-mode, default-deny user; needs a one-time global open) | **yes** (PMP discriminates per thread; APM opened once) | PMP path proven on qemu-riscv; **C6 SRAM enforcement + per-thread peripheral isolation PROVEN on silicon** (18/18 + mpu_fault; `c6blink` drives the APM open + an 8 B PMP window, ungranted poke PMP-faults) |
+| RISC-V PMP (qemu-riscv; ESP32-C6) | yes | ESP32-C6 APM/PMS (per security-mode, default-deny user; opened at boot over each device a composition grants) | **yes** (PMP discriminates per thread; APM per node) | PMP path proven on qemu-riscv; **C6 SRAM enforcement + per-thread peripheral isolation PROVEN on silicon** (18/18 + mpu_fault; `c6blink` drives the APM open + an 8 B PMP window, ungranted poke PMP-faults) |
 | RX72M -- RXv3 MPU (CPU-side) | yes | none (PRCR is an unrelated write-latch, not a privilege gate) | **yes** | silicon-proven: SRAM/domain enforcement (selftest + mpu_fault cross-domain trap, 2026-07-17) AND a real granted peripheral window -- `rxdrv` blinks LED6 through a granted 16-byte PORT8 PODR window while an ungranted PORT8.PDR poke faults ("MPU FAULT: task 'rxdrv'") |
 | K64F -- SYSMPU (bus-slave-side) | **no** | **AIPS PACR** (by privilege+master, per 4 KB slot, NOT per-thread) | **no** | silicon-proven: an unprivileged PIT access faults via AIPS while SYSMPU latches no error; clearing the slot's PACR SP bit then admits ALL user code |
 
@@ -718,8 +718,10 @@ user mode is REE (16.3.1). PMP is the per-thread line the MMIO grant programs; *
 (Access Permission Management, TRM chapter 16) is per SECURITY MODE** -- TEE / REE0 / REE1 / REE2 --
 never per thread, and its default posture DENIES every REE mode access to every peripheral
 (16.3.2 Note). So without a one-time APM open a U-mode driver reaches nothing even with a correct
-PMP grant. `apm_open_ree0()` runs in `arch_init` (`arch/riscv/chip/esp32c6/chip_esp32c6.cc`) on
-every C6 board, so this is boot-time state on all of them, not a per-app step. Registers
+PMP grant. `apm_program_gate()` runs in `arch_init` (`arch/riscv/chip/esp32c6/chip_esp32c6.cc`)
+on every C6 board and programs exactly the gate assignment the image links
+(`<kickos/sys/partition_gate.h>`, `docs/design-m10-fleet.md` section 9.5), so this is boot-time
+state on all of them, not a per-app step. Registers
 (`arch/riscv/chip/esp32c6/regs/apm.h`; TRM Reg 16.1-16.5 and 16.53):
 
 | Register | Address / offset | Reset | Contents |
@@ -728,15 +730,19 @@ every C6 board, so this is boot-time state on all of them, not a per-app step. R
 | `HP_APM_REGION_FILTER_EN_REG` | `HP_APM` `+0x0000` | `0x01` | bit n enables region n; region 0 on at reset |
 | `HP_APM_REGIONn_ADDR_START_REG` | `+0x0004 + 0xC*n` | 0 | region start |
 | `HP_APM_REGIONn_ADDR_END_REG` | `+0x0008 + 0xC*n` | `0xFFFFFFFF` | region end |
-| `HP_APM_REGIONn_ATTR_REG` | `+0x000C + 0xC*n` | 0 | `R0_X` b0, `R0_W` b1, `R0_R` b2, then `R1_X` b3 .. `R2_R` b8 |
+| `HP_APM_REGIONn_ATTR_REG` | `+0x000C + 0xC*n` | 0 | `R0_X` b0, `R0_W` b1, `R0_R` b2, `R1_X` b4, `R1_W` b5, `R1_R` b6, `R2_X` b8, `R2_W` b9, `R2_R` b10 (Reg 16.4) |
 | `HP_APM_FUNC_CTRL_REG` | `+0x00C4` | `0xF` | `M0..M3_FUNC_EN`; all four enforcing at reset, so KickOS writes nothing here either |
 
 `HP_APM` is at `0x6009_9000`. Region 0 is LEFT at its reset values -- start 0, end `0xFFFFFFFF`,
 attr 0 -- which is the catch-all that denies every REE mode everywhere; overlaps are a permit
 UNION (16.3.2.3), so a later region granting `R0_R | R0_W` beats it on the overlap. `arch_init`
-programs regions **1..3** to the complement of the HP-bus Rule 7 reserved blocks -- INTMTX, and
-the contiguous PCR..HP_APM span -- so those stay APM-closed to REE on top of the grant path's
-refusal, and everything else is REE0 read/write. The APM registers are writable only in TEE mode
+programs each gate's rows into its regions from 1 up and writes its `FILTER_EN` whole, so a region
+no row names stays off: for REE0 each device node 0's composition grants and nothing else, none in
+an image linking no composition, so a U-mode task reaches through the APM only a device a
+composition grants it, and no CPU peripheral and no HP SRAM, which PMP alone gates for the HP CPU
+(Table 16.1-1); for the LP node, which `arch_amp_release_peers` moves to
+REE1 before it wakes it because every other bus master shares REE2 at power-up (16.3.2 Note),
+its slice, the shared window, its kernel's three LP pages and its granted devices. The APM registers are writable only in TEE mode
 (= M-mode), so a REE thread cannot reprogram them even if it somehow held a PMP window over
 `0x6009_9000`; the grant path refuses that window anyway (Rule 7 lists HP_APM and HP_TEE).
 
@@ -1037,7 +1043,8 @@ feeds the slave app.
   old leaves `KickOS::kickos` and `KickOS::kickos_cxx` carry those three (all sit over a
   posture-neutral `KickOS::kickos_core`). `KickOS::kernel` links beside exactly
   one system target, which carries the init, the emitted table and the heap:
-  `kickos_compose(<system> <composition.yaml>)` makes one, and `KickOS::system_default` is the
+  `kickos_compose(<system> <composition.yaml>)` makes one, `kickos_compose(<system> PARTITION
+  <node0.yaml>...)` one on a node of an AMP partition, and `KickOS::system_default` is the
   board's default composition's (`docs/design-m10-target.md`, section 5), or on a board with none a
   stub whose link fails on a required symbol naming the remedy. Every exported target
   is named `KickOS::<name>`: installed through the export's namespace, in tree through an `ALIAS`
@@ -1074,11 +1081,12 @@ feeds the slave app.
   exported driver-lib linking `kickos_user`, its `.data`/`.bss` landing app-side, and with `THREADS`
   a packaged driver whose declared metadata reaches both its descriptor, through the generated
   `<kickos/driver/declared/<name>.h>`, and the export manifest's catalogue. Every driver a service
-  list carries is packaged; a line role is named after the chip file's line it binds, but on a
-  module whose channels share their lines, as the XMC's USIC does. A composition binds each role
-  to a line, and the init hands the driver's `START` a `kos_driver_instance` carrying each line
-  as its number and its index among its device's lines: `bring_up` claims the instance's lines,
-  never the descriptor's numbers, which only a service list still claims; `kickos_add_qemu_test(NAME
+  list carries is packaged. A line role is named after the chip file's line it binds, except on a
+  module whose channels share their lines, as the XMC's USIC is, where the role is `irq`. A
+  composition binds each role to a line, and the init hands the driver's `START` a
+  `kos_driver_instance` carrying each line as its number and its index among its device's lines:
+  `bring_up` claims the instance's lines, never the descriptor's numbers, which only a service
+  list still claims; `kickos_add_qemu_test(NAME
   TARGET BOARD SCRIPT ...)` -- a QEMU boot gate (exit 77 = SKIP) that keeps the per-board QEMU env
   prefix in exactly one place; and `kickos_add_board_provider(<name> SOURCE [LINK])` -- a pinmap or
   service-list descriptor lib that folds its `install(EXPORT)` in so adding a provider cannot drift

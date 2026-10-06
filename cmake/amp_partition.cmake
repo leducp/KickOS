@@ -162,7 +162,7 @@ if(KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
   set(_amp_seed "# Written by node ${KICKOS_AMP_NODE_ID}'s configure. Read by tools/amp/build-partition.sh.\n")
   foreach(_amp_name IN LISTS KICKOS_KCONFIG_PROMPTED_VALUE
                     ITEMS KICKOS_CONSOLE KICKOS_TELEMETRY)
-    if(_amp_name STREQUAL "KICKOS_AMP_NODE_ID")
+    if(_amp_name STREQUAL "KICKOS_AMP_NODE_ID" OR _amp_name IN_LIST KICKOS_KCONFIG_DERIVED)
       continue()
     endif()
     if(DEFINED _amp_cfg_${_amp_name})
@@ -174,6 +174,9 @@ if(KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
   # `=n`, so absent from the resolved .config is off and not unstated. Seeded as unstated the
   # peer would take its Kconfig default.
   foreach(_amp_name IN LISTS KICKOS_KCONFIG_PROMPTED_FLAG)
+    if(_amp_name IN_LIST KICKOS_KCONFIG_DERIVED)
+      continue()
+    endif()
     set(_amp_v "OFF")
     if(DEFINED _amp_cfg_${_amp_name} AND _amp_cfg_${_amp_name} STREQUAL "y")
       set(_amp_v "ON")

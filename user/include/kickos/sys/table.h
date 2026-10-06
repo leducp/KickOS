@@ -48,7 +48,17 @@ enum kos_grant_kind
     KOS_GRANT_PORTS = 4,
     KOS_GRANT_REGION = 5,
     KOS_GRANT_LINE = 6,
-    KOS_GRANT_STATUS = 7 // /init/status: the init's status block, read-only, for a watcher
+    KOS_GRANT_STATUS = 7, // /init/status: the init's status block, read-only, for a watcher
+    // An /amp crossing: `flags` is KOS_CAP_WAIT to serve it or KOS_CAP_SIGNAL to use it, `base` its
+    // port and `target` the node the partition list names its server.
+    KOS_GRANT_PORT = 8
+};
+
+// kos_table_region.flags, beside KOS_MEM_NOCACHE
+enum kos_table_region_flags
+{
+    // In the partition's user share at `offset`, which the init maps and never reserves.
+    KOS_TABLE_REGION_PARTITION = 1 << 7
 };
 
 struct kos_service_cfg;
@@ -109,7 +119,7 @@ struct kos_table_task
 struct kos_table_grant
 {
     uint8_t kind; // enum kos_grant_kind
-    uint8_t flags; // KOS_WINDOW_RO and KOS_WINDOW_UNCACHED
+    uint8_t flags; // KOS_WINDOW_RO and KOS_WINDOW_UNCACHED, or a port grant's KOS_CAP_WAIT or KOS_CAP_SIGNAL
     uint16_t cap_slot; // KOS_SPAWN_DELEGATED_CAP0 + i, or KOS_TABLE_NONE
     uint32_t name;
     uint32_t path;
@@ -141,7 +151,8 @@ struct kos_table_region
 {
     uint32_t name;
     uint32_t size;
-    uint8_t flags; // KOS_MEM_NOCACHE
+    uint32_t offset; // a partition region's offset in the partition's user share, else 0
+    uint8_t flags; // KOS_MEM_NOCACHE and KOS_TABLE_REGION_PARTITION
     uint8_t rsv0[3];
 };
 
@@ -222,11 +233,12 @@ KOS_TABLE_ASSERT(offsetof(struct kos_table_priv, offset) == 0, "priv.offset (tab
 KOS_TABLE_ASSERT(offsetof(struct kos_table_priv, width) == 2, "priv.width (table layout)");
 KOS_TABLE_ASSERT(offsetof(struct kos_table_priv, rsv0) == 3, "priv.rsv0 (table layout)");
 
-KOS_TABLE_ASSERT(sizeof(struct kos_table_region) == 12, "a region is 12 bytes (table layout)");
+KOS_TABLE_ASSERT(sizeof(struct kos_table_region) == 16, "a region is 16 bytes (table layout)");
 KOS_TABLE_ASSERT(offsetof(struct kos_table_region, name) == 0, "region.name (table layout)");
 KOS_TABLE_ASSERT(offsetof(struct kos_table_region, size) == 4, "region.size (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_region, flags) == 8, "region.flags (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_region, rsv0) == 9, "region.rsv0 (table layout)");
+KOS_TABLE_ASSERT(offsetof(struct kos_table_region, offset) == 8, "region.offset (table layout)");
+KOS_TABLE_ASSERT(offsetof(struct kos_table_region, flags) == 12, "region.flags (table layout)");
+KOS_TABLE_ASSERT(offsetof(struct kos_table_region, rsv0) == 13, "region.rsv0 (table layout)");
 
 #undef KOS_TABLE_ASSERT
 

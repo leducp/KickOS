@@ -235,7 +235,6 @@ namespace selftest
     KICKOS_SELFTEST_LOCAL void t_amp_far_undisclosed();
     KICKOS_SELFTEST_LOCAL void t_amp_far_infoless();
     KICKOS_SELFTEST_LOCAL void t_amp_deferred_doorbell();
-    KICKOS_SELFTEST_LOCAL void t_amp_app_alive();
     KICKOS_SELFTEST_LOCAL void t_amp_inbound_reply();
     KICKOS_SELFTEST_LOCAL void t_amp_port_seating();
     KICKOS_SELFTEST_LOCAL void t_amp_port_unnamed();

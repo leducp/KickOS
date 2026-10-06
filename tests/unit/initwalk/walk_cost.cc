@@ -51,11 +51,30 @@ namespace
         return nullptr;
     }
 
+    bool names_a_driver(systems::System const& system)
+    {
+        kos_table_header const* const header = *system.table;
+        auto const tasks = reinterpret_cast<kos_table_task const*>(header + 1);
+        for (uint16_t i = 0; i < header->task_count; i++)
+        {
+            if (tasks[i].driver != KOS_TABLE_NONE)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     std::vector<Case> cases()
     {
         std::vector<Case> out;
         for (size_t i = 0; i < systems::COUNT; i++)
         {
+            // Built against the trivial driver path, a system naming a driver is not this walk's.
+            if (KICKOS_INITWALK_NO_DRIVERS and names_a_driver(systems::ALL[i]))
+            {
+                continue;
+            }
             out.push_back(Case{systems::ALL[i].name, Scenario::FIRST});
             if (systems::ALL[i].refusal == nullptr and restartable(systems::ALL[i]) != nullptr)
             {
@@ -175,6 +194,12 @@ namespace
         {
             EXPECT_EQ(harness::status(index).deaths, 1u) << "a failed start";
             EXPECT_EQ(fake::spawned(task).size(), 1u) << "then started";
+        }
+        if (KICKOS_INITWALK_NO_DRIVERS)
+        {
+            // With no console driver to take one at its handover, the boot narrows every
+            // endpoint it creates.
+            EXPECT_EQ(fake::calls_of("kos_cap_narrow").size(), fake::calls_of("kos_endpoint_create").size());
         }
         if (driver)
         {

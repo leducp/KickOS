@@ -6032,13 +6032,15 @@ by ruling and sits in `roadmap.md`'s `Later`.
 
 ## `ampping`'s serve loop reads the first payload byte without checking a byte arrived
 
-- [ ] **A ZERO-LENGTH DATAGRAM WOULD BE ANSWERED FROM UNINITIALISED STACK.**
+- [x] **A ZERO-LENGTH DATAGRAM WOULD BE ANSWERED FROM UNINITIALISED STACK.**
       `user/apps/common/ampping/main_serve.c` takes `kos_reply_recv`'s result into `got`, tests it
       only for negativity, and then builds its reply out of `msg[0]` -- which for a zero-length
       arrival is whatever the frame held. The reply and the line it prints are then both a stale
       byte, and nothing distinguishes that from a real answer.
       **Low priority, and the premise is unverified**: whether this protocol can produce a
       zero-length datagram at all was not established, only that the loop does not survive one.
+      **Closed in M10.5.9**: the composed serve loop answers a call that carried no byte with an
+      empty reply, the refusal a caller already reads, and builds no answer from the frame.
 
 ## The file:line:column indirect-call binding is fragile, and replacing it is its own piece
 
@@ -14666,7 +14668,7 @@ follows is what survived that.
       is preserved by not touching it.
 
       **WHO MAY WRITE IT**: the kernel alone, into the row of the node it is running on, at that
-      node's root's request; the node is derived in `KOS_AMP_OP_APP_ALIVE_SET` and is never a
+      node's root's request; the node is derived in the kernel's probe op and is never a
       parameter, and the value stored is the kernel's own derivation from the partition list, so
       no word an app supplies crosses into the shared region.
       **WHAT THE READER VALIDATES**: the row must equal the port the partition names that node
