@@ -211,20 +211,22 @@ endfunction()
 
 # ---------------------------------------------------------------------------
 # kickos_emit_image(<target>)
-#   Does nothing on the sim. On an MCU it writes the .bin and .hex a board flashes and prints the
-#   size, and on x86_64 it marks the image's map for cleaning.
+#   Writes the link map that KICKOS_IMAGE_MAP names; x86_64's link rule writes it itself, and
+#   the sim's selftest map is read by its seam gates. On an MCU it also writes the .bin and .hex
+#   a board flashes and prints the size.
 #
 #   PUBLIC: a POST_BUILD action cannot ride a usage requirement, so it is one opt-in line
 #   after target_link_libraries(app PRIVATE KickOS::kernel KickOS::system_default).
 # ---------------------------------------------------------------------------
 function(kickos_emit_image target)
   set_property(GLOBAL APPEND PROPERTY KICKOS_EMITTED_IMAGES ${target})
-  if(KICKOS_ARCH STREQUAL "sim")
-    return()
+  set_target_properties(${target} PROPERTIES KICKOS_IMAGE_MAP "$<TARGET_FILE:${target}>.map")
+  set_property(TARGET ${target} APPEND PROPERTY ADDITIONAL_CLEAN_FILES
+    "$<TARGET_FILE:${target}>.map")
+  if(NOT KICKOS_ARCH STREQUAL "x86_64")
+    target_link_options(${target} PRIVATE "-Wl,-Map=$<TARGET_FILE:${target}>.map")
   endif()
-  if(KICKOS_ARCH STREQUAL "x86_64")
-    set_property(TARGET ${target} APPEND PROPERTY ADDITIONAL_CLEAN_FILES
-      "$<TARGET_FILE:${target}>.map")
+  if(KICKOS_ARCH STREQUAL "sim" OR KICKOS_ARCH STREQUAL "x86_64")
     return()
   endif()
   add_custom_command(TARGET ${target} POST_BUILD

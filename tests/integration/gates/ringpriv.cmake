@@ -58,6 +58,10 @@ endif()
 # observable, and an operator capturing that board on silicon reads the floor from here.
 message(STATUS
   "KickOS: ringpriv expects exactly ${_arms} arm(s) (priv_ring=${_ring} arch=${KICKOS_ARCH})")
+kickos_app_judge(ringpriv tests/integration/check_app_arms.sh ARGS ringpriv ${_arms})
+if(TARGET ringppb)
+  kickos_emulator_judged(ringppb)
+endif()
 
 if(KICKOS_QEMU_MPS2)
   kickos_add_qemu_test(TARGET ringpriv

@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   picopi
+   arch    armv6m
+   cpu     rp2040
+   mpu     enforce
+   sched   tickless
+
+[fs] spawning the faulter
+[fs] worker about to fault
+
+=== THREAD FAULT === thread 'faulter' killed, system continues
+  PC=0x10000420
+[fs] survivor ran after the fault

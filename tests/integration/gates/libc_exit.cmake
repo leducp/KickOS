@@ -7,6 +7,7 @@
 if(NOT TARGET libc_exit)
   return()
 endif()
+kickos_app_judge(libc_exit tests/integration/check_libc_exit.sh ARGS --atexit)
 
 set(_libc_exit_script "${PROJECT_SOURCE_DIR}/tests/integration/check_libc_exit.sh")
 

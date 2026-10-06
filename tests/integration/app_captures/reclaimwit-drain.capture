@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   rx72m
+   arch    rxv3
+   cpu     rxv3
+   mpu     enforce
+   sched   tickless
+
+[reclaimwit] console reclaim + terminate drain witness
+[reclaimwit] HOW TO READ THIS CAPTURE:
+[reclaimwit]  1. this block is on the wire, so the kernel owns the console
+[reclaimwit]  2. the app now publishes the console to a driver it spawns
+[reclaimwit]  3. that driver never writes to a console, so the wire must go
+[reclaimwit]     silent: a MUTE line below must occur ZERO times
+[reclaimwit]  4. the app then SLAYS the driver and prints a LIVE line with
+[reclaimwit]     the same kos_print call the MUTE line used
+[reclaimwit]  5. LIVE present + MUTE absent == arch_console_reclaim fired.
+[reclaimwit]     MUTE present == the publish never took, verdict void.
+[reclaimwit]     both absent == the reclaim did not fire, console still dark.
+[reclaimwit] LIVE kernel console after the driver died
+[reclaimwit]   handle_close rc=0
+[reclaimwit]   driver serve bytes rc=58
+[reclaimwit]   slay rc=0
+[reclaimwit]   post-death send (want -KOS_ECONNREFUSED) rc=-111
+[reclaimwit] PASS reclaim fired: driver slain, endpoint refused, wire back
+[reclaimwit] drain arm: kickos_terminate follows. The ring is disarmed in
+[reclaimwit] RECLAIMED, so arch_console_flush_sync alone holds the core until
+[reclaimwit] the shift register empties. The capture must END with the next
+[reclaimwit] line INTACT, sentinel included; a short tail is a drain that
+[reclaimwit] did not complete before arch_shutdown stopped the core.
+[reclaimwit] DRAINTAIL 0123456789abcdef0123456789abcdef <<<DRAIN-END>>>

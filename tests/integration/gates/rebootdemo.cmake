@@ -7,6 +7,7 @@
 if(NOT TARGET rebootdemo)
   return()
 endif()
+kickos_emulator_judged(rebootdemo)
 
 set(_reboot_script "${PROJECT_SOURCE_DIR}/tests/integration/check_reboot.sh")
 

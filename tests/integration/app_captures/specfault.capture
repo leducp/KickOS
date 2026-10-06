@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   teensy41
+   arch    armv7m
+   cpu     imxrt1062
+   mpu     enforce
+   sched   tickless
+
+[specfault] reading 0x60800000: expect a clean MPU FAULT
+
+=== THREAD FAULT === thread 'main' killed, system continues
+  PC=0x60001a2c CFSR=0x82
+  ADDR=0x60800000

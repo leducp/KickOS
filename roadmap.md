@@ -1824,7 +1824,8 @@ instance's threads held, and the init keeps its endpoint and ring block for the 
 | M10.5.12 | the selftest as a task under its own composition on every board, one more per console driver a board has, its priorities under each, its root arms reading the task, AMP nodes naming their crossings |
 | M10.5.13 | the deletions, in order: the service lists with the service ABI, the drivers' line numbers and the bring-up without an instance, the bench's lists and the sweep tool; the default init with the pin maps and the app authority macro; `kickos_root_lower`; the cap-table summing; the heap knob; the root-only wait; the old leaves last; every page naming them updated |
 | M10.5.14 | the fleet sweep over every preset, the silicon witnesses through `tools/bench` with a judge per capture, and M10.5's ten-angle review |
-| M10.6 | the exit record, and the reference documents reconciled against what shipped |
+| M10.6 | the selftest ordered by events: every arm that orders threads by a sleep rewritten to order them by priority, a semaphore or a mark, every arm releasing what it created on every path, and a leak named at the arm that made it |
+| M10.7 | the exit record, and the reference documents reconciled against what shipped |
 
 **THE TOOLCHAIN IS KICKOS'S OWN, BUILT FROM PINNED SOURCES ON ANY HOST** (maintainer,
 2026-09-30). C and full C++ on every target, x86_64 included, from one toolchain version the tree

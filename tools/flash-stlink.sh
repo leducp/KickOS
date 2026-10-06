@@ -3,7 +3,7 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # flash-<tool> backend: flash an STM32 via st-flash (ST-Link). Flash alias 0x08000000.
-# Usage: [STLINK_UNDER_RESET=1] tools/flash-stlink.sh <board> [app]
+# Usage: [STLINK_UNDER_RESET=1] [FLASH_STLINK_RESET=1] tools/flash-stlink.sh <board> [app]
 set -euo pipefail
 FL_ROOT=$(cd "$(dirname "$0")/.." && pwd); . "$FL_ROOT/tools/flash-common.sh"
 flash_resolve "$@"
@@ -37,12 +37,20 @@ case "$FL_BOARD" in
 esac
 [ "${STLINK_UNDER_RESET:-}" = "1" ] && FL_UR=(--connect-under-reset)
 [ "${STLINK_UNDER_RESET:-}" = "0" ] && FL_UR=()
+# FLASH_STLINK_RESET=1 starts the image from reset and writes nothing. Neither the write nor
+# st-flash's `reset` leaves halting debug off, so a fault after either halts silently on a vector
+# catch; a read under reset's detach clears C_DEBUGEN.
+if [ "${FLASH_STLINK_RESET:-0}" = "1" ]; then
+    [ ${#FL_UR[@]} -gt 0 ] \
+        || die "FLASH_STLINK_RESET needs --connect-under-reset (STLINK_UNDER_RESET=1)"
+    FL_PROBE=$(mktemp)
+    trap 'rm -f "$FL_PROBE"' EXIT
+    run st-flash "${FL_SN[@]}" "${FL_UR[@]}" read "$FL_PROBE" 0x08000000 4
+    exit 0
+fi
 # NEVER add --reset to a --connect-under-reset write: it leaves the core under halting debug
 # with DEMCR.VC_HARDERR armed, so the first HardFault halts the CPU at the handler's first
 # instruction and the fault reporter is silent while the board looks locked up.
-#
-# The bench capture path issues no reset of its own, so this branch's write IS the boot the
-# capture reads. Adding a reset here would cut it off mid-line and start a second one.
 if [ ${#FL_UR[@]} -gt 0 ]; then
     run st-flash "${FL_SN[@]}" "${FL_UR[@]}" write "$FL_BIN" 0x08000000
 else

@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   rx72m
+   arch    rxv3
+   cpu     rxv3
+   mpu     enforce
+   sched   tickless
+
+[rootfault] child: wrote my own granted region
+[rootfault] main: writing the child's granted region at 0x20000 (expect fault)
+
+=== THREAD FAULT === thread 'main' killed, system continues
+  PC=0xffc00682 MPESTS=0x6
+  ADDR=0x20000

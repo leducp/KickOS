@@ -11,7 +11,12 @@ endif()
 # 139 is KOS_EXIT_FAULT (user/include/kickos/sys/abi.h) and 132 kfault_terminate's, both restated
 # here on purpose: a gate computing the number from the same header the runtime reports would
 # assert nothing about it.
-if(KICKOS_FAULT_ISOLATION)
+# The RX image traps with BRK, which shares the catch-all vector with the NMI and so is never a
+# thread fault, isolating or not.
+if(KICKOS_ARCH STREQUAL "rxv3")
+  set(_fault_marker "RX EXCEPTION (trap)")
+  set(_fault_status 132)
+elseif(KICKOS_FAULT_ISOLATION)
   set(_fault_marker "THREAD FAULT")
   set(_fault_status 139)
 else()
@@ -27,6 +32,11 @@ else()
   endif()
 endif()
 
+if(KICKOS_FAULT_ISOLATION OR KICKOS_ARCH MATCHES "^(sim|rv32imac|armv8a|armv7m|armv6m|rxv3)$")
+  kickos_app_judge(fault tests/integration/check_fault_dump.sh ARGS "${_fault_marker}")
+else()
+  kickos_emulator_judged(fault)
+endif()
 if(KICKOS_ARCH STREQUAL "sim")
   add_test(NAME fault_dump
     COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_fault_dump.sh" "$<TARGET_FILE:fault>"

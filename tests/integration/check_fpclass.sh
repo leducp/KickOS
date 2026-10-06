@@ -3,11 +3,10 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # Require fpclass's own verdict on double classification and printf, and every arm's line by
-# name. Under QEMU it boots the image; on silicon, where rxv3 has no emulator, it reads the
-# console log a bench capture fetched:
+# name. Under QEMU it boots the image; with KOS_CAPTURE it reads a silicon capture:
 #
 #   check_fpclass.sh <fpclass.elf>
-#   check_fpclass.sh --log <capture.log>
+#   KOS_CAPTURE=<log> check_fpclass.sh <board-build> <kickos-source> <cmake>
 #
 # The arm list is the app's (user/apps/common/fpclass/main.cc). A PASS is printed by whatever
 # arms ran, so an arm deleted there leaves the verdict green; naming each one here is what
@@ -15,14 +14,12 @@
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
 
-if [ "${1:-}" = "--log" ]; then
-    log="${2:?usage: check_fpclass.sh <fpclass.elf> | --log <capture.log>}"
-    [ -r "$log" ] || fail "no capture at $log"
-    OUT="$(tr -d '\r' < "$log")"
+if judging_capture; then
+    judge_capture fpclass
     printf '%s\n' "$OUT" | grep '^\[fpclass\]'
-    has_e '\[fpclass\] (PASS|FAIL)' || fail "the capture carries no fpclass verdict"
+    has_e '\[fpclass\] (PASS|FAIL)' || jfail verdict "the capture carries no fpclass verdict"
 else
-    elf="${1:?usage: check_fpclass.sh <fpclass.elf> | --log <capture.log>}"
+    elf="${1:?usage: check_fpclass.sh <fpclass.elf>}"
     poll_image "$elf" "\[fpclass\] (PASS|FAIL)"
     if [ "$POLL_OK" -ne 1 ]; then
         fail "fpclass reached no verdict: neither PASS nor FAIL was printed"
@@ -41,15 +38,15 @@ for _arm in \
 do
     _line=$(printf '%s\n' "$OUT" | grep -F "[fpclass] $_arm " | tail -1)
     case "$_line" in
-        "") fail "fpclass printed no '$_arm' line, so that arm did not run and PASS covers less
+        "") cfail arm "fpclass printed no '$_arm' line, so that arm did not run and PASS covers less
   than it claims" ;;
         *" ok") ;;
-        *) fail "fpclass arm '$_arm' is wrong: $_line" ;;
+        *) cfail arm "fpclass arm '$_arm' is wrong: $_line" ;;
     esac
 done
 
 if has "\[fpclass\] FAIL"; then
-    fail "fpclass reported FAIL"
+    cfail error "fpclass reported FAIL"
 fi
 
 echo "PASS: every double fpclass tried classified, compared and printed right"

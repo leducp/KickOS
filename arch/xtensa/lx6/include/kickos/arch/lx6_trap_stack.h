@@ -53,11 +53,7 @@
 #define KICKOS_LX6_PANIC_DEPTH 768
 
 /* idle_entry and arch_idle_wait, whose frames sit above the level-1 interrupt idle waits in:
- * 64 on every registered preset. Enforced at 128 at one core. */
-#if KICKOS_KERNEL_CORES > 1
-#define KICKOS_LX6_TRAP_DEPTH_IDLE 64
-#else
+ * 64 on every registered preset. Enforced at 128. */
 #define KICKOS_LX6_TRAP_DEPTH_IDLE 128
-#endif
 
 #endif

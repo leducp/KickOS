@@ -6,12 +6,19 @@
 #
 #   <name> <TAB> <,label,label,> <TAB> <0|1 DISABLED> <TAB> <program>
 #
+# and, with -DIMAGES=<file>, for tests/integration/check_image_listing.sh, one line for each
+# absolute path in the command of a test that is neither disabled nor labelled host:
+#
+#   <file name less -DSUFFIX> | <name>
+#
+# or `@none|<name>` for such a test with no command.
+#
 # With -DHOST_BOOTS=<file>, for tests/static/check_host_gate_boots.sh, the name of each test
 # labelled host that is not disabled and whose command or ENVIRONMENT sets QEMU_MACHINE or names
 # a qemu-system program, one per line.
 #
-# Run as: cmake -DJSON=<file> -DOUT=<file> [-DHOST_BOOTS=<file>]
-#             -P tests/static/ctest_tests.cmake
+# Run as: cmake -DJSON=<file> -DOUT=<file> [-DIMAGES=<file> [-DSUFFIX=<s>]]
+#             [-DHOST_BOOTS=<file>] -P tests/static/ctest_tests.cmake
 #
 # The command arguments here carry `;`, `"` and regex backslashes, and a property VALUE in
 # this corpus spells "name" as a key, so a line-shaped parse of the pretty-printed JSON
@@ -44,6 +51,7 @@ if(_count EQUAL 0)
 endif()
 
 set(_table "")
+set(_images "")
 set(_host_boots "")
 set(_boot_re "(^|/)qemu-system-|^QEMU_MACHINE=")
 math(EXPR _last "${_count} - 1")
@@ -128,9 +136,38 @@ foreach(_i RANGE 0 ${_last})
   if(_boots AND _disabled EQUAL 0 AND _labels MATCHES ",host,")
     string(APPEND _host_boots "${_name}\n")
   endif()
+
+  if(DEFINED IMAGES AND _disabled EQUAL 0 AND NOT _labels MATCHES ",host,")
+    if(NOT _nargs)
+      string(APPEND _images "@none|${_name}\n")
+    else()
+      math(EXPR _alast "${_nargs} - 1")
+      foreach(_a RANGE 0 ${_alast})
+        string(JSON _arg GET "${_test}" command ${_a})
+        if(_arg MATCHES "^/")
+          string(REGEX REPLACE "^.*/" "" _file "${_arg}")
+          if(NOT "${SUFFIX}" STREQUAL "")
+            string(LENGTH "${_file}" _flen)
+            string(LENGTH "${SUFFIX}" _slen)
+            if(_flen GREATER _slen)
+              math(EXPR _stem "${_flen} - ${_slen}")
+              string(SUBSTRING "${_file}" ${_stem} -1 _tail)
+              if(_tail STREQUAL "${SUFFIX}")
+                string(SUBSTRING "${_file}" 0 ${_stem} _file)
+              endif()
+            endif()
+          endif()
+          string(APPEND _images "${_file}|${_name}\n")
+        endif()
+      endforeach()
+    endif()
+  endif()
 endforeach()
 
 file(WRITE "${OUT}" "${_table}")
+if(DEFINED IMAGES)
+  file(WRITE "${IMAGES}" "${_images}")
+endif()
 if(DEFINED HOST_BOOTS)
   file(WRITE "${HOST_BOOTS}" "${_host_boots}")
 endif()

@@ -4604,21 +4604,15 @@ namespace
         wait_n(1);
         tap::fail("the timed call never returned");
     }
-    // `entered` is the clock immediately before the timed syscall: a reading earlier than the
-    // receiver's own pre-syscall reading means the caller was already parked (slow path), a
-    // later one means the receiver parked first (fast path). Both stagings satisfy every rc
-    // and duration assertion, so nothing else here can tell them apart.
     struct EpTimedSend
     {
         int32_t rc;
         uint32_t waited_us;
-        uint64_t entered;
     };
     void ep_timed_worker(void*) // caps: done@1, E(SIGNAL)@2
     {
         EpTimedSend r;
         uint64_t const t0 = kos_clock_now();
-        r.entered = t0;
         r.rc = static_cast<int32_t>(
             kos_send_timed(2, EP_MSG, strlen(EP_MSG), EP_SEND_TIMEOUT_US));
         r.waited_us = static_cast<uint32_t>((kos_clock_now() - t0) / 1000ull);
@@ -4662,9 +4656,7 @@ namespace
     constexpr uint64_t EP_CALL_TIMEOUT_WAIT_NS = 80000000ull;
     constexpr uint64_t EP_CALL_SETTLE_NS = 3000000ull; // long enough for the caller to park
     // The reply-wait arm needs the OPPOSITE ordering: the server must pop the caller BEFORE
-    // its deadline fires, so the settle sleep has to finish inside the deadline. At a 1x
-    // margin the caller times out first, the server's recv returns the report instead of the
-    // request, and the arm leaks its reply cap into the census cap_child_width reads.
+    // its deadline fires. A host that stalls main past it makes the arm vacuous.
     constexpr uint32_t EP_CALL_REPLY_TIMEOUT_US = 60000;
     // A deadline no arm here can reach: it is on a recv that pops an ALREADY-parked peer,
     // so it never arms, and it doubles as the witness that the kernel leaves the input word
@@ -4682,7 +4674,6 @@ namespace
         char buf[8] = {0};
         EpTimedSend r;
         uint64_t const t0 = kos_clock_now();
-        r.entered = t0;
         r.rc = kos_call_timed(2, buf, 4, sizeof(buf), EP_CALL_TIMEOUT_US);
         r.waited_us = static_cast<uint32_t>((kos_clock_now() - t0) / 1000ull);
         g_ep_timed_returned = 1;
@@ -4724,18 +4715,21 @@ namespace
     }
 
     // --- Timed call: the deadline expires in CALL_REPLY_WAIT, reached by the slow path ---
-    // The caller parks on send_waiters first (main sleeps instead of recv'ing), and main's
-    // info-bearing recv then MIGRATES it onto main's reply_waiters. That migration is a
-    // park-to-park move and not an unpark, so the deadline armed once at the call must
-    // survive it; were the cancel back in wq_pop_highest this caller would park forever and
-    // the arm would HANG. Staged on the fast path every rc, duration and cap assertion still
-    // passes; only `r.entered` separates them.
-    void ep_call_reply_worker(void*) // caps: done@1, E(SIGNAL)@2
+    // The caller parks on send_waiters first, and main's info-bearing recv then MIGRATES it
+    // onto main's reply_waiters. That migration is a park-to-park move and not an unpark, so
+    // the deadline armed once at the call must survive it; were the cancel back in
+    // wq_pop_highest this caller would park forever and the arm would HANG. Staged on the
+    // fast path every rc, duration and cap assertion still passes; only the caller's mark,
+    // read by main before its recv, separates them.
+    Atomic<int, Order::RELAXED> g_cltr_calling{0};
+    void ep_call_reply_worker(void*) // caps: done@1, E(SIGNAL)@2, go(SIGNAL)@3
     {
         char buf[8] = {0};
         EpTimedSend r;
+        // Posted before the mark: a main that could preempt this thread reads the mark unset.
+        kos_sem_post(3);
+        g_cltr_calling = 1;
         uint64_t const t0 = kos_clock_now();
-        r.entered = t0;
         r.rc = kos_call_timed(2, buf, 4, sizeof(buf), EP_CALL_REPLY_TIMEOUT_US);
         r.waited_us = static_cast<uint32_t>((kos_clock_now() - t0) / 1000ull);
         g_ep_timed_returned = 1;
@@ -4745,31 +4739,53 @@ namespace
     void t_call_timeout_reply()
     {
         g_ep_timed_returned = 0;
+        g_cltr_calling = 0;
+        kos_cap_t go = KOS_CAP_NONE;
+        kos_cap_t reply_cap = KOS_CAP_NONE;
+        kos::thread::Handle w;
+        ArmHold hold;
+        hold.thread(&w);
+        hold.cap(&g_ep);
+        hold.cap(&go);
+        hold.cap(&reply_cap);
         TAP_CHECK(kos_endpoint_create(&g_ep) == 0);
-        kos_cap_grant caps[] = {{g_done, CH_FULL}, {g_ep, EP_SIGNAL_ONLY}};
-        auto w = kos::thread::create_caps(ep_call_reply_worker, nullptr, "cltr", 12, caps, 2,
-                                          KOS_POLICY_FIFO, 0, /*privileged=*/false);
+        TAP_CHECK(kos_sem_create(0, &go) == 0);
+        kos_cap_grant caps[] = {{g_done, CH_FULL}, {g_ep, EP_SIGNAL_ONLY}, {go, KOS_CAP_SIGNAL}};
+        // Above main on main's core: main resumes only once this caller has parked.
+        w = kos::thread::create_caps(ep_call_reply_worker, nullptr, "cltr", TAP_PRIO_PARKS, caps,
+                                     3, KOS_POLICY_FIFO, 0, /*privileged=*/false, nullptr, 0, 0,
+                                     nullptr, KOS_TASK_NONE, nullptr, 0, TAP_PIN_CORE);
         TAP_CHECK(w.valid());
-        // main is the lowest-priority thread, so once this sleep blocks main the caller
-        // runs to its own park before main can resume.
-        kos_sleep_ns(EP_CALL_SETTLE_NS); // the caller is now parked as CALL_SEND_WAIT
+        TAP_CHECK(kos_sem_wait(go) == 0);
+        int const caller_first = g_cltr_calling.load();
         char req[8];
         // The caller is already queued. Check that writing receive metadata
         // preserves the input timeout.
         struct kos_reply_recv_opts opts;
         kos_reply_recv_opts_init(&opts, g_ep, 0, EP_RECV_GENEROUS_US);
-        uint64_t const before_recv = kos_clock_now();
         int32_t const got = kos_reply_recv(KOS_CAP_NONE, req,
                                            kos_call_lens_pack(0, sizeof(req)),
                                            &opts); // slow-path pop + migration
+        reply_cap = opts.info.reply_cap;
+        TAP_CHECK(caller_first == 1);
+        if (got == static_cast<int32_t>(sizeof(EpTimedSend)) and reply_cap == KOS_CAP_NONE)
+        {
+            // The report, not the request: the deadline fired on send_waiters first.
+            EpTimedSend early;
+            memcpy(&early, req, sizeof(early));
+            TAP_CHECK(early.rc == -KOS_ETIMEDOUT);
+            TAP_CHECK(early.waited_us >= EP_CALL_REPLY_TIMEOUT_US);
+            TAP_SKIP_VACUOUS("the caller's %u us deadline fired before main's recv popped it",
+                             static_cast<unsigned>(EP_CALL_REPLY_TIMEOUT_US));
+            wait_n(1);
+            return;
+        }
         TAP_CHECK(got == 4);
-        TAP_CHECK(opts.info.reply_cap != KOS_CAP_NONE); // we hold the reply cap, and never use it
+        TAP_CHECK(reply_cap != KOS_CAP_NONE); // we hold the reply cap, and never use it
         TAP_CHECK(opts.timeout_us == EP_RECV_GENEROUS_US);
-        kos_cap_t const reply_cap = opts.info.reply_cap;
         if (not ep_timed_awaited())
         {
-            (void)kos_handle_close(reply_cap);
-            ep_timed_abandon();
+            tap::fail("the timed call never returned");
             return;
         }
         EpTimedSend r;
@@ -4779,33 +4795,28 @@ namespace
         int32_t const n =
             kos_reply_recv(KOS_CAP_NONE, &r, kos_call_lens_pack(0, sizeof(r)), &ro);
         TAP_CHECK(n == static_cast<int32_t>(sizeof(r)));
-        // The staging witness: the caller's pre-call reading precedes main's pre-recv
-        // reading, so the caller was already parked and the recv POPPED it. A fast-path
-        // staging inverts this and fails here rather than passing on the untested path.
-        TAP_CHECK(r.entered < before_recv);
         TAP_CHECK(r.rc == -KOS_ETIMEDOUT); // the deadline crossed the handoff and fired
         TAP_CHECK(r.waited_us >= EP_CALL_REPLY_TIMEOUT_US);
         // The cap outlives the caller by design, so closing it is still the server's job and
         // must succeed with nobody left to wake.
-        TAP_CHECK(kos_handle_close(reply_cap) == 0);
+        TAP_CHECK(hold.close(&reply_cap) == 0);
         wait_n(1);
-        TAP_CHECK(kos_handle_close(g_ep) == 0);
+        TAP_CHECK(hold.close(&g_ep) == 0);
     }
 
     // --- Reply to a caller that already timed out: -KOS_ESRCH, cap consumed --------------
     // Staged on the FAST path (main is already parked in recv when the call lands), which
     // is the other half of the CALL_REPLY_WAIT unwind: there the deadline is armed straight
-    // onto the reply park.
+    // onto the reply park. The caller reads main's mark before its call, so a slow-path
+    // staging fails on the mark instead of duplicating the reply-wait arm.
+    Atomic<int, Order::RELAXED> g_rpst_main_receiving{0};
+    Atomic<int, Order::RELAXED> g_rpst_caller_saw{-1};
     void ep_reply_stale_worker(void*) // caps: done@1, E(SIGNAL)@2
     {
         char buf[8] = {0};
         EpTimedSend r;
-        // The settle sleep is on the CALLER here, the mirror image of the reply-wait arm:
-        // main must reach its recv and park before this call lands, or the call takes the
-        // slow path and the reply cap is minted by the recv-side scan instead.
-        kos_sleep_ns(EP_CALL_SETTLE_NS);
+        g_rpst_caller_saw = g_rpst_main_receiving.load();
         uint64_t const t0 = kos_clock_now();
-        r.entered = t0;
         r.rc = kos_call_timed(2, buf, 4, sizeof(buf), EP_CALL_TIMEOUT_US);
         r.waited_us = static_cast<uint32_t>((kos_clock_now() - t0) / 1000ull);
         g_ep_timed_returned = 1;
@@ -4815,46 +4826,53 @@ namespace
     void t_reply_stale_caller()
     {
         g_ep_timed_returned = 0;
+        g_rpst_main_receiving = 0;
+        g_rpst_caller_saw = -1;
+        kos_cap_t reply_cap = KOS_CAP_NONE;
+        kos::thread::Handle w;
+        ArmHold hold;
+        hold.thread(&w);
+        hold.cap(&g_ep);
+        hold.cap(&reply_cap);
         TAP_CHECK(kos_endpoint_create(&g_ep) == 0);
         kos_cap_grant caps[] = {{g_done, CH_FULL}, {g_ep, EP_SIGNAL_ONLY}};
-        auto w = kos::thread::create_caps(ep_reply_stale_worker, nullptr, "rpst", 12, caps, 2,
-                                          KOS_POLICY_FIFO, 0, /*privileged=*/false);
+        // Below main on main's core: the caller first runs once main has parked in its recv.
+        w = kos::thread::create_caps(ep_reply_stale_worker, nullptr, "rpst", TAP_PRIO_AFTER, caps,
+                                     2, KOS_POLICY_FIFO, 0, /*privileged=*/false, nullptr, 0, 0,
+                                     nullptr, KOS_TASK_NONE, nullptr, 0, TAP_PIN_CORE);
         TAP_CHECK(w.valid());
         char req[8];
         struct kos_reply_recv_opts opts;
         kos_reply_recv_opts_init(&opts, g_ep, 0, KOS_TIMEOUT_NONE);
-        uint64_t const before_recv = kos_clock_now();
+        g_rpst_main_receiving = 1;
         int32_t const got =
             kos_reply_recv(KOS_CAP_NONE, req, kos_call_lens_pack(0, sizeof(req)), &opts);
-        TAP_CHECK(got == 4 and opts.info.reply_cap != KOS_CAP_NONE);
+        reply_cap = opts.info.reply_cap;
+        TAP_CHECK(g_rpst_caller_saw.load() == 1);
+        TAP_CHECK(got == 4 and reply_cap != KOS_CAP_NONE);
         if (not ep_timed_awaited())
         {
-            (void)kos_handle_close(opts.info.reply_cap);
-            ep_timed_abandon();
+            tap::fail("the timed call never returned");
             return;
         }
         char rep[4] = {0};
         // The cap still resolves, but the caller it names left CALL_REPLY_WAIT, so the
         // reply has nowhere to land. It is consumed anyway.
-        TAP_CHECK(kos_reply(opts.info.reply_cap, rep, sizeof(rep)) == -KOS_ESRCH);
+        TAP_CHECK(kos_reply(reply_cap, rep, sizeof(rep)) == -KOS_ESRCH);
         // Consumed exactly once: the slot is empty and its cap-gen rolled, so the handle no
         // longer resolves at all and the second attempt fails EARLIER, on the cap.
-        TAP_CHECK(kos_reply(opts.info.reply_cap, rep, sizeof(rep)) == -KOS_EBADF);
-        TAP_CHECK(kos_handle_close(opts.info.reply_cap) == -KOS_EBADF);
+        TAP_CHECK(kos_reply(reply_cap, rep, sizeof(rep)) == -KOS_EBADF);
+        TAP_CHECK(hold.close(&reply_cap) == -KOS_EBADF);
         EpTimedSend r;
         memset(&r, 0, sizeof(r));
         struct kos_reply_recv_opts opts2;
         kos_reply_recv_opts_init(&opts2, g_ep, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
         int32_t const n = kos_reply_recv(KOS_CAP_NONE, &r, kos_call_lens_pack(0, sizeof(r)), &opts2);
         TAP_CHECK(n == static_cast<int32_t>(sizeof(r)));
-        // The mirror of the reply-wait arm's witness: the caller entered its call AFTER
-        // main's reading, so main was parked in the recv when the call landed. That is the
-        // FAST path, and a slow-path staging fails here instead of duplicating the other arm.
-        TAP_CHECK(r.entered > before_recv);
         TAP_CHECK(r.rc == -KOS_ETIMEDOUT); // expired on the reply park, not on send_waiters
         TAP_CHECK(r.waited_us >= EP_CALL_TIMEOUT_US);
         wait_n(1);
-        TAP_CHECK(kos_handle_close(g_ep) == 0);
+        TAP_CHECK(hold.close(&g_ep) == 0);
     }
 
     // Time out a call, then wrap its sequence while the first server keeps its
@@ -7473,6 +7491,19 @@ namespace
         }
     };
 
+    // main's free capability slots, or -1 where an object pool ran out before the table did.
+    // The fill takes the free list whole and gives it back in the order it took it, so an
+    // arm's own creates land where they would without the census.
+    long cap_census()
+    {
+        TableFill fill;
+        if (fill.stop != -KOS_EMFILE)
+        {
+            return -1;
+        }
+        return fill.n;
+    }
+
     // --- Index 0 is the kernel stdout slot; an own create never lands there -------------
     void t_cap_index0()
     {
@@ -8322,6 +8353,7 @@ namespace
 
         // Narrowed at once, as the init keeps a served endpoint: vacated, HANDOUT alone.
         TAP_CHECK(kos_endpoint_create(&g_con_ep) == 0);
+        tap::census_expect(-1); // g_con_ep, which console_publish_narrow closes
         TAP_CHECK(kos_cap_narrow(g_con_ep, CON_KEPT) == 0);
         int const pub = kos_console_publish(g_con_ep, drv_task);
         // main holds WAIT again and the endpoint receives, so the send parks to its deadline.
@@ -8396,6 +8428,7 @@ namespace
         int32_t const after = kos_send(KOS_CAP_STDOUT, &probe, 0);
         int const closed = kos_handle_close(g_con_ep);
         g_con_ep = KOS_CAP_NONE;
+        tap::census_expect(1);
         int32_t const gone = kos_send(KOS_CAP_STDOUT, &probe, 0);
         // Back to the unpublished seat, which every later line falls back from.
         TAP_CHECK(kos_handle_close(KOS_CAP_STDOUT) == 0);
@@ -11757,13 +11790,25 @@ namespace
     }
 }
 
+namespace
+{
+    // A failing arm can return with the shared g_ep still open.
+    void after_failure()
+    {
+        (void)kos_handle_close(g_ep);
+        g_ep = KOS_CAP_NONE;
+        done_reset();
+    }
+}
+
 extern "C" void selftest_main(kos_self_t const* self)
 {
     g_self = self;
     g_main = kos_thread_self();
     kos_sem_create(1, &g_lock);
     kos_sem_create(0, &g_done);
-    tap::set_after_failure(done_reset);
+    tap::set_after_failure(after_failure);
+    tap::set_census(cap_census, "main's free capability slots");
 #if KICKOS_HAVE_ASPACE && defined(KICKOS_ENABLE_SELFTEST)
     g_live_rest = kos_aspace_probe(KOS_ASPACE_OP_THREADS_LIVE, 0);
 #endif
@@ -11836,8 +11881,8 @@ extern "C" void selftest_main(kos_self_t const* self)
     TAP_ADD("reply_recv_lens_clamp", t_reply_recv_lens_clamp);
     TAP_ADD("call_timeout_pending", t_call_timeout_pending);
     TAP_ADD("call_timeout_revert", t_call_timeout_revert);
-    TAP_ADD("call_timeout_reply", t_call_timeout_reply);
-    TAP_ADD("reply_stale_caller", t_reply_stale_caller);
+    TAP_ADD_PINNED("call_timeout_reply", t_call_timeout_reply);
+    TAP_ADD_PINNED("reply_stale_caller", t_reply_stale_caller);
     TAP_ADD("reply_abandoned_cap", t_reply_abandoned_cap);
     TAP_ADD("call_infoless_revert", t_call_infoless_revert);
     TAP_ADD("call_close_reply", t_call_close_reply);

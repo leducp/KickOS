@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   xmc4800-relax
+   arch    armv7m
+   cpu     xmc4800
+   mpu     enforce
+   sched   tickless
+
+[gpioblink] driving port 5 pin 8 via a direct MMIO grant
+[gpioblink] cycle 0 led=1 readback=1 / led=0 readback=0
+[gpioblink] cycle 1 led=1 readback=1 / led=0 readback=0
+[gpioblink] cycle 2 led=1 readback=1 / led=0 readback=0
+[gpioblink] cycle 3 led=1 readback=1 / led=0 readback=0
+[gpioblink] cycle 4 led=1 readback=1 / led=0 readback=0
+[gpioblink] cycle 5 led=1 readback=1 / led=0 readback=0
+[gpioblink] cycle 6 led=1 readback=1 / led=0 readback=0
+[gpioblink] cycle 7 led=1 readback=1 / led=0 readback=0
+[gpioblink] cycle 8 led=1 readback=1 / led=0 readback=0
+[gpioblink] cycle 9 led=1 readback=1 / led=0 readback=0
+[gpioblink] PASS (10 cycles, readback ok)

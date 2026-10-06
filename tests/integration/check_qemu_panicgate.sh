@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# QEMU kos_panic wire gate: boot a `panicgate` image and assert the expected panic line
-# reached the wire. This is the positive assertion, where check_app_arms.sh's absence one
-# passes trivially when the panic path is never taken.
+# kos_panic wire gate: boot a `panicgate` image under QEMU, or read a silicon capture of one
+# with KOS_CAPTURE, and assert the expected panic line reached the wire. This is the positive
+# assertion, where check_app_arms.sh's absence one passes trivially when the panic path is never
+# taken.
 #
 # $2 is the literal line expected after the kernel's trusted banner; $3, when non-empty,
 # is a literal that must NOT appear (the tail a truncation drops). A FAULT banner is a
@@ -30,25 +31,41 @@
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
 
-elf="${1:?usage: check_qemu_panicgate.sh <panicgate.elf> <expected-line> [absent]}"
-expect="${2:?usage: check_qemu_panicgate.sh <panicgate.elf> <expected-line> [absent]}"
-absent="${3:-}"
+_usage="usage: check_qemu_panicgate.sh <panicgate.elf> <expected-line> [absent]
+       KOS_CAPTURE=<log> check_qemu_panicgate.sh <board-build> <kickos-source> <cmake> <expected-line> [absent]"
+if judging_capture; then
+    shift 3
+    judge_capture panicgate
+else
+    elf="${1:?$_usage}"
+    shift
+fi
+expect="${1:?$_usage}"
+absent="${2:-}"
 
-need_qemu_machine
-run_image "$elf"
+if ! judging_capture; then
+    need_qemu_machine
+    run_image "$elf"
+fi
 
 if has "\[panicgate\] ERROR"; then
-    fail "kos_panic returned to the caller"
+    cfail returned "kos_panic returned to the caller"
 fi
 # The arm must have been reached, so a panic cannot be credited to an earlier trap
 # during ctors or bring-up.
-require_on_wire "[panicgate] case" "the app never reached its kos_panic call"
+require_on_wire "[panicgate] case" "the app never reached its kos_panic call" case
 if has_e "=== (HARD|MPU|BUS) FAULT|=== RISC-V TRAP|MPU FAULT: thread"; then
-    fail "the kernel faulted instead of refusing the message pointer"
+    cfail fault "the kernel faulted instead of refusing the message pointer"
 fi
-require_on_wire "$expect" "expected panic line missing: $expect"
+require_on_wire "$expect" "expected panic line missing: $expect" line
+# Ordered only where both lines arrived whole: a split line has no line number of its own.
+_case="$(printf '%s\n' "$OUT" | grep -nF -- '[panicgate] case' | head -n1 | cut -d: -f1)"
+_said="$(printf '%s\n' "$OUT" | grep -nF -- "$expect" | head -n1 | cut -d: -f1)"
+if [ -n "$_case" ] && [ -n "$_said" ] && [ "$_said" -le "$_case" ]; then
+    cfail order "the panic line at $_said precedes the app's case line at $_case"
+fi
 if [ -n "$absent" ] && printf '%s\n' "$OUT" | grep -qF -- "$absent"; then
-    fail "text that must not reach the wire is present: $absent"
+    cfail absent "text that must not reach the wire is present: $absent"
 fi
 
 echo "PASS: $expect"

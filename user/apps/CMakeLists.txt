@@ -61,18 +61,44 @@ function(kickos_app_system app)
   set_target_properties(${app} PROPERTIES KICKOS_APP_SYSTEM ${_system})
 endfunction()
 
-# kickos_app_judge(<image> <judge>)
+# kickos_app_judge(<image> <judge> [ARGS <arg>...])
 #   Names the gate script, relative to the tree, that judges a silicon capture of <image> as
-#   tools/bench/bench.sh's JUDGE. The judge is the third field of the image's row in
+#   tools/bench/bench.sh's JUDGE, and the arguments it takes after `<build> <tree> cmake`. The
+#   judge and its arguments are the third and fourth fields of the image's row in
 #   kickos-images.txt, which `LIST_IMAGES=1 tools/bench/bench.sh <board>` prints.
 function(kickos_app_judge image judge)
+  cmake_parse_arguments(KAJ "" "" "ARGS" ${ARGN})
+  if(KAJ_UNPARSED_ARGUMENTS)
+    message(FATAL_ERROR "kickos_app_judge(${image}): unexpected ${KAJ_UNPARSED_ARGUMENTS}")
+  endif()
   if(NOT TARGET ${image})
     message(FATAL_ERROR "kickos_app_judge(${image}): no such image")
   endif()
   if(NOT EXISTS "${PROJECT_SOURCE_DIR}/${judge}")
     message(FATAL_ERROR "kickos_app_judge(${image}): no gate script at ${judge}")
   endif()
-  set_target_properties(${image} PROPERTIES KICKOS_IMAGE_JUDGE "${judge}")
+  get_target_property(_judge ${image} KICKOS_IMAGE_JUDGE)
+  if(_judge)
+    message(FATAL_ERROR "kickos_app_judge(${image}): already ${_judge}")
+  endif()
+  set_target_properties(${image} PROPERTIES KICKOS_IMAGE_JUDGE "${judge}"
+                                            KICKOS_IMAGE_JUDGE_ARGS "${KAJ_ARGS}")
+endfunction()
+
+# kickos_human_judged(<image> <what a person reads>)
+#   States that <image>'s only verdict is something a person reads and no capture carries, an
+#   LED say. The image listing reads `human` with <what> as its argument, which the bench reports
+#   as owed.
+function(kickos_human_judged image what)
+  if(NOT TARGET ${image})
+    message(FATAL_ERROR "kickos_human_judged(${image}): no such image")
+  endif()
+  get_target_property(_judge ${image} KICKOS_IMAGE_JUDGE)
+  if(_judge)
+    message(FATAL_ERROR "kickos_human_judged(${image}): ${_judge} already judges it")
+  endif()
+  set_target_properties(${image} PROPERTIES KICKOS_IMAGE_JUDGE human
+                                            KICKOS_IMAGE_JUDGE_ARGS "${what}")
 endfunction()
 
 # This tree's posture for its own apps, which an out-of-tree app does not get. gcc 15 defaults

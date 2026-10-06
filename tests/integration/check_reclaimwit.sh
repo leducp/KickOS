@@ -17,7 +17,8 @@
 # spells the word MUTE four times, so `grep MUTE` matches the key on a CORRECT run and
 # reports a broken publish that did not happen.
 #
-# usage: check_reclaimwit.sh <reclaimwit.elf> <park|drain>
+#   check_reclaimwit.sh <reclaimwit.elf> <park|drain>
+#   KOS_CAPTURE=<log> check_reclaimwit.sh <board-build> <kickos-source> <cmake> <park|drain>
 #   park  the app never returns: polled to its last line, then killed. A poll that runs
 #         out is a FAILURE, never a pass.
 #   drain main returns and its task's end ends the system: the app's LAST line must be the
@@ -28,8 +29,13 @@ set -u
 : "${QEMU_TIMEOUT:=20}"
 : "${SIM_TIMEOUT:=20}"
 
-elf="${1:?usage: check_reclaimwit.sh <reclaimwit.elf> <park|drain>}"
-arm="${2:?usage: check_reclaimwit.sh <reclaimwit.elf> <park|drain>}"
+if judging_capture; then
+    shift 3
+    arm="${1:?usage: check_reclaimwit.sh <board-build> <kickos-source> <cmake> <park|drain>}"
+else
+    elf="${1:?usage: check_reclaimwit.sh <reclaimwit.elf> <park|drain>}"
+    arm="${2:?usage: check_reclaimwit.sh <reclaimwit.elf> <park|drain>}"
+fi
 
 KEY_LINE='[reclaimwit] HOW TO READ THIS CAPTURE:'
 KEY_END='[reclaimwit]     both absent == the reclaim did not fire, console still dark.'
@@ -44,73 +50,81 @@ TAIL_LINE='[reclaimwit] DRAINTAIL 0123456789abcdef0123456789abcdef <<<DRAIN-END>
 # prints.
 n_of() { printf '%s\n' "$OUT" | grep -cF -- "$1" || true; }
 
-case "$arm" in
-    park)
-        # The last line of each terminal path, as one ERE. print_rc's failure prefix is in it
-        # because an early failure otherwise burns the whole poll and reports no-progress
-        # instead of its cause.
-        poll_image "$elf" '\[reclaimwit\] (park arm: the system stays up|  FAIL )'
-        if [ "$POLL_OK" -ne 1 ]; then
-            fail "no terminal line reached the wire: the image did not boot, or the console never came back after the driver died"
-        fi
-        ;;
-    drain)
-        run_image "$elf"
-        if [ "$RC" -eq 124 ]; then
-            fail "the drain arm never ended the system (timed out before or in the shutdown?)"
-        fi
-        ;;
-    *)
-        fail "<arm> is 'park' or 'drain', not '$arm'"
-        ;;
-esac
+if judging_capture; then
+    case "$arm" in
+        park|drain)
+            judge_capture reclaimwit
+            ;;
+        *)
+            fail "<arm> is 'park' or 'drain', not '$arm'"
+            ;;
+    esac
+else
+    case "$arm" in
+        park)
+            # The last line of each terminal path, as one ERE. print_rc's failure prefix is in it
+            # because an early failure otherwise burns the whole poll and reports no-progress
+            # instead of its cause.
+            poll_image "$elf" '\[reclaimwit\] (park arm: the system stays up|  FAIL )'
+            if [ "$POLL_OK" -ne 1 ]; then
+                fail "no terminal line reached the wire: the image did not boot, or the console never came back after the driver died"
+            fi
+            ;;
+        drain)
+            run_image "$elf"
+            ;;
+        *)
+            fail "<arm> is 'park' or 'drain', not '$arm'"
+            ;;
+    esac
+fi
 
 assert_no_panic "the image panicked, so any reclaim cannot be credited to the driver's death"
 
 # Premise, first: a capture that lost its head makes every absence assertion below vacuous.
 if [ "$(n_of "$KEY_LINE")" -eq 0 ]; then
-    fail "the app's reading key never reached the wire, so this capture witnesses nothing"
+    cfail key "the app's reading key never reached the wire, so this capture witnesses nothing"
 fi
 # Every key line was printed while the kernel owned the console, so one missing is a line the
 # kernel console lost before the publish, never the publish's doing.
 if [ "$(n_of "$KEY_END")" -eq 0 ]; then
-    fail "the app's reading key lost its tail: a key line never reached the wire before the publish"
+    cfail key "the app's reading key lost its tail: a key line never reached the wire before the publish"
 fi
 
 # The two arms are built from one source file and the wrong binary greps green on almost
 # everything here, so each arm names the other's terminal line as its own refusal.
 if [ "$arm" = park ] && [ "$(n_of "$TAIL_LINE")" -ne 0 ]; then
-    fail "the park gate was handed the drain binary"
+    cfail arm "the park gate was handed the drain binary"
 fi
 if [ "$arm" = drain ] && [ "$(n_of "$PARK_LINE")" -ne 0 ]; then
-    fail "the drain gate was handed the park binary"
+    cfail arm "the drain gate was handed the park binary"
 fi
 
 # THE ANTI-VACUITY HALF. This write runs while the driver owns the console, so USER_OWNED
 # must drop it. On the wire it means the publish never took, and the LIVE line below then
 # reaches the wire with no reclaim involved.
 if [ "$(n_of "$MUTE_LINE")" -ne 0 ]; then
-    fail "the kernel console was STILL live while the driver held it: the publish never took, and every assertion here is void"
+    cfail mute "the kernel console was STILL live while the driver held it: the publish never took, and every assertion here is void"
 fi
 
 # The driver is a pure sink. A byte of its own on the wire means the console was not
 # USER_OWNED, or the driver outlived the slay.
 if [ "$(n_of "$SINK_LINE")" -ne 0 ]; then
-    fail "the console driver WROTE to a console, so a post-death byte no longer separates a fired reclaim from a driver that never died"
+    cfail sink "the console driver WROTE to a console, so a post-death byte no longer separates a fired reclaim from a driver that never died"
 fi
 
 # THE POSITIVE HALF: the same call site as the MUTE line, now carried by the reclaimed
 # polled route.
 LIVE_N="$(n_of "$LIVE_LINE")"
 if [ "$LIVE_N" -eq 0 ]; then
-    fail "the console stayed DARK after the driver died: arch_console_reclaim did not fire"
+    cfail live "the console stayed DARK after the driver died: arch_console_reclaim did not fire"
 fi
 if [ "$LIVE_N" -ne 1 ]; then
-    fail "the post-reclaim line appeared $LIVE_N times (double-routed?)"
+    cfail live "the post-reclaim line appeared $LIVE_N times (double-routed?)"
 fi
 
 if [ "$(n_of "$PASS_LINE")" -eq 0 ]; then
-    fail "the app did not report PASS; read its rc lines in the capture above"
+    cfail verdict "the app did not report PASS; read its rc lines in the capture above"
 fi
 
 if [ "$arm" = drain ]; then
@@ -122,11 +136,9 @@ if [ "$arm" = drain ]; then
     # the kernel after main returns, so the drain tail is not the final byte on the wire.
     LAST="$(printf '%s\n' "$OUT" | grep '^\[reclaimwit\]' | tail -n 1)"
     if [ "$LAST" != "$TAIL_LINE" ]; then
-        fail "the app's last line is not the drain sentinel intact; it is: $LAST"
+        cfail drain-tail "the app's last line is not the drain sentinel intact; it is: $LAST"
     fi
-    if [ "$RC" -ne 0 ]; then
-        fail "the drain arm shut down with status $RC, not 0"
-    fi
+    status_clause "the drain arm shut the system down with status 0" 0
 fi
 
 echo "PASS: the console came back to the kernel on the driver's death ($arm arm)"

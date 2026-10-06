@@ -11,6 +11,7 @@
 #include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 
 extern "C"
@@ -51,8 +52,12 @@ int _lseek(int, int, int)
 {
     return 0;
 }
-int _fstat(int, void*)
+// Newlib reads st_blksize as its buffer size where it has one, so the whole struct is written.
+int _fstat(int, struct stat* st)
 {
+    struct stat const console{};
+    *st = console;
+    st->st_mode = S_IFCHR;
     return 0;
 }
 int _getpid(void)
@@ -83,9 +88,9 @@ int _getentropy(void* buf, size_t len)
     }
     return 0;
 }
-#elif defined(__XTENSA__)
-// libstdc++'s std::random_device and libc's arc4random reach getentropy, and the
-// toolchain's libnosys stub of it carries a link-time warning. No image calls it.
+#elif defined(__XTENSA__) or defined(__RX__)
+// libstdc++'s std::random_device and libc's arc4random reach getentropy, and no entropy
+// source exists here.
 int _getentropy(void*, size_t)
 {
     errno = ENOSYS;
@@ -134,19 +139,19 @@ void _fini(void)
 // into every image by -Wl,-u,_exit, so a strong reference to _kickos_heap_start from
 // here would defeat the heapless-board link error.
 
-#ifdef __x86_64__
-// newlib builds x86_64-elf with MISSING_SYSCALL_NAMES (its configure.host gives the target no
-// syscall directory), so its reentrant layer calls these names without the underscore.
+#if defined(__x86_64__) or defined(__RX__)
+// The x86_64-elf and rx-elf newlibs' reentrant layer calls these names without the underscore;
+// unaliased, stdout is lost silently.
 int write(int fd, char const* buf, int len) __attribute__((alias("_write")));
 int read(int, char*, int) __attribute__((alias("_read")));
 int close(int) __attribute__((alias("_close")));
 int isatty(int) __attribute__((alias("_isatty")));
 int lseek(int, int, int) __attribute__((alias("_lseek")));
-int fstat(int, void*) __attribute__((alias("_fstat")));
+int fstat(int, struct stat*) __attribute__((alias("_fstat")));
 int getpid(void) __attribute__((alias("_getpid")));
 int kill(int, int) __attribute__((alias("_kill")));
-int getentropy(void* buf, size_t len) __attribute__((alias("_getentropy")));
 int gettimeofday(struct timeval* tv, void*) __attribute__((alias("_gettimeofday")));
+int getentropy(void* buf, size_t len) __attribute__((alias("_getentropy")));
 #endif
 
 #ifdef __RX__

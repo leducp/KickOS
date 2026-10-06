@@ -241,20 +241,9 @@ foreach(_img IN LISTS _selftest_images)
 endforeach()
 set_property(GLOBAL PROPERTY KICKOS_SELFTEST_IMAGES "${_selftest_images}")
 
-# The linked image and its map, for the host gates that read them. Only the map names the
-# archive MEMBER each symbol was resolved from, which is what proves a backend's definition beat
-# its fallback. x86_64's link rule writes <image>.map itself (tools/x86_64-link.sh).
-#
-# Recorded on the target: the gates that read the map live on the test side, and a path
-# restated there would be a second truth that drifts from the -Map this link actually passed.
+# The linked image, for the host gates that read it beside its map.
 foreach(_img IN LISTS _selftest_images)
-  set(_img_elf "$<TARGET_FILE:${_img}>")
-  if(NOT KICKOS_ARCH STREQUAL "x86_64")
-    target_link_options(${_img} PRIVATE "-Wl,-Map=${_img_elf}.map")
-    set_property(TARGET ${_img} APPEND PROPERTY ADDITIONAL_CLEAN_FILES "${_img_elf}.map")
-  endif()
-  set_target_properties(${_img} PROPERTIES
-    KICKOS_IMAGE_ELF "${_img_elf}" KICKOS_IMAGE_MAP "${_img_elf}.map")
+  set_target_properties(${_img} PROPERTIES KICKOS_IMAGE_ELF "$<TARGET_FILE:${_img}>")
 endforeach()
 if(KICKOS_ARCH STREQUAL "x86_64")
   # OVMF places an image at its preferred base when it can, so every other image boots with

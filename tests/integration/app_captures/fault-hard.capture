@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   microbit
+   arch    armv6m
+   cpu     nrf51822
+   mpu     off
+   sched   tickless
+
+[fault] executing an illegal instruction (expect a fault dump)
+
+=== HARD FAULT ===
+  PC=0x00018aa0 LR=0x00018a91 xPSR=0x61000000 (PSP)
+  R0=0x0 R1=0x0 R2=0x0 R3=0x0 R12=0x0

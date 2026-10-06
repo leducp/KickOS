@@ -764,6 +764,14 @@ if(KICKOS_BUILD_TESTS)
       set(_kickos_test_name "${ARGV0}")
     endif()
     set_property(TEST "${_kickos_test_name}" APPEND PROPERTY FIXTURES_REQUIRED kickos_build)
+    # <image>|<test> for each image the test's command names, which the image listing reads.
+    string(REGEX MATCHALL "\\$<TARGET_FILE:[^>]+>" _kickos_test_images "${ARGV}")
+    foreach(_kickos_test_image IN LISTS _kickos_test_images)
+      string(REGEX REPLACE "^\\$<TARGET_FILE:(.+)>$" "\\1" _kickos_test_image
+             "${_kickos_test_image}")
+      set_property(DIRECTORY APPEND PROPERTY kickos_image_tests
+                   "${_kickos_test_image}|${_kickos_test_name}")
+    endforeach()
     if(NOT KICKOS_BUILD_INTEGRATION_TESTS)
       # cmake_language(DEFER CALL) expands its arguments when the call RUNS, so a per-test
       # defer would see the LAST name registered in the directory and decline only that one.
@@ -1031,9 +1039,27 @@ if(KICKOS_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(app_judges PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
+  _add_test(NAME bench_fleet_controls
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_bench_fleet.sh" "${CMAKE_COMMAND}"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(bench_fleet_controls PROPERTIES TIMEOUT 120 LABELS "host;tree")
+
+  _add_test(NAME stlink_capture_controls
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_stlink_capture.sh"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(stlink_capture_controls PROPERTIES TIMEOUT 60 LABELS "host;tree")
+
   _add_test(NAME no_eh_runtime_controls
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/check_no_eh_runtime.sh" --self-test)
   set_tests_properties(no_eh_runtime_controls PROPERTIES TIMEOUT 60 LABELS "host;tree")
+
+  _add_test(NAME no_libnosys_controls
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/check_no_libnosys.sh" --self-test)
+  set_tests_properties(no_libnosys_controls PROPERTIES TIMEOUT 60 LABELS "host;tree")
+
+  _add_test(NAME image_listing_controls
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/check_image_listing.sh" --self-test)
+  set_tests_properties(image_listing_controls PROPERTIES TIMEOUT 60 LABELS "host;tree")
 
   # The kernel-core seam against the machine's core identity. Corpus-wide source scan, so it
   # is registered from every board and reads no build output.
@@ -1446,17 +1472,28 @@ if(TARGET kickos_kernel_leaf)
     kickos_compose(${_system} "${_composition}")
   endforeach()
 endif()
-# Every image this configure emits as `<image>|<stdout>|<judge>`: the stdout is `kernel`, the
-# packaged driver its system names, or `-` for an image composing no system of its own; the judge
-# is the gate script KICKOS_IMAGE_JUDGE names, or `-`. The bench reads it. Deferred behind the
-# systems a directory composes once the manifest is written.
+# Every image this configure emits as `<image>|<stdout>|<judge>|<args>`: the stdout is `kernel`,
+# the packaged driver its system names, or `-` for an image composing no system of its own; the
+# judge is the gate script KICKOS_IMAGE_JUDGE names, `emulator` or `emulator-owed` for an image
+# kickos_emulator_judged marks, by whether a test this build runs names it, `human` or
+# `inapplicable` for one kickos_human_judged or kickos_inapplicable marks, or `-`; the args are the
+# judge's, `;`-separated. The bench reads it. Deferred behind the systems a directory composes
+# once the manifest is written.
 function(_kickos_write_images)
   get_property(_images GLOBAL PROPERTY KICKOS_EMITTED_IMAGES)
+  get_property(_run_images GLOBAL PROPERTY KICKOS_RUN_IMAGES)
   set(_rows "")
   foreach(_image IN LISTS _images)
     get_target_property(_judge ${_image} KICKOS_IMAGE_JUDGE)
     if(NOT _judge)
       set(_judge "-")
+    endif()
+    if(_judge STREQUAL "emulator" AND NOT _image IN_LIST _run_images)
+      set(_judge "emulator-owed")
+    endif()
+    get_target_property(_judge_args ${_image} KICKOS_IMAGE_JUDGE_ARGS)
+    if(NOT _judge_args)
+      set(_judge_args "")
     endif()
     set(_stdout "-")
     get_target_property(_image_system ${_image} KICKOS_APP_SYSTEM)
@@ -1471,9 +1508,18 @@ function(_kickos_write_images)
         set(_stdout kernel)
       endif()
     endif()
-    string(APPEND _rows "${_image}|${_stdout}|${_judge}\n")
+    string(APPEND _rows "${_image}|${_stdout}|${_judge}|${_judge_args}\n")
   endforeach()
   kickos_write_if_changed("${PROJECT_BINARY_DIR}/kickos-images.txt" "${_rows}")
+  # Every image's link map, one per line, for the host gates that read them all.
+  if(NOT KICKOS_ARCH STREQUAL "sim")
+    set(_maps "")
+    foreach(_image IN LISTS _images)
+      get_target_property(_map ${_image} KICKOS_IMAGE_MAP)
+      string(APPEND _maps "${_map}\n")
+    endforeach()
+    file(GENERATE OUTPUT "${PROJECT_BINARY_DIR}/kickos-image-maps.txt" CONTENT "${_maps}")
+  endif()
 endfunction()
 cmake_language(DEFER DIRECTORY "${PROJECT_SOURCE_DIR}" CALL _kickos_write_images)
 if(KICKOS_BUILD_TESTS)

@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   esp32c6-wroom
+   arch    rv32imac
+   cpu     esp32c6
+   mpu     enforce
+   sched   tickless
+
+[fs] spawning the faulter
+[fs] worker about to fault
+
+=== THREAD FAULT === thread 'faulter' killed, system continues
+  mepc=0x42000400 mcause=0x2
+[fs] survivor ran after the fault
+[fs] [lowband] INTACT: the kernel wrote nothing below the parked sp

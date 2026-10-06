@@ -6,6 +6,9 @@
 # QEMU_MACHINE is set).
 #
 #   check_libc_exit.sh <libc_exit image> [--atexit]
+#   KOS_CAPTURE=<log> check_libc_exit.sh <board-build> <kickos-source> <cmake> [--atexit]
+#
+# A capture carries no exit status, so main's exit() ending the system is the emulator's claim.
 #
 # The WORKER's marker alone would pass on a libc exit() that never reached the kernel, so
 # main's survival is the required half: KOS_SYS_EXIT ends only the calling thread unless the
@@ -23,39 +26,43 @@ set -u
 : "${QEMU_TIMEOUT:=8}"
 : "${SIM_TIMEOUT:=8}"
 
-elf="${1:?usage: check_libc_exit.sh <libc_exit.elf> [--atexit]}"
+if judging_capture; then
+    shift 3
+    judge_capture libc_exit
+else
+    elf="${1:?usage: check_libc_exit.sh <libc_exit.elf> [--atexit]}"
+    shift
+    run_image "$elf"
+fi
 atexit=0
-[ "${2:-}" = "--atexit" ] && atexit=1
-
-run_image "$elf"
+[ "${1:-}" = "--atexit" ] && atexit=1
 
 assert_no_panic "panic on the exit() path"
 if has "worker spawn refused"; then
-    fail "the worker could not be spawned; the thread-exit arm witnessed nothing"
+    cfail spawn "the worker could not be spawned; the thread-exit arm witnessed nothing"
 fi
 if ! has "worker: exit()"; then
-    fail "the worker never reached its exit()"
+    cfail worker "the worker never reached its exit()"
 fi
 if ! has "main: survived worker exit()"; then
-    fail "the worker's exit() did not reach KOS_SYS_EXIT (it ended the image, or main died)"
+    cfail survived "the worker's exit() did not reach KOS_SYS_EXIT (it ended the image, or main died)"
 fi
 if ! has "main: exit()"; then
-    fail "main never reached its own exit()"
+    cfail main-exit "main never reached its own exit()"
 fi
 if [ "$atexit" -eq 1 ]; then
     if ! printf '%s\n' "$OUT" | sed -n '/^main: exit()$/,$p' | grep -q '^main: atexit handler$'
     then
-        fail "main's exit() ran no atexit handler registered after the worker's exit, or ran it
+        cfail atexit "main's exit() ran no atexit handler registered after the worker's exit, or ran it
   before main reached its own exit()"
     fi
 fi
-if [ "$RC" -eq 124 ]; then
-    fail "main's exit() left the system running (timed out)"
-fi
-if [ "$RC" -ne 7 ]; then
-    fail "main's exit() shut down with status $RC, not the 7 it passed"
-fi
+status_clause "main's exit() ended the system with status 7" 7
 
+if judging_capture; then
+    echo "PASS: a worker's exit() ended only the worker, and main reached its own exit()"
+    exit 0
+fi
 if [ "$atexit" -eq 1 ]; then
     echo "PASS: exit() reached KOS_SYS_EXIT from a worker and from main, main's after its own atexit handler, carrying its status"
     exit 0

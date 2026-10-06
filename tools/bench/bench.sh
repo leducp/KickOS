@@ -49,29 +49,33 @@
 # APP is its target and PACKAGE_ARGS reaches its configure verbatim.
 #
 # JUDGE names a gate script, relative to the tree, that reads a capture through KOS_CAPTURE. It
-# runs here over the log just taken, as `<script> <board build> <tree> cmake JUDGE_ARGS...`, and
-# its verdict is this run's exit status:
+# runs here over the log just taken, as `<script> <board build> <tree> cmake <args>...`, the args
+# being JUDGE_ARGS split at each `;`, and its verdict is this run's exit status:
 #
 #   PACKAGE_PROJECT=examples/composition APP=sensor_system VARIANT= \
 #     JUDGE=tests/integration/check_golden_system.sh tools/bench/bench.sh xmc4800-relax
 #
-# An image is judged by the gate script its row of the build's image listing names unless JUDGE
-# names another: a board app's kickos_app_judge, or the TAP validator for a selftest image, which
-# the capture runs itself:
+# An image is judged by the gate script its row of the build's image listing names, with the
+# row's args, unless JUDGE names another: an image's kickos_app_judge, or the TAP validator for a
+# selftest image, which the capture runs itself:
 #
 #   VARIANT=st APP=xmcspi tools/bench/bench.sh xmc4800-relax
 #
-# An image that no row and no JUDGE judges is refused; JUDGE=none takes the capture unjudged.
+# An image that no row and no JUDGE judges is refused, and so is one its row marks emulator-judged,
+# human-judged or inapplicable; JUDGE=none takes the capture unjudged.
 set -u
 # AMP_PARTITION=1, with APP=ampping_n0 and VARIANT=amp2-n0, builds the board's whole AMP partition,
 # every node's image merged into one, flashes that, and judges the capture with the judge
 # ampping_n0's row names.
 #
 # WHICH IMAGES THIS BOARD'S BUILD SHIPS IS A PROPERTY OF ITS CONFIGURE, and LIST_IMAGES=1 is how a
-# caller asks: configure, print one `<image>|<stdout>|<judge>` row per image, flash nothing. The
-# stdout is `kernel`, the packaged console driver the image's composition names, or `-`; the
-# judge is a gate script relative to the tree, or `-`. Everything this script narrates goes to
-# stderr in that mode, so the caller's $(...) holds the rows and nothing else.
+# caller asks: configure, print one `<image>|<stdout>|<judge>|<args>` row per image, flash nothing.
+# The stdout is `kernel`, the packaged console driver the image's composition names, or `-`. The
+# judge is a gate script relative to the tree; `emulator` or `emulator-owed` for an image whose
+# verdict an emulator gate holds, by whether this build registers that gate; `human` for one whose
+# verdict only a person reads; `inapplicable` for one whose claim this posture voids; or `-`. The
+# args are the judge's, `;`-separated. Everything this script narrates goes to stderr in that mode,
+# so the caller's $(...) holds the rows and nothing else.
 if [ "${LIST_IMAGES:-0}" = "1" ]; then
   exec 3>&1 1>&2
 fi
@@ -198,8 +202,8 @@ printf '%s\n' "$EXTRA_WANT" > "$EXTRA_STAMP"
 # Written by tests/integration/gates/selftest.cmake, which is the file that hands the same three
 # sets to the CTest entries, so nothing here is a second statement of them.
 MANIFEST="$BUILD/kickos-selftest-manifest.txt"
-# EVERY IMAGE THIS CONFIGURE EMITS, one `<image>|<stdout>|<judge>` row each. Written by the root
-# CMakeLists.txt.
+# EVERY IMAGE THIS CONFIGURE EMITS, one `<image>|<stdout>|<judge>|<args>` row each. Written by the
+# root CMakeLists.txt.
 IMAGES="$BUILD/kickos-images.txt"
 [ -s "$IMAGES" ] || { echo "REFUSING: $PRESET configured but listed no image at $IMAGES" >&2; exit 1; }
 TAP_JUDGE=tests/integration/check_tap_stream.sh
@@ -226,19 +230,48 @@ fi
 APP_ROW=$(awk -F '|' -v app="$APP" '$1 == app { print; exit }' "$IMAGES")
 APP_STDOUT=""
 APP_JUDGE=""
+APP_JUDGE_ARGS=""
 if [ -n "$APP_ROW" ]; then
-  IFS='|' read -r _ APP_STDOUT APP_JUDGE <<AROW
+  IFS='|' read -r _ APP_STDOUT APP_JUDGE APP_JUDGE_ARGS <<AROW
 $APP_ROW
 AROW
 fi
-if [ "$APP_JUDGE" = "-" ]; then
-  APP_JUDGE=""
-fi
+APP_EMULATED=""
+APP_HUMAN=""
+APP_VOID=""
+case $APP_JUDGE in
+  -) APP_JUDGE="" ;;
+  emulator|emulator-owed)
+    APP_EMULATED=$APP_JUDGE
+    APP_JUDGE=""
+    ;;
+  human)
+    APP_HUMAN=$APP_JUDGE_ARGS
+    APP_JUDGE=""
+    ;;
+  inapplicable)
+    APP_VOID=$APP_JUDGE_ARGS
+    APP_JUDGE=""
+    ;;
+  *) ;;
+esac
 if [ -z "${JUDGE:-}" ]; then
   JUDGE="$APP_JUDGE"
+  JUDGE_ARGS="$APP_JUDGE_ARGS"
 fi
 if [ -z "$JUDGE" ]; then
-  echo "REFUSING: no judge for $APP (JUDGE=none to waive)" >&2
+  if [ -n "$APP_EMULATED" ]; then
+    echo "REFUSING: $APP is emulator-judged ($APP_EMULATED): an exit status, a panic, a reboot or a" >&2
+    echo "  deliberate fault holds its verdict, and no capture carries it (JUDGE=none to waive)" >&2
+  elif [ -n "$APP_HUMAN" ]; then
+    echo "REFUSING: $APP is human-judged ($APP_HUMAN): a person reads its verdict and no capture" >&2
+    echo "  carries it (JUDGE=none to waive)" >&2
+  elif [ -n "$APP_VOID" ]; then
+    echo "REFUSING: $APP is inapplicable on $PRESET ($APP_VOID): nothing can witness its claim" >&2
+    echo "  here (JUDGE=none to waive)" >&2
+  else
+    echo "REFUSING: no judge for $APP (JUDGE=none to waive)" >&2
+  fi
   exit 2
 fi
 
@@ -357,10 +390,12 @@ judge() {
   if [ "$JUDGE" = none ] || [ "$JUDGE" = "$TAP_JUDGE" ]; then
     return 0
   fi
-  echo "=== judging $LOG with $JUDGE"
-  # Deliberately unquoted: the caller passes one or more words.
-  # shellcheck disable=SC2086
-  KOS_CAPTURE="$LOG" sh "$JUDGE" "$PWD/$BUILD" "$PWD" cmake ${JUDGE_ARGS:-}
+  local -a args=()
+  if [ -n "${JUDGE_ARGS:-}" ]; then
+    IFS=';' read -r -a args <<<"$JUDGE_ARGS"
+  fi
+  echo "=== judging $LOG with $JUDGE${JUDGE_ARGS:+ ($JUDGE_ARGS)}"
+  KOS_CAPTURE="$LOG" sh "$JUDGE" "$PWD/$BUILD" "$PWD" cmake ${args[@]+"${args[@]}"}
 }
 
 # --- boards here ---------------------------------------------------------------

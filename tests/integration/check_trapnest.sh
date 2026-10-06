@@ -39,43 +39,55 @@
 # under it is the ISR. It cannot be a clause: a fixed system prints no such line, so requiring
 # it would make the arm unfalsifiable in the direction that matters.
 #
-# QEMU, machine from kickos_add_qemu_test.
+# QEMU, machine from kickos_add_qemu_test, or a silicon capture with KOS_CAPTURE:
+#
+#   check_trapnest.sh <elf> <interrupt-kernel-descent-bytes>
+#   KOS_CAPTURE=<log> check_trapnest.sh <board-build> <kickos-source> <cmake> <descent-bytes>
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
 
 _usage="usage: check_trapnest.sh <elf> <interrupt-kernel-descent-bytes>"
-elf="${1:?$_usage}"
-descent="${2:?$_usage}"
+if judging_capture; then
+    shift 3
+    descent="${1:?$_usage}"
+else
+    elf="${1:?$_usage}"
+    descent="${2:?$_usage}"
+fi
 
 case "$descent" in
     ''|*[!0-9]*) fail "the descent argument '$descent' is not a number" ;;
     *) ;;
 esac
 
-run_image "$elf"
+if judging_capture; then
+    judge_capture trapnest
+else
+    run_image "$elf"
+fi
 
 if has "\[trapnest\] ERROR"; then
-    fail "the app reported its own failure"
+    cfail error "the app reported its own failure"
 fi
 if ! has "\[trapnest\] worker done"; then
-    fail "the worker never finished its injects"
+    cfail worker "the worker never finished its injects"
 fi
 if ! has "\[trapnest\] main ran after the worker"; then
-    fail "main never ran again, so the join never returned"
+    cfail join "main never ran again, so the join never returned"
 fi
 assert_no_panic "the arm ended in a panic"
 
 line="$(printf '%s\n' "$OUT" | grep -E '^\[nestwitness\] traps=' | head -n1)"
-[ -n "$line" ] || fail "no [nestwitness] tally in the output: KICKOS_ENABLE_SELFTEST off, so
+[ -n "$line" ] || cfail tally "no [nestwitness] tally in the output: KICKOS_ENABLE_SELFTEST off, so
     KOS_SYS_NEST_WITNESS is not in the dispatch and the counters are not compiled"
 
 traps="$(printf '%s\n' "$line" | sed -n 's/.*traps=\([0-9]\{1,\}\).*/\1/p')"
 onstack="$(printf '%s\n' "$line" | sed -n 's/.*onstack=\([0-9]\{1,\}\).*/\1/p')"
-[ -n "$traps" ] && [ -n "$onstack" ] || fail "cannot read both counters out of: $line"
+[ -n "$traps" ] && [ -n "$onstack" ] || cfail tally "cannot read both counters out of: $line"
 
 if [ "$traps" -eq 0 ]; then
-    fail "traps=0: no interrupt was taken while the kernel was running, so this arm
+    cfail traps "traps=0: no interrupt was taken while the kernel was running, so this arm
     observed nothing. The inject line is masked (irq_attach refused?), the inject syscall
     is compiled out, or the witness is no longer called."
 fi
@@ -92,11 +104,11 @@ if [ "$onstack" -ne 0 ]; then
             why="$why, so the ISR under that frame ran off the bottom of the stack"
         fi
     fi
-    fail "NESTED FRAME ON A THREAD STACK: $why"
+    cfail onstack "NESTED FRAME ON A THREAD STACK: $why"
 fi
 
 if [ -n "$room" ]; then
-    fail "onstack=0 yet the kernel reported a room figure, which it only records for a frame
+    cfail onstack "onstack=0 yet the kernel reported a room figure, which it only records for a frame
     it saw on a thread stack: the two counters disagree and one of them is not being written"
 fi
 

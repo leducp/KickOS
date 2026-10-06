@@ -7,6 +7,7 @@
 if(NOT TARGET sched_exit)
   return()
 endif()
+kickos_app_judge(sched_exit tests/integration/check_sched_exit.sh)
 
 set(_sched_exit_script "${PROJECT_SOURCE_DIR}/tests/integration/check_sched_exit.sh")
 

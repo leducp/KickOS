@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   rx72m
+   arch    rxv3
+   cpu     rxv3
+   mpu     enforce
+   sched   tickless
+
+[tlsprobe] start
+[tlsprobe] main tp 1e008 sp 1ff60
+[tlsprobe] w0 tp 2000c sp 21fe8 seed a5a5a5a5 read c0de0000 ok
+[tlsprobe] w1 tp 2200c sp 23fe8 seed a5a5a5a5 read c0de0001 ok
+[tlsprobe] main addr 1e008 read 4f4f5400
+[tlsprobe] PASS

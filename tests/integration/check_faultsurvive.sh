@@ -64,57 +64,45 @@
 # and no write ever landing. QEMU virt COMPLETES misaligned stores, so pre-fix it writes the
 # whole frame in bounds and kills the thread cleanly. The ESP32-C6 is the exposed core.
 #
-# The four refusal arms share the negative claim: no kill banner, a panic dump, exit 132.
+# The four refusal arms share the negative claim of no kill banner. A contained refusal leaves the
+# system running; a terminated one ends in a panic dump and exit 132.
 #
-# QEMU, machine from kickos_add_qemu_test; the survive arm also runs natively on the sim.
+# QEMU, machine from kickos_add_qemu_test; the survive arm also runs natively on the sim. With
+# KOS_CAPTURE it reads a silicon capture, which carries no exit status.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
 
-_usage="usage: [FS_CAPTURE=<log>] check_faultsurvive.sh <elf|-> <arm: survive|overflow|offstack|kwrite|lowedge|misalign> <arch> <outcome: contained|terminated>"
-elf="${1:?$_usage}"
-arm="${2:?$_usage}"
-# Which fact corroborates a refusal is a property of the backend, so it is passed in: a gate
-# that read it back out of the dump it judges would accept whichever dump it got.
-arch="${3:?$_usage}"
-# WHAT A REFUSED SP COSTS, and it is carried by the caller for the same reason: `contained`
-# says the trap entry slays the offending thread and the system runs on, `terminated` says it
-# ends. Required and undefaulted, because the weaker claim is the one that passes silently on
-# a backend that has since gained containment.
-outcome="${4:?$_usage}"
-
-# FS_CAPTURE judges a captured silicon log, which is how the armv6m and rxv3 clauses below
-# execute at all; unexecuted clauses are the unfalsifiable shape this gate exists to refuse.
-# The elf must be `-`, so a call site cannot read as having run an image when it did not.
-CAPTURED=0
-if [ -n "${FS_CAPTURE:-}" ]; then
-    CAPTURED=1
-    [ "$elf" = "-" ] || fail "FS_CAPTURE is set, so no image is booted: pass - for the elf"
-    [ -s "$FS_CAPTURE" ] || fail "FS_CAPTURE=$FS_CAPTURE is missing or empty"
-    # Same CR strip run_image does; every silicon capture is CRLF throughout.
-    OUT="$(tr -d '\r' < "$FS_CAPTURE")"
-    # RC is left UNSET, so the exit clauses below opt out by name instead of comparing
-    # against a defaulted zero.
-    printf '%s\n' "$OUT"
+_usage="usage: check_faultsurvive.sh <elf> <arm: survive|overflow|offstack|kwrite|lowedge|misalign> <arch> <outcome: contained|terminated>
+       KOS_CAPTURE=<log> check_faultsurvive.sh <board-build> <kickos-source> <cmake> <arm> <arch> <outcome>"
+if judging_capture; then
+    shift 3
+    judge_capture faultsurvive
 else
-    [ "$elf" != "-" ] || fail "no FS_CAPTURE, so an elf is required"
+    elf="${1:?$_usage}"
+    shift
     run_image "$elf"
 fi
+arm="${1:?$_usage}"
+arch="${2:?$_usage}"
+outcome="${3:?$_usage}"
 
-# assert_no_panic ON THE survive ARM IS PAIRED WITH THE EXIT STATUS BELOW: a panic after the
-# survivor line leaves every clause here standing, and only the required clean exit 0 breaks.
-# Under FS_CAPTURE there is no status and that pairing is gone, which the capture path says.
-# Every other arm's absence clause runs on a one-core posture only, where the wire has one
-# writer and a grep for an absent literal means what it says.
 if has "\[fs\] ERROR"; then
-    fail "the app reported its own failure"
+    cfail error "the app reported its own failure"
 fi
-if ! has "\[fs\] worker about to fault"; then
-    fail "the worker never reached its deliberate fault"
-fi
-
 # First matching line number, so the two arms can be ordered against each other.
 line_of() { printf '%s\n' "$OUT" | grep -nE "$1" | head -n1 | cut -d: -f1; }
+
+about="$(line_of "\[fs\] worker about to fault")"
+if [ -z "$about" ]; then
+    cfail reached "the worker never reached its deliberate fault"
+fi
+# <line> <what>: the record at <line> follows the worker's announcement, so it is this fault's.
+after_about() {
+    if [ "$1" -le "$about" ]; then
+        cfail order "$2 at line $1 is not after the worker's announcement at line $about"
+    fi
+}
 
 # The banner the backend's own trap entry prints when it refuses an sp. Carried per arch and
 # not matched loosely, so a refusal that came out of another backend's reporter fails here.
@@ -145,14 +133,15 @@ case "$arm" in
     survive | lowedge)
         killed="$(line_of "$(thread_fault_re faulter)")"
         if [ -z "$killed" ]; then
-            fail "no thread-kill for 'faulter' (the fault ended the system?)"
+            cfail killed "no thread-kill for 'faulter' (the fault ended the system?)"
         fi
+        after_about "$killed" "the kill"
         survived="$(line_of "\[fs\] survivor ran after the fault")"
         if [ -z "$survived" ]; then
-            fail "main never ran again after the worker faulted"
+            cfail survived "main never ran again after the worker faulted"
         fi
         if [ "$survived" -le "$killed" ]; then
-            fail "main's line is at $survived, not after the kill at $killed"
+            cfail order "main's line is at $survived, not after the kill at $killed"
         fi
         assert_no_panic "the worker was killed AND the system panicked"
         # The band, and BOTH directions are clauses. Corrupted names the privileged writes
@@ -160,37 +149,31 @@ case "$arm" in
         # and printed neither, which is the silent arm this pair exists to refuse.
         if [ "$arm" = lowedge ]; then
             if has "lowband] CORRUPTED"; then
-                fail "lowedge: the kernel's trap dispatch ran below stack_lo through a U-mode sp"
+                cfail lowband "lowedge: the kernel's trap dispatch ran below stack_lo through a U-mode sp"
             fi
             intact="$(line_of "\[fs\] \[lowband\] INTACT")"
             if [ -z "$intact" ]; then
-                fail "lowedge: main printed no band verdict, so nothing here witnessed the
+                cfail lowband "lowedge: main printed no band verdict, so nothing here witnessed the
     band at all: the readback is compiled out, or this is not the mode 4 image"
             fi
             if [ "$intact" -le "$killed" ]; then
-                fail "lowedge: the band verdict at $intact is not after the kill at $killed,
+                cfail order "lowedge: the band verdict at $intact is not after the kill at $killed,
     so it was read before the fault it is meant to judge"
             fi
         fi
-        if [ "$CAPTURED" -eq 0 ]; then
-            if [ "$RC" -ne 0 ]; then
-                fail "expected a clean exit 0 once main returned, got $RC"
-            fi
-        else
-            echo "NOT EVALUATED: the clean exit 0. A capture carries no exit status." >&2
-        fi
+        status_clause "the system exited 0 once main returned" 0
         echo "PASS: 'faulter' died at line $killed and main ran at line $survived"
         ;;
     overflow | offstack | kwrite | misalign)
         if has_e "$(thread_fault_re faulter)"; then
-            fail "$arm: the fault was redirected to the exit stub instead of escalating"
+            cfail redirected "$arm: the fault was redirected to the exit stub instead of escalating"
         fi
         # kwrite is the trap-stack security regression: the worker aimed its SP at a kernel
         # word. A backend that stored the frame through the U-mode SP prints this from its
         # panic path, so a fixed one leaves the word intact and the line absent. Claimed under
         # BOTH outcomes: it is about what the prologue wrote, not about what it did next.
         if [ "$arm" = kwrite ] && has "trapwitness] CORRUPTED"; then
-            fail "kwrite: the trap prologue stored through the U-mode SP into kernel memory"
+            cfail kwrite "kwrite: the trap prologue stored through the U-mode SP into kernel memory"
         fi
         if [ "$outcome" = contained ]; then
             # assert_no_panic IS available on this path now: a contained refusal spells its
@@ -200,19 +183,37 @@ case "$arm" in
             assert_no_panic "$arm: something panicked on a run that was supposed to contain"
             refused="$(line_of "$(wild_refusal_re "$arch" "$outcome")")"
             if [ -z "$refused" ]; then
-                fail "$arm: no $arch wild-stack refusal reached the wire, so the sp was
+                cfail refusal "$arm: no $arch wild-stack refusal reached the wire, so the sp was
     ACCEPTED and this arm witnessed nothing"
             fi
+            after_about "$refused" "the refusal"
             survived="$(line_of "\[fs\] survivor ran after the fault")"
             if [ -z "$survived" ]; then
-                fail "$arm: the refusal ended the system, so the whole image paid for one
+                cfail survived "$arm: the refusal ended the system, so the whole image paid for one
     thread's sp"
             fi
             if [ "$survived" -le "$refused" ]; then
-                fail "$arm: main's line is at $survived, not after the refusal at $refused"
+                cfail order "$arm: main's line is at $survived, not after the refusal at $refused"
             fi
-            if [ "$CAPTURED" -eq 0 ] && [ "$RC" -ne 0 ]; then
-                fail "$arm: main outlived the refusal and the image still exited $RC"
+            status_clause "the system exited 0 once main outlived the refusal" 0
+            # The rejected USP, read off the refusal record: kickos_rx_bad_usp's guard has an
+            # alignment leg and a bounds leg, and the USP's low two bits say which one refused.
+            if [ "$arch" = rxv3 ]; then
+                usp="$(printf '%s\n' "$OUT" | sed -n "$refused,\$p" \
+                    | sed -n 's/.*USP=0x\([0-9a-fA-F]*\).*/\1/p' | head -n1)"
+                [ -n "$usp" ] || cfail usp "$arm: the refusal record carries no USP"
+                case "$arm:$usp" in
+                    misalign:*[048cC])
+                        cfail usp "USP=0x$usp is 4-byte aligned, so the alignment leg did not
+    refuse it"
+                        ;;
+                    kwrite:*[048cC]) ;;
+                    kwrite:*)
+                        cfail usp "USP=0x$usp is misaligned, so the alignment leg refused it, not the
+    bounds leg"
+                        ;;
+                    *) ;;
+                esac
             fi
             # ATTRIBUTION, and rv32imac is the arch that needs the clause: its trap entry
             # catches a thread that overflowed its own stack BEFORE the PMP-denial report that
@@ -227,7 +228,7 @@ case "$arm" in
                 _credited="$(printf '%s\n' "$OUT" \
                     | awk -v start="$refused" 'NR >= start && /thread '"'"'faulter'"'"'/ { print NR; exit }')"
                 if [ -z "$_credited" ]; then
-                    fail "$arm: no line at or after the refusal at $refused credits 'faulter',
+                    cfail attribution "$arm: no line at or after the refusal at $refused credits 'faulter',
     so the containment took the attribution the panic path used to carry"
                 fi
             fi
@@ -237,9 +238,11 @@ case "$arm" in
         if [ "$outcome" != terminated ]; then
             fail "unknown outcome '$outcome': expected 'contained' or 'terminated'"
         fi
-        if ! has_e "$KOS_PANIC_RE"; then
-            fail "$arm: the fault reached no dump (looped, or walked into a neighbour?)"
+        dumped="$(line_of "$KOS_PANIC_RE")"
+        if [ -z "$dumped" ]; then
+            cfail dump "$arm: the fault reached no dump (looped, or walked into a neighbour?)"
         fi
+        after_about "$dumped" "the dump"
         # Corroboration, so the arm cannot pass on ANY panic that happens to occur.
         why=""
         case "$arch:$arm" in
@@ -251,13 +254,13 @@ case "$arm" in
                 # write and only a SYSMPU board prints it, which is what keeps the second
                 # shape from accepting a bare BusFault.
                 cfsr="$(printf '%s\n' "$OUT" | sed -n 's/.*CFSR=0x\([0-9a-fA-F]*\).*/\1/p' | head -n1)"
-                [ -n "$cfsr" ] || fail "the dump carries no CFSR (KICKOS_PANIC_DUMP off?)"
+                [ -n "$cfsr" ] || cfail cause "the dump carries no CFSR (KICKOS_PANIC_DUMP off?)"
                 if [ $(( 0x$cfsr & 0x10 )) -ne 0 ]; then
                     why="CFSR=0x$cfsr, MSTKERR"
                 elif [ $(( 0x$cfsr & 0x1000 )) -ne 0 ] && has "SYSMPU ISOLATION FAULT"; then
                     why="CFSR=0x$cfsr, BusFault STKERR corroborated by SYSMPU ISOLATION FAULT"
                 else
-                    fail "CFSR=0x$cfsr is neither MSTKERR nor a SYSMPU-corroborated STKERR: this was not a stacking failure"
+                    cfail cause "CFSR=0x$cfsr is neither MSTKERR nor a SYSMPU-corroborated STKERR: this was not a stacking failure"
                 fi
                 ;;
             armv6m:overflow | armv6m:offstack)
@@ -266,9 +269,9 @@ case "$arm" in
                 # would prove nothing about a user thread. Requiring the CFSR to be ABSENT is
                 # the positive control that refuses an armv7m capture handed here by mistake.
                 if has "CFSR="; then
-                    fail "this dump carries a CFSR, so it is not an armv6m capture"
+                    cfail cause "this dump carries a CFSR, so it is not an armv6m capture"
                 fi
-                has "(PSP)" || fail "the dump does not name PSP: the frame was not taken from a thread stack"
+                has "(PSP)" || cfail cause "the dump does not name PSP: the frame was not taken from a thread stack"
                 why="frame on PSP, no CFSR to latch (armv6m has none)"
                 # The overflow frame is garbage by construction, the hardware stacking into
                 # the region that overflowed, so no clause here asserts a plausible PC. A PC
@@ -280,20 +283,20 @@ case "$arm" in
                 # thread. Supervisor bypasses that MPU, so kickos_fault_below_stack is what
                 # refuses this and not the frame's own store.
                 if ! has "MPU FAULT: thread 'faulter' attempted write"; then
-                    fail "no denied write credited to 'faulter': the recursion never ran off its granted stack"
+                    cfail cause "no denied write credited to 'faulter': the recursion never ran off its granted stack"
                 fi
                 why="RX-MPU-denied write by 'faulter'"
                 ;;
             rxv3:offstack)
                 has "RX EXCEPTION (privileged instruction)" \
-                  || fail "the dump names a cause other than the deliberate privileged instruction"
+                  || cfail cause "the dump names a cause other than the deliberate privileged instruction"
                 # PSW.PM (bit 20) is the privilege clause reporting that it said YES. RXv3
                 # CANCELS the faulting instruction and restores SP, so the bounds test is the
                 # only thing left that can refuse this.
                 psw="$(printf '%s\n' "$OUT" | sed -n 's/.*PSW=0x\([0-9a-fA-F]*\).*/\1/p' | head -n1)"
-                [ -n "$psw" ] || fail "the dump carries no PSW (KICKOS_PANIC_DUMP off?)"
+                [ -n "$psw" ] || cfail cause "the dump carries no PSW (KICKOS_PANIC_DUMP off?)"
                 if [ $(( 0x$psw & 0x100000 )) -eq 0 ]; then
-                    fail "PSW=0x$psw has PM clear: the fault was not taken in user mode, so the privilege clause refused it and the arm proves nothing about the bounds test"
+                    cfail cause "PSW=0x$psw has PM clear: the fault was not taken in user mode, so the privilege clause refused it and the arm proves nothing about the bounds test"
                 fi
                 why="PSW=0x$psw, PM=1 (user)"
                 ;;
@@ -302,87 +305,11 @@ case "$arm" in
                 # exactly the ones that must be clear. Without this clause the arm passes on
                 # a stacking abort and says nothing about the bounds test.
                 cfsr="$(printf '%s\n' "$OUT" | sed -n 's/.*CFSR=0x\([0-9a-fA-F]*\).*/\1/p' | head -n1)"
-                [ -n "$cfsr" ] || fail "the dump carries no CFSR (KICKOS_PANIC_DUMP off?)"
+                [ -n "$cfsr" ] || cfail cause "the dump carries no CFSR (KICKOS_PANIC_DUMP off?)"
                 if [ $(( 0x$cfsr & 0x1818 )) -ne 0 ]; then
-                    fail "CFSR=0x$cfsr carries a stacking-abort bit, so the CFSR early-out could have refused this frame and the arm proves nothing about the bounds test"
+                    cfail cause "CFSR=0x$cfsr carries a stacking-abort bit, so the CFSR early-out could have refused this frame and the arm proves nothing about the bounds test"
                 fi
                 why="CFSR=0x$cfsr, no stacking-abort bit"
-                ;;
-            rv32imac:overflow)
-                # M-mode bypasses the unlocked PMP entries, so the trap prologue writes the
-                # frame below the stack and nothing latches. The evidence is the recursion's
-                # OWN push, a U-mode store the PMP denied.
-                if ! has "MPU FAULT: thread 'faulter' attempted write"; then
-                    fail "no denied write credited to 'faulter': the recursion never ran off its granted stack"
-                fi
-                why="PMP-denied write by 'faulter'"
-                ;;
-            rv32imac:offstack)
-                has "RISC-V TRAP (illegal instruction)" \
-                  || fail "the dump names a cause other than the deliberate illegal instruction"
-                # MPP == 0 (mstatus bits 12:11) is the privilege clause reporting that it
-                # said YES. No status register latches a bad frame here, so the stack-bounds
-                # test is the only thing left that can have refused this.
-                mst="$(printf '%s\n' "$OUT" | sed -n 's/.*mstatus=0x\([0-9a-fA-F]*\).*/\1/p' | head -n1)"
-                [ -n "$mst" ] || fail "the dump carries no mstatus (KICKOS_PANIC_DUMP off?)"
-                if [ $(( 0x$mst & 0x1800 )) -ne 0 ]; then
-                    fail "mstatus=0x$mst has MPP != U: the fault was not taken in user mode, so the privilege clause refused it and the arm proves nothing about the bounds test"
-                fi
-                why="mstatus=0x$mst, MPP=U"
-                ;;
-            rv32imac:misalign)
-                # Same trap and the same two facts as kwrite: a panic taken in user mode is
-                # the entry refusing this sp before it stored anything, and this arm claims
-                # nothing more here, QEMU virt completing the misaligned stores a trapping
-                # core would loop on.
-                has "RISC-V TRAP (illegal instruction)" \
-                  || fail "the dump names a cause other than the deliberate illegal instruction"
-                mst="$(printf '%s\n' "$OUT" | sed -n 's/.*mstatus=0x\([0-9a-fA-F]*\).*/\1/p' | head -n1)"
-                [ -n "$mst" ] || fail "the dump carries no mstatus (KICKOS_PANIC_DUMP off?)"
-                if [ $(( 0x$mst & 0x1800 )) -ne 0 ]; then
-                    fail "mstatus=0x$mst has MPP != U: the sp the guard refused was not a thread's"
-                fi
-                why="mstatus=0x$mst, MPP=U"
-                ;;
-            rv32imac:kwrite)
-                # Same trap as offstack, aimed at a kernel word. A panic in user mode (MPP=U)
-                # is the prologue refusing the out-of-bounds SP before it stored; the
-                # trapwitness line checked above stays intact.
-                has "RISC-V TRAP (illegal instruction)" \
-                  || fail "the dump names a cause other than the deliberate illegal instruction"
-                mst="$(printf '%s\n' "$OUT" | sed -n 's/.*mstatus=0x\([0-9a-fA-F]*\).*/\1/p' | head -n1)"
-                [ -n "$mst" ] || fail "the dump carries no mstatus (KICKOS_PANIC_DUMP off?)"
-                if [ $(( 0x$mst & 0x1800 )) -ne 0 ]; then
-                    fail "mstatus=0x$mst has MPP != U: the wild SP was not rejected in user mode"
-                fi
-                why="mstatus=0x$mst, MPP=U, witness intact"
-                ;;
-            rxv3:misalign)
-                # Same entry as rxv3:kwrite (int #1), aimed at an in-bounds MISALIGNED USP,
-                # so only the alignment leg can refuse it. A fault-path entry reaches
-                # kickos_fault_frame_trusted, which tests range and extent but not alignment,
-                # and reports a clean thread kill.
-                has "RX EXCEPTION (wild stack)" \
-                  || fail "the dump names a cause other than the rejected misaligned USP: the syscall trap's alignment leg did not refuse it"
-                usp="$(printf '%s\n' "$OUT" | sed -n 's/.*USP=0x\([0-9a-fA-F]*\).*/\1/p' | head -n1)"
-                [ -n "$usp" ] || fail "the wild-stack dump carries no USP"
-                # The leg tests `and #3`, so the discriminator is the low TWO bits and not
-                # evenness: sub #2 from a 4-aligned sp lands at 2 mod 4, which is even.
-                case "$usp" in
-                    *[048cC]) fail "USP=0x$usp is 4-byte aligned: this is not the misaligned case" ;;
-                    *) ;;
-                esac
-                why="RX alignment refusal USP=0x$usp"
-                ;;
-            rxv3:kwrite)
-                # The worker entered kickos_rx_syscall_trap (int #1) with a wild USP, which
-                # is rejected before the store and panics through kickos_rx_bad_usp; the
-                # trapwitness line checked above stays intact.
-                has "RX EXCEPTION (wild stack)" \
-                  || fail "the dump names a cause other than the rejected wild USP: the syscall trap did not refuse it"
-                usp="$(printf '%s\n' "$OUT" | sed -n 's/.*USP=0x\([0-9a-fA-F]*\).*/\1/p' | head -n1)"
-                [ -n "$usp" ] || fail "the wild-stack dump carries no USP"
-                why="RX wild-stack refusal USP=0x$usp, witness intact"
                 ;;
             *)
                 fail "$arm: no corroborating evidence is defined for arch '$arch'"
@@ -394,13 +321,10 @@ case "$arm" in
         if has "MPU FAULT: thread"; then
             want=0
         fi
-        if [ "$CAPTURED" -eq 0 ]; then
-            if [ "$RC" -ne "$want" ]; then
-                fail "expected exit $want from the escalation path, got $RC"
-            fi
-            echo "PASS: the $arm fault escalated to the panic dump ($why, exit $RC)"
+        status_clause "the escalation ended the system with exit $want" "$want"
+        if ! judging_capture; then
+            echo "PASS: the $arm fault escalated to the panic dump ($why, exit $want)"
         else
-            echo "NOT EVALUATED: which dead-end ran (expected exit $want). A capture carries no exit status." >&2
             echo "PASS: the $arm fault escalated to the panic dump ($why, from a capture)"
         fi
         ;;

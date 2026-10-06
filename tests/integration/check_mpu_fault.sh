@@ -19,20 +19,36 @@
 # main then parks forever on a semaphore nobody can post, so that arm polls and stops QEMU
 # instead of waiting for an exit. The claim is the same either way: detected, and credited
 # to 'domainA'.
+#
+#   check_mpu_fault.sh <mpu_fault.elf> <outcome>
+#   KOS_CAPTURE=<log> check_mpu_fault.sh <board-build> <kickos-source> <cmake> <outcome>
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
 
 _usage="usage: check_mpu_fault.sh <mpu_fault.elf> <outcome: panic|thread-kill>"
-elf="${1:?$_usage}"
-outcome="${2:?$_usage}"
+if judging_capture; then
+    shift 3
+    outcome="${1:?$_usage}"
+else
+    elf="${1:?$_usage}"
+    outcome="${2:?$_usage}"
+fi
 
 case "$outcome" in
     panic)
-        run_image "$elf"
+        if judging_capture; then
+            judge_capture mpu_fault
+        else
+            run_image "$elf"
+        fi
         ;;
     thread-kill)
-        poll_image "$elf" "\[domain\] A: my region ok" "$(thread_fault_re domainA)" "ADDR=0x"
+        if judging_capture; then
+            judge_capture mpu_fault
+        else
+            poll_image "$elf" "\[domain\] A: my region ok" "$(thread_fault_re domainA)" "ADDR=0x"
+        fi
         ;;
     *)
         fail "$_usage"
@@ -40,16 +56,16 @@ case "$outcome" in
 esac
 
 if has "ERROR"; then
-    fail "mpu_fault reported a failed setup or control arm"
+    cfail error "mpu_fault reported a failed setup or control arm"
 fi
 if has_e "did not fault|cross-domain write completed"; then
-    fail "the cross-domain write was NOT trapped (enforcement inactive?)"
+    cfail confined "the cross-domain write was NOT trapped (enforcement inactive?)"
 fi
 # The CONTROL half must have run: the thread writing its OWN granted region and reading the
 # value back separates "domain B is refused" from "region A was never granted", which faults
 # earlier and prints the same banner.
 if ! has "\[domain\] A: my region ok"; then
-    fail "the control write never took effect (region A not granted?)"
+    cfail control "the control write never took effect (region A not granted?)"
 fi
 
 # Pin the trap to the address the app announced, which is what the banner cannot say. The
@@ -59,24 +75,24 @@ fi
 want="$(printf '%s\n' "$OUT" \
     | sed -n 's/.*\[domain\] expect fault at 0x\([0-9a-fA-F]*\).*/\1/p' | head -n1)"
 if [ -z "$want" ]; then
-    fail "the app never announced its expected fault address (faulted during setup?)"
+    cfail announce "the app never announced its expected fault address (faulted during setup?)"
 fi
 if [ "$outcome" = "thread-kill" ]; then
     if ! has_e "$(thread_fault_re domainA)"; then
-        fail "no thread-kill for 'domainA' (crash / hang / truncated run?)"
+        cfail killed "no thread-kill for 'domainA' (crash / hang / truncated run?)"
     fi
     # The kill must be the WHOLE outcome: a redirect that fired and then escalated anyway
     # still shows the banner above, with the system it was meant to keep running dead.
     assert_no_panic "the domain violation killed the thread AND panicked the system"
 elif ! has_e "MPU FAULT: thread 'domainA'|=== MPU FAULT ==="; then
-    fail "MPU FAULT marker missing (crash / hang / truncated run?)"
+    cfail marker "MPU FAULT marker missing (crash / hang / truncated run?)"
 fi
 got="$(reported_fault_addr)"
 if [ -z "$got" ]; then
-    fail "the fault report carries no address (KICKOS_PANIC_DUMP off?)"
+    cfail address "the fault report carries no address (KICKOS_PANIC_DUMP off?)"
 fi
 if [ "$((0x$got))" -ne "$((0x$want))" ]; then
-    fail "trap at 0x$got, not at domain B's 0x$want (the wrong write faulted)"
+    cfail address "trap at 0x$got, not at domain B's 0x$want (the wrong write faulted)"
 fi
 
 echo "PASS: the unprivileged cross-domain write trapped at 0x$got ($outcome)"

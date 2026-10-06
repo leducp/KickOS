@@ -6,6 +6,8 @@
 if(NOT TARGET reclaimwit)
   return()
 endif()
+kickos_app_judge(reclaimwit tests/integration/check_reclaimwit.sh ARGS park)
+kickos_app_judge(reclaimwit_drain tests/integration/check_reclaimwit.sh ARGS drain)
 
 set(_reclaimwit_script "${PROJECT_SOURCE_DIR}/tests/integration/check_reclaimwit.sh")
 

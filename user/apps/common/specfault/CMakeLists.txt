@@ -8,3 +8,4 @@
 add_executable(specfault main.cc)
 target_link_libraries(specfault PRIVATE KickOS::kernel KickOS::system_default)
 kickos_emit_image(specfault)
+kickos_app_judge(specfault tests/integration/check_specfault.sh)

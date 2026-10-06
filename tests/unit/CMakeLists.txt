@@ -10,7 +10,7 @@ if(KICKOS_BUILD_UNIT_TESTS)
       ampconsole amphold ampshare ampwindow benchdist c6apm capreply captable consoleline consoleown consolepace consoletx
       consoletxsmp dcacheplan
       deathspace drvbringup fastrefuse faultline frame fusedwake grantlookup grantnocache initwalk irqquiesce kstring
-      ktime mapexec mapfence mpuskip mtimeconv placeadmit presync probecatch ramowner regionsync
+      ktime mapexec mapfence mpuskip mtimeconv newlibstubs placeadmit presync probecatch ramowner regionsync
       reschedowed rp2350gate slotpool
       stdoutwrite taskbudget uartclass vrange windowholder)
     add_subdirectory(${_unit})

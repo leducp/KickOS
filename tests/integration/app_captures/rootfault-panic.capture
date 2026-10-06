@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   sim
+   arch    sim
+   cpu     aarch64
+   mpu     enforce
+   sched   tickless
+
+[rootfault] child: wrote my own granted region
+[rootfault] main: writing the child's granted region at 0xffff9e832000 (expect fault)
+
+[sim] SIGSEGV si_code=2 si_addr=0xffff9e832000 pc=0x0
+
+MPU FAULT: thread 'main' attempted write at 0xffff9e832000, reported
+  its stack 0xffff9e828000-0xffff9e82a000

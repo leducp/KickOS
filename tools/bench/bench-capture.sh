@@ -66,6 +66,7 @@ SN="${5:-}"
 . "$HERE/rig.sh"
 . "$HERE/bench-host.sh"
 . "$HERE/board-rows.sh"
+. "$HERE/reset-boot.sh"
 rig_find "$ROOT" || true
 
 # The bench host keeps uv's esptool and the rfp-cli wrapper in ~/.local/bin, which a
@@ -245,17 +246,13 @@ case $BOARD in
     # One arm, two consoles. f302nucleo's is the ST-Link V2.1's own VCOM; f411disco's probe
     # is a V2 with NO VCP, so its console is a separate FTDI named by RIG_CONSOLE_F411DISCO
     # and the stty re-arm below is what keeps that cable from returning EOF at once.
-    # THERE IS NO SEPARATE RESET STEP. Releasing NRST at the end of the write already starts
-    # the image, so the write's own boot IS the authoritative run; a reset after it cuts that
-    # boot off MID-LINE and starts a second one.
     #
-    # The reader is a passive cat on the ST-Link's own VCOM and does not touch SWD, so arming
-    # it FIRST is harmless here and is what captures the head of the banner. That is an
-    # ST-Link property, not a general one: on a J-Link, arming before the flash yields an empty
-    # log or one missing its head.
+    # THE WRITE'S OWN BOOT IS NOT READ: it starts without a reset and under halting debug, and
+    # in some runs faults at once and halts on a vector catch. A reset under the armed reader
+    # starts the boot this capture reads.
     #
-    # THE WRITE GOES THROUGH tools/flash.sh, so the bench recipe and the hand recipe are one
-    # command; tools/flash-stlink.sh carries why that command has no reset step.
+    # THE WRITE AND THE RESET GO THROUGH tools/flash.sh, so the bench recipe and the hand
+    # recipe are one command.
     #
     # FLASH_TOOL IS PINNED, not left to the dispatcher: candidates_for() offers "stlink jlink"
     # for stm32f302 and takes the first on PATH, so on a host without stlink-tools this would
@@ -263,21 +260,32 @@ case $BOARD in
     # keeps the missing-tool case a named refusal.
     command -v st-flash > /dev/null || refuse "st-flash not on PATH (apt install stlink-tools)"
     [ -e "$IMG.bin" ] || refuse "no $IMG.bin (st-flash loads the raw binary)"
+    # CHECKED, and its output kept: a failed write leaves the PREVIOUS image running, which is
+    # the failure that most looks like a pass.
+    if ! WOUT=$(FLASH_TOOL=stlink FLASH_IMAGE="$IMG" "$ROOT/tools/flash.sh" "$BOARD" "$APP" 2>&1); then
+      printf '%s\n' "$WOUT" | tail -8 >&2
+      refuse "the $BOARD write failed (tools/flash.sh -> flash-stlink.sh on $IMG.bin)"
+    fi
     stty -F "$PORT" 115200 raw -echo -hupcl clocal min 1 time 0 || refuse "stty failed on $PORT"
     cat "$PORT" >> "$LOG" &
     READER=$!
     sleep 1
     check_reader "on arming"
-    # CHECKED, and its output kept: a failed write leaves the PREVIOUS image running, which is
-    # the failure that most looks like a pass.
-    if ! WOUT=$(FLASH_TOOL=stlink FLASH_IMAGE="$IMG" "$ROOT/tools/flash.sh" "$BOARD" "$APP" 2>&1); then
+    : > "$LOG"
+    if ! WOUT=$(FLASH_STLINK_RESET=1 FLASH_TOOL=stlink FLASH_IMAGE="$IMG" \
+        "$ROOT/tools/flash.sh" "$BOARD" "$APP" 2>&1); then
       kill $READER 2>/dev/null
       printf '%s\n' "$WOUT" | tail -8 >&2
-      refuse "the $BOARD write failed (tools/flash.sh -> flash-stlink.sh on $IMG.bin)"
+      refuse "the $BOARD reset after the write failed"
     fi
+    # The core stops at the read's connect under reset and restarts at its detach, so no byte of
+    # the earlier image lands past this while st-flash outlasts the console's delivery latency; a
+    # banner of the reset's own boot that lands ahead of it is refused, never kept.
+    _reset_bytes=$(wc -c < "$LOG")
     sleep "${CAP_SECS:-25}"
     note_reader
     kill $READER 2>/dev/null
+    _why=$(reset_boot_cut "$LOG" "$_reset_bytes") || refuse "$_why"
     ;;
   picopi|pizero2350)
     command -v picotool > /dev/null || refuse "picotool not on PATH"

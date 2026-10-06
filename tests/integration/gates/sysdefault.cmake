@@ -47,14 +47,19 @@ set(_sysdefault_script "${PROJECT_SOURCE_DIR}/tests/integration/check_system_def
 set(_sysdefault_runs
   "sysdefault|sysdefault: main returns 3|3"
   "sysdefault_spin|sysdefault: main returns 3 while a thread spins|3")
-# A fault ends main's task, rather than the system, only where faults are isolated. The RX's
-# faulting instruction is privileged, so it faults only where tasks run in user mode.
-if(KICKOS_FAULT_ISOLATION AND (KICKOS_MEMORY_ENFORCED OR NOT KICKOS_ARCH STREQUAL "rxv3"))
+# The RX's faulting instruction is privileged, so it faults only where tasks run in user mode.
+if(NOT KICKOS_FAULT_ISOLATION)
+  kickos_inapplicable(sysdefault_fault "faults are not isolated")
+elseif(KICKOS_ARCH STREQUAL "rxv3" AND NOT KICKOS_MEMORY_ENFORCED)
+  kickos_inapplicable(sysdefault_fault
+    "tasks run privileged, so the privileged instruction does not fault")
+else()
   list(APPEND _sysdefault_runs "sysdefault_fault|sysdefault: main faults|${KOS_EXIT_FAULT}|main")
 endif()
 foreach(_run IN LISTS _sysdefault_runs)
   string(REPLACE "|" ";" _run "${_run}")
   list(POP_FRONT _run _target)
+  kickos_app_judge(${_target} tests/integration/check_system_default.sh ARGS ${_run})
   if(KICKOS_ARCH STREQUAL "sim")
     add_test(NAME ${_tag}_${_target}
       COMMAND "${_sysdefault_script}" "$<TARGET_FILE:${_target}>" ${_run})

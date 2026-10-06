@@ -5900,7 +5900,13 @@ milestone does not close while any of them still composes a system.
       taken by `AMP_PARTITION=1 APP=ampping_n0 VARIANT=amp2-n0 tools/bench/bench.sh pizero2350`;
       until then the judge holds only its planted capture.
 
-- [ ] **M10.6: THE EXIT RECORD.** Reconcile `roadmap.md`, `docs/reference/architecture.md`,
+- [ ] **M10.6: THE SELFTEST ORDERED BY EVENTS.** Arms still order threads by sleeping
+      (`EP_CALL_SETTLE_NS` and the like) and fail under a loaded host: a sleep is not an order. Each
+      such arm orders by priority, a semaphore or a mark instead, and releases what it created on
+      every path (`ArmHold`), so one failing arm cannot starve the rest; the census between arms
+      already names a leak at the arm that made it.
+
+- [ ] **M10.7: THE EXIT RECORD.** Reconcile `roadmap.md`, `docs/reference/architecture.md`,
       `docs/reference/invariants.md` and `STATE.md` against what shipped, and record what the green
       runs do not say.
 
@@ -8304,7 +8310,14 @@ duplicated.
       that byte for byte, which is what proves it is the capture protocol rather than the image. The
       board now has a gate-verified fault-isolation witness, TAG `m484p2`. **So its post-fault console
       is NOT an unreliable instrument**, and expecting two plan lines there and slicing from the last
-      one is retired: take the capture write-only.
+      one is retired.
+      **Write-only is retired too (2026-10-05):** the write's own boot is a PC jump under halting
+      debug, not a reset, and on `f411disco` it faulted wild and was halted by `VC_HARDERR` in 2 of
+      23 runs (`DFSR.VCATCH`, `HFSR` FORCED, `CFSR` `IACCVIOL|PRECISERR`). The capture starts the
+      image with a read under reset; 23 of 23 passed under it, which a start that changed nothing
+      does 12 percent of the time at that base rate. **Owed:** 34 clean back-to-back `f411disco`
+      captures in all (5 percent), or 51 (1 percent). `docs/reference/boards.md`, *M4.5.6*, holds
+      the measurement.
       Original notes follow.
       **Superseded reading:** Not the new probers' bug:
       the pre-existing `fault` app truncates at `[f` (338 bytes, `.session/m456-silicon/b4-fault.log`)

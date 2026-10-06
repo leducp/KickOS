@@ -7,6 +7,11 @@
 #   TAG=<tag> tools/bench/bench-fleet.sh              # everything enumerated
 #   TAG=<tag> tools/bench/bench-fleet.sh rx72m xmc4800-relax
 #
+# Exit status: 0 when every image is captured and nothing is owed; 1 on a failed capture, an absent
+# board, an image not run or one no judge names; 3 when every capture passed and the pass still
+# owes a witness: an emulator-judged image on a board with no emulator, a human-judged one, or a
+# clause a capture judge could not evaluate.
+#
 # REMOTE MODE, when the bench is not on this box:
 #   BENCH_HOST=<bench-host> BENCH_PORT=<port> TAG=<tag> tools/bench/bench-fleet.sh
 #
@@ -43,14 +48,14 @@ ALL="rx72m f302nucleo esp32c6-wroom esp32-wroom xmc4800-relax frdmk64f"
 WANT="${*:-$ALL}"
 
 # WHICH IMAGES A BOARD'S BUILD SHIPS, asked of the tree one board at a time, as bench.sh's
-# `<image>|<stdout>|<judge>` rows. The count is a property of that board's own configure: the
-# selftest app cuts its registration list into regions and groups them into as many images as
+# `<image>|<stdout>|<judge>|<args>` rows. The count is a property of that board's own configure:
+# the selftest app cuts its registration list into regions and groups them into as many images as
 # the board's flash or code window takes, once under the kernel's console and once under each
-# console driver the board composes, and each board app names the gate script that judges it. A list here would be a second authority, and this script carried
-# one: it named two boards that had gone to four images and did not name esp32c6-wroom at all,
-# so a fleet pass flashed one image of three on that board. TAP numbering RESTARTS at 1 in each
-# image, so a lone first plan line is a FRACTION of a run and not a short one, and the pass read
-# green for two splits.
+# console driver the board composes, and each image names what judges it. A list here would be a
+# second authority, and this script carried one: it named two boards that had gone to four images
+# and did not name esp32c6-wroom at all, so a fleet pass flashed one image of three on that board.
+# TAP numbering RESTARTS at 1 in each image, so a lone first plan line is a FRACTION of a run and
+# not a short one, and the pass read green for two splits.
 #
 # The configure this does is the one the runs below reuse: same TAG, same board, same variant,
 # so it lands in the same build dir and costs nothing twice.
@@ -69,8 +74,13 @@ has_variant() { # <board> <variant>
   (cd "${TREE:-$RIG_TREE}" && cmake --list-presets=configure 2>/dev/null) | grep -qF "\"$1-$2\""
 }
 # An image only the board's flat build ships (one that reads what enforcement would refuse it) is
-# captured from that build; an image both builds ship is the enforcing build's.
+# captured from that build; an image both builds ship is the enforcing build's, except a
+# <board>:<image> FLAT_ALSO names, which each build's capture witnesses.
 FLAT_VARIANT=flat
+FLAT_ALSO="rx72m:fpclass"
+flat_also() { # <board> <image>
+  printf '%s\n' "$FLAT_ALSO" | tr ' ' '\n' | grep -qxF "$1:$2"
+}
 
 # ONE enumeration of the bus, taken once, wherever the boards are.
 bench_host_select "${BENCH_HOST:-}"
@@ -112,6 +122,7 @@ TAP_JUDGE=tests/integration/check_tap_stream.sh
 # With <variant> set, the image is that variant's build's; with <amp> 1 as well, the run is that
 # variant's AMP partition rather than one image.
 bench_one() {
+  NOT_EVALUATED=""
   local board=$1 app=$2 sn=$3 label=$4 judge=$5 variant=${6:-} amp=${7:-0} out rc
   local -a vars=(TAG="$TAG" APP="$app")
   if [ -n "$variant" ]; then
@@ -134,8 +145,13 @@ bench_one() {
     return 1
   fi
   if [ "$judge" != "$TAP_JUDGE" ]; then
+    NOT_EVALUATED=$(sed -n 's/^NOT EVALUATED: //p' "$out" | paste -sd ';' -)
     rm -f "$out"
-    record "$label" "PASS ($judge)"
+    if [ -n "$NOT_EVALUATED" ]; then
+      record "$label" "PASS ($judge), partly owed: $NOT_EVALUATED"
+    else
+      record "$label" "PASS ($judge)"
+    fi
     return 0
   fi
   # bench-capture.sh already prints the counts; fold them onto one line for the table.
@@ -162,11 +178,72 @@ bench_one() {
   [ "${notokc:-0}" -eq 0 ]
 }
 
+# Files one image of <board> by its judge: a mark is reported apart, and a judged image is
+# captured, or named in a dry run.
+take_image() { # <board> <image> <label> <judge> <args> [variant]
+  local board=$1 img=$2 label=$3 judge=$4 args=$5 variant=${6:-}
+  case $judge in
+    -)
+      UNJUDGED="$UNJUDGED$board $label
+"
+      return
+      ;;
+    emulator)
+      EMULATED="$EMULATED$board $label
+"
+      return
+      ;;
+    emulator-owed)
+      EMULATOR_OWED="$EMULATOR_OWED$board $label
+"
+      return
+      ;;
+    human)
+      HUMAN_OWED="$HUMAN_OWED$board|$label|$args
+"
+      return
+      ;;
+    inapplicable)
+      VOID="$VOID$board|$label|$args
+"
+      return
+      ;;
+    *) ;;
+  esac
+  capture_image "$board" "$img" "$label" "$judge" "$variant" 0
+}
+
+# Captures one judged image, or names it in a dry run, and files the outcome.
+capture_image() { # <board> <image> <label> <judge> <variant> <amp>
+  local board=$1 img=$2 label=$3 judge=$4 variant=$5 amp=$6
+  OWED="$OWED$board $label
+"
+  if [ "$DRY_RUN" = "1" ]; then
+    record "$board/$label" "WOULD FLASH (dry run; judge $judge)"
+    return
+  fi
+  if bench_one "$board" "$img" "$SN" "$board/$label" "$judge" "$variant" "$amp"; then
+    COVERED="$COVERED$board $label
+"
+    if [ -n "$NOT_EVALUATED" ]; then
+      PARTLY="$PARTLY$board|$label|$NOT_EVALUATED
+"
+    fi
+  else
+    FAILED=1
+  fi
+}
+
 FAILED=0
 ABSENT=0
 COVERED=""
 OWED=""
 UNJUDGED=""
+EMULATED=""
+EMULATOR_OWED=""
+HUMAN_OWED=""
+VOID=""
+PARTLY=""
 for board in $WANT; do
   SN=""
   if [ "$DRY_RUN" != "1" ]; then
@@ -194,7 +271,7 @@ $ROWS
 EOF
     if [ -n "$MISS" ]; then
       record "$board" "ABSENT ($MISS)"
-      ABSENT=1
+      ABSENT=$((ABSENT + 1))
       continue
     fi
   fi
@@ -214,25 +291,9 @@ EOF
   # at 1, so a figure in the table below belongs to an image rather than to the board. A console
   # driver is only in the images whose composition names it, so a green kernel-console run says
   # nothing about the driver.
-  while IFS='|' read -r img _stdout judge <&4; do
+  while IFS='|' read -r img _stdout judge args <&4; do
     [ -n "$img" ] || continue
-    if [ "$judge" = "-" ]; then
-      UNJUDGED="$UNJUDGED$board $img
-"
-      continue
-    fi
-    OWED="$OWED$board $img
-"
-    if [ "$DRY_RUN" = "1" ]; then
-      record "$board/$img" "WOULD FLASH (dry run; judge $judge)"
-      continue
-    fi
-    if bench_one "$board" "$img" "$SN" "$board/$img" "$judge"; then
-      COVERED="$COVERED$board $img
-"
-    else
-      FAILED=1
-    fi
+    take_image "$board" "$img" "$img" "$judge" "$args"
   done 4<<ROWS
 $IMAGES
 ROWS
@@ -244,29 +305,13 @@ ROWS
       FAILED=1
     fi
     rm -f "$LERR"
-    while IFS='|' read -r img _stdout judge <&4; do
+    while IFS='|' read -r img _stdout judge args <&4; do
       [ -n "$img" ] || continue
-      if printf '%s\n' "$IMAGES" | awk -F '|' -v i="$img" '$1 == i { f = 1 } END { exit !f }'; then
+      if printf '%s\n' "$IMAGES" | awk -F '|' -v i="$img" '$1 == i { f = 1 } END { exit !f }' \
+        && ! flat_also "$board" "$img"; then
         continue
       fi
-      label="$img ($FLAT_VARIANT)"
-      if [ "$judge" = "-" ]; then
-        UNJUDGED="$UNJUDGED$board $label
-"
-        continue
-      fi
-      OWED="$OWED$board $label
-"
-      if [ "$DRY_RUN" = "1" ]; then
-        record "$board/$label" "WOULD FLASH (dry run; judge $judge)"
-        continue
-      fi
-      if bench_one "$board" "$img" "$SN" "$board/$label" "$judge" "$FLAT_VARIANT"; then
-        COVERED="$COVERED$board $label
-"
-      else
-        FAILED=1
-      fi
+      take_image "$board" "$img" "$img ($FLAT_VARIANT)" "$judge" "$args" "$FLAT_VARIANT"
     done 4<<ROWS
 $FLAT_IMAGES
 ROWS
@@ -280,16 +325,7 @@ ROWS
       UNJUDGED="$UNJUDGED$board $img
 "
     else
-      OWED="$OWED$board $img
-"
-      if [ "$DRY_RUN" = "1" ]; then
-        record "$board/$img" "WOULD FLASH (dry run; judge $judge)"
-      elif bench_one "$board" ampping_n0 "$SN" "$board/$img" "$judge" "$AMP_VARIANT" 1; then
-        COVERED="$COVERED$board $img
-"
-      else
-        FAILED=1
-      fi
+      capture_image "$board" ampping_n0 "$img" "$judge" "$AMP_VARIANT" 1
     fi
   fi
 done
@@ -308,9 +344,19 @@ fi
 echo
 echo "=== image coverage"
 UNCOVERED=0
+CLAUSES=0
 while read -r board img; do
   [ -n "$board" ] || continue
-  if printf '%s' "$COVERED" | grep -qxF "$board $img"; then
+  partly=$(printf '%s' "$PARTLY" | KOS_BOARD="$board" KOS_LABEL="$img" awk -F '|' '
+    $1 == ENVIRON["KOS_BOARD"] && $2 == ENVIRON["KOS_LABEL"] {
+      sub(/^[^|]*[|][^|]*[|]/, "")
+      print
+      exit
+    }')
+  if [ -n "$partly" ]; then
+    printf '  %-16s %-38s captured, partly owed: %s\n' "$board" "$img" "$partly"
+    CLAUSES=$((CLAUSES + $(printf '%s\n' "$partly" | tr ';' '\n' | grep -c .)))
+  elif printf '%s' "$COVERED" | grep -qxF "$board $img"; then
     printf '  %-16s %-38s captured\n' "$board" "$img"
   else
     printf '  %-16s %-38s NOT RUN\n' "$board" "$img"
@@ -326,10 +372,67 @@ while read -r board img; do
 done <<UNJUDGED
 $UNJUDGED
 UNJUDGED
+while read -r board img; do
+  [ -n "$board" ] || continue
+  printf '  %-16s %-38s emulator-judged\n' "$board" "$img"
+done <<EMULATED
+$EMULATED
+EMULATED
+NOWITNESS=0
+while read -r board img; do
+  [ -n "$board" ] || continue
+  printf '  %-16s %-38s emulator-judged, no emulator: owed\n' "$board" "$img"
+  NOWITNESS=$((NOWITNESS + 1))
+done <<EMULATOR_OWED
+$EMULATOR_OWED
+EMULATOR_OWED
+while IFS='|' read -r board img why; do
+  [ -n "$board" ] || continue
+  printf '  %-16s %-38s inapplicable (%s)\n' "$board" "$img" "$why"
+done <<VOID
+$VOID
+VOID
+HUMANS=0
+while IFS='|' read -r board img what; do
+  [ -n "$board" ] || continue
+  printf '  %-16s %-38s human-judged (%s): owed\n' "$board" "$img" "$what"
+  HUMANS=$((HUMANS + 1))
+done <<HUMAN_OWED
+$HUMAN_OWED
+HUMAN_OWED
+if [ "$NOWITNESS" -ne 0 ]; then
+  echo
+  echo "OWED: $NOWITNESS emulator-judged image(s) have no emulator on their board, so nothing has"
+  echo "  witnessed them there and this pass covers none of them."
+fi
+if [ "$HUMANS" -ne 0 ]; then
+  echo
+  echo "OWED: $HUMANS human-judged image(s) carry a verdict only a person reads, which this pass"
+  echo "  cannot see and covers none of."
+fi
+if [ "$CLAUSES" -ne 0 ]; then
+  echo
+  echo "OWED: $CLAUSES clause(s) of captured images' verdicts, an exit status or the system ending,"
+  echo "  which a capture does not carry."
+fi
+if [ "$ABSENT" -ne 0 ]; then
+  echo
+  echo "INCOMPLETE: $ABSENT board(s) were absent, so this pass captured none of their images."
+fi
 if [ "$UNCOVERED" -ne 0 ]; then
   echo
   echo "INCOMPLETE: $UNCOVERED image(s) a board ships were not captured, or no judge names them, so"
   echo "  this pass does not cover those boards."
+fi
+if [ $((ABSENT + UNCOVERED)) -ne 0 ]; then
   exit 1
 fi
-exit $FAILED
+if [ "$FAILED" -ne 0 ]; then
+  exit 1
+fi
+if [ $((NOWITNESS + HUMANS + CLAUSES)) -ne 0 ]; then
+  echo
+  echo "OWED: every capture passed, and the pass still owes the witnesses above."
+  exit 3
+fi
+exit 0

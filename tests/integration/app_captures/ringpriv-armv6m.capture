@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   picopi
+   arch    armv6m
+   cpu     rp2040
+   mpu     enforce
+   sched   tickless
+
+[ringpriv]   CONTROL=0x3
+[ringpriv] ok - CONTROL.nPRIV=1: unprivileged, and off its reset value (a priv msr landed)
+[ringpriv] ok - CONTROL.SPSEL=1: on SP_process, a second bit off reset
+[ringpriv] skip - the msr/mrs arms need armv7m assembler syntax (APSR_nzcvq)
+[ringpriv] PASS (2 arms)

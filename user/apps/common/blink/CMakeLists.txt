@@ -8,3 +8,4 @@
 add_executable(blink main.cc)
 target_link_libraries(blink PRIVATE KickOS::kernel KickOS::system_default)
 kickos_emit_image(blink)
+kickos_human_judged(blink LED)

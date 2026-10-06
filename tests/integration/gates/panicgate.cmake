@@ -37,6 +37,11 @@ set(_pg_re_5 "KERNEL PANIC: \\[panicgate\\] ctl\\?\\?\\?\\? end")
 set(_pg_txt_5 "KERNEL PANIC: [panicgate] ctl???? end")
 
 foreach(_case 1 2 3 4 5)
+  set(_pg_args "${_pg_txt_${_case}}")
+  if(_pg_absent_${_case})
+    list(APPEND _pg_args "${_pg_absent_${_case}}")
+  endif()
+  kickos_app_judge(panicgate${_case} tests/integration/check_qemu_panicgate.sh ARGS ${_pg_args})
   if(KICKOS_ARCH STREQUAL "sim")
     add_test(NAME panicgate${_case} COMMAND "$<TARGET_FILE:panicgate${_case}>")
     # PASS_REGULAR_EXPRESSION also makes CTest ignore the exit status, which

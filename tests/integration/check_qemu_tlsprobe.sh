@@ -2,7 +2,11 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Boot the thread_local witness under QEMU and require its own verdict.
+# Boot the thread_local witness under QEMU, or read a silicon capture of it, and require its own
+# verdict.
+#
+#   check_qemu_tlsprobe.sh <tlsprobe.elf>
+#   KOS_CAPTURE=<log> check_qemu_tlsprobe.sh <board-build> <kickos-source> <cmake>
 #
 # The image decides PASS/FAIL itself, because the properties it checks are ones only it can
 # see: that each thread reads back what IT wrote, that the storage is at a DIFFERENT address
@@ -18,19 +22,26 @@
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
 
-elf="${1:?usage: check_qemu_tlsprobe.sh <tlsprobe.elf>}"
-
-poll_image "$elf" "\[tlsprobe\] PASS"
+if judging_capture; then
+    judge_capture tlsprobe
+    POLL_OK=0
+    if has "^\[tlsprobe\] PASS"; then
+        POLL_OK=1
+    fi
+else
+    elf="${1:?usage: check_qemu_tlsprobe.sh <tlsprobe.elf>}"
+    poll_image "$elf" "\[tlsprobe\] PASS"
+fi
 
 if has "\[tlsprobe\] FAIL"; then
     printf '%s\n' "$OUT" | grep "\[tlsprobe\] FAIL"
-    fail "tlsprobe reported FAIL"
+    cfail error "tlsprobe reported FAIL"
 fi
 if [ "$POLL_OK" -ne 1 ]; then
-    fail "tlsprobe reached no PASS inside ${QEMU_TIMEOUT:-8}s: it printed no verdict, or the
-  one it printed was not a PASS"
+    cfail verdict "tlsprobe reached no PASS: it printed no verdict, or the one it printed was not
+  a PASS"
 fi
 assert_no_panic "tlsprobe panicked before reaching a verdict"
 
-echo "PASS: QEMU tlsprobe gave every thread its own thread_local"
+echo "PASS: tlsprobe gave every thread its own thread_local"
 exit 0
