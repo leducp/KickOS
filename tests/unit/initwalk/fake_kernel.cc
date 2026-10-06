@@ -61,6 +61,10 @@ namespace fake
         };
         Owner g_owner = Owner::KERNEL;
         uint32_t g_reclaims = 0;
+        // The task the console was published for, into g_tasks, or CONSOLE_SELF for the init's
+        // own, which never ends.
+        constexpr int64_t CONSOLE_SELF = -1;
+        int64_t g_console_task = CONSOLE_SELF;
         kos_cap_t g_next_cap = 0;
         Peaks g_peaks;
 
@@ -239,11 +243,27 @@ namespace fake
             return false;
         }
 
+        // Whether the task the console was published for has not ended
+        // (kernel/syscall/cap.cc, EP_CONSOLE_SERVED).
+        bool console_task_live()
+        {
+            if (g_console_task == CONSOLE_SELF)
+            {
+                return true;
+            }
+            return (g_tasks[static_cast<size_t>(g_console_task)].state & KOS_TASK_ENDED) == 0u;
+        }
+
         // The kernel's vacated mark (kernel/syscall/cap.cc): set when an endpoint's WAIT holders
-        // fall to none, whatever drops them. The published console's falling to none gives the
-        // kernel its console back.
+        // fall to none, whatever drops them. The published console's task ending gives the kernel
+        // its console back.
         void settle()
         {
+            if (g_owner == Owner::USER and not console_task_live())
+            {
+                g_owner = Owner::RECLAIMED;
+                g_reclaims++;
+            }
             for (size_t o = 0; o < g_objects.size(); o++)
             {
                 Object& obj = g_objects[o];
@@ -255,11 +275,6 @@ namespace fake
                 if (obj.holders != 0u and now == 0u)
                 {
                     obj.vacated = true;
-                    if (static_cast<int64_t>(o) == g_stdout and g_owner == Owner::USER)
-                    {
-                        g_owner = Owner::RECLAIMED;
-                        g_reclaims++;
-                    }
                 }
                 obj.holders = now;
             }
@@ -278,9 +293,15 @@ namespace fake
         }
 
         // Whether a send that finds no waiting receiver parks rather than being refused
-        // (kernel/include/kickos/endpoint.h, endpoint_receiving).
+        // (kernel/include/kickos/endpoint.h, endpoint_receiving), the published console parking
+        // it while its task lives.
         bool receiving(size_t object)
         {
+            if (static_cast<int64_t>(object) == g_stdout and g_owner == Owner::USER
+                and console_task_live())
+            {
+                return true;
+            }
             return receivers(object) != 0u and not g_objects[object].vacated;
         }
 
@@ -612,6 +633,7 @@ namespace fake
         g_stdout = -1;
         g_owner = Owner::KERNEL;
         g_reclaims = 0;
+        g_console_task = CONSOLE_SELF;
         on_spawn = nullptr;
         g_next_cap = 0x100u;
         g_peaks = Peaks{};
@@ -1834,16 +1856,16 @@ int32_t kos_send_timed(kos_cap_t ep, void const* buf, size_t len, uint32_t timeo
     }
     if (receiving(object))
     {
-        // Parked until its deadline (kernel/syscall/syscall_ipc.cc).
+        // Parked until its deadline, never for a deadline of 0 (kernel/syscall/syscall_ipc.cc).
         advance(static_cast<uint64_t>(timeout_us) * 1000u);
         return finish(call, -KOS_ETIMEDOUT);
     }
     return finish(call, unserved(object));
 }
 
-int kos_console_publish(kos_cap_t ep)
+int kos_console_publish(kos_cap_t ep, kos_task_t task)
 {
-    size_t const call = record("kos_console_publish", {ep});
+    size_t const call = record("kos_console_publish", {ep, task});
     int const rc = scripted(call);
     if (rc != 1)
     {
@@ -1853,6 +1875,21 @@ int kos_console_publish(kos_cap_t ep)
     if (object < 0 or g_objects[static_cast<size_t>(object)].kind != Kind::ENDPOINT)
     {
         return finish(call, -KOS_EBADF);
+    }
+    int64_t served_by = CONSOLE_SELF;
+    if (task != KOS_TASK_NONE)
+    {
+        Task* t = nullptr;
+        int const err = resolve(task, &t);
+        if (err != 0)
+        {
+            return finish(call, err);
+        }
+        if ((t->state & KOS_TASK_ENDED) != 0u)
+        {
+            return finish(call, -KOS_EBUSY);
+        }
+        served_by = t - g_tasks.data();
     }
     // kernel/syscall/cap.cc, cap_console_publish_through: HANDOUT, and a holder without WAIT
     // gains it and the endpoint receives.
@@ -1868,6 +1905,7 @@ int kos_console_publish(kos_cap_t ep)
     }
     g_stdout = object;
     g_owner = Owner::USER;
+    g_console_task = served_by;
     settle();
     return finish(call, 0);
 }

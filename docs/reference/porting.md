@@ -151,6 +151,13 @@ reach. The idempotence is load-bearing rather than incidental: the panic gate is
 `state != RECLAIMED`, so the body runs on devices no driver ever touched
 (`invariants.md`, `panic-console-probe-independent`).
 
+**A board's `KICKOS_DIAG_LINE_MAX` bounds the console's masked work on a held record.** The ring
+is derived from it, and a thread-fault record held for a published console's driver is committed
+under IrqLock in at most L + 6 passes over that ring, L the record's lines, while a held line
+walks it at most once per open record, plus three (`console.md`, "A fault record while a driver owns the
+console"). No task can grow either figure: a board that needs a shorter masked span lowers the
+line bound.
+
 **Decode BOTH fault banks, and print the address.** An ungranted device access does not
 reliably surface as the MPU's own fault: on some Cortex-M a peripheral-bridge error response
 arrives as a **BusFault** rather than MemManage, and on SYSMPU it arrives as an imprecise bus

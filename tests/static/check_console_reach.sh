@@ -2,11 +2,11 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Reachability gate on the fault-record console route. kvprintf_route hands a fault record to a
-# published console driver through cap_console_deliver; any kpanic reachable from there prints,
-# and the print re-enters kvprintf_route, so the delivery runs again with nothing bounding the
-# depth. This gate walks the call graph from that route and fails when a panic terminal is
-# reachable.
+# Reachability gate on the fault-record console route. A fault record is held for a published
+# console driver and handed to it through cap_console_deliver; any kpanic reachable from that
+# route prints, and the print re-enters kvprintf_route, so the record runs again with nothing
+# bounding the depth. This gate walks the call graph from that route and fails when a panic
+# terminal is reachable.
 #
 # tests/lib/scratch_ci.sh configures a SCRATCH tree of its own with -fcallgraph-info=su,da, and
 # tests/static/console_reach.py merges the .ci files through tests/static/trap_redzone.py and

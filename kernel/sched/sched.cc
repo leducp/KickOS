@@ -1202,5 +1202,6 @@ extern "C" void kickos_kernel_core_resched(void)
 extern "C" void kickos_thread_slay_exit(void* arg)
 {
     (void)arg;
+    ::kickos::krecord_abandon();
     ::kickos::sched::exit_current(KOS_EXIT_CANCELLED, ::kickos::sched::EXIT_RETURN);
 }

@@ -4,6 +4,7 @@
 // The park unwind MUST stay total over WaitKind: a cancel that reached only the kinds a
 // thread happens to park on is not a kill.
 
+#include <kickos/console_tx.h>
 #include <kickos/endpoint.h>
 #include <kickos/instance.h>
 #include <kickos/irqlock.h>
@@ -127,6 +128,7 @@ namespace kickos
             case WAIT_SLEEP:
             case WAIT_JOIN:
             case WAIT_TASK_EMPTY:
+            case WAIT_CONSOLE:
             {
                 // Sleep and notification waits have no wait queue. wake removes the timer
                 // entry. A raised bit remains pending in the OBJECT for the next wait if
@@ -195,6 +197,44 @@ namespace kickos
     void thread_cancel(Thread* t)
     {
         thread_cancel_kind(t, CANCEL_KILL);
+    }
+
+    int console_dark_wait(void)
+    {
+        Thread* const c = sched::current();
+        uint32_t epoch = 0;
+        {
+            IrqLock lock;
+            if (park_cancel_pending(c))
+            {
+                return -KOS_ECANCELED;
+            }
+            if (console_dark() == 0)
+            {
+                return 0;
+            }
+            park_queueless(c, WAIT_CONSOLE, nullptr);
+            epoch = c->switch_count;
+            sched::reschedule();
+        }
+        wq_confirm_resume(c, epoch);
+        return static_cast<int>(c->wait_result);
+    }
+
+    void console_dark_wake(void)
+    {
+        Kernel& k = kernel();
+        for (int s = 0; s < k.threads.next; s++)
+        {
+            Thread* const t = &k.threads.slots[s];
+            if (t->wait_kind != WAIT_CONSOLE)
+            {
+                continue;
+            }
+            t->clear_wait_edge();
+            t->wait_result = 0;
+            sched::wake(t);
+        }
     }
 
     void task_cancel_group(Task* t)

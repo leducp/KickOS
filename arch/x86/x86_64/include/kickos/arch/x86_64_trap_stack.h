@@ -34,8 +34,8 @@
 /* The KickOS toolchain's x86_64-elf GCC 16.2 (docs/design-m10-toolchain.md) builds deeper
  * frames than the host compilers the figures below were first measured under. Where it did, the
  * class is reserved at a round figure above its measurement. On qemu-x86_64-bench it measures
- * IRQ, IRQK and IST 592, EXITK and EXITKSW 920, RET and RETSW 904; on qemu-x86_64-smp12 IRQ 672,
- * EXITK 1200, RET 1168, SYSK 2400 and PANIC 608. */
+ * IRQ, IRQK and IST 576, EXITK and EXITKSW 920, RET and RETSW 904; on qemu-x86_64-smp12 IRQ 672,
+ * EXITK 1184, RET 1152, SYSK 2160 and PANIC 576. */
 
 /* struct trap_frame, the frame every entry builds from a 16-byte-aligned top: five hardware
  * words, the stub's error code and vector, fifteen registers. arch_x86_64.cc asserts it. */
@@ -61,13 +61,13 @@
  * arch_x86_64.cc asserts. */
 #define KICKOS_X86_64_TRAP_NEST 824
 
-/* The ring 3 syscall on the block. 1880 on qemu-x86_64, a spawn staging 9 grants and seeding
- * the new task's space, and 1896 on qemu-x86_64-bench, whose 32-slot root table widens
- * spawn_masked to 528; arch_x86_64.cc refuses more than 9 grants:
+/* The ring 3 syscall on the block, reserved at 2048. 1880 on qemu-x86_64, a spawn staging 9
+ * grants and seeding the new task's space, and 1896 on qemu-x86_64-bench, whose 32-slot root
+ * table widens spawn_masked to 528; arch_x86_64.cc refuses more than 9 grants:
  *   syscall_dispatch[144] -> thread_create_call[32] -> spawn_masked[512] -> thread_create[128]
  *   -> task_for[32] -> domain_for[80] -> claim_slot[48] -> aspace_image_seed[144]
  *   -> arch_aspace_map[112] -> map_into[112] x5 -> kickos_frame_alloc[32] -> ... */
-#define KICKOS_X86_64_TRAP_DEPTH_SYSK 1920
+#define KICKOS_X86_64_TRAP_DEPTH_SYSK 2048
 
 /* An interrupt nested below arch_irq_window, the one place a ring 3 syscall opens interrupts on
  * the block: the syscall entry's frame and a ring 0 interrupt's whole extent, FRAME + NEST, which
@@ -113,7 +113,7 @@
 #define KICKOS_X86_64_TRAP_DEPTH_IDLE 64
 
 /* The panic reporter on its own array, below the null return word kickos_panic_stack_enter
- * pushes. 320 on qemu-x86_64-bench under g++ 13:
+ * pushes. 312 on qemu-x86_64 and qemu-x86_64-bench:
  *   kickos_panic_report[16] -> kputs[16] -> kconsole_write[8] -> console_emit[64] -> ...
  *   -> com1_putc[8] -> com1_slot_free[8] */
 #define KICKOS_X86_64_PANIC_FRAME 8
@@ -132,7 +132,7 @@
 #define KICKOS_X86_64_TRAP_WINDOW 1128
 #undef KICKOS_X86_64_TRAP_DEPTH_SYSK
 #define KICKOS_X86_64_TRAP_DEPTH_SYSK 2432
-/* SYSK, SYSPRIV and SYSPRIVSW measure 2400 on qemu-x86_64-smp12, a spawn seeding the new task's
+/* SYSK, SYSPRIV and SYSPRIVSW measure 2160 on qemu-x86_64-smp12, a spawn seeding the new task's
  * space from a 32-slot root table. */
 #undef KICKOS_X86_64_TRAP_DEPTH_SYSPRIV
 #define KICKOS_X86_64_TRAP_DEPTH_SYSPRIV 2432

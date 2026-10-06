@@ -23,6 +23,11 @@
 
 #include "kfixture.h"
 
+// Set where the real kernel/init/console.cc is linked, which defines what these stub.
+#ifndef KSEAM_REAL_CONSOLE
+#define KSEAM_REAL_CONSOLE 0
+#endif
+
 extern "C"
 {
     // A zero lock count marks a capability-sweep gap for injected actions.
@@ -201,6 +206,7 @@ extern "C"
     {
     }
 
+#if not KSEAM_REAL_CONSOLE
     // Trace reclamation after the full sweep to check its order relative to switches.
     void console_note_driver_death(void)
     {
@@ -214,6 +220,26 @@ extern "C"
         kickos::testfix::trace_add("reclaim");
     }
 
+    int console_dark(void)
+    {
+        return static_cast<int>(kickos::testfix::g_console_dark);
+    }
+
+    uint32_t console_held_ready(void)
+    {
+        return kickos::testfix::g_held_len - kickos::testfix::g_held_off;
+    }
+
+    char const* console_held_data(void)
+    {
+        return kickos::testfix::g_held + kickos::testfix::g_held_off;
+    }
+
+    void console_held_take(uint32_t n)
+    {
+        kickos::testfix::g_held_off = kickos::testfix::g_held_off + n;
+    }
+
     // Always fail shutdown so exit(0) cannot hide unrun tests.
     // Tests of last-thread exit must keep another thread live.
     void kickos_terminate(int status)
@@ -221,10 +247,12 @@ extern "C"
         printf("FIXTURE FAIL: kickos_terminate(%d) ended the arm\n", status);
         exit(1);
     }
+#endif
 }
 
 namespace kickos
 {
+#if not KSEAM_REAL_CONSOLE
     void kpanic(char const* msg)
     {
         printf("KERNEL PANIC: %s\n", msg);
@@ -241,10 +269,24 @@ namespace kickos
     }
 #endif
 
-    // Link-only stub.
+    // Link-only stubs: a record here never reaches a console.
+    void krecord_end(void)
+    {
+    }
+
+    void krecord_abandon(void)
+    {
+    }
+
     void kprintf_fault(char const*, ...)
     {
     }
+
+    bool console_window_held_outside(Task const*)
+    {
+        return testfix::g_console_window_held;
+    }
+#endif
 
     // Use a distinct domain per task so reference counts can be tested independently.
     // The production default-user singleton is not shared in this fixture.

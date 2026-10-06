@@ -512,18 +512,18 @@ TEST_F(DrvInstance, every_thread_runs_on_the_declared_core)
         << "the line holder and the threads holding none alike: " << kos_seam_trace();
 }
 
-TEST_F(DrvInstance, a_failed_start_before_the_first_spawn_leaves_the_task_and_endpoint_to_the_init)
+TEST_F(DrvInstance, a_failed_console_start_before_the_first_spawn_ends_its_task_before_it_prints)
 {
     g_seam.irq_claim_fail_at = 2;
     struct kos_driver_instance in = instance_of(k_two);
     EXPECT_EQ(drv::bring_up(k_two, &in), -1);
     EXPECT_EQ(kos_seam_trace(), std::string{"taskmem90 grant90/9/0 watch90/8/7 pub7 claim10 claim! close10 "}
-                                    + NARROW + " print print")
-        << "the claimed line closed, the console narrowed BEFORE the print, no tkill and no close of 7";
-    EXPECT_EQ(in.task, 90u) << "the init slays what it was handed";
+                                    + NARROW + " tslay90 print print")
+        << "the claimed line closed, the console narrowed and its task ended BEFORE the print, no close of 7";
+    EXPECT_EQ(in.task, KOS_TASK_NONE) << "the task is gone, so the init has nothing to slay";
 }
 
-TEST_F(DrvInstance, a_failed_console_start_narrows_before_it_prints_at_every_step)
+TEST_F(DrvInstance, a_failed_console_start_ends_its_task_before_it_prints_at_every_step)
 {
     struct Arm
     {
@@ -564,7 +564,7 @@ TEST_F(DrvInstance, a_failed_console_start_narrows_before_it_prints_at_every_ste
 
     for (Arm const& arm : arms)
     {
-        std::string const tail = std::string{NARROW} + " print print";
+        std::string const tail = std::string{NARROW} + " tslay90 print print";
         ASSERT_GE(arm.trace.size(), tail.size()) << arm.what;
         EXPECT_EQ(arm.trace.substr(arm.trace.size() - tail.size()), tail) << arm.what << ": " << arm.trace;
         EXPECT_EQ(arm.trace.find("tkill"), std::string::npos) << arm.what;
@@ -573,7 +573,7 @@ TEST_F(DrvInstance, a_failed_console_start_narrows_before_it_prints_at_every_ste
 }
 
 // The init's endpoint, narrowed by the first start, is published again by the next one.
-TEST_F(DrvInstance, a_restart_repeats_the_handover_and_a_failure_in_it_narrows_before_it_prints)
+TEST_F(DrvInstance, a_restart_repeats_the_handover_and_a_failure_in_it_ends_its_task_before_it_prints)
 {
     struct kos_driver_instance in = instance_of(k_two);
     EXPECT_EQ(drv::bring_up(k_two, &in), 0);
@@ -587,15 +587,15 @@ TEST_F(DrvInstance, a_restart_repeats_the_handover_and_a_failure_in_it_narrows_b
     EXPECT_EQ(drv::bring_up(k_two, &in), 0);
     EXPECT_EQ(kos_seam_trace(), first) << "the restart publishes the same endpoint and hands over again";
 
-    // The restart's receiver refused: its narrow is what gives the kernel its console back.
+    // The restart's receiver refused: its task's end is what gives the kernel its console back.
     kos_seam_reset();
     g_seam.spawn_fail_at = 2;
     in = instance_of(k_two);
     EXPECT_EQ(drv::bring_up(k_two, &in), -1);
     EXPECT_EQ(kos_seam_trace(), std::string{"taskmem90 grant90/9/0 watch90/8/7 pub7 claim10 claim11"
                                             " note12 badge0 bind close13 badge1 bind close14 spawn50 spawn!"
-                                            " close10 close11 close12 "} + NARROW + " print print")
-        << "no tkill and no close of 7: the task and the endpoint stay the init's";
+                                            " close10 close11 close12 "} + NARROW + " tslay90 print print")
+        << "no close of 7: the endpoint stays the init's";
 }
 
 TEST_F(DrvInstance, a_handover_probe_that_is_not_taken_is_a_failed_start)
@@ -605,8 +605,8 @@ TEST_F(DrvInstance, a_handover_probe_that_is_not_taken_is_a_failed_start)
     EXPECT_EQ(drv::bring_up(k_two, &in), -KOS_EAGAIN);
     EXPECT_EQ(kos_seam_trace(), std::string{"taskmem90 grant90/9/0 watch90/8/7 pub7 claim10 claim11"
                                             " note12 badge0 bind close13 badge1 bind close14 spawn50 spawn51"
-                                            " close10 close11 close12 "} + NARROW + " probe print print")
-        << "narrowed, probed, reported; the init slays the task";
+                                            " close10 close11 close12 "} + NARROW + " probe tslay90 print print")
+        << "narrowed, probed, the task ended, reported";
     EXPECT_PRED2(says, kos_seam_msg(), "probe was not taken");
 }
 
@@ -690,7 +690,7 @@ TEST_F(DrvInstance, a_block_the_descriptor_refuses_to_lay_out_is_a_failed_start_
     EXPECT_EQ(in.task, KOS_TASK_NONE);
 }
 
-TEST_F(DrvInstance, a_failed_console_start_narrows_before_it_prints_at_every_claim_and_bind_step)
+TEST_F(DrvInstance, a_failed_console_start_ends_its_task_before_it_prints_at_every_claim_and_bind_step)
 {
     struct Arm
     {
@@ -722,7 +722,7 @@ TEST_F(DrvInstance, a_failed_console_start_narrows_before_it_prints_at_every_cla
         struct kos_driver_instance in = instance_of(k_two);
         EXPECT_EQ(drv::bring_up(k_two, &in), -1) << a.what;
         std::string const trace = kos_seam_trace();
-        std::string const tail = std::string{NARROW} + " print print";
+        std::string const tail = std::string{NARROW} + " tslay90 print print";
         ASSERT_GE(trace.size(), tail.size()) << a.what;
         EXPECT_EQ(trace.substr(trace.size() - tail.size()), tail) << a.what << ": " << trace;
         EXPECT_EQ(trace.find("tkill"), std::string::npos) << a.what;

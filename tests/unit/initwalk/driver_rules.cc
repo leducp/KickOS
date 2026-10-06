@@ -272,7 +272,7 @@ namespace
         EXPECT_EQ(status("drv").deaths, 1u);
     }
 
-    TEST_F(Driver, a_failed_console_start_narrows_the_endpoint_before_it_prints)
+    TEST_F(Driver, a_failed_console_start_ends_its_task_before_it_prints)
     {
         use("golden_xmc");
         fake::refuse_if("kos_thread_create", -KOS_ENOMEM, 1,
@@ -283,7 +283,7 @@ namespace
         Outcome const outcome = run();
         ASSERT_EQ(outcome.kind, Outcome::Kind::IDLE) << outcome.message;
         EXPECT_NE(fake::console().find("[xmcuartirq] ERROR: driver thread spawn failed\n"), std::string::npos)
-            << "printed on the kernel console the narrowing gave back: " << fake::console();
+            << "printed on the kernel console the task's end gave back: " << fake::console();
         EXPECT_EQ(status("console").deaths, 1u);
         EXPECT_EQ(status("console").state, 0u) << "the composition gives it no restart";
         EXPECT_FALSE(fake::handout(static_cast<size_t>(fake::stdout_object())));
@@ -370,7 +370,7 @@ namespace
         ASSERT_NE(print, second.end());
         EXPECT_LT(narrow - second.begin(), print - second.begin());
         EXPECT_NE(fake::console().find("[xmcuartirq] ERROR: driver thread spawn failed\n"), std::string::npos)
-            << "printed on the kernel console the narrowing gave back: " << fake::console();
+            << "printed on the kernel console the task's end gave back: " << fake::console();
         EXPECT_EQ(fake::reclaims(), 2u) << "at the first instance's death, then at the narrow";
         EXPECT_EQ(status("console").deaths, 2u);
         EXPECT_EQ(status("console").state, 0u);

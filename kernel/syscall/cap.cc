@@ -16,6 +16,7 @@
 #include <kickos/notify.h>
 #include <kickos/sched.h>
 #include <kickos/sync.h>
+#include <kickos/task.h>
 
 #include <kickos/sys/errno.h>
 
@@ -265,11 +266,30 @@ namespace kickos
             }
         }
 
+        // Answer every sender parked on `ep` with `answer`. Caller holds IrqLock.
+        void answer_senders(Endpoint* ep, int32_t answer)
+        {
+            Thread* s;
+            while ((s = wq_pop_highest(ep->send_waiters)) != nullptr)
+            {
+                // A SEND_WAIT caller returns via kos_call's call_state clear.
+                s->wait_result = answer;
+                sched::wake(s);
+            }
+        }
+
+        // Answer every sender parked on `ep` what a new one would be told. Caller holds IrqLock.
+        void refuse_senders(Endpoint* ep)
+        {
+            answer_senders(ep, endpoint_unserved(ep, 0));
+        }
+
         // `dropped` leaves a cap naming endpoint `obj`, by a close, a teardown or a narrow.
         // Dropping the LAST WAIT-bearing cap leaves the endpoint with no receiver, so every
         // parked sender is answered what a new caller would be: -KOS_EAGAIN while a holder of
         // the handout right remains, -KOS_ECONNREFUSED once none does. Fired exactly once
-        // (recv_holders -> 0), on a voluntary close, an exit teardown and a narrow alike.
+        // (recv_holders -> 0), on a voluntary close, an exit teardown and a narrow alike. The
+        // published console while its task lives is the exception: its senders stay parked.
         void endpoint_rights_dropped(Thread* closer, int obj, uint8_t dropped, bool teardown)
         {
             Endpoint* ep = kernel().endpoints.resolve(obj);
@@ -314,23 +334,11 @@ namespace kickos
                 return;
             }
             ep->vacated = 1;
-            // Mark console-driver loss before waking the parked senders: inline switching can
-            // run them immediately. Keep the marker if reclaim is deferred while an IRQ thread
-            // still owns the register window. exit_current retries after thread death
-            // releases that window.
-            if (obj == stdout_target())
+            if (ep->console == EP_CONSOLE_SERVED)
             {
-                console_note_driver_death();
-                console_on_driver_death();
+                return;
             }
-            int32_t const answer = endpoint_unserved(ep, 0);
-            Thread* s;
-            while ((s = wq_pop_highest(ep->send_waiters)) != nullptr)
-            {
-                // A SEND_WAIT caller returns via kos_call's call_state clear.
-                s->wait_result = answer;
-                sched::wake(s);
-            }
+            refuse_senders(ep);
         }
 
         // Per-type close/exit protocol, run BEFORE detach + drop at both call sites.
@@ -1118,6 +1126,11 @@ namespace kickos
 
     void cap_console_reset()
     {
+        Endpoint* const ep = cap_console_endpoint();
+        if (ep != nullptr)
+        {
+            ep->console = EP_CONSOLE_NONE;
+        }
         stdout_target() = KCAP_STDOUT_NONE;
     }
 
@@ -1610,19 +1623,55 @@ namespace kickos
             obj_ref_undo(CapType::CAP_ENDPOINT, obj_handle, 0);
             return false;
         }
+        Endpoint* const old = cap_console_endpoint();
+        if (old != nullptr)
+        {
+            old->console = EP_CONSOLE_NONE;
+            if (stdout_target() != obj_handle)
+            {
+                // -KOS_EAGAIN and not the endpoint's own answer: -KOS_ECONNREFUSED makes
+                // stdout_write close the seat moved here.
+                Kernel& k = kernel();
+                for (int i = 0; i < KICKOS_THREAD_SLOTS; i++)
+                {
+                    Thread* const th = &k.threads.slots[i];
+                    if (not cap_run_held(th->caps))
+                    {
+                        continue;
+                    }
+                    CapEntry const& e = *cap_slot(th->caps, KOS_CAP_STDOUT);
+                    if (e.type == static_cast<uint8_t>(CapType::CAP_ENDPOINT)
+                        and e.obj == stdout_target())
+                    {
+                        (void)cap_seat_stdout(th, obj_handle);
+                    }
+                }
+                answer_senders(old, -KOS_EAGAIN);
+            }
+        }
         if (stdout_target() != KCAP_STDOUT_NONE)
         {
             endpoint_ref_drop(stdout_target(), /*teardown=*/false);
         }
         stdout_target() = obj_handle;
+        // No task serves it until cap_console_serve names one.
+        Endpoint* const ep = cap_console_endpoint();
+        if (ep != nullptr)
+        {
+            ep->console = EP_CONSOLE_ENDED;
+        }
         return true;
     }
 
-    int cap_console_publish_through(Thread* publisher, CapEntry* e)
+    int cap_console_publish_through(Thread* publisher, CapEntry* e, Task* served_by)
     {
         if ((e->rights & CAP_HANDOUT) == 0)
         {
             return -KOS_EACCES;
+        }
+        if (console_window_held_outside(served_by))
+        {
+            return -KOS_EBUSY;
         }
         Endpoint* const ep = kernel().endpoints.resolve(e->obj);
         KICKOS_DEBUG_ASSERT(ep != nullptr);
@@ -1641,17 +1690,44 @@ namespace kickos
             ep->recv_holders++;
             ep->vacated = 0;
         }
+        cap_console_serve(served_by);
         return 0;
     }
 
-    bool cap_console_target(int* out)
+    void cap_console_serve(Task* t)
+    {
+        task_console_serve(t);
+        Endpoint* const ep = cap_console_endpoint();
+        if (ep != nullptr and t != nullptr)
+        {
+            ep->console = EP_CONSOLE_SERVED;
+        }
+    }
+
+    void cap_console_task_ended()
+    {
+        // Before the senders are woken, who may run at once, and while the slain receivers still
+        // wait, so no line is handed to one.
+        Endpoint* const ep = cap_console_endpoint();
+        if (ep != nullptr)
+        {
+            ep->console = EP_CONSOLE_ENDED;
+        }
+        console_note_driver_death();
+        console_on_driver_death();
+        if (ep != nullptr)
+        {
+            refuse_senders(ep);
+        }
+    }
+
+    Endpoint* cap_console_endpoint()
     {
         if (stdout_target() == KCAP_STDOUT_NONE)
         {
-            return false;
+            return nullptr;
         }
-        *out = stdout_target();
-        return true;
+        return kernel().endpoints.resolve(stdout_target());
     }
 
     bool cap_console_serves(Thread const* t)
@@ -1667,6 +1743,6 @@ namespace kickos
             return false;
         }
         Endpoint const* const ep = kernel().endpoints.resolve(e.obj);
-        return ep != nullptr and endpoint_receiving(ep);
+        return ep != nullptr and ep->console == EP_CONSOLE_SERVED;
     }
 }

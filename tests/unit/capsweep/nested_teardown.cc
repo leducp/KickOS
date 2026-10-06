@@ -17,6 +17,7 @@
 #include <kickos/kernel.h>
 #include <kickos/sched.h>
 #include <kickos/sync.h>
+#include <kickos/task.h>
 
 #include <kickos/sys/errno.h>
 
@@ -153,10 +154,12 @@ namespace kickos
                 return sender;
             }
 
-            // The published console, served by `owner`. A publisher of its own, so `owner`
-            // holds exactly ONE cap on the endpoint and the sweep's recv_holders arithmetic is
-            // the arm's subject rather than the seat in slot 0.
-            int publish_console_served_by(Thread* owner, int index, int publisher_slot)
+            // The published console, served by `owner` for the task `served_by`, or for no task
+            // at all where it is null. A publisher of its own, so `owner` holds exactly ONE cap
+            // on the endpoint and the sweep's recv_holders arithmetic is the arm's subject rather
+            // than the seat in slot 0.
+            int publish_console_served_by(Thread* owner, int index, int publisher_slot,
+                                          Task* served_by = nullptr)
             {
                 Thread* const publisher = spawn(publisher_slot, PRIO_PEER);
                 attach_caps(publisher, KICKOS_CAP_FIRST_DYNAMIC + 1);
@@ -170,6 +173,10 @@ namespace kickos
                 // last reference and take a leak-never-strand branch instead of this arm.
                 EXPECT_TRUE(obj_ref_inc(CapType::CAP_ENDPOINT, handle, CAP_WAIT))
                     << "fixture: the receiver cap took its references";
+                {
+                    IrqLock lock;
+                    cap_console_serve(served_by);
+                }
                 return handle;
             }
 
@@ -307,15 +314,13 @@ namespace kickos
 
         // --- the console the same wake exposes ------------------------------------------
 
-        // The other name-keyed release, and the reason the pass above must precede the loop:
-        // the reclaim runs at the NOTE, in the masked window that EPIPEs the peer, so no peer
-        // can observe a console the sweep has already decided is dead. Dated by the trace,
-        // which is the only oracle that can fail on this being moved after the loop.
-        TEST_F(CapSweep, the_endpoint_arm_reclaims_the_console_before_it_drops_the_lock)
+        // A console is dead only when its task ends: the sweep of its last receiver notes
+        // nothing, reclaims nothing, and leaves the sender parked on it parked.
+        TEST_F(CapSweep, the_last_receivers_sweep_leaves_a_live_console_and_its_sender_parked)
         {
             Thread* const outer = dying_sweeper(0, SWEEP_WIDTH);
             Thread* const sender = spawn(1, PRIO_PEER);
-            int const handle = publish_console_served_by(outer, KICKOS_CAP_FIRST_DYNAMIC, 2);
+            int const handle = publish_console_served_by(outer, KICKOS_CAP_FIRST_DYNAMIC, 2, task(0));
             park_plain_sender(sender, kernel().endpoints.resolve(handle));
 
             trace_reset();
@@ -323,15 +328,30 @@ namespace kickos
 
             cap_teardown(outer);
 
-            EXPECT_STREQ(trace(), "gap1 note reclaim gap2 gap3 gap4")
-                << "note and reclaim both land inside the chunk that EPIPEd the sender";
-            EXPECT_EQ(sender->wait_result, -KOS_ECONNREFUSED) << "the sender was released by that arm";
-            EXPECT_EQ(g_console_noted, 1u) << "the published endpoint lost its last receiver";
-            EXPECT_EQ(g_console_reclaimed, 1u) << "exactly once";
+            EXPECT_STREQ(trace(), "gap1 gap2 gap3 gap4") << "the sweep decided nothing about the console";
+            EXPECT_EQ(g_console_noted, 0u) << "a receiver's exit was taken for the console's death";
+            EXPECT_EQ(g_console_reclaimed, 0u);
+            EXPECT_EQ(sender->state, ThreadState::BLOCKED) << "the sender was released";
+            EXPECT_EQ(sender->wait_kind, WAIT_EP_SEND) << "and it still waits on the endpoint";
+        }
+
+        // The control: the same sweep with no task serving the console releases the sender, so
+        // the arm above cannot pass on a sweep that releases nobody.
+        TEST_F(CapSweep, the_same_sweep_with_no_serving_task_releases_the_sender)
+        {
+            Thread* const outer = dying_sweeper(0, SWEEP_WIDTH);
+            Thread* const sender = spawn(1, PRIO_PEER);
+            int const handle = publish_console_served_by(outer, KICKOS_CAP_FIRST_DYNAMIC, 2);
+            park_plain_sender(sender, kernel().endpoints.resolve(handle));
+
+            cap_teardown(outer);
+
+            EXPECT_EQ(sender->wait_result, -KOS_ECONNREFUSED);
+            EXPECT_EQ(g_console_noted, 0u);
         }
 
         // The control: the same sweep over an UNPUBLISHED endpoint decides nothing about the
-        // console, so the arm above cannot pass on a reclaim that fires for any dying thread.
+        // console either.
         TEST_F(CapSweep, a_sweep_over_an_unpublished_endpoint_reclaims_nothing)
         {
             Thread* const outer = dying_sweeper(0, SWEEP_WIDTH);
@@ -347,78 +367,84 @@ namespace kickos
             EXPECT_EQ(g_console_reclaimed, 0u) << "and nothing was reclaimed";
         }
 
-        // --- what a live sweep does to a concurrent voluntary close --------------------
+        // --- the console's task ending ------------------------------------------------
 
-        // A close that takes the published endpoint's last receiver away reclaims for the
-        // CALLER, at the same site the sweep uses, and a sweep in flight elsewhere does not
-        // postpone it: a counted sweep has already released every line it held.
-        TEST_F(CapSweep, a_close_in_a_chunk_gap_reclaims_the_console_at_once)
-        {
-            Thread* const outer = dying_sweeper(0, SWEEP_WIDTH);
-            g_closer = spawn(1, PRIO_PEER);
-            attach_caps(g_closer, KICKOS_CAP_FIRST_DYNAMIC + 1);
-            (void) publish_console_served_by(g_closer, KICKOS_CAP_FIRST_DYNAMIC, 2);
-            g_closer_cap = cap_handle_at(g_closer, KICKOS_CAP_FIRST_DYNAMIC);
-
-            trace_reset();
-            run_in_chunk_gap(close_the_closers_cap, GAP_AFTER_FIRST_CHUNK);
-
-            cap_teardown(outer);
-
-            EXPECT_STREQ(trace(), "gap1 gap2 close note reclaim gap3 gap4")
-                << "the close lands between chunks and decides the console there";
-            EXPECT_EQ(g_console_reclaimed, 1u)
-                << "a live sweep elsewhere does not postpone the closer's reclaim";
-            EXPECT_FALSE(cap_teardown_active()) << "the sweep balanced its depth";
-        }
-
-        // The control for the arm above: the same close with no sweep in flight, which is what
-        // makes that one a claim about the sweep rather than about the close site itself.
-        TEST_F(CapSweep, the_same_close_outside_a_sweep_reclaims_at_once)
+        // A voluntary close of the last receiver decides nothing either.
+        TEST_F(CapSweep, closing_the_last_receiver_of_a_live_console_reclaims_nothing)
         {
             g_closer = spawn(0, PRIO_PEER);
             attach_caps(g_closer, KICKOS_CAP_FIRST_DYNAMIC + 1);
-            (void) publish_console_served_by(g_closer, KICKOS_CAP_FIRST_DYNAMIC, 1);
+            (void) publish_console_served_by(g_closer, KICKOS_CAP_FIRST_DYNAMIC, 1, task(0));
             g_closer_cap = cap_handle_at(g_closer, KICKOS_CAP_FIRST_DYNAMIC);
 
             trace_reset();
             close_the_closers_cap();
 
-            EXPECT_STREQ(trace(), "close note reclaim")
-                << "the closer notes and reclaims the console itself";
-            EXPECT_EQ(g_console_reclaimed, 1u) << "exactly once";
+            EXPECT_STREQ(trace(), "close");
+            EXPECT_EQ(g_console_noted, 0u);
+            EXPECT_EQ(g_console_reclaimed, 0u);
         }
 
-        // The switch the close ADMITS, which no arm above can show: their closer is either
-        // dying or under every peer, so wake declines and the EPIPE loop is silent. Here
-        // the closer is alive and the released sender outranks it, so the wake reaches
-        // arch_switch, which swaps INLINE on the sim. The trace is the only oracle that
+        // The console's task ending is its death: the note and the reclaim land before the
+        // sender parked on the receiver-less endpoint is released, and that release admits
+        // the switch to it, which swaps INLINE on the sim. The trace is the only oracle that
         // fails when the console decision moves after the wake.
-        TEST_F(CapSweep, a_voluntary_close_reclaims_before_the_wake_it_admits)
+        TEST_F(CapSweep, the_consoles_task_ending_reclaims_before_the_wake_it_admits)
         {
             g_closer = spawn(0, PRIO_CLOSER);
             attach_caps(g_closer, KICKOS_CAP_FIRST_DYNAMIC + 1);
-            int const handle = publish_console_served_by(g_closer, KICKOS_CAP_FIRST_DYNAMIC, 1);
+            Task* const served = task(0);
+            int const handle = publish_console_served_by(g_closer, KICKOS_CAP_FIRST_DYNAMIC, 1, served);
             g_closer_cap = cap_handle_at(g_closer, KICKOS_CAP_FIRST_DYNAMIC);
             Thread* const sender = spawn(2, PRIO_ABOVE_CLOSER);
             park_plain_sender(sender, kernel().endpoints.resolve(handle));
+            close_the_closers_cap();
+            ASSERT_EQ(sender->state, ThreadState::BLOCKED) << "fixture: the console still parks the sender";
 
             {
                 IrqLock lock;
                 sched::reschedule();
             }
             EXPECT_EQ(kernel().current[kickos_kernel_core()], g_closer) << "fixture: the closer holds the CPU";
-            EXPECT_FALSE(g_closer->dying) << "fixture: a voluntary close, not a teardown";
 
             trace_reset();
-            close_the_closers_cap();
+            {
+                IrqLock lock;
+                task_end(served, 0, true);
+            }
 
-            EXPECT_STREQ(trace(), "close note reclaim switch1>3")
-                << "the console is decided before the sender the same call releases can run";
+            EXPECT_STREQ(trace(), "note reclaim switch1>3")
+                << "the console is decided before the sender the task's end releases can run";
             EXPECT_EQ(sender->wait_result, -KOS_ECONNREFUSED)
-                << "and it is a sender THIS close released, not an unrelated thread";
-            EXPECT_EQ(g_console_noted, 1u) << "the published endpoint lost its last receiver";
-            EXPECT_EQ(g_console_reclaimed, 1u) << "exactly once";
+                << "and it is a sender that end released, not an unrelated thread";
+            EXPECT_EQ(g_console_noted, 1u);
+            EXPECT_EQ(g_console_reclaimed, 1u);
+            {
+                IrqLock lock;
+                EXPECT_EQ(cap_console_endpoint()->console, EP_CONSOLE_ENDED)
+                    << "the console still takes sends after its task ended";
+            }
+        }
+
+        // A task whose slot goes back without it ever ending, a start that failed before its
+        // first thread, is the console's death too.
+        TEST_F(CapSweep, the_consoles_task_slot_going_back_is_its_death)
+        {
+            g_closer = spawn(0, PRIO_PEER);
+            attach_caps(g_closer, KICKOS_CAP_FIRST_DYNAMIC + 1);
+            Task* const served = task(0);
+            int const handle = publish_console_served_by(g_closer, KICKOS_CAP_FIRST_DYNAMIC, 1, served);
+            Thread* const sender = spawn(2, PRIO_PEER);
+            park_plain_sender(sender, kernel().endpoints.resolve(handle));
+            {
+                IrqLock lock;
+                task_drop_hold(served);
+            }
+            EXPECT_EQ(g_console_noted, 1u);
+            EXPECT_EQ(g_console_reclaimed, 1u);
+            EXPECT_EQ(sender->wait_result, -KOS_EAGAIN)
+                << "the sender parked on the console was not answered at the slot's return";
+            EXPECT_NE(sender->state, ThreadState::BLOCKED);
         }
 
         // --- the vacated endpoint ---------------------------------------------------------

@@ -42,14 +42,32 @@ void trap()
     }
 }
 
-int console_handover_finish(kos_cap_t ep, char const* tag)
+namespace
 {
-    (void)kos_cap_narrow(ep, KOS_DRV_HANDOVER_KEPT);
+void end_failed_task(struct kos_driver_instance& in)
+{
+    if (in.task != KOS_TASK_NONE and kos_task_slay(in.task, KOS_DRV_HANDOVER_PROBE_US) == 0)
+    {
+        in.task = KOS_TASK_NONE;
+    }
+}
+}
+
+void console_start_failed(struct kos_driver_instance& in)
+{
+    (void)kos_cap_narrow(in.endpoint, KOS_DRV_HANDOVER_KEPT);
+    end_failed_task(in);
+}
+
+int console_handover_finish(struct kos_driver_instance& in, char const* tag)
+{
+    (void)kos_cap_narrow(in.endpoint, KOS_DRV_HANDOVER_KEPT);
     int const probe = kos_send_timed(KOS_CAP_STDOUT, "", 0, KOS_DRV_HANDOVER_PROBE_US);
     if (probe >= 0)
     {
         return 0;
     }
+    end_failed_task(in);
     (void)fail(tag, "ERROR: the console handover probe was not taken\n");
     return probe;
 }
@@ -170,7 +188,7 @@ namespace
 // What a failed bring-up given an instance made goes; a console endpoint is narrowed before the
 // diagnostic prints, its WAIT being what holds the console; the task and the endpoint stay the
 // init's.
-int instance_failed(Descriptor const& d, struct kos_driver_instance const& in, kos_cap_t const* line,
+int instance_failed(Descriptor const& d, struct kos_driver_instance& in, kos_cap_t const* line,
                     uint8_t claimed, kos_cap_t note, char const* msg)
 {
     for (uint8_t i = 0; i < claimed; i++)
@@ -183,7 +201,7 @@ int instance_failed(Descriptor const& d, struct kos_driver_instance const& in, k
     }
     if (d.ep_posture == KOS_DRV_EP_HANDOVER)
     {
-        (void)kos_cap_narrow(in.endpoint, KOS_DRV_HANDOVER_KEPT);
+        console_start_failed(in);
     }
     return fail(d.tag, msg);
 }
@@ -253,7 +271,7 @@ int instance_bring_up(Descriptor const& d, struct kos_driver_instance& in)
     }
     // PUBLISH BEFORE CLAIM: irq_claim refuses a line while any handler but the default is
     // attached, and only the publish detaches the kernel's own ring from that vector.
-    if (d.ep_posture == KOS_DRV_EP_HANDOVER and kos_console_publish(in.endpoint) != 0)
+    if (d.ep_posture == KOS_DRV_EP_HANDOVER and kos_console_publish(in.endpoint, task) != 0)
     {
         return instance_failed(d, in, line, 0, note, "ERROR: console_publish failed\n");
     }
@@ -346,7 +364,7 @@ int instance_bring_up(Descriptor const& d, struct kos_driver_instance& in)
     }
     if (d.ep_posture == KOS_DRV_EP_HANDOVER)
     {
-        return console_handover_finish(in.endpoint, d.tag);
+        return console_handover_finish(in, d.tag);
     }
     return 0;
 }

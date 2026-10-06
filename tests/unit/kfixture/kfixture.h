@@ -46,8 +46,17 @@ namespace kickos
         uint16_t domain_refs(Domain const* d);
 
         extern uint32_t g_switches;
+        // The kernel records held for the published console: [g_held_off, g_held_len) of
+        // g_held is what console_held_ready and console_held_data answer. Arms seed it; reset clears it.
+        extern char g_held[128];
+        extern uint32_t g_held_len;
+        extern uint32_t g_held_off;
         extern uint32_t g_console_noted;
         extern uint32_t g_console_reclaimed;
+        // What console_dark answers: the kernel console's dark window. Reset clears it.
+        extern bool g_console_dark;
+        // What console_window_held_outside answers. Reset clears it.
+        extern bool g_console_window_held;
         extern uint32_t g_parked;
 
         // Fixture-owned TCB storage outside ThreadPool.

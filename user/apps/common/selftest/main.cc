@@ -14,7 +14,9 @@
 
 #if KICKOS_LIBC_REENT
 #include <errno.h>
+#include <fcntl.h>
 #include <stdlib.h>
+#include <unistd.h>
 #endif
 
 using namespace selftest;
@@ -8056,7 +8058,7 @@ namespace
     {
         // Unprivileged caller: rejected before any console state change, so this never
         // actually hands over the console. The rest of the suite keeps printing.
-        g_pub_rc = kos_console_publish(1);
+        g_pub_rc = kos_console_publish(1, KOS_TASK_NONE);
         kos_sem_post(CH_DONE);
     }
     void t_console_publish()
@@ -8066,8 +8068,8 @@ namespace
         // test never publishes anything itself.
         // The -KOS_EBADF assertions are exact: the AUTH_CONSOLE gate runs before the cap
         // resolve, so a main that lost the bit answers -KOS_EPERM and this test fails.
-        TAP_CHECK(kos_console_publish(KOS_CAP_NONE) == -KOS_EBADF);
-        TAP_CHECK(kos_console_publish(0x7fffffff) == -KOS_EBADF);
+        TAP_CHECK(kos_console_publish(KOS_CAP_NONE, KOS_TASK_NONE) == -KOS_EBADF);
+        TAP_CHECK(kos_console_publish(0x7fffffff, KOS_TASK_NONE) == -KOS_EBADF);
         // Unprivileged child: the privileged-only gate rejects it.
         g_pub_rc = -99;
         kos_cap_grant caps[] = {{g_done, CH_FULL}};
@@ -8077,24 +8079,198 @@ namespace
         TAP_CHECK(g_pub_rc == -KOS_EPERM);
     }
 
-    // --- a console published again through HANDOUT, and given back when its last WAIT goes ---
-    // main's own stdout is the endpoint it publishes, so from each publish until main's narrow
-    // main writes nothing: a TAP line there would park main on itself. Each arm's own line, and
-    // every line after, reaches the wire only once the kernel console is back, which is what the
-    // stream gate counts.
+    // --- a console published through HANDOUT for a task, given back when that task ends -----
+    // main's own stdout is the endpoint it publishes, so from each publish until the task's end
+    // main writes nothing: a TAP line there would park main on a console nobody receives on.
+    // Each arm's own lines, and every line after, reach the wire only once the kernel console is
+    // back, which is what the stream gate counts.
     constexpr uint32_t CON_KEPT = KOS_CAP_SIGNAL | KOS_CAP_TRANSFER | KOS_CAP_HANDOUT;
     constexpr uint32_t CON_PARK_US = 1000;
     constexpr uint32_t CON_SEND_US = 1000000;
     constexpr uint32_t CON_JOIN_US = 60000;
     kos_cap_t g_con_ep = KOS_CAP_NONE;
-    char g_con_got[4] = {0};
-    int32_t g_con_n = -99;
-
+    // Takes one message and exits.
     void con_driver(void*) // caps: the console endpoint@1, WAIT only
     {
+        char got[4];
         struct kos_reply_recv_opts o;
         kos_reply_recv_opts_init(&o, KOS_SPAWN_DELEGATED_CAP0, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
-        g_con_n = kos_reply_recv(KOS_CAP_NONE, g_con_got, kos_call_lens_pack(0, sizeof(g_con_got)), &o);
+        (void)kos_reply_recv(KOS_CAP_NONE, got, kos_call_lens_pack(0, sizeof(got)), &o);
+    }
+
+    // The driver task's entry: it holds no right on the console and lives until main lets it go.
+    void con_keeper(void*) // caps: hold@1
+    {
+        (void)kos_sem_wait(KOS_SPAWN_DELEGATED_CAP0);
+    }
+
+    // A stdout client spawned after the publish, so its stdout is the console's endpoint. In
+    // main's task, so main reads what its send answered: a driver task may have its own space.
+    int32_t g_con_sent = -99;
+    void con_writer(void*)
+    {
+        g_con_sent = kos_send(KOS_CAP_STDOUT, "hi", 2);
+    }
+
+    struct ConNonblock
+    {
+        size_t tried = 99;
+        int32_t sent = -99;
+        bool set = false;
+        bool read_back = false;
+        bool would_block = false;
+        bool cleared = false;
+        bool main_blocking = false;
+        int32_t main_sent = -99;
+        bool fcntl_refusals = false;
+    };
+
+    ConNonblock g_nb;
+
+    // O_NONBLOCK is the task's: set here, in a task of its own, it leaves main's blocking.
+    bool con_nonblock_set(bool on)
+    {
+#if not KICKOS_LIBC_REENT
+        // The host's own fcntl and write would act on the harness's stdout.
+        int op = KOS_NONBLOCK_CLEAR;
+        if (on)
+        {
+            op = KOS_NONBLOCK_SET;
+        }
+        return kos_task_nonblock(op) == static_cast<int>(on);
+#else
+        int flags = 0;
+        if (on)
+        {
+            flags = O_NONBLOCK;
+        }
+        return fcntl(1, F_SETFL, flags) == 0;
+#endif
+    }
+
+    bool con_nonblocking()
+    {
+#if not KICKOS_LIBC_REENT
+        return kos_task_nonblock(KOS_NONBLOCK_GET) == 1;
+#else
+        return (fcntl(1, F_GETFL) & O_NONBLOCK) != 0;
+#endif
+    }
+
+    // What the probe saw, carried out in its task's exit status: a task of its own may have its
+    // own copy of this image's data.
+    constexpr int NB_RAN = 1 << 6;
+    constexpr int NB_SET = 1 << 0;
+    constexpr int NB_READ_BACK = 1 << 1;
+    constexpr int NB_SENT = 1 << 2;
+    constexpr int NB_TRIED = 1 << 3;
+    constexpr int NB_WOULD_BLOCK = 1 << 4;
+    constexpr int NB_CLEARED = 1 << 5;
+
+    // Non-blocking writes against a console whose task lives and nobody receives on: nothing is
+    // taken and the writer carries on at once. Nothing before the first post can wait.
+    void con_nb_probe(void*) // caps: go@1, back@2
+    {
+        char const probe = 'x';
+        int seen = NB_RAN;
+        if (con_nonblock_set(true))
+        {
+            seen |= NB_SET;
+        }
+        if (con_nonblocking())
+        {
+            seen |= NB_READ_BACK;
+        }
+        (void)kos_sem_post(KOS_SPAWN_DELEGATED_CAP0 + 1);
+        (void)kos_sem_wait(KOS_SPAWN_DELEGATED_CAP0);
+        if (kos_send(KOS_CAP_STDOUT, &probe, 1) == -KOS_ETIMEDOUT)
+        {
+            seen |= NB_SENT;
+        }
+        if (kickos::stdout_write(&probe, 1) == 0u)
+        {
+            seen |= NB_TRIED;
+        }
+#if not KICKOS_LIBC_REENT
+        seen |= NB_WOULD_BLOCK;
+#else
+        errno = 0;
+        int const wrote = static_cast<int>(write(1, &probe, 1));
+        if (wrote == -1 and errno == EAGAIN)
+        {
+            seen |= NB_WOULD_BLOCK;
+        }
+#endif
+        (void)con_nonblock_set(false);
+        if (not con_nonblocking())
+        {
+            seen |= NB_CLEARED;
+        }
+        kos_exit(seen);
+    }
+
+    // fcntl knows fds 0 to 2 and F_GETFL, F_SETFL, F_GETFD, F_SETFD, and refuses the rest.
+    bool con_fcntl_refusals()
+    {
+#if not KICKOS_LIBC_REENT
+        return true;
+#else
+        errno = 0;
+        bool const bad_fd = fcntl(3, F_GETFL) == -1 and errno == EBADF;
+        errno = 0;
+        bool const bad_cmd = fcntl(1, F_DUPFD, 3) == -1 and errno == EINVAL;
+        bool const getfd = fcntl(2, F_GETFD) == 0;
+        return bad_fd and bad_cmd and getfd and (fcntl(0, F_GETFL) & O_ACCMODE) == O_RDONLY;
+#endif
+    }
+
+    // main's side: while the probe's task is non-blocking, main's is not, and its send parks.
+    void con_nonblock()
+    {
+        g_nb = ConNonblock{};
+        g_nb.fcntl_refusals = con_fcntl_refusals();
+        kos_task_t nb_task = KOS_TASK_NONE;
+        kos_cap_t go = KOS_CAP_NONE;
+        kos_cap_t back = KOS_CAP_NONE;
+        if (kos_task_create(nullptr, 0, 0, &nb_task) != 0 or kos_sem_create(0, &go) != 0
+            or kos_sem_create(0, &back) != 0)
+        {
+            return;
+        }
+        kos_cap_grant const caps[] = {{go, CH_FULL}, {back, CH_FULL}};
+        auto probe = kos::thread::create_caps(con_nb_probe, nullptr, "connb", 10, caps, 2,
+                                              KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr,
+                                              nb_task);
+        int seen = 0;
+        if (probe.valid())
+        {
+            (void)kos_sem_wait(back);
+            char const p = 'y';
+            g_nb.main_blocking = not con_nonblocking();
+            g_nb.main_sent = kos_send_timed(KOS_CAP_STDOUT, &p, 1, CON_PARK_US);
+            (void)kos_sem_post(go);
+            if (probe.join(CON_JOIN_US) != 0 or kos_task_exit_status(nb_task, &seen) != 0)
+            {
+                seen = 0;
+            }
+        }
+        g_nb.set = (seen & NB_SET) != 0;
+        g_nb.read_back = (seen & NB_READ_BACK) != 0;
+        g_nb.sent = -99;
+        if ((seen & NB_SENT) != 0)
+        {
+            g_nb.sent = -KOS_ETIMEDOUT;
+        }
+        g_nb.tried = 99;
+        if ((seen & NB_TRIED) != 0)
+        {
+            g_nb.tried = 0;
+        }
+        g_nb.would_block = (seen & NB_WOULD_BLOCK) != 0;
+        g_nb.cleared = (seen & NB_CLEARED) != 0;
+        (void)kos_task_kill(nb_task);
+        (void)kos_handle_close(go);
+        (void)kos_handle_close(back);
     }
 
     void t_console_publish_handout()
@@ -8105,10 +8281,15 @@ namespace
             tap::skip("this image already publishes a console");
             return;
         }
+        if (not pool_can_host(4))
+        {
+            tap::skip("pool too small (a keeper, a writer, a driver and a probe)");
+            return;
+        }
         kos_cap_t bare = KOS_CAP_NONE;
         TAP_CHECK(kos_endpoint_create(&bare) == 0);
         TAP_CHECK(kos_cap_narrow(bare, KOS_CAP_SIGNAL | KOS_CAP_TRANSFER) == 0);
-        int const refused = kos_console_publish(bare);
+        int const refused = kos_console_publish(bare, KOS_TASK_NONE);
         int32_t const unseated = kos_send_timed(KOS_CAP_STDOUT, &probe, 0, CON_PARK_US);
         TAP_CHECK(kos_handle_close(bare) == 0);
         TAP_CHECK(refused == -KOS_EACCES);
@@ -8118,48 +8299,85 @@ namespace
         kos_cap_t waiter = KOS_CAP_NONE;
         TAP_CHECK(kos_endpoint_create(&waiter) == 0);
         TAP_CHECK(kos_cap_narrow(waiter, KOS_CAP_WAIT) == 0);
-        int const wait_refused = kos_console_publish(waiter);
+        int const wait_refused = kos_console_publish(waiter, KOS_TASK_NONE);
         int32_t const wait_unseated = kos_send_timed(KOS_CAP_STDOUT, &probe, 0, CON_PARK_US);
         TAP_CHECK(kos_handle_close(waiter) == 0);
         TAP_CHECK(wait_refused == -KOS_EACCES);
         TAP_CHECK(wait_unseated == -KOS_EBADF);
 
-        // Narrowed at once, as the init keeps a served endpoint: vacated, HANDOUT alone.
-        TAP_CHECK(kos_endpoint_create(&g_con_ep) == 0);
-        TAP_CHECK(kos_cap_narrow(g_con_ep, CON_KEPT) == 0);
-        int const pub = kos_console_publish(g_con_ep);
-        // main holds WAIT again and the endpoint receives, so the send parks to its deadline.
-        int32_t const parked = kos_send_timed(KOS_CAP_STDOUT, &probe, 0, CON_PARK_US);
-        g_con_n = -99;
-        kos_cap_grant caps[] = {{g_con_ep, KOS_CAP_WAIT}};
-        auto drv = kos::thread::create_caps(con_driver, nullptr, "condrv", 10, caps, 1);
-        int const narrowed = kos_cap_narrow(g_con_ep, CON_KEPT);
-        if (not drv.valid())
+        kos_task_t drv_task = KOS_TASK_NONE;
+        kos_cap_t hold = KOS_CAP_NONE;
+        TAP_CHECK(kos_task_create(nullptr, 0, 0, &drv_task) == 0);
+        TAP_CHECK(kos_sem_create(0, &hold) == 0);
+        kos_cap_grant const hold_caps[] = {{hold, CH_FULL}};
+        auto keeper = kos::thread::create_caps(con_keeper, nullptr, "conkeep", 10, hold_caps, 1,
+                                               KOS_POLICY_FIFO, 0, false, nullptr, 0, 0,
+                                               nullptr, drv_task);
+        if (not keeper.valid())
         {
-            // main's narrow was the last WAIT, so the kernel console is back for this line.
+            (void)kos_task_kill(drv_task);
             tap::skip("pool too small");
             return;
         }
-        int32_t const sent = kos_send_timed(KOS_CAP_STDOUT, "hi", 2, CON_SEND_US);
-        int const joined = drv.join(CON_JOIN_US);
-        if (joined != 0)
+
+        // Narrowed at once, as the init keeps a served endpoint: vacated, HANDOUT alone.
+        TAP_CHECK(kos_endpoint_create(&g_con_ep) == 0);
+        TAP_CHECK(kos_cap_narrow(g_con_ep, CON_KEPT) == 0);
+        int const pub = kos_console_publish(g_con_ep, drv_task);
+        // main holds WAIT again and the endpoint receives, so the send parks to its deadline.
+        int32_t const parked = kos_send_timed(KOS_CAP_STDOUT, &probe, 0, CON_PARK_US);
+        int const narrowed = kos_cap_narrow(g_con_ep, CON_KEPT);
+
+        // Nobody receives, and the task lives.
+        con_nonblock();
+        ConNonblock const nb = g_nb;
+        // The writer outranks main, so it has run into its send by the time this returns.
+        g_con_sent = -99;
+        auto writer = kos::thread::create(con_writer, nullptr, "conwrite", 10);
+        int const blocked = writer.join(CON_PARK_US);
+        // A receiver comes back and takes the parked line.
+        kos_cap_grant caps[] = {{g_con_ep, KOS_CAP_WAIT}};
+        auto drv = kos::thread::create_caps(con_driver, nullptr, "condrv", 10, caps, 1,
+                                            KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr,
+                                            drv_task);
+        int const drv_joined = drv.join(CON_JOIN_US);
+        int const writer_joined = writer.join(CON_JOIN_US);
+        // The receiver is gone again and the task lives, so the console is still the driver's.
+        int32_t const still = kos_send_timed(KOS_CAP_STDOUT, &probe, 0, 0);
+        // The task ends with its entry: the console comes back.
+        (void)kos_sem_post(hold);
+        int const keeper_joined = keeper.join(CON_JOIN_US);
+        if (keeper_joined != 0)
         {
-            (void)kos_thread_kill(drv.id());
-            (void)drv.join(CON_JOIN_US);
+            (void)kos_task_slay(drv_task, CON_SEND_US);
         }
-        // The driver's WAIT was the last: vacated, and main's HANDOUT left.
+        // main's HANDOUT is left.
         int32_t const after = kos_send(KOS_CAP_STDOUT, &probe, 0);
+        (void)kos_task_kill(drv_task);
+        (void)kos_handle_close(hold);
         TAP_CHECK(pub == 0);
         TAP_CHECK(parked == -KOS_ETIMEDOUT);
         TAP_CHECK(narrowed == 0);
-        TAP_CHECK(sent == 2);
-        TAP_CHECK(joined == 0);
-        TAP_CHECK(g_con_n == 2 and g_con_got[0] == 'h' and g_con_got[1] == 'i');
+        TAP_CHECK(nb.tried == 0u);
+        TAP_CHECK(nb.sent == -KOS_ETIMEDOUT);
+        TAP_CHECK(nb.set);
+        TAP_CHECK(nb.read_back);
+        TAP_CHECK(nb.would_block);
+        TAP_CHECK(nb.cleared);
+        TAP_CHECK(nb.main_blocking);
+        TAP_CHECK(nb.main_sent == -KOS_ETIMEDOUT);
+        TAP_CHECK(nb.fcntl_refusals);
+        TAP_CHECK(blocked == -KOS_ETIMEDOUT);
+        TAP_CHECK(drv.valid() and drv_joined == 0);
+        TAP_CHECK(writer_joined == 0);
+        TAP_CHECK(g_con_sent == 2);
+        TAP_CHECK(still == -KOS_ETIMEDOUT);
+        TAP_CHECK(keeper_joined == 0);
         TAP_CHECK(after == -KOS_EAGAIN);
     }
 
-    // A restart whose start fails before its receiver exists: main's narrow alone gives the
-    // console back.
+    // A restart whose start fails before its receiver exists: the task's end alone gives the
+    // console back, and main's narrow alone does not.
     void t_console_publish_narrow()
     {
         if (g_con_ep == KOS_CAP_NONE)
@@ -8168,18 +8386,25 @@ namespace
             return;
         }
         char const probe = '\0';
-        int const pub = kos_console_publish(g_con_ep);
+        kos_task_t drv_task = KOS_TASK_NONE;
+        int const created = kos_task_create(nullptr, 0, 0, &drv_task);
+        int const pub = kos_console_publish(g_con_ep, drv_task);
         int32_t const parked = kos_send_timed(KOS_CAP_STDOUT, &probe, 0, CON_PARK_US);
         int const narrowed = kos_cap_narrow(g_con_ep, CON_KEPT);
+        int32_t const unserved = kos_send_timed(KOS_CAP_STDOUT, &probe, 0, 0);
+        int const killed = kos_task_kill(drv_task);
         int32_t const after = kos_send(KOS_CAP_STDOUT, &probe, 0);
         int const closed = kos_handle_close(g_con_ep);
         g_con_ep = KOS_CAP_NONE;
         int32_t const gone = kos_send(KOS_CAP_STDOUT, &probe, 0);
         // Back to the unpublished seat, which every later line falls back from.
         TAP_CHECK(kos_handle_close(KOS_CAP_STDOUT) == 0);
+        TAP_CHECK(created == 0);
         TAP_CHECK(pub == 0);
         TAP_CHECK(parked == -KOS_ETIMEDOUT);
         TAP_CHECK(narrowed == 0);
+        TAP_CHECK(unserved == -KOS_ETIMEDOUT);
+        TAP_CHECK(killed == 0);
         TAP_CHECK(after == -KOS_EAGAIN);
         TAP_CHECK(closed == 0);
         TAP_CHECK(gone == -KOS_ECONNREFUSED);
@@ -11614,6 +11839,12 @@ extern "C" void selftest_main(kos_self_t const* self)
     TAP_ADD("call_timeout_reply", t_call_timeout_reply);
     TAP_ADD("reply_stale_caller", t_reply_stale_caller);
     TAP_ADD("reply_abandoned_cap", t_reply_abandoned_cap);
+    TAP_ADD("call_infoless_revert", t_call_infoless_revert);
+    TAP_ADD("call_close_reply", t_call_close_reply);
+    TAP_ADD("call_happy", t_call_happy);
+    TAP_ADD("reply_recv_loop", t_reply_recv_loop);
+    TAP_ADD("reply_recv_no_reply", t_reply_recv_no_reply);
+    TAP_ADD("reply_recv_timeout", t_reply_recv_timeout);
 #undef TAP_ADD
 // Region 4.
 #if KICKOS_SELFTEST_REGION(4)
@@ -11621,12 +11852,6 @@ extern "C" void selftest_main(kos_self_t const* self)
 #else
 #define TAP_ADD(name, fn) TAP_ELIDE(fn)
 #endif
-    TAP_ADD("call_infoless_revert", t_call_infoless_revert);
-    TAP_ADD("call_close_reply", t_call_close_reply);
-    TAP_ADD("call_happy", t_call_happy);
-    TAP_ADD("reply_recv_loop", t_reply_recv_loop);
-    TAP_ADD("reply_recv_no_reply", t_reply_recv_no_reply);
-    TAP_ADD("reply_recv_timeout", t_reply_recv_timeout);
     TAP_ADD("reply_recv_bad_ep_wakes_caller", t_reply_recv_bad_ep_wakes_caller);
     TAP_ADD("service_survives_client_fault", t_service_survives_client_fault);
 #if defined(KICKOS_ENABLE_SELFTEST)

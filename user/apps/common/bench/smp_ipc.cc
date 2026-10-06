@@ -4,6 +4,7 @@
 // Independent call/reply pairs, all active at once. The optional remote clients
 // mix same-core and cross-core IPC in one workload.
 
+#include <kickos/board_config.h>
 #include <kickos/kos.h>
 #include <kickos/sys/atomic.h>
 #include <kickos/sys/emit.h>

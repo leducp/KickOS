@@ -16,22 +16,23 @@
 extern "C"
 {
 
-int _write(int fd, char const* buf, int len)
+// KickOS has no fd namespace: every fd goes to the console. MUST NOT cache how a call fared: a
+// publish seats cap 0 after a send failed on it.
+int _write(int, char const* buf, int len)
 {
-    // KickOS has no fd namespace: every fd goes to the console. Cap index 0 is
-    // per-thread and fixed at spawn, so each call classifies itself afresh against its
-    // own cap 0 and MUST NOT cache the outcome: cached state would let a pre-publish
-    // thread's send failure poison a post-publish thread whose cap 0 is seated to the
-    // endpoint. See the handover design (D5).
-    (void)fd;
     if (len <= 0)
     {
         return 0;
     }
-    // The FULL len even where bytes were lost: a short write would make newlib retry and
-    // re-send the bytes IPC already accepted.
-    kickos::stdout_write(buf, static_cast<size_t>(len));
-    return len;
+    // Short only for a non-blocking task: a short write would make newlib offer the rest again,
+    // and a blocking writer's bytes are lost only to its own cancellation.
+    size_t const took = kickos::stdout_write(buf, static_cast<size_t>(len));
+    if (took == 0)
+    {
+        errno = EAGAIN;
+        return -1;
+    }
+    return static_cast<int>(took);
 }
 
 int _read(int, char*, int)

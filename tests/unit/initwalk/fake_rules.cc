@@ -394,7 +394,7 @@ namespace
     {
         kos_cap_t ep = KOS_CAP_NONE;
         ASSERT_EQ(kos_endpoint_create(&ep), 0);
-        ASSERT_EQ(kos_console_publish(ep), 0);
+        ASSERT_EQ(kos_console_publish(ep, KOS_TASK_NONE), 0);
         kos_cap_grant const wait[] = {{ep, KOS_CAP_WAIT}};
         kos_thread_params p = params(task());
         p.caps = wait;
@@ -414,7 +414,7 @@ namespace
     {
         kos_cap_t ep = KOS_CAP_NONE;
         ASSERT_EQ(kos_endpoint_create(&ep), 0);
-        ASSERT_EQ(kos_console_publish(ep), 0);
+        ASSERT_EQ(kos_console_publish(ep, KOS_TASK_NONE), 0);
         kos_cap_grant const wait[] = {{ep, KOS_CAP_WAIT}};
         kos_thread_params p = params(task());
         p.caps = wait;
@@ -434,11 +434,14 @@ namespace
         EXPECT_EQ(fake::calls_of("kos_send_timed").size(), before + 3u);
     }
 
+    // The console's task ends first, so the endpoint answers as any other one does.
     TEST_F(Fake, a_vacated_endpoint_answers_at_once_until_its_next_receiver_waits)
     {
         kos_cap_t ep = KOS_CAP_NONE;
         ASSERT_EQ(kos_endpoint_create(&ep), 0);
-        ASSERT_EQ(kos_console_publish(ep), 0);
+        kos_task_t const served = task();
+        ASSERT_EQ(kos_console_publish(ep, served), 0);
+        ASSERT_EQ(kos_task_kill(served), 0);
         // The creator's WAIT goes before any receiver is seated.
         ASSERT_EQ(kos_cap_narrow(ep, KOS_CAP_SIGNAL | KOS_CAP_TRANSFER | KOS_CAP_HANDOUT), 0);
         kos_cap_grant const wait[] = {{ep, KOS_CAP_WAIT}};
@@ -470,6 +473,25 @@ namespace
         EXPECT_EQ(kos_send_timed(KOS_CAP_STDOUT, "x", 1u, 1000u), -KOS_ETIMEDOUT);
         EXPECT_EQ(fake::now() - before, 1000000u);
         EXPECT_THROW(kos_send(KOS_CAP_STDOUT, "x", 1u), fake::Panic);
+    }
+
+    // While the task it was published for lives, the console parks a send with no receiver,
+    // its last WAIT gone included, and the task's end gives the kernel its console back.
+    TEST_F(Fake, a_published_console_parks_a_send_until_its_task_ends)
+    {
+        kos_cap_t ep = KOS_CAP_NONE;
+        ASSERT_EQ(kos_endpoint_create(&ep), 0);
+        kos_task_t const served = task();
+        ASSERT_EQ(kos_console_publish(ep, served), 0);
+        ASSERT_EQ(kos_cap_narrow(ep, KOS_CAP_SIGNAL | KOS_CAP_TRANSFER | KOS_CAP_HANDOUT), 0);
+        uint64_t const before = fake::now();
+        EXPECT_EQ(kos_send_timed(KOS_CAP_STDOUT, "x", 1u, 0u), -KOS_ETIMEDOUT);
+        EXPECT_EQ(fake::now(), before) << "a send of no deadline parked";
+        EXPECT_THROW(kos_send(KOS_CAP_STDOUT, "x", 1u), fake::Panic);
+        EXPECT_EQ(fake::reclaims(), 0u) << "the last WAIT going reclaimed the console";
+        ASSERT_EQ(kos_task_kill(served), 0);
+        EXPECT_EQ(kos_send(KOS_CAP_STDOUT, "x", 1u), -KOS_EAGAIN) << "a HANDOUT holder remains";
+        EXPECT_EQ(fake::reclaims(), 1u);
     }
 
     TEST_F(Fake, a_walk_that_never_stops_calling_fails_rather_than_hangs)

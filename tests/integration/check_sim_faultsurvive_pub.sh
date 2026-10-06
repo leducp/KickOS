@@ -6,11 +6,11 @@
 # names the packaged simcon as stdout (a userspace driver owns the "wire"; see
 # system/driver/sim/simcon/simcon.cc), and require the `survive' arm to hold there too.
 #
-# The claim is ORDERING through the driver's own queue. cap_console_deliver hands the record
-# to the driver by popping it out of recv, so main's later line finds no parked receiver and
-# parks in send_waiters instead; the driver emits the record, returns to recv, and only then
-# takes main's line. An implementation that queued the record somewhere and left it for later
-# satisfies presence and fails this.
+# The claim is ORDERING through the driver's own queue. The record is held whole for the driver
+# and handed to it either at once, popping it out of recv so main's later line parks in
+# send_waiters, or at its next receive ahead of every queued sender; the driver emits the record
+# and only then takes main's line. An implementation that let a later send overtake the held
+# record satisfies presence and fails this.
 #
 # A real handover is a PREMISE here, tested across rather than proven: the route being real is
 # sim_published_panic's negative assertion, where the app's kos_print witness must be ABSENT

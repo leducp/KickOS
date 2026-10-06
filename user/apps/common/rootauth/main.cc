@@ -61,7 +61,7 @@ int main(int, char**)
 
     // The authority gate precedes the cap lookup, so the handle must stay bogus: a
     // -KOS_EBADF here would mean the gate let the call through to the lookup.
-    rc = kos_console_publish(-1);
+    rc = kos_console_publish(-1, KOS_TASK_NONE);
     report_rc("console_publish (undeclared bit)", rc);
     check(rc == -KOS_EPERM, "undeclared KOS_AUTH_CONSOLE was not granted");
 

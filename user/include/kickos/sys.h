@@ -25,13 +25,17 @@ extern "C"
 // Debug console: unbuffered, polling, straight at the kernel console, so it works in boot and
 // panic. NOT stdout: ordinary output is libc stdio over a userspace console driver. The write(2)
 // shape: returns bytes written (a len-0 write is a legitimate 0), or with none completed
-// -KOS_EAGAIN (the console can take no complete byte now: a full transmit ring, a peer node holding
-// a shared UART, or a dead driver's thread still holding the device; try again), -KOS_EBUSY (a
-// driver owns the console and this thread's stdout send would be taken now; send there instead) or
-// -KOS_EFAULT for a buffer the caller cannot read. THE COUNT CAN BE SHORT, for the same causes: the
-// walk stops at the first byte the console cannot take. On an AMP UART, CR can precede an uncounted
-// newline; retrying from the reported count sends its LF without repeating CR. A page unmapped
-// mid-write stops it too, the chunks spanning no lock.
+// -KOS_EAGAIN (the console can take no complete byte now: a full transmit ring or a peer node
+// holding a shared UART; try again), -KOS_EBUSY (a driver owns the console and this thread's
+// stdout send would be taken now; send there instead), -KOS_EFAULT for a buffer the caller cannot
+// read, or -KOS_ECANCELED for a writer cancelled while it waited. THE COUNT CAN BE SHORT, for the
+// same causes: the walk stops at the first byte the console cannot take. On an AMP UART, CR can
+// precede an uncounted newline; retrying from the reported count sends its LF without repeating
+// CR. A page unmapped mid-write stops it too, the chunks spanning no lock. In the DARK WINDOW, a
+// console driver's task dead and the kernel's reclaim of the device not landed yet, the write
+// waits, with no bound, for the reclaim or a publish. A task that set O_NONBLOCK
+// (kos_task_nonblock) never waits and never needs to try again: it is answered -KOS_ETIMEDOUT
+// instead of either.
 // kos_print discards all of it, so a line that has to survive a burst goes through
 // kickos::emit (sys/emit.h), which retries the remainder.
 int32_t kos_kconsole_write(void const* buf, size_t len);
@@ -87,7 +91,7 @@ int kos_endpoint_create(kos_cap_t* out_cap); // -> 0, or -KOS_ENOMEM/-KOS_EMFILE
 int kos_amp_endpoint_create(uint32_t node, uint32_t port, kos_cap_t* out_cap);
 // Send `len` bytes, giving up after `timeout_us` RELATIVE microseconds, or never if that is
 // KOS_TIMEOUT_NONE. The deadline bounds the PARK only: a receiver already waiting
-// rendezvouses regardless of it.
+// rendezvouses regardless of it, and a timeout of 0 never parks.
 // -> as kos_send below, plus -KOS_ETIMEDOUT (the deadline passed with NO receiver: the send
 // did NOT happen and no bytes crossed).
 int32_t kos_send_timed(kos_cap_t ep, void const* buf, size_t len, uint32_t timeout_us);
@@ -97,7 +101,9 @@ int32_t kos_send_timed(kos_cap_t ep, void const* buf, size_t len, uint32_t timeo
 // receiver while a holder of KOS_CAP_HANDOUT remains, or for a far endpoint whose peer
 // ring is full, ECONNREFUSED for an endpoint with no receiver and nothing left that could
 // seat one. Both no-receiver answers arrive at once, or on waking when the last receiver
-// leaves a parked sender; nothing was sent. A zero-length message is valid.
+// leaves a parked sender; nothing was sent. The published console is the exception while the
+// task it was published for lives: a send there parks, receiver or not, like a write to a
+// pipe, and is answered so only once that task has ended. A zero-length message is valid.
 //
 // For all IPC copies, either buffer may become inaccessible after validation.
 // Both parties receive EFAULT; any bytes already copied remain changed.
@@ -139,18 +145,24 @@ int kos_reply(kos_cap_t reply_cap, void const* buf, size_t len);
 int kos_reply_recv(kos_cap_t reply_cap, void* buf, uintptr_t lens,
                    struct kos_reply_recv_opts* opts);
 
-// Hand the kernel console UART over to a userspace driver serving endpoint `ep`.
+// Hand the kernel console UART over to a userspace driver serving endpoint `ep` from `task`:
+// KOS_TASK_NONE names the caller's own task, any other a task the caller created. That task's
+// end is the driver's death, and the kernel then takes the console back
+// (docs/reference/console.md).
 // Needs KOS_AUTH_CONSOLE and, on `ep`, KOS_CAP_HANDOUT. After this the kernel chip path drops
 // (RTT, if built, still carries kernel output) and libc stdout routes through the driver via
 // cap index 0, seated both into children spawned AFTER the publish and into the CALLER's own
 // table. Through a capability without WAIT, `ep` gains WAIT and the endpoint counts as
 // receiving, as for its creator, so every publish leaves `ep` holding WAIT and HANDOUT: the
 // caller drops that WAIT once the driver's receiver holds its own (docs/reference/console.md).
-// Re-callable to re-point at a fresh driver, caller's cap 0 included. -> 0, -KOS_EPERM (no
-// KOS_AUTH_CONSOLE), -KOS_EBADF (bad / non-endpoint / stale cap), -KOS_EACCES (`ep` lacks
-// HANDOUT, a WAIT-only cap included), or -KOS_EOVERFLOW (a reference or receiver count is at
-// its ceiling). A refusal publishes nothing and leaves the kernel console untouched.
-int kos_console_publish(kos_cap_t ep);
+// Re-callable to re-point at a fresh driver: every cap 0 naming the console it replaces follows,
+// and a sender parked there is answered -KOS_EAGAIN. -> 0, -KOS_EPERM (no
+// KOS_AUTH_CONSOLE, or a task the caller did not create), -KOS_EBADF (bad / non-endpoint / stale
+// cap, or a task handle naming nothing), -KOS_EBUSY (a task that has already ended, or the
+// console's registers held by a thread outside that task), -KOS_EACCES
+// (`ep` lacks HANDOUT, a WAIT-only cap included), or -KOS_EOVERFLOW (a reference or receiver
+// count is at its ceiling). A refusal publishes nothing and leaves the kernel console untouched.
+int kos_console_publish(kos_cap_t ep, kos_task_t task);
 // Wait until the console driver holding this thread's stdout has written every byte sent to it
 // before, as far as its device can tell: two zero-length sends on KOS_CAP_STDOUT, each bounded by
 // `timeout_us` as kos_send_timed bounds it (docs/reference/console.md). Bytes stdio still buffers
@@ -221,6 +233,13 @@ kos_thread_t kos_thread_self(void);
 // Returns 0 or -KOS_E*: EINVAL outside KICKOS_PRIO_MIN to KICKOS_PRIO_MAX, EPERM above the
 // ceiling.
 int kos_thread_set_priority(uint8_t priority);
+
+// The calling TASK's O_NONBLOCK, one flag shared by all its threads, as fcntl's F_SETFL and
+// F_GETFL on fds 0 to 2 set and read it: `op` is a kos_nonblock_op. Set, the task's sends of no
+// timeout on the published console and its kernel console writes never wait, and are answered
+// -KOS_ETIMEDOUT where they would; a send with a finite timeout keeps it. Returns the flag as the
+// op leaves it, 0 or 1, or -KOS_EINVAL (an unknown op, or a caller in no task).
+int kos_task_nonblock(int op);
 
 // Set a created task's priority ceiling and core grant while it is empty.
 // May only narrow the caller's grant. Zero leaves that field unchanged.

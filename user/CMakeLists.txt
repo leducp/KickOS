@@ -15,7 +15,7 @@ set(KICKOS_USER_SOURCES src/syscall_stubs.cc src/init_args.cc src/root_entry.cc
 if(KICKOS_ARCH STREQUAL "sim")
   list(APPEND KICKOS_USER_SOURCES src/sim_exit.cc)
 else()
-  list(APPEND KICKOS_USER_SOURCES src/newlib_stubs.cc src/newlib_sbrk.cc)
+  list(APPEND KICKOS_USER_SOURCES src/newlib_stubs.cc src/newlib_sbrk.cc src/newlib_fcntl.cc)
   list(APPEND KICKOS_USER_SOURCES src/newlib_reent.cc)
 endif()
 

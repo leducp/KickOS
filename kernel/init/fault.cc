@@ -31,6 +31,7 @@ extern "C" void kickos_trapstack_witness_report(void)
     if (v != 0x5A5A5A5Au)
     {
         ::kickos::kprintf_fault("[trapwitness] CORRUPTED 0x%x\n", static_cast<unsigned>(v));
+        ::kickos::krecord_end();
     }
 }
 
@@ -94,9 +95,8 @@ namespace
 {
     // The window between the redirect and the stub is PREEMPTIBLE (`dying` is not set until
     // exit_current runs), so a second thread's fault can overwrite this before the first stub
-    // reads it; kprintf_fault is one such point, waking a console driver that outranks every
-    // stdout client. `owner` keeps that honest: a stub that does not own the record prints no
-    // fault facts instead of printing another thread's.
+    // reads it. `owner` keeps that honest: a stub that does not own the record prints no fault
+    // facts instead of printing another thread's.
     struct FaultRecord
     {
         ::kickos::Thread const* owner;
@@ -310,5 +310,6 @@ extern "C" void kickos_thread_fault_exit(void)
             ::kickos::kprintf_fault(KDIAG_F_FAULT_ADDR, reinterpret_cast<void*>(r.addr));
         }
     }
+    ::kickos::krecord_end();
     ::kickos::sched::exit_current(KOS_EXIT_FAULT, ::kickos::sched::EXIT_FAULTED);
 }

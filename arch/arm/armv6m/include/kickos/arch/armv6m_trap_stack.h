@@ -206,7 +206,7 @@
  * the reporter is on. A plain integer because check_trap_redzone.sh scrapes it as an immediate;
  * arch_armv6m.cc asserts it against KICKOS_ARMV6M_TRAP_FRAME.
  *
- * 152 MEASURED on the three picopi presets and 144 on microbit, under an enforced 320. */
+ * 128 MEASURED on the three picopi presets and 120 on microbit, under an enforced 320. */
 #define KICKOS_ARMV6M_PANIC_FRAME 32
 #define KICKOS_ARMV6M_PANIC_DEPTH 320
 

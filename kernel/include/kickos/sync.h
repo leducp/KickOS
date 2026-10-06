@@ -60,6 +60,14 @@ namespace kickos
     // waking; a parked thread never writes its own result. Caller holds IrqLock.
     void park_queueless(Thread* c, WaitKind kind, void* obj);
 
+    // Park the calling writer while the kernel console is dark (console_dark), with no
+    // deadline: the reclaim and a publish end the wait (console_dark_wake). 0 once the console
+    // is no longer dark, or -KOS_ECANCELED where the caller is cancelled, before or during it.
+    // Caller holds no lock.
+    int console_dark_wait(void);
+    // Wake every writer console_dark_wait parked. Caller holds IrqLock.
+    void console_dark_wake(void);
+
     // Check cancellation under IrqLock before any side effect in a blocking
     // operation. Cancellation can arrive after syscall entry checked it but
     // before the thread becomes BLOCKED, leaving no waiter to wake.

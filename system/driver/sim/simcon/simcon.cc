@@ -9,6 +9,7 @@
 // Sim-only by construction (host libc).
 
 
+#include <kickos/config/priorities.h> // KICKOS_PRIO_MIN
 #include <kickos/driver/declared/simcon.h>
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -92,18 +93,18 @@ namespace
 #endif
 
 #ifdef SIMCON_HAS_WINDOW_THREAD
-    // A SECOND driver thread owning the console's register window and nothing else. It is not
-    // a receiver on the console endpoint, so the endpoint losing its last WAIT cap says nothing
-    // about it.
+    // A driver thread owning the console's register window and nothing else.
     //
-    // The sim admits exactly ONE DEV window: its fake register block, mapped at the first
-    // of these candidates the host leaves free. This list and its ORDER must equal
+    // The sim's DEV windows lie in its fake register block, mapped at the first of these
+    // candidates the host leaves free. This list and its ORDER must equal
     // arch/sim/sim.cc's SIM_PVREG_BASES, and WIN its SIM_PVREG_WINDOW; a drift shows up as
     // every candidate being refused, never as a pass.
     constexpr uintptr_t SIMCON_WIN_BASES[] = {
         0x40000000u, 0x100000000ull, 0x400000000ull, 0x10000000000ull, 0x100000000000ull,
     };
     constexpr uint32_t SIMCON_WIN = 0x10000u;
+    // The block's third window, sim.cc's SIM_PVREG_CONSOLE.
+    constexpr uintptr_t SIMCON_WIN_AT = 2u * SIMCON_WIN;
 
     // Root's wait for the window thread to reach its park, in 1 ms steps.
     constexpr uint32_t WIN_READY_MAX = 500u;
@@ -111,7 +112,7 @@ namespace
 
     kickos::Atomic<uint32_t, kickos::Order::RELAXED> g_win_ready{0};
 
-    // Under an instance only the init may end the window thread, so it polls this every
+    // Under an instance only the init may end the driver's task, so its entry polls this every
     // WIN_READY_NS.
     kickos::Atomic<uint32_t, kickos::Order::RELAXED> g_win_release{0};
 
@@ -132,7 +133,7 @@ namespace
         kos::thread::Handle t;
         for (uintptr_t b : SIMCON_WIN_BASES)
         {
-            kos_window const win = {b, SIMCON_WIN, KOS_WINDOW_DEVICE, 0};
+            kos_window const win = {b + SIMCON_WIN_AT, SIMCON_WIN, KOS_WINDOW_DEVICE, 0};
             t = kos::thread::create(
                 entry, nullptr, name, prio, KOS_POLICY_FIFO, /*quantum_ns=*/0,
                 /*privileged=*/false, /*mem=*/nullptr, /*mem_size=*/0,
@@ -185,22 +186,28 @@ namespace
 #endif
 
 #ifdef SIMCON_START_WINDOWED
+    // The task's entry, holding nothing: its exit on release ends the task.
+    void simconsole_entry_thread(void*)
+    {
+        while (g_win_release == 0u)
+        {
+            kos_sleep_ns(WIN_READY_NS);
+        }
+        wire_puts("[simcon] task entry released, ending the driver's task\n");
+        kos_exit(0);
+    }
+
+    // Holds the console registers until the task's end slays it. It runs at the lowest
+    // priority, so a client above it runs between that end and this thread's exit.
     void simconsole_window_thread(void*)
     {
         wire_puts("[simcon] window thread holding the console registers\n");
         (void)kos_notify_bind(KOS_SPAWN_DELEGATED_CAP0);
         g_win_ready = 1;
-        // Exiting releases the DEV window, which is what lets the console come back.
-        while (g_win_release == 0u)
+        while (kos_notify_wait(KOS_SPAWN_DELEGATED_CAP0, 0xFFFFFFFFu, KOS_TIMEOUT_NONE, nullptr)
+               == 0)
         {
-            int const rc = kos_notify_wait(KOS_SPAWN_DELEGATED_CAP0, 0xFFFFFFFFu,
-                                           static_cast<uint32_t>(WIN_READY_NS / 1000u), nullptr);
-            if (rc != 0 and rc != -KOS_ETIMEDOUT)
-            {
-                break;
-            }
         }
-        wire_puts("[simcon] window thread done, releasing the registers\n");
         kos_exit(0);
     }
 #endif
@@ -312,12 +319,9 @@ extern "C"
     // kos::print diagnostic is DROPPED on a published board; the banner written straight
     // to the wire survives.
     //
-    // The `n < 0` break never fires on a lost sender: no kernel path wakes a receiver
-    // parked in kos_recv when the last SIGNAL holder goes (only the mirror case exists,
-    // recv_holders -> 0 answering parked SENDERS -KOS_EAGAIN or -KOS_ECONNREFUSED), so this
-    // loop parks forever unless KICKOS_SIMCON_EXIT_AFTER bounds it. Root keeps its
-    // WAIT-bearing cap, which keeps the mirror wake away too; kos_cap_narrow could drop WAIT
-    // and keep KOS_CAP_HANDOUT, and this service does not.
+    // The `n < 0` break never fires on a lost sender: no kernel path wakes a receiver parked in
+    // kos_recv when the last SIGNAL holder goes, so this loop parks forever unless
+    // KICKOS_SIMCON_EXIT_AFTER bounds it.
     void simconsole_driver(void* arg)
     {
         (void)arg; // records the posture; the thread takes no arg
@@ -395,7 +399,8 @@ extern "C"
         return g_win_thread.id();
     }
 
-    // Ends the window thread of a build that has one, which it notices within WIN_READY_NS.
+    // Ends the driver's task in a build that has a window thread, which its entry notices
+    // within WIN_READY_NS.
     void kickos_simcon_window_release(void)
     {
 #ifdef SIMCON_HAS_WINDOW_THREAD
@@ -405,9 +410,9 @@ extern "C"
 
 #ifdef SIMCON_START_WEDGE
     // The READY TIMEOUT under the init: the wedged thread is the driver task's entry and holds
-    // the register window, so dropping the init's receiving right notes the console dead and
-    // the reclaim waits for the window. The init slays the failed start, which releases it,
-    // and reports the failure on the console that comes back.
+    // the register window. The init slays the failed start, whose end notes the console dead
+    // and whose exit releases the window, and reports the failure on the console that comes
+    // back.
     static int simconsole_start_wedge(struct kos_driver_instance* in)
     {
         kos_task_t task = KOS_TASK_NONE;
@@ -416,7 +421,7 @@ extern "C"
         {
             return task_rc;
         }
-        int const pub = kos_console_publish(in->endpoint);
+        int const pub = kos_console_publish(in->endpoint, task);
         if (pub != 0)
         {
             kos::print("[simcon] ERROR: console_publish failed\n");
@@ -443,14 +448,14 @@ extern "C"
         {
             return drvt.error();
         }
-        return drv::console_handover_finish(in->endpoint, "[simcon] ");
+        return drv::console_handover_finish(*in, "[simcon] ");
     }
 #endif
 
 #ifdef SIMCON_START_WINDOWED
-    // The windowed posture under the init: the window thread is spawned first, so it is the
-    // driver task's entry and outlives the receiver's death holding the console registers,
-    // until its release ends the task.
+    // The windowed posture under the init: an entry that holds nothing, a window thread that
+    // outlives the receiver's death holding the console registers, and the receiver. The
+    // entry's release ends the task with the window still held.
     static int simconsole_start_windowed(struct kos_driver_instance* in)
     {
         kos_task_t task = KOS_TASK_NONE;
@@ -459,7 +464,17 @@ extern "C"
         {
             return task_rc;
         }
-        g_win_thread = spawn_window_thread(simconsole_window_thread, in->ceiling, "simconwin", task);
+        kos::thread::Handle const entry = kos::thread::create(
+            simconsole_entry_thread, nullptr, "simconent", in->ceiling, KOS_POLICY_FIFO, 0,
+            /*privileged=*/false, nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0, 0, nullptr,
+            task);
+        if (not entry.valid())
+        {
+            kos::print("[simcon] ERROR: no entry thread\n");
+            return entry.error();
+        }
+        g_win_thread = spawn_window_thread(simconsole_window_thread, KICKOS_PRIO_MIN, "simconwin",
+                                           task);
         if (not g_win_thread.valid())
         {
             kos::print("[simcon] ERROR: no notification or DEV window for the window thread\n");
@@ -474,7 +489,7 @@ extern "C"
             }
             kos_sleep_ns(WIN_READY_NS);
         }
-        int const pub = kos_console_publish(in->endpoint);
+        int const pub = kos_console_publish(in->endpoint, task);
         if (pub != 0)
         {
             return pub;
@@ -484,7 +499,7 @@ extern "C"
         {
             return drvt.error();
         }
-        return drv::console_handover_finish(in->endpoint, "[simcon] ");
+        return drv::console_handover_finish(*in, "[simcon] ");
     }
 #endif
 

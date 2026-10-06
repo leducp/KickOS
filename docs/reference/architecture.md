@@ -292,7 +292,7 @@ native **newlib** on every arch, no per-toolchain libc special-casing; our `newl
 fits directly. **Design rule: keep KickOS's own libc newlib-*family*-compatible** so the *sim*
 can ride host `libstdc++` and so freestanding/newlib interop stays clean. What remains on target
 is only the well-trodden **syscall-stub** porting layer -- uniformly the newlib bottom edge
-(`_sbrk`, `_write/_read/_close/_fstat/_isatty/_exit`, `_impure_ptr`/reent, `__malloc_lock` when
+(`_sbrk`, `_write/_read/_close/_fstat/_isatty/_exit/_fcntl`, `_impure_ptr`/reent, `__malloc_lock` when
 threaded, C++ guard/lock hooks) routed to KickOS syscalls. (Honest caveat: that stub tax is real
 -- we sidestep the header/ABI class, not the bottom-edge class.)
 
@@ -954,7 +954,9 @@ feeds the slave app.
 - **libc**: one freestanding KickOS libc for the kernel + freestanding userspace, identical on sim
   and target. Its ABI is kept **newlib-family-compatible** so the *sim* rides host `libstdc++` and
   newlib interop stays clean. The bottom edge is a syscall-stub porting layer
-  (`_sbrk`, `_write/_read/_close/_fstat/_isatty/_exit/_kill/_getpid`, `_impure_ptr`/reent,
+  (`_sbrk`, `_write/_read/_close/_fstat/_isatty/_exit/_kill/_getpid`, `_fcntl`, whose
+  `F_SETFL`/`F_GETFL` carry `O_NONBLOCK` for stdout and stderr (`console.md`, "Non-blocking
+  stdout"), `_impure_ptr`/reent,
   `__malloc_lock` when threaded, and C++ guard/lock hooks) routed to KickOS
   syscalls: the same seam under both the sim's host `libstdc++` and a target full-C++ app's
   pinned newlib -- one newlib seam fleet-wide. (The full seam detail: `docs/design-kickcat-k64f.md`.)

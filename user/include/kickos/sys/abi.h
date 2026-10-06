@@ -65,8 +65,13 @@ enum kos_syscall_nr
     KOS_SYS_KCONSOLE_WRITE = 1, // (buf, len)            -> bytes written, WHICH CAN BE SHORT
                                 //   where the console took part or a page went away
                                 //   mid-stream, or with no input byte completed -KOS_EAGAIN (the
-                                //   console can take nothing now; try again) or -KOS_EFAULT
-                                //   (bad buffer)
+                                //   console can take nothing now; try again), -KOS_EFAULT
+                                //   (bad buffer), -KOS_EBUSY (the caller's stdout takes it
+                                //   now), -KOS_ECANCELED (cancelled while waiting) or, for a
+                                //   task that set O_NONBLOCK (KOS_SYS_TASK_NONBLOCK),
+                                //   -KOS_ETIMEDOUT where it would have to wait or try again.
+                                //   Waits, with no bound, while a dead console driver's task
+                                //   awaits its reclaim
     KOS_SYS_YIELD = 2,          // ()                    -> 0
     KOS_SYS_SLEEP_NS = 3,       // (ns_lo, ns_hi)        -> 0
     KOS_SYS_SEM_CREATE = 4,     // (initial, kos_cap_t* out) -> 0, or -KOS_E* (ENOMEM sem pool,
@@ -126,16 +131,22 @@ enum kos_syscall_nr
                                 //   remains, or a far endpoint's peer ring is full),
                                 //   ECONNREFUSED (no receiver and no such holder), either
                                 //   at once or on waking when the last receiver leaves;
-                                //   nothing sent. Parks indefinitely otherwise. EFAULT also
-                                //   answers a rendezvous copy refused at either end (sys.h)
+                                //   nothing sent. Parks indefinitely otherwise, and on the
+                                //   published console while its task lives, receiver or not,
+                                //   where a task that set O_NONBLOCK is answered ETIMEDOUT
+                                //   instead. EFAULT also answers a rendezvous copy refused at
+                                //   either end (sys.h)
     KOS_SYS_NOTIFY_BIND = 28,   // (notify_cap) -> 0, or -KOS_E*: EBADF, EACCES (cap lacks
                                 //   WAIT), EBUSY (another thread is bound, or the caller is
                                 //   already bound to a different object), EOVERFLOW (the
                                 //   object's reference count is at its ceiling)
-    KOS_SYS_CONSOLE_PUBLISH = 29, // (endpoint_cap) -> 0, -KOS_EPERM (no KOS_AUTH_CONSOLE),
-                                  //   -KOS_EBADF (bad cap), -KOS_EACCES (cap lacks
-                                  //   HANDOUT), -KOS_EOVERFLOW (a reference or receiver count
-                                  //   at its ceiling); seats WAIT on a cap without it
+    KOS_SYS_CONSOLE_PUBLISH = 29, // (endpoint_cap, task) -> 0, -KOS_EPERM (no
+                                  //   KOS_AUTH_CONSOLE, or a task the caller did not create),
+                                  //   -KOS_EBADF (bad cap or task), -KOS_EBUSY (an ended task,
+                                  //   or the console's registers held outside that task),
+                                  //   -KOS_EACCES (cap lacks HANDOUT), -KOS_EOVERFLOW (a
+                                  //   reference or receiver count at its ceiling); seats WAIT
+                                  //   on a cap without it. KOS_TASK_NONE: the caller's task
     KOS_SYS_CPU_CLOCK_SET = 30,  // (kos_pstate_t as u32) -> landed core Hz (u64); 0 == cannot-change
     KOS_SYS_GRANT_PROBE = 31,    // (op, base, size) -> Rule 7 grant predicate 0/1, or for ops 6/7
                                  //   the raw reserved-block base/size; a BAD op returns -KOS_EINVAL,
@@ -199,7 +210,9 @@ enum kos_syscall_nr
                                //   under this handle), -KOS_EPERM (the caller did not spawn
                                //   it), -KOS_EDEADLK (naming yourself).
     KOS_SYS_SEND_TIMED = 50,   // (cap, buf, len, timeout_us) -> as KOS_SYS_SEND, plus
-                               //   -KOS_ETIMEDOUT
+                               //   -KOS_ETIMEDOUT, at once for a timeout of 0, which never
+                               //   parks. A non-blocking task keeps a finite timeout on the
+                               //   console; KOS_TIMEOUT_NONE is a send of no timeout
     KOS_SYS_TASK_CREATE = 51,  // (mem_base, mem_size, kos_task_t* out, kos_mem_flags) -> 0,
                                //   or -KOS_E*: EPERM (no KOS_AUTH_TASKS, an inadmissible
                                //   shared grant, a range the caller never reserved, a
@@ -350,10 +363,22 @@ enum kos_syscall_nr
                                //   task ended with, or -KOS_EBUSY (not ended yet),
                                //   -KOS_EBADF (stale task), -KOS_EPERM (not the creator),
                                //   -KOS_EINVAL / -KOS_EFAULT (status).
-    KOS_SYS_THREAD_SET_PRIORITY = 77 // (priority) -> 0, or -KOS_EINVAL (outside
+    KOS_SYS_THREAD_SET_PRIORITY = 77, // (priority) -> 0, or -KOS_EINVAL (outside
                                //   KICKOS_PRIO_MIN to KICKOS_PRIO_MAX), -KOS_EPERM (above the
                                //   calling task's priority ceiling). The caller's OWN base
                                //   priority; an inherited boost above it stays.
+    KOS_SYS_TASK_NONBLOCK = 78 // (enum kos_nonblock_op) -> the calling task's O_NONBLOCK as
+                               //   the op leaves it, 0 or 1, or -KOS_EINVAL (an unknown op, or
+                               //   a caller in no task). One flag per task, shared by its threads
+};
+
+// KOS_SYS_TASK_NONBLOCK's ops on the calling task's O_NONBLOCK, which applies to its sends of no
+// timeout on the published console and its kernel console writes.
+enum kos_nonblock_op
+{
+    KOS_NONBLOCK_GET = 0,
+    KOS_NONBLOCK_SET = 1,
+    KOS_NONBLOCK_CLEAR = 2
 };
 
 // What KOS_SYS_TASK_STATE answers for the task a handle names.

@@ -75,6 +75,8 @@ namespace kickos
         // Set when recv_holders falls to 0 and cleared when a receiver next waits here: a
         // receiver a handout seats counts as none until it first receives.
         uint8_t vacated = 0;
+        // EP_CONSOLE_*: whether this is the published console, and whether its task lives.
+        uint8_t console = 0;
 #if KICKOS_AMP_NODE
         // The node whose kernel holds the receiver, PLUS ONE: 0 is local, so a zeroed slot
         // is already local and nothing has to be seated. THE WHOLE ANSWER to "is this
@@ -175,6 +177,23 @@ namespace kickos
         return e->recv_holders != 0 and e->vacated == 0;
     }
 
+    // Endpoint::console: SERVED from the publish to the end of the task it names, ENDED after.
+    constexpr uint8_t EP_CONSOLE_NONE = 0;
+    constexpr uint8_t EP_CONSOLE_SERVED = 1;
+    constexpr uint8_t EP_CONSOLE_ENDED = 2;
+
+    // Whether a send is taken, parked where no receiver waits: a receiving endpoint, and the
+    // published console while its task lives, receiver or not. always_inline: -Os otherwise
+    // emits it out of line on every send and call.
+    __attribute__((always_inline)) inline bool endpoint_takes_sends(Endpoint const* e)
+    {
+        if (e->console != EP_CONSOLE_NONE)
+        {
+            return e->console == EP_CONSOLE_SERVED;
+        }
+        return endpoint_receiving(e);
+    }
+
     // What a caller finding no receiver is answered, a vacated endpoint included:
     // -KOS_EAGAIN while a WAIT holder beyond the `leaving` ones already on their way out, or a
     // HANDOUT holder, remains, since a receiver may come; -KOS_ECONNREFUSED once neither does.
@@ -188,9 +207,9 @@ namespace kickos
     }
 
 #if KICKOS_AMP_NODE
-    constexpr unsigned EP_NARROW_BYTES = 7; // the two holder counts, next_served, vacated, far_node, far_port
+    constexpr unsigned EP_NARROW_BYTES = 8; // the two holder counts, next_served, vacated, console, far_node, far_port
 #else
-    constexpr unsigned EP_NARROW_BYTES = 5; // the two holder counts, next_served, vacated
+    constexpr unsigned EP_NARROW_BYTES = 6; // the two holder counts, next_served, vacated, console
 #endif
     // The span the narrow fields take ahead of `server` on every posture: one pointer on a
     // 64-bit build, two words on a 32-bit one.

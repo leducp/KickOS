@@ -1445,16 +1445,6 @@ count_literal() { # <literal>
     KOS_COUNT="$KOS_LITERAL_N"
 }
 
-# A capture over OUT carrying the producer's drop marker (<kickos/sys/emit.h>) is missing lines,
-# and fails as that rather than as the first line it lacks.
-require_console_whole() {
-    literal_count "$OUT" '# console dropped'
-    if [ "$KOS_LITERAL_N" -gt 0 ]; then
-        printf '%s\n' "$OUT" | grep -F -- '# console dropped' >&2
-        fail "the console dropped output ($KOS_LITERAL_N marker(s)): the capture is missing lines"
-    fi
-}
-
 # KOS_FIELD_N: occurrences of a record `<name>=<value>` in <text>, the value whole. A substring
 # count reads `scause=0xdead` as a hit for `scause=0xd` and `ADDR=0x80201000` as a hit for
 # `ADDR=0x8020100`. The value ends at the first character that could not continue it, or at end
@@ -1519,6 +1509,59 @@ count_field() { # <name> <value>
 # wire is what produces it: three markers over two lines, two of them sharing one line, so a
 # counter that answers 2 is counting lines and every doubled fault below it reads as a single.
 # The absent marker is the other direction: a counter that reports one is unattributable.
+# Why a numbered writer's lines on <text> are not accounted for, empty when they are: each whole
+# line matching <ere>, its first group the number, must carry one of <expected>, each spent once,
+# and at least one line must match. A line split by a shuffled wire is not whole and is not read
+# here; presence is after's. The s command's delimiter is a control byte, since <ere> holds `/`.
+numbered_verdict() { # <text> <ere> <expected>...
+    _ne_text="$1"
+    _ne_ere="$2"
+    shift 2
+    _ne_d="$(printf '\001')"
+    if ! _ne_nums="$(printf '%s\n' "$_ne_text" \
+            | sed -nE "s${_ne_d}^${_ne_ere}\$${_ne_d}\\1${_ne_d}p")"; then
+        echo "is read through a pattern sed refuses: $_ne_ere"
+        return
+    fi
+    if [ -z "$_ne_nums" ]; then
+        echo "never matches a line on the wire: $_ne_ere"
+        return
+    fi
+    _ne_extra="$(printf '%s\n' "$_ne_nums" | awk -v want="$*" '
+        BEGIN { n = split(want, w, " "); for (i = 1; i <= n; i++) { left[w[i]]++ } }
+        { if (left[$0] > 0) { left[$0]--; next } print; exit }')"
+    if [ -n "$_ne_extra" ]; then
+        echo "$_ne_extra is on the wire more often than its writer numbered it"
+    fi
+}
+
+# A numbered writer's lines on OUT: some present, none repeated past its numbering, none it never
+# numbered.
+require_numbered() { # <ere> <what> <expected>...
+    _rn_ere="$1"
+    _rn_what="$2"
+    shift 2
+    _rn_bad="$(numbered_verdict "$OUT" "$_rn_ere" "$@")"
+    [ -z "$_rn_bad" ] || fail "$_rn_what $_rn_bad"
+}
+
+# The parse require_numbered rests on, planted with the real patterns' shape: a slash in the
+# pattern, a line repeated past its numbering, a number never given and a pattern matching nothing.
+numbered_matcher_control() {
+    _nmc="w/x: 1 out
+w/x: 2 out
+w/x: 2 out"
+    [ "$(numbered_verdict "$_nmc" 'w/x: ([0-9]+) out' 1 2)" \
+        = "2 is on the wire more often than its writer numbered it" ] \
+        || fail "the numbered-line parse misses a planted line repeated past its numbering"
+    [ -n "$(numbered_verdict "$_nmc" 'w/x: ([0-9]+) out' 1 3 2)" ] \
+        || fail "the numbered-line parse accepts a planted number its writer never gave"
+    [ -z "$(numbered_verdict "$_nmc" 'w/x: ([0-9]+) out' 1 2 2)" ] \
+        || fail "the numbered-line parse refuses a planted capture whose lines are all numbered"
+    [ -n "$(numbered_verdict "$_nmc" 'w/y: ([0-9]+) out' 1 2 2)" ] \
+        || fail "the numbered-line parse reads a pattern matching no planted line as accounted for"
+}
+
 literal_matcher_control() {
     _lmc="=== THREAD FAULT === thread 'a' killed=== THREAD FAULT === thread 'b' killed
 === THREAD FAULT === thread 'c' killed"

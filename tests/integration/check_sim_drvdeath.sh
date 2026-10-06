@@ -97,9 +97,9 @@ COUNT="$(count_of '\[drvdeath\] kernel console AFTER death (reclaimed)')"
 [ "$RC" -eq 0 ] || fail "expected a clean exit 0, got $RC"
 
 # ---------------------------------------------------------------------------------
-# Case 2: the driver dies BEFORE it ever receives, i.e. its start fails. The probe notices
-# because a rendezvous on a receiver-less endpoint is refused, the death gives the console
-# back so the start can REPORT it, and the init counts a failed start, reports it and, with no
+# Case 2: the driver dies BEFORE it ever receives, i.e. its start fails. Its death ends its
+# task, which refuses the probe's rendezvous and gives the console back so the start can
+# REPORT it, and the init counts a failed start, reports it and, with no
 # restart, marks main, which uses the console, dependency-down: no app runs on a dark console,
 # and the system ends with KOS_EXIT_CANCELLED. Without the probe the start returns 0 and the
 # app runs against a console nothing is serving.
@@ -133,26 +133,24 @@ fi
   || fail "case 2: expected KOS_EXIT_CANCELLED ($CANCELLED_STATUS) from a main that never ran, got $RC"
 
 # ---------------------------------------------------------------------------------
-# Case 3: a TWO-THREAD driver, which is the shape every silicon console driver has. A
-# service thread receives; the task's entry thread holds the register window and parks in
-# the notification wait. This is the only case that reaches the reclaim's device precondition,
-# since the driver in cases 1 and 2 is one thread with no window.
+# Case 3: a driver whose receiver exits while its task lives, and whose task then ends with a
+# thread still holding the register window, the shape every silicon console driver has. The
+# task is an entry holding nothing, a window thread at the lowest priority that holds the
+# register window and parks in a notification wait, and the service thread that receives. It is
+# the only case that reaches the reclaim's device precondition.
 #
-# The three markers are ONE assertion, not three:
-#   BEFORE the service thread dies : absent  (the handover really happened)
-#   AFTER it dies, window HELD     : absent  (the reclaim WAITED for the register owner)
-#   AFTER the window is released   : present (and only cancelling the holder got us here)
-# The middle marker is the whole point. Keying the reclaim on the endpoint's last
-# RECEIVER makes it appear (the console comes back while a live thread still owns the
-# UART), so deleting the dev_window_free guard in kernel/init/console.cc turns this red.
-# It is also self-anti-vacuous: if the second thread never took the window, the middle
-# marker appears too.
+# The receiver's exit alone is no death: the console stays the driver's, the kernel console
+# stays dark, a send of no deadline and a non-blocking write are refused at once, and a
+# blocking writer parks, and a thread faulting in a task of its own leaves its record held for
+# the driver. The entry's release then ends the task while the window thread still holds the
+# registers: the reclaim waits for that thread's exit, writes the held record, and only then
+# wakes the parked writer, which outranks the window thread, waited out that dark window, and
+# lands its line exactly once, after the record. Without the dark window's wake the line never
+# lands; keying the reclaim on the last receiver puts the window-HELD marker on the wire.
 #
-# The window thread is the driver task's entry, which only the init may end, so the app ends
-# it through the driver's test hook (kickos_simcon_window_release) and its exit ends the task.
 # The kill gate is the app's own: no thread of it can kill root, which runs the init, a
 # stranger is refused, a spawner may cancel its child, and a second kill answers EBADF.
-echo "== case 3: a two-thread driver, the register window outliving the receiver =="
+echo "== case 3: a receiver-less live driver, then its task's end with the window held =="
 ( cd "$KICKOS_SRC" && "$CMAKE" --preset sim -B "$TMP/build3" \
     -DKICKOS_SIMCON_EXIT_AFTER=2 \
     -DKICKOS_SIMCON_WINDOW_THREAD=1 >/dev/null ) \
@@ -185,14 +183,28 @@ if has '\[drvdeath\] ERROR'; then
     fail "case 3: the app reported an error (see its line above)"
 fi
 
-# THE new assertion. Absent == the reclaim deferred to the register owner.
+# Absent == the receiver's exit alone left the console with its driver.
 if has '\[drvdeath\] kernel console AFTER death, window HELD'; then
-    fail "case 3: the console came BACK while a live thread still held the UART register window; reclaim is keyed on the last receiver, not on the device"
+    fail "case 3: the console came BACK after the receiver's exit, with the driver's task alive and a thread of it holding the UART register window"
 fi
 
-# The holder left its wait and exited, releasing the window.
-has '\[simcon\] window thread done, releasing the registers' \
-  || fail "case 3: the window thread never left its notification wait"
+has '\[simcon\] task entry released, ending the driver'"'"'s task' \
+  || fail "case 3: the driver's task entry never ended the task"
+[ "$(count_of '\[drvdeath\] blocked line, written once after the reclaim')" -eq 1 ] \
+  || fail "case 3: the line parked across the task's end did not land exactly once"
+# The faulter's record was held for a driver that no longer receives, so it reaches the wire only
+# when the reclaim writes it, and the reclaim writes it before it wakes the parked writer. A line
+# ahead of it went out before the reclaim, which merely following the release does not exclude.
+after_line() { printf '%s\n' "$OUT" | grep -n -- "$1" | head -n1 | cut -d: -f1; }
+[ "$(count_of "$(thread_fault_re dfault)")" -eq 1 ] \
+  || fail "case 3: the faulter's record held for the dead driver did not reach the wire exactly once"
+_released="$(after_line 'task entry released')"
+_record="$(after_line "$(thread_fault_re dfault)")"
+_blocked="$(after_line 'blocked line, written once')"
+[ -n "$_released" ] && [ -n "$_record" ] && [ "$_record" -gt "$_released" ] \
+  || fail "case 3: the held record reached the wire before the driver's task ended"
+[ -n "$_blocked" ] && [ "$_blocked" -gt "$_record" ] \
+  || fail "case 3: the parked line reached the wire before the reclaim"
 has '\[drvdeath\] kill gate: EBADF/EPERM refused, root unkillable, spawner accepted' \
   || fail "case 3: the thread_kill gate matrix did not pass"
 [ "$(count_of "$DEATH_LINE")" -eq 1 ] \
@@ -212,18 +224,10 @@ COUNT="$(count_of '\[drvdeath\] kernel console AFTER death (reclaimed)')"
 # that takes the register window and never sets `ready`, with a start ordered like the
 # silicon drivers (publish, claim, IRQ thread, wait, service thread).
 #
-# The ORDER is what this defends, on three counts:
-#   - the wait precedes the SERVICE spawn: the init's capability is still E's only receiving
-#     right, so dropping it takes recv_holders to 0 and notes the console dead. Waiting after
-#     both spawns leaves the service thread holding a WAIT cap on E, and the drop reclaims
-#     nothing.
-#   - the drop precedes the init's slay of the failed start: the note must be set before the
-#     slain thread's exit re-runs the reclaim.
-#   - the slay is not optional: the note alone leaves the console USER_OWNED because the
-#     wedged thread still holds the window (dev_window_free in kernel/init/console.cc).
-#
-# The slay stops the wedged thread in its notification wait: it never runs past that wait,
-# and its exit releases the window.
+# The init's slay of the failed start is what gives the console back: it ends the driver's
+# task, which notes the console dead, and the reclaim waits for the wedged thread, which still
+# holds the window (dev_window_free in kernel/init/console.cc). The slay stops that thread in
+# its notification wait: it never runs past that wait, and its exit releases the window.
 #
 # The assertion is a PAIR, as in case 1:
 #   after the publish, before the timeout     : absent  (USER_OWNED drops it)
@@ -264,11 +268,6 @@ if has 'KERNEL PANIC'; then
     fail "case 4: the system panicked, so the reclaim cannot be attributed to the timeout path"
 fi
 
-# The wait ran BEFORE the service spawn: no service thread was ever created.
-if has '\[simcon\] driver up (host fd 1)'; then
-    fail "case 4: the service thread was spawned before the ready-wait expired, so the init's capability is not E's only receiving right, dropping it reclaims nothing and the timeout is unreportable (the rpusb bug)"
-fi
-
 # THE POSITIVE HALF: the init's report reached the wire, which only a reclaim allows.
 COUNT="$(count_of "$FAILED_LINE")"
 [ "$COUNT" -ne 0 ] \
@@ -292,4 +291,4 @@ if has '\[drvdeath\]'; then
     fail "case 4: the app ran anyway, on a dark console"
 fi
 
-echo "PASS: the console returns to the kernel on driver death, a failed handover is loud, a two-thread driver's console waits for its register owner, and a ready-timeout is reported"
+echo "PASS: the console returns to the kernel when its driver's task ends, a failed handover is loud, a receiver-less live driver parks its writers, the reclaim waits for its register owner, and a ready-timeout is reported"

@@ -60,7 +60,6 @@ KOS_POLL_UNTIL=all_ended
 echo "== running the driver witness =="
 poll_image "$IMAGE"
 assert_no_panic "a panic in the driver witness"
-require_console_whole
 if [ "$POLL_UNTIL_OK" -ne 1 ]; then
     fail "the drivers did not all end in ${QEMU_TIMEOUT}s (alive at the end: $POLL_ALIVE)"
 fi
@@ -89,6 +88,12 @@ in_order() { # <who>
 }
 in_order exits
 in_order traps
+# Each answer once per instance: the chain above finds every one in order. Two copies of one
+# number are legal, so a line of one instance repeated where the other's is missing is not seen.
+numbered_matcher_control
+for _who in exits traps; do
+    require_numbered "$_who: served ([0-9]+) by /svc/$_who" "answer of $_who" 1 1 2 2 3 3 4 4 5 5
+done
 after 1 'watch: fails deaths 1 left 0 alive' "the watcher told of the first failed start"
 after "$AT" 'watch: fails deaths 2 left 0 gone' "the watcher told of the second, for good"
 after "$AT" 'watch: fails_client deaths 0 left 0 down' "the client of fails marked dependency-down"

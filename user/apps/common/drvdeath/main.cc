@@ -15,18 +15,20 @@
 //      anti-vacuity witness: a line on the wire here means the console was never
 //      published and every assertion below is meaningless.
 //   1. emit() -> the published route, served by the driver, reaches the wire.
-//   2. the driver exits; its cap_teardown takes the endpoint's recv_holders to 0, which
-//      notes the console death, and exit_current then runs the reclaim.
+//   2. the driver exits, which ends its task: that end notes the console death, and the
+//      reclaim runs once no thread of it holds the device.
 //   3. the init reports the death on /init/events, then closes the endpoint for good, so a
 //      send is refused -KOS_ECONNREFUSED. That is what PROVES the driver is gone rather than
 //      merely slow, with no timing assumption.
 //   4. the SAME kos_print now has to reach the wire. Steps 0 and 4 together are the
 //      whole assertion.
 //
-// Under KICKOS_SIMCON_WINDOW_THREAD the driver is TWO threads: a service thread that
-// receives, and the task's entry thread, which holds the register window and parks in a
-// notification wait. Step 4 then splits in two, because the reclaim must WAIT for the
-// register holder, not for the last receiver.
+// Under KICKOS_SIMCON_WINDOW_THREAD the driver is THREE threads: a service thread that
+// receives, a window thread at the lowest priority holding the register window, and the
+// task's entry. The receiver's exit leaves a live driver with no receiver, where a send parks,
+// and a thread faulting then leaves its record held for that driver. The entry's release then
+// ends the task while the window is still held: the reclaim writes the record, and a writer
+// parked across that end lands its line once, after it.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -41,6 +43,8 @@ using kickos::emit;
 
 namespace
 {
+    char const BLOCKED_LINE[] = "[drvdeath] blocked line, written once after the reclaim\n";
+
     // A writer of a console whose driver is dead gets -KOS_EAGAIN while the init still holds
     // the endpoint, and -KOS_ECONNREFUSED once it closed it: 1 ms steps, a second at most.
     constexpr int REFUSED_TRIES = 1000;
@@ -73,6 +77,25 @@ namespace
 {
     using kickos::Atomic;
     using kickos::Order;
+
+    // Above the window thread and main, at main's ceiling or below.
+    constexpr uint8_t WRITER_PRIO = 9;
+    // How long a parked writer is watched before it counts as parked, and how long its line may
+    // take once the reclaim lands.
+    constexpr uint32_t WRITER_PARKED_US = 20000u;
+    constexpr uint32_t WRITER_DONE_US = 2000000u;
+
+    void blocked_writer(void*)
+    {
+        emit(BLOCKED_LINE);
+    }
+
+    // Its record is held for a driver that no longer receives, so only the reclaim writes it,
+    // and it writes it before it wakes anyone.
+    void fault_now(void*)
+    {
+        __builtin_trap();
+    }
 
     // The kill gate is PARENTHOOD, so witnessing a refusal needs a live thread this thread
     // did NOT spawn. Main spawns the child, hence a grandchild.
@@ -201,22 +224,34 @@ extern "C" void drvdeath_main(kos_self_t const* self)
     emit("[drvdeath] published route live\n");
 
 #if defined(KICKOS_SIMCON_WINDOW_THREAD) && KICKOS_SIMCON_WINDOW_THREAD
-    // The receiver runs above main and has exited by now. Its task lives on in the thread
-    // holding the registers, so the init still holds the endpoint and a writer is told to
-    // retry rather than refused.
-    if (kos_send(KOS_CAP_STDOUT, "x", 1) != -KOS_EAGAIN)
+    // The receiver runs above main and has exited by now, and its task lives on: a send would
+    // park, so a send of no deadline and a non-blocking write take nothing, at once.
+    int32_t const nowait_rc = kos_send_timed(KOS_CAP_STDOUT, "x", 1, 0);
+    int const nonblock_on = kos_task_nonblock(KOS_NONBLOCK_SET);
+    size_t const tried = kickos::stdout_write("x", 1);
+    int const nonblock_off = kos_task_nonblock(KOS_NONBLOCK_CLEAR);
+    // A blocking writer parks: it outranks main, so it is in its send when this returns.
+    kos::thread::Handle const writer =
+        kos::thread::create(blocked_writer, nullptr, "dwriter", WRITER_PRIO);
+    int const parked_rc = writer.join(WRITER_PARKED_US);
+    // A fault ends its thread's task, so the faulter gets one of its own.
+    kos_task_t fault_task = KOS_TASK_NONE;
+    int faulted_rc = kos_task_create(nullptr, 0, 0, &fault_task);
+    if (faulted_rc == 0)
     {
-        kos_print("[drvdeath] ERROR: driver still alive after its bounded serve\n");
-        emit("[drvdeath] ERROR: driver still alive after its bounded serve\n");
-        exit(1);
+        kos::thread::Handle const faulter =
+            kos::thread::create(fault_now, nullptr, "dfault", WRITER_PRIO, KOS_POLICY_FIFO, 0,
+                                /*privileged=*/false, nullptr, 0, nullptr, 0, nullptr, 0, nullptr,
+                                0, 0, nullptr, fault_task);
+        faulted_rc = faulter.join(WRITER_DONE_US);
+        (void)kos_task_kill(fault_task);
     }
-    // The receiver is gone but the thread owning the UART registers is not, so the console
-    // must still be USER_OWNED: reclaiming here would reprogram a live driver's device.
+    // The receiver is gone but its task is not, so the console must still be USER_OWNED.
     // Absent on the wire == correct.
     kos_print("[drvdeath] kernel console AFTER death, window HELD "
               "(must NOT reach the wire)\n");
-    // Releasing the window is what finally lets the sticky death note reclaim the console;
-    // the holder's exit ends the driver's task.
+    // The entry's exit ends the driver's task while the window thread still holds the
+    // registers: the reclaim lands at that thread's exit.
     kickos_simcon_window_release();
 #endif
 
@@ -235,6 +270,27 @@ extern "C" void drvdeath_main(kos_self_t const* self)
     }
 
 #if defined(KICKOS_SIMCON_WINDOW_THREAD) && KICKOS_SIMCON_WINDOW_THREAD
+    if (nowait_rc != -KOS_ETIMEDOUT or nonblock_on != 1 or tried != 0u or nonblock_off != 0)
+    {
+        kos_print("[drvdeath] ERROR: a write of no wait was not refused at once by a live "
+                  "driver with no receiver\n");
+        exit(10);
+    }
+    if (parked_rc != -KOS_ETIMEDOUT)
+    {
+        kos_print("[drvdeath] ERROR: a writer of a live driver with no receiver did not park\n");
+        exit(11);
+    }
+    if (faulted_rc != 0)
+    {
+        kos_print("[drvdeath] ERROR: the faulter's thread was not reported gone\n");
+        exit(13);
+    }
+    if (writer.join(WRITER_DONE_US) != 0)
+    {
+        kos_print("[drvdeath] ERROR: the parked writer never finished after the reclaim\n");
+        exit(12);
+    }
     if (child_kill_rc != 0)
     {
         kos_print("[drvdeath] ERROR: a spawner could not cancel its own child\n");

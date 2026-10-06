@@ -8,6 +8,7 @@
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 #include <kickos/sys/cap_index.h>
+#include <kickos/sys/emit.h>
 #include <kickos/sys/errno.h>
 #include <kickos/libc/fmt.h>
 
@@ -74,24 +75,36 @@ namespace
         kos::print(line);
     }
 
+    // Not kos_print: the key outruns the wire, and kos_print drops each line the full ring
+    // refuses, which reads as a console that went dark at the publish.
+    void key(char const* s)
+    {
+        size_t n = 0;
+        while (s[n] != '\0')
+        {
+            n++;
+        }
+        kickos::kconsole_write_all(s, n);
+    }
+
     void print_reading_key(void)
     {
-        kos::print("[reclaimwit] console reclaim + terminate drain witness\n");
-        kos::print("[reclaimwit] HOW TO READ THIS CAPTURE:\n");
-        kos::print("[reclaimwit]  1. this block is on the wire, so the kernel owns the console\n");
-        kos::print("[reclaimwit]  2. the app now publishes the console to a driver it spawns\n");
-        kos::print("[reclaimwit]  3. that driver never writes to a console, so the wire must go\n");
-        kos::print("[reclaimwit]     silent: a MUTE line below must occur ZERO times\n");
-        kos::print("[reclaimwit]  4. the app then SLAYS the driver and prints a LIVE line with\n");
-        kos::print("[reclaimwit]     the same kos_print call the MUTE line used\n");
-        kos::print("[reclaimwit]  5. LIVE present + MUTE absent == arch_console_reclaim fired.\n");
-        kos::print("[reclaimwit]     MUTE present == the publish never took, verdict void.\n");
-        kos::print("[reclaimwit]     both absent == the reclaim did not fire, console still dark.\n");
+        key("[reclaimwit] console reclaim + terminate drain witness\n");
+        key("[reclaimwit] HOW TO READ THIS CAPTURE:\n");
+        key("[reclaimwit]  1. this block is on the wire, so the kernel owns the console\n");
+        key("[reclaimwit]  2. the app now publishes the console to a driver it spawns\n");
+        key("[reclaimwit]  3. that driver never writes to a console, so the wire must go\n");
+        key("[reclaimwit]     silent: a MUTE line below must occur ZERO times\n");
+        key("[reclaimwit]  4. the app then SLAYS the driver and prints a LIVE line with\n");
+        key("[reclaimwit]     the same kos_print call the MUTE line used\n");
+        key("[reclaimwit]  5. LIVE present + MUTE absent == arch_console_reclaim fired.\n");
+        key("[reclaimwit]     MUTE present == the publish never took, verdict void.\n");
+        key("[reclaimwit]     both absent == the reclaim did not fire, console still dark.\n");
 #if KICKOS_RW_RTT
         // kconsole_write feeds RTT in every ownership state, so the MUTE line reaches an
         // RTT viewer even on a correct run.
-        kos::print("[reclaimwit] NOTE: this image also carries RTT. Read the CHIP UART capture;\n");
-        kos::print("[reclaimwit] NOTE: the RTT stream carries kernel writes in every state.\n");
+        key("[reclaimwit] NOTE: this image also carries RTT. Read the CHIP UART capture;\n");
+        key("[reclaimwit] NOTE: the RTT stream carries kernel writes in every state.\n");
 #endif
     }
 }
@@ -108,26 +121,38 @@ int main(int, char**)
         park_forever();
     }
 
+    // The driver is a task of its own: the console's death is its task's end, and main's task
+    // never ends before the verdict.
+    kos_task_t drv_task = KOS_TASK_NONE;
+    int const task_rc = kos_task_create(nullptr, 0, 0, &drv_task);
+    if (task_rc != 0)
+    {
+        print_rc("FAIL task_create", task_rc);
+        park_forever();
+    }
+
     // Spawned before the publish so a refused spawn still reports on a kernel-owned
-    // console. Unprivileged: kos_thread_slay refuses a privileged target.
+    // console. Unprivileged: a task slay kills a privileged member rather than slaying it.
     kos_cap_grant const caps[1] = {{ep, KOS_CAP_WAIT}};
     auto const drv = kos::thread::create_caps(console_sink, nullptr, "rwdrv", DRIVER_PRIO,
-                                              caps, /*cap_count=*/1);
+                                              caps, /*cap_count=*/1, KOS_POLICY_FIFO, 0,
+                                              /*privileged=*/false, nullptr, 0, 0, nullptr,
+                                              drv_task);
     if (not drv.valid())
     {
         print_rc("FAIL driver spawn", drv.error());
         park_forever();
     }
 
-    int const pub_rc = kos_console_publish(ep);
+    int const pub_rc = kos_console_publish(ep, drv_task);
     if (pub_rc != 0)
     {
         print_rc("FAIL console_publish", pub_rc);
         park_forever();
     }
 
-    // Main's own WAIT-bearing cap must go, or the driver's death leaves recv_holders at 1
-    // and no death is noted. The kernel's stdout ref keeps the endpoint alive.
+    // Main's own WAIT and HANDOUT must go, or the endpoint still receives, or may again, once
+    // the driver is dead. The kernel's stdout ref keeps the endpoint alive.
     int const close_rc = kos_handle_close(ep);
 
     // The same kos_print call as the LIVE line below. Its absence from the capture is the
@@ -140,11 +165,11 @@ int main(int, char**)
     int32_t const serve_rc = kos_send(KOS_CAP_STDOUT, served, sizeof(served) - 1u);
 
     // Forcible, not cooperative: the driver never gets the window in which it would have
-    // quieted its device. 0 means EXITED and swept, so the reclaim has already been attempted.
-    int const slay_rc = drv.slay(SLAY_TIMEOUT_US);
+    // quieted its device. 0 means the task is empty and swept, so the reclaim has already been
+    // attempted.
+    int const slay_rc = kos_task_slay(drv_task, SLAY_TIMEOUT_US);
 
-    // recv_holders is 0, so this either refuses at once or parks and is released by the
-    // sweep with the same code.
+    // The driver's task is dead and nothing holds WAIT or HANDOUT, so this refuses at once.
     char const dead = 'x';
     int32_t const refused_rc = kos_send(KOS_CAP_STDOUT, &dead, 1);
 

@@ -12,8 +12,6 @@
 #                       two others, which would stop the poll early;
 #   require_root_depth  reads the last figure, refuses it unreadable, and passes over an earlier
 #                       one a split left unreadable;
-#   require_console_whole  refuses a capture carrying the console's drop marker, mid-line too, as
-#                       one missing lines;
 #   require_drivers_up  takes each packaged driver's up line, as its source prints it, before a
 #                       given line, and refuses a driver it knows no up line for.
 
@@ -110,30 +108,6 @@ if depth "root: stack high water 7900 of 8192, 100 free above the thread-local b
     bad "require_root_depth passes a figure under KICKOS_MIN_STACK_SIZE"
 fi
 
-# The verdict of require_console_whole in a subshell, its refusal on stdout.
-whole() { # <capture>
-    (
-        OUT="$1"
-        require_console_whole
-    ) 2>&1
-}
-case "$(whole "exits: served 1 by /svc/exits
-exits: served 2 by /svc/exi
-# console dropped 112 byte(s)
-traps: served 3 by /svc/traps")" in
-    *"the console dropped output (1 marker(s))"*) ;;
-    *) bad "require_console_whole passes a capture carrying the drop marker" ;;
-esac
-case "$(whole "exits: served 2 by /svc/exi# console dropped 40 byte(s)
-traps: served 3 by /svc/traps")" in
-    *"the console dropped output (1 marker(s))"*) ;;
-    *) bad "require_console_whole misses a drop marker landing mid-line" ;;
-esac
-if ! whole "exits: served 1 by /svc/exits
-traps: served 3 by /svc/traps" >/dev/null; then
-    bad "require_console_whole refuses a capture carrying no drop marker"
-fi
-
 SYSTEM="$TMP/system.yaml"
 printf 'tasks:\n  - name: console\n    driver: xmcuartirq\n  - name: spi0\n    driver: xmcssc\n  - name: app\n    entry: app_main\n' > "$SYSTEM"
 UART_UP='[xmcuartirq] device up (IRQ TX)'
@@ -170,4 +144,4 @@ fi
 if [ "$rc" -ne 0 ]; then
     exit 1
 fi
-echo "PASS: after, log_holds, require_root_depth, require_console_whole and require_drivers_up read the planted captures as the witnesses need"
+echo "PASS: after, log_holds, require_root_depth and require_drivers_up read the planted captures as the witnesses need"

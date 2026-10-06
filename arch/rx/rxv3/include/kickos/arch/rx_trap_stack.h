@@ -260,7 +260,7 @@
  * descends is the UART RECLAIM's baud arithmetic:
  *   kickos_panic_report[8] -> kfault_terminate[20] -> kpanic_enter[4] -> arch_console_reclaim[12]
  *   -> rx::reg::sci::baud_select[80] -> __divdi3[32]
- * rx72m-bench measures 160, down the console:
+ * rx72m-bench measures 168, down the console:
  *   kickos_panic_report[8] -> kputs[8] -> kconsole_write[4] -> console_emit[36]
  *   -> arch_console_write[4] -> console_tx_insert_line[48] -> console_write_line_sync[32]
  *   -> bench_lock_hold_add[20]

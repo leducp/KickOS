@@ -17,9 +17,8 @@
 // The fault report survives a console handover either way: the panic arm goes through
 // kickos_isr_fault, whose kpanic_enter reclaims the UART from the userspace driver before
 // printing; the thread-kill arm prints with kprintf_fault, whose kernel-path write runs
-// FIRST and unconditionally (the chip backend DROPS it while a driver owns the UART, RTT
-// does not), then delivers to the published endpoint and forces the chip path back open
-// only when that delivery reaches nobody.
+// unconditionally (the chip backend DROPS it while a driver owns the UART, RTT does not), and
+// whose record is held whole for the published endpoint's driver, which writes it.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>

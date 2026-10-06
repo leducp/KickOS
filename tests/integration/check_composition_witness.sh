@@ -135,8 +135,6 @@ else
     KOS_POLL_UNTIL=gone_for_good
     poll_image "$IMAGE"
 fi
-require_console_whole
-
 after 1 'sensor: a thread above its priority was refused' "refusal of a thread above the sensor's priority"
 REFUSED=$AT
 if [ "$CORES" -gt 1 ]; then
@@ -178,6 +176,10 @@ restart 2 0 11
 instance "$NEXT" 11
 after "$DIED" 'health: sensor is down for good, running degraded' "end for good"
 after "$LAST" 'sensor: gone for good' "'sensor: gone for good' from the app"
+
+# The readings the app prints, each once: the chain above finds every one in order.
+numbered_matcher_control
+require_numbered 'sensor: ([0-9]+) from /svc/sensor' "reading" 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15
 
 # Over the whole capture, once the run has ended, each corroborated by a positive above.
 assert_no_panic "a panic in the restart witness"
