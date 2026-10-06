@@ -11,7 +11,7 @@
 # The witness the arm reads is kept OUT of a bench build: its call site is inside what the
 # injected-IRQ bench measures. So is the arm, which would report traps=0 and fail for a
 # reason that is not a regression.
-kickos_add_app_target(trapnest main.cc)
+add_executable(trapnest main.cc)
 target_link_libraries(trapnest PRIVATE kickos)
 kickos_emit_image(trapnest)
 

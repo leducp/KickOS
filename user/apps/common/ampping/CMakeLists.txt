@@ -11,11 +11,11 @@
 #
 # Sources stay .c: the consumer posture is a plain add_executable linking `kickos` with a pure
 # C main, and a C++ file would quietly stop demonstrating it.
-kickos_add_app_target(ampping_n0 main_n0.c)
+add_executable(ampping_n0 main_n0.c)
 target_link_libraries(ampping_n0 PRIVATE kickos)
 kickos_emit_image(ampping_n0)
 
-kickos_add_app_target(ampserve main_serve.c)
+add_executable(ampserve main_serve.c)
 target_link_libraries(ampserve PRIVATE kickos)
 kickos_emit_image(ampserve)
 # One CONCURRENTLY parked far caller: the peer's call is held on this node's table while the
@@ -24,7 +24,7 @@ kickos_declare_app_capabilities(ampserve ${KICKOS_CAP_APP_PEAK_DEFAULT} 0 1)
 
 # The peer the SELFTEST talks to: it echoes the caller's own bytes, where ampserve's reply
 # transforms the payload.
-kickos_add_app_target(ampecho main_echo.c)
+add_executable(ampecho main_echo.c)
 target_link_libraries(ampecho PRIVATE kickos)
 kickos_emit_image(ampecho)
 kickos_declare_app_capabilities(ampecho ${KICKOS_CAP_APP_PEAK_DEFAULT} 0 1)

@@ -11,7 +11,7 @@
 # An OPERATOR on silicon is the reader of both arms: this app answers a HARDWARE question
 # (userspace UART ownership, the client->driver->wire path, and panic-path reclaim), and a live
 # publish silences the TAP stream.
-kickos_add_app_target(k64console main.cc)
+add_executable(k64console main.cc)
 target_link_libraries(k64console PRIVATE kickos)
 kickos_emit_image(k64console)
 

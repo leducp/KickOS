@@ -342,7 +342,7 @@ SECTIONS
     *(.reloc)
   }
   /* The retained copy of .reloc, which the boot reads to relocate the app window a second
-   * time (cmake/x86_64_image.cmake links it in on a second pass). After every section a
+   * time (tools/x86_64-link.sh links it in on a second pass). After every section a
    * fixup can sit in and carrying none itself, so its presence leaves .reloc unchanged.
    */
   .krel BLOCK(__section_alignment__) :

@@ -128,7 +128,7 @@ foreach(_img IN LISTS _selftest_images)
   list(GET _selftest_region_lo ${_img_index} _img_lo)
   list(GET _selftest_region_hi ${_img_index} _img_hi)
   math(EXPR _img_index "${_img_index} + 1")
-  kickos_add_app_target(${_img} ${_selftest_srcs})
+  add_executable(${_img} ${_selftest_srcs})
   target_link_libraries(${_img} PRIVATE kickos)
   kickos_emit_image(${_img})
   # PEAK concurrently held capabilities, not a sum over the run. The peak is main's 2 permanent
@@ -152,24 +152,27 @@ foreach(_img IN LISTS _selftest_images)
 endforeach()
 set_property(GLOBAL PROPERTY KICKOS_SELFTEST_IMAGES "${_selftest_images}")
 
-# The linked image and its map, for the host gates that read them. On x86_64 the app target is
-# an OBJECT library and the image is a PE32+ UEFI application a custom command writes, so
-# $<TARGET_FILE:> names nothing and the -Map rides that ld line instead
-# (cmake/x86_64_boot.cmake). Only the map names the archive MEMBER each symbol was resolved
-# from, which is what proves a backend's definition beat its fallback.
+# The linked image and its map, for the host gates that read them. Only the map names the
+# archive MEMBER each symbol was resolved from, which is what proves a backend's definition beat
+# its fallback. x86_64's link rule writes <image>.map itself (tools/x86_64-link.sh).
 #
 # Recorded on the target: the gates that read the map live on the test side, and a path
 # restated there would be a second truth that drifts from the -Map this link actually passed.
+set(_selftest_elf "$<TARGET_FILE:selftest>")
+set(_selftest_map "${_selftest_elf}.map")
 if(KICKOS_ARCH STREQUAL "x86_64")
-  get_target_property(_selftest_elf selftest KICKOS_IMAGE_FILE)
-  set(_selftest_map "${_selftest_elf}.map")
   # OVMF places an image at its preferred base when it can, so every other image boots with
   # firmware's relocation pass idle. 1 TiB is past any q35 RAM this tree boots, so firmware
   # has to move this one, and the app window's words are then relocated twice.
-  kickos_x86_64_link_image(selftest REBASED 0x10000000000)
+  add_executable(selftest_rebased $<TARGET_OBJECTS:selftest>)
+  set_target_properties(selftest_rebased PROPERTIES LINKER_LANGUAGE CXX
+    ADDITIONAL_CLEAN_FILES "$<TARGET_FILE:selftest_rebased>.map")
+  target_link_libraries(selftest_rebased PRIVATE $<TARGET_PROPERTY:selftest,LINK_LIBRARIES>)
+  target_link_options(selftest_rebased PRIVATE $<TARGET_PROPERTY:selftest,LINK_OPTIONS>
+                                               "LINKER:--image-base=0x10000000000")
+  set_target_properties(selftest PROPERTIES
+    KICKOS_REBASED_IMAGE_FILE "$<TARGET_FILE:selftest_rebased>")
 else()
-  set(_selftest_elf "$<TARGET_FILE:selftest>")
-  set(_selftest_map "${_selftest_elf}.map")
   target_link_options(selftest PRIVATE "-Wl,-Map=${_selftest_map}")
   set_property(TARGET selftest APPEND PROPERTY ADDITIONAL_CLEAN_FILES "${_selftest_map}")
 endif()

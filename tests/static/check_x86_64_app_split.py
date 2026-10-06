@@ -30,7 +30,7 @@ usage: check_x86_64_app_split.py --readelf R --objdump O --nm N --allowlist F
            (--tree <build-dir> | <image.efi>...)
        check_x86_64_app_split.py --controls
 --tree takes every application image under <build-dir> that has a map beside it.
-Each image's map is <image.efi>.map, which cmake/x86_64_image.cmake writes.
+Each image's map is <image.efi>.map, which tools/x86_64-link.sh writes.
 """
 
 import argparse

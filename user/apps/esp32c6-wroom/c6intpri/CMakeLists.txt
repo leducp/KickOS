@@ -6,6 +6,6 @@
 # KOS_SYS_IRQ_UNMASK / KOS_SYS_IRQ_INJECT / KOS_SYS_GRANT_PROBE arms, which are compiled in
 # under KICKOS_ENABLE_SELFTEST alone.
 # No CTest gate: it answers a HARDWARE question and is validated by the operator on silicon.
-kickos_add_app_target(c6intpri main.cc)
+add_executable(c6intpri main.cc)
 target_link_libraries(c6intpri PRIVATE kickos)
 kickos_emit_image(c6intpri)

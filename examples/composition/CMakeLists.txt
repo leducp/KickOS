@@ -43,12 +43,6 @@ else()
   message(FATAL_ERROR "no composition for board '${KICKOS_BOARD}' in systems/")
 endif()
 
-# x86_64 firmware loads a PE32+ UEFI application, which CMake cannot link directly, so there the
-# target is kickos_add_app_target's object library and kickos_emit_image writes the image.
-if(KICKOS_ARCH STREQUAL "x86_64")
-  kickos_add_app_target(sensor_system app.cc health.cc ${sensor})
-else()
-  add_executable(sensor_system app.cc health.cc ${sensor})
-endif()
+add_executable(sensor_system app.cc health.cc ${sensor})
 target_link_libraries(sensor_system PRIVATE KickOS::kernel example_system)
 kickos_emit_image(sensor_system)

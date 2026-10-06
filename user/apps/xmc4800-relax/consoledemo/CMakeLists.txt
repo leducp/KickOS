@@ -22,6 +22,6 @@ if(NOT KICKOS_SERVICE_LIST IN_LIST _consoledemo_lists)
   return()
 endif()
 
-kickos_add_app_target(consoledemo main.cc)
+add_executable(consoledemo main.cc)
 target_link_libraries(consoledemo PRIVATE kickos)
 kickos_emit_image(consoledemo)

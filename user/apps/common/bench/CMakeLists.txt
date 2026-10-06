@@ -1,14 +1,14 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-kickos_add_app_target(bench main.cc)
+add_executable(bench main.cc)
 target_link_libraries(bench PRIVATE kickos)
 kickos_emit_image(bench)
 
 if(KICKOS_ARCH STREQUAL "x86_64" OR
    ((KICKOS_ARCH STREQUAL "armv8a" OR KICKOS_ARCH STREQUAL "lx6") AND
     KICKOS_KERNEL_CORES GREATER 1))
-  kickos_add_app_target(bench_smp smp_lock.cc)
+  add_executable(bench_smp smp_lock.cc)
   target_link_libraries(bench_smp PRIVATE kickos)
   if(NOT KICKOS_ARCH STREQUAL "x86_64")
     if(KICKOS_KERNEL_CORES GREATER 4)
@@ -22,7 +22,7 @@ endif()
 
 if(KICKOS_ARCH STREQUAL "x86_64" OR
    (KICKOS_ARCH STREQUAL "armv8a" AND KICKOS_CONFIG_VARIANT STREQUAL "benchsmp12"))
-  kickos_add_app_target(bench_smp_ipc smp_ipc.cc)
+  add_executable(bench_smp_ipc smp_ipc.cc)
   target_link_libraries(bench_smp_ipc PRIVATE kickos)
   set(KICKOS_M95_BENCH_PAIRS "${KICKOS_KERNEL_CORES}" CACHE STRING
       "Active pairs in the SMP IPC benchmark")

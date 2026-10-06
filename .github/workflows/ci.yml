@@ -730,10 +730,10 @@ jobs:
             *Skipped*) echo "a gate SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
           # Require the architecture-specific boot checks.
-          tests/ci/ctest_named.sh 'x86_64_no_vector|x86_64_entry_cld|x86_64_no_got_selftest|x86_64_weak_undef_selftest' \
+          tests/ci/ctest_named.sh 'x86_64_no_vector|x86_64_entry_cld|x86_64_no_got_selftest|x86_64_weak_undef_selftest|x86_64_link_order' \
             --preset qemu-x86_64 --no-tests=error --output-on-failure
           # Require the default system's gates.
-          out=$(tests/ci/ctest_named.sh '^qemu_x86_64_sysdefault$|qemu_x86_64_sysdefault_spin|qemu_x86_64_sysdefault_fault|qemu_x86_64_system_link_none|qemu_x86_64_system_link_two|qemu_x86_64_system_link_entry|qemu_x86_64_system_link_refused|qemu_x86_64_system_link_notool|qemu_x86_64_system_link_nocc|qemu_x86_64_system_link_rerun' \
+          out=$(tests/ci/ctest_named.sh '^qemu_x86_64_sysdefault$|qemu_x86_64_sysdefault_spin|qemu_x86_64_sysdefault_fault|qemu_x86_64_system_link_none|qemu_x86_64_system_link_two|qemu_x86_64_system_link_entry|qemu_x86_64_system_link_refused|qemu_x86_64_system_link_notool|qemu_x86_64_system_link_nocc|qemu_x86_64_system_link_rerun|qemu_x86_64_system_link_noheap' \
             --preset qemu-x86_64 --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
@@ -759,7 +759,7 @@ jobs:
           cmake --preset qemu-x86_64-smp2
           cmake --build build/qemu-x86_64-smp2
           ctest --test-dir build/qemu-x86_64-smp2 -L host -LE tree --no-tests=error --output-on-failure
-          tests/ci/ctest_named.sh 'qemu_x86_64_system_link_none|qemu_x86_64_system_link_two|qemu_x86_64_system_link_entry|qemu_x86_64_system_link_refused|qemu_x86_64_system_link_notool|qemu_x86_64_system_link_nocc|qemu_x86_64_system_link_rerun' \
+          tests/ci/ctest_named.sh 'x86_64_link_order|qemu_x86_64_system_link_none|qemu_x86_64_system_link_two|qemu_x86_64_system_link_entry|qemu_x86_64_system_link_refused|qemu_x86_64_system_link_notool|qemu_x86_64_system_link_nocc|qemu_x86_64_system_link_rerun|qemu_x86_64_system_link_noheap' \
             --test-dir build/qemu-x86_64-smp2 --no-tests=error --output-on-failure
 
   # Root on core 1: an application processor enters it as its first thread, and errnoprobe's

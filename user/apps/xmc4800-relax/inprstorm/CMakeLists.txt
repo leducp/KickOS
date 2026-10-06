@@ -18,7 +18,7 @@
 # No CTest gate: the result is an operator reading of the console under load on silicon
 # (see main.cc), which the in-env sim/QEMU cannot reproduce.
 foreach(_t inprstorm inprstormmax inprstormfifo)
-  kickos_add_app_target(${_t} main.cc)
+  add_executable(${_t} main.cc)
   target_link_libraries(${_t} PRIVATE kickos)
   kickos_emit_image(${_t})
   # The chip register dir carries regs/usic.h (the shared USIC offset plus bit-field header),

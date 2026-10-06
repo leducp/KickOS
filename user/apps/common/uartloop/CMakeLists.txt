@@ -10,7 +10,7 @@
 # and the reason this is a build condition rather than a weak fallback (no KickOS seam is
 # a weak symbol).
 if(KICKOS_SERVICE_LIST STREQUAL "kickos_services_simuart")
-  kickos_add_app_target(uartloop main.cc)
+  add_executable(uartloop main.cc)
   target_link_libraries(uartloop PRIVATE kickos)
   kickos_emit_image(uartloop)
 endif()

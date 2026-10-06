@@ -20,7 +20,8 @@
 #     policy is not part of the interface);
 #   - every installed header compiles standalone with the package's OWN cross
 #     compiler and its OWN definitions (check_public_headers.sh);
-#   - the single-board guard rejects a cross-board request at find_package time;
+#   - the single-board guard rejects a cross-board request at find_package time, and a package
+#     whose configuration names an arch its targets do not carry is refused there too;
 #   - a package whose descriptor fixes a micro:bit newlib profile refuses the other one.
 #
 # NOTHING HERE NAMES AN ARCH. The gate registers on one board per KICKOS_ARCH
@@ -127,7 +128,7 @@ package_names "$KICKOS_BUILD" "$KICKOS_SRC" "$CMAKE" "$TMP/prefix" "$TMP/names" 
 # none is refused and the linker names the symbol. The probe is the KickOS::kernel image the
 # names check just configured.
 echo "== a KickOS::kernel link with no system target is refused =="
-KERNEL_PROBE="$(grep -xE 'kernel_probe(_image)?' "$TMP/names/link_targets" || true)"
+KERNEL_PROBE="$(grep -x 'kernel_probe' "$TMP/names/link_targets" || true)"
 [ -n "$KERNEL_PROBE" ] || fail "the names probe lists no KickOS::kernel image"
 if "$CMAKE" --build "$TMP/names" --target "$KERNEL_PROBE" >"$TMP/nosystem.log" 2>&1; then
   fail "a KickOS::kernel image linked with no system target"
@@ -239,7 +240,7 @@ else
   # READ THE ARTEFACT, not the build's exit status: a configure that never reached the link is
   # the failure mode this whole gate exists to catch, and a zero-length or truncated file has
   # an exit status of zero behind it. The three fields are what firmware loads the image on.
-  [ -s "$EFI" ] || fail "kickos_emit_image produced an empty $EFI"
+  [ -s "$EFI" ] || fail "the link produced an empty $EFI"
   [ "$(le_ascii "$EFI" 0 2)" = "MZ" ] || fail "$EFI does not start with MZ, so it is no PE \
 image at all"
   PE_AT="$(le_num "$EFI" 60 4)"
@@ -333,6 +334,20 @@ if ! grep -q "$PKG_BOARD" "$TMP/mismatch.log" || ! grep -q "$OTHER_BOARD" "$TMP/
 the single-board guard and this arm witnesses nothing: \
 $(sed -n '1,3p' "$TMP/mismatch.log" | tr '\n' ' ')"
 fi
+
+echo "== arch guard: a package whose configuration names an arch it does not ship is refused =="
+cp -R "$TMP/prefix" "$TMP/archless"
+ARCH_CFG="$TMP/archless/lib/cmake/KickOS/KickOSConfig.cmake"
+grep -q '^set(KICKOS_ARCH "' "$ARCH_CFG" || fail "$ARCH_CFG sets no KICKOS_ARCH to replace"
+sed 's/^set(KICKOS_ARCH ".*")$/set(KICKOS_ARCH "kickos_no_such_arch")/' "$ARCH_CFG" \
+  > "$ARCH_CFG.new" && mv "$ARCH_CFG.new" "$ARCH_CFG"
+if "$CMAKE" -S "$KICKOS_SRC/examples/oot-mcu-app" -B "$TMP/archless-build" -G "$GEN" \
+     -DCMAKE_TOOLCHAIN_FILE="$TC" -DCMAKE_PREFIX_PATH="$TMP/archless" >"$TMP/archless.log" 2>&1; then
+  fail "a package naming an arch it does not ship configured (arch guard gone)"
+fi
+tr -s ' \n' '  ' < "$TMP/archless.log" | grep -q 'provides no KickOS::kickos_arch_kickos_no_such_arch' \
+  || fail "the arch-less configure failed for another reason: \
+$(sed -n '/CMake Error/,$p' "$TMP/archless.log" | sed -n '1,6p' | tr '\n' ' ')"
 
 PKG_NEWLIB="$(sed -n 's/^set(KICKOS_MICROBIT_PACKAGE_NEWLIB \([a-z]*\)).*/\1/p' "$DESC" | head -1)"
 PROFILE_NOTE=""

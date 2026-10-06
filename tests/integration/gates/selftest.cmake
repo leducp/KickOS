@@ -652,15 +652,13 @@ endif()
 
 # Split-image boards separate writable app data and user executable code.
 # Keep kernel, arch, and chip archives outside both; libkickos_lib is app code.
-# x86_64 links a PE32+ image with ld directly: the image and its map are the .efi pair, and
-# the boot and landing objects are the kernel's too, linked as objects rather than archived.
+# On x86_64 the boot and landing objects are the kernel's too, linked as objects rather than
+# archived.
 if(KICKOS_HAVE_ASPACE)
   set(_appdata_image "$<TARGET_FILE:selftest>")
   set(_appdata_map "${_selftest_map}")
   set(_appdata_kernel_objects "")
   if(KICKOS_ARCH STREQUAL "x86_64")
-    get_target_property(_appdata_image selftest KICKOS_IMAGE_FILE)
-    set(_appdata_map "${_appdata_image}.map")
     set(_appdata_kernel_objects $<TARGET_OBJECTS:kickos_x86_64_landed_kernel>)
     if(KICKOS_KERNEL_CORES GREATER 1)
       list(APPEND _appdata_kernel_objects $<TARGET_OBJECTS:kickos_x86_64_boot_ap>)

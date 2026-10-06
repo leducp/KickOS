@@ -31,11 +31,7 @@ kickos_add_qemu_test(TARGET sysdefault_fault SCRIPT "${_sysdefault_script}"
 # is not masked and a thread-local object costs a block, the arena where the board places its
 # stacks in one region arena by the pow2 rule the arm sizes its stack by, and the heap where it
 # is an enforcing window's pad.
-set(_system_link_arms none two entry refused notool nocc rerun)
-# x86_64 links its heap from the system target's KICKOS_SYSTEM_HEAP rather than its link options.
-if(NOT KICKOS_ARCH STREQUAL "x86_64")
-  list(APPEND _system_link_arms noheap)
-endif()
+set(_system_link_arms none two entry refused notool nocc rerun noheap)
 if(KICKOS_TLS AND NOT KICKOS_TLS_FROM_SP)
   list(APPEND _system_link_arms stack)
 endif()

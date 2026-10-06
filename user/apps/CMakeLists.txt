@@ -18,6 +18,14 @@ macro(kickos_add_diagnostic_apps)
   endif()
 endmacro()
 
+# This tree's posture for its own apps, which an out-of-tree app does not get. gcc 15 defaults
+# to gnu23, which accepts bool, static_assert, alignas and nullptr, so an unpinned C app stops
+# witnessing the C contract it exists for.
+add_compile_options(${KICKOS_WARN_FLAGS})
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
+
 # Board-agnostic and multi-board apps.
 add_subdirectory(common)
 

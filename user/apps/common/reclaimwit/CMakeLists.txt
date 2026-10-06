@@ -16,14 +16,14 @@ if(NOT KICKOS_SERVICE_LIST STREQUAL "kickos_services_none")
     "-DKICKOS_SERVICE_LIST=kickos_services_none to give a verdict.")
 endif()
 
-kickos_add_app_target(reclaimwit main.cc)
+add_executable(reclaimwit main.cc)
 target_link_libraries(reclaimwit PRIVATE kickos)
 kickos_emit_image(reclaimwit)
 target_compile_definitions(reclaimwit PRIVATE KICKOS_RW_MODE=0)
 
 # Its own binary, it ends the system, and built alongside the park arm so both #if branches of
 # main.cc stay compiled.
-kickos_add_app_target(reclaimwit_drain main.cc)
+add_executable(reclaimwit_drain main.cc)
 target_link_libraries(reclaimwit_drain PRIVATE kickos)
 kickos_emit_image(reclaimwit_drain)
 target_compile_definitions(reclaimwit_drain PRIVATE KICKOS_RW_MODE=1)

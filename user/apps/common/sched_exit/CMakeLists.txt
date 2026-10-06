@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-kickos_add_app_target(sched_exit main.cc)
+add_executable(sched_exit main.cc)
 target_link_libraries(sched_exit PRIVATE kickos)
 kickos_emit_image(sched_exit)
 
