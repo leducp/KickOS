@@ -5,7 +5,8 @@
 # A silicon capture of specfault (user/apps/common/specfault): the read of the probe address
 # faulted cleanly there. On the Teensy that address is the unbacked FlexSPI wrap, and a wrap that
 # regressed to readable stalls the core instead, so a capture ending at the announcement is the
-# regression; elsewhere it is an address nothing grants the thread.
+# regression; elsewhere it is an address nothing grants the thread. Built only where the image
+# enforces memory (user/apps/common/CMakeLists.txt).
 #
 #   KOS_CAPTURE=<log> check_specfault.sh <board-build> <kickos-source> <cmake>
 

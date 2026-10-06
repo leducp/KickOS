@@ -45,7 +45,7 @@ link within 1,700 bytes of one another -- each link prints its own `size` line, 
 and by how much is read there rather than quoted here.
 
 At 64 KiB of flash the self-test does not fit as one image and is built as `selftest` and
-`selftest_p2` to `selftest_p9`: see *The selftest ships as SEVERAL images on six boards* below.
+`selftest_p2` to `selftest_p10`: see *The selftest ships as SEVERAL images on six boards* below.
 
 ### Recommended: `microbit` is exactly this tier
 
@@ -1030,14 +1030,14 @@ the arms between them.
 registration list into TEN regions; each image carries a contiguous RUN of them and elides the
 rest, so the number of images is what varies by board and the cut points do not. Each board's cut
 is `_selftest_firsts` in `user/apps/common/selftest/CMakeLists.txt`, the first region of each
-image. The two STM32 parts take NINE images, one region each and the last carrying regions 9 and
-10, because 64 KiB of FLASH holds only a slice of the suite. `microbit` takes FIVE (regions 1-4,
+image. The two STM32 parts take TEN images, one region each, because 64 KiB of FLASH holds only a
+slice of the suite. `microbit` takes FIVE (regions 1-4,
 5-6, 7-8, 9, 10). `esp32c6` takes FIVE on the enforcing bench variant (1-2, 3-4, 5-6, 7-9, 10)
-and FOUR on the enforcing or own-image AMP variants (1-4, 5-6, 7-9, 10).
-An enforcing `xmc4800-relax` build takes TWO, regions 1 to 8 and 9 to 10: its thread arena is
+and FOUR on the enforcing or own-image AMP variants (1-3, 4-6, 7-9, 10).
+An enforcing `xmc4800-relax` build takes THREE, regions 1 to 8, 9 and 10: its thread arena is
 the 56 KiB between the app window and the kernel stack, the allocator never takes a block back,
 and by region 9 the earlier arms' blocks and the suite's stacks have spent it, so region 9's
-grants and stacks need an image of their own.
+grants and stacks need an image of their own, and so does region 10's console handover.
 An `esp32-wroom` bench build takes TWO, regions 1 to 6 and 7 to 10: every ESP32 instruction runs
 from the 128 KiB `IRAM` of `arch/xtensa/chip/esp32/esp32.ld`, and the bench probes beside a
 console driver or the second core's code put the whole suite past it.
@@ -1058,8 +1058,8 @@ build no driver images.
 arena: its unprivileged code+rodata is ONE pow2 PMP NAPOT window, `_code_size` in
 `arch/riscv/chip/esp32c6/esp32c6.ld`, 128 KiB, and the whole suite in one image overflowed it. The
 next pow2 step is 256 KiB and would take 128 KiB straight off the thread arena, which is why the
-split is what pays for it: at three images the fattest part on `esp32c6-wroom-st` is the one
-carrying regions 1 and 2, at 95,676 B of 131,072 with 35,396 free. And **`microbit` split for the
+split is what pays for it: at four images the fattest part on `esp32c6-wroom-st` is the `c6uart`
+one carrying regions 1 to 3, at 118,972 B of 131,072 with 12,100 free. And **`microbit` split for the
 opposite resource, and no longer needs to**: its FLASH
 is 256 KiB and never binding, but
 `__kickos_ram_start` follows `.bss` on `nrf51`, so eliding a region's test bodies took their statics
@@ -1068,7 +1068,7 @@ fit; at the 32 KiB provisioning it is a RESIDUAL, and `user/apps/common/selftest
 says so at the microbit gate. Collapsing it means taking that board's part count to one and
 re-deriving the per-region counts as a whole-suite one.
 
-- The images are `selftest`, `selftest_p2` and so on up to the board's last part (`selftest_p9` on
+- The images are `selftest`, `selftest_p2` and so on up to the board's last part (`selftest_p10` on
   the two STM32 parts, `selftest_p5` on `microbit`). Each is compiled with the region run it carries
   (`KICKOS_SELFTEST_FIRST_REGION`, `KICKOS_SELFTEST_LAST_REGION`), which is what elides the other
   regions' bodies. They all land in `<build>/user/apps/common/selftest/` with the usual `.elf` /
@@ -1084,14 +1084,15 @@ re-deriving the per-region counts as a whole-suite one.
 - The two 64 KiB parts run the FULL arm set: `cap_dest` and `irq_discard` are not excluded on them.
 - **`microbit` is the only split board with ctest gates, and it has five:** `microbit_selftest`
   through `microbit_selftest_p5`, each with its OWN
-  `EXPECT_SKIPS` / `EXPECT_PARTIALS`. The declarations are made PER REGION in
-  `tests/integration/gates/selftest.cmake` and an image declares the union over the regions it
-  carries: regions 1-4, 6 and 7 declare nothing, region 5 declares the `uart_service` skip, region 8 the
-  `irq_as_event` skip, region 9 the `caller_stack` partial, and region 10 the
-  `irq_kernel_line_reserved` partial where the arch routes every line itself. A name has to be
-  declared in the region that holds its
-  `TAP_ADD` line, because `check_tap_stream.sh` reports a name declared in another image as a NOTE
-  and not a failure -- so a misfiled name is not caught by the gate at all, only by that rule.
+  `EXPECT_SKIPS` / `EXPECT_PARTIALS`. A board's sets are declared BY NAME in
+  `tests/integration/gates/selftest.cmake` (on `microbit` the `uart_service` and `irq_as_event`
+  skips, the `caller_stack` partial, and the `irq_kernel_line_reserved` partial where the arch
+  routes every line itself), and each image is judged against the members its own regions
+  register, read off the same region bounds in `main.cc` that cut the suite. So an arm moving
+  across a boundary takes its permission with it. `check_tap_stream.sh` reports a name declared
+  in another image as a NOTE and not a failure, so the build's `<board>_selftest_manifest` gate
+  holds every manifest row to the arms its LINKED image registers, and refuses a name another
+  image of the build runs.
 - **A SILICON capture of any of these images is judged by the same verdict**, `check_tap_stream.sh`,
   which `tools/bench/bench-capture.sh` runs over the stream. It was not, until M8.13: that chain
   counted the `ok` lines instead, and a console that dropped lines shrank the count with the loss
@@ -1170,14 +1171,14 @@ both of the two, and then **a THREE-way cut stopped fitting at all**: the notifi
 `bluepill-c8-st`, 496 bytes of headroom in total, which no re-cut of two boundaries can spread.
 A FOURTH region was cut for it, and a fourth image stopped fitting in turn: the console handover's
 arms left `selftest_p4` overflowing by 1,452 B on `bluepill-c8-st`, and the cut has grown to ten
-regions since. They end after `sem_raii`, `endpoint_handout`, `reply_abandoned_cap`,
+regions since. They end after `sem_raii`, `endpoint_handout`, `reply_recv_timeout`,
 `call_donation_hold`, `cap_reply_slot_reuse`, `task_exit_member_exit`,
 `task_slay_after_every_sweep`, the IRQ arms and `caller_stack`. `caller_stack` closes region 9 on
 purpose: a stack that fits spends arena that `ram_alloc_zeroed` and the probes before it need on
 `microbit`, which carries region 9 alone.
 
 The table below is the measurement of the six-region cut, six images; the current cut is the
-nine-image one of `_selftest_firsts`.
+ten-image one of `_selftest_firsts`.
 
 | image | `bluepill-c8-st` | `f302nucleo-st` | `bluepill-c8` | `f302nucleo` |
 | --- | --- | --- | --- | --- |
@@ -1450,11 +1451,16 @@ the system. The bank also holds the console's and the reserved pins, and the tas
 `coarse_gate`: the platform-wide `no_protection` the LP core's cluster brings subsumes it, and
 admission refuses it as unneeded. `tests/integration/check_c6blink.sh` judges the capture, and
 `tests/integration/check_c6lpprobe.sh` the LP probe's, which runs on the board's default
-composition in the flat build. `c6txidle` runs there too: it loads a line straight into UART0's
-FIFO, calls `arch_console_flush_sync`, and takes the TX pad from the UART the moment the flush
-returns, so `tests/integration/check_c6txidle.sh` finds the line's last byte whole only where the
-flush waited for the frame; the image also times the wait against the measured frame and reads
-`ST_UTX_OUT` after 10 ms of quiet line.
+composition in the flat build. `c6txidle` runs there too, its kernel-side half
+(`arch/riscv/chip/esp32c6/txidle_probe_esp32c6.cc`) in M-mode as the console ring is set up: it
+loads a line straight into UART0's FIFO, calls `arch_console_flush_sync`, and holds the
+transmitter in reset the moment the flush returns, so `tests/integration/check_c6txidle.sh` finds
+the line's last byte whole only where the flush waited for the frame. The image also times the
+wait against the measured frame and reads `ST_UTX_OUT` while the line shifts and after 10 ms of
+quiet line. It cannot be a U-mode thread: the APM answers an ungranted REE0 read of UART0 with 0
+and drops the store, without a trap, and 0 is the idle encoding under test. The C6 keeps
+`ST_UTX_OUT` in `FSM_STATUS[7:4]`; `[3:0]` is the receiver's state machine, which reads idle through
+a whole transmission.
 
 #### `pizero2350` -- PMSAv8
 
@@ -1650,7 +1656,8 @@ inside it and runs the loopback on the line, then reads ungranted `GPIOB` and is
 which ends the system (`design-spi-driver-stm32f411.md`; the seam's contract is
 `archive/M4_unprivileged_root_record.md` stage 3). What is open is bench time, not code: the app has
 not run on silicon since that rework, and its loopback arm additionally needs the PA7->PA6 jumper
-fitted. `tests/integration/check_f411spi.sh` judges the capture. So the chip's peripheral-window
+fitted. `tests/integration/check_f411spi.sh` judges the capture, the echo only where the rig declares
+that jumper (`spi1-loopback`, see `bench.md`) and owed elsewhere. So the chip's peripheral-window
 proof remains open and the canonical PMSA peripheral proof stays `xmcspi`.
 
 **The pre-stage-3 fault, measured.** With the bring-up still in `main`, i.e. in root, the app faulted

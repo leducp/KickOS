@@ -1348,6 +1348,16 @@ cnot_evaluated() { # <clause>
     echo "NOT EVALUATED: $1"
 }
 
+# A bench fitting the rig declares on the captured board: KOS_WIRED, which tools/bench/rig.sh
+# fills from RIG_WIRED_<BOARD>. Unset declares none, so a clause resting on a fitting is owed.
+wired() { # <fitting>
+    case " ${KOS_WIRED:-} " in
+        *" $1 "*) return 0 ;;
+        *) ;;
+    esac
+    return 1
+}
+
 # The one reader of an image's exit status a capture judge may use: a capture carries none, so
 # there the clause is owed; a boot fails unless RC is <status>, or for `ended`, not the bound's.
 status_clause() { # <clause> <status|ended>

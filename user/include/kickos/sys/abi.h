@@ -166,8 +166,10 @@ enum kos_syscall_nr
     KOS_SYS_SHUTDOWN = 36,    // (status) -> does not return; -KOS_EPERM if refused
     KOS_SYS_MEM_SELF_GRANT = 37, // (base, size, kos_mem_flags) -> 0, or -KOS_E*
                               //   (EPERM/EINVAL/ENOMEM/ENOTSUP/EBUSY). ENOTSUP is a memory
-                              //   type this chip cannot honour; EINVAL an undefined flag bit;
-                              //   EBUSY the range mapped elsewhere with another type.
+                              //   type this chip cannot honour; EINVAL an undefined flag bit,
+                              //   or a range overlapping the caller's own regions in a way its
+                              //   MPU cannot decide (any overlap on ARMv8-M); EBUSY the range
+                              //   mapped elsewhere with another type.
     KOS_SYS_REBOOT = 38,      // () -> does not return; -KOS_EPERM if refused, -KOS_ENOSYS (no backend)
                               //   (self-test only: the dispatch arm is compiled out unless
                               //   KICKOS_ENABLE_SELFTEST, so a production image returns -KOS_EINVAL)
@@ -768,6 +770,8 @@ struct kos_thread_params
     uint32_t mem_size;   // size of that region (bytes)
     // The windows this thread holds, each its own and none its task's (0 => none), read
     // once at the spawn. More than KICKOS_MAX_THREAD_WINDOWS entries: -KOS_ENOMEM.
+    // A region backend refuses (-KOS_EINVAL) a child whose data, windows and stack overlap in a
+    // way its MPU cannot decide as the kernel does: any overlap on ARMv8-M.
     struct kos_window const* windows;
     uint16_t window_count;
     void* stack_base;    // caller-owned thread stack; 0 => kernel default (KICKOS_USER_STACK_SIZE).

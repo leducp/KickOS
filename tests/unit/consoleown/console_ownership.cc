@@ -75,6 +75,7 @@ extern "C"
     }
 
     int console_tx_armed(void) { return g_tx_armed; }
+    int console_tx_insert_record_line(char const*, size_t, int) { return 0; }
     void console_tx_flush_sync(void) {}
     void console_tx_deinit(void) { g_tx_armed = 0; }
     int console_held_append(uint32_t, char const*, uint32_t, uint32_t) { return 0; }

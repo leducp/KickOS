@@ -366,6 +366,12 @@ namespace kickos
         {
             return -KOS_EBUSY;
         }
+#if KICKOS_MEMORY_ENFORCED and KICKOS_HAVE_MPU
+        if (not c->mpu.retyping_expressible(base, rsz, attr))
+        {
+            return -KOS_EINVAL;
+        }
+#endif
         grant_sync(&c->mpu, base, rsz, attr);
         // Retyped in place: two overlapping descriptors of one block would conflict.
         if (not c->mpu.add_enforced_retyping(base, rsz, attr))
@@ -409,6 +415,55 @@ namespace kickos
             grant_sync(nullptr, reinterpret_cast<uintptr_t>(t->stack_base),
                        arch_ram_region_size(t->stack_size), ARCH_MPU_R | ARCH_MPU_W);
         }
+    }
+#endif
+
+    // Assembles into t->mpu the region set a thread spawned with `attr` on this stack carries,
+    // in its task's domain `dom`, and answers whether all of it fitted. An unprivileged thread
+    // has no background region, so its set is explicit: app code and static data, its task's
+    // domain regions, its own windows and its own stack, sized to what this MPU can describe.
+    //
+    // Portable code may rely only on the floor, that a thread-scoped grant reaches its HOLDER; a
+    // region backend also makes the stack private, and a translating backend maps it task-wide.
+    static bool thread_regions_assemble(Thread* t, Domain const* dom, ThreadAttr const& attr,
+                                        void* stack_base, size_t stack_size)
+    {
+        t->mpu.clear();
+        if (not attr.privileged)
+        {
+            t->mpu.append_statics();
+        }
+        // The whole set MUST fit: a truncated set that drops the thread's own stack would fault
+        // it on its own memory.
+        bool fitted = true;
+        if (dom != nullptr)
+        {
+            size_t const dn = domain_region_count(dom);
+            for (size_t i = 0; i < dn; i++)
+            {
+                arch_mpu_region const* const dr = domain_region_at(dom, i);
+                fitted = t->mpu.add(dr->base, dr->size, dr->attr) and fitted;
+            }
+        }
+        if (not attr.privileged)
+        {
+            fitted = seat_windows(t, attr) and fitted;
+        }
+        if (not attr.privileged and stack_base != nullptr and stack_size != 0)
+        {
+            fitted = t->mpu.add(reinterpret_cast<uintptr_t>(stack_base),
+                                arch_ram_region_size(stack_size), ARCH_MPU_R | ARCH_MPU_W)
+                     and fitted;
+        }
+        return fitted;
+    }
+
+#if KICKOS_MEMORY_ENFORCED and KICKOS_HAVE_MPU and not KICKOS_HAVE_ASPACE
+    bool thread_regions_expressible(Thread* scratch, Domain const* dom, ThreadAttr const& attr,
+                                    void* stack_base, size_t stack_size)
+    {
+        (void)thread_regions_assemble(scratch, dom, attr, stack_base, stack_size);
+        return scratch->mpu.overlaps_expressible();
     }
 #endif
 
@@ -461,7 +516,6 @@ namespace kickos
         t->stack_size = stack_size;
         t->kstack_owned = attr.kstack_owned;
         t->task_entry = attr.task_entry;
-        t->mpu.clear();
 
         // A reference on the task is held for the thread's lifetime and released at exit
         // (sched::exit_current).
@@ -502,45 +556,14 @@ namespace kickos
         }
 #endif
 
-        // An unprivileged thread has no background region, so its set is assembled
-        // explicitly: app code and static data, its task's domain regions, its own windows
-        // and its own stack. Sizes round to what this MPU can describe (arch_mpu_region_pow2).
-        //
-        // Portable code may rely only on the floor, that a thread-scoped grant reaches its
-        // HOLDER; a region backend also makes the stack private, and a translating backend
-        // maps it task-wide.
-        if (not attr.privileged)
-        {
-            t->mpu.append_statics();
-        }
-        bool const wants_stack =
-            (not attr.privileged and stack_base != nullptr and stack_size != 0);
-        // The whole set MUST fit: a truncated set that drops the thread's own stack would
-        // fault it on its own memory.
-        bool fitted = true;
-        Domain const* const dom = task_domain(t->task);
-        if (dom != nullptr)
-        {
-            size_t const dn = domain_region_count(dom);
-            for (size_t i = 0; i < dn; i++)
-            {
-                arch_mpu_region const* const dr = domain_region_at(dom, i);
-                fitted = t->mpu.add(dr->base, dr->size, dr->attr) and fitted;
-            }
-        }
-        if (not attr.privileged)
-        {
-            fitted = seat_windows(t, attr) and fitted;
+        bool const fitted = thread_regions_assemble(t, task_domain(t->task), attr, stack_base,
+                                                    stack_size);
 #if KICKOS_ARCH_ARENA_DCACHE and not KICKOS_HAVE_ASPACE
-            thread_region_sync(t);
-#endif
-        }
-        if (wants_stack)
+        if (not attr.privileged)
         {
-            fitted = t->mpu.add(reinterpret_cast<uintptr_t>(stack_base),
-                                arch_ram_region_size(stack_size), ARCH_MPU_R | ARCH_MPU_W)
-                and fitted;
+            thread_region_sync(t);
         }
+#endif
         KICKOS_ASSERT(fitted);
 
         // Rule 7 backstop: no assembled region may overlap a kernel-reserved block.

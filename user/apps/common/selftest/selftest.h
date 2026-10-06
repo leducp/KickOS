@@ -42,6 +42,16 @@
 // cast gives a template-id such as main_pinned<f> the type that names its one specialization.
 #define TAP_ELIDE(fn) ((void)sizeof(static_cast<void (*)()>(&(fn))))
 
+// A registration this image compiles. The absolute symbol `kickos_tap_arm.<name>` it leaves in
+// the symbol table is how tests/integration/check_selftest_manifest.sh reads which arms the
+// linked image carries, so it must stay beside the tap::add it names.
+#define TAP_REGISTER(name, fn)                                                                \
+    do                                                                                        \
+    {                                                                                         \
+        __asm__(".set \"kickos_tap_arm." name "\", 1");                                     \
+        tap::add(name, fn);                                                                   \
+    } while (false)
+
 #ifndef KICKOS_KERNEL_CORES
 #define KICKOS_KERNEL_CORES 1
 #endif
@@ -228,6 +238,13 @@ namespace selftest
     KICKOS_SELFTEST_LOCAL size_t discover_granule();
     KICKOS_SELFTEST_LOCAL void pool_probe_worker(void*);
     KICKOS_SELFTEST_LOCAL bool pool_can_host(int n);
+    // kos_ram_alloc, refused while g_ram_starved is set: the refusal paths of the arms that
+    // reserve through it are otherwise reached only once a board's arena has run out. A
+    // member of another task reads its own copy of the flag, so it is told through
+    // st_ram_alloc_as.
+    extern KICKOS_SELFTEST_LOCAL bool g_ram_starved;
+    KICKOS_SELFTEST_LOCAL void* st_ram_alloc(size_t size);
+    KICKOS_SELFTEST_LOCAL void* st_ram_alloc_as(bool starved, size_t size);
 
 #if defined(KICKOS_ENABLE_SELFTEST)
     // A member of ANOTHER task gets its own copy of this image's static data, so every report

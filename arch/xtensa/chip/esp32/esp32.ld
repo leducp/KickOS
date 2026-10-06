@@ -77,14 +77,21 @@ SECTIONS
 
     /* Global ctors SPLIT: .init_array keeps ONLY the closed KickOS-owned set
        (kernel/arch/chip/lib), run early by Reset_Handler; other (app/lib) ctors
-       land in .kickos_app_init_array and run from root_entry with the kernel live. */
+       land in .kickos_app_init_array and run from root_entry with the kernel live.
+       The xtensa GCC, configured without --enable-initfini-array (conan/toolchain), emits
+       .ctors: a table section no selector names is dropped by --gc-sections, constructor and
+       all. SORT_BY_INIT_PRIORITY reads either spelling's priority for a forward walk. */
     .init_array : ALIGN(4)
     {
         __init_array_start = .;
-        KEEP(*libkickos_kernel.a:*(SORT(.init_array.*) .init_array))
-        KEEP(*libkickos_arch_lx6.a:*(SORT(.init_array.*) .init_array))
-        KEEP(*libkickos_chip_esp32.a:*(SORT(.init_array.*) .init_array))
-        KEEP(*libkickos_lib.a:*(SORT(.init_array.*) .init_array))
+        KEEP(*libkickos_kernel.a:*(SORT_BY_INIT_PRIORITY(.init_array.*) .init_array))
+        KEEP(*libkickos_kernel.a:*(SORT_BY_INIT_PRIORITY(.ctors.*) .ctors))
+        KEEP(*libkickos_arch_lx6.a:*(SORT_BY_INIT_PRIORITY(.init_array.*) .init_array))
+        KEEP(*libkickos_arch_lx6.a:*(SORT_BY_INIT_PRIORITY(.ctors.*) .ctors))
+        KEEP(*libkickos_chip_esp32.a:*(SORT_BY_INIT_PRIORITY(.init_array.*) .init_array))
+        KEEP(*libkickos_chip_esp32.a:*(SORT_BY_INIT_PRIORITY(.ctors.*) .ctors))
+        KEEP(*libkickos_lib.a:*(SORT_BY_INIT_PRIORITY(.init_array.*) .init_array))
+        KEEP(*libkickos_lib.a:*(SORT_BY_INIT_PRIORITY(.ctors.*) .ctors))
         __init_array_end = .;
     } > DRAM
 
@@ -93,8 +100,8 @@ SECTIONS
     .kickos_app_fini_array : ALIGN(4)
     {
         __kickos_app_fini_array_start = .;
-        KEEP(*(SORT(.fini_array.*)))
-        KEEP(*(.fini_array))
+        KEEP(*(SORT_BY_INIT_PRIORITY(.fini_array.*) SORT_BY_INIT_PRIORITY(.dtors.*)))
+        KEEP(*(.fini_array .dtors))
         __kickos_app_fini_array_end = .;
     } > DRAM
 
@@ -103,8 +110,8 @@ SECTIONS
     .kickos_app_init_array : ALIGN(4)
     {
         __kickos_app_init_array_start = .;
-        KEEP(*(SORT(.init_array.*)))
-        KEEP(*(.init_array))
+        KEEP(*(SORT_BY_INIT_PRIORITY(.init_array.*) SORT_BY_INIT_PRIORITY(.ctors.*)))
+        KEEP(*(.init_array .ctors))
         __kickos_app_init_array_end = .;
     } > DRAM
 

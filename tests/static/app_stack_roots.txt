@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# Declarations for tests/static/app_stack.py, which check_trap_redzone.sh runs over its own
+# scratch tree: WHICH application threads are bounded, on WHAT stack, and what the arch's trap
+# entry reserves below each one's deepest sp.
+#
+#   need    <arch> header=<path> frame=<MACRO> zone=<MACRO> reason: <text>
+#   thread  <arch> <image> <name> root=<symbol> stack=<MACRO> reason: <text>
+#   unsized <arch> <symbol> <bytes> [calls=[?]<symbol>[,...]] reason: <text>
+#
+# A thread passes when its root's longest path, plus frame, plus zone, fits the stack less the
+# image's __kickos_tls_carve. The walk covers the units the image's link map LOADs and nothing
+# else, and it refuses what it cannot bound instead of charging it nothing: a reachable node
+# with no frame and no unsized record, an indirect call, a dynamic stack object, a cycle.
+#
+# stack= is a macro of the unit that defines the root, and the spawn has to pass exactly it.
+# Every macro resolves under that unit's own compile command, ISA flags included.
+#
+# ONLY A THREAD WHOSE WHOLE GRAPH CLOSES CAN BE DECLARED. Prebuilt newlib and libstdc++ carry
+# no .ci, so a call into them is an unsized node, and the ones a thread reaches through a
+# function pointer (exit's atexit handlers, stdio's FILE hooks) cannot be sized from here at
+# all. That keeps out every composed task's main: kickos_main ends in exit.
+
+# --- armv7m ------------------------------------------------------------------------------
+need    armv7m header=arch/arm/armv7m/include/kickos/arch/armv7m_trap_stack.h \
+               frame=KICKOS_ARMV7M_TRAP_ENTRY_FRAME zone=KICKOS_ARMV7M_TRAP_NEED_SVC \
+               reason: the SVC guard's red zone below the validated PSP and the entry frame above it, which dominate a preemption's frame and the PendSV push at every posture
+thread  armv7m reclaimwit       rwdrv root=main.cc:console_sink stack=RW_DRIVER_STACK \
+               reason: the published console driver, spawned on a stack main allocates
+thread  armv7m reclaimwit_drain rwdrv root=main.cc:console_sink stack=RW_DRIVER_STACK \
+               reason: the published console driver, spawned on a stack main allocates
+unsized armv7m arch_syscall 0 reason: switch.S, a load, the svc and bx lr, which write no stack
+unsized armv7m _free_r 16 calls=__malloc_lock,__malloc_unlock \
+               reason: newlib nano, measured on the linked image: push {r4, lr} then sp lowered by 8, and __malloc_unlock is a tail call

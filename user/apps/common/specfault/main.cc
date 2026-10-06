@@ -15,6 +15,10 @@
 #include <kickos/kos.h>
 #include <kickos/libc/fmt.h>
 
+#if not KICKOS_MEMORY_ENFORCED
+#error "specfault's verdict is a denied read, which only an image enforcing memory can deny"
+#endif
+
 // The probe address: inside FlexSPI (0x6000_0000) but beyond the 8 MiB populated image,
 // so it lands in the no-access wrap. Overridable for a board with a different aperture.
 #ifndef KICKOS_SPECFAULT_ADDR

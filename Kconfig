@@ -1005,8 +1005,8 @@ config KICKOS_TLS
 	  WHERE THE ARCH SELECTS ARCH_TLS_FROM_SP IT FORCES POWER-OF-TWO STACK SIZES.
 	  Unprivileged code on ARM has no register that differs per thread except SP, so
 	  __aeabi_read_tp is SP masked down to the thread's own block. That is correct only
-	  when the blocks are STRIDED by a power of two, so there every arena block is
-	  aligned to its own rounded size and KICKOS_USER_STACK_SIZE and
+	  when the blocks are STRIDED by a power of two, so there every arena block of one
+	  stride is aligned to it and KICKOS_USER_STACK_SIZE and
 	  KICKOS_ROOT_STACK_SIZE must be powers of two and must round to the SAME one. The
 	  top-level CMakeLists.txt refuses each failure by name at configure time, and
 	  cmake/boot_arena.cmake mirrors the align leg so the link-time assert models the

@@ -349,7 +349,6 @@ namespace
         {
             uintptr_t base;
             size_t size;
-            uint32_t attr;
         };
         // Cap above KICKOS_MPU_MAX_REGIONS (8); extra entries are clamped.
         constexpr size_t CAP = 32;
@@ -371,7 +370,6 @@ namespace
             }
             sorted[j].base = b;
             sorted[j].size = s;
-            sorted[j].attr = sim().applied[i].attr;
             m++;
         }
         uintptr_t cursor = astart;
@@ -391,10 +389,14 @@ namespace
         {
             mprotect(reinterpret_cast<void*>(cursor), aend - cursor, PROT_NONE);
         }
-        for (size_t i = 0; i < m; i++)
+        // In slot order, never base order: under ARCH_MPU_OVERLAP_HIGHER the last call decides.
+        for (size_t i = 0; i < sim().applied_n; i++)
         {
-            mprotect(reinterpret_cast<void*>(sorted[i].base), sorted[i].size,
-                     prot_from_attr(sorted[i].attr));
+            arch_mpu_region const& r = sim().applied[i];
+            if (arena_region_valid(r.base, r.size))
+            {
+                mprotect(reinterpret_cast<void*>(r.base), r.size, prot_from_attr(r.attr));
+            }
         }
     }
 

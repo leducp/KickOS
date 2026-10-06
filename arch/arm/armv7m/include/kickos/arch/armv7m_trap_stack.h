@@ -252,6 +252,17 @@
     (KICKOS_ARMV7M_TRAP_NEST_SVC_DISPATCH + KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVC)
 #endif
 
+/* The exception frame the SVC entry stacks ABOVE the PSP the guard validates, which the guard
+ * does not count and the thread's own stack still pays: 104 where an __ARM_FP build can enter
+ * with an FP frame, and the plain 32 elsewhere. So a thread needs this plus
+ * KICKOS_ARMV7M_TRAP_NEED_SVC below its deepest sp, which also covers the preemption and the
+ * PendSV push, both smaller. tests/static/app_stack_roots.txt prices app threads on it. */
+#if defined(__ARM_FP)
+#define KICKOS_ARMV7M_TRAP_ENTRY_FRAME 104
+#else
+#define KICKOS_ARMV7M_TRAP_ENTRY_FRAME 32
+#endif
+
 /* What one kernel block has to hold: a requirement on KICKOS_KERNEL_STACK_SIZE, not a bound
  * anything refuses at run time, every byte of it being written by privileged code through a
  * pointer the kernel seated. It resolves per POSTURE, of which there are three, so that the

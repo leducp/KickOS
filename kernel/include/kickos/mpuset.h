@@ -18,6 +18,7 @@
 #include <stdint.h>
 
 #include <kickos/arch/arch.h>
+#include <kickos/arch/mpu_overlap.h>
 #include <kickos/config.h>
 #include <kickos/config/limits.h>
 
@@ -33,6 +34,36 @@ namespace kickos
     static_assert(KICKOS_MPU_MAX_REGIONS < 32,
                   "the seating bitmask is a uint32_t, and the no-MPU encode shifts by a count "
                   "that reaches the maximum, so 32 is already the undefined shift");
+
+    // Whether an MPU deciding overlaps by `rule` (ARCH_MPU_OVERLAP_*) decides every access to a
+    // byte both regions cover as the kernel's range checks do: allowed where both allow it and
+    // nowhere else. `lower` and `higher` are named by slot number. The memory type is not
+    // asked: the type rules admit one type per block.
+    constexpr bool mpu_overlap_expressible(int rule, arch_mpu_region const& lower,
+                                           arch_mpu_region const& higher)
+    {
+        if (lower.size == 0 or higher.size == 0 or lower.base > higher.base + (higher.size - 1u)
+            or higher.base > lower.base + (lower.size - 1u))
+        {
+            return true;
+        }
+        uint32_t const rights = ARCH_MPU_R | ARCH_MPU_W | ARCH_MPU_X;
+        uint32_t const lo = lower.attr & rights;
+        uint32_t const hi = higher.attr & rights;
+        if (rule == ARCH_MPU_OVERLAP_HIGHER)
+        {
+            return (hi & ~lo) == 0;
+        }
+        if (rule == ARCH_MPU_OVERLAP_LOWER)
+        {
+            return (lo & ~hi) == 0;
+        }
+        if (rule == ARCH_MPU_OVERLAP_UNION)
+        {
+            return lo == hi;
+        }
+        return false;
+    }
 
     class MpuSet
     {
@@ -167,6 +198,62 @@ namespace kickos
                 return false;
             }
             return add_enforced(base, size, attr);
+        }
+#endif
+
+#if KICKOS_HAVE_MPU and not KICKOS_HAVE_ASPACE
+        // Whether this MPU decides every byte `r`, seated at slot `at`, shares with another
+        // region of the set as the kernel's range checks do. A region already at `at` is the one
+        // `r` replaces.
+        [[nodiscard]] __attribute__((noinline)) bool admits(arch_mpu_region const& r,
+                                                            uint8_t at) const
+        {
+            for (uint8_t i = 0; i < count_; i++)
+            {
+                bool ok = true;
+                if (i < at)
+                {
+                    ok = mpu_overlap_expressible(ARCH_MPU_OVERLAP, regions_[i], r);
+                }
+                else if (i > at)
+                {
+                    ok = mpu_overlap_expressible(ARCH_MPU_OVERLAP, r, regions_[i]);
+                }
+                if (not ok)
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        // Whether this MPU decides every overlap in the set as the kernel's range checks do.
+        [[nodiscard]] bool overlaps_expressible() const
+        {
+            for (uint8_t i = 0; i < count_; i++)
+            {
+                if (not admits(regions_[i], i))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        // admits(), at the slot add_enforced_retyping(base, size, attr) would seat the region in.
+        [[nodiscard]] bool retyping_expressible(uintptr_t base, size_t size, uint32_t attr) const
+        {
+            uint8_t at = count_;
+            for (uint8_t i = 0; i < count_; i++)
+            {
+                if (regions_[i].base == base and regions_[i].size == size)
+                {
+                    at = i;
+                    break;
+                }
+            }
+            arch_mpu_region const r = {base, size, attr};
+            return admits(r, at);
         }
 #endif
 

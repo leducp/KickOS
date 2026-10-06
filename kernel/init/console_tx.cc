@@ -235,9 +235,10 @@ static void drain_in_producer(void);
 // caller owes it NO fallback.
 //
 // A LINE THE RING CANNOT TAKE DOES NOT GO OUT. The kernel console is a DEBUG facility, so
-// losing a line under console pressure is the honest outcome; what is not acceptable is a
-// SPLIT line, and any direct write while the ring holds bytes produces one: the drain and
-// the direct writer are two writers at one device and interleave mid-line.
+// losing an ordinary line under console pressure is the honest outcome; what is not acceptable
+// is a SPLIT line, and any direct write while the ring holds bytes produces one: the drain and
+// the direct writer are two writers at one device and interleave mid-line. A fault record's
+// line makes room instead (console_tx_insert_record_line).
 //
 // The one direct write left is the UNARMED ring, before console_tx_init has run. No ring means
 // no drain means no second writer, and early-boot output predates the ring. That case is
@@ -324,6 +325,48 @@ int console_tx_insert_line(char const* buf, size_t n, int crlf)
     }
     drain_in_producer();
     return static_cast<int>(n);
+}
+
+// A FAULT RECORD'S LINE IS NOT LOST TO A FULL RING. Under the mask, the oldest queued bytes go
+// out through the polled writer, in ring order, until the line fits, and the line then queues
+// as any other: the ISR and every producer are held off for the span, so the wire has one
+// writer, and the span is at most the line's own expanded length of wire time. A producer drain
+// holding a byte it took is the one writer the mask does not stop, so that ring is not touched.
+int console_tx_insert_record_line(char const* buf, size_t n, int crlf)
+{
+    ConsoleTxRing& r = tx();
+    kickos::IrqLock lock;
+    if (not r.armed or r.inserting or r.draining)
+    {
+        return 0;
+    }
+    uint32_t needed = static_cast<uint32_t>(n);
+    if (crlf != 0)
+    {
+        for (size_t i = 0; i < n; i++)
+        {
+            if (buf[i] == '\n')
+            {
+                needed++;
+            }
+        }
+    }
+    if (needed > r.size - 1u)
+    {
+        return 0;
+    }
+    while (r.space() < needed)
+    {
+        uint32_t const tail = r.tail;
+        uint32_t run = needed - r.space();
+        if (run > r.size - tail)
+        {
+            run = r.size - tail;
+        }
+        arch_console_write_sync(r.buf + tail, run);
+        r.tail = (tail + run) & r.mask;
+    }
+    return console_tx_insert_line(buf, n, crlf);
 }
 
 static void drain_in_producer(void)

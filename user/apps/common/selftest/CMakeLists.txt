@@ -55,30 +55,31 @@ set(_selftest_regions 10)
 # region once. Order across images does not matter, each one initialising the board and running
 # its own arms alone.
 #
-# A per-board property, not a fleet one, and the binding budget is a different one on each of
-# them: 64 KiB of FLASH on the two STM32 parts, the 128 KiB pow2 PMP code window (`_code_size`
-# in arch/riscv/chip/esp32c6/esp32c6.ld) on an enforcing ESP32-C6, whose next step up would take
-# 128 KiB straight off the thread arena, the 240 KiB node slice on the ESP32-C6's own-image AMP
-# partition, the arena that follows .bss on nrf51 and the 56 KiB one between the app window and
-# the kernel stack on an enforcing XMC4800 (`xmc4800.ld`), which never takes a block back and is
-# spent before region 9's grants and stacks, and the 128 KiB IRAM every ESP32 instruction
-# runs from (`IRAM` in arch/xtensa/chip/esp32/esp32.ld), which the bench probes overrun beside a
-# console driver or the second core's code. The bench probes take the C6's code window past one
-# more cut. None of these is a number the build can read back from the board, so the cut is
-# stated here and nowhere else: the chip, KICKOS_HAVE_MPU, KICKOS_AMP_OWN_IMAGE and KICKOS_BENCH
-# come from the board's own config, and every gate takes the image list and each image's arm
-# count off the targets below rather than restating either.
+# A per-board property, not a fleet one, and the binding budget is a different one on each of them:
+# 64 KiB of FLASH on the two STM32 parts, the 128 KiB pow2 PMP code window (`_code_size` in
+# arch/riscv/chip/esp32c6/esp32c6.ld) on an enforcing ESP32-C6, whose next step up would take 128
+# KiB straight off the thread arena, the 240 KiB node slice on the ESP32-C6's own-image AMP
+# partition, the arena that follows .bss on nrf51 and the 56 KiB one between the app window and the
+# kernel stack on an enforcing XMC4800 (`xmc4800.ld`), which never takes a block back: regions 1 to
+# 8 spend it before region 9's grants and stacks, and region 9 before region 10's console handover,
+# and the 128 KiB IRAM every ESP32 instruction runs from (`IRAM` in
+# arch/xtensa/chip/esp32/esp32.ld), which the bench probes overrun beside a console driver or the
+# second core's code. The bench probes take the C6's code window past one more cut. None of these is
+# a number the build can read back from the board, so the cut is stated here and nowhere else: the
+# chip, KICKOS_HAVE_MPU, KICKOS_AMP_OWN_IMAGE and KICKOS_BENCH come from the board's own config, and
+# every gate takes the image list and each image's arm count off the targets below rather than
+# restating either.
 set(_selftest_firsts 1)
 if(KICKOS_CHIP STREQUAL "stm32f103" OR KICKOS_CHIP STREQUAL "stm32f302")
-  set(_selftest_firsts 1 2 3 4 5 6 7 8 9)
+  set(_selftest_firsts 1 2 3 4 5 6 7 8 9 10)
 elseif(KICKOS_CHIP STREQUAL "nrf51")
   set(_selftest_firsts 1 5 7 9 10)
 elseif(KICKOS_CHIP STREQUAL "xmc4800" AND KICKOS_HAVE_MPU)
-  set(_selftest_firsts 1 9)
+  set(_selftest_firsts 1 9 10)
 elseif(KICKOS_CHIP STREQUAL "esp32c6" AND KICKOS_HAVE_MPU AND KICKOS_BENCH)
   set(_selftest_firsts 1 3 5 7 10)
 elseif(KICKOS_CHIP STREQUAL "esp32c6" AND (KICKOS_HAVE_MPU OR KICKOS_AMP_OWN_IMAGE))
-  set(_selftest_firsts 1 5 7 10)
+  set(_selftest_firsts 1 4 7 10)
 elseif(KICKOS_CHIP STREQUAL "esp32" AND (KICKOS_BENCH OR KICKOS_KERNEL_CORES GREATER 1))
   set(_selftest_firsts 1 7)
 endif()
@@ -306,6 +307,34 @@ foreach(_row IN LISTS _selftest_declared_rows)
   endif()
 endforeach()
 list(LENGTH _selftest_declared_rows _selftest_declared_n)
+
+# Each region's arm NAMES, read off the same `#if KICKOS_SELFTEST_REGION(<n>)` ... `#undef TAP_ADD`
+# bounds that make the split, so an image's permission sets can be cut to the arms it carries.
+# Lexical: a name under a nested #if counts whether or not this posture compiles it.
+set(_selftest_all_arm_names "")
+foreach(_region RANGE 1 ${_selftest_regions})
+  string(FIND "${_selftest_main_nocomment}" "#if KICKOS_SELFTEST_REGION(${_region})" _at)
+  if(_at EQUAL -1)
+    message(FATAL_ERROR "selftest: main.cc has no `#if KICKOS_SELFTEST_REGION(${_region})`")
+  endif()
+  string(SUBSTRING "${_selftest_main_nocomment}" ${_at} -1 _tail)
+  string(FIND "${_tail}" "#undef TAP_ADD" _end)
+  if(_end EQUAL -1)
+    message(FATAL_ERROR "selftest: main.cc's region ${_region} has no closing `#undef TAP_ADD`")
+  endif()
+  string(SUBSTRING "${_tail}" 0 ${_end} _body)
+  string(REGEX MATCHALL "\n[ \t]*TAP_ADD(_IRQ|_PINNED)?\\(\"[^\"]*\"" _rows "${_body}")
+  set(_selftest_arm_names_r${_region} "")
+  foreach(_row IN LISTS _rows)
+    string(REGEX REPLACE ".*\"([^\"]*)\"$" "\\1" _name "${_row}")
+    list(APPEND _selftest_arm_names_r${_region} "${_name}")
+  endforeach()
+  if(NOT _selftest_arm_names_r${_region})
+    message(FATAL_ERROR "selftest: no TAP_ADD line read out of main.cc's region ${_region}")
+  endif()
+  list(APPEND _selftest_all_arm_names ${_selftest_arm_names_r${_region}})
+endforeach()
+set_property(GLOBAL PROPERTY KICKOS_SELFTEST_ALL_ARM_NAMES "${_selftest_all_arm_names}")
 message(STATUS "selftest: ${_selftest_declared_n} arm(s) declared in selftest.h, all registered")
 
 # The EXACT number of tap::add calls main.cc reaches in this posture. tap.cc plans `1..N` from the
@@ -332,7 +361,7 @@ if(KICKOS_HAVE_MPU)
 endif()
 # Both enforcing backends and neither flat one, which is the arm's own guard.
 if(KICKOS_MEMORY_ENFORCED)
-  math(EXPR _tap_arms "${_tap_arms} + 1") # cross_task_block
+  math(EXPR _tap_arms "${_tap_arms} + 2") # cross_task_block, reservation_refused_skips
 endif()
 if(KICKOS_HAVE_ASPACE)
   math(EXPR _tap_arms "${_tap_arms} + 1") # caller_stack_arena
@@ -449,7 +478,7 @@ if(NOT KICKOS_HAVE_ASPACE)
   math(EXPR _tap_arms_r9 "${_tap_arms_r9} + 1") # region_mode
 endif()
 if(KICKOS_MEMORY_ENFORCED)
-  math(EXPR _tap_arms_r9 "${_tap_arms_r9} + 1") # cross_task_block
+  math(EXPR _tap_arms_r9 "${_tap_arms_r9} + 2") # cross_task_block, reservation_refused_skips
 endif()
 if(KICKOS_FAULT_ISOLATION)
   math(EXPR _tap_arms_r9 "${_tap_arms_r9} + 1") # task_exit_driver_trap
@@ -560,8 +589,13 @@ foreach(_img IN LISTS _selftest_images)
   foreach(_region RANGE ${_img_lo} ${_img_hi})
     math(EXPR _img_arms "${_img_arms} + ${_tap_arms_r${_region}}")
   endforeach()
+  set(_img_names "")
+  foreach(_region RANGE ${_img_lo} ${_img_hi})
+    list(APPEND _img_names ${_selftest_arm_names_r${_region}})
+  endforeach()
   target_compile_definitions(${_img} PRIVATE KICKOS_TAP_MAX_TESTS=${_img_arms})
-  set_target_properties(${_img} PROPERTIES KICKOS_TAP_ARMS "${_img_arms}")
+  set_target_properties(${_img} PROPERTIES KICKOS_TAP_ARMS "${_img_arms}"
+                                           KICKOS_SELFTEST_ARM_NAMES "${_img_names}")
   list(APPEND _selftest_plan "${_img} plans ${_img_arms} (region(s) ${_img_lo}-${_img_hi})")
 endforeach()
 if(_selftest_parts GREATER 1)

@@ -154,6 +154,11 @@ namespace tap
     // Emit a free-form TAP diagnostic (`# <text>`) on the harness's own route.
     void diag(char const* fmt, ...) __attribute__((format(printf, 1, 2)));
 
+    // Run fn inside the current test and answer whether it recorded a skip. The current
+    // test's own verdict and reason are left as they were; any other nested verdict is
+    // emitted as a diagnostic.
+    bool nested_skips(TestFn fn);
+
     // Register a repair to run after a test that failed, before the next one starts. A
     // failing TAP_CHECK returns mid-test, so a suite sharing state across tests strands
     // whatever the abandoned test had not consumed, and the next test reads it as its own:

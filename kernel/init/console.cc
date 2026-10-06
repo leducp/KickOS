@@ -334,7 +334,8 @@ namespace kickos
             // left queued is a line nobody reads.
             //
             // The chip seam is the only door into the ring: every arch_console_write inserts
-            // the line, and a line the ring refuses does not go out.
+            // the line, and a line the ring refuses does not go out, unless it is a fault
+            // record's, which makes its own room.
             int took = static_cast<int>(n);
             if (entry == ChipEntry::KERNEL_OWNED and not g_console_panicking)
             {
@@ -346,6 +347,10 @@ namespace kickos
                 else
 #endif
                 took = arch_console_write(buf, n);
+                if (took == 0 and (flags & WRITE_RECORD) != 0)
+                {
+                    took = console_tx_insert_record_line(buf, n, KICKOS_CONSOLE_CRLF);
+                }
             }
             else
             {

@@ -44,7 +44,7 @@ TAG="${TAG:-m475}"
 OUTDIR="$RIG_SESSION/logs"
 mkdir -p "$OUTDIR"
 
-ALL="rx72m f302nucleo esp32c6-wroom esp32-wroom xmc4800-relax frdmk64f"
+ALL="rx72m f302nucleo f411disco esp32c6-wroom esp32-wroom xmc4800-relax frdmk64f"
 WANT="${*:-$ALL}"
 
 # WHICH IMAGES A BOARD'S BUILD SHIPS, asked of the tree one board at a time, as bench.sh's
@@ -412,8 +412,9 @@ if [ "$HUMANS" -ne 0 ]; then
 fi
 if [ "$CLAUSES" -ne 0 ]; then
   echo
-  echo "OWED: $CLAUSES clause(s) of captured images' verdicts, an exit status or the system ending,"
-  echo "  which a capture does not carry."
+  echo "OWED: $CLAUSES clause(s) of captured images' verdicts: an exit status or the system ending,"
+  echo "  which a capture does not carry, or a reply resting on a bench fitting the rig does not"
+  echo "  declare (RIG_WIRED_<BOARD>)."
 fi
 if [ "$ABSENT" -ne 0 ]; then
   echo

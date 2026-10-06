@@ -34,6 +34,9 @@
 # trust, per translation unit, for this configuration and this optimization level (MinSizeRel,
 # as the presets build), with inlining already folded in, so the winning chain printed below
 # can be shorter than the source reads.
+#
+# The same tree also bounds the application threads tests/static/app_stack_roots.txt declares,
+# through tests/static/app_stack.py.
 
 set -u
 # Every path arrives as an argument and is re-split unquoted below; a glob character in a
@@ -391,6 +394,9 @@ prc=$?
 if [ "$prc" -ne 0 ]; then
     rc="$prc"
 fi
+
+python3 "$HERE/app_stack.py" --ci-dir "$BUILD" --src "$SRC" --arch "$ARCH" \
+    --decl "$HERE/app_stack_roots.txt" || rc=1
 
 if [ "$rc" -eq 0 ]; then
     echo "trap_redzone: OK ($PRESET/$ARCH, floor $FLOOR)"

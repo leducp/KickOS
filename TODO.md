@@ -8795,6 +8795,9 @@ rule.
       gives you: the classic ESP32 TRM enumerates `UART_ST_UTX_OUT` outright (`0: TX_IDLE`), while
       the C6 TRM names the field and not its encodings, so THAT one rests on the reset value and
       says so at the constant rather than claiming documentation it does not have.
+      The C6 body read `FSM_STATUS[3:0]`, the RECEIVER's state machine, so its flush returned with
+      the last frame still shifting; a `c6txidle` capture cut that frame. The transmitter's is
+      `[7:4]`, and reads 2 while the line shifts and 0 once it is out.
 - [x] **`rp2040`, `rp2350` and `rx72m` had NONE of the three seams**, and all three have a real
       publishing driver, so a console-driver death left the DEVICE however the dead driver left it.
       **Every chip that publishes is now three of three**: mk64f, xmc4800, esp32c6, esp32, rp2040,
@@ -11082,12 +11085,12 @@ here because they are pre-existing isolation facts, not things that pass created
       any other way (watchdog/timeout/a future join) -- then join before respawning, or retry on
       `-KOS_EBUSY`. Note the respawn path is ALREADY broken for an unrelated reason (the IRQ-line
       entry above), so no in-tree caller exercises this yet.
-- [ ] **`pvprobe` and `inprstorm` print via `kos::print`, not `kickos::emit`**, so their output is
-      silently dropped on any board whose console has been published to a userspace driver. Only
-      `rootfault`, `mpu_fault` and `rebootdemo` include `emit.h`. The fix is one include and a call
-      swap, and it matters out of proportion to its size: these two are the probes the
-      unprivileged-root design's evidence rests on, so a silent probe reads as a probe that found
-      nothing.
+- [x] **`pvprobe` and `inprstorm` print via `kos::print`, not `kickos::emit`**, so their output is
+      silently dropped on any board whose console has been published to a userspace driver.
+      `pvprobe` and `xmcspi` print through `kickos::emit` now: on the kernel console a burst filled
+      the ring and `kos_print` dropped the lines their judges read. `inprstorm` keeps `kos::print`:
+      its composition's stdout is the kernel's by design, the console path being what it attacks,
+      so no publish can take its output.
 - [~] **`f411spi` cannot run under the flip: its bring-up shim writes MMIO from `main`. ADDRESSED by
       stage 3, silicon-unwitnessed.** The `stm32f411` `arch_periph_enable` backend covers the SPI1
       clock gate and the pinmux encoding covers `PE3`, but `frdmk64f` was the only board on the bench

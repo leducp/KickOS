@@ -31,7 +31,7 @@ extern "C"
 {
     int arch_console_write(char const* buf, size_t n)
     {
-        return console_tx_insert_line(buf, n, 0);
+        return console_tx_insert_line(buf, n, KICKOS_CONSOLE_CRLF);
     }
 
     void arch_console_flush_sync(void)

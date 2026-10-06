@@ -13,7 +13,8 @@
 # exchanges the first line carrying the literal with the first line carrying the replacement,
 # and `cache` judges the fixture whole with the replacement as the cache line instead. A second
 # edit applies to the first's result. A judge refuses as `FAIL: <token>: ...` (gate.sh jfail).
-# <judge> is the script, then `;<arg>` for each argument its kickos_app_judge ARGS pass it.
+# <judge> is the script, then `;<arg>` for each argument its kickos_app_judge ARGS pass it, and
+# `;@<fitting>` for each bench fitting the rig declares on the board (KOS_WIRED); none declares none.
 # Every judge an app CMake or a gate fragment names must have a passing row, and every app a
 # board directory builds names a judge, is human-judged or sits on WAIVED. With --listing, every
 # (judge, arguments) pair one build's image listing names must have a row.
@@ -30,17 +31,30 @@ rc=0
 # <board>/<app> per line: a board app judged by no capture.
 WAIVED=""
 
-ROWS="tests/integration/check_f411spi.sh|f411spi.capture||word|drop|[f411spi] word 2:|
-tests/integration/check_f411spi.sh|f411spi.capture||error|swap|rx=0x3c PASS|rx=0x3d FAIL
-tests/integration/check_f411spi.sh|f411spi.capture||error|after|poking UNGRANTED|[f411spi] UNGRANTED ACCESS DID NOT FAULT
-tests/integration/check_f411spi.sh|f411spi.capture||loopback-start|drop|starting loopback|
-tests/integration/check_f411spi.sh|f411spi.capture||loopback|drop|loopback PASS|
+ROWS="tests/integration/check_f411spi.sh;@spi1-loopback|f411spi.capture||word|drop|[f411spi] word 2:|
+tests/integration/check_f411spi.sh;@spi1-loopback|f411spi.capture||error|swap|rx=0x3c PASS|rx=0x3d FAIL
+tests/integration/check_f411spi.sh;@spi1-loopback|f411spi.capture||error|after|poking UNGRANTED|[f411spi] UNGRANTED ACCESS DID NOT FAULT
+tests/integration/check_f411spi.sh;@spi1-loopback|f411spi.capture||loopback-start|drop|starting loopback|
+tests/integration/check_f411spi.sh;@spi1-loopback|f411spi.capture||loopback|drop|loopback PASS|
+tests/integration/check_f411spi.sh;@spi1-loopback|f411spi.capture||announce|drop|poking UNGRANTED|
+tests/integration/check_f411spi.sh;@spi1-loopback|f411spi.capture||announce|order|loopback PASS|poking UNGRANTED
+tests/integration/check_f411spi.sh;@spi1-loopback|f411spi.capture||killed|drop|=== THREAD FAULT ===|
+tests/integration/check_f411spi.sh;@spi1-loopback|f411spi.capture||kill-address|swap|ADDR=0x40020400|ADDR=0x40020404
+tests/integration/check_f411spi.sh;@spi1-loopback|f411spi.capture||kill-address|swap|ADDR=0x40020400|ADDR=0x40020404|after|poking UNGRANTED|  ADDR=0x40020400
+tests/integration/check_f411spi.sh;@spi1-loopback|f411spi.capture||panic|swap|PC=0x080002f4|KERNEL PANIC: PC=0x080002f4
 tests/integration/check_f411spi.sh|f411spi.capture||announce|drop|poking UNGRANTED|
-tests/integration/check_f411spi.sh|f411spi.capture||announce|order|loopback PASS|poking UNGRANTED
-tests/integration/check_f411spi.sh|f411spi.capture||killed|drop|=== THREAD FAULT ===|
-tests/integration/check_f411spi.sh|f411spi.capture||kill-address|swap|ADDR=0x40020400|ADDR=0x40020404
-tests/integration/check_f411spi.sh|f411spi.capture||kill-address|swap|ADDR=0x40020400|ADDR=0x40020404|after|poking UNGRANTED|  ADDR=0x40020400
-tests/integration/check_f411spi.sh|f411spi.capture||panic|swap|PC=0x080002f4|KERNEL PANIC: PC=0x080002f4
+tests/integration/check_f411spi.sh|f411spi-unwired.capture||word|drop|[f411spi] word 2:|
+tests/integration/check_f411spi.sh|f411spi-unwired.capture||word|order|[f411spi] word 1:|[f411spi] word 3:
+tests/integration/check_f411spi.sh|f411spi-unwired.capture||loopback-start|drop|starting loopback|
+tests/integration/check_f411spi.sh|f411spi-unwired.capture||loopback|drop|loopback FAIL|
+tests/integration/check_f411spi.sh|f411spi-unwired.capture||error|after|poking UNGRANTED|[f411spi] UNGRANTED ACCESS DID NOT FAULT
+tests/integration/check_f411spi.sh|f411spi-unwired.capture||error|after|[f411spi] word 0:|[f411spi] ERROR: planted rc -1
+tests/integration/check_f411spi.sh|f411spi-unwired.capture||error|after|[f411spi] word 1:|[f411spi] TXE timeout on word 2
+tests/integration/check_f411spi.sh|f411spi-unwired.capture||announce|drop|poking UNGRANTED|
+tests/integration/check_f411spi.sh|f411spi-unwired.capture||announce|order|loopback FAIL|poking UNGRANTED
+tests/integration/check_f411spi.sh|f411spi-unwired.capture||killed|drop|=== THREAD FAULT ===|
+tests/integration/check_f411spi.sh|f411spi-unwired.capture||kill-address|swap|ADDR=0x40020400|ADDR=0x40020404
+tests/integration/check_f411spi.sh|f411spi-unwired.capture||panic|swap|PC=0x080002f4|KERNEL PANIC: PC=0x080002f4
 tests/integration/check_k64drv.sh|k64drv.capture||timer-start|drop|counting the 1 kHz LPO|
 tests/integration/check_k64drv.sh|k64drv.capture||tick|drop|[k64drv] tick 7|
 tests/integration/check_k64drv.sh|k64drv.capture||tick|swap|[k64drv] tick 2|[k64drv] tick 22
@@ -62,17 +76,33 @@ tests/integration/check_k64console.sh|k64console.capture||verdict|cache||K64CONS
 tests/integration/check_k64console.sh|k64console-scramble.capture|K64CONSOLE_SCRAMBLE_TEST:BOOL=ON|verdict|drop|KERNEL PANIC|
 tests/integration/check_k64console.sh|k64console-scramble.capture|K64CONSOLE_SCRAMBLE_TEST:BOOL=ON|driver-up|drop|[k64uart] driver up|
 tests/integration/check_k64console.sh|k64console-scramble.capture|K64CONSOLE_SCRAMBLE_TEST:BOOL=ON|panic|cache||K64CONSOLE_SCRAMBLE_TEST:BOOL=OFF
-tests/integration/check_k64dspi.sh|k64dspi-loopback.capture|K64DSPI_LOOPBACK:BOOL=ON|driver-up|drop|SPI service up|
-tests/integration/check_k64dspi.sh|k64dspi-loopback.capture|K64DSPI_LOOPBACK:BOOL=ON|case|drop|zero-tx loopback: PASS|
-tests/integration/check_k64dspi.sh|k64dspi-loopback.capture|K64DSPI_LOOPBACK:BOOL=ON|error|swap|single-byte loopback: PASS|single-byte loopback: FAIL
-tests/integration/check_k64dspi.sh|k64dspi-loopback.capture|K64DSPI_LOOPBACK:BOOL=ON|case|order|single-byte loopback: PASS|zero-tx loopback: PASS
-tests/integration/check_k64dspi.sh|k64dspi-loopback.capture|K64DSPI_LOOPBACK:BOOL=ON|loopback|drop|loopback PASS (the SPI|
-tests/integration/check_k64dspi.sh|k64dspi-loopback.capture|K64DSPI_LOOPBACK:BOOL=ON|panic|after|loopback PASS (the SPI|KERNEL PANIC: planted
-tests/integration/check_k64dspi.sh|k64dspi-loopback.capture|K64DSPI_LOOPBACK:BOOL=ON|byte-test|cache||K64DSPI_LOOPBACK:BOOL=OFF
-tests/integration/check_k64dspi.sh|k64dspi-lan9252.capture||byte-test|drop|BYTE_TEST PASS|
+tests/integration/check_k64dspi.sh;@dspi0-loopback|k64dspi-loopback.capture|K64DSPI_LOOPBACK:BOOL=ON|driver-up|drop|SPI service up|
+tests/integration/check_k64dspi.sh;@dspi0-loopback|k64dspi-loopback.capture|K64DSPI_LOOPBACK:BOOL=ON|case|drop|zero-tx loopback: PASS|
+tests/integration/check_k64dspi.sh;@dspi0-loopback|k64dspi-loopback.capture|K64DSPI_LOOPBACK:BOOL=ON|error|swap|single-byte loopback: PASS|single-byte loopback: FAIL
+tests/integration/check_k64dspi.sh;@dspi0-loopback|k64dspi-loopback.capture|K64DSPI_LOOPBACK:BOOL=ON|case|order|single-byte loopback: PASS|zero-tx loopback: PASS
+tests/integration/check_k64dspi.sh;@dspi0-loopback|k64dspi-loopback.capture|K64DSPI_LOOPBACK:BOOL=ON|loopback|drop|loopback PASS (the SPI|
+tests/integration/check_k64dspi.sh;@dspi0-loopback|k64dspi-loopback.capture|K64DSPI_LOOPBACK:BOOL=ON|panic|after|loopback PASS (the SPI|KERNEL PANIC: planted
+tests/integration/check_k64dspi.sh;@dspi0-loopback|k64dspi-loopback.capture|K64DSPI_LOOPBACK:BOOL=ON|byte-test|cache||K64DSPI_LOOPBACK:BOOL=OFF
+tests/integration/check_k64dspi.sh;@lan9252|k64dspi-lan9252.capture||byte-test|drop|BYTE_TEST PASS|
+tests/integration/check_k64dspi.sh;@lan9252|k64dspi-lan9252.capture||device-open|drop|device open rc=|
+tests/integration/check_k64dspi.sh;@lan9252|k64dspi-lan9252.capture||case|cache||K64DSPI_LOOPBACK:BOOL=ON
+tests/integration/check_k64dspi.sh;@lan9252|k64dspi-lan9252.capture||posture|cache||KICKOS_SPI_LOCAL_ENGINE:BOOL=ON
+tests/integration/check_k64dspi.sh;@lan9252|k64dspi-lan9252.capture||error|swap|BYTE_TEST PASS: ESC SPI link OK (read 0x87654321)|BYTE_TEST FAIL: no valid signature
 tests/integration/check_k64dspi.sh|k64dspi-lan9252.capture||device-open|drop|device open rc=|
-tests/integration/check_k64dspi.sh|k64dspi-lan9252.capture||case|cache||K64DSPI_LOOPBACK:BOOL=ON
-tests/integration/check_k64dspi.sh|k64dspi-lan9252.capture||posture|cache||KICKOS_SPI_LOCAL_ENGINE:BOOL=ON
+tests/integration/check_k64dspi.sh|k64dspi-loopback.capture|K64DSPI_LOOPBACK:BOOL=ON|driver-up|drop|SPI service up|
+tests/integration/check_k64dspi.sh|k64dspi-lan9252-unwired.capture||byte-test|drop|BYTE_TEST attempt 1:|
+tests/integration/check_k64dspi.sh|k64dspi-lan9252-unwired.capture||byte-test|drop|BYTE_TEST FAIL|
+tests/integration/check_k64dspi.sh|k64dspi-lan9252-unwired.capture||byte-test|order|BYTE_TEST attempt 1:|BYTE_TEST FAIL
+tests/integration/check_k64dspi.sh|k64dspi-lan9252-unwired.capture||device-open|drop|device open rc=|
+tests/integration/check_k64dspi.sh|k64dspi-lan9252-unwired.capture||driver-up|drop|SPI service up|
+tests/integration/check_k64dspi.sh|k64dspi-lan9252-unwired.capture||error|after|BYTE_TEST attempt 2:|[k64dspi] ERROR: planted
+tests/integration/check_k64dspi.sh|k64dspi-lan9252-unwired.capture||panic|after|BYTE_TEST FAIL|KERNEL PANIC: planted
+tests/integration/check_k64dspi.sh|k64dspi-lan9252-unwired.capture||posture|cache||KICKOS_SPI_LOCAL_ENGINE:BOOL=ON
+tests/integration/check_k64dspi.sh|k64dspi-loopback-unwired.capture|K64DSPI_LOOPBACK:BOOL=ON|case|drop|zero-tx loopback: FAIL|
+tests/integration/check_k64dspi.sh|k64dspi-loopback-unwired.capture|K64DSPI_LOOPBACK:BOOL=ON|case|swap|device open: PASS|device open: FAIL
+tests/integration/check_k64dspi.sh|k64dspi-loopback-unwired.capture|K64DSPI_LOOPBACK:BOOL=ON|loopback|drop|loopback FAIL (see|
+tests/integration/check_k64dspi.sh|k64dspi-loopback-unwired.capture|K64DSPI_LOOPBACK:BOOL=ON|error|after|zero-tx loopback: FAIL|[k64dspi] ERROR: planted
+tests/integration/check_k64dspi.sh|k64dspi-loopback-unwired.capture|K64DSPI_LOOPBACK:BOOL=ON|panic|after|loopback FAIL (see|KERNEL PANIC: planted
 tests/integration/check_rxdrv.sh|rxdrv.capture||mux|swap|general I/O rc 0|general I/O rc -16
 tests/integration/check_rxdrv.sh|rxdrv.capture||console-pin|drop|refused (-KOS_EBUSY)|
 tests/integration/check_rxdrv.sh|rxdrv.capture||holder|drop|PASS periph_enable holder|
@@ -106,10 +136,10 @@ tests/integration/check_c6txidle.sh|c6txidle.capture||tail|swap|<<<TXIDLE-END>>>
 tests/integration/check_c6txidle.sh|c6txidle.capture||tail|drop|[c6txidle] TAIL|
 tests/integration/check_c6txidle.sh|c6txidle.capture||timing|drop|flush held|
 tests/integration/check_c6txidle.sh|c6txidle.capture||timing|order|[c6txidle] TAIL|[c6txidle] frame
-tests/integration/check_c6txidle.sh|c6txidle.capture||state|drop|ST_UTX_OUT 0|
+tests/integration/check_c6txidle.sh|c6txidle.capture||state|drop|ST_UTX_OUT 2|
 tests/integration/check_c6txidle.sh|c6txidle.capture||verdict|drop|PASS the flush|
-tests/integration/check_c6txidle.sh|c6txidle.capture||verdict|after|ST_UTX_OUT 0|[c6txidle] FAIL the flush returned before the last frame could finish
-tests/integration/check_c6txidle.sh|c6txidle.capture||error|after|UART0 TX idle witness|[c6txidle] ERROR: the console FIFO never stayed empty
+tests/integration/check_c6txidle.sh|c6txidle.capture||verdict|after|ST_UTX_OUT 2|[c6txidle] FAIL the flush returned before the last frame could finish
+tests/integration/check_c6txidle.sh|c6txidle.capture||error|after|[c6txidle] TAIL|[c6txidle] ERROR: the console FIFO never stayed empty
 tests/integration/check_c6txidle.sh|c6txidle.capture||panic|after|PASS the flush|KERNEL PANIC: planted
 tests/integration/check_xmcspi.sh|xmcspi.capture||error|swap|seam FDR: rc=0 wrote=0x80000167 read=0x80000167 LANDED|seam FDR: rc=0 wrote=0x80000167 read=0x0 DISCARDED/REFUSED
 tests/integration/check_xmcspi.sh|xmcspi.capture||seam|drop|seam BRG:|
@@ -438,6 +468,8 @@ OWED="tests/integration/check_fault_dump.sh;HARD FAULT|the fault ended the syste
 tests/integration/check_fault_dump.sh;RX EXCEPTION (trap)|the fault ended the system with the status its marker implies
 tests/integration/check_fault_dump.sh;SIM FAULT|the fault ended the system with the status its marker implies
 tests/integration/check_fault_dump.sh;THREAD FAULT|the fault ended the system with the status its marker implies
+tests/integration/check_f411spi.sh|loopback (bench wiring absent)
+tests/integration/check_k64dspi.sh|the bus peer (bench wiring absent)
 tests/integration/check_faultsurvive.sh;kwrite;rv32imac;contained|the system exited 0 once main outlived the refusal
 tests/integration/check_faultsurvive.sh;kwrite;rxv3;contained|the system exited 0 once main outlived the refusal
 tests/integration/check_faultsurvive.sh;lowedge;rv32imac;terminated|the system exited 0 once main returned
@@ -536,7 +568,18 @@ judged() {
     IFS="$_jd_ifs"
     _jd_script="$1"
     shift
-    KOS_CAPTURE="$_jd_log" sh "$_jd_script" "$TMP/build" "$PWD" cmake "$@" > "$TMP/judge.out" 2>&1
+    _jd_wired=""
+    _jd_n=$#
+    while [ "$_jd_n" -gt 0 ]; do
+        case "$1" in
+            @*) _jd_wired="$_jd_wired ${1#@}" ;;
+            *) set -- "$@" "$1" ;;
+        esac
+        shift
+        _jd_n=$((_jd_n - 1))
+    done
+    KOS_WIRED="$_jd_wired" KOS_CAPTURE="$_jd_log" sh "$_jd_script" "$TMP/build" "$PWD" cmake "$@" \
+        > "$TMP/judge.out" 2>&1
 }
 
 # <judge> <output>: the NOT EVALUATED clauses in <output> are not exactly those OWED declares.

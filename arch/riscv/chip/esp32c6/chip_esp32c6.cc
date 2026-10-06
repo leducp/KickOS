@@ -70,6 +70,8 @@ extern "C"
 #if !KICKOS_HAVE_MPU && !KICKOS_AMP_OWN_IMAGE
     // Defined by lp_probe_esp32c6.cc, which only c6lpprobe's link extracts.
     void kickos_c6_lp_probe_boot(void) __attribute__((weak));
+    // Defined by txidle_probe_esp32c6.cc, which only c6txidle's link extracts.
+    void kickos_c6_txidle_probe(void) __attribute__((weak));
 #endif
 #if KICKOS_AMP_OWN_IMAGE
     extern uint8_t kickos_c6_amp_lp_stub_start[];
@@ -572,6 +574,13 @@ console_tx_backend const c6_console_backend = {
 
 console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)
 {
+#if !KICKOS_HAVE_MPU && !KICKOS_AMP_OWN_IMAGE
+    // After the banner and before the ring, so the witness's line is the boot's own.
+    if (kickos_c6_txidle_probe != nullptr)
+    {
+        kickos_c6_txidle_probe();
+    }
+#endif
     *storage = console_tx_buf;
     *size = KICKOS_CONSOLE_TX_SIZE;
     *irq_line = irq::UART0_TX_LINE;

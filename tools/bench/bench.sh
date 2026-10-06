@@ -50,7 +50,8 @@
 #
 # JUDGE names a gate script, relative to the tree, that reads a capture through KOS_CAPTURE. It
 # runs here over the log just taken, as `<script> <board build> <tree> cmake <args>...`, the args
-# being JUDGE_ARGS split at each `;`, and its verdict is this run's exit status:
+# being JUDGE_ARGS split at each `;` and the board's RIG_WIRED_<BOARD> fittings in KOS_WIRED, and
+# its verdict is this run's exit status:
 #
 #   PACKAGE_PROJECT=examples/composition APP=sensor_system VARIANT= \
 #     JUDGE=tests/integration/check_golden_system.sh tools/bench/bench.sh xmc4800-relax
@@ -390,12 +391,10 @@ judge() {
   if [ "$JUDGE" = none ] || [ "$JUDGE" = "$TAP_JUDGE" ]; then
     return 0
   fi
-  local -a args=()
-  if [ -n "${JUDGE_ARGS:-}" ]; then
-    IFS=';' read -r -a args <<<"$JUDGE_ARGS"
-  fi
-  echo "=== judging $LOG with $JUDGE${JUDGE_ARGS:+ ($JUDGE_ARGS)}"
-  KOS_CAPTURE="$LOG" sh "$JUDGE" "$PWD/$BUILD" "$PWD" cmake ${args[@]+"${args[@]}"}
+  local wired
+  wired=$(rig_wired "$BOARD")
+  echo "=== judging $LOG with $JUDGE${JUDGE_ARGS:+ ($JUDGE_ARGS)}, fittings: ${wired:-none declared}"
+  rig_judge "$BOARD" "$LOG" "$PWD/$BUILD" "$JUDGE" "${JUDGE_ARGS:-}"
 }
 
 # --- boards here ---------------------------------------------------------------

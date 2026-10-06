@@ -8,6 +8,7 @@
 #include "selftest.h"
 
 #include <kickos/arch/arch.h> // arch_syscall
+#include <kickos/arch/mpu_overlap.h>
 #include <kickos/config/priorities.h> // KICKOS_PRIO_MIN
 #include <kickos/sys/driver_service.h> // kickos::driver::trap
 #include <kickos/sys/emit.h> // kickos::kconsole_write_all, kickos::stdout_write
@@ -20,6 +21,13 @@
 #endif
 
 using namespace selftest;
+
+// How the MPU a spawn's regions are held to decides an overlap, or -1 where no region set is.
+#if KICKOS_MEMORY_ENFORCED and KICKOS_HAVE_MPU and not KICKOS_HAVE_ASPACE
+#define ST_MPU_OVERLAP ARCH_MPU_OVERLAP
+#else
+#define ST_MPU_OVERLAP (-1)
+#endif
 
 namespace
 {
@@ -2759,6 +2767,84 @@ namespace
         return size;
     }
 
+#if not KICKOS_HAVE_ASPACE
+    constexpr uint32_t CSTK_JOIN_US = 500000;
+
+    // caps: g_cstk_sem at CH_DONE
+    void* g_cstk_grant_base = nullptr;
+    uint32_t g_cstk_grant_size = 0;
+    int g_cstk_grant_rc = 1;
+    void caller_stack_grant_worker(void*)
+    {
+        g_cstk_grant_rc = kos_mem_self_grant(g_cstk_grant_base, g_cstk_grant_size, 0);
+        kos_sem_post(CH_DONE);
+    }
+
+    // Whether the spawn ran its child to the end, or answers its refusal.
+    int cstk_ran(kos::thread::Handle const& t)
+    {
+        if (not t.valid())
+        {
+            return t.error();
+        }
+        kos_sem_wait(g_cstk_sem);
+        return t.join(CSTK_JOIN_US);
+    }
+
+    // A child whose stack shares its block with another region of its own: refused where the
+    // MPU faults on an address two regions cover, run everywhere else. `stk` is a free block of
+    // `raw`, and `reserve` bytes long from it.
+    void t_caller_stack_overlap(void* raw, uint32_t reserve, void* stk, uint32_t size)
+    {
+        int want = 0;
+        if (ST_MPU_OVERLAP == ARCH_MPU_OVERLAP_FAULTS)
+        {
+            want = -KOS_EINVAL;
+        }
+        kos_sem_create(0, &g_cstk_sem);
+        kos_cap_grant caps[] = {{g_cstk_sem, CH_FULL}};
+        // The stack inside its task's data region.
+        kos_task_t task = KOS_TASK_NONE;
+        if (kos_task_create(stk, size, 0, &task) == 0)
+        {
+            TAP_CHECK(cstk_ran(kos::thread::create(caller_stack_worker, nullptr, "cstkD", 10,
+                                                   KOS_POLICY_FIFO, 0, false, nullptr, 0, stk,
+                                                   size, nullptr, 0, caps, 1, 0, nullptr,
+                                                   task))
+                      == want);
+            (void)kos_task_kill(task);
+        }
+        else
+        {
+            tap::partial("data-region half not run (task pool)");
+        }
+        // The stack under a window of the same spawn.
+        kos_window const w = {reinterpret_cast<uintptr_t>(stk), size, KOS_WINDOW_MEMORY, 0};
+        TAP_CHECK(cstk_ran(kos::thread::create(caller_stack_worker, nullptr, "cstkW", 10,
+                                               KOS_POLICY_FIFO, 0, false, nullptr, 0, stk, size,
+                                               &w, 1, caps, 1))
+                  == want);
+        // A self-grant over the running thread's own stack and past it: an overlap only where a
+        // region is not a power of two, the reserve then being wider than the stack.
+        g_cstk_grant_base = raw;
+        g_cstk_grant_size = reserve;
+        g_cstk_grant_rc = 1;
+        TAP_CHECK(cstk_ran(kos::thread::create(caller_stack_grant_worker, nullptr, "cstkG", 10,
+                                               KOS_POLICY_FIFO, 0, false, nullptr, 0, stk, size,
+                                               nullptr, 0, caps, 1, KOS_AUTH_MEMORY))
+                  == 0);
+        if (ST_MPU_OVERLAP == ARCH_MPU_OVERLAP_FAULTS and reserve != size)
+        {
+            TAP_CHECK(g_cstk_grant_rc == -KOS_EINVAL);
+        }
+        else
+        {
+            TAP_CHECK(g_cstk_grant_rc == 0);
+        }
+        kos_sem_destroy(g_cstk_sem);
+    }
+#endif
+
     void t_caller_stack()
     {
         // Reject a non-null, tiny + misaligned caller stack: -KOS_EINVAL, not run or corrupt.
@@ -2805,6 +2891,12 @@ namespace
         TAP_CHECK(t.valid());
         cstk_wait_if_run(t);
         kos_sem_destroy(g_cstk_sem);
+#if not KICKOS_HAVE_ASPACE
+        if (t.valid() and t.join(CSTK_JOIN_US) == 0)
+        {
+            t_caller_stack_overlap(raw, CSTK_RESERVE, stk, STK);
+        }
+#endif
 #if !KICKOS_MEMORY_ENFORCED
 #if KICKOS_LIBC_REENT
         // The worker sets its errno through libc, parks, and reads it back after this thread has
@@ -2946,11 +3038,13 @@ namespace
 #else
     constexpr uint32_t XG_STK = KICKOS_MIN_STACK_SIZE;
 #endif
+    // rep[XG_OWN] where the worker's own reservation was refused: not an errno.
+    constexpr int32_t XG_NO_BLOCK = 2;
     void xg_noop(void*) {}
-    void xg_worker(void* arg) // caps: done@1, E(SIGNAL)@2
+    void xg_report(void* arg, bool starved)
     {
-        int32_t rep[XG_WORDS] = {1, 1, 1, 1};
-        void* const mine = kos_ram_alloc(XG_BLK);
+        int32_t rep[XG_WORDS] = {XG_NO_BLOCK, 1, 1, 1};
+        void* const mine = st_ram_alloc_as(starved, XG_BLK);
         if (mine != nullptr)
         {
             rep[XG_OWN] = kos_mem_self_grant(mine, XG_BLK, 0);
@@ -2965,16 +3059,31 @@ namespace
         (void)kos_send(2, rep, sizeof(rep));
         kos_sem_post(CH_DONE);
     }
+    // Two entries, because the worker's task reads its own copy of g_ram_starved.
+    void xg_worker(void* arg) // caps: done@1, E(SIGNAL)@2
+    {
+        xg_report(arg, false);
+    }
+    void xg_worker_starved(void* arg) // caps: done@1, E(SIGNAL)@2
+    {
+        xg_report(arg, true);
+    }
     void t_cross_task_block()
     {
-        void* const theirs = kos_ram_alloc(XG_STK);
+        // A starved worker declines before it names the donor as a stack, so it needs no stride.
+        uint32_t donor = XG_STK;
+        if (g_ram_starved)
+        {
+            donor = XG_BLK;
+        }
+        void* const theirs = kos_ram_alloc(donor);
         if (theirs == nullptr)
         {
             tap::skip("arena cannot spare the donor block");
             return;
         }
         // main maps it, so the worker names a range that really is live somewhere.
-        TAP_CHECK(kos_mem_self_grant(theirs, XG_STK, 0) == 0);
+        TAP_CHECK(kos_mem_self_grant(theirs, donor, 0) == 0);
         kos_cap_t ep = KOS_CAP_NONE;
         if (kos_endpoint_create(&ep) != 0)
         {
@@ -2989,7 +3098,12 @@ namespace
             return;
         }
         kos_cap_grant caps[] = {{g_done, CH_FULL}, {ep, KOS_CAP_SIGNAL}};
-        if (not kos::thread::create_caps(xg_worker, theirs, "xgrnt", 10, caps, 2,
+        void (*worker)(void*) = xg_worker;
+        if (g_ram_starved)
+        {
+            worker = xg_worker_starved;
+        }
+        if (not kos::thread::create_caps(worker, theirs, "xgrnt", 10, caps, 2,
                                          KOS_POLICY_FIFO, 0, false, nullptr, 0,
                                          KOS_AUTH_MEMORY, nullptr, t).valid())
         {
@@ -3008,6 +3122,11 @@ namespace
         (void)kos_task_kill(t);
         (void)kos_handle_close(ep);
         TAP_CHECK(heard);
+        if (rep[XG_OWN] == XG_NO_BLOCK)
+        {
+            tap::skip("arena cannot spare the worker's own block");
+            return;
+        }
         TAP_CHECK(rep[XG_OWN] == 0);
         TAP_CHECK(rep[XG_FOREIGN] == -KOS_EPERM);
         TAP_CHECK(rep[XG_MEMBASE] == -KOS_EPERM);
@@ -3159,8 +3278,17 @@ namespace
         g_wro_sys = -1;
         auto const sys = kos::thread::create(wro_sys_child, blk, "wros", 10, KOS_POLICY_FIFO, 0,
                                              false, blk, size, nullptr, 0, &ro, 1);
-        TAP_CHECK(sys.valid() and sys.join(WRO_JOIN_US) == 0);
-        TAP_CHECK(g_wro_sys == -KOS_EFAULT);
+        // Only an MPU letting the higher-numbered window decide reads the block as the kernel
+        // does; elsewhere the pair would fault the child or let it write.
+        if (ST_MPU_OVERLAP == -1 or ST_MPU_OVERLAP == ARCH_MPU_OVERLAP_HIGHER)
+        {
+            TAP_CHECK(sys.valid() and sys.join(WRO_JOIN_US) == 0);
+            TAP_CHECK(g_wro_sys == -KOS_EFAULT);
+        }
+        else
+        {
+            TAP_CHECK(sys.error() == -KOS_EINVAL);
+        }
 #endif
         TAP_CHECK(wro_run(blk, size, 0, -1, KOS_TASK_NONE, ep, &seen) == 0);
         TAP_CHECK(seen.read == WRO_BYTE);
@@ -3670,12 +3798,15 @@ namespace
         kos_cap_grant kidcaps[] = {{g_cd_kidsem, CH_FULL}};  // grandchild's index 1
         // A child NAMED from .rodata: the kernel bounds + copies the string. Userspace
         // cannot read a TCB name back, so acceptance shows as the child running.
-        g_cd_goodspawn = kos::thread::create_caps(cd_kid, &g_cd_goodname_ran, "cdgood", 9,
-                                                  kidcaps, 1)
-                             .error();
+        // Each grandchild is joined before the next spawn: it runs below this worker, so its post
+        // returns here while it still holds a slot and a stack the next spawn may need.
+        auto const good = kos::thread::create_caps(cd_kid, &g_cd_goodname_ran, "cdgood", 9,
+                                                   kidcaps, 1);
+        g_cd_goodspawn = good.error();
         if (g_cd_goodspawn == 0)
         {
             kos_sem_wait(g_cd_kidsem);
+            (void)good.join();
         }
 #if KICKOS_HAVE_MPU && defined(KICKOS_ENABLE_SELFTEST)
         void* bad = kos_guard_addr(); // an arena page granted to no domain
@@ -3686,13 +3817,14 @@ namespace
             g_cd_bad_rc = kos_kconsole_write(bad, 8);
             // Bogus NAME pointer: the kernel must bound the walk (no fault), drop the
             // name, and still spawn the child.
-            g_cd_badname_spawn = kos::thread::create_caps(cd_kid, &g_cd_badname_ran,
+            auto const badname = kos::thread::create_caps(cd_kid, &g_cd_badname_ran,
                                                           static_cast<char const*>(bad), 9,
-                                                          kidcaps, 1)
-                                     .error();
+                                                          kidcaps, 1);
+            g_cd_badname_spawn = badname.error();
             if (g_cd_badname_spawn == 0)
             {
                 kos_sem_wait(g_cd_kidsem);
+                (void)badname.join();
             }
             g_cd_neg_ran = 1;
         }
@@ -9890,6 +10022,11 @@ namespace
         auto const w = kos::thread::create(td_creator, nullptr, "tdc", 12, KOS_POLICY_FIFO, 0,
                                            false, nullptr, 0, nullptr, 0, nullptr, 0, caps, 1,
                                            KOS_AUTH_TASKS, nullptr, KOS_TASK_NONE, 1u);
+        if (w.error() == -KOS_ENOMEM)
+        {
+            tap::skip("arena cannot spare the creator's stack");
+            return;
+        }
         if (not w.valid())
         {
             tap::fail("no thread for the creator (rc %d)", w.error());
@@ -10048,6 +10185,11 @@ namespace
         auto const w = kos::thread::create(te_creator, nullptr, "tec", 14, KOS_POLICY_FIFO, 0,
                                            false, nullptr, 0, nullptr, 0, nullptr, 0, caps, 1,
                                            KOS_AUTH_TASKS, nullptr, KOS_TASK_NONE, 1u);
+        if (w.error() == -KOS_ENOMEM)
+        {
+            tap::skip("arena cannot spare the creator's stack");
+            return;
+        }
         if (not w.valid())
         {
             tap::fail("no thread for the creator (rc %d)", w.error());
@@ -10114,13 +10256,14 @@ namespace
     constexpr uint32_t TX_ONE_CORE = 0u;
 #endif
     // A task with its report, main's reservation in `absent`, which no member of the task
-    // reaches; null when either is missing.
-    TxReport volatile* tx_report_task(kos_task_t* t)
+    // reaches; null when either is missing, with `*no_ram` set where a reservation was refused.
+    TxReport volatile* tx_report_task(kos_task_t* t, bool* no_ram)
     {
-        void* const absent = kos_ram_alloc(64);
+        void* const absent = st_ram_alloc(64);
 #if KICKOS_HAVE_ASPACE
         size_t const g = discover_granule();
-        void* const shared = kos_ram_alloc(g);
+        void* const shared = st_ram_alloc(g);
+        *no_ram = absent == nullptr or shared == nullptr;
         if (absent == nullptr or shared == nullptr or kos_mem_self_grant(shared, g, 0) != 0
             or kos_task_create(shared, static_cast<uint32_t>(g), 0, t) != 0)
         {
@@ -10128,6 +10271,7 @@ namespace
         }
         TxReport volatile* const rep = static_cast<TxReport volatile*>(shared);
 #else
+        *no_ram = absent == nullptr;
         if (absent == nullptr or kos_task_create(nullptr, 0, 0, t) != 0)
         {
             return nullptr;
@@ -10180,10 +10324,16 @@ namespace
     {
         kos_cap_t go = KOS_CAP_NONE;
         kos_task_t t = KOS_TASK_NONE;
-        TxReport volatile* const rep = tx_report_task(&t);
+        bool no_ram = false;
+        TxReport volatile* const rep = tx_report_task(&t, &no_ram);
+        if (no_ram)
+        {
+            tap::skip("arena cannot spare the report's reservation");
+            return;
+        }
         if (rep == nullptr or kos_sem_create(0, &go) != 0)
         {
-            tap::fail("no reservation, semaphore or task slot");
+            tap::fail("no semaphore or task slot");
             return;
         }
         kos_cap_grant const caps[] = {{go, KOS_CAP_WAIT}};
@@ -10224,10 +10374,16 @@ namespace
     {
         kos_cap_t go = KOS_CAP_NONE;
         kos_task_t t = KOS_TASK_NONE;
-        TxReport volatile* const rep = tx_report_task(&t);
+        bool no_ram = false;
+        TxReport volatile* const rep = tx_report_task(&t, &no_ram);
+        if (no_ram)
+        {
+            tap::skip("arena cannot spare the report's reservation");
+            return;
+        }
         if (rep == nullptr or kos_sem_create(0, &go) != 0)
         {
-            tap::fail("no reservation, semaphore or task slot");
+            tap::fail("no semaphore or task slot");
             return;
         }
         kos_cap_grant const caps[] = {{go, KOS_CAP_WAIT}};
@@ -10273,13 +10429,18 @@ namespace
         void* own = nullptr;
         if (g != 0)
         {
-            own = kos_ram_alloc(g);
+            own = st_ram_alloc(g);
         }
-        void* const absent = kos_ram_alloc(64);
-        kos_cap_t ep = KOS_CAP_NONE;
-        if (own == nullptr or absent == nullptr or kos_endpoint_create(&ep) != 0)
+        void* const absent = st_ram_alloc(64);
+        if (own == nullptr or absent == nullptr)
         {
-            tap::fail("no reservation or endpoint");
+            tap::skip("arena cannot spare the entry's stack or the absent block");
+            return;
+        }
+        kos_cap_t ep = KOS_CAP_NONE;
+        if (kos_endpoint_create(&ep) != 0)
+        {
+            tap::fail("no endpoint");
             return;
         }
         kos_cap_grant const caps[] = {{ep, KOS_CAP_WAIT | KOS_CAP_TRANSFER}};
@@ -10579,11 +10740,16 @@ namespace
         void* blk = nullptr;
         if (g != 0)
         {
-            blk = kos_ram_alloc(g);
+            blk = st_ram_alloc(g);
+        }
+        if (g == 0)
+        {
+            tap::fail("no granule for the memory window");
+            return;
         }
         if (blk == nullptr)
         {
-            tap::fail("no arena block for the memory window");
+            tap::skip("arena cannot spare the memory window's block");
             return;
         }
         kos_window const mem = {reinterpret_cast<uintptr_t>(blk), static_cast<uint32_t>(g),
@@ -10693,13 +10859,23 @@ namespace
         {
             at = kos_grant_probe(KOS_GRANT_OP_ARENA_SCRIBBLE, 0, 2u * g);
         }
+        if (g == 0)
+        {
+            tap::fail("no granule to reserve");
+            return;
+        }
         void* blk = nullptr;
         if (at != 0)
         {
-            blk = kos_ram_alloc(g);
+            blk = st_ram_alloc(g);
+        }
+        if (blk == nullptr)
+        {
+            tap::skip("arena cannot spare the block to read back");
+            return;
         }
         uintptr_t const b = reinterpret_cast<uintptr_t>(blk);
-        if (blk == nullptr or b < at or b + g > at + 2u * g)
+        if (b < at or b + g > at + 2u * g)
         {
             tap::fail("the next block is not in the written arena (at 0x%lx, block 0x%lx)",
                       static_cast<unsigned long>(at), static_cast<unsigned long>(b));
@@ -10954,8 +11130,13 @@ namespace
     {
         kos_task_t task = KOS_TASK_NONE;
         TAP_CHECK(kos_task_create(nullptr, 0, 0, &task) == 0);
-        void* const blk = kos_ram_alloc(64);
-        TAP_CHECK(blk != nullptr);
+        void* const blk = st_ram_alloc(64);
+        if (blk == nullptr)
+        {
+            (void)kos_task_kill(task);
+            tap::skip("arena cannot spare the member's data block");
+            return;
+        }
         struct kos_thread_params p = {};
         p.entry = join_probe;
         p.name = "tmem";
@@ -10973,6 +11154,48 @@ namespace
         TAP_CHECK(kos_thread_create(&p, &h) == -KOS_EBADF);
         TAP_CHECK(kos_task_kill(task) == 0);
     }
+
+#if KICKOS_MEMORY_ENFORCED
+    // Every arm that reserves through st_ram_alloc declines with a skip when its reservation
+    // is refused, rather than failing as if the kernel were at fault.
+    struct StarvedArm
+    {
+        char const* name;
+        tap::TestFn fn;
+    };
+    void t_reservation_refused_skips()
+    {
+        StarvedArm const arms[] = {
+            {"cross_task_block", t_cross_task_block},
+#if KICKOS_FAULT_ISOLATION
+            {"task_exit_member_fault", t_task_exit_member_fault},
+            {"task_exit_cancelled_fault", t_task_exit_cancelled_fault},
+            {"task_exit_implicit_fault", t_task_exit_implicit_fault},
+#endif
+#if defined(KICKOS_ENABLE_SELFTEST) && (KICKOS_HAVE_MPU || defined(KICKOS_SELFTEST_SPARE_DEV))
+            {"window_get", t_window_get},
+#endif
+#if defined(KICKOS_ENABLE_SELFTEST) && not KICKOS_HAVE_ASPACE
+            {"ram_alloc_zeroed", t_ram_alloc_zeroed},
+#endif
+            {"task_member_refusals", t_task_member_refusals},
+        };
+        char const* failed = nullptr;
+        g_ram_starved = true;
+        for (StarvedArm const& a : arms)
+        {
+            if (not tap::nested_skips(a.fn) and failed == nullptr)
+            {
+                failed = a.name;
+            }
+        }
+        g_ram_starved = false;
+        if (failed != nullptr)
+        {
+            tap::fail("%s did not skip on a refused reservation", failed);
+        }
+    }
+#endif
 
     // The group kill, end to end. One member parks on a semaphore nothing ever posts, the
     // other spins below main and never enters the kernel. The kill stops both at once: the
@@ -11431,6 +11654,11 @@ namespace
         auto const w = kos::thread::create(ts_creator, nullptr, "tsc", 14, KOS_POLICY_FIFO, 0,
                                            false, nullptr, 0, nullptr, 0, nullptr, 0, caps, 1,
                                            KOS_AUTH_TASKS, nullptr, KOS_TASK_NONE, 1u);
+        if (w.error() == -KOS_ENOMEM)
+        {
+            tap::skip("arena cannot spare the creator's stack");
+            return;
+        }
         if (not w.valid())
         {
             tap::fail("no thread for the creator (rc %d)", w.error());
@@ -11818,7 +12046,7 @@ extern "C" void selftest_main(kos_self_t const* self)
 // CMakeLists, which asserts the floors still sum to the whole suite. A boundary only ever
 // moves between two ADJACENT registrations, so no arm changes place relative to another.
 #if KICKOS_SELFTEST_REGION(1)
-#define TAP_ADD(name, fn) tap::add(name, fn)
+#define TAP_ADD(name, fn) TAP_REGISTER(name, fn)
 #else
 #define TAP_ADD(name, fn) TAP_ELIDE(fn)
 #endif
@@ -11842,7 +12070,7 @@ extern "C" void selftest_main(kos_self_t const* self)
 #undef TAP_ADD
 // Region 2.
 #if KICKOS_SELFTEST_REGION(2)
-#define TAP_ADD(name, fn) tap::add(name, fn)
+#define TAP_ADD(name, fn) TAP_REGISTER(name, fn)
 #else
 #define TAP_ADD(name, fn) TAP_ELIDE(fn)
 #endif
@@ -11869,7 +12097,7 @@ extern "C" void selftest_main(kos_self_t const* self)
 #undef TAP_ADD
 // Region 3.
 #if KICKOS_SELFTEST_REGION(3)
-#define TAP_ADD(name, fn) tap::add(name, fn)
+#define TAP_ADD(name, fn) TAP_REGISTER(name, fn)
 #else
 #define TAP_ADD(name, fn) TAP_ELIDE(fn)
 #endif
@@ -11893,7 +12121,7 @@ extern "C" void selftest_main(kos_self_t const* self)
 #undef TAP_ADD
 // Region 4.
 #if KICKOS_SELFTEST_REGION(4)
-#define TAP_ADD(name, fn) tap::add(name, fn)
+#define TAP_ADD(name, fn) TAP_REGISTER(name, fn)
 #else
 #define TAP_ADD(name, fn) TAP_ELIDE(fn)
 #endif
@@ -11917,7 +12145,7 @@ extern "C" void selftest_main(kos_self_t const* self)
 #undef TAP_ADD
 // Region 5.
 #if KICKOS_SELFTEST_REGION(5)
-#define TAP_ADD(name, fn) tap::add(name, fn)
+#define TAP_ADD(name, fn) TAP_REGISTER(name, fn)
 #else
 #define TAP_ADD(name, fn) TAP_ELIDE(fn)
 #endif
@@ -11943,7 +12171,7 @@ extern "C" void selftest_main(kos_self_t const* self)
 #undef TAP_ADD
 // Region 6.
 #if KICKOS_SELFTEST_REGION(6)
-#define TAP_ADD(name, fn) tap::add(name, fn)
+#define TAP_ADD(name, fn) TAP_REGISTER(name, fn)
 #else
 #define TAP_ADD(name, fn) TAP_ELIDE(fn)
 #endif
@@ -11971,7 +12199,7 @@ extern "C" void selftest_main(kos_self_t const* self)
 #undef TAP_ADD
 // Region 7.
 #if KICKOS_SELFTEST_REGION(7)
-#define TAP_ADD(name, fn) tap::add(name, fn)
+#define TAP_ADD(name, fn) TAP_REGISTER(name, fn)
 #else
 #define TAP_ADD(name, fn) TAP_ELIDE(fn)
 #endif
@@ -11992,7 +12220,7 @@ extern "C" void selftest_main(kos_self_t const* self)
 #undef TAP_ADD
 // Region 8.
 #if KICKOS_SELFTEST_REGION(8)
-#define TAP_ADD(name, fn) tap::add(name, fn)
+#define TAP_ADD(name, fn) TAP_REGISTER(name, fn)
 #else
 #define TAP_ADD(name, fn) TAP_ELIDE(fn)
 #endif
@@ -12023,7 +12251,7 @@ extern "C" void selftest_main(kos_self_t const* self)
 #undef TAP_ADD
 // Region 9.
 #if KICKOS_SELFTEST_REGION(9)
-#define TAP_ADD(name, fn) tap::add(name, fn)
+#define TAP_ADD(name, fn) TAP_REGISTER(name, fn)
 #else
 #define TAP_ADD(name, fn) TAP_ELIDE(fn)
 #endif
@@ -12059,12 +12287,15 @@ extern "C" void selftest_main(kos_self_t const* self)
     TAP_ADD("ram_alloc_zeroed", t_ram_alloc_zeroed);
     TAP_ADD("uncached_grant_sync", t_uncached_grant_sync);
 #endif
+#if KICKOS_MEMORY_ENFORCED
+    TAP_ADD("reservation_refused_skips", t_reservation_refused_skips);
+#endif
     // Last of its region: a stack that fits spends arena the probes above need on microbit.
     TAP_ADD("caller_stack", t_caller_stack);
 #undef TAP_ADD
 // Region 10.
 #if KICKOS_SELFTEST_REGION(10)
-#define TAP_ADD(name, fn) tap::add(name, fn)
+#define TAP_ADD(name, fn) TAP_REGISTER(name, fn)
 #else
 #define TAP_ADD(name, fn) TAP_ELIDE(fn)
 #endif

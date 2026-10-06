@@ -8,6 +8,7 @@
 // being per-chip.
 
 #include <kickos/arch/arch.h>
+#include <kickos/arch/armv6m_fault_frame.h>
 #include <kickos/arch/armv6m_trap_stack.h> // the figures switch.S's PSP guard enforces
 #include <kickos/diag.h>
 
@@ -259,8 +260,15 @@ void kickos_armv6m_fault_report(uint32_t* frame, uint32_t exc_return)
     {
         stk = "PSP";
     }
-    ::kickos::kprintf(KDIAG_F_ARM_REGS1, frame[6], frame[5], frame[7], stk);
-    ::kickos::kprintf(KDIAG_F_ARM_REGS2, frame[0], frame[1], frame[2], frame[3], frame[4]);
+    if (armv6m_fault_frame_readable(frame, exc_return))
+    {
+        ::kickos::kprintf(KDIAG_F_ARM_REGS1, frame[6], frame[5], frame[7], stk);
+        ::kickos::kprintf(KDIAG_F_ARM_REGS2, frame[0], frame[1], frame[2], frame[3], frame[4]);
+    }
+    else
+    {
+        ::kickos::kprintf(KDIAG_F_ARM_FRAME_FOREIGN, reinterpret_cast<uint32_t>(frame), stk);
+    }
 #else
     (void)frame;
     (void)exc_return;

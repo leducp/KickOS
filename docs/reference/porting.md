@@ -170,7 +170,10 @@ contents otherwise -- `BFSR.IMPRECISERR` (bit 10) is called out so a reader does
 stacked PC as the culprit, and then the `arch_fault_report_extra()` chip hook runs. That hook
 is where a bus-side unit reports: `mk64f` reads SYSMPU `CESR`, decodes the per-slave-port
 `SPERR` nibble, and says so explicitly when NO protection error is latched -- which is the tell
-for a peripheral-bridge fault rather than an MPU one.
+for a peripheral-bridge fault rather than an MPU one. A thread's fault is not a panic and runs
+no reporter, so the kill path asks `arch_fault_chip_addr()` instead: it hands the thread's fault
+record the latched address where neither `MMFAR` nor `BFAR` is valid, and clears the latch
+whatever the core recorded, since a latch left set labels the next thread's fault.
 
 ### Fault-isolation contract (a faulting thread takes its task and nothing beyond)
 

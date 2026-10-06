@@ -117,6 +117,22 @@ namespace selftest
         return got == n;
     }
 
+    bool g_ram_starved = false;
+
+    void* st_ram_alloc_as(bool starved, size_t size)
+    {
+        if (starved)
+        {
+            return nullptr;
+        }
+        return kos_ram_alloc(size);
+    }
+
+    void* st_ram_alloc(size_t size)
+    {
+        return st_ram_alloc_as(g_ram_starved, size);
+    }
+
 #if defined(KICKOS_ENABLE_SELFTEST)
     kos_cap_t g_pl_ep = KOS_CAP_NONE;
 #endif

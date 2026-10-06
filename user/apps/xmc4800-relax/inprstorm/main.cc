@@ -303,20 +303,41 @@ namespace
         }
 #endif
     }
+
+    // Heartbeat. A DoS kills the log outright; a rate the console merely SURVIVES shows up as dt
+    // drifting above the 300 ms nominal, which a bare beat counter cannot show. t is uptime and dt
+    // the interval since the previous beat, both ms from the monotonic clock.
+    void heartbeat(void*)
+    {
+        uint64_t const t0 = kos_clock_now();
+        uint64_t prev = t0;
+        uint32_t beat = 0;
+        while (true)
+        {
+            uint64_t const now = kos_clock_now();
+            char s[80];
+            ksnprintf(s, sizeof(s), "[inprstorm] heartbeat %u t=%ums dt=%ums\n",
+                      static_cast<unsigned>(beat),
+                      static_cast<unsigned>((now - t0) / 1000000ull),
+                      static_cast<unsigned>((now - prev) / 1000000ull));
+            kos::print(s);
+            prev = now;
+            beat++;
+            kos_sleep_ns(300000000ull);
+        }
+    }
 }
 
 extern "C" void inprstorm_main(kos_self_t const* self)
 {
     kos::print("[inprstorm] XMC4800 console DoS probe via U0C1 INPR reroute onto SR0\n");
-    kos::print("[inprstorm] MARKER: root up, spawning the U0C1 holder\n");
+    kos::print("[inprstorm] MARKER: root up, starting the heartbeat\n");
     {
         char s[80];
         ksnprintf(s, sizeof(s), "[inprstorm] rate profile: %s\n", PROFILE_NAME);
         kos::print(s);
     }
 
-    // The entry holds the channel window its composition grants and re-delegates it to the storm
-    // thread.
     kos_window_t const window = kos_grant_mmio(self, "/dev/usic0/ch1");
     uintptr_t const win = reinterpret_cast<uintptr_t>(kos_window_addr(window));
     if (win == 0u or kos_window_size(window) < U0C1_WINDOW)
@@ -324,39 +345,23 @@ extern "C" void inprstorm_main(kos_self_t const* self)
         kos_panic("[inprstorm] no /dev/usic0/ch1 window");
     }
 
-    // Priority 1 (KICKOS_PRIO_MIN) is BELOW the task's, so the storm can never starve the entry by
-    // hogging the CPU: a wedged console then isolates the foreign-SR0 storm as the cause.
-    kos_window const grant = {win, U0C1_WINDOW, KOS_WINDOW_DEVICE, 0};
-    auto const p = kos::thread::create(storm, reinterpret_cast<void*>(win),
-                                       "inprstorm-dos", 1, KOS_POLICY_FIFO, 0,
-                                       /*privileged=*/false,
-                                       /*mem=*/nullptr, /*mem_size=*/0,
-                                       /*stack=*/nullptr, /*stack_size=*/0,
-                                       /*windows=*/&grant, 1);
+    // The window stays with the entry, its only holder, which drops to priority 1
+    // (KICKOS_PRIO_MIN) below the beat and storms: the storm can never starve the heartbeat by
+    // hogging the CPU, so a wedged console isolates the foreign-SR0 storm as the cause.
+    auto const p = kos::thread::create(heartbeat, nullptr, "inprstorm-beat", 2, KOS_POLICY_FIFO,
+                                       0, /*privileged=*/false);
     if (not p.valid())
     {
         char e[64];
-        ksnprintf(e, sizeof(e), "[inprstorm] U0C1 storm spawn refused, errno %d", -p.error());
+        ksnprintf(e, sizeof(e), "[inprstorm] heartbeat spawn refused, errno %d", -p.error());
         kos_panic(e);
     }
-
-    // Heartbeat. A DoS kills the log outright; a rate the console merely SURVIVES shows up as dt
-    // drifting above the 300 ms nominal, which a bare beat counter cannot show. t is uptime and dt
-    // the interval since the previous beat, both ms from the monotonic clock.
-    uint64_t const t0 = kos_clock_now();
-    uint64_t prev = t0;
-    uint32_t beat = 0;
-    while (true)
+    int const rc = kos_thread_set_priority(1);
+    if (rc != 0)
     {
-        uint64_t const now = kos_clock_now();
-        char s[80];
-        ksnprintf(s, sizeof(s), "[inprstorm] heartbeat %u t=%ums dt=%ums\n",
-                  static_cast<unsigned>(beat),
-                  static_cast<unsigned>((now - t0) / 1000000ull),
-                  static_cast<unsigned>((now - prev) / 1000000ull));
-        kos::print(s);
-        prev = now;
-        beat++;
-        kos_sleep_ns(300000000ull);
+        char e[64];
+        ksnprintf(e, sizeof(e), "[inprstorm] priority drop refused, errno %d", -rc);
+        kos_panic(e);
     }
+    storm(reinterpret_cast<void*>(win));
 }

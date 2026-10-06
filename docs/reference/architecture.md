@@ -642,14 +642,22 @@ implied); ThreadX Modules and ChibiOS/SB are the loadable-code cousins.
 - **Cross-domain sharing = a region deliberately mapped into two domains.** This is the basis for
   shared-memory IPC (roadmap). Absent an explicit shared region, domains cannot see each other.
 
-**Region-set contract (portability keystone).** Region grants must be **non-overlapping**, and
-`arch_mpu_apply(regions, n)` **replaces the whole active set** for the running thread. This is
-the one contract that spans the hardware split: **K64F SYSMPU** grants are a *union* (any region
-descriptor granting access wins), while **ARM PMSA** resolves overlaps by *region priority*
-(higher-numbered region wins) -- so KickOS forbids overlap and treats `arch_mpu_region.attr` as
-the **unprivileged** access rights (supervisor access comes from the background region / SYSMPU
-RGD0, not from these descriptors). With this, the same region set programs identically on SYSMPU
-and PMSA. The seam signature does not change (RX72M litmus preserved).
+**Region-set contract (portability keystone).** `arch_mpu_apply(regions, n)` **replaces the
+whole active set** for the running thread, and `arch_mpu_region.attr` is the **unprivileged**
+access (supervisor access comes from the background region / SYSMPU RGD0, not from these
+descriptors). Where two regions of one set overlap, the hardware splits four ways, which each
+backend's `mpu_encoded.h` states as `ARCH_MPU_OVERLAP` (`arch/include/kickos/arch/mpu_overlap.h`):
+**PMSAv8** faults every access to the shared bytes, a privileged one included, so the overlap
+faults the thread's exception entry and the kernel's own reads of its frame; **PMSAv7** (v7-M and
+v6-M) and the sim let the higher-numbered region decide; the **RISC-V PMP** the lower-numbered
+one; **K64F SYSMPU** and the **RX MPU** take the union. A set is admitted only where its rule
+decides every shared byte as the kernel's range checks do, allowed only where both regions allow
+it (`mpu_overlap_expressible`, `kernel/include/kickos/mpuset.h`): no overlap at all on PMSAv8,
+equal rights on a union MPU, and the deciding region never granting what the other withholds on a
+priority one. The spawn refuses `-KOS_EINVAL` a child whose set, assembled as `thread_create`
+would seat it, breaks it, and a self-grant that would break it in the caller's set. The memory
+type is the type rules' (`memory_type_free`), which admit one type per block. The seam signature
+does not change (RX72M litmus preserved).
 
 **Region budget** (only **8** regions on ARMv6-M/v7-M; ~12 on K64F SYSMPU): kernel needs ~0
 explicit regions (background map); a domain is ~3 (code, data/heap, optional MMIO) + 1 per-thread

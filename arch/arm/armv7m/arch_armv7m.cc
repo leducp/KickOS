@@ -120,17 +120,11 @@ static_assert(KICKOS_ARMV7M_TRAP_NEED_SVC > KICKOS_ARMV7M_TRAP_NEED_PENDSV,
 // not: it asks for NEED_SVC unconditionally, so the requirement is NEED_SVC plus whatever
 // entry spent, and the FP-live 104 is the worse of the two. That leaves the guard 72 bytes
 // stricter than physics there, the price of not branching on FPCA at the SVC site.
-#if defined(__ARM_FP)
-static_assert(KICKOS_MIN_STACK_SIZE >= KICKOS_ARMV7M_TRAP_NEED_SVC + 104,
-              "KICKOS_MIN_STACK_SIZE is below the armv7m syscall red zone plus the "
-              "FP-live exception frame entry spends above it: raise the per-arch default in "
-              "Kconfig, never the red zone, which is a measurement");
-#else
-static_assert(KICKOS_MIN_STACK_SIZE >= KICKOS_ARMV7M_TRAP_NEED_SVC + 32,
+static_assert(KICKOS_MIN_STACK_SIZE
+                  >= KICKOS_ARMV7M_TRAP_NEED_SVC + KICKOS_ARMV7M_TRAP_ENTRY_FRAME,
               "KICKOS_MIN_STACK_SIZE is below the armv7m syscall red zone plus the "
               "exception frame entry spends above it: raise the per-arch default in "
               "Kconfig, never the red zone, which is a measurement");
-#endif
 
 // ARMv7-M keeps SP 8-byte aligned at every public interface (AAPCS), so a kernel stack
 // whose SIZE is not a multiple of 8 puts its top off that boundary.
@@ -360,6 +354,15 @@ namespace kickos
 extern "C" void kpanic_enter(void);
 extern "C" void kfault_terminate(void) __attribute__((noreturn));
 
+namespace
+{
+    // MSTKERR/MUNSTKERR (CFSR bits 4/3) and STKERR/UNSTKERR (bits 12/11): the hardware aborted
+    // the stacking or unstacking of the frame, so it never was or no longer is a frame, and a
+    // privileged read of it can fault again in handler mode, as one at an address two PMSAv8
+    // regions match does.
+    constexpr uint32_t CFSR_STACKING_ABORTS = 0x1818u;
+}
+
 extern "C"
 {
 
@@ -380,10 +383,8 @@ bool arch_fault_is_user_thread(void* frame)
     {
         return false;
     }
-    // MSTKERR/MUNSTKERR (CFSR bits 4/3) and STKERR/UNSTKERR (bits 12/11) mean the hardware
-    // aborted mid-stacking, so `frame` addresses memory the frame was never written to and
-    // f[7] below would be whatever RAM already held. A stack overflow arrives this way.
-    if (kickos::arm::reg32(0xE000ED28) & 0x1818u)
+    // A stack overflow arrives as a stacking abort.
+    if (kickos::arm::reg32(0xE000ED28) & CFSR_STACKING_ABORTS)
     {
         return false;
     }
@@ -413,6 +414,9 @@ void arch_fault_redirect_to_exit(void* frame)
     uint32_t const hfsr = kickos::arm::reg32(0xE000ED2C);
     uintptr_t addr = 0;
     int addr_valid = 0;
+    // Taken whatever the core latched: a chip latch left set labels the NEXT thread's fault.
+    uintptr_t chip_addr = 0;
+    bool const chip_latched = arch_fault_chip_addr(&chip_addr);
     // MMFAR/BFAR hold a stale address unless the matching VALID bit is set (MMARVALID =
     // CFSR bit 7, BFARVALID = bit 15).
     if (cfsr & (1u << 7))
@@ -423,6 +427,11 @@ void arch_fault_redirect_to_exit(void* frame)
     else if (cfsr & (1u << 15))
     {
         addr = kickos::arm::reg32(0xE000ED38);
+        addr_valid = 1;
+    }
+    else if (chip_latched)
+    {
+        addr = chip_addr;
         addr_valid = 1;
     }
     uint32_t* const f = static_cast<uint32_t*>(frame);
@@ -510,8 +519,9 @@ void kickos_armv7m_fault_report(uint32_t* frame, uint32_t exc_return)
     // HardFault_Handler reaches here by a plain `b`, so this function's own return IS the
     // exception return. Nothing may print above this: kpanic_enter's console reclaim is
     // permanent and this fault is survivable.
+    bool const frame_read = (kickos::arm::reg32(0xE000ED28) & CFSR_STACKING_ABORTS) == 0;
 #if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_AMP_OWN_IMAGE
-    if (kickos_armv7m_probe_caught(frame, exc_return))
+    if (frame_read and kickos_armv7m_probe_caught(frame, exc_return))
     {
         return;
     }
@@ -540,8 +550,15 @@ void kickos_armv7m_fault_report(uint32_t* frame, uint32_t exc_return)
         label = "BUS FAULT";
     }
     ::kickos::kprintf("\n=== %s ===\n", label);
-    ::kickos::kprintf(KDIAG_F_ARM_REGS1, frame[6], frame[5], frame[7], stk);
-    ::kickos::kprintf(KDIAG_F_ARM_REGS2, frame[0], frame[1], frame[2], frame[3], frame[4]);
+    if (frame_read)
+    {
+        ::kickos::kprintf(KDIAG_F_ARM_REGS1, frame[6], frame[5], frame[7], stk);
+        ::kickos::kprintf(KDIAG_F_ARM_REGS2, frame[0], frame[1], frame[2], frame[3], frame[4]);
+    }
+    else
+    {
+        ::kickos::kprintf(KDIAG_F_ARM_NOFRAME, reinterpret_cast<uint32_t>(frame), stk);
+    }
     ::kickos::kprintf(KDIAG_F_ARM_CFSR, cfsr, hfsr);
     if (cfsr & (1u << 10)) // BFSR IMPRECISERR: the stacked PC is past the faulting store
     {
@@ -561,6 +578,7 @@ void kickos_armv7m_fault_report(uint32_t* frame, uint32_t exc_return)
 #else
     (void)frame;
     (void)exc_return;
+    (void)frame_read;
     ::kickos::kprintf("\n=== HARD FAULT ===\n");
 #endif
     kfault_terminate();

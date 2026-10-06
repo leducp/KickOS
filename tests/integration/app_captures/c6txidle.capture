@@ -18,11 +18,7 @@ rst:0x1 (POWERON),boot:0x6c (SPI_FAST_FLASH_BOOT)
    heap    15 KiB available
    kstack  1008 B x 9 = 9072 B
 
-[c6txidle] UART0 TX idle witness: a line loaded into the FIFO, the console flush,
-[c6txidle] then the TX pad taken from the UART and held idle. The TAIL line below
-[c6txidle] must end in its sentinel whole; a cut last byte is a flush that
-[c6txidle] returned with the frame still shifting.
 [c6txidle] TAIL 0123456789abcdef0123456789abcdef <<<TXIDLE-END>>>
-[c6txidle] frame 86790 ns over 65 bytes, flush held 88120 ns past the FIFO's last byte (late past 4599870 ns)
-[c6txidle] ST_UTX_OUT 0 after 10 ms quiet, 0 at the flush's return; idle is 0
+[c6txidle] frame 3435 ticks, flush held 5222 ticks past the FIFO's last byte (late past 182055)
+[c6txidle] ST_UTX_OUT 2 while shifting, 0 after 10 ms quiet, 0 at the flush's return; idle is 0
 [c6txidle] PASS the flush returned once the last frame had left

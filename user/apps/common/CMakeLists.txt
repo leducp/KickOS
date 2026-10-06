@@ -22,7 +22,7 @@ add_subdirectory(stress)
 add_subdirectory(sched_exit)
 add_subdirectory(stackdepth)
 
-kickos_add_diagnostic_apps(fault panicgate specfault)
+kickos_add_diagnostic_apps(fault panicgate)
 
 # --- A C library on the target -----------------------------------------------------------
 if(KICKOS_HAVE_LIBC)
@@ -30,6 +30,14 @@ if(KICKOS_HAVE_LIBC)
   add_subdirectory(sysdefault)
   kickos_add_diagnostic_apps(mpu_fault rootfault rootauth rebootdemo reclaimwit
                              objbudget)
+endif()
+
+# --- Memory enforcement --------------------------------------------------------------------
+# specfault's verdict is that a read of an address nothing grants is DENIED. Where nothing
+# enforces memory the read is the bus's to answer: it returns on esp32-wroom, and faults on
+# f302nucleo only because no slave sits there, which is no claim of the kernel's.
+if(KICKOS_MEMORY_ENFORCED)
+  kickos_add_diagnostic_apps(specfault)
 endif()
 
 # --- Fault isolation, translation, and the host sim --------------------------------------
