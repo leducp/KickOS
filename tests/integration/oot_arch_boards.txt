@@ -10,8 +10,9 @@
 # in no other arch's package.
 #
 # Read by tests/integration/gates/selftest.cmake, which registers the gate on the named board
-# and nowhere else, and by tests/static/check_oot_arch_cover.sh, which holds this file whole
-# against boards/*/board.cmake. A new arch with no row here fails that gate.
+# and nowhere else, and fails the configure of a board whose arch has no row, more than one, or
+# a covers board that states another arch or that no configure preset sets, and every configure
+# given a row whose arch no board states.
 #
 #   covers   <arch> <board>   the board whose preset runs the gate
 #   declines <arch> <reason>  an arch no package can be consumed on yet, and why

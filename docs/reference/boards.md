@@ -456,7 +456,7 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
   `arch_diag_led_*`); a board with no kernel LED (`qemu`, `microbit`,
   `pizero2350`, `rx72m`) links the no-op fallback (`arch/common/arch_diag_led_set_default.cc`) and the LED
   silently does nothing -- not a failure.
-  `blink` is built for every board regardless, so on those it is a legitimate no-op.
+  `blink` is built only where the chip's own sources define `arch_diag_led_set`.
 
 ### `f302nucleo` on silicon -- the suite passes at the selftest provisioning
 
@@ -646,8 +646,8 @@ split odd and even lines for bandwidth and are not a per-core partition, so ther
 grant a node. `flash_flush_cache` (5.4.8.8, p.386) unpins every pinned line whole-cache and is
 global, so one node's flush silently destroys the other node's cache-as-SRAM with no error and no
 local symptom. The maintenance window is the only way to issue a PIN (4.4.1.1, p.342), so
-`tests/static/check_amp_no_xip_pin.sh` holds the refusal by confirming the linked image, under that
-posture, names no reference to it; a single-image kernel on this chip may still pin freely, there
+`tests/static/check_amp_no_xip_pin.sh`, registered for that posture only, holds the refusal by
+confirming no source an RP2350 image compiles names it; a single-image kernel on this chip may still pin freely, there
 being no peer kernel to lose a line. Lifted only by per-core cache partitioning or a documented
 pin-ownership mechanism; this part has neither.
 
@@ -1087,7 +1087,7 @@ re-deriving the per-region counts as a whole-suite one.
   page and `caller_stack`'s stack
   against the part's RAM, and `uart_service` from the app's own pin
   (`tests/static/selftest_demands.py` reads the arms). No set names an arm under a board
-  predicate, and the `skip_lists_derived` gate refuses one. Each image is judged against the
+  predicate, and the `board_predicates` gate refuses one. Each image is judged against the
   members its own regions register, read off the same region bounds in `main.cc` that cut the suite. So an arm moving
   across a boundary takes its permission with it. `check_tap_stream.sh` reports a name declared
   in another image as a NOTE and not a failure, so the build's `<board>_selftest_manifest` gate
@@ -1203,7 +1203,7 @@ hundred free bytes an image turns on the compiler again, so compare the SIGN, no
 across two toolchains.
 
 **What it cost beyond the two images while it stood.** `trap_redzone` is registered on both presets
-(`tests/static/trap_redzone_roots.txt` declares all four armv7m presets of these two chips), and on
+(it runs on every preset of an arch with a trap-stack header), and on
 these two it failed inside its own scratch tree at that same link, so **neither preset contributed a
 trap-stack measurement between `480767f1` and this fix**. The failure read
 `FAIL: build failed in /var/tmp/kickos-trap-redzone-<preset>, twice, the second time after a fresh

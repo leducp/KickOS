@@ -172,3 +172,17 @@ kickos_export_targets(kickos_kernel)
 if(KICKOS_SCHED_PERIODIC_TICK)
   target_compile_definitions(kickos_kernel PUBLIC KICKOS_SCHED_PERIODIC_TICK=1)
 endif()
+
+# No preset turns KICKOS_SMP_TRACE on, so its arm is compiled here once more, under the kernel's
+# own flags, into objects nothing links: a renamed hook or a moved record field fails the build.
+# -U first: the knob's =0 is a directory definition, and a second -D would be a redefinition.
+if(NOT KICKOS_SMP_TRACE)
+  add_library(kickos_smp_trace_arm OBJECT
+              sync/smptrace.cc sync/sync.cc sched/sched.cc sync/smptrace_arm.cc)
+  kickos_apply_freestanding(kickos_smp_trace_arm)
+  foreach(_prop IN ITEMS INCLUDE_DIRECTORIES COMPILE_DEFINITIONS COMPILE_OPTIONS)
+    set_property(TARGET kickos_smp_trace_arm APPEND PROPERTY ${_prop}
+                 "$<TARGET_PROPERTY:kickos_kernel,${_prop}>")
+  endforeach()
+  target_compile_options(kickos_smp_trace_arm PRIVATE -UKICKOS_SMP_TRACE -DKICKOS_SMP_TRACE=1)
+endif()

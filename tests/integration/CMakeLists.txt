@@ -22,7 +22,7 @@
 #
 # NO board name conditions an emulator gate: kickos_add_qemu_test is total and registers nothing
 # where there is no emulator, and a predicate states the fact the CLAIM rests on (an arch, a
-# Kconfig symbol, the machine, an image). tests/static/check_qemu_gates_derived.py refuses one.
+# Kconfig symbol, the machine, an image). tests/static/check_board_predicates.py refuses one.
 
 # kickos_emulator_judged(<image>...)
 #   States that an emulator gate holds <image>'s verdict and no capture can: an exit status, a
@@ -57,6 +57,17 @@ function(kickos_inapplicable image why)
                                             KICKOS_IMAGE_JUDGE_ARGS "${why}")
 endfunction()
 
+# kickos_unbooted(<image> <why>)
+#   States why no test of this build boots <image>, which the root's image listing otherwise
+#   refuses where the build boots its images: a test that boots it as a tree of its own builds
+#   it, or a run that measures rather than judges.
+function(kickos_unbooted image why)
+  if(NOT TARGET ${image})
+    message(FATAL_ERROR "kickos_unbooted(${image}): no such image")
+  endif()
+  set_target_properties(${image} PROPERTIES KICKOS_IMAGE_UNBOOTED "${why}")
+endfunction()
+
 # The board name as a CTest-name prefix, for the gates whose ctest name is the claim rather
 # than the image and so cannot take kickos_add_qemu_test's derived name.
 string(REPLACE "-" "_" _tag "${KICKOS_BOARD}")
@@ -80,11 +91,11 @@ endforeach()
 add_test(NAME ${_tag}_image_listing
   COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_image_listing.sh"
           "${PROJECT_BINARY_DIR}/kickos-images.txt" "${PROJECT_SOURCE_DIR}" "${CMAKE_CTEST_COMMAND}"
-          "${CMAKE_COMMAND}" "${PROJECT_BINARY_DIR}" "${CMAKE_EXECUTABLE_SUFFIX_CXX}")
+          "${PROJECT_BINARY_DIR}" "${CMAKE_EXECUTABLE_SUFFIX_CXX}")
 kickos_host_gate(${_tag}_image_listing TIMEOUT 30)
 add_test(NAME ${_tag}_host_gate_boots
   COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_host_gate_boots.sh" "${PROJECT_SOURCE_DIR}"
-          "${CMAKE_CTEST_COMMAND}" "${CMAKE_COMMAND}" "${PROJECT_BINARY_DIR}")
+          "${CMAKE_CTEST_COMMAND}" "${PROJECT_BINARY_DIR}")
 kickos_host_gate(${_tag}_host_gate_boots TIMEOUT 30)
 add_test(NAME ${_tag}_image_judges_proved
   COMMAND sh "${PROJECT_SOURCE_DIR}/tests/static/check_app_judges.sh" --listing

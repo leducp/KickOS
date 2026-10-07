@@ -4,8 +4,7 @@
 # F1 guard for the i.MX RT1062 M7 speculative-access fix (ERR011573): a deliberate read
 # of the unbacked, wrapped FlexSPI window. On the fixed Teensy it produces a clean
 # MemManage dump; a regression to a readable wrap (fable finding F1) would hang the core.
-# Silicon one-shot: the sim/qemu gates have no wrapped external aperture, so no ctest.
+# Elsewhere the address is one nothing grants the thread.
 add_executable(specfault main.cc)
 target_link_libraries(specfault PRIVATE KickOS::kernel KickOS::system_default)
 kickos_emit_image(specfault)
-kickos_app_judge(specfault tests/integration/check_specfault.sh)

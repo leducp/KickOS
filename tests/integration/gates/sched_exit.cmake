@@ -28,7 +28,4 @@ if(KICKOS_ARCH STREQUAL "sim" AND NOT KICKOS_MULTI_INSTANCE)
   set_tests_properties(sim_multi_instance PROPERTIES TIMEOUT 300)
 endif()
 
-# Not armv8a: the arm64 boards build the app and register no arm today.
-if(NOT KICKOS_ARCH STREQUAL "armv8a")
-  kickos_add_qemu_test(TARGET sched_exit SCRIPT "${_sched_exit_script}")
-endif()
+kickos_add_qemu_test(TARGET sched_exit SCRIPT "${_sched_exit_script}")

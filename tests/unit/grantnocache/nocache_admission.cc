@@ -3,9 +3,15 @@
 //
 // The three-valued non-cacheable admission, read from the REAL kernel/grant/grant.cc over
 // an arch seam this file sets. REFUSED is the answer no chip in tree gives, so this fixture
-// is where that value is driven.
+// is where that value is driven. And the REAL kernel/domain/domain.cc over the same seam: its
+// handle codec, and the memory-type refusal of its RAM admission.
 
+#include <kickos/domain.h>
 #include <kickos/grant.h>
+#include <kickos/instance.h>
+#include <kickos/kernel.h>
+
+#include <kickos/sys/errno.h>
 
 #include <gtest/gtest.h>
 
@@ -49,11 +55,6 @@ extern "C"
     constexpr struct arch_reserved_block BUS_MASTERS[] = {{0x402E0000u, 0x200u}};
     struct arch_reserved_span arch_bus_master_apertures(void) { return {BUS_MASTERS}; }
     int arch_bitband_present(void) { return 0; }
-}
-
-extern "C" size_t arch_domain_static_regions(struct arch_mpu_region*, size_t)
-{
-    return 0;
 }
 
 namespace kickos
@@ -129,5 +130,81 @@ namespace
         EXPECT_TRUE(kickos::grant_window_bus_master(0x402DFF00u, 0x200u));
         EXPECT_FALSE(kickos::grant_window_bus_master(0x402E0200u, 0x600u));
         EXPECT_FALSE(kickos::grant_window_bus_master(0x402DFE00u, 0x200u));
+    }
+}
+
+namespace kickos
+{
+    bool memory_type_free(uintptr_t, size_t, uint32_t, Thread const*)
+    {
+        return true;
+    }
+
+    namespace
+    {
+        constexpr int SLOT = KICKOS_MAX_DOMAINS - 1;
+
+        Domain* live_slot(uint16_t generation)
+        {
+            Domain* const d = &kernel().domains[SLOT];
+            *d = Domain{};
+            d->generation = generation;
+            d->refcount = 1;
+            return d;
+        }
+
+        void* const ARENA_RAM = reinterpret_cast<void*>(ARENA_BASE);
+    }
+
+    // A domain slot claimed 32768 times mints a handle with bit 31 set. It must still resolve,
+    // or every capability naming that slot answers -KOS_EBADF until the generation wraps.
+    TEST(DomainHandle, an_aged_handle_is_negative_and_resolves)
+    {
+        Domain* const d = live_slot(0x8000u);
+        int const handle = domain_handle(d);
+
+        EXPECT_LT(handle, 0) << "generation 0x8000 sets bit 31";
+        EXPECT_EQ(domain_resolve(handle), d);
+    }
+
+    TEST(DomainHandle, the_last_generation_before_the_wrap_resolves)
+    {
+        Domain* const d = live_slot(0xFFFFu);
+        EXPECT_EQ(domain_resolve(domain_handle(d)), d);
+    }
+
+    TEST(DomainHandle, a_stale_aged_handle_is_refused)
+    {
+        Domain* const d = live_slot(0x8000u);
+        int const handle = domain_handle(d);
+        d->generation++;
+
+        EXPECT_EQ(domain_resolve(handle), nullptr);
+    }
+
+    TEST(DomainHandle, the_null_domains_handle_is_refused)
+    {
+        EXPECT_EQ(domain_handle(nullptr), -1);
+        EXPECT_EQ(domain_resolve(-1), nullptr);
+    }
+
+    // The ABI's answer to a memory type the chip cannot honour is -KOS_ENOTSUP, on a region
+    // backend as on a translating one.
+    TEST(DomainAdmit, an_unhonoured_memory_type_answers_enotsup)
+    {
+        g_nocache = ARCH_MPU_NOCACHE_REFUSED;
+        int err = 0;
+
+        EXPECT_EQ(domain_for(0u, ARENA_RAM, 64u, ARCH_MPU_NOCACHE, nullptr, &err), nullptr);
+        EXPECT_EQ(err, KOS_ENOTSUP);
+    }
+
+    TEST(DomainAdmit, an_honoured_memory_type_is_admitted)
+    {
+        g_nocache = ARCH_MPU_NOCACHE_PROGRAMMED;
+        int err = 0;
+
+        EXPECT_NE(domain_for(0u, ARENA_RAM, 64u, ARCH_MPU_NOCACHE, nullptr, &err), nullptr);
+        EXPECT_EQ(err, 0);
     }
 }

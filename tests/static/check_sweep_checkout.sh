@@ -4,8 +4,7 @@
 #
 # The main checkout the gate sweeps read their GTest prefix from (tools/sweep-common.sh), over
 # planted repositories: from the main tree, from a linked worktree, from a bare repository's
-# worktree and from no repository, under this git and under one that predates
-# `rev-parse --path-format` and echoes it back.
+# worktree and from no repository.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
@@ -37,49 +36,15 @@ g -C "$TMP/bare.git" worktree add -q "$TMP/barewt"
 mkdir -p "$TMP/plain"
 P="$(cd "$TMP" && pwd -P)"
 
-mkdir -p "$TMP/oldgit"
-cat > "$TMP/oldgit/git" <<STUB
-#!/bin/sh
-# rev-parse before git 2.31 prints an option it does not know as a revision.
-for a in "\$@"; do
-    case "\$a" in
-        --path-format=*)
-            echo "\$a"
-            ;;
-    esac
-done
-n=\$#
-while [ "\$n" -gt 0 ]; do
-    case "\$1" in
-        --path-format=*)
-            ;;
-        *)
-            set -- "\$@" "\$1"
-            ;;
-    esac
-    shift
-    n=\$((n - 1))
-done
-exec "$REAL_GIT" "\$@"
-STUB
-chmod +x "$TMP/oldgit/git"
-PATH="$TMP/oldgit:$PATH" git -C "$TMP/main" rev-parse --path-format=absolute --git-common-dir \
-    | grep -qx -- '--path-format=absolute' || fail "the old-git stub does not echo --path-format"
-
-# <git label> <tree> <expected>
+# <tree> <expected>
 expect() {
-    got="$(main_checkout "$2")"
-    [ "$got" = "$3" ] || bad "under $1 git, the main checkout of $2 is [$got], not $3"
+    got="$(main_checkout "$1")"
+    [ "$got" = "$2" ] || bad "the main checkout of $1 is [$got], not $2"
 }
-for label in this old; do
-    if [ "$label" = old ]; then
-        PATH="$TMP/oldgit:$PATH"
-    fi
-    expect "$label" "$P/main" "$P/main"
-    expect "$label" "$P/linked" "$P/main"
-    expect "$label" "$P/barewt" "$P/barewt"
-    expect "$label" "$P/plain" "$P/plain"
-done
+expect "$P/main" "$P/main"
+expect "$P/linked" "$P/main"
+expect "$P/barewt" "$P/barewt"
+expect "$P/plain" "$P/plain"
 
 [ "$rc" -eq 0 ] || exit 1
-echo "PASS: the gate sweeps find the main checkout from every tree layout, on any git"
+echo "PASS: the gate sweeps find the main checkout from every tree layout"

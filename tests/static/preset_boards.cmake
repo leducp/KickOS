@@ -6,12 +6,7 @@
 #
 #   <preset> <TAB> <KICKOS_BOARD> <TAB> <registration key>
 #
-# Run as: cmake -DSRC=<repo root> -DOUT=<file> [-DCACHE=<file>] -P tests/static/preset_boards.cmake
-#
-# CACHE, when given, receives one TAB-separated line per KICKOS_* cache variable a visible
-# preset resolves to, null included as unset and so absent:
-#
-#   <preset> <TAB> <variable> <TAB> <type, UNINITIALIZED when the preset states none> <TAB> <value>
+# Run as: cmake -DSRC=<repo root> -DOUT=<file> -P tests/static/preset_boards.cmake
 #
 # KICKOS_BOARD is set on a handful of base presets and INHERITED by every -st, -flat,
 # -telem and -bench variant, so a line-shaped scan finds a board for a third of the file
@@ -25,8 +20,7 @@
 # The third field is the name a per-preset gate is REGISTERED under. CMake names no
 # preset, so the root CMakeLists rebuilds one out of the board, the variant and, on an
 # own-image AMP node, the node index; that is what a `preset` record in
-# trap_redzone_roots.txt and console_reach_roots.txt is matched against, and it is not
-# the preset name. The rebuild here restates the one in CMakeLists.txt so the two can be
+# console_reach_roots.txt is matched against, and it is not the preset name. The rebuild here restates the one in CMakeLists.txt so the two can be
 # compared, and reads the same defconfig CMakeLists resolves the posture from.
 
 cmake_minimum_required(VERSION 3.24)
@@ -65,7 +59,6 @@ while(_queue)
   endif()
 endwhile()
 
-set(_cachevars "")
 set(_names "")
 foreach(_f IN LISTS _files)
   file(READ "${_f}" _json)
@@ -147,9 +140,6 @@ foreach(_f IN LISTS _files)
         list(APPEND _own_${_key} "${_cv}")
         set(_cvt_${_cv}_${_key} "${_ty}")
         set(_cvv_${_cv}_${_key} "${_val}")
-        if(NOT "${_cv}" IN_LIST _cachevars)
-          list(APPEND _cachevars "${_cv}")
-        endif()
       endforeach()
     endif()
   endforeach()
@@ -184,7 +174,6 @@ function(_resolve name var)
 endfunction()
 
 set(_table "")
-set(_cache "")
 foreach(_name IN LISTS _names)
   string(MAKE_C_IDENTIFIER "${_name}" _key)
   if(_hidden_${_key})
@@ -195,12 +184,6 @@ foreach(_name IN LISTS _names)
     _resolve("${_name}" "${_cv}")
     if(NOT _r_type STREQUAL "")
       set(_cv_${_cv} "${_r_value}")
-    endif()
-  endforeach()
-  foreach(_cv IN LISTS _cachevars)
-    _resolve("${_name}" "${_cv}")
-    if(NOT _r_type STREQUAL "")
-      string(APPEND _cache "${_name}\t${_cv}\t${_r_type}\t${_r_value}\n")
     endif()
   endforeach()
   set(_b "${_cv_KICKOS_BOARD}")
@@ -235,6 +218,3 @@ foreach(_name IN LISTS _names)
 endforeach()
 
 file(WRITE "${OUT}" "${_table}")
-if(DEFINED CACHE)
-  file(WRITE "${CACHE}" "${_cache}")
-endif()

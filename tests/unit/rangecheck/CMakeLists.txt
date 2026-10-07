@@ -20,28 +20,11 @@ kickos_add_unit_test(NAME range_check
 # VirtualRanges comes with them; aspace_seam.cc stands in for kernel/domain and kernel/mem,
 # which no board the host arch answers for provides. KICKOS_ARCH_ALIAS_DCACHE is armv8a's and
 # x86_64's posture, and dcache_seam.cc records the maintenance it compiles.
-set(_rc_kseam
-  "${PROJECT_SOURCE_DIR}/tests/unit/kfixture/kfixture.cc"
-  "${PROJECT_SOURCE_DIR}/tests/unit/kfixture/karch_seam.cc"
-  aspace_seam.cc
-  dcache_seam.cc
-  "${PROJECT_SOURCE_DIR}/kernel/mem/vrange.cc"
-  "${PROJECT_SOURCE_DIR}/kernel/syscall/syscall_mem.cc"
-  "${PROJECT_SOURCE_DIR}/kernel/sched/sched.cc"
-  "${PROJECT_SOURCE_DIR}/kernel/sched/policy_fifo_rr.cc"
-  "${PROJECT_SOURCE_DIR}/kernel/sync/sync.cc"
-  "${PROJECT_SOURCE_DIR}/kernel/thread/park.cc"
-  "${PROJECT_SOURCE_DIR}/kernel/syscall/cap.cc"
-  "${PROJECT_SOURCE_DIR}/kernel/task/task.cc"
-  "${PROJECT_SOURCE_DIR}/kernel/irq/irq.cc"
-  "${PROJECT_SOURCE_DIR}/kernel/notify/notify.cc"
-  "${PROJECT_SOURCE_DIR}/kernel/init/instance.cc"
-  "${PROJECT_SOURCE_DIR}/kernel/init/fault.cc")
-
-kickos_add_kernel_host_lib(kickos_kseam_rangecheck_aspace
-  SOURCES ${_rc_kseam}
-  INCLUDES "${PROJECT_SOURCE_DIR}/tests/unit/kfixture"
-           "${PROJECT_SOURCE_DIR}/kernel/syscall" "${CMAKE_CURRENT_SOURCE_DIR}"
+kickos_add_kseam(kickos_kseam_rangecheck_aspace
+  EXTRA aspace_seam.cc dcache_seam.cc
+        "${PROJECT_SOURCE_DIR}/kernel/mem/vrange.cc"
+        "${PROJECT_SOURCE_DIR}/kernel/syscall/syscall_mem.cc"
+  INCLUDES "${PROJECT_SOURCE_DIR}/kernel/syscall" "${CMAKE_CURRENT_SOURCE_DIR}"
   POSTURE KICKOS_HAVE_ASPACE=1 KICKOS_ARCH_ALIAS_DCACHE=1 KICKOS_ARCH_IRQ_WINDOW=1)
 kickos_add_unit_test(NAME range_check_aspace SOURCES range_check.cc
   TEST_PREFIX aspace_
@@ -50,25 +33,9 @@ kickos_add_unit_test(NAME range_check_aspace SOURCES range_check.cc
 # The cache maintenance the copy seam brackets a non-cacheable user end with, at both postures.
 # The region one compiles the K-seam sources again at armv7m's KICKOS_ARCH_ARENA_DCACHE, so no
 # translation unit of the gate sees the other posture's definitions.
-set(_as_kseam
-  "${PROJECT_SOURCE_DIR}/tests/unit/kfixture/kfixture.cc"
-  "${PROJECT_SOURCE_DIR}/tests/unit/kfixture/karch_seam.cc"
-  dcache_seam.cc
-  "${PROJECT_SOURCE_DIR}/kernel/syscall/syscall_mem.cc"
-  "${PROJECT_SOURCE_DIR}/kernel/sched/sched.cc"
-  "${PROJECT_SOURCE_DIR}/kernel/sched/policy_fifo_rr.cc"
-  "${PROJECT_SOURCE_DIR}/kernel/sync/sync.cc"
-  "${PROJECT_SOURCE_DIR}/kernel/thread/park.cc"
-  "${PROJECT_SOURCE_DIR}/kernel/syscall/cap.cc"
-  "${PROJECT_SOURCE_DIR}/kernel/task/task.cc"
-  "${PROJECT_SOURCE_DIR}/kernel/irq/irq.cc"
-  "${PROJECT_SOURCE_DIR}/kernel/notify/notify.cc"
-  "${PROJECT_SOURCE_DIR}/kernel/init/instance.cc"
-  "${PROJECT_SOURCE_DIR}/kernel/init/fault.cc")
-kickos_add_kernel_host_lib(kickos_kseam_alias_region
-  SOURCES ${_as_kseam}
-  INCLUDES "${PROJECT_SOURCE_DIR}/tests/unit/kfixture"
-           "${PROJECT_SOURCE_DIR}/kernel/syscall" "${CMAKE_CURRENT_SOURCE_DIR}"
+kickos_add_kseam(kickos_kseam_alias_region
+  EXTRA dcache_seam.cc "${PROJECT_SOURCE_DIR}/kernel/syscall/syscall_mem.cc"
+  INCLUDES "${PROJECT_SOURCE_DIR}/kernel/syscall" "${CMAKE_CURRENT_SOURCE_DIR}"
   POSTURE KICKOS_ARCH_ARENA_DCACHE=1)
 kickos_add_unit_test(NAME alias_sync SOURCES alias_sync.cc
   LIBRARIES kickos_kseam_alias_region)

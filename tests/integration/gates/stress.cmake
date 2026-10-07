@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-# The gates riding `stress`: the host conservation round, and the every-core scheduling gate
-# on the two SMP backends.
+# The gates riding `stress`: the conservation round, and the every-core scheduling gate on the
+# two SMP backends.
 
 if(NOT TARGET stress)
   return()
@@ -19,6 +19,7 @@ if(KICKOS_ARCH STREQUAL "sim")
     COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_stress.sh" "$<TARGET_FILE:stress>")
   set_tests_properties(sim_stress PROPERTIES TIMEOUT 60)
 endif()
+kickos_add_qemu_test(TARGET stress SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_stress.sh")
 
 # Threads on every core, on THIS image and not the smallest one that boots the chip: the soak
 # holds more runnable threads than the machine has cores for its whole run, so a core running
@@ -48,6 +49,8 @@ endif()
 # the emulator's execution log and is architecture-neutral; its second reads the trap log on
 # rv64, whose line names the hart and the cause where the GIC's event names the interface and
 # the INTID.
+# Not x86_64: QEMU's x86 model names no core in an interrupt event, so the second channel would
+# read the execution log; the selftest's threads_reach_every_core arm holds the placement there.
 # The stress app caps its conservation set at 3 pairs plus 6 sleepers. At twelve
 # cores that is only twelve live workers, many of them asleep, so it cannot
 # require an unpinned worker to visit every core. The twelve-core ARM64

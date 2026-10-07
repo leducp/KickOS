@@ -37,7 +37,27 @@ if [ "${LIST_IMAGES:-0}" = 1 ]; then
     fi
     exit 0
 fi
+if [ "${BUILD_ONLY:-0}" = 1 ]; then
+    echo "build $1 $APP" >> "$FLEET_FIXTURE/events"
+    exit 0
+fi
 echo "$1 ${VARIANT:--} $APP ${AMP_PARTITION:-0} $TAG" >> "$FLEET_FIXTURE/flashed"
+echo "start $1" >> "$FLEET_FIXTURE/events"
+if [ -f "$FLEET_FIXTURE/$1.peer" ]; then
+    n=0
+    until grep -qx "start $(cat "$FLEET_FIXTURE/$1.peer")" "$FLEET_FIXTURE/events"; do
+        n=$((n + 1))
+        if [ "$n" -ge 100 ]; then
+            echo "alone $1" >> "$FLEET_FIXTURE/events"
+            break
+        fi
+        sleep 0.1
+    done
+fi
+if [ -f "$FLEET_FIXTURE/hold" ]; then
+    sleep "$(cat "$FLEET_FIXTURE/hold")"
+fi
+echo "end $1" >> "$FLEET_FIXTURE/events"
 if [ -f "$FLEET_FIXTURE/$APP.capture" ]; then
     . "$(dirname "$0")/rig.sh"
     rig_load "$TREE"
@@ -85,7 +105,7 @@ printf 'NOT EVALUATED: the planted clause\n' > "$F/ampping_n0.out"
 fleet() {
     printf '%s\n' "$1" > "$F/bus"
     shift
-    rm -f "$F/flashed"
+    rm -f "$F/flashed" "$F/events"
     FLEET_FIXTURE="$F" KICKOS_RIG="$TMP/rig.conf" TREE="$TMP/tree" TAG=planted \
         bash "$TMP/tools/bench/bench-fleet.sh" "$@" > "$TMP/fleet.out" 2>&1
 }
@@ -278,7 +298,42 @@ fleet "$F411_BUS" f411disco
 got=$?
 [ "$got" -eq 3 ] || bad "an echoing f411spi under a rig declaring no jumper exits $got, not 3"
 
+# Two boards sharing nothing are captured at once, each capture of one waiting for the other's
+# first; every image is built before the first flash, and one board's captures keep their order.
+printf 'hello|kernel|tests/integration/check_qemu_hello.sh|\n' > "$F/f411disco.images"
+printf 'RIG_CONSOLE_RX72M=/dev/planted-a\nRIG_CONSOLE_F411DISCO=/dev/planted-b\n' >> "$TMP/rig.conf"
+printf 'f411disco\n' > "$F/rx72m.peer"
+printf 'rx72m\n' > "$F/f411disco.peer"
+fleet "$RX_BUS
+$F411_BUS" rx72m f411disco
+got=$?
+[ "$got" -eq 0 ] || bad "a pass capturing every image of two boards sharing nothing exits $got, not 0"
+if grep -q '^alone ' "$F/events"; then
+    bad "two boards sharing no probe and no console were captured one after the other"
+fi
+awk '$1 == "start" { s = 1 } $1 == "build" && s { bad = 1 } END { exit bad }' "$F/events" \
+    || bad "an image was built after the first flash"
+[ "$(grep '^rx72m ' "$F/flashed" | cut -d' ' -f2,3 | paste -sd ',' -)" = '- hello,- fpclass,flat fpclass' ] \
+    || bad "the rx72m captures did not run in their queued order"
+for row in 'rx72m +hello' 'f411disco +hello'; do
+    grep -qE "^  $row +captured\$" "$TMP/fleet.out" || bad "the merged coverage table does not show [$row] captured"
+done
+rm -f "$F/rx72m.peer" "$F/f411disco.peer"
+
+# The same two boards on one console cable are captured one after the other.
+printf 'RIG_CONSOLE_F411DISCO=/dev/planted-a\n' >> "$TMP/rig.conf"
+printf '0.3\n' > "$F/hold"
+fleet "$RX_BUS
+$F411_BUS" rx72m f411disco
+got=$?
+[ "$got" -eq 0 ] || bad "a pass over two boards sharing a console exits $got, not 0"
+[ "$(grep -c '^start ' "$F/events")" -eq 4 ] || bad "the pass over two boards sharing a console did not capture four images"
+awk '$1 == "start" { if (open) bad = 1; open = 1 } $1 == "end" { open = 0 } END { exit bad }' "$F/events" \
+    || bad "two boards sharing a console cable were captured at the same time"
+rm -f "$F/hold"
+
 [ "$rc" -eq 0 ] || exit 1
 echo "PASS: an absent board fails the pass; every declared variant is captured under its own tag"
 echo "  and label, a measurement posture is reported and not flashed; a loopback is judged only"
-echo "  where the rig declares its fitting"
+echo "  where the rig declares its fitting; boards sharing nothing are captured at once and boards"
+echo "  sharing a cable one after the other, every image built first"

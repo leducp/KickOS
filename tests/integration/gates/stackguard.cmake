@@ -9,17 +9,8 @@ endif()
 
 # 139 is KOS_EXIT_FAULT and "THREAD FAULT" the thread-kill banner. The gate asserts them as
 # literals; computing them from the sources that produce them would assert nothing. The access
-# is an EL0 one, so armv8a contains it and the marker is the kill banner.
-if(KICKOS_ARCH STREQUAL "armv8a")
-  kickos_add_qemu_test(NAME ${_tag}_stack_guard TARGET stackguard
-    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_stack_guard.sh"
-    ARGS "THREAD FAULT" 139)
-endif()
-
-# RV64 has a script of its own: the write bit lives in the CAUSE here, so there is no constant
-# to substitute.
-if(KICKOS_ARCH STREQUAL "rv64imac")
-  kickos_add_qemu_test(NAME ${_tag}_stack_guard TARGET stackguard
-    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_stack_guard_rv64.sh"
-    ARGS "THREAD FAULT" 139)
-endif()
+# is an unprivileged one, so every translating backend contains it and the marker is the kill
+# banner. The arch travels as an argument: the syndrome is spelled per arch.
+kickos_add_qemu_test(NAME ${_tag}_stack_guard TARGET stackguard
+  SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_stack_guard.sh"
+  ARGS "THREAD FAULT" 139 ${KICKOS_ARCH})

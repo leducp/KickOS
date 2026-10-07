@@ -10,18 +10,18 @@
 # configure that wrote the listing.
 # --self-test reads planted listings and a stub ctest.
 #
-#   check_image_listing.sh <listing> <kickos-source> <ctest> <cmake> <build> [<executable suffix>]
+#   check_image_listing.sh <listing> <kickos-source> <ctest> <build> [<executable suffix>]
 #   check_image_listing.sh --self-test
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
 
-# <kickos-source> <ctest> <cmake> <build> <suffix> <out>: `<image>|<test>` for each absolute path
+# <kickos-source> <ctest> <build> <suffix> <out>: `<image>|<test>` for each absolute path
 # the command of a test ctest runs names, less the executable suffix.
 run_images() {
-    "$2" --test-dir "$4" --show-only=json-v1 -LE '^host$' > "$TMP/tests.json" || return 1
-    "$3" "-DJSON=$TMP/tests.json" "-DOUT=$TMP/tests.tsv" "-DIMAGES=$6" "-DSUFFIX=$5" \
-        -P "$1/tests/static/ctest_tests.cmake" > "$TMP/tests.err" 2>&1 || return 1
+    "$2" --test-dir "$3" --show-only=json-v1 -LE '^host$' > "$TMP/tests.json" || return 1
+    python3 "$1/tests/static/ctest_tests.py" --json "$TMP/tests.json" --out "$TMP/tests.tsv" \
+        --images "$5" --suffix "$4" > "$TMP/tests.err" 2>&1 || return 1
 }
 
 # <listing> <kickos-source> <run images>: prints the first defect and returns 1, or the row
@@ -83,7 +83,6 @@ read_listing() {
 if [ "${1:-}" = --self-test ]; then
     scratch_dir
     src="$(cd "$(dirname "$0")/../.." && pwd)"
-    cmake="$(command -v cmake)" || fail "no cmake on PATH to read the stub test list with"
     good='hello|kernel|tests/integration/check_qemu_hello.sh|
 stackdepth0|kernel|emulator-owed|
 blink|kernel|human|LED
@@ -121,7 +120,7 @@ cat <<JSON
 JSON
 STUB
     chmod +x "$TMP/ctest"
-    run_images "$src" "$TMP/ctest" "$cmake" "$TMP/build" .efi "$TMP/runs" \
+    run_images "$src" "$TMP/ctest" "$TMP/build" .efi "$TMP/runs" \
         || fail "the stub test list was not read: $(cat "$TMP/tests.err")"
     read_listing "$TMP/good" "$src" "$TMP/runs" > "$TMP/out" \
         || fail "a sound listing was refused: $(cat "$TMP/out")"
@@ -144,7 +143,7 @@ STUB
     refused owed-run 'panicgate1|kernel|emulator-owed|' 'b_panicgate1 runs it'
     refused owed-run-suffixed 'rebootdemo|kernel|emulator-owed|' 'b_rebootdemo runs it'
     refused void-run 'panicgate1|kernel|inapplicable|planted' 'b_panicgate1 runs it'
-    KOS_STUB_UNBUILT=1 run_images "$src" "$TMP/ctest" "$cmake" "$TMP/build" .efi "$TMP/runs" \
+    KOS_STUB_UNBUILT=1 run_images "$src" "$TMP/ctest" "$TMP/build" .efi "$TMP/runs" \
         || fail "the unbuilt stub test list was not read: $(cat "$TMP/tests.err")"
     if read_listing "$TMP/good" "$src" "$TMP/runs" > "$TMP/out"; then
         fail "a test list with a commandless test was read"
@@ -157,14 +156,13 @@ STUB
     exit 0
 fi
 
-_usage="usage: check_image_listing.sh <listing> <kickos-source> <ctest> <cmake> <build> [<suffix>]"
+_usage="usage: check_image_listing.sh <listing> <kickos-source> <ctest> <build> [<suffix>]"
 listing="${1:?$_usage}"
 src="${2:?$_usage}"
 ctest="${3:?$_usage}"
-cmake="${4:?$_usage}"
-build="${5:?$_usage}"
+build="${4:?$_usage}"
 scratch_dir
-run_images "$src" "$ctest" "$cmake" "$build" "${6:-}" "$TMP/runs" \
+run_images "$src" "$ctest" "$build" "${5:-}" "$TMP/runs" \
     || fail "the tests of $build could not be listed: $(tail -n 3 "$TMP/tests.err" 2>/dev/null)"
 if ! out="$(read_listing "$listing" "$src" "$TMP/runs")"; then
     fail "$out"

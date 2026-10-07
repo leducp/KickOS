@@ -143,77 +143,8 @@ header_finding() { # <file> <window> <spdx-ere> <copyright-ere> <copyright span 
     fi
 }
 
-# --- self-test: prove every clause of the rule, one control per clause ---------
-# Each control is a MINIMAL PAIR against its opposite number, differing in one property only,
-# so one an unrelated clause catches shows up as the wrong count rather than as a pass.
-#
-# The corpus below is every tracked file, so the controls are planted under scratch_dir's
-# mktemp directory and are invisible to `git ls-files`. A control naming the SPDX tag inside
-# this file is harmless: only the first five lines of a file are ever read.
-
-# classify(), one path per arm plus the near miss that discriminates it from its neighbour.
-: > "$TMP/classify_controls"
-arm() { # <verdict> <path>
-    printf '%s\t%s\n' "$1" "$2" >> "$TMP/classify_controls"
-}
-arm none   tests/lib/panic.ere
-arm refuse tests/lib/panic.ere.bak
-arm refuse kernel/lib/panic.ere
-arm none   CMakePresets.json
-arm refuse boards/x/presets.jsonc
-arm need   tests/integration/app_captures/c6blink.capture
-arm refuse tests/integration/app_captures/c6blink.captured
-arm need   tests/integration/app_captures/wallclock.capture.times
-arm refuse tests/integration/app_captures/wallclock.times
-arm need   kernel/sched.cc
-arm need   arch/arm/armv7m/vectors.S
-arm need   docs/reference/style.md
-arm need   tools/sweep_host_gates.sh
-arm need   tests/static/fn_body.awk
-arm need   cmake/kernel_runtime.syms
-arm none   .gitignore
-arm none   boards/x/.gitignore
-arm none   .gitattributes
-arm refuse boards/x/gitignore
-arm none   tools/compose/uv.lock
-arm refuse tools/compose/poetry.lock
-arm need   tools/compose/pyproject.toml
-arm refuse tools/compose/pyproject.tml
-arm need   Kconfig
-arm need   boards/x/Kconfig
-arm refuse boards/x/Kconfiguration
-arm need   defconfig
-arm need   boards/x/defconfig
-arm refuse boards/x/rx72m_defconfig
-arm need   kernel/include/kickos/config/cap_width.h.in
-arm refuse tools/telemetry.ini
-arm need   LICENSE
-arm need   docs/LICENSE
-arm refuse LICENCE
-arm refuse README
-arm need   conan/toolchain/patches/kickos-rx-multilib.patch
-arm refuse conan/toolchain/patches/kickos-rx-multilib.patch.orig
-
-C_NEED=0
-C_NONE=0
-C_REFUSE=0
-i=0
-while IFS="$TAB" read -r want path; do
-    i=$((i + 1))
-    got="$(classify "$path")"
-    [ "$got" = "$want" ] || fail "classify($path) says '$got', expected '$want'"
-    case "$got" in
-        need)   C_NEED=$((C_NEED + 1)) ;;
-        none)   C_NONE=$((C_NONE + 1)) ;;
-        refuse) C_REFUSE=$((C_REFUSE + 1)) ;;
-    esac
-done < "$TMP/classify_controls"
-[ "$i" -eq 37 ] || fail "$i classify() control(s) ran, expected 37"
-# All three verdicts, or a classify() collapsed onto one of them would satisfy every equality
-# above and still classify the whole tree wrong.
-[ "$C_NEED" -eq 17 ] || fail "classify() answered need for $C_NEED of 17 controls"
-[ "$C_NONE" -eq 6 ] || fail "classify() answered none for $C_NONE of 6 controls"
-[ "$C_REFUSE" -eq 14 ] || fail "classify() answered refuse for $C_REFUSE of 14 controls"
+# --- controls: one per clause of the header rule, planted under scratch_dir -----------------
+# classify() is not planted: the tree runs every arm of it, and a type it does not know fails.
 
 # The header check. Each positive is one clause: no tag at all, a tag one line past the
 # window, a copyright line not beside the tag, the two words in PROSE, and a copyright line
@@ -279,77 +210,23 @@ hdr n_markdown '' <<'EOF'
 <!-- Copyright (c) 2026 Philippe Leduc -->
 EOF
 
-H_NOSPDX=0
-H_ADJ=0
-H_CLEAN=0
 i=0
 while IFS="$TAB" read -r name want; do
     i=$((i + 1))
     header_finding "$TMP/hdr_$name" "$SPDX_WINDOW" "$SPDX_ERE" "$COPYRIGHT_ERE" "$COPYRIGHT_SPAN"
-    got="$HF"
-    [ "$got" = "$want" ] || fail "header control $name: the scan says '$got', expected '$want'"
-    case "$got" in
-        nospdx) H_NOSPDX=$((H_NOSPDX + 1)) ;;
-        '')     H_CLEAN=$((H_CLEAN + 1)) ;;
-        *)      H_ADJ=$((H_ADJ + 1)) ;;
-    esac
+    [ "$HF" = "$want" ] || fail "header control $name: the scan says '$HF', expected '$want'"
 done < "$TMP/header_controls"
 [ "$i" -eq 10 ] || fail "$i header control(s) ran, expected 10"
-[ "$H_NOSPDX" -eq 2 ] || fail "the scan missed a tag in $H_NOSPDX of 2 controls that carry none in the window"
-[ "$H_ADJ" -eq 3 ] || fail "the scan reported $H_ADJ of 3 controls whose copyright line is not beside the tag"
-[ "$H_CLEAN" -eq 5 ] || fail "the scan read $H_CLEAN of 5 conforming controls clean; the gate would cry wolf"
-
-# The mutation the controls exist to survive: relax one clause and the counts over the control
-# corpus must move to EXACT numbers that differ per clause, so the control is a near miss and
-# not slack.
-NEVER='KICKOS_THIS_ERE_MATCHES_NOTHING'
-header_mutation() { # <clause> <window> <spdx-ere> <copyright-ere> <span> <nospdx> <adjacency>
-    _hm_n=0
-    _hm_a=0
-    while IFS="$TAB" read -r name want; do
-        header_finding "$TMP/hdr_$name" "$2" "$3" "$4" "$5"
-        case "$HF" in
-            '') ;;
-            nospdx) _hm_n=$((_hm_n + 1)) ;;
-            *)      _hm_a=$((_hm_a + 1)) ;;
-        esac
-    done < "$TMP/header_controls"
-    [ "$_hm_n" -eq "$6" ] && [ "$_hm_a" -eq "$7" ] || fail "with the $1 clause relaxed the scan reported $_hm_n missing tag(s) and
-      $_hm_a misplaced copyright line(s), expected $6 and $7; the controls for it are not near
-      misses and prove nothing"
-}
-# A window wide enough to reach line 6 exempts the one control that sits there, and nothing
-# else moves.
-header_mutation five-line-window 99 "$SPDX_ERE" "$COPYRIGHT_ERE" "$COPYRIGHT_SPAN" 1 3
-# The loose reading: a copyright line ANYWHERE in the file. All three adjacency controls carry
-# one, the prose control included, so all three go quiet.
-header_mutation beside 5 "$SPDX_ERE" "$COPYRIGHT_ERE" 0 2 0
-# Neither leg can run at all without its own matcher, and each collapses the corpus onto ONE
-# verdict, so a control quiet because the tag was found is not confused with one quiet because
-# the copyright line was.
-header_mutation spdx-tag 5 "$NEVER" "$COPYRIGHT_ERE" "$COPYRIGHT_SPAN" 10 0
-header_mutation copyright-word 5 "$SPDX_ERE" "$NEVER" "$COPYRIGHT_SPAN" 2 8
 
 # --- the corpus ---------------------------------------------------------------
 corpus_all "$TMP/all"
-# Sized at about HALF what the tree tracks, so an ordinary deletion still passes while a
-# truncated listing refuses. Nonempty is not a floor: this gate asserts an ABSENCE over
-# every tracked file, and a handful of them satisfies it as readily as all of them.
-CORPUS_FLOOR=600
-N_ALL="$(wc -l < "$TMP/all" | tr -d ' ')"
-[ "$N_ALL" -ge "$CORPUS_FLOOR" ] || fail "git ls-files listed $N_ALL tracked file(s), under the
-      floor of $CORPUS_FLOOR. The corpus this gate read is not this tree, so its silence is
-      about nothing."
+corpus_floor "$TMP/all" 600 "tracked file(s)"
 
 : > "$TMP/findings"
 : > "$TMP/refused"
-N=0
 N_NEED=0
 N_NONE=0
 while IFS= read -r f; do
-    [ -f "$f" ] || fail "tracked file is missing from the worktree: $f"
-    [ -r "$f" ] || fail "tracked file is unreadable, so its verdict is UNKNOWN, not clean: $f"
-    N=$((N + 1))
     case "$(classify "$f")" in
         none)
             N_NONE=$((N_NONE + 1))

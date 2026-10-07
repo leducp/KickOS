@@ -650,36 +650,14 @@ done
 echo "   both cells declared Atomic<uint8_t, Order::RELAXED>[32] in
       arch/xtensa/lx6/arch_xtensa.cc"
 
-# --- the symbol table, and the bodies in it -----------------------------------
-tool_out "$TMP/nm" "[0-9a-fA-F]" "$nm" -S --defined-only "$elf"
-require_nonempty "$TMP/nm" "$nm printed no symbol at all for $elf, so the corpus is UNKNOWN
-  rather than empty and every verdict below it would be vacuous"
-syms="$(wc -l < "$TMP/nm" | tr -d ' ')"
-require_number "$syms" "the defined-symbol count"
-if [ "$syms" -lt "$SYM_FLOOR" ]; then
-    fail "$nm reports $syms defined symbol(s) in $elf, below the floor of $SYM_FLOOR. A table
-  that short is a misread, not a small image, and the corpus is UNKNOWN"
-fi
-
-# --- A1: the instruction stream -----------------------------------------------
-tool_out "$TMP/dis" "^[0-9a-f]+ <.*>:\$" "$objdump" -d --no-show-raw-insn "$elf"
-require_nonempty "$TMP/dis" "$objdump printed no disassembly for $elf"
+# --- the symbol table, the instruction stream (A1), and the bodies in it ------
+image_listing "$elf" "$nm" "$objdump" "$SYM_FLOOR" --no-show-raw-insn
 
 # The whole set of bodies that touch a cell. A fifth belongs in this list.
 for sym in arch_irq_mask arch_irq_unmask arch_irq_clear_pending arch_irq_inject; do
-    _row="$(awk -v s="$sym" 'NF == 4 && $4 == s { print $1 "\t" $2; exit }' "$TMP/nm")"
-    if [ -z "$_row" ]; then
-        fail "no sized defined symbol '$sym' in $elf. The body was renamed, made static,
-  inlined away or dropped by --gc-sections, so this gate has an absence it cannot tell apart
-  from a failure to read"
-    fi
-    _start="$(printf '%s' "$_row" | cut -f1)"
-    _size="$(printf '%s' "$_row" | cut -f2)"
-    case "$_size" in
-        *[!0]*) ;;
-        *) fail "'$sym' has size 0 in $elf: the symbol survived as a label but its body is
-  gone" ;;
-    esac
+    image_body "$sym" "$elf"
+    _start="$BODY_START"
+    _size="$BODY_SIZE"
     # Exclusive: past the body objdump decodes alignment padding and the literal pool as
     # instructions.
     _end="$(printf '%x' "$((0x$_start + 0x$_size))")"

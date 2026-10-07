@@ -75,10 +75,10 @@ cannot see whether a body moved the stack pointer at all: a shim that branches w
 passes every figure while the reporter runs on the caller's stack.
 `tests/static/check_panic_stack_seat.sh` is what reads the body instead, naming the ISA's mask
 and the one instruction that writes its stack pointer FROM THE FOURTH ARGUMENT REGISTER. It is
-text, so it cannot show either instruction is REACHED. The running half is the qemu `panicgate`
-suite, and it does not reach every backend: `kickos_add_qemu_test` registers it for armv7m,
-armv6m, rv32imac, rv64imac, armv8a and x86_64, so **rxv3 and lx6 have no runtime arm and the
-source gate is the whole of their witness**.
+text, so it cannot show either instruction is REACHED. The qemu `panicgate` cases run the entry
+on armv7m, armv6m, rv32imac, rv64imac, armv8a and x86_64 and still pass with both instructions
+deleted, the panic line reaching the wire from whichever stack the reporter stands on, so **the
+source gate is the whole witness on every backend**, and rxv3 and lx6 run no arm at all.
 
 `KICKOS_PANIC_STACK_SIZE` is a Kconfig default per arch: the next multiple of 64 strictly above
 the gate's PANIC class reading. A new arch owes that reading before its figure means anything,
@@ -522,10 +522,14 @@ scripts that carry the pow2 window. Read the reserve a chip needs from its WIDES
 one link: on `rx72m` the kernel `.bss` differs between images of the same preset, and a reserve
 sampled from a narrow one is too low.
 
-The rule, both ld facts below and the three ASSERTs live once in
+The rule, both ld facts below, the pin and the three ASSERTs live once in
 `arch/common/kernel_data_reserve.ld.h`, which every enforcing script includes and invokes as
-`KICKOS_KERNEL_DATA_RESERVE_DECL(<base>)` and `KICKOS_KERNEL_DATA_RESERVE_ASSERT(<bss end>)`.
-A script states only its reserve default, its kernel-data base and its `.bss` end symbol.
+`KICKOS_KERNEL_DATA_RESERVE_DECL(<base>)` and as `KICKOS_APPDATA_SECTION(<bss end>)` in place
+of the `.appdata` section header. A script states only its reserve default, its kernel-data base
+and its `.bss` end symbol. `arch/common/app_window.ld.h`, which the build preprocesses after
+every chip script whatever it includes, refuses a window that does not start at
+`_kernel_data_top`, or within 32 bytes of kernel `.bss` on a script that declares none, and a
+heap base other than `ALIGN(_appdata_used_end, 8)`.
 
 **TWO GNU ld FACTS THAT SHAPE HOW THAT BASE IS SPELLED**, both of which cost a probe script
 to find. First, the pin belongs in the section's ADDRESS expression as
@@ -556,7 +560,7 @@ defined only when it is on would turn an `#if defined(...)` site on for the wron
 quoted, an `int` or `hex` as a decimal number, a `bool` as `ON` or `OFF`. A numeric one
 whose dependencies are unmet reaches the header not at all, so C keeps its own default,
 and reaches CMake as `0`, CMake having no `#ifndef` fallback and no way to tell an unset
-variable from an empty one. `tests/static/check_kconfig_reach.sh` (ctest `kconfig_reach`,
+variable from an empty one. `tools/kconfig/test_genconfig.py` (ctest `kconfig_gen`,
 registered on every board) drives every defconfig in the tree and asserts each declared
 symbol arrives with the value and the type its declaration gives it, deriving the
 expectation from kconfiglib rather than from a list.
@@ -910,8 +914,8 @@ interrupt later than that, as the privileged specification allows, takes it at a
 None waits for one still on its way from the interrupt controller, which a later window takes,
 so the masked span between two windows is the work between them plus that delivery delay, and
 on rv64imac whatever delay the core adds. The trap red-zone gate prices the
-nested interrupt as its own class at the deepest call into this function (`at=` in
-`tests/static/trap_redzone_roots.txt`).
+nested interrupt as its own class at the deepest call into this function (`at=` on its class
+line in the arch's `<arch>_trap_stack.h`).
 
 ### Which core am I (`arch_cpu_id`)
 
@@ -922,8 +926,9 @@ image is byte-identical to one with no such seam at all.
 
 **It is a preprocessor fold and not an inline on purpose.** An `inline` returning 0 would rely on
 the optimiser, and this tree has already measured GCC out-lining an `always_inline` candidate at
-`-Os` (`system/include/kickos/sys/atomic.h` records it). The `cpu_id_fold` gate pins the property,
-so softening the macro fails the build rather than silently costing the byte-identity.
+`-Os` (`system/include/kickos/sys/atomic.h` records it). An `#if arch_cpu_id() != 0` beside the macro pins the
+property, so softening it to an inline or a call fails the build rather than silently costing
+the byte-identity.
 
 **A multi-core port raises `KICKOS_NUM_CORES` in its defconfig and DEFINES the function.** There is
 deliberately no `arch/common/` fallback member on that arm, following `arch_reserved_blocks`: a

@@ -18,13 +18,19 @@ if(KICKOS_ARCH STREQUAL "sim")
     COMMAND "${CMAKE_COMMAND}" -E env
             "${PROJECT_SOURCE_DIR}/tests/integration/check_hello.py"
             "$<TARGET_FILE:hello>")
+  add_test(
+    NAME    hello_c_demo
+    COMMAND "${CMAKE_COMMAND}" -E env
+            "${PROJECT_SOURCE_DIR}/tests/integration/check_hello.py"
+            "$<TARGET_FILE:hello_c>")
   # Above check_hello.py's own waits, 10 s for the exchanges and 5 s for the exit.
-  set_tests_properties(hello_demo PROPERTIES TIMEOUT 20)
+  set_tests_properties(hello_demo hello_c_demo PROPERTIES TIMEOUT 20)
 endif()
 
-# Every board with an emulator boots this image through the same script and reports under the
-# derived <board tag>_hello name.
+# Every board with an emulator boots these images through the same script and reports under the
+# derived <board tag>_hello and <board tag>_hello_c names.
 kickos_add_qemu_test(TARGET hello SCRIPT "${_hello_qemu}")
+kickos_add_qemu_test(TARGET hello_c SCRIPT "${_hello_qemu}")
 
 # The secondary-arrival gate, on the smallest image that boots the chip: every core comes up
 # in arch_init, so the app itself is only what carries the release there. The expected count is
@@ -33,6 +39,11 @@ kickos_add_qemu_test(TARGET hello SCRIPT "${_hello_qemu}")
 # Both backends bind the short-machine arm to the count, by different mechanisms: arm64 has
 # firmware that refuses a start, and rv64 has none, so there the missing hart never publishes
 # arrival and the bounded wait names it.
+#
+# Not x86_64, for this gate or the doorbell one below: q35 prints no `# smp:` banner, and QEMU's
+# x86 model names no core in an interrupt event, so a second channel would have to read the
+# execution log. The selftest holds both claims there, its `# smp sched` line counting the cores
+# in the scheduler and its doorbell_xpoke arm running on every SMP image.
 if(KICKOS_NUM_CORES GREATER 1 AND KICKOS_ARCH MATCHES "^(armv8a|rv64imac)$")
   kickos_add_qemu_test(NAME ${_tag}_smp_arrival TARGET hello
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_smp_arrival.sh"
@@ -75,21 +86,6 @@ if(KICKOS_ARCH STREQUAL "armv8a")
   kickos_host_gate(tlbi_shareability)
 endif()
 
-# Three orderings the arm64 entry and timer paths owe, read out of the linked image: the SPSel
-# select ahead of the first stack write, and the ISB after each CNTP_CTL_EL0 disable ahead of the
-# Device write it protects. Registered on the arch and not on a board or a core count: all three
-# bodies are compiled on every armv8a posture, both GIC versions and one core included.
-# It runs no image, so it carries the host label.
-#
-# Structural because no arm64 machine in the fleet can witness any of the three: QEMU enters at
-# reset with PSTATE.SP already 1, and its timer model deasserts on the register write.
-if(KICKOS_ARCH STREQUAL "armv8a")
-  add_test(NAME arm64_entry_order
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_arm64_entry_order.sh"
-            "$<TARGET_FILE:hello>" "${CMAKE_NM}" "${CMAKE_OBJDUMP}")
-  kickos_host_gate(arm64_entry_order)
-endif()
-
 # The doorbell service body's instruction barrier and its position, read out of the linked image.
 # Keyed on the core count, not the kernel-core count: the service body is compiled whenever the
 # image drives more than one core, so it exists under AMP, where one kernel schedules one core.
@@ -103,6 +99,25 @@ if(KICKOS_ARCH STREQUAL "armv8a" AND KICKOS_NUM_CORES GREATER 1)
     COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_doorbell_isb.sh"
             "$<TARGET_FILE:hello>" "${CMAKE_NM}" "${CMAKE_OBJDUMP}")
   kickos_host_gate(doorbell_isb)
+endif()
+
+# Orders and words of the linked image no build rule can see (tests/static/check_image_rules.sh).
+if(KICKOS_ARCH STREQUAL "armv8a")
+  kickos_image_rule(arm64_entry hello)
+elseif(KICKOS_ARCH STREQUAL "rv32imac")
+  kickos_image_rule(rv32_trap hello "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>"
+                    "${KICKOS_CHIP_LIMITS_H}")
+endif()
+if(KICKOS_NUM_CORES GREATER 1 AND KICKOS_CHIP STREQUAL "rp2350")
+  kickos_image_rule(rp_node hello "${PROJECT_BINARY_DIR}/generated/chip/chip_layout.h")
+endif()
+if(KICKOS_CHIP STREQUAL "esp32c6" AND KICKOS_AMP_OWN_IMAGE AND KICKOS_AMP_NODE_ID EQUAL 1)
+  kickos_image_rule(c6_lp hello)
+elseif(KICKOS_CHIP STREQUAL "esp32c6")
+  kickos_image_rule(c6_hp hello)
+endif()
+if(KICKOS_NUM_CORES EQUAL 1)
+  kickos_image_rule(cpu_id hello)
 endif()
 
 # Where the route drain sits in every doorbell service body, read out of the source tree. Keyed
@@ -142,26 +157,16 @@ add_test(NAME irq_line_op_sole
           "${PROJECT_SOURCE_DIR}")
 kickos_host_gate(irq_line_op_sole)
 
-# The per-core ATOMCTL seat and the read-back beside it, read out of the linked image.
-# Unconditional on the core count: ATOMCTL governs every S32C1I the image can execute, and a
-# single-core LX6 build reaches the register on the same boot path.
-# lx6 only: Special Register 99 is Xtensa's.
+# The per-core ATOMCTL seat with its read-back, and the interrupt posture the secondary park
+# holds across its sleep decision, read out of the linked image. The seat on every LX6 image:
+# ATOMCTL governs every S32C1I the image can execute, and a single-core build reaches the
+# register on the same boot path. The park only where the image drives more than one core,
+# the one place it is compiled.
 # It runs no image, so it carries the host label.
 if(KICKOS_ARCH STREQUAL "lx6")
-  add_test(NAME lx6_atomctl
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_lx6_atomctl.sh"
-            "$<TARGET_FILE:hello>" "${CMAKE_NM}" "${CMAKE_OBJDUMP}")
-  kickos_host_gate(lx6_atomctl)
-endif()
-
-# The interrupt posture the LX6 secondary park holds across its sleep decision, read out of the
-# linked image. Keyed on the core count: the park is compiled only where the image drives more
-# than one core.
-# It runs no image, so it carries the host label.
-if(KICKOS_ARCH STREQUAL "lx6" AND KICKOS_NUM_CORES GREATER 1)
   add_test(NAME lx6_park_mask
     COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_lx6_park_mask.sh"
-            "$<TARGET_FILE:hello>" "${CMAKE_NM}" "${CMAKE_OBJDUMP}")
+            "$<TARGET_FILE:hello>" "${CMAKE_NM}" "${CMAKE_OBJDUMP}" ${KICKOS_NUM_CORES})
   kickos_host_gate(lx6_park_mask)
 endif()
 
@@ -245,30 +250,4 @@ if(KICKOS_KERNEL_CORES GREATER 1
     COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_doorbell_generic.sh"
             "$<TARGET_FILE:hello>" "${CMAKE_NM}" "${CMAKE_OBJDUMP}" "${KICKOS_ARCH}")
   kickos_host_gate(doorbell_generic)
-endif()
-
-# Node 1's own vector table, read out of the linked image: every line but the doorbell parks,
-# and the doorbell reaches the service body.
-# It runs no image, so it carries the host label.
-if(KICKOS_NUM_CORES GREATER 1 AND KICKOS_CHIP STREQUAL "rp2350")
-  add_test(NAME rp_node_vectors
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_rp_node_vectors.sh"
-            "$<TARGET_FILE:hello>" "${CMAKE_NM}" "${CMAKE_OBJDUMP}" "${KICKOS_CHIP}"
-            "${KICKOS_CHIP_LIMITS_H}" "${PROJECT_BINARY_DIR}/generated/chip/chip_layout.h")
-  kickos_host_gate(rp_node_vectors)
-endif()
-
-# The ESP32-C6's CPU clock, held before the constructors run, out of the linked image.
-# Structural because no emulator runs a C6 image. It runs no image, so it carries the host
-# label.
-if(KICKOS_CHIP STREQUAL "esp32c6")
-  get_property(_c6_lp GLOBAL PROPERTY KICKOS_RV32_LP)
-  set(_c6_core hp)
-  if(_c6_lp)
-    set(_c6_core lp)
-  endif()
-  add_test(NAME c6_clock_first
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_c6_clock_first.sh"
-            "$<TARGET_FILE:hello>" "${CMAKE_OBJDUMP}" ${_c6_core})
-  kickos_host_gate(c6_clock_first)
 endif()

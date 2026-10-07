@@ -373,6 +373,10 @@ enum kos_syscall_nr
                                //   the op leaves it, 0 or 1, or -KOS_EINVAL (an unknown op, or
                                //   a caller in no task). One flag per task, shared by its threads
 };
+// The raw console write's number, refused in an app as kos_kconsole_write is (<kickos/sys.h>).
+#if defined(main)
+#pragma GCC poison KOS_SYS_KCONSOLE_WRITE
+#endif
 
 // KOS_SYS_TASK_NONBLOCK's ops on the calling task's O_NONBLOCK, which applies to its sends of no
 // timeout on the published console and its kernel console writes.

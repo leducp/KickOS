@@ -401,24 +401,17 @@ if(KICKOS_BUILD_TESTS)
             "${KICKOS_X4_IMAGE}" "${PROJECT_BINARY_DIR}/x4run-ctest")
   set_tests_properties(x86_64_x4_ring3 PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77)
 
-  add_test(NAME x86_64_no_got_selftest
-    COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_x86_64_no_got_selftest.sh"
-            "${KICKOS_NO_GOT}" "${CMAKE_READELF}" "${CMAKE_C_COMPILER}" "${CMAKE_AR}"
-            ${KICKOS_MCPU_FLAGS} -ffreestanding -fpie -mcmodel=small)
-  set_tests_properties(x86_64_no_got_selftest PROPERTIES TIMEOUT 60 LABELS host)
-
   add_test(NAME x86_64_weak_undef_selftest
     COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_x86_64_weak_undef_selftest.sh"
-            "${KICKOS_WEAK_UNDEF}" "${CMAKE_READELF}" "${CMAKE_C_COMPILER}" "${CMAKE_AR}")
+            "${KICKOS_NO_GOT}" "${KICKOS_WEAK_UNDEF}" "${CMAKE_READELF}" "${CMAKE_C_COMPILER}"
+            "${CMAKE_AR}" ${KICKOS_MCPU_FLAGS} -ffreestanding -fpie -mcmodel=small)
   set_tests_properties(x86_64_weak_undef_selftest PROPERTIES TIMEOUT 60 LABELS host)
 
-  # The vector and x87 census over the kernel half this board compiled and linked. It walks
-  # PROJECT_BINARY_DIR itself and derives the kernel half from the PE script's claims rather
-  # than taking a list of targets, so a claimed object library is in the corpus by being built.
+  # The vector and x87 census over the kernel half of every image this board linked. It walks
+  # PROJECT_BINARY_DIR itself, so an image is in the corpus by being built.
   add_test(NAME x86_64_no_vector
     COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_x86_64_no_vector.sh"
-            "${CMAKE_OBJDUMP}" "${CMAKE_C_COMPILER}" "${PROJECT_BINARY_DIR}"
-            "${KICKOS_X86_64_PE_SCRIPT}")
+            "${CMAKE_OBJDUMP}" "${CMAKE_C_COMPILER}" "${PROJECT_BINARY_DIR}")
   set_tests_properties(x86_64_no_vector PROPERTIES TIMEOUT 300 LABELS host)
 
   # The direction flag the interrupt entry clears before it calls C. Delivery through a gate
@@ -437,16 +430,6 @@ else()
   message(STATUS "KickOS: x86_64 shared-kernel application images with AP startup")
 endif()
 
-if(KICKOS_BUILD_TESTS)
-  add_test(NAME x86_64_link_order
-    COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_x86_64_link_order.sh"
-            "${PROJECT_BINARY_DIR}" "${KICKOS_X86_64_PE_SCRIPT}")
-  kickos_host_gate(x86_64_link_order TIMEOUT 60)
-  add_test(NAME x86_64_link_order_controls
-    COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_x86_64_link_order.sh" --controls)
-  kickos_host_gate(x86_64_link_order_controls TIMEOUT 60)
-endif()
-
 # The boot tail of an image that carries the kernel: RAM publish, the kernel-owned ctor
 # window, arch_init, kmain.
 add_library(kickos_x86_64_landed_kernel OBJECT
@@ -458,8 +441,7 @@ target_include_directories(kickos_x86_64_landed_kernel PRIVATE ${KICKOS_X86_64_I
 
 # The kernel posture (cmake/toolchain-x86_64-uefi.cmake), on exactly the targets pe_image.ld
 # claims for the kernel's .text, read from the script so the two cannot drift, and on the
-# probe images' objects, which have no app half. tests/static/check_x86_64_no_vector.sh derives
-# its corpus from the same claims.
+# probe images' objects, which have no app half.
 file(STRINGS "${KICKOS_X86_64_PE_SCRIPT}" _kos_claims REGEX "\\(\\.text \\.text\\.\\*\\)")
 set(_kos_kernel_half "")
 foreach(_kos_claim IN LISTS _kos_claims)

@@ -11,9 +11,9 @@
  * one level-2 slot the boot root leaves empty. The app links low and loads high over one
  * uniform delta, published as __kickos_app_load_delta.
  *
- * A CROSS-HALF REFERENCE CAN LINK SILENTLY. What catches one is two gates:
- * tests/static/check_riscv_kernel_apphalf.sh over the kernel archives' relocations and
- * tests/static/check_riscv_kernel_gp.sh over the linked image for the gp direction.
+ * A CROSS-HALF REFERENCE CAN LINK SILENTLY. What catches one is
+ * tests/static/check_riscv_kernel_apphalf.sh over the kernel archives' relocations; the link
+ * is --no-relax-gp (CMakeLists.txt, kickos_kernel_leaf), so none resolves through gp.
  *
  * THE SELECTION IS INVERTED: the closed KickOS-owned kernel set is named in script order and the
  * app catch-alls take everything else, so an archive nobody listed lands app-side.
@@ -150,12 +150,22 @@ SECTIONS
        dereference of an address no root maps. */
     _sidata = LOADADDR(.data) + KICKOS_RV64_VA_BASE;
 
+    /* The KickOS libs are built -msmall-data-limit=0. Small data from one of them is captured
+       here, ahead of the catch-alls below, and refused at the end of this file. */
+    .kickos_kernel_sdata :
+    {
+        *libkickos_kernel.a:*(.sdata* .sbss*)
+        *libkickos_arch_rv64imac.a:*(.sdata* .sbss*)
+        *libkickos_chip_virt_rv64.a:*(.sdata* .sbss*)
+        *libkickos_lib.a:*(.sdata* .sbss*)
+    }
+
     .data : AT(ADDR(.data) - KICKOS_RV64_VA_BASE) ALIGN(8)
     {
         _sdata = .;
-        *libkickos_kernel.a:*(.data .data.* .sdata .sdata.*)
-        *libkickos_arch_rv64imac.a:*(.data .data.* .sdata .sdata.*)
-        *libkickos_chip_virt_rv64.a:*(.data .data.* .sdata .sdata.*)
+        *libkickos_kernel.a:*(.data .data.*)
+        *libkickos_arch_rv64imac.a:*(.data .data.*)
+        *libkickos_chip_virt_rv64.a:*(.data .data.*)
         . = ALIGN(8);
         _edata = .;
     } > RAM
@@ -183,9 +193,9 @@ SECTIONS
     .bss (NOLOAD) : AT(ADDR(.bss) - KICKOS_RV64_VA_BASE) ALIGN(8)
     {
         _sbss = .;
-        *libkickos_kernel.a:*(.sbss .sbss.* .bss .bss.* COMMON)
-        *libkickos_arch_rv64imac.a:*(.sbss .sbss.* .bss .bss.* COMMON)
-        *libkickos_chip_virt_rv64.a:*(.sbss .sbss.* .bss .bss.* COMMON)
+        *libkickos_kernel.a:*(.bss .bss.* COMMON)
+        *libkickos_arch_rv64imac.a:*(.bss .bss.* COMMON)
+        *libkickos_chip_virt_rv64.a:*(.bss .bss.* COMMON)
         . = ALIGN(8);
         _ebss = .;
     } > RAM
@@ -282,6 +292,17 @@ ASSERT(KICKOS_RV64_HART_STACK_STRIDE >= 0x2000,
 ASSERT(_estack <= ORIGIN(KTEXT) + 0x40000000,
        "KickOS: the image outgrows the 1 GiB the root's kernel-window level-1 table maps; startup.S owes a second level-2 entry")
 
+/* Every byte of the two boot-table sections is a page startup.S writes under one name, so the
+   hardware walks no table its BOOT_LEAF checks did not read. The root chain above level 2 is
+   checked in startup.S, being one span of a single section. */
+ASSERT(ADDR(.mmu_boot) == kickos_rv64_root
+       && kickos_rv64_kernel_l1 == kickos_rv64_high_l2 + 4096
+       && kickos_rv64_window_l1 == kickos_rv64_kernel_l1 + 4096
+       && ADDR(.mmu_boot) + SIZEOF(.mmu_boot) == kickos_rv64_window_l1 + 4096,
+       "KickOS: .mmu_boot holds bytes no boot table in startup.S accounts for, so the hardware can walk a page whose leaves nothing checked")
+ASSERT(ADDR(.mmu_leaves) == kickos_rv64_window_l0 && SIZEOF(.mmu_leaves) == 4096,
+       "KickOS: .mmu_leaves holds bytes other than kickos_rv64_window_l0, so the hardware can walk a page whose leaves nothing checked")
+
 /* The write-execute boundary, the half of it the linker owns: nothing stored to is linked below
    the boundary startup.S maps read-execute. */
 ASSERT(LOADADDR(.data) - KICKOS_RV64_DRAM_BASE >= KICKOS_RV64_KTEXT_SIZE,
@@ -299,8 +320,8 @@ ASSERT(ORIGIN(APPTEXT) >= 0x40000000 && ORIGIN(APPDATA) + LENGTH(APPDATA) <= 0x8
        "KickOS: the app window leaves level-2 slot 1, which is the only slot the boot root leaves for it")
 
 /* The two halves are out of each other's medany reach, so no single auipc pair spans them. A
-   cross-half reference still links silently; the two gates named in the file header are what
-   catch one. */
+   cross-half reference still links silently; the gate named in the file header is what catches
+   one. */
 ASSERT(ORIGIN(KTEXT) - (ORIGIN(APPDATA) + LENGTH(APPDATA)) > 0x80000000,
        "KickOS: the halves are within medany's reach of each other, so one auipc pair spans them")
 
@@ -315,6 +336,8 @@ ASSERT(__kickos_app_fini_array_end == __kickos_app_fini_array_start,
    reach, gp-relative loads resolve at the wrong addresses. */
 ASSERT(ADDR(.appdata) + SIZEOF(.appdata) <= __global_pointer$ + 0x800,
        "KickOS: small-data overflows the gp + 0x800 reach")
+ASSERT(SIZEOF(.kickos_kernel_sdata) == 0,
+       "KickOS: a KickOS archive emits .sdata/.sbss small data, which belongs to the app's gp window. Build every KickOS RISC-V lib -msmall-data-limit=0 (kickos_apply_freestanding in cmake/kickos.cmake)")
 
 /* Selector-mismatch guard: a broken selector shows up as an EMPTY KERNEL side, kernel writable
    state silently linked into the app's window. An empty app side is legitimate, so only the

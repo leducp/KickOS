@@ -5,7 +5,7 @@
 # every -KOS_E* code a RETURN statement carries, per dispatch arm and per function
 # definition, plus the names each arm calls.
 #
-#   awk -v F=<real path> [-v ARMS=1] [-v NOGUARD=1] -f syscall_return_harvest.awk <residue>
+#   awk -v F=<real path> [-v ARMS=1] -f syscall_return_harvest.awk <residue>
 #
 # Input is the residue of tests/lib/strip_comments.awk, line for line with the source. A
 # caller handing the RAW file instead reads a comment that NAMES a code as a code the arm
@@ -34,8 +34,7 @@
 # alone, where `c` came from sched::current(). No dispatch arm reaches such a branch, the
 # dispatch dereferencing sched::current() unguarded, so that code answers a kernel-internal
 # caller and never a syscall. A condition with anything else in it (`c == nullptr or not
-# c->privileged`) is a real gate and IS harvested. NOGUARD=1 disables the skip, for the
-# gate's own near-miss control.
+# c->privileged`) is a real gate and IS harvested.
 #
 # Exits 2, and no record may then be read as an absence, when the braces do not balance at
 # EOF, when a `case KOS_SYS_*:` run is followed by no block, or when two label runs sit at
@@ -119,7 +118,7 @@ BEGIN {
             next
         }
     }
-    if (!NOGUARD && match(line, /^[ \t]*if[ \t]*\([A-Za-z_][A-Za-z_0-9]*[ \t]*==[ \t]*nullptr\)[ \t]*$/) > 0) {
+    if (match(line, /^[ \t]*if[ \t]*\([A-Za-z_][A-Za-z_0-9]*[ \t]*==[ \t]*nullptr\)[ \t]*$/) > 0) {
         gv = line
         sub(/^[ \t]*if[ \t]*\(/, "", gv)
         sub(/[ \t]*==.*$/, "", gv)

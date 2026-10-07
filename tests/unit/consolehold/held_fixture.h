@@ -19,7 +19,6 @@
 #include <unistd.h>
 
 #include "console_seam.h"
-#include "held_seam.h"
 
 namespace heldfix
 {

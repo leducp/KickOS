@@ -6,3 +6,4 @@
 # having eight. Declared in the build, which exports root's free regions in the manifest's `init`
 # section from it, and emitted to C through the generated <kickos/config/mpu_geometry.h>.
 set(KICKOS_MPU_MAX_REGIONS 8)
+kickos_emit_geometry(kickos/config/mpu_geometry.h KICKOS_MPU_MAX_REGIONS)

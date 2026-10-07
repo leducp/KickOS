@@ -22,22 +22,8 @@
 #                                   exhausted notification pool either
 # The pool sizes size `struct Kernel`, so they cannot be a bare DEFINITIONS on a target
 # linking the shared kickos_kseam: the fixture and the arm would disagree on the layout.
-kickos_add_kernel_host_lib(kickos_kseam_budget
-  SOURCES
-    "${PROJECT_SOURCE_DIR}/tests/unit/kfixture/kfixture.cc"
-    "${PROJECT_SOURCE_DIR}/tests/unit/kfixture/karch_seam.cc"
-    "${PROJECT_SOURCE_DIR}/kernel/sched/sched.cc"
-    "${PROJECT_SOURCE_DIR}/kernel/sched/policy_fifo_rr.cc"
-    "${PROJECT_SOURCE_DIR}/kernel/sync/sync.cc"
-    "${PROJECT_SOURCE_DIR}/kernel/thread/park.cc"
-    "${PROJECT_SOURCE_DIR}/kernel/syscall/cap.cc"
-    "${PROJECT_SOURCE_DIR}/kernel/syscall/syscall_obj.cc"
-    "${PROJECT_SOURCE_DIR}/kernel/task/task.cc"
-    "${PROJECT_SOURCE_DIR}/kernel/irq/irq.cc"
-    "${PROJECT_SOURCE_DIR}/kernel/notify/notify.cc"
-    "${PROJECT_SOURCE_DIR}/kernel/init/instance.cc"
-    "${PROJECT_SOURCE_DIR}/kernel/init/fault.cc"
-  INCLUDES "${PROJECT_SOURCE_DIR}/tests/unit/kfixture"
+kickos_add_kseam(kickos_kseam_budget
+  EXTRA "${PROJECT_SOURCE_DIR}/kernel/syscall/syscall_obj.cc"
   POSTURE KICKOS_TASK_SEMAPHORE_BUDGET=2 KICKOS_MAX_SEMAPHORES=8
           KICKOS_TASK_MUTEX_BUDGET=1 KICKOS_MAX_MUTEXES=4
           KICKOS_TASK_ENDPOINT_BUDGET=2

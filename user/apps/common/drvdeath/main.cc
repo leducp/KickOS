@@ -49,7 +49,7 @@ namespace
         {
             n++;
         }
-        (void)kos_kconsole_write(s, n); // a dropped line is the measurement
+        (void)KICKOS_KCONSOLE_MEASURED(DROP, s, n);
     }
 
     char const BLOCKED_LINE[] = "[drvdeath] blocked line, written once after the reclaim\n";

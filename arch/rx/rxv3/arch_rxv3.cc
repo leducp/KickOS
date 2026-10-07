@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 
 #include <kickos/arch/arch.h>
+#include "ctx_redirect.h"
 #include <kickos/arch/rx_trap_stack.h> // the USP guards' derived figures + ctx offsets
 #include <kickos/units.h> // _s literal (== 1e9 ns) for the cycle<->ns conversions
 
@@ -392,10 +393,6 @@ void arch_ctx_set_syscall_result(struct arch_context* ctx, uint32_t result)
 void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
                        void* stack_base, size_t stack_size)
 {
-    // kernel_sp SURVIVES THE REBUILD, put back explicitly rather than assumed untouched:
-    // lost, the thread carries 0 through its own teardown and every syscall on the way takes
-    // svc_trampoline's .Lsvc_nokstack arm.
-    uintptr_t const kernel_sp = ctx->kernel_sp;
     // THE FOUR BYTES OF CLEARANCE BELOW THE BLOCK TOP ARE INCIDENTAL. kickos_rx_pendsw's
     // block leg tests kernel_sp - USP with bleu, so a USP exactly at the top reads as
     // not-on-the-block and is refused; the fault path spends a deliberate 8 to stay clear
@@ -403,26 +400,7 @@ void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
     // RTS-target word arch_context_init leaves at the top, which puts the rebuilt frame at
     // kernel_sp - 4. If arch_context_init ever stops pushing that word, this path lands
     // exactly on the top and every slain thread panics at its first preemption.
-#if KICKOS_KERNEL_STACKS
-    // Build the exit stub at the top of the thread's kernel stack, discarding
-    // dispatch frames. Privileged state must not be stored on a user-writable stack.
-    // Preserve user stack bounds because arch_context_init would replace them
-    // with the kernel block bounds. Checked by check_death_stack_seating.sh.
-    if (kernel_sp != 0)
-    {
-        uint32_t const lo = ctx->stack_lo;
-        uint32_t const hi = ctx->stack_hi;
-        void* const block = reinterpret_cast<void*>(
-            kernel_sp - KICKOS_KERNEL_STACK_SIZE);
-        arch_context_init(ctx, entry, nullptr, block, KICKOS_KERNEL_STACK_SIZE, 1);
-        ctx->stack_lo = lo;
-        ctx->stack_hi = hi;
-        ctx->kernel_sp = kernel_sp;
-        return;
-    }
-#endif
-    arch_context_init(ctx, entry, nullptr, stack_base, stack_size, 1);
-    ctx->kernel_sp = kernel_sp;
+    arch_ctx_redirect_to_block(ctx, entry, stack_base, stack_size);
 }
 
 // --- Critical section: raise PSW.IPL to the kernel lock level ---------------

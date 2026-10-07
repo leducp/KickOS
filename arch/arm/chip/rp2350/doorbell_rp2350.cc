@@ -241,9 +241,6 @@ namespace
 extern "C"
 {
 
-// check_cpu_id_fold.sh scans source text with no preprocessor and treats this definition as
-// guarded only inside an `#if KICKOS_NUM_CORES > 1` whose line ends there, so this guard may
-// not be merged with the file guard above.
 #if KICKOS_NUM_CORES > 1
 uint32_t arch_cpu_id(void)
 {

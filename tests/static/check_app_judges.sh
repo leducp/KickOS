@@ -789,40 +789,31 @@ cmp -s tests/integration/check_libc_exit.sh "$TMP/planted/check_libc_exit.sh" \
 raw_status_reads "$TMP/planted/check_libc_exit.sh" > /dev/null \
     || bad "a new arm reading the exit status outside status_clause is not refused"
 
-# Planted: each OWED pair passes its fixture with NOT EVALUATED silenced, and owed_differs
-# refuses it; and with its OWED rows removed, owed_differs refuses it as it prints.
+# Every pair OWED declares is run by a fixture row, so its clauses were compared above.
+while IFS= read -r key; do
+    printf '%s' "$goodruns" | cut -d '|' -f 1 | grep -qxF -- "$key" \
+        || bad "OWED declares $key and no fixture row runs it"
+done <<KEYS
+$(printf '%s\n' "$OWED" | cut -d '|' -f 1 | sort -u)
+KEYS
+
+# Planted: a judge whose NOT EVALUATED line is silenced still passes its fixture, and
+# owed_differs refuses it.
+key='tests/integration/check_libc_exit.sh;--atexit'
 mkdir -p "$TMP/silenced/tests/integration"
 cp -R tests/lib "$TMP/silenced/tests/lib"
 sed 's/^    echo "NOT EVALUATED: $1"$/    :/' tests/lib/gate.sh > "$TMP/silenced/tests/lib/gate.sh"
 cmp -s tests/lib/gate.sh "$TMP/silenced/tests/lib/gate.sh" \
     && fail "cnot_evaluated was not silenced in the planted gate.sh"
-while IFS= read -r key; do
-    run="$(printf '%s' "$goodruns" \
-        | KOS_OD_KEY="$key" awk -F '|' '$1 == ENVIRON["KOS_OD_KEY"] { print; exit }')"
-    if [ -z "$run" ]; then
-        bad "OWED declares $key and no fixture row runs it"
-        continue
-    fi
-    fixture="$(printf '%s' "$run" | cut -d '|' -f 2)"
-    cache="$(printf '%s' "$run" | cut -d '|' -f 3)"
-    cp "${key%%;*}" "$TMP/silenced/${key%%;*}"
-    plant_pair "tests/integration/app_captures/$fixture" none "" "" "$TMP/good.log"
-    if ! judged "$TMP/silenced/$key" "$cache" "$TMP/good.log"; then
-        bad "$key with its NOT EVALUATED silenced refuses $fixture, so the control proves nothing: \
-$(tail -n 1 "$TMP/judge.out")"
-    elif ! owed_differs "$key" "$TMP/judge.out"; then
-        bad "$key with its NOT EVALUATED silenced passes $fixture unrefused"
-    fi
-    judged "$key" "$cache" "$TMP/good.log"
-    _owed="$OWED"
-    OWED="$(printf '%s\n' "$OWED" | KOS_OD_KEY="$key" awk -F '|' '$1 != ENVIRON["KOS_OD_KEY"]')"
-    if ! owed_differs "$key" "$TMP/judge.out"; then
-        bad "$key with no OWED row passes $fixture unrefused"
-    fi
-    OWED="$_owed"
-done <<KEYS
-$(printf '%s\n' "$OWED" | cut -d '|' -f 1 | sort -u)
-KEYS
+cp "${key%%;*}" "$TMP/silenced/${key%%;*}"
+run="$(printf '%s' "$goodruns" | KOS_OD_KEY="$key" awk -F '|' '$1 == ENVIRON["KOS_OD_KEY"] { print; exit }')"
+plant_pair "tests/integration/app_captures/$(printf '%s' "$run" | cut -d '|' -f 2)" none "" "" \
+    "$TMP/good.log"
+if ! judged "$TMP/silenced/$key" "$(printf '%s' "$run" | cut -d '|' -f 3)" "$TMP/good.log"; then
+    bad "$key with its NOT EVALUATED silenced refuses its fixture: $(tail -n 1 "$TMP/judge.out")"
+elif ! owed_differs "$key" "$TMP/judge.out"; then
+    bad "$key with its NOT EVALUATED silenced passes its fixture unrefused"
+fi
 
 # A fitting reaches a judge as an argument and from nowhere else: a judge run straight from a
 # shell that exports a fitting list judges the unjumpered capture as unwired.

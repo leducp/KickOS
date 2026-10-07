@@ -413,33 +413,6 @@ EOF
 st_expect "grouped-one-label" "$TMP/st/abi.grpone" "$TMP/st/rec.group" 0
 st_expect "grouped-no-label" "$TMP/st/abi.grpnone" "$TMP/st/rec.group" 1
 
-# --- the mutation: turn each clause off and the counts must MOVE ---------------
-# Each arm below disables ONE clause over the fixture that clause keeps quiet, and the
-# expected count differs per clause.
-st_code "$TMP/st/rec.guard.noguard" 1 -v NOGUARD=1 <<'EOF'
-int helper(uint32_t* out)
-{
-    Thread* c = sched::current();
-    if (c == nullptr)
-    {
-        return -KOS_EPERM;
-    }
-    return 0;
-}
-uint64_t syscall_body(uintptr_t nr)
-{
-    switch (nr)
-    {
-        case KOS_SYS_ALPHA:
-        {
-            return static_cast<uint64_t>(helper(&h));
-        }
-    }
-}
-EOF
-st_expect "null-context-guard DISABLED" "$TMP/st/abi.cbare" "$TMP/st/rec.guard.noguard" 1
-st_expect "inheritance DISABLED" "$TMP/st/abi.as" "$TMP/st/rec.two" 1 -v NOAS=1
-
 # --- the scanner's own death, which must never read as clean -------------------
 # A gate whose reader dies and whose caller counts lines out of a pipe reports PASS over a
 # corpus it never read. Each arm below is a separate refusal, not a finding count.

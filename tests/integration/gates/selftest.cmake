@@ -135,7 +135,7 @@ else()
 endif()
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 execute_process(
-  COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/static/selftest_demands.py"
+  COMMAND "${Python3_EXECUTABLE}" -B "${PROJECT_SOURCE_DIR}/tests/static/selftest_demands.py"
           "${PROJECT_SOURCE_DIR}/user/apps/common/selftest" ${_selftest_guards} --supply
           "workers=${_selftest_workers}" "caps=${_selftest_caps}" "sems=${_selftest_sems}"
           "mutexes=${KICKOS_TASK_MUTEX_BUDGET}" "endpoints=${KICKOS_TASK_ENDPOINT_BUDGET}"
@@ -230,17 +230,18 @@ if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE AND NOT KICKOS_AMP_OWN_IMAGE)
        amp_far_answer_deferred)
 endif()
 
-# The arms that skip on a doorbell keeping no seat (tests/static/check_seat_arms.py), where the
-# chip file states none.
-set(_selftest_seat_skips amp_deferred_doorbell amp_far_reply_guard)
+# The arms that skip on a doorbell keeping no seat, where the chip file states none.
+include("${PROJECT_SOURCE_DIR}/tests/integration/selftest_partials.cmake")
+set(_selftest_seat ON)
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE)
   if(NOT KICKOS_CHIP_DOORBELL_SEAT MATCHES "^(ON|OFF)$")
     message(FATAL_ERROR "selftest: the generated chip.cmake states no KICKOS_CHIP_DOORBELL_SEAT")
   endif()
-  if(NOT KICKOS_CHIP_DOORBELL_SEAT)
-    list(APPEND KICKOS_EXPECT_SKIPS ${_selftest_seat_skips})
-  endif()
+  set(_selftest_seat ${KICKOS_CHIP_DOORBELL_SEAT})
 endif()
+_selftest_seat_skips("${PROJECT_SOURCE_DIR}/user/apps/common/selftest/main.cc" ${_selftest_seat}
+                     _selftest_seat_skips)
+list(APPEND KICKOS_EXPECT_SKIPS ${_selftest_seat_skips})
 
 # The two console_publish arms publish the console themselves, which they refuse to do in an
 # image whose composition names a console driver as `stdout`.
@@ -259,7 +260,6 @@ function(_selftest_names_known what)
   endforeach()
 endfunction()
 
-include("${PROJECT_SOURCE_DIR}/tests/integration/selftest_partials.cmake")
 _selftest_starved_arms("${PROJECT_SOURCE_DIR}/user/apps/common/selftest/main.cc" _selftest_starved)
 
 # <names> cut to the members of <keep>, once each, comma-joined into <out>.
@@ -525,25 +525,73 @@ kickos_host_gate(${_tag}_selftest_manifest TIMEOUT 120)
 # The out-of-tree package gate, on ONE BOARD PER KICKOS_ARCH. Registered on two of the
 # seventy-one presets it leaves every arch-private installed header unexamined.
 #
-# The map is data (tests/integration/oot_arch_boards.txt) and tests/static/check_oot_arch_cover.sh
-# holds it whole against boards/*/board.cmake, so a new arch cannot quietly get no row.
+# The map is data (tests/integration/oot_arch_boards.txt). Every configure holds its own arch's
+# row, and CI configures every arch, so a new arch cannot quietly get no row.
 set(_oot_map "${PROJECT_SOURCE_DIR}/tests/integration/oot_arch_boards.txt")
-# A literal space, never [ \t]: CMake's regex engine has no tab escape, so the class would
-# silently reduce to "space or the letter t". check_oot_arch_cover.sh refuses a tab anywhere in
-# the map for that reason.
-file(STRINGS "${_oot_map}" _oot_rows REGEX "^covers ")
-if(_oot_rows STREQUAL "")
-  message(FATAL_ERROR "${_oot_map} states no covers row, so the out-of-tree package gate "
-                      "would register on no board at all")
+# The rows match a literal space, never [ \t]: CMake's regex engine has no tab escape, so the
+# class would silently reduce to "space or the letter t". A tab is refused outright instead.
+file(READ "${_oot_map}" _oot_text)
+string(FIND "${_oot_text}" "\t" _oot_tab)
+if(NOT _oot_tab EQUAL -1)
+  message(FATAL_ERROR "${_oot_map} holds a tab; its columns are separated by spaces")
 endif()
+file(STRINGS "${_oot_map}" _oot_rows REGEX "^[^#]")
+file(GLOB _oot_descs "${PROJECT_SOURCE_DIR}/boards/*/board.cmake")
+set(_oot_arches "")
+foreach(_oot_desc IN LISTS _oot_descs)
+  file(STRINGS "${_oot_desc}" _oot_states REGEX "^set\\(KICKOS_ARCH +\"[A-Za-z0-9_]+\"\\)")
+  string(REGEX REPLACE "^set\\(KICKOS_ARCH +\"([A-Za-z0-9_]+)\"\\)$" "\\1" _oot_states
+         "${_oot_states}")
+  list(APPEND _oot_arches ${_oot_states})
+endforeach()
 set(_oot_board "")
+set(_oot_own 0)
 foreach(_oot_row IN LISTS _oot_rows)
-  if(_oot_row MATCHES "^covers +([A-Za-z0-9_]+) +([A-Za-z0-9_-]+)")
-    if(CMAKE_MATCH_1 STREQUAL KICKOS_ARCH)
-      set(_oot_board "${CMAKE_MATCH_2}")
+  if(NOT _oot_row MATCHES "^(covers +[A-Za-z0-9_]+ +[A-Za-z0-9_-]+|declines +[A-Za-z0-9_]+ +[^ ].*)$")
+    message(FATAL_ERROR "${_oot_map}: '${_oot_row}' is neither `covers <arch> <board>` nor "
+                        "`declines <arch> <reason>`")
+  endif()
+  string(REGEX MATCH "^([a-z]+) +([A-Za-z0-9_]+) +(.*)$" _oot_m "${_oot_row}")
+  if(NOT CMAKE_MATCH_2 IN_LIST _oot_arches)
+    message(FATAL_ERROR "${_oot_map}: '${_oot_row}' names an arch no boards/*/board.cmake states, "
+                        "so no configure ever reads it")
+  endif()
+  if(CMAKE_MATCH_2 STREQUAL KICKOS_ARCH)
+    math(EXPR _oot_own "${_oot_own} + 1")
+    if(CMAKE_MATCH_1 STREQUAL "covers")
+      set(_oot_board "${CMAKE_MATCH_3}")
     endif()
   endif()
 endforeach()
+if(NOT _oot_own EQUAL 1)
+  message(FATAL_ERROR "${_oot_map} holds ${_oot_own} rows for ${KICKOS_ARCH}, and every arch a "
+                      "board states needs exactly one: covers, with the board whose preset runs "
+                      "the out-of-tree package gate, or declines, with the reason no package can "
+                      "be consumed on it yet")
+endif()
+if(_oot_board)
+  set(_oot_desc "${PROJECT_SOURCE_DIR}/boards/${_oot_board}/board.cmake")
+  if(NOT EXISTS "${_oot_desc}")
+    message(FATAL_ERROR "${_oot_map} covers ${KICKOS_ARCH} with board ${_oot_board}, which has no "
+                        "${_oot_desc}")
+  endif()
+  file(STRINGS "${_oot_desc}" _oot_states REGEX "^set\\(KICKOS_ARCH +\"${KICKOS_ARCH}\"\\)")
+  if(_oot_states STREQUAL "")
+    message(FATAL_ERROR "${_oot_map} covers ${KICKOS_ARCH} with board ${_oot_board}, whose "
+                        "${_oot_desc} states another arch")
+  endif()
+  file(GLOB _oot_presets "${PROJECT_SOURCE_DIR}/CMakePresets.json"
+                         "${PROJECT_SOURCE_DIR}/cmake/presets/*.json")
+  set(_oot_sets "")
+  foreach(_oot_preset IN LISTS _oot_presets)
+    file(STRINGS "${_oot_preset}" _oot_set REGEX "\"KICKOS_BOARD\": *\"${_oot_board}\"")
+    list(APPEND _oot_sets ${_oot_set})
+  endforeach()
+  if(NOT _oot_sets)
+    message(FATAL_ERROR "${_oot_map} covers ${KICKOS_ARCH} with board ${_oot_board}, which no "
+                        "configure preset sets as KICKOS_BOARD, so the gate runs on none")
+  endif()
+endif()
 
 if(_oot_board AND KICKOS_BOARD STREQUAL _oot_board)
   # FIXTURES_REQUIRED is named explicitly: without it ctest -j runs cmake --install on the
@@ -579,24 +627,6 @@ if(_oot_board AND KICKOS_BOARD STREQUAL _oot_board)
         "${PROJECT_SOURCE_DIR}/tests/integration/check_oot_mcu_run.sh" WORK 300)
     endif()
   endif()
-endif()
-
-# kickos_string, where it exists, is kernel code too.
-set(_kernel_archives "$<TARGET_FILE:kickos_kernel>"
-                     "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>"
-                     "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>"
-                     "$<TARGET_FILE:kickos_lib>")
-if(TARGET kickos_string_scan)
-  list(APPEND _kernel_archives "$<TARGET_FILE:kickos_string_scan>")
-endif()
-
-if(KICKOS_HAVE_MPU AND KICKOS_ARCH STREQUAL "armv7m")
-  add_test(
-    NAME    kernel_ctor_placement
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_kernel_ctor_placement.sh"
-            "$<TARGET_FILE:selftest>" "${CMAKE_NM}" "${CMAKE_OBJCOPY}"
-            ${_kernel_archives})
-  kickos_host_gate(kernel_ctor_placement TIMEOUT 60)
 endif()
 
 # Every archive of the rescan group, so the gate sees the WHOLE set of definitions the link had
@@ -651,40 +681,13 @@ add_test(
           ${_seam_archives})
 kickos_host_gate(class_backend)
 
-# RISC-V small-data guard: the KickOS libs (built -msmall-data-limit=0) must emit ZERO
-# .sdata/.sbss, so gp anchors the app's window and nothing of the kernel's. NECESSARY AND NOT
-# SUFFICIENT on the translating board, which is why riscv_kernel_gp is registered beside it: gp
-# addressing is MADE BY THE LINKER, so an archive with no .sdata at all can still end up with
-# gp-relative kernel accesses in the linked image.
-if((KICKOS_HAVE_MPU AND KICKOS_ARCH STREQUAL "rv32imac")
-   OR (KICKOS_HAVE_ASPACE AND KICKOS_ARCH STREQUAL "rv64imac"))
-  add_test(
-    NAME    riscv_no_smalldata
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_riscv_no_smalldata.sh"
-            "${CMAKE_OBJDUMP}" ${_kernel_archives})
-  kickos_host_gate(riscv_no_smalldata TIMEOUT 60)
-endif()
-
-# The three rv64 image readers below take THREE images, so a reference the optimiser only emits
-# in one of them is still in the corpus.
+# The rv64 reader below takes THREE images, so a reference the optimiser only emits in one of
+# them is still in the corpus.
 if(KICKOS_HAVE_ASPACE AND KICKOS_ARCH STREQUAL "rv64imac")
-  # The LINKED image, which is the only place gp addressing exists: the linker MAKES a
-  # gp-relative access out of an ordinary upper/lower pair whose target lands inside
-  # gp +/- 0x800, so a kernel reference to an app-half symbol links silently through the app's
-  # own anchor.
-  add_test(
-    NAME    riscv_kernel_gp
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_riscv_kernel_gp.sh"
-            "${CMAKE_OBJDUMP}" ".text"
-            "$<TARGET_FILE:selftest>"
-            "$<TARGET_FILE:hello>"
-            "$<TARGET_FILE:cxxtest>")
-  kickos_host_gate(riscv_kernel_gp)
-
-  # The same hazard in its larger form: the app window is at 0x40000000, inside medlow's
-  # absolute reach, so the linker relaxes such a reference to lui+addi and the link succeeds
-  # whether or not gp is involved. This one reads the kernel archives' relocations, which name
-  # the symbol an instruction operand resolves to whatever the linker did to the encoding.
+  # The app window is at 0x40000000, inside medlow's absolute reach, so ld rewrites a kernel
+  # reference to it into lui+addi and the link succeeds, relaxation or not. This reads the
+  # kernel archives' relocations, which name the symbol an instruction operand resolves to
+  # whatever the linker did to the encoding.
   add_test(
     NAME    riscv_kernel_apphalf
     COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_riscv_kernel_apphalf.sh"
@@ -698,18 +701,14 @@ if(KICKOS_HAVE_ASPACE AND KICKOS_ARCH STREQUAL "rv64imac")
             "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>"
             "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>")
   kickos_host_gate(riscv_kernel_apphalf)
-
-  # And the kernel window's own leaves, out of the same three images. The boundary they are held
-  # against is the image's own section table, so a layout that moved a fetched or a stored
-  # section across it fails here rather than at the first access.
-  add_test(
-    NAME    riscv_kernel_wx
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/static/riscv_kernel_wx.py"
-            "${CMAKE_READELF}"
-            "$<TARGET_FILE:selftest>"
-            "$<TARGET_FILE:hello>"
-            "$<TARGET_FILE:cxxtest>")
-  kickos_host_gate(riscv_kernel_wx)
+  # Three images, so a reference the optimiser emits in one alone is still read.
+  foreach(_img IN ITEMS hello selftest cxxtest)
+    kickos_image_rule(rv64_wx ${_img})
+    kickos_image_rule(rv64_gp ${_img})
+  endforeach()
+endif()
+if(KICKOS_HAVE_MPU AND KICKOS_ARCH STREQUAL "armv7m")
+  kickos_image_rule(ctor selftest)
 endif()
 
 # App-window leak guard for the inverted .appdata scheme: the enforcing linker scripts name the

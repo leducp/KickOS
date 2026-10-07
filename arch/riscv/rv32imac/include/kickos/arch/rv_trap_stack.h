@@ -171,4 +171,21 @@
 #define KICKOS_RV_PANIC_FRAME 0
 #define KICKOS_RV_PANIC_DEPTH 448
 
+/*
+ * The trap classes tests/static/check_trap_redzone.sh measures against the figures above,
+ * one line each; tests/static/trap_redzone_roots.txt says what each option means and roots
+ * every class.
+ *
+ * class TRAP    frame=KICKOS_RV_TRAP_FRAME depth=KICKOS_RV_TRAP_KERNEL_DEPTH stack=kernel
+ * class SYS     frame=KICKOS_RV_TRAP_FRAME_SYS depth=KICKOS_RV_TRAP_KERNEL_DEPTH_SYS stack=kernel
+ * class SYSPRIV frame=KICKOS_RV_TRAP_FRAME_SYS depth=KICKOS_RV_TRAP_KERNEL_DEPTH_SYSPRIV
+ * class FAULT   frame=KICKOS_RV_TRAP_FRAME depth=KICKOS_RV_TRAP_NESTED_DEPTH stack=kernel
+ * class SWITCH  frame=KICKOS_RV_TRAP_FRAME depth=KICKOS_RV_TRAP_SWITCH_DEPTH
+ * class NESTED  frame=KICKOS_RV_TRAP_FRAME depth=KICKOS_RV_TRAP_NESTED_DEPTH stack=trap
+ * class EXITK   frame=KICKOS_RV_TRAP_NEST_EXIT depth=KICKOS_RV_TRAP_KERNEL_DEPTH_EXITK stack=kernel
+ * class RET     frame=KICKOS_RV_TRAP_NEST_EXIT depth=KICKOS_RV_TRAP_KERNEL_DEPTH_RET
+ * class PANIC   frame=KICKOS_RV_PANIC_FRAME depth=KICKOS_RV_PANIC_DEPTH stack=panic
+ * class IDLE    frame=KICKOS_RV_TRAP_FRAME depth=KICKOS_RV_TRAP_DEPTH_IDLE
+ */
+
 #endif /* KICKOS_ARCH_RV_TRAP_STACK_H */

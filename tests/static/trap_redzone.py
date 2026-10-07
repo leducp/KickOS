@@ -54,10 +54,20 @@ COMPILER_ID_DIR = re.compile(r'(?:^|/)CompilerId[^/]*/')
 # The archives kickos_privatise_runtime rewrites (cmake/kickos.cmake): their .ci files keep the
 # names the compiler emitted, and the link resolves those to the kernel's private twins.
 PRIVATISED_CI = re.compile(r'/CMakeFiles/kickos_(kernel|arch_[^/]+|chip_[^/]+)\.dir/')
+# The SMP trace arm, compiled a second time into objects no image links (kernel/CMakeLists.txt):
+# its code is on no path an image runs.
+UNLINKED_CI = re.compile(r'/CMakeFiles/kickos_smp_trace_arm\.dir/')
 # Appended to a caller key to stand for every unlocated indirect site inside it.
 UNLOCATED_SUFFIX = '@indirect'
 SITE_PREFIX = '!site '
 ORDINAL_SEP = '@'
+# A class is a line of a comment in its arch's trap-stack header,
+# ` * class <CLASS> <key>=<value>...`, so a figure and the class that enforces it sit in one
+# file. Every KICKOS_*DEPTH* the header defines is some class's depth=.
+HEADER_CLASS_RE = re.compile(r'^\s*\*\s+class\s+([A-Z][A-Z0-9_]*(?:\s+[a-z]+=\S+)+)\s*(?:\*/)?$')
+HEADER_CLASS_LIKE_RE = re.compile(r'^\s*\*\s+class\s+[A-Z]')
+HEADER_DEFINE_RE = re.compile(r'^\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)')
+DEPTH_MACRO_RE = re.compile(r'^KICKOS_[A-Z0-9_]*DEPTH[A-Z0-9_]*$')
 
 
 class Bad(Exception):
@@ -102,11 +112,46 @@ def records(path):
         yield n, line.split(), reason
 
 
+def header_classes(path):
+    """[(where, [CLASS, option...])] of a trap-stack header's class lines."""
+    try:
+        lines = open(path).read().splitlines()
+    except OSError as e:
+        die('cannot read the trap-stack header %s: %s' % (path, e))
+    found = []
+    defined = set()
+    for n, line in enumerate(lines, 1):
+        m = HEADER_DEFINE_RE.match(line)
+        if m:
+            defined.add(m.group(1))
+            continue
+        m = HEADER_CLASS_RE.match(line)
+        if m:
+            found.append(('%s:%d' % (path, n), m.group(1).split()))
+        elif HEADER_CLASS_LIKE_RE.match(line):
+            die('%s:%d: a class line reads class <CLASS> <key>=<value>... and nothing else'
+                % (path, n))
+    if not found:
+        die('%s carries no class line, so no trap of its arch is measured' % path)
+    depths = set()
+    for where, f in found:
+        for opt in f[1:]:
+            for key in ('frame=', 'depth='):
+                if opt.startswith(key) and opt[len(key):] not in defined:
+                    die('%s: class %s names %s, which %s does not define'
+                        % (where, f[0], opt[len(key):], path))
+            if opt.startswith('depth='):
+                depths.add(opt[len('depth='):])
+    for m in sorted(x for x in defined if DEPTH_MACRO_RE.match(x) and x not in depths):
+        die('%s defines %s and no class line measures it; a class was deleted, or the figure'
+            ' enforces nothing' % (path, m))
+    return found
+
+
 class Decl(object):
-    def __init__(self, roots_path, arch, kernel_cores):
+    def __init__(self, roots_path, arch, kernel_cores, src):
         self.arch = arch
         self.header = None
-        self.presets = []
         self.classes = []                            # class names, declaration order
         self.macros = {}                             # class -> (frame macro, depth macro)
         self.trap_stack = set()                      # classes declared stack=trap
@@ -125,7 +170,17 @@ class Decl(object):
         self.floor_nodes = None
         seen_arch = set()
         floor_at = {}                                 # arch -> where its floor is declared
-        for n, f, reason in records(roots_path):
+        recs = list(records(roots_path))
+        for n, f, _reason in recs:
+            if f[0] == 'arch' and len(f) > 1 and f[1] == arch:
+                if len(f) != 3 or not f[2].startswith('header='):
+                    die('%s:%d: arch record wants exactly header=<path>' % (roots_path, n))
+                self.header = os.path.join(src, f[2][len('header='):])
+        if self.header is None:
+            die('%s declares nothing for arch %s' % (roots_path, arch))
+        for where, f in header_classes(self.header):
+            self._class(where, f)
+        for n, f, reason in recs:
             where = '%s:%d' % (roots_path, n)
             kind = f[0]
             if kind == 'arch':
@@ -139,65 +194,15 @@ class Decl(object):
             if f[1] != arch:
                 continue
             if kind == 'arch':
-                if len(f) != 3 or not f[2].startswith('header='):
-                    die('%s: arch record wants exactly header=<path>' % where)
-                self.header = f[2][len('header='):]
-            elif kind == 'preset':
-                self.presets.append(f[2])
+                pass
             elif kind == 'floor':
                 self.floor_files = self._number(where, f[2], 'files=')
                 self.floor_nodes = self._number(where, f[3], 'nodes=')
-            elif kind == 'class':
-                name = f[2]
-                frame = None
-                depth = None
-                on_trap = False
-                on_kernel = False
-                on_panic = False
-                at = None
-                for opt in f[3:]:
-                    if opt.startswith('frame='):
-                        frame = opt[len('frame='):]
-                    elif opt.startswith('at=') and len(opt) > len('at='):
-                        at = opt[len('at='):]
-                    elif opt.startswith('depth='):
-                        depth = opt[len('depth='):]
-                    elif opt == 'stack=trap':
-                        on_trap = True
-                    elif opt == 'stack=kernel':
-                        on_kernel = True
-                    elif opt == 'stack=panic':
-                        on_panic = True
-                    elif opt in ('kstacks=0', 'kstacks=1'):
-                        # Read by check_trap_redzone.sh, which owns the live posture knob.
-                        # Accepted here only so a marked record parses: a .ci tree carries no
-                        # board config to resolve it from.
-                        pass
-                    else:
-                        die('%s: unknown class option "%s"' % (where, opt))
-                if frame is None or depth is None:
-                    die('%s: class %s needs both frame= and depth=' % (where, name))
-                if (on_trap + on_kernel + on_panic) > 1:
-                    die('%s: class %s names two stacks; a frame goes on one of them'
-                        % (where, name))
-                if name in self.macros:
-                    die('%s: class %s declared twice' % (where, name))
-                if on_trap:
-                    self.trap_stack.add(name)
-                if on_kernel:
-                    self.kernel_stack.add(name)
-                if on_panic:
-                    self.panic_stack.add(name)
-                if at is not None:
-                    self.at[name] = at
-                self.classes.append(name)
-                self.macros[name] = (frame, depth)
-                self.roots[name] = []
             elif kind == 'root':
                 cls = f[2]
                 if cls not in self.roots:
-                    die('%s: root names class %s, declared nowhere for %s'
-                        % (where, cls, arch))
+                    die('%s: root names class %s, which %s does not declare'
+                        % (where, cls, self.header))
                 sym = f[3]
                 # NONE is the deliberate twin of an omitted record: the class runs no C on
                 # this stack, so 0 is the answer rather than a silence.
@@ -296,10 +301,6 @@ class Decl(object):
                 self.recurse[f[2]] = (count, reason)
             else:
                 die('%s: unknown record "%s"' % (where, kind))
-        if arch not in seen_arch:
-            die('%s declares nothing for arch %s' % (roots_path, arch))
-        if not self.classes:
-            die('%s declares no class for arch %s' % (roots_path, arch))
         if self.floor_files is None:
             die('%s declares no floor record for arch %s. Without one this gate reports the'
                 ' same clean answer over a full build and over an empty directory'
@@ -315,6 +316,53 @@ class Decl(object):
                 die('%s: class %s has no root, so it would measure 0 and always pass.'
                     ' Declare `root %s %s NONE reason: ...` if that is the honest answer'
                     % (roots_path, cls, arch, cls))
+
+    def _class(self, where, f):
+        """One class line: its name, then frame=, depth= and the stack options."""
+        name = f[0]
+        frame = None
+        depth = None
+        on_trap = False
+        on_kernel = False
+        on_panic = False
+        at = None
+        for opt in f[1:]:
+            if opt.startswith('frame='):
+                frame = opt[len('frame='):]
+            elif opt.startswith('at=') and len(opt) > len('at='):
+                at = opt[len('at='):]
+            elif opt.startswith('depth='):
+                depth = opt[len('depth='):]
+            elif opt == 'stack=trap':
+                on_trap = True
+            elif opt == 'stack=kernel':
+                on_kernel = True
+            elif opt == 'stack=panic':
+                on_panic = True
+            elif opt in ('kstacks=0', 'kstacks=1'):
+                # Read by check_trap_redzone.sh, which owns the live posture knob. Accepted
+                # here only so a marked record parses: a .ci tree carries no board config to
+                # resolve it from.
+                pass
+            else:
+                die('%s: unknown class option "%s"' % (where, opt))
+        if frame is None or depth is None:
+            die('%s: class %s needs both frame= and depth=' % (where, name))
+        if (on_trap + on_kernel + on_panic) > 1:
+            die('%s: class %s names two stacks; a frame goes on one of them' % (where, name))
+        if name in self.macros:
+            die('%s: class %s declared twice' % (where, name))
+        if on_trap:
+            self.trap_stack.add(name)
+        if on_kernel:
+            self.kernel_stack.add(name)
+        if on_panic:
+            self.panic_stack.add(name)
+        if at is not None:
+            self.at[name] = at
+        self.classes.append(name)
+        self.macros[name] = (frame, depth)
+        self.roots[name] = []
 
     @staticmethod
     def _check_floor(where, f, reason, seen):
@@ -608,11 +656,12 @@ def corpus(build_dir):
     shared with another checkout collects that checkout's, so both directions are refused by
     identity. The declared floor stays the gross guard on a build that barely started.
     """
-    want = build_units(build_dir)
+    want = {ci: src for ci, src in build_units(build_dir).items() if not UNLINKED_CI.search(ci)}
     # realpath on both sides: the database records the path cmake resolved, and a build
     # directory reached through a symlink globs as the other spelling of it.
     found = set(os.path.realpath(p)
-                for p in glob.glob(os.path.join(build_dir, '**', '*.ci'), recursive=True))
+                for p in glob.glob(os.path.join(build_dir, '**', '*.ci'), recursive=True)
+                if not UNLINKED_CI.search(p))
     missing = sorted(set(want) - found)
     if missing:
         die('CORPUS IS NOT THIS BUILD: %d translation unit(s) of %s left no .ci file, the'
@@ -1133,12 +1182,32 @@ def root_keys(graph, decl, cls, report):
 
 def usage():
     sys.stderr.write(
-        'usage: trap_redzone.py --ci-dir <dir> --arch <arch> --preset <preset>\n'
+        'usage: trap_redzone.py --ci-dir <dir> --src <dir> --arch <arch> --preset <preset>\n'
         '                       --kernel-cores <n> --roots <file> --indirect <file>\n'
         '                       --enforced <CLASS>=<frame>,<depth> [--enforced ...]\n'
         '                       [--not-compiled <CLASS>]...\n'
-        '       trap_redzone.py --check-file <indirect-file>\n')
+        '       trap_redzone.py --check-file <indirect-file>\n'
+        '       trap_redzone.py --classes <trap-stack header>\n')
     return 2
+
+
+def print_classes(path):
+    """The header's classes, one per line: CLASS, frame, depth, stack, kstacks."""
+    for _where, f in header_classes(path):
+        frame = depth = ''
+        onstack = 'thread'
+        kstacks = 'any'
+        for opt in f[1:]:
+            if opt.startswith('frame='):
+                frame = opt[len('frame='):]
+            elif opt.startswith('depth='):
+                depth = opt[len('depth='):]
+            elif opt in ('stack=trap', 'stack=kernel', 'stack=panic'):
+                onstack = opt[len('stack='):]
+            elif opt in ('kstacks=0', 'kstacks=1'):
+                kstacks = opt[len('kstacks='):]
+        print('\t'.join((f[0], frame, depth, onstack, kstacks)))
+    return 0
 
 
 def check_file(path):
@@ -1170,7 +1239,7 @@ def read_renames(path):
 
 
 def parse_argv(argv):
-    want = {'--ci-dir', '--arch', '--preset', '--kernel-cores', '--roots', '--indirect'}
+    want = {'--ci-dir', '--src', '--arch', '--preset', '--kernel-cores', '--roots', '--indirect'}
     opt = {'privatised': None}
     enforced = collections.OrderedDict()
     # Classes this image does not compile, per the caller's read of the live posture knob.
@@ -1228,22 +1297,18 @@ def run(argv):
     opt, enforced, not_compiled = parse_argv(argv)
     arch = opt['arch']
     preset = opt['preset']
-    decl = Decl(opt['roots'], arch, opt['kernel-cores'])
-    if preset not in decl.presets:
-        die('preset %s is not declared for arch %s in %s (declared: %s)'
-            % (preset, arch, opt['roots'], ' '.join(decl.presets)))
+    decl = Decl(opt['roots'], arch, opt['kernel-cores'], opt['src'])
     for cls in decl.classes:
         if cls not in enforced:
             die('class %s is declared for %s but no --enforced figure was passed for it'
                 % (cls, arch))
     for cls in enforced:
         if cls not in decl.macros:
-            die('--enforced names class %s, which %s declares nowhere for %s'
-                % (cls, opt['roots'], arch))
+            die('--enforced names class %s, which %s does not declare' % (cls, decl.header))
     for cls in sorted(not_compiled):
         if cls not in decl.macros:
-            die('--not-compiled names class %s, which %s declares nowhere for %s'
-                % (cls, opt['roots'], arch))
+            die('--not-compiled names class %s, which %s does not declare'
+                % (cls, decl.header))
 
     renames = None
     if opt['privatised'] is not None:
@@ -1545,9 +1610,11 @@ def main():
     if len(sys.argv) < 2:
         return usage()
     try:
-        if sys.argv[1] == '--check-file':
+        if sys.argv[1] in ('--check-file', '--classes'):
             if len(sys.argv) != 3:
                 return usage()
+            if sys.argv[1] == '--classes':
+                return print_classes(sys.argv[2])
             return check_file(sys.argv[2])
         return run(sys.argv[1:])
     except Bad as e:

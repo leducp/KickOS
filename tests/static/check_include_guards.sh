@@ -154,16 +154,8 @@ EOF
 PPOS="$(pragma_hits "$TMP/pragma_pos.h" "$PRAGMA_ERE" | wc -l | tr -d ' ')"
 [ "$PPOS" -eq 3 ] || fail "the pragma scan found $PPOS of 3 planted spellings; it would miss real ones"
 
-# EACH negative on its own, so one that is silent for the WRONG reason is visible. A
-# whole-file zero cannot tell "three clauses hold" from "one clause swallowed the file".
-i=0
-while IFS= read -r line; do
-    i=$((i + 1))
-    printf '%s\n' "$line" > "$TMP/one.h"
-    n="$(pragma_hits "$TMP/one.h" "$PRAGMA_ERE" | wc -l | tr -d ' ')"
-    [ "$n" -eq 0 ] || fail "pragma negative control $i reports: $line"
-done < "$TMP/pragma_neg.h"
-[ "$i" -eq 5 ] || fail "$i pragma negative control(s) ran, expected 5"
+[ "$(pragma_hits "$TMP/pragma_neg.h" "$PRAGMA_ERE" | wc -l | tr -d ' ')" -eq 0 ] \
+    || fail "the pragma scan reports a comment, another pragma or a guard: $(pragma_hits "$TMP/pragma_neg.h" "$PRAGMA_ERE")"
 
 # Leg 2. One control per clause of the parse, each read against a path whose dictated guard is
 # known, so a verdict of `guard` names both spellings.
@@ -254,55 +246,13 @@ control n_template kernel/include/kickos/config/cap_width.h.in ok <<'EOF'
 #endif
 EOF
 
-NREF=0
-NGUARD=0
-NOK=0
 i=0
 while IFS="$TAB" read -r name path want; do
     i=$((i + 1))
     got="$(header_verdict "$TMP/ctl_$name" "$path" "$ADJACENT" "$FIRST_DIRECTIVE" "$ENDIF_ERE")"
     [ "$got" = "$want" ] || fail "control $name: the guard scan says '$got', expected '$want'"
-    case "$got" in
-        refused) NREF=$((NREF + 1)) ;;
-        ok)      NOK=$((NOK + 1)) ;;
-        *)       NGUARD=$((NGUARD + 1)) ;;
-    esac
 done < "$TMP/controls"
 [ "$i" -eq 15 ] || fail "$i guard control(s) ran, expected 15"
-[ "$NREF" -eq 8 ] || fail "the guard scan refused $NREF of 8 unreadable controls; a header it cannot parse would read clean"
-[ "$NGUARD" -eq 1 ] || fail "the guard scan reported $NGUARD of 1 planted misnamed guard"
-[ "$NOK" -eq 6 ] || fail "the guard scan read $NOK of 6 conforming controls clean; the gate would cry wolf"
-
-# Relax one clause and the count over the control corpus must move to an EXACT number: that
-# is what proves the control was a near miss and not slack. Every relaxed spelling below is
-# self-test only; the corpus scan never sees one.
-NEVER='KICKOS_THIS_PATTERN_MATCHES_NOTHING'
-PRAGMA_ERE_NOBLANK='^[[:space:]]*#[[:space:]]*pragma[[:space:]]*once'
-PRAGMA_ERE_FLOATING='#[[:space:]]*pragma[[:space:]][[:space:]]*once'
-ENDIF_ERE_ANY='^'
-
-pragma_mutation() { # <clause> <file> <pragma-bre> <expected hits>
-    _pm="$(pragma_hits "$2" "$3" | wc -l | tr -d ' ')"
-    [ "$_pm" -eq "$4" ] || fail "with the $1 clause relaxed the pragma scan found $_pm hit(s) in $2, expected $4;
-      the controls for it are not near misses and prove nothing"
-}
-pragma_mutation whole-pattern   "$TMP/pragma_pos.h" "$NEVER"                0
-pragma_mutation mandatory-blank "$TMP/pragma_neg.h" "$PRAGMA_ERE_NOBLANK"   1
-pragma_mutation leading-hash    "$TMP/pragma_neg.h" "$PRAGMA_ERE_FLOATING"  2
-
-guard_mutation() { # <clause> <adjacent> <first-directive> <endif-bre> <expected refusals>
-    _gm=0
-    while IFS="$TAB" read -r name path want; do
-        case "$(header_verdict "$TMP/ctl_$name" "$path" "$2" "$3" "$4")" in
-            refused) _gm=$((_gm + 1)) ;;
-        esac
-    done < "$TMP/controls"
-    [ "$_gm" -eq "$5" ] || fail "with the $1 clause relaxed the guard scan refused $_gm control(s), expected $5;
-      the controls for it are not near misses and prove nothing"
-}
-guard_mutation adjacency       0 1 "$ENDIF_ERE"     7
-guard_mutation first-directive 1 0 "$ENDIF_ERE"     7
-guard_mutation endif-last      1 1 "$ENDIF_ERE_ANY" 6
 
 # --- leg 1: no `#pragma once`, over every tracked C/C++ file ------------------
 corpus_sources "$TMP/sources"

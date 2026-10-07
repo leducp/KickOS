@@ -725,6 +725,10 @@ namespace kickos
         }
     }
 
+    // Never defined: only a constant evaluation reaches it, and the call ends that evaluation.
+    // Outside the unnamed namespace, so the missing definition draws no warning.
+    int a_task_budget_reaches_its_pool();
+
     namespace
     {
         // One task's hold sets, a bit per slot of each charged pool.
@@ -737,6 +741,107 @@ namespace kickos
             uint32_t notify;
         };
 
+        // A CHARGED POOL IS EITHER ABSENT OR WIDER THAN ITS BUDGET, which is the whole of "no
+        // single task can take a pool's last slot": at budget == slots one task empties the pool
+        // and the supervisor respawning a driver finds nothing left to respawn it with. The
+        // budget floor of 1 makes this also refuse a pool of exactly one slot, where a ceiling
+        // could only ever be 0 and the pool would cost .bss nothing could allocate. A ceiling
+        // past that is no constant, so the arm stating it fails the build.
+        constexpr int ceiling_within(int budget, int pool)
+        {
+            if (pool != 0 and budget >= pool)
+            {
+                return a_task_budget_reaches_its_pool();
+            }
+            return budget;
+        }
+        template <int>
+        struct Constant
+        {
+        };
+        template <int Budget, int Pool>
+        concept has_ceiling = requires { typename Constant<ceiling_within(Budget, Pool)>; };
+        static_assert(has_ceiling<1, 2> and not has_ceiling<2, 2> and has_ceiling<5, 0>,
+                      "ceiling_within no longer refuses exactly a budget reaching its pool");
+
+        template <class T, int N>
+        constexpr int pool_width(SlotPool<T, N> Kernel::*)
+        {
+            return N;
+        }
+
+        // A kind charged against Pool: its ceiling is its budget, measured against the width of
+        // that same pool.
+        template <int Budget, auto Pool>
+        struct Charged
+        {
+            static constexpr int ceiling = ceiling_within(Budget, pool_width(Pool));
+            static constexpr auto pool = Pool;
+        };
+
+        // Op<arm>::on(<its hold set in h>, args...) for the Charged arm of a kind, `otherwise`
+        // for an uncharged kind.
+        template <template <class> class Op, class R, class... Args>
+        constexpr inline __attribute__((always_inline)) R charged(CapType type, R otherwise,
+                                                                  TaskObjectHolds* h,
+                                                                  Args... args)
+        {
+            switch (type)
+            {
+            case CapType::CAP_SEM:
+            {
+                return Op<Charged<KICKOS_TASK_SEMAPHORE_BUDGET, &Kernel::sems>>::on(&h->sem,
+                                                                                    args...);
+            }
+            case CapType::CAP_MUTEX:
+            {
+                return Op<Charged<KICKOS_TASK_MUTEX_BUDGET, &Kernel::mutexes>>::on(&h->mutex,
+                                                                                   args...);
+            }
+            case CapType::CAP_ENDPOINT:
+            {
+                return Op<Charged<KICKOS_TASK_ENDPOINT_BUDGET, &Kernel::endpoints>>::on(
+                    &h->endpoint, args...);
+            }
+            case CapType::CAP_IRQ:
+            {
+                return Op<Charged<KICKOS_TASK_IRQ_HANDLE_BUDGET, &Kernel::irq_bindings>>::on(
+                    &h->irq, args...);
+            }
+            case CapType::CAP_NOTIFY:
+            {
+                return Op<Charged<KICKOS_TASK_NOTIFY_BUDGET, &Kernel::notifies>>::on(&h->notify,
+                                                                                     args...);
+            }
+            default:
+            {
+                return otherwise;
+            }
+            }
+        }
+
+        // The hold set and the slot of the object named.
+        template <class Arm>
+        struct Mark
+        {
+            static inline __attribute__((always_inline)) bool
+            on(uint32_t* hold, int obj_handle, uint32_t** set, int* slot)
+            {
+                *set = hold;
+                *slot = (kernel().*Arm::pool).live_index(obj_handle);
+                return true;
+            }
+        };
+
+        template <class Arm>
+        struct CeilingOf
+        {
+            static constexpr int on(uint32_t*)
+            {
+                return Arm::ceiling;
+            }
+        };
+
         // Return the pool hold set and slot for a capability kind.
         // Uncharged kinds return false; invalid handles give slot -1.
         // Use NO_OBJECT when only the hold set is needed.
@@ -747,43 +852,14 @@ namespace kickos
         charged_pool(CapType type, int obj_handle, TaskObjectHolds* h, uint32_t** set,
                      int* slot)
         {
-            switch (type)
-            {
-            case CapType::CAP_SEM:
-            {
-                *set = &h->sem;
-                *slot = kernel().sems.live_index(obj_handle);
-                return true;
-            }
-            case CapType::CAP_MUTEX:
-            {
-                *set = &h->mutex;
-                *slot = kernel().mutexes.live_index(obj_handle);
-                return true;
-            }
-            case CapType::CAP_ENDPOINT:
-            {
-                *set = &h->endpoint;
-                *slot = kernel().endpoints.live_index(obj_handle);
-                return true;
-            }
-            case CapType::CAP_IRQ:
-            {
-                *set = &h->irq;
-                *slot = kernel().irq_bindings.live_index(obj_handle);
-                return true;
-            }
-            case CapType::CAP_NOTIFY:
-            {
-                *set = &h->notify;
-                *slot = kernel().notifies.live_index(obj_handle);
-                return true;
-            }
-            default:
-            {
-                return false;
-            }
-            }
+            return charged<Mark>(type, false, h, obj_handle, set, slot);
+        }
+
+        // Maximum slots per task of a kind, 0 for an uncharged kind.
+        constexpr int task_object_ceiling(CapType kind)
+        {
+            TaskObjectHolds none;
+            return charged<CeilingOf>(kind, 0, &none);
         }
 
         void hold_mark(CapType type, int obj_handle, TaskObjectHolds* h)

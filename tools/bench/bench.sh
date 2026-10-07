@@ -77,6 +77,9 @@ set -u
 # verdict only a person reads; `inapplicable` for one whose claim this posture voids; or `-`. The
 # args are the judge's, `;`-separated. Everything this script narrates goes to stderr in that mode,
 # so the caller's $(...) holds the rows and nothing else.
+#
+# BUILD_ONLY=1 configures and builds the image as a capture would, then stops before the flash,
+# so a caller can build every image before the first board is flashed.
 if [ "${LIST_IMAGES:-0}" = "1" ]; then
   exec 3>&1 1>&2
 fi
@@ -326,6 +329,9 @@ if [ -n "${PACKAGE_PROJECT:-}" ]; then
 else
   cmake --build "$BUILD" -j8 --target "$BUILD_TARGET" > /dev/null || exit 1
 fi
+if [ "${BUILD_ONLY:-0}" = "1" ]; then
+  exit 0
+fi
 
 # THE LABEL THAT WENT INTO THIS IMAGE, read out of the stamp the build just wrote rather than
 # asked of git here. The two answer differently the moment the tree is touched between the
@@ -487,7 +493,13 @@ REMOTE
 # -s (--secluded-args/--protect-args) sends the remote-side path over rsync's own
 # protocol instead of a shell command line, so the destination is never re-parsed by the
 # remote login shell.
-rsync -a -s --delete -e "$RSH" tools boards tests "$BENCH_HOST:$RROOT/" || { echo "REFUSING: could not ship tools/, boards/ and tests/" >&2; exit 1; }
+#
+# The lock, because a fleet pass runs one of these per board at once into the same directory, and
+# one transfer's --delete removes the temporary files of another.
+(
+  flock 9
+  rsync -a -s --delete -e "$RSH" tools boards tests "$BENCH_HOST:$RROOT/"
+) 9> "$SESSION/.bench-ship.lock" || { echo "REFUSING: could not ship tools/, boards/ and tests/" >&2; exit 1; }
 # The rig config is the one thing tools/ cannot carry: it is gitignored, and the console
 # cable it names is a property of the CABLE, so it is valid wherever that cable is plugged.
 rsync -a -s -e "$RSH" "$RIG_CONF" "$BENCH_HOST:$RROOT/.session/rig.conf" || { echo "REFUSING: could not ship the rig config" >&2; exit 1; }

@@ -90,8 +90,8 @@ extern "C"
         __kickos_appdata_end;
 #endif
 
-    // CPU_CLK, read off PCR before the constructors run (mtime_conv.h).
-    uint32_t SystemCoreClock = 0u;
+    // CPU_CLK, read off PCR before the constructors run (mtime_conv.h); the ROM's PLL until then.
+    uint32_t SystemCoreClock = kickos::esp32c6::PLL_ROOT_HZ;
 }
 
 namespace
@@ -917,7 +917,7 @@ static void apm_program_gate(void)
 
 // MTIME counts CPU_CLK, so a CPU clock that is not 160 MHz >> n stops the boot.
 //
-// noinline: tests/static/check_c6_clock_first.sh finds its call in Reset_Handler.
+// noinline: tests/static/check_image_rules.sh (c6_hp) finds its call in Reset_Handler.
 static __attribute__((noinline)) void mtime_rate_init(void)
 {
     uint32_t const sys = r32(reg::pcr::SYSCLK_CONF);

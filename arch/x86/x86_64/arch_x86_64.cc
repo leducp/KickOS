@@ -15,6 +15,7 @@ extern "C" __attribute__((visibility("hidden"), noreturn)) void kfault_terminate
 
 #include <kickos/arch/apic.h>
 #include <kickos/arch/arch.h>
+#include "ctx_redirect.h"
 #include <kickos/arch/aspace.h>
 #include <kickos/arch/desc.h>
 #include <kickos/arch/regs.h>
@@ -365,31 +366,8 @@ void arch_context_init(struct arch_context* ctx,
 void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
                        void* stack_base, size_t stack_size)
 {
-    // kernel_sp and fs_base survive the rebuild and are put back explicitly. The stub is
-    // privileged, so the rebuild below places its frame from the block it is HANDED.
-    uintptr_t const kernel_sp = ctx->kernel_sp;
     uintptr_t const fs_base = ctx->fs_base;
-#if KICKOS_KERNEL_STACKS
-    // stack_lo and stack_hi are saved and put back: arch_context_init derives them from what
-    // it is handed, and handing it the block would leave the context describing kernel .bss
-    // as this thread's stack. check_death_stack_seating.sh holds this shape.
-    //
-    // The `if` covers a TCB outside the pool, which has no block. Idle is that TCB.
-    if (kernel_sp != 0)
-    {
-        uintptr_t const lo = ctx->stack_lo;
-        uintptr_t const hi = ctx->stack_hi;
-        void* const block = reinterpret_cast<void*>(kernel_sp - KICKOS_KERNEL_STACK_SIZE);
-        arch_context_init(ctx, entry, nullptr, block, KICKOS_KERNEL_STACK_SIZE, 1);
-        ctx->stack_lo = lo;
-        ctx->stack_hi = hi;
-        ctx->kernel_sp = kernel_sp;
-        ctx->fs_base = fs_base;
-        return;
-    }
-#endif
-    arch_context_init(ctx, entry, nullptr, stack_base, stack_size, 1);
-    ctx->kernel_sp = kernel_sp;
+    arch_ctx_redirect_to_block(ctx, entry, stack_base, stack_size);
     ctx->fs_base = fs_base;
 }
 

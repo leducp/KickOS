@@ -125,6 +125,23 @@ console_row() {
     return 0
 }
 
+# board_resources <board> <probe-serial>
+#
+# Prints what a capture on <board> holds while it runs, one line each: every probe row's device,
+# and every console its images can be read on, pin UART or USB device. Two boards printing a
+# common line share a probe or a cable, so their captures cannot overlap.
+board_resources() {
+    local rows cdc
+    if rows=$(board_probe_rows "$1" 2>/dev/null); then
+        printf '%s\n' "$rows" | awk -F '|' 'NF { print "probe " $1 }'
+    fi
+    for cdc in 0 1; do
+        if console_row "$1" "${2:-}" "$cdc" && [ -n "$CONSOLE_PORT$CONSOLE_PATTERN" ]; then
+            printf 'console %s\n' "${CONSOLE_PORT:-$CONSOLE_PATTERN}"
+        fi
+    done
+}
+
 # elf_symbol_at <elf> <symbol>
 #
 # Prints the file offset and the size of <symbol>'s bytes in <elf>, read through readelf alone,

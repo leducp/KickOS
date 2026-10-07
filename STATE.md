@@ -90,7 +90,7 @@ shape that HANGS a bounded wait rather than reddening it.**
 
 **NO BOARD IN THE TREE FAILS THE PART'S HALF OF THE PREDICATE WHILE PASSING THE ARCH'S**, every chip
 that ships a declaration declaring all three, so the predicate is one authority driven twice: the
-build calls it and `tests/static/check_smp_predicate.sh` calls the same function over SYNTHETIC
+build calls it and `tests/static/check_smp_predicate.cmake` calls the same function over SYNTHETIC
 declaration trees, each case against a control differing in one clause and **each checked by
 MUTATION rather than by passing.**
 
@@ -146,10 +146,10 @@ it will regrow.
 
 **`tests/static/trap_redzone_indirect.txt` BINDS CALL SITES BY EXACT `file:line:column`, SO A
 COMMENT EDIT IN ONE OF THE SIX FILES IT NAMES COSTS A RE-PIN**: `sched.cc`, `syscall_ipc_fast.cc`,
-`irq.cc`, `console_tx.cc` and the two rp2 chip files. `trap_redzone_decls` does not catch a stale
-line; of its readers only `check_trap_redzone.sh` and `check_console_reach.sh` reject one, both PER
-SCOPE, **so a re-pin is only witnessed by a preset that compiles that scope** and `irq.cc` is not
-pinned in armv8a at all. Stranded behind that binding are every surviving in-repo doc PATH in code,
+`irq.cc`, `console_tx.cc` and the two rp2 chip files. Of its readers only `check_trap_redzone.sh`
+rejects a stale line, in its depth walk and in its console route clause, both PER SCOPE, **so a
+re-pin is only witnessed by a preset that compiles that scope** and `irq.cc` is not pinned in armv8a
+at all. Stranded behind that binding are every surviving in-repo doc PATH in code,
 three step designators, and the DEFINITIONS of the `INVARIANT H1..H8`, `D1..D9`, `B1..B3` and `RULE
 L1/U2/U4` families. **The re-pin is mechanical rather than manual**, so the cost is smaller than the
 count suggests.
@@ -612,14 +612,14 @@ The whole point of this file. A green fleet pass says none of the following.
   exactly like one that is broken.
 
 - **THE GICv3 BACKEND'S ONE-CORE FOLDS ARE WITNESSED NOW, AND THE IMPRECISION THAT DELAYED IT IS
-  THE PART WORTH KEEPING.** `cpu_id_fold` reads the count of cores the image DRIVES and skips as a
-  class above one of those. It is NOT the kernel-core count, and the difference decides which
+  THE PART WORTH KEEPING.** The one-core fold check (`arch.h`, once the `cpu_id_fold` gate) reads the
+  count of cores the image DRIVES and does not apply above one of those. It is NOT the kernel-core count, and the difference decides which
   preset can ever close the arm: an AMP image sets one kernel core while DRIVING four, so the
   gate skips there too. What closes it is a GICv3 board that drives ONE core, which
   `imx8mp-evk` is for an unrelated reason, the emulator modelling no secondary release. **A gate's
   skip condition is a claim about which figure it reads, and naming the wrong figure moved an
   obligation onto the wrong milestone for two whole steps.** The multi-core folds above one driven
-  core remain unwitnessed and `cpu_id_fold` structurally cannot reach them.
+  core remain unwitnessed and the fold check structurally cannot reach them.
 - **NOTHING WITNESSES THAT THE x86_64 DECODE IS FED THE LIVE ATTRIBUTE TABLE**, and the arm that
   used to is gone on purpose. It proved the feed by REPROGRAMMING `IA32_PAT`, which SDM 14.12.4
   makes the operating system's job to sequence and which this port has no reason to spend a cache
@@ -956,9 +956,9 @@ The whole point of this file. A green fleet pass says none of the following.
   cross-TU address-take going GOT-indirect under `-fpie` when the selftest TU was split. So the
   two statements sit together: dormant for the case it was written for, and firing on another.
 
-- **`check_c_headers.sh` compiles with no `-D` at all**, so a C-facing header's other `#if
-  KICKOS_<knob>` arm is compiled by nothing and the gate still reports PASS. NOT fixed on
-  purpose: widening wants measuring first.
+- **`check_public_headers.sh --tree` compiles with no `-D` at all**, so a C-facing header's
+  other `#if KICKOS_<knob>` arm is compiled by nothing and the gate still reports PASS. NOT fixed
+  on purpose: widening wants measuring first.
 - **The `docs/`-out-of-the-oracle fix OUTLIVES the `.html` that motivated it.** `doc_names`
   reads tracked markdown only, validates a path and an identifier and never a line number, so
   the next non-markdown file committed under `docs/` reopens the hole. Widening was measured at
@@ -1142,9 +1142,8 @@ missing from one of those QEMU captures under load is this, not a flake to re-ru
 - The console ISR now wakes a parked writer. The trap red-zone gate bounds that tail where it roots
   interrupts; armv7m, armv6m and rxv3 take interrupts on MSP/ISP stacks no gate bounds, by design
   and older than M10.5, so there the tail has no measured bound.
-- `board_refusals` copies the source tree while configures rewrite composition YAML in it; under
-  `-j` that is a race, older than M10.5 and not fixed. A one-off tree-gate failure seen during M10.5
-  did not reproduce in 86 runs.
+- A configure writes composition YAML into the source tree, so a tree gate that reads the tree
+  while another preset configures can race it (seen once in M10.5, never reproduced).
 - The console's dark-window wait is unwitnessed on silicon, and no emulated board declares a reclaim
   window. Host tests and the sim script it.
 - The ARMv6-M fault reporter's frame check is held by a host gate only: a wild PSP locks a v6-M part

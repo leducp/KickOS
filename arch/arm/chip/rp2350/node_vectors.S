@@ -26,7 +26,11 @@
     .section .node_vector, "a"
     /* Armv8-M VTOR ignores the low bits: a table is aligned to its own size rounded up to a
        power of two, and to at least 128 bytes. 16 + KICKOS_MAX_IRQ entries is 272 bytes. */
-    .align 9
+#define NODE_VECTOR_ALIGN_LOG2 9
+.if (16 + KICKOS_MAX_IRQ) * 4 > (1 << NODE_VECTOR_ALIGN_LOG2) || NODE_VECTOR_ALIGN_LOG2 < 7
+.error "g_node_isr_vector is aligned below its size rounded up to a power of two, or below 128 bytes, so VTOR cannot name it"
+.endif
+    .align NODE_VECTOR_ALIGN_LOG2
     .global g_node_isr_vector
     .type g_node_isr_vector, %object
 g_node_isr_vector:
@@ -41,6 +45,9 @@ g_node_isr_vector:
     .word kickos_rp2350_node_park
     .endr
     .size g_node_isr_vector, . - g_node_isr_vector
+.if . - g_node_isr_vector != (16 + KICKOS_MAX_IRQ) * 4
+.error "g_node_isr_vector holds other than 16 + KICKOS_MAX_IRQ slots"
+.endif
 
     /* Terminal: the exception is never returned from, so a line this node has no business
        taking cannot reach thread context either. */

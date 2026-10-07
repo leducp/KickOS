@@ -1,16 +1,12 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-# arch_ram_region_align where the thread pointer is SP masked down to the stride, which no host
-# build is: the posture is set here, and the region seam is the fixture's.
-kickos_add_unit_test(NAME ram_align
-  SOURCES stride_align.cc
-  POSTURE KICKOS_TLS=1 KICKOS_TLS_FROM_SP=1 KICKOS_TLS_STRIDE=8192 KICKOS_TLS_STRIDE_LOG2=13)
-
 # The align rule's three copies over one table: arch_ram_region_align, kickos_region_align
 # (cmake/boot_arena.cmake, evaluated here) and the composition tool's ram_align
 # (tools/compose/kickos_compose/supply.py, evaluated by emit_align.py). The C copy is compiled
-# once per stride posture, and each program checks the rows of its own stride.
+# once per stride posture, and each program checks the rows of its own stride. The strided
+# posture, where the thread pointer is SP masked down to the stride, is one no host build is, so
+# it is set here.
 set(_ra_strides 0 8192)
 set(_ra_geometries 0:0 32:0 64:0 256:0 32:1 256:1)
 set(_ra_wants 1 16 31 96 100 512 1000 4096 4097 8160 8172 8192 8193 8224 12000 16384)

@@ -6,11 +6,13 @@ target_link_libraries(faultsurvive PRIVATE KickOS::kernel KickOS::system_default
 kickos_emit_image(faultsurvive)
 target_compile_definitions(faultsurvive PRIVATE KICKOS_FS_MODE=0)
 
-# Built everywhere the app is, so all three #if branches of main.cc stay compiled.
-add_executable(faultsurvive_ovf main.cc)
-target_link_libraries(faultsurvive_ovf PRIVATE KickOS::kernel KickOS::system_default)
-kickos_emit_image(faultsurvive_ovf)
-target_compile_definitions(faultsurvive_ovf PRIVATE KICKOS_FS_MODE=1)
+# Not the sim, which maps no guard under a thread's stack, so the recursion overruns main's.
+if(NOT KICKOS_ARCH STREQUAL "sim")
+  add_executable(faultsurvive_ovf main.cc)
+  target_link_libraries(faultsurvive_ovf PRIVATE KickOS::kernel KickOS::system_default)
+  kickos_emit_image(faultsurvive_ovf)
+  target_compile_definitions(faultsurvive_ovf PRIVATE KICKOS_FS_MODE=1)
+endif()
 # The survive arm again, its stdout the packaged simcon its composition names.
 if(KICKOS_ARCH STREQUAL "sim")
   add_executable(faultsurvive_published main.cc)

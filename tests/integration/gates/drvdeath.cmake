@@ -6,6 +6,7 @@
 if(NOT TARGET drvdeath)
   return()
 endif()
+kickos_unbooted(drvdeath "sim_driver_death boots it in a tree of its own per death knob")
 
 # The gate builds a tree of its own per death knob of the console driver, so register it only
 # in a tree that sets none; registering it in the trees the script configures would recurse.

@@ -57,4 +57,14 @@
  * 64 on every registered preset. Enforced at 128. */
 #define KICKOS_LX6_TRAP_DEPTH_IDLE 128
 
+/*
+ * The trap classes tests/static/check_trap_redzone.sh measures against the figures above,
+ * one line each; tests/static/trap_redzone_roots.txt says what each option means and roots
+ * every class.
+ *
+ * class PREEMPT frame=KICKOS_LX6_TRAP_FRAME depth=KICKOS_LX6_TRAP_DEPTH
+ * class PANIC   frame=KICKOS_LX6_PANIC_FRAME depth=KICKOS_LX6_PANIC_DEPTH stack=panic
+ * class IDLE    frame=KICKOS_LX6_TRAP_FRAME depth=KICKOS_LX6_TRAP_DEPTH_IDLE
+ */
+
 #endif

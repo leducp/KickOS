@@ -6,10 +6,10 @@
 # CORE, not that nothing else ever runs there: a mask naming one, alone or beside ordinary cores,
 # is the opt-in and that core's picker then takes the thread.
 #
-# A FUNCTION AND NOT AN INLINE BLOCK IN THE ROOT LISTS FILE, so tests/static/check_isolated_cores.sh
-# can drive the same authority the build drives, over synthetic values, with a control beside
-# every refusal. An inline FATAL_ERROR is reachable only by configuring a whole tree that
-# actually fails, which is one arm and no controls.
+# A FUNCTION AND NOT AN INLINE BLOCK IN THE ROOT LISTS FILE, so
+# tests/static/check_isolated_cores.cmake can drive the same authority the build drives, over
+# synthetic values, with a control beside every refusal. An inline FATAL_ERROR is reachable only
+# by configuring a whole tree that actually fails, which is one arm and no controls.
 
 function(kickos_isolated_cores_check)
   set(_one ISOLATED KERNEL_CORES ORIGIN)

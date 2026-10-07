@@ -5,8 +5,15 @@
 
 #include <kickos/irq_route.h>
 #include <kickos/arch/arch.h>
+#include <kickos/bench.h>
 #include <kickos/console_tx.h>
 #include <kickos/irq.h>
+#include <kickos/kernel.h>
+#include <kickos/sched.h>
+
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 namespace
 {
@@ -111,6 +118,15 @@ namespace
 
 namespace consoleseam
 {
+    uint32_t g_deliveries = 0;
+    kickos::Thread* g_current = nullptr;
+    bool g_window_free = true;
+    bool g_serves_console = false;
+    uint32_t g_reclaims = 0;
+    uint32_t g_dark_wakes = 0;
+    int (*g_dark_wait)(void) = nullptr;
+    void (*g_flush_hook)(void) = nullptr;
+
     std::string const& wire()
     {
         return g_wire;
@@ -329,5 +345,136 @@ namespace kickos
     void irq_line_op_local(int line, LineOp op)
     {
         irq_line_op(line, op);
+    }
+}
+
+extern "C"
+{
+    // Every buffered chip's arch_console_write is exactly this, so the routing decision in
+    // console.cc reaches the real ring producer.
+    int arch_console_write(char const* buf, size_t n)
+    {
+        return console_tx_insert_line(buf, n, KICKOS_CONSOLE_CRLF);
+    }
+
+    void arch_console_flush_sync(void)
+    {
+        void (*const hook)(void) = consoleseam::g_flush_hook;
+        consoleseam::g_flush_hook = nullptr;
+        if (hook != nullptr)
+        {
+            hook();
+        }
+    }
+
+    void arch_console_reclaim(void)
+    {
+        consoleseam::g_reclaims = consoleseam::g_reclaims + 1;
+    }
+
+    void arch_console_reclaim_window(uintptr_t* base, size_t* size)
+    {
+        *base = 0x40000000u;
+        *size = 0x100u;
+    }
+
+    int kvsnprintf(char* buf, size_t size, char const* fmt, va_list ap)
+    {
+        return vsnprintf(buf, size, fmt, ap);
+    }
+
+    // Distinct statuses: an arm that expects the panic path must be able to tell it from an
+    // ordinary failed expectation.
+    void arch_shutdown(int status)
+    {
+        printf("SEAM: arch_shutdown(%d)\n", status);
+        exit(43);
+    }
+
+    int arch_reboot(void)
+    {
+        return 0;
+    }
+
+    void kfault_terminate(void)
+    {
+        printf("SEAM: kfault_terminate\n");
+        exit(42);
+    }
+
+    // No stack switch, as on ARCH_SIM: a host thread stack is megabytes and no red-zone
+    // class measures one.
+    void kickos_panic_stack_enter(char const* msg, char const* file, unsigned line,
+                                  uintptr_t top)
+    {
+        (void)top;
+        kickos_panic_report(msg, file, line);
+    }
+}
+
+namespace kickos
+{
+#if KICKOS_BENCH
+    // The paced printer's lock sampling, without the scheduler and syscall table behind it.
+    constinit BenchLockRow g_bench_lock[KICKOS_KERNEL_CORES] = {};
+
+    void bench_dist_add(uint32_t, BenchTick)
+    {
+    }
+
+    void bench_lock_hold_add(BenchTick, void*)
+    {
+    }
+#endif
+
+    bool dev_window_free(uintptr_t, size_t)
+    {
+        return consoleseam::g_window_free;
+    }
+
+    bool dev_window_held_outside(uintptr_t, size_t, Task const*)
+    {
+        return false;
+    }
+
+    bool task_serves_console(Task const*)
+    {
+        return consoleseam::g_serves_console;
+    }
+
+    // No ring to wait on: the write ends.
+    int console_room_wait(char const*, size_t, int) { return -KOS_ECANCELED; }
+
+    int console_dark_wait(void)
+    {
+        if (consoleseam::g_dark_wait != nullptr)
+        {
+            return consoleseam::g_dark_wait();
+        }
+        return 0;
+    }
+
+    void console_dark_wake(void)
+    {
+        consoleseam::g_dark_wakes = consoleseam::g_dark_wakes + 1;
+    }
+
+    // No receiver is ever parked here: what a record leaves behind is what the held store says.
+    void cap_console_deliver()
+    {
+        consoleseam::g_deliveries = consoleseam::g_deliveries + 1;
+    }
+
+    bool cap_console_serves(Thread const*)
+    {
+        return false;
+    }
+
+    namespace sched
+    {
+        Thread* current()
+        {
+            return consoleseam::g_current;
+        }
     }
 }

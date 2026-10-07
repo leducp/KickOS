@@ -16,7 +16,7 @@
 # all six can still release a secondary by different mechanisms.
 #
 # Driven twice, so a change to this signature breaks a gate: the root CMakeLists calls it for
-# the real build, and tests/static/check_smp_predicate.sh calls it in script mode over
+# the real build, and tests/static/check_smp_predicate.cmake calls it in script mode over
 # synthetic declaration trees.
 
 include_guard(GLOBAL)

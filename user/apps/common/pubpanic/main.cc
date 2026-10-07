@@ -24,7 +24,7 @@
 int main(int, char**)
 {
     char const witness[] = "[pubpanic] kernel-console witness (must NOT reach the wire)\n";
-    (void)kos_kconsole_write(witness, sizeof(witness) - 1u); // a dropped line is the measurement
+    (void)KICKOS_KCONSOLE_MEASURED(DROP, witness, sizeof(witness) - 1u);
     // kos_send blocks on the console rendezvous, so the driver thread has run and
     // drained before the terminal event below.
     kos::print("[pubpanic] published route live\n");

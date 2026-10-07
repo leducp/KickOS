@@ -128,7 +128,7 @@
  *                64, and the presets at 6 (bluepill-c8, bluepill-c8-st, due, f302nucleo,
  *                f302nucleo-st) measure 428. arch_armv7m.cc refuses more than 9. It is not
  *                zeroed at KICKOS_KERNEL_STACKS 1: the gate scrapes it on every preset, and
- *                trap_redzone_roots.txt marks the class kstacks=0.
+ *                its class line below is kstacks=0.
  *   _SVCK        the same dispatch on the kernel block, posture-dependent, below.
  *
  * THE PANIC REPORTER IS ON NEITHER THIS CLASS NOR _SVCK: kpanic leaves the stack it was called
@@ -303,5 +303,41 @@
 #else
 #define KICKOS_ARMV7M_PANIC_DEPTH 320
 #endif
+
+/*
+ * The trap classes tests/static/check_trap_redzone.sh measures against the figures above,
+ * one line each; tests/static/trap_redzone_roots.txt says what each option means and roots
+ * every class.
+ *
+ * class PENDSV frame=KICKOS_ARMV7M_TRAP_FRAME_MAX depth=KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_PENDSV
+ *
+ * NEST_SVC_DISPATCH: the class is kstacks=0, and that posture puts the dispatch's compiler
+ * frames between the trampoline and the preemption point, so the preempting entry's STKALIGN pad
+ * stops cancelling. Provisioning it in the frame is what makes the depth comparison below
+ * (measured <= depth) the right test for every parity.
+ *
+ * class SVC    frame=KICKOS_ARMV7M_TRAP_NEST_SVC_DISPATCH depth=KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVC kstacks=0
+ * class SVCK   frame=KICKOS_ARMV7M_TRAP_NEST_SVCK depth=KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVCK stack=kernel
+ *
+ * The death path: no prologue guards these three classes.
+ *
+ * EXITK is the two relocating stubs wherever a block is seated. kickos_fault_stack_top answers
+ * with ctx.kernel_sp, so the fault redirect and the slay rebuild both land at the block TOP.
+ *
+ * class EXITK  frame=KICKOS_ARMV7M_TRAP_NEST_EXIT depth=KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_EXITK stack=kernel
+ *
+ * EXIT is the fallback: f302nucleo, f302nucleo-st, due, due-st, bluepill-c8 and bluepill-c8-st
+ * resolve KICKOS_KERNEL_STACKS 0, so all three stubs stay on the thread's own stack against the
+ * spawn floor. KICKOS_KERNEL_STACKS needs the chip's HAS_MPU, which stm32f103, stm32f302 and
+ * sam3x8e do not select.
+ *
+ * class EXIT   frame=KICKOS_ARMV7M_TRAP_NEST_EXIT depth=KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_EXIT kstacks=0
+ *
+ * RET is unmarked because it applies under BOTH designs: kickos_thread_return is an ordinary
+ * privileged thread's entry returning, with no fault and no redirect, so nothing relocates it.
+ *
+ * class RET    frame=KICKOS_ARMV7M_TRAP_NEST_EXIT depth=KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_RET
+ * class PANIC  frame=KICKOS_ARMV7M_PANIC_FRAME depth=KICKOS_ARMV7M_PANIC_DEPTH stack=panic
+ */
 
 #endif /* KICKOS_ARCH_ARMV7M_TRAP_STACK_H */

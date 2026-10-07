@@ -118,10 +118,6 @@ namespace kickos
 extern "C"
 {
 
-// THE GUARD SPELLING IS LOAD-BEARING AND MUST STAY EXACTLY THIS. check_cpu_id_fold.sh scans
-// every tracked C or C++ file for a definition of arch_cpu_id and skips only a block opened by
-// this literal line, so any other spelling makes this fixture a finding on every single-core
-// preset in the fleet.
 #if KICKOS_NUM_CORES > 1
 uint32_t arch_cpu_id(void)
 {

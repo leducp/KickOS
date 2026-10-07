@@ -25,7 +25,7 @@ TEST(ConsoleHeld, AKernelOwnedRecordGoesToTheDeviceAndIsNotHeld)
         console_tx_flush_sync();
         EXPECT_EQ(consoleseam::wire(), text("t1", 0x100u));
         EXPECT_EQ(held(), "");
-        EXPECT_EQ(heldseam::g_deliveries, 0u);
+        EXPECT_EQ(consoleseam::g_deliveries, 0u);
     });
 }
 
@@ -40,7 +40,7 @@ TEST(ConsoleHeld, ARecordUnderADriverTouchesNoDeviceAndIsHeldWhole)
         EXPECT_EQ(consoleseam::pushes_after_commit(), 0u)
             << "a fault record was written at a device the driver owns";
         EXPECT_EQ(held(), text("t1", 0x100u));
-        EXPECT_EQ(heldseam::g_deliveries, 1u) << "the finished record was not handed on";
+        EXPECT_EQ(consoleseam::g_deliveries, 1u) << "the finished record was not handed on";
     });
 }
 
@@ -51,11 +51,11 @@ TEST(ConsoleHeld, TwoRecordsWrittenAtOnceAreBothHeldWhole)
     run_isolated([]() {
         consoleseam::reset(kRing * 2u);
         publish();
-        heldseam::g_current = thread(1);
+        consoleseam::g_current = thread(1);
         kickos::kprintf_fault(kHead, "t1");
-        heldseam::g_current = thread(2);
+        consoleseam::g_current = thread(2);
         record("t2", 0x200u);
-        heldseam::g_current = thread(1);
+        consoleseam::g_current = thread(1);
         kickos::kprintf_fault(kPc, 0x100u);
         kickos::kprintf_fault(kAddr, 0x101u);
         kickos::krecord_end();
@@ -64,7 +64,7 @@ TEST(ConsoleHeld, TwoRecordsWrittenAtOnceAreBothHeldWhole)
         EXPECT_EQ(first, text("t2", 0x200u)) << "the record finished first is not read first";
         take(first.size());
         EXPECT_EQ(held(), text("t1", 0x100u));
-        EXPECT_EQ(heldseam::g_deliveries, 2u);
+        EXPECT_EQ(consoleseam::g_deliveries, 2u);
     });
 }
 
@@ -76,7 +76,7 @@ TEST(ConsoleHeld, TakingEverythingFinishedLeavesTheOpenRecordWhole)
         consoleseam::reset(kRing * 2u);
         publish();
         record("t1", 0x100u);
-        heldseam::g_current = thread(1);
+        consoleseam::g_current = thread(1);
         kickos::kprintf_fault(kHead, "t2");
         {
             std::string const first = held();
@@ -165,10 +165,10 @@ TEST(ConsoleHeld, ARecordItsWriterWasSlainInsideIsDroppedForTheNext)
     run_isolated([]() {
         consoleseam::reset(kRing);
         publish();
-        heldseam::g_current = thread(1);
+        consoleseam::g_current = thread(1);
         kickos::kprintf_fault(kHead, "t1");
         kickos::krecord_abandon();
-        heldseam::g_current = thread(2);
+        consoleseam::g_current = thread(2);
         record("t2", 0x200u);
         EXPECT_EQ(held(), text("t2", 0x200u));
         EXPECT_EQ(consoleseam::pushes_after_commit(), 0u);
@@ -185,12 +185,12 @@ TEST(ConsoleHeld, AReclaimInsideARecordWritesEachLineOnce)
         publish();
         kickos::kprintf_fault(kHead, "t1");
         task_ends();
-        ASSERT_EQ(heldseam::g_reclaims, 1u);
+        ASSERT_EQ(consoleseam::g_reclaims, 1u);
         kickos::kprintf_fault(kPc, 0x100u);
         kickos::kprintf_fault(kAddr, 0x101u);
         kickos::krecord_end();
         EXPECT_EQ(consoleseam::wire(), text("t1", 0x100u));
-        EXPECT_EQ(heldseam::g_reclaims, 1u) << "the record's end reclaimed the device again";
+        EXPECT_EQ(consoleseam::g_reclaims, 1u) << "the record's end reclaimed the device again";
         EXPECT_EQ(held(), "");
     });
 }
@@ -208,7 +208,7 @@ TEST(ConsoleHeld, APanicInsideARecordIsTheLastWriter)
         kickos::krecord_end();
         EXPECT_EQ(consoleseam::wire(),
                   "\n=== THREAD FAULT === thread 't1' killed\n\nKERNEL PANIC: banner\n");
-        EXPECT_EQ(heldseam::g_reclaims, 1u) << "the record's end reprogrammed the device again";
+        EXPECT_EQ(consoleseam::g_reclaims, 1u) << "the record's end reprogrammed the device again";
     });
 }
 
@@ -220,10 +220,10 @@ TEST(ConsoleHeld, ARecordEndingInsideAnotherCoresPanicReclaimsNothing)
         consoleseam::reset(kRing);
         publish();
         kickos::kprintf_fault(kHead, "t1");
-        heldseam::g_flush_hook = []() { kickos::krecord_end(); };
+        consoleseam::g_flush_hook = []() { kickos::krecord_end(); };
         kpanic_enter();
         kickos::kputs("\nKERNEL PANIC: banner\n");
-        EXPECT_EQ(heldseam::g_reclaims, 1u) << "the record's end reprogrammed the device again";
+        EXPECT_EQ(consoleseam::g_reclaims, 1u) << "the record's end reprogrammed the device again";
         EXPECT_EQ(consoleseam::wire(),
                   "\n=== THREAD FAULT === thread 't1' killed\n\nKERNEL PANIC: banner\n");
     });
@@ -240,11 +240,11 @@ TEST(ConsoleHeld, ATaskEndingDuringTheHandOffIsReclaimedWhenItCompletes)
             console_handover_begin();
         }
         task_ends();
-        EXPECT_EQ(heldseam::g_reclaims, 0u) << "the reclaim ran under a hand-off still draining";
-        uint32_t const wakes = heldseam::g_dark_wakes;
+        EXPECT_EQ(consoleseam::g_reclaims, 0u) << "the reclaim ran under a hand-off still draining";
+        uint32_t const wakes = consoleseam::g_dark_wakes;
         console_owner_set_user();
-        EXPECT_EQ(heldseam::g_reclaims, 1u) << "the death noted in the hand-off was erased";
-        EXPECT_GT(heldseam::g_dark_wakes, wakes);
+        EXPECT_EQ(consoleseam::g_reclaims, 1u) << "the death noted in the hand-off was erased";
+        EXPECT_GT(consoleseam::g_dark_wakes, wakes);
         EXPECT_EQ(console_dark(), 0);
         kickos::kputs("after\n");
         EXPECT_EQ(consoleseam::wire(), "after\n") << "the console stayed with a dead driver";
@@ -257,7 +257,7 @@ TEST(ConsoleHeld, ATaskEndingDuringTheHandOffWaitsForItsWindow)
 {
     run_isolated([]() {
         consoleseam::reset(kRing);
-        heldseam::g_window_free = false;
+        consoleseam::g_window_free = false;
         {
             kickos::IrqLock lock;
             console_handover_begin();
@@ -265,13 +265,13 @@ TEST(ConsoleHeld, ATaskEndingDuringTheHandOffWaitsForItsWindow)
         task_ends();
         console_owner_set_user();
         EXPECT_NE(console_dark(), 0) << "a writer finds a console it can neither use nor wait for";
-        EXPECT_EQ(heldseam::g_reclaims, 0u);
-        heldseam::g_window_free = true;
+        EXPECT_EQ(consoleseam::g_reclaims, 0u);
+        consoleseam::g_window_free = true;
         {
             kickos::IrqLock lock;
             console_on_driver_death();
         }
-        EXPECT_EQ(heldseam::g_reclaims, 1u);
+        EXPECT_EQ(consoleseam::g_reclaims, 1u);
         EXPECT_EQ(console_dark(), 0);
     });
 }
@@ -289,7 +289,7 @@ TEST(ConsoleHeld, ARecordAcrossAPublishKeepsItsTail)
         kickos::krecord_end();
         EXPECT_EQ(consoleseam::wire(), "\n=== THREAD FAULT === thread 't1' killed\n");
         EXPECT_EQ(held(), "  PC=0x100\n  ADDR=0x101\n");
-        EXPECT_EQ(heldseam::g_deliveries, 1u);
+        EXPECT_EQ(consoleseam::g_deliveries, 1u);
     });
 }
 

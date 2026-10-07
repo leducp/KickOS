@@ -128,8 +128,8 @@
  * figure says so. _SYSK is NOT rounded, a kernel block being sized to it directly, so a byte of
  * slack there costs KICKOS_THREAD_SLOTS bytes.
  *
- * rx72m is the only chip that selects ARCH_RXV3 and trap_redzone_roots.txt declares four of
- * its presets, so a figure here is the worst of four readings. No telemetry build is among
+ * rx72m is the only chip that selects ARCH_RXV3 and the gate runs on all four of its presets,
+ * so a figure here is the worst of four readings. No telemetry build is among
  * them: _PENDSW's optional trace root is ABSENT from every graph. A re-measurement MUST carry
  * this board's -misa=v3 -mdfpu baseline; at the compiler's default -misa=v1 with no DFPU every
  * figure comes out smaller than the truth. */
@@ -272,5 +272,24 @@
  * arch_rxv3.cc static_asserts the two agree. */
 #define KICKOS_RX_PANIC_FRAME 0
 #define KICKOS_RX_PANIC_DEPTH 320
+
+/*
+ * The trap classes tests/static/check_trap_redzone.sh measures against the figures above,
+ * one line each; tests/static/trap_redzone_roots.txt says what each option means and roots
+ * every class.
+ *
+ * class PENDSW   frame=KICKOS_RX_TRAP_FRAME_PENDSW depth=KICKOS_RX_TRAP_KERNEL_DEPTH_PENDSW
+ * class SYS      frame=KICKOS_RX_TRAP_NEST_SYS depth=KICKOS_RX_TRAP_KERNEL_DEPTH_SYS
+ * class SYS_FAST frame=KICKOS_RX_TRAP_FRAME_SYS_FAST depth=KICKOS_RX_TRAP_KERNEL_DEPTH_SYS_FAST
+ * class SYSK     frame=KICKOS_RX_TRAP_NEST_SYSK depth=KICKOS_RX_TRAP_KERNEL_DEPTH_SYSK stack=kernel
+ *
+ * THE DEATH PATH. The backend rewrites the stacked PC so the RTE lands in a stub with R0 at
+ * kickos_fault_stack_top, which answers with ctx.kernel_sp. EXITK is the two relocating stubs on
+ * the block; RET is kickos_thread_return, which cannot move.
+ *
+ * class EXITK    frame=KICKOS_RX_TRAP_NEST_EXIT depth=KICKOS_RX_TRAP_KERNEL_DEPTH_EXITK stack=kernel
+ * class RET      frame=KICKOS_RX_TRAP_NEST_EXIT depth=KICKOS_RX_TRAP_KERNEL_DEPTH_RET
+ * class PANIC    frame=KICKOS_RX_PANIC_FRAME depth=KICKOS_RX_PANIC_DEPTH stack=panic
+ */
 
 #endif /* KICKOS_ARCH_RX_TRAP_STACK_H */

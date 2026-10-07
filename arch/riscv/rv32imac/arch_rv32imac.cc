@@ -4,6 +4,7 @@
 // RISC-V RV32IMAC arch backend, ISA-generic half; switch.S and arch/riscv/chip/ hold the rest.
 
 #include <kickos/arch/arch.h>
+#include "ctx_redirect.h"
 #include <kickos/arch/idle_floor.h>
 #include <kickos/arch/rv_trap_stack.h>
 #include <kickos/diag.h>
@@ -266,37 +267,10 @@ void arch_ctx_set_syscall_result(struct arch_context* ctx, uint32_t result)
 void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
                        void* stack_base, size_t stack_size)
 {
-    // kernel_sp is put back explicitly: lost, the thread carries 0 through its own teardown
-    // and every trap on the way takes the entry's refusal path.
-    uintptr_t const kernel_sp = ctx->kernel_sp;
 #if defined(KICKOS_TLS) && KICKOS_TLS
     uint32_t const tls_base = ctx->tls_base;
 #endif
-#if KICKOS_KERNEL_STACKS
-    // The stub is rebuilt at the TOP of the thread's own kernel block, so no privileged frame
-    // lands on memory the thread or a domain sibling can write, and the block requirement is
-    // the MAX of the dispatch and exit classes rather than their sum.
-    //
-    // stack_lo and stack_hi are put back, or the context would describe the kernel block as
-    // this thread's stack. tests/static/check_death_stack_seating.sh holds this shape.
-    if (kernel_sp != 0)
-    {
-        uint32_t const lo = ctx->stack_lo;
-        uint32_t const hi = ctx->stack_hi;
-        void* const block = reinterpret_cast<void*>(
-            kernel_sp - KICKOS_KERNEL_STACK_SIZE);
-        arch_context_init(ctx, entry, nullptr, block, KICKOS_KERNEL_STACK_SIZE, 1);
-        ctx->stack_lo = lo;
-        ctx->stack_hi = hi;
-        ctx->kernel_sp = kernel_sp;
-#if defined(KICKOS_TLS) && KICKOS_TLS
-        ctx->tls_base = tls_base;
-#endif
-        return;
-    }
-#endif
-    arch_context_init(ctx, entry, nullptr, stack_base, stack_size, 1);
-    ctx->kernel_sp = kernel_sp;
+    arch_ctx_redirect_to_block(ctx, entry, stack_base, stack_size);
 #if defined(KICKOS_TLS) && KICKOS_TLS
     ctx->tls_base = tls_base;
 #endif

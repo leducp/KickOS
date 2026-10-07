@@ -21,8 +21,7 @@
 #
 #   as        `-> as KOS_SYS_<other>, plus -KOS_ETIMEDOUT` INHERITS the other entry's codes,
 #             which is how the three timed twins are written today. Resolved transitively, so
-#             a chain reaches its root. NOAS=1 disables it, for the gate's own near-miss
-#             control.
+#             a chain reaches its root.
 #
 #   grouped   one arm under several `case` labels answers several syscalls from ONE body, and
 #             nothing in the text says which label reaches which refusal. A code the shared
@@ -191,14 +190,12 @@ END {
             if (nxt ~ /[A-Za-z_0-9]/ || prv ~ /[A-Za-z_0-9]/) { continue }
             if (is_code(tok)) { doc[nm, tok] = 1 }
         }
-        if (!NOAS) {
-            t = doctext[nm]
-            while (match(t, /as[ \t]+KOS_SYS_[A-Za-z_0-9]*/) > 0) {
-                other = substr(t, RSTART, RLENGTH)
-                sub(/^as[ \t]+/, "", other)
-                t = substr(t, RSTART + RLENGTH)
-                inherits[nm] = inherits[nm] " " other
-            }
+        t = doctext[nm]
+        while (match(t, /as[ \t]+KOS_SYS_[A-Za-z_0-9]*/) > 0) {
+            other = substr(t, RSTART, RLENGTH)
+            sub(/^as[ \t]+/, "", other)
+            t = substr(t, RSTART + RLENGTH)
+            inherits[nm] = inherits[nm] " " other
         }
     }
     for (pass = 1; pass <= 4; pass++) {

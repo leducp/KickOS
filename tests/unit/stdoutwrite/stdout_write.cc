@@ -7,14 +7,19 @@
 // The short-accept arms run the endpoint's rendezvous instead of a send script. A non-blocking
 // task's kernel answers -KOS_ETIMEDOUT where a blocking one would wait. libc's _write is the
 // stubs' own body, compiled in under the shim's names.
+// The stubs' fstat: newlib reads st_mode to decide line buffering and st_blksize as a buffer
+// size, so a field left as the caller's stack bytes makes stdout's buffering vary.
 
 #include <gtest/gtest.h>
 
 #include <cerrno>
 #include <csetjmp>
 #include <cstdlib>
+#include <cstring>
 #include <deque>
 #include <string>
+
+#include <sys/stat.h>
 
 #include <kickos/sys.h>
 #include <kickos/sys/emit.h>
@@ -182,6 +187,8 @@ extern "C"
     }
 
     int _write(int fd, char const* buf, int len);
+    int _fstat(int fd, struct stat* st);
+    int kos_ut_plain_fstat(int fd, struct stat* st);
 }
 
 namespace
@@ -470,5 +477,30 @@ namespace
         kos_print("line\n");
         EXPECT_EQ(g_kconsole, "li");
         EXPECT_TRUE(g_kconsole_script.empty());
+    }
+
+    void expect_console(int (*call)(int, struct stat*), int fd)
+    {
+        struct stat st;
+        memset(&st, 0xA5, sizeof(st));
+        ASSERT_EQ(call(fd, &st), 0);
+        EXPECT_TRUE(S_ISCHR(st.st_mode));
+        EXPECT_EQ(st.st_mode, static_cast<mode_t>(S_IFCHR));
+        EXPECT_EQ(st.st_size, 0);
+        EXPECT_EQ(st.st_blksize, 0);
+        EXPECT_EQ(st.st_blocks, 0);
+    }
+
+    TEST(NewlibStubs, FstatReportsTheConsoleAsACharacterDeviceWithNothingElseSet)
+    {
+        for (int fd = 0; fd < 3; ++fd)
+        {
+            expect_console(_fstat, fd);
+        }
+    }
+
+    TEST(NewlibStubs, ThePlainNameAnswersAsTheUnderscoredOne)
+    {
+        expect_console(kos_ut_plain_fstat, 1);
     }
 }

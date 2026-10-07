@@ -20,7 +20,7 @@
 # CLOSED ON THE NAMES THAT HAVE A KERNEL TWIN. bcmp, bzero, __memcpy_chk and __memset_chk are
 # deliberately absent: nothing in the tree defines a kernel twin for them, so a toolchain that
 # starts emitting one is a change worth a human reading rather than a silent redirect.
-# tests/static/check_kernel_runtime.sh refuses those, and refuses any name below that this
+# tests/static/check_kernel_got.sh refuses those, and refuses any name below that this
 # rewrite failed to reach, which is what catches an archive it was never applied to. It also
 # refuses kvsnprintf and ksnprintf: no compiler emits either, so a kernel-side reference to
 # one is an explicit call and belongs corrected in the source.

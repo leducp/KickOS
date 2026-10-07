@@ -2,7 +2,10 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# The fleet silicon pass: the boards enumerated in ALL below, one at a time.
+# The fleet silicon pass over the boards enumerated in ALL below. Every image is built first; then
+# each board's captures run in order in a worker of its own, boards that share a probe or a console
+# cable (board_resources in board-rows.sh) in one worker, so the pass takes as long as its longest
+# worker. Each worker's output and findings are merged, in board order, into one summary.
 #
 #   TAG=<tag> tools/bench/bench-fleet.sh              # everything enumerated
 #   TAG=<tag> tools/bench/bench-fleet.sh rx72m xmc4800-relax
@@ -144,26 +147,33 @@ record() {
 # The judge bench.sh names for a selftest image: the capture runs it over the TAP stream.
 TAP_JUDGE=tests/integration/check_tap_stream.sh
 
+# The environment bench.sh takes for one image, in VARS. With <variant> set, the image is that
+# variant's build's; with <amp> 1 as well, the run is that variant's AMP partition rather than one
+# image.
+bench_vars() { # <app> <variant> <amp>
+  VARS=(TAG="$TAG" APP="$1")
+  if [ -n "$2" ]; then
+    VARS=(TAG="$(variant_tag "$2")" APP="$1" VARIANT="$2")
+  fi
+  if [ "$3" = "1" ]; then
+    VARS+=(AMP_PARTITION=1)
+  fi
+}
+
+# Builds the image bench_one flashes, and flashes nothing. bench.sh's output lands in <out>.
+build_one() { # <board> <app> <sn> <variant> <amp> <out>
+  bench_vars "$2" "$4" "$5"
+  env "${VARS[@]}" BUILD_ONLY=1 "$BENCH" "$1" ${3:+"$3"} > "$6" 2>&1 < /dev/null
+}
+
 # Runs bench.sh for ONE board and ONE image. The serial, when a board needs one, is
-# passed as its own argument here and nowhere else.
-# With <variant> set, the image is that variant's build's; with <amp> 1 as well, the run is that
-# variant's AMP partition rather than one image.
+# passed as its own argument.
 bench_one() {
   NOT_EVALUATED=""
   local board=$1 app=$2 sn=$3 label=$4 judge=$5 variant=${6:-} amp=${7:-0} out rc
-  local -a vars=(TAG="$TAG" APP="$app")
-  if [ -n "$variant" ]; then
-    vars=(TAG="$(variant_tag "$variant")" APP="$app" VARIANT="$variant")
-  fi
-  if [ "$amp" = "1" ]; then
-    vars+=(AMP_PARTITION=1)
-  fi
+  bench_vars "$app" "$variant" "$amp"
   out=$(mktemp)
-  if [ -n "$sn" ]; then
-    env "${vars[@]}" "$BENCH" "$board" "$sn" > "$out" 2>&1 < /dev/null
-  else
-    env "${vars[@]}" "$BENCH" "$board" > "$out" 2>&1 < /dev/null
-  fi
+  env "${VARS[@]}" "$BENCH" "$board" ${sn:+"$sn"} > "$out" 2>&1 < /dev/null
   rc=$?
   if [ $rc -ne 0 ]; then
     record "$label" "FAILED rc=$rc: $(grep -m1 -E 'REFUSING|FAIL' "$out" || echo 'see log below')"
@@ -240,7 +250,7 @@ take_image() { # <board> <image> <label> <judge> <args> [variant]
   capture_image "$board" "$img" "$label" "$judge" "$variant" 0
 }
 
-# Captures one judged image, or names it in a dry run, and files the outcome.
+# Queues one judged image for its board's worker, or names it in a dry run.
 capture_image() { # <board> <image> <label> <judge> <variant> <amp>
   local board=$1 img=$2 label=$3 judge=$4 variant=$5 amp=$6
   OWED="$OWED$board $label
@@ -249,16 +259,57 @@ capture_image() { # <board> <image> <label> <judge> <variant> <amp>
     record "$board/$label" "WOULD FLASH (dry run; judge $judge)"
     return
   fi
-  if bench_one "$board" "$img" "$SN" "$board/$label" "$judge" "$variant" "$amp"; then
-    COVERED="$COVERED$board $label
+  JOBS="$JOBS$board|$img|$label|$judge|$variant|$amp|$SN
 "
-    if [ -n "$NOT_EVALUATED" ]; then
-      PARTLY="$PARTLY$board|$label|$NOT_EVALUATED
-"
+}
+
+# The worker a board's captures run in: the one already holding a probe or a console the board
+# holds, else its own. A board holding what two workers hold joins them into one.
+declare -A WORKER_OF=() HOLDER=()
+join_worker() { # <board> <probe-serial>
+  local w=$1 r k
+  WORKER_OF[$1]=$1
+  while IFS= read -r r; do
+    if [ -n "${HOLDER[$r]:-}" ] && [ "${HOLDER[$r]}" != "$w" ]; then
+      for k in "${!WORKER_OF[@]}"; do
+        [ "${WORKER_OF[$k]}" != "$w" ] || WORKER_OF[$k]=${HOLDER[$r]}
+      done
+      for k in "${!HOLDER[@]}"; do
+        [ "${HOLDER[$k]}" != "$w" ] || HOLDER[$k]=${HOLDER[$r]}
+      done
+      w=${HOLDER[$r]}
     fi
-  else
-    FAILED=1
-  fi
+    HOLDER[$r]=$w
+  done < <(board_resources "$1" "$2")
+}
+
+# One worker's captures, in the order they were queued. Its findings go to $WORK/<worker>.<name>,
+# since a background worker's variables die with it.
+worker() { # <worker>
+  local board img label judge variant amp sn
+  RESULTS=""
+  COVERED=""
+  PARTLY=""
+  FAILED=0
+  while IFS='|' read -r board img label judge variant amp sn <&4; do
+    [ -n "$board" ] && [ "${WORKER_OF[$board]}" = "$1" ] || continue
+    if bench_one "$board" "$img" "$sn" "$board/$label" "$judge" "$variant" "$amp"; then
+      COVERED="$COVERED$board $label
+"
+      if [ -n "$NOT_EVALUATED" ]; then
+        PARTLY="$PARTLY$board|$label|$NOT_EVALUATED
+"
+      fi
+    else
+      FAILED=1
+    fi
+  done 4<<JOBS
+$BUILT
+JOBS
+  printf '%s' "$RESULTS" > "$WORK/$1.RESULTS"
+  printf '%s' "$COVERED" > "$WORK/$1.COVERED"
+  printf '%s' "$PARTLY" > "$WORK/$1.PARTLY"
+  printf '%s' "$FAILED" > "$WORK/$1.FAILED"
 }
 
 FAILED=0
@@ -272,6 +323,7 @@ HUMAN_OWED=""
 VOID=""
 PARTLY=""
 MEASURED=""
+JOBS=""
 for board in $WANT; do
   SN=""
   if [ "$DRY_RUN" != "1" ]; then
@@ -305,6 +357,7 @@ EOF
   fi
 
   echo "=== $board${SN:+  SN $SN}"
+  join_worker "$board" "$SN"
   LERR=$(mktemp)
   IMAGES=$(images_for "$board" "$LERR")
   if [ -z "$IMAGES" ]; then
@@ -382,6 +435,51 @@ $VAR_IMAGES
 ROWS
   done
 done
+
+# EVERY IMAGE IS BUILT BEFORE THE FIRST FLASH, so no capture waits on the compiler. An image that
+# does not build is a failed capture, and its worker never flashes it.
+BUILT=""
+while IFS='|' read -r board img label judge variant amp sn <&4; do
+  [ -n "$board" ] || continue
+  echo "=== building $board/$label"
+  out=$(mktemp)
+  if build_one "$board" "$img" "$sn" "$variant" "$amp" "$out"; then
+    BUILT="$BUILT$board|$img|$label|$judge|$variant|$amp|$sn
+"
+  else
+    record "$board/$label" "FAILED to build: $(grep -m1 -E 'REFUSING|FAIL|error' "$out" || echo 'see the build output')"
+    grep -E 'REFUSING|FAIL|Error|error:' "$out" | head -5 | sed 's/^/    /'
+    FAILED=1
+  fi
+  rm -f "$out"
+done 4<<JOBS
+$JOBS
+JOBS
+
+WORK=$(mktemp -d)
+WORKERS=$(printf '%s' "$BUILT" | while IFS='|' read -r board _; do
+  printf '%s\n' "${WORKER_OF[$board]}"
+done | awk '!seen[$0]++')
+for w in $WORKERS; do
+  worker "$w" > "$WORK/$w.out" 2>&1 &
+done
+wait
+# A worker that left no verdict behind failed, and its images read NOT RUN below.
+for w in $WORKERS; do
+  members=""
+  for board in $WANT; do
+    [ "${WORKER_OF[$board]:-}" != "$w" ] || members="$members $board"
+  done
+  echo "=== worker:$members"
+  cat "$WORK/$w.out"
+  for part in RESULTS COVERED PARTLY; do
+    if [ -s "$WORK/$w.$part" ]; then
+      printf -v "$part" '%s%s\n' "${!part}" "$(cat "$WORK/$w.$part")"
+    fi
+  done
+  [ "$(cat "$WORK/$w.FAILED" 2>/dev/null)" = 0 ] || FAILED=1
+done
+rm -rf "$WORK"
 
 echo
 echo "=== fleet pass, TAG=$TAG"

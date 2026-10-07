@@ -17,7 +17,7 @@ namespace kickos
         namespace
         {
             // THE ONE OBJECT BOTH SIDES WRITE.
-            KICKOS_AMP_SHARED("window") Window g_window;
+            KICKOS_AMP_SHARED("window") constinit Window g_window{};
 
             // Which ports each node has minted. NOT in the window: it is what a far port is
             // validated AGAINST, so a far side able to write it would validate itself. Under

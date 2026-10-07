@@ -27,6 +27,7 @@
 
 #include <kickos/arch/rv_trap_ids.h>
 #include <kickos/arch/rv_trap_stack.h>
+#include <kickos/chip_limits.h>
 
 #if KICKOS_BENCH && KICKOS_KERNEL_CORES > 1
     .error "the switch stamp below is ONE word for the image, so a second core stamping it subtracts one core's open from another's close. Give this backend a per-core cell (armv8a, rv64imac and lx6 have one) before raising the kernel core count."
@@ -84,8 +85,7 @@
 
 #if KICKOS_BENCH
 /* One cycle sample into \rd, using \rtmp as scratch. A non-zero g_bench_cycle_src selects
-   that MMIO counter, for a core whose rdcycle traps. Every caller wraps this in
-   `.option norelax`: a relaxed `la` resolves through gp. */
+   that MMIO counter, for a core whose rdcycle traps. */
     .macro  BENCH_CYC rd, rtmp
     la      \rtmp, g_bench_cycle_src
     lw      \rtmp, 0(\rtmp)
@@ -98,17 +98,21 @@
     .endm
 #endif
 
+/* Nothing in this file is relaxed. gp is U-mode writable and only the linker makes a gp-relative
+   access, out of a relaxable pair, so every gp read below is one written out. */
+    .option norelax
     .text
 
 /* Vectored mtvec table. The ESP32-C6 core supports ONLY vectored mtvec (TRM: "Only vectored
    mode 0x1 is available"). An INTERRUPT of cause i vectors to BASE + 4*i and any EXCEPTION to
-   BASE, so the base must be 256-byte aligned and each slot a 4-byte entry, hence norvc. */
+   BASE, so the base must be 256-byte aligned and each slot a 4-byte entry, hence norvc. One slot
+   per interrupt cause the chip can raise. */
     .balign 256
     .global kickos_rv_mtvec
 kickos_rv_mtvec:
     .option push
     .option norvc
-    .rept 32
+    .rept KICKOS_MAX_IRQ
     j       trap_entry
     .endr
     .option pop
@@ -125,21 +129,15 @@ trap_entry:
     /* Anchor gp BEFORE any gp-relative kernel access below. gp is U-mode writable and never
        saved; the demux's `la g_arch_current` reads the running ctx* THROUGH it, so an
        unanchored gp lets the interrupted thread choose the ctx whose bounds and kernel_sp the
-       frame store obeys, in M-mode, past PMP. norelax is load-bearing: a relaxed la becomes
-       `addi gp, gp, off`, which reads the gp under attack. */
-    .option push
-    .option norelax
+       frame store obeys, in M-mode, past PMP. The file's norelax is load-bearing: a relaxed la
+       becomes `addi gp, gp, off`, which reads the gp under attack. */
     la      gp, __global_pointer$
-    .option pop
 #if KICKOS_BENCH
     /* The switch window opens above the register save and the demux sits below it, so every
        trap pays this stamp and only .Lswitch reads it. */
-    .option push
-    .option norelax
     BENCH_CYC t0, t1
     la      t1, g_bench_sw_start
     sw      t0, 0(t1)
-    .option pop
 #endif
     csrr    t0, mstatus
     srli    t1, t0, 11             /* MPP is mstatus[12:11]; 0x1800 exceeds andi's imm */
@@ -399,8 +397,6 @@ trap_entry:
     lw      s1, 4(t3)               /* to_tid = incoming->trace_tid */
 #endif
 #if KICKOS_BENCH
-    .option push
-    .option norelax
     BENCH_CYC t0, t1
     la      t1, g_bench_sw_start
     lw      t1, 0(t1)
@@ -415,7 +411,6 @@ trap_entry:
     sw      zero, 0(t1)
     call    kickos_bench_switch_done
 10:
-    .option pop
 #endif
 #if KICKOS_TELEMETRY
     mv      a0, s0
@@ -498,26 +493,17 @@ svc_trampoline:
 .Lrestore:
 #if KICKOS_BENCH
     /* Every register but sp is dead here, the frame reloading each one below. */
-    .option push
-    .option norelax
     BENCH_CYC t0, t1
     la      t1, g_bench_sw_rstart
     sw      t0, 0(t1)
-    .option pop
 #endif
     /* Force gp to its link-time value on every resume. __global_pointer$ is anchored inside
        the LIVE app small-data window and U-mode can write gp, so the next thread's
-       gp-relative loads would otherwise resolve at addresses the last one chose. norelax: a
-       relaxed `la` reads gp through gp. */
-    .option push
-    .option norelax
+       gp-relative loads would otherwise resolve at addresses the last one chose. */
     la      gp, __global_pointer$
-    .option pop
 #if defined(KICKOS_TLS) && KICKOS_TLS
     /* tp = the running thread's TLS block base, from its context and NEVER from the incoming
-       tp, which U-mode can write.
-       KEEP THIS AFTER THE gp ANCHOR ABOVE: relaxation is back on here and the linker turns
-       the `la` into `addi tp, gp, <off>`, which reads the gp those instructions just set. */
+       tp, which U-mode can write. */
     la      tp, g_arch_current
     lw      tp, 0(tp)
     lw      tp, F_CTX_TLS_BASE(tp)
@@ -558,8 +544,6 @@ svc_trampoline:
     /* The switch window closes here. t0/t1/t2 are this block's scratch, so they are reloaded
        below it and nowhere above. mret leaves no register free, so the delta is left for
        .Lswitch to bank. */
-    .option push
-    .option norelax
     BENCH_CYC t0, t1
     la      t1, g_bench_sw_half
     lw      t2, 0(t1)
@@ -572,7 +556,6 @@ svc_trampoline:
     la      t1, g_bench_sw_pend
     sw      t0, 0(t1)
 11:
-    .option pop
 #endif
     lw      t0,  F_T0(sp)
     lw      t1,  F_T1(sp)

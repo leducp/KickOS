@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# The standalone C11 compile two header gates share. SOURCED, never executed, and only after
-# gate.sh, whose fail() it uses:
+# The standalone C11 compile of tests/static/check_public_headers.sh's C arm. SOURCED, never
+# executed, and only after gate.sh, whose fail() it uses:
 #   . "$(dirname "$0")/../lib/gate.sh"
 #   KOS_C_FORM=quoted
 #   KOS_C_CC="$CC"
@@ -11,9 +11,8 @@
 #   kos_c_prove_missing_include "$TMP" -I"$root"
 #
 # It carries the COMPILE and nothing else. Which headers to compile, and what a refusal
-# means for the tree, are the gates' own, and they assert different things over different
-# corpora: check_c_headers.sh walks the source tree with the board's cross compiler,
-# check_public_headers.sh walks an installed package with the consumer's.
+# means, are the gate's own, over two corpora: the source tree with the board's cross
+# compiler, and an installed package with the consumer's.
 #
 # KOS_C_FORM is how the include is spelled, and it decides what the argument to each function
 # below MEANS. `quoted` takes a PATH, resolved against the working directory, which is the

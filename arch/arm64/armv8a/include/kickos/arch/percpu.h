@@ -57,8 +57,8 @@ struct alignas(64) armv8a_percpu_block
 extern struct armv8a_percpu_block kickos_armv8a_percpu[KICKOS_NUM_CORES];
 
 // At one core the block is the array's first element and the accessor is a FOLD, so the
-// image carries no load and no branch to find it: the property check_cpu_id_fold.sh holds
-// for arch_cpu_id, for the same reason. The multi-core arm is a DECLARATION ONLY, reading
+// image carries no load and no branch to find it: the property arch.h holds for arch_cpu_id,
+// for the same reason. The multi-core arm is a DECLARATION ONLY, reading
 // TPIDR_EL1 which secondary bring-up seats, so a port that raises KICKOS_NUM_CORES and
 // ships no definition is a LINK error rather than a kernel that believes it is on core 0.
 #if KICKOS_NUM_CORES > 1

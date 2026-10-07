@@ -2,7 +2,9 @@
 # Copyright (c) 2026 Philippe Leduc
 
 # Ownership gate for kernel/init/console.cc: who may poke the UART, and when. The real
-# translation unit is compiled in and given a recording arch seam, arch_irq_save included.
+# translation unit is compiled in and given a recording arch seam, arch_irq_save included;
+# tests/unit/consoleseam/console_alone.cc answers what the three console.cc-alone gates below
+# do not record.
 #
 # It takes the kernel target's include path and definitions verbatim (KICKOS_CONSOLE_CHIP
 # among them) but NOT its compile options: -ffreestanding describes an image with no host
@@ -18,7 +20,8 @@
 # the chip path, which consumes a mask gap; publish_handoff.cc offsets its gap ordinals by
 # that, so both console postures race the window each test names.
 kickos_add_unit_test(NAME console_ownership
-  SOURCES console_ownership.cc "${PROJECT_SOURCE_DIR}/kernel/init/console.cc"
+  SOURCES console_ownership.cc "${PROJECT_SOURCE_DIR}/tests/unit/consoleseam/console_alone.cc"
+          "${PROJECT_SOURCE_DIR}/kernel/init/console.cc"
           "${PROJECT_SOURCE_DIR}/lib/rtt.cc"
   KERNEL)
 
@@ -28,8 +31,12 @@ kickos_add_unit_test(NAME console_ownership
 #
 # HOST-ONLY: the publish must land inside a specific mask gap of the writer it races, which
 # needs an instrumented arch_irq_save/restore and no second thread.
+#
+# masked_window.cc: the interrupt-masked window of console_tx_insert_line, which any
+# unprivileged thread drives through kos_kconsole_write. Host-only: the metric is bytes pushed
+# per masked span, and no board can report that without an instrumented mask.
 kickos_add_unit_test(NAME console_publish_handoff
-  SOURCES publish_handoff.cc publish_seam.cc
+  SOURCES publish_handoff.cc masked_window.cc
           "${PROJECT_SOURCE_DIR}/tests/unit/consoleseam/console_seam.cc"
           "${PROJECT_SOURCE_DIR}/kernel/init/console.cc"
           "${PROJECT_SOURCE_DIR}/kernel/init/console_tx.cc"
@@ -40,12 +47,14 @@ kickos_add_unit_test(NAME console_publish_handoff
 # kernel/init/console.cc at an own-image AMP node's posture, where a user writer carries a
 # half-sent CR between offers.
 kickos_add_unit_test(NAME console_cr_pending
-  SOURCES console_cr_pending.cc "${PROJECT_SOURCE_DIR}/kernel/init/console.cc"
+  SOURCES console_cr_pending.cc "${PROJECT_SOURCE_DIR}/tests/unit/consoleseam/console_alone.cc"
+          "${PROJECT_SOURCE_DIR}/kernel/init/console.cc"
           "${PROJECT_SOURCE_DIR}/lib/rtt.cc"
   POSTURE KICKOS_AMP_OWN_IMAGE=1)
 
 # kernel/init/console.cc's polled line writer at a CRLF console's posture.
 kickos_add_unit_test(NAME console_line_sync
-  SOURCES line_sync.cc "${PROJECT_SOURCE_DIR}/kernel/init/console.cc"
+  SOURCES line_sync.cc "${PROJECT_SOURCE_DIR}/tests/unit/consoleseam/console_alone.cc"
+          "${PROJECT_SOURCE_DIR}/kernel/init/console.cc"
           "${PROJECT_SOURCE_DIR}/lib/rtt.cc"
   POSTURE KICKOS_CONSOLE_CRLF=1)

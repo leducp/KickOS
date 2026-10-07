@@ -44,7 +44,7 @@ inline WriteResult kconsole_offer(char const* s, size_t n)
     WriteResult r = {0, 0};
     while (r.sent < n)
     {
-        int32_t const w = kos_kconsole_write(s + r.sent, n - r.sent);
+        int32_t const w = KconsoleRaw::write(s + r.sent, n - r.sent);
         if (w < 0)
         {
             r.error = w;

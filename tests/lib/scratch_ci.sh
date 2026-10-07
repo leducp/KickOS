@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# The scratch callgraph tree two gates share. SOURCED, never executed, and only after
-# gate.sh, whose fail() and $TMP it uses:
+# The scratch callgraph tree check_trap_redzone.sh walks. SOURCED, never executed, and only
+# after gate.sh, whose fail() and $TMP it uses:
 #   . "$(dirname "$0")/../lib/gate.sh"
 #   . "$(dirname "$0")/../lib/scratch_ci.sh"
 #
@@ -49,7 +49,7 @@ _scratch_ci_fresh() {
 }
 
 # A tree that held another checkout, or another ISA, is DELETED rather than reconfigured.
-# --fresh leaves every object and every .ci beside it, and both consumers glob '**/*.ci'
+# --fresh leaves every object and every .ci beside it, and every reader of it globs '**/*.ci'
 # recursively, so a translation unit that exists only in the other checkout stays in the
 # merged callgraph: it lands as AMBIGUOUS DEFINITION where the surviving tree also defines
 # the symbol, and as a silently wider graph where it does not.

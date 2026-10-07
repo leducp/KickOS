@@ -214,4 +214,21 @@
 #define KICKOS_ARMV6M_PANIC_FRAME 32
 #define KICKOS_ARMV6M_PANIC_DEPTH 320
 
+/*
+ * The trap classes tests/static/check_trap_redzone.sh measures against the figures above,
+ * one line each; tests/static/trap_redzone_roots.txt says what each option means and roots
+ * every class.
+ *
+ * class PENDSV frame=KICKOS_ARMV6M_TRAP_FRAME depth=KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_PENDSV
+ * class SVC    frame=KICKOS_ARMV6M_TRAP_NEST_SVC depth=KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_SVC
+ *
+ * The death path. EXITK is the two relocating stubs on the block; RET is kickos_thread_return,
+ * which cannot move and stays against the spawn floor.
+ *
+ * class EXITK  frame=KICKOS_ARMV6M_TRAP_NEST_EXIT depth=KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_EXITK stack=kernel
+ * class RET    frame=KICKOS_ARMV6M_TRAP_NEST_EXIT depth=KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_RET
+ * class SVCK   frame=KICKOS_ARMV6M_TRAP_NEST_SVCK depth=KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_SVCK stack=kernel
+ * class PANIC  frame=KICKOS_ARMV6M_PANIC_FRAME depth=KICKOS_ARMV6M_PANIC_DEPTH stack=panic
+ */
+
 #endif /* KICKOS_ARCH_ARMV6M_TRAP_STACK_H */
