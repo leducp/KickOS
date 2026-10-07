@@ -109,6 +109,21 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
+# <kickos/sys.h> poisons the raw kernel console write in every app TU it compiles. This refuses
+# it in the arms and the sources no configuration compiles.
+file(GLOB_RECURSE _kos_app_sources "${CMAKE_CURRENT_SOURCE_DIR}/*.c"
+     "${CMAKE_CURRENT_SOURCE_DIR}/*.cc" "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp"
+     "${CMAKE_CURRENT_SOURCE_DIR}/*.h")
+foreach(_kos_src IN LISTS _kos_app_sources)
+  file(STRINGS "${_kos_src}" _kos_raw
+       REGEX "(^|[^A-Za-z0-9_])(kos_kconsole_write *\\(|KOS_SYS_KCONSOLE_WRITE)")
+  if(_kos_raw)
+    message(FATAL_ERROR "KickOS: ${_kos_src} writes the kernel console raw: '${_kos_raw}'. Write "
+      "through kos_print or stdio, or state what of the write is measured: "
+      "KICKOS_KCONSOLE_MEASURED(DROP|ANSWER|WAIT, buf, len) (<kickos/sys.h>).")
+  endif()
+endforeach()
+
 # Board-agnostic and multi-board apps.
 add_subdirectory(common)
 

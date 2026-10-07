@@ -231,7 +231,7 @@ legs12_scan() { # <class-syms> <defs> <included> <findings-out> <count-out> <ref
             _winner=$(awk -F'\t' -v s="$_sym" '$1 == s && $4 == "object" { print $2 }' "$2" | head -1)
             if [ -n "$_winner" ]; then
                 _losers=$(awk -F'\t' -v s="$_sym" '$1 == s && $4 == "archive" { print $2 }' "$2" | sort -u)
-                printf '%s\n' "leg 1: $_sym is defined by the link-line object $_winner AND by $(echo $_losers); the archive member is never extracted, no duplicate symbol is reported, and that backend's own calls bind to the object's definition. Either keep the second definition out of every target image (what the UART class does: its mock is host-only, tests/unit/uartclass), or rename the backend's class symbols in its CMakeLists (what the SPI services do, because t_bus_device_slots needs a mock in the image: target_compile_definitions kos_*=<driver>_*)" >> "$4"
+                printf '%s\n' "leg 1: $_sym is defined by the link-line object $_winner AND by $(echo $_losers); the archive member is never extracted, no duplicate symbol is reported, and that backend's own calls bind to the object's definition. Either keep the second definition out of every target image (a host-only test seam), or rename the backend's class symbols in its CMakeLists (what the SPI services do, because t_bus_device_slots needs a mock in the image: target_compile_definitions kos_*=<driver>_*)" >> "$4"
             else
                 printf '%s\n' "leg 1: $_sym has $_c definition sources ($(echo $_sources)); which one this link resolves to is archive order" >> "$4"
             fi

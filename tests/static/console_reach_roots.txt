@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Declarations for tests/static/check_console_reach.sh: WHICH symbols the fault-record console
-# route starts at, WHAT it must still reach for the root set to mean anything, WHAT it must
-# never reach, and WHAT the graph is allowed not to know.
+# Declarations for the console_reach clause of tests/static/check_trap_redzone.sh: WHICH
+# symbols the fault-record console route starts at, WHAT it must still reach for the root set
+# to mean anything, WHAT it must never reach, and WHAT the graph is allowed not to know.
 #
 # The defect class: a fault record is held for a published console driver and handed to it
 # through cap_console_deliver, so any kpanic reachable from that route closes a cycle -- kpanic
@@ -30,9 +30,9 @@
 # tests/static/trap_redzone.py, whose graph this clause reads.
 #
 # This clause looks for a call EDGE, and an edge only exists where the compiler kept the call:
-# on the region-model boards the whole cap_console_deliver family folds away. Every TRANSLATING
-# preset of the fleet is registered below, and that set is the claim -- a translating board
-# added without a record here is a board where the next assert can land.
+# on the region-model boards the whole cap_console_deliver family folds away. The top-level
+# CMakeLists registers the clause on every TRANSLATING preset (KICKOS_HAVE_ASPACE), so a
+# translating board added without a preset and floor record here fails until it is declared.
 
 preset  armv8a   imx8mp-evk
 preset  armv8a   qemu-arm64

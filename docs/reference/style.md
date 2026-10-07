@@ -57,9 +57,10 @@ further down: it binds every tracked file.
   non-template function body goes in a `.cc` -- `user/src/` for the user substrate -- so the
   tree carries one definition rather than a copy per including TU for the linker to fold.
 - **A C-facing header compiles as C11.** **gated** Guarding `extern "C"` with `#ifdef
-  __cplusplus` is what declares a header C-facing, and `tests/static/check_c_headers.sh`
+  __cplusplus` is what declares a header C-facing, and `tests/static/check_public_headers.sh`
   compiles every such header, plus every header one of them includes, as a standalone
-  `-std=c11` TU with the board's own C compiler. So `static_cast`, `nullptr`, `alignas`,
+  `-std=c11` TU: tracked ones with the board's own C compiler, installed ones with the
+  consumer's. So `static_cast`, `nullptr`, `alignas`,
   `static_assert`, a `bool` without `<stdbool.h>`, and the spelled `and`/`or`/`not` of the rule
   above are all errors there: write both spellings under the guard, as
   `<kickos/sys/uart.h>` does for `static_assert` and `_Static_assert`, or split the condition.

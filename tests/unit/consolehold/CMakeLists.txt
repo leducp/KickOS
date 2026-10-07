@@ -6,11 +6,11 @@
 # ahead of every queued sender.
 #
 # console_held: kernel/init/console.cc and kernel/init/console_tx.cc as they ship, with
-# tests/unit/consoleseam answering the transport and held_seam.cc the rest, and a hook at every
-# store a change of the held store makes (KICKOS_HELD_STEP). HOST-ONLY: the second record has to
-# open while the first is still being written, which no image can arrange.
+# tests/unit/consoleseam answering the rest, and a hook at every store a change of the held store
+# makes (KICKOS_HELD_STEP). HOST-ONLY: the second record has to open while the first is still
+# being written, which no image can arrange.
 kickos_add_unit_test(NAME console_held
-  SOURCES held_record.cc held_store.cc record_room.cc held_seam.cc
+  SOURCES held_record.cc held_store.cc record_room.cc
           "${PROJECT_SOURCE_DIR}/tests/unit/consoleseam/console_seam.cc"
           "${PROJECT_SOURCE_DIR}/kernel/init/console.cc"
           "${PROJECT_SOURCE_DIR}/kernel/init/console_tx.cc"
@@ -22,7 +22,7 @@ kickos_add_unit_test(NAME console_held
 # console_held_rtt: the same two translation units at the RTT posture, RTT recorded by the test
 # itself, for a user line the kernel console is offered more than once.
 kickos_add_unit_test(NAME console_held_rtt
-  SOURCES held_rtt.cc held_seam.cc
+  SOURCES held_rtt.cc
           "${PROJECT_SOURCE_DIR}/tests/unit/consoleseam/console_seam.cc"
           "${PROJECT_SOURCE_DIR}/kernel/init/console.cc"
           "${PROJECT_SOURCE_DIR}/kernel/init/console_tx.cc"
@@ -45,28 +45,13 @@ kickos_add_unit_test(NAME console_live SOURCES live_console.cc
 # console_dark: the dark window end to end, the real console.cc, console_tx.cc and park.cc over a
 # K-seam whose console stubs are compiled out (KSEAM_REAL_CONSOLE), dark_seam.cc answering the
 # device.
-kickos_add_kernel_host_lib(kickos_kseam_console
-  SOURCES
-    "${PROJECT_SOURCE_DIR}/tests/unit/kfixture/kfixture.cc"
-    "${PROJECT_SOURCE_DIR}/tests/unit/kfixture/karch_seam.cc"
-    "${PROJECT_SOURCE_DIR}/tests/unit/fusedwake/ipc_seam.cc"
-    dark_seam.cc
-    "${PROJECT_SOURCE_DIR}/kernel/syscall/syscall_ipc.cc"
-    "${PROJECT_SOURCE_DIR}/kernel/sched/sched.cc"
-    "${PROJECT_SOURCE_DIR}/kernel/sched/policy_fifo_rr.cc"
-    "${PROJECT_SOURCE_DIR}/kernel/sync/sync.cc"
-    "${PROJECT_SOURCE_DIR}/kernel/sync/klock.cc"
-    "${PROJECT_SOURCE_DIR}/kernel/thread/park.cc"
-    "${PROJECT_SOURCE_DIR}/kernel/syscall/cap.cc"
-    "${PROJECT_SOURCE_DIR}/kernel/task/task.cc"
-    "${PROJECT_SOURCE_DIR}/kernel/irq/irq.cc"
-    "${PROJECT_SOURCE_DIR}/kernel/notify/notify.cc"
-    "${PROJECT_SOURCE_DIR}/kernel/init/instance.cc"
-    "${PROJECT_SOURCE_DIR}/kernel/init/fault.cc"
-    "${PROJECT_SOURCE_DIR}/kernel/init/console.cc"
-    "${PROJECT_SOURCE_DIR}/kernel/init/console_tx.cc"
-  INCLUDES "${PROJECT_SOURCE_DIR}/tests/unit/kfixture"
-           "${PROJECT_SOURCE_DIR}/tests/unit/fusedwake"
+kickos_add_kseam(kickos_kseam_console
+  EXTRA "${PROJECT_SOURCE_DIR}/tests/unit/fusedwake/ipc_seam.cc"
+        dark_seam.cc
+        "${PROJECT_SOURCE_DIR}/kernel/syscall/syscall_ipc.cc"
+        "${PROJECT_SOURCE_DIR}/kernel/init/console.cc"
+        "${PROJECT_SOURCE_DIR}/kernel/init/console_tx.cc"
+  INCLUDES "${PROJECT_SOURCE_DIR}/tests/unit/fusedwake"
            "${PROJECT_SOURCE_DIR}/kernel/syscall"
   POSTURE KSEAM_REAL_CONSOLE=1)
 

@@ -2,51 +2,33 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# A constant the build declares in a cmake/*_geometry.cmake reaches C through the header the
-# configure generates from its template, and is defined nowhere else, so CMake never reads a value
-# back out of C and the two never disagree.
+# A constant a cmake/*_geometry.cmake hands kickos_emit_geometry reaches C through the header
+# that writes, and no tracked source defines it. A copy in a translation unit that never
+# includes that header compiles, and keeps the old value when the declaration changes.
 #
-#   check_geometry_emitted.sh <kickos-build>
-#
-# Each row below is a name, the file declaring it, and the template its header is generated
-# from. For each, the declaration is one `set(<name> <integer>)`, the template's one definition is
-# `#define <name> @<name>@`, no other tracked C file defines it, and the build's generated header
-# defines it to the declared value.
+# Run from the repo root, no arguments: tests/static/check_geometry_emitted.sh
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
-
-USAGE="usage: check_geometry_emitted.sh <kickos-build>"
-BUILD="${1:?$USAGE}"
 require_repo_root
-
-ROWS="KICKOS_MPU_MAX_REGIONS cmake/mpu_geometry.cmake kernel/include/kickos/config/mpu_geometry.h.in
-KOS_EXIT_FAULT cmake/exit_geometry.cmake user/include/kickos/sys/exit_status.h.in
-KOS_EXIT_CANCELLED cmake/exit_geometry.cmake user/include/kickos/sys/exit_status.h.in"
-
 scratch_dir
 rc=0
-printf '%s\n' "$ROWS" > "$TMP/rows"
-git ls-files -- '*.h' '*.hh' '*.hpp' '*.c' '*.cc' '*.cpp' '*.h.in' > "$TMP/c"
-require_nonempty "$TMP/c" "git ls-files listed no C file"
-while read -r name declared template; do
-    value="$(sed -n "s/^set($name \\([0-9][0-9]*\\))\$/\\1/p" "$declared")"
-    if [ "$(printf '%s\n' "$value" | grep -c .)" -ne 1 ]; then
-        bad "$declared does not declare $name once as an integer"
-        continue
-    fi
-    [ "$(grep -c "^#define $name @$name@\$" "$template")" -eq 1 ] \
-        || bad "$template does not define $name once as @$name@"
-    others="$(grep -vxF "$template" "$TMP/c" | xargs grep -lE "^[[:space:]]*#[[:space:]]*define[[:space:]]+$name([^A-Za-z0-9_]|\$)")"
-    [ -z "$others" ] || bad "$name is defined beside $template, in: $others"
-    generated="$BUILD/generated/include/${template#*/include/}"
-    generated="${generated%.in}"
-    if [ ! -f "$generated" ]; then
-        bad "the build generated no $generated"
-        continue
-    fi
-    [ "$(grep -c "^#define $name $value\$" "$generated")" -eq 1 ] \
-        || bad "$generated does not define $name to $declared's $value"
-done < "$TMP/rows"
+
+defines() { # <name> <list of files>: those defining <name>
+    xargs grep -lE "^[[:space:]]*#[[:space:]]*define[[:space:]]+$1([^A-Za-z0-9_]|\$)" < "$2"
+}
+printf '#  define KOS_EXIT_FAULT 139\n' > "$TMP/planted.h"
+echo "$TMP/planted.h" > "$TMP/planted"
+[ -n "$(defines KOS_EXIT_FAULT "$TMP/planted")" ] || fail "the reader missed a planted #define,
+  so finding none in the tree witnesses nothing"
+
+corpus "$TMP/decl" "geometry declaration" 'cmake/*_geometry.cmake'
+xargs sed -n 's/^kickos_emit_geometry([^ ]* \(.*\))$/\1/p' < "$TMP/decl" | tr ' ' '\n' > "$TMP/names"
+require_nonempty "$TMP/names" "no cmake/*_geometry.cmake hands kickos_emit_geometry a name"
+corpus_sources "$TMP/c"
+while read -r name; do
+    others="$(defines "$name" "$TMP/c")"
+    [ -z "$others" ] || bad "$name is defined beside its generated header, in: $others"
+done < "$TMP/names"
 [ "$rc" -eq 0 ] || exit 1
-echo "PASS: each declared geometry constant reaches C through its generated header alone"
+echo "PASS: $(wc -l < "$TMP/names") geometry constant(s) reach C through their generated header alone"

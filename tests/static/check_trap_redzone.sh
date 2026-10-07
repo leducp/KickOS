@@ -24,9 +24,9 @@
 # That tree is named by preset alone, so concurrent runs of one preset must pass distinct
 # KICKOS_TRAP_REDZONE_DIR values or each corrupts the other's tree.
 #
-# The enforced numbers come out of the arch header, and which macros to read comes from
-# trap_redzone_roots.txt. A macro that cannot be read is a hard failure and never a default: a
-# gate that defaults its own reference compares a measurement against nothing.
+# The enforced numbers come out of the arch header, and which macros to read comes from the
+# class lines in that same header. A macro that cannot be read is a hard failure and never a
+# default: a gate that defaults its own reference compares a measurement against nothing.
 #
 # One board per run; the console backend is per board. The root set is a declaration: a call
 # switch.S makes is in the number only when the roots file names it, so the roots are what a
@@ -84,35 +84,16 @@ decl() { # <kind>
     ' "$ROOTS"
 }
 
-# --- clause 0: the preset/arch pair is declared -------------------------------
-# A pair nobody declared has no header to scrape and no root set, so refusing beats measuring
-# the wrong thing.
-if ! decl preset | awk -v P="$PRESET" '{ if ($3 == P) { found = 1 } } END { exit !found }'; then
-    KNOWN="$(decl preset | awk '{ printf "%s ", $3 }')"
-    fail "preset/arch pair $PRESET/$ARCH is not declared in $ROOTS (for $ARCH: $KNOWN)"
-fi
-
 HEADER_REL="$(decl arch | sed -n 's/.*header=\([^ ]*\).*/\1/p' | head -n1)"
 [ -n "$HEADER_REL" ] || fail "$ROOTS declares no header= for arch $ARCH"
 HEADER="$SRC/$HEADER_REL"
 
-decl class | awk '
-    {
-        frame = ""; depth = ""; onstack = "thread"; kstacks = "any"
-        n = split($0, f, /[[:space:]]+/)
-        for (i = 4; i <= n; i++) {
-            if (f[i] ~ /^frame=/) { frame = substr(f[i], 7) }
-            if (f[i] ~ /^depth=/) { depth = substr(f[i], 7) }
-            if (f[i] == "stack=trap") { onstack = "trap" }
-            if (f[i] == "stack=kernel") { onstack = "kernel" }
-            if (f[i] == "stack=panic") { onstack = "panic" }
-            if (f[i] == "kstacks=0") { kstacks = "0" }
-            if (f[i] == "kstacks=1") { kstacks = "1" }
-        }
-        if (frame == "" || depth == "") { exit 1 }
-        print f[3] "\t" frame "\t" depth "\t" onstack "\t" kstacks
-    }' > "$TMP/classes" || fail "$ROOTS has a class record for $ARCH without frame=/depth="
-require_nonempty "$TMP/classes" "$ROOTS declares no class for arch $ARCH"
+python3 "$TOOL" --classes "$HEADER" > "$TMP/classes" || fail "$HEADER_REL has no readable class list"
+require_nonempty "$TMP/classes" "$HEADER_REL declares no class"
+
+# The bindings file is read only for this arch and preset below, so a malformed record for
+# another arch would reach no run; this shape-checks every record in it.
+python3 "$TOOL" --check-file "$INDIRECT" || fail "$INDIRECT has a malformed record"
 
 # --- configure and build the scratch tree ------------------------------------
 # Named per preset so two boards do not fight over one tree, and reused so a re-run is
@@ -392,7 +373,7 @@ if grep -q '^[[:space:]]*set(KICKOS_HAVE_ASPACE[[:space:]]\{1,\}1)' "$CFGFILE"; 
     PRIVATISED="$SRC/cmake/kernel_runtime.syms"
 fi
 # shellcheck disable=SC2086
-python3 "$TOOL" --ci-dir "$BUILD" --arch "$ARCH" --preset "$PRESET" --kernel-cores "$KCORES" \
+python3 "$TOOL" --ci-dir "$BUILD" --src "$SRC" --arch "$ARCH" --preset "$PRESET" --kernel-cores "$KCORES" \
     --roots "$ROOTS" --indirect "$INDIRECT" $ENFORCED_ARGS $NOTCOMPILED_ARGS ${PRIVATISED:+--privatised "$PRIVATISED"}
 prc=$?
 if [ "$prc" -ne 0 ]; then
@@ -402,6 +383,26 @@ fi
 python3 "$HERE/app_stack.py" --ci-dir "$BUILD" --src "$SRC" --arch "$ARCH" --preset "$PRESET" \
     --decl "$HERE/app_stack_roots.txt" --roots "$ROOTS" --indirect "$INDIRECT" \
     --kernel-cores "$KCORES" || rc=1
+
+# The fault-record console route, where CMake sets KICKOS_CONSOLE_REACH: a kpanic reachable
+# from it prints, the print re-enters kvprintf_route and the record runs again with nothing
+# bounding the depth. tests/static/console_reach.py walks this graph from the roots
+# tests/static/console_reach_roots.txt declares. Its corpus check is shown to refuse an empty
+# directory first, by the compile database it is keyed to, or a green walk is an absence over
+# an unknown corpus.
+if [ "${KICKOS_CONSOLE_REACH:-0}" = 1 ]; then
+    REACH="$HERE/console_reach_roots.txt"
+    mkdir -p "$TMP/empty"
+    if python3 "$HERE/console_reach.py" --ci-dir "$TMP/empty" --arch "$ARCH" --preset "$PRESET" \
+           --kernel-cores 1 --decl "$REACH" --indirect "$INDIRECT" > "$TMP/reach.log" 2>&1 \
+       || ! grep -q 'compile_commands.json' "$TMP/reach.log"; then
+        sed -n '1,20p' "$TMP/reach.log" >&2
+        bad "console_reach.py did not refuse an EMPTY .ci directory by its compile database,
+    so its corpus check is not what stands behind a clean walk"
+    fi
+    python3 "$HERE/console_reach.py" --ci-dir "$BUILD" --arch "$ARCH" --preset "$PRESET" \
+        --kernel-cores "$KCORES" --decl "$REACH" --indirect "$INDIRECT" || rc=1
+fi
 
 if [ "$rc" -eq 0 ]; then
     echo "trap_redzone: OK ($PRESET/$ARCH, floor $FLOOR)"

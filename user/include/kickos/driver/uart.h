@@ -13,8 +13,7 @@
 // EXACTLY ONE DEFINITION PER IMAGE, and the build selects it: a per-chip local backend, or a
 // proxy marshalling onto a service endpoint. An image carrying a SECOND definition does not
 // report a duplicate symbol; it keeps the real backend's archive member out of the link and
-// drives the other definition instead. The host contract mock (tests/unit/uartclass) therefore
-// stays off every target image.
+// drives the other definition instead.
 //
 // THE CLASS MOVES BYTES AND NOTHING ELSE. CRLF expansion, retry-on-full and the console's
 // line discipline belong to each consumer: <kickos/sys/uart_service.h> for the service

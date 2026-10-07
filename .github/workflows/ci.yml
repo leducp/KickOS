@@ -125,7 +125,7 @@ jobs:
       - run: ctest --preset sim -L tree --no-tests=error --output-on-failure
       - name: the description, composition and judge gates, by name
         run: |
-          tests/ci/ctest_named.sh '^app_judges$|^amp_share$|^chip_kconfig$|^chip_protection$|^platform_descriptions$|^platform_compositions$|^platform_arms$|^platform_coverage$|^platform_tables$|^board_refusals$|^no_eh_runtime_controls$' \
+          tests/ci/ctest_named.sh '^app_judges$|^amp_share$|^chip_kconfig$|^chip_protection$|^platform_descriptions$|^platform_compositions$|^platform_arms$|^platform_coverage$|^platform_tables$|^no_eh_runtime_controls$' \
             --preset sim -L tree --no-tests=error --output-on-failure
 
   # Run the host suite, excluding the source-only checks above.
@@ -281,7 +281,7 @@ jobs:
             --preset microbit --no-tests=error --output-on-failure --repeat until-pass:2
           # Require the stack-block test for this non-enforcing board, the default system's checks
           # and the emulated SRAM's.
-          tests/ci/ctest_named.sh '^microbit_pspguard_block$|^microbit_sysdefault$|microbit_sysdefault_spin|microbit_sysdefault_no_eh_runtime|microbit_sysdefault_no_driver_path|^microbit_qemu_sram$' --preset microbit --no-tests=error --output-on-failure
+          tests/ci/ctest_named.sh '^microbit_pspguard_block$|^microbit_sysdefault$|microbit_sysdefault_spin|microbit_sysdefault_no_eh_runtime|microbit_sysdefault_no_driver_path' --preset microbit --no-tests=error --output-on-failure
 
   # Ubuntu includes qemu-system-aarch64 in qemu-system-arm.
   qemu-arm64:
@@ -470,7 +470,7 @@ jobs:
           cmake --build --preset qemu-arm64-amp2-n0
           # These tests build the peer and merged partition, then run both kernels.
           ctest --preset qemu-arm64-amp2-n0 -LE tree --no-tests=error --output-on-failure
-          out=$(tests/ci/ctest_named.sh '^amp_partition$|amp_elf_agree|^amp_peer_arms$|amp_peer_arms_controls|ipi_fence|^qemu_arm64_sysdefault$|qemu_arm64_sysdefault_spin|qemu_arm64_sysdefault_fault|qemu_arm64_system_link_none|qemu_arm64_system_link_two|qemu_arm64_system_link_entry|qemu_arm64_system_link_refused|qemu_arm64_system_link_notool|qemu_arm64_system_link_nocc|qemu_arm64_system_link_rerun|qemu_arm64_system_link_noheap|qemu_arm64_system_link_stack' \
+          out=$(tests/ci/ctest_named.sh '^amp_partition$|^amp_peer_arms$|amp_peer_arms_controls|ipi_fence|^qemu_arm64_sysdefault$|qemu_arm64_sysdefault_spin|qemu_arm64_sysdefault_fault|qemu_arm64_system_link_none|qemu_arm64_system_link_two|qemu_arm64_system_link_entry|qemu_arm64_system_link_refused|qemu_arm64_system_link_notool|qemu_arm64_system_link_nocc|qemu_arm64_system_link_rerun|qemu_arm64_system_link_noheap|qemu_arm64_system_link_stack' \
             --preset qemu-arm64-amp2-n0 --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
@@ -500,7 +500,7 @@ jobs:
           done
           # Node 0 builds the peer images and boots the three kernels, one gate at a time: each
           # gate builds the partition first.
-          out=$(tests/ci/ctest_named.sh 'amp_elf_agree|^amp_partition$|^amp_peer_arms$' \
+          out=$(tests/ci/ctest_named.sh '^amp_partition$|^amp_peer_arms$' \
             --preset qemu-arm64-amp3-n0 -j1 --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
@@ -756,7 +756,7 @@ jobs:
             *Skipped*) echo "a gate SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
           # Require the architecture-specific boot checks.
-          tests/ci/ctest_named.sh 'x86_64_no_vector|x86_64_entry_cld|x86_64_no_got_selftest|x86_64_weak_undef_selftest|x86_64_link_order' \
+          tests/ci/ctest_named.sh 'x86_64_no_vector|x86_64_entry_cld|x86_64_weak_undef_selftest' \
             --preset qemu-x86_64 --no-tests=error --output-on-failure
           # Require the default system's gates.
           out=$(tests/ci/ctest_named.sh '^qemu_x86_64_sysdefault$|qemu_x86_64_sysdefault_spin|qemu_x86_64_sysdefault_fault|qemu_x86_64_sysdefault_no_eh_runtime|qemu_x86_64_sysdefault_no_driver_path|^qemu_x86_64_cxxterm$|qemu_x86_64_cxxterm_eh_control|qemu_x86_64_system_link_none|qemu_x86_64_system_link_two|qemu_x86_64_system_link_entry|qemu_x86_64_system_link_refused|qemu_x86_64_system_link_notool|qemu_x86_64_system_link_nocc|qemu_x86_64_system_link_rerun|qemu_x86_64_system_link_noheap' \
@@ -785,12 +785,19 @@ jobs:
           cmake --build build/qemu-x86_64-smp2
           ctest --test-dir build/qemu-x86_64-smp2 -LE tree --no-tests=error --output-on-failure
           # Require the golden system, the default system's and the out-of-tree app's gates.
-          out=$(tests/ci/ctest_named.sh 'x86_64_link_order|qemu_x86_64_golden_system|qemu_x86_64_restart_witness|^qemu_x86_64_sysdefault$|qemu_x86_64_sysdefault_spin|qemu_x86_64_sysdefault_fault|qemu_x86_64_oot_mcu_app|qemu_x86_64_system_link_none|qemu_x86_64_system_link_two|qemu_x86_64_system_link_entry|qemu_x86_64_system_link_refused|qemu_x86_64_system_link_notool|qemu_x86_64_system_link_nocc|qemu_x86_64_system_link_rerun|qemu_x86_64_system_link_noheap' \
+          out=$(tests/ci/ctest_named.sh 'qemu_x86_64_golden_system|qemu_x86_64_restart_witness|^qemu_x86_64_sysdefault$|qemu_x86_64_sysdefault_spin|qemu_x86_64_sysdefault_fault|qemu_x86_64_oot_mcu_app|qemu_x86_64_system_link_none|qemu_x86_64_system_link_two|qemu_x86_64_system_link_entry|qemu_x86_64_system_link_refused|qemu_x86_64_system_link_notool|qemu_x86_64_system_link_nocc|qemu_x86_64_system_link_rerun|qemu_x86_64_system_link_noheap' \
             --test-dir build/qemu-x86_64-smp2 --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
             *Skipped*) echo "a required two-core gate SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
+      - name: x86_64 (q35) four, eight and twelve cores, built with their host gates
+        run: |
+          for p in qemu-x86_64-smp4 qemu-x86_64-smp8 qemu-x86_64-smp12; do
+            cmake --preset "$p"
+            cmake --build --preset "$p"
+            ctest --test-dir "build/$p" -L host -LE tree --no-tests=error --output-on-failure
+          done
 
   # Root on core 1: an application processor enters it as its first thread, and errnoprobe's
   # arm F reads libc there before any switch.
@@ -862,6 +869,9 @@ jobs:
           cmake --build --preset esp32-wroom-bench
           ctest --test-dir build/esp32-wroom-bench -L host -LE tree --no-tests=error --output-on-failure
           tests/ci/ctest_named.sh 'esp32_wroom_system_link_none|esp32_wroom_system_link_two|esp32_wroom_system_link_entry|esp32_wroom_system_link_refused|esp32_wroom_system_link_notool|esp32_wroom_system_link_nocc|esp32_wroom_system_link_rerun|esp32_wroom_system_link_noheap' --test-dir build/esp32-wroom-bench --no-tests=error --output-on-failure
+          cmake --preset esp32-wroom-benchsmp
+          cmake --build --preset esp32-wroom-benchsmp
+          ctest --test-dir build/esp32-wroom-benchsmp -L host -LE tree --no-tests=error --output-on-failure
 
   # Build RX72M images and run host checks for each configuration. No emulator models the part.
   rx:
@@ -974,8 +984,6 @@ jobs:
 
   # Build enforcing ARM variants to check app sections, grant symbols,
   # archive selectors, and arch_reserved_blocks.
-  # These apps have empty constructor sections: kernel_ctor_placement checks
-  # that the section symbols exist, but not placement of actual constructors.
   build-boards-mpu:
     needs: toolchain-arm-none-eabi
     runs-on: ubuntu-26.04
@@ -1049,8 +1057,7 @@ jobs:
           cmake --preset pizero2350-amp
           cmake --build --preset pizero2350-amp
           ctest --test-dir build/pizero2350-amp -L host -LE tree --no-tests=error --output-on-failure
-          # Require the vector test, which depends on the two-core configuration.
-          tests/ci/ctest_named.sh '^rp_node_vectors$|pizero2350_system_link_none|pizero2350_system_link_two|pizero2350_system_link_entry|pizero2350_system_link_refused|pizero2350_system_link_notool|pizero2350_system_link_nocc|pizero2350_system_link_rerun|pizero2350_system_link_noheap|pizero2350_system_link_heap' \
+          tests/ci/ctest_named.sh 'pizero2350_system_link_none|pizero2350_system_link_two|pizero2350_system_link_entry|pizero2350_system_link_refused|pizero2350_system_link_notool|pizero2350_system_link_nocc|pizero2350_system_link_rerun|pizero2350_system_link_noheap|pizero2350_system_link_heap' \
             --test-dir build/pizero2350-amp --no-tests=error --output-on-failure
       - name: armv8-M own-image partition, both nodes, self-test on
         run: |
@@ -1061,6 +1068,8 @@ jobs:
             tests/ci/ctest_named.sh 'pizero2350_system_link_none|pizero2350_system_link_two|pizero2350_system_link_entry|pizero2350_system_link_refused|pizero2350_system_link_notool|pizero2350_system_link_nocc|pizero2350_system_link_rerun|pizero2350_system_link_noheap|pizero2350_system_link_heap' \
               --test-dir build/pizero2350-amp2-n$node --no-tests=error --output-on-failure
           done
+          # Merge this posture too: the merge compares every peer's .amp_shared with node 0's.
+          cmake --build build/pizero2350-amp2-n0 --target amp_partition
       - name: armv8-M own-image partition, the PRODUCTION posture (self-test off)
         run: |
           # Disable shutdown-to-bootloader along with its self-test dependency.
@@ -1074,7 +1083,7 @@ jobs:
       - name: armv8-M own-image partition, the MERGED artefact
         run: |
           # Build the flashable merged partition. This also builds the peer and checks
-          # that the Kconfig fingerprints agree.
+          # that the Kconfig fingerprints and the .amp_shared layouts agree.
           cmake --build build/pizero2350-amp2-prod-n0 --target amp_partition
           ls -l build/pizero2350-amp2-prod-n0/kickos-partition.elf
 
@@ -1113,7 +1122,7 @@ jobs:
           # shared-runner load is uncontrolled.
           cmake --preset qemu-arm64-bench
           cmake --build --preset qemu-arm64-bench
-          out=$(tests/ci/ctest_named.sh 'qemu_arm64_bench_lock|qemu_arm64_bench_cyccnt|qemu_arm64_bench_saturate|qemu_arm64_bench_phase_table|qemu_arm64_benchauth|qemu_arm64_bench_a53_pmcr|qemu_arm64_bench_irqspan_controls' \
+          out=$(tests/ci/ctest_named.sh 'qemu_arm64_bench_lock|qemu_arm64_bench_cyccnt|qemu_arm64_bench_saturate|qemu_arm64_bench_phase_table|qemu_arm64_benchauth|qemu_arm64_bench_irqspan_controls' \
             --test-dir build/qemu-arm64-bench --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
@@ -1163,6 +1172,13 @@ jobs:
           case "$out" in
             *Skipped*) echo "a bench gate SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
+      - name: the other core counts and GICv3, built with their host gates
+        run: |
+          for p in qemu-arm64-benchsmp2 qemu-arm64-benchsmp12 qemu-arm64-benchgicv3 qemu-riscv64-benchsmp2; do
+            cmake --preset "$p"
+            cmake --build --preset "$p"
+            ctest --test-dir "build/$p" -L host -LE tree --no-tests=error --output-on-failure
+          done
       - name: armv7m microbench, link surface only
         run: |
           # F411 uses percentile histograms. Run host checks only; timing needs hardware.

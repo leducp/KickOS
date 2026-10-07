@@ -2,7 +2,7 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # The selftest partials tests/integration/selftest_partials.cmake derives, over planted sets and
-# compositions and the real arms[], run under cmake -P:
+# compositions and the real arms[], and the seat skips over the real sources, run under cmake -P:
 #   cmake -DKICKOS_SOURCE_DIR=<repo root> -DSCRATCH=<dir> -P tests/static/check_selftest_partials.cmake
 
 cmake_minimum_required(VERSION 3.24)
@@ -52,6 +52,17 @@ string(FIND "${_gate}" "_selftest_derived_partials(" _derive_at)
 string(FIND "${_gate}" "list(APPEND _partials \${_derived})" _append_at)
 if(_sets_at EQUAL -1 OR _derive_at LESS _sets_at OR _append_at LESS _derive_at)
   set(_failed "${_failed}\n  _selftest_image_sets does not add the derived partials to an image's set")
+endif()
+
+_selftest_seat_skips("${KICKOS_SOURCE_DIR}/user/apps/common/selftest/main.cc" OFF _seatless)
+_selftest_seat_skips("${KICKOS_SOURCE_DIR}/user/apps/common/selftest/main.cc" ON _seated)
+if(NOT _seatless OR _seated)
+  set(_failed "${_failed}\n  a seatless doorbell expects [${_seatless}], a seated one [${_seated}]")
+endif()
+string(FIND "${_gate}" "set(_selftest_seat \${KICKOS_CHIP_DOORBELL_SEAT})" _seat_at)
+string(FIND "${_gate}" "list(APPEND KICKOS_EXPECT_SKIPS \${_selftest_seat_skips})" _expect_at)
+if(_seat_at EQUAL -1 OR _expect_at LESS _seat_at)
+  set(_failed "${_failed}\n  the gate does not expect the seat skips its chip's doorbell implies")
 endif()
 
 if(_failed)

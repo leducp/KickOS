@@ -6,6 +6,7 @@
 if(NOT TARGET conrestart)
   return()
 endif()
+kickos_unbooted(conrestart "sim_console_restart boots it in a tree of its own with a death knob")
 
 # The gate builds a tree of its own with a death knob of the console driver, so register it only
 # in a tree that sets none; registering it in the tree the script configures would recurse.

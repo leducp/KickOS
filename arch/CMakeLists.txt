@@ -8,10 +8,8 @@ endif()
 
 if(KICKOS_CHIP STREQUAL "esp32c6" AND KICKOS_AMP_OWN_IMAGE AND KICKOS_AMP_NODE_ID EQUAL 1)
   add_compile_definitions(KICKOS_RV32_LP=1)
-  set_property(GLOBAL PROPERTY KICKOS_RV32_LP 1)
 else()
   add_compile_definitions(KICKOS_RV32_LP=0)
-  set_property(GLOBAL PROPERTY KICKOS_RV32_LP 0)
 endif()
 
 # --- Seam fallbacks: the lone-TU rule ----------------------------------------
@@ -137,6 +135,7 @@ if(KICKOS_ARCH_LINK_LIBRARIES)
   target_link_libraries(kickos_arch_${KICKOS_ARCH} PUBLIC ${KICKOS_ARCH_LINK_LIBRARIES})
 endif()
 target_include_directories(kickos_arch_${KICKOS_ARCH} PRIVATE "${PROJECT_BINARY_DIR}/generated/chip")
+target_include_directories(kickos_arch_${KICKOS_ARCH} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/common")
 kickos_export_targets(kickos_arch_${KICKOS_ARCH})
 set(KICKOS_ARCH_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/${_kos_arch_dir}/include" PARENT_SCOPE)
 
@@ -199,27 +198,15 @@ if(KICKOS_BUILD_TESTS AND NOT (KICKOS_ARCH STREQUAL "sim"))
   set_tests_properties(no_privileged_tls PROPERTIES TIMEOUT 60 LABELS host)
 endif()
 
-# No archive holding kernel text may name the app's runtime; the kernel's own copies go by the
-# kickos/kruntime.h names. kickos_lib is left out: on these boards it is user code.
-if(KICKOS_BUILD_TESTS AND KICKOS_HAVE_ASPACE)
-  add_test(
-    NAME    kernel_runtime
-    COMMAND "${CMAKE_SOURCE_DIR}/tests/static/check_kernel_runtime.sh"
-            "${CMAKE_NM}"
-            "$<TARGET_FILE:kickos_kernel>"
-            "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>"
-            "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>")
-  set_tests_properties(kernel_runtime PROPERTIES TIMEOUT 60 LABELS host)
-endif()
-
-# No GOT reference from those archives either: a weak extern in a TU left off
-# kickos_split_image_tu emits one, and the link stays clean until something forces .got to be
-# placed.
+# No archive holding kernel text may emit a GOT reference or name the app's runtime: a weak
+# extern in a TU left off kickos_split_image_tu emits the first and the link stays clean until
+# something forces .got to be placed, and the kernel's own runtime goes by the kickos/kruntime.h
+# names. kickos_lib is left out: on these boards it is user code.
 if(KICKOS_BUILD_TESTS AND KICKOS_HAVE_ASPACE)
   add_test(
     NAME    kernel_got
     COMMAND "${CMAKE_SOURCE_DIR}/tests/static/check_kernel_got.sh"
-            "${CMAKE_READELF}"
+            "${CMAKE_READELF}" "${CMAKE_NM}"
             "$<TARGET_FILE:kickos_kernel>"
             "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>"
             "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>")
@@ -411,6 +398,9 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
     if(KICKOS_ARCH STREQUAL "rxv3")
       list(APPEND _ld_required KICKOS_TLS_EMUTLS_ASSERT)
     endif()
+    if(KICKOS_ARCH STREQUAL "armv7m")
+      list(APPEND _ld_required KICKOS_KERNEL_CTORS_NONE_ASSERT)
+    endif()
     foreach(_m IN LISTS _ld_required)
       if(NOT "${_ld_sections_txt}" MATCHES "${_m}")
         message(FATAL_ERROR
@@ -521,7 +511,8 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
     endif()
     set_property(GLOBAL PROPERTY KICKOS_ROOT_STATIC_REGIONS "${_root_statics}")
     # -MD/DEPFILE and not a longer DEPENDS list: a chip script may include headers of its own
-    # beside the two common ones, and cpp is what knows which.
+    # beside the two common ones, and cpp is what knows which. The script is the forced include
+    # so that app_window.ld.h follows it, binding every script whatever that script includes.
     add_custom_command(
       OUTPUT "${_ld_gen}"
       COMMAND ${CMAKE_C_COMPILER} -E -P -x c ${_ld_defs}
@@ -529,9 +520,11 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
               # An arch may state a geometry both its own code and a chip's script read.
               "-I${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/${KICKOS_ARCH}/include"
               -MD -MF "${_ld_gen}.d" -MT "${_ld_gen}"
-              "${_ld}" -o "${_ld_gen}"
+              -include "${_ld}" "${CMAKE_CURRENT_SOURCE_DIR}/common/app_window.ld.h"
+              -o "${_ld_gen}"
       DEPENDS "${_ld}" "${CMAKE_CURRENT_SOURCE_DIR}/common/boot_arena.ld.h"
               "${CMAKE_CURRENT_SOURCE_DIR}/common/sections.ld.h"
+              "${CMAKE_CURRENT_SOURCE_DIR}/common/app_window.ld.h"
       DEPFILE "${_ld_gen}.d"
       COMMENT "linker: preprocess ${KICKOS_CHIP}.ld (KICKOS_HAVE_MPU=${KICKOS_HAVE_MPU})"
       VERBATIM)

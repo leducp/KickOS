@@ -13,6 +13,27 @@
 #     kickos_qemu_machine.
 #   the two emulatable arm64 boards (qemu-arm64, imx8mp-evk) are exactly the armv8a fleet,
 #     KICKOS_ARCH STREQUAL "armv8a".
+#
+# NO board name selects an app: a name list is where an app was once run, and the next board is
+# left out in silence. tests/static/check_board_predicates.py refuses one.
+
+# _kos_chip_defines(<out> <symbol>): ON where a source of this build's chip library defines
+# <symbol>, which displaces the arch/common/<symbol>_default.cc fallback.
+function(_kos_chip_defines out symbol)
+  set(_defined OFF)
+  if(TARGET kickos_chip_${KICKOS_CHIP})
+    _kickos_target_cc_sources(kickos_chip_${KICKOS_CHIP} "${PROJECT_SOURCE_DIR}/arch" _srcs)
+    foreach(_src IN LISTS _srcs)
+      set_property(DIRECTORY "${CMAKE_SOURCE_DIR}" APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+                   "${_src}")
+      file(READ "${_src}" _txt)
+      if(_txt MATCHES "[^A-Za-z0-9_]${symbol}\\([^)]*\\)[ \t\r\n]*{")
+        set(_defined ON)
+      endif()
+    endforeach()
+  endif()
+  set(${out} ${_defined} PARENT_SCOPE)
+endfunction()
 
 # --- Every posture ---------------------------------------------------------------------------
 add_subdirectory(hello)
@@ -20,7 +41,11 @@ add_subdirectory(hello_c)
 add_subdirectory(selftest)
 add_subdirectory(stress)
 add_subdirectory(sched_exit)
-add_subdirectory(stackdepth)
+# Its only witness is the kernel block's high-water line, which a panic prints only where the
+# board carves the blocks and reports them.
+if(KICKOS_KERNEL_STACKS AND KICKOS_KSTACK_REPORT)
+  add_subdirectory(stackdepth)
+endif()
 
 kickos_add_diagnostic_apps(fault panicgate)
 
@@ -28,8 +53,20 @@ kickos_add_diagnostic_apps(fault panicgate)
 if(KICKOS_HAVE_LIBC)
   add_subdirectory(libc_exit)
   add_subdirectory(sysdefault)
-  kickos_add_diagnostic_apps(mpu_fault rootfault rootauth rebootdemo reclaimwit
-                             objbudget)
+  kickos_add_diagnostic_apps(rootfault rootauth rebootdemo reclaimwit)
+endif()
+# objbudget fills main's endpoint budget and asks that the refusal be the budget's, so both the
+# pool and main's table must have room for that budget: the pool has none to spare where the
+# init seats the partition's ports in it first, and main's table is a spawn's width
+# (KICKOS_MAX_SPAWN_GRANTS + 1), part of it held from the start.
+if(KICKOS_HAVE_LIBC AND NOT KICKOS_AMP_PORTS
+   AND KICKOS_TASK_ENDPOINT_BUDGET LESS KICKOS_MAX_SPAWN_GRANTS)
+  kickos_add_diagnostic_apps(objbudget)
+endif()
+# mpu_fault grants a region to one thread of a task, which a backend that translates cannot:
+# its unit of memory is the task's space.
+if(KICKOS_HAVE_LIBC AND NOT KICKOS_HAVE_ASPACE)
+  kickos_add_diagnostic_apps(mpu_fault)
 endif()
 
 # --- Memory enforcement --------------------------------------------------------------------
@@ -63,8 +100,9 @@ endif()
 # caller's own stack AND builds its trap frames in software, so it is the only one where an
 # interrupt taken mid-dispatch can put a frame at an unbounded depth on a thread's stack. The
 # witness it reads is kept OUT of a bench build: its call site is inside what the injected-IRQ
-# bench measures.
-if(KICKOS_ARCH STREQUAL "rv32imac" AND NOT KICKOS_BENCH)
+# bench measures. Its deep syscall is a spawn the region rules must refuse, and without an MPU
+# backend nothing refuses it.
+if(KICKOS_ARCH STREQUAL "rv32imac" AND NOT KICKOS_BENCH AND KICKOS_HAVE_MPU)
   kickos_add_diagnostic_apps(trapnest)
 endif()
 # Built only where the board compiles TLS: elsewhere the thread_local is a link error naming
@@ -77,10 +115,9 @@ kickos_qemu_machine("${KICKOS_BOARD}" _kos_errno_env _kos_errno_machine)
 if(NOT _kos_errno_machine STREQUAL "")
   add_subdirectory(errnoprobe)
 endif()
-# Double classification and printf through the compiler and newlib: on rxv3, whose DFPU
-# compare the toolchain patches, and on the M4F QEMU image, which runs the same verdict under
-# a reference compiler on every pass.
-if(KICKOS_HAVE_LIBC AND (KICKOS_ARCH STREQUAL "rxv3" OR KICKOS_BOARD STREQUAL "qemu"))
+# Double classification and printf through the compiler and newlib, wherever newlib prints a
+# double: nano does not, and the sim's C library is the host's.
+if(KICKOS_HAVE_LIBC AND NOT KICKOS_ARCH STREQUAL "sim" AND NOT KICKOS_NEWLIB_NANO)
   add_subdirectory(fpclass)
 endif()
 
@@ -115,27 +152,20 @@ if(KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
 endif()
 
 # --- Full-C++ opt-in smoke test -----------------------------------------------------------
-# A board joins this list only once its RAM covers the runtime heap and its linker script homes
-# the toolchain EH tables (EHABI .ARM.extab / DWARF .eh_frame+.gcc_except_table / RX SjLj
-# .gcc_except_table) plus the runtime writable state inside the app grants.
-if(KICKOS_BOARD STREQUAL "frdmk64f"
-   OR KICKOS_BOARD STREQUAL "xmc4800-relax"
-   OR KICKOS_QEMU_MPS2
-   OR ((KICKOS_BOARD STREQUAL "picopi"
-        OR KICKOS_BOARD STREQUAL "rx72m"
-        OR KICKOS_BOARD STREQUAL "esp32c6-wroom"
-        OR KICKOS_BOARD STREQUAL "qemu-riscv")
-       AND KICKOS_HAVE_MPU)
-   OR (KICKOS_BOARD STREQUAL "qemu-riscv" AND NOT KICKOS_HAVE_MPU)
-   OR KICKOS_BOARD STREQUAL "qemu-riscv64"
-   OR KICKOS_BOARD STREQUAL "qemu-x86_64"
-   OR KICKOS_BOARD STREQUAL "esp32-wroom")
+# The toolchain's libstdc++ over newlib, so not the sim, whose runtime and terminate handler are
+# the host's; and where the board's heap holds cxxtest's high-water, 6,136 B
+# (docs/reference/boards.md). Every link runs --orphan-handling=error, so a linker script that
+# homes no EH table refuses the image.
+file(STRINGS "${PROJECT_SOURCE_DIR}/boards/${KICKOS_BOARD}/composition.yaml" _kos_heap
+     REGEX "^heap: *[0-9]+" LIMIT_COUNT 1)
+string(REGEX REPLACE "^heap: *([0-9]+).*$" "\\1" _kos_heap "${_kos_heap}")
+if(NOT KICKOS_ARCH STREQUAL "sim" AND _kos_heap GREATER_EQUAL 6136)
   add_subdirectory(cxxtest)
   add_subdirectory(cxxterm)
 endif()
 
 # --- Telemetry ----------------------------------------------------------------------------
-if(KICKOS_TELEMETRY_ON AND (KICKOS_ARCH STREQUAL "sim" OR KICKOS_BOARD STREQUAL "qemu"))
+if(KICKOS_TELEMETRY_ON)
   add_subdirectory(tele_pingpong)
 endif()
 if(KICKOS_TELEMETRY_ON AND KICKOS_ARCH STREQUAL "sim")
@@ -143,13 +173,9 @@ if(KICKOS_TELEMETRY_ON AND KICKOS_ARCH STREQUAL "sim")
 endif()
 
 # --- FP context-switch torture test -------------------------------------------------------
-# Uses vldmia/vstmia {s16-s31}, so armv7m+FPU only: the QEMU images are enumerated here rather
-# than taken from the mps2 chip, qemu-m3 (an385, Cortex-M3) being soft-float.
-if(KICKOS_BOARD STREQUAL "frdmk64f"
-   OR KICKOS_BOARD STREQUAL "xmc4800-relax"
-   OR KICKOS_BOARD STREQUAL "qemu"
-   OR KICKOS_BOARD STREQUAL "qemu-m33"
-   OR KICKOS_BOARD STREQUAL "qemu-m7"
+# Uses vldmia/vstmia {s16-s31}, so an armv7m core with an FPU, which a float ABI other than soft
+# states, or any armv8a one.
+if((KICKOS_ARCH STREQUAL "armv7m" AND NOT KICKOS_MFLOAT_ABI STREQUAL "soft")
    OR KICKOS_ARCH STREQUAL "armv8a")
   add_subdirectory(fp_switch)
 endif()
@@ -162,31 +188,21 @@ if(KICKOS_BENCH)
   endif()
 endif()
 
-# --- GPIO from userspace: the two boards whose layout gpioblink carries ---------------------
-if(KICKOS_BOARD STREQUAL "frdmk64f" OR KICKOS_BOARD STREQUAL "xmc4800-relax")
+# --- GPIO from userspace: the boards whose layout gpioblink carries -------------------------
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/gpioblink/systems/${KICKOS_BOARD}.yaml")
   add_subdirectory(gpioblink)
 endif()
 
 # --- Bring-up LED blink -------------------------------------------------------------------
-# An ALLOWLIST: on a chip whose arch_diag_led_set is the no-op fallback it would blink nothing
-# and read as a dead board.
-if(KICKOS_BOARD STREQUAL "picopi"
-   OR KICKOS_BOARD STREQUAL "frdmk64f"
-   OR KICKOS_BOARD STREQUAL "f411disco"
-   OR KICKOS_BOARD STREQUAL "blackpill"
-   OR KICKOS_BOARD STREQUAL "bluepill-c8"
-   OR KICKOS_BOARD STREQUAL "f302nucleo"
-   OR KICKOS_BOARD STREQUAL "due"
-   OR KICKOS_BOARD STREQUAL "xmc4800-relax"
-   OR KICKOS_BOARD STREQUAL "esp32-wroom"
-   OR KICKOS_BOARD STREQUAL "teensy41")
+# On a chip whose arch_diag_led_set is the no-op fallback it would blink nothing and read as a
+# dead board.
+_kos_chip_defines(_kos_led arch_diag_led_set)
+if(_kos_led)
   add_subdirectory(blink)
 endif()
 
 # Its composition names the board's packaged USB CDC console driver.
-if((KICKOS_BOARD STREQUAL "picopi"
-    OR KICKOS_BOARD STREQUAL "pizero2350"
-    OR KICKOS_BOARD STREQUAL "teensy41")
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/usbcdcwit/systems/${KICKOS_BOARD}.yaml"
    AND NOT KICKOS_AMP_NODE)
   add_subdirectory(usbcdcwit)
 endif()
@@ -196,11 +212,10 @@ endif()
 # board; only the descent is gated.
 option(KICKOS_CLOCK_RETUNE_TEST "clockretune: privileged runtime clock-retune HW harness" OFF)
 option(KICKOS_CLOCKSOAK_TEST "clocksoak: clock-hardening wrap/soak HW harness" OFF)
-# Only the two backends that strong-override arch_cpu_clock_set (XMC4800, K64F) under
-# enforcement; elsewhere the retune is a fallback no-op and this harness would prove nothing.
-if(KICKOS_CLOCK_RETUNE_TEST
-   AND (KICKOS_BOARD STREQUAL "xmc4800-relax" OR KICKOS_BOARD STREQUAL "frdmk64f")
-   AND KICKOS_HAVE_MPU)
+# Only a chip that defines arch_cpu_clock_set, under enforcement; elsewhere the retune is the
+# fallback no-op and this harness would prove nothing.
+_kos_chip_defines(_kos_clock_set arch_cpu_clock_set)
+if(KICKOS_CLOCK_RETUNE_TEST AND _kos_clock_set AND KICKOS_HAVE_MPU)
   add_subdirectory(clockretune)
 endif()
 # Arch-neutral (clock_now plus sleep_ns only), so it builds for any board.

@@ -22,7 +22,7 @@ namespace
     // The writer's wait ends with the reclaim, as the last holder's exit lands it.
     int reclaim_in_the_wait(void)
     {
-        heldseam::g_window_free = true;
+        consoleseam::g_window_free = true;
         kickos::IrqLock lock;
         console_on_driver_death();
         return 0;
@@ -41,15 +41,15 @@ TEST(ConsoleHeldRtt, ADarkWindowWriterReachesRttOnce)
     run_isolated([]() {
         consoleseam::reset(kRing);
         publish();
-        heldseam::g_window_free = false;
+        consoleseam::g_window_free = false;
         {
             kickos::IrqLock lock;
             console_note_driver_death();
             console_on_driver_death();
         }
         ASSERT_NE(console_dark(), 0);
-        heldseam::g_current = reinterpret_cast<kickos::Thread*>(0x100u);
-        heldseam::g_dark_wait = reclaim_in_the_wait;
+        consoleseam::g_current = reinterpret_cast<kickos::Thread*>(0x100u);
+        consoleseam::g_dark_wait = reclaim_in_the_wait;
         g_rtt.clear();
         EXPECT_EQ(kickos::kconsole_write_user("line\n", 5, true), 5);
         EXPECT_EQ(consoleseam::wire(), "line\n");
@@ -63,7 +63,7 @@ TEST(ConsoleHeldRtt, ARefusedUserLineIsNotOnRtt)
     run_isolated([]() {
         consoleseam::reset(kRing);
         consoleseam::set_slot_free(0);
-        heldseam::g_current = reinterpret_cast<kickos::Thread*>(0x100u);
+        consoleseam::g_current = reinterpret_cast<kickos::Thread*>(0x100u);
         std::string const fill(1u, 'f');
         while (kickos::kconsole_write_user(fill.data(), fill.size(), false) != 0)
         {

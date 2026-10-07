@@ -10,7 +10,7 @@ How a silicon capture is taken, and what a capture is allowed to claim. The scri
 | script | job |
 | --- | --- |
 | `tools/bench/bench-present.sh` | READ ONLY: which machine the boards are on, which of them answer, each probe serial and each resolved console. Flashes nothing and is safe at any time |
-| `tools/bench/bench-fleet.sh` | enumerates the bus, resolves each probe serial LIVE, runs every board and every judged image `LIST_IMAGES` names for it, then states image coverage |
+| `tools/bench/bench-fleet.sh` | enumerates the bus, resolves each probe serial LIVE, builds every judged image `LIST_IMAGES` names for each board, captures them in one worker per board, then states image coverage |
 | `tools/bench/bench.sh` | ONE board: configure, build, locate the image, then hand off -- locally, or over ssh to the bench host |
 | `tools/bench/bench-capture.sh` | ONE board, ONE built image: flash, capture, judge (the TAP stream through `check_tap_stream.sh`, a bench report through its own arms). THIS is the script that runs where the hardware is |
 | `tools/bench/cap_esp.py` | the Espressif capture: reset-into-run and read on ONE serial handle |
@@ -224,6 +224,14 @@ nothing is. One TAG covers the whole pass: a capture's log is keyed by tag, boar
 (`<session>/logs/<tag>-<board>-<image>.log`), the tag of a variant's capture being TAG with the
 variant appended (`<tag>smp`, `<tag>flat`, `<tag>amp2n0`), so the captures of one pass never share
 a log.
+
+Every image is built (`BUILD_ONLY=1 bench.sh`) before the first is flashed. The captures then run
+in one worker per board, a board's in the order above, so a pass takes as long as its slowest
+board. Boards that share a probe or a console cable share a worker: `board_resources` in
+`board-rows.sh` names each probe and console a board holds, and two boards naming one (the RP
+boards and the Teensy, whose `RIG_CONSOLE_<BOARD>` pins name one FTDI) are captured one after the
+other. Each worker's output is printed under its own heading once all have finished, and the table
+above merges them.
 
 `DRY_RUN=1 tools/bench/bench-fleet.sh` prints that whole set and flashes nothing; it asks no board
 either, so no line it prints is a witness.
@@ -502,9 +510,9 @@ it is on `rv32imac` and `armv7m`. The ancestor frames below that one reload lazi
 thread runs and belong to no switch. A switch resuming a thread through the interrupt frame
 never returns there, so the entry that follows it finds no end stamp and banks nothing rather
 than banking a delta against a stale one. The counter there is 32 bits, so a stale pair would
-land in the row as an ordinary sample with no `SAT` column to refuse it;
-`tests/static/check_bench_xtensa_stamp.sh` reads both halves out of the linked image, there
-being no LX6 emulator in this tree to read the row from.
+land in the row as an ordinary sample with no `SAT` column to refuse it; it would read as a delta
+of 2^31 cycles or more, which `kickos_bench_switch_done` drops on every arch, no switch taking
+that long.
 
 THE RXv3 ROW CLOSES WITH THE FRAME BACK. `kickos_rx_pendsw` stamps the open above the
 register save and writes the save-and-swap half into a cell; `kickos_rx_restore` stamps its

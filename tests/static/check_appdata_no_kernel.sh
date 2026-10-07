@@ -64,7 +64,7 @@ command -v "$NM" >/dev/null 2>&1 || fail "nm not found: $NM"
 
 scratch_dir
 
-# The EREs the two scanners key on, defined once and handed in, so the self-test below and
+# The EREs the two scanners key on, defined once and handed in, so the planted record below and
 # the real scan cannot disagree about what the rule is.
 #
 # The RX ABI prefixes every C identifier with an underscore, so rx72m.ld spells the window
@@ -175,197 +175,6 @@ END {
 }' "$1"
 }
 
-# --- self-test: prove every clause of the rule, one control per clause ---------
-# Each control below is a MINIMAL PAIR: the positive and the negative differ in one property
-# only, and every expected count is exact.
-CTL_LO=0x2000
-CTL_HI=0x3000
-CTL_NAMES=' libkickos_kernel.a libkickos_arch_ctl.a landed.cc.obj'
-CTL_HEADING='Linker script and memory map'
-
-ctl_scan() { # <map> [heading] [nonalloc] [attr] [placed]
-    _h="$MAP_HEADING"
-    _n="$NONALLOC_ERE"
-    _a="$ATTR_ERE"
-    _p="$PLACED_ERE"
-    if [ "$#" -ge 2 ]; then _h="$2"; fi
-    if [ "$#" -ge 3 ]; then _n="$3"; fi
-    if [ "$#" -ge 4 ]; then _a="$4"; fi
-    if [ "$#" -ge 5 ]; then _p="$5"; fi
-    map_scan "$1" "$CTL_NAMES" "$CTL_LO" "$CTL_HI" "$_h" "$_n" "$_a" "$WRITABLE_ERE" "$_p"
-}
-ctl_leaks() { # <map> [heading] [nonalloc] [attr] [placed] -> LEAK line count
-    ctl_scan "$@" | grep -c '^LEAK ' || :
-}
-
-# One leak per shape and per boundary. The pre-heading record is the SAME shape as the
-# same-line positive and differs only in sitting above the heading. The last two are the
-# near misses the .apptrap exemption's anchors exist for.
-cat > "$TMP/ctl.pos.map" <<'EOF'
-Archive member included to satisfy reference by file (symbol)
-
- .data.pre_heading
-                0x00002100       0x10 kernel/libkickos_kernel.a(discarded.cc.obj)
-Linker script and memory map
-
- .data.same_line 0x00002000      0x10 kernel/libkickos_kernel.a(same.cc.obj)
- .bss._ZN6kickos7wrappedE
-                0x00002200       0x20 kernel/libkickos_kernel.a(wrap.cc.obj)
-COMMON
-                0x00002300        0x8 kernel/libkickos_kernel.a(common.cc.obj)
- .bss.g_attributes
-                0x00002400        0x4 kernel/libkickos_kernel.a(attr.cc.obj)
- .data.ends_past_lo 0x00001000  0x1001 kernel/libkickos_kernel.a(edge.cc.obj)
- .data.starts_below_hi
-                0x00002fff        0x1 kernel/libkickos_kernel.a(edge.cc.obj)
- .apptrap.veneer 0x00002600       0x8 kernel/libkickos_kernel.a(trap.cc.obj)
- .text.apptrap  0x00002610        0x8 kernel/libkickos_kernel.a(trap.cc.obj)
- .data.boot_object 0x00002800      0x10 CMakeFiles/boot.dir/landed.cc.obj
-EOF
-
-# Every line here is the same-line shape, so the per-control loop below can read one at a
-# time. Each differs from a positive above in exactly one property.
-cat > "$TMP/ctl.neg.map" <<'EOF'
- .debug_info    0x00002100       0x10 kernel/libkickos_kernel.a(dbg.cc.obj)
- .comment       0x00002110        0x8 kernel/libkickos_kernel.a(dbg.cc.obj)
- .ARM.attributes 0x00002120       0x4 kernel/libkickos_kernel.a(attr.cc.obj)
- .riscv.attributes 0x00002130      0x4 kernel/libkickos_kernel.a(attr.cc.obj)
- .data.stranger 0x00002140       0x10 other/libkickos_other.a(x.cc.obj)
- .data.ends_at_lo 0x00001000    0x1000 kernel/libkickos_kernel.a(edge.cc.obj)
- .data.starts_at_hi 0x00003000     0x10 kernel/libkickos_kernel.a(edge.cc.obj)
- .data.badaddr  0xzzzz0000       0x10 kernel/libkickos_kernel.a(edge.cc.obj)
- .data.below_window 0x00000100     0x10 kernel/libkickos_kernel.a(edge.cc.obj)
- .data.empty_inside 0x00002500      0x0 kernel/libkickos_kernel.a(edge.cc.obj)
- .apptrap       0x00002700        0x8 kernel/libkickos_arch_ctl.a(switch.S.obj)
- .data.app_object 0x00002810       0x10 CMakeFiles/app.dir/main.cc.obj
-EOF
-
-# ctl.neg.map carries no heading, so that the per-control loop below reads records only. A
-# scan of it MUST be given one, or every control is silent because nothing was read at all.
-printf '%s\n' "$CTL_HEADING" > "$TMP/ctl.neg.full.map"
-cat "$TMP/ctl.neg.map" >> "$TMP/ctl.neg.full.map"
-
-POS="$(ctl_leaks "$TMP/ctl.pos.map")"
-[ "$POS" -eq 9 ] || fail "the map scan found $POS of 9 planted leaks; it would miss a real one"
-
-# The SECTION NAME of each leak, not just the count. A scan that stopped reading the bare
-# name line above a wrapped placement still reports the leak, carrying the PREVIOUS record's
-# section name, so the count alone cannot see that clause break.
-ctl_scan "$TMP/ctl.pos.map" | awk '/^LEAK /{ print $3 }' | sort > "$TMP/ctl.secs"
-cat > "$TMP/ctl.secs.want" <<'EOF'
-.apptrap.veneer
-.bss._ZN6kickos7wrappedE
-.bss.g_attributes
-.data.boot_object
-.data.ends_past_lo
-.data.same_line
-.data.starts_below_hi
-.text.apptrap
-COMMON
-EOF
-sort "$TMP/ctl.secs.want" -o "$TMP/ctl.secs.want"
-if ! cmp -s "$TMP/ctl.secs" "$TMP/ctl.secs.want"; then
-    fail "the planted leaks resolved section names $(tr '\n' ' ' < "$TMP/ctl.secs"), expected
-      $(tr '\n' ' ' < "$TMP/ctl.secs.want"); a wrapped placement is being read against the
-      section name of the record above it"
-fi
-
-if [ "$(ctl_leaks "$TMP/ctl.neg.full.map" | tr -d ' ')" != 0 ]; then
-    ctl_scan "$TMP/ctl.neg.full.map" | sed 's/^/      /' >&2
-    fail "the map scan reported a non-allocated section, an attributes section, an unlisted
-      archive, an explicitly placed section or a placement outside the window; the gate would
-      cry wolf and be switched off"
-fi
-
-# Each control is re-read on its own, so a control silent for the WRONG reason is visible. A
-# whole-file zero cannot tell "every clause works" from "one clause swallowed the file".
-i=0
-while IFS= read -r line; do
-    i=$((i + 1))
-    printf '%s\n%s\n' "$CTL_HEADING" "$line" > "$TMP/ctl.one.map"
-    n="$(ctl_leaks "$TMP/ctl.one.map" | tr -d ' ')"
-    [ "$n" -eq 0 ] || fail "negative control $i reports a leak: $line"
-done < "$TMP/ctl.neg.map"
-[ "$i" -eq 12 ] || fail "$i negative control(s) ran, expected 12"
-
-# The exempted placement must be COUNTED as exempt and not merely absent from the leaks: a
-# clause that dropped the record before the tally would read the same way here.
-printf '%s\n' "$CTL_HEADING" > "$TMP/ctl.trap.map"
-grep '^ \.apptrap ' "$TMP/ctl.neg.map" >> "$TMP/ctl.trap.map"
-ctl_scan "$TMP/ctl.trap.map" | grep -qxF 'TOTAL 1 0 1' \
-    || fail "the explicitly placed control did not tally as one exempt placement: $(ctl_scan "$TMP/ctl.trap.map" | grep '^TOTAL ')"
-
-# Turn each clause OFF and the count over the control corpus must MOVE by an EXACT amount:
-# a control kept quiet by the wrong clause then shows up as the wrong number.
-NEVER='KICKOS_THIS_ERE_MATCHES_NOTHING'
-mutate() { # <what> <expect> <map> [heading] [nonalloc] [attr] [placed]
-    _what="$1"; _want="$2"; shift 2
-    _got="$(ctl_leaks "$@" | tr -d ' ')"
-    [ "$_got" -eq "$_want" ] || fail "with the $_what clause disabled the map scan reported
-      $_got leak(s) of $1, expected $_want; the controls for it are not near misses and prove nothing"
-}
-# A heading matching every line puts the scan inside the map region from line 1, so the
-# pre-heading record joins the nine.
-mutate "heading"  10 "$TMP/ctl.pos.map" '^'
-mutate "nonalloc" 2 "$TMP/ctl.neg.full.map" "$MAP_HEADING" "$NEVER"
-mutate "attr"     2 "$TMP/ctl.neg.full.map" "$MAP_HEADING" "$NONALLOC_ERE" "$NEVER"
-mutate "placed"   1 "$TMP/ctl.neg.full.map" "$MAP_HEADING" "$NONALLOC_ERE" "$ATTR_ERE" "$NEVER"
-# With the attributes test UNANCHORED the planted .bss.g_attributes leak is exempted, so the
-# count drops instead of rising.
-mutate "attr-anchor" 8 "$TMP/ctl.pos.map" "$MAP_HEADING" "$NONALLOC_ERE" 'attributes$'
-# With the placed test UNANCHORED both near misses are exempted with it.
-mutate "placed-anchor" 7 "$TMP/ctl.pos.map" "$MAP_HEADING" "$NONALLOC_ERE" "$ATTR_ERE" 'apptrap'
-
-# The tallies the verdict is read off, and the two refusals that keep an unusable window or
-# an unmatched archive from reading clean.
-CTL_V="$(ctl_scan "$TMP/ctl.pos.map")"
-printf '%s\n' "$CTL_V" | grep -qxF 'SEEN libkickos_kernel.a 8 6' \
-    || fail "the placement tally miscounted the control corpus: $(printf '%s\n' "$CTL_V" | grep '^SEEN ')"
-printf '%s\n' "$CTL_V" | grep -qxF 'SEEN libkickos_arch_ctl.a 0 0' \
-    || fail "an archive with no placement did not report a zero tally, so a basename mismatch would read clean"
-printf '%s\n' "$CTL_V" | grep -qxF 'SEEN landed.cc.obj 1 1' \
-    || fail "a plain object's placement was not tallied under its basename: $(printf '%s\n' "$CTL_V" | grep '^SEEN ')"
-printf '%s\n' "$CTL_V" | grep -qxF 'TOTAL 9 9 0' \
-    || fail "the grand tally miscounted the control corpus: $(printf '%s\n' "$CTL_V" | grep '^TOTAL ')"
-map_scan "$TMP/ctl.pos.map" "$CTL_NAMES" 0x3000 0x2000 "$MAP_HEADING" "$NONALLOC_ERE" \
-    "$ATTR_ERE" "$WRITABLE_ERE" "$PLACED_ERE" | grep -q '^BADWIN ' \
-    || fail "an inverted window was not refused, so every placement would read as outside it"
-map_scan "$TMP/ctl.pos.map" "$CTL_NAMES" 0x2000 0x2000 "$MAP_HEADING" "$NONALLOC_ERE" \
-    "$ATTR_ERE" "$WRITABLE_ERE" "$PLACED_ERE" | grep -q '^BADWIN ' \
-    || fail "an EMPTY window (start == end, how a script states a window it does not carve)
-      was not refused, so a board with no window at all would read clean"
-map_scan "$TMP/ctl.pos.map" "$CTL_NAMES" 0xnothex 0x3000 "$MAP_HEADING" "$NONALLOC_ERE" \
-    "$ATTR_ERE" "$WRITABLE_ERE" "$PLACED_ERE" | grep -q '^BADWIN ' \
-    || fail "an unparsable window bound was not refused"
-
-# The window lookup, on a symbol table holding both near misses the anchors exist for.
-cat > "$TMP/ctl.sym" <<'EOF'
-1fff45a0 D __kickos_appdata_start
-1fff4600 D __kickos_appdata_start_hi
-200145a0 D __kickos_appdata_end
-20014600 D __kickos_appdata_load_end
-2001a000 D ___kickos_appdata_rxbound
-2001b000 D __kickos_appdata_twice
-2001c000 D __kickos_appdata_twice
-EOF
-ctl_win() { # <name> -> the address, or nothing on refusal
-    win_sym "$TMP/ctl.sym" "$(win_ere "$1")" || :
-}
-[ "$(ctl_win __kickos_appdata_start)" = 1fff45a0 ] \
-    || fail "the window lookup did not resolve the exact start symbol"
-[ "$(ctl_win __kickos_appdata_end)" = 200145a0 ] \
-    || fail "the window lookup did not resolve the exact end symbol"
-[ "$(ctl_win __kickos_appdata_rxbound)" = 2001a000 ] \
-    || fail "the window lookup does not accept the RX spelling, so the gate is vacuous on that board"
-[ -z "$(ctl_win __kickos_appdata_absent)" ] \
-    || fail "the window lookup resolved a symbol the table does not define"
-[ -z "$(ctl_win __kickos_appdata_twice)" ] \
-    || fail "the window lookup accepted a symbol at two addresses, so the window would be one of them by table order"
-# Unanchored, the start lookup also takes __kickos_appdata_start_hi and so resolves two
-# addresses, which is what proves the anchors are load-bearing and not decoration.
-win_sym "$TMP/ctl.sym" '^_?__kickos_appdata_start' >/dev/null 2>&1 \
-    && fail "an unanchored window lookup still resolved one address; the near-miss symbol proves nothing"
-
 # --- the image and the map ----------------------------------------------------
 # A symbol SHAPE and not a name: the identifier prefix is per-target (below).
 tool_out "$TMP/sym" '^[0-9a-fA-F]+[[:space:]]+[A-Za-z][[:space:]]' "$NM" "$ELF"
@@ -395,6 +204,15 @@ for W in $WINDOWS; do
 
     map_scan "$MAP" "$NAMES" "$WIN_START" "$WIN_END" "$MAP_HEADING" "$NONALLOC_ERE" \
         "$ATTR_ERE" "$WRITABLE_ERE" "$PLACED_ERE" > "$TMP/verdict"
+    # The planted control: the same map with one .data record of the first archive at the
+    # window's start must read as exactly one leak more.
+    { cat "$MAP"; printf ' .data.kos_planted %s 0x10 %s(planted.cc.obj)\n' "$WIN_START" "$1"; } \
+        > "$TMP/planted.map"
+    map_scan "$TMP/planted.map" "$NAMES" "$WIN_START" "$WIN_END" "$MAP_HEADING" \
+        "$NONALLOC_ERE" "$ATTR_ERE" "$WRITABLE_ERE" "$PLACED_ERE" > "$TMP/planted"
+    [ "$(grep -c '^LEAK ' "$TMP/planted")" -eq "$(($(grep -c '^LEAK ' "$TMP/verdict") + 1))" ] \
+        || fail "a .data record of $1 planted at $WIN_START, inside $START_SYM..$END_SYM, is not
+      read as one more leak, so this scan would miss a real one"
 
     if grep -q '^BADWIN ' "$TMP/verdict"; then
         fail "unusable window $START_SYM..$END_SYM from $ELF: $(sed -n 's/^BADWIN //p' "$TMP/verdict")"

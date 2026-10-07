@@ -150,7 +150,7 @@ declaration rests on; the measurement is what made the declaration worth attempt
 core-local arm executes every instruction of `arch_kernel_lock` and excludes a core from itself and
 from nobody else: the lock appears to work while excluding nothing, and no fault is raised
 anywhere. `arch/xtensa/lx6/smp.cmake` states that hazard in its `exclusion` predicate and could not
-check it, a predicate being a configure-time declaration; `tests/static/check_lx6_atomctl.sh` reads
+check it, a predicate being a configure-time declaration; `tests/static/check_lx6_park_mask.sh` reads
 the seat and the read-back out of the linked image, and the die's answer stays the board's.
 
 **Both properties are INTEGRATION OPTIONS, so this is one die's answer**, and a record of it names
@@ -1168,7 +1168,7 @@ rather than closed: it is now answered statically, by configuration, for the end
 node holding a capability for a crossing is not a node whose peer is running: the list is a
 partition fact, and whether the far side exists is a deployment one.
 
-### N6h. A PARTITION IS DEPLOYED AS ONE ARTEFACT, AND THE IMAGES ARE CHECKED AGAINST EACH OTHER
+### N6h. A PARTITION IS DEPLOYED AS ONE ARTEFACT, AND EVERY IMAGE IS HELD TO THE ONE PARTITION
 
 N6b rules that deployment is a MERGE and not a second flash. This freeze is what that costs and
 what it buys, now that two kernels boot from one file.
@@ -1187,17 +1187,22 @@ the merge step would be the second truth N6g refuses, one layer further out.
 **NODE 0 OWNS THE MERGE**, being the node that releases the others (N5), so one step in a node 0
 build produces the whole partition and a user flashes once.
 
-**AND THE IMAGES ARE CHECKED AGAINST EACH OTHER, WHICH NO SINGLE LINK CAN DO.** Each node is
+**AND EVERY IMAGE IS HELD TO THE ONE PARTITION, SINCE NO LINK SEES ITS PEERS.** Each node is
 linked from its own configure and every link succeeds whatever the others did, so images built
-from different partition descriptions BUILD CLEANLY AND BOOT. What they then disagree about is
-where the region every node writes sits and how wide it is, and N6b already records that this
-presents as a HANG rather than as an error. **Every clause below is quantified over the
-partition and not over a pair**, the partition's width being a knob and two its smallest useful
-value (N6c). Four clauses, each a thing one link cannot see: the window at the same address and
-the same size in EVERY node's image; the window NOBITS in every one of them, an image that LOADS
-it carrying initialised bytes into memory a peer may already be using; the loaded spans of every
-PAIR of nodes disjoint; and every node's base distinct, two nodes linked at one base being the
-collapse N6c names and one that every arm on the node owning that base passes.
+from different partition descriptions would BUILD CLEANLY AND BOOT, and N6b already records that
+the disagreement presents as a HANG rather than as an error. So `tools/amp/build-partition.sh`
+builds every peer from node 0's resolved configuration and refuses one whose Kconfig fingerprint
+differs, which makes the partition's constants one set, and each node's script holds its own
+image to them (`arch/common/amp_partition.ld.h`). The window sits at the address and within the
+size they derive; each image lies inside its own slice of every span, which keeps the loaded
+spans of every PAIR of nodes disjoint and every node's base distinct, two nodes linked at one
+base being the collapse N6c names; and the merge's link refuses two nodes loading one byte. A
+script only bounds its own image, so one comparison remains: the merge refuses a peer whose
+window differs from node 0's in address, size or type (NOBITS, an image that LOADS it carrying
+initialised bytes into memory a peer may already be using) or in where any object in it sits,
+which a node-dependent object or an input the fingerprint does not hash would move. Every clause
+holds over the partition and not over a pair, its width being a knob and two its smallest useful
+value (N6c).
 
 **PEER CONSOLE LINES ARE GATED WHOLE, AND THE CLAIM, NOT TIMING, KEEPS THEM WHOLE.** This holds
 wherever own-image nodes share one UART, which is the RP2350 and QEMU ARM64 partitions. One
@@ -1723,7 +1728,7 @@ moment the mistake is committed, which is when the image is configured. A board 
 nothing is the most expensive shape a configuration error can take.
 
 The core-0 check lives in a CMake function rather than inline in the root lists file so that
-`tests/static/check_isolated_cores.sh` can drive the same authority the build drives, over synthetic
+`tests/static/check_isolated_cores.cmake` can drive the same authority the build drives, over synthetic
 values, with a control beside every refusal. An inline `FATAL_ERROR` is reachable only by
 configuring a whole tree that actually fails, which is one arm and no controls.
 

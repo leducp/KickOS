@@ -19,9 +19,9 @@
  * default a preset can raise, so a posture that does not fit pays the arena where the cost is
  * visible rather than losing a window unremarked.
  *
- * THE PIN ITSELF STAYS PER-CHIP, as MAX(., _kernel_data_top) in the .appdata section's own
- * ADDRESS expression, because that section's region and AT clause differ per chip. Two ld
- * facts fix that spelling. A bare address fails the link with ld's backwards-move error the
+ * THE PIN IS MAX(., _kernel_data_top) in the .appdata section's own ADDRESS expression, which
+ * KICKOS_APPDATA_SECTION spells once; the section's body, region and AT clause stay per chip
+ * after it. Two ld facts fix that spelling. A bare address fails the link with ld's backwards-move error the
  * moment kernel .bss overflows, and ld evaluates every ASSERT AFTER layout, so an overflowing
  * link must still lay out (one window higher) for the ASSERT below to be the thing that
  * prints. And the same MAX written as a pad INSIDE an output section body does not work: an
@@ -47,5 +47,16 @@
            "KickOS: _kernel_data_reserve is a whole _appdata_size larger than kernel .data/.bss needs, so the user-RAM arena is short by that much for nothing. Lower KICKOS_KERNEL_DATA_RESERVE by one _appdata_size, or drop this preset's override to take the chip default") \
     ASSERT(_kernel_data_top == ALIGN(_kernel_data_top, _appdata_size),  \
            "KickOS: _kernel_data_top (the kernel data base plus _kernel_data_reserve) is not _appdata_size-aligned, so .appdata's own ALIGN moves the window off the address the reserve names (keep KICKOS_KERNEL_DATA_RESERVE a whole multiple of _appdata_size)")
+
+/* The pinned app window's section header, invoked inside SECTIONS after the kernel .bss whose
+ * end it is handed. */
+#if KICKOS_HAVE_MPU
+#define KICKOS_APPDATA_SECTION(bss_end)        \
+    KICKOS_KERNEL_DATA_RESERVE_ASSERT(bss_end) \
+    .appdata MAX(., _kernel_data_top) : ALIGN(_appdata_size)
+#else
+#define KICKOS_APPDATA_SECTION(bss_end) \
+    .appdata MAX(., _kernel_data_top) : ALIGN(_appdata_size)
+#endif
 
 #endif

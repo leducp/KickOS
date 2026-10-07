@@ -7,7 +7,7 @@
 //
 // The mask is per THREAD, so an arm speaks as whichever core it names, and a producer's mask
 // therefore reaches only its own core. That is the posture the drain's exclusion has to hold
-// in, and the one tests/unit/consoletx cannot express: its mock runs the drain in the
+// in, and the one tests/unit/consoleseam cannot express: its mock runs the drain in the
 // producer's own mask gap, which is the single-core machine.
 
 #ifndef KICKOS_TESTS_UNIT_CONSOLETXSMP_TX_SMP_SEAM_H

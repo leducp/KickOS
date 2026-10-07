@@ -5,6 +5,7 @@
 // (arch/arm64/chip/virt_arm64) supplies the hardware edges, switch.S the frame and entries.
 
 #include <kickos/arch/arch.h>
+#include "ctx_redirect.h"
 #include <kickos/arch/armv8a_trap_stack.h>
 #include <kickos/arch/idle_floor.h>
 #include <kickos/arch/percpu.h>
@@ -405,36 +406,12 @@ void arch_context_init(struct arch_context* ctx,
 void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
                        void* stack_base, size_t stack_size)
 {
-    // kernel_sp SURVIVES THE REBUILD, put back explicitly. The stub is privileged, so the
-    // rebuild below places its frame from the block it is HANDED.
-    uintptr_t const kernel_sp = ctx->kernel_sp;
 #if defined(KICKOS_TLS) && KICKOS_TLS
+    // The rebuild derives it from the BLOCK, and a thread's thread_locals live where they
+    // were carved.
     uintptr_t const tls_base = ctx->tls_base;
 #endif
-#if KICKOS_KERNEL_STACKS
-    // stack_lo and stack_hi are saved and put back: arch_context_init derives them from what it
-    // is handed, and handing it the block would leave the context describing kernel .bss as this
-    // thread's stack. check_death_stack_seating.sh holds this shape. The `if` covers a TCB
-    // outside the pool, which has no block.
-    if (kernel_sp != 0)
-    {
-        uintptr_t const lo = ctx->stack_lo;
-        uintptr_t const hi = ctx->stack_hi;
-        void* const block = reinterpret_cast<void*>(kernel_sp - KICKOS_KERNEL_STACK_SIZE);
-        arch_context_init(ctx, entry, nullptr, block, KICKOS_KERNEL_STACK_SIZE, 1);
-        ctx->stack_lo = lo;
-        ctx->stack_hi = hi;
-        ctx->kernel_sp = kernel_sp;
-#if defined(KICKOS_TLS) && KICKOS_TLS
-        // Survives for the same reason: the rebuild derived it from the BLOCK, and a
-        // thread's thread_locals live where they were carved.
-        ctx->tls_base = tls_base;
-#endif
-        return;
-    }
-#endif
-    arch_context_init(ctx, entry, nullptr, stack_base, stack_size, 1);
-    ctx->kernel_sp = kernel_sp;
+    arch_ctx_redirect_to_block(ctx, entry, stack_base, stack_size);
 #if defined(KICKOS_TLS) && KICKOS_TLS
     ctx->tls_base = tls_base;
 #endif

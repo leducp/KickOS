@@ -7,23 +7,22 @@
 # its command or ENVIRONMENT sets QEMU_MACHINE or names a qemu-system program, read from the
 # build's own ctest list. A planted list is read first, so a reader that finds nothing fails.
 #
-#   check_host_gate_boots.sh <kickos-source> <ctest> <cmake> <build>
+#   check_host_gate_boots.sh <kickos-source> <ctest> <build>
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
 
-USAGE="usage: check_host_gate_boots.sh <kickos-source> <ctest> <cmake> <build>"
+USAGE="usage: check_host_gate_boots.sh <kickos-source> <ctest> <build>"
 KICKOS_SRC="${1:?$USAGE}"
 CTEST="${2:?$USAGE}"
-CMAKE="${3:?$USAGE}"
-BUILD="${4:?$USAGE}"
+BUILD="${3:?$USAGE}"
 
 scratch_dir
 
 host_boots() { # <json> <out>
-    "$CMAKE" "-DJSON=$1" "-DOUT=$TMP/tests.tsv" "-DHOST_BOOTS=$2" \
-        -P "$KICKOS_SRC/tests/static/ctest_tests.cmake" > "$TMP/reader.err" 2>&1 \
-        || fail "ctest_tests.cmake could not read $1: $(sed -n '1,3p' "$TMP/reader.err" | tr '\n' ' ')"
+    python3 "$KICKOS_SRC/tests/static/ctest_tests.py" --json "$1" --out "$TMP/tests.tsv" \
+        --host-boots "$2" > "$TMP/reader.err" 2>&1 \
+        || fail "ctest_tests.py could not read $1: $(sed -n '1,3p' "$TMP/reader.err" | tr '\n' ' ')"
 }
 
 cat > "$TMP/planted.json" <<'EOF'

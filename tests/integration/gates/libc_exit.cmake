@@ -17,8 +17,5 @@ if(KICKOS_ARCH STREQUAL "sim")
   set_tests_properties(sim_libc_exit PROPERTIES TIMEOUT 15)
 endif()
 
-# Not armv8a: it builds the app and registers no arm today. Every emulated board runs newlib's
-# own exit(), which runs main's handler.
-if(NOT KICKOS_ARCH STREQUAL "armv8a")
-  kickos_add_qemu_test(TARGET libc_exit SCRIPT "${_libc_exit_script}" ARGS --atexit)
-endif()
+# Every emulated board runs newlib's own exit(), which runs main's handler.
+kickos_add_qemu_test(TARGET libc_exit SCRIPT "${_libc_exit_script}" ARGS --atexit)

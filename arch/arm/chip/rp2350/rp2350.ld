@@ -26,7 +26,6 @@
 
 #include <chip_layout.h>
 #include <sections.ld.h>
-#include <app_heap.ld.h>
 
 ENTRY(Reset_Handler)
 
@@ -231,7 +230,7 @@ SECTIONS
         __kickos_appdata_end = .;
         /* The newlib heap IS the window pad: [ALIGN(used_end,8), window end). That ALIGN is
            relative to this section's start, which is why .appdata closes on ALIGN(8);
-           app_heap.ld.h holds the rule and the file-scope ASSERT that reads it back. */
+           app_window.ld.h holds the rule and the file-scope ASSERT that reads it back. */
         _kickos_heap_start = ALIGN(_appdata_used_end, 8);
         _kickos_heap_limit = __kickos_appdata_end;
     } > RAM
@@ -344,10 +343,10 @@ KICKOS_BOOT_ARENA_ASSERT(__kickos_ram_start, __kickos_ram_end)
 KICKOS_POOL_ARENA_ASSERT(__kickos_ram_start, __kickos_ram_end)
 ASSERT(__kickos_app_fini_array_end == __kickos_app_fini_array_start,
        "KickOS: .fini_array is non-empty: a global with a non-trivial destructor? Static destructors are not supported; nothing would ever run it")
+KICKOS_KERNEL_CTORS_NONE_ASSERT()
 
 #if KICKOS_HAVE_MPU
 /* App globals must fit the granted window. If this trips, raise KICKOS_APPDATA_SIZE. */
-KICKOS_APP_HEAP_ALIGN_ASSERT(_kickos_heap_start, _appdata_used_end)
 ASSERT(_appdata_used_end <= __kickos_appdata_start + _appdata_size,
        "KickOS: app .data/.bss overflow _appdata_size (raise KICKOS_APPDATA_SIZE)")
 /* Lower bound: an empty .appdata dropping its ALIGN would place .appbss below the base. */
@@ -376,20 +375,13 @@ ASSERT(ADDR(.text) == ORIGIN(FLASH),
  * assert reading ORIGIN(SHARED) against LENGTH(SHARED) passes wherever the region is
  * repointed, which is the one edit it exists to catch.
  */
-ASSERT(ADDR(.amp_shared) == KICKOS_AMP_SHARED_BASE,
-       "KickOS: the AMP shared region is not at the address the partition derives. Every node's script computes KICKOS_AMP_PARTITION_BASE + KICKOS_AMP_NODES * KICKOS_AMP_NODE_SHARE, so a region elsewhere means this image was built against a different geometry than its peers")
-
-ASSERT(__kickos_amp_shared_end - __kickos_amp_shared_start <= KICKOS_AMP_KERNEL_SHARED_SIZE,
-       "KickOS: the AMP shared objects overflow KICKOS_AMP_SHARED_SIZE less the tasks' KICKOS_AMP_USER_SHARE_SIZE at its top. Raise the first or lower the second in the partition's defconfig, in every node's, or narrow KICKOS_AMP_NODES / KICKOS_AMP_PARTITION_CORES")
+KICKOS_AMP_SHARED_ASSERT(ADDR(.amp_shared))
 
 /* Two spans, and neither implies the other: a node's text and its data are sliced out of
    different apertures with different strides. */
-ASSERT(ORIGIN(RAM) >= KICKOS_AMP_PARTITION_BASE && _estack <= KICKOS_AMP_SHARED_BASE,
-       "KickOS: this node's DATA is not inside its own SRAM share of the partition. It starts at KICKOS_AMP_PARTITION_BASE plus its node index times KICKOS_AMP_NODE_SHARE and must end below the region every node writes")
-
-ASSERT(ORIGIN(FLASH) >= KICKOS_AMP_TEXT_BASE
-       && ORIGIN(FLASH) + LENGTH(FLASH) <= KICKOS_AMP_TEXT_BASE + KICKOS_AMP_NODES * KICKOS_AMP_TEXT_SHARE,
-       "KickOS: this node's TEXT is not inside its own flash share of the partition. It starts at KICKOS_AMP_TEXT_BASE plus its node index times KICKOS_AMP_TEXT_SHARE")
+KICKOS_AMP_SLICE_ASSERT(ORIGIN(RAM), _estack, KICKOS_AMP_PARTITION_BASE, KICKOS_AMP_NODE_SHARE)
+KICKOS_AMP_SLICE_ASSERT(ORIGIN(FLASH), ORIGIN(FLASH) + LENGTH(FLASH),
+                        KICKOS_AMP_TEXT_BASE, KICKOS_AMP_TEXT_SHARE)
 
 /* Two machine facts, refused here rather than in the shared header. The partition's SRAM must
    end at or below the striped SRAM end (datasheet Table 11), the two 4 KiB banks above it being

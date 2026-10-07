@@ -115,7 +115,6 @@ extern "C"
         record(kickos::testfix::OP_RENDEZVOUS, peers);
     }
 
-// Keep this guard spelling for check_cpu_id_fold.sh.
 #if KICKOS_NUM_CORES > 1
     uint32_t arch_cpu_id(void)
     {

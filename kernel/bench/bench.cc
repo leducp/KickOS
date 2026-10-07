@@ -548,8 +548,14 @@ extern "C"
     }
 #endif
 
+    // A delta of 2^31 cycles or more is no switch: it is an end stamp older than the start it is
+    // read against (a thread resumed past the stamping close), and it is dropped, not banked.
     void kickos_bench_switch_done(uint32_t delta)
     {
+        if (delta >= (1u << 31))
+        {
+            return;
+        }
         dist_add_row(row(), kickos::BD_SWITCH, delta);
     }
 }

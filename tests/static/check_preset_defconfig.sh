@@ -3,7 +3,9 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # CI gate on the preset-to-defconfig bijection: every visible configure preset resolves to a
-# defconfig, and every defconfig is reachable from a preset.
+# defconfig, and every defconfig is reachable from a preset. Each preset is also its own
+# registration key, and the translating ones are exactly the presets
+# tests/static/console_reach_roots.txt declares.
 #
 # THE MAPPING IS NOT NAME EQUALITY, AND IT IS NOT THE PRESET'S NAME AT ALL. A preset's
 # defconfig is decided by its BOARD and its resolved KICKOS_CONFIG_VARIANT, so a preset named
@@ -39,60 +41,7 @@ require_repo_root "$SRC is not the repo root"
 FLATTEN="tests/static/preset_boards.cmake"
 [ -f "$FLATTEN" ] || fail "no preset flattener at $SRC/$FLATTEN"
 
-# A defconfig with no preset, consumed BY PATH by some gate. Each entry is <board>/<variant>
-# and each must be named by a file under tests/.
-FIXTURES="sim/smp-ineligible"
-
 scratch_dir
-
-# --- fixture consumption, and the bound that keeps one entry from covering another ---------
-# The needle is the bare VARIANT and cannot be board-qualified: check_smp_predicate.sh
-# composes its path out of shell variables, so `sim/configs/smp-ineligible` appears nowhere in
-# the tree as a literal. A distinctive variant name is therefore part of what makes an entry
-# checkable; keep the list short and its names specific.
-#
-# BOUNDED, never a bare substring. `-` is an ordinary character in a variant name, so a plain
-# match lets any entry whose name is a piece of a LIVE one ride on the live one's mentions,
-# and the dead entry then sits in the list forever with the gate green. The bound is any
-# character a variant name cannot hold.
-VARIANT_EDGE='[^A-Za-z0-9_-]'
-
-fixture_consumed() { # <variant> <root>; 0 when a file under <root> besides this gate names it
-    # The alphabet VARIANT_EDGE assumes. Anything else reaches the match as a pattern, where a
-    # dot stands for a character the name does not hold and the entry rides on a near neighbour.
-    case "$1" in
-        *[!A-Za-z0-9_-]*) fail "FIXTURES names the variant '$1', which holds a character no
-      board variant may: it would reach the consumption match as a regular expression" ;;
-    esac
-    grep -rlE "(^|$VARIANT_EDGE)$1($VARIANT_EDGE|\$)" "$2" 2>/dev/null \
-        | grep -qvxF "tests/static/$(basename "$0")"
-}
-
-# The match as it was before the bound, so the control below is a near miss and not a needle
-# that never matched anything. Self-test only; the legs never call it.
-fixture_consumed_unbounded() { # <variant> <root>
-    grep -rl -e "$1" "$2" 2>/dev/null | grep -qvxF "tests/static/$(basename "$0")"
-}
-
-# One consumer naming one variant, and a second variant whose name is a piece of the first.
-mkdir -p "$TMP/st"
-printf 'KOS_FIXTURE_VARIANT="kos-probe-live"\n' >"$TMP/st/consumer.sh"
-fixture_consumed "kos-probe-live" "$TMP/st" \
-    || fail "the consumption match does not see a variant a file under tests/ names outright,
-      so every entry would read as dead and this leg would cry wolf"
-if fixture_consumed "kos-probe" "$TMP/st"; then
-    fail "a variant whose name is a piece of a live one reads as consumed, so a dead entry
-      hides behind the live one's mentions and stays in the list forever"
-fi
-fixture_consumed_unbounded "kos-probe" "$TMP/st" \
-    || fail "the unbounded match does not accept the alias either, so the bound above is not
-      what refuses it and the control proves nothing"
-# The same alias spelled with a dot, which matches the live name as a pattern and nothing as a
-# literal, so the refusal above is what keeps it out and not a needle that misses.
-if ( fixture_consumed "kos.probe-live" "$TMP/st" ) 2>/dev/null; then
-    fail "a variant holding a regular-expression character is matched as a pattern, so a dot
-      in the list stands for a character no variant name holds"
-fi
 
 # --- the two sets ------------------------------------------------------------
 "$CMAKE" -DSRC="$SRC" -DOUT="$TMP/presets.tsv" -P "$FLATTEN" >"$TMP/flatten.log" 2>&1 \
@@ -111,19 +60,6 @@ sed -E 's|boards/([^/]+)/configs/([^/]+)/defconfig|\1 \2|' "$TMP/defconfigs.txt"
     | awk '{ if ($2 == "base") { print $1 } else { print $1 "-" $2 } }' \
     | sort -u >"$TMP/defconfig_keys.txt"
 require_nonempty "$TMP/defconfig_keys.txt" "no defconfig resolved to a board and variant"
-
-# The exception list in the same key shape as the two sets above.
-: >"$TMP/fixture_keys.txt"
-for _f in $FIXTURES; do
-    _b="${_f%%/*}"
-    _v="${_f#*/}"
-    if [ "$_v" = "base" ]; then
-        echo "$_b" >>"$TMP/fixture_keys.txt"
-    else
-        echo "$_b-$_v" >>"$TMP/fixture_keys.txt"
-    fi
-done
-sort -u "$TMP/fixture_keys.txt" -o "$TMP/fixture_keys.txt"
 
 # --- leg 1: every preset resolves to a defconfig -----------------------------
 n_missing=0
@@ -156,46 +92,54 @@ while IFS= read -r key; do
     if grep -qxF "$key" "$TMP/matched_keys.txt"; then
         continue
     fi
-    if grep -qxF "$key" "$TMP/fixture_keys.txt"; then
-        continue
-    fi
     n_orphan=$((n_orphan + 1))
     bad "defconfig '$key' is named by no configure preset. Nothing compiles it and no run" \
-        "reports it missing. Give it a preset, delete it, or declare it in this gate's" \
-        "FIXTURES if a test consumes it by path."
+        "reports it missing. Give it a preset or delete it."
 done <"$TMP/defconfig_keys.txt"
 
-# --- leg 3: the exception list is not a hiding place -------------------------
-# A fixture must BE a tracked defconfig and must be named by a file under tests/.
-n_dead=0
-for _f in $FIXTURES; do
-    _b="${_f%%/*}"
-    _v="${_f#*/}"
-    if ! grep -qxF "boards/$_b/configs/$_v/defconfig" "$TMP/defconfigs.txt"; then
-        n_dead=$((n_dead + 1))
-        bad "FIXTURES names '$_f' and boards/$_b/configs/$_v/defconfig is not tracked."
-        continue
-    fi
-    # EXCLUDING THIS FILE, which lists the entry two dozen lines up: without that exclusion
-    # every entry matches its own declaration and this leg can never fire at all.
-    if ! fixture_consumed "$_v" tests/; then
-        n_dead=$((n_dead + 1))
-        bad "FIXTURES names '$_f' and nothing under tests/ besides this gate names the" \
-            "variant '$_v'. A declared exception nothing consumes is an orphan defconfig" \
-            "wearing a licence."
-    fi
-done
+# --- leg 3: every preset is its own registration key -------------------------
+# trap_redzone rebuilds `cmake --preset <key>`, so a preset keyed otherwise is measured as the
+# preset its key names, or as none.
+awk -F'\t' '$3 != $1 { print $1, $3 }' "$TMP/presets.tsv" >"$TMP/rekeyed.txt"
+while read -r _name _key; do
+    bad "configure preset '$_name' registers its per-preset gates under '$_key', so" \
+        "trap_redzone measures the preset named '$_key' in its place, or none."
+done <"$TMP/rekeyed.txt"
+
+# --- leg 4: the translating presets are console_reach's preset records -------
+# A translating arch is one console_reach_roots.txt declares; a preset is of the arch its board
+# states.
+REACH=tests/static/console_reach_roots.txt
+awk '$1 == "preset" { print $2 }' "$REACH" | sort -u >"$TMP/reach_arches.txt"
+require_nonempty "$TMP/reach_arches.txt" "$REACH declares no preset"
+awk '$1 == "preset" { print $3 }' "$REACH" | sort >"$TMP/reach_presets.txt"
+: >"$TMP/translating.txt"
+while IFS="$TAB" read -r _name _board _key; do
+    _arch="$(sed -n 's/^set(KICKOS_ARCH  *"\([^"]*\)").*/\1/p' "boards/$_board/board.cmake" \
+        2>/dev/null)"
+    grep -qxF "$_arch" "$TMP/reach_arches.txt" && echo "$_name" >>"$TMP/translating.txt"
+done <"$TMP/presets.tsv"
+sort "$TMP/translating.txt" | comm -3 - "$TMP/reach_presets.txt" >"$TMP/reach_diff.txt"
+while IFS= read -r _line; do
+    case "$_line" in
+        "$TAB"*) bad "$REACH declares preset ${_line#"$TAB"}, which is no configure preset of" \
+                     "an arch it declares, so that record is dead." ;;
+        *) bad "translating preset $_line has no preset and floor record in $REACH, so" \
+               "its console_reach clause dies where it runs and nothing says so elsewhere." ;;
+    esac
+done <"$TMP/reach_diff.txt"
 
 n_names=$(wc -l <"$TMP/preset_names.txt")
 n_keys=$(wc -l <"$TMP/preset_keys.txt")
 n_defconfigs=$(wc -l <"$TMP/defconfig_keys.txt")
-n_fixtures=$(wc -l <"$TMP/fixture_keys.txt")
 echo "== checked $n_names configure preset(s) over $n_keys key(s) against $n_defconfigs" \
-     "defconfig(s), $n_fixtures declared fixture(s) =="
+     "defconfig(s) =="
 
 if [ "$rc" -ne 0 ]; then
     fail "$n_missing preset(s) with no defconfig, $n_orphan defconfig(s) with no preset," \
-         "$n_dead dead fixture declaration(s)."
+         "$(wc -l <"$TMP/rekeyed.txt") preset(s) keyed as another," \
+         "$(wc -l <"$TMP/reach_diff.txt") console_reach preset record(s) out of step."
 fi
 
-echo "PASS: every configure preset resolves to a defconfig and every defconfig is reachable"
+echo "PASS: every configure preset resolves to a defconfig and is its own key, every defconfig is" \
+     "reachable, and console_reach declares exactly the translating presets"

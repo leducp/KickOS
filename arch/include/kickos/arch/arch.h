@@ -162,6 +162,12 @@ void kickos_panic_report(char const* msg, char const* file,
 uint32_t arch_cpu_id(void);
 #else
 #define arch_cpu_id() 0u
+// A fold and never an inline: a single-core image carries no arch_cpu_id at all. Any other
+// spelling fails here (a name the preprocessor does not know reads as 0, then `0()`), and the
+// macro turns a function definition of it into a macro-argument error.
+#if arch_cpu_id() != 0
+#error "arch_cpu_id() must fold to the literal 0 at one core"
+#endif
 #endif
 
 // Send a doorbell to each core in the mask, then wait for every reply.

@@ -42,7 +42,8 @@ int main(int, char**)
     for (unsigned step = 0; step < PROBE_LIMIT; step++)
     {
         char msg[64];
-        ksnprintf(msg, sizeof(msg), "[stackguard] touching 0x%x\n", static_cast<unsigned>(p));
+        ksnprintf(msg, sizeof(msg), "[stackguard] touching 0x%lx\n",
+                  static_cast<unsigned long>(p));
         kos_print(msg);
         *reinterpret_cast<volatile unsigned char*>(p) = 0xA5u;
         p -= g;

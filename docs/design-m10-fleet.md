@@ -576,7 +576,7 @@ x86_64's move to `add_executable`.
 
 | mechanism | replaced by | gates, tests and docs that change |
 | --- | --- | --- |
-| the service lists: every `system/init/<board>/service_list*.cc`, `services_none.cc`, `service_list_run.cc`, `kos_service_list`, `kos_service_bringup`, `kickos_board_services`, `kickos_service_list_run`, the service-list selection knob and the two board defaults | compositions (4.5) | `check_service_lists.sh` and `service_lists.txt` deleted; `check_kconfig_gen.sh`'s string arm moves to another string knob; the `check_sim_*.sh` gates configure compositions instead of `-D` lists; `boards.md`, `architecture.md`, `invariants.md`, `porting.md` |
+| the service lists: every `system/init/<board>/service_list*.cc`, `services_none.cc`, `service_list_run.cc`, `kos_service_list`, `kos_service_bringup`, `kickos_board_services`, `kickos_service_list_run`, the service-list selection knob and the two board defaults | compositions (4.5) | `check_service_lists.sh` and `service_lists.txt` deleted; `kconfig_gen`'s string arm moves to another string knob; the `check_sim_*.sh` gates configure compositions instead of `-D` lists; `boards.md`, `architecture.md`, `invariants.md`, `porting.md` |
 | `kos_service_cfg`, `kos_svc_kind`, the descriptor's line numbers, the line argument of `KICKOS_UART_CONSOLE_SERVICE`, `bring_up` given no instance and the posture bit | `START` taking the instance (section 5) | `tests/unit/drvbringup/bringup_unwind.cc`'s number-mismatch and service-list cases; the size assert on the cfg |
 | `kickos_add_board_provider` and `cmake/cap_table.cmake`'s summing, with `kickos_declare_app_capabilities` and `kickos_declare_app_endpoints` | root, which is the init, gets a table `KICKOS_CAP_TABLE_SUPPLY` wide, the supply admission already counts the init against; the init's endpoints are admission's `supply.budget` | the selftest gate's partials on the summed width; `architecture.md` |
 | the pin maps, the pin-map selection knob, `pinmap.h`, `pinmux_run.cc` | a task muxes its own pins under `pinmux`; the board file states the wiring | `check_provider_alias.sh` and its fixture; `boards.md` |
@@ -635,9 +635,8 @@ witnessed. It writes the map beside the image as `<TARGET>.map`, the path the ga
   OBJECT library for its core count and the landed kernel's, so `$<TARGET_OBJECTS>` places them;
   `libc`, `libm`, `libgcc`, `libstdc++` and `libsupc++` are named by `-l` inside each leaf's
   group, the toolchain file's rule carrying their `-L` directories, so no path of the building
-  machine reaches the exported targets; `-T` names `pe_image.ld`. CMake places an object a usage
-  requirement carries by its target's depth, so the C++ runtime object rides an INTERFACE target
-  one level below the leaf, and `tests/static/check_x86_64_link_order.sh` pins the order.
+  machine reaches the exported targets; `-T` names `pe_image.ld`. The order CMake gives the
+  objects lays out the app half and nothing depends on it.
 - **A rebased image** is a second executable over the first's objects (`$<TARGET_OBJECTS:>` of
   the first) and its link libraries, linked with `-Wl,--image-base=<base>`, so nothing is
   compiled twice.
@@ -664,7 +663,7 @@ section of every image byte-identical to the custom-command link it replaced, an
 build them against the installed package. The sim gate also runs its app, and on a board an
 emulator runs, the image gate `check_oot_mcu_run.sh` boots the MCU app. Each run expects the app's
 line and its `main`'s status through the default composition.
-`check_oot_arch_cover.sh` keeps every arch covered. `examples/composition` is kept correct with the
+The configure of every board refuses an arch with no row in that map. `examples/composition` is kept correct with the
 tree like any track: the golden gates build and run it, and the Relax Kit captures judge its lines.
 
 ## 9. The partition build

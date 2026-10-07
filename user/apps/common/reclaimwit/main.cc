@@ -171,7 +171,7 @@ int main(int, char**)
     int const close_rc = kos_handle_close(ep);
 
     char const mute[] = "[reclaimwit] MUTE kernel console while the driver holds it\n";
-    (void)kos_kconsole_write(mute, sizeof(mute) - 1u); // a dropped line is the measurement
+    (void)KICKOS_KCONSOLE_MEASURED(DROP, mute, sizeof(mute) - 1u);
 
     // Returns only once the driver has TAKEN the bytes, so the published route is served
     // and not merely created.

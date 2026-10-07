@@ -131,7 +131,7 @@ Two further costs outside the invariants file:
 - **The kernel-stack depth chain forks.** `arch_rv32imac.cc` 97-114 derives
   `KICKOS_RV_TRAP_FRAME_SYS == 2 * KICKOS_RV_TRAP_FRAME` and
   `KICKOS_RV_TRAP_NEST_EXIT == KICKOS_RV_TRAP_FRAME` from "the msip frame a reschedule puts
-  below it", and `tests/static/trap_redzone_roots.txt` scrapes those as plain immediates. The
+  below it", and `tests/static/check_trap_redzone.sh` scrapes those as plain immediates. The
   worst case does not shrink -- a timer preemption still takes the full frame -- so the
   asserts survive, but the derivation and the gate roots have to be restated for two paths.
 

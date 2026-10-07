@@ -15,7 +15,6 @@
 
 #include <chip_layout.h>
 #include <sections.ld.h>
-#include <app_heap.ld.h>
 
 ENTRY(Reset_Handler)
 
@@ -221,7 +220,7 @@ SECTIONS
         __kickos_appdata_end = .;
         /* The newlib heap IS the window pad: [ALIGN(used_end,8), window end). That ALIGN is
            relative to this section's start, which is why .appdata closes on ALIGN(8);
-           app_heap.ld.h holds the rule and the file-scope ASSERT that reads it back. */
+           app_window.ld.h holds the rule and the file-scope ASSERT that reads it back. */
         _kickos_heap_start = ALIGN(_appdata_used_end, 8);
         _kickos_heap_limit = __kickos_appdata_end;
     } > RAM
@@ -291,12 +290,12 @@ KICKOS_BOOT_ARENA_ASSERT(__kickos_ram_start, __kickos_ram_end)
 KICKOS_POOL_ARENA_ASSERT(__kickos_ram_start, __kickos_ram_end)
 ASSERT(__kickos_app_fini_array_end == __kickos_app_fini_array_start,
        "KickOS: .fini_array is non-empty: a global with a non-trivial destructor? Static destructors are not supported; nothing would ever run it")
+KICKOS_KERNEL_CTORS_NONE_ASSERT()
 
 /* App globals must fit _appdata_size, the app's MPU-granted .data/.bss window.
    SYSMPU is 32-byte granular, so any 32-byte multiple works here.
    A zero-sized used-end means the user-path selector matched nothing. */
 #if KICKOS_HAVE_MPU
-KICKOS_APP_HEAP_ALIGN_ASSERT(_kickos_heap_start, _appdata_used_end)
 ASSERT(_appdata_used_end <= __kickos_appdata_start + _appdata_size,
        "KickOS: app .data/.bss overflow _appdata_size (raise it, 32-byte granular on SYSMPU)")
 /* Lower bound: an empty .appdata dropping its ALIGN would place .appbss below the base. */

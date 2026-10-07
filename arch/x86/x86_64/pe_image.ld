@@ -211,7 +211,7 @@ SECTIONS
   }
   /* On the section alignment PE32+ requires of every section, which is this board's page, and
    * granular after it: no power-of-two window to lose, and nothing above the app window slides
-   * with it (tests/static/check_kernel_data_reserve.sh).
+   * with it, so it takes no KICKOS_APPDATA_SECTION.
    */
   .appdata BLOCK(__section_alignment__) : ALIGN(8)
   {

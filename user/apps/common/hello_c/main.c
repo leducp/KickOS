@@ -3,7 +3,7 @@
 //
 // Compiles the kos_* C-facing headers it includes as C with the real flags. Rewriting it as C++,
 // or including a C++-only header, leaves the C claim those headers make resting on
-// check_c_headers.sh's standalone compile alone.
+// check_public_headers.sh's standalone compile alone.
 
 #include <stdbool.h>
 

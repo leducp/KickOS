@@ -32,25 +32,12 @@ namespace
     constexpr uint8_t PRIO_RUNNER = 6;
     constexpr uint8_t PRIO_UNDER = 5;
 
-    int owed_at(uint32_t core)
-    {
-        uint32_t const was = g_core;
-        g_core = core;
-        int const owed = kickos_kernel_core_resched_owed();
-        g_core = was;
-        return owed;
-    }
-
-    // klock.cc's sequence rows outlive reset(), so an arm starts from what it drains here.
     void settle()
     {
-        uint32_t const was = g_core;
         for (uint32_t core = 0; core < KICKOS_KERNEL_CORES; core++)
         {
-            g_core = core;
-            (void)kickos_kernel_core_resched_take();
+            drain(core);
         }
-        g_core = was;
     }
 
     void pass_as(uint32_t core)

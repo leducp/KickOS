@@ -89,10 +89,9 @@ namespace kickos
         }
 
         // At namespace scope and volatile. Both name app-half storage, which kernel text
-        // cannot materialise on a split image: the linker relaxes the address pair onto the
-        // register anchoring the app's small data, which an unprivileged thread writes
-        // (tests/static/check_riscv_kernel_gp.sh). A local volatile stops the value folding
-        // but not the address being materialised inline.
+        // cannot materialise on a split image: the address names whichever process is on the
+        // core (tests/static/check_riscv_kernel_apphalf.sh). A local volatile stops the value
+        // folding but not the address being materialised inline.
         char const* const volatile g_app_stamp = kickos_app_stamp;
         struct kos_init_args* const volatile g_init_args_home = &kickos_init_args;
 
@@ -459,3 +458,44 @@ namespace kickos
         return 0;
     }
 }
+
+#if defined(KICKOS_TLS) && KICKOS_TLS
+#if !KICKOS_TLS_FROM_SP
+#include <kickos/arch/idle_floor.h>
+#endif
+
+namespace kickos
+{
+    namespace
+    {
+        // What a default stack pays above its floor with no thread_local declared: the control
+        // block alone, a constant. The template's share is the link's (KICKOS_TLS_CARVE_ASSERT
+        // in arch/common/sections.ld.h).
+        constexpr size_t TCB_CARVE = KICKOS_REENT_IN_TCB
+            * ((KICKOS_ARCH_TLS_TCB + (KICKOS_STACK_ALIGN - 1u))
+               & ~static_cast<size_t>(KICKOS_STACK_ALIGN - 1u));
+        // A spawned thread's floor unless the stack names its own.
+        constexpr bool carves(size_t stack, size_t floor = KICKOS_MIN_STACK_SIZE)
+        {
+            return stack >= floor + TCB_CARVE;
+        }
+        static_assert(TCB_CARVE == 0 or not carves(KICKOS_MIN_STACK_SIZE),
+                      "carves() admits a stack at its floor, so no assert below can fire");
+        static_assert(carves(KICKOS_USER_STACK_SIZE),
+                      "KICKOS_USER_STACK_SIZE cannot hold a thread's TLS control block above "
+                      "KICKOS_MIN_STACK_SIZE, so a thread on the default stack runs below the "
+                      "arch's syscall stack floor. Raise it in "
+                      "boards/<board>/configs/<variant>/defconfig.");
+        static_assert(carves(KICKOS_ROOT_STACK_SIZE),
+                      "KICKOS_ROOT_STACK_SIZE cannot hold root's TLS control block above "
+                      "KICKOS_MIN_STACK_SIZE, so root runs below the arch's syscall stack "
+                      "floor. Raise it in boards/<board>/configs/<variant>/defconfig.");
+#if !KICKOS_TLS_FROM_SP
+        static_assert(carves(KICKOS_IDLE_STACK_SIZE, KICKOS_ARCH_IDLE_FLOOR),
+                      "KICKOS_IDLE_STACK_SIZE cannot hold idle's TLS control block above "
+                      "KICKOS_ARCH_IDLE_FLOOR, so idle would overrun its stack on its first "
+                      "interrupt. Raise it in boards/<board>/configs/<variant>/defconfig.");
+#endif
+    }
+}
+#endif

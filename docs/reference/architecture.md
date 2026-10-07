@@ -1047,8 +1047,8 @@ feeds the slave app.
   runs the two guards over every input, links twice with `ld -m i386pep` so the image carries a
   copy of its relocation directory, and writes `<image>.map`; the section script and the boot
   and kernel-landing objects ride the exported leaves, so `kickos_emit_image()` only checks the
-  image's leaves there. The order of an image's objects decides its app half, and
-  `tests/static/check_x86_64_link_order.sh` pins it. An app whose sources call a driver class
+  image's leaves there. The order of an image's objects lays out its app half, and nothing
+  depends on it. An app whose sources call a driver class
   adds `kickos_link_class_backends(<target> <class>...)` before its `target_link_libraries` line: an
   app names the class (it is already in its `#include` list); the backend and its position
   ahead of the rescan group come from `kickos_select_class_backend`, called by
@@ -1080,9 +1080,9 @@ feeds the slave app.
 - **`KICKOS_SMP_TRACE`** (CMake `option()`, default `OFF`, selected by no preset) compiles the
   per-core park/wake event ring (`kickos/smptrace.h`) into `smptrace.cc`, `sync.cc` and `sched.cc`;
   it is a diagnostic knob for an SMP park that never woke, never a posture, and the guarded code
-  compiles to nothing when it is off. `tests/static/check_smp_trace_builds.sh` compiles its enabled
-  arm alone, with the preset's own flags, so it cannot rot unnoticed while every preset ships it
-  off.
+  compiles to nothing when it is off. `kickos_smp_trace_arm`, an object library nothing links,
+  compiles those three TUs with it on under the kernel's flags in every build, so the arm cannot
+  rot unnoticed while every preset ships it off.
 
 ---
 

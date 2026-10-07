@@ -3,7 +3,7 @@
 //
 // Probe selectors and result encodings. Values are ABI: append, never reorder.
 // Include this header explicitly; sys.h and sys/abi.h must not include it.
-// Keep the extern "C" block so check_c_headers.sh includes this header.
+// Keep the extern "C" block so check_public_headers.sh includes this header.
 
 #ifndef KICKOS_SYS_ABI_PROBE_H
 #define KICKOS_SYS_ABI_PROBE_H

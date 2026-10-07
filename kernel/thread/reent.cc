@@ -22,8 +22,8 @@ namespace kickos
         KickosReentSeam s_seam = {};
 
         // At namespace scope and volatile: a local volatile would stop the value folding but not
-        // the address being materialised inline, which two gates refuse
-        // (tests/static/check_riscv_kernel_apphalf.sh, check_riscv_kernel_gp.sh).
+        // the address being materialised inline, which tests/static/check_riscv_kernel_apphalf.sh
+        // refuses.
         KickosReentSeam const* const volatile s_seam_home = &kickos_reent_seam;
 
 #if defined(KICKOS_ENABLE_SELFTEST)

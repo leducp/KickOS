@@ -291,15 +291,15 @@ namespace
     {
         char const* s = "# [svc] kconsole_write arg/return roundtrip (not a delivery check)\n";
         size_t const n = strlen(s);
-        int32_t const took = kos_kconsole_write(s, n); // its answer is the measurement
+        int32_t const took = KICKOS_KCONSOLE_MEASURED(ANSWER, s, n);
         TAP_CHECK(console_count_ok(took, n));
         write_rest(s, n, took);
         // A len-0 write is a legitimate 0 (sys.h).
-        TAP_CHECK(kos_kconsole_write(s, 0) == 0); // its answer is the measurement
+        TAP_CHECK(KICKOS_KCONSOLE_MEASURED(ANSWER, s, 0) == 0);
         // The prefix must itself be a whole line or the TAP stream is malformed.
         char const* pfx = "# [svc] len-honoured prefix\nTRAILING-MUST-NOT-APPEAR";
         size_t const cut = strlen("# [svc] len-honoured prefix\n");
-        int32_t const cut_took = kos_kconsole_write(pfx, cut); // its answer is the measurement
+        int32_t const cut_took = KICKOS_KCONSOLE_MEASURED(ANSWER, pfx, cut);
         TAP_CHECK(console_count_ok(cut_took, cut));
         write_rest(pfx, cut, cut_took);
     }
@@ -3938,7 +3938,7 @@ namespace
     {
         size_t const lit_len = strlen(CD_LIT);
         int32_t const lit_took
-            = kos_kconsole_write(CD_LIT, lit_len); // its answer is the measurement
+            = KICKOS_KCONSOLE_MEASURED(ANSWER, CD_LIT, lit_len);
         g_cd_lit_rc = lit_took;
         write_rest(CD_LIT, lit_len, lit_took);
 
@@ -3965,7 +3965,7 @@ namespace
         {
             // Bogus console buffer: rejected, and never read (a wrong-accept would return 8,
             // having read the guard page the caller cannot reach).
-            g_cd_bad_rc = kos_kconsole_write(bad, 8); // its answer is the measurement
+            g_cd_bad_rc = KICKOS_KCONSOLE_MEASURED(ANSWER, bad, 8);
             // Bogus NAME pointer: the kernel must bound the walk (no fault), drop the
             // name, and still spawn the child.
             auto const badname = kos::thread::create_caps(cd_kid, &g_cd_badname_ran,

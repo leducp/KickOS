@@ -8,30 +8,14 @@
 #
 # ONE SOURCE SET, NOT kickos_kseam's: that library takes the preset's posture, where the whole
 # amp window compiles to nothing. ipc_seam.cc is the user-access seam fused_wake already uses.
-set(_amphold_srcs
-  "${PROJECT_SOURCE_DIR}/tests/unit/kfixture/kfixture.cc"
-  "${PROJECT_SOURCE_DIR}/tests/unit/kfixture/karch_seam.cc"
-  "${PROJECT_SOURCE_DIR}/tests/unit/fusedwake/ipc_seam.cc"
-  amp_hold_seam.cc
-  "${PROJECT_SOURCE_DIR}/kernel/syscall/syscall_ipc.cc"
-  "${PROJECT_SOURCE_DIR}/kernel/syscall/syscall_ipc_fast.cc"
-  "${PROJECT_SOURCE_DIR}/kernel/amp/ampwindow.cc"
-  "${PROJECT_SOURCE_DIR}/kernel/amp/ampmap.cc"
-  "${PROJECT_SOURCE_DIR}/kernel/sched/sched.cc"
-  "${PROJECT_SOURCE_DIR}/kernel/sched/policy_fifo_rr.cc"
-  "${PROJECT_SOURCE_DIR}/kernel/sync/sync.cc"
-  "${PROJECT_SOURCE_DIR}/kernel/thread/park.cc"
-  "${PROJECT_SOURCE_DIR}/kernel/syscall/cap.cc"
-  "${PROJECT_SOURCE_DIR}/kernel/task/task.cc"
-  "${PROJECT_SOURCE_DIR}/kernel/irq/irq.cc"
-  "${PROJECT_SOURCE_DIR}/kernel/notify/notify.cc"
-  "${PROJECT_SOURCE_DIR}/kernel/init/instance.cc"
-  "${PROJECT_SOURCE_DIR}/kernel/init/fault.cc")
-
-kickos_add_kernel_host_lib(kickos_kseam_amp
-  SOURCES ${_amphold_srcs}
-  INCLUDES "${PROJECT_SOURCE_DIR}/tests/unit/kfixture"
-           "${PROJECT_SOURCE_DIR}/tests/unit/fusedwake"
+kickos_add_kseam(kickos_kseam_amp
+  EXTRA "${PROJECT_SOURCE_DIR}/tests/unit/fusedwake/ipc_seam.cc"
+        amp_hold_seam.cc
+        "${PROJECT_SOURCE_DIR}/kernel/syscall/syscall_ipc.cc"
+        "${PROJECT_SOURCE_DIR}/kernel/syscall/syscall_ipc_fast.cc"
+        "${PROJECT_SOURCE_DIR}/kernel/amp/ampwindow.cc"
+        "${PROJECT_SOURCE_DIR}/kernel/amp/ampmap.cc"
+  INCLUDES "${PROJECT_SOURCE_DIR}/tests/unit/fusedwake"
            "${PROJECT_SOURCE_DIR}/kernel/syscall"
   POSTURE KICKOS_ARCH_HAS_IPC_FASTPATH=1
           KICKOS_NUM_CORES=1

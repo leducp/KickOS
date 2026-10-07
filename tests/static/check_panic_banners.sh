@@ -630,7 +630,7 @@ cls read   system/init/compose/walk.cc
 cls skip   user/apps/common/selftest/main.cc
 cls skip   examples/oot-app/main.cc
 cls skip   boards/blackpill/include/kickos/board_wiring.h
-cls skip   tests/unit/uartclass/uart_mock.cc
+cls skip   tests/unit/uartclass/uart_class.cc
 cls skip   tools/host/probe.c
 cls refuse docs/reference/main.c
 cls refuse archive/old/arch_armv7m.cc

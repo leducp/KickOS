@@ -35,6 +35,9 @@ if [ "$KOS_FAULT_RE" = "$KOS_PANIC_RE" ]; then
     exit 1
 fi
 
+# The Python a gate runs reads the sources, and writes no bytecode beside them.
+export PYTHONDONTWRITEBYTECODE=1
+
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
 # A finding collected rather than fatal, so one run names them all. It sets the caller's `rc`,
@@ -288,6 +291,38 @@ corpus_headers() { # <outfile>
     corpus "$1" "header" '*.h' '*.hh' '*.hpp'
 }
 
+# Tracked shell: every *.sh, a sourced fragment with no shebang included, and any other file
+# whose first line is a sh or bash shebang.
+corpus_shell() { # <outfile>
+    corpus_all "$1.all"
+    : > "$1"
+    while IFS= read -r _sh; do
+        case "$_sh" in
+            *.sh) printf '%s\n' "$_sh" >> "$1"; continue ;;
+        esac
+        [ -r "$_sh" ] || fail "tracked file is missing or unreadable, so whether it is shell
+      is UNKNOWN: $_sh"
+        if head -n1 "$_sh" | grep -qE '^#!.*(/bin/sh|env[[:blank:]]+sh|/bin/bash|env[[:blank:]]+bash)'; then
+            printf '%s\n' "$_sh" >> "$1"
+        fi
+    done < "$1.all"
+    rm -f "$1.all"
+    require_nonempty "$1" "no tracked shell script matched, so this gate would pass on any tree"
+}
+
+# N: the paths in <list>, refused under <floor>, each a readable file in the worktree. A floor
+# at about half what the tree holds lets an ordinary deletion pass and refuses a truncated
+# listing, which an absence-assertion reads as a clean tree; a skipped file shrinks the corpus
+# with nothing saying so.
+corpus_floor() { # <list> <floor> <what>
+    N="$(wc -l < "$1" | tr -d ' ')"
+    [ "$N" -ge "$2" ] || fail "$N $3 in the corpus, under the floor of $2: this is not the tree"
+    while IFS= read -r _cl; do
+        [ -f "$_cl" ] && [ -r "$_cl" ] || fail "tracked file is missing from the worktree or
+      unreadable, so its verdict is UNKNOWN, not clean: $_cl"
+    done < "$1"
+}
+
 # The same trap one level up: a binutils invocation that failed also produces nothing, so
 # every absence-assertion reading its output concludes "clean". Route every invocation
 # through here. The landmark is a positive control (a section, a symbol shape) that a healthy
@@ -504,6 +539,92 @@ ctl_dead_reader() { # <verdict> <prose>
         NOSYM) ;;
         *) fail "the reader answered [$1] for a symbol the listing does not carry, so $2" ;;
     esac
+}
+
+# The symbol table and the instruction stream of a linked image, for a gate reading bodies out
+# of it: $TMP/nm from `nm -S --defined-only`, $TMP/dis from `objdump -d` plus any extra
+# argument. A table under <floor> defined symbols is a misread, not a small image.
+image_listing() { # <elf> <nm> <objdump> <floor> [objdump arg]...
+    _il_elf="$1"
+    _il_nm="$2"
+    _il_od="$3"
+    _il_floor="$4"
+    shift 4
+    tool_out "$TMP/nm" "[0-9a-fA-F]" "$_il_nm" -S --defined-only "$_il_elf"
+    require_nonempty "$TMP/nm" "$_il_nm printed no symbol at all for $_il_elf, so the corpus is
+  UNKNOWN rather than empty and every verdict below it would be vacuous"
+    _il_syms="$(wc -l < "$TMP/nm" | tr -d ' ')"
+    require_number "$_il_syms" "the defined-symbol count"
+    if [ "$_il_syms" -lt "$_il_floor" ]; then
+        fail "$_il_nm reports $_il_syms defined symbol(s) in $_il_elf, below the floor of
+  $_il_floor. A table that short is a misread, not a small image, and the corpus is UNKNOWN"
+    fi
+    tool_out "$TMP/dis" "^[0-9a-f]+ <.*>:\$" "$_il_od" -d "$@" "$_il_elf"
+    require_nonempty "$TMP/dis" "$_il_od printed no disassembly for $_il_elf"
+}
+
+# A body image_listing's table defines, as BODY_START and BODY_SIZE in hex. A symbol with no
+# sized definition, or a size of 0, is refused: the gate would report an absence it cannot tell
+# apart from a failure to read.
+image_body() { # <symbol> <elf>
+    BODY_START=""
+    BODY_SIZE=""
+    _ib="$(awk -v s="$1" 'NF == 4 && $4 == s { print $1 " " $2; exit }' "$TMP/nm")"
+    if [ -z "$_ib" ]; then
+        fail "no sized defined symbol '$1' in $2. The body was renamed, made static,
+  inlined away or dropped by --gc-sections, so this gate has an absence it cannot tell apart
+  from a failure to read"
+    fi
+    BODY_START="${_ib% *}"
+    BODY_SIZE="${_ib#* }"
+    case "$BODY_SIZE" in
+        *[!0]*) ;;
+        *) fail "'$1' has size 0 in $2: the symbol survived as a label but its body is
+  gone" ;;
+    esac
+}
+
+# A body out of $TMP/dis on stderr, beside a refusal that names instructions by ordinal.
+image_body_dump() { # <symbol>
+    awk -v sym="$1" '
+        /^[0-9a-f]+ <.*>:$/ { name = $2; gsub(/[<>:]/, "", name); f = (name == sym); next }
+        f { print "      " $0 }
+        f && /^$/ { exit }' "$TMP/dis" >&2
+}
+
+# The section table of a linked image as $TMP/sec, one "name address size flags" row per
+# section that carries flags, readelf's "[ n]" index stripped. A table with no allocated section
+# is a misread.
+image_sections() { # <readelf> <elf>
+    tool_out "$TMP/sec.raw" '^ *\[ *[0-9]+\]' "$1" -SW "$2"
+    sed -n 's/^ *\[ *[0-9]*\] //p' "$TMP/sec.raw" | awk 'NF == 10 { print $1, $3, $5, $7 }' \
+        > "$TMP/sec"
+    grep -q ' [A-Z]*A[A-Z]*$' "$TMP/sec" || fail "$1 lists no allocated section in $2"
+}
+
+# An image's contents as "address word" rows in hex, each word <width> bytes read little-endian,
+# out of `objdump -s` over the sections or the address range the trailing arguments name. The
+# hex area is cut by column, so an ASCII column that reads as hex is never taken for a word.
+image_words() { # <objdump> <elf> <width> <objdump arg>...
+    _iw_od="$1"
+    _iw_elf="$2"
+    _iw_w="$3"
+    shift 3
+    tool_out "$TMP/words.raw" "^Contents of section " "$_iw_od" -s "$@" "$_iw_elf"
+    awk -v w="$_iw_w" '
+        /^ [0-9a-f]+ / {
+            hx = substr($0, length($1) + 3, 35)
+            gsub(/ /, "", hx)
+            hi = substr($1, 1, length($1) - 8)
+            lo = 0
+            for (i = length($1) - 7; i <= length($1); i++)
+                lo = lo * 16 + index("0123456789abcdef", substr($1, i, 1)) - 1
+            for (o = 0; o + 2 * w <= length(hx); o += 2 * w) {
+                word = ""
+                for (b = 0; b < w; b++) word = substr(hx, o + 2 * b + 1, 2) word
+                printf "%s%08x %s\n", hi, lo + o / 2, word
+            }
+        }' "$TMP/words.raw"
 }
 
 # The -D arguments an installed KickOS package puts on a consumer's compile line, read back
@@ -1326,15 +1447,14 @@ free above the thread-local block, under KICKOS_MIN_STACK_SIZE $_rd_margin"
 }
 
 # Each packaged driver the composition <system> names has printed its up line, whole, before line
-# <before> of OUT. A driver with no up line here is refused rather than passed over.
+# <before> of OUT: the `[<driver>] ... up (...)` line its source prints. A driver whose source
+# prints none is refused rather than passed over.
 require_drivers_up() { # <system> <before>
     [ -f "$1" ] || fail "no composition at $1"
     for _du in $(sed -n 's/^ *driver: *\([a-z0-9_]*\).*$/\1/p' "$1"); do
-        case "$_du" in
-            xmcuartirq) _du_line='[xmcuartirq] device up (IRQ TX)' ;;
-            xmcssc) _du_line='[xmcssc] SPI service up (USIC0-CH1 SSC, IRQ-paced, HW CS on SELO0)' ;;
-            *) fail "no up line is known for packaged driver $_du" ;;
-        esac
+        _du_line="$(sed -n "s/^.*\"\(\[$_du\] [^\"]* up ([^\"]*\)\\\\n\".*\$/\1/p" \
+            "$(dirname "$0")"/../../system/driver/*/"$_du"/*.cc 2>/dev/null | head -n 1)"
+        [ -n "$_du_line" ] || fail "packaged driver $_du prints no up line in its source"
         after 1 "$_du_line" "up line of $_du"
         [ "$AT" -lt "$2" ] || fail "$_du's up line, at line $AT, follows line $2"
     done
@@ -1736,7 +1856,7 @@ field_matcher_control() {
 # judged byte-exact and the zero goes through require_on_wire.
 #
 # Never a control marker: a control's absence and its repetition are two different findings.
-# check_aspace_ufault_rv64.sh asserts its control on its own lines.
+# check_aspace_ufault.sh asserts its control on its own lines.
 require_single_marker() { # <marker> <absence-prose> [repeat-prose]
     require_literal "$1" "the fault-dump marker"
     literal_matcher_control

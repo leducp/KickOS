@@ -323,7 +323,7 @@ namespace
                       static_cast<unsigned>(beat),
                       static_cast<unsigned>((now - t0) / 1000000ull),
                       static_cast<unsigned>((now - prev) / 1000000ull));
-            (void)kos_kconsole_write(s, strlen(s)); // its wait is the measurement
+            (void)KICKOS_KCONSOLE_MEASURED(WAIT, s, strlen(s));
             prev = now;
             beat++;
             kos_sleep_ns(300000000ull);

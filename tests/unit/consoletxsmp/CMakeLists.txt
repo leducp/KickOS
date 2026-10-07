@@ -6,7 +6,7 @@
 # undefined set.
 #
 # AT TWO KERNEL CORES, which is the point and is why this gate compiles its own copy rather
-# than joining tests/unit/consoletx: that fixture runs the drain in the producer's own mask
+# than joining tests/unit/consoleseam: that fixture runs the drain in the producer's own mask
 # gap, which is the single-core machine, and no arm in it can put a drain on a core the
 # producer's mask never reached.
 kickos_add_unit_test(NAME console_tx_smp

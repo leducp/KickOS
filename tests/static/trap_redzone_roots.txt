@@ -11,11 +11,13 @@
 # dispatch descends on that same stack; FRAME is everything else in the zone, which on armv7m
 # also carries the hardware frame a preempting exception stacks and no call graph can see.
 #
+# The classes live in the arch's trap-stack header beside the figures they enforce, one line of
+# a comment each, and every KICKOS_*DEPTH* macro the header defines must be some class's depth:
+#   class <CLASS> frame=<MACRO> depth=<MACRO> [stack=trap|stack=kernel|stack=panic] \
+#                                               [kstacks=0|kstacks=1] [at=<symbol>]
+#
 # File format, one record per line, '#' starts a comment:
 #   arch    <arch> header=<path-relative-to-source-dir>
-#   preset  <arch> <configure-preset>
-#   class   <arch> <CLASS> frame=<MACRO> depth=<MACRO> [stack=trap|stack=kernel] \
-#                                                        [kstacks=0|kstacks=1] [at=<symbol>]
 #   root    <arch> <CLASS> [?]<symbol>
 #   root    <arch> <CLASS> NONE reason: <text to end of line>
 #   exclude <arch> <mangled-symbol> [class=<CLASS>[,<CLASS>]...] reason: <text to end of line>
@@ -51,14 +53,9 @@
 # A `root` symbol matches the graph as an exact name or as the mangled tail of a file-scoped
 # one; the match must be UNIQUE, and an ambiguous name is refused rather than guessed at.
 #
-# EVERY PRESET OF EVERY ARCH BELONGS HERE: a `preset` record is what makes a (board, variant)
-# pair measurable at all. KICKOS_BENCH, KICKOS_TELEMETRY, KICKOS_ENABLE_SELFTEST, the memory
-# model and the console backend each move a chain, and a board's variants differ by those.
-#
-# The top-level CMakeLists rebuilds the preset name from the board, the variant and, on an
-# own-image AMP node, the node index, and asks THIS FILE whether that name is declared.
-# tests/static/check_trap_redzone_decls.sh matches a record against that same rebuild, so a
-# record naming anything else is reported dead.
+# The top-level CMakeLists registers the gate on every preset of an arch that has a trap-stack
+# header: KICKOS_BENCH, KICKOS_TELEMETRY, KICKOS_ENABLE_SELFTEST, the memory model and the
+# console backend each move a chain, and a board's variants differ by those.
 #
 # lx6 carries one trap class, PREEMPT: CHIP_ESP32 selects no HAS_MPU, so the syscall classes
 # have no one to protect, while an involuntary frame still has to FIT the stack it lands on.
@@ -112,25 +109,6 @@
 # never trapped is the frame arch_context_init fabricated on its USER stack. Measuring 0 there
 # is what says no privileged C frame stands on user memory.
 arch    rv32imac header=arch/riscv/rv32imac/include/kickos/arch/rv_trap_stack.h
-preset  rv32imac qemu-riscv
-preset  rv32imac qemu-riscv-flat
-preset  rv32imac qemu-riscv-bench
-preset  rv32imac esp32c6-wroom
-preset  rv32imac esp32c6-wroom-st
-preset  rv32imac esp32c6-wroom-flat
-preset  rv32imac esp32c6-wroom-bench
-preset  rv32imac esp32c6-wroom-amp2-n0
-preset  rv32imac esp32c6-wroom-amp2-n1
-class   rv32imac TRAP   frame=KICKOS_RV_TRAP_FRAME depth=KICKOS_RV_TRAP_KERNEL_DEPTH stack=kernel
-class   rv32imac SYS    frame=KICKOS_RV_TRAP_FRAME_SYS depth=KICKOS_RV_TRAP_KERNEL_DEPTH_SYS stack=kernel
-class   rv32imac SYSPRIV frame=KICKOS_RV_TRAP_FRAME_SYS depth=KICKOS_RV_TRAP_KERNEL_DEPTH_SYSPRIV
-class   rv32imac FAULT  frame=KICKOS_RV_TRAP_FRAME depth=KICKOS_RV_TRAP_NESTED_DEPTH stack=kernel
-class   rv32imac SWITCH frame=KICKOS_RV_TRAP_FRAME depth=KICKOS_RV_TRAP_SWITCH_DEPTH
-class   rv32imac NESTED frame=KICKOS_RV_TRAP_FRAME depth=KICKOS_RV_TRAP_NESTED_DEPTH stack=trap
-class   rv32imac EXITK  frame=KICKOS_RV_TRAP_NEST_EXIT depth=KICKOS_RV_TRAP_KERNEL_DEPTH_EXITK stack=kernel
-class   rv32imac RET    frame=KICKOS_RV_TRAP_NEST_EXIT depth=KICKOS_RV_TRAP_KERNEL_DEPTH_RET
-class   rv32imac PANIC  frame=KICKOS_RV_PANIC_FRAME depth=KICKOS_RV_PANIC_DEPTH stack=panic
-class   rv32imac IDLE   frame=KICKOS_RV_TRAP_FRAME depth=KICKOS_RV_TRAP_DEPTH_IDLE
 
 # The symbols the .Lintr arms of switch.S branch to.
 root    rv32imac TRAP kickos_isr_timer
@@ -233,21 +211,6 @@ unsized rv32imac _ZN6kickos10BenchScopeD1Ev 0 reason: measured from the object, 
 # address plus eight. KICKOS_RX_TRAP_NEST_SYS prices the head plus the switcher zone a SWINT can
 # put below it while svc_trampoline is still on that stack.
 arch    rxv3 header=arch/rx/rxv3/include/kickos/arch/rx_trap_stack.h
-# Every rxv3 preset, per the knob rule above.
-preset  rxv3 rx72m
-preset  rxv3 rx72m-st
-preset  rxv3 rx72m-flat
-preset  rxv3 rx72m-bench
-class   rxv3 PENDSW   frame=KICKOS_RX_TRAP_FRAME_PENDSW   depth=KICKOS_RX_TRAP_KERNEL_DEPTH_PENDSW
-class   rxv3 SYS      frame=KICKOS_RX_TRAP_NEST_SYS       depth=KICKOS_RX_TRAP_KERNEL_DEPTH_SYS
-class   rxv3 SYS_FAST frame=KICKOS_RX_TRAP_FRAME_SYS_FAST depth=KICKOS_RX_TRAP_KERNEL_DEPTH_SYS_FAST
-class   rxv3 SYSK     frame=KICKOS_RX_TRAP_NEST_SYSK      depth=KICKOS_RX_TRAP_KERNEL_DEPTH_SYSK stack=kernel
-# THE DEATH PATH. The backend rewrites the stacked PC so the RTE lands in a stub with R0 at
-# kickos_fault_stack_top, which answers with ctx.kernel_sp. EXITK is the two relocating stubs on
-# the block; RET is kickos_thread_return, which cannot move.
-class   rxv3 EXITK    frame=KICKOS_RX_TRAP_NEST_EXIT      depth=KICKOS_RX_TRAP_KERNEL_DEPTH_EXITK stack=kernel
-class   rxv3 RET      frame=KICKOS_RX_TRAP_NEST_EXIT      depth=KICKOS_RX_TRAP_KERNEL_DEPTH_RET
-class   rxv3 PANIC    frame=KICKOS_RX_PANIC_FRAME         depth=KICKOS_RX_PANIC_DEPTH stack=panic
 
 root    rxv3 PENDSW kickos_arch_mpu_commit
 root    rxv3 PENDSW ?kickos_trace_switch_done
@@ -299,74 +262,6 @@ unsized rxv3 __clzsi2     4 reason: measured from libgcc.a, frameless leaf so th
 # push, and is the same under both designs and therefore unmarked, handler mode putting
 # everything it calls on the MSP.
 arch    armv7m header=arch/arm/armv7m/include/kickos/arch/armv7m_trap_stack.h
-# Every armv7m preset, per the knob rule above, grouped by board.
-preset  armv7m qemu
-preset  armv7m qemu-flat
-preset  armv7m qemu-telem
-preset  armv7m qemu-m3
-preset  armv7m qemu-m3-flat
-preset  armv7m qemu-m7
-preset  armv7m qemu-m7-flat
-preset  armv7m qemu-m33
-preset  armv7m qemu-m33-flat
-preset  armv7m frdmk64f
-preset  armv7m frdmk64f-flat
-preset  armv7m frdmk64f-st
-preset  armv7m teensy41
-preset  armv7m teensy41-flat
-preset  armv7m teensy41-st
-preset  armv7m xmc4800-relax
-preset  armv7m xmc4800-relax-flat
-preset  armv7m xmc4800-relax-st
-preset  armv7m xmc4800-relax-bench
-preset  armv7m f411disco
-preset  armv7m f411disco-flat
-preset  armv7m f411disco-st
-preset  armv7m f411disco-bench
-preset  armv7m blackpill
-preset  armv7m blackpill-flat
-preset  armv7m blackpill-st
-preset  armv7m due
-preset  armv7m due-st
-preset  armv7m pizero2350
-preset  armv7m pizero2350-flat
-preset  armv7m pizero2350-st
-preset  armv7m pizero2350-amp
-preset  armv7m pizero2350-amp2-n0
-preset  armv7m pizero2350-amp2-n1
-# The two 64 KiB FLASH parts, whose OWN dispatch is smaller than the fleet worst case.
-preset  armv7m f302nucleo
-preset  armv7m f302nucleo-st
-preset  armv7m bluepill-c8
-preset  armv7m bluepill-c8-st
-class   armv7m PENDSV frame=KICKOS_ARMV7M_TRAP_FRAME_MAX \
-                      depth=KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_PENDSV
-# NEST_SVC_DISPATCH: the class is kstacks=0, and that posture puts the dispatch's compiler
-# frames between the trampoline and the preemption point, so the preempting entry's STKALIGN pad
-# stops cancelling. Provisioning it in the frame is what makes the depth comparison below
-# (measured <= depth) the right test for every parity.
-class   armv7m SVC    frame=KICKOS_ARMV7M_TRAP_NEST_SVC_DISPATCH \
-                      depth=KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVC kstacks=0
-class   armv7m SVCK   frame=KICKOS_ARMV7M_TRAP_NEST_SVCK \
-                      depth=KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVCK stack=kernel
-# The death path: no prologue guards these three classes.
-#
-# EXITK is the two relocating stubs wherever a block is seated. kickos_fault_stack_top answers
-# with ctx.kernel_sp, so the fault redirect and the slay rebuild both land at the block TOP.
-class   armv7m EXITK  frame=KICKOS_ARMV7M_TRAP_NEST_EXIT \
-                      depth=KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_EXITK stack=kernel
-# EXIT is the fallback: f302nucleo, f302nucleo-st, due, due-st, bluepill-c8 and bluepill-c8-st
-# resolve KICKOS_KERNEL_STACKS 0, so all three stubs stay on the thread's own stack against the
-# spawn floor. KICKOS_KERNEL_STACKS needs the chip's HAS_MPU, which stm32f103, stm32f302 and
-# sam3x8e do not select.
-class   armv7m EXIT   frame=KICKOS_ARMV7M_TRAP_NEST_EXIT \
-                      depth=KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_EXIT kstacks=0
-# RET is unmarked because it applies under BOTH designs: kickos_thread_return is an ordinary
-# privileged thread's entry returning, with no fault and no redirect, so nothing relocates it.
-class   armv7m RET    frame=KICKOS_ARMV7M_TRAP_NEST_EXIT \
-                      depth=KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_RET
-class   armv7m PANIC  frame=KICKOS_ARMV7M_PANIC_FRAME \
-                      depth=KICKOS_ARMV7M_PANIC_DEPTH stack=panic
 
 root    armv7m PENDSV NONE reason: PendSV_Handler and the SVC fastpath arm run in handler mode, where ARMv7-M forces SP_main, so kickos_arch_mpu_commit, kickos_ipc_fastpath and the trace/bench hooks all descend on the MSP. What the MSP has to hold is a kernel-stack sizing question, not a privilege one, and no figure here bounds it. THE RP2350 NODE'S DOORBELL BODY IS A THIRD SUCH DESCENT AND IS UNROOTED FOR THE SAME REASON: kickos_rp2350_doorbell_service, entered from node_vectors.S, reaches kickos_amp_node_service and measures 220 bytes on pizero2350-amp2-n0 and -n1, a far call's delivery waking into the timer rearm, against the 8 KiB _kernel_stack_size rp2350.ld reserves. Rooting it under this class would compare that 220 against KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_PENDSV, which is 0 by handler mode, and against the spawn floor of every armv7m preset; a class of its own would still price ONE spender of an MSP that PendSV, the SVC fastpath arm and every device ISR also spend, so it would read as a bound the tree does not have. doorbell_rp2350.cc says the same at the body.
 
@@ -410,25 +305,6 @@ unsized armv7m __aeabi_uldivmod 56 reason: measured, 16-byte head plus __udivmod
 # that can preempt the window between them. PENDSV takes the push itself. There is no FP term on
 # this arch.
 arch    armv6m header=arch/arm/armv6m/include/kickos/arch/armv6m_trap_stack.h
-# Every armv6m preset, per the knob rule above.
-preset  armv6m microbit
-preset  armv6m picopi
-preset  armv6m picopi-st
-preset  armv6m picopi-flat
-class   armv6m PENDSV frame=KICKOS_ARMV6M_TRAP_FRAME \
-                      depth=KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_PENDSV
-class   armv6m SVC    frame=KICKOS_ARMV6M_TRAP_NEST_SVC \
-                      depth=KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_SVC
-# The death path. EXITK is the two relocating stubs on the block; RET is kickos_thread_return,
-# which cannot move and stays against the spawn floor.
-class   armv6m EXITK  frame=KICKOS_ARMV6M_TRAP_NEST_EXIT \
-                      depth=KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_EXITK stack=kernel
-class   armv6m RET    frame=KICKOS_ARMV6M_TRAP_NEST_EXIT \
-                      depth=KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_RET
-class   armv6m SVCK   frame=KICKOS_ARMV6M_TRAP_NEST_SVCK \
-                      depth=KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_SVCK stack=kernel
-class   armv6m PANIC  frame=KICKOS_ARMV6M_PANIC_FRAME \
-                      depth=KICKOS_ARMV6M_PANIC_DEPTH stack=panic
 
 root    armv6m PENDSV NONE reason: PendSV_Handler and the SVC fastpath arm run in handler mode, where ARMv6-M forces SP_main, so kickos_arch_mpu_commit, kickos_ipc_fastpath and the telemetry hook all descend on the MSP. What the MSP has to hold is a kernel-stack sizing question, not a privilege one, and no figure here bounds it.
 root    armv6m SVC    NONE reason: svc_trampoline moves SP to ctx.kernel_sp before it calls anything, so syscall_dispatch and the tree under it are measured as SVCK. What is left on the thread's PSP at this site writes no C frame at all: the fastpath arm's callee block, in handler mode, and the trampoline's own scratch push. NEST_SVC prices both plus the exception pair that can preempt the window between them.
@@ -462,11 +338,6 @@ unsized armv6m __clzsi2          0 reason: measured, frameless register-only lea
 unsized armv6m __ctzsi2           0 reason: measured, frameless register-only leaf
 
 arch    lx6 header=arch/xtensa/lx6/include/kickos/arch/lx6_trap_stack.h
-preset  lx6 esp32-wroom
-preset  lx6 esp32-wroom-st
-preset  lx6 esp32-wroom-smp
-preset  lx6 esp32-wroom-bench
-preset  lx6 esp32-wroom-benchsmp
 
 # --- armv8a --------------------------------------------------------------------
 # ELEVEN classes. switch.S takes four entries: the EL1h IRQ slot, which builds its frame on the
@@ -485,39 +356,6 @@ preset  lx6 esp32-wroom-benchsmp
 #
 # IDLE's frame term is the whole interrupt, so its zone is the idle floor.
 arch    armv8a header=arch/arm64/armv8a/include/kickos/arch/armv8a_trap_stack.h
-preset  armv8a qemu-arm64
-preset  armv8a qemu-arm64-bench
-preset  armv8a qemu-arm64-smp
-preset  armv8a qemu-arm64-benchsmp
-preset  armv8a qemu-arm64-benchgicv3
-preset  armv8a qemu-arm64-benchsmp2
-preset  armv8a qemu-arm64-benchsmp12
-preset  armv8a qemu-arm64-smpiso
-preset  armv8a qemu-arm64-gicv3
-preset  armv8a qemu-arm64-amp
-preset  armv8a qemu-arm64-amp2-n0
-preset  armv8a qemu-arm64-amp2-n1
-preset  armv8a qemu-arm64-amp3-n0
-preset  armv8a qemu-arm64-amp3-n1
-preset  armv8a qemu-arm64-amp3-n2
-preset  armv8a imx8mp-evk
-class   armv8a IRQ     frame=KICKOS_ARMV8A_TRAP_FRAME depth=KICKOS_ARMV8A_TRAP_DEPTH_IRQ
-class   armv8a IRQK    frame=KICKOS_ARMV8A_TRAP_FRAME depth=KICKOS_ARMV8A_TRAP_DEPTH_IRQ \
-                       stack=kernel
-class   armv8a SYSK    frame=KICKOS_ARMV8A_TRAP_FRAME depth=KICKOS_ARMV8A_TRAP_DEPTH_SYSK \
-                       stack=kernel
-class   armv8a SYSWIN  frame=KICKOS_ARMV8A_TRAP_WINDOW depth=KICKOS_ARMV8A_TRAP_DEPTH_SYSWIN \
-                       stack=kernel at=arch_irq_window
-class   armv8a EXITK   frame=KICKOS_ARMV8A_TRAP_NEST depth=KICKOS_ARMV8A_TRAP_DEPTH_EXITK \
-                       stack=kernel
-class   armv8a EXITKSW frame=KICKOS_ARMV8A_TRAP_FRAME_NONE \
-                       depth=KICKOS_ARMV8A_TRAP_DEPTH_EXITKSW stack=kernel
-class   armv8a RET     frame=KICKOS_ARMV8A_TRAP_NEST depth=KICKOS_ARMV8A_TRAP_DEPTH_RET
-class   armv8a RETSW   frame=KICKOS_ARMV8A_TRAP_FRAME_NONE depth=KICKOS_ARMV8A_TRAP_DEPTH_RETSW
-class   armv8a FAULT   frame=KICKOS_ARMV8A_TRAP_FRAME_NONE depth=KICKOS_ARMV8A_TRAP_DEPTH_FAULT
-class   armv8a IDLE    frame=KICKOS_ARMV8A_TRAP_NEST depth=KICKOS_ARMV8A_TRAP_DEPTH_IDLE
-class   armv8a PANIC   frame=KICKOS_ARMV8A_PANIC_FRAME depth=KICKOS_ARMV8A_PANIC_DEPTH \
-                       stack=panic
 
 # The IRQ entry's call, and at its exit the incoming thread's unlock and bench close, which run
 # below that thread's parked frame whichever stack it is on.
@@ -573,30 +411,6 @@ recurse armv8a aspace_armv8a.cc:map_into 3 reason: levels 1 to 3, the leaf level
 #
 # IDLE's frame term is the whole interrupt, so its zone is idle's floor.
 arch    rv64imac header=arch/riscv/rv64imac/include/kickos/arch/rv64_trap_stack.h
-preset  rv64imac qemu-riscv64
-preset  rv64imac qemu-riscv64-sv48
-preset  rv64imac qemu-riscv64-smp
-preset  rv64imac qemu-riscv64-bench
-preset  rv64imac qemu-riscv64-benchsmp
-preset  rv64imac qemu-riscv64-benchsmp2
-class   rv64imac IRQ     frame=KICKOS_RV64_TRAP_FRAME depth=KICKOS_RV64_TRAP_DEPTH_IRQ
-class   rv64imac IRQK    frame=KICKOS_RV64_TRAP_FRAME depth=KICKOS_RV64_TRAP_DEPTH_IRQ \
-                         stack=kernel
-class   rv64imac SYSK    frame=KICKOS_RV64_TRAP_FRAME depth=KICKOS_RV64_TRAP_DEPTH_SYSK \
-                         stack=kernel
-class   rv64imac SYSWIN  frame=KICKOS_RV64_TRAP_WINDOW depth=KICKOS_RV64_TRAP_DEPTH_SYSWIN \
-                         stack=kernel at=arch_irq_window
-class   rv64imac NESTED  frame=KICKOS_RV64_TRAP_FRAME depth=KICKOS_RV64_TRAP_NESTED_DEPTH \
-                         stack=trap
-class   rv64imac EXITK   frame=KICKOS_RV64_TRAP_NEST depth=KICKOS_RV64_TRAP_DEPTH_EXITK \
-                         stack=kernel
-class   rv64imac EXITKSW frame=KICKOS_RV64_TRAP_FRAME_NONE \
-                         depth=KICKOS_RV64_TRAP_DEPTH_EXITKSW stack=kernel
-class   rv64imac RET     frame=KICKOS_RV64_TRAP_NEST depth=KICKOS_RV64_TRAP_DEPTH_RET
-class   rv64imac RETSW   frame=KICKOS_RV64_TRAP_FRAME_NONE depth=KICKOS_RV64_TRAP_DEPTH_RETSW
-class   rv64imac IDLE    frame=KICKOS_RV64_TRAP_NEST depth=KICKOS_RV64_TRAP_DEPTH_IDLE
-class   rv64imac PANIC   frame=KICKOS_RV64_PANIC_FRAME depth=KICKOS_RV64_PANIC_DEPTH \
-                         stack=panic
 
 # .Lintr's call, and at its exit a booked switch's unlock, which runs below the incoming
 # thread's parked frame whichever stack it is on.
@@ -656,35 +470,7 @@ recurse rv64imac aspace_rv64imac.cc:map_into 4 reason: one activation per level,
 # The build also compiles the kernel-free boot images' objects, whose declining stubs define
 # the kernel's own entry points, so the corpus is what the application images' maps LOAD.
 arch    x86_64 header=arch/x86/x86_64/include/kickos/arch/x86_64_trap_stack.h
-preset  x86_64 qemu-x86_64
-preset  x86_64 qemu-x86_64-bench
-preset  x86_64 qemu-x86_64-smp2
-preset  x86_64 qemu-x86_64-smp2root1
-preset  x86_64 qemu-x86_64-smp4
-preset  x86_64 qemu-x86_64-smp8
-preset  x86_64 qemu-x86_64-smp12
 link    x86_64 maps=**/*.efi.map reason: tools/x86_64-link.sh writes one per application image, and a boot probe's single link writes none
-class   x86_64 IRQ       frame=KICKOS_X86_64_TRAP_FRAME_IRQ depth=KICKOS_X86_64_TRAP_DEPTH_IRQ
-class   x86_64 IRQK      frame=KICKOS_X86_64_TRAP_FRAME depth=KICKOS_X86_64_TRAP_DEPTH_IRQ \
-                         stack=kernel
-class   x86_64 SYSK      frame=KICKOS_X86_64_TRAP_FRAME depth=KICKOS_X86_64_TRAP_DEPTH_SYSK \
-                         stack=kernel
-class   x86_64 SYSWIN    frame=KICKOS_X86_64_TRAP_WINDOW depth=KICKOS_X86_64_TRAP_DEPTH_SYSWIN \
-                         stack=kernel at=arch_irq_window
-class   x86_64 SYSPRIV   frame=KICKOS_X86_64_TRAP_NEST depth=KICKOS_X86_64_TRAP_DEPTH_SYSPRIV
-class   x86_64 SYSPRIVSW frame=KICKOS_X86_64_TRAP_FRAME_NONE \
-                         depth=KICKOS_X86_64_TRAP_DEPTH_SYSPRIVSW
-class   x86_64 IST       frame=KICKOS_X86_64_TRAP_FRAME depth=KICKOS_X86_64_TRAP_DEPTH_IST \
-                         stack=trap
-class   x86_64 EXITK     frame=KICKOS_X86_64_TRAP_NEST depth=KICKOS_X86_64_TRAP_DEPTH_EXITK \
-                         stack=kernel
-class   x86_64 EXITKSW   frame=KICKOS_X86_64_TRAP_FRAME_NONE \
-                         depth=KICKOS_X86_64_TRAP_DEPTH_EXITKSW stack=kernel
-class   x86_64 RET       frame=KICKOS_X86_64_TRAP_NEST depth=KICKOS_X86_64_TRAP_DEPTH_RET
-class   x86_64 RETSW     frame=KICKOS_X86_64_TRAP_FRAME_NONE depth=KICKOS_X86_64_TRAP_DEPTH_RETSW
-class   x86_64 IDLE      frame=KICKOS_X86_64_TRAP_NEST depth=KICKOS_X86_64_TRAP_DEPTH_IDLE
-class   x86_64 PANIC     frame=KICKOS_X86_64_PANIC_FRAME depth=KICKOS_X86_64_PANIC_DEPTH \
-                         stack=panic
 
 # kickos_x86_64_trap_common's call: the vector's service, the containment call and the report
 # are all under it. A switch the service books resumes a frame and runs no C on the incoming
@@ -736,9 +522,6 @@ floor   armv8a   files=90 nodes=700 reason: all 16 declared armv8a presets swept
 floor   rv64imac files=90 nodes=700 reason: all 6 declared rv64imac presets swept 2026-09-25; smallest 133 files/1206 nodes on qemu-riscv64 and -sv48, largest 137 files on -benchsmp and -benchsmp2 and 1372 nodes on -benchsmp
 floor   x86_64   files=85 nodes=700 reason: all 6 declared x86_64 presets swept 2026-09-28, counted after the units no application map LOADs; smallest 116 files/1224 nodes on qemu-x86_64, largest 121 files on the four SMP presets and 1393 nodes on -smp4, -smp8 and -smp12
 floor   lx6      files=75 nodes=650 reason: all 5 declared lx6 presets swept, the first three 2026-09-12, esp32-wroom-bench 2026-09-13 and esp32-wroom-benchsmp 2026-09-22; smallest 103 files/909 nodes on esp32-wroom, largest 127 files/1182 nodes on esp32-wroom-benchsmp
-class   lx6 PREEMPT frame=KICKOS_LX6_TRAP_FRAME depth=KICKOS_LX6_TRAP_DEPTH
-class   lx6 PANIC   frame=KICKOS_LX6_PANIC_FRAME depth=KICKOS_LX6_PANIC_DEPTH stack=panic
-class   lx6 IDLE    frame=KICKOS_LX6_TRAP_FRAME depth=KICKOS_LX6_TRAP_DEPTH_IDLE
 root    lx6 PREEMPT kickos_lx6_dispatch_l1
 root    lx6 IDLE    kmain.cc:idle_entry
 

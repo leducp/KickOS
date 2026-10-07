@@ -120,12 +120,10 @@ function(kickos_apply_freestanding target)
   # window holds only app and C++-runtime small-data. The app keeps its own: a -fexceptions
   # TU built -msmall-data-limit=0 hangs __cxa_throw in the FDE walk.
   #
-  # The flag keeps kernel DATA out of .sdata/.sbss; a kernel access can still RESOLVE through
-  # gp, the linker making gp addressing out of any upper/lower pair landing within
-  # gp +/- 0x800. gp is a register an unprivileged thread writes, so
-  # arch/riscv/rv64imac/switch.S re-anchors it twice per trap, at .Ltrap_regs and .Lrestore.
-  # check_riscv_no_smalldata.sh reads the archives; gp addressing exists only after link, so
-  # check_riscv_kernel_gp.sh reads the linked image.
+  # The flag keeps kernel DATA out of .sdata/.sbss, and each RISC-V chip script refuses a
+  # KickOS archive's small data at link. On the split rv64 image a kernel ACCESS must not
+  # resolve through gp either, which the image's link holds (--no-relax-gp on
+  # kickos_kernel_leaf).
   if((KICKOS_ARCH STREQUAL "rv32imac" AND KICKOS_HAVE_MPU)
      OR (KICKOS_ARCH STREQUAL "rv64imac" AND KICKOS_HAVE_ASPACE))
     target_compile_options(${target} PRIVATE -msmall-data-limit=0)
@@ -138,7 +136,7 @@ endfunction()
 #   privileged-execute-never once EL0 can reach them.
 #
 #   The syms file is NOT a dependency of this command, so adding a name to it re-archives
-#   nothing: tests/static/check_kernel_runtime.sh is what turns that into a failure.
+#   nothing: tests/static/check_kernel_got.sh is what turns that into a failure.
 function(kickos_privatise_runtime target)
   if(NOT CMAKE_OBJCOPY)
     message(FATAL_ERROR "kickos_privatise_runtime(${target}): no CMAKE_OBJCOPY. The kernel "
@@ -591,6 +589,15 @@ function(kickos_host_gate)
   set_tests_properties(${HG_UNPARSED_ARGUMENTS} PROPERTIES TIMEOUT ${HG_TIMEOUT} LABELS host)
 endfunction()
 
+# kickos_image_rule(<rule> <target> [<arg>...])
+#   Host gate image_<rule>: tests/static/check_image_rules.sh's <rule> over <target>'s image.
+function(kickos_image_rule rule target)
+  add_test(NAME image_${rule}_${target}
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_image_rules.sh" ${rule} "${CMAKE_OBJDUMP}"
+            "$<TARGET_FILE:${target}>" ${ARGN})
+  kickos_host_gate(image_${rule}_${target})
+endfunction()
+
 # ---------------------------------------------------------------------------
 # The host gate seam: real kernel translation units compiled for the build host at a
 # POSTURE the running preset does not carry.
@@ -736,4 +743,24 @@ function(kickos_board_names out)
   endforeach()
   list(SORT _names)
   set(${out} "${_names}" PARENT_SCOPE)
+endfunction()
+
+# ---------------------------------------------------------------------------
+# kickos_emit_geometry(<header> <name>...)
+#   Writes generated/include/<header> defining each <name> to its value in the calling
+#   cmake/*_geometry.cmake, so the C side has no copy of the value to drift.
+function(kickos_emit_geometry header)
+  string(MAKE_C_IDENTIFIER "${header}" _guard)
+  string(TOUPPER "${_guard}" _guard)
+  file(RELATIVE_PATH _from "${PROJECT_SOURCE_DIR}" "${CMAKE_CURRENT_LIST_FILE}")
+  set(_text "// GENERATED from ${_from}; edits are overwritten by the next configure.\n\n")
+  string(APPEND _text "#ifndef ${_guard}\n#define ${_guard}\n\n")
+  foreach(_name ${ARGN})
+    if(NOT "${${_name}}" MATCHES "^[0-9]+$")
+      message(FATAL_ERROR "KickOS: ${_from} declares no integer ${_name}")
+    endif()
+    string(APPEND _text "#define ${_name} ${${_name}}\n")
+  endforeach()
+  string(APPEND _text "\n#endif\n")
+  file(CONFIGURE OUTPUT "${PROJECT_BINARY_DIR}/generated/include/${header}" CONTENT "${_text}" @ONLY)
 endfunction()

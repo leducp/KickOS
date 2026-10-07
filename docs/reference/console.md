@@ -275,8 +275,11 @@ dark window below, and the only way out of either wait is the writer's own kill 
 that set O_NONBLOCK is answered at once instead. A writer whose own task holds the console's
 registers is not made to wait for a drain that task can stop: its line is lost to the kernel
 console at once. The raw `kos_kconsole_write` is the same kernel write, and the one call that
-drops where no route reaches the wire: it answers how much it took, and an app that calls it marks
-the line as the measurement (`tests/static/check_kconsole_emit.sh`).
+drops where no route reaches the wire: it answers how much it took. `<kickos/sys.h>` poisons it,
+and `<kickos/sys/abi.h>` its syscall number, in every app TU, so a call whose drop, answer or wait
+is the measurement states which at the call, `KICKOS_KCONSOLE_MEASURED(DROP, buf, len)` or
+`ANSWER` or `WAIT`, and `user/apps/CMakeLists.txt` refuses a raw spelling in an arm no build
+compiles.
 
 **A thread of the task that serves the console has no capability 0.** A send there would wait on
 the very receiver that is sending, so neither the spawn nor a publish seats one in it, and a

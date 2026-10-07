@@ -23,7 +23,7 @@ namespace
 
     void as(uintptr_t n)
     {
-        heldseam::g_current = thread(n);
+        consoleseam::g_current = thread(n);
     }
 
     // Bytes no walk of the store may reach: every byte of the block past the ring.
@@ -349,10 +349,10 @@ TEST(ConsoleHeldStore, TheConsoleWindowIsWithheldFromOtherTasksWhilePublished)
         EXPECT_TRUE(kickos::console_window_withheld(0x40000080u, 0x10u, other));
         EXPECT_TRUE(kickos::console_window_withheld(0x3FFFFF00u, 0x200u, other));
         EXPECT_FALSE(kickos::console_window_withheld(0x40000100u, 0x100u, other));
-        heldseam::g_serves_console = true;
+        consoleseam::g_serves_console = true;
         EXPECT_FALSE(kickos::console_window_withheld(0x40000080u, 0x10u, other))
             << "withheld from the console's own task";
-        heldseam::g_serves_console = false;
+        consoleseam::g_serves_console = false;
         task_ends();
         EXPECT_FALSE(kickos::console_window_withheld(0x40000080u, 0x10u, other))
             << "withheld after the reclaim";

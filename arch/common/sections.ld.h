@@ -58,6 +58,14 @@
     *(.glue_7) *(.glue_7t) *(.vfp11_veneer) *(.v4_bx)                         \
     *(.iplt) *(.igot.plt) *(.rel.iplt) *(.rela.iplt)
 
+/* Reset_Handler walks the privileged .init_array before kmain, inside the kernel, and the
+ * chip script fills it with the closed KickOS-owned archive set alone. Those archives' statics
+ * are constinit, so the window is empty, and an app constructor never runs there.
+ */
+#define KICKOS_KERNEL_CTORS_NONE_ASSERT()                                     \
+    ASSERT(__init_array_end == __init_array_start,                            \
+           "KickOS: the privileged .init_array holds a constructor. The KickOS-owned archives' statics are constinit, so make the new one constinit; an app constructor belongs in .kickos_app_init_array, which root_entry runs")
+
 #define KICKOS_STATIC_RELOC_ASSERT()                                          \
     ASSERT(__kickos_relocs_end == __kickos_relocs_start,                      \
            "KickOS: the link kept dynamic relocations, which nothing in a KickOS image applies; a PIE or shared-object flag reached the link")
@@ -108,28 +116,28 @@
  * user and root stacks keep KICKOS_MIN_STACK_SIZE above their block, and where the thread
  * pointer is SEATED so does idle's stack keep the arch's KICKOS_ARCH_IDLE_FLOOR
  * (<kickos/arch/idle_floor.h>), or the thread overruns its stack on its first interrupt. With
- * no thread_local the carve is the control block alone, under KICKOS_REENT_IN_TCB. A masking
- * arch refuses idle's stack and carves nothing.
+ * no thread_local the carve is the control block alone, under KICKOS_REENT_IN_TCB, a constant
+ * kernel/init/kmain.cc holds each stack to. A masking arch refuses idle's stack and carves
+ * nothing.
+ *
+ * ONE PREDICATE carries the carve, and a stack with no room at all is asserted refused by it,
+ * so a term dropped from it fails every link that carries a thread_local. Idle's assert defines
+ * __kickos_tls_idle_checked, which the link requires where the thread pointer is seated.
  */
-#define KICKOS_TLS_CARVE_ASSERT(size, floor, tls_msg, tcb_msg)                 \
-    ASSERT(SIZEOF(.tdata) + SIZEOF(.tbss) == 0                                \
-               || (size) >= (floor)                                           \
-                      + ALIGN(__kickos_tbss_end - __kickos_tdata_start        \
-                                  + KICKOS_ARCH_TLS_TCB,                      \
-                              KICKOS_STACK_ALIGN),                            \
-           tls_msg)                                                           \
-    ASSERT(SIZEOF(.tdata) + SIZEOF(.tbss) != 0                                \
-               || (size) >= (floor)                                           \
-                      + KICKOS_REENT_IN_TCB                                   \
-                            * ALIGN(KICKOS_ARCH_TLS_TCB, KICKOS_STACK_ALIGN), \
-           tcb_msg)
+#define KICKOS_TLS_CLEARS(size, floor)                                        \
+    ((size) >= (floor)                                                        \
+                   + ALIGN(__kickos_tbss_end - __kickos_tdata_start           \
+                               + KICKOS_ARCH_TLS_TCB,                         \
+                           KICKOS_STACK_ALIGN))
+#define KICKOS_TLS_CARVE_ASSERT(size, floor, tls_msg)                          \
+    ASSERT(SIZEOF(.tdata) + SIZEOF(.tbss) == 0 || KICKOS_TLS_CLEARS(size, floor), tls_msg)
 
 #if defined(KICKOS_TLS) && KICKOS_TLS && !KICKOS_TLS_FROM_SP
 #include <kickos/arch/idle_floor.h>
 #define KICKOS_TLS_IDLE_ASSERT()                                              \
+    KICKOS_LD_C_SYM(__kickos_tls_idle_checked) = 1;                           \
     KICKOS_TLS_CARVE_ASSERT(KICKOS_IDLE_STACK_SIZE, KICKOS_ARCH_IDLE_FLOOR,   \
-           "KickOS: KICKOS_IDLE_STACK_SIZE cannot hold idle's thread-local block (the __kickos_tdata_start..__kickos_tbss_end template plus KICKOS_ARCH_TLS_TCB) above KICKOS_ARCH_IDLE_FLOOR, so idle would overrun its stack on its first interrupt. Declare fewer or smaller thread_local objects, or raise KICKOS_IDLE_STACK_SIZE in boards/<board>/configs/<variant>/defconfig.", \
-           "KickOS: KICKOS_IDLE_STACK_SIZE cannot hold idle's TLS control block above KICKOS_ARCH_IDLE_FLOOR, so idle would overrun its stack on its first interrupt. Raise KICKOS_IDLE_STACK_SIZE in boards/<board>/configs/<variant>/defconfig.")
+           "KickOS: KICKOS_IDLE_STACK_SIZE cannot hold idle's thread-local block (the __kickos_tdata_start..__kickos_tbss_end template plus KICKOS_ARCH_TLS_TCB) above KICKOS_ARCH_IDLE_FLOOR, so idle would overrun its stack on its first interrupt. Declare fewer or smaller thread_local objects, or raise KICKOS_IDLE_STACK_SIZE in boards/<board>/configs/<variant>/defconfig.")
 #else
 #define KICKOS_TLS_IDLE_ASSERT()
 #endif
@@ -158,12 +166,12 @@
                             + KICKOS_ARCH_TLS_TCB,                            \
                         KICKOS_STACK_ALIGN) < KICKOS_TLS_STRIDE,              \
            "KickOS: the thread_local template plus the ABI bias below the thread pointer does not fit one KICKOS_TLS_STRIDE, so no thread's block can hold it and every spawn would be refused. Declare fewer or smaller thread_local objects, or raise this board's stack size (which is the stride) in boards/<board>/configs/<variant>/defconfig.") \
+    ASSERT(SIZEOF(.tdata) + SIZEOF(.tbss) == 0 || !KICKOS_TLS_CLEARS(0, 0),   \
+           "KickOS: KICKOS_TLS_CLEARS admits a stack with no room for the thread-local block, so no carve assert below it can fire") \
     KICKOS_TLS_CARVE_ASSERT(KICKOS_USER_STACK_SIZE, KICKOS_MIN_STACK_SIZE,    \
-           "KickOS: KICKOS_USER_STACK_SIZE cannot hold a thread's thread-local block (the __kickos_tdata_start..__kickos_tbss_end template plus KICKOS_ARCH_TLS_TCB) above KICKOS_MIN_STACK_SIZE, so a thread on the default stack runs below the arch's syscall stack floor. Declare fewer or smaller thread_local objects, or raise KICKOS_USER_STACK_SIZE in boards/<board>/configs/<variant>/defconfig.", \
-           "KickOS: KICKOS_USER_STACK_SIZE cannot hold a thread's TLS control block above KICKOS_MIN_STACK_SIZE, so a thread on the default stack runs below the arch's syscall stack floor. Raise KICKOS_USER_STACK_SIZE in boards/<board>/configs/<variant>/defconfig.") \
+           "KickOS: KICKOS_USER_STACK_SIZE cannot hold a thread's thread-local block (the __kickos_tdata_start..__kickos_tbss_end template plus KICKOS_ARCH_TLS_TCB) above KICKOS_MIN_STACK_SIZE, so a thread on the default stack runs below the arch's syscall stack floor. Declare fewer or smaller thread_local objects, or raise KICKOS_USER_STACK_SIZE in boards/<board>/configs/<variant>/defconfig.") \
     KICKOS_TLS_CARVE_ASSERT(KICKOS_ROOT_STACK_SIZE, KICKOS_MIN_STACK_SIZE,    \
-           "KickOS: KICKOS_ROOT_STACK_SIZE cannot hold root's thread-local block (the __kickos_tdata_start..__kickos_tbss_end template plus KICKOS_ARCH_TLS_TCB) above KICKOS_MIN_STACK_SIZE, so root runs below the arch's syscall stack floor. Declare fewer or smaller thread_local objects, or raise KICKOS_ROOT_STACK_SIZE in boards/<board>/configs/<variant>/defconfig.", \
-           "KickOS: KICKOS_ROOT_STACK_SIZE cannot hold root's TLS control block above KICKOS_MIN_STACK_SIZE, so root runs below the arch's syscall stack floor. Raise KICKOS_ROOT_STACK_SIZE in boards/<board>/configs/<variant>/defconfig.") \
+           "KickOS: KICKOS_ROOT_STACK_SIZE cannot hold root's thread-local block (the __kickos_tdata_start..__kickos_tbss_end template plus KICKOS_ARCH_TLS_TCB) above KICKOS_MIN_STACK_SIZE, so root runs below the arch's syscall stack floor. Declare fewer or smaller thread_local objects, or raise KICKOS_ROOT_STACK_SIZE in boards/<board>/configs/<variant>/defconfig.") \
     KICKOS_TLS_IDLE_ASSERT()
 #else
 #define KICKOS_TLS_FIT_ASSERT()                                               \

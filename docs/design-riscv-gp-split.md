@@ -2,11 +2,11 @@
 <!-- Copyright (c) 2026 Philippe Leduc -->
 # Design: RISC-V gp small-data kernel/app split -- full-C++-under-PMP feasibility
 
-> **Status: LANDED** -- the split shipped and is CI-gated: `riscv_no_smalldata`,
-> `qemu_riscv_cxxtest` and `qemu_riscv_mpu_fault` run in the `qemu-riscv-mpu` job, so a U-mode
-> throw under PMP is a green gate rather than a hope. `user/` objects build
-> `-msmall-data-limit=0` and app globals land in `.appdata`/`.appbss`. The option analysis below
-> is kept as the why.
+> **Status: LANDED** -- the split shipped and is CI-gated: each RISC-V chip script refuses a
+> KickOS archive's small data at link, and `qemu_riscv_cxxtest` and `qemu_riscv_mpu_fault` run
+> in the `qemu-riscv-mpu` job, so a U-mode throw under PMP is a green gate rather than a hope.
+> `user/` objects build `-msmall-data-limit=0` and app globals land in `.appdata`/`.appbss`. The
+> option analysis below is kept as the why.
 
 Decision record for one question: where the RISC-V `gp` small-data window goes when full C++
 (exceptions/STL/RTTI) must run under PMP. Full C++ under memory protection already worked on ARM

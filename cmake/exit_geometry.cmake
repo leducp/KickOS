@@ -11,3 +11,4 @@ set(KOS_EXIT_FAULT 139)
 # A cancelled thread, 128 + SIGINT, the kernel ending it: also the status of a task whose members
 # were all cancelled.
 set(KOS_EXIT_CANCELLED 130)
+kickos_emit_geometry(kickos/sys/exit_status.h KOS_EXIT_FAULT KOS_EXIT_CANCELLED)

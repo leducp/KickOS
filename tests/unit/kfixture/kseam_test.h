@@ -130,6 +130,26 @@ namespace kickos
                    != k.sched_in[holder].drop_took[asker].load();
         }
 
+        // The ask cell is keyed by target and read from the target's seat, so a read about a
+        // peer speaks as that peer for its length.
+        inline int owed_at(uint32_t core)
+        {
+            uint32_t const was = g_core;
+            g_core = core;
+            int const owed = kickos_kernel_core_resched_owed();
+            g_core = was;
+            return owed;
+        }
+
+        // klock.cc's sequence rows outlive reset(), so an arm starts from what it drains here.
+        inline void drain(uint32_t core)
+        {
+            uint32_t const was = g_core;
+            g_core = core;
+            (void)kickos_kernel_core_resched_take();
+            g_core = was;
+        }
+
         // One doorbell dispatch on `core`, in the vector's own order: consume the ask, then enter
         // the scheduler, whose entry drains what was handed to that core before its pass.
         inline void dispatch_as(uint32_t core)

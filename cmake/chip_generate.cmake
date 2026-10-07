@@ -1,15 +1,21 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-# kickos_chip_generate(<description> <arch>)
-#   Runs `kickos_compose chip` at configure on <description>, a board file or the chip file it
-#   names, for the cluster whose architecture is <arch>. It writes kickos/chip_mmap.h and
-#   kickos/chip_limits.h under ${PROJECT_BINARY_DIR}/generated/include, and irq.h, chip_layout.h,
-#   chip_tables.h, chip.cmake, board_pins.h and board_buses.h under
-#   ${PROJECT_BINARY_DIR}/generated/chip, each only when its bytes change. The description, the chip
+# kickos_chip_generate(<source_dir> <board> <chip> <arch>)
+#   Refuses <board> unless kickos_board_undescribed finds it described under <source_dir>, then
+#   runs `kickos_compose chip` at configure on its board file, for the cluster whose architecture
+#   is <arch>. It writes kickos/chip_mmap.h and kickos/chip_limits.h under
+#   ${PROJECT_BINARY_DIR}/generated/include, and irq.h, chip_layout.h, chip_tables.h,
+#   chip.cmake, board_pins.h and board_buses.h under
+#   ${PROJECT_BINARY_DIR}/generated/chip, each only when its bytes change. The board file, the chip
 #   file beside it and the tool are configure dependencies. A refusal fails the configure with the
 #   tool's `<file>:<line>: <rule>: <message>` lines. Requires uv on PATH, as kickos_compose() does.
-function(kickos_chip_generate description arch)
+function(kickos_chip_generate source_dir board chip arch)
+  kickos_board_undescribed(_lacks "${source_dir}" "${board}" "${chip}")
+  if(NOT _lacks STREQUAL "")
+    message(FATAL_ERROR "KickOS: board '${board}' ${_lacks}.")
+  endif()
+  set(description "${source_dir}/platform/${chip}/${board}.yaml")
   set(_tool "${PROJECT_SOURCE_DIR}/tools/compose")
   get_filename_component(_platform "${description}" DIRECTORY)
   file(GLOB _tool_sources CONFIGURE_DEPENDS "${_tool}/kickos_compose/*.py")

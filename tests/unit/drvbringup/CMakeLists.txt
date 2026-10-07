@@ -8,9 +8,9 @@
 # user/src/driver_service.cc is COMPILED IN, never linked from kickos_user: that archive also
 # carries the real syscall stubs, which would satisfy the kos_* names instead of the seam.
 #
-# HOST-ONLY, like the uartclass gate and for the same mechanism: kos_seam.cc defines public
-# kos_* names, and a target image linking it would satisfy them from the executable and keep
-# the real stubs' archive members out of the link (tests/static/check_class_backend.sh).
+# HOST-ONLY: kos_seam.cc defines public kos_* names, and a target image linking it would
+# satisfy them from the executable and keep the real stubs' archive members out of the link
+# (tests/static/check_class_backend.sh).
 #
 # driver_service.h uses designated initialisers in a constexpr aggregate and does not parse at
 # gnu++17, so it needs the cxx_std_20 kickos_add_unit_test sets.

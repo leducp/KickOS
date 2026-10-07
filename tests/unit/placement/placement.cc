@@ -58,25 +58,6 @@ namespace
                   "every arm below reads one ordering of these five; a reorder makes an arm "
                   "assert about whichever thread its scan reached first");
 
-    // The ask cell is keyed by target and read from the target's seat.
-    int owed_at(uint32_t core)
-    {
-        uint32_t const was = g_core;
-        g_core = core;
-        int const owed = kickos_kernel_core_resched_owed();
-        g_core = was;
-        return owed;
-    }
-
-    // klock.cc's sequence rows outlive reset(), so an arm starts from what it drains here.
-    void drain(uint32_t core)
-    {
-        uint32_t const was = g_core;
-        g_core = core;
-        (void)kickos_kernel_core_resched_take();
-        g_core = was;
-    }
-
     void settle()
     {
         drain(CORE_ME);

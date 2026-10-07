@@ -9,6 +9,12 @@
 cmake_minimum_required(VERSION 3.24)
 include("${KICKOS_SOURCE_DIR}/cmake/chip_generate.cmake")
 
+# The refusal cases at the end run this again, on a scratch tree they describe in part.
+if(DEFINED KICKOS_GENERATE)
+  kickos_chip_generate("${KICKOS_GENERATE}" kit part sim)
+  return()
+endif()
+
 # have_mpu, have_aspace, region unit, translates, and whether the pair disagrees.
 foreach(_case "1;0;pmsav7;OFF;0" "1;0;;OFF;1" "0;0;;OFF;0" "0;1;;ON;0" "0;1;;OFF;1" "0;0;;ON;1" "1;0;pmp;ON;1"
               "0;0;pmp;OFF;0")
@@ -74,4 +80,26 @@ kickos_board_undescribed(_said "${KICKOS_SCRATCH}" kit "")
 if(NOT _said STREQUAL "names no chip")
   message(FATAL_ERROR "kickos_board_undescribed answered '${_said}' on a board naming no chip")
 endif()
+
+# Every configure reaches the chip headers through kickos_chip_generate, which refuses a board
+# lacking a file before it reads one, naming the file.
+foreach(_case "platform/part/kit.yaml=has no board file platform/part/kit.yaml"
+              "boards/kit/composition.yaml=has no default composition boards/kit/composition.yaml")
+  string(REPLACE "=" ";" _case "${_case}")
+  list(GET _case 0 _dropped)
+  list(GET _case 1 _want)
+  foreach(_file platform/part/chip.yaml platform/part/kit.yaml boards/kit/composition.yaml)
+    file(WRITE "${KICKOS_SCRATCH}/${_file}" "version: 1\n")
+  endforeach()
+  file(REMOVE "${KICKOS_SCRATCH}/${_dropped}")
+  execute_process(COMMAND "${CMAKE_COMMAND}" "-DKICKOS_SOURCE_DIR=${KICKOS_SOURCE_DIR}"
+                          "-DKICKOS_GENERATE=${KICKOS_SCRATCH}" -P "${CMAKE_CURRENT_LIST_FILE}"
+                  RESULT_VARIABLE _rc OUTPUT_VARIABLE _said ERROR_VARIABLE _said)
+  string(REGEX REPLACE "[ \n]+" " " _said "${_said}")
+  string(FIND "${_said}" "${_want}" _at)
+  if(_rc EQUAL 0 OR _at EQUAL -1)
+    message(FATAL_ERROR
+      "kickos_chip_generate with no ${_dropped} did not refuse saying '${_want}': ${_said}")
+  endif()
+endforeach()
 message(STATUS "chip_protection: OK")

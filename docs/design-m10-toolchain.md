@@ -511,9 +511,9 @@ app text, which is where every libc member lands. A kernel `memcpy` resolving to
 is vector code, fails the build.
 
 **The no-vector gate is rescoped.** `tests/static/check_x86_64_no_vector.sh` reads every object
-and every image whole, so it would refuse every app. Its corpus becomes the objects of the
-kernel-half targets, a set it derives from the claims in `pe_image.ld` rather than listing; the
-executable sections of every image outside the app window; and the probe images whole. An
+and every image whole, so it would refuse every app. Its corpus becomes the executable sections
+of every image outside the app window, and the probe images whole: what `-mgeneral-regs-only`
+cannot hold, assembly, toolchain members and linker-synthesised text, is all there. An
 application image is one whose link wrote its map beside it (`tools/x86_64-link.sh`). Its
 controls stay, and one joins them: the app half of the selftest image must decode at least one
 vector instruction, or the split did not happen and the rescoped gate reads nothing new. The

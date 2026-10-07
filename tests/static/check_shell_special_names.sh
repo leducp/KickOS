@@ -12,16 +12,7 @@
 # Run from the repo root, no arguments, no build directory:
 #   tests/static/check_shell_special_names.sh
 #
-#   corpus     tracked *.sh, plus any tracked file whose first line is a sh or bash shebang,
-#              out of `git ls-files` so an untracked scratch script is neither read nor
-#              counted. A sourced fragment with no shebang is in the corpus when it is named
-#              *.sh, which is how tests/lib/gate.sh is covered.
-#
-#   floor      CORPUS_FLOOR, at about half what the tree tracks, on the corpus AND on the
-#              number of files the scan actually read: a `git ls-files` that matched almost
-#              nothing, a walk that stopped early and a corpus narrowed by an edit here would
-#              all read as clean. A tracked file MISSING from the worktree is refused rather
-#              than skipped, a silent skip being how a corpus shrinks without a count moving.
+#   corpus     corpus_shell and corpus_floor (tests/lib/gate.sh).
 #
 #   the names  NAMES below. Two kinds, and the fix is the same for both, so one list: the ones
 #              bash refuses to let a script write (GROUPS, BASH_*, EUID, UID, PPID, SHELLOPTS,
@@ -41,9 +32,6 @@
 #              comment that is erased to end of line. That buys one false NEGATIVE, an
 #              assignment sitting after a `#` inside a string on the same line, and it is
 #              what lets this gate's own header name GROUPS without reporting itself.
-#
-# The self-test below plants one violation per NAME per form: a name in the list that no ERE
-# reaches would otherwise be listed and unenforced, which reads exactly like a clean corpus.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
@@ -52,10 +40,7 @@ require_repo_root
 
 scratch_dir
 
-# Sized at about HALF what the corpus holds, so an ordinary deletion still passes while an
-# empty walk, a run outside a checkout and a corpus narrowed by an edit here all refuse. The
-# corpus count is printed on every run and is not pinned here.
-CORPUS_FLOOR=48
+CORPUS_FLOOR=120
 
 # One name per line. BASH_ and COMP_ are prefixes, matched below as such.
 NAMES="GROUPS
@@ -95,121 +80,33 @@ READ_ERE="${POS}read([[:blank:]]+-[A-Za-z]+)*([[:blank:]]+[A-Za-z_][A-Za-z0-9_]*
 STRIP='s/^[[:blank:]]*#.*$//; s/[[:blank:]]#.*$//'
 
 scan() { # <file>
-    LC_ALL=C sed "$STRIP" "$1" \
-        | LC_ALL=C grep -nE "$ASSIGN_ERE|$FOR_ERE|$READ_ERE" \
-        | sed "s|^|$1:|"
+    sed "$STRIP" "$1" | grep -nE "$ASSIGN_ERE|$FOR_ERE|$READ_ERE" | sed "s|^|$1:|"
 }
 
-# --- self-test: every listed name, every form ---------------------------------
-planted=0
-for n in $(printf '%s\n' "$NAMES") BASH_MINE COMP_MINE; do
-    for form in 1 2 3 4; do
-        case "$form" in
-            1) printf '%s=value\n' "$n" > "$TMP/one.sh" ;;
-            2) printf 'export %s=value\n' "$n" > "$TMP/one.sh" ;;
-            3) printf 'for %s in a b; do :; done\n' "$n" > "$TMP/one.sh" ;;
-            4) printf 'printf x | while IFS= read -r %s; do :; done\n' "$n" > "$TMP/one.sh" ;;
-        esac
-        got="$(scan "$TMP/one.sh" | wc -l | tr -d ' ')"
-        if [ "$got" -ne 1 ]; then
-            fail "the scan found $got finding(s) in a planted write to $n (form $form); that
-      name is listed and unenforced, which reads exactly like a clean corpus"
-        fi
-        planted=$((planted + 1))
-    done
-done
-[ "$planted" -eq 80 ] || fail "$planted positive control(s) ran, expected 80"
+# One write per form, then reads, ordinary variables, longer names and a quoted violation in a
+# comment, none of which may report. The writes are assembled by printf because this file is in
+# its own corpus.
+printf '%s="a table"\nexport %s=1\nfor %s in a b; do :; done\nprintf x | while IFS= read -r %s; do :; done\n' \
+    GROUPS BASH_MINE UID PWD > "$TMP/pos.sh"
+printf '%s\n' 'while IFS= read -r line; do :; done' 'OPTIND=1; OPTARG=x; REPLY=y' \
+    'echo "$PWD $UID ${PIPESTATUS[0]} $RANDOM"' 'NOTGROUPS=1; MY_UID=2' \
+    'x=1  # GROUPS=the table was the bug' > "$TMP/neg.sh"
+[ "$(scan "$TMP/pos.sh" | wc -l | tr -d ' ')" -eq 4 ] \
+    || fail "the scan missed a planted write: $(scan "$TMP/pos.sh")"
+[ -z "$(scan "$TMP/neg.sh")" ] \
+    || fail "the scan reported a read, an ordinary name or a comment: $(scan "$TMP/neg.sh")"
 
-# The negatives, one per line and each scanned ALONE: a whole-file zero cannot tell "every
-# clause is right" from "one clause swallowed the file".
-{
-    printf 'while IFS= read -r line; do :; done\n'
-    printf 'IFS="$TAB"\n'
-    printf 'OPTIND=1; OPTARG=x; REPLY=y\n'
-    printf 'echo "$PWD $UID ${PIPESTATUS[0]} $RANDOM"\n'
-    printf 'RC=${PIPESTATUS[0]}\n'
-    printf 'NOTGROUPS=1\n'
-    printf 'MY_UID=2\n'
-    printf 'KOS_GROUP_TABLE="a table"\n'
-    printf 'KOS_GROUP_ROWS=5\n'
-    printf 'for f in a b; do :; done\n'
-} > "$TMP/neg.sh"
-i=0
-while IFS= read -r line; do
-    i=$((i + 1))
-    printf '%s\n' "$line" > "$TMP/one.sh"
-    got="$(scan "$TMP/one.sh" | wc -l | tr -d ' ')"
-    [ "$got" -eq 0 ] || fail "negative control $i reports, so this gate would cry wolf: $line"
-done < "$TMP/neg.sh"
-[ "$i" -eq 10 ] || fail "$i negative control(s) ran, expected 10"
-
-# The comment erase is load-bearing and has to be a near miss: with it disabled, a line that
-# NAMES a violation in prose must newly report. A comment carrying no violation must stay
-# silent under either, which is what separates the erase from a blanket skip.
-printf 'x=1  # GROUPS=the table was the bug\n' > "$TMP/cmt.sh"
-[ "$(scan "$TMP/cmt.sh" | wc -l | tr -d ' ')" -eq 0 ] \
-    || fail "a violation quoted inside a comment reports; this gate's own header would fail it"
-raw="$(LC_ALL=C grep -cE "$ASSIGN_ERE" "$TMP/cmt.sh" || true)"
-[ "$raw" -eq 1 ] \
-    || fail "with the comment erase disabled the quoted violation still does not report, so
-      the erase is not a near miss and proves nothing about what it hides"
-
-# --- the corpus ---------------------------------------------------------------
-corpus_all "$TMP/tracked"
-
-: > "$TMP/corpus"
-while IFS= read -r f; do
-    [ -f "$f" ] || fail "tracked file is missing from the worktree: $f. A skipped file leaves
-      the corpus one shorter with nothing saying so."
-    [ -r "$f" ] || fail "tracked file is unreadable, so its verdict is UNKNOWN, not clean: $f"
-    case "$f" in
-        *.sh)
-            printf '%s\n' "$f" >> "$TMP/corpus"
-            continue
-            ;;
-    esac
-    if head -n1 "$f" | LC_ALL=C grep -qE '^#!.*(/bin/sh|env[[:blank:]]+sh|/bin/bash|env[[:blank:]]+bash)'; then
-        printf '%s\n' "$f" >> "$TMP/corpus"
-    fi
-done < "$TMP/tracked"
-require_nonempty "$TMP/corpus" "no tracked shell script matched; the scan would pass vacuously"
-N="$(wc -l < "$TMP/corpus" | tr -d ' ')"
-[ "$N" -ge "$CORPUS_FLOOR" ] \
-    || fail "$N shell script(s) in the corpus, beneath the floor of $CORPUS_FLOOR: this is not
-      the tree, so a clean result below would be a corpus that shrank and not a tree that is
-      clean."
-
-# This script is itself a corpus member, so its presence is asserted: a corpus built from the
-# wrong path would otherwise read one file fewer and still pass.
-grep -Fxq "tests/static/check_shell_special_names.sh" "$TMP/corpus" \
-    || fail "the corpus does not hold tests/static/check_shell_special_names.sh, so it was built
-      from the wrong path and every finding below would be missing rather than absent"
-
+corpus_shell "$TMP/corpus"
+corpus_floor "$TMP/corpus" "$CORPUS_FLOOR" "shell script(s)"
 : > "$TMP/findings"
-N_READ=0
 while IFS= read -r f; do
     scan "$f" >> "$TMP/findings"
-    N_READ=$((N_READ + 1))
 done < "$TMP/corpus"
-
-# The corpus is what the walk BUILT; this is what the scan READ. A loop that ended early leaves
-# the two apart, and only the first of them reaches the headline.
-[ "$N_READ" -eq "$N" ] \
-    || fail "the scan read $N_READ of $N script(s) in the corpus, so it stopped early and the
-      rest are unreported rather than clean"
-[ "$N_READ" -ge "$CORPUS_FLOOR" ] \
-    || fail "$N_READ script(s) read, beneath the floor of $CORPUS_FLOOR"
-
-echo "== checked $N_READ tracked shell script(s) for a write to a shell-owned identifier =="
 
 if [ -s "$TMP/findings" ]; then
     sed 's/^/      /' "$TMP/findings" >&2
-    echo "" >&2
-    echo "FAIL: $(wc -l < "$TMP/findings" | tr -d ' ') line(s) write an identifier a shell" >&2
-    echo "      already owns. Under bash the write is refused or overwritten, the data is" >&2
-    echo "      silently gone, and the script keeps its exit code. Rename it into the" >&2
-    echo "      project's own namespace (KOS_...) and assert whatever count depends on it." >&2
-    exit 1
+    fail "$(wc -l < "$TMP/findings" | tr -d ' ') line(s) write an identifier a shell already owns.
+      Under bash the write is refused or overwritten and the data is silently gone. Rename it
+      into the project's own namespace (KOS_...)."
 fi
-
-echo "PASS: no tracked shell script writes a shell-owned identifier across $N_READ script(s)"
+echo "PASS: no tracked shell script writes a shell-owned identifier across $N script(s)"

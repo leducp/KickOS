@@ -9,9 +9,10 @@
 #
 # The link does not already refuse this. The linker script's assert covers only the medany
 # range; the app window is at 0x40000000, inside medlow's `lui`-reachable range, so the linker
-# RELAXES a kernel reference to an app-half symbol into `lui`+`addi` and the link succeeds. At
-# run time the read or write succeeds too: sstatus.SUM is set for the life of kernel context
-# and the running space maps the app's half U.
+# REWRITES a kernel reference to an app-half symbol into `lui`+`addi` and the link succeeds,
+# with relaxation off as well: ld converts any out-of-range auipc a non-PIC link can reach
+# absolutely. At run time the read or write succeeds too: sstatus.SUM is set for the life of
+# kernel context and the running space maps the app's half U.
 #
 # The corpus is the kernel-side archives' RELOCATIONS. A relocation names the SYMBOL an
 # instruction operand resolves to, and relaxation rewrites the encoding without changing that

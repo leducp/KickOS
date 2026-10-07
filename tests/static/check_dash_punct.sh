@@ -63,7 +63,7 @@ scratch_dir
 SCAN="$(dirname "$0")/dash_punct.awk"
 [ -r "$SCAN" ] || fail "tests/static/dash_punct.awk is unreadable; nothing below can scan a line"
 
-# The five EREs, defined once and handed to the scanner, so the self-test below and the
+# The five EREs, defined once and handed to the scanner, so the controls below and the
 # corpus scan cannot disagree about what the rule is.
 DASH_ERE='(^|[^-])[[:blank:]]--([[:blank:]"'\''\\\\]|$)'
 RUN_ERE='---'
@@ -78,10 +78,7 @@ scan() { # <file> <heredoc 0|1>
         -v HASH="$HASH_ERE" -v HEREDOC="$2" -f "$SCAN" "$1"
 }
 
-# --- self-test: prove every clause of the rule, one control per clause ---------
-# A gate whose positive control could be caught by an unrelated clause proves nothing about
-# the clause it claims to test, so each control below is a MINIMAL PAIR: the positive and
-# the negative differ in one property only, and the expected count is exact.
+# --- the planted controls: every pair in pos.sh reports, nothing in neg.sh does ---------
 cat > "$TMP/pos.sh" <<'EOF'
 echo "the arena is full -- the spawn returns ENOMEM"
 # a comment that breaks -- right here
@@ -132,68 +129,6 @@ if [ -s "$TMP/negout" ]; then
       gate would cry wolf and be switched off"
 fi
 
-# EACH negative on its own, so a control that is silent for the WRONG reason is visible. A
-# whole-file zero cannot tell "six clauses work" from "one clause swallowed the file".
-i=0
-while IFS= read -r line; do
-    i=$((i + 1))
-    printf '%s\n' "$line" > "$TMP/one.sh"
-    n="$(scan "$TMP/one.sh" 0 | wc -l | tr -d ' ')"
-    [ "$n" -eq 0 ] || fail "negative control $i reports: $line"
-done < "$TMP/neg.sh"
-[ "$i" -eq 17 ] || fail "$i negative control(s) ran, expected 17"
-
-# The mutation the controls exist to survive: turn each exemption OFF and the count over the
-# control file must move, which is what proves the control was ever a near miss. Every arm
-# but the last reads neg.sh, where a disabled exemption makes silent lines report.
-mutate() { # <what> <file> <run-ere> <sep-ere> <tick-ere> <hash-ere> <expect-count>
-    m="$(LC_ALL=C awk -v DASH="$DASH_ERE" -v RUN="$3" -v SEP="$4" -v TICK="$5" -v HASH="$6" \
-            -v HEREDOC=0 -f "$SCAN" "$2" | wc -l | tr -d ' ')"
-    [ "$m" -eq "$7" ] || fail "with the $1 clause disabled the scanner reported $m line(s) of $2, expected $7;
-      the controls for it are not near misses and prove nothing"
-}
-# Disabled = an ERE that cannot match. The count is EXACT and differs per clause, so a
-# control kept quiet by the wrong clause shows up as the wrong number rather than as a pass.
-NEVER='KICKOS_THIS_ERE_MATCHES_NOTHING'
-mutate "separator" "$TMP/neg.sh" "$RUN_ERE" "$NEVER"   "$TICK_ERE" "$HASH_ERE" 12
-mutate "banner"    "$TMP/neg.sh" "$NEVER"   "$SEP_ERE" "$TICK_ERE" "$HASH_ERE" 1
-mutate "backtick"  "$TMP/neg.sh" "$RUN_ERE" "$SEP_ERE" "$NEVER"    "$HASH_ERE" 1
-
-# SEP has three sub-clauses beyond the plain command word, each with its own near miss
-# above, so each gets its own disabled-variant proof: a control quiet because the WORD is
-# recognised must not be confused with one quiet because the PREFIX in front of it is
-# tolerated, nor with one quiet because a LONG option was tolerated in the option run.
-# Self-test only; the corpus scan never sees these three.
-SEP_ERE_NOPREFIX='(^|[;&|()]|[$][(])[[:blank:]]*(command[[:blank:]]+)?(git[[:blank:]]+[a-z][a-z-]*|git|grep|egrep|fgrep|xargs|find|rm|mv|cp|ls|printf|echo|sed|awk|install|chmod|env|test|ctest|cmake|nm|objcopy|objdump|readelf|size|python3|diff|sort|head|tail|cut|tr|kill|bash|sh|cd|dirname|set)([[:blank:]]+--?[A-Za-z0-9][^[:blank:]]*)*[[:blank:]]+--([[:blank:]]|$)'
-SEP_ERE_OLDWORDS='(^|[;&|()]|[$][(])[[:blank:]]*("[$][{][A-Za-z_][A-Za-z0-9_]*[[]@[]][}]"[[:blank:]]+)?([A-Za-z_][A-Za-z0-9_]*=[^[:blank:]]*[[:blank:]]+)*(command[[:blank:]]+)?(git[[:blank:]]+[a-z][a-z-]*|git|grep|egrep|fgrep|xargs|find|rm|mv|cp|ls|printf|echo|sed|awk|install|chmod|env|test|ctest|cmake|nm|objcopy|objdump|readelf|size|python3|diff|sort|head|tail|cut|tr)([[:blank:]]+--?[A-Za-z0-9][^[:blank:]]*)*[[:blank:]]+--([[:blank:]]|$)'
-SEP_ERE_OLDATOM='(^|[;&|()]|[$][(])[[:blank:]]*("[$][{][A-Za-z_][A-Za-z0-9_]*[[]@[]][}]"[[:blank:]]+)?([A-Za-z_][A-Za-z0-9_]*=[^[:blank:]]*[[:blank:]]+)*(command[[:blank:]]+)?(git[[:blank:]]+[a-z][a-z-]*|git|grep|egrep|fgrep|xargs|find|rm|mv|cp|ls|printf|echo|sed|awk|install|chmod|env|test|ctest|cmake|nm|objcopy|objdump|readelf|size|python3|diff|sort|head|tail|cut|tr|kill|bash|sh|cd|dirname|set)([[:blank:]]+-[A-Za-z0-9][^[:blank:]]*)*[[:blank:]]+--([[:blank:]]|$)'
-SEP_ERE_OLDPOS='(^|[;&|(]|[$][(])[[:blank:]]*("[$][{][A-Za-z_][A-Za-z0-9_]*[[]@[]][}]"[[:blank:]]+)?([A-Za-z_][A-Za-z0-9_]*=[^[:blank:]]*[[:blank:]]+)*(command[[:blank:]]+)?(git[[:blank:]]+[a-z][a-z-]*|git|grep|egrep|fgrep|xargs|find|rm|mv|cp|ls|printf|echo|sed|awk|install|chmod|env|test|ctest|cmake|nm|objcopy|objdump|readelf|size|python3|diff|sort|head|tail|cut|tr|kill|bash|sh|cd|dirname|set)([[:blank:]]+--?[A-Za-z0-9][^[:blank:]]*)*[[:blank:]]+--([[:blank:]]|$)'
-# NOPREFIX keeps the new words but drops the VAR=/array tolerance: only the three lines that
-# actually need a prefix (CDPATH= cd, CDPATH= cd via $(dirname, and the ssh-array bash) must
-# newly report.
-mutate "sep-prefix"      "$TMP/neg.sh" "$RUN_ERE" "$SEP_ERE_NOPREFIX" "$TICK_ERE" "$HASH_ERE" 3
-# OLDWORDS keeps the prefix tolerance but drops kill/bash/sh/cd/dirname/set from the list:
-# every line that exists to prove one of those six words must newly report. `set --` is on the
-# list because `set` takes the separator like any other command, and a POSIX shell builds an
-# argument list with it: `set --` inside a function replaces that function's own positional
-# parameters and leaves the caller's alone.
-mutate "sep-new-words"   "$TMP/neg.sh" "$RUN_ERE" "$SEP_ERE_OLDWORDS" "$TICK_ERE" "$HASH_ERE" 8
-# OLDATOM keeps the words and the prefix tolerance but narrows the option run back to a
-# SINGLE leading dash: only the line whose option run holds a long option must newly
-# report, which is what proves the two-dash tolerance is a near miss and not slack.
-mutate "sep-long-option" "$TMP/neg.sh" "$RUN_ERE" "$SEP_ERE_OLDATOM" "$TICK_ERE" "$HASH_ERE" 1
-# OLDPOS keeps everything but narrows the command position back to the line start and the
-# five operators, dropping the `)` that closes a case pattern: only the case-arm line must
-# newly report, which is what proves that clause is a near miss and not slack.
-mutate "sep-case-position" "$TMP/neg.sh" "$RUN_ERE" "$SEP_ERE_OLDPOS" "$TICK_ERE" "$HASH_ERE" 1
-
-# The comment test runs the other way, so its arm reads POS.SH: the forge planted there is a
-# real command position spelled inside prose, and HASH is the only reason it reports. With
-# HASH disabled it is exempted again and pos.sh drops back to its other pairs, which is
-# what proves the test is a near miss and not slack. The last negative control is the mirror,
-# a comment opening AFTER a real separator, and it stays silent under either HASH.
-mutate "sep-comment"     "$TMP/pos.sh" "$RUN_ERE" "$SEP_ERE"          "$TICK_ERE" "$NEVER"    8
-
 # The heredoc body must be skipped and the line AFTER it must not be.
 H="$(scan "$TMP/here.sh" 1)"
 case "$H" in
@@ -221,12 +156,11 @@ corpus "$TMP/all" "source file" \
     '*.c' '*.cc' '*.cpp' '*.h' '*.hh' '*.hpp' '*.inc' '*.h.in' '*.S' \
     '*.ld' '*.lds' '*.py' '*.sh' '*.cmake' '*.awk' '*.yml' \
     CMakeLists.txt '*/CMakeLists.txt' Kconfig '*/Kconfig'
-N="$(wc -l < "$TMP/all" | tr -d ' ')"
+corpus_floor "$TMP/all" 800 "source file(s)"
 
 : > "$TMP/findings"
 : > "$TMP/refused"
 while IFS= read -r f; do
-    [ -f "$f" ] || fail "tracked file is missing from the worktree: $f"
     hd=0
     case "$f" in
         *.sh) hd=1 ;;

@@ -18,7 +18,9 @@
 # Each peer is configured from the SAME source and the SAME variant, differing only in
 # KICKOS_AMP_NODE_ID: the geometry and the port list are stated once in the shared defconfig,
 # and every node derives its own share, link base and capabilities from its index (N6c, N6g).
-# tests/static/check_amp_elf_agree.sh refuses a pair that did not.
+# Each node's script holds its image to that derivation (arch/common/amp_partition.ld.h), the
+# fingerprint below refuses a peer configured from anything else, and the window's layout
+# below refuses a peer whose shared objects sit elsewhere.
 
 set -eu
 
@@ -90,6 +92,36 @@ image_fp() { # <elf>
         END { if (hi != "" && lo != "") { print hi lo } }'
 }
 
+# The window every node writes, as one image lays it out: .amp_shared's type, address and size,
+# then the value, size and name of every symbol in it. Each script bounds the window only against
+# its own derivation, so a derivation or an object that differs by node, or an input the
+# fingerprint does not hash, links on every node. ld files a script symbol defined outside every
+# section under some section's index, so only the symbols from the window's start to its end
+# symbol count, compared as the zero-padded hex readelf prints (POSIX awk reads no hex).
+shared_layout() { # <elf>
+    _row="$(LC_ALL=C "$READELF" -SW "$1" | sed -n 's/^ *\[ *\([0-9]*\)\] *\.amp_shared /\1 /p')"
+    [ -n "$_row" ] || return 0
+    set -- "$1" $_row
+    echo ".amp_shared $3 $4 $6"
+    LC_ALL=C "$READELF" -sW "$1" | LC_ALL=C awk -v ndx="$2" -v lo="$4" '
+        $7 == ndx && ($2 "") >= lo { held[++n] = $2 " " $3 " " $8 }
+        $8 == "__kickos_amp_shared_end" { hi = $2 "" }
+        END { for (i = 1; i <= n; i++) if (substr(held[i], 1, length(hi)) <= hi) print held[i] }' \
+        | LC_ALL=C sort
+}
+
+mkdir -p "$WORK"
+shared_layout "$NODE0_ELF" > "$WORK/layout0"
+case "$(head -n 1 "$WORK/layout0")" in
+    ".amp_shared NOBITS "*) ;;
+    *)
+        echo "build-partition.sh: $NODE0_ELF holds no NOBITS .amp_shared. The window is the" >&2
+        echo "  partition's own and every node writes it, so an image that loads it overwrites" >&2
+        echo "  what the nodes booted before it published." >&2
+        exit 1
+        ;;
+esac
+
 NODE0_FP="$(image_fp "$NODE0_ELF")"
 [ -n "$NODE0_FP" ] || {
     echo "build-partition.sh: $NODE0_ELF carries no Kconfig fingerprint, so the" >&2
@@ -151,7 +183,14 @@ EOF
         echo "  $bdir/generated/.config for the knob that differs." >&2
         exit 1
     fi
-    echo "== partition: node $node agrees with node 0 on Kconfig $peer_fp =="
+    shared_layout "$elf" > "$WORK/layout$node"
+    if ! cmp -s "$WORK/layout0" "$WORK/layout$node"; then
+        echo "build-partition.sh: node $node lays out .amp_shared apart from node 0, so one" >&2
+        echo "  node reads the other's objects at the wrong address. Node 0 against node $node:" >&2
+        diff "$WORK/layout0" "$WORK/layout$node" >&2 || :
+        exit 1
+    fi
+    echo "== partition: node $node agrees with node 0 on Kconfig $peer_fp and on .amp_shared =="
     ELF_LINES="$ELF_LINES
 $elf"
     node=$((node + 1))

@@ -110,8 +110,8 @@ milestone does not close while any of them still composes a system.
       taken by `AMP_PARTITION=1 APP=ampping_n0 VARIANT=amp2-n0 tools/bench/bench.sh pizero2350`;
       until then the judge holds only its planted capture.
 
-- [ ] **M10.6.2: APPS BUILT BY BOARD NAME, AND APPS THAT BUILD AND NEVER RUN (found 2026-10-06, cut from
-      M10.5 for scope).** The emulator gates are keyed on facts and `qemu_gates_derived` refuses a
+- [x] **M10.6.2: APPS BUILT BY BOARD NAME, AND APPS THAT BUILD AND NEVER RUN (found 2026-10-06, cut from
+      M10.5 for scope).** The emulator gates are keyed on facts and `board_predicates` refuses a
       board name around one; two neighbouring gaps were found and left open.
       - `user/apps/common/CMakeLists.txt` still selects apps by board name: `fpclass` (rxv3 or
         `qemu`), the `cxxtest`/`cxxterm` list, `tele_pingpong`, `fp_switch` (the FPU boards),
@@ -119,7 +119,7 @@ milestone does not close while any of them still composes a system.
         profile (nano prints no double), the board's heap (microbit's 1 KiB runs out under
         `cxxtest`'s vector arm, and its RAM fits no larger heap), `KICKOS_TELEMETRY_ON`,
         `KICKOS_MFLOAT_ABI`, a `systems/<board>.yaml` the app ships, and whether the chip's own
-        sources define `arch_diag_led_set` / `arch_cpu_clock_set`. `qemu_gates_derived` should then
+        sources define `arch_diag_led_set` / `arch_cpu_clock_set`. `board_predicates` should then
         read this file too.
       - Apps that build on an emulated preset and that no test boots: `stackguard` on x86_64 (its
         probe line prints the address with `%x`, which truncates an x86_64 user address),
@@ -134,6 +134,21 @@ milestone does not close while any of them still composes a system.
         arm64 AMP and `benchsmp12` postures, where the init holds endpoints first), the sim links
         the host's terminate handler (`cxxterm`), `specfault`'s judge reads captures only, and the
         sim maps no guard under a thread's stack (`faultsurvive_ovf` overruns `main`).
+      **LANDED:**
+      - Each app is selected by the fact it needs, and `board_predicates` refuses a board name in
+        this file too. The name lists were short: `fpclass`, `cxxtest`, `cxxterm`, `fp_switch`
+        and `blink` now build on every board their fact admits.
+      - A configure refuses an image no test of that build boots, unless it states why
+        (`kickos_unbooted`, `kickos_inapplicable`, `kickos_human_judged`). `stackguard` prints
+        `%lx` and boots on x86_64; `aspacefault` boots on rv64imac and `aspaceufault` on armv8a;
+        `hello_c`, `stress`, `specfault` and the armv8a and x86_64 exit, root and reclaim images
+        boot too. The x86_64 SMP arrival, doorbell and every-core gates state why: the x86_64
+        SMP selftest holds those claims.
+      - Where a premise fails the image is not offered: `stackdepth` without the kernel-stack
+        line, `mpu_fault` on a translating backend, `objbudget` on the AMP-port postures and
+        where the budget reaches `KICKOS_MAX_SPAWN_GRANTS`, `trapnest` without an MPU,
+        `faultsurvive_ovf` and `cxxterm` on the sim. `initdemo`'s premise holds wherever it is
+        built.
 
 - [ ] **M10.6.4: THE SELFTEST ORDERED BY EVENTS.** Arms still order threads by sleeping
       (`EP_CALL_SETTLE_NS` and the like) and fail under a loaded host: a sleep is not an order. Each
@@ -224,7 +239,7 @@ and their ratio; no gate is written over them.
     handed waiter's result, and the arm reads it after the resume barrier, outside the lock, as
     `mutex_lock` does (`park_result`'s `a_cancelled_semaphore_wait_returns_ecanceled`).
   - `domain_resolve` has no sign test; the null domain's handle is refused by its all-ones
-    index. `tests/unit/domain` compiles the real `domain.cc` and ages a slot past 0x8000.
+    index. `tests/unit/grantnocache` compiles the real `domain.cc` and ages a slot past 0x8000.
   - `domain_for` asks the memory type once, ahead of both arms, so a region backend answers
     `-KOS_ENOTSUP` as the ABI says (`DomainAdmit` in the same suite).
   - `console_tx_write`, `write_unbuffered`, `enqueue_locked`, `wait_space` and
@@ -276,7 +291,7 @@ and their ratio; no gate is written over them.
   - **Close (2026-10-07):** `TODO.md` 15,096 to 4,230 lines, `STATE.md` 4,118 to 1,170, the
     archive 93,450 to 0. Product and tests and tools are unchanged by this step.
 
-- [ ] **M10.6.2: THE GATE AUDIT, SIZED BEFORE IT STARTS.** The inventory sized the DRY items and
+- [x] **M10.6.2: THE GATE AUDIT, SIZED BEFORE IT STARTS.** The inventory sized the DRY items and
       left the audit unsized; the audit is where the mass is. Its first deliverable is a table over
       the 116 static gates and the 79 unit suites answering four questions each: which bug class it
       prevents; whether it has ever fired on a real change (`git log -S` on its name); whether the
@@ -284,8 +299,8 @@ and their ratio; no gate is written over them.
       can generate the thing it compares, so the copy does not exist. The answers map to delete,
       replace, derive or keep, and the table is the step's budget. Then the shape change:
       - The harness once. About 77 of the 116 gates carry their own planted controls, 23 walk
-        `git ls-files` themselves, 16 re-implement the comment stripper, and 7 source
-        `tests/lib/gate.sh`. `check_cpu_id_fold.sh` is 436 lines, of which about 75 are its rule
+        `git ls-files` themselves and 16 re-implement the comment stripper. Nearly all source
+        `tests/lib/gate.sh`, but its two control helpers serve 30 of them. `check_cpu_id_fold.sh` is 436 lines, of which about 75 are its rule
         and about 290 its controls and refusals. The controls, the corpus walk with its floor and
         the dead-reader refusal live once in `gate.sh` (`ctl_fires`, `ctl_quiet`, `corpus`), and a
         gate is its rule and one planted file. The feature stays: a gate still proves it can fire
@@ -305,9 +320,109 @@ and their ratio; no gate is written over them.
         presets CI does not build; the bench fleet run across boards in parallel.
       A new fix's arm extends a gate or is a unit test; a new static checker is written only for a
       class likely to recur, and it starts from `gate.sh`.
+      **SIZED (2026-10-07).** 124 gates (39k lines) and 80 suites (50k) read; about 25k gate lines
+      and 4.5k suite lines removable. 11 gates show a real catch; 42 caught only their own planted
+      controls. No suite goes: every one holds something nothing else holds, so its savings are
+      shared seams. Taken in waves, least risk first, each gate going only once its replacement
+      has been shown to refuse the gate's own planted defect:
+      1. delete (7), fold (10), unit (6), and the harness shrink into `gate.sh` (22): about 7k.
+      2. derive (16), the hand lists generated from facts the build has: about 4k.
+      3. replace with a build mechanism (23), a flag, linker `ASSERT`, `static_assert`, configure
+         check, or seams linked whole: about 8.6k, product behaviour unchanged.
+      4. the shared unit seams: one console seam, one parameterised K-seam, one region and one
+         translating fake, one user-side `kos_*` fake: about 4.5k.
+      5. replace with a product type or token (15): about 5.4k, kernel and arch code. **Ruled
+         (maintainer, 2026-10-07): with M10.6.3's DRY pass**, whose silicon witnesses it needs.
+      **Ruled (maintainer, 2026-10-07):** a replacement is proven once and keeps no test of its
+      own: the commit that deletes a gate plants that gate's defect, shows the build refusing it
+      with the error text, and reverts. A flag or link mode is set where inheritance carries it to
+      a library added later (the kernel's interface target), never on a list of libraries. The
+      per-core bench stamp gate goes, its defect needing a lock the kernel does not have; the
+      Xtensa stamp gate becomes a discard of wrapped deltas in `kickos_bench_switch_done`; the
+      x86_64 entry gate was to become `-mcld` once no assembly `memcpy`/`memset` links into the
+      kernel half, and **stays**: none does, but under `-mcld` GCC 16.2 still lowers `kmemcpy`'s
+      and `kmemmove`'s byte loops to a `movsb` with no `cld` before it, so the flag does not hold
+      the rule and the entry's `cld` is still the whole protection.
+      **LANDED**, waves 1 to 4, each gate going in the commit that showed its replacement refusing
+      the gate's own planted defect, or its images byte-identical:
+  - Deleted or folded: the five above, `c6_clock_first` (the HP `SystemCoreClock` boots at the
+    ROM's rate), `x86_64_link_order` (85 of 86 x86_64 gates pass with the order changed), and
+    `c_headers`, `lx6_atomctl`, `kernel_runtime`, `console_reach`, the x86_64 no-GOT selftest
+    and `kconfig_reach` into the gate beside them. `gate.sh` gained the image-body, shell-corpus
+    and floor helpers those share, and every gate's Python writes no bytecode into the sources.
+  - Moved to unit tests: `smp_predicate` and `isolated_cores` (`cmake -P` cases), `stamp_lines`,
+    `kconfig_gen`, `trap_redzone_walk` (Python unittests beside their tools), `boot_bounds` and
+    `capture_matchers` (`tests/lib/check_gate.sh`).
+  - Shrunk to their rule (20): `ternary`, `ascii`, `spdx`, `include_guards`, `irq_line_op_sole`,
+    `syscall_return_codes`, `sweep_checkout`, `shell_special_names`, `tlbi_shareability`,
+    `panic_stack_seat`, `arm_read_tp`, `amp_slot_snapshot`, `amp_no_xip_pin`,
+    `appdata_no_kernel`, `x86_64_no_vector`, `esp_tx_latch_ack`, `dash_punct`, `doc_names`,
+    `app_judges`, `death_stack_seating`.
+  - Derived: the app-stack `presets=` lists, the trap and console-route registration (each trap
+    class now in its own header), the seatless-doorbell skips, the geometry headers, one
+    `.appdata` linker macro, one block-redirect helper for the seven carving backends.
+  - Replaced by the build: `cpu_id_fold`, `bench_a53_pmcr`, `riscv_kernel_gp`
+    (`--no-relax-gp` on the kernel's interface target), `riscv_no_smalldata`, `riscv_kernel_wx`,
+    `rv32_trap_gp_anchor`, `rp_node_vectors`, `app_heap_align`, `kernel_ctor_placement`,
+    `tls_carve_link`, `amp_elf_agree`, `object_budget_asserts`, `smp_trace_builds`,
+    `oot_arch_cover`, `arm64_entry_order`, and `kconsole_emit`: `kos_kconsole_write` is poisoned
+    in every app, out-of-tree ones included, and each raw call states its measurement,
+    `KICKOS_KCONSOLE_MEASURED(DROP|ANSWER|WAIT, buf, len)` (**ruled, maintainer, 2026-10-07**).
+  - **Restored after a clause-by-clause audit (maintainer, 2026-10-07).** Each replacement
+    above had been proven against one planted defect, and a review found the heap base held to
+    its low bits only. The rule since: every failure case of a deleted gate, its clauses and its
+    planted controls, must fail its replacement. Of about 99 cases that had stopped failing,
+    all but three MOOT ones fail again, through one shared image reader
+    (`tests/static/check_image_rules.sh`, ten per-arch rules, each run on a planted copy of its
+    own image), a cross-node `.amp_shared` comparison in `build-partition.sh`, `app_window.ld.h`
+    applied after every chip script by the build, each task budget measured against the pool
+    its own arm indexes, and build rules where they hold the case. **Accepted losses
+    (maintainer):** the per-core bench stamp and the Xtensa stamp's cases, by decision 23; a
+    window based on `.` with a correctly sized reserve still links, and is refused once kernel
+    `.bss` passes the reserve. The audit and the proof tables sit in the session reports. A
+    review found three cases the audit missed, restored the same way: each `kernel_l1` leaf's
+    destination, the rv32 vector's length against `KICKOS_MAX_IRQ`, and the rv64 rules over
+    `hello`, `selftest` and `cxxtest` with the paired-anchor floor.
+  - The shared unit seams: one postured `kickos_add_kseam`, console.cc's undefined set answered
+    once in `consoleseam`, six suite merges, `uartclass` without its mock (its eight mock-only
+    cases went).
+  - **Found on the way:** the privileged-ctor `ASSERT` caught a constructor re-zeroing the AMP
+    window on every node's reset (only the primary may clear it); it is constinit now, and owes
+    its RP2350 and ESP32-C6 silicon witness. `sim_driver_death` and `sim_console_restart`
+    refused their own knob trees, ctest's test list was read in 11.8 s (`sim_host_gate_boots`
+    against 30), and the always-built SMP trace arm joined the trap depth graph as if an image
+    held it: all fixed.
+  - **Refused by their proofs, gates kept:** `riscv_kernel_apphalf` (with relaxation off ld
+    still links the cross-half reference, rewriting `auipc` to `lui`); the C++ half of
+    `public_headers` (CMake's header sets passed three of four planted headers); `ipi_fence` (a
+    seq_cst fence turns RP2350's `dmb sy` into the reserved `dmb ish`); `atomic_rmw` (rxv3 links
+    the RMW under `clrpsw i`; only armv6m refuses); `bench_e2e_publish` (only its acquire/release
+    half is in the type); `doorbell_isb` (goes with M10.6.3's shared service body); the
+    `panic_stack_seat` cut to two backends (see below); the `app_judges` row dedup and derived
+    OWED; the `doc_names` and `dash_punct` corpus narrowing; `panic_banners`,
+    `preset_defconfig`, `chip_kconfig` and `chip_protection`, `ci_named_lists` (a label cannot
+    require a test to stay registered), the selftest demand table, the runtime starved-arm
+    record, one banner row table, and the ST-Link regexes from `diag.h` (each reads a copy no
+    derivation reaches: silicon captures, presets read before configure, Kconfig read with no
+    build directory, the bench host).
+  - **Left open:** the region, translating, two-core and user-side unit fakes and initwalk's
+    bridge (the copies differ in behaviour, not text); linking the seam and class backends whole
+    (all 19 chip scripts place kernel sections by archive name).
+  - **Close (2026-10-07):** product 135,617 to 135,677 lines, tests and tools 178,560 to
+    163,575, ratio 1.32 to 1.21; `tests/static` 43,555 to 28,664, `tests/unit` 49,820 to
+    48,776. Swept: the sim whole with UBSan, all 91 presets configured, and one to three presets
+    of every family built with their gates.
+- [ ] **M10.6.3: THE PANIC GATE DOES NOT WITNESS THE PANIC STACK SEAT (found in M10.6.2).** With
+      both the interrupt mask and the move onto the panic stack deleted from the armv8a panic
+      entry, all five qemu-arm64 panicgate cases still pass, so only `check_panic_stack_seat.sh`
+      holds the seat, on all eight backends. A panic arm that reads its own stack pointer against
+      the panic stack would make the emulator gate witness it.
 
-- [ ] **M10.6.2: PRESETS NO CI JOB BUILDS.** Eight visible presets appear nowhere in `ci.yml`, and
+- [x] **M10.6.2: PRESETS NO CI JOB BUILDS.** Eight visible presets appear nowhere in `ci.yml`, and
       no record says any was left out on purpose. Build each in a job, or record why not.
+      **LANDED:** the arm64 `benchsmp2`, `benchsmp12` and `benchgicv3`, `qemu-riscv64-benchsmp2`,
+      `esp32-wroom-benchsmp` and `qemu-x86_64-smp4`, `-smp8` and `-smp12` build in the `bench`,
+      `xtensa` and `qemu-x86_64` jobs with their host gates, about 2.5 minutes each here.
 
 - [ ] **M10.6.3: THE DRY PASS.** After the audit, so that no copy is folded inside a gate the audit
       deletes and no name a surviving text gate pins is moved twice. The inventory taken after
@@ -319,6 +434,11 @@ and their ratio; no gate is written over them.
       app helpers), the emulator-witnessed arch folds next, and the silicon-only folds (the reset
       tails, the pin guard on every chip, the semihosting chips, the F3/F4 GPIO) on M10.6.6's bench
       passes.
+      **With it (maintainer, 2026-10-07), the gate audit's fifth wave:** the 15 gates a product
+      type or token replaces (a lock-held token on the caller-held entries and the inject path,
+      `KernelCore`, `LandedHz`, `ParkToken`, a seq_cst-only handshake type, `LineCell`, a frame-pool
+      passkey, one seqlock type, the doorbell's fused take-and-resched and one shared service
+      body), about 5.4k lines; each gate goes in the commit that makes its defect unrepresentable.
 
 - [ ] **M10.6.5: THE CONSOLE READ THROUGH.** The console took ruling (c), non-blocking stdout, the
       dark window, whole fault-record lines, kernel waits, the AMP claim and the console task with
@@ -326,6 +446,35 @@ and their ratio; no gate is written over them.
       what does not serve it. Start from M10.6.0's finding: `console_tx_insert_line` re-reads no
       ownership after a publish, so whether a producer outside `console_emit`'s bracket may exist
       at all is the first question.
+
+- [ ] **M10.6.4, FIRST: NO SELF-TEST CODE IN THE KERNEL (maintainer, 2026-10-07).** The code under
+      test must be the production code. `KICKOS_ENABLE_SELFTEST` gates 152 blocks, about 4,300
+      lines in `kernel/` and 820 in `arch/`, and 63 of the 86 defconfigs turn it on, every
+      emulator base and bench configuration among them, so the kernel the emulator gates and the
+      bench run is not the one a production image links. The blocks, worst first:
+      - Configuration: `KICKOS_MAX_SPAWN_GRANTS` defaults to 9 with it and 6 without (the spawn
+        frame the trap gates measure differs), and `arch_reboot` exists only with it
+        (`KICKOS_SHUTDOWN_TO_BOOTLOADER`).
+      - Trap and fault control flow: rv32 `switch.S` calls the nested witness on trap entry, the
+        armv7m fault handler returns early on a caught probe, the fault paths report the
+        trap-stack witness, virt_rv64 runs the doorbell self-check at boot.
+      - Fault injection in production functions: `frame_pool_fail_in`, presync window drops
+        (`drops_left`), the far-reply blind (`endpoint_far_blind_*`), `arch_irq_inject` inside a
+        presync window, and the record fields they need (`PresyncRecord` changes layout).
+      - Counters on hot paths: TLBI issued and elided, doorbell served and initiated, IRQ
+        windows, GIC deferrals, acquire pairing, locked pages, peer release hits, some under an
+        IrqLock.
+      - Probe syscalls, additions only: `syscall_aspace.cc` (the whole file), `syscall_amp.cc`,
+        the `ampwindow.cc` forges, GRANT_PROBE, NEST_WITNESS.
+      The rule: no `KICKOS_ENABLE_SELFTEST` in `kernel/` or `arch/`, and the selftest is an app on
+      the production ABI. Fault injection moves to host suites that compile the real TU with a
+      link seam; a counter's or witness's claim moves to a unit suite or an emulator-level check,
+      or the counter becomes a production observable every build compiles; a probe op goes when
+      a unit suite holds its claim, or its arm is rewritten on the production ABI. **Ruled
+      (maintainer, 2026-10-07):** the probes that witness a silicon-only internal fact (AMP rings
+      on RP2350 and ESP32-C6, the alias syncs, TLBI elision on real cores) are decided one by one
+      as the audit reaches each. It runs before the arm-by-arm audit below, which then audits
+      arms that already run on the production kernel.
 
 - [ ] **M10.6.4: AUDIT THE SELFTEST FOR BLOAT (maintainer, 2026-10-03; ASSIGNED TO M10'S TAIL).** The
       selftest grows with every milestone and now needs six images on the 64 KiB STM32 parts and
@@ -345,7 +494,7 @@ and their ratio; no gate is written over them.
       memory, which the linker map does not use and part of which the ROM loader uses during boot.
       Found when the selftest outgrew one image's IRAM.
 
-- [ ] **M10.6.2: RUN THE BENCH FLEET ACROSS BOARDS IN PARALLEL (maintainer, 2026-10-06).** `bench-fleet.sh`
+- [x] **M10.6.2: RUN THE BENCH FLEET ACROSS BOARDS IN PARALLEL (maintainer, 2026-10-06).** `bench-fleet.sh`
       builds, flashes and captures one image at a time across every board, so a full pass takes
       the sum of every board's captures (about three hours in M10.5's final pass). Each board has
       its own probe and console, so run one worker per board and keep each board's captures in
@@ -354,16 +503,27 @@ and their ratio; no gate is written over them.
       blackpill on one ST-Link; picopi, pizero2350 and teensy41 on one FTDI cable) stay in one
       worker, and bench-present.sh already knows which ones those are. Each board's log tags
       stay separate, and the summary is merged at the end.
+      **LANDED:** every image is built first (`BUILD_ONLY=1`), then one worker per board captures
+      its images in order; boards holding a common probe or console (`board_resources`) share a
+      worker; the summary and exit status are as before. `check_bench_fleet.sh` plants two
+      overlapping boards, a shared cable, a build after a flash and an out-of-order capture.
+      **Owed:** the remote mode, whose shipping step now holds a lock, has run against no bench
+      host yet.
 
 - [ ] **M10.6.6: BOUND THE INTERRUPT STACK ON ARMV7-M, ARMV6-M AND RX (found closing M10.5).** The trap
       depth gate roots device ISRs only where they run on a thread's or a kernel stack it sizes; on
       these three the ISRs run on the main/interrupt stack, which the roots file declares unbounded,
       so no ISR chain is measured there (M10.5 added a wake to the console TX ISR's tail).
 
-- [ ] **M10.6.2: `board_refusals` COPIES THE TREE WHILE CONFIGURES REWRITE COMPOSITION FILES IN IT (found
-      closing M10.5).** Under a parallel `-L tree` run it failed once in 0.5 s and then passed: a
-      configure writes composition yaml into the source tree while the gate copies it. A build must
-      not write into its sources.
+- [x] **M10.6.2: A CONFIGURE WRITES COMPOSITION FILES INTO THE SOURCE TREE (found closing M10.5).**
+      Under a parallel `-L tree` run a gate copying the tree failed once in 0.5 s and then passed:
+      a configure wrote composition yaml into the source tree while the gate copied it. That gate
+      (`board_refusals`, two configure refusals) went in the audit's first wave; the cause stays:
+      a build must not write into its sources.
+      **CLOSED:** no configure writes composition yaml; all 91 presets configured four at a time
+      leave the source tree as it was. What a configure did write was `selftest_demands.py`'s
+      bytecode, now run with `-B`; every gate's Python inherits `PYTHONDONTWRITEBYTECODE` from
+      `gate.sh`. The M10.5 failure's own cause is not reproduced.
 
 - [ ] **M10.6.4: THE SELFTEST APP DOES NOT BUILD WITH THE SELF-TEST OFF ON ADDRESS-SPACE BOARDS (found closing
       M10.5, older than it).** On qemu-arm64-amp2-n0 and amp3-n0 configured with
@@ -620,7 +780,7 @@ What is left here is what the step deliberately did not close.
       comment trim before them.
 - [ ] **(superseded) A ONE-CORE-KERNEL GICv3 PRESET, OWED TO THE AMP STEP AND NOT TO THIS ONE.** Nothing
       witnesses the `KICKOS_NUM_CORES > 1` folds in `arch/arm64/common/arch_arm64_gicv3.cc`, and
-      `cpu_id_fold` cannot: it is skipped as a class above one kernel core, and the only preset
+      the one-core fold check in `arch.h` cannot: it does not apply above one kernel core, and the only preset
       carrying that backend runs four. Deliberately NOT added now -- an arm nothing exercises says
       nothing, and the configuration where one kernel core meets a live GICv3 is
       `KICKOS_MULTICORE_AMP`, which sets one kernel core while the image still drives four. That is
@@ -724,27 +884,25 @@ to all 20.
       lists; nothing compares the two. A knob in the fragment but not the translation is one the
       fragment SILENTLY OVERWRITES -- that shape has now bitten three times (the posture, the five
       booleans, and the service-list selection knob/the pin-map selection knob, whose omission reddened four sim
-      gates). `tests/static/check_kconfig_gen.sh:51` drives `tools/kconfig/genconfig.py` DIRECTLY, so the CMake
-      translation never executes under any gate; its only round-trip leg is the service-list selection knob
-      (`:149-152`), there is none for the pin-map selection knob, and no leg tests a provisioning
-      integer accepted as an override or a boolean forced to `n` against a defconfig that sets it
-      `y`. The only real exercise of the translation is an explicit service-list selection in the four sim
-      gates.
+      gates). `tools/kconfig/test_genconfig.py` drives `tools/kconfig/genconfig.py` DIRECTLY, so
+      the CMake translation never executes under any gate, and no case round-trips the service-list
+      or the pin-map selection knob, a provisioning integer accepted as an override, or a boolean
+      forced to `n` against a defconfig that sets it `y`. The only real exercise of the
+      translation is an explicit service-list selection in the four sim gates.
 - [ ] **Five booleans reach C from CMake, not from the generated header.** `KICKOS_DEBUG`,
       `KICKOS_ENABLE_SELFTEST`, `KICKOS_BENCH`, `KICKOS_SHUTDOWN_TO_BOOTLOADER`
       (`CMakeLists.txt:245,253,278,295`) and `KICKOS_SCHED_PERIODIC_TICK`
       (`kernel/CMakeLists.txt:93`) arrive by `add_compile_definitions`, because
       `tools/kconfig/genconfig.py:30-31` emits only `INT`/`HEX` symbols. The fragment is therefore
       load-bearing for them and `option()` must defer via CMP0077. Converting the emitter to
-      `#if`-style booleans retires the fragment lines, the deference and the
-      `check_kconfig_gen.sh:101-106` presence assert together.
+      `#if`-style booleans retires the fragment lines and the deference together.
 - [ ] **A board's provisioning is repeated once per variant and nothing compares the copies.** The
       corpus is `git ls-files '*/configs/*/defconfig'`, 52 defconfigs over 20 boards at the time of
       writing (20 `base`, 14 `flat`, 13 `st`, 3 `bench`, 2 `telem`), each a
       COMPLETE statement rather than a delta on `base` -- which is the Kconfig model and what
       `savedefconfig` writes back. A board with `base`, `st` and `flat` states
       `KICKOS_MAX_THREADS` three times and an edit to one is silent in the other two.
-      `check_kconfig_gen.sh` leg 6 iterates every one of them but only asserts each RESOLVES; it never
+      `tools/kconfig/test_genconfig.py` resolves every one of them and asserts only that; it never
       diffs a variant against its base, and `savedefconfig` regenerates one variant from the live
       `.config`, so it cannot catch a divergence either. Cheap first cut: a gate asserting every
       variant agrees with its board's `base` outside a per-variant allowlist of the symbols that
@@ -787,9 +945,8 @@ to all 20.
       `context.h` (`alignas`) out of the corpus with it.
       What is left: the one caller (`check_oot_export.sh`) installs ONE board's package and
       uses the host `gcc`, so the per-arch `context.h` of the other five arches and every chip
-      header are unchecked as C. A sibling branch's `check_c_headers.sh` walks the SOURCE tree
-      per board with that board's own cross compiler; the two are complementary, and the
-      shared derivation should end up in one place instead of two.
+      header are unchecked as C. Its `--tree` form walks the SOURCE tree per board with that
+      board's own cross compiler; the two forms are complementary.
 - [ ] **`abi.h`'s p-state enum is C++11/C23, not C11.** `user/include/kickos/sys/abi.h`
       declares `typedef enum kos_pstate_e : uint32_t`, and a fixed underlying type is
       something C did not adopt until C23. GCC accepts it as an extension and says nothing
@@ -881,8 +1038,8 @@ archived `M4.7.9_teardown_latency_meas.md`.
       lock -- `console_tx_write` queues in ring-sized chunks and waits UNMASKED between them, so the
       masked window is one ring copy (at most 128 bytes on every CRLF board), independent of baud,
       at a sub-1% duty cycle, with a bounded synchronous burst only when nothing drains at all.
-      `tests/unit/consoletx/` scores the old code at 4096 masked pushes and the new at 1. Re-take
-      the two figures under the same synthetic pressure. The drop-on-overflow the old comment
+      `tests/unit/consoleown/masked_window.cc` scores the old code at 4096 masked pushes and the
+      new at 1. Re-take the two figures under the same synthetic pressure. The drop-on-overflow the old comment
       rejected is moot: nothing is dropped and nothing stalls.
 
 - [ ] **`console_tx_flush_sync` still drains a full ring under `IrqLock`** (up to about 44ms).

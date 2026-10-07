@@ -15,6 +15,7 @@
 // through sip.SSIP, which S-mode may write itself.
 
 #include <kickos/arch/arch.h>
+#include "ctx_redirect.h"
 #include <kickos/arch/percpu.h>
 #include <kickos/arch/rv64_doorbell.h>
 #include <kickos/arch/rv64_frame.h>
@@ -516,38 +517,13 @@ void arch_context_init(struct arch_context* ctx,
 void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
                        void* stack_base, size_t stack_size)
 {
-    // kernel_sp SURVIVES THE REBUILD, put back explicitly rather than assumed untouched.
-    uintptr_t const kernel_sp = ctx->kernel_sp;
 #if defined(KICKOS_TLS) && KICKOS_TLS
     uintptr_t const tls_base = ctx->tls_base;
 #endif
 #if KICKOS_REENT_PER_THREAD
     uintptr_t const reent_tp = ctx->reent_tp;
 #endif
-#if KICKOS_KERNEL_STACKS
-    // stack_lo and stack_hi are saved and put back: arch_context_init derives them from what it
-    // is handed, and handing it the block would leave the context describing kernel .bss as this
-    // thread's stack. The `if` covers a TCB outside the pool, which has no block.
-    if (kernel_sp != 0)
-    {
-        uintptr_t const lo = ctx->stack_lo;
-        uintptr_t const hi = ctx->stack_hi;
-        void* const block = reinterpret_cast<void*>(kernel_sp - KICKOS_KERNEL_STACK_SIZE);
-        arch_context_init(ctx, entry, nullptr, block, KICKOS_KERNEL_STACK_SIZE, 1);
-        ctx->stack_lo = lo;
-        ctx->stack_hi = hi;
-        ctx->kernel_sp = kernel_sp;
-#if defined(KICKOS_TLS) && KICKOS_TLS
-        ctx->tls_base = tls_base;
-#endif
-#if KICKOS_REENT_PER_THREAD
-        ctx->reent_tp = reent_tp;
-#endif
-        return;
-    }
-#endif
-    arch_context_init(ctx, entry, nullptr, stack_base, stack_size, 1);
-    ctx->kernel_sp = kernel_sp;
+    arch_ctx_redirect_to_block(ctx, entry, stack_base, stack_size);
 #if defined(KICKOS_TLS) && KICKOS_TLS
     ctx->tls_base = tls_base;
 #endif

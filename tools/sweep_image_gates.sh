@@ -263,7 +263,7 @@ census() {
     _j="$OUT/census/$_p.$_tag.json"
     _t="$OUT/census/$_p.$_tag.tsv"
     ctest --test-dir "$_dir" --show-only=json-v1 -LE host > "$_j" 2>> "$LOG"
-    if ! cmake "-DJSON=$_j" "-DOUT=$_t" -P "$ROOT/tests/static/ctest_tests.cmake" \
+    if ! python3 "$ROOT/tests/static/ctest_tests.py" --json "$_j" --out "$_t" \
             >> "$LOG" 2>&1; then
         C_WHY="could not read the $C_SEL selected test(s)"
         return 1

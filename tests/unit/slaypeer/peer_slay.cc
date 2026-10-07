@@ -70,26 +70,6 @@ namespace kickos
                 reinterpret_cast<void*>(static_cast<uintptr_t>(0x20050000u));
             constexpr size_t STACK_SIZE = 0x1000u;
 
-            // The cell is keyed by target and read from the target's seat, so an arm asking
-            // about a peer has to speak as that peer for the length of the read.
-            int owed_at(uint32_t core)
-            {
-                uint32_t const was = g_core;
-                g_core = core;
-                int const owed = kickos_kernel_core_resched_owed();
-                g_core = was;
-                return owed;
-            }
-
-            // klock.cc's sequence rows outlive reset(), so an arm starts from what it drains.
-            void drain(uint32_t core)
-            {
-                uint32_t const was = g_core;
-                g_core = core;
-                (void)kickos_kernel_core_resched_take();
-                g_core = was;
-            }
-
             // Every counter this gate reads, back to zero, with the rows drained. An arm that
             // seats anything after place() starts again from here: sched::add places the new
             // thread and can ask a peer for it, so a seat of its own can leave a cell standing.

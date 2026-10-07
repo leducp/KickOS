@@ -26,6 +26,7 @@ ignore armv8a * kickos::driver::bring_up@1/1 reason: userland block initializer 
 ignore armv8a * kickos::init::task_trampoline@1/1 reason: userland task entry read from the table
 ignore armv8a * kickos::init::driver_path::start@1/1 reason: userland packaged driver start read from the table
 ignore armv8a * kickos_root_entry@1/1 reason: userland app init-array constructor
+ignore-if-present armv8a * main.cc:cxx_worker@1/1 reason: userland C++ test dispatch
 ignore armv8a * tap::run_all@1/2 reason: userland test callback
 ignore armv8a * tap::run_all@2/2 reason: userland test callback
 ignore armv8a * tap.cc:census_read@1/1 reason: userland test census callback

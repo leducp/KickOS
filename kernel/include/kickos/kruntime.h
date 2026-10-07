@@ -7,7 +7,7 @@
 // WHERE A TRANSLATING BACKEND SPLITS THE IMAGE IN TWO, they are the kernel's OWN copies and
 // the ordinary names belong to the app: app text is EL0-reachable, so it carries
 // privileged-execute-never, and a per-process root need not map it at all.
-// tests/static/check_kernel_runtime.sh refuses an ordinary name in an archive holding
+// tests/static/check_kernel_got.sh refuses an ordinary name in an archive holding
 // kernel text there. A reference the COMPILER emitted, an aggregate copy or the default
 // construction of a struct with default member initialisers, is rewritten to these names
 // after `ar` by kickos_privatise_runtime, so only an EXPLICIT call has to be spelled this

@@ -2,7 +2,8 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // arch_ram_region_align, cmake/boot_arena.cmake's kickos_region_align and the composition tool's
-// ram_align answer every row of one table alike.
+// ram_align answer every row of one table alike. At a stride, where the thread pointer is SP
+// masked down to it, the stride leg is also checked on each region geometry by value.
 
 #include <kickos/arch/arch.h>
 
@@ -57,4 +58,40 @@ namespace
         }
         EXPECT_NE(rows, 0u) << "the table holds no row at this build's stride";
     }
+
+#if defined(KICKOS_TLS) && KICKOS_TLS && KICKOS_TLS_FROM_SP
+    void geometry(size_t min_region, int pow2)
+    {
+        g_min_region = min_region;
+        g_pow2 = pow2;
+    }
+
+    TEST(RamAlign, ABaseLimitMpuStridesOnlyAStackSizedBlock)
+    {
+        geometry(32u, 0);
+        EXPECT_EQ(arch_ram_region_align(STRIDE), STRIDE);
+        EXPECT_EQ(arch_ram_region_align(STRIDE - 20u), STRIDE);
+        EXPECT_EQ(arch_ram_region_align(STRIDE / 2u), 32u);
+        EXPECT_EQ(arch_ram_region_align(STRIDE - 64u), 32u);
+        EXPECT_EQ(arch_ram_region_align(STRIDE + 32u), 32u);
+        EXPECT_EQ(arch_ram_region_align(96u), 32u);
+    }
+
+    TEST(RamAlign, NoMpuStridesOnlyAStackSizedBlock)
+    {
+        geometry(0u, 1);
+        EXPECT_EQ(arch_ram_region_align(STRIDE), STRIDE);
+        EXPECT_EQ(arch_ram_region_align(STRIDE / 2u), 16u);
+        EXPECT_EQ(arch_ram_region_align(2u * STRIDE), 16u);
+    }
+
+    TEST(RamAlign, APow2MpuAlignsEveryBlockToItsSize)
+    {
+        geometry(32u, 1);
+        EXPECT_EQ(arch_ram_region_align(STRIDE), STRIDE);
+        EXPECT_EQ(arch_ram_region_align(STRIDE / 2u), STRIDE / 2u);
+        EXPECT_EQ(arch_ram_region_align(2u * STRIDE), 2u * STRIDE);
+        EXPECT_EQ(arch_ram_region_align(100u), 128u);
+    }
+#endif
 }

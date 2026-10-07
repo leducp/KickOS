@@ -37,6 +37,41 @@ extern "C"
 // It is the raw call: a line no route carries to the wire, a driver owning the UART or the
 // caller's own task holding it, is reported taken and dropped.
 int32_t kos_kconsole_write(void const* buf, size_t len);
+// An app writes through kos_print or stdio. The raw call drops what no route carries and leaves
+// a short count's rest to its caller, so an app spells it only where its drop, its answer or its
+// wait is what the app measures, and states which at the call:
+// KICKOS_KCONSOLE_MEASURED(DROP, buf, len), or ANSWER, or WAIT. Defined ahead of the poison below,
+// it still reaches the raw call.
+enum kos_kconsole_measure
+{
+    KOS_KCONSOLE_MEASURES_DROP,
+    KOS_KCONSOLE_MEASURES_ANSWER,
+    KOS_KCONSOLE_MEASURES_WAIT
+};
+#define KICKOS_KCONSOLE_MEASURED(what, buf, len)                                                  \
+    ((void)KOS_KCONSOLE_MEASURES_##what, kos_kconsole_write((buf), (len)))
+#ifdef __cplusplus
+extern "C++"
+{
+    namespace kickos
+    {
+        struct WriteResult;
+        inline WriteResult kconsole_offer(char const* s, size_t n);
+        // The raw call for <kickos/sys/emit.h>'s fallback alone, which every app's stdout may
+        // reach, named ahead of the poison.
+        class KconsoleRaw
+        {
+            static constexpr int32_t (*write)(void const*, size_t) = &kos_kconsole_write;
+            friend WriteResult kconsole_offer(char const* s, size_t n);
+        };
+    }
+}
+#endif
+// Every TU linking KickOS::kernel, executable or object library, in tree or out, has its main
+// renamed (<kickos/app.h>), and is an app's.
+#if defined(main)
+#pragma GCC poison kos_kconsole_write
+#endif
 
 // The whole of s to this thread's stdout, as libc's write(1) sends it (kickos::stdout_write,
 // sys/emit.h): through the published console where one serves this thread, else the kernel

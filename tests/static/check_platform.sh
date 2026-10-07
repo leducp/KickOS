@@ -228,9 +228,8 @@ mkdir -p "$STATE/tmp" || fail "cannot create $STATE in the build directory"
 UV_PROJECT_ENVIRONMENT="$STATE/venv"
 UV_PYTHON_DOWNLOADS=never
 PYTHONPATH="$TOOL"
-PYTHONDONTWRITEBYTECODE=1
 TMPDIR="$STATE/tmp"
-export UV_PROJECT_ENVIRONMENT UV_PYTHON_DOWNLOADS PYTHONPATH PYTHONDONTWRITEBYTECODE TMPDIR
+export UV_PROJECT_ENVIRONMENT UV_PYTHON_DOWNLOADS PYTHONPATH TMPDIR
 
 tree_state() { # <outfile>
     git status --porcelain --ignored --untracked-files=all -- tools/compose platform examples/composition > "$1" \

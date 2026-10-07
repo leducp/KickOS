@@ -41,12 +41,15 @@ def die(msg):
 class Decl(object):
     def __init__(self, path, arch, kernel_cores=1):
         self.need = None                            # (header, frame macro, zone macro)
-        self.threads = []                           # (image, name, root spec, stack macro, presets)
+        self.threads = []                           # (image, name, root spec, stack macro)
+        self.images = set()                         # every image a thread of any arch names
         self.unsized = {}                           # symbol -> (bytes, [(callee, optional)])
         for n, f, reason in T.records(path):
             where = '%s:%d' % (path, n)
             if len(f) < 2:
                 die('%s: record "%s" has no arch' % (where, f[0]))
+            if f[0] == 'thread' and len(f) > 2:
+                self.images.add(f[2])
             if f[1] != arch:
                 continue
             if not reason:
@@ -61,15 +64,10 @@ class Decl(object):
                         die('%s: need wants header=, frame= and zone=' % where)
                 self.need = (fields['header'], fields['frame'], fields['zone'])
             elif kind == 'thread':
-                presets = set()
-                for x in f[4:]:
-                    if x.startswith('presets='):
-                        presets.update(p for p in x[len('presets='):].split(',') if p)
-                if 'root' not in fields or 'stack' not in fields or not presets:
+                if 'root' not in fields or 'stack' not in fields:
                     die('%s: thread wants <arch> <image> <name> root=<symbol> stack=<macro>'
-                        ' presets=<preset>[,<preset>...]...' % where)
-                self.threads.append((f[2], f[3], fields['root'], fields['stack'],
-                                     frozenset(presets)))
+                        % where)
+                self.threads.append((f[2], f[3], fields['root'], fields['stack']))
             elif kind == 'unsized':
                 if len(f) < 4:
                     die('%s: unsized wants <arch> <symbol> <bytes> [cores=1|cores>1]'
@@ -97,7 +95,7 @@ class Decl(object):
                 ' reservation to add below them' % (path, arch))
 
     KEYS = {'need': (2, ('header', 'frame', 'zone'), ()),
-            'thread': (4, ('root', 'stack'), ('presets',)),
+            'thread': (4, ('root', 'stack'), ()),
             'unsized': (4, ('calls',), ())}
 
     @staticmethod
@@ -234,6 +232,24 @@ def tls_carve(map_path):
         ' are unknown' % map_path)
 
 
+# The images of <images> no CMakeLists.txt under <src>/user/apps names as a target, in the
+# statement adding it or in the set() or foreach() naming it, which no tree links and so no run
+# bounds.
+TARGET_RE = re.compile(r'^\s*(?:add_executable|kickos_emit_image|set|foreach)\s*\(([^#]*)')
+
+
+def unnamed_images(src, images):
+    named = set()
+    for root, _dirs, files in os.walk(os.path.join(src, 'user', 'apps')):
+        if 'CMakeLists.txt' in files:
+            with open(os.path.join(root, 'CMakeLists.txt')) as f:
+                for line in f:
+                    m = TARGET_RE.match(line)
+                    if m:
+                        named.update(re.findall(r'[A-Za-z0-9_]+', m.group(1)))
+    return sorted(set(images) - named)
+
+
 # The map is named for the linked file, so an executable suffix (x86_64's .efi) comes before
 # .map.
 def find_map(build_dir, image):
@@ -251,11 +267,8 @@ def find_map(build_dir, image):
 
 
 def check_thread(build_dir, src_dir, decl, bindings, entries, preset, image, name, root,
-                 stack_macro, presets):
+                 stack_macro):
     map_path = find_map(build_dir, image)
-    if map_path is None and preset in presets:
-        return ['IMAGE NOT LINKED: %s/%s is bounded on %s, and the tree links no %s.map'
-                % (image, name, preset, image)]
     if map_path is None:
         print('app_stack: %s/%s: not bounded on %s' % (image, name, preset))
         return []
@@ -354,10 +367,14 @@ def run(argv):
         die('--kernel-cores %s is not a number' % opt['kernel-cores'])
     decl = Decl(opt['decl'], opt['arch'], cores)
     if not decl.threads:
+        linked = sorted(i for i in decl.images if find_map(opt['ci-dir'], i) is not None)
+        if linked:
+            die('UNBOUNDED: %s declares no app thread for %s, and this tree links %s, which'
+                ' another arch bounds' % (opt['decl'], opt['arch'], ', '.join(linked)))
         print('app_stack: %s declares no app thread for %s' % (opt['decl'], opt['arch']))
         return 0
     # The trap gate's own allowances for code no .ci sizes, so one figure prices both.
-    base = T.Decl(opt['roots'], opt['arch'], cores)
+    base = T.Decl(opt['roots'], opt['arch'], cores, opt['src'])
     for sym, (cost, _reason) in base.unsized.items():
         if sym in decl.unsized:
             die('unsized %s is declared in both %s and %s' % (sym, opt['decl'], opt['roots']))
@@ -365,9 +382,9 @@ def run(argv):
     bindings = T.read_bindings(opt['indirect'], opt['arch'], opt['preset'], cores)
     entries = compile_entries(opt['ci-dir'])
     fails = []
-    for image, name, root, stack, presets in decl.threads:
+    for image, name, root, stack in decl.threads:
         fails += check_thread(opt['ci-dir'], opt['src'], decl, bindings, entries, opt['preset'],
-                              image, name, root, stack, presets)
+                              image, name, root, stack)
     if fails:
         for f in fails:
             sys.stderr.write('FAIL: %s\n' % f)

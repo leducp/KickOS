@@ -53,6 +53,22 @@
 #define PTE_LEAF(pa, rights) \
     ((((pa) >> 12) << 10) + PTE_V + PTE_A + PTE_D + PTE_G + (rights))
 
+/* Every leaf the boot tables carry. Nothing they map belongs to the unprivileged level (every
+ * space fills its own slot), and no leaf is write-only or writable and executable at once.
+ */
+.macro BOOT_LEAF pa, rights
+.if ((\rights) & PTE_R) == 0
+.error "a boot-table leaf without PTE_R is write-only, which the architecture reserves, or no leaf at all"
+.endif
+.if ((\rights) & PTE_U) != 0
+.error "a boot-table leaf grants the unprivileged level, handing every thread on the machine its page"
+.endif
+.if ((\rights) & (PTE_W + PTE_X)) == (PTE_W + PTE_X)
+.error "a boot-table leaf is writable and executable at once"
+.endif
+    .quad   PTE_LEAF(\pa, \rights)
+.endm
+
 #define VPN2(va)    KICKOS_RV64_VPN(va, 2)
 #define VPN1(va)    KICKOS_RV64_VPN(va, 1)
 #define VPN0(va)    KICKOS_RV64_VPN(va, 0)
@@ -905,8 +921,8 @@ kickos_rv64_boot_high:
 
     /* gp := __global_pointer$, out of a link-time word: the anchor is in the APP's half and a
        PC-relative materialisation of it does not reach. Seats the register and dereferences
-       nothing, no root mapping that half yet. check_riscv_kernel_gp.sh is what holds kernel
-       accesses off gp. */
+       nothing, no root mapping that half yet. The link is --no-relax-gp, which is what holds
+       kernel accesses off gp. */
     .option push
     .option norelax
     ld      gp, .Lgp_anchor
@@ -1007,7 +1023,7 @@ kickos_rv64_root:
     .global kickos_rv64_high_l2
 kickos_rv64_high_l2:
     .fill   MMIO_VPN2, 8, 0
-    .quad   PTE_LEAF(0, PTE_R + PTE_W)
+    BOOT_LEAF 0, PTE_R + PTE_W
     .fill   KERNEL_VPN2 - MMIO_VPN2 - 1, 8, 0
     .quad   0                       /* the kernel window's level-1 table: _start fills it */
     .fill   512 - KERNEL_VPN2 - 1, 8, 0
@@ -1023,13 +1039,16 @@ kickos_rv64_high_l2:
 kickos_rv64_kernel_l1:
     .set    _kleaf, 0
     .rept   KTEXT_MEGAPAGES
-    .quad   PTE_LEAF(KICKOS_RV64_DRAM_BASE + _kleaf * MEGAPAGE, PTE_R + PTE_X)
+    BOOT_LEAF KICKOS_RV64_DRAM_BASE + _kleaf * MEGAPAGE, PTE_R + PTE_X
     .set    _kleaf, _kleaf + 1
     .endr
     .rept   512 - KTEXT_MEGAPAGES
-    .quad   PTE_LEAF(KICKOS_RV64_DRAM_BASE + _kleaf * MEGAPAGE, PTE_R + PTE_W)
+    BOOT_LEAF KICKOS_RV64_DRAM_BASE + _kleaf * MEGAPAGE, PTE_R + PTE_W
     .set    _kleaf, _kleaf + 1
     .endr
+.if _kleaf != 512 || . - kickos_rv64_kernel_l1 != 4096
+.error "kickos_rv64_kernel_l1 does not hold 512 leaves stepping 2 MiB from KICKOS_RV64_DRAM_BASE"
+.endif
 
 /* The transient window's level-1 table. A slot mapped under it is kernel data: no U and no X. */
     .balign 4096

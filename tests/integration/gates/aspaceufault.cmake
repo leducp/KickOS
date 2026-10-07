@@ -10,14 +10,7 @@ endif()
 # 139 is KOS_EXIT_FAULT and "THREAD FAULT" the thread-kill banner. The gate asserts them as
 # literals; computing them from the sources that produce them would assert nothing. The faulting
 # read is the PROCESS's own, so fault isolation contains it and the record is the kill banner.
-if(KICKOS_ARCH STREQUAL "x86_64")
-  kickos_add_qemu_test(NAME ${_tag}_aspace_ufault TARGET aspaceufault
-    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_aspace_ufault_x86_64.sh"
-    ARGS "THREAD FAULT" 139)
-endif()
-
-if(KICKOS_ARCH STREQUAL "rv64imac")
-  kickos_add_qemu_test(NAME ${_tag}_aspace_ufault TARGET aspaceufault
-    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_aspace_ufault_rv64.sh"
-    ARGS "THREAD FAULT" 139)
-endif()
+# The arch travels as an argument: the syndrome is spelled per arch.
+kickos_add_qemu_test(NAME ${_tag}_aspace_ufault TARGET aspaceufault
+  SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_aspace_ufault.sh"
+  ARGS "THREAD FAULT" 139 ${KICKOS_ARCH})

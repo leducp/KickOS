@@ -878,7 +878,7 @@ config KICKOS_KERNEL_STACK_SIZE
 	  nothing the gate asks for while costing KICKOS_THREAD_SLOTS bytes per byte.
 
 	  EVERY DEFAULT ABOVE FOLLOWS ITS ARCH'S DEPTH MACROS, on all four arches that carve
-	  a block: rv32imac, rxv3, armv7m and armv6m. trap_redzone_roots.txt declares the
+	  a block: rv32imac, rxv3, armv7m and armv6m. The arch's trap-stack header declares the
 	  transferred class stack=kernel and check_trap_redzone.sh measures it against this
 	  knob rather than against the spawn floor. Each arch derives its own terms in its
 	  own <arch>_trap_stack.h, which is where to read what a figure is made of; no
@@ -940,7 +940,7 @@ config KICKOS_PANIC_STACK_SIZE
 	  dispatch chain can reach it. Charged to the chain it fired on, that tail would be the
 	  largest term in most trap red zones on the arches with least slack, and a thread near
 	  KICKOS_MIN_STACK_SIZE would have the console writer descend past stack_lo,
-	  privileged. On this array it is the PANIC class of trap_redzone_roots.txt instead,
+	  privileged. On this array it is the PANIC class of each trap-stack header instead,
 	  measured against THIS figure and nothing else, so the console's depth is priced once
 	  for the image rather than once per stack that can reach an assert.
 

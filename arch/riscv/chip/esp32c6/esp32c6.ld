@@ -25,7 +25,6 @@
 
 #include <chip_layout.h>
 #include <sections.ld.h>
-#include <app_heap.ld.h>
 #include <kernel_data_reserve.ld.h>
 #include <amp_partition.ld.h>
 
@@ -158,6 +157,17 @@ SECTIONS
 
        Every loadable section here stays free of an `AT` clause, and the ASSERT at the end
        of this file pins LMA == VMA with the reason. */
+    /* The KickOS libs are built -msmall-data-limit=0. Small data from one of them is captured
+       here, ahead of the catch-alls below, and refused at the end of this file. */
+    .kickos_kernel_sdata :
+    {
+        *libkickos_kernel.a:*(.sdata* .sbss*)
+        *libkickos_arch_rv32imac.a:*(.sdata* .sbss*)
+        *libkickos_chip_esp32c6.a:*(.sdata* .sbss*)
+        *libkickos_lib.a:*(.sdata* .sbss*)
+        *kickos_string.dir*(.sdata* .sbss*)
+    }
+
     .data __kickos_code_end : ALIGN(8)
     {
         _sdata = .;
@@ -188,14 +198,14 @@ SECTIONS
 
     /* App-owned globals as a pow2 NAPOT region above the kernel data, based at
        _kernel_data_top so kernel .bss growth moves neither this window nor the arena above
-       it. The MAX belongs in this ADDRESS expression and nowhere else;
-       kernel_data_reserve.ld.h says why. The section-level ALIGN keeps the base at a
+       it. KICKOS_APPDATA_SECTION carries the pin and its
+       ASSERTs; kernel_data_reserve.ld.h says why. The section-level ALIGN keeps the base at a
        natural pow2 boundary (NAPOT) when the reserve is overflowed. .appbss is pinned right after
        .appdata via SIZEOF, so __kickos_appbss_start == the .appdata VMA end and the
        Reset_Handler's [__kickos_appbss_start, __kickos_appdata_end) zero covers the whole
        grant with no external gap. The gp small-data window (anchor + .sdata/.sbss
        catch-all) lives inside this granted region. */
-    .appdata MAX(., _kernel_data_top) : ALIGN(_appdata_size)
+    KICKOS_APPDATA_SECTION(_ebss)
     {
         __kickos_appdata_start = .;
         *(.data .data.*)                         /* app + vendor .data (app-side) */
@@ -221,7 +231,7 @@ SECTIONS
         __kickos_appdata_end = .;
         /* The newlib heap IS the window pad: [ALIGN(used_end,8), window end). That ALIGN is
            relative to this section's start, which is why .appdata closes on ALIGN(8);
-           app_heap.ld.h holds the rule and the file-scope ASSERT that reads it back. */
+           app_window.ld.h holds the rule and the file-scope ASSERT that reads it back. */
         _kickos_heap_start = ALIGN(_appdata_used_end, 8);
         _kickos_heap_limit = __kickos_appdata_end;
     } > RAM
@@ -305,10 +315,8 @@ SECTIONS
 
 KICKOS_STATIC_RELOC_ASSERT()
 #if KICKOS_AMP_OWN_IMAGE
-ASSERT(ADDR(.amp_shared) == KICKOS_AMP_SHARED_BASE,
-       "KickOS: ESP32-C6 AMP shared region moved from the common partition address")
-ASSERT(__kickos_amp_shared_end - __kickos_amp_shared_start <= KICKOS_AMP_KERNEL_SHARED_SIZE,
-       "KickOS: ESP32-C6 AMP shared objects overflow the reserved window below the tasks' share")
+KICKOS_AMP_SHARED_ASSERT(ADDR(.amp_shared))
+KICKOS_AMP_SLICE_ASSERT(ORIGIN(RAM), _estack, KICKOS_AMP_PARTITION_BASE, KICKOS_AMP_NODE_SHARE)
 ASSERT(KICKOS_AMP_PARTITION_BASE == 0x40800000 && KICKOS_AMP_PARTITION_END <= 0x40880000,
        "KickOS: ESP32-C6 AMP partition must fit its 512 KiB HP SRAM")
 ASSERT(__kickos_amp_cells_end > __kickos_amp_cells_start
@@ -341,8 +349,6 @@ ASSERT(__kickos_app_fini_array_end == __kickos_app_fini_array_start,
 #if KICKOS_HAVE_MPU
 ASSERT(_code_used_end <= __kickos_code_end,
        "KickOS: app code overflows _code_size (raise it to the next pow2)")
-KICKOS_KERNEL_DATA_RESERVE_ASSERT(_ebss)
-KICKOS_APP_HEAP_ALIGN_ASSERT(_kickos_heap_start, _appdata_used_end)
 ASSERT(_appdata_used_end <= __kickos_appdata_start + _appdata_size,
        "KickOS: app .data/.bss overflow _appdata_size (raise it to the next pow2)")
 /* Selector-mismatch guard for the inverted closed-set .data/.bss capture: the colon
@@ -358,6 +364,8 @@ ASSERT(__sdata_end <= __global_pointer$ + 0x800,
        "KickOS: runtime small-data overflows the gp + 0x800 reach")
 ASSERT(__sdata_start >= __global_pointer$ - 0x800,
        "KickOS: runtime small-data underflows the gp - 0x800 reach")
+ASSERT(SIZEOF(.kickos_kernel_sdata) == 0,
+       "KickOS: a KickOS archive emits .sdata/.sbss small data, which belongs to the app's gp window. Build every KickOS RISC-V lib -msmall-data-limit=0 (kickos_apply_freestanding in cmake/kickos.cmake)")
 /* Same VMA-only load rule as the .data ASSERT above. */
 ASSERT(_appdata_lma == __kickos_appdata_start,
        "KickOS: .appdata LMA != VMA: the ROM loader places segments at their VMAs, so the LMA holds no image bytes (drop the AT clause)")

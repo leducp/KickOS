@@ -81,6 +81,16 @@ if(_fs_judged)
                           "none applies")
     endif()
   endforeach()
+elseif(KICKOS_HAVE_ASPACE)
+  # A translating backend's trap entry builds its frame on the kernel's own stack, so no sp the
+  # thread sets carries a frame, and an overrun is a plain unprivileged fault at the guard page,
+  # which stackguard witnesses.
+  kickos_inapplicable(faultsurvive_ovf
+    "the trap entry runs on the kernel's stack, so an overrun is a kill at the guard page")
+  if(TARGET faultsurvive_off)
+    kickos_inapplicable(faultsurvive_off
+      "the trap entry builds its frame on the kernel's stack, never through the thread's sp")
+  endif()
 endif()
 
 if(KICKOS_ARCH STREQUAL "sim")

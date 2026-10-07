@@ -104,4 +104,22 @@
 #define KICKOS_RV64_PANIC_FRAME 0
 #define KICKOS_RV64_PANIC_DEPTH 576
 
+/*
+ * The trap classes tests/static/check_trap_redzone.sh measures against the figures above,
+ * one line each; tests/static/trap_redzone_roots.txt says what each option means and roots
+ * every class.
+ *
+ * class IRQ     frame=KICKOS_RV64_TRAP_FRAME depth=KICKOS_RV64_TRAP_DEPTH_IRQ
+ * class IRQK    frame=KICKOS_RV64_TRAP_FRAME depth=KICKOS_RV64_TRAP_DEPTH_IRQ stack=kernel
+ * class SYSK    frame=KICKOS_RV64_TRAP_FRAME depth=KICKOS_RV64_TRAP_DEPTH_SYSK stack=kernel
+ * class SYSWIN  frame=KICKOS_RV64_TRAP_WINDOW depth=KICKOS_RV64_TRAP_DEPTH_SYSWIN stack=kernel at=arch_irq_window
+ * class NESTED  frame=KICKOS_RV64_TRAP_FRAME depth=KICKOS_RV64_TRAP_NESTED_DEPTH stack=trap
+ * class EXITK   frame=KICKOS_RV64_TRAP_NEST depth=KICKOS_RV64_TRAP_DEPTH_EXITK stack=kernel
+ * class EXITKSW frame=KICKOS_RV64_TRAP_FRAME_NONE depth=KICKOS_RV64_TRAP_DEPTH_EXITKSW stack=kernel
+ * class RET     frame=KICKOS_RV64_TRAP_NEST depth=KICKOS_RV64_TRAP_DEPTH_RET
+ * class RETSW   frame=KICKOS_RV64_TRAP_FRAME_NONE depth=KICKOS_RV64_TRAP_DEPTH_RETSW
+ * class IDLE    frame=KICKOS_RV64_TRAP_NEST depth=KICKOS_RV64_TRAP_DEPTH_IDLE
+ * class PANIC   frame=KICKOS_RV64_PANIC_FRAME depth=KICKOS_RV64_PANIC_DEPTH stack=panic
+ */
+
 #endif

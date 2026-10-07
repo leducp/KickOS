@@ -8,6 +8,7 @@
 // linker script naming the user-RAM region.
 
 #include <kickos/arch/arch.h>
+#include "ctx_redirect.h"
 #include <kickos/diag.h>
 #include <kickos/units.h> // _s literal (== 1e9 ns)
 
@@ -283,35 +284,7 @@ void arch_ctx_set_syscall_result(struct arch_context* ctx, uint32_t result)
 void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
                        void* stack_base, size_t stack_size)
 {
-    // kernel_sp SURVIVES THE REBUILD, put back explicitly rather than assumed untouched:
-    // lost, the thread carries 0 through its own teardown and every syscall on the way takes
-    // svc_trampoline's .Lsvc_nokstack arm.
-    uintptr_t const kernel_sp = ctx->kernel_sp;
-#if KICKOS_KERNEL_STACKS
-    // The stub is rebuilt on the thread's own kernel block, so no privileged frame is
-    // fabricated on memory the thread or a domain sibling can write. The frame goes at the
-    // block TOP, discarding whatever dispatch frames it held, which is what keeps the block
-    // requirement the MAX of the dispatch and exit classes rather than their sum.
-    //
-    // stack_lo and stack_hi are saved and put back because arch_context_init derives them
-    // from what it is handed, and handing it the block would leave the context describing
-    // kernel .bss as this thread's stack.
-    // tests/static/check_death_stack_seating.sh holds this shape.
-    if (kernel_sp != 0)
-    {
-        uint32_t const lo = ctx->stack_lo;
-        uint32_t const hi = ctx->stack_hi;
-        void* const block = reinterpret_cast<void*>(
-            kernel_sp - KICKOS_KERNEL_STACK_SIZE);
-        arch_context_init(ctx, entry, nullptr, block, KICKOS_KERNEL_STACK_SIZE, 1);
-        ctx->stack_lo = lo;
-        ctx->stack_hi = hi;
-        ctx->kernel_sp = kernel_sp;
-        return;
-    }
-#endif
-    arch_context_init(ctx, entry, nullptr, stack_base, stack_size, 1);
-    ctx->kernel_sp = kernel_sp;
+    arch_ctx_redirect_to_block(ctx, entry, stack_base, stack_size);
 }
 
 // --- Critical section: raise BASEPRI to the kernel lock threshold -----------

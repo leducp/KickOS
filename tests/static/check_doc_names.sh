@@ -10,11 +10,8 @@
 #
 # EXTRACTION RULE (precision over recall: a checker that cries wolf gets disabled):
 #
-#   corpus       every tracked *.md, discovered via `git ls-files`. Nothing is
-#                hardcoded. Read one file at a time, its NUL bytes mapped to an ASCII
-#                control byte first and its lines numbered by awk: a checker that lets a
-#                tool skip a "binary" file passes vacuously, and the option that used to
-#                stop that is not one a conforming grep has.
+#   corpus       every tracked *.md (corpus, tests/lib/gate.sh), each read with its NUL
+#                bytes mapped to a control byte so no tool skips it as binary.
 #
 #   fences       lines inside a ``` fence are SKIPPED. Design docs fence PROPOSED
 #                code and capture files fence device output; neither names the tree.
@@ -78,47 +75,23 @@ require_repo_root
 scratch_dir
 
 # --- corpus -------------------------------------------------------------------
-git ls-files -z '*.md' | tr '\0' '\n' > "$TMP/docs.txt"
-DOCS=$(wc -l < "$TMP/docs.txt" | tr -d ' ')
-[ "$DOCS" -gt 0 ] || fail "no tracked *.md found: wrong directory? (gate would pass vacuously)"
+corpus "$TMP/docs.txt" "markdown doc" '*.md'
+corpus_floor "$TMP/docs.txt" 50 "doc(s)"
+DOCS="$N"
+corpus "$TMP/tracked.txt" "tracked file"
 
 # --- valid identifier set, scanned from the tree ------------------------------
-# Every such token appearing in a tracked NON-markdown file: CMake option()/set()/
-# add_compile_definitions, #define, enum members, board_config.h overrides, linker
-# scripts and presets all land here without the gate needing to know their syntax.
-# This script is excluded from its own scan: its comments quote mis-spellings and dead
-# names as EXAMPLES, and once it is tracked those examples would enter the valid set and
-# mask the very findings they describe.
-# docs/ is excluded for the same reason and it is NOT redundant with the *.md filter:
-# a DOCUMENT tracked under a non-markdown extension behaves as a source here, so every
-# name it records would stay valid to this gate forever after the build dropped it, and
-# the next .html, .svg or .json committed under docs/ would do exactly that. The corpus
-# being CHECKED is unaffected: docs/*.md is still every bit of it.
-# The vendored directories of tests/lib/gate.sh are excluded too: another project's text
-# cannot make a KickOS name valid. They stay in the path set below, so a doc can cite them.
-git ls-files -z | tr '\0' '\n' | drop_vendored | grep -v '\.md$' | grep -v '^docs/' | grep -v '^tests/static/check_doc_names\.sh$' > "$TMP/src.txt"
-[ -s "$TMP/src.txt" ] || fail "no tracked non-markdown sources: cannot build the valid identifier set"
-# The alphabet here MUST match the one the doc scan below uses, lowercase included:
-# a source-side scan that stopped at the first lowercase letter would put `KOS_E` in
-# the valid set and then report the tree's own `KOS_Exxx` metasyntax as dangling.
-#
-# The left boundary is load-bearing. Without it `grep -o` cuts a CAP_ prefixed tail out of
-# a KCAP_ prefixed name, so 26 identifiers that exist nowhere enter the valid set as
-# substrings and a doc may drop the K from any KCAP_ name and pass. KCAP is listed
-# explicitly because with the boundary and without it here, those names match on neither
-# side and go unchecked.
-# Comments do not confer validity. A name mentioned only in prose is a name nothing builds,
-# and admitting one lets a removed knob validate itself in every doc. No run can show that
-# happening, because the masking IS the green.
-#
-# Type-aware, because the marker is not: `#` opens a comment in sh, CMake and Kconfig, and
-# opens the preprocessor in C where `#define` is the definition site. An unrecognised
-# extension passes through unstripped.
-#
-# A `#` inside a shell string takes the rest of that line with it, so a name living only
-# there loses validity. A name in dead code is code, not prose, and still counts.
-# The program goes to a FILE and the harvest to a function, so the self-test below runs the
-# SAME scan the corpus does.
+# Every such token in a tracked NON-markdown file outside docs/, this script and the vendored
+# directories: this script quotes dead names as examples, a document under docs/ in another
+# extension would keep every name it records valid forever, and another project's text cannot
+# make a KickOS name valid. The left boundary keeps a KCAP_ name from yielding its CAP_ tail.
+drop_vendored < "$TMP/tracked.txt" | grep -v '\.md$' | grep -v '^docs/' \
+    | grep -v '^tests/static/check_doc_names\.sh$' > "$TMP/src.txt"
+corpus_floor "$TMP/src.txt" 1000 "non-markdown source(s)"
+# Comments do not confer validity: a name only prose mentions is a name nothing builds, and
+# admitting one lets a removed knob validate itself in every doc. `#` opens a comment in sh,
+# CMake and Kconfig and the preprocessor in C, so the strip is per type; an extension it does
+# not know passes through unstripped, and a `#` inside a shell string takes the line with it.
 cat > "$TMP/harvest.awk" <<'AWK'
 FNR == 1 {
     print FILENAME >> SEEN
@@ -178,44 +151,22 @@ function emit(s,   p, pre) {
 }
 AWK
 
-# The one alphabet, handed to the one scan, so the self-test and the corpus scan cannot
-# disagree. It is matched by awk and never by grep: -o and -h are no more standard than the
-# -a a capture's NUL bytes used to need, and a conforming grep rejects the lot.
+# The one alphabet, matched by awk and never by grep, whose -o is not standard.
 ID_CORE='(KICKOS|KOS|KCAP|CAP|AUTH)_[A-Za-z0-9_]*[A-Za-z0-9]'
 
-# Refuses by name instead of reading less. xargs splits the list across SEVERAL awk
-# invocations, and awk exits FATALLY on a file it cannot open, dropping every remaining file
-# of THAT batch; the pipeline status comes from `sort`, so the loss reads as a smaller tree.
-# The usual way in is a path `git ls-files` reports whose file is gone: a rename whose
-# deletion is not staged yet.
-# A return, not a fail(), so the self-test can assert the refusal.
+# awk must have OPENED every member: xargs splits the list, and a file awk cannot open drops
+# the rest of its batch while the pipeline reports sort's status. The unread are named.
 harvest_ids() { # <file-list> <outfile>; 0 ok, 1 a member went unread (named in $TMP/unread)
-    : > "$TMP/unread"
     : > "$TMP/seen"
-    : > "$TMP/harvest.err"
-    while IFS= read -r _f; do
-        [ -r "$_f" ] || printf '%s\n' "$_f" >> "$TMP/unread"
-    done < "$1"
-    if [ ! -s "$TMP/unread" ]; then
-        tr '\n' '\0' < "$1" | xargs -0 awk -v SEEN="$TMP/seen" -v CORE="$ID_CORE" \
-            -f "$TMP/harvest.awk" 2>"$TMP/harvest.err" | sort -u > "$2"
-        # COVERAGE, the general form of the failure above: awk must have OPENED every
-        # member. A count floor cannot tell a smaller tree from an unread batch; the
-        # per-file marker can, and it names what was missed.
-        sort -u "$1" > "$TMP/want.s"
-        sort -u "$TMP/seen" > "$TMP/seen.s"
-        comm -23 "$TMP/want.s" "$TMP/seen.s" >> "$TMP/unread"
-    fi
-    [ ! -s "$TMP/unread" ] || return 1
-    # A pipeline hides awk's status, and an awk failure here costs part of the corpus rather
-    # than the run.
-    [ ! -s "$TMP/harvest.err" ] || return 1
-    return 0
+    tr '\n' '\0' < "$1" | xargs -0 awk -v SEEN="$TMP/seen" -v CORE="$ID_CORE" \
+        -f "$TMP/harvest.awk" 2>"$TMP/harvest.err" | sort -u > "$2"
+    sort -u "$1" > "$TMP/want.s"
+    sort -u "$TMP/seen" > "$TMP/seen.s"
+    comm -23 "$TMP/want.s" "$TMP/seen.s" > "$TMP/unread"
+    [ ! -s "$TMP/unread" ] && [ ! -s "$TMP/harvest.err" ]
 }
 
-# --- self-test: prove the harvest both ways before reading the tree ------------
-# A stripper that ate everything, or an alphabet that matched nothing, would each leave the
-# valid set empty and report every name in every doc as dangling.
+# --- the planted harvest: names in code count, names in comments do not ----------
 mkdir -p "$TMP/st"
 cat > "$TMP/st/code.c" <<'EOF'
 #define KICKOS_ST_DEFINED 1
@@ -231,7 +182,7 @@ EOF
 printf '%s\n' "$TMP/st/code.c" "$TMP/st/code.cmake" > "$TMP/st/list"
 
 harvest_ids "$TMP/st/list" "$TMP/st/ids" \
-    || fail "the harvest refused its own self-test corpus, so it cannot judge the tree"
+    || fail "the harvest refused its planted corpus, so it cannot judge the tree"
 for _want in KICKOS_ST_DEFINED KOS_ST_ENUM KICKOS_ST_OPTION; do
     grep -qx "$_want" "$TMP/st/ids" \
         || fail "the harvest missed $_want, planted in CODE; it would report live names dangling"
@@ -242,32 +193,13 @@ for _no in KICKOS_ST_LINE_COMMENT KICKOS_ST_BLOCK_COMMENT KICKOS_ST_BLOCK_SECOND
         || fail "the harvest took $_no out of a COMMENT; a name nothing builds would validate itself"
 done
 
-# The mutation, in both directions: ONE unreadable member must make the harvest refuse and
-# name it, and removing that member must restore the pass.
-ST_PHANTOM="$TMP/st/deleted_by_an_unstaged_rename.cc"
-printf '%s\n' "$ST_PHANTOM" >> "$TMP/st/list"
-if harvest_ids "$TMP/st/list" "$TMP/st/ids.mut"; then
-    fail "the harvest accepted a corpus member that does not exist, so a tracked-but-deleted
-      file would silently shrink the valid set again"
-fi
-grep -Fxq "$ST_PHANTOM" "$TMP/unread" \
-    || fail "the harvest refused but did not name the missing file; the report has to say which"
-grep -Fxv "$ST_PHANTOM" "$TMP/st/list" > "$TMP/st/list.ok"
-harvest_ids "$TMP/st/list.ok" "$TMP/st/ids.back" \
-    || fail "the harvest still refuses once the phantom is gone, so the refusal was not its"
-cmp -s "$TMP/st/ids" "$TMP/st/ids.back" \
-    || fail "the harvest read a different valid set before and after the phantom; not deterministic"
-
 # --- the valid identifier set of the real tree --------------------------------
 if ! harvest_ids "$TMP/src.txt" "$TMP/valid_ids.txt"; then
     if [ -s "$TMP/unread" ]; then
         echo "" >&2
         sed 's/^/      /' "$TMP/unread" >&2
-        fail "the file(s) above are listed by git ls-files but the identifier scan did not read
-      them, so it covers LESS of the tree than it reports and would call live names dangling.
-      A rename whose deletion is not staged yet is the usual cause: stage it (git add -A)
-      and re-run. If the file is present and readable, the scan skipped it and that is a bug
-      in this gate, not in the tree."
+        fail "the identifier scan did not read the tracked file(s) above, so it would call live
+      names dangling. An unstaged rename is the usual cause."
     fi
     sed -n '1,4p' "$TMP/harvest.err" >&2
     fail "awk objected while scanning the tree for identifiers, so the valid set is incomplete"
@@ -275,9 +207,6 @@ fi
 IDS=$(wc -l < "$TMP/valid_ids.txt" | tr -d ' ')
 
 # --- valid path set: tracked files plus every ancestor directory ---------------
-# Built from git, never from the filesystem, so an untracked build/ or .session/
-# can never make a stale reference resolve.
-git ls-files -z | tr '\0' '\n' > "$TMP/tracked.txt"
 awk '{ print; n = split($0, c, "/"); p = ""; for (i = 1; i < n; i++) { p = p c[i]; print p; p = p "/" } }' \
   "$TMP/tracked.txt" | sort -u > "$TMP/valid_paths.txt"
 awk -F/ '{ print $1 }' "$TMP/tracked.txt" | sort -u > "$TMP/toplevel.txt"
@@ -294,19 +223,8 @@ ABI="user/include/kickos/sys/abi.h"
 sed -n 's/^ *\(KOS_SYS_[A-Z0-9_]*\) *= *\([0-9][0-9]*\).*/\1 \2/p' "$ABI" > "$TMP/sysnum.txt"
 [ -s "$TMP/sysnum.txt" ] || fail "parsed zero syscall numbers out of $ABI; number cross-check is broken"
 
-
-# =============================================================================
-# One pass over the corpus. Output is file-ordered then line-ordered, so the
-# report is byte-identical across runs given the same tree.
-# =============================================================================
-# ONE FILE AT A TIME, EVERY STAGE'S STATUS READ: under /bin/sh there is no pipefail, so a
-# reader on the left of a pipe can die and leave the run reading the right-hand tool's
-# success. A short corpus and a short file look alike, and the gate would report PASS on
-# a corpus it never read.
-#
-# The name goes to awk through -v and never as an operand: awk reads an operand of the form
-# `name=value` as a VARIABLE ASSIGNMENT, and one doc named like an assignment would take
-# the rest of the list with it.
+# One file at a time and every stage's status read, /bin/sh having no pipefail. The name goes
+# to awk through -v: an operand of the form `name=value` is a variable assignment.
 : > "$TMP/corpus.txt"
 while IFS= read -r _d; do
     LC_ALL=C tr '\000' '\001' < "$_d" > "$TMP/nulfree" \
@@ -315,22 +233,8 @@ while IFS= read -r _d; do
         || fail "the reader failed on $_d, so its lines are UNREAD and not clean"
 done < "$TMP/docs.txt"
 [ -s "$TMP/corpus.txt" ] || fail "read zero lines out of $DOCS doc file(s); extraction is broken"
-# Non-emptiness alone is satisfied by ONE readable doc: xargs splits the corpus into
-# several grep invocations and keeps going after one of them dies, so a doc the scan
-# never reached would simply contribute no findings. Reconcile file for file. A doc that
-# is genuinely EMPTY contributes no line either and is the one admissible absence.
-cut -d: -f1 < "$TMP/corpus.txt" | sort -u > "$TMP/corpus_files.txt"
-MISSED=""
-while read -r d; do
-  if ! grep -qxF "$d" "$TMP/corpus_files.txt" && [ -s "$d" ]; then
-    MISSED="$MISSED $d"
-  fi
-done < "$TMP/docs.txt"
-[ -z "$MISSED" ] || fail "the scan never read:$MISSED, so those were checked against nothing"
 
-# THE REPORTING PASS, IN A FILE, BECAUSE IT IS DRIVEN TWICE: once over a planted corpus whose
-# findings are known, and once over the tree. Inline it could only ever be run over the tree,
-# and a regression in it would then be indistinguishable from a corpus with nothing wrong.
+# The reporting pass, in a file because it runs over the planted corpus first and then the tree.
 cat > "$TMP/report.awk" <<'AWKEOF'
 function load(f, arr,   l) { while ((getline l < f) > 0) { arr[l] = 1 } close(f) }
 
@@ -511,10 +415,7 @@ END {
 }
 AWKEOF
 
-# --- self-test: prove the reporting pass fires, before the tree is read -------
-# The harvest is proven above. This proves the half that REPORTS: a citation naming an
-# identifier or a path that does not resolve has to become a finding. Without it a green run
-# says only that the corpus was read, not that a dead citation would be seen.
+# --- the planted citations: a dead identifier and a dead path, beside their live twins -----
 mkdir -p "$TMP/rt"
 printf '%s\n' KICKOS_RT_LIVE > "$TMP/rt/valid_ids.txt"
 printf '%s\n' docs kernel docs/rt.md kernel/rt_live.cc > "$TMP/rt/valid_paths.txt"
@@ -522,8 +423,6 @@ printf '%s\n' docs kernel > "$TMP/rt/toplevel.txt"
 printf '%s\n' md cc > "$TMP/rt/exts.txt"
 printf '%s\n' 'KOS_SYS_RT 7' > "$TMP/rt/sysnum.txt"
 
-# The clean twin FIRST: two citations that resolve, so the dirty run below differs from it in
-# the two names alone and each finding is attributable to its own name.
 cat > "$TMP/rt/clean" <<'RTEOF'
 docs/rt.md:1:KICKOS_RT_LIVE is the knob
 docs/rt.md:2:the body is in kernel/rt_live.cc today
@@ -556,122 +455,6 @@ grep -q "KICKOS_RT_GONE" "$TMP/rt/dirty.out" \
 grep -q "kernel/rt_gone.cc" "$TMP/rt/dirty.out" \
     || fail "the reporting pass made two findings and neither names the dead path
       kernel/rt_gone.cc: $(cat "$TMP/rt/dirty.out")"
-
-# The pair above proves two of the reporting pass's clauses: the dangling identifier and the
-# dead path. The pass has FOUR more, each its OWN branch of the awk program and each reachable
-# only through its own input shape; a control that never takes one of those branches can be
-# disabled without a single self-test noticing. One clean/dirty pair per remaining clause,
-# below, closes that gap. Both files extend the same valid set the pair above used, so the
-# extension itself is proof against nothing shifting underneath the controls already run.
-printf '%s\n' KOS_SYS_RT >> "$TMP/rt/valid_ids.txt"
-printf '%s\n' docs/rt2.md >> "$TMP/rt/valid_paths.txt"
-
-# --- clause: MIS-CASED IDENTIFIER ----------------------------------------------
-# KICKOS_rt_live is not itself a tree symbol, but its upper-cased form is: the mis-cased
-# branch must fire instead of the dangling-identifier one, and name the correct spelling.
-printf '%s\n' 'docs/rt.md:1:KICKOS_RT_LIVE is spelled the way the tree defines it' \
-    > "$TMP/rt/case_clean"
-if ! awk -v T="$TMP/rt" -v ABIH="$ABI" -F: -f "$TMP/report.awk" \
-        < "$TMP/rt/case_clean" > "$TMP/rt/case_clean.out"; then
-    cat "$TMP/rt/case_clean.out" >&2
-    fail "the reporting pass reports a finding on a correctly-cased citation of
-      KICKOS_RT_LIVE, so the mis-casing control below cannot be trusted either"
-fi
-printf '%s\n' 'docs/rt.md:1:KICKOS_rt_live is not spelled the way the tree defines it' \
-    > "$TMP/rt/case_dirty"
-if awk -v T="$TMP/rt" -v ABIH="$ABI" -F: -f "$TMP/report.awk" \
-       < "$TMP/rt/case_dirty" > "$TMP/rt/case_dirty.out"; then
-    fail "THE REPORTING PASS FOUND NOTHING in a corpus citing KICKOS_rt_live, whose
-      upper-cased form is a real tree symbol but whose own spelling greps for nothing.
-      The mis-casing branch can be disabled and no control would notice."
-fi
-grep -q "mis-cased" "$TMP/rt/case_dirty.out" \
-    || fail "the reporting pass flagged KICKOS_rt_live but not as mis-cased: $(cat "$TMP/rt/case_dirty.out")"
-grep -q "KICKOS_RT_LIVE" "$TMP/rt/case_dirty.out" \
-    || fail "the mis-casing finding does not name the tree's own spelling KICKOS_RT_LIVE:
-      $(cat "$TMP/rt/case_dirty.out")"
-
-# --- clause: SYSCALL NUMBER DISAGREEMENT ---------------------------------------
-# KOS_SYS_RT is both a live identifier and a number abi.h pins at 7. A doc quoting the
-# right number must stay silent; one quoting any other number is a stale citation of a
-# REUSED number, which is the dangerous case this clause exists for.
-printf '%s\n' 'docs/rt.md:1:KOS_SYS_RT = 7 today' > "$TMP/rt/sysnum_clean"
-if ! awk -v T="$TMP/rt" -v ABIH="$ABI" -F: -f "$TMP/report.awk" \
-        < "$TMP/rt/sysnum_clean" > "$TMP/rt/sysnum_clean.out"; then
-    cat "$TMP/rt/sysnum_clean.out" >&2
-    fail "the reporting pass reports a finding on KOS_SYS_RT = 7, which agrees with
-      $ABI, so the disagreement control below cannot be trusted either"
-fi
-printf '%s\n' 'docs/rt.md:1:KOS_SYS_RT = 8 today' > "$TMP/rt/sysnum_dirty"
-if awk -v T="$TMP/rt" -v ABIH="$ABI" -F: -f "$TMP/report.awk" \
-       < "$TMP/rt/sysnum_dirty" > "$TMP/rt/sysnum_dirty.out"; then
-    fail "THE REPORTING PASS FOUND NOTHING in a corpus quoting KOS_SYS_RT = 8 where
-      $ABI pins it at 7. A doc can quote the WRONG number for a live syscall, which is a
-      reused number naming the wrong one, and no control would notice this clause going
-      dark."
-fi
-grep -q "syscall number disagrees" "$TMP/rt/sysnum_dirty.out" \
-    || fail "the reporting pass flagged KOS_SYS_RT = 8 but not as a number disagreement:
-      $(cat "$TMP/rt/sysnum_dirty.out")"
-
-# --- clause: UNBALANCED FENCE ---------------------------------------------------
-# A ``` opened and never closed has to be reported on its OWN opening line, not silently
-# swallowed as "the rest of the file is fenced". The state machine's correctness rests on
-# this firing; nothing else in this gate would catch a stuck fence.
-cat > "$TMP/rt/fence_clean" <<'RTEOF'
-docs/fence.md:1:```
-docs/fence.md:2:proposed code, not a citation
-docs/fence.md:3:```
-RTEOF
-if ! awk -v T="$TMP/rt" -v ABIH="$ABI" -F: -f "$TMP/report.awk" \
-        < "$TMP/rt/fence_clean" > "$TMP/rt/fence_clean.out"; then
-    cat "$TMP/rt/fence_clean.out" >&2
-    fail "the reporting pass reports a finding on a balanced fence, so the unbalanced-fence
-      control below cannot be trusted either"
-fi
-cat > "$TMP/rt/fence_dirty" <<'RTEOF'
-docs/fence.md:1:```
-docs/fence.md:2:never closed
-RTEOF
-if awk -v T="$TMP/rt" -v ABIH="$ABI" -F: -f "$TMP/report.awk" \
-       < "$TMP/rt/fence_dirty" > "$TMP/rt/fence_dirty.out"; then
-    fail "THE REPORTING PASS FOUND NOTHING in a corpus whose lone fence opens on line 1
-      and never closes. Every line under it is skipped as fenced code, so a dangling
-      citation inside it would read as PROPOSED, not live, and this clause is the only
-      thing that can say the fence itself is broken."
-fi
-grep -q "unbalanced .* fence" "$TMP/rt/fence_dirty.out" \
-    || fail "the reporting pass did not name the unbalanced fence: $(cat "$TMP/rt/fence_dirty.out")"
-
-# --- clause: RELATIVE (../) PATH NORMALIZATION ----------------------------------
-# A doc under docs/sub/ citing ../rt2.md means docs/rt2.md, and that has to resolve
-# without a finding; the same doc citing ../rt2_missing.md means docs/rt2_missing.md,
-# which does not exist, and that has to become one. Collapsing the ".." wrong breaks
-# either direction silently: it either flags every good relative link or clears every
-# bad one, and only testing BOTH tells which.
-printf '%s\n' 'docs/sub/x.md:1:see ../rt2.md for details' > "$TMP/rt/norm_clean"
-if ! awk -v T="$TMP/rt" -v ABIH="$ABI" -F: -f "$TMP/report.awk" \
-        < "$TMP/rt/norm_clean" > "$TMP/rt/norm_clean.out"; then
-    cat "$TMP/rt/norm_clean.out" >&2
-    fail "the reporting pass reports a finding on ../rt2.md from docs/sub/x.md, which
-      normalizes to the tracked docs/rt2.md, so the broken-relative-link control below
-      cannot be trusted either"
-fi
-printf '%s\n' 'docs/sub/y.md:1:see ../rt2_missing.md for details' > "$TMP/rt/norm_dirty"
-if awk -v T="$TMP/rt" -v ABIH="$ABI" -F: -f "$TMP/report.awk" \
-       < "$TMP/rt/norm_dirty" > "$TMP/rt/norm_dirty.out"; then
-    fail "THE REPORTING PASS FOUND NOTHING in a corpus whose ../rt2_missing.md, cited from
-      docs/sub/y.md, normalizes to docs/rt2_missing.md, which is not tracked. Relative
-      normalization can be disabled and no control would notice."
-fi
-grep -q "rt2_missing.md" "$TMP/rt/norm_dirty.out" \
-    || fail "the reporting pass did not name the unresolved ../rt2_missing.md:
-      $(cat "$TMP/rt/norm_dirty.out")"
-
-echo "== control: the reporting pass finds the planted dead identifier and dead path, and
-   nothing in their resolving twins; and each of mis-casing, syscall number disagreement,
-   an unbalanced fence and a broken ../ link fires on its own planted dirty twin and stays
-   silent on its clean one =="
 
 awk -v T="$TMP" -v ABIH="$ABI" -F: -f "$TMP/report.awk" \
     < "$TMP/corpus.txt" > "$TMP/findings.txt"

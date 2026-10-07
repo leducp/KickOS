@@ -25,7 +25,6 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from check_seat_arms import spans  # noqa: E402
 from check_starved_arms import TAP_ADD_RE, strip  # noqa: E402
 
 POOLS = ('workers', 'caps', 'sems', 'mutexes', 'endpoints', 'notifies')
@@ -44,6 +43,41 @@ AND_RE = re.compile(r'&&|\band\b')
 UNDEFINED = None
 OPS = {'>=': lambda a, b: a >= b, '<=': lambda a, b: a <= b, '==': lambda a, b: a == b,
        '!=': lambda a, b: a != b, '>': lambda a, b: a > b, '<': lambda a, b: a < b}
+
+
+def spans(code):
+    """[(name, first line, last line)] of every function defined outside another body."""
+    found = []
+    depth = 0
+    opaque = []
+    name = None
+    start = 0
+    for i, c in enumerate(code):
+        if c == '{':
+            head = code[max(0, i - 300):i]
+            if depth == 0:
+                if re.search(r'\bnamespace\b[\w\s:]*$', head):
+                    opaque.append(False)
+                    continue
+                m = re.search(r'\b(\w+)\s*\([^(){};]*(?:\([^(){};]*\)[^(){};]*)*\)\s*(?:const\s*)?'
+                              r'(?:noexcept\s*)?$', head)
+                name = None
+                if m and m.group(1) not in ('if', 'for', 'while', 'switch', 'return', 'sizeof'):
+                    name = m.group(1)
+                start = i
+            depth += 1
+            opaque.append(True)
+        elif c == '}':
+            if opaque and not opaque[-1]:
+                opaque.pop()
+                continue
+            if opaque:
+                opaque.pop()
+            depth -= 1
+            if depth == 0 and name is not None:
+                found.append((name, code.count('\n', 0, start), code.count('\n', 0, i)))
+                name = None
+    return found
 
 
 def term(t, config):

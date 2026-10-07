@@ -5,6 +5,10 @@
 // a drain ISR that runs ONLY while the mask is open. A producer that never opens the mask can
 // therefore never be drained, which is what makes the masked-push metric separate a
 // bit-banged transmission from a ring enqueue.
+//
+// And what kernel/init/console.cc and console_tx.cc leave undefined over that transport. The
+// ownership state, the writer count and the held store are the REAL ones, so the handover
+// protocol runs as it ships; the knobs below are what the rest answers.
 
 #ifndef KICKOS_TESTS_UNIT_CONSOLESEAM_CONSOLE_SEAM_H
 #define KICKOS_TESTS_UNIT_CONSOLESEAM_CONSOLE_SEAM_H
@@ -13,6 +17,11 @@
 #include <stdint.h>
 
 #include <string>
+
+namespace kickos
+{
+    struct Thread;
+}
 
 namespace consoleseam
 {
@@ -73,6 +82,23 @@ namespace consoleseam
 
     // Called at the instant USER_OWNED is flipped.
     void note_commit();
+
+    // cap_console_deliver calls, each one a record handed on for a receiver to take.
+    extern uint32_t g_deliveries;
+    // What sched::current() answers: the thread a record is printed by. Never dereferenced.
+    extern kickos::Thread* g_current;
+    // What dev_window_free answers for the console's reclaim window.
+    extern bool g_window_free;
+    // What task_serves_console answers.
+    extern bool g_serves_console;
+    // arch_console_reclaim calls, and console_dark_wake calls.
+    extern uint32_t g_reclaims;
+    extern uint32_t g_dark_wakes;
+    // Run in place of the dark window's park where set: what the writer's wait answers.
+    extern int (*g_dark_wait)(void);
+    // Run once by the next arch_console_flush_sync, the first step of a reclaim: what another
+    // core does while this one reclaims.
+    extern void (*g_flush_hook)(void);
 }
 
 #endif

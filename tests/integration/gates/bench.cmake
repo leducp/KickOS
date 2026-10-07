@@ -9,6 +9,14 @@ if(NOT TARGET bench)
   return()
 endif()
 
+# Measurements, which the bench drivers named take and no gate judges.
+if(TARGET bench_smp)
+  kickos_unbooted(bench_smp "a measurement tools/bench/run_m941_smp.sh takes")
+endif()
+if(TARGET bench_smp_ipc)
+  kickos_unbooted(bench_smp_ipc "a measurement tools/bench/run_m95_ipc.sh takes")
+endif()
+
 # Use kernel-core count: AMP kernels may each own only one machine core.
 # Run SMP sweeps serially to avoid host contention exhausting wall-clock timeouts.
 if(KICKOS_KERNEL_CORES GREATER 1)
@@ -35,15 +43,7 @@ add_test(NAME ${_tag}_bench_phase_table_controls
   COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_bench_phase_table.sh" --controls)
 kickos_host_gate(${_tag}_bench_phase_table_controls)
 
-# Inspect per-core switch timestamp addressing in the linked image.
-# Runtime tests cannot expose sharing because the kernel lock serializes the bracket.
-if(KICKOS_KERNEL_CORES GREATER 1)
-  set(_bench_image "$<TARGET_FILE:bench>")
-  add_test(NAME ${_tag}_bench_stamp_percore
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_bench_stamp_percore.sh"
-            "${_bench_image}" "${CMAKE_OBJDUMP}" "${KICKOS_ARCH}")
-  kickos_host_gate(${_tag}_bench_stamp_percore)
-endif()
+set(_bench_image "$<TARGET_FILE:bench>")
 
 # Check SMP release/acquire instructions where the architecture has distinct acquire/release
 # instructions. x86 TSO uses the same MOV for relaxed, acquire and release; disassembly cannot
@@ -55,21 +55,8 @@ if(KICKOS_KERNEL_CORES GREATER 1 AND NOT KICKOS_ARCH STREQUAL "x86_64")
   kickos_host_gate(${_tag}_bench_e2e_publish)
 endif()
 
-# Check that LX6 consumes its delayed switch-end timestamp at every core count.
-if(KICKOS_ARCH STREQUAL "lx6")
-  add_test(NAME ${_tag}_bench_xtensa_stamp
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_bench_xtensa_stamp.sh"
-            "$<TARGET_FILE:bench>" "${CMAKE_OBJDUMP}")
-  kickos_host_gate(${_tag}_bench_xtensa_stamp)
-endif()
-
-# Check PMCR_EL0.LC in the linked image. QEMU returns a 64-bit cycle counter
-# even when this bit is missing.
 if(KICKOS_ARCH STREQUAL "armv8a")
-  add_test(NAME ${_tag}_bench_a53_pmcr
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_bench_a53_pmcr.sh"
-            "$<TARGET_FILE:bench>" "${CMAKE_OBJDUMP}" "${KICKOS_ARCH}")
-  kickos_host_gate(${_tag}_bench_a53_pmcr)
+  kickos_image_rule(a53_pmcr bench)
 endif()
 
 # Check outermost lock sampling at every core count; WAIT exists only on SMP.

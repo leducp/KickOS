@@ -64,7 +64,7 @@
 
 // The prose table is the only C++ in this header, and kickos/console_tx.h includes the header
 // from a C-facing one to reach KICKOS_DIAG_LINE_MAX, so the block is guarded rather than the
-// whole file being C++ only (tests/static/check_c_headers.sh).
+// whole file being C++ only (tests/static/check_public_headers.sh).
 #ifdef __cplusplus
 namespace kickos
 {

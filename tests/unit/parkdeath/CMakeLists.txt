@@ -15,22 +15,7 @@ kickos_add_unit_test(NAME cancelled_park_smp SOURCES sync_park.cc
   TEST_PREFIX smp.)
 
 # The K-seam with the real time.cc in place of the seam's ktime stubs.
-kickos_add_kernel_host_lib(kickos_kseam_time
-  SOURCES
-    "${PROJECT_SOURCE_DIR}/tests/unit/kfixture/kfixture.cc"
-    "${PROJECT_SOURCE_DIR}/tests/unit/kfixture/karch_seam.cc"
-    "${PROJECT_SOURCE_DIR}/kernel/time/time.cc"
-    "${PROJECT_SOURCE_DIR}/kernel/sched/sched.cc"
-    "${PROJECT_SOURCE_DIR}/kernel/sched/policy_fifo_rr.cc"
-    "${PROJECT_SOURCE_DIR}/kernel/sync/sync.cc"
-    "${PROJECT_SOURCE_DIR}/kernel/thread/park.cc"
-    "${PROJECT_SOURCE_DIR}/kernel/syscall/cap.cc"
-    "${PROJECT_SOURCE_DIR}/kernel/task/task.cc"
-    "${PROJECT_SOURCE_DIR}/kernel/irq/irq.cc"
-    "${PROJECT_SOURCE_DIR}/kernel/notify/notify.cc"
-    "${PROJECT_SOURCE_DIR}/kernel/init/instance.cc"
-    "${PROJECT_SOURCE_DIR}/kernel/init/fault.cc"
-  INCLUDES "${PROJECT_SOURCE_DIR}/tests/unit/kfixture")
+kickos_add_kseam(kickos_kseam_time EXTRA "${PROJECT_SOURCE_DIR}/kernel/time/time.cc")
 target_compile_definitions(kickos_kseam_time PRIVATE KFIXTURE_REAL_TIME=1)
 kickos_add_unit_test(NAME cancelled_timed_park SOURCES timed_park.cc
   LIBRARIES kickos_kseam_time)
