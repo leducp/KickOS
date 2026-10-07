@@ -26,9 +26,9 @@
 
 namespace
 {
-    // 31 usable, so a message a single console_emit carries whole still costs the producer
-    // several chunks, and a gap ordinal picks which chunk boundary the publish lands on.
-    constexpr uint32_t kRing = 32u;
+    // The ring takes the message as one line, so the gap after the insert is the one window in
+    // which the line sits queued with its writer still counted.
+    constexpr uint32_t kRing = 128u;
     constexpr size_t kMsg = 100u;
 
     // These races are addressed by mask-gap ORDINAL, so they move with the number of brackets
@@ -40,10 +40,10 @@ namespace
 #else
     constexpr uint32_t kGapBase = 0u;
 #endif
-    // Closes console_emit's state-read-plus-count bracket, before console_tx_write reads
-    // `armed`. The second is a chunk boundary, two chunks in.
+    // Closes console_emit's state-read-plus-count bracket, before console_tx_insert_line reads
+    // `armed`. The second closes the insert, with the line in the ring and its writer counted.
     constexpr uint32_t kGapBeforeRingCheck = kGapBase + 1u;
-    constexpr uint32_t kGapMidChunking = kGapBase + 3u;
+    constexpr uint32_t kGapAfterInsert = kGapBase + 2u;
 
     int g_writers_at_handover = -1;
     int g_drain_passes = -1;
@@ -140,28 +140,27 @@ namespace
 }
 
 // Anti-vacuity premise for the arms that seat a publish in a gap ordinal: with no publish in
-// flight the message reaches the wire whole AND the producer really does chunk, so an ordinal
-// names a real boundary.
-TEST(ConsolePublishHandoff, AChunkedWriteWithNoPublishReachesTheWireWhole)
+// flight the message reaches the wire whole, through the ring.
+TEST(ConsolePublishHandoff, AWriteWithNoPublishReachesTheWireWhole)
 {
     run_isolated([]() {
         consoleseam::reset(kRing);
         std::string const in = message();
         kickos::kconsole_write(in.data(), in.size());
         EXPECT_EQ(consoleseam::wire(), in);
-        EXPECT_GE(consoleseam::gap_count(), 4u) << "the producer did not chunk";
+        EXPECT_GE(consoleseam::gap_count(), kGapAfterInsert) << "a gap the arms below name is missing";
         EXPECT_LE(consoleseam::max_masked_pushes(), 1u);
     });
 }
 
-// The publish lands at a chunk boundary of a writer already counted in the in-flight bracket.
-// That writer's remainder has no buffered path left, so it must go out synchronously while the
-// kernel still owns the UART.
-TEST(ConsolePublishHandoff, AWriterPublishedOverMidChunkingLosesNoBytes)
+// The publish lands with the writer's line queued in the ring and the writer still counted in
+// the in-flight bracket. The handover's flush sends it while the kernel still owns the UART.
+TEST(ConsolePublishHandoff, AWriterPublishedOverAfterItsInsertLosesNoBytes)
 {
     run_isolated([]() {
         consoleseam::reset(kRing);
-        consoleseam::run_in_gap(kGapMidChunking, publish_lock_held);
+        consoleseam::set_isr_runs_in_gap(false);
+        consoleseam::run_in_gap(kGapAfterInsert, publish_lock_held);
         std::string const in = message();
         kickos::kconsole_write(in.data(), in.size());
         ASSERT_TRUE(consoleseam::seat_fired()) << "the publish never fired: no race was run";
@@ -172,8 +171,8 @@ TEST(ConsolePublishHandoff, AWriterPublishedOverMidChunkingLosesNoBytes)
 }
 
 // The same window one step earlier: the publish lands after console_emit has taken the bracket
-// but before console_tx_write reads the ring's arm state, so the WHOLE message is the
-// remainder and it routes through console_emit's own synchronous arm.
+// but before the insert reads the ring's arm state, so the WHOLE message goes out through the
+// disarmed ring's synchronous writer.
 TEST(ConsolePublishHandoff, AWriterPublishedOverBeforeTheRingCheckLosesNoBytes)
 {
     run_isolated([]() {
@@ -194,7 +193,7 @@ TEST(ConsolePublishHandoff, TheInFlightWriterIsCountedWhenThePublishBegins)
 {
     run_isolated([]() {
         consoleseam::reset(kRing);
-        consoleseam::run_in_gap(kGapMidChunking, publish_lock_held);
+        consoleseam::run_in_gap(kGapAfterInsert, publish_lock_held);
         std::string const in = message();
         kickos::kconsole_write(in.data(), in.size());
         ASSERT_TRUE(consoleseam::seat_fired());
@@ -222,34 +221,18 @@ TEST(ConsolePublishHandoff, AWriterArrivingAfterTheHandoverBeginsIsRefused)
     });
 }
 
-// The masked-window bound must survive the protocol: the producer's masked span is still one
-// ring copy, and the handover path may not push a transmission's worth of bytes with the
-// mask held either.
+// The masked-window bound must survive the protocol: the handover's flush may push no more than
+// the ring holds with the mask held.
 TEST(ConsolePublishHandoff, ThePublishDoesNotWidenTheMaskedWindow)
 {
     run_isolated([]() {
         consoleseam::reset(kRing);
-        consoleseam::run_in_gap(kGapMidChunking, publish_lock_held);
+        consoleseam::run_in_gap(kGapAfterInsert, publish_lock_held);
         std::string const in = message();
         kickos::kconsole_write(in.data(), in.size());
         ASSERT_TRUE(consoleseam::seat_fired());
         publish_tail();
         EXPECT_LE(consoleseam::max_masked_pushes(), kRing - 1u);
-    });
-}
-
-// The ring producer is exported, so a caller reaching it outside console_emit's bracket is
-// invisible to the drain. Its own ownership re-read is what must refuse a driver-owned device.
-TEST(ConsolePublishHandoff, AnUnbracketedProducerRefusesADriverOwnedUart)
-{
-    run_isolated([]() {
-        consoleseam::reset(kRing);
-        publish_lock_held();
-        publish_tail();
-        size_t const settled = consoleseam::wire().size();
-        console_tx_write("unbracketed", 11);
-        EXPECT_EQ(consoleseam::wire().size(), settled)
-            << "the ring producer poked a UART the driver owns";
     });
 }
 
@@ -269,33 +252,8 @@ TEST(ConsolePublishHandoff, HandingOverWithAWriterStillCountedIsRefused)
 {
     run_isolated_expecting_panic([]() {
         consoleseam::reset(kRing);
-        consoleseam::run_in_gap(kGapMidChunking, publish_without_draining);
+        consoleseam::run_in_gap(kGapAfterInsert, publish_without_draining);
         std::string const in = message();
         kickos::kconsole_write(in.data(), in.size());
-    });
-}
-
-// Injecting console_tx_deinit alone, as the consoletx deinit arms do, leaves the ownership
-// state KERNEL_OWNED, so the remainder is written and the arm is green whether the protocol
-// exists or not. That blind spot is why the arms above transcribe the whole sequence.
-namespace
-{
-    void deinit_only(void)
-    {
-        console_tx_deinit();
-        consoleseam::set_isr_runs_in_gap(false);
-    }
-}
-
-TEST(ConsolePublishHandoff, ADeinitWithNoOwnershipMoveCannotSeeTheTruncation)
-{
-    run_isolated([]() {
-        consoleseam::reset(kRing);
-        consoleseam::run_in_gap(kGapMidChunking, deinit_only);
-        std::string const in = message();
-        kickos::kconsole_write(in.data(), in.size());
-        ASSERT_TRUE(consoleseam::seat_fired());
-        ASSERT_NE(console_owner_is_kernel(), 0) << "this injection moved the ownership state";
-        EXPECT_EQ(consoleseam::wire(), in);
     });
 }

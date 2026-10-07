@@ -39,7 +39,7 @@ namespace
                   uint8_t* out, uint16_t out_max)
     {
         uint8_t buf[KOS_EP_MSG_MAX];
-        struct kos_uart_req req;
+        struct kos_uart_req req = {};
         req.op = op;
         req.flags = 0;
         req.len = len;

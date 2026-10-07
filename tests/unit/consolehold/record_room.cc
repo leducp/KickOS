@@ -29,17 +29,25 @@ namespace
         return queued;
     }
 
-    // Ordinary lines leaving at most `room` bytes free, queued by the burst writer, which never
-    // drains in its producer: what a backend with no TX interrupt holds while none is draining.
-    std::string fill_undrained(uint32_t room)
+    // Ordinary lines leaving at most `room` bytes free, as one lower writer's line.
+    std::string lower_lines(uint32_t room)
     {
         std::string queued;
         for (char c = 'a'; queued.size() + 41u + room <= kRing - 1u; c++)
         {
             queued += std::string(40, c) + "\n";
         }
-        console_tx_write(queued.data(), queued.size());
         return queued;
+    }
+
+    // A backend with no TX interrupt holds queued bytes only while the writer that queued them
+    // is preempted before its own drain: `body` runs in the gap after that writer's insert.
+    void queue_and_preempt(std::string const& queued, void (*body)(void))
+    {
+        consoleseam::run_in_gap(consoleseam::gap_count() + 1u, body);
+        EXPECT_EQ(console_tx_insert_line(queued.data(), queued.size(), 0),
+                  static_cast<int>(queued.size()));
+        ASSERT_TRUE(consoleseam::seat_fired()) << "the lower writer was never preempted";
     }
 
     int head_len(char const* who)
@@ -49,6 +57,7 @@ namespace
     }
 
     std::string g_seen;
+    std::string g_queued;
     int g_nested = -1;
     std::string const kNested = "nested\n";
     std::string const kLine = "  record line\n";
@@ -99,16 +108,17 @@ TEST(ConsoleRecordRoom, NoTxInterruptDrainsTheRestUnmasked)
 {
     run_isolated([]() {
         consoleseam::reset(kRing, -1);
-        std::string const queued = fill_undrained(0u);
-        ASSERT_LT(kRing - 1u - (queued.size() - consoleseam::wire().size()),
-                  static_cast<uint32_t>(head_len("t1")))
-            << "premise: the ring has no room for the record's first line";
-
-        record("t1", 0x100u);
+        g_queued = lower_lines(0u);
+        queue_and_preempt(g_queued, []() {
+            ASSERT_LT(kRing - 1u - (g_queued.size() - consoleseam::wire().size()),
+                      static_cast<uint32_t>(head_len("t1")))
+                << "premise: the ring has no room for the record's first line";
+            record("t1", 0x100u);
+        });
         EXPECT_LE(consoleseam::max_masked_pushes(), static_cast<uint32_t>(head_len("t1")))
             << "a record line sent more than its own length under the mask";
         console_tx_flush_sync();
-        EXPECT_EQ(consoleseam::wire(), queued + text("t1", 0x100u));
+        EXPECT_EQ(consoleseam::wire(), g_queued + text("t1", 0x100u));
     });
 }
 
@@ -169,16 +179,16 @@ TEST(ConsoleRecordRoom, ARecordBetweenAProducerDrainsPushesTakesItsRoomInOrder)
 {
     run_isolated([]() {
         consoleseam::reset(kRing, -1);
-        std::string const queued = fill_undrained(64u);
-        // The insert's gap, then the one after the drain claims the ring.
+        std::string const queued = lower_lines(64u);
+        // The insert's gap, then the one after the drain's first push.
         consoleseam::run_in_gap(consoleseam::gap_count() + 2u, []() {
             g_nested = console_tx_insert_record_line(kWide.data(), kWide.size(), 0);
         });
-        EXPECT_EQ(console_tx_insert_line(kLine.data(), kLine.size(), 0),
-                  static_cast<int>(kLine.size()));
+        EXPECT_EQ(console_tx_insert_line(queued.data(), queued.size(), 0),
+                  static_cast<int>(queued.size()));
         ASSERT_TRUE(consoleseam::seat_fired());
         EXPECT_EQ(g_nested, static_cast<int>(kWide.size()));
-        EXPECT_EQ(consoleseam::wire(), queued + kLine + kWide);
+        EXPECT_EQ(consoleseam::wire(), queued + kWide);
     });
 }
 

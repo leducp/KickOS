@@ -509,16 +509,24 @@ uint64_t syscall_body(uintptr_t nr,
         {
             // Resolve and use under one lock: a concurrent close could otherwise free the slot
             // between resolve and use.
-            IrqLock lock;
-            int err = 0;
-            Semaphore* s = static_cast<Semaphore*>(
-                cap_resolve_e(sched::current(), static_cast<uint32_t>(a0), CapType::CAP_SEM, CAP_WAIT, &err));
-            if (s == nullptr)
+            Thread* const c = sched::current();
+            uint32_t epoch = 0;
             {
-                return static_cast<uint64_t>(-err); // EBADF (bad/closed cap) or EPERM (no WAIT right)
+                IrqLock lock;
+                int err = 0;
+                Semaphore* s = static_cast<Semaphore*>(
+                    cap_resolve_e(c, static_cast<uint32_t>(a0), CapType::CAP_SEM, CAP_WAIT, &err));
+                if (s == nullptr)
+                {
+                    return static_cast<uint64_t>(-err); // EBADF (bad/closed cap) or EACCES (no WAIT right)
+                }
+                if (not sem_wait(lock, s, epoch))
+                {
+                    return 0;
+                }
             }
-            sem_wait(lock, s);
-            return 0;
+            wq_confirm_resume(c, epoch);
+            return static_cast<uint64_t>(c->wait_result);
         }
         case KOS_SYS_SEM_POST:
         {
@@ -1190,6 +1198,11 @@ uint64_t syscall_body(uintptr_t nr,
             if (irq < 0 or irq >= KICKOS_MAX_IRQ)
             {
                 return static_cast<uint64_t>(-KOS_EINVAL);
+            }
+            // The inject arm's refusal: the kernel alone decides a line it drives.
+            if (arch_irq_line_kernel_owned(irq))
+            {
+                return static_cast<uint64_t>(-KOS_EPERM);
             }
             // As the inject arm above: the image-wide masked word is read-modify-written
             // here, and the backend's own bracket excludes this core's handler alone.

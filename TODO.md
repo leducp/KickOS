@@ -5901,7 +5901,7 @@ milestone does not close while any of them still composes a system.
       taken by `AMP_PARTITION=1 APP=ampping_n0 VARIANT=amp2-n0 tools/bench/bench.sh pizero2350`;
       until then the judge holds only its planted capture.
 
-- [ ] **APPS BUILT BY BOARD NAME, AND APPS THAT BUILD AND NEVER RUN (found 2026-10-06, cut from
+- [ ] **M10.6.2: APPS BUILT BY BOARD NAME, AND APPS THAT BUILD AND NEVER RUN (found 2026-10-06, cut from
       M10.5 for scope).** The emulator gates are keyed on facts and `qemu_gates_derived` refuses a
       board name around one; two neighbouring gaps were found and left open.
       - `user/apps/common/CMakeLists.txt` still selects apps by board name: `fpclass` (rxv3 or
@@ -5926,7 +5926,7 @@ milestone does not close while any of them still composes a system.
         the host's terminate handler (`cxxterm`), `specfault`'s judge reads captures only, and the
         sim maps no guard under a thread's stack (`faultsurvive_ovf` overruns `main`).
 
-- [ ] **M10.6: THE SELFTEST ORDERED BY EVENTS.** Arms still order threads by sleeping
+- [ ] **M10.6.4: THE SELFTEST ORDERED BY EVENTS.** Arms still order threads by sleeping
       (`EP_CALL_SETTLE_NS` and the like) and fail under a loaded host: a sleep is not an order. Each
       such arm orders by priority, a semaphore or a mark instead, and releases what it created on
       every path (`ArmHold`), so one failing arm cannot starve the rest; the census between arms
@@ -5986,9 +5986,128 @@ by ruling and sits in `roadmap.md`'s `Later`.
       `roadmap.md`'s Later section.
 
 
-## M10's tail (maintainer, 2026-10-03)
+## M10.6 -- the cleanup pass (maintainer, 2026-10-06)
 
-- [ ] **AUDIT THE SELFTEST FOR BLOAT (maintainer, 2026-10-03; ASSIGNED TO M10'S TAIL).** The
+M10.6 cleans up before the exit record; its steps are in `roadmap.md`. The entries below, and the
+ones elsewhere in this file tagged `M10.6.<n>`, are its work. M10's tail (maintainer, 2026-10-03)
+became this milestone.
+
+**The rule (maintainer, 2026-10-06): at the same features, less is more.** M10.5 grew the product
+(kernel, arch, system, user/src, cmake) by about 3k lines and the tests and tools by about 31k;
+today `tests/static` (44k), `tests/unit` (50k), `tests/integration` (17k), `tools` (22k) and the
+selftest app (23k) together weigh what the kernel, arch, user and system do. The DRY inventory's own
+ceiling is about -7.5k, because a fold removes a copy and not a feature of the apparatus. The larger
+cuts are a change of shape: a gate reduced to its rule with its harness paid once, a hand list
+derived so the gate comparing it has nothing left to compare, lint rules in one table, one
+kernel-under-test library for the unit suites, and the closed records out of the tree. So the steps
+run in the order below, numbered as they run: the cuts that are read-only on the host before the
+folds that need silicon, and nothing folded that a later step would delete. A second copy of a fact
+exists only where the first cannot be read at the time of the check (the Python region rule,
+`panic.ere`, `kicktrace.py`); where both copies are hand-maintained text, one is derived and its gate
+goes with it. Each step's close records three numbers, lines of product, lines of tests and tools,
+and their ratio; no gate is written over them.
+
+- [x] **M10.6.0: THE MISSES FOUND AFTER M10.5 MERGED.** Each verified on the tree, each fixed with
+      its arm before the cleanup moves code. Only the first is M10.5's; the rest are older.
+      **LANDED**, each with the arm that reddens without it:
+  - The C6 APM test's kernel blocks are read from the generated `chip_mmap.h` and include
+    `gpio_matrix`; `Ree0PastNode0sGrantsIsCaught` now names the one block the open GPIO row
+    covers.
+  - `KOS_SYS_SEM_WAIT` answers `-KOS_ECANCELED` to a cancelled waiter: `sem_post` writes the
+    handed waiter's result, and the arm reads it after the resume barrier, outside the lock, as
+    `mutex_lock` does (`park_result`'s `a_cancelled_semaphore_wait_returns_ecanceled`).
+  - `domain_resolve` has no sign test; the null domain's handle is refused by its all-ones
+    index. `tests/unit/domain` compiles the real `domain.cc` and ages a slot past 0x8000.
+  - `domain_for` asks the memory type once, ahead of both arms, so a region backend answers
+    `-KOS_ENOTSUP` as the ABI says (`DomainAdmit` in the same suite).
+  - `console_tx_write`, `write_unbuffered`, `enqueue_locked`, `wait_space` and
+    `console_chip_writable` are deleted with their 395 indirect-site records. The masked-window
+    and publish-handoff suites drive `console_tx_insert_line`; the cases that described only
+    the burst producer's chunk gaps went with it. The room and record fixtures stage a lower
+    writer preempted in the gap after its insert, the one time a backend with no TX interrupt
+    holds its bytes. **Found on the way, for M10.6.5:** the live insert re-reads no ownership,
+    so an unbracketed producer after a publish writes the driver's device; that is the
+    direct-arch-print case below (decision 3), and its arm went with the dead re-check.
+  - `tests/lib/gate.sh` derives `KOS_FAULT_RE` from `panic.ere`, and the panicgate judge reads
+    it; `check_app_judges.sh` plants the arm64, rv64 and x86_64 banners.
+  - `run_image`'s native branch charges `boot_bound` like the QEMU one, and
+    `kickos_boot_timeout` (renamed from `kickos_qemu_timeout`) reads `SIM_TIMEOUT` on the sim, so
+    `fault_dump`, objbudget, rootauth, the reboot gate and selftest take a derived timeout and a
+    short one fails with a finding; `hello_demo` and `telemetry_ring_wrap` sit above their
+    Python scripts' own waits.
+  - `KOS_SYS_IRQ_UNMASK` refuses a kernel-owned line, with the selftest arm beside the claim
+    and inject refusals.
+  - With them: `usbcdcwit` zeroes its request, `consoledemo` prints the `ERROR:` its judge
+    reads, and the dead `rp2040/regs/xip_ssi.h`, `esp32c6/regs/usb_serial_jtag.h` and simuart's
+    `tx_idle`/`tx_irq_enable` are gone.
+  - **Open, decision 3:** direct arch prints after a publish (boot and doorbell-timeout paths
+    only) still write the driver's UART.
+  - **Close (2026-10-06):** product 135,838 to 135,610 lines, tests and tools 179,051 to 178,693,
+    ratio 1.31 (product: `arch`, `kernel`, `lib`, `include`, `system`, `user/src`,
+    `user/include`, `platform`, `boards`, `cmake`, the root `CMakeLists.txt` and `Kconfig`; tests
+    and tools: `tests`, `tools`, `user/apps`). Swept: the sim whole, and one to three presets of
+    every family with their image or host gates.
+
+- [ ] **M10.6.1: THE ARCHIVES TRIMMED.** First, because every later deletion pays
+      `check_doc_names.sh` for each name it removes while the archive is still in the tree. Records
+      of merged milestones under `docs/archive/` (82 files), the closed entries in this file (640 of
+      905, about 9.7k of its 15k lines) and finished sections of `STATE.md` leave the tree, since
+      git history keeps them; what is still cited moves to where it is cited, and every link is
+      updated.
+
+- [ ] **M10.6.2: THE GATE AUDIT, SIZED BEFORE IT STARTS.** The inventory sized the DRY items and
+      left the audit unsized; the audit is where the mass is. Its first deliverable is a table over
+      the 116 static gates and the 79 unit suites answering four questions each: which bug class it
+      prevents; whether it has ever fired on a real change (`git log -S` on its name); whether the
+      compiler, a linker-script `ASSERT` or `-Werror` can hold the rule instead; whether the build
+      can generate the thing it compares, so the copy does not exist. The answers map to delete,
+      replace, derive or keep, and the table is the step's budget. Then the shape change:
+      - The harness once. About 77 of the 116 gates carry their own planted controls, 23 walk
+        `git ls-files` themselves, 16 re-implement the comment stripper, and 7 source
+        `tests/lib/gate.sh`. `check_cpu_id_fold.sh` is 436 lines, of which about 75 are its rule
+        and about 290 its controls and refusals. The controls, the corpus walk with its floor and
+        the dead-reader refusal live once in `gate.sh` (`ctl_fires`, `ctl_quiet`, `corpus`), and a
+        gate is its rule and one planted file. The feature stays: a gate still proves it can fire
+        and still refuses a corpus it could not read.
+      - The lint gates become one rule table: `check_ternary` (646 lines around `?:` and
+        `for (;;)`), `check_ascii` (656), `check_spdx` (421), `check_include_guards` (371),
+        `check_c_headers` (473), `check_public_headers` (371), `check_doc_names` (695),
+        `extern_c_linkage`; one driver, one stripper, one corpus.
+      - A hand list derived from the tree goes with the gate that compared it:
+        `trap_redzone_indirect.txt` (1820 lines), `trap_redzone_roots.txt` (756),
+        `console_reach_roots.txt`, `app_stack_roots.txt`, `_selftest_seat_skips`, the ci.yml name
+        families. The inventory's section 6 keeps several as "the independent oracle"; an oracle
+        costs a copy, a gate and the gate's controls, and is kept only where the primary cannot be
+        read at check time.
+      - Shared parsing (macros under a TU's flags, comments, CMake shapes, the record grammar) in
+        one library; the gate that races a configure; apps built by board name or never run;
+        presets CI does not build; the bench fleet run across boards in parallel.
+      A new fix's arm extends a gate or is a unit test; a new static checker is written only for a
+      class likely to recur, and it starts from `gate.sh`.
+
+- [ ] **M10.6.2: PRESETS NO CI JOB BUILDS.** Eight visible presets appear nowhere in `ci.yml`, and
+      no record says any was left out on purpose. Build each in a job, or record why not.
+
+- [ ] **M10.6.3: THE DRY PASS.** After the audit, so that no copy is folded inside a gate the audit
+      deletes and no name a surviving text gate pins is moved twice. The inventory taken after
+      M10.5 (arch, kernel and userspace, build and tools, and every static assert classed) lists
+      each copy with its single form, size, risk and witness; the pass re-ranks it by lines removed
+      per unit of risk: the host-only items first (the unit seams as one kernel-under-test library
+      with one fake arch, where 51 seam, fake and stub files total 9.2k lines and 30 `CMakeLists`
+      name kernel sources 232 times; the ABI vocabularies; the handle codec; the park unwind; the
+      app helpers), the emulator-witnessed arch folds next, and the silicon-only folds (the reset
+      tails, the pin guard on every chip, the semihosting chips, the F3/F4 GPIO) on M10.6.6's bench
+      passes.
+
+- [ ] **M10.6.5: THE CONSOLE READ THROUGH.** The console took ruling (c), non-blocking stdout, the
+      dark window, whole fault-record lines, kernel waits, the AMP claim and the console task with
+      no stdout in one milestone. Write its contract once, in `docs/reference/console.md`, and cut
+      what does not serve it. Start from M10.6.0's finding: `console_tx_insert_line` re-reads no
+      ownership after a publish, so whether a producer outside `console_emit`'s bracket may exist
+      at all is the first question.
+
+
+- [ ] **M10.6.4: AUDIT THE SELFTEST FOR BLOAT (maintainer, 2026-10-03; ASSIGNED TO M10'S TAIL).** The
       selftest grows with every milestone and now needs six images on the 64 KiB STM32 parts and
       more on the ESP32's 128 KiB of IRAM. Some arms may be obsolete (a mechanism since replaced, a
       regression long covered by a host unit test), some duplicate each other, and many repeat the
@@ -5997,7 +6116,7 @@ by ruling and sits in `roadmap.md`'s `Later`.
       and what code each costs per image. Every deletion keeps the witness somewhere, and the
       per-region counts and skip sets follow.
 
-- [ ] **WIDEN THE ESP32'S CODE SPACE BEYOND 128 KIB OF IRAM (maintainer, 2026-10-03; ASSIGNED TO
+- [ ] **M10.6.6: WIDEN THE ESP32'S CODE SPACE BEYOND 128 KIB OF IRAM (maintainer, 2026-10-03; ASSIGNED TO
       M10'S TAIL).** `arch/xtensa/chip/esp32/esp32.ld` links all code into the upper 128 KiB of
       internal SRAM0 (`0x4008_0000`) and all data into 192 KiB of SRAM2, executing nothing from
       flash. Two levers to verify against the ESP32 TRM (1.3.2, "Embedded Memory") and on silicon
@@ -6006,7 +6125,7 @@ by ruling and sits in `roadmap.md`'s `Later`.
       memory, which the linker map does not use and part of which the ROM loader uses during boot.
       Found when the selftest outgrew one image's IRAM.
 
-- [ ] **RUN THE BENCH FLEET ACROSS BOARDS IN PARALLEL (maintainer, 2026-10-07).** `bench-fleet.sh`
+- [ ] **M10.6.2: RUN THE BENCH FLEET ACROSS BOARDS IN PARALLEL (maintainer, 2026-10-06).** `bench-fleet.sh`
       builds, flashes and captures one image at a time across every board, so a full pass takes
       the sum of every board's captures (about three hours in M10.5's final pass). Each board has
       its own probe and console, so run one worker per board and keep each board's captures in
@@ -6016,7 +6135,7 @@ by ruling and sits in `roadmap.md`'s `Later`.
       worker, and bench-present.sh already knows which ones those are. Each board's log tags
       stay separate, and the summary is merged at the end.
 
-- [x] **BOOT THE TWO-CORE X86 OUT-OF-TREE APP IN CI (found closing M10.5, 2026-10-07).** The
+- [x] **BOOT THE TWO-CORE X86 OUT-OF-TREE APP IN CI (found closing M10.5, 2026-10-06).** The
       out-of-tree MCU app's boot is an image gate now, so the 24.04 two-core host step no longer
       runs it; the `qemu-x86_64-ap` job on 26.04 runs a fixed list of named tests that does not name
       `qemu_x86_64_oot_mcu_app`, so no CI job boots it at two cores. Add it to that list, or move
@@ -6024,31 +6143,31 @@ by ruling and sits in `roadmap.md`'s `Later`.
       **DONE:** every CI job runs on `ubuntu-26.04`, and the two-core x86 step runs the image gates
       of `qemu-x86_64-smp2` and requires `qemu_x86_64_oot_mcu_app`.
 
-- [ ] **BOUND THE INTERRUPT STACK ON ARMV7-M, ARMV6-M AND RX (found closing M10.5).** The trap
+- [ ] **M10.6.6: BOUND THE INTERRUPT STACK ON ARMV7-M, ARMV6-M AND RX (found closing M10.5).** The trap
       depth gate roots device ISRs only where they run on a thread's or a kernel stack it sizes; on
       these three the ISRs run on the main/interrupt stack, which the roots file declares unbounded,
       so no ISR chain is measured there (M10.5 added a wake to the console TX ISR's tail).
 
-- [ ] **`board_refusals` COPIES THE TREE WHILE CONFIGURES REWRITE COMPOSITION FILES IN IT (found
+- [ ] **M10.6.2: `board_refusals` COPIES THE TREE WHILE CONFIGURES REWRITE COMPOSITION FILES IN IT (found
       closing M10.5).** Under a parallel `-L tree` run it failed once in 0.5 s and then passed: a
       configure writes composition yaml into the source tree while the gate copies it. A build must
       not write into its sources.
 
-- [ ] **THE SELFTEST APP DOES NOT BUILD WITH THE SELF-TEST OFF ON ADDRESS-SPACE BOARDS (found closing
+- [ ] **M10.6.4: THE SELFTEST APP DOES NOT BUILD WITH THE SELF-TEST OFF ON ADDRESS-SPACE BOARDS (found closing
       M10.5, older than it).** On qemu-arm64-amp2-n0 and amp3-n0 configured with
       `KICKOS_ENABLE_SELFTEST=OFF`, `selftest/main.cc` and `selftest_common.cc` call
       `kos_aspace_probe` with no guard. No CI or local configuration builds that posture, so
       `amp_prod_build` skips address-space boards; either guard those calls or stop building the
       selftest app without the self-test, then register the gate there.
 
-- [ ] **NAME THE PORT BY ITS NUMBER IN THE GENERATED PIN LISTS (maintainer, 2026-10-07).**
+- [ ] **M10.6.3: NAME THE PORT BY ITS NUMBER IN THE GENERATED PIN LISTS (maintainer, 2026-10-06).**
       `KICKOS_BOARD_RESERVED_RUNS` and `KICKOS_BOARD_KERNEL_PINS` carry each pin's port as a base
       address, so `chip_imxrt1062.cc` maps it back to a GPIO bank through a hand-written `bank_of`
       that knows banks 1 and 2 only, a second truth beside the port number the generator already
       emits for named pins. Emit the port number in `RUN` and `PIN` as well, use it in every chip
       that reads those lists, and delete `bank_of`.
 
-- [ ] **WAKE AN OWN-IMAGE AMP CONSOLE WRITER BY DOORBELL (maintainer, 2026-10-06; deferred out of
+- [ ] **M10.6.5: WAKE AN OWN-IMAGE AMP CONSOLE WRITER BY DOORBELL (maintainer, 2026-10-06; deferred out of
       M10.5).** A writer waiting for a peer node's console claim parks for `CONSOLE_CLAIM_POLL_NS`
       (1 ms) between offers, because a peer's release sends no wake. The proper form rings the
       waiting node's doorbell on release, so the writer parks until woken, with no poll.
@@ -6056,7 +6175,7 @@ by ruling and sits in `roadmap.md`'s `Later`.
 
 ## Selftest expectations still approximate (cut from M10.5)
 
-- [ ] **THREE PIECES OF THE DERIVED SKIP SETS WERE CUT FROM M10.5 AND ARE OPEN.**
+- [ ] **M10.6.4: THREE PIECES OF THE DERIVED SKIP SETS WERE CUT FROM M10.5 AND ARE OPEN.**
       `tests/integration/gates/selftest.cmake` derives each arm's thread, capability and task-budget
       skips from the ask the arm makes (`pool_can_host`, `objects_can_host`). What it does not yet
       derive:
@@ -11603,7 +11722,7 @@ update `SystemCoreClock` in the same step so the ns<->tick math stays coherent.
 - [ ] *(optional perf)* STM32F411 84 -> 96/100 -- deliberate sweet-spot today; only if we
       want the true ceiling. F302 is HW-capped (Nucleo has no HSE crystal);
       K64F/RX72M/F103 already at max; ESP32/RP2040/XMC now at max (silicon-validated).
-- [ ] **ESP32-C6: PLL bring-up 40 -> 160 MHz** (deferred out of M10.5 by the maintainer).
+- [ ] **M10.6.6: ESP32-C6: PLL bring-up 40 -> 160 MHz** (deferred out of M10.5 by the maintainer).
       KickOS sets no C6 clock tree, so every EN reset leaves the CPU on the 40 MHz crystal;
       the kernel reads the rate from PCR at boot, so the bring-up only has to switch the
       source. The C6 AMP judge accepts the crystal rate only and moves with it; the

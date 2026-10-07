@@ -72,17 +72,6 @@ void console_tx_init(struct console_tx_backend const* be, char* storage, uint32_
 // Nonzero once console_tx_init has run (the routing guard in console.cc reads it).
 int console_tx_armed(void);
 
-// Producer, thread context ONLY (it publishes and primes under IrqLock). A burst wider
-// than the ring is queued in ring-sized chunks with the wait between them UNMASKED, so
-// the masked window is one ring copy and not one transmission. Only when nothing drains
-// for a whole poll window does it fall back to a bounded synchronous burst (in order, TX
-// IRQ disabled) rather than dropping output. A concurrent producer can interleave at a
-// chunk boundary; each stream keeps its own order and loses no bytes. A console_tx_deinit
-// landing between two chunks stops the buffering: the remainder goes out synchronously on
-// the still-kernel-owned UART, which HANDING_OFF holds for a writer already inside the
-// chip-writer bracket, and is dropped only once a driver has the device.
-void console_tx_write(char const* buf, size_t n);
-
 // One line, indivisibly, or nothing: returns n or 0. NEVER WAITS UNDER THE MASK, so it is safe
 // from ISR and fault context. On a backend with no TX interrupt it returns once every byte queued
 // up to its line has left, whatever context sent them, which a wedged device bounds.
@@ -181,10 +170,6 @@ int console_owner_is_kernel(void);   // nonzero while the kernel owns the UART (
 void console_chip_writer_enter(void); // bracket a kernel-owned device poke
 void console_chip_writer_leave(void);
 int console_chip_writers(void);      // in-flight kernel chip writers (publish drain spin)
-
-// Nonzero while the kernel may still touch the UART. TRUE through a handover, unlike
-// console_owner_is_kernel: an in-flight writer finishing there has to reach the device.
-int console_chip_writable(void);
 
 // The console handover, in the two halves the drain has to sit between.
 //

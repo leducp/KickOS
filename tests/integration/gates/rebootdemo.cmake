@@ -16,7 +16,7 @@ if(KICKOS_ARCH STREQUAL "sim")
   # status, so the refusal line plus a dirty exit would still pass.
   add_test(NAME sim_reboot_declined
     COMMAND "${_reboot_script}" "$<TARGET_FILE:rebootdemo>")
-  set_tests_properties(sim_reboot_declined PROPERTIES TIMEOUT 20)
+  kickos_boot_timeout(sim_reboot_declined "${_reboot_script}")
 else()
   kickos_add_qemu_test(NAME ${_tag}_reboot_declined TARGET rebootdemo
     SCRIPT "${_reboot_script}")

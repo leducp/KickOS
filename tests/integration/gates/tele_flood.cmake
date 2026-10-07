@@ -14,5 +14,6 @@ if(KICKOS_ARCH STREQUAL "sim")
     COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/telemetry/check_flood.py"
             "$<TARGET_FILE:tele_flood>"
             "${PROJECT_SOURCE_DIR}/tools/kicktrace.py")
-  set_tests_properties(telemetry_ring_wrap PROPERTIES TIMEOUT 60)
+  # Above check_flood.py's own 60 s wait for the app.
+  set_tests_properties(telemetry_ring_wrap PROPERTIES TIMEOUT 70)
 endif()

@@ -83,9 +83,13 @@ namespace
         ASSERT_EQ(WEXITSTATUS(status), 0) << "see the arm's own failure text above";
     }
 
+    std::string const kQueued(kRing - 8u, 'L');
+
     // A running writer and a ring whose earlier lines, a lower writer's, fill it but for a few
-    // bytes: none has left yet.
-    std::string stage(int irq_line)
+    // bytes: none has left yet. `preempted`, where given, runs in the gap after the lower
+    // writer's insert and before its own drain, which on a backend with no TX interrupt is the
+    // only time its bytes sit queued.
+    void stage(int irq_line, GapAction preempted = nullptr)
     {
         darkseam::reset();
         darkseam::g_ring_backed = true;
@@ -101,11 +105,17 @@ namespace
         }
         EXPECT_EQ(sched::current(), writer);
         console_tx_init(&kBackend, g_storage, kRing, irq_line);
-        std::string const queued(kRing - 8u, 'L');
-        console_tx_write(queued.data(), queued.size());
-        EXPECT_EQ(g_pushes, 0u) << "fixture: a byte left before the writer ran";
+        if (preempted != nullptr)
+        {
+            run_in_chunk_gap(preempted, 1u);
+        }
+        EXPECT_EQ(console_tx_insert_line(kQueued.data(), kQueued.size(), 0),
+                  static_cast<int>(kQueued.size()));
+        if (preempted == nullptr)
+        {
+            EXPECT_EQ(g_pushes, 0u) << "fixture: a byte left before the writer ran";
+        }
         g_slot_free = true;
-        return queued;
     }
 
     std::string const kLine = "high priority line\n";
@@ -116,12 +126,14 @@ namespace
 TEST_F(ConsoleRoom, a_writer_the_ring_refuses_drains_it_itself_on_a_producer_drained_backend)
 {
     run_isolated([]() {
-        std::string const queued = stage(kNoTxLine);
-        wake_next_park([](Thread*) { g_writer_parked = true; });
-        EXPECT_EQ(kconsole_write_user(kLine.data(), kLine.size(), true),
-                  static_cast<int>(kLine.size()));
+        stage(kNoTxLine, []() {
+            g_slot_free = true;
+            wake_next_park([](Thread*) { g_writer_parked = true; });
+            EXPECT_EQ(kconsole_write_user(kLine.data(), kLine.size(), true),
+                      static_cast<int>(kLine.size()));
+        });
         EXPECT_FALSE(g_writer_parked) << "the writer waited for a drain only it could run";
-        EXPECT_EQ(darkseam::g_wire, queued + kLine);
+        EXPECT_EQ(darkseam::g_wire, kQueued + kLine);
     });
 }
 
@@ -130,7 +142,7 @@ TEST_F(ConsoleRoom, a_writer_the_ring_refuses_drains_it_itself_on_a_producer_dra
 TEST_F(ConsoleRoom, a_writer_the_ring_refuses_sleeps_until_the_tx_drain_frees_room)
 {
     run_isolated([]() {
-        std::string const queued = stage(kTxLine);
+        stage(kTxLine);
         wake_next_park([](Thread* parked) {
             g_park_kind = parked->wait_kind;
             EXPECT_EQ(darkseam::g_wire, "") << "a byte left before the drain ran";
@@ -140,7 +152,7 @@ TEST_F(ConsoleRoom, a_writer_the_ring_refuses_sleeps_until_the_tx_drain_frees_ro
                   static_cast<int>(kLine.size()));
         EXPECT_EQ(g_park_kind, WAIT_CONSOLE) << "the writer did not sleep on the console";
         console_tx_isr();
-        EXPECT_EQ(darkseam::g_wire, queued + kLine);
+        EXPECT_EQ(darkseam::g_wire, kQueued + kLine);
     });
 }
 
@@ -148,7 +160,7 @@ TEST_F(ConsoleRoom, a_writer_the_ring_refuses_sleeps_until_the_tx_drain_frees_ro
 TEST_F(ConsoleRoom, a_non_blocking_writer_the_ring_refuses_is_answered_at_once)
 {
     run_isolated([]() {
-        (void)stage(kTxLine);
+        stage(kTxLine);
         wake_next_park([](Thread*) {
             g_writer_parked = true;
             console_tx_isr();
@@ -163,7 +175,7 @@ TEST_F(ConsoleRoom, a_non_blocking_writer_the_ring_refuses_is_answered_at_once)
 TEST_F(ConsoleRoom, a_writer_whose_own_task_holds_the_uart_does_not_wait)
 {
     run_isolated([]() {
-        std::string const queued = stage(kTxLine);
+        stage(kTxLine);
         darkseam::g_window_free = false;
         wake_next_park([](Thread*) {
             g_writer_parked = true;
@@ -173,6 +185,6 @@ TEST_F(ConsoleRoom, a_writer_whose_own_task_holds_the_uart_does_not_wait)
                   static_cast<int>(kLine.size()));
         EXPECT_FALSE(g_writer_parked) << "the writer waited on a UART its own task holds";
         console_tx_isr();
-        EXPECT_EQ(darkseam::g_wire, queued);
+        EXPECT_EQ(darkseam::g_wire, kQueued);
     });
 }

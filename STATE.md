@@ -1026,8 +1026,8 @@ The whole point of this file. A green fleet pass says none of the following.
   the only thing that says so.
 - **THE CONSOLE HAS NO CROSS-CORE EXCLUSION ANYWHERE, AND A RED `qemu-riscv64-smp` UNDER LOAD IS
   THAT, NOT NEW BREAKAGE.** No `arch_console_write` backend excludes a second core: seven are bare
-  device loops and the other eleven reach `console_tx_write`, which holds the kernel lock for one
-  ring chunk and drops it between chunks. `kernel/init/console.cc` (`kconsole_write_impl`) states
+  device loops and the other eleven reach the burst producer (since deleted), which held the kernel
+  lock for one ring chunk and dropped it between chunks. `kernel/init/console.cc` (`kconsole_write_impl`) states
   the opposite -- "the chip transport locks internally" -- which is why the chip arm deliberately
   takes no lock, and that sentence is true of no backend. `console_chip_writer_enter`/`_leave`
   counts writers for the publish drain and excludes nothing. **The rate is load-dependent and only
@@ -4026,7 +4026,7 @@ xmc4800-relax, esp32c6-wroom (one-core, flat, and the AMP node 0 alone), esp32-w
 SMP, f302nucleo, f411disco and rx72m. Every capture passed its judge, rx72m's cxxtest only on a
 re-flash (below). Fault records came out whole, writers on a full ring lost no line on the
 TX-interrupt boards, and the wallclock image held a 5 s kernel sleep to within 40 us of the host's
-arrival stamps on every board it reached (2026-10-07, measured). The C6 AMP node-0 selftest images
+arrival stamps on every board it reached (2026-10-06, measured). The C6 AMP node-0 selftest images
 were captured by hand: the fleet pass takes only the partition's own image on that variant.
 
 **THE ESP32-C6 KERNEL CLOCK RAN FOUR TIMES SLOW SINCE ITS BRING-UP, AND NO GATE SAW IT.** MTIME

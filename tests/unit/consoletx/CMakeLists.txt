@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-# The interrupt-masked window of console_tx_write, which any unprivileged thread can drive
+# The interrupt-masked window of console_tx_insert_line, which any unprivileged thread can drive
 # through kos_kconsole_write. kernel/init/console_tx.cc is compiled here as the real kernel
 # translation unit (kickos_kernel's include path and definitions verbatim);
 # tests/unit/consoleseam answers the transport and tx_seam.cc the console-ownership

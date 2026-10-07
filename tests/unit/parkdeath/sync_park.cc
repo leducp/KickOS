@@ -28,7 +28,8 @@ namespace kickos
             void wait_on_the_semaphore()
             {
                 IrqLock lock;
-                sem_wait(lock, &g_sem);
+                uint32_t epoch = 0;
+                (void) sem_wait(lock, &g_sem, epoch);
             }
 
             void lock_the_mutex()

@@ -10,14 +10,9 @@ extern "C"
 {
     void console_tx_room_freed(void) {}
 
-    // Both ownership reads are pinned kernel-owned: this seam measures the RING, and the
-    // publish sequence is gated in tests/unit/consoleown/publish_handoff.cc.
+    // The ownership read is pinned kernel-owned: this seam measures the RING, and the publish
+    // sequence is gated in tests/unit/consoleown/publish_handoff.cc.
     int console_owner_is_kernel(void)
-    {
-        return 1;
-    }
-
-    int console_chip_writable(void)
     {
         return 1;
     }

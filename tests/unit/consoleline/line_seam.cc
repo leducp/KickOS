@@ -268,11 +268,6 @@ int console_owner_is_kernel(void)
     return 1;
 }
 
-int console_chip_writable(void)
-{
-    return 1;
-}
-
 void console_chip_writer_enter(void)
 {
 }

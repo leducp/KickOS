@@ -113,7 +113,7 @@ namespace kickos
         s->waiters = List{};
     }
 
-    void sem_wait(IrqLock& held, Semaphore* s)
+    bool sem_wait(IrqLock& held, Semaphore* s, uint32_t& epoch)
     {
         Thread* const c = sched::current();
         if (park_cancel_pending(c))
@@ -123,10 +123,11 @@ namespace kickos
         if (s->count > 0)
         {
             s->count--;
-            return;
+            return false;
         }
+        epoch = c->switch_count;
         wq_block(s->waiters, WAIT_SEM, s);
-        // The token was handed over directly by sem_post; there is nothing to decrement.
+        return true;
     }
 
     bool sem_trywait(Semaphore* s)
@@ -146,7 +147,8 @@ namespace kickos
         Thread* w = wq_pop_highest(s->waiters);
         if (w != nullptr)
         {
-            sched::wake(w); // the token goes straight to the waiter, count stays put
+            w->wait_result = 0; // the token goes straight to the waiter, count stays put
+            sched::wake(w);
             return true;
         }
         if (s->count >= KOS_SEM_COUNT_MAX)

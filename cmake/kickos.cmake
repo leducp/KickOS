@@ -491,7 +491,7 @@ endfunction()
 #   QEMU_MACHINE is always passed: check_fault_dump.sh reads an UNSET QEMU_MACHINE as "this
 #   is the sim, run natively", and most boards would otherwise take the mps2-an386 fallback.
 #   MACHINE overrides the board default. ARGS are extra script arguments after the ELF.
-#   BOOTS and WORK size the TIMEOUT, see kickos_qemu_timeout.
+#   BOOTS and WORK size the TIMEOUT, see kickos_boot_timeout.
 #   TARGET names an app target, whose image is $<TARGET_FILE:>.
 # ---------------------------------------------------------------------------
 function(kickos_add_qemu_test)
@@ -515,22 +515,22 @@ function(kickos_add_qemu_test)
     COMMAND "${CMAKE_COMMAND}" -E env ${_env}
             "${QT_SCRIPT}" "$<TARGET_FILE:${QT_TARGET}>" ${QT_ARGS})
   set_tests_properties("${QT_NAME}" PROPERTIES SKIP_RETURN_CODE 77)
-  kickos_qemu_timeout("${QT_NAME}" "${QT_SCRIPT}" BOOTS ${QT_BOOTS} WORK ${QT_WORK})
+  kickos_boot_timeout("${QT_NAME}" "${QT_SCRIPT}" BOOTS ${QT_BOOTS} WORK ${QT_WORK})
 endfunction()
 
 # ---------------------------------------------------------------------------
-# kickos_qemu_timeout(<test> <script> [BOOTS <n>] [WORK <s>])
-#   Register the TIMEOUT of a test booting the configured board's emulator as the charge
-#   tests/lib/gate.sh's boot_bound puts on its boots, plus one second, so that charge can refuse
-#   only a test whose BOOTS is miscounted. Each boot is bounded at the QEMU_TIMEOUT this
-#   configure sees, else at <script>'s own default, else at run_image's, and carries gate.sh's
-#   firmware allowance under uefi-pe and its stop. A ctest run under another QEMU_TIMEOUT needs
-#   a reconfigure.
+# kickos_boot_timeout(<test> <script> [BOOTS <n>] [WORK <s>])
+#   Register the TIMEOUT of a test booting the configured board's image, under its emulator or
+#   natively on the sim, as the charge tests/lib/gate.sh's boot_bound puts on its boots, plus one
+#   second, so that charge can refuse only a test whose BOOTS is miscounted. Each boot is bounded
+#   at the QEMU_TIMEOUT (on the sim, SIM_TIMEOUT) this configure sees, else at <script>'s own
+#   default, else at run_image's, and carries gate.sh's firmware allowance under uefi-pe and its
+#   stop. A ctest run under another bound needs a reconfigure.
 #
 #   BOOTS (default 1) counts the boots gate.sh charges, those of a script <script> runs
 #   included. WORK is what the test spends beside them, such as building the image it boots.
 # ---------------------------------------------------------------------------
-function(kickos_qemu_timeout test script)
+function(kickos_boot_timeout test script)
   cmake_parse_arguments(QB "" "BOOTS;WORK" "" ${ARGN})
   if(NOT DEFINED QB_BOOTS)
     set(QB_BOOTS 1)
@@ -539,23 +539,27 @@ function(kickos_qemu_timeout test script)
     set(QB_WORK 0)
   endif()
   set(_lib "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../tests/lib/gate.sh")
-  set(_default_re "(^: |boot_bound )\"\\$\\{QEMU_TIMEOUT:[-=][0-9]+\\}\"")
-  set(_bound "$ENV{QEMU_TIMEOUT}")
+  set(_var QEMU_TIMEOUT)
+  if(KICKOS_ARCH STREQUAL "sim")
+    set(_var SIM_TIMEOUT)
+  endif()
+  set(_default_re "(^: |boot_bound )\"\\$\\{${_var}:[-=][0-9]+\\}\"")
+  set(_bound "$ENV{${_var}}")
   if(_bound STREQUAL "")
     file(STRINGS "${script}" _bound REGEX "${_default_re}" LIMIT_COUNT 1)
   endif()
   if(_bound STREQUAL "")
     file(STRINGS "${_lib}" _bound REGEX "${_default_re}" LIMIT_COUNT 1)
   endif()
-  string(REGEX REPLACE "^.*QEMU_TIMEOUT:[-=]([0-9]+)}\"$" "\\1" _bound "${_bound}")
+  string(REGEX REPLACE "^.*${_var}:[-=]([0-9]+)}\"$" "\\1" _bound "${_bound}")
   file(STRINGS "${_lib}" _firmware REGEX "^KOS_UEFI_FIRMWARE_S=[0-9]+$")
   file(STRINGS "${_lib}" _ticks REGEX "^KOS_STOP_TICKS=[0-9]+$")
   string(REPLACE "KOS_UEFI_FIRMWARE_S=" "" _firmware "${_firmware}")
   string(REPLACE "KOS_STOP_TICKS=" "" _ticks "${_ticks}")
   foreach(_n IN ITEMS _bound _firmware _ticks)
     if(NOT "${${_n}}" MATCHES "^[0-9]+$")
-      message(FATAL_ERROR "kickos_qemu_timeout(${test}): ${_n} reads '${${_n}}', not whole "
-        "seconds, from QEMU_TIMEOUT, ${script} or ${_lib}")
+      message(FATAL_ERROR "kickos_boot_timeout(${test}): ${_n} reads '${${_n}}', not whole "
+        "seconds, from ${_var}, ${script} or ${_lib}")
     endif()
   endforeach()
   kickos_qemu_machine("${KICKOS_BOARD}" _env _machine)

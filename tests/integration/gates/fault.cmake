@@ -41,7 +41,7 @@ if(KICKOS_ARCH STREQUAL "sim")
   add_test(NAME fault_dump
     COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_fault_dump.sh" "$<TARGET_FILE:fault>"
             "${_fault_marker}" ${_fault_status})
-  set_tests_properties(fault_dump PROPERTIES TIMEOUT 15)
+  kickos_boot_timeout(fault_dump "${PROJECT_SOURCE_DIR}/tests/integration/check_fault_dump.sh")
 endif()
 
 # check_fault_dump.sh runs NATIVELY unless QEMU_MACHINE is set, so kickos_add_qemu_test must pass

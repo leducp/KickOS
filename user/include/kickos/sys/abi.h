@@ -77,7 +77,7 @@ enum kos_syscall_nr
     KOS_SYS_SEM_CREATE = 4,     // (initial, kos_cap_t* out) -> 0, or -KOS_E* (ENOMEM sem pool,
                                 //   EMFILE caller's cap table, EAGAIN task's sem budget,
                                 //   EINVAL/EFAULT)
-    KOS_SYS_SEM_WAIT = 5,       // (cap)   -> 0, or -KOS_EBADF/-KOS_EACCES
+    KOS_SYS_SEM_WAIT = 5,       // (cap)   -> 0, or -KOS_EBADF/-KOS_EACCES/-KOS_ECANCELED
     KOS_SYS_SEM_POST = 6,       // (cap)   -> 0, or -KOS_EBADF/-KOS_EACCES, or -KOS_EOVERFLOW
                                 //   with no waiter and the count at KOS_SEM_COUNT_MAX
     KOS_SYS_HANDLE_CLOSE = 17,  // (cap)   -> 0, -KOS_EBADF (bad cap), -KOS_EBUSY (own a held mutex)

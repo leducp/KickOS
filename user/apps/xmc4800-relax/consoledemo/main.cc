@@ -52,7 +52,7 @@ int main(int, char**)
     auto const w = kos::thread::create(worker, nullptr, "worker", WORKER_PRIO);
     if (not w.valid())
     {
-        printf("[consoledemo] worker spawn refused, errno %d\n", -w.error());
+        printf("[consoledemo] ERROR: worker spawn refused, errno %d\n", -w.error());
         return 1;
     }
     (void)w.join();

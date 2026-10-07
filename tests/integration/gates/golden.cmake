@@ -23,5 +23,5 @@ add_test(NAME ${_tag}_golden_system
           "${PROJECT_SOURCE_DIR}/tests/integration/check_golden_system.sh"
           "${PROJECT_BINARY_DIR}" "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}")
 set_tests_properties(${_tag}_golden_system PROPERTIES SKIP_RETURN_CODE 77)
-kickos_qemu_timeout(${_tag}_golden_system
+kickos_boot_timeout(${_tag}_golden_system
   "${PROJECT_SOURCE_DIR}/tests/integration/check_golden_system.sh" WORK 300)

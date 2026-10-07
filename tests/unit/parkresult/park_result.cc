@@ -58,6 +58,23 @@ namespace kickos
                 (void) sem_post(g_sem);
             }
 
+            // KOS_SYS_SEM_WAIT's shape: the park under the resolve's bracket, the result read
+            // after it, past the resume barrier.
+            int wait_on_the_semaphore()
+            {
+                Thread* const c = sched::current();
+                uint32_t epoch = 0;
+                {
+                    IrqLock lock;
+                    if (not sem_wait(lock, g_sem, epoch))
+                    {
+                        return 0;
+                    }
+                }
+                wq_confirm_resume(c, epoch);
+                return static_cast<int>(c->wait_result);
+            }
+
             // Every real waker in the tree writes a result; this one does not, which is what
             // leaves note 2's poison in place.
             void end_the_park_writing_nothing(Thread* parked)
@@ -126,25 +143,34 @@ namespace kickos
             EXPECT_EQ(holder->prio, PRIO_HOLDER) << "the owner's boost is reverted with the wait";
         }
 
-        // A semaphore park has no error channel at all: sem_wait returns void and reads no
-        // wait_result. The mechanism still demands its waker, because the park is real.
         TEST_F(ParkResult, a_posted_semaphore_park_hands_over_its_token)
+        {
+            Thread* holder = nullptr;
+            seat_waiter_over_holder(&holder);
+            g_sem = semaphore(nullptr);
+            wake_next_park(post_the_semaphore);
+
+            int const rc = wait_on_the_semaphore();
+
+            EXPECT_EQ(rc, 0) << "sem_post said the token was handed over";
+            EXPECT_EQ(g_sem->count, 0) << "the token went straight to the waiter";
+            EXPECT_TRUE(g_sem->waiters.head == nullptr) << "and it is off the queue";
+            EXPECT_STREQ(trace(), "switch2>1 switch1>2") << "the park switched away and back";
+        }
+
+        TEST_F(ParkResult, a_cancelled_semaphore_wait_returns_ecanceled)
         {
             Thread* holder = nullptr;
             Thread* const waiter = seat_waiter_over_holder(&holder);
             g_sem = semaphore(nullptr);
-            wake_next_park(post_the_semaphore);
+            wake_next_park(cancel_the_waiter);
 
-            {
-                IrqLock lock;
-                sem_wait(lock, g_sem);
-            }
+            int const rc = wait_on_the_semaphore();
 
-            EXPECT_EQ(g_sem->count, 0) << "the token went straight to the waiter";
-            EXPECT_TRUE(g_sem->waiters.head == nullptr) << "and it is off the queue";
-            EXPECT_EQ(waiter->wait_result, WAIT_RESULT_POISON)
-                << "sem_post writes no result, so the poison is what stays";
-            EXPECT_STREQ(trace(), "switch2>1 switch1>2") << "the park switched away and back";
+            EXPECT_EQ(rc, -KOS_ECANCELED) << "the cancel is what the return carries, not a token";
+            EXPECT_EQ(g_sem->count, 0) << "no token was taken or banked";
+            EXPECT_TRUE(g_sem->waiters.head == nullptr) << "the cancel took the waiter off the queue";
+            EXPECT_NE(waiter->cancel_kind, CANCEL_NONE) << "and marked it for its death point";
         }
 
         // A waker that ends the park without writing a result leaves the poison, so the

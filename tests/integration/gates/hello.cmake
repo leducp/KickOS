@@ -18,7 +18,8 @@ if(KICKOS_ARCH STREQUAL "sim")
     COMMAND "${CMAKE_COMMAND}" -E env
             "${PROJECT_SOURCE_DIR}/tests/integration/check_hello.py"
             "$<TARGET_FILE:hello>")
-  set_tests_properties(hello_demo PROPERTIES TIMEOUT 15)
+  # Above check_hello.py's own waits, 10 s for the exchanges and 5 s for the exit.
+  set_tests_properties(hello_demo PROPERTIES TIMEOUT 20)
 endif()
 
 # Every board with an emulator boots this image through the same script and reports under the

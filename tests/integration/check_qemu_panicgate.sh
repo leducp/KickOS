@@ -54,7 +54,7 @@ fi
 # The arm must have been reached, so a panic cannot be credited to an earlier trap
 # during ctors or bring-up.
 require_on_wire "[panicgate] case" "the app never reached its kos_panic call" case
-if has_e "=== (HARD|MPU|BUS) FAULT|=== RISC-V TRAP|MPU FAULT: thread"; then
+if has_e "$KOS_FAULT_RE"; then
     cfail fault "the kernel faulted instead of refusing the message pointer"
 fi
 require_on_wire "$expect" "expected panic line missing: $expect" line
