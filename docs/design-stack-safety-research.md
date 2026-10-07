@@ -3,7 +3,7 @@
 # Stack safety research
 
 > **Status: EXPLORATORY; M9.0 DECIDED.** The source survey, M8.9 audit and M9.0 experiments
-> are in [the research record](archive/M8-M9_stack_safety_research.md). The current stack
+> are in the research record (archived `M8-M9_stack_safety_research.md`). The current stack
 > and switch contracts are in [invariants](reference/invariants.md) and code.
 
 Keep per-thread kernel continuations. The M9.0 comparison did not justify replacing them

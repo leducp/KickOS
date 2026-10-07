@@ -3,7 +3,7 @@
 # M4.6 IRQ driver contract
 
 > **Status: LANDED.** The full design gate, per-chip analysis and validation record are in
-> [the M4 IRQ driver record](archive/M4_IRQ_driver_record.md). Its numbered sections remain there
+> the M4 IRQ driver record (archived `M4_IRQ_driver_record.md`). Its numbered sections remain there
 > for citations to the original decisions. For the current notification ABI, use
 > [IPC and notifications](reference/ipc-call-reply.md) and the code.
 

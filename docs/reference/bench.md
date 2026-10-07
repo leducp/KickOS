@@ -20,7 +20,7 @@ How a silicon capture is taken, and what a capture is allowed to claim. The scri
 | `tools/bench/bench-host.sh` | sourced: which machine the boards are on, how to run a command there, and THE bus enumeration |
 | `tools/bench/amp_peers.sh` | sourced: the other nodes' flash text windows of an own-image AMP node's build, which a capture of that image alone erases before the load so the node runs with no peer; only the RP2 boards' picotool load erases them, and it needs picotool 2.x and whole 4 KiB sectors, so any other board's capture refuses them |
 | `tools/bench/board-rows.sh` | sourced: THE per-board table, the probe row that decides presence and the console row a capture opens |
-| `tools/bench/exit_rows.py` | READ ONLY: extract the M9.7 emulator exit rows from `docs/archive/M9.7_exit_captures/`, its row pattern also matching the M8.12 format quoted in `docs/archive/M8.12_meas.md` lines 238-239; require every named capture and sampled row |
+| `tools/bench/exit_rows.py` | READ ONLY: extract the M9.7 emulator exit rows from archived `M9.7_exit_captures`, its row pattern also matching the M8.12 format quoted in archived `M8.12_meas.md` lines 238-239; require every named capture and sampled row |
 
 `bench.sh` never flashes. `bench-capture.sh` never builds and knows nothing about ssh.
 That split is what makes a remote pass honest: every refusal fires where the hardware is
@@ -688,7 +688,7 @@ Above one kernel core the bench prints one report per workload, each since the r
 it and labelled by a `tag`: 0 the call/reply sweep, 1 each throughput window, 2 one pinned
 ping-pong pair per core all at once, 3 an unpinned equal-priority pair beside round-robin
 spinners on wide masks, 4 the push probe, 5 the reseat probe. These are the workloads of
-`../archive/M9.4_rings_record.md` section G; the last five slots of the table above print here and not
+archived `M9.4_rings_record.md` section G; the last five slots of the table above print here and not
 in the ordinary report.
 
 THE PUSH PROBE GIVES A HANDOFF UP AFTER 2 S AND SAYS WHICH. Its hog spins on each round's two

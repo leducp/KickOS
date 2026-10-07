@@ -20,7 +20,7 @@
 # builds the preset.
 #
 # A `covers` row names the board that RUNS the gate, not that CI runs it: on rxv3 it is
-# witnessed on a developer box alone, recorded in TODO.md, "rxv3 IS IN NO CI JOB AT ALL".
+# witnessed on a developer box alone.
 
 covers   armv6m   microbit
 covers   armv7m   qemu

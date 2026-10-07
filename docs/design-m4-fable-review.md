@@ -3,7 +3,7 @@
 # M4 driver design risks
 
 > **Status: LANDED review.** The twelve original findings, verification notes and dated
-> outcomes are in [`archive/M4_adversarial_review.md`](archive/M4_adversarial_review.md).
+> outcomes are in archived `M4_adversarial_review.md`.
 > Finding numbers below remain stable for existing references.
 
 ## Settled findings

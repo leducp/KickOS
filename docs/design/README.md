@@ -3,8 +3,8 @@
 # Design documents by status
 
 The `../design-*.md` files state shipped designs, active work and exploratory proposals.
-Dated measurements, step logs and superseded reasoning belong in `../archive/` where a
-short design page links them. For code-synced behavior, use `../reference/` and the code.
+Dated measurements, step logs and superseded reasoning are archived in git (`../README.md`), where
+a short design page cites them. For code-synced behavior, use `../reference/` and the code.
 
 **Coverage is total: 51 documents = 31 LANDED + 11 ACTIVE + 9 EXPLORATORY + 0 SUPERSEDED.** Every
 `../design-*.md` appears in exactly one table, and no table names a file that does not exist.
@@ -48,7 +48,7 @@ different numbers; the current filenames use this order.
 | [`design-teensy-mpu-hang.md`](../design-teensy-mpu-hang.md) | Why an M7 stalled forever with no fault under enforcement, and the fixed-region wrap that fixed it |
 | [`design-unprivileged-root.md`](../design-unprivileged-root.md) | Root's unprivileged start and board limits; the five-stage record is archived |
 | [`design-m4-fable-review.md`](../design-m4-fable-review.md) | The live M4 risk constraints, with numbered findings and a link to the archived adversarial review |
-| [`design-flash-footprint.md`](../design-flash-footprint.md) | The footprint decision list: `-Os` rather than `-O1`/`-O2` (R2), the open 64-bit division helper (R3), the `.userheap` carve as policy rather than waste (R4), the `-Warray-bounds` pragma rather than `--param=min-pagesize=0`, and the standing LTO link defect. The numbers are a dated capture in [`archive/M4.5_footprint_meas.md`](../archive/M4.5_footprint_meas.md) |
+| [`design-flash-footprint.md`](../design-flash-footprint.md) | The footprint decision list: `-Os` rather than `-O1`/`-O2` (R2), the open 64-bit division helper (R3), the `.userheap` carve as policy rather than waste (R4), the `-Warray-bounds` pragma rather than `--param=min-pagesize=0`, and the standing LTO link defect. The numbers are a dated capture in archived `M4.5_footprint_meas.md` |
 | [`design-m4-driver-model.md`](../design-m4-driver-model.md) | How a driver is packaged: driver-lib class, service thread, or both (the ruling: both, service composed on the class) |
 | [`design-m4.6-irq-driver.md`](../design-m4.6-irq-driver.md) | IRQ capability and userspace UART rules; the original ABI and per-chip analysis are archived |
 | [`design-capability-table.md`](../design-capability-table.md) | Task-relative handles, possession rights and segmented reservation; the derivation is archived |

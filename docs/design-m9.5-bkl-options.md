@@ -13,11 +13,11 @@ The pinned x86 baseline has twelve guest cores on twelve distinct physical host
 cores. Independent IPC pairs contend on the BKL. In the one-fast-core 8-byte
 transaction, call + receive + reply spend about 79% of their locked cycles in
 handoff/parking, 1% in copying, and 20% elsewhere
-([phase record](archive/M9.5_x86_ipc_baseline.md)). A read-side optimization
+(phase record (archived `M9.5_x86_ipc_baseline.md`)). A read-side optimization
 cannot speed the mutating handoff merely by making a capability lookup cheaper.
 The owner-local experiment showed that bypassing global exclusion can help a
 purely local workload greatly, but its second protocol lost on an all-cross-core
-workload and was removed ([mixed record](archive/M9.5_x86_ipc_mixed.md)).
+workload and was removed (mixed record (archived `M9.5_x86_ipc_mixed.md`)).
 
 The evaluation rules are: one understandable exclusion and lifetime story;
 fixed storage; a stated maximum number of predecessors, retries and objects
@@ -81,7 +81,7 @@ CPUs 4-11 are the slower class, so comparisons across widths must account for
 which class is active. Both 8-byte and 256-byte requests and replies were
 checked. `remote pairs` counts clients on a different guest core from their
 server. The full matrix and evidence are in
-[the CLH measurement record](archive/M9.5_x86_clh.md).
+the CLH measurement record (archived `M9.5_x86_clh.md`).
 
 | Guest cores and placement | Remote pairs | Payload | Ticket calls/s | CLH calls/s | Change |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -125,7 +125,7 @@ matched multithreaded TCG runs found +1.4% yield throughput but -2.9% and
 -1.5% local IPC throughput at 8 and 256 bytes. The rates drifted between
 runs; TCG does not reproduce the physical ARM64 cache-coherence cost that
 motivated CLH on x86. The tested exchange is reviewable as an archival patch,
-with the full measurements in [the ARM64 record](archive/M9.5_arm64_clh_tcg.md).
+with the full measurements in the ARM64 record (archived `M9.5_arm64_clh_tcg.md`).
 The shipped ARM64 BKL remains ticket until physical A-class data supports a
 change.
 
@@ -162,7 +162,7 @@ CLH gained 1.2% on this deliberately contended two-core workload. The extra
 tail-exchange code and per-core request state do not earn their maintenance
 cost for this small gain, so LX6 retains ticket arbitration. The captures
 behind every LX6 figure here are in
-[archive/M9.5_lx6_clh.md](archive/M9.5_lx6_clh.md). The silicon
+archived `M9.5_lx6_clh.md`. The silicon
 result does not predict ARM64 physical throughput, which remains unmeasured.
 
 The tail exchange is not the same primitive on all three backends. On LX6,

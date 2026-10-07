@@ -16,7 +16,7 @@ endpoints. To preserve the current ABI, the cut must admit the slow path,
 cross-core peers, deadlines, cancellation, last-WAIT-cap close, server death,
 reply-cap close, priority donation and thread migration. Restricting it to a
 fast local pair recreates the owner-local second path that was already measured
-and removed ([mixed result](archive/M9.5_x86_ipc_mixed.md)). An endpoint lock
+and removed (mixed result (archived `M9.5_x86_ipc_mixed.md`)). An endpoint lock
 alone cannot be the ownership rule for all of these paths.
 
 | Operation | State read or changed in one current `IrqLock` span |

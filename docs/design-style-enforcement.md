@@ -82,10 +82,9 @@ replacing it: it tells whoever is already in the file what to fix on the way pas
 third party over a heuristic.
 
 It never rewrites a file (no `--fix`), owns no layout rule (Allman, indent, pointer
-alignment, wrapping), keeps no baseline or count file, and takes no in-file suppression marker. Two
-exemptions only, each named in the source with its reason, both unauthored: `LICENSE` (upstream text,
-Latin-1 bytes, byte-exact) and `docs/archive/` (captures the archive convention forbids editing); an
-authored file never gets one.
+alignment, wrapping), keeps no baseline or count file, and takes no in-file suppression marker. One
+exemption only, named in the source with its reason and unauthored: `LICENSE` (upstream text,
+Latin-1 bytes, byte-exact); an authored file never gets one.
 
 ## 4. Why each alternative loses
 

@@ -3,7 +3,7 @@
 # Capability table
 
 > **Status: LANDED.** The design derivation, fleet sizing, old alternatives and staged
-> implementation are in [the capability-table record](archive/M4_capability_table_record.md).
+> implementation are in the capability-table record (archived `M4_capability_table_record.md`).
 > For current behavior use [architecture](reference/architecture.md),
 > [invariants](reference/invariants.md) and the code.
 
@@ -20,6 +20,6 @@ section 8 records the concurrency hazards considered for the later multicore wor
 
 ## 8. Multicore audit
 
-[The original section 8](archive/M4_capability_table_record.md) inventories cross-core
+The original section 8 (archived `M4_capability_table_record.md`) inventories cross-core
 publication and lifetime hazards. The shared-kernel contract now resolves capability
 references under one continuous lock; see [the multicore design](design-multicore.md).

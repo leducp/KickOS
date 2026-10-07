@@ -3,7 +3,7 @@
 # Kill and slay
 
 > **Status: LANDED.** The original mechanism, mutation record and corrections are in
-> [the M4.8.4 record](archive/M4_kill_and_slay_record.md). Read its section 14 before using
+> the M4.8.4 record (archived `M4_kill_and_slay_record.md`). Read its section 14 before using
 > an earlier proposal there. Current behavior is in [the ABI](../user/include/kickos/sys/abi.h),
 > [invariants](reference/invariants.md) and code.
 

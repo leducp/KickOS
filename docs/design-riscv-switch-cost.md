@@ -72,7 +72,7 @@ switch that costs nothing at all. Against the two real denominators:
 | denominator | cycles | eligible switches | ceiling if the save were FREE |
 | --- | --- | --- | --- |
 | 8 B call/reply round trip (6130 MTIME ticks, which count CPU cycles) | 6130 | 1 | **2.7 percent** |
-| ping-pong handoff (13406 ctx-sw/s at 40 MHz; `docs/archive/M8.8_meas.md` 201 reads 53626 through the 160 MHz conversion) | 2984 | 1 | **5.6 percent** |
+| ping-pong handoff (13406 ctx-sw/s at 40 MHz; archived `M8.8_meas.md` 201 reads 53626 through the 160 MHz conversion) | 2984 | 1 | **5.6 percent** |
 
 A cooperative frame is 13 words each way against 30, and it still pays the `tp` derive and
 the deferred PMP commit; it removes the `mscratch` swap, the `gp` anchor, the `mcause` demux,

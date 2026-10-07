@@ -351,8 +351,8 @@ arms not yet moved off root.
 RAM (data, bss, the heap carve), the arena the boot and the init spend (`kickos_compose cost` and
 the chip script's arena asserts), and the thread slots left under `KICKOS_MAX_THREADS`. **The
 instrument** is `size -A` over each linked ELF, B and C as deltas against A from the same tree
-with the stamp masked as 1.4 masks it, and A built twice as the null control. The table goes to
-`docs/archive/` with the presets, toolchain and tree it was taken on.
+with the stamp masked as 1.4 masks it, and A built twice as the null control. The table went to
+archived `M10.5_smallest_boards_meas.md` with the presets, toolchain and tree it was taken on.
 
 **What the selftest as a task costs is decided here too, per board.** Run by the init rather than
 as root, it spends a task slot and its entry thread from `KICKOS_MAX_THREADS`, where root's slot
@@ -777,7 +777,7 @@ read and write on RMT and IO_MUX, which are the kernel's, on HP SRAM and on ever
 including INTPRI, and the LP node's slice and window were REE2's, so every DMA master reached them.
 The LP reset-vector row stays at 0x7000_0000, which Table 5.3-1 leaves reserved: LP_APM sees the
 LP CPU's reset fetch from LP SRAM (0x5000_0000) at that alias, as the archived probe capture
-`docs/archive/M9.9_lp_probe_captures/m99probe12.log` shows, and the chip file cites it.
+archived `M9.9_lp_probe_captures/m99probe12.log` shows, and the chip file cites it.
 
 **The RP2350's ACCESSCTRL** (RP2350 datasheet, 10.6). One register per peripheral at 0x4006_0000
 plus the offsets of Table 911. Node 0, Secure and privileged, writes each before it launches the

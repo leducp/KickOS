@@ -209,7 +209,7 @@ driver thread is UNPRIVILEGED:
 - **XMC4800 USIC0-CH1** -- word size, bit order and the CS framing are in `SCTR`/`PCR` and
   are per-device. Rate (`FDR`, `BRG`) and CPOL/CPHA (`BRG.SCLKCFG`) are NOT: those registers
   are write-privileged-only at the bus and an unprivileged store to them is silently
-  discarded (measured on silicon: `../archive/M4_unprivileged_root_record.md` section 9,
+  discarded (measured on silicon: archived `M4_unprivileged_root_record.md` section 9,
   `user/apps/xmc4800-relax/pvprobe`). `kos_spi_bus_open` fixes them, and every device on that
   bus shares one rate and mode 0, so the engine REFUSES (`-KOS_ENOTSUP`) any non-zero `cfg.hz`
   and any `CPOL`/`CPHA` bit rather than dropping them. `cfg.hz == 0` asks for the rate the

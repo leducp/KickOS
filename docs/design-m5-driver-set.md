@@ -58,7 +58,7 @@ two-thread `irq_loop`/`serve_loop` framework, so THAT much is silicon-judged. Wh
 the port contract itself: back-pressure with a real producer, baud mismatch, and overrun on a
 controller that can actually overrun.
 
-`archive/M4_IRQ_driver_record.md` records this as a strength, "all CI-gated against a real driver", and
+archived `M4_IRQ_driver_record.md` records this as a strength, "all CI-gated against a real driver", and
 against the loopback that is true. What the row does not support is the reading that matters:
 **a gate over a cooperative simulated device does not judge a contract whose hard cases are all
 uncooperative hardware.** This is the same class of finding the KickCAT reality check produced, and

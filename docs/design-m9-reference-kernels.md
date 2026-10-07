@@ -3,7 +3,7 @@
 # M9 reference-kernel survey: design use
 
 > **Status: EXPLORATORY.** The nineteen source-by-source rows and their dated
-> citations are in [`archive/M9_reference_kernel_survey.md`](archive/M9_reference_kernel_survey.md).
+> citations are in archived `M9_reference_kernel_survey.md`.
 > This summary commits KickOS to no borrowed locking scheme.
 
 The survey compared lock domains and acquisition order, remote wake, migration,
