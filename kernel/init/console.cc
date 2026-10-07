@@ -159,13 +159,6 @@ extern "C" int console_owner_is_kernel(void)
     return static_cast<int>(g_console_state == ConsoleState::KERNEL_OWNED);
 }
 
-// TRUE through a handover as well as at rest: the writer a handover is draining must still
-// reach the device, which no driver has taken yet.
-extern "C" int console_chip_writable(void)
-{
-    return static_cast<int>(g_console_state != ConsoleState::USER_OWNED);
-}
-
 // Publish's first half. Leaves the UART kernel-owned so a writer already inside the bracket
 // can finish on it. The caller MUST drain console_chip_writers to zero before
 // console_owner_set_user, else that writer lands on the driver's UART, and the drain

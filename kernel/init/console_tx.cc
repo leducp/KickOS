@@ -5,9 +5,7 @@
 // has one and in the producer's own context where it has none.
 //
 // THE UNIT OF ATOMICITY IS A LINE, and console_tx_insert_line holds it: one IrqLock spans the
-// whole copy, or the line is refused. console_tx_write promises no such thing, its IrqLock
-// spanning ONE ring chunk, so a write wider than the free space can be interleaved at a chunk
-// boundary by a concurrent producer.
+// whole copy, or the line is refused.
 
 #include <kickos/irq_route.h>
 #include <kickos/console_tx.h>
@@ -110,108 +108,6 @@ namespace
         return false;
     }
 
-    // Caller MUST have the TX IRQ disabled. On a stuck channel this DROPS the undrained
-    // bytes rather than hang.
-    void drain_sync()
-    {
-        ConsoleTxRing& r = tx();
-        uint32_t const head = r.head;
-        uint32_t tail = r.tail;
-        while (tail != head)
-        {
-            if (not wait_slot())
-            {
-                r.tail = head;
-                return;
-            }
-            r.backend->push(static_cast<uint8_t>(r.buf[tail]));
-            // Publish AFTER each byte, never once at the end. A synchronous CPU fault
-            // (illegal instruction, MPU, bus) is not gated by the interrupt mask, so it can
-            // land mid-loop, and its handler flushes again; a stale tail would make that
-            // flush re-push bytes already sent, doubling output before the panic banner.
-            tail = (tail + 1u) & r.mask;
-            r.tail = tail;
-        }
-    }
-
-    // Runs at the CALLER's interrupt level with no IrqLock held, so the drain ISR can run.
-    // False means nothing drained in the whole window, so the ISR cannot run: a stuck
-    // channel, or a caller that reached console_tx_write with interrupts already masked.
-    bool wait_space()
-    {
-        ConsoleTxRing& r = tx();
-        for (uint32_t i = 0; i < DRAIN_POLL_CAP; i++)
-        {
-            if (r.space() != 0)
-            {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    // Caller MUST hold IrqLock. Copies as much of [buf, buf+n) as the ring will take and
-    // returns that count; 0 means full. Never caches head across a call, so a producer
-    // that ran during a lock gap is picked up.
-    uint32_t enqueue_locked(char const* buf, size_t n)
-    {
-        ConsoleTxRing& r = tx();
-        uint32_t chunk = r.space();
-        if (n < chunk)
-        {
-            chunk = static_cast<uint32_t>(n);
-        }
-        if (chunk == 0)
-        {
-            return 0;
-        }
-        bool const was_empty = (r.used() == 0);
-        uint32_t idx = r.head;
-        for (uint32_t i = 0; i < chunk; i++)
-        {
-            r.buf[idx] = buf[i];
-            idx = (idx + 1u) & r.mask;
-        }
-        KICKOS_CONSOLE_TX_BARRIER();
-        r.head = idx;
-        r.queued = r.queued + chunk;
-        r.backend->irq_enable();
-        // With a transition-triggered TX interrupt, enabling the IRQ on an idle channel
-        // raises nothing: only this byte's completion event starts the drain ISR.
-        //   RX SCI TXI: REQUIRED. RX72M HW manual Rev.1.20 section 42.12.2(1) p.2308, a
-        //               TXI request is not generated "by setting the SCR.TIE bit to 1 while
-        //               the setting of the SCR.TE bit is 1". Same page, Note 2: gate a burst
-        //               at the ICU and NEVER by toggling TIE, because clearing TIE discards
-        //               an internally retained request.
-        //   XMC TBIEN:  REQUIRED. The USIC event is edge-per-word (RM V1.3 18.2.2.4
-        //               p.18-18), so an idle channel produces no event at all.
-        //   K64F TDRE:  harmless immediate send, level-asserted while the buffer is empty
-        //               (RM Rev.4 52.3.5; S1 resets to 0xC0 untransmitted).
-        //   PL011 FEN=0: the priming runs there on the analogy above, not on a citation.
-        uint32_t const tail = r.tail;
-        if (was_empty and idx != tail and r.backend->slot_free() != 0)
-        {
-            r.backend->push(static_cast<uint8_t>(r.buf[tail]));
-            r.tail = (tail + 1u) & r.mask;
-        }
-        return chunk;
-    }
-
-    // Runs with interrupts UNMASKED: a synchronous write is the long operation this file
-    // keeps out of a masked span. The re-read is console_chip_writable, which stays true
-    // through a handover: this caller can be the in-flight writer a publish is draining, and
-    // refusing it truncates the message it is finishing.
-    void write_unbuffered(char const* buf, size_t n)
-    {
-        if (console_chip_writable() == 0)
-        {
-            return;
-        }
-        console_chip_writer_enter();
-        arch_console_write_sync(buf, n);
-        console_chip_writer_leave();
-    }
-
     void console_tx_isr_trampoline(void*) { console_tx_isr(); }
 }
 
@@ -290,8 +186,17 @@ static __attribute__((noinline)) bool insert_locked(char const* buf, size_t n, i
     r.inserting = false;
     r.backend->irq_enable();
 
-    // A transition-triggered TX interrupt raises nothing on an idle channel, so the first
-    // byte is pushed here. Citations in enqueue_locked.
+    // With a transition-triggered TX interrupt, enabling the IRQ on an idle channel raises
+    // nothing: only this byte's completion event starts the drain ISR.
+    //   RX SCI TXI: REQUIRED. RX72M HW manual Rev.1.20 section 42.12.2(1) p.2308, a TXI request
+    //               is not generated "by setting the SCR.TIE bit to 1 while the setting of the
+    //               SCR.TE bit is 1". Same page, Note 2: gate a burst at the ICU and NEVER by
+    //               toggling TIE, because clearing TIE discards an internally retained request.
+    //   XMC TBIEN:  REQUIRED. The USIC event is edge-per-word (RM V1.3 18.2.2.4 p.18-18), so an
+    //               idle channel produces no event at all.
+    //   K64F TDRE:  harmless immediate send, level-asserted while the buffer is empty (RM Rev.4
+    //               52.3.5; S1 resets to 0xC0 untransmitted).
+    //   PL011 FEN=0: the priming runs there on the analogy above, not on a citation.
     uint32_t const tail = r.tail;
     if (was_empty and not r.pushing and idx != tail and r.backend->slot_free() != 0)
     {
@@ -493,82 +398,6 @@ int console_tx_room_want(char const* buf, size_t n, int crlf)
     return 1;
 }
 
-void console_tx_write(char const* buf, size_t n)
-{
-    ConsoleTxRing& r = tx();
-    // Zero length would skip the chunk loop and fall into the synchronous fallback below,
-    // draining a whole queued ring inside one masked span.
-    if (n == 0)
-    {
-        return;
-    }
-    if (not r.armed)
-    {
-        write_unbuffered(buf, n);
-        return;
-    }
-
-    // The wait between chunks runs UNMASKED, so the masked window is one ring copy and not
-    // one transmission: an unprivileged kos_kconsole_write cannot hold interrupts off for
-    // the line time of its own output.
-    size_t off = 0;
-    while (off < n)
-    {
-        uint32_t queued = 0;
-        bool armed_now = false;
-        {
-            kickos::IrqLock lock;
-            armed_now = r.armed;
-            if (armed_now)
-            {
-                queued = enqueue_locked(buf + off, n - off);
-            }
-        }
-        // console_tx_deinit can land in the gap between two chunks. A byte queued after it
-        // detaches the handler is never drained and flush_sync cannot recover it, and
-        // enqueue_locked's irq_enable would undo its irq_disable and leave a latched pend
-        // the driver takes as spurious. So `armed` is re-read under the SAME lock as the
-        // enqueue. The remainder is the tail of a message already on the wire, so it must
-        // go out rather than drop: HANDING_OFF keeps the UART writable until this returns.
-        if (not armed_now)
-        {
-            write_unbuffered(buf + off, n - off);
-            return;
-        }
-        off += queued;
-        if (off == n)
-        {
-            return;
-        }
-        if (not wait_space())
-        {
-            break;
-        }
-    }
-
-    // Only reachable when nothing drained for a whole DRAIN_POLL_CAP window, so the ISR is
-    // not running. drain_sync runs first to keep the bytes already queued ahead of the
-    // remainder, including any a concurrent producer added.
-    {
-        kickos::IrqLock lock;
-        if (r.armed)
-        {
-            r.backend->irq_disable();
-            drain_sync();
-            for (size_t i = off; i < n; i++)
-            {
-                if (not wait_slot())
-                {
-                    return; // stuck TX: give up rather than hang
-                }
-                r.backend->push(static_cast<uint8_t>(buf[i]));
-            }
-            return;
-        }
-    }
-    write_unbuffered(buf + off, n - off);
-}
-
 #if KICKOS_BENCH
 uint32_t console_tx_used(void)
 {
@@ -656,12 +485,28 @@ void console_tx_flush_sync(void)
         return;
     }
     // Under IrqLock so the TX-IRQ disable and the [tail, head) snapshot are atomic against
-    // the drain ISR and any thread producer: a producer racing between the disable and
-    // drain_sync's head read could re-enable the IRQ or extend head mid-drain. Nests under
-    // kpanic_enter's own mask.
+    // the drain ISR and any thread producer: a producer racing between the disable and the
+    // head read could re-enable the IRQ or extend head mid-drain. Nests under kpanic_enter's
+    // own mask. On a stuck channel the undrained bytes are DROPPED rather than hang.
     kickos::IrqLock lock;
     r.backend->irq_disable();
-    drain_sync();
+    uint32_t const head = r.head;
+    uint32_t tail = r.tail;
+    while (tail != head)
+    {
+        if (not wait_slot())
+        {
+            r.tail = head;
+            return;
+        }
+        r.backend->push(static_cast<uint8_t>(r.buf[tail]));
+        // Publish AFTER each byte, never once at the end. A synchronous CPU fault (illegal
+        // instruction, MPU, bus) is not gated by the interrupt mask, so it can land mid-loop,
+        // and its handler flushes again; a stale tail would make that flush re-push bytes
+        // already sent, doubling output before the panic banner.
+        tail = (tail + 1u) & r.mask;
+        r.tail = tail;
+    }
 }
 
 // Call once, after irq_init(). The TX line's priority must land in the IrqLock-maskable
@@ -698,9 +543,9 @@ void console_buffer_init(void)
 }
 
 // Relinquish the buffered TX path so a userspace driver can take the UART. One IrqLock
-// makes the four steps atomic against the drain ISR. console_tx_write holds the lock one
-// chunk at a time, so it re-reads `armed` under the same lock as each enqueue. The disarmed
-// guard also covers polled-only chips (mps2/virt/nrf51 never arm) and a re-publish. The
+// makes the four steps atomic against the drain ISR, and an insert reads `armed` under the
+// same lock as its copy. The disarmed guard also covers polled-only chips (mps2/virt/nrf51
+// never arm) and a re-publish. The
 // caller holds the state at HANDING_OFF across this, never USER_OWNED, so the flush here and
 // a synchronous fault mid-deinit both act on a kernel-owned, kernel-inited UART.
 void console_tx_deinit(void)

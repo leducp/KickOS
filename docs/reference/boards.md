@@ -2639,7 +2639,7 @@ where LMA and VMA DO agree -- so the divergence is specific to the section carry
 `_sidata` value differs between the two captures below (`0x40806810` here, `0x408064c8` in the
 first-fault image) because it tracks the end of `.text`, which moves with the image; the defect is
 that it is outside every loaded segment in both. `src+1c` landed on `g_tx.armed`, statically false,
-so `console_tx_write` called
+so the burst producer (since deleted) called
 `g_tx.backend->irq_enable` through NULL. The first fault:
 
 ```

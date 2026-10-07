@@ -20,8 +20,7 @@ extern "C"
     // console.cc reaches the real ring producer.
     int arch_console_write(char const* buf, size_t n)
     {
-        console_tx_write(buf, n);
-        return 1;
+        return console_tx_insert_line(buf, n, KICKOS_CONSOLE_CRLF);
     }
 
     void arch_console_flush_sync(void)

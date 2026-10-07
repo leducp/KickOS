@@ -18,6 +18,7 @@ namespace
 {
     namespace apm = kickos::esp32c6::apm;
     namespace reg = kickos::esp32c6::reg::apm;
+    namespace mmap = kickos::esp32c6::mmap;
 
     constexpr uint8_t RW = KICKOS_GATE_R | KICKOS_GATE_W;
     constexpr uint8_t RWX = KICKOS_GATE_R | KICKOS_GATE_W | KICKOS_GATE_X;
@@ -160,9 +161,15 @@ namespace
 
     // Kept from REE0: the kernel-owned HP blocks of platform/esp32c6/chip.yaml and HP SRAM.
     Block const KERNEL_BLOCKS[] = {
-        {"RMT", 0x60006000u, 0x1000u},     {"INTMTX", 0x60010000u, 0x1000u}, {"IO_MUX", 0x60090000u, 0x1000u},
-        {"PCR", 0x60096000u, 0x1000u},     {"HP_TEE", 0x60098000u, 0x1000u}, {"HP_APM", 0x60099000u, 0x1000u},
-        {"INTPRI", 0x600C5000u, 0x1000u},  {"HP SRAM", 0x40800000u, 0x80000u},
+        {"RMT", mmap::RMT_BASE, mmap::RMT_SIZE},
+        {"INTMTX", mmap::INTMTX_BASE, mmap::INTMTX_SIZE},
+        {"IO_MUX", mmap::IO_MUX_BASE, mmap::IO_MUX_SIZE},
+        {"GPIO_MATRIX", mmap::GPIO_MATRIX_BASE, mmap::GPIO_MATRIX_SIZE},
+        {"PCR", mmap::PCR_BASE, mmap::PCR_SIZE},
+        {"HP_TEE", mmap::HP_TEE_BASE, mmap::HP_TEE_SIZE},
+        {"HP_APM", mmap::HP_APM_BASE, mmap::HP_APM_SIZE},
+        {"INTPRI", mmap::INTPRI_BASE, mmap::INTPRI_SIZE},
+        {"HP SRAM", mmap::HP_SRAM_BASE, 0x80000u},
     };
 
     constexpr uint32_t REE0_BITS = reg::ATTR_MODE_MASK << reg::attr_shift(reg::MODE_REE0);
@@ -331,14 +338,21 @@ TEST(C6Apm, Ree0PastNode0sGrantsIsCaught)
 {
     FakeBus const bus = programmed(AMPPING_OPEN, count_of(AMPPING_OPEN), apm::NODE_MODE);
     size_t past = 0;
+    std::vector<std::string> kernel;
     for (std::string const& b : breaches(bus, AMPPING_OPEN, count_of(AMPPING_OPEN), AMPPING_NODE0, 1u))
     {
         if (b.find("past every device") != std::string::npos)
         {
             past++;
         }
+        else if (b.find(" to REE0") != std::string::npos)
+        {
+            kernel.push_back(b);
+        }
     }
     EXPECT_EQ(past, 7u);
+    // Each open row stops at a kernel block's edge but the GPIO row, which runs over the matrix.
+    EXPECT_EQ(kernel, std::vector<std::string>{"gate 0 region 5 opens GPIO_MATRIX to REE0"});
 }
 
 TEST(C6Apm, TheLpProbeKeepsItsRegions)
@@ -426,7 +440,6 @@ TEST(C6Apm, RefusesWhatTheApmCannotHold)
 
 TEST(C6Apm, TheModeRegistersLieInTheChipFilesTees)
 {
-    namespace mmap = kickos::esp32c6::mmap;
     EXPECT_LT(reg::HP_TEE_M0_MODE_CTRL - mmap::HP_TEE_BASE, mmap::HP_TEE_SIZE);
     EXPECT_LT(reg::LP_TEE_M0_MODE_CTRL - mmap::LP_TEE_BASE, mmap::LP_TEE_SIZE);
 }
@@ -435,7 +448,6 @@ TEST(C6Apm, TheModeRegistersLieInTheChipFilesTees)
 // (Table 5.3-2, p.176) and inside the chip file's windows.
 TEST(C6Apm, TheRegionControllersLieInTheChipFilesApms)
 {
-    namespace mmap = kickos::esp32c6::mmap;
     EXPECT_EQ(reg::HP_APM_BASE, 0x60099000u);
     EXPECT_EQ(reg::LP_APM_BASE, 0x600B3800u);
     for (uintptr_t const gate : {reg::HP_APM_BASE, reg::LP_APM_BASE})

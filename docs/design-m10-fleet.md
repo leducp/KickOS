@@ -510,7 +510,7 @@ images: ten on the two STM32 parts, one region each; five on `microbit`, whose b
 the arena after `.bss`; one on an enforcing XMC4800, whose arena spans DSRAM2; five on an
 enforcing ESP32-C6 bench build and four on the other enforcing or AMP builds of that chip; two on
 every ESP32 build. Its bloat audit stays
-in M10's tail.
+in M10.6.
 
 ### 4.5 Every service list becomes a composition
 
@@ -862,7 +862,7 @@ updates every page that names what it deletes, since the doc-name gate requires 
 `design-m10-composition.md`'s schema for every field it adds: the `mprotect` unit, `host` devices,
 the baseless arena, `blocks`, `link`, `interrupts`, `cycle_counter`, `c`, `symbol`, `manual`,
 `ref`, the partition gate's list, `ranges`, `regions` and registers, the `/amp` namespace,
-partition regions and the `port` grant kind. **To M10's tail**: the selftest's bloat audit and the
+partition regions and the `port` grant kind. **To M10.6**: the selftest's bloat audit and the
 ESP32's code space, unless the selftest's composition overflows an ESP32 image, which a further
 region answers first. **Not assigned anywhere**: the i.MX 8M Plus's M7 port and the RDC
 programming it would need, DMA, and the boot format.

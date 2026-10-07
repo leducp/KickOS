@@ -56,7 +56,8 @@ void kos_sleep_ns(uint64_t ns);
 // Also returns EINVAL for initial outside [0, KOS_SEM_COUNT_MAX] or a null/
 // misaligned out_cap, and EFAULT if out_cap is not writable (negative codes).
 int kos_sem_create(int initial, kos_cap_t* out_cap);
-// 0, or -KOS_EBADF (bad/stale/closed cap) / -KOS_EACCES (cap lacks WAIT/SIGNAL).
+// 0, or -KOS_EBADF (bad/stale/closed cap) / -KOS_EACCES (cap lacks WAIT/SIGNAL). A wait
+// also answers -KOS_ECANCELED when the waiter is cancelled, and then holds no token.
 int kos_sem_wait(kos_cap_t sem);
 // Also -KOS_EOVERFLOW with no waiter and the count at KOS_SEM_COUNT_MAX; the token is
 // not banked.
@@ -471,7 +472,8 @@ uint64_t kos_doorbell_probe(uintptr_t op, uintptr_t a1);
 uintptr_t kos_sched_probe(uintptr_t op);
 // Test-only: enable a controller line directly, so an injected raise reaches the
 // default handler on masked-by-default controllers (ARM NVIC, RX). Needs KOS_AUTH_IRQ.
-int kos_irq_unmask(int line); // 0, or -KOS_EPERM (no KOS_AUTH_IRQ) / -KOS_EINVAL (bad line)
+// 0, or -KOS_EPERM (no KOS_AUTH_IRQ, or a line the kernel drives) / -KOS_EINVAL (bad line).
+int kos_irq_unmask(int line);
 #endif
 
 // Tier-1 IRQ-as-event. The line IS a capability: claiming it needs KOS_AUTH_IRQ, and the

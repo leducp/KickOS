@@ -163,11 +163,17 @@ macro(kickos_toolchain_newlib_flags)
       else()
         set(_kos_required "${_kos_newlib_link}")
       endif()
-      string(FIND "$CACHE{${_kos_cached}}" "${_kos_required}" _kos_at)
+      # An empty needle is skipped, not searched: CMake 4.4.3 as the GitHub runner ships it finds
+      # no empty string in an empty value.
+      set(_kos_at 0)
+      if(NOT _kos_required STREQUAL "")
+        string(FIND "$CACHE{${_kos_cached}}" "${_kos_required}" _kos_at)
+      endif()
       if(_kos_at EQUAL -1)
-        message(FATAL_ERROR "KickOS: ${_kos_cached} lacks the selected pinned newlib "
-          "flags: the build directory predates them, or a -D${_kos_cached} replaced "
-          "them. Configure a fresh build directory without that -D.")
+        message(FATAL_ERROR "KickOS: ${_kos_cached} is '$CACHE{${_kos_cached}}', which lacks "
+          "the selected pinned newlib flags '${_kos_required}': the build directory predates "
+          "them, or a -D${_kos_cached} replaced them. Configure a fresh build directory "
+          "without that -D.")
       endif()
       # The other profile's flag, where the selected one requires none: full newlib's flags
       # are empty, so a tree first configured nano would pass the check above.

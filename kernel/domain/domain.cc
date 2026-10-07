@@ -161,7 +161,11 @@ namespace kickos
         return &kernel().domains[KDOM_DEFAULT_USER_INDEX];
     }
 
-    // Same codec as SlotPool's handle: generation in the high half, slot index in the low.
+    // Same codec as SlotPool's handle: generation in the high half, slot index in the low. The
+    // handle spends all 32 bits, so an aged one is negative and no decoder may test its sign;
+    // -1, the null domain's handle, is refused by its all-ones index.
+    static_assert(KICKOS_MAX_DOMAINS < 0xFFFF, "a domain index must never be all ones");
+
     int domain_handle(Domain const* d)
     {
         if (d == nullptr)
@@ -175,10 +179,6 @@ namespace kickos
 
     Domain* domain_resolve(int handle)
     {
-        if (handle < 0)
-        {
-            return nullptr;
-        }
         uint32_t const raw = static_cast<uint32_t>(handle);
         size_t const idx = raw & 0xFFFFu;
         if (idx >= KICKOS_MAX_DOMAINS)
@@ -297,21 +297,19 @@ namespace kickos
         uintptr_t const base = reinterpret_cast<uintptr_t>(mem_base);
         // Access is the grant's own; only the memory-type bits come from the caller.
         uint32_t const attr = ARCH_MPU_R | ARCH_MPU_W | (mem_attr & ARCH_MPU_NOCACHE);
-#if KICKOS_HAVE_ASPACE
-        // Admission on this backend is the handoff below: the range must be one the donor
-        // reserved, which no MMIO block and no kernel address can be.
         if (not grant_nocache_admissible(attr))
         {
             *err = KOS_ENOTSUP; // a memory type this chip cannot honour
             return nullptr;
         }
-#else
+#if not KICKOS_HAVE_ASPACE
+        // A region backend admits the range itself, before a slot is allocated: a refusal
+        // leaves no half-built domain.
         size_t const rsz = arch_ram_region_size(mem_size);
-        // Must run before a slot is allocated: a refusal leaves no half-built domain.
         if (not grant_region_admissible(base, rsz, attr,
                                         (caller & DOM_CALLER_MEM_AUTH) != 0))
         {
-            *err = KOS_EPERM; // out-of-arena / reserved block / unhonourable memory type
+            *err = KOS_EPERM; // out-of-arena or reserved block
             return nullptr;
         }
 #if KICKOS_MEMORY_ENFORCED
@@ -328,7 +326,9 @@ namespace kickos
             return nullptr;
         }
 #if KICKOS_HAVE_ASPACE
-        // A refusal leaves no half-built domain: the release below frees the space and the slot.
+        // On a translating backend admission is this handoff: the range must be one the donor
+        // reserved, which no MMIO block and no kernel address can be. A refusal leaves no
+        // half-built domain: the release below frees the space and the slot.
         enum arch_map_memtype mtype = ARCH_MAP_NORMAL;
         if ((mem_attr & ARCH_MPU_NOCACHE) != 0)
         {

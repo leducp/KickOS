@@ -4020,6 +4020,8 @@ namespace
             // The inject refuses the same line too: raising the tick or the doorbell from
             // userspace would reach kernel state no capability named.
             TAP_CHECK(kos_irq_inject(static_cast<int>(owned)) == -KOS_EPERM);
+            // And so does the unmask, from a caller the claim above found holding AUTH_IRQ.
+            TAP_CHECK(kos_irq_unmask(static_cast<int>(owned)) == -KOS_EPERM);
             // And no second line is reserved behind it, which a sweep from one past it says.
             TAP_CHECK(static_cast<int64_t>(kos_doorbell_probe(KOS_DOORBELL_OP_KERNEL_LINE,
                                                               static_cast<uintptr_t>(owned) + 1u))

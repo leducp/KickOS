@@ -442,7 +442,7 @@ namespace
         // The console owns UART0, so silence every source (the ROM polls, no IRQs) and
         // ack anything it left latched. Critical: CPU int 13 is armed below while
         // the ring is still unarmed, so a stale ROM-enabled source would storm the
-        // level-1 dispatcher. console_tx_write re-enables ONLY TXFIFO_EMPTY, later.
+        // level-1 dispatcher. The ring's backend re-enables ONLY TXFIFO_EMPTY, later.
         r32(reg::uart::INT_ENA) = 0;
         r32(reg::uart::INT_CLR) = 0xFFFFFFFFu;
 

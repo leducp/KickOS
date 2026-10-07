@@ -28,6 +28,12 @@ if [ -z "$KOS_PANIC_RE" ]; then
     echo "FAIL: tests/lib/panic.ere is empty or unreadable; every panic gate would pass" >&2
     exit 1
 fi
+# Every banner but the panic's own, for a judge that expects a panic and refuses a fault.
+KOS_FAULT_RE="${KOS_PANIC_RE#KERNEL PANIC:|}"
+if [ "$KOS_FAULT_RE" = "$KOS_PANIC_RE" ]; then
+    echo "FAIL: tests/lib/panic.ere no longer opens with 'KERNEL PANIC:|'; KOS_FAULT_RE is unset" >&2
+    exit 1
+fi
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
@@ -805,7 +811,7 @@ boot_bound() { # <seconds>
         fail "this gate's ctest TIMEOUT of ${KOS_CTEST_TIMEOUT_S%%.*}s does not cover its boots:
   with this one they are bounded at ${KOS_BOOTS_SPENT_S}s, each image's bound, the firmware
   allowance and the stop included. Count this boot in the BOOTS it is registered with, or
-  reconfigure under this QEMU_TIMEOUT"
+  reconfigure under this QEMU_TIMEOUT or SIM_TIMEOUT"
     fi
 }
 
@@ -901,7 +907,8 @@ run_image() {
         OUT="$(timeout "$KOS_BOOT_BOUND_S" "$QEMU_BIN" -M "$QEMU_MACHINE" ${QEMU_EXTRA:-} \
                  -nographic ${KOS_BOOT_ARGS} 2>&1)"
     else
-        OUT="$(timeout "${SIM_TIMEOUT:-20}" "$1" 2>&1)"
+        boot_bound "${SIM_TIMEOUT:-20}"
+        OUT="$(timeout "$KOS_BOOT_BOUND_S" "$1" 2>&1)"
     fi
     RC=$?
     # Every capture-parsing pattern in tests/ rests on this line: the console lowers '\n' to

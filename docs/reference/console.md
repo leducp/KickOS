@@ -95,8 +95,8 @@ otherwise             ->  console_write_line_sync  (polled under IrqLock)
 ```
 
 `arch_in_isr()` is NOT a condition here. It stood for "this context may not wait", which was
-true of `console_tx_write` and is not a rule about buffering: `console_tx_insert_line` never
-waits under its lock.
+true of the burst producer the ring once had and is not a rule about buffering:
+`console_tx_insert_line` never waits under its lock.
 
 `g_console_state` starts `KERNEL_OWNED` (every board that never hands over stays here,
 so the sub-decision is the whole story for them); `kos_console_publish` moves it to
@@ -174,8 +174,7 @@ returns; the bytes leave later, in an interrupt.
   line needs once `\n` is expanded, refuse if they do not fit, else copy the line into
   `[head, ...)` expanding as it goes, publish the new `head` and enable the TX-empty IRQ
   ("prime the pump"). Returns immediately -- the caller's cost is a copy, not the
-  transmission. `console_tx_write` is the older burst producer, which chunks at ring size
-  and waits UNMASKED between chunks; it makes no atomicity promise and no chip enters it.
+  transmission.
 - **Consumer** (`console_tx_isr`, ISR context, bound to the chip's TX line via
   `irq_attach`): push ring bytes while a HW TX slot is free; when the ring drains
   to empty, disable its own TX IRQ. A chip whose console has no TX interrupt reports

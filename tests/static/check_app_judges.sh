@@ -423,6 +423,9 @@ tests/integration/check_qemu_panicgate.sh;KERNEL PANIC: [panicgate] message on t
 tests/integration/check_qemu_panicgate.sh;KERNEL PANIC: [panicgate] message on the wire|panicgate.capture||line|drop|KERNEL PANIC:|
 tests/integration/check_qemu_panicgate.sh;KERNEL PANIC: [panicgate] message on the wire|panicgate.capture||returned|after|KERNEL PANIC:|[panicgate] ERROR: kos_panic returned
 tests/integration/check_qemu_panicgate.sh;KERNEL PANIC: [panicgate] message on the wire|panicgate.capture||fault|after|[panicgate] case 1|=== MPU FAULT === planted
+tests/integration/check_qemu_panicgate.sh;KERNEL PANIC: [panicgate] message on the wire|panicgate.capture||fault|after|[panicgate] case 1|=== ARMV8A EXCEPTION === planted
+tests/integration/check_qemu_panicgate.sh;KERNEL PANIC: [panicgate] message on the wire|panicgate.capture||fault|after|[panicgate] case 1|=== RISC-V S-TRAP === planted
+tests/integration/check_qemu_panicgate.sh;KERNEL PANIC: [panicgate] message on the wire|panicgate.capture||fault|after|[panicgate] case 1|=== X86_64 EXCEPTION === planted
 tests/integration/check_qemu_panicgate.sh;KERNEL PANIC: [panicgate] abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUV...;CUTME|panicgate-oversized.capture||absent|swap|UV...|UV...CUTME
 tests/integration/check_qemu_panicgate.sh;KERNEL PANIC: [panicgate] abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUV...;CUTME|panicgate-oversized.capture||line|swap|UV...|UVWXYZ
 tests/integration/check_fault_dump.sh;THREAD FAULT|fault.capture||marker|drop|=== THREAD FAULT|

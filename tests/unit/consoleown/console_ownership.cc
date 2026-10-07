@@ -214,8 +214,8 @@ namespace
         });
     }
 
-    // The buffered transport takes the same bracket, so a lost race drops there without
-    // leaning on console_tx_write's own recheck.
+    // The buffered transport takes the same bracket, so a lost race drops there: the ring
+    // producer has no ownership re-check of its own to lean on.
     TEST(ConsoleOwnership, TheBufferedArmDropsTheSameRace)
     {
         run_isolated([]() {

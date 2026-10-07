@@ -447,7 +447,7 @@ if(KICKOS_ARCH STREQUAL "sim")
   add_test(NAME selftest
     COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_sim_selftest.sh" "${_selftest_elf}"
             ${_selftest_arms})
-  set_tests_properties(selftest PROPERTIES TIMEOUT 30)
+  kickos_boot_timeout(selftest "${PROJECT_SOURCE_DIR}/tests/integration/check_sim_selftest.sh")
   set_property(TEST selftest APPEND PROPERTY ENVIRONMENT ${_selftest_env})
 
   # The sim's only coverage of the published console route.
@@ -484,7 +484,7 @@ if(_selftest_rebased AND TEST ${_tag}_selftest)
             "${PROJECT_SOURCE_DIR}/tests/integration/check_x86_64_rebased.sh"
             "${_selftest_rebased}" ${_selftest_arms})
   set_tests_properties(${_tag}_selftest_rebased PROPERTIES SKIP_RETURN_CODE 77)
-  kickos_qemu_timeout(${_tag}_selftest_rebased
+  kickos_boot_timeout(${_tag}_selftest_rebased
     "${PROJECT_SOURCE_DIR}/tests/integration/check_x86_64_rebased.sh")
 endif()
 
@@ -575,7 +575,7 @@ if(_oot_board AND KICKOS_BOARD STREQUAL _oot_board)
                 "${PROJECT_BINARY_DIR}" "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}")
       set_tests_properties(${_tag}_oot_mcu_app PROPERTIES SKIP_RETURN_CODE 77
                                                           FIXTURES_REQUIRED kickos_build)
-      kickos_qemu_timeout(${_tag}_oot_mcu_app
+      kickos_boot_timeout(${_tag}_oot_mcu_app
         "${PROJECT_SOURCE_DIR}/tests/integration/check_oot_mcu_run.sh" WORK 300)
     endif()
   endif()

@@ -73,7 +73,13 @@ configure() { # <probe arm> <composition> <build dir> [cmake argument]...
     "$CMAKE" -S "$KICKOS_SRC/tests/lib/system_link" -B "$_cf_dir" -G Ninja \
         -DCMAKE_MAKE_PROGRAM="$NINJA" -DCMAKE_TOOLCHAIN_FILE="$PACKAGE_TC" \
         -DCMAKE_PREFIX_PATH="$TMP/prefix" -DKICKOS_PROBE_ARM="$_cf_arm" \
-        -DKICKOS_PROBE_COMPOSITION="$_cf_composition" "$@" >"$_cf_dir.configure.log" 2>&1
+        -DKICKOS_PROBE_COMPOSITION="$_cf_composition" "$@" >"$_cf_dir.configure.log" 2>&1 || {
+        _cf_rc=$?
+        # The log goes with the scratch directory, so a failure the arm did not expect would
+        # otherwise say nothing about its cause. An arm that expects one reads the log itself.
+        sed -n '/CMake Error/,$p' "$_cf_dir.configure.log" | sed -n '1,30p' >&2
+        return "$_cf_rc"
+    }
 }
 
 if [ "$ARM" = rerun ]; then

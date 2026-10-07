@@ -104,8 +104,10 @@ namespace kickos
 
     void sem_init(Semaphore* s, int initial);
     // `held` is the caller's outermost bracket, spanning the resolve that produced `s`; a
-    // cancel honoured here ends it (sched::exit_current).
-    void sem_wait(IrqLock& held, Semaphore* s);
+    // cancel honoured here ends it (sched::exit_current). Returns false with a token taken,
+    // or true once parked with `epoch` sampled: the caller then leaves `held`'s scope, calls
+    // wq_confirm_resume and reads wait_result (0 handed a token, -KOS_ECANCELED cancelled).
+    bool sem_wait(IrqLock& held, Semaphore* s, uint32_t& epoch);
     bool sem_trywait(Semaphore* s); // non-blocking; true if token taken
     // Hands the token to the highest-priority waiter, else banks it. Thread or ISR context.
     // Returns false only with no waiter and the count already at KOS_SEM_COUNT_MAX, where the

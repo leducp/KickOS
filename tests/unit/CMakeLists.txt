@@ -9,7 +9,7 @@ if(KICKOS_BUILD_UNIT_TESTS)
   foreach(_unit IN ITEMS
       ampconsole amphold ampshare ampwindow benchdist c6apm capreply captable consoleline consoleown consolepace consoletx
       consoletxsmp dcacheplan
-      deathspace drvbringup fastrefuse faultline frame fusedwake grantlookup grantnocache initwalk irqquiesce kstring
+      deathspace domain drvbringup fastrefuse faultline frame fusedwake grantlookup grantnocache initwalk irqquiesce kstring
       k64fsysmpu ktime mapexec mapfence mpuoverlap mpuskip mtimeconv newlibstubs placeadmit presync probecatch ramalign ramowner regionsync
       reschedowed rp2350gate slotpool
       stdoutwrite taskbudget uartclass vrange windowholder)

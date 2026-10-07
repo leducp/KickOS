@@ -1085,8 +1085,8 @@ lock across the transmission, which at 115200 would mask for about 22 ms.
 Three claims made on the way were WRONG and are recorded because each one nearly became the
 design. **"The fault path bypasses the ring by design"**: it does not, and nothing hardcodes it.
 `console_emit` routed faults to the synchronous writer through `arch_in_isr()`, a blanket rule
-standing for "this context may not wait" -- true of `console_tx_write`, which chunks and waits
-UNMASKED between chunks, and false of buffering as such. A non-waiting insert is safe from any
+standing for "this context may not wait" -- true of the burst producer (since deleted), which
+chunked and waited UNMASKED between chunks, and false of buffering as such. A non-waiting insert is safe from any
 context, which is what let the fault path keep the ring. **"A ring needs a TX interrupt"**: it
 does not. A producer can drain its own queue outside the lock under a single-drainer flag, and
 the interrupt is one way to trigger a drain rather than a precondition for having a queue.
@@ -1824,7 +1824,14 @@ instance's threads held, and the init keeps its endpoint and ring block for the 
 | M10.5.12 | the selftest as a task under its own composition on every board, one more per console driver a board has, its priorities under each, its root arms reading the task, AMP nodes naming their crossings |
 | M10.5.13 | the deletions, in order: the service lists with the service ABI, the drivers' line numbers and the bring-up without an instance, the bench's lists and the sweep tool; the default init with the pin maps and the app authority macro; `kickos_root_lower`; the cap-table summing; the heap knob; the root-only wait; the old leaves last; every page naming them updated |
 | M10.5.14 | the fleet sweep over every preset, the silicon witnesses through `tools/bench` with a judge per capture, and M10.5's ten-angle review |
-| M10.6 | the selftest ordered by events: every arm that orders threads by a sleep rewritten to order them by priority, a semaphore or a mark, every arm releasing what it created on every path, and a leak named at the arm that made it |
+| M10.6 | a cleanup pass before the exit record, under one rule: at the same features, less. M10.5 grew the product by about 3k lines and the tests and tools by about 31k; the steps run in the order that removes the most for the least risk, so the cuts that are read-only on the host come before the folds that need silicon, and nothing is folded that a later step would delete. Each step's close records three numbers: lines of product, lines of tests and tools, and their ratio |
+| M10.6.0 | the misses found after M10.5 merged, each fixed with its arm before the cleanup moves code |
+| M10.6.1 | the archives trimmed first, since every later deletion pays the doc-name gate while the archive is in the tree: records of merged milestones that git history keeps, closed TODO entries and finished STATE.md sections removed, and every link to them updated |
+| M10.6.2 | the gates and CI, sized before it starts: every static gate and unit suite answers four questions (which bug class; has it ever fired on a real change; can the compiler, the linker script or `-Werror` hold the rule; can the build generate the thing it compares) and is deleted, replaced, derived or kept on the answer; the planted-control harness, the corpus walk and the comment stripper live once in `tests/lib/gate.sh`, so a gate is its rule and one planted file; the lint gates become one rule table; a hand list derived from the tree goes with the gate that compared it; shared parsing in one library; the gate that races a configure, apps built by board name or never run, presets CI does not build, and the bench fleet run across boards in parallel |
+| M10.6.3 | the DRY pass over the inventory taken after M10.5, re-ranked by lines removed per unit of risk now that the gate audit has settled which gates pin which names: second truths and copied mechanisms in arch, kernel, userspace, build and tools, one kernel-under-test library for the unit suites, the static asserts that only witness a hand copy, and the port number in the generated pin lists; the silicon-only folds ride M10.6.6's bench passes |
+| M10.6.4 | the selftest ordered by events: every arm that orders threads by a sleep rewritten to order them by priority, a semaphore or a mark, every arm releasing what it created on every path, and a leak named at the arm that made it; with it the selftest bloat audit, the cut pieces of the derived skip sets, and the selftest app built with the self-test off on every board |
+| M10.6.5 | the console read through: its contract written once and what does not serve it cut, and the own-image AMP writer woken by a doorbell |
+| M10.6.6 | the hardware tail: the interrupt stack bounded on ARMv7-M, ARMv6-M and RX, the ESP32's code space beyond its 128 KiB of IRAM, and the ESP32-C6 PLL, with the silicon-only folds of M10.6.3 on the same bench passes |
 | M10.7 | the exit record, and the reference documents reconciled against what shipped |
 
 **THE TOOLCHAIN IS KICKOS'S OWN, BUILT FROM PINNED SOURCES ON ANY HOST** (maintainer,

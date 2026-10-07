@@ -142,10 +142,10 @@ judge() { # <root> <roots> <reach> <indirect> <presets> <headers> <kconfig> <dep
 
         tool_out "$TMP/have.raw" '' sed -n \
             "s/^[[:space:]]*#[[:space:]]*define[[:space:]]\{1,\}\($_depth\).*/\1/p" "$_root/$h"
-        sort -u "$TMP/have.raw" -o "$TMP/have"
+        sort -u "$TMP/have.raw" > "$TMP/have"
         tool_out "$TMP/named.raw" '' awk -F"$TAB" -v A="$a" '$1 == A { print $3 }' \
             "$TMP/classmacros"
-        sort -u "$TMP/named.raw" -o "$TMP/named"
+        sort -u "$TMP/named.raw" > "$TMP/named"
         while IFS= read -r m; do
             N_DEPTHS=$((N_DEPTHS + 1))
             if ! grep -qxF "$m" "$TMP/named"; then
@@ -187,7 +187,7 @@ judge() { # <root> <roots> <reach> <indirect> <presets> <headers> <kconfig> <dep
     cut -f1 "$_presets" > "$TMP/presetnames"
     tool_out "$TMP/keys" '' awk -F"$TAB" -v NONE="$NONE_BOARD" '$2 != NONE { print $4 }' \
         "$TMP/presetarch"
-    sort "$TMP/keys" -o "$TMP/keys.sorted"
+    sort "$TMP/keys" > "$TMP/keys.sorted"
     uniq -d "$TMP/keys.sorted" > "$TMP/keydup"
     while IFS= read -r k; do
         [ -n "$k" ] || continue
@@ -239,7 +239,9 @@ judge() { # <root> <roots> <reach> <indirect> <presets> <headers> <kconfig> <dep
         /^config[[:space:]]/ { chip = ""; next }
         chip != "" && $1 == "select" && $2 == "HAS_ASPACE" { print chip }
     ' "$_kconfig"
-    sort -u "$TMP/aspacechips.raw" -o "$TMP/aspacechips"
+    # A redirect, never -o: uutils sort (Ubuntu 26.04) leaves an -o file untouched on empty
+    # input, so the previous control's list would survive into this one.
+    sort -u "$TMP/aspacechips.raw" > "$TMP/aspacechips"
     require_nonempty "$TMP/aspacechips" "no chip in $_kconfig selects HAS_ASPACE, so this clause would pass over an empty set"
 
     tool_out "$TMP/reachmap" '' awk '{ sub(/#.*/, "") } $1 == "preset" { printf "%s\t%s\n", $2, $3 }' "$_reach"

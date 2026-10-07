@@ -46,14 +46,6 @@ namespace
             return baud; // no divisor to program: the host wire has no baud
         }
 
-        bool tx_idle() const { return true; }
-
-        void tx_irq_enable()
-        {
-            // Nothing to arm: host stdout is never busy, so there is no TX-empty source. On
-            // silicon the CCR.TBIEN / SCR.TIE write and the burst's first byte both go here.
-        }
-
         // Wakes since boot. The readiness model below is a function of this alone, so it
         // stays deterministic on any host: no wall clock, no host scheduling.
         uint32_t pass = 0;

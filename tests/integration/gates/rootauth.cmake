@@ -17,7 +17,7 @@ if(KICKOS_ARCH STREQUAL "sim")
   add_test(NAME rootauth
     COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_app_arms.sh" "$<TARGET_FILE:rootauth>"
             rootauth ${_arms})
-  set_tests_properties(rootauth PROPERTIES TIMEOUT 15)
+  kickos_boot_timeout(rootauth "${PROJECT_SOURCE_DIR}/tests/integration/check_app_arms.sh")
 # Not armv8a and not x86_64: those build the app and register no arm today.
 elseif(NOT KICKOS_ARCH STREQUAL "armv8a" AND NOT KICKOS_ARCH STREQUAL "x86_64")
   kickos_add_qemu_test(TARGET rootauth
