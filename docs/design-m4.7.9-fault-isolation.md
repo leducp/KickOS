@@ -3,7 +3,7 @@
 # M4.7.9 fault isolation
 
 > **Status: LANDED.** The original spike, measurements and numbered reasoning are in
-> [the fault-isolation record](archive/M4_fault_isolation_record.md). Current porting and safety
+> the fault-isolation record (archived `M4_fault_isolation_record.md`). Current porting and safety
 > rules are in [porting](reference/porting.md) and [invariants](reference/invariants.md).
 
 ## 3. The rule

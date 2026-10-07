@@ -4,7 +4,7 @@
 
 > **Status: MEASUREMENT RECORD.** The M8.12 tables, recomputation, source labels and
 > term-by-term audit are in
-> [`archive/M9_entry_envelope_recompute.md`](archive/M9_entry_envelope_recompute.md).
+> archived `M9_entry_envelope_recompute.md`.
 > M9.1's later two-core LX6 measurement is in
 > [`design-m9-lock-bound.md`](design-m9-lock-bound.md).
 

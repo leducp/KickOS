@@ -4,7 +4,7 @@
 
 The milestone-level plan: the general idea to tackle per milestone. **No granular items** --
 those live in `TODO.md` (the actionable checklist); the design behind them lives in
-`docs/reference/architecture.md`; validated end-state lives in `docs/archive/M1_state.md`.
+`docs/reference/architecture.md`; validated end-state lives in archived `M1_state.md`.
 
 **Milestones are keyed to THEME, not sequence.** A milestone names a *capability the kernel
 gains*, not a date. Work that merely follows M1 is not "M2" unless it needs the MPU; orthogonal
@@ -19,7 +19,7 @@ whenever it is ready, tagged as such in `TODO.md`.
 - **M1 + M1.x -- the MCU fleet.** First silicon, then breadth: **10 boards across 5 ISAs**
   (armv7m, armv6m, RXv3, RV32IMAC, Xtensa LX6) up on hardware, privilege + SVC (no HW MPU yet),
   each with a console, tickless timer, fault dump, and inject-driven IRQ path; plus telemetry,
-  the buffered console, and per-chip clock bring-up. Full record in `docs/archive/M1_state.md`.
+  the buffered console, and per-chip clock bring-up. Full record in archived `M1_state.md`.
 - **M2 -- hardware MPU enforcement.** A cross-domain access faults on real silicon.
 - **M3 -- capabilities & object model**, and user clock-select.
 - **M4 -- the driver era.** M3 made real fleet-wide. The sub-milestone ledger below is the only
@@ -989,7 +989,8 @@ ceiling is true from root's first instruction.
 `TASK_OBJECT_RESERVE` is gone, and so is `Task::object_budget`, which stored a compile-time
 constant per task and was the same shape one layer down. **FOUR FIGURES AND NOT ONE**: a single
 budget forced down to the narrowest charged pool would cost the other three kinds `.bss` for
-slots a task never asked for (`STATE.md` carries the bisection that measured it). **The
+slots a task never asked for (bisected on `qemu` at M8.5: 8 and 6 run clean, 5 turns
+`mutex_deadlock` into a refused SKIP, 4 costs 114 arms and 3 costs 100). **The
 supervisor-respawn question is dissolved rather than answered**: the denial is now a sizing
 property of the pool.
 
@@ -1386,9 +1387,8 @@ capability topology, lifetime and migration stay behind the fair global lock. **
 reached by the stop condition firing, and it is a success.** What it may NOT rest on is the register
 fastpath: that path exists on armv6m, armv7m, rv32imac and rxv3, holds no lock, and none of the
 three shared-kernel arches has it. Porting it above one core is a separate item nobody has costed,
-and `TODO.md`'s G-06 -- decided, not yet
-landed -- is the configure refusal that makes that unreachability stated rather than incidental.
-Today it is unreachable only because no fastpath arch has an SMP build file.
+and the root `CMakeLists.txt` refuses the fastpath above one kernel core by name, so that
+unreachability is stated rather than incidental.
 
 **M9.1 COMES FIRST BECAUSE BOTH OUTCOMES NEED IT: the control plane keeps a global lock either
 way.** Today's lock is a bare test-and-set retry loop on every shared-kernel backend and has no
@@ -1489,7 +1489,7 @@ protocol, rather than a second answer for the same object.
 M9.5's x86 experiment kept capability topology and teardown behind the global
 lock and had that lock wait for active owner-local spans. It introduced no
 epoch or second reclaim predicate. The pinned mixed-workload gate in
-`docs/archive/M9.5_x86_ipc_mixed.md` led to removal of that second exclusion
+archived `M9.5_x86_ipc_mixed.md` led to removal of that second exclusion
 path. The whole-transaction audit in
 `docs/design-m9.5-ipc-lock-feasibility.md` found no small per-object protocol
 that also covers timeout, close, donation and switch-frame publication.
@@ -1573,7 +1573,7 @@ captures each saw both nodes, four far replies, and bidirectional doorbells. Thi
 deployment and the ordinary AMP call path, not throughput, per-thread isolation on LP,
 a denied access under the final partition image,
 or behavior on another C6 revision. The record is
-[`docs/archive/M9.9_amp.md`](docs/archive/M9.9_amp.md).
+archived `M9.9_amp.md`.
 
 **SHARED KERNEL STACKS ARE A SEPARATE M9 INVESTIGATION, AFTER M8.12.** The research in
 [`docs/design-stack-safety-research.md`](docs/design-stack-safety-research.md) extends the
@@ -1753,7 +1753,7 @@ restarts remain. What to do about any of it -- brake, log, stop, carry on -- is 
 
 **THE KERNEL MAY CHANGE, BUT CHANGING IT IS NOT THE POINT.** A defect the work finds, a wrong errno
 for instance, is fixed where it is found. The per-task object budget landed in M8.5. The reaper
-init was blocked on the kernel telling app threads from infrastructure ones (`TODO.md`, M4.7.8); a
+init was blocked on the kernel telling app threads from infrastructure ones (M4.7.8); a
 composition that DECLARES what ends the system lets the resident init end it itself, with no kernel
 classification. The seal, a create-suspended spawn, and an authority for the three operations
 `docs/design-multicore.md` leaves open (placing a thread of another task, a dynamic mint, starting a
@@ -1789,7 +1789,7 @@ instance's threads held, and the init keeps its endpoint and ring block for the 
 | M10.2.4 | x86_64: the compiler with PE32+ binutils, then newlib, libstdc++ and user threads' vector state (maintainer, 2026-09-30) |
 | M10.2.5 | ESP32 from Espressif's sources (maintainer, 2026-09-30), and RX as the pinned set plus Renesas's changes ported onto it, carried as patches in this repository, which the release mirrors (maintainer, 2026-10-01), with KickOS's fix to their double-precision unordered compares (maintainer, 2026-10-01) |
 | M10.2.6 | the deletions and CI's prebuilt packages for Linux x86_64 and macOS arm64 |
-| M10.2.7 | the exit: every CI preset and the fleet's silicon on the package, the red zones and size budgets re-measured; done, recorded in `docs/archive/M10.2_exit.md` (2026-10-02) |
+| M10.2.7 | the exit: every CI preset and the fleet's silicon on the package, the red zones and size budgets re-measured; done, recorded in archived `M10.2_exit.md` (2026-10-02) |
 | M10.3 | the host side, alongside M10.1: the platform files moved to a top-level `platform/`, the three schemas, the admission tool with one refusal per rule and a mutation arm for each, the emitted table, the export manifest, and the default compositions with the CI gate admitting them; the three golden systems are admitted |
 | M10.3.1 | the design corrections (maintainer, 2026-10-02): the console device granted only to the task `stdout` names, which must be a console driver's endpoint; a packaged driver's metadata declared on `kickos_add_driver` and emitted to its `Descriptor` and to the manifest; the manifest generated at configure; the host tool under `uv` |
 | M10.3.2 | the platform files moved to `platform/`, the YAML subset, and the chip and board schemas, every description admitted and every form refusal reddened by a mutated file |
@@ -1814,7 +1814,7 @@ instance's threads held, and the init keeps its endpoint and ring block for the 
 | M10.5.2 | the generator, `kickos_compose chip`, writing the chip headers, the link values, the reserved and aperture tables and the protection facts at configure, with the symbol compare and the emitted-code compare and their controls; the nine described chips switched, headers then tables, the table seams answering a span over the generated arrays; each translating chip's devices audited before they become apertures; the Kconfig-against-chip-file gate |
 | M10.5.3 | x86_64 linking through `add_executable`: the link rule and its wrapper in the installed toolchain file, the per-language `.efi` suffix, `-Wl,` flags translated for `ld`, the map the gates read, the boot objects as usage requirements; every `kickos_add_app_target` renamed, and the deferred image link deleted |
 | M10.5.4 | the remaining chips by family, the AN505 as its own chip over an `mps2` family, and the sim's chip file; a board file and a default composition for every board, the sim and the i.MX 8M Plus EVK included; each board's own Kconfig classified; the coverage gate; a board without a default refused at configure and the stub deleted |
-| M10.5.5 | the smallest boards measured before their apps move: a plain `main` and the largest selftest image on the freestanding leaf, on `kickos_cxx` and on `KickOS::kernel` with a system target, on `microbit`, `f302nucleo` and `bluepill-c8`, recorded in `docs/archive/`; and per board, what the selftest as a task costs, its task and thread slot and a child's capability table, met by raising the pools where RAM allows, a misfit raised to the maintainer |
+| M10.5.5 | the smallest boards measured before their apps move: a plain `main` and the largest selftest image on the freestanding leaf, on `kickos_cxx` and on `KickOS::kernel` with a system target, on `microbit`, `f302nucleo` and `bluepill-c8`, recorded in archived `M10.5_smallest_boards_meas.md`; and per board, what the selftest as a task costs, its task and thread slot and a child's capability table, met by raising the pools where RAM allows, a misfit raised to the maintainer |
 | M10.5.6 | the out-of-tree examples on `KickOS::kernel` and `KickOS::system_default`, built and, where an emulator runs, run by their gates on every arch |
 | M10.5.7 | the catalogue completed with every driver a service list carries (`k64dspi`, `simcon`, `simuart`, `rpusb`, `rt1062usb`, and two polled console drivers since removed); the driver instance carrying each line's number and index, and `bring_up` given an instance claiming the instance's lines |
 | M10.5.8 | the partition's kernel share, each change with its arm: a Kconfig user share of the AMP shared window, root seating it on every node, the arena confinement admitting a window inside it, its mapping on a translating node, and its cache attribute |
@@ -1887,7 +1887,7 @@ to tasks with the required rights; no new kernel or provisioning path tests "is 
 Task creation is creator-scoped today, while memory grants require memory authority. **M10
 closes with a separate task-creation authority** (maintainer, 2026-09-28), built in M10.1
 with the rest of the kernel share: an authority added after the ABI freeze would break the ABI, and M11 and M12 should build
-on the finished shape. It also closes the hole `TODO.md` has recorded since M8.5, that a task is
+on the finished shape. It also closes the hole recorded since M8.5, that a task is
 free to mint tasks and so one unprivileged caller can seat a thread in every task slot and empty
 the pools. The authority questions
 deferred below -- a thread in another task, a dynamic mint -- are the gate a nested init reaches
@@ -1962,7 +1962,7 @@ than replacing it; chips without the extension use Option B alone. Buys a hardwa
 the capability-gated-services model. A security/assurance play, not a performance one. Post-MMU
 (needs the driver-era service model and SMP settled, since the MPUs and the SAU are banked per core);
 per-chip capability (M23/M33/M55/M85 MAY have it, detect + fall back); RP2350's M33 is a concrete
-target. Detail in `TODO.md` under the post-MMU optimizations.
+target.
 
 ### Userspace init service (driver-era; not hardware-gated -- anytime-coherence)
 Today the user's `main` doubles as pid-1: it IS the init entry, holds full userspace

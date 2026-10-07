@@ -3,7 +3,7 @@
 # M9.1 kernel-lock bound
 
 > **Status: LANDED.** The derivation, per-backend evidence and capture interpretation are in
-> [the M9.1 record](archive/M9.1_lock_bound_record.md). M9.5 changed x86_64 arbitration to
+> the M9.1 record (archived `M9.1_lock_bound_record.md`). M9.5 changed x86_64 arbitration to
 > CLH while retaining one big kernel lock; see [the M9.5 decision](design-m9.5-bkl-options.md).
 
 The ticket version assigns one ticket per core per acquisition. It tests whether its turn has

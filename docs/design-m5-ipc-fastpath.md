@@ -4,7 +4,7 @@
 
 > **Status: MEASURED, mechanism open.** No new IPC fastpath is specified or landed here.
 > The baseline, phase measurements, corrected instrument and candidate analysis are in
-> [`archive/M5_ipc_fastpath_study.md`](archive/M5_ipc_fastpath_study.md). Its section
+> archived `M5_ipc_fastpath_study.md`. Its section
 > numbers are retained for the measurements cited by other milestones.
 
 The measured call/reply cost is mostly fixed path length at small driver payloads.

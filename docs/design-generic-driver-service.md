@@ -3,7 +3,7 @@
 # Generic driver service
 
 > **Status: LANDED.** The per-instance audit, descriptor validator and original code sketches
-> are in [the M4.8.1 record](archive/M4_generic_driver_service_record.md). The sketches predate
+> are in the M4.8.1 record (archived `M4_generic_driver_service_record.md`). The sketches predate
 > task-based drivers and M8.13 notifications. Use
 > [driver_service.h](../user/include/kickos/sys/driver_service.h) and
 > [bus-service](reference/bus-service.md) for current fields and behavior.

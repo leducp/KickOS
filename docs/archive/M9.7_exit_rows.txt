@@ -1,8 +1,0 @@
-# SPDX-License-Identifier: CECILL-C
-# Copyright (c) 2026 Philippe Leduc
-qemu-riscv-bench       n=5  switch=1536 [1408-1536]  lock-hold=3328 [2048-4096]  rt8=11697 [11585-12135]  rt256=18803 [18529-19127]  lock-wait=-  doorbell=-  e2e-local=7168  e2e-cross=-
-qemu-arm64-bench       n=5  switch=176 [160-192]  lock-hold=1536 [1408-3072]  rt8=20091 [19765-21417]  rt256=20434 [19959-22311]  lock-wait=-  doorbell=-  e2e-local=8192 [8192-9216]  e2e-cross=-
-qemu-riscv64-bench     n=5  switch=256  lock-hold=2560 [2304-3840]  rt8=21733 [21535-22171]  rt256=21806 [21362-22140]  lock-wait=-  doorbell=-  e2e-local=6144 [6144-6656]  e2e-cross=-
-qemu-x86_64-bench      n=5  switch=60  lock-hold=832 [768-1152]  rt8=5699 [5690-5755]  rt256=5771 [5737-5839]  lock-wait=-  doorbell=-  e2e-local=3584  e2e-cross=-
-qemu-arm64-benchsmp    n=5  switch=176 [160-176]  lock-hold=2048 [2048-3072]  rt8=26714 [26563-26865]  rt256=26600 [26515-27048]  lock-wait=160 [160-176]  doorbell=15360 [14336-20480]  e2e-local=32768 [32768-36864]  e2e-cross=-
-qemu-riscv64-benchsmp  n=5  switch=480 [480-512]  lock-hold=7168 [6656-10240]  rt8=37954 [36646-39973]  rt256=37654 [36917-38011]  lock-wait=480 [416-480]  doorbell=32768 [30720-32768]  e2e-local=36864 [32768-57344]  e2e-cross=-

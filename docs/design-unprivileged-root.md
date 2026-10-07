@@ -3,7 +3,7 @@
 # Unprivileged root
 
 > **Status: LANDED.** The five-stage implementation record, board limits and verification
-> arguments are in [the original design](archive/M4_unprivileged_root_record.md).
+> arguments are in the original design (archived `M4_unprivileged_root_record.md`).
 > Current rules are in [invariants](reference/invariants.md),
 > [porting](reference/porting.md) and [boards](reference/boards.md).
 

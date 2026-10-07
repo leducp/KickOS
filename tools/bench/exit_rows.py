@@ -4,7 +4,7 @@
 """Read the M9.7 emulator exit rows with one strict reader.
 
 The distribution pattern also matches the M8.12 row format quoted in
-docs/archive/M8.12_meas.md, lines 238-239.
+archived `M8.12_meas.md`, lines 238-239.
 
 Input files are <preset>-runN.body, the unedited captured console bodies. The
 phase report has several workload windows: the last report of each distribution

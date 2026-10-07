@@ -3,7 +3,7 @@
 # M4 driver coverage: scope decision
 
 > **Status: LANDED.** The dated per-board survey, scores and original backlog are in
-> [`archive/M4_driver_coverage_survey.md`](archive/M4_driver_coverage_survey.md).
+> archived `M4_driver_coverage_survey.md`.
 > Current work is assigned by `roadmap.md` and `TODO.md`.
 
 M4 sought broad peripheral coverage on four neutrality boards: ESP32-C6, XMC4800,

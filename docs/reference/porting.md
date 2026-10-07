@@ -186,7 +186,7 @@ decides only WHETHER the fault is a thread's own, and `sched::exit_current` draw
 core half is `kernel/init/fault.cc`: a backend's fault handler calls
 `kickos_fault_kill_thread(frame)` BEFORE it starts its dump and simply RETURNS when that
 answers true, and the exception return then lands in `kickos_thread_fault_exit`. The
-reasoning is in `../archive/M4_fault_isolation_record.md` (sections 3 and 4).
+reasoning is in archived `M4_fault_isolation_record.md` (sections 3 and 4).
 
 **The two seams**, both declared in `arch/include/kickos/arch/arch.h`, both optional. Their
 fallback bodies (`arch/common/arch_fault_is_user_thread_default.cc`,
@@ -281,7 +281,7 @@ believe before it reads them, and this is the part that is easy to get wrong.
   a cross-domain access to a LOWER address escalates to the panic dump instead of dying alone
   (`mpu_fault` on `rx72m`, `0x13200`, below `domainA`'s stack), while one to a higher address dies
   alone (`rxdrv`, `0x8c068`). A port on any instruction-cancelling ISA inherits this and should read
-  `../archive/M4_fault_isolation_record.md` section 4.2 before reaching for a distance threshold instead:
+  archived `M4_fault_isolation_record.md` section 4.2 before reaching for a distance threshold instead:
   a threshold fails in the UNSAFE direction, because a frame larger than the threshold puts privileged
   code back on an exhausted stack.
 - Worth one line of history: an earlier implementation read the stacked IPSR field straight
@@ -1354,7 +1354,7 @@ always-ANCHORED archive member** -- one the link pulls for some other reason
 (`kickos_arch_*` after `kickos_chip_*` in the rescan group) is only a BACKSTOP, not a
 resolution guarantee: `arch/CMakeLists.txt` states the mechanism, and reversing the group
 FAILS THE LINK with a multiple-definition error wherever both a fallback and its backend
-are anchored (`TODO.md` carries the `qemu-m33` and `qemu-arm64` evidence).
+are anchored, as `qemu-m33` and `qemu-arm64` showed.
 **A chip that puts its definition in a dedicated TU nothing else references gets NEITHER
 protection -- the fallback resolves the reference first and the board SILENTLY DECLINES at
 runtime.** Proved by mutation: the group reversed plus `arch_idle_wait` moved into an
@@ -1489,7 +1489,7 @@ anywhere, because a list of the arms allowed to go vacuous would be a second aut
 the arms, stale the moment one is repaired. Every one is printed by name in the gate's output.
 
 Every figure below names its board, its app and its optimisation level. Flash figures are
-reused from `../archive/M4.5_footprint_meas.md` section 3; RAM figures are read out of ELFs
+reused from archived `M4.5_footprint_meas.md` section 3; RAM figures are read out of ELFs
 linked at this branch tip.
 
 ### The optimisation level is part of every floor
@@ -1591,7 +1591,7 @@ physical unit**, so neither CI nor a bench run can catch it -- only a full-fleet
 ### The program-memory floor
 
 `hello` -- kernel, arch, chip, console, UART driver, libgcc, minimal app -- across the
-fourteen real boards (`../archive/M4.5_footprint_meas.md` s.3):
+fourteen real boards (archived `M4.5_footprint_meas.md` s.3):
 
 | | Board | `hello` flash, `-Os` |
 | --- | --- | --- |
@@ -1601,14 +1601,14 @@ fourteen real boards (`../archive/M4.5_footprint_meas.md` s.3):
 | Xtensa | `esp32-wroom` | 22,996 |
 
 So the kernel plus a small app costs **18.7 to 23.0 KiB at `-Os`**, of which the kernel core is
-a flat ~12.5 KiB across boards (`../archive/M4.5_footprint_meas.md` s.4). A 32 KiB part holds
+a flat ~12.5 KiB across boards (archived `M4.5_footprint_meas.md` s.4). A 32 KiB part holds
 that with room for an app, but **no chip in the tree declares one**: the smallest FLASH
 regions are 64K, on `stm32f302` (`arch/arm/chip/stm32f302/stm32f302.ld:13`) and
 `stm32f103` (`arch/arm/chip/stm32f103/stm32f103.ld:17`). The 32 KiB run floor is derived
 from the measured `hello` sizes, not witnessed on a part.
 
 The two non-ARM ISAs cost 1.0 to 2.3 KiB more than the ARM maximum. `esp32c6-wroom`
-looks far larger -- 49,112 bytes in `../archive/M4.5_footprint_meas.md` s.3 -- but that is
+looks far larger -- 49,112 bytes in archived `M4.5_footprint_meas.md` s.3 -- but that is
 **region accounting, not code**: its linker script carves no flash region, so code and
 data share the 512 KiB RAM and the figure is whole-RAM occupancy. Measured at tip, its
 `hello` code is ordinary: `.text` 22,840 + `.data` 48 + `.init_array` 8 = 22,896, and
@@ -1617,7 +1617,7 @@ the rest of the 49,072-byte total is `.bss` 9,792 plus a 16,384-byte `.userheap`
 remaining ARM/non-ARM gap; that attribution is **inferred, not measured**.
 
 The suite spans 46,932 to 57,568 bytes at `-Os` across the fleet and both
-`KICKOS_ENABLE_SELFTEST` settings (`../archive/M4.5_footprint_meas.md` s.3), so it needs a
+`KICKOS_ENABLE_SELFTEST` settings (archived `M4.5_footprint_meas.md` s.3), so it needs a
 **64 KiB** part; the tightest shipped configuration keeps 13,820 bytes free.
 
 ### The SRAM model

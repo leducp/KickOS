@@ -856,7 +856,7 @@ in order:
 4. `wq_pop_highest(e->recv_waiters)` takes the receiver, which carries the record on its TCB
    (`Thread::far_hold`) and is woken with the payload length truncated to its `ipc.len`, as any
    datagram is. **NOTHING IS COPIED IN THE SERVICE**: the doorbell body runs with this core's
-   interrupts masked, and at `KOS_EP_MSG_MAX` one copy is the ISR-latency cost `TODO.md` P6 priced.
+   interrupts masked, and at `KOS_EP_MSG_MAX` one copy is the ISR-latency cost M8's P6 priced.
    Once popped the receiver is COMPLETED whatever follows: it is off its queue, so an early return
    would park it on nothing.
 

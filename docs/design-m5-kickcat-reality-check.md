@@ -200,8 +200,7 @@ both 2026-07-18, together verified over 65 warm relaunches reaching and holding 
 squashed them away; `kickos-backend-backup` does not carry them either. They survived only in the
 reflog, whose unreachable-object expiry defaults to 30 days, and they were exactly 30 days old.
 They are now held by `backup/k64f-master-relaunch-20260817` in the KickCAT repo, local and
-unpushed, in the same spirit as the KickOS backup branches `STATE.md` lists under *History that
-must not be garbage-collected*.
+unpushed.
 
 **The behaviour is back in KickCAT HEAD**: all three `freedom_k64f_*_map_example.cc` variants call
 a bare `bus.init(100ms)` with no retry wrapper, which is the pre-fix shape.

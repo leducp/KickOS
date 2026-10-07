@@ -51,8 +51,7 @@ low_n_reason() { # <row>
         ;;
     REPLY_TOTAL|REPLY_VALIDATE)
         echo "standalone-only since the fused reply-receive, which never enters the
-      standalone wrapper; TODO.md's M8.12 section carries the reasoning and names REPLY_LOCKED
-      as the reply row to read instead"
+      standalone wrapper; REPLY_LOCKED is the reply row to read instead"
         ;;
     # MPU_COMMIT is empty with protection disabled. MPU_APPLY still records
     # the deferred descriptor stash and is not waived.
@@ -152,8 +151,7 @@ phase_table_arms() {
         if [ -n "$_reason" ]; then
             if [ "$n" -ge "$POP_FLOOR" ]; then
                 bad "$row is waived as a quiet row and carries $n samples, so the reason it was
-      waived for has stopped holding: $_reason. Re-read TODO.md's M8.12 section and drop the
-      waiver rather than widening it"
+      waived for has stopped holding: $_reason. Drop the waiver rather than widening it"
             fi
             continue
         fi

@@ -4,14 +4,14 @@
 
 > **Status: experimental path removed.** The shared kernel uses the single
 > BKL path. The pinned pure-local KVM results are in
-> [M9.5_x86_ipc_local.md](archive/M9.5_x86_ipc_local.md).
+> archived `M9.5_x86_ipc_local.md`.
 
-The [mixed-workload decision](archive/M9.5_x86_ipc_mixed.md) keeps the BKL and
+The mixed-workload decision (archived `M9.5_x86_ipc_mixed.md`) keeps the BKL and
 removes the x86 local path to avoid maintaining two exclusion protocols. The
 sections below describe the measured experiment, not the current kernel.
 
 M9.4's lock-escape refusal was based on dual-core LX6. It is not evidence
-against a many-core x86 path. The [pinned x86 baseline](archive/M9.5_x86_ipc_pinned.md)
+against a many-core x86 path. The pinned x86 baseline (archived `M9.5_x86_ipc_pinned.md`)
 showed independent call/reply pairs flattening at roughly one pair's aggregate
 rate while BKL wait rose with core count. In the one-core control, wake and park
 dominated the locked spans; extracting only the payload copy could not address

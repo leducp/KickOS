@@ -69,7 +69,7 @@ and PIN-MUX -- stays OUT of the granted window (RCC `0x4002_3800`, GPIOA `0x4002
 GPIOE `0x4002_1000`). Those are the escalation surfaces; keeping them out of the 32 B SPI1
 window is what makes the window a real capability. Neither is reached by a privileged store
 from `main` either: each goes through a mediated syscall whose admissibility contract is
-`docs/archive/M4_unprivileged_root_record.md` stage 3.
+archived `M4_unprivileged_root_record.md` stage 3.
 
 1. Root, in `main`: `kos_pinmux_set` four times -- PE3 as an output preset high (bit 8 of the
    `func` encoding), holding the onboard gyro's chip-select deasserted so its SDO stays

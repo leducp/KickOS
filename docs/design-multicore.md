@@ -4,9 +4,9 @@
 
 > **Status: ACTIVE.** Section 1 sets the hardware predicate, section 2 the multicore rules,
 > section 8 thread placement, and section 9 the remaining decisions. The completed stage
-> record is in [the archive](archive/M7-M9_multicore_implementation_record.md).
+> record is in the archive (archived `M7-M9_multicore_implementation_record.md`).
 
-The [M7 candidate spike](archive/M7_smp_candidate_spike.md) records the earlier MCU ranking and
+The M7 candidate spike (archived `M7_smp_candidate_spike.md`) records the earlier MCU ranking and
 hardware analysis. The shared-kernel A53 target is the quad-core i.MX8MP; `qemu-arm64` is its
 development vehicle. `roadmap.md` owns milestone scheduling.
 
@@ -14,7 +14,7 @@ development vehicle. `roadmap.md` owns milestone scheduling.
 
 ## 1. When a shared kernel is reachable
 
-`docs/archive/M7_smp_candidate_spike.md` states the gate as two coupled facts, the inter-core atomic and switch-path
+archived `M7_smp_candidate_spike.md` states the gate as two coupled facts, the inter-core atomic and switch-path
 maturity. That is not enough: it names the primitive the lock needs and says nothing about the two
 properties whose absence turns a shared kernel into software standing in for missing hardware.
 
@@ -1215,7 +1215,7 @@ HP reports those records. Its partition capture checks LP's
 vector in its HP SRAM slice, both app-alive records, far replies, and both doorbell counts.
 The LP's own console writes are a sink, so this gate does not claim to preserve LP debug text.
 One ROM flash carries both nodes' LOAD segments, while HP copies the LP reset stub into LP SRAM
-and wakes it. The [silicon record](archive/M9.9_amp.md) states the precise witness.
+and wakes it. The silicon record (archived `M9.9_amp.md`) states the precise witness.
 The LP has no PMP or per-thread privilege split, but its REE2 bus master is
 confined by the APM to node 1's HP SRAM slice and the shared window. HP's
 private slice stays outside those grants. That protects HP from LP accesses;
@@ -1326,13 +1326,13 @@ family. The doorbell has both send and wait operations because a rendezvous need
 answer. A backend derives the active-core set from installed roots; the opaque
 `arch_aspace*` remains the root-table identity. Translation maintenance stays in each
 backend. The original audit and the alternatives it rejected are in
-[the implementation record](archive/M7-M9_multicore_implementation_record.md).
+the implementation record (archived `M7-M9_multicore_implementation_record.md`).
 
 ## 4. Lock and lifetime consequences
 
 The capability path requires one continuous lock from resolve through use. Its
 multicore audit found six cases, numbered here to retain the references in section 2.
-The full derivation is [archived](archive/M7-M9_multicore_implementation_record.md).
+The full derivation is archived (archived `M7-M9_multicore_implementation_record.md`).
 
 1. The register fastpath owns no lock. It is absent from shared-kernel images, and the
    configure refusal prevents enabling it there.
@@ -1363,7 +1363,7 @@ The full derivation is [archived](archive/M7-M9_multicore_implementation_record.
 ## 6. Stage outcomes and remaining work
 
 The completed step-by-step plan, its expected results and the GIC register analysis are in
-[the implementation record](archive/M7-M9_multicore_implementation_record.md). `roadmap.md`
+the implementation record (archived `M7-M9_multicore_implementation_record.md`). `roadmap.md`
 owns milestone scheduling. The stage identifiers below identify the outcome, not a new plan.
 
 | Stage | Outcome |
@@ -1596,7 +1596,7 @@ re-seats it and takes the pass that sees its fall.
 
 A core takes nothing off another's structure and links nothing into one: a thread its holder, waker
 or creator sends to a peer is HANDED onto the ring from this core to that one, and the peer links it
-in the dispatch that enters its scheduler (`archive/M9.4_rings_record.md`). A placement reads a peer's level
+in the dispatch that enters its scheduler (archived `M9.4_rings_record.md`). A placement reads a peer's level
 from the cell that core publishes at every change of its bitmap, with every thread already on its
 way there counted, and never reads the peer's ready structure, running thread or seated record. A core that has not started is never a placement
 target, having no scheduler yet to act on the doorbell; its own start links and picks what was

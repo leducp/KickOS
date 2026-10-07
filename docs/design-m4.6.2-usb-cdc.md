@@ -3,7 +3,7 @@
 # M4.9.1 USB CDC console
 
 > **Status: LANDED.** This was first numbered M4.6.2. The controller comparison, errata,
-> staging and validation analysis are in [the original design record](archive/M4_USB_CDC_design_record.md).
+> staging and validation analysis are in the original design record (archived `M4_USB_CDC_design_record.md`).
 > Use [the console reference](reference/console.md) and code for current handover behavior.
 
 The USB CDC console uses the IRQ capability and two-thread driver pattern from M4.6. RP2040

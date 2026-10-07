@@ -4,7 +4,7 @@
 
 > **Status: EXPLORATORY.** This is the historical candidate ranking and staged-model spike.
 > Its complete hardware analysis and numbered sections are in
-> [the M7 spike](archive/M7_smp_candidate_spike.md). Later shared-kernel and AMP decisions are
+> the M7 spike (archived `M7_smp_candidate_spike.md`). Later shared-kernel and AMP decisions are
 > in [the multicore design](design-multicore.md) and [architecture](reference/architecture.md).
 
 A shared kernel needs an inter-core exclusion primitive and a mature context-switch path.

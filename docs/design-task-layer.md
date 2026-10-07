@@ -3,7 +3,7 @@
 # Task layer
 
 > **Status: LANDED.** The original grouping diagnosis, staged plan, measured cost and
-> corrections are in [the M4.8.3 record](archive/M4_task_layer_record.md). The current model
+> corrections are in the M4.8.3 record (archived `M4_task_layer_record.md`). The current model
 > is in [architecture](reference/architecture.md), [invariants](reference/invariants.md)
 > and the code.
 

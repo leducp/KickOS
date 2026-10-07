@@ -11,12 +11,10 @@
 # EXTRACTION RULE (precision over recall: a checker that cries wolf gets disabled):
 #
 #   corpus       every tracked *.md, discovered via `git ls-files`. Nothing is
-#                hardcoded, so moving a file into docs/archive/ neither hides it from
-#                the gate nor breaks the gate. Read one file at a time, its NUL bytes
-#                mapped to an ASCII control byte first and its lines numbered by awk:
-#                M1_raw_meas.md holds raw serial captures with NUL bytes, a checker that
-#                lets a tool skip a "binary" file passes vacuously, and the option that
-#                used to stop that is not one a conforming grep has.
+#                hardcoded. Read one file at a time, its NUL bytes mapped to an ASCII
+#                control byte first and its lines numbered by awk: a checker that lets a
+#                tool skip a "binary" file passes vacuously, and the option that used to
+#                stop that is not one a conforming grep has.
 #
 #   fences       lines inside a ``` fence are SKIPPED. Design docs fence PROPOSED
 #                code and capture files fence device output; neither names the tree.

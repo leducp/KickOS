@@ -4,7 +4,7 @@
 
 > **Status: LANDED.** Sections 1 to 3 state the M6 address-space design. Section 5 summarises
 > the completed stages; their detailed step record is in
-> [`archive/M6_implementation_record.md`](archive/M6_implementation_record.md).
+> archived `M6_implementation_record.md`.
 
 This is the DESIGN CONTRACT for M6, not an exploration. `docs/design-mmu-era-exploration.md`
 is the exploration and stays one: it enumerates the five places the single-physical-address-space
@@ -110,7 +110,7 @@ Terms first, because the target state of this milestone is a statement about the
 already carries two of the three.
 
 A **task** is the set of threads that share one memory domain -- that is the definition in
-`docs/archive/M4_task_layer_record.md`, whose own table assigns the task "the `Domain` (the shared region set,
+archived `M4_task_layer_record.md`, whose own table assigns the task "the `Domain` (the shared region set,
 later the address space)". A **process** is a task whose domain IS a full virtualized address
 space: zero to the architectural limit of the low half, laid out freely, private. So every process
 is a task, and a task is NOT necessarily a process. On an MPU board none can be, because its domain
@@ -135,7 +135,7 @@ substance of section 3.1.
   process's text also lives is the proof that the translation family is real.
 - **The domain dedup has no place in the target state, and deleting it is NOT sufficient.**
   `domain_for` deliberately reuses one domain slot for two tasks granting the same block, and
-  `docs/archive/M4_task_layer_record.md` records that two tasks landing on one domain stay two tasks. Under the
+  archived `M4_task_layer_record.md` records that two tasks landing on one domain stay two tasks. Under the
   process model that is precisely the thing to stop: it would put two kill groups inside one address
   space, and then "the set of threads sharing a domain" names something bigger than a task, which
   makes the definition above false. Two tasks granting the same memory become two processes mapping
@@ -164,7 +164,7 @@ substance of section 3.1.
   implicit spawn is a new task too. **Nobody decided that, and the ALWAYS was not even true of the
   tree it described**: `task_resolve` has always answered a spawn that NAMES a task, and that arm
   spends no slot. The decision that does license an implicit task for a spawn naming none exists and
-  went uncited here -- `docs/archive/M4_task_layer_record.md` section 5.3, which rules that naming no task
+  went uncited here -- archived `M4_task_layer_record.md` section 5.3, which rules that naming no task
   creates one holding exactly that thread, and which explicitly leaves the dedup a separable
   question. What the ALWAYS added on top of that decision was what `task_for` happened to do,
   observed once and written in the present tense, and by F10 it was carrying an argument. There is
@@ -208,7 +208,7 @@ narrower form is not missing in the meantime.
 
 ### F4. One lock spans capability resolve-to-use
 
-Carried forward, not decided here: `docs/archive/M7_smp_candidate_spike.md` establishes that holding one lock across
+Carried forward, not decided here: archived `M7_smp_candidate_spike.md` establishes that holding one lock across
 the whole resolve-to-use span survives with or without address translation, where a scheme leaning
 on "no address translation exists" does not. M6 introduces translation, so it inherits the
 obligation to not widen that span.
@@ -224,7 +224,7 @@ decoded into the existing report. Stating it matters because "the MMU arrived" i
 "demand paging arrived for free".
 
 **IT KILLS THE TASK AND NOT ONE THREAD, and that reading only became distinguishable at T5c.** A
-fault ends the faulting thread's whole group (`docs/archive/M4_task_layer_record.md` section 6), which read as
+fault ends the faulting thread's whole group (archived `M4_task_layer_record.md` section 6), which read as
 "the thread" for as long as a plain spawn was alone in its task. Under a process model the group is
 the process, and containing a fault to one member of a shared address space would not contain it.
 
@@ -515,7 +515,7 @@ wider than its virtual range and a selectable paging mode; x86_64 tested entry a
 against a firmware-owned translation regime and a syscall that does not switch stacks.
 The three implementations kept one interface without forcing a shared root count or a
 common hardware identifier. The complete cross-backend derivation and the corrections it
-found are in [the F8 record](archive/M6_aspace_seam_derivation.md).
+found are in the F8 record (archived `M6_aspace_seam_derivation.md`).
 
 The portable address-space contract does not expose a direct physical map, a fixed number
 of page-table levels, a fixed number of roots, or a mandatory address-space identifier.
@@ -1368,12 +1368,12 @@ place and that is a finding about this design rather than about the board.
   or address-space teardown releases it. Memory authority gates map and unmap.
 
 The detailed steps, measurements and corrected premises are retained in
-[`archive/M6_implementation_record.md`](archive/M6_implementation_record.md).
+archived `M6_implementation_record.md`.
 
 ## 6. What M7 inherits
 
 **Multicore inherits a live TLB obligation rather than a deferred one, and that reverses what its
-own spike says.** `docs/archive/M7_smp_candidate_spike.md` was written when SMP came first, and it argued that
+own spike says.** archived `M7_smp_candidate_spike.md` was written when SMP came first, and it argued that
 cross-core TLB maintenance was "deferred, not inapplicable" -- an MPU having no translation cache to
 shoot down -- and that a doorbell carrying only asynchronous notification would need extending later.
 With page tables landing FIRST, the milestone that adds the second core arrives with translation

@@ -3,7 +3,7 @@
 # M4.8.2 host unit-test seams
 
 > **Status: LANDED.** The spike, mutations, landing corrections and numbered sections are in
-> [the host-test record](archive/M4_host_unit_test_record.md). Follow-up work is tracked in
+> the host-test record (archived `M4_host_unit_test_record.md`). Follow-up work is tracked in
 > `TODO.md`.
 
 The host layer links production sources into ordinary test executables and substitutes functions

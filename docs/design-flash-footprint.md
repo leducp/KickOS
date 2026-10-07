@@ -4,7 +4,7 @@
 # Flash and RAM footprint: the decisions
 
 > **Status: LANDED.** A decision list, not a measurement record. The numbers these rulings rest on
-> are a dated capture and live in `archive/M4.5_footprint_meas.md`, which also holds the method, the
+> are a dated capture and live in archived `M4.5_footprint_meas.md`, which also holds the method, the
 > per-board sweep and the traps. Quote a figure from there with its date, never from here.
 > Two items below are open records rather than shipped work: R3 and the LTO defect.
 
@@ -27,7 +27,7 @@ direction.
 
 `libgcc.a(_udivmoddi4.o)` is the only toolchain passenger on the freestanding leaf, 4.2 percent of
 the `bluepill-c8` `hello` image and 860 bytes on `xmc4800-relax`. It has three call sites, named
-in `archive/M4.5_footprint_meas.md` where the disassembly that found them is, and recovering it
+in archived `M4.5_footprint_meas.md` where the disassembly that found them is, and recovering it
 means moving each to 32-bit arithmetic or shifts, so it is a code change and not a flag. Not
 scheduled here.
 
@@ -56,7 +56,7 @@ function bodies (the `-Warray-bounds` push/pop around `r8`/`r16` in
 `arch/arm/chip/rp2040/chip_rp2040.cc` and `arch/arm/chip/rp2350/chip_rp2350.cc`).
 
 Demonstrated rather than argued, and the demonstration is in
-`archive/M4.5_footprint_meas.md`.
+archived `M4.5_footprint_meas.md`.
 
 ## LTO does not link. STANDS, no fix attempted
 

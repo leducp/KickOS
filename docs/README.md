@@ -67,11 +67,12 @@ rationale, not a contract: for the current contract go to `reference/`.
 - **`flashing.md`** -- flash-tool backends + the non-J-Link paths. (Per-target wiring is
   `reference/boards.md`; this box is the tooling.)
 
-### `archive/` -- measurement captures kept as evidence
-Closed-milestone measurement records: raw console captures and the bench numbers behind them, kept
-because they cost bench time and some can no longer be reproduced, and because they are future Book
-material. **Never in the re-grounding path**: do not read it to find out where the project is.
-See *Prose is regenerable, a measurement is not* under Conventions.
+### Archived records -- in git, not in the tree
+Closed-milestone records (raw console captures, the bench numbers behind them, step logs and
+implementation records) left the tree in M10.6.1 and live in its history. A page cites one as
+archived `<name>`. `git log --diff-filter=D -1 --format=%h -- docs/archive` names the commit that
+removed them; read a record from that commit's parent, `git show <commit>^:docs/archive/<name>`.
+**Never in the re-grounding path**: do not read them to find out where the project is.
 
 ## Conventions (how the docs are kept)
 
@@ -83,8 +84,9 @@ See *Prose is regenerable, a measurement is not* under Conventions.
 - **Prose is regenerable, a measurement is not.** A stale prose record is **deleted**: anyone
   reading the code can regenerate it, and git holds the old text. A **measurement** cost bench time
   and some are permanently unreproducible (the Due unit is retired, no real STM32F103C8 exists, no
-  micro:bit unit is recorded), so measurement captures are **archived to `archive/`**, never
-  deleted. The test: could this be regenerated from the tree, or did it cost bench time?
+  micro:bit unit is recorded), so a capture a page relies on is **copied into the page that cites it**,
+  never rewritten, and older ones are read from history as the archived records are. No page names
+  a commit hash: branches are squashed along the way.
 - **Spikes are ephemeral.** A design *spike* is scratch that lets one pass explore a path for the
   next to implement. When the code lands, the spike is **deleted + squashed out of history**, and
   its durable teaching is rewritten as a **Book chapter** (spike -> Book, never a lingering doc).
