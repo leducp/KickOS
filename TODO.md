@@ -573,15 +573,6 @@ and their ratio; no gate is written over them.
 
 ## The toolchain release (maintainer, 2026-10-04)
 
-- [ ] **ONE DOWNLOAD PER TOOLCHAIN, NOT ONE ARCHIVE OF ALL OF THEM (maintainer, 2026-10-04).** A
-      user builds for one or two target families, not all six. `toolchain-release.yml`'s `release`
-      job merges every family's package from both hosts, every pinned source and `SHA256SUMS` into
-      the single artifact `kickos-toolchain-release`, beside the per-job artifacts named from the
-      runner (`kickos-toolchain-<family>-macOS-ARM64`) that hold the same `.tgz` under its
-      `uname` name (`kickos-toolchain-<family>-Darwin-arm64.tgz`). Split it so each toolchain
-      (family and host) is its own archive a user fetches alone, with the sources and their
-      checksums beside them, and one naming for the artifact and the file inside it.
-
 - [ ] **THE TOOLCHAIN PROBABLY SHOULD NOT REACH A USER AS A CONAN PACKAGE (maintainer,
       2026-10-04).** To use a prebuilt toolchain today a user needs Conan:
       `tools/kickos-toolchain.sh` runs `conan profile detect` and `conan cache restore` on the
@@ -589,19 +580,6 @@ and their ratio; no gate is written over them.
       someone who only wants to compile for one board. To settle: a plain archive a user unpacks
       and points `KICKOS_TOOLCHAIN` at, with Conan kept for building the toolchain from source and
       in CI if it still earns its place there.
-
-- [ ] **THE RELEASE SHIPS ONE ARCHIVE OF THE SOURCES AND PATCHES, XZ AT ITS HARDEST (maintainer,
-      2026-10-04).** `tools/kickos-toolchain-release.sh` stops laying the pinned sources and
-      KickOS's patches out as loose release files and packs them, with their checksums, into one
-      `kickos-toolchain-sources-<version>.tar.xz` at `xz -9e`. Built by hand for toolchain-1.0 from
-      the release artifact: 373 MB of loose files became 269 MB, almost all of it from repacking the
-      gzip archives (Espressif's GCC, binutils and overlays, newlib, MPC) as xz, the xz and bzip2
-      ones being already compressed. A repacked archive no longer matches its upstream sha256, so
-      the archive carries `TAR-SHA256`, the hash of each repacked one's uncompressed tar, which
-      the upstream file's decompressed stream reproduces; `conan/toolchain/conandata.yml` and the
-      in-tree fallback to the release (`tools/kickos-toolchain.sh`, CI's source restore) read
-      sources from that archive. This narrows "which the release mirrors" (maintainer,
-      2026-10-01; `docs/design-m10-toolchain.md` section 1) to one file beside the toolchains.
 
 ## The console collision class closes at the EMITTER, and the gate side has run out of room
 

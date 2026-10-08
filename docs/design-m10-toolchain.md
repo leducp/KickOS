@@ -41,7 +41,7 @@ through a core plugin loaded at run time. KickOS targets the ESP32 alone, so the
 to the sources and the compiler is fixed to that core, with no plugin.
 
 **RX is the pinned set plus Renesas's changes ported onto it, carried as patches in this
-repository and mirrored by the release** (maintainer, 2026-10-01). Upstream GCC knows the RXv1
+repository and held by the sources archive** (maintainer, 2026-10-01). Upstream GCC knows the RXv1
 cores only; the RXv3 instructions and the double-precision FPU the RX72M has, and that
 `arch/rx/rxv3/switch.S` saves under `__RX_DFPU_INSNS__`, are Renesas's GNURX 14.2 changes, as is
 the `-misa` and `-dfpu` its GCC passes the assembler, which upstream's gas does not take. Each is
@@ -49,7 +49,8 @@ ported onto GCC 16.2.0, binutils 2.47 and newlib 4.5.0 as one patch per componen
 recipe applies after unpacking, for this family alone. Two GNURX changes are left out by
 maintainer decision: the `-mrxpeephole` pass and a loop-exit relaxation. The patches are
 Renesas's GPL code, vendored in `conan/toolchain/patches/` beside the x86_64 one (5.5), which
-`tests/lib/gate.sh` keeps out of the tree gates, and byte for byte the files the release mirrors.
+`tests/lib/gate.sh` keeps out of the tree gates, and byte for byte the files the sources archive
+holds.
 
 **One GNURX pattern is corrected by a KickOS patch over the port** (maintainer, 2026-10-01). Its
 double-precision compare branches on ORDERED for UNORDERED, and its UN* codes take the branch on
@@ -64,11 +65,21 @@ The bit stays set (maintainer, 2026-10-01): clearing it trades the flush for an
 unimplemented-processing exception on every denormal operand, which KickOS would have to emulate.
 
 **Every pinned source and every prebuilt package live in one GitHub release per toolchain
-version** on this repository (maintainer, 2026-09-30). The recipe fetches each source from its
-upstream first and the release second, and every patch from the copy it exports from this
-repository. Distributing GCC binaries obliges us to make their exact sources available, which the
-sources beside them do. A script assembles the release's files, the source archives, the patches,
-one package archive per family and host and their sha256 list, for the maintainer to upload.
+version** on this repository (maintainer, 2026-09-30), in the files a user fetches alone: one
+package archive per family and host, `kickos-toolchain-<family>-<os>-<arch>.tgz`, and one
+archive of every pinned source and patch, `kickos-toolchain-sources-<version>.tar.xz` at
+`xz -9e` (maintainer, 2026-10-04), with the sha256 list of every file beside them. The recipe
+fetches each source from its upstream and, where that download fails, from the sources archive,
+and every patch from the copy it exports from this repository. A source GitHub or GNU serves as
+gzip is stored in the archive as xz, so its sha256 no longer matches; `conandata.yml` pins the
+sha256 of its uncompressed tar as `tar_sha256`, which the upstream file's decompressed stream
+reproduces, and the name it is stored under as `stored`, which the recipe and the release script
+both read; the recipe checks the archive's member against that, never against a hash the
+archive carries. The archive's own `SHA256SUMS` and `TAR-SHA256` list its members for an auditor.
+Distributing GCC binaries obliges us to make their exact sources available, which the archive
+does. A script assembles the release's files for the maintainer to upload, and the
+`toolchain-release` workflow's artifacts are those files: one per toolchain, named as its file,
+and one of the sources and the sha256 list.
 
 ## 2. The families
 
@@ -763,7 +774,7 @@ cache key hashes them beside `conan/toolchain`. As built, recipe revision d1c090
 threads under `nice`: both guards pass over the eight archives, 2129 members, and `libc.a` and
 `libg.a` sit in the one multilib directory, holding neither deleted member.
 
-**The patches live in this repository, and the release mirrors them.** They are KickOS's own,
+**The patches live in this repository, and the sources archive holds them.** They are KickOS's own,
 kept here for review beside Renesas's RX patches: `conan/toolchain/patches/` holds
 `kickos-x86_64-binds-local.patch` against the pinned GCC 16.2.0 tree and
 `kickos-x86_64-pe-defweak-reloc.patch` against binutils 2.47, each applied with `-p1` in its tree
@@ -1123,7 +1134,8 @@ Every decision is accepted.
     which proves the write there but not that libc reads it.
 18. **A KickOS patch to GCC in the `x86_64-elf` recipe**, accepted, with its supply changed: the
     patch is KickOS-authored, so it lives in this repository for review,
-    `conan/toolchain/patches/kickos-x86_64-binds-local.patch`, and the release mirrors it (5.5).
+    `conan/toolchain/patches/kickos-x86_64-binds-local.patch`, and the sources archive holds it
+    (5.5).
     Wiring it in, at stage 3, changes the recipe's revision, so every family's package rebuilds,
     and changes CI's cache key; any later edit to the recipe, its `conandata.yml` or a patch does
     the same. The recipe applies every patch from its own export, never from the release.

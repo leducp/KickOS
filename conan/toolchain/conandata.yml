@@ -4,6 +4,8 @@
 # The pinned sources of the KickOS toolchain (docs/design-m10-toolchain.md section 1). GMP, MPFR,
 # MPC and ISL are the releases GCC 16.2's contrib/download_prerequisites names. `filename` names
 # an archive GitHub serves under its commit alone, or a patch in patches/ beside this file.
+# `tar_sha256` is the sha256 of a gzip source's uncompressed tar, and `stored` the name the
+# release's sources archive holds it under, as xz.
 sources:
   gcc:
     url: "https://ftp.gnu.org/gnu/gcc/gcc-16.2.0/gcc-16.2.0.tar.xz"
@@ -14,6 +16,8 @@ sources:
   newlib:
     url: "https://sourceware.org/pub/newlib/newlib-4.5.0.20241231.tar.gz"
     sha256: "33f12605e0054965996c25c1382b3e463b0af91799001f5bb8c0630f2ec8c852"
+    tar_sha256: "aed310ad73e404664b113507a0c45adda079c5f9efc6d6050588b4d3c74a14c2"
+    stored: "newlib-4.5.0.20241231.tar.xz"
   gmp:
     url: "https://gcc.gnu.org/pub/gcc/infrastructure/gmp-6.3.0.tar.bz2"
     sha256: "ac28211a7cfb609bae2e2c8d6058d66c8fe96434f740cf6fe2e47b000d1c20cb"
@@ -23,6 +27,8 @@ sources:
   mpc:
     url: "https://gcc.gnu.org/pub/gcc/infrastructure/mpc-1.3.1.tar.gz"
     sha256: "ab642492f5cf882b74aa0cb730cd410a81edcdbec895183ce930e706c1c759b8"
+    tar_sha256: "063c6cbbdd82a98f6ce51d74bf04c0063cf1ddca41b6ae755f9ef6f005e23ba3"
+    stored: "mpc-1.3.1.tar.xz"
   isl:
     url: "https://gcc.gnu.org/pub/gcc/infrastructure/isl-0.24.tar.bz2"
     sha256: "fcf78dd9656c10eb8cf9fbd5f59a0b6b01386205fe1934b3b287a0a1898145c0"
@@ -32,17 +38,23 @@ sources:
     url: "https://github.com/espressif/gcc/archive/96666a8b989e784ad3356b013e77e94a530fafe7.tar.gz"
     filename: "espressif-gcc-96666a8b989e784ad3356b013e77e94a530fafe7.tar.gz"
     sha256: "33e79d11f5c70dd426b2a7997cfeeed79ab57c5b5dfb1bd12696db26718741d8"
+    tar_sha256: "3b6e008071723ed10d610c623a739c7836ca757274299e4150464189eaeee900"
+    stored: "espressif-gcc-96666a8b989e784ad3356b013e77e94a530fafe7.tar.xz"
   binutils-esp:
     url: "https://github.com/espressif/binutils-gdb/archive/f5e7bfaf0786cd74c7138e32ca50359618967abf.tar.gz"
     filename: "espressif-binutils-gdb-f5e7bfaf0786cd74c7138e32ca50359618967abf.tar.gz"
     sha256: "5820a2fd06a5e2151335297f5c5ba3af0c4ff2a19950355b9d68f098503488a4"
+    tar_sha256: "2dbe69d0bcfe1719c42a977b5f23e9df09ff775d0309427d4eb59a01bdab7a82"
+    stored: "espressif-binutils-gdb-f5e7bfaf0786cd74c7138e32ca50359618967abf.tar.xz"
   xtensa-overlays:
     url: "https://github.com/espressif/xtensa-overlays/archive/dd1cf19f6eb327a9db51043439974a6de13f5c7f.tar.gz"
     filename: "espressif-xtensa-overlays-dd1cf19f6eb327a9db51043439974a6de13f5c7f.tar.gz"
     sha256: "2ff44e3932c4209d4be2ea8f4863c4c19d96636fd308ea7c557206be86f92c56"
+    tar_sha256: "446c7f0aa5941ec546283c5e9135a21b3e9c693c492d02a276b67ffbd3d06a0f"
+    stored: "espressif-xtensa-overlays-dd1cf19f6eb327a9db51043439974a6de13f5c7f.tar.xz"
   # Renesas's GNURX 14.2 changes ported onto the sources above, which the RX family applies,
   # and the trim of its multilibs to the four RX libraries (design section 1). Patches, not
-  # archives: the recipe exports them, and the release mirrors them.
+  # archives: the recipe exports them, and the sources archive holds them.
   gnurx-gcc:
     filename: "gnurx-gcc-16.2.0.patch"
     sha256: "a62b716bc1eafcfe64447e20d904a6e28c88246b6f0d3303fd253d99e3000467"

@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# The KickOS toolchain's release files (docs/design-m10-toolchain.md section 1): every family
-# built on each host CI publishes for, then every pinned source beside them and their sha256
-# list, as one artifact the maintainer uploads under the tag toolchain-<version>. The patches
-# among them are this repository's own, from conan/toolchain/patches.
+# The KickOS toolchain's release files (docs/design-m10-toolchain.md section 1), for the
+# maintainer to upload under the tag toolchain-<version>. One artifact per toolchain, a family on
+# a host, holding the one file of the release it is named for: kickos-toolchain-<family>-<os>-
+# <arch>.tgz, the uname spelling. One artifact of the sources, which holds the sources and
+# patches archive and the sha256 list of every file. Upload every file of every artifact.
 
 name: Toolchain release
 
@@ -43,32 +44,41 @@ jobs:
         with:
           family: ${{ matrix.family }}
           build: "true"
+          upload: "false"
       # A copy: the cache the action filled saves the original when the job ends.
       - name: The family's archive under its release name
+        id: archive
         env:
           FAMILY: ${{ matrix.family }}
         run: |
+          name="kickos-toolchain-$FAMILY-$(uname -s)-$(uname -m).tgz"
           mkdir -p release
-          cp ~/kickos-toolchain-archive/"$FAMILY".tgz \
-            release/kickos-toolchain-"$FAMILY"-"$(uname -s)"-"$(uname -m)".tgz
+          cp ~/kickos-toolchain-archive/"$FAMILY".tgz release/"$name"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         with:
-          name: kickos-toolchain-${{ matrix.family }}-${{ runner.os }}-${{ runner.arch }}
-          path: release/
+          name: ${{ steps.archive.outputs.name }}
+          path: release/${{ steps.archive.outputs.name }}
+          compression-level: 0
 
-  release:
+  sources:
     needs: package
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
+      # Only for the sha256 list to cover them: they stay in their own artifacts.
       - uses: actions/download-artifact@v4
         with:
           path: release
           merge-multiple: true
-      - name: Every source beside the packages, and their sha256 list
+      - name: Every source and patch in one archive, and the sha256 list
         run: tools/kickos-toolchain-release.sh release ""
       - uses: actions/upload-artifact@v4
         with:
-          name: kickos-toolchain-release
-          path: release/
+          name: kickos-toolchain-sources
+          path: |
+            release/kickos-toolchain-sources-*.tar.xz
+            release/SHA256SUMS
+          if-no-files-found: error
+          compression-level: 0
