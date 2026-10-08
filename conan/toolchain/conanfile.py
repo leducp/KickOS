@@ -58,8 +58,10 @@ FAMILIES = {
                 "--with-multilib-generator=rv64imac_zicsr_zmmul_zaamo_zalrsc_zca-lp64--;"
                 "rv32imac_zicsr-ilp32--"],
         "cflags": "-g -Os -ftls-model=local-exec -ffunction-sections -fdata-sections",
-        "newlib": ["--enable-newlib-reent-check-verify", "--enable-newlib-io-long-long",
-                   "--enable-newlib-io-c99-formats", "--enable-newlib-atexit-dynamic-alloc"],
+        "newlib": ["--enable-newlib-retargetable-locking", "--enable-newlib-reent-check-verify",
+                   "--enable-newlib-io-long-long", "--enable-newlib-io-c99-formats",
+                   "--enable-newlib-register-fini", "--enable-newlib-mb",
+                   "--enable-newlib-atexit-dynamic-alloc"],
         "dynamic_reent": "defined(__riscv) && __riscv_xlen == 64",
         "check": [["-march=rv32imac_zicsr", "-mabi=ilp32"],
                   ["-march=rv64imac_zicsr_zmmul_zaamo_zalrsc_zca", "-mabi=lp64",
@@ -126,7 +128,8 @@ FAMILIES = {
     # multilibs; -misa=v3 -mdfpu selects 64-bit-double/dfpu/rxv3, as -mdfpu makes doubles
     # 64-bit. KickOS's compare patch, last, corrects GNURX's unordered double-precision
     # branches. Each touched file is a generated one the patches carry, made newer than its
-    # inputs so that no maintainer tool runs.
+    # inputs so that no maintainer tool runs. newlib's register_fini stays off: it needs `_fini`,
+    # which RX's crt0 lacks.
     "rx-elf": {
         "patches": {"gcc": ["gnurx-gcc", "rx-multilib", "kickos-rx-dfpu-compare"],
                     "binutils": ["gnurx-binutils"],
@@ -137,7 +140,9 @@ FAMILIES = {
                   "newlib": ["newlib/Makefile.in", "libgloss/Makefile.in"]},
         "gcc": [],
         "cflags": "-g -O2 -ffunction-sections -fdata-sections",
-        "newlib": ["--enable-newlib-io-long-long", "--enable-newlib-io-c99-formats"],
+        "newlib": ["--enable-newlib-retargetable-locking", "--enable-newlib-reent-check-verify",
+                   "--enable-newlib-io-long-long", "--enable-newlib-io-c99-formats",
+                   "--disable-newlib-register-fini", "--enable-newlib-mb"],
         "check": [["-misa=v3", "-mdfpu"]],
     },
 }
