@@ -47,6 +47,11 @@ namespace kickos
     // ends this core's lock span, and a second publisher here would put the ask ahead of a
     // raise nothing ordered it against.
     void klock_resched_self(void);
+
+    // Consumes every ask standing against this core and says whether any stood. The doorbell
+    // dispatch reaches it only through kickos_kernel_core_resched_if_owed, which enters the
+    // scheduler on a true.
+    bool klock_resched_take(void);
 #else
     inline void klock_enter(void)
     {

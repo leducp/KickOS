@@ -8,16 +8,17 @@
 // normally have run. Everything here executes at Non-secure EL1.
 
 #include <kickos/arch/arch.h>
+#include "crt_tail.h"
 #include <kickos/console_tx.h>
 
-#include <kickos/chip_limits.h> // KICKOS_MAX_IRQ: this GIC's interrupt-ID count
+#include <kickos/chip_limits.h>
 #include <kickos/chip_mmap.h>
 
 #include <chip_layout.h>
 
-#include "a53.h"   // arch/arm64/common: the A53 facts and the timer seams both chips share
-#include "gic.h"   // arch/arm64/common: the architected half of this machine's controller
-#include "gicv3.h" // arch/arm64/common: which controller this part has, and where
+#include "a53.h"
+#include "gic.h"
+#include "gicv3.h"
 
 #include <fatal_status.ld.h>
 
@@ -44,20 +45,12 @@ QEMU's imx8mp-evk models the SRC as an unimplemented device and supplies no PSCI
 can release a core on that machine."
 #endif
 
-namespace kickos
-{
-    int kmain(int argc, char** argv);
-}
-
 extern "C"
 {
-    // Linker-script symbols (imx8mp.ld).
     extern uint32_t _sidata, _sdata, _edata, _sbss, _ebss;
     // The app's .bss lives in the low window, outside _sbss.._ebss, so the boot zeroing
     // covers it separately. Its .data needs no copy: the low window links VMA == LMA.
     extern uint32_t __kickos_appbss_start, __kickos_appbss_end;
-    extern void (*__init_array_start[])();
-    extern void (*__init_array_end[])();
 
     void kfault_terminate(void) __attribute__((noreturn));
 }
@@ -121,8 +114,6 @@ namespace
         *ucr2 = UCR2_SRST | UCR2_TXEN | UCR2_RXEN | UCR2_WS_8BIT;
     }
 
-    // --- Buffered console TX backend (console_tx.h). No TX interrupt is wired here, so
-    // irq_line is -1 and the producer drains. ---
     int imx_tx_slot_free(void) { return (*r32p(UART_UTS) & UTS_TXFULL) == 0; }
     void imx_tx_push(uint8_t b) { *r32p(UART_UTXD) = static_cast<uint32_t>(b); }
     void imx_tx_irq_enable(void) {}
@@ -132,8 +123,6 @@ namespace
     console_tx_backend const imx_console_backend = {
         imx_tx_slot_free, imx_tx_push, imx_tx_irq_enable, imx_tx_irq_disable};
 
-    // The refusal path's own writer, with the UART at the address the bus sees: the MMU
-    // is off, so dev_va's high alias translates through nothing.
     KICKOS_BOOT_TEXT void boot_console_write(char const* buf, size_t n)
     {
         volatile uint32_t* uts = reinterpret_cast<volatile uint32_t*>(UART_UTS);
@@ -170,22 +159,12 @@ namespace
     using kickos::imx8mp::mmap::GICD_BASE;
     using kickos::imx8mp::mmap::GICR_BASE;
     constexpr uintptr_t GICR_STRIDE = 0x20000;
-    // FOUR, BECAUSE THE DIE CARRIES FOUR A53s: one redistributor per core the part implements,
-    // decoded whatever KICKOS_NUM_CORES this image was built for. The four frame pairs fill the
-    // block from GICR_BASE to its top, which is the one cross-check the RM's 1 MB affords.
-    constexpr int GICR_COUNT = 4;
-    constexpr uintptr_t GIC_BLOCK_SIZE = 0x100000;
-    static_assert(GICR_BASE - GICD_BASE + GICR_COUNT * GICR_STRIDE == GIC_BLOCK_SIZE,
-                  "the redistributor series must fill the RM's GIC block above GICR_BASE");
-    static_assert(KICKOS_LAYOUT_GICR_SIZE >= GICR_COUNT * GICR_STRIDE,
-                  "the reserved redistributor window must cover every frame pair "
-                  "kickos_gicv3.rdist_count declares");
+    constexpr int GICR_COUNT = KICKOS_LAYOUT_GICR_SIZE / GICR_STRIDE;
 }
 
 extern "C"
 {
 
-// This part's interrupt controller, which the linked backend reads.
 struct kickos_gicv3_map const kickos_gicv3 = {
     GICD_BASE,
     GICR_BASE,
@@ -241,7 +220,7 @@ console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size
 {
     *storage = console_tx_buf;
     *size = KICKOS_CONSOLE_TX_SIZE;
-    *irq_line = -1; // no TX line is routed here; the producer drains
+    *irq_line = -1;
     return &imx_console_backend;
 }
 
@@ -297,12 +276,6 @@ void Reset_Handler(void)
     {
         *b = 0;
     }
-    for (void (**fn)() = __init_array_start; fn != __init_array_end; fn++)
-    {
-        (*fn)();
-    }
-    arch_init();
-    kickos::kmain(0, nullptr);
-    arch_shutdown(0);
+    kickos_crt_tail();
 }
 }

@@ -2,8 +2,7 @@
 # Copyright (c) 2026 Philippe Leduc
 
 # The double classification and printf gate riding `fpclass`. rxv3 has no QEMU machine, so
-# kickos_add_qemu_test registers nothing there and the script judges the board's capture; the
-# compiler half is arch/CMakeLists.txt's rx_dfpu_compare.
+# kickos_add_qemu_test registers nothing there and the script judges the board's capture.
 
 if(NOT TARGET fpclass)
   return()

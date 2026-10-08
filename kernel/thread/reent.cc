@@ -21,13 +21,11 @@ namespace kickos
     {
         KickosReentSeam s_seam = {};
 
-        // At namespace scope and volatile: a local volatile would stop the value folding but not
-        // the address being materialised inline, which tests/static/check_riscv_kernel_apphalf.sh
-        // refuses.
+        // Namespace scope and volatile: a local volatile would not stop the address being
+        // materialised inline, which tests/static/check_riscv_kernel_apphalf.sh refuses.
         KickosReentSeam const* const volatile s_seam_home = &kickos_reent_seam;
 
 #if defined(KICKOS_ENABLE_SELFTEST)
-        // Writes to the app half made for a thread whose memory view is not installed.
         size_t s_unseated_writes = 0;
 
         void note_write(void)
@@ -128,8 +126,7 @@ namespace kickos
             thread_cancel_escalate(sched::current(), CANCEL_SLAY);
         }
 #else
-        // __builtin_memcpy: under -ffreestanding a plain memcpy would lower to a call on every
-        // switch.
+        // __builtin_memcpy: under -ffreestanding a plain memcpy lowers to a call on every switch.
         (void)space;
         void** const word =
             static_cast<void**>(__builtin_assume_aligned(s_seam.seat, sizeof(void*)));

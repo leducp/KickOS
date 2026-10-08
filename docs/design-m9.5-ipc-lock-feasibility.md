@@ -45,7 +45,7 @@ These are actual dependencies in `syscall_ipc.cc`, `cap.cc`, `park.cc`,
 
 2. **Endpoint to timer, timer to endpoint.** A timed CALL links its wait edge
    and arms the deadline before another core may wake it. Timer expiry removes
-   the deadline, then `endpoint_wait_abort` unlinks the endpoint wait or donor
+   the deadline, then `thread_abort_park` unlinks the endpoint wait or donor
    edge and calls the scheduler. Directly locking the existing order gives
    `endpoint -> timer` in CALL and `timer -> endpoint` in expiry. Reversing one
    order creates a gap in which expiry can run before the park is published;

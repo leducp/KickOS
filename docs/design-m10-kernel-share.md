@@ -24,7 +24,7 @@ and its user address. Boot derives U from the firmware root and paging depth, th
 checks that the app image and frame pool fit in unmapped user slots without overflow.
 The other translating backends answer U=0 through the same arch hook.
 
-The kernel keeps its identity-mapped view of frames. `aspace_reserve`, self-grants and
+The kernel keeps its identity-mapped view of frames. RAM allocations, self-grants and
 user stacks use physical address + U in a task; the kernel accesses user memory through
 `arch_aspace_acquire`, never by dereferencing that user address. All tasks use the same
 U, so a delegated block has the same virtual address in each. Section 6 defines

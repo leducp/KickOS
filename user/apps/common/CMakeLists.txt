@@ -137,6 +137,10 @@ endif()
 # anywhere but where the slayer is, which is the whole hazard.
 if(KICKOS_HAVE_LIBC AND KICKOS_BUILD_TESTS AND KICKOS_KERNEL_CORES GREATER 1)
   add_subdirectory(slaypeer)
+  # Its judge reads the arm64 fault record, and the arm stands in for an arm64 image gate.
+  if(KICKOS_HAVE_ASPACE AND KICKOS_ARCH STREQUAL "armv8a")
+    add_subdirectory(unmappeer)
+  endif()
   # The counter taskleave reads exists only where a space can be installed on a core at all,
   # and the probe is selftest scaffolding.
   if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST)

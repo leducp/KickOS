@@ -12,6 +12,7 @@
 kickos_add_unit_test(NAME console_held
   SOURCES held_record.cc held_store.cc record_room.cc
           "${PROJECT_SOURCE_DIR}/tests/unit/consoleseam/console_seam.cc"
+          "${PROJECT_SOURCE_DIR}/kernel/irq/irq_route.cc"
           "${PROJECT_SOURCE_DIR}/kernel/init/console.cc"
           "${PROJECT_SOURCE_DIR}/kernel/init/console_tx.cc"
           "${PROJECT_SOURCE_DIR}/lib/rtt.cc"
@@ -24,6 +25,7 @@ kickos_add_unit_test(NAME console_held
 kickos_add_unit_test(NAME console_held_rtt
   SOURCES held_rtt.cc
           "${PROJECT_SOURCE_DIR}/tests/unit/consoleseam/console_seam.cc"
+          "${PROJECT_SOURCE_DIR}/kernel/irq/irq_route.cc"
           "${PROJECT_SOURCE_DIR}/kernel/init/console.cc"
           "${PROJECT_SOURCE_DIR}/kernel/init/console_tx.cc"
   INCLUDES "${PROJECT_SOURCE_DIR}/tests/unit/consoleseam"

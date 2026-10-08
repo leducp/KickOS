@@ -1,17 +1,15 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// MK64FN1M0 chip backend for FRDM-K64F. Register definitions follow
-// K64P144M120SF5RM. The 50 MHz input is an external clock
-// (EREFS0=0, RANGE0=2); check PRDIV, VDIV, and FRDIV /1536 encoding.
+// MK64FN1M0 chip backend for FRDM-K64F. Register definitions follow K64P144M120SF5RM.
 
 #include <kickos/arch/arch.h>
-#include <kickos/arch/pin_guard.h>
+#include "pin_guard.h"
 #include <kickos/config/limits.h>
-#include <kickos/arch/clk_anchor.h> // shared tickless-clock epoch anchor (B2)
+#include <kickos/arch/clk_anchor.h>
 #include <kickos/console_tx.h>
 
-#include <kickos/sys/abi.h> // kos_pstate_t / KOS_PSTATE_* (clock-select)
+#include <kickos/sys/abi.h>
 
 #include <stdint.h>
 
@@ -51,9 +49,7 @@ extern "C"
     extern void (*__init_array_start[])();
     extern void (*__init_array_end[])();
 
-    // FEI reset clock (MCGOUTCLK = 32.768 kHz internal ref x 640 FLL). This is the
-    // initial + fallback value; clock_init() raises it to 120 MHz on success.
-    // UART0 and SysTick are clocked by this system clock.
+    // FEI reset clock: MCGOUTCLK = 32.768 kHz internal ref x 640 FLL.
     uint32_t SystemCoreClock = 20971520u;
 }
 
@@ -78,7 +74,6 @@ namespace
     static_assert(KICKOS_BOARD_CONSOLE_BASE == mmap::UART0_BASE,
                   "the board's console is not the UART this backend drives");
 
-    // A pin's PCR sits in the PORT instance its GPIO port index names.
     constexpr uintptr_t pcr(uint32_t port, uint32_t pin)
     {
         return mmap::PORTA_BASE + port * mmap::PORT_STRIDE + pin * reg::port::PCR_STRIDE;
@@ -97,26 +92,6 @@ namespace
         return KICKOS_BOARD_LED_PORT_BASE + reg::gpio::PCOR_OFFSET;
     }
     constexpr bool LED_LIT = KICKOS_BOARD_LED_ACTIVE_LOW == 0;
-
-#define KICKOS_RESERVED_RUN(port_base, first, last) \
-    or (mmap::GPIOA_BASE + port * mmap::GPIO_STRIDE == (port_base) and pin >= (first) and pin <= (last))
-    constexpr bool mk64f_pin_kernel_owned(uint32_t port, uint32_t pin)
-    {
-        return (port == KICKOS_BOARD_CONSOLE_RX_PORT and pin == KICKOS_BOARD_CONSOLE_RX_BIT)
-               or (port == KICKOS_BOARD_CONSOLE_TX_PORT and pin == KICKOS_BOARD_CONSOLE_TX_BIT)
-               or (port == KICKOS_BOARD_LED_PORT and pin == KICKOS_BOARD_LED_BIT)
-                   KICKOS_BOARD_RESERVED_RUNS(KICKOS_RESERVED_RUN);
-    }
-#undef KICKOS_RESERVED_RUN
-
-#define KICKOS_KERNEL_PIN(port_base, bit) or (mmap::GPIOA_BASE + port * mmap::GPIO_STRIDE == (port_base) and pin == (bit))
-    constexpr bool mk64f_pin_listed(uint32_t port, uint32_t pin)
-    {
-        return false KICKOS_BOARD_KERNEL_PINS(KICKOS_KERNEL_PIN);
-    }
-#undef KICKOS_KERNEL_PIN
-    static_assert(kickos::refuses_exactly(mk64f_pin_kernel_owned, mk64f_pin_listed, 5u, 32u),
-                  "arch_pinmux_set refuses other pins than the board's kernel pins");
 
     constexpr uintptr_t UART0_BDH = mmap::UART0_BASE + reg::uart::BDH_OFFSET;
     constexpr uintptr_t UART0_BDL = mmap::UART0_BASE + reg::uart::BDL_OFFSET;
@@ -138,7 +113,7 @@ namespace
     // constant: a reclaim reaching outside the window it reports would rewrite registers
     // whose holder was never checked.
     constexpr uintptr_t CONSOLE_WIN_BASE = mmap::UART0_BASE;
-    constexpr size_t CONSOLE_WIN_SIZE = 0x20u;
+    constexpr size_t CONSOLE_WIN_SIZE = KICKOS_BOARD_CONSOLE_SIZE;
 
     // Every register the reclaim body writes must lie inside that window; adding a store
     // outside it fails to build rather than silently widening the reclaim's reach.
@@ -166,7 +141,7 @@ namespace
     {
         // Boot-order constraint: arch_clock_now MUST NOT run before this. The PIT is
         // clock-gated out of reset and an ungated AIPS read BusFaults.
-        r32(reg::sim::SCGC6) |= reg::sim::SCGC6_PIT; // clock the PIT module
+        r32(reg::sim::SCGC6) |= reg::sim::SCGC6_PIT;
         // The gate opens some bus cycles after the SCGC6 store issues, and a PIT store
         // that beats it is dropped. Read SCGC6 back so the write commits first. Without
         // this the MCR write below is lost at -Os, MCR keeps its MDIS=1 reset value, and
@@ -248,8 +223,8 @@ namespace
     // caller unconditionally sets SystemCoreClock = 20971520.
     bool fail_to_fei()
     {
-        r8(reg::mcg::C6) = 0;                     // clear PLLS + VDIV
-        r8(reg::mcg::C5) = 0;                     // clear PRDIV
+        r8(reg::mcg::C6) = 0;
+        r8(reg::mcg::C5) = 0;
         r8(reg::mcg::C1) = reg::mcg::C1_IREFS_INT; // CLKS=0 (FLL output) + internal ref -> FEI
         mcg_wait(reg::mcg::S_IREFST, reg::mcg::S_IREFST); // best-effort: internal ref reselected
         mcg_wait(reg::mcg::S_CLKST_MASK, 0);              // CLKST=0 (FEI/FLL output)
@@ -310,24 +285,23 @@ namespace
             SystemCoreClock = 120000000u;
             return true;
         }
-        return false; // fail_to_fei parked us on FEI; SystemCoreClock stays 20.97 MHz
+        return false;
     }
 
     void uart0_init()
     {
         r32(reg::sim::SCGC5) |= (1u << (reg::sim::SCGC5_PORT_SHIFT + KICKOS_BOARD_CONSOLE_RX_PORT))
                                 | (1u << (reg::sim::SCGC5_PORT_SHIFT + KICKOS_BOARD_CONSOLE_TX_PORT));
-        r32(reg::sim::SCGC4) |= reg::sim::SCGC4_UART0; // clock UART0
+        r32(reg::sim::SCGC4) |= reg::sim::SCGC4_UART0;
         r32(pcr(KICKOS_BOARD_CONSOLE_RX_PORT, KICKOS_BOARD_CONSOLE_RX_BIT)) = pcr_mux(KICKOS_BOARD_CONSOLE_RX_SELECT);
         r32(pcr(KICKOS_BOARD_CONSOLE_TX_PORT, KICKOS_BOARD_CONSOLE_TX_BIT)) = pcr_mux(KICKOS_BOARD_CONSOLE_TX_SELECT);
 
         r8(UART0_C2) = 0; // disable TX/RX while configuring
-        // baud = clk / (16 x (SBR + BRFA/32)); UART0 is system-clocked, so derive
-        // SBR + the 1/32 fine-adjust from the live clock (tracks 120 MHz or the
-        // 20.97 MHz FEI fallback). 20.97 MHz -> SBR 11/BRFA 12; 120 MHz -> 65/3.
+        // UART0 is system-clocked, so the divisor follows the live clock: 120 MHz or the
+        // 20.97 MHz FEI fallback.
         uint32_t const baud = 115200u;
-        uint32_t sbr = SystemCoreClock / (16u * baud);
-        uint32_t brfa = (SystemCoreClock * 2u) / baud - sbr * 32u;
+        uint32_t sbr = reg::uart::baud_sbr(SystemCoreClock, baud);
+        uint32_t brfa = reg::uart::baud_brfa(SystemCoreClock, baud);
         r8(UART0_BDH) = static_cast<uint8_t>((sbr >> 8) & 0x1F);
         r8(UART0_BDL) = static_cast<uint8_t>(sbr & 0xFF);
         r8(UART0_C4) = static_cast<uint8_t>(brfa & 0x1F); // BRFA fine-adjust (low 5 bits)
@@ -353,20 +327,16 @@ extern "C"
 
 void arch_init(void)
 {
-    // FPU is enabled earlier (Reset_Handler, before C++ ctors). Raise the core to
-    // 120 MHz BEFORE UART (baud) + SysTick are programmed; on failure both fall
-    // back cleanly to the 20.97 MHz FEI clock (SystemCoreClock unchanged).
+    // Clock first: the UART baud and SysTick derive from the final SystemCoreClock.
     clock_init();
-    pit_clock_init(); // monotonic time base (see pit_clock_init note; replaces DWT)
-    g_clk.init(SystemCoreClock / BUS_DIV); // anchor ONCE from the final bus clock (B2)
+    pit_clock_init();
+    g_clk.init(SystemCoreClock / BUS_DIV); // anchor ONCE from the final bus clock
     uart0_init();
     kickos_armv7m_init();
 }
 
-// Monotonic clock override: convert free-running PIT ticks (bus clock = core/2) to ns,
-// the required per-chip arch_clock_now (the DWT is unreliable on this silicon). Pure epoch
-// read: the anchor holds the rate, so a read in the window around a retune cannot bake
-// the phantom rate jump into the epoch.
+// Pure epoch read: the anchor holds the rate, so a read in the window around a retune
+// cannot bake the phantom rate jump into the epoch.
 uint64_t arch_clock_now(void)
 {
     return g_clk.ns_from(pit_ticks());
@@ -455,8 +425,8 @@ void arch_console_retune(void)
     // disabled; TIE stays clear (the console ring re-primes it on the next write).
     r8(UART0_C2) = 0;
     uint32_t const baud = 115200u;
-    uint32_t const sbr = SystemCoreClock / (16u * baud);
-    uint32_t const brfa = (SystemCoreClock * 2u) / baud - sbr * 32u;
+    uint32_t const sbr = reg::uart::baud_sbr(SystemCoreClock, baud);
+    uint32_t const brfa = reg::uart::baud_brfa(SystemCoreClock, baud);
     r8(UART0_BDH) = static_cast<uint8_t>((sbr >> 8) & 0x1F);
     r8(UART0_BDL) = static_cast<uint8_t>(sbr & 0xFF);
     r8(UART0_C4) = static_cast<uint8_t>(brfa & 0x1F);
@@ -473,12 +443,12 @@ uint32_t arch_periph_clock_hz(uintptr_t base)
 {
     if (base == mmap::UART0_BASE or base == mmap::UART1_BASE)
     {
-        return SystemCoreClock; // system-clocked UARTs
+        return SystemCoreClock;
     }
     if (base == mmap::UART2_BASE or base == mmap::UART3_BASE or base == mmap::UART4_BASE
         or base == mmap::DSPI0_BASE or base == mmap::PIT_BASE)
     {
-        return SystemCoreClock / BUS_DIV; // bus-clocked peripherals
+        return SystemCoreClock / BUS_DIV;
     }
     return 0;
 }
@@ -624,7 +594,7 @@ extern "C" void kickos_arch_mpu_commit(void)
         }
         else
         {
-            r32(rgd + reg::sysmpu::RGD_WORD3) = 0u; // invalidate the descriptor
+            r32(rgd + reg::sysmpu::RGD_WORD3) = 0u;
         }
         g_mpu_held.word0[i] = word0;
         g_mpu_held.word1[i] = word1;
@@ -665,7 +635,6 @@ int arch_mpu_nocache_support(void)
     return ARCH_MPU_NOCACHE_ALREADY;
 }
 
-// K64F is a Cortex-M4 with the bit-band peripheral/SRAM alias.
 int arch_bitband_present(void)
 {
     return 1;
@@ -775,8 +744,8 @@ void arch_console_reclaim(void)
     // Re-derive baud from the live SystemCoreClock (as uart0_init): 120 MHz or the
     // 20.97 MHz FEI fallback. BDH before BDL (BDL write latches the divisor).
     uint32_t const baud = 115200u;
-    uint32_t const sbr = SystemCoreClock / (16u * baud);
-    uint32_t const brfa = (SystemCoreClock * 2u) / baud - sbr * 32u;
+    uint32_t const sbr = reg::uart::baud_sbr(SystemCoreClock, baud);
+    uint32_t const brfa = reg::uart::baud_brfa(SystemCoreClock, baud);
     r8(UART0_BDH) = static_cast<uint8_t>((sbr >> 8) & 0x1F);
     r8(UART0_BDL) = static_cast<uint8_t>(sbr & 0xFF);
     r8(UART0_C4) = static_cast<uint8_t>(brfa & 0x1F);
@@ -809,21 +778,19 @@ void arch_diag_led_set(int on)
     }
 }
 
-// One-shot pin-function config (KOS_SYS_PINMUX_SET). PORTx base = 0x40049000 + port*0x1000
-// (A=0..E=4); SCGC5 port-clock bit = 1u<<(9+port); PCRn = base + pin*4. func = the raw PCR
-// value (0x100 = MUX ALT1 = GPIO; 0x300 = ALT3 = the console UART). Gate the PORT clock
-// FIRST (unclocked PCR access faults).
+// func = the raw PCR value (0x100 = MUX ALT1 = GPIO; 0x300 = ALT3 = the console UART). Gate
+// the PORT clock FIRST: an unclocked PCR access faults.
 int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
 {
     if (port > 4u or pin > 31u)
     {
         return -KOS_EINVAL;
     }
-    if (mk64f_pin_kernel_owned(port, pin))
+    if (kickos::board_pin_kernel_owned(port, pin))
     {
         return -KOS_EBUSY;
     }
-    r32(reg::sim::SCGC5) |= (1u << (reg::sim::SCGC5_PORT_SHIFT + port)); // gate this PORT's clock (idempotent)
+    r32(reg::sim::SCGC5) |= (1u << (reg::sim::SCGC5_PORT_SHIFT + port));
     // The gate needs an intervening bus transaction before the PCR store or that store is
     // dropped (same mechanism as pit_clock_init above).
     uint32_t const gate = r32(reg::sim::SCGC5);
@@ -839,7 +806,7 @@ void Reset_Handler(void)
     kickos_armv7m_enable_fpu(); // before ANY later code (the copy loops are integer, but a
                     // hard-float ABI could emit FP anywhere; CPACR-off FP faults)
 
-    kickos_ranges_init(); // init .data + the pow2 app-data block; zero .bss + app-bss
+    kickos_ranges_init();
     for (void (**fn)() = __init_array_start; fn != __init_array_end; fn++)
     {
         (*fn)();

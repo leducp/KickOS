@@ -13,9 +13,10 @@ kickos_add_unit_test(NAME presync
 # translating posture whose kernel view is cacheable. Linked with --gc-sections: only the map's
 # own callees need a seam.
 kickos_add_unit_test(NAME presync_map
-  SOURCES presync_map.cc
+  SOURCES presync_map.cc "${PROJECT_SOURCE_DIR}/tests/unit/common/kpanic_seam.cc"
           "${PROJECT_SOURCE_DIR}/kernel/mem/aspace.cc"
           "${PROJECT_SOURCE_DIR}/kernel/mem/vrange.cc"
+          "${PROJECT_SOURCE_DIR}/kernel/init/instance.cc"
   POSTURE KICKOS_HAVE_ASPACE=1 KICKOS_ARCH_ALIAS_DCACHE=1 KICKOS_ARCH_IRQ_WINDOW=1)
 target_compile_options(presync_map PRIVATE -ffunction-sections -fdata-sections)
 target_link_options(presync_map PRIVATE -Wl,--gc-sections)
@@ -37,9 +38,10 @@ foreach(_alias IN ITEMS 1 0)
     set(_stage_prefix noalias_)
   endif()
   kickos_add_unit_test(NAME ${_stage_name} TEST_PREFIX "${_stage_prefix}"
-    SOURCES presync_stage.cc
+    SOURCES presync_stage.cc "${PROJECT_SOURCE_DIR}/tests/unit/common/kpanic_seam.cc"
             "${PROJECT_SOURCE_DIR}/kernel/mem/aspace.cc"
             "${PROJECT_SOURCE_DIR}/kernel/mem/vrange.cc"
+            "${PROJECT_SOURCE_DIR}/kernel/init/instance.cc"
     DEFINITIONS PRESYNC_STAGE_DATA_BYTES=${_stage_data_bytes}
     POSTURE KICKOS_HAVE_ASPACE=1 KICKOS_ARCH_ALIAS_DCACHE=${_alias} KICKOS_ARCH_IRQ_WINDOW=1)
   target_compile_options(${_stage_name} PRIVATE -ffunction-sections -fdata-sections)
@@ -48,5 +50,5 @@ foreach(_alias IN ITEMS 1 0)
     -Wl,--defsym=__kickos_app_rom_end=g_stage_sram
     -Wl,--defsym=__kickos_app_sram_start=g_stage_sram
     -Wl,--defsym=__kickos_app_sram_end=g_stage_sram+${_stage_data_bytes}
-    -Wl,--defsym=__kickos_app_load_delta=0 -Wl,--defsym=__kickos_frame_pool_delta=0)
+    -Wl,--defsym=__kickos_app_load_delta=0)
 endforeach()

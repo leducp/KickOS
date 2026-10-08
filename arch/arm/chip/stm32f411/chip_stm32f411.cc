@@ -1,19 +1,13 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// STM32F411 (STM32F411E-DISCO, Cortex-M4F) chip backend. Registers are clean-room
-// from RM0383; hand-rolled, no vendor HAL/CMSIS, consistent with the arch layer.
+// STM32F411 (STM32F411E-DISCO, Cortex-M4F) chip backend. Registers clean-room from RM0383;
+// no vendor HAL/CMSIS.
 //
-// Clocking: HSE crystal (8 MHz on the
-// F411E-DISCO) -> main PLL -> 84 MHz SYSCLK for an accurate, full-speed core (the
-// HSI RC is too imprecise for reliable 115200 UART). clock_init() runs first in
-// arch_init and bounded-polls every ready flag, so a dead/missing crystal degrades
-// to the reset-default HSI 16 MHz instead of hanging (the BRR is recomputed from
-// whichever APB1 clock we end up on). Console = USART2, on the pins the board file names,
-// buffered TX drained by the USART2 TXE interrupt; arch_console_write_sync is the
-// polled writer for panic/fault. STM32 keeps peripheral clocks running in WFI, so the
-// TXE drain continues while the core sleeps (unlike the XMC). STM32 has no watchdog
-// running at reset (unlike the K64F), so the reset path is FPU + C-runtime + clocks.
+// The HSI RC is too imprecise for a reliable 115200 console, hence the HSE crystal and PLL.
+// A dead crystal degrades to the 16 MHz HSI instead of hanging, and the BRR follows whichever
+// APB1 clock results. Peripheral clocks run in WFI, so the TXE drain continues while the core
+// sleeps. No watchdog runs at reset.
 
 #include "regs.h" // arch/arm/common: kickos_armv7m_enable_fpu + core SCB regs
 #include <kickos/chip_mmap.h>
@@ -25,17 +19,18 @@
 #include "regs/usart.h"
 #include "board_pins.h"
 #include "stm32_gpio.h"
+#include "stm32_usart.h"
 
 #include <kickos/arch/arch.h>
-#include <kickos/arch/pin_guard.h>
-#include <kickos/arch/clk_anchor.h> // shared tickless-clock epoch anchor (B2)
+#include "pin_guard.h"
+#include <kickos/arch/clk_anchor.h>
 #include <kickos/board_config.h>
 // Required: a board on this chip that ships no boards/<board>/include/kickos/board_wiring.h
 // fails here rather than compiling against another board's crystal.
 #include <kickos/board_wiring.h>
 #include <kickos/config/limits.h>
 #include <kickos/console_tx.h>
-#include <kickos/sys/abi.h> // KOS_E* taxonomy (arch_pinmux_set)
+#include <kickos/sys/abi.h>
 
 
 #include <stdint.h>
@@ -61,7 +56,7 @@ extern "C"
     extern void (*__init_array_start[])();
     extern void (*__init_array_end[])();
 
-    uint32_t SystemCoreClock = 16000000u; // updated by clock_init(); HSI on fallback
+    uint32_t SystemCoreClock = 16000000u; // HSI at reset
 }
 
 namespace
@@ -76,7 +71,7 @@ namespace
     //   VCO_out = VCO_in * PLLN = 1 MHz * 336 = 336 MHz (100..432 MHz, RM line 5293)
     //   SYSCLK  = VCO_out / PLLP = 336 / 4   = 84 MHz  (<=100 MHz, RM line 5280)
     //   PLL48   = VCO_out / PLLQ = 336 / 7   = 48 MHz  (USB/SDIO, RM line 5251)
-    constexpr uint32_t PLLM = KICKOS_HSE_HZ / 1000000u; // board-derived, no fixed constant
+    constexpr uint32_t PLLM = KICKOS_HSE_HZ / 1000000u;
     constexpr uint32_t PLLCFGR_VALUE =
         (rcc::PLLQ << rcc::PLLCFGR_PLLQ_SHIFT) | rcc::PLLCFGR_PLLSRC_HSE |
         rcc::PLLCFGR_PLLP_DIV4 | (rcc::PLLN << rcc::PLLCFGR_PLLN_SHIFT) |
@@ -86,14 +81,11 @@ namespace
     constexpr uint32_t SYSCLK_PLL_HZ = 84000000u;
     constexpr uint32_t PCLK1_PLL_HZ = 42000000u; // APB1 = 84/2
 
-    // Bounded so a dead/missing crystal degrades to HSI instead of hanging boot
-    // forever (a silent hang leaves no UART/LED sign of life). The cap is far
-    // longer than any legitimate wait (HSE startup is well under 1 ms).
+    // Bounded so a dead crystal degrades to HSI with a live console; far past any real HSE
+    // startup (well under 1 ms).
     constexpr uint32_t POLL_TIMEOUT = 1000000u;
 
-    // APB1 clock the console runs on; set by clock_init(). Defaults to the HSI
-    // fallback (SYSCLK=HCLK=PCLK1=16 MHz at reset) so the UART still works if the
-    // crystal never comes up.
+    // USART2's PCLK1: the HSI rate until the PLL locks.
     uint32_t pclk1_hz = 16000000u;
 
     static_assert(KICKOS_BOARD_CONSOLE_BASE == mmap::USART2_BASE,
@@ -133,45 +125,6 @@ namespace
 
     constexpr bool LED_LIT = KICKOS_BOARD_LED_ACTIVE_LOW == 0;
 
-#define KICKOS_RESERVED_RUN(port_base, first, last) \
-    or (mmap::GPIOA_BASE + port * mmap::GPIO_STRIDE == (port_base) and pin >= (first) and pin <= (last))
-    constexpr bool f411_pin_kernel_owned(uint32_t port, uint32_t pin)
-    {
-        if (port == KICKOS_BOARD_CONSOLE_TX_PORT and pin == KICKOS_BOARD_CONSOLE_TX_BIT)
-        {
-            return true;
-        }
-        if (port == KICKOS_BOARD_CONSOLE_RX_PORT and pin == KICKOS_BOARD_CONSOLE_RX_BIT)
-        {
-            return true;
-        }
-        if (port == KICKOS_BOARD_LED_PORT and pin == KICKOS_BOARD_LED_BIT)
-        {
-            return true;
-        }
-        return false KICKOS_BOARD_RESERVED_RUNS(KICKOS_RESERVED_RUN);
-    }
-#undef KICKOS_RESERVED_RUN
-
-#define KICKOS_KERNEL_PIN(port_base, bit) or (mmap::GPIOA_BASE + port * mmap::GPIO_STRIDE == (port_base) and pin == (bit))
-    constexpr bool f411_pin_listed(uint32_t port, uint32_t pin)
-    {
-        return false KICKOS_BOARD_KERNEL_PINS(KICKOS_KERNEL_PIN);
-    }
-#undef KICKOS_KERNEL_PIN
-    static_assert(kickos::refuses_exactly(f411_pin_kernel_owned, f411_pin_listed, 8u, 16u),
-                  "arch_pinmux_set refuses other pins than the board's kernel pins");
-
-    // OVER8=0: baud = fPCLK1 / (16 * USARTDIV) (RM lines 28373-28378). The BRR
-    // register value equals 16*USARTDIV = fPCLK1/baud, with BRR[15:4]=mantissa and
-    // BRR[3:0]=fraction/16 (RM lines 27814-27830), so round fPCLK1/baud to nearest:
-    //   PLL   : 42e6/115200 = 364.58 -> 365 = 0x16D (=> 42e6/(16*22.8125)=115068, -0.11%)
-    //   HSI   : 16e6/115200 = 138.89 -> 139 = 0x8B
-    uint32_t usart_brr(uint32_t fpclk1, uint32_t baud)
-    {
-        return (fpclk1 + baud / 2u) / baud;
-    }
-
     bool wait_mask(uintptr_t addr, uint32_t mask)
     {
         for (uint32_t i = 0; i < POLL_TIMEOUT; i++)
@@ -184,8 +137,7 @@ namespace
         return false;
     }
 
-    // HSE crystal -> PLL -> 84 MHz. Every ready flag is bounded-polled; on any
-    // failure we leave the reset-default HSI 16 MHz selected and pclk1_hz at 16 MHz.
+    // SystemCoreClock and pclk1_hz move only once SYSCLK is confirmed on the PLL.
     void clock_init()
     {
         // Flash access time MUST be widened before the core runs faster, else the
@@ -196,7 +148,7 @@ namespace
         r32(rcc::CR) |= rcc::CR_HSEON;
         if (not wait_mask(rcc::CR, rcc::CR_HSERDY))
         {
-            return; // no crystal: stay on HSI 16 MHz
+            return;
         }
 
         // PLL config bits are writable only while PLL is off (RM lines 5250, 5279).
@@ -209,13 +161,13 @@ namespace
         r32(rcc::CR) |= rcc::CR_PLLON;
         if (not wait_mask(rcc::CR, rcc::CR_PLLRDY))
         {
-            return; // PLL never locked: stay on HSI 16 MHz
+            return;
         }
 
         r32(rcc::CFGR) = (r32(rcc::CFGR) & ~rcc::CFGR_SW_MASK) | rcc::CFGR_SW_PLL;
-        if (not wait_mask(rcc::CFGR, rcc::CFGR_SWS_PLL)) // SWS reads back the active source
+        if (not wait_mask(rcc::CFGR, rcc::CFGR_SWS_PLL))
         {
-            return; // switch did not take: HSI still drives SYSCLK
+            return;
         }
 
         SystemCoreClock = SYSCLK_PLL_HZ;
@@ -223,24 +175,15 @@ namespace
     }
 
     // --- TIM2: the monotonic time base (RM0383 sec.13) --------------------------
-    // arch_clock_now is a REQUIRED chip contract: the armv7m layer ships no clock
-    // fallback. The obvious source, the DWT cycle counter, sits in the core debug
-    // power domain and intermittently returns aliased garbage on parts in this fleet,
-    // which the software 32->64 wrap-extension turns into a phantom 2^32 jump that
-    // strands every timed wait. TIM2 is a plain 32-bit general-purpose timer on
-    // APB1: free-run it and use it as arch_clock_now.
-    // arch_trace_now stays on raw DWT_CYCCNT, where a glitch costs one telemetry
-    // sample. TIM2 does not collide with the one-shot tickless timer
-    // (SysTick, core-generic) nor any driver (none use TIM2 on this port).
+    // Not DWT_CYCCNT: on parts in this fleet it intermittently reads aliased garbage, which the
+    // 32->64 wrap extension turns into a phantom 2^32 jump that strands every timed wait.
+    // arch_trace_now stays on raw DWT_CYCCNT, where a glitch costs one telemetry sample. No
+    // driver on this port uses TIM2.
 
-    // Software 64-bit extension of the 32-bit TIM2_CNT. Reads are RELIABLE (unlike
-    // DWT): TIM2 wraps every 2^32/84e6 ~= 51 s. The wrap is folded either by a
-    // thread read or, when the system is idle with the tickless timer disarmed, by
-    // the TIM2 overflow ISR below, exactly once: whoever reads first advances
-    // g_clk_last, so the other sees no backward step. Without that ISR a wrap
-    // across a fully-quiescent >51 s idle would be lost (a slow DWT-style leap).
-    // The two words are ONE value: the IrqLock in tim2_ticks is what keeps them
-    // coherent against the TIM2 overflow ISR, not the atomicity of either word.
+    // 64-bit extension of TIM2_CNT, which wraps every 2^32/84e6 ~= 51 s. The wrap is folded
+    // exactly once, by whichever comes first of a thread read or the TIM2 overflow ISR; without
+    // that ISR a wrap across a quiescent >51 s idle is lost. The two words are ONE value: the
+    // IrqLock in tim2_ticks keeps them coherent against the ISR, not the atomicity of either.
     uint32_t g_clk_high = 0;
     uint32_t g_clk_last = 0;
 
@@ -255,23 +198,21 @@ namespace
         // (__init_array) calling ktime_now()/arch_clock_now() BusFaults here on
         // the ungated APB1 access.
         r32(rcc::APB1ENR) |= rcc::APB1ENR_TIM2EN;
-        // Keep TIM2 clocked in Sleep mode (WFI). TIM2LPEN resets to 1; clearing it
-        // would freeze the clock the instant the idle thread executes WFI.
+        // TIM2LPEN resets to 1; clearing it would freeze the clock the instant the idle
+        // thread executes WFI.
         r32(rcc::APB1LPENR) |= rcc::APB1ENR_TIM2EN;
-        r32(tim::CR1) = 0;             // stop; upcount, defaults
-        r32(tim::PSC) = 0;             // no prescale: count at the timer kernel clock
-        r32(tim::ARR) = 0xFFFFFFFFu;   // full 32-bit free-run
+        r32(tim::CR1) = 0;
+        r32(tim::PSC) = 0;
+        r32(tim::ARR) = 0xFFFFFFFFu;
         r32(tim::EGR) = tim::EGR_UG;   // latch PSC/ARR into the shadow regs (sets UIF)
         r32(tim::SR) = ~tim::SR_UIF;   // drop the UG-induced UIF before arming the IRQ
         r32(tim::DIER) = tim::DIER_UIE; // wrap observer for the disarmed-timer idle case
-        r32(tim::CR1) = tim::CR1_CEN;  // enable
+        r32(tim::CR1) = tim::CR1_CEN;
         // No arch_irq_clear_pending: a pend latched here (latch-and-coalesce) redelivers
         // one benign kickos_isr_timer tick on enable, which the tickless handler tolerates.
-        arch_irq_unmask(irq::TIM2_IRQ); // NVIC enable in the maskable device band
+        arch_irq_unmask(irq::TIM2_IRQ);
     }
 
-    // Wrap-catch must be atomic against a concurrent reader (thread + ISR), so the
-    // extend runs under the crit section.
     uint64_t tim2_ticks()
     {
         arch_irq_state_t s = arch_irq_save();
@@ -292,15 +233,12 @@ namespace
         r32(rcc::APB1ENR) |= rcc::APB1ENR_USART2EN;
         console_pins_init();
 
-        r32(usart::CR1) = 0;         // disable while configuring (OVER8=0)
-        r32(usart::BRR) = usart_brr(pclk1_hz, usart::BAUD_115200);
+        r32(usart::CR1) = 0;         // OVER8=0, as usart_brr assumes
+        r32(usart::BRR) = stm32::usart_brr(pclk1_hz, usart::BAUD_115200);
         r32(usart::CR1) = usart::CR1_UE | usart::CR1_TE | usart::CR1_RE; // TXEIE clear; ring primes it
     }
 
-    // --- Buffered console TX backend (console_tx.h). The ring drains via the
-    // USART2 TXE (TX-data-register-empty) interrupt, level-triggered: enabling
-    // TXEIE while TXE=1 raises it immediately. slot_free/push touch one data
-    // register; irq_enable/disable gate TXEIE at the peripheral. ---
+    // TXE is level-triggered: enabling TXEIE while TXE=1 raises the IRQ immediately.
     int f4_tx_slot_free(void) { return (r32(usart::SR) & usart::SR_TXE) != 0; }
     void f4_tx_push(uint8_t b) { r32(usart::DR) = b; }
     void f4_tx_irq_enable(void) { r32(usart::CR1) |= usart::CR1_TXEIE; }
@@ -310,13 +248,9 @@ namespace
         f4_tx_slot_free, f4_tx_push, f4_tx_irq_enable, f4_tx_irq_disable};
 
     // The window arch_console_reclaim rewrites. ONE constant: a reclaim reaching outside
-    // the window it reports would rewrite registers whose holder was never checked. The
-    // USART register file ends at 0x1B (RM0383 sec.19.6.8 Table 88), so this covers every
-    // register that exists on the channel, and it need not equal the driver's grant:
-    // dev_window_free tests OVERLAP, so any holder able to reach a register below also
-    // overlaps this.
+    // the window it reports would rewrite registers whose holder was never checked.
     constexpr uintptr_t CONSOLE_WIN_BASE = mmap::USART2_BASE;
-    constexpr size_t CONSOLE_WIN_SIZE = usart::BLOCK_SIZE;
+    constexpr size_t CONSOLE_WIN_SIZE = KICKOS_BOARD_CONSOLE_SIZE;
 
     // Every register the reclaim body writes must lie inside that window; adding a store
     // outside it fails to build rather than silently widening the reclaim's reach.
@@ -335,11 +269,9 @@ extern "C"
 
 void arch_init(void)
 {
-    // FPU is enabled earlier (Reset_Handler, before C++ ctors). Bring the core up
-    // on the HSE crystal + PLL first, then configure the console at the resulting
-    // APB1 clock (clock_init leaves us on HSI 16 MHz if the crystal is absent).
+    // Clock first: the console's BRR derives from the final PCLK1.
     clock_init();
-    tim2_clock_init(); // monotonic time base: the required arch_clock_now source
+    tim2_clock_init();
     // Anchor the clock ONCE, from the FINAL rate: TIM2 is on APB1 and, with HPRE=/1
     // and PPRE1 in {/1,/2}, the STM32 APB timer-clock doubler makes the timer kernel
     // clock equal HCLK == SystemCoreClock (retuning PPRE1 to /4+ would break that).
@@ -348,18 +280,14 @@ void arch_init(void)
     kickos_armv7m_init();
 }
 
-// Monotonic clock: free-running TIM2 ticks -> ns, the required per-chip arch_clock_now.
-// Pure epoch read: the anchor holds the rate, so no divide and no rate derivation
-// happens here.
+// Pure epoch read: the anchor holds the rate, so no rate derivation happens here.
 uint64_t arch_clock_now(void)
 {
     return g_clk.ns_from(tim2_ticks());
 }
 
-// TIM2 overflow (update) ISR, vectored at NVIC 28 in startup.S. Its only job is to
-// observe the 51 s wrap while the tickless timer is disarmed and no thread reads
-// the clock; tim2_ticks folds it into g_clk_high (idempotent vs a concurrent
-// thread read). Runs in the maskable band, so an IrqLock defers it harmlessly.
+// TIM2 update ISR, NVIC 28 in startup.S: observes the wrap while no thread reads the clock.
+// It runs in the maskable band, so an IrqLock defers it harmlessly.
 void kickos_tim2_clock_isr(void)
 {
     r32(tim::SR) = ~tim::SR_UIF; // ack the update flag (rc_w0)
@@ -444,7 +372,7 @@ void arch_console_reclaim(void)
 
     // Re-derive the divisor from the live APB1 clock, as usart2_init does: 42 MHz on the
     // PLL, or the 16 MHz HSI fallback when the crystal never came up.
-    r32(usart::BRR) = usart_brr(pclk1_hz, usart::BAUD_115200);
+    r32(usart::BRR) = stm32::usart_brr(pclk1_hz, usart::BAUD_115200);
 
     // 8N1, OVER8=0, TXEIE clear: the polled writer in arch_console_write_sync is what has to
     // work after this, and console_tx re-arms TXEIE itself when the ring is used again.
@@ -496,11 +424,11 @@ int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
     {
         return -KOS_EINVAL;
     }
-    if (f411_pin_kernel_owned(port, pin))
+    if (kickos::board_pin_kernel_owned(port, pin))
     {
         return -KOS_EBUSY;
     }
-    r32(rcc::AHB1ENR) |= (1u << port); // gate this port's clock (idempotent)
+    r32(rcc::AHB1ENR) |= (1u << port);
     // The gate needs an intervening bus transaction before the BSRR store or that store
     // is dropped and the pin takes the ODR reset level (low) when MODER switches
     // (mechanism: pit_clock_init in arch/arm/chip/mk64f/chip_mk64f.cc).
@@ -554,13 +482,12 @@ int arch_periph_enable(uintptr_t base)
 {
     if (base == mmap::SPI1_BASE)
     {
-        r32(rcc::APB2ENR) |= rcc::APB2ENR_SPI1EN; // idempotent
+        r32(rcc::APB2ENR) |= rcc::APB2ENR_SPI1EN;
         return 0;
     }
     return -KOS_EINVAL;
 }
 
-// STM32F411 is a Cortex-M4 with the bit-band peripheral/SRAM alias.
 int arch_bitband_present(void)
 {
     return 1;
@@ -570,7 +497,7 @@ void Reset_Handler(void)
 {
     kickos_armv7m_enable_fpu(); // before any code that a hard-float ABI might emit FP into
 
-    kickos_ranges_init(); // init .data + the pow2 app-data block; zero .bss + app-bss
+    kickos_ranges_init();
     for (void (**fn)() = __init_array_start; fn != __init_array_end; fn++)
     {
         (*fn)();

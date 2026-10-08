@@ -2,8 +2,8 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // What the cross-core doorbell and the kernel lock coupled to it cost on the Xtensa LX6: the
-// trigger's clear, the service body, the ticket draw's conditional store, and the secondary
-// park. The protocol over them is in arch/common/doorbell_protocol.cc.
+// trigger's clear, the ticket draw's conditional store, and the secondary park. The protocol
+// over them, the service body included, is in arch/common/doorbell_protocol.cc.
 //
 // The rendezvous is shared memory. The trigger register reports nothing back to a sender and is
 // not even per target core, so the answer travels in the shared cells. The trigger register is
@@ -31,9 +31,6 @@ extern "C" void kfault_terminate(void) __attribute__((noreturn));
 // Declared rather than included: this TU is below <kickos/bench.h>.
 extern "C" void kickos_bench_lock_draw(uint32_t retries, uint32_t queued);
 #endif
-
-using kickos::doorbell::g_answer;
-using kickos::doorbell::g_request;
 
 namespace
 {
@@ -126,56 +123,21 @@ int kickos_lx6_doorbell_pending(void)
     return 0;
 }
 
-// The far side of the doorbell, on the calling core. Reached from the level-1 dispatch and from
-// a poll inside a spin, and masked either way.
-//
-// The caller has already cleared the trigger; this reads the cells after that clear.
-void kickos_lx6_doorbell_service(void)
+} // extern "C"
+
+// No barrier: this part has no translation to invalidate and no cache over the memory both cores
+// fetch from.
+kickos::doorbell::Fenced kickos::doorbell::service_fence(Observed)
 {
-    uint32_t const me = arch_doorbell_core();
-
-    // Observed once and answered from that observation: answering a request raised after this
-    // loop would report work not done.
-    uint32_t asked[KICKOS_DOORBELL_CORES] = {};
-    bool owed = false;
-    for (uint32_t from = 0; from < KICKOS_DOORBELL_CORES; from++)
-    {
-        asked[from] = g_request[from].seq[me].load();
-        if (asked[from] != g_answer[me].seq[from].load())
-        {
-            owed = true;
-        }
-    }
-    if (not owed)
-    {
-        return;
-    }
-
 #if defined(KICKOS_ENABLE_SELFTEST)
+    uint32_t const me = arch_doorbell_core();
     g_served[me].v = g_served[me].v.load() + 1u;
 #endif
-
-    // No instruction-side barrier: this part has no translation to invalidate and no cache
-    // over the memory both cores fetch from.
-#if KICKOS_KERNEL_CORES > 1
-    // After the snapshot above and before the answer stores below; both halves are the
-    // contract (kernel/irq/irq_route.cc, line_op_ask).
-    kickos_irq_route_service();
-#endif
-
-    for (uint32_t from = 0; from < KICKOS_DOORBELL_CORES; from++)
-    {
-        if (asked[from] != g_answer[me].seq[from].load())
-        {
-            g_answer[me].seq[from] = asked[from];
-        }
-    }
-#if KICKOS_AMP_NODE
-    // After the answers, which is the contract: an AMP payload drain may not delay the
-    // rendezvous a shared kernel's callers wait on through this same body.
-    kickos_amp_node_service();
-#endif
+    return Fenced();
 }
+
+extern "C"
+{
 
 // Masked: the body is not re-entrant against itself, an answer write preempted between its
 // read and its store publishing a stale sequence an initiator waits on forever.
@@ -191,7 +153,7 @@ void kickos_doorbell_poll(void)
     arch_irq_state_t const state = arch_irq_save();
     // Before the service: a set landing after this stays asserted and is delivered again.
     kickos_lx6_doorbell_clear();
-    kickos_lx6_doorbell_service();
+    kickos_doorbell_service();
 #if KICKOS_KERNEL_CORES > 1
     // After the clear that absorbed it. A self raise sets this same trigger, so the clear above
     // drops a reschedule this core owes itself. klock_leave carries it for an ordinary critical
@@ -319,11 +281,10 @@ void kickos_lx6_doorbell_park(void)
         // edge: the core would stay asleep until the primary's bound expired.
         (void)arch_irq_save();
 #if KICKOS_KERNEL_CORES > 1
-        if (kickos_kernel_core_seated() != 0 and kickos_kernel_core_ready() != 0)
+        if (kickos_kernel_core_startable() != 0)
         {
             // Masked and never restored: the scheduler's first resume stands on a frame
             // carrying its own interrupt state.
-            kickos_kernel_core_arrive();
             kickos_kernel_core_start();
         }
 #endif

@@ -41,6 +41,11 @@ enum kos_cap_index
     KOS_CAP_FIRST_DYNAMIC = KICKOS_CAP_FIRST_DYNAMIC // first index an own-create may take
 };
 
+// "No capability". No table can mint this word, nor KOS_CAP_AUTHORITY, which shares its
+// index field. Written to a minting call's out-parameter on EVERY failure, and carried by
+// kos_recv_info.reply_cap for a plain send.
+#define KOS_CAP_NONE 0xFFFFFFFFu
+
 // The thread's authority word is NOT a capability-table entry; it lives in the TCB
 // beside `privileged`. This pseudo-handle is the name kos_cap_narrow takes for it.
 //

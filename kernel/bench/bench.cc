@@ -29,25 +29,16 @@
 // stack depth on the SYSPRIV path. Below the sample floor, report max instead of p99.
 #if defined(KICKOS_CHIP_CYCCNT_GLITCHES) && KICKOS_CHIP_CYCCNT_GLITCHES
 #define BENCH_HEADLINE_MIN 1
-#define BENCH_DIST_FMT(label) "  " label " %u/%u/%u cyc  %u/%u/%u ns  (min/avg/max, n=%u)\n"
-#define BENCH_DIST_FMT_CYC(label) "  " label " %u/%u/%u cyc  (min/avg/max, n=%u)\n"
-#define BENCH_DIST_FMT_CNT(label) "  " label " %u/%u/%u  (min/avg/max, n=%u)\n"
-#define BENCH_E2E_FMT(label) "  " label " %u/%u/%u ns  (min/avg/max, n=%u)\n"
-#define BENCH_DIST_FMT_MAX(label) BENCH_DIST_FMT(label)
-#define BENCH_DIST_FMT_CYC_MAX(label) BENCH_DIST_FMT_CYC(label)
-#define BENCH_DIST_FMT_CNT_MAX(label) BENCH_DIST_FMT_CNT(label)
-#define BENCH_E2E_FMT_MAX(label) BENCH_E2E_FMT(label)
+#define BENCH_STATS "min/avg/max"
+#define BENCH_STATS_MAX "min/avg/max"
 #else
 #define BENCH_HEADLINE_MIN 0
-#define BENCH_DIST_FMT(label) "  " label " %u/%u/%u cyc  %u/%u/%u ns  (p50/p99/max, n=%u)\n"
-#define BENCH_DIST_FMT_CYC(label) "  " label " %u/%u/%u cyc  (p50/p99/max, n=%u)\n"
-#define BENCH_DIST_FMT_CNT(label) "  " label " %u/%u/%u  (p50/p99/max, n=%u)\n"
-#define BENCH_E2E_FMT(label) "  " label " %u/%u/%u ns  (p50/p99/max, n=%u)\n"
-#define BENCH_DIST_FMT_MAX(label) "  " label " %u/%u/%u cyc  %u/%u/%u ns  (p50/max/max, n=%u)\n"
-#define BENCH_DIST_FMT_CYC_MAX(label) "  " label " %u/%u/%u cyc  (p50/max/max, n=%u)\n"
-#define BENCH_DIST_FMT_CNT_MAX(label) "  " label " %u/%u/%u  (p50/max/max, n=%u)\n"
-#define BENCH_E2E_FMT_MAX(label) "  " label " %u/%u/%u ns  (p50/max/max, n=%u)\n"
+#define BENCH_STATS "p50/p99/max"
+#define BENCH_STATS_MAX "p50/max/max"
 #endif
+#define BENCH_FMT(label, units, stats) "  " label " %u/%u/%u" units "  (" stats ", n=%u)\n"
+#define BENCH_STAT_PAIR(label, units) \
+    {BENCH_FMT(label, units, BENCH_STATS), BENCH_FMT(label, units, BENCH_STATS_MAX)}
 
 namespace
 {
@@ -106,20 +97,20 @@ namespace
     constinit volatile uint8_t g_lat_dst[BENCH_LAT_SPAN_MAX] = {0};
 
     // STIR can pend an ARM interrupt while PRIMASK is set. Other targets use
-    // arch_irq_inject, which may be unsupported.
+    // irq_inject, which may be unsupported.
 #if defined(__ARM_ARCH_7M__) || defined(__ARM_ARCH_7EM__)
 #define BENCH_RAISE_NAME "stir"
 #else
 #define BENCH_RAISE_NAME "inject"
 #endif
 
-    inline void bench_irq_raise(int line)
+    inline void bench_irq_raise(int line, [[maybe_unused]] kickos::Held held)
     {
 #if defined(__ARM_ARCH_7M__) || defined(__ARM_ARCH_7EM__)
         *reinterpret_cast<volatile uint32_t*>(0xE000EF00u) = static_cast<uint32_t>(line); // STIR
         __asm volatile("dsb; isb" ::: "memory");
 #else
-        arch_irq_inject(line);
+        kickos::irq_inject(line, held);
 #endif
     }
 
@@ -255,15 +246,12 @@ namespace
         StatFmt ns;
         StatFmt cyc;
     };
-#define BENCH_DIST_ENTRY(label)                                   \
-    {{BENCH_DIST_FMT(label), BENCH_DIST_FMT_MAX(label)},          \
-     {BENCH_DIST_FMT_CYC(label), BENCH_DIST_FMT_CYC_MAX(label)}}
+#define BENCH_DIST_ENTRY(label) \
+    {BENCH_STAT_PAIR(label, " cyc  %u/%u/%u ns"), BENCH_STAT_PAIR(label, " cyc")}
 #define BENCH_DIST_ENTRY_NONE() {{nullptr, nullptr}, {nullptr, nullptr}}
 // A slot carrying a COUNT. The absent nanosecond pair is what dist_print_fmt reads to keep a
 // count out of the cycles-to-nanoseconds conversion.
-#define BENCH_DIST_ENTRY_CNT(label)                                   \
-    {{nullptr, nullptr},                                              \
-     {BENCH_DIST_FMT_CNT(label), BENCH_DIST_FMT_CNT_MAX(label)}}
+#define BENCH_DIST_ENTRY_CNT(label) {{nullptr, nullptr}, BENCH_STAT_PAIR(label, "")}
     constexpr DistFmt DIST_FMT[kickos::BD_COUNT] = {
         BENCH_DIST_ENTRY("switch:   "),
         BENCH_DIST_ENTRY("lock-hold:"),
@@ -314,16 +302,13 @@ namespace
                       == sizeof(WCASE_SPANS) / sizeof(WCASE_SPANS[0]),
                   "one distribution per masked span");
 
-    constexpr StatFmt E2E_FMT_LOCAL = {BENCH_E2E_FMT("e2e-local:"),
-                                       BENCH_E2E_FMT_MAX("e2e-local:")};
+    constexpr StatFmt E2E_FMT_LOCAL = BENCH_STAT_PAIR("e2e-local:", " ns");
 #if KICKOS_KERNEL_CORES > 1
-    constexpr StatFmt E2E_FMT_CROSS = {BENCH_E2E_FMT("e2e-cross:"),
-                                       BENCH_E2E_FMT_MAX("e2e-cross:")};
+    constexpr StatFmt E2E_FMT_CROSS = BENCH_STAT_PAIR("e2e-cross:", " ns");
 #endif
 #if KICKOS_BENCH_SCHED_ON
-    constexpr StatFmt PUSH_E2E_FMT = {BENCH_E2E_FMT("push-e2e:"), BENCH_E2E_FMT_MAX("push-e2e:")};
-    constexpr StatFmt RESEAT_E2E_FMT = {BENCH_E2E_FMT("reseat-e2e:"),
-                                        BENCH_E2E_FMT_MAX("reseat-e2e:")};
+    constexpr StatFmt PUSH_E2E_FMT = BENCH_STAT_PAIR("push-e2e:", " ns");
+    constexpr StatFmt RESEAT_E2E_FMT = BENCH_STAT_PAIR("reseat-e2e:", " ns");
 #endif
 
     // Require 1000 samples for p99, leaving ten samples in the top percent.
@@ -379,12 +364,6 @@ namespace
         DistSlot dist[DIST_SWEPT_COUNT];
     };
 
-#if KICKOS_KERNEL_CORES > 1
-    static_assert(sizeof(BenchRow) % KICKOS_BENCH_CACHE_LINE == 0
-                      and sizeof(SweepRow) % KICKOS_BENCH_CACHE_LINE == 0,
-                  "a row shorter than a line would share one with the next writer");
-#endif
-
     // Bound retries if a writer is paused during publication.
     constexpr uint32_t LOCK_SITE_READ_TRIES = 8u;
 
@@ -410,8 +389,6 @@ namespace
     // Use one snapshot buffer per core to avoid reporter races and large stack use.
     // Keep its index fixed if the reporter migrates during the read.
     constinit kickos::BenchHistSnap g_dist_snap[KICKOS_KERNEL_CORES] = {};
-    static_assert(sizeof(g_dist_snap) / sizeof(g_dist_snap[0]) == KICKOS_KERNEL_CORES,
-                  "one percentile snapshot per kernel core, or two reporters share one");
 
     kickos::BenchHistSnap& dist_snapshot(uint32_t d)
     {
@@ -479,14 +456,7 @@ namespace
         kickos::IrqLock lock;
         for (uint32_t c = 0; c < KICKOS_KERNEL_CORES; c++)
         {
-            DistSlot& sl = dist_slot(c, d);
-            sl.acc = Acc{};
-#if !BENCH_HEADLINE_MIN
-            for (uint32_t i = 0; i < kickos::BENCH_HIST; i++)
-            {
-                sl.hist[i] = 0;
-            }
-#endif
+            dist_slot(c, d) = DistSlot{};
         }
     }
 }
@@ -533,8 +503,7 @@ extern "C"
         dist_add_row(row(), kickos::BD_LOCK_DRAW, 0u);
     }
 
-    // One sample per reschedule ask, valued by the peers it reaches. A zero-peer ask is a
-    // sample like any other: the omitted request and the empty one are different events.
+    // A zero-peer ask is a sample: the omitted request and the empty one are different events.
     void kickos_bench_resched_ask(uint32_t peers)
     {
         dist_add_row(row(), kickos::BD_RESCHED_ASK, peers);
@@ -910,6 +879,19 @@ namespace
                         static_cast<unsigned>(capped));
     }
 
+#if defined(__aarch64__)
+    // PMCR_EL0 as this core's kickos_armv8a_percore_init left it; check_bench_cyccnt.sh reads
+    // its E, D and LC bits.
+    void pmcr_probe_print()
+    {
+        uint64_t v = 0;
+        __asm volatile("mrs %0, pmcr_el0" : "=r"(v));
+        kickos::kprintf_paced("  pmcr-probe: pmcr=0x%x\n", static_cast<unsigned>(v));
+    }
+#else
+    void pmcr_probe_print() {}
+#endif
+
     // Check that one valid and one oversized sample update count and sat separately.
     void sat_probe_print()
     {
@@ -960,7 +942,6 @@ namespace kickos
         dist_add_row(r, BD_LOCK_HOLD, delta);
         if (a.count != had and (had == 0 or a.max != peak))
         {
-            // Publish only when the maximum changes or the first sample arrives.
             uint32_t const gen = r.lock_site_gen.load(std::memory_order_relaxed);
             r.lock_site_gen.store(gen + 1u, std::memory_order_relaxed);
             std::atomic_thread_fence(std::memory_order_release);
@@ -998,14 +979,7 @@ namespace kickos
             BenchRow& r = g_row[c];
             for (uint32_t d = 0; d < BD_COUNT; d++)
             {
-                DistSlot& sl = dist_slot(c, d);
-                sl.acc = Acc{};
-#if !BENCH_HEADLINE_MIN
-                for (uint32_t i = 0; i < BENCH_HIST; i++)
-                {
-                    sl.hist[i] = 0;
-                }
-#endif
+                dist_slot(c, d) = DistSlot{};
             }
             for (uint32_t i = 0; i < PH_COUNT; i++)
             {
@@ -1032,8 +1006,8 @@ namespace kickos
             }
         }
 #endif
-        // Reset counters with their distributions. Preserve the one-time tare and
-        // the live waiter state, which may already be armed on another core.
+        // Preserve the one-time tare and the live waiter state, which may already be
+        // armed on another core.
         g_e2e_closed = 0;
         g_e2e_dropped = 0;
         g_e2e_raised = 0;
@@ -1299,14 +1273,7 @@ namespace kickos
         {
             IrqLock lock;
             me = kickos_kernel_core();
-            uint32_t peers = 0;
-            for (uint32_t c = 0; c < KICKOS_KERNEL_CORES; c++)
-            {
-                if (c != me)
-                {
-                    peers |= 1u << c;
-                }
-            }
+            uint32_t const peers = KICKOS_CORE_SET_ALL & ~(1u << me);
             uint32_t const before = bench_dist_count(BD_DOORBELL);
             while (ran < rounds)
             {
@@ -1369,6 +1336,7 @@ namespace kickos
                     static_cast<unsigned>(a.count));
         }
         phase_print_rows();
+        pmcr_probe_print();
         ns_probe_print();
         sat_probe_print();
     }
@@ -1383,8 +1351,9 @@ namespace kickos
             return -KOS_EBUSY;
         }
         g_irq_line = line;
-        irq_line_op(line, LineOp::CLEAR);
-        irq_line_op(line, LineOp::UNMASK);
+        IrqLock lock;
+        irq_line_op(line, LineOp::CLEAR, lock);
+        irq_line_op(line, LineOp::UNMASK, lock);
         return 0;
     }
 
@@ -1451,11 +1420,15 @@ namespace kickos
     // has no cycle counter / no injectable line).
     static IrqSample irq_once(int line)
     {
-        // Rearm before each injection; some backends mask the line on delivery.
-        irq_line_op(line, LineOp::UNMASK);
-        g_irq_seen = 0;
-        uint32_t const t0 = bench_cyccnt();
-        bench_irq_raise(line);
+        uint32_t t0 = 0;
+        {
+            IrqLock lock;
+            // Rearm before each injection; some backends mask the line on delivery.
+            irq_line_op(line, LineOp::UNMASK, lock);
+            g_irq_seen = 0;
+            t0 = bench_cyccnt();
+            bench_irq_raise(line, lock);
+        }
         return irq_close(t0);
     }
 
@@ -1572,22 +1545,25 @@ namespace kickos
         {
             span_bytes = BENCH_LAT_SPAN_MAX;
         }
-        irq_line_op(line, LineOp::UNMASK);
-        g_irq_seen = 0;
-        arch_irq_state_t st = arch_irq_save();
-        uint32_t const t0 = bench_cyccnt();
-        bench_irq_raise(line);
-        uint32_t i = 0;
-        if (span_bytes != 0)
+        uint32_t t0 = 0;
         {
-            do
+            IrqLock lock;
+            irq_line_op(line, LineOp::UNMASK, lock);
+            g_irq_seen = 0;
+            t0 = bench_cyccnt();
+            bench_irq_raise(line, lock);
+            uint32_t i = 0;
+            if (span_bytes != 0)
             {
-                g_lat_dst[i] = g_lat_src[i];
-                i++;
-            } while (i != span_bytes);
+                do
+                {
+                    g_lat_dst[i] = g_lat_src[i];
+                    i++;
+                } while (i != span_bytes);
+            }
         }
-        arch_irq_restore(st);
-        // Only this core is masked. Reject an interrupt delivered to a peer during the copy.
+        // The bracket masks this core and, above one core, holds the kernel lock; irq_close rejects
+        // a handler that ran on a peer.
         return irq_close(t0);
     }
 
@@ -1683,7 +1659,7 @@ namespace kickos
         g_e2e_mode = E2E_PARKED;
     }
 
-    // Do not hold IrqLock: this measures unmasked delivery.
+    // The raise is delivered as its bracket releases.
     int bench_e2e_raise()
     {
         // Acquire the metadata published by the waiter.
@@ -1696,11 +1672,13 @@ namespace kickos
         {
             return -KOS_EINVAL;
         }
+        // The span opens after the bracket is held and ends at the delivery its release makes.
+        IrqLock lock;
         // Publish the timestamp immediately through the following release store.
         g_e2e_t0 = arch_clock_now();
         g_e2e_mode = E2E_RAISED;
         g_e2e_raised = g_e2e_raised + 1;
-        bench_irq_raise(line);
+        bench_irq_raise(line, lock);
         return 0;
     }
 
@@ -1709,9 +1687,9 @@ namespace kickos
         IrqLock lock;
         Kernel const& k = kernel();
         uint32_t const me = kickos_kernel_core();
-        for (uint32_t c = 0; c < KICKOS_KERNEL_CORES; c++)
+        for (KernelCore const c : KernelCores::all())
         {
-            if (c != me and k.current[c] != k.idle[c])
+            if (c != me and k.current(c) != k.idle(c))
             {
                 return 0;
             }

@@ -1,36 +1,29 @@
 {
   "version": 6,
+  "include": ["base.json"],
   "configurePresets": [
     {
       "name": "arm64-base",
       "hidden": true,
-      "generator": "Ninja",
-      "toolchainFile": "${sourceDir}/cmake/toolchain-aarch64-none-elf.cmake",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "MinSizeRel",
-        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-        "KICKOS_CONFIG_VARIANT": "base"
-      }
+      "inherits": "kickos-base",
+      "toolchainFile": "${sourceDir}/cmake/toolchain-aarch64-none-elf.cmake"
     },
     {
       "name": "qemu-arm64",
       "displayName": "QEMU virt (AArch64 Cortex-A53, EL1) [first 64-bit ISA]",
       "inherits": "arm64-base",
-      "binaryDir": "${sourceDir}/build/qemu-arm64",
       "cacheVariables": { "KICKOS_BOARD": "qemu-arm64" }
     },
     {
       "name": "qemu-arm64-bench",
       "displayName": "QEMU virt (AArch64 Cortex-A53, EL1) + KICKOS_BENCH - context-switch microbench",
       "inherits": "qemu-arm64",
-      "binaryDir": "${sourceDir}/build/qemu-arm64-bench",
       "cacheVariables": { "KICKOS_CONFIG_VARIANT": "bench" }
     },
     {
       "name": "qemu-arm64-smp",
       "displayName": "QEMU virt (AArch64 Cortex-A53, EL1) with four cores",
       "inherits": "qemu-arm64",
-      "binaryDir": "${sourceDir}/build/qemu-arm64-smp",
       "cacheVariables": {
         "KICKOS_CONFIG_VARIANT": "smp",
         "KICKOS_GOLDEN_COMPOSITION": "examples/composition/systems/qemu-arm64.yaml",
@@ -47,91 +40,78 @@
       "name": "qemu-arm64-benchsmp",
       "displayName": "QEMU virt (AArch64 Cortex-A53, EL1), four cores + KICKOS_BENCH",
       "inherits": "qemu-arm64",
-      "binaryDir": "${sourceDir}/build/qemu-arm64-benchsmp",
       "cacheVariables": { "KICKOS_CONFIG_VARIANT": "benchsmp" }
     },
     {
       "name": "qemu-arm64-benchsmp12",
       "displayName": "QEMU virt (AArch64 Cortex-A53, EL1), twelve cores + GICv3 + KICKOS_BENCH",
       "inherits": "qemu-arm64",
-      "binaryDir": "${sourceDir}/build/qemu-arm64-benchsmp12",
       "cacheVariables": { "KICKOS_CONFIG_VARIANT": "benchsmp12" }
     },
     {
       "name": "qemu-arm64-benchgicv3",
       "displayName": "QEMU virt (AArch64 Cortex-A53, EL1), four cores + GICv3 + KICKOS_BENCH",
       "inherits": "qemu-arm64",
-      "binaryDir": "${sourceDir}/build/qemu-arm64-benchgicv3",
       "cacheVariables": { "KICKOS_CONFIG_VARIANT": "benchgicv3" }
     },
     {
       "name": "qemu-arm64-benchsmp2",
       "displayName": "QEMU virt (AArch64 Cortex-A53, EL1), two cores + KICKOS_BENCH",
       "inherits": "qemu-arm64",
-      "binaryDir": "${sourceDir}/build/qemu-arm64-benchsmp2",
       "cacheVariables": { "KICKOS_CONFIG_VARIANT": "benchsmp2" }
     },
     {
       "name": "qemu-arm64-smpiso",
       "displayName": "QEMU virt (AArch64 Cortex-A53, EL1), four cores with core 3 isolated",
       "inherits": "qemu-arm64",
-      "binaryDir": "${sourceDir}/build/qemu-arm64-smpiso",
       "cacheVariables": { "KICKOS_CONFIG_VARIANT": "smpiso" }
     },
     {
       "name": "qemu-arm64-gicv3",
       "displayName": "QEMU virt (AArch64 Cortex-A53, EL1) with four cores under GICv3",
       "inherits": "qemu-arm64",
-      "binaryDir": "${sourceDir}/build/qemu-arm64-gicv3",
       "cacheVariables": { "KICKOS_CONFIG_VARIANT": "gicv3" }
     },
     {
       "name": "qemu-arm64-amp",
       "displayName": "QEMU virt (AArch64 Cortex-A53, EL1), four cores driven by one kernel core under GICv3",
       "inherits": "qemu-arm64",
-      "binaryDir": "${sourceDir}/build/qemu-arm64-amp",
       "cacheVariables": { "KICKOS_CONFIG_VARIANT": "amp" }
     },
     {
       "name": "qemu-arm64-amp2-n0",
       "displayName": "QEMU virt (AArch64 Cortex-A53, EL1), node 0 of a two-image AMP partition",
       "inherits": "qemu-arm64",
-      "binaryDir": "${sourceDir}/build/qemu-arm64-amp2-n0",
       "cacheVariables": { "KICKOS_CONFIG_VARIANT": "amp2", "KICKOS_AMP_NODE_ID": "0" }
     },
     {
       "name": "qemu-arm64-amp2-n1",
       "displayName": "QEMU virt (AArch64 Cortex-A53, EL1), node 1 of a two-image AMP partition",
       "inherits": "qemu-arm64",
-      "binaryDir": "${sourceDir}/build/qemu-arm64-amp2-n1",
       "cacheVariables": { "KICKOS_CONFIG_VARIANT": "amp2", "KICKOS_AMP_NODE_ID": "1" }
     },
     {
       "name": "qemu-arm64-amp3-n0",
       "displayName": "QEMU virt (AArch64 Cortex-A53, EL1), node 0 of a three-image AMP partition",
       "inherits": "qemu-arm64",
-      "binaryDir": "${sourceDir}/build/qemu-arm64-amp3-n0",
       "cacheVariables": { "KICKOS_CONFIG_VARIANT": "amp3", "KICKOS_AMP_NODE_ID": "0" }
     },
     {
       "name": "qemu-arm64-amp3-n1",
       "displayName": "QEMU virt (AArch64 Cortex-A53, EL1), node 1 of a three-image AMP partition",
       "inherits": "qemu-arm64",
-      "binaryDir": "${sourceDir}/build/qemu-arm64-amp3-n1",
       "cacheVariables": { "KICKOS_CONFIG_VARIANT": "amp3", "KICKOS_AMP_NODE_ID": "1" }
     },
     {
       "name": "qemu-arm64-amp3-n2",
       "displayName": "QEMU virt (AArch64 Cortex-A53, EL1), node 2 of a three-image AMP partition",
       "inherits": "qemu-arm64",
-      "binaryDir": "${sourceDir}/build/qemu-arm64-amp3-n2",
       "cacheVariables": { "KICKOS_CONFIG_VARIANT": "amp3", "KICKOS_AMP_NODE_ID": "2" }
     },
     {
       "name": "imx8mp-evk",
       "displayName": "NXP i.MX 8M Plus EVK (quad Cortex-A53, GIC-500, EL3 handover)",
       "inherits": "arm64-base",
-      "binaryDir": "${sourceDir}/build/imx8mp-evk",
       "cacheVariables": { "KICKOS_BOARD": "imx8mp-evk" }
     }
   ],

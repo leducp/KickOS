@@ -17,11 +17,10 @@
 # caller has to tell "this preset names no board" from "this preset is not there at
 # all", and a dropped line makes those identical.
 #
-# The third field is the name a per-preset gate is REGISTERED under. CMake names no
-# preset, so the root CMakeLists rebuilds one out of the board, the variant and, on an
-# own-image AMP node, the node index; that is what a `preset` record in
-# console_reach_roots.txt is matched against, and it is not the preset name. The rebuild here restates the one in CMakeLists.txt so the two can be
-# compared, and reads the same defconfig CMakeLists resolves the posture from.
+# The third field is the name a per-preset gate is REGISTERED under, cmake/preset_key.cmake's
+# from the resolved facts, reading the same defconfig CMakeLists resolves the posture from;
+# that is what a `preset` record in console_reach_roots.txt is matched against, and it is not
+# the preset name.
 
 cmake_minimum_required(VERSION 3.24)
 
@@ -149,6 +148,8 @@ if(NOT _names)
   message(FATAL_ERROR "preset_boards.cmake: no configure preset in ${SRC}/CMakePresets.json")
 endif()
 
+include("${SRC}/cmake/preset_key.cmake")
+
 # The preset's own value, else the first parent in `inherits` order that resolves one; a null
 # resolves, to unset. Sets _r_type ("" when unset) and _r_value in the caller.
 function(_resolve name var)
@@ -195,25 +196,19 @@ foreach(_name IN LISTS _names)
   if("${_variant}" STREQUAL "")
     set(_variant "base")
   endif()
-  set(_regkey "${_b}")
-  if(NOT _variant STREQUAL "base")
-    set(_regkey "${_b}-${_variant}")
-  endif()
-  # The node index enters the key on the own-image posture alone, which is where one
-  # partition has one preset per node. Keying on KICKOS_AMP_NODE_ID being set instead
-  # would suffix every AMP preset, the shared-image posture carrying a Kconfig default
-  # for it.
+  set(_own_image OFF)
   set(_dc "${SRC}/boards/${_b}/configs/${_variant}/defconfig")
   if(EXISTS "${_dc}")
     file(STRINGS "${_dc}" _own REGEX "^CONFIG_KICKOS_AMP_POSTURE_OWN_IMAGE=y$")
     if(NOT "${_own}" STREQUAL "")
-      set(_nid "${_cv_KICKOS_AMP_NODE_ID}")
-      if("${_nid}" STREQUAL "")
-        set(_nid "0")
-      endif()
-      set(_regkey "${_regkey}-n${_nid}")
+      set(_own_image ON)
     endif()
   endif()
+  set(_nid "${_cv_KICKOS_AMP_NODE_ID}")
+  if("${_nid}" STREQUAL "")
+    set(_nid "0")
+  endif()
+  kickos_preset_key(_regkey "${_b}" "${_variant}" "${_own_image}" "${_nid}")
   string(APPEND _table "${_name}\t${_b}\t${_regkey}\n")
 endforeach()
 

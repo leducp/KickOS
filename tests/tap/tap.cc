@@ -65,8 +65,7 @@ namespace tap
         char const* g_census_what = "";
         long g_census_delta = 0;
 
-        // Out of line: tests/static/caller_held_indirect.txt declares its call as one site.
-        __attribute__((noinline)) long census_read()
+        long census_read()
         {
             if (g_census == nullptr)
             {

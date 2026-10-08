@@ -50,8 +50,8 @@ namespace
         attach_caps(t, KICKOS_CAP_CHILD_WIDTH);
         {
             IrqLock lock;
-            kernel().policy->on_remove(t);
-            t->state = ThreadState::BLOCKED;
+            policy_on_remove(t);
+            testfix::seat_blocked(t);
         }
         return t;
     }
@@ -182,7 +182,7 @@ TEST_F(IrqLineCore, a_line_released_and_reclaimed_on_another_core_binds_afresh)
     Chained const c = chain_on_core_a();
     {
         IrqLock lock;
-        ASSERT_EQ(handle_close(c.t, c.line), 0);
+        ASSERT_EQ(handle_close(c.t, c.line, lock), 0);
     }
     uint32_t const again = claim_on(c.t, LINE_ONE, CORE_B);
     ASSERT_EQ(irq_bind_notify(c.t, again, c.note), 0);
@@ -343,7 +343,7 @@ TEST_F(IrqLineCore, a_raise_the_old_core_held_does_not_reach_a_reclaim_on_anothe
     Chained const c = chain_on_core_a();
     {
         IrqLock lock;
-        ASSERT_EQ(handle_close(c.t, c.line), 0);
+        ASSERT_EQ(handle_close(c.t, c.line, lock), 0);
     }
     uint32_t const again = claim_on(c.t, LINE_ONE, CORE_B);
     ASSERT_EQ(irq_bind_notify(c.t, again, c.note), 0);

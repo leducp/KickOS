@@ -16,6 +16,8 @@
 
 #include <gtest/gtest.h>
 
+#include <optional>
+
 #include <signal.h>
 #include <string.h>
 #include <stdio.h>
@@ -284,8 +286,8 @@ namespace
     {
         seam::StatusBlock block(PAGE);
         as_health(block);
-        block.record(seam::watched_at("health", "sensor"))->count = 1u;
-        block.record(seam::watched_at("health", "sensor"))->deaths = 5u;
+        kickos::init::StatusWriter held(block.record(seam::watched_at("health", "sensor")));
+        held.deaths(5u);
         struct kos_task_status st;
         memset(&st, 0xA5, sizeof(st));
         struct kos_task_status untouched;
@@ -299,16 +301,16 @@ namespace
     {
         seam::StatusBlock block(PAGE);
         as_health(block);
-        kickos::init::StatusRecord* const sensor = block.record(seam::watched_at("health", "sensor"));
-        sensor->count = 1u;
-        sensor->deaths = 3u;
+        std::optional<kickos::init::StatusWriter> sensor;
+        sensor.emplace(block.record(seam::watched_at("health", "sensor")));
+        sensor->deaths(3u);
         seam::on_sleep = [&]()
         {
             if (seam::sleeps.size() == 100u)
             {
-                sensor->restarts_left = 7u;
-                sensor->state = kickos::init::STATUS_ALIVE;
-                sensor->count = 2u;
+                sensor->restarts_left(7u);
+                sensor->state(kickos::init::STATUS_ALIVE);
+                sensor.reset();
             }
         };
         struct kos_task_status st;
@@ -327,6 +329,7 @@ namespace
     constexpr long long TRAP_FLAG = 0x100;
     seam::StatusBlock* g_torn_block;
     kickos::init::StatusRecord* g_torn;
+    std::optional<kickos::init::StatusWriter> g_torn_write;
 
     void on_fault(int, siginfo_t*, void* context)
     {
@@ -336,8 +339,8 @@ namespace
 
     void on_step(int, siginfo_t*, void* context)
     {
-        g_torn->count = 3u;
-        g_torn->deaths = 9u;
+        g_torn_write.emplace(g_torn);
+        g_torn_write->deaths(9u);
         static_cast<ucontext_t*>(context)->uc_mcontext.gregs[REG_EFL] &= ~TRAP_FLAG;
     }
 #endif
@@ -352,8 +355,8 @@ namespace
         kickos::init::status_write(g_torn, kickos::init::StatusFields{1, 2, kickos::init::STATUS_ALIVE});
         seam::on_sleep = [&]()
         {
-            g_torn->restarts_left = 1u;
-            g_torn->count = 4u;
+            g_torn_write->restarts_left(1u);
+            g_torn_write.reset();
         };
 
         struct sigaction fault = {};

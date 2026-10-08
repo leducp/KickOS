@@ -30,6 +30,7 @@
 #include <kickos/config/amp_ports.h>
 #include <kickos/sys/abi.h>
 #include <kickos/sys/atomic.h>
+#include <kickos/held.h>
 
 #if KICKOS_AMP_NODE
 
@@ -80,7 +81,6 @@ namespace kickos
         static_assert((RING_SLOTS & (RING_SLOTS - 1u)) == 0u,
                       "RING_SLOTS must be a power of two");
 
-        // A slot holds a whole message at the local IPC bound.
         constexpr uint32_t SLOT_BYTES = KOS_EP_MSG_MAX;
 
         // WHAT ONE SERVICE CALL WILL DO, per sender and across every sender. node_service
@@ -161,7 +161,6 @@ namespace kickos
             RESERVE    // no slot is free in the reply ring this call's reply would have to use
         };
 
-        // Why one send was refused.
         enum class Sent : uint8_t
         {
             OK = 0,
@@ -331,9 +330,10 @@ namespace kickos
         //
         // `gen` counts the deaths of this slot's record. The record IS the ring slot
         // (docs/design-multicore.md N6f), and the resynchronisation in depth_ok is the one path
-        // that frees one whose capability is still live; the table slot is keyed by ring
-        // position, so without the count that holder's token would name the slot's NEXT tenant
-        // and would answer a stranger's caller and release a stranger's slot.
+        // that frees one whose capability is still live; the generation bump is the only thing
+        // that invalidates it there. The table slot is keyed by ring position, so without the
+        // count that holder's token would name the slot's NEXT tenant and would answer a
+        // stranger's caller and release a stranger's slot.
         struct Inbound
         {
             ReplyTag tag;
@@ -341,20 +341,23 @@ namespace kickos
             uint8_t from;
             uint8_t slot;
             uint8_t live;
-            // An answer the reply ring refused: the TOKEN is dead and the obligation is not.
-            // The call slot may not go back to the peer while it stands. It keeps a later call
-            // off this record's masked slot only while the held run still covers that slot: a
+            // No answer is owed beyond the live token.
+            static constexpr uint8_t PENDING_NONE = 0u;
+            // The answer was refused; the token is dead, the obligation stands.
+            static constexpr uint8_t PENDING_HELD = 1u;
+            // The held run that named this record's slot was abandoned by a resynchronisation.
+            static constexpr uint8_t PENDING_GONE = 2u;
+            // A pending record keeps its call slot from going back to the peer and keeps a later
+            // call off its masked slot only while the held run still covers that slot: a
             // resynchronisation has already set taken = tail = head, so a call landing there
-            // afterwards is taken and then refused at inbound_seat.
+            // afterwards is taken and then refused at inbound_seat. A PENDING_GONE record's `slot`
+            // may not be spent as a release and no length of run accounts for what it owes; the
+            // masked index cannot say either, an abandoned record and a later wrap's call
+            // sharing one.
             uint8_t pending;
             // Service passes this obligation has been carried over, against DEFER_PASSES.
-            // Meaningless unless `pending`, and record_defer is the one writer that arms it.
+            // Meaningless unless pending, and record_defer is the one writer that arms it.
             uint8_t defers;
-            // The held run that named this record's slot has been abandoned: `slot` may no
-            // longer be spent as a release and no length of run accounts for what this record
-            // owes. The MASKED index cannot say either, an abandoned record and a later wrap's
-            // call sharing one.
-            uint8_t run_gone;
         };
 
         // Seat a record for a held call and answer a TOKEN for it, or FAR_RECORD_NONE where the
@@ -491,12 +494,12 @@ namespace kickos
         // calls, which the slots it frees admit. One carried DEFER_PASSES times is abandoned.
         //
         // Reached from the backend's doorbell service, so it runs with this core's interrupts
-        // masked, which is the whole of a one-core kernel's exclusion.
+        // masked.
         //
         // THE REPLY ROUTE READS kernel() AND IS INERT ON A NODE THAT RUNS NO KERNEL: a peer
         // node's Kernel is provisioned and never initialised, so its thread pool is zeroed and
         // refuses every index at the first clause. Nothing else here touches kernel() state.
-        void node_service(void);
+        void node_service(Held held);
 
         // Seat the static mint and THIS NODE'S OWN rows, then read the rings once. Kernel init,
         // before any node can be poked.
@@ -539,7 +542,7 @@ namespace kickos
         // serving node publishes for a call refused past the take.
         //
         // BOTH INDICES ARE RESET FIRST, as forge_and_take does.
-        ForgedReply forge_reply(uint32_t from, ReplyTag const& tag, uint32_t len);
+        ForgedReply forge_reply(uint32_t from, ReplyTag const& tag, uint32_t len, Held held);
 
         // Publish a REPLY-class port into the CALL ring and take it. Both untrusted fields are
         // well-formed, so only the class clause can refuse this.
@@ -559,7 +562,7 @@ namespace kickos
         // The CALL ring tail moves in release_call alone, so an unmoved tail is the whole of
         // "the receiver holds this slot until it replies" and a moved one the whole of "the
         // taker released it".
-        bool forge_drain_held(uint32_t from);
+        bool forge_drain_held(uint32_t from, Held held);
 
         // Take one well-formed CALL while the reply ring this node would answer it into holds no
         // free slot, then take the SAME call again with room. The verdict of the FIRST take is
@@ -589,7 +592,7 @@ namespace kickos
         // strike and then runs the call ring's depth clause, which a strike count not keyed by
         // class would clear. The verdict of a well-formed reply taken afterwards is whether the
         // ring recovered.
-        Verdict forge_reply_depth_recovery(uint32_t from);
+        Verdict forge_reply_depth_recovery(uint32_t from, Held held);
 
         // One inbound record across a resynchronisation: a record seated on a HELD slot, the
         // ring resynchronised under it, a fresh call taken at the same masked slot, and the
@@ -602,7 +605,6 @@ namespace kickos
         //   8  spending the abandoned token released no slot
         // Bit 16 says the scaffold reached the end, so a zero answer is a forge that could not
         // run rather than four failed claims.
-        constexpr uint32_t RESET_RECORD_OK = 0x1Fu;
         uint32_t forge_reset_record(uint32_t from);
 
         // The PRODUCER's strike bound, driven over THIS NODE'S SELF REPLY RING for the reason
@@ -616,7 +618,6 @@ namespace kickos
         //   4  the head it published at is the far tail this node adopted
         //   8  tail_reset moved by exactly one
         // Bit 16 says the scaffold reached the end.
-        constexpr uint32_t TAIL_RECOVERY_OK = 0x1Fu;
         uint32_t forge_tail_recovery(uint32_t to);
 
         // A refused ANSWER, and what it leaves behind. One call taken and seated through the
@@ -630,7 +631,6 @@ namespace kickos
         // Bit 8 says the scaffold reached the end, and 16 that it DECLINED against a node that
         // runs a kernel of its own, which would be moving both of those indices under it. The
         // ring is given back with room, so forge_answer_discharge alone finishes the pair.
-        constexpr uint32_t ANSWER_DEFER_OK = 0x7u;
         constexpr uint32_t ANSWER_DEFER_DECLINED = 0x10u;
         uint32_t forge_answer_defer(uint32_t from);
 
@@ -641,8 +641,7 @@ namespace kickos
         //   2  the call slot it held is back with the peer
         //   4  no record of that pair is left pending
         // Bit 8 says the scaffold reached the end.
-        constexpr uint32_t ANSWER_DISCHARGE_OK = 0x7u;
-        uint32_t forge_answer_discharge(uint32_t from);
+        uint32_t forge_answer_discharge(uint32_t from, Held held);
 
         // What a CALL-ring resynchronisation owes the callers it abandons. One held call seated
         // through the real path, an incredible far head left standing for the whole strike
@@ -655,7 +654,6 @@ namespace kickos
         //   8  reply_unsent moved by exactly one, the answer's own bytes being lost
         // Bit 16 says the scaffold reached the end, and 32 that it DECLINED for want of a free
         // reply slot to answer into, which is a precondition and not a failed claim.
-        constexpr uint32_t RESET_ANSWERS_OK = 0x1Fu;
         constexpr uint32_t RESET_ANSWERS_DECLINED = 0x20u;
         uint32_t forge_reset_answers(uint32_t from);
 #endif

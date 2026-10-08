@@ -180,11 +180,11 @@ namespace kickos
                 spawner->privileged = true;
                 spawner->task = own;
                 task_ref(own);
-                k.current[kickos_kernel_core()] = spawner;
+                k.current(kickos_kernel_core()) = spawner;
 
                 // Slot 1 is reclaimable, with a region set of its own left from its occupant.
                 Thread& was = k.threads.slots[1];
-                was.state = ThreadState::EXITED;
+                was.state.to<ThreadState::EXITED>();
                 was.mpu.clear();
                 uintptr_t const mark = reinterpret_cast<uintptr_t>(g_code);
                 ASSERT_TRUE(was.mpu.add(mark, sizeof(g_code), ARCH_MPU_R));

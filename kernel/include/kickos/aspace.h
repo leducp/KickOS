@@ -103,11 +103,6 @@ namespace kickos
     // destroy it. The one sanctioned way to end a space; arch_aspace_destroy alone strands both.
     void aspace_release(struct arch_aspace* space, VirtualRanges* ranges);
 
-    // Allocation: `bytes` rounded up to whole granules, reserved in this space and mapped
-    // nowhere. 0 when the frame pool has no run that long or the list is full. The virtual
-    // address is the frames' own, which is what makes a reservation a globally unique name.
-    uintptr_t aspace_reserve(VirtualRanges* ranges, size_t bytes);
-
     // Whether every live mapping of [pa, pa + pages granules) in any space, `self` aside, carries
     // `memtype`: one block mapped cacheable in one place and not in another is incoherent.
     bool aspace_frames_type_ok(arch_phys_addr_t pa, size_t pages, uint8_t memtype,
@@ -213,7 +208,8 @@ namespace kickos
 
     // Map a capability-owned frame run at the chosen VA and record it as borrowed.
     // The capability retains frame ownership. Return -KOS_ENOMEM for unavailable
-    // space or -KOS_EINVAL for an invalid range.
+    // space, -KOS_EINVAL for an invalid range, or -KOS_EBUSY where another mapping of the
+    // run carries another memory type.
     int aspace_cap_map(struct arch_aspace* space, VirtualRanges* ranges, uintptr_t va,
                        int run_obj, arch_phys_addr_t base, uint32_t pages, uint32_t rights,
                        enum arch_map_memtype type);
@@ -243,7 +239,8 @@ namespace kickos
 
     // Map the donor's complete reservation at the same VA without taking ownership.
     // Require its exact base and rounded page count. Return -KOS_EPERM for a
-    // missing reservation or -KOS_ENOMEM if the destination cannot accept it.
+    // missing reservation, -KOS_EBUSY where the frames are mapped with another memory type,
+    // or -KOS_ENOMEM if the destination cannot accept it.
     int aspace_handoff(VirtualRanges const* donor, struct arch_aspace* space,
                        VirtualRanges* ranges, uintptr_t base, size_t size,
                        enum arch_map_memtype type);
@@ -282,8 +279,8 @@ namespace kickos
     // for a destroy that never ran, so a caller asserting the 0 needs this beside it.
     uint64_t aspace_release_runs(void);
 
-    // Granules cleared or copied under the kernel lock since boot, for a reservation, a new
-    // space's static data or the snapshot.
+    // Granules copied under the kernel lock since boot, for a new space's static data or the
+    // snapshot.
     uint64_t aspace_locked_pages(void);
 
     // Drop the space holding the image's own data pages, as its release would.

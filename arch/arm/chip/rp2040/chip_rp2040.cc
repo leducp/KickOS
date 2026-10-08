@@ -2,31 +2,20 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // Raspberry Pi RP2040 (Pico), Cortex-M0+ chip backend. Register addresses/fields
-// are clean-room from the RP2040 datasheet (RP-008371-DS); hand-rolled, no vendor
-// SDK sources, consistent with the arch layer's regs.h.
+// are clean-room from the RP2040 datasheet (RP-008371-DS), no vendor SDK sources.
 //
-// Privilege + SVC, and the PMSAv6 MPU is enforced (its chip file's unit). clk_sys is raised to
-// 125 MHz off PLL_SYS (12 MHz XOSC x125 /6 /2); SystemCoreClock tracks it so the SysTick
-// ns<->cycle math (arch_arm_common) stays coherent. clk_ref stays on the 12 MHz
-// XOSC and the WATCHDOG /12 tick is untouched, so the 1 MHz system TIMER
-// (arch_clock_now / arch_trace_now; arch.h requires a 64-bit monotonic clock and
-// v6-M has no DWT) is PLL-independent. clk_peri follows clk_sys to 125 MHz, so the
-// UART baud divisors are recomputed for 125 MHz (uart0_init). If the crystal or the
-// PLL never comes up the board degrades to XOSC/ROSC timing instead of hanging.
+// clk_sys runs at 125 MHz off PLL_SYS (12 MHz XOSC x125 /6 /2).
 //
-// The clock, PLL and console-transport sequences this part shares with the RP2350 are in
-// arch/arm/chip/rp2xxx/chip_rp2xxx.cc, which family.cmake adds to this chip's archive.
-//
-// The second-stage bootloader (boot2.S) and its CRC wrapper run BEFORE this file;
-// by the time Reset_Handler executes, code is already executing in place from
-// flash. See boot2.S and cmake/rp2040_checksum.py.
+// boot2.S and its CRC wrapper (cmake/rp2040_checksum.py) run BEFORE this file:
+// Reset_Handler already executes in place from flash.
 
 #include <kickos/arch/arch.h>
-#include <kickos/arch/pin_guard.h>
+#include "crt_tail.h"
+#include "pin_guard.h"
 #include <kickos/config/limits.h>
 #include <kickos/diag.h>
 #include <kickos/console_tx.h>
-#include <kickos/sys/abi.h> // KOS_E* taxonomy (arch_pinmux_set)
+#include <kickos/sys/abi.h>
 #include <kickos/usb_console.h>
 
 #include <stdint.h>
@@ -57,20 +46,11 @@ using kickos::rp2xxx::r32;
 using kickos::rp2xxx::unreset;
 using kickos::rp2xxx::wait_mask;
 
-namespace kickos
-{
-    int kmain(int argc, char** argv);
-}
-
 extern "C"
 {
     void kickos_armv6m_init(void);
 
-    extern void (*__init_array_start[])();
-    extern void (*__init_array_end[])();
-
-    // Pre-init value (12 MHz XOSC, reset). clocks_init() raises this to 125 MHz
-    // once clk_sys is on PLL_SYS; SysTick (processor clock) reads it live.
+    // SysTick (processor clock) reads this live: clocks_init updates it with every clk_sys switch.
     uint32_t SystemCoreClock = 12000000u;
 }
 
@@ -87,21 +67,16 @@ namespace
 #pragma GCC diagnostic pop
 #endif
 
-    // Chosen by clocks_init (which source clk_peri lands on), consumed by
-    // uart0_init. Boot is single-threaded and sequential, so no guard is needed.
+    // Set by clocks_init, so uart0_init must run after it.
     uint32_t g_uart_ibrd = reg::uart::IBRD_115200;
     uint32_t g_uart_fbrd = reg::uart::FBRD_115200;
 
     // Cycles spent letting a stopped clock generator settle before its aux mux moves.
     constexpr uint32_t CLK_STOP_SPIN = 64u;
 
-    // PLL_USB at 48 MHz, clk_usb onto it, and the USB block out of reset. All three
-    // touch RESETS/CLOCKS, which the kernel owns for life, so the unprivileged driver
-    // cannot do them; everything inside the USB block itself is left to it.
-    //
-    // USB bring-up is refused, at bring-up time, when the crystal did not come up.
-    // A full-speed device cannot be sourced from the ring oscillator, and a 6.5 MHz
-    // clk_sys also violates the clk_sys > 1.1 * clk_usb workaround for RP2040-E16.
+    // In the kernel because RESETS/CLOCKS are kernel-owned; the USB block's own registers
+    // are the driver's. Refused without the crystal: full-speed USB cannot run off the
+    // ROSC, and a 6.5 MHz clk_sys breaks the clk_sys > 1.1 * clk_usb workaround for RP2040-E16.
     void usb_clock_init()
     {
         if (SystemCoreClock < reg::clocks::CLK_SYS_MIN_FOR_USB_HZ)
@@ -142,9 +117,6 @@ namespace
 
     void clocks_init()
     {
-        // Bring up the 12 MHz crystal and put clk_ref on it. If it never stabilizes,
-        // degrade to the ROSC that clk_sys already runs on at reset so the board
-        // still boots (approximate timing) instead of hanging.
         r32(reg::xosc::STARTUP) = reg::xosc::STARTUP_DELAY;
         // Program the frequency range, THEN start the oscillator (datasheet
         // sequence): a combined write is avoided so ENABLE never latches before
@@ -155,16 +127,15 @@ namespace
         bool xosc_ok = wait_mask(reg::xosc::STATUS, reg::xosc::STATUS_STABLE);
         if (xosc_ok)
         {
-            // clk_ref <- XOSC (glitchless mux); clk_sys follows to 12 MHz via its
-            // SRC=clk_ref reset default. Poll the one-hot SELECTED before proceeding.
+            // clk_sys follows clk_ref to 12 MHz through its SRC=clk_ref reset default.
             r32(reg::clocks::CLK_REF_CTRL) = reg::clocks::CLK_REF_SRC_XOSC;
             xosc_ok = wait_mask(reg::clocks::CLK_REF_SELECTED, reg::clocks::CLK_REF_SELECTED_XOSC);
         }
 
         if (not xosc_ok)
         {
-            SystemCoreClock = reg::xosc::ROSC_NOMINAL_HZ;              // clk_sys stayed on ROSC
-            r32(reg::clocks::CLK_PERI_CTRL) = reg::clocks::CLK_PERI_ENABLE_CLK_SYS; // UART clock <- clk_sys
+            SystemCoreClock = reg::xosc::ROSC_NOMINAL_HZ;
+            r32(reg::clocks::CLK_PERI_CTRL) = reg::clocks::CLK_PERI_ENABLE_CLK_SYS;
             r32(reg::watchdog::TICK) = reg::watchdog::TICK_CFG_ROSC;   // ~6.5 MHz / 7 ~= 1 MHz
             return;
         }
@@ -187,13 +158,13 @@ namespace
             SystemCoreClock = reg::clocks::CLK_SYS_HZ;
             g_uart_ibrd = reg::uart::IBRD_PLL;
             g_uart_fbrd = reg::uart::FBRD_PLL;
-            r32(reg::clocks::CLK_PERI_CTRL) = reg::clocks::CLK_PERI_ENABLE_CLK_SYS; // UART clock <- clk_sys 125 MHz
+            r32(reg::clocks::CLK_PERI_CTRL) = reg::clocks::CLK_PERI_ENABLE_CLK_SYS;
         }
         else
         {
-            // PLL never locked: clk_sys still follows clk_ref (12 MHz). SystemCoreClock
-            // and the UART divisors keep their 12 MHz defaults.
-            r32(reg::clocks::CLK_PERI_CTRL) = reg::clocks::CLK_PERI_ENABLE_XOSC; // UART clock <- XOSC 12 MHz
+            // clk_sys stays on clk_ref (12 MHz), which the SystemCoreClock and UART divisor
+            // defaults already match.
+            r32(reg::clocks::CLK_PERI_CTRL) = reg::clocks::CLK_PERI_ENABLE_XOSC;
         }
     }
 
@@ -211,16 +182,13 @@ namespace
         r32(reg::uart::IBRD) = g_uart_ibrd;
         r32(reg::uart::FBRD) = g_uart_fbrd;
         r32(reg::uart::LCR_H) = reg::uart::LCR_H_8N1;
-        r32(reg::uart::IMSC) = 0; // all UART interrupt sources masked; the ring arms TXIM
+        r32(reg::uart::IMSC) = 0; // the ring arms TXIM
         r32(reg::uart::CR) = reg::uart::CR_ENABLE;
     }
 
-    // --- Buffered console TX backend (console_tx.h). The ring drains via the PL011
-    // transmit interrupt with the FIFO disabled (see LCR_H_8N1); the idle->busy
-    // prime starts the transfer whether TXIM is level- or transition-triggered at
-    // rest (HW-unverified). slot_free/push touch one data register;
-    // irq_enable/disable use the RP2040 atomic set/clear aliases so no read-modify-
-    // write on IMSC is needed. ---
+    // Console TX ring backend (console_tx.h). Relies on the FIFO being off (LCR_H_8N1). The
+    // idle->busy prime assumes TXIM fires whether level- or edge-triggered at rest (HW-unverified).
+    // IMSC goes through the SET/CLR aliases, never a read-modify-write.
     int rp_tx_slot_free(void) { return (r32(reg::uart::FR) & reg::uart::FR_TXFF) == 0; }
     void rp_tx_push(uint8_t b) { r32(reg::uart::DR) = b; }
     void rp_tx_irq_enable(void) { r32(reg::uart::IMSC + ATOMIC_SET) = reg::uart::IMSC_TXIM; }
@@ -239,25 +207,6 @@ namespace
     }
 
     constexpr bool LED_LIT = KICKOS_BOARD_LED_ACTIVE_LOW == 0;
-
-#define KICKOS_RESERVED_RUN(port_base, first, last) \
-    or ((port_base) == kickos::rp2040::mmap::SIO_BASE and pin >= (first) and pin <= (last))
-    constexpr bool rp2040_pin_kernel_owned(uint32_t pin)
-    {
-        return pin == KICKOS_BOARD_CONSOLE_TX_BIT or pin == KICKOS_BOARD_CONSOLE_RX_BIT
-               or pin == KICKOS_BOARD_LED_BIT KICKOS_BOARD_RESERVED_RUNS(KICKOS_RESERVED_RUN);
-    }
-#undef KICKOS_RESERVED_RUN
-
-#define KICKOS_KERNEL_PIN(port_base, bit) or ((port_base) == kickos::rp2040::mmap::SIO_BASE and pin == (bit))
-    constexpr bool rp2040_pin_listed(uint32_t, uint32_t pin)
-    {
-        return false KICKOS_BOARD_KERNEL_PINS(KICKOS_KERNEL_PIN);
-    }
-#undef KICKOS_KERNEL_PIN
-    static_assert(kickos::refuses_exactly([](uint32_t, uint32_t pin) { return rp2040_pin_kernel_owned(pin); },
-                                          rp2040_pin_listed, 1u, 30u),
-                  "arch_pinmux_set refuses other pins than the board's kernel pins");
 }
 
 extern "C"
@@ -311,15 +260,14 @@ void arch_diag_led_set(int on)
 // One-shot pin-function config (KOS_SYS_PINMUX_SET). func packs the IO_BANK0 CTRL
 // funcsel in bits[4:0] plus pad/SIO side effects: bit[8] set pad IE, bit[9] clear
 // pad OD (drive out), bit[16] enable the SIO output (GPIO_OE_SET, 1<<pin). IE resets
-// 1 here, so bit[8] is belt-and-braces. IO_BANK0/PADS are already unreset+clocked
-// from arch_init, so no clock gate is needed.
+// 1 here, so bit[8] is belt-and-braces.
 int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
 {
     if (port != 0u or pin > 29u)
     {
         return -KOS_EINVAL;
     }
-    if (rp2040_pin_kernel_owned(pin))
+    if (kickos::board_pin_kernel_owned(port, pin))
     {
         return -KOS_EBUSY;
     }
@@ -383,15 +331,8 @@ int arch_reboot(void)
 
 void Reset_Handler(void)
 {
-    // Cortex-M0+ has no FPU; nothing to enable before the C runtime.
-    kickos_ranges_init(); // init .data + the pow2 app-data block; zero .bss + app-bss
-    for (void (**fn)() = __init_array_start; fn != __init_array_end; fn++)
-    {
-        (*fn)();
-    }
-    arch_init();
-    kickos::kmain(0, nullptr);
-    arch_shutdown(0);
+    kickos_ranges_init();
+    kickos_crt_tail();
 }
 
 }

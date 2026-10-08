@@ -31,10 +31,9 @@ namespace kickos
     constexpr uintptr_t AMP_SHARE_BASE = KICKOS_AMP_USER_SHARE_ADDR;
     constexpr size_t AMP_SHARE_SIZE = KICKOS_AMP_USER_SHARE_SIZE;
 
-    // The share's one memory type, which every mapping of it carries, the kernel's own included.
+    // The share's one memory type, carried by every mapping of it, the kernel's own included.
     constexpr bool AMP_SHARE_UNCACHED = KICKOS_AMP_USER_SHARE_UNCACHED != 0;
 
-    // Whether [lo, hi) meets the share.
     constexpr bool amp_share_meets(uint64_t lo, uint64_t hi)
     {
         return lo < AMP_SHARE_BASE + static_cast<uint64_t>(AMP_SHARE_SIZE) and AMP_SHARE_BASE < hi;
@@ -49,7 +48,6 @@ namespace kickos
                and last <= AMP_SHARE_BASE + (AMP_SHARE_SIZE - 1u);
     }
 
-    // The share where the kernel reaches it.
     unsigned char* amp_share_kernel_view(void);
 
     // Must run before any peer is released: a write a peer makes first would be cleared.
@@ -66,8 +64,7 @@ namespace kickos
 #endif
 
 #if defined(KICKOS_ENABLE_SELFTEST)
-    // Root's reservation over the share, read back from its record. False where root holds
-    // none.
+    // False where root holds no reservation over the share.
     bool amp_share_seated(uintptr_t* base, size_t* size);
 #endif
 #endif

@@ -1,18 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Infineon XMC4800 USIC ASC-mode (UART) polled console: the thin ASC protocol
-// layer over the shared USIC-IP mechanism in usic.h (module/kernel clock, baud
-// generator, input mux, raw TX/RX/status). ASC-specific register setup
-// (SCTR/TCSR/PCR/CCR + the pin mux) lives here. Register addresses and bit
-// fields are clean-room from the XMC4700/XMC4800 Reference Manual (V1.3,
-// 2016-07); no XMCLib/DAVE/CMSIS vendor source. "RM p.NN" citations are the
-// manual's printed page numbers.
-//
-// Target: USIC0 channel 0 (U0C0), on the DOUT0 and DX0 pins the board file names.
-//
-// Clock: fPERIPH = fCPU/2 = 72 MHz after the crystal PLL bring-up in
-// chip_xmc4800.cc clock_init() (runs before this). Baud is 115200.
+// Infineon XMC4800 USIC ASC-mode (UART) console on USIC0 channel 0 (U0C0), on the
+// DOUT0 and DX0 pins the board file names. Register facts are from the XMC4700/XMC4800
+// Reference Manual (V1.3, 2016-07); "RM p.NN" citations are its printed page numbers.
 
 #include "usic.h"
 
@@ -22,25 +13,18 @@
 #include "regs/scu.h"
 #include "regs/usic.h"
 
-#include <kickos/arch/arch.h> // arch_periph_clock_hz: the live fPERIPH the baud follows
+#include <kickos/arch/arch.h>
 #include <kickos/console_tx.h>
 
 #include <stddef.h>
 #include <stdint.h>
 
-extern "C"
-{
-    // fCPU (drives fPERIPH = fCPU/2). Defined in chip_xmc4800.cc; the baud re-derive on
-    // a clock-select reads the LANDED value here.
-    extern uint32_t SystemCoreClock;
-}
-
 namespace
 {
-    namespace u = kickos::xmc::usic;       // shared USIC mechanism API (usic.h)
-    namespace ru = kickos::xmc::reg::usic; // USIC register constants (regs/usic.h)
-    namespace rp = kickos::xmc::reg::port; // PORT registers + IOCR PC-field helpers
-    namespace rs = kickos::xmc::reg::scu;  // SCU clock-gate / reset pair
+    namespace u = kickos::xmc::usic;
+    namespace ru = kickos::xmc::reg::usic;
+    namespace rp = kickos::xmc::reg::port;
+    namespace rs = kickos::xmc::reg::scu;
 
     constexpr uintptr_t U0C0 = u::U0C0_BASE;
 
@@ -48,7 +32,7 @@ namespace
     // constant, because a reclaim that rewrote a register outside the window it reports
     // would rewrite registers whose holder was never checked.
     constexpr uintptr_t CONSOLE_WIN_BASE = U0C0;
-    constexpr size_t CONSOLE_WIN_SIZE = 0x200u;
+    constexpr size_t CONSOLE_WIN_SIZE = KICKOS_BOARD_CONSOLE_SIZE;
 
     // Every offset the reclaim body writes must lie inside that window. Adding a store
     // outside it fails to build instead of silently widening the reclaim's reach.
@@ -109,8 +93,6 @@ namespace
         return false;
     }
 
-    // Buffered console TX backend (console_tx.h); the ring drains on the USIC0
-    // transmit-buffer interrupt (CCR.TBIEN) routed to SR0.
     int xmc_tx_slot_free(void)
     {
         if (u::tx_ready(U0C0))
@@ -132,8 +114,7 @@ extern "C"
 
 void kickos_xmc_usic_init(void)
 {
-    // Module clock on, out of reset (ungate before de-reset; RM 11.6), then the
-    // kernel clock. USIC0 = bit 11 in the CGATCLR0/PRCLR0 pair.
+    // Module clock on and out of reset before the kernel clock.
     u::module_clock_enable(rs::CGATCLR0, rs::PRCLR0, rs::USIC0_GATE_BIT);
     u::kernel_clock_enable(U0C0);
 
@@ -151,7 +132,7 @@ void kickos_xmc_usic_init(void)
     u::reg32(U0C0 + u::off::SCTR) = ru::SCTR_WLE_8 | ru::SCTR_FLE_8 | ru::SCTR_TRM_ACTIVE | ru::SCTR_PDL;
     u::reg32(U0C0 + u::off::TCSR) = ru::TCSR_TDEN_TDV | ru::TCSR_TDSSM;
     u::reg32(U0C0 + u::off::PCR) = ru::PCR_ASC_SP | ru::PCR_ASC_SMD | ru::PCR_ASC_TSTEN;
-    u::reg32(U0C0 + u::off::PSCR) = 0xFFFFFFFFu; // clear any stale protocol status flags
+    u::reg32(U0C0 + u::off::PSCR) = 0xFFFFFFFFu;
 
     // Route the RX pin's DX0 input into the ASC pre-processor. Input-stage config must be
     // done while CCR.MODE=0 (RM p.18-57).
@@ -187,7 +168,7 @@ void arch_console_reclaim_window(uintptr_t* base, size_t* size)
     *size = CONSOLE_WIN_SIZE;
 }
 
-// Panic-path reclaim (console.cc D6): force U0C0 back to a known polled-ready ASC
+// Panic-path reclaim: force U0C0 back to a known polled-ready ASC
 // channel after a userspace driver may have garbled EVERY writable register inside
 // its granted 0x200 window. Runs with IRQs masked, privileged; MUST be idempotent +
 // re-entrant, so every store here is ABSOLUTE, NO read-modify-write on any
@@ -223,12 +204,12 @@ void arch_console_reclaim(void)
     u::Baud b;
     if (u::baud_for_periph(arch_periph_clock_hz(CONSOLE_WIN_BASE), &b))
     {
-        u::set_baud(CONSOLE_WIN_BASE, b); // FDR + BRG
+        u::set_baud(CONSOLE_WIN_BASE, b);
     }
     u::reg32(CONSOLE_WIN_BASE + u::off::SCTR) = ru::SCTR_WLE_8 | ru::SCTR_FLE_8 | ru::SCTR_TRM_ACTIVE | ru::SCTR_PDL;
     u::reg32(CONSOLE_WIN_BASE + u::off::TCSR) = ru::TCSR_TDEN_TDV | ru::TCSR_TDSSM;
     u::reg32(CONSOLE_WIN_BASE + u::off::PCR) = ru::PCR_ASC_SP | ru::PCR_ASC_SMD | ru::PCR_ASC_TSTEN;
-    u::select_input(CONSOLE_WIN_BASE, u::off::DX0CR, KICKOS_BOARD_CONSOLE_DX0_INPUT_SELECT); // DX0 RX input mux
+    u::select_input(CONSOLE_WIN_BASE, u::off::DX0CR, KICKOS_BOARD_CONSOLE_DX0_INPUT_SELECT);
     u::reg32(CONSOLE_WIN_BASE + u::off::INPR) = 0; // TBINP back to SR0, which a driver may have moved
 
     // (d) Drop a stale Transmit-Data-Valid word a hostile driver may have loaded into
@@ -302,9 +283,8 @@ void arch_console_retune(void)
 }
 
 // Non-blocking RX drain: copy up to n received words into buf, return the count
-// read. The DX0 input is already routed to the ASC pre-processor by
-// kickos_xmc_usic_init(). No FIFO: the standard receive buffer holds two words
-// (RDV0/RDV1), so a caller that does not keep up loses bytes.
+// read. No FIFO: the standard receive buffer holds two words (RDV0/RDV1), so a caller
+// that does not keep up loses bytes.
 size_t kickos_xmc_usic_read(char* buf, size_t n)
 {
     size_t got = 0;

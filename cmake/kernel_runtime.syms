@@ -2,7 +2,7 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # objcopy --redefine-syms input: the runtime names a COMPILER emits on its own, mapped to
-# the kernel's private ones (kernel/include/kickos/kruntime.h). Applied to the archives that
+# the kernel's private ones (kernel/klib/kstring.cc, kernel/include/kickos/kruntime.h). Applied to the archives that
 # hold kernel text by kickos_privatise_runtime() in cmake/kickos.cmake.
 #
 # WHY A REWRITE AND NOT A SOURCE FIX. An explicit call is renamed at its call site and needs

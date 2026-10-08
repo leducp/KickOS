@@ -9,8 +9,9 @@
 import copy
 
 from .composition import (
-    Cache, admit_composition, amp_port, gate_unit, read_composition, region_size, views,
+    Cache, admit_composition, amp_port, gate_unit, read_composition, region_size,
 )
+from .descriptions import cluster_views
 from .manifest import read_manifest
 from .subset import File, Report, line_of
 
@@ -97,7 +98,7 @@ def check_devices(files, admitted):
     for k, later in enumerate(admitted):
         for j in range(k):
             earlier = admitted[j]
-            task_views = views(later.chip, later.cluster) + views(earlier.chip, earlier.cluster)
+            task_views = cluster_views(later.chip, later.cluster) + cluster_views(earlier.chip, earlier.cluster)
             for grant in mem_grants(later):
                 for held in mem_grants(earlier):
                     if grant.space != held.space:
@@ -156,7 +157,7 @@ def region_align(size, made, manifest):
         align = size
     elif manifest.window_rule == "granule" and manifest.smallest_window:
         align = manifest.smallest_window
-    for view in views(made.chip, made.cluster):
+    for view in cluster_views(made.chip, made.cluster):
         unit = made.chip.protection.get(view)
         if unit is not None and unit.page is not None:
             align = max(align, unit.page)
@@ -248,7 +249,7 @@ def check_cached(files, admitted):
     for path, nodes in regions.items():
         if len(nodes) < 2:
             continue
-        if coherent([(admitted[k].chip, views(admitted[k].chip, admitted[k].cluster)) for k in nodes]):
+        if coherent([(admitted[k].chip, cluster_views(admitted[k].chip, admitted[k].cluster)) for k in nodes]):
             continue
         for k in nodes:
             made = admitted[k]

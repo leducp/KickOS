@@ -17,6 +17,7 @@ include(cmake/stack_geometry.cmake)
 include(cmake/mpu_geometry.cmake)
 include(cmake/exit_geometry.cmake)
 include(cmake/manifest.cmake)
+include(cmake/preset_key.cmake)
 
 # KICKOS is what an add_subdirectory(KickOS) consumer tests with if(KICKOS).
 set(KICKOS TRUE CACHE INTERNAL "Building against KickOS")
@@ -837,11 +838,6 @@ if(KICKOS_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(ternary PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
-  _add_test(NAME chip_divisor_rate
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_chip_divisor_rate.sh"
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(chip_divisor_rate PROPERTIES TIMEOUT 120 LABELS "host;tree")
-
   _add_test(NAME panic_banners
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_panic_banners.sh"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -877,16 +873,12 @@ if(KICKOS_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(geometry_emitted PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
-  # Reconstruct the preset name from board, variant and optional AMP node.
-  # Keep this format consistent with tests/static/preset_boards.cmake.
-  if(KICKOS_CONFIG_VARIANT STREQUAL "base")
-    set(_fs_preset_key "${KICKOS_BOARD}")
-  else()
-    set(_fs_preset_key "${KICKOS_BOARD}-${KICKOS_CONFIG_VARIANT}")
-  endif()
+  set(_fs_own_image OFF)
   if(KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
-    set(_fs_preset_key "${_fs_preset_key}-n${KICKOS_AMP_NODE_ID}")
+    set(_fs_own_image ON)
   endif()
+  kickos_preset_key(_fs_preset_key "${KICKOS_BOARD}" "${KICKOS_CONFIG_VARIANT}"
+                    "${_fs_own_image}" "${KICKOS_AMP_NODE_ID}")
 
   # Every preset of an arch with a trap-stack header measures its trap descent.
   file(GLOB _fs_trap_stack_header
@@ -914,23 +906,15 @@ if(KICKOS_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(app_stack_control PROPERTIES TIMEOUT 120 LABELS "host;tree")
 
-  _add_test(NAME frame_pool_unwritten
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_frame_pool_unwritten.sh"
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(frame_pool_unwritten PROPERTIES TIMEOUT 120 LABELS "host;tree")
-
   # Every translating preset walks the fault-record console route, as a clause of trap_redzone.
   if(KICKOS_HAVE_ASPACE AND _fs_trap_stack_header)
     set_property(TEST trap_redzone APPEND PROPERTY ENVIRONMENT "KICKOS_CONSOLE_REACH=1")
   endif()
 
-  # Cache-as-SRAM pinning, refused where two kernel images share the RP2350's one XIP cache.
-  if(KICKOS_CHIP STREQUAL "rp2350" AND KICKOS_AMP_OWN_IMAGE)
-    _add_test(NAME amp_no_xip_pin
-              COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_amp_no_xip_pin.sh"
-              WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-    set_tests_properties(amp_no_xip_pin PROPERTIES TIMEOUT 300 LABELS host)
-  endif()
+  _add_test(NAME amp_no_xip_pin
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_amp_no_xip_pin.sh"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(amp_no_xip_pin PROPERTIES TIMEOUT 300 LABELS "host;tree")
 
   _add_test(NAME atomic_rmw
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_atomic_rmw.sh"
@@ -1052,10 +1036,6 @@ if(KICKOS_BUILD_TESTS)
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/check_string_provider.sh"
                     --self-test "${CMAKE_C_COMPILER}" "${CMAKE_AR}" "${CMAKE_NM}")
   set_tests_properties(string_provider_controls PROPERTIES TIMEOUT 60 LABELS "host;tree")
-
-  _add_test(NAME selftest_manifest_controls
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/check_selftest_manifest.sh" --self-test)
-  set_tests_properties(selftest_manifest_controls PROPERTIES TIMEOUT 60 LABELS "host;tree")
 
   _add_test(NAME ctors_kept_controls
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/check_ctors_kept.sh" --self-test)

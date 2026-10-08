@@ -18,6 +18,7 @@ extern "C" __attribute__((visibility("hidden"), noreturn)) void kfault_terminate
 #include "ctx_redirect.h"
 #include <kickos/arch/aspace.h>
 #include <kickos/arch/desc.h>
+#include <kickos/arch/doorbell_protocol.h>
 #include <kickos/arch/regs.h>
 #include <kickos/arch/ring3.h>
 #include <kickos/arch/trap.h>
@@ -45,9 +46,6 @@ extern "C" KICKOS_X86_64_LOCAL void kickos_x86_64_bench_open(void);
 // the syscall trap. An unprivileged thread's entry returns HERE and never into
 // kickos_thread_return, which is kernel text it may not call.
 extern "C" KICKOS_X86_64_LOCAL void kickos_user_thread_return(void);
-#if KICKOS_KERNEL_CORES > 1
-extern "C" void kickos_x86_64_doorbell_service(void);
-#endif
 
 namespace
 {
@@ -468,48 +466,6 @@ uint64_t arch_cpu_clock_hz(void)
     return kickos::x86_64::apic_tsc_hz();
 }
 
-// --- Region descriptors: none on this arch ----------------------------------
-// arch_mpu_min_region returning 0 makes arch_ram_region_size 16-byte granular. cmake/
-// boot_arena.cmake SCRAPES both bodies textually, so each must stay a plain integer return.
-void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
-                    struct arch_mpu_encoded const* image)
-{
-    (void)regions;
-    (void)n;
-    (void)image;
-}
-
-void kickos_arch_mpu_commit(void) {}
-
-// Nothing is deferred on this backend, so the set is already live when apply returns.
-void arch_mpu_apply_now(struct arch_mpu_region const* regions, size_t n,
-                        struct arch_mpu_encoded const* image)
-{
-    arch_mpu_apply(regions, n, image);
-}
-
-size_t arch_mpu_min_region(void)
-{
-    return 0;
-}
-
-int arch_mpu_region_pow2(void)
-{
-    return 0;
-}
-
-bool arch_mpu_region_encodable(uintptr_t base, size_t size)
-{
-    (void)base;
-    (void)size;
-    return false;
-}
-
-int arch_mpu_nocache_support(void)
-{
-    return ARCH_MPU_NOCACHE_REFUSED;
-}
-
 // Rule 7 (arch.h): x86 has no bit-band alias.
 int arch_bitband_present(void)
 {
@@ -770,11 +726,8 @@ kickos::x86_64::trap_frame* kickos_x86_64_isr(kickos::x86_64::trap_frame* frame)
     else
     {
 #if KICKOS_KERNEL_CORES > 1
-        kickos_x86_64_doorbell_service();
-        if (kickos_kernel_core_resched_take() != 0)
-        {
-            kickos_kernel_core_resched();
-        }
+        kickos_doorbell_service();
+        kickos_kernel_core_resched_if_owed();
 #endif
         dispatch_doorbell();
     }

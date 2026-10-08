@@ -3,8 +3,8 @@
 
 # kickos_simcon: the host sim's console driver, one thread writing what its endpoint receives to
 # host fd 1.
-kickos_add_driver(simcon THREADS service:0:default:1:0 RECEIVER service
-                  BLOCK none POSTURE handover BARRIER none START simcon_console_start CONSOLE)
+kickos_add_driver(simcon BLOCK none BARRIER none POSTURE handover CONSOLE START simcon_console_start
+                  THREAD service ENTRY simconsole_driver CAPS ep:wait)
 
 # The knobs of tests/integration/check_sim_drvdeath.sh. The driver exits after N served messages,
 # 0 serving forever.

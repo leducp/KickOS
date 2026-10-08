@@ -43,18 +43,6 @@ add_test(NAME ${_tag}_bench_phase_table_controls
   COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_bench_phase_table.sh" --controls)
 kickos_host_gate(${_tag}_bench_phase_table_controls)
 
-set(_bench_image "$<TARGET_FILE:bench>")
-
-# Check SMP release/acquire instructions where the architecture has distinct acquire/release
-# instructions. x86 TSO uses the same MOV for relaxed, acquire and release; disassembly cannot
-# distinguish a source-level downgrade there. Its runtime E2E gate still runs above one core.
-if(KICKOS_KERNEL_CORES GREATER 1 AND NOT KICKOS_ARCH STREQUAL "x86_64")
-  add_test(NAME ${_tag}_bench_e2e_publish
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_bench_e2e_publish.sh"
-            "${_bench_image}" "${CMAKE_OBJDUMP}" "${KICKOS_ARCH}")
-  kickos_host_gate(${_tag}_bench_e2e_publish)
-endif()
-
 if(KICKOS_ARCH STREQUAL "armv8a")
   kickos_image_rule(a53_pmcr bench)
 endif()

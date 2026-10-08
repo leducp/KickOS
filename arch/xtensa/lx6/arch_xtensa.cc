@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 #include <kickos/arch/arch.h>
+#include <kickos/arch/doorbell_protocol.h>
 #include <kickos/arch/idle_floor.h>
 #include <kickos/arch/lx6_doorbell.h>
 #include <kickos/arch/lx6_trap_stack.h>
@@ -11,6 +12,8 @@
 #include <kickos/sys/atomic.h>
 
 #include <stddef.h>
+
+#include <type_traits>
 
 static_assert(KICKOS_TRACE_ARCH == kickos::trace::ARCH_XTENSA,
               "KICKOS_TRACE_ARCH does not match ArchId::ARCH_XTENSA for lx6");
@@ -273,6 +276,22 @@ namespace
         (void)line;
 #endif
     }
+
+    // One line's state, written only as a whole constant: a read-modify-write of the byte would
+    // race the unlocked ISR mask store, and a wider cell would carry its neighbours into it.
+    class LineCell
+    {
+    public:
+        KICKOS_ATOMIC_INLINE void set() { v_ = 1u; }
+        KICKOS_ATOMIC_INLINE void clear() { v_ = 0u; }
+        KICKOS_ATOMIC_INLINE bool test() const { return v_.load() != 0u; }
+
+    private:
+        Atomic<uint8_t, Order::RELAXED> v_;
+        static_assert(std::is_same_v<decltype(v_), Atomic<uint8_t, Order::RELAXED>>,
+                      "a byte and relaxed: what orders it is the kernel lock after it");
+    };
+    static_assert(sizeof(LineCell) == 1 and alignof(LineCell) == 1, "one byte per line");
 }
 
 extern "C"
@@ -320,7 +339,7 @@ extern "C"
     static_assert(sizeof(g_arch_switch_pending[0]) == 4, "asm reads one word");
     static_assert(sizeof(g_isr_depth[0]) == 4, "asm reads one word");
 
-    // 0 = masked. Every line starts masked (the arch.h reset contract), which zero-init gives.
+    // Clear = masked. Every line starts masked (the arch.h reset contract), which zero-init gives.
     //
     // Image-wide and not per core: a routed line is pinned to one core, so the RSIL bracket
     // is its whole exclusion. An unrouted line has no pin, and arch_irq_mask reached from
@@ -336,7 +355,7 @@ extern "C"
     //
     // 32 cells to match the `& 31u` index: KICKOS_MAX_IRQ is out of reach, since this layer
     // has no kernel include path.
-    static kickos::Atomic<uint8_t, kickos::Order::RELAXED> g_irq_unmasked[32] = {};
+    static LineCell g_irq_unmasked[32] = {};
     // Per core: arch_irq_inject raises INTSET on the CALLING core, so that same core's
     // dispatch must read it.
 #if KICKOS_KERNEL_CORES > 1
@@ -357,8 +376,10 @@ extern "C"
     // A raise landed while masked: latched one-deep, coalesced, redelivered at unmask.
     // Serialised by the kernel lock at every access, unlike g_irq_unmasked: no ISR-context
     // path reaches it.
-    static kickos::Atomic<uint8_t, kickos::Order::RELAXED> g_irq_pending[32] = {};
-
+    static LineCell g_irq_pending[32] = {};
+    static_assert(std::is_same_v<decltype(g_irq_unmasked), LineCell[32]>
+                      and std::is_same_v<decltype(g_irq_pending), LineCell[32]>,
+                  "every access to a cell goes through LineCell");
 }
 
 #if KICKOS_KERNEL_CORES > 1
@@ -604,14 +625,11 @@ void kickos_lx6_dispatch_l1(void)
         // is the authority, so a spurious entry finds nothing owed and returns.
         if (kickos_lx6_doorbell_pending() != 0)
         {
-            kickos_lx6_doorbell_service();
+            kickos_doorbell_service();
         }
 #if KICKOS_KERNEL_CORES > 1
         // Outside the service body, because it takes the kernel lock.
-        if (kickos_kernel_core_resched_take() != 0)
-        {
-            kickos_kernel_core_resched();
-        }
+        kickos_kernel_core_resched_if_owed();
         take_posts();
 #endif
     }
@@ -869,8 +887,8 @@ void kickos_lx6_hw_unmask(int line)
 // --- Interrupt controller: a SOFTWARE controller over the logical device lines ---
 // Xtensa INTSET latches only the software-type interrupts (int 7/29), so an INJECTED
 // logical line cannot be a physical INTENABLE bit: lines 5/9/11 would be silent no-ops and
-// line 6 collides with the timer. Mask is a software bitmask; inject records the line and
-// rings the ONE real software int 7.
+// line 6 collides with the timer. Mask is a software cell per line; inject records the line
+// and rings the ONE real software int 7.
 // A line with a device route additionally reaches INTENABLE: a LEVEL peripheral source
 // keeps re-asserting until the controller masks it, so the software bit alone would
 // livelock the level-1 handler.
@@ -882,7 +900,7 @@ void arch_irq_mask(int line)
     }
     assert_line_core(line);
     arch_irq_state_t s = arch_irq_save();
-    g_irq_unmasked[static_cast<unsigned>(line) & 31u] = 0u;
+    g_irq_unmasked[static_cast<unsigned>(line) & 31u].clear();
     kickos_lx6_hw_mask(line);
     arch_irq_restore(s);
 }
@@ -896,11 +914,11 @@ void arch_irq_unmask(int line)
     assert_line_core(line);
     unsigned l = static_cast<unsigned>(line) & 31u;
     arch_irq_state_t s = arch_irq_save();
-    g_irq_unmasked[l] = 1u;
+    g_irq_unmasked[l].set();
     kickos_lx6_hw_unmask(line);
-    if (g_irq_pending[l] != 0u)
+    if (g_irq_pending[l].test())
     {
-        g_irq_pending[l] = 0u;
+        g_irq_pending[l].clear();
 #if KICKOS_KERNEL_CORES > 1
         g_inject_set[arch_cpu_id()] = g_inject_set[arch_cpu_id()].load() | (1u << l);
 #else
@@ -924,7 +942,7 @@ void arch_irq_clear_pending(int line)
     }
     assert_line_core(line);
     arch_irq_state_t s = arch_irq_save();
-    g_irq_pending[static_cast<unsigned>(line) & 31u] = 0u;
+    g_irq_pending[static_cast<unsigned>(line) & 31u].clear();
 #if KICKOS_KERNEL_CORES > 1
     uint32_t const me = arch_cpu_id();
     uint32_t const bit = 1u << (static_cast<unsigned>(line) & 31u);
@@ -1010,9 +1028,9 @@ void arch_irq_inject(int irq)
     }
     // Bracketed like arch_irq_mask/unmask: an ISR reaching those writes the same cells.
     arch_irq_state_t s = arch_irq_save();
-    if (g_irq_unmasked[static_cast<unsigned>(irq) & 31u] == 0u)
+    if (not g_irq_unmasked[static_cast<unsigned>(irq) & 31u].test())
     {
-        g_irq_pending[static_cast<unsigned>(irq) & 31u] = 1u;
+        g_irq_pending[static_cast<unsigned>(irq) & 31u].set();
     }
     else
     {

@@ -9,6 +9,7 @@
 
 #include <kickos/arch/arch.h>
 #include "ctx_redirect.h"
+#include "../common/fault_resume.h"
 #include <kickos/diag.h>
 #include <kickos/units.h> // _s literal (== 1e9 ns)
 
@@ -128,8 +129,6 @@ static_assert(KICKOS_MIN_STACK_SIZE
               "exception frame entry spends above it: raise the per-arch default in "
               "Kconfig, never the red zone, which is a measurement");
 
-// ARMv7-M keeps SP 8-byte aligned at every public interface (AAPCS), so a kernel stack
-// whose SIZE is not a multiple of 8 puts its top off that boundary.
 // The reporter's own array (kernel/init/console.cc). The frame term is the hardware frame a
 // HardFault stacks there, PRIMASK not masking one, so the two macros must agree.
 static_assert(KICKOS_ARMV7M_PANIC_FRAME == KICKOS_ARMV7M_TRAP_FRAME_MAX,
@@ -137,6 +136,8 @@ static_assert(KICKOS_ARMV7M_PANIC_FRAME == KICKOS_ARMV7M_TRAP_FRAME_MAX,
 static_assert(KICKOS_PANIC_STACK_SIZE >= KICKOS_ARMV7M_PANIC_FRAME + KICKOS_ARMV7M_PANIC_DEPTH,
               "KICKOS_PANIC_STACK_SIZE is below what this arch's panic reporter descends");
 
+// AAPCS keeps SP 8-byte aligned at every public interface, so a kernel stack whose SIZE is
+// not a multiple of 8 puts its top off that boundary.
 static_assert(KICKOS_KERNEL_STACK_SIZE % 8 == 0,
               "KICKOS_KERNEL_STACK_SIZE must be a multiple of 8 on this arch, or a "
               "kernel stack's top does not land on the alignment every frame on it "
@@ -191,10 +192,9 @@ namespace
 
 extern "C"
 {
-    // Userspace thread epilogue (kickos_user): an unprivileged thread whose entry
-    // returns cannot run the kernel's kickos_thread_return directly (it would
-    // execute exit_current with nPRIV=1 -> IrqLock/BASEPRI is a no-op and the
-    // SCS write in arch_switch BusFaults). It must trap out via the exit syscall.
+    // An unprivileged thread whose entry returns cannot run kickos_thread_return: with
+    // nPRIV=1 the BASEPRI write in IrqLock is a no-op and the SCS write in arch_switch
+    // BusFaults. This one traps out via the exit syscall.
     void kickos_user_thread_return(void);
 
     // CMSIS convention: the core clock in Hz, defined + maintained by the chip.
@@ -231,7 +231,6 @@ void arch_context_init(struct arch_context* ctx,
         ret = reinterpret_cast<uint32_t>(kickos_user_thread_return);
     }
 
-    // Hardware exception frame (unstacked by the exception return into `entry`).
     *(--sp) = 0x01000000u;                                    // xPSR (Thumb bit)
     *(--sp) = reinterpret_cast<uint32_t>(entry) & ~1u;        // PC = entry
     *(--sp) = ret;                                            // LR: entry returns here
@@ -268,14 +267,6 @@ void arch_context_init(struct arch_context* ctx,
     // ctx->kernel_sp IS DELIBERATELY UNTOUCHED. thread_create seats it BEFORE this call and
     // is the only writer of the zero that means no block seated, which svc_trampoline's
     // refusal path keys on; clearing it here would wipe the block off every fresh thread.
-}
-
-// The result has to be seated where the restore reloads r4 from: ctx->sp is the base of the
-// {r4-r11, EXC_RETURN} block. r4, not the AAPCS r0, is the register the trap's own ABI
-// answers in (arch_syscall_reg in switch.S).
-void arch_ctx_set_syscall_result(struct arch_context* ctx, uint32_t result)
-{
-    reinterpret_cast<uint32_t*>(ctx->sp)[0] = result;
 }
 
 // The fabricated frame carries EXC_RETURN 0xFFFFFFFD (thread mode, PSP, NON-FP frame), so
@@ -349,7 +340,7 @@ bool arch_fault_is_user_thread(void* frame)
         return false;
     }
     // A stack overflow arrives as a stacking abort.
-    if (not armv7m_fault_frame_readable(kickos::arm::reg32(0xE000ED28)))
+    if (not armv7m_fault_frame_readable(kickos::arm::reg32(SCB_CFSR)))
     {
         return false;
     }
@@ -375,23 +366,22 @@ __attribute__((naked, noreturn)) void kickos_armv7m_fault_stack_reset(void)
 
 void arch_fault_redirect_to_exit(void* frame)
 {
-    uint32_t const cfsr = kickos::arm::reg32(0xE000ED28);
-    uint32_t const hfsr = kickos::arm::reg32(0xE000ED2C);
+    uint32_t const cfsr = kickos::arm::reg32(SCB_CFSR);
+    uint32_t const hfsr = kickos::arm::reg32(SCB_HFSR);
     uintptr_t addr = 0;
     int addr_valid = 0;
     // Taken whatever the core latched: a chip latch left set labels the NEXT thread's fault.
     uintptr_t chip_addr = 0;
     bool const chip_latched = arch_fault_chip_addr(&chip_addr);
-    // MMFAR/BFAR hold a stale address unless the matching VALID bit is set (MMARVALID =
-    // CFSR bit 7, BFARVALID = bit 15).
-    if (cfsr & (1u << 7))
+    // MMFAR/BFAR hold a stale address unless the matching VALID bit is set.
+    if (cfsr & ARMV7M_CFSR_MMARVALID)
     {
-        addr = kickos::arm::reg32(0xE000ED34);
+        addr = kickos::arm::reg32(SCB_MMFAR);
         addr_valid = 1;
     }
-    else if (cfsr & (1u << 15))
+    else if (cfsr & ARMV7M_CFSR_BFARVALID)
     {
-        addr = kickos::arm::reg32(0xE000ED38);
+        addr = kickos::arm::reg32(SCB_BFAR);
         addr_valid = 1;
     }
     else if (chip_latched and armv7m_chip_addr_explains(cfsr))
@@ -402,39 +392,15 @@ void arch_fault_redirect_to_exit(void* frame)
     uint32_t* const f = static_cast<uint32_t*>(frame);
     kickos_fault_record("CFSR", cfsr, f[6], addr, addr_valid);
     // Write-1-to-clear and sticky: a bit left set mislabels the NEXT thread's fault.
-    kickos::arm::reg32(0xE000ED28) = cfsr;
-    kickos::arm::reg32(0xE000ED2C) = hfsr;
+    kickos::arm::reg32(SCB_CFSR) = cfsr;
+    kickos::arm::reg32(SCB_HFSR) = hfsr;
 
-    // The stub runs at the top of this thread's stack, and the frame is NOT relocated to
-    // get there: with lazy FP stacking the EXC_RETURN still in the handler's LR decides
-    // whether the CPU unstacks a basic 8-word or an extended 26-word frame (ARMv7-M ARM
-    // B1.5.7), and a frame moved somewhere EXC_RETURN disagrees with is popped at the wrong
-    // size out of the wrong memory. So the hardware pops where it stacked and the shim's
-    // first instruction, reached only after that pop, moves SP. r0 carries the new SP
-    // because it is the frame's own first word and this thread is dying.
-    //
-    // The stack-realign bit 9 is left alone: it belongs to the pop, which still happens at
-    // the original SP.
-    uint32_t const top = static_cast<uint32_t>(kickos_fault_stack_top());
-    if (top != 0)
-    {
-        f[0] = top & ~7u;
-        f[6] = reinterpret_cast<uint32_t>(&kickos_armv7m_fault_stack_reset) & ~1u;
-    }
-    else
-    {
-        f[6] = reinterpret_cast<uint32_t>(&kickos_thread_fault_exit) & ~1u; // drop the Thumb bit
-    }
-    // Keep T (bit 24) and the stack-realign bit 9, clear IT/ICI (bits 26:25 and 15:10):
-    // a fault inside an IT block would otherwise resume with stale condition state and
-    // conditionally skip the stub's first instructions.
+    kickos_arm_fault_resume_at(f, &kickos_armv7m_fault_stack_reset);
+    // Keep T (bit 24) and the stack-realign bit 9, which belongs to the pop at the original
+    // SP; clear IT/ICI (bits 26:25 and 15:10): a fault inside an IT block would otherwise
+    // resume with stale condition state and conditionally skip the stub's first instructions.
     f[7] = (f[7] & ~((3u << 25) | (0x3Fu << 10))) | (1u << 24);
-    // Exception return does not restore CONTROL, so clearing nPRIV here is what makes the
-    // stub privileged. SPSEL is the bit handler mode ignores; nPRIV is not.
-    uint32_t control;
-    __asm volatile("mrs %0, control" : "=r"(control));
-    __asm volatile("msr control, %0" ::"r"(control & ~1u));
-    __asm volatile("isb" ::: "memory");
+    kickos_arm_fault_resume_privileged();
 }
 
 #if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_AMP_OWN_IMAGE
@@ -457,15 +423,15 @@ static bool kickos_armv7m_probe_caught(uint32_t* frame, uint32_t exc_return)
     uint32_t const load = reinterpret_cast<uint32_t>(&kickos_armv7m_probe_word) & ~1u;
     uint32_t control;
     __asm volatile("mrs %0, control" : "=r"(control));
-    uint32_t const cfsr = kickos::arm::reg32(0xE000ED28);
+    uint32_t const cfsr = kickos::arm::reg32(SCB_CFSR);
     if (not kickos::armv7m::probe_catch(g_probe, frame, load, exc_return, control, cfsr,
-                                        kickos::arm::reg32(0xE000ED38)))
+                                        kickos::arm::reg32(SCB_BFAR)))
     {
         return false;
     }
     // Write-1-to-clear, as on every other fault path.
-    kickos::arm::reg32(0xE000ED28) = cfsr;
-    kickos::arm::reg32(0xE000ED2C) = kickos::arm::reg32(0xE000ED2C);
+    kickos::arm::reg32(SCB_CFSR) = cfsr;
+    kickos::arm::reg32(SCB_HFSR) = kickos::arm::reg32(SCB_HFSR);
     return true;
 }
 
@@ -484,7 +450,7 @@ void kickos_armv7m_fault_report(uint32_t* frame, uint32_t exc_return)
     // HardFault_Handler reaches here by a plain `b`, so this function's own return IS the
     // exception return. Nothing may print above this: kpanic_enter's console reclaim is
     // permanent and this fault is survivable.
-    bool const frame_read = armv7m_fault_frame_readable(kickos::arm::reg32(0xE000ED28));
+    bool const frame_read = armv7m_fault_frame_readable(kickos::arm::reg32(SCB_CFSR));
 #if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_AMP_OWN_IMAGE
     if (frame_read and kickos_armv7m_probe_caught(frame, exc_return))
     {
@@ -497,20 +463,19 @@ void kickos_armv7m_fault_report(uint32_t* frame, uint32_t exc_return)
     }
     kpanic_enter(); // mask IRQs + force the sync path + flush queued bytes, in order
 #if KICKOS_PANIC_DUMP
-    uint32_t cfsr = kickos::arm::reg32(0xE000ED28);
-    uint32_t hfsr = kickos::arm::reg32(0xE000ED2C);
+    uint32_t cfsr = kickos::arm::reg32(SCB_CFSR);
+    uint32_t hfsr = kickos::arm::reg32(SCB_HFSR);
     char const* stk = "MSP";
     if (exc_return & 0x4u)
     {
         stk = "PSP";
     }
-    // Label from the CFSR byte that is set: MMFSR is CFSR[7:0], BFSR is CFSR[15:8].
     char const* label = "HARD FAULT";
-    if (cfsr & 0xFFu)
+    if (cfsr & ARMV7M_CFSR_MMFSR)
     {
         label = "MPU FAULT";
     }
-    else if (cfsr & 0xFF00u)
+    else if (cfsr & ARMV7M_CFSR_BFSR)
     {
         label = "BUS FAULT";
     }
@@ -525,19 +490,18 @@ void kickos_armv7m_fault_report(uint32_t* frame, uint32_t exc_return)
         ::kickos::kprintf(KDIAG_F_ARM_NOFRAME, reinterpret_cast<uint32_t>(frame), stk);
     }
     ::kickos::kprintf(KDIAG_F_ARM_CFSR, cfsr, hfsr);
-    if (cfsr & (1u << 10)) // BFSR IMPRECISERR: the stacked PC is past the faulting store
+    if (cfsr & ARMV7M_CFSR_IMPRECISERR) // the stacked PC is past the faulting store
     {
         ::kickos::kprintf(KDIAG_F_ARM_IMPRECISE);
     }
-    // MMFAR/BFAR are stale unless the matching CFSR VALID bit is set (MMARVALID = bit 7,
-    // BFARVALID = bit 15).
-    if (cfsr & (1u << 7))
+    // MMFAR/BFAR are stale unless the matching CFSR VALID bit is set.
+    if (cfsr & ARMV7M_CFSR_MMARVALID)
     {
-        ::kickos::kprintf(KDIAG_F_ARM_MMFAR, kickos::arm::reg32(0xE000ED34));
+        ::kickos::kprintf(KDIAG_F_ARM_MMFAR, kickos::arm::reg32(SCB_MMFAR));
     }
-    if (cfsr & (1u << 15))
+    if (cfsr & ARMV7M_CFSR_BFARVALID)
     {
-        ::kickos::kprintf(KDIAG_F_ARM_BFAR, kickos::arm::reg32(0xE000ED38));
+        ::kickos::kprintf(KDIAG_F_ARM_BFAR, kickos::arm::reg32(SCB_BFAR));
     }
     arch_fault_report_extra(); // chip hook: e.g. K64F SYSMPU error capture
 #else

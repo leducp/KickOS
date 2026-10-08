@@ -28,8 +28,6 @@ namespace kickos
             // release. The bracket must not release it while this is set.
             uint32_t owed;
         };
-        static_assert(sizeof(KlockRow) % KLOCK_CACHE_LINE == 0,
-                      "a row shorter than a line would share one with the next writer");
 
         KlockRow g_row[KICKOS_KERNEL_CORES] = {};
 
@@ -40,8 +38,6 @@ namespace kickos
         {
             Resched seq[KICKOS_KERNEL_CORES];
         };
-        static_assert(sizeof(ReschedRow) % KLOCK_CACHE_LINE == 0,
-                      "a row shorter than a line would share one with the next writer");
 
         // g_asked[i].seq[t]: reschedules core i has owed core t. Written by i, read by t.
         // g_took[t].seq[i]: how far core t has consumed i's. Written by t, read by i.
@@ -56,6 +52,22 @@ namespace kickos
         {
             KICKOS_DEBUG_ASSERT(::arch_kernel_lock_held() != 0);
             arch_kernel_unlock();
+        }
+
+        // The reschedule a raise carries, held as state rather than as the raise itself. Every
+        // cell has exactly one writer: an asked word only by the core owing, a took word only by
+        // the core consuming.
+        void resched_owe(uint32_t cores)
+        {
+            uint32_t const me = kickos_kernel_core();
+            for (uint32_t to = 0; to < KICKOS_KERNEL_CORES; to++)
+            {
+                if ((cores & (1u << to)) != 0)
+                {
+                    // Single writer, so a load and a store rather than an increment.
+                    g_asked[me].seq[to] = g_asked[me].seq[to].load() + 1u;
+                }
+            }
         }
 
         inline __attribute__((always_inline)) bool resched_owed_on(uint32_t me)
@@ -88,6 +100,16 @@ namespace kickos
             }
         }
 
+        // The wait sample is charged to the hold span enclosing it: the accumulator call sits
+        // inside the masked window the IrqLock bracket is timing.
+        inline __attribute__((always_inline)) void acquire([[maybe_unused]] uint32_t resume)
+        {
+            KICKOS_BENCH_MARK(bw);
+            arch_kernel_lock();
+            KICKOS_BENCH_DIST_SPAN(BD_LOCK_WAIT, bw);
+            KICKOS_BENCH_ACQUIRED(resume);
+        }
+
         inline __attribute__((always_inline)) void drop(void)
         {
             KlockRow& r = g_row[kickos_kernel_core()];
@@ -102,12 +124,7 @@ namespace kickos
         KlockRow& r = g_row[kickos_kernel_core()];
         if (r.depth == 0 and r.owed == 0)
         {
-            // The wait sample, charged to the hold span enclosing it: the accumulator call
-            // sits inside the masked window the IrqLock bracket is timing.
-            KICKOS_BENCH_MARK(bw);
-            arch_kernel_lock();
-            KICKOS_BENCH_DIST_SPAN(BD_LOCK_WAIT, bw);
-            KICKOS_BENCH_ACQUIRED(0);
+            acquire(0);
         }
         r.depth = r.depth + 1u;
     }
@@ -152,10 +169,7 @@ namespace kickos
         // acquire here would spin on a word it holds itself.
         if (r.owed == 0)
         {
-            KICKOS_BENCH_MARK(bw);
-            arch_kernel_lock();
-            KICKOS_BENCH_DIST_SPAN(BD_LOCK_WAIT, bw);
-            KICKOS_BENCH_ACQUIRED(1);
+            acquire(1);
         }
         r.depth = depth;
     }
@@ -166,11 +180,10 @@ namespace kickos
     }
 
     // Runs once the outgoing frame is parked and this core stands on the incoming one; the
-    // unlock's release publishes that parked frame.
-    // The other half of klock_leave's arm, not a duplicate of it: a swap booked from an
-    // interrupt runs at the exception exit, so klock_detach left `owed` set and the klock_leave
-    // that follows the booking releases nothing and raises nothing. This is the release that
-    // ends that span, the only one a deferred backend reaches.
+    // unlock's release publishes that parked frame. A swap booked from an interrupt runs at the
+    // exception exit, so klock_detach left `owed` set and the klock_leave that follows the
+    // booking releases nothing and raises nothing: this is the release that ends that span, the
+    // only one a deferred backend reaches.
     extern "C" void kickos_switch_unlock(void)
     {
         KICKOS_BENCH_SWITCHED();
@@ -186,7 +199,7 @@ namespace kickos
         // absorb instead of the vector, and the cell is what outlives it. A bare raise: a
         // reschedule owes no rendezvous answer.
         uint32_t const peers = cores & ~(1u << kickos_kernel_core());
-        ::kickos_kernel_core_resched_owe(peers);
+        resched_owe(peers);
         arch_ipi_raise(peers);
     }
 
@@ -196,50 +209,30 @@ namespace kickos
     // holds it.
     void klock_resched_self(void)
     {
-        ::kickos_kernel_core_resched_owe(1u << kickos_kernel_core());
-    }
-
-    // The reschedule a raise carries, held as state rather than as the raise itself
-    // (arch/include/kickos/arch/arch.h). Every cell has exactly one writer: an asked word
-    // only by the core owing, a took word only by the core consuming.
-    extern "C" void kickos_kernel_core_resched_owe(uint32_t cores)
-    {
-        uint32_t const me = kickos_kernel_core();
-        for (uint32_t to = 0; to < KICKOS_KERNEL_CORES; to++)
-        {
-            if ((cores & (1u << to)) != 0)
-            {
-                // Single writer, so a load and a store rather than an increment.
-                g_asked[me].seq[to] = g_asked[me].seq[to].load() + 1u;
-            }
-        }
+        resched_owe(1u << kickos_kernel_core());
     }
 
     extern "C" int kickos_kernel_core_resched_owed(void)
     {
-        if (resched_owed_on(kickos_kernel_core()))
-        {
-            return 1;
-        }
-        return 0;
+        return static_cast<int>(resched_owed_on(kickos_kernel_core()));
     }
 
     // Stores the sequence it read rather than a blanket clear, so a peer that owes another
     // reschedule between this load and this store is owed again instead of answered.
-    extern "C" int kickos_kernel_core_resched_take(void)
+    bool klock_resched_take(void)
     {
         uint32_t const me = kickos_kernel_core();
-        int stood = 0;
+        bool stood = false;
         for (uint32_t from = 0; from < KICKOS_KERNEL_CORES; from++)
         {
             uint32_t const asked = g_asked[from].seq[me].load();
             if (asked != g_took[me].seq[from].load())
             {
                 g_took[me].seq[from] = asked;
-                stood = 1;
+                stood = true;
             }
         }
-        if (stood != 0)
+        if (stood)
         {
             KICKOS_BENCH_RESCHED_TAKE();
         }

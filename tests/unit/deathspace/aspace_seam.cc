@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Host address-space hooks for exit_current. Record calls in order.
+// See aspace_seam.h.
 
 #include <stdint.h>
 #include <string.h>
@@ -70,6 +70,7 @@ namespace kickos
             {
                 g_installed[core] = space;
             }
+            aspace_forget_current();
         }
 
         void note_member_release()
@@ -79,10 +80,17 @@ namespace kickos
 
         void aspace_seam_reset()
         {
+#if KICKOS_NUM_CORES > 1
+            uint32_t const was = g_core;
             for (uint32_t c = 0; c < KICKOS_NUM_CORES; c++)
             {
-                g_installed[c] = boot_space();
+                g_core = c;
+                install_here(boot_space());
             }
+            g_core = was;
+#else
+            install_here(boot_space());
+#endif
             g_ustack_frees = 0;
             g_ustack_free_base = 0;
         }
@@ -124,54 +132,37 @@ namespace kickos
         return nullptr;
     }
 
-    void aspace_window_unmap_holder(struct arch_aspace*, VirtualRanges*, uint16_t) {}
-
-    struct arch_aspace* aspace_activate_for(Thread const* t)
-    {
-        if (t == nullptr)
-        {
-            return nullptr;
-        }
-        struct arch_aspace* const own = domain_space(task_domain(t->task));
-        struct arch_aspace* space = own;
-        if (space == nullptr)
-        {
-            space = testfix::boot_space();
-        }
-        if (testfix::installed_on(arch_cpu_id()) != space)
-        {
-            testfix::install_here(space);
-            testfix::trace_add("activate_for(t%u)", static_cast<unsigned>(t->id));
-        }
-        return own;
-    }
-
-    bool aspace_seated_for(Thread const* t)
-    {
-        if (t == nullptr)
-        {
-            return false;
-        }
-        struct arch_aspace* const space = domain_space(task_domain(t->task));
-        if (space == nullptr)
-        {
-            return false;
-        }
-        return space == testfix::installed_on(arch_cpu_id());
-    }
-
-    void aspace_install_boot(void)
-    {
-        testfix::trace_add("install_boot");
-        testfix::install_here(testfix::boot_space());
-    }
-
     void frame_pool_free_run(arch_phys_addr_t, size_t, size_t) {}
 }
 
 extern "C"
 {
-    // Provide runtime symbols required by KICKOS_HAVE_ASPACE.
+    // kernel/mem/aspace.cc writes a core's root only when its own record of that core differs.
+    void arch_aspace_activate(struct arch_aspace* space)
+    {
+        uint32_t const core = arch_cpu_id();
+        if (core < KICKOS_NUM_CORES)
+        {
+            kickos::testfix::g_installed[core] = space;
+        }
+        if (space == kickos::testfix::boot_space())
+        {
+            kickos::testfix::trace_add("install_boot");
+            return;
+        }
+        kickos::testfix::trace_add("activate");
+    }
+
+    struct arch_aspace* arch_aspace_boot(void)
+    {
+        return kickos::testfix::boot_space();
+    }
+
+    enum arch_aspace_result arch_aspace_unmap(struct arch_aspace*, uintptr_t, size_t)
+    {
+        return ARCH_ASPACE_OK;
+    }
+
     void* kmemset(void* dst, int c, size_t n)
     {
         return memset(dst, c, n);

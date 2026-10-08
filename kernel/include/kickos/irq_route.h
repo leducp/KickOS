@@ -4,7 +4,9 @@
 #ifndef KICKOS_IRQ_ROUTE_H
 #define KICKOS_IRQ_ROUTE_H
 
+#include <kickos/arch/arch.h>
 #include <kickos/config.h>
+#include <kickos/held.h>
 
 namespace kickos
 {
@@ -21,7 +23,14 @@ namespace kickos
     // (docs/design-multicore.md N3). tests/static/check_irq_line_op_sole.sh refuses a
     // kernel-layer call to arch_irq_mask, arch_irq_unmask or arch_irq_clear_pending
     // anywhere else.
-    void irq_line_op(int line, LineOp op);
+    void irq_line_op(int line, LineOp op, Held held);
+
+    // The kernel layer's one way to raise a line in software; the same gate refuses a
+    // kernel-layer call to arch_irq_inject anywhere else.
+    inline void irq_inject(int line, Held)
+    {
+        arch_irq_inject(line);
+    }
 
     // For a caller that IS the routed core by construction, which here means ISR context
     // alone. Reaches no rendezvous, which keeps the dispatch's callgraph inside the red zone
@@ -29,10 +38,11 @@ namespace kickos
     void irq_line_op_local(int line, LineOp op);
 
 #if KICKOS_KERNEL_CORES > 1
-    // Drains this core's asks. Called from a backend's doorbell SERVICE BODY and nowhere else,
-    // AFTER that body has snapshotted the request sequences and BEFORE it stores the answers: a
-    // drain merely ahead of the answer stores answers work it never did
-    // (tests/static/check_route_service_order.sh asserts the order in all three bodies).
+    // Drains this core's asks. Called from the doorbell SERVICE BODY and nowhere else, AFTER it
+    // has snapshotted the request sequences and BEFORE it stores the answers: a drain merely
+    // ahead of the answer stores answers work it never did. The service's step types order it
+    // (arch/common/doorbell_protocol.cc), and tests/static/check_route_service_order.sh reads
+    // that the drain step is its caller.
     // extern "C" because the arch layer is its only caller and carries no kernel include path.
     extern "C" void kickos_irq_route_service(void);
 #endif

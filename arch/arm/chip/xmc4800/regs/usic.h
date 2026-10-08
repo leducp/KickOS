@@ -2,8 +2,8 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // XMC4800 USIC channel registers + bit fields, ASC (UART) and SSC (SPI) mode
-// layers. Clean-room from the XMC4700/XMC4800 Reference Manual (V1.3, 2016-07);
-// no XMCLib/DAVE/CMSIS vendor source. "RM p.NN" are the manual's printed pages.
+// layers, from the XMC4700/XMC4800 Reference Manual (V1.3, 2016-07). "RM p.NN" are
+// the manual's printed pages.
 
 #ifndef KICKOS_ARCH_ARM_CHIP_XMC4800_REGS_USIC_H
 #define KICKOS_ARCH_ARM_CHIP_XMC4800_REGS_USIC_H
@@ -14,8 +14,6 @@
 
 namespace kickos::xmc::reg::usic
 {
-    // Console channel (Relax Kit VCOM) is USIC0 channel 0; the SSC (SPI) drivers
-    // use the sibling channel 1.
     constexpr uintptr_t U0C0_BASE = mmap::USIC0_CH0_BASE;
     constexpr uintptr_t U0C1_BASE = mmap::USIC0_CH1_BASE;
 
@@ -103,6 +101,8 @@ namespace kickos::xmc::reg::usic
     //
     // BUSY IS NOT SUFFICIENT ALONE for "drained": its window STARTS at the start bit, so a
     // word sitting in TBUF with TCSR.TDV=1 that has not begun shifting reads BUSY=0.
+    //
+    // ASC MODE ONLY: RM 18.4.5.2 lists PSR[9:5] as reserved in SSC, and in IIC bit 9 is ACK.
     constexpr uint32_t PSR_BUSY = 1u << 9;
 
     // RBUFSR (RM p.18-204): RDV0/RDV1 "Receive Data Valid"; RBUF.DSR[15:0] word.
@@ -149,7 +149,6 @@ namespace kickos::xmc::reg::usic
     constexpr uint32_t ASC_ERR_MASK = PSR_RNS | PSR_FER0 | PSR_FER1 | PSR_DLIF;
 
     // ---- SSC (SPI) mode field constants --------------------------------------
-    // Users: system/driver/xmc4800/xmcssc and user/apps/xmc4800-relax/{xmcspi,xmccshold}.
 
     // 72 MHz SSC baud profile (fCPU=144 MHz): FDR fractional mode (DM=10B) STEP=367; BRG
     // PDIV+1=14, PCTQ+1=1, DCTQ+1=16 (RM eq.18.8; RM p.18-178 / p.18-179).
@@ -231,6 +230,31 @@ namespace kickos::xmc::reg::usic
     constexpr Baud BAUD_115200_72MHZ = { 367u, 13u, 0u, 15u }; // -0.0004%
     constexpr Baud BAUD_115200_48MHZ = { 354u, 8u, 0u, 15u };  // +0.03%
     constexpr Baud BAUD_115200_24MHZ = { 393u, 4u, 0u, 15u };  // -0.05%
+
+    constexpr bool baud_115200_for(uint32_t periph_hz, Baud* out)
+    {
+        if (periph_hz == 72000000u)
+        {
+            *out = BAUD_115200_72MHZ;
+            return true;
+        }
+        if (periph_hz == 60000000u)
+        {
+            *out = BAUD_115200_60MHZ;
+            return true;
+        }
+        if (periph_hz == 48000000u)
+        {
+            *out = BAUD_115200_48MHZ;
+            return true;
+        }
+        if (periph_hz == 24000000u)
+        {
+            *out = BAUD_115200_24MHZ;
+            return true;
+        }
+        return false;
+    }
 }
 
 #endif

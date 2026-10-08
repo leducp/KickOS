@@ -50,7 +50,7 @@ namespace kickos
 
             void cancel_the_waiter(Thread* parked)
             {
-                thread_cancel(parked);
+                thread_cancel(parked, kickos::IrqLock());
             }
 
             void post_the_semaphore(Thread*)
@@ -83,7 +83,7 @@ namespace kickos
                 parked->clear_wait_edge();
                 {
                     IrqLock lock;
-                    sched::wake(parked);
+                    sched::wake(parked, lock);
                 }
             }
 
@@ -96,9 +96,9 @@ namespace kickos
                 Thread* const waiter = spawn(1, PRIO_WAITER);
                 {
                     IrqLock lock;
-                    sched::reschedule();
+                    sched::reschedule(nullptr, lock);
                 }
-                EXPECT_EQ(kernel().current[kickos_kernel_core()], waiter) << "fixture: the waiter is current";
+                EXPECT_EQ(kernel().current(kickos_kernel_core()), waiter) << "fixture: the waiter is current";
                 g_switches = 0;
                 trace_reset();
                 *out_holder = holder;
@@ -201,7 +201,7 @@ namespace kickos
             spawn(1, PRIO_HOLDER);
             {
                 IrqLock lock;
-                sched::reschedule();
+                sched::reschedule(nullptr, lock);
             }
             trace_reset();
             g_switches = 0;

@@ -5,7 +5,7 @@
 # kernel/mem/ramown.cc at an own-image node's posture with a share stated. No region board with
 # a share has an emulator, so this is where the seat and the confinement exception run.
 kickos_add_unit_test(NAME amp_share_admission
-  SOURCES share_admission.cc
+  SOURCES share_admission.cc "${PROJECT_SOURCE_DIR}/tests/unit/common/kpanic_seam.cc"
           "${PROJECT_SOURCE_DIR}/kernel/grant/grant.cc"
           "${PROJECT_SOURCE_DIR}/kernel/mem/ramown.cc"
   POSTURE KICKOS_AMP_OWN_IMAGE=1
@@ -16,9 +16,10 @@ kickos_add_unit_test(NAME amp_share_admission
 # kernel/amp/ampshare.cc and kernel/mem/vrange.cc. The share's holder is the init, which no image
 # arm can be.
 kickos_add_unit_test(NAME amp_share_window
-  SOURCES share_window.cc
+  SOURCES share_window.cc "${PROJECT_SOURCE_DIR}/tests/unit/common/kpanic_seam.cc"
           "${PROJECT_SOURCE_DIR}/kernel/amp/ampshare.cc"
           "${PROJECT_SOURCE_DIR}/kernel/mem/vrange.cc"
+          "${PROJECT_SOURCE_DIR}/kernel/init/instance.cc"
   POSTURE KICKOS_HAVE_ASPACE=1
           KICKOS_AMP_OWN_IMAGE=1
           KICKOS_AMP_NODES=2
@@ -35,6 +36,7 @@ kickos_add_unit_test(NAME amp_share_type_aspace
   SOURCES share_type.cc
           "${PROJECT_SOURCE_DIR}/kernel/mem/aspace.cc"
           "${PROJECT_SOURCE_DIR}/kernel/mem/vrange.cc"
+          "${PROJECT_SOURCE_DIR}/kernel/init/instance.cc"
   POSTURE KICKOS_HAVE_ASPACE=1
           KICKOS_AMP_OWN_IMAGE=1
           KICKOS_AMP_NODES=2
@@ -49,6 +51,7 @@ kickos_add_unit_test(NAME amp_share_type_aspace_cached TEST_PREFIX cached_
   SOURCES share_type.cc
           "${PROJECT_SOURCE_DIR}/kernel/mem/aspace.cc"
           "${PROJECT_SOURCE_DIR}/kernel/mem/vrange.cc"
+          "${PROJECT_SOURCE_DIR}/kernel/init/instance.cc"
   POSTURE KICKOS_HAVE_ASPACE=1
           KICKOS_AMP_OWN_IMAGE=1
           KICKOS_AMP_NODES=2
@@ -61,6 +64,7 @@ kickos_add_unit_test(NAME amp_share_type_aspace_cached TEST_PREFIX cached_
 kickos_add_unit_test(NAME amp_share_type_region
   SOURCES share_type.cc
           "${PROJECT_SOURCE_DIR}/kernel/thread/thread.cc"
+          "${PROJECT_SOURCE_DIR}/kernel/init/instance.cc"
   POSTURE KICKOS_AMP_OWN_IMAGE=1
           KICKOS_AMP_USER_SHARE_ADDR=0x2007C000
           KICKOS_AMP_USER_SHARE_SIZE=0x4000)

@@ -2,20 +2,20 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# kickos_panic_stack_enter really masks, and really moves the stack pointer to the seat its
-# caller passed, on every backend that has one.
+# kickos_panic_stack_enter really masks on every backend that has one, and really moves the stack
+# pointer to the seat its caller passed on the backends no emulator runs.
 #
 # Run from the repo root, no arguments: tests/static/check_panic_stack_seat.sh
 #
 # WHY A SOURCE GATE. check_trap_redzone.sh measures the trap descents by walking gcc's
 # -fcallgraph-info output, and no .ci file describes assembly, so the walk stops at this entry.
-# The qemu panicgate cases run it and still pass with both instructions deleted: the panic line
-# reaches the wire from whichever stack the reporter stands on. RXV3 and LX6 have no runtime arm
-# at all.
+# The qemu panicgate cases see a missing MOVE, the reporter printing a line panic.ere matches
+# when it stands off its seat, but not a missing MASK: kpanic_enter masks again before the
+# reporter can tell. RXV3 and LX6 have no runtime arm at all, so only their move is read here.
 #
-# WHAT IT PROVES. Each assembly entry contains the mask its ISA spells and the ONE instruction
-# that writes its stack pointer FROM THE FOURTH ARGUMENT REGISTER, which is where arch.h says the
-# caller puts the seat. Naming the whole instruction refuses the near misses a looser pattern
+# WHAT IT PROVES. Each assembly entry contains the mask its ISA spells and, on the backends in
+# SEAT_READ, the ONE instruction that writes its stack pointer FROM THE FOURTH ARGUMENT REGISTER,
+# which is where arch.h says the caller puts the seat. Naming the whole instruction refuses the near misses a looser pattern
 # accepts: a test of sp (`cmp sp, r0`), an adjustment of the live sp (`sub sp, sp, #32`), and a
 # move from the wrong register. A backend whose definition is C is DECLINING the switch, and
 # must say so in Kconfig with a `default 0 if ARCH_<X>` under KICKOS_PANIC_STACK_SIZE. That every
@@ -40,6 +40,8 @@ ENTRY=kickos_panic_stack_enter
 # Every backend with an assembly entry. Each must be read, so a walk that missed one, or a
 # backend that left, refuses rather than passes.
 SWITCHING="rv32imac rv64imac armv6m armv7m armv8a rxv3 lx6 x86_64"
+# The backends whose move no panicgate run reads back.
+SEAT_READ="rxv3 lx6"
 
 # The FOURTH argument is the seat, per arch.h: a3 on RISC-V, r3 on ARM, x3 on AArch64, R4 on RX
 # (whose first argument is R1), a5 on Xtensa (whose arguments are a2-a5 once `entry` has run),
@@ -141,9 +143,12 @@ comment record for $_arch" >> "$4"
         fi
         grep -qE "$_mask" "$TMP/body" \
             || echo "$f: $ENTRY carries no $_arch interrupt mask" >> "$4"
-        grep -qE "$_seat" "$TMP/body" \
-            || echo "$f: $ENTRY does not move the $_arch stack pointer from the fourth \
-argument register" >> "$4"
+        case " $SEAT_READ " in
+            *" $_arch "*)
+                grep -qE "$_seat" "$TMP/body" \
+                    || echo "$f: $ENTRY does not move the $_arch stack pointer from the fourth \
+argument register" >> "$4" ;;
+        esac
     done < "$2"
 }
 
@@ -185,5 +190,5 @@ if [ -s "$TMP/findings" ]; then
       and moves its stack pointer from the fourth argument register; a C one declines the
       switch in Kconfig."
 fi
-echo "PASS: $(wc -l < "$TMP/findings.read" | tr -d ' ') assembly panic entries mask and seat from
+echo "PASS: $(wc -l < "$TMP/findings.read" | tr -d ' ') assembly panic entries mask, $SEAT_READ seat from
       their ABI's fourth argument, and every C one declines in Kconfig"

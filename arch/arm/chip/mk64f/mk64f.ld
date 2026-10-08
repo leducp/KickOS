@@ -86,7 +86,7 @@ SECTIONS
        instance is constructed before kmain uses it. Every OTHER ctor (app, libstdc++/
        libsupc++, KickCAT, newlib) lands in .kickos_app_init_array below and runs from
        root_entry, in a thread with the kernel live, because a ctor may call a KickOS
-       syscall (kos_clock_now), which needs ktime_init + a current thread. Colon
+       syscall (kos_clock_now), which needs the clock + a current thread. Colon
        selectors (not EXCLUDE_FILE) per the .appdata note above. */
     .init_array :
     {
@@ -125,27 +125,7 @@ SECTIONS
         __exidx_end = .;
     } > FLASH
 
-    /* Copy/zero tables for the generic C-runtime init (kickos_ranges_init): flash
-       rodata, read before .data exists. Copy triples {src,dst,len}; zero pairs
-       {dst,len}. App ranges first, kernel ranges second (order is immaterial). */
-    .kickos_init_tables : ALIGN(4)
-    {
-        __kickos_copy_table_start = .;
-#if KICKOS_HAVE_MPU
-        LONG(LOADADDR(.appdata)); LONG(ADDR(.appdata)); LONG(SIZEOF(.appdata));
-#endif
-        LONG(LOADADDR(.data));    LONG(ADDR(.data));    LONG(SIZEOF(.data));
-        __kickos_copy_table_end = .;
-        __kickos_zero_table_start = .;
-#if KICKOS_HAVE_MPU
-        /* Zero the whole granted window past the loaded .appdata: the pre-.appbss
-           alignment gap (forced by an over-aligned .appbss object), .appbss, and the
-           and the pad, so no stale read-back anywhere in the app grant. */
-        LONG(__kickos_appdata_load_end); LONG(__kickos_appdata_end - __kickos_appdata_load_end);
-#endif
-        LONG(ADDR(.bss));    LONG(SIZEOF(.bss));
-        __kickos_zero_table_end = .;
-    } > FLASH
+    KICKOS_INIT_TABLES(FLASH)
 
     _sidata = LOADADDR(.data);
 

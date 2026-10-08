@@ -49,9 +49,8 @@ namespace kickos
         KOS_TR_RUN = 7,     // a: thread,        b: its priority
     };
 
-    // Twenty-four bytes, fixed layout: the rings are decoded out of guest memory word by word,
-    // so a field added here moves every offset the decoder reads. `seq` is this core's own
-    // count and is what says whether the ring WRAPPED and lost the start of the story.
+    // `seq` is this core's own count and is what says whether the ring WRAPPED and lost the
+    // start of the story.
     struct KosTraceRec
     {
         uint32_t seq;
@@ -89,10 +88,6 @@ namespace kickos
     inline void kos_trace(uint16_t kind, uint32_t a, uint32_t b)
     {
         uint32_t const me = kickos_kernel_core();
-        if (me >= static_cast<uint32_t>(KICKOS_KERNEL_CORES))
-        {
-            return;
-        }
         KosTraceRing& r = g_kos_trace[me];
         uint32_t const i = r.next & (KOS_TRACE_DEPTH - 1);
         // ONE WRITER PER RING AND NO READER WHILE THE IMAGE RUNS, so plain stores are the whole

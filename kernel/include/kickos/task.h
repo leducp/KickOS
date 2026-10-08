@@ -27,6 +27,8 @@
 
 #include <kickos/arch/arch.h> // KICKOS_KERNEL_CORES, KICKOS_CORE_SET_ALL
 #include <kickos/config.h>
+#include <kickos/held.h>
+#include <kickos/slotpool.h> // the handle codec
 
 #include <kickos/sys/abi.h> // kos_task_t, KOS_TASK_NONE
 
@@ -54,9 +56,8 @@ namespace kickos
         // through the total accessors below and never raw: a stored 0 is the WHOLE grant, and
         // that is what keeps every member here zero-initialised.
         //
-        // The ceiling is UNCONDITIONAL where the core set is not: unbounded priority let any
-        // unprivileged thread take the top of the run queue, which is a starvation hole on a
-        // one-core board too.
+        // The ceiling is UNCONDITIONAL where the core set is not: without it any unprivileged
+        // thread can take the top of the run queue, a starvation hole on a one-core board too.
         uint8_t prio_ceiling = 0;
         // TASK_MARK_* bits (task.cc): the armed endpoint has been waited on since the task last
         // emptied, which is what "ready" means for the creator's watch (kos_task_watch); the
@@ -107,16 +108,15 @@ namespace kickos
     // `gen` on the host and none on 32-bit, so such an assert cannot hold on both.
 
     // Handle codec. The index is stored BIASED BY ONE so that no live task is ever named by
-    // the all-zero word: KOS_TASK_NONE is 0, and kos_thread_params zero-initialised by an
-    // app that predates this field must mean "no task".
-    constexpr int TASK_INDEX_BITS = 16;
+    // the all-zero word: KOS_TASK_NONE is 0, and a zero-initialised kos_thread_params must
+    // mean "no task".
+    constexpr int TASK_INDEX_BITS = HANDLE_INDEX_BITS;
 
     // Boot: clear the pool. Reads nothing from the domain pool, so it carries no ordering
     // constraint against domain_init.
     void task_init(void);
 
-    // The domain this task's threads share, or null for a task holding nothing.
-    // Null-safe.
+    // The domain this task's threads share, or null for a task holding nothing. Null-safe.
     Domain* task_domain(Task const* t);
 
     // Create the IMPLICIT task a new thread belongs to, resolving its domain through domain_for.
@@ -142,7 +142,7 @@ namespace kickos
     // Takes the domain reference immediately and holds the slot on `creator_tag`'s behalf, so
     // refcount 0 does not free it. Refusals are domain_for's, plus KOS_ENOMEM. mem_attr is
     // domain_for's; task_for passes 0, an implicit task being unable to ask for one.
-    Task* task_create(uint16_t creator_tag, uint32_t caller, void* mem_base, size_t mem_size,
+    Task* task_create(uint16_t creator_tag, void* mem_base, size_t mem_size,
                       uint32_t mem_attr, Domain* donor, int* err);
 
     // Resolve a handle to an EXPLICIT task, or null. An implicit task is unnameable: idle's
@@ -157,7 +157,7 @@ namespace kickos
     // Release the creator's hold: the group is no longer nameable, and the slot and its
     // domain go back as soon as the last member leaves (at once, if there is none). Caller
     // holds IrqLock.
-    void task_drop_hold(Task* t);
+    void task_drop_hold(Task* t, Held held);
 
     // The creator's reports (kos_task_watch). Arm or replace the watch on `task`, or disarm
     // it with KOS_CAP_NONE for `notify_cap`: 0, -KOS_EBADF (no such task, or a cap naming
@@ -174,11 +174,11 @@ namespace kickos
     // member from here on, the creator's watch is raised, and `code` is its status when `latch`
     // holds, the ending thread being uncancelled; otherwise it keeps KOS_EXIT_CANCELLED. A later
     // end raises and latches nothing. Every other member is slain (CANCEL_SLAY), with or without
-    // a creator, and a privileged one killed (CANCEL_KILL). Caller holds IrqLock.
-    void task_end(Task* t, int code, bool latch);
+    // a creator, and a privileged one killed (CANCEL_KILL).
+    void task_end(Task* t, int code, bool latch, Held held);
     // Kill and slay: `t` ends now, before its members have run to their deaths, and every member
-    // is stopped. Caller holds IrqLock.
-    void task_stop(Task* t);
+    // is stopped.
+    void task_stop(Task* t, Held held);
     // Whether `t` has ended, which refuses it a new member. Null-safe: false.
     bool task_ended(Task const* t);
     // Whether `t` set O_NONBLOCK on the console's fds: its stdout sends and kernel console
@@ -212,9 +212,9 @@ namespace kickos
     // Compiles to nothing without a translating backend: the call sits on the deepest chain the
     // armv7m and rxv3 trap red zones measure.
 #if KICKOS_HAVE_ASPACE
-    void task_discard(Task* t);
+    void task_discard(Task* t, Held held);
 #else
-    inline void task_discard(Task*)
+    inline void task_discard(Task*, Held)
     {
     }
 #endif
@@ -223,7 +223,7 @@ namespace kickos
     // gate: kill_tag_for_index derives it from the pool slot, so a recycled slot would inherit
     // creator authority over groups it never made. O(1) when Kernel::task_holds is zero;
     // otherwise KICKOS_MAX_TASKS compares interrupt-masked on EVERY thread exit.
-    void task_orphan_created_by(uint16_t tag);
+    void task_orphan_created_by(uint16_t tag, Held held);
 
     // The scheduling grant, TOTAL over a zero-initialised or absent task: a stored 0 is the
     // whole grant, so idle, root and every implicit task answer the machine's full width
@@ -271,14 +271,14 @@ namespace kickos
     // once every sweep under it is done. An explicit task outlives its members until its
     // creator drops the hold. TRUE when THIS call emptied the group; the transition happens
     // once and only its cause can see it.
-    bool task_release(Task* t);
+    bool task_release(Task* t, Held held);
 
     // Slay every live member: each is marked and woken out of whatever it is parked on, and its
     // next resume is claimed, so it reaches its own death point. The group dies by ONE rule:
     // there is no exception argument, and thread_cancel_kind already refuses a dying thread. A
     // privileged member, which no explicit task has, takes CANCEL_KILL instead: its frames may
-    // hold kernel work, as thread_slay refuses it for. Caller holds the exclusion.
-    void task_cancel_group(Task* t);
+    // hold kernel work, as thread_slay refuses it for.
+    void task_cancel_group(Task* t, Held held);
 }
 
 #endif

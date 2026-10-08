@@ -56,7 +56,7 @@ namespace kickos
             int publish(Published const& p)
             {
                 IrqLock lock;
-                return cap_console_publish_through(p.publisher, p.e, p.publisher->task);
+                return cap_console_publish_through(p.publisher, p.e, p.publisher->task, lock);
             }
 
             // Everything a refusal must leave as it found it.
@@ -159,7 +159,7 @@ namespace kickos
             EXPECT_FALSE(serves(p.publisher)) << "nothing is published yet";
             {
                 IrqLock lock;
-                ASSERT_EQ(cap_console_publish_through(p.publisher, p.e, served), 0);
+                ASSERT_EQ(cap_console_publish_through(p.publisher, p.e, served, lock), 0);
             }
             EXPECT_TRUE(serves(p.publisher));
 
@@ -185,7 +185,7 @@ namespace kickos
             EXPECT_TRUE(serves(p.publisher)) << "a vacated endpoint of a live task";
             {
                 IrqLock lock;
-                task_end(served, 0, true);
+                task_end(served, 0, true, lock);
             }
             EXPECT_FALSE(serves(p.publisher)) << "the task ended";
             p.ep->vacated = 0;

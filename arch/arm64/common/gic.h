@@ -53,10 +53,6 @@ extern "C"
     uint32_t kickos_armv8a_gic_seat_set(uint32_t core, uint32_t seated);
     uint32_t kickos_armv8a_gic_deferred(uint32_t core);
 #endif
-
-    // What a backend calls on the calling core when the doorbell arrives. Must not take the
-    // kernel lock: an initiator holding it waits on this.
-    void kickos_arm64_doorbell_service(void);
 #endif
 }
 

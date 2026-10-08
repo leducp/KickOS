@@ -931,40 +931,20 @@ void kickos_isr_fault(uintptr_t addr, int is_write);
 // pending work; a deferred ISR switch leaves this release to the swap.
 void kickos_switch_unlock(void);
 
-// Acquire whether this core's control block is published. A nonzero result
-// makes all initialization writes visible.
-int kickos_kernel_core_seated(void);
+// Whether this core's control block is published and holds a thread to run. An acquire: a
+// nonzero result makes every initialization write visible.
+int kickos_kernel_core_startable(void);
 
-// Whether this core has a published thread. Query only after
-// kickos_kernel_core_seated returns nonzero.
-int kickos_kernel_core_ready(void);
-
-// Publish this core's scheduler commitment once, immediately before start.
-void kickos_kernel_core_arrive(void);
-
-// Start this core's scheduler. Requires seated and ready; never returns.
+// Publish that this core committed to its own scheduler, then start it. Requires startable;
+// never returns.
 void kickos_kernel_core_start(void) __attribute__((noreturn));
 
-// Handle doorbell scheduling from interrupt dispatch only. Takes the kernel
-// lock, so do not call from the doorbell service body.
-void kickos_kernel_core_resched(void);
-
-// Publish reschedule requests for cores before raising their doorbells.
-void kickos_kernel_core_resched_owe(uint32_t cores);
+// Consume this core's reschedule requests and, if any stood, enter the scheduler. From the
+// doorbell's interrupt dispatch only, outside the service body: it takes the kernel lock.
+void kickos_kernel_core_resched_if_owed(void);
 
 // Whether this core has a pending reschedule, without consuming it.
 int kickos_kernel_core_resched_owed(void);
-
-// Consume this core's reschedule requests; return nonzero if any were pending.
-int kickos_kernel_core_resched_take(void);
-#endif
-
-#if KICKOS_KERNEL_CORES > 1
-// Service this core's IRQ routing requests from the doorbell service body,
-// after snapshotting request sequences and before acknowledging them. This
-// order prevents acknowledging requests that were not serviced. Takes no
-// kernel lock; mask/unmask/clear_pending protect themselves. See irq_route.cc.
-void kickos_irq_route_service(void);
 #endif
 
 #if KICKOS_AMP_NODE

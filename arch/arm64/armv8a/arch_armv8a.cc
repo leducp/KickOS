@@ -227,12 +227,11 @@ static_assert(ARMV8A_FRAME_SIZE % 16 == 0, "SP must stay 16-byte aligned");
 
 namespace
 {
-    // SPSR for a thread: debug masked, interrupts and SError live. EL1h means "EL1 with its
-    // own SP"; EL0t is 0, EL0 having only SP_EL0 to run on.
+    // SPSR for a thread: debug masked, interrupts and SError live.
     constexpr uint64_t SPSR_EL1H_IRQ_ON = (1ULL << 9) | 0x5ULL;
     constexpr uint64_t SPSR_EL0T_IRQ_ON = (1ULL << 9);
 
-    // Indexed by the slot vectors.S passes, so a dump names which of the sixteen fired.
+    // Indexed by the slot vectors.S passes.
     char const* const VECTOR_NAMES[] = {
         "SP_EL0 sync", "SP_EL0 irq", "SP_EL0 fiq", "SP_EL0 serror",
         "SP_EL1 sync", "SP_EL1 irq", "SP_EL1 fiq", "SP_EL1 serror",
@@ -475,48 +474,6 @@ int arch_in_isr(void)
 uint64_t arch_cpu_clock_hz(void)
 {
     return 0;
-}
-
-// --- MPU: none on this arch ------------------------------------------------
-// Protection here is the stage-1 tables rather than a region MPU. arch_mpu_min_region
-// returning 0 makes arch_ram_region_size 16-byte granular, so region_pow2 is never read.
-void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
-                    struct arch_mpu_encoded const* image)
-{
-    (void)regions;
-    (void)n;
-    (void)image;
-}
-
-void kickos_arch_mpu_commit(void) {}
-
-// Nothing is deferred on this backend, so the set is already live when apply returns.
-void arch_mpu_apply_now(struct arch_mpu_region const* regions, size_t n,
-                        struct arch_mpu_encoded const* image)
-{
-    arch_mpu_apply(regions, n, image);
-}
-
-size_t arch_mpu_min_region(void)
-{
-    return 0;
-}
-
-int arch_mpu_region_pow2(void)
-{
-    return 0;
-}
-
-bool arch_mpu_region_encodable(uintptr_t base, size_t size)
-{
-    (void)base;
-    (void)size;
-    return false;
-}
-
-int arch_mpu_nocache_support(void)
-{
-    return ARCH_MPU_NOCACHE_REFUSED;
 }
 
 // Rule 7 (arch.h): AArch64 has no bit-band alias.

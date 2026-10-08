@@ -68,6 +68,69 @@ namespace
 
     Report g_report[WORKERS] = {};
 
+#if defined(__arm__) and defined(KICKOS_TLS_STRIDE)
+#define TLSPROBE_EDGE 1
+#define TLSPROBE_STR(x) #x
+#define TLSPROBE_XSTR(x) TLSPROBE_STR(x)
+#define TLSPROBE_KEEP_R1 0x11111111
+#define TLSPROBE_KEEP_R2 0x22222222
+#define TLSPROBE_KEEP_R3 0x33333333
+#else
+#define TLSPROBE_EDGE 0
+#endif
+}
+
+#if TLSPROBE_EDGE
+// What tlsprobe_edge stores, in this order: the block __aeabi_read_tp answers from where the
+// thread stands, the one it answers with SP at that block's exclusive top, and r1-r3 after it.
+extern "C" unsigned g_edge[5];
+unsigned g_edge[5] = {};
+kickos::Atomic<unsigned, kickos::Order::ACQUIRE | kickos::Order::RELEASE> g_edge_done{0};
+
+extern "C" [[noreturn]] void tlsprobe_edge_park(void)
+{
+    g_edge_done = 1;
+    while (true)
+    {
+        kos::sleep_ns(1000000000ull);
+    }
+}
+
+// An empty stack's SP sits at its block's exclusive top, which no C code reaches, so this
+// thread's entry is assembly. It keeps nothing on its own stack and never returns: an interrupt
+// taken while SP is at the top stacks its frame over this block's outermost frames.
+extern "C" void tlsprobe_edge(void*);
+__asm__(".syntax unified\n"
+        ".pushsection .text.tlsprobe_edge, \"ax\", %progbits\n"
+        ".balign 2\n"
+        ".thumb_func\n"
+        ".type tlsprobe_edge, %function\n"
+        "tlsprobe_edge:\n"
+        "    bl      __aeabi_read_tp\n"
+        "    mov     r5, r0\n"
+        "    ldr     r4, =" TLSPROBE_XSTR(KICKOS_TLS_STRIDE) "\n"
+        "    adds    r0, r0, r4\n"
+        "    ldr     r1, =" TLSPROBE_XSTR(TLSPROBE_KEEP_R1) "\n"
+        "    ldr     r2, =" TLSPROBE_XSTR(TLSPROBE_KEEP_R2) "\n"
+        "    ldr     r3, =" TLSPROBE_XSTR(TLSPROBE_KEEP_R3) "\n"
+        "    mov     r4, sp\n"
+        "    mov     sp, r0\n"
+        "    bl      __aeabi_read_tp\n"
+        "    mov     sp, r4\n"
+        "    ldr     r4, =g_edge\n"
+        "    str     r5, [r4, #0]\n"
+        "    str     r0, [r4, #4]\n"
+        "    str     r1, [r4, #8]\n"
+        "    str     r2, [r4, #12]\n"
+        "    str     r3, [r4, #16]\n"
+        "    bl      tlsprobe_edge_park\n"
+        "    .ltorg\n"
+        ".size tlsprobe_edge, . - tlsprobe_edge\n"
+        ".popsection\n");
+#endif
+
+namespace
+{
     void worker(void* arg)
     {
         int const k = static_cast<int>(reinterpret_cast<uintptr_t>(arg));
@@ -109,6 +172,9 @@ int main(int, char**)
         kos::thread::create(worker, reinterpret_cast<void*>(static_cast<uintptr_t>(k)),
                             "tlsw", 10);
     }
+#if TLSPROBE_EDGE
+    kos::thread::create(tlsprobe_edge, nullptr, "tlse", 10);
+#endif
 #if TLSPROBE_CALLER_STACK
     {
         // Allocation grants nothing, and where a backend translates the block is not mapped.
@@ -136,7 +202,12 @@ int main(int, char**)
         {
             ready += static_cast<int>(g_report[k].done);
         }
+#if TLSPROBE_EDGE
+        ready += static_cast<int>(g_edge_done);
+        if (ready == WORKERS + 1)
+#else
         if (ready == WORKERS)
+#endif
         {
             break;
         }
@@ -203,6 +274,31 @@ int main(int, char**)
             }
         }
     }
+#if TLSPROBE_EDGE
+    {
+        char const* verdict = "ok";
+        if (g_edge_done == 0)
+        {
+            verdict = "NEVER RAN";
+            bad++;
+        }
+        else if (g_edge[1] != g_edge[0])
+        {
+            verdict = "EDGE NAMES ANOTHER BLOCK";
+            bad++;
+        }
+        else if (g_edge[2] != TLSPROBE_KEEP_R1 or g_edge[3] != TLSPROBE_KEEP_R2
+                 or g_edge[4] != TLSPROBE_KEEP_R3)
+        {
+            verdict = "R1-R3 CLOBBERED";
+            bad++;
+        }
+        char e[112];
+        ksnprintf(e, sizeof(e), "[tlsprobe] edge tp %x at top %x r1-r3 %x %x %x %s\n",
+                  g_edge[0], g_edge[1], g_edge[2], g_edge[3], g_edge[4], verdict);
+        kos::print(e);
+    }
+#endif
     if (g_written != 0x4F4F5400u)
     {
         kos::print("[tlsprobe] MAIN COPY CLOBBERED\n");

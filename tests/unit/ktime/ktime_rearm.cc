@@ -22,7 +22,9 @@
 
 #include <kickos/irqlock.h>
 #include <kickos/time.h>
+#include <kickos/kernel.h>
 #include <kickos/sched.h>
+#include <kickos/sync.h>
 #include <kickos/instance.h>
 #include <kickos/arch/arch.h>
 
@@ -87,13 +89,23 @@ namespace kickos
         abort();
     }
 
-    // ktime_on_timer delegates every endpoint park's unwind to park.cc, which this gate does
-    // not link. Reaching this means an arm staged a park the gate cannot model, so abort for
+    // ktime_on_timer delegates every park's unwind to park.cc, which this gate does not link.
+    // Reaching this means an arm let a deadline expire, which no arm here stages, so abort for
     // the same reason as kpanic above.
-    void endpoint_wait_abort(Thread*, intptr_t)
+    void thread_abort_park(Thread*, intptr_t, Held)
     {
-        fprintf(stderr, "endpoint_wait_abort: no endpoint layer in this gate\n");
+        fprintf(stderr, "thread_abort_park: no park layer in this gate\n");
         abort();
+    }
+
+
+    uint32_t park_queueless(Thread* c, WaitKind kind, void* obj, Held)
+    {
+        c->state.block();
+        c->wait_queue = nullptr;
+        c->wait_kind = kind;
+        c->wait_obj = obj;
+        return c->switch_count;
     }
 
     namespace sched
@@ -120,16 +132,19 @@ namespace kickos
             longjmp(g_exit_pad, 1);
         }
 
-        // The seam reports "no timed event" and parking is a no-op, which leaves the
-        // sleeper on the sleepq for an arm to read.
+        // The seam reports "no timed event" and the reschedule only arms the timer as the
+        // switch would, which leaves the sleeper on the sleepq for an arm to read.
         uint64_t next_timed_event(Thread const*) { return UINT64_MAX; }
         Thread* current()
         {
-            return kernel().current[kickos_kernel_core()];
+            return kernel().current(kickos_kernel_core());
         }
-        void block_current() {}
-        void wake(Thread*) {}
-        void tick_rr(uint64_t) {}
+        void reschedule(Thread*, Held held)
+        {
+            ktime_rearm(current(), held);
+        }
+        void wake(Thread*, Held) {}
+        void tick_rr(uint64_t, Held) {}
         void yield() {}
     }
 }
@@ -143,12 +158,12 @@ namespace
     void reset()
     {
         kernel().sleepq = nullptr;
-        kernel().current[kickos_kernel_core()] = &g_sleeper;
+        kernel().current(kickos_kernel_core()) = &g_sleeper;
         g_sleeper.tnext = nullptr;
         g_sleeper.on_timer = false;
         g_sleeper.cancel_kind = CANCEL_NONE;
         g_sleeper.dying = false;
-        g_sleeper.state = ThreadState::RUNNING; // the caller of a sleep syscall
+        g_sleeper.state.to<ThreadState::RUNNING>(); // the caller of a sleep syscall
         sched::g_exited = false;
         sched::g_exit_pad_armed = false;
         g_armed = UINT64_MAX;
@@ -179,7 +194,7 @@ TEST(KTime, deadline_is_stable_inside_the_window)
     g_now = deadline - KICKOS_TIMER_MIN_DELTA_NS / 4; // well inside the window
     {
         IrqLock lock;
-        ktime_rearm(sched::current());
+        ktime_rearm(sched::current(), lock);
     }
     uint64_t const first = g_armed;
     EXPECT_EQ(first, deadline) << "first arm inside the window is the parked deadline";
@@ -191,7 +206,7 @@ TEST(KTime, deadline_is_stable_inside_the_window)
         g_now += KICKOS_TIMER_MIN_DELTA_NS / 8;
         {
             IrqLock lock;
-            ktime_rearm(sched::current());
+            ktime_rearm(sched::current(), lock);
         }
         EXPECT_EQ(g_armed, first) << "rearm inside the window moved the deadline";
     }
@@ -208,14 +223,14 @@ TEST(KTime, due_deadline_is_not_pushed_into_the_future)
     g_now = deadline + 1;
     {
         IrqLock lock;
-        ktime_rearm(sched::current());
+        ktime_rearm(sched::current(), lock);
     }
     EXPECT_EQ(g_armed, deadline) << "a due deadline was rearmed into the future";
 
     g_now += 5 * KICKOS_TIMER_MIN_DELTA_NS;
     {
         IrqLock lock;
-        ktime_rearm(sched::current());
+        ktime_rearm(sched::current(), lock);
     }
     EXPECT_EQ(g_armed, deadline) << "a due deadline drifted with the clock";
 }
@@ -245,10 +260,9 @@ TEST(KTime, floor_is_applied_at_birth)
     EXPECT_EQ(g_sleeper.deadline_ns, g_now + 1000000) << "a normal sleep was perturbed";
 }
 
-// THE DEATH POINT ON THE SLEEP PATH. A sleep reaches neither wq_block nor park_queueless,
-// so the two park funnels' prologues do not cover it and it carries its own. The claim is
-// that a cancelled caller ENDS here, and ends before the sleep has touched anything: no
-// deadline written, no sleep-queue entry, no timer armed.
+// THE DEATH POINT ON THE SLEEP PATH. A sleep reaches no park funnel, so it carries its own
+// prologue. The claim is that a cancelled caller ENDS here, and ends before the sleep has
+// touched anything: no deadline written, no sleep-queue entry, no timer armed.
 TEST(KTime, a_cancelled_sleeper_dies_before_it_touches_anything)
 {
     reset();
@@ -309,7 +323,7 @@ TEST(KTime, empty_disarms)
     g_now = 1234;
     {
         IrqLock lock;
-        ktime_rearm(sched::current());
+        ktime_rearm(sched::current(), lock);
     }
     EXPECT_EQ(g_disarms, 1u) << "an empty sleepq did not disarm";
     EXPECT_EQ(g_arms, 0u) << "an empty sleepq armed instead of disarming";
@@ -323,7 +337,7 @@ TEST(KTime, a_repeated_rearm_programs_the_comparator_once)
     park(deadline);
     {
         IrqLock lock;
-        ktime_rearm(sched::current());
+        ktime_rearm(sched::current(), lock);
     }
     ASSERT_EQ(g_arms, 1u) << "the first rearm did not program the comparator";
 
@@ -332,7 +346,7 @@ TEST(KTime, a_repeated_rearm_programs_the_comparator_once)
         g_now += KICKOS_TIMER_MIN_DELTA_NS;
         {
             IrqLock lock;
-            ktime_rearm(sched::current());
+            ktime_rearm(sched::current(), lock);
         }
     }
     EXPECT_EQ(g_arms, 1u) << "a switch burst reprogrammed a comparator already holding the "
@@ -350,7 +364,7 @@ TEST(KTime, a_fired_comparator_is_reprogrammed_for_the_same_deadline)
     park(deadline);
     {
         IrqLock lock;
-        ktime_rearm(sched::current());
+        ktime_rearm(sched::current(), lock);
     }
     ASSERT_EQ(g_arms, 1u) << "the first rearm did not program the comparator";
 

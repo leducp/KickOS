@@ -4,7 +4,7 @@
 #include <kickos/domain.h>
 
 #include <kickos/aspace.h> // aspace_image_seed / aspace_release
-#include <kickos/grant.h> // grant_region_admissible
+#include <kickos/grant.h> // grant_nocache_admissible
 #include <kickos/instance.h>
 #include <kickos/irqlock.h>
 #include <kickos/debug.h>  // KICKOS_DEBUG_ASSERT
@@ -82,7 +82,6 @@ namespace kickos
             uint16_t const gen = static_cast<uint16_t>(d->generation + 1u);
             *d = Domain{};
             d->generation = gen;
-            d->privileged = false;
 #if KICKOS_HAVE_ASPACE
             // After the reinitialisation, so a cascade that frees further slots cannot find
             // this one half written.
@@ -128,10 +127,7 @@ namespace kickos
             kdom->regions[0].attr = ARCH_MPU_R | ARCH_MPU_W;
             kdom->region_count = 1;
         }
-        Domain* const udom = &k.domains[KDOM_DEFAULT_USER_INDEX];
-        udom->privileged = false;
-        udom->immortal = true;
-        udom->region_count = 0;
+        k.domains[KDOM_DEFAULT_USER_INDEX].immortal = true;
     }
 
     // Only domain_init and domain_for may touch regions[] directly; every reader outside this
@@ -239,11 +235,7 @@ namespace kickos
 
     VirtualRanges* domain_ranges_mut(Domain* d)
     {
-        if (d == nullptr or d->space == nullptr)
-        {
-            return nullptr;
-        }
-        return &d->ranges;
+        return const_cast<VirtualRanges*>(domain_ranges(d));
     }
 
     size_t domain_spaces_held(void)
@@ -281,7 +273,6 @@ namespace kickos
                        Domain* donor, int* err)
     {
         *err = 0;
-        (void)donor;
         if ((caller & DOM_CALLER_PRIVILEGED) != 0)
         {
             return domain_kernel();
@@ -299,27 +290,9 @@ namespace kickos
         uint32_t const attr = ARCH_MPU_R | ARCH_MPU_W | (mem_attr & ARCH_MPU_NOCACHE);
         if (not grant_nocache_admissible(attr))
         {
-            *err = KOS_ENOTSUP; // a memory type this chip cannot honour
+            *err = KOS_ENOTSUP;
             return nullptr;
         }
-#if not KICKOS_HAVE_ASPACE
-        // A region backend admits the range itself, before a slot is allocated: a refusal
-        // leaves no half-built domain.
-        size_t const rsz = arch_ram_region_size(mem_size);
-        if (not grant_region_admissible(base, rsz, attr,
-                                        (caller & DOM_CALLER_MEM_AUTH) != 0))
-        {
-            *err = KOS_EPERM; // out-of-arena or reserved block
-            return nullptr;
-        }
-#if KICKOS_MEMORY_ENFORCED
-        if (not memory_type_free(base, rsz, attr, nullptr))
-        {
-            *err = KOS_EBUSY; // a thread holds the block with another memory type
-            return nullptr;
-        }
-#endif
-#endif
         Domain* d = claim_slot(caller, donor, err);
         if (d == nullptr)
         {
@@ -352,7 +325,7 @@ namespace kickos
         // answers from on this backend.
 #else
         d->regions[0].base = base;
-        d->regions[0].size = rsz;
+        d->regions[0].size = arch_ram_region_size(mem_size);
         d->regions[0].attr = attr;
         d->region_count = 1;
 #endif
@@ -413,8 +386,24 @@ namespace kickos
     }
 }
 
-// Load app RX and RW-NX regions from the linker bounds.
-// Use end > start: a zero start is valid on flash-at-zero targets.
+namespace
+{
+    // end > start, never start != 0: a zero start is valid on flash-at-zero targets.
+    void add_static(struct arch_mpu_region* out, size_t* n, size_t max, unsigned char const* start,
+                    unsigned char const* end, uint32_t attr)
+    {
+        uintptr_t const lo = reinterpret_cast<uintptr_t>(start);
+        uintptr_t const hi = reinterpret_cast<uintptr_t>(end);
+        if (hi > lo and *n < max)
+        {
+            out[*n].base = lo;
+            out[*n].size = static_cast<size_t>(hi - lo);
+            out[*n].attr = attr;
+            (*n)++;
+        }
+    }
+}
+
 extern "C"
 {
     extern unsigned char __kickos_code_start[] KICKOS_LINK_BOUND;
@@ -424,27 +413,10 @@ extern "C"
 
     size_t arch_domain_static_regions(struct arch_mpu_region* out, size_t max)
     {
-        // Decay the linker-symbol arrays to uintptr_t before comparing: a direct
-        // `end > start` on two array-typed externs trips -Warray-compare (gcc 12+).
         size_t n = 0;
-        uintptr_t const code_start = reinterpret_cast<uintptr_t>(__kickos_code_start);
-        uintptr_t const code_end = reinterpret_cast<uintptr_t>(__kickos_code_end);
-        if (code_end > code_start and n < max)
-        {
-            out[n].base = code_start;
-            out[n].size = static_cast<size_t>(code_end - code_start);
-            out[n].attr = ARCH_MPU_R | ARCH_MPU_X;
-            n++;
-        }
-        uintptr_t const data_start = reinterpret_cast<uintptr_t>(__kickos_appdata_start);
-        uintptr_t const data_end = reinterpret_cast<uintptr_t>(__kickos_appdata_end);
-        if (data_end > data_start and n < max)
-        {
-            out[n].base = data_start;
-            out[n].size = static_cast<size_t>(data_end - data_start);
-            out[n].attr = ARCH_MPU_R | ARCH_MPU_W;
-            n++;
-        }
+        add_static(out, &n, max, __kickos_code_start, __kickos_code_end, ARCH_MPU_R | ARCH_MPU_X);
+        add_static(out, &n, max, __kickos_appdata_start, __kickos_appdata_end,
+                   ARCH_MPU_R | ARCH_MPU_W);
         return n;
     }
 }

@@ -48,19 +48,6 @@ extern "C"
 
 #include <stdint.h>
 
-#ifndef KICKOS_VERSION
-#define KICKOS_VERSION "0.0.0"
-#endif
-#ifndef KICKOS_BOARD_NAME
-#define KICKOS_BOARD_NAME "unknown"
-#endif
-#ifndef KICKOS_ARCH_NAME
-#define KICKOS_ARCH_NAME "unknown"
-#endif
-#ifndef KICKOS_CPU_NAME
-#define KICKOS_CPU_NAME "unknown"
-#endif
-
 namespace kickos
 {
     namespace
@@ -74,8 +61,6 @@ namespace kickos
                 kpanic(exhausted_msg);
             }
             uintptr_t const base = reinterpret_cast<uintptr_t>(p);
-            // On a pow2-descriptor arch the alignment is the region size; elsewhere it is
-            // the 16-byte ABI floor.
             size_t const align = arch_ram_region_align(size);
             KICKOS_ASSERT((base & (align - 1u)) == 0);
             // Subtract-form bounds, which cannot wrap, over the whole rounded block.
@@ -158,6 +143,20 @@ namespace kickos
             }
         }
 
+        void idle_build(Thread* tcb, void* stack)
+        {
+            ThreadAttr idle_attr;
+            idle_attr.name = "idle";
+            idle_attr.prio = KICKOS_PRIO_IDLE;
+            idle_attr.policy = Policy::FIFO;
+            idle_attr.privileged = true;
+            idle_attr.cap_run = CapRun{};
+#if KICKOS_MEMORY_ENFORCED and KICKOS_HAVE_MPU and not KICKOS_HAVE_ASPACE
+            thread_regions_boot(idle_attr, stack, KICKOS_IDLE_STACK_SIZE);
+#endif
+            thread_create(tcb, idle_entry, nullptr, stack, KICKOS_IDLE_STACK_SIZE, idle_attr);
+        }
+
 #if KICKOS_KERNEL_CORES > 1
         // The peer cores' idle stacks. Static, not arena: the link-time arena assert replays
         // exactly the idle and root allocations and would not see a third kind.
@@ -173,24 +172,13 @@ namespace kickos
         // guest barely executes.
         constexpr uint64_t PEER_START_NS = 5ull * 1000ull * 1000ull * 1000ull;
 
-        // Every peer's idle thread, published against that peer's own cell.
         void peer_idle_publish()
         {
             uint32_t peers = 0;
-            for (uint32_t core = 1; core < KICKOS_KERNEL_CORES; core++)
+            for (KernelCore const core : KernelCores::peers())
             {
-                ThreadAttr attr;
-                attr.name = "idle";
-                attr.prio = KICKOS_PRIO_IDLE;
-                attr.policy = Policy::FIFO;
-                attr.privileged = true;
-                attr.cap_run = CapRun{};
                 Thread* const tcb = &kernel().idle_tcb_peer[core - 1];
-#if KICKOS_MEMORY_ENFORCED and KICKOS_HAVE_MPU and not KICKOS_HAVE_ASPACE
-                thread_regions_boot(attr, g_peer_idle_stack[core - 1], KICKOS_IDLE_STACK_SIZE);
-#endif
-                thread_create(tcb, idle_entry, nullptr, g_peer_idle_stack[core - 1],
-                              KICKOS_IDLE_STACK_SIZE, attr);
+                idle_build(tcb, g_peer_idle_stack[core - 1]);
                 sched::add_idle(tcb, core);
                 peers |= 1u << core;
             }
@@ -261,7 +249,6 @@ namespace kickos
         domain_init();
         task_init();
         grant_reserved_validate();
-        ktime_init();
         irq_init();            // before any driver attaches
         console_buffer_init(); // after irq_init
         ktrace_init();
@@ -311,7 +298,7 @@ namespace kickos
 #endif
 
 #if KICKOS_LIBC_REENT
-        // Must precede the two thread_create calls below, which acquire out of it.
+        // Must precede idle's and root's creation below, which acquire out of it.
         reent_seam_read();
 #endif
 
@@ -319,29 +306,19 @@ namespace kickos
         // scratch, so running it afterwards would hand root's run back to the free list.
         cap_slab_init();
 
-        ThreadAttr idle_attr;
-        idle_attr.name = "idle";
-        idle_attr.prio = KICKOS_PRIO_IDLE;
-        idle_attr.policy = Policy::FIFO;
-        idle_attr.privileged = true;
-        idle_attr.cap_run = CapRun{};
-#if KICKOS_MEMORY_ENFORCED and KICKOS_HAVE_MPU and not KICKOS_HAVE_ASPACE
-        thread_regions_boot(idle_attr, idle_stack, KICKOS_IDLE_STACK_SIZE);
-#endif
-        thread_create(&kernel().idle_tcb, idle_entry, nullptr,
-                      idle_stack, KICKOS_IDLE_STACK_SIZE, idle_attr);
+        idle_build(&kernel().idle_tcb, idle_stack);
         // Idle is created first, so it MUST be trace id 0: the telemetry decoder keys CPU%
         // off tid 0 == idle.
         KICKOS_ASSERT(kernel().idle_tcb.id == KICKOS_TID_IDLE);
         {
             IrqLock lock;
-            sched::add(&kernel().idle_tcb);
+            sched::add(&kernel().idle_tcb, lock);
         }
 
         // Root runs the app's constructors at this priority and the init then lowers it to the
-        // priority its composition states. Spawn order is not a barrier: any interrupt between two spawns
-        // reschedules onto the highest-priority READY thread, so an orchestrator that needs its
-        // workers staged MUST gate them on a semaphore it posts itself.
+        // priority its composition states. Spawn order is not a barrier: any interrupt between
+        // two spawns reschedules onto the highest-priority READY thread, so an orchestrator that
+        // needs its workers staged MUST gate them on a semaphore it posts itself.
         ThreadAttr root_attr;
         root_attr.name = "root";
         root_attr.prio = KICKOS_PRIO_MAX;
@@ -356,7 +333,7 @@ namespace kickos
         // not name. After idle is built, too: task_for takes no reference, so an uncommitted
         // task slot is still free and idle's own resolve would take root's.
         int root_derr = 0;
-        Task* const root_task = task_for(DOM_CALLER_MEM_AUTH, nullptr, 0, nullptr, &root_derr);
+        Task* const root_task = task_for(0, nullptr, 0, nullptr, &root_derr);
         if (root_task == nullptr)
         {
             kpanic(diag::kBootRootStack);
@@ -380,10 +357,6 @@ namespace kickos
                                 &root_attr.cap_free_head, &root_attr.cap_width))
         {
             kpanic(diag::kBootRootRun);
-        }
-        if ((static_cast<uint64_t>(KICKOS_ROOT_CORE_MASK) >> KICKOS_KERNEL_CORES) != 0)
-        {
-            kpanic(diag::kBootRootCoreMask);
         }
 #if KICKOS_KERNEL_CORES > 1
         root_attr.core_mask = static_cast<uint32_t>(KICKOS_ROOT_CORE_MASK);
@@ -441,7 +414,7 @@ namespace kickos
 #endif
         {
             IrqLock lock;
-            sched::add(root_tcb);
+            sched::add(root_tcb, lock);
         }
 
 #if KICKOS_KERNEL_CORES > 1

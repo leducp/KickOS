@@ -3,13 +3,11 @@
 //
 // A thread's protection set: the regions it is granted, and the descriptor words the
 // switch path programs from. The image is DERIVED, so the region array is private and
-// every mutator re-encodes before it returns: there is no expression that changes a base,
-// a size or an attribute and leaves the image behind.
+// every mutator re-encodes before it returns.
 //
 // A region the backend cannot name exactly gets NO descriptor: the image never rounds a
 // base or a size, so the set can be narrower than what hardware would have been asked
-// for, never wider. That rule is stated once per arch inside arch_mpu_encode and paid
-// once per grant instead of once per switch.
+// for, never wider.
 
 #ifndef KICKOS_MPUSET_H
 #define KICKOS_MPUSET_H
@@ -107,8 +105,7 @@ namespace kickos
             return regions_ + count_;
         }
 
-        // Drops every region. The zeroed image that follows grants nothing, which is also
-        // what a kmemset'd TCB carries before its first append.
+        // The zeroed image that follows grants nothing, as a kmemset'd TCB carries.
         void clear()
         {
             count_ = 0;
@@ -117,8 +114,8 @@ namespace kickos
             encode();
         }
 
-        // add(), for a spawn window: the set records the region at `place` in the spawn list,
-        // with the flags it was spawned with, which a later retype of the region leaves alone.
+        // add(), recording the region at `place` in the spawn list with its spawn flags, which
+        // a later retype of the region leaves alone.
         [[nodiscard]] bool add_window(uintptr_t base, size_t size, uint32_t attr, uint8_t place,
                                       uint8_t flags)
         {
@@ -132,8 +129,7 @@ namespace kickos
             return true;
         }
 
-        // The region of the window at `place` in the spawn list and its spawn flags, or null
-        // for a place no window of this set holds.
+        // The region of the window at `place` and its spawn flags, or null.
         arch_mpu_region const* window(uint32_t place, uint8_t* flags) const
         {
             if (place >= 4u)
@@ -149,10 +145,10 @@ namespace kickos
             return &regions_[seat & 7u];
         }
 
-        // Appends one region, or answers false and changes nothing because the set is full.
-        // A region the backend seats no descriptor for is still carried: it is what the
-        // kernel's own range checks read, and a privileged thread's whole-arena grant is
-        // never nameable by one descriptor on a power-of-two backend.
+        // False, changing nothing, when the set is full. A region the backend seats no
+        // descriptor for is still carried: the kernel's range checks read it, and a privileged
+        // thread's whole-arena grant is never nameable by one descriptor on a power-of-two
+        // backend.
         [[nodiscard]] bool add(uintptr_t base, size_t size, uint32_t attr)
         {
             if (full())
@@ -167,14 +163,11 @@ namespace kickos
             return true;
         }
 
-        // For a grant whose whole point is that the hardware enforces it. Answers false
-        // and changes nothing when the set is full or the backend seats no descriptor for
-        // the region, so the caller returns an error instead of handing back memory the
-        // thread would fault on.
+        // For a grant the hardware must enforce: false, changing nothing, when the set is full
+        // or the backend seats no descriptor for the region.
         //
-        // NOT COMPILED ON A TRANSLATING BACKEND. There the enforcement is the mapping and
-        // no descriptor is ever seated, so encode() below has no honest answer to give and
-        // a caller reading its all-seated one would take a description for a guarantee.
+        // NOT COMPILED ON A TRANSLATING BACKEND: no descriptor is ever seated there, and
+        // encode()'s all-seated answer would be a description taken for a guarantee.
 #if !KICKOS_HAVE_ASPACE
         [[nodiscard]] bool add_enforced(uintptr_t base, size_t size, uint32_t attr)
         {
@@ -196,13 +189,11 @@ namespace kickos
         }
 
         // add_enforced, except that a region already naming EXACTLY this base and size is
-        // RETYPED IN PLACE rather than joined by a second one. Two descriptors over one block
-        // are two answers to one question: the kernel's range checks read the first and the
-        // hardware obeys the last. Keeping the index is the other half, region precedence
-        // being positional on PMSAv7.
+        // RETYPED IN PLACE: two descriptors over one block are two answers, the kernel's range
+        // checks reading the first and the hardware obeying the last. Keeping the index matters
+        // too, region precedence being positional on PMSAv7.
         //
-        // Answers false and changes NOTHING when the new attributes are unencodable, the old
-        // ones going straight back, so a refused re-type takes no reach away.
+        // False, changing NOTHING, when the new attributes are unencodable.
         //
         // noinline is LOAD-BEARING, for the reason console_write_user gives in syscall.cc:
         // inlined, this search costs the `syscall_body` frame the SVC and SYSK red zones are
@@ -232,9 +223,8 @@ namespace kickos
 #endif
 
 #if KICKOS_HAVE_MPU and not KICKOS_HAVE_ASPACE
-        // Whether this MPU decides every byte `r`, at slot `at`, shares with another region of
-        // the set as the kernel's checks do (mpu_overlap_expressible), each region as the image
-        // seats it. A region already at `at` is the one `r` replaces.
+        // Whether this MPU decides every byte `r`, at slot `at`, shares with the set as the
+        // kernel's checks do. A region already at `at` is the one `r` replaces.
         [[nodiscard]] __attribute__((noinline)) bool admits(arch_mpu_region const& r,
                                                             uint8_t at, bool r_seated) const
         {
@@ -260,7 +250,6 @@ namespace kickos
             return true;
         }
 
-        // Whether this MPU decides every overlap in the set as the kernel's checks do.
         [[nodiscard]] bool overlaps_expressible() const
         {
             for (uint8_t i = 0; i < count_; i++)
@@ -273,8 +262,7 @@ namespace kickos
             return true;
         }
 
-        // admits(), at the slot add_enforced_retyping(base, size, attr) would seat the region in,
-        // which seats a descriptor for it or refuses it.
+        // admits(), at the slot add_enforced_retyping would seat the region in.
         [[nodiscard]] bool retyping_expressible(uintptr_t base, size_t size, uint32_t attr) const
         {
             uint8_t at = count_;
@@ -291,9 +279,8 @@ namespace kickos
         }
 #endif
 
-        // Drops every device region, which is what releases the thread's device windows: the
-        // one-holder check reads them here. For a thread past its last return to user code,
-        // whose registers stay reachable only while their holder can run.
+        // Drops every device region, which releases the thread's device windows: the one-holder
+        // check reads them here. For a thread past its last return to user code.
         void drop_devices()
         {
             uint8_t kept = 0;
@@ -306,15 +293,13 @@ namespace kickos
                 }
             }
             count_ = kept;
-            // Its owner is past its last return to user code, so no window is asked for again.
             places_ = 0;
             window_flags_ = 0;
             encode();
         }
 
-        // Appends the arch's app-wide static regions (code and static data). They come from
-        // the linker script, so they are encodable by construction and there are never more
-        // of them than a fresh set holds.
+        // The linker script's regions, encodable by construction and never more than a fresh
+        // set holds.
         void append_statics()
         {
             count_ = static_cast<uint8_t>(
@@ -323,7 +308,6 @@ namespace kickos
             encode();
         }
 
-        // Loads this set on switch-in.
         void apply() const
         {
 #if KICKOS_HAVE_MPU
@@ -331,9 +315,9 @@ namespace kickos
 #endif
         }
 
-        // Loads this set into the hardware AT ONCE, for a grant that must be live before the
-        // syscall granting it returns. NOT the switch path: on a deferred backend this must
-        // not become the image a pended switch's epilogue programs.
+        // Loads this set AT ONCE, for a grant live before its syscall returns. NOT the switch
+        // path: on a deferred backend this must not become the image a pended switch's epilogue
+        // programs.
         void apply_now() const
         {
 #if KICKOS_HAVE_MPU
@@ -347,9 +331,8 @@ namespace kickos
             return count_ >= KICKOS_MPU_MAX_REGIONS;
         }
 
-        // The seating bitmask. Where no descriptor exists the answer is all-seated, which
-        // is honest only because nothing is enforced there either; add_enforced is
-        // compiled out on the one backend where that pair comes apart.
+        // The seating bitmask. All-seated where no descriptor exists, honest only because
+        // nothing is enforced there either; add_enforced is compiled out where that comes apart.
         uint32_t encode()
         {
 #if KICKOS_HAVE_MPU

@@ -9,7 +9,7 @@ truth: `kernel/syscall/syscall_ipc.cc` (`endpoint_call` / `endpoint_reply` /
 `endpoint_reply_recv` / `endpoint_recv_locked`),
 `kernel/syscall/cap.cc` (the `CAP_REPLY` arm + `cap_reply_thread` / `cap_reply_caller`),
 `kernel/sync/sync.cc` (`thread_effective_prio`), `kernel/thread/park.cc`
-(`endpoint_wait_abort`), `kernel/amp/ampwindow.cc` (the far reply's route),
+(`thread_abort_park`), `kernel/amp/ampwindow.cc` (the far reply's route),
 `kernel/irq/irq.cc` (the notification word, its bind and its post),
 `user/include/kickos/sys/abi.h` (numbers + `kos_recv_info` + `kos_reply_recv_opts`),
 `user/include/kickos/sys.h` (the C stubs). If a page and the code disagree, the page is
@@ -529,7 +529,7 @@ sole effective-priority writer):
   immediate. Symmetric with D1.
 
 A donation that is never reverted changes no return code, so the revert is invisible to
-any arm that only reads results: dropping the `sched::set_prio` in `endpoint_wait_abort`
+any arm that only reads results: dropping the `sched::set_prio` in `thread_abort_park`
 leaves the whole timed-call family green. What holds it is a scheduling ORDER --
 `call_timeout_revert` in `user/apps/common/selftest/main.cc` runs a medium-priority
 spoiler against a boosted server and requires it to run between the expiry and the
@@ -664,7 +664,7 @@ resynchronisation, and never by the take, which moves nothing.
 own park, which has none, parks only a local caller, so clause 5 refuses any far reply naming it.
 
 **The park.** `WAIT_EP_FAR_REPLY`, `wait_obj` the far `Endpoint`, queue-less on no list at
-all. `endpoint_wait_abort` unwinds it with no donor list to unlink and no server to deflate,
+all. `thread_abort_park` unwinds it with no donor list to unlink and no server to deflate,
 and it MUST bump `call_seq` for the same reason the local `WAIT_EP_REPLY` arm does: a reply
 still in flight names the call by its sequence alone, so a sequence left standing resolves to
 this thread again once the caller's `call_seq` has come round -- after exactly 65536 further
@@ -695,12 +695,12 @@ and a publication refused are never read as one number.
 
 **AND WHAT IT OWES IS NOT DERIVED FROM THE HELD RUN ALONE.** A CALL-ring resynchronisation sets
 `taken = tail = head` with the released mask clear, so a run of length zero can still owe a reply
-slot: the record the clause left pending (`amp::Inbound::run_gone`) is counted beside the run
+slot: the record the clause left pending (`amp::Inbound::PENDING_GONE`) is counted beside the run
 rather than out of it. The masked slot cannot say which is which -- an abandoned record and a
 later wrap's call share one -- so the record carries the fact. Counting the run alone admits one
 call too many per such record, and the answer to each of those is a publication the reply ring
 then refuses, which is how a GENERIC malformed peer reaches the full-ring state above rather than
-only a targeted one. `run_gone` also decides that such a record's slot is never spent as a
+only a targeted one. `PENDING_GONE` also decides that such a record's slot is never spent as a
 release again: `release_call` masks its index against the run that stands NOW, so releasing it
 would hand the peer back a slot this node is still being served on.
 

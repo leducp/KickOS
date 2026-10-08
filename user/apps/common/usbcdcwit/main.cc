@@ -35,53 +35,6 @@ namespace
     constexpr uint32_t STALL_MAX =
         static_cast<uint32_t>((STALL_BUDGET_MS * 1000000ull) / RETRY_SLEEP_NS);
 
-    int uart_call(uint8_t op, uint16_t len, uint8_t const* payload,
-                  uint8_t* out, uint16_t out_max)
-    {
-        uint8_t buf[KOS_EP_MSG_MAX];
-        struct kos_uart_req req = {};
-        req.op = op;
-        req.flags = 0;
-        req.len = len;
-        uint8_t const* rp = reinterpret_cast<uint8_t const*>(&req);
-        for (size_t i = 0; i < sizeof(req); i++)
-        {
-            buf[i] = rp[i];
-        }
-        size_t send_len = sizeof(req);
-        if (payload != nullptr)
-        {
-            for (uint16_t i = 0; i < len; i++)
-            {
-                buf[sizeof(req) + i] = payload[i];
-            }
-            send_len += len;
-        }
-        int32_t const rc = kos_call(CH_EP, buf, send_len, sizeof(buf));
-        if (rc < 0)
-        {
-            return static_cast<int>(rc);
-        }
-        struct kos_uart_rsp rsp;
-        uint8_t* dp = reinterpret_cast<uint8_t*>(&rsp);
-        for (size_t i = 0; i < sizeof(rsp); i++)
-        {
-            dp[i] = buf[i];
-        }
-        if (rsp.status < 0)
-        {
-            return rsp.status;
-        }
-        if (out != nullptr and rsp.len <= out_max)
-        {
-            for (uint16_t i = 0; i < rsp.len; i++)
-            {
-                out[i] = buf[sizeof(rsp) + i];
-            }
-        }
-        return static_cast<int>(rsp.len);
-    }
-
     // Flushed per line: the run ends in a reboot that takes the USB device away, and a
     // stdio buffer would go with it.
     void say(char const* s)
@@ -111,7 +64,7 @@ int main(int, char**)
     }
 
     // A refused cap must be reported as itself, not counted as a stalled channel.
-    int const probe = uart_call(KOS_UART_STATS, 0, nullptr, nullptr, 0);
+    int const probe = kos_uart_call(CH_EP, KOS_UART_STATS, 0, 0, nullptr, nullptr, 0);
     if (probe < 0)
     {
         char b[80];
@@ -131,8 +84,8 @@ int main(int, char**)
         {
             want = CHUNK;
         }
-        int const took = uart_call(KOS_UART_WRITE, static_cast<uint16_t>(want), chunk,
-                                   nullptr, 0);
+        int const took = kos_uart_call(CH_EP, KOS_UART_WRITE, 0, static_cast<uint16_t>(want),
+                                       chunk, nullptr, 0);
         if (took < 0)
         {
             err = took;
@@ -161,7 +114,7 @@ int main(int, char**)
 
     uint8_t st[sizeof(struct kos_uart_stats)];
     struct kos_uart_stats stats = {};
-    if (uart_call(KOS_UART_STATS, 0, nullptr, st, sizeof(st))
+    if (kos_uart_call(CH_EP, KOS_UART_STATS, 0, 0, nullptr, st, sizeof(st))
         == static_cast<int>(sizeof(st)))
     {
         kickos::console::stats_unpack(&stats, st);

@@ -72,8 +72,8 @@ namespace
     {
         {
             IrqLock lock;
-            ASSERT_TRUE(cap_console_publish(publisher, console_handle(ep)));
-            cap_console_serve(served);
+            ASSERT_TRUE(cap_console_publish(publisher, console_handle(ep), lock));
+            cap_console_serve(served, lock);
             console_handover_begin();
         }
         console_owner_set_user();
@@ -103,14 +103,14 @@ TEST_F(ConsoleOwnTask, a_driver_thread_spawned_after_the_publish_has_no_stdout_a
         join_task(member, served);
         {
             IrqLock lock;
-            sched::reschedule();
+            sched::reschedule(nullptr, lock);
         }
         ASSERT_EQ(sched::current(), member);
         ASSERT_NO_FATAL_FAILURE(publish(publisher, endpoint(), served));
         {
             IrqLock lock;
-            cap_install_defaults(member);
-            cap_install_defaults(client);
+            cap_install_defaults(member, lock);
+            cap_install_defaults(client, lock);
         }
         EXPECT_EQ(stdout_type(client), static_cast<uint8_t>(CapType::CAP_ENDPOINT))
             << "fixture: a client spawned after the publish did not get the console";

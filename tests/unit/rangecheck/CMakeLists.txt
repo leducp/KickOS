@@ -17,11 +17,16 @@ kickos_add_unit_test(NAME range_check
 
 # THE SAME SOURCE AT THE TRANSLATING POSTURE. The range list the checks consult lives in the
 # domain, so the K-seam sources are compiled again with KICKOS_HAVE_ASPACE=1 and the real
-# VirtualRanges comes with them; aspace_seam.cc stands in for kernel/domain and kernel/mem,
-# which no board the host arch answers for provides. KICKOS_ARCH_ALIAS_DCACHE is armv8a's and
-# x86_64's posture, and dcache_seam.cc records the maintenance it compiles.
+# VirtualRanges comes with them. kernel/mem/aspace.cc is compiled whole and the link keeps what
+# the switch and exit paths reach; aspace_seam.cc stands in for kernel/domain and the arch
+# boundary. KICKOS_ARCH_ALIAS_DCACHE is armv8a's and x86_64's posture, and dcache_seam.cc
+# records the maintenance it compiles.
+set_source_files_properties("${PROJECT_SOURCE_DIR}/kernel/mem/aspace.cc"
+  DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+  PROPERTIES COMPILE_OPTIONS "-ffunction-sections;-fdata-sections")
 kickos_add_kseam(kickos_kseam_rangecheck_aspace
   EXTRA aspace_seam.cc dcache_seam.cc
+        "${PROJECT_SOURCE_DIR}/kernel/mem/aspace.cc"
         "${PROJECT_SOURCE_DIR}/kernel/mem/vrange.cc"
         "${PROJECT_SOURCE_DIR}/kernel/syscall/syscall_mem.cc"
   INCLUDES "${PROJECT_SOURCE_DIR}/kernel/syscall" "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -29,6 +34,7 @@ kickos_add_kseam(kickos_kseam_rangecheck_aspace
 kickos_add_unit_test(NAME range_check_aspace SOURCES range_check.cc
   TEST_PREFIX aspace_
   LIBRARIES kickos_kseam_rangecheck_aspace)
+target_link_options(range_check_aspace PRIVATE -Wl,--gc-sections)
 
 # The cache maintenance the copy seam brackets a non-cacheable user end with, at both postures.
 # The region one compiles the K-seam sources again at armv7m's KICKOS_ARCH_ARENA_DCACHE, so no
@@ -42,3 +48,4 @@ kickos_add_unit_test(NAME alias_sync SOURCES alias_sync.cc
 kickos_add_unit_test(NAME alias_sync_aspace SOURCES alias_sync.cc
   TEST_PREFIX aspace_
   LIBRARIES kickos_kseam_rangecheck_aspace)
+target_link_options(alias_sync_aspace PRIVATE -Wl,--gc-sections)

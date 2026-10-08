@@ -14,10 +14,18 @@
 
 #include <kickos/arch/arch.h>
 #include <kickos/bench.h>
+#include <kickos/held.h>
 #include <kickos/klock.h>
 
 namespace kickos
 {
+    class IrqLock;
+    namespace sched
+    {
+        enum ExitCause : uint8_t;
+        void exit_current(int code, ExitCause cause, IrqLock* held) __attribute__((noreturn));
+    }
+
     class IrqLock
     {
     public:
@@ -41,6 +49,15 @@ namespace kickos
             end();
         }
 
+        __attribute__((always_inline)) operator Held() const
+        {
+            return Held();
+        }
+
+        IrqLock(IrqLock const&) = delete;
+        IrqLock& operator=(IrqLock const&) = delete;
+
+    private:
         // Only on a path that never returns into this bracket's scope, whose destructor would
         // otherwise end it a second time.
         __attribute__((always_inline)) void end()
@@ -49,11 +66,8 @@ namespace kickos
             KICKOS_BENCH_LOCK_CLOSE();
             arch_irq_restore(state_);
         }
+        friend void sched::exit_current(int code, sched::ExitCause cause, IrqLock* held);
 
-        IrqLock(IrqLock const&) = delete;
-        IrqLock& operator=(IrqLock const&) = delete;
-
-    private:
         arch_irq_state_t state_;
     };
 }

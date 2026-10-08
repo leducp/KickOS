@@ -30,10 +30,10 @@ namespace kickos
             return v;
         }
         uint32_t e = 3u;
-        // THE BOUND IS NOT DECORATION: without it a delta at or above 2^31 shifts by 32, which
-        // is undefined and which both backends here answer by masking the count to zero, so the
-        // test never fails and the accumulator spins inside a masked window forever. A wrapped
-        // counter or a stamp taken before a reset produces exactly such a delta.
+        // THE BOUND IS NOT DECORATION: a delta at or above 2^31 shifts by 32, which both
+        // backends here answer by masking the count to zero, so the test never fails and the
+        // accumulator spins inside a masked window forever. A wrapped counter or a stamp taken
+        // before a reset produces such a delta.
         while (e < 31u and (v >> (e + 1u)) != 0u)
         {
             e++;
@@ -89,19 +89,15 @@ namespace kickos
     static_assert(bench_bucket(0xFFFFFFFFu) == BENCH_HIST - 1u,
                   "a delta at the top of the range saturates rather than spinning");
 
-    // The population every reported percentile is a quantile OF: the family's rows summed
-    // BUCKET-WISE into one copy, with the total taken in the SAME pass as the buckets. A board
-    // whose workload feeds a row keeps writing it while this runs, so each row is read once and
-    // the copy holds the union of every row's samples up to the instant that row was read.
+    // The population every reported percentile is a quantile OF: the rows summed BUCKET-WISE,
+    // with the total taken in the SAME pass as the buckets. A workload keeps writing a row
+    // while this runs, so each row is read once.
     //
-    // `stride` is the distance in uint32_t between one row's bucket array and the next, so the
-    // caller hands the first row and never an array of pointers. 672 bytes, so a caller on a
-    // chain the stack-descent gate measures keeps this out of its frame.
+    // `stride` is the distance in uint32_t between one row's bucket array and the next. 672
+    // bytes: keep it out of the frame of a caller on a chain the stack-descent gate measures.
     //
-    // BOUNDED RUN: fewer than 2^32 samples in any ONE bucket of any one distribution. The
-    // caller's buckets are uint32_t, so that is where a long enough run wraps. The rep counts
-    // that decide how close a run gets carry a static_assert on this bound
-    // (user/apps/common/bench/main.cc).
+    // BOUNDED RUN: fewer than 2^32 samples in any ONE bucket, which are uint32_t. The rep
+    // counts carry a static_assert on this bound (user/apps/common/bench/main.cc).
     struct BenchHistSnap
     {
         uint32_t bucket[BENCH_HIST];
@@ -150,8 +146,7 @@ namespace kickos
                 return bench_bucket_low(i);
             }
         }
-        // Unreachable from bench_hist_snapshot, whose total is the sum of these buckets. A
-        // hand-built snapshot claiming more samples than the buckets hold still gets a floor.
+        // Only a hand-built snapshot claiming more samples than its buckets hold gets here.
         return bench_bucket_low(last);
     }
 }

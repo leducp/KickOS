@@ -12,6 +12,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <kickos/sys/static_assert.h> // KOS_STATIC_ASSERT
 #include <kickos/sys/table_version.h> // KICKOS_TABLE_VERSION (generated)
 
 #ifdef __cplusplus
@@ -164,85 +165,98 @@ extern struct kos_table_header const* const kickos_table;
 // image linking no system target fails naming it, and one linking two defines it twice.
 extern char const kickos_link_one_system_target;
 
-#ifdef __cplusplus
-#define KOS_TABLE_ASSERT(cond, why) static_assert(cond, why)
-#else
-#define KOS_TABLE_ASSERT(cond, why) _Static_assert(cond, why)
-#endif
+KOS_STATIC_ASSERT(sizeof(union kos_table_entry) == 8, "the entry is eight bytes (table layout)");
 
-KOS_TABLE_ASSERT(sizeof(union kos_table_entry) == 8, "the entry is eight bytes (table layout)");
+KOS_STATIC_ASSERT(sizeof(struct kos_table_header) == 32, "the header is 32 bytes (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_header, magic) == 0, "header.magic (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_header, version) == 4, "header.version (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_header, flags) == 6, "header.flags (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_header, ends_task) == 8,
+                  "header.ends_task (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_header, task_count) == 10,
+                  "header.task_count (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_header, grant_count) == 12,
+                  "header.grant_count (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_header, ref_count) == 14,
+                  "header.ref_count (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_header, priv_count) == 16,
+                  "header.priv_count (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_header, region_count) == 18,
+                  "header.region_count (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_header, strings_size) == 20,
+                  "header.strings_size (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_header, init_priority) == 24,
+                  "header.init_priority (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_header, rsv0) == 25, "header.rsv0 (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_header, rsv1) == 26, "header.rsv1 (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_header, rsv2) == 28, "header.rsv2 (table layout)");
 
-KOS_TABLE_ASSERT(sizeof(struct kos_table_header) == 32, "the header is 32 bytes (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_header, magic) == 0, "header.magic (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_header, version) == 4, "header.version (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_header, flags) == 6, "header.flags (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_header, ends_task) == 8, "header.ends_task (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_header, task_count) == 10, "header.task_count (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_header, grant_count) == 12, "header.grant_count (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_header, ref_count) == 14, "header.ref_count (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_header, priv_count) == 16, "header.priv_count (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_header, region_count) == 18, "header.region_count (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_header, strings_size) == 20, "header.strings_size (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_header, init_priority) == 24, "header.init_priority (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_header, rsv0) == 25, "header.rsv0 (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_header, rsv1) == 26, "header.rsv1 (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_header, rsv2) == 28, "header.rsv2 (table layout)");
+KOS_STATIC_ASSERT(sizeof(struct kos_table_task) == 56, "a task is 56 bytes (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_task, name) == 0, "task.name (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_task, block) == 4, "task.block (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_task, entry) == 8, "task.entry (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_task, driver) == 16, "task.driver (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_task, ceiling) == 18, "task.ceiling (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_task, rsv1) == 19, "task.rsv1 (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_task, stack) == 20, "task.stack (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_task, priority) == 24, "task.priority (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_task, restart_max) == 25,
+                  "task.restart_max (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_task, flags) == 26, "task.flags (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_task, core_mask) == 28,
+                  "task.core_mask (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_task, authority) == 32,
+                  "task.authority (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_task, first_grant) == 36,
+                  "task.first_grant (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_task, grant_count) == 38,
+                  "task.grant_count (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_task, cap_grant_count) == 40,
+                  "task.cap_grant_count (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_task, first_use) == 42,
+                  "task.first_use (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_task, use_count) == 44,
+                  "task.use_count (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_task, first_watch) == 46,
+                  "task.first_watch (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_task, watch_count) == 48,
+                  "task.watch_count (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_task, rsv3) == 50, "task.rsv3 (table layout)");
 
-KOS_TABLE_ASSERT(sizeof(struct kos_table_task) == 56, "a task is 56 bytes (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_task, name) == 0, "task.name (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_task, block) == 4, "task.block (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_task, entry) == 8, "task.entry (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_task, driver) == 16, "task.driver (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_task, ceiling) == 18, "task.ceiling (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_task, rsv1) == 19, "task.rsv1 (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_task, stack) == 20, "task.stack (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_task, priority) == 24, "task.priority (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_task, restart_max) == 25, "task.restart_max (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_task, flags) == 26, "task.flags (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_task, core_mask) == 28, "task.core_mask (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_task, authority) == 32, "task.authority (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_task, first_grant) == 36, "task.first_grant (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_task, grant_count) == 38, "task.grant_count (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_task, cap_grant_count) == 40, "task.cap_grant_count (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_task, first_use) == 42, "task.first_use (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_task, use_count) == 44, "task.use_count (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_task, first_watch) == 46, "task.first_watch (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_task, watch_count) == 48, "task.watch_count (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_task, rsv3) == 50, "task.rsv3 (table layout)");
+KOS_STATIC_ASSERT(sizeof(struct kos_table_grant) == 40, "a grant is 40 bytes (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_grant, kind) == 0, "grant.kind (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_grant, flags) == 1, "grant.flags (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_grant, cap_slot) == 2, "grant.cap_slot (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_grant, name) == 4, "grant.name (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_grant, path) == 8, "grant.path (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_grant, target) == 12, "grant.target (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_grant, window) == 14, "grant.window (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_grant, base) == 16, "grant.base (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_grant, size) == 24, "grant.size (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_grant, line_index) == 28,
+                  "grant.line_index (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_grant, line) == 30, "grant.line (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_grant, priv_first) == 32,
+                  "grant.priv_first (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_grant, priv_count) == 34,
+                  "grant.priv_count (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_grant, rsv1) == 36, "grant.rsv1 (table layout)");
 
-KOS_TABLE_ASSERT(sizeof(struct kos_table_grant) == 40, "a grant is 40 bytes (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_grant, kind) == 0, "grant.kind (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_grant, flags) == 1, "grant.flags (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_grant, cap_slot) == 2, "grant.cap_slot (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_grant, name) == 4, "grant.name (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_grant, path) == 8, "grant.path (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_grant, target) == 12, "grant.target (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_grant, window) == 14, "grant.window (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_grant, base) == 16, "grant.base (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_grant, size) == 24, "grant.size (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_grant, line_index) == 28, "grant.line_index (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_grant, line) == 30, "grant.line (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_grant, priv_first) == 32, "grant.priv_first (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_grant, priv_count) == 34, "grant.priv_count (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_grant, rsv1) == 36, "grant.rsv1 (table layout)");
+KOS_STATIC_ASSERT(sizeof(struct kos_table_ref) == 4, "a ref is 4 bytes (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_ref, task) == 0, "ref.task (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_ref, rsv0) == 2, "ref.rsv0 (table layout)");
 
-KOS_TABLE_ASSERT(sizeof(struct kos_table_ref) == 4, "a ref is 4 bytes (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_ref, task) == 0, "ref.task (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_ref, rsv0) == 2, "ref.rsv0 (table layout)");
+KOS_STATIC_ASSERT(sizeof(struct kos_table_priv) == 4, "a priv is 4 bytes (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_priv, offset) == 0, "priv.offset (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_priv, width) == 2, "priv.width (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_priv, rsv0) == 3, "priv.rsv0 (table layout)");
 
-KOS_TABLE_ASSERT(sizeof(struct kos_table_priv) == 4, "a priv is 4 bytes (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_priv, offset) == 0, "priv.offset (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_priv, width) == 2, "priv.width (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_priv, rsv0) == 3, "priv.rsv0 (table layout)");
-
-KOS_TABLE_ASSERT(sizeof(struct kos_table_region) == 16, "a region is 16 bytes (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_region, name) == 0, "region.name (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_region, size) == 4, "region.size (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_region, offset) == 8, "region.offset (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_region, flags) == 12, "region.flags (table layout)");
-KOS_TABLE_ASSERT(offsetof(struct kos_table_region, rsv0) == 13, "region.rsv0 (table layout)");
-
-#undef KOS_TABLE_ASSERT
+KOS_STATIC_ASSERT(sizeof(struct kos_table_region) == 16, "a region is 16 bytes (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_region, name) == 0, "region.name (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_region, size) == 4, "region.size (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_region, offset) == 8, "region.offset (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_region, flags) == 12, "region.flags (table layout)");
+KOS_STATIC_ASSERT(offsetof(struct kos_table_region, rsv0) == 13, "region.rsv0 (table layout)");
 
 #ifdef __cplusplus
 }

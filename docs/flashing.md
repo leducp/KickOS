@@ -76,9 +76,8 @@ is emitted into `inprstorm/`, so `tools/flash.sh xmc4800-relax inprstormmax` fai
 `FLASH_IMAGE=<path> tools/flash.sh <board>` for those, or split the app directories. This is in
 `flash_resolve`, so it applies to **every board and every backend**, not just the J-Link ones.
 
-**Build-dir hazard: the sim presets put their binary dir INSIDE the source tree.**
-`cmake/presets/host.json` sets `"binaryDir": "${sourceDir}/build/sim"` for the `sim` preset (and
-`build/sim-telem` for `sim-telem`). Two source trees configured with the preset and no explicit `-B`
+**Build-dir hazard: every preset puts its binary dir INSIDE the source tree.**
+`cmake/presets/base.json` sets `"binaryDir": "${sourceDir}/build/${presetName}"` for every preset. Two source trees configured with the preset and no explicit `-B`
 therefore collide on the same path, and a stale in-tree `build/sim` has been observed doing exactly
 that. Pass `-B <dir>` (or point `FLASH_BUILD` at the one you mean, for the board presets) when more
 than one tree is in play.

@@ -25,9 +25,13 @@
 
 kickos_add_driver(spi_k64dspi SOURCES spi_dspi.cc CLASS kickos_class_mk64f REGDIR arch/arm/chip/mk64f)
 
+# No BASE: spi_dspi.cc is base-parameterised across DSPI0/1/2. No line: the pump polls its FIFOs.
+# The window grant is inert on coarse-AIPS for the peripheral itself, but it is what authorises the
+# driver's kos_periph_enable.
 kickos_add_driver(k64dspi SOURCES k64dspi.cc spi_dspi.cc CLASS kickos_class_mk64f REGDIR arch/arm/chip/mk64f
-                  THREADS service:0:default:1:0 RECEIVER service WINDOWS regs
-                  BLOCK none POSTURE retain BARRIER none START k64dspi_spi_start CLIENT kickos_spi_proxy)
+                  WINDOWS regs BLOCK none BARRIER none
+                  POSTURE retain START k64dspi_spi_start CLIENT kickos_spi_proxy
+                  THREAD service ENTRY bus_thread ARG window WINDOW regs CAPS ep:wait)
 target_compile_definitions(kickos_k64dspi PRIVATE
   kos_spi_bus_open=k64dspi_bus_open
   kos_spi_device_open=k64dspi_device_open

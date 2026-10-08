@@ -53,7 +53,7 @@ namespace kickos
     bool dev_window_free(uintptr_t, size_t) { return true; }
 
     int console_dark_wait(void) { return -KOS_ECANCELED; }
-    void console_dark_wake(void) {}
+    void console_dark_wake(Held) {}
 
     bool cap_console_serves(Thread const*) { return false; }
 

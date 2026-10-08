@@ -10,7 +10,10 @@
 # than joining the K-seam fixture: that library takes the preset's core count, and the sim
 # preset drives one core, where the mechanism under test compiles to nothing.
 kickos_add_unit_test(NAME irq_quiesce
-  SOURCES quiesce.cc irq_seam.cc
+  SOURCES quiesce.cc irq_seam.cc "${PROJECT_SOURCE_DIR}/tests/unit/common/kpanic_seam.cc"
           "${PROJECT_SOURCE_DIR}/kernel/irq/irq.cc"
+          "${PROJECT_SOURCE_DIR}/kernel/irq/irq_route.cc"
+          "${PROJECT_SOURCE_DIR}/arch/common/arch_irq_line_core_default.cc"
+          "${PROJECT_SOURCE_DIR}/kernel/init/instance.cc"
           "${PROJECT_SOURCE_DIR}/kernel/sync/klock.cc"
   POSTURE KICKOS_NUM_CORES=2 KICKOS_KERNEL_CORES=2 KICKOS_MULTICORE_MODEL_SHARED=1)

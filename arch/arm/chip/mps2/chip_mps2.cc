@@ -9,9 +9,10 @@
 // declining ENOSYS fallback.
 
 #include <kickos/arch/arch.h>
-#include <kickos/console_tx.h>
+#include "crt_tail.h"
+#include "semihost.h"
 
-#include "regs.h" // arch/arm/common: kickos_armv7m_enable_fpu + core SCB regs
+#include "regs.h"
 
 #include <stdint.h>
 
@@ -19,74 +20,17 @@
 #include <kickos/rtt.h>
 #endif
 
-namespace kickos
-{
-    int kmain(int argc, char** argv);
-}
-
 extern "C"
 {
-    // From the armv7m arch layer: installs SHPR priorities + enables DWT.
     void kickos_armv7m_init(void);
 
-    // PMSAv8 MPU backend (arch/arm/common/arch_arm_pmsav8.cc): one-time MAIR +
-    // MemManage enable. Also the LINK ANCHOR that pulls the PMSAv8 archive member,
-    // so its commit/encodable replace the v7-M fallback TUs.
 #if KICKOS_HAVE_MPU && KICKOS_ARM_MPU == KICKOS_ARM_MPU_PMSAV8
     void kickos_arm_pmsav8_init(void);
 #endif
 
-    // Linker-script symbols (mps2.ld, an505.ld).
-    extern void (*__init_array_start[])();
-    extern void (*__init_array_end[])();
-
-    // CMSIS convention: core clock in Hz. QEMU's Cortex-M4 has no real PLL; the SysTick
-    // ns<->cycle math (arch_arm_common) only needs a consistent value, and arch_clock_now
-    // here is semihosting-based. 25 MHz is the MPS2 default.
+    // Read only by the SysTick ns-to-cycles conversion, which needs a consistent value and no
+    // real PLL. 25 MHz is the MPS2 default.
     uint32_t SystemCoreClock = 25000000u;
-}
-
-namespace
-{
-    // ARM semihosting call (QEMU implements the host side).
-    inline long semihost(long op, void* arg)
-    {
-        register long r0 __asm("r0") = op;
-        register void* r1 __asm("r1") = arg;
-        __asm volatile("bkpt 0xAB" : "+r"(r0) : "r"(r1) : "memory");
-        return r0;
-    }
-
-    constexpr long SYS_OPEN = 0x01;
-    constexpr long SYS_CLOSE = 0x02;
-    constexpr long SYS_WRITE = 0x05;
-    constexpr long SYS_WRITEC = 0x03;
-    constexpr long SYS_CLOCK = 0x10;
-    constexpr long SYS_EXIT_EXTENDED = 0x20;
-    constexpr uint32_t ADP_Stopped_ApplicationExit = 0x20026u;
-
-    // --- Buffered console TX backend (console_tx.h). The semihosting trap takes the byte
-    // inside the call: no channel to wait on, no completion to interrupt on. ---
-    int mps2_tx_slot_free(void) { return 1; }
-    void mps2_tx_push(uint8_t b)
-    {
-        char c = static_cast<char>(b);
-        semihost(SYS_WRITEC, &c);
-    }
-    void mps2_tx_irq_enable(void) {}
-    void mps2_tx_irq_disable(void) {}
-
-    char console_tx_buf[KICKOS_CONSOLE_TX_SIZE];
-    console_tx_backend const mps2_console_backend = {
-        mps2_tx_slot_free, mps2_tx_push, mps2_tx_irq_enable, mps2_tx_irq_disable};
-
-    void run_init_array()
-    {
-        for (void (**fn)() = __init_array_start; fn != __init_array_end; fn++)
-        {
-            (*fn)();
-        }
-    }
 }
 
 extern "C"
@@ -94,7 +38,6 @@ extern "C"
 
 void arch_init(void)
 {
-    // FPU is enabled earlier (Reset_Handler, before C++ ctors).
 #if KICKOS_HAVE_MPU && KICKOS_ARM_MPU == KICKOS_ARM_MPU_PMSAV8
     // MUST precede kickos_armv7m_init and MUST NOT be dropped: this reference pulls
     // the PMSAv8 backend into the link. Without it the build still succeeds, but the
@@ -104,90 +47,43 @@ void arch_init(void)
     kickos_armv7m_init();
 }
 
-// The required per-chip clock. QEMU does not implement the DWT cycle counter (it reads
-// frozen), so derive the monotonic clock from the semihosting SYS_CLOCK (centiseconds
-// since start). Resolution is 10 ms.
+// QEMU's DWT cycle counter reads frozen, so both clocks come from SYS_CLOCK and telemetry
+// timestamps here carry no latency information.
 uint64_t arch_clock_now(void)
 {
-    // Must be monotonic: a semihosting error/glitch (cs < 0) must not regress the
-    // clock to 0 (which would stall every armed sleeper). Clamp to the last value.
-    // Guard the RMW: `last` is 64-bit on a 32-bit core and shared thread<->ISR,
-    // so a torn store latched by the clamp would jump the clock forward forever.
     static uint64_t last = 0;
-    arch_irq_state_t st = arch_irq_save();
-    long cs = semihost(SYS_CLOCK, nullptr);
-    uint64_t ns = 0;
-    if (cs > 0)
-    {
-        ns = static_cast<uint64_t>(cs) * 10000000ull; // 1 cs = 10 ms = 1e7 ns
-    }
-    if (ns < last)
-    {
-        ns = last;
-    }
-    last = ns;
-    arch_irq_restore(st);
-    return ns;
+    return kickos::semihost::clock_now(last);
 }
 
-// Replaces the arch layer's DWT trace-clock fallback: QEMU's DWT CYCCNT reads frozen,
-// so derive the telemetry timestamp from the same monotonic semihosting clock. 10 ms
-// resolution, so timestamps here carry no latency information.
 uint32_t arch_trace_now(void)
 {
-    return static_cast<uint32_t>(arch_clock_now() / 1000ull); // us
+    return static_cast<uint32_t>(arch_clock_now() / 1000ull);
 }
 
-// Replaces the arch layer's WFI idle fallback: this target's clock is the semihosting
-// SYS_CLOCK (arch_clock_now above), and QEMU <= 10 stops it while the core halts
-// in WFI, so a sleep with every thread idle never wakes. Spin instead.
+// Replaces the WFI idle fallback: QEMU <= 10 stops the SYS_CLOCK clock while the core halts in
+// WFI, so a sleep with every thread idle never wakes.
 void arch_idle_wait(void)
 {
     __asm volatile("nop");
 }
 
-int arch_console_write(char const* buf, size_t n)
-{
-    return console_tx_insert_line(buf, n, KICKOS_CONSOLE_CRLF);
-}
-
-// SYS_WRITEC hands each byte to the host inside the call, so nothing is ever in flight
-// here and arch_console_flush_sync is left to its no-op fallback.
-bool arch_console_write_sync(char const* buf, size_t n)
-{
-    for (size_t i = 0; i < n; i++)
-    {
-        char c = buf[i];
-        semihost(SYS_WRITEC, &c);
-    }
-    return true;
-}
-
-console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)
-{
-    *storage = console_tx_buf;
-    *size = KICKOS_CONSOLE_TX_SIZE;
-    *irq_line = -1; // no TX completion event exists; the producer drains
-    return &mps2_console_backend;
-}
-
 void arch_shutdown(int status)
 {
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
-    // Mask IRQs across the ENTIRE flush (root_entry -> arch_shutdown holds no
-    // lock): a SysTick landing here would emit records after the closing SESSION's
-    // records_attempted snapshot, breaking the decoder cross-check. Held to exit.
+    // Masked to the exit: a SysTick here would emit records after the closing SESSION's
+    // records_attempted snapshot, breaking the decoder cross-check.
     (void)arch_irq_save();
-    // Capture the ch1 telemetry ring to a host file via semihosting (QEMU writes
-    // it relative to its CWD) so the offline decoder gets the trace. Best-effort on
-    // this dying path.
+    // The ch1 ring goes to kicktrace.bin, relative to QEMU's working directory.
     kickos_trace_final_session();
     kickos_trace_report_counters();
     {
+        constexpr long SYS_OPEN = 0x01;
+        constexpr long SYS_CLOSE = 0x02;
+        constexpr long SYS_WRITE = 0x05;
         char const name[] = "kicktrace.bin";
         uint32_t oparm[3] = {reinterpret_cast<uint32_t>(name), 5 /* "wb" */,
                              sizeof(name) - 1};
-        long fh = semihost(SYS_OPEN, oparm);
+        long fh = kickos::semihost::call(SYS_OPEN, oparm);
         if (fh > 0)
         {
             char buf[256];
@@ -201,23 +97,14 @@ void arch_shutdown(int status)
                 uint32_t wparm[3] = {static_cast<uint32_t>(fh),
                                      reinterpret_cast<uint32_t>(buf),
                                      static_cast<uint32_t>(got)};
-                semihost(SYS_WRITE, wparm);
+                kickos::semihost::call(SYS_WRITE, wparm);
             }
             uint32_t cparm[1] = {static_cast<uint32_t>(fh)};
-            semihost(SYS_CLOSE, cparm);
+            kickos::semihost::call(SYS_CLOSE, cparm);
         }
     }
 #endif
-    uint32_t block[2];
-    block[0] = ADP_Stopped_ApplicationExit;
-    block[1] = static_cast<uint32_t>(status);
-    semihost(SYS_EXIT_EXTENDED, block);
-    // Semihosting exit should terminate QEMU; if it returns, halt.
-    __asm volatile("cpsid i" ::: "memory");
-    while (true)
-    {
-        __asm volatile("wfi");
-    }
+    kickos::semihost::exit(status);
 }
 
 void Reset_Handler(void)
@@ -227,10 +114,7 @@ void Reset_Handler(void)
     // the compiler may emit FP instructions in a global initializer, which would
     // UsageFault (CP10/CP11 disabled at reset) -> HardFault before kmain.
     kickos_armv7m_enable_fpu();
-    run_init_array();
-    arch_init();
-    kickos::kmain(0, nullptr);
-    arch_shutdown(0); // kmain returns only if the scheduler unwinds to boot
+    kickos_crt_tail();
 }
 
 }

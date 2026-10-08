@@ -213,17 +213,17 @@ is checked against that. A nested init is the task that declares `tasks`, and th
   `stack`, extra threads and objects come from its
 exported metadata rather than from the composition.
 
-A packaged driver's metadata is declared where the driver is built, on `kickos_add_driver`: the
-role names of its windows and lines, its threads with their priority offset, stack, the
-capabilities each one's spawn delegates and the badged copies of the driver's notification among
-them, the thread that receives on its endpoint, the
-endpoints and notifications it creates, its ring block, a power of two, and the block's memory
-type, `BLOCK_CACHE cached` or `uncached`, its endpoint posture,
-its readiness barrier, whether it takes the console, `START`, the C function the init calls
-to bring it up, at which a driver task's `entry` points, and `CLIENT`, the libraries a task using
-it links, each a target the manifest's export refuses the driver for lacking. The build emits it
-twice, into a generated header the driver's `Descriptor` reads and into the manifest's catalogue,
-since a value the build reads is never read back out of C. A driver task's `devices` bind in
+A packaged driver is declared where it is built, on `kickos_add_driver`: the role names of its
+windows and of its lines with each one's trigger, its threads in spawn order with their priority
+offset, entry, argument, window and the capabilities each one's spawn delegates, the badged copy of
+the driver's notification among them, and so the thread that receives on its endpoint and whether
+it uses a notification, its ring block, a power of two, the block's memory type, `BLOCK_CACHE
+cached` or `uncached`, and its initialiser, its endpoint posture, its readiness barrier and latch,
+whether it takes the console, `START`, the C function the init calls to bring it up, at which a
+driver task's `entry` points, and `CLIENT`, the libraries a task using it links, each a target the
+manifest's export refuses the driver for lacking. The build emits it twice, as the driver's
+generated `Descriptor` and as its entry in the manifest's catalogue, since a value the build reads
+is never read back out of C. A driver task's `devices` bind in
 order to its window roles, as many as it declares, and its `lines` name exactly its line roles.
 
 `stdout` names the endpoint served by a packaged driver that takes the console, or `kernel`. The

@@ -39,9 +39,7 @@ namespace kickos
             {
                 continue;
             }
-            uintptr_t const lo = ranges_[i].base;
-            uintptr_t const hi = lo + static_cast<uintptr_t>(ranges_[i].pages) * granule_;
-            if (base < hi and lo < end)
+            if (base < end_of(ranges_[i]) and ranges_[i].base < end)
             {
                 return true;
             }
@@ -59,11 +57,6 @@ namespace kickos
         if (pages > VR_MAX_PAGES)
         {
             return false; // the entry cannot hold the count, and truncating it would admit it
-        }
-        uintptr_t end = 0;
-        if (not extent_end(base, pages, granule_, &end))
-        {
-            return false;
         }
         if (overlaps(base, pages))
         {
@@ -106,8 +99,7 @@ namespace kickos
             for (size_t i = 0; i < KICKOS_ASPACE_RANGES and hit == nullptr; i++)
             {
                 VirtualRange const& r = ranges_[i];
-                uintptr_t const hi = r.base + static_cast<uintptr_t>(r.pages) * granule_;
-                if (r.state != VirtualState::Free and base < hi and r.base < end)
+                if (r.state != VirtualState::Free and base < end_of(r) and r.base < end)
                 {
                     hit = &r;
                 }
@@ -116,7 +108,7 @@ namespace kickos
             {
                 return base;
             }
-            base = hit->base + static_cast<uintptr_t>(hit->pages) * granule_;
+            base = end_of(*hit);
         }
         return 0;
     }
@@ -131,66 +123,47 @@ namespace kickos
         {
             return false; // a right the entry cannot hold, refused rather than dropped
         }
-        for (size_t i = 0; i < KICKOS_ASPACE_RANGES; i++)
+        size_t const i = index_at(base);
+        if (i == KICKOS_ASPACE_RANGES or ranges_[i].pages != pages)
         {
-            if (ranges_[i].state == VirtualState::Free or ranges_[i].base != base)
-            {
-                continue;
-            }
-            if (ranges_[i].pages != pages)
-            {
-                return false;
-            }
-            ranges_[i].rights = static_cast<uint8_t>(rights);
-            ranges_[i].memtype = memtype;
-            ranges_[i].state = VirtualState::Granted;
-            return true;
+            return false;
         }
-        return false;
+        ranges_[i].rights = static_cast<uint8_t>(rights);
+        ranges_[i].memtype = memtype;
+        ranges_[i].state = VirtualState::Granted;
+        return true;
     }
 
     bool VirtualRanges::set_sync_owed(uintptr_t base, bool owed)
     {
-        for (size_t i = 0; i < KICKOS_ASPACE_RANGES; i++)
+        size_t const i = index_at(base);
+        if (i == KICKOS_ASPACE_RANGES)
         {
-            if (ranges_[i].state == VirtualState::Free or ranges_[i].base != base)
-            {
-                continue;
-            }
-            uint8_t f = static_cast<uint8_t>(ranges_[i].flags & ~VR_SYNC_OWED);
-            if (owed)
-            {
-                f = static_cast<uint8_t>(f | VR_SYNC_OWED);
-            }
-            ranges_[i].flags = f;
-            return true;
+            return false;
         }
-        return false;
+        uint8_t f = static_cast<uint8_t>(ranges_[i].flags & ~VR_SYNC_OWED);
+        if (owed)
+        {
+            f = static_cast<uint8_t>(f | VR_SYNC_OWED);
+        }
+        ranges_[i].flags = f;
+        return true;
     }
 
     bool VirtualRanges::release(uintptr_t base)
     {
-        for (size_t i = 0; i < KICKOS_ASPACE_RANGES; i++)
+        size_t const i = index_at(base);
+        if (i == KICKOS_ASPACE_RANGES)
         {
-            if (ranges_[i].state != VirtualState::Free and ranges_[i].base == base)
-            {
-                ranges_[i] = VirtualRange{};
-                return true;
-            }
+            return false;
         }
-        return false;
+        ranges_[i] = VirtualRange{};
+        return true;
     }
 
     VirtualRange const* VirtualRanges::at_base(uintptr_t base) const
     {
-        for (size_t i = 0; i < KICKOS_ASPACE_RANGES; i++)
-        {
-            if (ranges_[i].state != VirtualState::Free and ranges_[i].base == base)
-            {
-                return &ranges_[i];
-            }
-        }
-        return nullptr;
+        return at(index_at(base));
     }
 
     VirtualRange const* VirtualRanges::find(uintptr_t addr, size_t len) const
@@ -210,9 +183,7 @@ namespace kickos
             {
                 continue;
             }
-            uintptr_t const lo = ranges_[i].base;
-            uintptr_t const hi = lo + static_cast<uintptr_t>(ranges_[i].pages) * granule_;
-            if (addr >= lo and end <= hi)
+            if (addr >= ranges_[i].base and end <= end_of(ranges_[i]))
             {
                 return &ranges_[i];
             }
@@ -237,14 +208,29 @@ namespace kickos
             {
                 continue;
             }
-            uintptr_t const lo = ranges_[i].base;
-            uintptr_t const hi = lo + static_cast<uintptr_t>(ranges_[i].pages) * granule_;
-            if (addr >= lo and end <= hi and (ranges_[i].rights & rights) == rights)
+            if (addr >= ranges_[i].base and end <= end_of(ranges_[i])
+                and (ranges_[i].rights & rights) == rights)
             {
                 return true;
             }
         }
         return false;
+    }
+
+    size_t VirtualRanges::index_at(uintptr_t base) const
+    {
+        size_t i = 0;
+        while (i < KICKOS_ASPACE_RANGES
+               and (ranges_[i].state == VirtualState::Free or ranges_[i].base != base))
+        {
+            i++;
+        }
+        return i;
+    }
+
+    uintptr_t VirtualRanges::end_of(VirtualRange const& r) const
+    {
+        return r.base + static_cast<uintptr_t>(r.pages) * granule_;
     }
 
     size_t VirtualRanges::count() const

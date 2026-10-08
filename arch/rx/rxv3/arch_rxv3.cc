@@ -3,18 +3,60 @@
 
 #include <kickos/arch/arch.h>
 #include "ctx_redirect.h"
-#include <kickos/arch/rx_trap_stack.h> // the USP guards' derived figures + ctx offsets
-#include <kickos/units.h> // _s literal (== 1e9 ns) for the cycle<->ns conversions
+#include <kickos/arch/rx_trap_stack.h>
+#include <kickos/units.h>
 
 #include "chip_layout.h"
 #include "regs.h"
 #include "rx_mpu_encode.h"
-#include <kickos/console_tx.h> // console_tx_isr: drained by the TXI ISR below
+#include <kickos/console_tx.h>
 #include <kickos/sys/atomic.h>
-#include <kickos/trace/record.h> // ArchId: pin this build's trace-arch id to this backend
+#include <kickos/trace/record.h>
 
 
-#include <stddef.h> // offsetof
+#include <stddef.h>
+
+namespace kickos::rxv3
+{
+    // IRn per-source request flag, one byte per source n (UM sec.15.2.1 p.479). EDGE source:
+    // the ICU clears IR when the request is ACCEPTED, so a software write of 0 after the
+    // handler ran would discard a request latched while the line was IER-masked (UM
+    // sec.15.2.1(1) p.480). LEVEL source: "when level detection is selected, do not write to
+    // the IR flag", neither 0 nor 1 (UM sec.15.2.1(2) p.480).
+    constexpr uintptr_t ICU_IR_BASE = KICKOS_LAYOUT_ICU_BASE;
+    // IERm, one bit per source: line n is IER[n>>3] bit (n & 7) (UM sec.15.2.2 p.481).
+    constexpr uintptr_t ICU_IER_BASE = KICKOS_LAYOUT_ICU_BASE + 0x200;
+    // IPRr 4-bit per-source priority (UM sec.15.2.4 p.482). The IPR index is NOT the vector
+    // number in general: the ICUD shares IPR entries per a source table (CMWI0 vector 30 =>
+    // IPR006), which vector_to_ipr maps.
+    constexpr uintptr_t ICU_IPR_BASE = KICKOS_LAYOUT_ICU_BASE + 0x300;
+    constexpr uintptr_t ICU_SWINTR = KICKOS_LAYOUT_ICU_BASE + 0x2E0;
+    constexpr uintptr_t ICU_SWINT2R = KICKOS_LAYOUT_ICU_BASE + 0x2E1;
+    // SWINT (27) and SWINT2 (26) SHARE ICU.IPR[3] (Renesas RX72N BSP iodefine, same RX700
+    // ICU: "SWINT2,SWINT share IPR level"). An IPR left at 0 means "never accepted", so a
+    // wrong address or index makes the switch silently dead on the first arch_switch.
+    constexpr uintptr_t ICU_IPR_SWINT = ICU_IPR_BASE + 3;
+
+    // SCI6, the board console: two DEDICATED edge vectors, each wired to its own INTB slot by
+    // the chip's startup.S; its TEI6/ERI6 are GROUPBL0 sources with no vector (UM Table 15.5
+    // p.523, Table 15.7 p.530). Their IPR index is the vector number (UM sec.15.2.3 p.482).
+    constexpr int SCI6_RXI_VECTOR = KICKOS_LAYOUT_LINE_SCI6_RXI;
+    constexpr int SCI6_TXI_VECTOR = KICKOS_LAYOUT_LINE_SCI6_TXI;
+
+    constexpr uintptr_t CMTW0_BASE = KICKOS_LAYOUT_CMTW_BASE;
+    constexpr uintptr_t CMTW1_BASE = KICKOS_LAYOUT_CMTW_BASE + 0x80;
+    constexpr int CMWI0_VECTOR = KICKOS_LAYOUT_LINE_CMTW_CMWI0;
+
+    // RSPAGEn at +n*8, REPAGEn at +4+n*8 (UM sec.17.2.1, 17.2.2).
+    constexpr uintptr_t MPU_RSPAGE_BASE = KICKOS_LAYOUT_MPU_BASE;
+    constexpr uintptr_t MPU_REPAGE_BASE = KICKOS_LAYOUT_MPU_BASE + 0x04;
+    constexpr uintptr_t MPU_MPEN = KICKOS_LAYOUT_MPU_BASE + 0x100;
+    constexpr uintptr_t MPU_MPBAC = KICKOS_LAYOUT_MPU_BASE + 0x104;
+    constexpr uintptr_t MPU_MPECLR = KICKOS_LAYOUT_MPU_BASE + 0x108;
+    constexpr uintptr_t MPU_MPESTS = KICKOS_LAYOUT_MPU_BASE + 0x10C;
+    constexpr uintptr_t MPU_MPDEA = KICKOS_LAYOUT_MPU_BASE + 0x114;
+    constexpr uintptr_t MPU_MPOPI = KICKOS_LAYOUT_MPU_BASE + 0x126; // 16-bit
+}
 
 static_assert(KICKOS_TRACE_ARCH == kickos::trace::ARCH_RX,
               "KICKOS_TRACE_ARCH does not match ArchId::ARCH_RX for rxv3");
@@ -168,8 +210,8 @@ namespace
 #if KICKOS_RX_MPU_TRACE
     void rx_mpu_mark(char c)
     {
-        constexpr uintptr_t SCI6_SSR = 0x0008A0C4; // TDRE = b7
-        constexpr uintptr_t SCI6_TDR = 0x0008A0C3;
+        constexpr uintptr_t SCI6_SSR = KICKOS_LAYOUT_SCI6_BASE + 0x04; // TDRE = b7
+        constexpr uintptr_t SCI6_TDR = KICKOS_LAYOUT_SCI6_BASE + 0x03;
         uint32_t spin = 0;
         while ((reg8(SCI6_SSR) & (1u << 7)) == 0)
         {
@@ -191,7 +233,6 @@ extern "C"
     // the kernel epilogue with PM=1.
     void kickos_user_thread_return(void);
 
-    // The CMTW input-clock frequency in Hz (PCLKB / prescale), defined by the chip.
     extern uint32_t kickos_rx_timer_hz;
 
     // Shared with switch.S: written by C and by asm.
@@ -203,7 +244,6 @@ extern "C"
     static_assert(sizeof(g_arch_next) == sizeof(struct arch_context*), "asm reads one word");
     static_assert(alignof(decltype(g_arch_current)) == alignof(struct arch_context*), "asm reads it naturally aligned");
 
-    // CMSIS core clock (ICLK), defined + maintained by the chip at PLL lock.
     extern uint32_t SystemCoreClock;
     uint64_t arch_cpu_clock_hz(void)
     {
@@ -213,7 +253,7 @@ extern "C"
 
 namespace
 {
-    using namespace kickos::units; // _s == 1e9 ns
+    using namespace kickos::units;
 
     inline uint64_t now_cycles()
     {
@@ -282,7 +322,6 @@ namespace
         {SWINT_VECTOR, 3},
         {CMWI0_VECTOR, 6},  // CMTW0 CMWI0(30) -> ICU.IPR[6]
     };
-    static_assert(CMWI0_VECTOR == KICKOS_LAYOUT_LINE_CMTW_CMWI0, "CMWI0's vector is the chip file's");
 
     inline unsigned vector_to_ipr(int vector)
     {
@@ -320,7 +359,7 @@ void arch_context_init(struct arch_context* ctx,
     constexpr uint32_t FPSW_INIT = 0x00000100u; // RX FPSW reset posture (RM sec.2.12)
 
     uintptr_t top = reinterpret_cast<uintptr_t>(stack_base) + stack_size;
-    top &= ~static_cast<uintptr_t>(3); // 4-byte aligned stack
+    top &= ~static_cast<uintptr_t>(3);
     uint32_t* sp = reinterpret_cast<uint32_t*>(top);
 
     uint32_t psw = PSW_THREAD_KERNEL;
@@ -524,10 +563,9 @@ void arch_fault_redirect_to_exit(void* frame)
     ff->saved[0] = reinterpret_cast<uint32_t>(&kickos_thread_fault_exit);
     ff->saved[1] = (ff->saved[1] & ~(PSW_PM | PSW_IPL_MASK)) | PSW_U | PSW_I;
 
-    // Reset USP below the stack top; exception entry restores SP and can hide
-    // the depth of an overflow (ISA UM 5.3.1). This handler uses ISP, so writing
-    // USP is safe. Use top-8 because kickos_rx_pendsw rejects zero distance
-    // from kernel_sp, and RX entry pushes PC/PSW on ISP without changing USP.
+    // An overflow can leave the USP anywhere (exception entry restores SP, ISA UM sec.5.3.1),
+    // so it is reset; this handler runs on the ISP. top - 8 because kickos_rx_pendsw's block
+    // leg refuses a USP at zero distance from kernel_sp.
     uint32_t const top = static_cast<uint32_t>(kickos_fault_stack_top());
     if (top != 0)
     {
@@ -536,12 +574,10 @@ void arch_fault_redirect_to_exit(void* frame)
     }
 }
 
-// Handle a USP outside both the user stack and the thread's kernel block.
-// Runs on ISP. Try containment before kpanic_enter, whose mask is permanent.
-// arch_ctx_redirect builds an exit frame on the kernel block without reading
-// the rejected USP. Use g_arch_current, which tracks the physical thread
-// even when the scheduler has already selected its replacement.
-// Return the context to resume, or terminate if containment fails.
+// A USP outside both the thread's stack and its kernel block. Runs on the ISP. Containment
+// comes before kpanic_enter, whose mask is permanent. Reads g_arch_current, which names the
+// physical thread even after the scheduler has chosen its replacement. Returns the context
+// to resume; terminates if containment fails.
 struct arch_context* kickos_rx_bad_usp(uint32_t usp)
 {
     struct arch_context* const next = kickos_thread_contain_wild_stack(g_arch_current, nullptr);
@@ -713,9 +749,8 @@ void arch_timer_arm(uint64_t deadline_ns)
     }
     if (cyc == 0)
     {
-        cyc = 1; // never program 0
+        cyc = 1;
     }
-    // CMWCR clock and prescale are set once by the chip init.
     reg16(CMTW0_BASE + CMTW_CMWSTR) = 0;
     reg32(CMTW0_BASE + CMTW_CMWCNT) = 0;
     reg32(CMTW0_BASE + CMTW_CMWCOR) = static_cast<uint32_t>(cyc);
@@ -730,13 +765,11 @@ void arch_timer_arm(uint64_t deadline_ns)
 void arch_timer_disarm(void)
 {
     reg16(CMTW0_BASE + CMTW_CMWSTR) = 0;
-    reg8(ICU_IR_BASE + CMWI0_VECTOR) = 0; // drop a pending compare-match request
+    reg8(ICU_IR_BASE + CMWI0_VECTOR) = 0;
 }
 
-// RX72M MPU (UM section 17): checks user mode only. Supervisor always has
-// access. Use MPBAC=0 and eight RSPAGEn/REPAGEn regions for user grants.
-// arch_mpu_apply stores the set; SWINT commits it after the physical switch
-// so the outgoing thread retains access to its stack until then.
+// The RX MPU (UM sec.17) checks user mode only. arch_mpu_apply only stashes the set; SWINT
+// commits it after the physical switch so the outgoing thread keeps its stack until then.
 #if KICKOS_HAVE_MPU
 uint32_t arch_mpu_encode(struct arch_mpu_region const* regions, size_t n,
                          struct arch_mpu_encoded* out)
@@ -760,15 +793,12 @@ static struct arch_mpu_encoded g_mpu_held;
 static bool g_mpu_held_valid = false;
 static_assert(MPU_REGION_COUNT <= ARCH_MPU_ENCODED_SLOTS,
               "the record is one cell per encoded slot and the commit indexes it by region");
-// And the other direction, which is the descriptor-budget refusal PMSAv7 and PMSAv8 spin on:
-// an image slot above the last hardware region would be dropped and its grant silently lost.
-// The RX region count is a chip constant rather than a register field, so the refusal is a
-// BUILD failure here and there is no runtime read to spin on.
+// And the other direction: an image slot above the last hardware region would be dropped
+// and its grant silently lost. The region count is a chip constant, so this refuses at build.
 static_assert(ARCH_MPU_ENCODED_SLOTS <= MPU_REGION_COUNT,
               "this part cannot hold a full per-thread set; refuse, never drop the top slots");
 
 #if KICKOS_BENCH
-// Declare the recorder here to avoid including the kernel benchmark header.
 extern "C" void kickos_bench_mpu_commit(uint32_t delta);
 
 // Match bench_cyccnt(): convert CMTW1 ticks (PCLKB/8) to ICLK cycles.
@@ -899,7 +929,6 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
     (void)n;
     (void)image;
 }
-// Nothing to program on this backend.
 void kickos_arch_mpu_commit(void) {}
 
 // Nothing is deferred on this backend, so the set is already live when apply returns.
@@ -918,8 +947,7 @@ size_t arch_mpu_min_region(void)
     return 16u;
 }
 
-// The RX MPU is byte-granular on a 16-byte page (RSPAGEn/REPAGEn hold addr[31:4]);
-// a window is exact iff base and base+size both land on a 16-byte boundary.
+// 16-byte pages: RSPAGEn/REPAGEn hold addr[31:4].
 bool arch_mpu_region_encodable(uintptr_t base, size_t size)
 {
     if (size < 16u)
@@ -1058,8 +1086,7 @@ void arch_irq_clear_pending(int line)
     }
     else
     {
-        // IR is vector-indexed, and only an EDGE vector may be written; see the ICU_IR_BASE
-        // note in regs.h.
+        // Only an EDGE vector's IR may be written; see ICU_IR_BASE.
         reg8(ICU_IR_BASE + static_cast<unsigned>(line)) = 0;
     }
     arch_irq_restore(s);
@@ -1082,7 +1109,7 @@ void arch_irq_inject(int irq)
     else
     {
         g_inject_line = irq; // recorded BEFORE the doorbell (the ISR reads it)
-        reg8(ICU_SWINT2R) = SWINT2R_SWINT2; // ring SWINT2 -> kickos_rx_swint2 dispatches it
+        reg8(ICU_SWINT2R) = SWINT2R_SWINT2;
     }
     arch_irq_restore(s);
 }
@@ -1103,7 +1130,7 @@ __attribute__((interrupt)) void kickos_rx_timer_isr(void)
     // No stop-and-clear here: ktime_on_timer disarms before it reads the queue, and
     // arch_timer_disarm stops CMTW0 BEFORE dropping the IR flag, so no match can re-latch
     // behind the clear the way it can when the flag is dropped first.
-    kickos_isr_timer(); // disarms, then re-arms the next deadline
+    kickos_isr_timer();
     g_in_isr = g_in_isr - 1;
 }
 
@@ -1168,7 +1195,7 @@ __attribute__((interrupt)) void kickos_rx_sci6_rxi_isr(void)
 }
 
 // --- One-time core bring-up ------------------------------------------------
-// The chip has already released the CMTW module stop and set the CMWCR prescale.
+// The chip has already released the CMTW module stops.
 void kickos_rxv3_init(void)
 {
     g_in_isr = 0;

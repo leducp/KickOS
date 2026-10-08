@@ -217,8 +217,8 @@ U-mode-confined claim now rests on a running in-tree test, not this record. The 
 all LANDED:
 - `virt_rv32.ld`: `_code_size`/`_appdata_size` = 128 K; colon-selectors routing app + libc/libgcc/
   libstdc++/libkickos_user `.data/.sdata/.bss/.sbss` into `.appdata`/`.appbss`; `__global_pointer$`
-  anchored inside `.appdata`; `_appdata_lma` exported.
-- `chip_virt_rv32.cc` `Reset_Handler`: copy `.appdata` LMA->VMA before zeroing `.appbss`.
+  anchored inside `.appdata`; the init tables list `.appdata`'s copy ahead of `.data`.
+- `chip_virt_rv32.cc` `Reset_Handler`: `kickos_ranges_init` copies `.appdata` before zeroing `.appbss`.
 - cmake: KickOS libs built `-msmall-data-limit=0`; app NOT (keep small-data for unwinding).
 
 Result:

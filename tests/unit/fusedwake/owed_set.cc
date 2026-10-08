@@ -6,7 +6,7 @@
 // one is kept for the deferred local reschedule. Test both priority orders.
 // Observe peer requests through kickos_kernel_core_resched_owed.
 // Also check consumed-mask write-back after reply, flags, and buffer errors,
-// and propagation of write-back failure.
+// propagation of write-back failure, and where a notification wait marks its park.
 
 #include <string.h>
 
@@ -66,7 +66,7 @@ namespace
     {
         uint32_t const was = g_core;
         g_core = CORE_PEER;
-        (void)kickos_kernel_core_resched_take();
+        (void)klock_resched_take();
         g_core = was;
     }
 
@@ -106,16 +106,16 @@ namespace
         for (Thread* t : {f->answered, f->sender})
         {
             detach_ready(t);
-            t->state = ThreadState::BLOCKED;
+            testfix::seat_blocked(t);
         }
         {
             IrqLock lock;
-            sched::reschedule();
+            sched::reschedule(nullptr, lock);
         }
         ASSERT_EQ(sched::current(), f->server);
         // Give the peer a running thread so it is eligible for reschedule requests.
         detach_ready(f->peer_running);
-        f->peer_running->state = ThreadState::RUNNING;
+        f->peer_running->state.to<ThreadState::RUNNING>();
         kickos::testfix::seat_running_on(f->peer_running, CORE_PEER);
 
         Endpoint* const ep = endpoint();
@@ -160,7 +160,7 @@ namespace
         attach_caps(l->server, KICKOS_CAP_CHILD_WIDTH);
         {
             IrqLock lock;
-            sched::reschedule();
+            sched::reschedule(nullptr, lock);
         }
         l->irq = KCAP_INVALID;
         l->note = KCAP_INVALID;
@@ -354,4 +354,36 @@ TEST_F(FusedWake, a_fused_wait_over_a_line_refuses_a_server_not_pinned_to_its_cl
     EXPECT_EQ(endpoint_reply_recv(KOS_CAP_NONE, 0, 0, reinterpret_cast<uintptr_t>(&opts)),
               -KOS_ENOTIFY);
     EXPECT_EQ(opts.notify, l.bit);
+}
+
+namespace
+{
+    uint32_t g_signalled_note = KCAP_INVALID;
+
+    // The fixture poisons the parked result, which a delivery leaves as the wait wrote it.
+    void signal_the_parked_server(Thread* parked)
+    {
+        parked->wait_result = 0;
+        ASSERT_EQ(notify_signal(parked, g_signalled_note), 0);
+    }
+}
+
+TEST_F(FusedWake, the_bench_park_mark_lands_under_the_lock_ahead_of_the_block)
+{
+    Line l{};
+    ASSERT_NO_FATAL_FAILURE(seat_server_with_a_line(&l));
+    bench_seam_reset();
+    g_signalled_note = l.note;
+    wake_next_park(signal_the_parked_server);
+    uint32_t const parks = g_parks_committed;
+
+    uint32_t bits = 0;
+    ASSERT_EQ(notify_wait(l.server, l.note, l.bit, KOS_TIMEOUT_NONE, &bits), 0);
+    ASSERT_EQ(bits, l.bit);
+    BenchParkMark const& m = g_bench_seam_park_mark;
+    EXPECT_EQ(m.calls, 1u);
+    EXPECT_TRUE(m.locked) << "the mark ran outside the kernel lock";
+    EXPECT_EQ(m.by, l.server) << "the mark ran after the switch away";
+    EXPECT_EQ(m.state, ThreadState::RUNNING) << "the mark ran after the park";
+    EXPECT_EQ(m.parks, parks) << "the mark ran after the park committed";
 }

@@ -3,22 +3,20 @@
 //
 // The libc reentrant-state seam. The kernel never names struct _reent and includes no newlib
 // header: the user side STATES where the state lives, in a descriptor of plain pointers and
-// widths, and the kernel does the acquiring, the priming and the seating itself.
+// widths.
 //
-// KICKOS_LIBC_REENT names two postures. A cross toolchain gives the kernel newlib's per-thread
-// state to own. The sim's libc is the HOST's and owns its own, so nothing below is compiled
-// there; do NOT answer that posture with a descriptor of zero slots, whose seat word is an
-// address the kernel would still write through.
+// The sim's libc is the HOST's and owns its own state, so nothing below is compiled there; do
+// NOT answer that posture with a descriptor of zero slots, whose seat word is an address the
+// kernel would still write through.
 //
-// Where libc finds the running thread's state is KICKOS_REENT_PER_THREAD's choice. At 0 it is ONE
-// word the kernel rewrites at every switch, correct only while one core runs the threads that
-// share it. At 1 libc calls __getreent and the thread pointer answers it: through the first word
-// of the thread's TLS control block under KICKOS_REENT_IN_TCB, and as the thread pointer itself
-// otherwise. Either is written once when the thread is created, and the descriptor's `seat` is
-// then null.
+// At KICKOS_REENT_PER_THREAD 0 libc resolves from ONE word the kernel rewrites at every
+// switch, correct only while one core runs the threads that share it. At 1 libc calls
+// __getreent and the thread pointer answers it: through the first word of the thread's TLS
+// control block under KICKOS_REENT_IN_TCB, as the thread pointer itself otherwise. Written once
+// at thread creation, with the descriptor's `seat` then null.
 //
-// The seam is DATA: where a translating backend splits the image every EL0-reachable leaf carries
-// privileged-execute-never, so the kernel may not call app text at all.
+// The seam is DATA: where a translating backend splits the image every EL0-reachable leaf
+// carries privileged-execute-never, so the kernel may not call app text at all.
 //
 // EVERY WRITE IS A kmemcpy AND NEVER A TYPED STORE. struct _reent is in scope only on the user
 // side, so a kernel store through void** asserts an effective type the object does not have; and
@@ -32,8 +30,8 @@
 
 #include <stddef.h>
 
-// Global scope, matching kickos/arch/arch.h: an elaborated `struct arch_aspace*` first seen inside
-// namespace kickos would declare a second, unrelated type.
+// Global scope: an elaborated `struct arch_aspace*` first seen inside namespace kickos would
+// declare a second, unrelated type.
 struct arch_aspace;
 
 #if KICKOS_LIBC_REENT
@@ -60,32 +58,27 @@ extern "C"
 
     extern KickosReentSeam const kickos_reent_seam;
 
-    // User side, and defined only where libc builds per-thread scratch on the heap on first
-    // use: returns the calling thread's to the heap and clears it. The exit stub runs it
-    // before the trap because nothing after that can: the kernel reaches neither the heap nor
-    // the allocator, and the next prime of the slot overwrites the pointers.
+    // User side, defined only where libc builds per-thread scratch on the heap on first use.
+    // The exit stub runs it before the trap because nothing after that can: the kernel reaches
+    // neither the heap nor the allocator, and the next prime overwrites the pointers.
     void kickos_reent_release(void);
 }
 
 namespace kickos
 {
-    // Boot. Must precede the first thread_create, which acquires out of the descriptor.
+    // Must precede the first thread_create.
     void reent_seam_read(void);
 
-    // The state a thread-pool slot owns, UNPRIMED. A TCB the pool does not own (idle)
-    // passes a negative index and gets the process-wide state.
+    // The state a pool slot owns, UNPRIMED. A negative index (idle) gets the process-wide state.
     void* reent_state_for_slot(int slot);
 
-    // Bring a slot to its post-boot contents. SWITCH-IN AND NOWHERE ELSE: it writes hundreds
-    // of bytes into memory the INCOMING thread owns.
+    // SWITCH-IN AND NOWHERE ELSE: it writes hundreds of bytes into memory the INCOMING thread
+    // owns. `space` is the incoming thread's own, reached through the kaccess seam; null with
+    // no translating backend.
     //
-    // `space` is the incoming thread's own, and both of these reach it through the kaccess seam
-    // rather than through the running translation. Null on a board with no translating backend.
-    //
-    // A REFUSED WRITE SLAYS THE INCOMING THREAD AND MUST NOT PANIC: both run with
-    // kernel().current already assigned to that thread, and switch_book's claim three statements
-    // past the call is what redirects the resume. On sched::start's path nothing claims a resume,
-    // so a kill taken at the first switch lands at that thread's next syscall entry.
+    // A REFUSED WRITE SLAYS THE INCOMING THREAD AND MUST NOT PANIC: kernel().current is already
+    // that thread, and switch_book's claim three statements past the call redirects the resume.
+    // On sched::start's path nothing claims a resume, so a kill lands at its next syscall entry.
     void reent_prime(struct arch_aspace* space, void* state);
 
 #if KICKOS_REENT_IN_TCB
@@ -94,13 +87,12 @@ namespace kickos
     void reent_seat_tcb(void* tls, void* state);
 #endif
 #if not KICKOS_REENT_PER_THREAD
-    // Make `state` the one libc resolves from. Runs on EVERY switch.
+    // Runs on EVERY switch.
     void reent_seat(struct arch_aspace* space, void* state);
 #endif
 
 #if defined(KICKOS_ENABLE_SELFTEST)
-    // Times reent_prime or reent_seat wrote the app half for a thread whose memory view was not
-    // installed. Must be 0 (kickos/aspace.h, aspace_seated_for).
+    // Writes made for a thread whose memory view was not installed. Must be 0.
     size_t reent_unseated_writes(void);
 #endif
 }

@@ -47,11 +47,6 @@ namespace kickos
             }
             return rights;
         }
-
-        VirtualRanges const* current_ranges(Thread const* c)
-        {
-            return domain_ranges(task_domain(c->task));
-        }
     }
 #endif
 
@@ -130,7 +125,7 @@ namespace kickos
             }
         }
 #if KICKOS_HAVE_ASPACE
-        VirtualRanges const* const ranges = current_ranges(c);
+        VirtualRanges const* const ranges = domain_ranges(thread_domain(c));
         if (ranges != nullptr and ranges->covers(ptr, len, map_rights_of(need)))
         {
             return true;
@@ -154,7 +149,7 @@ namespace kickos
 #if KICKOS_HAVE_ASPACE
         // A self-grant seats no region, so the array below holds no entry for a block this
         // question is ever asked about; a translating backend records the type here.
-        VirtualRanges const* const ranges = current_ranges(c);
+        VirtualRanges const* const ranges = domain_ranges(thread_domain(c));
         if (ranges != nullptr)
         {
             uint8_t memtype = static_cast<uint8_t>(ARCH_MAP_NORMAL);
@@ -240,7 +235,7 @@ namespace kickos
             }
 #endif
 #if KICKOS_HAVE_ASPACE
-            VirtualRanges const* const ranges = domain_ranges(task_domain(c->task));
+            VirtualRanges const* const ranges = domain_ranges(thread_domain(c));
             uint16_t const holder = static_cast<uint16_t>(kernel().threads.index_of(c) + 1);
             for (size_t i = 0; ranges != nullptr and i < VirtualRanges::capacity(); i++)
             {
@@ -437,7 +432,7 @@ namespace kickos
 #if KICKOS_HAVE_ASPACE
             if (read_asks or write_asks)
             {
-                VirtualRanges const* const ranges = current_ranges(c);
+                VirtualRanges const* const ranges = domain_ranges(thread_domain(c));
                 if (ranges != nullptr)
                 {
                     if (read_asks and ranges->covers(ptr, read_len, map_rights_of(ARCH_MPU_R)))
@@ -462,9 +457,6 @@ namespace kickos
         }
         return true;
     }
-
-    // Callers must validate permissions first. Null space means a directly
-    // accessible address. Reject overlap because kmemcpy copies forward only.
 
     namespace
     {
@@ -506,7 +498,12 @@ namespace kickos
         }
 #endif
 
-#if KICKOS_ALIAS_DCACHE
+#if not KICKOS_ALIAS_DCACHE
+        // The kernel reaches user memory with the type the user maps it, so nothing is owed.
+        void alias_sync(void const*, size_t) {}
+#endif
+
+#if KICKOS_HAVE_ASPACE or KICKOS_ALIAS_DCACHE
         // The dropping ahead of the write is owed too: a partial-line write merges into a stale
         // line, and the clean after it writes the stale bytes back.
         void chunk_copy(void* d, bool d_uncached, void const* s, bool s_uncached, size_t n)
@@ -540,11 +537,7 @@ namespace kickos
                 bool d_uncached = false;
                 if (dspace != nullptr)
                 {
-#if KICKOS_ALIAS_DCACHE
                     d = arch_aspace_acquire(dspace, dst, &d_uncached);
-#else
-                    d = arch_aspace_acquire(dspace, dst, nullptr);
-#endif
                     if (d == nullptr)
                     {
                         return false;
@@ -555,11 +548,7 @@ namespace kickos
                 bool s_uncached = false;
                 if (sspace != nullptr)
                 {
-#if KICKOS_ALIAS_DCACHE
                     s = arch_aspace_acquire(sspace, src, &s_uncached);
-#else
-                    s = arch_aspace_acquire(sspace, src, nullptr);
-#endif
                     if (s == nullptr)
                     {
                         if (dspace != nullptr)
@@ -570,13 +559,7 @@ namespace kickos
                     }
                     chunk = granule_chunk(src, chunk);
                 }
-#if KICKOS_ALIAS_DCACHE
                 chunk_copy(d, d_uncached, s, s_uncached, chunk);
-#else
-                (void)d_uncached;
-                (void)s_uncached;
-                kmemcpy(d, s, chunk);
-#endif
                 if (sspace != nullptr)
                 {
                     arch_aspace_release(sspace, src);
@@ -665,11 +648,7 @@ namespace kickos
 #if KICKOS_HAVE_ASPACE
     UserOwner user_space_of(Thread const* t)
     {
-        if (t == nullptr)
-        {
-            return nullptr;
-        }
-        return domain_space(task_domain(t->task));
+        return domain_space(thread_domain(t));
     }
 #elif KICKOS_ARCH_ARENA_DCACHE
     UserOwner user_space_of(Thread const* t)
@@ -714,7 +693,6 @@ namespace kickos
         {
             return false;
         }
-#if KICKOS_ALIAS_DCACHE
         void* d = reinterpret_cast<void*>(udst);
         bool uncached = false;
 #if KICKOS_HAVE_ASPACE
@@ -726,8 +704,10 @@ namespace kickos
                 return false;
             }
         }
-#else
+#elif KICKOS_ARCH_ARENA_DCACHE
         uncached = region_uncached(dspace, udst, sizeof(void*));
+#else
+        (void)dspace;
 #endif
         if (uncached)
         {
@@ -745,26 +725,6 @@ namespace kickos
         }
 #endif
         return true;
-#else
-#if KICKOS_HAVE_ASPACE
-        if (dspace != nullptr)
-        {
-            void* const d = arch_aspace_acquire(dspace, udst, nullptr);
-            if (d == nullptr)
-            {
-                return false;
-            }
-            __builtin_memcpy(__builtin_assume_aligned(d, sizeof(void*)), kword, sizeof(void*));
-            arch_aspace_release(dspace, udst);
-            return true;
-        }
-#else
-        (void)dspace;
-#endif
-        __builtin_memcpy(__builtin_assume_aligned(reinterpret_cast<void*>(udst), sizeof(void*)),
-                         kword, sizeof(void*));
-        return true;
-#endif
     }
 
     // Compare overlap only within the same space, which is every pair where the backend does

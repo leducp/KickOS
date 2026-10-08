@@ -16,7 +16,7 @@ foreach(_fixture IN LISTS _fixtures)
   list(APPEND _tables "${CMAKE_CURRENT_BINARY_DIR}/table_${_fixture}.c")
 endforeach()
 list(JOIN _requests "," _requests)
-file(GLOB _tool CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/tools/compose/kickos_compose/*.py")
+kickos_compose_inputs(_tool "${PROJECT_SOURCE_DIR}/tools/compose")
 file(GLOB_RECURSE _platform CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/platform/*.yaml")
 file(GLOB _systems CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/examples/composition/systems/*.yaml")
 add_custom_command(
@@ -25,9 +25,7 @@ add_custom_command(
           -DSTATE=${CMAKE_CURRENT_BINARY_DIR}/compose "-DFIXTURES=${_requests}"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/emit_fixture.cmake"
   DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/emit_fixture.cmake" "${CMAKE_CURRENT_SOURCE_DIR}/emit_fixture.py"
-          "${PROJECT_SOURCE_DIR}/tools/compose/tests/test_arms.py"
-          "${PROJECT_SOURCE_DIR}/tools/compose/pyproject.toml" "${PROJECT_SOURCE_DIR}/tools/compose/uv.lock"
-          ${_tool} ${_platform} ${_systems}
+          "${PROJECT_SOURCE_DIR}/tools/compose/tests/test_arms.py" ${_tool} ${_platform} ${_systems}
   COMMENT "Emitting the lookup tests' tables"
   VERBATIM)
 

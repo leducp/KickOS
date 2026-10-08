@@ -40,7 +40,7 @@ namespace kickos
                 Thread* const t = spawn(0, PRIO);
                 t->stack_base = reinterpret_cast<void*>(base);
                 t->stack_size = size;
-                kernel().current[kickos_kernel_core()] = t;
+                kernel().current(kickos_kernel_core()) = t;
                 return t;
             }
 
@@ -147,8 +147,8 @@ namespace kickos
             //
             // THE OTHER BRANCH CANNOT BE REACHED ON THE HOST AT ALL: the sim's struct
             // arch_context is an opaque byte array (arch/sim/include/kickos/arch/context.h)
-            // with no kernel_sp member, so the block arm does not compile against it.
-            // tests/static/check_death_stack_seating.sh is what gates that branch instead.
+            // with no kernel_sp member, so the block arm does not compile against it. The
+            // death stubs' seat assert, run by the emulator fault gates, holds that branch.
             static_assert(KICKOS_KERNEL_STACKS == 0,
                           "the host now compiles kickos_fault_stack_top's kernel-block arm, "
                           "which nothing in this file covers: give the sim's arch_context a "
@@ -168,7 +168,7 @@ namespace kickos
                 Thread* const t = spawn(0, PRIO);
                 t->stack_base = nullptr;
                 t->stack_size = 0;
-                kernel().current[kickos_kernel_core()] = t;
+                kernel().current(kickos_kernel_core()) = t;
                 EXPECT_EQ(kickos_fault_stack_top(), 0u);
 
                 t->stack_base = reinterpret_cast<void*>(STACK_BASE);
@@ -189,7 +189,7 @@ namespace kickos
             //                         nobody established it may use.
             TEST_F(FaultBand, an_unattributable_fault_escalates_and_relocates_nothing)
             {
-                kernel().current[kickos_kernel_core()] = nullptr;
+                kernel().current(kickos_kernel_core()) = nullptr;
                 EXPECT_TRUE(kickos_fault_below_stack(STACK_BASE - 4));
                 EXPECT_EQ(kickos_fault_stack_top(), 0u);
             }
@@ -201,7 +201,7 @@ namespace kickos
                 Thread* const t = spawn(0, PRIO);
                 t->stack_base = nullptr;
                 t->stack_size = 0;
-                kernel().current[kickos_kernel_core()] = t;
+                kernel().current(kickos_kernel_core()) = t;
                 EXPECT_TRUE(kickos_fault_below_stack(STACK_BASE - 4));
             }
         }

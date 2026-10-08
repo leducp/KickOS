@@ -78,9 +78,9 @@ namespace kickos
                 g_mid.sweep_open = cap_teardown_active();
                 run_exit_in_gap(g_mid.light, 0);
                 IrqLock lock;
-                task_drop_hold(g_mid.group);
+                task_drop_hold(g_mid.group, lock);
                 int err = 0;
-                g_mid.restart = task_create(FIXTURE_TASK_TAG, /*caller=*/0u, nullptr, 0,
+                g_mid.restart = task_create(FIXTURE_TASK_TAG, nullptr, 0,
                                             /*mem_attr=*/0u, /*donor=*/nullptr, &err);
                 g_mid.straggler = false;
                 Kernel& k = kernel();
@@ -107,7 +107,7 @@ namespace kickos
                 g_mid = MidSweep{};
                 g_mid.light = *light;
                 g_mid.group = group;
-                kernel().current[kickos_kernel_core()] = *heavy;
+                kernel().current(kickos_kernel_core()) = *heavy;
                 return group;
             }
         }
@@ -121,8 +121,8 @@ namespace kickos
             Thread* light = nullptr;
             Task* const group = slain_pair(&heavy, &light);
             Thread* const waiter = seat_pool(SLOT_WAITER, PRIO_LOW);
-            kernel().policy->on_remove(waiter);
-            waiter->state = ThreadState::BLOCKED;
+            policy_on_remove(waiter);
+            testfix::seat_blocked(waiter);
             waiter->wait_kind = WAIT_TASK_EMPTY;
             waiter->wait_obj = group;
             waiter->wait_result = WAIT_RESULT_POISON;
@@ -172,7 +172,7 @@ namespace kickos
 
             {
                 IrqLock lock;
-                task_orphan_created_by(FIXTURE_TASK_TAG);
+                task_orphan_created_by(FIXTURE_TASK_TAG, lock);
             }
 
             EXPECT_EQ(member->cancel_kind, CANCEL_NONE);
@@ -191,7 +191,7 @@ namespace kickos
             join_task(entry, group);
             entry->task_entry = true;
             stray->task = group;
-            kernel().current[kickos_kernel_core()] = entry;
+            kernel().current(kickos_kernel_core()) = entry;
 
             run_exit(0);
 

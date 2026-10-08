@@ -7,13 +7,14 @@
 // chapters). Hand-rolled, no ESP-IDF/HAL sources.
 
 #include <kickos/arch/arch.h>
-#include <kickos/arch/pin_guard.h>
+#include "crt_tail.h"
+#include "pin_guard.h"
 #include <kickos/arch/doorbell_protocol.h>
 #include <kickos/arch/lx6_doorbell.h>
-#include <kickos/arch/clk_q32.h> // shared Q32 tickless-clock reciprocal + multiply
-#include <kickos/config/limits.h> // KICKOS_POLL_SPIN_MAX
+#include <kickos/arch/clk_q32.h>
+#include <kickos/config/limits.h>
 #include <kickos/console_tx.h>
-#include <kickos/sys/abi.h> // KOS_E* taxonomy (arch_pinmux_set)
+#include <kickos/sys/abi.h>
 
 #include <stdint.h>
 
@@ -33,11 +34,6 @@ namespace mmap = kickos::esp32::mmap;
 namespace reg = kickos::esp32::reg;
 namespace irq = kickos::esp32::irq;
 
-namespace kickos
-{
-    int kmain(int argc, char** argv);
-}
-
 extern "C"
 {
     void kickos_lx6_init(void);
@@ -52,13 +48,8 @@ extern "C"
     void kickos_lx6_bind_dev_int(int cpu_int, int line, int core);
 
     extern uint32_t _sidata, _sdata, _edata, _sbss, _ebss;
-    extern void (*__init_array_start[])();
-    extern void (*__init_array_end[])();
 
-    // The ROM first-stage loader leaves the CPU on the 40 MHz crystal (no PLL,
-    // since KickOS boots without the IDF second-stage bootloader). This is the
-    // reset value; clock_init_240mhz() (arch_init) raises the PLL and rewrites
-    // this to 240 MHz so the CCOUNT/CCOMPARE0 ns<->cycle math stays coherent.
+    // The ROM loader leaves the CPU on the 40 MHz crystal; clock_init_240mhz rewrites this.
     uint32_t SystemCoreClock = 40000000u;
 }
 
@@ -109,23 +100,10 @@ namespace
         r32(reg::dport::app_intr_map(source)) = app;
     }
 
-    // Logical kernel IRQ line the console_tx drain ISR is bound to (irq_table index), a
-    // namespace distinct from the CPU interrupt number: on this arch the arch.h irq_* seam is
-    // a software controller over logical lines, decoupled from the physical Xtensa interrupts.
-    // See regs irq.h for the three numbering spaces.
-
-    // --- Watchdogs. The ROM (running the image in flash-boot mode) leaves three
-    //     watchdogs armed: the RTC WDT and the two Timer Group MWDTs (TIMG0, TIMG1).
-    //     Each must be fully disabled or it resets the part within seconds of
-    //     bring-up. Each register file is unlocked by writing its 32-bit write-
-    //     protect key (default 0x50D83AA1), edited, then re-locked (write 0).
-    //
-    //     Clearing WDT_EN alone is not enough: the ROM arms the stage-0 watchdog
-    //     via the separate FLASHBOOT_MOD_EN bit (a flash-boot watchdog independent
-    //     of WDT_EN), which stays live until explicitly cleared, so each WDT needs
-    //     both WDT_EN and FLASHBOOT_MOD_EN cleared. The classic ESP32 has no RTC
-    //     super-watchdog (SWD); RTC_CNTL_SWD_* first appears on the ESP32-S2, so
-    //     there is nothing more to disable here.
+    // The ROM leaves the RTC WDT and both TIMG MWDTs armed, each resetting the part within
+    // seconds. Clearing WDT_EN alone is not enough: FLASHBOOT_MOD_EN arms an independent
+    // flash-boot watchdog. The classic ESP32 has no RTC super-watchdog (RTC_CNTL_SWD_* first
+    // appears on the ESP32-S2).
     void timg_wdt_disable(uintptr_t base)
     {
         r32(base + reg::timg::WDTWPROTECT_OFF) = reg::timg::WDT_WKEY;
@@ -143,20 +121,12 @@ namespace
         timg_wdt_disable(mmap::TIMG1_BASE);
     }
 
-    // --- CPU clock: raise the core from the ROM's 40 MHz XTAL to the 240 MHz PLL.
-    //     The classic ESP32 makes 240 MHz from the 480 MHz BBPLL divided by 2. The
-    //     BBPLL analog register file is NOT memory-mapped: it is reached over the
-    //     chip's internal "reg-I2C" bus, whose bit-level transaction lives in the ESP32
-    //     ROM, so the ROM routine is called at its fixed entry (ROM_REGI2C_WRITE,
-    //     the symbol the IDF links as _regi2c_impl_write). Register addresses/bitfields
-    //     and the 480 MHz / 40 MHz-XTAL analog values are clean-room facts from the
-    //     ESP32 TRM (RTC_CNTL + DPORT clock chapters, analog-PLL description).
+    // 240 MHz = 480 MHz BBPLL / 2. The BBPLL analog registers are NOT memory-mapped: they sit
+    // on the internal reg-I2C bus, whose transaction lives in ROM (ROM_REGI2C_WRITE).
 
-    // The classic-ESP32 BBPLL has NO memory-mapped lock/ready bit. The available
-    // barrier is a slow-clock-domain one: start a TIMG0 RTC calibration for 0 slow
-    // cycles and wait for RDY, which the hardware sets on the next RTC-slow edge, so
-    // the analog writes have provably latched across the clock-domain crossing before
-    // the CPU is switched onto the PLL.
+    // The BBPLL has no memory-mapped lock/ready bit. The barrier is a TIMG0 RTC calibration
+    // for 0 slow cycles: RDY sets on the next RTC-slow edge, so the analog writes have
+    // latched across the clock-domain crossing before the CPU moves onto the PLL.
     constexpr uintptr_t TIMG0_RTCCALICFG = mmap::TIMG0_BASE + reg::timg::RTCCALICFG_OFF;
 
     inline uint32_t rd_ccount()
@@ -166,9 +136,7 @@ namespace
         return c;
     }
 
-    // Busy-wait `us` microseconds. CCOUNT ticks at the CPU clock, so the caller
-    // passes the cycles-per-us for whichever clock is live at the call site (40
-    // before the PLL switch, 240 after).
+    // CCOUNT ticks at the CPU clock: `mhz` must be the clock live at the call site.
     inline void delay_us(uint32_t us, uint32_t mhz)
     {
         uint32_t start = rd_ccount();
@@ -183,16 +151,13 @@ namespace
 
     void bbpll_write(uint8_t reg_add, uint8_t data)
     {
-        // ROM _regi2c_impl_write(block, host_id, reg_add, data): windowed ABI at a fixed
-        // ROM address, doing the whole analog reg-I2C transaction internally.
         auto rom_regi2c_write =
             reinterpret_cast<void (*)(uint8_t, uint8_t, uint8_t, uint8_t)>(ROM_REGI2C_WRITE);
         rom_regi2c_write(reg::system::I2C_BBPLL, reg::system::I2C_BBPLL_HOSTID, reg_add, data);
     }
 
-    // Wait one RTC-slow cycle so pending analog/RTC writes latch across the clock
-    // domain. Bounded: if RDY never sets (e.g. slow clock stopped) it returns after the
-    // cap rather than hanging; the caller's fixed settle delay still covers it.
+    // Bounded: if RDY never sets (slow clock stopped), the caller's fixed settle delay
+    // still covers it.
     void wait_slow_cycle()
     {
         r32(TIMG0_RTCCALICFG) = 0;                       // CLK_SEL=RTC_SLOW, MAX=0, clear RDY/START
@@ -208,19 +173,15 @@ namespace
 
     void clock_init_240mhz()
     {
-        // Open the internal reg-I2C bus to the BBPLL: reset gates all analog blocks,
-        // then ungate BBPLL (bit 17).
         r32(reg::system::ANA_CONFIG) |= reg::system::ANA_CONFIG_ALL_GATES;
         r32(reg::system::ANA_CONFIG) &= ~reg::system::ANA_CONFIG_BBPLL_GATE;
 
-        // Power up the reg-I2C bus and the BBPLL analog block (clear force-power-down).
         r32(reg::rtc_cntl::OPTIONS0) &= ~reg::rtc_cntl::BIAS_I2C_FORCE_PD;
         r32(reg::rtc_cntl::OPTIONS0) &= ~(reg::rtc_cntl::BB_I2C_FORCE_PD |
                                           reg::rtc_cntl::BBPLL_FORCE_PD |
                                           reg::rtc_cntl::BBPLL_I2C_FORCE_PD);
         wait_slow_cycle(); // the power-up must latch before the reg-I2C config writes
 
-        // BBPLL reset/calibration defaults (byte offsets 0/1/4/10/12 in the block).
         bbpll_write(0, 0x18);  // IR_CAL_DELAY
         bbpll_write(1, 0x20);  // IR_CAL_EXT_CAP
         bbpll_write(4, 0x9A);  // OC_ENB_FCAL
@@ -246,8 +207,7 @@ namespace
         delay_us(160, 40);     // PLL lock settle (no lock bit on this chip; conservative)
         wait_slow_cycle();     // config latched across the domain before the source flip
 
-        // Select 480/2 = 240 MHz, then route the CPU off the XTAL onto the PLL. The
-        // divider must be set before the source flip.
+        // The 480/2 divider must be set before the source flips onto the PLL.
         r32(reg::dport::CPU_PER_CONF) = reg::dport::CPUPERIOD_SEL_240;
         uint32_t clk = r32(reg::rtc_cntl::CLK_CONF);
         clk &= ~(reg::rtc_cntl::SOC_CLK_SEL_MASK << reg::rtc_cntl::SOC_CLK_SEL_SHIFT);
@@ -257,27 +217,18 @@ namespace
         // CCOUNT/CCOMPARE0 now tick at 240 MHz: publish it so arch_xtensa.cc's
         // ns<->cycle math (which reads SystemCoreClock live) stays coherent.
         SystemCoreClock = reg::system::CPU_CLOCK_HZ;
-        delay_us(30, 240); // settle at the new clock (240 cyc/us now)
+        delay_us(30, 240);
 
         // APB doubled 40->80 MHz, so the ROM's UART0 divider now halves the baud.
-        // Drain any in-flight byte, then recompute CLKDIV for 80 MHz APB. clkdiv is
-        // in 1/16 units: integer=[19:0], fraction=[23:20].
         while (((r32(reg::uart::STATUS) >> reg::uart::TXFIFO_CNT_S) & reg::uart::TXFIFO_CNT_MASK) != 0)
         {
         }
-        uint32_t clkdiv16 = (reg::system::APB_CLOCK_HZ << 4) / reg::uart::CONSOLE_BAUD;
-        uint32_t integer = clkdiv16 >> 4;
-        uint32_t frac = clkdiv16 & 0xF;
-        r32(reg::uart::CLKDIV) =
-            (frac << reg::uart::CLKDIV_FRAC_S) | (integer & reg::uart::CLKDIV_INT_MASK);
+        r32(reg::uart::CLKDIV) = reg::uart::clkdiv(reg::system::APB_CLOCK_HZ, reg::uart::CONSOLE_BAUD);
     }
 
-    // --- Monotonic clock: TIMG0 timer T0, a 64-bit free-running up-counter -------
-    // Replaces the CCOUNT-backed arch_clock_now fallback (arch/xtensa/lx6). CCOUNT is a
-    // 32-bit core cycle counter software-extended to 64 bits, so a wrap not observed
-    // within one 2^32-cycle window (~17.9 s at 240 MHz) is lost; a native 64-bit counter
-    // has no software wrap word to miss. CCOUNT is also per core and the two are not
-    // synchronised, while TIMG0 T0 is one counter both CPUs reach at one address.
+    // TIMG0 T0 is the monotonic clock, not the CCOUNT fallback (arch/xtensa/lx6): CCOUNT is
+    // per core and unsynchronised, and its software-extended wrap is lost if not observed
+    // within ~17.9 s at 240 MHz.
     constexpr uintptr_t TIMG0_T0CONFIG = mmap::TIMG0_BASE + reg::timg::T0CONFIG_OFF;
     constexpr uintptr_t TIMG0_T0LO = mmap::TIMG0_BASE + reg::timg::T0LO_OFF;
     constexpr uintptr_t TIMG0_T0HI = mmap::TIMG0_BASE + reg::timg::T0HI_OFF;
@@ -286,27 +237,17 @@ namespace
     constexpr uintptr_t TIMG0_T0LOADHI = mmap::TIMG0_BASE + reg::timg::T0LOADHI_OFF;
     constexpr uintptr_t TIMG0_T0LOAD = mmap::TIMG0_BASE + reg::timg::T0LOAD_OFF;
 
-    // Prescaler off the 80 MHz APB (fixed on the PLL for both 160/240 MHz CPU; see
-    // clock_init_240mhz). reg::timg::DIVIDER=2 gives the highest resolution while
-    // dodging the field's special-cased 0/1: 80/2 = 40 MHz -> 25 ns/tick. A 64-bit
-    // counter at 40 MHz wraps in ~14600 years, so there is no wrap concern at all.
-    constexpr uint32_t TIMG_HZ = reg::system::APB_CLOCK_HZ / reg::timg::DIVIDER; // 40 MHz
+    // APB is 80 MHz on the PLL whatever the CPU divider. DIVIDER=2, not 1: the field
+    // special-cases 0 and 1.
+    constexpr uint32_t TIMG_HZ = reg::system::APB_CLOCK_HZ / reg::timg::DIVIDER;
 
-    // ticks -> ns reciprocal multiply: ns = ticks*1e9/HZ via mult = (1e9<<32)/HZ,
-    // ns = (ticks*mult)>>32, done as a 64x64->64 split so the product never overflows.
-    // HZ is a compile-time constant here (APB is fixed on the PLL), so the one divide
-    // folds at build time.
     constexpr uint64_t TIMG_NS_MULT = kickos::arch_clk_recip_q32(TIMG_HZ);
 
     void timg_clock_init()
     {
-        // Boot-order constraint: arch_clock_now MUST NOT run before this, and this
-        // MUST run AFTER clock_init_240mhz (the counter rate is derived off the
-        // 80 MHz PLL APB; running it on the 40 MHz XTAL APB would tick at half rate).
-        // The TIMG0 APB clock is already live (the ROM armed its MWDT and
-        // clock_init_240mhz's wait_slow_cycle drives TIMG0 RTCCALICFG), so no DPORT
-        // peripheral-clock ungate is needed here.
-        // Free-running up-counter: no alarm, no autoreload, prescaler = reg::timg::DIVIDER.
+        // Runs before any arch_clock_now and after clock_init_240mhz: on the 40 MHz XTAL
+        // APB the counter ticks at half rate. No DPORT clock ungate: the ROM armed TIMG0's
+        // MWDT, so its APB clock is live.
         r32(TIMG0_T0CONFIG) = reg::timg::T0_INCREASE | (reg::timg::DIVIDER << reg::timg::T0_DIVIDER_SHIFT);
         r32(TIMG0_T0LOADLO) = 0;
         r32(TIMG0_T0LOADHI) = 0;
@@ -315,9 +256,8 @@ namespace
             reg::timg::T0_EN | reg::timg::T0_INCREASE | (reg::timg::DIVIDER << reg::timg::T0_DIVIDER_SHIFT);
     }
 
-    // Read the 64-bit T0 count. The live counter is not directly readable: write T0UPDATE to
-    // latch it into the T0LO/T0HI shadow regs, then read LO+HI; a bare LO/HI read without the
-    // latch is stale. On the classic ESP32 T0UPDATE has no ready/self-clearing bit (that is an
+    // The live counter is not directly readable: write T0UPDATE to latch it into the T0LO/T0HI
+    // shadow regs, then read LO+HI; a bare LO/HI read without the latch is stale. On the classic ESP32 T0UPDATE has no ready/self-clearing bit (that is an
     // S2/S3 addition), so a single write latches synchronously.
     //
     // The shadow is one resource for both CPUs: a peer's UPDATE can land between this core's LO
@@ -339,11 +279,9 @@ namespace
         }
     }
 
-    // --- Buffered console TX backend (console_tx.h). The ring drains via the UART0
-    // TX-empty interrupt; slot_free/push touch the FIFO + status regs, irq_enable/
-    // disable gate reg::uart::TXFIFO_EMPTY_INT AT THE PERIPHERAL; the CPU line's own
-    // INTENABLE bit is the kernel's mask and is not touched here. The source is a latch,
-    // dropped by the INT_CLR writes in esp32_tx_push and esp32_tx_irq_enable. ---
+    // irq_enable/disable gate TXFIFO_EMPTY_INT AT THE PERIPHERAL; the CPU line's INTENABLE bit
+    // is the kernel's mask and is not touched here. The source is a latch, dropped by the
+    // INT_CLR writes in esp32_tx_push and esp32_tx_irq_enable.
     uint32_t uart0_txfifo_cnt()
     {
         return (r32(reg::uart::STATUS) >> reg::uart::TXFIFO_CNT_S) & reg::uart::TXFIFO_CNT_MASK;
@@ -383,7 +321,7 @@ namespace
     static_assert(KICKOS_BOARD_CONSOLE_BASE == CONSOLE_WIN_BASE, "the board's console is not the UART this backend drives");
     static_assert(KICKOS_BOARD_CONSOLE_TX_SELECT == 0 and KICKOS_BOARD_CONSOLE_RX_SELECT == 0,
                   "the console pads keep IO MUX function 0, their reset value, which this backend leaves");
-    constexpr size_t CONSOLE_WIN_SIZE = 0x1000u;
+    constexpr size_t CONSOLE_WIN_SIZE = KICKOS_BOARD_CONSOLE_SIZE;
 
     static_assert(reg::uart::OFF_INT_ENA < CONSOLE_WIN_SIZE
                       and reg::uart::OFF_INT_CLR < CONSOLE_WIN_SIZE
@@ -392,7 +330,7 @@ namespace
                       and reg::uart::OFF_CLKDIV < CONSOLE_WIN_SIZE,
                   "arch_console_reclaim writes outside the window it reports");
 
-    // UART0 sub-source -> logical line. Every entry currently names the one grouped line:
+    // UART0 sub-source -> logical line. Every entry names the one grouped line:
     // the kernel-owned mask is CPU int 13's INTENABLE bit, which cannot separate
     // sub-sources, so splitting them across lines would let masking one silently mask the
     // others.
@@ -439,10 +377,8 @@ namespace
 
     void uart0_irq_setup()
     {
-        // The console owns UART0, so silence every source (the ROM polls, no IRQs) and
-        // ack anything it left latched. Critical: CPU int 13 is armed below while
-        // the ring is still unarmed, so a stale ROM-enabled source would storm the
-        // level-1 dispatcher. The ring's backend re-enables ONLY TXFIFO_EMPTY, later.
+        // CPU int 13 is armed below while the ring is still unarmed, so a stale ROM-enabled
+        // source would storm the level-1 dispatcher.
         r32(reg::uart::INT_ENA) = 0;
         r32(reg::uart::INT_CLR) = 0xFFFFFFFFu;
 
@@ -452,7 +388,6 @@ namespace
                  << reg::uart::TXFIFO_EMPTY_THRHD_S;
         r32(reg::uart::CONF1) = conf1;
 
-        // Pinned to the taking core's bank.
         route_source(irq::UART0_SRC, irq::CONSOLE_CORE, irq::UART0_CPU_INT);
         kickos_lx6_bind_dev_int(static_cast<int>(irq::UART0_CPU_INT), irq::CONSOLE_TX_LINE,
                                 static_cast<int>(irq::CONSOLE_CORE));
@@ -462,7 +397,6 @@ namespace
 extern "C"
 {
 
-// --- Device dispatch: one asserted CPU interrupt -> 0..N logical lines --------
 // ISR context. Every UART0 sub-source shares one interrupt-matrix source and one CPU
 // interrupt, so this is where they are told apart; 0 posts is a valid outcome.
 // INT_ST is already INT_RAW & INT_ENA, so a disabled source cannot appear here. The
@@ -474,13 +408,11 @@ void kickos_lx6_dispatch_dev(int cpu_int)
         return;
     }
     uint32_t const st = r32(reg::uart::INT_ST);
-    // A source with no row in UART0_LINES has nothing that will ever clear it, and the
-    // level-1 handler re-enters on the still-asserted CPU interrupt forever. It never
-    // reaches the kernel's spurious accounting, because that is only entered through
-    // kickos_isr_irq and an unroutable source posts no line, so this is a live-lock, not
-    // a degraded line. Silence it HERE. The window's MMIO grant lets an unprivileged
-    // driver enable any sub-source (RXFIFO_TOUT is the obvious one), so refusing to route
-    // it must cost that driver its interrupt, never the machine.
+    // A source with no row in UART0_LINES has nothing that will ever clear it, and posts no
+    // line, so it never reaches the kernel's spurious accounting: the level-1 handler would
+    // re-enter forever. Silence it HERE. The window's MMIO grant lets a driver enable any
+    // sub-source (RXFIFO_TOUT), so an unrouted one must cost that driver its interrupt,
+    // never the machine.
     uint32_t const stray = st & ~uart0_routed_mask();
     if (stray != 0)
     {
@@ -516,7 +448,6 @@ void kickos_lx6_route_dev_int(int cpu_int, int core)
 }
 #endif
 
-// --- Console reclaim: force UART0 back to a polled-ready channel --------------
 void arch_console_reclaim_window(uintptr_t* base, size_t* size)
 {
     *base = CONSOLE_WIN_BASE;
@@ -553,9 +484,7 @@ void arch_console_reclaim(void)
 
     // Baud off the fixed 80 MHz APB, the same constant folding clock_init_240mhz does.
     // SystemCoreClock is deliberately not consulted: it is writable state.
-    constexpr uint32_t CLKDIV16 = (reg::system::APB_CLOCK_HZ << 4) / reg::uart::CONSOLE_BAUD;
-    r32(reg::uart::CLKDIV) = ((CLKDIV16 & 0xFu) << reg::uart::CLKDIV_FRAC_S)
-                             | ((CLKDIV16 >> 4) & reg::uart::CLKDIV_INT_MASK);
+    r32(reg::uart::CLKDIV) = reg::uart::clkdiv(reg::system::APB_CLOCK_HZ, reg::uart::CONSOLE_BAUD);
 }
 
 }
@@ -576,26 +505,6 @@ namespace
     }
 
     constexpr bool LED_LIT = KICKOS_BOARD_LED_ACTIVE_LOW == 0;
-
-    // On a WROOM module the reserved pins include those of the SPI flash the image executes
-    // from (XIP), so remuxing ANY of them stops execution dead.
-#define KICKOS_RESERVED_RUN(port_base, first, last) or ((port_base) == mmap::GPIO_BASE and pin >= (first) and pin <= (last))
-    constexpr bool esp32_pin_kernel_owned(uint32_t pin)
-    {
-        return pin == KICKOS_BOARD_CONSOLE_TX_BIT or pin == KICKOS_BOARD_CONSOLE_RX_BIT or pin == KICKOS_BOARD_LED_BIT
-            KICKOS_BOARD_RESERVED_RUNS(KICKOS_RESERVED_RUN);
-    }
-#undef KICKOS_RESERVED_RUN
-
-#define KICKOS_KERNEL_PIN(port_base, bit) or ((port_base) == mmap::GPIO_BASE and pin == (bit))
-    constexpr bool esp32_pin_listed(uint32_t, uint32_t pin)
-    {
-        return false KICKOS_BOARD_KERNEL_PINS(KICKOS_KERNEL_PIN);
-    }
-#undef KICKOS_KERNEL_PIN
-    static_assert(kickos::refuses_exactly([](uint32_t, uint32_t pin) { return esp32_pin_kernel_owned(pin); },
-                                          esp32_pin_listed, 1u, 40u),
-                  "arch_pinmux_set refuses other pins than the board's kernel pins");
 }
 
 extern "C"
@@ -620,13 +529,10 @@ void arch_diag_led_set(int on)
     }
 }
 
-// One-shot pin-function config (KOS_SYS_PINMUX_SET). port must be 0 (the WROOM has a
-// single GPIO bank). func = the raw IO_MUX_GPIOn word (MCU_SEL | drive | FUN_IE),
-// written verbatim to the pad's IO_MUX register. The GPIO number indexes
-// reg::gpio::IO_MUX_OFF, whose offsets are scrambled in silicon (never
-// pin*4); a 0 offset is a nonexistent/unbonded GPIO and fails EINVAL. GPIO-matrix
-// signal routing (the second half of a full mux) is DEFERRED; this is the IO_MUX layer
-// only. Validation runs before the register write.
+// One-shot pin-function config (KOS_SYS_PINMUX_SET), the IO_MUX layer only: no GPIO-matrix
+// routing. func is the raw IO_MUX_GPIOn word (MCU_SEL | drive | FUN_IE), written verbatim.
+// IO_MUX_OFF is scrambled in silicon (never pin*4); a 0 offset is a nonexistent or unbonded
+// GPIO.
 int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
 {
     if (port != 0u or pin > 39u)
@@ -638,7 +544,7 @@ int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
     {
         return -KOS_EINVAL; // nonexistent (20/24/28..31) or unbonded on WROOM (37/38)
     }
-    if (esp32_pin_kernel_owned(pin))
+    if (kickos::board_pin_kernel_owned(port, pin))
     {
         return -KOS_EBUSY;
     }
@@ -767,17 +673,11 @@ uint32_t kickos_esp32_release_secondaries(void)
 
 void arch_init(void)
 {
-    // FP: the LX6 single-precision FPU (coprocessor 0) is enabled for all threads
-    // (kickos_lx6_init sets CPENABLE). The FP data registers are caller-saved on Xtensa
-    // (the compiler spills live f-regs around any call), so the COOPERATIVE switch needs
-    // no FP handling; only the PREEMPTIVE path banks them, in the level-1 interrupt frame
-    // that saves/restores f0-f15+FCR+FSR (startup.S). Double stays soft-float
-    // (__muldf3): the LX6 FPU is single-only.
     wdt_disable();
-    clock_init_240mhz(); // 40 MHz XTAL -> 240 MHz PLL; updates SystemCoreClock + UART0 baud
-    timg_clock_init();   // 64-bit monotonic time base; AFTER the PLL (rate is off APB)
+    clock_init_240mhz();
+    timg_clock_init();   // AFTER the PLL: its rate is off APB
     kickos_lx6_init();
-    uart0_irq_setup(); // route + arm the UART0 TX-empty interrupt for the console ring
+    uart0_irq_setup();
 #if KICKOS_NUM_CORES > 1
     // After the console is routed, so the release can report.
     uint32_t const arrived = kickos_esp32_release_secondaries();
@@ -789,11 +689,6 @@ void arch_init(void)
 #endif
 }
 
-// Monotonic clock override: convert the free-running TIMG0 T0 64-bit count (40 MHz,
-// off the fixed 80 MHz APB) to ns via the cached reciprocal multiply, replacing the
-// CCOUNT-backed arch_clock_now fallback (arch/xtensa/lx6), whose 32-bit software-extended
-// source loses a wrap unobserved within ~17.9 s and whose base is per core.
-//
 // The KICKOS_BENCH switch.S timestamps stay on raw CCOUNT: the top-level CMakeLists refuses
 // that knob above one kernel core, so there is only ever one base to read.
 uint64_t arch_clock_now(void)
@@ -802,11 +697,8 @@ uint64_t arch_clock_now(void)
     return kickos::arch_clk_mul_q32(ticks, TIMG_NS_MULT);
 }
 
-// Trace clock override. CCOUNT is per core and each counter starts at its own core's launch,
-// so a cross-core trace on it carries two time bases with an offset that is neither known nor
-// constant. TIMG0 T0 is one 64-bit counter off the fixed 80 MHz APB that both CPUs read at one
-// address, at 40 MHz ticks and three MMIO reads. The decoder needs no change: the SESSION
-// record carries this tick beside an arch_clock_now anchor and derives the rate from the pair.
+// TIMG0 T0, not CCOUNT: a cross-core trace needs one time base. The decoder derives the rate
+// from the SESSION record, which carries this tick beside an arch_clock_now anchor.
 uint32_t arch_trace_now(void)
 {
     return static_cast<uint32_t>(timg_ticks());
@@ -817,9 +709,7 @@ int arch_console_write(char const* buf, size_t n)
     return console_tx_insert_line(buf, n, KICKOS_CONSOLE_CRLF);
 }
 
-// Synchronous polled writer for the panic / fault / pre-arm path (console.cc selects it
-// when the ring is unarmed or in ISR/panic context); it replaces a fallback that would
-// re-enter the buffered writer.
+// Overrides a fallback that would re-enter the buffered writer from the panic path.
 bool arch_console_write_sync(char const* buf, size_t n)
 {
     for (size_t i = 0; i < n; i++)
@@ -873,10 +763,9 @@ console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size
 
 void arch_shutdown(int status)
 {
-    (void)status; // no exit on bare metal
-    // RSIL 15 then WAITI 15: mask everything (incl. below NMI) and park. WAITI writes
-    // PS.INTLEVEL from its immediate, so it must be 15, not 0 (waiti 0 would unmask
-    // everything the rsil masked).
+    (void)status;
+    // WAITI writes PS.INTLEVEL from its immediate, so it must be 15, not 0 (waiti 0 would
+    // unmask everything the rsil masked).
     __asm volatile("rsil a0, 15" ::: "a0", "memory");
     while (true)
     {
@@ -897,13 +786,7 @@ void Reset_Handler(void)
     {
         *b = 0;
     }
-    for (void (**fn)() = __init_array_start; fn != __init_array_end; fn++)
-    {
-        (*fn)();
-    }
-    arch_init();
-    kickos::kmain(0, nullptr);
-    arch_shutdown(0);
+    kickos_crt_tail();
 }
 
 }

@@ -32,7 +32,6 @@ namespace kickos
     inline void presync_commit() {}
 #endif
 
-    // A spawn's memory windows and its task data.
     constexpr size_t PRESYNC_SPANS = KICKOS_MAX_THREAD_WINDOWS + 1u;
     static_assert(PRESYNC_SPANS <= UINT8_MAX, "PresyncSpans::count must hold every span");
 
@@ -56,7 +55,6 @@ namespace kickos
 
     struct PresyncRecord
     {
-        // The spans this call synced ahead of its locked pass.
         PresyncSpans noted;
         // The pool spans the locked pass mapped, dropped from every other record when the call
         // completes and never before.
@@ -70,7 +68,6 @@ namespace kickos
         // sending the call round.
         bool staged_short = false;
         struct arch_aspace* staged_home = nullptr;
-        // Inside a system call that works outside the lock.
         bool active = false;
         // A spawn's parameters and window list, copied in once when the call enters: its plan
         // and its locked pass read these and never the caller's memory again.

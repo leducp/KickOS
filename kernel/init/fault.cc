@@ -273,9 +273,15 @@ extern "C" void kickos_thread_fault_exit(void)
 {
     ::kickos::Thread* const c = ::kickos::sched::current();
     char const* who = "?";
-    if (c != nullptr and c->name != nullptr)
+    if (c != nullptr)
     {
         who = c->name;
+#if KICKOS_KERNEL_STACKS
+        // The stub completes the death on any stack, so this is the only witness that it runs
+        // where a domain sibling cannot rewrite its frames.
+        KICKOS_ASSERT(c->ctx.kernel_sp == 0
+                      or kickos_fault_frame_on_kernel_stack(__builtin_stack_address(), 0));
+#endif
     }
     // kprintf_fault, not kprintf: a published console DROPS the kernel chip path, and this
     // record is the one line naming the dead thread on the boards whose composition carries a

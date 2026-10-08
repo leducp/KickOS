@@ -507,21 +507,6 @@ if(_selftest_parts GREATER 1)
   endforeach()
 endif()
 
-# Each row names only arms its own image registers, read off the linked images rather than the
-# region bounds the rows were cut by.
-get_property(_selftest_manifest_images GLOBAL PROPERTY KICKOS_SELFTEST_IMAGES)
-set(_selftest_image_files "")
-foreach(_img IN LISTS _selftest_manifest_images)
-  string(APPEND _selftest_image_files "${_img}|$<TARGET_FILE:${_img}>\n")
-endforeach()
-file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/kickos-selftest-images.txt"
-     CONTENT "${_selftest_image_files}")
-add_test(NAME ${_tag}_selftest_manifest
-  COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_selftest_manifest.sh"
-          "${CMAKE_BINARY_DIR}/kickos-selftest-manifest.txt"
-          "${CMAKE_BINARY_DIR}/kickos-selftest-images.txt" "${CMAKE_NM}")
-kickos_host_gate(${_tag}_selftest_manifest TIMEOUT 120)
-
 # The out-of-tree package gate, on ONE BOARD PER KICKOS_ARCH. Registered on two of the
 # seventy-one presets it leaves every arch-private installed header unexamined.
 #

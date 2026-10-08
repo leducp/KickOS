@@ -6,6 +6,7 @@
 // this core through PMU; the common RV32 switcher handles its one vector.
 
 #include <kickos/arch/arch.h>
+#include "crt_tail.h"
 
 #if KICKOS_RV32_LP
 
@@ -13,17 +14,10 @@
 
 #include <stdint.h>
 
-namespace kickos
-{
-    int kmain(int argc, char** argv);
-}
-
 extern "C"
 {
     void kickos_rv32_init(void);
     extern uint32_t _sidata, _sdata, _edata, _sbss, _ebss;
-    extern void (*__init_array_start[])();
-    extern void (*__init_array_end[])();
     uint32_t SystemCoreClock = 20000000u;
     extern kickos::Atomic<uint32_t, kickos::Order::RELAXED> kickos_c6_amp_rtc_hz;
 }
@@ -125,13 +119,7 @@ void Reset_Handler(void)
     {
         *p = 0;
     }
-    for (void (**fn)() = __init_array_start; fn != __init_array_end; fn++)
-    {
-        (*fn)();
-    }
-    arch_init();
-    kickos::kmain(0, nullptr);
-    arch_shutdown(0);
+    kickos_crt_tail();
 }
 }
 

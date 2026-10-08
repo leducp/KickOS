@@ -1,15 +1,12 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Rule 7: the grant path REFUSES a region that overlaps a kernel-reserved block. The
-// reserved set is the arch's owns-for-life peripherals: the timebase, the IRQ
-// controller, every access-permission controller (the MPU/PMP twin and any bus-side
-// gate) and the clock/reset gates. Each enforcing chip declares it via
-// arch_reserved_blocks (arch.h).
+// Rule 7: the grant path REFUSES a region that overlaps a kernel-reserved block: the arch's
+// owns-for-life peripherals (timebase, IRQ controller, access-permission controllers, clock
+// and reset gates), declared via arch_reserved_blocks.
 //
-// The geometry and Rule 7 checks compile only where memory protection is LIVE
-// (KICKOS_MEMORY_ENFORCED), which a translating backend sets while carrying no region
-// descriptors at all; the stubs below keep the call sites #if-free.
+// The checks compile only where memory protection is LIVE (KICKOS_MEMORY_ENFORCED), which a
+// translating backend sets while carrying no region descriptors at all.
 
 #ifndef KICKOS_GRANT_H
 #define KICKOS_GRANT_H
@@ -22,9 +19,8 @@
 
 namespace kickos
 {
-    // Overlap of [a_base,a_last] with [b_base,b_last]. Adjacency (a_last+1 == b_base) is
-    // NOT overlap: a grant may sit flush against a reserved block (the mk64f PIT CH2
-    // case). Callers pass non-wrapping ranges (last >= base).
+    // Adjacency (a_last+1 == b_base) is NOT overlap: a grant may sit flush against a reserved
+    // block (the mk64f PIT CH2 case). Callers pass non-wrapping ranges.
     inline bool grant_ranges_overlap(uintptr_t a_base, uintptr_t a_last,
                                      uintptr_t b_base, uintptr_t b_last)
     {
@@ -32,12 +28,10 @@ namespace kickos
     }
 
     // A commit backend silently DROPS a region whose memory type it cannot encode, so an
-    // unencodable ARCH_MPU_NOCACHE must be refused here. Live in BOTH postures.
+    // unencodable ARCH_MPU_NOCACHE is refused here, in BOTH postures.
     //
-    // THE QUESTION GOES TO WHICHEVER FAMILY COMMITS THE MAPPING. A translating board
-    // seats no region descriptor and answers ARCH_MPU_NOCACHE_REFUSED to the region query
-    // whatever its page tables can encode, so asking that one there refuses every memory
-    // type the map editor honours.
+    // THE QUESTION GOES TO WHICHEVER FAMILY COMMITS THE MAPPING: a translating board answers
+    // ARCH_MPU_NOCACHE_REFUSED to the region query whatever its page tables can encode.
     inline bool grant_nocache_admissible(uint32_t attr)
     {
         if ((attr & ARCH_MPU_NOCACHE) == 0)
@@ -51,9 +45,8 @@ namespace kickos
 #endif
     }
 
-    // Whether the mapping itself CARRIES the memory type, so a block already reachable
-    // cacheably is not already reachable as the caller asked. A page table always carries
-    // it; a region set carries it only where the descriptor has the field.
+    // Whether the mapping itself CARRIES the memory type: a page table always does, a region
+    // set only where the descriptor has the field.
     inline bool grant_memtype_programmed(void)
     {
 #if KICKOS_HAVE_ASPACE
@@ -64,19 +57,15 @@ namespace kickos
     }
 
 #if KICKOS_MEMORY_ENFORCED
-    // True iff [base, base+size) touches any reserved block, or on a bit-band chip the
-    // alias image of a reserved block lying in the aliasable 1 MB peripheral region.
-    // size 0 touches nothing (shape checks live in grant_region_admissible); a wrapping
-    // window fails closed (returns true).
+    // Includes, on a bit-band chip, the alias image of a reserved block in the aliasable 1 MB
+    // peripheral region. Size 0 touches nothing; a wrapping window fails closed.
     bool grant_hits_reserved(uintptr_t base, size_t size);
 
 #if KICKOS_HAVE_ASPACE
-    // True iff [base, base+size) is whole granules lying inside ONE aperture the chip states
-    // (arch_window_apertures): where a translating backend may map a user device window.
+    // True iff [base, base+size) is whole granules inside ONE chip-stated aperture.
     bool grant_window_aperture_ok(uintptr_t base, size_t size);
 #endif
 
-    // True iff [base, base+size) touches a bus-master row (arch_bus_master_apertures).
     bool grant_window_bus_master(uintptr_t base, size_t size);
 
     // Full admission policy for ONE prospective committed region (data or MMIO):
@@ -87,17 +76,17 @@ namespace kickos
     //   RAM : exactly encodable + confined to the user arena (every caller)
     //
     // `caller_authorized` is AUTH_MEMORY on the caller's authority cap, NOT
-    // `Thread::privileged`. Only the DEV arm reads it (the RAM arm ignores it, Choice 10C).
+    // `Thread::privileged`. Only the DEV arm reads it.
     bool grant_region_admissible(uintptr_t base, size_t size, uint32_t attr,
                                  bool caller_authorized);
 
-    // Boot self-check (KICKOS_ASSERT): every reserved block is well-formed and the static
-    // grantable extents (arena + app code + appdata) are reserved-disjoint.
+    // Boot self-check: every reserved block is well-formed and the static grantable extents
+    // are reserved-disjoint.
     void grant_reserved_validate(void);
 #else
     inline bool grant_hits_reserved(uintptr_t, size_t) { return false; }
     inline bool grant_window_bus_master(uintptr_t, size_t) { return false; }
-    // The memory-type arm survives with enforcement off; this is NOT a `return true`.
+    // The memory-type arm survives with enforcement off.
     inline bool grant_region_admissible(uintptr_t, size_t, uint32_t attr, bool)
     {
         return grant_nocache_admissible(attr);

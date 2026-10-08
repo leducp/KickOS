@@ -25,7 +25,7 @@
  * drain waking the writers waiting for ring room, whose switch re-acquires the kernel lock:
  * console_tx_isr -> console_tx_room_freed -> console_dark_wake -> wake -> resched_after_wake
  * -> pick_and_seat -> klock_attach -> arch_kernel_lock -> kickos_doorbell_poll
- * -> kickos_lx6_doorbell_service -> kickos_irq_route_service -> arch_irq_mask
+ * -> kickos_doorbell_service -> kickos_irq_route_service -> arch_irq_mask
  * -> kickos_lx6_hw_mask -> phys_int_disable.
  * The poll's four frames are charged to every chain that can spin on the kernel lock, pending
  * drain or not. switch_to and switch_book inline into pick_and_seat, so one more value held live

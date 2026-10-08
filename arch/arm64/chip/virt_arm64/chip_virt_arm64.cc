@@ -6,25 +6,26 @@
 // machine defaulting to a core that refuses an A64 image.
 
 #include <kickos/arch/arch.h>
+#include "crt_tail.h"
 #include <kickos/arch/console_retry.h>
 #include <kickos/console_tx.h>
 
-#include <kickos/arch/amp_shared.h> // arch_amp_shared_zero: the partition primary's own clear
+#include <kickos/arch/amp_shared.h>
 
-#include <kickos/chip_limits.h> // KICKOS_MAX_IRQ: this GIC's interrupt-ID count
+#include <kickos/chip_limits.h>
 #include <kickos/chip_mmap.h>
 #include <kickos/config/limits.h>
 #include <kickos/sys/atomic.h>
 
-#include "a53.h" // arch/arm64/common: the A53 facts and the timer seams both chips share
-#include "gic.h" // arch/arm64/common: the architected half of this machine's controller
+#include "a53.h"
+#include "gic.h"
 #if KICKOS_ARM64_GIC_VERSION == 3
-#include "gicv3.h" // arch/arm64/common: which controller this machine has, and where
+#include "gicv3.h"
 #else
-#include "gicv2.h" // arch/arm64/common: which controller this machine has, and where
+#include "gicv2.h"
 #endif
 #include "console_claim.h"
-#include "smp_bringup.h" // arch/arm64/common: ARM64_BRINGUP_WAIT_NS
+#include "smp_bringup.h"
 
 #include <fatal_status.ld.h>
 
@@ -38,20 +39,12 @@
 #define KICKOS_BOOT_TEXT __attribute__((section(".text.init"), noinline, used))
 #define KICKOS_BOOT_RODATA __attribute__((section(".rodata.init"), used))
 
-namespace kickos
-{
-    int kmain(int argc, char** argv);
-}
-
 extern "C"
 {
-    // Linker-script symbols (virt_arm64.ld).
     extern uint32_t _sidata, _sdata, _edata, _sbss, _ebss;
     // The app's .bss lives in the low window, outside _sbss.._ebss, so the boot zeroing
     // covers it separately. Its .data needs no copy: the low window links VMA == LMA.
     extern uint32_t __kickos_appbss_start, __kickos_appbss_end;
-    extern void (*__init_array_start[])();
-    extern void (*__init_array_end[])();
 
     void kfault_terminate(void) __attribute__((noreturn));
 
@@ -65,8 +58,6 @@ extern "C"
     // the SUCCESS PSCI returns for a core it merely started.
     extern kickos::Atomic<uint8_t, kickos::Order::RELAXED> kickos_armv8a_core_online[];
 
-    // The doorbell-and-lock bring-up check (arch/common/doorbell_protocol.cc). Terminates the
-    // image on a raise that goes unanswered.
     void kickos_doorbell_selfcheck(void);
 #endif
 }
@@ -91,7 +82,6 @@ namespace
     constexpr uint32_t UART_POLL_BOUND = 100000;
 
 #if !KICKOS_AMP_OWN_IMAGE
-    // One kernel owns this UART. No TX interrupt is wired, so the producer drains.
     int pl011_tx_slot_free(void) { return (*r32p(UART_FR) & UART_FR_TXFF) == 0; }
     void pl011_tx_push(uint8_t b) { *r32p(UART_DR) = static_cast<uint32_t>(b); }
     void pl011_tx_irq_enable(void) {}
@@ -166,8 +156,6 @@ namespace
     }
 #endif
 
-    // The refusal path's own writer, with the PL011 at the address the bus sees: the MMU
-    // is off, so dev_va's high alias translates through nothing.
     KICKOS_BOOT_TEXT void boot_console_write(char const* buf, size_t n)
     {
         volatile uint32_t* fr = reinterpret_cast<volatile uint32_t*>(UART_FR);
@@ -211,8 +199,6 @@ namespace
 // A peer is started by the partition and not by the cores this image drives, so the conduit is
 // built for either: a shared kernel releasing its secondaries, or a node releasing its peers.
 #if (KICKOS_NUM_CORES > 1 || KICKOS_AMP_OWN_IMAGE)
-    // --- Secondary release, PSCI ------------------------------------------------
-    //
     // QEMU `virt` holds every core but the first inside its own PSCI implementation, so a
     // secondary's first instruction is the one CPU_ON names and the release is the kernel's to
     // initiate.
@@ -584,7 +570,7 @@ console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size
 #else
     *storage = console_tx_buf;
     *size = KICKOS_CONSOLE_TX_SIZE;
-    *irq_line = -1; // no TX line is routed on this machine; the producer drains
+    *irq_line = -1;
     return &pl011_console_backend;
 #endif
 }
@@ -645,13 +631,7 @@ void Reset_Handler(void)
     // Ahead of arch_init, which publishes this core's affinity into that region: later would
     // erase the primary's own publication. A peer's call is a no-op by node index.
     arch_amp_shared_zero();
-    for (void (**fn)() = __init_array_start; fn != __init_array_end; fn++)
-    {
-        (*fn)();
-    }
-    arch_init();
-    kickos::kmain(0, nullptr);
-    arch_shutdown(0);
+    kickos_crt_tail();
 }
 
 }

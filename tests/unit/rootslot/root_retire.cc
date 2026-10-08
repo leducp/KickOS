@@ -62,14 +62,14 @@ namespace kickos
                 }
                 if (index >= 0)
                 {
-                    kernel().threads.slots[index].state = ThreadState::READY;
+                    kernel().threads.slots[index].state.to<ThreadState::READY>();
                 }
                 return index;
             }
 
             void kill(Thread* t)
             {
-                kernel().current[kickos_kernel_core()] = t;
+                kernel().current(kickos_kernel_core()) = t;
                 run_exit(0);
             }
 

@@ -23,10 +23,12 @@
 
 kickos_add_driver(spi_xmcssc SOURCES spi_usic.cc REGDIR arch/arm/chip/xmc4800)
 
+# BASE: the thread drives U0C1, so an instance naming the sibling channel would grant one window and
+# program the other; the console owns U0C0. EDGE: the engine W1Cs the receive flags before it acks.
 kickos_add_driver(xmcssc SOURCES xmcssc.cc spi_usic.cc REGDIR arch/arm/chip/xmc4800
-                  THREADS service:0:default:3:0 RECEIVER service
-                  WINDOWS regs LINES irq NOTIFY BLOCK none
-                  POSTURE retain BARRIER none START xmc_spi0_start CLIENT kickos_spi_proxy)
+                  BASE mmap::USIC0_CH1_BASE WINDOWS regs LINES irq:edge BLOCK none BARRIER none
+                  POSTURE retain START xmc_spi0_start CLIENT kickos_spi_proxy
+                  THREAD service ENTRY bus_thread ARG line0_index WINDOW regs CAPS ep:wait notify:wait irq:wait)
 target_compile_definitions(kickos_xmcssc PRIVATE
   kos_spi_bus_open=xmcssc_bus_open
   kos_spi_device_open=xmcssc_device_open

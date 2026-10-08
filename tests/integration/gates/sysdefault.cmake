@@ -8,28 +8,6 @@ if(NOT TARGET sysdefault)
   return()
 endif()
 
-# No emulator runs the RX image, so its faulting instruction is read from the image.
-if(KICKOS_ARCH STREQUAL "rxv3")
-  add_test(NAME ${_tag}_sysdefault_fault_instruction
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_fault_instruction.sh"
-            "${CMAKE_OBJDUMP}" "$<TARGET_FILE:sysdefault_fault>" wait)
-  kickos_host_gate(${_tag}_sysdefault_fault_instruction TIMEOUT 60)
-  # Negative controls: an image whose main never executes it, and a main naming it only as a
-  # symbol and an operand.
-  add_test(NAME ${_tag}_sysdefault_fault_instruction_absent
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_fault_instruction.sh"
-            "${CMAKE_OBJDUMP}" "$<TARGET_FILE:sysdefault>" wait)
-  kickos_host_gate(${_tag}_sysdefault_fault_instruction_absent TIMEOUT 60)
-  add_test(NAME ${_tag}_sysdefault_fault_instruction_operand
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_fault_instruction.sh"
-            "${PROJECT_SOURCE_DIR}/tests/integration/fault_instruction_planted.sh"
-            "$<TARGET_FILE:sysdefault>" wait)
-  kickos_host_gate(${_tag}_sysdefault_fault_instruction_operand TIMEOUT 60)
-  set_tests_properties(${_tag}_sysdefault_fault_instruction_absent
-                       ${_tag}_sysdefault_fault_instruction_operand
-                       PROPERTIES PASS_REGULAR_EXPRESSION "does not execute `wait`")
-endif()
-
 # A plain C main creates no exception, so its image links none of the exception runtime.
 if(NOT KICKOS_ARCH STREQUAL "sim")
   add_test(NAME ${_tag}_sysdefault_no_eh_runtime

@@ -3691,9 +3691,9 @@ namespace
         }
 
         // --- End-to-end errno coherence: an unprivileged child whose mem_base lies outside
-        // the arena is refused with -KOS_EPERM (policy refusal), not -KOS_ENOMEM. The code
-        // must come from domain_for, not a pre-check at the spawn boundary. 0xE0000000 is
-        // 2048-aligned, so ONLY arena containment can reject it.
+        // the arena is refused with -KOS_EPERM (policy refusal), not -KOS_ENOMEM, before any
+        // slot is claimed. 0xE0000000 is 2048-aligned, so ONLY arena containment can reject
+        // it.
         auto const mrc = kos::thread::create(grant_noop, nullptr, "membad", 10, KOS_POLICY_FIFO,
                                              0, /*privileged=*/false,
                                              reinterpret_cast<void*>(0xE0000000u), 2048);
@@ -7463,29 +7463,11 @@ namespace
         return g_uart_msg + sizeof(struct kos_uart_rsp);
     }
 
-    // Frame + kos_call one request whose `carried` payload bytes are already at
-    // uart_payload(); returns rsp.status, or rsp.len when status is 0, the reply payload
-    // left at uart_reply().
+    // The `carried` payload bytes are already at uart_payload(); the reply payload is left at
+    // uart_reply().
     int uart_call(uint8_t op, uint8_t flags, uint16_t len, size_t carried)
     {
-        struct kos_uart_req req;
-        memset(&req, 0, sizeof(req));
-        req.op = op;
-        req.flags = flags;
-        req.len = len;
-        memcpy(g_uart_msg, &req, sizeof(req));
-        int32_t const rc = kos_call(2, g_uart_msg, sizeof(req) + carried, sizeof(g_uart_msg));
-        if (rc < 0)
-        {
-            return static_cast<int>(rc);
-        }
-        struct kos_uart_rsp rsp;
-        memcpy(&rsp, g_uart_msg, sizeof(rsp));
-        if (rsp.status < 0)
-        {
-            return rsp.status;
-        }
-        return static_cast<int>(rsp.len);
+        return kos_uart_call_in_place(2, g_uart_msg, op, flags, len, carried);
     }
 
     void uart_client(void*) // caps: done@1, E(SIGNAL)@2
@@ -9592,7 +9574,7 @@ namespace
     }
 
     // --- Join: a handle whose slot changed hands --------------------------------
-    // thread_resolve has two ways to answer nullptr, and t_thread_join's refusals reach only
+    // ThreadPool::resolve has two ways to answer nullptr, and t_thread_join's refusals reach only
     // the first (KOS_THREAD_NONE and 0x7fffffff both mask to an index no pool seats). The
     // second is reached by RECLAIM: the pool hands out the LOWEST exited slot, so the second
     // spawn lands on the first target's slot and bumps its generation, leaving the first
@@ -9649,7 +9631,7 @@ namespace
         }
         // The claim, made only where the premise is a fact: the reseating spawn bumped the
         // generation, so the old handle carries an index the pool DOES seat and a generation
-        // nothing holds, which is thread_resolve's second nullptr branch and no other.
+        // nothing holds, which is ThreadPool::resolve's second nullptr branch and no other.
         int stale_rc = 0;
         kos_thread_t reseated_id = KOS_THREAD_NONE;
         if (reseated >= 0)
@@ -12259,7 +12241,7 @@ extern "C" void selftest_main(kos_self_t const* self)
 // CMakeLists, which asserts the floors still sum to the whole suite. A boundary only ever
 // moves between two ADJACENT registrations, so no arm changes place relative to another.
 #if KICKOS_SELFTEST_REGION(1)
-#define TAP_ADD(name, fn) TAP_REGISTER(name, fn)
+#define TAP_ADD(name, fn) tap::add(name, fn)
 #else
 #define TAP_ADD(name, fn) TAP_ELIDE(fn)
 #endif
@@ -12286,7 +12268,7 @@ extern "C" void selftest_main(kos_self_t const* self)
 #undef TAP_ADD
 // Region 2.
 #if KICKOS_SELFTEST_REGION(2)
-#define TAP_ADD(name, fn) TAP_REGISTER(name, fn)
+#define TAP_ADD(name, fn) tap::add(name, fn)
 #else
 #define TAP_ADD(name, fn) TAP_ELIDE(fn)
 #endif
@@ -12310,7 +12292,7 @@ extern "C" void selftest_main(kos_self_t const* self)
 #undef TAP_ADD
 // Region 3.
 #if KICKOS_SELFTEST_REGION(3)
-#define TAP_ADD(name, fn) TAP_REGISTER(name, fn)
+#define TAP_ADD(name, fn) tap::add(name, fn)
 #else
 #define TAP_ADD(name, fn) TAP_ELIDE(fn)
 #endif
@@ -12331,7 +12313,7 @@ extern "C" void selftest_main(kos_self_t const* self)
 #undef TAP_ADD
 // Region 4.
 #if KICKOS_SELFTEST_REGION(4)
-#define TAP_ADD(name, fn) TAP_REGISTER(name, fn)
+#define TAP_ADD(name, fn) tap::add(name, fn)
 #else
 #define TAP_ADD(name, fn) TAP_ELIDE(fn)
 #endif
@@ -12357,7 +12339,7 @@ extern "C" void selftest_main(kos_self_t const* self)
 #undef TAP_ADD
 // Region 5.
 #if KICKOS_SELFTEST_REGION(5)
-#define TAP_ADD(name, fn) TAP_REGISTER(name, fn)
+#define TAP_ADD(name, fn) tap::add(name, fn)
 #else
 #define TAP_ADD(name, fn) TAP_ELIDE(fn)
 #endif
@@ -12380,7 +12362,7 @@ extern "C" void selftest_main(kos_self_t const* self)
 #undef TAP_ADD
 // Region 6.
 #if KICKOS_SELFTEST_REGION(6)
-#define TAP_ADD(name, fn) TAP_REGISTER(name, fn)
+#define TAP_ADD(name, fn) tap::add(name, fn)
 #else
 #define TAP_ADD(name, fn) TAP_ELIDE(fn)
 #endif
@@ -12412,7 +12394,7 @@ extern "C" void selftest_main(kos_self_t const* self)
 #undef TAP_ADD
 // Region 7.
 #if KICKOS_SELFTEST_REGION(7)
-#define TAP_ADD(name, fn) TAP_REGISTER(name, fn)
+#define TAP_ADD(name, fn) tap::add(name, fn)
 #else
 #define TAP_ADD(name, fn) TAP_ELIDE(fn)
 #endif
@@ -12433,7 +12415,7 @@ extern "C" void selftest_main(kos_self_t const* self)
 #undef TAP_ADD
 // Region 8.
 #if KICKOS_SELFTEST_REGION(8)
-#define TAP_ADD(name, fn) TAP_REGISTER(name, fn)
+#define TAP_ADD(name, fn) tap::add(name, fn)
 #else
 #define TAP_ADD(name, fn) TAP_ELIDE(fn)
 #endif
@@ -12464,7 +12446,7 @@ extern "C" void selftest_main(kos_self_t const* self)
 #undef TAP_ADD
 // Region 9.
 #if KICKOS_SELFTEST_REGION(9)
-#define TAP_ADD(name, fn) TAP_REGISTER(name, fn)
+#define TAP_ADD(name, fn) tap::add(name, fn)
 #else
 #define TAP_ADD(name, fn) TAP_ELIDE(fn)
 #endif
@@ -12511,7 +12493,7 @@ extern "C" void selftest_main(kos_self_t const* self)
 #undef TAP_ADD
 // Region 10.
 #if KICKOS_SELFTEST_REGION(10)
-#define TAP_ADD(name, fn) TAP_REGISTER(name, fn)
+#define TAP_ADD(name, fn) tap::add(name, fn)
 #else
 #define TAP_ADD(name, fn) TAP_ELIDE(fn)
 #endif

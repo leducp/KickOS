@@ -353,11 +353,12 @@ endfunction()
 
 # ---------------------------------------------------------------------------
 # kickos_add_driver(<name> [SOURCES <src...>] [CLASS <leaf>] [REGDIR <dir>]
-#                   [THREADS <role>:<priority offset>:<stack>:<capabilities>:<badged>...] [RECEIVER <role>]
-#                   [WINDOWS <role>...] [LINES <role>...] [NOTIFY]
-#                   [BLOCK <bytes>|none] [BLOCK_CACHE cached|uncached] [POSTURE handover|retain]
-#                   [BARRIER <threads before the poll>|none] [START <symbol>] [CONSOLE [USB_DEVICE]]
-#                   [CLIENT <target>...])
+#                   [TAG <word>] [BASE <expr>] [WINDOWS <role>...] [LINES <role>:edge|level...]
+#                   [BLOCK <bytes>|none] [BLOCK_CACHE cached|uncached] [INIT <function>]
+#                   [POSTURE handover|retain] [BARRIER <threads before the poll>|none] [READY <expr>]
+#                   [START <symbol>] [CONSOLE [USB_DEVICE]] [CLIENT <target>...]
+#                   [THREAD <role> [PRIORITY <offset>] ENTRY <function>
+#                           [ARG none|block|window|line0_index] [WINDOW <role>] [CAPS <grant>...]]...)
 #   The one shape of an unprivileged chip/device driver library: a freestanding STATIC lib
 #   that links kickos_user, sees system/include, optionally sees a chip register dir (REGDIR,
 #   definitions only), optionally links a chip class leaf (CLASS), and is EXPORTED so an
@@ -365,20 +366,19 @@ endfunction()
 #   being outside the closed kernel set the chip .ld catch-all excludes. The target is
 #   kickos_<name>; SOURCES defaults to <name>.cc.
 #
-#   THREADS makes it a packaged driver, a composition's `driver:`, and requires BLOCK, POSTURE,
-#   BARRIER, START, the C function the init calls to bring it up, and RECEIVER, the thread that
-#   waits on its endpoint. A role is its thread's name, but the role `service`, whose thread takes
-#   its task's name; a stack is `default` only, bring_up spawning every thread on
-#   the kernel's default stack; a thread's capabilities are what its spawn delegates, and badged the
-#   copies of the driver's notification among them, which the bring-up mints for the spawn. NOTIFY
-#   says it uses the notification the shared bring-up creates. BLOCK_CACHE uncached types the ring
-#   block KOS_MEM_NOCACHE, the init self-granting it so and its descriptor's block_flags stating
-#   it; cached is the default. USB_DEVICE marks a console served over the board's USB device
-#   controller, whose clock tree chip init brings up in an image whose stdout it is. CLIENT
-#   names the libraries a task
-#   using the driver links, which kickos_compose links in a system naming it. Its catalogue entry joins the
-#   KICKOS_DRIVER_CATALOGUE global property for the manifest, and its descriptor reads the
-#   generated <kickos/driver/declared/<name>.h>, whose k_declared it static_asserts declared_as.
+#   A THREAD makes it a packaged driver, a composition's `driver:`, and requires BLOCK, POSTURE,
+#   BARRIER and START, the C function the init calls to bring it up. Each THREAD is one spawn, in
+#   order, named by its role but the role `service`, which takes its task's name. A grant is
+#   <ep|notify|line role>:<wait|signal>, or notify:signal:doorbell for the badged copy whose bit
+#   sits above the lines; the thread granted ep:wait receives on the endpoint. TAG prefixes the
+#   diagnostics, the name by default; BASE is the window base the bring-up insists on, 0 for none;
+#   READY is the latch's offset in the block, polled after BARRIER threads. BLOCK_CACHE uncached
+#   types the ring block KOS_MEM_NOCACHE. USB_DEVICE marks a console served over the board's USB
+#   device controller, whose clock tree chip init brings up in an image whose stdout it is. CLIENT
+#   names the libraries a task using the driver links, which kickos_compose links in a system
+#   naming it. ENTRY, INIT, BASE and READY are C++ expressions: the driver's TU expands
+#   KICKOS_DRIVER_DESCRIPTOR from the generated <kickos/driver/declared/<name>.h> where they are in
+#   scope. The catalogue entry joins the KICKOS_DRIVER_CATALOGUE global property for the manifest.
 function(kickos_add_driver name)
   cmake_parse_arguments(DRV "${KICKOS_DRIVER_OPTIONS}" "${KICKOS_DRIVER_SINGLE}" "${KICKOS_DRIVER_MULTI}" ${ARGN})
   kickos_driver_metadata(${name} _packaged _json _header ${ARGN})

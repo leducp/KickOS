@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// lib/libc/fmt.cc compiled a second time under the names kickos/kruntime.h declares. The
+// lib/libc/fmt.cc compiled a second time under the names kfmt_vsnprintf and kfmt_snprintf. The
 // app keeps kvsnprintf/ksnprintf: both halves need those two names, and a global symbol
 // has one value.
 

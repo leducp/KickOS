@@ -34,6 +34,7 @@ list(REMOVE_ITEM _armv8a_defaults
 
 set(KICKOS_ARCH_SOURCES
   arm64/armv8a/arch_armv8a.cc
+  common/arch_mpu_none.cc
   arm64/armv8a/aspace_armv8a.cc
   arm64/armv8a/cache_armv8a.cc
   arm64/armv8a/vectors.S

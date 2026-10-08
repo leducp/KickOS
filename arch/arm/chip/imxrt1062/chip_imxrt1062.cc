@@ -2,25 +2,23 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // NXP i.MX RT1062 (Teensy 4.1) chip backend, Cortex-M7. Register addresses/fields
-// are from the i.MX RT1060 Processor Reference Manual, Rev. 3 (IMXRT1060RM);
-// hand-rolled (no vendor CMSIS/SDK), consistent with the arch layer's clean-room
-// regs.h.
+// are from the i.MX RT1060 Processor Reference Manual, Rev. 3 (IMXRT1060RM).
 //
 // Boots as a FlexSPI serial-NOR XIP image (RM 9.6/9.7): a 512-byte FlexSPI config
 // block at flash offset 0, the IVT at 0x1000, code executing in place from
-// 0x6000_0000, writable state in OCRAM2. The LPUART6 console (Teensy "Serial1",
-// pins 0/1) baud assumes the reset UART clock root.
+// 0x6000_0000, writable state in OCRAM2.
 
 #include <kickos/arch/arch.h>
-#include <kickos/arch/pin_guard.h>
+#include "pin_guard.h"
 #include <kickos/config/limits.h>
 #include <kickos/diag.h>
-#include <kickos/arch/clk_q32.h> // shared Q32 tickless-clock reciprocal + multiply
+#include <kickos/arch/clk_q32.h>
 #include <kickos/console_tx.h>
-#include <kickos/sys/abi.h> // KOS_E* taxonomy (arch_pinmux_set)
+#include <kickos/sys/abi.h>
 #include <kickos/usb_console.h>
 
-#include "regs.h" // arch/arm/common: kickos_armv7m_enable_fpu + core SCB regs
+#include "mpu.h"
+#include "regs.h"
 #include <kickos/chip_mmap.h>
 #include "board_pins.h"
 #include "chip_layout.h"
@@ -52,20 +50,18 @@ namespace kickos
 extern "C"
 {
     void kickos_armv7m_init(void);
-    void kickos_armv7m_icache_enable(void); // arch/arm/armv7m/cache.cc
-    void kickos_armv7m_dcache_enable(void); // (pre-M4)
-    void kickos_arm_mpu_fixed_init(void);   // arch/arm/common (programs the fixed regions)
-    void _boot_entry(void); // startup.S: sets MSP, jumps to Reset_Handler
+    void kickos_armv7m_icache_enable(void);
+    void kickos_armv7m_dcache_enable(void);
+    void _boot_entry(void);
 
     extern void (*__init_array_start[])();
     extern void (*__init_array_end[])();
 
-    extern uint32_t g_isr_vector[];       // startup.S: vector table @ 0x6000_2000
-    extern char __boot_image_length[];    // linker: on-flash image extent
+    extern uint32_t g_isr_vector[];       // @ 0x6000_2000, not the flash base
+    extern char __boot_image_length[];    // on-flash image extent
 
-    // Core clock (AHB_CLK_ROOT feeding the Cortex-M7 / SysTick / DWT), Hz, CMSIS
-    // convention, owned by the chip. clock_init() is deferred, so KickOS inherits
-    // the boot ROM's CCM tree, NOT the reset default. RM (IMXRT1060RM rev3) Table 9-7
+    // Core clock (AHB_CLK_ROOT), Hz. clock_init() leaves the boot ROM's CCM tree in place,
+    // NOT the reset default. RM (IMXRT1060RM rev3) Table 9-7
     // "ROM Clock Setting" fixes that tree; Table 9-5 confirms 396 MHz is the default
     // boot frequency (BOOT_FREQ=0, LPB_BOOT=0). Field-by-field from Table 9-7:
     //   CCM_ANALOG_PLL_ARM = 0x80002042: LOCK|ENABLE, DIV_SELECT[6:0]=0x42=66
@@ -74,9 +70,7 @@ extern "C"
     //   CCM_CBCMR = 0x75AE8104: PRE_PERIPH_CLK_SEL[19:18]=0b11 -> divided PLL1 (RM 14.7.5).
     //   CCM_CBCDR = 0x000A8200: PERIPH_CLK_SEL[25]=0 -> pre_periph; AHB_PODF[12:10]=0
     //     -> /1 -> AHB_CLK_ROOT = 396 MHz (RM 14.7.4, clock tree Fig 14-2).
-    // Both timers count this clock, so 396 MHz makes SysTick (SYST_RVR from
-    // SystemCoreClock) and the DWT ns<->cycle math coherent. The old 24 MHz stand-in
-    // was ~16.5x low, so SysTick periods were ~16.5x short -> timed sleeps fired early.
+    // SysTick and the DWT both count this clock, so a wrong value skews every timed sleep.
     uint32_t SystemCoreClock = 396000000u;
 }
 
@@ -158,8 +152,7 @@ namespace
     // Single-pad (1-1-1) 0x03 normal read at 30 MHz; no quad-mode enable needed. LUT
     // instruction = (opcode<<10)|(pads<<8)|operand, two per 32-bit word (RM 9.6.3.1
     // note 2 / Table 9-16). seq0 = CMD 0x03 (1-pad) + 24-bit RADDR (1-pad) + READ (1-pad).
-    // FLASH-SPECIFIC: validate this LUT + serialClkFreq against the Teensy's flash
-    // before flashing (design doc DEFERRED note).
+    // The LUT and serialClkFreq are specific to the board's NOR part.
     __attribute__((section(".boot_fcb"), used))
     const flexspi_nor_config g_flexspi_config = {
         // memConfig
@@ -225,7 +218,7 @@ namespace
 
     __attribute__((section(".boot_data"), used))
     const boot_data g_boot_data = {
-        0x60000000u,                                        // start: image base
+        KICKOS_LAYOUT_FLEXSPI_FLASH_BASE,                   // start: image base
         static_cast<uint32_t>(reinterpret_cast<uintptr_t>(__boot_image_length)), // length
         0,                                                  // plugin flag
     };
@@ -241,26 +234,21 @@ namespace
         0,
         0,            // dcd: none (ROM defaults; no SDRAM/SEMC)
         static_cast<uint32_t>(reinterpret_cast<uintptr_t>(&g_boot_data)),
-        0x60001000u,  // self: IVT address
+        static_cast<uint32_t>(reinterpret_cast<uintptr_t>(&g_boot_ivt)), // self
         0,            // csf: none (non-secure boot)
         0,
     };
 }
 
-// ===========================================================================
-// Chip registers + bring-up
-// ===========================================================================
 namespace
 {
     inline volatile uint32_t& r32(uintptr_t a) { return *reinterpret_cast<volatile uint32_t*>(a); }
     inline volatile uint16_t& r16(uintptr_t a) { return *reinterpret_cast<volatile uint16_t*>(a); }
 
-    // --- Watchdogs (RM ch.57 WDOG1/2, ch.58 RTWDOG). The RT1062 hands the app ARMED
-    // watchdogs: WDOG1/2 WMCR.PDE (reset 1) is a 16 s power-down counter, and the
-    // RTWDOG (WDOG3) resets to CS.EN=1 and the boot ROM RE-ENABLES it on exit (RM
-    // 58.4) with a short LPO timeout. KickOS services none of them, so the RTWDOG
-    // reset-loops the board (the banner reprints every timeout). Disable all three
-    // first thing at reset. ------------------------------------------------------
+    // Watchdogs (RM ch.57 WDOG1/2, ch.58 RTWDOG). The RT1062 hands over ARMED watchdogs:
+    // WDOG1/2 WMCR.PDE (reset 1) is a 16 s power-down counter, and the RTWDOG (WDOG3)
+    // resets to CS.EN=1 and the boot ROM RE-ENABLES it on exit (RM 58.4) with a short
+    // LPO timeout. Nothing services them, so all three are disabled first thing at reset.
     void watchdog_disable()
     {
         // WDOG1/2 main timer is WDE=0 (off) at reset; only the 16 s power-down counter
@@ -299,21 +287,17 @@ namespace
         }
     }
 
-    // DEFERRED: leave the boot-ROM clock tree untouched (no PLL bring-up). The
-    // 600 MHz CCM/ARM-PLL config is a follow-up; see the design doc.
+    // Leaves the boot-ROM clock tree untouched: SystemCoreClock and
+    // lpuart::UART_CLK_ROOT_HZ are that tree's values.
     void clock_init() {}
 
     constexpr uint32_t POLL_TIMEOUT_USB = 1000000u;
 
-    // --- Monotonic clock: GPT1 free-running off the 24 MHz crystal oscillator ----
-    // (RM ch.52). The armv7m arch provides NO clock fallback: the DWT is debug-domain
-    // and unreliable on the M7 (lockable, absent under a debugger reset). We source
-    // GPT1 from ipg_clk_24M (CLKSRC=0b101 + EN_24M, RM Table 52-3), so the counter is
-    // fixed at 24 MHz and IMMUNE to any ARM-PLL retune (the 396->600 MHz follow-up),
-    // so there is no re-anchor on cpu_clock_set. Free-run 32-bit counter (RM 52.7.1.2
-    // FRR=1),
-    // extended to 64-bit monotonic ns in software (wraps every 2^32/24e6 ~= 179 s;
-    // the scheduler reads far more often, and clocksoak validates multi-wrap).
+    // Monotonic clock: GPT1 free-running (RM ch.52), not the DWT, which is debug-domain on
+    // the M7 (lockable, absent under a debugger reset). Sourced from ipg_clk_24M
+    // (CLKSRC=0b101 + EN_24M, RM Table 52-3), so it stays 24 MHz across an ARM-PLL retune
+    // and needs no re-anchor. The 32-bit counter (RM 52.7.1.2 FRR=1) is extended to 64
+    // bits in software, so it must be read at least once per wrap (2^32/24e6 ~= 179 s).
     uint32_t g_gpt_hi = 0;   // software high word; read/updated under the crit section
     uint32_t g_gpt_last = 0;
 
@@ -335,15 +319,15 @@ namespace
 
     void gpt_clock_init()
     {
-        r32(reg::ccm::CCGR1) |= reg::ccm::CCGR1_GPT1; // clock GPT1 (bus + serial)
+        r32(reg::ccm::CCGR1) |= reg::ccm::CCGR1_GPT1;
         r32(reg::gpt::GPT1_CR) = 0;               // CLKSRC only changes while EN=0 (RM 52.4)
-        r32(reg::gpt::GPT1_CR) = reg::gpt::CR_SWR; // software reset
+        r32(reg::gpt::GPT1_CR) = reg::gpt::CR_SWR;
         while ((r32(reg::gpt::GPT1_CR) & reg::gpt::CR_SWR) != 0)
         {
         }
-        r32(reg::gpt::GPT1_IR) = 0;               // polled clock: no compare/rollover IRQs
-        r32(reg::gpt::GPT1_SR) = 0x3Fu;           // W1C: clear any latched status
-        r32(reg::gpt::GPT1_PR) = 0;               // PRESCALER=/1, PRESCALER24M=/1 -> 24 MHz
+        r32(reg::gpt::GPT1_IR) = 0;
+        r32(reg::gpt::GPT1_SR) = 0x3Fu;           // W1C
+        r32(reg::gpt::GPT1_PR) = 0;             // PRESCALER=/1, PRESCALER24M=/1 -> 24 MHz
         // Program all config with EN=0, then set EN last (RM 52.6.1).
         uint32_t const cr = reg::gpt::CR_CLKSRC_24M | reg::gpt::CR_EN_24M | reg::gpt::CR_FRR
                           | reg::gpt::CR_ENMOD | reg::gpt::CR_DBGEN | reg::gpt::CR_WAITEN
@@ -355,25 +339,16 @@ namespace
     static_assert(KICKOS_BOARD_CONSOLE_BASE == mmap::LPUART6_BASE,
                   "the board's console is not the LPUART this backend drives");
 
-    // The GPIO bank a port base names, 0 for a bank the pad tables leave out.
-    constexpr uint32_t bank_of(uintptr_t base)
+    constexpr bool pad_listed(uint32_t port, uint32_t pin)
     {
-        if (base == mmap::GPIO1_BASE)
-        {
-            return 1u;
-        }
-        if (base == mmap::GPIO2_BASE)
-        {
-            return 2u;
-        }
-        return 0u;
+#define KICKOS_CHIP_PIN(p, bit) or (port == (p) and pin == (bit))
+        return false KICKOS_CHIP_PINS(KICKOS_CHIP_PIN);
+#undef KICKOS_CHIP_PIN
     }
-
-    constexpr uint32_t TX_BANK = bank_of(KICKOS_BOARD_CONSOLE_TX_PORT_BASE);
-    constexpr uint32_t RX_BANK = bank_of(KICKOS_BOARD_CONSOLE_RX_PORT_BASE);
-    constexpr uint32_t LED_BANK = bank_of(KICKOS_BOARD_LED_PORT_BASE);
-    static_assert(TX_BANK != 0u and RX_BANK != 0u, "a console pad outside GPIO banks 1 and 2");
-    static_assert(LED_BANK == 2u, "this backend clocks and drives the LED through GPIO2 alone");
+#define KICKOS_CHIP_PIN(p, bit) and ((p) == 1 or (p) == 2)
+    static_assert(true KICKOS_CHIP_PINS(KICKOS_CHIP_PIN), "sw_mux addresses the pads of GPIO banks 1 and 2 alone");
+#undef KICKOS_CHIP_PIN
+    static_assert(KICKOS_BOARD_LED_PORT == 2, "this backend clocks and drives the LED through GPIO2 alone");
     constexpr uint32_t LED_BIT = 1u << KICKOS_BOARD_LED_BIT;
 
     constexpr uintptr_t led_out(bool level)
@@ -387,35 +362,16 @@ namespace
 
     constexpr bool LED_LIT = KICKOS_BOARD_LED_ACTIVE_LOW == 0;
 
-#define KICKOS_RESERVED_RUN(port_base, first, last) or (bank_of(port_base) == port and pin >= (first) and pin <= (last))
-    constexpr bool imxrt_pin_kernel_owned(uint32_t port, uint32_t pin)
-    {
-        return (port == TX_BANK and pin == KICKOS_BOARD_CONSOLE_TX_BIT)
-               or (port == RX_BANK and pin == KICKOS_BOARD_CONSOLE_RX_BIT)
-               or (port == LED_BANK and pin == KICKOS_BOARD_LED_BIT)
-                   KICKOS_BOARD_RESERVED_RUNS(KICKOS_RESERVED_RUN);
-    }
-#undef KICKOS_RESERVED_RUN
-
-#define KICKOS_KERNEL_PIN(port_base, bit) or (bank_of(port_base) == port and pin == (bit))
-    constexpr bool imxrt_pin_listed(uint32_t port, uint32_t pin)
-    {
-        return false KICKOS_BOARD_KERNEL_PINS(KICKOS_KERNEL_PIN);
-    }
-#undef KICKOS_KERNEL_PIN
-    static_assert(kickos::refuses_exactly(imxrt_pin_kernel_owned, imxrt_pin_listed, 6u, 32u),
-                  "arch_pinmux_set refuses other pins than the board's kernel pins");
-
     void uart6_init()
     {
-        r32(reg::ccm::CCGR3) |= reg::ccm::CCGR3_LPUART6; // clock LPUART6 (reset already enables it)
+        r32(reg::ccm::CCGR3) |= reg::ccm::CCGR3_LPUART6;
 
-        r32(reg::iomuxc::sw_mux(TX_BANK, KICKOS_BOARD_CONSOLE_TX_BIT)) = KICKOS_BOARD_CONSOLE_TX_SELECT;
-        r32(reg::iomuxc::sw_mux(RX_BANK, KICKOS_BOARD_CONSOLE_RX_BIT)) = KICKOS_BOARD_CONSOLE_RX_SELECT;
+        r32(reg::iomuxc::sw_mux(KICKOS_BOARD_CONSOLE_TX_PORT, KICKOS_BOARD_CONSOLE_TX_BIT)) = KICKOS_BOARD_CONSOLE_TX_SELECT;
+        r32(reg::iomuxc::sw_mux(KICKOS_BOARD_CONSOLE_RX_PORT, KICKOS_BOARD_CONSOLE_RX_BIT)) = KICKOS_BOARD_CONSOLE_RX_SELECT;
         r32(reg::iomuxc::LPUART6_RX_SELECT_INPUT) = KICKOS_BOARD_CONSOLE_RX_INPUT_SELECT;
 
         r32(reg::lpuart::LPUART6_CTRL) = 0;                     // disable TX/RX while configuring
-        r32(reg::lpuart::LPUART6_GLOBAL) = reg::lpuart::GLOBAL_RST; // module software reset
+        r32(reg::lpuart::LPUART6_GLOBAL) = reg::lpuart::GLOBAL_RST;
         r32(reg::lpuart::LPUART6_GLOBAL) = 0;
 
         r32(reg::lpuart::LPUART6_BAUD) = reg::lpuart::BAUD_CONSOLE;
@@ -468,13 +424,10 @@ namespace
     }
 
 #ifdef KICKOS_UART_BEACON
-    // Baud-beacon diagnostic. Programs
-    // LPUART6 BAUD with a FIXED SBR (independent of UART_CLK_ROOT_HZ) and transmits
-    // 0x55 ('U', alternating bits) forever. Flash once, then sweep the host reader
-    // baud; the reader baud that reads clean 0x55 IS the on-wire baud, so
+    // Baud-beacon diagnostic: a FIXED SBR (independent of UART_CLK_ROOT_HZ) and 0x55
+    // forever. The host reader baud that reads clean 0x55 is the on-wire baud, so
     //   real_uart_clk = clean_reader_baud * (OSR+1) * BEACON_SBR = clean_reader_baud * 176.
-    // BEACON_SBR=11, OSR=15 (16x): at the RM-derived 20 MHz root this is 20e6/(16*11) =
-    // 113636 baud, which reads clean at host 115200 (-1.36%, within receiver tolerance).
+    // At the RM-derived 20 MHz root this is 20e6/(16*11) = 113636 baud, clean at host 115200.
     constexpr uint32_t BEACON_SBR = 11u;
     void uart6_beacon(void)
     {
@@ -491,7 +444,6 @@ namespace
     }
 #endif
 
-    // --- Buffered console TX backend (console_tx.h) ---
     int lp6_tx_slot_free(void) { return (r32(reg::lpuart::LPUART6_STAT) & reg::lpuart::STAT_TDRE) != 0; }
     void lp6_tx_push(uint8_t b) { r32(reg::lpuart::LPUART6_DATA) = b; }
     void lp6_tx_irq_enable(void) { r32(reg::lpuart::LPUART6_CTRL) |= reg::lpuart::CTRL_TIE; }
@@ -503,7 +455,7 @@ namespace
     // The window arch_console_reclaim reports: LPUART6's whole AIPS-2 slot, 4019_8000 to
     // 4019_BFFF (RM Table 3-3), not its 0x30 register block.
     constexpr uintptr_t CONSOLE_WIN_BASE = mmap::LPUART6_BASE;
-    constexpr size_t CONSOLE_WIN_SIZE = reg::lpuart::LPUART6_WINDOW;
+    constexpr size_t CONSOLE_WIN_SIZE = KICKOS_BOARD_CONSOLE_SIZE;
 
     static_assert((CONSOLE_WIN_SIZE & (CONSOLE_WIN_SIZE - 1u)) == 0u
                       and (CONSOLE_WIN_BASE % CONSOLE_WIN_SIZE) == 0u,
@@ -541,8 +493,6 @@ void arch_init(void)
     // into an AHB slave that never responds. They must be LIVE BEFORE the cache is
     // enabled; a cache is what arms that speculation.
     kickos_arm_mpu_fixed_init();
-    // The D-cache defaults ON (KICKOS_IMXRT_DCACHE, arch/CMakeLists.txt); the coherency
-    // obligation arrives with DMA.
     kickos_armv7m_icache_enable();
 #if defined(KICKOS_IMXRT_DCACHE) && KICKOS_IMXRT_DCACHE
     kickos_armv7m_dcache_enable();
@@ -556,7 +506,7 @@ void arch_init(void)
         usb_clock_init(); // after uart6_init: a refusal here must still be able to print
     }
 #ifdef KICKOS_UART_BEACON
-    uart6_beacon(); // never returns: raw 0x55 stream for host baud sweep
+    uart6_beacon(); // never returns
 #endif
     kickos_armv7m_init();
 }
@@ -569,30 +519,23 @@ void arch_init(void)
 // populated 8 MiB of flash, or into the unbacked SEMC aperture, hits an AHB slave that
 // never responds and stalls the core with NO fault. Wrap both external Normal bands
 // Device + XN + no-access; overlay the real 8 MiB as Normal cacheable priv-RO+X.
-// PRIVDEFENA stays on for RAM/peripherals. The row type mirrors arch/arm/common/mpu.h.
+// PRIVDEFENA stays on for RAM/peripherals.
 extern "C"
 {
-    struct kickos_arm_mpu_fixed_region
-    {
-        uint32_t base;
-        uint32_t rasr;
-    };
-
     size_t kickos_arm_mpu_fixed(struct kickos_arm_mpu_fixed_region const** out)
     {
-        // PMSAv7 RASR: ENABLE | size_field<<1 | AP<<24 | TEX/C/B | XN.
-        constexpr uint32_t EN = 1u;
-        constexpr uint32_t XN = 1u << 28;
-        constexpr uint32_t AP_NONE = 0x0u << 24; // no access (priv + unpriv)
-        constexpr uint32_t AP_PRO = 0x5u << 24;  // priv RO, unpriv none
-        constexpr uint32_t DEVICE = (1u << 18) | (1u << 16); // shareable Device (non-speculatable)
-        constexpr uint32_t NORMAL = (1u << 17) | (1u << 16); // Normal WB cacheable
+        using namespace kickos::arm;
+        constexpr uint32_t FLASH = KICKOS_LAYOUT_FLEXSPI_FLASH_BASE;
+        static_assert((KICKOS_LAYOUT_FLEXSPI_FLASH_SIZE & (KICKOS_LAYOUT_FLEXSPI_FLASH_SIZE - 1)) == 0,
+                      "a PMSAv7 region is a power of two");
+        // RASR.SIZE: a region of 2^(SIZE + 1) bytes.
         constexpr uint32_t SZ_512M = (29u - 1u) << 1;
-        constexpr uint32_t SZ_8M = (23u - 1u) << 1; // == LENGTH(FLASH), the populated image
+        constexpr uint32_t SZ_FLASH = (__builtin_ctz(KICKOS_LAYOUT_FLEXSPI_FLASH_SIZE) - 1u) << 1;
+        constexpr uint32_t WRAP = MPU_RASR_ENABLE | SZ_512M | MPU_RASR_AP_NONE | MPU_RASR_XN | MPU_RASR_MEM_DEVICE;
         static kickos_arm_mpu_fixed_region const rows[] = {
-            {0x60000000u, EN | SZ_512M | AP_NONE | XN | DEVICE}, // FlexSPI aperture wrap
-            {0x60000000u, EN | SZ_8M | AP_PRO | NORMAL},         // populated-flash overlay (RO+X)
-            {0x80000000u, EN | SZ_512M | AP_NONE | XN | DEVICE}, // SEMC aperture wrap
+            {FLASH, WRAP},                                                               // FlexSPI aperture wrap
+            {FLASH, MPU_RASR_ENABLE | SZ_FLASH | MPU_RASR_AP_PRO | MPU_RASR_MEM_NORMAL}, // populated flash, RO+X
+            {0x80000000u, WRAP},                                                         // SEMC aperture wrap
         };
         *out = rows;
         return sizeof(rows) / sizeof(rows[0]);
@@ -636,7 +579,7 @@ void arch_console_reclaim_window(uintptr_t* base, size_t* size)
     *size = CONSOLE_WIN_SIZE;
 }
 
-// Panic-path reclaim (console.cc D6): force LPUART6 back to a polled-ready 8N1 TX channel
+// Panic-path reclaim: force LPUART6 back to a polled-ready 8N1 TX channel
 // after a userspace driver may have garbled every writable register in the window. Runs with
 // IRQs masked, privileged; MUST be idempotent and re-entrant, so straight-line ABSOLUTE
 // stores only, no read-modify-write and no loops.
@@ -685,7 +628,7 @@ void arch_diag_led_init(void)
     // to the instance that does not own the bit is silently ignored. Bit clear = GPIO2, the
     // instance regs/gpio.h maps.
     r32(reg::iomuxc::GPR27) &= ~LED_BIT;
-    r32(reg::iomuxc::sw_mux(LED_BANK, KICKOS_BOARD_LED_BIT)) = reg::iomuxc::MUX_ALT5;
+    r32(reg::iomuxc::sw_mux(KICKOS_BOARD_LED_PORT, KICKOS_BOARD_LED_BIT)) = reg::iomuxc::MUX_ALT5;
     // Dark BEFORE the pin becomes an output, so bring-up never flashes it.
     r32(led_out(not LED_LIT)) = LED_BIT;
     r32(reg::gpio::GPIO2_GDIR) |= LED_BIT;
@@ -705,26 +648,8 @@ void arch_diag_led_set(int on)
     }
 }
 
-// Pad-mux table for KOS_SYS_PINMUX_SET. Selector is the datasheet-natural pair
-// (port = GPIO bank 1..5, pin = bit within the bank); a 1:1 pad<->GPIO position.
-// Value = the pad's SW_MUX_CTL_PAD address. 0 = hole (unbonded / not tabled) ->
-// EINVAL. The table is INTENTIONALLY PARTIAL: only GPIO1.IO00..05 and GPIO2.IO00..03
-// are named (regs/iomuxc.h). An un-tabled pad hard-fails EINVAL, never a silent write.
-static uintptr_t const imxrt_pad_mux[6][32] = {
-    {}, // bank 0 unused (GPIO banks are 1-based)
-    {   // GPIO1 = GPIO_AD_B0_xx (IO00..IO15) / GPIO_AD_B1_xx (IO16..IO31)
-        reg::iomuxc::SW_MUX_AD_B0_00, reg::iomuxc::SW_MUX_AD_B0_01,
-        reg::iomuxc::SW_MUX_AD_B0_02, reg::iomuxc::SW_MUX_AD_B0_03,
-        reg::iomuxc::SW_MUX_AD_B0_04, reg::iomuxc::SW_MUX_AD_B0_05,
-    },
-    {   // GPIO2 = GPIO_B0_xx (IO00..IO15) / GPIO_B1_xx (IO16..IO31)
-        reg::iomuxc::SW_MUX_B0_00, reg::iomuxc::SW_MUX_B0_01,
-        reg::iomuxc::SW_MUX_B0_02, reg::iomuxc::SW_MUX_B0_03,
-    },
-};
-
-// Daisy (SELECT_INPUT) table, keyed by func's OWN index bits[15:8], NOT parallel to
-// the pad table: a SELECT_INPUT belongs to a (pad, MUX_MODE) pair, not to a pad.
+// Daisy (SELECT_INPUT) table, keyed by func's OWN index bits[15:8]: a SELECT_INPUT belongs
+// to a (pad, MUX_MODE) pair, not to a pad.
 static uintptr_t const imxrt_daisy[] = {
     reg::iomuxc::LPUART6_RX_SELECT_INPUT, // index 0
 };
@@ -734,22 +659,16 @@ static uintptr_t const imxrt_daisy[] = {
 //   bit[16]    = has-daisy
 //   bits[15:8] = daisy-table index (imxrt_daisy)
 //   bits[23:20]= daisy value written to the SELECT_INPUT register
-// SW_PAD_CTL is left at reset defaults. That is fine for the console-class route and
-// this narrow exercise, but is NOT safe generically (drive/pull/hysteresis
-// depend on the pad + net). All range/ownership/index validation happens BEFORE any
+// SW_PAD_CTL stays at its reset default, which is NOT safe for every pad
+// (drive/pull/hysteresis depend on the pad + net). All validation happens BEFORE any
 // register write (no half-applied pad on a rejected request).
 int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
 {
-    if (port < 1u or port > 5u or pin > 31u)
+    if (not pad_listed(port, pin))
     {
         return -KOS_EINVAL;
     }
-    uintptr_t const pad = imxrt_pad_mux[port][pin];
-    if (pad == 0u)
-    {
-        return -KOS_EINVAL; // hole: unbonded or not tabled
-    }
-    if (imxrt_pin_kernel_owned(port, pin))
+    if (kickos::board_pin_kernel_owned(port, pin))
     {
         return -KOS_EBUSY;
     }
@@ -759,7 +678,7 @@ int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
     {
         return -KOS_EINVAL;
     }
-    r32(pad) = func & reg::iomuxc::MUX_FIELD_MASK;
+    r32(reg::iomuxc::sw_mux(port, pin)) = func & reg::iomuxc::MUX_FIELD_MASK;
     if (has_daisy)
     {
         r32(imxrt_daisy[daisy_idx]) = (func >> 20) & 0xFu;
@@ -767,13 +686,10 @@ int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
     return 0;
 }
 
-// Monotonic clock (arch.h contract; the armv7m layer provides no fallback). GPT1
-// 24 MHz ticks -> ns. Fixed 24 MHz, so the reciprocal-multiply constant is compile-
-// time (no per-read divide, no re-anchor across an ARM-PLL retune).
+// Required here: the armv7m layer provides no arch_clock_now fallback.
 uint64_t arch_clock_now(void)
 {
     uint64_t ticks = gpt_ticks();
-    // ns = ticks * 1e9 / 24e6, the divide folds at build time (GPT_HZ is constant).
     constexpr uint64_t MULT = kickos::arch_clk_recip_q32(reg::gpt::GPT_HZ);
     return kickos::arch_clk_mul_q32(ticks, MULT);
 }
@@ -781,8 +697,7 @@ uint64_t arch_clock_now(void)
 // Replaces the WFI idle fallback. The tickless wakeup timer is SysTick, clocked off the
 // core clock, which the RT106x halts under WFI: SysTick stops counting and a sleep with
 // every thread idle never wakes (the GPT monotonic clock keeps running, but it is not
-// the wakeup source). Spin so the core clock, and thus SysTick, stays alive. A GPT
-// output-compare wakeup would allow WFI (GPT counts through WAIT via CR_WAITEN).
+// the wakeup source). Spin so the core clock, and thus SysTick, stays alive.
 void arch_idle_wait(void)
 {
     __asm volatile("nop");
@@ -836,11 +751,11 @@ void Reset_Handler(void)
     // interrupt path runs.
     watchdog_disable(); // FIRST: the ROM hands off a running RTWDOG (RM 58.4)
     kickos_armv7m_enable_fpu(); // before ANY later code that could emit FP (softfp ABI)
-    r32(0xE000ED08) = reinterpret_cast<uintptr_t>(g_isr_vector); // SCB->VTOR
+    r32(kickos::arm::SCB_VTOR) = reinterpret_cast<uintptr_t>(g_isr_vector);
     __asm volatile("dsb" ::: "memory");
     __asm volatile("isb" ::: "memory");
 
-    kickos_ranges_init(); // init .data (copy from FlexSPI LMA); zero .bss
+    kickos_ranges_init();
     for (void (**fn)() = __init_array_start; fn != __init_array_end; fn++)
     {
         (*fn)();

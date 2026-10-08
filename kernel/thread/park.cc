@@ -20,9 +20,7 @@
 
 namespace kickos
 {
-    // Precondition: `t` is already off the timer delta list and its wait edge is intact; that
-    // edge is the only thing naming the list `t` is on.
-    void endpoint_wait_abort(Thread* t, intptr_t result)
+    void thread_abort_park(Thread* t, intptr_t result, Held held)
     {
         switch (t->wait_kind)
         {
@@ -33,17 +31,16 @@ namespace kickos
                 // which D2-boosted the endpoint's conventional server.
                 bool const donor =
                     (t->wait_kind == WAIT_EP_SEND and t->call_state == CALL_SEND_WAIT);
-                Endpoint* const e = t->wait_endpoint(); // before the edge is cleared
-                KICKOS_ASSERT(e != nullptr);           // wq_block never parks here without one
+                Endpoint* const e = t->wait_endpoint();
+                KICKOS_ASSERT(e != nullptr); // wq_block never parks here without one
                 t->wait_queue->unlink(&t->link);
-                t->clear_wait_edge();
                 t->call_state = CALL_NONE;
                 if (donor and e->server != nullptr)
                 {
                     // Both the unlink and the CALL_NONE above MUST precede this: the funnel
                     // counts a SEND_WAIT donor still linked on send_waiters, so recomputing
                     // first would re-derive the very boost we are reverting.
-                    sched::set_prio(e->server, thread_effective_prio(e->server));
+                    sched::set_prio(e->server, thread_effective_prio(e->server), held);
                 }
                 break;
             }
@@ -62,7 +59,7 @@ namespace kickos
                 // resolves to this thread again after exactly 256 further calls.
                 t->call_seq++;
                 // D3, after the unlink and the CALL_NONE for the same reason as above.
-                sched::set_prio(server, thread_effective_prio(server));
+                sched::set_prio(server, thread_effective_prio(server), held);
                 // The server keeps the reply capability: reclaiming it would reach into
                 // another thread's table. Its eventual reply consumes it and answers
                 // -KOS_ESRCH.
@@ -72,7 +69,6 @@ namespace kickos
             {
                 // Queue-less on no list at all, and no donation to revert: priority does not
                 // cross to a peer's scheduler (docs/design-multicore.md N6e).
-                t->clear_wait_edge();
                 t->call_state = CALL_NONE;
                 // For the same reason the local arm above bumps it: a reply still in flight
                 // names this call by call_seq, so a seq left standing resolves to this thread
@@ -80,27 +76,6 @@ namespace kickos
                 // 65536 calls here where the local arm's masked 8 make it 256.
                 t->call_seq++;
                 break;
-            }
-            default:
-            {
-                KICKOS_UNREACHABLE(::kickos::diag::kTimeoutNotEp);
-            }
-        }
-        t->wait_result = result;
-        sched::wake(t);
-    }
-
-    void thread_abort_park(Thread* t, intptr_t result)
-    {
-        switch (t->wait_kind)
-        {
-            case WAIT_EP_SEND:
-            case WAIT_EP_RECV:
-            case WAIT_EP_REPLY:
-            case WAIT_EP_FAR_REPLY:
-            {
-                endpoint_wait_abort(t, result); // wakes it itself
-                return;
             }
             case WAIT_MUTEX:
             {
@@ -110,10 +85,9 @@ namespace kickos
                 Mutex* const m = t->wait_mutex();
                 KICKOS_ASSERT(m != nullptr); // WAIT_MUTEX never parks without one
                 t->wait_queue->unlink(&t->link);
-                t->clear_wait_edge();
                 if (m->owner != nullptr)
                 {
-                    sched::set_prio(m->owner, thread_effective_prio(m->owner));
+                    sched::set_prio(m->owner, thread_effective_prio(m->owner), held);
                 }
                 break;
             }
@@ -122,7 +96,6 @@ namespace kickos
                 // The count is untouched, so a later poster still hands its token to a
                 // genuine waiter.
                 t->wait_queue->unlink(&t->link);
-                t->clear_wait_edge();
                 break;
             }
             case WAIT_NOTIFY:
@@ -131,10 +104,10 @@ namespace kickos
             case WAIT_TASK_EMPTY:
             case WAIT_CONSOLE:
             {
-                // Sleep and notification waits have no wait queue. wake removes the timer
-                // entry. A raised bit remains pending in the OBJECT for the next wait if
-                // cancellation races delivery.
-                t->clear_wait_edge();
+                // On no list at all, and the wake drops any deadline, so clearing the edge is
+                // the whole unwind; it is also what makes exit_current's sweep miss a waiter
+                // that has given up. A raised bit remains pending in the OBJECT for the next
+                // wait if cancellation races delivery.
                 break;
             }
             default:
@@ -142,8 +115,9 @@ namespace kickos
                 KICKOS_UNREACHABLE(::kickos::diag::kParkNoKind);
             }
         }
+        t->clear_wait_edge();
         t->wait_result = result;
-        sched::wake(t);
+        sched::wake(t, held);
     }
 
     bool thread_cancel_escalate(Thread* t, uint8_t kind)
@@ -165,7 +139,7 @@ namespace kickos
         return true;
     }
 
-    void thread_cancel_kind(Thread* t, uint8_t kind)
+    void thread_cancel_kind(Thread* t, uint8_t kind, Held held)
     {
         if (not thread_cancel_escalate(t, kind))
         {
@@ -181,7 +155,7 @@ namespace kickos
         // pass can take it off.
         if (kind == CANCEL_SLAY and t->state == ThreadState::RUNNING)
         {
-            sched::reseat(t);
+            sched::reseat(t, held);
             return;
         }
 #endif
@@ -192,34 +166,53 @@ namespace kickos
         // Reaching the death point needs it runnable, so the park ends here. A slain thread
         // never reads the result, but the unwind is the other side of each park's bookkeeping
         // and must still run.
-        thread_abort_park(t, -KOS_ECANCELED);
+        thread_abort_park(t, -KOS_ECANCELED, held);
     }
 
-    void thread_cancel(Thread* t)
+    void thread_cancel(Thread* t, Held held)
     {
-        thread_cancel_kind(t, CANCEL_KILL);
+        thread_cancel_kind(t, CANCEL_KILL, held);
+    }
+
+    namespace
+    {
+        // What holds a console writer parked, asked under the same lock as the park.
+        enum ConsoleHold
+        {
+            HOLD_TIMEOUT,
+            HOLD_DARK,
+            HOLD_ROOM,
+        };
+
+        int console_park(ConsoleHold hold, char const* buf, size_t n, int crlf,
+                         uint32_t timeout_us)
+        {
+            Thread* const c = sched::current();
+            uint32_t epoch = 0;
+            {
+                IrqLock lock;
+                ParkToken const ask = park_cancel_pending(c);
+                if (ask.cancelled())
+                {
+                    return -KOS_ECANCELED;
+                }
+                if ((hold == HOLD_DARK and console_dark() == 0)
+                    or (hold == HOLD_ROOM and console_tx_room_want(buf, n, crlf) == 0))
+                {
+                    return 0;
+                }
+                epoch = park_queueless(ask)(c, WAIT_CONSOLE, nullptr, lock);
+                ktime_deadline_arm(c, timeout_us, lock);
+                sched::reschedule(nullptr, lock);
+            }
+            wq_confirm_resume(c, epoch);
+            return static_cast<int>(c->wait_result);
+        }
     }
 
     int console_dark_wait(void)
     {
-        Thread* const c = sched::current();
-        uint32_t epoch = 0;
-        {
-            IrqLock lock;
-            if (park_cancel_pending(c))
-            {
-                return -KOS_ECANCELED;
-            }
-            if (console_dark() == 0)
-            {
-                return 0;
-            }
-            park_queueless(c, WAIT_CONSOLE, nullptr);
-            epoch = c->switch_count;
-            sched::reschedule();
-        }
-        wq_confirm_resume(c, epoch);
-        return static_cast<int>(c->wait_result);
+        return console_park(HOLD_DARK, nullptr, 0, 0, KOS_TIMEOUT_NONE);
     }
 
     int console_room_wait(char const* buf, size_t n, int crlf)
@@ -228,43 +221,12 @@ namespace kickos
         {
             return 0;
         }
-        Thread* const c = sched::current();
-        uint32_t epoch = 0;
-        {
-            IrqLock lock;
-            if (park_cancel_pending(c))
-            {
-                return -KOS_ECANCELED;
-            }
-            if (console_tx_room_want(buf, n, crlf) == 0)
-            {
-                return 0;
-            }
-            park_queueless(c, WAIT_CONSOLE, nullptr);
-            epoch = c->switch_count;
-            sched::reschedule();
-        }
-        wq_confirm_resume(c, epoch);
-        return static_cast<int>(c->wait_result);
+        return console_park(HOLD_ROOM, buf, n, crlf, KOS_TIMEOUT_NONE);
     }
 
     int console_claim_wait(uint32_t timeout_us)
     {
-        Thread* const c = sched::current();
-        uint32_t epoch = 0;
-        {
-            IrqLock lock;
-            if (park_cancel_pending(c))
-            {
-                return -KOS_ECANCELED;
-            }
-            park_queueless(c, WAIT_CONSOLE, nullptr);
-            ktime_deadline_arm(c, timeout_us);
-            epoch = c->switch_count;
-            sched::reschedule();
-        }
-        wq_confirm_resume(c, epoch);
-        int const rc = static_cast<int>(c->wait_result);
+        int const rc = console_park(HOLD_TIMEOUT, nullptr, 0, 0, timeout_us);
         if (rc == -KOS_ETIMEDOUT)
         {
             return 0;
@@ -272,7 +234,7 @@ namespace kickos
         return rc;
     }
 
-    void console_dark_wake(void)
+    void console_dark_wake(Held held)
     {
         Kernel& k = kernel();
         for (int s = 0; s < k.threads.next; s++)
@@ -284,11 +246,11 @@ namespace kickos
             }
             t->clear_wait_edge();
             t->wait_result = 0;
-            sched::wake(t);
+            sched::wake(t, held);
         }
     }
 
-    void task_cancel_group(Task* t)
+    void task_cancel_group(Task* t, Held held)
     {
         if (t == nullptr)
         {
@@ -309,7 +271,7 @@ namespace kickos
             {
                 at = CANCEL_KILL;
             }
-            thread_cancel_kind(p, at);
+            thread_cancel_kind(p, at, held);
         }
     }
 }

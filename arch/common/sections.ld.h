@@ -220,6 +220,37 @@
 #define KICKOS_LD_C_SYM(name) name
 #endif
 
+/* Copy and zero tables read by kickos_ranges_init from flash, before .data exists. Copy
+ * triples are {src,dst,len}, zero pairs {dst,len}. The app ranges come first when the
+ * image carries an app window. The app zero range covers the whole granted window past the
+ * loaded .appdata: the pre-.appbss alignment gap, .appbss and the pad, so no stale
+ * read-back is left anywhere in the app grant.
+ */
+#if KICKOS_HAVE_MPU
+#define KICKOS_INIT_TABLES_APP_COPY()                                         \
+    LONG(LOADADDR(.appdata)); LONG(ADDR(.appdata)); LONG(SIZEOF(.appdata));
+#define KICKOS_INIT_TABLES_APP_ZERO()                                         \
+    LONG(KICKOS_LD_C_SYM(__kickos_appdata_load_end));                         \
+    LONG(KICKOS_LD_C_SYM(__kickos_appdata_end) -                              \
+         KICKOS_LD_C_SYM(__kickos_appdata_load_end));
+#else
+#define KICKOS_INIT_TABLES_APP_COPY()
+#define KICKOS_INIT_TABLES_APP_ZERO()
+#endif
+
+#define KICKOS_INIT_TABLES(region)                                            \
+    .kickos_init_tables : ALIGN(4)                                            \
+    {                                                                         \
+        KICKOS_LD_C_SYM(__kickos_copy_table_start) = .;                       \
+        KICKOS_INIT_TABLES_APP_COPY()                                         \
+        LONG(LOADADDR(.data)); LONG(ADDR(.data)); LONG(SIZEOF(.data));        \
+        KICKOS_LD_C_SYM(__kickos_copy_table_end) = .;                         \
+        KICKOS_LD_C_SYM(__kickos_zero_table_start) = .;                       \
+        KICKOS_INIT_TABLES_APP_ZERO()                                         \
+        LONG(ADDR(.bss)); LONG(SIZEOF(.bss));                                 \
+        KICKOS_LD_C_SYM(__kickos_zero_table_end) = .;                         \
+    } > region
+
 /* THE WINDOWS A CHIP DOES NOT CARVE, STATED EMPTY.
  *
  * Every bound below is referenced STRONGLY (include/kickos/klink.h), so a script that states

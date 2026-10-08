@@ -88,7 +88,7 @@ namespace kickos
                     g_text_readable = false;
                     g_data_writable = false;
                     caller_ = seat_pool(SLOT_CALLER, PRIO);
-                    kernel().current[kickos_kernel_core()] = caller_;
+                    kernel().current(kickos_kernel_core()) = caller_;
 #if KICKOS_HAVE_ASPACE
                     ASSERT_EQ(arch_aspace_granule(), SPAN)
                         << "one region of this gate is one granule, which is what makes a "
@@ -256,7 +256,7 @@ namespace kickos
             {
                 grant(BASE, SPAN, ARCH_MPU_R | ARCH_MPU_W);
                 seat_list(ARCH_MAP_R | ARCH_MAP_W);
-                kernel().current[kickos_kernel_core()] = nullptr;
+                kernel().current(kickos_kernel_core()) = nullptr;
                 for (int hooks = 0; hooks < 4; hooks++)
                 {
                     g_text_readable = ((hooks & 1) != 0);

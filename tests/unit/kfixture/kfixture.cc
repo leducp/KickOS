@@ -159,7 +159,7 @@ namespace kickos
                 exit(1);
             }
             g_klock_held = false;
-            Thread* const c = kernel().current[kickos_kernel_core()];
+            Thread* const c = kernel().current(kickos_kernel_core());
             if (c != nullptr and c->state == ThreadState::EXITED and c != g_park_from)
             {
                 g_exit_window_opened++;
@@ -410,7 +410,7 @@ namespace kickos
             g_fx.idle.prio = KICKOS_PRIO_IDLE;
             {
                 IrqLock lock;
-                sched::add(&g_fx.idle);
+                sched::add(&g_fx.idle, lock);
             }
             sched::start();
         }
@@ -467,7 +467,7 @@ namespace kickos
                 return;
             }
 #endif
-            kernel().policy->on_remove(t);
+            policy_on_remove(t);
         }
 
         // base_prio is the anchor a priority recompute falls back to.
@@ -483,13 +483,12 @@ namespace kickos
             th->prio = prio;
             th->id = static_cast<uint16_t>(slot + 1);
 #if KICKOS_KERNEL_CORES > 1
-            // As seat_pool does, and for the same reason: thread_create supplies this and a
-            // zero mask names no core, so a thread spawned without it is one no core may run.
+            // Supply the placement mask normally set by thread_create; zero is unschedulable.
             th->affinity = KICKOS_CORE_SET_ALL;
 #endif
             {
                 IrqLock lock;
-                sched::add(th);
+                sched::add(th, lock);
             }
             return th;
         }
@@ -506,11 +505,11 @@ namespace kickos
             Kernel& k = kernel();
 #if KICKOS_KERNEL_CORES > 1
             // The slot's own state survives its reuse, as it does across thread_create.
-            ThreadSlotKeep const keep = thread_slot_keep(&k.threads.slots[slot]);
+            uint8_t const reseat_owed = k.threads.slots[slot].reseat_owed;
 #endif
             Thread* w = new (&k.threads.slots[slot]) Thread{};
 #if KICKOS_KERNEL_CORES > 1
-            thread_slot_restore(w, keep);
+            w->reseat_owed = reseat_owed;
 #endif
             w->base_prio = prio;
             w->prio = prio;
@@ -525,7 +524,7 @@ namespace kickos
             }
             {
                 IrqLock lock;
-                sched::add(w);
+                sched::add(w, lock);
             }
             return w;
         }
@@ -533,7 +532,7 @@ namespace kickos
         void park_join(Thread* w, Thread* target)
         {
             detach_ready(w);
-            w->state = ThreadState::BLOCKED;
+            testfix::seat_blocked(w);
             w->wait_kind = WAIT_JOIN;
             w->wait_obj = target;
             // Poison wait_result so tests cannot pass without a waker writing it.
@@ -566,7 +565,7 @@ namespace kickos
         // before reusing it in the wait queue.
         void park_plain_sender(Thread* w, Endpoint* ep)
         {
-            w->state = ThreadState::BLOCKED;
+            testfix::seat_blocked(w);
             detach_ready(w);
             w->wait_queue = &ep->send_waiters;
             w->wait_kind = WAIT_EP_SEND;
@@ -604,7 +603,7 @@ namespace kickos
             }
             int err = 0;
             Task* const tk =
-                task_create(FIXTURE_TASK_TAG, /*caller=*/0u, nullptr, 0, /*mem_attr=*/0u,
+                task_create(FIXTURE_TASK_TAG, nullptr, 0, /*mem_attr=*/0u,
                             /*donor=*/nullptr, &err);
             if (tk == nullptr)
             {
@@ -645,7 +644,7 @@ namespace kickos
 
         void park_sem_waiter(Thread* w, Semaphore* s)
         {
-            w->state = ThreadState::BLOCKED;
+            testfix::seat_blocked(w);
             detach_ready(w);
             w->wait_queue = &s->waiters;
             w->wait_kind = WAIT_SEM;
@@ -656,7 +655,7 @@ namespace kickos
 
         void park_sleeper(Thread* w, uint64_t deadline_ns)
         {
-            w->state = ThreadState::BLOCKED;
+            testfix::seat_blocked(w);
             detach_ready(w);
             w->wait_queue = nullptr;
             w->wait_kind = WAIT_SLEEP;
@@ -671,7 +670,7 @@ namespace kickos
 
         void park_mutex_waiter(Thread* w, Mutex* m)
         {
-            w->state = ThreadState::BLOCKED;
+            testfix::seat_blocked(w);
             detach_ready(w);
             w->wait_queue = &m->waiters;
             w->wait_kind = WAIT_MUTEX;
@@ -711,10 +710,10 @@ namespace kickos
             jmp_buf outer;
             memcpy(&outer, &g_park_jmp, sizeof(jmp_buf));
             bool const outer_armed = g_park_armed;
-            Thread* const was = kernel().current[kickos_kernel_core()];
-            kernel().current[kickos_kernel_core()] = t;
+            Thread* const was = kernel().current(kickos_kernel_core());
+            kernel().current(kickos_kernel_core()) = t;
             run_exit(code);
-            kernel().current[kickos_kernel_core()] = was;
+            kernel().current(kickos_kernel_core()) = was;
             memcpy(&g_park_jmp, &outer, sizeof(jmp_buf));
             g_park_armed = outer_armed;
         }

@@ -13,9 +13,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <kickos/sys/cap_index.h> // KOS_CAP_AUTHORITY, the well-known indices
+#include <kickos/sys/cap_index.h> // KOS_CAP_NONE, KOS_CAP_AUTHORITY, the well-known indices
+#include <kickos/sys/cap_rights.h> // kos_cap_rights, kos_cap_authority
 #include <kickos/sys/errno.h> // KOS_E* taxonomy: failures return -KOS_Exxx (see below)
 #include <kickos/sys/exit_status.h> // KOS_EXIT_FAULT, KOS_EXIT_CANCELLED (generated)
+#include <kickos/sys/static_assert.h> // KOS_STATIC_ASSERT
 
 // Return-encoding contract (see errno.h). A syscall that can fail returns its error as
 // -KOS_Exxx (negative); success is a non-negative byte-count / count, so the two are
@@ -28,11 +30,6 @@
 // and every capability-MINTING call returns a status and delivers the handle through an
 // out-parameter.
 typedef uint32_t kos_cap_t;
-
-// "No capability". No table can mint this word, nor KOS_CAP_AUTHORITY, which shares its
-// index field. Written to a minting call's out-parameter on EVERY failure, and carried by
-// kos_recv_info.reply_cap for a plain send.
-#define KOS_CAP_NONE 0xFFFFFFFFu
 
 // A thread handle: 16 index bits + 16 generation bits over the THREAD pool, whose slots and
 // generations are unrelated to kos_cap_t's. Both are plain 32-bit words, so the compiler
@@ -83,7 +80,13 @@ enum kos_syscall_nr
     KOS_SYS_HANDLE_CLOSE = 17,  // (cap)   -> 0, -KOS_EBADF (bad cap), -KOS_EBUSY (own a held mutex)
     KOS_SYS_THREAD_CREATE = 7,   // (kos_thread_params*, kos_thread_t* out) -> 0, or -KOS_E*
                                 //   (EINVAL/EFAULT/EPERM/EACCES/EBADF/EBUSY/ENOMEM/EAGAIN/
-                                //   EOVERFLOW)
+                                //   EOVERFLOW/ENOTSUP). A RAM range it names, data grant,
+                                //   stack or memory window, answers ENOTSUP for a memory type
+                                //   this chip cannot honour, then EINVAL where no one region
+                                //   descriptor names it, then EPERM, then EBUSY. Across
+                                //   arguments the first refusal answers, in the order:
+                                //   priority and privilege, the stack, the data grant, the
+                                //   windows, the authority word, the capabilities
     KOS_SYS_EXIT = 8,           // (code)                -> does not return. Ends the calling
                                 //   thread, or the SYSTEM when the caller is root, which
                                 //   needs KOS_AUTH_SYSTEM for it and panics without.
@@ -217,14 +220,17 @@ enum kos_syscall_nr
                                //   console; KOS_TIMEOUT_NONE is a send of no timeout
     KOS_SYS_TASK_CREATE = 51,  // (mem_base, mem_size, kos_task_t* out, kos_mem_flags) -> 0,
                                //   or -KOS_E*: EPERM (no KOS_AUTH_TASKS, an inadmissible
-                               //   shared grant, a range the caller never reserved, a
-                               //   memory type this chip cannot honour, or a caller no
-                               //   member could name), EINVAL (the window wraps, or an
-                               //   undefined flag bit), ENOMEM (task or
-                               //   domain pool full, or the new space cannot take the range at
-                               //   the caller's address), EFAULT (bad out-pointer), EBUSY (the
-                               //   range held elsewhere, another task's data or a window, with
-                               //   another memory type). The task is EMPTY:
+                               //   shared grant, a range the caller never reserved, or a
+                               //   caller no member could name), ENOTSUP (a memory type this
+                               //   chip cannot honour), EINVAL (the window wraps, no one
+                               //   region descriptor names it, or an undefined flag bit),
+                               //   ENOMEM (task or domain pool full, or the new space cannot
+                               //   take the range at the caller's address), EFAULT (bad
+                               //   out-pointer), EBUSY (the range held elsewhere, another
+                               //   task's data or a window, with another memory type). The
+                               //   first refusal answers, in the order: the out-pointer, the
+                               //   flags, KOS_AUTH_TASKS, the range as KOS_SYS_THREAD_CREATE
+                               //   admits one, the pools. The task is EMPTY:
                                //   kos_thread_params::task is what seats members.
     KOS_SYS_TASK_KILL = 52,    // (kos_task_t) -> 0, -KOS_EBADF (never created / freed under
                                //   this handle / an implicit task, which is unnameable),
@@ -525,21 +531,21 @@ enum kos_bench_op
 #define KOS_BENCH_SAMPLES_MAX 100u
 #define KOS_BENCH_ROUNDS_MAX 64u
 
+// What kos_recv_info.badge carries for a sender holding no badge. Distinct from a zero
+// badge_out, which means the receiver asked for no info.
+#define KOS_BADGE_NONE 0u
+
 // Receive metadata: 8 bytes, aligned to 4. Plain sends have KOS_CAP_NONE;
 // calls supply a one-shot reply cap that the receiver must reply to or close.
 // Receiving without metadata rejects calls with -KOS_ENOTSUP.
 struct kos_recv_info
 {
-    uint32_t badge;      // sender badge (KOS_BADGE_NONE == 0 in this stage)
+    uint32_t badge;      // sender badge, KOS_BADGE_NONE in this stage
     kos_cap_t reply_cap; // KOS_CAP_NONE for a plain send; else a one-shot CAP_REPLY handle
                          // in the receiver's table. Test it against KOS_CAP_NONE: a live
                          // reply cap can have bit 31 set, so no sign test works.
 };
-#ifdef __cplusplus
-static_assert(sizeof(struct kos_recv_info) == 8, "kos_recv_info must stay 8 bytes (ABI)");
-#else
-_Static_assert(sizeof(struct kos_recv_info) == 8, "kos_recv_info must stay 8 bytes (ABI)");
-#endif
+KOS_STATIC_ASSERT(sizeof(struct kos_recv_info) == 8, "kos_recv_info must stay 8 bytes (ABI)");
 
 // Receive flags; unknown bits return -KOS_EINVAL.
 // KOS_RECV_NO_INFO leaves info untouched and rejects calls with -KOS_ENOTSUP.
@@ -558,17 +564,10 @@ struct kos_reply_recv_opts
                                // OUT: consumed bits; unaccepted bits remain pending
     struct kos_recv_info info; // OUT: the arrival, whole-struct
 };
-#ifdef __cplusplus
-static_assert(sizeof(struct kos_reply_recv_opts) == 24,
-              "kos_reply_recv_opts must stay 24 bytes (ABI)");
-static_assert(offsetof(struct kos_reply_recv_opts, info) == 16,
-              "the nested kos_recv_info must sit at offset 16 (ABI)");
-#else
-_Static_assert(sizeof(struct kos_reply_recv_opts) == 24,
-               "kos_reply_recv_opts must stay 24 bytes (ABI)");
-_Static_assert(offsetof(struct kos_reply_recv_opts, info) == 16,
-               "the nested kos_recv_info must sit at offset 16 (ABI)");
-#endif
+KOS_STATIC_ASSERT(sizeof(struct kos_reply_recv_opts) == 24,
+                  "kos_reply_recv_opts must stay 24 bytes (ABI)");
+KOS_STATIC_ASSERT(offsetof(struct kos_reply_recv_opts, info) == 16,
+                  "the nested kos_recv_info must sit at offset 16 (ABI)");
 
 // Initialize receive options and clear outputs. No IRQ notifications are accepted
 // by default; set notify before each call that should accept them.
@@ -609,13 +608,8 @@ typedef uint32_t kos_pstate_t;
 // carry the deadline. Nine bits each, both being bounded by KOS_EP_MSG_MAX.
 #define KOS_CALL_LEN_BITS 9
 #define KOS_CALL_LEN_MASK ((1u << KOS_CALL_LEN_BITS) - 1u)
-#ifdef __cplusplus
-static_assert((unsigned)KOS_EP_MSG_MAX < KOS_CALL_LEN_MASK,
-              "KOS_EP_MSG_MAX must stay strictly below the packed field's saturation value");
-#else
-_Static_assert((unsigned)KOS_EP_MSG_MAX < KOS_CALL_LEN_MASK,
-               "KOS_EP_MSG_MAX must stay strictly below the packed field's saturation value");
-#endif
+KOS_STATIC_ASSERT((unsigned)KOS_EP_MSG_MAX < KOS_CALL_LEN_MASK,
+                  "KOS_EP_MSG_MAX must stay strictly below the packed field's saturation value");
 
 // Saturates at the field width: a masked 512 would arrive as 0 and become a silent zero-length
 // call, while a saturated 511 still trips the kernel's send_len > KOS_EP_MSG_MAX refusal.
@@ -670,39 +664,6 @@ enum kos_policy
 {
     KOS_POLICY_FIFO = 0,
     KOS_POLICY_RR = 1
-};
-
-// Object capability rights (must mirror kickos::CapRights): the rights of a semaphore,
-// mutex, endpoint or reply cap. A delegation NARROWS only: the child cap gets
-// parent.rights & mask, and a mask adding a bit the parent lacks is rejected, the one
-// exception being KOS_CAP_WAIT from an endpoint cap carrying KOS_CAP_HANDOUT.
-// Delegating requires the parent cap carry KOS_CAP_TRANSFER.
-enum kos_cap_rights
-{
-    KOS_CAP_WAIT = 1 << 0,     // sem_wait; endpoint recv
-    KOS_CAP_SIGNAL = 1 << 1,   // sem_post; endpoint send
-    KOS_CAP_TRANSFER = 1 << 2, // may be delegated onward
-    // Endpoint only: a delegation may grant KOS_CAP_WAIT from this cap although it holds no
-    // WAIT itself. Its holder is no receiver, and while one exists a call the endpoint has no
-    // receiver for answers -KOS_EAGAIN rather than -KOS_ECONNREFUSED.
-    KOS_CAP_HANDOUT = 1 << 3
-};
-
-// The thread's authority word (must mirror kickos::CapAuthority): its own field, sharing no
-// numbering with kos_cap_rights. It is TCB state and not a table entry, so a spawning parent
-// is what seats it. A thread may pass a bit to a child (kos_thread_params::authority) only if
-// it holds that bit, and may drop bits with kos_cap_narrow(KOS_CAP_AUTHORITY, mask). Nothing
-// widens.
-enum kos_cap_authority
-{
-    KOS_AUTH_MEMORY = 1 << 0,  // kos_ram_alloc, a spawn's device window, kos_mem_self_grant
-    KOS_AUTH_PINMUX = 1 << 1,  // kos_pinmux_set
-    KOS_AUTH_PSTATE = 1 << 2,  // kos_cpu_clock_set
-    KOS_AUTH_IRQ = 1 << 3,     // kos_irq_claim, kos_irq_unmask
-    KOS_AUTH_SYSTEM = 1 << 4,  // kos_shutdown, kos_reboot
-    KOS_AUTH_CONSOLE = 1 << 5, // kos_console_publish
-    KOS_AUTH_TASKS = 1 << 6,   // kos_task_create, and a spawn that builds a task of its own
-    KOS_AUTH_BUS_MASTER = 1 << 7 // a spawn's device window over a device that masters the bus
 };
 
 // One entry of a spawn delegation list: hand the child a narrowed copy of the parent cap
@@ -821,34 +782,18 @@ struct kos_thread_params
 // core_mask and authority are the two 32-bit words the tail carries with no padding between.
 // The spawn stager copies the whole struct onto the syscall stack, so a padding byte here
 // is a byte of every trap red zone.
-#ifdef __cplusplus
-static_assert(sizeof(((struct kos_thread_params*)0)->core_mask) == 4,
-              "the core mask is a 32-bit word at every ABI that carries one");
-static_assert(sizeof(((struct kos_thread_params*)0)->authority) == 4,
-              "the authority word is 32 bits at every ABI");
-static_assert(offsetof(struct kos_thread_params, authority)
-                  == offsetof(struct kos_thread_params, core_mask) + 4,
-              "authority must sit immediately behind core_mask (ABI)");
-static_assert(offsetof(struct kos_thread_params, cap_count)
-                  == offsetof(struct kos_thread_params, privileged) + 1,
-              "cap_count must fill the byte behind privileged (ABI)");
-static_assert(offsetof(struct kos_thread_params, quantum_ns)
-                  == offsetof(struct kos_thread_params, prio) + 4,
-              "prio, policy, privileged and cap_count must fill one word (ABI)");
-#else
-_Static_assert(sizeof(((struct kos_thread_params*)0)->core_mask) == 4,
-               "the core mask is a 32-bit word at every ABI that carries one");
-_Static_assert(sizeof(((struct kos_thread_params*)0)->authority) == 4,
-               "the authority word is 32 bits at every ABI");
-_Static_assert(offsetof(struct kos_thread_params, authority)
-                   == offsetof(struct kos_thread_params, core_mask) + 4,
-               "authority must sit immediately behind core_mask (ABI)");
-_Static_assert(offsetof(struct kos_thread_params, cap_count)
-                   == offsetof(struct kos_thread_params, privileged) + 1,
-               "cap_count must fill the byte behind privileged (ABI)");
-_Static_assert(offsetof(struct kos_thread_params, quantum_ns)
-                   == offsetof(struct kos_thread_params, prio) + 4,
-               "prio, policy, privileged and cap_count must fill one word (ABI)");
-#endif
+KOS_STATIC_ASSERT(sizeof(((struct kos_thread_params*)0)->core_mask) == 4,
+                  "the core mask is a 32-bit word at every ABI that carries one");
+KOS_STATIC_ASSERT(sizeof(((struct kos_thread_params*)0)->authority) == 4,
+                  "the authority word is 32 bits at every ABI");
+KOS_STATIC_ASSERT(offsetof(struct kos_thread_params, authority)
+                      == offsetof(struct kos_thread_params, core_mask) + 4,
+                  "authority must sit immediately behind core_mask (ABI)");
+KOS_STATIC_ASSERT(offsetof(struct kos_thread_params, cap_count)
+                      == offsetof(struct kos_thread_params, privileged) + 1,
+                  "cap_count must fill the byte behind privileged (ABI)");
+KOS_STATIC_ASSERT(offsetof(struct kos_thread_params, quantum_ns)
+                      == offsetof(struct kos_thread_params, prio) + 4,
+                  "prio, policy, privileged and cap_count must fill one word (ABI)");
 
 #endif

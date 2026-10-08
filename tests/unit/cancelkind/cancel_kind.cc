@@ -74,9 +74,9 @@ namespace kickos
                 Thread* const waiter = seat_pool(SLOT_VICTIM, PRIO_HIGH);
                 {
                     IrqLock lock;
-                    sched::reschedule();
+                    sched::reschedule(nullptr, lock);
                 }
-                EXPECT_EQ(kernel().current[kickos_kernel_core()], waiter) << "fixture: the waiter is current";
+                EXPECT_EQ(kernel().current(kickos_kernel_core()), waiter) << "fixture: the waiter is current";
                 EXPECT_NE(peer, nullptr);
                 g_switches = 0;
                 trace_reset();
@@ -97,7 +97,7 @@ namespace kickos
                 parked->wait_result = 0;
                 {
                     IrqLock lock;
-                    sched::wake(parked);
+                    sched::wake(parked, lock);
                 }
             }
 
@@ -127,7 +127,7 @@ namespace kickos
 
             {
                 IrqLock lock;
-                thread_cancel(victim);
+                thread_cancel(victim, lock);
             }
 
             EXPECT_EQ(victim->cancel_kind, CANCEL_KILL)
@@ -142,8 +142,8 @@ namespace kickos
 
             {
                 IrqLock lock;
-                thread_cancel(victim);
-                thread_cancel(victim);
+                thread_cancel(victim, lock);
+                thread_cancel(victim, lock);
             }
 
             EXPECT_EQ(victim->cancel_kind, CANCEL_KILL) << "still the kind the first call wrote";
@@ -162,7 +162,7 @@ namespace kickos
 
             {
                 IrqLock lock;
-                task_cancel_group(group);
+                task_cancel_group(group, lock);
             }
 
             EXPECT_EQ(a->cancel_kind, CANCEL_SLAY) << "the group form slays";
@@ -178,8 +178,8 @@ namespace kickos
 
             {
                 IrqLock lock;
-                thread_cancel_kind(victim, CANCEL_KILL);
-                thread_cancel_kind(victim, CANCEL_SLAY);
+                thread_cancel_kind(victim, CANCEL_KILL, lock);
+                thread_cancel_kind(victim, CANCEL_SLAY, lock);
             }
 
             EXPECT_EQ(victim->cancel_kind, CANCEL_SLAY)
@@ -195,8 +195,8 @@ namespace kickos
 
             {
                 IrqLock lock;
-                thread_cancel_kind(victim, CANCEL_SLAY);
-                thread_cancel_kind(victim, CANCEL_KILL);
+                thread_cancel_kind(victim, CANCEL_SLAY, lock);
+                thread_cancel_kind(victim, CANCEL_KILL, lock);
             }
 
             EXPECT_EQ(victim->cancel_kind, CANCEL_SLAY) << "still the stronger kind";
@@ -215,11 +215,11 @@ namespace kickos
             Thread* const peer = seat_pool(SLOT_PEER, PRIO_LOW);
             join_task(c, group);
             join_task(victim, group);
-            kernel().current[kickos_kernel_core()] = c;
+            kernel().current(kickos_kernel_core()) = c;
 
             {
                 IrqLock lock;
-                thread_cancel(peer);
+                thread_cancel(peer, lock);
             }
             run_exit_faulted(0);
 
@@ -239,7 +239,7 @@ namespace kickos
             Thread* const peer = seat_pool(SLOT_PEER, PRIO_LOW);
             join_task(c, group);
             join_task(peer, group);
-            kernel().current[kickos_kernel_core()] = c;
+            kernel().current(kickos_kernel_core()) = c;
             c->cancel_kind = CANCEL_SLAY;
 
             run_exit(0);
@@ -256,7 +256,7 @@ namespace kickos
             uint32_t const cap = claim_the_line(waiter);
             {
                 IrqLock lock;
-                thread_cancel(waiter);
+                thread_cancel(waiter, lock);
             }
             // Armed even on an arm that must NOT park: an unarmed park is a fixture exit(1)
             // that takes the rest of the suite with it, and a waker nothing consumed is

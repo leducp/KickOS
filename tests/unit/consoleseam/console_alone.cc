@@ -70,5 +70,5 @@ namespace kickos
     // No ring to wait on: the write ends.
     int console_room_wait(char const*, size_t, int) { return -KOS_ECANCELED; }
 
-    void cap_console_deliver() {}
+    void cap_console_deliver(Held) {}
 }

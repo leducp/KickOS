@@ -2,8 +2,8 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The cross-core doorbell and the kernel lock coupled to it, on armv8a: the GIC's clear and
-// raise, the service body's context synchronization event, the ticket draw's exclusive pair,
-// and the secondary park. The protocol over them is in arch/common/doorbell_protocol.cc.
+// raise, the service's context synchronization event, the ticket draw's exclusive pair, and the
+// secondary park. The protocol over them is in arch/common/doorbell_protocol.cc.
 //
 // Neither GIC version reports that a target has serviced a software-generated interrupt, and
 // GICv2's per-source pending registers are banked to the accessing core: the controller
@@ -40,9 +40,6 @@ extern "C"
 #endif
 }
 
-using kickos::doorbell::g_answer;
-using kickos::doorbell::g_request;
-
 namespace
 {
 #if defined(KICKOS_ENABLE_SELFTEST)
@@ -54,15 +51,6 @@ namespace
     kickos::doorbell::PartCell g_initiated[KICKOS_NUM_CORES] = {};
 #endif
 #endif
-
-    // The requests the service answers, one row per core: on the stack they would deepen every
-    // trap class that polls the doorbell by a word per core. One row is enough because the
-    // service is entered masked and nothing it calls before its answers enters it again.
-    struct alignas(KICKOS_DOORBELL_LINE) AskedRow
-    {
-        uint32_t seq[KICKOS_DOORBELL_CORES];
-    };
-    AskedRow g_asked[KICKOS_DOORBELL_CORES] = {};
 
 #if KICKOS_KERNEL_CORES > 1
     // Separate lines: every draw takes g_next_ticket's line exclusive in the inner-shareable
@@ -126,63 +114,25 @@ namespace
 #endif
 }
 
-extern "C"
+// A context synchronization event on this PE: until a PE takes one, instructions it has already
+// fetched may be re-executed with no bound (DDI 0487 M.b section B2.7.4.2), and no operation makes
+// one PE synchronize another (Glossary, "Context Synchronization event"). ISB flushes the pipeline
+// in the PE and is such an event (section C6.2.177); it is spelled explicitly because the poll
+// runs the service from inside a spin, which enters no exception, and whether exception entry is
+// itself such an event rests on FEAT_ExS and SCTLR_EL1.EIS. tests/static/check_doorbell_isb.sh
+// reads it out of the image.
+kickos::doorbell::Fenced kickos::doorbell::service_fence(Observed)
 {
-
-// The far side of the doorbell, on the calling core. Reached from the SGI handler and from a
-// poll inside a spin, and MASKED either way.
-void kickos_arm64_doorbell_service(void)
-{
-    uint32_t const me = arch_doorbell_core();
-    // Observed once and answered from the observation, never re-read: the ISB below must
-    // attest to THIS snapshot, and a request raised after it is not one it covers.
-    uint32_t* const asked = g_asked[me].seq;
-    bool owed = false;
-    for (uint32_t from = 0; from < KICKOS_DOORBELL_CORES; from++)
-    {
-        asked[from] = g_request[from].seq[me].load();
-        if (asked[from] != g_answer[me].seq[from].load())
-        {
-            owed = true;
-        }
-    }
-    if (not owed)
-    {
-        return;
-    }
-
-    // A context synchronization event on this PE: until a PE takes one, instructions it has
-    // already fetched may be re-executed with no bound (DDI 0487 M.b section B2.7.4.2), and no
-    // operation makes one PE synchronize another (Glossary, "Context Synchronization event").
-    // ISB flushes the pipeline in the PE and is such an event (section C6.2.177); it is spelled
-    // explicitly because the poll runs this body from inside a spin, which enters no exception,
-    // and whether exception entry is itself such an event rests on FEAT_ExS and SCTLR_EL1.EIS.
-    // Placed after the snapshot and before the answer stores, so an initiator that has seen an
-    // answer has seen this.
     __asm volatile("isb" ::: "memory");
 #if defined(KICKOS_ENABLE_SELFTEST)
+    uint32_t const me = arch_doorbell_core();
     g_served[me].v = g_served[me].v.load() + 1u;
 #endif
-#if KICKOS_KERNEL_CORES > 1
-    // After the snapshot above and before the answer stores below; both halves are the
-    // contract (kernel/irq/irq_route.cc, line_op_ask).
-    kickos_irq_route_service();
-#endif
-
-    for (uint32_t from = 0; from < KICKOS_DOORBELL_CORES; from++)
-    {
-        if (asked[from] != g_answer[me].seq[from].load())
-        {
-            g_answer[me].seq[from] = asked[from];
-        }
-    }
-#if KICKOS_AMP_NODE
-    // After the answers, which is the contract: an AMP payload drain may not delay the
-    // rendezvous a shared kernel's callers wait on through this same body. The early return
-    // above cannot lose a payload wake, a send raising the request cell like any other.
-    kickos_amp_node_service();
-#endif
+    return Fenced();
 }
+
+extern "C"
+{
 
 // Runs the service body with this core's interrupts masked: the body is not re-entrant
 // against itself, an answer write preempted between its read and its store publishing a
@@ -196,7 +146,7 @@ void kickos_doorbell_poll(void)
     arch_irq_state_t const state = arch_irq_save();
     // Before the service: a raise landing after the clear stays pending and is delivered.
     kickos_armv8a_gic_doorbell_clear();
-    kickos_arm64_doorbell_service();
+    kickos_doorbell_service();
 #if KICKOS_KERNEL_CORES > 1
     // After the clear that absorbed it: the clear above drops every source's pending bit, a
     // reschedule among them, and the cell is what says one was owed.
@@ -352,7 +302,7 @@ void kickos_armv8a_doorbell_park(void)
     while (true)
     {
 #if KICKOS_KERNEL_CORES > 1
-        if (kickos_kernel_core_seated() != 0 and kickos_kernel_core_ready() != 0)
+        if (kickos_kernel_core_startable() != 0)
         {
             // Masked and never restored: the scheduler's first switch erets onto a frame
             // carrying its own interrupt state. percore_init restores the bank doorbell_only
@@ -360,7 +310,6 @@ void kickos_armv8a_doorbell_park(void)
             // alone.
             (void)arch_irq_save();
             kickos_armv8a_gic_percore_init();
-            kickos_kernel_core_arrive();
             kickos_kernel_core_start();
         }
 #endif

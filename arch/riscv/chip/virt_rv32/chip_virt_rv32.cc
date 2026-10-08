@@ -10,17 +10,13 @@
 // left to the declining ENOSYS fallback.
 
 #include <kickos/arch/arch.h>
-#include <kickos/console_tx.h>
+#include "crt_tail.h"
+#include "semihost.h"
 #include <kickos/arch/clk_q32.h>
 
 #include <stdint.h>
 
 #include <kickos/chip_mmap.h>
-
-namespace kickos
-{
-    int kmain(int argc, char** argv);
-}
 
 extern "C"
 {
@@ -29,20 +25,6 @@ extern "C"
     // The arch layer's deferred-switch software-interrupt register (CLINT msip),
     // set here so switch.S can pend/clear it.
     extern volatile uint32_t* g_clint_msip;
-
-    // Linker-script symbols (virt.ld).
-    extern uint32_t _sidata, _sdata, _edata, _sbss, _ebss;
-    extern void (*__init_array_start[])();
-    extern void (*__init_array_end[])();
-
-#if KICKOS_HAVE_MPU
-    // App-data NAPOT region (virt.ld). .appdata holds the app + C++-runtime .data and
-    // the gp small-data window; its VMA jumps to the pow2 window base above the NOLOAD
-    // kernel .bss, so LMA != VMA and it needs a copy (like .data) before .appbss + pad
-    // are zeroed.
-    extern uint32_t _appdata_lma, __kickos_appdata_start, __kickos_appbss_start,
-        __kickos_appdata_end;
-#endif
 
     // No core clock on this machine: MTIME_HZ below is the CLINT rate, not a core rate.
     uint32_t SystemCoreClock = 0;
@@ -57,49 +39,8 @@ namespace
     constexpr uintptr_t CLINT_MSIP = CLINT_BASE + 0x0000;
     constexpr uintptr_t CLINT_MTIMECMP = CLINT_BASE + 0x4000; // 64-bit
     constexpr uintptr_t CLINT_MTIME = CLINT_BASE + 0xBFF8;     // 64-bit
-    constexpr uint64_t MTIME_HZ = 10000000ull;                 // `virt` mtime = 10 MHz
+    constexpr uint64_t MTIME_HZ = 10000000ull;
     constexpr uint64_t NS_PER_TICK = kickos::KICKOS_NS_PER_SEC / MTIME_HZ;
-
-    // RISC-V semihosting. The magic sequence slli x0,x0,0x1f / ebreak / srai x0,x0,7 must
-    // NOT be compressed. .balign 16 (not 4): QEMU's magic-sequence check reads the words
-    // at ebreak-4 and ebreak+4, so if the 12-byte sequence straddles a 4K page QEMU does
-    // not recognize the call and the ebreak traps as a plain breakpoint. 16 divides 4096,
-    // so the block never crosses a page.
-    inline long semihost(long op, void* arg)
-    {
-        register long a0 __asm("a0") = op;
-        register void* a1 __asm("a1") = arg;
-        __asm volatile(".option push\n"
-                       ".option norvc\n"
-                       ".balign 16\n"
-                       "slli x0, x0, 0x1f\n"
-                       "ebreak\n"
-                       "srai x0, x0, 7\n"
-                       ".option pop\n"
-                       : "+r"(a0)
-                       : "r"(a1)
-                       : "memory");
-        return a0;
-    }
-
-    constexpr long SYS_WRITEC = 0x03;
-    constexpr long SYS_EXIT_EXTENDED = 0x20;
-    constexpr uint32_t ADP_Stopped_ApplicationExit = 0x20026u;
-
-    // --- Buffered console TX backend (console_tx.h). The semihosting trap takes the byte
-    // inside the call: no channel to wait on, no completion to interrupt on. ---
-    int rv32_tx_slot_free(void) { return 1; }
-    void rv32_tx_push(uint8_t b)
-    {
-        char c = static_cast<char>(b);
-        semihost(SYS_WRITEC, &c);
-    }
-    void rv32_tx_irq_enable(void) {}
-    void rv32_tx_irq_disable(void) {}
-
-    char console_tx_buf[KICKOS_CONSOLE_TX_SIZE];
-    console_tx_backend const rv32_console_backend = {
-        rv32_tx_slot_free, rv32_tx_push, rv32_tx_irq_enable, rv32_tx_irq_disable};
 }
 
 extern "C"
@@ -116,7 +57,6 @@ void arch_init(void)
     // semihosting), so arch_irq_* stay on the arch-provided SSIP software channel.
 }
 
-// --- Tickless clock: the 64-bit CLINT mtime (10 MHz) -> ns ------------------
 uint64_t arch_clock_now(void)
 {
     volatile uint32_t* mt = r32p(CLINT_MTIME);
@@ -132,7 +72,6 @@ uint64_t arch_clock_now(void)
     return t * NS_PER_TICK;
 }
 
-// --- One-shot next-event timer: CLINT mtimecmp (absolute) -------------------
 void arch_timer_arm(uint64_t deadline_ns)
 {
     uint64_t ticks = deadline_ns / NS_PER_TICK;
@@ -151,81 +90,15 @@ void arch_timer_disarm(void)
     cmp[1] = 0xFFFFFFFFu;
 }
 
-// --- Debug console + exit via semihosting -----------------------------------
-int arch_console_write(char const* buf, size_t n)
-{
-    return console_tx_insert_line(buf, n, KICKOS_CONSOLE_CRLF);
-}
-
-// SYS_WRITEC hands each byte to the host inside the call, so nothing is ever in flight
-// here and arch_console_flush_sync is left to its no-op fallback.
-bool arch_console_write_sync(char const* buf, size_t n)
-{
-    for (size_t i = 0; i < n; i++)
-    {
-        char c = buf[i];
-        semihost(SYS_WRITEC, &c);
-    }
-    return true;
-}
-
-console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)
-{
-    *storage = console_tx_buf;
-    *size = KICKOS_CONSOLE_TX_SIZE;
-    *irq_line = -1; // no TX completion event exists; the producer drains
-    return &rv32_console_backend;
-}
-
 void arch_shutdown(int status)
 {
-    uint32_t block[2];
-    block[0] = ADP_Stopped_ApplicationExit;
-    block[1] = static_cast<uint32_t>(status);
-    semihost(SYS_EXIT_EXTENDED, block);
-    // If semihosting exit returns, mask interrupts and park.
-    __asm volatile("csrci mstatus, 0x8" ::: "memory"); // clear MIE
-    while (true)
-    {
-        __asm volatile("wfi");
-    }
+    kickos::semihost::exit(status);
 }
 
-// --- C-runtime bring-up (the reset entry) ----------------------------------
 void Reset_Handler(void)
 {
-    // QEMU places each segment at its PhysAddr, so the LMA really holds the image bytes.
-    // Under KICKOS_HAVE_MPU .data's VMA is pinned past the code pad, so LMA != VMA and
-    // this copy is real; without enforcement LMA == VMA and it is a no-op.
-    uint32_t* src = &_sidata;
-    uint32_t* dst = &_sdata;
-    while (dst < &_edata)
-    {
-        *dst++ = *src++;
-    }
-    for (uint32_t* b = &_sbss; b < &_ebss; b++)
-    {
-        *b = 0;
-    }
-#if KICKOS_HAVE_MPU
-    uint32_t* asrc = &_appdata_lma;
-    uint32_t* adst = &__kickos_appdata_start;
-    while (adst < &__kickos_appbss_start) // .appdata: LMA != VMA (see decl)
-    {
-        *adst++ = *asrc++;
-    }
-    for (uint32_t* b = &__kickos_appbss_start; b < &__kickos_appdata_end; b++)
-    {
-        *b = 0;
-    }
-#endif
-    for (void (**fn)() = __init_array_start; fn != __init_array_end; fn++)
-    {
-        (*fn)();
-    }
-    arch_init();
-    kickos::kmain(0, nullptr);
-    arch_shutdown(0);
+    kickos_ranges_init();
+    kickos_crt_tail();
 }
 
 }

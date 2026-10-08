@@ -31,16 +31,9 @@ extern "C"
 {
     void* kmemcpy(void* dst, void const* src, size_t n);
     void* kmemset(void* dst, int c, size_t n);
-    void* kmemmove(void* dst, void const* src, size_t n);
-    int kmemcmp(void const* a, void const* b, size_t n);
     size_t kstrlen(char const* s);
-    size_t kstrnlen(char const* s, size_t maxlen);
-
-    // kvsnprintf/ksnprintf under the private name: same formatter, same limits
-    // (lib/include/kickos/libc/fmt.h).
+    // The formatter and limits of kvsnprintf (lib/include/kickos/libc/fmt.h).
     int kfmt_vsnprintf(char* buf, size_t size, char const* fmt, va_list ap);
-    int kfmt_snprintf(char* buf, size_t size, char const* fmt, ...)
-        __attribute__((format(printf, 3, 4)));
 }
 
 #else
@@ -50,12 +43,8 @@ extern "C"
 
 #define kmemcpy memcpy
 #define kmemset memset
-#define kmemmove memmove
-#define kmemcmp memcmp
 #define kstrlen strlen
-#define kstrnlen strnlen
 #define kfmt_vsnprintf kvsnprintf
-#define kfmt_snprintf ksnprintf
 
 #endif
 

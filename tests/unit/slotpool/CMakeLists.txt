@@ -2,14 +2,14 @@
 # Copyright (c) 2026 Philippe Leduc
 
 # Allocation-policy gate for kernel/include/kickos/slotpool.h: the header is standalone
-# (stdint.h only), so a host program instantiates the real template and measures how a
+# (stddef.h and stdint.h only), so a host program instantiates the real template and measures how a
 # create/destroy workload spreads its recycles; the quantity that sets the ABA wrap
 # distance. Host-only, so it registers on the sim build only, like the telemetry gates.
 kickos_add_unit_test(NAME slotpool_policy
   SOURCES slotpool_policy.cc
   INCLUDES "${PROJECT_SOURCE_DIR}/kernel/include")
 
-# at() and live() take an INDEX, and both refuse one outside [0, N). Comparing the returned
+# at() takes an INDEX, and refuses one outside [0, N). Comparing the returned
 # pointer cannot witness that refusal: drop the bound and `used_[-1]` reads the byte below the
 # array, which on this layout is zero, so `not used_[-1]` refuses the slot BY ACCIDENT and the
 # arm still passes. UBSan's bounds check is what turns the read itself into the property, which

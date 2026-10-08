@@ -2,9 +2,9 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The address-space boundary of the K-seam for the range-check gate at KICKOS_HAVE_ASPACE=1.
-// No board the host arch answers for translates, so kernel/mem and kernel/domain are not
-// compiled here; what this stands in for is the list a domain holds and the space that makes
-// it reachable, which is what the range checks ask on a translating backend.
+// kernel/domain is not compiled here; what this stands in for is the list a domain holds and
+// the space that makes it reachable, which is what the range checks ask on a translating
+// backend.
 //
 // Keep this header GTEST-FREE, for the reason kfixture.h states.
 

@@ -142,10 +142,8 @@ namespace kickos
         {
             return word_at(bits_ + widx * WORD_BYTES);
         }
-        // The bitmap is a whole number of bytes, so bits at and past frames_ exist and read as
-        // zero. Forced to 1 here: bits at and past frames_ read as allocated, which keeps the
-        // scan inside the range and covers every byte past the bitmap's own length, so the
-        // loop stops there rather than reads it.
+        // The bitmap's last byte holds bits past frames_, stored as zero: forced to 1 here, as
+        // is every byte past the bitmap, which the loop stops before reading.
         size_t const bitmap_bytes = (frames_ + 7u) / 8u;
         size_t w = ALL_SET << (frames_ - first);
         for (size_t k = 0; k < WORD_BYTES; k++)

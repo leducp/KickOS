@@ -23,15 +23,15 @@ config ARCH_KERNEL_STACKS_MANDATORY
 	  The arch's switch.S compiles the transfer UNCONDITIONALLY, with no red-zone path
 	  beside it, and its backend static_asserts KICKOS_KERNEL_STACKS != 0. Selecting
 	  this makes that knob default 1 unconditionally on the arch, so no chip capability
-	  or board opt-in can steer it to a value three backends reject, and pins it with
+	  or board opt-in can steer it to a value those backends reject, and pins it with
 	  `range 1 1` as a declared invariant. A requested 0 is REFUSED BY NAME at configure
 	  instead of reaching the assert as a compile error.
 
 	  WHY IT IS NOT IMPLIED BY ARCH_HAS_KERNEL_STACKS. That symbol says the entry CAN
-	  transfer; this one says it can do nothing else. armv6m, rv32imac and rxv3 select
-	  this: every chip on them either has an MPU or opted in, so the fallback was never
-	  written and their asserts have always been the only thing standing behind the
-	  knob's `default 0`.
+	  transfer; this one says it can do nothing else. armv6m, armv8a, rxv3, rv32imac,
+	  rv64imac and x86_64 select this: every chip on them either has an MPU or opted in,
+	  so the fallback was never written and their asserts have always been the only
+	  thing standing behind the knob's `default 0`.
 
 	  ARMV7M DELIBERATELY DOES NOT SELECT IT, and that is what makes the distinction
 	  expressible rather than a tautology. It carries BOTH paths under

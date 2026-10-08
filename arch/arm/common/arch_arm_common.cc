@@ -104,6 +104,13 @@ void arch_switch(struct arch_context* from, struct arch_context* to)
     __asm volatile("isb" ::: "memory");
 }
 
+// ctx->sp is the base of the PendSV-pushed block, whose first word reloads r4. r4, not the
+// AAPCS r0, is the register the trap's own ABI answers in (arch_syscall_reg in switch.S).
+void arch_ctx_set_syscall_result(struct arch_context* ctx, uint32_t result)
+{
+    reinterpret_cast<uint32_t*>(ctx->sp)[0] = result;
+}
+
 int arch_in_isr(void)
 {
     uint32_t ipsr;
@@ -196,7 +203,7 @@ void arch_timer_disarm(void)
 
 // --- MPU ---------------------------------------------------------------------
 // The stash every ARM backend reads, and the two apply entries, are their own archive
-// member: arch/arm/common/arch_arm_mpu_pending.cc. The PMSAv7 descriptor writer is
+// member: arch/common/arch_mpu_stash.cc. The PMSAv7 descriptor writer is
 // arch_arm_mpu_pmsav7.cc; SYSMPU and PMSAv8 program their own from their own commits.
 
 // --- Interrupt controller (NVIC) --------------------------------------------

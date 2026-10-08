@@ -55,8 +55,7 @@ Renesas's GPL code, vendored in `conan/toolchain/patches/` beside the x86_64 one
 double-precision compare branches on ORDERED for UNORDERED, and its UN* codes take the branch on
 every ordered pair, so under `-mdfpu` `isnan` reads 1.0 as a NaN and printf prints `nan` for it,
 while `<` and `==` are right. `kickos-rx-dfpu-compare.patch`, applied after the multilib patch,
-turns those branches round. `rx_dfpu_compare` steps the compiler's compares on the host, and
-`fpclass` checks classification and printf of doubles on the board, which the RX72M passes
+turns those branches round; whoever touches the patch re-checks its compares. `fpclass` checks classification and printf of doubles on the board, which the RX72M passes
 enforcing and flat (M10.2 exit (archived `M10.2_exit.md`), Silicon). A subnormal double reads as
 zero there, which is the DFPU's and not the compiler's: `DPSW.DDN`, set from reset and in every
 thread, handles a denormal operand as 0, and `fpclass` reads the bit before it expects either.

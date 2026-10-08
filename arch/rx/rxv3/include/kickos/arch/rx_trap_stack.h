@@ -101,27 +101,28 @@
  *   _SYS          0  svc_trampoline moves R0 to ctx.kernel_sp before it calls anything.
  *   _SYS_FAST    44  the same epilogue and so the same chain as _PENDSW, kept a macro of its
  *                    own because it is a distinct SITE with its own guard.
- *   _SYSK       796  ENFORCED over 672 measured, as headroom. THE PANIC REPORTER IS NOT ON
+ *   _SYSK       796  ENFORCED over 668 measured, as headroom. THE PANIC REPORTER IS NOT ON
  *                    THIS CHAIN: kpanic leaves this stack before it prints
  *                    (kickos_panic_stack_enter, switch.S). kickos_ipc_fastpath is the other
  *                    root and is dominated. rx72m-bench sets the measurement, its bench arm
  *                    printing:
- *                    syscall_dispatch[52] -> bench_irq_sweep[96] -> dist_print_fmt[96]
- *                    -> kprintf_paced[288] -> console_emit[36] -> arch_console_write[4]
- *                    -> console_tx_insert_line[48] -> console_write_line_sync[32]
- *                    -> bench_lock_hold_add[20].
- *                    rx72m reads 512 and rx72m-st 568, a spawn's grant admission, at 6 and
- *                    9 grants; arch_rxv3.cc refuses more than 9:
- *                    syscall_dispatch[48] -> thread_create_call[8] -> spawn_masked[300]
- *                    -> thread_create[72] -> task_for[36] -> domain_for[40]
- *                    -> grant_region_admissible[32] -> grant_hits_reserved[28]
- *                    -> arch_bitband_present[4].
- *                    rx72m-flat reads 496, FLAT dropping the grant admission arm entirely:
- *                    syscall_dispatch[48] -> endpoint_reply_recv[116] -> exit_current[40]
- *                    -> cap_teardown[40] -> teardown_entry[48] -> obj_close_protocol[24]
- *                    -> endpoint_rights_dropped[32] -> wake[8] -> resched_after_wake[4]
- *                    -> pick_and_seat[24] -> ktime_rearm[24] -> arch_timer_arm[24]
- *                    -> arch_clock_now[32] -> __divdi3[32].
+ *                    syscall_dispatch[56] -> bench_irq_sweep[96] -> dist_print_fmt[96]
+ *                    -> kprintf_paced[284] -> console_emit[36]
+ *                    -> console_tx_insert_record_line[44] -> drain_in_producer[32]
+ *                    -> wait_slot[20] -> rx_tx_slot_free[4].
+ *                    rx72m-st reads 556, a spawn of 9 grants seating its default
+ *                    capabilities; arch_rxv3.cc refuses more than 9:
+ *                    syscall_dispatch[52] -> thread_create_call[4] -> spawn_masked[300]
+ *                    -> cap_install_defaults[20] -> cap_seat_stdout[40] -> obj_ref_drop[24]
+ *                    -> irq_ref_drop[24] -> irq_detach[12] -> irq_line_op[4]
+ *                    -> arch_irq_mask[12] -> kickos_rx_group_arm[32]
+ *                    -> kickos_rx_icu_line_arm[4] -> icu_ier_set[24] -> arch_irq_restore[4].
+ *                    rx72m and rx72m-flat read 508, the exit path:
+ *                    syscall_dispatch[52] -> endpoint_reply_recv[116] -> exit_current[40]
+ *                    -> cap_teardown[40] -> teardown_entry[40] -> obj_close_protocol[24]
+ *                    -> endpoint_rights_dropped[28] -> refuse_senders[20] -> wake[8]
+ *                    -> resched_after_wake[4] -> pick_and_seat[24] -> ktime_rearm[24]
+ *                    -> arch_timer_arm[24] -> arch_clock_now[32] -> __divdi3[32].
  *                    ONE FIGURE COVERS EVERY POSTURE, as rv32imac's _SYS does.
  *
  * ENFORCED figures are those measurements rounded up to 64, or above them as headroom where a

@@ -200,9 +200,10 @@ size and the private block's the task count plus the shared region count times i
 record size declared by `cmake/init_geometry.cmake`, beside `cmake/driver_geometry.cmake`, and
 exported by the manifest's `init` section, and the init asserts both. The init alone writes them.
 A status record's
-count is an `Atomic<uint32_t, Order::RELEASE>` and each field an `Atomic` at `Order::RELAXED`
-(`system/include/kickos/sys/atomic.h`). To write a record the init stores the count odd, issues a
-release fence, writes the fields, then stores the count even with release ordering. A write keeps
+count and each of its fields is an `Atomic` at `Order::ACQUIRE | Order::RELEASE`
+(`system/include/kickos/sys/atomic.h`), and no fence orders them. A record is stored to only through
+a `StatusWriter` (`user/include/kickos/sys/init_status.h`): its construction stores the count odd,
+the fields are written through it, and its destruction stores the count even. A write keeps
 the count's parity, so the init clears each record of a status block it reserves, the count 0 and
 every field 0, before its first write, and reads nothing of a reservation it has not written.
 
@@ -415,8 +416,7 @@ int kos_task_status(kos_self_t const* self, uint32_t i, struct kos_task_status* 
   stands for, and `-KOS_EINVAL` past the last. It reads record i of the watcher's own status
   block through the status grant, with no system call beyond finding the window and nothing asked
   of the init. It loads the
-  record's count, issues an acquire fence, copies the fields, issues an acquire fence and loads
-  the count again. A count odd or changed sleeps 1 ms and reads again, at most 100 times, then
+  record's count, copies the fields and loads the count again. A count odd or changed sleeps 1 ms and reads again, at most 100 times, then
   answers `-KOS_EAGAIN`. The init holds a count odd for a few stores, so the bound is never
   reached while the init runs.
 
@@ -733,9 +733,9 @@ int kos_task_exit_status(kos_task_t task, int* status);
 int kos_thread_set_priority(uint8_t priority);  /* the caller's own base priority */
 /* and the lookups of section 4 */
 
-/* system/include/kickos/sys/atomic.h */
-void fence_acquire();        /* std::atomic_thread_fence at acquire, for the status read */
-void fence_release();        /* std::atomic_thread_fence at release, for the status write */
+/* user/include/kickos/sys/init_status.h */
+class StatusRecord;          /* count and fields Atomic<..., Order::ACQUIRE | Order::RELEASE>, no fence */
+class StatusWriter;          /* the one store path: count odd at construction, even at destruction */
 
 /* user/include/kickos/sys/table.h, KICKOS_TABLE_VERSION 3 at M10.4, 6 since M10.5 */
 uint8_t init_priority;       /* kos_table_header, after strings_size: what the init lowers itself to */

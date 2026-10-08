@@ -111,7 +111,7 @@ root    * ?console.cc:kvprintf_route reason: the function this clause is named f
 
 # A root set that has drifted off the code it names still walks a graph and still finds no
 # panic. These two are what a route that still routes must reach.
-witness * _ZN6kickos19cap_console_deliverEv reason: the hand-off to a published console driver, the far end of the cycle this clause exists to keep open-loop
+witness * _ZN6kickos19cap_console_deliverENS_4HeldE reason: the hand-off to a published console driver, the far end of the cycle this clause exists to keep open-loop
 witness * console_held_append reason: the hold a record line takes where a published console refuses the chip write, under the same masked read
 witness * console_chip_writer_leave reason: the end of the kernel chip write's bracket, reached where the console is the kernel's
 

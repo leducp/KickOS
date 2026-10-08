@@ -73,12 +73,13 @@ why the lx6 body is the one that opens a 32-byte frame on the stack it is leavin
 **What checks the body, and what does not.** `check_trap_redzone.sh` reads the callgraph, so it
 cannot see whether a body moved the stack pointer at all: a shim that branches without moving
 passes every figure while the reporter runs on the caller's stack.
-`tests/static/check_panic_stack_seat.sh` is what reads the body instead, naming the ISA's mask
-and the one instruction that writes its stack pointer FROM THE FOURTH ARGUMENT REGISTER. It is
-text, so it cannot show either instruction is REACHED. The qemu `panicgate` cases run the entry
-on armv7m, armv6m, rv32imac, rv64imac, armv8a and x86_64 and still pass with both instructions
-deleted, the panic line reaching the wire from whichever stack the reporter stands on, so **the
-source gate is the whole witness on every backend**, and rxv3 and lx6 run no arm at all.
+The move is read back on the run instead: the reporter prints `PANIC STACK NOT SEATED` when its
+frame is off its core's panic stack, and the qemu `panicgate` cases refuse that line on armv7m,
+armv6m, rv32imac, rv64imac, armv8a and x86_64. The mask no run reads, `kpanic_enter` masking
+again before the reporter can tell, so `tests/static/check_panic_stack_seat.sh` reads the body
+for it on every backend, naming the ISA's mask, and on rxv3 and lx6, which run no arm at all,
+also the one instruction that writes the stack pointer FROM THE FOURTH ARGUMENT REGISTER. It is
+text, so it cannot show either instruction is REACHED.
 
 `KICKOS_PANIC_STACK_SIZE` is a Kconfig default per arch: the next multiple of 64 strictly above
 the gate's PANIC class reading. A new arch owes that reading before its figure means anything,
@@ -761,7 +762,7 @@ Backends exist for `mk64f`, `xmc4800`, `rp2040`, `rp2350`, `esp32c6`, `rx72m`,
 `an505`, `imx8mp`, `q35` and the three `virt_*` machines keep the declining fallback (no central
 mux block -- per-peripheral PSEL, emulated, or virtual). Per-backend caveats: `stm32f103` covers default-mapped
 peripherals only (AFIO_MAPR remap out of scope); `imxrt1062` keys `port`=GPIO-bank /
-`pin`=bit against a PARTIAL pad table (a hole returns `-KOS_EINVAL`); `esp32c6` packs
+`pin`=bit against the chip file's pin list (a hole returns `-KOS_EINVAL`); `esp32c6` packs
 BOTH of that family's mux stages into `func` -- the IO_MUX pad word in bits `[15:0]`,
 the GPIO-matrix out-sel signal index in `[31:24]` behind an arm bit `[23]` -- so the
 kernel-owned-pin refusal covers the matrix and not just the pad (`esp32` still muxes
@@ -1500,7 +1501,7 @@ linked at this branch tip.
 ### The optimisation level is part of every floor
 
 Every byte count in this section is `-Os`. The fleet gets that from `CMAKE_BUILD_TYPE`
-`MinSizeRel` in `cmake/presets/arm.json:10`, which is **in-tree only**: an out-of-tree
+`MinSizeRel` in `cmake/presets/base.json`, which is **in-tree only**: an out-of-tree
 consumer reaching KickOS through `find_package(KickOS)` picks its own `CMAKE_BUILD_TYPE`
 and never sees the presets. Both the empty default and `Debug` are `-O0`.
 
@@ -1683,11 +1684,11 @@ and rv32imac seat the register from the context and take no fourth leg. So the r
 the geometry and not the answer for a stack: `microbit` is a no-MPU chip on that row and still
 strides its 2048-byte user and root stacks by **2048**
 (`../../boards/microbit/configs/base/defconfig`). `f302nucleo` and `bluepill-c8` are the
-boards that set `KICKOS_TLS=n` rather than pay the rounding. `cmake/boot_arena.cmake`'s
-`kickos_region_align()` and the composition tool's `ram_align`
-(`tools/compose/kickos_compose/supply.py`) mirror this leg, so the link-time assert and the
-composition's arena check model the geometry the allocator actually produces;
-`tests/unit/ramalign` runs the three copies over one table.
+boards that set `KICKOS_TLS=n` rather than pay the rounding. The composition tool's `ram_align`
+(`tools/compose/kickos_compose/region.py`) mirrors this leg, and the configure asks it for the
+link-time assert's figures, so that assert and the composition's arena check model the geometry
+the allocator actually produces; `tests/unit/ramalign` runs the C and Python copies over one
+table.
 
 The pow2 mode and the TLS leg are what pay a natural-alignment run-up, and there it can cost
 as much again as the request, so compute it rather than assuming the sum of the sizes. A

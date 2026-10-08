@@ -1,24 +1,18 @@
 {
   "version": 6,
+  "include": ["base.json"],
   "configurePresets": [
     {
       "name": "sim",
       "displayName": "Host x86-64 sim",
-      "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build/sim",
+      "inherits": "kickos-base",
       "toolchainFile": "${sourceDir}/cmake/toolchain-host.cmake",
-      "cacheVariables": {
-        "KICKOS_BOARD": "sim",
-        "KICKOS_CONFIG_VARIANT": "base",
-        "CMAKE_BUILD_TYPE": "MinSizeRel",
-        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
-      }
+      "cacheVariables": { "KICKOS_BOARD": "sim" }
     },
     {
       "name": "sim-telem",
       "displayName": "Host sim + telemetry (RTT ch1) - runs the telemetry CI gates",
       "inherits": "sim",
-      "binaryDir": "${sourceDir}/build/sim-telem",
       "cacheVariables": { "KICKOS_CONFIG_VARIANT": "telem" }
     }
   ],

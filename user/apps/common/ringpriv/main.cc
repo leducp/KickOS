@@ -28,6 +28,8 @@
 #include <kickos/sys.h>
 #include <kickos/libc/fmt.h>
 
+#include <kickos/apps/arm_count.h>
+
 #ifndef RINGPRIV_EXPECT_RING
 #error "RINGPRIV_EXPECT_RING must be 1 (real privilege ring) or 0 (no privilege axis)"
 #endif
@@ -37,32 +39,7 @@ namespace
     constexpr uint32_t CONTROL_NPRIV = 1u << 0;
     constexpr uint32_t CONTROL_SPSEL = 1u << 1;
 
-    int failures = 0;
-    int arms = 0;
-
-    // Every arm string must fit msg with its prefix and newline. A truncated arm loses its
-    // '\n', merges two arms onto one line and undercounts the runner's per-line arm tally.
-    void check(bool ok, char const* what)
-    {
-        char msg[128];
-        if (ok)
-        {
-            arms = arms + 1;
-            ksnprintf(msg, sizeof(msg), "[ringpriv] ok - %s\n", what);
-            kos::print(msg);
-            return;
-        }
-        failures = failures + 1;
-        ksnprintf(msg, sizeof(msg), "[ringpriv] ERROR: %s\n", what);
-        kos::print(msg);
-    }
-
-    [[maybe_unused]] void skip(char const* what)
-    {
-        char msg[128];
-        ksnprintf(msg, sizeof(msg), "[ringpriv] skip - %s\n", what);
-        kos::print(msg);
-    }
+    kickos::apps::ArmCount harness("ringpriv");
 
     void report_u32(char const* what, uint32_t v)
     {
@@ -91,16 +68,16 @@ int main(int, char**)
     // Without that, arm 3's "unchanged" could mean the bit is hardwired or the read is
     // broken.
 #if RINGPRIV_EXPECT_RING
-    check((control & CONTROL_NPRIV) != 0,
-          "CONTROL.nPRIV=1: unprivileged, and off its reset value (a priv msr landed)");
-    check((control & CONTROL_SPSEL) != 0,
-          "CONTROL.SPSEL=1: on SP_process, a second bit off reset");
+    harness.check((control & CONTROL_NPRIV) != 0,
+                  "CONTROL.nPRIV=1: unprivileged, and off its reset value (a priv msr landed)");
+    harness.check((control & CONTROL_SPSEL) != 0,
+                  "CONTROL.SPSEL=1: on SP_process, a second bit off reset");
 #else
     // The kernel believes this thread is unprivileged and the core disagrees. Asserted
     // rather than skipped so the no-ring classification is itself gated: a core that
     // grew a privilege ring, or a board misfiled as no-ring, goes red here.
-    check((control & CONTROL_NPRIV) == 0,
-          "CONTROL.nPRIV=0: no privilege axis, the unprivileged thread is PRIVILEGED");
+    harness.check((control & CONTROL_NPRIV) == 0,
+                  "CONTROL.nPRIV=0: no privilege axis, the unprivileged thread is PRIVILEGED");
 #endif
 
 #if defined(__ARM_ARCH) && (__ARM_ARCH >= 7) && RINGPRIV_EXPECT_RING
@@ -124,8 +101,8 @@ int main(int, char**)
                    : "cc");
     report_u32("APSR after writing 0xF8000000", apsr_set);
     report_u32("APSR after writing 0x00000000", apsr_clr);
-    check((apsr_set & 0xF8000000u) == 0xF8000000u and (apsr_clr & 0xF8000000u) == 0,
-          "a permitted unprivileged msr DOES move the mrs read-back");
+    harness.check((apsr_set & 0xF8000000u) == 0xF8000000u and (apsr_clr & 0xF8000000u) == 0,
+                  "a permitted unprivileged msr DOES move the mrs read-back");
 
     // Arm 3. THE BOUNDARY. Clearing CONTROL.nPRIV from unprivileged Thread mode would
     // promote this thread to privileged, which is the whole confinement claim.
@@ -153,24 +130,15 @@ int main(int, char**)
                    : "memory");
     report_u32("CONTROL before the attempt", pre);
     report_u32("CONTROL after attempting to clear nPRIV", post);
-    check((post & CONTROL_NPRIV) != 0,
-          "the unprivileged write to CONTROL.nPRIV was IGNORED: no self-promotion");
-    check(post == pre,
-          "the ignored write changed nothing in CONTROL (SPSEL/FPCA intact)");
+    harness.check((post & CONTROL_NPRIV) != 0,
+                  "the unprivileged write to CONTROL.nPRIV was IGNORED: no self-promotion");
+    harness.check(post == pre,
+                  "the ignored write changed nothing in CONTROL (SPSEL/FPCA intact)");
 #elif RINGPRIV_EXPECT_RING
-    skip("the msr/mrs arms need armv7m assembler syntax (APSR_nzcvq)");
+    harness.skip("the msr/mrs arms need armv7m assembler syntax (APSR_nzcvq)");
 #else
-    skip("the boundary arm needs a privilege ring: nothing here to escape from");
+    harness.skip("the boundary arm needs a privilege ring: nothing here to escape from");
 #endif
 
-    char msg[64];
-    if (failures != 0)
-    {
-        ksnprintf(msg, sizeof(msg), "[ringpriv] FAIL (%d)\n", failures);
-        kos::print(msg);
-        return 1;
-    }
-    ksnprintf(msg, sizeof(msg), "[ringpriv] PASS (%d arms)\n", arms);
-    kos::print(msg);
-    return 0;
+    return harness.verdict();
 }

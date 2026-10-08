@@ -8,6 +8,7 @@
 
 #include <kickos/sys/atomic.h>
 #include <kickos/sys/emit.h>
+#include <kickos/sys/trap.h>
 
 #include <stdlib.h>
 #include <string.h>
@@ -38,21 +39,7 @@ void trap()
 {
     while (true)
     {
-#if defined(__XTENSA__)
-        __asm volatile("ill");
-#elif defined(__riscv)
-        __asm volatile(".word 0x00000000"); // all-zero encoding: illegal on RV32 and RV64
-#elif defined(__arm__) or defined(__thumb__)
-        __asm volatile("udf #0");
-#elif defined(__aarch64__)
-        // Not __builtin_trap, which is `brk` there and raises a debug exception instead.
-        __asm volatile(".inst 0x00000000");
-#elif defined(__RX__)
-        // A privileged-instruction exception in user mode; GCC lowers __builtin_trap to abort().
-        __asm volatile("mvtipl #0");
-#else
-        __builtin_trap();
-#endif
+        KOS_TRAP_ILLEGAL();
     }
 }
 
@@ -410,7 +397,6 @@ int bring_up(Descriptor const& d, struct kos_driver_instance* in)
     {
         return refused;
     }
-    // This function's one indirect call, which tests/static/caller_held_indirect.txt counts.
     if (d.block_size != 0u and d.block_init(in->block, in) != 0)
     {
         return instance_failed(d, *in, nullptr, 0, KOS_CAP_NONE, "ERROR: block_init refused the instance\n");

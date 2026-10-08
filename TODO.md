@@ -412,11 +412,15 @@ and their ratio; no gate is written over them.
     163,575, ratio 1.32 to 1.21; `tests/static` 43,555 to 28,664, `tests/unit` 49,820 to
     48,776. Swept: the sim whole with UBSan, all 91 presets configured, and one to three presets
     of every family built with their gates.
-- [ ] **M10.6.3: THE PANIC GATE DOES NOT WITNESS THE PANIC STACK SEAT (found in M10.6.2).** With
+- [x] **M10.6.3: THE PANIC GATE DOES NOT WITNESS THE PANIC STACK SEAT (found in M10.6.2).** With
       both the interrupt mask and the move onto the panic stack deleted from the armv8a panic
       entry, all five qemu-arm64 panicgate cases still pass, so only `check_panic_stack_seat.sh`
       holds the seat, on all eight backends. A panic arm that reads its own stack pointer against
       the panic stack would make the emulator gate witness it.
+      **LANDED:** the panic reporter prints `PANIC STACK NOT SEATED` when its frame is off its
+      core's panic stack, and `panic.ere` refuses it; the move deleted from each of the six
+      emulated backends' entries reddens all five panicgate cases. `check_panic_stack_seat.sh`
+      stays for the mask and for lx6 and rxv3.
 
 - [x] **M10.6.2: PRESETS NO CI JOB BUILDS.** Eight visible presets appear nowhere in `ci.yml`, and
       no record says any was left out on purpose. Build each in a job, or record why not.
@@ -424,7 +428,7 @@ and their ratio; no gate is written over them.
       `esp32-wroom-benchsmp` and `qemu-x86_64-smp4`, `-smp8` and `-smp12` build in the `bench`,
       `xtensa` and `qemu-x86_64` jobs with their host gates, about 2.5 minutes each here.
 
-- [ ] **M10.6.3: THE DRY PASS.** After the audit, so that no copy is folded inside a gate the audit
+- [x] **M10.6.3: THE DRY PASS.** After the audit, so that no copy is folded inside a gate the audit
       deletes and no name a surviving text gate pins is moved twice. The inventory taken after
       M10.5 (arch, kernel and userspace, build and tools, and every static assert classed) lists
       each copy with its single form, size, risk and witness; the pass re-ranks it by lines removed
@@ -439,6 +443,71 @@ and their ratio; no gate is written over them.
       `KernelCore`, `LandedHz`, `ParkToken`, a seq_cst-only handshake type, `LineCell`, a frame-pool
       passkey, one seqlock type, the doorbell's fused take-and-resched and one shared service
       body), about 5.4k lines; each gate goes in the commit that makes its defect unrepresentable.
+      **Ruled (maintainer, 2026-10-07):** the bench's raise takes the lock (it is a baseline, not
+      a cross-kernel comparison); the lx6 computed-store control is moot; inventory decisions 6, 7,
+      8, 13, 15, 17 and 19 taken as recommended, 1 and 4 go to M10.6.5, and decision 5 kept each
+      assert that refuses a board the chip code cannot drive.
+      **LANDED:**
+  - The misses: a frame-run handle tested against its sentinel; the task-data refusals documented
+    (EBUSY, and ENOTSUP for an unhonourable type); the AMP self-report offered to own-image
+    partitions only; comments the code contradicted. The device-window miss did not hold.
+  - Kernel: one handle codec and slot index; one ref-drop locator; one IRQ line admission; one
+    parked-caller seat and slot vacate; the ABI capability vocabulary defined once; direct
+    scheduler calls instead of a one-implementation policy table; one peer-start query; one park
+    abort, deadline arm and resume epoch; one image-data source and copier; one RAM region
+    admission with one order and errno table (EINVAL for an unencodable region, the memory type
+    first); the AMP abandoned run folded into the pending state; `thread_domain`; about 1k comment
+    lines that restated a constraint.
+  - Arch and chips: the kernel-pin guard from port numbers the generator emits (the i.MX RT pads
+    from the chip file), one init-table linker block, one reset tail, one semihosting console,
+    one no-region-unit seam, the MPU stash shared with rv32, the GIC and v7-M registers named
+    once, the arm64 EL1 boot tail, chip constants from the generated layout.
+  - Build and tools: compose run through one helper; one hidden base preset; driver descriptors
+    generated from their declaration; the catalogue rules and the RAM region rule asked of the
+    compose tool at configure; the unused IPC campaign scripts gone; static asserts that restated
+    their definition gone, the C/C++ twins spelled once.
+  - Tests: one kernel-under-test library (the real instance, IRQ router and address-space layer,
+    one panic terminal, one translating-op recorder); one arm-count harness, UART client and
+    illegal-instruction helper for the apps.
+  - Wave 5, each gate gone in the commit that holds its defect: `LineCell`, the unwritten-frame
+    friend, the status seqlock's typed fields and scoped writer, `KernelCore`, `ParkToken`, the
+    doorbell's one typed service body and fused take-and-resched, and the `Held` token on every
+    caller-held entry and the inject path. Reduced clauses kept where the type cannot refuse the
+    case: explicit conversions to `KernelCore`, writes past the state cell, the drain's call
+    site, the ISB in the arm64 fence, the send and lx6 dispatch targets, the fastpath's callers
+    and `arch_irq_inject`'s one user. The proof tables sit in the session reports.
+  - **Kept by their proofs:** `rv64_irq_fence` (a seq_cst word orders none of the plain data
+    around it). `chip_divisor_rate` was kept here and later deleted: it stood in for an integration
+    claim at the wrong level, by the shape of the code; the divisor arithmetic moved to the
+    `console_baud` unit suite and the claim to M10.6.6's bench. **Accepted, no holder:** a cast through a `LineCell`, a second `AspaceUnwritten`, a
+    `Held` copied out of its bracket.
+  - **Owed to M10.6.6's bench:** images moved on esp32-wroom (handle codec, peer start, `KernelCore`
+    debug labels, `ParkToken`, the doorbell body, `Held`), esp32c6 (MPU stash, AMP), pizero2350
+    AMP, rx72m (pin guard, `mvtipl` in sysdefault) and teensy41 (pad mux), and every armv6m and
+    armv7m silicon image by layout (the syscall-result seat).
+  - **Left:** the silicon folds (the reset tail on f411, mk64f, xmc4800, imxrt1062 and rp2350,
+    whose images move once `Reset_Handler` reads as noreturn; the hand `.data`/`.bss` copies;
+    the rx halves of the MPU stash, IRQ latch and timer; F3/F4 GPIO; the ESP UART); the
+    selftest-only rows (M10.6.4); the console rows (M10.6.5); `KICKOS_BENCH_SCHED` and
+    `KICKOS_SCHED_PERIODIC_TICK` build in no preset; the armv6m syscall red zone enforces 808
+    against 528 measured since the RAM admission moved; the bench's IRQ entry rows now include
+    the bracket's exit, so earlier figures are not comparable.
+  - **Each static gate at its level (maintainer, 2026-10-08):** a gate reading code shape for a
+    result is a unit test, and one reading it for a running behaviour is an emulator or silicon
+    run. Gone to their level: `chip_divisor_rate` (one host suite of the divisor formulas),
+    `bench_e2e_publish` (a `fusedwake` case), `selftest_manifest`, `fault_instruction` and the
+    `c6_lp` rule (their run judges refuse the defect), the arm64 unmap's shareability (a peer
+    core reading the withdrawn page), `a53_pmcr` (the bench reads PMCR back), `arm_read_tp` (an
+    edge thread in `tlsprobe`) and the death-stack seat (an assert on the dying thread's block).
+    Kept: the gates no run can witness (fences, placement), `app_stack`, `x86_64_entry_cld` (an
+    arm reddened only above one core and only through one `rep stos` the compiler chose), and
+    `rv32_trap` and `rv64_wx` (no run reaches their remaining cases). `rx_dfpu_compare` is gone: a
+    compiler patch is checked by whoever touches it, not by every RX configure. The silicon
+    proxies are an M10.6.6 entry.
+  - **Close (2026-10-08):** product 135,677 to 132,749 lines, tests and tools 163,604 to 158,737,
+    ratio 1.21 to 1.20; `tests/static` 28,689 to 24,284, `tests/unit` 48,776 to 49,065. Swept:
+    the sim whole with UBSan, all 91 presets configured, one to three presets of every family
+    built with their gates, one AMP partition merge, and the fleet host sweep.
 
 - [ ] **M10.6.5: THE CONSOLE READ THROUGH.** The console took ruling (c), non-blocking stdout, the
       dark window, whole fault-record lines, kernel waits, the AMP claim and the console task with
@@ -510,6 +579,21 @@ and their ratio; no gate is written over them.
       **Owed:** the remote mode, whose shipping step now holds a lock, has run against no bench
       host yet.
 
+- [ ] **M10.6.6: A CONSOLE THAT DEGRADES ITS CLOCK STILL PRINTS (maintainer, 2026-10-08).** On each port
+      with a clock fallback, boot silicon with the fallback forced (crystal or PLL refused) and
+      capture the console at the baud its divisor lands on: bluepill-c8, f302nucleo, f411disco,
+      frdmk64f, picopi, pizero2350, due, xmc4800-relax, rx72m and esp32c6-wroom. The `console_baud`
+      unit suite holds the arithmetic; this is whether each port hands it the rate it landed on.
+
+- [ ] **M10.6.6: SILICON CAPTURES FOR THE GATES THAT STAND IN FOR THEM (M10.6.3).** Each static gate
+      below reads a property only silicon can show; it goes once its capture judges it:
+      `esp_tx_latch_ack`, a TX burst longer than the FIFO on esp32-wroom and esp32c6-wroom, judged
+      on TX-empty dispatches per byte; `lx6_park_mask`'s ATOMCTL half, an esp32-wroom-smp boot row
+      printing ATOMCTL per core; `doorbell_generic`'s lx6 clause, the esp32-wroom-smp selftest's
+      cross-core wake arms; image rule `rp_node`, a pizero2350 arm raising a stray line on node
+      core 1 through a node test hook; image rule `c6_hp`, an esp32c6-wroom constructor row reading
+      the clock after an EN reset.
+
 - [ ] **M10.6.6: BOUND THE INTERRUPT STACK ON ARMV7-M, ARMV6-M AND RX (found closing M10.5).** The trap
       depth gate roots device ISRs only where they run on a thread's or a kernel stack it sizes; on
       these three the ISRs run on the main/interrupt stack, which the roots file declares unbounded,
@@ -532,12 +616,23 @@ and their ratio; no gate is written over them.
       `amp_prod_build` skips address-space boards; either guard those calls or stop building the
       selftest app without the self-test, then register the gate there.
 
-- [ ] **M10.6.3: NAME THE PORT BY ITS NUMBER IN THE GENERATED PIN LISTS (maintainer, 2026-10-06).**
-      `KICKOS_BOARD_RESERVED_RUNS` and `KICKOS_BOARD_KERNEL_PINS` carry each pin's port as a base
-      address, so `chip_imxrt1062.cc` maps it back to a GPIO bank through a hand-written `bank_of`
-      that knows banks 1 and 2 only, a second truth beside the port number the generator already
-      emits for named pins. Emit the port number in `RUN` and `PIN` as well, use it in every chip
-      that reads those lists, and delete `bank_of`.
+- [ ] **M10.6.4: ONE APP THAT CHECKS THE COMPILED BEHAVIOUR OF STANDARD PATTERNS (maintainer,
+      2026-10-08).** Rather than a test per compiler defect, one simple app run on every board
+      checks what the whole chain (compiler, libgcc, newlib, flags) produces for common patterns:
+      integer and 64-bit arithmetic, float and double compares and classification, the libm
+      basics, printf of every format. `fpclass` is the seed. Emulator boards run it as a gate,
+      silicon boards on the bench passes.
+
+- [ ] **M10.6.5: TWO THREADS PRINTING THROUGH stdio CORRUPT EACH OTHER'S LINES (found closing
+      M10.6.3, older than it).** The toolchain's newlib is built without retargetable locking, so
+      every thread of an image shares one unlocked `stdout` FILE: a preemption between copying into
+      the buffer and moving its position overwrites bytes, and one inside a flush sends a line
+      twice. The console below holds its contract; the bytes are wrong before they reach it.
+      `qemu_riscv_restart_witness` fails about 4 in 600 under load on M10.6.3 and 2 in 600 on
+      master (its root prints a stack figure while the app prints readings). Either lock stdio
+      (newlib retargetable locking with KickOS hooks, which meets the recursive-lock identity
+      problem the malloc lock already records) or state that stdio is one writer per image and
+      make the witness write its line whole through `kos_print`.
 
 - [ ] **M10.6.5: WAKE AN OWN-IMAGE AMP CONSOLE WRITER BY DOORBELL (maintainer, 2026-10-06; deferred out of
       M10.5).** A writer waiting for a peer node's console claim parks for `CONSOLE_CLAIM_POLL_NS`
@@ -3416,7 +3511,7 @@ Touches nearly every file, so it runs after M4.5.8 merges.
       `wq_confirm_resume` requires the lock released BEFORE `wait_result` is read; inlining the read
       under the lock compiles clean and passes on the sim, whose switch is synchronous, and races on
       ARM. `ThreadPool` stack harvest must happen only once the exited thread is provably off-CPU.
-      `domain_for` requires `caller_authorized` resolved by the CALLER, never read from
+      `domain_for` requires its posture word resolved by the CALLER, never read from
       `sched::current()` inside. `irq_register`'s clear-then-enable order matters only on ARM and RX,
       which are default-masked; sim and riscv would never catch a reorder. `console_tx`'s
       prime-the-pump applies per chip family and a refactor dropping it hangs TX on real

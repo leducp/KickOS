@@ -145,29 +145,7 @@ SECTIONS
         ___kickos_app_init_array_end = .;
     } > ROM
 
-    /* Copy/zero tables for the generic C-runtime init (kickos_ranges_init): flash
-       rodata, read before .data exists. Copy triples {src,dst,len}; zero pairs
-       {dst,len}. App ranges first, kernel ranges second (order is immaterial).
-       RX symbol prefix: C `__kickos_copy_table_start` resolves to the linker symbol
-       with one extra leading underscore (`___kickos_copy_table_start`). */
-    .kickos_init_tables : ALIGN(4)
-    {
-        ___kickos_copy_table_start = .;
-#if KICKOS_HAVE_MPU
-        LONG(LOADADDR(.appdata)); LONG(ADDR(.appdata)); LONG(SIZEOF(.appdata));
-#endif
-        LONG(LOADADDR(.data));    LONG(ADDR(.data));    LONG(SIZEOF(.data));
-        ___kickos_copy_table_end = .;
-        ___kickos_zero_table_start = .;
-#if KICKOS_HAVE_MPU
-        /* Zero the whole granted window past the loaded .appdata: the pre-.appbss
-           alignment gap (forced by an over-aligned .appbss object), .appbss, and the
-           pad, so no stale read-back anywhere in the app grant. */
-        LONG(___kickos_appdata_load_end); LONG(___kickos_appdata_end - ___kickos_appdata_load_end);
-#endif
-        LONG(ADDR(.bss));    LONG(SIZEOF(.bss));
-        ___kickos_zero_table_end = .;
-    } > ROM
+    KICKOS_INIT_TABLES(ROM)
 
     __sidata = LOADADDR(.data);
 

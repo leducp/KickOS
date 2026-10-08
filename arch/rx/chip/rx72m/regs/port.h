@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // RX72M I/O-port register offsets + fields. From the RX72M Group User's Manual: Hardware
-// (r01uh0804ej0120, Rev.1.20) sec.22; hand-rolled, clean-room. Bases: mmap.h.
+// (r01uh0804ej0120, Rev.1.20) sec.22.
 
 #ifndef KICKOS_ARCH_RX_CHIP_RX72M_REGS_PORT_H
 #define KICKOS_ARCH_RX_CHIP_RX72M_REGS_PORT_H
@@ -26,10 +26,10 @@ namespace kickos::rx::reg::port
 
     constexpr uintptr_t pmr(uint32_t p) { return PMR_BASE + p; }
 
-    // A pin's bit along the port rows, as the chip file's `gpio` functions number it: port
-    // index times 8 plus the pin.
+    // The row-bit numbering the chip file's `gpio` functions use.
     constexpr uint32_t port_of(uint32_t row_bit) { return row_bit / 8u; }
     constexpr uint8_t mask_of(uint32_t row_bit) { return static_cast<uint8_t>(1u << (row_bit % 8u)); }
+    constexpr uint32_t row_bit(uint32_t p, uint32_t pin) { return p * 8u + pin; }
 }
 
 #endif

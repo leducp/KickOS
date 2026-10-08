@@ -7,6 +7,7 @@
 
 #include <kickos/domain.h>
 #include <kickos/instance.h>
+#include <kickos/irqlock.h>
 #include <kickos/task.h>
 #include <kickos/thread.h>
 
@@ -64,7 +65,7 @@ namespace kickos
             Task* spawn_task(int* err)
             {
                 *err = 0;
-                return task_for(DOM_CALLER_MEM_AUTH, nullptr, 0, nullptr, err);
+                return task_for(0, nullptr, 0, nullptr, err);
             }
         }
 
@@ -112,7 +113,7 @@ namespace kickos
             int const holds = kernel().task_holds;
 
             int err = 0;
-            Task* const tk = task_create(FIXTURE_TASK_TAG, /*caller=*/0u, nullptr, 0,
+            Task* const tk = task_create(FIXTURE_TASK_TAG, nullptr, 0,
                                          /*mem_attr=*/0u, /*donor=*/nullptr, &err);
 
             EXPECT_EQ(tk, nullptr);
@@ -128,7 +129,7 @@ namespace kickos
             int err = 0;
             ASSERT_EQ(spawn_task(&err), nullptr);
 
-            task_drop_hold(&kernel().tasks[KICKOS_MAX_TASKS - 1]);
+            task_drop_hold(&kernel().tasks[KICKOS_MAX_TASKS - 1], kickos::IrqLock());
             ASSERT_EQ(free_task_slots(), 1);
 
             Task* const tk = spawn_task(&err);

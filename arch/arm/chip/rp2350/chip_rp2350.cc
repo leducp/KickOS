@@ -2,41 +2,18 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // Raspberry Pi RP2350 (Cortex-M33) chip backend. Register addresses/fields are
-// clean-room from the RP2350 datasheet (RP-008373-DS-2); hand-rolled, no vendor
-// SDK sources, consistent with the arch layer's regs.h. Section numbers in the
-// comments cite that datasheet.
+// clean-room from the RP2350 datasheet (RP-008373-DS-2), no vendor SDK sources.
+// Section numbers in the comments cite that datasheet.
 //
-// The clock, PLL and console-transport sequences this part shares with the RP2040 are in
-// arch/arm/chip/rp2xxx/chip_rp2xxx.cc, which family.cmake adds to this chip's archive.
-//
-// clk_sys
-// is raised to 150 MHz off PLL_SYS (12 MHz XOSC x125 /5 /2, the datasheet default
-// max, 8.6); SystemCoreClock tracks it so the SysTick ns<->cycle math
-// (arch_arm_common) stays coherent. clk_ref is the XOSC divided by CLK_REF_DIV (8.1),
-// which the bootrom leaves at something other than the reset 1, so clk_ref is NOT the
-// crystal frequency and the divisor is read at boot. The TICKS TIMER0 generator divides
-// clk_ref again to the 1 MHz the 64-bit system TIMER0 (arch_clock_now / arch_trace_now)
-// is read at, PLL-independent. clk_peri follows clk_sys, so the UART baud divisors are
-// recomputed for 150 MHz. If the crystal or the PLL never comes up the board degrades to
-// ROSC timing instead of hanging.
-//
-// Key deltas from the RP2040 (all APB peripheral bases relocated; datasheet 2.2.4):
-//   - No boot2/CRC stage: the bootrom does XIP setup + reads SP/PC from the vector
-//     table (startup.S / rp2350.ld).
-//   - The system TIMER tick comes from the new common TICKS block (8.5), not the
-//     watchdog.
-//   - PADS gained an ISO (isolation) bit that resets SET and must be cleared to use
-//     a pad (9.11.3).
-//   - 52 NVIC lines; the console is on UART1 (UART1_IRQ = 34, 3.2). See the IO_BANK0
-//     block below for why the Pi-Zero header forces UART1, not UART0.
+// clk_sys runs at 150 MHz off PLL_SYS (12 MHz XOSC x125 /5 /2, the datasheet default max, 8.6).
 
-#include <kickos/arch/amp_shared.h> // arch_amp_shared_zero: the partition primary's own clear
+#include <kickos/arch/amp_shared.h>
 #include <kickos/arch/arch.h>
-#include <kickos/arch/pin_guard.h>
+#include "pin_guard.h"
 #include <kickos/config/limits.h>
 #include <kickos/diag.h>
 #include <kickos/console_tx.h>
-#include <kickos/sys/abi.h> // KOS_E* taxonomy (arch_pinmux_set)
+#include <kickos/sys/abi.h>
 #include <kickos/sys/atomic.h>
 #include <kickos/usb_console.h>
 
@@ -58,6 +35,7 @@
 #include "regs/xosc.h"
 #include "../rp2xxx/rp2xxx.h"
 #include "console_claim.h"
+#include "regs.h"
 
 namespace reg = kickos::rp2350::reg;
 namespace irq = kickos::rp2350::irq;
@@ -79,18 +57,16 @@ extern "C"
 {
 void kickos_armv7m_init(void);
 #if KICKOS_HAVE_MPU
-// PMSAv8 MPU backend (arch/arm/common/arch_arm_pmsav8.cc): one-time MAIR + MemManage
-// enable. This reference is also the LINK ANCHOR that pulls the PMSAv8 member so its
+// This reference is the LINK ANCHOR that pulls arch_arm_pmsav8.cc, so its
 // kickos_arch_mpu_commit / arch_mpu_region_encodable replace the v7-M fallback TUs.
 void kickos_arm_pmsav8_init(void);
 #endif
 
 extern void (*__init_array_start[])();
 extern void (*__init_array_end[])();
-extern uint32_t g_isr_vector[]; // startup.S: the vector table at this image's flash base
+extern uint32_t g_isr_vector[];
 
-// Pre-init value: clk_sys as the bootrom leaves it. clocks_init() overwrites this on
-// every path; SysTick (processor clock) reads it live.
+// clk_sys as the bootrom leaves it. SysTick (processor clock) reads this live.
 uint32_t SystemCoreClock = reg::clocks::ROSC_NOMINAL_HZ;
 }
 
@@ -108,29 +84,21 @@ namespace
 #endif
 
 #if KICKOS_AMP_OWN_IMAGE
-    // The clk_sys the primary resolved, published for every other node to install: a peer runs
-    // no clocks_init and would otherwise keep the bootrom's reset value while executing off a
-    // PLL three times faster. The dsb in arch_amp_release_peers orders this store ahead of any
-    // peer's boot, so the field itself carries no ordering.
+    // Published by the primary for peers, which run no clocks_init. RELAXED suffices: the dsb
+    // in arch_amp_release_peers orders this store ahead of any peer's boot.
     KICKOS_AMP_SHARED("chip")
     kickos::Atomic<uint32_t, kickos::Order::RELAXED> g_amp_clk_sys_hz = 0;
 #endif
 
-    // Chosen by clocks_init (which source clk_peri lands on), consumed by uart1_init.
-    // Boot is single-threaded and sequential, so no guard is needed.
+    // Set by clocks_init, so uart1_init must run after it.
     uint32_t g_uart_ibrd = reg::uart::IBRD_115200;
     uint32_t g_uart_fbrd = reg::uart::FBRD_115200;
 
-    // PLL_USB at 48 MHz, clk_usb onto it, and the USB block out of reset. All three
-    // touch RESETS/CLOCKS, which the MPU reserves for the kernel
-    // (arch_reserved_blocks), so the unprivileged driver cannot do them; everything
-    // inside the USB block itself is left to it.
-    //
-    // USB bring-up is refused, at bring-up time, when the crystal did not come up. A
-    // full-speed device cannot be sourced from the ring oscillator, and a 6.5 MHz
-    // clk_sys also violates the clk_sys > 1.1 * clk_usb workaround for RP2350-E12. The
-    // refusal is silent here because the console is not up yet; the driver reports it
-    // (its DPRAM reads back as bus errors with the block still in reset).
+    // In the kernel because RESETS/CLOCKS are MPU-reserved (arch_reserved_blocks); the USB
+    // block's own registers are the driver's. Refused without the crystal: full-speed USB
+    // cannot run off the ROSC, and a 6.5 MHz clk_sys breaks the clk_sys > 1.1 * clk_usb
+    // workaround for RP2350-E12. Silent because the console is not up yet; the driver reports
+    // it (its DPRAM reads back as bus errors with the block still in reset).
     void usb_clock_init()
     {
         if (SystemCoreClock < reg::clocks::CLK_SYS_MIN_FOR_USB_HZ)
@@ -183,10 +151,8 @@ namespace
         return src_hz / div;
     }
 
-    // Start the TICKS TIMER0 generator so the 64-bit system TIMER0 counts. arch_clock_now
-    // reads that counter as microseconds, so CYCLES has to land the tick on TICK_HZ for the
-    // given clk_ref; a wrong divisor scales every sleep, timeout and timestamp on the board.
-    // The generator must be stopped before CYCLES is changed (datasheet 8.5.1).
+    // arch_clock_now reads TIMER0 as microseconds, so CYCLES must land the tick on TICK_HZ
+    // for this clk_ref. The generator must be stopped before CYCLES changes (datasheet 8.5.1).
     void ticks_timer0_start(uint32_t ref_hz)
     {
         uint32_t cycles = (ref_hz + (reg::ticks::TICK_HZ / 2u)) / reg::ticks::TICK_HZ;
@@ -205,9 +171,6 @@ namespace
 
     void clocks_init()
     {
-        // Bring up the 12 MHz crystal and put clk_ref on it. If it never stabilizes,
-        // degrade to the ROSC that clk_sys already runs on at reset so the board still
-        // boots (approximate timing) instead of hanging.
         r32(reg::xosc::STARTUP) = reg::xosc::STARTUP_DELAY;
         // Program the frequency range, THEN start the oscillator (datasheet 8.2.7): a
         // combined write is avoided so ENABLE never latches before FREQ_RANGE is set.
@@ -217,9 +180,8 @@ namespace
         bool xosc_ok = wait_mask(reg::xosc::STATUS, reg::xosc::STATUS_STABLE);
         if (xosc_ok)
         {
-            // clk_ref <- XOSC (glitchless mux). clk_sys does NOT follow: the bootrom
-            // leaves it on the ROSC through its aux mux, so only the switch below moves it.
-            // Poll the one-hot SELECTED before proceeding.
+            // clk_sys does NOT follow clk_ref: the bootrom leaves it on the ROSC through its
+            // aux mux, so only the switch below moves it.
             r32(reg::clocks::CLK_REF_CTRL) = reg::clocks::CLK_REF_SRC_XOSC;
             xosc_ok = wait_mask(reg::clocks::CLK_REF_SELECTED, reg::clocks::CLK_REF_SELECTED_XOSC);
         }
@@ -278,28 +240,9 @@ namespace
         r32(reg::uart::IBRD) = g_uart_ibrd;
         r32(reg::uart::FBRD) = g_uart_fbrd;
         r32(reg::uart::LCR_H) = reg::uart::LCR_H_8N1;
-        r32(reg::uart::IMSC) = 0; // all UART interrupt sources masked; the ring arms TXIM
+        r32(reg::uart::IMSC) = 0; // the ring arms TXIM
         r32(reg::uart::CR) = reg::uart::CR_ENABLE;
     }
-
-#define KICKOS_RESERVED_RUN(port_base, first, last) \
-    or ((port_base) == kickos::rp2350::mmap::SIO_BASE and pin >= (first) and pin <= (last))
-    constexpr bool rp2350_pin_kernel_owned(uint32_t pin)
-    {
-        return pin == KICKOS_BOARD_CONSOLE_TX_BIT
-               or pin == KICKOS_BOARD_CONSOLE_RX_BIT KICKOS_BOARD_RESERVED_RUNS(KICKOS_RESERVED_RUN);
-    }
-#undef KICKOS_RESERVED_RUN
-
-#define KICKOS_KERNEL_PIN(port_base, bit) or ((port_base) == kickos::rp2350::mmap::SIO_BASE and pin == (bit))
-    constexpr bool rp2350_pin_listed(uint32_t, uint32_t pin)
-    {
-        return false KICKOS_BOARD_KERNEL_PINS(KICKOS_KERNEL_PIN);
-    }
-#undef KICKOS_KERNEL_PIN
-    static_assert(kickos::refuses_exactly([](uint32_t, uint32_t pin) { return rp2350_pin_kernel_owned(pin); },
-                                          rp2350_pin_listed, 1u, 30u),
-                  "arch_pinmux_set refuses other pins than the board's kernel pins");
 }
 
 #if KICKOS_AMP_OWN_IMAGE
@@ -378,10 +321,8 @@ namespace kickos::rp2xxx
 #if !KICKOS_AMP_OWN_IMAGE
 namespace
 {
-    // --- Buffered console TX backend (console_tx.h). The ring drains via the PL011
-    // transmit interrupt with the FIFO disabled (see LCR_H_8N1); the idle->busy prime
-    // starts the transfer. slot_free/push touch one data register; irq_enable/disable
-    // use the RP2350 atomic set/clear aliases so no read-modify-write on IMSC. ---
+    // Console TX ring backend (console_tx.h). Relies on the FIFO being off (LCR_H_8N1). IMSC
+    // goes through the SET/CLR aliases, never a read-modify-write.
     int rp_tx_slot_free(void)
     {
         return (r32(reg::uart::FR) & reg::uart::FR_TXFF) == 0;
@@ -476,7 +417,7 @@ console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size
     // is non-empty" is stated of ONE ring, and IMSC.TXIM is one bit over two. UART1_IRQ reaches
     // both cores' controllers (datasheet 3.2), so whichever node's drain reaches empty first
     // clears the bit the other's queued bytes are waiting on. With no ring nothing writes IMSC,
-    // TXIM stays 0, and the polled writer above is this node's one writer.
+    // TXIM stays 0, and the polled writer is this node's one writer.
     (void)storage;
     (void)size;
     (void)irq_line;
@@ -493,15 +434,14 @@ console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size
 // funcsel in bits[4:0] plus pad/SIO side effects: bit[8] set pad IE, bit[9] clear
 // pad OD (drive out), bit[16] enable the SIO output (GPIO_OE_SET, 1<<pin). The pad
 // ISO bit is ALWAYS cleared: RP2350 pads reset ISOLATED and stay dead otherwise. IE
-// resets 0 here, so a peripheral INPUT requires bit[8]. IO_BANK0/PADS are already
-// unreset+clocked from arch_init, so no clock gate is needed.
+// resets 0 here, so a peripheral INPUT requires bit[8].
 int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
 {
     if (port != 0u or pin > 29u)
     {
         return -KOS_EINVAL;
     }
-    if (rp2350_pin_kernel_owned(pin))
+    if (kickos::board_pin_kernel_owned(port, pin))
     {
         return -KOS_EBUSY;
     }
@@ -638,18 +578,14 @@ void kickos_rp2350_xip_identity(void)
 
 void Reset_Handler(void)
 {
-    // The bootrom sets Secure VTOR before entry (datasheet 5.2.2), but pin it
-    // explicitly to the image base for robustness (a warm reboot / debugger entry
-    // may not have re-run the bootrom path). SCB->VTOR = 0xE000ED08.
-    // From the SYMBOL and never a literal: a peer links at its own flash slice, and a
-    // literal base would point its table at node 0's handlers.
-    r32(0xE000ED08) = reinterpret_cast<uintptr_t>(g_isr_vector);
+    // The bootrom sets Secure VTOR before entry (datasheet 5.2.2), but a warm reboot or a
+    // debugger entry may not have re-run that path. From the SYMBOL and never a literal: a
+    // peer links at its own flash slice, and a literal base would point its table at node 0's
+    // handlers.
+    r32(kickos::arm::SCB_VTOR) = reinterpret_cast<uintptr_t>(g_isr_vector);
 
-    // Enable the FPU (CP10/CP11 full access) before any code a hard-float ABI might
-    // emit FP into; Cortex-M33 has an FPv5-SP FPU. SCB->CPACR = 0xE000ED88.
-    r32(0xE000ED88) |= (0xFu << 20);
-    __asm volatile("dsb" ::: "memory");
-    __asm volatile("isb" ::: "memory");
+    // Before any code a hard-float ABI might emit FP into.
+    kickos_armv7m_enable_fpu();
 
     kickos_ranges_init();
 #if KICKOS_AMP_OWN_IMAGE

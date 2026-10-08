@@ -6,9 +6,11 @@
 // and the INTID the EL1 physical timer asserts.
 
 #include <kickos/arch/arch.h>
-#include <kickos/chip_limits.h> // KICKOS_MAX_IRQ: this GIC's interrupt-ID count
+#include <kickos/arch/doorbell_protocol.h>
+#include <kickos/chip_limits.h>
 
 #include "gic.h"
+#include "gicd.h"
 #include "gicv2.h"
 
 #include <kickos/sys/atomic.h>
@@ -24,6 +26,8 @@ extern "C"
 
 namespace
 {
+    using namespace kickos::arm64;
+
     // Every device register is reached through the kernel's own half. The device gigabyte is
     // mapped at PA + __kickos_arm64_va_base by TTBR1, which every address space shares; TTBR0
     // carries a per-process root that maps no device at all, so a low literal here would
@@ -48,13 +52,7 @@ namespace
         return reinterpret_cast<volatile uint32_t*>(dev_va(kickos_gicv2.cpu_pa + off));
     }
 
-    // Displacements from the two bases.
-    constexpr uintptr_t GICD_CTLR = 0x000;
-    constexpr uintptr_t GICD_ISENABLER = 0x100;
-    constexpr uintptr_t GICD_ICENABLER = 0x180;
-    constexpr uintptr_t GICD_ISPENDR = 0x200;
-    constexpr uintptr_t GICD_ICPENDR = 0x280;
-    constexpr uintptr_t GICD_IPRIORITYR = 0x400;
+    // Displacements from the two bases, beyond the shared distributor ones (gicd.h).
     constexpr uintptr_t GICD_ITARGETSR = 0x800;
     constexpr uintptr_t GICD_SGIR = 0xF00;
     constexpr uintptr_t GICD_CPENDSGIR = 0xF10;
@@ -62,12 +60,6 @@ namespace
     constexpr uintptr_t GICC_PMR = 0x004;
     constexpr uintptr_t GICC_IAR = 0x00C;
     constexpr uintptr_t GICC_EOIR = 0x010;
-
-    // The kind, as a value range rather than a separate field. Below 32 the GIC banks its
-    // registers per core, so INTID 30 names this core's timer; at or above 32 an interrupt is
-    // global and reaches no core until ITARGETSR names one. Every arch_irq_* body branches on
-    // this boundary and nothing else does.
-    constexpr int GIC_BANKED_INTIDS = 32;
 
     // INTID 1023 means "no pending interrupt" in an IAR read.
     constexpr uint32_t GICC_IAR_SPURIOUS = 1023;
@@ -80,8 +72,6 @@ namespace
 
     // The doorbell's INTID. Legal range for a GICD_SGIR write is 0 to 15.
     constexpr int GIC_SGI_DOORBELL = 0;
-    static_assert(GIC_SGI_DOORBELL >= 0 and GIC_SGI_DOORBELL <= 15,
-                  "GICD_SGIR carries a 4-bit INTID");
 
     // Each core's GICD_SGIR target bit, a GIC CPU interface number and not a core index.
     // IHI 0048B.b's one discovery mechanism: a read of a CPU-targets field of GICD_ITARGETSR0-7
@@ -302,7 +292,7 @@ void arch_irq_route(int line, uint32_t core)
     uint8_t const bit = target_bit_of(core);
     if (bit == 0)
     {
-        return; // no interface to write; the line stays unrouted and unmask decides as before
+        return; // no interface to write; the line stays unrouted
     }
     *gicd8(GICD_ITARGETSR + static_cast<uintptr_t>(line)) = bit;
     // LAST: the release store is what lets an unmask on another core read the write above.
@@ -362,7 +352,7 @@ void kickos_armv8a_gic_dispatch(void)
     {
         // SGIs are edge-triggered (GICD_ICFGR0's SGI config bits are RAO/WI), and the
         // acknowledge above cleared the pending state.
-        kickos_arm64_doorbell_service();
+        kickos_doorbell_service();
     }
 #endif
     else
@@ -377,10 +367,9 @@ void kickos_armv8a_gic_dispatch(void)
     // which the service body may not, the service answering an initiator that may hold it.
     // The cell is the authority, not the raise: the doorbell also carries rendezvous whose
     // targets owe no scheduler entry, and the take is what tells the two apart.
-    if (intid == static_cast<uint32_t>(GIC_SGI_DOORBELL)
-        and kickos_kernel_core_resched_take() != 0)
+    if (intid == static_cast<uint32_t>(GIC_SGI_DOORBELL))
     {
-        kickos_kernel_core_resched();
+        kickos_kernel_core_resched_if_owed();
     }
 #endif
 }

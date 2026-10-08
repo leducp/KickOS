@@ -16,11 +16,10 @@ namespace kickos
 {
 #if KICKOS_KERNEL_CORES > 1
     // Publish every core named in `cores` as seated. CALL ONCE ITS CONTROL BLOCK IS COMPLETE:
-    // the store releases those writes to the acquire in kickos_kernel_core_seated.
+    // the store releases those writes to the acquire in kickos_kernel_core_startable.
     void corestart_seat(uint32_t cores);
 
-    // Whether `core` has committed to its own scheduler. A core outside the built range
-    // answers false.
+    // Whether `core`, in [0, KICKOS_KERNEL_CORES), has committed to its own scheduler.
     bool corestart_arrived(uint32_t core);
 #endif
 }

@@ -3,14 +3,10 @@
 //
 // Architecture and runtime hooks for kernel fixtures. To check required symbols:
 //   nm --undefined-only <objects> | comm -23 - <defined-symbols>
-// Build with -fno-exceptions to avoid unwinding dependencies.
-// kpanic terminates the process. Use KICKOS_EXPECT_PANIC so gtest captures
-// the panic output and matches tests/lib/panic.ere.
 
 #include <stdio.h>
 #include <stdlib.h>
 
-#include <kickos/irq_route.h>
 #include <kickos/console_tx.h>
 #include <kickos/domain.h>
 #include <kickos/instance.h>
@@ -18,6 +14,7 @@
 #include <kickos/kernel.h>
 #include <kickos/klock.h>
 #include <kickos/sched.h>
+#include <kickos/sync.h>
 #include <kickos/task.h>
 #include <kickos/time.h>
 
@@ -217,12 +214,6 @@ extern "C"
         kickos::testfix::trace_add("note");
     }
 
-    void console_on_driver_death(void)
-    {
-        kickos::testfix::g_console_reclaimed++;
-        kickos::testfix::trace_add("reclaim");
-    }
-
     int console_dark(void)
     {
         return static_cast<int>(kickos::testfix::g_console_dark);
@@ -264,25 +255,17 @@ extern "C"
 #endif
 }
 
+#if not KSEAM_REAL_CONSOLE
+void console_on_driver_death(kickos::Held)
+{
+    kickos::testfix::g_console_reclaimed++;
+    kickos::testfix::trace_add("reclaim");
+}
+#endif
+
 namespace kickos
 {
 #if not KSEAM_REAL_CONSOLE
-    void kpanic(char const* msg)
-    {
-        printf("KERNEL PANIC: %s\n", msg);
-        fflush(stdout);
-        exit(1);
-    }
-
-#if KICKOS_DIAG_TERSE
-    void kpanic_at(char const* file, unsigned line)
-    {
-        printf("KERNEL PANIC: %s:%u\n", file, line);
-        fflush(stdout);
-        exit(1);
-    }
-#endif
-
     // Link-only stubs: a record here never reaches a console.
     void krecord_end(void)
     {
@@ -365,17 +348,17 @@ namespace kickos
         return testfix::g_now_ns;
     }
 
-    void ktime_rearm(Thread const*)
+    void ktime_rearm(Thread const*, Held)
     {
     }
 
-    void ktime_deadline_cancel(Thread* t)
+    void ktime_deadline_cancel(Thread* t, Held)
     {
         t->on_timer = false;
     }
 
     // No clock runs here. Tests trigger expiry with thread_abort_park.
-    void ktime_deadline_arm(Thread* t, uint32_t)
+    void ktime_deadline_arm(Thread* t, uint32_t, Held)
     {
         t->on_timer = true;
     }
@@ -400,34 +383,3 @@ extern "C"
     }
 }
 #endif
-
-namespace kickos
-{
-    // All IRQ lines are local on this single-core fixture.
-    void irq_line_op(int line, LineOp op)
-    {
-        switch (op)
-        {
-            case LineOp::MASK:
-            {
-                arch_irq_mask(line);
-                break;
-            }
-            case LineOp::UNMASK:
-            {
-                arch_irq_unmask(line);
-                break;
-            }
-            case LineOp::CLEAR:
-            {
-                arch_irq_clear_pending(line);
-                break;
-            }
-        }
-    }
-
-    void irq_line_op_local(int line, LineOp op)
-    {
-        irq_line_op(line, op);
-    }
-}

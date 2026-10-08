@@ -7,38 +7,6 @@
 # Every input is scraped from the file that already owns it, and anything unreadable is
 # a FATAL_ERROR, never a guessed default.
 
-# What a build whose arch_mpu_min_region is 0 rounds and encodes at; the C side's no-unit legs
-# (arch_ram_region_size, arch_mpu_region_encodable) must say the same.
-set_property(GLOBAL PROPERTY KICKOS_NO_UNIT_GRANULE 16)
-
-# Round `want` up to the region size one MPU descriptor can name. Mirrors
-# arch_ram_region_size() (arch/include/kickos/arch/arch.h); keep the two in step.
-# The C function's two size_t-overflow fallbacks are not mirrored: math(EXPR) is signed
-# 64-bit, and the only inputs here are the provisioned boot-stack sizes (512..8192).
-function(kickos_region_size want mn pow2 out)
-  if(mn EQUAL 0)
-    get_property(_g GLOBAL PROPERTY KICKOS_NO_UNIT_GRANULE)
-    math(EXPR _v "((${want}) + ${_g} - 1) & ~(${_g} - 1)")
-    set(${out} "${_v}" PARENT_SCOPE)
-    return()
-  endif()
-  set(_w "${want}")
-  if(_w LESS "${mn}")
-    set(_w "${mn}")
-  endif()
-  if(pow2 EQUAL 0)
-    math(EXPR _v "(${_w} + ${mn} - 1) & ~(${mn} - 1)")
-    set(${out} "${_v}" PARENT_SCOPE)
-    return()
-  endif()
-  set(_p 1)
-  while(_p LESS "${_w}")
-    math(EXPR _p "${_p} * 2")
-  endwhile()
-  set(${out} "${_p}" PARENT_SCOPE)
-endfunction()
-
-# Round up to a power of two.
 function(kickos_pow2_ceil want out)
   set(_p 1)
   while(_p LESS want)
@@ -47,25 +15,46 @@ function(kickos_pow2_ceil want out)
   set(${out} "${_p}" PARENT_SCOPE)
 endfunction()
 
-# Natural alignment the block must sit on. Mirrors arch_ram_region_align(), INCLUDING its
-# stride leg, which is read from the resolved configuration rather than passed: the C side
-# reads the same knobs and a fourth parameter here would let a caller model a geometry the
-# allocator does not produce.
-function(kickos_region_align want mn pow2 out)
-  set(_geometry 16)
-  if(NOT mn EQUAL 0)
-    set(_geometry "${mn}")
-    if(NOT pow2 EQUAL 0)
-      kickos_region_size("${want}" "${mn}" "${pow2}" _geometry)
-    endif()
+# The RAM region rule as the compose tool answers it on this build (kickos_compose/region.py): the
+# no-unit granule into the KICKOS_NO_UNIT_GRANULE property, and into `out` the size, then the
+# alignment, of each further argument, as arch_ram_region_size and arch_ram_region_align give them.
+# A block the target's address space cannot hold fails the configure.
+function(kickos_ram_region_rule mn pow2 out)
+  find_program(KICKOS_UV uv)
+  if(NOT KICKOS_UV)
+    message(FATAL_ERROR "KickOS: uv not found on PATH; the RAM region rule is answered by "
+      "tools/compose, which runs under uv (https://docs.astral.sh/uv/)")
   endif()
+  # From the resolved configuration, as the C side reads it: a caller-passed stride could model a
+  # geometry the allocator does not produce.
+  set(_stride 0)
   if(KICKOS_TLS AND KICKOS_TLS_FROM_SP)
-    kickos_region_size("${want}" "${mn}" "${pow2}" _size)
-    if(_size EQUAL KICKOS_STACK_STRIDE AND KICKOS_STACK_STRIDE GREATER _geometry)
-      set(_geometry "${KICKOS_STACK_STRIDE}")
-    endif()
+    set(_stride "${KICKOS_STACK_STRIDE}")
   endif()
-  set(${out} "${_geometry}" PARENT_SCOPE)
+  math(EXPR _bits "${CMAKE_SIZEOF_VOID_P} * 8")
+  set(_tool "${PROJECT_SOURCE_DIR}/tools/compose")
+  # The whole package: `python -m kickos_compose` imports every module of it.
+  file(GLOB _tool_sources "${_tool}/kickos_compose/*.py")
+  set_property(DIRECTORY "${PROJECT_SOURCE_DIR}" APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+               ${_tool_sources} "${_tool}/pyproject.toml" "${_tool}/uv.lock")
+  # Run from the tool's directory, which `-m` puts first on sys.path, never the build's.
+  execute_process(
+    COMMAND "${CMAKE_COMMAND}" -E env
+            "UV_PROJECT_ENVIRONMENT=${CMAKE_BINARY_DIR}/kickos_compose/venv"
+            UV_PYTHON_DOWNLOADS=never PYTHONDONTWRITEBYTECODE=1
+            "${KICKOS_UV}" run --project "${_tool}" --locked --quiet
+            python -m kickos_compose region --min-region "${mn}" --pow2 "${pow2}"
+            --stride "${_stride}" --word-bits "${_bits}" ${ARGN}
+    WORKING_DIRECTORY "${_tool}"
+    RESULT_VARIABLE _rc OUTPUT_VARIABLE _out ERROR_VARIABLE _err)
+  if(NOT _rc EQUAL 0)
+    message(FATAL_ERROR "KickOS: the compose tool refused the RAM region rule on board "
+      "'${KICKOS_BOARD}' (${_rc}):\n  ${_out}${_err}")
+  endif()
+  string(REGEX MATCHALL "[0-9]+" _figures "${_out}")
+  list(POP_FRONT _figures _granule)
+  set_property(GLOBAL PROPERTY KICKOS_NO_UNIT_GRANULE "${_granule}")
+  set(${out} "${_figures}" PARENT_SCOPE)
 endfunction()
 
 # The integer returned by a `symbol` DEFINITION in `file`, or "" when the file only
@@ -169,10 +158,9 @@ function(kickos_boot_arena_defs arch_dir arch_tgt chip_tgt ld
         "as a <symbol>_default.cc fallback.")
     endif()
   endforeach()
-  # What the post-boot arena has to back: the two boot-stack sizes, the default thread
-  # stack and how many of it. From the generated fragment, so they are the same resolution
-  # the compile reads: sizing the arena from any other copy of these numbers models an
-  # image nobody builds.
+  # From the generated fragment, the resolution the compile reads: any other copy of these
+  # numbers models an image nobody builds. KICKOS_MAX_THREADS is the slots but root's, whose stack
+  # is the boot replay's.
   set(_idle "${KICKOS_IDLE_STACK_SIZE}")
   set(_root "${KICKOS_ROOT_STACK_SIZE}")
   set(_user "${KICKOS_USER_STACK_SIZE}")
@@ -185,30 +173,9 @@ function(kickos_boot_arena_defs arch_dir arch_tgt chip_tgt ld
         "generated kickos_config.cmake is what carries them here.")
     endif()
   endforeach()
-  kickos_region_size("${_idle}" "${_mn}" "${_p2}" _isz)
-  kickos_region_align("${_idle}" "${_mn}" "${_p2}" _ial)
-  kickos_region_size("${_root}" "${_mn}" "${_p2}" _rsz)
-  kickos_region_align("${_root}" "${_mn}" "${_p2}" _ral)
-  # The post-boot arena also has to back KICKOS_MAX_THREADS default stacks, or the board
-  # advertises KICKOS_MAX_THREADS it cannot seat: kos_thread_create returns -KOS_ENOMEM
-  # for a slot the board claims to have, and it returns the SAME code for a full slot
-  # table, so the shortfall is indistinguishable from a legitimate limit at runtime.
-  # SLOTS MINUS ROOT, not the slot count: the pool holds KICKOS_THREAD_SLOTS, and root's
-  # slot takes its stack from the boot replay above rather than from this demand.
-  # A DEMAND-ALLOCATED STACK IS ONE MPU DESCRIPTOR, and on a pow2 backend only a power of
-  # two is expressible, so a size that is not one gets SNAPPED UP by arch_ram_region_size
-  # and the board allocates more per thread than it asked for. Refused here rather than
-  # snapped, because the arena model below would then be right about a number no defconfig
-  # states. The fact is per BACKEND and not per board: PMSAv7 RASR carries ctz(size) - 1
-  # and PMP folds the size into the address bits, while PMSAv8, SYSMPU and the RX MPU are
-  # base+limit and take any granule multiple. _p2 is the scraped seam, so this asks the
-  # backend rather than assuming every enforcing board is the strict kind.
-  # AND IT ASKS _mn FIRST, because arch_mpu_region_pow2 is declared read-only where
-  # arch_mpu_min_region is non-zero (arch/include/kickos/arch/arch.h) and
-  # arch_ram_region_size returns 16-byte granular at 0 without ever reading it. A board
-  # with no MPU scrapes _p2 = 1 off the v7-M fallback TU, so a refusal keyed on _p2 alone
-  # rejected a size that backend snaps nothing on, and said so citing a snap that cannot
-  # happen there.
+  # A pow2 backend snaps a stack that is not a power of two up, so the defconfig would not state
+  # what each thread costs: refused, never modelled. _mn first: a no-MPU board scrapes _p2 = 1
+  # off the v7-M fallback TU and snaps nothing.
   if(_p2 AND NOT _mn EQUAL 0 AND NOT _user EQUAL 0)
     math(EXPR _user_pow2 "${_user} & (${_user} - 1)")
     if(NOT _user_pow2 EQUAL 0)
@@ -220,8 +187,13 @@ function(kickos_boot_arena_defs arch_dir arch_tgt chip_tgt ld
         "power of two, or state a size this backend can name exactly.")
     endif()
   endif()
-  kickos_region_size("${_user}" "${_mn}" "${_p2}" _usz)
-  kickos_region_align("${_user}" "${_mn}" "${_p2}" _ual)
+  kickos_ram_region_rule("${_mn}" "${_p2}" _figures "${_idle}" "${_root}" "${_user}")
+  list(GET _figures 0 _isz)
+  list(GET _figures 1 _ial)
+  list(GET _figures 2 _rsz)
+  list(GET _figures 3 _ral)
+  list(GET _figures 4 _usz)
+  list(GET _figures 5 _ual)
   file(READ "${ld}" _ldtxt)
   if(NOT "${_ldtxt}" MATCHES "KICKOS_BOOT_ARENA_ASSERT")
     message(FATAL_ERROR

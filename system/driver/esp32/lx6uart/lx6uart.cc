@@ -33,8 +33,4 @@ namespace
 //
 // The baud 0 below keeps the divisor the ROM left, and the frame is Register 19.9's reset
 // framing, so the backend has nothing to reprogram.
-//
-// LEVEL: CPU interrupt 13 is level-triggered (TRM Table 8.3-2) and the UART latch stays set
-// until the driver clears it.
-KICKOS_UART_CONSOLE_SERVICE(lx6uart, k_uart, /*fallback_baud=*/0u, mmap::UART0_BASE,
-                            KOS_IRQ_LEVEL);
+KICKOS_UART_CONSOLE_SERVICE(lx6uart, k_uart, /*fallback_baud=*/0u);

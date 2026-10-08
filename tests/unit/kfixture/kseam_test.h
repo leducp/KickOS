@@ -14,6 +14,7 @@
 #include "kfixture.h"
 
 #include <kickos/instance.h>
+#include <kickos/klock.h>
 #include <kickos/thread.h>
 
 namespace kickos
@@ -107,13 +108,13 @@ namespace kickos
             k.ready_bitmap[core] |= (1u << t->prio);
             // A thread this seat displaces is still on the core's queue, which is what a switch
             // leaves behind it.
-            Thread* const was = k.current[core];
+            Thread* const was = k.current(core_at(core));
             if (was != nullptr and was != t and was->state == ThreadState::RUNNING)
             {
-                was->state = ThreadState::READY;
+                was->state.to<ThreadState::READY>();
             }
-            t->state = ThreadState::RUNNING;
-            k.current[core] = t;
+            t->state.to<ThreadState::RUNNING>();
+            k.current(core_at(core)) = t;
             // What the core's last pass seated, or a later pass seating lower sees no drop.
             k.seated_prio[core] = t->prio;
             // Started, as its own first seat would publish it.
@@ -146,7 +147,7 @@ namespace kickos
         {
             uint32_t const was = g_core;
             g_core = core;
-            (void)kickos_kernel_core_resched_take();
+            (void)klock_resched_take();
             g_core = was;
         }
 
@@ -156,10 +157,7 @@ namespace kickos
         {
             uint32_t const was = g_core;
             g_core = core;
-            if (kickos_kernel_core_resched_take() != 0)
-            {
-                kickos_kernel_core_resched();
-            }
+            kickos_kernel_core_resched_if_owed();
             g_core = was;
         }
     }

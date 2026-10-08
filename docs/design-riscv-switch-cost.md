@@ -44,7 +44,7 @@ switch is a trap today; what a cooperative path could catch is the subset where
 - `g_isr_depth` is bumped only by the timer, soft, external and device demux arms
   (`switch.S` `.Ltimer`, `.Lssoft`, `.Lext`, `.Lextdev`). Neither `.Lswitch` nor the ecall
   path touches it, so a syscall dispatch and the switcher itself read thread context.
-- Every `block_current` / `yield` / `wake`-from-dispatch switch is therefore eligible. The
+- Every park / `yield` / `wake`-from-dispatch switch is therefore eligible. The
   ineligible ones are RR slice expiry (`sched::tick_rr`, reached from `kickos_isr_timer`) and
   a wake raised by a device ISR.
 - The n=40001 `SWITCH` population is the semaphore ping-pong window alone (20000 rounds x 2

@@ -101,7 +101,8 @@ namespace kickos
             void close_the_closers_cap()
             {
                 trace_add("close");
-                EXPECT_EQ(handle_close(g_closer, g_closer_cap), 0) << "the close was accepted";
+                EXPECT_EQ(handle_close(g_closer, g_closer_cap, kickos::IrqLock()), 0)
+                    << "the close was accepted";
             }
 
             // Stands in for the SUPERVISOR the sweep's own EPIPE released: on target it is a
@@ -132,9 +133,9 @@ namespace kickos
                 Thread* const c = spawn(slot, PRIO_SWEEPER);
                 {
                     IrqLock lock;
-                    sched::reschedule();
+                    sched::reschedule(nullptr, lock);
                 }
-                EXPECT_EQ(kernel().current[kickos_kernel_core()], c) << "fixture: the sweeper is current";
+                EXPECT_EQ(kernel().current(kickos_kernel_core()), c) << "fixture: the sweeper is current";
                 c->dying = true;
                 attach_caps(c, width);
                 return c;
@@ -165,7 +166,7 @@ namespace kickos
                 attach_caps(publisher, KICKOS_CAP_FIRST_DYNAMIC + 1);
                 Endpoint* const ep = endpoint();
                 int const handle = kernel().endpoints.handle_for(kernel().endpoints.index_of(ep));
-                EXPECT_TRUE(cap_console_publish(publisher, handle))
+                EXPECT_TRUE(cap_console_publish(publisher, handle, kickos::IrqLock()))
                     << "fixture: the console endpoint was published";
                 cap_install_at(owner, index, handle, CapType::CAP_ENDPOINT, CAP_WAIT, KCAP_BADGE_NONE);
                 // Through the real counter locator, so recv_holders and endpoint_refs move
@@ -175,7 +176,7 @@ namespace kickos
                     << "fixture: the receiver cap took its references";
                 {
                     IrqLock lock;
-                    cap_console_serve(served_by);
+                    cap_console_serve(served_by, lock);
                 }
                 return handle;
             }
@@ -403,14 +404,14 @@ namespace kickos
 
             {
                 IrqLock lock;
-                sched::reschedule();
+                sched::reschedule(nullptr, lock);
             }
-            EXPECT_EQ(kernel().current[kickos_kernel_core()], g_closer) << "fixture: the closer holds the CPU";
+            EXPECT_EQ(kernel().current(kickos_kernel_core()), g_closer) << "fixture: the closer holds the CPU";
 
             trace_reset();
             {
                 IrqLock lock;
-                task_end(served, 0, true);
+                task_end(served, 0, true, lock);
             }
 
             EXPECT_STREQ(trace(), "note reclaim switch1>3")
@@ -438,7 +439,7 @@ namespace kickos
             park_plain_sender(sender, kernel().endpoints.resolve(handle));
             {
                 IrqLock lock;
-                task_drop_hold(served);
+                task_drop_hold(served, lock);
             }
             EXPECT_EQ(g_console_noted, 1u);
             EXPECT_EQ(g_console_reclaimed, 1u);
@@ -487,7 +488,7 @@ namespace kickos
 
             {
                 IrqLock lock;
-                EXPECT_EQ(handle_close(server, wait_cap), 0);
+                EXPECT_EQ(handle_close(server, wait_cap, lock), 0);
             }
 
             EXPECT_EQ(ep->vacated, 1u) << "the last receiver left";
@@ -505,7 +506,7 @@ namespace kickos
 
             {
                 IrqLock lock;
-                EXPECT_EQ(cap_narrow(init, all, CAP_SIGNAL | CAP_TRANSFER | CAP_HANDOUT), 0);
+                EXPECT_EQ(cap_narrow(init, all, CAP_SIGNAL | CAP_TRANSFER | CAP_HANDOUT, lock), 0);
             }
             EXPECT_EQ(ep->vacated, 1u) << "the narrow dropped the last receiver";
             EXPECT_EQ(endpoint_unserved(ep, 0), -KOS_EAGAIN) << "a HANDOUT holder remains";
@@ -514,7 +515,7 @@ namespace kickos
             EXPECT_FALSE(endpoint_receiving(ep)) << "a seated receiver counts once it waits";
             {
                 IrqLock lock;
-                EXPECT_EQ(cap_narrow(init, all, CAP_SIGNAL), 0);
+                EXPECT_EQ(cap_narrow(init, all, CAP_SIGNAL, lock), 0);
             }
             EXPECT_EQ(ep->handout_holders, 0u) << "fixture: no HANDOUT holder remains";
             EXPECT_EQ(endpoint_unserved(ep, 0), -KOS_EAGAIN)
@@ -539,7 +540,7 @@ namespace kickos
             (void)hold_endpoint(client, ep, CAP_SIGNAL);
             {
                 IrqLock lock;
-                EXPECT_EQ(handle_close(server, wait_cap), 0);
+                EXPECT_EQ(handle_close(server, wait_cap, lock), 0);
             }
             ASSERT_EQ(ep->vacated, 1u) << "fixture: the slot was vacated";
             kernel().endpoints.free(kernel().endpoints.handle_for(index));

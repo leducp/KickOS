@@ -11,6 +11,7 @@
 // CMakeLists.txt picks them.
 
 #include <kickos/kos.h>
+#include <kickos/sys/trap.h>
 
 // Optional pre-crash delay (ms), default 0. Set (e.g. -DKICKOS_FAULT_DELAY_MS=5000) for
 // a board whose console re-enumerates on reset (the ESP32-C6 self-hosted
@@ -26,21 +27,10 @@ int main(int, char**)
 #if KICKOS_FAULT_DELAY_MS
     kos_sleep_ns(static_cast<uint64_t>(KICKOS_FAULT_DELAY_MS) * 1000000ull);
 #endif
-#if defined(__XTENSA__)
-    __asm volatile("ill");
-#elif defined(__riscv)
-    __asm volatile(".word 0x00000000"); // all-zero encoding: illegal on RV32
-#elif defined(__arm__) || defined(__thumb__)
-    __asm volatile("udf #0");
-#elif defined(__aarch64__)
-    // All-zero is a permanently-undefined A64 encoding, reported with EC 0x00; the RV32 arm
-    // above uses the same idiom. NOT __builtin_trap, which is `brk` on this ISA and raises a
-    // DEBUG exception (EC 0x3C) instead: a different vector cause and a different report.
-    __asm volatile(".inst 0x00000000");
-#elif defined(__RX__)
+#if defined(__RX__)
     __asm volatile("brk"); // BRK traps through rvector[0]
 #else
-    __builtin_trap(); // host/sim: x86 ud2 -> SIGILL -> on_sigill reporter
+    KOS_TRAP_ILLEGAL();
 #endif
     // The fault path never returns. This distinct line makes a target that did not trap
     // fail the gate's negative assertion instead of passing.

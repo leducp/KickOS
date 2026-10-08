@@ -9,15 +9,12 @@
 #
 # The answer is the `emulator` of each board's board file, read through the chip.cmake the chip
 # generator writes for it, which is what a configure of that board hands kickos_qemu_machine. A
-# board that boots on silicon emits no line. Requires uv on PATH, as a configure does.
+# board that boots on silicon emits no line.
 
 if(NOT DEFINED SRC OR NOT DEFINED OUT OR NOT DEFINED BOARDS)
   message(FATAL_ERROR "board_emulators.cmake needs -DSRC=, -DBOARDS= and -DOUT=")
 endif()
-find_program(_uv uv)
-if(NOT _uv)
-  message(FATAL_ERROR "board_emulators.cmake: uv not found on PATH; the board files are read by tools/compose")
-endif()
+include("${SRC}/cmake/compose.cmake")
 set(_scratch "${OUT}.d")
 file(REMOVE_RECURSE "${_scratch}")
 
@@ -29,11 +26,9 @@ function(_emulator_of board out)
   include("${_descriptor}")
   set(_dir "${_scratch}/${board}")
   file(MAKE_DIRECTORY "${_dir}/tmp")
+  kickos_compose_python(_python "${SRC}/tools/compose" "${_scratch}/venv" "${_dir}/tmp")
   execute_process(
-    COMMAND "${CMAKE_COMMAND}" -E env "UV_PROJECT_ENVIRONMENT=${_scratch}/venv" UV_PYTHON_DOWNLOADS=never
-            "PYTHONPATH=${SRC}/tools/compose" PYTHONDONTWRITEBYTECODE=1 "TMPDIR=${_dir}/tmp"
-            "${_uv}" run --project "${SRC}/tools/compose" --locked --quiet
-            python -m kickos_compose chip "${SRC}/platform/${KICKOS_CHIP}/${board}.yaml" --arch "${KICKOS_ARCH}"
+    COMMAND ${_python} -m kickos_compose chip "${SRC}/platform/${KICKOS_CHIP}/${board}.yaml" --arch "${KICKOS_ARCH}"
             --include-dir "${_dir}/include" --chip-dir "${_dir}"
     RESULT_VARIABLE _rc ERROR_VARIABLE _err OUTPUT_VARIABLE _out)
   if(NOT _rc STREQUAL "0")

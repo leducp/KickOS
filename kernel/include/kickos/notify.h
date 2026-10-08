@@ -16,19 +16,18 @@
 #include <stdint.h>
 
 #include <kickos/config.h>
+#include <kickos/held.h>
 
 namespace kickos
 {
     struct Thread;   // kickos/thread.h
     struct CapEntry; // kickos/cap.h
 
-    // Every "none" sentinel below is zero: a footprint rule, not a style choice. The whole
-    // of `struct Kernel` is one statically-allocated object, and a single non-zero default
-    // member initialiser anywhere inside it moves the whole object out of .bss and into
-    // .data, where its initialiser image costs flash. Measured on f302nucleo: a `-1` default
-    // on these three fields alone put 3184 bytes of .bss into .data. So each of them stores a
-    // biased value, exactly as kcap_free_ref biases the capability free list for the same
-    // reason: zero is the sentinel and every real value is one more than itself.
+    // Every "none" sentinel below is zero. `struct Kernel` is one statically-allocated object,
+    // and a single non-zero default member initialiser anywhere inside it moves the whole
+    // object out of .bss and into .data, where its initialiser image costs flash. So each of
+    // them stores a biased value, as kcap_free_ref does: zero is the sentinel and every real
+    // value is one more than itself.
 
     // "No signaller on this chain". The chain threads IrqBinding::next_signaller, whose
     // entries are binding pool indices biased by one, not handles: the chain is walked only
@@ -127,7 +126,7 @@ namespace kickos
     // Drop one reference to notification `obj_handle`; free the slot at refs -> 0. Caller
     // holds IrqLock. A parked waiter is the bound thread, whose bind holds a reference of its
     // own, so refs cannot reach 0 under it.
-    void notify_ref_drop(int obj_handle, bool teardown);
+    void notify_ref_drop(int obj_handle);
 
     // Raise `bit` in `n` and wake the bound thread if its wait accepts that bit. False where
     // the bit was already set. ISR-safe: it resolves nothing, allocates nothing and walks no
@@ -145,8 +144,8 @@ namespace kickos
     // The fused receive's two halves, over whatever object `c` is bound to. enter() opens
     // `mask` (rearming the signallers it covers) and answers the bits the wait may take;
     // leave() consumes the pending bits within `opened`, closes the window and answers what
-    // it took. Both answer 0 for a thread bound to nothing. Caller holds IrqLock.
-    uint32_t notify_wait_enter(Thread* c, uint32_t mask);
+    // it took. Both answer 0 for a thread bound to nothing. leave()'s caller holds IrqLock.
+    uint32_t notify_wait_enter(Thread* c, uint32_t mask, Held held);
     uint32_t notify_wait_leave(Thread* c, uint32_t opened);
 
     // The pending word of whatever `c` is bound to, or 0. Caller holds IrqLock.

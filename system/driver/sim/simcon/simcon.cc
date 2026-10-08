@@ -31,7 +31,6 @@ extern "C" long write(int, void const*, unsigned long);
 extern "C" void simconsole_driver(void*);
 
 namespace drv = kickos::driver;
-namespace declared = kickos::driver::declared::simcon;
 
 namespace
 {
@@ -46,34 +45,10 @@ namespace
         (void)write(1, s, n);
     }
 
-    // ONE thread, no window (the "device" is host fd 1), no line, no shared block, and so no
-    // readiness latch: the one thread IS the endpoint's receiver, and no point exists before
-    // it at which a timeout would be reportable.
-    constexpr drv::Descriptor k_desc = {
-        .tag = "[simcon] ",
-        .expected_base = 0,
-        .block_size = declared::k_declared.block_size,
-        .block_flags = 0,
-        .ready_offset = drv::KOS_DRV_READY_NONE,
-        .ep_posture = declared::k_declared.ep_posture,
-        .line_count = declared::k_declared.line_count,
-        .thread_count = declared::k_declared.thread_count,
-        .barrier_after = declared::k_declared.barrier_after,
-        .lines = {},
-        .threads = {{.entry = simconsole_driver,
-                     .name = declared::k_declared.thread_name[0],
-                     .prio_delta = declared::k_declared.prio_delta[0],
-                     .arg = drv::KOS_DRV_ARG_NONE,
-                     .window_grant = false,
-                     .cap_count = 1,
-                     .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT, 0}}}},
-        .block_init = nullptr
-    };
+    constexpr drv::Descriptor k_desc = KICKOS_DRIVER_DESCRIPTOR;
 
     static_assert(drv::valid(k_desc),
                   "the simcon descriptor is not a well-formed driver shape");
-    static_assert(drv::declared_as(k_desc, declared::k_declared),
-                  "the simcon descriptor departs from its kickos_add_driver declaration");
 
     // The window thread, invalid where this build has none. Defined unconditionally.
     kos::thread::Handle g_win_thread;

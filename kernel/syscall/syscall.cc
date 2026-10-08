@@ -31,6 +31,10 @@
 
 #include "syscall_internal.h"
 
+#if KICKOS_HAVE_ASPACE and not KICKOS_PRESYNC
+#error "a translating backend lets an interrupt in between a call's rounds (KICKOS_ARCH_IRQ_WINDOW)"
+#endif
+
 namespace kickos
 {
     // syscall_dispatch answers 8 bytes on every target and the userspace stub narrows that
@@ -277,6 +281,32 @@ namespace
     uint64_t syscall_body(uintptr_t nr, uintptr_t a0, uintptr_t a1,
                           uintptr_t a2, uintptr_t a3);
 
+    // kos_mem_flags -> the ARCH_MPU_* memory-type bits, ORed into *attr. False on an
+    // undefined bit: refused (-KOS_EINVAL), never masked off.
+    bool mem_flags_to_attr(uintptr_t flags, uint32_t* attr)
+    {
+        if ((flags & ~static_cast<uintptr_t>(KOS_MEM_FLAGS_ALL)) != 0)
+        {
+            return false;
+        }
+        if ((flags & static_cast<uintptr_t>(KOS_MEM_NOCACHE)) != 0)
+        {
+            *attr |= ARCH_MPU_NOCACHE;
+        }
+        return true;
+    }
+
+#if KICKOS_HAVE_ASPACE
+    enum arch_map_memtype map_memtype_of(uint32_t attr)
+    {
+        if ((attr & ARCH_MPU_NOCACHE) != 0)
+        {
+            return ARCH_MAP_NOCACHE;
+        }
+        return ARCH_MAP_NORMAL;
+    }
+#endif
+
 #if KICKOS_PRESYNC
     bool presync_wanted(uintptr_t nr)
     {
@@ -299,19 +329,15 @@ namespace
         {
             return;
         }
-        enum arch_map_memtype mtype = ARCH_MAP_NORMAL;
-        if ((attr & ARCH_MPU_NOCACHE) != 0)
-        {
-            mtype = ARCH_MAP_NOCACHE;
-        }
-        aspace_self_grant_note(domain_ranges(task_domain(c->task)), base, size,
-                               ARCH_MAP_R | ARCH_MAP_W, mtype);
+        aspace_self_grant_note(domain_ranges(thread_domain(c)), base, size,
+                               ARCH_MAP_R | ARCH_MAP_W, map_memtype_of(attr));
     }
 
     void frame_map_plan(Thread* c, uintptr_t a0, uintptr_t a1, uintptr_t a3)
     {
+        uint32_t attr = 0u;
         if (not cap_check_authority(c, AUTH_MEMORY)
-            or (static_cast<uint32_t>(a3) & ~static_cast<uint32_t>(KOS_MEM_FLAGS_ALL)) != 0)
+            or not mem_flags_to_attr(static_cast<uint32_t>(a3), &attr))
         {
             return;
         }
@@ -325,12 +351,7 @@ namespace
         {
             return;
         }
-        enum arch_map_memtype type = ARCH_MAP_NORMAL;
-        if ((static_cast<uint32_t>(a3) & KOS_MEM_NOCACHE) != 0)
-        {
-            type = ARCH_MAP_NOCACHE;
-        }
-        aspace_cap_map_note(fe->obj, run->base, run->pages, type);
+        aspace_cap_map_note(fe->obj, run->base, run->pages, map_memtype_of(attr));
     }
 
 #endif
@@ -418,7 +439,9 @@ extern "C" uint64_t syscall_dispatch(uintptr_t nr,
                                      uintptr_t a2, uintptr_t a3)
 {
     Thread* const caller = sched::current();
-    if (caller != nullptr and caller->cancel_kind != CANCEL_NONE and not caller->dying)
+    // Every thread starts behind sched::start, which seats current.
+    KICKOS_ASSERT(caller != nullptr);
+    if (caller->cancel_kind != CANCEL_NONE and not caller->dying)
     {
         sched::exit_current(KOS_EXIT_CANCELLED, sched::EXIT_RETURN);
     }
@@ -503,7 +526,8 @@ uint64_t syscall_body(uintptr_t nr,
         case KOS_SYS_HANDLE_CLOSE:
         {
             IrqLock lock;
-            return static_cast<uint64_t>(handle_close(sched::current(), static_cast<uint32_t>(a0)));
+            return static_cast<uint64_t>(
+                handle_close(sched::current(), static_cast<uint32_t>(a0), lock));
         }
         case KOS_SYS_SEM_WAIT:
         {
@@ -518,7 +542,7 @@ uint64_t syscall_body(uintptr_t nr,
                     cap_resolve_e(c, static_cast<uint32_t>(a0), CapType::CAP_SEM, CAP_WAIT, &err));
                 if (s == nullptr)
                 {
-                    return static_cast<uint64_t>(-err); // EBADF (bad/closed cap) or EACCES (no WAIT right)
+                    return static_cast<uint64_t>(-err);
                 }
                 if (not sem_wait(lock, s, epoch))
                 {
@@ -536,7 +560,7 @@ uint64_t syscall_body(uintptr_t nr,
                 cap_resolve_e(sched::current(), static_cast<uint32_t>(a0), CapType::CAP_SEM, CAP_SIGNAL, &err));
             if (s == nullptr)
             {
-                return static_cast<uint64_t>(-err); // EBADF (bad/closed cap) or EPERM (no SIGNAL right)
+                return static_cast<uint64_t>(-err);
             }
             if (not sem_post(s))
             {
@@ -570,7 +594,7 @@ uint64_t syscall_body(uintptr_t nr,
             }
             if (m == nullptr)
             {
-                return static_cast<uint64_t>(-err); // -KOS_EBADF (need == 0, so never EPERM here)
+                return static_cast<uint64_t>(-err);
             }
             // -KOS_EOWNERDEAD is negative but still an ACQUIRE.
             return static_cast<uint64_t>(mutex_lock(m));
@@ -610,26 +634,17 @@ uint64_t syscall_body(uintptr_t nr,
             return cap_out_deliver(a2, rc, h);
         }
         case KOS_SYS_SEND:
+        case KOS_SYS_SEND_TIMED:
         {
             // No dispatch IrqLock: endpoint_send takes and releases its own around the
             // park, and a spanning caller lock would livelock ARM.
-            int32_t const sent = endpoint_send(static_cast<uint32_t>(a0), a1,
-                                               static_cast<size_t>(a2), KOS_TIMEOUT_NONE);
-            if (sent == SEND_WOULD_PARK)
+            uint32_t timeout = KOS_TIMEOUT_NONE;
+            if (nr == KOS_SYS_SEND_TIMED)
             {
-                return static_cast<uint64_t>(-KOS_ETIMEDOUT);
+                timeout = static_cast<uint32_t>(a3);
             }
-            return static_cast<uint64_t>(sent);
-        }
-        case KOS_SYS_SEND_TIMED:
-        {
-            int32_t const sent = endpoint_send(static_cast<uint32_t>(a0), a1,
-                                               static_cast<size_t>(a2), static_cast<uint32_t>(a3));
-            if (sent == SEND_WOULD_PARK)
-            {
-                return static_cast<uint64_t>(-KOS_ETIMEDOUT);
-            }
-            return static_cast<uint64_t>(sent);
+            return static_cast<uint64_t>(endpoint_send(static_cast<uint32_t>(a0), a1,
+                                                       static_cast<size_t>(a2), timeout));
         }
         case KOS_SYS_CALL:
         {
@@ -683,8 +698,8 @@ uint64_t syscall_body(uintptr_t nr,
         }
         case KOS_SYS_CONSOLE_PUBLISH:
         {
-            // AUTH_CONSOLE, its own bit and not shutdown's.
             Thread* c = sched::current();
+            // AUTH_CONSOLE is its own bit, not shutdown's.
             if (not cap_check_authority(c, AUTH_CONSOLE))
             {
                 return static_cast<uint64_t>(-KOS_EPERM);
@@ -717,7 +732,7 @@ uint64_t syscall_body(uintptr_t nr,
                 }
                 // Must precede the relinquish below: it is the last step that can fail, and a
                 // refusal has to leave a working console behind.
-                int const rc = cap_console_publish_through(c, e, served_by);
+                int const rc = cap_console_publish_through(c, e, served_by, lock);
                 if (rc != 0)
                 {
                     return static_cast<uint64_t>(rc);
@@ -737,7 +752,7 @@ uint64_t syscall_body(uintptr_t nr,
             // ready-list move alone.
             {
                 IrqLock lock;
-                sched::set_prio(pub, KICKOS_PRIO_MIN);
+                sched::set_prio(pub, KICKOS_PRIO_MIN, lock);
             }
             uint32_t guard = 0;
             while (console_chip_writers() != 0)
@@ -751,7 +766,7 @@ uint64_t syscall_body(uintptr_t nr,
             }
             {
                 IrqLock lock;
-                sched::set_prio(pub, saved_prio);
+                sched::set_prio(pub, saved_prio, lock);
             }
             console_owner_set_user(); // must be LAST, and strictly after the drain
             return 0;
@@ -930,21 +945,16 @@ uint64_t syscall_body(uintptr_t nr,
             // Not gated on the CALLER: this simulates a DEVICE firing, and selftest injects
             // it from an unprivileged thread at authority 0. The gate is on the LINE instead.
             int irq = static_cast<int>(a0);
-            if (irq < 0 or irq >= KICKOS_MAX_IRQ)
+            int const admit = irq_line_admit(irq);
+            if (admit != 0)
             {
-                return static_cast<uint64_t>(-KOS_EINVAL);
-            }
-            // The same refusal irq_claim makes: raising a line the kernel drives (the tick,
-            // console TX, the doorbell) reaches kernel state no capability named.
-            if (arch_irq_line_kernel_owned(irq))
-            {
-                return static_cast<uint64_t>(-KOS_EPERM);
+                return static_cast<uint64_t>(admit);
             }
             // The image-wide masked and pending words are read-modify-written here, and the
             // backend's own bracket excludes this core's handler alone.
             {
                 IrqLock lock;
-                arch_irq_inject(irq);
+                irq_inject(irq, lock);
             }
             return 0;
         }
@@ -1189,26 +1199,22 @@ uint64_t syscall_body(uintptr_t nr,
         case KOS_SYS_IRQ_UNMASK:
         {
             // Masked-by-default controllers (ARM NVIC, RX) drop an injected raise on an
-            // UNBOUND line until this unmasks it. AUTH_IRQ, like irq_attach.
+            // UNBOUND line until this unmasks it.
             if (not cap_check_authority(sched::current(), AUTH_IRQ))
             {
                 return static_cast<uint64_t>(-KOS_EPERM);
             }
             int irq = static_cast<int>(a0);
-            if (irq < 0 or irq >= KICKOS_MAX_IRQ)
+            int const admit = irq_line_admit(irq);
+            if (admit != 0)
             {
-                return static_cast<uint64_t>(-KOS_EINVAL);
-            }
-            // The inject arm's refusal: the kernel alone decides a line it drives.
-            if (arch_irq_line_kernel_owned(irq))
-            {
-                return static_cast<uint64_t>(-KOS_EPERM);
+                return static_cast<uint64_t>(admit);
             }
             // As the inject arm above: the image-wide masked word is read-modify-written
             // here, and the backend's own bracket excludes this core's handler alone.
             {
                 IrqLock lock;
-                irq_line_op(irq, LineOp::UNMASK);
+                irq_line_op(irq, LineOp::UNMASK, lock);
             }
             return 0;
         }
@@ -1254,12 +1260,11 @@ uint64_t syscall_body(uintptr_t nr,
             // the frames under it make it a globally unique name the handoff can carry, and
             // they are cleared before the range names them. A privileged caller gets null: the
             // kernel domain carries no space.
-#if KICKOS_PRESYNC
             {
                 IrqLock lock;
                 Thread* const c = sched::current();
-                if (c == nullptr or not cap_check_authority(c, AUTH_MEMORY)
-                    or aspace_reserve_stage(domain_ranges(task_domain(c->task)),
+                if (not cap_check_authority(c, AUTH_MEMORY)
+                    or aspace_reserve_stage(domain_ranges(thread_domain(c)),
                                             static_cast<size_t>(a0))
                            == 0)
                 {
@@ -1270,26 +1275,16 @@ uint64_t syscall_body(uintptr_t nr,
             uintptr_t va = 0;
             {
                 IrqLock lock;
-                va = aspace_reserve_commit(domain_ranges_mut(task_domain(sched::current()->task)));
+                va = aspace_reserve_commit(domain_ranges_mut(thread_domain(sched::current())));
             }
             presync_release(va != 0);
             return va;
-#else
-            IrqLock lock;
-            Thread* const c = sched::current();
-            if (c == nullptr or not cap_check_authority(c, AUTH_MEMORY))
-            {
-                return 0;
-            }
-            return aspace_reserve(domain_ranges_mut(task_domain(c->task)),
-                                  static_cast<size_t>(a0));
-#endif
 #else
             void* block = nullptr;
             {
                 IrqLock lock;
                 Thread* const c = sched::current();
-                if (c == nullptr or not cap_check_authority(c, AUTH_MEMORY))
+                if (not cap_check_authority(c, AUTH_MEMORY))
                 {
                     return 0;
                 }
@@ -1312,7 +1307,7 @@ uint64_t syscall_body(uintptr_t nr,
             // One lock spans resolve-to-use for BOTH capabilities and the edit they drive.
             IrqLock lock;
             Thread* const c = sched::current();
-            if (c == nullptr or not cap_check_authority(c, AUTH_MEMORY))
+            if (not cap_check_authority(c, AUTH_MEMORY))
             {
                 // The authority word and not a rights bit: the rights field is full, and
                 // widening it spends the reply sequence packed beside it.
@@ -1323,10 +1318,6 @@ uint64_t syscall_body(uintptr_t nr,
                 cap_resolve_e(c, static_cast<uint32_t>(a0), CapType::CAP_FRAME, 0, &ferr));
             if (run == nullptr)
             {
-                if (ferr == 0)
-                {
-                    ferr = KOS_EBADF;
-                }
                 return static_cast<uint64_t>(-ferr);
             }
             CapEntry const* const fe = cap_lookup(c, static_cast<uint32_t>(a0));
@@ -1340,10 +1331,6 @@ uint64_t syscall_body(uintptr_t nr,
                 cap_resolve_e(c, static_cast<uint32_t>(a1), CapType::CAP_ASPACE, 0, &aerr));
             if (target == nullptr)
             {
-                if (aerr == 0)
-                {
-                    aerr = KOS_EBADF;
-                }
                 return static_cast<uint64_t>(-aerr);
             }
             struct arch_aspace* const sp = domain_space(target);
@@ -1356,17 +1343,13 @@ uint64_t syscall_body(uintptr_t nr,
             {
                 return static_cast<uint64_t>(aspace_cap_unmap(sp, vr, a2, run_obj));
             }
-            enum arch_map_memtype type = ARCH_MAP_NORMAL;
-            if ((static_cast<uint32_t>(a3) & KOS_MEM_NOCACHE) != 0)
-            {
-                type = ARCH_MAP_NOCACHE;
-            }
-            if ((static_cast<uint32_t>(a3) & ~static_cast<uint32_t>(KOS_MEM_FLAGS_ALL)) != 0)
+            uint32_t attr = 0u;
+            if (not mem_flags_to_attr(static_cast<uint32_t>(a3), &attr))
             {
                 return static_cast<uint64_t>(-KOS_EINVAL);
             }
             int const mrc = aspace_cap_map(sp, vr, a2, run_obj, run->base, run->pages,
-                                           ARCH_MAP_R | ARCH_MAP_W, type);
+                                           ARCH_MAP_R | ARCH_MAP_W, map_memtype_of(attr));
             if (mrc == 0)
             {
                 presync_commit();
@@ -1380,7 +1363,7 @@ uint64_t syscall_body(uintptr_t nr,
             // translating one maps into the task's space, so no caller may infer sibling denial.
             IrqLock lock;
             Thread* const c = sched::current();
-            if (c == nullptr or not cap_check_authority(c, AUTH_MEMORY))
+            if (not cap_check_authority(c, AUTH_MEMORY))
             {
                 return static_cast<uint64_t>(-KOS_EPERM);
             }
@@ -1422,14 +1405,9 @@ uint64_t syscall_body(uintptr_t nr,
             // The range must be one this task RESERVED, which refuses an address another task
             // reserved; the arena and natural-alignment arms below do not apply to frame-pool
             // frames.
-            enum arch_map_memtype mtype = ARCH_MAP_NORMAL;
-            if ((attr & ARCH_MPU_NOCACHE) != 0)
-            {
-                mtype = ARCH_MAP_NOCACHE;
-            }
-            int const grc = aspace_self_grant(domain_space(task_domain(c->task)),
-                                              domain_ranges_mut(task_domain(c->task)), base,
-                                              size, ARCH_MAP_R | ARCH_MAP_W, mtype);
+            int const grc = aspace_self_grant(domain_space(thread_domain(c)),
+                                              domain_ranges_mut(thread_domain(c)), base, size,
+                                              ARCH_MAP_R | ARCH_MAP_W, map_memtype_of(attr));
             if (grc == 0)
             {
                 presync_commit();
@@ -1485,7 +1463,7 @@ uint64_t syscall_body(uintptr_t nr,
             IrqLock lock;
             return static_cast<uint64_t>(
                 cap_narrow(sched::current(), static_cast<uint32_t>(a0),
-                           static_cast<uint32_t>(a1)));
+                           static_cast<uint32_t>(a1), lock));
         }
         case KOS_SYS_PANIC:
         {
@@ -1583,6 +1561,14 @@ uint64_t syscall_body(uintptr_t nr,
         {
             // Print without IrqLock held. Counts are validated here to keep checks out of the
             // measured helpers.
+            // These ops call irq_attach, whose own syscall (KOS_SYS_IRQ_ATTACH) takes
+            // AUTH_IRQ; reaching it through here must not be the cheaper route.
+            if ((a0 == KOS_BENCH_OP_IRQ_SETUP or a0 == KOS_BENCH_OP_IRQ_SWEEP
+                 or a0 == KOS_BENCH_OP_IRQ_WCASE)
+                and not cap_check_authority(sched::current(), AUTH_IRQ))
+            {
+                return static_cast<uint64_t>(-KOS_EPERM);
+            }
             switch (a0)
             {
                 case KOS_BENCH_OP_RESET:
@@ -1619,12 +1605,6 @@ uint64_t syscall_body(uintptr_t nr,
                 }
                 case KOS_BENCH_OP_IRQ_SETUP:
                 {
-                    // bench_irq_setup calls irq_attach, whose own syscall (KOS_SYS_IRQ_ATTACH)
-                    // takes AUTH_IRQ; reaching it through here must not be the cheaper route.
-                    if (not cap_check_authority(sched::current(), AUTH_IRQ))
-                    {
-                        return static_cast<uint64_t>(-KOS_EPERM);
-                    }
                     int const line = static_cast<int>(a1);
                     if (line < 0 or line >= KICKOS_MAX_IRQ)
                     {
@@ -1633,28 +1613,17 @@ uint64_t syscall_body(uintptr_t nr,
                     return static_cast<uint64_t>(bench_irq_setup(line));
                 }
                 case KOS_BENCH_OP_IRQ_SWEEP:
-                {
-                    if (not cap_check_authority(sched::current(), AUTH_IRQ))
-                    {
-                        return static_cast<uint64_t>(-KOS_EPERM);
-                    }
-                    if (a1 > KOS_BENCH_SAMPLES_MAX)
-                    {
-                        return static_cast<uint64_t>(-KOS_EINVAL);
-                    }
-                    return bench_irq_sweep(static_cast<uint32_t>(a1));
-                }
                 case KOS_BENCH_OP_IRQ_WCASE:
                 {
-                    if (not cap_check_authority(sched::current(), AUTH_IRQ))
-                    {
-                        return static_cast<uint64_t>(-KOS_EPERM);
-                    }
                     if (a1 > KOS_BENCH_SAMPLES_MAX)
                     {
                         return static_cast<uint64_t>(-KOS_EINVAL);
                     }
-                    return bench_irq_wcase_sweep(static_cast<uint32_t>(a1));
+                    if (a0 == KOS_BENCH_OP_IRQ_WCASE)
+                    {
+                        return bench_irq_wcase_sweep(static_cast<uint32_t>(a1));
+                    }
+                    return bench_irq_sweep(static_cast<uint32_t>(a1));
                 }
                 case KOS_BENCH_OP_E2E_ARM:
                 {
@@ -1668,7 +1637,7 @@ uint64_t syscall_body(uintptr_t nr,
                                       CapType::CAP_IRQ, CAP_WAIT, &err));
                     if (b == nullptr)
                     {
-                        return static_cast<uint64_t>(-err); // EBADF, or EPERM without WAIT
+                        return static_cast<uint64_t>(-err);
                     }
                     return static_cast<uint64_t>(bench_e2e_arm(b->line));
                 }

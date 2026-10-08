@@ -21,9 +21,7 @@
 //   4. SMR, SCMR, SEMR and BRR are writable ONLY with SCR.TE and SCR.RE both 0 (notes on
 //      sec.42.2.9/12/13/15), so open takes the channel down first.
 //
-// SCR.TEIE stays 0 and RIE covers ERI: both are GROUPBL0 LEVEL sources, and the thread that
-// relays this driver's second line owns no register, so it cannot clear the peripheral flag
-// that makes the level drop.
+// SCR.TEIE stays 0 and RIE covers ERI: both are GROUPBL0 LEVEL sources no driver claims.
 
 #include <kickos/driver/uart.h>
 

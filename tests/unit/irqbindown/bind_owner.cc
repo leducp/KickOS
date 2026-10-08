@@ -88,7 +88,7 @@ namespace
         attach_caps(b.server, KICKOS_CAP_CHILD_WIDTH);
         {
             IrqLock lock;
-            sched::reschedule();
+            sched::reschedule(nullptr, lock);
         }
         EXPECT_EQ(notify_create(b.server, &b.note), 0);
         b.obj = obj_of(b.server, b.note);
@@ -110,7 +110,7 @@ TEST_F(IrqBindOwn, closing_a_signal_alias_leaves_the_binding_standing)
 
     {
         IrqLock lock;
-        ASSERT_EQ(handle_close(b.server, doorbell), 0);
+        ASSERT_EQ(handle_close(b.server, doorbell, lock), 0);
     }
 
     EXPECT_EQ(bound_thread(b.obj), b.server);
@@ -127,7 +127,7 @@ TEST_F(IrqBindOwn, the_last_capability_closing_under_a_live_bind_frees_nothing)
 
     {
         IrqLock lock;
-        ASSERT_EQ(handle_close(b.server, b.note), 0);
+        ASSERT_EQ(handle_close(b.server, b.note, lock), 0);
     }
 
     ASSERT_NE(kernel().notifies.resolve(b.obj), nullptr) << "the slot went away under a bind";
@@ -171,14 +171,14 @@ TEST_F(IrqBindOwn, the_attached_line_holds_the_last_reference_and_releases_it_at
     {
         IrqLock lock;
         ASSERT_EQ(notify_unbind(b.server, b.note), 0);
-        ASSERT_EQ(handle_close(b.server, b.note), 0);
+        ASSERT_EQ(handle_close(b.server, b.note, lock), 0);
     }
     ASSERT_NE(kernel().notifies.resolve(b.obj), nullptr)
         << "the attached line's reference was never taken";
 
     {
         IrqLock lock;
-        ASSERT_EQ(handle_close(b.server, b.claim), 0);
+        ASSERT_EQ(handle_close(b.server, b.claim, lock), 0);
     }
     EXPECT_EQ(kernel().irq_bindings.resolve(obj_of(b.server, b.claim)), nullptr);
     EXPECT_EQ(kernel().notifies.resolve(b.obj), nullptr) << "the object outlived every holder";
@@ -231,7 +231,7 @@ TEST_F(IrqBindOwn, the_last_close_masks_the_line_before_it_drops_the_route)
 
     {
         IrqLock lock;
-        ASSERT_EQ(handle_close(b.server, b.claim), 0);
+        ASSERT_EQ(handle_close(b.server, b.claim, lock), 0);
     }
 
     EXPECT_EQ(g_routed_armed, 0) << "the route was dropped while the line was still armed";

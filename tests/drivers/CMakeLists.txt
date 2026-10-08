@@ -9,33 +9,33 @@
 # a witness preset or an operator's configure sets: tests/integration/check_test_drivers_absent.sh
 # holds every other package to none.
 
-kickos_add_driver(testexits SOURCES testexits.cc
-                  THREADS service:0:default:1:0 RECEIVER service
-                  BLOCK none POSTURE retain BARRIER none START testexits_start)
+kickos_add_driver(testexits SOURCES testexits.cc BLOCK none BARRIER none POSTURE retain START testexits_start
+                  THREAD service ENTRY service CAPS ep:wait)
 
-kickos_add_driver(testtraps SOURCES testtraps.cc
-                  THREADS entry:0:default:0:0 worker:0:default:1:0 RECEIVER worker
-                  BLOCK none POSTURE retain BARRIER none START testtraps_start)
+kickos_add_driver(testtraps SOURCES testtraps.cc BLOCK none BARRIER none POSTURE retain START testtraps_start
+                  THREAD entry ENTRY entry
+                  THREAD worker ENTRY worker CAPS ep:wait)
 
-kickos_add_driver(testfails SOURCES testfails.cc
-                  THREADS service:0:default:1:0 RECEIVER service
-                  BLOCK none POSTURE retain BARRIER none START testfails_start)
+kickos_add_driver(testfails SOURCES testfails.cc BASE 0x1000u BLOCK none BARRIER none POSTURE retain
+                  START testfails_start
+                  THREAD service ENTRY service CAPS ep:wait)
 
 # Bound to a window and lines virt_arm64's chip file names, as no other emulated chip's does.
 if(KICKOS_CHIP STREQUAL "virt_arm64")
-  kickos_add_driver(testpl011 SOURCES testpl011.cc
-                    THREADS service:0:default:1:0 RECEIVER service WINDOWS regs
-                    BLOCK none POSTURE handover BARRIER none START testpl011_start CONSOLE)
+  kickos_add_driver(testpl011 SOURCES testpl011.cc WINDOWS regs BLOCK none BARRIER none
+                    POSTURE handover CONSOLE START testpl011_start
+                    THREAD service ENTRY service WINDOW regs CAPS ep:wait)
 
-  kickos_add_driver(testline SOURCES testline.cc
-                    THREADS irq:1:default:3:0 service:0:default:1:0 RECEIVER service LINES routed held NOTIFY
-                    BLOCK none POSTURE retain BARRIER none START testline_start)
+  kickos_add_driver(testline SOURCES testline.cc LINES routed:edge held:edge BLOCK none BARRIER none
+                    POSTURE retain START testline_start
+                    THREAD irq PRIORITY 1 ENTRY irq ARG line0_index CAPS notify:wait routed:wait held:wait
+                    THREAD service ENTRY service CAPS ep:wait)
 endif()
 
 # The USIC backend uart_usic.cc is the one xmcuartirq compiles, so an image links one of the two.
 if(KICKOS_CHIP STREQUAL "xmc4800")
   kickos_add_driver(testusic SOURCES testusic.cc "${PROJECT_SOURCE_DIR}/system/driver/xmc4800/uart_usic.cc"
                     CLASS kickos_class_xmc4800 REGDIR arch/arm/chip/xmc4800
-                    THREADS service:0:default:1:0 RECEIVER service WINDOWS regs
-                    BLOCK none POSTURE handover BARRIER none START testusic_start CONSOLE)
+                    WINDOWS regs BLOCK none BARRIER none POSTURE handover CONSOLE START testusic_start
+                    THREAD service ENTRY service ARG window WINDOW regs CAPS ep:wait)
 endif()

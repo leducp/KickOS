@@ -24,6 +24,7 @@
  */
 
 #include <vmsa.h>
+#include <boot_el1.inc>
 
 /* 64 MiB of DRAM in 2 MiB blocks. Must be KICKOS_ARM64_DRAM_SIZE / L2_BLOCK_SIZE from the
  * linker script; nothing checks the pair. */
@@ -168,71 +169,7 @@ _start:
     cmp     x0, #1
     b.ne    .Lbad_el
 
-    /* CPACR_EL1.FPEN resets to TRAPPING, so the q-register copies above would trap. */
-    mov     x0, #(3 << 20)          /* FPEN=0b11: no trapping at either level */
-    msr     CPACR_EL1, x0
-    isb
-
-    ldr     x0, =MAIR_VALUE
-    msr     MAIR_EL1, x0
-    ldr     x0, =TCR_VALUE
-    msr     TCR_EL1, x0
-    /* Both roots are identity-linked, so these literals are already physical. */
-    ldr     x0, =kickos_arm64_ident_table
-    msr     TTBR0_EL1, x0
-    ldr     x0, =kickos_arm64_kernel_table
-    msr     TTBR1_EL1, x0
-
-    /* The tables have to be visible to the walker before the walker exists. */
-    dsb     sy
-    isb
-    tlbi    vmalle1
-    dsb     sy
-    isb
-
-    /* Before the MMU and before the C runtime, so the whole boot path is covered rather
-       than the part after arch_init where the RISC-V chip installs mtvec: an exception with
-       no vector base runs whatever bytes VBAR points at. The reporter it reaches touches
-       only the console and .rodata, both live here. Reseated at its high address past the
-       branch below, where the physical alias stops being the one the kernel runs at. */
-    ldr     x0, =kickos_armv8a_vectors
-    sub     x0, x0, x9
-    msr     VBAR_EL1, x0
-    isb
-
-    mrs     x0, SCTLR_EL1
-    orr     x0, x0, #SCTLR_M
-    orr     x0, x0, #SCTLR_C
-    orr     x0, x0, #SCTLR_I
-    msr     SCTLR_EL1, x0
-    isb                             /* the next instruction is fetched translated */
-
-    /* TTBR0's identity map is what keeps this section fetching across the write above.
-       Through a register: the displacement to the high half exceeds every branch's. */
-    ldr     x0, =kickos_arm64_boot_high
-    br      x0
-
-    /* The level stays in x0 as the argument. A direct branch, the callee being linked into
-       this same section: no literal to unbias, and nothing it reads sits in the high half. */
-.Lbad_el:
-    b       kickos_arm64_bad_el     /* noreturn (chip_virt_arm64.cc) */
-
-/* Reached through TTBR1. SP and VBAR_EL1 still hold the physical aliases .text.init needed
- * before the walk existed.
- */
-    .section .text.boot_high, "ax"
-    .global kickos_arm64_boot_high
-kickos_arm64_boot_high:
-    ldr     x0, =_estack
-    mov     sp, x0
-    ldr     x0, =kickos_armv8a_vectors
-    msr     VBAR_EL1, x0
-    isb
-
-    bl      Reset_Handler           /* C runtime + kmain (noreturn) */
-.Lhang:
-    wfi
-    b       .Lhang
+    KICKOS_ARM64_BOOT_EL1
 
 /* THE TABLES ARE IDENTITY-LINKED (virt_arm64.ld places .rodata.mmu_ident in .text.init):
  * a descriptor names its output by physical address, so every expression here has to be one.

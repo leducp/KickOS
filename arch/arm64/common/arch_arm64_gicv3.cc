@@ -12,10 +12,11 @@
 // end-of-interrupt registers are Group 1's for the same reason.
 
 #include <kickos/arch/arch.h>
-#include <kickos/arch/doorbell_cells.h>
-#include <kickos/chip_limits.h> // KICKOS_MAX_IRQ: this GIC's interrupt-ID count
+#include <kickos/arch/doorbell_protocol.h>
+#include <kickos/chip_limits.h>
 
 #include "gic.h"
+#include "gicd.h"
 #include "gicv3.h"
 #include "smp_bringup.h"
 
@@ -34,6 +35,8 @@ extern "C"
 
 namespace
 {
+    using namespace kickos::arm64;
+
     // Every device register is reached through the kernel's own half. The device gigabyte is
     // mapped at PA + __kickos_arm64_va_base by TTBR1, which every address space shares; TTBR0
     // carries a per-process root that maps no device at all, so a low literal here would
@@ -73,14 +76,9 @@ namespace
         return reinterpret_cast<volatile uint64_t*>(dev_va(base + off));
     }
 
-    // Displacements, IHI 0069H.b tables 12-25 (distributor), 12-27 and 12-29 (redistributor).
-    constexpr uintptr_t GICD_CTLR = 0x0000;
+    // Displacements beyond the shared distributor ones (gicd.h), IHI 0069H.b tables 12-25
+    // (distributor), 12-27 and 12-29 (redistributor).
     constexpr uintptr_t GICD_IGROUPR = 0x0080;
-    constexpr uintptr_t GICD_ISENABLER = 0x0100;
-    constexpr uintptr_t GICD_ICENABLER = 0x0180;
-    constexpr uintptr_t GICD_ISPENDR = 0x0200;
-    constexpr uintptr_t GICD_ICPENDR = 0x0280;
-    constexpr uintptr_t GICD_IPRIORITYR = 0x0400;
     constexpr uintptr_t GICD_IROUTER = 0x6000;
 
     // RD_base holds the redistributor's own controls; SGI_base, the second 64 KB frame, holds
@@ -116,13 +114,6 @@ namespace
     constexpr uint32_t GICR_WAKER_CHILDREN_ASLEEP = 1u << 2;
 
     constexpr uint64_t GICR_TYPER_LAST = 1ull << 4;
-
-    // The kind, as a value range rather than a separate field. Below 32 an INTID is the calling
-    // core's own, and with affinity routing on it is reached in that core's redistributor
-    // rather than in the distributor, whose first word is RES0 there. At or above 32 an
-    // interrupt is global and reaches no core until GICD_IROUTER
-    // names one. Every arch_irq_* body branches on this boundary and nothing else does.
-    constexpr int GIC_BANKED_INTIDS = 32;
 
     // ICC_IAR1_EL1 carries a 24-bit INTID, and 1020 to 1023 are the special values that name
     // no interrupt. None of them is acknowledged, so none owes an end of interrupt.
@@ -359,8 +350,6 @@ namespace
 
     // The doorbell's INTID. ICC_SGI1R_EL1 carries a 4-bit INTID.
     constexpr int GIC_SGI_DOORBELL = 0;
-    static_assert(GIC_SGI_DOORBELL >= 0 and GIC_SGI_DOORBELL <= 15,
-                  "ICC_SGI1R_EL1 carries a 4-bit INTID");
 
     // One write per affinity-and-range window: TargetList is 16 bits of affinity 0 within the
     // cluster Aff3.Aff2.Aff1, and RS picks which group of 16. IRM stays clear, the caller
@@ -708,7 +697,7 @@ void arch_irq_route(int line, uint32_t core)
     uint32_t const row = route_row(core);
     if (row >= KICKOS_DOORBELL_CORES or g_affinity_seated[row].load() == 0)
     {
-        return; // no affinity to write; the line stays unrouted and unmask decides as before
+        return; // no affinity to write; the line stays unrouted
     }
     *gicd64(GICD_IROUTER + static_cast<uintptr_t>(line) * 8) =
         router_value(g_affinity[row].load());
@@ -774,7 +763,7 @@ void kickos_armv8a_gic_dispatch(void)
     else if (intid == static_cast<uint32_t>(GIC_SGI_DOORBELL))
     {
         // SGIs are edge-triggered, and the acknowledge above cleared the pending state.
-        kickos_arm64_doorbell_service();
+        kickos_doorbell_service();
     }
 #endif
     else
@@ -789,10 +778,9 @@ void kickos_armv8a_gic_dispatch(void)
     // which the service body may not, the service answering an initiator that may hold it.
     // The cell is the authority, not the raise: the doorbell also carries rendezvous whose
     // targets owe no scheduler entry, and the take is what tells the two apart.
-    if (intid == static_cast<uint32_t>(GIC_SGI_DOORBELL)
-        and kickos_kernel_core_resched_take() != 0)
+    if (intid == static_cast<uint32_t>(GIC_SGI_DOORBELL))
     {
-        kickos_kernel_core_resched();
+        kickos_kernel_core_resched_if_owed();
     }
 #endif
 }

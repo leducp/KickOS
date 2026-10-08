@@ -9,7 +9,7 @@
 #   chip.cmake, board_pins.h and board_buses.h under
 #   ${PROJECT_BINARY_DIR}/generated/chip, each only when its bytes change. The board file, the chip
 #   file beside it and the tool are configure dependencies. A refusal fails the configure with the
-#   tool's `<file>:<line>: <rule>: <message>` lines. Requires uv on PATH, as kickos_compose() does.
+#   tool's `<file>:<line>: <rule>: <message>` lines.
 function(kickos_chip_generate source_dir board chip arch)
   kickos_board_undescribed(_lacks "${source_dir}" "${board}" "${chip}")
   if(NOT _lacks STREQUAL "")
@@ -18,9 +18,8 @@ function(kickos_chip_generate source_dir board chip arch)
   set(description "${source_dir}/platform/${chip}/${board}.yaml")
   set(_tool "${PROJECT_SOURCE_DIR}/tools/compose")
   get_filename_component(_platform "${description}" DIRECTORY)
-  file(GLOB _tool_sources CONFIGURE_DEPENDS "${_tool}/kickos_compose/*.py")
-  set(_inputs "${description}" "${_platform}/chip.yaml" ${_tool_sources} "${_tool}/pyproject.toml"
-              "${_tool}/uv.lock")
+  kickos_compose_inputs(_tool_inputs "${_tool}")
+  set(_inputs "${description}" "${_platform}/chip.yaml" ${_tool_inputs})
   list(REMOVE_DUPLICATES _inputs)
   set_property(DIRECTORY "${PROJECT_SOURCE_DIR}" APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${_inputs})
   set(_hashes "${arch}\n")
@@ -53,20 +52,11 @@ function(kickos_chip_generate source_dir board chip arch)
     return()
   endif()
 
-  find_program(KICKOS_UV uv)
-  if(NOT KICKOS_UV)
-    message(FATAL_ERROR "KickOS: uv not found on PATH; the chip headers are written by tools/compose, which "
-      "runs under uv (https://docs.astral.sh/uv/)")
-  endif()
+  kickos_compose_python(_python "${_tool}" "${CMAKE_BINARY_DIR}/kickos_compose/venv" "${_state}/tmp")
   file(REMOVE "${_state}/inputs.sha256")
   file(MAKE_DIRECTORY "${_state}/tmp")
   execute_process(
-    COMMAND "${CMAKE_COMMAND}" -E env
-            "UV_PROJECT_ENVIRONMENT=${CMAKE_BINARY_DIR}/kickos_compose/venv"
-            UV_PYTHON_DOWNLOADS=never "PYTHONPATH=${_tool}" PYTHONDONTWRITEBYTECODE=1
-            "TMPDIR=${_state}/tmp"
-            "${KICKOS_UV}" run --project "${_tool}" --locked --quiet
-            python -m kickos_compose chip "${description}" --arch "${arch}"
+    COMMAND ${_python} -m kickos_compose chip "${description}" --arch "${arch}"
             --include-dir "${_include}" --chip-dir "${_chip}"
     RESULT_VARIABLE _rc OUTPUT_VARIABLE _out ERROR_VARIABLE _err
     TIMEOUT 600)

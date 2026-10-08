@@ -89,7 +89,7 @@ namespace kickos
                 Thread* const t = seat_pool(slot, PRIO_MID);
                 join_task(t, group);
                 attach_caps(t, CAP_WIDTH);
-                kernel().current[kickos_kernel_core()] = t;
+                kernel().current(kickos_kernel_core()) = t;
                 return t;
             }
 
@@ -102,56 +102,44 @@ namespace kickos
                 return t;
             }
 
-            int live_sems()
+            template <class T, int N>
+            bool slot_live(SlotPool<T, N> const& pool, int index)
+            {
+                return pool.live_index(pool.handle_for(index)) >= 0;
+            }
+
+            template <class T, int N>
+            int live_slots(SlotPool<T, N> const& pool)
             {
                 int n = 0;
-                for (int i = 0; i < KICKOS_MAX_SEMAPHORES; i++)
+                for (int i = 0; i < N; i++)
                 {
-                    if (kernel().sems.live(i))
+                    if (slot_live(pool, i))
                     {
                         n++;
                     }
                 }
                 return n;
+            }
+
+            int live_sems()
+            {
+                return live_slots(kernel().sems);
             }
 
             int live_notifies()
             {
-                int n = 0;
-                for (int i = 0; i < KICKOS_MAX_NOTIFY; i++)
-                {
-                    if (kernel().notifies.live(i))
-                    {
-                        n++;
-                    }
-                }
-                return n;
+                return live_slots(kernel().notifies);
             }
 
             int live_irq_bindings()
             {
-                int n = 0;
-                for (int i = 0; i < KICKOS_MAX_IRQ_HANDLES; i++)
-                {
-                    if (kernel().irq_bindings.live(i))
-                    {
-                        n++;
-                    }
-                }
-                return n;
+                return live_slots(kernel().irq_bindings);
             }
 
             int live_mutexes()
             {
-                int n = 0;
-                for (int i = 0; i < KICKOS_MAX_MUTEXES; i++)
-                {
-                    if (kernel().mutexes.live(i))
-                    {
-                        n++;
-                    }
-                }
-                return n;
+                return live_slots(kernel().mutexes);
             }
 
             void fill_to_the_ceiling(Thread* c, uint32_t* out)
@@ -159,7 +147,7 @@ namespace kickos
                 for (int i = 0; i < KICKOS_TASK_SEMAPHORE_BUDGET; i++)
                 {
                     uint32_t cap = KCAP_INVALID;
-                    kernel().current[kickos_kernel_core()] = c;
+                    kernel().current(kickos_kernel_core()) = c;
                     EXPECT_EQ(sem_create(0, &cap), 0)
                         << "fixture: create " << i << " is inside the ceiling";
                     if (out != nullptr)
@@ -204,7 +192,7 @@ namespace kickos
                 ASSERT_EQ(live_sems(), KICKOS_TASK_SEMAPHORE_BUDGET);
 
                 uint32_t cap = KCAP_INVALID;
-                kernel().current[kickos_kernel_core()] = c;
+                kernel().current(kickos_kernel_core()) = c;
                 EXPECT_EQ(sem_create(0, &cap), -KOS_EAGAIN)
                     << "past its ceiling a task is refused, and with the budget's own code";
                 EXPECT_EQ(cap, KCAP_INVALID) << "a refused create discloses no capability";
@@ -293,7 +281,7 @@ namespace kickos
                 uint32_t bound = KCAP_INVALID;
                 ASSERT_EQ(notify_create(c, &bound), 0);
                 ASSERT_EQ(notify_bind(c, bound), 0);
-                ASSERT_EQ(handle_close(c, bound), 0);
+                ASSERT_EQ(handle_close(c, bound, kickos::IrqLock()), 0);
                 ASSERT_EQ(live_notifies(), 1)
                     << "fixture: the bind's own reference keeps the slot allocated";
 
@@ -322,7 +310,7 @@ namespace kickos
                 uint32_t bound = KCAP_INVALID;
                 ASSERT_EQ(notify_create(c, &bound), 0);
                 ASSERT_EQ(notify_bind(c, bound), 0);
-                ASSERT_EQ(handle_close(c, bound), 0);
+                ASSERT_EQ(handle_close(c, bound, kickos::IrqLock()), 0);
 
                 notify_unbind_self(c);
                 EXPECT_EQ(live_notifies(), 0)
@@ -345,7 +333,7 @@ namespace kickos
                 uint32_t signalled = KCAP_INVALID;
                 ASSERT_EQ(notify_create(c, &signalled), 0);
                 ASSERT_EQ(irq_bind_notify(c, line, signalled), 0);
-                ASSERT_EQ(handle_close(c, signalled), 0);
+                ASSERT_EQ(handle_close(c, signalled, kickos::IrqLock()), 0);
                 ASSERT_EQ(live_notifies(), 1)
                     << "fixture: the binding's own reference keeps the slot allocated";
 
@@ -498,7 +486,7 @@ namespace kickos
                 }
 
                 uint32_t signalled = KCAP_INVALID;
-                kernel().current[kickos_kernel_core()] = donor;
+                kernel().current(kickos_kernel_core()) = donor;
                 ASSERT_EQ(notify_create(donor, &signalled), 0);
                 EXPECT_EQ(irq_bind_notify(donor, line, signalled), -KOS_EAGAIN)
                     << "the attach would seat this object on a peer that has no room for it";
@@ -527,7 +515,7 @@ namespace kickos
                 }
 
                 uint32_t signalled = KCAP_INVALID;
-                kernel().current[kickos_kernel_core()] = donor;
+                kernel().current(kickos_kernel_core()) = donor;
                 ASSERT_EQ(notify_create(donor, &signalled), 0);
                 EXPECT_EQ(irq_bind_notify(donor, line, signalled), 0)
                     << "one slot of room in the peer is what this attach needs";
@@ -562,7 +550,7 @@ namespace kickos
                 ASSERT_EQ(mutex_create(&cap), 0);
                 ASSERT_EQ(live_mutexes(), 1);
 
-                kernel().current[kickos_kernel_core()] = c;
+                kernel().current(kickos_kernel_core()) = c;
                 EXPECT_EQ(mutex_create(&cap), -KOS_EAGAIN)
                     << "the mutex budget refuses at one while the semaphore budget is two";
                 EXPECT_EQ(live_mutexes(), 1);
@@ -575,7 +563,7 @@ namespace kickos
                 Thread* const first = creator_in_task(SLOT_FIRST, 0);
                 fill_to_the_ceiling(first, nullptr);
                 uint32_t refused = KCAP_INVALID;
-                kernel().current[kickos_kernel_core()] = first;
+                kernel().current(kickos_kernel_core()) = first;
                 ASSERT_EQ(sem_create(0, &refused), -KOS_EAGAIN);
 
                 Thread* const second = creator_in_task(SLOT_SECOND, 1);
@@ -585,9 +573,9 @@ namespace kickos
                 EXPECT_EQ(sem_create(0, &cap), 0)
                     << "one task at its ceiling must not deny another task's creator";
                 EXPECT_NE(cap, KCAP_INVALID);
-                kernel().current[kickos_kernel_core()] = second;
+                kernel().current(kickos_kernel_core()) = second;
                 EXPECT_EQ(sem_create(0, &cap), 0) << "the ceiling is per task, not shared";
-                kernel().current[kickos_kernel_core()] = second;
+                kernel().current(kickos_kernel_core()) = second;
                 EXPECT_EQ(sem_create(0, &cap), -KOS_EAGAIN)
                     << "and the second task is bounded by the same ceiling";
             }
@@ -598,11 +586,11 @@ namespace kickos
                 for (int i = 0; i < KICKOS_MAX_SEMAPHORES * 2; i++)
                 {
                     uint32_t cap = KCAP_INVALID;
-                    kernel().current[kickos_kernel_core()] = c;
+                    kernel().current(kickos_kernel_core()) = c;
                     ASSERT_EQ(sem_create(0, &cap), 0)
                         << "iteration " << i << " was refused, so a release did not give the "
                                                 "budget back";
-                    ASSERT_EQ(handle_close(c, cap), 0);
+                    ASSERT_EQ(handle_close(c, cap, kickos::IrqLock()), 0);
                 }
                 EXPECT_EQ(live_sems(), 0) << "the loop leaves the pool as it found it";
             }
@@ -617,7 +605,7 @@ namespace kickos
                     ASSERT_EQ(irq_claim(c, LINE_A, 0, &cap), 0)
                         << "claim " << i << " was refused, so a release did not give the "
                                             "budget back";
-                    ASSERT_EQ(handle_close(c, cap), 0);
+                    ASSERT_EQ(handle_close(c, cap, kickos::IrqLock()), 0);
                 }
             }
 
@@ -630,9 +618,9 @@ namespace kickos
                 Thread* const holder = creator_in_task(SLOT_SECOND, 1);
 
                 uint32_t cap = KCAP_INVALID;
-                kernel().current[kickos_kernel_core()] = holder;
+                kernel().current(kickos_kernel_core()) = holder;
                 ASSERT_EQ(sem_create(0, &cap), 0) << "fixture: the second task starts empty";
-                ASSERT_EQ(handle_close(holder, cap), 0);
+                ASSERT_EQ(handle_close(holder, cap, kickos::IrqLock()), 0);
 
                 for (int i = 0; i < KICKOS_TASK_SEMAPHORE_BUDGET; i++)
                 {
@@ -640,7 +628,7 @@ namespace kickos
                         << "fixture: delegation " << i;
                 }
 
-                kernel().current[kickos_kernel_core()] = holder;
+                kernel().current(kickos_kernel_core()) = holder;
                 EXPECT_EQ(sem_create(0, &cap), -KOS_EAGAIN)
                     << "a task holding a ceiling of DELEGATED objects is at its ceiling";
                 EXPECT_GT(KICKOS_MAX_SEMAPHORES - live_sems(), 0)
@@ -663,15 +651,15 @@ namespace kickos
                         << "fixture: delegation " << i;
                 }
 
-                kernel().current[kickos_kernel_core()] = doomed;
+                kernel().current(kickos_kernel_core()) = doomed;
                 run_exit(0);
                 ASSERT_EQ(task_member_count(doomed_task), 0) << "fixture: the group emptied";
                 ASSERT_EQ(live_sems(), KICKOS_TASK_SEMAPHORE_BUDGET)
                     << "fixture: the objects outlived their creator";
-                task_drop_hold(doomed_task);
+                task_drop_hold(doomed_task, kickos::IrqLock());
 
                 uint32_t cap = KCAP_INVALID;
-                kernel().current[kickos_kernel_core()] = holder;
+                kernel().current(kickos_kernel_core()) = holder;
                 EXPECT_EQ(sem_create(0, &cap), -KOS_EAGAIN)
                     << "the survivor still holds a ceiling of objects, whoever made them";
                 EXPECT_EQ(live_sems(), KICKOS_TASK_SEMAPHORE_BUDGET)
@@ -681,7 +669,7 @@ namespace kickos
                 ASSERT_EQ(fresh->task, doomed_task) << "fixture: the slot came back";
                 for (int i = 0; i < KICKOS_TASK_SEMAPHORE_BUDGET; i++)
                 {
-                    kernel().current[kickos_kernel_core()] = fresh;
+                    kernel().current(kickos_kernel_core()) = fresh;
                     EXPECT_EQ(sem_create(0, &cap), 0)
                         << "create " << i << " was refused, so the recycled slot inherited a "
                                              "dead task's charge";
@@ -694,7 +682,7 @@ namespace kickos
                 Thread* const holder = creator_in_task(SLOT_SECOND, 1);
 
                 uint32_t cap = KCAP_INVALID;
-                kernel().current[kickos_kernel_core()] = maker;
+                kernel().current(kickos_kernel_core()) = maker;
                 ASSERT_EQ(sem_create(0, &cap), 0);
                 for (int i = 0; i < KICKOS_TASK_SEMAPHORE_BUDGET; i++)
                 {
@@ -704,10 +692,10 @@ namespace kickos
                 ASSERT_EQ(live_sems(), 1) << "fixture: the copies are names, not objects";
 
                 uint32_t own = KCAP_INVALID;
-                kernel().current[kickos_kernel_core()] = holder;
+                kernel().current(kickos_kernel_core()) = holder;
                 EXPECT_EQ(sem_create(0, &own), 0)
                     << "two names for one object leave the holder one slot of headroom";
-                kernel().current[kickos_kernel_core()] = holder;
+                kernel().current(kickos_kernel_core()) = holder;
                 EXPECT_EQ(sem_create(0, &own), -KOS_EAGAIN)
                     << "and the second distinct slot is the ceiling";
             }
@@ -727,13 +715,13 @@ namespace kickos
                 }
 
                 uint32_t cap = KCAP_INVALID;
-                kernel().current[kickos_kernel_core()] = holder;
+                kernel().current(kickos_kernel_core()) = holder;
                 ASSERT_EQ(sem_create(0, &cap), -KOS_EAGAIN) << "fixture: at the ceiling";
 
-                ASSERT_EQ(handle_close(holder, theirs[0]), 0);
+                ASSERT_EQ(handle_close(holder, theirs[0], kickos::IrqLock()), 0);
                 ASSERT_EQ(live_sems(), KICKOS_TASK_SEMAPHORE_BUDGET)
                     << "fixture: the maker's own capability keeps the object alive";
-                kernel().current[kickos_kernel_core()] = holder;
+                kernel().current(kickos_kernel_core()) = holder;
                 EXPECT_EQ(sem_create(0, &cap), 0)
                     << "the closed capability's slot came back to the holder's ceiling";
             }
@@ -746,7 +734,7 @@ namespace kickos
 
                 fill_to_the_ceiling(first, nullptr);
                 uint32_t cap = KCAP_INVALID;
-                kernel().current[kickos_kernel_core()] = sibling;
+                kernel().current(kickos_kernel_core()) = sibling;
                 EXPECT_EQ(sem_create(0, &cap), -KOS_EAGAIN)
                     << "a thread of a task at its ceiling is at that ceiling too";
                 EXPECT_GT(KICKOS_MAX_SEMAPHORES - live_sems(), 0)
@@ -876,10 +864,10 @@ namespace kickos
                                               &client_caps[i]), 0);
                     }
                     // Dropping the last WAIT capability leaves the endpoint refusing callers.
-                    kernel().current[kickos_kernel_core()] = server;
-                    ASSERT_EQ(handle_close(server, served), 0);
+                    kernel().current(kickos_kernel_core()) = server;
+                    ASSERT_EQ(handle_close(server, served, kickos::IrqLock()), 0);
                     ASSERT_EQ(ep->recv_holders, 0) << "fixture: the endpoint must be DEAD";
-                    ASSERT_TRUE(kernel().endpoints.live(idx))
+                    ASSERT_TRUE(slot_live(kernel().endpoints, idx))
                         << "fixture: the client's cap must still pin the slot";
                 }
 
@@ -909,15 +897,15 @@ namespace kickos
                     ASSERT_EQ(cap_install(client, obj, CapType::CAP_ENDPOINT, CAP_SIGNAL,
                                           &held), 0);
                 }
-                kernel().current[kickos_kernel_core()] = server;
-                ASSERT_EQ(handle_close(server, served), 0);
-                EXPECT_TRUE(kernel().endpoints.live(idx))
+                kernel().current(kickos_kernel_core()) = server;
+                ASSERT_EQ(handle_close(server, served, kickos::IrqLock()), 0);
+                EXPECT_TRUE(slot_live(kernel().endpoints, idx))
                     << "the driver's own close does NOT free the slot: the client pins it";
                 EXPECT_EQ(kernel().endpoint_refs[idx], 1);
 
-                kernel().current[kickos_kernel_core()] = client;
-                ASSERT_EQ(handle_close(client, held), 0);
-                EXPECT_FALSE(kernel().endpoints.live(idx))
+                kernel().current(kickos_kernel_core()) = client;
+                ASSERT_EQ(handle_close(client, held, kickos::IrqLock()), 0);
+                EXPECT_FALSE(slot_live(kernel().endpoints, idx))
                     << "the CLIENT's close is what returns the slot to the pool";
                 EXPECT_EQ(kernel().endpoint_refs[idx], 0);
             }
@@ -1008,10 +996,10 @@ namespace kickos
                     ASSERT_EQ(cap_install(client, obj, CapType::CAP_ENDPOINT, CAP_SIGNAL,
                                           &held), 0);
                 }
-                kernel().current[kickos_kernel_core()] = client;
-                ASSERT_EQ(handle_close(client, held), 0);
+                kernel().current(kickos_kernel_core()) = client;
+                ASSERT_EQ(handle_close(client, held, kickos::IrqLock()), 0);
 
-                EXPECT_TRUE(kernel().endpoints.live(idx))
+                EXPECT_TRUE(slot_live(kernel().endpoints, idx))
                     << "the endpoint is still alive and still served";
                 EXPECT_EQ(ep->recv_holders, 1) << "the server never left";
                 IrqLock lock;
@@ -1034,7 +1022,7 @@ namespace kickos
                     while (g_admitted < KICKOS_MAX_SEMAPHORES)
                     {
                         uint32_t cap = KCAP_INVALID;
-                        kernel().current[kickos_kernel_core()] = g_sibling;
+                        kernel().current(kickos_kernel_core()) = g_sibling;
                         g_last_rc = sem_create(0, &cap);
                         if (g_last_rc != 0)
                         {
@@ -1046,7 +1034,7 @@ namespace kickos
                     if (g_stranger != nullptr)
                     {
                         uint32_t cap = KCAP_INVALID;
-                        kernel().current[kickos_kernel_core()] = g_stranger;
+                        kernel().current(kickos_kernel_core()) = g_stranger;
                         g_stranger_rc = sem_create(0, &cap);
                     }
                 }
@@ -1069,7 +1057,7 @@ namespace kickos
                 // Ordinal 1 is the gap before the first teardown chunk; all capabilities remain.
                 run_in_chunk_gap(dyingwindow::sibling_creates, 1);
 
-                kernel().current[kickos_kernel_core()] = doomed;
+                kernel().current(kickos_kernel_core()) = doomed;
                 run_exit(0);
 
                 EXPECT_EQ(dyingwindow::g_admitted, 0)

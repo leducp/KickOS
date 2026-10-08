@@ -18,14 +18,6 @@ extern "C" uint32_t arch_mpu_encode(arch_mpu_region const*, size_t n, arch_mpu_e
     return out->seated;
 }
 
-namespace kickos
-{
-    namespace detail
-    {
-        constinit InstanceLocal<Kernel> g_instance;
-    }
-}
-
 namespace
 {
     using kickos::Task;
@@ -44,7 +36,8 @@ namespace
     {
         kickos::Kernel& k = kickos::kernel();
         Thread& th = k.threads.slots[slot];
-        th.state = state;
+        // Any state, BLOCKED included, on a thread no park ran for.
+        *reinterpret_cast<ThreadState*>(&th.state) = state;
         th.task = t;
         th.mpu.clear();
         EXPECT_TRUE(th.mpu.add(base, SIZE, ARCH_MPU_R | ARCH_MPU_W | ARCH_MPU_DEV));
@@ -63,7 +56,7 @@ namespace
             kickos::Kernel& k = kickos::kernel();
             for (Thread& th : k.threads.slots)
             {
-                th.state = ThreadState::INACTIVE;
+                th.state.to<ThreadState::INACTIVE>();
                 th.mpu.clear();
             }
             k.threads.next = 0;

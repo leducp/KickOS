@@ -21,6 +21,8 @@
 #include <stddef.h> // NULL, spelled instead of nullptr so the bodies below compile as C
 #include <iso646.h> // and / or / not are macros in C, not keywords
 
+#include <kickos/sys/static_assert.h>
+
 #ifdef __cplusplus
 extern "C"
 {
@@ -306,15 +308,9 @@ static inline uint32_t kos_usb_cdc_descriptor(uint16_t wValue, uint8_t const** o
     return 0u;
 }
 
-#ifdef __cplusplus
-static_assert(sizeof(struct kos_usb_setup) == 8, "the SETUP packet is 8 wire bytes");
-static_assert(sizeof(kos_usb_cdc_config_desc) == KOS_USB_CDC_CONFIG_DESC_LEN,
-              "wTotalLength in the configuration descriptor must equal the table size");
-#else
-_Static_assert(sizeof(struct kos_usb_setup) == 8, "the SETUP packet is 8 wire bytes");
-_Static_assert(sizeof(kos_usb_cdc_config_desc) == KOS_USB_CDC_CONFIG_DESC_LEN,
-               "wTotalLength in the configuration descriptor must equal the table size");
-#endif
+KOS_STATIC_ASSERT(sizeof(struct kos_usb_setup) == 8, "the SETUP packet is 8 wire bytes");
+KOS_STATIC_ASSERT(sizeof(kos_usb_cdc_config_desc) == KOS_USB_CDC_CONFIG_DESC_LEN,
+                  "wTotalLength in the configuration descriptor must equal the table size");
 
 #ifdef __cplusplus
 }

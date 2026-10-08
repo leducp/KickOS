@@ -24,7 +24,7 @@ namespace
     {
         consoleseam::g_window_free = true;
         kickos::IrqLock lock;
-        console_on_driver_death();
+        console_on_driver_death(lock);
         return 0;
     }
 }
@@ -45,7 +45,7 @@ TEST(ConsoleHeldRtt, ADarkWindowWriterReachesRttOnce)
         {
             kickos::IrqLock lock;
             console_note_driver_death();
-            console_on_driver_death();
+            console_on_driver_death(lock);
         }
         ASSERT_NE(console_dark(), 0);
         consoleseam::g_current = reinterpret_cast<kickos::Thread*>(0x100u);

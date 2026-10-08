@@ -19,9 +19,9 @@ using namespace kickos::testfix;
 
 namespace
 {
-    constexpr uint32_t CORE_A = 0;
-    constexpr uint32_t CORE_B = 1;
-    constexpr uint32_t CORE_IDLE = 2;
+    constexpr KernelCore CORE_A = testfix::core_at(0);
+    constexpr KernelCore CORE_B = testfix::core_at(1);
+    constexpr KernelCore CORE_IDLE = testfix::core_at(2);
     static_assert(KICKOS_KERNEL_CORES == 3, "the arm names three distinct cores");
 
     constexpr uint8_t PRIO_RUNNER = 6;
@@ -34,7 +34,7 @@ namespace
         t->base_prio = KICKOS_PRIO_IDLE;
         t->prio = KICKOS_PRIO_IDLE;
         t->id = static_cast<uint16_t>(slot + 1);
-        sched::add_idle(t, core);
+        sched::add_idle(t, testfix::core_at(core));
         return t;
     }
 
@@ -44,7 +44,7 @@ namespace
         for (uint32_t core = 0; core < KICKOS_KERNEL_CORES; core++)
         {
             g_core = core;
-            (void)kickos_kernel_core_resched_take();
+            (void)klock_resched_take();
         }
         g_core = was;
     }
@@ -55,7 +55,7 @@ namespace
         g_core = core;
         {
             IrqLock lock;
-            sched::wake(t);
+            sched::wake(t, lock);
         }
         g_core = was;
     }
@@ -75,12 +75,12 @@ TEST_F(SchedRing3, two_placements_from_two_cores_toward_one_idle_core_do_not_pil
     Thread* const idle_c = add_idle_on(1, CORE_IDLE);
     {
         IrqLock lock;
-        sched::reschedule();
+        sched::reschedule(nullptr, lock);
     }
     seat_running_on(idle_b, CORE_B);
     seat_running_on(runner_b, CORE_B);
     seat_running_on(idle_c, CORE_IDLE);
-    ASSERT_EQ(kernel().current[CORE_A], runner_a) << "fixture: core A runs its runner";
+    ASSERT_EQ(kernel().current(CORE_A), runner_a) << "fixture: core A runs its runner";
     Thread* const first = seat_pool(3, PRIO_FIRST);
     park_join(first, runner_a);
     Thread* const second = seat_pool(4, PRIO_SECOND);
@@ -101,7 +101,7 @@ TEST_F(SchedRing3, two_placements_from_two_cores_toward_one_idle_core_do_not_pil
 
 namespace
 {
-    constexpr uint32_t CORE_C = 2;
+    constexpr KernelCore CORE_C = testfix::core_at(2);
     constexpr uint8_t PRIO_UNDER = 5;
     constexpr uint8_t PRIO_HOG = 7;
     constexpr uint8_t PRIO_BOOST = 8;
@@ -112,7 +112,7 @@ namespace
         g_core = core;
         {
             IrqLock lock;
-            sched::set_prio(t, p);
+            sched::set_prio(t, p, lock);
         }
         g_core = was;
     }
@@ -131,7 +131,7 @@ namespace
         g_core = core;
         {
             IrqLock lock;
-            thread_cancel_kind(t, CANCEL_SLAY);
+            thread_cancel_kind(t, CANCEL_SLAY, lock);
         }
         g_core = was;
     }
@@ -163,7 +163,7 @@ namespace
         Thread* const idle_c = add_idle_on(1, CORE_C);
         {
             IrqLock lock;
-            sched::reschedule();
+            sched::reschedule(nullptr, lock);
         }
         seat_running_on(idle_b, CORE_B);
         seat_running_on(idle_c, CORE_C);
@@ -213,7 +213,7 @@ TEST_F(SchedRing3, a_boost_requested_after_a_move_follows_the_thread_to_a_third_
 
     EXPECT_EQ(t->rq_prio, PRIO_BOOST) << "the boost never reached the list the thread sits on";
     EXPECT_EQ(t->reseat_owed, 0u) << "the forwarded request left its slot owed";
-    EXPECT_EQ(kernel().current[CORE_C], t) << "the boosted thread does not run over C's hog";
+    EXPECT_EQ(kernel().current(CORE_C), t) << "the boosted thread does not run over C's hog";
 }
 
 TEST_F(SchedRing3, a_narrowing_requested_after_a_move_follows_the_thread_to_a_third_core)
@@ -238,7 +238,7 @@ TEST_F(SchedRing3, a_slay_requested_after_a_move_follows_the_thread_to_a_third_c
 {
     Thread* const t = handed_to_c_behind_a_request(PRIO_BOOST);
     dispatch_as(CORE_C);
-    ASSERT_EQ(kernel().current[CORE_C], t) << "fixture: the moved thread runs on C";
+    ASSERT_EQ(kernel().current(CORE_C), t) << "fixture: the moved thread runs on C";
     ASSERT_EQ(t->reseat_owed, 1u) << "fixture: request #1 is still unretired toward B";
     g_redirect_target = nullptr;
 
@@ -246,7 +246,7 @@ TEST_F(SchedRing3, a_slay_requested_after_a_move_follows_the_thread_to_a_third_c
     dispatch_as(CORE_B);
     dispatch_as(CORE_C);
 
-    EXPECT_NE(kernel().current[CORE_C], t)
+    EXPECT_NE(kernel().current(CORE_C), t)
         << "the slain thread keeps its core: B dropped the request for a thread running on C";
 
     dispatch_as(CORE_C);
@@ -269,5 +269,5 @@ TEST_F(SchedRing3, a_request_for_a_thread_still_handed_to_a_third_core_is_read_a
     dispatch_as(CORE_C);
 
     EXPECT_EQ(t->rq_prio, PRIO_BOOST) << "the link did not read the field the request wrote";
-    EXPECT_EQ(kernel().current[CORE_C], t) << "the boosted thread does not run over C's hog";
+    EXPECT_EQ(kernel().current(CORE_C), t) << "the boosted thread does not run over C's hog";
 }

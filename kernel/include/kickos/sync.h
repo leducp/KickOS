@@ -9,7 +9,8 @@
 
 #include <kickos/thread.h>
 
-#include <kickos/sys/errno.h> // KOS_E* codes
+#include <kickos/sys/errno.h>
+#include <kickos/held.h>
 
 namespace kickos
 {
@@ -45,28 +46,71 @@ namespace kickos
     // The same choice without unlinking. Under the same IrqLock a following wq_pop_highest
     // returns this exact thread.
     Thread* wq_peek_highest(List& q);
-    // Park current on q and switch away. Thread context only. Hold one continuous
-    // IrqLock across the block decision and this call to avoid lost wakes.
-    // kind and obj identify the queue for cancellation and timeout cleanup.
-    // wq_pop_highest clears them; re-parking must set them again.
-    // Pass any thread readied by wake_no_resched as woken so the park's reschedule
-    // places it if this core does not select it.
-    void wq_block(List& q, WaitKind kind, void* obj, Thread* woken = nullptr);
+    // What every park asks for, minted only by park_cancel_pending.
+    class ParkToken
+    {
+    public:
+        [[nodiscard]] bool cancelled() const
+        {
+            return c_->cancel_kind != CANCEL_NONE and not c_->dying;
+        }
 
-    // Park `current` on no list at all: the wait edge is then the only thing that can find it
-    // again, so `kind` must be a kind some waker sweeps for (thread.h). Detaches from the
-    // ready set without rescheduling, so the caller decides when to switch away and may link
-    // the thread somewhere else first. The waker writes wait_result and clears the edge before
-    // waking; a parked thread never writes its own result. Caller holds IrqLock.
-    void park_queueless(Thread* c, WaitKind kind, void* obj);
+    private:
+        explicit ParkToken(Thread const* c) : c_(c)
+        {
+        }
+
+        friend ParkToken park_cancel_pending(Thread const* c);
+
+        Thread const* c_;
+    };
+
+    // Ask under IrqLock before any side effect in a blocking operation, and heed cancelled():
+    // a cancel raised after syscall entry checked it but before the thread is BLOCKED leaves
+    // no waiter to wake. Do not move the ask into the park itself: a transaction may already be
+    // committed. The answer stays valid until the lock releases.
+    [[nodiscard]] inline ParkToken park_cancel_pending(Thread const* c)
+    {
+        return ParkToken(c);
+    }
+
+    using WqBlock = uint32_t(List& q, WaitKind kind, void* obj, Thread* woken, Held held);
+    using ParkQueueless = uint32_t(Thread* c, WaitKind kind, void* obj, Held held);
+
+    // wq_block(ask)(q, kind, obj, woken, held): park current on q and switch away. Thread context
+    // only. Hold one continuous IrqLock across the block decision and this call to avoid lost
+    // wakes. kind and obj identify the queue for cancellation and timeout cleanup.
+    // wq_pop_highest clears them; re-parking must set them again. Pass any thread readied by
+    // wake_no_resched as woken so the park's reschedule places it if this core does not select
+    // it. Returns the epoch for wq_confirm_resume.
+    inline WqBlock& wq_block(ParkToken const&)
+    {
+        // Declared only here and at its definition, so no park reaches it without a token.
+        WqBlock wq_block;
+        return wq_block;
+    }
+
+    // park_queueless(ask)(c, kind, obj, held): park `current` on no list at all. The wait edge
+    // is then the only thing that can find it again, so `kind` must be a kind some waker sweeps
+    // for (thread.h). Detaches from the ready set without rescheduling, so the caller decides
+    // when to switch away and may link the thread somewhere else first. The waker writes
+    // wait_result and clears the edge before waking; a parked thread never writes its own
+    // result. Returns the epoch for wq_confirm_resume, sampled before anything the caller does
+    // next can switch.
+    inline ParkQueueless& park_queueless(ParkToken const&)
+    {
+        // As wq_block's.
+        ParkQueueless park_queueless;
+        return park_queueless;
+    }
 
     // Park the calling writer while the kernel console is dark (console_dark), with no
     // deadline: the reclaim and a publish end the wait (console_dark_wake). 0 once the console
     // is no longer dark, or -KOS_ECANCELED where the caller is cancelled, before or during it.
     // Caller holds no lock.
     int console_dark_wait(void);
-    // Wake every writer console_dark_wait or console_room_wait parked. Caller holds IrqLock.
-    void console_dark_wake(void);
+    // Wake every writer console_dark_wait or console_room_wait parked.
+    void console_dark_wake(Held held);
 
     // The ring refused the calling writer's line: on a backend with no TX interrupt the writer
     // drains it itself until the line fits, and on one whose TX interrupt drains it the writer
@@ -81,21 +125,9 @@ namespace kickos
     // Caller holds no lock.
     int console_claim_wait(uint32_t timeout_us);
 
-    // Check cancellation under IrqLock before any side effect in a blocking
-    // operation. Cancellation can arrive after syscall entry checked it but
-    // before the thread becomes BLOCKED, leaving no waiter to wake.
-    // Do not move this check into the park itself: a transaction may already
-    // be committed. Exit from the prologue instead, except irq_wait, which
-    // returns ECANCELED. The result stays valid until the lock releases.
-    // Keep inline so test fixtures use the same check as the kernel.
-    [[nodiscard]] inline bool park_cancel_pending(Thread const* c)
-    {
-        return c->cancel_kind != CANCEL_NONE and not c->dying;
-    }
-
     // After blocking, release IrqLock and call wq_confirm_resume before reading
     // waker-written state such as wait_result:
-    //   { IrqLock lock; epoch = c->switch_count; wq_block(q, kind, obj); }
+    //   { IrqLock lock; epoch = wq_block(ask)(q, kind, obj, nullptr); }
     //   wq_confirm_resume(c, epoch);
     //   result = c->wait_result;
     // ARM may execute instructions after unmasking before PendSV runs. The barrier
@@ -108,7 +140,6 @@ namespace kickos
     // or true once parked with `epoch` sampled: the caller then leaves `held`'s scope, calls
     // wq_confirm_resume and reads wait_result (0 handed a token, -KOS_ECANCELED cancelled).
     bool sem_wait(IrqLock& held, Semaphore* s, uint32_t& epoch);
-    bool sem_trywait(Semaphore* s); // non-blocking; true if token taken
     // Hands the token to the highest-priority waiter, else banks it. Thread or ISR context.
     // Returns false only with no waiter and the count already at KOS_SEM_COUNT_MAX, where the
     // post is refused and the count left alone. The syscall reports -KOS_EOVERFLOW.
@@ -132,7 +163,7 @@ namespace kickos
     int mutex_unlock(Mutex* m);
     // For a dying owner (Thread::dying, mid-cap_teardown): force-unlock, delivering
     // MUTEX_OWNER_DIED to the woken waiter, leaving the dying thread's priority unrecomputed.
-    void mutex_force_unlock(Mutex* m, Thread* dying);
+    void mutex_force_unlock(Mutex* m, Thread* dying, Held held);
 
     // Link/unlink a CALL_REPLY_WAIT caller on the server's reply-donor list. Must be
     // called at every reply-cap mint site and at every site that consumes a CAP_REPLY
@@ -171,5 +202,13 @@ namespace kickos
     // Caller holds IrqLock.
     uint8_t thread_effective_prio(Thread* t);
 }
+
+// The console's driver-death reclaim (kickos/console_tx.h notes the death). Puts the UART back in
+// a known polled state so panic and ordinary kprintf still reach the wire, and wakes every
+// writer waiting out the dark window. Idempotent, and a no-op if the console was never
+// published, if no death is noted, while a publish is handing over (its set_user acts on the
+// note), or while ANY live thread still holds arch_console_reclaim_window(). Only a thread
+// DEATH can free that window, so a refusal is retried at the next death.
+void console_on_driver_death(kickos::Held held);
 
 #endif

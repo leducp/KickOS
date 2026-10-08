@@ -53,7 +53,7 @@ if(KICKOS_BENCH)
   list(APPEND KICKOS_KERNEL_SOURCES bench/bench.cc)
 endif()
 
-# The kernel's own copies of the runtime, under the private names kickos/kruntime.h declares.
+# The kernel's own copies of the runtime, under the private names cmake/kernel_runtime.syms lists.
 # ONLY where a translating backend splits the image in two: a region backend serves both
 # privilege levels from one text mapping, so there the header aliases the app's names and a
 # second copy does not fit on the two 64 KB parts.

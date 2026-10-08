@@ -31,7 +31,7 @@ namespace kickos
             TEST_F(WildStack, an_ordinary_pool_thread_is_contained)
             {
                 Thread* const t = seat_pool(SLOT_VICTIM, PRIO_LOW);
-                kernel().current[kickos_kernel_core()] = t;
+                kernel().current(kickos_kernel_core()) = t;
                 EXPECT_NE(kickos_thread_contain_wild_stack(&t->ctx, nullptr), nullptr)
                     << "a pool thread with a wild sp is exactly what containment is for";
                 EXPECT_EQ(t->cancel_kind, CANCEL_SLAY) << "and the slay must have claimed it";
@@ -41,7 +41,7 @@ namespace kickos
             // scanning the pool, and idle sits outside it.
             TEST_F(WildStack, idle_is_refused_because_no_pool_slot_owns_it)
             {
-                Thread* const victim = kernel().idle[kickos_kernel_core()];
+                Thread* const victim = kernel().idle(kickos_kernel_core());
                 ASSERT_NE(victim, nullptr) << "the fixture seats an idle thread";
                 EXPECT_LT(kernel().threads.index_of(victim), 0)
                     << "idle must stay outside the pool: the refusal below rests on it";
@@ -55,7 +55,7 @@ namespace kickos
             {
                 Thread* const t = seat_pool(SLOT_VICTIM, PRIO_LOW);
                 t->privileged = true;
-                kernel().current[kickos_kernel_core()] = t;
+                kernel().current(kickos_kernel_core()) = t;
                 EXPECT_EQ(kickos_thread_contain_wild_stack(&t->ctx, nullptr), nullptr)
                     << "a privileged thread's wild pointer is a kernel bug, not a thread's";
             }

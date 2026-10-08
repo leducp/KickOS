@@ -308,18 +308,16 @@ namespace kickos
             size_t const free_before = frame_pool_free();
             // A double free does not move the free count: the pool refuses and counts it.
             size_t const refused_before = frame_pool_refused();
-            Domain* const mine = task_domain(self->task);
+            Domain* const mine = thread_domain(self);
             uint16_t const hold_before = domain_refcount(mine);
 
-            // A frame RUN, taken from the pool and named by a capability.
             size_t const g = arch_aspace_granule();
             arch_phys_addr_t const run = frame_pool_alloc_user_run(2);
             uint32_t fcap = KCAP_INVALID;
-            int fobj = -1;
+            int fobj = FRAME_RUN_NONE;
             if (run != 0)
             {
                 fobj = frame_run_create(run, 2);
-                // A HANDLE, so never a sign test: an aged generation sets bit 31.
                 if (fobj != FRAME_RUN_NONE)
                 {
                     if (cap_install(self, fobj, CapType::CAP_FRAME, CAP_TRANSFER, &fcap) == 0)
@@ -328,9 +326,7 @@ namespace kickos
                     }
                     else
                     {
-                        // Surrendering the run returns the frames AND the slot. Leave fobj
-                        // set: the tail's pool-free is for a run that never became an object,
-                        // and clearing it here frees the frames a second time.
+                        // Leave fobj set: the release already returned the frames.
                         fcap = KCAP_INVALID;
                         frame_run_release(fobj);
                     }
@@ -346,7 +342,6 @@ namespace kickos
                 }
             }
 
-            // The address space this task already holds, named by a capability.
             uint32_t acap = KCAP_INVALID;
             if (mine != nullptr)
             {
@@ -385,20 +380,19 @@ namespace kickos
 
             if (fcap != KCAP_INVALID)
             {
-                handle_close(self, fcap);
+                handle_close(self, fcap, lock);
                 if (frame_pool_free() == free_before)
                 {
                     bits |= KOS_ASPACE_CAPOBJ_CLOSE_FRAMES;
                 }
             }
-            else if (run != 0 and fobj < 0)
+            else if (run != 0 and fobj == FRAME_RUN_NONE)
             {
-                // Only where no run object was seated: once one is, its release returns these.
                 frame_pool_free_run(run, 2, g);
             }
             if (acap != KCAP_INVALID)
             {
-                handle_close(self, acap);
+                handle_close(self, acap, lock);
                 if (domain_refcount(mine) == hold_before)
                 {
                     bits |= KOS_ASPACE_CAPOBJ_CLOSE_HOLD;
@@ -426,11 +420,7 @@ namespace kickos
             }
             IrqLock lock;
             Thread* self = sched::current();
-            if (self == nullptr)
-            {
-                return 0;
-            }
-            Domain* const mine = task_domain(self->task);
+            Domain* const mine = thread_domain(self);
             if (mine == nullptr)
             {
                 return 0;
@@ -464,13 +454,13 @@ namespace kickos
             uint32_t acap = KCAP_INVALID;
             if (not obj_ref_inc(CapType::CAP_ASPACE, h, 0))
             {
-                handle_close(self, fcap); // no hold was taken, so none is undone
+                handle_close(self, fcap, lock); // no hold was taken, so none is undone
                 return 0;
             }
             if (cap_install(self, h, CapType::CAP_ASPACE, CAP_TRANSFER, &acap) != 0)
             {
                 obj_ref_undo(CapType::CAP_ASPACE, h, 0);
-                handle_close(self, fcap);
+                handle_close(self, fcap, lock);
                 return 0;
             }
             g_seed_obj = fobj;
@@ -481,11 +471,7 @@ namespace kickos
         {
             IrqLock lock;
             Thread* self = sched::current();
-            if (self == nullptr)
-            {
-                return 0;
-            }
-            Domain* const mine = task_domain(self->task);
+            Domain* const mine = thread_domain(self);
             if (mine == nullptr)
             {
                 return 0;
@@ -517,7 +503,7 @@ namespace kickos
             {
                 return 0;
             }
-            VirtualRanges const* const r = domain_ranges(task_domain(c->task));
+            VirtualRanges const* const r = domain_ranges(thread_domain(c));
             if (r == nullptr)
             {
                 return static_cast<uint64_t>(va_seed());
@@ -942,19 +928,9 @@ namespace kickos
         // confirms the seeded word.
         arch_phys_addr_t g_here_frame = 0;
 
-        struct arch_aspace* caller_space()
-        {
-            Thread const* const c = sched::current();
-            if (c == nullptr)
-            {
-                return nullptr;
-            }
-            return domain_space(task_domain(c->task));
-        }
-
         uint64_t op_map_here()
         {
-            struct arch_aspace* const space = caller_space();
+            struct arch_aspace* const space = domain_space(thread_domain(sched::current()));
             if (space == nullptr or g_here_frame != 0)
             {
                 return 0;
@@ -989,7 +965,7 @@ namespace kickos
 
         uint64_t op_unmap_here(uintptr_t seen)
         {
-            struct arch_aspace* const space = caller_space();
+            struct arch_aspace* const space = domain_space(thread_domain(sched::current()));
             if (space == nullptr or g_here_frame == 0)
             {
                 return 0;
@@ -1032,12 +1008,7 @@ namespace kickos
             size_t mem_size = 0;
             if (donor_base != 0)
             {
-                Thread const* const c = sched::current();
-                if (c == nullptr)
-                {
-                    return 0;
-                }
-                donor = task_domain(c->task);
+                donor = thread_domain(sched::current());
                 VirtualRanges const* const r = domain_ranges(donor);
                 if (r == nullptr)
                 {
@@ -1066,7 +1037,7 @@ namespace kickos
             {
                 frame_pool_fail_in(nth);
                 int derr = 0;
-                Domain* const d = domain_for(DOM_CALLER_MEM_AUTH, mem_base,
+                Domain* const d = domain_for(0, mem_base,
                                              mem_size, 0, donor, &derr);
                 bool const spent = not frame_pool_fail_armed();
                 frame_pool_fail_in(0);
@@ -1124,7 +1095,7 @@ namespace kickos
             for (int i = 0; i < 4; i++)
             {
                 int derr = 0;
-                Domain* const d = domain_for(DOM_CALLER_MEM_AUTH, nullptr, 0, 0, nullptr, &derr);
+                Domain* const d = domain_for(0, nullptr, 0, 0, nullptr, &derr);
                 if (d == nullptr)
                 {
                     return 0; // no frame for a root: nothing to weigh
@@ -1134,7 +1105,7 @@ namespace kickos
             domain_release(last);
             size_t const lost_reuse = frames_lost(before_reuse);
             int derr = 0;
-            Domain* const one = domain_for(DOM_CALLER_MEM_AUTH, nullptr, 0, 0, nullptr, &derr);
+            Domain* const one = domain_for(0, nullptr, 0, 0, nullptr, &derr);
             if (one == nullptr)
             {
                 return 0;
@@ -1262,12 +1233,7 @@ namespace kickos
             }
             case KOS_ASPACE_OP_RANGES_FREE:
             {
-                Thread const* const c = sched::current();
-                if (c == nullptr)
-                {
-                    return 0;
-                }
-                VirtualRanges const* const r = domain_ranges(task_domain(c->task));
+                VirtualRanges const* const r = domain_ranges(thread_domain(sched::current()));
                 if (r == nullptr)
                 {
                     return 0;
@@ -1278,12 +1244,7 @@ namespace kickos
             {
                 // Two tasks comparing this for one address is what witnesses that
                 // per-process static data is a copy (section 3.4).
-                Thread const* const c = sched::current();
-                if (c == nullptr)
-                {
-                    return 0;
-                }
-                return aspace_frame_token(domain_space(task_domain(c->task)), a1);
+                return aspace_frame_token(domain_space(thread_domain(sched::current())), a1);
             }
             case KOS_ASPACE_OP_MODEL:
             {
@@ -1293,12 +1254,7 @@ namespace kickos
             }
             case KOS_ASPACE_OP_MEMTYPE_AT:
             {
-                Thread const* const c = sched::current();
-                if (c == nullptr)
-                {
-                    return 0;
-                }
-                VirtualRanges const* const r = domain_ranges(task_domain(c->task));
+                VirtualRanges const* const r = domain_ranges(thread_domain(sched::current()));
                 if (r == nullptr)
                 {
                     return 0;
@@ -1367,12 +1323,8 @@ namespace kickos
             {
                 uint32_t const held = domain_cores_on_held_space()
                                       | arch_aspace_active_cores(arch_aspace_boot());
-                uint32_t mine = 0;
-                Thread const* const c = sched::current();
-                if (c != nullptr)
-                {
-                    mine = arch_aspace_active_cores(domain_space(task_domain(c->task)));
-                }
+                uint32_t const mine =
+                    arch_aspace_active_cores(domain_space(thread_domain(sched::current())));
                 return (static_cast<uint64_t>(KICKOS_KERNEL_CORES) << 16)
                        | (static_cast<uint64_t>(popcount32(held)) << 8)
                        | static_cast<uint64_t>(popcount32(mine));
@@ -1383,12 +1335,11 @@ namespace kickos
                 {
                     return arch_cpu_block_addr();
                 }
-                Thread const* const c = sched::current();
-                if (a1 != 0 or c == nullptr)
+                if (a1 != 0)
                 {
                     return 0;
                 }
-                return reinterpret_cast<uintptr_t>(domain_space(task_domain(c->task)));
+                return reinterpret_cast<uintptr_t>(domain_space(thread_domain(sched::current())));
             }
             case KOS_ASPACE_OP_ALIAS_SYNCS:
             {
@@ -1447,12 +1398,7 @@ namespace kickos
             {
                 // Two tasks comparing this is what witnesses that a domain is an address
                 // space of its own.
-                Thread const* const c = sched::current();
-                if (c == nullptr)
-                {
-                    return 0;
-                }
-                return domain_space_id(task_domain(c->task));
+                return domain_space_id(thread_domain(sched::current()));
             }
             default:
             {

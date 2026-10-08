@@ -9,9 +9,8 @@
 // reached from here tells a sender that a target serviced a raise. Every cell has exactly one
 // writer: a request word is written by the asking core, an answer word by the answering core.
 //
-// The service bodies stay in the backends: tests/static/check_route_service_order.sh matches an
-// unindented `void <name>(` in three named files, so a body moved here reads as absent.
-// arch_ipi_fence keeps its barrier in its own body, which tests/static/check_ipi_fence.sh reads.
+// arch_ipi_fence keeps its barrier in its own body, which tests/static/check_ipi_fence.sh reads,
+// and stays out of service_fence.
 
 #include <kickos/arch/doorbell_protocol.h>
 
@@ -24,6 +23,8 @@
 
 #include <stddef.h>
 #include <stdint.h>
+
+#include <type_traits>
 
 extern "C" void kfault_terminate(void) __attribute__((noreturn));
 
@@ -45,6 +46,81 @@ namespace kickos::doorbell
         static_assert((CLOCK_CHECK_SPINS & (CLOCK_CHECK_SPINS - 1u)) == 0u, "tested as a mask");
 
         constexpr char NL[] = "\n";
+
+        // The requests the service answers, one row per core: on the stack they would deepen
+        // every trap class that polls the doorbell by a word per core. One row is enough because
+        // the service is entered masked and nothing it calls before its answers enters it again.
+        struct alignas(KICKOS_DOORBELL_LINE) AskedRow
+        {
+            uint32_t seq[KICKOS_DOORBELL_CORES];
+        };
+        AskedRow g_asked[KICKOS_DOORBELL_CORES] = {};
+
+        // An initiator learns the fence ran by reading the answer, so the answer store must be
+        // a release.
+        static_assert(std::is_same_v<std::remove_extent_t<decltype(PartRow::seq)>,
+                                     Atomic<uint32_t, Order::ACQUIRE | Order::RELEASE>>,
+                      "an answer is published by a release store");
+    }
+
+    class [[nodiscard]] __attribute__((warn_unused)) Drained
+    {
+        friend class Service;
+        Drained()
+        {
+        }
+    };
+
+    class Service
+    {
+    public:
+        static __attribute__((always_inline)) Snapshot snapshot(void)
+        {
+            uint32_t const me = arch_doorbell_core();
+            uint32_t* const asked = g_asked[me].seq;
+            bool owed = false;
+            for (uint32_t from = 0; from < KICKOS_DOORBELL_CORES; from++)
+            {
+                asked[from] = g_request[from].seq[me].load();
+                if (asked[from] != g_answer[me].seq[from].load())
+                {
+                    owed = true;
+                }
+            }
+            return Snapshot(owed);
+        }
+
+        static Drained drain(Fenced);
+
+        // The core is read again rather than carried across the fence and the drain, which would
+        // hold a register over both calls and deepen every chain through the service.
+        static __attribute__((always_inline)) void publish_answers(Snapshot, Drained)
+        {
+            uint32_t const me = arch_doorbell_core();
+            uint32_t const* const asked = g_asked[me].seq;
+            for (uint32_t from = 0; from < KICKOS_DOORBELL_CORES; from++)
+            {
+                if (asked[from] != g_answer[me].seq[from].load())
+                {
+                    g_answer[me].seq[from] = asked[from];
+                }
+            }
+        }
+    };
+
+#if KICKOS_KERNEL_CORES > 1
+    // Declared after Service, whose other steps cannot name it, and in this namespace, which the
+    // global service body reaches only qualified. tests/static/check_route_service_order.sh reads
+    // that drain calls it and nothing else does.
+    extern "C" void kickos_irq_route_service(void);
+#endif
+
+    inline __attribute__((always_inline)) Drained Service::drain(Fenced)
+    {
+#if KICKOS_KERNEL_CORES > 1
+        kickos_irq_route_service();
+#endif
+        return Drained();
     }
 
     bool pending(void)
@@ -224,6 +300,32 @@ namespace kickos::klock
 
 extern "C"
 {
+
+// Snapshot, fence, drain, answer, in the only order the step types allow. A fence or a drain run
+// before the request is loaded attests to nothing the initiator published ahead of its raise, and
+// an answer stored ahead of either reports work this core has not done.
+//
+// rv32imac links this file without a service_fence: its node keeps its own service body, and this
+// one is collected unreferenced.
+void kickos_doorbell_service(void)
+{
+    using kickos::doorbell::Service;
+
+    kickos::doorbell::Snapshot const s = Service::snapshot();
+    if (not s.owed())
+    {
+        return;
+    }
+    kickos::doorbell::Fenced const f = kickos::doorbell::service_fence(s.observed());
+    kickos::doorbell::Drained const d = Service::drain(f);
+    Service::publish_answers(s, d);
+#if KICKOS_AMP_NODE
+    // After the answers: an AMP payload drain may not delay the rendezvous a shared kernel's
+    // callers wait on through this same body. The early return above cannot lose a payload wake,
+    // a send raising the request cell like any other.
+    kickos_amp_node_service();
+#endif
+}
 
 // The caller's own bit is serviced here, not raised: a core waiting with interrupts masked would
 // wait on a handler it keeps out. Its request cell is still bumped, so the answer cells describe

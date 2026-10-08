@@ -74,10 +74,18 @@ memory:
 
 # Pins are the RM's pad names. A selector other than `gpio` is the ALT mode the pad's
 # SW_MUX_CTL_PAD selects, and `input_select` the DAISY value that hands the pad the function's
-# input. GPIO_B0_03's `gpio` is GPIO2 while GPR27 leaves the pad to it.
+# input. A GPIO_B0 pad's `gpio` is GPIO2 while GPR27 leaves the pad to it. kos_pinmux_set muxes
+# the pads listed here and refuses every other.
 pins:
+  GPIO_AD_B0_00: { gpio: gpio1.0 }
+  GPIO_AD_B0_01: { gpio: gpio1.1 }
   GPIO_AD_B0_02: { alt2: lpuart6.tx, gpio: gpio1.2 }
   GPIO_AD_B0_03:
     alt2: { function: lpuart6.rx, input_select: 1, ref: "11.6.336 LPUART6_RX_SELECT_INPUT, p.855" }
     gpio: gpio1.3
+  GPIO_AD_B0_04: { gpio: gpio1.4 }
+  GPIO_AD_B0_05: { gpio: gpio1.5 }
+  GPIO_B0_00: { gpio: gpio2.0 }
+  GPIO_B0_01: { gpio: gpio2.1 }
+  GPIO_B0_02: { gpio: gpio2.2 }
   GPIO_B0_03: { gpio: gpio2.3 }

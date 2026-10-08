@@ -60,8 +60,8 @@ namespace kickos
                 g_core = 0;
                 seat_running_on(t, 0);
 #else
-                kernel().current[0] = t;
-                t->state = ThreadState::RUNNING;
+                kernel().current(testfix::core_at(0)) = t;
+                t->state.to<ThreadState::RUNNING>();
 #endif
             }
 
@@ -101,7 +101,7 @@ namespace kickos
             {
                 Thread* const t = dying_thread(SLOT_CANCELLED);
                 IrqLock lock;
-                thread_cancel(t);
+                thread_cancel(t, lock);
                 return t;
             }
 

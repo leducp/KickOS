@@ -2,6 +2,8 @@
 # Copyright (c) 2026 Philippe Leduc
 
 import ast
+import contextlib
+import io
 import os
 import shutil
 import sys
@@ -9,10 +11,11 @@ import tempfile
 import unittest
 from unittest import mock
 
-from kickos_compose import composition, descriptions, emit, manifest, partition, subset, supply
+from kickos_compose import composition, descriptions, emit, manifest, partition, region, subset, supply
 from kickos_compose.composition import admit, region_size
 from kickos_compose.descriptions import check_platform
 from kickos_compose.manifest import check_manifests
+from kickos_compose.__main__ import REFUSED, main
 from kickos_compose.subset import RULES
 
 TREE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..")
@@ -852,7 +855,8 @@ ADMISSION_ARMS = [
      [("\ntasks:\n", "\ntasks:\n  - name: early\n    entry: early_main\n    stack: 2048\n    priority: 5\n    ceiling: 5\n")], [], False),
     (("ownership.console", "scheduling.console-driver"), "xmc4800-relax.yaml", [("stdout: /svc/console", "stdout: kernel")],
      [], True),
-    ("scheduling.console-driver", "xmc4800-relax.yaml", [], [("    console: true\n", "    console: false\n")], True),
+    ("scheduling.console-driver", "xmc4800-relax.yaml", [],
+     [("posture: handover", "posture: retain"), ("    console: true\n", "    console: false\n")], True),
     ("supply.pool", "xmc4800-relax.yaml", [], [("  KICKOS_MAX_THREADS: 8\n", "  KICKOS_MAX_THREADS: 5\n")], True),
     (None, "xmc4800-relax.yaml", [], [("  KICKOS_MAX_THREADS: 8\n", "  KICKOS_MAX_THREADS: 6\n")], False),
     ("supply.pool", "xmc4800-relax.yaml", [], [("  KICKOS_MAX_ENDPOINTS: 5\n", "  KICKOS_MAX_ENDPOINTS: 2\n")], True),
@@ -1079,7 +1083,14 @@ MANIFEST_ARMS = [
     ("manifest.barrier", [("    barrier: 1\n", "    barrier: 0\n")], False),
     ("manifest.barrier", [("    barrier: none\n", "    barrier: 1\n")], False),
     ("manifest.console", [("    console: false\n", "    console: true\n")], False),
+    ("manifest.console", [("    console: true\n", "    console: false\n")], False),
     (None, [("    console: false\n", "    console: true\n"), ("posture: retain", "posture: handover")], False),
+    ("manifest.console", [("    console: false\n    usb_device: false\n", "    console: false\n    usb_device: true\n")],
+     False),
+    (None, [("    console: true\n    usb_device: false\n", "    console: true\n    usb_device: true\n")], False),
+    ("form.range", [("{ name: uartirq, priority: 1,", "{ name: uartirq, priority: 128,")], False),
+    (None, [("{ name: uartirq, priority: 1,", "{ name: uartirq, priority: 127,")], False),
+    ("form.range", [("caps: 3, badged: 0 }", "caps: 256, badged: 0 }")], False),
     (None, [("  enforced: true\n", "  enforced: false\n")], False),
     (None, [("  enforced: true\n", "  enforced: false\n"), ("window_rule: pow2", "window_rule: granule")], False),
     (None, [("  enforced: true\n  window_rule: pow2\n  smallest_window: 32\n",
@@ -2346,6 +2357,8 @@ class Rounding(unittest.TestCase):
         self.assertEqual(region_size(65, xmc, None, self.rule("pow2", 32)), 128)
         self.assertEqual(region_size(8, xmc, None, self.rule("pow2", 32)), 32)
         self.assertEqual(region_size(65, xmc, None, self.rule("granule", 32)), 96)
+        self.assertEqual(region_size(0, xmc, None, self.rule("granule", 32)), 0)
+        self.assertEqual(region_size(0, xmc, None, self.rule("pow2", 32)), 32)
         self.assertEqual(region_size(65, xmc, None, self.rule("none", None)), 65)
         self.assertEqual(region_size(64, arm64, None, self.rule("none", None)), 0x1000)
         self.assertEqual(region_size(0x1001, arm64, None, self.rule("none", None)), 0x2000)
@@ -2357,8 +2370,30 @@ class Rounding(unittest.TestCase):
     def test_a_region_build_with_no_unit_rounds_at_16(self):
         rule = self.rule("granule", 16)
         rule.stack_stride = None
-        self.assertEqual((supply.ram_size(0x41, rule), supply.ram_align(0x41, rule)), (0x50, 16))
-        self.assertEqual((supply.ram_size(8, rule), supply.ram_align(8, rule)), (16, 16))
+        self.assertEqual((region.ram_size(0x41, rule), region.ram_align(0x41, rule)), (0x50, 16))
+        self.assertEqual((region.ram_size(8, rule), region.ram_align(8, rule)), (16, 16))
+
+    def boot(self, *wants, min_region=32, pow2=1, word_bits=32):
+        said = io.StringIO()
+        arguments = ["region", "--min-region", str(min_region), "--pow2", str(pow2), "--stride", "0",
+                     "--word-bits", str(word_bits)] + [str(want) for want in wants]
+        with contextlib.redirect_stdout(said), contextlib.redirect_stderr(said):
+            status = main(arguments)
+        return status, said.getvalue().split()
+
+    def test_the_boot_figures_are_the_rule_s(self):
+        self.assertEqual(self.boot(512, 100), (0, ["16", "512", "512", "128", "128"]))
+        self.assertEqual(self.boot(100, min_region=0), (0, ["16", "112", "16"]))
+        self.assertEqual(self.boot(0, min_region=0), (0, ["16", "0", "16"]))
+        self.assertEqual(self.boot(0), (0, ["16", "32", "32"]))
+        self.assertEqual(self.boot(100, pow2=0), (0, ["16", "128", "32"]))
+
+    # arch_ram_region_size hands such a block back unrounded, so no figure could model it.
+    def test_a_boot_figure_past_the_address_space_is_refused(self):
+        self.assertEqual(self.boot(0x80000000)[0], 0)
+        self.assertEqual(self.boot(0x80000001)[0], REFUSED)
+        self.assertEqual(self.boot(0xFFFFFFF0, pow2=0)[0], REFUSED)
+        self.assertEqual(self.boot(0x80000001, word_bits=64)[0], 0)
 
 
 class Versions(unittest.TestCase):

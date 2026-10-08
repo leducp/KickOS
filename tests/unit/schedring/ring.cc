@@ -22,8 +22,8 @@ using namespace kickos::testfix;
 
 namespace
 {
-    constexpr uint32_t CORE_ME = 0;
-    constexpr uint32_t CORE_PEER = 1;
+    constexpr KernelCore CORE_ME = testfix::core_at(0);
+    constexpr KernelCore CORE_PEER = testfix::core_at(1);
 
     // Fixture storage, so every pool slot is free for the threads under test.
     constexpr int SLOT_PEER_IDLE = 0;
@@ -46,7 +46,7 @@ namespace
         g_core = core;
         {
             IrqLock lock;
-            sched::reschedule();
+            sched::reschedule(nullptr, lock);
         }
         g_core = was;
     }
@@ -57,7 +57,7 @@ namespace
         g_core = core;
         {
             IrqLock lock;
-            sched::wake(t);
+            sched::wake(t, lock);
         }
         g_core = was;
     }
@@ -81,7 +81,7 @@ namespace
         Thread* const peer_idle = add_peer_idle();
         {
             IrqLock lock;
-            sched::reschedule();
+            sched::reschedule(nullptr, lock);
         }
         if (peer_started)
         {
@@ -158,7 +158,7 @@ TEST_F(SchedRing, a_handoff_is_linked_by_the_target_dispatch_and_by_no_other)
     dispatch_as(CORE_PEER);
 
     EXPECT_TRUE(linked_on(b, CORE_PEER)) << "the target's dispatch did not link its handoff";
-    EXPECT_EQ(kernel().current[CORE_PEER], b) << "the idle target did not take its handoff";
+    EXPECT_EQ(kernel().current(CORE_PEER), b) << "the idle target did not take its handoff";
 }
 
 TEST_F(SchedRing, a_handoff_to_an_unstarted_core_is_linked_at_its_start)
@@ -169,7 +169,7 @@ TEST_F(SchedRing, a_handoff_to_an_unstarted_core_is_linked_at_its_start)
     wake_as(CORE_ME, b);
 
     ASSERT_EQ(b->state, ThreadState::HANDED) << "fixture: the thread is bound for the peer";
-    ASSERT_EQ(kernel().current[CORE_PEER], nullptr) << "fixture: the peer has not started";
+    ASSERT_EQ(kernel().current(CORE_PEER), nullptr) << "fixture: the peer has not started";
 
     dispatch_as(CORE_PEER);
 
@@ -179,7 +179,7 @@ TEST_F(SchedRing, a_handoff_to_an_unstarted_core_is_linked_at_its_start)
     sched::start();
     g_core = CORE_ME;
 
-    EXPECT_EQ(kernel().current[CORE_PEER], b)
+    EXPECT_EQ(kernel().current(CORE_PEER), b)
         << "the peer started without linking what was handed to it before it started, and no "
            "later dispatch is owed that would";
 }
@@ -220,8 +220,8 @@ TEST_F(SchedRing, every_thread_in_flight_at_once_does_not_fill_one_ring)
         IrqLock lock;
         for (Thread* t : threads)
         {
-            ASSERT_TRUE(sched::wake_no_resched(t)) << "fixture: every thread was parked";
-            sched::set_prio(t, PRIO_UNDER + 1u);
+            ASSERT_TRUE(sched::wake_no_resched(t, lock)) << "fixture: every thread was parked";
+            sched::set_prio(t, PRIO_UNDER + 1u, lock);
         }
         ASSERT_EQ(in_flight(CORE_ME, CORE_PEER), 2u * KICKOS_THREAD_SLOTS)
             << "fixture: every pool thread is on one ring, handed and reseated";
@@ -251,7 +251,7 @@ TEST_F(SchedRing, a_staged_entry_is_invisible_until_the_span_ends)
 
     {
         IrqLock lock;
-        ASSERT_TRUE(sched::wake_no_resched(b)) << "fixture: the thread was parked";
+        ASSERT_TRUE(sched::wake_no_resched(b, lock)) << "fixture: the thread was parked";
         ASSERT_EQ(b->state, ThreadState::HANDED) << "fixture: the thread is bound for the peer";
         EXPECT_EQ(kernel().sched_out[CORE_ME].head[CORE_PEER].load(), head)
             << "the entry was published inside the span: a switch this span books would let "
@@ -277,7 +277,7 @@ TEST_F(SchedRing, a_drain_past_its_budget_owes_itself_the_next_dispatch)
         IrqLock lock;
         for (Thread* t : threads)
         {
-            ASSERT_TRUE(sched::wake_no_resched(t)) << "fixture: every thread was parked";
+            ASSERT_TRUE(sched::wake_no_resched(t, lock)) << "fixture: every thread was parked";
         }
     }
 
@@ -300,8 +300,8 @@ TEST_F(SchedRing, a_wake_placed_by_the_collector_while_handed_is_left_to_its_tar
 
     {
         IrqLock lock;
-        ASSERT_TRUE(sched::wake_no_resched(b)) << "fixture: the thread was parked";
-        sched::place_ready(b);
+        ASSERT_TRUE(sched::wake_no_resched(b, lock)) << "fixture: the thread was parked";
+        sched::place_ready(b, lock);
     }
 
     EXPECT_EQ(b->state, ThreadState::HANDED) << "the collector placed a thread in flight";
@@ -337,18 +337,9 @@ namespace
         return o;
     }
 
-    // Counts re-seats: a list removal of a thread that stays READY or RUNNING.
-    SchedPolicy g_counted{};
+    // Re-seats: list removals of a thread that stays READY or RUNNING. The wrap counts every
+    // call in the binary, so an arm reading it resets it first.
     uint32_t g_reseats = 0;
-
-    void counted_on_remove(Thread* t)
-    {
-        if (t->state == ThreadState::READY or t->state == ThreadState::RUNNING)
-        {
-            g_reseats++;
-        }
-        sched::default_policy()->on_remove(t);
-    }
 
     void set_prio_as(uint32_t core, Thread* t, uint8_t p)
     {
@@ -356,7 +347,7 @@ namespace
         g_core = core;
         {
             IrqLock lock;
-            sched::set_prio(t, p);
+            sched::set_prio(t, p, lock);
         }
         g_core = was;
     }
@@ -375,7 +366,7 @@ namespace
         g_core = core;
         {
             IrqLock lock;
-            thread_cancel_kind(t, CANCEL_SLAY);
+            thread_cancel_kind(t, CANCEL_SLAY, lock);
         }
         g_core = was;
     }
@@ -392,6 +383,18 @@ namespace
         dispatch_as(CORE_ME);
         return o;
     }
+}
+
+// sched.cc reaches policy_on_remove through the --wrap this suite's target links with.
+extern "C" void __real__ZN6kickos16policy_on_removeEPNS_6ThreadE(Thread* t);
+
+extern "C" void __wrap__ZN6kickos16policy_on_removeEPNS_6ThreadE(Thread* t)
+{
+    if (t->state == ThreadState::READY or t->state == ThreadState::RUNNING)
+    {
+        g_reseats++;
+    }
+    __real__ZN6kickos16policy_on_removeEPNS_6ThreadE(t);
 }
 
 TEST_F(SchedRing, a_boost_of_a_thread_ready_on_a_peer_is_seated_by_that_peers_dispatch)
@@ -413,7 +416,7 @@ TEST_F(SchedRing, a_boost_of_a_thread_ready_on_a_peer_is_seated_by_that_peers_di
 
     EXPECT_EQ(o.t->rq_prio, PRIO_BOOST) << "the peer's dispatch did not re-seat the boost";
     EXPECT_EQ(o.t->reseat_owed, 0u) << "the applied request left its slot owed";
-    EXPECT_EQ(kernel().current[CORE_PEER], o.t) << "the boosted thread does not run over the hog";
+    EXPECT_EQ(kernel().current(CORE_PEER), o.t) << "the boosted thread does not run over the hog";
 }
 
 TEST_F(SchedRing, a_reseat_of_a_handed_thread_is_read_at_its_link)
@@ -422,14 +425,11 @@ TEST_F(SchedRing, a_reseat_of_a_handed_thread_is_read_at_its_link)
     Thread* const b = parked(2, PRIO_UNDER, runner, 1u << CORE_PEER);
     {
         IrqLock lock;
-        ASSERT_TRUE(sched::wake_no_resched(b)) << "fixture: the thread was parked";
+        ASSERT_TRUE(sched::wake_no_resched(b, lock)) << "fixture: the thread was parked";
         ASSERT_EQ(b->state, ThreadState::HANDED) << "fixture: the thread is bound for the peer";
-        sched::set_prio(b, PRIO_BOOST);
+        sched::set_prio(b, PRIO_BOOST, lock);
     }
-    g_counted = *sched::default_policy();
-    g_counted.on_remove = counted_on_remove;
     g_reseats = 0;
-    kernel().policy = &g_counted;
 
     dispatch_as(CORE_PEER);
 
@@ -493,8 +493,8 @@ TEST_F(SchedRing, a_reseat_of_a_parked_or_exited_thread_is_dropped)
     reset();
     OnPeer q = ready_on_peer(PRIO_UNDER);
     set_prio_as(CORE_ME, q.t, PRIO_UNDER + 1u);
-    kernel().policy->on_remove(q.t);
-    q.t->state = ThreadState::EXITED;
+    policy_on_remove(q.t);
+    q.t->state.to<ThreadState::EXITED>();
 
     dispatch_as(CORE_PEER);
 
@@ -528,7 +528,7 @@ TEST_F(SchedRing, a_local_request_on_a_thread_handed_to_this_core_writes_only_th
     g_core = CORE_PEER;
     {
         IrqLock lock;
-        ASSERT_TRUE(sched::wake_no_resched(b)) << "fixture: the thread was parked";
+        ASSERT_TRUE(sched::wake_no_resched(b, lock)) << "fixture: the thread was parked";
     }
     g_core = was;
     ASSERT_EQ(b->state, ThreadState::HANDED) << "fixture: the peer handed the thread here";
@@ -552,8 +552,8 @@ TEST_F(SchedRing, a_reseat_in_flight_across_a_slot_reuse_does_not_admit_a_second
     ASSERT_EQ(o.t->reseat_owed, 1u) << "fixture: the request is in flight";
     // The occupant dies with its request in flight and the slot is taken by the next spawn.
     int const slot = kernel().threads.index_of(o.t);
-    kernel().policy->on_remove(o.t);
-    o.t->state = ThreadState::EXITED;
+    policy_on_remove(o.t);
+    o.t->state.to<ThreadState::EXITED>();
     Thread* const heir = seat_pool(slot, PRIO_UNDER);
     ASSERT_EQ(heir->reseat_owed, 1u)
         << "the slot's zeroing for its next occupant dropped the byte an entry in flight still "
@@ -589,7 +589,7 @@ TEST_F(SchedRing, a_boost_requested_after_a_move_follows_the_thread_to_its_new_c
 
     EXPECT_EQ(o.t->rq_prio, PRIO_BOOST) << "the boost never reached the list the thread sits on";
     EXPECT_EQ(o.t->reseat_owed, 0u) << "the forwarded request left its slot owed";
-    EXPECT_EQ(kernel().current[CORE_ME], o.t) << "the boosted thread does not run over the runner";
+    EXPECT_EQ(kernel().current(CORE_ME), o.t) << "the boosted thread does not run over the runner";
 }
 
 TEST_F(SchedRing, a_narrowing_requested_after_a_move_follows_the_thread_to_its_new_core)
@@ -612,7 +612,7 @@ TEST_F(SchedRing, a_narrowing_requested_after_a_move_follows_the_thread_to_its_n
 TEST_F(SchedRing, a_slay_requested_after_a_move_follows_the_thread_to_its_new_core)
 {
     OnPeer o = moved_here_behind_a_request(PRIO_BOOST);
-    ASSERT_EQ(kernel().current[CORE_ME], o.t) << "fixture: the moved thread runs here";
+    ASSERT_EQ(kernel().current(CORE_ME), o.t) << "fixture: the moved thread runs here";
     ASSERT_EQ(o.t->reseat_owed, 1u) << "fixture: request #1 is still unretired";
     g_redirect_target = nullptr;
 
@@ -620,7 +620,7 @@ TEST_F(SchedRing, a_slay_requested_after_a_move_follows_the_thread_to_its_new_co
     dispatch_as(CORE_PEER);
     dispatch_as(CORE_ME);
 
-    EXPECT_NE(kernel().current[CORE_ME], o.t)
+    EXPECT_NE(kernel().current(CORE_ME), o.t)
         << "the slain thread keeps its core: the peer dropped the request for a thread running "
            "here";
 

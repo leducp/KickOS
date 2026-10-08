@@ -117,7 +117,6 @@ namespace kickos
     enum : uint32_t
     {
         DOM_CALLER_PRIVILEGED = 1u << 0, // resolves the kernel domain, whole arena
-        DOM_CALLER_MEM_AUTH = 1u << 1,   // the GRANTING thread's AUTH_MEMORY answer
         DOM_CALLER_TASK = 1u << 2        // an explicit task's: its data is the image snapshot's
     };
 
@@ -127,22 +126,43 @@ namespace kickos
     // granting the same block get two domains.
     //
     // mem_attr is the memory type the region is committed with, over the R|W every RAM grant
-    // already has. The prospective committed geometry goes through grant_region_admissible before
-    // a slot is taken; DOM_CALLER_MEM_AUTH is the granting thread's AUTH_MEMORY answer and must
-    // come from the caller, never read from sched::current() here.
+    // already has. A region backend admits nothing here: where it enforces, the caller ran
+    // ram_region_admit on the grant before any claim.
     //
     // `donor` is the domain the grant's memory was reserved in; where a backend translates the
     // block is mapped into the new space at the same virtual address and recorded borrowed. A
-    // successful handoff takes a reference on the donor, which is why this is not const.
+    // successful handoff takes a reference on the donor.
     //
     // Returns null on refusal and writes the reason to *err (never null; 0 on success):
-    //   KOS_EPERM   inadmissible grant: reserved-block hit, out-of-arena, or a range the
-    //               donor never reserved
     //   KOS_ENOTSUP a memory type this chip cannot honour
+    //   KOS_EPERM   (translating) a range the donor never reserved
+    //   KOS_EBUSY   (translating) another mapping of the range's frames has another memory type
     //   KOS_ENOMEM  the domain pool is full, no address space could be built, or the new
     //               space cannot take the range at the donor's address
     Domain* domain_for(uint32_t caller, void* mem_base, size_t mem_size, uint32_t mem_attr,
                        Domain* donor, int* err);
+
+#if not KICKOS_HAVE_ASPACE
+    struct Thread; // kickos/thread.h
+
+    enum RamAdmit : uint8_t
+    {
+        RAM_ADMIT_GRANT,     // a region of another thread or task
+        RAM_ADMIT_SELF,      // the granter's own: its regions do not hold the block against it
+        RAM_ADMIT_PRIVILEGED // a privileged child's window: Rule 7 and the owner are waived
+    };
+
+    // The admission of one RAM data region `granter` names, on the extent its descriptor
+    // commits, in the one order every path naming a region asks it:
+    //   -KOS_ENOTSUP a memory type this chip cannot honour
+    //   -KOS_EINVAL  no one descriptor names the extent
+    //   -KOS_EPERM   out of the arena or over a reserved block (Rule 7), or in no block the
+    //                granter's task reserved
+    //   -KOS_EBUSY   held elsewhere with another memory type
+    // Caller holds IrqLock.
+    int ram_region_admit(Thread const* granter, uintptr_t base, size_t size, uint32_t attr,
+                         RamAdmit how);
+#endif
 
     // Held by the task, not by each of its threads. Three kinds of holder call these outside
     // domain_init: task_ref/task_release, the explicit task's creator hold, and the handoff's

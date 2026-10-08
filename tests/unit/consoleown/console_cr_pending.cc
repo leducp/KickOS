@@ -9,8 +9,10 @@
 #include <kickos/arch/arch.h>
 #include <kickos/cap.h>
 #include <kickos/console_tx.h>
+#include <kickos/irqlock.h>
 #include <kickos/kernel.h>
 #include <kickos/sched.h>
+#include <kickos/sync.h>
 #include <kickos/sys/errno.h>
 
 #include <stdio.h>
@@ -62,7 +64,7 @@ namespace kickos
     int console_claim_wait(uint32_t) { return -KOS_ECANCELED; }
 
     int console_dark_wait(void) { return -KOS_ECANCELED; }
-    void console_dark_wake(void) {}
+    void console_dark_wake(Held) {}
 
     bool cap_console_serves(Thread const*) { return g_serves; }
 
@@ -104,7 +106,7 @@ namespace
             console_owner_set_user();
             console_note_driver_death();
             g_window_free = false;
-            console_on_driver_death();
+            console_on_driver_death(kickos::IrqLock());
             ASSERT_EQ(g_reclaims, 0) << "the reclaim did not defer, so no retry is asked";
             g_writer.console_cr_pending = 1;
             EXPECT_EQ(kickos::kconsole_write_user("\n", 1, false), -KOS_EAGAIN);

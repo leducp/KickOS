@@ -3,6 +3,8 @@
 #
 # docs/design-m10-composition.md, "What one task costs", counted against the manifest.
 
+from .region import ram_align, ram_size
+
 U32 = 0xFFFFFFFF
 # The ranges every address space opens with, its image's text and data
 # (kernel/include/kickos/vrange.h, VR_IMAGE_SLOTS).
@@ -520,37 +522,6 @@ def check_arena(f, root, shared, tasks, chip, cluster, manifest):
                      "arena holds 0x%X"
                      % (cursor - base, where, size))
             break
-
-
-def ram_size(want, manifest):
-    """arch_ram_region_size()."""
-    smallest = manifest.smallest_window
-    if manifest.window_rule not in ("pow2", "granule"):
-        return -(-want // 16) * 16
-    want = max(want, smallest)
-    if manifest.window_rule == "granule":
-        return -(-want // smallest) * smallest
-    return pow2_ceil(want)
-
-
-def ram_align(want, manifest):
-    """arch_ram_region_align()."""
-    geometry = 16
-    if manifest.window_rule == "granule":
-        geometry = manifest.smallest_window
-    if manifest.window_rule == "pow2":
-        geometry = ram_size(want, manifest)
-    stride = manifest.stack_stride
-    if stride is not None and ram_size(want, manifest) == stride and stride > geometry:
-        geometry = stride
-    return geometry
-
-
-def pow2_ceil(want):
-    power = 1
-    while power < want:
-        power = power * 2
-    return power
 
 
 def check_scheduling(f, top, tasks, stdout, manifest):

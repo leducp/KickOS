@@ -1,24 +1,17 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
-//
-// Tickless time. A delta list of absolute deadlines (sorted ascending) drives a single
-// one-shot next-event timer armed for min(nearest sleeper, running-RR slice), with a
-// minimum-delta guard against programming a compare already in the past. Nothing
-// time-pending leaves the timer disarmed. KICKOS_SCHED_PERIODIC_TICK forces a periodic
-// tick instead.
 
 #include <kickos/time.h>
 #include <kickos/bench.h>
-#include <kickos/endpoint.h> // endpoint_wait_abort
 #include <kickos/sched.h>
-#include <kickos/sync.h>  // park_cancel_pending
+#include <kickos/sync.h>
 #include <kickos/instance.h>
 #include <kickos/irqlock.h>
 #include <kickos/arch/arch.h>
 #include <kickos/kernel.h>
 #include <kickos/ktrace.h>
 
-#include <kickos/sys/errno.h> // KOS_ETIMEDOUT
+#include <kickos/sys/errno.h>
 
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
 #include <kickos/trace/record.h>
@@ -80,17 +73,12 @@ namespace kickos
         }
     }
 
-    void ktime_init()
-    {
-        kernel().sleepq = nullptr;
-    }
-
     uint64_t ktime_now()
     {
         return arch_clock_now();
     }
 
-    void ktime_rearm(Thread const* incoming)
+    void ktime_rearm(Thread const* incoming, Held)
     {
 #if KICKOS_BENCH
         BenchScope const bench_body(PH_KTIME_REARM);
@@ -118,7 +106,7 @@ namespace kickos
         // NO min-delta floor here, deliberately: this runs on EVERY context switch, and a
         // floor re-derived from the clock would change `next` on every call, which is the
         // quantity this dedup rests on. The floor belongs where the deadline is BORN, against
-        // ONE clock reading (ktime_sleep_until, arm_slice).
+        // ONE clock reading (ktime_floored).
         uint64_t& armed = kernel().timer_armed_ns[kickos_kernel_core()];
         if (next == armed)
         {
@@ -138,7 +126,7 @@ namespace kickos
     // is re-armed for the SAME absolute deadline; skipping that re-arm starves the sleeper
     // for good. An LX6 goes further: its pending CCOMPARE0 match is cleared only by the next
     // write to that register, so a skipped re-arm leaves a raise standing.
-    void ktime_disarm()
+    void ktime_disarm(Held)
     {
         kernel().timer_armed_ns[kickos_kernel_core()] = UINT64_MAX;
         arch_timer_disarm();
@@ -148,49 +136,31 @@ namespace kickos
     {
         IrqLock lock;
         Thread* c = sched::current();
-        // This park reaches neither wq_block nor park_queueless: the class is every site that
-        // writes ThreadState::BLOCKED, not the two funnels.
-        // Ahead of every side effect below, so the exit leaves no deadline and no
-        // sleep-queue entry. A check at the park instead would exit with this thread already
-        // inserted and the hardware timer armed for it, and sched::exit_current does not sweep
-        // the sleep queue.
-        if (park_cancel_pending(c))
+        // Ahead of every side effect below: sched::exit_current does not sweep the sleep
+        // queue, so an exit after the insert would leave this thread on it.
+        ParkToken const ask = park_cancel_pending(c);
+        if (ask.cancelled())
         {
             sched::exit_current(KOS_EXIT_CANCELLED, sched::EXIT_RETURN, &lock);
         }
-        // The floor is applied HERE, once, against one clock reading. See ktime_rearm.
-        uint64_t const floor = ktime_now() + KICKOS_TIMER_MIN_DELTA_NS;
-        if (deadline_ns < floor)
-        {
-            deadline_ns = floor;
-        }
-        c->deadline_ns = deadline_ns;
-        c->state = ThreadState::BLOCKED;
-        // All three fields, like every other park: one left unwritten makes this park
-        // correct only by virtue of whoever cleared it last.
-        c->wait_queue = nullptr;
-        c->wait_kind = WAIT_SLEEP;
-        c->wait_obj = nullptr; // the delta list is rooted in the Kernel, not in an object
+        c->deadline_ns = ktime_floored(ktime_now(), deadline_ns);
+        park_queueless(ask)(c, WAIT_SLEEP, nullptr, lock);
         sleepq_insert(c);
-        ktime_rearm(c);
-        sched::block_current(); // returns on wake
+        sched::reschedule(nullptr, lock); // its switch arms the timer for the incoming thread
     }
 
-    void ktime_deadline_arm(Thread* t, uint32_t timeout_us)
+    void ktime_deadline_arm(Thread* t, uint32_t timeout_us, Held)
     {
-        // The floor is applied HERE, once, against one clock reading. See ktime_rearm.
-        uint64_t const now = ktime_now();
-        uint64_t deadline = now + static_cast<uint64_t>(timeout_us) * 1000u;
-        uint64_t const floor = now + KICKOS_TIMER_MIN_DELTA_NS;
-        if (deadline < floor)
+        if (timeout_us == KOS_TIMEOUT_NONE)
         {
-            deadline = floor;
+            return;
         }
-        t->deadline_ns = deadline;
+        uint64_t const now = ktime_now();
+        t->deadline_ns = ktime_floored(now, now + static_cast<uint64_t>(timeout_us) * 1000u);
         sleepq_insert(t);
     }
 
-    void ktime_deadline_cancel(Thread* t)
+    void ktime_deadline_cancel(Thread* t, Held)
     {
         if (not t->on_timer)
         {
@@ -226,7 +196,7 @@ namespace kickos
         IrqLock lock;
         // BEFORE anything reads the queue: the comparator has fired, so what the kernel
         // recorded for it no longer describes the hardware.
-        ktime_disarm();
+        ktime_disarm(lock);
         uint64_t now = ktime_now();
 
         // MUST precede the wake loop: sched::wake reassigns kernel().current and tick_rr
@@ -237,7 +207,7 @@ namespace kickos
 #if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_KERNEL_CORES > 1
         Thread const* const ran = sched::current();
 #endif
-        sched::tick_rr(now);
+        sched::tick_rr(now, lock);
 #if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_KERNEL_CORES > 1
         if (sched::current() != ran)
         {
@@ -249,48 +219,12 @@ namespace kickos
         {
             Thread* t = kernel().sleepq;
             sleepq_remove(t);
-            // The tag is cleared HERE, never in sleepq_remove: a timed wait is on the sleepq
-            // AND a wait queue at once, so a clear there would erase the edge this dispatch
-            // reads. sched::wake reuses `link`, so a thread still linked on a wait queue must
-            // leave it BEFORE the wake.
-            switch (t->wait_kind)
-            {
-                case WAIT_SLEEP:
-                {
-                    t->clear_wait_edge();
-                    sched::wake(t);
-                    break;
-                }
-                case WAIT_NOTIFY:
-                case WAIT_JOIN:
-                case WAIT_TASK_EMPTY:
-                case WAIT_CONSOLE:
-                {
-                    // On no list at all, so clearing the tag IS the whole unwind, and it is
-                    // what makes exit_current's sweep miss a waiter that has given up.
-                    t->clear_wait_edge();
-                    t->wait_result = -KOS_ETIMEDOUT;
-                    sched::wake(t);
-                    break;
-                }
-                case WAIT_EP_SEND:
-                case WAIT_EP_RECV:
-                case WAIT_EP_REPLY:
-                case WAIT_EP_FAR_REPLY:
-                {
-                    // Which list to unlink from and which priority donation to revert are
-                    // endpoint internals.
-                    endpoint_wait_abort(t, -KOS_ETIMEDOUT);
-                    break;
-                }
-                default:
-                {
-                    kpanic(diag::kDeadlineNoTimer);
-                }
-            }
+            // sleepq_remove leaves the wait edge: a timed wait is on the sleepq AND a wait
+            // queue at once, and the unwind reads the edge to find the second.
+            thread_abort_park(t, -KOS_ETIMEDOUT, lock);
         }
 
-        ktime_rearm(sched::current());
+        ktime_rearm(sched::current(), lock);
     }
 
 }

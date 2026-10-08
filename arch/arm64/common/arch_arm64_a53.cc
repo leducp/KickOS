@@ -76,14 +76,9 @@ void kickos_armv8a_percore_init(void)
 #if defined(KICKOS_BENCH) && KICKOS_BENCH
     // The bench cycle source (kickos/bench.h) is PMCCNTR_EL0, and nothing else in this port
     // programs the PMU. PMCR_EL0.D divides the count by 64 and its reset value is
-    // architecturally UNKNOWN, so it is cleared rather than assumed.
-    //
-    // LC IS PART OF THE WIDTH CLAIM. bench_cyccnt subtracts PMCCNTR_EL0 at 64 bits
-    // (KICKOS_BENCH_TICK_BITS), and with LC clear the cycle counter's overflow sits at bit 31;
-    // Arm deprecates that setting. No vehicle in this tree tells the two images apart at run
-    // time: QEMU returns the counter at 64 bits whatever LC holds, and D only scales a
-    // plausible distribution. Per core, these registers being per PE. One statement, so the
-    // image carries the read, the clear and the set as written.
+    // architecturally UNKNOWN, so it is cleared rather than assumed. Per core, these registers
+    // being per PE. One statement: check_image_rules.sh reads C out of the immediate the
+    // image ORs in.
     uint64_t pmcr = 0;
     uint64_t set = 0;
     __asm volatile("mrs %0, pmcr_el0\n\tand %0, %0, %2\n\tmov %1, %3\n\torr %0, %0, %1\n\t"

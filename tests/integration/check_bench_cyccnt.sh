@@ -3,10 +3,11 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # Check that both assembly switch timing and C phase timing use a moving counter.
-# This checks counter activity, not its units or rate.
+# This checks counter activity, not its units or rate, except on armv8a, where the PMCR_EL0
+# the bench prints must count (E), undivided (D clear), with its overflow at bit 63 (LC).
 # --controls checks fixed reports and expected TAP failure counts.
 #
-# Usage: check_bench_cyccnt.sh <bench image> | --controls
+# Usage: check_bench_cyccnt.sh <bench image> <arch> | --controls
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
@@ -14,13 +15,14 @@ set -u
 # Allow time for the call/reply sweep and throughput windows on emulated SMP.
 : "${QEMU_TIMEOUT:=240}"
 
-_usage="usage: check_bench_cyccnt.sh <bench image> | check_bench_cyccnt.sh --controls"
+_usage="usage: check_bench_cyccnt.sh <bench image> <arch> | check_bench_cyccnt.sh --controls"
 controls_only=0
 if [ "${1:-}" = "--controls" ]; then
     controls_only=1
     elf=""
 else
     elf="${1:?$_usage}"
+    ARCH="${2:?$_usage}"
 fi
 
 read_report() { # <report text>
@@ -44,6 +46,7 @@ read_report() { # <report text>
     fi
 
     ROWS="$(printf '%s\n' "$REPORT" | sed -n 's|^ *[A-Z][A-Z_]* \{1,\}[0-9]\{1,\}/\([0-9]\{1,\}\) \{1,\}min=.*|\1|p')"
+    PMCR="$(printf '%s\n' "$REPORT" | sed -n 's|^  pmcr-probe: pmcr=0x\([0-9a-f]\{1,8\}\)$|\1|p' | tail -n1)"
     # Do not count the empty line printf emits for an empty string.
     LIVE=0
     if [ -n "$ROWS" ]; then
@@ -90,6 +93,25 @@ cyccnt_arms() {
         rc=1
     else
         echo "ok 4 - $LIVE phase row(s) carry a non-zero maximum"
+    fi
+
+    if [ "$ARCH" != armv8a ]; then
+        echo "ok 5 - $ARCH reads no PMCR_EL0"
+    elif [ -z "$PMCR" ]; then
+        echo "not ok 5 - the run printed no pmcr-probe line, so the PMCR_EL0 the cycle source"
+        echo "#          runs under is unread"
+        rc=1
+    elif [ $((0x$PMCR & 1)) -eq 0 ]; then
+        echo "not ok 5 - PMCR_EL0 is 0x$PMCR: E is clear, so the cycle counter is stopped"
+        rc=1
+    elif [ $((0x$PMCR & 8)) -ne 0 ]; then
+        echo "not ok 5 - PMCR_EL0 is 0x$PMCR: D is set, so every cycle reading is divided by 64"
+        rc=1
+    elif [ $((0x$PMCR & 64)) -eq 0 ]; then
+        echo "not ok 5 - PMCR_EL0 is 0x$PMCR: LC is clear, so the cycle counter overflows at bit 31"
+        rc=1
+    else
+        echo "ok 5 - PMCR_EL0 is 0x$PMCR: E and LC set, D clear"
     fi
 }
 
@@ -160,6 +182,11 @@ ctl_rv32() {
 '  irq:       1536/4600/4600 cyc  (p50/max/max, n=100)'
 }
 
+# The armv8a fixture: the rv32 one with the PMCR_EL0 line an armv8a bench prints.
+ctl_arm64() {
+    ctl_rv32 | awk -v p="${1:-41033041}" '/^  ns-probe:/ { print "  pmcr-probe: pmcr=0x" p } 1'
+}
+
 # <name> <pass|refuse> <findings expected on a refusal> <report text>
 _ctl_pass=0
 _ctl_refuse=0
@@ -191,6 +218,7 @@ $_ctl_out"
 }
 
 if [ "$controls_only" -eq 1 ]; then
+    ARCH=rv32imac
     ctl 'a complete report from a live counter' pass 0 "$(ctl_rv32)"
 
     ctl 'a report with no switch line' refuse 1 \
@@ -208,12 +236,19 @@ if [ "$controls_only" -eq 1 ]; then
     ctl 'a C-side reader that measures nothing' refuse 1 \
         "$(ctl_rv32 | sed 's|^\(    [A-Z][A-Z_]*  *\)[0-9]*/[0-9]*  min=[0-9]*|\10/0  min=0|')"
 
+    ARCH=armv8a
+    ctl 'an armv8a report from a counting, undivided PMU' pass 0 "$(ctl_arm64)"
+    ctl 'an armv8a report with no pmcr-probe line' refuse 1 "$(ctl_rv32)"
+    ctl 'an armv8a PMU with E clear' refuse 1 "$(ctl_arm64 41033040)"
+    ctl 'an armv8a PMU dividing by 64' refuse 1 "$(ctl_arm64 41033049)"
+    ctl 'an armv8a PMU with LC clear' refuse 1 "$(ctl_arm64 41033001)"
+
     echo "PASS: $_ctl_pass planted report(s) accepted and $_ctl_refuse refused, each naming its
   own arm"
     exit 0
 fi
 
-echo "1..4"
+echo "1..5"
 
 run_image "$elf"
 OUT_ALL="$OUT"

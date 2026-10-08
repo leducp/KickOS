@@ -6,8 +6,10 @@
 #include <kickos/arch/arch.h>
 #include <kickos/cap.h>
 #include <kickos/console_tx.h>
+#include <kickos/irqlock.h>
 #include <kickos/kernel.h>
 #include <kickos/sched.h>
+#include <kickos/sync.h>
 #include <kickos/sys/errno.h>
 
 #include <stdio.h>
@@ -85,12 +87,12 @@ namespace kickos
         if (g_dark_wait_answer == 0)
         {
             g_window_free = true;
-            console_on_driver_death();
+            console_on_driver_death(kickos::IrqLock());
         }
         return g_dark_wait_answer;
     }
 
-    void console_dark_wake(void)
+    void console_dark_wake(Held)
     {
         g_dark_wakes = g_dark_wakes + 1;
     }
@@ -185,7 +187,7 @@ namespace
         run_isolated([]() {
             console_owner_set_user();
             console_note_driver_death();
-            console_on_driver_death();
+            console_on_driver_death(kickos::IrqLock());
             EXPECT_EQ(g_reclaims, 1);
             EXPECT_EQ(console_owner_is_kernel(), 0);
             kickos::kputs("after");
@@ -201,7 +203,7 @@ namespace
         run_isolated([]() {
             console_owner_set_user();
             console_note_driver_death();
-            console_on_driver_death();
+            console_on_driver_death(kickos::IrqLock());
             ASSERT_EQ(g_reclaims, 1) << "the console never reached RECLAIMED";
             g_pokes = 0;
             g_pokes_not_owned = 0;
@@ -223,10 +225,10 @@ namespace
             console_owner_set_user();
             console_note_driver_death();
             g_window_free = false;
-            console_on_driver_death();
+            console_on_driver_death(kickos::IrqLock());
             EXPECT_EQ(g_reclaims, 0);
             g_window_free = true;
-            console_on_driver_death();
+            console_on_driver_death(kickos::IrqLock());
             EXPECT_EQ(g_reclaims, 1);
         });
     }
@@ -239,14 +241,14 @@ namespace
             console_owner_set_user(); // the first driver's publish
             console_note_driver_death();
             g_window_free = false; // its IRQ thread still holds the registers
-            console_on_driver_death();
+            console_on_driver_death(kickos::IrqLock());
             ASSERT_EQ(g_reclaims, 0) << "the reclaim did not defer, so no stale note can exist";
 
             console_handover_begin(); // the supervisor publishes a NEW endpoint
             console_owner_set_user();
 
             g_window_free = true; // the OLD driver's IRQ thread finally exits
-            console_on_driver_death();
+            console_on_driver_death(kickos::IrqLock());
             EXPECT_EQ(g_reclaims, 0)
                 << "the old driver's death note reclaimed a console the NEW driver owns";
             EXPECT_EQ(console_owner_is_kernel(), 0);
@@ -266,7 +268,7 @@ namespace
         run_isolated([]() {
             console_owner_set_user();
             console_note_driver_death();
-            console_on_driver_death();
+            console_on_driver_death(kickos::IrqLock());
             ASSERT_EQ(g_reclaims, 1) << "the console never reached RECLAIMED";
             console_owner_set_user(); // the restart's publish
             g_pokes = 0;
@@ -307,7 +309,7 @@ namespace
             console_owner_set_user();
             console_note_driver_death();
             g_window_free = false;
-            console_on_driver_death();
+            console_on_driver_death(kickos::IrqLock());
             ASSERT_EQ(g_reclaims, 0) << "the reclaim did not defer, so no window was opened";
             ASSERT_NE(console_dark(), 0);
             g_serves = false;
@@ -327,7 +329,7 @@ namespace
             console_owner_set_user();
             console_note_driver_death();
             g_window_free = false;
-            console_on_driver_death();
+            console_on_driver_death(kickos::IrqLock());
             g_serves = false;
             EXPECT_EQ(kickos::kconsole_write_user("line 6\n", 7, false), -KOS_EAGAIN);
             EXPECT_EQ(g_dark_waits, 0) << "a non-blocking writer waited";
@@ -343,7 +345,7 @@ namespace
             console_owner_set_user();
             console_note_driver_death();
             g_window_free = false;
-            console_on_driver_death();
+            console_on_driver_death(kickos::IrqLock());
             g_serves = false;
             g_dark_wait_answer = -KOS_ECANCELED;
             EXPECT_EQ(kickos::kconsole_write_user("line 6\n", 7, true), -KOS_ECANCELED);
@@ -361,10 +363,10 @@ namespace
             EXPECT_GE(after_publish, 1) << "a publish did not wake the dark window's writers";
             console_note_driver_death();
             g_window_free = false;
-            console_on_driver_death();
+            console_on_driver_death(kickos::IrqLock());
             EXPECT_EQ(g_dark_wakes, after_publish) << "a refused reclaim woke the writers";
             g_window_free = true;
-            console_on_driver_death();
+            console_on_driver_death(kickos::IrqLock());
             EXPECT_EQ(g_dark_wakes, after_publish + 1) << "the reclaim did not wake the writers";
             EXPECT_EQ(console_dark(), 0);
         });

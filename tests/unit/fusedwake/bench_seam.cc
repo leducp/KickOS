@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Record when PH_REPLY_RECV_TOTAL closes relative to scheduler switches.
-// Stub other benchmark hooks and provide IrqLock timestamp storage.
+// Record when PH_REPLY_RECV_TOTAL closes relative to scheduler switches, and where the park
+// mark is called. Stub other benchmark hooks and provide IrqLock timestamp storage.
 
 #include <kickos/bench.h>
+#include <kickos/sched.h>
 
 #include <kickos/sys/atomic.h>
 
@@ -15,11 +16,13 @@ namespace kickos::testfix
 {
     uint32_t g_bench_seam_reply_recv_rows = 0;
     uint32_t g_bench_seam_reply_recv_switches = 0;
+    BenchParkMark g_bench_seam_park_mark = {};
 
     void bench_seam_reset()
     {
         g_bench_seam_reply_recv_rows = 0;
         g_bench_seam_reply_recv_switches = 0;
+        g_bench_seam_park_mark = {};
     }
 }
 
@@ -49,6 +52,12 @@ namespace kickos
 
     void bench_e2e_park_mark()
     {
+        testfix::BenchParkMark& m = testfix::g_bench_seam_park_mark;
+        m.calls++;
+        m.locked = testfix::klock_held();
+        m.by = sched::current();
+        m.state = m.by->state;
+        m.parks = testfix::g_parks_committed;
     }
 }
 

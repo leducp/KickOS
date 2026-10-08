@@ -5,38 +5,47 @@
 
 namespace kickos::init
 {
-    void status_clear(StatusRecord* record)
+    // The destructor's even store is the constructor's odd one plus one: a writer that did not
+    // store odd leaves the count odd, and every reader refused.
+    StatusWriter::StatusWriter(StatusRecord* record) : record_{record}
     {
-        record->count = 0u;
-        record->deaths = 0u;
-        record->restarts_left = 0u;
-        record->state = 0u;
+        record_->count_ = record_->count_.load() + 1u;
+    }
+
+    StatusWriter::~StatusWriter() { record_->count_ = record_->count_.load() + 1u; }
+
+    void StatusWriter::deaths(uint16_t value) { record_->deaths_ = value; }
+
+    void StatusWriter::restarts_left(uint8_t value) { record_->restarts_left_ = value; }
+
+    void StatusWriter::state(uint8_t value) { record_->state_ = value; }
+
+    void StatusWriter::clear(StatusRecord* record)
+    {
+        record->count_ = 0u;
+        record->deaths_ = 0u;
+        record->restarts_left_ = 0u;
+        record->state_ = 0u;
     }
 
     void status_write(StatusRecord* record, StatusFields const& fields)
     {
-        // The caller is the one writer, so this reads back its own last store.
-        uint32_t const count = record->count;
-        record->count = count + 1u;
-        fence_release();
-        record->deaths = fields.deaths;
-        record->restarts_left = fields.restarts_left;
-        record->state = fields.state;
-        record->count = count + 2u;
+        StatusWriter w(record);
+        w.deaths(fields.deaths);
+        w.restarts_left(fields.restarts_left);
+        w.state(fields.state);
     }
 
     bool status_read(StatusRecord const* record, StatusFields* out)
     {
-        uint32_t const before = record->count;
+        uint32_t const before = record->count_;
         if ((before & 1u) != 0u)
         {
             return false;
         }
-        fence_acquire();
-        out->deaths = record->deaths;
-        out->restarts_left = record->restarts_left;
-        out->state = record->state;
-        fence_acquire();
-        return record->count == before;
+        out->deaths = record->deaths_;
+        out->restarts_left = record->restarts_left_;
+        out->state = record->state_;
+        return record->count_ == before;
     }
 }

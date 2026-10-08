@@ -26,6 +26,8 @@ static inline bool armv7m_fault_frame_readable(uint32_t cfsr)
 
 // CFSR fields (ARMv7-M ARM B3.2.15).
 constexpr uint32_t ARMV7M_CFSR_MMFSR = 0xFFu;
+constexpr uint32_t ARMV7M_CFSR_MMARVALID = 1u << 7;
+constexpr uint32_t ARMV7M_CFSR_BFSR = 0xFF00u;
 constexpr uint32_t ARMV7M_CFSR_PRECISERR = 1u << 9;
 constexpr uint32_t ARMV7M_CFSR_IMPRECISERR = 1u << 10;
 constexpr uint32_t ARMV7M_CFSR_BFARVALID = 1u << 15;

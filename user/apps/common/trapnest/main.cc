@@ -179,8 +179,9 @@ int main(int, char**)
 
     // WHERE the refusal happens decides the depth reached. A stack under the floor is refused
     // near the TOP of thread_create_call; an INADMISSIBLE memory region is refused in
-    // grant_region_admissible, the deep end of the chain rv_trap_stack.h measures the syscall
-    // red zone against. So: a kernel-default stack, and a region outside the arena.
+    // spawn_grant_admit -> ram_region_admit -> grant_region_admissible, the deep end of the
+    // chain rv_trap_stack.h measures the syscall red zone against. So: a kernel-default stack,
+    // and a region outside the arena.
     g_tn_params.entry = worker;
     g_tn_params.name = "tndeep";
     g_tn_params.prio = 10;

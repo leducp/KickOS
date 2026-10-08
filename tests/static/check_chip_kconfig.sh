@@ -32,8 +32,6 @@ require_repo_root
 ROOT="$(pwd)"
 TOOL="$ROOT/tools/compose"
 [ -x "$PY" ] || fail "no python interpreter at $PY"
-command -v uv >/dev/null 2>&1 \
-    || fail "uv not found on PATH; tools/compose runs under uv (https://docs.astral.sh/uv/)"
 scratch_dir
 
 cat > "$TMP/selects.py" <<'PYEOF'
@@ -66,13 +64,7 @@ PYEOF
 
 corpus "$TMP/files" "chip file under platform/" 'platform/*/chip.yaml'
 
-STATE="$BUILD/compose/chip_kconfig"
-mkdir -p "$STATE/tmp" || fail "cannot create $STATE in the build directory"
-UV_PROJECT_ENVIRONMENT="$STATE/venv"
-UV_PYTHON_DOWNLOADS=never
-PYTHONPATH="$TOOL"
-TMPDIR="$STATE/tmp"
-export UV_PROJECT_ENVIRONMENT UV_PYTHON_DOWNLOADS PYTHONPATH TMPDIR
+compose_env "$TOOL" "$BUILD/compose/chip_kconfig"
 
 cat > "$TMP/agree.py" <<'PYEOF'
 import os
@@ -172,6 +164,6 @@ for label, applies, flip in ARMS:
 print("chip_kconfig: %d chip file(s) agree with Kconfig, %d arm(s) refused" % (len(files), len(ARMS)))
 PYEOF
 
-uv run --project "$TOOL" --locked --quiet python "$TMP/agree.py" "$TMP/selects" "$TMP/files" \
+compose_python "$TMP/agree.py" "$TMP/selects" "$TMP/files" \
     || fail "a chip file disagrees with Kconfig, or the gate could not run, see above"
 echo "PASS: chip_kconfig"

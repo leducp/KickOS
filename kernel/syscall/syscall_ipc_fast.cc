@@ -12,6 +12,7 @@
 #include <kickos/bench.h>
 #include <kickos/cap.h>
 #include <kickos/endpoint.h>
+#include <kickos/held.h>
 #include <kickos/instance.h>
 #include <kickos/kernel.h>
 #include <kickos/sched.h>
@@ -50,11 +51,6 @@ static_assert(KICKOS_KERNEL_CORES == 1,
 
 namespace kickos
 {
-    namespace
-    {
-        constexpr uint32_t KOS_BADGE_NONE = 0;
-    }
-
     // The arch prologues branch on the literal, an asm trap handler having no enum; this
     // assert is what makes a renumbering a build error.
     static_assert(KOS_SYS_CALL_REG == 56, "the arch prologues branch on the literal 56");
@@ -72,14 +68,16 @@ namespace kickos
     {
         // Entered with interrupts masked by the trap itself, so there is no IrqLock here
         // and no lock release to order anything against.
-        Thread* c = kernel().current[kickos_kernel_core()];
+        Held const held{};
+        Thread* c = kernel().current(kickos_kernel_core());
         if (c == nullptr)
         {
             return nullptr;
         }
         // The generic dispatch exits a cancelled thread on entry; bypassing dispatch must
         // not bypass that.
-        if (c->cancel_kind != CANCEL_NONE or c->dying)
+        ParkToken const ask = park_cancel_pending(c);
+        if (ask.cancelled() or c->dying)
         {
             return nullptr;
         }
@@ -126,11 +124,7 @@ namespace kickos
             return nullptr; // the RECEIVER's table or its reply bound, and no side effect yet
         }
 
-        size_t n = send_len;
-        if (w->ipc.len < n)
-        {
-            n = w->ipc.len; // receiver-side request truncation
-        }
+        size_t const n = ipc_len_min(send_len, w->ipc.len);
         // The request end is the caller's SAVED TRAP FRAME and so kernel storage, which
         // is what a null owner names; the receiver's end is its own space.
         //
@@ -160,33 +154,27 @@ namespace kickos
         // the payload straight in the registers the restore will pop. call_frame_parked is
         // what tells endpoint_reply that this ipc.buf is kernel storage and not a user
         // address.
-        c->ipc.buf = reinterpret_cast<uintptr_t>(&args[1]);
-        c->ipc.len = recv_cap;
-        c->ipc.badge_out = 0;
-        c->call_rx_cap = recv_cap;
-        c->call_state = CALL_REPLY_WAIT;
+        reply_wait_seat(c, reinterpret_cast<uintptr_t>(&args[1]), recv_cap);
         // No kernel continuation exists for this park: the caller's resume is the arch
         // restoring the frame this call trapped on, so the switch stores the result in args[0].
         c->call_frame_parked = 1;
-        // NO park_cancel_pending HERE, and the entry read above is the whole guard: this path
-        // takes no lock, so it releases none, and nothing can land behind that read on this
-        // core. A peer core is ruled out rather than handled: docs/design-multicore.md
-        // section 4 gap 1 puts this path out of scope for the multicore contract, and N10's
-        // configure-time refusal is what carries the ruling.
-        park_queueless(c, WAIT_EP_REPLY, w);
+        // The entry ask is the whole guard: this path takes no lock, and nothing can land
+        // behind it on this core. A peer core is ruled out by the configure-time refusal of the
+        // fastpath above one kernel core.
+        park_queueless(ask)(c, WAIT_EP_REPLY, w, held);
         reply_donor_park(w, c);
         // No deadline: the untimed kos_call is the only shape the stub selects this number for.
 
-        if (not sched::wake_no_resched(w))
+        if (not sched::wake_no_resched(w, held))
         {
             // Not reachable: w was parked on recv_waiters and this is the pop. Refusing here
             // would strand it.
             KICKOS_ASSERT(false);
         }
-        Thread* next = kernel().policy->pick_next();
+        Thread* next = policy_pick_next();
         KICKOS_ASSERT(next != nullptr);
         KICKOS_ASSERT(next != c); // c just parked, so the policy cannot list it
-        return sched::switch_prepare(next);
+        return sched::switch_prepare(next, held);
     }
 }
 
