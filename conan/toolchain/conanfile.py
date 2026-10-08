@@ -137,7 +137,7 @@ FAMILIES = {
                   "newlib": ["newlib/Makefile.in", "libgloss/Makefile.in"]},
         "gcc": [],
         "cflags": "-g -O2 -ffunction-sections -fdata-sections",
-        "newlib": [],
+        "newlib": ["--enable-newlib-io-long-long", "--enable-newlib-io-c99-formats"],
         "check": [["-misa=v3", "-mdfpu"]],
     },
 }
@@ -178,7 +178,7 @@ class KickOSToolchain(ConanFile):
     built it is no part of what it is.
     """
 
-    version = "1.0"
+    version = "1.1"
     license = "GPL-3.0-or-later WITH GCC-exception-3.1 AND BSD-3-Clause (newlib COPYING.NEWLIB)"
     description = "The KickOS cross toolchain for one target family"
     package_type = "application"
