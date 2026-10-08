@@ -4,8 +4,7 @@
 // RISC-V RV64IMAC arch backend: the ISA-generic half of the arch.h seam. switch.S holds the
 // trap vector, the save frame and the entries; trap.S the supervisor-mode confirmation.
 //
-// This port runs in supervisor mode, so every CSR here is an s-prefixed one and nothing is
-// shared with the machine-mode rv32imac backend beside it.
+// This port runs in supervisor mode: every CSR here is s-prefixed.
 //
 // satp belongs to the map editor in aspace_rv64imac.cc: one root serves both privilege levels,
 // so it moves only when the space does.
@@ -16,15 +15,12 @@
 
 #include <kickos/arch/arch.h>
 #include "ctx_redirect.h"
+#include <kickos/arch/doorbell_protocol.h>
 #include <kickos/arch/percpu.h>
 #include <kickos/arch/rv64_doorbell.h>
 #include <kickos/arch/rv64_frame.h>
 #include <kickos/diag.h>
 #include <kickos/sys/atomic.h>
-
-#if KICKOS_KERNEL_CORES > 1
-#include <kickos/arch/doorbell_part.h>
-#endif
 
 #include <stddef.h>
 #include <stdint.h>
@@ -105,9 +101,6 @@ namespace
     }
 
 #if KICKOS_KERNEL_CORES > 1
-    static_assert(KICKOS_MULTICORE_MODEL_SHARED,
-                  "the kernel's core index names the hart only under one shared kernel");
-
     using kickos::Atomic;
     using kickos::Order;
     using RowWord = Atomic<uint32_t, Order::RELAXED>;
@@ -595,49 +588,6 @@ uint64_t arch_cpu_clock_hz(void)
     return 0;
 }
 
-// --- Region descriptors: none on this arch ----------------------------------
-// arch_mpu_min_region returning 0 makes arch_ram_region_size 16-byte granular, so
-// arch_mpu_region_pow2 is never read. Both bodies are scraped textually by
-// cmake/boot_arena.cmake and must stay a plain integer return.
-void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
-                    struct arch_mpu_encoded const* image)
-{
-    (void)regions;
-    (void)n;
-    (void)image;
-}
-
-void kickos_arch_mpu_commit(void) {}
-
-// Nothing is deferred on this backend, so the set is already live when apply returns.
-void arch_mpu_apply_now(struct arch_mpu_region const* regions, size_t n,
-                        struct arch_mpu_encoded const* image)
-{
-    arch_mpu_apply(regions, n, image);
-}
-
-size_t arch_mpu_min_region(void)
-{
-    return 0;
-}
-
-int arch_mpu_region_pow2(void)
-{
-    return 0;
-}
-
-bool arch_mpu_region_encodable(uintptr_t base, size_t size)
-{
-    (void)base;
-    (void)size;
-    return false;
-}
-
-int arch_mpu_nocache_support(void)
-{
-    return ARCH_MPU_NOCACHE_REFUSED;
-}
-
 // Rule 7 (arch.h): RISC-V has no bit-band alias.
 int arch_bitband_present(void)
 {
@@ -905,16 +855,13 @@ void kickos_rv64_isr_dispatch(void* frame)
         // holding it while it waits here. The cell is the authority, not the raise.
         if (kickos_rv64_doorbell_pending() != 0)
         {
-            kickos_rv64_doorbell_service();
+            kickos_doorbell_service();
         }
 #endif
 #if KICKOS_KERNEL_CORES > 1
         // Third, and outside the service body because it takes the kernel lock. The take is
         // what tells a reschedule from a rendezvous whose target owes no scheduler entry.
-        if (kickos_kernel_core_resched_take() != 0)
-        {
-            kickos_kernel_core_resched();
-        }
+        kickos_kernel_core_resched_if_owed();
 #endif
         // Fourth, the device lines the set carries, which share the cause with everything above.
         // Every line the set carries, not one: two raises can land between dispatches, and a

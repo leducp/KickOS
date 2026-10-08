@@ -461,23 +461,24 @@ ends, and linked by the peer's own dispatch (archived `M9.4_rings_record.md`).
 **Exclusion:** `IrqLock` masks the local core and, above one kernel core,
 holds one BKL across shared-kernel transactions. Per-core ready queues
 restrict who edits a list; they do not let two cores edit shared capability,
-IPC or timer state concurrently. The scheduler and timer entries marked
-"caller holds the exclusion" in `sched.h` and `time.h` rely on the incoming
-caller's bracket or a masked trap entry. The located compiler-callgraph gate
-in `tests/static/check_caller_held.py` checks that obligation on its declared
-presets; `STATE.md` names its Xtensa coverage limit.
+IPC or timer state concurrently. An entry that requires the exclusion takes a
+`Held` (`kickos/held.h`), which only an `IrqLock` or the IPC fastpath,
+entered under its trap's own mask, can make, so a call with no lock in hand
+does not compile. The token is copyable and storable: it shows the caller was
+handed a lock, not that the lock is held now.
 
-**Pluggable policy interface (RTEMS-style).** The core owns *mechanism* (run state, context
-switch, ready structure); the *policy* (which thread runs next) sits behind a small interface
-(`SchedPolicy`, `kernel/include/kickos/sched.h`): `pick_next()`, `on_ready(t)`, `on_remove(t)`,
-`on_yield(t)`, `on_slice_expire(t)`, plus the **tickless timed-event seam** -- `on_switch_in(t)`
-arms the incoming thread and `next_timed_event()` reports the earliest policy deadline
-(`UINT64_MAX` = none), so the core owns the clock and the policy owns the deadline.
-**FIFO + RR ship first**
-(priority bitmap + per-priority FIFO, optional per-thread quantum); **EDF / rate-monotonic** drop
-in later without touching `reschedule()`, IPC, or the arch layer.
+**Policy interface (RTEMS-style).** The core owns *mechanism* (run state, context switch); the
+*policy* (which thread runs next, and the ready structure) sits behind a small set of functions
+declared in `kernel/include/kickos/sched.h`: `policy_pick_next()`, `policy_on_ready(t)`,
+`policy_on_remove(t)`, `policy_on_yield(t)`, `policy_on_slice_expire(t)`, plus the **tickless
+timed-event seam**: `policy_on_switch_in(t)` arms the incoming thread and
+`policy_next_timed_event()` reports the earliest policy deadline (`UINT64_MAX` = none), so the core
+owns the clock and the policy owns the deadline. **FIFO + RR ship first**
+(`kernel/sched/policy_fifo_rr.cc`: priority bitmap + per-priority FIFO, optional per-thread
+quantum); **EDF / rate-monotonic** would supply the same functions without touching
+`reschedule()`, IPC, or the arch layer.
 
-**`pick_and_seat()`** -- the single decision point: ask the active policy for `pick_next()`;
+**`pick_and_seat()`** is the single decision point: ask the policy for `policy_pick_next()`;
 if != current, call `arch_switch(from, to)` (which may defer). `sched::reschedule()` is the bare
 entry to it and `sched::resched_after_wake()` the one that also carries the woken thread, so a
 pass that does not take that thread places it. No caller is privileged
@@ -576,7 +577,7 @@ is the form that waits. archived `M4_task_layer_record.md` is the record.
   `KOS_SYS_CALL_TIMED` and `KOS_SYS_THREAD_JOIN` given a `timeout_us` other than
   `KOS_TIMEOUT_NONE` expire with no peer, move no bytes, return no reply, and leave the joined
   thread running. `kernel/time/time.cc` decides only THAT a deadline
-  expired and delegates each endpoint park's unwind to `endpoint_wait_abort`
+  expired and delegates each park's unwind to `thread_abort_park`
   (`kernel/thread/park.cc`), which unlinks the right queue and reverts the right
   donation; the deadline is cancelled in `sched::wake_no_resched`, the one unpark funnel, so a
   rendezvous that beats it can never also report it. ONE caveat, and it is the reason the promise is
@@ -794,9 +795,13 @@ one MPU descriptor (no rounding) + not a bit-band alias, or for a **RAM** grant 
 privileged waiver), an own-image AMP partition's user share being the one range outside it
 admitted, its holder root's reservation (`invariants.md`,
 `amp-user-share-is-roots-reservation`) -- power-of-two size plus natural alignment on a pow2-mode backend
-(PMSAv7, PMP NAPOT), a granule multiple on a base+limit one (PMSAv8, SYSMPU, RX). `domain_for` (`kernel/domain`) runs it at the **region-commit chokepoint** on the
-prospective committed geometry before it allocates a domain slot; the caller-owned-stack path in
-`thread_create_call` runs the same predicate on the stack region, and `thread_create` carries a backstop
+(PMSAv7, PMP NAPOT), a granule multiple on a base+limit one (PMSAv8, SYSMPU, RX). `ram_region_admit`
+(`kernel/thread`) runs it on the prospective committed geometry of every RAM region a caller names,
+a task's data grant before any domain slot is claimed, a caller-owned stack, a memory window (a
+privileged child's waives this predicate and the owner) and a self-grant, in one order with one
+answer each: `-KOS_ENOTSUP` for a memory type the chip cannot honour, `-KOS_EINVAL` for an extent
+no one descriptor names, `-KOS_EPERM` for Rule 7, the arena or a block the granter's task did not
+reserve, `-KOS_EBUSY` for a block held with another memory type. `thread_create` carries a backstop
 assert. Each enforcing chip declares its owns-for-life set via `arch_reserved_blocks` (`arch.h`) and
 the set is fail-closed both ways it can be stated: a chip with a chip file has it generated from the
 devices the file marks `owner: kernel`, and the host tool refuses a file whose protecting unit has
@@ -812,9 +817,9 @@ module is inline no-op stubs, so the call sites pay zero flash. (Design + worked
 
 **Arena confinement is all this predicate says about a RAM range's provenance.** WHICH task
 inside the arena reserved a block is a second authority, `ram_owner_nameable` (`kernel/include/kickos/ramown.h`),
-asked BESIDE Rule 7 at each of the three paths that let a caller name a block and deliberately not
-inside it: the grant module then stays arch-seam-only, and its host gate needs no task pool to
-compile. See `arena-block-owner-is-the-reserving-task`.
+asked BESIDE Rule 7 in `ram_region_admit` and deliberately not inside it: the grant module then
+stays arch-seam-only, and its host gate needs no task pool to compile. See
+`arena-block-owner-is-the-reserving-task`.
 
 **Domains vs kernel instances (complementary, not competing).** The KickCAT whole-bus sim runs
 many slaves, and **each slave is its own MCU -> its own KickOS kernel instance**; several
@@ -829,7 +834,7 @@ on every switch-in, and a cross-domain write faults (CI-covered by the `selftest
 M2 completed the picture: the full `Domain` object (a shared region set several threads
 reference, plus per-thread private stacks) and the per-**chip** hardware backends are in, so the
 same cross-domain write is silicon-proven to fault on SYSMPU, PMSAv6-M/v7/v8, RISC-V PMP and the
-RX MPU. A single per-thread granted region (`ThreadAttr.mem_base` / `kos_thread_params.mem_base`,
+RX MPU. A single per-thread granted region (`kos_thread_params.mem_base`,
 backed by `arch_ram_alloc`) remains the simple case a domain is built from.
 
 ---
@@ -1063,10 +1068,10 @@ feeds the slave app.
   KickOS's own warning flags are **never** part of that interface -- they are this project's
   hygiene policy, applied `PRIVATE` to targets we own, and a consumer's diagnostics stay theirs.
 - **Declaring a driver / QEMU test / board provider.** Three macros in `cmake/kickos.cmake` give
-  each its single shape: `kickos_add_driver(<name> [SOURCES] [CLASS] [REGDIR] [THREADS ...])` -- a freestanding,
-  exported driver-lib linking `kickos_user`, its `.data`/`.bss` landing app-side, and with `THREADS`
-  a packaged driver whose declared metadata reaches both its descriptor, through the generated
-  `<kickos/driver/declared/<name>.h>`, and the export manifest's catalogue. Every driver a service
+  each its single shape: `kickos_add_driver(<name> [SOURCES] [CLASS] [REGDIR] [THREAD ...]...)`, a freestanding,
+  exported driver-lib linking `kickos_user`, its `.data`/`.bss` landing app-side, and with a `THREAD`
+  a packaged driver whose declaration generates both its descriptor, the `KICKOS_DRIVER_DESCRIPTOR`
+  of `<kickos/driver/declared/<name>.h>`, and the export manifest's catalogue. Every driver a service
   list carries is packaged. A line role is named after the chip file's line it binds, except on a
   module whose channels share their lines, as the XMC's USIC is, where the role is `irq`. A
   composition binds each role to a line, and the init hands the driver's `START` a

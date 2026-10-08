@@ -37,11 +37,6 @@ extern "C"
 
 namespace kickos
 {
-    namespace detail
-    {
-        constinit InstanceLocal<Kernel> g_instance;
-    }
-
 #if KICKOS_HAVE_ASPACE
     struct arch_aspace* domain_space(Domain const*) { return nullptr; }
     VirtualRanges const* domain_ranges(Domain const*) { return nullptr; }

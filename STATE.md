@@ -210,7 +210,7 @@ count returns the gate to a lottery. The app reports the size it realized and th
 anything at or below the core count; without that line the gate would pass while proving nothing.
 
 **THE AMP POSTURE IS REACHABLE BY CONFIGURATION ALONE**, `KICKOS_MULTICORE_AMP` in `Kconfig`, which
-sets one kernel core while the image still drives four. It links `kickos_arm64_doorbell_service`, so
+sets one kernel core while the image still drives four. It links the doorbell service, so
 **gates keyed on the kernel-core count silently skip a body that exists**, which is why the ISB gate
 is keyed on `KICKOS_NUM_CORES`.
 
@@ -595,10 +595,9 @@ The whole point of this file. A green fleet pass says none of the following.
   arm anywhere cancels a SLEEPING thread.** Every cancel-facing worker in the selftest is written to
   park on a semaphore nothing posts, so 64 sleep call sites and every kill, slay and group-kill site
   between them never produce the interleaving. Recorded rather than closed with a probabilistic arm.
-  **`park_death_point` is now a closed class enforced by a gate**, which counts the
-  `ThreadState::BLOCKED` writes against a declared set: it cannot check that each park ASKS, the ask
-  being in the caller for two of the three sites, but it can refuse a park nobody declared, which is
-  the failure that actually happened.
+  **`park_death_point` is now held by a type**: the one `ThreadState::BLOCKED` write takes the
+  `ParkToken` only the cancel ask mints, so a park that skips the ask does not compile; the gate
+  left beside it only refuses a write past the state cell.
 - **THE SINGLE-CORE DEFECT M7.5's DEATH POINT EXISTS TO CLOSE HAS NO WITNESS IN THIS SUITE.**
   Forcing the predicate to answer false reddens NOTHING at one kernel core: the window needs a
   preemption between `syscall_dispatch`'s entry read and the lock acquisition, and no arm can drive
@@ -1028,7 +1027,7 @@ The whole point of this file. A green fleet pass says none of the following.
   device loops and the other eleven reach the burst producer (since deleted), which held the kernel
   lock for one ring chunk and dropped it between chunks. `kernel/init/console.cc` (`kconsole_write_impl`) states
   the opposite -- "the chip transport locks internally" -- which is why the chip arm deliberately
-  takes no lock, and that sentence is true of no backend. `console_chip_writer_enter`/`_leave`
+  takes no lock, and that sentence is true of no backend. The chip arm's writer tally
   counts writers for the publish drain and excludes nothing. **The rate is load-dependent and only
   that**: idle, the preset's whole CI job is green thirty runs out of thirty; loaded it costs the
   TAP stream about seven times in thirty. So the figure to distrust is an unloaded one, and a red

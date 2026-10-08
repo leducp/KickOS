@@ -71,8 +71,6 @@ namespace kickos
     }
 
 #if KICKOS_KERNEL_STACKS
-    // Armed once at init and never re-armed on slot reuse: re-arming would erase the record
-    // of an overflow that already happened. Both figures below are per slot and since boot.
     void kstack_arm(int index)
     {
         uint32_t* const w = kstack_words(index);
@@ -85,17 +83,13 @@ namespace kickos
         }
     }
 
-    // False means the low word was overwritten. It reports an overflow that has already
-    // happened; it cannot prevent one.
     bool kstack_canary_intact(int index)
     {
         return kstack_words(index)[0] == KSTACK_CANARY;
     }
 
-    // Scans upward from the canary to the lowest word that is no longer the fill, which is the
-    // deepest sp anything reached on this slot since it was armed. A run of written words that
-    // happen to equal KSTACK_FILL at that boundary reads shallow, so this under-reports and
-    // never over-reports.
+    // A run of written words that happen to equal KSTACK_FILL at the boundary reads shallow, so
+    // this under-reports and never over-reports.
     size_t kstack_high_water(int index)
     {
         // Never through kstack_words: that asserts, an assert reaches kpanic, and kpanic
@@ -119,8 +113,9 @@ namespace kickos
     // containing and straddling requests all refuse while an adjacent window stays
     // admissible. A holder counts until its exit drops its device regions, before the
     // teardown can wake a supervisor into a respawn. Check and commit both sit inside
-    // thread_create_call's function-scope IrqLock.
-    static bool dev_window_held(uintptr_t base, size_t size, Task const* outside, bool any)
+    // thread_create_call's function-scope IrqLock. A null `outside` asks about every holder: a
+    // thread whose task is gone has already dropped its device regions.
+    bool dev_window_held_outside(uintptr_t base, size_t size, Task const* outside)
     {
         uintptr_t const last = base + size - 1u;
         Kernel& k = kernel();
@@ -128,7 +123,7 @@ namespace kickos
         {
             Thread const& t = k.threads.slots[i];
             if (t.state == ThreadState::EXITED or t.state == ThreadState::INACTIVE
-                or (not any and t.task == outside))
+                or t.task == outside)
             {
                 continue;
             }
@@ -146,12 +141,7 @@ namespace kickos
 
     bool dev_window_free(uintptr_t base, size_t size)
     {
-        return not dev_window_held(base, size, nullptr, true);
-    }
-
-    bool dev_window_held_outside(uintptr_t base, size_t size, Task const* t)
-    {
-        return dev_window_held(base, size, t, false);
+        return not dev_window_held_outside(base, size, nullptr);
     }
 
     bool memory_type_free(uintptr_t base, size_t size, uint32_t attr, Thread const* except)
@@ -326,10 +316,6 @@ namespace kickos
     bool stack_type_free(uintptr_t base, size_t size, kos_window const* list, uint16_t n)
     {
         uintptr_t const last = base + size - 1u;
-        if (not memory_type_free(base, size, ARCH_MPU_R | ARCH_MPU_W, nullptr))
-        {
-            return false;
-        }
         for (uint16_t i = 0; i < n; i++)
         {
             kos_window const& w = list[i];
@@ -346,38 +332,49 @@ namespace kickos
 #endif
 
 #if not KICKOS_HAVE_ASPACE
-    // `c` holds memory authority.
-    int thread_self_grant(Thread* c, uintptr_t base, size_t size, uint32_t attr)
+    int ram_region_admit(Thread const* granter, uintptr_t base, size_t size, uint32_t attr,
+                         RamAdmit how)
     {
-        // Admitted at the extent the descriptor commits: a window rounded up after admission
-        // could cover a neighbour the request did not.
-        size_t const rsz = arch_ram_region_size(size);
-        if (rsz == 0)
+        if (not grant_nocache_admissible(attr))
         {
-            return -KOS_EINVAL;
+            return -KOS_ENOTSUP;
         }
-        // Nameable by one descriptor: PMSAv7's MPU_RBAR masks the base down to the region
-        // size, so an unaligned base would start the window below what the caller named.
+        // Admitted at the extent the descriptor commits: rounded up after admission, it could
+        // cover a neighbour the request did not. PMSAv7's MPU_RBAR masks the base down to the
+        // region size, so an unaligned base would start the window below what was named.
+        size_t const rsz = arch_ram_region_size(size);
         if (not arch_ram_region_admissible(base, rsz))
         {
             return -KOS_EINVAL;
         }
-        if (not grant_region_admissible(base, rsz, attr, true))
+        // Rule 7 bounds the arena, not who inside it reserved what: a sibling task's block is
+        // in-arena too.
+        if (how != RAM_ADMIT_PRIVILEGED
+            and (not grant_region_admissible(base, rsz, attr, false)
+                 or not ram_owner_nameable(granter->task, base, size)))
         {
             return -KOS_EPERM;
         }
-        // Rule 7 bounds the arena, not who inside it reserved what: a sibling task's block
-        // is in-arena too.
-        if (not ram_owner_nameable(c->task, base, size))
+        Thread const* except = nullptr;
+        if (how == RAM_ADMIT_SELF)
         {
-            return -KOS_EPERM;
+            except = granter;
         }
-        // Another thread holding the block with another memory type keeps it: a window
-        // over it, or a sibling's grant.
-        if (not memory_type_free(base, rsz, attr, c))
+        if (not memory_type_free(base, rsz, attr, except))
         {
             return -KOS_EBUSY;
         }
+        return 0;
+    }
+
+    int thread_self_grant(Thread* c, uintptr_t base, size_t size, uint32_t attr)
+    {
+        int const arc = ram_region_admit(c, base, size, attr, RAM_ADMIT_SELF);
+        if (arc != 0)
+        {
+            return arc;
+        }
+        size_t const rsz = arch_ram_region_size(size);
 #if KICKOS_MEMORY_ENFORCED and KICKOS_HAVE_MPU
         if (not c->mpu.retyping_expressible(base, rsz, attr))
         {
@@ -413,7 +410,7 @@ namespace kickos
         }
         // A non-cacheable data region was synced when its task was created, and owes nothing
         // per member.
-        Domain const* const d = task_domain(t->task);
+        Domain const* const d = thread_domain(t);
         if (d != nullptr and d != domain_kernel() and domain_region_count(d) != 0)
         {
             arch_mpu_region const* const r = domain_region_at(d, 0);
@@ -475,12 +472,12 @@ namespace kickos
     static Task* thread_task_resolve(ThreadAttr const& attr)
     {
         int derr = 0;
-        uint32_t caller = DOM_CALLER_MEM_AUTH;
+        uint32_t caller = 0;
         if (attr.privileged)
         {
             caller |= DOM_CALLER_PRIVILEGED;
         }
-        return task_for(caller, attr.mem_base, attr.mem_size, nullptr, &derr);
+        return task_for(caller, nullptr, 0, nullptr, &derr);
     }
 
 #if KICKOS_MEMORY_ENFORCED and KICKOS_HAVE_MPU and not KICKOS_HAVE_ASPACE
@@ -517,11 +514,11 @@ namespace kickos
                        void* stack_base, size_t stack_size, ThreadAttr const& attr)
     {
 #if KICKOS_KERNEL_CORES > 1
-        ThreadSlotKeep const keep = thread_slot_keep(t);
+        uint8_t const reseat_owed = t->reseat_owed;
 #endif
         kmemset(t, 0, sizeof(*t));
 #if KICKOS_KERNEL_CORES > 1
-        thread_slot_restore(t, keep);
+        t->reseat_owed = reseat_owed;
 #endif
 #if KICKOS_PRESYNC
         presync_fresh(t);
@@ -535,25 +532,22 @@ namespace kickos
 #endif
         t->spawner_tag = attr.spawner_tag;
         t->id = assign_thread_id();
-        // NEVER alias attr.name: via thread_create_call it can be a user pointer, and the
-        // fault reporter %s-prints t->name, so an unbounded strlen of a bad one would crash
-        // the fault path itself.
+        // attr.name does not outlive this call: copy, never alias.
         size_t ni = 0;
         if (attr.name != nullptr)
         {
-            for (; ni + 1 < sizeof(t->name_buf) and attr.name[ni] != '\0'; ++ni)
+            for (; ni + 1 < sizeof(t->name) and attr.name[ni] != '\0'; ++ni)
             {
-                t->name_buf[ni] = attr.name[ni];
+                t->name[ni] = attr.name[ni];
             }
         }
-        t->name_buf[ni] = '\0';
-        t->name = t->name_buf;
+        t->name[ni] = '\0';
         t->prio = attr.prio;
         t->base_prio = attr.prio;
         t->policy = attr.policy;
         t->quantum_ns = attr.quantum_ns;
         t->privileged = attr.privileged;
-        t->state = ThreadState::INACTIVE;
+        t->state.to<ThreadState::INACTIVE>();
         t->stack_base = stack_base;
         t->stack_size = stack_size;
         t->kstack_owned = attr.kstack_owned;
@@ -594,7 +588,7 @@ namespace kickos
         KICKOS_ASSERT(attr.regions != nullptr);
         t->mpu = *attr.regions;
 #else
-        bool const fitted = thread_regions_assemble(t->mpu, task_domain(t->task), attr,
+        bool const fitted = thread_regions_assemble(t->mpu, thread_domain(t), attr,
                                                     stack_base, stack_size);
         KICKOS_ASSERT(fitted);
 #endif

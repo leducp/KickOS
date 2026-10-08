@@ -2,8 +2,8 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The doorbell protocol a shared-kernel backend takes whole rather than spelling for itself:
-// the cells, the raise over them, the rendezvous wait, and the bring-up check of the coupling
-// between the kernel lock and the doorbell.
+// the cells, the raise over them, the rendezvous wait, the service body, and the bring-up check
+// of the coupling between the kernel lock and the doorbell.
 //
 // A BACKEND SUPPLIES TWO THINGS. What is the part's, through <kickos/arch/doorbell_part.h>: the
 // padding a cell owes, the spin a wait costs, the console a refusal reaches and the wording of
@@ -31,9 +31,6 @@ namespace kickos::doorbell
 {
     using PartRow = Row<KICKOS_DOORBELL_LINE>;
     using PartCell = Cell<KICKOS_DOORBELL_LINE>;
-
-    static_assert(sizeof(PartRow) % KICKOS_DOORBELL_LINE == 0,
-                  "a row shorter than a line would share one with the next writer");
 
     // Both nodes write these, so under one image per node they sit in the region the two link
     // scripts agree on rather than being allocated per image.
@@ -69,10 +66,63 @@ namespace kickos::doorbell
     extern PartCell g_held[KICKOS_NUM_CORES];
     extern PartCell g_spinning[KICKOS_NUM_CORES];
 #endif
+
+    // The service body's steps, each taking the token the step before it returns: snapshot,
+    // fence, drain, answer. Minted by kickos_doorbell_service's own steps and by service_fence
+    // alone.
+    class Service;
+
+    // That a snapshot was taken, and nothing else: the fence takes it in no register, so the call
+    // costs the service no register held across it.
+    class [[nodiscard]] Observed
+    {
+        friend class Snapshot;
+        Observed()
+        {
+        }
+    };
+
+    // That this core has stored the request sequences it will answer from and never re-read: a
+    // request raised after the snapshot is not one the fence attests to.
+    class [[nodiscard]] Snapshot
+    {
+    public:
+        bool owed(void) const
+        {
+            return owed_;
+        }
+        Observed observed(void) const
+        {
+            return Observed();
+        }
+
+    private:
+        friend class Service;
+        explicit Snapshot(bool owed) : owed_(owed)
+        {
+        }
+        bool owed_;
+    };
+
+    class [[nodiscard]] __attribute__((warn_unused)) Fenced
+    {
+        friend Fenced service_fence(Observed);
+        Fenced()
+        {
+        }
+    };
+
+    // The barrier this part owes between observing a request and answering it, on the calling
+    // core. Defined by every backend whose service body is kickos_doorbell_service.
+    Fenced service_fence(Observed);
 }
 
 extern "C"
 {
+
+// The far side of the doorbell, on the calling core: snapshot, fence, route drain, answers.
+// MASKED, and not re-entrant against itself.
+void kickos_doorbell_service(void);
 
 // The far side of the doorbell run from a spin rather than from the vector: drops this part's
 // pending state, runs the backend's service body, and raises again whatever the same cause

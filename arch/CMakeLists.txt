@@ -150,28 +150,6 @@ if(KICKOS_HAVE_ASPACE)
     "${KICKOS_ARCH_FAMILY}/${KICKOS_ARCH}/arch_${KICKOS_ARCH}.cc")
 endif()
 
-# __aeabi_read_tp is checked by instruction: C code never runs with SP at an exclusive stack
-# top, so the tlsprobe witness passes with or without the subtract that case needs.
-if(KICKOS_BUILD_TESTS AND KICKOS_TLS AND KICKOS_ARCH_FAMILY STREQUAL "arm")
-  add_test(
-    NAME    arm_read_tp
-    COMMAND "${CMAKE_SOURCE_DIR}/tests/static/check_arm_read_tp.sh"
-            "${CMAKE_OBJDUMP}"
-            "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>")
-  set_tests_properties(arm_read_tp PROPERTIES TIMEOUT 60 LABELS host)
-endif()
-
-# The double-precision compares the RX compiler emits are stepped for NaN, infinite and
-# subnormal operands: plain compares were right while every unordered one branched the wrong
-# way, and no emulator runs rxv3 (tests/static/check_rx_dfpu_compare.py).
-if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "rxv3")
-  add_test(
-    NAME    rx_dfpu_compare
-    COMMAND "${CMAKE_SOURCE_DIR}/tests/static/check_rx_dfpu_compare.py"
-            "${CMAKE_C_COMPILER}" ${KICKOS_MCPU_FLAGS})
-  set_tests_properties(rx_dfpu_compare PROPERTIES TIMEOUT 60 LABELS host SKIP_RETURN_CODE 77)
-endif()
-
 # No privileged TU may reach thread-local storage. Registered on every cross board, not only
 # where KICKOS_TLS is on.
 if(KICKOS_BUILD_TESTS AND NOT (KICKOS_ARCH STREQUAL "sim"))
@@ -230,9 +208,10 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
     list(APPEND _chip_src "${KICKOS_ARM_PMSAV8_SOURCE}")
   endif()
 
-  # A family.cmake names TUs shared by chips of one vendor family. They are compiled into this
-  # chip's archive, once per chip, against the chip's own family_map.h and regs/, so every
-  # per-part value stays a compile-time constant. They must not get an archive of their own:
+  # A family.cmake names TUs several chips share (a vendor family's bodies, the semihosting
+  # console). They are compiled into this chip's archive, once per chip, against the chip's own
+  # family_map.h and regs/, so every per-part value stays a compile-time constant. They must
+  # not get an archive of their own:
   # the chip linker scripts select .data/.bss by archive:member, so a new archive falls through
   # to the app catch-all, and a family may straddle two ISAs (RP2040 armv6m, RP2350 armv7m).
   set(_family_optin

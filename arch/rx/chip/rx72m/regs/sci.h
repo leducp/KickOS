@@ -119,7 +119,7 @@ namespace kickos::rx::reg::sci
     // The SCI clock is PCLKB for SCI0..SCI6 and SCI12 (UM sec.42 preamble p.2144).
 
     // D for a live (CKS, SEMR) pair.
-    inline uint32_t baud_divider(uint8_t cks, uint8_t semr)
+    constexpr uint32_t baud_divider(uint8_t cks, uint8_t semr)
     {
         uint32_t base = 32u;
         if ((semr & SEMR_BGDM) != 0)
@@ -161,7 +161,7 @@ namespace kickos::rx::reg::sci
     // comparison are what encode that, so neither is free to change.
     //
     // ABCSE is never selected: its D = 6 << 2n sits between the D = 8 and D = 16 rows.
-    inline bool baud_select(uint32_t clk, uint32_t baud, BaudSetting* out)
+    constexpr bool baud_select(uint32_t clk, uint32_t baud, BaudSetting* out)
     {
         if (clk == 0u or baud == 0u)
         {

@@ -8,6 +8,8 @@
 
 #include "held_fixture.h"
 
+#include <kickos/irqlock.h>
+
 using namespace heldfix;
 
 namespace
@@ -139,7 +141,7 @@ TEST(ConsoleHeld, AReclaimWritesWhatTheDriverNeverTook)
         publish();
         record("t1", 0x100u);
         console_note_driver_death();
-        console_on_driver_death();
+        console_on_driver_death(kickos::IrqLock());
         EXPECT_EQ(consoleseam::wire(), text("t1", 0x100u));
         EXPECT_EQ(held(), "");
     });
@@ -269,7 +271,7 @@ TEST(ConsoleHeld, ATaskEndingDuringTheHandOffWaitsForItsWindow)
         consoleseam::g_window_free = true;
         {
             kickos::IrqLock lock;
-            console_on_driver_death();
+            console_on_driver_death(lock);
         }
         EXPECT_EQ(consoleseam::g_reclaims, 1u);
         EXPECT_EQ(console_dark(), 0);

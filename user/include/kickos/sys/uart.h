@@ -12,6 +12,10 @@
 #define KICKOS_SYS_UART_H
 
 #include <stdint.h>
+#include <iso646.h> // and / or / not are macros in C, not keywords
+
+#include <kickos/sys.h> // kos_call
+#include <kickos/sys/static_assert.h>
 
 #ifdef __cplusplus
 extern "C"
@@ -118,19 +122,95 @@ struct kos_uart_stats
 //
 // kos_counter_t is pinned to the word it wraps: nine of them ARE the 36-byte wire image, and
 // stats_pack / stats_unpack copy the struct whole.
-#ifdef __cplusplus
-static_assert(sizeof(kos_counter_t) == 4, "kos_counter_t must stay one uint32_t wide");
-static_assert(alignof(kos_counter_t) == 4, "kos_counter_t must stay 4-aligned");
-static_assert(sizeof(struct kos_uart_req) == 12, "kos_uart_req must stay 12 bytes (wire ABI)");
-static_assert(sizeof(struct kos_uart_rsp) == 8, "kos_uart_rsp must stay 8 bytes (wire ABI)");
-static_assert(sizeof(struct kos_uart_stats) == 36, "kos_uart_stats must stay 36 bytes (wire ABI)");
-#else
-_Static_assert(sizeof(kos_counter_t) == 4, "kos_counter_t must stay one uint32_t wide");
-_Static_assert(_Alignof(kos_counter_t) == 4, "kos_counter_t must stay 4-aligned");
-_Static_assert(sizeof(struct kos_uart_req) == 12, "kos_uart_req must stay 12 bytes (wire ABI)");
-_Static_assert(sizeof(struct kos_uart_rsp) == 8, "kos_uart_rsp must stay 8 bytes (wire ABI)");
-_Static_assert(sizeof(struct kos_uart_stats) == 36, "kos_uart_stats must stay 36 bytes (wire ABI)");
-#endif
+KOS_STATIC_ASSERT(sizeof(kos_counter_t) == 4, "kos_counter_t must stay one uint32_t wide");
+KOS_STATIC_ASSERT(KOS_ALIGNOF(kos_counter_t) == 4, "kos_counter_t must stay 4-aligned");
+KOS_STATIC_ASSERT(sizeof(struct kos_uart_req) == 12, "kos_uart_req must stay 12 bytes (wire ABI)");
+KOS_STATIC_ASSERT(sizeof(struct kos_uart_rsp) == 8, "kos_uart_rsp must stay 8 bytes (wire ABI)");
+KOS_STATIC_ASSERT(sizeof(struct kos_uart_stats) == 36,
+                  "kos_uart_stats must stay 36 bytes (wire ABI)");
+
+// One request and its reply over a UART service endpoint. `buf` is the whole message,
+// KOS_EP_MSG_MAX bytes, request and reply alike: the caller seats `carried` payload bytes at
+// buf + sizeof(struct kos_uart_req) first, and the reply payload is left at
+// buf + sizeof(struct kos_uart_rsp). `len` is sent as given, whatever `carried` is.
+// Returns the reply's status when negative, else its len.
+static inline int kos_uart_call_in_place(kos_cap_t ep, uint8_t* buf, uint8_t op, uint8_t flags,
+                                         uint16_t len, size_t carried)
+{
+    struct kos_uart_req req;
+    uint8_t* rp = (uint8_t*)&req;
+    for (size_t i = 0; i < sizeof(req); i++)
+    {
+        rp[i] = 0;
+    }
+    req.op = op;
+    req.flags = flags;
+    req.len = len;
+    for (size_t i = 0; i < sizeof(req); i++)
+    {
+        buf[i] = rp[i];
+    }
+    int32_t const rc = kos_call(ep, buf, sizeof(req) + carried, KOS_EP_MSG_MAX);
+    if (rc < 0)
+    {
+        return (int)rc;
+    }
+    if ((size_t)rc < sizeof(struct kos_uart_rsp))
+    {
+        return -KOS_EINVAL;
+    }
+    struct kos_uart_rsp rsp;
+    uint8_t* dp = (uint8_t*)&rsp;
+    for (size_t i = 0; i < sizeof(rsp); i++)
+    {
+        dp[i] = buf[i];
+    }
+    if (rsp.status < 0)
+    {
+        return rsp.status;
+    }
+    return (int)rsp.len;
+}
+
+// The same call on a stack buffer: `payload` (len bytes, or none) is copied in, and up to
+// `out_max` bytes of the reply payload are copied to `out`. A payload over the message limit
+// answers -KOS_EINVAL before any call.
+static inline int kos_uart_call(kos_cap_t ep, uint8_t op, uint8_t flags, uint16_t len,
+                                uint8_t const* payload, uint8_t* out, uint16_t out_max)
+{
+    uint8_t buf[KOS_EP_MSG_MAX];
+    size_t carried = 0;
+    if (payload != NULL)
+    {
+        if (len > KOS_EP_MSG_MAX - sizeof(struct kos_uart_req))
+        {
+            return -KOS_EINVAL;
+        }
+        for (uint16_t i = 0; i < len; i++)
+        {
+            buf[sizeof(struct kos_uart_req) + i] = payload[i];
+        }
+        carried = len;
+    }
+    int const n = kos_uart_call_in_place(ep, buf, op, flags, len, carried);
+    if (n > 0 and out != NULL)
+    {
+        size_t m = (size_t)n;
+        if (m > out_max)
+        {
+            m = out_max;
+        }
+        if (m > KOS_EP_MSG_MAX - sizeof(struct kos_uart_rsp))
+        {
+            m = KOS_EP_MSG_MAX - sizeof(struct kos_uart_rsp);
+        }
+        for (size_t i = 0; i < m; i++)
+        {
+            out[i] = buf[sizeof(struct kos_uart_rsp) + i];
+        }
+    }
+    return n;
+}
 
 #ifdef __cplusplus
 }

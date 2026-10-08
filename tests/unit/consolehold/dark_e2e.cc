@@ -51,7 +51,7 @@ namespace
         attach_caps(g_writer, KICKOS_CAP_CHILD_WIDTH);
         {
             IrqLock lock;
-            sched::reschedule();
+            sched::reschedule(nullptr, lock);
         }
         ASSERT_EQ(sched::current(), g_writer);
         Endpoint* const ep = endpoint();
@@ -59,15 +59,15 @@ namespace
         {
             IrqLock lock;
             int const handle = kernel().endpoints.handle_for(kernel().endpoints.index_of(ep));
-            ASSERT_TRUE(cap_console_publish(g_writer, handle));
-            cap_console_serve(served);
+            ASSERT_TRUE(cap_console_publish(g_writer, handle, lock));
+            cap_console_serve(served, lock);
             console_handover_begin();
         }
         console_owner_set_user();
         darkseam::g_window_free = false;
         {
             IrqLock lock;
-            task_end(served, 0, true);
+            task_end(served, 0, true, lock);
         }
         ASSERT_NE(console_dark(), 0) << "fixture: the console is not dark";
     }
@@ -105,7 +105,7 @@ TEST_F(ConsoleDark, the_reclaim_wakes_a_writer_parked_in_the_dark_window)
             EXPECT_EQ(darkseam::g_wire, "") << "the line went out before the reclaim";
             darkseam::g_window_free = true;
             IrqLock lock;
-            console_on_driver_death();
+            console_on_driver_death(lock);
         });
         EXPECT_EQ(kconsole_write_user("line\n", 5, true), 5);
         EXPECT_EQ(g_park_kind, WAIT_CONSOLE) << "the writer did not wait on the console";
@@ -123,10 +123,11 @@ TEST_F(ConsoleDark, a_publish_wakes_a_writer_parked_in_the_dark_window)
         ASSERT_NO_FATAL_FAILURE(stage_dark());
         wake_next_park([](Thread* parked) {
             g_park_kind = parked->wait_kind;
-            IrqLock lock;
-            cap_console_serve(task(1));
-            console_handover_begin();
-            lock.end();
+            {
+                IrqLock lock;
+                cap_console_serve(task(1), lock);
+                console_handover_begin();
+            }
             console_owner_set_user();
         });
         EXPECT_EQ(kconsole_write_user("line\n", 5, true), -KOS_EBUSY);

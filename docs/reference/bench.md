@@ -784,13 +784,13 @@ other cannot:
   that. An empty entry row beside closed end-to-end spans is that backend; an empty entry row
   beside no closed span is a board that cannot deliver an injected interrupt at all.
 
-`bench_irq_raise` is not uniform and the probe line says which it took: a direct `STIR` write on
-`armv7m`, which works while `PRIMASK` holds a span masked, and the `arch_irq_inject` seam
-everywhere else.
+The raise happens inside an `IrqLock` bracket and is delivered when the bracket releases, so the
+entry rows include the bracket's exit path. Entry numbers taken before this change are not
+comparable.
 
 ### The end-to-end span
 
-It opens where `bench_irq_raise` fires and closes in the woken USERSPACE thread, on the trap it
+It opens once the raising bracket is held and closes in the woken USERSPACE thread, on the trap it
 takes immediately after reading the device window it holds. What it encloses: the controller's
 delivery, the trap entry, the dispatch, the tier-1 ISR's mask and post, the wake and reschedule,
 the switch, the return to userspace, that read, and one trap back in.
@@ -838,10 +838,9 @@ waiter RELEASES the parked state from inside its own park; the raise ACQUIRES th
 what makes those four readable there, reads `arch_clock_now` and RELEASES the opened state; the
 close ACQUIRES that before it subtracts. Nothing else in the protocol is atomic: every other
 cell is ordinary data one of those releases carries. The ISR's own stamp is the exception and is
-relaxed on purpose, the wake path's kernel lock already ordering it against the close. Above one
-kernel core `tests/static/check_bench_e2e_publish.sh` reads those instructions out of the linked
-image, TCG modelling no store buffer and no run in this tree being able to tell a relaxed image
-from an ordered one.
+relaxed on purpose, the wake path's kernel lock already ordering it against the close. The state's
+type carries the acquire and the release, and `tests/unit/fusedwake` holds where each access sits
+between the calls that bracket it and where the waiter's park calls its mark.
 
 **A REFUSED TRANSITION IS NOT A NO-OP, AND THE POSTURE IS WHAT KEEPS THAT HARMLESS.** The
 protocol is a plain read-then-write on one cell, never a compare-and-swap, and three of its

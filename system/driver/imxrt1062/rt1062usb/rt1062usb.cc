@@ -39,14 +39,13 @@
 namespace drv = kickos::driver;
 namespace reg = kickos::rtusb::reg;
 namespace usb = kickos::usb;
-namespace declared = kickos::driver::declared::rt1062usb;
 
 namespace
 {
     using kickos::Atomic;
     using kickos::Order;
 
-    constexpr uint32_t BLOCK_SIZE = declared::k_declared.block_size;
+    constexpr uint32_t BLOCK_SIZE = KICKOS_DRIVER_BLOCK_SIZE;
 
     // One packet per dTD, and the largest is the 64-byte EP0 packet.
     constexpr uint32_t MAX_XFER = KOS_USB_CDC_EP0_MAX_PACKET;
@@ -896,55 +895,13 @@ namespace
         return nullptr;
     }
 
-    constexpr drv::Descriptor k_desc = {
-        .tag = "[rtusb] ",
-        // The register map is hard-wired to USB1, so an instance naming another window would
-        // grant one block and poke another.
-        .expected_base = reg::USB1_BASE,
-        .block_size = BLOCK_SIZE,
-        // The controller reads its dQH/dTD lists and writes transfer results out of this
-        // block as a BUS MASTER, and this tree has no cache-maintenance primitive.
-        .block_flags = declared::k_declared.block_flags,
-        .ready_offset = READY_OFFSET,
-        // The publish blinds the kernel console, which is LPUART6 on pins 0/1 and a
-        // different peripheral from the one taken here.
-        .ep_posture = declared::k_declared.ep_posture,
-        .line_count = declared::k_declared.line_count,
-        .thread_count = declared::k_declared.thread_count,
-        // irq_loop latches ready before enumeration, so the poll does not wait for a cable.
-        .barrier_after = declared::k_declared.barrier_after,
-        // LEVEL: USBSTS is an OR of sources cleared at the peripheral, and the NVIC line
-        // follows it.
-        .lines = {{KOS_IRQ_LEVEL}},
-        .threads = {{.entry = rtusb_irq_thread,
-                     .name = declared::k_declared.thread_name[0],
-                     .prio_delta = declared::k_declared.prio_delta[0],
-                     .arg = drv::KOS_DRV_ARG_BLOCK,
-                     .window_grant = true,
-                     .cap_count = 2,
-                     .caps = {{drv::KOS_DRV_RES_NOTIFY, KOS_CAP_WAIT, 0},
-                              {drv::KOS_DRV_RES_LINE0, KOS_CAP_WAIT, 0}}},
-                    {.entry = rtusb_service_thread,
-                     .name = declared::k_declared.thread_name[1],
-                     .prio_delta = declared::k_declared.prio_delta[1],
-                     .arg = drv::KOS_DRV_ARG_BLOCK,
-                     .window_grant = false,
-                     .cap_count = 2,
-                     // A BADGED copy of the same notification: the doorbell owns its own
-                     // bit, so the servicer tells it from the line's raise.
-                     .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT, 0},
-                              {drv::KOS_DRV_RES_NOTIFY, KOS_CAP_SIGNAL,
-                               drv::doorbell_badge(1)}}}},
-        .block_init = block_init
-    };
+    constexpr drv::Descriptor k_desc = KICKOS_DRIVER_DESCRIPTOR;
 
     static_assert(drv::valid(k_desc), "the rtusb descriptor is not a well-formed driver shape");
     // usb::desc_ok is the same check spelled for a 2 KiB block with Shared at offset 0,
     // which this driver cannot use: the dQH list has to sit at offset 0.
     static_assert(drv::ring_doorbell_shape_ok(k_desc, READY_OFFSET, BLOCK_SIZE),
                   "the rtusb cap positions do not match KOS_USB_CAP_*");
-    static_assert(drv::declared_as(k_desc, declared::k_declared),
-                  "the rtusb descriptor departs from its kickos_add_driver declaration");
 }
 
 extern "C"

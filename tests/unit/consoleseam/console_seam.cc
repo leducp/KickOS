@@ -3,7 +3,6 @@
 
 #include "console_seam.h"
 
-#include <kickos/irq_route.h>
 #include <kickos/arch/arch.h>
 #include <kickos/bench.h>
 #include <kickos/console_tx.h>
@@ -317,35 +316,6 @@ namespace kickos
     void irq_detach(int)
     {
     }
-
-    // One core, so every line is local. Forwarded to the arch stubs in this file, which is
-    // what keeps each arm's recorded trace unchanged.
-    void irq_line_op(int line, LineOp op)
-    {
-        switch (op)
-        {
-            case LineOp::MASK:
-            {
-                arch_irq_mask(line);
-                break;
-            }
-            case LineOp::UNMASK:
-            {
-                arch_irq_unmask(line);
-                break;
-            }
-            case LineOp::CLEAR:
-            {
-                arch_irq_clear_pending(line);
-                break;
-            }
-        }
-    }
-
-    void irq_line_op_local(int line, LineOp op)
-    {
-        irq_line_op(line, op);
-    }
 }
 
 extern "C"
@@ -454,13 +424,13 @@ namespace kickos
         return 0;
     }
 
-    void console_dark_wake(void)
+    void console_dark_wake(Held)
     {
         consoleseam::g_dark_wakes = consoleseam::g_dark_wakes + 1;
     }
 
     // No receiver is ever parked here: what a record leaves behind is what the held store says.
-    void cap_console_deliver()
+    void cap_console_deliver(Held)
     {
         consoleseam::g_deliveries = consoleseam::g_deliveries + 1;
     }

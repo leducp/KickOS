@@ -1,14 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Minimal ARMv7-M core peripheral register definitions, arch-internal, NOT
-// part of the porting ABI (kept out of the installed kickos/ headers). Only the
-// registers the arch backend actually touches: SCB (ICSR/SHPR/CCR), SysTick,
-// NVIC (enable/pending), and DWT (cycle counter) for the telemetry trace clock.
-//
-// Deliberately hand-rolled instead of pulling a vendor CMSIS pack: the surface
-// is tiny and clean-room (register offsets from the ARMv7-M Architecture
-// Reference Manual, not vendor headers).
+// ARMv7-M core peripheral registers, arch-internal, NOT part of the porting ABI. Offsets
+// are from the ARMv7-M Architecture Reference Manual, not vendor headers.
 
 #ifndef KICKOS_ARCH_ARM_ARMV7M_REGS_H
 #define KICKOS_ARCH_ARM_ARMV7M_REGS_H
@@ -24,6 +18,12 @@ namespace kickos
         // --- System Control Block (arch-specific: SHPR bytes for the BASEPRI band) ---
         constexpr uintptr_t SCB_SHPR2 = 0xE000ED1C; // System Handler Priority 2 (SVCall)
         constexpr uintptr_t SCB_SHPR3 = 0xE000ED20; // System Handler Priority 3 (PendSV/SysTick)
+
+        // --- Fault status and address (v6-M has none) ---
+        constexpr uintptr_t SCB_CFSR = 0xE000ED28;
+        constexpr uintptr_t SCB_HFSR = 0xE000ED2C;
+        constexpr uintptr_t SCB_MMFAR = 0xE000ED34;
+        constexpr uintptr_t SCB_BFAR = 0xE000ED38;
 
         // --- NVIC (arch-specific: byte-addressable per-line priority) ---
         constexpr uintptr_t NVIC_IPR0 = 0xE000E400;

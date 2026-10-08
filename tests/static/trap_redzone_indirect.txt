@@ -23,176 +23,7 @@
 # <basename>:<identifier-or-mangled-tail> for file-local functions.
 # Missing site bindings, required callees, or unresolvable keys are errors.
 
-# --- POINTER A: the SchedPolicy hook table, Kernel::policy ----------------------
-# Exactly one SchedPolicy exists in the tree, kickos::(anonymous)::g_fifo_rr in
-# kernel/sched/policy_fifo_rr.cc, and sched::set_policy has no callers, so each site is bound to
-# its own slot.
-site rv32imac * kickos::sched::switch_prepare@1/1    policy_fifo_rr.cc:policy_on_switch_in
-site rv32imac * sched.cc:pick_and_seat@1/2           policy_fifo_rr.cc:policy_on_switch_in
-site rv32imac * sched.cc:pick_and_seat@2/2           policy_fifo_rr.cc:policy_pick_next
-site rv32imac * kickos_thread_contain_wild_stack@1/2 policy_fifo_rr.cc:policy_on_switch_in
-site rv32imac * kickos::sched::add@1/1               policy_fifo_rr.cc:policy_on_ready
-site rv32imac * kickos_thread_contain_wild_stack@2/2 policy_fifo_rr.cc:policy_pick_next
-site rv32imac * kickos::sched::start@1/2             policy_fifo_rr.cc:policy_pick_next
-site rv32imac * kickos::sched::start@2/2             policy_fifo_rr.cc:policy_on_switch_in
-site rv32imac * kickos::sched::yield@1/1             policy_fifo_rr.cc:policy_on_yield
-site rv32imac * kickos::sched::detach_current@1/1    policy_fifo_rr.cc:policy_on_remove
-site rv32imac * kickos::sched::wake_no_resched@1/1   policy_fifo_rr.cc:policy_on_ready
-site rv32imac * kickos::sched::set_prio@1/2          policy_fifo_rr.cc:policy_on_remove
-site rv32imac * kickos::sched::set_prio@2/2          policy_fifo_rr.cc:policy_on_ready
-site rv32imac * kickos::sched::exit_current@1/1      policy_fifo_rr.cc:policy_on_remove
-site rv32imac * kickos::sched::next_timed_event@1/1  policy_fifo_rr.cc:policy_next_timed_event
-site rv32imac * kickos::sched::tick_rr@1/2           policy_fifo_rr.cc:policy_next_timed_event
-site rv32imac * kickos::sched::tick_rr@2/2           policy_fifo_rr.cc:policy_on_slice_expire
-site rv32imac * kickos_ipc_fastpath@1/1              policy_fifo_rr.cc:policy_pick_next
-
-site rxv3 * kickos::sched::switch_prepare@1/1    policy_fifo_rr.cc:policy_on_switch_in
-site rxv3 * sched.cc:pick_and_seat@1/2           policy_fifo_rr.cc:policy_on_switch_in
-site rxv3 * sched.cc:pick_and_seat@2/2           policy_fifo_rr.cc:policy_pick_next
-site rxv3 * kickos_thread_contain_wild_stack@1/2 policy_fifo_rr.cc:policy_on_switch_in
-site rxv3 * kickos::sched::add@1/1               policy_fifo_rr.cc:policy_on_ready
-site rxv3 * kickos_thread_contain_wild_stack@2/2 policy_fifo_rr.cc:policy_pick_next
-site rxv3 * kickos::sched::start@1/2             policy_fifo_rr.cc:policy_pick_next
-site rxv3 * kickos::sched::start@2/2             policy_fifo_rr.cc:policy_on_switch_in
-site rxv3 * kickos::sched::yield@1/1             policy_fifo_rr.cc:policy_on_yield
-site rxv3 * kickos::sched::detach_current@1/1    policy_fifo_rr.cc:policy_on_remove
-site rxv3 * kickos::sched::wake_no_resched@1/1   policy_fifo_rr.cc:policy_on_ready
-site rxv3 * kickos::sched::set_prio@1/2          policy_fifo_rr.cc:policy_on_remove
-site rxv3 * kickos::sched::set_prio@2/2          policy_fifo_rr.cc:policy_on_ready
-site rxv3 * kickos::sched::exit_current@1/1      policy_fifo_rr.cc:policy_on_remove
-site rxv3 * kickos::sched::next_timed_event@1/1  policy_fifo_rr.cc:policy_next_timed_event
-site rxv3 * kickos::sched::tick_rr@1/2           policy_fifo_rr.cc:policy_next_timed_event
-site rxv3 * kickos::sched::tick_rr@2/2           policy_fifo_rr.cc:policy_on_slice_expire
-site rxv3 * kickos_ipc_fastpath@1/1              policy_fifo_rr.cc:policy_pick_next
-
-# None of the three TRANSLATING arches compiles the IPC fastpath, so the syscall_ipc_fast.cc
-# site above has no twin here.
-
-site armv8a * kickos_thread_contain_wild_stack@1/2         policy_fifo_rr.cc:policy_on_switch_in
-site armv8a * kickos_thread_contain_wild_stack@2/2         policy_fifo_rr.cc:policy_pick_next
-site armv8a cores=1 kickos::sched::start@1/2               policy_fifo_rr.cc:policy_pick_next
-site armv8a cores=1 kickos::sched::start@2/2               policy_fifo_rr.cc:policy_on_switch_in
-site armv8a cores>1 kickos::sched::start@1/3               policy_fifo_rr.cc:policy_pick_next
-site armv8a cores>1 kickos::sched::start@2/3               policy_fifo_rr.cc:policy_on_switch_in
-site armv8a cores>1 kickos::sched::start@3/3               policy_fifo_rr.cc:policy_on_start
-site armv8a * kickos::sched::yield@1/1                     policy_fifo_rr.cc:policy_on_yield
-site armv8a * kickos::sched::detach_current@1/1            policy_fifo_rr.cc:policy_on_remove
-site armv8a * kickos::sched::set_prio@1/2                  policy_fifo_rr.cc:policy_on_remove
-site armv8a * kickos::sched::set_prio@2/2                  policy_fifo_rr.cc:policy_on_ready
-site armv8a * kickos::sched::exit_current@1/1              policy_fifo_rr.cc:policy_on_remove
-site armv8a * kickos::sched::next_timed_event@1/1          policy_fifo_rr.cc:policy_next_timed_event
-site armv8a * kickos::sched::tick_rr@1/2                   policy_fifo_rr.cc:policy_next_timed_event
-site armv8a * kickos::sched::tick_rr@2/2                   policy_fifo_rr.cc:policy_on_slice_expire
-site armv8a cores=1 sched.cc:pick_and_seat@1/2             policy_fifo_rr.cc:policy_on_switch_in
-site armv8a cores=1 sched.cc:pick_and_seat@2/2             policy_fifo_rr.cc:policy_pick_next
-# ONE CORE, AND WHERE publish_ready IS INLINED: the one site is its caller's. It is not inlined on
-# qemu-arm64-amp, whose site is publish_ready's own, so this record is per preset there.
-site armv8a imx8mp-evk kickos::sched::wake_no_resched@1/1  policy_fifo_rr.cc:policy_on_ready
-site armv8a qemu-arm64 kickos::sched::wake_no_resched@1/1  policy_fifo_rr.cc:policy_on_ready
-site armv8a qemu-arm64-amp2-n0 kickos::sched::wake_no_resched@1/1 policy_fifo_rr.cc:policy_on_ready
-site armv8a qemu-arm64-amp2-n1 kickos::sched::wake_no_resched@1/1 policy_fifo_rr.cc:policy_on_ready
-site armv8a qemu-arm64-amp3-n0 kickos::sched::wake_no_resched@1/1 policy_fifo_rr.cc:policy_on_ready
-site armv8a qemu-arm64-amp3-n1 kickos::sched::wake_no_resched@1/1 policy_fifo_rr.cc:policy_on_ready
-site armv8a qemu-arm64-amp3-n2 kickos::sched::wake_no_resched@1/1 policy_fifo_rr.cc:policy_on_ready
-site armv8a qemu-arm64-bench kickos::sched::wake_no_resched@1/1 policy_fifo_rr.cc:policy_on_ready
-site armv8a qemu-arm64-amp sched.cc:publish_ready@1/1      policy_fifo_rr.cc:policy_on_ready
-site armv8a cores>1 sched.cc:pick_and_seat@1/2             policy_fifo_rr.cc:policy_on_switch_in
-site armv8a cores>1 sched.cc:pick_and_seat@2/2             policy_fifo_rr.cc:policy_pick_next
-site armv8a cores>1 kickos_kernel_core_resched@1/2         policy_fifo_rr.cc:policy_push_candidate
-site armv8a cores>1 kickos_kernel_core_resched@2/2         policy_fifo_rr.cc:policy_on_remove
-site armv8a cores>1 sched.cc:link_ready@1/1                policy_fifo_rr.cc:policy_on_ready
-site armv8a cores>1 sched.cc:place@1/2                     policy_fifo_rr.cc:policy_place
-site armv8a cores>1 sched.cc:place@2/2                     policy_fifo_rr.cc:policy_on_remove
-site armv8a cores>1 sched.cc:place_declined@1/1            policy_fifo_rr.cc:policy_declined
-site armv8a cores>1 sched.cc:ring_drain@1/2                policy_fifo_rr.cc:policy_on_remove
-site armv8a cores>1 sched.cc:ring_drain@2/2                policy_fifo_rr.cc:policy_on_ready
-# One core, and not on qemu-arm64-amp, whose add makes no indirect call of its own.
-site armv8a imx8mp-evk kickos::sched::add@1/1 policy_fifo_rr.cc:policy_on_ready
-site armv8a qemu-arm64 kickos::sched::add@1/1 policy_fifo_rr.cc:policy_on_ready
-site armv8a qemu-arm64-bench kickos::sched::add@1/1 policy_fifo_rr.cc:policy_on_ready
-site armv8a qemu-arm64-amp2-n0 kickos::sched::add@1/1 policy_fifo_rr.cc:policy_on_ready
-site armv8a qemu-arm64-amp2-n1 kickos::sched::add@1/1 policy_fifo_rr.cc:policy_on_ready
-site armv8a qemu-arm64-amp3-n0 kickos::sched::add@1/1 policy_fifo_rr.cc:policy_on_ready
-site armv8a qemu-arm64-amp3-n1 kickos::sched::add@1/1 policy_fifo_rr.cc:policy_on_ready
-site armv8a qemu-arm64-amp3-n2 kickos::sched::add@1/1 policy_fifo_rr.cc:policy_on_ready
-# The IRQ table, as on the other arches. arch_switch defers while kickos_armv8a_irq holds
-# isr_depth, so none of these re-enters the scheduler's swap on this stack.
-site armv8a * kickos_isr_irq@1/1 irq.cc:irq_default_handler \
-                                 irq.cc:irq_event_isr \
-                                 console_tx.cc:console_tx_isr_trampoline \
-                                 ?bench.cc:bench_irq_handler
-
-site rv64imac * kickos_thread_contain_wild_stack@1/2       policy_fifo_rr.cc:policy_on_switch_in
-site rv64imac * kickos_thread_contain_wild_stack@2/2       policy_fifo_rr.cc:policy_pick_next
-site rv64imac cores=1 kickos::sched::start@1/2             policy_fifo_rr.cc:policy_pick_next
-site rv64imac cores=1 kickos::sched::start@2/2             policy_fifo_rr.cc:policy_on_switch_in
-site rv64imac cores>1 kickos::sched::start@1/3             policy_fifo_rr.cc:policy_pick_next
-site rv64imac cores>1 kickos::sched::start@2/3             policy_fifo_rr.cc:policy_on_switch_in
-site rv64imac cores>1 kickos::sched::start@3/3             policy_fifo_rr.cc:policy_on_start
-site rv64imac * kickos::sched::yield@1/1                   policy_fifo_rr.cc:policy_on_yield
-site rv64imac * kickos::sched::detach_current@1/1          policy_fifo_rr.cc:policy_on_remove
-site rv64imac * kickos::sched::set_prio@1/2                policy_fifo_rr.cc:policy_on_remove
-site rv64imac * kickos::sched::set_prio@2/2                policy_fifo_rr.cc:policy_on_ready
-site rv64imac * kickos::sched::exit_current@1/1            policy_fifo_rr.cc:policy_on_remove
-site rv64imac * kickos::sched::next_timed_event@1/1        policy_fifo_rr.cc:policy_next_timed_event
-site rv64imac * kickos::sched::tick_rr@1/2                 policy_fifo_rr.cc:policy_next_timed_event
-site rv64imac * kickos::sched::tick_rr@2/2                 policy_fifo_rr.cc:policy_on_slice_expire
-site rv64imac cores=1 sched.cc:pick_and_seat@1/2           policy_fifo_rr.cc:policy_on_switch_in
-site rv64imac cores=1 sched.cc:pick_and_seat@2/2           policy_fifo_rr.cc:policy_pick_next
-site rv64imac cores=1 kickos::sched::wake_no_resched@1/1   policy_fifo_rr.cc:policy_on_ready
-site rv64imac cores>1 sched.cc:pick_and_seat@1/2           policy_fifo_rr.cc:policy_on_switch_in
-site rv64imac cores>1 sched.cc:pick_and_seat@2/2           policy_fifo_rr.cc:policy_pick_next
-site rv64imac cores>1 kickos_kernel_core_resched@1/2       policy_fifo_rr.cc:policy_push_candidate
-site rv64imac cores>1 kickos_kernel_core_resched@2/2       policy_fifo_rr.cc:policy_on_remove
-site rv64imac cores>1 sched.cc:link_ready@1/1              policy_fifo_rr.cc:policy_on_ready
-site rv64imac cores>1 sched.cc:place@1/2                   policy_fifo_rr.cc:policy_place
-site rv64imac cores>1 sched.cc:place@2/2                   policy_fifo_rr.cc:policy_on_remove
-site rv64imac cores>1 sched.cc:place_declined@1/1          policy_fifo_rr.cc:policy_declined
-site rv64imac cores>1 sched.cc:ring_drain@1/2              policy_fifo_rr.cc:policy_on_remove
-site rv64imac cores>1 sched.cc:ring_drain@2/2              policy_fifo_rr.cc:policy_on_ready
-# One core: above it add makes no indirect call of its own.
-site rv64imac cores=1 kickos::sched::add@1/1               policy_fifo_rr.cc:policy_on_ready
-# The IRQ table, as on the other arches. arch_switch books its target while .Lintr holds
-# isr_depth, so none of these re-enters the scheduler's swap on this stack.
-site rv64imac * kickos_isr_irq@1/1 irq.cc:irq_default_handler \
-                                   irq.cc:irq_event_isr \
-                                   console_tx.cc:console_tx_isr_trampoline \
-                                   ?bench.cc:bench_irq_handler
-
-site x86_64 * sched.cc:pick_and_seat@1/2           policy_fifo_rr.cc:policy_on_switch_in
-site x86_64 * sched.cc:pick_and_seat@2/2           policy_fifo_rr.cc:policy_pick_next
-site x86_64 * kickos_thread_contain_wild_stack@1/2 policy_fifo_rr.cc:policy_on_switch_in
-site x86_64 * kickos_thread_contain_wild_stack@2/2 policy_fifo_rr.cc:policy_pick_next
-site x86_64 cores=1 kickos::sched::add@1/1         policy_fifo_rr.cc:policy_on_ready
-site x86_64 cores=1 kickos::sched::start@1/2       policy_fifo_rr.cc:policy_pick_next
-site x86_64 cores=1 kickos::sched::start@2/2       policy_fifo_rr.cc:policy_on_switch_in
-site x86_64 cores>1 kickos::sched::start@1/3       policy_fifo_rr.cc:policy_pick_next
-site x86_64 cores>1 kickos::sched::start@2/3       policy_fifo_rr.cc:policy_on_switch_in
-site x86_64 cores>1 kickos::sched::start@3/3       policy_fifo_rr.cc:policy_on_start
-site x86_64 * kickos::sched::yield@1/1             policy_fifo_rr.cc:policy_on_yield
-site x86_64 * kickos::sched::detach_current@1/1    policy_fifo_rr.cc:policy_on_remove
-site x86_64 cores=1 kickos::sched::wake_no_resched@1/1 policy_fifo_rr.cc:policy_on_ready
-site x86_64 * kickos::sched::set_prio@1/2          policy_fifo_rr.cc:policy_on_remove
-site x86_64 * kickos::sched::set_prio@2/2          policy_fifo_rr.cc:policy_on_ready
-site x86_64 * kickos::sched::exit_current@1/1      policy_fifo_rr.cc:policy_on_remove
-site x86_64 * kickos::sched::next_timed_event@1/1  policy_fifo_rr.cc:policy_next_timed_event
-site x86_64 * kickos::sched::tick_rr@1/2           policy_fifo_rr.cc:policy_next_timed_event
-site x86_64 * kickos::sched::tick_rr@2/2           policy_fifo_rr.cc:policy_on_slice_expire
-# The IRQ table, as on the other arches. arch_switch books its target while kickos_x86_64_isr
-# holds g_isr_depth, so none of these re-enters the scheduler's swap on this stack.
-site x86_64 * kickos_isr_irq@1/1 irq.cc:irq_default_handler \
-                               irq.cc:irq_event_isr \
-                               console_tx.cc:console_tx_isr_trampoline \
-                               ?bench.cc:bench_irq_handler
-site x86_64 cores>1 kickos_kernel_core_resched@1/2 policy_fifo_rr.cc:policy_push_candidate
-site x86_64 cores>1 kickos_kernel_core_resched@2/2 policy_fifo_rr.cc:policy_on_remove
-site x86_64 cores>1 sched.cc:link_ready@1/1        policy_fifo_rr.cc:policy_on_ready
-site x86_64 cores>1 sched.cc:place@1/2             policy_fifo_rr.cc:policy_place
-site x86_64 cores>1 sched.cc:place@2/2             policy_fifo_rr.cc:policy_on_remove
-site x86_64 cores>1 sched.cc:place_declined@1/1    policy_fifo_rr.cc:policy_declined
-site x86_64 cores>1 sched.cc:ring_drain@1/2        policy_fifo_rr.cc:policy_on_remove
-site x86_64 cores>1 sched.cc:ring_drain@2/2        policy_fifo_rr.cc:policy_on_ready
-# --- POINTER B: ConsoleTxRing::backend, console_tx_backend const* ---------------
+# --- POINTER A: ConsoleTxRing::backend, console_tx_backend const* ---------------
 # Four slots (slot_free/push/irq_enable/irq_disable), set once in console_tx_init from the arch
 # seam arch_console_tx_backend(), of which exactly ONE definition links per image, so the tuple
 # is per board and the scope column carries that.
@@ -200,18 +31,18 @@ site x86_64 cores>1 sched.cc:ring_drain@2/2        policy_fifo_rr.cc:policy_on_r
 # A backend with no TX interrupt (irq_line -1) still arms a ring and is drained in the
 # producer's own context, so its irq_enable/irq_disable slots bind to empty bodies. NONE is
 # for a board that binds no backend at all.
-site rv32imac qemu-riscv console_tx.cc:wait_slot@1/1  chip_virt_rv32.cc:rv32_tx_slot_free
-site rv32imac qemu-riscv console_tx_flush_sync@2/2 chip_virt_rv32.cc:rv32_tx_push
-site rv32imac qemu-riscv console_tx_isr@1/3           chip_virt_rv32.cc:rv32_tx_slot_free
-site rv32imac qemu-riscv console_tx_isr@2/3           chip_virt_rv32.cc:rv32_tx_push
-site rv32imac qemu-riscv console_tx_isr@3/3           chip_virt_rv32.cc:rv32_tx_irq_disable
-site rv32imac qemu-riscv console_tx_flush_sync@1/2    chip_virt_rv32.cc:rv32_tx_irq_disable
-site rv32imac qemu-riscv console_tx_deinit@1/1        chip_virt_rv32.cc:rv32_tx_irq_disable
-site rv32imac qemu-riscv console_tx.cc:insert_locked@1/3 chip_virt_rv32.cc:rv32_tx_irq_enable
-site rv32imac qemu-riscv console_tx.cc:insert_locked@2/3 chip_virt_rv32.cc:rv32_tx_slot_free
-site rv32imac qemu-riscv console_tx.cc:insert_locked@3/3 chip_virt_rv32.cc:rv32_tx_push
-site rv32imac qemu-riscv console_tx.cc:drain_in_producer@1/2 chip_virt_rv32.cc:rv32_tx_slot_free
-site rv32imac qemu-riscv console_tx.cc:drain_in_producer@2/2 chip_virt_rv32.cc:rv32_tx_push
+site rv32imac qemu-riscv console_tx.cc:wait_slot@1/1  semihost_console.cc:semihost_tx_slot_free
+site rv32imac qemu-riscv console_tx_flush_sync@2/2 semihost_console.cc:semihost_tx_push
+site rv32imac qemu-riscv console_tx_isr@1/3           semihost_console.cc:semihost_tx_slot_free
+site rv32imac qemu-riscv console_tx_isr@2/3           semihost_console.cc:semihost_tx_push
+site rv32imac qemu-riscv console_tx_isr@3/3           semihost_console.cc:semihost_tx_irq_disable
+site rv32imac qemu-riscv console_tx_flush_sync@1/2    semihost_console.cc:semihost_tx_irq_disable
+site rv32imac qemu-riscv console_tx_deinit@1/1        semihost_console.cc:semihost_tx_irq_disable
+site rv32imac qemu-riscv console_tx.cc:insert_locked@1/3 semihost_console.cc:semihost_tx_irq_enable
+site rv32imac qemu-riscv console_tx.cc:insert_locked@2/3 semihost_console.cc:semihost_tx_slot_free
+site rv32imac qemu-riscv console_tx.cc:insert_locked@3/3 semihost_console.cc:semihost_tx_push
+site rv32imac qemu-riscv console_tx.cc:drain_in_producer@1/2 semihost_console.cc:semihost_tx_slot_free
+site rv32imac qemu-riscv console_tx.cc:drain_in_producer@2/2 semihost_console.cc:semihost_tx_push
 
 site rv32imac esp32c6-wroom-st console_tx.cc:wait_slot@1/1  chip_esp32c6.cc:c6_tx_slot_free
 site rv32imac esp32c6-wroom-st console_tx_flush_sync@2/2 chip_esp32c6.cc:c6_tx_push
@@ -581,7 +412,7 @@ site x86_64 * console_tx.cc:drain_in_producer@1/2 console_q35.cc:q35_tx_slot_fre
 site x86_64 * console_tx.cc:drain_in_producer@2/2 console_q35.cc:q35_tx_push
 
 
-# POINTER C: Kernel::irq_table[irq].handler.
+# POINTER B: Kernel::irq_table[irq].handler.
 # irq_init fills every entry with irq_default_handler. Userspace cannot install
 # handlers; bench_irq_handler exists only in benchmark builds.
 # On rv32imac and rxv3, arch_switch requests a deferred switch and returns,
@@ -595,27 +426,26 @@ site rxv3     * kickos_isr_irq@1/1 irq.cc:irq_default_handler \
                                    irq.cc:irq_event_isr \
                                    console_tx.cc:console_tx_isr_trampoline \
                                    ?bench.cc:bench_irq_handler
+# armv8a: arch_switch defers while kickos_armv8a_irq holds
+# isr_depth, so none of these re-enters the scheduler's swap on this stack.
+site armv8a * kickos_isr_irq@1/1 irq.cc:irq_default_handler \
+                                 irq.cc:irq_event_isr \
+                                 console_tx.cc:console_tx_isr_trampoline \
+                                 ?bench.cc:bench_irq_handler
+# rv64imac: arch_switch books its target while .Lintr holds
+# isr_depth, so none of these re-enters the scheduler's swap on this stack.
+site rv64imac * kickos_isr_irq@1/1 irq.cc:irq_default_handler \
+                                   irq.cc:irq_event_isr \
+                                   console_tx.cc:console_tx_isr_trampoline \
+                                   ?bench.cc:bench_irq_handler
+# x86_64: arch_switch books its target while kickos_x86_64_isr
+# holds g_isr_depth, so none of these re-enters the scheduler's swap on this stack.
+site x86_64 * kickos_isr_irq@1/1 irq.cc:irq_default_handler \
+                               irq.cc:irq_event_isr \
+                               console_tx.cc:console_tx_isr_trampoline \
+                               ?bench.cc:bench_irq_handler
 
-# --- armv7m: the same two arch-wide pointers ------------------------------------
-site armv7m * kickos::sched::switch_prepare@1/1    policy_fifo_rr.cc:policy_on_switch_in
-site armv7m * sched.cc:pick_and_seat@1/2           policy_fifo_rr.cc:policy_on_switch_in
-site armv7m * sched.cc:pick_and_seat@2/2           policy_fifo_rr.cc:policy_pick_next
-site armv7m * kickos_thread_contain_wild_stack@1/2 policy_fifo_rr.cc:policy_on_switch_in
-site armv7m * kickos::sched::add@1/1               policy_fifo_rr.cc:policy_on_ready
-site armv7m * kickos_thread_contain_wild_stack@2/2 policy_fifo_rr.cc:policy_pick_next
-site armv7m * kickos::sched::start@1/2             policy_fifo_rr.cc:policy_pick_next
-site armv7m * kickos::sched::start@2/2             policy_fifo_rr.cc:policy_on_switch_in
-site armv7m * kickos::sched::yield@1/1             policy_fifo_rr.cc:policy_on_yield
-site armv7m * kickos::sched::detach_current@1/1    policy_fifo_rr.cc:policy_on_remove
-site armv7m * kickos::sched::wake_no_resched@1/1   policy_fifo_rr.cc:policy_on_ready
-site armv7m * kickos::sched::set_prio@1/2          policy_fifo_rr.cc:policy_on_remove
-site armv7m * kickos::sched::set_prio@2/2          policy_fifo_rr.cc:policy_on_ready
-site armv7m * kickos::sched::exit_current@1/1      policy_fifo_rr.cc:policy_on_remove
-site armv7m * kickos::sched::next_timed_event@1/1  policy_fifo_rr.cc:policy_next_timed_event
-site armv7m * kickos::sched::tick_rr@1/2           policy_fifo_rr.cc:policy_next_timed_event
-site armv7m * kickos::sched::tick_rr@2/2           policy_fifo_rr.cc:policy_on_slice_expire
-site armv7m * kickos_ipc_fastpath@1/1              policy_fifo_rr.cc:policy_pick_next
-
+# --- armv7m: the IRQ table ------------------------------------------------------
 # armv7m pends PendSV and returns, so sem_post -> sched::wake -> ... -> arch_switch does not
 # re-enter the scheduler on this stack.
 site armv7m * kickos_isr_irq@1/1 irq.cc:irq_default_handler \
@@ -625,128 +455,127 @@ site armv7m * kickos_isr_irq@1/1 irq.cc:irq_default_handler \
 
 # --- armv7m: ConsoleTxRing::backend, per board ----------------------------------
 # The console backend is per BOARD, so every armv7m preset is bound: a '*' record would bind a
-# board that HAS a backend to nothing. The four MPS2 boards resolve arch_console_tx_backend to
-# the arch/common fallback, which returns nullptr, so no site can run.
+# board that HAS a backend to nothing. The four MPS2 boards bind the semihosting slots.
 #
 # All twelve sites are declared whatever the posture: a flat variant reaches four of them where
 # an enforcing one reaches nine.
 
-site armv7m qemu console_tx.cc:wait_slot@1/1  chip_mps2.cc:mps2_tx_slot_free
-site armv7m qemu console_tx_flush_sync@2/2 chip_mps2.cc:mps2_tx_push
-site armv7m qemu console_tx_isr@1/3           chip_mps2.cc:mps2_tx_slot_free
-site armv7m qemu console_tx_isr@2/3           chip_mps2.cc:mps2_tx_push
-site armv7m qemu console_tx_isr@3/3           chip_mps2.cc:mps2_tx_irq_disable
-site armv7m qemu console_tx_flush_sync@1/2    chip_mps2.cc:mps2_tx_irq_disable
-site armv7m qemu console_tx_deinit@1/1        chip_mps2.cc:mps2_tx_irq_disable
-site armv7m qemu console_tx.cc:insert_locked@1/3 chip_mps2.cc:mps2_tx_irq_enable
-site armv7m qemu console_tx.cc:insert_locked@2/3 chip_mps2.cc:mps2_tx_slot_free
-site armv7m qemu console_tx.cc:insert_locked@3/3 chip_mps2.cc:mps2_tx_push
-site armv7m qemu console_tx.cc:drain_in_producer@1/2 chip_mps2.cc:mps2_tx_slot_free
-site armv7m qemu console_tx.cc:drain_in_producer@2/2 chip_mps2.cc:mps2_tx_push
+site armv7m qemu console_tx.cc:wait_slot@1/1  semihost_console.cc:semihost_tx_slot_free
+site armv7m qemu console_tx_flush_sync@2/2 semihost_console.cc:semihost_tx_push
+site armv7m qemu console_tx_isr@1/3           semihost_console.cc:semihost_tx_slot_free
+site armv7m qemu console_tx_isr@2/3           semihost_console.cc:semihost_tx_push
+site armv7m qemu console_tx_isr@3/3           semihost_console.cc:semihost_tx_irq_disable
+site armv7m qemu console_tx_flush_sync@1/2    semihost_console.cc:semihost_tx_irq_disable
+site armv7m qemu console_tx_deinit@1/1        semihost_console.cc:semihost_tx_irq_disable
+site armv7m qemu console_tx.cc:insert_locked@1/3 semihost_console.cc:semihost_tx_irq_enable
+site armv7m qemu console_tx.cc:insert_locked@2/3 semihost_console.cc:semihost_tx_slot_free
+site armv7m qemu console_tx.cc:insert_locked@3/3 semihost_console.cc:semihost_tx_push
+site armv7m qemu console_tx.cc:drain_in_producer@1/2 semihost_console.cc:semihost_tx_slot_free
+site armv7m qemu console_tx.cc:drain_in_producer@2/2 semihost_console.cc:semihost_tx_push
 
-site armv7m qemu-flat console_tx.cc:wait_slot@1/1  chip_mps2.cc:mps2_tx_slot_free
-site armv7m qemu-flat console_tx_flush_sync@2/2 chip_mps2.cc:mps2_tx_push
-site armv7m qemu-flat console_tx_isr@1/3           chip_mps2.cc:mps2_tx_slot_free
-site armv7m qemu-flat console_tx_isr@2/3           chip_mps2.cc:mps2_tx_push
-site armv7m qemu-flat console_tx_isr@3/3           chip_mps2.cc:mps2_tx_irq_disable
-site armv7m qemu-flat console_tx_flush_sync@1/2    chip_mps2.cc:mps2_tx_irq_disable
-site armv7m qemu-flat console_tx_deinit@1/1        chip_mps2.cc:mps2_tx_irq_disable
-site armv7m qemu-flat console_tx.cc:insert_locked@1/3 chip_mps2.cc:mps2_tx_irq_enable
-site armv7m qemu-flat console_tx.cc:insert_locked@2/3 chip_mps2.cc:mps2_tx_slot_free
-site armv7m qemu-flat console_tx.cc:insert_locked@3/3 chip_mps2.cc:mps2_tx_push
-site armv7m qemu-flat console_tx.cc:drain_in_producer@1/2 chip_mps2.cc:mps2_tx_slot_free
-site armv7m qemu-flat console_tx.cc:drain_in_producer@2/2 chip_mps2.cc:mps2_tx_push
+site armv7m qemu-flat console_tx.cc:wait_slot@1/1  semihost_console.cc:semihost_tx_slot_free
+site armv7m qemu-flat console_tx_flush_sync@2/2 semihost_console.cc:semihost_tx_push
+site armv7m qemu-flat console_tx_isr@1/3           semihost_console.cc:semihost_tx_slot_free
+site armv7m qemu-flat console_tx_isr@2/3           semihost_console.cc:semihost_tx_push
+site armv7m qemu-flat console_tx_isr@3/3           semihost_console.cc:semihost_tx_irq_disable
+site armv7m qemu-flat console_tx_flush_sync@1/2    semihost_console.cc:semihost_tx_irq_disable
+site armv7m qemu-flat console_tx_deinit@1/1        semihost_console.cc:semihost_tx_irq_disable
+site armv7m qemu-flat console_tx.cc:insert_locked@1/3 semihost_console.cc:semihost_tx_irq_enable
+site armv7m qemu-flat console_tx.cc:insert_locked@2/3 semihost_console.cc:semihost_tx_slot_free
+site armv7m qemu-flat console_tx.cc:insert_locked@3/3 semihost_console.cc:semihost_tx_push
+site armv7m qemu-flat console_tx.cc:drain_in_producer@1/2 semihost_console.cc:semihost_tx_slot_free
+site armv7m qemu-flat console_tx.cc:drain_in_producer@2/2 semihost_console.cc:semihost_tx_push
 
-site armv7m qemu-telem console_tx.cc:wait_slot@1/1  chip_mps2.cc:mps2_tx_slot_free
-site armv7m qemu-telem console_tx_flush_sync@2/2 chip_mps2.cc:mps2_tx_push
-site armv7m qemu-telem console_tx_isr@1/3           chip_mps2.cc:mps2_tx_slot_free
-site armv7m qemu-telem console_tx_isr@2/3           chip_mps2.cc:mps2_tx_push
-site armv7m qemu-telem console_tx_isr@3/3           chip_mps2.cc:mps2_tx_irq_disable
-site armv7m qemu-telem console_tx_flush_sync@1/2    chip_mps2.cc:mps2_tx_irq_disable
-site armv7m qemu-telem console_tx_deinit@1/1        chip_mps2.cc:mps2_tx_irq_disable
-site armv7m qemu-telem console_tx.cc:insert_locked@1/3 chip_mps2.cc:mps2_tx_irq_enable
-site armv7m qemu-telem console_tx.cc:insert_locked@2/3 chip_mps2.cc:mps2_tx_slot_free
-site armv7m qemu-telem console_tx.cc:insert_locked@3/3 chip_mps2.cc:mps2_tx_push
-site armv7m qemu-telem console_tx.cc:drain_in_producer@1/2 chip_mps2.cc:mps2_tx_slot_free
-site armv7m qemu-telem console_tx.cc:drain_in_producer@2/2 chip_mps2.cc:mps2_tx_push
+site armv7m qemu-telem console_tx.cc:wait_slot@1/1  semihost_console.cc:semihost_tx_slot_free
+site armv7m qemu-telem console_tx_flush_sync@2/2 semihost_console.cc:semihost_tx_push
+site armv7m qemu-telem console_tx_isr@1/3           semihost_console.cc:semihost_tx_slot_free
+site armv7m qemu-telem console_tx_isr@2/3           semihost_console.cc:semihost_tx_push
+site armv7m qemu-telem console_tx_isr@3/3           semihost_console.cc:semihost_tx_irq_disable
+site armv7m qemu-telem console_tx_flush_sync@1/2    semihost_console.cc:semihost_tx_irq_disable
+site armv7m qemu-telem console_tx_deinit@1/1        semihost_console.cc:semihost_tx_irq_disable
+site armv7m qemu-telem console_tx.cc:insert_locked@1/3 semihost_console.cc:semihost_tx_irq_enable
+site armv7m qemu-telem console_tx.cc:insert_locked@2/3 semihost_console.cc:semihost_tx_slot_free
+site armv7m qemu-telem console_tx.cc:insert_locked@3/3 semihost_console.cc:semihost_tx_push
+site armv7m qemu-telem console_tx.cc:drain_in_producer@1/2 semihost_console.cc:semihost_tx_slot_free
+site armv7m qemu-telem console_tx.cc:drain_in_producer@2/2 semihost_console.cc:semihost_tx_push
 
-site armv7m qemu-m3 console_tx.cc:wait_slot@1/1  chip_mps2.cc:mps2_tx_slot_free
-site armv7m qemu-m3 console_tx_flush_sync@2/2 chip_mps2.cc:mps2_tx_push
-site armv7m qemu-m3 console_tx_isr@1/3           chip_mps2.cc:mps2_tx_slot_free
-site armv7m qemu-m3 console_tx_isr@2/3           chip_mps2.cc:mps2_tx_push
-site armv7m qemu-m3 console_tx_isr@3/3           chip_mps2.cc:mps2_tx_irq_disable
-site armv7m qemu-m3 console_tx_flush_sync@1/2    chip_mps2.cc:mps2_tx_irq_disable
-site armv7m qemu-m3 console_tx_deinit@1/1        chip_mps2.cc:mps2_tx_irq_disable
-site armv7m qemu-m3 console_tx.cc:insert_locked@1/3 chip_mps2.cc:mps2_tx_irq_enable
-site armv7m qemu-m3 console_tx.cc:insert_locked@2/3 chip_mps2.cc:mps2_tx_slot_free
-site armv7m qemu-m3 console_tx.cc:insert_locked@3/3 chip_mps2.cc:mps2_tx_push
-site armv7m qemu-m3 console_tx.cc:drain_in_producer@1/2 chip_mps2.cc:mps2_tx_slot_free
-site armv7m qemu-m3 console_tx.cc:drain_in_producer@2/2 chip_mps2.cc:mps2_tx_push
+site armv7m qemu-m3 console_tx.cc:wait_slot@1/1  semihost_console.cc:semihost_tx_slot_free
+site armv7m qemu-m3 console_tx_flush_sync@2/2 semihost_console.cc:semihost_tx_push
+site armv7m qemu-m3 console_tx_isr@1/3           semihost_console.cc:semihost_tx_slot_free
+site armv7m qemu-m3 console_tx_isr@2/3           semihost_console.cc:semihost_tx_push
+site armv7m qemu-m3 console_tx_isr@3/3           semihost_console.cc:semihost_tx_irq_disable
+site armv7m qemu-m3 console_tx_flush_sync@1/2    semihost_console.cc:semihost_tx_irq_disable
+site armv7m qemu-m3 console_tx_deinit@1/1        semihost_console.cc:semihost_tx_irq_disable
+site armv7m qemu-m3 console_tx.cc:insert_locked@1/3 semihost_console.cc:semihost_tx_irq_enable
+site armv7m qemu-m3 console_tx.cc:insert_locked@2/3 semihost_console.cc:semihost_tx_slot_free
+site armv7m qemu-m3 console_tx.cc:insert_locked@3/3 semihost_console.cc:semihost_tx_push
+site armv7m qemu-m3 console_tx.cc:drain_in_producer@1/2 semihost_console.cc:semihost_tx_slot_free
+site armv7m qemu-m3 console_tx.cc:drain_in_producer@2/2 semihost_console.cc:semihost_tx_push
 
-site armv7m qemu-m3-flat console_tx.cc:wait_slot@1/1  chip_mps2.cc:mps2_tx_slot_free
-site armv7m qemu-m3-flat console_tx_flush_sync@2/2 chip_mps2.cc:mps2_tx_push
-site armv7m qemu-m3-flat console_tx_isr@1/3           chip_mps2.cc:mps2_tx_slot_free
-site armv7m qemu-m3-flat console_tx_isr@2/3           chip_mps2.cc:mps2_tx_push
-site armv7m qemu-m3-flat console_tx_isr@3/3           chip_mps2.cc:mps2_tx_irq_disable
-site armv7m qemu-m3-flat console_tx_flush_sync@1/2    chip_mps2.cc:mps2_tx_irq_disable
-site armv7m qemu-m3-flat console_tx_deinit@1/1        chip_mps2.cc:mps2_tx_irq_disable
-site armv7m qemu-m3-flat console_tx.cc:insert_locked@1/3 chip_mps2.cc:mps2_tx_irq_enable
-site armv7m qemu-m3-flat console_tx.cc:insert_locked@2/3 chip_mps2.cc:mps2_tx_slot_free
-site armv7m qemu-m3-flat console_tx.cc:insert_locked@3/3 chip_mps2.cc:mps2_tx_push
-site armv7m qemu-m3-flat console_tx.cc:drain_in_producer@1/2 chip_mps2.cc:mps2_tx_slot_free
-site armv7m qemu-m3-flat console_tx.cc:drain_in_producer@2/2 chip_mps2.cc:mps2_tx_push
+site armv7m qemu-m3-flat console_tx.cc:wait_slot@1/1  semihost_console.cc:semihost_tx_slot_free
+site armv7m qemu-m3-flat console_tx_flush_sync@2/2 semihost_console.cc:semihost_tx_push
+site armv7m qemu-m3-flat console_tx_isr@1/3           semihost_console.cc:semihost_tx_slot_free
+site armv7m qemu-m3-flat console_tx_isr@2/3           semihost_console.cc:semihost_tx_push
+site armv7m qemu-m3-flat console_tx_isr@3/3           semihost_console.cc:semihost_tx_irq_disable
+site armv7m qemu-m3-flat console_tx_flush_sync@1/2    semihost_console.cc:semihost_tx_irq_disable
+site armv7m qemu-m3-flat console_tx_deinit@1/1        semihost_console.cc:semihost_tx_irq_disable
+site armv7m qemu-m3-flat console_tx.cc:insert_locked@1/3 semihost_console.cc:semihost_tx_irq_enable
+site armv7m qemu-m3-flat console_tx.cc:insert_locked@2/3 semihost_console.cc:semihost_tx_slot_free
+site armv7m qemu-m3-flat console_tx.cc:insert_locked@3/3 semihost_console.cc:semihost_tx_push
+site armv7m qemu-m3-flat console_tx.cc:drain_in_producer@1/2 semihost_console.cc:semihost_tx_slot_free
+site armv7m qemu-m3-flat console_tx.cc:drain_in_producer@2/2 semihost_console.cc:semihost_tx_push
 
-site armv7m qemu-m7 console_tx.cc:wait_slot@1/1  chip_mps2.cc:mps2_tx_slot_free
-site armv7m qemu-m7 console_tx_flush_sync@2/2 chip_mps2.cc:mps2_tx_push
-site armv7m qemu-m7 console_tx_isr@1/3           chip_mps2.cc:mps2_tx_slot_free
-site armv7m qemu-m7 console_tx_isr@2/3           chip_mps2.cc:mps2_tx_push
-site armv7m qemu-m7 console_tx_isr@3/3           chip_mps2.cc:mps2_tx_irq_disable
-site armv7m qemu-m7 console_tx_flush_sync@1/2    chip_mps2.cc:mps2_tx_irq_disable
-site armv7m qemu-m7 console_tx_deinit@1/1        chip_mps2.cc:mps2_tx_irq_disable
-site armv7m qemu-m7 console_tx.cc:insert_locked@1/3 chip_mps2.cc:mps2_tx_irq_enable
-site armv7m qemu-m7 console_tx.cc:insert_locked@2/3 chip_mps2.cc:mps2_tx_slot_free
-site armv7m qemu-m7 console_tx.cc:insert_locked@3/3 chip_mps2.cc:mps2_tx_push
-site armv7m qemu-m7 console_tx.cc:drain_in_producer@1/2 chip_mps2.cc:mps2_tx_slot_free
-site armv7m qemu-m7 console_tx.cc:drain_in_producer@2/2 chip_mps2.cc:mps2_tx_push
+site armv7m qemu-m7 console_tx.cc:wait_slot@1/1  semihost_console.cc:semihost_tx_slot_free
+site armv7m qemu-m7 console_tx_flush_sync@2/2 semihost_console.cc:semihost_tx_push
+site armv7m qemu-m7 console_tx_isr@1/3           semihost_console.cc:semihost_tx_slot_free
+site armv7m qemu-m7 console_tx_isr@2/3           semihost_console.cc:semihost_tx_push
+site armv7m qemu-m7 console_tx_isr@3/3           semihost_console.cc:semihost_tx_irq_disable
+site armv7m qemu-m7 console_tx_flush_sync@1/2    semihost_console.cc:semihost_tx_irq_disable
+site armv7m qemu-m7 console_tx_deinit@1/1        semihost_console.cc:semihost_tx_irq_disable
+site armv7m qemu-m7 console_tx.cc:insert_locked@1/3 semihost_console.cc:semihost_tx_irq_enable
+site armv7m qemu-m7 console_tx.cc:insert_locked@2/3 semihost_console.cc:semihost_tx_slot_free
+site armv7m qemu-m7 console_tx.cc:insert_locked@3/3 semihost_console.cc:semihost_tx_push
+site armv7m qemu-m7 console_tx.cc:drain_in_producer@1/2 semihost_console.cc:semihost_tx_slot_free
+site armv7m qemu-m7 console_tx.cc:drain_in_producer@2/2 semihost_console.cc:semihost_tx_push
 
-site armv7m qemu-m7-flat console_tx.cc:wait_slot@1/1  chip_mps2.cc:mps2_tx_slot_free
-site armv7m qemu-m7-flat console_tx_flush_sync@2/2 chip_mps2.cc:mps2_tx_push
-site armv7m qemu-m7-flat console_tx_isr@1/3           chip_mps2.cc:mps2_tx_slot_free
-site armv7m qemu-m7-flat console_tx_isr@2/3           chip_mps2.cc:mps2_tx_push
-site armv7m qemu-m7-flat console_tx_isr@3/3           chip_mps2.cc:mps2_tx_irq_disable
-site armv7m qemu-m7-flat console_tx_flush_sync@1/2    chip_mps2.cc:mps2_tx_irq_disable
-site armv7m qemu-m7-flat console_tx_deinit@1/1        chip_mps2.cc:mps2_tx_irq_disable
-site armv7m qemu-m7-flat console_tx.cc:insert_locked@1/3 chip_mps2.cc:mps2_tx_irq_enable
-site armv7m qemu-m7-flat console_tx.cc:insert_locked@2/3 chip_mps2.cc:mps2_tx_slot_free
-site armv7m qemu-m7-flat console_tx.cc:insert_locked@3/3 chip_mps2.cc:mps2_tx_push
-site armv7m qemu-m7-flat console_tx.cc:drain_in_producer@1/2 chip_mps2.cc:mps2_tx_slot_free
-site armv7m qemu-m7-flat console_tx.cc:drain_in_producer@2/2 chip_mps2.cc:mps2_tx_push
+site armv7m qemu-m7-flat console_tx.cc:wait_slot@1/1  semihost_console.cc:semihost_tx_slot_free
+site armv7m qemu-m7-flat console_tx_flush_sync@2/2 semihost_console.cc:semihost_tx_push
+site armv7m qemu-m7-flat console_tx_isr@1/3           semihost_console.cc:semihost_tx_slot_free
+site armv7m qemu-m7-flat console_tx_isr@2/3           semihost_console.cc:semihost_tx_push
+site armv7m qemu-m7-flat console_tx_isr@3/3           semihost_console.cc:semihost_tx_irq_disable
+site armv7m qemu-m7-flat console_tx_flush_sync@1/2    semihost_console.cc:semihost_tx_irq_disable
+site armv7m qemu-m7-flat console_tx_deinit@1/1        semihost_console.cc:semihost_tx_irq_disable
+site armv7m qemu-m7-flat console_tx.cc:insert_locked@1/3 semihost_console.cc:semihost_tx_irq_enable
+site armv7m qemu-m7-flat console_tx.cc:insert_locked@2/3 semihost_console.cc:semihost_tx_slot_free
+site armv7m qemu-m7-flat console_tx.cc:insert_locked@3/3 semihost_console.cc:semihost_tx_push
+site armv7m qemu-m7-flat console_tx.cc:drain_in_producer@1/2 semihost_console.cc:semihost_tx_slot_free
+site armv7m qemu-m7-flat console_tx.cc:drain_in_producer@2/2 semihost_console.cc:semihost_tx_push
 
-site armv7m qemu-m33 console_tx.cc:wait_slot@1/1  chip_mps2.cc:mps2_tx_slot_free
-site armv7m qemu-m33 console_tx_flush_sync@2/2 chip_mps2.cc:mps2_tx_push
-site armv7m qemu-m33 console_tx_isr@1/3           chip_mps2.cc:mps2_tx_slot_free
-site armv7m qemu-m33 console_tx_isr@2/3           chip_mps2.cc:mps2_tx_push
-site armv7m qemu-m33 console_tx_isr@3/3           chip_mps2.cc:mps2_tx_irq_disable
-site armv7m qemu-m33 console_tx_flush_sync@1/2    chip_mps2.cc:mps2_tx_irq_disable
-site armv7m qemu-m33 console_tx_deinit@1/1        chip_mps2.cc:mps2_tx_irq_disable
-site armv7m qemu-m33 console_tx.cc:insert_locked@1/3 chip_mps2.cc:mps2_tx_irq_enable
-site armv7m qemu-m33 console_tx.cc:insert_locked@2/3 chip_mps2.cc:mps2_tx_slot_free
-site armv7m qemu-m33 console_tx.cc:insert_locked@3/3 chip_mps2.cc:mps2_tx_push
-site armv7m qemu-m33 console_tx.cc:drain_in_producer@1/2 chip_mps2.cc:mps2_tx_slot_free
-site armv7m qemu-m33 console_tx.cc:drain_in_producer@2/2 chip_mps2.cc:mps2_tx_push
+site armv7m qemu-m33 console_tx.cc:wait_slot@1/1  semihost_console.cc:semihost_tx_slot_free
+site armv7m qemu-m33 console_tx_flush_sync@2/2 semihost_console.cc:semihost_tx_push
+site armv7m qemu-m33 console_tx_isr@1/3           semihost_console.cc:semihost_tx_slot_free
+site armv7m qemu-m33 console_tx_isr@2/3           semihost_console.cc:semihost_tx_push
+site armv7m qemu-m33 console_tx_isr@3/3           semihost_console.cc:semihost_tx_irq_disable
+site armv7m qemu-m33 console_tx_flush_sync@1/2    semihost_console.cc:semihost_tx_irq_disable
+site armv7m qemu-m33 console_tx_deinit@1/1        semihost_console.cc:semihost_tx_irq_disable
+site armv7m qemu-m33 console_tx.cc:insert_locked@1/3 semihost_console.cc:semihost_tx_irq_enable
+site armv7m qemu-m33 console_tx.cc:insert_locked@2/3 semihost_console.cc:semihost_tx_slot_free
+site armv7m qemu-m33 console_tx.cc:insert_locked@3/3 semihost_console.cc:semihost_tx_push
+site armv7m qemu-m33 console_tx.cc:drain_in_producer@1/2 semihost_console.cc:semihost_tx_slot_free
+site armv7m qemu-m33 console_tx.cc:drain_in_producer@2/2 semihost_console.cc:semihost_tx_push
 
-site armv7m qemu-m33-flat console_tx.cc:wait_slot@1/1  chip_mps2.cc:mps2_tx_slot_free
-site armv7m qemu-m33-flat console_tx_flush_sync@2/2 chip_mps2.cc:mps2_tx_push
-site armv7m qemu-m33-flat console_tx_isr@1/3           chip_mps2.cc:mps2_tx_slot_free
-site armv7m qemu-m33-flat console_tx_isr@2/3           chip_mps2.cc:mps2_tx_push
-site armv7m qemu-m33-flat console_tx_isr@3/3           chip_mps2.cc:mps2_tx_irq_disable
-site armv7m qemu-m33-flat console_tx_flush_sync@1/2    chip_mps2.cc:mps2_tx_irq_disable
-site armv7m qemu-m33-flat console_tx_deinit@1/1        chip_mps2.cc:mps2_tx_irq_disable
-site armv7m qemu-m33-flat console_tx.cc:insert_locked@1/3 chip_mps2.cc:mps2_tx_irq_enable
-site armv7m qemu-m33-flat console_tx.cc:insert_locked@2/3 chip_mps2.cc:mps2_tx_slot_free
-site armv7m qemu-m33-flat console_tx.cc:insert_locked@3/3 chip_mps2.cc:mps2_tx_push
-site armv7m qemu-m33-flat console_tx.cc:drain_in_producer@1/2 chip_mps2.cc:mps2_tx_slot_free
-site armv7m qemu-m33-flat console_tx.cc:drain_in_producer@2/2 chip_mps2.cc:mps2_tx_push
+site armv7m qemu-m33-flat console_tx.cc:wait_slot@1/1  semihost_console.cc:semihost_tx_slot_free
+site armv7m qemu-m33-flat console_tx_flush_sync@2/2 semihost_console.cc:semihost_tx_push
+site armv7m qemu-m33-flat console_tx_isr@1/3           semihost_console.cc:semihost_tx_slot_free
+site armv7m qemu-m33-flat console_tx_isr@2/3           semihost_console.cc:semihost_tx_push
+site armv7m qemu-m33-flat console_tx_isr@3/3           semihost_console.cc:semihost_tx_irq_disable
+site armv7m qemu-m33-flat console_tx_flush_sync@1/2    semihost_console.cc:semihost_tx_irq_disable
+site armv7m qemu-m33-flat console_tx_deinit@1/1        semihost_console.cc:semihost_tx_irq_disable
+site armv7m qemu-m33-flat console_tx.cc:insert_locked@1/3 semihost_console.cc:semihost_tx_irq_enable
+site armv7m qemu-m33-flat console_tx.cc:insert_locked@2/3 semihost_console.cc:semihost_tx_slot_free
+site armv7m qemu-m33-flat console_tx.cc:insert_locked@3/3 semihost_console.cc:semihost_tx_push
+site armv7m qemu-m33-flat console_tx.cc:drain_in_producer@1/2 semihost_console.cc:semihost_tx_slot_free
+site armv7m qemu-m33-flat console_tx.cc:drain_in_producer@2/2 semihost_console.cc:semihost_tx_push
 
 site armv7m frdmk64f console_tx.cc:wait_slot@1/1  chip_mk64f.cc:k64_tx_slot_free
 site armv7m frdmk64f console_tx_flush_sync@2/2 chip_mk64f.cc:k64_tx_push
@@ -1144,26 +973,7 @@ site armv7m pizero2350-amp2-n0 arch_reboot@2/2 NONE
 site armv7m pizero2350-amp2-n1 arch_reboot@1/2 NONE
 site armv7m pizero2350-amp2-n1 arch_reboot@2/2 NONE
 
-# --- armv6m: the same two arch-wide pointers ------------------------------------
-site armv6m * kickos::sched::switch_prepare@1/1    policy_fifo_rr.cc:policy_on_switch_in
-site armv6m * sched.cc:pick_and_seat@1/2           policy_fifo_rr.cc:policy_on_switch_in
-site armv6m * sched.cc:pick_and_seat@2/2           policy_fifo_rr.cc:policy_pick_next
-site armv6m * kickos_thread_contain_wild_stack@1/2 policy_fifo_rr.cc:policy_on_switch_in
-site armv6m * kickos::sched::add@1/1               policy_fifo_rr.cc:policy_on_ready
-site armv6m * kickos_thread_contain_wild_stack@2/2 policy_fifo_rr.cc:policy_pick_next
-site armv6m * kickos::sched::start@1/2             policy_fifo_rr.cc:policy_pick_next
-site armv6m * kickos::sched::start@2/2             policy_fifo_rr.cc:policy_on_switch_in
-site armv6m * kickos::sched::yield@1/1             policy_fifo_rr.cc:policy_on_yield
-site armv6m * kickos::sched::detach_current@1/1    policy_fifo_rr.cc:policy_on_remove
-site armv6m * kickos::sched::wake_no_resched@1/1   policy_fifo_rr.cc:policy_on_ready
-site armv6m * kickos::sched::set_prio@1/2          policy_fifo_rr.cc:policy_on_remove
-site armv6m * kickos::sched::set_prio@2/2          policy_fifo_rr.cc:policy_on_ready
-site armv6m * kickos::sched::exit_current@1/1      policy_fifo_rr.cc:policy_on_remove
-site armv6m * kickos::sched::next_timed_event@1/1  policy_fifo_rr.cc:policy_next_timed_event
-site armv6m * kickos::sched::tick_rr@1/2           policy_fifo_rr.cc:policy_next_timed_event
-site armv6m * kickos::sched::tick_rr@2/2           policy_fifo_rr.cc:policy_on_slice_expire
-site armv6m * kickos_ipc_fastpath@1/1              policy_fifo_rr.cc:policy_pick_next
-
+# --- armv6m: the IRQ table ------------------------------------------------------
 # armv6m pends PendSV and returns, so sem_post -> sched::wake -> ... -> arch_switch does not
 # re-enter the scheduler on this stack.
 site armv6m * kickos_isr_irq@1/1 irq.cc:irq_default_handler \
@@ -1172,22 +982,21 @@ site armv6m * kickos_isr_irq@1/1 irq.cc:irq_default_handler \
                                  ?bench.cc:bench_irq_handler
 
 # --- armv6m: ConsoleTxRing::backend, per board ----------------------------------
-# nrf51 resolves arch_console_tx_backend to the arch/common fallback, which returns
-# nullptr, so console_tx_init never arms the ring and no site can run. rp2040 has a real
-# PL011 backend, so picopi-st binds each site to the slot that call reaches.
+# nrf51 binds the semihosting slots. rp2040 has a real PL011 backend, so picopi-st binds each
+# site to the slot that call reaches.
 
-site armv6m microbit console_tx.cc:wait_slot@1/1  chip_nrf51.cc:nrf51_tx_slot_free
-site armv6m microbit console_tx_flush_sync@2/2 chip_nrf51.cc:nrf51_tx_push
-site armv6m microbit console_tx_isr@1/3           chip_nrf51.cc:nrf51_tx_slot_free
-site armv6m microbit console_tx_isr@2/3           chip_nrf51.cc:nrf51_tx_push
-site armv6m microbit console_tx_isr@3/3           chip_nrf51.cc:nrf51_tx_irq_disable
-site armv6m microbit console_tx_flush_sync@1/2    chip_nrf51.cc:nrf51_tx_irq_disable
-site armv6m microbit console_tx_deinit@1/1        chip_nrf51.cc:nrf51_tx_irq_disable
-site armv6m microbit console_tx.cc:insert_locked@1/3 chip_nrf51.cc:nrf51_tx_irq_enable
-site armv6m microbit console_tx.cc:insert_locked@2/3 chip_nrf51.cc:nrf51_tx_slot_free
-site armv6m microbit console_tx.cc:insert_locked@3/3 chip_nrf51.cc:nrf51_tx_push
-site armv6m microbit console_tx.cc:drain_in_producer@1/2 chip_nrf51.cc:nrf51_tx_slot_free
-site armv6m microbit console_tx.cc:drain_in_producer@2/2 chip_nrf51.cc:nrf51_tx_push
+site armv6m microbit console_tx.cc:wait_slot@1/1  semihost_console.cc:semihost_tx_slot_free
+site armv6m microbit console_tx_flush_sync@2/2 semihost_console.cc:semihost_tx_push
+site armv6m microbit console_tx_isr@1/3           semihost_console.cc:semihost_tx_slot_free
+site armv6m microbit console_tx_isr@2/3           semihost_console.cc:semihost_tx_push
+site armv6m microbit console_tx_isr@3/3           semihost_console.cc:semihost_tx_irq_disable
+site armv6m microbit console_tx_flush_sync@1/2    semihost_console.cc:semihost_tx_irq_disable
+site armv6m microbit console_tx_deinit@1/1        semihost_console.cc:semihost_tx_irq_disable
+site armv6m microbit console_tx.cc:insert_locked@1/3 semihost_console.cc:semihost_tx_irq_enable
+site armv6m microbit console_tx.cc:insert_locked@2/3 semihost_console.cc:semihost_tx_slot_free
+site armv6m microbit console_tx.cc:insert_locked@3/3 semihost_console.cc:semihost_tx_push
+site armv6m microbit console_tx.cc:drain_in_producer@1/2 semihost_console.cc:semihost_tx_slot_free
+site armv6m microbit console_tx.cc:drain_in_producer@2/2 semihost_console.cc:semihost_tx_push
 
 site armv6m picopi-st console_tx.cc:wait_slot@1/1  chip_rp2040.cc:rp_tx_slot_free
 site armv6m picopi-st console_tx_flush_sync@2/2 chip_rp2040.cc:rp_tx_push
@@ -1209,35 +1018,34 @@ site armv6m picopi-st console_tx.cc:drain_in_producer@2/2 chip_rp2040.cc:rp_tx_p
 site armv6m picopi-st arch_reboot@1/2 NONE
 site armv6m picopi-st arch_reboot@2/2 NONE
 
-# The console backend is per BOARD, so every rv32imac preset is bound: qemu-riscv resolves
-# arch_console_tx_backend to the arch/common fallback whatever the variant, and all four
-# esp32c6-wroom presets bind the C6 slots.
+# The console backend is per BOARD, so every rv32imac preset is bound: qemu-riscv binds the
+# semihosting slots whatever the variant, and all four esp32c6-wroom presets bind the C6 slots.
 
-site rv32imac qemu-riscv-flat console_tx.cc:wait_slot@1/1  chip_virt_rv32.cc:rv32_tx_slot_free
-site rv32imac qemu-riscv-flat console_tx_flush_sync@2/2 chip_virt_rv32.cc:rv32_tx_push
-site rv32imac qemu-riscv-flat console_tx_isr@1/3           chip_virt_rv32.cc:rv32_tx_slot_free
-site rv32imac qemu-riscv-flat console_tx_isr@2/3           chip_virt_rv32.cc:rv32_tx_push
-site rv32imac qemu-riscv-flat console_tx_isr@3/3           chip_virt_rv32.cc:rv32_tx_irq_disable
-site rv32imac qemu-riscv-flat console_tx_flush_sync@1/2    chip_virt_rv32.cc:rv32_tx_irq_disable
-site rv32imac qemu-riscv-flat console_tx_deinit@1/1        chip_virt_rv32.cc:rv32_tx_irq_disable
-site rv32imac qemu-riscv-flat console_tx.cc:insert_locked@1/3 chip_virt_rv32.cc:rv32_tx_irq_enable
-site rv32imac qemu-riscv-flat console_tx.cc:insert_locked@2/3 chip_virt_rv32.cc:rv32_tx_slot_free
-site rv32imac qemu-riscv-flat console_tx.cc:insert_locked@3/3 chip_virt_rv32.cc:rv32_tx_push
-site rv32imac qemu-riscv-flat console_tx.cc:drain_in_producer@1/2 chip_virt_rv32.cc:rv32_tx_slot_free
-site rv32imac qemu-riscv-flat console_tx.cc:drain_in_producer@2/2 chip_virt_rv32.cc:rv32_tx_push
+site rv32imac qemu-riscv-flat console_tx.cc:wait_slot@1/1  semihost_console.cc:semihost_tx_slot_free
+site rv32imac qemu-riscv-flat console_tx_flush_sync@2/2 semihost_console.cc:semihost_tx_push
+site rv32imac qemu-riscv-flat console_tx_isr@1/3           semihost_console.cc:semihost_tx_slot_free
+site rv32imac qemu-riscv-flat console_tx_isr@2/3           semihost_console.cc:semihost_tx_push
+site rv32imac qemu-riscv-flat console_tx_isr@3/3           semihost_console.cc:semihost_tx_irq_disable
+site rv32imac qemu-riscv-flat console_tx_flush_sync@1/2    semihost_console.cc:semihost_tx_irq_disable
+site rv32imac qemu-riscv-flat console_tx_deinit@1/1        semihost_console.cc:semihost_tx_irq_disable
+site rv32imac qemu-riscv-flat console_tx.cc:insert_locked@1/3 semihost_console.cc:semihost_tx_irq_enable
+site rv32imac qemu-riscv-flat console_tx.cc:insert_locked@2/3 semihost_console.cc:semihost_tx_slot_free
+site rv32imac qemu-riscv-flat console_tx.cc:insert_locked@3/3 semihost_console.cc:semihost_tx_push
+site rv32imac qemu-riscv-flat console_tx.cc:drain_in_producer@1/2 semihost_console.cc:semihost_tx_slot_free
+site rv32imac qemu-riscv-flat console_tx.cc:drain_in_producer@2/2 semihost_console.cc:semihost_tx_push
 
-site rv32imac qemu-riscv-bench console_tx.cc:wait_slot@1/1  chip_virt_rv32.cc:rv32_tx_slot_free
-site rv32imac qemu-riscv-bench console_tx_flush_sync@2/2 chip_virt_rv32.cc:rv32_tx_push
-site rv32imac qemu-riscv-bench console_tx_isr@1/3           chip_virt_rv32.cc:rv32_tx_slot_free
-site rv32imac qemu-riscv-bench console_tx_isr@2/3           chip_virt_rv32.cc:rv32_tx_push
-site rv32imac qemu-riscv-bench console_tx_isr@3/3           chip_virt_rv32.cc:rv32_tx_irq_disable
-site rv32imac qemu-riscv-bench console_tx_flush_sync@1/2    chip_virt_rv32.cc:rv32_tx_irq_disable
-site rv32imac qemu-riscv-bench console_tx_deinit@1/1        chip_virt_rv32.cc:rv32_tx_irq_disable
-site rv32imac qemu-riscv-bench console_tx.cc:insert_locked@1/3 chip_virt_rv32.cc:rv32_tx_irq_enable
-site rv32imac qemu-riscv-bench console_tx.cc:insert_locked@2/3 chip_virt_rv32.cc:rv32_tx_slot_free
-site rv32imac qemu-riscv-bench console_tx.cc:insert_locked@3/3 chip_virt_rv32.cc:rv32_tx_push
-site rv32imac qemu-riscv-bench console_tx.cc:drain_in_producer@1/2 chip_virt_rv32.cc:rv32_tx_slot_free
-site rv32imac qemu-riscv-bench console_tx.cc:drain_in_producer@2/2 chip_virt_rv32.cc:rv32_tx_push
+site rv32imac qemu-riscv-bench console_tx.cc:wait_slot@1/1  semihost_console.cc:semihost_tx_slot_free
+site rv32imac qemu-riscv-bench console_tx_flush_sync@2/2 semihost_console.cc:semihost_tx_push
+site rv32imac qemu-riscv-bench console_tx_isr@1/3           semihost_console.cc:semihost_tx_slot_free
+site rv32imac qemu-riscv-bench console_tx_isr@2/3           semihost_console.cc:semihost_tx_push
+site rv32imac qemu-riscv-bench console_tx_isr@3/3           semihost_console.cc:semihost_tx_irq_disable
+site rv32imac qemu-riscv-bench console_tx_flush_sync@1/2    semihost_console.cc:semihost_tx_irq_disable
+site rv32imac qemu-riscv-bench console_tx_deinit@1/1        semihost_console.cc:semihost_tx_irq_disable
+site rv32imac qemu-riscv-bench console_tx.cc:insert_locked@1/3 semihost_console.cc:semihost_tx_irq_enable
+site rv32imac qemu-riscv-bench console_tx.cc:insert_locked@2/3 semihost_console.cc:semihost_tx_slot_free
+site rv32imac qemu-riscv-bench console_tx.cc:insert_locked@3/3 semihost_console.cc:semihost_tx_push
+site rv32imac qemu-riscv-bench console_tx.cc:drain_in_producer@1/2 semihost_console.cc:semihost_tx_slot_free
+site rv32imac qemu-riscv-bench console_tx.cc:drain_in_producer@2/2 semihost_console.cc:semihost_tx_push
 
 site rv32imac esp32c6-wroom console_tx.cc:wait_slot@1/1  chip_esp32c6.cc:c6_tx_slot_free
 site rv32imac esp32c6-wroom console_tx_flush_sync@2/2 chip_esp32c6.cc:c6_tx_push
@@ -1335,28 +1143,7 @@ site armv6m picopi-flat console_tx.cc:insert_locked@3/3 chip_rp2040.cc:rp_tx_pus
 site armv6m picopi-flat console_tx.cc:drain_in_producer@1/2 chip_rp2040.cc:rp_tx_slot_free
 site armv6m picopi-flat console_tx.cc:drain_in_producer@2/2 chip_rp2040.cc:rp_tx_push
 
-# xtensa. The SchedPolicy sites every arch binds; the table is one static instance
-# (policy_fifo_rr.cc) and the site's pointer can hold nothing else.
-site lx6 * kickos_thread_contain_wild_stack@1/2         policy_fifo_rr.cc:policy_on_switch_in
-site lx6 * kickos_thread_contain_wild_stack@2/2         policy_fifo_rr.cc:policy_pick_next
-site lx6 * kickos::sched::set_prio@1/2                  policy_fifo_rr.cc:policy_on_remove
-site lx6 * kickos::sched::set_prio@2/2                  policy_fifo_rr.cc:policy_on_ready
-site lx6 * kickos::sched::next_timed_event@1/1          policy_fifo_rr.cc:policy_next_timed_event
-site lx6 * kickos::sched::tick_rr@1/2                   policy_fifo_rr.cc:policy_next_timed_event
-site lx6 * kickos::sched::tick_rr@2/2                   policy_fifo_rr.cc:policy_on_slice_expire
-site lx6 cores=1 sched.cc:pick_and_seat@1/2             policy_fifo_rr.cc:policy_on_switch_in
-site lx6 cores=1 sched.cc:pick_and_seat@2/2             policy_fifo_rr.cc:policy_pick_next
-site lx6 cores=1 kickos::sched::wake_no_resched@1/1     policy_fifo_rr.cc:policy_on_ready
-site lx6 cores>1 sched.cc:pick_and_seat@1/2             policy_fifo_rr.cc:policy_on_switch_in
-site lx6 cores>1 sched.cc:pick_and_seat@2/2             policy_fifo_rr.cc:policy_pick_next
-site lx6 cores>1 kickos_kernel_core_resched@1/2         policy_fifo_rr.cc:policy_push_candidate
-site lx6 cores>1 kickos_kernel_core_resched@2/2         policy_fifo_rr.cc:policy_on_remove
-site lx6 cores>1 sched.cc:link_ready@1/1                policy_fifo_rr.cc:policy_on_ready
-site lx6 cores>1 sched.cc:place@1/2                     policy_fifo_rr.cc:policy_place
-site lx6 cores>1 sched.cc:place@2/2                     policy_fifo_rr.cc:policy_on_remove
-site lx6 cores>1 sched.cc:place_declined@1/1            policy_fifo_rr.cc:policy_declined
-site lx6 cores>1 sched.cc:ring_drain@1/2                policy_fifo_rr.cc:policy_on_remove
-site lx6 cores>1 sched.cc:ring_drain@2/2                policy_fifo_rr.cc:policy_on_ready
+# xtensa: the IRQ table, as on the other arches.
 site lx6 * kickos_isr_irq@1/1 irq.cc:irq_default_handler \
                               irq.cc:irq_event_isr \
                               console_tx.cc:console_tx_isr_trampoline \
@@ -1377,24 +1164,11 @@ site lx6 * console_tx.cc:insert_locked@2/3 chip_esp32.cc:esp32_tx_slot_free
 site lx6 * console_tx.cc:insert_locked@3/3 chip_esp32.cc:esp32_tx_push
 site lx6 * console_tx.cc:drain_in_producer@1/2 chip_esp32.cc:esp32_tx_slot_free
 site lx6 * console_tx.cc:drain_in_producer@2/2 chip_esp32.cc:esp32_tx_push
-# gcc emits ONE UNLOCATED __indirect_call edge out of this body while the emitted code holds no
-# indirect call at all, so NONE charges 0 for it. Re-read this body by hand if it ever gains a
-# real callback: the aggregate absorbs it and no count moves, so nothing here is refused.
-#
-# ONE ROW PER TWO-CORE LX6 PRESET, and the scope stays a preset rather than * because the body
-# only reaches a trap root where the doorbell exists, which is above one kernel core. A new
-# two-core lx6 preset owes a row here or its trap_redzone reports every figure as a lower bound.
-site lx6 esp32-wroom-smp kickos_lx6_doorbell_service@indirect NONE reason: an unlocated edge with no indirect call behind it in the emitted body
-site lx6 esp32-wroom-benchsmp kickos_lx6_doorbell_service@indirect NONE reason: an unlocated edge with no indirect call behind it in the emitted body
 
 # --- lx6: the syscall paths an app thread descends ---------------------------------
 # A KickOS syscall is a plain call on this arch, so tests/static/app_stack.py walks an app
-# thread down the kernel's own call paths. The SchedPolicy and ConsoleTxRing::backend sites it
-# meets are the same two pointers as above.
-site lx6 cores=1 kickos::sched::add@1/1          policy_fifo_rr.cc:policy_on_ready
-site lx6 * kickos::sched::yield@1/1              policy_fifo_rr.cc:policy_on_yield
-site lx6 * kickos::sched::detach_current@1/1     policy_fifo_rr.cc:policy_on_remove
-site lx6 * kickos::sched::exit_current@1/1       policy_fifo_rr.cc:policy_on_remove
+# thread down the kernel's own call paths. The ConsoleTxRing::backend site it meets is the
+# pointer above.
 site lx6 * console_tx_deinit@1/1                 chip_esp32.cc:esp32_tx_irq_disable
 # Unlocated edges with no indirect call behind them, read off the reclaimwit image each
 # esp32-wroom preset links that has app threads (-st, -smp, -bench, -benchsmp): no callx or
@@ -1406,8 +1180,7 @@ site lx6 * console_tx_deinit@1/1                 chip_esp32.cc:esp32_tx_irq_disa
 site lx6 * kickos::domain_for@indirect           NONE reason: no indirect call in the emitted body
 site lx6 * kickos::endpoint_reply_recv@indirect  NONE reason: no indirect call in the emitted body
 site lx6 * kickos::endpoint_slot_claim@indirect  NONE reason: no indirect call in the emitted body
-site lx6 * kickos::task_create@indirect          NONE reason: no indirect call in the emitted body
-site lx6 * kickos::task_for@indirect             NONE reason: no indirect call in the emitted body
+site lx6 * task.cc:task_seat@indirect           NONE reason: no indirect call in the emitted body
 site lx6 * kickos::task_object_admit_binding_notify@indirect NONE reason: no indirect call in the emitted body
 site lx6 * kickos::task_object_admit_grants@indirect NONE reason: its one jx is a jump table inside the body
 site lx6 esp32-wroom-st syscall_thread.cc:spawn_masked@indirect NONE reason: no indirect call in the emitted body

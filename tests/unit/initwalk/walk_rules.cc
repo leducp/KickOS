@@ -1136,7 +1136,7 @@ namespace
         for (uint16_t k = 0; k < order.size(); k++)
         {
             SCOPED_TRACE(order[k]);
-            EXPECT_EQ(static_cast<uint32_t>(watcher.status[k].count), 2u) << "cleared, then written once";
+            EXPECT_EQ(watcher.status[k].count(), 2u) << "cleared, then written once";
             StatusFields read{};
             ASSERT_TRUE(kickos::init::status_read(&watcher.status[k], &read));
             EXPECT_EQ(read.deaths, 0u);

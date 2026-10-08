@@ -142,22 +142,7 @@ SECTIONS
         __exidx_end = .;
     } > FLASH
 
-    /* Copy/zero tables for the generic C-runtime init (kickos_ranges_init). */
-    .kickos_init_tables : ALIGN(4)
-    {
-        __kickos_copy_table_start = .;
-#if KICKOS_HAVE_MPU
-        LONG(LOADADDR(.appdata)); LONG(ADDR(.appdata)); LONG(SIZEOF(.appdata));
-#endif
-        LONG(LOADADDR(.data));    LONG(ADDR(.data));    LONG(SIZEOF(.data));
-        __kickos_copy_table_end = .;
-        __kickos_zero_table_start = .;
-#if KICKOS_HAVE_MPU
-        LONG(__kickos_appdata_load_end); LONG(__kickos_appdata_end - __kickos_appdata_load_end);
-#endif
-        LONG(ADDR(.bss));    LONG(SIZEOF(.bss));
-        __kickos_zero_table_end = .;
-    } > FLASH
+    KICKOS_INIT_TABLES(FLASH)
 
     _sidata = LOADADDR(.data);
 

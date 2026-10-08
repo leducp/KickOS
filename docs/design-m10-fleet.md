@@ -290,14 +290,14 @@ includes:
 
 | macro | from |
 | --- | --- |
-| `KICKOS_BOARD_CONSOLE_BASE` | the console device's window, a channel's or an instance's where the path names one |
-| `KICKOS_BOARD_CONSOLE_<ROLE>_PORT`, `_PORT_BASE`, `_BIT` | the console pin's `gpio` function: the port device's instance, where it repeats, that instance's base and the bit; the RX72M's `port` device does not repeat, so it has no `_PORT` and its `_BIT` is the port index times 8 plus the pin |
+| `KICKOS_BOARD_CONSOLE_BASE`, `_SIZE` | the console device's window, a channel's or an instance's where the path names one |
+| `KICKOS_BOARD_CONSOLE_<ROLE>_PORT`, `_PORT_BASE`, `_BIT` | the console pin's `gpio` function: its port's number where the chip has more than one port (the instance of a port device that repeats, else the number the port device's name ends in, the i.MX RT's `gpio1`), that port's base and the bit; the RX72M's `port` device is one port, so it has no `_PORT` and its `_BIT` is the port index times 8 plus the pin |
 | `KICKOS_BOARD_CONSOLE_<ROLE>_SELECT` | the value of the selector whose function is `<device>.<role>`: the number the selector ends in (`f2`, `alt3`, `af7`, `psel11`), or a one-letter selector's place from `a` = 0 |
 | `KICKOS_BOARD_CONSOLE_<ROLE>_INPUT_SELECT` | the function's `input_select`, where the chip file states one |
 | `KICKOS_BOARD_LED_PORT`, `_PORT_BASE`, `_BIT` | the `owner: kernel` LED's pin |
 | `KICKOS_BOARD_LED_ACTIVE_LOW`, or `KICKOS_BOARD_LED_ADDRESSABLE` | its `active` level, or `kind: addressable` for an LED sent its state as data, which has none |
-| `KICKOS_BOARD_RESERVED_RUNS(RUN)` | the `reserved_pins`, as `RUN(port base, first, last)` per run of consecutive bits of one port, empty where the board reserves none |
-| `KICKOS_BOARD_KERNEL_PINS(PIN)` | every pin the kernel holds, the console pins, the `owner: kernel` LED and the reserved pins, as `PIN(port base, bit)` |
+| `KICKOS_BOARD_KERNEL_PINS(PIN)` | every pin the kernel holds, the console pins, the `owner: kernel` LED and the reserved pins, as `PIN(port, bit)`, the port numbered as `_PORT` is and 0 on a chip of one port |
+| `KICKOS_CHIP_PINS(PIN)` | every pin of the chip file with a `gpio` function, as `PIN(port, bit)`; the i.MX RT's `arch_pinmux_set` muxes these pads and no other |
 
 A role is the signal its pin carries, so a chip's code reads the roles its console device has:
 `TX` and `RX`, the RX72M's `TXD` and `RXD`, the XMC's `DOUT0` and `DX0`, whose DX0 input line
@@ -309,12 +309,11 @@ reserved pin (`board.pin-not-gpio`).
 The chip code keeps how a pin is muxed: the register, its field, the pad state, the clock gate.
 It reads which pin and which function from the header, `static_assert`s that the console is the
 device it drives and that the selector is one its mux code serves (the STM32F103's unremapped
-USART1, the SAM3X's peripheral A, the ESP chips' reset IO MUX function), and refuses the same
-pins in `arch_pinmux_set`, the reserved ones with them. The reserved runs are a list macro rather
-than an array so that the guard expands them into one condition, the form the compiler turns into
-the same bit test the hand-written guard had. Each chip `static_assert`s that its guard, read over
-every port and pin `arch_pinmux_set` accepts, holds exactly at `KICKOS_BOARD_KERNEL_PINS`
-(`kickos/arch/pin_guard.h`), so an LED a task muxes is not the board file's `owner: kernel` one. A value
+USART1, the SAM3X's peripheral A, the ESP chips' reset IO MUX function), and refuses every pin
+`KICKOS_BOARD_KERNEL_PINS` names in `arch_pinmux_set` through one guard,
+`kickos::board_pin_kernel_owned` (`arch/common/pin_guard.h`). The list is a macro rather than an
+array so that the guard expands it into one condition the compiler folds. The RX72M names a pin to
+the guard by port 0 and its bit along the port rows. A value
 per pin that the selector does not carry is the chip file's,
 on the pin function: the i.MX RT's DAISY input, `alt2: { function: lpuart6.rx, input_select: 1,
 ref: ... }`, and the XMC's DX0 input line, `in: { function: usic0.ch0.dx0, input_select: 1 }`.
@@ -329,8 +328,7 @@ where it has one, its LED, so a pin the code reads from the header moved the ima
 still named in the C would not have. That compare was run once, at the switch. The generator's
 tests (`tools/compose/tests/test_chip.py`) pin the header each board file writes, and the
 admission arms (`tools/compose/tests/test_arms.py`) the refusals above. The chip code's
-`static_assert`s hold, on every build, the console device, the selector and the pin guard
-against the header.
+`static_assert`s hold, on every build, the console device and the selector against the header.
 
 ## 3. The smallest boards, measured first
 

@@ -124,6 +124,16 @@ class Report:
         self.refusals.append(Refusal(path, line, rule, message))
 
 
+def read_utf8(path, report):
+    """The file's text, or None once refused as unreadable."""
+    try:
+        with open(path, encoding="utf-8") as stream:
+            return stream.read()
+    except (OSError, UnicodeDecodeError) as error:
+        report.refuse(path, 1, "form.unreadable", "the file cannot be read as UTF-8: %s" % error)
+        return None
+
+
 def line_of(node):
     return node.start_mark.line + 1
 

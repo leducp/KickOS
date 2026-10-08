@@ -324,11 +324,8 @@ uint32_t arch_mpu_encode(struct arch_mpu_region const* regions, size_t n,
     return kickos::rv32::pmp_encode(regions, n, out);
 }
 
-// A POINTER into the caller's TCB, not a copy: every commit is preceded by an apply inside
-// the SAME MIE=0 window (the msip trap, the .Lecall fastpath tail, arch_start, and
-// arch_mpu_apply_now), so nothing can rewrite the image in between. Thread slots come from a
-// static pool and are never freed, so a stale pointer still addresses valid storage.
-static struct arch_mpu_encoded const* g_pend_image = nullptr;
+// arch/common/arch_mpu_stash.cc.
+extern "C" struct arch_mpu_encoded const* g_pend_image;
 
 #if KICKOS_BENCH
 // Declared rather than included: this TU is below <kickos/bench.h>.
@@ -347,17 +344,6 @@ static __attribute__((always_inline)) inline uint32_t mpu_bench_cyc(void)
     return v;
 }
 #endif
-
-// STASH-ONLY: kickos_arch_mpu_commit writes the PMP CSRs from the .Lswitch epilogue AFTER the
-// physical swap. An eager apply would run the OUTGOING user thread under the incoming PMP set
-// until msip fires, faulting on its own stack.
-void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
-                    struct arch_mpu_encoded const* image)
-{
-    (void)regions;
-    (void)n;
-    g_pend_image = image;
-}
 
 // Runs in the M-mode trap with MIE=0, so it must NOT toggle MIE.
 void kickos_arch_mpu_commit(void)
@@ -395,39 +381,9 @@ void kickos_arch_mpu_commit(void)
     kickos_bench_mpu_commit(mpu_bench_cyc() - bench_start);
 #endif
 }
-
-// THE STASH IS RESTORED: a switch may already be pended behind the caller and the stash is
-// ONE cell, so leaving this set in it would program the CALLER's regions onto the incoming
-// thread. Self-bracketed: an interrupt between the two writes could decide a switch, and the
-// restore would then drop the image that switch stashed.
-void arch_mpu_apply_now(struct arch_mpu_region const* regions, size_t n,
-                        struct arch_mpu_encoded const* image)
-{
-    (void)regions;
-    (void)n;
-    arch_irq_state_t const irq = arch_irq_save();
-    struct arch_mpu_encoded const* const pend = g_pend_image;
-    g_pend_image = image;
-    kickos_arch_mpu_commit();
-    g_pend_image = pend;
-    arch_irq_restore(irq);
-}
 #else
 // KICKOS_HAVE_MPU=0: the permissive bootstrap PMP stays in place for the life of the image.
-void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
-                    struct arch_mpu_encoded const* image)
-{
-    (void)regions;
-    (void)n;
-    (void)image;
-}
 void kickos_arch_mpu_commit(void) {}
-
-void arch_mpu_apply_now(struct arch_mpu_region const* regions, size_t n,
-                        struct arch_mpu_encoded const* image)
-{
-    arch_mpu_apply(regions, n, image);
-}
 #endif
 
 size_t arch_mpu_min_region(void)

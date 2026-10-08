@@ -22,7 +22,7 @@ foreach(_system IN LISTS _systems)
     "kickos_table=kickos_table_${_system};kickos_link_one_system_target=kickos_link_one_system_target_${_system};kickos_usb_device_console=kickos_usb_device_console_${_system}")
 endforeach()
 list(JOIN _requests "," _requests)
-file(GLOB _tool CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/tools/compose/kickos_compose/*.py")
+kickos_compose_inputs(_tool "${PROJECT_SOURCE_DIR}/tools/compose")
 file(GLOB_RECURSE _platform CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/platform/*.yaml")
 file(GLOB _compositions CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/examples/composition/systems/*.yaml"
      "${PROJECT_SOURCE_DIR}/boards/*/composition.yaml")
@@ -33,9 +33,7 @@ add_custom_command(
           "-DFIXTURES=${_requests}" -P "${PROJECT_SOURCE_DIR}/tests/unit/grantlookup/emit_fixture.cmake"
   DEPENDS "${PROJECT_SOURCE_DIR}/tests/unit/grantlookup/emit_fixture.cmake"
           "${CMAKE_CURRENT_SOURCE_DIR}/emit_systems.py"
-          "${PROJECT_SOURCE_DIR}/tools/compose/tests/test_arms.py"
-          "${PROJECT_SOURCE_DIR}/tools/compose/pyproject.toml" "${PROJECT_SOURCE_DIR}/tools/compose/uv.lock"
-          ${_tool} ${_platform} ${_compositions}
+          "${PROJECT_SOURCE_DIR}/tools/compose/tests/test_arms.py" ${_tool} ${_platform} ${_compositions}
   COMMENT "Emitting the init walk tests' systems"
   VERBATIM)
 

@@ -11,9 +11,8 @@ from ruamel.yaml.nodes import ScalarNode
 
 from .descriptions import check_platform
 from .manifest_fields import DRIVER_FIELDS, WINDOWS_KNOB, is_pool
-from .subset import C_IDENTIFIER, FILE_NAME, IDENTIFIER, File, Report, line_of
+from .subset import C_IDENTIFIER, FILE_NAME, IDENTIFIER, File, Report, line_of, read_utf8
 
-# The versions of the manifest format this tool reads.
 MANIFEST_VERSIONS = (1,)
 MANIFEST_FIELDS = ("version", "abi", "target", "protection", "pools", "threads", "init", "descriptions", "default",
                    "drivers")
@@ -57,7 +56,6 @@ class Manifest:
         # partition's only one.
         self.amp_image = "own"
         self.cap_reserved = None
-        # What the link spells before a C name.
         self.symbol_prefix = None
         self.table = None
         self.enforced = None
@@ -126,11 +124,8 @@ def check_manifests(paths):
 def read_manifest(path, report, clean=True):
     """The Manifest, or None once refused, or False when the file cannot be read. With `clean`, a
     manifest any refusal was made in reads as None."""
-    try:
-        with open(path, encoding="utf-8") as stream:
-            text = stream.read()
-    except (OSError, UnicodeDecodeError) as error:
-        report.refuse(path, 1, "form.unreadable", "the file cannot be read: %s" % error)
+    text = read_utf8(path, report)
+    if text is None:
         return False
     before = len(report.refusals)
     manifest = check_manifest(path, text, report)
@@ -471,7 +466,8 @@ def check_driver(f, node, what):
                 elif name is not None:
                     seen[name] = line_of(thread["name"])
             if "priority" in thread:
-                offset = f.integer(thread["priority"], "%s priority offset" % twhat, 8)
+                # A descriptor carries the offset as a signed byte.
+                offset = f.integer(thread["priority"], "%s priority offset" % twhat, 7)
             if "stack" in thread:
                 stack = word_or_integer(f, thread["stack"], "%s stack" % twhat, "default", 32)
             driver.threads.append((name, offset, stack))
@@ -524,9 +520,13 @@ def check_driver(f, node, what):
                      "%s receives on its endpoint in thread `%s`, which is none of its threads" % (what, receiver))
         elif receiver is not None:
             driver.receiver = names.index(receiver)
-    if driver.console and posture == "retain":
+    if posture is not None and "console" in values and driver.console != (posture == "handover"):
         f.refuse(values["console"], "manifest.console",
-                 "%s takes the console and retains its endpoint; a console driver hands it over" % what)
+                 "%s has posture `%s` and console %s; a console driver hands its endpoint over, any other "
+                 "retains it" % (what, posture, str(driver.console).lower()))
+    if driver.usb_device and not driver.console:
+        f.refuse(values["usb_device"], "manifest.console",
+                 "%s serves the console over the board's USB device controller and takes no console" % what)
     if "barrier" in values:
         barrier = word_or_integer(f, values["barrier"], "%s barrier" % what, "none", 8)
         if isinstance(barrier, int) and block == "none":

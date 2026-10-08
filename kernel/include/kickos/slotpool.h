@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // Generational slot pool: a fixed array of N slots, each with a generation counter.
-// Handles pack (gen << INDEX_BITS) | index and spend all 32 bits, so a handle is NOT a
+// Handles pack (gen << HANDLE_INDEX_BITS) | index and spend all 32 bits, so a handle is NOT a
 // signed quantity: alloc() signals a full pool with -1, which is an INDEX and never a
 // handle. free() bumps the slot's generation so a stale handle (naming a since-recycled
 // slot) fails to resolve: the ABA guard.
@@ -15,29 +15,63 @@
 // Liveness here is EXTRINSIC, a used[] bit per slot. The thread pool does not use this
 // template; its liveness is intrinsic in TCB.state == EXITED.
 //
-// NOT internally locked: the caller serializes (IrqLock today).
+// NOT internally locked: the caller serializes (IrqLock).
 
 #ifndef KICKOS_SLOTPOOL_H
 #define KICKOS_SLOTPOOL_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 namespace kickos
 {
+    // The handle codec every generational pool shares: (gen << HANDLE_INDEX_BITS) | index. The
+    // uint16_t generation takes the other 16 bits, so a fully aged handle has bit 31 set and is
+    // NEGATIVE as an int: no decoder may test its sign.
+    constexpr int HANDLE_INDEX_BITS = 16;
+    constexpr uint32_t HANDLE_INDEX_MASK = (1u << HANDLE_INDEX_BITS) - 1u;
+
+    constexpr uint32_t handle_pack(uint16_t gen, uint32_t index)
+    {
+        return (static_cast<uint32_t>(gen) << HANDLE_INDEX_BITS) | index;
+    }
+
+    constexpr uint32_t handle_index(uint32_t handle)
+    {
+        return handle & HANDLE_INDEX_MASK;
+    }
+
+    constexpr uint16_t handle_gen(uint32_t handle)
+    {
+        return static_cast<uint16_t>(handle >> HANDLE_INDEX_BITS);
+    }
+
+    // Index of `p` in `slots`, or -1 if `p` is not one of its element bases, nullptr included.
+    // Compares addresses as integers: subtracting pointers that may not point into the array
+    // is UB. sizeof(T) is rarely a power of two, so a core with no divide instruction calls a
+    // libgcc helper here; keep it off any per-message path.
+    template <class T, size_t N>
+    int slot_index_of(T const (&slots)[N], T const* p)
+    {
+        uintptr_t const base = reinterpret_cast<uintptr_t>(&slots[0]);
+        uintptr_t const q = reinterpret_cast<uintptr_t>(p);
+        if (p == nullptr or q < base or q - base >= sizeof(slots) or (q - base) % sizeof(T) != 0)
+        {
+            return -1;
+        }
+        return static_cast<int>((q - base) / sizeof(T));
+    }
+
     template <class T, int N>
     class SlotPool
     {
-        // The uint16_t generation takes the other 16, so the handle spends the whole word. A
-        // fully aged handle has bit 31 set and is NEGATIVE as an int, so neither free() nor
-        // resolve() may test its sign.
-        static constexpr int INDEX_BITS = 16;
-        static constexpr uint32_t INDEX_MASK = (1u << INDEX_BITS) - 1u;
         // The one index value the pool never seats, so no handle a live slot can mint carries
         // an all-ones index. That keeps `-1`, and every other malformed word whose low half
         // is all ones, unresolvable rather than aliasing the top slot once its generation has
         // aged far enough.
-        static_assert(N < (1 << INDEX_BITS), "SlotPool: N would seat the reserved all-ones index");
-        // cursor_ stores an index, so widening INDEX_BITS past the cursor type would
+        static_assert(N < (1 << HANDLE_INDEX_BITS),
+                      "SlotPool: N would seat the reserved all-ones index");
+        // cursor_ stores an index, so widening the index field past the cursor type would
         // truncate it and alias two slots onto one resume point.
         static_assert(N - 1 <= UINT16_MAX, "SlotPool: cursor_ too narrow for N");
 
@@ -76,17 +110,16 @@ namespace kickos
         }
 
         // Release the slot a handle names: bump its generation so outstanding handles
-        // to it stop resolving, then mark it free. Self-guards the index (a safety-
-        // critical primitive must not corrupt an adjacent slot on a malformed handle,
-        // even though callers resolve() first today).
+        // to it stop resolving, then mark it free. Self-guards the index: a malformed handle
+        // must not corrupt an adjacent slot, even though callers resolve() first.
         //
         // NO SIGN TEST. An aged handle has bit 31 set, so `handle < 0` would silently refuse
         // to release live slots after 32768 recycles of one of them; the reserved all-ones
         // index is what keeps a `-1` out of range instead.
         void free(int handle)
         {
-            int const index = static_cast<int>(static_cast<uint32_t>(handle) & INDEX_MASK);
-            if (index >= N)
+            uint32_t const index = handle_index(static_cast<uint32_t>(handle));
+            if (index >= static_cast<uint32_t>(N))
             {
                 return;
             }
@@ -95,39 +128,34 @@ namespace kickos
         }
 
         // Validate + resolve a handle to its slot, or nullptr if out-of-range, freed,
-        // or stale (generation mismatch). No sign test, for free()'s reason.
+        // or stale (generation mismatch).
         T* resolve(int handle)
         {
-            uint32_t const u = static_cast<uint32_t>(handle);
-            int const index = static_cast<int>(u & INDEX_MASK);
-            uint32_t const gen = u >> INDEX_BITS;
-            if (index >= N or not used_[index] or static_cast<uint32_t>(gen_[index]) != gen)
+            if (live_index(handle) < 0)
             {
                 return nullptr;
             }
-            return &slots_[index];
+            return &slots_[handle_index(static_cast<uint32_t>(handle))];
         }
 
         // The validated slot INDEX a handle names, or -1 for out-of-range, freed or stale.
-        // Exactly resolve()'s test without the dereference, for a caller that wants the index
-        // and not the object: index_of(resolve(h)) recovers by pointer subtraction and so
-        // spends a DIVIDE that this never does, sizeof(T) rarely being a power of two.
+        // index_of(resolve(h)) recovers it by pointer subtraction and so spends a DIVIDE that
+        // this never does.
         int live_index(int handle) const
         {
             uint32_t const u = static_cast<uint32_t>(handle);
-            int const index = static_cast<int>(u & INDEX_MASK);
-            uint32_t const gen = u >> INDEX_BITS;
-            if (index >= N or not used_[index] or static_cast<uint32_t>(gen_[index]) != gen)
+            uint32_t const index = handle_index(u);
+            if (index >= static_cast<uint32_t>(N) or not used_[index]
+                or gen_[index] != handle_gen(u))
             {
                 return -1;
             }
-            return index;
+            return static_cast<int>(index);
         }
 
         // The slot at `index`, or nullptr where `index` is outside [0, N). THE BOUND ALONE:
-        // a freed slot still hands back its last occupant's fields, so live() is what makes a
-        // sweep over indices legal. Takes an INDEX and never a handle, so `at(alloc())` needs
-        // no test of its own.
+        // a freed slot still hands back its last occupant's fields. Takes an INDEX and never a
+        // handle, so `at(alloc())` needs no test of its own.
         T* at(int index)
         {
             if (static_cast<uint32_t>(index) >= static_cast<uint32_t>(N))
@@ -137,37 +165,11 @@ namespace kickos
             return &slots_[index];
         }
 
-        // For a sweep wanting liveness alone, with no slot to dereference.
-        static constexpr int capacity() { return N; }
-        bool live(int index) const
-        {
-            return static_cast<uint32_t>(index) < static_cast<uint32_t>(N) and used_[index];
-        }
-
-        // Slot index of an object this pool handed out, for a caller holding the object but
-        // not its handle; -1 if `p` is not one of our slot bases, WHICH INCLUDES nullptr, so
-        // index_of(resolve(h)) is one refusal and not two. Compares addresses as integers,
-        // because subtracting pointers that may not point into slots_ is UB.
-        // sizeof(T) is rarely a power of two, so a core with no divide instruction calls a
-        // libgcc helper here; keep it off any per-message path.
+        // For a caller holding the object but not its handle. nullptr answers -1, so
+        // index_of(resolve(h)) is one refusal and not two.
         int index_of(T const* p) const
         {
-            uintptr_t const base = reinterpret_cast<uintptr_t>(&slots_[0]);
-            uintptr_t const q = reinterpret_cast<uintptr_t>(p);
-            if (p == nullptr or q < base)
-            {
-                return -1;
-            }
-            uintptr_t const off = q - base;
-            if (off >= sizeof(slots_))
-            {
-                return -1;
-            }
-            if (off % sizeof(T) != 0)
-            {
-                return -1; // interior pointer, not a slot base
-            }
-            return static_cast<int>(off / sizeof(T));
+            return slot_index_of(slots_, p);
         }
 
         // The opaque handle for a live slot index, carrying its current generation; -1 for an
@@ -179,15 +181,14 @@ namespace kickos
             {
                 return -1;
             }
-            return static_cast<int>((static_cast<uint32_t>(gen_[index]) << INDEX_BITS) |
-                                    static_cast<uint32_t>(index));
+            return static_cast<int>(handle_pack(gen_[index], static_cast<uint32_t>(index)));
         }
 
     private:
         T slots_[N];
-        bool used_[N] = {};    // all slots start free
+        bool used_[N] = {};
         uint16_t cursor_ = 0;  // next-fit resume point; an index, always in [0, N)
-        uint16_t gen_[N] = {}; // generations start at 0
+        uint16_t gen_[N] = {};
     };
 }
 

@@ -10,7 +10,11 @@
 # raw UART class <kickos/driver/uart.h> and owns every register; c6uart.cc is the service
 # composed on it. An image gets exactly one definition of that class, so a second esp32c6
 # UART driver may not be linked beside this one.
+#
+# LEVEL: the UART source stays asserted until the driver clears the latch.
 kickos_add_driver(c6uart SOURCES c6uart.cc uart_c6.cc ../../espuart/uart_esp.cc REGDIR arch/riscv/chip/esp32c6
-                  THREADS c6uartirq:1:default:2:0 service:0:default:2:1 RECEIVER service
-                  WINDOWS regs LINES uart0 NOTIFY BLOCK ${KICKOS_UART_BLOCK_SIZE}
-                  POSTURE handover BARRIER 1 START c6uart_console_start CONSOLE)
+                  BASE mmap::UART0_BASE WINDOWS regs LINES uart0:level
+                  BLOCK ${KICKOS_UART_BLOCK_SIZE} INIT block_init BARRIER 1 READY uart::KOS_UART_READY_OFFSET
+                  POSTURE handover CONSOLE START c6uart_console_start
+                  THREAD c6uartirq PRIORITY 1 ENTRY irq_entry ARG block WINDOW regs CAPS notify:wait uart0:wait
+                  THREAD service ENTRY uart::console_thread ARG block CAPS ep:wait notify:signal:doorbell)

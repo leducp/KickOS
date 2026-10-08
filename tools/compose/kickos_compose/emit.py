@@ -11,8 +11,9 @@ from .composition import AUTHORITIES, Cache, admit_composition, amp_port, read_c
 from .descriptions import check_chip, host_runs
 from .manifest import read_manifest
 from .partition import admit_partition, derive_gate, place_regions
-from .subset import File, Report, line_of
-from .supply import arena_blocks, ram_align, ram_size, ring_block, status_block
+from .subset import File, Report, line_of, read_utf8
+from .region import ram_align, ram_size
+from .supply import arena_blocks, ring_block, status_block
 
 # The most entries of one kind, whose last index is then 0xFFFE.
 COUNT_LIMIT = 0xFFFF
@@ -198,7 +199,9 @@ def emit_gate(manifest_path):
         return report, None
     chip = None
     if manifest.descriptions is not None:
-        chip = check_chip(manifest.descriptions[0], read_text(manifest.descriptions[0]), report)
+        text = read_utf8(manifest.descriptions[0], report)
+        if text is not None:
+            chip = check_chip(manifest.descriptions[0], text, report)
     if report.refusals:
         return report, None
     if chip is None:
@@ -215,11 +218,6 @@ def emit_gate(manifest_path):
     if report.refusals:
         return report, None
     return report, render_gate(rows, os.path.basename(manifest_path))
-
-
-def read_text(path):
-    with open(path, encoding="utf-8") as stream:
-        return stream.read()
 
 
 def render_gate(rows, source):

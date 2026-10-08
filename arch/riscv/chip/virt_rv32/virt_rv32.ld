@@ -7,8 +7,9 @@
  * (.text.init) must be first at the RAM origin.
  *
  * Chip<->arch contract: define __kickos_ram_start/__kickos_ram_end (the
- * arch_ram_alloc pool), _estack (boot stack top), and _sidata/.../_ebss (C
- * runtime). __global_pointer$ anchors gp-relative small-data access.
+ * arch_ram_alloc pool), _estack (boot stack top), _sdata/.../_ebss and the tables
+ * kickos_ranges_init reads (C runtime). __global_pointer$ anchors gp-relative small-data
+ * access.
  *
  * Under KICKOS_HAVE_MPU the script also carves the two linker-defined regions every
  * UNPRIVILEGED thread needs under PMP enforcement (see arch_domain_static_regions):
@@ -100,6 +101,8 @@ SECTIONS
         __init_array_end = .;
     } > RAM
 
+    KICKOS_INIT_TABLES(RAM)
+
     /* .fini_array, app side, ASSERTed empty below; nothing walks it. See
        arch/arm/chip/stm32f411/stm32f411.ld. */
     .kickos_app_fini_array : ALIGN(4)
@@ -130,10 +133,6 @@ SECTIONS
        _code_used_end and __kickos_code_end is unused SRAM left inside the RX grant. */
     __kickos_code_end = __kickos_code_start + _code_size;
     KICKOS_KERNEL_DATA_RESERVE_DECL(__kickos_code_end)
-
-    /* != VMA under enforcement: .data's VMA is pinned at __kickos_code_end, past the code
-       pad, while its LMA follows the code. The Reset_Handler copy is real (see .data). */
-    _sidata = LOADADDR(.data);
 
     /* Enforcement layout. Writable state SPLIT kernel-side vs app-side with an INVERTED
        selection: the CLOSED KickOS-owned set (kernel/arch/chip/lib) is captured FIRST via
@@ -167,11 +166,12 @@ SECTIONS
         *libkickos_lib.a:*(.data .data.*)
         . = ALIGN(4);
         _edata = .;
-    /* AT is load-bearing here and _sidata != _sdata is CORRECT: QEMU's ELF loader places
-       each segment at its PhysAddr, so .data's bytes really are at the LMA and the
-       Reset_Handler copy does real work. Do NOT add the _sidata == _sdata ASSERT the
-       esptool chip scripts carry: esptool elf2image builds from VMAs, which is why an AT
-       clause there left the copy reading unloaded memory. Loader-dependent, not arch. */
+    /* AT is load-bearing here and LMA != VMA is CORRECT: .data's VMA is pinned past the
+       code pad, QEMU's ELF loader places each segment at its PhysAddr, so .data's bytes
+       really are at the LMA and the copy table entry does real work. Do NOT add the
+       _sidata == _sdata ASSERT the esptool chip scripts carry: esptool elf2image builds from
+       VMAs, which is why an AT clause there left the copy reading unloaded memory.
+       Loader-dependent, not arch. */
     } > RAM AT > RAM
 
     .bss (NOLOAD) : ALIGN(4)
@@ -196,11 +196,10 @@ SECTIONS
        it. KICKOS_APPDATA_SECTION carries the pin and its
        ASSERTs; kernel_data_reserve.ld.h says why. The section-level ALIGN keeps the base at a
        natural pow2 boundary (NAPOT) when the reserve is overflowed. .appbss is pinned right
-       after .appdata via SIZEOF, so __kickos_appbss_start == the .appdata VMA end and
-       the Reset_Handler's [__kickos_appbss_start, __kickos_appdata_end) zero covers the
-       whole grant with no external gap. .appdata's VMA jumps to the pow2 window base
-       above the NOLOAD kernel .bss, so LMA != VMA and Reset_Handler copies it LMA->VMA
-       via _appdata_lma before zeroing .appbss. The gp small-data window (anchor +
+       after .appdata via SIZEOF, so the zero table's [__kickos_appdata_load_end,
+       __kickos_appdata_end) covers the whole grant past the loaded bytes with no external
+       gap. .appdata's VMA jumps to the pow2 window base above the NOLOAD kernel .bss, so
+       LMA != VMA and the copy table moves it. The gp small-data window (anchor +
        .sdata/.sbss catch-all) lives inside this granted region. */
     KICKOS_APPDATA_SECTION(_ebss)
     {
@@ -212,8 +211,8 @@ SECTIONS
         *(.sdata .sdata.* .sdata2.*)             /* ONLY runtime small-data reaches here */
         . = ALIGN(8);
         __sdata_end = .;
+        __kickos_appdata_load_end = .;
     } > RAM AT > RAM
-    _appdata_lma = LOADADDR(.appdata);           /* Reset_Handler copies .appdata LMA->VMA */
 
     .appbss (__kickos_appdata_start + SIZEOF(.appdata)) (NOLOAD) : ALIGN(4)
     {
@@ -233,8 +232,6 @@ SECTIONS
         _kickos_heap_limit = __kickos_appdata_end;
     } > RAM
 #else
-    _sidata = LOADADDR(.data);          /* == VMA here (RAM image), so the copy is a no-op */
-
     .data : ALIGN(8)
     {
         _sdata = .;

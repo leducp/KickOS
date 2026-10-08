@@ -5,12 +5,12 @@ import os
 
 from ruamel.yaml.nodes import ScalarNode
 
-from .descriptions import PART, check_board
-from .manifest import read_manifest
+from .descriptions import PART, check_board, cluster_views, reaches, unit_views
+from .manifest import CORES, read_manifest
+from .region import ram_size
 from .supply import check_drivers, check_priorities, check_scheduling, check_supply
-from .subset import C_IDENTIFIER, FILE_NAME, IDENTIFIER, File, Report, index_below, line_of
+from .subset import C_IDENTIFIER, FILE_NAME, IDENTIFIER, File, Report, index_below, line_of, read_utf8
 
-# The versions of the composition format this tool reads.
 COMPOSITION_VERSIONS = (1,)
 COMPOSITION_FIELDS = ("version", "board", "cluster", "stdout", "ends", "accepts", "heap", "init", "shared", "tasks")
 INIT_FIELDS = ("priority",)
@@ -39,7 +39,6 @@ LIMITATIONS = (
 )
 COMPOSITION_LIMITATIONS = ("no_protection", "no_privilege_split", "cached_incoherent")
 TASK_LIMITATIONS = ("device_not_isolated", "coarse_gate", "bus_master")
-CORES = 32
 # The bits of a watcher's notification, the i-th task it watches raising bit i.
 WATCH_BITS = 32
 # The ports an /amp crossing names: the window layer carries one in a byte.
@@ -196,12 +195,7 @@ def read_composition(path, report):
     if not os.path.isfile(path):
         report.refuse(path, 1, "form.layout", "no such file")
         return None
-    try:
-        with open(path, encoding="utf-8") as stream:
-            return stream.read()
-    except (OSError, UnicodeDecodeError) as error:
-        report.refuse(path, 1, "form.unreadable", "the file cannot be read as UTF-8: %s" % error)
-        return None
+    return read_utf8(path, report)
 
 
 def admit_composition(path, text, platform, report, cache, manifest, partition=False):
@@ -386,11 +380,8 @@ def board_default(report, manifest):
 def load_board(f, path, cache):
     """(the Board the file at `path` describes, or None; whether it and its chip file were admitted)."""
     if path not in cache.boards:
-        try:
-            with open(path, encoding="utf-8") as stream:
-                text = stream.read()
-        except (OSError, UnicodeDecodeError) as error:
-            f.report.refuse(path, 1, "form.unreadable", "the file cannot be read as UTF-8: %s" % error)
+        text = read_utf8(path, f.report)
+        if text is None:
             cache.boards[path] = None
             return None, False
         cache.boards[path] = check_board(path, text, f.report, cache.chips, {})
@@ -461,14 +452,6 @@ def check_cluster(f, top, root, chip, base):
                  % (name, chip.name, ", ".join(chip.clusters)))
         return None
     return name
-
-
-def views(chip, cluster):
-    if cluster is not None:
-        return (cluster,)
-    if chip.clusters:
-        return tuple(chip.clusters)
-    return (PART,)
 
 
 def unique(f, values, what):
@@ -723,10 +706,6 @@ def check_task(f, item, index, chip, cluster, board_less, base_stack):
 
 def table_name(name):
     return name in TABLE_NAMES or name.startswith(ABI_PREFIXES)
-
-
-def reaches(device, cluster):
-    return device.cluster is None or cluster is None or device.cluster == cluster
 
 
 def from_cluster(cluster):
@@ -1066,7 +1045,7 @@ def check_restart(f, top, named):
 
 
 def check_ownership(f, tasks, chip, cluster, board, stdout):
-    task_views = views(chip, cluster)
+    task_views = cluster_views(chip, cluster)
     grants = [grant for task in tasks for grant in task.grants]
     for i, later in enumerate(grants):
         for earlier in grants[:i]:
@@ -1144,9 +1123,6 @@ def covered(ranges, span):
             return True
     return False
 
-def unit_views(chip, cluster):
-    """Each view this image runs under, as (view, Protection)."""
-    return [(view, chip.protection[view]) for view in views(chip, cluster) if view in chip.protection]
 
 
 def view_name(chip, view):
@@ -1173,14 +1149,9 @@ def window_prose(manifest):
 def region_size(size, chip, cluster, manifest):
     """The bytes a shared region of `size` occupies once encodable: up to the window rule's granule
     or power of two, then to the page of each translating view."""
-    smallest = manifest.smallest_window
-    if manifest.window_rule == "pow2":
-        rounded = smallest
-        while rounded < size:
-            rounded = rounded * 2
-        size = rounded
-    elif manifest.window_rule == "granule":
-        size = -(-size // smallest) * smallest
+    # A granule multiple of 0 is 0, where ram_size answers its smallest region.
+    if manifest.window_rule == "pow2" or (manifest.window_rule == "granule" and size != 0):
+        size = ram_size(size, manifest)
     for view, unit in unit_views(chip, cluster):
         if unit.page is not None:
             size = -(-size // unit.page) * unit.page
@@ -1361,7 +1332,7 @@ def incoherent_part(chip):
     """Whether some two nodes of a partition of this chip can map one memory incoherently."""
     if not chip.data_cache:
         return False
-    every = views(chip, None)
+    every = cluster_views(chip, None)
     return len(every) != 1 or not chip.smp.get(every[0], False)
 
 

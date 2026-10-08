@@ -20,6 +20,7 @@
 set(_ring ${KICKOS_HAVE_PRIV_RING})
 
 add_executable(ringpriv main.cc)
+target_include_directories(ringpriv PRIVATE "${PROJECT_SOURCE_DIR}/user/apps/common/include")
 target_link_libraries(ringpriv PRIVATE KickOS::kernel KickOS::system_default)
 kickos_emit_image(ringpriv)
 target_compile_definitions(ringpriv PRIVATE RINGPRIV_EXPECT_RING=${_ring})

@@ -39,7 +39,7 @@ namespace
         attach_caps(t, KICKOS_CAP_CHILD_WIDTH);
         {
             IrqLock lock;
-            sched::reschedule();
+            sched::reschedule(nullptr, lock);
         }
         return t;
     }
@@ -81,7 +81,7 @@ TEST_F(CapBadge, a_released_slot_hands_no_badge_to_the_next_entry)
 
     {
         IrqLock lock;
-        ASSERT_EQ(handle_close(t, badged), 0);
+        ASSERT_EQ(handle_close(t, badged, lock), 0);
     }
 
     // Walk the free list round until that index comes back, minting an unbadged copy each

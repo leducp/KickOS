@@ -112,7 +112,7 @@ namespace kickos
             void doorbell()
             {
                 IrqLock lock;
-                amp::node_service();
+                amp::node_service(lock);
             }
 
             bool answered_empty_at(uint32_t index)
@@ -171,7 +171,7 @@ namespace kickos
             {
                 peer_calls(CALL_FILL);
                 g_tail_before = call_ring().tail.v.load();
-                amp::node_service();
+                amp::node_service(kickos::IrqLock());
                 memcpy(g_rbuf_at_service, g_rbuf, sizeof(g_rbuf));
                 g_hold_at_service = parked->far_hold;
                 g_tail_at_service = call_ring().tail.v.load();
@@ -210,7 +210,7 @@ namespace kickos
                 Thread* const r = seat_pool(slot, prio);
                 attach_caps(r, KICKOS_CAP_CHILD_WIDTH);
                 IrqLock lock;
-                sched::reschedule();
+                sched::reschedule(nullptr, lock);
                 EXPECT_EQ(amp_port_bind_local(r, PORT_SERVED, out_ep), 0);
                 return r;
             }
@@ -314,8 +314,8 @@ namespace kickos
                 Endpoint* const e = static_cast<Endpoint*>(
                     cap_resolve_e(r, ep_cap, CapType::CAP_ENDPOINT, CAP_WAIT, &err));
                 ASSERT_NE(e, nullptr);
-                r->state = ThreadState::BLOCKED;
-                kernel().policy->on_remove(r);
+                testfix::seat_blocked(r);
+                policy_on_remove(r);
                 r->ipc.buf = reinterpret_cast<uintptr_t>(g_rbuf);
                 r->ipc.len = RECV_CAP;
                 r->ipc.badge_out = reinterpret_cast<uintptr_t>(&opts->info);
@@ -354,9 +354,9 @@ namespace kickos
 
             {
                 IrqLock lock;
-                thread_cancel_kind(r, CANCEL_SLAY);
-                sched::set_prio(above, PRIO_BELOW);
-                sched::reschedule();
+                thread_cancel_kind(r, CANCEL_SLAY, lock);
+                sched::set_prio(above, PRIO_BELOW, lock);
+                sched::reschedule(nullptr, lock);
             }
             ASSERT_EQ(sched::current(), r);
             ASSERT_EQ(g_redirect_target, r) << "the slay claim did not take the resume";
@@ -381,7 +381,7 @@ namespace kickos
                 r.head.v.store(r.tail.v.load() + 2u * amp::RING_SLOTS);
                 for (uint32_t i = 0; i < amp::DEPTH_STRIKES; i++)
                 {
-                    amp::node_service();
+                    amp::node_service(kickos::IrqLock());
                 }
             }
 
@@ -437,6 +437,42 @@ namespace kickos
             EXPECT_EQ(opts.info.reply_cap, KOS_CAP_NONE);
             EXPECT_EQ(call_ring().tail.v.load() + 1u, call_ring().head.v.load())
                 << "the old receiver released the later call's slot";
+        }
+
+        namespace
+        {
+            bool g_old_hold_live = true;
+            Thread* g_second = nullptr;
+            uint32_t g_second_ep = KCAP_INVALID;
+            kos_reply_recv_opts g_second_opts{};
+
+            void reset_reuse_and_probe_old_hold()
+            {
+                resync_under_the_hold();
+                ASSERT_NO_FATAL_FAILURE(park_receiver(g_second, g_second_ep, &g_second_opts));
+                g_second->far_hold = 0u;
+                peer_calls(0x90u);
+                amp::node_service(kickos::IrqLock());
+                ASSERT_NE(g_second->far_hold, 0u) << "the reused slot was never seated";
+                g_old_hold_live = amp::hold_live(g_hold_at_service - 1u);
+            }
+        }
+
+        TEST_F(AmpHold, a_hold_a_reset_freed_is_not_live_once_its_slot_is_seated_again)
+        {
+            uint32_t ep = KCAP_INVALID;
+            g_second = seat_receiver(1, PRIO_RECEIVER, &ep);
+            g_second_ep = ep;
+            kos_reply_recv_opts_init(&g_second_opts, ep, 0, KOS_TIMEOUT_NONE);
+            g_old_hold_live = true;
+            g_after_service = reset_reuse_and_probe_old_hold;
+            wake_next_park(call_arrives);
+
+            kos_reply_recv_opts opts{};
+            receive(ep, &opts, 0);
+
+            ASSERT_NE(g_hold_at_service, 0u);
+            EXPECT_FALSE(g_old_hold_live);
         }
 
         TEST_F(AmpHold, a_reset_after_call_snapshot_is_refused_before_user_copy)
@@ -535,7 +571,7 @@ namespace kickos
                 peer_replies(published_tag());
                 g_reply_tail_before = reply_ring().tail.v.load();
                 amphold::g_raise_mask = 0;
-                amp::node_service();
+                amp::node_service(kickos::IrqLock());
                 memcpy(g_cbuf_at_service, g_cbuf, sizeof(g_cbuf));
                 g_hold_at_service = parked->far_hold;
                 g_reply_tail_at_service = reply_ring().tail.v.load();
@@ -550,18 +586,18 @@ namespace kickos
 
             void kill_after_the_hold()
             {
-                thread_cancel_kind(g_caller, CANCEL_KILL);
+                thread_cancel_kind(g_caller, CANCEL_KILL, kickos::IrqLock());
             }
 
             // The deadline fires while the caller waits, and the reply lands after it.
             void timed_out_then_reply_arrives(Thread* parked)
             {
                 amp::ReplyTag const tag = published_tag();
-                thread_abort_park(parked, -KOS_ETIMEDOUT);
+                thread_abort_park(parked, -KOS_ETIMEDOUT, kickos::IrqLock());
                 peer_replies(tag);
                 g_reply_tail_before = reply_ring().tail.v.load();
                 amphold::g_raise_mask = 0;
-                amp::node_service();
+                amp::node_service(kickos::IrqLock());
                 g_hold_at_service = parked->far_hold;
                 g_reply_tail_at_service = reply_ring().tail.v.load();
                 g_credit_at_service = amphold::g_raise_mask & PEER_CORE_BIT;
@@ -573,7 +609,7 @@ namespace kickos
                 Thread* const c = seat_pool(slot, prio);
                 attach_caps(c, KICKOS_CAP_CHILD_WIDTH);
                 IrqLock lock;
-                sched::reschedule();
+                sched::reschedule(nullptr, lock);
                 EXPECT_EQ(amp_endpoint_mint(c, PEER, PORT_FAR, CAP_SIGNAL, out_far), 0);
                 return c;
             }
@@ -630,7 +666,7 @@ namespace kickos
                 r.head.v.store(r.tail.v.load() + 2u * amp::RING_SLOTS);
                 for (uint32_t i = 0; i < amp::DEPTH_STRIKES; i++)
                 {
-                    amp::node_service();
+                    amp::node_service(kickos::IrqLock());
                 }
                 peer_replies(published_tag());
             }
@@ -749,8 +785,8 @@ namespace kickos
                 c->ipc.badge_out = 0;
                 c->call_rx_cap = RECV_CAP;
                 c->call_state = CALL_REPLY_WAIT;
-                c->state = ThreadState::BLOCKED;
-                kernel().policy->on_remove(c);
+                testfix::seat_blocked(c);
+                policy_on_remove(c);
                 c->wait_queue = nullptr;
                 c->wait_kind = WAIT_EP_FAR_REPLY;
                 c->wait_obj = e;
@@ -791,9 +827,9 @@ namespace kickos
             ASSERT_FALSE(HasFailure());
             {
                 IrqLock lock;
-                thread_cancel_kind(c, CANCEL_SLAY);
-                sched::set_prio(above, PRIO_BELOW);
-                sched::reschedule();
+                thread_cancel_kind(c, CANCEL_SLAY, lock);
+                sched::set_prio(above, PRIO_BELOW, lock);
+                sched::reschedule(nullptr, lock);
             }
             ASSERT_EQ(sched::current(), c);
             ASSERT_EQ(g_redirect_target, c) << "the slay claim did not take the resume";
@@ -814,8 +850,8 @@ namespace kickos
             ASSERT_FALSE(HasFailure());
             {
                 IrqLock lock;
-                sched::set_prio(above, PRIO_BELOW);
-                sched::reschedule();
+                sched::set_prio(above, PRIO_BELOW, lock);
+                sched::reschedule(nullptr, lock);
             }
             ASSERT_EQ(sched::current(), c);
             run_noreturn(exit_now);
@@ -861,8 +897,8 @@ namespace kickos
                 attach_caps(g_fs.w, KICKOS_CAP_CHILD_WIDTH);
                 {
                     IrqLock lock;
-                    g_fs.w->state = ThreadState::BLOCKED;
-                    kernel().policy->on_remove(g_fs.w);
+                    testfix::seat_blocked(g_fs.w);
+                    policy_on_remove(g_fs.w);
                     g_fs.w->wait_queue = &g_fs.ep->recv_waiters;
                     g_fs.w->wait_kind = WAIT_EP_RECV;
                     g_fs.w->wait_obj = g_fs.ep;
@@ -870,7 +906,7 @@ namespace kickos
                     g_fs.w->ipc.len = sizeof(g_fs.recv_buf);
                     g_fs.w->ipc.badge_out = reinterpret_cast<uintptr_t>(&g_fs.info);
                     g_fs.ep->recv_waiters.push_back(&g_fs.w->link);
-                    sched::reschedule();
+                    sched::reschedule(nullptr, lock);
                 }
                 ASSERT_EQ(sched::current(), g_fs.c);
                 g_fs.args[0] = KOS_SYS_CALL_REG;

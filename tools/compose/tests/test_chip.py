@@ -450,8 +450,13 @@ class Generated(unittest.TestCase):
         with self.assertRaisesRegex(chip.Failure, "bus `spi0` pin `PA1` has no `gpio` function"):
             chip.generate(self.view(board))
 
-    def small_board(self, pin):
-        self.write(self.path, SMALL + "pins:\n  %s\n  PA2: { gpio: port.0.2 }\n" % pin)
+    def test_two_port_devices_sharing_a_number_are_refused(self):
+        board = self.small_board("PA1: { alt2: usic.ch0.sclk, gpio: uart.1 }", "PA2: { gpio: scu.2 }")
+        with self.assertRaisesRegex(chip.Failure, "chip `small` numbers port devices `uart` and `scu` both 0"):
+            chip.generate(self.view(board))
+
+    def small_board(self, pin, second="PA2: { gpio: port.0.2 }"):
+        self.write(self.path, SMALL + "pins:\n  %s\n  %s\n" % (pin, second))
         board = os.path.join(self.platform, "tiny.yaml")
         self.write(board, "version: 1\nboard: tiny\nchip: small\nconsole: { device: /dev/uart }\nbuses:\n"
                           "  spi0: { device: /dev/usic/ch0, pins: [PA1], chip_selects: [PA2] }\n")
@@ -481,6 +486,7 @@ class Generated(unittest.TestCase):
 
         disco = pins("stm32f411", "f411disco")
         for line in ("#define KICKOS_BOARD_CONSOLE_BASE 0x40004400 /* /dev/usart2 */",
+                     "#define KICKOS_BOARD_CONSOLE_SIZE 0x20\n",
                      "#define KICKOS_BOARD_CONSOLE_TX_PORT 0\n", "#define KICKOS_BOARD_CONSOLE_TX_PORT_BASE 0x40020000\n",
                      "#define KICKOS_BOARD_CONSOLE_TX_BIT 2\n", "#define KICKOS_BOARD_CONSOLE_RX_SELECT 7 ",
                      "#define KICKOS_BOARD_LED_PORT 3\n", "#define KICKOS_BOARD_LED_PORT_BASE 0x40020C00\n",
@@ -494,14 +500,19 @@ class Generated(unittest.TestCase):
         # An input path selects no mux value.
         xmc = pins("xmc4800", "xmc4800-relax")
         self.assertIn("#define KICKOS_BOARD_CONSOLE_DOUT0_SELECT 2 ", xmc)
+        self.assertIn("#define KICKOS_BOARD_CONSOLE_SIZE 0x200\n", xmc)
         self.assertNotIn("KICKOS_BOARD_CONSOLE_DX0_SELECT", xmc)
         self.assertIn("#define KICKOS_BOARD_CONSOLE_DX0_INPUT_SELECT 1 ", xmc)
-        # A port device that does not repeat names no index.
+        # A chip of one port names none.
         rp = pins("rp2040", "picopi", "armv6m")
         self.assertNotIn("KICKOS_BOARD_LED_PORT ", rp)
         self.assertIn("#define KICKOS_BOARD_CONSOLE_TX_SELECT 2 ", rp)
         self.assertIn("#define KICKOS_BOARD_CONSOLE_TX_SELECT 0 ", pins("sam3x8e", "due"))
-        self.assertIn("#define KICKOS_BOARD_CONSOLE_RX_INPUT_SELECT 1 ", pins("imxrt1062", "teensy41"))
+        teensy = pins("imxrt1062", "teensy41")
+        self.assertIn("#define KICKOS_BOARD_CONSOLE_RX_INPUT_SELECT 1 ", teensy)
+        # A port device of its own is numbered by its name.
+        self.assertIn("#define KICKOS_BOARD_CONSOLE_TX_PORT 1\n", teensy)
+        self.assertIn("#define KICKOS_BOARD_LED_PORT 2\n", teensy)
         self.assertIn("#define KICKOS_BOARD_CONSOLE_TXD_SELECT 11 ", pins("rx72m", "rx72m", "rxv3"))
         self.assertNotIn("KICKOS_BOARD_LED", pins("rp2350", "pizero2350"))
         # An addressable LED has a pin and no level.
@@ -509,20 +520,27 @@ class Generated(unittest.TestCase):
         self.assertIn("#define KICKOS_BOARD_LED_BIT 8\n", c6)
         self.assertIn("#define KICKOS_BOARD_LED_ADDRESSABLE 1\n", c6)
         self.assertNotIn("KICKOS_BOARD_LED_ACTIVE_LOW", c6)
-        # Consecutive reserved bits of one port are one run.
         esp32 = pins("esp32", "esp32-wroom", "lx6")
-        self.assertIn("#define KICKOS_BOARD_RESERVED_RUNS(RUN) RUN(0x3FF44000, 6, 11) /*", esp32)
-        self.assertIn("#define KICKOS_BOARD_RESERVED_RUNS(RUN) RUN(0x60091000, 9, 9) RUN(0x60091000, 12, 13) "
-                      "RUN(0x60091000, 15, 15) /*", c6)
-        self.assertIn("#define KICKOS_BOARD_RESERVED_RUNS(RUN) /*", disco)
-        # The console pins, the kernel LED and every reserved pin, each by its port's base.
-        self.assertIn("#define KICKOS_BOARD_KERNEL_PINS(PIN) PIN(0x40020000, 2) PIN(0x40020000, 3) "
-                      "PIN(0x40020C00, 12) /*", disco)
-        self.assertIn("#define KICKOS_BOARD_KERNEL_PINS(PIN) PIN(0x3FF44000, 1) PIN(0x3FF44000, 3) PIN(0x3FF44000, 2) "
-                      "PIN(0x3FF44000, 6) PIN(0x3FF44000, 7) PIN(0x3FF44000, 8) PIN(0x3FF44000, 9) "
-                      "PIN(0x3FF44000, 10) PIN(0x3FF44000, 11) /*", esp32)
-        self.assertIn("#define KICKOS_BOARD_KERNEL_PINS(PIN) PIN(0x401B8000, 2) PIN(0x401B8000, 3) "
-                      "PIN(0x401BC000, 3) /*", pins("imxrt1062", "teensy41"))
+        # The console pins, the kernel LED and every reserved pin, each by its port's number.
+        self.assertIn("#define KICKOS_BOARD_KERNEL_PINS(PIN) PIN(0, 2) PIN(0, 3) PIN(3, 12) /*", disco)
+        self.assertIn("#define KICKOS_BOARD_KERNEL_PINS(PIN) PIN(0, 1) PIN(0, 3) PIN(0, 2) PIN(0, 6) PIN(0, 7) "
+                      "PIN(0, 8) PIN(0, 9) PIN(0, 10) PIN(0, 11) /*", esp32)
+        self.assertIn("#define KICKOS_BOARD_KERNEL_PINS(PIN) PIN(1, 2) PIN(1, 3) PIN(2, 3) /*", teensy)
+        self.assertIn("#define KICKOS_BOARD_KERNEL_PINS(PIN) PIN(0, 16) PIN(0, 17) PIN(0, 8) PIN(0, 9) PIN(0, 15) "
+                      "PIN(0, 12) PIN(0, 13) /*", c6)
+        self.assertIn("#define KICKOS_BOARD_KERNEL_PINS(PIN) PIN(0, 89) PIN(0, 88) /*", pins("rx72m", "rx72m", "rxv3"))
+        # Every pin the chip file names with a `gpio` function, the board's or not.
+        self.assertIn("#define KICKOS_CHIP_PINS(PIN) PIN(1, 0) PIN(1, 1) PIN(1, 2) PIN(1, 3) PIN(1, 4) PIN(1, 5) "
+                      "PIN(2, 0) PIN(2, 1) PIN(2, 2) PIN(2, 3) /*", teensy)
+
+    def test_an_unreadable_file_is_refused(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            path = os.path.join(scratch, "chip.yaml")
+            with open(path, "wb") as stream:
+                stream.write(b"chip: \xff\n")
+            report, said, status = chip.run(path, "armv7m", scratch, scratch)
+        self.assertEqual([(r.path, r.line, r.rule) for r in report.refusals], [(path, 1, "form.unreadable")])
+        self.assertIsNone(status)
 
     def test_a_chip_file_alone_wires_no_pin(self):
         alone = chip.generate(self.view(os.path.join(PLATFORM, "stm32f411", "chip.yaml")))["board_pins.h"]

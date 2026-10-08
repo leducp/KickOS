@@ -10,15 +10,11 @@
 
 #include <kickos/notify.h>
 
-#include <stdio.h>
-#include <stdlib.h>
-
 #include <atomic>
 #include <chrono>
 #include <mutex>
 #include <thread>
 
-#include <kickos/irq_route.h>
 #include <kickos/arch/arch.h>
 #include <kickos/cap.h>
 #include <kickos/instance.h>
@@ -32,11 +28,6 @@
 
 namespace kickos
 {
-    namespace detail
-    {
-        constinit InstanceLocal<Kernel> g_instance;
-    }
-
     namespace irqfix
     {
         namespace
@@ -130,10 +121,10 @@ namespace kickos
         void reset_kernel()
         {
             Kernel& k = kernel();
-            for (int i = 0; i < k.irq_bindings.capacity(); i++)
+            for (int i = 0; i < KICKOS_MAX_IRQ_HANDLES; i++)
             {
                 k.irq_refs[i] = 0;
-                if (k.irq_bindings.live(i))
+                if (k.irq_bindings.live_index(k.irq_bindings.handle_for(i)) >= 0)
                 {
                     k.irq_bindings.free(k.irq_bindings.handle_for(i));
                 }
@@ -212,15 +203,9 @@ namespace kickos
 
     // --- the kernel-side stubs ------------------------------------------------------------
 
-    void kpanic(char const* msg)
+    uint32_t wq_block(List&, WaitKind, void*, Thread*, Held)
     {
-        printf("kickos: panic: %s\n", msg);
-        fflush(stdout);
-        abort();
-    }
-
-    void wq_block(List&, WaitKind, void*, Thread*)
-    {
+        return 0;
     }
 
     // The lock's release publishes what the scheduler staged, and this gate stages nothing.
@@ -228,12 +213,13 @@ namespace kickos
     {
     }
 
-    void park_queueless(Thread*, WaitKind, void*)
+    uint32_t park_queueless(Thread*, WaitKind, void*, Held)
     {
+        return 0;
     }
 
     // No clock runs here; deadlines are recorded but do not expire.
-    void ktime_deadline_arm(Thread* t, uint32_t)
+    void ktime_deadline_arm(Thread* t, uint32_t, Held)
     {
         t->on_timer = true;
     }
@@ -244,11 +230,11 @@ namespace kickos
 
     namespace sched
     {
-        void reschedule(Thread*)
+        void reschedule(Thread*, Held)
         {
         }
 
-        void wake(Thread*)
+        void wake(Thread*, Held)
         {
         }
     }
@@ -305,7 +291,7 @@ namespace kickos
         return changed; // no bound thread here: nothing to wake
     }
 
-    void notify_ref_drop(int, bool)
+    void notify_ref_drop(int)
     {
     }
 
@@ -340,7 +326,7 @@ namespace kickos
     // Empties the slot before it drops the reference, as kernel/syscall/cap.cc does. That order
     // is what makes a refused release unrecoverable: once this returns, nothing names the object
     // any more, so a reference the drop puts back has no owner left to drop it again.
-    int handle_close(Thread*, uint32_t)
+    int handle_close(Thread*, uint32_t, Held)
     {
         g_closes++;
         int const obj = g_installed_handle;
@@ -348,7 +334,7 @@ namespace kickos
         g_installed_handle = -1;
         if (obj >= 0)
         {
-            irq_ref_drop(obj, false);
+            irq_ref_drop(obj, kickos::IrqLock());
         }
         return 0;
     }
@@ -457,6 +443,11 @@ arch_irq_state_t arch_irq_save(void)
 
 void arch_irq_restore(arch_irq_state_t)
 {
+}
+
+int arch_in_isr(void)
+{
+    return 0;
 }
 
 void arch_irq_mask(int line)
@@ -608,37 +599,5 @@ namespace kickos
                 }
             }
         }
-    }
-}
-
-namespace kickos
-{
-    // One core, so every line is local. Forwarded to the arch stubs in this file, which is
-    // what keeps each arm's recorded trace unchanged.
-    void irq_line_op(int line, LineOp op)
-    {
-        switch (op)
-        {
-            case LineOp::MASK:
-            {
-                arch_irq_mask(line);
-                break;
-            }
-            case LineOp::UNMASK:
-            {
-                arch_irq_unmask(line);
-                break;
-            }
-            case LineOp::CLEAR:
-            {
-                arch_irq_clear_pending(line);
-                break;
-            }
-        }
-    }
-
-    void irq_line_op_local(int line, LineOp op)
-    {
-        irq_line_op(line, op);
     }
 }

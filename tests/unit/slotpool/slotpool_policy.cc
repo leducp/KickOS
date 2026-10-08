@@ -7,8 +7,8 @@
 // evenly a create/destroy workload spreads its recycles over the pool. This gate measures
 // that spread through the PUBLIC API only: alloc() returns the index it claimed, and every
 // case here frees exactly what it allocated, so the per-slot allocation count IS the number
-// of generation bumps that slot took. Nothing decodes the handle, so widening INDEX_BITS
-// cannot turn this into a silent pass.
+// of generation bumps that slot took. Nothing decodes the handle, so widening
+// HANDLE_INDEX_BITS cannot turn this into a silent pass.
 //
 // It also covers the two consequences of the 16-bit index: a pool of more than 256 slots,
 // and a handle whose aged generation sets bit 31. A sign test on a handle would silently
@@ -297,10 +297,10 @@ namespace
 }
 
 // --- at() is TOTAL over its index -------------------------------------------------------
-// The one accessor here that took an index on trust. Both halves of the refusal are host-only
-// by construction: no board can call at() with an out-of-range index, because every kernel
-// site derives one from alloc() or from a resolved object, and no board can call it on a freed
-// slot either. What a board WOULD have shown is the corruption afterwards, not the refusal.
+// Both halves of the refusal are host-only by construction: no board can call at() with an
+// out-of-range index, because every kernel site derives one from alloc() or from a resolved
+// object, and no board can call it on a freed slot either. What a board WOULD have shown is the
+// corruption afterwards, not the refusal.
 TEST(SlotPool, at_bounds_its_index)
 {
     constexpr int N = 4;
@@ -313,51 +313,41 @@ TEST(SlotPool, at_bounds_its_index)
     // a signed `index >= N` would let it through and hand back slots_[-1].
     EXPECT_EQ(pool.at(opaque(-1)), nullptr) << "alloc()'s pool-full answer";
     EXPECT_EQ(pool.at(opaque(-N - 1)), nullptr) << "and any other negative index";
-
-    // live() takes an index too, and answers the same question without a slot to dereference.
-    EXPECT_FALSE(pool.live(opaque(N))) << "live() bounds its index as at() does";
-    EXPECT_FALSE(pool.live(opaque(-1)));
 }
 
 // WHAT at() DOES NOT ANSWER, so a reader of the kernel's call sites knows what is still owed
 // there. at() bounds the INDEX and nothing else: a freed slot is in range, so it answers with a
-// pointer to its last occupant's fields. live() is the liveness question, and a sweep over
-// indices has to ask it. Bounding liveness inside at() was measured at eight bytes of frame on
-// the one inlining site that sits on an AMP node's SVCK chain, which has no spare byte.
+// pointer to its last occupant's fields, and only a handle says whether the slot is live.
+// Bounding liveness inside at() costs eight bytes of frame on the one inlining site that sits
+// on an AMP node's SVCK chain, which has no spare byte.
 TEST(SlotPool, at_bounds_the_index_and_not_liveness)
 {
     constexpr int N = 4;
     kickos::SlotPool<Obj, N> pool;
 
-    // An untouched pool: in range, so at() answers, and live() is what says nothing is there.
     for (int i = 0; i < N; i++)
     {
         EXPECT_NE(pool.at(i), nullptr) << "slot " << i << " is in range";
-        EXPECT_FALSE(pool.live(i)) << "and live() is what refuses it";
     }
 
     int const index = pool.alloc();
     ASSERT_GE(index, 0);
     Obj* const seated = pool.at(index);
     EXPECT_NE(seated, nullptr) << "at(alloc()) is the claim's own slot";
-    EXPECT_TRUE(pool.live(index));
     EXPECT_EQ(seated, pool.resolve(pool.handle_for(index)))
         << "and it is the slot that index's handle resolves to";
 
-    // A FREED SLOT KEEPS ITS LAST CONTENTS and at() still hands it back: the two questions are
-    // separate, and this is the caller obligation live() exists to discharge.
     seated->v = 0x5A;
     int const handle = pool.handle_for(index);
     pool.free(handle);
     EXPECT_EQ(pool.at(index), seated) << "a freed slot is in range, so at() answers";
     EXPECT_EQ(pool.at(index)->v, 0x5A) << "with its last occupant's fields standing";
-    EXPECT_FALSE(pool.live(index)) << "and live() is the only thing that says so";
     EXPECT_EQ(pool.resolve(handle), nullptr) << "while the HANDLE stops resolving";
 }
 
-// AN INDEX IS NOT A HANDLE, and this is the confusion that panicked frame_run_create: it spent
-// alloc()'s index as a handle, which resolve() answers only while that slot's generation is
-// still 0. The second occupant of a slot resolved to nothing and the store went through null.
+// AN INDEX IS NOT A HANDLE: resolve() answers alloc()'s index only while that slot's generation
+// is still 0, so a caller spending the index as a handle resolves the slot's second occupant to
+// nothing.
 TEST(SlotPool, an_index_spent_as_a_handle_stops_resolving_after_one_recycle)
 {
     constexpr int N = 4;
@@ -365,8 +355,8 @@ TEST(SlotPool, an_index_spent_as_a_handle_stops_resolving_after_one_recycle)
 
     int const first = pool.alloc();
     ASSERT_EQ(first, 0) << "a fresh pool's first claim is slot 0";
-    // The premise of the bug: at generation 0 the index and the handle ARE the same word, so
-    // resolve(index) answers and the mistake is invisible.
+    // At generation 0 the index and the handle ARE the same word, so resolve(index) answers
+    // and the mistake is invisible.
     EXPECT_EQ(pool.handle_for(first), first);
     EXPECT_NE(pool.resolve(first), nullptr) << "resolve(index) answers, once";
 
@@ -391,9 +381,9 @@ TEST(SlotPool, an_index_spent_as_a_handle_stops_resolving_after_one_recycle)
     EXPECT_NE(pool.resolve(pool.handle_for(second)), nullptr) << "as does the real handle";
 }
 
-// handle_for takes an index too, and it is the last accessor of the set to bound one. -1 is a
-// safe answer rather than a second sentinel: its low half is the reserved all-ones index, so
-// the pool's own resolve() and free() already refuse it.
+// handle_for takes an index too, and bounds it. -1 is a safe answer rather than a second
+// sentinel: its low half is the reserved all-ones index, so the pool's own resolve() and free()
+// already refuse it.
 TEST(SlotPool, handle_for_bounds_its_index)
 {
     constexpr int N = 4;
@@ -428,7 +418,7 @@ TEST(SlotPool, index_of_is_total_over_a_null_object)
     ASSERT_GE(index, 0);
 
     EXPECT_EQ(pool.index_of(pool.at(index)), index) << "a slot base answers its own index";
-    // WHAT THE KERNEL RESTS ON: index_of(resolve(h)) is one refusal and not two, so the four
+    // WHAT THE KERNEL RESTS ON: index_of(resolve(h)) is one refusal and not two, so the
     // cap.cc helpers that turn a handle into a slot index have a single answer for "no live
     // object". The address compare below it already refuses a null on every real target; the
     // explicit test is what keeps the contract off that layout property.

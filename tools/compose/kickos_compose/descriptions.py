@@ -11,12 +11,11 @@ from ruamel.yaml.nodes import MappingNode
 
 from .subset import (
     ACCESS, C_IDENTIFIER, FILE_NAME, FUNCTION, GPIO_FUNCTION, IDENTIFIER, LINE_ENUM, NAMESPACE, PIN, REGION,
-    SELECTOR, File, Report, index_below, line_of,
+    SELECTOR, File, Report, index_below, line_of, read_utf8,
 )
 
 UNITS = ("pmsav7", "pmsav8", "pmsav6", "pmp", "rxmpu", "sysmpu", "mprotect", "mmu", "none")
 
-# The versions of the chip and board file formats this tool reads.
 CHIP_VERSIONS = (1,)
 BOARD_VERSIONS = (1,)
 CHIP_FIELDS = (
@@ -416,7 +415,7 @@ def check_valued(f, node, what, read):
 
 
 def host_runs(chip):
-    """Whether the host runs the part, which its `mprotect` unit says."""
+    """Whether the host runs the part."""
     return any(protection.unit == "mprotect" for protection in chip.protection.values())
 
 
@@ -433,7 +432,7 @@ def check_reserved(f, top, root, chip):
     for view in protecting_views(chip):
         held = [device.name for device in chip.devices.values()
                 if device.owner == "kernel" and (device.window is not None or device.channel_windows)
-                and view in device_reach(chip, device.cluster)]
+                and view in cluster_views(chip, device.cluster)]
         where = "the part"
         if view is not PART:
             where = "cluster `%s`" % view
@@ -819,12 +818,22 @@ def check_cluster_ref(f, chip, node, what):
     return name
 
 
-def device_reach(chip, cluster):
+def cluster_views(chip, cluster):
+    """The views a build on `cluster` runs under, every cluster's for None."""
     if cluster is not None:
         return (cluster,)
     if chip.clusters:
         return tuple(chip.clusters)
     return (PART,)
+
+
+def unit_views(chip, cluster):
+    """Each view a build on `cluster` runs under, as (view, Protection)."""
+    return [(view, chip.protection[view]) for view in cluster_views(chip, cluster) if view in chip.protection]
+
+
+def reaches(device, cluster):
+    return device.cluster is None or cluster is None or device.cluster == cluster
 
 
 def check_line_order(f, lines, name):
@@ -855,7 +864,7 @@ def check_device(f, chip, key, value, windows):
 
     if "cluster" in values:
         device.cluster = check_cluster_ref(f, chip, values["cluster"], "%s cluster" % what)
-    reach = device_reach(chip, device.cluster)
+    reach = cluster_views(chip, device.cluster)
 
     shapes = [field for field in ("window", "ports", "channels") if field in values]
     for extra in shapes[1:]:
@@ -1087,7 +1096,7 @@ def check_memory(f, top, root, chip, translates, windows):
                 if cluster is None:
                     continue
             base = f.integer(values["base"], "%s base" % what, 64)
-            for view in device_reach(chip, cluster):
+            for view in cluster_views(chip, cluster):
                 bases[view] = (base, values["base"])
         else:
             at = f.mapping(values["at"], "%s at" % what)
@@ -1598,7 +1607,7 @@ def check_board_memory(f, node, chip, board):
         entry.node = key
         if chip is None:
             continue
-        reach = device_reach(chip, cluster)
+        reach = cluster_views(chip, cluster)
         entry.bases = {view: base for view in reach}
         symbol = memory_symbol(entry)
         if symbol in names or any(macro in layout for macro, v, r in memory_layout(entry, 0)):
@@ -1789,11 +1798,8 @@ def check_platform(paths):
         if not path.endswith(".yaml") or os.path.basename(platform) != "platform":
             report.refuse(path, 1, "form.layout", "a description file is platform/<chip>/<name>.yaml")
             continue
-        try:
-            with open(path, encoding="utf-8") as stream:
-                text = stream.read()
-        except (OSError, UnicodeDecodeError) as error:
-            report.refuse(path, 1, "form.unreadable", "the file cannot be read as UTF-8: %s" % error)
+        text = read_utf8(path, report)
+        if text is None:
             continue
         if os.path.basename(path) == "chip.yaml":
             chips[os.path.abspath(path)] = check_chip(path, text, report)

@@ -7,7 +7,6 @@
 #include <kickos/console_tx.h>
 #include <kickos/irq.h>
 #include <kickos/instance.h>
-#include <kickos/irq_route.h>
 
 #include <atomic>
 #include <chrono>
@@ -269,20 +268,6 @@ console_tx_backend const* arch_console_tx_backend(char**, uint32_t*, int*)
     return nullptr; // the fixture arms the ring through console_tx_init
 }
 
-// Both ownership reads are pinned kernel-owned: these arms measure the ring.
-int console_owner_is_kernel(void)
-{
-    return 1;
-}
-
-void console_chip_writer_enter(void)
-{
-}
-
-void console_chip_writer_leave(void)
-{
-}
-
 // Stubs console.cc's version; the insert reaches it only for the unarmed ring, where there
 // is nothing to interleave with, so these suites need only the symbol.
 void console_write_line_sync(char const*, size_t)
@@ -292,18 +277,6 @@ void console_write_line_sync(char const*, size_t)
 
 namespace kickos
 {
-    // klock.cc's release reads the scheduler's flush row.
-    namespace detail
-    {
-        constinit InstanceLocal<Kernel> g_instance;
-    }
-
-    void kpanic(char const*) __attribute__((noreturn));
-    void kpanic(char const*)
-    {
-        __builtin_trap();
-    }
-
     bool irq_attach(int, IrqHandler, void*)
     {
         return true;
@@ -316,32 +289,5 @@ namespace kickos
     // The lock's release publishes what the scheduler staged, and this gate stages nothing.
     void sched_flush_owed(uint32_t)
     {
-    }
-
-    void irq_line_op(int line, LineOp op)
-    {
-        switch (op)
-        {
-            case LineOp::MASK:
-            {
-                arch_irq_mask(line);
-                break;
-            }
-            case LineOp::UNMASK:
-            {
-                arch_irq_unmask(line);
-                break;
-            }
-            case LineOp::CLEAR:
-            {
-                arch_irq_clear_pending(line);
-                break;
-            }
-        }
-    }
-
-    void irq_line_op_local(int line, LineOp op)
-    {
-        irq_line_op(line, op);
     }
 }

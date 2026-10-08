@@ -106,22 +106,18 @@ namespace kickos
     bool grant_region_admissible(uintptr_t base, size_t size, uint32_t attr,
                                  bool caller_authorized)
     {
-        // The size-0 and wrap refusals live HERE, not only in the overlap
-        // helper (which treats size 0 as "touches nothing").
+        // grant_hits_reserved answers size 0 as touching nothing, so that refusal is here.
         if (size == 0)
         {
             return false;
         }
-        if (base + size - 1u < base)
-        {
-            return false; // wraps 2^32
-        }
-        // Rule 7 core: a grant touching ANY reserved block is refused
-        // UNCONDITIONALLY; privileged callers bind too.
+        // Rule 7 core: a grant touching ANY reserved block is refused UNCONDITIONALLY;
+        // privileged callers bind too. A wrapping range is refused there as well.
         if (grant_hits_reserved(base, size))
         {
             return false;
         }
+        uintptr_t const last = base + size - 1u;
         // Memory TYPE, ahead of either geometry arm: a backend that cannot encode the type
         // drops the descriptor silently at commit, so the refusal happens here or nowhere.
         if (not grant_nocache_admissible(attr))
@@ -146,7 +142,6 @@ namespace kickos
             // simplest sound rule. DEV-only, hence here and not in hits_reserved.
             if (arch_bitband_present() != 0)
             {
-                uintptr_t const last = base + size - 1u;
                 if (grant_ranges_overlap(base, last, BB_PERI_ALIAS_BASE, BB_PERI_ALIAS_LAST)
                     or grant_ranges_overlap(base, last, BB_SRAM_ALIAS_BASE, BB_SRAM_ALIAS_LAST))
                 {
@@ -155,18 +150,15 @@ namespace kickos
             }
             return true;
         }
-        // RAM data grant: the block must be nameable by ONE descriptor,
-        // else the programmed window covers a span the caller did not ask for (a PMSA/
-        // NAPOT descriptor snaps an unaligned base downwards). The mask this replaced
-        // was only an alignment test, sound while every size was a power of two.
-        // Geometry only: arena confinement is the check below.
+        // RAM data grant: the block must be nameable by ONE descriptor, else the programmed
+        // window covers a span the caller did not ask for (a PMSA/NAPOT descriptor snaps an
+        // unaligned base downwards). Geometry only: arena confinement is the check below.
         if (not arch_ram_region_admissible(base, size))
         {
             return false;
         }
         // Choice 10C: confine RAM to the user arena for EVERY caller (no privileged
         // waiver). Guard an absent arena (arch_ram_size() == 0 -> nothing admissible).
-        (void)caller_authorized;
         size_t const ram_size = arch_ram_size();
         if (ram_size == 0)
         {
@@ -182,7 +174,7 @@ namespace kickos
             return true;
         }
 #endif
-        return base >= ram_base and (base + size - 1u) <= ram_last;
+        return base >= ram_base and last <= ram_last;
     }
 
     void grant_reserved_validate(void)

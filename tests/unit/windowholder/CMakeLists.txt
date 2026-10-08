@@ -6,6 +6,7 @@
 # queries' own callees need a seam.
 kickos_add_unit_test(NAME window_holder
   SOURCES window_holder.cc "${PROJECT_SOURCE_DIR}/kernel/thread/thread.cc"
+          "${PROJECT_SOURCE_DIR}/kernel/init/instance.cc"
   KERNEL)
 target_compile_options(window_holder PRIVATE -ffunction-sections -fdata-sections)
 target_link_options(window_holder PRIVATE -Wl,--gc-sections)

@@ -27,7 +27,6 @@ extern "C" long write(int, void const*, unsigned long);
 
 namespace drv = kickos::driver;
 namespace uart = kickos::uart;
-namespace declared = kickos::driver::declared::simuart;
 
 namespace
 {
@@ -116,46 +115,10 @@ namespace
                   "the sim block is a bare Shared, so the latch must sit at the Shared's "
                   "own offset");
 
-    constexpr drv::Descriptor k_desc = {
-        .tag = "[simuart] ",
-        // No guard: no thread takes a window.
-        .expected_base = 0,
-        .block_size = declared::k_declared.block_size,
-        .block_flags = 0,
-        .ready_offset = uart::KOS_UART_READY_OFFSET,
-        .ep_posture = declared::k_declared.ep_posture, // no kos_console_publish, no handover tail
-        .line_count = declared::k_declared.line_count,
-        .thread_count = declared::k_declared.thread_count,
-        .barrier_after = declared::k_declared.barrier_after,
-        // EDGE, and leg L5 requires it: the IRQ thread holds no window here, so it could not
-        // clear a peripheral flag if there were one.
-        .lines = {{KOS_IRQ_EDGE}},
-        .threads = {{.entry = uart_irq_thread,
-                     .name = declared::k_declared.thread_name[0],
-                     .prio_delta = declared::k_declared.prio_delta[0],
-                     .arg = drv::KOS_DRV_ARG_BLOCK,
-                     .window_grant = false,
-                     .cap_count = 2,
-                     .caps = {{drv::KOS_DRV_RES_NOTIFY, KOS_CAP_WAIT, 0},
-                              {drv::KOS_DRV_RES_LINE0, KOS_CAP_WAIT, 0}}},
-                    {.entry = uart_service_thread,
-                     .name = declared::k_declared.thread_name[1],
-                     .prio_delta = declared::k_declared.prio_delta[1],
-                     .arg = drv::KOS_DRV_ARG_BLOCK,
-                     .window_grant = false,
-                     .cap_count = 2,
-                     // A BADGED copy of the same notification: a pure raise of the
-                     // doorbell's own bit, never a touch of the controller.
-                     .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT, 0},
-                              {drv::KOS_DRV_RES_NOTIFY, KOS_CAP_SIGNAL,
-                               drv::doorbell_badge(1)}}}},
-        .block_init = block_init
-    };
+    constexpr drv::Descriptor k_desc = KICKOS_DRIVER_DESCRIPTOR;
 
     static_assert(drv::valid(k_desc), "the simuart descriptor is not a well-formed driver shape");
     static_assert(uart::desc_ok(k_desc), "the simuart cap positions do not match KOS_UART_CAP_*");
-    static_assert(drv::declared_as(k_desc, declared::k_declared),
-                  "the simuart descriptor departs from its kickos_add_driver declaration");
 }
 
 extern "C"

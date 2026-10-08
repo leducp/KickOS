@@ -13,7 +13,6 @@
 
 #include <stddef.h>
 #include <stdint.h>
-#include <stdlib.h>
 
 static_assert(KICKOS_AMP_SHARE, "this gate's posture states a share");
 
@@ -44,20 +43,6 @@ extern "C"
 
 namespace kickos
 {
-    void kpanic(char const* msg)
-    {
-        ADD_FAILURE() << "kernel panic: " << msg;
-        abort();
-    }
-
-#if KICKOS_DIAG_TERSE
-    void kpanic_at(char const* file, unsigned line)
-    {
-        ADD_FAILURE() << "kernel panic: " << file << ":" << line;
-        abort();
-    }
-#endif
-
     namespace
     {
         Task g_tasks[2];

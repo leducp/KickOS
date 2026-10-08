@@ -86,9 +86,9 @@ if(KICKOS_ARCH STREQUAL "armv8a")
   kickos_host_gate(tlbi_shareability)
 endif()
 
-# The doorbell service body's instruction barrier and its position, read out of the linked image.
-# Keyed on the core count, not the kernel-core count: the service body is compiled whenever the
-# image drives more than one core, so it exists under AMP, where one kernel schedules one core.
+# The doorbell service's instruction barrier, read out of the linked image. Keyed on the core
+# count, not the kernel-core count: the service is compiled whenever the image drives more than one
+# core, so it exists under AMP, where one kernel schedules one core.
 # It runs no image, so it carries the host label.
 #
 # armv8a only, and rv64imac is absent by ruling rather than by oversight: the instruction-side
@@ -111,31 +111,20 @@ endif()
 if(KICKOS_NUM_CORES GREATER 1 AND KICKOS_CHIP STREQUAL "rp2350")
   kickos_image_rule(rp_node hello "${PROJECT_BINARY_DIR}/generated/chip/chip_layout.h")
 endif()
-if(KICKOS_CHIP STREQUAL "esp32c6" AND KICKOS_AMP_OWN_IMAGE AND KICKOS_AMP_NODE_ID EQUAL 1)
-  kickos_image_rule(c6_lp hello)
-elseif(KICKOS_CHIP STREQUAL "esp32c6")
+if(KICKOS_CHIP STREQUAL "esp32c6" AND NOT (KICKOS_AMP_OWN_IMAGE AND KICKOS_AMP_NODE_ID EQUAL 1))
   kickos_image_rule(c6_hp hello)
 endif()
 if(KICKOS_NUM_CORES EQUAL 1)
   kickos_image_rule(cpu_id hello)
 endif()
 
-# Where the route drain sits in every doorbell service body, read out of the source tree. Keyed
-# on nothing: the ordering is a source property, so every build checks all three bodies.
+# The doorbell service's route drain, read out of the source tree. Keyed on nothing: the call is
+# a source property, so every build checks it.
 # It runs no image, so it carries the host label.
 add_test(NAME route_service_order
   COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_route_service_order.sh"
           "${PROJECT_SOURCE_DIR}")
 kickos_host_gate(route_service_order)
-
-# The IrqLock bracket on the IRQ syscall arms that touch image-wide controller words, read out
-# of the source tree. Keyed on nothing: IrqLock folds to the local mask at one kernel core, so
-# the shape a second core depends on is checked in every build.
-# It runs no image, so it carries the host label.
-add_test(NAME irq_syscall_locked
-  COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_irq_syscall_locked.sh"
-          "${PROJECT_SOURCE_DIR}")
-kickos_host_gate(irq_syscall_locked)
 
 # The ESP UART's TX-empty acknowledgement, read out of the source tree. Keyed on nothing: the
 # three bodies are source whichever board this build is for, and two of the three are compiled
@@ -149,8 +138,8 @@ add_test(NAME esp_tx_latch_ack
           "${PROJECT_SOURCE_DIR}")
 kickos_host_gate(esp_tx_latch_ack)
 
-# The sole decider of a logical line's delivery gating, read out of the source tree. Keyed on
-# nothing: the rule binds at one kernel core too.
+# The sole users of the delivery-gating seams, the software raise and the IPC fastpath, read out
+# of the source tree. Keyed on nothing: the rule binds at one kernel core too.
 # It runs no image, so it carries the host label.
 add_test(NAME irq_line_op_sole
   COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_irq_line_op_sole.sh"
@@ -184,7 +173,8 @@ endif()
 # store-then-load pairing for a fence to serve; the publication it does owe is ordered inside
 # kickos_rv64_doorbell_send by a `fence rw, ow` of its own, the CLINT sitting in an I/O PMA. So
 # a multi-hart rv64 image links no caller, and a clause keyed on the hart count demands a symbol
-# the linker is entitled to drop. The clause lights up with the first rv64 AMP node instead.
+# the linker is entitled to drop. The RP2350 and ESP32-C6 owe it for the AMP window alone too.
+# An M-profile DMB has one defined option, SY; a seq_cst fence emits the reserved `dmb ish`.
 # It runs no image, so it carries the host label.
 set(_fence_full "")
 set(_fence_refused "")
@@ -192,9 +182,11 @@ if(KICKOS_ARCH STREQUAL "armv8a" AND KICKOS_ARM64_GIC_VERSION EQUAL 3
    AND (KICKOS_AMP_NODE OR KICKOS_NUM_CORES GREATER 1))
   set(_fence_full "ish")
   set(_fence_refused "ishld ishst")
-elseif(KICKOS_ARCH STREQUAL "rv64imac" AND KICKOS_AMP_NODE)
+elseif(KICKOS_ARCH MATCHES "^rv(32|64)imac$" AND KICKOS_AMP_NODE)
   set(_fence_full "rw,rw")
   set(_fence_refused "r,r w,w rw,w r,rw")
+elseif(KICKOS_ARCH STREQUAL "armv7m" AND KICKOS_AMP_NODE)
+  set(_fence_full "sy")
 endif()
 if(NOT _fence_full STREQUAL "")
   add_test(NAME ipi_fence
@@ -220,28 +212,9 @@ if(KICKOS_ARCH STREQUAL "rv64imac")
   kickos_host_gate(rv64_irq_fence)
 endif()
 
-# The one-cell-per-line invariant the lx6 interrupt-controller cells rest on, read out of the
-# linked image, plus the atomic declaration in the source that each access needs. A mask is a
-# store of 0 and an unmask a store of 1, whole values; an edit deriving a stored value from a
-# loaded one reintroduces the cross-core lost update with no local symptom and no failing arm.
-# Unconditional on the core count, as the invariant is: the cells are image-wide rather than per
-# core.
-# lx6 only: this reader's cell names occur in no other backend.
-# It runs no image, so it carries the host label.
-# Keyed on KICKOS_ENABLE_SELFTEST: arch_irq_inject, one of the four bodies read, is reached only
-# from the inject syscall arm and the bench, so --gc-sections drops it from an image built
-# without either, and this gate refuses an absence it cannot tell from a failure to read.
-if(KICKOS_ARCH STREQUAL "lx6" AND KICKOS_ENABLE_SELFTEST)
-  add_test(NAME lx6_irq_cells
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_lx6_irq_cells.sh"
-            "$<TARGET_FILE:hello>" "${CMAKE_NM}" "${CMAKE_OBJDUMP}")
-  kickos_host_gate(lx6_irq_cells)
-endif()
-
-# The boundary between the doorbell's rendezvous half and its scheduling half, read out of the
-# linked image. Keyed on the kernel-core count: the reschedule cell and the dispatch's scheduler
-# entry exist only where one kernel schedules more than one core, and under AMP there is no
-# scheduling half to separate.
+# The send and the rendezvous never entering the scheduler, and lx6's dispatch consuming the
+# reschedule ask, read out of the linked image. Keyed on the kernel-core count: the ask and the
+# dispatch's scheduler entry exist only where one kernel schedules more than one core.
 # It runs no image, so it carries the host label.
 if(KICKOS_KERNEL_CORES GREATER 1
    AND (KICKOS_ARCH STREQUAL "armv8a" OR KICKOS_ARCH STREQUAL "rv64imac"

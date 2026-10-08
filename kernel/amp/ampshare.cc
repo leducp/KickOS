@@ -49,7 +49,7 @@ namespace kickos
         bool seated = false;
 #if KICKOS_HAVE_ASPACE
         size_t const g = arch_aspace_granule();
-        VirtualRanges* const r = domain_ranges_mut(task_domain(root->task));
+        VirtualRanges* const r = domain_ranges_mut(thread_domain(root));
         // The share's user address is its physical one, which is what <kickos/amp.h> states.
         seated = r != nullptr and aspace_user_va(AMP_SHARE_BASE) == AMP_SHARE_BASE
                  and (AMP_SHARE_BASE % g) == 0 and (AMP_SHARE_SIZE % g) == 0

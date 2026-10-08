@@ -9,8 +9,8 @@
 // (docs/design-m10-target.md, section 2).
 //
 // A class enters only as a thread-entry pointer and as the per-chip block_init. No chip
-// header is included here: a descriptor is authored in the per-chip TU, the only one with
-// REGDIR on its include path.
+// header is included here: a descriptor is generated from the driver's kickos_add_driver
+// declaration and expanded in the per-chip TU, the only one with REGDIR on its include path.
 
 #ifndef KICKOS_SYS_DRIVER_SERVICE_H
 #define KICKOS_SYS_DRIVER_SERVICE_H
@@ -642,74 +642,6 @@ constexpr bool ring_doorbell_shape_ok(Descriptor const& d, uint16_t ready_offset
         }
     }
     return true;
-}
-
-// ---------------------------------------------------------------------------------
-// What kickos_add_driver declares for a packaged driver and exports in the manifest's
-// catalogue, read from the generated <kickos/driver/declared/<name>.h>. A descriptor takes its
-// line and thread counts, ring block, posture, barrier point, thread names and priority offsets
-// from it, and declared_as checks the descriptor's own statement of every other declared fact.
-struct Declared
-{
-    uint8_t window_count;
-    uint8_t line_count;
-    uint8_t thread_count;
-    int8_t prio_delta[KOS_DRV_THREADS_MAX];
-    char const* thread_name[KOS_DRV_THREADS_MAX]; // null takes the instance's name
-    uint8_t cap_count[KOS_DRV_THREADS_MAX];
-    uint8_t badged[KOS_DRV_THREADS_MAX]; // the badged notification copies each spawn mints
-    uint8_t receiver; // the thread that waits on the endpoint
-    bool notify;
-    uint32_t block_size;
-    uint32_t block_flags; // KOS_MEM_NOCACHE for an uncached block
-    uint8_t ep_posture; // enum kos_drv_ep
-    bool barrier;
-    uint8_t barrier_after; // thread_count where there is no barrier
-    bool console;
-};
-
-constexpr bool declared_as(Descriptor const& d, Declared const& m)
-{
-    if (window_holder_count(d) != m.window_count)
-    {
-        return false;
-    }
-    for (uint8_t i = 0; i < d.thread_count; i++)
-    {
-        if (d.threads[i].cap_count != m.cap_count[i])
-        {
-            return false;
-        }
-        uint8_t badged = 0;
-        for (uint8_t c = 0; c < d.threads[i].cap_count; c++)
-        {
-            if (d.threads[i].caps[c].resource == KOS_DRV_RES_NOTIFY and d.threads[i].caps[c].badge != 0u)
-            {
-                badged++;
-            }
-        }
-        if (badged != m.badged[i])
-        {
-            return false;
-        }
-    }
-    if (ep_holder(d) != m.receiver)
-    {
-        return false;
-    }
-    if (notify_used(d) != m.notify)
-    {
-        return false;
-    }
-    if ((d.ready_offset != KOS_DRV_READY_NONE) != m.barrier)
-    {
-        return false;
-    }
-    if (d.block_flags != m.block_flags)
-    {
-        return false;
-    }
-    return (d.ep_posture == KOS_DRV_EP_HANDOVER) == m.console;
 }
 
 // ---------------------------------------------------------------------------------

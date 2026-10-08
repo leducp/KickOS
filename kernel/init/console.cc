@@ -8,7 +8,7 @@
 #include <kickos/kernel.h>
 #include <kickos/sched.h>
 #include <kickos/arch/arch.h>
-#include <kickos/cap.h> // cap_console_deliver (the fault record's route to a published console)
+#include <kickos/cap.h>
 #include <kickos/console_tx.h>
 #include <kickos/grant.h>
 #include <kickos/instance.h>
@@ -97,7 +97,6 @@ namespace
         return static_cast<uint32_t>(reinterpret_cast<uintptr_t>(kickos::sched::current()));
     }
 
-    // A line's flags on its way to the console.
     constexpr uint8_t WRITE_RECORD = 1u;  // a line of a fault record
     constexpr uint8_t WRITE_OFFERED = 2u; // offered again where the chip took part of it
     constexpr uint8_t WRITE_USER = 4u;    // the current thread's own write
@@ -182,23 +181,15 @@ extern "C" void console_owner_set_user(void)
     g_console_state = ConsoleState::USER_OWNED;
     if (g_console_driver_died)
     {
-        console_on_driver_death();
+        console_on_driver_death(lock);
         return;
     }
-    kickos::console_dark_wake();
+    kickos::console_dark_wake(lock);
 }
 
 // Every access to the chip-writer count, mutators and reader alike, MUST run under IrqLock:
 // console_emit can run in ISR/fault context, so an unlocked read-modify-write tears against
-// a thread producer's and an unlocked reader can observe the intermediate. This increment is
-// unconditional, so it must only ever nest inside a chip_writer_enter bracket that already
-// passed the state gate; reached on its own it would keep publish's drain from converging.
-extern "C" void console_chip_writer_enter(void)
-{
-    kickos::IrqLock lock;
-    g_chip_writers = g_chip_writers + 1;
-}
-
+// a thread producer's and an unlocked reader can observe the intermediate.
 extern "C" void console_chip_writer_leave(void)
 {
     kickos::IrqLock lock;
@@ -243,7 +234,7 @@ extern "C" int console_dark(void)
                                  or state == ConsoleState::HANDING_OFF));
 }
 
-extern "C" void console_on_driver_death(void)
+void console_on_driver_death(kickos::Held held)
 {
     if (not g_console_driver_died or g_console_state == ConsoleState::HANDING_OFF)
     {
@@ -271,13 +262,13 @@ extern "C" void console_on_driver_death(void)
     }
     g_console_state = ConsoleState::RECLAIMED;
     console_flush_then_reclaim();
-    kickos::console_dark_wake();
+    kickos::console_dark_wake(held);
 }
 
 extern "C" void console_tx_room_freed(void)
 {
     kickos::IrqLock lock;
-    kickos::console_dark_wake();
+    kickos::console_dark_wake(lock);
 }
 
 // Whether a thread of `t`'s own task holds the console's registers. A window has one holder.
@@ -589,7 +580,7 @@ namespace kickos
         IrqLock lock;
         if (console_held_commit(held_key()) != 0 and g_console_state != ConsoleState::RECLAIMED)
         {
-            cap_console_deliver();
+            cap_console_deliver(lock);
         }
     }
 
@@ -624,7 +615,6 @@ namespace kickos
     }
 
 #if KICKOS_KERNEL_STACKS && KICKOS_KSTACK_REPORT
-    // Decimal of the usable block, left-aligned in the buffer, built at compile time.
     struct UsableText
     {
         char s[12];
@@ -673,7 +663,7 @@ namespace kickos
     // panic descended. Answers an empty string when no thread is current.
     char const* kstack_report_text()
     {
-        Thread const* const c = kernel().current[kickos_kernel_core()];
+        Thread const* const c = kernel().current(kickos_kernel_core());
         if (c == nullptr)
         {
             return "";
@@ -746,6 +736,15 @@ namespace kickos
 extern "C" void kickos_panic_report(char const* msg, char const* file, unsigned line)
 {
     kpanic_enter();
+#if KICKOS_PANIC_STACK_SIZE > 0
+    // tests/lib/panic.ere matches this line verbatim.
+    uintptr_t const sp = reinterpret_cast<uintptr_t>(__builtin_stack_address());
+    uintptr_t const top = kickos::panic_stack_top();
+    if (sp < top - KICKOS_PANIC_STACK_SIZE or sp > top)
+    {
+        kickos::kputs("\nPANIC STACK NOT SEATED\n");
+    }
+#endif
     kickos::kputs("\nKERNEL PANIC: ");
 #if !KICKOS_DIAG_TERSE
     (void)file;
@@ -780,7 +779,7 @@ extern "C" void kickos_panic_report(char const* msg, char const* file, unsigned 
 #if KICKOS_KERNEL_STACKS && KICKOS_KSTACK_REPORT
     kickos::kputs(kickos::kstack_report_text());
 #endif
-    kfault_terminate(); // blink forever (real HW) or exit with a fault status (host/QEMU)
+    kfault_terminate();
 }
 
 // See kernel.h. The order below is load-bearing: mask FIRST so no ISR can enqueue after,

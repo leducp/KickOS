@@ -75,6 +75,17 @@ namespace kickos::mk64f::reg::uart
 
     constexpr uint8_t C4_BRFA_MASK = 0x1Fu; // baud fine-adjust, in 1/32 increments
 
+    // baud = clk / (16 x (SBR + BRFA/32)) (RM 52.4.3). BRFA truncates the 1/32 remainder.
+    constexpr uint32_t baud_sbr(uint32_t clk, uint32_t baud)
+    {
+        return clk / (16u * baud);
+    }
+
+    constexpr uint32_t baud_brfa(uint32_t clk, uint32_t baud)
+    {
+        return (clk * 2u) / baud - baud_sbr(clk, baud) * 32u;
+    }
+
     // CFIFO command bits (RM 52.3.17): write 1 to flush the TX / RX FIFO buffer.
     constexpr uint8_t CFIFO_RXFLUSH = 1u << 6;
     constexpr uint8_t CFIFO_TXFLUSH = 1u << 7;

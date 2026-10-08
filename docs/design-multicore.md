@@ -319,16 +319,15 @@ own declaration says so. Above one kernel core the words are one row per hart wr
 hart alone, a line's state living in the row of the hart it is routed to, and the Dekker pair
 below moves to the post that carries a raise to that hart. **One cell per line removes that
 read-modify-write outright**: a mask is a store of 0 and an unmask a store of 1, whole values, so
-there is no shared word to clobber and nothing for an atomic RMW to protect. Read out of the linked
-image, every write to either cell is a `movi` followed by an `s8i`, and not one of them derives its
+there is no shared word to clobber and nothing for an atomic RMW to protect. Each cell is a
+`LineCell`, a relaxed byte whose only writes are `set()` and `clear()`, so no write can derive its
 value from a value read. rv64's other half, the store-load fence pair between its unmask and its
 inject, answers a Dekker race between those two bodies; here both of those bodies hold the kernel
 lock, so that race does not arise, and importing one fence without the exactly-once take that
 settles which side delivers would assert a completeness this backend does not have. Freeze N9 is
 the licence rather than an excuse: the cross-core mechanism is a per-arch seam whose cheapest
-correct mechanism differs per part. `tests/static/check_lx6_irq_cells.sh` asserts the no-RMW half
-out of the image, because it is exactly the property an innocent edit removes with no local
-symptom.
+correct mechanism differs per part. The type holds the no-RMW half, because it is exactly the
+property an innocent edit removes with no local symptom.
 
 **AND ONE THING IS NOT CLOSED BY ANY OF IT, so it is recorded rather than implied.** Two stores to
 one cell from two cores have no order that a primitive can give: an atomic access is indivisible
@@ -337,9 +336,10 @@ an unrouted line the mask-versus-unmask order therefore rests entirely on the ca
 with no pin behind it. No reachable inversion of that chain was constructed, and none is claimed
 impossible.
 
-`kernel/irq/irq_route.cc` is the one place that decides, and
-`tests/static/check_irq_line_op_sole.sh` refuses a kernel-layer call to `arch_irq_mask`,
-`arch_irq_unmask` or `arch_irq_clear_pending` anywhere else. **The gate ships with the routing and
+`kernel/irq/irq_route.cc` is the one place that decides (`irq_line_op` takes the caller's `Held`, `irq_line_op_local`
+does not), and `tests/static/check_irq_line_op_sole.sh` refuses a kernel-layer call to `arch_irq_mask`,
+`arch_irq_unmask` or `arch_irq_clear_pending` anywhere else, and to `arch_irq_inject` outside
+`irq_inject`. **The gate ships with the routing and
 not after it**, because N3's discipline was correct and unenforced for the whole of this backend's
 life, and that is precisely how a wrong-core touch reached an audit and stranded a board with no
 message. A rule enforced by nothing is a rule someone has to remember.
@@ -1782,7 +1782,7 @@ give it one is an exemption clause in the placement rule for idle threads. There
 separate things are why.
 
 What GUARANTEES the core has an idle thread is `policy_pick_next`'s last line: a scan that admits
-nothing falls through to `kernel().idle[core]` unconditionally, and that predates this work. What
+nothing falls through to `kernel().idle(core)` unconditionally, and that predates this work. What
 `sched::add_idle` adds is the mask, EXACTLY that core's own bit, which is what keeps idle inside the
 `affinity` invariant every reader of the field relies on and what stops a peer's scan taking it.
 `sched::add` seats the boot core's idle by the same rule, so the two paths agree rather than one of

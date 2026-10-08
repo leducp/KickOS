@@ -28,8 +28,8 @@ namespace
     // from a set_prio re-seat.
     void park_reply_donor(Thread* server, Thread* caller)
     {
-        caller->state = ThreadState::BLOCKED;
-        kernel().policy->on_remove(caller);
+        testfix::seat_blocked(caller);
+        policy_on_remove(caller);
         caller->call_state = CALL_REPLY_WAIT;
         caller->wait_result = WAIT_RESULT_POISON;
         reply_donor_park(server, caller); // seats the wait edge itself
@@ -39,8 +39,8 @@ namespace
     // what the funnel counts.
     void park_call_sender(Thread* caller, Endpoint* ep)
     {
-        caller->state = ThreadState::BLOCKED;
-        kernel().policy->on_remove(caller);
+        testfix::seat_blocked(caller);
+        policy_on_remove(caller);
         caller->wait_queue = &ep->send_waiters;
         caller->wait_kind = WAIT_EP_SEND;
         caller->wait_obj = ep;
@@ -60,7 +60,7 @@ namespace
         park_call_sender(urgent, served);
         {
             IrqLock lock;
-            sched::set_prio(donor, thread_effective_prio(donor));
+            sched::set_prio(donor, thread_effective_prio(donor), lock);
         }
     }
 }

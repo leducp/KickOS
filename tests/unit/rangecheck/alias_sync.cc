@@ -114,7 +114,7 @@ namespace kickos
                     memset(g_mem, 0, sizeof(g_mem));
                     dcache_reset(nullptr);
                     owner_ = seat_pool(SLOT_OWNER, PRIO);
-                    kernel().current[kickos_kernel_core()] = owner_;
+                    kernel().current(kickos_kernel_core()) = owner_;
 #if KICKOS_HAVE_ASPACE
                     ASSERT_EQ(arch_aspace_granule(), PAGE);
                     Task* const tk = task(0);
@@ -277,16 +277,16 @@ namespace kickos
                 int err = 0;
                 g_owed = false;
                 g_data_region = {base, PAGE, ARCH_MPU_R | ARCH_MPU_W | ARCH_MPU_NOCACHE};
-                Task* const nc = task_create(1, 0, nullptr, 0, 0, nullptr, &err);
+                Task* const nc = task_create(1, nullptr, 0, 0, nullptr, &err);
                 size_t const nc_ops = dcache_count();
                 int const nc_mark = g_marked;
                 dcache_reset(nullptr);
                 g_data_region = {base, PAGE, ARCH_MPU_R | ARCH_MPU_W};
-                Task* const plain = task_create(1, 0, nullptr, 0, 0, nullptr, &err);
+                Task* const plain = task_create(1, nullptr, 0, 0, nullptr, &err);
                 size_t const plain_ops = dcache_count();
                 dcache_reset(nullptr);
                 g_owed = true;
-                Task* const owed = task_create(1, 0, nullptr, 0, 0, nullptr, &err);
+                Task* const owed = task_create(1, nullptr, 0, 0, nullptr, &err);
                 g_owed = false;
                 g_data_regions = 0;
                 ASSERT_NE(nc, nullptr);

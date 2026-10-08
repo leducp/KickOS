@@ -83,8 +83,8 @@ namespace kickos
             // exist at all (kfixture.h compiles it out below one core).
             void run_as(Thread* t)
             {
-                kernel().current[0] = t;
-                t->state = ThreadState::RUNNING;
+                kernel().current(testfix::core_at(0)) = t;
+                t->state.to<ThreadState::RUNNING>();
                 install_here(space_of(task_domain(t->task)));
             }
         }
@@ -156,7 +156,7 @@ namespace kickos
             Thread* const dying = seat_pool(SLOT_DYING, PRIO_MID);
             ASSERT_EQ(dying->task, nullptr);
 
-            kernel().current[0] = dying;
+            kernel().current(testfix::core_at(0)) = dying;
             install_here(boot_space());
             trace_reset();
             run_exit(0);

@@ -65,7 +65,7 @@ namespace kickos
             Thread* const stranger = seat_pool(SLOT_OTHER, PRIO_LOW);
             join_task(c, alone);
             join_task(stranger, other);
-            kernel().current[kickos_kernel_core()] = c;
+            kernel().current(kickos_kernel_core()) = c;
 
             run_exit_faulted(0);
 
@@ -88,7 +88,7 @@ namespace kickos
             join_task(peer, group);
             Semaphore* const s = semaphore(nullptr);
             park_sem_waiter(peer, s);
-            kernel().current[kickos_kernel_core()] = c;
+            kernel().current(kickos_kernel_core()) = c;
 
             run_exit(0);
 
@@ -112,7 +112,7 @@ namespace kickos
             Semaphore* const s = semaphore(nullptr);
             park_sem_waiter(peer, s);
             c->cancel_kind = CANCEL_KILL;
-            kernel().current[kickos_kernel_core()] = c;
+            kernel().current(kickos_kernel_core()) = c;
 
             run_exit(0);
 
@@ -135,7 +135,7 @@ namespace kickos
             Semaphore* const s = semaphore(nullptr);
             park_sem_waiter(peer, s);
             c->cancel_kind = CANCEL_SLAY;
-            kernel().current[kickos_kernel_core()] = c;
+            kernel().current(kickos_kernel_core()) = c;
 
             run_exit(0);
 
@@ -156,7 +156,7 @@ namespace kickos
             join_task(peer, group);
             Semaphore* const s = semaphore(nullptr);
             park_sem_waiter(peer, s);
-            kernel().current[kickos_kernel_core()] = c;
+            kernel().current(kickos_kernel_core()) = c;
 
             run_exit_faulted(0);
 
@@ -177,7 +177,7 @@ namespace kickos
             join_task(peer, group);
             Semaphore* const s = semaphore(nullptr);
             park_sem_waiter(peer, s);
-            kernel().current[kickos_kernel_core()] = c;
+            kernel().current(kickos_kernel_core()) = c;
             c->cancel_kind = CANCEL_KILL;
             int32_t const before = group->exit_status;
 
@@ -199,7 +199,7 @@ namespace kickos
             join_task(c, group);
             join_task(peer, group);
             c->task_entry = true;
-            kernel().current[kickos_kernel_core()] = c;
+            kernel().current(kickos_kernel_core()) = c;
 
             run_exit(5);
 
@@ -226,7 +226,7 @@ namespace kickos
                 park_sem_waiter(peer, s);
                 c->task_entry = true;
                 c->cancel_kind = kind;
-                kernel().current[kickos_kernel_core()] = c;
+                kernel().current(kickos_kernel_core()) = c;
 
                 run_exit(0);
 
@@ -260,7 +260,7 @@ namespace kickos
             join_task(peer, group);
             Semaphore* const s = semaphore(nullptr);
             park_sem_waiter(peer, s);
-            kernel().current[kickos_kernel_core()] = c;
+            kernel().current(kickos_kernel_core()) = c;
 
             run_exit_faulted(0);
 
@@ -283,7 +283,7 @@ namespace kickos
             join_task(peer, group);
             Semaphore* const s = semaphore(nullptr);
             park_sem_waiter(peer, s);
-            kernel().current[kickos_kernel_core()] = c;
+            kernel().current(kickos_kernel_core()) = c;
 
             run_exit_faulted(0);
 
@@ -304,7 +304,7 @@ namespace kickos
             join_task(peer, group);
             Endpoint* const ep = endpoint();
             park_plain_sender(peer, ep);
-            kernel().current[kickos_kernel_core()] = c;
+            kernel().current(kickos_kernel_core()) = c;
 
             run_exit_faulted(0);
 
@@ -325,7 +325,7 @@ namespace kickos
             join_task(c, group);
             join_task(peer, group);
             park_sleeper(peer, 1000000u);
-            kernel().current[kickos_kernel_core()] = c;
+            kernel().current(kickos_kernel_core()) = c;
 
             run_exit_faulted(0);
 
@@ -351,9 +351,9 @@ namespace kickos
             // The donation the real mutex_lock would have made.
             {
                 IrqLock lock;
-                sched::set_prio(owner, PRIO_HIGH);
+                sched::set_prio(owner, PRIO_HIGH, lock);
             }
-            kernel().current[kickos_kernel_core()] = c;
+            kernel().current(kickos_kernel_core()) = c;
 
             run_exit_faulted(0);
 
@@ -377,7 +377,7 @@ namespace kickos
             join_task(peer, group);
             Semaphore* const s = semaphore(nullptr);
             park_sem_waiter(peer, s);
-            kernel().current[kickos_kernel_core()] = c;
+            kernel().current(kickos_kernel_core()) = c;
             trace_reset();
 
             run_exit_faulted(0);
@@ -400,7 +400,7 @@ namespace kickos
             join_task(peer, group);
             Semaphore* const s = semaphore(nullptr);
             park_sem_waiter(peer, s);
-            kernel().current[kickos_kernel_core()] = c;
+            kernel().current(kickos_kernel_core()) = c;
             trace_reset();
 
             run_exit_faulted(0);
@@ -422,10 +422,10 @@ namespace kickos
             join_task(c, group);
             join_task(peer, group);
             c->dying = true;
-            kernel().current[kickos_kernel_core()] = peer;
+            kernel().current(kickos_kernel_core()) = peer;
 
             IrqLock lock;
-            task_cancel_group(group);
+            task_cancel_group(group, lock);
 
             EXPECT_EQ(c->cancel_kind, CANCEL_NONE)
                 << "a thread already running its own exit is left alone";
@@ -444,12 +444,12 @@ namespace kickos
             Thread* const c = seat_pool(SLOT_DYING, PRIO_MID);
             Thread* const waiter = seat_pool(SLOT_OTHER, PRIO_LOW);
             join_task(c, group);
-            kernel().policy->on_remove(waiter);
-            waiter->state = ThreadState::BLOCKED;
+            policy_on_remove(waiter);
+            testfix::seat_blocked(waiter);
             waiter->wait_kind = WAIT_TASK_EMPTY;
             waiter->wait_obj = group;
             waiter->wait_result = WAIT_RESULT_POISON;
-            kernel().current[kickos_kernel_core()] = c;
+            kernel().current(kickos_kernel_core()) = c;
 
             run_exit(0);
 
@@ -469,12 +469,12 @@ namespace kickos
             Thread* const waiter = seat_pool(SLOT_OTHER, PRIO_LOW);
             join_task(c, group);
             join_task(peer, group);
-            kernel().policy->on_remove(waiter);
-            waiter->state = ThreadState::BLOCKED;
+            policy_on_remove(waiter);
+            testfix::seat_blocked(waiter);
             waiter->wait_kind = WAIT_TASK_EMPTY;
             waiter->wait_obj = group;
             waiter->wait_result = WAIT_RESULT_POISON;
-            kernel().current[kickos_kernel_core()] = c;
+            kernel().current(kickos_kernel_core()) = c;
 
             run_exit(0);
 
@@ -491,12 +491,12 @@ namespace kickos
             Thread* const c = seat_pool(SLOT_DYING, PRIO_MID);
             Thread* const waiter = seat_pool(SLOT_OTHER, PRIO_LOW);
             join_task(c, group);
-            kernel().policy->on_remove(waiter);
-            waiter->state = ThreadState::BLOCKED;
+            policy_on_remove(waiter);
+            testfix::seat_blocked(waiter);
             waiter->wait_kind = WAIT_TASK_EMPTY;
             waiter->wait_obj = other;
             waiter->wait_result = WAIT_RESULT_POISON;
-            kernel().current[kickos_kernel_core()] = c;
+            kernel().current(kickos_kernel_core()) = c;
 
             run_exit(0);
 
@@ -511,11 +511,11 @@ namespace kickos
         {
             Task* const empty = task(0);
             Thread* const stranger = seat_pool(SLOT_OTHER, PRIO_LOW);
-            kernel().current[kickos_kernel_core()] = stranger;
+            kernel().current(kickos_kernel_core()) = stranger;
 
             IrqLock lock;
-            task_cancel_group(empty);
-            task_cancel_group(nullptr);
+            task_cancel_group(empty, lock);
+            task_cancel_group(nullptr, lock);
 
             EXPECT_EQ(stranger->cancel_kind, CANCEL_NONE)
                 << "a thread in no task at all is not a member";

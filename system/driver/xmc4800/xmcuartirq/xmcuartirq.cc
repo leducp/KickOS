@@ -36,8 +36,4 @@ namespace
 
 // The baud 0 below keeps the divisor the kernel left, and the frame is what
 // kickos_xmc_usic_init programmed, so the backend has nothing to reprogram.
-//
-// EDGE, with no peripheral-side clear to pair with it: PSR.TBIF has no influence on interrupt
-// generation and does not need clearing (RM 18.2.2.3 p.18-17).
-KICKOS_UART_CONSOLE_SERVICE(xmcuartirq, k_uart, /*fallback_baud=*/0u, mmap::USIC0_CH0_BASE,
-                            KOS_IRQ_EDGE);
+KICKOS_UART_CONSOLE_SERVICE(xmcuartirq, k_uart, /*fallback_baud=*/0u);

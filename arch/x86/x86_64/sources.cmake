@@ -21,6 +21,7 @@ list(REMOVE_ITEM _x86_defaults
 
 set(KICKOS_ARCH_SOURCES
   x86/x86_64/arch_x86_64.cc
+  common/arch_mpu_none.cc
   x86/x86_64/apic_x86_64.cc
   x86/x86_64/aspace_x86_64.cc
   x86/x86_64/apprel_x86_64.cc

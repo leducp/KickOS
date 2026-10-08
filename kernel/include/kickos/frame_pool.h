@@ -4,8 +4,8 @@
 // The system's one FrameAllocator, over the carve the chip linker script reserves for it
 // (__kickos_frame_pool_start/_end).
 //
-// Every entry point below takes the pool's IrqLock (nesting-safe), except frame_pool_init and
-// frame_pool_total, which read state written once at boot.
+// Every frame_pool_* entry point takes the pool's IrqLock (nesting-safe), except frame_pool_init,
+// frame_pool_phys_bounds and frame_pool_alias, which read state written once at boot.
 
 #ifndef KICKOS_FRAME_POOL_H
 #define KICKOS_FRAME_POOL_H
@@ -16,7 +16,7 @@
 
 namespace kickos
 {
-    // A capability's unit over this pool: a RUN, the pool holding thousands of frames against
+    // A capability's unit over this pool: a run, the pool holding thousands of frames against
     // a spawned thread's single-digit capability table. `base` stays below the resolve
     // chokepoint, so no address reaches the capability ABI.
     struct FrameRun
@@ -29,29 +29,30 @@ namespace kickos
     };
 
     // What frame_run_create answers when it could not make one, and what a caller holding no
-    // run stores. A HANDLE, so compare against it and never test the sign (slotpool.h).
+    // run stores. A handle, so compare against it and never test the sign (slotpool.h).
     constexpr int FRAME_RUN_NONE = -1;
 
-    // Seat a frame RUN and take the creator's reference over frames the caller already holds.
-    // -1 when the pool is full. NOT in cap.h: the base is an arch_phys_addr_t and that header
+    // Seat a frame run and take the creator's reference over frames the caller already holds.
+    // -1 when the pool is full. Not in cap.h: the base is an arch_phys_addr_t and that header
     // must not learn an address width.
     [[nodiscard]] int frame_run_create(arch_phys_addr_t base, uint32_t pages);
 
-    // One reference on a frame RUN for a holder that is not a capability. A MAPPING is one:
+    // One reference on a frame run for a holder that is not a capability. A mapping is one:
     // without it the last capability's drop frees frames a live leaf still points at. False at
-    // the ceiling or on a handle that does not resolve.
+    // the ceiling or on a handle that does not resolve; true means frame_run_slot_of resolves
+    // it for as long as the caller's IrqLock is held.
     [[nodiscard]] bool frame_run_ref(int obj_handle);
     void frame_run_release(int obj_handle);
     // Holders, capabilities and mappings alike. 0 when the handle does not resolve.
     uint8_t frame_run_refcount(int obj_handle);
-    // The frame RUN slot a handle names, or -1. This is what a VirtualRange stores.
+    // The frame run slot a handle names, or -1; a VirtualRange stores it plus one.
     int frame_run_slot_of(int obj_handle);
 
     // FrameRun::sync_owed of the run a handle names; false when it does not resolve.
     bool frame_run_sync_owed(int obj_handle);
     void frame_run_set_sync_owed(int obj_handle, bool owed);
 
-    // A teardown's release, named by the run's SLOT as the range recorded it. A slot out of
+    // A teardown's release, named by the run's slot as the range recorded it. A slot out of
     // range, or one holding no reference, is a no-op rather than a drop of whatever sits there.
     // The slot is pinned by the very reference this drops.
     void frame_run_release_by_slot(int slot);
@@ -61,7 +62,6 @@ namespace kickos
     bool frame_pool_init();
 
     size_t frame_pool_free();
-    size_t frame_pool_total();
 
     // How many times the pool has refused a free: a nonzero count is a frame freed twice or a
     // frame the pool never owned.
@@ -70,6 +70,8 @@ namespace kickos
     // The pointer the kernel reaches a frame's bytes through, or null when `frame` is not one
     // this pool handed out.
     void* frame_pool_ptr(arch_phys_addr_t frame);
+    // The same pointer for any frame of the image's own memory, allocated or not.
+    void* frame_pool_alias(arch_phys_addr_t frame);
 
     // `pages` consecutive frames with every byte zero, or 0 when no run that long is free.
     // Whole-run or nothing: a frame the kernel cannot reach through its own alias fails the

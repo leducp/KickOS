@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The bring-up the RP2040 and the RP2350 share, declared for both chip backends.
-//
-// The two parts are on DIFFERENT ISAs (armv6m and armv7m), so they link no arch archive in
-// common and this unit cannot live in one. chip_rp2xxx.cc enters each CHIP archive instead,
-// named by that chip's family.cmake, and reads the configured chip's own regs/ headers.
+// The two parts are on DIFFERENT ISAs (armv6m and armv7m) and share no arch archive, so
+// chip_rp2xxx.cc is compiled into each chip's archive (its family.cmake) against that chip's
+// regs/ headers.
 //
 // A chip joins the family by aliasing its register namespace into kickos::rp2xxx (its
 // family_map.h) and by spelling what this unit names: reg::uart::BASE and the
@@ -26,11 +24,8 @@ namespace kickos::rp2xxx
     // Every APB register is mirrored at these offsets from its own address; SIO is not.
     constexpr uintptr_t ATOMIC_SET = 0x2000u;
     constexpr uintptr_t ATOMIC_CLR = 0x3000u;
-    // An APB device's slot: its registers and the three alias images above them.
-    constexpr uintptr_t APB_ATOMIC_WINDOW = 0x4000u;
 
-    // Bounded so a dead or missing crystal, or a stuck peripheral, degrades instead of
-    // hanging the boot forever. The cap is far longer than any legitimate wait.
+    // Far longer than any legitimate wait: reaching it means a dead crystal or stuck peripheral.
     constexpr uint32_t POLL_TIMEOUT = 1000000u;
 
     bool wait_mask(uintptr_t addr, uint32_t mask);
@@ -38,9 +33,8 @@ namespace kickos::rp2xxx
     bool pll_sys_lock();
 
 #if KICKOS_AMP_OWN_IMAGE
-    // One UART and two kernels: the chip owning a partition posture serialises the polled
-    // writer against its peer. Defined by that chip, not here, the claim being its own
-    // hardware's (chip_rp2350.cc).
+    // Defined by the chip (chip_rp2350.cc): serialises the polled console writer against the
+    // peer kernel sharing the UART.
     bool console_claim(void);
     bool console_claim_open(void);
     void console_drop(bool ended_line);

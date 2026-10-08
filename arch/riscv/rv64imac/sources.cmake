@@ -17,6 +17,7 @@ endif()
 
 set(KICKOS_ARCH_SOURCES
   riscv/rv64imac/arch_rv64imac.cc
+  common/arch_mpu_none.cc
   riscv/rv64imac/aspace_rv64imac.cc
   riscv/rv64imac/klock_rv64imac.cc
   common/doorbell_protocol.cc

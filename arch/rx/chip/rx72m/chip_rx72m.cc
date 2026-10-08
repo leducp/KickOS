@@ -2,8 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // RX72M chip backend. Register addresses/fields are from the RX72M Group User's
-// Manual: Hardware (r01uh0804ej0120, Rev.1.20), derived from the manual and consistent
-// with the arch layer's clean-room regs.h.
+// Manual: Hardware (r01uh0804ej0120, Rev.1.20).
 //
 // Board: RX72M CPU Card with RDC-IC (RTK0EMXDE0C00000BJ), R5F572MNDDBD, 24 MHz
 // main crystal (board UM r12uz0098ej0110 Table 1-1). Console = SCI6, on the pins the board
@@ -17,13 +16,13 @@
 // is the SCI + CMTW clock.
 
 #include <kickos/arch/arch.h>
-#include <kickos/arch/pin_guard.h>
+#include "crt_tail.h"
+#include "pin_guard.h"
 #include <kickos/console_tx.h>
-#include <kickos/sys/abi.h> // KOS_E* taxonomy (arch_pinmux_set)
+#include <kickos/sys/abi.h>
 
 #include <stdint.h>
 
-// Bases in mmap.h, IRQ vectors in irq.h, per-peripheral offsets/fields in regs/.
 #include <kickos/chip_mmap.h>
 #include "board_pins.h"
 #include "irq.h"
@@ -44,26 +43,16 @@ namespace mpc = kickos::rx::reg::mpc;
 namespace port = kickos::rx::reg::port;
 namespace sci = kickos::rx::reg::sci;
 
-namespace kickos
-{
-    int kmain(int argc, char** argv);
-}
-
 extern "C"
 {
     void kickos_rxv3_init(void);
 
-    extern void (*__init_array_start[])();
-    extern void (*__init_array_end[])();
+    // CMTW input clock (PCLKB/8). Stays at the LOCO/8 nominal when arch_init cannot derive
+    // the clock tree.
+    uint32_t kickos_rx_timer_hz = 30000u;
 
-    // CMTW input clock (PCLKB / 8) the arch clock+timer convert against. Set to
-    // the achieved value once the PLL is confirmed locked (arch_init); left at
-    // the LOCO reset nominal if the bring-up degrades so timing stays plausible.
-    uint32_t kickos_rx_timer_hz = 30000u; // ~LOCO/8 until PLL locks
-
-    // ICLK core clock in Hz (CMSIS-style). LOCO reset nominal until the PLL
-    // bring-up in arch_init raises it to the achieved 240 MHz.
-    uint32_t SystemCoreClock = 240000u; // LOCO reset nominal (raised to 240 MHz on PLL lock)
+    // ICLK in Hz. Stays at the LOCO nominal when arch_init cannot derive the clock tree.
+    uint32_t SystemCoreClock = 240000u;
 }
 
 namespace
@@ -72,14 +61,11 @@ namespace
     inline volatile uint16_t& r16(uintptr_t a) { return *reinterpret_cast<volatile uint16_t*>(a); }
     inline volatile uint8_t& r8(uintptr_t a) { return *reinterpret_cast<volatile uint8_t*>(a); }
 
-    // Bounded-poll ceilings: a clock/console misconfiguration must degrade (fall
-    // through), never hang the boot. Sized generously vs. the LOCO-clocked worst
-    // case (osc/PLL settling counts run off the ~240 kHz LOCO).
+    // A clock/console misconfiguration must degrade, never hang the boot. Sized for the
+    // LOCO-clocked worst case (settling counts run off the ~240 kHz LOCO).
     constexpr uint32_t CLOCK_POLL_LIMIT = 2000000u;
     constexpr uint32_t CONSOLE_POLL_LIMIT = 1000000u;
 
-    // The kernel console's rate. A userspace driver taking the channel over asks for its
-    // own through kos_uart_config and is told what it actually got.
     constexpr uint32_t CONSOLE_BAUD = 115200u;
 
     // The window arch_console_reclaim reports. 16 bytes is the RX MPU minimum region
@@ -197,8 +183,7 @@ namespace
     }
 
     // The clock the SCKCR dividers are fed from, read out of the LIVE tree rather than
-    // assumed from what clock_to_pll_240mhz() intended, so a degraded bring-up (or a later
-    // retune) is reflected instead of silently mispriced. Returns 0 for a tree this cannot
+    // assumed from what clock_to_pll_240mhz() intended. Returns 0 for a tree this cannot
     // describe, which every caller must forward rather than substitute a nominal for.
     uint32_t clock_source_hz()
     {
@@ -254,9 +239,8 @@ namespace
         return src >> pckb;
     }
 
-    // Enable the 8 KB flash ROM cache (UM sec.64.7.1). Reset auto-invalidates it; a
-    // flash self-program must re-invalidate (write ROMCIV=1) before re-enable. Bounded
-    // invalidate poll degrades, never hangs.
+    // 8 KB flash ROM cache (UM sec.64.7.1). A flash self-program must re-invalidate
+    // (ROMCIV=1) before re-enable.
     void rom_cache_enable()
     {
         r16(flash::ROMCIV) = flash::ROMCIV_ROMCIV;
@@ -276,26 +260,6 @@ namespace
     constexpr uint32_t RXD_PORT = port::port_of(KICKOS_BOARD_CONSOLE_RXD_BIT);
     constexpr uint8_t TXD_MASK = port::mask_of(KICKOS_BOARD_CONSOLE_TXD_BIT);
     constexpr uint8_t RXD_MASK = port::mask_of(KICKOS_BOARD_CONSOLE_RXD_BIT);
-
-#define KICKOS_RESERVED_RUN(port_base, first, last) \
-    or ((port_base) == mmap::PORT and p * 8u + pin >= (first) and p * 8u + pin <= (last))
-    constexpr bool rx72m_pin_kernel_owned(uint32_t p, uint32_t pin)
-    {
-        return (p == TXD_PORT and pin == KICKOS_BOARD_CONSOLE_TXD_BIT % 8u)
-               or (p == RXD_PORT and pin == KICKOS_BOARD_CONSOLE_RXD_BIT % 8u)
-                   KICKOS_BOARD_RESERVED_RUNS(KICKOS_RESERVED_RUN);
-    }
-#undef KICKOS_RESERVED_RUN
-
-#define KICKOS_KERNEL_PIN(port_base, bit) or ((port_base) == mmap::PORT and p * 8u + pin == (bit))
-    constexpr bool rx72m_pin_listed(uint32_t p, uint32_t pin)
-    {
-        return false KICKOS_BOARD_KERNEL_PINS(KICKOS_KERNEL_PIN);
-    }
-#undef KICKOS_KERNEL_PIN
-    static_assert(kickos::refuses_exactly(rx72m_pin_kernel_owned, rx72m_pin_listed, port::PORT_INDEX_MAX + 1u,
-                                          port::PIN_MAX + 1u),
-                  "arch_pinmux_set refuses other pins than the board's kernel pins");
 
     void sci6_console_init()
     {
@@ -330,8 +294,8 @@ namespace
             r8(sci::SEMR) = bs.semr;
             r8(sci::BRR) = bs.brr;
         }
-        // Volatile so -Os keeps the wait, which is belt-and-braces: the hardware itself
-        // holds TXD high for one frame after TE goes 1 (UM Fig.42.13 p.2234).
+        // Volatile so -Os keeps the wait. The hardware itself holds TXD high for one frame
+        // after TE goes 1 (UM Fig.42.13 p.2234).
         for (volatile uint32_t d = 0; d < 10000u;)
         {
             d = d + 1;
@@ -379,7 +343,7 @@ void arch_init(void)
 {
     unlock_registers(true);
     (void)clock_to_pll_240mhz(); // the landed tree is read back below, not assumed here
-    // Release the module stops for the timer + console (UM sec.11 MSTPCR).
+    // UM sec.11 MSTPCR.
     r32(cgc::MSTPCRA) &= ~(cgc::MSTPA_CMTW0 | cgc::MSTPA_CMTW1);
     r32(cgc::MSTPCRB) &= ~cgc::MSTPB_SCI6;
     unlock_registers(false);
@@ -403,12 +367,11 @@ void arch_init(void)
 
     sci6_console_init();
 
-    // Timer line (CMTW0 compare match, vector 30): priority below the kernel lock
-    // level, then enable at the ICU. (The CMTW's own CMWIE is set per-arm.)
+    // CMWI0, vector 30. The CMTW's own CMWIE is set per arm (arch_timer_arm).
     r8(icu::IPR006) = 4; // IPL_DEVICE (< IPL_LOCK)
     r8(icu::IER03) |= icu::IER03_CMWI0;
 
-    kickos_rxv3_init(); // start CMTW1 free-run + reset arch software state
+    kickos_rxv3_init();
 }
 
 // Arch seam (arch_rxv3.cc): arm or disarm ONE group source, and the group vector itself.
@@ -444,7 +407,7 @@ void kickos_rx_group_arm(int line, int on)
         r32(GROUPS[g].enable) = en | mask;
         if (en == 0u)
         {
-            kickos_rx_icu_line_arm(GROUPS[g].vector, 1); // IPR + IER for the group vector itself
+            kickos_rx_icu_line_arm(GROUPS[g].vector, 1);
         }
     }
     else
@@ -494,10 +457,8 @@ void kickos_rx_dev_dispatch(void)
     }
 }
 
-// Branch-clock oracle (arch.h): report the clock feeding a peripheral block so a userspace
-// driver derives its own divisor. SCI0..SCI6 run on PCLKB (UM sec.42 preamble p.2144),
-// which is READ OUT OF THE LIVE TREE on every call rather than cached from arch_init, so
-// a driver's reported baud tracks the clock the channel is actually on.
+// SCI0..SCI6 run on PCLKB (UM sec.42 preamble p.2144), READ OUT OF THE LIVE TREE on every
+// call rather than cached from arch_init.
 //
 // The SYSTEM block this reads is kernel-reserved (arch_reserved_blocks), so the holder of
 // an SCI window has no way to read the select itself. A block this chip does not model
@@ -581,7 +542,7 @@ bool arch_console_write_sync(char const* buf, size_t n)
         {
             if (++spin >= CONSOLE_POLL_LIMIT)
             {
-                return false; // TDRE never cleared (SCI dead/misconfigured): drop, don't hang
+                return false; // drop, never hang
             }
         }
         r8(sci::TDR) = static_cast<uint8_t>(buf[i]);
@@ -598,9 +559,6 @@ void arch_console_flush_sync(void)
     (void)poll_flag(sci::SSR, sci::SSR_TEND, CONSOLE_POLL_LIMIT);
 }
 
-// Arch seam (console_tx.h): hand the kernel the SCI6 backend + ring storage + the
-// TXI6 line. console_buffer_init binds the drain ISR, unmasks the line (IPR087 +
-// IER0A.IEN7 via arch_irq_unmask), and arms the ring.
 console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)
 {
     *storage = console_tx_buf;
@@ -664,12 +622,10 @@ void arch_console_reclaim(void)
     r8(sci::SCR) = sci::SCR_TE;
 }
 
-// One-shot pin-function config (KOS_SYS_PINMUX_SET), covering BOTH mux stages an RX
-// pin passes: the MPC PmnPFS peripheral-function select and the PORTm.PMR general-I/O
-// vs peripheral switch. Mediating PMR alone would leave the refusal above bypassable:
-// PSEL can re-point a pin already at PMR=1 (the console pins are) at a different module
-// without PMR ever being written. func packs both stages, encoded chip-locally
-// (reg::mpc::PINMUX_*).
+// Covers BOTH mux stages an RX pin passes, MPC PmnPFS.PSEL and PORTm.PMR. Mediating PMR
+// alone would leave the kernel-owned refusal bypassable: PSEL can re-point a pin already at
+// PMR=1 (the console pins are) at a different module without PMR ever being written. func
+// packs both stages (reg::mpc::PINMUX_*).
 int arch_pinmux_set(uint32_t p, uint32_t pin, uint32_t func)
 {
     if (p > port::PORT_INDEX_MAX or pin > port::PIN_MAX)
@@ -680,7 +636,7 @@ int arch_pinmux_set(uint32_t p, uint32_t pin, uint32_t func)
     {
         return -KOS_EINVAL;
     }
-    if (rx72m_pin_kernel_owned(p, pin))
+    if (kickos::board_pin_kernel_owned(0u, port::row_bit(p, pin)))
     {
         return -KOS_EBUSY;
     }
@@ -716,17 +672,10 @@ void arch_shutdown(int status)
     }
 }
 
-// C runtime init, the reset entry. Never returns.
 void rx_reset_handler(void)
 {
-    kickos_ranges_init(); // init .data + the pow2 app-data block; zero .bss + app-bss
-    for (void (**fn)() = __init_array_start; fn != __init_array_end; fn++)
-    {
-        (*fn)();
-    }
-    arch_init();
-    kickos::kmain(0, nullptr);
-    arch_shutdown(0);
+    kickos_ranges_init();
+    kickos_crt_tail();
 }
 
 }

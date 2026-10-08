@@ -32,8 +32,4 @@ namespace
 
 // 115200, not the kernel's divisor: this driver reprograms the frame anyway, so the divisor is
 // written in the same pass.
-//
-// LEVEL: every source on this vector is a status flag that stays asserted until the driver
-// clears it at the peripheral.
-KICKOS_UART_CONSOLE_SERVICE(k64uartirq, k_uart, /*fallback_baud=*/115200u, mmap::UART0_BASE,
-                            KOS_IRQ_LEVEL);
+KICKOS_UART_CONSOLE_SERVICE(k64uartirq, k_uart, /*fallback_baud=*/115200u);

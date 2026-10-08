@@ -17,8 +17,7 @@ namespace kickos
 
 extern "C"
 {
-    // sections.ld.h. .tbss immediately follows .tdata, and both are empty when the image
-    // declares no thread_local.
+    // sections.ld.h. .tbss immediately follows .tdata.
     extern unsigned char __kickos_tdata_start[];
     extern unsigned char __kickos_tdata_end[];
     extern unsigned char __kickos_tbss_start[];
@@ -68,7 +67,6 @@ size_t tls_block_size()
     if (tdata == 0 and tbss == 0)
     {
 #if KICKOS_REENT_IN_TCB
-        // The control block at the thread pointer holds libc's reentrant-state pointer.
         return (KICKOS_ARCH_TLS_TCB + (KICKOS_STACK_ALIGN - 1u))
             & ~static_cast<size_t>(KICKOS_STACK_ALIGN - 1u);
 #else
@@ -78,7 +76,6 @@ size_t tls_block_size()
     // THE SPAN AND NOT THE SUM: the compiler's offsets include any gap the linker puts between
     // .tdata and .tbss.
     size_t const payload = tls_payload_bytes();
-    // The ABI reserve at the thread pointer; zero on a variant 2 arch.
     size_t const block = KICKOS_ARCH_TLS_TCB + payload;
     return (block + (KICKOS_STACK_ALIGN - 1u)) & ~static_cast<size_t>(KICKOS_STACK_ALIGN - 1u);
 }

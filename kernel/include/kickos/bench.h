@@ -11,7 +11,6 @@
 
 #include <kickos/arch/arch.h>
 
-// Match BenchTick to the counter width used by bench_cyccnt.
 #if (defined(__riscv) && __riscv_xlen == 64) || defined(__aarch64__) || defined(__x86_64__)
 #define KICKOS_BENCH_TICK_BITS 64
 #else
@@ -288,7 +287,6 @@ namespace kickos
     using BenchTick = uint32_t;
 #endif
 
-    // Return the architecture counter or zero if unavailable.
     // LX6 has a 32-bit counter, so intervals spanning inline switches can wrap.
 #if defined(__riscv) && __riscv_xlen == 32
     KICKOS_BENCH_INLINE BenchTick bench_cyccnt()
@@ -520,23 +518,13 @@ namespace kickos
 
 #else
 
-#define KICKOS_BENCH_MARK(var) \
-    do                         \
-    {                          \
-    } while (false)
-#define KICKOS_BENCH_SPAN(phase, var) \
-    do                                \
-    {                                 \
-    } while (false)
-#define KICKOS_BENCH_DIST_SPAN(dist, var) \
-    do                                    \
-    {                                     \
-    } while (false)
+#define KICKOS_BENCH_MARK(var) ((void)0)
+#define KICKOS_BENCH_SPAN(phase, var) ((void)0)
+#define KICKOS_BENCH_DIST_SPAN(dist, var) ((void)0)
 
 #endif
 
-// Measure IrqLock and switch_to detach/attach. Macros remove references
-// to benchmark declarations from other builds.
+// Macros, so no other build references a bench declaration.
 #if defined(KICKOS_BENCH) && KICKOS_BENCH
 #define KICKOS_BENCH_LOCK_OPEN() ::kickos::bench_lock_open()
 #define KICKOS_BENCH_LOCK_CLOSE() ::kickos::bench_lock_close()
@@ -548,44 +536,15 @@ namespace kickos
 #define KICKOS_BENCH_RESCHED_ASK(peers) ::kickos_bench_resched_ask(peers)
 #define KICKOS_BENCH_RESCHED_TAKE() ::kickos_bench_resched_take()
 #else
-#define KICKOS_BENCH_LOCK_OPEN() \
-    do                           \
-    {                            \
-    } while (false)
-#define KICKOS_BENCH_LOCK_CLOSE() \
-    do                            \
-    {                             \
-    } while (false)
-#define KICKOS_BENCH_LOCK_DETACH(var) \
-    do                                \
-    {                                 \
-    } while (false)
-#define KICKOS_BENCH_LOCK_ATTACH(var) \
-    do                                \
-    {                                 \
-    } while (false)
-#define KICKOS_BENCH_LOCK_DROP() \
-    do                           \
-    {                            \
-    } while (false)
-#define KICKOS_BENCH_E2E_ISR_MARK(line) \
-    do                                  \
-    {                                   \
-        (void)(line);                   \
-    } while (false)
-#define KICKOS_BENCH_E2E_PARK_MARK() \
-    do                               \
-    {                                \
-    } while (false)
-#define KICKOS_BENCH_RESCHED_ASK(peers) \
-    do                                  \
-    {                                   \
-        (void)(peers);                  \
-    } while (false)
-#define KICKOS_BENCH_RESCHED_TAKE() \
-    do                             \
-    {                              \
-    } while (false)
+#define KICKOS_BENCH_LOCK_OPEN() ((void)0)
+#define KICKOS_BENCH_LOCK_CLOSE() ((void)0)
+#define KICKOS_BENCH_LOCK_DETACH(var) ((void)0)
+#define KICKOS_BENCH_LOCK_ATTACH(var) ((void)0)
+#define KICKOS_BENCH_LOCK_DROP() ((void)0)
+#define KICKOS_BENCH_E2E_ISR_MARK(line) ((void)(line))
+#define KICKOS_BENCH_E2E_PARK_MARK() ((void)0)
+#define KICKOS_BENCH_RESCHED_ASK(peers) ((void)(peers))
+#define KICKOS_BENCH_RESCHED_TAKE() ((void)0)
 #endif
 
 // The scheduler's own instrument, above one kernel core only.
@@ -606,66 +565,21 @@ namespace kickos
 #define KICKOS_BENCH_DRAIN_APPLIED() ::kickos_bench_drain_applied()
 #define KICKOS_BENCH_DRAIN_CLOSE() ::kickos_bench_drain_close()
 #else
-#define KICKOS_BENCH_ACQUIRED(resume) \
-    do                                \
-    {                                 \
-    } while (false)
-#define KICKOS_BENCH_PASS_OPEN() \
-    do                           \
-    {                            \
-    } while (false)
-#define KICKOS_BENCH_PASS_CLOSE() \
-    do                            \
-    {                             \
-    } while (false)
-#define KICKOS_BENCH_PERFORM_OPEN() \
-    do                              \
-    {                               \
-    } while (false)
-#define KICKOS_BENCH_DECIDE_OPEN() \
-    do                             \
-    {                              \
-    } while (false)
-#define KICKOS_BENCH_DECIDE_CLOSE() \
-    do                              \
-    {                               \
-    } while (false)
-#define KICKOS_BENCH_SWITCHED() \
-    do                          \
-    {                           \
-    } while (false)
-#define KICKOS_BENCH_SCHED_COUNT(which) \
-    do                                  \
-    {                                   \
-    } while (false)
-#define KICKOS_BENCH_DROP_ASKED(holder) \
-    do                                  \
-    {                                   \
-    } while (false)
-#define KICKOS_BENCH_PUSHED(t, asker) \
-    do                                \
-    {                                 \
-    } while (false)
-#define KICKOS_BENCH_RESEAT_ASKED(t) \
-    do                               \
-    {                                \
-    } while (false)
-#define KICKOS_BENCH_RESEAT_APPLIED(t, running) \
-    do                                          \
-    {                                           \
-    } while (false)
-#define KICKOS_BENCH_DRAIN_OPEN() \
-    do                            \
-    {                             \
-    } while (false)
-#define KICKOS_BENCH_DRAIN_APPLIED() \
-    do                               \
-    {                                \
-    } while (false)
-#define KICKOS_BENCH_DRAIN_CLOSE() \
-    do                             \
-    {                              \
-    } while (false)
+#define KICKOS_BENCH_ACQUIRED(resume) ((void)0)
+#define KICKOS_BENCH_PASS_OPEN() ((void)0)
+#define KICKOS_BENCH_PASS_CLOSE() ((void)0)
+#define KICKOS_BENCH_PERFORM_OPEN() ((void)0)
+#define KICKOS_BENCH_DECIDE_OPEN() ((void)0)
+#define KICKOS_BENCH_DECIDE_CLOSE() ((void)0)
+#define KICKOS_BENCH_SWITCHED() ((void)0)
+#define KICKOS_BENCH_SCHED_COUNT(which) ((void)0)
+#define KICKOS_BENCH_DROP_ASKED(holder) ((void)0)
+#define KICKOS_BENCH_PUSHED(t, asker) ((void)0)
+#define KICKOS_BENCH_RESEAT_ASKED(t) ((void)0)
+#define KICKOS_BENCH_RESEAT_APPLIED(t, running) ((void)0)
+#define KICKOS_BENCH_DRAIN_OPEN() ((void)0)
+#define KICKOS_BENCH_DRAIN_APPLIED() ((void)0)
+#define KICKOS_BENCH_DRAIN_CLOSE() ((void)0)
 #endif
 
 #endif

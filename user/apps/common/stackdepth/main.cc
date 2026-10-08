@@ -41,8 +41,8 @@ int main(int, char**)
 #else
     kos::print("[stackdepth] driving the grant-carrying spawn\n");
 
-    // The grant is what reaches task_for -> domain_for -> grant_region_admissible ->
-    // grant_hits_reserved. A spawn without one stops short of that subtree.
+    // The grant is what reaches spawn_grant_admit -> ram_region_admit -> grant_region_admissible
+    // -> grant_hits_reserved. A spawn without one stops short of that subtree.
     void* const block = kos_ram_alloc(SD_GRANT);
     if (block == nullptr)
     {

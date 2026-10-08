@@ -171,7 +171,7 @@ namespace fake
         bool sp_masked = false;
         uint32_t stride = 0;    // a masked stack's one size and alignment
         uint32_t min_stack = 0; // KICKOS_MIN_STACK_SIZE
-        uint32_t authority = 0x7Fu; // the init's
+        uint32_t authority = KOS_AUTH_ALL; // the init's
         // Whether a task created after a release takes the released task's handle.
         bool reuse_handles = false;
         // Whether a published console's receiver takes what is sent it.

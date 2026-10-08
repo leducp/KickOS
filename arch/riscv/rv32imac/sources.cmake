@@ -7,6 +7,7 @@
 # RISC-V RV32IMAC (ESP32-C6 + QEMU virt).
 set(KICKOS_ARCH_SOURCES
   riscv/rv32imac/arch_rv32imac.cc
+  common/arch_mpu_stash.cc
   common/arch_ram_common.cc
   common/startup_ranges.cc
   ${KICKOS_SEAM_DEFAULTS_COMMON}

@@ -14,6 +14,8 @@
 
 #include <stdint.h>
 
+#include <kickos/sys/static_assert.h>
+
 #ifdef __cplusplus
 extern "C"
 {
@@ -120,17 +122,10 @@ struct kos_bus_cfg
 
 // Inline budget: 12 B header + 8 * 4 B segs = 44 B worst-case framing, leaving
 // ~212 B inline data under KOS_EP_MSG_MAX (256). Covers every first consumer.
-#ifdef __cplusplus
-static_assert(sizeof(struct kos_bus_req) == 12, "kos_bus_req must stay 12 bytes (wire ABI)");
-static_assert(sizeof(struct kos_bus_seg) == 4, "kos_bus_seg must stay 4 bytes (wire ABI)");
-static_assert(sizeof(struct kos_bus_rsp) == 4, "kos_bus_rsp must stay 4 bytes (wire ABI)");
-static_assert(sizeof(struct kos_bus_cfg) == 12, "kos_bus_cfg must stay 12 bytes (wire ABI)");
-#else
-_Static_assert(sizeof(struct kos_bus_req) == 12, "kos_bus_req must stay 12 bytes (wire ABI)");
-_Static_assert(sizeof(struct kos_bus_seg) == 4, "kos_bus_seg must stay 4 bytes (wire ABI)");
-_Static_assert(sizeof(struct kos_bus_rsp) == 4, "kos_bus_rsp must stay 4 bytes (wire ABI)");
-_Static_assert(sizeof(struct kos_bus_cfg) == 12, "kos_bus_cfg must stay 12 bytes (wire ABI)");
-#endif
+KOS_STATIC_ASSERT(sizeof(struct kos_bus_req) == 12, "kos_bus_req must stay 12 bytes (wire ABI)");
+KOS_STATIC_ASSERT(sizeof(struct kos_bus_seg) == 4, "kos_bus_seg must stay 4 bytes (wire ABI)");
+KOS_STATIC_ASSERT(sizeof(struct kos_bus_rsp) == 4, "kos_bus_rsp must stay 4 bytes (wire ABI)");
+KOS_STATIC_ASSERT(sizeof(struct kos_bus_cfg) == 12, "kos_bus_cfg must stay 12 bytes (wire ABI)");
 
 #ifdef __cplusplus
 }

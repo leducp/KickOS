@@ -2,11 +2,11 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The sole decider of which core performs a logical line's delivery gating, and the only file
-// in the kernel layer that may call arch_irq_mask, arch_irq_unmask or arch_irq_clear_pending
-// (tests/static/check_irq_line_op_sole.sh enforces that). The words those three seam members
-// read-modify-write belong to the line's core: the image-wide ones under one kernel lock, the
-// per-core ones by construction, so a caller on another core loses a mask or a latched raise
-// with no fault anywhere.
+// in the kernel layer that may call arch_irq_mask, arch_irq_unmask, arch_irq_clear_pending or
+// arch_irq_inject (tests/static/check_irq_line_op_sole.sh enforces that). The words those seam
+// members read-modify-write belong to the line's core: the image-wide ones under one kernel
+// lock, the per-core ones by construction, so a caller on another core loses a mask or a
+// latched raise with no fault anywhere.
 //
 // A server holding CAP_WAIT is refused where its mask cannot reach its line's claim core and is
 // never moved; a passer-by is never moved either, so its touch is routed instead.
@@ -86,10 +86,9 @@ namespace kickos
             a.line = static_cast<int32_t>(line);
             a.op = static_cast<uint8_t>(op);
             a.seq = a.seq.load() + 1u;
-            // The answer is the completion: there is no second cell, and every backend's
-            // doorbell service body must drain after its request snapshot and before it stores
-            // the answer, or a drain ahead of the snapshot answers work it never did
-            // (tests/static/check_route_service_order.sh asserts it in all three bodies).
+            // The answer is the completion: there is no second cell, and the doorbell service
+            // body must drain after its request snapshot and before it stores the answer, or a
+            // drain ahead of the snapshot answers work it never did.
             //
             // One slot per ordered pair suffices under that ordering: an answer for ask N means
             // N was drained, so N+1 cannot be published while N is outstanding, and nothing
@@ -101,8 +100,6 @@ namespace kickos
 #endif
     }
 
-    // For a caller that is the routed core by construction, which is every ISR-context caller.
-    //
     // A separate entry, not a branch: check_trap_redzone.sh walks the callgraph, and a runtime
     // `if (arch_in_isr())` is invisible to it. Merging the two entries puts arch_ipi_wait's
     // panic tail on the interrupt path and overruns its red zone.
@@ -111,9 +108,7 @@ namespace kickos
         line_op_here(line, op);
     }
 
-    // The one entry for every caller that is not the routed core by construction. Callers name
-    // the line and the operation and never the core.
-    void irq_line_op(int line, LineOp op)
+    void irq_line_op(int line, LineOp op, Held)
     {
 #if KICKOS_KERNEL_CORES > 1
         int const owner = arch_irq_line_core(line);

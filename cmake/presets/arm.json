@@ -1,120 +1,101 @@
 {
   "version": 6,
+  "include": ["base.json"],
   "configurePresets": [
     {
       "name": "arm-base",
       "hidden": true,
-      "generator": "Ninja",
-      "toolchainFile": "${sourceDir}/cmake/toolchain-arm-none-eabi.cmake",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "MinSizeRel",
-        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-        "KICKOS_CONFIG_VARIANT": "base"
-      }
+      "inherits": "kickos-base",
+      "toolchainFile": "${sourceDir}/cmake/toolchain-arm-none-eabi.cmake"
     },
     {
       "name": "qemu",
       "displayName": "QEMU mps2-an386 (Cortex-M4F, armv7m) - runnable",
       "inherits": "arm-base",
-      "binaryDir": "${sourceDir}/build/qemu",
       "cacheVariables": { "KICKOS_BOARD": "qemu" }
     },
     {
       "name": "qemu-m33",
       "displayName": "QEMU mps2-an505 (Cortex-M33, PMSAv8) - runnable",
       "inherits": "arm-base",
-      "binaryDir": "${sourceDir}/build/qemu-m33",
       "cacheVariables": { "KICKOS_BOARD": "qemu-m33" }
     },
     {
       "name": "qemu-m7",
       "displayName": "QEMU mps2-an500 (Cortex-M7, 16 MPU regions) - runnable",
       "inherits": "arm-base",
-      "binaryDir": "${sourceDir}/build/qemu-m7",
       "cacheVariables": { "KICKOS_BOARD": "qemu-m7" }
     },
     {
       "name": "qemu-m3",
       "displayName": "QEMU mps2-an385 (Cortex-M3, soft-float) - runnable",
       "inherits": "arm-base",
-      "binaryDir": "${sourceDir}/build/qemu-m3",
       "cacheVariables": { "KICKOS_BOARD": "qemu-m3" }
     },
     {
       "name": "frdmk64f",
       "displayName": "NXP FRDM-K64F (Cortex-M4F, armv7m)",
       "inherits": "arm-base",
-      "binaryDir": "${sourceDir}/build/frdmk64f",
       "cacheVariables": { "KICKOS_BOARD": "frdmk64f" }
     },
     {
       "name": "teensy41",
       "displayName": "PJRC Teensy 4.1 (NXP i.MX RT1062, Cortex-M7)",
       "inherits": "arm-base",
-      "binaryDir": "${sourceDir}/build/teensy41",
       "cacheVariables": { "KICKOS_BOARD": "teensy41" }
     },
     {
       "name": "f411disco",
       "displayName": "STM32F411 Discovery (Cortex-M4F, armv7m)",
       "inherits": "arm-base",
-      "binaryDir": "${sourceDir}/build/f411disco",
       "cacheVariables": { "KICKOS_BOARD": "f411disco" }
     },
     {
       "name": "blackpill",
       "displayName": "WeAct STM32F411CEU6 Black Pill (Cortex-M4F, armv7m)",
       "inherits": "arm-base",
-      "binaryDir": "${sourceDir}/build/blackpill",
       "cacheVariables": { "KICKOS_BOARD": "blackpill" }
     },
     {
       "name": "bluepill-c8",
       "displayName": "STM32F103C8 Blue Pill, genuine 20 KiB (Cortex-M3)",
       "inherits": "arm-base",
-      "binaryDir": "${sourceDir}/build/bluepill-c8",
       "cacheVariables": { "KICKOS_BOARD": "bluepill-c8" }
     },
     {
       "name": "microbit",
       "displayName": "BBC micro:bit v1 (nRF51, Cortex-M0, armv6m) - runnable",
       "inherits": "arm-base",
-      "binaryDir": "${sourceDir}/build/microbit",
       "cacheVariables": { "KICKOS_BOARD": "microbit" }
     },
     {
       "name": "picopi",
       "displayName": "Raspberry Pi Pico (RP2040, Cortex-M0+, armv6m)",
       "inherits": "arm-base",
-      "binaryDir": "${sourceDir}/build/picopi",
       "cacheVariables": { "KICKOS_BOARD": "picopi" }
     },
     {
       "name": "pizero2350",
       "displayName": "Waveshare RP2350 Pi-Zero (Cortex-M33, armv7m)",
       "inherits": "arm-base",
-      "binaryDir": "${sourceDir}/build/pizero2350",
       "cacheVariables": { "KICKOS_BOARD": "pizero2350" }
     },
     {
       "name": "f302nucleo",
       "displayName": "ST Nucleo-F302R8 (Cortex-M4F, armv7m)",
       "inherits": "arm-base",
-      "binaryDir": "${sourceDir}/build/f302nucleo",
       "cacheVariables": { "KICKOS_BOARD": "f302nucleo" }
     },
     {
       "name": "due",
       "displayName": "Arduino Due (AT91SAM3X8E, Cortex-M3)",
       "inherits": "arm-base",
-      "binaryDir": "${sourceDir}/build/due",
       "cacheVariables": { "KICKOS_BOARD": "due" }
     },
     {
       "name": "xmc4800-relax",
       "displayName": "Infineon XMC4800 Relax Kit (Cortex-M4F, armv7m)",
       "inherits": "arm-base",
-      "binaryDir": "${sourceDir}/build/xmc4800-relax",
       "cacheVariables": {
         "KICKOS_BOARD": "xmc4800-relax",
         "KICKOS_GOLDEN_COMPOSITION": "examples/composition/systems/xmc4800-relax.yaml",
@@ -126,35 +107,34 @@
       "name": "qemu-telem",
       "displayName": "QEMU mps2-an386 + telemetry - QEMU structural gate (PendSV asm)",
       "inherits": "qemu",
-      "binaryDir": "${sourceDir}/build/qemu-telem",
       "cacheVariables": { "KICKOS_CONFIG_VARIANT": "telem" }
     },
-    { "name": "frdmk64f-st", "displayName": "FRDM-K64F + selftest (full IRQ suite)", "inherits": "frdmk64f", "binaryDir": "${sourceDir}/build/frdmk64f-st", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "st" } },
-    { "name": "teensy41-st", "displayName": "Teensy 4.1 + selftest (full IRQ suite)", "inherits": "teensy41", "binaryDir": "${sourceDir}/build/teensy41-st", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "st" } },
-    { "name": "xmc4800-relax-st", "displayName": "XMC4800 Relax + selftest (full IRQ suite)", "inherits": "xmc4800-relax", "binaryDir": "${sourceDir}/build/xmc4800-relax-st", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "st", "KICKOS_GOLDEN_COMPOSITION": null, "KICKOS_RESTART_WITNESS_SYSTEM": null, "KICKOS_WITNESS_ROOT_DEPTH": null } },
-    { "name": "xmc4800-relax-bench", "displayName": "XMC4800 Relax + KICKOS_BENCH - the call/reply payload sweep, enforcing", "inherits": "xmc4800-relax", "binaryDir": "${sourceDir}/build/xmc4800-relax-bench", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "bench", "KICKOS_GOLDEN_COMPOSITION": null, "KICKOS_RESTART_WITNESS_SYSTEM": null, "KICKOS_WITNESS_ROOT_DEPTH": null } },
-    { "name": "f411disco-st", "displayName": "STM32F411 Disco + selftest", "inherits": "f411disco", "binaryDir": "${sourceDir}/build/f411disco-st", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "st" } },
-    { "name": "f411disco-bench", "displayName": "STM32F411 Disco + KICKOS_BENCH - the armv7m switch distribution, enforcing", "inherits": "f411disco", "binaryDir": "${sourceDir}/build/f411disco-bench", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "bench" } },
-    { "name": "blackpill-st", "displayName": "STM32F411 Black Pill + selftest", "inherits": "blackpill", "binaryDir": "${sourceDir}/build/blackpill-st", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "st" } },
-    { "name": "bluepill-c8-st", "displayName": "STM32F103C8 Blue Pill + selftest", "inherits": "bluepill-c8", "binaryDir": "${sourceDir}/build/bluepill-c8-st", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "st" } },
-    { "name": "picopi-st", "displayName": "RP2040 Pico + selftest", "inherits": "picopi", "binaryDir": "${sourceDir}/build/picopi-st", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "st" } },
-    { "name": "pizero2350-st", "displayName": "RP2350 Pi-Zero + selftest", "inherits": "pizero2350", "binaryDir": "${sourceDir}/build/pizero2350-st", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "st" } },
-    { "name": "f302nucleo-st", "displayName": "Nucleo-F302R8 + selftest", "inherits": "f302nucleo", "binaryDir": "${sourceDir}/build/f302nucleo-st", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "st" } },
-    { "name": "due-st", "displayName": "Arduino Due + selftest", "inherits": "due", "binaryDir": "${sourceDir}/build/due-st", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "st" } },
-    { "name": "qemu-flat", "displayName": "QEMU mps2-an386, no PMSA enforcement - the ring-only run gate", "inherits": "qemu", "binaryDir": "${sourceDir}/build/qemu-flat", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "flat" } },
-    { "name": "qemu-m33-flat", "displayName": "QEMU mps2-an505, no PMSAv8 enforcement - runnable", "inherits": "qemu-m33", "binaryDir": "${sourceDir}/build/qemu-m33-flat", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "flat" } },
-    { "name": "qemu-m7-flat", "displayName": "QEMU mps2-an500, no PMSA enforcement - runnable", "inherits": "qemu-m7", "binaryDir": "${sourceDir}/build/qemu-m7-flat", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "flat" } },
-    { "name": "qemu-m3-flat", "displayName": "QEMU mps2-an385, no PMSA enforcement - runnable", "inherits": "qemu-m3", "binaryDir": "${sourceDir}/build/qemu-m3-flat", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "flat" } },
-    { "name": "frdmk64f-flat", "displayName": "FRDM-K64F with no SYSMPU enforcement", "inherits": "frdmk64f", "binaryDir": "${sourceDir}/build/frdmk64f-flat", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "flat" } },
-    { "name": "teensy41-flat", "displayName": "Teensy 4.1 with no PMSA enforcement", "inherits": "teensy41", "binaryDir": "${sourceDir}/build/teensy41-flat", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "flat" } },
-    { "name": "f411disco-flat", "displayName": "STM32F411 Disco with no PMSA enforcement", "inherits": "f411disco", "binaryDir": "${sourceDir}/build/f411disco-flat", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "flat" } },
-    { "name": "blackpill-flat", "displayName": "STM32F411 Black Pill with no PMSA enforcement", "inherits": "blackpill", "binaryDir": "${sourceDir}/build/blackpill-flat", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "flat" } },
-    { "name": "picopi-flat", "displayName": "RP2040 Pico with no PMSA enforcement", "inherits": "picopi", "binaryDir": "${sourceDir}/build/picopi-flat", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "flat" } },
-    { "name": "pizero2350-flat", "displayName": "RP2350 Pi-Zero with no PMSAv8 enforcement", "inherits": "pizero2350", "binaryDir": "${sourceDir}/build/pizero2350-flat", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "flat" } },
-    { "name": "xmc4800-relax-flat", "displayName": "XMC4800 Relax with no PMSA enforcement", "inherits": "xmc4800-relax", "binaryDir": "${sourceDir}/build/xmc4800-relax-flat", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "flat", "KICKOS_GOLDEN_COMPOSITION": null, "KICKOS_RESTART_WITNESS_SYSTEM": null, "KICKOS_WITNESS_ROOT_DEPTH": null } },
-    { "name": "pizero2350-amp", "displayName": "RP2350 Pi-Zero AMP scaffolding (provisional)", "inherits": "pizero2350", "binaryDir": "${sourceDir}/build/pizero2350-amp", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "amp" } },
-    { "name": "pizero2350-amp2-n0", "displayName": "RP2350 Pi-Zero, node 0 of a two-image AMP partition", "inherits": "pizero2350", "binaryDir": "${sourceDir}/build/pizero2350-amp2-n0", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "amp2", "KICKOS_AMP_NODE_ID": "0", "KICKOS_APPDATA_SIZE": "112K" } },
-    { "name": "pizero2350-amp2-n1", "displayName": "RP2350 Pi-Zero, node 1 of a two-image AMP partition", "inherits": "pizero2350", "binaryDir": "${sourceDir}/build/pizero2350-amp2-n1", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "amp2", "KICKOS_AMP_NODE_ID": "1", "KICKOS_APPDATA_SIZE": "112K" } }
+    { "name": "frdmk64f-st", "displayName": "FRDM-K64F + selftest (full IRQ suite)", "inherits": "frdmk64f", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "st" } },
+    { "name": "teensy41-st", "displayName": "Teensy 4.1 + selftest (full IRQ suite)", "inherits": "teensy41", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "st" } },
+    { "name": "xmc4800-relax-st", "displayName": "XMC4800 Relax + selftest (full IRQ suite)", "inherits": "xmc4800-relax", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "st", "KICKOS_GOLDEN_COMPOSITION": null, "KICKOS_RESTART_WITNESS_SYSTEM": null, "KICKOS_WITNESS_ROOT_DEPTH": null } },
+    { "name": "xmc4800-relax-bench", "displayName": "XMC4800 Relax + KICKOS_BENCH - the call/reply payload sweep, enforcing", "inherits": "xmc4800-relax", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "bench", "KICKOS_GOLDEN_COMPOSITION": null, "KICKOS_RESTART_WITNESS_SYSTEM": null, "KICKOS_WITNESS_ROOT_DEPTH": null } },
+    { "name": "f411disco-st", "displayName": "STM32F411 Disco + selftest", "inherits": "f411disco", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "st" } },
+    { "name": "f411disco-bench", "displayName": "STM32F411 Disco + KICKOS_BENCH - the armv7m switch distribution, enforcing", "inherits": "f411disco", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "bench" } },
+    { "name": "blackpill-st", "displayName": "STM32F411 Black Pill + selftest", "inherits": "blackpill", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "st" } },
+    { "name": "bluepill-c8-st", "displayName": "STM32F103C8 Blue Pill + selftest", "inherits": "bluepill-c8", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "st" } },
+    { "name": "picopi-st", "displayName": "RP2040 Pico + selftest", "inherits": "picopi", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "st" } },
+    { "name": "pizero2350-st", "displayName": "RP2350 Pi-Zero + selftest", "inherits": "pizero2350", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "st" } },
+    { "name": "f302nucleo-st", "displayName": "Nucleo-F302R8 + selftest", "inherits": "f302nucleo", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "st" } },
+    { "name": "due-st", "displayName": "Arduino Due + selftest", "inherits": "due", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "st" } },
+    { "name": "qemu-flat", "displayName": "QEMU mps2-an386, no PMSA enforcement - the ring-only run gate", "inherits": "qemu", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "flat" } },
+    { "name": "qemu-m33-flat", "displayName": "QEMU mps2-an505, no PMSAv8 enforcement - runnable", "inherits": "qemu-m33", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "flat" } },
+    { "name": "qemu-m7-flat", "displayName": "QEMU mps2-an500, no PMSA enforcement - runnable", "inherits": "qemu-m7", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "flat" } },
+    { "name": "qemu-m3-flat", "displayName": "QEMU mps2-an385, no PMSA enforcement - runnable", "inherits": "qemu-m3", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "flat" } },
+    { "name": "frdmk64f-flat", "displayName": "FRDM-K64F with no SYSMPU enforcement", "inherits": "frdmk64f", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "flat" } },
+    { "name": "teensy41-flat", "displayName": "Teensy 4.1 with no PMSA enforcement", "inherits": "teensy41", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "flat" } },
+    { "name": "f411disco-flat", "displayName": "STM32F411 Disco with no PMSA enforcement", "inherits": "f411disco", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "flat" } },
+    { "name": "blackpill-flat", "displayName": "STM32F411 Black Pill with no PMSA enforcement", "inherits": "blackpill", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "flat" } },
+    { "name": "picopi-flat", "displayName": "RP2040 Pico with no PMSA enforcement", "inherits": "picopi", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "flat" } },
+    { "name": "pizero2350-flat", "displayName": "RP2350 Pi-Zero with no PMSAv8 enforcement", "inherits": "pizero2350", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "flat" } },
+    { "name": "xmc4800-relax-flat", "displayName": "XMC4800 Relax with no PMSA enforcement", "inherits": "xmc4800-relax", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "flat", "KICKOS_GOLDEN_COMPOSITION": null, "KICKOS_RESTART_WITNESS_SYSTEM": null, "KICKOS_WITNESS_ROOT_DEPTH": null } },
+    { "name": "pizero2350-amp", "displayName": "RP2350 Pi-Zero AMP scaffolding (provisional)", "inherits": "pizero2350", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "amp" } },
+    { "name": "pizero2350-amp2-n0", "displayName": "RP2350 Pi-Zero, node 0 of a two-image AMP partition", "inherits": "pizero2350", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "amp2", "KICKOS_AMP_NODE_ID": "0", "KICKOS_APPDATA_SIZE": "112K" } },
+    { "name": "pizero2350-amp2-n1", "displayName": "RP2350 Pi-Zero, node 1 of a two-image AMP partition", "inherits": "pizero2350", "cacheVariables": { "KICKOS_CONFIG_VARIANT": "amp2", "KICKOS_AMP_NODE_ID": "1", "KICKOS_APPDATA_SIZE": "112K" } }
   ],
   "buildPresets": [
     { "name": "qemu",      "configurePreset": "qemu" },

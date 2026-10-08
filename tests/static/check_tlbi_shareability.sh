@@ -16,9 +16,11 @@
 # VMALLE1IS pair the same way at op2=0b000. So CRm=7 is LOCAL and CRm=3 is BROADCAST. Any other
 # CRm is a shareability this gate was not written to judge, and is refused rather than passed.
 #
-# The oracle is the image because QEMU does not model a stale TLB entry: a runtime arm stays
-# green with the maintenance loop bounds wrong, and green with the operation left local on a
-# multi-core image.
+# Above one core, the maintenance arch_aspace_unmap reaches is judged by its result instead:
+# unmappeer reads a page from a peer core across its unmap, and on qemu-arm64-smp a local form
+# there leaves that core reading the withdrawn page. What arch_aspace_map and
+# arch_aspace_destroy reach beyond it, the full flush, stays judged here: planted local, it
+# reddens no emulator arm.
 #
 # arch_aspace_activate is asserted LOCAL at EVERY core count: a root change concerns the PE whose
 # register changed, so a uniform edit that turned the whole file broadcast must redden this gate.
@@ -27,7 +29,7 @@
 # any one of the four roots, says the parse or the encoding matcher moved, and that is UNKNOWN.
 # The per-root count is printed on success so a reader sees the corpus.
 #
-# The planted pair is the image's own listing with one TLBI the walk reaches from
+# The planted pair is the image's own listing with one TLBI this gate judges under
 # arch_aspace_map rewritten to the other form of the pair: it must be refused, so the verdict
 # rests on the CRm the image carries and not on whatever it holds.
 #
@@ -232,6 +234,12 @@ judge() { # <nm listing> <disassembly> <cores>
     fi
 
     # --- the verdict, per root ------------------------------------------------
+    : > "$_t/witnessed"
+    if [ "$_cores" -gt 1 ]; then
+        awk '$1 == "ROOT" && $2 == "arch_aspace_unmap" { print $3 }' "$_t/rec" \
+            | sort -u > "$_t/witnessed"
+    fi
+    : > "$_t/judged"
     for root in $ROOTS; do
         if grep -q "^MISSING $root\$" "$_t/rec"; then
             fail "'$root' is in the symbol table but the disassembly carries no body for it, so
@@ -257,7 +265,13 @@ judge() { # <nm listing> <disassembly> <cores>
         if [ "$root" = arch_aspace_activate ] || [ "$_cores" -eq 1 ]; then
             want="$CRM_LOCAL"
             label=local
+        else
+            awk -v f="$_t/witnessed" 'BEGIN { while ((getline l < f) > 0) w[l] = 1 }
+                !($3 in w)' "$_t/root" > "$_t/kept"
+            mv "$_t/kept" "$_t/root"
+            n="$(wc -l < "$_t/root" | tr -d ' ')"
         fi
+        cat "$_t/root" >> "$_t/judged"
 
         wrong="$(awk -v w="$want" '$4 != w { printf "      CRm %s  %s  in %s\n", $4, $5, $3 }' \
             "$_t/root")"
@@ -277,7 +291,11 @@ judge() { # <nm listing> <disassembly> <cores>
   no peer TLB to reach, so the local form (CRm=0b0111) is what this posture spends"
         fi
 
-        echo "   $root: $n TLBI, every one CRm $want ($label)"
+        if [ "$n" -eq 0 ]; then
+            echo "   $root: every TLBI it reaches is unmappeer's to judge"
+        else
+            echo "   $root: $n TLBI, every one CRm $want ($label)"
+        fi
     done
 }
 
@@ -286,9 +304,9 @@ tool_out "$TMP/dis" "^[0-9a-f]+ <.*>:\$" "$objdump" -d "$elf"
 echo "== TLBI shareability in $elf, built at $cores kernel core(s) =="
 judge "$TMP/nm" "$TMP/dis" "$cores"
 
-# The planted pair: the first TLBI reached from arch_aspace_map, its CRm nibble swapped
+# The planted pair: the first TLBI judged under arch_aspace_map, its CRm nibble swapped
 # between the two forms wherever the word occurs.
-word="$(awk '$1 == "ROOT" && $2 == "arch_aspace_map" { print $5; exit }' "$TMP/judge/rec")"
+word="$(awk '$2 == "arch_aspace_map" { print $5; exit }' "$TMP/judge/judged")"
 nib="$(printf '%s' "$word" | cut -c6)"
 case "$nib" in
     "$CRM_BCAST") swap="$CRM_LOCAL" ;;

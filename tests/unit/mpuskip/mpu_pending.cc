@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The deferred-commit STASH, over the shipping ARM member that owns it
-// (arch/arm/common/arch_arm_mpu_pending.cc) and the shipping PMSAv7 writer it feeds, with
+// (arch/common/arch_mpu_stash.cc) and the shipping PMSAv7 writer it feeds, with
 // the PendSV epilogue modelled by the seam's kickos_arch_mpu_commit.
 //
 // What only this gate can see: the stash is one file-static cell, and nothing on target can
@@ -78,10 +78,10 @@ namespace
     };
 }
 
-// THE REGRESSION. A switch to another thread is booked, then the caller self-grants: the
-// grant must be live when the syscall returns AND the epilogue must still program the thread
-// the switch lands on. Committing through arch_mpu_apply plus kickos_arch_mpu_commit passes
-// the first half and fails the second.
+// A switch to another thread is booked, then the caller self-grants: the grant must be live
+// when the syscall returns AND the epilogue must still program the thread the switch lands
+// on. Committing through arch_mpu_apply plus kickos_arch_mpu_commit passes the first half
+// and fails the second.
 TEST_F(MpuPending, a_booked_switch_keeps_its_own_image_across_a_self_grant)
 {
     struct arch_mpu_encoded incoming = {};

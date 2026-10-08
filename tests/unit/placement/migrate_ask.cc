@@ -45,8 +45,8 @@ using namespace kickos::testfix;
 
 namespace
 {
-    constexpr uint32_t CORE_ME = 0;   // the core the fixture speaks as
-    constexpr uint32_t CORE_PEER = 1; // the core an ask is read against
+    constexpr KernelCore CORE_ME = testfix::core_at(0);   // the core the fixture speaks as
+    constexpr KernelCore CORE_PEER = testfix::core_at(1); // the core an ask is read against
 
     constexpr uint8_t PRIO_RUNNER = 6;
     constexpr uint8_t PRIO_UNDER_RUNNER = 5;
@@ -75,11 +75,11 @@ namespace
         p.below = seat_pool(2, PRIO_BELOW);
         {
             IrqLock lock;
-            sched::reschedule();
+            sched::reschedule(nullptr, lock);
         }
 
         detach_ready(p.below);
-        p.below->state = ThreadState::RUNNING;
+        p.below->state.to<ThreadState::RUNNING>();
         kickos::testfix::seat_running_on(p.below, CORE_PEER);
 
         drain(CORE_ME);
@@ -101,12 +101,12 @@ class MigrateAsk : public kickos::testfix::KSeam
 TEST_F(MigrateAsk, a_thread_re_masked_off_the_core_it_runs_on_asks_the_core_it_may_now_take)
 {
     Placed p = place();
-    ASSERT_EQ(kernel().current[CORE_ME], p.runner) << "fixture: the thread runs on this core";
+    ASSERT_EQ(kernel().current(CORE_ME), p.runner) << "fixture: the thread runs on this core";
     ASSERT_EQ(owed_at(CORE_PEER), 0) << "fixture: nothing stands against the peer core";
 
     sched::set_affinity(p.runner, 1u << CORE_PEER);
 
-    ASSERT_EQ(kernel().current[CORE_ME], p.alt)
+    ASSERT_EQ(kernel().current(CORE_ME), p.alt)
         << "fixture: the re-mask cost this core the switch the ask rides behind";
     ASSERT_EQ(p.runner->state, ThreadState::HANDED)
         << "fixture: that switch handed the thread to the peer, whose drain links it";
@@ -127,8 +127,8 @@ namespace
     void displace_runner_by_a_raise(Placed const& p)
     {
         IrqLock lock;
-        sched::set_prio(p.alt, PRIO_ABOVE);
-        sched::reschedule();
+        sched::set_prio(p.alt, PRIO_ABOVE, lock);
+        sched::reschedule(nullptr, lock);
     }
 }
 
@@ -139,13 +139,13 @@ TEST_F(MigrateAsk, an_ordinary_switch_asks_for_the_thread_it_displaces)
     p.runner->affinity = 1u << CORE_ME;
 
     sched::set_affinity(p.runner, KICKOS_CORE_SET_ALL);
-    ASSERT_EQ(kernel().current[CORE_ME], p.runner)
+    ASSERT_EQ(kernel().current(CORE_ME), p.runner)
         << "fixture: a mask that still admits this core moves nothing";
     ASSERT_EQ(owed_at(CORE_PEER), 0)
         << "fixture: the widening itself owes nothing, the thread being RUNNING throughout it";
 
     displace_runner_by_a_raise(p);
-    ASSERT_EQ(kernel().current[CORE_ME], p.alt) << "fixture: the pass took the switch";
+    ASSERT_EQ(kernel().current(CORE_ME), p.alt) << "fixture: the pass took the switch";
     ASSERT_EQ(p.runner->state, ThreadState::HANDED)
         << "fixture: that switch handed the thread to the peer, whose drain links it";
 
@@ -162,7 +162,7 @@ TEST_F(MigrateAsk, an_ordinary_switch_asks_for_the_thread_it_displaces)
     q.runner->affinity = 1u << CORE_ME;
 
     displace_runner_by_a_raise(q);
-    ASSERT_EQ(kernel().current[CORE_ME], q.alt) << "fixture: the pass took the switch";
+    ASSERT_EQ(kernel().current(CORE_ME), q.alt) << "fixture: the pass took the switch";
     ASSERT_EQ(q.runner->state, ThreadState::READY)
         << "fixture: and stored the same state over the thread it displaced";
 
@@ -180,8 +180,8 @@ TEST_F(MigrateAsk, re_placing_a_thread_no_core_can_pick_asks_nobody)
     Placed p = place();
     ASSERT_EQ(owed_at(CORE_PEER), 0) << "fixture: nothing stands against the peer core";
 
-    kernel().policy->on_remove(p.alt);
-    p.alt->state = ThreadState::BLOCKED;
+    policy_on_remove(p.alt);
+    testfix::seat_blocked(p.alt);
     p.alt->affinity = 1u << CORE_ME;
 
     sched::set_affinity(p.alt, 1u << CORE_PEER);
@@ -193,10 +193,10 @@ TEST_F(MigrateAsk, re_placing_a_thread_no_core_can_pick_asks_nobody)
     // Under the runner, so READY it waits behind strictly higher priority on this core.
     {
         IrqLock lock;
-        sched::set_prio(p.alt, PRIO_UNDER_RUNNER);
+        sched::set_prio(p.alt, PRIO_UNDER_RUNNER, lock);
     }
-    p.alt->state = ThreadState::READY;
-    kernel().policy->on_ready(p.alt);
+    p.alt->state.to<ThreadState::READY>();
+    policy_on_ready(p.alt);
     sched::set_affinity(p.alt, KICKOS_CORE_SET_ALL);
     EXPECT_NE(owed_at(CORE_PEER), 0)
         << "the SAME thread, now READY, waiting behind a higher priority here and eligible on "
@@ -210,7 +210,7 @@ TEST_F(MigrateAsk, a_running_thread_no_core_seats_is_a_debug_assert)
 {
     Placed p = place();
     ASSERT_EQ(p.runner->state, ThreadState::RUNNING) << "fixture: the thread is RUNNING";
-    kernel().current[CORE_ME] = nullptr;
+    kernel().current(CORE_ME) = nullptr;
 
     KICKOS_EXPECT_PANIC(sched::set_affinity(p.runner, 1u << CORE_PEER),
                         "debug assert: seated == t");
@@ -223,8 +223,8 @@ TEST_F(MigrateAsk, a_thread_re_masked_off_a_peers_core_asks_that_peer)
 
     sched::set_affinity(p.below, 1u << CORE_ME);
 
-    ASSERT_EQ(kernel().current[CORE_ME], p.runner) << "fixture: this core took no switch";
-    ASSERT_EQ(kernel().current[CORE_PEER], p.below)
+    ASSERT_EQ(kernel().current(CORE_ME), p.runner) << "fixture: this core took no switch";
+    ASSERT_EQ(kernel().current(CORE_PEER), p.below)
         << "fixture: no core may pull a thread off another's CPU";
     EXPECT_NE(owed_at(CORE_PEER), 0)
         << "the thread is excluded from the only core it executes on, and that core was not "
@@ -245,10 +245,10 @@ TEST_F(MigrateAsk, a_wake_this_core_takes_itself_asks_for_the_thread_it_displace
 
     {
         IrqLock lock;
-        sched::wake(woken);
+        sched::wake(woken, lock);
     }
 
-    ASSERT_EQ(kernel().current[CORE_ME], woken)
+    ASSERT_EQ(kernel().current(CORE_ME), woken)
         << "fixture: the woken thread outranks this core's and is placeable here, so this "
            "core is the one that takes it";
     ASSERT_EQ(p.runner->state, ThreadState::HANDED)
@@ -271,7 +271,7 @@ TEST_F(MigrateAsk, the_ask_a_taken_wake_owes_is_bounded_by_the_displaced_threads
     // and that list is what placement reads.
     {
         IrqLock lock;
-        sched::set_prio(p.below, PRIO_BETWEEN);
+        sched::set_prio(p.below, PRIO_BETWEEN, lock);
     }
     Thread* const woken = seat_pool(3, PRIO_ABOVE);
     park_join(woken, p.runner);
@@ -280,10 +280,10 @@ TEST_F(MigrateAsk, the_ask_a_taken_wake_owes_is_bounded_by_the_displaced_threads
 
     {
         IrqLock lock;
-        sched::wake(woken);
+        sched::wake(woken, lock);
     }
 
-    ASSERT_EQ(kernel().current[CORE_ME], woken) << "fixture: this core takes the woken thread";
+    ASSERT_EQ(kernel().current(CORE_ME), woken) << "fixture: this core takes the woken thread";
     ASSERT_EQ(p.runner->state, ThreadState::READY) << "fixture: and displaces what it ran";
     EXPECT_EQ(owed_at(CORE_PEER), 0)
         << "a peer running ABOVE the displaced thread was asked to look. It would take the "
@@ -293,7 +293,7 @@ TEST_F(MigrateAsk, the_ask_a_taken_wake_owes_is_bounded_by_the_displaced_threads
     // The same shape with the peer put back below what the next wake displaces.
     {
         IrqLock lock;
-        sched::set_prio(p.below, PRIO_BELOW);
+        sched::set_prio(p.below, PRIO_BELOW, lock);
     }
     Thread* const higher = seat_pool(4, PRIO_TOP);
     park_join(higher, woken);
@@ -302,10 +302,10 @@ TEST_F(MigrateAsk, the_ask_a_taken_wake_owes_is_bounded_by_the_displaced_threads
 
     {
         IrqLock lock;
-        sched::wake(higher);
+        sched::wake(higher, lock);
     }
 
-    ASSERT_EQ(kernel().current[CORE_ME], higher) << "fixture: this core takes the woken thread";
+    ASSERT_EQ(kernel().current(CORE_ME), higher) << "fixture: this core takes the woken thread";
     EXPECT_NE(owed_at(CORE_PEER), 0)
         << "the peer now runs below the displaced thread and was still not told: without this "
            "half the assertion above would pass for a wake that asked nobody anything";
@@ -329,10 +329,10 @@ TEST_F(MigrateAsk, a_wake_that_displaces_a_thread_which_parked_instead_asks_nobo
     wake_next_park(leave_parked);
     {
         IrqLock lock;
-        sched::wake(woken);
+        sched::wake(woken, lock);
     }
 
-    ASSERT_EQ(kernel().current[CORE_ME], woken) << "fixture: this core takes the woken thread";
+    ASSERT_EQ(kernel().current(CORE_ME), woken) << "fixture: this core takes the woken thread";
     ASSERT_EQ(p.runner->state, ThreadState::BLOCKED)
         << "fixture: the outgoing thread parked, so the switch stored nothing over it";
     EXPECT_EQ(owed_at(CORE_PEER), 0)
@@ -353,10 +353,10 @@ TEST_F(MigrateAsk, a_wake_this_core_cannot_place_still_asks_the_peer)
 
     {
         IrqLock lock;
-        sched::wake(woken);
+        sched::wake(woken, lock);
     }
 
-    ASSERT_EQ(kernel().current[CORE_ME], p.runner)
+    ASSERT_EQ(kernel().current(CORE_ME), p.runner)
         << "fixture: this core may not run the woken thread, so its own pick stands";
     EXPECT_NE(owed_at(CORE_PEER), 0)
         << "the woken thread is eligible only on the peer core, and that core was not told "

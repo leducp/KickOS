@@ -32,7 +32,4 @@ namespace
 // ungated out of reset, and arch_init's HP_APM REE0 permit already covers the block.
 //
 // The baud 0 below keeps the divisor the ROM left.
-//
-// LEVEL: the UART source stays asserted until the driver clears the latch.
-KICKOS_UART_CONSOLE_SERVICE(c6uart, k_uart, /*fallback_baud=*/0u, mmap::UART0_BASE,
-                            KOS_IRQ_LEVEL);
+KICKOS_UART_CONSOLE_SERVICE(c6uart, k_uart, /*fallback_baud=*/0u);

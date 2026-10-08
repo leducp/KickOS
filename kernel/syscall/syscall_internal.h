@@ -10,10 +10,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <kickos/arch/arch.h> // ARCH_MPU_NOCACHE
 #include <kickos/aspace.h>    // the kaccess byte-access seam
 #include <kickos/cap.h>       // KCAP_INVALID (the minting out-parameter's failure value)
-#include <kickos/sys/abi.h>   // kos_thread_params (thread_create_call parameter), kos_mem_flags
+#include <kickos/thread.h>    // the IPC state reply_wait_seat writes
+#include <kickos/sys/abi.h>   // kos_thread_params (thread_create_call parameter)
 
 namespace kickos
 {
@@ -44,21 +44,6 @@ namespace kickos
     // across `write_len`, in one walk. For a buffer the kernel reads and then writes back.
     bool user_readable_and_writable_ok(uintptr_t ptr, size_t read_len, size_t write_len);
 
-    // kos_mem_flags -> the ARCH_MPU_* memory-type bits, ORed into *attr. False on an
-    // undefined bit: refused (-KOS_EINVAL), never masked off.
-    inline bool mem_flags_to_attr(uintptr_t flags, uint32_t* attr)
-    {
-        if ((flags & ~static_cast<uintptr_t>(KOS_MEM_FLAGS_ALL)) != 0)
-        {
-            return false;
-        }
-        if ((flags & static_cast<uintptr_t>(KOS_MEM_NOCACHE)) != 0)
-        {
-            *attr |= ARCH_MPU_NOCACHE;
-        }
-        return true;
-    }
-
     // --- MMIO possession (syscall_mem.cc) --------------------------------------
     // One of the current thread's DEV windows has base exactly `base`. The whole
     // authorisation for arch_periph_enable; no authority bit gates it. Exact base, so a
@@ -87,7 +72,6 @@ namespace kickos
     // owner means kernel storage. An owner cannot be recovered from an address once two
     // processes hold different frames at one virtual address, or once two threads hold one
     // block with different region sets, so a site passes what it already holds.
-    struct Thread;
 #if KICKOS_HAVE_ASPACE or KICKOS_ARCH_ARENA_DCACHE
     // The owner of a thread's own user pointers.
     UserOwner user_space_of(Thread const* t);
@@ -146,10 +130,6 @@ namespace kickos
     // The same mint with the privilege gate left to the caller. Caller holds IrqLock.
     int amp_endpoint_mint(Thread* c, uint32_t node, uint32_t port, uint8_t rights, uint32_t* out_cap);
 #endif
-    // endpoint_send's answer where the send would park and may not: a timeout of 0, or a
-    // non-blocking task on the published console. Never a -KOS_E*: the dispatch answers it
-    // -KOS_ETIMEDOUT.
-    constexpr int32_t SEND_WOULD_PARK = -1000;
     int32_t endpoint_send(uint32_t cap, uintptr_t buf, size_t len, uint32_t timeout_us);
     // The deadline bounds BOTH call phases: the send-side park and the reply-side park.
     int32_t endpoint_call(uint32_t cap, uintptr_t buf, size_t send_len, size_t recv_cap,
@@ -159,6 +139,24 @@ namespace kickos
     // kos_reply_recv_opts the kernel reads and writes back.
     int32_t endpoint_reply_recv(uint32_t reply_cap, uintptr_t buf, uintptr_t lens,
                                 uintptr_t opts);
+
+    constexpr size_t ipc_len_min(size_t a, size_t b)
+    {
+        if (b < a)
+        {
+            return b;
+        }
+        return a;
+    }
+
+    inline void reply_wait_seat(Thread* t, uintptr_t buf, size_t recv_cap)
+    {
+        t->ipc.buf = buf;
+        t->ipc.len = recv_cap;
+        t->ipc.badge_out = 0;
+        t->call_rx_cap = recv_cap;
+        t->call_state = CALL_REPLY_WAIT;
+    }
 
     // --- Thread lifecycle (syscall_thread.cc) ----------------------------------
     // Same minting shape as the cap creators above: *out_thread is written on EVERY path

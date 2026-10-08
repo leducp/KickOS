@@ -96,6 +96,13 @@ namespace kickos::esp32::reg::uart
     constexpr uint32_t CLKDIV_INT_MASK = 0xFFFFFu;
     constexpr uint32_t CLKDIV_FRAC_S = 20;
 
+    // baud = clk / (CLKDIV + FRAC/16), the sixteenths truncated.
+    constexpr uint32_t clkdiv(uint32_t clk, uint32_t baud)
+    {
+        uint32_t const clkdiv16 = (clk << 4) / baud;
+        return ((clkdiv16 & 0xFu) << CLKDIV_FRAC_S) | ((clkdiv16 >> 4) & CLKDIV_INT_MASK);
+    }
+
     // Default FIFO block per controller, out of the 1024-byte RAM the three UARTs share
     // (TRM 19.3.3, Figure 19.3-2).
     constexpr uint32_t FIFO_DEPTH = 128;

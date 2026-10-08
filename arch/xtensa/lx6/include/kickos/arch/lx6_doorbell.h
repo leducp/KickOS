@@ -38,9 +38,6 @@ void kickos_lx6_doorbell_route(void);
 // INTCLEAR is owed.
 uint32_t kickos_lx6_doorbell_cpu_int(void);
 
-// The far side, on the calling core: answers every peer that has asked. Takes NO kernel lock.
-void kickos_lx6_doorbell_service(void);
-
 // Whether any peer has asked this core for something it has not answered. The cell is the
 // authority: a spurious raise finds nothing owed and costs one return.
 int kickos_lx6_doorbell_pending(void);

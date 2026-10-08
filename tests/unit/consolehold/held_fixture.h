@@ -13,6 +13,7 @@
 #include <kickos/console_tx.h>
 #include <kickos/irqlock.h>
 #include <kickos/kernel.h>
+#include <kickos/sync.h>
 
 #include <stdio.h>
 #include <sys/wait.h>
@@ -84,7 +85,7 @@ namespace heldfix
     {
         kickos::IrqLock lock;
         console_note_driver_death();
-        console_on_driver_death();
+        console_on_driver_death(lock);
     }
 
     // The ownership state is a one-way street, so each arm gets its own process.

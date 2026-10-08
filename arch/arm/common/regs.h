@@ -1,19 +1,16 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Core register definitions shared by the ARMv6-M and ARMv7-M backends: the
-// SCB/SysTick/NVIC subset whose offsets and bit values are identical across
-// both architecture profiles (clean-room, from the ARM Architecture Reference
-// Manuals). Arch-specific registers (v7-M BASEPRI band + DWT; each profile's
-// SHPR priority bytes) stay in the per-arch regs.h.
+// Only registers whose offsets and bit values are identical on ARMv6-M and ARMv7-M
+// (clean-room, from the ARM Architecture Reference Manuals); anything profile-specific
+// belongs in the per-arch regs.h.
 
 #ifndef KICKOS_ARCH_ARM_COMMON_REGS_H
 #define KICKOS_ARCH_ARM_COMMON_REGS_H
 
 #include <stdint.h>
 
-// A host gate drives a backend TU over a register window and a barrier trace of its own
-// (tests/unit/mpuskip). Zero in every shipping build, where both are the inlines below.
+// Set only by a host gate (tests/unit/mpuskip) that supplies these from its own register model.
 #ifndef KICKOS_ARM_REGS_FROM_SEAM
 #define KICKOS_ARM_REGS_FROM_SEAM 0
 #endif
@@ -56,17 +53,17 @@ namespace kickos
 #endif
 
         // --- System Control Block ---
-        constexpr uintptr_t SCB_ICSR = 0xE000ED04; // Interrupt Control and State
-        constexpr uintptr_t SCB_VTOR = 0xE000ED08; // Vector Table Offset
-        constexpr uintptr_t SCB_CPACR = 0xE000ED88; // Coprocessor Access Control
+        constexpr uintptr_t SCB_ICSR = 0xE000ED04;
+        constexpr uintptr_t SCB_VTOR = 0xE000ED08;
+        constexpr uintptr_t SCB_CPACR = 0xE000ED88;
         constexpr uint32_t ICSR_PENDSVSET = 1u << 28;
-        constexpr uint32_t ICSR_PENDSTCLR = 1u << 25; // clear a pending SysTick
-        constexpr uint32_t CPACR_CP10_CP11_FULL = 0xFu << 20; // FPU: CP10/CP11 full access
+        constexpr uint32_t ICSR_PENDSTCLR = 1u << 25;
+        constexpr uint32_t CPACR_CP10_CP11_FULL = 0xFu << 20;
 
         // --- SysTick ---
-        constexpr uintptr_t SYST_CSR = 0xE000E010; // control/status
-        constexpr uintptr_t SYST_RVR = 0xE000E014; // reload value
-        constexpr uintptr_t SYST_CVR = 0xE000E018; // current value
+        constexpr uintptr_t SYST_CSR = 0xE000E010;
+        constexpr uintptr_t SYST_RVR = 0xE000E014;
+        constexpr uintptr_t SYST_CVR = 0xE000E018;
         constexpr uint32_t SYST_CSR_ENABLE = 1u << 0;
         constexpr uint32_t SYST_CSR_TICKINT = 1u << 1;
         constexpr uint32_t SYST_CSR_CLKSOURCE = 1u << 2; // processor clock
@@ -76,14 +73,14 @@ namespace kickos
         constexpr uintptr_t NVIC_ISER0 = 0xE000E100;
         constexpr uintptr_t NVIC_ICER0 = 0xE000E180;
         constexpr uintptr_t NVIC_ISPR0 = 0xE000E200;
-        constexpr uintptr_t NVIC_ICPR0 = 0xE000E280; // clear-pending (tier-1 re-arm)
+        constexpr uintptr_t NVIC_ICPR0 = 0xE000E280;
 
-        // --- PMSA MPU (identical register map on ARMv6-M and ARMv7-M) ---
+        // --- PMSA MPU ---
         constexpr uintptr_t MPU_TYPE = 0xE000ED90; // DREGION [15:8] = # regions
         constexpr uintptr_t MPU_CTRL = 0xE000ED94;
-        constexpr uintptr_t MPU_RNR = 0xE000ED98;  // region-number select
-        constexpr uintptr_t MPU_RBAR = 0xE000ED9C; // region base address
-        constexpr uintptr_t MPU_RASR = 0xE000EDA0; // region attr + size
+        constexpr uintptr_t MPU_RNR = 0xE000ED98;
+        constexpr uintptr_t MPU_RBAR = 0xE000ED9C;
+        constexpr uintptr_t MPU_RASR = 0xE000EDA0;
         constexpr uint32_t MPU_CTRL_ENABLE = 1u << 0;
         constexpr uint32_t MPU_CTRL_PRIVDEFENA = 1u << 2; // priv uses the default map
         constexpr uint32_t MPU_RASR_ENABLE = 1u << 0;
@@ -93,6 +90,8 @@ namespace kickos
         constexpr uint32_t MPU_RASR_AP_RW = 0x3u << 24; // priv RW, unpriv RW
         constexpr uint32_t MPU_RASR_AP_RO = 0x6u << 24; // priv RO, unpriv RO
         constexpr uint32_t MPU_RASR_AP_URO = 0x2u << 24; // priv RW, unpriv RO
+        constexpr uint32_t MPU_RASR_AP_NONE = 0x0u << 24; // no access
+        constexpr uint32_t MPU_RASR_AP_PRO = 0x5u << 24;  // priv RO, unpriv none
         constexpr uint32_t MPU_RASR_MEM_NORMAL = (1u << 17) | (1u << 16); // C=1,B=1
         constexpr uint32_t MPU_RASR_MEM_DEVICE = (1u << 18) | (1u << 16); // S=1,B=1 (shared device)
         // TEX=0b001, C=0, B=0, S=1 (DDI0403E Table B3-13): Normal, outer AND inner
@@ -100,18 +99,15 @@ namespace kickos
         // access UNPREDICTABLE, and this region is walked by memcpy over byte rings.
         constexpr uint32_t MPU_RASR_MEM_NORMAL_NC = (1u << 19) | (1u << 18);
 
-        // SCB System Handler Control and State: enable the MemManage fault so an
-        // MPU violation raises MemManage (not an escalated HardFault).
+        // Without MEMFAULTENA an MPU violation escalates to HardFault.
         constexpr uintptr_t SCB_SHCSR = 0xE000ED24;
         constexpr uint32_t SHCSR_MEMFAULTENA = 1u << 16;
         constexpr uint32_t SHCSR_BUSFAULTENA = 1u << 17;
     }
 }
 
-// Enable the FPU (CP10/CP11 full access) then serialize (DSB+ISB) so a later FP
-// instruction cannot be prefetched ahead of the enable. static inline: the caller
-// gets the bare CPACR poke it wrote by hand. ARMv7-M chips with an FPU call this
-// from arch_init before any code a hard-float ABI could emit FP into.
+// DSB+ISB so no FP instruction is prefetched ahead of the enable. Call before any code a
+// hard-float ABI could emit FP into.
 static inline void kickos_armv7m_enable_fpu()
 {
     kickos::arm::reg32(kickos::arm::SCB_CPACR) |= kickos::arm::CPACR_CP10_CP11_FULL;

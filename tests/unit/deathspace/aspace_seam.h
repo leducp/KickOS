@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The address-space boundary of the K-seam, for the one gate that compiles the kernel with
-// KICKOS_HAVE_ASPACE=1. No board the host arch answers for translates, so the layer under
-// kernel/mem is not compiled at all: this records the calls exit_current makes across it and
-// keeps one installed-root cell per core, which is the whole of what the ordering claim needs.
+// The arch boundary under kernel/mem/aspace.cc, and the domain and user-stack layers beside it,
+// for the one gate that compiles the kernel with KICKOS_HAVE_ASPACE=1. It keeps one
+// installed-root cell per core, which is the whole of what the ordering claim needs.
 //
 // Keep this header GTEST-FREE, for the reason kfixture.h states.
 
@@ -19,11 +18,13 @@ namespace kickos
 
     namespace testfix
     {
-        // The seam's per-core translation base, written by the two installers below. Null is
-        // "nothing installed yet", which no core is in once an arm has switched.
+        // The seam's per-core translation base, written by arch_aspace_activate and by
+        // install_here. Null is "nothing installed yet", which no core is in once an arm has
+        // switched.
         struct arch_aspace* installed_on(uint32_t core);
 
-        // Write THIS core's translation base.
+        // Write THIS core's translation base behind the kernel, which then forgets the root it
+        // last wrote there.
         void install_here(struct arch_aspace* space);
 
         // The one boot root every core falls back to.

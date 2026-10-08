@@ -30,11 +30,11 @@
 namespace drv = kickos::driver;
 namespace spi = kickos::spi;
 namespace mmap = kickos::xmc::mmap;
-namespace declared = kickos::driver::declared::xmcssc;
 
 namespace
 {
-    // UNPRIVILEGED driver thread, on the U0C1 window the descriptor pins.
+    // UNPRIVILEGED driver thread, on the U0C1 window the descriptor pins. USIC0's module clock is
+    // ungated by the console's U0C0 bring-up, not here.
     void bus_thread(void* arg)
     {
         // The line is already owned before the bus open arms RIEN/AIEN, which is the ordering
@@ -66,42 +66,10 @@ namespace
         drv::trap();
     }
 
-    constexpr drv::Descriptor k_desc = {
-        .tag = "[xmcssc] ",
-        // The thread drives U0C1 at this base, so an instance naming the sibling channel would
-        // grant one window and program the other. The console owns U0C0.
-        .expected_base = mmap::USIC0_CH1_BASE,
-        .block_size = declared::k_declared.block_size,
-        .block_flags = 0,
-        .ready_offset = drv::KOS_DRV_READY_NONE,
-        .ep_posture = declared::k_declared.ep_posture,
-        .line_count = declared::k_declared.line_count,
-        .thread_count = declared::k_declared.thread_count,
-        .barrier_after = declared::k_declared.barrier_after,
-        // EDGE: the receive flags are W1C'd by the engine before it acks.
-        .lines = {{KOS_IRQ_EDGE}},
-        // No register access by root: it holds no DEV region at all (ARCH_MPU_DEV is attached
-        // only by thread_create_call), so this thread is the only one that can address the channel.
-        // USIC0's module clock is already ungated by the console (U0C0) bring-up.
-        .threads = {{.entry = bus_thread,
-                     .name = declared::k_declared.thread_name[0],
-                     .prio_delta = declared::k_declared.prio_delta[0],
-                     .arg = drv::KOS_DRV_ARG_LINE0_INDEX,
-                     .window_grant = true,
-                     .cap_count = 3,
-                     // All WAIT only: the driver receives and services, it does not send,
-                     // ring its own doorbell, or re-delegate. The notification is UNBADGED:
-                     // this thread binds the whole object rather than signalling one bit.
-                     .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT, 0},
-                              {drv::KOS_DRV_RES_NOTIFY, KOS_CAP_WAIT, 0},
-                              {drv::KOS_DRV_RES_LINE0, KOS_CAP_WAIT, 0}}}},
-        .block_init = nullptr
-    };
+    constexpr drv::Descriptor k_desc = KICKOS_DRIVER_DESCRIPTOR;
 
     static_assert(drv::valid(k_desc), "the xmcssc descriptor is not a well-formed driver shape");
     static_assert(spi::desc_ok(k_desc), "the xmcssc cap positions do not match KOS_SPI_CAP_*");
-    static_assert(drv::declared_as(k_desc, declared::k_declared),
-                  "the xmcssc descriptor departs from its kickos_add_driver declaration");
 }
 
 extern "C"

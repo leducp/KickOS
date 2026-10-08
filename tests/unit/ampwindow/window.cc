@@ -12,6 +12,7 @@
 #include "amp_seam.h"
 
 #include <kickos/ampwindow.h>
+#include <kickos/irqlock.h>
 
 #include <gtest/gtest.h>
 
@@ -224,7 +225,7 @@ namespace
     {
         uint32_t const was = fix::g_node;
         fix::g_node = me;
-        amp::node_service();
+        amp::node_service(kickos::IrqLock());
         fix::g_node = was;
     }
 
@@ -736,7 +737,7 @@ namespace
         uint32_t const was_took = amp::counts(NODE_A).took;
         uint32_t const was_serviced = amp::counts(NODE_A).serviced;
         fix::g_node = NODE_A;
-        amp::node_service();
+        amp::node_service(kickos::IrqLock());
         fix::g_node = 0;
         EXPECT_EQ(was_serviced + 1u, amp::counts(NODE_A).serviced);
         EXPECT_EQ(was_took + sent, amp::counts(NODE_A).took);
@@ -766,7 +767,7 @@ namespace
         ASSERT_EQ(amp::Sent::OK,
                   send_tagged_as(NODE_B, NODE_A, amp::PORT_REPLY, TAG_CARRIED, payload, 2u));
         fix::g_node = NODE_A;
-        amp::node_service();
+        amp::node_service(kickos::IrqLock());
         fix::g_node = 0;
         EXPECT_EQ(1u, fix::g_replies);
         EXPECT_EQ(NODE_B, fix::g_reply_from);
@@ -789,7 +790,7 @@ namespace
         ASSERT_EQ(amp::Sent::OK,
                   send_tagged_as(NODE_B, NODE_A, amp::PORT_REPLY, TAG_CARRIED, payload, 1u));
         fix::g_node = NODE_A;
-        amp::node_service();
+        amp::node_service(kickos::IrqLock());
         fix::g_node = 0;
         EXPECT_EQ(1u, fix::g_replies);
         EXPECT_EQ(was_drop + 1u, amp::counts(NODE_A).reply_drop);
@@ -806,7 +807,7 @@ namespace
         ASSERT_EQ(amp::Sent::OK,
                   send_tagged_as(NODE_B, NODE_A, amp::PORT_ECHO, TAG_CARRIED, payload, 1u));
         fix::g_node = NODE_A;
-        amp::node_service();
+        amp::node_service(kickos::IrqLock());
         fix::g_node = 0;
         EXPECT_EQ(0u, fix::g_replies);
         EXPECT_EQ(1u, amp::ring_for(amp::Class::REPLY, NODE_B, NODE_A).head.v.load());

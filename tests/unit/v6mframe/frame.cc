@@ -62,7 +62,7 @@ namespace kickos
                 Thread* const t = spawn(0, PRIO);
                 t->stack_base = reinterpret_cast<void*>(STACK_BASE);
                 t->stack_size = STACK_SIZE;
-                kernel().current[kickos_kernel_core()] = t;
+                kernel().current(kickos_kernel_core()) = t;
                 g_kernel_sp = 0;
             }
 

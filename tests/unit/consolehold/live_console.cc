@@ -59,7 +59,7 @@ namespace
         attach_caps(l->writer, KICKOS_CAP_CHILD_WIDTH);
         {
             IrqLock lock;
-            sched::reschedule();
+            sched::reschedule(nullptr, lock);
         }
         ASSERT_EQ(sched::current(), l->writer);
         l->ep = endpoint();
@@ -68,10 +68,10 @@ namespace
         IrqLock lock;
         int const handle = kernel().endpoints.handle_for(kernel().endpoints.index_of(l->ep));
         ASSERT_EQ(cap_install(l->writer, handle, CapType::CAP_ENDPOINT, CAP_SIGNAL, &l->cap), 0);
-        ASSERT_TRUE(cap_console_publish(l->writer, handle));
+        ASSERT_TRUE(cap_console_publish(l->writer, handle, lock));
         if (serve)
         {
-            cap_console_serve(l->served);
+            cap_console_serve(l->served, lock);
         }
         l->ep->vacated = 1;
         ASSERT_FALSE(endpoint_receiving(l->ep));
@@ -91,7 +91,7 @@ TEST_F(ConsoleLive, a_send_parks_on_a_live_console_with_no_receiver_until_its_ta
         g_parked_on_send = parked->wait_kind == WAIT_EP_SEND;
         EXPECT_EQ(g_console_noted, 0u) << "the console died before its task ended";
         IrqLock lock;
-        task_end(g_live.served, 0, true);
+        task_end(g_live.served, 0, true, lock);
     });
     int32_t const rc = send(g_live, KOS_TIMEOUT_NONE);
     EXPECT_TRUE(g_parked_on_send) << "the send was refused rather than parked";
@@ -111,7 +111,7 @@ TEST_F(ConsoleLive, a_send_of_no_deadline_never_parks)
 {
     ASSERT_NO_FATAL_FAILURE(stage(&g_live, true));
     uint32_t const parked = g_parked;
-    EXPECT_EQ(send(g_live, 0u), SEND_WOULD_PARK);
+    EXPECT_EQ(send(g_live, 0u), -KOS_ETIMEDOUT);
     EXPECT_EQ(g_parked, parked);
 }
 
@@ -132,7 +132,7 @@ TEST_F(ConsoleLive, a_dark_window_writer_waits_until_the_wake)
         EXPECT_EQ(kernel().sleepq, nullptr) << "the dark window's wait is bounded";
         g_console_dark = false;
         IrqLock lock;
-        console_dark_wake();
+        console_dark_wake(lock);
     });
     EXPECT_EQ(console_dark_wait(), 0) << "the wake did not end the wait";
     EXPECT_EQ(g_park_kind, WAIT_CONSOLE);
@@ -147,7 +147,7 @@ TEST_F(ConsoleLive, a_killed_writer_leaves_the_dark_window_wait)
     wake_next_park([](Thread* parked) {
         g_park_kind = parked->wait_kind;
         IrqLock lock;
-        thread_cancel_kind(parked, CANCEL_KILL);
+        thread_cancel_kind(parked, CANCEL_KILL, lock);
     });
     EXPECT_EQ(console_dark_wait(), -KOS_ECANCELED);
     EXPECT_EQ(g_park_kind, WAIT_CONSOLE);
@@ -179,7 +179,7 @@ namespace
         detach_ready(g_receiver);
         memset(g_receiver_buf, 0, sizeof(g_receiver_buf));
         IrqLock lock;
-        g_receiver->state = ThreadState::BLOCKED;
+        testfix::seat_blocked(g_receiver);
         g_receiver->ipc.buf = reinterpret_cast<uintptr_t>(g_receiver_buf);
         g_receiver->ipc.len = sizeof(g_receiver_buf);
         g_receiver->ipc.badge_out = 0;
@@ -203,7 +203,7 @@ TEST_F(ConsoleLive, no_line_is_handed_to_a_receiver_once_the_task_ended)
     ASSERT_TRUE(endpoint_receiving(g_live.ep));
     {
         IrqLock lock;
-        task_end(g_live.served, 0, true);
+        task_end(g_live.served, 0, true, lock);
     }
     EXPECT_EQ(send(g_live, KOS_TIMEOUT_NONE), -KOS_EAGAIN);
     EXPECT_EQ(g_receiver->wait_kind, WAIT_EP_RECV) << "the line was handed to the receiver";
@@ -233,7 +233,7 @@ TEST_F(ConsoleLive, a_non_blocking_task_never_parks_on_the_console)
     EXPECT_TRUE(task_nonblocking(mine));
     EXPECT_FALSE(task_nonblocking(other)) << "a sibling task went non-blocking";
     uint32_t const parked = g_parked;
-    EXPECT_EQ(send(g_live, KOS_TIMEOUT_NONE), SEND_WOULD_PARK);
+    EXPECT_EQ(send(g_live, KOS_TIMEOUT_NONE), -KOS_ETIMEDOUT);
     EXPECT_EQ(g_parked, parked);
     EXPECT_EQ(task_nonblock_call(KOS_NONBLOCK_GET), 1);
     EXPECT_EQ(task_nonblock_call(KOS_NONBLOCK_CLEAR), 0);
@@ -248,7 +248,7 @@ TEST_F(ConsoleLive, a_blocking_task_parks_on_the_console)
     wake_next_park([](Thread* parked) {
         g_parked_on_send = parked->wait_kind == WAIT_EP_SEND;
         IrqLock lock;
-        task_end(g_live.served, 0, true);
+        task_end(g_live.served, 0, true, lock);
     });
     EXPECT_EQ(send(g_live, KOS_TIMEOUT_NONE), -KOS_ECONNREFUSED);
     EXPECT_TRUE(g_parked_on_send);
@@ -272,7 +272,7 @@ TEST_F(ConsoleLive, a_non_blocking_task_parks_on_another_endpoint)
     wake_next_park([](Thread* parked) {
         g_parked_on_send = parked->wait_kind == WAIT_EP_SEND;
         IrqLock lock;
-        thread_abort_park(parked, -KOS_ETIMEDOUT);
+        thread_abort_park(parked, -KOS_ETIMEDOUT, lock);
     });
     g_parked_on_send = false;
     EXPECT_EQ(endpoint_send(cap, reinterpret_cast<uintptr_t>(g_live.buf), sizeof(g_live.buf),
@@ -292,7 +292,7 @@ TEST_F(ConsoleLive, a_non_blocking_task_keeps_a_timed_sends_timeout)
     wake_next_park([](Thread* parked) {
         g_parked_on_send = parked->wait_kind == WAIT_EP_SEND;
         IrqLock lock;
-        thread_abort_park(parked, -KOS_ETIMEDOUT);
+        thread_abort_park(parked, -KOS_ETIMEDOUT, lock);
     });
     EXPECT_EQ(send(g_live, 100u), -KOS_ETIMEDOUT);
     EXPECT_TRUE(g_parked_on_send) << "a timed send was answered before its timeout";
@@ -326,8 +326,8 @@ TEST_F(ConsoleLive, a_writer_parked_on_a_replaced_console_is_answered_and_follow
         Endpoint* const next = endpoint();
         IrqLock lock;
         g_next_console = kernel().endpoints.handle_for(kernel().endpoints.index_of(next));
-        ASSERT_TRUE(cap_console_publish(publisher, g_next_console));
-        cap_console_serve(g_live.served);
+        ASSERT_TRUE(cap_console_publish(publisher, g_next_console, lock));
+        cap_console_serve(g_live.served, lock);
     });
     int32_t const rc = endpoint_send(KOS_CAP_STDOUT, reinterpret_cast<uintptr_t>(g_live.buf),
                                      sizeof(g_live.buf), KOS_TIMEOUT_NONE);

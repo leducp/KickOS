@@ -10,10 +10,8 @@
 #include <kickos/config/mpu_geometry.h> // KICKOS_MPU_MAX_REGIONS (generated)
 #include <kickos/config/priorities.h> // the scheduler's priority range (generated)
 
-// Structural bounded-spin backstop for raw synchronous MMIO polls on the
-// panic/fault/boot path: a wedged peripheral must never hang, so every such poll
-// caps here and bails. NOT a per-app knob: it dwarfs a real per-byte wait at any baud.
-// Chip console-sync loops and the console-TX drain caps single-source this.
+// Bounded-spin backstop for raw synchronous MMIO polls on the panic/fault/boot path: a wedged
+// peripheral must never hang. It dwarfs a real per-byte wait at any baud.
 #define KICKOS_POLL_SPIN_MAX 1000000u
 
 #endif

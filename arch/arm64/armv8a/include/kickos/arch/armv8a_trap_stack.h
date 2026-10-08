@@ -37,12 +37,12 @@
 /* IRQ and IRQK. 736 on qemu-arm64-amp, 672 benchgicv3 and benchsmp12, 656 gicv3, 560 benchsmp
  * and benchsmp2, 544 smp and smpiso, 464 amp3, 448 amp2, 432 bench, 384 qemu-arm64 and
  * imx8mp-evk. The AMP doorbell's payload drain wins:
- *   kickos_armv8a_irq[32] -> kickos_armv8a_gic_dispatch[32] -> kickos_arm64_doorbell_service[16]
+ *   kickos_armv8a_irq[32] -> kickos_armv8a_gic_dispatch[32] -> kickos_doorbell_service[32]
  *   -> amp::node_service[144] -> amp::take_call[160] -> amp::depth_ok[96] -> amp::send[64]
  *   -> amp::send_on[64] -> arch_ipi_send[32] -> kickos_armv8a_gic_doorbell_send[96]
  * Above one core it is an interrupt event's wake whose switch spins on the kernel lock and
  * services a route ask: ... notify_raise -> sched::wake -> pick_and_seat -> klock_attach
- * -> arch_kernel_lock -> kickos_doorbell_poll -> kickos_arm64_doorbell_service
+ * -> arch_kernel_lock -> kickos_doorbell_poll -> kickos_doorbell_service
  * -> kickos_irq_route_service -> arch_irq_mask -> wait_gicd_rwp -> kfault_terminate. */
 #define KICKOS_ARMV8A_TRAP_DEPTH_IRQ 768
 
@@ -87,7 +87,7 @@
  *   kickos_thread_fault_exit -> exit_current[112] -> cap_teardown[80] -> teardown_entry[80]
  *   -> obj_close_protocol -> endpoint_rights_dropped -> refuse_senders -> sched::wake
  *   -> pick_and_seat -> arch_switch -> kickos_armv8a_switch_now[800] -> kickos_switch_unlock
- *   -> sched_flush_owed -> klock_resched_ask -> kickos_kernel_core_resched_owe */
+ *   -> sched_flush_owed -> klock_resched_ask -> resched_owe */
 #define KICKOS_ARMV8A_TRAP_DEPTH_EXITKSW 2048
 
 /* kickos_thread_return on a privileged thread's own stack with an interrupt nested below. 1216

@@ -30,9 +30,6 @@ extern "C"
 // space and QEMU's CLINT gates the msip write on no privilege, both measured on qemu-riscv64.
 void kickos_rv64_doorbell_send(uint32_t cores);
 
-// The far side, on the calling core: answers every peer that has asked. Takes NO kernel lock.
-void kickos_rv64_doorbell_service(void);
-
 // Whether any peer has asked this core for something it has not answered. THE CELL, NOT THE
 // RAISE, is what says a service is owed: sip.SSIP carries the local device-line injection too.
 int kickos_rv64_doorbell_pending(void);

@@ -136,7 +136,7 @@ struct console_tx_backend const* arch_console_tx_backend(char** storage, uint32_
                                                          int* irq_line);
 
 // Relinquish the buffered TX path so a userspace driver can take the UART. Idempotent.
-// Runs under one IrqLock, with the ownership state held at HANDING_OFF across it. See the
+// Caller holds IrqLock, with the ownership state held at HANDING_OFF across it. See the
 // console-handover design (D2).
 void console_tx_deinit(void);
 
@@ -167,7 +167,6 @@ void console_held_take(uint32_t n);
 // MUST be bracketed by enter/leave, else kos_console_publish cannot drain an in-flight
 // writer before handing the UART over. See the console-handover design (D1/D3).
 int console_owner_is_kernel(void);   // nonzero while the kernel owns the UART (KERNEL_OWNED)
-void console_chip_writer_enter(void); // bracket a kernel-owned device poke
 void console_chip_writer_leave(void);
 int console_chip_writers(void);      // in-flight kernel chip writers (publish drain spin)
 
@@ -191,13 +190,6 @@ void console_owner_set_user(void);
 // cleared by a reclaim that goes through, and by a re-publish, which retires a note naming the
 // console it replaced.
 void console_note_driver_death(void);
-// The reclaim itself. Puts the UART back in a known polled state so panic and ordinary
-// kprintf still reach the wire, and wakes every writer waiting out the dark window. Idempotent,
-// and a no-op if the console was never published, if no death is noted, while a publish is
-// handing over (its set_user acts on the note), or while ANY live thread still holds
-// arch_console_reclaim_window(). Only a thread DEATH can free that window, so a refusal is
-// retried at the next death. Caller holds IrqLock.
-void console_on_driver_death(void);
 // Nonzero in the DARK WINDOW: the published console's task has ended and the reclaim still
 // waits on a thread holding the device. Caller holds IrqLock.
 int console_dark(void);

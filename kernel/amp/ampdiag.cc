@@ -53,10 +53,6 @@ namespace kickos
             // Bounds the wait, so a partition whose peer never started reports instead of
             // hanging the primary at boot.
             constexpr uint32_t REPORT_SPINS = 20000000u;
-
-#ifndef KICKOS_AMP_DIAG_TAG
-#define KICKOS_AMP_DIAG_TAG 0u
-#endif
         }
 
         void diag_peer_publish()

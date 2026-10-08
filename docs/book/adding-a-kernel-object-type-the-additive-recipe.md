@@ -95,11 +95,20 @@ Each is a switch whose arms are the object types, with a debug-trapping `default
 ```
 void obj_ref_drop(CapEntry const& e, bool teardown)
 {
+    Kernel& k = kernel();
     switch (static_cast<CapType>(e.type))
     {
-    case CapType::CAP_SEM:      sem_ref_drop(e.obj, teardown);      return;
-    case CapType::CAP_MUTEX:    mutex_ref_drop(e.obj, teardown);    return;
-    case CapType::CAP_ENDPOINT: endpoint_ref_drop(e.obj, teardown); return;
+    case CapType::CAP_SEM:
+    {
+        int const idx = obj_ref_last(k.sems, k.sem_refs, e.obj);   // -1 unless the last ref
+        if (idx < 0 or leaks(not k.sems.at(idx)->waiters.empty(), &k.sem_refs[idx], teardown))
+        {
+            return;
+        }
+        k.sems.free(e.obj);
+        return;
+    }
+    // ... one arm per counted type, each the same three steps ...
     default:
         KICKOS_ASSERT(false);   // unknown type: loud in debug, safe leak in release
         return;

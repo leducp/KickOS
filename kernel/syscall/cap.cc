@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Capability-table manager (see cap.h): the per-thread naming+rights layer over the
-// global object pools, plus the object-side refcount (kernel().sem_refs) that owns
-// destroy-on-last-close.
+// Capability-table manager (see cap.h): the per-thread naming and rights layer over the
+// global object pools, plus the object-side refcounts that own destroy-on-last-close.
 
 #include <kickos/ampwindow.h>
 #include <kickos/cap.h>
@@ -24,10 +23,8 @@ namespace kickos
 {
     namespace
     {
-        // "No stdout target published yet". The all-ones index, which SlotPool never seats
-        // (slotpool.h), so no live endpoint handle can equal it. Tested by EQUALITY, never by
-        // sign: a live handle spends the whole word, and one whose slot generation has reached
-        // 32768 has bit 31 set and is NEGATIVE as an int.
+        // "No stdout target published yet": the all-ones index, which SlotPool never seats.
+        // Tested by EQUALITY, never by sign: a live handle may be negative as an int.
         constexpr int KCAP_STDOUT_NONE = -1;
 
         // Console stdout target: the GLOBAL gen-encoded endpoint handle a userspace
@@ -39,6 +36,20 @@ namespace kickos
         int& stdout_target()
         {
             return g_stdout_target.get();
+        }
+
+        CapEntry* stdout_on_console(Thread const* t)
+        {
+            if (not cap_run_held(t->caps))
+            {
+                return nullptr;
+            }
+            CapEntry* const e = cap_slot(t->caps, KOS_CAP_STDOUT);
+            if (e->type != static_cast<uint8_t>(CapType::CAP_ENDPOINT) or e->obj != stdout_target())
+            {
+                return nullptr;
+            }
+            return e;
         }
 
         // Every .bss datum this module owns, in ONE object. The grouping is load-bearing:
@@ -54,8 +65,7 @@ namespace kickos
             CapChunkList free_chunks;
             // Threads inside cap_teardown right now. A count, not a flag: a dying thread can
             // be switched out mid-sweep and a second thread can then enter and finish its own
-            // sweep first. The two routes that do it are enumerated at cap.h's cap_teardown
-            // declaration.
+            // sweep first.
             unsigned teardown_depth;
         };
         // Per instance: the slab IS the capability namespace, and a second kernel's
@@ -67,169 +77,99 @@ namespace kickos
             return g_cap_all.get();
         }
 
-        // Slot index of the semaphore a global handle names (via the live object, so
-        // the SlotPool handle codec is never assumed here). -1 if it does not resolve.
-        int sem_index_of(int obj_handle)
+        // `teardown` is the noreturn exit path, which must never strand a parked waiter: a last
+        // reference dropped there with a waiter still linked LEAKS the object instead, refs
+        // floored at 1. Unreachable via close, since a parked waiter is BLOCKED and pins its
+        // own cap.
+        bool leaks(bool parked, uint8_t* refs, bool teardown)
         {
-            return kernel().sems.index_of(kernel().sems.resolve(obj_handle));
-        }
-
-        // Drop one reference to semaphore `obj_handle`; free it at refs -> 0. `teardown` is
-        // the noreturn exit path, which must never strand a parked waiter, so a would-be free
-        // with waiters still linked LEAKS (floors refs at 1). That branch is unreachable via
-        // close, since a parked waiter pins its own cap, hence the assert.
-        void sem_ref_drop(int obj_handle, bool teardown)
-        {
-            int const idx = sem_index_of(obj_handle);
-            if (idx < 0)
+            if (not parked)
             {
-                return; // already gone: cannot happen under correct refcounting
+                return false;
             }
-            uint8_t& r = kernel().sem_refs[idx];
-            if (r > 0)
-            {
-                r--;
-            }
-            if (r == 0)
-            {
-                Semaphore* s = kernel().sems.resolve(obj_handle);
-                if (s != nullptr and not s->waiters.empty())
-                {
-                    KICKOS_ASSERT(teardown); // refs->0 with a waiter parked is unreachable via close
-                    r = 1;                   // leak, never strand
-                    return;
-                }
-                kernel().sems.free(obj_handle);
-            }
+            KICKOS_ASSERT(teardown);
+            *refs = 1;
+            return true;
         }
 
 #if KICKOS_HAVE_ASPACE
-        int frame_run_index_of(int obj_handle)
+        // Apart from obj_ref_drop: the address-space release reaches it, and obj_ref_drop's
+        // domain arm reaches that release, which would close a call cycle.
+        void frame_run_drop(int obj_handle)
         {
-            return kernel().frame_runs.index_of(kernel().frame_runs.resolve(obj_handle));
-        }
-
-        // At refs -> 0 the FRAMES go back and then the slot does. Freeing the slot first would
-        // lose the base and page count the release needs.
-        void frame_run_ref_drop(int obj_handle, bool teardown)
-        {
-            (void)teardown;
-            int const idx = frame_run_index_of(obj_handle);
+            Kernel& k = kernel();
+            int const idx = obj_ref_last(k.frame_runs, k.frame_run_refs, obj_handle);
             if (idx < 0)
             {
-                return; // already gone: cannot happen under correct refcounting
+                return;
             }
-            uint8_t& r = kernel().frame_run_refs[idx];
-            if (r > 0)
+            // The frames before the slot, which holds their base and page count.
+            FrameRun const* const f = k.frame_runs.at(idx);
+            if (f->pages > 0)
             {
-                r--;
+                frame_pool_free_run(f->base, f->pages, arch_aspace_granule());
             }
-            if (r == 0)
-            {
-                FrameRun* f = kernel().frame_runs.resolve(obj_handle);
-                if (f != nullptr and f->pages > 0)
-                {
-                    frame_pool_free_run(f->base, f->pages, arch_aspace_granule());
-                }
-                kernel().frame_runs.free(obj_handle);
-            }
+            k.frame_runs.free(obj_handle);
         }
 #endif
 
-        int mutex_index_of(int obj_handle)
+        // Drop one reference to an object and free it at the last. A new type reaching the
+        // default without its own arm traps in debug and leaks in release; a silent skip would
+        // lose the reference with no diagnostic.
+        void obj_ref_drop(CapEntry const& e, bool teardown, Held held)
         {
-            return kernel().mutexes.index_of(kernel().mutexes.resolve(obj_handle));
-        }
-
-        // Drop one reference to mutex `obj_handle`; free at refs -> 0. Same leak-don't-strand
-        // guard as sem_ref_drop: refs -> 0 with a waiter still parked is unreachable via close,
-        // because a parked waiter is BLOCKED and cannot run handle_close. refs -> 0 also
-        // implies owner == nullptr: an owner's own cap pins a ref through the close-of-owned
-        // refusal, and the exit path force-unlocks before this drop.
-        void mutex_ref_drop(int obj_handle, bool teardown)
-        {
-            int const idx = mutex_index_of(obj_handle);
-            if (idx < 0)
-            {
-                return;
-            }
-            uint8_t& r = kernel().mutex_refs[idx];
-            if (r > 0)
-            {
-                r--;
-            }
-            if (r == 0)
-            {
-                Mutex* m = kernel().mutexes.resolve(obj_handle);
-                if (m != nullptr and not m->waiters.empty())
-                {
-                    KICKOS_ASSERT(teardown); // refs->0 with a waiter parked is unreachable via close
-                    r = 1;                   // leak, never strand
-                    return;
-                }
-                KICKOS_ASSERT(m == nullptr or m->owner == nullptr); // never free a locked, reachable mutex
-                kernel().mutexes.free(obj_handle);
-            }
-        }
-
-        int endpoint_index_of(int obj_handle)
-        {
-            return kernel().endpoints.index_of(kernel().endpoints.resolve(obj_handle));
-        }
-
-        // Drop one reference to endpoint `obj_handle`; free at refs -> 0. The
-        // leak-don't-strand guard checks BOTH waitqs, and is unreachable via close: a parked
-        // sender pins its own SIGNAL cap and a parked receiver its own WAIT cap, recv_holders
-        // -> 0 has already emptied send_waiters, and recv_waiters requires a WAIT cap.
-        void endpoint_ref_drop(int obj_handle, bool teardown)
-        {
-            int const idx = endpoint_index_of(obj_handle);
-            if (idx < 0)
-            {
-                return;
-            }
-            uint8_t& r = kernel().endpoint_refs[idx];
-            if (r > 0)
-            {
-                r--;
-            }
-            if (r == 0)
-            {
-                Endpoint* e = kernel().endpoints.resolve(obj_handle);
-                if (e != nullptr and (not e->send_waiters.empty() or not e->recv_waiters.empty()))
-                {
-                    KICKOS_ASSERT(teardown); // refs->0 with a waiter parked is unreachable via close
-                    r = 1;                   // leak, never strand
-                    return;
-                }
-                // A live server pins a WAIT-bearing cap, so neither recv_holders nor
-                // endpoint_refs can reach 0 while the field is set. A slot freed with it set
-                // would leave a chain entry pointing into a reused endpoint.
-                KICKOS_ASSERT(e == nullptr or e->server == nullptr);
-                kernel().endpoints.free(obj_handle);
-            }
-        }
-
-        // Drop one reference to the object a (now-detached) cap entry named. A new type
-        // reaching the default without its own arm traps in debug and leaks in release; a
-        // silent skip would lose the reference with no diagnostic.
-        void obj_ref_drop(CapEntry const& e, bool teardown)
-        {
+            Kernel& k = kernel();
+            int const obj_handle = e.obj;
             switch (static_cast<CapType>(e.type))
             {
             case CapType::CAP_SEM:
             {
-                sem_ref_drop(e.obj, teardown);
+                int const idx = obj_ref_last(k.sems, k.sem_refs, obj_handle);
+                if (idx < 0
+                    or leaks(not k.sems.at(idx)->waiters.empty(), &k.sem_refs[idx], teardown))
+                {
+                    return;
+                }
+                k.sems.free(obj_handle);
                 return;
             }
             case CapType::CAP_MUTEX:
             {
-                mutex_ref_drop(e.obj, teardown);
+                int const idx = obj_ref_last(k.mutexes, k.mutex_refs, obj_handle);
+                if (idx < 0)
+                {
+                    return;
+                }
+                Mutex const* const m = k.mutexes.at(idx);
+                if (leaks(not m->waiters.empty(), &k.mutex_refs[idx], teardown))
+                {
+                    return;
+                }
+                // An owner's own cap pins a ref through the close-of-owned refusal, and the exit
+                // path force-unlocks before this drop.
+                KICKOS_ASSERT(m->owner == nullptr);
+                k.mutexes.free(obj_handle);
                 return;
             }
             case CapType::CAP_ENDPOINT:
             {
-                endpoint_ref_drop(e.obj, teardown);
+                // recv_holders -> 0 has already emptied send_waiters, and a receiver parks only
+                // with a WAIT cap of its own.
+                int const idx = obj_ref_last(k.endpoints, k.endpoint_refs, obj_handle);
+                if (idx < 0)
+                {
+                    return;
+                }
+                Endpoint const* const ep = k.endpoints.at(idx);
+                if (leaks(not ep->send_waiters.empty() or not ep->recv_waiters.empty(),
+                          &k.endpoint_refs[idx], teardown))
+                {
+                    return;
+                }
+                // A live server pins a WAIT-bearing cap. A slot freed with the field set would
+                // leave a chain entry pointing into a reused endpoint.
+                KICKOS_ASSERT(ep->server == nullptr);
+                k.endpoints.free(obj_handle);
                 return;
             }
             case CapType::CAP_REPLY:
@@ -238,23 +178,23 @@ namespace kickos
             }
             case CapType::CAP_IRQ:
             {
-                irq_ref_drop(e.obj, teardown);
+                irq_ref_drop(obj_handle, held);
                 return;
             }
             case CapType::CAP_NOTIFY:
             {
-                notify_ref_drop(e.obj, teardown);
+                notify_ref_drop(obj_handle);
                 return;
             }
 #if KICKOS_HAVE_ASPACE
             case CapType::CAP_FRAME:
             {
-                frame_run_ref_drop(e.obj, teardown);
+                frame_run_drop(obj_handle);
                 return;
             }
             case CapType::CAP_ASPACE:
             {
-                domain_release(domain_resolve(e.obj)); // null-safe; frees at the last hold
+                domain_release(domain_resolve(obj_handle)); // null-safe; frees at the last hold
                 return;
             }
 #endif
@@ -266,22 +206,22 @@ namespace kickos
             }
         }
 
-        // Answer every sender parked on `ep` with `answer`. Caller holds IrqLock.
-        void answer_senders(Endpoint* ep, int32_t answer)
+        // Answer every sender parked on `ep` with `answer`.
+        void answer_senders(Endpoint* ep, int32_t answer, Held held)
         {
             Thread* s;
             while ((s = wq_pop_highest(ep->send_waiters)) != nullptr)
             {
                 // A SEND_WAIT caller returns via kos_call's call_state clear.
                 s->wait_result = answer;
-                sched::wake(s);
+                sched::wake(s, held);
             }
         }
 
-        // Answer every sender parked on `ep` what a new one would be told. Caller holds IrqLock.
-        void refuse_senders(Endpoint* ep)
+        // Answer every sender parked on `ep` what a new one would be told.
+        void refuse_senders(Endpoint* ep, Held held)
         {
-            answer_senders(ep, endpoint_unserved(ep, 0));
+            answer_senders(ep, endpoint_unserved(ep, 0), held);
         }
 
         // `dropped` leaves a cap naming endpoint `obj`, by a close, a teardown or a narrow.
@@ -290,7 +230,8 @@ namespace kickos
         // the handout right remains, -KOS_ECONNREFUSED once none does. Fired exactly once
         // (recv_holders -> 0), on a voluntary close, an exit teardown and a narrow alike. The
         // published console while its task lives is the exception: its senders stay parked.
-        void endpoint_rights_dropped(Thread* closer, int obj, uint8_t dropped, bool teardown)
+        void endpoint_rights_dropped(Thread* closer, int obj, uint8_t dropped, bool teardown,
+                                     Held held)
         {
             Endpoint* ep = kernel().endpoints.resolve(obj);
             if (ep == nullptr)
@@ -319,8 +260,8 @@ namespace kickos
                     uint8_t const np = thread_effective_prio(closer);
                     if (np != closer->prio)
                     {
-                        sched::set_prio(closer, np);
-                        sched::reschedule();
+                        sched::set_prio(closer, np, held);
+                        sched::reschedule(nullptr, held);
                     }
                 }
             }
@@ -338,12 +279,12 @@ namespace kickos
             {
                 return;
             }
-            refuse_senders(ep);
+            refuse_senders(ep, held);
         }
 
         // Per-type close/exit protocol, run BEFORE detach + drop at both call sites.
         // Returns 0, or a negative -KOS_E* to refuse a voluntary (non-teardown) close.
-        int obj_close_protocol(Thread* closer, CapEntry const& e, bool teardown)
+        int obj_close_protocol(Thread* closer, CapEntry const& e, bool teardown, Held held)
         {
             switch (static_cast<CapType>(e.type))
             {
@@ -364,12 +305,12 @@ namespace kickos
                 }
                 // The owner is exiting. Force-unlock BEFORE the ref drop so a
                 // waiter is never stranded; the woken lock() caller gets OWNER_DIED.
-                mutex_force_unlock(m, closer);
+                mutex_force_unlock(m, closer, held);
                 return 0;
             }
             case CapType::CAP_ENDPOINT:
             {
-                endpoint_rights_dropped(closer, e.obj, e.rights, teardown);
+                endpoint_rights_dropped(closer, e.obj, e.rights, teardown, held);
                 return 0; // endpoints NEVER refuse a close, unlike a mutex its owner holds
             }
 #if KICKOS_HAVE_ASPACE
@@ -406,14 +347,14 @@ namespace kickos
                 // carries no errno, so a service that died and a service that answered nothing
                 // both reach that caller the same way. Where the reply ring refuses the
                 // publication the obligation is left pending on this node's own bound.
-                if (ThreadPool::far_reply_is(static_cast<uint32_t>(cap_reply_handle(e))))
+                if (ThreadPool::far_reply_is(cap_reply_handle(e)))
                 {
                     amp::inbound_reply(
-                        ThreadPool::far_reply_record(static_cast<uint32_t>(cap_reply_handle(e))),
+                        ThreadPool::far_reply_record(cap_reply_handle(e)),
                         nullptr, 0u);
                     if (not teardown)
                     {
-                        sched::set_prio(closer, thread_effective_prio(closer));
+                        sched::set_prio(closer, thread_effective_prio(closer), held);
                     }
                     return 0;
                 }
@@ -437,11 +378,11 @@ namespace kickos
                 // still-boosted closer. Mirrors endpoint_reply's deflate-then-wake order.
                 if (not teardown)
                 {
-                    sched::set_prio(closer, thread_effective_prio(closer));
+                    sched::set_prio(closer, thread_effective_prio(closer), held);
                 }
                 if (caller != nullptr)
                 {
-                    sched::wake(caller);
+                    sched::wake(caller, held);
                 }
                 return 0;
             }
@@ -471,7 +412,7 @@ namespace kickos
             {
             case CapType::CAP_SEM:
             {
-                int const idx = sem_index_of(obj_handle); // rights: sem accounting ignores them
+                int const idx = kernel().sems.live_index(obj_handle);
                 if (idx < 0)
                 {
                     return false;
@@ -481,7 +422,7 @@ namespace kickos
             }
             case CapType::CAP_MUTEX:
             {
-                int const idx = mutex_index_of(obj_handle);
+                int const idx = kernel().mutexes.live_index(obj_handle);
                 if (idx < 0)
                 {
                     return false;
@@ -491,12 +432,12 @@ namespace kickos
             }
             case CapType::CAP_ENDPOINT:
             {
-                Endpoint* const ep = kernel().endpoints.resolve(obj_handle);
-                int const idx = kernel().endpoints.index_of(ep);
+                int const idx = kernel().endpoints.live_index(obj_handle);
                 if (idx < 0)
                 {
                     return false;
                 }
+                Endpoint* const ep = kernel().endpoints.at(idx);
                 *refs = &kernel().endpoint_refs[idx];
                 // A cap COPY carrying CAP_WAIT adds a receiver holder, and one carrying the
                 // handout right a holder that may seat one.
@@ -512,8 +453,7 @@ namespace kickos
             }
             case CapType::CAP_IRQ:
             {
-                IrqBinding* const b = kernel().irq_bindings.resolve(obj_handle);
-                int const idx = kernel().irq_bindings.index_of(b);
+                int const idx = kernel().irq_bindings.live_index(obj_handle);
                 if (idx < 0)
                 {
                     return false;
@@ -534,7 +474,7 @@ namespace kickos
 #if KICKOS_HAVE_ASPACE
             case CapType::CAP_FRAME:
             {
-                int const idx = frame_run_index_of(obj_handle);
+                int const idx = kernel().frame_runs.live_index(obj_handle);
                 if (idx < 0)
                 {
                     return false;
@@ -560,12 +500,10 @@ namespace kickos
         }
     }
 
-    // Bump one reference to the object a global handle names. Handle MUST resolve.
-    // Caller holds IrqLock.
 #if KICKOS_HAVE_ASPACE
     bool frame_run_ref(int obj_handle)
     {
-        int const idx = frame_run_index_of(obj_handle);
+        int const idx = kernel().frame_runs.live_index(obj_handle);
         if (idx < 0)
         {
             return false;
@@ -581,7 +519,7 @@ namespace kickos
 
     int frame_run_slot_of(int obj_handle)
     {
-        return frame_run_index_of(obj_handle);
+        return kernel().frame_runs.live_index(obj_handle);
     }
 
     void frame_run_release_by_slot(int slot)
@@ -593,12 +531,12 @@ namespace kickos
         {
             return;
         }
-        frame_run_ref_drop(kernel().frame_runs.handle_for(slot), true);
+        frame_run_drop(kernel().frame_runs.handle_for(slot));
     }
 
     uint8_t frame_run_refcount(int obj_handle)
     {
-        int const idx = frame_run_index_of(obj_handle);
+        int const idx = kernel().frame_runs.live_index(obj_handle);
         if (idx < 0)
         {
             return 0;
@@ -608,7 +546,7 @@ namespace kickos
 
     void frame_run_release(int obj_handle)
     {
-        frame_run_ref_drop(obj_handle, false);
+        frame_run_drop(obj_handle);
     }
 
     bool frame_run_sync_owed(int obj_handle)
@@ -1077,7 +1015,7 @@ namespace kickos
         {
             return nullptr;
         }
-        if ((e->rights & need) != need) // rights enforced HERE, nowhere else
+        if ((e->rights & need) != need)
         {
             *err = KOS_EACCES; // named a valid cap but it lacks a required right
             return nullptr;
@@ -1128,29 +1066,6 @@ namespace kickos
         return cap_resolve_e(c, cap_handle, want, need, &err);
     }
 
-    constexpr bool rights_mirror(CapRights kernel, kos_cap_rights abi)
-    {
-        return static_cast<uint32_t>(kernel) == static_cast<uint32_t>(abi);
-    }
-    static_assert(rights_mirror(CAP_WAIT, KOS_CAP_WAIT)
-                      and rights_mirror(CAP_SIGNAL, KOS_CAP_SIGNAL)
-                      and rights_mirror(CAP_TRANSFER, KOS_CAP_TRANSFER)
-                      and rights_mirror(CAP_HANDOUT, KOS_CAP_HANDOUT),
-                  "CapRights and the ABI's kos_cap_rights must number every bit alike");
-    constexpr bool auth_mirrors(CapAuthority kernel, kos_cap_authority abi)
-    {
-        return static_cast<uint32_t>(kernel) == static_cast<uint32_t>(abi);
-    }
-    static_assert(auth_mirrors(AUTH_MEMORY, KOS_AUTH_MEMORY)
-                      and auth_mirrors(AUTH_PINMUX, KOS_AUTH_PINMUX)
-                      and auth_mirrors(AUTH_PSTATE, KOS_AUTH_PSTATE)
-                      and auth_mirrors(AUTH_IRQ, KOS_AUTH_IRQ)
-                      and auth_mirrors(AUTH_SYSTEM, KOS_AUTH_SYSTEM)
-                      and auth_mirrors(AUTH_CONSOLE, KOS_AUTH_CONSOLE)
-                      and auth_mirrors(AUTH_TASKS, KOS_AUTH_TASKS)
-                      and auth_mirrors(AUTH_BUS_MASTER, KOS_AUTH_BUS_MASTER),
-                  "CapAuthority and the ABI's kos_cap_authority must number every bit alike");
-
     bool cap_check_authority(Thread* c, uint32_t need)
     {
         if (c == nullptr)
@@ -1170,7 +1085,7 @@ namespace kickos
         t->authority = auth & CAP_AUTH_ALL;
     }
 
-    int cap_narrow(Thread* c, uint32_t cap_handle, uint32_t mask)
+    int cap_narrow(Thread* c, uint32_t cap_handle, uint32_t mask, Held held)
     {
         if (cap_handle == KOS_CAP_AUTHORITY)
         {
@@ -1195,7 +1110,7 @@ namespace kickos
         // given up here leaves them as a close of a cap carrying it would.
         if (static_cast<CapType>(e->type) == CapType::CAP_ENDPOINT and dropped != 0)
         {
-            endpoint_rights_dropped(c, e->obj, dropped, /*teardown=*/false);
+            endpoint_rights_dropped(c, e->obj, dropped, /*teardown=*/false, held);
         }
         return 0;
     }
@@ -1337,6 +1252,27 @@ namespace kickos
         return 0;
     }
 
+    void cap_slot_vacate(Thread* c, uint32_t index, CapEntry* e)
+    {
+#if KCAP_RUN_CHUNKS > 1
+        // The flat path counts live replies by scanning, so it has no count to settle.
+        if (e->type == static_cast<uint8_t>(CapType::CAP_REPLY))
+        {
+            KICKOS_ASSERT(c->cap_reply_live > 0);
+            c->cap_reply_live--;
+        }
+#endif
+        if (e->type == static_cast<uint8_t>(CapType::CAP_IRQ))
+        {
+            KICKOS_DEBUG_ASSERT(c->cap_irq_live > 0);
+            c->cap_irq_live--;
+        }
+        e->gen++;
+        e->type = static_cast<uint8_t>(CapType::CAP_EMPTY);
+        e->rights = 0;
+        cap_run_free_release(c->caps, index, e, &c->cap_free_head);
+    }
+
     bool cap_uninstall_reply(Thread* c, uint32_t cap, Thread* caller)
     {
         CapEntry* const e = cap_lookup(c, cap);
@@ -1357,13 +1293,8 @@ namespace kickos
         {
             return false; // not the reply this caller's mint seated
         }
-        // cap_run_free_release writes the free-list links over `obj`, so it must follow the
-        // read above. CAP_REPLY holds no object reference, so nothing is dropped.
-        e->gen++;
-        e->type = static_cast<uint8_t>(CapType::CAP_EMPTY);
-        e->rights = 0;
-        cap_run_free_release(c->caps, cap & KCAP_INDEX_MASK, e, &c->cap_free_head);
-        cap_reply_released(c);
+        // After the read above. CAP_REPLY holds no object reference, so nothing is dropped.
+        cap_slot_vacate(c, cap & KCAP_INDEX_MASK, e);
         return true;
     }
 
@@ -1402,18 +1333,13 @@ namespace kickos
         {
             return false;
         }
-        uint32_t const handle = static_cast<uint32_t>(cap_reply_handle(*e));
+        uint32_t const handle = cap_reply_handle(*e);
         if (not ThreadPool::far_reply_is(handle) or ThreadPool::far_reply_record(handle) != record)
         {
             return false;
         }
-        // cap_run_free_release writes the free-list links over `obj`, so it must follow the
-        // read above. CAP_REPLY holds no object reference, so nothing is dropped.
-        e->gen++;
-        e->type = static_cast<uint8_t>(CapType::CAP_EMPTY);
-        e->rights = 0;
-        cap_run_free_release(c->caps, cap & KCAP_INDEX_MASK, e, &c->cap_free_head);
-        cap_reply_released(c);
+        // After the read above. CAP_REPLY holds no object reference, so nothing is dropped.
+        cap_slot_vacate(c, cap & KCAP_INDEX_MASK, e);
         return true;
     }
 #endif
@@ -1437,16 +1363,6 @@ namespace kickos
         return n;
 #else
         return c->cap_reply_live;
-#endif
-    }
-
-    void cap_reply_released(Thread* c)
-    {
-#if KCAP_RUN_CHUNKS == 1
-        (void)c;
-#else
-        KICKOS_ASSERT(c->cap_reply_live > 0);
-        c->cap_reply_live--;
 #endif
     }
 
@@ -1495,47 +1411,23 @@ namespace kickos
         return cap_reply_thread(cap_reply_handle(e), cap_reply_seq(e), KCAP_REPLY_SEQ_MASK);
     }
 
-    namespace
-    {
-        // The per-type accounting a slot release owes, at the ONE place both release sites
-        // reach, so neither can drift from the other.
-        void cap_slot_released(Thread* c, CapEntry const& detached)
-        {
-            if (detached.type == static_cast<uint8_t>(CapType::CAP_REPLY))
-            {
-                cap_reply_released(c);
-            }
-            else if (detached.type == static_cast<uint8_t>(CapType::CAP_IRQ))
-            {
-                KICKOS_DEBUG_ASSERT(c->cap_irq_live > 0);
-                c->cap_irq_live--;
-            }
-        }
-    }
-
-    int handle_close(Thread* c, uint32_t cap_handle)
+    int handle_close(Thread* c, uint32_t cap_handle, Held held)
     {
         CapEntry* e = cap_lookup(c, cap_handle);
         if (e == nullptr)
         {
             return -KOS_EBADF;
         }
-        int const refused = obj_close_protocol(c, *e, /*teardown=*/false);
+        int const refused = obj_close_protocol(c, *e, /*teardown=*/false, held);
         if (refused != 0)
         {
             return refused; // protocol refused the close (owner closing a held mutex -> -KOS_EBUSY)
         }
         CapEntry const detached = *e;
-        // Stale the handle + empty the slot BEFORE dropping the ref, so the slot is
-        // cleanly reusable and no stale handle resolves during the drop. The release writes
-        // the free-list links over `obj`, so it must follow the copy above.
-        e->gen++;
-        e->type = static_cast<uint8_t>(CapType::CAP_EMPTY);
-        e->rights = 0;
-        cap_run_free_release(c->caps, cap_handle & KCAP_INDEX_MASK, e, &c->cap_free_head);
-        // The CAP_REPLY half of this is the close-instead-of-reply path kos_reply does not cover.
-        cap_slot_released(c, detached);
-        obj_ref_drop(detached, /*teardown=*/false);
+        // Vacated BEFORE the ref drops, so no stale handle resolves during the drop, and
+        // after the copy above, whose obj the vacate overwrites.
+        cap_slot_vacate(c, cap_handle & KCAP_INDEX_MASK, e);
+        obj_ref_drop(detached, /*teardown=*/false, held);
         return 0;
     }
 
@@ -1548,25 +1440,19 @@ namespace kickos
     {
         // Release ONE live entry of a dying thread's table: protocol, stale the handle, empty
         // the slot, then drop the object reference. Both teardown passes go through it, so
-        // neither can drift from the other. Caller holds IrqLock and c->dying is set.
-        void teardown_entry(Thread* c, uint32_t i)
+        // neither can drift from the other. `c` is dying.
+        void teardown_entry(Thread* c, uint32_t i, Held held)
         {
             CapEntry& e = *cap_slot(c->caps, i);
-            obj_close_protocol(c, e, /*teardown=*/true);
+            obj_close_protocol(c, e, /*teardown=*/true, held);
             CapEntry const detached = e;
-            e.gen++;
-            e.type = static_cast<uint8_t>(CapType::CAP_EMPTY);
-            e.rights = 0;
-            cap_run_free_release(c->caps, i, &e, &c->cap_free_head);
-            cap_slot_released(c, detached);
-            obj_ref_drop(detached, /*teardown=*/true);
+            cap_slot_vacate(c, i, &e);
+            obj_ref_drop(detached, /*teardown=*/true, held);
         }
     }
 
     void cap_teardown(Thread* c)
     {
-        // Preconditions differ from every other entry point here: the caller must NOT
-        // hold IrqLock, and must have set c->dying first.
         KICKOS_ASSERT(c->dying);
 #if KICKOS_KERNEL_CORES > 1 && KICKOS_DEBUG
         KICKOS_DEBUG_ASSERT(klock_depth() == 0);
@@ -1592,7 +1478,7 @@ namespace kickos
                 {
                     if (cap_slot(c->caps, k)->type == static_cast<uint8_t>(CapType::CAP_IRQ))
                     {
-                        teardown_entry(c, k);
+                        teardown_entry(c, k, lock);
                     }
                 }
             }
@@ -1616,7 +1502,7 @@ namespace kickos
                 {
                     continue;
                 }
-                teardown_entry(c, i);
+                teardown_entry(c, i, lock);
             }
         }
         IrqLock lock;
@@ -1637,14 +1523,9 @@ namespace kickos
         cap_state().teardown_depth--;
     }
 
-    // Seat (or re-seat) a thread's reserved stdout slot (index 0) as a SEND-ONLY (CAP_SIGNAL,
-    // no WAIT/TRANSFER) copy of console endpoint `target`. CAP_SIGNAL bumps endpoint_refs but
-    // NOT recv_holders, so a client does not hold the dead-endpoint gate open. Written
-    // DIRECTLY, since cap_install_at rejects index 0; this and cap_install_defaults are the
-    // only writers that SEAT it. Take the new ref BEFORE dropping any prior one, or re-seating
-    // the same endpoint transiently frees it. The thread's own cap_teardown drops this ref at
-    // exit. Caller holds IrqLock.
-    bool cap_seat_stdout(Thread* t, int target)
+    // CAP_SIGNAL bumps endpoint_refs but NOT recv_holders, so a client does not hold the
+    // dead-endpoint gate open. Written DIRECTLY, since cap_install_at rejects index 0.
+    bool cap_seat_stdout(Thread* t, int target, Held held)
     {
         // Slot 0 is written with no bound test below. Ordered before the ref so a runless `t`
         // leaves nothing to undo.
@@ -1665,12 +1546,12 @@ namespace kickos
         cap_badge_seat(&e, KCAP_BADGE_NONE); // as cap_install_at: never inherited
         if (had_prior)
         {
-            obj_ref_drop(prior, /*teardown=*/false);
+            obj_ref_drop(prior, /*teardown=*/false, held);
         }
         return true;
     }
 
-    void cap_install_defaults(Thread* child)
+    void cap_install_defaults(Thread* child, Held held)
     {
         // Pre-publish: nothing seated (index 0 empty). The selftest/bring-up world that
         // never publishes is untouched, and its apps fall back to kconsole_write. A member of
@@ -1681,21 +1562,17 @@ namespace kickos
         }
         // A ceiling refusal leaves slot 0 empty, which is the state the child already handles
         // pre-publish, so the spawn is NOT failed over it.
-        (void)cap_seat_stdout(child, stdout_target());
+        (void)cap_seat_stdout(child, stdout_target(), held);
     }
 
-    // Move the kernel console reference and publisher's stdout slot to obj_handle.
-    // Caller holds IrqLock. Acquire both new references before releasing old ones
-    // so republishing the same endpoint cannot free it or partially fail.
-    // The kernel reference has no WAIT right and does not count as a receiver.
-    // Install the publisher's slot here because root predates console publication.
-    bool cap_console_publish(Thread* publisher, int obj_handle)
+    // The publisher's slot is seated here because root predates console publication.
+    bool cap_console_publish(Thread* publisher, int obj_handle, Held held)
     {
         if (not obj_ref_inc(CapType::CAP_ENDPOINT, obj_handle, 0))
         {
             return false;
         }
-        if (not cap_seat_stdout(publisher, obj_handle))
+        if (not cap_seat_stdout(publisher, obj_handle, held))
         {
             obj_ref_undo(CapType::CAP_ENDPOINT, obj_handle, 0);
             return false;
@@ -1712,23 +1589,20 @@ namespace kickos
                 for (int i = 0; i < KICKOS_THREAD_SLOTS; i++)
                 {
                     Thread* const th = &k.threads.slots[i];
-                    if (not cap_run_held(th->caps))
+                    if (stdout_on_console(th) != nullptr)
                     {
-                        continue;
-                    }
-                    CapEntry const& e = *cap_slot(th->caps, KOS_CAP_STDOUT);
-                    if (e.type == static_cast<uint8_t>(CapType::CAP_ENDPOINT)
-                        and e.obj == stdout_target())
-                    {
-                        (void)cap_seat_stdout(th, obj_handle);
+                        (void)cap_seat_stdout(th, obj_handle, held);
                     }
                 }
-                answer_senders(old, -KOS_EAGAIN);
+                answer_senders(old, -KOS_EAGAIN, held);
             }
         }
         if (stdout_target() != KCAP_STDOUT_NONE)
         {
-            endpoint_ref_drop(stdout_target(), /*teardown=*/false);
+            CapEntry stale = {};
+            stale.obj = stdout_target();
+            stale.type = static_cast<uint8_t>(CapType::CAP_ENDPOINT);
+            obj_ref_drop(stale, /*teardown=*/false, held);
         }
         stdout_target() = obj_handle;
         // No task serves it until cap_console_serve names one.
@@ -1740,7 +1614,7 @@ namespace kickos
         return true;
     }
 
-    int cap_console_publish_through(Thread* publisher, CapEntry* e, Task* served_by)
+    int cap_console_publish_through(Thread* publisher, CapEntry* e, Task* served_by, Held held)
     {
         if ((e->rights & CAP_HANDOUT) == 0)
         {
@@ -1757,7 +1631,7 @@ namespace kickos
         {
             return -KOS_EOVERFLOW;
         }
-        if (not cap_console_publish(publisher, e->obj))
+        if (not cap_console_publish(publisher, e->obj, held))
         {
             return -KOS_EOVERFLOW;
         }
@@ -1767,11 +1641,11 @@ namespace kickos
             ep->recv_holders++;
             ep->vacated = 0;
         }
-        cap_console_serve(served_by);
+        cap_console_serve(served_by, held);
         return 0;
     }
 
-    void cap_console_serve(Task* t)
+    void cap_console_serve(Task* t, Held held)
     {
         task_console_serve(t);
         Endpoint* const ep = cap_console_endpoint();
@@ -1785,25 +1659,25 @@ namespace kickos
         for (int i = 0; i < KICKOS_THREAD_SLOTS; i++)
         {
             Thread* const th = &k.threads.slots[i];
-            if (th->task != t or not cap_run_held(th->caps))
+            if (th->task != t)
             {
                 continue;
             }
-            CapEntry& e = *cap_slot(th->caps, KOS_CAP_STDOUT);
-            if (e.type != static_cast<uint8_t>(CapType::CAP_ENDPOINT) or e.obj != stdout_target())
+            CapEntry* const e = stdout_on_console(th);
+            if (e == nullptr)
             {
                 continue;
             }
             // No gen bump: KOS_CAP_STDOUT answers again once a later publish seats it.
-            CapEntry const prior = e;
-            e.type = static_cast<uint8_t>(CapType::CAP_EMPTY);
-            e.rights = 0;
-            cap_run_free_release(th->caps, KOS_CAP_STDOUT, &e, &th->cap_free_head);
-            obj_ref_drop(prior, /*teardown=*/false);
+            CapEntry const prior = *e;
+            e->type = static_cast<uint8_t>(CapType::CAP_EMPTY);
+            e->rights = 0;
+            cap_run_free_release(th->caps, KOS_CAP_STDOUT, e, &th->cap_free_head);
+            obj_ref_drop(prior, /*teardown=*/false, held);
         }
     }
 
-    void cap_console_task_ended()
+    void cap_console_task_ended(Held held)
     {
         // Before the senders are woken, who may run at once, and while the slain receivers still
         // wait, so no line is handed to one.
@@ -1813,10 +1687,10 @@ namespace kickos
             ep->console = EP_CONSOLE_ENDED;
         }
         console_note_driver_death();
-        console_on_driver_death();
+        console_on_driver_death(held);
         if (ep != nullptr)
         {
-            refuse_senders(ep);
+            refuse_senders(ep, held);
         }
     }
 
@@ -1831,17 +1705,16 @@ namespace kickos
 
     bool cap_console_serves(Thread const* t)
     {
-        if (stdout_target() == KCAP_STDOUT_NONE or not cap_run_held(t->caps))
+        if (stdout_target() == KCAP_STDOUT_NONE)
         {
             return false;
         }
-        CapEntry const& e = *cap_slot(t->caps, KOS_CAP_STDOUT);
-        if (e.type != static_cast<uint8_t>(CapType::CAP_ENDPOINT) or e.obj != stdout_target()
-            or (e.rights & CAP_SIGNAL) == 0)
+        CapEntry const* const e = stdout_on_console(t);
+        if (e == nullptr or (e->rights & CAP_SIGNAL) == 0)
         {
             return false;
         }
-        Endpoint const* const ep = kernel().endpoints.resolve(e.obj);
+        Endpoint const* const ep = kernel().endpoints.resolve(e->obj);
         return ep != nullptr and ep->console == EP_CONSOLE_SERVED;
     }
 }

@@ -12,6 +12,7 @@
 # python -m kickos_compose chip <chip or board file> --arch <arch> --include-dir <dir> --chip-dir <dir>
 # python -m kickos_compose chip <chip or board file> --arch <arch> --compare <header>
 #                               --cxx "<compiler> [<flag>...]"
+# python -m kickos_compose region --min-region <n> --pow2 <0|1> --stride <n> --word-bits <n> <want>...
 #
 # Against a manifest, the chip and board files are the ones its `descriptions` names. A run that
 # refuses exits REFUSED; any other failure exits otherwise.
@@ -27,6 +28,7 @@ from .descriptions import check_platform
 from .emit import admitted_of, emit_gate, emit_system
 from .manifest import check_manifests
 from .partition import admit_partition
+from .region import NO_UNIT_GRANULE, boot_figures
 from .supply import init_figures
 
 # The exit status of a run that refused what it read, which kickos_compose tells apart from a tool
@@ -93,10 +95,30 @@ def main(argv):
                          help="a hand-written chip_mmap.h, irq.h or chip_limits.h to assert against")
     headers.add_argument("--cxx",
                          help="the C++ compiler and flags the compare compiles with, as one shell word list")
+    rule = commands.add_parser("region", help="print the no-unit granule, then the size and alignment the RAM "
+                                              "region rule gives each want, one pair per line")
+    rule.add_argument("--min-region", required=True, type=int, help="arch_mpu_min_region")
+    rule.add_argument("--pow2", required=True, type=int, help="arch_mpu_region_pow2")
+    rule.add_argument("--stride", required=True, type=int,
+                      help="the block a thread pointer is masked from SP to, 0 for none")
+    rule.add_argument("--word-bits", required=True, type=int, help="the target's address width")
+    rule.add_argument("wants", nargs="*", type=int, help="the block sizes asked for")
     arguments = parser.parse_args(argv)
 
     if arguments.command == "chip":
         return run_chip(arguments)
+
+    if arguments.command == "region":
+        figures, refused = boot_figures(arguments.wants, arguments.min_region, arguments.pow2, arguments.stride,
+                                        arguments.word_bits)
+        if figures is None:
+            print("kickos_compose: a block of %d bytes rounds past the %d-bit address space, where no region "
+                  "descriptor names it" % (refused, arguments.word_bits), file=sys.stderr)
+            return REFUSED
+        print(NO_UNIT_GRANULE)
+        for size, align in figures:
+            print("%d %d" % (size, align))
+        return 0
 
     if arguments.command in ("admit", "emit", "cost", "partition", "gate"):
         platform = getattr(arguments, "platform", None)

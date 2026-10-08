@@ -62,9 +62,9 @@ namespace kickos
                 Thread* const r = spawn(SLOT_RUNNER, PRIO_LOW);
                 {
                     IrqLock lock;
-                    sched::reschedule();
+                    sched::reschedule(nullptr, lock);
                 }
-                EXPECT_EQ(kernel().current[kickos_kernel_core()], r) << "fixture: the runner is current";
+                EXPECT_EQ(kernel().current(kickos_kernel_core()), r) << "fixture: the runner is current";
                 g_switches = 0;
                 g_redirects = 0;
                 g_redirect_target = nullptr;
@@ -83,10 +83,10 @@ namespace kickos
 
             {
                 IrqLock lock;
-                sched::reschedule();
+                sched::reschedule(nullptr, lock);
             }
 
-            EXPECT_EQ(kernel().current[kickos_kernel_core()], v) << "fixture: the higher-priority victim was picked";
+            EXPECT_EQ(kernel().current(kickos_kernel_core()), v) << "fixture: the higher-priority victim was picked";
             EXPECT_EQ(g_redirects, 1u) << "its resume was claimed";
             EXPECT_EQ(g_redirect_target, v) << "and the context named is the victim's own";
         }
@@ -101,7 +101,7 @@ namespace kickos
 
             {
                 IrqLock lock;
-                sched::reschedule();
+                sched::reschedule(nullptr, lock);
             }
 
             char expect[64];
@@ -123,10 +123,10 @@ namespace kickos
 
             {
                 IrqLock lock;
-                sched::reschedule();
+                sched::reschedule(nullptr, lock);
             }
 
-            EXPECT_EQ(kernel().current[kickos_kernel_core()], v) << "fixture: the switch happened";
+            EXPECT_EQ(kernel().current(kickos_kernel_core()), v) << "fixture: the switch happened";
             EXPECT_EQ(g_redirects, 0u)
                 << "the hook reads the INCOMING thread only; a rebuild of the outgoing "
                    "context is what the switcher's save destroys";
@@ -142,7 +142,7 @@ namespace kickos
 
             {
                 IrqLock lock;
-                sched::reschedule();
+                sched::reschedule(nullptr, lock);
             }
 
             EXPECT_EQ(reinterpret_cast<void*>(g_redirect_entry),
@@ -165,10 +165,10 @@ namespace kickos
 
             {
                 IrqLock lock;
-                sched::reschedule();
+                sched::reschedule(nullptr, lock);
             }
 
-            EXPECT_EQ(kernel().current[kickos_kernel_core()], v) << "fixture: it was switched in";
+            EXPECT_EQ(kernel().current(kickos_kernel_core()), v) << "fixture: it was switched in";
             EXPECT_EQ(g_redirects, 0u)
                 << "a kill keeps its cleanup window and dies at its next syscall ENTRY; "
                    "claiming its resume here would silently make kill mean slay";
@@ -181,7 +181,7 @@ namespace kickos
 
             {
                 IrqLock lock;
-                sched::reschedule();
+                sched::reschedule(nullptr, lock);
             }
 
             EXPECT_EQ(g_redirects, 0u) << "the hot path costs two tests and nothing else";
@@ -201,10 +201,10 @@ namespace kickos
 
             {
                 IrqLock lock;
-                sched::reschedule();
+                sched::reschedule(nullptr, lock);
             }
 
-            EXPECT_EQ(kernel().current[kickos_kernel_core()], v) << "fixture: it was switched in";
+            EXPECT_EQ(kernel().current(kickos_kernel_core()), v) << "fixture: it was switched in";
             EXPECT_EQ(g_redirects, 0u)
                 << "`dying` is the window's existing marker and no fourth flag is needed";
         }
@@ -220,14 +220,14 @@ namespace kickos
 
             {
                 IrqLock lock;
-                sched::reschedule();       // switch to the victim, rebuild #1
+                sched::reschedule(nullptr, lock);       // switch to the victim, rebuild #1
             }
-            kernel().current[kickos_kernel_core()] = r;      // the fixture never switches, so put the runner back
-            r->state = ThreadState::RUNNING;
-            v->state = ThreadState::READY;
+            kernel().current(kickos_kernel_core()) = r;      // the fixture never switches, so put the runner back
+            r->state.to<ThreadState::RUNNING>();
+            v->state.to<ThreadState::READY>();
             {
                 IrqLock lock;
-                sched::reschedule();       // pick the victim again, rebuild #2
+                sched::reschedule(nullptr, lock);       // pick the victim again, rebuild #2
             }
 
             EXPECT_EQ(g_redirects, 2u)

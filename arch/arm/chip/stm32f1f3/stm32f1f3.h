@@ -18,6 +18,7 @@
 #define KICKOS_ARCH_ARM_CHIP_STM32F1F3_STM32F1F3_H
 
 #include "regs.h" // arch/arm/common: kickos::arm::reg32
+#include "stm32_usart.h"
 
 #include <kickos/chip_mmap.h>
 
@@ -65,13 +66,6 @@ namespace kickos::stm32
     constexpr uint32_t TIM_EGR_UG = 1u << 0;
     constexpr uint32_t TIM_DIER_UIE = 1u << 0; // update (overflow) interrupt enable
     constexpr uint32_t TIM_SR_UIF = 1u << 0;   // update (overflow) flag, rc_w0
-
-    // OVER8=0 -> BRR = round(fck / baud). On the classic F1 USART that integer IS the
-    // mantissa:fraction encoding, so one formula covers both register models.
-    constexpr uint32_t usart_brr(uint32_t fck, uint32_t baud)
-    {
-        return (fck + baud / 2u) / baud;
-    }
 
     // Bring SYSCLK onto the PLL described by family_map.h. False leaves the reset
     // HSI clock selected, so a part with a dead crystal or an unlocked PLL still

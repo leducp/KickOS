@@ -4,7 +4,8 @@
 // The three-valued non-cacheable admission, read from the REAL kernel/grant/grant.cc over
 // an arch seam this file sets. REFUSED is the answer no chip in tree gives, so this fixture
 // is where that value is driven. And the REAL kernel/domain/domain.cc over the same seam: its
-// handle codec, and the memory-type refusal of its RAM admission.
+// handle codec and its memory-type refusal; and kernel/thread/thread.cc's ram_region_admit,
+// the order and the answers of every path's RAM admission.
 
 #include <kickos/domain.h>
 #include <kickos/grant.h>
@@ -17,7 +18,6 @@
 
 #include <stddef.h>
 #include <stdint.h>
-#include <stdlib.h>
 
 namespace
 {
@@ -27,6 +27,7 @@ namespace
     constexpr size_t ARENA_SIZE = 0x10000u;
 
     int g_nocache = ARCH_MPU_NOCACHE_ALREADY;
+    bool g_owned = true;
 }
 
 extern "C"
@@ -55,24 +56,6 @@ extern "C"
     constexpr struct arch_reserved_block BUS_MASTERS[] = {{0x402E0000u, 0x200u}};
     struct arch_reserved_span arch_bus_master_apertures(void) { return {BUS_MASTERS}; }
     int arch_bitband_present(void) { return 0; }
-}
-
-namespace kickos
-{
-    // grant_reserved_validate's KICKOS_ASSERT lands here; no arm should trip one.
-    void kpanic(char const* msg)
-    {
-        ADD_FAILURE() << "kernel panic: " << msg;
-        abort();
-    }
-
-#if KICKOS_DIAG_TERSE
-    void kpanic_at(char const* file, unsigned line)
-    {
-        ADD_FAILURE() << "kernel panic: " << file << ":" << line;
-        abort();
-    }
-#endif
 }
 
 namespace
@@ -135,9 +118,9 @@ namespace
 
 namespace kickos
 {
-    bool memory_type_free(uintptr_t, size_t, uint32_t, Thread const*)
+    bool ram_owner_nameable(Task const*, uintptr_t, size_t)
     {
-        return true;
+        return g_owned;
     }
 
     namespace
@@ -154,6 +137,40 @@ namespace kickos
         }
 
         void* const ARENA_RAM = reinterpret_cast<void*>(ARENA_BASE);
+        constexpr uintptr_t BLOCK = ARENA_BASE + 0x1000u;
+        constexpr size_t BLOCK_SIZE = 0x100u;
+        constexpr uintptr_t UNALIGNED = BLOCK + 0x20u;
+
+        class DomainAdmit : public ::testing::Test
+        {
+        protected:
+            void TearDown() override
+            {
+                g_nocache = ARCH_MPU_NOCACHE_ALREADY;
+                g_owned = true;
+                domain_release(held_);
+                held_ = nullptr;
+            }
+
+            int admit(uintptr_t base, uint32_t attr, RamAdmit how = RAM_ADMIT_GRANT)
+            {
+                return ram_region_admit(&granter_, base, BLOCK_SIZE, attr, how);
+            }
+
+            // A task's data region over BLOCK, committed non-cacheable.
+            void hold_uncached()
+            {
+                g_nocache = ARCH_MPU_NOCACHE_PROGRAMMED;
+                int err = 0;
+                held_ = domain_for(0u, reinterpret_cast<void*>(BLOCK), BLOCK_SIZE,
+                                   ARCH_MPU_NOCACHE, nullptr, &err);
+                ASSERT_NE(held_, nullptr);
+                domain_ref(held_);
+            }
+
+            Thread granter_{};
+            Domain* held_ = nullptr;
+        };
     }
 
     // A domain slot claimed 32768 times mints a handle with bit 31 set. It must still resolve,
@@ -190,7 +207,7 @@ namespace kickos
 
     // The ABI's answer to a memory type the chip cannot honour is -KOS_ENOTSUP, on a region
     // backend as on a translating one.
-    TEST(DomainAdmit, an_unhonoured_memory_type_answers_enotsup)
+    TEST_F(DomainAdmit, an_unhonoured_memory_type_answers_enotsup)
     {
         g_nocache = ARCH_MPU_NOCACHE_REFUSED;
         int err = 0;
@@ -199,12 +216,66 @@ namespace kickos
         EXPECT_EQ(err, KOS_ENOTSUP);
     }
 
-    TEST(DomainAdmit, an_honoured_memory_type_is_admitted)
+    TEST_F(DomainAdmit, an_honoured_memory_type_is_admitted)
     {
         g_nocache = ARCH_MPU_NOCACHE_PROGRAMMED;
         int err = 0;
 
         EXPECT_NE(domain_for(0u, ARENA_RAM, 64u, ARCH_MPU_NOCACHE, nullptr, &err), nullptr);
         EXPECT_EQ(err, 0);
+    }
+
+    TEST_F(DomainAdmit, a_block_the_granter_reserved_is_admitted)
+    {
+        EXPECT_EQ(admit(BLOCK, RW), 0);
+    }
+
+    TEST_F(DomainAdmit, a_region_no_one_descriptor_names_answers_einval)
+    {
+        EXPECT_EQ(admit(UNALIGNED, RW), -KOS_EINVAL);
+        EXPECT_EQ(admit(0x40000001u, RW), -KOS_EINVAL);
+    }
+
+    TEST_F(DomainAdmit, the_shape_is_asked_before_the_owner)
+    {
+        g_owned = false;
+        EXPECT_EQ(admit(UNALIGNED, RW), -KOS_EINVAL);
+    }
+
+    TEST_F(DomainAdmit, the_memory_type_is_asked_before_the_shape)
+    {
+        g_nocache = ARCH_MPU_NOCACHE_REFUSED;
+        EXPECT_EQ(admit(UNALIGNED, RW_NC), -KOS_ENOTSUP);
+    }
+
+    TEST_F(DomainAdmit, the_memory_type_is_asked_before_the_owner)
+    {
+        g_nocache = ARCH_MPU_NOCACHE_REFUSED;
+        g_owned = false;
+        EXPECT_EQ(admit(BLOCK, RW_NC), -KOS_ENOTSUP);
+    }
+
+    TEST_F(DomainAdmit, a_region_out_of_the_arena_answers_eperm)
+    {
+        EXPECT_EQ(admit(ARENA_BASE + ARENA_SIZE, RW), -KOS_EPERM);
+    }
+
+    TEST_F(DomainAdmit, a_block_the_granter_never_reserved_answers_eperm)
+    {
+        g_owned = false;
+        EXPECT_EQ(admit(BLOCK, RW), -KOS_EPERM);
+    }
+
+    TEST_F(DomainAdmit, a_privileged_child_s_window_waives_the_arena_and_the_owner)
+    {
+        g_owned = false;
+        EXPECT_EQ(admit(ARENA_BASE + ARENA_SIZE, RW, RAM_ADMIT_PRIVILEGED), 0);
+    }
+
+    TEST_F(DomainAdmit, a_block_held_with_another_type_answers_ebusy)
+    {
+        hold_uncached();
+        EXPECT_EQ(admit(BLOCK, RW), -KOS_EBUSY);
+        EXPECT_EQ(admit(BLOCK, RW_NC), 0);
     }
 }

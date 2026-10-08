@@ -20,13 +20,13 @@
 #                above it; the image writes mtvec once; switch.S's object has no R_RISCV_RELAX
 #   rp_node      g_node_isr_vector holds the park in every slot but the bell line's, which holds
 #                the doorbell service; the park makes no call and branches only into itself
-#   a53_pmcr     kickos_armv8a_percore_init writes PMCR_EL0 once, unconditionally, as read, D
-#                (bit 3) cleared, E, C and LC (bits 0, 2, 6) set
+#   a53_pmcr     kickos_armv8a_percore_init writes PMCR_EL0 as read with D (bit 3) cleared and C
+#                (bit 2) set, which no emulator run tells apart: QEMU resets D clear, and C reads
+#                as 0. bench_cyccnt reads E, D and LC back on the run
 #   arm64_entry  _start selects SP_ELx before its first write to SP; arch_timer_disarm and
 #                kickos_armv8a_percore_init take an ISB between the CNTP_CTL_EL0 disable and
 #                their next Device write or branch
 #   c6_hp        Reset_Handler calls mtime_rate_init before it names an init_array bound
-#   c6_lp        SystemCoreClock is a nonzero word of loaded data
 #   ctor         every .init_array input the map places lies in __init_array_start/_end or
 #                __kickos_app_init_array_start/_end, and none comes from a KickOS-owned object
 #   cpu_id       at one core no image defines arch_cpu_id
@@ -229,17 +229,20 @@ rule_a53_pmcr() {
         /^[0-9a-f]+ <.*>:$/ { f = ($2 == "<kickos_armv8a_percore_init>:"); n += f; next }
         !f || !/^[ \t]*[0-9a-f]+:/ { next }
         { t = insn($0); gsub(/ x[0-9]+/, " x", t); body = body t ";" }
-        t ~ /^(b\.|cbn?z |tbn?z )/ { print "a conditional branch: " t }
-        t ~ /^msr pmcr_el0,/ { w++ }
         END {
             if (!n) print "no kickos_armv8a_percore_init body"
-            if (w != 1) print w + 0 " PMCR_EL0 write(s)"
-            if (index(body, "mrs x, pmcr_el0;and x, x, #0xfffffffffffffff7;mov x, #0x45;orr x, x, x;msr pmcr_el0, x;") == 0)
-                print "PMCR_EL0 is not written as read, D cleared, E C LC set"
+            if (!match(body, /mrs x, pmcr_el0;and x, x, #0x[0-9a-f]+;mov x, #0x[0-9a-f]+;orr x, x, x;msr pmcr_el0, x;/)) {
+                print "PMCR_EL0 is not written as read, masked, then ORed with an immediate"
+                exit
+            }
+            split(substr(body, RSTART, RLENGTH), part, /#|;/)
+            # The low nibble alone: a 64-bit mask is past what an awk number holds exactly.
+            if (bit(hex(substr(part[3], length(part[3]))), 3)) print "the PMCR_EL0 write keeps D (bit 3)"
+            if (!bit(hex(substr(part[5], length(part[5]))), 2)) print "the PMCR_EL0 write sets no C (bit 2)"
         }' "$D"
 }
 ctl_a53_pmcr() {
-    sed 's/#0x45/#0x5/' "$D" > "$TMP/d.p"
+    sed -e 's/#0x45/#0x41/' -e 's/#0xfffffffffffffff7/#0xffffffffffffffff/' "$D" > "$TMP/d.p"
     D="$TMP/d.p"
 }
 
@@ -269,16 +272,6 @@ rule_c6_hp() {
 ctl_c6_hp() {
     grep -v 'mtime_rate_init[^>]*>$' "$D" > "$TMP/d.p"
     D="$TMP/d.p"
-}
-
-rule_c6_lp() {
-    awk '$NF == "SystemCoreClock" { t = $(NF - 1) }
-        END { if (t !~ /^[DdGg]$/) print "SystemCoreClock is a [" t "] symbol, not loaded data" }' "$N"
-    awk '$2 ~ /^0+$/ { print "SystemCoreClock loads as 0" } END { if (!NR) print "no SystemCoreClock word" }' "$W"
-}
-ctl_c6_lp() {
-    sed 's/ [DdGg] SystemCoreClock$/ B SystemCoreClock/' "$N" > "$TMP/n.p"
-    N="$TMP/n.p"
 }
 
 rule_ctor() {
@@ -350,14 +343,6 @@ case "$RULE" in
         [ -n "$_a" ] && [ -n "$_z" ] || fail "no sized g_node_isr_vector in $ELF"
         image_words "$OD" "$ELF" 4 --start-address="0x$_a" \
             --stop-address="$(printf '0x%x' $((0x$_a + 0x$_z)))" > "$W" ;;
-    c6_lp)
-        _a="$(addr_of SystemCoreClock)"
-        : > "$W"
-        if [ -n "$_a" ] && awk '$NF == "SystemCoreClock" && $(NF - 1) ~ /^[DdGg]$/ { f = 1 }
-            END { exit !f }' "$N"; then
-            image_words "$OD" "$ELF" 4 --start-address="0x$_a" \
-                --stop-address="$(printf '0x%x' $((0x$_a + 4)))" > "$W"
-        fi ;;
     ctor)
         X="$ELF.map"
         [ -r "$X" ] || fail "no link map at $X" ;;

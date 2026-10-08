@@ -13,11 +13,16 @@
 # service composed on it. It sits at chip level beside the other drivers over that USIC
 # backend. An image gets exactly one definition of that class, so a second xmc4800 UART
 # driver may not be linked beside this one.
+#
+# EDGE, with no peripheral-side clear to pair with it: PSR.TBIF has no influence on interrupt
+# generation and does not need clearing (RM 18.2.2.3 p.18-17).
 kickos_add_driver(xmcuartirq SOURCES xmcuartirq.cc ../uart_usic.cc
                   CLASS kickos_class_xmc4800 REGDIR arch/arm/chip/xmc4800
-                  THREADS uartirq:1:default:2:0 service:0:default:2:1 RECEIVER service
-                  WINDOWS regs LINES irq NOTIFY BLOCK ${KICKOS_UART_BLOCK_SIZE}
-                  POSTURE handover BARRIER 1 START xmcuartirq_console_start CONSOLE)
+                  BASE mmap::USIC0_CH0_BASE WINDOWS regs LINES irq:edge
+                  BLOCK ${KICKOS_UART_BLOCK_SIZE} INIT block_init BARRIER 1 READY uart::KOS_UART_READY_OFFSET
+                  POSTURE handover CONSOLE START xmcuartirq_console_start
+                  THREAD uartirq PRIORITY 1 ENTRY irq_entry ARG block WINDOW regs CAPS notify:wait irq:wait
+                  THREAD service ENTRY uart::console_thread ARG block CAPS ep:wait notify:signal:doorbell)
 
 target_include_directories(kickos_xmcuartirq PRIVATE
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>")

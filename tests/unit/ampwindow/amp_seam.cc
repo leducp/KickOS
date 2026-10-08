@@ -14,6 +14,7 @@
 #include "amp_seam.h"
 
 #include <kickos/ampwindow.h>
+#include <kickos/irqlock.h>
 #include <kickos/arch/arch.h>
 
 static_assert(KICKOS_AMP_NODE,
@@ -87,7 +88,7 @@ namespace kickos
     // No endpoint layer here: the window's own arms bind no port, so this answers as an
     // unbound one.
     bool endpoint_far_call_deliver(uint32_t, uint32_t, amp::ReplyTag const&, uint32_t,
-                                   uint32_t)
+                                   uint32_t, Held)
     {
         return false;
     }
@@ -95,7 +96,7 @@ namespace kickos
     // A caller that takes the reply HOLDS it: releasing it is the arm's, as landing it is a
     // resumed caller's.
     bool endpoint_far_reply_deliver(uint32_t from, amp::ReplyTag const& tag, uint32_t hold,
-                                    uint32_t len)
+                                    uint32_t len, Held)
     {
         ampfix::g_replies++;
         ampfix::g_reply_from = from;
@@ -135,5 +136,14 @@ void arch_ipi_fence(void)
 {
 }
 #endif
+
+arch_irq_state_t arch_irq_save(void)
+{
+    return 0;
+}
+
+void arch_irq_restore(arch_irq_state_t)
+{
+}
 
 }

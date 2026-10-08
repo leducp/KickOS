@@ -41,9 +41,8 @@
  */
 
 #include <kickos/arch/rx_trap_stack.h>
-/* KICKOS_KERNEL_STACK_SIZE, which kickos_rx_pendsw compares a USP against. Pure integer
-   macros, generated. */
 #include <kickos/board_config.h>
+#include "chip_layout.h"
 
 #if KICKOS_BENCH && KICKOS_KERNEL_CORES > 1
     .error "the switch stamp below is ONE word for the image, so a second core stamping it subtracts one core's open from another's close. Give this backend a per-core cell (armv8a, rv64imac and lx6 have one) before raising the kernel core count."
@@ -56,8 +55,8 @@
     .equ BIT_U,       0x00020000   /* PSW.U (select USP) */
     .equ MASK_NOT_PM, 0xffefffff   /* clear PSW.PM (-> supervisor) */
     .equ MASK_PM,     0x00100000   /* PSW.PM: 0 supervisor, 1 user */
-    .equ ICU_SWINTR,  0x000872E0   /* ICU.SWINTR: bit0 pends SWINT (vector 27) */
-    .equ ICU_IR_SWINT, 0x0008701B  /* ICU.IR027: the SWINT request flag (0x87000+27) */
+    .equ ICU_SWINTR,  KICKOS_LAYOUT_ICU_BASE + 0x2E0 /* ICU.SWINTR: bit0 pends SWINT (vector 27) */
+    .equ ICU_IR_SWINT, KICKOS_LAYOUT_ICU_BASE + 27    /* ICU.IR027: the SWINT request flag */
     .equ BIT_I,       0x00010000   /* PSW.I (interrupt enable) */
 /* struct arch_context field offsets read by the trap sites. Taken from rx_trap_stack.h,
    which arch_rxv3.cc static_asserts offsetof against. */
@@ -91,7 +90,7 @@
     .equ FRAME_R1_OFF, 28
 #endif
 #if KICKOS_BENCH
-    .equ CMTW1_CMWCNT, 0x00094290  /* free-running 7.5 MHz counter (bench time base) */
+    .equ CMTW1_CMWCNT, KICKOS_LAYOUT_CMTW_BASE + 0x90  /* free-running 7.5 MHz counter (bench time base) */
 #endif
 
 /* arch_switch(from, to): R1=from (ignored; the switcher saves g_arch_current),  */
@@ -161,12 +160,10 @@ _kickos_rx_pendsw:
        in the save runs supervisor, so an enforcing MPU refuses the THREAD's own access to
        the block and permits the SWITCHER's frame through the pointer that thread supplied.
 
-       ARM needs neither test because its exception entry stacks the frame ABOVE the PSP at
-       the PRE-exception privilege, so a kernel-aimed PSP is refused as MSTKERR before the
-       handler runs. RX acceptance clears PSW.U and pushes PC then PSW to the ISP whatever
-       stack was interrupted (ISA UM sec.5.5.9), so the hardware neither writes through the
-       USP nor validates it. The stacked PSW is the only record of the interrupted privilege,
-       an exception setting PM to 0 and saving the pre-exception value (ISA UM sec.1.4.4).
+       RX acceptance clears PSW.U and pushes PC then PSW to the ISP whatever stack was
+       interrupted (ISA UM sec.5.5.9), so the hardware neither writes through the USP nor
+       validates it. The stacked PSW is the only record of the interrupted privilege, an
+       exception setting PM to 0 and saving the pre-exception value (ISA UM sec.1.4.4).
 
        ROOM BELOW IS PART OF THE RANGE, the save being built BELOW the accepted USP. A bare
        range test admits the block's base, and 236 bytes then land under the block with the
@@ -689,14 +686,13 @@ _svc_trampoline:
     rte                        /* PC=userPC, PSW=userPSW -> back in arch_syscall (R1:R2=result) */
 
 /* A thread whose ctx.kernel_sp is 0 reached the syscall path, so the transfer has nowhere to
-   build. No TCB reaches it today, thread_create seating a block on every pool thread and idle
-   being privileged and running arch_idle_wait alone, so this is a refusal for a future one
-   rather than a store through 0.
+   build. thread_create seats a block on every pool thread and idle runs arch_idle_wait alone,
+   so this refuses rather than storing through 0.
 
-   THE REPORTER RUNS ON THE ISP, and the switch is not tidiness. This site is
-   supervisor-on-USP: R0 is the thread's own stack with KICKOS_RX_TRAP_REDZONE_SYS less the
-   eight-byte head, 300 bytes, under it, and the reporter's console chain measures 596 on
-   rx72m-st, so reporting on the USP overflows the thread's stack while printing.
+   THE REPORTER RUNS ON THE ISP. This site is supervisor-on-USP: R0 is the thread's own stack
+   with KICKOS_RX_TRAP_REDZONE_SYS less the eight-byte head, 300 bytes, under it, and the
+   reporter's console chain measures 596 on rx72m-st, so reporting on the USP overflows the
+   thread's stack while printing.
    .Lsys_bad_usp and .Lpendsw_bad_usp need no such switch, both being inside a trap prologue
    already on the ISP. clrpsw is taken AFTER R0 is copied, so the reported USP is the
    thread's. The ISP here is the 8K boot/interrupt stack (_kernel_stack_size, rx72m.ld). */

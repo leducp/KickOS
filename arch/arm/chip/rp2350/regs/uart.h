@@ -7,6 +7,10 @@
 #ifndef KICKOS_ARCH_ARM_CHIP_RP2350_REGS_UART_H
 #define KICKOS_ARCH_ARM_CHIP_RP2350_REGS_UART_H
 
+#include "../../rp2xxx/pl011_baud.h"
+#include "clocks.h"
+#include "xosc.h"
+
 #include <kickos/chip_mmap.h>
 
 #include <stdint.h>
@@ -33,13 +37,11 @@ namespace kickos::rp2350::reg::uart
     // RXIFLSEL and TXIFLSEL both reset to b010 (DS 12.1.8, UARTIFLS).
     constexpr uint32_t IFLS_RESET = (0x2u << 3) | 0x2u;
 
-    // baud = clk_peri / (16 x (IBRD + FBRD/64)), FBRD = round(frac x 64). clk_peri
-    // 12 MHz, 115200 -> IBRD 6, FBRD 33; clk_peri 150 MHz -> IBRD 81, FBRD 24
-    // (actual 115207 baud, +0.006%).
-    constexpr uint32_t IBRD_115200 = 6u;
-    constexpr uint32_t FBRD_115200 = 33u;
-    constexpr uint32_t IBRD_PLL = 81u;
-    constexpr uint32_t FBRD_PLL = 24u;
+    // clk_peri is the 12 MHz XOSC until clk_sys is on the PLL, then clk_sys.
+    constexpr uint32_t IBRD_115200 = rp2xxx::pl011_ibrd(xosc::FREQ_HZ, 115200u);
+    constexpr uint32_t FBRD_115200 = rp2xxx::pl011_fbrd(xosc::FREQ_HZ, 115200u);
+    constexpr uint32_t IBRD_PLL = rp2xxx::pl011_ibrd(clocks::CLK_SYS_HZ, 115200u);
+    constexpr uint32_t FBRD_PLL = rp2xxx::pl011_fbrd(clocks::CLK_SYS_HZ, 115200u);
 
     // WLEN=8, no parity, one stop. FEN is deliberately LEFT OFF so the ring's
     // idle->busy prime starts the transfer regardless of level-vs-transition trigger.

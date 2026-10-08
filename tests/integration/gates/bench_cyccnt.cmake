@@ -8,7 +8,8 @@ endif()
 
 # Allow time for the call/reply sweep and all throughput windows.
 kickos_add_qemu_test(NAME ${_tag}_bench_cyccnt TARGET bench
-  SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_bench_cyccnt.sh")
+  SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_bench_cyccnt.sh"
+  ARGS ${KICKOS_ARCH})
 
 # Run SMP sweeps serially to avoid host contention exhausting the timeout.
 if(KICKOS_KERNEL_CORES GREATER 1)

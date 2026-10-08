@@ -24,7 +24,8 @@
 #if !KICKOS_C6_LP_NODE
 
 #include <kickos/arch/arch.h>
-#include <kickos/arch/pin_guard.h>
+#include "crt_tail.h"
+#include "pin_guard.h"
 #include <kickos/arch/amp_shared.h>
 #include <kickos/arch/rv_trap_ids.h>
 #include <kickos/config/limits.h> // KICKOS_POLL_SPIN_MAX
@@ -56,11 +57,6 @@ namespace mmap = kickos::esp32c6::mmap;
 namespace reg = kickos::esp32c6::reg;
 namespace irq = kickos::esp32c6::irq;
 
-namespace kickos
-{
-    int kmain(int argc, char** argv);
-}
-
 extern "C"
 {
     void kickos_rv32_init(void);
@@ -78,8 +74,6 @@ extern "C"
     extern uint8_t kickos_c6_amp_lp_stub_end[];
     extern kickos::Atomic<uint32_t, kickos::Order::RELAXED> kickos_c6_amp_rtc_hz;
 #endif
-    extern void (*__init_array_start[])();
-    extern void (*__init_array_end[])();
 
 #if KICKOS_HAVE_MPU
     // App-data NAPOT region (esp32c6.ld). .appdata holds the app + C++-runtime .data and
@@ -105,16 +99,8 @@ namespace
     // MTIME's rate as MTIME_TOP_HZ >> g_mtime_shift, set before the constructors run.
     uint32_t g_mtime_shift = 0u;
 
-    // --- UART0 console (regs/uart.h; TRM ch.27; base 0x6000_0000), on the board's console
-    //     pins. The ROM already sets UART0 up (baud/pins) for its own
-    //     boot log, so pushing bytes needs no setup: poll STATUS.TXFIFO_CNT for room,
-    //     write the FIFO. FIFO depth 128.
-
-    // --- Early boot markers (raw UART0, pre-console). Default OFF: build with
-    //     -DKICKOS_C6_EARLY_MARK=1 to emit a byte at each boot stage (A..H). The ROM
-    //     leaves UART0 up and _start sets gp/sp before Reset_Handler, so a byte reaches
-    //     the TX FIFO before the console exists. Touches no global, so it is safe before
-    //     .data/.bss are live. Bounded spin: a wedged FIFO never blocks boot.
+    // -DKICKOS_C6_EARLY_MARK=1 emits one raw UART0 byte per boot stage (A..H). Must touch
+    // no global: it runs before .data/.bss are live.
 #ifndef KICKOS_C6_EARLY_MARK
 #define KICKOS_C6_EARLY_MARK 0
 #endif
@@ -139,17 +125,16 @@ namespace
     // count below CONF1.TXFIFO_EMPTY_THRHD, TRM section 27.4.11), but the INT_RAW bit it
     // sets is a LATCH, so enabling INT_ENA on an idle channel raises at once AND the source
     // stays asserted after the FIFO refills until INT_CLR is written (c6_tx_push).
-    constexpr uint32_t CONSOLE_TXFIFO_EMPTY_THRHD = 32;   // re-fire when the FIFO drains to <=32
+    constexpr uint32_t CONSOLE_TXFIFO_EMPTY_THRHD = 32;
 
     // The window arch_console_reclaim rewrites, and the one a userspace console driver is
-    // granted (c6uart). ONE constant: a reclaim
-    // reaching outside the window it reports would rewrite registers whose holder was
-    // never checked. UART1 sits at base + 0x1000, outside it.
+    // granted (c6uart). ONE constant: a reclaim reaching outside the window it reports would
+    // rewrite registers whose holder was never checked. UART1 sits at base + 0x1000.
     constexpr uintptr_t CONSOLE_WIN_BASE = mmap::UART0_BASE;
     static_assert(KICKOS_BOARD_CONSOLE_BASE == CONSOLE_WIN_BASE, "the board's console is not the UART this backend drives");
     static_assert(KICKOS_BOARD_CONSOLE_TX_SELECT == 0 and KICKOS_BOARD_CONSOLE_RX_SELECT == 0,
                   "the console pads keep IO MUX function 0, their reset value, which this backend leaves");
-    constexpr size_t CONSOLE_WIN_SIZE = 0x1000u;
+    constexpr size_t CONSOLE_WIN_SIZE = KICKOS_BOARD_CONSOLE_SIZE;
 
     // Every offset the reclaim body writes must lie inside that window. Adding a store
     // outside it fails to build instead of silently widening the reclaim's reach.
@@ -185,14 +170,9 @@ namespace
         }
     }
 
-    // --- Watchdogs (regs/wdt.h; TRM ch.14 MWDT, ch.15 RWDT/SWD). ALL must be disabled
-    //     or the ROM-armed WDTs reset the part within seconds. Common unlock key 0x50D83AA1.
-
-    // --- Interrupt matrix (INTMTX) + local interrupt controller (INTPRI). The C6 has no
-    //     S-mode, so the arch's SSIP inject channel is a no-op here and a REAL machine
-    //     interrupt is raised instead. A software-settable FROM_CPU source (level) is
-    //     routed through the matrix to a dedicated CPU interrupt ID, which the C6 core
-    //     vectors as mcause = ID, not the standard mcause = 11. ONE doorbell carries every
+    // --- Inject doorbell. The C6 has no S-mode, so the arch's SSIP inject is a no-op here: a
+    //     FROM_CPU source (level) is routed through the matrix to a CPU interrupt, which the
+    //     C6 vectors as mcause = ID, not the standard mcause = 11. ONE doorbell carries every
     //     logical inject line (arch keeps g_inject_line).
 
     // Enable, type, per-int priority and threshold are all driven through the
@@ -278,6 +258,8 @@ namespace
         r32(reg::uart::CONF1) = conf1;
     }
 
+    // --- Watchdogs (regs/wdt.h; TRM ch.14 MWDT, ch.15 RWDT/SWD): the ROM arms them and
+    //     each resets the part within seconds.
     void timg_mwdt_disable(uintptr_t base)
     {
         r32(base + reg::wdt::TIMG_WDTWPROTECT) = reg::wdt::WKEY;
@@ -289,11 +271,9 @@ namespace
     {
         timg_mwdt_disable(mmap::TIMG0_BASE);
         timg_mwdt_disable(mmap::TIMG1_BASE);
-        // RTC (LP) watchdog.
         r32(mmap::RTC_WDT_BASE + reg::wdt::RTC_WDT_WPROTECT) = reg::wdt::WKEY;
         r32(mmap::RTC_WDT_BASE + reg::wdt::RTC_WDT_CONFIG0) &= ~(reg::wdt::RTC_WDT_EN | reg::wdt::RTC_WDT_FLASHBOOT);
         r32(mmap::RTC_WDT_BASE + reg::wdt::RTC_WDT_WPROTECT) = 0;
-        // Super watchdog (SWD): set the disable bit (its own write-protect key).
         r32(mmap::RTC_WDT_BASE + reg::wdt::RTC_SWD_WPROTECT) = reg::wdt::WKEY;
         r32(mmap::RTC_WDT_BASE + reg::wdt::RTC_SWD_CONFIG) |= reg::wdt::RTC_SWD_DISABLE;
         r32(mmap::RTC_WDT_BASE + reg::wdt::RTC_SWD_WPROTECT) = 0;
@@ -305,21 +285,18 @@ namespace
     // is left de-asserted.
     void inject_doorbell_init()
     {
-        r32(reg::intmtx::FROM_CPU_0_MAP) = DOORBELL_CPU_INT;     // route the source -> CPU int
+        r32(reg::intmtx::FROM_CPU_0_MAP) = DOORBELL_CPU_INT;
         r32(reg::plic::MXINT_PRI_BASE + 4u * DOORBELL_CPU_INT) = DOORBELL_PRIO;
         r32(reg::plic::MXINT_TYPE) &= ~(1u << DOORBELL_CPU_INT); // level
         r32(reg::plic::MXINT_THRESH) = 0;                       // mask nothing: prio >= 0 always holds
-        r32(reg::plic::MXINT_ENABLE) |= (1u << DOORBELL_CPU_INT); // enable at the controller
+        r32(reg::plic::MXINT_ENABLE) |= (1u << DOORBELL_CPU_INT);
         __asm volatile("fence" ::: "memory");                    // settle before MIE is enabled
         __asm volatile("csrs mie, %0" ::"r"(1u << DOORBELL_CPU_INT) : "memory");
     }
 
-    // --- Diagnostic LED: the board's addressable WS2812B (VDD tied to 3V3, no enable pin).
-    //     GPIO bit-bang FAILS here: the register-write latency exceeds
-    //     the WS2812B ~400 ns bit high-time, so software cannot form
-    //     valid bits (LED latched solid white). The RMT peripheral (regs/rmt.h) clocks
-    //     the pulse train in hardware. Panic path: single frame, polled, no
-    //     interrupts/DMA.
+    // --- Diagnostic LED: the board's WS2812B (VDD tied to 3V3, no enable pin), through the
+    //     RMT. GPIO bit-bang FAILS here: the register-write latency exceeds the ~400 ns bit
+    //     high-time. Panic path: single frame, polled, no interrupts/DMA.
 
     // WS2812B pulse widths in RMT ticks. Clock: XTAL 40 MHz / group 1 / div_cnt 2 =
     // 20 MHz -> 50 ns/tick. Each 32-bit RAM word holds two {duration:15, level:1}
@@ -342,7 +319,6 @@ namespace
         return thigh | (1u << 15) | (tlow << 16);
     }
 
-    // Encode a 24-bit colour into the channel-0 RAM and transmit it (blocking poll).
     // Sent MSB first; the byte->channel mapping is the pixel's (this board is RGB, see
     // arch_diag_led_set).
     void rmt_send_ws2812(uint32_t color)
@@ -350,7 +326,7 @@ namespace
         volatile uint32_t* ram = reinterpret_cast<volatile uint32_t*>(reg::rmt::CH0_RAM);
         for (int i = 0; i < 24; i++)
         {
-            uint32_t bit = (color >> (23 - i)) & 1u; // MSB first
+            uint32_t bit = (color >> (23 - i)) & 1u;
             if (bit)
             {
                 ram[i] = ws_word(WS_T1H, WS_T1L);
@@ -363,11 +339,11 @@ namespace
         // Latch entry: a long low, then a {0,0} pulse (duration 0 = stop marker).
         ram[24] = WS_RESET; // pulse0 = low 60 us; pulse1 = {0,0}
 
-        r32(reg::rmt::INT_CLR) = reg::rmt::CH0_TX_END;                        // clear stale done flag
-        r32(reg::rmt::CH0CONF0) = RMT_CH0_CFG | reg::rmt::MEM_RD_RST | reg::rmt::APB_MEM_RST; // reset RAM pointers
+        r32(reg::rmt::INT_CLR) = reg::rmt::CH0_TX_END;
+        r32(reg::rmt::CH0CONF0) = RMT_CH0_CFG | reg::rmt::MEM_RD_RST | reg::rmt::APB_MEM_RST;
         r32(reg::rmt::CH0CONF0) = RMT_CH0_CFG;
-        r32(reg::rmt::CH0CONF0) = RMT_CH0_CFG | reg::rmt::CONF_UPDATE;        // latch config
-        r32(reg::rmt::CH0CONF0) = RMT_CH0_CFG | reg::rmt::TX_START;           // go
+        r32(reg::rmt::CH0CONF0) = RMT_CH0_CFG | reg::rmt::CONF_UPDATE;
+        r32(reg::rmt::CH0CONF0) = RMT_CH0_CFG | reg::rmt::TX_START;
 
         // Blocking (panic ctx: interrupts masked, no DMA). Bounded so a wedged RMT never
         // hangs the fault path; ~25 words * 1.25 us + 60 us latch is < 100 us.
@@ -380,24 +356,6 @@ namespace
             }
         }
     }
-
-#define KICKOS_RESERVED_RUN(port_base, first, last) or ((port_base) == mmap::GPIO_BASE and pin >= (first) and pin <= (last))
-    constexpr bool c6_pin_kernel_owned(uint32_t pin)
-    {
-        return pin == KICKOS_BOARD_LED_BIT or pin == KICKOS_BOARD_CONSOLE_TX_BIT or pin == KICKOS_BOARD_CONSOLE_RX_BIT
-            KICKOS_BOARD_RESERVED_RUNS(KICKOS_RESERVED_RUN);
-    }
-#undef KICKOS_RESERVED_RUN
-
-#define KICKOS_KERNEL_PIN(port_base, bit) or ((port_base) == mmap::GPIO_BASE and pin == (bit))
-    constexpr bool c6_pin_listed(uint32_t, uint32_t pin)
-    {
-        return false KICKOS_BOARD_KERNEL_PINS(KICKOS_KERNEL_PIN);
-    }
-#undef KICKOS_KERNEL_PIN
-    static_assert(kickos::refuses_exactly([](uint32_t, uint32_t pin) { return c6_pin_kernel_owned(pin); },
-                                          c6_pin_listed, 1u, 31u),
-                  "arch_pinmux_set refuses other pins than the board's kernel pins");
 }
 
 extern "C"
@@ -425,9 +383,7 @@ int arch_console_write_retry(char const* buf, size_t n, bool* cr_pending)
 }
 #endif
 
-// Synchronous polled writer for the panic / fault / pre-arm path (console.cc picks it when
-// the ring is unarmed or in ISR/panic context); it replaces a fallback TU that would
-// re-enter the buffered writer. Bounded so a wedged UART cannot hang the panic path.
+// Overrides a fallback that would re-enter the buffered writer from the panic path.
 bool arch_console_write_sync(char const* buf, size_t n)
 {
     for (size_t i = 0; i < n; i++)
@@ -472,7 +428,6 @@ void arch_console_flush_sync(void)
     }
 }
 
-// --- Tickless clock: the 64-bit CLINT MTIME -> ns -------------------------------
 uint64_t arch_clock_now(void)
 {
     volatile uint32_t* mt = r32p(reg::clint::MTIME);
@@ -487,7 +442,6 @@ uint64_t arch_clock_now(void)
     return mtime_ticks_to_ns(t, g_mtime_shift);
 }
 
-// --- One-shot next-event timer: CLINT MTIMECMP (fires when MTIME >= MTIMECMP) ----
 void arch_timer_arm(uint64_t deadline_ns)
 {
     uint64_t ticks = mtime_ns_to_ticks(deadline_ns, g_mtime_shift);
@@ -508,9 +462,8 @@ void arch_timer_disarm(void)
 // generic rv32 bring-up must not write it.
 int arch_rv_has_mcounteren(void) { return 0; }
 
-// Inject-delivery backend (the arch fallback TU raises SSIP, which is a
-// no-op on this M/U-only core). Assert the FROM_CPU_0 level source -> CPU int 31
-// fires (mcause=31 -> switch.S .Lext). The logical line is already in g_inject_line.
+// The arch fallback raises SSIP, a no-op on this M/U-only core. The logical line is already
+// in g_inject_line.
 void arch_rv_inject_deliver(int line)
 {
     (void)line;
@@ -552,7 +505,7 @@ static void c6_tx_push(uint8_t b)
 static void c6_tx_irq_enable(void)
 {
     r32(reg::uart::INT_CLR) = reg::uart::TXFIFO_EMPTY_INT;                              // clear any stale latch
-    r32(reg::uart::INT_ENA) = r32(reg::uart::INT_ENA) | reg::uart::TXFIFO_EMPTY_INT;   // enable TX-empty
+    r32(reg::uart::INT_ENA) = r32(reg::uart::INT_ENA) | reg::uart::TXFIFO_EMPTY_INT;
 }
 static void c6_tx_irq_disable(void)
 {
@@ -632,11 +585,8 @@ void arch_console_reclaim(void)
     r32(reg::uart::REG_UPDATE) = reg::uart::REG_UPDATE_BIT;
 }
 
-// Route + enable a real device line: aim its interrupt-matrix source at the line's CPU
-// interrupt, configure that CPU int (level, priority) and enable it at the controller and
-// in mie. A line with no route stays on the software doorbell (no-op). The UART's own
-// TXFIFO_EMPTY enable is toggled per-burst by whoever owns the block
-// (c6_tx_irq_enable/disable for the console).
+// A line with no route stays on the software doorbell. The UART's own TXFIFO_EMPTY enable is
+// toggled per-burst by whoever owns the block (c6_tx_irq_enable/disable for the console).
 void arch_rv_hw_unmask(int line)
 {
     dev_route const* const r = dev_route_of(line);
@@ -694,7 +644,7 @@ void kickos_rv_ext_dispatch_dev(void)
     {
         return;
     }
-    uint32_t posted = 0; // logical lines already posted in this pass
+    uint32_t posted = 0;
     for (uint32_t i = 0; i < UART0_SUBSOURCE_COUNT; i++)
     {
         if ((st & UART0_SUBSOURCES[i].st_bit) == 0)
@@ -715,27 +665,19 @@ void kickos_rv_ext_dispatch_dev(void)
     }
 }
 
-static_assert(KICKOS_BOARD_LED_ADDRESSABLE == 1, "this backend drives a WS2812, an addressable LED");
-
-// --- Kernel diagnostic LED: the board's WS2812B, driven by RMT channel 0.
 void arch_diag_led_init(void)
 {
-    // Ungate + reset the RMT, then select its source clock. PCR owns both on the C6.
-    r32(reg::pcr::RMT_CONF) |= reg::pcr::RMT_CLK_EN;           // APB register clock
-    r32(reg::pcr::RMT_CONF) |= reg::pcr::RMT_RST_EN;           // assert peripheral reset
-    r32(reg::pcr::RMT_CONF) &= ~reg::pcr::RMT_RST_EN;          // deassert
-    // XTAL 40 MHz source, group divisor 1 (DIV_NUM field 0), function clock enabled.
+    r32(reg::pcr::RMT_CONF) |= reg::pcr::RMT_CLK_EN;
+    r32(reg::pcr::RMT_CONF) |= reg::pcr::RMT_RST_EN;
+    r32(reg::pcr::RMT_CONF) &= ~reg::pcr::RMT_RST_EN;
+    // SCLK_SEL 3 = XTAL 40 MHz, group divisor 1 (DIV_NUM field 0).
     r32(reg::pcr::RMT_SCLK_CONF) =
         (3u << reg::pcr::RMT_SCLK_SEL_S) | (0u << reg::pcr::RMT_SCLK_DIV_NUM_S) | reg::pcr::RMT_SCLK_EN;
 
-    r32(reg::rmt::SYS_CONF) |= reg::rmt::APB_FIFO_MASK;        // access channel RAM directly
-    // Channel 0: div_cnt=2 (-> 20 MHz tick), 1 RAM block, idle drives low (WS2812 reset),
-    // carrier off. Latch it.
+    r32(reg::rmt::SYS_CONF) |= reg::rmt::APB_FIFO_MASK;
     r32(reg::rmt::CH0CONF0) = RMT_CH0_CFG;                     // carrier_en defaults 1 -> cleared here
     r32(reg::rmt::CH0CONF0) = RMT_CH0_CFG | reg::rmt::CONF_UPDATE;
 
-    // Route RMT ch-0 TX to the LED's pin: GPIO matrix out-sel = signal 71, output enable,
-    // IO_MUX pad on the GPIO function with a driver.
     r32(reg::gpio::func_out_sel_cfg(KICKOS_BOARD_LED_BIT)) = reg::gpio::RMT_SIG_OUT0_IDX;
     r32(reg::gpio::ENABLE_W1TS) = 1u << KICKOS_BOARD_LED_BIT;
     r32(reg::io_mux::gpio(KICKOS_BOARD_LED_BIT)) = reg::io_mux::MCU_SEL_GPIO | reg::io_mux::FUN_DRV_2;
@@ -776,7 +718,7 @@ int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
     {
         return -KOS_EINVAL;
     }
-    if (c6_pin_kernel_owned(pin))
+    if (kickos::board_pin_kernel_owned(port, pin))
     {
         return -KOS_EBUSY;
     }
@@ -947,19 +889,19 @@ void arch_init(void)
     // working baud (see g_console_clkdiv).
     g_console_clkdiv = r32(reg::uart::CLKDIV);
 
-    g_clint_msip = r32p(reg::clint::MSIP);   // the deferred-switch software interrupt
+    g_clint_msip = r32p(reg::clint::MSIP);
 #if KICKOS_BENCH
     // The C6 traps on `rdcycle`; MTIME counts CPU cycles. Set before any switch.
     extern volatile uint32_t* g_bench_cycle_src;
     g_bench_cycle_src = r32p(reg::clint::MTIME);
 #endif
-    arch_timer_disarm();               // MTIMECMP = max: no timer fire until armed
-    r32(reg::clint::MTIMECTL) = reg::clint::MTIMECTL_MTCE | reg::clint::MTIMECTL_MTIE; // start the counter + enable
+    arch_timer_disarm();
+    r32(reg::clint::MTIMECTL) = reg::clint::MTIMECTL_MTCE | reg::clint::MTIMECTL_MTIE;
 
-    kickos_rv32_init();  // vectored mtvec + mie(MSIE|MTIE|SSIE) + PMP (no mcounteren here)
+    kickos_rv32_init();
     apm_program_gate();
     c6_early_mark('F');  // mtvec + mie + permissive bootstrap PMP installed
-    inject_doorbell_init(); // wire the interrupt matrix FROM_CPU doorbell (device IRQs)
+    inject_doorbell_init();
     c6_early_mark('G');  // inject doorbell wired
 
 #if KICKOS_AMP_OWN_IMAGE
@@ -992,7 +934,6 @@ void arch_shutdown(int status)
     }
 }
 
-// --- C-runtime bring-up (the reset entry) ----------------------------------
 void Reset_Handler(void)
 {
     c6_early_mark('A'); // reset entry reached (gp/sp/tp already set by _start)
@@ -1026,10 +967,7 @@ void Reset_Handler(void)
     c6_early_mark('C'); // .appdata copied + .appbss zeroed (enforcement symbols sane)
 #endif
     mtime_rate_init(); // a constructor may read SystemCoreClock
-    for (void (**fn)() = __init_array_start; fn != __init_array_end; fn++)
-    {
-        (*fn)();
-    }
+    kickos_crt_ctors();
     c6_early_mark('D'); // C++ static constructors (init_array) ran
     arch_init();
     c6_early_mark('H'); // arch_init returned, kmain next

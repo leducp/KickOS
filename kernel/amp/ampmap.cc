@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The partition's node-to-core map: the ONE place a node index becomes a hardware core mask.
-//
-// A node index and a core index coincide only under the shared image, where a node's identity
-// IS the core register. Under one image per node they are unrelated, so the map is stated
+// The ONE place a node index becomes a hardware core mask. Node and core index coincide only
+// under the shared image; under one image per node the map is stated
 // (KICKOS_AMP_NODE_CORES) and CMakeLists.txt refuses a build that leaves it unstated.
 
 #include <kickos/ampwindow.h>
@@ -20,7 +18,6 @@ namespace kickos
 #if KICKOS_AMP_OWN_IMAGE
         namespace
         {
-            // One entry per node, in node order.
             constexpr uint32_t NODE_CORE[] = KICKOS_AMP_NODE_CORE_LIST;
             static_assert(sizeof(NODE_CORE) / sizeof(NODE_CORE[0]) == NODE_MAX,
                           "the map owes a core for every node the partition holds");
@@ -31,9 +28,8 @@ namespace kickos
         {
             if (node >= NODE_MAX)
             {
-                // NO CORE, and not the primary's index: every backend indexed by this refuses
-                // a core at or above the doorbell's width, so the refusal travels rather than
-                // needing a flag of its own beside the answer.
+                // NO CORE, not the primary's index: every backend indexed by this refuses a core
+                // at or above the doorbell's width.
                 return KICKOS_DOORBELL_CORES;
             }
 #if KICKOS_AMP_OWN_IMAGE

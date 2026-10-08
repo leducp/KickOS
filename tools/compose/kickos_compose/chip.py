@@ -11,10 +11,10 @@ import subprocess
 import tempfile
 
 from .descriptions import (
-    PART, check_board, check_chip, device_layout, device_symbols, line_macro, line_symbols, memory_layout,
-    memory_symbol,
+    check_board, check_chip, device_layout, device_symbols, line_macro, line_symbols, memory_layout,
+    memory_symbol, reaches, unit_views,
 )
-from .subset import Report
+from .subset import Report, read_utf8
 
 FAMILIES = {
     "armv6m": "arm", "armv7m": "arm", "armv8a": "arm64", "rxv3": "rx", "rv32imac": "riscv",
@@ -32,7 +32,7 @@ LINE_LIMITS = ("count", "soft_only_from", "free_from")
 INCLUDE_OUTPUTS = ("chip_mmap.h", "chip_limits.h")
 CHIP_OUTPUTS = ("irq.h", "chip_layout.h", "chip_tables.h", "chip.cmake", "board_pins.h", "board_buses.h")
 COMMENT = re.compile(r"/\*.*?\*/|//[^\n]*", re.S)
-SELECTOR_NUMBER = re.compile(r"[a-z]+?([0-9]+)")
+NAME_NUMBER = re.compile(r"[a-z]+?([0-9]+)")
 
 
 class Failure(Exception):
@@ -46,7 +46,6 @@ class View:
         self.chip = chip
         self.cluster = cluster
         self.offset = chip.line_offsets.get(cluster, 0)
-        # The board file the build names, whose soldered memory joins the chip's.
         self.board = board
 
     def memory(self):
@@ -55,7 +54,7 @@ class View:
         return self.chip.memory + self.board.memory
 
     def reaches(self, device):
-        return device.cluster is None or self.cluster is None or device.cluster == self.cluster
+        return reaches(device, self.cluster)
 
     def devices(self):
         return [device for device in self.chip.devices.values() if self.reaches(device)]
@@ -70,20 +69,15 @@ class View:
 
     def units(self):
         """The protection units this build's cores carry."""
-        if self.cluster is not None:
-            views = [self.cluster]
-        elif PART in self.chip.protection:
-            views = [PART]
-        else:
-            views = list(self.chip.clusters)
-        return [self.chip.protection[view] for view in views if view in self.chip.protection]
+        return [unit for view, unit in unit_views(self.chip, self.cluster)]
 
 
 def read(path, report):
     """(Chip, Board) a chip file or a board file describes, the Board None for a chip file, or
     (None, None) once refused."""
-    with open(path, encoding="utf-8") as stream:
-        text = stream.read()
+    text = read_utf8(path, report)
+    if text is None:
+        return None, None
     if os.path.basename(path) == "chip.yaml":
         return check_chip(path, text, report), None
     board = check_board(path, text, report, {}, {})
@@ -314,14 +308,10 @@ def bus_selector(chip, bus, pin):
 
 
 def bus_port_bit(chip, bus, pin):
-    """(port instance, bit) of a bus pin's `gpio` function, the instance 0 where the port does
-    not repeat."""
+    """(port, bit) of a bus pin, as kernel_pins numbers them."""
     if "gpio" not in chip.pins[pin]:
         raise Failure("bus `%s` pin `%s` has no `gpio` function to name its port" % (bus.name, pin))
-    device, index, bit = port_bit(chip, pin)
-    if index is None:
-        index = 0
-    return index, bit
+    return pinmux_port_bit(chip, pin)
 
 
 def emit_buses(view):
@@ -334,8 +324,8 @@ def emit_buses(view):
     lines = ["// %s\n// %s\n" % (banner, chip.manual),
              "\n#ifndef KICKOS_BOARD_BUSES_H\n#define KICKOS_BOARD_BUSES_H\n\n#include <stdint.h>\n\n",
              "namespace %s::board\n{\n" % namespace(chip),
-             "    // port is the instance of the pin's `gpio` port, select its selector's mux value, as in\n"
-             "    // board_pins.h.\n"
+             "    // port is the port kos_pinmux_set names the pin by, select its selector's mux value, as\n"
+             "    // in board_pins.h.\n"
              "    struct gpio_pin\n    {\n        uint32_t port;\n        uint32_t bit;\n    };\n\n"
              "    struct bus_pin\n    {\n        uint32_t port;\n        uint32_t bit;\n"
              "        uint32_t select;\n    };\n\n"
@@ -362,11 +352,11 @@ def emit_buses(view):
                 port, bit = bus_port_bit(chip, bus, pin)
                 lines.append("        {%du, %du},%s\n" % (port, bit, comment(pin, "c")))
             lines.append("    };\n")
-        base = window_base(chip, bus.path)
-        if base is None:
+        window = window_of(chip, bus.path)
+        if window is None:
             raise Failure("bus `%s` device `%s` has no window of its own" % (bus.name, bus.path))
         rows.append('        {"%s", %s, %s, %du, %s, %du},\n'
-                    % (bus.name, hex_u(base), pins, len(bus.pins), selects, len(bus.chip_selects)))
+                    % (bus.name, hex_u(window[0]), pins, len(bus.pins), selects, len(bus.chip_selects)))
     if rows:
         lines.append("\n    inline constexpr bus bus_rows[] = {\n")
         lines.extend(rows)
@@ -433,7 +423,7 @@ def selector_value(selector):
     """The value a console pin's mux field takes for `selector`: the number it ends in, a
     one-letter selector's place from `a`, or None for a selector of more letters and no number,
     which names no mux value."""
-    number = SELECTOR_NUMBER.fullmatch(selector)
+    number = NAME_NUMBER.fullmatch(selector)
     if number is not None:
         return int(number.group(1))
     if len(selector) == 1:
@@ -447,20 +437,18 @@ def instance_base(device, index):
     return device.window[0] + index * device.stride
 
 
-def window_base(chip, path):
-    """The base of the window a /dev path names, or None where it names none."""
+def window_of(chip, path):
+    """(base, size) of the window a /dev path names, or None where it names none."""
     parts = path.split("/")
     device = chip.devices[parts[2]]
     if len(parts) == 3:
-        if device.window is None:
-            return None
-        return device.window[0]
+        return device.window
     leaf = parts[3]
     if leaf in device.channel_windows:
-        return device.channel_windows[leaf][0]
+        return device.channel_windows[leaf]
     if leaf in device.channels:
         return None
-    return instance_base(device, int(leaf))
+    return instance_base(device, int(leaf)), device.window[1]
 
 
 def port_bit(chip, pin):
@@ -473,38 +461,59 @@ def port_bit(chip, pin):
     return chip.devices[parts[0]], index, int(parts[-1])
 
 
-def port_base_bit(chip, pin):
+def raw_port_number(chip, pin):
     device, index, bit = port_bit(chip, pin)
-    return instance_base(device, index), bit
+    if index is not None:
+        return index
+    number = NAME_NUMBER.fullmatch(device.name)
+    if number is not None:
+        return int(number.group(1))
+    return None
 
 
-def reserved_runs(chip, pins):
-    """[(port base, first, last)] of the reserved pins, consecutive bits of one port being one run."""
-    runs = []
-    for base, bit in sorted({port_base_bit(chip, pin) for pin in pins}):
-        if runs and runs[-1][0] == base and runs[-1][2] == bit - 1:
-            runs[-1][2] = bit
-        else:
-            runs.append([base, bit, bit])
-    return [tuple(run) for run in runs]
+def port_number(chip, pin):
+    """The number of a pin's port: the instance its `gpio` function names where the port device
+    repeats, else the number the device's name ends in, else None on a chip of one port. A chip
+    whose port devices would share a number is refused."""
+    owners = {}
+    for other in chip.pins:
+        if "gpio" not in chip.pins[other]:
+            continue
+        number = raw_port_number(chip, other)
+        if number is None:
+            number = 0
+        name = port_bit(chip, other)[0].name
+        if owners.setdefault(number, name) != name:
+            raise Failure("chip `%s` numbers port devices `%s` and `%s` both %d"
+                          % (chip.name, owners[number], name, number))
+    return raw_port_number(chip, pin)
+
+
+def pinmux_port_bit(chip, pin):
+    """(port, bit) by which arch_pinmux_set names a pin, the port 0 on a chip of one port."""
+    number = port_number(chip, pin)
+    if number is None:
+        number = 0
+    return number, port_bit(chip, pin)[2]
 
 
 def kernel_pins(board):
-    """[(port base, bit)] of the pins the kernel holds: the console's, its LED's, the reserved."""
+    """[(port, bit)] of the pins the kernel holds: the console's, its LED's, the reserved."""
     pins = [pin for role, pin, selector in board.console_pins]
     if board.kernel_led is not None:
         pins.append(board.kernel_led[0])
     pins.extend(board.reserved)
-    return [port_base_bit(board.chip, pin) for pin in pins]
+    return [pinmux_port_bit(board.chip, pin) for pin in pins]
 
 
 def pin_values(chip, stem, pin):
-    """[(macro, value, ref)] of the port a pin's `gpio` function names: its instance, where the
-    port device repeats, the instance's base and the pin's bit."""
+    """[(macro, value, ref)] of the port a pin's `gpio` function names: its number, where the chip
+    has more than one, the instance's base and the pin's bit."""
     device, index, bit = port_bit(chip, pin)
     values = []
-    if index is not None:
-        values.append((stem + "_PORT", index, None))
+    number = port_number(chip, pin)
+    if number is not None:
+        values.append((stem + "_PORT", number, None))
     values.append((stem + "_PORT_BASE", instance_base(device, index), None))
     values.append((stem + "_BIT", bit, None))
     return values
@@ -519,9 +528,10 @@ def board_values(view):
     chip = view.chip
     values = []
     if board.console is not None:
-        base = window_base(chip, board.console)
-        if base is not None:
-            values.append(("KICKOS_BOARD_CONSOLE_BASE", base, board.console))
+        window = window_of(chip, board.console)
+        if window is not None:
+            values.append(("KICKOS_BOARD_CONSOLE_BASE", window[0], board.console))
+            values.append(("KICKOS_BOARD_CONSOLE_SIZE", window[1], None))
     for role, pin, selector in board.console_pins:
         stem = "KICKOS_BOARD_CONSOLE_%s" % role.upper()
         values.extend(pin_values(chip, stem, pin))
@@ -551,14 +561,15 @@ def emit_board(view):
     lines = ["/* %s */\n" % banner, "\n#ifndef KICKOS_BOARD_PINS_H\n#define KICKOS_BOARD_PINS_H\n\n"]
     for macro, value, ref in board_values(view):
         shown = "%d" % value
-        if macro.endswith("_BASE"):
+        if macro.endswith("_BASE") or macro.endswith("_SIZE"):
             shown = "0x%X" % value
         lines.append("#define %s %s%s\n" % (macro, shown, comment(ref, "c")))
     if view.board is not None:
-        runs = "".join(" RUN(0x%X, %d, %d)" % run for run in reserved_runs(view.chip, view.board.reserved))
-        lines.append("#define KICKOS_BOARD_RESERVED_RUNS(RUN)%s /* RUN(port base, first bit, last bit) */\n" % runs)
-        pins = "".join(" PIN(0x%X, %d)" % pin for pin in kernel_pins(view.board))
-        lines.append("#define KICKOS_BOARD_KERNEL_PINS(PIN)%s /* PIN(port base, bit) */\n" % pins)
+        pins = "".join(" PIN(%d, %d)" % pin for pin in kernel_pins(view.board))
+        lines.append("#define KICKOS_BOARD_KERNEL_PINS(PIN)%s /* PIN(port, bit) */\n" % pins)
+        pins = "".join(" PIN(%d, %d)" % pinmux_port_bit(view.chip, pin)
+                       for pin, functions in view.chip.pins.items() if "gpio" in functions)
+        lines.append("#define KICKOS_CHIP_PINS(PIN)%s /* PIN(port, bit) */\n" % pins)
     lines.append("\n#endif\n")
     return "".join(lines)
 

@@ -14,16 +14,6 @@
 
 namespace kickos
 {
-    namespace
-    {
-        // The stack's frames plus the guard's: the page below a stack belongs to that stack,
-        // so no later allocation can map it.
-        size_t run_pages(size_t stack_pages)
-        {
-            return stack_pages + 1u;
-        }
-    }
-
     UserStack ustack_alloc(Domain* d, size_t want)
     {
         UserStack out;
@@ -39,8 +29,11 @@ namespace kickos
             return out; // the round-up below would wrap
         }
         size_t const pages = (want + g - 1u) / g;
+        // The stack's frames plus the guard's: the page below a stack belongs to that stack,
+        // so no later allocation can map it.
+        size_t const run_pages = pages + 1u;
         // Cleared frames: nothing writes a fresh stack before the thread runs on it.
-        arch_phys_addr_t const run = frame_pool_alloc_user_run(run_pages(pages));
+        arch_phys_addr_t const run = frame_pool_alloc_user_run(run_pages);
         if (run == 0)
         {
             return out;
@@ -52,16 +45,16 @@ namespace kickos
         // BEFORE THE MAP, and over the guard as well as the stack: the record is what refuses
         // a later reservation here, and reserving after mapping would leave a mapping standing
         // on a refusal. Keyed on the RUN's base, which is the guard page.
-        if (not ranges->reserve(aspace_user_va(run), run_pages(pages), VR_USTACK))
+        if (not ranges->reserve(aspace_user_va(run), run_pages, VR_USTACK))
         {
-            frame_pool_free_run(run, run_pages(pages), g);
+            frame_pool_free_run(run, run_pages, g);
             return out;
         }
         if (arch_aspace_map(space, va, stack, pages, ARCH_MAP_R | ARCH_MAP_W,
                             ARCH_MAP_NORMAL) != ARCH_ASPACE_OK)
         {
             (void)ranges->release(aspace_user_va(run));
-            frame_pool_free_run(run, run_pages(pages), g);
+            frame_pool_free_run(run, run_pages, g);
             return out;
         }
         out.base = va;

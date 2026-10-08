@@ -41,7 +41,7 @@ TEST_F(RrSlice, a_first_switch_in_arms_a_whole_quantum)
     g_now_ns = 1000000u;
     {
         IrqLock lock;
-        kernel().policy->on_switch_in(a);
+        policy_on_switch_in(a);
     }
     EXPECT_EQ(a->slice_deadline_ns, g_now_ns + QUANTUM_NS);
 }
@@ -52,13 +52,13 @@ TEST_F(RrSlice, a_resume_inside_the_slice_keeps_its_deadline)
     g_now_ns = 1000000u;
     {
         IrqLock lock;
-        kernel().policy->on_switch_in(a);
+        policy_on_switch_in(a);
     }
     uint64_t const armed = a->slice_deadline_ns;
     g_now_ns += QUANTUM_NS / 2u;
     {
         IrqLock lock;
-        kernel().policy->on_switch_in(a);
+        policy_on_switch_in(a);
     }
     EXPECT_EQ(a->slice_deadline_ns, armed);
 }
@@ -69,12 +69,12 @@ TEST_F(RrSlice, a_resume_past_the_slice_expires_it_instead_of_refunding_it)
     g_now_ns = 1000000u;
     {
         IrqLock lock;
-        kernel().policy->on_switch_in(a);
+        policy_on_switch_in(a);
     }
     g_now_ns += 5u * QUANTUM_NS;
     {
         IrqLock lock;
-        kernel().policy->on_switch_in(a);
+        policy_on_switch_in(a);
     }
     EXPECT_LE(a->slice_deadline_ns, g_now_ns + KICKOS_TIMER_MIN_DELTA_NS);
     EXPECT_GT(a->slice_deadline_ns, g_now_ns);
@@ -88,7 +88,7 @@ TEST_F(RrSlice, a_fresh_thread_is_armed_a_whole_quantum)
     g_now_ns = 1000000u;
     {
         IrqLock lock;
-        kernel().policy->on_switch_in(a);
+        policy_on_switch_in(a);
     }
     EXPECT_EQ(a->slice_deadline_ns, g_now_ns + QUANTUM_NS);
 }

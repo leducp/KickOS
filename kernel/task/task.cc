@@ -24,11 +24,12 @@ namespace kickos
 {
     namespace
     {
-        constexpr uint8_t TASK_MARK_READY = 1u << 0;
-        constexpr uint8_t TASK_MARK_ENDED = 1u << 1;
-        constexpr uint8_t TASK_MARK_DEAD = 1u << 2;
-        constexpr uint8_t TASK_MARK_CONSOLE = 1u << 3; // serves the published console
-        constexpr uint8_t TASK_MARK_NONBLOCK = 1u << 4; // O_NONBLOCK on the console's fds
+        // The first three are their KOS_TASK_* bits, so task_state_call answers them as stored.
+        constexpr uint8_t TASK_MARK_READY = KOS_TASK_READY;
+        constexpr uint8_t TASK_MARK_DEAD = KOS_TASK_DEAD;
+        constexpr uint8_t TASK_MARK_ENDED = KOS_TASK_ENDED;
+        constexpr uint8_t TASK_MARK_CONSOLE = 1u << 4; // serves the published console
+        constexpr uint8_t TASK_MARK_NONBLOCK = 1u << 5; // O_NONBLOCK on the console's fds
 
         // A slot is free iff it holds no live thread, nobody reserved it, and no released
         // member still sweeps under its name: such a member's capabilities count in the budget
@@ -49,8 +50,27 @@ namespace kickos
             return nullptr;
         }
 
-        // The slot and its domain go back, and the generation bump is what stops a handle
-        // still naming this task from resolving onto its successor.
+        // A slot for `d`, which domain_for built. On a full pool `d` is released: a domain built
+        // by a handoff holds a reference on its DONOR, and an abandoned one pins that donor's
+        // space and every frame in it until the slot happens to be reused.
+        Task* task_seat(Domain* d, int* err)
+        {
+            Task* const t = free_slot();
+            if (t == nullptr)
+            {
+                domain_release(d);
+                *err = KOS_ENOMEM; // pool exhausted: retry later
+                return nullptr;
+            }
+            uint16_t const gen = t->gen;
+            *t = Task{};
+            t->gen = gen;
+            t->domain = d;
+            // A task whose members are all cancelled ends with this status.
+            t->exit_status = KOS_EXIT_CANCELLED;
+            return t;
+        }
+
         // Disarm the watch. Caller holds IrqLock.
         void watch_clear(Task* t)
         {
@@ -71,7 +91,6 @@ namespace kickos
             return kernel().notifies.resolve(notify_bound_handle(t->watch_notify));
         }
 
-        // Raise the creator's watch, if the notification still resolves.
         void watch_raise(Task const* t)
         {
             Notification* const n = watch_target(t);
@@ -82,19 +101,18 @@ namespace kickos
         }
 
         // The task no longer serves the console: it ended, or its slot went back without it ever
-        // ending. Caller holds IrqLock.
-        void console_leave(Task* t)
+        // ending.
+        void console_leave(Task* t, Held held)
         {
             if ((t->marks & TASK_MARK_CONSOLE) == 0)
             {
                 return;
             }
             t->marks = static_cast<uint8_t>(t->marks & ~TASK_MARK_CONSOLE);
-            cap_console_task_ended();
+            cap_console_task_ended(held);
         }
 
-        // Caller holds IrqLock.
-        void mark_ended(Task* t, int code, bool latch)
+        void mark_ended(Task* t, int code, bool latch, Held held)
         {
             if ((t->marks & TASK_MARK_ENDED) != 0)
             {
@@ -105,13 +123,15 @@ namespace kickos
             {
                 t->exit_status = code;
             }
-            console_leave(t);
+            console_leave(t, held);
             watch_raise(t);
         }
 
-        void free_task(Task* t)
+        // The slot and its domain go back, and the generation bump is what stops a handle
+        // still naming this task from resolving onto its successor.
+        void free_task(Task* t, Held held)
         {
-            console_leave(t);
+            console_leave(t, held);
             watch_clear(t);
             domain_release(t->domain);
             // Nulling makes the debris FAIL-CLOSED: task_domain answers null, which every
@@ -120,19 +140,6 @@ namespace kickos
             t->creator_tag = ThreadPool::KILL_TAG_NONE;
             t->gen++;
         }
-
-        int index_of(Task const* t)
-        {
-            Kernel& k = kernel();
-            for (int i = 0; i < KICKOS_MAX_TASKS; i++)
-            {
-                if (&k.tasks[i] == t)
-                {
-                    return i;
-                }
-            }
-            return -1;
-        }
     }
 
     // idle and root each resolve a task at boot (thread.cc, kmain.cc) and neither call carries
@@ -140,22 +147,15 @@ namespace kickos
     static_assert(KICKOS_MAX_TASKS >= 2,
                   "the task pool must seat idle's task and root's, which boot cannot refuse");
 
-    static_assert(KICKOS_THREAD_SLOTS + 1 <= UINT8_MAX,
-                  "Task::refcount and Task::sweeping are uint8_t, and a thread counts in one of "
-                  "them at a time: every TCB that can be live at once must fit their sum");
-
-    // Kill tags must remain distinct after truncation to a byte, including
-    // KILL_TAG_NONE (0) and the idle tag (0xFF).
     static_assert(KICKOS_THREAD_SLOTS < UINT8_MAX,
-                  "a pool slot's kill tag would alias another, or idle's boot tag, once "
-                  "truncated into Task::creator_tag");
-
-    static_assert(KICKOS_MAX_TASKS < (1 << TASK_INDEX_BITS),
-                  "task handle index field too small for KICKOS_MAX_TASKS");
+                  "Task::refcount and Task::sweeping are uint8_t and must fit every TCB live at "
+                  "once, idle's included, and a pool slot's kill tag would alias another, or "
+                  "idle's boot tag, once truncated into Task::creator_tag");
 
     static_assert(KICKOS_MAX_TASKS <= UINT16_MAX,
-                  "Kernel::task_holds is uint16_t and counts the slots carrying a creator "
-                  "tag: every task that can hold one at once must fit it");
+                  "the task handle's biased index field, or Kernel::task_holds, which is "
+                  "uint16_t and counts the slots carrying a creator tag, is too small for "
+                  "KICKOS_MAX_TASKS");
 
     void task_init(void)
     {
@@ -167,8 +167,6 @@ namespace kickos
         k.task_holds = 0;
     }
 
-    // Every reader OUTSIDE this file must come through here, so the representation stays
-    // changeable. Inside it, task_for seats the field and task_ref/task_release read it.
     Domain* task_domain(Task const* t)
     {
         if (t == nullptr)
@@ -188,26 +186,10 @@ namespace kickos
         {
             return nullptr;
         }
-        Task* const t = free_slot();
-        if (t == nullptr)
-        {
-            // The domain is at refcount 0 and nothing will ever hold it: a domain built by a
-            // handoff holds a reference on its DONOR, and an abandoned slot pins that donor's
-            // space and every frame in it until the slot happens to be reused.
-            domain_release(d);
-            *err = KOS_ENOMEM; // pool exhausted: retry later
-            return nullptr;
-        }
-        uint16_t const gen = t->gen;
-        *t = Task{};
-        t->gen = gen;
-        t->domain = d;
-        // A task whose members are all cancelled ends with this status.
-        t->exit_status = KOS_EXIT_CANCELLED;
-        return t;
+        return task_seat(d, err);
     }
 
-    Task* task_create(uint16_t creator_tag, uint32_t caller, void* mem_base, size_t mem_size,
+    Task* task_create(uint16_t creator_tag, void* mem_base, size_t mem_size,
                       uint32_t mem_attr, Domain* donor, int* err)
     {
         *err = 0;
@@ -216,26 +198,16 @@ namespace kickos
             *err = KOS_EPERM; // a creator that matches nobody could never name the result
             return nullptr;
         }
-        // Always unprivileged, whatever the creator is: DOM_CALLER_PRIVILEGED is dropped
-        // here rather than forwarded.
-        Domain* const d = domain_for((caller & DOM_CALLER_MEM_AUTH) | DOM_CALLER_TASK, mem_base,
-                                     mem_size, mem_attr, donor, err);
+        Domain* const d = domain_for(DOM_CALLER_TASK, mem_base, mem_size, mem_attr, donor, err);
         if (d == nullptr)
         {
             return nullptr;
         }
-        Task* const t = free_slot();
+        Task* const t = task_seat(d, err);
         if (t == nullptr)
         {
-            domain_release(d); // as in task_for: an abandoned domain still pins its donor
-            *err = KOS_ENOMEM;
             return nullptr;
         }
-        uint16_t const gen = t->gen;
-        *t = Task{};
-        t->gen = gen;
-        t->domain = d;
-        t->exit_status = KOS_EXIT_CANCELLED;
         // The hold, taken before the reservation is visible: an explicit task sits at
         // refcount 0 between create and its first spawn, and only this reference stops the
         // domain pool re-handing the slot underneath it.
@@ -255,19 +227,14 @@ namespace kickos
 
     Task* task_resolve(kos_task_t handle)
     {
-        unsigned const biased =
-            static_cast<unsigned>(handle & ((1u << TASK_INDEX_BITS) - 1u));
-        if (biased == 0u)
-        {
-            return nullptr; // KOS_TASK_NONE, or a word carrying no index at all
-        }
-        int const index = static_cast<int>(biased - 1u);
-        if (index >= KICKOS_MAX_TASKS)
+        // Unbiased, so KOS_TASK_NONE and every word carrying no index at all wrap out of range.
+        uint32_t const index = handle_index(handle) - 1u;
+        if (index >= static_cast<uint32_t>(KICKOS_MAX_TASKS))
         {
             return nullptr;
         }
         Task* const t = &kernel().tasks[index];
-        if (t->gen != static_cast<uint16_t>(handle >> TASK_INDEX_BITS))
+        if (t->gen != handle_gen(handle))
         {
             return nullptr;
         }
@@ -280,13 +247,12 @@ namespace kickos
 
     kos_task_t task_handle(Task const* t)
     {
-        int const index = index_of(t);
+        int const index = slot_index_of(kernel().tasks, t);
         if (index < 0)
         {
             return KOS_TASK_NONE;
         }
-        return (static_cast<kos_task_t>(t->gen) << TASK_INDEX_BITS)
-               | static_cast<kos_task_t>(index + 1);
+        return handle_pack(t->gen, static_cast<uint32_t>(index) + 1u);
     }
 
     bool task_created_by(Task const* t, uint16_t tag)
@@ -353,22 +319,10 @@ namespace kickos
         {
             return -KOS_EPERM;
         }
-        int state = 0;
+        int state = t->marks & (TASK_MARK_READY | TASK_MARK_DEAD | TASK_MARK_ENDED);
         if (t->refcount != 0)
         {
             state |= KOS_TASK_LIVE;
-        }
-        if ((t->marks & TASK_MARK_READY) != 0)
-        {
-            state |= KOS_TASK_READY;
-        }
-        if ((t->marks & TASK_MARK_DEAD) != 0)
-        {
-            state |= KOS_TASK_DEAD;
-        }
-        if ((t->marks & TASK_MARK_ENDED) != 0)
-        {
-            state |= KOS_TASK_ENDED;
         }
         return state;
     }
@@ -393,28 +347,28 @@ namespace kickos
         return 0;
     }
 
-    void task_end(Task* t, int code, bool latch)
+    void task_end(Task* t, int code, bool latch, Held held)
     {
         if (t == nullptr)
         {
             return;
         }
-        mark_ended(t, code, latch);
+        mark_ended(t, code, latch, held);
         // The ending thread is still a member, so a count of one leaves nobody to cancel.
         if (t->refcount > 1)
         {
-            task_cancel_group(t);
+            task_cancel_group(t, held);
         }
     }
 
-    void task_stop(Task* t)
+    void task_stop(Task* t, Held held)
     {
         if (t == nullptr)
         {
             return;
         }
-        mark_ended(t, 0, /*latch=*/false);
-        task_cancel_group(t);
+        mark_ended(t, 0, /*latch=*/false, held);
+        task_cancel_group(t, held);
     }
 
     void task_console_serve(Task* t)
@@ -520,12 +474,11 @@ namespace kickos
         return notify_raise_deferred(n, 1u << t->watch_bit);
     }
 
-    void task_orphan_created_by(uint16_t tag)
+    void task_orphan_created_by(uint16_t tag, Held held)
     {
         Kernel& k = kernel();
         // At zero no slot carries a creator tag. The scan below runs interrupt-masked at EVERY
-        // thread exit, and on rx72m under an IRQ-driven UART that was enough to move an RR slice
-        // boundary, so this early return is load-bearing.
+        // thread exit, so this early return is load-bearing.
         if (k.task_holds == 0 or tag == ThreadPool::KILL_TAG_NONE)
         {
             return;
@@ -535,26 +488,26 @@ namespace kickos
             Task* const t = &k.tasks[i];
             if (t->creator_tag == static_cast<uint8_t>(tag))
             {
-                task_drop_hold(t);
+                task_drop_hold(t, held);
             }
         }
     }
 
-    void task_drop_hold(Task* t)
+    void task_drop_hold(Task* t, Held held)
     {
         if (t == nullptr or t->creator_tag == ThreadPool::KILL_TAG_NONE)
         {
             return;
         }
         t->creator_tag = ThreadPool::KILL_TAG_NONE;
-        // Clear live creator tags only here to keep the count consistent.
-        // free_task sees an already-cleared tag or a task that never held one.
+        // The only place a live creator tag is cleared, which keeps task_holds exact: free_task
+        // sees an already-cleared tag or a task that never held one.
         Kernel& k = kernel();
         KICKOS_DEBUG_ASSERT(k.task_holds > 0);
         k.task_holds--;
         if (t->refcount == 0)
         {
-            free_task(t);
+            free_task(t, held);
             return;
         }
         // A member still holds the slot. The domain reference this drops is the CREATOR's;
@@ -563,15 +516,14 @@ namespace kickos
     }
 
 #if KICKOS_HAVE_ASPACE
-    void task_discard(Task* t)
+    void task_discard(Task* t, Held held)
     {
-        // Release only tasks with no members or creator hold.
         if (t == nullptr or t->refcount != 0
             or t->creator_tag != ThreadPool::KILL_TAG_NONE)
         {
             return;
         }
-        free_task(t);
+        free_task(t, held);
     }
 #endif
 
@@ -690,7 +642,7 @@ namespace kickos
         return t->sweeping;
     }
 
-    bool task_release(Task* t)
+    bool task_release(Task* t, Held held)
     {
         if (t == nullptr or t->refcount == 0)
         {
@@ -709,7 +661,7 @@ namespace kickos
             domain_release(t->domain);
             return true;
         }
-        free_task(t);
+        free_task(t, held);
         return true;
     }
 }

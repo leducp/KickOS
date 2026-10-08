@@ -1,45 +1,36 @@
 {
   "version": 6,
+  "include": ["base.json"],
   "configurePresets": [
     {
       "name": "esp32-wroom",
       "displayName": "ESP32-WROOM-32 (Xtensa LX6, windowed ABI) [first non-ARM ISA]",
-      "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build/esp32-wroom",
+      "inherits": "kickos-base",
       "toolchainFile": "${sourceDir}/cmake/toolchain-xtensa-esp32-elf.cmake",
-      "cacheVariables": {
-        "KICKOS_BOARD": "esp32-wroom",
-        "KICKOS_CONFIG_VARIANT": "base",
-        "CMAKE_BUILD_TYPE": "MinSizeRel",
-        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
-      }
+      "cacheVariables": { "KICKOS_BOARD": "esp32-wroom" }
     },
     {
       "name": "esp32-wroom-st",
       "displayName": "ESP32-WROOM-32 (Xtensa LX6) + selftest (full IRQ suite)",
       "inherits": "esp32-wroom",
-      "binaryDir": "${sourceDir}/build/esp32-wroom-st",
       "cacheVariables": { "KICKOS_CONFIG_VARIANT": "st" }
     },
     {
       "name": "esp32-wroom-smp",
       "displayName": "ESP32-WROOM-32 (Xtensa LX6) on both cores under one kernel",
       "inherits": "esp32-wroom",
-      "binaryDir": "${sourceDir}/build/esp32-wroom-smp",
       "cacheVariables": { "KICKOS_CONFIG_VARIANT": "smp" }
     },
     {
       "name": "esp32-wroom-bench",
       "displayName": "ESP32-WROOM-32 (Xtensa LX6) + KICKOS_BENCH - the cooperative switch distribution",
       "inherits": "esp32-wroom",
-      "binaryDir": "${sourceDir}/build/esp32-wroom-bench",
       "cacheVariables": { "KICKOS_CONFIG_VARIANT": "bench" }
     },
     {
       "name": "esp32-wroom-benchsmp",
       "displayName": "ESP32-WROOM-32 (Xtensa LX6), both cores + KICKOS_BENCH",
       "inherits": "esp32-wroom",
-      "binaryDir": "${sourceDir}/build/esp32-wroom-benchsmp",
       "cacheVariables": { "KICKOS_CONFIG_VARIANT": "benchsmp" }
     }
   ],

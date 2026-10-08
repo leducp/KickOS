@@ -8,36 +8,14 @@
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
-#include <kickos/libc/fmt.h>
 #include <kickos/sys/cap_index.h>
 #include <kickos/sys/errno.h>
 
+#include <kickos/apps/arm_count.h>
+
 namespace
 {
-    int failures = 0;
-    int arms = 0;
-
-    void check(bool ok, char const* what)
-    {
-        char msg[128];
-        if (ok)
-        {
-            arms = arms + 1;
-            ksnprintf(msg, sizeof(msg), "[objbudget] ok - %s\n", what);
-            kos::print(msg);
-            return;
-        }
-        failures = failures + 1;
-        ksnprintf(msg, sizeof(msg), "[objbudget] ERROR: %s\n", what);
-        kos::print(msg);
-    }
-
-    void report_rc(char const* what, int rc)
-    {
-        char msg[128];
-        ksnprintf(msg, sizeof(msg), "[objbudget]   %s rc=%d\n", what, rc);
-        kos::print(msg);
-    }
+    kickos::apps::ArmCount harness("objbudget");
 
     // More endpoints than any pool in the fleet, so the loop below is bounded by the kernel's
     // refusal and never by this array.
@@ -97,10 +75,11 @@ int main(int, char**)
     // -KOS_ENOMEM here would mean the pool ran dry, which is the denial this budget exists
     // to prevent: a slot must be left over for somebody else.
     int const refused = fill_endpoints();
-    report_rc("endpoint_create at the ceiling", refused);
-    check(refused == -KOS_EAGAIN,
-          "a task at its endpoint ceiling is refused with the budget's own code, not ENOMEM");
-    check(held_n >= 1, "and the ceiling admitted at least one endpoint first");
+    harness.note_rc("endpoint_create at the ceiling", refused);
+    harness.check(refused == -KOS_EAGAIN,
+                  "a task at its endpoint ceiling is refused with the budget's own code, "
+                  "not ENOMEM");
+    harness.check(held_n >= 1, "and the ceiling admitted at least one endpoint first");
 
     // --- 3: the budget comes back at the release ------------------------------------
     // Without this a long-running task dies of its own churn, and no create-only arm can
@@ -109,21 +88,21 @@ int main(int, char**)
     held_n = held_n - 1;
     kos_cap_t again = KOS_CAP_NONE;
     int const after = kos_endpoint_create(&again);
-    report_rc("endpoint_create after closing one", after);
+    harness.note_rc("endpoint_create after closing one", after);
     if (after == 0)
     {
         held[held_n] = again;
         held_n = held_n + 1;
     }
-    check(closed == 0 and after == 0,
-          "releasing an endpoint gives its budget back to the task that created it");
+    harness.check(closed == 0 and after == 0,
+                  "releasing an endpoint gives its budget back to the task that created it");
 
     // --- 4: THE ITEM'S CLAIM. Another TASK's creator still lands --------------------
     // A task of its own and not a plain spawn: a plain spawn is a thread of THIS task and
     // would share this ceiling, so it could not tell a per-task bound from a global one.
     kos_task_t group = KOS_TASK_NONE;
     int const tk = kos_task_create(nullptr, 0, 0, &group);
-    report_rc("task_create", tk);
+    harness.note_rc("task_create", tk);
     bool child_ok = false;
     int child_rc = 1;
     if (tk == 0)
@@ -144,10 +123,10 @@ int main(int, char**)
             (void)c.join(KOS_TIMEOUT_NONE);
             child_ok = got == static_cast<int32_t>(sizeof(child_rc)) and child_rc == 0;
         }
-        report_rc("the child task's endpoint_create", child_rc);
+        harness.note_rc("the child task's endpoint_create", child_rc);
     }
-    check(child_ok,
-          "a task at its ceiling does not deny another task's endpoint_create");
+    harness.check(child_ok,
+                  "a task at its ceiling does not deny another task's endpoint_create");
 
     // --- 5: the ceiling is PER POOL and not one budget across the kinds -------------
     // Still at the endpoint ceiling here. One shared count would refuse this too, and a
@@ -155,9 +134,9 @@ int main(int, char**)
     // denial one pool away.
     kos_cap_t s = KOS_CAP_NONE;
     int const other_kind = kos_sem_create(0, &s);
-    report_rc("sem_create at the endpoint ceiling", other_kind);
-    check(other_kind == 0,
-          "the endpoint ceiling does not refuse a semaphore: the count is per pool");
+    harness.note_rc("sem_create at the endpoint ceiling", other_kind);
+    harness.check(other_kind == 0,
+                  "the endpoint ceiling does not refuse a semaphore: the count is per pool");
     if (other_kind == 0)
     {
         (void)kos_handle_close(s);
@@ -169,16 +148,5 @@ int main(int, char**)
         (void)kos_task_kill(group);
     }
 
-    char msg[64];
-    if (failures != 0)
-    {
-        ksnprintf(msg, sizeof(msg), "[objbudget] FAIL (%d)\n", failures);
-        kos::print(msg);
-        return 1;
-    }
-    // The count comes from a counter and the `ok -` lines from one emit per arm, so the gate
-    // cross-checks the two and output lost between them cannot read as a clean run.
-    ksnprintf(msg, sizeof(msg), "[objbudget] PASS (%d arms)\n", arms);
-    kos::print(msg);
-    return 0;
+    return harness.verdict();
 }

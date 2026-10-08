@@ -27,6 +27,18 @@ namespace kickos
         ListNode* prev = nullptr;
     };
 
+    inline bool list_contains(ListNode const* head, ListNode const* n)
+    {
+        for (ListNode const* c = head; c != nullptr; c = c->next)
+        {
+            if (c == n)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     // FIFO-insert. No ownership: nodes live in the objects that embed them (TCBs).
     struct List
     {
@@ -38,30 +50,15 @@ namespace kickos
             return head == nullptr;
         }
 
-        // Compiled out by default, so queue integrity rests on caller discipline: a node
-        // inserted twice, or unlinked from a list it is not on, corrupts the links
-        // silently and surfaces somewhere else entirely.
-#if KICKOS_DEBUG
-        bool contains(ListNode const* n) const
-        {
-            for (ListNode const* c = head; c != nullptr; c = c->next)
-            {
-                if (c == n)
-                {
-                    return true;
-                }
-            }
-            return false;
-        }
-#endif
-
+        // The membership asserts are compiled out by default, so queue integrity rests on
+        // caller discipline: a node inserted twice, or unlinked from a list it is not on,
+        // corrupts the links silently and surfaces somewhere else entirely.
         void push_back(ListNode* n)
         {
             // A detached node has both links null. The scan additionally catches a node
             // whose links were nulled while it was still listed.
             KICKOS_DEBUG_ASSERT(n->next == nullptr and n->prev == nullptr);
-            KICKOS_DEBUG_ASSERT(not contains(n));
-            KICKOS_DEBUG_ASSERT(n != tail);
+            KICKOS_DEBUG_ASSERT(not list_contains(head, n));
             n->next = nullptr;
             n->prev = tail;
             if (tail != nullptr)
@@ -80,7 +77,7 @@ namespace kickos
             // Unlinking a node not on this list splices this list's head/tail onto that
             // node's neighbours, corrupting both lists quietly. The scan is O(n) over a
             // queue bounded by KICKOS_MAX_THREADS.
-            KICKOS_DEBUG_ASSERT(contains(n));
+            KICKOS_DEBUG_ASSERT(list_contains(head, n));
             if (n->prev != nullptr)
             {
                 n->prev->next = n->next;
@@ -113,25 +110,10 @@ namespace kickos
             return head == nullptr;
         }
 
-        // NOT debug-only, unlike List::contains: unlink_if_present() uses it as the
-        // membership test, so compiling it out breaks the removal itself. O(members),
-        // bounded by one server's outstanding callers.
-        bool contains(ListNode const* n) const
-        {
-            for (ListNode const* c = head; c != nullptr; c = c->next)
-            {
-                if (c == n)
-                {
-                    return true;
-                }
-            }
-            return false;
-        }
-
         void push(ListNode* n)
         {
             KICKOS_DEBUG_ASSERT(n->next == nullptr and n->prev == nullptr);
-            KICKOS_DEBUG_ASSERT(not contains(n));
+            KICKOS_DEBUG_ASSERT(not list_contains(head, n));
             n->prev = nullptr;
             n->next = head;
             if (head != nullptr)
@@ -142,10 +124,10 @@ namespace kickos
         }
 
         // False means `n` was not on this list, which is NOT an error here; see
-        // reply_donor_unpark.
+        // reply_donor_unpark. O(members), bounded by one server's outstanding callers.
         bool unlink_if_present(ListNode* n)
         {
-            if (not contains(n))
+            if (not list_contains(head, n))
             {
                 return false;
             }

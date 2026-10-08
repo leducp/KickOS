@@ -19,7 +19,6 @@
 
 #include <stddef.h>
 #include <stdint.h>
-#include <stdlib.h>
 
 #if not KICKOS_HAVE_ASPACE or not KICKOS_ARCH_ALIAS_DCACHE
 #error "this gate's posture is a translating backend with a cacheable kernel view"
@@ -64,23 +63,12 @@ extern "C"
 
 namespace kickos
 {
-    namespace detail
-    {
-        constinit InstanceLocal<Kernel> g_instance;
-    }
-
     namespace sched
     {
         Thread* current()
         {
             return g_current;
         }
-    }
-
-    void kpanic(char const* msg)
-    {
-        ADD_FAILURE() << "kernel panic: " << msg;
-        abort();
     }
 
     struct arch_aspace* domain_space(Domain const*) { return nullptr; }

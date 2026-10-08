@@ -267,7 +267,7 @@ then calls `main`. Static initialization never sees a half-built environment.
 
 A freestanding OS gets no such guarantee for free -- it has to *reconstruct* that
 ordering by hand, and KickOS learned it the hard way. Its reset path ran `.init_array`
-straight out of `Reset_Handler`, *before* `kmain` brought up `arch_init`, `ktime_init`,
+straight out of `Reset_Handler`, *before* `kmain` brought up `arch_init`, the clock,
 and the scheduler. That is harmless for a constructor that only touches memory, and a
 trap for one that touches the OS. KickCAT has exactly such a constructor:
 

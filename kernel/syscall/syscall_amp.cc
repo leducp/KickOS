@@ -243,7 +243,7 @@ namespace kickos
         }
 
         // The reply forges, which mean nothing without a caller parked on a far call.
-        uint64_t amp_forge_reply(uint32_t selector)
+        uint64_t amp_forge_reply(uint32_t selector, Held held)
         {
             amp::ReplyTag tag = {};
             uint32_t node = 0;
@@ -305,7 +305,7 @@ namespace kickos
             {
                 len = 0u;
             }
-            amp::ForgedReply const f = amp::forge_reply(node, tag, len);
+            amp::ForgedReply const f = amp::forge_reply(node, tag, len, held);
             if (not f.published)
             {
                 return KOS_AMP_V_EMPTY | KOS_AMP_FORGE_NO_RING;
@@ -334,14 +334,14 @@ namespace kickos
             return KOS_AMP_V_EMPTY | bits;
         }
 
-        uint64_t amp_forge(uint32_t selector)
+        uint64_t amp_forge(uint32_t selector, Held held)
         {
             if ((selector >= KOS_AMP_FORGE_REPLY_UNPARKED
                  and selector <= KOS_AMP_FORGE_REPLY_GOOD)
                 or selector == KOS_AMP_FORGE_REPLY_EMPTY
                 or selector == KOS_AMP_FORGE_REPLY_ALIAS_SEQ)
             {
-                return amp_forge_reply(selector);
+                return amp_forge_reply(selector, held);
             }
             if (selector == KOS_AMP_FORGE_CLASS)
             {
@@ -376,7 +376,7 @@ namespace kickos
             }
             if (selector == KOS_AMP_FORGE_REPLY_DEPTH_SERVICE)
             {
-                return verdict_code(amp::forge_reply_depth_recovery(amp_peer_node()));
+                return verdict_code(amp::forge_reply_depth_recovery(amp_peer_node(), held));
             }
             if (selector == KOS_AMP_FORGE_PEER_CALL
                 or selector == KOS_AMP_FORGE_PEER_CALL_BLIND)
@@ -397,7 +397,7 @@ namespace kickos
                     endpoint_far_blind_arm();
                 }
                 uintptr_t answer = KOS_AMP_V_TOOK;
-                if (amp::forge_drain_held(amp_peer_node()))
+                if (amp::forge_drain_held(amp_peer_node(), held))
                 {
                     answer = answer | KOS_AMP_PEER_CALL_HELD;
                 }
@@ -468,7 +468,7 @@ namespace kickos
                 {
                     return static_cast<uint64_t>(-KOS_EPERM);
                 }
-                return amp_forge(static_cast<uint32_t>(a1));
+                return amp_forge(static_cast<uint32_t>(a1), lock);
             }
             case KOS_AMP_OP_TOOK:
             {
@@ -560,7 +560,7 @@ namespace kickos
                 {
                     return 0;
                 }
-                return amp::forge_answer_discharge(amp_peer_node());
+                return amp::forge_answer_discharge(amp_peer_node(), lock);
             }
             case KOS_AMP_OP_RESET_ANSWERS:
             {
@@ -718,7 +718,7 @@ namespace kickos
                 {
                     return cap;
                 }
-                (void)handle_close(c, cap);
+                (void)handle_close(c, cap, lock);
                 return 0;
             }
             case KOS_AMP_OP_PORT_PARKED:

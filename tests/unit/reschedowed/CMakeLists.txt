@@ -9,6 +9,7 @@
 # than joining the K-seam fixture: that library takes the preset's core count, and the sim
 # preset drives one core, where the mechanism under test compiles to nothing.
 kickos_add_unit_test(NAME resched_owed
-  SOURCES owed.cc resched_seam.cc
+  SOURCES owed.cc resched_seam.cc "${PROJECT_SOURCE_DIR}/tests/unit/common/kpanic_seam.cc"
           "${PROJECT_SOURCE_DIR}/kernel/sync/klock.cc"
+          "${PROJECT_SOURCE_DIR}/kernel/init/instance.cc"
   POSTURE KICKOS_NUM_CORES=2 KICKOS_KERNEL_CORES=2 KICKOS_MULTICORE_MODEL_SHARED=1)

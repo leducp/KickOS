@@ -28,9 +28,10 @@
 /* Deliberately ABOVE their measurement: the enforced figure is what a future change is measured
  * against. Do NOT tighten them; the block would fall from 1184 to 1104.
  *
- *   _TRAP  176 on the five non-bench presets, 208 on the two bench ones:
- *          kickos_isr_timer -> ktime_on_timer -> endpoint_wait_abort -> sched::wake
- *          -> pick_and_seat -> arch_ctx_redirect[32] -> arch_context_init[32]
+ *   _TRAP  192 on the five non-bench presets, 224 on the two bench ones:
+ *          kickos_rv_ext_dispatch -> console_tx_isr -> console_tx_room_freed
+ *          -> console_dark_wake -> sched::wake -> pick_and_seat -> arch_ctx_redirect[32]
+ *          -> arch_context_init[32]
  *   _SYS   768 on qemu-riscv-bench and 752 on esp32c6-wroom-bench, the arm that prints:
  *          syscall_dispatch[80]
  *          -> bench_irq_sweep[112] -> dist_print_fmt -> kprintf_paced[320] -> the console.
@@ -38,9 +39,7 @@
  *
  * FRAME_SYS + _SYS = 1168, and the lowest word of a block is its overflow canary, so
  * KICKOS_KERNEL_STACK_SIZE is 1184 here: 12 bytes above the canary word.
- *
- * The TRAP chain runs through the SchedPolicy hook table, bound per site in
- * tests/static/trap_redzone_indirect.txt. */
+ */
 #define KICKOS_RV_TRAP_KERNEL_DEPTH 480
 #define KICKOS_RV_TRAP_KERNEL_DEPTH_SYS 912
 

@@ -596,8 +596,8 @@ number), a dynamically sized frame, a reachable function the compiler reported n
 for, a symbol with two definitions so the walk cannot tell which body it is pricing, and
 a declared root that resolves to nothing and would therefore measure zero and always pass.
 Any of them and the gate fails, naming what it could not see. On this fleet the winning
-chain genuinely runs through an indirect call -- a scheduler policy hook table -- and the
-fix is not to ignore it: `tests/static/trap_redzone_indirect.txt` binds each such site to
+chain genuinely runs through an indirect call, an interrupt table slot or a console backend, and
+the fix is not to ignore it: `tests/static/trap_redzone_indirect.txt` binds each such site to
 the slot that call actually reaches, naming the site by its enclosing function and an
 ordinal within it, and the gate stays refusing while any reachable site is unbound, while
 a binding names a callee the graph no longer contains, or while a key no longer resolves

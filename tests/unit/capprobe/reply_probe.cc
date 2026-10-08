@@ -101,7 +101,7 @@ namespace kickos
         // it, and that write can be refused. A capability nobody was told the handle of can
         // never be spent, so the install is undone. What has to come back is not just the
         // table SLOT but the reply BOUND, and only one of those is visible in the free list:
-        // an undo that emptied the entry without cap_reply_released leaves the bound spent
+        // an undo that emptied the entry without cap_slot_vacate leaves the bound spent
         // and the receiver's next caller refused against a capability that is already gone.
         TEST_F(CapProbe, an_undisclosed_mint_gives_back_the_slot_and_the_bound)
         {

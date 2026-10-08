@@ -35,15 +35,14 @@ TEST_F(TaskStop, a_kill_ends_the_console_task_before_its_member_runs)
     attach_caps(creator, KICKOS_CAP_CHILD_WIDTH);
     {
         IrqLock lock;
-        sched::reschedule();
+        sched::reschedule(nullptr, lock);
     }
     ASSERT_EQ(sched::current(), creator);
     int err = 0;
     Task* served = nullptr;
     {
         IrqLock lock;
-        served = task_create(kernel().threads.kill_tag_of(creator), 0u, nullptr, 0, 0u, nullptr,
-                             &err);
+        served = task_create(kernel().threads.kill_tag_of(creator), nullptr, 0, 0u, nullptr, &err);
     }
     ASSERT_NE(served, nullptr) << "fixture: task_create refused (" << err << ")";
     Thread* const member = seat_pool(1, PRIO_MEMBER);
@@ -53,8 +52,8 @@ TEST_F(TaskStop, a_kill_ends_the_console_task_before_its_member_runs)
     {
         IrqLock lock;
         int const handle = kernel().endpoints.handle_for(kernel().endpoints.index_of(ep));
-        ASSERT_TRUE(cap_console_publish(creator, handle));
-        cap_console_serve(served);
+        ASSERT_TRUE(cap_console_publish(creator, handle, lock));
+        cap_console_serve(served, lock);
     }
     ASSERT_EQ(ep->console, EP_CONSOLE_SERVED) << "fixture: the console is not served";
 

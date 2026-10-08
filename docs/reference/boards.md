@@ -461,7 +461,7 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
 ### `f302nucleo` on silicon -- the suite passes at the selftest provisioning
 
 Four captures, 2026-07-29, over the ST-Link VCP on `/dev/ttyACM0`. They are the fleet's
-first silicon witnesses on **optimised** code (`MinSizeRel`, `cmake/presets/arm.json:10`)
+first silicon witnesses on **optimised** code (`MinSizeRel`, `cmake/presets/base.json`)
 and the first on this board since 2026-07-14. Every banner reads `board f302nucleo /
 arch armv7m / mpu off / sched tickless`; the three at the board's application profile add
 `heap 2 KiB available`, and the `-st` capture reads `heap none`, since that preset carves no
@@ -646,10 +646,11 @@ split odd and even lines for bandwidth and are not a per-core partition, so ther
 grant a node. `flash_flush_cache` (5.4.8.8, p.386) unpins every pinned line whole-cache and is
 global, so one node's flush silently destroys the other node's cache-as-SRAM with no error and no
 local symptom. The maintenance window is the only way to issue a PIN (4.4.1.1, p.342), so
-`tests/static/check_amp_no_xip_pin.sh`, registered for that posture only, holds the refusal by
-confirming no source an RP2350 image compiles names it; a single-image kernel on this chip may still pin freely, there
-being no peer kernel to lose a line. Lifted only by per-core cache partitioning or a documented
-pin-ownership mechanism; this part has neither.
+`tests/static/check_amp_no_xip_pin.sh` holds the refusal by confirming no source an RP2350 image
+compiles names it. It reads the tree and not a posture, so it also refuses a pin by a single-image
+kernel, which has no peer kernel to lose a line and which the posture alone would allow. Lifted
+only by per-core cache partitioning or a documented pin-ownership mechanism; this part has
+neither.
 
 ### `teensy41` (i.MX RT1062) -- the three ROM-consumed structures and the console
 
@@ -1088,11 +1089,9 @@ re-deriving the per-region counts as a whole-suite one.
   against the part's RAM, and `uart_service` from the app's own pin
   (`tests/static/selftest_demands.py` reads the arms). No set names an arm under a board
   predicate, and the `board_predicates` gate refuses one. Each image is judged against the
-  members its own regions register, read off the same region bounds in `main.cc` that cut the suite. So an arm moving
-  across a boundary takes its permission with it. `check_tap_stream.sh` reports a name declared
-  in another image as a NOTE and not a failure, so the build's `<board>_selftest_manifest` gate
-  holds every manifest row to the arms its LINKED image registers, and refuses a name another
-  image of the build runs.
+  members its own regions register, read off the same region bounds in `main.cc` that cut the
+  suite. So an arm moving across a boundary takes its permission with it, and a permission left
+  on the wrong image fails both images' exact sets in `check_tap_stream.sh`.
 - **A SILICON capture of any of these images is judged by the same verdict**, `check_tap_stream.sh`,
   which `tools/bench/bench-capture.sh` runs over the stream. It was not, until M8.13: that chain
   counted the `ok` lines instead, and a console that dropped lines shrank the count with the loss
@@ -1911,8 +1910,8 @@ transcript says so on its own line.
 `MinSizeRel` throughout, on six boards: `xmc4800-relax` (PMSAv7), `frdmk64f` (SYSMPU, **full**
 service list), `pizero2350` (PMSAv8, kernel console), `rx72m` (RX MPU), `esp32c6-wroom` (PMP NAPOT)
 and `f302nucleo` (**no MPU at all** -- banner `mpu off`, and the only board here that can carry the
-ring arm). The optimisation level is the preset default rather than a per-capture observation: every
-base preset in `cmake/presets/*.json` sets `CMAKE_BUILD_TYPE=MinSizeRel`.
+ring arm). The optimisation level is the preset default rather than a per-capture observation: the
+hidden base preset in `cmake/presets/base.json` sets `CMAKE_BUILD_TYPE=MinSizeRel`.
 
 **The FIVE `xmc4800-relax` diagnostic apps ran `kickos_services_none`, NOT the console-only service
 list** -- `pvprobe`, `conreclaim`, `inprstorm`, `xmcspi` and `xmccshold`, at every tip they were taken

@@ -37,9 +37,4 @@ namespace
 
 // 115200, not the kernel's divisor: this driver rewrites CR1/CR2/CR3 anyway, so BRR is written
 // in the same pass.
-//
-// LEVEL: every USART event is ORed into one request line (RM0383 sec.19.4 Figure 191), so a
-// status flag stays asserted until the driver clears it at the peripheral. ORE is the one
-// that matters: RXNEIE arms it, and a bare DR read does not clear it.
-KICKOS_UART_CONSOLE_SERVICE(f4uartirq, k_uart, /*fallback_baud=*/115200u, mmap::USART2_BASE,
-                            KOS_IRQ_LEVEL);
+KICKOS_UART_CONSOLE_SERVICE(f4uartirq, k_uart, /*fallback_baud=*/115200u);

@@ -17,8 +17,8 @@ namespace kickos
         struct RamBlock
         {
             uintptr_t base = 0;
-            // 0 => this slot describes no address. Every member's default is zero so the
-            // table stays in .bss, and a free slot spans nothing AND names no task.
+            // 0: a free slot. Every member's default is zero so the table stays in .bss, and a
+            // free slot spans nothing and names no task.
             uint32_t size = 0;
             kos_task_t owner = KOS_TASK_NONE;
 #if KICKOS_ARCH_ARENA_DCACHE
@@ -31,6 +31,18 @@ namespace kickos
         RamBlock (&blocks())[KICKOS_RAM_OWNER_SLOTS]
         {
             return g_owners.get();
+        }
+
+        RamBlock* free_block()
+        {
+            for (RamBlock& b : blocks())
+            {
+                if (b.size == 0)
+                {
+                    return &b;
+                }
+            }
+            return nullptr;
         }
 
         static_assert(KICKOS_RAM_OWNER_SLOTS > 0,
@@ -50,18 +62,10 @@ namespace kickos
         {
             return nullptr; // an extent RamBlock::size cannot hold, never a truncated one
         }
-        // The slot is found BEFORE the arena is spent. The allocator never takes a block
-        // back, so recording after allocating would drain the arena one lost block per call
-        // once the table filled.
-        RamBlock* slot = nullptr;
-        for (RamBlock& b : blocks())
-        {
-            if (b.size == 0)
-            {
-                slot = &b;
-                break;
-            }
-        }
+        // The slot is found before the arena is spent: the allocator never takes a block back,
+        // so recording after allocating would drain the arena one lost block per call once the
+        // table filled.
+        RamBlock* const slot = free_block();
         if (slot == nullptr)
         {
             return nullptr;
@@ -71,15 +75,10 @@ namespace kickos
         {
             return nullptr;
         }
-        slot->base = reinterpret_cast<uintptr_t>(p);
-        // What the allocator ACTUALLY reserved, which is the request rounded to a
-        // describable region; recording the request would refuse a self-grant of the same
-        // block at the extent the descriptor covers.
-        slot->size = static_cast<uint32_t>(rsz);
-        slot->owner = tag;
-#if KICKOS_ARCH_ARENA_DCACHE
-        slot->sync_owed = false;
-#endif
+        // The size the allocator reserved, the request rounded to a describable region:
+        // recording the request would refuse a self-grant of the block at the extent the
+        // descriptor covers.
+        *slot = RamBlock{reinterpret_cast<uintptr_t>(p), static_cast<uint32_t>(rsz), tag};
         return p;
     }
 
@@ -149,20 +148,13 @@ namespace kickos
         {
             return false;
         }
-        for (RamBlock& b : blocks())
+        RamBlock* const b = free_block();
+        if (b == nullptr)
         {
-            if (b.size == 0)
-            {
-                b.base = base;
-                b.size = static_cast<uint32_t>(size);
-                b.owner = tag;
-#if KICKOS_ARCH_ARENA_DCACHE
-                b.sync_owed = false;
-#endif
-                return true;
-            }
+            return false;
         }
-        return false;
+        *b = RamBlock{base, static_cast<uint32_t>(size), tag};
+        return true;
     }
 
 #if defined(KICKOS_ENABLE_SELFTEST)

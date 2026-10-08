@@ -12,6 +12,7 @@
 #include <kickos/domain.h>
 #include <kickos/frame_pool.h>
 #include <kickos/instance.h>
+#include <kickos/irq_route.h>
 #include <kickos/irqlock.h>
 #include <kickos/kernel.h>
 #include <kickos/klink.h>
@@ -32,13 +33,20 @@ extern "C"
 
     // Added to an app virtual address to name the frame the loader put those bytes in.
     extern unsigned char __kickos_app_load_delta[] KICKOS_LINK_BOUND;
-
-    // The kernel address that corresponds to physical address 0 for the image's own DRAM.
-    extern unsigned char __kickos_frame_pool_delta[];
 }
 
 namespace kickos
 {
+    // Every caller writes every byte of the run before anything reads it or a task maps it.
+    class AspaceUnwritten
+    {
+    public:
+        static arch_phys_addr_t alloc_run(size_t pages)
+        {
+            return UnwrittenFrames::alloc_run(pages);
+        }
+    };
+
     namespace
     {
         // The last space written to this core's translation root.
@@ -67,8 +75,7 @@ namespace kickos
 
         size_t g_release_runs = 0;
 
-        // Granules cleared or copied under the kernel lock for a reservation, a new space's
-        // static data or the snapshot.
+        // Granules copied under the kernel lock, for a new space's static data or the snapshot.
         uint32_t g_locked_pages = 0;
 #endif
 
@@ -119,18 +126,12 @@ namespace kickos
 
         PresyncRecord* presync_of(Thread const* t)
         {
-            Kernel& k = kernel();
-            if (t == nullptr or t < &k.threads.slots[0]
-                or t >= &k.threads.slots[KICKOS_THREAD_SLOTS])
+            int const i = kernel().threads.index_of(t);
+            if (i < 0)
             {
                 return nullptr;
             }
-            return &k.presync[t - &k.threads.slots[0]];
-        }
-
-        PresyncRecord* presync_mine()
-        {
-            return presync_of(sched::current());
+            return &kernel().presync[i];
         }
 
         void presync_drop(PresyncRecord& r)
@@ -159,7 +160,7 @@ namespace kickos
             {
                 return;
             }
-            PresyncRecord const* const mine = presync_mine();
+            PresyncRecord const* const mine = presync_record();
             size_t const g = arch_aspace_granule();
             for (PresyncRecord& r : k.presync)
             {
@@ -207,7 +208,7 @@ namespace kickos
 #if defined(KICKOS_ENABLE_SELFTEST)
                 if (open_ and idle_ and line_ != 0)
                 {
-                    arch_irq_inject(static_cast<int>(line_));
+                    inject(line_);
                     line_ = 0;
                     r_.windows_opened++;
                     arch_irq_window();
@@ -248,7 +249,7 @@ namespace kickos
 #if defined(KICKOS_ENABLE_SELFTEST)
                 if (line_ != 0)
                 {
-                    arch_irq_inject(static_cast<int>(line_));
+                    inject(line_);
                     line_ = 0;
                 }
                 r_.windows_opened++;
@@ -279,6 +280,13 @@ namespace kickos
             }
 
           private:
+            // A frame of its own: inlined, the bracket widens the SYSWIN chain's frame.
+            __attribute__((noinline)) static void inject(uint16_t line)
+            {
+                IrqLock lock;
+                irq_inject(static_cast<int>(line), lock);
+            }
+
             bool open_;
             PresyncRecord& r_;
 #if defined(KICKOS_ENABLE_SELFTEST)
@@ -305,7 +313,7 @@ namespace kickos
             {
                 return true;
             }
-            PresyncRecord* const r = presync_mine();
+            PresyncRecord* const r = presync_record();
             if (r != nullptr and presync_excuses(*r, pa, pages, arch_aspace_granule()))
             {
                 return true;
@@ -329,7 +337,7 @@ namespace kickos
                 return;
             }
             // Each editor is reached only from a presync_wanted syscall, whose spans fit.
-            PresyncRecord* const r = presync_mine();
+            PresyncRecord* const r = presync_record();
             bool kept = r != nullptr and r->active and presync_add(r->edits, pa, pages);
 #if defined(KICKOS_ENABLE_SELFTEST)
             kept = kept or (r != nullptr and r->probe);
@@ -347,7 +355,6 @@ namespace kickos
         unsigned char* const volatile g_app_sram_lo = __kickos_app_sram_start;
         unsigned char* const volatile g_app_sram_hi = __kickos_app_sram_end;
         unsigned char* const volatile g_app_load_delta = __kickos_app_load_delta;
-        unsigned char* const volatile g_pool_delta = __kickos_frame_pool_delta;
 
         // The frame the loader placed an app virtual address in. The linker states the
         // window where the loader puts it; a task reaches it at that address plus the user
@@ -402,8 +409,6 @@ namespace kickos
             return extent_of(g_app_sram_lo, g_app_sram_hi, g);
         }
 
-        // Check app ROM/RAM windows before applying their address offsets.
-        // Equal bounds indicate an absent window.
         bool in_app_image(uintptr_t p)
         {
             uintptr_t const rom_lo = app_va(g_app_rom_lo);
@@ -429,9 +434,45 @@ namespace kickos
             (void)ranges->grant(e.base, e.pages, rights, ARCH_MAP_NORMAL);
         }
 
+        // Copies granule `i` of the image's static data based at `base` into the run at `to`,
+        // from the live `home` or from the snapshot where it is null; false when either end is
+        // gone. Both ends are cacheable (an image range refuses a memory-type change), so no
+        // alias sync is owed. Out of line: inlined, it widens the seed's frame on the spawn chain.
+        __attribute__((noinline)) bool copy_data_granule(arch_phys_addr_t to,
+                                                         struct arch_aspace* home, uintptr_t base,
+                                                         size_t i, size_t g)
+        {
+            arch_phys_addr_t const step = static_cast<arch_phys_addr_t>(i * g);
+            void* const dst = frame_pool_ptr(to + step);
+            if (dst == nullptr)
+            {
+                return false;
+            }
+            if (home == nullptr)
+            {
+                void const* const src = frame_pool_ptr(g_data_template + step);
+                if (src == nullptr)
+                {
+                    return false;
+                }
+                kmemcpy(dst, src, g);
+                return true;
+            }
+            uintptr_t const va = base + static_cast<uintptr_t>(i * g);
+            void const* const src = acquire_page(home, va);
+            if (src == nullptr)
+            {
+                return false;
+            }
+            kmemcpy(dst, src, g);
+            release_page(home, va);
+            return true;
+        }
+
         // Runs with the home's mappings still standing: at the first explicit task's seed and
-        // on the home's way out.
-        bool data_template_fill(Extent const& data, size_t g)
+        // on the home's way out. Inlined: a frame of its own deepens a dying thread's chain
+        // through its space's release.
+        __attribute__((always_inline)) inline bool data_template_fill(Extent const& data, size_t g)
         {
             if (g_data_template_filled)
             {
@@ -446,24 +487,37 @@ namespace kickos
 #endif
             for (size_t i = 0; i < data.pages; i++)
             {
-                uintptr_t const va = data.base + static_cast<uintptr_t>(i * g);
-                void const* const src = acquire_page(g_data_home, va);
-                if (src == nullptr)
+                if (not copy_data_granule(g_data_template, g_data_home, data.base, i, g))
                 {
                     return false;
                 }
-                void* const dst =
-                    frame_pool_ptr(g_data_template + static_cast<arch_phys_addr_t>(i * g));
-                if (dst == nullptr)
-                {
-                    release_page(g_data_home, va);
-                    return false;
-                }
-                kmemcpy(dst, src, g);
-                release_page(g_data_home, va);
             }
             g_data_template_filled = true;
             return true;
+        }
+
+        // The source a new space's static data is copied from: the live `*home`, or the
+        // snapshot where it is null; false when there is none. The stage a system call makes
+        // ahead of its lock and the locked seed both ask here: a seed that disagrees with its
+        // stage refuses it, and the call goes round again forever.
+        bool image_data_source(bool from_snapshot, struct arch_aspace* spawner,
+                               Extent const& data, size_t g, struct arch_aspace** home)
+        {
+            if (g_data_home == nullptr and not g_data_template_filled)
+            {
+                return false;
+            }
+            *home = nullptr;
+            if (from_snapshot)
+            {
+                return data_template_fill(data, g);
+            }
+            *home = g_data_home;
+            if (spawner != nullptr)
+            {
+                *home = spawner;
+            }
+            return *home != nullptr or g_data_template_filled;
         }
 
         // Maps the written `run` as `data`, whose range is claimed; frees both on a refusal.
@@ -485,34 +539,10 @@ namespace kickos
             return true;
         }
 
-        // The live space a new space's static data is copied from, or null for the snapshot.
-        struct arch_aspace* image_source(bool from_snapshot, struct arch_aspace* spawner)
-        {
-            if (from_snapshot)
-            {
-                return nullptr;
-            }
-            if (spawner != nullptr)
-            {
-                return spawner;
-            }
-            return g_data_home;
-        }
-
-        // Copy data from the live `home` (image_source), or from the snapshot where it is null,
-        // under IrqLock.
+        // Copies data from the source image_data_source chose, under IrqLock.
         bool data_copy(struct arch_aspace* space, VirtualRanges* ranges, Extent const& data,
-                       size_t g, bool from_snapshot, struct arch_aspace* home)
+                       size_t g, struct arch_aspace* home)
         {
-            if (from_snapshot and not data_template_fill(data, g))
-            {
-                return false;
-            }
-            bool const live = home != nullptr;
-            if (not live and not g_data_template_filled)
-            {
-                return false;
-            }
             if (not claim(ranges, data, VR_IMAGE))
             {
                 return false;
@@ -520,7 +550,7 @@ namespace kickos
 #if KICKOS_PRESYNC
             // A system call copies ahead of its lock (presync_stage_image), and goes round
             // again when what it copied is not what this space takes.
-            PresyncRecord* const r = presync_mine();
+            PresyncRecord* const r = presync_record();
             if (r != nullptr and r->active and r->staged_short)
             {
                 (void)ranges->release(data.base);
@@ -543,7 +573,7 @@ namespace kickos
             }
 #endif
             // Uncleared: the loop below writes every byte of every page.
-            arch_phys_addr_t const run = frame_pool_alloc_run(data.pages);
+            arch_phys_addr_t const run = AspaceUnwritten::alloc_run(data.pages);
             if (run == 0)
             {
                 (void)ranges->release(data.base);
@@ -554,34 +584,11 @@ namespace kickos
 #endif
             for (size_t i = 0; i < data.pages; i++)
             {
-                uintptr_t const va = data.base + static_cast<uintptr_t>(i * g);
-                void* const dst = frame_pool_ptr(run + static_cast<arch_phys_addr_t>(i * g));
-                void const* src = nullptr;
-                bool held = false;
-                if (live)
+                if (not copy_data_granule(run, home, data.base, i, g))
                 {
-                    src = acquire_page(home, va);
-                    held = src != nullptr;
-                }
-                else
-                {
-                    src = frame_pool_ptr(g_data_template
-                                         + static_cast<arch_phys_addr_t>(i * g));
-                }
-                if (dst == nullptr or src == nullptr)
-                {
-                    if (held)
-                    {
-                        release_page(home, va);
-                    }
                     frame_pool_free_run(run, data.pages, g);
                     (void)ranges->release(data.base);
                     return false;
-                }
-                kmemcpy(dst, src, g);
-                if (held)
-                {
-                    release_page(home, va);
                 }
             }
             return data_map(space, ranges, data, run, g);
@@ -596,42 +603,23 @@ namespace kickos
         bool stage_granule(Thread const* c, PresyncRecord const& r, uint32_t j, size_t g)
         {
             IrqLock lock;
-            arch_phys_addr_t const step = static_cast<arch_phys_addr_t>(j) * g;
-            void* const dst = frame_pool_ptr(r.staged + step);
-            if (dst == nullptr)
-            {
-                return false;
-            }
             if (r.stage == PresyncStage::CLEAR)
             {
-                kmemset(dst, 0, g);
-                return true;
-            }
-            if (r.staged_home == nullptr)
-            {
-                void const* const src = frame_pool_ptr(g_data_template + step);
-                if (src == nullptr)
+                void* const dst = frame_pool_ptr(r.staged + static_cast<arch_phys_addr_t>(j) * g);
+                if (dst == nullptr)
                 {
                     return false;
                 }
-                kmemcpy(dst, src, g);
+                kmemset(dst, 0, g);
                 return true;
             }
             // Root's space may be released between two granules.
-            if (r.staged_home != g_data_home
-                and r.staged_home != domain_space(task_domain(c->task)))
+            if (r.staged_home != nullptr and r.staged_home != g_data_home
+                and r.staged_home != domain_space(thread_domain(c)))
             {
                 return false;
             }
-            uintptr_t const va = image_data(g).base + static_cast<uintptr_t>(j) * g;
-            void const* const src = acquire_page(r.staged_home, va);
-            if (src == nullptr)
-            {
-                return false;
-            }
-            kmemcpy(dst, src, g);
-            release_page(r.staged_home, va);
-            return true;
+            return copy_data_granule(r.staged, r.staged_home, image_data(g).base, j, g);
         }
 #endif
     }
@@ -667,23 +655,23 @@ namespace kickos
         {
             return true;
         }
-        if (g_data_home != nullptr or g_data_template_filled)
+        struct arch_aspace* home = nullptr;
+        if (image_data_source(from_snapshot, spawner, data, g, &home))
         {
-            return data_copy(space, ranges, data, g, from_snapshot,
-                             image_source(from_snapshot, spawner));
+            return data_copy(space, ranges, data, g, home);
         }
-        // The first space uses the image data initialized by root constructors.
-        // A nonzero template with no live root means snapshot creation failed.
+        // Only the first seed finds no template; every later one with no source is refused.
         if (g_data_template != 0)
         {
             return false;
         }
+        // The first space uses the image data initialized by root constructors.
         if (not claim(ranges, data, VR_IMAGE | VR_BORROWED))
         {
             return false;
         }
         // Uncleared: data_template_fill writes every byte, and no seed reads it until it has.
-        arch_phys_addr_t const tmpl = frame_pool_alloc_run(data.pages);
+        arch_phys_addr_t const tmpl = AspaceUnwritten::alloc_run(data.pages);
         if (tmpl == 0)
         {
             (void)ranges->release(data.base);
@@ -714,8 +702,7 @@ namespace kickos
         {
             return nullptr;
         }
-        uintptr_t const pa = static_cast<uintptr_t>(app_pa(va));
-        return reinterpret_cast<void*>(pa + reinterpret_cast<uintptr_t>(g_pool_delta));
+        return frame_pool_alias(app_pa(va));
     }
 
     uintptr_t aspace_frame_token(struct arch_aspace* space, uintptr_t va)
@@ -741,36 +728,6 @@ namespace kickos
         // Frames apart, biased so the reference answers 1 and 0 stays "not mapped". Unsigned
         // wrap below the reference is deliberate: the value is compared, never ordered.
         return static_cast<uintptr_t>((at - ref) / g) + 1u;
-    }
-
-    uintptr_t aspace_reserve(VirtualRanges* ranges, size_t bytes)
-    {
-        if (ranges == nullptr or bytes == 0)
-        {
-            return 0;
-        }
-        size_t const g = arch_aspace_granule();
-        if (bytes > SIZE_MAX - g)
-        {
-            return 0; // the round-up below would wrap
-        }
-        size_t const pages = (bytes + g - 1u) / g;
-        // Cleared frames: neither the later self-grant nor the handoff writes the bytes first.
-        arch_phys_addr_t const run = frame_pool_alloc_user_run(pages);
-        if (run == 0)
-        {
-            return 0;
-        }
-#if defined(KICKOS_ENABLE_SELFTEST)
-        g_locked_pages += static_cast<uint32_t>(pages);
-#endif
-        uintptr_t const va = aspace_user_va(run);
-        if (not ranges->reserve(va, pages, 0))
-        {
-            frame_pool_free_run(run, pages, g);
-            return 0;
-        }
-        return va;
     }
 
     bool aspace_frames_type_ok(arch_phys_addr_t pa, size_t pages, uint8_t memtype,
@@ -824,12 +781,12 @@ namespace kickos
 #if KICKOS_PRESYNC
     PresyncRecord* presync_record()
     {
-        return presync_mine();
+        return presync_of(sched::current());
     }
 
     bool presync_begin()
     {
-        PresyncRecord* const r = presync_mine();
+        PresyncRecord* const r = presync_record();
         if (r == nullptr)
         {
             return false;
@@ -853,7 +810,7 @@ namespace kickos
 #if KICKOS_ARCH_ALIAS_DCACHE
     void presync_note(arch_phys_addr_t pa, size_t pages)
     {
-        PresyncRecord* const r = presync_mine();
+        PresyncRecord* const r = presync_record();
         if (r == nullptr or pool_pages(pa, pages) == 0)
         {
             return;
@@ -871,25 +828,17 @@ namespace kickos
 
     void presync_stage_image(bool from_snapshot, struct arch_aspace* spawner)
     {
-        PresyncRecord* const r = presync_mine();
+        PresyncRecord* const r = presync_record();
         size_t const g = arch_aspace_granule();
         Extent const data = image_data(g);
+        struct arch_aspace* home = nullptr;
         if (r == nullptr or data.pages == 0
-            or (g_data_home == nullptr and not g_data_template_filled))
-        {
-            return;
-        }
-        if (from_snapshot and not data_template_fill(data, g))
-        {
-            return;
-        }
-        struct arch_aspace* const home = image_source(from_snapshot, spawner);
-        if (home == nullptr and not g_data_template_filled)
+            or not image_data_source(from_snapshot, spawner, data, g, &home))
         {
             return;
         }
         // Unwritten: presync_run writes every byte of every page before anything maps it.
-        arch_phys_addr_t const run = frame_pool_alloc_run(data.pages);
+        arch_phys_addr_t const run = AspaceUnwritten::alloc_run(data.pages);
         if (run == 0)
         {
             r->staged_short = true;
@@ -904,7 +853,7 @@ namespace kickos
 
     arch_phys_addr_t aspace_reserve_stage(VirtualRanges const* ranges, size_t bytes)
     {
-        PresyncRecord* const r = presync_mine();
+        PresyncRecord* const r = presync_record();
         size_t const g = arch_aspace_granule();
         if (r == nullptr or ranges == nullptr or bytes == 0 or bytes > SIZE_MAX - g
             or bytes / g > UINT32_MAX)
@@ -913,7 +862,7 @@ namespace kickos
         }
         size_t const pages = (bytes + g - 1u) / g;
         // Unwritten: presync_run clears every byte before the range names the frames.
-        arch_phys_addr_t const run = frame_pool_alloc_run(pages);
+        arch_phys_addr_t const run = AspaceUnwritten::alloc_run(pages);
         if (run == 0)
         {
             return 0;
@@ -927,7 +876,7 @@ namespace kickos
 
     uintptr_t aspace_reserve_commit(VirtualRanges* ranges)
     {
-        PresyncRecord* const r = presync_mine();
+        PresyncRecord* const r = presync_record();
         if (r == nullptr or r->stage != PresyncStage::CLEAR or not r->staged_full
             or ranges == nullptr)
         {
@@ -995,7 +944,7 @@ namespace kickos
 
     void presync_commit()
     {
-        PresyncRecord* const r = presync_mine();
+        PresyncRecord* const r = presync_record();
         if (r == nullptr)
         {
             return;
@@ -1011,7 +960,7 @@ namespace kickos
 
     bool presync_end()
     {
-        PresyncRecord* const r = presync_mine();
+        PresyncRecord* const r = presync_record();
         if (r == nullptr)
         {
             return false;
@@ -1079,7 +1028,7 @@ namespace kickos
 
     void presync_exit()
     {
-        PresyncRecord* const r = presync_mine();
+        PresyncRecord* const r = presync_record();
         if (r == nullptr)
         {
             return;
@@ -1130,7 +1079,7 @@ namespace kickos
     uint32_t presync_windows_mine()
     {
         IrqLock lock;
-        PresyncRecord const* const r = presync_mine();
+        PresyncRecord const* const r = presync_record();
         if (r == nullptr)
         {
             return 0;
@@ -1140,7 +1089,7 @@ namespace kickos
 
     void presync_probe(bool on)
     {
-        PresyncRecord* const r = presync_mine();
+        PresyncRecord* const r = presync_record();
         if (r != nullptr)
         {
             r->probe = on;
@@ -1149,7 +1098,7 @@ namespace kickos
 
     void presync_arm(uint16_t line, uint8_t drops, bool fault_out, bool idle_window)
     {
-        PresyncRecord* const r = presync_mine();
+        PresyncRecord* const r = presync_record();
         if (r != nullptr)
         {
             r->inject_line = line;
@@ -1161,7 +1110,7 @@ namespace kickos
 
     bool presync_take_fault_out()
     {
-        PresyncRecord* const r = presync_mine();
+        PresyncRecord* const r = presync_record();
         if (r == nullptr or not r->fault_out)
         {
             return false;
@@ -1191,7 +1140,7 @@ namespace kickos
             }
             if (not vr_caller_nameable(e))
             {
-                // A stack run's base is its GUARD, so an admitted grant maps that page too.
+                // A stack run's base is its guard, so an admitted grant would map that page too.
                 return -KOS_EPERM;
             }
             // A window, a handoff or the donor mapping these frames with another type keeps
@@ -1261,16 +1210,23 @@ namespace kickos
             bool owed = false;
         };
 
-        Owner owner_of(arch_phys_addr_t pa)
+        Owner owner_from(VirtualRanges* in, VirtualRange const* e)
         {
             Owner o;
-            VirtualRange const* const e = reservation_at(pa, &o.in);
             if (e != nullptr)
             {
+                o.in = in;
                 o.base = e->base;
                 o.owed = (e->flags & VR_SYNC_OWED) != 0;
             }
             return o;
+        }
+
+        Owner owner_of(arch_phys_addr_t pa)
+        {
+            VirtualRanges* in = nullptr;
+            VirtualRange const* const e = reservation_at(pa, &in);
+            return owner_from(in, e);
         }
 
         // `e` of `ranges`, which is the reservation itself unless the space borrowed it.
@@ -1280,11 +1236,7 @@ namespace kickos
             {
                 return owner_of(aspace_frame_of(e->base));
             }
-            Owner o;
-            o.in = ranges;
-            o.base = e->base;
-            o.owed = (e->flags & VR_SYNC_OWED) != 0;
-            return o;
+            return owner_from(ranges, e);
         }
 #else
         struct Owner
@@ -1426,14 +1378,7 @@ namespace kickos
         {
             return -KOS_ENOMEM;
         }
-        // Require VR_FRAMECAP as well as VR_BORROWED. Store a biased run index
-        // so real slot zero is distinct from no run.
         int const run_slot = frame_run_slot_of(run_obj);
-        if (run_slot < 0)
-        {
-            frame_run_release(run_obj);
-            return -KOS_EINVAL;
-        }
         if (not ranges->reserve(va, pages, VR_BORROWED | VR_FRAMECAP,
                                 static_cast<uint32_t>(run_slot) + 1u))
         {
@@ -1470,8 +1415,8 @@ namespace kickos
             return -KOS_EINVAL;
         }
         VirtualRange const* const e = ranges->at_base(va);
-        // The range must be one aspace_cap_map placed AND must name this run. Matching a page
-        // count instead accepts the image and every handoff, which carry VR_BORROWED too.
+        // The range must be one aspace_cap_map placed and must name this run: a page count
+        // alone accepts the image and every handoff, which carry VR_BORROWED too.
         if (e == nullptr or e->base != va or (e->flags & VR_FRAMECAP) == 0)
         {
             return -KOS_EPERM;
@@ -1652,6 +1597,25 @@ namespace kickos
         arch_aspace_activate(space);
     }
 
+    static void seat(struct arch_aspace* space)
+    {
+        uint32_t const cpu = arch_cpu_id();
+        if (g_current[cpu] == space)
+        {
+            return;
+        }
+        g_current[cpu] = space;
+        activate_locked(space);
+    }
+
+    // The snapshot is filled while root's static data still exists; a failure leaves it unfilled.
+    static void data_home_leave()
+    {
+        size_t const g = arch_aspace_granule();
+        (void)data_template_fill(image_data(g), g);
+        g_data_home = nullptr;
+    }
+
     void aspace_release(struct arch_aspace* space, VirtualRanges* ranges)
     {
         if (space == nullptr)
@@ -1682,13 +1646,11 @@ namespace kickos
                 activate_locked(arch_aspace_boot());
             }
         }
-        size_t const g = arch_aspace_granule();
         if (g_data_home == space)
         {
-            // The last moment root's static data exists. A failure leaves it unfilled.
-            (void)data_template_fill(image_data(g), g);
-            g_data_home = nullptr;
+            data_home_leave();
         }
+        size_t const g = arch_aspace_granule();
         for (size_t i = 0; ranges != nullptr and i < VirtualRanges::capacity(); i++)
         {
             VirtualRange const* const e = ranges->at(i);
@@ -1738,11 +1700,7 @@ namespace kickos
 
     struct arch_aspace* aspace_activate_for(Thread const* t)
     {
-        if (t == nullptr)
-        {
-            return nullptr;
-        }
-        struct arch_aspace* const space = domain_space(task_domain(t->task));
+        struct arch_aspace* const space = domain_space(thread_domain(t));
         if (space == nullptr)
         {
 #if defined(KICKOS_ENABLE_SELFTEST)
@@ -1756,23 +1714,13 @@ namespace kickos
 #endif
             return nullptr;
         }
-        uint32_t const cpu = arch_cpu_id();
-        if (space == g_current[cpu])
-        {
-            return space;
-        }
-        g_current[cpu] = space;
-        activate_locked(space);
+        seat(space);
         return space;
     }
 
     bool aspace_seated_for(Thread const* t)
     {
-        if (t == nullptr)
-        {
-            return false;
-        }
-        struct arch_aspace* const space = domain_space(task_domain(t->task));
+        struct arch_aspace* const space = domain_space(thread_domain(t));
         if (space == nullptr)
         {
             return false;
@@ -1783,14 +1731,7 @@ namespace kickos
 
     void aspace_install_boot(void)
     {
-        struct arch_aspace* const boot = arch_aspace_boot();
-        uint32_t const cpu = arch_cpu_id();
-        if (g_current[cpu] == boot)
-        {
-            return;
-        }
-        g_current[cpu] = boot;
-        activate_locked(boot);
+        seat(arch_aspace_boot());
     }
 
     void aspace_forget_current(void)
@@ -1833,10 +1774,7 @@ namespace kickos
     void aspace_data_home_forget(void)
     {
         IrqLock lock;
-        size_t const g = arch_aspace_granule();
-        // Mirrors aspace_release exactly, snapshot included.
-        (void)data_template_fill(image_data(g), g);
-        g_data_home = nullptr;
+        data_home_leave();
     }
 #endif
 }

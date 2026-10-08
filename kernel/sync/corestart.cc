@@ -6,6 +6,7 @@
 #if KICKOS_KERNEL_CORES > 1
 
 #include <kickos/instance.h>
+#include <kickos/sched.h>
 #include <kickos/sys/atomic.h>
 
 #include <stddef.h>
@@ -19,16 +20,13 @@ namespace kickos
 
         using Flag = Atomic<uint32_t, Order::ACQUIRE | Order::RELEASE>;
 
-        // One row per core, rounded up to a whole line. EACH CELL HAS EXACTLY ONE WRITER:
-        // `seated` is written by the core running kmain and read by this row's own core,
-        // `arrived` the other way about.
+        // EACH CELL HAS EXACTLY ONE WRITER: `seated` is written by the core running kmain and
+        // read by this row's own core, `arrived` the other way about.
         struct alignas(CORESTART_CACHE_LINE) CoreRow
         {
             Flag seated;
             Flag arrived;
         };
-        static_assert(sizeof(CoreRow) % CORESTART_CACHE_LINE == 0,
-                      "a row shorter than a line would share one with the next writer");
 
         CoreRow g_row[KICKOS_KERNEL_CORES] = {};
     }
@@ -46,27 +44,24 @@ namespace kickos
 
     bool corestart_arrived(uint32_t core)
     {
-        if (core >= KICKOS_KERNEL_CORES)
-        {
-            return false;
-        }
         return g_row[core].arrived.load() != 0u;
     }
 
-    // The arch seam's two bring-up halves (arch/include/kickos/arch/arch.h).
-    extern "C" int kickos_kernel_core_seated(void)
+    // The idle cell is read only behind the acquire that publishes it.
+    extern "C" int kickos_kernel_core_startable(void)
     {
-        int answer = 0;
-        if (g_row[kickos_kernel_core()].seated.load() != 0u)
-        {
-            answer = 1;
-        }
-        return answer;
+        KernelCore const me = kickos_kernel_core();
+        return static_cast<int>(g_row[me].seated.load() != 0u and kernel().idle(me) != nullptr);
     }
 
-    extern "C" void kickos_kernel_core_arrive(void)
+    extern "C" void kickos_kernel_core_start(void)
     {
         g_row[kickos_kernel_core()].arrived = 1u;
+        sched::start();
+        while (true)
+        {
+            arch_idle_wait();
+        }
     }
 }
 

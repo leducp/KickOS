@@ -42,16 +42,6 @@
 // cast gives a template-id such as main_pinned<f> the type that names its one specialization.
 #define TAP_ELIDE(fn) ((void)sizeof(static_cast<void (*)()>(&(fn))))
 
-// A registration this image compiles. The absolute symbol `kickos_tap_arm.<name>` it leaves in
-// the symbol table is how tests/integration/check_selftest_manifest.sh reads which arms the
-// linked image carries, so it must stay beside the tap::add it names.
-#define TAP_REGISTER(name, fn)                                                                \
-    do                                                                                        \
-    {                                                                                         \
-        __asm__(".set \"kickos_tap_arm." name "\", 1");                                     \
-        tap::add(name, fn);                                                                   \
-    } while (false)
-
 #ifndef KICKOS_KERNEL_CORES
 #define KICKOS_KERNEL_CORES 1
 #endif

@@ -20,8 +20,6 @@
 
 #include <stddef.h>
 #include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
 
 #if not KICKOS_ARCH_ARENA_DCACHE or KICKOS_HAVE_ASPACE
 #error "this gate compiles the region seats with a data cache over the arena"
@@ -161,18 +159,6 @@ extern "C"
 
 namespace kickos
 {
-    namespace detail
-    {
-        constinit InstanceLocal<Kernel> g_instance;
-    }
-
-    void kpanic(char const* msg)
-    {
-        fprintf(stderr, "kernel panic: %s\n", msg);
-        ADD_FAILURE() << "kernel panic: " << msg;
-        abort();
-    }
-
     kos_task_t task_handle(Task const* t)
     {
         return static_cast<kos_task_t>(reinterpret_cast<uintptr_t>(t) & 0xFFFFu);
@@ -239,7 +225,7 @@ namespace
             blk_[1] = take();
             t_.mpu.clear();
             t_.task = task();
-            t_.state = kickos::ThreadState::RUNNING;
+            t_.state.to<kickos::ThreadState::RUNNING>();
         }
 
         uintptr_t take()

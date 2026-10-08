@@ -43,8 +43,8 @@ namespace kickos
             {
             };
 
-            constexpr uint32_t CORE_ME = 0;   // the core the fixture speaks as
-            constexpr uint32_t CORE_PEER = 1; // the core the victim executes on
+            constexpr KernelCore CORE_ME = testfix::core_at(0);   // the core the fixture speaks as
+            constexpr KernelCore CORE_PEER = testfix::core_at(1); // the core the victim executes on
 
             // Not ROOT_INDEX: ThreadPool::alloc retires root's slot, and is_root reads the
             // slot comparison, so an arm seating its threads there speaks about root.
@@ -118,7 +118,7 @@ namespace kickos
                 p.peer_idle = seat_peer_idle();
                 {
                     IrqLock lock;
-                    sched::reschedule();
+                    sched::reschedule(nullptr, lock);
                 }
 
                 testfix::seat_running_on(p.victim, CORE_PEER);
@@ -135,7 +135,7 @@ namespace kickos
                 g_core = CORE_PEER;
                 {
                     IrqLock lock;
-                    sched::reschedule();
+                    sched::reschedule(nullptr, lock);
                 }
                 g_core = was;
             }
@@ -149,7 +149,7 @@ namespace kickos
                 g_core = CORE_PEER;
                 {
                     IrqLock lock;
-                    thread_cancel_kind(t, CANCEL_SLAY);
+                    thread_cancel_kind(t, CANCEL_SLAY, lock);
                 }
                 g_core = was;
             }
@@ -179,14 +179,14 @@ namespace kickos
         TEST_F(SlayPeer, a_slay_of_a_peers_running_thread_asks_that_peer_and_nobody_else)
         {
             Placed p = place();
-            ASSERT_EQ(kernel().current[CORE_ME], p.slayer) << "fixture: the slayer runs here";
-            ASSERT_EQ(kernel().current[CORE_PEER], p.victim)
+            ASSERT_EQ(kernel().current(CORE_ME), p.slayer) << "fixture: the slayer runs here";
+            ASSERT_EQ(kernel().current(CORE_PEER), p.victim)
                 << "fixture: the victim runs on the peer core";
             ASSERT_EQ(owed_at(CORE_PEER), 0) << "fixture: nothing stands against the peer core";
 
             {
                 IrqLock lock;
-                thread_cancel_kind(p.victim, CANCEL_SLAY);
+                thread_cancel_kind(p.victim, CANCEL_SLAY, lock);
             }
 
             EXPECT_EQ(p.victim->cancel_kind, CANCEL_SLAY) << "fixture: the escalation stood";
@@ -210,13 +210,13 @@ namespace kickos
             Placed p = place();
             {
                 IrqLock lock;
-                thread_cancel_kind(p.victim, CANCEL_SLAY);
+                thread_cancel_kind(p.victim, CANCEL_SLAY, lock);
             }
             drain(CORE_PEER);
 
             pass_as_peer();
 
-            EXPECT_EQ(kernel().current[CORE_PEER], p.peer_idle)
+            EXPECT_EQ(kernel().current(CORE_PEER), p.peer_idle)
                 << "the core re-picked its own slain thread: the claim is a switch INTO the "
                    "victim, so a core that never switches away never claims it";
             EXPECT_EQ(p.victim->state, ThreadState::READY)
@@ -238,14 +238,14 @@ namespace kickos
             Placed p = place();
             {
                 IrqLock lock;
-                thread_cancel_kind(p.victim, CANCEL_SLAY);
+                thread_cancel_kind(p.victim, CANCEL_SLAY, lock);
             }
             pass_as_peer();
             ASSERT_EQ(p.victim->state, ThreadState::READY) << "fixture: the victim lost the core";
 
             pass_as_peer();
 
-            EXPECT_EQ(kernel().current[CORE_PEER], p.victim)
+            EXPECT_EQ(kernel().current(CORE_PEER), p.victim)
                 << "the second pass did not pick the victim, so nothing runs its teardown";
             EXPECT_EQ(g_redirect_target, p.victim) << "the rebuild named another thread";
             EXPECT_EQ(reinterpret_cast<void*>(g_redirect_entry),
@@ -266,7 +266,7 @@ namespace kickos
 
             {
                 IrqLock lock;
-                thread_cancel_kind(p.victim, CANCEL_KILL);
+                thread_cancel_kind(p.victim, CANCEL_KILL, lock);
             }
 
             ASSERT_EQ(p.victim->cancel_kind, CANCEL_KILL) << "fixture: the escalation stood";
@@ -275,7 +275,7 @@ namespace kickos
 
             pass_as_peer();
 
-            EXPECT_EQ(kernel().current[CORE_PEER], p.victim)
+            EXPECT_EQ(kernel().current(CORE_PEER), p.victim)
                 << "a cooperative cancel took the core off its target, which is what a slay is "
                    "for";
             EXPECT_EQ(g_redirects, 0u) << "a kill's target had its context rebuilt";
@@ -292,7 +292,7 @@ namespace kickos
 
             pass_as_peer();
 
-            EXPECT_EQ(kernel().current[CORE_PEER], p.victim)
+            EXPECT_EQ(kernel().current(CORE_PEER), p.victim)
                 << "a thread partway through its own capability sweep lost the core";
             EXPECT_EQ(owed_at(CORE_PEER), 0)
                 << "a pass was owed for a claim that has already fired";
@@ -313,7 +313,7 @@ namespace kickos
 
             {
                 IrqLock lock;
-                thread_cancel_kind(p.slayer, CANCEL_SLAY);
+                thread_cancel_kind(p.slayer, CANCEL_SLAY, lock);
             }
 
             EXPECT_EQ(g_ipi_sends, 0u) << "a core sent itself a doorbell it strips anyway";
@@ -331,7 +331,7 @@ namespace kickos
 
             pass_as_peer();
 
-            EXPECT_EQ(kernel().current[CORE_PEER], p.victim)
+            EXPECT_EQ(kernel().current(CORE_PEER), p.victim)
                 << "a core dropped a thread it was legitimately running, so every pass on every "
                    "core now costs a switch";
             EXPECT_EQ(g_ipi_self_raises, 0u) << "an ordinary pass owed itself another";
@@ -346,7 +346,7 @@ namespace kickos
 
             {
                 IrqLock lock;
-                thread_cancel_kind(p.victim, CANCEL_SLAY);
+                thread_cancel_kind(p.victim, CANCEL_SLAY, lock);
             }
             slay_as_peer(p.slayer);
 
@@ -382,7 +382,7 @@ namespace kickos
 
             {
                 IrqLock lock;
-                thread_cancel_kind(p.victim, CANCEL_SLAY);
+                thread_cancel_kind(p.victim, CANCEL_SLAY, lock);
             }
             slay_as_peer(p.slayer);
             drain(CORE_ME);
@@ -391,12 +391,12 @@ namespace kickos
             pass_as_peer();
             {
                 IrqLock lock;
-                sched::reschedule();
+                sched::reschedule(nullptr, lock);
             }
 
-            EXPECT_EQ(kernel().current[CORE_PEER], p.peer_idle)
+            EXPECT_EQ(kernel().current(CORE_PEER), p.peer_idle)
                 << "the peer re-picked its own slain current";
-            EXPECT_NE(kernel().current[CORE_ME], p.slayer)
+            EXPECT_NE(kernel().current(CORE_ME), p.slayer)
                 << "the slayer's core re-picked its own slain current: a slay reaches its "
                    "victim through a switch, and the core that asked is no exception";
             EXPECT_EQ(g_redirects, 0u)
@@ -412,7 +412,7 @@ namespace kickos
 
             pass_as_peer();
 
-            EXPECT_EQ(kernel().current[CORE_PEER], p.victim)
+            EXPECT_EQ(kernel().current(CORE_PEER), p.victim)
                 << "the pass the peer owed itself did not claim the victim";
             EXPECT_EQ(g_redirect_target, p.victim) << "the rebuild named another thread";
             EXPECT_EQ(g_redirect_stack_top, reinterpret_cast<uintptr_t>(STACK_BASE) + STACK_SIZE)
@@ -420,10 +420,10 @@ namespace kickos
 
             {
                 IrqLock lock;
-                sched::reschedule();
+                sched::reschedule(nullptr, lock);
             }
 
-            EXPECT_EQ(kernel().current[CORE_ME], p.slayer)
+            EXPECT_EQ(kernel().current(CORE_ME), p.slayer)
                 << "the pass the slayer's core owed itself did not claim its own victim";
             EXPECT_EQ(g_redirect_target, p.slayer) << "the rebuild named another thread";
             EXPECT_EQ(reinterpret_cast<void*>(g_redirect_entry),
@@ -444,7 +444,7 @@ namespace kickos
             Placed p = place();
             Thread* const hog = seat_hog();
             pass_as_peer();
-            ASSERT_EQ(kernel().current[CORE_PEER], hog)
+            ASSERT_EQ(kernel().current(CORE_PEER), hog)
                 << "fixture: the higher priority thread holds the peer's core";
             ASSERT_EQ(p.victim->state, ThreadState::READY)
                 << "fixture: the victim is on the ready lists and on no core";
@@ -452,7 +452,7 @@ namespace kickos
 
             {
                 IrqLock lock;
-                thread_cancel_kind(p.victim, CANCEL_SLAY);
+                thread_cancel_kind(p.victim, CANCEL_SLAY, lock);
             }
 
             EXPECT_EQ(g_ipi_sends, 0u)
@@ -464,7 +464,7 @@ namespace kickos
 
             pass_as_peer();
 
-            EXPECT_EQ(kernel().current[CORE_PEER], hog)
+            EXPECT_EQ(kernel().current(CORE_PEER), hog)
                 << "the claim displaced a higher priority thread: it is an ordinary switch "
                    "in, and a slay that preempts hands a dying thread the CPU ahead of a live "
                    "one";
@@ -474,11 +474,11 @@ namespace kickos
 
             {
                 IrqLock lock;
-                sched::set_prio(hog, PRIO_HOG_STEPPED);
+                sched::set_prio(hog, PRIO_HOG_STEPPED, lock);
             }
             dispatch_as(CORE_PEER);
 
-            EXPECT_EQ(kernel().current[CORE_PEER], p.victim)
+            EXPECT_EQ(kernel().current(CORE_PEER), p.victim)
                 << "the first pass that could pick the victim did not, so a slain READY "
                    "thread is never claimed at all";
             EXPECT_EQ(g_redirect_target, p.victim) << "the rebuild named another thread";
@@ -497,19 +497,19 @@ namespace kickos
         {
             Placed p = place();
             Thread* const hog = seat_hog();
-            ASSERT_EQ(kernel().current[CORE_PEER], p.victim)
+            ASSERT_EQ(kernel().current(CORE_PEER), p.victim)
                 << "fixture: the victim still holds the peer's core";
 
             {
                 IrqLock lock;
-                thread_cancel_kind(p.victim, CANCEL_SLAY);
+                thread_cancel_kind(p.victim, CANCEL_SLAY, lock);
             }
             drain(CORE_PEER);
             ASSERT_EQ(g_ipi_self_raises, 0u) << "fixture: no core has raised its own doorbell";
 
             pass_as_peer();
 
-            EXPECT_EQ(kernel().current[CORE_PEER], hog)
+            EXPECT_EQ(kernel().current(CORE_PEER), hog)
                 << "fixture: the pass had a reason of its own to switch, which is the higher "
                    "priority thread";
             EXPECT_EQ(p.victim->state, ThreadState::READY)

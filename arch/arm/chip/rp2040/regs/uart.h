@@ -8,6 +8,9 @@
 #ifndef KICKOS_ARCH_ARM_CHIP_RP2040_REGS_UART_H
 #define KICKOS_ARCH_ARM_CHIP_RP2040_REGS_UART_H
 
+#include "../../rp2xxx/pl011_baud.h"
+#include "clocks.h"
+
 #include <kickos/chip_mmap.h>
 
 #include <stdint.h>
@@ -40,13 +43,11 @@ namespace kickos::rp2040::reg::uart
     constexpr uint32_t LCR_H_8N1 = (0x3u << 5); // WLEN=8
     constexpr uint32_t CR_ENABLE = (1u << 0) | (1u << 8) | (1u << 9); // UARTEN,TXE,RXE
 
-    // baud = clk_peri / (16 x (IBRD + FBRD/64)), FBRD = round(frac x 64). clk_peri
-    // 12 MHz, 115200 -> IBRD 6, FBRD 33; clk_peri 125 MHz (clk_sys on PLL) -> IBRD
-    // 67, FBRD 52 (actual 115207 baud, +0.006%).
-    constexpr uint32_t IBRD_115200 = 6u;
-    constexpr uint32_t FBRD_115200 = 33u;
-    constexpr uint32_t IBRD_PLL = 67u;
-    constexpr uint32_t FBRD_PLL = 52u;
+    // clk_peri is the 12 MHz XOSC until clk_sys is on the PLL, then clk_sys.
+    constexpr uint32_t IBRD_115200 = rp2xxx::pl011_ibrd(12000000u, 115200u);
+    constexpr uint32_t FBRD_115200 = rp2xxx::pl011_fbrd(12000000u, 115200u);
+    constexpr uint32_t IBRD_PLL = rp2xxx::pl011_ibrd(clocks::CLK_SYS_HZ, 115200u);
+    constexpr uint32_t FBRD_PLL = rp2xxx::pl011_fbrd(clocks::CLK_SYS_HZ, 115200u);
 }
 
 #endif

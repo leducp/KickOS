@@ -15,12 +15,13 @@
 #include <kickos/sched.h>
 #include <kickos/vrange.h>
 
+#include "../../../kernel/mem/frame_pool_unwritten.h"
+
 #include <gtest/gtest.h>
 
 #include <setjmp.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <stdlib.h>
 #include <string.h>
 
 #if not KICKOS_PRESYNC
@@ -138,23 +139,12 @@ extern "C"
 
 namespace kickos
 {
-    namespace detail
-    {
-        constinit InstanceLocal<Kernel> g_instance;
-    }
-
     namespace sched
     {
         Thread* current()
         {
             return g_current;
         }
-    }
-
-    void kpanic(char const* msg)
-    {
-        ADD_FAILURE() << "kernel panic: " << msg;
-        abort();
     }
 
     void alias_sync(void const*, size_t) {}
@@ -171,7 +161,7 @@ namespace kickos
         *hi = POOL_LO + FRAMES * G;
     }
 
-    arch_phys_addr_t frame_pool_alloc_run(size_t pages)
+    arch_phys_addr_t UnwrittenFrames::alloc_run(size_t pages)
     {
         if (g_fail_in != 0 and --g_fail_in == 0)
         {

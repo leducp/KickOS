@@ -79,11 +79,6 @@ namespace kickos
         return g_frames.frames_free();
     }
 
-    size_t frame_pool_total()
-    {
-        return g_frames.frames_total();
-    }
-
     size_t frame_pool_refused()
     {
         IrqLock lock;
@@ -104,7 +99,7 @@ namespace kickos
     }
 #endif
 
-    arch_phys_addr_t frame_pool_alloc_run(size_t pages)
+    arch_phys_addr_t UnwrittenFrames::alloc_run(size_t pages)
     {
         IrqLock lock;
 #if defined(KICKOS_ENABLE_SELFTEST)
@@ -123,7 +118,7 @@ namespace kickos
 
     arch_phys_addr_t frame_pool_alloc_user_run(size_t pages)
     {
-        arch_phys_addr_t const run = frame_pool_alloc_run(pages);
+        arch_phys_addr_t const run = UnwrittenFrames::alloc_run(pages);
         if (run == 0)
         {
             return 0;
@@ -151,15 +146,20 @@ namespace kickos
         }
     }
 
+    void* frame_pool_alias(arch_phys_addr_t frame)
+    {
+        return reinterpret_cast<void*>(static_cast<uintptr_t>(frame) + pool_delta());
+    }
+
     void* frame_pool_ptr(arch_phys_addr_t frame)
     {
         IrqLock lock;
-        uintptr_t const p = static_cast<uintptr_t>(frame) + pool_delta();
-        if (not g_frames.is_allocated(p))
+        void* const p = frame_pool_alias(frame);
+        if (not g_frames.is_allocated(reinterpret_cast<uintptr_t>(p)))
         {
             return nullptr;
         }
-        return reinterpret_cast<void*>(p);
+        return p;
     }
 }
 

@@ -34,6 +34,28 @@ else()
 endif()
 set_property(GLOBAL PROPERTY KICKOS_COMPOSE_TOOL "${_kickos_compose_tool}")
 
+# kickos_compose_python(<out> <tool> <venv> <tmpdir> [<pythonpath>...])
+#   Sets <out> to the command that runs Python under <tool>'s uv.lock in the environment <venv>,
+#   with <tool> and each <pythonpath> on PYTHONPATH; `-m kickos_compose ...` or a script follows.
+#   Script-safe, so a cmake -P run includes this file for it.
+function(kickos_compose_python out tool venv tmpdir)
+  find_program(KICKOS_UV uv)
+  if(NOT KICKOS_UV)
+    message(FATAL_ERROR "KickOS: uv not found on PATH; tools/compose runs under uv (https://docs.astral.sh/uv/)")
+  endif()
+  string(JOIN ":" _path "${tool}" ${ARGN})
+  set(${out} "${CMAKE_COMMAND}" -E env "UV_PROJECT_ENVIRONMENT=${venv}" UV_PYTHON_DOWNLOADS=never
+             "PYTHONPATH=${_path}" PYTHONDONTWRITEBYTECODE=1 "TMPDIR=${tmpdir}"
+             "${KICKOS_UV}" run --project "${tool}" --locked --quiet python PARENT_SCOPE)
+endfunction()
+
+# kickos_compose_inputs(<out> <tool>)
+#   Sets <out> to the files a run of <tool> depends on: its modules, pyproject.toml and uv.lock.
+function(kickos_compose_inputs out tool)
+  file(GLOB _sources CONFIGURE_DEPENDS "${tool}/kickos_compose/*.py")
+  set(${out} ${_sources} "${tool}/pyproject.toml" "${tool}/uv.lock" PARENT_SCOPE)
+endfunction()
+
 function(kickos_compose system)
   cmake_parse_arguments(KC "" "EXPORT_NAME" "PARTITION" ${ARGN})
   set(_named ${KC_UNPARSED_ARGUMENTS})
@@ -82,9 +104,8 @@ function(kickos_compose system)
   get_filename_component(_manifest_dir "${KICKOS_MANIFEST}" DIRECTORY)
   file(GLOB_RECURSE _descriptions CONFIGURE_DEPENDS "${_manifest_dir}/platform/*.yaml"
                                                    "${_manifest_dir}/boards/*.yaml")
-  file(GLOB_RECURSE _tool_sources CONFIGURE_DEPENDS "${_tool}/kickos_compose/*.py")
-  set(_inputs ${_compositions} "${KICKOS_MANIFEST}" ${_descriptions} ${_tool_sources}
-              "${_tool}/pyproject.toml" "${_tool}/uv.lock")
+  kickos_compose_inputs(_tool_inputs "${_tool}")
+  set(_inputs ${_compositions} "${KICKOS_MANIFEST}" ${_descriptions} ${_tool_inputs})
   set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${_inputs})
   set(_hashes "${KC_EXPORT_NAME}\n")
   foreach(_input IN LISTS _inputs)
@@ -120,22 +141,13 @@ function(kickos_compose system)
   endforeach()
 
   if(_stale)
-    find_program(KICKOS_UV uv)
-    if(NOT KICKOS_UV)
-      message(FATAL_ERROR "kickos_compose(${system}): uv not found on PATH; the host tool runs "
-        "under uv (https://docs.astral.sh/uv/)")
-    endif()
     set(_fresh "${_dir}/emit")
+    kickos_compose_python(_python "${_tool}" "${CMAKE_BINARY_DIR}/kickos_compose/venv" "${_fresh}/tmp")
     file(REMOVE_RECURSE "${_fresh}")
     file(REMOVE "${_dir}/inputs.sha256")
     file(MAKE_DIRECTORY "${_fresh}/tmp")
     execute_process(
-      COMMAND "${CMAKE_COMMAND}" -E env
-              "UV_PROJECT_ENVIRONMENT=${CMAKE_BINARY_DIR}/kickos_compose/venv"
-              UV_PYTHON_DOWNLOADS=never "PYTHONPATH=${_tool}" PYTHONDONTWRITEBYTECODE=1
-              "TMPDIR=${_fresh}/tmp"
-              "${KICKOS_UV}" run --project "${_tool}" --locked --quiet
-              python -m kickos_compose emit ${_source_args} --manifest "${KICKOS_MANIFEST}"
+      COMMAND ${_python} -m kickos_compose emit ${_source_args} --manifest "${KICKOS_MANIFEST}"
               -o "${_fresh}/table.c" --asserts "${_fresh}/asserts.ld"
               --fragment "${_fresh}/system.cmake" --gate "${_fresh}/gate.c" ${_name_args}
       RESULT_VARIABLE _rc OUTPUT_VARIABLE _out ERROR_VARIABLE _err

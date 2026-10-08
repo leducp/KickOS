@@ -26,12 +26,17 @@ namespace
     constexpr uint32_t CORE_A = 0; // the initiator
     constexpr uint32_t CORE_B = 1; // the target owed a reschedule
 
-    // Owe `targets` a reschedule while speaking as core `from`.
+    // Owe `targets` a reschedule while speaking as core `from`, through the cell's two
+    // publishers: klock_resched_self for its own bit, klock_resched_ask for every other.
     void owe_as(uint32_t from, uint32_t targets)
     {
         uint32_t const was = fix::g_core;
         fix::g_core = from;
-        kickos_kernel_core_resched_owe(targets);
+        if ((targets & (1u << from)) != 0)
+        {
+            kickos::klock_resched_self();
+        }
+        kickos::klock_resched_ask(targets);
         fix::g_core = was;
     }
 
@@ -54,12 +59,12 @@ namespace
         fix::g_core = was;
     }
 
-    // What the interrupt dispatch does: consume the cell, then enter the scheduler.
-    int dispatch_as(uint32_t core)
+    // The consuming half of what the interrupt dispatch does, which then enters the scheduler.
+    bool dispatch_as(uint32_t core)
     {
         uint32_t const was = fix::g_core;
         fix::g_core = core;
-        int const stood = kickos_kernel_core_resched_take();
+        bool const stood = kickos::klock_resched_take();
         fix::g_core = was;
         return stood;
     }
@@ -85,7 +90,7 @@ namespace
         // reaches the scheduler.
         owe_as(CORE_A, 1u << CORE_B);
         EXPECT_EQ(fix::raise_total(), 0u)
-            << "publishing an owed reschedule must not raise anything by itself";
+            << "publishing an owed reschedule must not restore a raise at any core by itself";
 
         bracket_as(CORE_B);
         EXPECT_EQ(fix::g_raised[CORE_B], 1u)
@@ -104,7 +109,7 @@ namespace
             << "the release consumed the cell: the raise it restored can be absorbed again by "
                "the very poll that absorbed the first one, and then nothing is left to say a "
                "reschedule was ever owed";
-        EXPECT_NE(dispatch_as(CORE_B), 0)
+        EXPECT_TRUE(dispatch_as(CORE_B))
             << "the dispatch that finally enters the scheduler must still find the ask standing";
     }
 
@@ -118,7 +123,7 @@ namespace
             << "every release before the scheduler runs must re-arm the raise, since each one "
                "may be the last chance this core takes before going idle";
 
-        ASSERT_NE(dispatch_as(CORE_B), 0) << "the ask stood until the dispatch took it";
+        ASSERT_TRUE(dispatch_as(CORE_B)) << "the ask stood until the dispatch took it";
 
         bracket_as(CORE_B);
         EXPECT_EQ(fix::g_raised[CORE_B], 2u)
@@ -191,7 +196,7 @@ namespace
         bracket_as(CORE_B);
         ASSERT_EQ(fix::g_raised[CORE_B], 1u) << "the arm needs one raise restored";
 
-        ASSERT_NE(dispatch_as(CORE_B), 0) << "the dispatch takes what stands";
+        ASSERT_TRUE(dispatch_as(CORE_B)) << "the dispatch takes what stands";
         EXPECT_EQ(owed_as(CORE_B), 0)
             << "the take stores the sequence it read, so it answers exactly what it saw";
 
@@ -210,18 +215,18 @@ namespace
         EXPECT_EQ(fix::g_raised[CORE_B], 1u)
             << "two asks standing at once are one raise, not two";
 
-        ASSERT_NE(dispatch_as(CORE_B), 0) << "the asks stood until the dispatch took them";
+        ASSERT_TRUE(dispatch_as(CORE_B)) << "the asks stood until the dispatch took them";
         EXPECT_EQ(owed_as(CORE_B), 0)
             << "the take consumed every row, not just the first that differed";
     }
 
     TEST_F(ReschedOwed, take_answers_once_per_ask)
     {
-        EXPECT_EQ(dispatch_as(CORE_B), 0) << "nothing has been asked, so nothing stands";
+        EXPECT_FALSE(dispatch_as(CORE_B)) << "nothing has been asked, so nothing stands";
 
         owe_as(CORE_A, 1u << CORE_B);
-        EXPECT_NE(dispatch_as(CORE_B), 0) << "the ask stands and must be reported";
-        EXPECT_EQ(dispatch_as(CORE_B), 0)
+        EXPECT_TRUE(dispatch_as(CORE_B)) << "the ask stands and must be reported";
+        EXPECT_FALSE(dispatch_as(CORE_B))
             << "the ask was consumed by the take above and may not stand a second time";
     }
 
@@ -231,7 +236,7 @@ namespace
         EXPECT_NE(owed_as(CORE_B), 0) << "the ask stands";
         EXPECT_NE(owed_as(CORE_B), 0) << "reading the cell must not clear it";
         EXPECT_NE(owed_as(CORE_B), 0) << "and must not clear it on a third read either";
-        EXPECT_NE(dispatch_as(CORE_B), 0) << "the take still finds it";
+        EXPECT_TRUE(dispatch_as(CORE_B)) << "the take still finds it";
     }
 
     TEST_F(ReschedOwed, an_ask_naming_no_core_owes_nothing)
@@ -280,7 +285,7 @@ namespace
             << "core B left kernel state with the scheduler's ask standing against it and "
                "restored no raise: the ask died with the edge a poll absorbed, which is the "
                "starvation this cell exists to prevent";
-        EXPECT_NE(dispatch_as(CORE_B), 0)
+        EXPECT_TRUE(dispatch_as(CORE_B))
             << "and the dispatch the restored raise wakes must still find the ask standing";
     }
 

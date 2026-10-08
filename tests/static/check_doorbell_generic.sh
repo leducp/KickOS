@@ -3,27 +3,16 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # The doorbell carries a rendezvous and a reschedule over one raise, and this reads the LINKED
-# IMAGE for the boundary between them: the send publishes no reschedule, and the dispatch enters
-# the scheduler only when the cell says one stands.
+# IMAGE for the two halves of the boundary between them the types cannot hold.
 #
-# REFUSED: a send that branches to the reschedule publisher, an instruction-side rendezvous that
-# does, a dispatch whose transfer into the scheduler is not guarded by the take that consumes the
-# cell, and a publisher with no caller at all. The last one is the vacuity trap: with the
-# mechanism deleted every other assertion here holds over an image that cannot reschedule a peer.
+# The reschedule's publisher is file-local to kernel/sync/klock.cc and its consumer enters the
+# scheduler only through kickos_kernel_core_resched_if_owed, so no backend can publish an ask or
+# enter the scheduler unguarded. That fused entry has to be visible to the dispatch, though, so:
 #
-# WHY THE PUBLISHER'S CALLER SIDE IS ASSERTED RATHER THAN ITS BODY. A raise is an edge and the
-# kernel lock's acquire loop absorbs it by POLLING, which acknowledges the raise and enters no
-# scheduler, so the reschedule has to be state published ahead of the raise. Nothing stops a
-# backend from publishing that state for every raise it makes, and then a rendezvous the caller
-# wanted no switch out of costs each target a scheduler entry and a contended kernel lock. What
-# separates the two is which side of the seam names the publisher, and that IS readable here: a
-# caller whose name begins with arch_ is a backend publishing scheduling intent again.
-#
-# The two readers go through planted listings before the image is read, the failing shapes
-# included: a reader that cannot report the defect cannot go red.
-#
-# AN EMPTY CORPUS IS A FAILURE, not a pass. A body this cannot decode, or a symbol that moved,
-# is UNKNOWN.
+#   - the send and the rendezvous may not branch to it: a rendezvous the caller wanted no switch
+#     out of would cost each target a scheduler entry and a contended kernel lock;
+#   - on lx6 the dispatch must branch to it. Elsewhere an emulator run reddens when it does not;
+#     this part has none, and an ask left standing starves the core it names.
 #
 # usage: check_doorbell_generic.sh <elf> <nm> <objdump> <arch>
 
@@ -36,70 +25,43 @@ nm="${2:?$_usage}"
 objdump="${3:?$_usage}"
 arch="${4:?$_usage}"
 
-# The raise, which every backend spells the same.
 SEND=arch_ipi_send
-
-# WHAT IS PER ARCH: the dispatch body's name, the rendezvous body's name where one is linked,
-# the lowering the raise tail-calls, and the mnemonics a direct and a conditional branch are
-# spelled with. A backend not named here is a REFUSAL rather than a skip: an unlisted arch would
-# otherwise read as a gate that passed.
-case "$arch" in
-    armv8a)
-        RDV=kickos_arm64_instruction_side_rendezvous
-        DISPATCH=kickos_armv8a_gic_dispatch
-        RAISE=kickos_armv8a_gic_doorbell_send
-        BRX='^(b|bl|b\\..*)$'
-        CONDX='^(cbz|cbnz|tbz|tbnz|b\\..*)$'
-        ;;
-    rv64imac)
-        # The rendezvous this backend raises carries the TRANSLATION half, not the instruction
-        # half: SFENCE.VMA has no broadcast form on RISC-V, so a peer runs its own through the
-        # service body. The instruction half would be FENCE.I, absent from this board's ISA
-        # baseline, so no body here asserts it and check_doorbell_isb.sh is not registered.
-        RDV=kickos_rv64_translation_rendezvous
-        DISPATCH=kickos_rv64_isr_dispatch
-        RAISE=kickos_rv64_doorbell_send
-        BRX='^(j|jal|call|tail)$'
-        CONDX='^(beq|bne|blt|bge|bltu|bgeu|beqz|bnez|blez|bgez|bltz|bgtz|bgt|ble|bgtu|bleu)$'
-        ;;
-    lx6)
-        # NO RENDEZVOUS BODY on this part, and the empty RDV says so deliberately. The send is
-        # still asserted below, which is where the scheduling boundary lives.
-        RDV=
-        DISPATCH=kickos_lx6_dispatch_l1
-        RAISE=kickos_lx6_doorbell_send
-        # Xtensa names a windowed call by its window rotation, and `j` is the only direct
-        # unconditional branch that carries a symbol: callx*/jx are register-indirect and name
-        # none, so they contribute nothing either way.
-        BRX='^(j|call0|call4|call8|call12)$'
-        # Every conditional branch this ISA spells, INCLUDING the .n narrow forms: the guard is
-        # `beqz.n` at -Os, so a pattern without them reads a guarded dispatch as unguarded.
-        CONDX='^(beqz|bnez|beqz\\.n|bnez\\.n|beq|bne|blt|bge|bltu|bgeu|beqi|bnei|blti|bgei|bltui|bgeui|bgez|bltz|bbc|bbs|bbci|bbsi|bany|bnone|ball|bnall|bt|bf)$'
-        ;;
-    *)
-        fail "check_doorbell_generic.sh knows no backend '$arch'. The symbol names and the
-  branch mnemonics are both per arch, so an unlisted one would read every body as a leaf and
-  pass without asserting anything" ;;
-esac
-# The cell's publisher, its consumer, and the scheduler entry the consumer guards.
-OWE=kickos_kernel_core_resched_owe
-TAKE=kickos_kernel_core_resched_take
-RESCHED=kickos_kernel_core_resched
+FUSED=kickos_kernel_core_resched_if_owed
+DISPATCH=
 # A defined-symbol count below this says nm was read wrong, whatever it printed.
 SYM_FLOOR=100
 
+# Per arch: the rendezvous body where one is linked, and the mnemonics a direct branch is spelled
+# with. A backend not named here is a refusal: it would otherwise read as a gate that passed.
+case "$arch" in
+    armv8a)
+        RDV=kickos_arm64_instruction_side_rendezvous
+        BRX='^(b|bl|b\\..*)$'
+        B_CALL="bl 2000"; B_TAIL="b 2200" ;;
+    rv64imac)
+        RDV=kickos_rv64_translation_rendezvous
+        BRX='^(j|jal|call|tail)$'
+        B_CALL="jal 2000"; B_TAIL="j 2200" ;;
+    lx6)
+        # No rendezvous body on this part.
+        RDV=
+        DISPATCH=kickos_lx6_dispatch_l1
+        # callx*/jx are register-indirect and name no symbol.
+        BRX='^(j|call0|call4|call8|call12)$'
+        B_CALL="call8 2000"; B_TAIL="j 2200" ;;
+    *)
+        fail "check_doorbell_generic.sh knows no backend '$arch'. The symbol names and the
+  branch mnemonics are both per arch, so an unlisted one would pass without asserting anything" ;;
+esac
+
 [ -f "$elf" ] || fail "no image at $elf"
-[ -x "$nm" ] || fail "no nm at $nm; the symbol table cannot be read out of the image and every
-  assertion below would rest on a hard-coded layout"
+[ -x "$nm" ] || fail "no nm at $nm; the symbol table cannot be read out of the image"
 [ -x "$objdump" ] || fail "no objdump at $objdump; there is no instruction stream to decode"
 
 scratch_dir
 
-# --- reader one: the branch targets inside one body --------------------------
-# Emits one NAME per line, deduplicated, or a single NOSYM / NOINSN record. Direct branches
-# only: an indirect one names no symbol and contributes nothing either way.
-# HALF A PROGRAM: `seen` and the body scope come from gate.sh's scoped_body, which reads
-# tests/lib/objdump_scope.awk ahead of this file.
+# The direct branch targets inside one body, one per line, or NOSYM / NOINSN.
+# HALF A PROGRAM: `seen` and the body scope come from gate.sh's scoped_body.
 cat > "$TMP/calls.awk" <<'AWK'
 {
     text = $0
@@ -127,291 +89,56 @@ body_calls() { # <listing> <symbol>
     scoped_body "$TMP/calls.awk" "$1" "$2" -v brx="$BRX"
 }
 
-# --- reader two: the guard between the take and the scheduler entry ----------
-# Ordinals, not addresses: the verdict is an ORDER. Emits exactly one record.
-#
-# A conditional branch is what a guard lowers to on this backend: cbz/cbnz and tbz/tbnz test a
-# register outright, b.<cond> tests the flags a compare set.
-# HALF A PROGRAM: `seen` and the body scope come from gate.sh's scoped_body, which reads
-# tests/lib/objdump_scope.awk ahead of this file.
-cat > "$TMP/guard.awk" <<'AWK'
-{
-    text = $0
-    sub(/^[^:]*:[ \t]*/, "", text)
-    n++
-    mnem = text
-    sub(/[ \t].*$/, "", mnem)
-    tgt = ""
-    if (text ~ /</) {
-        tgt = text
-        sub(/^[^<]*</, "", tgt)
-        sub(/>.*$/, "", tgt)
-        sub(/\+0x[0-9a-f]+$/, "", tgt)
-    }
-    if (mnem ~ brx && tgt == take && takeat == 0) {
-        takeat = n
-        next
-    }
-    if (mnem ~ brx && tgt == resched && reschedat == 0) {
-        reschedat = n
-    }
-    if (takeat != 0 && guard == 0 && reschedat == 0) {
-        if (mnem ~ condx) { guard = n }
-    }
-}
-END {
-    if (!seen) { print "NOSYM"; exit }
-    if (n == 0) { print "NOINSN"; exit }
-    if (takeat == 0) { print "NOTAKE " n; exit }
-    if (reschedat == 0) { print "NORESCHED " n; exit }
-    if (guard == 0) { print "UNGUARDED " takeat " " reschedat " " n; exit }
-    print "GUARDED " takeat " " guard " " reschedat " " n
-}
-AWK
-
-body_guard() { # <listing> <symbol>
-    scoped_body "$TMP/guard.awk" "$1" "$2" \
-        -v take="$TAKE" -v resched="$RESCHED" -v brx="$BRX" -v condx="$CONDX"
-}
-
-# --- the readers' controls, before the image is read --------------------------
-# Planted listings in the shape the invocation below produces, which is --no-show-raw-insn: a
-# control carrying the raw-bytes column would read its first byte group as the mnemonic and prove
-# the reader against input the gate never hands it.
-# THE CONTROLS ARE PER ARCH TOO, and must be: a reader proven against a listing this
-# disassembler never prints is proven against nothing. The instruction COUNTS are the same on
-# both, so the ordinals the guard reader reports below are as well.
-case "$arch" in
-    armv8a)
-        B_CALL="bl 2000"; B_CALL2="bl 2100"; B_TAIL="b 2200"
-        B_FRAME="stp x29, x30, [sp, #-32]!"; B_POP="ldp x29, x30, [sp], #48"
-        B_COND="cbz w0, 1014 <planted_dispatch+0x14>"; B_RET="ret" ;;
-    rv64imac)
-        B_CALL="jal 2000"; B_CALL2="jal 2100"; B_TAIL="j 2200"
-        B_FRAME="addi sp,sp,-32"; B_POP="ld ra,24(sp)"
-        B_COND="beqz a0, 1014 <planted_dispatch+0x14>"; B_RET="ret" ;;
-    lx6)
-        # The narrow forms on purpose: they are what -Os emits, and a control built from the
-        # wide spellings alone would prove the reader against a listing this image never has.
-        B_CALL="call8 2000"; B_CALL2="call8 2100"; B_TAIL="j 2200"
-        B_FRAME="entry a1, 32"; B_POP="l32i.n a4, a3, 4"
-        B_COND="beqz.n a10, 1014 <planted_dispatch+0x14>"; B_RET="retw.n" ;;
-    *)
-        fail "check_doorbell_generic.sh plants no control listing for backend '$arch'. A reader
-  proven against another ISA's syntax is proven against nothing, so this refuses rather than
-  falling through to whichever arm was written last" ;;
-esac
-cat > "$TMP/ctl_send_clean" <<EOF
+# Planted listings in this arch's --no-show-raw-insn syntax.
+cat > "$TMP/ctl_clean" <<EOF
 0000000000001000 <planted_send>:
-    1000: $B_FRAME
-    1004: $B_CALL <arch_cpu_id>
-    1008: $B_CALL2 <planted_poll>
-    100c: $B_TAIL <$RAISE>
+    1000: $B_CALL <arch_cpu_id>
+    1004: $B_TAIL <planted_raise>
 EOF
-cat > "$TMP/ctl_send_dirty" <<EOF
+cat > "$TMP/ctl_dirty" <<EOF
 0000000000001000 <planted_send>:
-    1000: $B_FRAME
-    1004: $B_CALL <$OWE>
-    1008: $B_TAIL <$RAISE>
-EOF
-cat > "$TMP/ctl_guarded" <<EOF
-0000000000001000 <planted_dispatch>:
-    1000: $B_CALL <kickos_isr_timer>
-    1004: $B_CALL2 <$TAKE>
-    1008: $B_COND
-    100c: $B_TAIL <$RESCHED>
-    1010: $B_RET
-EOF
-cat > "$TMP/ctl_unguarded" <<EOF
-0000000000001000 <planted_dispatch>:
-    1000: $B_CALL <kickos_isr_timer>
-    1004: $B_CALL2 <$TAKE>
-    1008: $B_POP
-    100c: $B_TAIL <$RESCHED>
+    1000: $B_CALL <$FUSED>
+    1004: $B_TAIL <planted_raise>
 EOF
 
-ctl="$(body_calls "$TMP/ctl_send_clean" planted_send | tr '\n' ' ')"
-case "$ctl" in
-    "arch_cpu_id planted_poll $RAISE ") ;;
-    *) fail "the branch reader answered [$ctl] for a planted send, so it does not see the
-  targets a body branches to and every assertion resting on it is meaningless" ;;
-esac
-
-ctl="$(body_calls "$TMP/ctl_send_dirty" planted_send | grep -c -x "$OWE" || ctl=0)"
-if [ "$ctl" != "1" ]; then
-    fail "the branch reader found $ctl call(s) to '$OWE' in a planted send that branches to it
-  once. That is the defect this gate exists to catch, so a reader that does not report it
-  cannot go red"
-fi
-
-ctl_dead_reader "$(body_calls "$TMP/ctl_send_clean" a_symbol_no_listing_carries)" \
+ctl="$(body_calls "$TMP/ctl_clean" planted_send | tr '\n' ' ')"
+[ "$ctl" = "arch_cpu_id planted_raise " ] || fail "the branch reader answered [$ctl] for a
+  planted send, so it does not see the targets a body branches to"
+ctl="$(body_calls "$TMP/ctl_dirty" planted_send | grep -c -x "$FUSED" || true)"
+[ "$ctl" = "1" ] || fail "the branch reader found $ctl branch(es) to '$FUSED' in a planted body
+  that makes one, so neither a send reaching it nor a dispatch dropping it would be reported"
+ctl_dead_reader "$(body_calls "$TMP/ctl_clean" a_symbol_no_listing_carries)" \
     "a renamed body would read as a clean one"
 
-ctl="$(body_guard "$TMP/ctl_guarded" planted_dispatch)"
-case "$ctl" in
-    "GUARDED 2 3 4 5") ;;
-    *) fail "the guard reader answered [$ctl] for a planted dispatch whose scheduler entry is
-  guarded by a conditional branch on the take's answer, so it cannot recognise the shape this
-  gate requires" ;;
-esac
+image_listing "$elf" "$nm" "$objdump" "$SYM_FLOOR" --no-show-raw-insn
 
-ctl="$(body_guard "$TMP/ctl_unguarded" planted_dispatch)"
-case "$ctl" in
-    "UNGUARDED 2 4 4") ;;
-    *) fail "the guard reader answered [$ctl] for a planted dispatch that enters the scheduler
-  unconditionally after the take. That is the defect this gate exists to catch, so a reader that
-  does not report it cannot go red" ;;
-esac
-
-# --- the symbol table ---------------------------------------------------------
-tool_out "$TMP/nm" "[0-9a-fA-F]" "$nm" -S --defined-only "$elf"
-require_nonempty "$TMP/nm" "$nm printed no symbol at all for $elf, so the corpus is UNKNOWN
-  rather than empty and every verdict below it would be vacuous"
-syms="$(wc -l < "$TMP/nm" | tr -d ' ')"
-require_number "$syms" "the defined-symbol count"
-if [ "$syms" -lt "$SYM_FLOOR" ]; then
-    fail "$nm reports $syms defined symbol(s) in $elf, below the floor of $SYM_FLOOR. A table
-  that short is a misread, not a small image, and the corpus is UNKNOWN"
-fi
-
-for sym in "$SEND" ${RDV:+"$RDV"} "$DISPATCH" "$OWE" "$TAKE" "$RESCHED"; do
-    size="$(awk -v s="$sym" 'NF == 4 && $4 == s { print $2; exit }' "$TMP/nm")"
-    if [ -z "$size" ]; then
-        fail "no sized defined symbol '$sym' in $elf: it was renamed, made static or inlined
-  away, so this gate reports an absence it cannot tell apart from a failure to read"
-    fi
-    case "$size" in
-        *[!0]*) ;;
-        *) fail "'$sym' has size 0 in $elf: the symbol survived as a label but its body is
-  gone" ;;
-    esac
-done
-
-# --- the instruction stream ---------------------------------------------------
-tool_out "$TMP/dis" "^[0-9a-f]+ <.*>:\$" "$objdump" -d --no-show-raw-insn "$elf"
-require_nonempty "$TMP/dis" "$objdump printed no disassembly for $elf"
-
-echo "== the doorbell's scheduling boundary in $elf =="
-
-findings=0
-
-# The raise, and the rendezvous over it, publish no reschedule and enter no scheduler.
-for sym in "$SEND" ${RDV:+"$RDV"}; do
-    rec="$(body_calls "$TMP/dis" "$sym")"
+# The branch targets of a body the image defines, into $TMP/targets.
+targets() { # <symbol>
+    image_body "$1" "$elf"
+    rec="$(body_calls "$TMP/dis" "$1")"
     case "$rec" in
-        NOSYM)
-            fail "'$sym' is a sized symbol in $elf but the disassembly carries no body for it,
-  so the reader started nowhere. The disassembler's output shape has moved" ;;
-        NOINSN)
-            fail "the body of '$sym' in $elf disassembles to no instruction at all, so the
-  corpus is UNKNOWN rather than empty" ;;
+        NOSYM) fail "'$1' is a sized symbol in $elf but the disassembly carries no body for it" ;;
+        NOINSN) fail "the body of '$1' in $elf disassembles to no instruction at all" ;;
+        "") fail "the body of '$1' in $elf branches to no symbol at all, so this reader is
+  looking at the wrong body" ;;
     esac
     printf '%s\n' "$rec" > "$TMP/targets"
-    reached="$(wc -l < "$TMP/targets" | tr -d ' ')"
-    require_number "$reached" "the branch-target count of $sym"
-    if [ "$reached" -eq 0 ]; then
-        fail "the body of '$sym' in $elf branches to no symbol at all. A leaf there means the
-  raise or the rendezvous was restructured and this reader is looking at the wrong body"
+}
+
+image_body "$FUSED" "$elf"
+for sym in "$SEND" ${RDV:+"$RDV"}; do
+    targets "$sym"
+    if grep -q -x -F -e "$FUSED" "$TMP/targets"; then
+        fail "'$sym' branches to '$FUSED' in $elf: every raise it makes enters the target's
+  scheduler, so a rendezvous costs each target a scheduler entry and a contended kernel lock"
     fi
-    echo "   corpus: '$sym' branches to $reached symbol(s)"
-    for banned in "$OWE" "$RESCHED"; do
-        if grep -q -x -F -e "$banned" "$TMP/targets"; then
-            findings=$((findings + 1))
-            echo "FINDING: '$sym' branches to '$banned'" >&2
-            sed -n '1,20p' "$TMP/targets" | sed 's/^/      /' >&2
-        fi
-    done
 done
-
-# The dispatch enters the scheduler only behind the take.
-rec="$(body_guard "$TMP/dis" "$DISPATCH")"
-kind="$(printf '%s\n' "$rec" | cut -d' ' -f1)"
-f2="$(printf '%s\n' "$rec" | cut -d' ' -f2)"
-f3="$(printf '%s\n' "$rec" | cut -d' ' -f3)"
-f4="$(printf '%s\n' "$rec" | cut -d' ' -f4)"
-f5="$(printf '%s\n' "$rec" | cut -d' ' -f5)"
-case "$kind" in
-    NOSYM)
-        fail "'$DISPATCH' is a sized symbol in $elf but the disassembly carries no body for it,
-  so the reader started nowhere. The disassembler's output shape has moved" ;;
-    NOINSN)
-        fail "the body of '$DISPATCH' in $elf disassembles to no instruction at all, so the
-  corpus is UNKNOWN rather than empty" ;;
-    NOTAKE)
-        fail "the body of '$DISPATCH' in $elf branches to '$TAKE' nowhere across its $f2
-  instruction(s). Nothing consumes the cell in the one body that may, so a reschedule owed to
-  this core stands forever and the core re-raises a doorbell at itself on every release" ;;
-    NORESCHED)
-        fail "the body of '$DISPATCH' in $elf branches to '$RESCHED' nowhere across its $f2
-  instruction(s). A reschedule owed to this core is consumed and never acted on, which is the
-  starvation the cell exists to prevent, and it is also UNKNOWN rather than a pass" ;;
-    UNGUARDED)
-        echo "FINDING: in '$DISPATCH' the take is instruction #$f2 and the transfer to
-  '$RESCHED' is #$f3, with no conditional branch between them across $f4 instruction(s): every
-  doorbell enters the scheduler, a rendezvous the initiator wanted no switch out of included" >&2
-        findings=$((findings + 1)) ;;
-    GUARDED)
-        echo "   corpus: $f5 instruction(s) in '$DISPATCH', take at #$f2, guard at #$f3,
-  scheduler entry at #$f4"
-        require_number "$f2" "the take's ordinal in $DISPATCH"
-        require_number "$f3" "the guard's ordinal in $DISPATCH"
-        require_number "$f4" "the scheduler entry's ordinal in $DISPATCH" ;;
-    *)
-        fail "the guard reader emitted [$rec] for '$DISPATCH', a record this gate does not
-  model" ;;
-esac
-
-# --- the publisher's callers, which is the vacuity trap ----------------------
-awk '/^[0-9a-f]+ <.*>:$/ { name = $2; gsub(/[<>:]/, "", name); next }
-     $0 !~ /^[ \t]*[0-9a-f]+:/ { next }
-     {
-         text = $0
-         sub(/^[^:]*:[ \t]*/, "", text)
-         mnem = text
-         sub(/[ \t].*$/, "", mnem)
-         if (mnem !~ brx) { next }
-         if (text !~ /</) { next }
-         tgt = text
-         sub(/^[^<]*</, "", tgt)
-         sub(/>.*$/, "", tgt)
-         sub(/\+0x[0-9a-f]+$/, "", tgt)
-         if (tgt != owe || name == owe) { next }
-         print name
-     }' owe="$OWE" brx="$BRX" "$TMP/dis" > "$TMP/publishers.raw" \
-    || fail "awk could not scan the disassembly of $elf for callers of '$OWE'"
-# Not piped straight from the awk above: a crashing awk would leave sort succeeding on empty
-# input, and the vacuity check below would blame an unreachable publisher rather than the awk.
-sort -u "$TMP/publishers.raw" > "$TMP/publishers" \
-    || fail "sort could not sort the callers of '$OWE' found in $elf"
-publishers="$(wc -l < "$TMP/publishers" | tr -d ' ')"
-require_number "$publishers" "the caller count of $OWE"
-if [ "$publishers" -eq 0 ]; then
-    fail "nothing in $elf branches to '$OWE'. With no publisher every assertion above holds
-  over an image that cannot ask a peer to reschedule at all, so this is the vacuous pass the
-  trap exists to refuse, not a clean tree"
-fi
-echo "   corpus: $publishers symbol(s) publish through '$OWE'"
-while read -r caller; do
-    case "$caller" in
-        arch_*)
-            echo "FINDING: '$caller' branches to '$OWE': a backend body publishes scheduling
-  intent, so every raise it makes carries a reschedule and a rendezvous over the same doorbell
-  costs each target a scheduler entry and a contended kernel lock" >&2
-            findings=$((findings + 1)) ;;
-        *)
-            echo "      $caller" ;;
-    esac
-done < "$TMP/publishers"
-
-if [ "$findings" -ne 0 ]; then
-    fail "$findings finding(s): the doorbell's rendezvous half and its scheduling half are not
-  separated in $elf"
+if [ -n "$DISPATCH" ]; then
+    targets "$DISPATCH"
+    grep -q -x -F -e "$FUSED" "$TMP/targets" || fail "'$DISPATCH' never branches to '$FUSED'
+  in $elf: an ask standing against this core is never consumed, and the core it names starves
+  and re-raises a doorbell at itself on every release"
 fi
 
-_bodies="'$SEND'"
-if [ -n "$RDV" ]; then
-    _bodies="'$SEND' and '$RDV'"
-fi
-echo "PASS: $_bodies publish no reschedule, '$DISPATCH' enters the scheduler only
-  behind '$TAKE', and '$OWE' is published from above the arch seam alone"
+echo "PASS: no branch to '$FUSED' from '$SEND'${RDV:+ or '$RDV'}${DISPATCH:+, and one from '$DISPATCH'}"
 exit 0

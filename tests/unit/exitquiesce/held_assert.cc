@@ -24,8 +24,8 @@ namespace
     Thread* blocked(int slot)
     {
         Thread* t = spawn(slot, PRIO);
-        kernel().policy->on_remove(t);
-        t->state = ThreadState::BLOCKED;
+        policy_on_remove(t);
+        testfix::seat_blocked(t);
         return t;
     }
 }
@@ -37,8 +37,13 @@ class HeldAssert : public kickos::testfix::KSeam
 TEST_F(HeldAssert, a_held_body_reached_outside_the_bracket_dies)
 {
     Thread* t = blocked(0);
+    // A token carried out of the bracket that made it.
+    Held const stale = [] {
+        IrqLock lock;
+        return Held(lock);
+    }();
 
-    KICKOS_EXPECT_PANIC(sched::wake(t), "debug assert: ::kickos::klock_exclusion_held");
+    KICKOS_EXPECT_PANIC(sched::wake(t, stale), "debug assert: ::kickos::klock_exclusion_held");
 }
 
 TEST_F(HeldAssert, the_same_call_under_a_bracket_stands)
@@ -47,7 +52,7 @@ TEST_F(HeldAssert, the_same_call_under_a_bracket_stands)
 
     {
         IrqLock lock;
-        sched::wake(t);
+        sched::wake(t, lock);
     }
 
     EXPECT_NE(t->state, ThreadState::BLOCKED)
@@ -59,14 +64,15 @@ TEST_F(HeldAssert, a_booked_swap_leaves_the_exclusion_held_at_depth_zero)
 {
     Thread* t = blocked(0);
 
-    {
+    Held const held = [] {
         IrqLock lock;
         // Model a deferred switch.
         uint32_t const depth = klock_detach();
         klock_attach(depth);
-    }
+        return Held(lock);
+    }();
 
-    sched::set_prio(t, PRIO + 1);
+    sched::set_prio(t, PRIO + 1, held);
     EXPECT_EQ(t->prio, PRIO + 1);
 
     // Model lock release by the exception epilogue.

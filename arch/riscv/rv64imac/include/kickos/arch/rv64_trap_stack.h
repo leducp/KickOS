@@ -41,7 +41,7 @@
  * and services a route ask:
  *   kickos_rv64_isr_dispatch[48] -> kprintf[352] -> console_emit[96]
  *   -> console_tx_insert_line[96] -> console_write_line_sync[64] -> klock_enter[32]
- *   -> arch_kernel_lock[32] -> kickos_doorbell_poll[32] -> kickos_rv64_doorbell_service[48]
+ *   -> arch_kernel_lock[32] -> kickos_doorbell_poll[32] -> kickos_doorbell_service[32]
  *   -> kickos_irq_route_service[64] -> arch_irq_unmask[16] */
 #define KICKOS_RV64_TRAP_DEPTH_IRQ 896
 

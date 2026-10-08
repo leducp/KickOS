@@ -7,3 +7,6 @@
 # must therefore exist before this directory is added.
 kickos_add_unit_test(NAME placement SOURCES placement.cc migrate_ask.cc
   LIBRARIES kickos_kseam_smp)
+# placement.cc watches the decline walk from between sched.cc and the policy.
+target_link_options(placement PRIVATE
+  "LINKER:--wrap=_ZN6kickos15policy_declinedENS_10KernelCoreEiPNS_9SchedWalkE")

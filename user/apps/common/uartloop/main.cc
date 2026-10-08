@@ -46,57 +46,6 @@ namespace
         return n;
     }
 
-    int uart_call(uint8_t op, uint8_t flags, uint16_t len, unsigned char const* payload,
-                  unsigned char* out, uint16_t out_max)
-    {
-        unsigned char buf[KOS_EP_MSG_MAX];
-        struct kos_uart_req req;
-        for (unsigned i = 0; i < sizeof(req); i++)
-        {
-            reinterpret_cast<unsigned char*>(&req)[i] = 0;
-        }
-        req.op = op;
-        req.flags = flags;
-        req.len = len;
-        unsigned char const* rp = reinterpret_cast<unsigned char const*>(&req);
-        for (unsigned i = 0; i < sizeof(req); i++)
-        {
-            buf[i] = rp[i];
-        }
-        unsigned send_len = sizeof(req);
-        if (payload != nullptr)
-        {
-            for (uint16_t i = 0; i < len; i++)
-            {
-                buf[sizeof(req) + i] = payload[i];
-            }
-            send_len += len;
-        }
-        long const rc = kos_call(g_ep, buf, send_len, sizeof(buf));
-        if (rc < 0)
-        {
-            return static_cast<int>(rc);
-        }
-        struct kos_uart_rsp rsp;
-        unsigned char* dp = reinterpret_cast<unsigned char*>(&rsp);
-        for (unsigned i = 0; i < sizeof(rsp); i++)
-        {
-            dp[i] = buf[i];
-        }
-        if (rsp.status < 0)
-        {
-            return rsp.status;
-        }
-        if (out != nullptr and rsp.len <= out_max)
-        {
-            for (uint16_t i = 0; i < rsp.len; i++)
-            {
-                out[i] = buf[sizeof(rsp) + i];
-            }
-        }
-        return static_cast<int>(rsp.len);
-    }
-
     // The consumer is parked and the producer is the only thing that can wake it, so a
     // producer that stops ringing the doorbell on a full ring ends the stream for good.
     // Reported as bytes ACCEPTED, so a wedged channel fails the gate as a number rather
@@ -117,8 +66,8 @@ namespace
             {
                 want = SUSTAIN_CHUNK;
             }
-            int const took = uart_call(KOS_UART_WRITE, 0, static_cast<uint16_t>(want),
-                                       chunk, nullptr, 0);
+            int const took = kos_uart_call(g_ep, KOS_UART_WRITE, 0, static_cast<uint16_t>(want),
+                                           chunk, nullptr, 0);
             if (took < 0)
             {
                 g_sustained = took;
@@ -130,7 +79,7 @@ namespace
                 zeros = 0;
                 // Drain the loopback's RX ring so that IT is never what saturates.
                 unsigned char sink[240];
-                (void)uart_call(KOS_UART_READ, 0, 240, nullptr, sink, sizeof(sink));
+                (void)kos_uart_call(g_ep, KOS_UART_READ, 0, 240, nullptr, sink, sizeof(sink));
                 continue;
             }
             zeros++;
@@ -147,8 +96,8 @@ namespace
     void client()
     {
         int const n = payload_len();
-        g_wrote = uart_call(KOS_UART_WRITE, 0, static_cast<uint16_t>(n),
-                            reinterpret_cast<unsigned char const*>(PAYLOAD), nullptr, 0);
+        g_wrote = kos_uart_call(g_ep, KOS_UART_WRITE, 0, static_cast<uint16_t>(n),
+                                reinterpret_cast<unsigned char const*>(PAYLOAD), nullptr, 0);
 
         // The write returns when the SERVICE thread replies, which can precede the IRQ
         // thread's drain, so the read must be polled. Bounded, so a genuine failure fails
@@ -157,8 +106,8 @@ namespace
         int got = 0;
         for (int spin = 0; spin < 100 and got < n; spin++)
         {
-            int const r = uart_call(KOS_UART_READ, 0, static_cast<uint16_t>(n - got),
-                                    nullptr, back + got, static_cast<uint16_t>(64 - got));
+            int const r = kos_uart_call(g_ep, KOS_UART_READ, 0, static_cast<uint16_t>(n - got),
+                                        nullptr, back + got, static_cast<uint16_t>(64 - got));
             if (r < 0)
             {
                 got = r;
@@ -194,7 +143,7 @@ namespace
         sustain();
 
         unsigned char st[sizeof(struct kos_uart_stats)];
-        if (uart_call(KOS_UART_STATS, 0, 0, nullptr, st, sizeof(st))
+        if (kos_uart_call(g_ep, KOS_UART_STATS, 0, 0, nullptr, st, sizeof(st))
             == static_cast<int>(sizeof(st)))
         {
             struct kos_uart_stats s;

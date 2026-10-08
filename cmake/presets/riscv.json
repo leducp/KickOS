@@ -1,22 +1,17 @@
 {
   "version": 6,
+  "include": ["base.json"],
   "configurePresets": [
     {
       "name": "riscv-base",
       "hidden": true,
-      "generator": "Ninja",
-      "toolchainFile": "${sourceDir}/cmake/toolchain-riscv-none-elf.cmake",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "MinSizeRel",
-        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-        "KICKOS_CONFIG_VARIANT": "base"
-      }
+      "inherits": "kickos-base",
+      "toolchainFile": "${sourceDir}/cmake/toolchain-riscv-none-elf.cmake"
     },
     {
       "name": "qemu-riscv",
       "displayName": "QEMU virt (RISC-V RV32IMAC, M-mode) - runnable [first RISC-V ISA]",
       "inherits": "riscv-base",
-      "binaryDir": "${sourceDir}/build/qemu-riscv",
       "cacheVariables": {
         "KICKOS_BOARD": "qemu-riscv",
         "KICKOS_RESTART_WITNESS_SYSTEM": "tests/integration/composition_witness/systems/restart-qemu-riscv.yaml",
@@ -30,109 +25,84 @@
       "name": "qemu-riscv-flat",
       "displayName": "QEMU virt (RISC-V) with no PMP enforcement - runnable",
       "inherits": "qemu-riscv",
-      "binaryDir": "${sourceDir}/build/qemu-riscv-flat",
       "cacheVariables": { "KICKOS_CONFIG_VARIANT": "flat", "KICKOS_RESTART_WITNESS_SYSTEM": null, "KICKOS_PRIORITY_WITNESS_SYSTEM": null, "KICKOS_DRIVER_WITNESS_SYSTEM": null, "KICKOS_TEST_DRIVERS": null, "KICKOS_WITNESS_ROOT_DEPTH": null }
     },
     {
       "name": "qemu-riscv-bench",
       "displayName": "QEMU virt (RISC-V) + KICKOS_BENCH - context-switch microbench",
       "inherits": "qemu-riscv",
-      "binaryDir": "${sourceDir}/build/qemu-riscv-bench",
       "cacheVariables": { "KICKOS_CONFIG_VARIANT": "bench", "KICKOS_RESTART_WITNESS_SYSTEM": null, "KICKOS_PRIORITY_WITNESS_SYSTEM": null, "KICKOS_DRIVER_WITNESS_SYSTEM": null, "KICKOS_TEST_DRIVERS": null, "KICKOS_WITNESS_ROOT_DEPTH": null }
-    },
-    {
-      "name": "riscv64-base",
-      "hidden": true,
-      "generator": "Ninja",
-      "toolchainFile": "${sourceDir}/cmake/toolchain-riscv-none-elf.cmake",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "MinSizeRel",
-        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-        "KICKOS_CONFIG_VARIANT": "base"
-      }
     },
     {
       "name": "qemu-riscv64",
       "displayName": "QEMU virt (RISC-V RV64IMAC) [second translating backend]",
-      "inherits": "riscv64-base",
-      "binaryDir": "${sourceDir}/build/qemu-riscv64",
+      "inherits": "riscv-base",
       "cacheVariables": { "KICKOS_BOARD": "qemu-riscv64" }
     },
     {
       "name": "qemu-riscv64-sv48",
       "displayName": "QEMU virt (RISC-V RV64IMAC) with four translation levels",
       "inherits": "qemu-riscv64",
-      "binaryDir": "${sourceDir}/build/qemu-riscv64-sv48",
       "cacheVariables": { "KICKOS_CONFIG_VARIANT": "sv48" }
     },
     {
       "name": "qemu-riscv64-smp",
       "displayName": "QEMU virt (RISC-V RV64IMAC) with four harts under one kernel",
       "inherits": "qemu-riscv64",
-      "binaryDir": "${sourceDir}/build/qemu-riscv64-smp",
       "cacheVariables": { "KICKOS_CONFIG_VARIANT": "smp" }
     },
     {
       "name": "esp32c6-wroom",
       "displayName": "ESP32-C6-WROOM-1 (RISC-V RV32IMAC)",
       "inherits": "riscv-base",
-      "binaryDir": "${sourceDir}/build/esp32c6-wroom",
       "cacheVariables": { "KICKOS_BOARD": "esp32c6-wroom" }
     },
     {
       "name": "esp32c6-wroom-st",
       "displayName": "ESP32-C6-WROOM-1 (RISC-V RV32IMAC) + selftest (full IRQ suite)",
       "inherits": "esp32c6-wroom",
-      "binaryDir": "${sourceDir}/build/esp32c6-wroom-st",
       "cacheVariables": { "KICKOS_CONFIG_VARIANT": "st" }
     },
     {
       "name": "qemu-riscv64-bench",
       "displayName": "QEMU virt (RV64, S-mode) + KICKOS_BENCH - context-switch microbench",
       "inherits": "qemu-riscv64",
-      "binaryDir": "${sourceDir}/build/qemu-riscv64-bench",
       "cacheVariables": { "KICKOS_CONFIG_VARIANT": "bench" }
     },
     {
       "name": "qemu-riscv64-benchsmp",
       "displayName": "QEMU virt (RV64, S-mode), four harts + KICKOS_BENCH",
       "inherits": "qemu-riscv64",
-      "binaryDir": "${sourceDir}/build/qemu-riscv64-benchsmp",
       "cacheVariables": { "KICKOS_CONFIG_VARIANT": "benchsmp" }
     },
     {
       "name": "qemu-riscv64-benchsmp2",
       "displayName": "QEMU virt (RV64, S-mode), two harts + KICKOS_BENCH",
       "inherits": "qemu-riscv64",
-      "binaryDir": "${sourceDir}/build/qemu-riscv64-benchsmp2",
       "cacheVariables": { "KICKOS_CONFIG_VARIANT": "benchsmp2" }
     },
     {
       "name": "esp32c6-wroom-flat",
       "displayName": "ESP32-C6-WROOM-1 with no PMP enforcement",
       "inherits": "esp32c6-wroom",
-      "binaryDir": "${sourceDir}/build/esp32c6-wroom-flat",
       "cacheVariables": { "KICKOS_CONFIG_VARIANT": "flat" }
     },
     {
       "name": "esp32c6-wroom-bench",
       "displayName": "ESP32-C6-WROOM-1 + KICKOS_BENCH - the call/reply phase decomposition, enforcing",
       "inherits": "esp32c6-wroom",
-      "binaryDir": "${sourceDir}/build/esp32c6-wroom-bench",
       "cacheVariables": { "KICKOS_CONFIG_VARIANT": "bench", "KICKOS_CODE_SIZE": "256K" }
     },
     {
       "name": "esp32c6-wroom-amp2-n0",
       "displayName": "ESP32-C6 HP node of the two-image AMP partition",
       "inherits": "esp32c6-wroom",
-      "binaryDir": "${sourceDir}/build/esp32c6-wroom-amp2-n0",
       "cacheVariables": { "KICKOS_CONFIG_VARIANT": "amp2", "KICKOS_AMP_NODE_ID": "0" }
     },
     {
       "name": "esp32c6-wroom-amp2-n1",
       "displayName": "ESP32-C6 LP node of the two-image AMP partition",
       "inherits": "esp32c6-wroom",
-      "binaryDir": "${sourceDir}/build/esp32c6-wroom-amp2-n1",
       "cacheVariables": { "KICKOS_CONFIG_VARIANT": "amp2", "KICKOS_AMP_NODE_ID": "1" }
     }
   ],

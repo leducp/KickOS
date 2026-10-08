@@ -188,8 +188,8 @@ namespace kickos
             void park_receiver(Thread* w, Endpoint* ep, uintptr_t buf, size_t cap_len,
                                uintptr_t badge_out)
             {
-                w->state = ThreadState::BLOCKED;
-                kernel().policy->on_remove(w);
+                testfix::seat_blocked(w);
+                policy_on_remove(w);
                 w->wait_queue = &ep->recv_waiters;
                 w->wait_kind = WAIT_EP_RECV;
                 w->wait_obj = ep;
@@ -250,9 +250,9 @@ namespace kickos
                 // Last, so the caller holds the CPU with both receivers already parked.
                 {
                     IrqLock lock;
-                    sched::reschedule();
+                    sched::reschedule(nullptr, lock);
                 }
-                if (kernel().current[kickos_kernel_core()] != s.c)
+                if (kernel().current(kickos_kernel_core()) != s.c)
                 {
                     printf("FIXTURE FAIL: the caller does not hold the CPU\n");
                     exit(1);
@@ -315,7 +315,7 @@ namespace kickos
         TEST_F(FastRefuse, no_current_thread)
         {
             Stage s = stage();
-            kernel().current[kickos_kernel_core()] = nullptr;
+            kernel().current(kickos_kernel_core()) = nullptr;
 
             expect_refused(s);
         }
@@ -446,7 +446,7 @@ namespace kickos
             // would leave the ready lists indexed by the old value.
             {
                 IrqLock lock;
-                sched::set_prio(s.c, PRIO + 1);
+                sched::set_prio(s.c, PRIO + 1, lock);
             }
             g_switches = 0;
             trace_reset();

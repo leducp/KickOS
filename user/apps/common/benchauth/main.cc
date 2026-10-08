@@ -18,8 +18,9 @@
 #include <kickos/sys.h>
 #include <kickos/sys/cap_index.h>
 #include <kickos/sys/errno.h>
-#include <kickos/libc/fmt.h>
 #include <kickos/sys/irq_free.h>
+
+#include <kickos/apps/arm_count.h>
 
 namespace
 {
@@ -32,30 +33,7 @@ namespace
     // the arm must refuse a holder that cannot wait on the line it would name.
     constexpr int CH_IRQ_SIGNAL = 1;
 
-    int failures = 0;
-    int arms = 0;
-
-    void check(bool ok, char const* what)
-    {
-        char msg[112];
-        if (ok)
-        {
-            arms = arms + 1;
-            ksnprintf(msg, sizeof(msg), "[benchauth] ok - %s\n", what);
-            kos::print(msg);
-            return;
-        }
-        failures = failures + 1;
-        ksnprintf(msg, sizeof(msg), "[benchauth] ERROR: %s\n", what);
-        kos::print(msg);
-    }
-
-    void report_rc(char const* what, int64_t rc)
-    {
-        char msg[112];
-        ksnprintf(msg, sizeof(msg), "[benchauth]   %s rc=%d\n", what, static_cast<int>(rc));
-        kos::print(msg);
-    }
+    kickos::apps::ArmCount harness("benchauth");
 
     // At one kernel core the doorbell arm is compiled out ahead of every check in it, so the
     // refusal to expect there is -KOS_ENOSYS and the bound cannot be read at all.
@@ -73,38 +51,39 @@ namespace
     void unauthorised(void*)
     {
         int64_t rc = kos_bench(KOS_BENCH_OP_IRQ_SETUP, SETUP_LINE, 0);
-        report_rc("child irq_setup", rc);
-        check(rc == -KOS_EPERM, "child cannot attach a tier-2 handler");
+        harness.note_rc("child irq_setup", rc);
+        harness.check(rc == -KOS_EPERM, "child cannot attach a tier-2 handler");
 
         // Asked at the ceiling, so the refusal is the authority gate and not the bound.
         rc = kos_bench(KOS_BENCH_OP_IRQ_SWEEP, KOS_BENCH_SAMPLES_MAX, 0);
-        report_rc("child irq_sweep", rc);
-        check(rc == -KOS_EPERM, "child cannot sweep the line");
+        harness.note_rc("child irq_sweep", rc);
+        harness.check(rc == -KOS_EPERM, "child cannot sweep the line");
 
         rc = kos_bench(KOS_BENCH_OP_IRQ_WCASE, KOS_BENCH_SAMPLES_MAX, 0);
-        report_rc("child irq_wcase", rc);
-        check(rc == -KOS_EPERM, "child cannot sweep a masked span");
+        harness.note_rc("child irq_wcase", rc);
+        harness.check(rc == -KOS_EPERM, "child cannot sweep a masked span");
 
         rc = kos_bench(KOS_BENCH_OP_DOORBELL_PROBE, 0, KOS_BENCH_ROUNDS_MAX);
-        report_rc("child doorbell_probe", rc);
-        check(doorbell_refused(rc, -KOS_EPERM), "child cannot run doorbell rounds");
+        harness.note_rc("child doorbell_probe", rc);
+        harness.check(doorbell_refused(rc, -KOS_EPERM), "child cannot run doorbell rounds");
 
         rc = kos_bench(KOS_BENCH_OP_E2E_ARM, CH_IRQ_SIGNAL, 0);
-        report_rc("child e2e_arm (SIGNAL-only cap)", rc);
-        check(rc == -KOS_EACCES, "a cap without WAIT cannot name the span's line");
+        harness.note_rc("child e2e_arm (SIGNAL-only cap)", rc);
+        harness.check(rc == -KOS_EACCES, "a cap without WAIT cannot name the span's line");
 
         // Over the span main re-armed: the raise and the reset leave it open, the close ends it.
         rc = kos_bench(KOS_BENCH_OP_E2E_RAISE, 0, 0);
-        report_rc("child e2e_raise", rc);
-        check(rc == -KOS_EAGAIN, "a raise the parked waiter has not invited injects nothing");
+        harness.note_rc("child e2e_raise", rc);
+        harness.check(rc == -KOS_EAGAIN,
+                      "a raise the parked waiter has not invited injects nothing");
 
         rc = kos_bench(KOS_BENCH_OP_RESET, 0, 0);
-        report_rc("child reset", rc);
-        check(rc == 0, "reset takes no authority and clears the distributions");
+        harness.note_rc("child reset", rc);
+        harness.check(rc == 0, "reset takes no authority and clears the distributions");
 
         rc = kos_bench(KOS_BENCH_OP_E2E_CLOSE, 0, 0);
-        report_rc("child e2e_close", rc);
-        check(rc == -KOS_EPERM, "a close from anyone but the armed waiter is dropped");
+        harness.note_rc("child e2e_close", rc);
+        harness.check(rc == -KOS_EPERM, "a close from anyone but the armed waiter is dropped");
     }
 }
 
@@ -112,31 +91,31 @@ int main(int, char**)
 {
     // --- Main holds KOS_AUTH_IRQ: the positive control for every child arm below ---------
     int64_t rc = kos_bench(KOS_BENCH_OP_IRQ_SETUP, SETUP_LINE, 0);
-    report_rc("main irq_setup", rc);
-    check(rc != -KOS_EPERM, "KOS_AUTH_IRQ reaches the tier-2 attach");
+    harness.note_rc("main irq_setup", rc);
+    harness.check(rc != -KOS_EPERM, "KOS_AUTH_IRQ reaches the tier-2 attach");
 
     rc = kos_bench(KOS_BENCH_OP_IRQ_SWEEP, KOS_BENCH_SAMPLES_MAX, 0);
-    report_rc("main irq_sweep at the ceiling", rc);
-    check(rc >= 0, "a sweep at KOS_BENCH_SAMPLES_MAX is admitted");
+    harness.note_rc("main irq_sweep at the ceiling", rc);
+    harness.check(rc >= 0, "a sweep at KOS_BENCH_SAMPLES_MAX is admitted");
 
     // --- No caller asks the kernel for unbounded work -----------------------------------
     rc = kos_bench(KOS_BENCH_OP_IRQ_SWEEP, KOS_BENCH_SAMPLES_MAX + 1u, 0);
-    report_rc("main irq_sweep above the ceiling", rc);
-    check(rc == -KOS_EINVAL, "a sweep above KOS_BENCH_SAMPLES_MAX is refused");
+    harness.note_rc("main irq_sweep above the ceiling", rc);
+    harness.check(rc == -KOS_EINVAL, "a sweep above KOS_BENCH_SAMPLES_MAX is refused");
 
     rc = kos_bench(KOS_BENCH_OP_IRQ_WCASE, KOS_BENCH_SAMPLES_MAX + 1u, 0);
-    report_rc("main irq_wcase above the ceiling", rc);
-    check(rc == -KOS_EINVAL, "a masked-span sweep above KOS_BENCH_SAMPLES_MAX is refused");
+    harness.note_rc("main irq_wcase above the ceiling", rc);
+    harness.check(rc == -KOS_EINVAL, "a masked-span sweep above KOS_BENCH_SAMPLES_MAX is refused");
 
     rc = kos_bench(KOS_BENCH_OP_DOORBELL_PROBE, 0, KOS_BENCH_ROUNDS_MAX + 1u);
-    report_rc("main doorbell_probe above the ceiling", rc);
-    check(doorbell_refused(rc, -KOS_EINVAL),
-          "doorbell rounds above KOS_BENCH_ROUNDS_MAX are refused");
+    harness.note_rc("main doorbell_probe above the ceiling", rc);
+    harness.check(doorbell_refused(rc, -KOS_EINVAL),
+                  "doorbell rounds above KOS_BENCH_ROUNDS_MAX are refused");
 
     // --- The end-to-end arm takes a cap, not a line number ------------------------------
     rc = kos_bench(KOS_BENCH_OP_E2E_ARM, NO_SUCH_CAP, 0);
-    report_rc("main e2e_arm (no such cap)", rc);
-    check(rc == -KOS_EBADF, "KOS_AUTH_IRQ alone does not name a line to arm");
+    harness.note_rc("main e2e_arm (no such cap)", rc);
+    harness.check(rc == -KOS_EBADF, "KOS_AUTH_IRQ alone does not name a line to arm");
 
     kos_cap_t irq = KOS_CAP_NONE;
 #if KICKOS_KERNEL_CORES > 1
@@ -148,35 +127,36 @@ int main(int, char**)
 #if KICKOS_KERNEL_CORES > 1
     (void)kos_thread_set_affinity(self, 0);
 #endif
-    report_rc("main irq_claim", crc);
-    check(crc == 0, "main claims the line the arm will name");
+    harness.note_rc("main irq_claim", crc);
+    harness.check(crc == 0, "main claims the line the arm will name");
 
     rc = kos_bench(KOS_BENCH_OP_E2E_ARM, irq, 0);
-    report_rc("main e2e_arm (own cap)", rc);
-    check(rc == 0, "the line the caller may wait on is armed");
+    harness.note_rc("main e2e_arm (own cap)", rc);
+    harness.check(rc == 0, "the line the caller may wait on is armed");
 
     // --- What RAISE, RESET and CLOSE answer, none of them taking authority --------------
     rc = kos_bench(KOS_BENCH_OP_E2E_CLOSE, 0, 0);
-    report_rc("main e2e_close (armed, never raised)", rc);
-    check(rc == -KOS_EBUSY, "the armed waiter's close of a span that never woke is dropped");
+    harness.note_rc("main e2e_close (armed, never raised)", rc);
+    harness.check(rc == -KOS_EBUSY,
+                  "the armed waiter's close of a span that never woke is dropped");
 
     rc = kos_bench(KOS_BENCH_OP_E2E_RAISE, 0, 0);
-    report_rc("main e2e_raise (no span open)", rc);
-    check(rc == -KOS_EAGAIN, "KOS_AUTH_IRQ does not make a raise land either");
+    harness.note_rc("main e2e_raise (no span open)", rc);
+    harness.check(rc == -KOS_EAGAIN, "KOS_AUTH_IRQ does not make a raise land either");
 
     rc = kos_bench(KOS_BENCH_OP_RESET, 0, 0);
-    report_rc("main reset", rc);
-    check(rc == 0, "reset answers 0 and leaves the e2e state alone");
+    harness.note_rc("main reset", rc);
+    harness.check(rc == 0, "reset answers 0 and leaves the e2e state alone");
 
     // The child's close needs a live span to be refused over.
     rc = kos_bench(KOS_BENCH_OP_E2E_ARM, irq, 0);
-    report_rc("main e2e_arm (re-armed for the child)", rc);
-    check(rc == 0, "the span is open again");
+    harness.note_rc("main e2e_arm (re-armed for the child)", rc);
+    harness.check(rc == 0, "the span is open again");
 
     // --- The same ops from a thread that declared nothing -------------------------------
     kos_cap_grant caps[] = {{irq, KOS_CAP_SIGNAL}};
     auto child = kos::thread::create_caps(unauthorised, nullptr, "bauth_c", 1, caps, 1);
-    check(child.valid(), "the unauthorised child was spawned");
+    harness.check(child.valid(), "the unauthorised child was spawned");
     if (child.valid())
     {
         (void)kos_thread_join(child.id(), KOS_TIMEOUT_NONE);
@@ -185,18 +165,8 @@ int main(int, char**)
     // -KOS_EINVAL and not the -KOS_EBUSY the same call answered over an armed span above: the
     // child's refused close ended it.
     rc = kos_bench(KOS_BENCH_OP_E2E_CLOSE, 0, 0);
-    report_rc("main e2e_close (after the child's)", rc);
-    check(rc == -KOS_EINVAL, "a refused close still consumed the span main had armed");
+    harness.note_rc("main e2e_close (after the child's)", rc);
+    harness.check(rc == -KOS_EINVAL, "a refused close still consumed the span main had armed");
 
-    char msg[96];
-    if (failures == 0)
-    {
-        ksnprintf(msg, sizeof(msg), "[benchauth] PASS (%d arms)\n", arms);
-    }
-    else
-    {
-        ksnprintf(msg, sizeof(msg), "[benchauth] FAIL (%d failed)\n", failures);
-    }
-    kos::print(msg);
-    return 0;
+    return harness.verdict();
 }

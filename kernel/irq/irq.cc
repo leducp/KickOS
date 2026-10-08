@@ -6,7 +6,6 @@
 #include <kickos/instance.h>
 #include <kickos/config.h>
 #include <kickos/sync.h>
-#include <kickos/time.h> // ktime_deadline_arm, for the timed wait
 #include <kickos/irqlock.h>
 #include <kickos/cap.h>
 #include <kickos/thread.h> // Thread::affinity, what the claim and the wait admit
@@ -87,8 +86,6 @@ namespace kickos
             // on this field's zero crossings ONLY.
             uint32_t depth = 0;
         };
-        static_assert(sizeof(EpochRow) % IRQ_EPOCH_CACHE_LINE == 0,
-                      "a row shorter than a line would share one with the next writer");
 
         EpochRow g_epoch_row[KICKOS_KERNEL_CORES];
 
@@ -139,7 +136,6 @@ namespace kickos
         }
 #endif
 
-        // Caller holds IrqLock.
         IrqBinding* binding_of_cap(Thread* c, uint32_t cap_handle, uint8_t need, int* err)
         {
             return static_cast<IrqBinding*>(
@@ -165,12 +161,11 @@ namespace kickos
         }
 #endif
 
-        // Caller holds IrqLock.
         // The first arm discards the latch whatever the trigger: a raise latched before the
         // line had an owner would phantom-wake the first wait. After that only LEVEL keeps
         // discarding; clearing for EDGE would drop the coalesced raises this path exists to
         // redeliver, so an EDGE driver with a known-stale latch calls irq_discard.
-        void rearm_locked(IrqBinding* b)
+        void rearm_locked(IrqBinding* b, Held held)
         {
             if (not b->needs_rearm)
             {
@@ -187,10 +182,10 @@ namespace kickos
             b->needs_rearm = false;
             if (not b->armed_once or b->trigger == IRQ_LEVEL)
             {
-                irq_line_op(b->line, LineOp::CLEAR);
+                irq_line_op(b->line, LineOp::CLEAR, held);
             }
             b->armed_once = true;
-            irq_line_op(b->line, LineOp::UNMASK);
+            irq_line_op(b->line, LineOp::UNMASK, held);
         }
 
         // ISR context. `arg` is the pre-bound binding, not a line number. The matching unmask
@@ -213,8 +208,6 @@ namespace kickos
             irq_line_op_local(b->line, LineOp::MASK);
             if (b->notify == nullptr)
             {
-                // Unreachable: rearm_locked refuses to open a line that signals nothing, so
-                // an unattached binding's line is never unmasked. Masked above regardless.
                 return;
             }
             (void)notify_raise(b->notify, 1u << b->badge);
@@ -345,7 +338,7 @@ namespace kickos
         // claim of the line is refused until then, so no rebind can arm it under a dispatch
         // that has already read the record. That grace period also gates binding slot
         // `binding_handle`, or nothing when it is -1.
-        void line_release(int line, int binding_handle)
+        void line_release(int line, int binding_handle, Held held)
         {
             uint32_t const word = kernel().irq_table[line].pub.load();
             uint32_t const slot = word & ~IRQ_PUB_RETIRING;
@@ -371,7 +364,7 @@ namespace kickos
                     kernel().irq_table[line].pub = slot | IRQ_PUB_RETIRING;
                 }
             }
-            irq_line_op(line, LineOp::MASK);
+            irq_line_op(line, LineOp::MASK, held);
             pub_drain();
         }
 
@@ -410,17 +403,6 @@ namespace kickos
             kernel().irq_table[line].pub = static_cast<uint32_t>(slot);
         }
 
-        bool pub_publish(int line, IrqHandler handler, void* arg)
-        {
-            int const slot = pub_reserve();
-            if (slot < 0)
-            {
-                return false;
-            }
-            pub_commit(slot, line, handler, arg);
-            return true;
-        }
-
         // Every record free and no batch open. Pre-start only.
         void pub_reset()
         {
@@ -446,6 +428,32 @@ namespace kickos
             pub_lists_check();
         }
 #endif
+
+        bool line_unbound(int line)
+        {
+#if KICKOS_KERNEL_CORES > 1
+            return kernel().irq_table[line].pub.load() == IRQ_PUB_NONE;
+#else
+            return kernel().irq_table[line].handler == irq_default_handler;
+#endif
+        }
+
+        // False only above one kernel core.
+        bool line_bind(int line, IrqHandler handler, void* arg)
+        {
+#if KICKOS_KERNEL_CORES > 1
+            int const slot = pub_reserve();
+            if (slot < 0)
+            {
+                return false;
+            }
+            pub_commit(slot, line, handler, arg);
+#else
+            kernel().irq_table[line].handler = handler;
+            kernel().irq_table[line].arg = arg;
+#endif
+            return true;
+        }
     }
 
 #if KICKOS_KERNEL_CORES > 1
@@ -482,37 +490,37 @@ namespace kickos
         return kernel().irq_spurious_count;
     }
 
-    bool irq_attach(int irq, IrqHandler handler, void* arg)
+    int irq_line_admit(int line)
     {
-        if (irq < 0 or irq >= KICKOS_MAX_IRQ)
+        if (line < 0 or line >= KICKOS_MAX_IRQ)
         {
-            return false;
+            return -KOS_EINVAL;
         }
         // The arch takes this line ahead of kickos_isr_irq, so a binding here would drive
-        // nothing and its detach would mask the line the kernel rings on.
-        if (arch_irq_line_kernel_owned(irq))
+        // nothing and its detach would mask the line the kernel rings on. No holder could ever
+        // free it, so this is a permanent EPERM and not an EBUSY.
+        if (arch_irq_line_kernel_owned(line))
+        {
+            return -KOS_EPERM;
+        }
+        return 0;
+    }
+
+    bool irq_attach(int irq, IrqHandler handler, void* arg)
+    {
+        if (irq_line_admit(irq) != 0)
         {
             return false;
         }
         IrqLock lock;
 #if KICKOS_KERNEL_CORES > 1
         pub_drain();
-        // One driver per line: only a line still naming the null-object default is free.
-        if (kernel().irq_table[irq].pub.load() != IRQ_PUB_NONE)
-        {
-            return false;
-        }
-        return pub_publish(irq, handler, arg);
-#else
-        // One driver per line: only a line still holding the null-object default is free.
-        if (kernel().irq_table[irq].handler != irq_default_handler)
-        {
-            return false;
-        }
-        kernel().irq_table[irq].handler = handler;
-        kernel().irq_table[irq].arg = arg;
-        return true;
 #endif
+        if (not line_unbound(irq))
+        {
+            return false;
+        }
+        return line_bind(irq, handler, arg);
     }
 
     void irq_detach(int irq)
@@ -523,10 +531,10 @@ namespace kickos
         }
         IrqLock lock;
 #if KICKOS_KERNEL_CORES > 1
-        line_release(irq, -1); // back to the null-object
+        line_release(irq, -1, lock); // back to the null-object
 #else
         set_default(irq); // the null-object, not a null slot
-        irq_line_op(irq, LineOp::MASK);
+        irq_line_op(irq, LineOp::MASK, lock);
 #endif
     }
 
@@ -534,23 +542,14 @@ namespace kickos
     {
         IrqLock lock;
         *out_cap = KCAP_INVALID;
-        if (c == nullptr)
-        {
-            return -KOS_EPERM;
-        }
-        if (line < 0 or line >= KICKOS_MAX_IRQ)
-        {
-            return -KOS_EINVAL;
-        }
         if ((flags & ~static_cast<unsigned int>(KOS_IRQ_LEVEL)) != 0)
         {
             return -KOS_EINVAL;
         }
-        // A kernel-owned line has no holder that could ever free it, so this is a permanent
-        // EPERM, not an EBUSY.
-        if (arch_irq_line_kernel_owned(line))
+        int const admit = irq_line_admit(line);
+        if (admit != 0)
         {
-            return -KOS_EPERM;
+            return admit;
         }
 #if KICKOS_KERNEL_CORES > 1
         // Pinned to the core it runs on, which is the core the line is routed to. EPERM and
@@ -571,18 +570,18 @@ namespace kickos
         // Before the allocation below: a retirement may still owe the pool the slot this claim
         // is about to ask for.
         pub_drain();
-        // One driver per line: free iff it still names the null-object default. This is also
-        // what keeps the console line unclaimable until the kernel's own console_tx_deinit
-        // has detached it.
-        uint32_t const pub_now = k.irq_table[line].pub.load();
-        if ((pub_now & IRQ_PUB_RETIRING) != 0)
+        if ((k.irq_table[line].pub.load() & IRQ_PUB_RETIRING) != 0)
         {
             return -KOS_EAGAIN; // released, but a dispatch on another core may still hold it
         }
-        if (pub_now != IRQ_PUB_NONE)
+#endif
+        // This is also what keeps the console line unclaimable until the kernel's own
+        // console_tx_deinit has detached it.
+        if (not line_unbound(line))
         {
             return -KOS_EBUSY;
         }
+#if KICKOS_KERNEL_CORES > 1
         // BEFORE the binding and the capability: the publication below must not be able to fail,
         // or a refused claim would have to hand the binding back through the release path, which
         // reads the line to find the record that owes it and would find none.
@@ -590,14 +589,6 @@ namespace kickos
         if (pub < 0)
         {
             return -KOS_ENOMEM;
-        }
-#else
-        // One driver per line: free iff it still holds the null-object default. This is also
-        // what keeps the console line unclaimable until the kernel's own console_tx_deinit
-        // has detached it.
-        if (k.irq_table[line].handler != irq_default_handler)
-        {
-            return -KOS_EBUSY;
         }
 #endif
         int const i = k.irq_bindings.alloc();
@@ -649,9 +640,8 @@ namespace kickos
 #if KICKOS_KERNEL_CORES > 1
         pub_commit(pub, line, irq_event_isr, b);
 #else
-        irq_attach(line, irq_event_isr, b);
+        line_bind(line, irq_event_isr, b);
 #endif
-        // The line stays masked until the first irq_wait arms it.
         *out_cap = cap;
         return 0;
     }
@@ -688,7 +678,7 @@ namespace kickos
         IrqBinding* const b = binding_of_cap(c, irq_cap, CAP_WAIT, &err);
         if (b == nullptr)
         {
-            return -err; // EBADF (bad/closed cap, freed slot) or EPERM (no WAIT right)
+            return -err;
         }
         // The attachment lasts until the binding is released, keeping the ISR pointer valid.
         if (b->notify != nullptr)
@@ -741,13 +731,13 @@ namespace kickos
         return 0;
     }
 
-    void irq_signallers_rearm(Notification* n, uint32_t mask)
+    void irq_signallers_rearm(Notification* n, uint32_t mask, Held held)
     {
         for (IrqBinding* b = signaller_first(n); b != nullptr; b = signaller_next(b))
         {
             if ((mask & (1u << b->badge)) != 0u)
             {
-                rearm_locked(b);
+                rearm_locked(b, held);
             }
         }
     }
@@ -804,7 +794,7 @@ namespace kickos
         int const idx = kernel().notifies.index_of(n);
         if (idx >= 0)
         {
-            notify_ref_drop(kernel().notifies.handle_for(idx), true);
+            notify_ref_drop(kernel().notifies.handle_for(idx));
         }
     }
 
@@ -827,7 +817,7 @@ namespace kickos
         IrqBinding* b = binding_of_cap(c, cap_handle, CAP_WAIT, &err);
         if (b == nullptr)
         {
-            return -err; // EBADF (bad/closed cap) or EPERM (no WAIT right)
+            return -err;
         }
 #if KICKOS_KERNEL_CORES > 1
         int const prc = admit_claim_core(c, b);
@@ -842,7 +832,7 @@ namespace kickos
             return -KOS_EINVAL;
         }
         // Optional and idempotent: a double ack, or an ack after auto-rearm, is a no-op.
-        rearm_locked(b);
+        rearm_locked(b, lock);
         return 0;
     }
 
@@ -853,7 +843,7 @@ namespace kickos
         IrqBinding* b = binding_of_cap(c, cap_handle, CAP_WAIT, &err);
         if (b == nullptr)
         {
-            return -err; // EBADF (bad/closed cap) or EPERM (no WAIT right)
+            return -err;
         }
 #if KICKOS_KERNEL_CORES > 1
         int const prc = admit_claim_core(c, b);
@@ -865,58 +855,48 @@ namespace kickos
         // The controller only: needs_rearm and the mask state are both untouched, so a
         // discard can neither arm nor open a line. Discarding an armed line races the
         // device; the latch is only known stale between a wait return and its ack.
-        irq_line_op(b->line, LineOp::CLEAR);
+        irq_line_op(b->line, LineOp::CLEAR, lock);
         return 0;
     }
 
-    void irq_ref_drop(int obj_handle, bool teardown)
+    void irq_ref_drop(int obj_handle, [[maybe_unused]] Held held)
     {
-        (void)teardown; // no arm left reads it: nothing here can strand a waiter
         Kernel& k = kernel();
-        IrqBinding* b = k.irq_bindings.resolve(obj_handle);
-        int const idx = k.irq_bindings.index_of(b);
+        int const idx = obj_ref_last(k.irq_bindings, k.irq_refs, obj_handle);
         if (idx < 0)
         {
             return;
         }
-        uint8_t& r = k.irq_refs[idx];
-        if (r > 0)
-        {
-            r--;
-        }
-        if (r == 0)
-        {
-            // A waiter is parked on the object, not on this line, and the object's own
-            // reference count keeps it alive, so dropping the last capability naming this line
-            // strands nobody even while a driver waits.
-            //
-            // Unchained here and released at the slot free below: a rearm must not reach a
-            // line that is going away, but a dispatch on another core may already hold this
-            // binding's object pointer and must find the object still there.
-            irq_unchain_signaller(idx);
-            // Read before the release, which may return the slot to the pool.
-            int const line = b->line;
-            // The budget comes back here and not at the pool free below, which above one
-            // kernel core happens later, from a reclamation: the binding is unreachable from
-            // this instant and holding its owner until the slot returns would keep charging a
-            // task for a line it no longer has.
+        // A waiter is parked on the object, not on this line, and the object's own
+        // reference count keeps it alive, so dropping the last capability naming this line
+        // strands nobody even while a driver waits.
+        //
+        // Unchained here and released at the slot free below: a rearm must not reach a
+        // line that is going away, but a dispatch on another core may already hold this
+        // binding's object pointer and must find the object still there.
+        irq_unchain_signaller(idx);
+        // Read before the release, which may return the slot to the pool.
+        int const line = k.irq_bindings.at(idx)->line;
+        // The budget comes back here and not at the pool free below, which above one
+        // kernel core happens later, from a reclamation: the binding is unreachable from
+        // this instant and holding its owner until the slot returns would keep charging a
+        // task for a line it no longer has.
 #if KICKOS_KERNEL_CORES > 1
-            // The slot returns with the record's grace period: a dispatch still reading that
-            // record is one still holding this slot's address as its pre-bound argument.
-            line_release(line, obj_handle);
+        // The slot returns with the record's grace period: a dispatch still reading that
+        // record is one still holding this slot's address as its pre-bound argument.
+        line_release(line, obj_handle, held);
 #else
-            // Detach before free: irq_event_isr holds this binding's address as its
-            // pre-bound arg, so the slot must leave the dispatch table before it returns
-            // to the pool. The detach also masks the line and restores the null-object,
-            // which is what lets a later irq_claim of the same line pass its EBUSY test.
-            irq_detach(line);
-            irq_detach_notify(idx);
-            k.irq_bindings.free(obj_handle);
+        // Detach before free: irq_event_isr holds this binding's address as its
+        // pre-bound arg, so the slot must leave the dispatch table before it returns
+        // to the pool. The detach also masks the line and restores the null-object,
+        // which is what lets a later irq_claim of the same line pass its EBUSY test.
+        irq_detach(line);
+        irq_detach_notify(idx);
+        k.irq_bindings.free(obj_handle);
 #endif
-            // After the mask: the mask must reach the core the route still names, and the seam
-            // requires the line masked across the call.
-            arch_irq_route(line, KICKOS_IRQ_ROUTE_NONE);
-        }
+        // After the mask: the mask must reach the core the route still names, and the seam
+        // requires the line masked across the call.
+        arch_irq_route(line, KICKOS_IRQ_ROUTE_NONE);
     }
 }
 
@@ -940,13 +920,9 @@ extern "C" void kickos_isr_irq(int irq)
     row.depth = row.depth + 1u;
     // No null check: every publication is a valid callback (the null-object default).
     ::kickos::IrqDispatch const d = ::kickos::irq_published(irq);
-#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
     ::kickos::ktrace_irq_enter(static_cast<uint16_t>(irq));
-#endif
     d.handler(d.arg);
-#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
     ::kickos::ktrace_irq_exit(static_cast<uint16_t>(irq));
-#endif
     row.depth = row.depth - 1u;
     if (row.depth == 0)
     {
@@ -955,12 +931,8 @@ extern "C" void kickos_isr_irq(int irq)
 #else
     ::kickos::Kernel& k = ::kickos::kernel();
     // No null check: every slot is a valid callback (the null-object default).
-#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
     ::kickos::ktrace_irq_enter(static_cast<uint16_t>(irq));
-#endif
     k.irq_table[irq].handler(k.irq_table[irq].arg);
-#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
     ::kickos::ktrace_irq_exit(static_cast<uint16_t>(irq));
-#endif
 #endif
 }

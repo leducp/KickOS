@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Kernel diagnostic LED: the board's single status LED. Usable with no UART wired,
-// inside a fault, and before any driver exists, which is why it is not a device driver.
-// One physical pin, one owner: the kernel arbitrates, so a panic indicator and a
-// userspace heartbeat (kos_kernel_diag_led_*) cannot fight over it. State is tracked
-// here, so the arch backend implements only a raw set().
+// Kernel diagnostic LED, usable inside a fault and before any driver exists. One pin, one
+// owner: the kernel arbitrates, so a panic indicator and a userspace heartbeat
+// (kos_kernel_diag_led_*) cannot fight over it.
 
 #include <kickos/kernel.h>
 #include <kickos/arch/arch.h>

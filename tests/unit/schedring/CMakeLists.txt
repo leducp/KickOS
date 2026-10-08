@@ -6,6 +6,8 @@
 # must therefore exist before this directory is added.
 kickos_add_unit_test(NAME sched_ring SOURCES ring.cc
   LIBRARIES kickos_kseam_smp)
+# ring.cc counts re-seats from between the scheduler and the policy.
+target_link_options(sched_ring PRIVATE "LINKER:--wrap=_ZN6kickos16policy_on_removeEPNS_6ThreadE")
 
 # The same sources AT THREE KERNEL CORES, for the arms that need two placers and a third core.
 kickos_add_kseam(kickos_kseam_smp3

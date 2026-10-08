@@ -2,13 +2,11 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Refuses cache-as-SRAM pinning under the own-image AMP posture on the RP2350, the only posture
-# the root CMakeLists registers it for. Run from the repo root.
-#
-# The refusal is a property of the POSTURE and not of the part: a single-image kernel on this
-# chip may pin freely, there being no second kernel to have its lines destroyed. The rule, its
-# three independent reasons, the partial mitigation the datasheet offers and what would lift it
-# are stated in docs/reference/boards.md under the rp2350 board.
+# Refuses cache-as-SRAM pinning on the RP2350, which the own-image AMP posture forbids. Run from
+# the repo root. A tree gate: it reads the sources and no build, so a single-image kernel's pin,
+# which the posture alone would allow, is refused too. The rule, its three independent reasons,
+# the partial mitigation the datasheet offers and what would lift it are stated in
+# docs/reference/boards.md under the rp2350 board.
 #
 # A gate rather than a Kconfig refusal because nothing in the tree pins a cache line, so there
 # is no knob to refuse. What is enforceable is the textual property, and it is narrower than the

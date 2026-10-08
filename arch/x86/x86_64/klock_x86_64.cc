@@ -46,40 +46,18 @@ namespace
 #endif
 }
 
+// Drops this core's non-global translations before the answer.
+kickos::doorbell::Fenced kickos::doorbell::service_fence(Observed)
+{
+    kickos::x86_64::write_cr3(kickos::x86_64::read_cr3());
+#if defined(KICKOS_ENABLE_SELFTEST)
+    ++g_served[arch_cpu_id()];
+#endif
+    return Fenced();
+}
+
 extern "C"
 {
-
-// The caller and the interrupt handler enter with local interrupts masked. A
-// snapshot is answered only after the local non-global translations have been
-// dropped and the IRQ routing request has been serviced.
-void kickos_x86_64_doorbell_service(void)
-{
-    using namespace kickos::doorbell;
-    uint32_t const me = arch_cpu_id();
-    uint32_t asked[KICKOS_DOORBELL_CORES] = {};
-    bool owed = false;
-    for (uint32_t from = 0; from < KICKOS_DOORBELL_CORES; ++from)
-    {
-        asked[from] = g_request[from].seq[me].load();
-        owed |= asked[from] != g_answer[me].seq[from].load();
-    }
-    if (not owed)
-    {
-        return;
-    }
-    kickos::x86_64::write_cr3(kickos::x86_64::read_cr3());
-    kickos_irq_route_service();
-#if defined(KICKOS_ENABLE_SELFTEST)
-    ++g_served[me];
-#endif
-    for (uint32_t from = 0; from < KICKOS_DOORBELL_CORES; ++from)
-    {
-        if (asked[from] != g_answer[me].seq[from].load())
-        {
-            g_answer[me].seq[from] = asked[from];
-        }
-    }
-}
 
 void kickos_doorbell_poll(void)
 {
@@ -88,7 +66,7 @@ void kickos_doorbell_poll(void)
         return;
     }
     arch_irq_state_t const state = arch_irq_save();
-    kickos_x86_64_doorbell_service();
+    kickos_doorbell_service();
     if (kickos_kernel_core_resched_owed() != 0)
     {
         kickos::x86_64::apic_doorbell();
@@ -194,10 +172,9 @@ void kickos_x86_64_doorbell_park(void)
     uint32_t const me = arch_cpu_id();
     while (true)
     {
-        if (kickos_kernel_core_seated() != 0 and kickos_kernel_core_ready() != 0)
+        if (kickos_kernel_core_startable() != 0)
         {
             (void)arch_irq_save();
-            kickos_kernel_core_arrive();
             kickos_kernel_core_start();
         }
         uint32_t const contend = g_contend.load();

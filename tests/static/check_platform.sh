@@ -35,11 +35,6 @@
 #                 with the host compiler and walked, its dump the tool's own
 #   table         one composition's table, emitted against that build's manifest and compiled with
 #                 that build's C compiler, so the layout's assertions hold on its architecture
-#
-# uv runs the tool against its uv.lock as committed (`--locked` refuses a stale lock rather than
-# rewriting it), with its environment, scratch and bytecode in <build-dir> and its downloads in
-# uv's own cache, so a run writes nothing into the source tree. A missing uv FAILS: the
-# descriptions are then unchecked, not clean.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
@@ -155,8 +150,6 @@ if [ "$MODE" = installed ]; then
     shift
 fi
 [ -f "$TOOL/uv.lock" ] || fail "no $TOOL/uv.lock; the tool runs against its lock"
-command -v uv >/dev/null 2>&1 \
-    || fail "uv not found on PATH; tools/compose runs under uv (https://docs.astral.sh/uv/)"
 
 scratch_dir
 
@@ -224,12 +217,7 @@ if [ "$MODE" = tables ] || [ "$MODE" = table ]; then
     command -v "$CC" >/dev/null 2>&1 || fail "not an executable C compiler: $CC"
     [ -f "$GENERATED/kickos/sys/table_version.h" ] || fail "no generated kickos/sys/table_version.h under $GENERATED"
 fi
-mkdir -p "$STATE/tmp" || fail "cannot create $STATE in the build directory"
-UV_PROJECT_ENVIRONMENT="$STATE/venv"
-UV_PYTHON_DOWNLOADS=never
-PYTHONPATH="$TOOL"
-TMPDIR="$STATE/tmp"
-export UV_PROJECT_ENVIRONMENT UV_PYTHON_DOWNLOADS PYTHONPATH TMPDIR
+compose_env "$TOOL" "$STATE"
 
 tree_state() { # <outfile>
     git status --porcelain --ignored --untracked-files=all -- tools/compose platform examples/composition > "$1" \
@@ -249,17 +237,16 @@ if [ "$MODE" = descriptions ] || [ "$MODE" = compositions ]; then
         set -- "$@" "$f"
     done < "$TMP/files"
     if [ "$MODE" = descriptions ]; then
-        uv run --project "$TOOL" --locked --quiet python -m kickos_compose platform "$@"
+        compose_python -m kickos_compose platform "$@"
     else
-        uv run --project "$TOOL" --locked --quiet \
-            python -m kickos_compose admit "$@" --platform "$ROOT/platform"
+        compose_python -m kickos_compose admit "$@" --platform "$ROOT/platform"
     fi
     rc=$?
 elif [ "$MODE" = manifest ]; then
-    uv run --project "$TOOL" --locked --quiet python -m kickos_compose manifest "$MANIFEST"
+    compose_python -m kickos_compose manifest "$MANIFEST"
     rc=$?
 elif [ "$MODE" = golden ]; then
-    uv run --project "$TOOL" --locked --quiet python -m kickos_compose admit "$COMPOSITION" --manifest "$MANIFEST"
+    compose_python -m kickos_compose admit "$COMPOSITION" --manifest "$MANIFEST"
     rc=$?
 elif [ "$MODE" = drivers ]; then
     set --
@@ -268,24 +255,22 @@ elif [ "$MODE" = drivers ]; then
     done < "$TMP/files"
     rc=0
     if [ "$#" -ne 0 ]; then
-        uv run --project "$TOOL" --locked --quiet python -m kickos_compose admit "$@" --manifest "$MANIFEST"
+        compose_python -m kickos_compose admit "$@" --manifest "$MANIFEST"
         rc=$?
     fi
     [ "$rc" -ne 0 ] || echo "   $(wc -l < "$TMP/catalogue") catalogue driver(s), $# composition(s) admitted"
 elif [ "$MODE" = installed ]; then
-    uv run --project "$TOOL" --locked --quiet python -m kickos_compose manifest "$MANIFEST"
+    compose_python -m kickos_compose manifest "$MANIFEST"
     rc=$?
     if [ "$rc" -eq 0 ] && [ -n "$COMPOSITION" ]; then
-        uv run --project "$TOOL" --locked --quiet python -m kickos_compose admit "$COMPOSITION" --manifest "$MANIFEST"
+        compose_python -m kickos_compose admit "$COMPOSITION" --manifest "$MANIFEST"
         rc=$?
     fi
 elif [ "$MODE" = tables ]; then
-    uv run --project "$TOOL" --locked --quiet \
-        python "$TOOL/tests/round_trip.py" "$CC" "$GENERATED"
+    compose_python "$TOOL/tests/round_trip.py" "$CC" "$GENERATED"
     rc=$?
 elif [ "$MODE" = table ]; then
-    uv run --project "$TOOL" --locked --quiet \
-        python -m kickos_compose emit "$COMPOSITION" --manifest "$MANIFEST" -o "$TMP/table.c"
+    compose_python -m kickos_compose emit "$COMPOSITION" --manifest "$MANIFEST" -o "$TMP/table.c"
     rc=$?
     if [ "$rc" -eq 0 ]; then
         "$CC" -std=c11 -pedantic-errors -Wall -Wextra -Werror -I"$ROOT/user/include" -I"$ROOT/system/include" \
@@ -293,8 +278,7 @@ elif [ "$MODE" = table ]; then
         rc=$?
     fi
 else
-    uv run --project "$TOOL" --locked --quiet \
-        python -m unittest discover -s "$TOOL/tests"
+    compose_python -m unittest discover -s "$TOOL/tests"
     rc=$?
 fi
 

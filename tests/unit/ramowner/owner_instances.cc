@@ -48,11 +48,6 @@ extern "C"
 
 namespace kickos
 {
-    namespace detail
-    {
-        __thread unsigned g_instance_index __attribute__((tls_model("initial-exec"))) = 0;
-    }
-
     namespace
     {
         Task g_task;

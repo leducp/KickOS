@@ -166,7 +166,6 @@ void arch_context_init(struct arch_context* ctx,
         ret = reinterpret_cast<uint32_t>(kickos_user_thread_return);
     }
 
-    // Hardware exception frame.
     *(--sp) = 0x01000000u;                              // xPSR (Thumb bit)
     *(--sp) = reinterpret_cast<uint32_t>(entry) & ~1u;  // PC = entry
     *(--sp) = ret;                                      // LR: entry returns here
@@ -175,7 +174,6 @@ void arch_context_init(struct arch_context* ctx,
     *(--sp) = 0;                                        // r2
     *(--sp) = 0;                                        // r1
     *(--sp) = reinterpret_cast<uint32_t>(arg);          // r0 = arg
-    // PendSV-saved block {r4-r11}.
     for (size_t i = 0; i < CALLEE_BLOCK_WORDS; i++)
     {
         *(--sp) = 0;
@@ -199,14 +197,6 @@ void arch_context_init(struct arch_context* ctx,
     // ctx->kernel_sp IS DELIBERATELY UNTOUCHED. thread_create seats it BEFORE this call and
     // is the only writer of the zero that means no block seated, which svc_trampoline's
     // refusal path keys on; clearing it here would wipe the block off every fresh thread.
-}
-
-// The result has to be seated where the restore reloads r4 from: ctx->sp is the base of
-// the {r4-r11} block. r4, not the AAPCS r0, is the register the trap's own ABI answers in
-// (arch_syscall_reg in switch.S).
-void arch_ctx_set_syscall_result(struct arch_context* ctx, uint32_t result)
-{
-    reinterpret_cast<uint32_t*>(ctx->sp)[0] = result;
 }
 
 void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),

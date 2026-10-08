@@ -32,17 +32,101 @@
 
 namespace kickos
 {
-    struct SchedPolicy;
+    // A slot index in [0, KICKOS_KERNEL_CORES). It converts to an integer and no integer converts
+    // to it, so a slot is never arch_cpu_id(), the machine's identity, which under AMP answers
+    // 1..3 on a peer and indexes past the one slot. A conversion to it is written only here and
+    // by the unit fixture (tests/static/check_kernel_core_index.sh).
+    enum KernelCore : uint32_t
+    {
+    };
 
-    // Which core within this kernel is running: a slot index in [0, KICKOS_KERNEL_CORES).
-    // Under AMP arch_cpu_id() answers 1..3 on a peer while this answers 0, so current[],
-    // idle[] and boot[] take this index and never the core's machine id.
-    // tests/static/check_kernel_core_index.sh refuses the other subscript.
+    // The running core's slot. A macro: an inline function here compiles to other code.
 #if KICKOS_MULTICORE_MODEL_SHARED
-#define kickos_kernel_core() arch_cpu_id()
+#define kickos_kernel_core() static_cast<::kickos::KernelCore>(arch_cpu_id())
 #else
-#define kickos_kernel_core() 0u
+#define kickos_kernel_core() static_cast<::kickos::KernelCore>(0u)
 #endif
+
+    // Read from the thread, never the calling core: this is what lets a core remove a thread
+    // another core readied.
+    inline KernelCore queue_core_of(Thread const* t)
+    {
+#if KICKOS_KERNEL_CORES > 1
+        return static_cast<KernelCore>(t->queue_core);
+#else
+        (void)t;
+        return static_cast<KernelCore>(0u);
+#endif
+    }
+
+    // The slots from `first` on, in order.
+    class KernelCores
+    {
+      public:
+        class Iterator
+        {
+          public:
+            KernelCore operator*() const
+            {
+                return static_cast<KernelCore>(at);
+            }
+            void operator++()
+            {
+                at++;
+            }
+            bool operator!=(Iterator other) const
+            {
+                return at != other.at;
+            }
+
+          private:
+            friend class KernelCores;
+            uint32_t at;
+        };
+
+        static constexpr KernelCores all()
+        {
+            return KernelCores(0u);
+        }
+
+        // Every slot but 0, the one kmain boots on.
+        static constexpr KernelCores peers()
+        {
+            return KernelCores(1u);
+        }
+
+        Iterator begin() const
+        {
+            Iterator i;
+            i.at = first;
+            return i;
+        }
+        Iterator end() const
+        {
+            Iterator i;
+            i.at = KICKOS_KERNEL_CORES;
+            return i;
+        }
+
+      private:
+        constexpr explicit KernelCores(uint32_t f)
+            : first(f)
+        {
+        }
+
+        uint32_t first;
+    };
+
+    struct Kernel;
+
+    // One cell per slot, reached only through Kernel's accessors. They sit on Kernel and not
+    // here: a subscript through this member's own address compiles to other code.
+    template <typename T>
+    class PerCore
+    {
+        friend struct Kernel;
+        T cells[KICKOS_KERNEL_CORES] = {};
+    };
 
 #if KICKOS_KERNEL_CORES > 1
     constexpr uint32_t sched_ring_depth_for(uint32_t entries)
@@ -98,22 +182,41 @@ namespace kickos
 
     struct Kernel
     {
-        // --- scheduler mechanism (sched.cc) ---
+        Thread*& current(KernelCore c)
+        {
+            return currents.cells[c];
+        }
+        Thread* current(KernelCore c) const
+        {
+            return currents.cells[c];
+        }
+        Thread*& idle(KernelCore c)
+        {
+            return idles.cells[c];
+        }
+        Thread* idle(KernelCore c) const
+        {
+            return idles.cells[c];
+        }
+        arch_context& boot(KernelCore c)
+        {
+            return boots.cells[c];
+        }
+
+        // --- scheduler mechanism (sched.cc, policy_fifo_rr.cc) ---
         // One set per core. A thread sits on exactly one core's structure, named by its
-        // queue_core, so a core picks without consulting any peer's state. At one kernel
-        // core the outer extent is 1 and every index folds to a constant.
+        // queue_core, so a core picks without consulting any peer's state.
         List ready[KICKOS_KERNEL_CORES][KICKOS_NUM_PRIO]; // per priority; running at front
         uint32_t ready_bitmap[KICKOS_KERNEL_CORES] = {};  // bit p set iff ready[c][p] non-empty
-        Thread* current[KICKOS_KERNEL_CORES] = {}; // indexed by kickos_kernel_core()
-        Thread* idle[KICKOS_KERNEL_CORES] = {}; // indexed by kickos_kernel_core()
+        PerCore<Thread*> currents;
+        PerCore<Thread*> idles;
         unsigned live = 0; // non-idle threads not yet EXITED
 #if KICKOS_KERNEL_CORES > 1
         // seated_prio[c]: the priority core c's last pass seated, left high across a lowering so
         // that pass sees the drop. Written and read by c alone.
         uint8_t seated_prio[KICKOS_KERNEL_CORES] = {};
 #endif
-        arch_context boot[KICKOS_KERNEL_CORES] = {}; // indexed by kickos_kernel_core()
-        SchedPolicy const* policy = nullptr;
+        PerCore<arch_context> boots;
 
         // Per-Kernel monotonic thread-id counter (thread.cc). Starts at 0 so the
         // first thread created (idle, in kmain) is id 0; wraps skip 0 and 0xFFFF.
@@ -144,7 +247,7 @@ namespace kickos
         // whatever a bring-up probe left in the hardware.
         uint64_t timer_armed_ns[KICKOS_KERNEL_CORES] = {};
 
-        // --- syscall object pools (syscall.cc) ---
+        // --- object pools ---
         // Semaphore registry: a generational slot pool (see slotpool.h). Reached only
         // through its own resolve(); the generation wraps every 2^16 destroys of one slot.
         SlotPool<Semaphore, KICKOS_MAX_SEMAPHORES> sems;
@@ -195,9 +298,7 @@ namespace kickos
         // refcount is 0 and it has no creator. All access via task_*().
         Task tasks[KICKOS_MAX_TASKS];
 #if KICKOS_HAVE_ASPACE
-        // Frame-run pool and its object-side refcount, same shape as the pools above. Only a
-        // translating board has a frame pool to name, so this is the one kind whose storage
-        // is posture-gated.
+        // Frame-run pool and its object-side refcount, same shape as the pools above.
         SlotPool<FrameRun, KICKOS_MAX_FRAME_RUNS> frame_runs;
         uint8_t frame_run_refs[KICKOS_MAX_FRAME_RUNS] = {};
 #endif

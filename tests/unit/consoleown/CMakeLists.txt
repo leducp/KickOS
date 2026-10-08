@@ -38,6 +38,7 @@ kickos_add_unit_test(NAME console_ownership
 kickos_add_unit_test(NAME console_publish_handoff
   SOURCES publish_handoff.cc masked_window.cc
           "${PROJECT_SOURCE_DIR}/tests/unit/consoleseam/console_seam.cc"
+          "${PROJECT_SOURCE_DIR}/kernel/irq/irq_route.cc"
           "${PROJECT_SOURCE_DIR}/kernel/init/console.cc"
           "${PROJECT_SOURCE_DIR}/kernel/init/console_tx.cc"
           "${PROJECT_SOURCE_DIR}/lib/rtt.cc"

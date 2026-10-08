@@ -62,10 +62,10 @@ namespace
         c->sender->affinity = 1u;
         attach_caps(c->driver, KICKOS_CAP_CHILD_WIDTH);
         detach_ready(c->sender);
-        c->sender->state = ThreadState::BLOCKED;
+        testfix::seat_blocked(c->sender);
         {
             IrqLock lock;
-            sched::reschedule();
+            sched::reschedule(nullptr, lock);
         }
         ASSERT_EQ(sched::current(), c->driver);
         c->ep = endpoint();
@@ -81,8 +81,8 @@ namespace
             Endpoint* const console = endpoint();
             published_handle = kernel().endpoints.handle_for(kernel().endpoints.index_of(console));
         }
-        ASSERT_TRUE(cap_console_publish(c->driver, published_handle));
-        cap_console_serve(task(0));
+        ASSERT_TRUE(cap_console_publish(c->driver, published_handle, lock));
+        cap_console_serve(task(0), lock);
         c->sender->ipc.buf = reinterpret_cast<uintptr_t>(c->sender_buf);
         c->sender->ipc.len = sizeof(c->sender_buf);
         c->sender->call_state = CALL_NONE;
@@ -158,7 +158,7 @@ TEST_F(ConsoleHeldRecv, a_parked_driver_is_handed_the_record_at_once)
     wake_next_park([](Thread*) {
         seed_held("REC\n");
         IrqLock lock;
-        cap_console_deliver();
+        cap_console_deliver(lock);
     });
     int32_t const n = serve(&c);
     ASSERT_EQ(n, 4) << "the parked driver was not handed the record";

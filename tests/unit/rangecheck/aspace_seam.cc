@@ -102,26 +102,18 @@ namespace kickos
         return nullptr;
     }
 
-    void aspace_window_unmap_holder(struct arch_aspace*, VirtualRanges*, uint16_t) {}
-
-    // The exit path's end of a call that syncs ahead of its lock; no arm here makes one.
-    void presync_exit() {}
-
-    struct arch_aspace* aspace_activate_for(Thread const*) { return nullptr; }
-
-    bool aspace_seated_for(Thread const*)
-    {
-        return true;
-    }
-
-    void aspace_install_boot(void) {}
-
     void frame_pool_free_run(arch_phys_addr_t, size_t, size_t) {}
 }
 
 extern "C"
 {
-    // Provide runtime symbols required by KICKOS_HAVE_ASPACE.
+    void arch_aspace_activate(struct arch_aspace*) {}
+    struct arch_aspace* arch_aspace_boot(void) { return nullptr; }
+    enum arch_aspace_result arch_aspace_unmap(struct arch_aspace*, uintptr_t, size_t)
+    {
+        return ARCH_ASPACE_OK;
+    }
+
     void* kmemset(void* dst, int c, size_t n)
     {
         return memset(dst, c, n);

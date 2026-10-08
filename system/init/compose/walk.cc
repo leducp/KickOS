@@ -221,7 +221,7 @@ namespace kickos::init
             // reader off for good.
             for (uint16_t k = 0; k < tasks_[i].watch_count; k++)
             {
-                status_clear(&r.status[k]);
+                StatusWriter::clear(&r.status[k]);
             }
         }
         for (uint16_t r = 0; r < header_->region_count; r++)

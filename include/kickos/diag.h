@@ -37,12 +37,10 @@
     X(kConsoleAttach,   "console_buffer_init: irq_attach failed",                    "P04")       \
     X(kBlockInIsr,      "kickos: blocking operation from ISR context",               "P05")       \
     X(kResumeNoSwitch,  "wq_confirm_resume: switch never landed",                    "P06")       \
-    X(kDeadlineNoTimer, "expired deadline on a park that cannot time out",           "P07")       \
     X(kUserPanicNoMsg,  "user panic (no readable message)",                          "P08")       \
     X(kPublishNoDrain,  "console_publish: chip-writer drain did not converge",       "P09")       \
     X(kRootExitRefused, "root: exit shutdown refused",                               "P10")       \
     X(kPastExitCurrent, "unreachable: thread continued past exit_current",           "P11")       \
-    X(kTimeoutNotEp,    "unreachable: endpoint_wait_abort on a non-endpoint park",   "P12")       \
     X(kRebootRp2040,    "arch_reboot: rp2040 _reset_to_usb_boot returned",           "P13")       \
     X(kRebootRp2350,    "arch_reboot: rp2350 bootrom reboot returned",               "P14")       \
     X(kRebootImxrt,     "arch_reboot: imxrt1062 bkpt resumed (no MKL02?)",           "P15")       \
@@ -53,8 +51,6 @@
                         "       into root; this node could not serve or reach it",       "P19")    \
     X(kBootAmpSlot,     "kmain: a partition port landed off its derived capability slot \n"       \
                         "       (a dynamic install into root ran before the partition's)", "P20")  \
-    X(kBootRootCoreMask, "kmain: KICKOS_ROOT_CORE_MASK names a core this kernel does not run", \
-                        "P21")                                                                     \
     X(kBootAmpShare,    "kmain: the partition's user share could not be seated into root \n"    \
                         "       (KICKOS_AMP_USER_SHARE_SIZE not whole granules?)",       "P22")    \
     X(kDcacheWraps,     "arch_dcache: a maintenance range wraps the address space", "P23")       \

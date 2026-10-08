@@ -12,6 +12,8 @@
 
 #include <stdint.h>
 
+#include <type_traits>
+
 namespace kickos::init
 {
     // StatusFields::state
@@ -28,24 +30,58 @@ namespace kickos::init
         uint8_t state;
     };
 
-    // `count` is odd while the init writes the fields. Its loads are relaxed: the reader orders
-    // them with fence_acquire.
-    struct StatusRecord
+    // `count` is odd while the init writes the fields. Every field, not only the count, is
+    // acquire and release: one relaxed field lets a copy torn by a write in progress read as
+    // whole, with the count even and unchanged on both sides. Only a StatusWriter stores to it.
+    class StatusRecord
     {
-        Atomic<uint32_t, Order::RELEASE> count;
-        Atomic<uint16_t, Order::RELAXED> deaths;
-        Atomic<uint8_t, Order::RELAXED> restarts_left;
-        Atomic<uint8_t, Order::RELAXED> state;
+    public:
+        uint32_t count() const { return count_; }
+
+    private:
+        Atomic<uint32_t, Order::ACQUIRE | Order::RELEASE> count_;
+        Atomic<uint16_t, Order::ACQUIRE | Order::RELEASE> deaths_;
+        Atomic<uint8_t, Order::ACQUIRE | Order::RELEASE> restarts_left_;
+        Atomic<uint8_t, Order::ACQUIRE | Order::RELEASE> state_;
+
+        static_assert(std::is_same_v<decltype(count_),
+                                     Atomic<uint32_t, Order::ACQUIRE | Order::RELEASE>>
+                          and std::is_same_v<decltype(deaths_),
+                                             Atomic<uint16_t, Order::ACQUIRE | Order::RELEASE>>
+                          and std::is_same_v<decltype(restarts_left_),
+                                             Atomic<uint8_t, Order::ACQUIRE | Order::RELEASE>>
+                          and std::is_same_v<decltype(state_),
+                                             Atomic<uint8_t, Order::ACQUIRE | Order::RELEASE>>,
+                      "the seqlock's order is its fields' own: no fence holds it");
+
+        friend class StatusWriter;
+        friend bool status_read(StatusRecord const* record, StatusFields* out);
     };
     static_assert(sizeof(StatusRecord) == KICKOS_INIT_STATUS_RECORD_SIZE,
                   "a status record is the size cmake/init_geometry.cmake declares");
 
-    // The record's state before its first write: the count even at 0 and every field 0. The init
-    // clears each record of a block it reserves before it writes one.
-    void status_clear(StatusRecord* record);
+    // The one write of a record: the count odd from construction to destruction, the fields
+    // stored in between. The init is the record's one writer.
+    class StatusWriter
+    {
+    public:
+        explicit StatusWriter(StatusRecord* record);
+        ~StatusWriter();
+        StatusWriter(StatusWriter const&) = delete;
+        StatusWriter& operator=(StatusWriter const&) = delete;
 
-    // The init's write: the count odd, a release fence, the fields, the count even. The init is
-    // the record's one writer.
+        void deaths(uint16_t value);
+        void restarts_left(uint8_t value);
+        void state(uint8_t value);
+
+        // The record's state before its first write: the count even at 0 and every field 0.
+        // The init clears each record of a block it reserves before it writes one.
+        static void clear(StatusRecord* record);
+
+    private:
+        StatusRecord* record_;
+    };
+
     void status_write(StatusRecord* record, StatusFields const& fields);
 
     // One copy of the fields, false where the count was odd or changed across the copy.

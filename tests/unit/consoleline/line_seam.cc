@@ -6,7 +6,6 @@
 #include <kickos/arch/arch.h>
 #include <kickos/console_tx.h>
 #include <kickos/irq.h>
-#include <kickos/irq_route.h>
 #include <kickos/irqlock.h>
 
 namespace
@@ -261,21 +260,6 @@ console_tx_backend const* arch_console_tx_backend(char**, uint32_t*, int*)
     return nullptr; // the fixture arms the ring through console_tx_init
 }
 
-// Both ownership reads are pinned kernel-owned: these arms measure the RING, and the publish
-// sequence is gated in tests/unit/consoleown.
-int console_owner_is_kernel(void)
-{
-    return 1;
-}
-
-void console_chip_writer_enter(void)
-{
-}
-
-void console_chip_writer_leave(void)
-{
-}
-
 // console.cc's, and the insert reaches it for the UNARMED ring alone: before console_tx_init
 // there is no ring to interleave with, so that line goes straight at the device. The arms
 // that exercise it read the wire, so it lands there like every other push.
@@ -287,12 +271,6 @@ void console_write_line_sync(char const* buf, size_t n)
 
 namespace kickos
 {
-    void kpanic(char const*) __attribute__((noreturn));
-    void kpanic(char const*)
-    {
-        __builtin_trap();
-    }
-
     bool irq_attach(int, IrqHandler, void*)
     {
         return true;
@@ -300,32 +278,5 @@ namespace kickos
 
     void irq_detach(int)
     {
-    }
-
-    void irq_line_op(int line, LineOp op)
-    {
-        switch (op)
-        {
-            case LineOp::MASK:
-            {
-                arch_irq_mask(line);
-                break;
-            }
-            case LineOp::UNMASK:
-            {
-                arch_irq_unmask(line);
-                break;
-            }
-            case LineOp::CLEAR:
-            {
-                arch_irq_clear_pending(line);
-                break;
-            }
-        }
-    }
-
-    void irq_line_op_local(int line, LineOp op)
-    {
-        irq_line_op(line, op);
     }
 }

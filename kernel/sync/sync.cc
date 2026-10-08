@@ -9,13 +9,12 @@
 #include <kickos/kernel.h>
 #include <kickos/irqlock.h>
 
-#include <kickos/sys/abi.h> // KOS_SEM_COUNT_MAX
+#include <kickos/sys/abi.h>
 
 #include <limits.h>
 
 namespace kickos
 {
-    // FIFO among equal priority.
     Thread* wq_pop_highest(List& q)
     {
         Thread* best = wq_peek_highest(q);
@@ -56,9 +55,6 @@ namespace kickos
         return best;
     }
 
-    // `epoch` must be c->switch_count sampled under the block lock immediately before
-    // wq_block. Where the switch is pended it has not fired when that lock is released, so
-    // the caller is still executing pre-switch and must not trust anything a waker wrote.
     // switch_to bumps the incoming thread's switch_count, so an advance is proof of a real
     // switch-in and the acquire load is what makes the waker's writes readable.
     void wq_confirm_resume(Thread* c, uint32_t epoch)
@@ -74,34 +70,29 @@ namespace kickos
         }
     }
 
-    // Returns when woken.
-    void wq_block(List& q, WaitKind kind, void* obj, Thread* woken)
+    uint32_t park_queueless(Thread* c, WaitKind kind, void* obj, Held held)
     {
-        Thread* c = sched::current();
-        // BLOCKED before the detach: on_remove reads `state` to tell a park from a
-        // set_prio re-seat, and only a park forfeits the RR slice remainder.
-        c->state = ThreadState::BLOCKED;
-        // Detach from the ready list FIRST: the ready list and the wait queues share the TCB
-        // link node, so the push below would clobber links the removal still has to read.
-        sched::detach_current();
-        c->wait_queue = &q;
-        c->wait_kind = kind;
-        c->wait_obj = obj;
-        q.push_back(&c->link);
-        // BEFORE the reschedule, which on a stall never returns.
-        KOS_TRACE(::kickos::KOS_TR_PARK, KOS_TRACE_ID(c), KOS_TRACE_ID(&q));
-        sched::reschedule(woken);
-    }
-
-    void park_queueless(Thread* c, WaitKind kind, void* obj)
-    {
-        // Same ordering as wq_block: BLOCKED before the detach (on_remove reads it), and the
-        // removal reads `link`, so it must run before anything re-uses that node.
-        c->state = ThreadState::BLOCKED;
-        sched::detach_current();
+        // BLOCKED before the detach: on_remove reads `state` to tell a park from a set_prio
+        // re-seat, and only a park forfeits the RR slice remainder. The removal reads `link`,
+        // so it must run before anything re-uses that node.
+        c->state.block();
+        sched::detach_current(held);
         c->wait_queue = nullptr;
         c->wait_kind = kind;
         c->wait_obj = obj;
+        return c->switch_count;
+    }
+
+    uint32_t wq_block(List& q, WaitKind kind, void* obj, Thread* woken, Held held)
+    {
+        Thread* c = sched::current();
+        uint32_t const epoch = park_queueless(c, kind, obj, held);
+        c->wait_queue = &q;
+        q.push_back(&c->link);
+        // BEFORE the reschedule, which on a stall never returns.
+        KOS_TRACE(::kickos::KOS_TR_PARK, KOS_TRACE_ID(c), KOS_TRACE_ID(&q));
+        sched::reschedule(woken, held);
+        return epoch;
     }
 
     static_assert(KOS_SEM_COUNT_MAX <= INT_MAX,
@@ -116,7 +107,8 @@ namespace kickos
     bool sem_wait(IrqLock& held, Semaphore* s, uint32_t& epoch)
     {
         Thread* const c = sched::current();
-        if (park_cancel_pending(c))
+        ParkToken const ask = park_cancel_pending(c);
+        if (ask.cancelled())
         {
             sched::exit_current(KOS_EXIT_CANCELLED, sched::EXIT_RETURN, &held);
         }
@@ -125,20 +117,8 @@ namespace kickos
             s->count--;
             return false;
         }
-        epoch = c->switch_count;
-        wq_block(s->waiters, WAIT_SEM, s);
+        epoch = wq_block(ask)(s->waiters, WAIT_SEM, s, nullptr, held);
         return true;
-    }
-
-    bool sem_trywait(Semaphore* s)
-    {
-        IrqLock lock;
-        if (s->count > 0)
-        {
-            s->count--;
-            return true;
-        }
-        return false;
     }
 
     bool sem_post(Semaphore* s)
@@ -148,7 +128,7 @@ namespace kickos
         if (w != nullptr)
         {
             w->wait_result = 0; // the token goes straight to the waiter, count stays put
-            sched::wake(w);
+            sched::wake(w, lock);
             return true;
         }
         if (s->count >= KOS_SEM_COUNT_MAX)
@@ -185,43 +165,17 @@ namespace kickos
             }
         }
 
-        // Returns 0 when nobody is parked; 0 is below every real priority.
-        uint8_t highest_waiter_prio(Mutex* m)
-        {
-            uint8_t best = 0;
-            for (ListNode* n = m->waiters.head; n != nullptr; n = n->next)
-            {
-                Thread* t = thread_of(n);
-                if (t->prio > best)
-                {
-                    best = t->prio;
-                }
-            }
-            return best;
-        }
-
         // Caller holds IrqLock, and must already have held_remove'd m from the releaser and
         // popped w off m->waiters; that pop is what cleared w's wait edge. Both that clear
         // and `status` belong to the WAKER: where the resume is deferred, a self-clear leaves
         // a window in which a still-parked thread answers nullptr from wait_mutex() and the
-        // chain walk stops short of it, losing a boost or a deadlock detection.
+        // chain walk stops short of it, losing a boost or a deadlock detection. w must be the
+        // top waiter: no boost is recomputed for the waiters left behind it.
         void transfer_to(Mutex* m, Thread* w, intptr_t status)
         {
             m->owner = w;
             w->wait_result = status;
             held_push(w, m);
-            // VACUOUS while the pop returns the highest-prio waiter: every waiter left on m
-            // is then <= w.
-            uint8_t wp = w->prio;
-            uint8_t const hw = highest_waiter_prio(m);
-            if (hw > wp)
-            {
-                wp = hw;
-            }
-            if (wp != w->prio)
-            {
-                sched::set_prio(w, wp);
-            }
         }
     }
 
@@ -338,10 +292,10 @@ namespace kickos
         uint8_t p = t->base_prio;
         for (Mutex* h = t->held_list; h != nullptr; h = h->next_held)
         {
-            uint8_t const hw = highest_waiter_prio(h);
-            if (hw > p)
+            Thread const* const w = wq_peek_highest(h->waiters);
+            if (w != nullptr and w->prio > p)
             {
-                p = hw;
+                p = w->prio;
             }
         }
         for (ListNode* n = t->reply_waiters.head; n != nullptr; n = n->next)
@@ -388,7 +342,8 @@ namespace kickos
             IrqLock lock;
             // Ahead of the donation walk below, whose boosts an exit taken at the park would
             // leave seated on this caller's behalf with the caller gone.
-            if (park_cancel_pending(c))
+            ParkToken const ask = park_cancel_pending(c);
+            if (ask.cancelled())
             {
                 sched::exit_current(KOS_EXIT_CANCELLED, sched::EXIT_RETURN, &lock);
             }
@@ -400,7 +355,7 @@ namespace kickos
             }
             if (m->owner == c)
             {
-                return -KOS_EDEADLK; // a recursive lock is refused, never parked
+                return -KOS_EDEADLK;
             }
             // Pass 1: cycle detection, READ ONLY, so a refusal writes no boost. The depth
             // bound only stops the walk on a PRE-EXISTING foreign cycle.
@@ -436,7 +391,7 @@ namespace kickos
                     {
                         break;
                     }
-                    sched::set_prio(t, c->prio);
+                    sched::set_prio(t, c->prio, lock);
                     if (t->wait_mutex() == nullptr)
                     {
                         break;
@@ -449,11 +404,9 @@ namespace kickos
                     }
                 }
             }
-            // Sampled under the lock, immediately before parking.
-            epoch = c->switch_count;
             // WAIT_MUTEX is what puts c on the chain walk above for the next blocker. A
             // waker transfers ownership and writes wait_result.
-            wq_block(m->waiters, WAIT_MUTEX, m);
+            epoch = wq_block(ask)(m->waiters, WAIT_MUTEX, m, nullptr, lock);
         }
         // The wait_result read must be BOTH outside the critical section AND after the
         // barrier, or it returns the pre-block value.
@@ -467,7 +420,7 @@ namespace kickos
         Thread* c = sched::current();
         if (m->owner != c)
         {
-            return -KOS_EPERM; // a non-owner unlock is a runtime error, never a panic
+            return -KOS_EPERM;
         }
         held_remove(c, m);
         Thread* w = wq_pop_highest(m->waiters);
@@ -479,8 +432,8 @@ namespace kickos
             {
                 // Lowering ourselves can make a middle-priority READY thread the highest
                 // runnable, so the reschedule is not optional.
-                sched::set_prio(c, np);
-                sched::reschedule();
+                sched::set_prio(c, np, lock);
+                sched::reschedule(nullptr, lock);
             }
             return 0;
         }
@@ -488,13 +441,13 @@ namespace kickos
         uint8_t const np = thread_effective_prio(c);
         if (np != c->prio)
         {
-            sched::set_prio(c, np); // revert the boost over what we STILL hold
+            sched::set_prio(c, np, lock);
         }
-        sched::wake(w);
+        sched::wake(w, lock);
         return 0;
     }
 
-    void mutex_force_unlock(Mutex* m, Thread* dying)
+    void mutex_force_unlock(Mutex* m, Thread* dying, Held held)
     {
         // `dying` gets NO recompute: it stays boosted for the remainder of its own teardown,
         // a bounded inversion since the sweep is chunked. The waiter is woken with
@@ -507,6 +460,6 @@ namespace kickos
             return;
         }
         transfer_to(m, w, MUTEX_OWNER_DIED);
-        sched::wake(w);
+        sched::wake(w, held);
     }
 }

@@ -46,7 +46,7 @@ namespace
         uint32_t mask = 0;
         Atomic<uint32_t, Order::RELAXED> head = 0; // bytes queued; written by a producer
         Atomic<uint32_t, Order::RELAXED> tail = 0; // bytes drained; written by the drain OR a producer
-        int irq_line = -1;          // TX IRQ line (from the backend); console_tx_deinit detaches it
+        int irq_line = -1;
         bool armed = false;
         // Set across an insert's copy and a record line's polled room-making. A synchronous
         // CPU fault is not gated by the mask and its reporter writes to this same console: a
@@ -521,16 +521,10 @@ void console_buffer_init(void)
     {
         return;
     }
-    // A backend with no TX interrupt still arms the ring; drain_in_producer carries it.
-    if (line < 0)
-    {
-        console_tx_init(be, buf, size, line);
-        return;
-    }
     // A dropped attach would leave the ring armed but never drained: output fills it, falls
     // back to the bounded sync path, and looks like it works while every buffered write
     // stalls. A misconfigured TX line at boot is a port bug, so panic.
-    if (not kickos::irq_attach(line, console_tx_isr_trampoline, nullptr))
+    if (line >= 0 and not kickos::irq_attach(line, console_tx_isr_trampoline, nullptr))
     {
         kickos::kpanic(kickos::diag::kConsoleAttach);
     }
@@ -538,16 +532,18 @@ void console_buffer_init(void)
     // pend latched on this line before boot the instant ISER is set, and console_tx_isr on a
     // zero-init ring would deref a NULL backend.
     console_tx_init(be, buf, size, line);
-    kickos::irq_line_op(line, kickos::LineOp::CLEAR);
-    kickos::irq_line_op(line, kickos::LineOp::UNMASK);
+    if (line >= 0)
+    {
+        kickos::IrqLock lock;
+        kickos::irq_line_op(line, kickos::LineOp::CLEAR, lock);
+        kickos::irq_line_op(line, kickos::LineOp::UNMASK, lock);
+    }
 }
 
-// Relinquish the buffered TX path so a userspace driver can take the UART. One IrqLock
-// makes the four steps atomic against the drain ISR, and an insert reads `armed` under the
-// same lock as its copy. The disarmed guard also covers polled-only chips (mps2/virt/nrf51
-// never arm) and a re-publish. The
-// caller holds the state at HANDING_OFF across this, never USER_OWNED, so the flush here and
-// a synchronous fault mid-deinit both act on a kernel-owned, kernel-inited UART.
+// The caller's IrqLock makes the steps atomic against the drain ISR, and an insert reads
+// `armed` under that lock as its copy does. The caller holds the state at HANDING_OFF across
+// this, never USER_OWNED, so the flush here and a synchronous fault mid-deinit both act on a
+// kernel-owned, kernel-inited UART.
 void console_tx_deinit(void)
 {
     ConsoleTxRing& r = tx();
@@ -555,7 +551,6 @@ void console_tx_deinit(void)
     {
         return;
     }
-    kickos::IrqLock lock;
     console_tx_flush_sync();
     r.backend->irq_disable();
     if (r.irq_line >= 0)

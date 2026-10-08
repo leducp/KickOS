@@ -177,7 +177,7 @@ namespace
     {
         seat_binding();
 
-        kickos::irq_ref_drop(handle, false);
+        kickos::irq_ref_drop(handle, kickos::IrqLock());
 
         EXPECT_EQ(kickos::kernel().irq_bindings.resolve(handle), nullptr)
             << "the slot was not freed with no peer inside the dispatch entry";
@@ -194,7 +194,7 @@ namespace
         kickos::irqfix::reset();
         kickos::irqfix::g_core = 0;
 
-        kickos::irq_ref_drop(handle, false);
+        kickos::irq_ref_drop(handle, kickos::IrqLock());
 
         EXPECT_EQ(kickos::irqfix::ipi_sends(0), 0u)
             << "the teardown rendezvoused with a peer, so it can be made to wait under the "
@@ -208,7 +208,7 @@ namespace
         kickos::irqfix::reset();
         kickos::irqfix::g_core = 0;
 
-        kickos::irq_ref_drop(handle, false);
+        kickos::irq_ref_drop(handle, kickos::IrqLock());
 
         int const first_mask = kickos::irqfix::first_of(OP_MASK);
         ASSERT_GE(first_mask, 0) << "the teardown masked no line at all";
@@ -367,7 +367,7 @@ namespace
                 else
                 {
                     unsigned const before = kickos::irqfix::ipi_sends(0);
-                    kickos::handle_close(&g_claim_thread, cap);
+                    kickos::handle_close(&g_claim_thread, cap, lock);
                     g_cyc.sends_in_teardown.store(kickos::irqfix::ipi_sends(0) - before);
                     g_cyc.slot_live_at_return.store(
                         kickos::kernel().irq_bindings.resolve(obj) != nullptr);
@@ -464,7 +464,7 @@ namespace
     void drop_from_inside_the_nested_entry()
     {
         kickos::irqfix::g_core = 0;
-        kickos::handle_close(&g_claim_thread, g_nest_cap);
+        kickos::handle_close(&g_claim_thread, g_nest_cap, kickos::IrqLock());
         g_nest_slot_live = kickos::kernel().irq_bindings.resolve(g_nest_obj) != nullptr;
         kickos::irqfix::g_core = 1;
     }
@@ -511,7 +511,7 @@ namespace
         ASSERT_GE(second, 0);
 
         kickos::irqfix::g_core = 0;
-        kickos::handle_close(&g_claim_thread, again);
+        kickos::handle_close(&g_claim_thread, again, kickos::IrqLock());
 
         EXPECT_EQ(kickos::kernel().irq_bindings.resolve(second), nullptr)
             << "no core was inside the dispatch entry, so this teardown had nothing to outlive "
@@ -662,7 +662,7 @@ namespace
         EXPECT_EQ(kickos::irqfix::count_of(OP_MASK), masks_before + 1u)
             << "the dispatch did not mask the line it woke a driver for";
 
-        kickos::handle_close(&g_claim_thread, cap);
+        kickos::handle_close(&g_claim_thread, cap, kickos::IrqLock());
         EXPECT_EQ(free_bindings(), free_before) << "the closed capability kept its slot";
     }
 
@@ -683,7 +683,7 @@ namespace
             << "the line went to a core other than the one that claimed it";
 
         kickos::irqfix::g_routed_line = -1;
-        kickos::handle_close(&g_claim_thread, cap);
+        kickos::handle_close(&g_claim_thread, cap, kickos::IrqLock());
         EXPECT_EQ(kickos::irqfix::g_routed_line, LINE_FREE)
             << "the release left the record standing for a re-claim to inherit";
         EXPECT_EQ(kickos::irqfix::g_routed_core, KICKOS_IRQ_ROUTE_NONE)
@@ -701,12 +701,12 @@ namespace
 
         ASSERT_EQ(kickos::irq_claim(&g_claim_thread, LINE_FREE, 0u, &cap), 0);
         // What the driver's first wait leaves behind.
-        kickos::irq_line_op(LINE_FREE, kickos::LineOp::UNMASK);
+        kickos::irq_line_op(LINE_FREE, kickos::LineOp::UNMASK, kickos::IrqLock());
         ASSERT_EQ(kickos::irqfix::last_line_op(LINE_FREE),
                   static_cast<int>(kickos::irqfix::OP_UNMASK));
 
         kickos::irqfix::g_routed_line = -1;
-        kickos::handle_close(&g_claim_thread, cap);
+        kickos::handle_close(&g_claim_thread, cap, kickos::IrqLock());
         ASSERT_EQ(kickos::irqfix::g_routed_core, KICKOS_IRQ_ROUTE_NONE);
         EXPECT_FALSE(kickos::irqfix::g_routed_armed)
             << "the route was dropped while the line was still armed";
@@ -812,10 +812,10 @@ namespace
             }
             else
             {
-                // No lock is held here: the peer needs IrqLock for its post, and each call
-                // below takes and drops its own.
+                // No lock spans these calls: the peer needs IrqLock for its post, and each
+                // call below takes and drops its own.
                 kickos::irqfix::g_core = 0;
-                kickos::handle_close(&g_claim_thread, cap);
+                kickos::handle_close(&g_claim_thread, cap, kickos::IrqLock());
                 uint32_t again = 0;
                 int const rc = kickos::irq_claim(&g_claim_thread, LINE_TARGET, 0u, &again);
                 g_stale.rebind_rc.store(rc);
@@ -827,7 +827,7 @@ namespace
                     if (ok)
                     {
                         kickos::IrqLock lock;
-                        kickos::irq_signallers_rearm(kickos::irqfix::the_notification(), 1u);
+                        kickos::irq_signallers_rearm(kickos::irqfix::the_notification(), 1u, lock);
                     }
                     g_stale.rebind_armed.store(ok);
                 }

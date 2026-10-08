@@ -20,9 +20,6 @@ namespace fake
         constexpr kos_thread_t INIT_THREAD = 0x42u;
         constexpr size_t PAGE = 4096u;
         constexpr uint32_t ALL_RIGHTS = KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER;
-        constexpr uint32_t ALL_AUTHORITY = KOS_AUTH_MEMORY | KOS_AUTH_PINMUX | KOS_AUTH_PSTATE | KOS_AUTH_IRQ
-                                           | KOS_AUTH_SYSTEM | KOS_AUTH_CONSOLE | KOS_AUTH_TASKS
-                                           | KOS_AUTH_BUS_MASTER;
         // Past every walk's needs: a walk looping on an answer that never changes fails here
         // rather than hanging its test.
         constexpr size_t RUNAWAY = 100000u;
@@ -1527,7 +1524,7 @@ int kos_thread_create(struct kos_thread_params const* params, kos_thread_t* out_
     }
     // Bits past the defined authorities are refused, and only then a bit the creator lacks
     // (kernel/syscall/syscall_thread.cc:540).
-    if ((params->authority & ~ALL_AUTHORITY) != 0u)
+    if ((params->authority & ~KOS_AUTH_ALL) != 0u)
     {
         return finish(call, -KOS_EINVAL);
     }

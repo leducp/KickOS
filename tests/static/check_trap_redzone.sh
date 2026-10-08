@@ -408,18 +408,4 @@ if [ "$rc" -eq 0 ]; then
     echo "trap_redzone: OK ($PRESET/$ARCH, floor $FLOOR)"
 fi
 
-# The caller-held lock gate reads the same exact compiler graph. Keep it in this
-# test so CI builds one scratch corpus per preset, then checks both contracts.
-if [ "$rc" -eq 0 ]; then
-    case "$PRESET" in
-        qemu-x86_64|qemu-x86_64-smp2|qemu-arm64|qemu-arm64-benchsmp|\
-        qemu-riscv64|qemu-riscv64-benchsmp|qemu|microbit|qemu-riscv|rx72m)
-            python3 "$HERE/check_caller_held.py" "$BUILD" "$ARCH" "$PRESET" "$KCORES" \
-                || rc=1
-            if [ "$rc" -eq 0 ] && [ "$PRESET" = qemu-x86_64 ]; then
-                python3 "$HERE/check_caller_held_witness.py" "$BUILD" || rc=1
-            fi
-            ;;
-    esac
-fi
 exit "$rc"

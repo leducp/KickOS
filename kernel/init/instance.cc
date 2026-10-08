@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Storage for the kernel instances. constinit puts them in BSS with no boot-time
-// constructor and no .init_array entry, so kernel() stays zero-cost and signal-safe; the
+// constinit keeps the instances in BSS with no constructor, so kernel() stays signal-safe; the
 // compiler refuses the declaration the day a Kernel member loses its initialiser.
 
 #include <kickos/instance.h>

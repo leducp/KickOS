@@ -12,7 +12,6 @@
 #include "serve.h"
 
 namespace drv = kickos::driver;
-namespace declared = kickos::driver::declared::testline;
 
 namespace
 {
@@ -61,39 +60,9 @@ namespace
         kos_exit(0);
     }
 
-    constexpr drv::Descriptor k_desc = {
-        .tag = "[testline] ",
-        .expected_base = 0,
-        .block_size = declared::k_declared.block_size,
-        .block_flags = 0,
-        .ready_offset = drv::KOS_DRV_READY_NONE,
-        .ep_posture = declared::k_declared.ep_posture,
-        .line_count = declared::k_declared.line_count,
-        .thread_count = declared::k_declared.thread_count,
-        .barrier_after = declared::k_declared.barrier_after,
-        .lines = {{KOS_IRQ_EDGE}, {KOS_IRQ_EDGE}},
-        .threads = {{.entry = irq,
-                     .name = declared::k_declared.thread_name[0],
-                     .prio_delta = declared::k_declared.prio_delta[0],
-                     .arg = drv::KOS_DRV_ARG_LINE0_INDEX,
-                     .window_grant = false,
-                     .cap_count = 3,
-                     .caps = {{drv::KOS_DRV_RES_NOTIFY, KOS_CAP_WAIT, 0},
-                              {drv::KOS_DRV_RES_LINE0, KOS_CAP_WAIT, 0},
-                              {drv::KOS_DRV_RES_LINE1, KOS_CAP_WAIT, 0}}},
-                    {.entry = service,
-                     .name = declared::k_declared.thread_name[1],
-                     .prio_delta = declared::k_declared.prio_delta[1],
-                     .arg = drv::KOS_DRV_ARG_NONE,
-                     .window_grant = false,
-                     .cap_count = 1,
-                     .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT, 0}}}},
-        .block_init = nullptr
-    };
+    constexpr drv::Descriptor k_desc = KICKOS_DRIVER_DESCRIPTOR;
 
     static_assert(drv::valid(k_desc), "the testline descriptor is not a driver shape");
-    static_assert(drv::declared_as(k_desc, declared::k_declared),
-                  "the testline descriptor departs from its kickos_add_driver declaration");
 }
 
 extern "C" int testline_start(struct kos_driver_instance* instance)

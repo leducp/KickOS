@@ -553,7 +553,7 @@ above where they differ.
   `KOS_SYS_CALL_TIMED` and the timed receive, since folded into `KOS_SYS_REPLY_RECV`
   (`user/include/kickos/sys/abi.h`), dispatched in
   `kernel/syscall/syscall.cc`, with the park unwind in `kernel/thread/park.cc`
-  (`endpoint_wait_abort`). **The two items this entry named as blocked on it are no longer blocked
+  (`thread_abort_park`). **The two items this entry named as blocked on it are no longer blocked
   by it**: the clock-cascade quiesce-timeout (the deferred part 3 of the clock entry above) and the
   driver-death waiter wake (the entry below) each now stand on their own remaining work rather than
   on a missing primitive. Their status is otherwise unchanged. What is still absent is the wider

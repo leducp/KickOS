@@ -21,6 +21,7 @@
 
 #if KICKOS_KERNEL_CORES > 1
 #include <kickos/sys/atomic.h>
+#include <kickos/held.h>
 #endif
 
 namespace kickos
@@ -114,6 +115,11 @@ namespace kickos
     // Best-effort diagnostic, readable outside ISR context.
     uint32_t irq_spurious_count();
 
+    // Whether `line` may be bound, raised or unmasked from outside the kernel: 0, -KOS_EINVAL
+    // out of range, or -KOS_EPERM for a line the kernel itself drives (the tick, console TX,
+    // the doorbell). Called by irq_attach, irq_claim and the IRQ_INJECT and IRQ_UNMASK syscalls.
+    int irq_line_admit(int line);
+
     // Tier 2: privileged in-kernel direct handler. Returns false if the line is
     // out of range or already bound (one driver per line); true on success.
     //
@@ -126,7 +132,8 @@ namespace kickos
 
     // Claim an unused line with AUTH_IRQ and install a full-rights CAP_IRQ.
     // Leave it masked until the server's first wait or ack. Return 0 with out_cap,
-    // or -KOS_E*: ENOMEM for pool exhaustion, EMFILE for a full cap table,
+    // or -KOS_E*: EINVAL for a line out of range, EPERM for a line the kernel drives,
+    // ENOMEM for pool exhaustion, EMFILE for a full cap table,
     // EAGAIN for the task budget or a line still retiring, EBUSY for an occupied line.
     int irq_claim(Thread* c, int line, unsigned int flags, uint32_t* out_cap);
 
@@ -137,13 +144,13 @@ namespace kickos
     // One-way and once only: 0, -KOS_EBUSY (this line already signals something),
     // -KOS_EBADF, -KOS_EACCES (a missing right), -KOS_EPERM (the notification already carries
     // a line claimed on another core), -KOS_EAGAIN (a holding task's notification budget) or
-    // -KOS_EOVERFLOW (the object's reference count is at its ceiling). A released line leaves the chain, so a re-claim is a new binding and binds
-    // afresh.
+    // -KOS_EOVERFLOW (the object's reference count is at its ceiling). A released line leaves
+    // the chain, so a re-claim is a new binding and binds afresh.
     int irq_bind_notify(Thread* c, uint32_t irq_cap, uint32_t notify_cap);
 
     // Rearm every chained signaller of `n` whose badge is in `mask` and which owes one, and
-    // flag the signallers of `taken` to be rearmed next time round. Caller holds IrqLock.
-    void irq_signallers_rearm(Notification* n, uint32_t mask);
+    // flag the signallers of `taken` to be rearmed next time round.
+    void irq_signallers_rearm(Notification* n, uint32_t mask, Held held);
     void irq_signallers_owe_rearm(Notification* n, uint32_t taken);
 
     // Take binding `index` off its notification's signaller chain, so no later rearm reaches
@@ -179,10 +186,9 @@ namespace kickos
     int irq_discard(Thread* c, uint32_t cap_handle);
 
     // Drop one reference to IRQ binding `obj_handle`; release the line and free the
-    // slot at refs -> 0. Caller holds IrqLock. Above one kernel core the line is released
-    // here and the slot returns to the pool from a later reclamation, once no dispatch can
-    // still hold its address.
-    void irq_ref_drop(int obj_handle, bool teardown);
+    // slot at refs -> 0. Above one kernel core the line is released here and the slot returns
+    // to the pool from a later reclamation, once no dispatch can still hold its address.
+    void irq_ref_drop(int obj_handle, Held held);
 }
 
 #endif

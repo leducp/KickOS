@@ -18,7 +18,6 @@
 #if KICKOS_DEBUG
 namespace kickos
 {
-    // Same declaration as kernel.h; see the header comment for why it is repeated.
     void kpanic(char const* msg) __attribute__((noreturn));
 }
 #define KICKOS_DEBUG_ASSERT(cond)                     \

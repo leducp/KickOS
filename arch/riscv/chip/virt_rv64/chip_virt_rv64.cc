@@ -23,6 +23,7 @@
 // Virtual board, no pads; arch_pinmux_set is left to the declining ENOSYS fallback.
 
 #include <kickos/arch/arch.h>
+#include "crt_tail.h"
 #include <kickos/console_tx.h>
 #include <kickos/arch/clk_q32.h> // KICKOS_NS_PER_SEC (canonical 1e9 ns/sec)
 #include <kickos/arch/doorbell_protocol.h>
@@ -31,11 +32,6 @@
 #include <stdint.h>
 
 #include "boot_layout.ld.h"
-
-namespace kickos
-{
-    int kmain(int argc, char** argv);
-}
 
 extern "C"
 {
@@ -58,8 +54,6 @@ extern "C"
 
     // Linker-script symbols (virt_rv64.ld).
     extern uintptr_t _sidata, _sdata, _edata, _sbss, _ebss;
-    extern void (*__init_array_start[])();
-    extern void (*__init_array_end[])();
 
     // The app's zero range (virt_rv64.ld), in the app's own VIRTUAL addresses. Reset_Handler
     // runs before any space exists, so nothing maps that half yet and these are reached
@@ -96,8 +90,6 @@ namespace
     constexpr uint8_t UART_LSR_TEMT = 1u << 6;
     constexpr uint32_t UART_POLL_BOUND = KICKOS_RV64_UART_POLL_BOUND;
 
-    // --- Buffered console TX backend (console_tx.h). No TX line is routed through the PLIC,
-    // so irq_line is -1 and the producer drains. ---
     int ns16550_tx_slot_free(void) { return (*r8p(UART_LSR) & UART_LSR_THRE) != 0; }
     void ns16550_tx_push(uint8_t b) { *r8p(UART_THR) = b; }
     void ns16550_tx_irq_enable(void) {}
@@ -219,7 +211,6 @@ void arch_init(void)
 #endif
 }
 
-// --- Tickless clock: the time CSR (10 MHz) -> ns ----------------------------
 // A pure read, as the seam requires. The counter is 64-bit at this XLEN, so it comes back in
 // one csrr with no high-half re-read, and ticks*100 needs 58 years to overflow.
 uint64_t arch_clock_now(void)
@@ -229,7 +220,6 @@ uint64_t arch_clock_now(void)
     return t * NS_PER_TICK;
 }
 
-// --- One-shot next-event timer: stimecmp (absolute) -------------------------
 // Idempotent, so no armed-deadline dedup is owed. Dividing rather than multiplying is what
 // keeps a UINT64_MAX deadline from overflowing. A deadline already past leaves the compare
 // met, which asserts STIP now.
@@ -247,7 +237,6 @@ void arch_timer_disarm(void)
 }
 
 #if KICKOS_NUM_CORES > 1
-// --- The cross-hart doorbell's raise ----------------------------------------
 // A write of 1 to a hart's CLINT msip word raises a MACHINE software interrupt on it, which
 // mideleg cannot delegate. The machine-mode trampoline in startup.S clears the word and
 // re-raises it as mip.SSIP.
@@ -347,7 +336,6 @@ void arch_shutdown(int status)
     }
 }
 
-// --- C-runtime bring-up -----------------------------------------------------
 void Reset_Handler(void)
 {
     uintptr_t* src = &_sidata;
@@ -373,13 +361,7 @@ void Reset_Handler(void)
     {
         *b = 0;
     }
-    for (void (**fn)() = __init_array_start; fn != __init_array_end; fn++)
-    {
-        (*fn)();
-    }
-    arch_init();
-    kickos::kmain(0, nullptr);
-    arch_shutdown(0);
+    kickos_crt_tail();
 }
 
 }

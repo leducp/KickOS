@@ -18,7 +18,6 @@
 
 #include <stddef.h>
 #include <stdint.h>
-#include <stdlib.h>
 #include <string.h>
 
 static_assert(KICKOS_AMP_SHARE, "this gate's posture states a share");
@@ -58,11 +57,6 @@ extern "C"
 
 namespace kickos
 {
-    namespace detail
-    {
-        constinit InstanceLocal<Kernel> g_instance;
-    }
-
     Domain* task_domain(Task const* t)
     {
         if (t == nullptr)
@@ -89,20 +83,6 @@ namespace kickos
         }
         return &g_ranges;
     }
-
-    void kpanic(char const* msg)
-    {
-        ADD_FAILURE() << "kernel panic: " << msg;
-        abort();
-    }
-
-#if KICKOS_DIAG_TERSE
-    void kpanic_at(char const* file, unsigned line)
-    {
-        ADD_FAILURE() << "kernel panic: " << file << ":" << line;
-        abort();
-    }
-#endif
 
     bool aspace_frames_type_ok(arch_phys_addr_t pa, size_t pages, uint8_t memtype,
                                VirtualRange const* self)

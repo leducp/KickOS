@@ -31,6 +31,18 @@ namespace kickos
 {
     namespace testfix
     {
+        // The fixture's own mint of a slot, which the kernel takes only from its seams.
+        constexpr KernelCore core_at(uint32_t core)
+        {
+            return static_cast<KernelCore>(core);
+        }
+
+        // The fixture's own BLOCKED write, for a thread no park ran for.
+        inline void seat_blocked(Thread* t)
+        {
+            *reinterpret_cast<ThreadState*>(&t->state) = ThreadState::BLOCKED;
+        }
+
         // Value returned by arch_in_isr. Invalid call context is checked by death tests.
         extern bool g_in_isr;
         extern uint64_t g_now_ns;

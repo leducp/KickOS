@@ -5,17 +5,14 @@
 //
 //   nm --undefined-only <the object> | comm -23 - <its defined symbols>
 //
-// which is 5 symbols at two kernel cores. kpanic and the instance below answer the arms rather
-// than that object, so they are not in that set. One thread of execution runs the arms, so
+// which is 5 symbols at two kernel cores. One thread of execution runs the arms, so
 // arch_kernel_lock and arch_kernel_unlock only count.
 
 #include "resched_seam.h"
 
-#include <stdio.h>
-#include <stdlib.h>
-
 #include <kickos/arch/arch.h>
 #include <kickos/instance.h>
+#include <kickos/klock.h>
 
 static_assert(KICKOS_NUM_CORES > 1 and KICKOS_KERNEL_CORES > 1,
               "this seam answers the multi-core arm of every declaration below; at one core "
@@ -23,11 +20,6 @@ static_assert(KICKOS_NUM_CORES > 1 and KICKOS_KERNEL_CORES > 1,
 
 namespace kickos
 {
-    namespace detail
-    {
-        constinit InstanceLocal<Kernel> g_instance;
-    }
-
     namespace reschedfix
     {
         uint32_t g_core = 0;
@@ -59,7 +51,7 @@ namespace kickos
             for (uint32_t core = 0; core < CORES; core++)
             {
                 g_core = core;
-                (void)kickos_kernel_core_resched_take();
+                (void)klock_resched_take();
             }
             g_core = 0;
             for (uint32_t core = 0; core < CORES; core++)
@@ -83,13 +75,6 @@ namespace kickos
     // The lock's release publishes what the scheduler staged, and this gate stages nothing.
     void sched_flush_owed(uint32_t)
     {
-    }
-
-    void kpanic(char const* msg)
-    {
-        printf("KERNEL PANIC: %s\n", msg);
-        fflush(stdout);
-        abort();
     }
 }
 

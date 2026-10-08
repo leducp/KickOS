@@ -101,7 +101,7 @@ namespace
         attach_caps(writer, KICKOS_CAP_CHILD_WIDTH);
         {
             IrqLock lock;
-            sched::reschedule();
+            sched::reschedule(nullptr, lock);
         }
         EXPECT_EQ(sched::current(), writer);
         console_tx_init(&kBackend, g_storage, kRing, irq_line);

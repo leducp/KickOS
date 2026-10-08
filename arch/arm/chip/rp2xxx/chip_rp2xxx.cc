@@ -4,11 +4,6 @@
 // Bring-up and console transport shared by the RP2040 and the RP2350. Register addresses and
 // fields are clean-room from the two datasheets (RP-008371-DS and RP-008373-DS-2); a section
 // number written "a / b" cites the RP2040 first and the RP2350 second.
-//
-// Every name this unit reads is spelled the same way by both chips' regs/ headers, so the
-// configured chip decides the addresses and this unit decides the sequences. Where the two
-// parts genuinely differ (clock tree, pin mux, reset bit map, bootrom, the RP2350 AMP window
-// and its PMSAv8 MPU backend) the code stays in that chip's own backend.
 
 #include <kickos/arch/arch.h>
 #include <kickos/arch/console_retry.h>
@@ -17,6 +12,7 @@
 
 #include <stdint.h>
 
+#include "board_pins.h"
 #include "family_map.h"
 #include "regs/clocks.h"
 #include "regs/pll.h"
@@ -113,7 +109,7 @@ namespace
     // the register block plus the XOR/SET/CLR aliases at +0x1000/+0x2000/+0x3000. The aliases
     // must be inside it: a holder granted only an alias writes the very same registers.
     constexpr uintptr_t CONSOLE_WIN_BASE = reg::uart::BASE;
-    constexpr size_t CONSOLE_WIN_SIZE = kickos::rp2xxx::APB_ATOMIC_WINDOW;
+    constexpr size_t CONSOLE_WIN_SIZE = KICKOS_BOARD_CONSOLE_SIZE;
 
     static_assert(reg::uart::IBRD >= CONSOLE_WIN_BASE
                       and reg::uart::IBRD < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
