@@ -86,8 +86,9 @@ runs:
       shell: bash
       env:
         FAMILY: ${{ inputs.family }}
+      # Not /tmp: ubuntu-26.04 mounts it as a tmpfs with a 7.8G quota, short of one family's build.
       run: |
-        export CONAN_HOME="$(mktemp -d)"
+        export CONAN_HOME="$(mktemp -d "$RUNNER_TEMP/conan.XXXXXX")"
         ~/conan-venv/bin/conan profile detect --exist-ok
         ~/conan-venv/bin/conan create conan/toolchain --name "kickos-toolchain-$FAMILY" --build=missing
         mkdir -p ~/kickos-toolchain-archive ~/kickos-toolchain-built
