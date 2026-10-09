@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
+import collections
 import glob
 import hashlib
 import lzma
@@ -360,13 +361,16 @@ class KickOSToolchain(ConanFile):
 
     def _run(self, argv, cwd, env=None):
         os.makedirs(cwd, exist_ok=True)
-        with open(os.path.join(cwd, "kickos-build.log"), "a") as log:
+        path = os.path.join(cwd, "kickos-build.log")
+        with open(path, "a") as log:
             log.write("$ " + " ".join(argv) + "\n")
             log.flush()
             rc = subprocess.run(argv, cwd=cwd, env=env, stdout=log, stderr=subprocess.STDOUT)
         if rc.returncode != 0:
-            raise ConanInvalidConfiguration(
-                f"{argv[0]} failed in {cwd}; its output is in {cwd}/kickos-build.log")
+            with open(path, errors="replace") as log:
+                tail = collections.deque(log, maxlen=80)
+            print(f"--- the last {len(tail)} lines of {path} ---\n" + "".join(tail), flush=True)
+            raise ConanInvalidConfiguration(f"{argv[0]} failed in {cwd}; its output is in {path}")
 
     def _make(self, cwd, *targets, env=None):
         jobs = str(os.cpu_count() or 1)
