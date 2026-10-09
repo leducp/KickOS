@@ -17,6 +17,10 @@ inputs:
     description: "true in the job that provides a family the cache lacks; every other job restores."
     required: false
     default: "false"
+  upload:
+    description: "false where the caller uploads the family's archive itself."
+    required: false
+    default: "true"
   conan-version:
     description: Conan 2 version to install.
     required: false
@@ -95,7 +99,7 @@ runs:
 
     # Under its release name, for the maintainer to add to the release.
     - name: Upload the family built
-      if: steps.build.outputs.name != ''
+      if: inputs.upload == 'true' && steps.build.outputs.name != ''
       uses: actions/upload-artifact@v4
       with:
         name: ${{ steps.build.outputs.name }}

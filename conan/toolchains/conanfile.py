@@ -39,7 +39,7 @@ class KickOSToolchains(ConanFile):
 
     def requirements(self):
         for family in self._families():
-            self.requires(f"{PREFIX}{family}/1.0")
+            self.requires(f"{PREFIX}{family}/1.1")
 
     def generate(self):
         lines = ["# Written by conan/toolchains: one bin directory per KickOS toolchain family.\n"]

@@ -12,7 +12,7 @@
 # toolchain-<version> holds for this host is restored from it, and built otherwise;
 # KICKOS_TOOLCHAIN_NO_RELEASE set skips the release, and KICKOS_TOOLCHAIN_NO_BUILD set fails where
 # neither the cache nor the release holds a family. KICKOS_TOOLCHAIN_SOURCES may name a folder
-# holding the pinned archives, checked against their sha256 as a download is.
+# holding the pinned archives or the release's sources archive, each checked as a download is.
 #
 # POSIX sh (dash-clean).
 

@@ -3,13 +3,15 @@
 
 import glob
 import hashlib
+import lzma
 import os
 import shutil
 import subprocess
+import tarfile
 
 from conan import ConanFile
-from conan.errors import ConanInvalidConfiguration
-from conan.tools.files import copy, get, replace_in_file, save, unzip
+from conan.errors import ConanException, ConanInvalidConfiguration
+from conan.tools.files import copy, download, replace_in_file, save, unzip
 
 # One entry per family (docs/design-m10-toolchain.md section 2). `gcc` and `newlib` are configure
 # options beyond the ones every family takes; `cxxflags` are added to `cflags` for the C++
@@ -58,8 +60,10 @@ FAMILIES = {
                 "--with-multilib-generator=rv64imac_zicsr_zmmul_zaamo_zalrsc_zca-lp64--;"
                 "rv32imac_zicsr-ilp32--"],
         "cflags": "-g -Os -ftls-model=local-exec -ffunction-sections -fdata-sections",
-        "newlib": ["--enable-newlib-reent-check-verify", "--enable-newlib-io-long-long",
-                   "--enable-newlib-io-c99-formats", "--enable-newlib-atexit-dynamic-alloc"],
+        "newlib": ["--enable-newlib-retargetable-locking", "--enable-newlib-reent-check-verify",
+                   "--enable-newlib-io-long-long", "--enable-newlib-io-c99-formats",
+                   "--enable-newlib-register-fini", "--enable-newlib-mb",
+                   "--enable-newlib-atexit-dynamic-alloc"],
         "dynamic_reent": "defined(__riscv) && __riscv_xlen == 64",
         "check": [["-march=rv32imac_zicsr", "-mabi=ilp32"],
                   ["-march=rv64imac_zicsr_zmmul_zaamo_zalrsc_zca", "-mabi=lp64",
@@ -126,7 +130,8 @@ FAMILIES = {
     # multilibs; -misa=v3 -mdfpu selects 64-bit-double/dfpu/rxv3, as -mdfpu makes doubles
     # 64-bit. KickOS's compare patch, last, corrects GNURX's unordered double-precision
     # branches. Each touched file is a generated one the patches carry, made newer than its
-    # inputs so that no maintainer tool runs.
+    # inputs so that no maintainer tool runs. newlib's register_fini stays off: it needs `_fini`,
+    # which RX's crt0 lacks.
     "rx-elf": {
         "patches": {"gcc": ["gnurx-gcc", "rx-multilib", "kickos-rx-dfpu-compare"],
                     "binutils": ["gnurx-binutils"],
@@ -137,7 +142,9 @@ FAMILIES = {
                   "newlib": ["newlib/Makefile.in", "libgloss/Makefile.in"]},
         "gcc": [],
         "cflags": "-g -O2 -ffunction-sections -fdata-sections",
-        "newlib": [],
+        "newlib": ["--enable-newlib-retargetable-locking", "--enable-newlib-reent-check-verify",
+                   "--enable-newlib-io-long-long", "--enable-newlib-io-c99-formats",
+                   "--disable-newlib-register-fini", "--enable-newlib-mb"],
         "check": [["-misa=v3", "-mdfpu"]],
     },
 }
@@ -164,8 +171,11 @@ GUARDS = sorted({g for family in FAMILIES.values() for g in family.get("guards",
 
 PREFIX = "kickos-toolchain-"
 
-# The GitHub release mirroring every source under its archive's name (design section 1).
+# The GitHub release's one archive of every pinned source and patch (design section 1). A source
+# conandata.yml gives a `tar_sha256` is stored as .tar.xz in place of its .tar.gz, and checked by
+# the hash of its uncompressed tar.
 RELEASE = "https://github.com/leducp/KickOS/releases/download/toolchain-{version}/"
+SOURCES = "kickos-toolchain-sources-{version}.tar.xz"
 
 
 class KickOSToolchain(ConanFile):
@@ -178,7 +188,7 @@ class KickOSToolchain(ConanFile):
     built it is no part of what it is.
     """
 
-    version = "1.0"
+    version = "1.1"
     license = "GPL-3.0-or-later WITH GCC-exception-3.1 AND BSD-3-Clause (newlib COPYING.NEWLIB)"
     description = "The KickOS cross toolchain for one target family"
     package_type = "application"
@@ -224,13 +234,24 @@ class KickOSToolchain(ConanFile):
         source = self.conan_data["sources"][key]
         return source["filename"] if "filename" in source else os.path.basename(source["url"])
 
-    def _local(self, key):
-        # The copy KICKOS_TOOLCHAIN_SOURCES holds, checked against its sha256, or "".
+    def _stored(self, key):
+        # The name the sources archive holds the source under: conandata.yml's `stored`, which
+        # tools/kickos-toolchain-release.sh reads too, else the archive's own.
+        return self.conan_data["sources"][key].get("stored", self._archive(key))
+
+    def _local(self, key, destination):
+        # The copy KICKOS_TOOLCHAIN_SOURCES holds, a pinned archive or the release's sources
+        # archive, checked as a download is, or "".
         local = os.environ.get("KICKOS_TOOLCHAIN_SOURCES", "")
-        path = os.path.join(local, self._archive(key)) if local else ""
-        if not (path and os.path.isfile(path)):
+        if not local:
             return ""
-        return self._checked(key, path)
+        path = os.path.join(local, self._archive(key))
+        if os.path.isfile(path):
+            return self._checked(key, path)
+        archive = os.path.join(local, SOURCES.format(version=self.version))
+        if os.path.isfile(archive):
+            return self._extract(key, archive, destination)
+        return ""
 
     def _checked(self, key, path):
         with open(path, "rb") as f:
@@ -240,47 +261,99 @@ class KickOSToolchain(ConanFile):
             raise ConanInvalidConfiguration(f"{path} has sha256 {digest}, expected {expected}.")
         return path
 
+    def _extract(self, key, archive, destination):
+        # The member of the sources archive, checked against what conandata.yml pins: the
+        # archive's own word for it is no check.
+        source = self.conan_data["sources"][key]
+        name = self._stored(key)
+        os.makedirs(destination, exist_ok=True)
+        path = os.path.join(destination, name)
+        with tarfile.open(archive, "r:xz") as tar:
+            try:
+                member = tar.getmember(f"kickos-toolchain-sources-{self.version}/{name}")
+            except KeyError:
+                member = None
+            if member is None or not member.isfile():
+                raise ConanInvalidConfiguration(f"{name} is not in the sources archive")
+            with tar.extractfile(member) as src, open(path, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+        if "tar_sha256" not in source:
+            return self._checked(key, path)
+        digest = hashlib.sha256()
+        with lzma.open(path) as tar:
+            for block in iter(lambda: tar.read(1 << 20), b""):
+                digest.update(block)
+        if digest.hexdigest() != source["tar_sha256"]:
+            raise ConanInvalidConfiguration(
+                f"{name} holds a tar of sha256 {digest.hexdigest()}, expected "
+                f"{source['tar_sha256']}.")
+        return path
+
+    def _release_sources(self):
+        # Downloaded once per package, and only where an upstream failed.
+        archive = os.path.join(os.path.dirname(self.source_folder),
+                               SOURCES.format(version=self.version))
+        if not os.path.isfile(archive):
+            download(self, RELEASE.format(version=self.version) + os.path.basename(archive),
+                     archive)
+        return archive
+
     def _fetch(self, key, destination):
         source = self.conan_data["sources"][key]
         name = self._archive(key)
-        archive = self._local(key)
-        if archive:
+        scratch = os.path.join(os.path.dirname(self.source_folder), "fetch")
+        try:
+            archive = self._local(key, scratch)
+            if not archive and "url" in source:
+                # Only a failed download falls to the release: a mismatch is no reason to.
+                try:
+                    download(self, source["url"], os.path.join(scratch, name))
+                    archive = os.path.join(scratch, name)
+                except ConanException:
+                    archive = ""
+                if archive:
+                    self._checked(key, archive)
+            if not archive:
+                archive = self._extract(key, self._release_sources(), scratch)
             unzip(self, archive, destination=destination, strip_root=True)
-        else:
-            # Conan tries the next URL when one fails to download, never when one mismatches.
-            urls = [source["url"]] if "url" in source else []
-            get(self, url=urls + [RELEASE.format(version=self.version) + name], filename=name,
-                sha256=source["sha256"], destination=destination, strip_root=True)
+        finally:
+            shutil.rmtree(scratch, ignore_errors=True)
 
     def source(self):
         family = FAMILIES[self._target()]
-        for component in COMPONENTS:
-            self._fetch(self._key(component), os.path.join(self.source_folder, component))
-        # GCC builds these in its own tree when they sit beside its sources.
-        for key in PREREQUISITES:
-            self._fetch(key, os.path.join(self.source_folder, "gcc", key))
-        if "overlay" in family:
-            # Each overlay tree lies over the sources it names, replacing the core description
-            # they carry (xtensa-config.h, xtensa-modules.c, core-isa.h).
-            overlays = os.path.join(self.source_folder, "overlays")
-            self._fetch("xtensa-overlays", overlays)
-            for tree, where in family["overlay"].items():
-                shutil.copytree(os.path.join(overlays, tree),
-                                os.path.join(self.source_folder, where), dirs_exist_ok=True)
-        for component, keys in family.get("patches", {}).items():
-            tree = os.path.join(self.source_folder, component)
-            for key in keys:
-                self._patch(key, tree)
-            for generated in family.get("touch", {}).get(component, []):
-                if os.path.isfile(os.path.join(tree, generated)):
-                    os.utime(os.path.join(tree, generated))
+        try:
+            for component in COMPONENTS:
+                self._fetch(self._key(component), os.path.join(self.source_folder, component))
+            # GCC builds these in its own tree when they sit beside its sources.
+            for key in PREREQUISITES:
+                self._fetch(key, os.path.join(self.source_folder, "gcc", key))
+            if "overlay" in family:
+                # Each overlay tree lies over the sources it names, replacing the core
+                # description they carry (xtensa-config.h, xtensa-modules.c, core-isa.h).
+                overlays = os.path.join(self.source_folder, "overlays")
+                self._fetch("xtensa-overlays", overlays)
+                for tree, where in family["overlay"].items():
+                    shutil.copytree(os.path.join(overlays, tree),
+                                    os.path.join(self.source_folder, where), dirs_exist_ok=True)
+            for component, keys in family.get("patches", {}).items():
+                tree = os.path.join(self.source_folder, component)
+                for key in keys:
+                    self._patch(key, tree)
+                for generated in family.get("touch", {}).get(component, []):
+                    if os.path.isfile(os.path.join(tree, generated)):
+                        os.utime(os.path.join(tree, generated))
+        finally:
+            sources = os.path.join(os.path.dirname(self.source_folder),
+                                   SOURCES.format(version=self.version))
+            if os.path.isfile(sources):
+                os.remove(sources)
 
     def _patch(self, key, tree):
         # A stamp, not a reverse dry run: a later patch over the same lines hides the earlier.
         stamp = os.path.join(tree, f".kickos-patched-{key}")
         if os.path.isfile(stamp):
             return
-        # The exported copy alone; the release only mirrors it.
+        # The exported copy alone, never the sources archive's.
         path = self._checked(key, os.path.join(self.recipe_folder, "patches", self._archive(key)))
         self._run(["patch", "-p1", "--no-backup-if-mismatch", "-i", path], tree)
         save(self, stamp, "")

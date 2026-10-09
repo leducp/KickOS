@@ -940,15 +940,16 @@ With no family named, the script provisions every one. It restores a family from
 `toolchain-<version>` where that holds a package for this host, and otherwise builds it on first
 use, on a 24-thread machine about an hour for Cortex-M, whose every multilib is built twice for
 nano, and a quarter of that for the others; after that the Conan cache serves it.
-`KICKOS_TOOLCHAIN_SOURCES` may name a folder holding the pinned archives, and
-`KICKOS_TOOLCHAIN_NO_RELEASE` set skips the release; `KICKOS_TOOLCHAIN_NO_BUILD` set fails
+`KICKOS_TOOLCHAIN_SOURCES` may name a folder holding the pinned archives or the release's
+sources archive, and `KICKOS_TOOLCHAIN_NO_RELEASE` set skips the release; `KICKOS_TOOLCHAIN_NO_BUILD` set fails
 where neither the cache nor the release holds a family. CI's toolchain jobs take a family from
 their cache, else from the release, else build it and upload its archive as an artifact under
 its release name. `tools/kickos-toolchain-release.sh` assembles
-that release's files: every pinned source, the patches copied from this repository, this
-host's package per family, and their sha256 list. CI's `toolchain-release` workflow, run by
-hand, builds every family on Linux x86_64 and macOS arm64 and gathers those files as one
-artifact to upload. The script leaves
+that release's files: one archive of every pinned source and the patches copied from this
+repository, this host's package per family, and their sha256 list. CI's `toolchain-release`
+workflow, run by hand, builds every family on Linux x86_64 and macOS arm64 and uploads each
+package as an artifact named as its file, and the sources archive with the sha256 list as one
+more. The script leaves
 `KICKOS_TOOLCHAIN` naming `<dir>`, whose `kickos-toolchain.cmake` points each family's toolchain
 file at the package's compiler, whose newlib is its own.
 
