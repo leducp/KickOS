@@ -267,14 +267,6 @@ trap_entry:
 #endif
     li      t1, 3
     beq     t0, t1, .Lswitch        /* machine software (msip) -> the switcher */
-#if defined(KICKOS_ENABLE_SELFTEST) && !KICKOS_BENCH
-    /* After the msip test: an msip frame is a saved context and belongs on the thread's
-       stack. t0/t1 do not survive the call, hence the mcause re-read. */
-    mv      a0, sp
-    call    kickos_rv_nested_witness
-    csrr    t0, mcause
-    andi    t0, t0, 0x1f
-#endif
     li      t1, 7
     beq     t0, t1, .Ltimer         /* machine timer (mtip) */
     li      t1, 1

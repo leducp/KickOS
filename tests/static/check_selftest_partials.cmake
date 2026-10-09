@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# The selftest partials tests/integration/selftest_partials.cmake derives, over planted sets and
-# compositions and the real arms[], and the seat skips over the real sources, run under cmake -P:
+# The selftest partials tests/integration/selftest_partials.cmake derives, over planted
+# compositions, run under cmake -P:
 #   cmake -DKICKOS_SOURCE_DIR=<repo root> -DSCRATCH=<dir> -P tests/static/check_selftest_partials.cmake
 
 cmake_minimum_required(VERSION 3.24)
@@ -16,16 +16,7 @@ function(_expect name got want)
   endif()
 endfunction()
 
-_selftest_starved_arms("${KICKOS_SOURCE_DIR}/user/apps/common/selftest/main.cc" _starved)
-if(NOT "cross_task_block" IN_LIST _starved OR NOT "task_member_refusals" IN_LIST _starved)
-  set(_failed "${_failed}\n  the real arms[] reads [${_starved}]")
-endif()
-
 file(MAKE_DIRECTORY "${SCRATCH}")
-file(WRITE "${SCRATCH}/main.cc" "    StarvedArm const arms[] = {\n        {\"one\", t_one},\n#if X\n"
-                                "        {\"two\", t_two},\n#endif\n    };\n    {\"three\", t_three},\n")
-_selftest_starved_arms("${SCRATCH}/main.cc" _planted)
-_expect("a planted arms[]" "${_planted}" "one;two")
 
 file(WRITE "${SCRATCH}/kernel.yaml" "tasks:\n  - name: main\n    entry: selftest_main\n")
 file(WRITE "${SCRATCH}/driver.yaml" "tasks:\n  - name: console\n    driver: f4uartirq\n"
@@ -35,34 +26,33 @@ _expect("a composition with no driver" "${_none}" "0")
 _selftest_driver_tasks("${SCRATCH}/driver.yaml" _two)
 _expect("a composition with two drivers" "${_two}" "2")
 
-_selftest_derived_partials("one;two" "x;two;y" 0 18 _got)
-_expect("a starved arm expected to skip" "${_got}" "reservation_refused_skips")
-_selftest_derived_partials("one;two" "x;y" 0 18 _got)
-_expect("no starved arm expected to skip" "${_got}" "")
-_selftest_derived_partials("one" "" 1 2 _got)
-_expect("a pool of main and a driver" "${_got}" "caller_stack_overlap")
-_selftest_derived_partials("one" "" 1 3 _got)
+_selftest_derived_partials(1 4 1 _got)
+_expect("a pool of an idle, the init, main and a driver" "${_got}" "caller_stack_overlap")
+_selftest_derived_partials(1 5 1 _got)
 _expect("a pool with a slot past main and a driver" "${_got}" "")
-_selftest_derived_partials("one" "" 0 2 _got)
-_expect("a pool with a slot past main" "${_got}" "")
+_selftest_derived_partials(0 4 2 _got)
+_expect("a pool of two idles, the init and main" "${_got}" "caller_stack_overlap")
+
+_selftest_main_caps(9 4 _got)
+_expect("main's free caps at 9 grants, 4 seated" "${_got}" "6")
+_selftest_main_caps(6 4 _got)
+_expect("main's free caps at 6 grants, 4 seated" "${_got}" "3")
+
+_selftest_main_tasks(7 1 0 _got)
+_expect("main's free tasks of 7, one core, no driver" "${_got}" "4")
+_selftest_main_tasks(7 2 2 _got)
+_expect("main's free tasks of 7, two cores, two drivers" "${_got}" "1")
 
 file(READ "${KICKOS_SOURCE_DIR}/tests/integration/gates/selftest.cmake" _gate)
+string(FIND "${_gate}" "_selftest_main_caps(\"\${KICKOS_MAX_SPAWN_GRANTS}\"" _width_at)
+if(_width_at EQUAL -1)
+  set(_failed "${_failed}\n  the gate does not size main's free caps by the child width")
+endif()
 string(FIND "${_gate}" "function(_selftest_image_sets " _sets_at)
 string(FIND "${_gate}" "_selftest_derived_partials(" _derive_at)
 string(FIND "${_gate}" "list(APPEND _partials \${_derived})" _append_at)
 if(_sets_at EQUAL -1 OR _derive_at LESS _sets_at OR _append_at LESS _derive_at)
   set(_failed "${_failed}\n  _selftest_image_sets does not add the derived partials to an image's set")
-endif()
-
-_selftest_seat_skips("${KICKOS_SOURCE_DIR}/user/apps/common/selftest/main.cc" OFF _seatless)
-_selftest_seat_skips("${KICKOS_SOURCE_DIR}/user/apps/common/selftest/main.cc" ON _seated)
-if(NOT _seatless OR _seated)
-  set(_failed "${_failed}\n  a seatless doorbell expects [${_seatless}], a seated one [${_seated}]")
-endif()
-string(FIND "${_gate}" "set(_selftest_seat \${KICKOS_CHIP_DOORBELL_SEAT})" _seat_at)
-string(FIND "${_gate}" "list(APPEND KICKOS_EXPECT_SKIPS \${_selftest_seat_skips})" _expect_at)
-if(_seat_at EQUAL -1 OR _expect_at LESS _seat_at)
-  set(_failed "${_failed}\n  the gate does not expect the seat skips its chip's doorbell implies")
 endif()
 
 if(_failed)

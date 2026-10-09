@@ -204,43 +204,12 @@ void arch_ipi_raise(uint32_t cores);
 #define arch_ipi_raise(cores) ((void)(cores))
 #endif
 
-#if defined(KICKOS_ENABLE_SELFTEST)
-// Seat value for backends with no per-core controller publication state.
-#define ARCH_IPI_SEAT_NONE 2u
-
-#if (KICKOS_NUM_CORES > 1 || KICKOS_AMP_NODE)
-// Per-core doorbell counts: services in bits 31:0, instruction rendezvous
-// initiated in bits 63:32. Return zero for a core outside the built range.
-uint64_t arch_ipi_counts(uint32_t core);
-
-// Raises deferred because the target controller state was not published.
-// Return zero when the backend needs no publication.
-uint32_t arch_ipi_deferred(uint32_t core);
-
-// Return the previous seat value so callers can restore it. Never seat an
-// unpublished controller: affinity zero names a real core. ARCH_IPI_SEAT_NONE
-// means no publication state, not an unseated controller.
-uint32_t arch_ipi_seat_set(uint32_t core, uint32_t seated);
-#else
-#define arch_ipi_counts(core) ((void)(core), 0ull)
-#define arch_ipi_deferred(core) ((void)(core), 0u)
-#define arch_ipi_seat_set(core, seated) ((void)(core), (void)(seated), ARCH_IPI_SEAT_NONE)
-#endif
-#endif
-
 // Primary AMP node only: start the other nodes at their partition image bases.
 // Do not zero shared memory here; reset cleared it before nodes published data.
 #if KICKOS_AMP_OWN_IMAGE
 void arch_amp_release_peers(void);
 #else
 #define arch_amp_release_peers() ((void)0)
-#endif
-
-#if KICKOS_AMP_OWN_IMAGE && defined(KICKOS_ENABLE_SELFTEST)
-// A privileged read, its fault caught, of a device the partition gate gives another node's core
-// alone, printed: 1 when it faulted, 0 when it returned, or -KOS_ENOSYS where this node has no
-// such device.
-int arch_amp_gate_probe(void);
 #endif
 
 // Cross-core kernel lock covering capability resolution through use.
@@ -307,10 +276,6 @@ void arch_irq_restore(arch_irq_state_t state);
 // held, from a system call whose trap entry masked what the caller ran with unmasked: the
 // interrupt nests on the caller's kernel block and may switch it out there.
 void arch_irq_window(void);
-#if defined(KICKOS_ENABLE_SELFTEST)
-// arch_irq_window calls since boot, every core's.
-uint32_t arch_irq_windows(void);
-#endif
 
 // Nonzero while executing in interrupt/ISR context.
 int arch_in_isr(void);
@@ -549,11 +514,6 @@ static inline bool arch_ram_region_admissible(uintptr_t base, size_t size)
 uintptr_t arch_ram_base(void);
 size_t arch_ram_size(void);
 void* arch_ram_alloc(size_t size);
-#if defined(KICKOS_ENABLE_SELFTEST)
-// Selftest kernels on a region arch: the arena's first byte not handed out yet, at or below the
-// next block's base.
-uintptr_t arch_ram_next(void);
-#endif
 
 // Fill up to max shared application regions: code RX and static data RW/NX.
 // Return their count, or zero if none are modeled. The kernel prepends these
@@ -572,9 +532,6 @@ bool arch_user_text_readable(uintptr_t ptr, size_t len);
 // Nonenforcing backends admit static RAM below the arena; sim admits host-image
 // ranges outside it. Arena access always requires the region check.
 bool arch_user_data_writable(uintptr_t ptr, size_t len);
-
-// An address that faults on unprivileged access (sim: a reserved arena page no domain owns).
-uintptr_t arch_mpu_probe_addr(void);
 
 // Opaque translating address spaces, selected instead of MPU regions.
 // Backends own translation tags and manage them in activate/destroy.
@@ -663,7 +620,8 @@ void arch_aspace_activate(struct arch_aspace* space);
 // On success a non-null `uncached` receives whether the leaf maps the page ARCH_MAP_NOCACHE
 // where the returned pointer may reach it cacheably: the caller then maintains the data cache
 // around its access. Always false where the two views take one type.
-#define ARCH_ASPACE_ACQUIRE_MIN 6u
+// ep_copy holds one page of each end at once, the deepest holder in the kernel.
+#define ARCH_ASPACE_ACQUIRE_MIN 2u
 void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va, bool* uncached);
 void arch_aspace_release(struct arch_aspace* space, uintptr_t va);
 
@@ -674,26 +632,6 @@ void arch_aspace_release(struct arch_aspace* space, uintptr_t va);
 // Do not infer frame identity from acquire-pointer differences: windowed
 // backends may map unrelated frames into adjacent slots.
 arch_phys_addr_t arch_aspace_frame_at(struct arch_aspace* space, uintptr_t va);
-
-// Self-test translation model:
-// bits 0..7: confirmed ARCH_ASPACE_MODEL_* flags
-// bits 8..15: reported ASID width
-// bits 16..23: reported physical address width
-// bits 24..31: supported granules in architecture order, smallest first
-// (ARM64: 4 KiB, 16 KiB, 64 KiB).
-#define ARCH_ASPACE_MODEL_GRANULE 0x01u /* the granule this port programs is supported */
-#define ARCH_ASPACE_MODEL_ASID    0x02u /* the identifier is as wide as the port's record */
-#define ARCH_ASPACE_MODEL_PA      0x04u /* the physical range covers what the port programs */
-/* The port assigns translation tags. Excluded from ALL because untagged
- * ports are valid.
- */
-#define ARCH_ASPACE_MODEL_TAGGED  0x08u
-#define ARCH_ASPACE_MODEL_ALL     0x07u
-#define ARCH_ASPACE_MODEL_ASID_SHIFT 8u
-#define ARCH_ASPACE_MODEL_PA_SHIFT   16u
-#define ARCH_ASPACE_MODEL_GRAN_SHIFT 24u
-#define ARCH_ASPACE_MODEL_FIELD_MASK 0xFFu
-uint64_t arch_aspace_model(void);
 
 // The boot address-space handle. Switch to it before destroying the running
 // process space so the translation register cannot point at a freed root.
@@ -709,28 +647,6 @@ uintptr_t arch_aspace_user_offset(void);
 // every address a frame the kernel hands a task can take. Page-aligned; fixed once the first
 // space exists.
 void arch_aspace_window_area(uintptr_t* base, size_t* size);
-
-#if defined(KICKOS_ENABLE_SELFTEST)
-// Map-maintenance counters since boot:
-// bits 63..32: issued page invalidations
-// bits 31..8: elided invalidations, saturating
-// bits 7..0: releases with neither a hold nor a frame in the kernel window
-// The low byte records defects and must remain zero.
-uint64_t arch_aspace_tlbi_counts(void);
-
-// Bit c is set when core c uses this root. Return zero for null. Backends
-// without per-core roots use bit zero for the active space.
-uint32_t arch_aspace_active_cores(struct arch_aspace* space);
-
-// The memory type the hardware's own walk answers for va, through the kernel's view or, with
-// `user`, the running task's: an enum arch_map_memtype, or -1 where nothing maps it. Defined by
-// the backends an own-image AMP node runs on.
-int arch_aspace_walk_memtype(uintptr_t va, bool user);
-
-// The calling core's kernel-private per-core block, which the trap entry reaches before any
-// kernel stack is loaded. Zero where the arch keeps none apart from the kernel's own data.
-uintptr_t arch_cpu_block_addr(void);
-#endif
 
 // Cache maintenance for noncoherent observers over [addr, addr + bytes).
 // Use a kernel pointer; callers split user ranges into pages. Backends round
@@ -776,19 +692,6 @@ uintptr_t arch_syscall(uintptr_t nr,
 uint64_t arch_syscall64(uintptr_t nr,
                         uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3);
 
-// Kernel-text syscall traps. Split-image backends place these in the shared
-// kernel mapping; unsplit images alias the user trap names. Kernel code must
-// use these names so traps remain reachable under every address space.
-#if KICKOS_HAVE_ASPACE
-uintptr_t karch_syscall(uintptr_t nr,
-                        uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3);
-uint64_t karch_syscall64(uintptr_t nr,
-                         uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3);
-#else
-#define karch_syscall arch_syscall
-#define karch_syscall64 arch_syscall64
-#endif
-
 // Register IPC trap, enabled by KICKOS_ARCH_HAS_IPC_FASTPATH.
 // io has KOS_CALL_REG_WORDS + 3 words:
 // input: io[0]=nr, io[1]=ep_cap, io[2]=packed lengths, io[3..]=request
@@ -824,9 +727,10 @@ void arch_irq_unmask(int line);
 // raise of the line that core holds, a peer's post not yet taken included.
 void arch_irq_clear_pending(int line);
 
-// Inject a device interrupt through the ISR path. Privileged test support;
-// normal drivers register, wait and acknowledge.
-void arch_irq_inject(int irq);
+// Raise a line through the ISR path. False where this controller cannot raise
+// it from software, or where it is banked (one copy per core, as the GIC's SGIs
+// and PPIs, so a raise would land on the calling core whatever the route).
+bool arch_irq_inject(int irq);
 
 // Route a global line to core, named by this kernel's own core index: the
 // claimer's at claim, KICKOS_IRQ_ROUTE_NONE at the last release. The line
@@ -847,9 +751,9 @@ void arch_irq_route(int line, uint32_t core);
 #define KICKOS_IRQ_LINE_CORE_NONE (-1)
 int arch_irq_line_core(int line);
 
-// Whether line uses a private kernel vector instead of kickos_isr_irq.
-// Such lines have no irq_table entry and must be refused by irq_claim and
-// irq_attach. Multiple lines may be reserved; the fallback returns false.
+// Whether line uses a private kernel vector instead of kickos_isr_irq, for a
+// line no chip-file device carries: a device line the kernel owns is already
+// in KICKOS_KERNEL_LINES. The fallback returns false.
 bool arch_irq_line_kernel_owned(int line);
 
 // Console output:
@@ -1000,18 +904,6 @@ bool kickos_fault_below_stack(uintptr_t addr);
 // status_name labels the 64-bit status value. Read addr only when addr_valid.
 void kickos_fault_record(char const* status_name, uint64_t status,
                          uintptr_t pc, uintptr_t addr, int addr_valid);
-
-#if defined(KICKOS_ENABLE_SELFTEST)
-// Report a damaged kickos_trapstack_witness from the panic path after
-// kpanic_enter; stay silent if intact.
-void kickos_trapstack_witness_report(void);
-
-// Record a nested trap's frame and interrupted thread stack bounds to check
-// that it used a kernel stack. Pass lo == 0 with no current thread. Record
-// counters only.
-void kickos_nestwitness_note(uintptr_t frame, uintptr_t lo, uintptr_t hi);
-uint32_t kickos_nestwitness_count(int which);
-#endif
 
 // Where arch_fault_redirect_to_exit points the faulting thread. Runs privileged, in thread
 // mode, on that thread's own stack.

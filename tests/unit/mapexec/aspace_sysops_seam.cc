@@ -20,7 +20,7 @@ namespace
     constexpr uint64_t TCR_AS = 1ull << 36;
     constexpr uint64_t TCR_DEFAULT = 25ull | (2ull << 32) | TCR_AS;
     // ID_AA64MMFR0_EL1 as the A53 reports it: PARange 0b0010 (40 bits), ASIDBits 0b0010 (16),
-    // and 0 in each of the three granule fields, whose senses differ (arch_aspace_model).
+    // and 0 in each of the three granule fields, whose senses differ.
     constexpr uint64_t MMFR0_DEFAULT = 2ull | (2ull << 4);
 
     uint64_t g_tcr = TCR_DEFAULT;
@@ -42,17 +42,6 @@ extern "C"
     uint64_t kickos_armv8a_read_tcr_el1(void)
     {
         return g_tcr;
-    }
-
-    // A fault: no gate here asks the hardware's own walk.
-    uint64_t kickos_armv8a_at_read(uint64_t, bool)
-    {
-        return 1u;
-    }
-
-    uint64_t kickos_armv8a_read_mair_el1(void)
-    {
-        return 0u;
     }
 
     uint64_t kickos_armv8a_read_mmfr0_el1(void)

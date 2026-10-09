@@ -69,6 +69,8 @@ uint64_t kickos_armv8a_timebase_init(void)
 
 void kickos_armv8a_percore_init(void)
 {
+    kickos_armv8a_mmu_check();
+
     // CNTP_CTL_EL0's reset value is architecturally UNKNOWN, so an already-asserted timer
     // would fire the moment this core's PPI and DAIF open.
     timer_disable();

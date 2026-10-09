@@ -116,17 +116,6 @@ namespace kickos
     bool endpoint_far_call_deliver(uint32_t from, uint32_t port, amp::ReplyTag const& tag,
                                    uint32_t len, uint32_t slot, Held held);
 
-#if defined(KICKOS_ENABLE_SELFTEST)
-    // Make the next far delivery fail when writing back its new reply capability.
-    void endpoint_far_blind_arm(void);
-    bool endpoint_far_blind_take(void);
-#else
-    inline bool endpoint_far_blind_take(void)
-    {
-        return false;
-    }
-#endif
-
     // Hand one far reply to whatever local thread `tag` names, and answer whether one took it.
     // `tag` is another node's writing: nothing in it may be spent before this validates it.
     // `from` is the RING the reply arrived on, which the validation tests the caller's own
@@ -143,12 +132,6 @@ namespace kickos
     // naming this node, far for another. Before root's first instruction and before any other
     // dynamic install into its run. Panics rather than boot a node that could not be seated.
     void amp_ports_seat(Thread* root);
-
-#if defined(KICKOS_ENABLE_SELFTEST)
-    // The route a far side would have been handed for the one thread parked on a far reply, so
-    // a forge can play a hostile one at it. False where none is parked.
-    bool endpoint_far_reply_route(amp::ReplyTag* out_tag, uint32_t* out_node);
-#endif
 #else
     inline bool endpoint_is_far(Endpoint const*)
     {

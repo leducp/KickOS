@@ -54,6 +54,13 @@ namespace
     volatile uint64_t g_fault_vector = 0;
     volatile uint64_t g_fault_addr = 0;
 
+    // While nonzero, the fault reporter's kernel-stack question answers yes for this range.
+    volatile uintptr_t g_block_lo = 0;
+    volatile uintptr_t g_block_hi = 0;
+    volatile bool g_fault_on_block = false;
+    volatile bool g_fault_attributed = true;
+    volatile uint64_t g_fault_cs = 0;
+
     uintptr_t g_va = 0;
     uintptr_t g_va_unmapped = 0;
     uintptr_t g_span_va = 0;
@@ -300,11 +307,6 @@ namespace
         return g_faults == before + 1;
     }
 
-    uint32_t model_field(uint64_t model, unsigned shift)
-    {
-        return static_cast<uint32_t>((model >> shift) & ARCH_ASPACE_MODEL_FIELD_MASK);
-    }
-
     // Read the mapped leaf's memory type from the live PAT.
     bool leaf_names_type(uintptr_t va, enum arch_map_memtype type, uint8_t want)
     {
@@ -341,11 +343,8 @@ namespace
     // --- arms --------------------------------------------------------------
     void arm_shape(void)
     {
-        uint64_t const model = arch_aspace_model();
         unsigned const levels = aspace_levels();
-        put("  " KICKOS_X5_TOKEN " model=");
-        put_hex(model);
-        put(" levels=");
+        put("  " KICKOS_X5_TOKEN " levels=");
         put_dec(levels);
         put(" tag_bits=");
         put_dec(aspace_tag_bits());
@@ -362,17 +361,6 @@ namespace
             expect = 5;
         }
         arm("levels_match_control_register", levels == expect);
-        arm("model_granule_bore_out", (model & ARCH_ASPACE_MODEL_GRANULE) != 0);
-        arm("model_physical_range_bore_out", (model & ARCH_ASPACE_MODEL_PA) != 0);
-        arm("model_identifier_matches_record", (model & ARCH_ASPACE_MODEL_ASID) != 0);
-        arm("model_physical_bits_reported",
-            model_field(model, ARCH_ASPACE_MODEL_PA_SHIFT) != 0);
-        // One granule and three mapping sizes.
-        arm("model_one_granule_reported",
-            model_field(model, ARCH_ASPACE_MODEL_GRAN_SHIFT) == 1);
-        // INVPCID and PCID support are independent; the backend uses neither.
-        arm("model_identifier_width_is_the_record",
-            model_field(model, ARCH_ASPACE_MODEL_ASID_SHIFT) == aspace_tag_bits());
 
         arm("memtype_normal", arch_aspace_memtype_support(ARCH_MAP_NORMAL));
         arm("memtype_nocache", arch_aspace_memtype_support(ARCH_MAP_NOCACHE));
@@ -859,72 +847,6 @@ namespace
             arch_aspace_frame_at(g_space_a, g_va) != arch_aspace_frame_at(g_space_b, g_va));
     }
 
-    void arm_invalidation(void)
-    {
-#if !defined(KICKOS_ENABLE_SELFTEST)
-        // These checks require self-test invalidation counters; missing counters must fail.
-        put("  " KICKOS_X5_TOKEN " FAIL the invalidation arms need a self-test build\n");
-        g_failed = true;
-        return;
-#else
-        // Check both issued and skipped counts to distinguish skipped invalidation
-        // from a mapping that never happened.
-        arch_aspace_activate(g_space_a);
-        uint64_t before = arch_aspace_tlbi_counts();
-        (void)do_map(g_space_a, g_va_unmapped, g_frame_b, 1, ARCH_MAP_R, ARCH_MAP_NORMAL);
-        uint64_t after = arch_aspace_tlbi_counts();
-        uint32_t issued = static_cast<uint32_t>(after >> 32) - static_cast<uint32_t>(before >> 32);
-        uint32_t elided = static_cast<uint32_t>((after >> 8) & 0xFFFFFFu)
-                          - static_cast<uint32_t>((before >> 8) & 0xFFFFFFu);
-        arm("fresh_map_issues_one", issued == 1 and elided == 0);
-
-        before = after;
-        (void)do_map(g_space_a, g_va_unmapped, g_frame_a, 1, ARCH_MAP_R, ARCH_MAP_NORMAL);
-        after = arch_aspace_tlbi_counts();
-        issued = static_cast<uint32_t>(after >> 32) - static_cast<uint32_t>(before >> 32);
-        // Replacement requires an invalidation between clearing and installing.
-        arm("replacing_a_live_page_issues_two", issued == 2);
-        arm("and_the_replacement_took",
-            arch_aspace_frame_at(g_space_a, g_va_unmapped) == g_frame_a);
-
-        before = after;
-        (void)do_unmap(g_space_a, g_va_unmapped, 1);
-        after = arch_aspace_tlbi_counts();
-        issued = static_cast<uint32_t>(after >> 32) - static_cast<uint32_t>(before >> 32);
-        arm("unmap_issues_one", issued == 1);
-
-        // Never-run spaces need no invalidation.
-        arch_aspace_activate(g_boot);
-        struct arch_aspace* const unrun = arch_aspace_create();
-        arm("a_space_nothing_has_run", unrun != nullptr);
-        before = arch_aspace_tlbi_counts();
-        (void)do_map(unrun, g_va_unmapped, g_frame_b, 1, ARCH_MAP_R, ARCH_MAP_NORMAL);
-        after = arch_aspace_tlbi_counts();
-        issued = static_cast<uint32_t>(after >> 32) - static_cast<uint32_t>(before >> 32);
-        elided = static_cast<uint32_t>((after >> 8) & 0xFFFFFFu)
-                 - static_cast<uint32_t>((before >> 8) & 0xFFFFFFu);
-        arm("map_into_a_space_nothing_has_run_elides", issued == 0 and elided == 1);
-        (void)do_unmap(unrun, g_va_unmapped, 1);
-        arch_aspace_destroy(unrun);
-
-        // A previously used space must still receive maintenance after switching away.
-        before = arch_aspace_tlbi_counts();
-        (void)do_map(g_space_a, g_va_unmapped, g_frame_b, 1, ARCH_MAP_R, ARCH_MAP_NORMAL);
-        after = arch_aspace_tlbi_counts();
-        issued = static_cast<uint32_t>(after >> 32) - static_cast<uint32_t>(before >> 32);
-        elided = static_cast<uint32_t>((after >> 8) & 0xFFFFFFu)
-                 - static_cast<uint32_t>((before >> 8) & 0xFFFFFFu);
-        arm("map_into_a_space_this_core_has_left_still_pays", issued == 1 and elided == 0);
-        (void)do_unmap(g_space_a, g_va_unmapped, 1);
-
-        put("  " KICKOS_X5_TOKEN " tlbi issued=");
-        put_dec(static_cast<uint32_t>(arch_aspace_tlbi_counts() >> 32));
-        put(" elided=");
-        put_dec(static_cast<uint32_t>((arch_aspace_tlbi_counts() >> 8) & 0xFFFFFFu));
-        put("\n");
-#endif
-    }
-
     void arm_destroy(void)
     {
         // Destroy must preserve the kernel tables shared by both roots.
@@ -1060,6 +982,22 @@ namespace
         // Radix tables have no eviction-capacity failure.
         arm("capacity_refusal_is_unproducible", g_seen[ARCH_ASPACE_ECAPACITY] == 0);
     }
+
+    // A ring 0 fault whose frame lands on the running thread's own block is the kernel's.
+    void arm_ring0_fault_attribution(void)
+    {
+        uintptr_t sp = 0;
+        __asm__ volatile("movq %%rsp, %0" : "=r"(sp));
+        g_block_hi = sp;
+        g_block_lo = sp - granule;
+        bool const faulted = faults_at(g_va);
+        g_block_hi = 0;
+        g_block_lo = 0;
+        arm("ring0_fault_seen", faulted);
+        arm("ring0_fault_frame_on_block", g_fault_on_block);
+        arm("ring0_fault_cs_is_kernel", (g_fault_cs & 3u) == 0);
+        arm("ring0_fault_not_attributed", not g_fault_attributed);
+    }
 }
 
 extern "C"
@@ -1120,6 +1058,12 @@ bool kickos_fault_kill_thread(void* frame)
     {
         return false;
     }
+    if (g_block_hi != 0)
+    {
+        g_fault_on_block = kickos_fault_frame_on_kernel_stack(frame, sizeof(*f));
+        g_fault_attributed = arch_fault_is_user_thread(frame);
+        g_fault_cs = f->cs;
+    }
     uint64_t const cr2 = kickos::x86_64::read_cr2();
     g_faults = g_faults + 1;
     g_fault_vector = f->vector;
@@ -1130,9 +1074,8 @@ bool kickos_fault_kill_thread(void* frame)
 
 bool kickos_fault_frame_on_kernel_stack(void const* frame, size_t bytes)
 {
-    (void)frame;
-    (void)bytes;
-    return false;
+    uintptr_t const f = reinterpret_cast<uintptr_t>(frame);
+    return f >= g_block_lo and f < g_block_hi and bytes <= g_block_hi - f;
 }
 
 uintptr_t kickos_fault_stack_top(void)
@@ -1242,10 +1185,10 @@ void kickos_x86_64_landed(uintptr_t ram_base, uint64_t ram_size)
     arm_span();
     arm_out_of_frames();
     arm_acquire();
-    arm_invalidation();
     arm_destroy();
     arm_frames_returned(baseline);
     arm_capacity_refusal();
+    arm_ring0_fault_attribution();
 
     arm("root_register_ends_on_the_boot_space", aspace_root_installed() == g_root_boot);
 

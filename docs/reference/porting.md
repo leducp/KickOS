@@ -696,7 +696,7 @@ silicon-proven unless the row says otherwise:
 | `an505` | qemu-m33 | M33 | PMSAv8 | QEMU (two runnable CI gates, the machine in both postures, **plus runtime enforcement gates**); the `mps2` backend over its own memory map, through `family.cmake` |
 | `nrf51` | microbit | M0 | -- | QEMU (runnable CI gate) |
 | `virt_rv32` | qemu-riscv | RV32IMAC | PMP | QEMU (runnable CI gate, **plus a runtime enforcement gate**) |
-| `virt_rv64` | qemu-riscv64 / qemu-riscv64-sv48 / qemu-riscv64-smp | RV64IMAC | **Sv39 + Sv48 MMU** | QEMU (three runnable CI gates in one job: both paging postures at 52 arms each, re-derived 2026-08-29 by `ctest -N`, and a four-hart shared kernel), **plus runtime translation-enforcement gates**: an UNPRIVILEGED read of an unmapped page (`qemu_riscv64_aspace_ufault`, which replaced a kernel-side `aspace_fault` arm on 2026-08-29 that faulted before it reached the unmap), a stack guard, a kernel-half denial and a surviving fault. Both paging postures run because a level-count bug shows in only one (`../reference/boards.md`, *CI coverage*) |
+| `virt_rv64` | qemu-riscv64 / qemu-riscv64-sv48 / qemu-riscv64-smp | RV64IMAC | **Sv39 + Sv48 MMU** | QEMU (three runnable CI gates in one job: both paging postures at 52 arms each, re-derived 2026-08-29 by `ctest -N`, and a four-hart shared kernel), **plus runtime translation-enforcement gates**: an UNPRIVILEGED read of a dead thread's stack page after its unmap (`qemu_riscv64_deadstack`), a stack guard, a kernel-half denial and a surviving fault. Both paging postures run because a level-count bug shows in only one (`../reference/boards.md`, *CI coverage*) |
 | `virt_arm64` | qemu-arm64 (+ `-smp`, `-smpiso`, `-gicv3`, the `-amp` family) | Cortex-A53 | **VMSAv8 MMU** | QEMU (runnable CI gates at one kernel core -- the `qemu-arm64` job, 42 ctest arms re-derived 2026-08-29 by `ctest -N` -- at four cores, at four cores with one isolated, at four cores under a GICv3, and as an AMP partition of one, two and three images, **plus runtime translation-enforcement gates**) |
 | `imx8mp` | imx8mp-evk | quad Cortex-A53 (one brought up) | **VMSAv8 MMU** | QEMU, **NOT IN CI**: `.github/workflows/ci.yml` carries no job for it, so the board is LOCAL `ctest` only (`--preset imx8mp-evk`), 48 arms (`ctest -N` 2026-09-02), **plus runtime translation-enforcement gates**. The second armv8a chip, and what moved the shared-kernel predicate's per-part half out of the arch. Hands over at EL3 with no firmware, wires a GIC-500, and brings up ONE core because the machine models no secondary release (`../reference/boards.md`, *Per-board caveats*) |
 | `q35` | qemu-x86_64 | x86_64 | -- | QEMU (runnable CI gate, the `qemu-x86_64` job), booted as a PE32+ UEFI application under OVMF firmware the job resolves rather than names, because `-kernel` cannot start such an image at all. The chip selects no memory family, so the map is flat and there is no enforcement gate to run (`../reference/boards.md`, *CI coverage*) |
@@ -1200,13 +1200,11 @@ copied range are read back and written back with it, so a task that writes them 
 copy from another core races the kernel, as it races a device on any line it shares with a DMA
 buffer.
 
-**It is measured from the tree rather than chosen.** The deepest holder is the page-split access
-scenario behind `KOS_ASPACE_OP_SPLIT_ACCESS` (`kernel/syscall/syscall_aspace.cc`): four pages held
-across two spaces while `ep_copy` acquires one end in each, six at the peak. The endpoint copy
-alone holds two, which is the floor a caller doing nothing else meets. **A caller of the seam owes
-the other half:** a walk over many pages releases each before taking the next, as
-`KOS_ASPACE_OP_SPAN` does, or it puts the whole tree over the figure for a reason that is the
-walk's and not the seam's.
+**The figure is what the kernel holds at its deepest, two:** `ep_copy` acquires one end in each
+space. `tests/unit/rangecheck` refuses a third hold on every copy it drives and requires the peak
+to reach the figure, so a holder that goes deeper, or a figure left above the deepest holder,
+fails there. **A caller of the seam owes the other half:** a walk over many pages releases each
+before taking the next.
 
 ### Naming the frame behind a page (`arch_aspace_frame_at`)
 
@@ -1395,9 +1393,7 @@ A porter's in-env check is `periph_reg_write_unheld` (`selftest`, unguarded), TH
 2. A holder of a real DEV window at a base the chip does not table requires a REFUSAL
    that is neither `-KOS_EPERM` (the gate passed) nor 0 (nothing may accept an untabled
    address) -- so on every board with no backend it pins the default's `-KOS_ENOSYS` at
-   runtime. It finds the window **by attempting the spawn over candidate bases**, NOT
-   with `kos_grant_probe`: the probe syscall needs `KICKOS_ENABLE_SELFTEST`, and using it
-   would silently drop this arm on a production-ABI build.
+   runtime. It finds the window **by attempting the spawn over candidate bases**.
 3. The OFFSET BOUND: the same holder asks for an offset that is 4-aligned and that the
    chip table COULD name, but that lies outside the window it holds, and requires
    `-KOS_EPERM`. Arm 3 is the one the earlier shape could not express -- `PRW_OFFSET` was
@@ -1479,9 +1475,7 @@ BBC micro:bit v1's 16, `arch/arm/chip/nrf51/nrf51.ld`) declares the cases it can
 an expected-skip set checked by name in CI (`EXPECT_SKIPS`, derived in
 `tests/integration/gates/selftest.cmake` from each arm's own demand against the board's
 provisioning; rationale in `boards.md` under *Per-board caveats*): a skip not in that set fails
-the gate, and so does a named arm that ran. `uart_service` is in it as a PIN rather than an
-arena outcome -- `KICKOS_SELFTEST_NO_UART_SERVICE` holds it out because its 1 KiB ring and the
-arena probes want the same region. `f302nucleo` has no emulator, so its sets are judged against
+the gate, and so does a named arm that ran. `f302nucleo` has no emulator, so its sets are judged against
 its silicon captures.
 
 **One kind of skip takes no list, on any board.** An arm whose pass rests on a timing window
@@ -1948,7 +1942,7 @@ width no board configures. A build that misses the generated `kickos/config/cap_
 does not reach them: it fails on the missing include. The suite's own floor is measured off the suite's own call sites. **Two** of the 63 cases need a 4th concurrent
 worker: `call_infoless_revert`, four mutually-dependent workers spawned before any join
 (`../../user/apps/common/selftest/main.cc`, `t_call_infoless_revert`), and `mutex_chain_boost`,
-a four-link boost chain (`t_mutex_chain` in the same file). **Both** ask first, with `pool_can_host(4)`, and since
+a four-link boost chain (`t_mutex_chain` in the same file). **Both** ask first, with `TAP_ASK(.workers = 4, ...)`, and since
 that probe spawns four real threads it tests the arena as much as the pool. Asking first is
 not only about the message: each of the two now creates staging semaphores before its
 spawns, and a board too small to host the workers is also too small to supply those, so a
@@ -1959,9 +1953,9 @@ alike. The other 61 cases
 need no 4th worker, so a small part loses one chained-priority-inheritance case and
 one call/reply case, not the suite. The 6-semaphore peak is `mutex_deadlock`: two permanent
 plus the four semaphores `t_mutex_deadlock` creates, but on a 7-handle board the **cap
-table** binds first, since `KICKOS_CAP_FIRST_DYNAMIC 2`
+table** binds first, since `KICKOS_CAP_FIRST_DYNAMIC 1`
 (`../../system/include/kickos/sys/cap_index.h`) plus the suite's two permanent caps
-leaves 3 free against the 6 that case wants live (rationale: `t_mutex_deadlock`'s refusal
+leaves 4 free against the 6 that case wants live (rationale: `t_mutex_deadlock`'s refusal
 branch).
 
 `f302nucleo` walked that ladder one knob at a time: at `KICKOS_MAX_THREADS=4` plus
@@ -2001,11 +1995,14 @@ where `Thread` is 264 bytes with the FPU context and `ThreadPool` grows 272 rath
 because the extra `gen[]` entry pushes the trailing pointer past an 8-byte boundary. Text grew
 184 to 236 bytes depending on the ISA, the most on `microbit`'s Thumb-1.
 
-The suite also allocates from the arena and never returns it, among others: `t_irqdrv`'s
-4 KiB device page, the 256-byte domain regions of `t_domain_share` and
-`t_endpoint_crossdomain`, the self-grant probe ladders (`selfgrant_worker`, `sgnp_worker`) and
-one spare stack for `t_caller_stack`. Each has a real `tap::skip` or a `tap::partial` when
-the arena cannot spare it, so these cost coverage rather than a failure.
+The suite also takes blocks from the arena, which never returns one, among others: the
+256-byte domain regions of `t_domain_share` and `t_endpoint_crossdomain`, the self-grant
+blocks (`selfgrant_worker`, `sgnp_worker`) and one spare stack for `t_caller_stack`. Every
+block an arm uses is stated on its `TAP_ADD` line and reserved once at image start, past the
+default stacks of the image's widest worker ask, so what an arm finds does not depend on the
+arms before it. On a region board each image is linked once to size its arena, and the arms that
+arena cannot back are left out of the image and listed by the build
+(`user/apps/common/selftest/arena_fit.py`); its link ASSERT is the exact backstop.
 
 ### Deriving the suite's SRAM figures
 
@@ -2047,7 +2044,7 @@ besides, plus power-of-two natural alignment on every block where
 `arch_mpu_region_pow2()` is 1 (a base+limit backend pays only one granule per block). One of
 the five is not a RAM question at all: `mutex_deadlock` wants the suite's 3 OPTIONAL
 capabilities, so it needs a board whose `KICKOS_CAP_TABLE_SUPPLY` covers the demand
-of 10: 2 reserved (`KICKOS_CAP_FIRST_DYNAMIC`) + the suite's 5 mandatory peak + 3
+of 9: 1 reserved (`KICKOS_CAP_FIRST_DYNAMIC`) + the suite's 5 mandatory peak + 3
 optional. Only `bluepill-c8` and `f302nucleo` still supply 7
 (`grep -rn KICKOS_CAP_TABLE_SUPPLY boards/`); `microbit` dropped its own and takes the default 16,
 so on that part the cap table is no longer what binds.
@@ -2696,7 +2693,7 @@ save-frame, deferred switch.
   `.option norelax` on every dispatch: the anchor sits in a window U-mode can write, so a
   thread-set `gp` would otherwise corrupt the next thread's small-data addressing. ARM and RX
   have no small-data model and skip this.
-- **`arch_irq_inject`** (fake-a-device-firing test/bench scaffolding) uses the
+- **`arch_irq_inject`** (a line raised from software, as its device would) uses the
   **supervisor software interrupt** (`mip.SSIP`, `mcause`=1) as a private channel --
   the RISC-V analog of the host sim's `raise(SIGUSR1)`. The **PLIC has no
   software-generated interrupt** (unlike the Cortex-A GIC's SGIs; QEMU faithfully

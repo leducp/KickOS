@@ -205,7 +205,7 @@ void arch_init(void)
     // AFTER the boot hart's own supervisor state and address space exist: a secondary released
     // here runs a kickos_rv64_init of its own against tables this hart has already installed.
     release_secondaries();
-#if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_KERNEL_CORES > 1
+#if KICKOS_KERNEL_CORES > 1
     kickos_doorbell_selfcheck();
 #endif
 #endif

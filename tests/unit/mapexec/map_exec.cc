@@ -6,10 +6,14 @@
 // These tests do not model a hardware TLB.
 
 #include <kickos/arch/arch.h>
+#include <kickos/diag.h>
 
 #include <gtest/gtest.h>
 
+#include <string>
+
 #include "aspace_sysops_seam.h"
+#include "vmsa.h"
 
 using namespace kickos::testfix;
 
@@ -75,12 +79,6 @@ namespace
         return op_at(static_cast<size_t>(at)).arg;
     }
 
-    uint32_t model_asid_bits()
-    {
-        return static_cast<uint32_t>((arch_aspace_model() >> ARCH_ASPACE_MODEL_ASID_SHIFT) &
-                                     ARCH_ASPACE_MODEL_FIELD_MASK);
-    }
-
     struct arch_aspace* g_hook_space = nullptr;
 
     // Join after sampling to detect a peer mask computed too late.
@@ -128,7 +126,46 @@ namespace
         struct arch_aspace* space = nullptr;
         struct arch_aspace* elsewhere = nullptr;
     };
+
+    void* frame_pointer(arch_phys_addr_t pa)
+    {
+        return &__kickos_arm64_va_base[pa];
+    }
+
+    // The level-3 descriptor `va` resolves to, walked as the MMU does from the space's root.
+    uint64_t leaf_of(struct arch_aspace* space, uintptr_t va)
+    {
+        uint64_t const* table = reinterpret_cast<uint64_t const*>(space);
+        for (unsigned shift = 30; shift > 12; shift -= 9)
+        {
+            uint64_t const desc = table[(va >> shift) & 0x1FFu];
+            if ((desc & 3u) != TABLE)
+            {
+                return 0;
+            }
+            table = reinterpret_cast<uint64_t const*>(frame_pointer(desc & 0xFFFFFFFFF000ull));
+        }
+        return table[(va >> 12) & 0x1FFu];
+    }
+
+    // The MAIR_EL1 byte the boot programs at a leaf's AttrIndx.
+    uint32_t mair_byte_of(uint64_t leaf)
+    {
+        return static_cast<uint32_t>((static_cast<uint64_t>(MAIR_VALUE) >> (8u * ((leaf >> 2) & 7u)))
+                                     & 0xFFu);
+    }
+
+    // The level-1 walk reads VA bits 38:30, so this TTBR1 address indexes the slots of `low`.
+    uintptr_t kernel_half_of(uintptr_t low)
+    {
+        return ~((static_cast<uintptr_t>(1) << 39) - 1u) | low;
+    }
 }
+
+#define MAP_CONTRACT_FIXTURE MapExecContract
+#define MAP_CONTRACT_NOCACHE_SEEN true
+#define MAP_CONTRACT_PA_BITS 40u
+#include "map_contract.h"
 
 // Executable replacements.
 
@@ -180,6 +217,22 @@ TEST_F(MapExec, MapIntoAnInvalidLeafRingsNothing)
     // A new executable mapping has no previously fetched instructions to discard.
     EXPECT_EQ(ops_with(OP_RENDEZVOUS), 0u);
     EXPECT_EQ(ops_with(OP_TLBI_PAGE_IS), 1u);
+}
+
+// Memory types.
+
+TEST_F(MapExec, AnUncachedMapsLeafSelectsTheNonCacheableAttribute)
+{
+    ASSERT_EQ(arch_aspace_map(space, VA_DEEP, PA_A, 1, RIGHTS_DATA, ARCH_MAP_NOCACHE),
+              ARCH_ASPACE_OK);
+    ASSERT_EQ(arch_aspace_map(space, VA_OTHER, PA_B, 1, RIGHTS_DATA, ARCH_MAP_NORMAL),
+              ARCH_ASPACE_OK);
+
+    // Normal inner and outer non-cacheable (DDI 0487 M.b, D24.2.126); 0x00 would be Device.
+    EXPECT_EQ(mair_byte_of(leaf_of(space, VA_DEEP)), 0x44u)
+        << "the uncached map's leaf names a cacheable or device attribute";
+    EXPECT_EQ(mair_byte_of(leaf_of(space, VA_OTHER)), 0xFFu)
+        << "the control: an ordinary map's leaf is write-back";
 }
 
 // Propagate executable removal across recursive calls.
@@ -296,22 +349,7 @@ TEST_F(MapExec, TheRollbackOfANonExecutableMapRingsNothing)
     EXPECT_EQ(ops_with(OP_RENDEZVOUS), 0u);
 }
 
-// Partial-map refusal.
-
-TEST_F(MapExec, APartiallyMappedRangeIsRefusedBeforeAnyEdit)
-{
-    // A partial remap must preserve the low leaf even if allocation would fail later.
-    seed(VA_CROSS_LOW, PA_A, RIGHTS_DATA);
-    set_frame_budget(0);
-
-    // Continue checking the post-state even if refusal fails.
-    EXPECT_EQ(arch_aspace_map(space, VA_CROSS_LOW, PA_C, 2, RIGHTS_DATA, ARCH_MAP_NORMAL),
-              ARCH_ASPACE_EINVAL);
-
-    EXPECT_EQ(arch_aspace_frame_at(space, VA_CROSS_LOW), PA_A);
-    EXPECT_EQ(arch_aspace_frame_at(space, VA_CROSS_HIGH), 0u);
-    EXPECT_EQ(ops_count(), 0u);
-}
+// A wholly mapped range is a remap.
 
 TEST_F(MapExec, AWhollyMappedRangeIsStillARemapAndPasses)
 {
@@ -367,16 +405,22 @@ TEST_F(MapExec, ASpaceEveryCoreHasLeftIsStillMaintained)
 
 TEST_F(MapExec, ASpaceNoCoreHasRunIsNotMaintained)
 {
-    // Never-run spaces skip invalidation.
+    // Never-run spaces skip invalidation, as a task's image seed does over many pages.
+    constexpr size_t SEED_PAGES = 40;
     struct arch_aspace* const unrun = arch_aspace_create();
     ASSERT_NE(unrun, nullptr);
     ops_clear();
 
-    ASSERT_EQ(arch_aspace_map(unrun, VA_DEEP, PA_A, 1, RIGHTS_DATA, ARCH_MAP_NORMAL),
+    ASSERT_EQ(arch_aspace_map(unrun, VA_DEEP, PA_A, SEED_PAGES, RIGHTS_DATA, ARCH_MAP_NORMAL),
               ARCH_ASPACE_OK);
 
     EXPECT_EQ(ops_with(OP_TLBI_PAGE_IS), 0u);
+    EXPECT_EQ(ops_with(OP_TLBI_ALL_IS), 0u);
+    EXPECT_EQ(ops_with(OP_TLBI_ALL_LOCAL), 0u);
+    size_t const g = arch_aspace_granule();
     EXPECT_EQ(arch_aspace_frame_at(unrun, VA_DEEP), PA_A);
+    EXPECT_EQ(arch_aspace_frame_at(unrun, VA_DEEP + (SEED_PAGES - 1u) * g),
+              PA_A + (SEED_PAGES - 1u) * g);
     arch_aspace_destroy(unrun);
 }
 
@@ -546,9 +590,6 @@ TEST_F(MapExec, AReservedIdentifierWidthTagsNothingAndLeavesEverySwitchSweeping)
     EXPECT_EQ(last_identifier(), 0u);
     EXPECT_EQ(ops_with(OP_TLBI_ALL_LOCAL), 1u);
 
-    EXPECT_EQ(arch_aspace_model() & ARCH_ASPACE_MODEL_TAGGED, 0u);
-    EXPECT_EQ(model_asid_bits(), 0u);
-
     arch_aspace_destroy(a);
     arch_aspace_destroy(b);
 }
@@ -565,26 +606,9 @@ TEST_F(MapExec, AnEightBitFieldStillTagsBecauseTheRowCountIsTheNarrowerBound)
     ASSERT_NE(last_identifier(), NO_WRITE);
     EXPECT_NE(last_identifier(), 0u);
     EXPECT_LT(last_identifier(), 1u << 8);
-    EXPECT_NE(arch_aspace_model() & ARCH_ASPACE_MODEL_TAGGED, 0u);
-    EXPECT_EQ(arch_aspace_model() & ARCH_ASPACE_MODEL_ASID, 0u);
-    EXPECT_EQ(model_asid_bits(), 8u);
 
     set_tcr(tcr_a53());
     arch_aspace_destroy(narrow);
-}
-
-TEST_F(MapExec, TheWidthIsReadBackFromTheControlRegisterAndNotFromTheMachineAlone)
-{
-    // Keep ASIDBits at 16 and vary TCR.AS to check the effective width.
-    EXPECT_EQ(model_asid_bits(), 16u);
-    EXPECT_NE(arch_aspace_model() & ARCH_ASPACE_MODEL_ASID, 0u);
-
-    set_tcr(tcr_a53_without_as());
-    EXPECT_EQ(model_asid_bits(), 8u);
-    EXPECT_EQ(arch_aspace_model() & ARCH_ASPACE_MODEL_ASID, 0u);
-
-    set_tcr(tcr_a53());
-    EXPECT_EQ(model_asid_bits(), 16u);
 }
 
 // Boot-root protection.
@@ -627,4 +651,57 @@ TEST_F(MapExec, TheBootRootIsLatchedOnTheFirstCaptureAndNotByALaterActivate)
     EXPECT_EQ(arch_aspace_boot(), boot);
     EXPECT_NE(arch_aspace_boot(), space);
     EXPECT_NE(arch_aspace_boot(), elsewhere);
+}
+
+// What the boot core refuses to drive.
+
+namespace kickos
+{
+    namespace armv8a
+    {
+        char const* mmu_refusal(uint64_t mmfr0, uint64_t tcr);
+    }
+}
+
+namespace
+{
+    constexpr uint64_t TGRAN4_ABSENT = 0xFull << 28;
+    constexpr uint64_t PARANGE_MASK = 0xFull;
+    constexpr uint64_t PARANGE_36 = 1u;
+    constexpr uint64_t PARANGE_RESERVED = 0xEu;
+}
+
+TEST(MmuRefusal, AnA53IsDriven)
+{
+    EXPECT_EQ(kickos::armv8a::mmu_refusal(mmfr0_with_asid_bits(2), tcr_a53()), nullptr);
+}
+
+TEST(MmuRefusal, AnMmuWithoutThe4KiBGranuleIsRefused)
+{
+    EXPECT_STREQ(kickos::armv8a::mmu_refusal(mmfr0_with_asid_bits(2) | TGRAN4_ABSENT, tcr_a53()),
+                 kickos::diag::kMmuNoGranule);
+}
+
+TEST(MmuRefusal, APhysicalRangeNarrowerThanTheProgrammedOneIsRefused)
+{
+    uint64_t const a53 = mmfr0_with_asid_bits(2);
+    EXPECT_STREQ(kickos::armv8a::mmu_refusal((a53 & ~PARANGE_MASK) | PARANGE_36, tcr_a53()),
+                 kickos::diag::kMmuPaNarrow);
+    EXPECT_STREQ(kickos::armv8a::mmu_refusal((a53 & ~PARANGE_MASK) | PARANGE_RESERVED,
+                                             tcr_a53()),
+                 kickos::diag::kMmuPaNarrow);
+}
+
+extern "C" void kickos_armv8a_mmu_check(void);
+
+TEST(MmuRefusal, TheCoreCheckRefusesAnMmuItCannotDrive)
+{
+    sysops_reset();
+    kickos_armv8a_mmu_check();
+    EXPECT_DEATH(
+        {
+            set_mmfr0(mmfr0_with_asid_bits(2) | TGRAN4_ABSENT);
+            kickos_armv8a_mmu_check();
+        },
+        std::string("KERNEL PANIC: ") + kickos::diag::kMmuNoGranule);
 }

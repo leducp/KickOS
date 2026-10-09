@@ -17,7 +17,7 @@
 #                       `bios` (the combined /usr/share/ovmf/OVMF.fd through -bios).
 #   KICKOS_X1_MACHINE   qemu machine type, default q35.
 #   KICKOS_X1_TIMEOUT   seconds, default 60.
-#   KICKOS_X86_64_CPU   the -cpu model, required. Shared by all five witnesses.
+#   KICKOS_X86_64_CPU   the -cpu model, required. Shared by every witness.
 #
 # POSIX sh (dash-clean).
 

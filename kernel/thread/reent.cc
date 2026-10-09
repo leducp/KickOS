@@ -11,7 +11,7 @@
 #include <kickos/aspace.h>
 #include <kickos/kernel.h>
 
-#if defined(KICKOS_ENABLE_SELFTEST) or KICKOS_HAVE_ASPACE
+#if KICKOS_HAVE_ASPACE
 #include <kickos/sched.h>
 #endif
 
@@ -24,26 +24,7 @@ namespace kickos
         // Namespace scope and volatile: a local volatile would not stop the address being
         // materialised inline, which tests/static/check_riscv_kernel_apphalf.sh refuses.
         KickosReentSeam const* const volatile s_seam_home = &kickos_reent_seam;
-
-#if defined(KICKOS_ENABLE_SELFTEST)
-        size_t s_unseated_writes = 0;
-
-        void note_write(void)
-        {
-            if (not aspace_seated_for(sched::current()))
-            {
-                s_unseated_writes++;
-            }
-        }
-#endif
     }
-
-#if defined(KICKOS_ENABLE_SELFTEST)
-    size_t reent_unseated_writes(void)
-    {
-        return s_unseated_writes;
-    }
-#endif
 
     void reent_seam_read(void)
     {
@@ -88,9 +69,6 @@ namespace kickos
     void reent_prime(struct arch_aspace* space, void* state)
     {
         // s_seam.shared MUST stay pristine: every later prime copies it.
-#if defined(KICKOS_ENABLE_SELFTEST)
-        note_write();
-#endif
 #if KICKOS_HAVE_ASPACE
         // ep_copy requires disjoint ends, which the slot array and the process-wide state are.
         if (not ep_copy(space, reinterpret_cast<uintptr_t>(state), space,
@@ -115,9 +93,6 @@ namespace kickos
 #if not KICKOS_REENT_PER_THREAD
     void reent_seat(struct arch_aspace* space, void* state)
     {
-#if defined(KICKOS_ENABLE_SELFTEST)
-        note_write();
-#endif
 #if KICKOS_HAVE_ASPACE
         // A silent refusal here leaves the seat word naming the outgoing thread's block, so
         // two processes resolve one errno and one stdio state through it.

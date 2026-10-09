@@ -4,8 +4,9 @@
 # Packaged drivers the driver witnesses compose (docs/design-m10-target.md, section 8): three
 # with no window and no line, testpl011, a console driver over a PL011's window that only the
 # console restart witness on QEMU `virt` composes, testline, whose lines only the line witness
-# on QEMU `virt` binds, and testusic, a console driver over an XMC4800 USIC channel that scrambles
-# it on request, which only conreclaim composes. Built under KICKOS_TEST_DRIVERS alone, which only
+# on QEMU `virt` binds and whose raiser holds line 0 for SIGNAL alone, and testusic, a console
+# driver over an XMC4800 USIC channel that scrambles it on request, which only conreclaim
+# composes. Built under KICKOS_TEST_DRIVERS alone, which only
 # a witness preset or an operator's configure sets: tests/integration/check_test_drivers_absent.sh
 # holds every other package to none.
 
@@ -26,10 +27,12 @@ if(KICKOS_CHIP STREQUAL "virt_arm64")
                     POSTURE handover CONSOLE START testpl011_start
                     THREAD service ENTRY service WINDOW regs CAPS ep:wait)
 
-  kickos_add_driver(testline SOURCES testline.cc LINES routed:edge held:edge BLOCK none BARRIER none
-                    POSTURE retain START testline_start
-                    THREAD irq PRIORITY 1 ENTRY irq ARG line0_index CAPS notify:wait routed:wait held:wait
-                    THREAD service ENTRY service CAPS ep:wait)
+  kickos_add_driver(testline SOURCES testline.cc LINES routed:edge held:edge
+                    BLOCK none BARRIER none POSTURE retain START testline_start
+                    THREAD irq PRIORITY 1 ENTRY irq ARG line0_index
+                           CAPS notify:wait routed:wait held:wait
+                    THREAD service ENTRY service CAPS ep:wait
+                    THREAD raiser ENTRY raiser CAPS routed:signal)
 endif()
 
 # The USIC backend uart_usic.cc is the one xmcuartirq compiles, so an image links one of the two.

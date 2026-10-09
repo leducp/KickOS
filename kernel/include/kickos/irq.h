@@ -14,6 +14,7 @@
 
 #include <stdint.h>
 
+#include <kickos/arch/arch.h>
 #include <kickos/config.h>
 
 #include <kickos/notify.h>
@@ -115,9 +116,26 @@ namespace kickos
     // Best-effort diagnostic, readable outside ISR context.
     uint32_t irq_spurious_count();
 
+    // Whether the kernel drives `line` itself: a line of a device the chip file gives the
+    // kernel (KICKOS_KERNEL_LINES), or one the arch declares (arch_irq_line_kernel_owned).
+    inline bool irq_line_kernel_owned(int line)
+    {
+#if KICKOS_KERNEL_LINE_COUNT > 0
+        static constexpr int KERNEL_LINES[] = {KICKOS_KERNEL_LINES};
+        for (int const kernel_line : KERNEL_LINES)
+        {
+            if (line == kernel_line)
+            {
+                return true;
+            }
+        }
+#endif
+        return arch_irq_line_kernel_owned(line);
+    }
+
     // Whether `line` may be bound, raised or unmasked from outside the kernel: 0, -KOS_EINVAL
-    // out of range, or -KOS_EPERM for a line the kernel itself drives (the tick, console TX,
-    // the doorbell). Called by irq_attach, irq_claim and the IRQ_INJECT and IRQ_UNMASK syscalls.
+    // out of range, or -KOS_EPERM for a line the kernel itself drives (irq_line_kernel_owned).
+    // Called by irq_attach, irq_claim and the IRQ_INJECT and IRQ_UNMASK syscalls.
     int irq_line_admit(int line);
 
     // Tier 2: privileged in-kernel direct handler. Returns false if the line is
@@ -184,6 +202,12 @@ namespace kickos
     // and the controller sits in arch_reserved_blocks, so no grant reaches the register.
     // Leaves the line masked; the intended shape is wait, read the device, discard, ack.
     int irq_discard(Thread* c, uint32_t cap_handle);
+
+    // Raise the line as its device firing would: a masked line latches it, and it is taken on
+    // the line's claim core from any caller core. Needs CAP_SIGNAL. 0, or -KOS_EBADF,
+    // -KOS_EACCES, or -KOS_ENOTSUP for a line this controller cannot raise from software or
+    // holds banked per core.
+    int irq_raise(Thread* c, uint32_t cap_handle);
 
     // Drop one reference to IRQ binding `obj_handle`; release the line and free the
     // slot at refs -> 0. Above one kernel core the line is released here and the slot returns

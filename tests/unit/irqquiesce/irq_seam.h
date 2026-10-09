@@ -42,6 +42,12 @@ namespace kickos
         // nothing, which is what the fallback answers and where every other arm runs.
         extern int g_kernel_owned_line;
 
+        // What arch_irq_inject was last handed and how often, and what it answers: false is a
+        // controller that cannot raise that line from software.
+        extern int g_injected_line;
+        extern unsigned g_injects;
+        extern bool g_inject_raises;
+
         // The last (line, core) arch_irq_route was handed. -1 is a seam never called, which is
         // what an arm exercising only irq_attach must still see.
         extern int g_routed_line;
@@ -84,6 +90,8 @@ namespace kickos
         unsigned closes();
         int installed_handle();
         void reset_caps();
+        // The installed handle keeps only these rights, as a delegated copy would.
+        void narrow_installed_rights(uint8_t rights);
 
         // The one notification every arm's line signals. Seamed rather than pooled, since this
         // gate is about the dispatch entry against a teardown, and the real object would drag

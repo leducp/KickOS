@@ -7,6 +7,8 @@
 #include <kickos/irqlock.h>
 #include <kickos/sync.h>
 
+#include <kickos/sys/abi.h>
+
 #include "park_sweep.h"
 
 namespace kickos
@@ -29,7 +31,7 @@ namespace kickos
             {
                 IrqLock lock;
                 uint32_t epoch = 0;
-                (void) sem_wait(lock, &g_sem, epoch);
+                (void) sem_wait(lock, &g_sem, KOS_TIMEOUT_NONE, epoch);
             }
 
             void lock_the_mutex()

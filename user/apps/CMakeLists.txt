@@ -2,8 +2,8 @@
 # Copyright (c) 2026 Philippe Leduc
 
 # kickos_add_diagnostic_apps(<dir>...)
-#   A DIAGNOSTIC app depends on the test-only syscall surface kept out of the production ABI,
-#   and/or deliberately faults, so it is built ONLY under KICKOS_ENABLE_SELFTEST. The posture
+#   A DIAGNOSTIC app is a test image that deliberately faults or provokes a refusal, so it is
+#   built ONLY under KICKOS_ENABLE_SELFTEST. The posture
 #   is named HERE, where the tree decides what applies, and not inside the app: that is what
 #   lets an app file be its three lines and never ask whether it applies at all.
 #

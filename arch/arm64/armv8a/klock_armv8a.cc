@@ -42,16 +42,6 @@ extern "C"
 
 namespace
 {
-#if defined(KICKOS_ENABLE_SELFTEST)
-    // Per-core doorbell services, read across nodes, so placed with the cells.
-    KICKOS_AMP_SHARED("cells.served")
-    kickos::doorbell::PartCell g_served[KICKOS_DOORBELL_CORES] = {};
-#if KICKOS_NUM_CORES > 1
-    // Per-core instruction-side rendezvous initiated. No peer reads it.
-    kickos::doorbell::PartCell g_initiated[KICKOS_NUM_CORES] = {};
-#endif
-#endif
-
 #if KICKOS_KERNEL_CORES > 1
     // Separate lines: every draw takes g_next_ticket's line exclusive in the inner-shareable
     // domain, which on a shared line would invalidate it under every waiter loading
@@ -124,10 +114,6 @@ namespace
 kickos::doorbell::Fenced kickos::doorbell::service_fence(Observed)
 {
     __asm volatile("isb" ::: "memory");
-#if defined(KICKOS_ENABLE_SELFTEST)
-    uint32_t const me = arch_doorbell_core();
-    g_served[me].v = g_served[me].v.load() + 1u;
-#endif
     return Fenced();
 }
 
@@ -185,43 +171,8 @@ void arch_ipi_fence(void)
 #if KICKOS_NUM_CORES > 1
 void kickos_arm64_instruction_side_rendezvous(uint32_t peers)
 {
-#if defined(KICKOS_ENABLE_SELFTEST)
-    if (peers != 0)
-    {
-        uint32_t const me = arch_cpu_id();
-        g_initiated[me].v = g_initiated[me].v.load() + 1u;
-    }
-#endif
     arch_ipi_send(peers);
     arch_ipi_wait(peers);
-}
-#endif
-
-#if defined(KICKOS_ENABLE_SELFTEST)
-uint32_t arch_ipi_deferred(uint32_t core)
-{
-    return kickos_armv8a_gic_deferred(core);
-}
-
-static_assert(KICKOS_CHIP_DOORBELL_SEAT == 1,
-              "this doorbell keeps a seat, which the chip file must state as doorbell_seat: true");
-uint32_t arch_ipi_seat_set(uint32_t core, uint32_t seated)
-{
-    return kickos_armv8a_gic_seat_set(core, seated);
-}
-
-// Services in the low half, rendezvous initiated in the high half (arch.h, arch_ipi_counts).
-uint64_t arch_ipi_counts(uint32_t core)
-{
-    if (core >= KICKOS_DOORBELL_CORES)
-    {
-        return 0;
-    }
-    uint64_t initiated = 0;
-#if KICKOS_NUM_CORES > 1
-    initiated = g_initiated[core].v.load();
-#endif
-    return (initiated << 32) | static_cast<uint64_t>(g_served[core].v.load());
 }
 #endif
 

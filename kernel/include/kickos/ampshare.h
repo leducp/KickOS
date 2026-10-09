@@ -63,10 +63,6 @@ namespace kickos
     bool amp_share_window(VirtualRanges const* own, kos_window const& w, int* rc);
 #endif
 
-#if defined(KICKOS_ENABLE_SELFTEST)
-    // False where root holds no reservation over the share.
-    bool amp_share_seated(uintptr_t* base, size_t* size);
-#endif
 #endif
 }
 

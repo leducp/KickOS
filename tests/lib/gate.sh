@@ -902,7 +902,7 @@ run_image() {
     RC=$?
     # Every capture-parsing pattern in tests/ rests on this line: the console lowers '\n' to
     # CR+LF on every board but the sim (KICKOS_CONSOLE_CRLF), so the wire carries
-    # `ok 149 - amp_window\r\n`, and stripping the CR is what makes a '$' anchor and a
+    # `ok 149 - amp_far_call\r\n`, and stripping the CR is what makes a '$' anchor and a
     # whole-line `grep -c` mean what the gate author expects. The break is asymmetric: GNU
     # grep's '$' does not match before a CR while the ugrep that shadows `grep` on an
     # interactive shell does, so it fails in CI and passes by hand. The bench chain keeps the
@@ -1724,7 +1724,7 @@ field_matcher_control() {
 # judged byte-exact and the zero goes through require_on_wire.
 #
 # Never a control marker: a control's absence and its repetition are two different findings.
-# check_aspace_ufault.sh asserts its control on its own lines.
+# check_deadstack.sh asserts its control on its own lines.
 require_single_marker() { # <marker> <absence-prose> [repeat-prose]
     require_literal "$1" "the fault-dump marker"
     literal_matcher_control

@@ -45,6 +45,8 @@ namespace kickos
             constexpr uint32_t PEER = 1;
             // The partition's two entries: port 2 is served here, port 3 by the peer.
             constexpr uint32_t PORT_SERVED = 2;
+            // Inside the mint width, minted by neither node.
+            constexpr uint32_t PORT_UNMINTED = 7u;
 
             constexpr uint8_t PRIO_RECEIVER = 10;
             constexpr uint8_t PRIO_ABOVE = 20;
@@ -256,6 +258,13 @@ namespace kickos
                       0);
             EXPECT_EQ(answer_ring().head.v.load(), answers + 1u);
             EXPECT_EQ(call_ring().tail.v.load(), g_tail_before + 1u) << "the reply held the slot";
+
+            EXPECT_EQ(endpoint_reply(opts.info.reply_cap, reinterpret_cast<uintptr_t>(answer),
+                                     sizeof(answer)),
+                      -KOS_EBADF)
+                << "the reply capability survived the reply it answered";
+            EXPECT_EQ(answer_ring().head.v.load(), answers + 1u)
+                << "a second reply answered the far caller again";
         }
 
         // An info-less receive can be handed no capability, so the landing itself answers the
@@ -302,6 +311,84 @@ namespace kickos
             ASSERT_EQ(answer_ring().head.v.load(), answers + 1u);
             EXPECT_TRUE(answered_empty_at(answers));
             EXPECT_EQ(call_ring().tail.v.load(), g_tail_before + 1u);
+        }
+
+        TEST_F(AmpHold, a_far_call_with_no_receiver_parked_is_answered_empty_and_released)
+        {
+            uint32_t ep = KCAP_INVALID;
+            Thread* const r = seat_receiver(1, PRIO_RECEIVER, &ep);
+            ASSERT_EQ(sched::current(), r);
+            uint32_t const answers = answer_ring().head.v.load();
+            uint32_t const sent = amp::counts(ME).sent.load();
+            peer_calls(CALL_FILL);
+            uint32_t const tail_before = call_ring().tail.v.load();
+
+            doorbell();
+
+            EXPECT_EQ(r->far_hold, 0u) << "a running thread was handed the call";
+            ASSERT_EQ(answer_ring().head.v.load(), answers + 1u)
+                << "the far caller of a port nobody receives on is never answered";
+            EXPECT_TRUE(answered_empty_at(answers));
+            EXPECT_EQ(amp::counts(ME).sent.load(), sent + 1u);
+            EXPECT_EQ(call_ring().tail.v.load(), tail_before + 1u)
+                << "the refused call kept its slot";
+        }
+
+        TEST_F(AmpHold, a_receive_whose_info_write_is_refused_takes_back_the_far_reply_capability)
+        {
+            uint32_t ep = KCAP_INVALID;
+            Thread* const r = seat_receiver(1, PRIO_RECEIVER, &ep);
+            wake_next_park(call_arrives);
+            uint32_t const answers = answer_ring().head.v.load();
+            uint32_t const faults = amp::counts(ME).deliver_fault.load();
+            kos_reply_recv_opts refused{};
+            g_ipc_seam_refuse_write = reinterpret_cast<uintptr_t>(&refused.info);
+
+            int32_t const rc = receive(ep, &refused, 0);
+            g_ipc_seam_refuse_write = 0;
+
+            ASSERT_EQ(rc, -KOS_EFAULT);
+            EXPECT_EQ(refused.info.reply_cap, KOS_CAP_NONE);
+            EXPECT_EQ(cap_reply_live(r), 0u)
+                << "the capability the receiver was never told of stayed installed";
+            EXPECT_EQ(amp::counts(ME).deliver_fault.load(), faults + 1u);
+            ASSERT_EQ(answer_ring().head.v.load(), answers + 1u) << "the far caller is unanswered";
+            EXPECT_TRUE(answered_empty_at(answers));
+            EXPECT_EQ(call_ring().tail.v.load(), g_tail_before + 1u)
+                << "the slot was never released";
+
+            wake_next_park(call_arrives);
+            kos_reply_recv_opts opts{};
+            ASSERT_EQ(receive(ep, &opts, 0), static_cast<int32_t>(CALL_LEN));
+            EXPECT_NE(opts.info.reply_cap, KOS_CAP_NONE) << "the control is handed no capability";
+            EXPECT_EQ(cap_reply_live(r), 1u);
+            // A far record outlives amp_reset; left live, a later case's resynchronisation
+            // answers it.
+            EXPECT_EQ(endpoint_reply(opts.info.reply_cap, reinterpret_cast<uintptr_t>(g_rbuf), 0u),
+                      0);
+        }
+
+        TEST_F(AmpHold, no_far_reply_band_handle_resolves_to_a_local_thread)
+        {
+            for (int i = 0; i < KICKOS_THREAD_SLOTS; i++)
+            {
+                Thread* const t = seat_pool(i, PRIO_RECEIVER);
+                IrqLock lock;
+                testfix::seat_blocked(t);
+                policy_on_remove(t);
+                t->call_state = CALL_REPLY_WAIT;
+            }
+            ASSERT_EQ(kernel().threads.next, KICKOS_THREAD_SLOTS);
+
+            IrqLock lock;
+            for (uint32_t rec = 0; rec < ThreadPool::FAR_REPLY_RECORDS; rec++)
+            {
+                uint32_t const handle = ThreadPool::far_reply_handle(rec);
+                EXPECT_GE(handle_index(handle), static_cast<uint32_t>(kernel().threads.next))
+                    << "record " << rec << " lies inside the pool's high-water mark";
+                EXPECT_EQ(cap_reply_thread(handle, 0u, 0u), nullptr)
+                    << "record " << rec << " resolved to a local thread";
+            }
         }
 
         namespace
@@ -512,19 +599,24 @@ namespace kickos
                 return amp::ring_for(amp::Class::CALL, PEER, ME);
             }
 
-            void peer_replies(amp::ReplyTag const& tag)
+            void peer_replies_len(amp::ReplyTag const& tag, uint32_t len)
             {
                 amp::Ring& r = reply_ring();
                 uint32_t const head = r.head.v.load();
                 amp::Slot& s = r.slot[head % amp::RING_SLOTS];
                 s.port.store(amp::PORT_REPLY);
                 s.tag = tag;
-                s.len.store(REPLY_LEN);
-                for (uint32_t i = 0; i < REPLY_LEN; i++)
+                s.len.store(len);
+                for (uint32_t i = 0; i < len; i++)
                 {
                     s.payload[i] = static_cast<uint8_t>(REPLY_FILL + i);
                 }
                 r.head.v.store(head + 1u);
+            }
+
+            void peer_replies(amp::ReplyTag const& tag)
+            {
+                peer_replies_len(tag, REPLY_LEN);
             }
 
             // The route the caller's last publication carried, as the peer would hand it back.
@@ -656,6 +748,35 @@ namespace kickos
                 << "the landing never released the slot";
             EXPECT_EQ(amphold::g_raise_mask & PEER_CORE_BIT, PEER_CORE_BIT)
                 << "the release that freed the slot returned no credit";
+        }
+
+        namespace
+        {
+            void empty_reply_arrives(Thread*)
+            {
+                peer_replies_len(published_tag(), 0u);
+                g_reply_tail_before = reply_ring().tail.v.load();
+                amphold::g_raise_mask = 0;
+                amp::node_service(kickos::IrqLock());
+            }
+        }
+
+        TEST_F(AmpReplyHold, a_zero_length_far_reply_completes_the_call_with_zero)
+        {
+            uint32_t far = KCAP_INVALID;
+            Thread* const c = seat_caller(1, PRIO_RECEIVER, &far);
+            wake_next_park(empty_reply_arrives);
+            uint32_t const drops = amp::counts(ME).reply_drop.load();
+
+            int32_t const rc = call(far);
+
+            EXPECT_EQ(rc, 0);
+            EXPECT_TRUE(cbuf_holds(g_cbuf, REQUEST_FILL, CALL_LEN));
+            EXPECT_EQ(c->far_hold, 0u);
+            EXPECT_EQ(amp::counts(ME).reply_drop.load(), drops);
+            EXPECT_EQ(reply_ring().tail.v.load(), g_reply_tail_before + 1u)
+                << "the empty reply's slot was never released";
+            EXPECT_EQ(amphold::g_raise_mask & PEER_CORE_BIT, PEER_CORE_BIT);
         }
 
         namespace
@@ -794,14 +915,22 @@ namespace kickos
                 return tag;
             }
 
-            // A caller holding its reply, READY behind a thread that outranks it.
-            Thread* held_behind(Thread** out_above)
+            // A far caller parked on its call, behind a running thread parked on nothing.
+            Thread* parked_behind(Thread** out_above, amp::ReplyTag* out_tag)
             {
                 *out_above = seat_pool(0, PRIO_ABOVE);
                 uint32_t far = KCAP_INVALID;
                 Thread* const c = seat_caller(1, PRIO_RECEIVER, &far);
                 EXPECT_EQ(sched::current(), *out_above);
-                amp::ReplyTag const tag = park_far_caller(c, far);
+                *out_tag = park_far_caller(c, far);
+                return c;
+            }
+
+            // A caller holding its reply, READY behind a thread that outranks it.
+            Thread* held_behind(Thread** out_above)
+            {
+                amp::ReplyTag tag = {};
+                Thread* const c = parked_behind(out_above, &tag);
                 peer_replies(tag);
                 g_reply_tail_before = reply_ring().tail.v.load();
                 doorbell();
@@ -860,6 +989,172 @@ namespace kickos
             EXPECT_EQ(reply_ring().tail.v.load(), g_reply_tail_before + 1u)
                 << "an exiting caller's reply slot is never given back";
             EXPECT_EQ(amphold::g_raise_mask & PEER_CORE_BIT, PEER_CORE_BIT);
+        }
+
+        // --- the reply guard ---------------------------------------------------------------
+        // Each case ends on the caller's own tag over the same staging, the control.
+        namespace
+        {
+            void expect_still_parked(Thread const* c)
+            {
+                EXPECT_EQ(c->state, ThreadState::BLOCKED) << "a hostile reply woke the caller";
+                EXPECT_EQ(c->far_hold, 0u) << "a hostile reply was handed to the caller";
+                EXPECT_EQ(c->call_state, CALL_REPLY_WAIT);
+                EXPECT_EQ(c->wait_kind, WAIT_EP_FAR_REPLY);
+            }
+
+            void hostile_reply_is_dropped(Thread const* c, amp::ReplyTag const& tag)
+            {
+                uint32_t const drops = amp::counts(ME).reply_drop.load();
+                peer_replies(tag);
+                uint32_t const tail_before = reply_ring().tail.v.load();
+                doorbell();
+                EXPECT_EQ(amp::counts(ME).reply_drop.load(), drops + 1u)
+                    << "the refusal was not counted";
+                EXPECT_EQ(reply_ring().tail.v.load(), tail_before + 1u)
+                    << "a reply nobody lands was left holding the ring";
+                expect_still_parked(c);
+            }
+
+            void own_reply_completes(Thread const* c, amp::ReplyTag const& tag)
+            {
+                uint32_t const drops = amp::counts(ME).reply_drop.load();
+                peer_replies(tag);
+                uint32_t const tail_before = reply_ring().tail.v.load();
+                doorbell();
+                EXPECT_EQ(c->state, ThreadState::READY) << "the control did not complete";
+                EXPECT_NE(c->far_hold, 0u);
+                EXPECT_EQ(c->wait_result, static_cast<intptr_t>(REPLY_LEN));
+                EXPECT_EQ(amp::counts(ME).reply_drop.load(), drops);
+                EXPECT_EQ(reply_ring().tail.v.load(), tail_before);
+            }
+        }
+
+        TEST_F(AmpReplyHold, a_reply_naming_a_thread_not_parked_in_a_call_is_dropped)
+        {
+            Thread* above = nullptr;
+            amp::ReplyTag tag = {};
+            Thread* const c = parked_behind(&above, &tag);
+            ASSERT_FALSE(HasFailure());
+            amp::ReplyTag const running = {
+                kernel().threads.handle_for(kernel().threads.index_of(above)),
+                amp::reply_seq(above->call_seq)};
+
+            hostile_reply_is_dropped(c, running);
+            EXPECT_EQ(above->state, ThreadState::RUNNING);
+            EXPECT_EQ(above->far_hold, 0u);
+
+            own_reply_completes(c, tag);
+        }
+
+        TEST_F(AmpReplyHold, a_reply_from_a_node_the_caller_did_not_call_is_refused)
+        {
+            Thread* above = nullptr;
+            amp::ReplyTag tag = {};
+            Thread* const c = parked_behind(&above, &tag);
+            ASSERT_FALSE(HasFailure());
+            constexpr uint32_t HOLD = 3u;
+            uint32_t const strangers[] = {ME, PEER + 1u};
+            for (uint32_t from : strangers)
+            {
+                IrqLock lock;
+                EXPECT_FALSE(endpoint_far_reply_deliver(from, tag, HOLD, REPLY_LEN, lock))
+                    << "node " << from;
+            }
+            expect_still_parked(c);
+
+            {
+                IrqLock lock;
+                EXPECT_TRUE(endpoint_far_reply_deliver(PEER, tag, HOLD, REPLY_LEN, lock))
+                    << "the control does not complete";
+            }
+            EXPECT_EQ(c->state, ThreadState::READY);
+            EXPECT_EQ(c->far_hold, HOLD + 1u);
+        }
+
+        TEST_F(AmpReplyHold, a_reply_one_sequence_ahead_of_the_call_is_dropped)
+        {
+            Thread* above = nullptr;
+            amp::ReplyTag tag = {};
+            Thread* const c = parked_behind(&above, &tag);
+            ASSERT_FALSE(HasFailure());
+
+            hostile_reply_is_dropped(c, {tag.thread, amp::reply_seq(tag.seq + 1u)});
+
+            own_reply_completes(c, tag);
+        }
+
+        // The low byte left standing: a guard validating that byte alone takes it.
+        TEST_F(AmpReplyHold, a_reply_whose_sequence_differs_above_the_low_byte_is_dropped)
+        {
+            Thread* above = nullptr;
+            amp::ReplyTag tag = {};
+            Thread* const c = parked_behind(&above, &tag);
+            ASSERT_FALSE(HasFailure());
+
+            hostile_reply_is_dropped(c, {tag.thread, amp::reply_seq(tag.seq + 0x100u)});
+
+            own_reply_completes(c, tag);
+        }
+
+        // --- the far mint ----------------------------------------------------------------
+        TEST_F(AmpHold, the_far_mint_refuses_the_reply_port_and_mints_a_service)
+        {
+            Thread* const c = seat_pool(1, PRIO_RECEIVER);
+            attach_caps(c, KICKOS_CAP_CHILD_WIDTH);
+            IrqLock lock;
+            uint32_t cap = 0u;
+            EXPECT_EQ(amp_endpoint_mint(c, PEER, amp::PORT_REPLY, CAP_SIGNAL, &cap), -KOS_EINVAL);
+            EXPECT_EQ(cap, KCAP_INVALID);
+            EXPECT_EQ(amp_endpoint_mint(c, ME, PORT_SERVED, CAP_SIGNAL, &cap), -KOS_EINVAL)
+                << "a far endpoint was minted on this node itself";
+            EXPECT_EQ(amp_endpoint_mint(c, PEER, PORT_UNMINTED, CAP_SIGNAL, &cap), -KOS_EINVAL);
+
+            EXPECT_EQ(amp_endpoint_mint(c, PEER, amp::PORT_ECHO, CAP_SIGNAL, &cap), 0);
+            EXPECT_NE(cap, KCAP_INVALID);
+            EXPECT_EQ(amp_endpoint_mint(c, PEER, PORT_FAR, CAP_SIGNAL, &cap), 0);
+            EXPECT_NE(cap, KCAP_INVALID);
+        }
+
+        // The pool full but for the far endpoint's slot, so the create after its close lands
+        // there: it must not carry the far route.
+        TEST_F(AmpHold, a_far_endpoint_slot_freed_and_created_again_is_local)
+        {
+            uint32_t far = KCAP_INVALID;
+            Thread* const c = seat_caller(1, PRIO_RECEIVER, &far);
+            ASSERT_EQ(sched::current(), c);
+            Endpoint* far_ep = nullptr;
+            {
+                IrqLock lock;
+                int err = 0;
+                far_ep = static_cast<Endpoint*>(
+                    cap_resolve_e(c, far, CapType::CAP_ENDPOINT, CAP_SIGNAL, &err));
+                ASSERT_NE(far_ep, nullptr);
+                ASSERT_TRUE(endpoint_is_far(far_ep));
+                Endpoint* filler = nullptr;
+                while (endpoint_slot_claim(&filler) >= 0)
+                {
+                }
+                ASSERT_EQ(handle_close(c, far, lock), 0);
+            }
+            uint32_t local = KCAP_INVALID;
+            ASSERT_EQ(endpoint_create(&local), 0);
+            Endpoint* reused = nullptr;
+            {
+                IrqLock lock;
+                int err = 0;
+                reused = static_cast<Endpoint*>(
+                    cap_resolve_e(c, local, CapType::CAP_ENDPOINT, CAP_SIGNAL, &err));
+            }
+            ASSERT_EQ(reused, far_ep) << "the create took another slot, so nothing was reused";
+            EXPECT_FALSE(endpoint_is_far(reused)) << "the reused slot still carries the far route";
+
+            uint32_t const out_head = outbound_ring().head.v.load();
+            uint32_t const sent = amp::counts(ME).sent.load();
+            EXPECT_EQ(endpoint_send(local, reinterpret_cast<uintptr_t>(g_cbuf), CALL_LEN, 0u),
+                      -KOS_ETIMEDOUT);
+            EXPECT_EQ(outbound_ring().head.v.load(), out_head) << "the send crossed to the peer";
+            EXPECT_EQ(amp::counts(ME).sent.load(), sent);
         }
 
         // --- the register fastpath at a node's posture -----------------------------------

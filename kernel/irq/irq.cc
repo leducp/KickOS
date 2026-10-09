@@ -496,10 +496,10 @@ namespace kickos
         {
             return -KOS_EINVAL;
         }
-        // The arch takes this line ahead of kickos_isr_irq, so a binding here would drive
-        // nothing and its detach would mask the line the kernel rings on. No holder could ever
+        // The kernel takes this line ahead of kickos_isr_irq, so a binding here would drive
+        // nothing and its detach would mask the line the kernel needs. No holder could ever
         // free it, so this is a permanent EPERM and not an EBUSY.
-        if (arch_irq_line_kernel_owned(line))
+        if (irq_line_kernel_owned(line))
         {
             return -KOS_EPERM;
         }
@@ -856,6 +856,22 @@ namespace kickos
         // discard can neither arm nor open a line. Discarding an armed line races the
         // device; the latch is only known stale between a wait return and its ack.
         irq_line_op(b->line, LineOp::CLEAR, lock);
+        return 0;
+    }
+
+    int irq_raise(Thread* c, uint32_t cap_handle)
+    {
+        IrqLock lock;
+        int err = 0;
+        IrqBinding* const b = binding_of_cap(c, cap_handle, CAP_SIGNAL, &err);
+        if (b == nullptr)
+        {
+            return -err;
+        }
+        if (not irq_inject(b->line, lock))
+        {
+            return -KOS_ENOTSUP;
+        }
         return 0;
     }
 

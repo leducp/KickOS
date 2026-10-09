@@ -17,7 +17,6 @@
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
-#include <kickos/sys/abi_probe.h>
 
 #include <kickos/libc/fmt.h>
 
@@ -26,19 +25,16 @@ namespace
     // Far more pages than any stack this board configures, so a run that exhausts it has
     // found a mapping below the stack rather than run out of patience.
     constexpr unsigned PROBE_LIMIT = 64u;
+
+    // The map granule of every translating port.
+    constexpr uintptr_t GRANULE = 4096u;
 }
 
 int main(int, char**)
 {
-    uintptr_t const g = kos_aspace_probe(KOS_ASPACE_OP_GRANULE, 0);
-    if (g == 0 or (g & (g - 1u)) != 0)
-    {
-        kos_print("[stackguard] ERROR: no granule to walk in\n");
-        return 1;
-    }
     // volatile so the address escapes and the object stays on the stack.
     volatile unsigned char local = 0;
-    uintptr_t p = reinterpret_cast<uintptr_t>(&local) & ~(g - 1u);
+    uintptr_t p = reinterpret_cast<uintptr_t>(&local) & ~(GRANULE - 1u);
     for (unsigned step = 0; step < PROBE_LIMIT; step++)
     {
         char msg[64];
@@ -46,7 +42,7 @@ int main(int, char**)
                   static_cast<unsigned long>(p));
         kos_print(msg);
         *reinterpret_cast<volatile unsigned char*>(p) = 0xA5u;
-        p -= g;
+        p -= GRANULE;
     }
     kos_print("[stackguard] ERROR: walked past every page of the stack without faulting\n");
     return 1;

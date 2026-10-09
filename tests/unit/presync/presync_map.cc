@@ -4,8 +4,8 @@
 // The locked pass of a mapping that owes its frames a sync, over the REAL kernel/mem/aspace.cc:
 // a frame capability's map (aspace_cap_map) excused by the calling thread's live record of a sync
 // made ahead of it, refused otherwise, and a record dropped by another thread's call only when
-// that call completes. Two thread slots stand in for two callers; the map editor, the frame pool
-// and the capability's run are seams that record nothing.
+// that call completes. Two thread slots stand in for two callers; the map editor and the
+// capability's run are seams that record nothing.
 
 #include <kickos/aspace.h>
 #include <kickos/domain.h>
@@ -14,6 +14,10 @@
 #include <kickos/kernel.h>
 #include <kickos/sched.h>
 #include <kickos/vrange.h>
+
+#include <kickos/sys/errno.h>
+
+#include "host_frame_pool.h"
 
 #include <gtest/gtest.h>
 
@@ -27,10 +31,10 @@
 namespace
 {
     constexpr size_t G = 4096u;
-    // The pool's frames, and a run of them a capability names.
-    constexpr arch_phys_addr_t POOL_LO = 0x40000000u;
-    constexpr arch_phys_addr_t POOL_HI = 0x40100000u;
-    constexpr arch_phys_addr_t RUN = POOL_LO + 16u * G;
+    // A run of the pool's frames a capability names, and the first frame past the pool.
+    constexpr arch_phys_addr_t RUN = kickos::testfix::HOST_POOL_LO + 16u * G;
+    constexpr arch_phys_addr_t POOL_HI =
+        kickos::testfix::HOST_POOL_LO + kickos::testfix::HOST_POOL_FRAMES * G;
     constexpr uint32_t PAGES = 4;
     constexpr uintptr_t VA_A = 0x10000000u;
     constexpr uintptr_t VA_B = 0x20000000u;
@@ -75,15 +79,6 @@ namespace kickos
     VirtualRanges const* domain_ranges(Domain const*) { return nullptr; }
     VirtualRanges* domain_ranges_mut(Domain*) { return nullptr; }
 
-    void frame_pool_phys_bounds(arch_phys_addr_t* lo, arch_phys_addr_t* hi)
-    {
-        *lo = POOL_LO;
-        *hi = POOL_HI;
-    }
-
-    void frame_pool_free_run(arch_phys_addr_t, size_t, size_t) {}
-    void* frame_pool_ptr(arch_phys_addr_t) { return nullptr; }
-
     bool frame_run_ref(int) { return true; }
     void frame_run_release(int) {}
     int frame_run_slot_of(int obj) { return obj; }
@@ -113,6 +108,11 @@ namespace
         static Thread* a() { return &kickos::kernel().threads.slots[0]; }
         static Thread* b() { return &kickos::kernel().threads.slots[1]; }
 
+        static bool live(Thread const* t)
+        {
+            return kickos::kernel().presync[kickos::kernel().threads.index_of(t)].live;
+        }
+
         // One round of a call `t` makes: noting `pages` granules of the run when `note`, then
         // the locked pass mapping the whole run non-cacheable at `va`.
         int map(Thread* t, int which, uintptr_t va, size_t pages, bool note)
@@ -128,8 +128,13 @@ namespace
 
         int map_locked(int which, uintptr_t va)
         {
+            return map_at(which, &va, ARCH_MAP_NOCACHE);
+        }
+
+        int map_at(int which, uintptr_t* va, enum arch_map_memtype type)
+        {
             return kickos::aspace_cap_map(space_, &ranges_[which], va, which, RUN, PAGES,
-                                          ARCH_MAP_R | ARCH_MAP_W, ARCH_MAP_NOCACHE);
+                                          ARCH_MAP_R | ARCH_MAP_W, type);
         }
 
         // Ends the round of `t`'s call, which `completed` or failed; true when it was refused.
@@ -149,21 +154,17 @@ namespace
 
     TEST_F(PresyncMap, a_live_record_covering_the_run_excuses_the_locked_pass)
     {
-        uint32_t const r0 = kickos::presync_refusals();
         EXPECT_EQ(map(a(), 0, VA_A, PAGES, true), 0);
         EXPECT_FALSE(end(a(), true));
-        EXPECT_EQ(kickos::presync_refusals(), r0);
         EXPECT_EQ(g_maps, 1);
     }
 
     TEST_F(PresyncMap, no_record_or_a_short_one_refuses_and_maps_nothing)
     {
-        uint32_t const r0 = kickos::presync_refusals();
         EXPECT_NE(map(a(), 0, VA_A, PAGES, false), 0);
         EXPECT_TRUE(end(a(), false));
         EXPECT_NE(map(a(), 0, VA_A, PAGES - 1u, true), 0);
         EXPECT_TRUE(end(a(), false));
-        EXPECT_EQ(kickos::presync_refusals(), r0 + 2u);
         EXPECT_EQ(g_maps, 0);
     }
 
@@ -183,9 +184,9 @@ namespace
         // b's map is excused by b's own record and installs a mapping over the noted frames.
         EXPECT_EQ(map(b(), 1, VA_B, PAGES, true), 0);
         g_current = a();
-        EXPECT_EQ(kickos::presync_live_count(), 2u);
+        EXPECT_EQ(kickos::kernel().presync_live, 2u);
         EXPECT_FALSE(end(b(), false)) << "b's call did not complete";
-        EXPECT_TRUE(kickos::presync_live_of(a())) << "a failed call drops nothing";
+        EXPECT_TRUE(live(a())) << "a failed call drops nothing";
         g_current = a();
         EXPECT_EQ(map_locked(0, VA_A), 0);
         EXPECT_FALSE(end(a(), true));
@@ -198,7 +199,7 @@ namespace
         kickos::presync_note(RUN, PAGES);
         EXPECT_EQ(map(b(), 1, VA_B, PAGES, true), 0);
         EXPECT_FALSE(end(b(), true));
-        EXPECT_FALSE(kickos::presync_live_of(a()));
+        EXPECT_FALSE(live(a()));
         g_current = a();
         EXPECT_NE(map_locked(0, VA_A), 0);
         EXPECT_TRUE(end(a(), false));
@@ -211,7 +212,7 @@ namespace
         kickos::presync_note(RUN, PAGES);
         EXPECT_NE(map(b(), 1, VA_B, PAGES, false), 0);
         EXPECT_TRUE(end(b(), true));
-        EXPECT_TRUE(kickos::presync_live_of(a()));
+        EXPECT_TRUE(live(a()));
         g_current = a();
         EXPECT_EQ(map_locked(0, VA_A), 0);
         EXPECT_FALSE(end(a(), true));
@@ -221,7 +222,8 @@ namespace
     {
         g_current = a();
         kickos::presync_begin();
-        EXPECT_EQ(kickos::aspace_cap_map(space_, &ranges_[0], VA_A, 0, POOL_HI, PAGES,
+        uintptr_t va = VA_A;
+        EXPECT_EQ(kickos::aspace_cap_map(space_, &ranges_[0], &va, 0, POOL_HI, PAGES,
                                          ARCH_MAP_R | ARCH_MAP_W, ARCH_MAP_NOCACHE),
                   0);
         EXPECT_FALSE(end(a(), true));
@@ -231,13 +233,29 @@ namespace
     {
         g_current = a();
         kickos::presync_begin();
-        EXPECT_EQ(kickos::aspace_cap_map(space_, &ranges_[0], VA_A, 0, RUN, PAGES,
-                                         ARCH_MAP_R | ARCH_MAP_W, ARCH_MAP_NORMAL),
-                  0);
+        uintptr_t va = VA_A;
+        EXPECT_EQ(map_at(0, &va, ARCH_MAP_NORMAL), 0);
         kickos::presync_commit();
         EXPECT_FALSE(kickos::presync_end());
-        EXPECT_DEATH((void)kickos::aspace_cap_map(space_, &ranges_[1], VA_B, 1, RUN, PAGES,
-                                                  ARCH_MAP_R | ARCH_MAP_W, ARCH_MAP_NORMAL),
-                     "");
+        va = VA_B;
+        EXPECT_DEATH((void)map_at(1, &va, ARCH_MAP_NORMAL), "");
+    }
+
+    class FrameMap : public PresyncMap
+    {
+    };
+
+    TEST_F(FrameMap, a_second_va_zero_map_in_one_space_is_enomem)
+    {
+        g_current = a();
+        kickos::presync_begin();
+        uintptr_t va = 0;
+        ASSERT_EQ(map_at(0, &va, ARCH_MAP_NORMAL), 0);
+        EXPECT_NE(ranges_[0].at_base(RUN), nullptr) << "the range was registered elsewhere";
+        uintptr_t again = 0;
+        EXPECT_EQ(map_at(0, &again, ARCH_MAP_NORMAL), -KOS_ENOMEM);
+        EXPECT_EQ(again, 0u) << "a refused map wrote the address";
+        EXPECT_EQ(g_maps, 1);
+        EXPECT_FALSE(end(a(), true));
     }
 }

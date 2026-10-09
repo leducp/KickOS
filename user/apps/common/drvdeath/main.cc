@@ -125,7 +125,7 @@ namespace
 
     void nest_grandchild(void*) // caps: park@1
     {
-        kos_sem_wait(KOS_SPAWN_DELEGATED_CAP0); // never posted: alive until its spawner cancels it
+        kos_sem_wait(KOS_SPAWN_DELEGATED_CAP0, KOS_TIMEOUT_NONE); // never posted: alive until its spawner cancels it
         kos_exit(0);
     }
 
@@ -143,7 +143,7 @@ namespace
         // Main's refuse-half probe needs the grandchild ALIVE, and a cancel reaches a
         // semaphore park, so the accept half below would otherwise race it dead. The gate
         // makes the order explicit instead of resting on cancellation being toothless.
-        kos_sem_wait(NEST_PROBE);
+        kos_sem_wait(NEST_PROBE, KOS_TIMEOUT_NONE);
         // The accept half of the gate: a spawner may cancel its own child. Main's
         // -KOS_EPERM below is the refuse half.
         kos_thread_t const gc = g_grandchild;
@@ -152,7 +152,7 @@ namespace
             g_child_kill_rc = kos_thread_kill(gc);
         }
         kos_sem_post(NEST_DONE);
-        kos_sem_wait(NEST_PARK); // never posted: alive until main cancels it
+        kos_sem_wait(NEST_PARK, KOS_TIMEOUT_NONE); // never posted: alive until main cancels it
         kos_exit(0);
     }
 
@@ -187,14 +187,14 @@ namespace
         {
             return;
         }
-        kos_sem_wait(done); // the grandchild exists
+        kos_sem_wait(done, KOS_TIMEOUT_NONE); // the grandchild exists
         kos_thread_t const gc = g_grandchild;
         if (gc != KOS_THREAD_NONE)
         {
             *stranger_rc = kos_thread_kill(gc);
         }
         kos_sem_post(probe); // probed: the child may now cancel it for real
-        kos_sem_wait(done);  // the child has tried its own cancel
+        kos_sem_wait(done, KOS_TIMEOUT_NONE);  // the child has tried its own cancel
         // Cancellation, not destruction: the child wakes out of its park and exits itself. It
         // runs above main, so it has exited by the time this returns. Killing it TWICE must not
         // resolve: the slot is EXITED and the generation only bumps at reclaim, so the

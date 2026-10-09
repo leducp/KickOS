@@ -360,7 +360,7 @@ jobs:
           cmake --build --preset qemu-arm64-smp
           ctest --preset qemu-arm64-smp -LE tree --no-tests=error --output-on-failure
           # Require tests that depend on the configured core count, and the default system's.
-          out=$(tests/ci/ctest_named.sh 'qemu_arm64_smp_arrival|qemu_arm64_smp_doorbell|qemu_arm64_smp_threads|qemu_arm64_slaypeer|qemu_arm64_unmappeer|qemu_arm64_golden_system|qemu_arm64_restart_witness|qemu_arm64_line_taker|qemu_arm64_driver_restart|qemu_arm64_driver_line|qemu_arm64_console_restart|^qemu_arm64_sysdefault$|qemu_arm64_sysdefault_spin|qemu_arm64_sysdefault_fault|qemu_arm64_system_link_none|qemu_arm64_system_link_two|qemu_arm64_system_link_entry|qemu_arm64_system_link_refused|qemu_arm64_system_link_notool|qemu_arm64_system_link_nocc|qemu_arm64_system_link_rerun|qemu_arm64_system_link_noheap|qemu_arm64_system_link_stack' \
+          out=$(tests/ci/ctest_named.sh 'qemu_arm64_smp_arrival|qemu_arm64_smp_doorbell|qemu_arm64_smp_threads|qemu_arm64_slaypeer|qemu_arm64_deadstack|qemu_arm64_golden_system|qemu_arm64_restart_witness|qemu_arm64_line_taker|qemu_arm64_driver_restart|qemu_arm64_driver_line|qemu_arm64_console_restart|^qemu_arm64_sysdefault$|qemu_arm64_sysdefault_spin|qemu_arm64_sysdefault_fault|qemu_arm64_system_link_none|qemu_arm64_system_link_two|qemu_arm64_system_link_entry|qemu_arm64_system_link_refused|qemu_arm64_system_link_notool|qemu_arm64_system_link_nocc|qemu_arm64_system_link_rerun|qemu_arm64_system_link_noheap|qemu_arm64_system_link_stack' \
             --preset qemu-arm64-smp --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
@@ -699,7 +699,7 @@ jobs:
           cmake --build --preset qemu-riscv64-smp
           ctest --preset qemu-riscv64-smp -LE tree --no-tests=error --output-on-failure
           # Require tests that depend on the hart count and selftest configuration.
-          out=$(tests/ci/ctest_named.sh 'smp_threads|taskleave|slaypeer|^qemu_riscv64_sysdefault$|qemu_riscv64_sysdefault_spin|qemu_riscv64_sysdefault_fault|qemu_riscv64_system_link_none|qemu_riscv64_system_link_two|qemu_riscv64_system_link_entry|qemu_riscv64_system_link_refused|qemu_riscv64_system_link_notool|qemu_riscv64_system_link_nocc|qemu_riscv64_system_link_rerun|qemu_riscv64_system_link_noheap' \
+          out=$(tests/ci/ctest_named.sh 'smp_threads|taskleave|slaypeer|qemu_riscv64_deadstack|^qemu_riscv64_sysdefault$|qemu_riscv64_sysdefault_spin|qemu_riscv64_sysdefault_fault|qemu_riscv64_system_link_none|qemu_riscv64_system_link_two|qemu_riscv64_system_link_entry|qemu_riscv64_system_link_refused|qemu_riscv64_system_link_notool|qemu_riscv64_system_link_nocc|qemu_riscv64_system_link_rerun|qemu_riscv64_system_link_noheap' \
             --preset qemu-riscv64-smp --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
@@ -784,8 +784,9 @@ jobs:
           cmake --preset qemu-x86_64-smp2
           cmake --build build/qemu-x86_64-smp2
           ctest --test-dir build/qemu-x86_64-smp2 -LE tree --no-tests=error --output-on-failure
-          # Require the golden system, the default system's and the out-of-tree app's gates.
-          out=$(tests/ci/ctest_named.sh 'qemu_x86_64_golden_system|qemu_x86_64_restart_witness|^qemu_x86_64_sysdefault$|qemu_x86_64_sysdefault_spin|qemu_x86_64_sysdefault_fault|qemu_x86_64_oot_mcu_app|qemu_x86_64_system_link_none|qemu_x86_64_system_link_two|qemu_x86_64_system_link_entry|qemu_x86_64_system_link_refused|qemu_x86_64_system_link_notool|qemu_x86_64_system_link_nocc|qemu_x86_64_system_link_rerun|qemu_x86_64_system_link_noheap' \
+          # Require the golden system, the default system's and the out-of-tree app's gates, and the
+          # peer-core read of a dead thread's stack.
+          out=$(tests/ci/ctest_named.sh 'qemu_x86_64_golden_system|qemu_x86_64_deadstack|qemu_x86_64_restart_witness|^qemu_x86_64_sysdefault$|qemu_x86_64_sysdefault_spin|qemu_x86_64_sysdefault_fault|qemu_x86_64_oot_mcu_app|qemu_x86_64_system_link_none|qemu_x86_64_system_link_two|qemu_x86_64_system_link_entry|qemu_x86_64_system_link_refused|qemu_x86_64_system_link_notool|qemu_x86_64_system_link_nocc|qemu_x86_64_system_link_rerun|qemu_x86_64_system_link_noheap' \
             --test-dir build/qemu-x86_64-smp2 --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
@@ -800,7 +801,7 @@ jobs:
           done
 
   # Root on core 1: an application processor enters it as its first thread, and errnoprobe's
-  # arm F reads libc there before any switch.
+  # arm F reads libc there; a switch-in before it is not excluded.
   qemu-x86_64-ap:
     needs: toolchain-x86_64-elf
     runs-on: ubuntu-26.04
@@ -1072,12 +1073,12 @@ jobs:
           cmake --build build/pizero2350-amp2-n0 --target amp_partition
       - name: armv8-M own-image partition, the PRODUCTION posture (self-test off)
         run: |
-          # Disable shutdown-to-bootloader along with its self-test dependency.
+          # Disable reboot and shutdown-to-bootloader along with the self-test.
           # Use a separate build directory to avoid cached options. Build only:
           # preset-based gates would rebuild the standard variant instead.
           for node in 0 1; do
             cmake --preset pizero2350-amp2-n$node -B build/pizero2350-amp2-prod-n$node \
-              -DKICKOS_ENABLE_SELFTEST=OFF -DKICKOS_SHUTDOWN_TO_BOOTLOADER=OFF
+              -DKICKOS_ENABLE_SELFTEST=OFF -DKICKOS_REBOOT=OFF -DKICKOS_SHUTDOWN_TO_BOOTLOADER=OFF
             cmake --build build/pizero2350-amp2-prod-n$node
           done
       - name: armv8-M own-image partition, the MERGED artefact

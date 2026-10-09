@@ -5,7 +5,7 @@
 // C, because the same code links from the kernel and from unprivileged userspace unchanged.
 //
 // ONE DEFINITION OF THESE PUBLIC NAMES PER IMAGE, chosen per executable: a local engine, the
-// proxy that marshals onto a service endpoint, or the selftest's spi_mock.cc. A SERVICE driver
+// proxy that marshals onto a service endpoint, or a mock. A SERVICE driver
 // renames its four symbols at its CMake target (kos_spi_bus_open=k64dspi_bus_open ...) so its
 // own engine stays private. Skipping that rename on ALL FOUR is NOT reported at link time: an
 // archive member is extracted only to satisfy a name nothing on the link line already defines,

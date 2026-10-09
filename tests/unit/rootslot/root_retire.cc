@@ -114,8 +114,8 @@ namespace kickos
                    "tag and root's oversized stack block to a stranger";
         }
 
-        // The identity half, which is what syscall.cc, syscall_thread.cc and syscall_amp.cc
-        // read. All three want the IDENTITY, and none of them wants the slot.
+        // The identity half, which is what syscall.cc and sched.cc read. Both want the
+        // IDENTITY, and neither wants the slot.
         TEST_F(RootRetire, root_keeps_its_identity_and_no_successor_gains_it)
         {
             Thread* const root = seat_root();

@@ -102,37 +102,6 @@ namespace kickos
         return true;
     }
 #endif
-
-#if defined(KICKOS_ENABLE_SELFTEST)
-    bool amp_share_seated(uintptr_t* base, size_t* size)
-    {
-        Task const* const root = kernel().threads.slots[ThreadPool::ROOT_INDEX].task;
-        if (root == nullptr)
-        {
-            return false;
-        }
-#if KICKOS_HAVE_ASPACE
-        VirtualRanges const* const r = domain_ranges(task_domain(root));
-        for (size_t i = 0; r != nullptr and i < VirtualRanges::capacity(); i++)
-        {
-            VirtualRange const* const e = r->at(i);
-            if (e != nullptr and (e->flags & VR_SHARE) != 0)
-            {
-                *base = e->base;
-                *size = static_cast<size_t>(e->pages) * arch_aspace_granule();
-                return true;
-            }
-        }
-        return false;
-#elif KICKOS_HAVE_MPU
-        return ram_owner_extent(root, AMP_SHARE_BASE, base, size);
-#else
-        (void)base;
-        (void)size;
-        return false;
-#endif
-    }
-#endif
 }
 
 #endif

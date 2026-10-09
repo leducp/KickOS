@@ -51,9 +51,13 @@ kickos_add_diagnostic_apps(fault panicgate)
 
 # --- A C library on the target -----------------------------------------------------------
 if(KICKOS_HAVE_LIBC)
+  add_subdirectory(chaincheck)
   add_subdirectory(libc_exit)
   add_subdirectory(sysdefault)
-  kickos_add_diagnostic_apps(rootfault rootauth rebootdemo reclaimwit)
+  kickos_add_diagnostic_apps(rootfault rootauth reclaimwit)
+  if(KICKOS_REBOOT)
+    kickos_add_diagnostic_apps(rebootdemo)
+  endif()
 endif()
 # objbudget fills main's endpoint budget and asks that the refusal be the budget's, so both the
 # pool and main's table must have room for that budget: the pool has none to spare where the
@@ -82,7 +86,7 @@ if(KICKOS_FAULT_ISOLATION)
   kickos_add_diagnostic_apps(faultsurvive)
 endif()
 if(KICKOS_HAVE_ASPACE)
-  kickos_add_diagnostic_apps(aspacefault aspaceufault kernelhalf stackguard)
+  kickos_add_diagnostic_apps(deadstack kernelhalf stackguard)
 endif()
 # Sim only: each drives something that is only automatable on the host, a loopback "device"
 # that is the host wire, a published posture, or __builtin_trap.
@@ -98,12 +102,11 @@ if(KICKOS_ARCH STREQUAL "armv7m" OR KICKOS_ARCH STREQUAL "armv6m")
 endif()
 # The nested-trap witness: rv32imac is the one backend that runs syscall dispatch on the
 # caller's own stack AND builds its trap frames in software, so it is the only one where an
-# interrupt taken mid-dispatch can put a frame at an unbounded depth on a thread's stack. The
-# witness it reads is kept OUT of a bench build: its call site is inside what the injected-IRQ
-# bench measures. Its deep syscall is a spawn the region rules must refuse, and without an MPU
-# backend nothing refuses it.
-if(KICKOS_ARCH STREQUAL "rv32imac" AND NOT KICKOS_BENCH AND KICKOS_HAVE_MPU)
-  kickos_add_diagnostic_apps(trapnest)
+# interrupt taken mid-dispatch can put a frame at an unbounded depth on a thread's stack. Its
+# deep syscall is a spawn the region rules must refuse, and without an MPU backend nothing
+# refuses it.
+if(KICKOS_ARCH STREQUAL "rv32imac" AND KICKOS_HAVE_MPU)
+  add_subdirectory(trapnest)
 endif()
 # Built only where the board compiles TLS: elsewhere the thread_local is a link error naming
 # __aeabi_read_tp, which is the intended diagnostic but not a fleet build failure.
@@ -114,11 +117,6 @@ endif()
 kickos_qemu_machine("${KICKOS_BOARD}" _kos_errno_env _kos_errno_machine)
 if(NOT _kos_errno_machine STREQUAL "")
   add_subdirectory(errnoprobe)
-endif()
-# Double classification and printf through the compiler and newlib, wherever newlib prints a
-# double: nano does not, and the sim's C library is the host's.
-if(KICKOS_HAVE_LIBC AND NOT KICKOS_ARCH STREQUAL "sim" AND NOT KICKOS_NEWLIB_NANO)
-  add_subdirectory(fpclass)
 endif()
 
 # Per-thread stdout regression. newlib_stubs.cc (the _write under test) is compiled ONLY for
@@ -132,18 +130,12 @@ endif()
 
 # --- Above one core -----------------------------------------------------------------------
 # THE TARGETS THEMSELVES are gated and not just their ctest entries: slaypeer's main.cc pins by
-# core mask and reads a printf formatter, and taskleave calls kos_aspace_probe unconditionally,
-# which is not declared where KICKOS_HAVE_ASPACE is 0. At one core a victim cannot be RUNNING
-# anywhere but where the slayer is, which is the whole hazard.
+# core mask and reads a printf formatter, and taskleave calls kos_mem_count, which is not
+# declared where KICKOS_HAVE_ASPACE is 0. At one core a victim cannot be RUNNING anywhere but
+# where the slayer is, which is the whole hazard.
 if(KICKOS_HAVE_LIBC AND KICKOS_BUILD_TESTS AND KICKOS_KERNEL_CORES GREATER 1)
   add_subdirectory(slaypeer)
-  # Its judge reads the arm64 fault record, and the arm stands in for an arm64 image gate.
-  if(KICKOS_HAVE_ASPACE AND KICKOS_ARCH STREQUAL "armv8a")
-    add_subdirectory(unmappeer)
-  endif()
-  # The counter taskleave reads exists only where a space can be installed on a core at all,
-  # and the probe is selftest scaffolding.
-  if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST)
+  if(KICKOS_HAVE_ASPACE)
     add_subdirectory(taskleave)
   endif()
 endif()

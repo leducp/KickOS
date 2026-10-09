@@ -93,7 +93,7 @@ printf 'CONFIG_KICKOS_BENCH=y\n' > "$TMP/tree/boards/esp32-wroom/configs/bench/d
 F="$TMP/fixture"
 {
     printf 'hello|kernel|tests/integration/check_qemu_hello.sh|\n'
-    printf 'fpclass|kernel|tests/integration/check_fpclass.sh|\n'
+    printf 'chaincheck_float|kernel|tests/integration/check_chaincheck.sh|\n'
 } > "$F/rx72m.images"
 cp "$F/rx72m.images" "$F/rx72m-flat.images"
 printf 'hello|kernel|tests/integration/check_qemu_hello.sh|\n' > "$F/esp32c6-wroom.images"
@@ -117,23 +117,23 @@ C6_BUS='1a86:55d3 C6'
 fleet "$RX_BUS" rx72m
 got=$?
 [ "$got" -eq 0 ] || bad "a pass capturing every rx72m image exits $got, not 0"
-grep -qxF 'rx72m flat fpclass 0 plantedflat' "$F/flashed" \
-    || bad "the rx72m pass did not capture fpclass from its flat build"
+grep -qxF 'rx72m flat chaincheck_float 0 plantedflat' "$F/flashed" \
+    || bad "the rx72m pass did not capture chaincheck_float from its flat build"
 if grep -q '^rx72m flat hello ' "$F/flashed"; then
     bad "the rx72m pass captured hello from its flat build, which only the enforcing build owes"
 fi
-grep -qE '^  rx72m +fpclass \(flat\) +captured$' "$TMP/fleet.out" \
-    || bad "the rx72m coverage table does not show fpclass (flat) captured"
+grep -qE '^  rx72m +chaincheck_float \(flat\) +captured$' "$TMP/fleet.out" \
+    || bad "the rx72m coverage table does not show chaincheck_float (flat) captured"
 
-printf 'NOT EVALUATED: the flat clause\n' > "$F/fpclass-flat.out"
+printf 'NOT EVALUATED: the flat clause\n' > "$F/chaincheck_float-flat.out"
 fleet "$RX_BUS" rx72m
 got=$?
-[ "$got" -eq 3 ] || bad "a pass owing a clause of the flat fpclass exits $got, not 3"
-grep -qE '^  rx72m +fpclass +captured$' "$TMP/fleet.out" \
-    || bad "the enforcing fpclass row shows a clause only its flat run owes"
-grep -qE '^  rx72m +fpclass \(flat\) +captured, partly owed: the flat clause$' "$TMP/fleet.out" \
-    || bad "the flat fpclass row does not owe its own clause"
-rm -f "$F/fpclass-flat.out"
+[ "$got" -eq 3 ] || bad "a pass owing a clause of the flat chaincheck_float exits $got, not 3"
+grep -qE '^  rx72m +chaincheck_float +captured$' "$TMP/fleet.out" \
+    || bad "the enforcing chaincheck_float row shows a clause only its flat run owes"
+grep -qE '^  rx72m +chaincheck_float \(flat\) +captured, partly owed: the flat clause$' "$TMP/fleet.out" \
+    || bad "the flat chaincheck_float row does not owe its own clause"
+rm -f "$F/chaincheck_float-flat.out"
 
 fleet "$C6_BUS" rx72m
 got=$?
@@ -313,7 +313,7 @@ if grep -q '^alone ' "$F/events"; then
 fi
 awk '$1 == "start" { s = 1 } $1 == "build" && s { bad = 1 } END { exit bad }' "$F/events" \
     || bad "an image was built after the first flash"
-[ "$(grep '^rx72m ' "$F/flashed" | cut -d' ' -f2,3 | paste -sd ',' -)" = '- hello,- fpclass,flat fpclass' ] \
+[ "$(grep '^rx72m ' "$F/flashed" | cut -d' ' -f2,3 | paste -sd ',' -)" = '- hello,- chaincheck_float,flat chaincheck_float' ] \
     || bad "the rx72m captures did not run in their queued order"
 for row in 'rx72m +hello' 'f411disco +hello'; do
     grep -qE "^  $row +captured\$" "$TMP/fleet.out" || bad "the merged coverage table does not show [$row] captured"

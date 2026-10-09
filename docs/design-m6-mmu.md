@@ -483,7 +483,8 @@ this.
 
 **TAKEN at M6.2's close and NOT at S2, and the model agrees with the manuals on all three.**
 `arch_aspace_model` (`arch/arm64/armv8a/aspace_armv8a.cc`) reads `ID_AA64MMFR0_EL1` and the
-`aspace_model` arm reports it: granules `0x5` -- 4 KiB and 64 KiB supported, **16 KiB NOT** -- with
+`aspace_model` arm reported it (the arm is gone: the boot now refuses an MMU without the 4 KiB
+granule or with a physical range narrower than `TCR_EL1.IPS`): granules `0x5` -- 4 KiB and 64 KiB supported, **16 KiB NOT** -- with
 16 identifier bits and a 40-bit physical range, which is the A53 reset value F7 took from DDI 0500J
 Table 4-56 exactly. There is nothing to record as a divergence. The reading is what the arm asserts
 rather than a constant of the port's: the granule arm beside it re-reads `arch_aspace_granule`'s own
@@ -755,7 +756,7 @@ the control, without which a refusal from a missing authority reads the same. `r
 gives a member a reservation it never maps and ends its process, requiring every frame back: that
 run has no leaf pointing at it, so the destroy walk cannot see it and only `aspace_release` can
 hand it back. Both answer down an ENDPOINT, sharing no app global with root, per T6.2's ruling.
-The registered arm count went 124 to 127 with `aspace_model` (F7), and T8b's own two arms had
+The registered arm count went 124 to 127 with `aspace_model` (F7, since deleted), and T8b's own two arms had
 taken it 122 to 124 without this document saying so.
 
 **THE FLAGS-MATCH RULE IS WITNESSED ON ONE CONSUMER AND CANNOT BE ON THE OTHER.** The rule is the
@@ -786,7 +787,9 @@ and returned success over a block still mapped non-cacheable. That is the way BA
 buffer, and it is the transition the type exists for. The check now compares the existing exact
 type against the requested one in both directions before taking the short circuit, on both
 families: where a REGION descriptor carries the type the descriptor is REPLACED rather than
-stacked, one block never carrying two of them. Witnessed by `self_grant_retype`.
+stacked, one block never carrying two of them. Witnessed by the host case
+`VRange.the_memory_type_is_recorded_by_the_grant_that_maps_it` and the retype back in
+`uncached_alias_sync`.
 
 **THE KERNEL'S OWN VIEW IS THE ONE MAPPING THE RULE CANNOT BIND.** The kernel reaches every frame
 through a map of its own that stays cacheable: armv8a's static TTBR1 blocks map all RAM Normal
@@ -1024,15 +1027,13 @@ went with them anyway: on the keying it used to carry it answered 0 on exactly t
 strongest denial, so it is keyed on `KICKOS_MEMORY_ENFORCED` too and the file names `KICKOS_HAVE_MPU`
 nowhere. R3's denial arm takes its address from it.
 
-**What the two arms now witness, measured rather than argued.** `writable_global` (an out-pointer in
-an app global) and `readable_global` (a read buffer in app rodata) are both RED with the seeding
-removed and both green with it. Removing only the DATA range leaves `readable_global` green and
-`writable_global` red, so each arm is pinned to its own seeded extent. Removing only the TEXT range
-takes five arms down and the image does not survive to reach either of them, which is a fact about how
-load-bearing app rodata is to the suite's own scaffolding rather than a sharper isolation.
-`readable_global` runs from ROOT and not from a worker deliberately: root is unprivileged, a worker is
-a sibling in root's task holding root's space, so the worker would add nothing while making a refusal
-present as a failed spawn.
+**What witnesses the two extents, measured rather than argued.** Measured on qemu-arm64 by leaving
+one range out of the granted-range record. Without the DATA range, 83 arms fail, every create whose
+out-pointer is an app global among them; `endpoint_rendezvous` and `endpoint_zero_accept` fail at
+their endpoint create. Without the TEXT range, the image runs all 156 arms and 18 fail, among them
+`endpoint_rendezvous` (main's send of a rodata message), `endpoint_zero_accept`, `confused_deputy`
+(its readable floor answers -14 for an unprivileged rodata buffer), `svc_roundtrip`,
+`endpoint_handout`, `endpoint_handout_parked` and the `cap_reply_*` arms.
 
 Where the linker window comes from was stated wrongly here too, and the same way. The app-data window
 is not "carved under the descriptors-exist gate": `virt_arm64.ld` says in as many words that the app
@@ -1143,8 +1144,9 @@ root's data as it stood then. On root's way out, where no seed took it first, `a
 freezes those pages into a snapshot of frames taken off the pool when root was seeded, with
 root's mappings still standing, and a space claimed with no spawner copies the snapshot. A seed
 reaching a lost home with no snapshot behind it is REFUSED. No process other than root is ever
-the snapshot's source. Witnessed by
-`process_data_template`, which stages the loss of the home and reads a later process's copy back.
+the snapshot's source. Witnessed by the host case
+`a_space_seeded_after_the_home_is_released_copies_the_snapshot` (tests/unit/presync), which
+releases the home and seeds a later space from the snapshot.
 
 *A space now knows which of its mappings it OWNS.* The range list carries two flags per entry,
 BORROWED and IMAGE (`kernel/include/kickos/vrange.h`), and `aspace_release` walks it: a borrowed
@@ -1208,7 +1210,7 @@ never reaches a prime. `privilege-escalation-gated` closes it a second time, the
 being unable to grow after boot. So `aspace_seated_for` is not what saves THIS board; it is what
 covers the general case on a backend where a privileged thread CAN execute app-half code, and it is
 asked unconditionally so that no backend has to re-derive which case it is. Recorded at
-`root-unprivileged-idle-alone-privileged` and witnessed by `reent_seating`.
+`root-unprivileged-idle-alone-privileged` and witnessed by tests/unit/reentseat.
 
 *A caller-supplied stack re-keyed at T6.2 and is no longer arena-confined.* Where a backend
 translates, the block must be a range the space the CHILD runs in already maps and that is not the

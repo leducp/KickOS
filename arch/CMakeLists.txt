@@ -56,13 +56,9 @@ set(KICKOS_SEAM_DEFAULTS_COMMON
   common/arch_periph_reg_write_default.cc
   common/arch_pinmux_set_default.cc
   common/kfault_terminate_default.cc)
-# arch_reboot must be absent from a production image, fallback included.
-if(KICKOS_ENABLE_SELFTEST)
-  list(APPEND KICKOS_SEAM_DEFAULTS_COMMON common/arch_reboot_default.cc
-    common/arch_cpu_block_addr_default.cc)
-  if(KICKOS_AMP_OWN_IMAGE)
-    list(APPEND KICKOS_SEAM_DEFAULTS_COMMON common/arch_amp_gate_probe_default.cc)
-  endif()
+# arch_reboot is absent from an image without KICKOS_REBOOT, fallback included.
+if(KICKOS_REBOOT)
+  list(APPEND KICKOS_SEAM_DEFAULTS_COMMON common/arch_reboot_default.cc)
 endif()
 if(KICKOS_FAULT_ISOLATION)
   list(REMOVE_ITEM KICKOS_SEAM_DEFAULTS_COMMON

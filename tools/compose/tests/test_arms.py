@@ -582,7 +582,7 @@ COMPOSITION_ARMS = [
 MANIFEST = """version: 1
 abi:
   table: 6
-  cap_reserved: 2
+  cap_reserved: 1
   symbol_prefix: ""
 target:
   board: xmc4800-relax
@@ -887,13 +887,13 @@ ADMISSION_ARMS = [
                                                 ("  KICKOS_TASK_ENDPOINT_BUDGET: 4\n", "  KICKOS_TASK_ENDPOINT_BUDGET: 5\n")],
      True),
     (None, "xmc4800-relax.yaml", [], [("  KICKOS_MAX_ENDPOINTS: 5\n", "  KICKOS_MAX_ENDPOINTS: 4\n")], False),
-    ("supply.cap-table", "qemu-arm64.yaml", [], [("  KICKOS_CAP_TABLE_SUPPLY: 16\n", "  KICKOS_CAP_TABLE_SUPPLY: 5\n")], True),
-    (None, "qemu-arm64.yaml", [("    watches: [sensor]\n", "")], [("  KICKOS_CAP_TABLE_SUPPLY: 16\n", "  KICKOS_CAP_TABLE_SUPPLY: 5\n")],
+    ("supply.cap-table", "qemu-arm64.yaml", [], [("  KICKOS_CAP_TABLE_SUPPLY: 16\n", "  KICKOS_CAP_TABLE_SUPPLY: 4\n")], True),
+    (None, "qemu-arm64.yaml", [("    watches: [sensor]\n", "")], [("  KICKOS_CAP_TABLE_SUPPLY: 16\n", "  KICKOS_CAP_TABLE_SUPPLY: 4\n")],
      False),
-    (None, "qemu-arm64.yaml", [], [("  KICKOS_CAP_TABLE_SUPPLY: 16\n", "  KICKOS_CAP_TABLE_SUPPLY: 6\n")], False),
-    ("supply.cap-table", "qemu-arm64.yaml", [SENSOR_ALARM], [("  KICKOS_CAP_TABLE_SUPPLY: 16\n", "  KICKOS_CAP_TABLE_SUPPLY: 6\n")],
+    (None, "qemu-arm64.yaml", [], [("  KICKOS_CAP_TABLE_SUPPLY: 16\n", "  KICKOS_CAP_TABLE_SUPPLY: 5\n")], False),
+    ("supply.cap-table", "qemu-arm64.yaml", [SENSOR_ALARM], [("  KICKOS_CAP_TABLE_SUPPLY: 16\n", "  KICKOS_CAP_TABLE_SUPPLY: 5\n")],
      True),
-    (None, "qemu-arm64.yaml", [SENSOR_ALARM], [("  KICKOS_CAP_TABLE_SUPPLY: 16\n", "  KICKOS_CAP_TABLE_SUPPLY: 7\n")], False),
+    (None, "qemu-arm64.yaml", [SENSOR_ALARM], [("  KICKOS_CAP_TABLE_SUPPLY: 16\n", "  KICKOS_CAP_TABLE_SUPPLY: 6\n")], False),
     ("supply.stack", "xmc4800-relax.yaml", [("    stack: 2048\n    priority: 9\n", "    stack: 2056\n    priority: 9\n")], [], False),
     (None, "xmc4800-relax.yaml", [("    stack: 2048\n    priority: 9\n", "    stack: 2064\n    priority: 9\n")], [], False),
     ("supply.stack", "xmc4800-relax.yaml", [("    stack: 2048\n    priority: 9\n", "    stack: 4112\n    priority: 9\n")], [], False),
@@ -912,20 +912,20 @@ ADMISSION_ARMS = [
     ("supply.spawn-grants", "xmc4800-relax.yaml", [], [("  KICKOS_MAX_SPAWN_GRANTS: 6\n", "  KICKOS_MAX_SPAWN_GRANTS: 2\n")],
      True),
     (None, "xmc4800-relax.yaml", [], [("  KICKOS_MAX_SPAWN_GRANTS: 6\n", "  KICKOS_MAX_SPAWN_GRANTS: 3\n")], False),
-    ("supply.cap-table", "xmc4800-relax.yaml", [], [("  KICKOS_CAP_TABLE_SUPPLY: 16\n", "  KICKOS_CAP_TABLE_SUPPLY: 10\n")], True),
-    (None, "xmc4800-relax.yaml", [], [("  KICKOS_CAP_TABLE_SUPPLY: 16\n", "  KICKOS_CAP_TABLE_SUPPLY: 11\n")], False),
-    (None, "xmc4800-relax.yaml", [], DRIVERS_UNNOTIFIED + [("  KICKOS_CAP_TABLE_SUPPLY: 16\n", "  KICKOS_CAP_TABLE_SUPPLY: 9\n")],
+    ("supply.cap-table", "xmc4800-relax.yaml", [], [("  KICKOS_CAP_TABLE_SUPPLY: 16\n", "  KICKOS_CAP_TABLE_SUPPLY: 9\n")], True),
+    (None, "xmc4800-relax.yaml", [], [("  KICKOS_CAP_TABLE_SUPPLY: 16\n", "  KICKOS_CAP_TABLE_SUPPLY: 10\n")], False),
+    (None, "xmc4800-relax.yaml", [], DRIVERS_UNNOTIFIED + [("  KICKOS_CAP_TABLE_SUPPLY: 16\n", "  KICKOS_CAP_TABLE_SUPPLY: 8\n")],
      False),
     ("supply.cap-table", "xmc4800-relax.yaml", [],
-     DRIVERS_UNNOTIFIED + [("  KICKOS_CAP_TABLE_SUPPLY: 16\n", "  KICKOS_CAP_TABLE_SUPPLY: 8\n")], True),
+     DRIVERS_UNNOTIFIED + [("  KICKOS_CAP_TABLE_SUPPLY: 16\n", "  KICKOS_CAP_TABLE_SUPPLY: 7\n")], True),
     ("supply.cap-table", "xmc4800-relax.yaml", [],
-     [("caps: 2, badged: 1 }", "caps: 2, badged: 2 }"), ("  KICKOS_CAP_TABLE_SUPPLY: 16\n", "  KICKOS_CAP_TABLE_SUPPLY: 11\n")],
+     [("caps: 2, badged: 1 }", "caps: 2, badged: 2 }"), ("  KICKOS_CAP_TABLE_SUPPLY: 16\n", "  KICKOS_CAP_TABLE_SUPPLY: 10\n")],
      True),
     ("supply.cap-table", "xmc4800-relax.yaml", [],
-     [("caps: 2, badged: 1 }", "caps: 2, badged: 0 }"), ("  KICKOS_CAP_TABLE_SUPPLY: 16\n", "  KICKOS_CAP_TABLE_SUPPLY: 10\n")],
+     [("caps: 2, badged: 1 }", "caps: 2, badged: 0 }"), ("  KICKOS_CAP_TABLE_SUPPLY: 16\n", "  KICKOS_CAP_TABLE_SUPPLY: 9\n")],
      True),
     (None, "xmc4800-relax.yaml", [],
-     [("caps: 2, badged: 1 }", "caps: 2, badged: 0 }"), ("  KICKOS_CAP_TABLE_SUPPLY: 16\n", "  KICKOS_CAP_TABLE_SUPPLY: 11\n")],
+     [("caps: 2, badged: 1 }", "caps: 2, badged: 0 }"), ("  KICKOS_CAP_TABLE_SUPPLY: 16\n", "  KICKOS_CAP_TABLE_SUPPLY: 10\n")],
      False),
     ("supply.stack", "xmc4800-relax.yaml", [], [("  min_stack: 960\n", "  min_stack: 4096\n")], True),
     (None, "xmc4800-relax.yaml", [], [("  min_stack: 960\n", "  min_stack: 2048\n")], False),

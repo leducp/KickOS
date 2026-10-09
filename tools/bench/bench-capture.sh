@@ -1717,6 +1717,7 @@ if [ "$WANT_TAP" -eq 1 ] && [ -n "$LAST" ]; then
   [ -n "${EXPECT_ARMS:-}" ] || refuse "$APP is a TAP app and EXPECT_ARMS is unset, so nothing
   says how many arms this image plans and the stream can only be checked against itself.
   bench.sh reads it out of the build's own kickos-selftest-manifest.txt."
+  echo "left out at build: ${SELFTEST_LEFT_OUT:-none}"
   if ! EXPECT_SKIPS="${EXPECT_SKIPS:-}" EXPECT_PARTIALS="${EXPECT_PARTIALS:-}" \
        EXPECT_FAULTS="${EXPECT_FAULTS:-}" \
        sh "$TAPGATE" "$BOARD/$APP" "$EXPECT_ARMS" < "$RUN"; then

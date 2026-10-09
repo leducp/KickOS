@@ -47,7 +47,7 @@ namespace
         }
         kos::print("[rootfault] child: wrote my own granted region\n");
         kos_sem_post(CH_DONE);
-        kos_sem_wait(CH_HOLD);
+        kos_sem_wait(CH_HOLD, KOS_TIMEOUT_NONE);
         kos::print("[rootfault] ERROR: child unparked\n");
     }
 }
@@ -95,7 +95,7 @@ int main(int, char**)
         return 1;
     }
     kos_yield();
-    kos_sem_wait(done); // the child wrote A: the control half passed
+    kos_sem_wait(done, KOS_TIMEOUT_NONE); // the child wrote A: the control half passed
 
     // Announce BEFORE the poke, with the address: the armv7m dump reports MMFAR but
     // no thread name (kickos_armv7m_fault_report), so a capture cross-checks this line

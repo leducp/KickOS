@@ -613,29 +613,10 @@ void kickos_armv8a_irq(void)
     depth--;
 }
 
-#if defined(KICKOS_ENABLE_SELFTEST)
-// Per core, each written by its own core with interrupts masked.
-static kickos::Atomic<uint32_t, kickos::Order::RELAXED> g_irq_windows[KICKOS_NUM_CORES];
-
-uint32_t arch_irq_windows(void)
-{
-    uint32_t sum = 0;
-    for (kickos::Atomic<uint32_t, kickos::Order::RELAXED> const& n : g_irq_windows)
-    {
-        sum += n.load();
-    }
-    return sum;
-}
-#endif
-
 // The ISB takes an interrupt already signalled to the PE before the re-mask; one still on its
 // way from the controller may wait for a later window.
 void arch_irq_window(void)
 {
-#if defined(KICKOS_ENABLE_SELFTEST)
-    kickos::Atomic<uint32_t, kickos::Order::RELAXED>& mine = g_irq_windows[arch_cpu_id()];
-    mine.store(mine.load() + 1u);
-#endif
     __asm volatile("msr daifclr, #2\n\tisb\n\tmsr daifset, #2" ::: "memory");
 }
 

@@ -479,6 +479,11 @@ namespace kickos
 
         Counts const& counts(uint32_t node);
 
+        // One count of `node`'s row, named by its id: the ids number Counts' fields in
+        // declaration order. 0, or -KOS_EINVAL for a node outside the partition or an unknown id.
+        constexpr uint32_t COUNT_IDS = 14u;
+        int count_read(uint32_t node, uint32_t which, uint32_t* out);
+
         // Count one Counts::deliver_fault on THIS node, under its lock: one writer per row is
         // why a row may sit where a peer reads it.
         void count_deliver_fault(void);
@@ -509,154 +514,6 @@ namespace kickos
         // here, having been released in arch_init, so writing a peer's row would race its own
         // drain with nothing ordering the two.
         void window_init(void);
-
-#if defined(KICKOS_ENABLE_SELFTEST)
-        // Scaffolding: write ONE publication into THIS node's inbox from `from` exactly as a
-        // far side would, then take it. `head_jump` is how far past the ring the far head is
-        // pushed.
-        //
-        // BOTH INDICES ARE RESET FIRST, so a real message in flight from that node is lost.
-        Verdict forge_and_take(uint32_t from, uint32_t port, ReplyTag const& tag, uint32_t len,
-                               uint32_t head_jump);
-
-        // The send side's half: push a garbage TAIL under this node's own producer arithmetic
-        // and report what the send made of it. The ring forged is this node's SELF-RING, which
-        // no node produces into and no service drains, so no peer-owned index is written; `to`
-        // is only who the doorbell would reach had the send not been refused.
-        Sent forge_tail_and_send(uint32_t to, uint32_t tail_jump);
-
-        // What one reply forge did. `delivered` alone reads the same for a reply the guard
-        // refused and for a publication the forge never got back, and those are the two a
-        // caller has to tell apart.
-        struct ForgedReply
-        {
-            bool published;
-            bool offered; // this call took its own publication back, so the guard judged it
-            bool delivered;
-            bool counted; // the refusal moved this node's dropped-reply count by exactly one
-        };
-
-        // Publish ONE PORT_REPLY of `len` bytes into THIS node's inbox from `from` carrying
-        // `tag`, then take it and route it exactly as node_service does, so a HOSTILE reply is
-        // playable at a caller that is genuinely parked. A `len` of zero is the answer a
-        // serving node publishes for a call refused past the take.
-        //
-        // BOTH INDICES ARE RESET FIRST, as forge_and_take does.
-        ForgedReply forge_reply(uint32_t from, ReplyTag const& tag, uint32_t len, Held held);
-
-        // Publish a REPLY-class port into the CALL ring and take it. Both untrusted fields are
-        // well-formed, so only the class clause can refuse this.
-        //
-        // BOTH INDICES ARE RESET FIRST, as the other forges do.
-        Verdict forge_class_take(uint32_t from);
-
-        // Scaffolding: publish ONE well-formed call from `from` on `port` into THIS node's
-        // ring and take it no further, so the doorbell's own service body is what drains it.
-        // BOTH INDICES ARE RESET FIRST, as the other forges do.
-        bool forge_publish(uint32_t from, uint32_t port, ReplyTag const& tag);
-
-        // Call slots from `from` this node holds: taken and not yet released.
-        uint32_t forge_call_held(uint32_t from);
-
-        // Drain what forge_publish left, and answer whether the delivery kept the call's slot.
-        // The CALL ring tail moves in release_call alone, so an unmoved tail is the whole of
-        // "the receiver holds this slot until it replies" and a moved one the whole of "the
-        // taker released it".
-        bool forge_drain_held(uint32_t from, Held held);
-
-        // Take one well-formed CALL while the reply ring this node would answer it into holds no
-        // free slot, then take the SAME call again with room. The verdict of the FIRST take is
-        // the answer; `*out_bits` carries the KOS_AMP_RESERVE_* claims beside it.
-        //
-        // DECLINES against a node that has serviced: the state it holds is one such a node
-        // drains, so it answers EMPTY with no RAN bit rather than a wrong verdict.
-        constexpr uint32_t FORGE_RESERVE_RAN = 0x100u;
-        constexpr uint32_t FORGE_RESERVE_CURSOR_HELD = 0x200u;
-        constexpr uint32_t FORGE_RESERVE_THEN_TOOK = 0x400u;
-        Verdict forge_reserve_take(uint32_t from, uint32_t* out_bits);
-
-        // Free slots in the reply ring THIS node answers `to`'s calls into, having first drained
-        // it where `to` runs no kernel of its own. An arm that forges a call and expects it
-        // TAKEN owes this: every take reserves a slot here, and on a node booted alone nothing
-        // else will ever move that tail, so a preceding arm's answers wedge every later take at
-        // RESERVE. Zero means the ring is full and the take will be refused.
-        uint32_t forge_reply_room(uint32_t to);
-
-        // Publish a depth this node cannot believe, take DEPTH_STRIKES times so the strike
-        // bound resynchronises the ring, then publish one WELL-FORMED message and take it.
-        // The verdict of that last take is whether the ring recovered.
-        Verdict forge_depth_recovery(uint32_t from);
-
-        // The same bound on the REPLY ring, driven through node_service rather than a bare take
-        // because that is where the two rings of a pair meet: one pass yields at most one reply
-        // strike and then runs the call ring's depth clause, which a strike count not keyed by
-        // class would clear. The verdict of a well-formed reply taken afterwards is whether the
-        // ring recovered.
-        Verdict forge_reply_depth_recovery(uint32_t from, Held held);
-
-        // One inbound record across a resynchronisation: a record seated on a HELD slot, the
-        // ring resynchronised under it, a fresh call taken at the same masked slot, and the
-        // first holder's token spent afterwards, in that order and on one ring.
-        //
-        // Answers a bit per claim, all four set where the reset owns the record's death:
-        //   1  the resynchronisation freed the record it abandoned the slot of
-        //   2  the call taken after it was granted a record of its own
-        //   4  that record's token differs from the abandoned one's
-        //   8  spending the abandoned token released no slot
-        // Bit 16 says the scaffold reached the end, so a zero answer is a forge that could not
-        // run rather than four failed claims.
-        uint32_t forge_reset_record(uint32_t from);
-
-        // The PRODUCER's strike bound, driven over THIS NODE'S SELF REPLY RING for the reason
-        // forge_tail_and_send gives: what is under test is this node's own arithmetic against a
-        // tail it did not write, and a peer's ring would put a forged consumer index under a
-        // live consumer. `to` only names whose doorbell a send that stopped refusing would ring.
-        //
-        // Answers a bit per claim:
-        //   1  the first publication against an incredible tail was refused DEPTH
-        //   2  the publication at the strike bound was taken
-        //   4  the head it published at is the far tail this node adopted
-        //   8  tail_reset moved by exactly one
-        // Bit 16 says the scaffold reached the end.
-        uint32_t forge_tail_recovery(uint32_t to);
-
-        // A refused ANSWER, and what it leaves behind. One call taken and seated through the
-        // real path, the reply ring toward `from` then held with no slot free by THIS NODE'S OWN
-        // head, and the record's reply spent into it.
-        //
-        // Answers a bit per claim:
-        //   1  the publication was refused, so reply_unsent moved by exactly one
-        //   2  the call slot was NOT released: the caller is still owed an answer
-        //   4  the token no longer resolves, the reply capability having been spent
-        // Bit 8 says the scaffold reached the end, and 16 that it DECLINED against a node that
-        // runs a kernel of its own, which would be moving both of those indices under it. The
-        // ring is given back with room, so forge_answer_discharge alone finishes the pair.
-        constexpr uint32_t ANSWER_DEFER_DECLINED = 0x10u;
-        uint32_t forge_answer_defer(uint32_t from);
-
-        // The other half: one service pass, and whether it discharged what the refusal deferred.
-        //
-        // Answers a bit per claim:
-        //   1  a ZERO-LENGTH PORT_REPLY carrying the deferred record's tag reached `from`
-        //   2  the call slot it held is back with the peer
-        //   4  no record of that pair is left pending
-        // Bit 8 says the scaffold reached the end.
-        uint32_t forge_answer_discharge(uint32_t from, Held held);
-
-        // What a CALL-ring resynchronisation owes the callers it abandons. One held call seated
-        // through the real path, an incredible far head left standing for the whole strike
-        // bound, and the reply ring toward `from` watched across it.
-        //
-        // Answers a bit per claim:
-        //   1  the resynchronisation ran, so depth_reset moved
-        //   2  the record it abandoned is dead
-        //   4  a ZERO-LENGTH PORT_REPLY carrying that record's tag was published toward `from`
-        //   8  reply_unsent moved by exactly one, the answer's own bytes being lost
-        // Bit 16 says the scaffold reached the end, and 32 that it DECLINED for want of a free
-        // reply slot to answer into, which is a precondition and not a failed claim.
-        constexpr uint32_t RESET_ANSWERS_DECLINED = 0x20u;
-        uint32_t forge_reset_answers(uint32_t from);
-#endif
     }
 }
 

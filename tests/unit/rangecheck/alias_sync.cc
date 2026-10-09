@@ -120,7 +120,8 @@ namespace kickos
                     Task* const tk = task(0);
                     join_task(owner_, tk);
                     ASSERT_NE(seat_space(task_domain(tk)), nullptr);
-                    seat_backing(VA, g_mem, sizeof(g_mem), VA + PAGE);
+                    unback_all();
+                    ASSERT_TRUE(seat_backing(VA, g_mem, sizeof(g_mem), VA + PAGE));
 #else
                     uintptr_t const base = reinterpret_cast<uintptr_t>(g_mem);
                     ASSERT_TRUE(owner_->mpu.add(base, PAGE, ARCH_MPU_R | ARCH_MPU_W));
@@ -134,7 +135,11 @@ namespace kickos
 #if KICKOS_HAVE_ASPACE
                 void TearDown() override
                 {
-                    seat_backing(0, nullptr, 0, 0);
+                    EXPECT_EQ(holds().live, 0u) << "an acquire was never released";
+                    EXPECT_EQ(holds().unpaired, 0u) << "a release met no acquire";
+                    EXPECT_EQ(holds_refused_past_min(), 0u)
+                        << "a kernel path held more pages at once than ARCH_ASPACE_ACQUIRE_MIN";
+                    unback_all();
                 }
 #endif
 

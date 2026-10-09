@@ -42,8 +42,8 @@ kickos_add_qemu_test(TARGET hello_c SCRIPT "${_hello_qemu}")
 #
 # Not x86_64, for this gate or the doorbell one below: q35 prints no `# smp:` banner, and QEMU's
 # x86 model names no core in an interrupt event, so a second channel would have to read the
-# execution log. The selftest holds both claims there, its `# smp sched` line counting the cores
-# in the scheduler and its doorbell_xpoke arm running on every SMP image.
+# execution log. The image holds both claims there: the selftest's `# smp sched` line counts the
+# cores in the scheduler, and the boot's fatal doorbell self-check answers for every core.
 if(KICKOS_NUM_CORES GREATER 1 AND KICKOS_ARCH MATCHES "^(armv8a|rv64imac)$")
   kickos_add_qemu_test(NAME ${_tag}_smp_arrival TARGET hello
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_smp_arrival.sh"
@@ -116,6 +116,21 @@ if(KICKOS_CHIP STREQUAL "esp32c6" AND NOT (KICKOS_AMP_OWN_IMAGE AND KICKOS_AMP_N
 endif()
 if(KICKOS_NUM_CORES EQUAL 1)
   kickos_image_rule(cpu_id hello)
+endif()
+# The kernel's own view of an AMP user share: MAIR_EL1 slot 2 is Normal non-cacheable, slot 0
+# write-back (arch/arm64/common/vmsa.h).
+set(_hello_share_size 0)
+if(KICKOS_CHIP STREQUAL "virt_arm64" AND KICKOS_AMP_OWN_IMAGE
+   AND NOT "${KICKOS_AMP_USER_SHARE_SIZE}" STREQUAL "")
+  math(EXPR _hello_share_size "${KICKOS_AMP_USER_SHARE_SIZE}")
+endif()
+if(_hello_share_size GREATER 0)
+  math(EXPR _hello_share_base "${KICKOS_AMP_PARTITION_BASE} + ${KICKOS_AMP_NODES} * ${KICKOS_AMP_NODE_SHARE} + ${KICKOS_AMP_SHARED_SIZE} - ${_hello_share_size}")
+  set(_hello_share_slot 0)
+  if(KICKOS_AMP_USER_SHARE_UNCACHED)
+    set(_hello_share_slot 2)
+  endif()
+  kickos_image_rule(arm64_share hello ${_hello_share_base} ${_hello_share_size} ${_hello_share_slot})
 endif()
 
 # The doorbell service's route drain, read out of the source tree. Keyed on nothing: the call is

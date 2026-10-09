@@ -15,17 +15,17 @@
 namespace kickos
 {
     struct Domain;
+    struct Thread;
 
     namespace testfix
     {
-        // The seam's per-core translation base, written by arch_aspace_activate and by
-        // install_here. Null is "nothing installed yet", which no core is in once an arm has
-        // switched.
+        // The seam's per-core translation base, written by arch_aspace_activate. Null is
+        // "nothing installed yet", which no core is in once an arm has switched.
         struct arch_aspace* installed_on(uint32_t core);
 
-        // Write THIS core's translation base behind the kernel, which then forgets the root it
-        // last wrote there.
-        void install_here(struct arch_aspace* space);
+        // Seat THIS core on the boot root, or on `t`'s space, through the kernel's own path.
+        void install_boot_here();
+        void install_for(Thread const* t);
 
         // The one boot root every core falls back to.
         struct arch_aspace* boot_space();

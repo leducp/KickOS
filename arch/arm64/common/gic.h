@@ -47,12 +47,6 @@ extern "C"
 
     // Masks every line on the calling core's own bank except the doorbell.
     void kickos_armv8a_gic_doorbell_only(void);
-
-#if defined(KICKOS_ENABLE_SELFTEST) && (KICKOS_NUM_CORES > 1 || KICKOS_AMP_NODE)
-    // Scaffolding: reopens the bring-up window a running partition has already closed.
-    uint32_t kickos_armv8a_gic_seat_set(uint32_t core, uint32_t seated);
-    uint32_t kickos_armv8a_gic_deferred(uint32_t core);
-#endif
 #endif
 }
 

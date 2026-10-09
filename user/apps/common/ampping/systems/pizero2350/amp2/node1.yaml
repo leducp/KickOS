@@ -21,11 +21,3 @@ tasks:
     ceiling: 5
     serves: /amp/3
     maps: { /shm/ampbook: rw }
-
-  # Asks its kernel to read the device node 0 holds, which ACCESSCTRL gives node 0's core alone.
-  - name: probe
-    entry: ampprobe_main
-    stack: 4096
-    priority: 4
-    ceiling: 4
-    maps: { /shm/ampbook: rw }

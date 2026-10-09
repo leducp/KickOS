@@ -202,9 +202,7 @@ namespace kickos
             {
                 rcap = KCAP_INVALID;
             }
-            bool const info_ok = not endpoint_far_blind_take()
-                                 and write_recv_info(user_space_of(c), badge_out, KOS_BADGE_NONE,
-                                                     rcap);
+            bool const info_ok = write_recv_info(user_space_of(c), badge_out, KOS_BADGE_NONE, rcap);
             if (not info_ok and rcap != KCAP_INVALID)
             {
                 bool const undone = cap_uninstall_far_reply(c, rcap, record);
@@ -1128,25 +1126,6 @@ namespace kickos
     }
 
 #if KICKOS_AMP_NODE
-#if defined(KICKOS_ENABLE_SELFTEST)
-    namespace
-    {
-        bool g_far_blind = false;
-    }
-
-    void endpoint_far_blind_arm(void)
-    {
-        g_far_blind = true;
-    }
-
-    bool endpoint_far_blind_take(void)
-    {
-        bool const armed = g_far_blind;
-        g_far_blind = false;
-        return armed;
-    }
-#endif
-
     // Called from the doorbell handler with local interrupts masked.
     bool endpoint_far_reply_deliver(uint32_t from, amp::ReplyTag const& tag, uint32_t hold,
                                     uint32_t len, Held held)
@@ -1269,26 +1248,5 @@ namespace kickos
             }
         }
     }
-
-#if defined(KICKOS_ENABLE_SELFTEST)
-    bool endpoint_far_reply_route(amp::ReplyTag* out_tag, uint32_t* out_node)
-    {
-        ThreadPool& tp = kernel().threads;
-        for (int i = 0; i < tp.next; i++)
-        {
-            Thread* const t = &tp.slots[i];
-            Endpoint const* const e = t->wait_far_endpoint();
-            if (e == nullptr or t->state != ThreadState::BLOCKED)
-            {
-                continue;
-            }
-            out_tag->thread = tp.handle_for(i);
-            out_tag->seq = amp::reply_seq(t->call_seq);
-            *out_node = endpoint_far_node(e);
-            return true;
-        }
-        return false;
-    }
-#endif
 #endif
 }

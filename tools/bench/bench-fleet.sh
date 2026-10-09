@@ -107,7 +107,7 @@ AMP_VARIANT=amp2-n0
 # captured from that build; an image both builds ship is the enforcing build's, except a
 # <board>:<image> FLAT_ALSO names, which each build's capture witnesses.
 FLAT_VARIANT=flat
-FLAT_ALSO="rx72m:fpclass"
+FLAT_ALSO="rx72m:chaincheck_float rx72m:chaincheck_full"
 flat_also() { # <board> <image>
   printf '%s\n' "$FLAT_ALSO" | tr ' ' '\n' | grep -qxF "$1:$2"
 }

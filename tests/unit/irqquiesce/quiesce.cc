@@ -625,6 +625,9 @@ namespace
         unsigned const free_before = free_bindings();
         uint32_t cap = kickos::KCAP_INVALID;
 
+        // The attach first, so no state a refused claim left behind is what refuses it.
+        EXPECT_FALSE(kickos::irq_attach(LINE_FREE, probe_handler, nullptr))
+            << "the other minting entry bound a handler the arch vector never reaches";
         EXPECT_EQ(kickos::irq_claim(&g_claim_thread, LINE_FREE, 0u, &cap), -KOS_EPERM);
         EXPECT_EQ(cap, kickos::KCAP_INVALID) << "a refused claim handed back a capability";
         EXPECT_EQ(free_bindings(), free_before) << "the refused claim kept a binding slot";
@@ -633,9 +636,9 @@ namespace
             << "the line names a driver, so the arch vector's service was displaced or a "
                "detach is now owed on a line the kernel rings on";
         EXPECT_EQ(kickos::irqfix::last_line_op(LINE_FREE), -1)
-            << "the refused claim reached the controller for a line it does not own";
-        EXPECT_FALSE(kickos::irq_attach(LINE_FREE, probe_handler, nullptr))
-            << "the other minting entry bound a handler the arch vector never reaches";
+            << "a refusal reached the controller for a line it does not own";
+        EXPECT_EQ(kickos::irq_line_admit(LINE_FREE), -KOS_EPERM)
+            << "the line admission let the kernel's own line through";
     }
 
     // The control, on the same line and differing only in what the arch declares: the claim
@@ -647,6 +650,9 @@ namespace
         unsigned const free_before = free_bindings();
         uint32_t cap = kickos::KCAP_INVALID;
 
+        EXPECT_EQ(kickos::irq_line_admit(LINE_FREE), 0);
+        EXPECT_EQ(kickos::irq_line_admit(-1), -KOS_EINVAL);
+        EXPECT_EQ(kickos::irq_line_admit(KICKOS_MAX_IRQ), -KOS_EINVAL);
         ASSERT_TRUE(kickos::irq_attach(LINE_FREE, probe_handler, nullptr));
         kickos::irq_detach(LINE_FREE);
         ASSERT_EQ(kickos::irq_claim(&g_claim_thread, LINE_FREE, 0u, &cap), 0);
@@ -664,6 +670,23 @@ namespace
 
         kickos::handle_close(&g_claim_thread, cap, kickos::IrqLock());
         EXPECT_EQ(free_bindings(), free_before) << "the closed capability kept its slot";
+    }
+
+    TEST_F(IrqQuiesce, AnUnclaimedLineIsMaskedAndCountedByItsRaise)
+    {
+        uint32_t const before = kickos::irq_spurious_count();
+
+        kickos_isr_irq(LINE_FREE);
+
+        EXPECT_EQ(kickos::irq_spurious_count(), before + 1u);
+        EXPECT_EQ(kickos::irqfix::last_line_op(LINE_FREE), static_cast<int>(OP_MASK))
+            << "the unclaimed line was left armed, so it re-asserts forever";
+
+        // The control: a bound line reaches its handler and counts nothing.
+        ASSERT_TRUE(kickos::irq_attach(LINE_TARGET, probe_handler, nullptr));
+        kickos_isr_irq(LINE_TARGET);
+        EXPECT_EQ(kickos::irqfix::g_probe_calls, 1u);
+        EXPECT_EQ(kickos::irq_spurious_count(), before + 1u);
     }
 
     // Which core takes a global line is the claimer's, and it is decided once. Decided at
@@ -902,5 +925,42 @@ namespace
         }
         EXPECT_EQ(kickos::kernel().irq_bindings.resolve(obj), nullptr)
             << "the retired slot never returned to the pool once the peer had left";
+    }
+
+    // =======================================================================================
+
+    struct Raise : public IrqQuiesce
+    {
+        uint32_t cap = kickos::KCAP_INVALID;
+
+        void SetUp() override
+        {
+            IrqQuiesce::SetUp();
+            ASSERT_EQ(kickos::irq_claim(&g_claim_thread, LINE_FREE, 0u, &cap), 0);
+        }
+    };
+
+    TEST_F(Raise, a_signal_capability_raises_its_line)
+    {
+        EXPECT_EQ(kickos::irq_raise(&g_claim_thread, cap), 0);
+        EXPECT_EQ(kickos::irqfix::g_injects, 1u) << "the raise did not reach the controller";
+        EXPECT_EQ(kickos::irqfix::g_injected_line, LINE_FREE)
+            << "the raise reached a line its capability does not name";
+    }
+
+    TEST_F(Raise, a_capability_without_signal_is_eacces_and_raises_nothing)
+    {
+        kickos::irqfix::narrow_installed_rights(kickos::CAP_WAIT | kickos::CAP_TRANSFER);
+        EXPECT_EQ(kickos::irq_raise(&g_claim_thread, cap), -KOS_EACCES);
+        EXPECT_EQ(kickos::irqfix::g_injects, 0u)
+            << "a capability without CAP_SIGNAL raised its line";
+    }
+
+    TEST_F(Raise, a_line_the_controller_cannot_raise_is_enotsup)
+    {
+        kickos::irqfix::g_inject_raises = false;
+        EXPECT_EQ(kickos::irq_raise(&g_claim_thread, cap), -KOS_ENOTSUP)
+            << "a raise the controller did not make was answered as made";
+        EXPECT_EQ(kickos::irqfix::g_injects, 1u);
     }
 }

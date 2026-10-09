@@ -90,11 +90,6 @@ namespace kickos
     // Runs on EVERY switch.
     void reent_seat(struct arch_aspace* space, void* state);
 #endif
-
-#if defined(KICKOS_ENABLE_SELFTEST)
-    // Writes made for a thread whose memory view was not installed. Must be 0.
-    size_t reent_unseated_writes(void);
-#endif
 }
 
 #endif

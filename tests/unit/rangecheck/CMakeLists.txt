@@ -22,6 +22,7 @@ kickos_add_unit_test(NAME range_check
 # boundary. KICKOS_ARCH_ALIAS_DCACHE is armv8a's and x86_64's posture, and dcache_seam.cc
 # records the maintenance it compiles.
 set_source_files_properties("${PROJECT_SOURCE_DIR}/kernel/mem/aspace.cc"
+                            "${PROJECT_SOURCE_DIR}/kernel/syscall/syscall_mem.cc"
   DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
   PROPERTIES COMPILE_OPTIONS "-ffunction-sections;-fdata-sections")
 kickos_add_kseam(kickos_kseam_rangecheck_aspace
@@ -30,6 +31,7 @@ kickos_add_kseam(kickos_kseam_rangecheck_aspace
         "${PROJECT_SOURCE_DIR}/kernel/mem/vrange.cc"
         "${PROJECT_SOURCE_DIR}/kernel/syscall/syscall_mem.cc"
   INCLUDES "${PROJECT_SOURCE_DIR}/kernel/syscall" "${CMAKE_CURRENT_SOURCE_DIR}"
+           "${PROJECT_SOURCE_DIR}/tests/unit/common"
   POSTURE KICKOS_HAVE_ASPACE=1 KICKOS_ARCH_ALIAS_DCACHE=1 KICKOS_ARCH_IRQ_WINDOW=1)
 kickos_add_unit_test(NAME range_check_aspace SOURCES range_check.cc
   TEST_PREFIX aspace_
@@ -45,7 +47,7 @@ kickos_add_kseam(kickos_kseam_alias_region
   POSTURE KICKOS_ARCH_ARENA_DCACHE=1)
 kickos_add_unit_test(NAME alias_sync SOURCES alias_sync.cc
   LIBRARIES kickos_kseam_alias_region)
-kickos_add_unit_test(NAME alias_sync_aspace SOURCES alias_sync.cc
+kickos_add_unit_test(NAME alias_sync_aspace SOURCES alias_sync.cc split_access.cc
   TEST_PREFIX aspace_
   LIBRARIES kickos_kseam_rangecheck_aspace)
 target_link_options(alias_sync_aspace PRIVATE -Wl,--gc-sections)

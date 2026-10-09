@@ -989,7 +989,7 @@ its own sends as well as with a peer thread's replies.
 the critical section that produced it.** A forge that publishes, takes and dispatches under one
 IrqLock may read the counter either side of its own dispatch: nothing else on that core runs
 between the two reads, and the row is this node's own writing, so what comes back attributes ONE
-event instead of summing a window. `amp_far_reply_guard` is again the standing evidence. It read
+event instead of summing a window. The far reply-guard arm was again the evidence. It read
 one delta across a whole sequence of forges, where a forge losing its caller while one foreign
 message was taken read exactly like every forge arriving, and no counter placed outside the
 sequence could separate those: a window SUM is not an attribution, however narrow the window.
@@ -1001,10 +1001,11 @@ reply carrying the tag, so it is a stray source of its own. What it does not do 
 receiver, keep state between calls, or choose the moment it answers. So the conclusion stands and
 its reason narrows: an arm that will one day face a thread is not validated by passing against a
 body, and what it is not validated against is WHEN the answer comes and WHOM it names, never
-whether one comes at all. `amp_far_reply_guard` is the standing evidence, and the third time this
-example has been hit: it counts dropped replies over a window, and a peer that can be poked
-completes the arm's own caller before the first forged reply is published, so the arm has to
-withhold that peer's doorbell seat and wait for it to fall quiet before it publishes anything. The
+whether one comes at all. The far reply-guard arm was the evidence, and the third time this
+example was hit: it counted dropped replies over a window, and a peer that can be poked
+completed the arm's own caller before the first forged reply was published, so the arm had to
+withhold that peer's doorbell seat and wait for it to fall quiet before it published anything.
+Its claim now stands in `amp_hold`, which calls the real guard with no peer to race. The
 two-kernel vehicle is where such an arm is first believed.
 
 **THE BINDING RESOLVES ITS ENDPOINT BY INDEX AND NOT BY HANDLE**, because it names a slot of
@@ -1618,22 +1619,10 @@ every invariant holds, and a thread RUNNING on that core stays on it for the lif
 The failure is silent by construction, because a placement is an ask and never a yank.
 
 That is a property of the MACHINE and not of this section, so an image states it rather than
-assuming it. `KOS_SCHED_OP_PREEMPTED` answers one bit per core whose own slice timer has taken a
-thread off it. It is the one scheduling probe that is machine-wide rather than a read of the
-caller's own state, and it has to be: what a fresh backend leaves open is whether a SECONDARY
-preempts at all, and nothing a thread can read of itself on the boot core says that.
-
-**A set bit is a conjunction and the exclusions are the content.** It says that core's comparator
-fired AND the scheduler put a different thread on it. A cross-core reschedule, a device wake, and a
-slice expiry that re-picked the same thread each set nothing, because none of the three is evidence
-that this core can take a thread off itself on its own clock. The answer is monotonic and
-machine-wide, so a caller reads a FLOOR of what has ever happened and never a sample of what is
-happening.
-
-**It is one cell per core and never one shared mask**, which is the same rule N9 states one level
-down. A shared mask is a read-modify-write from several cores, and a lost update there erases a bit
-that may never be set again: a core preempting once and its only evidence going with it. One writer
-per cell has no such failure.
+assuming it. The selftest pins an equal-priority round-robin pair to each core in turn, neither of
+which yields or blocks, and requires each to see the other's pass count move: on that core nothing
+but its own slice expiry can take the running one off. What a fresh backend leaves open is whether
+a SECONDARY preempts at all, and nothing a thread can read of itself on the boot core says that.
 
 ### Two kernel cores is the narrow case, and the boot core is a destination there
 

@@ -17,7 +17,7 @@
 # CRm is a shareability this gate was not written to judge, and is refused rather than passed.
 #
 # Above one core, the maintenance arch_aspace_unmap reaches is judged by its result instead:
-# unmappeer reads a page from a peer core across its unmap, and on qemu-arm64-smp a local form
+# deadstack reads a page from a peer core across its unmap, and on qemu-arm64-smp a local form
 # there leaves that core reading the withdrawn page. What arch_aspace_map and
 # arch_aspace_destroy reach beyond it, the full flush, stays judged here: planted local, it
 # reddens no emulator arm.
@@ -292,7 +292,7 @@ judge() { # <nm listing> <disassembly> <cores>
         fi
 
         if [ "$n" -eq 0 ]; then
-            echo "   $root: every TLBI it reaches is unmappeer's to judge"
+            echo "   $root: every TLBI it reaches is deadstack's to judge"
         else
             echo "   $root: $n TLBI, every one CRm $want ($label)"
         fi

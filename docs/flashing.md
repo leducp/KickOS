@@ -198,9 +198,10 @@ help: the J-Link Pro (SN `000177003338`) reports `VTref=0.000V` / `ITarget=0mA` 
 i.e. the probe is not wired to the Pi-Zero's SWD pads at all. **SWD remains unavailable here**, so
 BOOTSEL is the only channel; budget captures accordingly, or wire SWD first.
 
-`kos_reboot()` at the end of `main` closes that loop for an app that reaches it, and
-`-DKICKOS_SHUTDOWN_TO_BOOTLOADER=ON` extends it to any image, including one that ends in a fault:
-the knob (default OFF, requires `KICKOS_ENABLE_SELFTEST`) puts the handover in the kernel's two
+`kos_reboot()` (built under `KICKOS_REBOOT`, default OFF) at the end of `main` closes that loop
+for an app that reaches it, and `-DKICKOS_SHUTDOWN_TO_BOOTLOADER=ON` extends it to any image,
+including one that ends in a fault: the knob (default OFF, requires `KICKOS_REBOOT`) puts the
+handover in the kernel's two
 terminal dead-ends, `kickos_terminate` (shutdown syscall, last-thread-out, `kickos_isr_fault`) and
 `kfault_terminate` (`kpanic`, and every ARM MemManage/HardFault; the handover sits in its
 fallback body, `arch/common/kfault_terminate_default.cc`). Both drain the console

@@ -25,6 +25,12 @@
 #define KSEAM_REAL_CONSOLE 0
 #endif
 
+// Set where the real kernel/domain/domain.cc is linked, which defines what domain_for,
+// domain_ref and domain_release stub.
+#ifndef KSEAM_REAL_DOMAIN
+#define KSEAM_REAL_DOMAIN 0
+#endif
+
 extern "C"
 {
     // A zero lock count marks a capability-sweep gap for injected actions.
@@ -88,6 +94,11 @@ extern "C"
     bool arch_irq_line_kernel_owned(int)
     {
         return false;
+    }
+
+    bool arch_irq_inject(int)
+    {
+        return true;
     }
 
     void arch_irq_clear_pending(int line)
@@ -285,6 +296,7 @@ namespace kickos
     }
 #endif
 
+#if not KSEAM_REAL_DOMAIN
     // Use a distinct domain per task so reference counts can be tested independently.
     // The production default-user singleton is not shared in this fixture.
     Domain* domain_for(uint32_t, void*, size_t, uint32_t, Domain*, int* err)
@@ -341,6 +353,20 @@ namespace kickos
         testfix::note_member_release();
 #endif
     }
+
+#if KICKOS_HAVE_ASPACE
+    void domain_retire_handles(Domain* d)
+    {
+        if (d != nullptr)
+        {
+            d->generation++;
+        }
+    }
+
+    // No fake domain holds a space.
+    void domain_retire_space(Domain*) {}
+#endif
+#endif
 
 #ifndef KFIXTURE_REAL_TIME
     uint64_t ktime_now()

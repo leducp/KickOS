@@ -171,12 +171,6 @@ namespace
     kickos::Atomic<uint8_t, kickos::Order::ACQUIRE | kickos::Order::RELEASE>
         g_affinity_seated[KICKOS_DOORBELL_CORES] = {};
 
-#if defined(KICKOS_ENABLE_SELFTEST) && (KICKOS_NUM_CORES > 1 || KICKOS_AMP_NODE)
-    // Raises this core skipped because the target was unseated, per target: the only place a
-    // peer that never started can be counted from.
-    kickos::Atomic<uint32_t, kickos::Order::RELAXED> g_deferred[KICKOS_DOORBELL_CORES] = {};
-#endif
-
     // Which core arch_irq_route named for a global line, biased by one so that the unrouted
     // state is zero and the array stays in .bss. Written on the claiming core and read by an
     // arch_irq_unmask that may run on another, so the release store that seats a row is what
@@ -470,28 +464,6 @@ void kickos_armv8a_gic_percore_init(void)
 //
 // A core whose affinity is unpublished contributes to no window: a zero read out of the array
 // is core zero's affinity rather than an absence.
-#if defined(KICKOS_ENABLE_SELFTEST) && (KICKOS_NUM_CORES > 1 || KICKOS_AMP_NODE)
-uint32_t kickos_armv8a_gic_seat_set(uint32_t core, uint32_t seated)
-{
-    if (core >= KICKOS_DOORBELL_CORES)
-    {
-        return 0u;
-    }
-    uint32_t const was = g_affinity_seated[core].load();
-    g_affinity_seated[core] = static_cast<uint8_t>(seated);
-    return was;
-}
-
-uint32_t kickos_armv8a_gic_deferred(uint32_t core)
-{
-    if (core >= KICKOS_DOORBELL_CORES)
-    {
-        return 0;
-    }
-    return g_deferred[core].load();
-}
-#endif
-
 void kickos_armv8a_gic_doorbell_send(uint32_t cores)
 {
     // The ring is the authority and this raise is a hint: a core whose affinity is unpublished
@@ -521,11 +493,7 @@ void kickos_armv8a_gic_doorbell_send(uint32_t cores)
         if (g_affinity_seated[index].load() != 0)
         {
             pending |= 1u << index;
-            continue;
         }
-#if defined(KICKOS_ENABLE_SELFTEST)
-        g_deferred[index].store(g_deferred[index].load() + 1u);
-#endif
     }
     if (pending == 0)
     {
@@ -714,33 +682,30 @@ void arch_irq_clear_pending(int line)
     kickos_armv8a_gic_clear_pending(line);
 }
 
-// The doorbell's SGI is taken by the dispatch ahead of kickos_isr_irq, so it holds no
-// irq_table slot; INTID 0 is inside KICKOS_MAX_IRQ here, the banked SGI and PPI IDs sitting
-// below the SPIs rather than outside them.
+// The doorbell's SGI is the GIC's own, and imx8mp's chip file numbers lines from the first SPI:
+// no chip-file line carries either.
 bool arch_irq_line_kernel_owned(int line)
 {
 #if (KICKOS_NUM_CORES > 1 || KICKOS_AMP_NODE)
-    return line == GIC_SGI_DOORBELL;
-#else
-    (void)line;
-    return false;
+    if (line == GIC_SGI_DOORBELL)
+    {
+        return true;
+    }
 #endif
+    return line == kickos_gicv3.timer_intid;
 }
 
-// Test scaffolding (arch.h). The set-pending registers pend in the controller, so delivery
-// takes the ordinary path and the latch-while-masked contract needs no software shadow.
-void arch_irq_inject(int irq)
+// The set-pending registers pend in the controller, so delivery takes the ordinary path and the
+// latch-while-masked contract needs no software shadow. A banked line would pend on the CALLER's
+// redistributor, not its claim core's.
+bool arch_irq_inject(int irq)
 {
-    if (irq < 0 or irq >= kickos_gicv3.intid_count)
+    if (irq < GIC_BANKED_INTIDS or irq >= kickos_gicv3.intid_count)
     {
-        return;
-    }
-    if (irq < GIC_BANKED_INTIDS)
-    {
-        *gicr32(my_rd_base(), GICR_ISPENDR0) = 1u << (irq % 32);
-        return;
+        return false;
     }
     *gicd32(GICD_ISPENDR + (irq / 32) * 4) = 1u << (irq % 32);
+    return true;
 }
 
 // One interrupt per entry: the GIC signals again for anything still pending.

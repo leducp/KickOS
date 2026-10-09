@@ -2,8 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // Echo calls on the crossing this node's composition serves, the first partition port named
-// for it. The node's other ports are served by tasks that never receive, for the reply-guard
-// arms.
+// for it. The node's other ports are served by tasks that never receive, for amp_far_reply_empty.
 
 #include <iso646.h> // and / or / not are macros in C, not keywords
 #include <stdbool.h>
@@ -20,6 +19,23 @@
 // amp_share_crossing states the same line and word.
 #define AMP_SHARE_LINE 64u
 #define AMP_SHARE_MARK(node) (0x53480000u | (uint32_t)(node))
+// A call whose first byte is AMP_HOLD_MARK is answered once node 0 stores its second byte at
+// AMP_HOLD_WORD of its own line, or after AMP_HOLD_NS. amp_far_reply_unmapped states the same.
+#define AMP_HOLD_MARK 0xD0u
+#define AMP_HOLD_WORD 8u
+#define AMP_HOLD_NS (2000ull * 1000ull * 1000ull)
+#define AMP_HOLD_POLL_NS (1000ull * 1000ull)
+
+static void ampecho_hold(unsigned char const* view, unsigned char seq)
+{
+    uint64_t waited = 0;
+    while (view != NULL and waited < AMP_HOLD_NS
+           and __atomic_load_n((uint32_t const*)(view + AMP_HOLD_WORD), __ATOMIC_ACQUIRE) != seq)
+    {
+        kos_sleep_ns(AMP_HOLD_POLL_NS);
+        waited += AMP_HOLD_POLL_NS;
+    }
+}
 
 void ampecho_spare(kos_self_t const* self)
 {
@@ -51,7 +67,7 @@ void ampecho_main(kos_self_t const* self)
 
     // Untimed on purpose. A far call finding nothing parked on the port is refused ON THE SPOT
     // (N6f) rather than held, so a timeout here leaves this peer off its receive between one
-    // expiry and the next park, and a caller landing in that gap waits out its own deadline.
+    // expiry and the next park, and a caller landing in that gap is answered empty.
     while (true)
     {
         unsigned char msg[KOS_EP_MSG_MAX];
@@ -80,6 +96,10 @@ void ampecho_main(kos_self_t const* self)
         if (info.reply_cap == KOS_CAP_NONE)
         {
             continue; // a send and not a call: there is nothing to answer
+        }
+        if (got >= 2 and msg[0] == AMP_HOLD_MARK)
+        {
+            ampecho_hold(view, msg[1]);
         }
         // The caller's own bytes, unchanged: the far-call arms check the payload.
         (void)kos_reply(info.reply_cap, msg, (size_t)got);

@@ -8,6 +8,7 @@
 #include <kickos/arch/arch.h>
 #include <kickos/arch/aspace_residency.h>
 #include <kickos/arch/aspace_table.h>
+#include <kickos/diag.h>
 #include <kickos/extent.h>
 
 #include "sysops_armv8a.h"
@@ -104,6 +105,34 @@ namespace
         return bits;
     }
 
+}
+
+namespace kickos
+{
+    void kpanic(char const* msg) __attribute__((noreturn));
+
+    namespace armv8a
+    {
+        // Why the MMU these ID and control registers describe cannot run this port, or null.
+        char const* mmu_refusal(uint64_t mmfr0, uint64_t tcr)
+        {
+            if (((mmfr0 >> 28) & 0xFu) == 0xFu)
+            {
+                return diag::kMmuNoGranule;
+            }
+            unsigned const pa = pa_bits_of(static_cast<unsigned>(mmfr0 & 0xFu));
+            unsigned const ips = pa_bits_of(static_cast<unsigned>((tcr >> 32) & 0x7u));
+            if (pa == 0 or ips == 0 or pa < ips)
+            {
+                return diag::kMmuPaNarrow;
+            }
+            return nullptr;
+        }
+    }
+}
+
+namespace
+{
     constexpr unsigned ASID_SHIFT = 48;
     constexpr uint64_t ASID_MASK = 0xFFFFull << ASID_SHIFT;
     constexpr uint64_t TCR_AS = 1ull << 36;
@@ -175,19 +204,10 @@ namespace
         return static_cast<uintptr_t>(1) << shift;
     }
 
-#if defined(KICKOS_ENABLE_SELFTEST)
-    // Invalidation counters, protected by the caller's IrqLock.
-    uint32_t g_tlbi_issued = 0;
-    uint32_t g_tlbi_elided = 0;
-#endif
-
     // The descriptor write must reach the walker before the invalidate, and the invalidate
     // must complete before the next translated access (DDI 0487 M.b section D8.17).
     void invalidate_page(uintptr_t va)
     {
-#if defined(KICKOS_ENABLE_SELFTEST)
-        g_tlbi_issued++;
-#endif
         kickos_armv8a_dsb_ishst();
         // The IS form reaches all PEs in the Inner Shareable domain; the local form
         // reaches this PE. DSB ISH completes either (DDI 0487 M.b, D8.17.5 and B2.6.9.1).
@@ -199,11 +219,6 @@ namespace
         kickos_armv8a_dsb_ish();
         kickos_armv8a_isb();
     }
-
-#if KICKOS_KERNEL_CORES > 1
-    // Last installed root per core. Updated only by write_ttbr0.
-    uint64_t g_installed_root[KICKOS_NUM_CORES] = {};
-#endif
 
     // Root-keyed ASIDs and cores that may retain translations.
     // write_ttbr0 records residency when it installs a root.
@@ -237,37 +252,6 @@ namespace
     }
 #endif
 
-#if defined(KICKOS_ENABLE_SELFTEST)
-    // Compare root addresses without the ASID bits.
-    bool installed_here(struct arch_aspace* space)
-    {
-        uint64_t const ttbr = kickos_armv8a_read_ttbr0_el1();
-        return (ttbr & DESC_OA_MASK) == static_cast<uint64_t>(phys_of(root_of(space)));
-    }
-
-    // Cores currently using this root, for self-tests only.
-    // Maintenance uses residency, which includes cores that switched away.
-    uint32_t active_cores(struct arch_aspace* space)
-    {
-        uint32_t set = 0;
-        if (installed_here(space))
-        {
-            set |= 1u << arch_cpu_id();
-        }
-#if KICKOS_KERNEL_CORES > 1
-        uint64_t const oa = static_cast<uint64_t>(phys_of(root_of(space)));
-        for (uint32_t c = 0; c < KICKOS_NUM_CORES; c++)
-        {
-            if (g_installed_root[c] == oa)
-            {
-                set |= 1u << c;
-            }
-        }
-#endif
-        return set;
-    }
-#endif
-
     // After removing executable mappings, each resident peer must execute an ISB
     // to discard previously fetched instructions. TLBI alone does not do this
     // (DDI 0487 M.b, B2.7.4.2). The doorbell handler supplies the peer ISB.
@@ -286,9 +270,6 @@ namespace
     {
         if (not resident)
         {
-#if defined(KICKOS_ENABLE_SELFTEST)
-            g_tlbi_elided++;
-#endif
             return;
         }
         invalidate_page(va);
@@ -336,7 +317,7 @@ namespace
 
     // Call with interrupts masked. Flush locally when leaving ASID 0: its
     // translations are shared, and the boot root also has global low-half entries.
-    // Switching between tagged roots needs no flush. Update both records after
+    // Switching between tagged roots needs no flush. Update the residency record after
     // writing TTBR0.
     void write_ttbr0(uint64_t ttbr)
     {
@@ -349,9 +330,6 @@ namespace
             kickos_armv8a_dsb_ish();
             kickos_armv8a_isb();
         }
-#if KICKOS_KERNEL_CORES > 1
-        g_installed_root[arch_cpu_id()] = ttbr & DESC_OA_MASK;
-#endif
         g_residency.note(ttbr & DESC_OA_MASK, arch_cpu_id());
     }
 
@@ -608,52 +586,14 @@ size_t arch_aspace_granule(void)
     return GRANULE;
 }
 
-uint64_t arch_aspace_model(void)
+void kickos_armv8a_mmu_check(void)
 {
-    uint64_t const mmfr0 = kickos_armv8a_read_mmfr0_el1();
-    uint64_t const tcr = kickos_armv8a_read_tcr_el1();
-    // TGran4: bits 31:28; TGran64: 27:24; TGran16: 23:20; ASIDBits: 7:4; PARange: 3:0.
-    // TGran16 uses the opposite support encoding from TGran4 and TGran64.
-    unsigned const tg4 = static_cast<unsigned>((mmfr0 >> 28) & 0xFu);
-    unsigned const tg64 = static_cast<unsigned>((mmfr0 >> 24) & 0xFu);
-    unsigned const tg16 = static_cast<unsigned>((mmfr0 >> 20) & 0xFu);
-    uint64_t granules = 0;
-    if (tg4 != 0xFu)
+    char const* const why = kickos::armv8a::mmu_refusal(kickos_armv8a_read_mmfr0_el1(),
+                                                        kickos_armv8a_read_tcr_el1());
+    if (why != nullptr)
     {
-        granules |= 1u; // the architecture's smallest, and the one TCR_EL1.TG0 selects here
+        kickos::kpanic(why);
     }
-    if (tg16 != 0u)
-    {
-        granules |= 2u;
-    }
-    if (tg64 != 0xFu)
-    {
-        granules |= 4u;
-    }
-    unsigned const asid_bits = asid_width();
-    unsigned const pa_bits = pa_bits_of(static_cast<unsigned>(mmfr0 & 0xFu));
-    unsigned const ips_bits = pa_bits_of(static_cast<unsigned>((tcr >> 32) & 0x7u));
-    uint64_t out = 0;
-    if ((granules & 1u) != 0 and GRANULE == 4096u)
-    {
-        out |= ARCH_ASPACE_MODEL_GRANULE;
-    }
-    if (asid_bits == ASID_BITS_RECORDED)
-    {
-        out |= ARCH_ASPACE_MODEL_ASID;
-    }
-    if (asid_capacity() != 0)
-    {
-        out |= ARCH_ASPACE_MODEL_TAGGED;
-    }
-    if (pa_bits != 0 and ips_bits != 0 and pa_bits >= ips_bits)
-    {
-        out |= ARCH_ASPACE_MODEL_PA;
-    }
-    out |= static_cast<uint64_t>(asid_bits) << ARCH_ASPACE_MODEL_ASID_SHIFT;
-    out |= static_cast<uint64_t>(pa_bits) << ARCH_ASPACE_MODEL_PA_SHIFT;
-    out |= granules << ARCH_ASPACE_MODEL_GRAN_SHIFT;
-    return out;
 }
 
 bool arch_aspace_memtype_support(enum arch_map_memtype type)
@@ -918,51 +858,5 @@ arch_phys_addr_t arch_aspace_frame_at(struct arch_aspace* space, uintptr_t va)
     arch_irq_restore(s);
     return out;
 }
-
-#if defined(KICKOS_ENABLE_SELFTEST)
-uint64_t arch_aspace_tlbi_counts(void)
-{
-    uint32_t elided = g_tlbi_elided;
-    if (elided > 0xFFFFFFu)
-    {
-        elided = 0xFFFFFFu; // saturates rather than bleeding into the issued half
-    }
-    // The low byte is zero: direct acquisition has no window holds to mispair.
-    return (static_cast<uint64_t>(g_tlbi_issued) << 32) | (static_cast<uint64_t>(elided) << 8);
-}
-
-uint32_t arch_aspace_active_cores(struct arch_aspace* space)
-{
-    if (space == nullptr)
-    {
-        return 0;
-    }
-    return active_cores(space);
-}
-
-int arch_aspace_walk_memtype(uintptr_t va, bool user)
-{
-    arch_irq_state_t const s = arch_irq_save();
-    uint64_t const par = kickos_armv8a_at_read(va, user);
-    uint64_t const mair = kickos_armv8a_read_mair_el1();
-    arch_irq_restore(s);
-    if ((par & 1u) != 0)
-    {
-        return -1;
-    }
-    // PAR_EL1.ATTR is the MAIR_EL1 byte the walk selected.
-    uint64_t const attr = par >> 56;
-    enum arch_map_memtype const types[] = {ARCH_MAP_NORMAL, ARCH_MAP_NOCACHE, ARCH_MAP_DEVICE};
-    for (enum arch_map_memtype const t : types)
-    {
-        uint64_t desc = 0;
-        if (memtype_attr(t, &desc) and ((mair >> (8u * ((desc >> 2) & 7u))) & 0xFFu) == attr)
-        {
-            return t;
-        }
-    }
-    return -1;
-}
-#endif
 
 }

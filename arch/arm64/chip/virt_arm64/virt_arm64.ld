@@ -318,7 +318,6 @@ SECTIONS
         __kickos_amp_cells_start = .;
         KEEP(*(.amp_shared.cells.request))
         KEEP(*(.amp_shared.cells.answer))
-        KEEP(*(.amp_shared.cells.served))
         /* The controller's own publication: which affinity carries each core, written by that
            core and read by every sender. */
         KEEP(*(.amp_shared.affinity))

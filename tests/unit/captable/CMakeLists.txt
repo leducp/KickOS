@@ -33,6 +33,7 @@ foreach(_case flat:7:1:7 segmented:10:2:7 deep:20:3:20 deeptail:20:3:7)
   kickos_add_unit_test(NAME captable_${_name} SOURCES captable_policy.cc
     TEST_PREFIX "${_name}."
     INCLUDES "${PROJECT_SOURCE_DIR}/kernel/include" "${PROJECT_SOURCE_DIR}/system/include"
+             "${PROJECT_SOURCE_DIR}/user/include"
     DEFINITIONS CAPTABLE_GATE_WIDTH=${_width} CAPTABLE_GATE_CHUNKS=${_chunks}
                 CAPTABLE_GATE_CHILD=${_child})
 endforeach()

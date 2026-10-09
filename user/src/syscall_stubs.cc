@@ -62,9 +62,10 @@ int kos_sem_create(int initial, kos_cap_t* out_cap)
                                          reinterpret_cast<uintptr_t>(out_cap), 0, 0));
 }
 
-int kos_sem_wait(kos_cap_t sem)
+int kos_sem_wait(kos_cap_t sem, uint32_t timeout_us)
 {
-    return static_cast<int>(arch_syscall(KOS_SYS_SEM_WAIT, static_cast<uintptr_t>(sem), 0, 0, 0));
+    return static_cast<int>(arch_syscall(KOS_SYS_SEM_WAIT, static_cast<uintptr_t>(sem),
+                                         static_cast<uintptr_t>(timeout_us), 0, 0));
 }
 
 int kos_sem_post(kos_cap_t sem)
@@ -106,6 +107,15 @@ int kos_amp_endpoint_create(uint32_t node, uint32_t port, kos_cap_t* out_cap)
                                          static_cast<uintptr_t>(port),
                                          reinterpret_cast<uintptr_t>(out_cap), 0));
 }
+
+#if KICKOS_AMP_NODE
+int kos_amp_count(uint32_t node, uint32_t which, uint32_t* out)
+{
+    return static_cast<int>(arch_syscall(KOS_SYS_AMP_COUNT, static_cast<uintptr_t>(node),
+                                         static_cast<uintptr_t>(which),
+                                         reinterpret_cast<uintptr_t>(out), 0));
+}
+#endif
 
 int32_t kos_send(kos_cap_t ep, void const* buf, size_t len)
 {
@@ -216,6 +226,37 @@ int kos_thread_set_affinity(kos_thread_t thread, uint32_t core_mask)
     return static_cast<int>(arch_syscall(KOS_SYS_THREAD_SET_AFFINITY,
                                          static_cast<uintptr_t>(thread),
                                          static_cast<uintptr_t>(core_mask), 0, 0));
+}
+
+int kos_thread_affinity(kos_thread_t thread)
+{
+#if KICKOS_KERNEL_CORES > 1
+    return static_cast<int>(arch_syscall(KOS_SYS_THREAD_AFFINITY,
+                                         static_cast<uintptr_t>(thread), 0, 0, 0));
+#else
+    (void)thread;
+    return -KOS_ENOSYS;
+#endif
+}
+
+int kos_core_current(void)
+{
+#if KICKOS_KERNEL_CORES > 1
+    return static_cast<int>(arch_syscall(KOS_SYS_CORE_CURRENT, 0, 0, 0, 0));
+#else
+    return 0;
+#endif
+}
+
+int kos_task_cores(kos_task_t task)
+{
+#if KICKOS_KERNEL_CORES > 1
+    return static_cast<int>(arch_syscall(KOS_SYS_TASK_CORES, static_cast<uintptr_t>(task), 0,
+                                         0, 0));
+#else
+    (void)task;
+    return -KOS_ENOSYS;
+#endif
 }
 
 // arch_syscall64: a handle may carry bit 31, which a 32-bit return cannot tell from an errno.
@@ -383,66 +424,12 @@ void kickos_user_thread_return(void)
     __builtin_unreachable();
 }
 
-int kos_irq_inject(int irq)
-{
-    return static_cast<int>(
-        arch_syscall(KOS_SYS_IRQ_INJECT, static_cast<uintptr_t>(irq), 0, 0, 0));
-}
-
-#if defined(KICKOS_ENABLE_SELFTEST)
+#if defined(KICKOS_REBOOT) && KICKOS_REBOOT
 // NOT noreturn, like kos_shutdown: the privilege gate can refuse, and a chip with no
 // bootloader entry declines.
 int kos_reboot(void)
 {
     return static_cast<int>(arch_syscall(KOS_SYS_REBOOT, 0, 0, 0, 0));
-}
-
-void* kos_guard_addr(void)
-{
-    return reinterpret_cast<void*>(arch_syscall(KOS_SYS_GUARD_ADDR, 0, 0, 0, 0));
-}
-
-uint32_t kos_irq_spurious_count(void)
-{
-    return static_cast<uint32_t>(arch_syscall(KOS_SYS_IRQ_SPURIOUS, 0, 0, 0, 0));
-}
-
-uint32_t kos_ipc_fast_taken(void)
-{
-    return static_cast<uint32_t>(arch_syscall(KOS_SYS_IPC_FAST_TAKEN, 0, 0, 0, 0));
-}
-
-uint32_t kos_nest_witness(int which)
-{
-    return static_cast<uint32_t>(
-        arch_syscall(KOS_SYS_NEST_WITNESS, static_cast<uintptr_t>(which), 0, 0, 0));
-}
-
-uintptr_t kos_grant_probe(uintptr_t op, uintptr_t base, uintptr_t size)
-{
-    return arch_syscall(KOS_SYS_GRANT_PROBE, op, base, size, 0);
-}
-
-uintptr_t kos_sched_probe(uintptr_t op)
-{
-    return static_cast<uintptr_t>(arch_syscall(KOS_SYS_SCHED_PROBE, op, 0, 0, 0));
-}
-
-uintptr_t kos_aspace_probe(uintptr_t op, uintptr_t a1)
-{
-    return arch_syscall(KOS_SYS_ASPACE_PROBE, op, a1, 0, 0);
-}
-
-uintptr_t kos_amp_probe(uintptr_t op, uintptr_t a1)
-{
-    return arch_syscall(KOS_SYS_AMP_PROBE, op, a1, 0, 0);
-}
-
-// arch_syscall64 and not arch_syscall: KOS_DOORBELL_OP_COUNTS answers two 32-bit fields in one
-// word, and the register-width return drops the high one on a 32-bit target.
-uint64_t kos_doorbell_probe(uintptr_t op, uintptr_t a1)
-{
-    return arch_syscall64(KOS_SYS_DOORBELL_PROBE, op, a1, 0, 0);
 }
 #endif
 
@@ -533,13 +520,11 @@ int kos_irq_discard(kos_cap_t irq_cap)
         arch_syscall(KOS_SYS_IRQ_DISCARD, static_cast<uintptr_t>(irq_cap), 0, 0, 0));
 }
 
-#if defined(KICKOS_ENABLE_SELFTEST)
-int kos_irq_unmask(int line)
+int kos_irq_raise(kos_cap_t irq_cap)
 {
     return static_cast<int>(
-        arch_syscall(KOS_SYS_IRQ_UNMASK, static_cast<uintptr_t>(line), 0, 0, 0));
+        arch_syscall(KOS_SYS_IRQ_RAISE, static_cast<uintptr_t>(irq_cap), 0, 0, 0));
 }
-#endif
 
 uint64_t kos_clock_now(void)
 {
@@ -586,6 +571,42 @@ int kos_mem_self_grant(void* base, size_t size, uint32_t flags)
                      static_cast<uintptr_t>(size), static_cast<uintptr_t>(flags), 0));
 }
 
+#if KICKOS_HAVE_ASPACE
+int kos_frame_create(size_t bytes, kos_cap_t* out_frame)
+{
+    cap_out_clear(out_frame);
+    return static_cast<int>(arch_syscall(KOS_SYS_FRAME_CREATE, static_cast<uintptr_t>(bytes),
+                                         reinterpret_cast<uintptr_t>(out_frame), 0, 0));
+}
+
+int kos_aspace_self(kos_cap_t* out_space)
+{
+    cap_out_clear(out_space);
+    return static_cast<int>(arch_syscall(KOS_SYS_ASPACE_SELF,
+                                         reinterpret_cast<uintptr_t>(out_space), 0, 0, 0));
+}
+
+int kos_frame_map(kos_cap_t frame, kos_cap_t space, uintptr_t* va, uint32_t flags)
+{
+    return static_cast<int>(arch_syscall(KOS_SYS_FRAME_MAP, static_cast<uintptr_t>(frame),
+                                         static_cast<uintptr_t>(space),
+                                         reinterpret_cast<uintptr_t>(va),
+                                         static_cast<uintptr_t>(flags)));
+}
+
+int kos_frame_unmap(kos_cap_t frame, kos_cap_t space, uintptr_t va)
+{
+    return static_cast<int>(arch_syscall(KOS_SYS_FRAME_UNMAP, static_cast<uintptr_t>(frame),
+                                         static_cast<uintptr_t>(space), va, 0));
+}
+
+int kos_mem_count(uint32_t which, uint32_t* out)
+{
+    return static_cast<int>(arch_syscall(KOS_SYS_MEM_COUNT, static_cast<uintptr_t>(which),
+                                         reinterpret_cast<uintptr_t>(out), 0, 0));
+}
+#endif
+
 void kos_kernel_diag_led_set(int on)
 {
     arch_syscall(KOS_SYS_DIAG_LED_SET, static_cast<uintptr_t>(on), 0, 0, 0);
@@ -606,15 +627,4 @@ int64_t kos_bench(uint32_t op, uint32_t a0, uint32_t a1)
                                                static_cast<uintptr_t>(a1), 0));
 }
 #endif
-}
-
-int kos_frame_map(kos_cap_t frame, kos_cap_t space, uintptr_t va, uint32_t flags)
-{
-    return (int)arch_syscall(KOS_SYS_FRAME_MAP, (uintptr_t)frame, (uintptr_t)space, va,
-                             (uintptr_t)flags);
-}
-
-int kos_frame_unmap(kos_cap_t frame, kos_cap_t space, uintptr_t va)
-{
-    return (int)arch_syscall(KOS_SYS_FRAME_UNMAP, (uintptr_t)frame, (uintptr_t)space, va, 0);
 }

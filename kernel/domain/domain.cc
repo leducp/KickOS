@@ -10,6 +10,7 @@
 #include <kickos/debug.h>  // KICKOS_DEBUG_ASSERT
 #include <kickos/kernel.h> // KICKOS_ASSERT
 #include <kickos/klink.h>
+#include <kickos/slotpool.h> // handle_pack / handle_index / handle_gen
 
 #include <kickos/sys/errno.h>
 
@@ -157,10 +158,9 @@ namespace kickos
         return &kernel().domains[KDOM_DEFAULT_USER_INDEX];
     }
 
-    // Same codec as SlotPool's handle: generation in the high half, slot index in the low. The
-    // handle spends all 32 bits, so an aged one is negative and no decoder may test its sign;
-    // -1, the null domain's handle, is refused by its all-ones index.
-    static_assert(KICKOS_MAX_DOMAINS < 0xFFFF, "a domain index must never be all ones");
+    // SlotPool's handle codec. An aged handle is negative, so no decoder may test its sign; -1,
+    // the null domain's handle, is refused by its all-ones index.
+    static_assert(KICKOS_MAX_DOMAINS < HANDLE_INDEX_MASK, "a domain index must never be all ones");
 
     int domain_handle(Domain const* d)
     {
@@ -169,20 +169,19 @@ namespace kickos
             return -1;
         }
         size_t const idx = static_cast<size_t>(d - &kernel().domains[0]);
-        return static_cast<int>((static_cast<uint32_t>(d->generation) << 16)
-                                | static_cast<uint32_t>(idx));
+        return static_cast<int>(handle_pack(d->generation, static_cast<uint32_t>(idx)));
     }
 
     Domain* domain_resolve(int handle)
     {
         uint32_t const raw = static_cast<uint32_t>(handle);
-        size_t const idx = raw & 0xFFFFu;
+        size_t const idx = handle_index(raw);
         if (idx >= KICKOS_MAX_DOMAINS)
         {
             return nullptr;
         }
         Domain* d = &kernel().domains[idx];
-        if (d->generation != static_cast<uint16_t>(raw >> 16))
+        if (d->generation != handle_gen(raw))
         {
             return nullptr; // the slot has been reclaimed since this handle was minted
         }
@@ -191,22 +190,6 @@ namespace kickos
             return nullptr; // free slot: a live handle to one cannot exist
         }
         return d;
-    }
-
-    unsigned domain_space_id(Domain const* d)
-    {
-#if KICKOS_HAVE_ASPACE
-        if (d == nullptr or d->space == nullptr)
-        {
-            return 0;
-        }
-        // The slot index biased by one, so 0 stays "no space" and no kernel address
-        // crosses the syscall boundary.
-        return static_cast<unsigned>(d - &kernel().domains[0]) + 1u;
-#else
-        (void)d;
-        return 0;
-#endif
     }
 
     struct arch_aspace* domain_space(Domain const* d)
@@ -238,6 +221,22 @@ namespace kickos
         return const_cast<VirtualRanges*>(domain_ranges(d));
     }
 
+    void domain_retire_handles(Domain* d)
+    {
+        if (d != nullptr and not d->immortal)
+        {
+            d->generation++;
+        }
+    }
+
+    void domain_retire_space(Domain* d)
+    {
+        if (d != nullptr)
+        {
+            aspace_release_runs(d->space, &d->ranges);
+        }
+    }
+
     size_t domain_spaces_held(void)
     {
         Kernel& k = kernel();
@@ -251,22 +250,6 @@ namespace kickos
         }
         return held;
     }
-
-#if defined(KICKOS_ENABLE_SELFTEST)
-    uint32_t domain_cores_on_held_space(void)
-    {
-        Kernel& k = kernel();
-        uint32_t set = 0;
-        for (int i = 0; i < KICKOS_MAX_DOMAINS; i++)
-        {
-            if (k.domains[i].space != nullptr)
-            {
-                set |= arch_aspace_active_cores(k.domains[i].space);
-            }
-        }
-        return set;
-    }
-#endif
 #endif
 
     Domain* domain_for(uint32_t caller, void* mem_base, size_t mem_size, uint32_t mem_attr,
@@ -332,12 +315,9 @@ namespace kickos
         return d;
     }
 
-    // The refcount counts live tasks, creator holds, and CAP_ASPACE capabilities. Only the
-    // first two are bounded by the task pool, which is what this assert covers; capability
-    // holds are bounded at obj_ref_inc, which refuses at the ceiling.
-    static_assert(2ull * KICKOS_MAX_TASKS <= UINT16_MAX,
-                  "Domain::refcount is uint16_t and counts live tasks plus creator holds: "
-                  "twice the task pool must fit it");
+    static_assert(2ull * KICKOS_MAX_TASKS + KICKOS_MAX_DOMAINS <= UINT16_MAX,
+                  "Domain::refcount is uint16_t and counts live tasks, creator holds and "
+                  "borrowers: twice the task pool plus the domain pool must fit it");
 
     uint16_t domain_refcount(Domain const* d)
     {
@@ -354,8 +334,6 @@ namespace kickos
         // references it and the counter would wrap.
         if (d != nullptr and not d->immortal)
         {
-            // UINT16_MAX and not twice the task pool: a CAP_ASPACE capability is a holder
-            // bounded by no pool of tasks.
             KICKOS_DEBUG_ASSERT(d->refcount < UINT16_MAX);
             d->refcount++;
         }

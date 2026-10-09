@@ -168,8 +168,8 @@ namespace
         EXPECT_FALSE(kickos::ram_owner_sync_owed(a, 128));
     }
 
-    // The kernel's own arena blocks (the boot stacks, the thread pool's default stacks,
-    // the sim's guard page) reach arch_ram_alloc directly and are recorded nowhere.
+    // The kernel's own arena blocks (the boot stacks, the thread pool's default stacks)
+    // reach arch_ram_alloc directly and are recorded nowhere.
     TEST_F(OwnerTable, AKernelPlacedBlockIsNobodys)
     {
         void* const kernel_block = arch_ram_alloc(128);

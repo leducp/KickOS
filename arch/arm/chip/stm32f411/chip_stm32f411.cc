@@ -12,6 +12,7 @@
 #include "regs.h" // arch/arm/common: kickos_armv7m_enable_fpu + core SCB regs
 #include <kickos/chip_mmap.h>
 #include "irq.h"
+#include <chip_layout.h>
 #include "regs/flash.h"
 #include "regs/gpio.h"
 #include "regs/rcc.h"
@@ -43,6 +44,9 @@ namespace gpio = kickos::stm32f411::reg::gpio;
 namespace tim = kickos::stm32f411::reg::tim;
 namespace usart = kickos::stm32f411::reg::usart;
 namespace stm32 = kickos::stm32;
+
+static_assert(irq::TIM2_IRQ == KICKOS_LAYOUT_LINE_TIM2_IRQ,
+              "startup.S vectors the clock-wrap ISR at KICKOS_LAYOUT_LINE_TIM2_IRQ");
 
 namespace kickos
 {
@@ -286,7 +290,7 @@ uint64_t arch_clock_now(void)
     return g_clk.ns_from(tim2_ticks());
 }
 
-// TIM2 update ISR, NVIC 28 in startup.S: observes the wrap while no thread reads the clock.
+// TIM2 update ISR, vectored from startup.S: observes the wrap while no thread reads the clock.
 // It runs in the maskable band, so an IrqLock defers it harmlessly.
 void kickos_tim2_clock_isr(void)
 {

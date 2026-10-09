@@ -4,8 +4,7 @@
 #
 # Driver-class shadowing gate. The public class symbols of <kickos/driver/*.h>
 # (kos_uart_open... , kos_spi_bus_open...) are ordinary strong C symbols, and an image may
-# legitimately hold a MOCK definition of them: the selftest compiles spi_mock.cc straight
-# into its executable.
+# hold a MOCK definition of them compiled straight into its executable.
 #
 # A static-archive member is extracted ONLY to satisfy a still-undefined symbol, so a mock
 # already on the link command line answers every reference first, the backend's member is
@@ -13,7 +12,7 @@
 # register file: kernel banner, then silence.
 #
 # Usage:
-#   check_class_backend.sh <nm> <headerdirs> <map> <expect-app-definition> <source>...
+#   check_class_backend.sh <nm> <headerdirs> <map> <source>...
 #
 # <headerdirs> is a ';'-separated list of public-header directories, each read at depth 1.
 # It covers the SYSCALL set as well as the driver classes, because the same shadowing works
@@ -23,8 +22,7 @@
 # the derived set is what has to survive it.
 #
 # The symbol set is DERIVED from the headers, so over-capture is safe: a name never defined
-# twice can never fail. <expect-app-definition> is 1 on an image that compiles a mock, and is
-# the positive control: green then means "no second definer" rather than "found nothing".
+# twice can never fail.
 
 set -u
 # Every path arrives as an argument and is re-split unquoted below; a glob character in a
@@ -32,15 +30,14 @@ set -u
 set -f
 . "$(dirname "$0")/../lib/gate.sh"
 
-if [ "$#" -lt 5 ]; then
-    echo "usage: $0 <nm> <headerdirs> <map> <expect-app-definition> <source>..." >&2
+if [ "$#" -lt 4 ]; then
+    echo "usage: $0 <nm> <headerdirs> <map> <source>..." >&2
     exit 2
 fi
 
 NM="$1"; shift
 HEADERDIRS="$1"; shift
 MAP="$1"; shift
-EXPECT_APP="$1"; shift
 
 [ -n "$HEADERDIRS" ] || fail "no header directory given"
 [ -r "$MAP" ] || fail "cannot read $MAP"
@@ -191,6 +188,16 @@ map_undefined() { # <map> <refs-out>
     cat "$TMP/map_u" >> "$2"
 }
 
+# The app's own objects must ask for at least one class or syscall name: an image whose objects
+# dropped out of the argument list would otherwise read as "nothing shadowed".
+app_reach_scan() { # <object-refs> <class-syms> <findings-out>
+    : > "$3"
+    tool_out "$TMP/reach" '' awk 'NR == FNR { k[$0] = 1; next } ($0 in k) { n++ } END { print n + 0 }' "$2" "$1"
+    if [ "$(cat "$TMP/reach")" -eq 0 ]; then
+        printf '%s\n' "no link-line object asks for any class or syscall name; the app's objects are not reaching this inventory" >> "$3"
+    fi
+}
+
 # A miss here is a class header this gate never read, or an app squatting on kos_*; either
 # leaves a backend shadowable with this gate still green.
 leg3_scan() { # <app-kos> <class-syms> <findings-out>
@@ -201,15 +208,6 @@ leg3_scan() { # <app-kos> <class-syms> <findings-out>
             printf '%s\n' "leg 3: $_member defines the public symbol $_sym, which is not declared by any header in $HEADERDIRS; the class symbol set this gate derives is incomplete" >> "$3"
         fi
     done < "$1"
-}
-
-# Without this a broken header parse, a broken nm invocation or an empty source list all
-# read as "no shadowing found".
-expect_app_scan() { # <expect-app> <napp> <findings-out>
-    : > "$3"
-    if [ "$1" = "1" ] && [ "$2" -eq 0 ]; then
-        printf '%s\n' "no class symbol is defined by any object on the link line, but this image compiles the mocks; the inventory is not seeing them" >> "$3"
-    fi
 }
 
 legs12_scan() { # <class-syms> <defs> <included> <findings-out> <count-out> <referenced> <leg2-count-out>
@@ -231,7 +229,7 @@ legs12_scan() { # <class-syms> <defs> <included> <findings-out> <count-out> <ref
             _winner=$(awk -F'\t' -v s="$_sym" '$1 == s && $4 == "object" { print $2 }' "$2" | head -1)
             if [ -n "$_winner" ]; then
                 _losers=$(awk -F'\t' -v s="$_sym" '$1 == s && $4 == "archive" { print $2 }' "$2" | sort -u)
-                printf '%s\n' "leg 1: $_sym is defined by the link-line object $_winner AND by $(echo $_losers); the archive member is never extracted, no duplicate symbol is reported, and that backend's own calls bind to the object's definition. Either keep the second definition out of every target image (a host-only test seam), or rename the backend's class symbols in its CMakeLists (what the SPI services do, because t_bus_device_slots needs a mock in the image: target_compile_definitions kos_*=<driver>_*)" >> "$4"
+                printf '%s\n' "leg 1: $_sym is defined by the link-line object $_winner AND by $(echo $_losers); the archive member is never extracted, no duplicate symbol is reported, and that backend's own calls bind to the object's definition. Either keep the second definition out of every target image (a host-only test seam), or rename the backend's class symbols in its CMakeLists (what the SPI services do: target_compile_definitions kos_*=<driver>_*)" >> "$4"
             else
                 printf '%s\n' "leg 1: $_sym has $_c definition sources ($(echo $_sources)); which one this link resolves to is archive order" >> "$4"
             fi
@@ -570,15 +568,18 @@ POS="$(wc -l < "$ST/leg3mut" | tr -d ' ')"
 [ "$POS" -eq 3 ] || fail "with an empty class symbol set leg 3 reported $POS finding(s), expected 3;
       its negative controls are not near misses and prove nothing"
 
-expect_app_scan 1 0 "$ST/eafind"
-POS="$(wc -l < "$ST/eafind" | tr -d ' ')"
-[ "$POS" -eq 1 ] || fail "the expect-app control stayed silent on an image that compiles a mock and inventoried none of it"
-expect_app_scan 1 4 "$ST/eafind"
-POS="$(wc -l < "$ST/eafind" | tr -d ' ')"
-[ "$POS" -eq 0 ] || fail "the expect-app control fired although the inventory saw the mock"
-expect_app_scan 0 0 "$ST/eafind"
-POS="$(wc -l < "$ST/eafind" | tr -d ' ')"
-[ "$POS" -eq 0 ] || fail "the expect-app control fired on an image that compiles no mock"
+printf '%s\n' kos_uart_open > "$ST/reachsyms"
+printf '%s\n' memcpy kos_uart_open > "$ST/reachrefs"
+app_reach_scan "$ST/reachrefs" "$ST/reachsyms" "$ST/reachfind"
+POS="$(wc -l < "$ST/reachfind" | tr -d ' ')"
+[ "$POS" -eq 0 ] || fail "the app-reach control fired on objects that ask for a class name"
+printf '%s\n' memcpy kos_uart_opened > "$ST/reachrefs"
+app_reach_scan "$ST/reachrefs" "$ST/reachsyms" "$ST/reachfind"
+POS="$(wc -l < "$ST/reachfind" | tr -d ' ')"
+[ "$POS" -eq 1 ] || fail "the app-reach control stayed silent on objects that ask for no class name"
+app_reach_scan /dev/null "$ST/reachsyms" "$ST/reachfind"
+POS="$(wc -l < "$ST/reachfind" | tr -d ' ')"
+[ "$POS" -eq 1 ] || fail "the app-reach control stayed silent with no link-line object"
 
 # --- the class symbol set, derived from the headers --------------------------
 # `find`, not a shell glob: `set -f` above would leave "$_d"/*.h unexpanded and the set empty.
@@ -639,10 +640,6 @@ done < "$TMP/find3"
 
 tool_out "$TMP/appdefs" '' awk -F'\t' '$4 == "object"' "$TMP/defs"
 napp=$(wc -l < "$TMP/appdefs" | tr -d ' ')
-expect_app_scan "$EXPECT_APP" "$napp" "$TMP/findapp"
-while IFS= read -r _msg; do
-    bad "$_msg"
-done < "$TMP/findapp"
 
 # --- map: which archive members entered the link -----------------------------
 map_included "$MAP" "$TMP/included"
@@ -653,10 +650,17 @@ for a in $ARCHIVES; do
     tool_out "$TMP/tool" '' "$NM" -A --undefined-only "$a"
     referenced_archive "$TMP/tool" "$TMP/included" "$TMP/refs"
 done
+[ -n "$OBJECTS" ] || bad "no link-line object was given; the app's objects dropped out of the inventory"
+: > "$TMP/obj_refs"
 for o in $OBJECTS; do
     tool_out "$TMP/tool" '' "$NM" --undefined-only "$o"
-    referenced_object "$TMP/tool" "$TMP/refs"
+    referenced_object "$TMP/tool" "$TMP/obj_refs"
 done
+cat "$TMP/obj_refs" >> "$TMP/refs"
+app_reach_scan "$TMP/obj_refs" "$TMP/class_syms" "$TMP/findreach"
+while IFS= read -r _msg; do
+    bad "$_msg"
+done < "$TMP/findreach"
 map_undefined "$MAP" "$TMP/refs"
 sort -u "$TMP/refs" -o "$TMP/refs"
 require_nonempty "$TMP/refs" "no link-line object or included member refers to any name; the

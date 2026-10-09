@@ -391,7 +391,7 @@ class Emitted(unittest.TestCase):
     def test_cost_prints_what_the_init_spends(self):
         run = self.cost("qemu-x86_64.yaml")
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
-        self.assertEqual(run.stdout, "cap_slots 6\nendpoints 1\nnotifications 2\nthreads 3\ntasks 3\nirq_handles 0\ndomains 6\n"
+        self.assertEqual(run.stdout, "cap_slots 5\nendpoints 1\nnotifications 2\nthreads 3\ntasks 3\nirq_handles 0\ndomains 6\n"
                                      "reservations 6\nself_grants 2\n")
 
     def test_cost_of_a_refused_composition_prints_its_refusals(self):

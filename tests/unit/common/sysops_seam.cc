@@ -21,6 +21,7 @@ namespace
 
     uint32_t g_cpu = 0;
 
+    uintptr_t g_pa_base = 0;
     size_t g_next_frame = 1;
     uint32_t g_frames_allocated = 0;
     uint32_t g_frames_freed = 0;
@@ -31,7 +32,6 @@ namespace
 
 extern "C"
 {
-    // PA is the frame's byte offset into the backend seam's RAM array.
     arch_phys_addr_t kickos_frame_alloc(void)
     {
         if (g_next_frame >= SYSOPS_FRAMES or g_frame_budget == 0)
@@ -40,7 +40,7 @@ extern "C"
         }
         g_frame_budget--;
         arch_phys_addr_t const frame =
-            static_cast<arch_phys_addr_t>(g_next_frame * SYSOPS_GRANULE);
+            static_cast<arch_phys_addr_t>(g_pa_base + g_next_frame * SYSOPS_GRANULE);
         g_next_frame++;
         g_frames_allocated++;
         return frame;
@@ -198,8 +198,9 @@ namespace kickos
             g_frame_budget = frames;
         }
 
-        void sysops_reset_common(size_t first_frame)
+        void sysops_reset_common(size_t first_frame, uintptr_t pa_base)
         {
+            g_pa_base = pa_base;
             g_ops_count = 0;
             g_ops_overflow = false;
             g_cpu = 0;

@@ -62,9 +62,12 @@ namespace kickos
     };
 
     // What the kernel placed rather than the caller: the process image, every thread stack
-    // with its guard, and every window. The one flag list a caller-controlled admission path
-    // filters on, so a further kernel-placed kind is added here and inherited everywhere.
+    // with its guard, and every window.
     constexpr uint8_t VR_KERNEL_PLACED = static_cast<uint8_t>(VR_IMAGE | VR_USTACK | VR_WINDOW);
+    // What no caller reserved, the one flag list a caller-controlled admission path filters on.
+    // A frame capability's mapping is one: an admission maps the frames at a range's address,
+    // and those are not the run's.
+    constexpr uint8_t VR_NOT_RESERVED = static_cast<uint8_t>(VR_KERNEL_PLACED | VR_FRAMECAP);
 
     // The most pages one range may name, which reserve() refuses above. This ceiling is what
     // makes the width of VirtualRange::pages a bound.
@@ -106,7 +109,7 @@ namespace kickos
     // admission path can ask this one question and no site keeps a flag list of its own.
     inline bool vr_caller_nameable(VirtualRange const* e)
     {
-        return e != nullptr and (e->flags & VR_KERNEL_PLACED) == 0u;
+        return e != nullptr and (e->flags & VR_NOT_RESERVED) == 0u;
     }
 
     // The stored value is the slot plus one, hence the strict inequality.

@@ -54,14 +54,86 @@ namespace kickos
 
         void note_member_release() {}
 
-        Backing g_backing = {};
-
-        void seat_backing(uintptr_t va, unsigned char* at, size_t bytes, uintptr_t uncached_va)
+        namespace
         {
-            g_backing.va = va;
-            g_backing.at = at;
-            g_backing.bytes = bytes;
-            g_backing.uncached_va = uncached_va;
+            struct BackedPage
+            {
+                struct arch_aspace const* space;
+                uintptr_t va;
+                unsigned char* at;
+                bool uncached;
+            };
+
+            BackedPage g_pages[BACKED_PAGES_MAX] = {};
+            size_t g_page_count = 0;
+
+            AcquireHolds g_holds;
+            size_t g_past_min = 0;
+
+            void* backed_at(struct arch_aspace const* space, uintptr_t va, bool* uncached)
+            {
+                uintptr_t const page = va & ~static_cast<uintptr_t>(arch_aspace_granule() - 1u);
+                for (size_t i = 0; i < g_page_count; i++)
+                {
+                    BackedPage const& p = g_pages[i];
+                    if (p.va == page and (p.space == nullptr or p.space == space))
+                    {
+                        if (uncached != nullptr)
+                        {
+                            *uncached = p.uncached;
+                        }
+                        return p.at + (va - page);
+                    }
+                }
+                return nullptr;
+            }
+        }
+
+        bool back_page(struct arch_aspace const* space, uintptr_t va, unsigned char* at,
+                       bool uncached)
+        {
+            if (g_page_count == BACKED_PAGES_MAX
+                or (va & static_cast<uintptr_t>(arch_aspace_granule() - 1u)) != 0)
+            {
+                return false;
+            }
+            g_pages[g_page_count] = BackedPage{space, va, at, uncached};
+            g_page_count++;
+            return true;
+        }
+
+        bool seat_backing(uintptr_t va, unsigned char* at, size_t bytes, uintptr_t uncached_va)
+        {
+            size_t const g = arch_aspace_granule();
+            if ((va & static_cast<uintptr_t>(g - 1u)) != 0)
+            {
+                return false;
+            }
+            for (size_t off = 0; off < bytes; off += g)
+            {
+                if (not back_page(nullptr, va + off, at + off, va + off >= uncached_va))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        void unback_all()
+        {
+            g_page_count = 0;
+            g_holds = AcquireHolds{};
+            g_past_min = 0;
+        }
+
+        AcquireHolds const& holds()
+        {
+            return g_holds;
+        }
+
+        size_t holds_refused_past_min()
+        {
+            return g_past_min;
         }
     }
 
@@ -134,21 +206,29 @@ extern "C"
         return 0;
     }
 
-    // Fails outside the window seat_backing names, so a range check never dereferences.
+    // Fails outside the backed pages, so a range check never dereferences. Refuses a hold past
+    // ARCH_ASPACE_ACQUIRE_MIN, as a windowed backend out of slots does.
     void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va, bool* uncached)
     {
-        using kickos::testfix::g_backing;
-        if (space == nullptr or g_backing.bytes == 0 or va < g_backing.va
-            or va - g_backing.va >= g_backing.bytes)
+        if (space == nullptr)
         {
             return nullptr;
         }
-        if (uncached != nullptr)
+        if (kickos::testfix::g_holds.live >= ARCH_ASPACE_ACQUIRE_MIN)
         {
-            *uncached = va >= g_backing.uncached_va;
+            kickos::testfix::g_past_min++;
+            return nullptr;
         }
-        return g_backing.at + (va - g_backing.va);
+        void* const p = kickos::testfix::backed_at(space, va, uncached);
+        if (p != nullptr)
+        {
+            kickos::testfix::g_holds.take(space, va);
+        }
+        return p;
     }
 
-    void arch_aspace_release(struct arch_aspace*, uintptr_t) {}
+    void arch_aspace_release(struct arch_aspace* space, uintptr_t va)
+    {
+        kickos::testfix::g_holds.give(space, va);
+    }
 }

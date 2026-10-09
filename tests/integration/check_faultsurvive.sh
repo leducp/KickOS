@@ -173,12 +173,12 @@ case "$arm" in
         if has_e "$(thread_fault_re faulter)"; then
             cfail redirected "$arm: the fault was redirected to the exit stub instead of escalating"
         fi
-        # kwrite is the trap-stack security regression: the worker aimed its SP at a kernel
-        # word. A backend that stored the frame through the U-mode SP prints this from its
-        # panic path, so a fixed one leaves the word intact and the line absent. Claimed under
-        # BOTH outcomes: it is about what the prologue wrote, not about what it did next.
-        if [ "$arm" = kwrite ] && has "trapwitness] CORRUPTED"; then
-            cfail kwrite "kwrite: the trap prologue stored through the U-mode SP into kernel memory"
+        # kwrite is the trap-stack security regression: the worker aimed its SP at a word of
+        # main's data. A backend that stored the frame through the U-mode SP changed that word,
+        # and main says so once it outlives the refusal. Claimed under BOTH outcomes: it is
+        # about what the prologue wrote, not about what it did next.
+        if [ "$arm" = kwrite ] && has "kword] CORRUPTED"; then
+            cfail kwrite "kwrite: the trap prologue stored through the U-mode SP into main's word"
         fi
         if [ "$outcome" = contained ]; then
             # assert_no_panic IS available on this path now: a contained refusal spells its
@@ -199,6 +199,19 @@ case "$arm" in
             fi
             if [ "$survived" -le "$refused" ]; then
                 cfail order "$arm: main's line is at $survived, not after the refusal at $refused"
+            fi
+            # A missing verdict is main reaching the readback and printing neither, the silent
+            # arm this pair exists to refuse.
+            if [ "$arm" = kwrite ]; then
+                intact="$(line_of "\[fs\] \[kword\] INTACT")"
+                if [ -z "$intact" ]; then
+                    cfail kwrite "kwrite: main printed no verdict on its word, so nothing here
+    read it"
+                fi
+                if [ "$intact" -le "$survived" ]; then
+                    cfail order "kwrite: the word's verdict at $intact is not after main's line at
+    $survived, so it was read before the fault it is meant to judge"
+                fi
             fi
             status_clause "the system exited 0 once main outlived the refusal" 0
             # The rejected USP, read off the refusal record: kickos_rx_bad_usp's guard has an

@@ -6,6 +6,7 @@
 // these tests do not model a hardware TLB.
 
 #include <kickos/arch/arch.h>
+#include <kickos/arch/rv64_paging.h>
 
 #include <gtest/gtest.h>
 
@@ -136,24 +137,46 @@ namespace
         struct arch_aspace* space = nullptr;
         struct arch_aspace* elsewhere = nullptr;
     };
+
+    void* frame_pointer(arch_phys_addr_t pa)
+    {
+        return reinterpret_cast<void*>(window_delta() + pa);
+    }
+
+    // Sv39 sign-extends bit 38, so no kernel-half address reaches a low-half root slot: a
+    // wrongly admitted map shows only in the frames it allocates.
+    uintptr_t kernel_half_of(uintptr_t low)
+    {
+        return ~((static_cast<uintptr_t>(1) << (KICKOS_RV64_VA_BITS - 1)) - 1u) | low;
+    }
 }
+
+#define MAP_CONTRACT_FIXTURE MapFenceContract
+#define MAP_CONTRACT_NOCACHE_SEEN false
+#define MAP_CONTRACT_PA_BITS 40u
+#include "map_contract.h"
 
 // Never-run spaces skip invalidation.
 
 TEST_F(MapFence, ASpaceNoHartHasRunPaysNoMaintenanceAtAll)
 {
+    // A task's image seed maps many pages into a space no hart has run.
+    constexpr size_t SEED_PAGES = 40;
     struct arch_aspace* const unrun = arch_aspace_create();
     ASSERT_NE(unrun, nullptr);
     uint32_t const before = frames_allocated();
     ops_clear();
 
-    ASSERT_EQ(arch_aspace_map(unrun, VA_DEEP, PA_A, 1, RIGHTS_DATA, ARCH_MAP_NORMAL),
+    ASSERT_EQ(arch_aspace_map(unrun, VA_DEEP, PA_A, SEED_PAGES, RIGHTS_DATA, ARCH_MAP_NORMAL),
               ARCH_ASPACE_OK);
 
     EXPECT_EQ(ops_with(OP_SFENCE_PAGE), 0u);
     EXPECT_EQ(ops_with(OP_SFENCE_ALL), 0u);
     EXPECT_EQ(ops_with(OP_RENDEZVOUS), 0u);
+    size_t const g = arch_aspace_granule();
     EXPECT_EQ(arch_aspace_frame_at(unrun, VA_DEEP), PA_A);
+    EXPECT_EQ(arch_aspace_frame_at(unrun, VA_DEEP + (SEED_PAGES - 1u) * g),
+              PA_A + (SEED_PAGES - 1u) * g);
     EXPECT_EQ(frames_allocated() - before, 2u);
 }
 
@@ -177,7 +200,10 @@ TEST_F(MapFence, NoSatpNamesTheSpaceTheEditorStillMaintains)
     seed(VA_DEEP, PA_A, RIGHTS_DATA);
     both_harts_leave();
 
-    EXPECT_EQ(arch_aspace_active_cores(space), 0u);
+    for (uint32_t hart = 0; hart < KICKOS_NUM_CORES; hart++)
+    {
+        EXPECT_NE(satp_of_hart(hart) & SATP_PPN_MASK, root_ppn(space)) << "hart " << hart;
+    }
 
     ASSERT_EQ(arch_aspace_map(space, VA_DEEP, PA_B, 1, RIGHTS_DATA, ARCH_MAP_NORMAL),
               ARCH_ASPACE_OK);
@@ -399,40 +425,6 @@ TEST_F(MapFence, AcquireOfAFrameInsideTheKernelWindowSpendsNone)
     EXPECT_EQ(ops_with(OP_SFENCE_PAGE), 0u);
     arch_aspace_release(space, VA_DEEP + 0x40);
     EXPECT_EQ(ops_with(OP_SFENCE_PAGE), 0u);
-}
-
-// ASID width probing.
-
-TEST_F(MapFence, TheProbeReportsTheFieldTheHartImplements)
-{
-    uint64_t const model = arch_aspace_model();
-
-    EXPECT_EQ((model >> ARCH_ASPACE_MODEL_ASID_SHIFT) & ARCH_ASPACE_MODEL_FIELD_MASK, 16u);
-    EXPECT_NE(model & ARCH_ASPACE_MODEL_ASID, 0u);
-}
-
-TEST_F(MapFence, ANarrowFieldIsReportedNarrowAndLosesTheVerdict)
-{
-    remachine(8);
-
-    uint64_t const model = arch_aspace_model();
-
-    EXPECT_EQ((model >> ARCH_ASPACE_MODEL_ASID_SHIFT) & ARCH_ASPACE_MODEL_FIELD_MASK, 8u);
-    // Only the ASID-width verdict should change.
-    EXPECT_EQ(model & ARCH_ASPACE_MODEL_ASID, 0u);
-    EXPECT_NE(model & ARCH_ASPACE_MODEL_GRANULE, 0u);
-    EXPECT_NE(model & ARCH_ASPACE_MODEL_PA, 0u);
-}
-
-TEST_F(MapFence, AHardwiredZeroFieldReportsNoIdentifierAtAll)
-{
-    // ASIDLEN may legally be zero.
-    remachine(0);
-
-    uint64_t const model = arch_aspace_model();
-
-    EXPECT_EQ((model >> ARCH_ASPACE_MODEL_ASID_SHIFT) & ARCH_ASPACE_MODEL_FIELD_MASK, 0u);
-    EXPECT_EQ(model & ARCH_ASPACE_MODEL_ASID, 0u);
 }
 
 // ASID allocation and switch fences.
@@ -703,7 +695,6 @@ TEST_F(MapFence, AHardwiredZeroFieldTagsNothingAndLeavesEverySwitchFencing)
 
     EXPECT_EQ(last_identifier(), 0u);
     EXPECT_EQ(ops_with(OP_SFENCE_ALL), 1u);
-    EXPECT_EQ(arch_aspace_model() & ARCH_ASPACE_MODEL_TAGGED, 0u);
 
     arch_aspace_destroy(a);
     arch_aspace_destroy(b);
@@ -721,15 +712,6 @@ TEST_F(MapFence, AnEightBitFieldStillTagsBecauseTheRowCountIsTheNarrowerBound)
     ASSERT_NE(last_identifier(), NO_WRITE);
     EXPECT_NE(last_identifier(), 0u);
     EXPECT_LT(last_identifier(), 1u << 8);
-    EXPECT_NE(arch_aspace_model() & ARCH_ASPACE_MODEL_TAGGED, 0u);
-    EXPECT_EQ(arch_aspace_model() & ARCH_ASPACE_MODEL_ASID, 0u);
 
     arch_aspace_destroy(narrow);
-}
-
-TEST_F(MapFence, TheSixteenBitMachineTagsAndKeepsItsWidthVerdict)
-{
-    // The full-width field must satisfy both verdicts.
-    EXPECT_NE(arch_aspace_model() & ARCH_ASPACE_MODEL_TAGGED, 0u);
-    EXPECT_NE(arch_aspace_model() & ARCH_ASPACE_MODEL_ASID, 0u);
 }

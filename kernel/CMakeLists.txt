@@ -35,8 +35,6 @@ set(KICKOS_KERNEL_SOURCES
   time/time.cc
   time/clock_select.cc
   syscall/syscall.cc
-  syscall/syscall_aspace.cc
-  syscall/syscall_amp.cc
   syscall/syscall_mem.cc
   syscall/syscall_obj.cc
   syscall/syscall_ipc.cc

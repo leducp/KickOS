@@ -30,6 +30,9 @@
 #   ctor         every .init_array input the map places lies in __init_array_start/_end or
 #                __kickos_app_init_array_start/_end, and none comes from a KickOS-owned object
 #   cpu_id       at one core no image defines arch_cpu_id
+#   arm64_share  in both boot roots' level-2 tables (kickos_arm64_ram_table and
+#                kickos_arm64_kernel_ram_table) every valid block holding part of the AMP user
+#                share selects the MAIR_EL1 slot given, and those blocks cover the whole share
 #
 # usage: check_image_rules.sh <rule> <objdump> <elf> [arg]...
 #   The nm and readelf beside <objdump> read the symbols and sections.
@@ -312,6 +315,46 @@ ctl_cpu_id() {
     N="$TMP/n.p"
 }
 
+rule_arm64_share() {
+    awk -v t1="$T1" -v t2="$T2" -v base="$SHARE_BASE" -v size="$SHARE_SIZE" -v want="$SHARE_ATTR" \
+        "$AWKLIB"'
+        {
+            x = hex($1)
+            if (x >= t1 && x < t1 + 4096) t = "kickos_arm64_ram_table"
+            else if (x >= t2 && x < t2 + 4096) t = "kickos_arm64_kernel_ram_table"
+            else next
+            lo = hex(substr($2, 15, 2))
+            if (lo % 4 != 1) next
+            out = hex(substr($2, 5, 12))
+            out -= out % 2 ^ 21
+            if (out + 2 ^ 21 <= base || out >= base + size) next
+            n[t]++
+            if (int(lo / 4) % 8 != want)
+                printf "%s: the share block at 0x%x selects MAIR slot %d, not %d\n", t, out, int(lo / 4) % 8, want
+        }
+        END {
+            blocks = int((base + size - 1) / 2 ^ 21) - int(base / 2 ^ 21) + 1
+            split("kickos_arm64_ram_table kickos_arm64_kernel_ram_table", ts, " ")
+            for (i = 1; i <= 2; i++)
+                if (n[ts[i]] != blocks)
+                    printf "%s maps %d of the share'"'"'s %d block(s)\n", ts[i], n[ts[i]], blocks
+        }' "$W"
+}
+ctl_arm64_share() {
+    awk -v t1="$T1" -v base="$SHARE_BASE" -v size="$SHARE_SIZE" "$AWKLIB"'
+        !done && hex($1) >= t1 && hex($1) < t1 + 4096 && hex(substr($2, 15, 2)) % 4 == 1 {
+            out = hex(substr($2, 5, 12))
+            out -= out % 2 ^ 21
+            if (out + 2 ^ 21 > base && out < base + size) {
+                lo = hex(substr($2, 15, 2))
+                $2 = substr($2, 1, 14) sprintf("%02x", (lo + 4) % 256)
+                done = 1
+            }
+        }
+        { print }' "$W" > "$TMP/w.p"
+    W="$TMP/w.p"
+}
+
 judge() { # <rule>
     "rule_$RULE" > "$TMP/found"
     if [ -s "$TMP/found" ]; then
@@ -346,6 +389,19 @@ case "$RULE" in
     ctor)
         X="$ELF.map"
         [ -r "$X" ] || fail "no link map at $X" ;;
+    arm64_share)
+        SHARE_BASE="${1:?arm64_share takes the share's base}"
+        SHARE_SIZE="${2:?arm64_share takes the share's size}"
+        SHARE_ATTR="${3:?arm64_share takes the MAIR_EL1 slot the share selects}"
+        : > "$W"
+        for _t in kickos_arm64_ram_table kickos_arm64_kernel_ram_table; do
+            _a="$(addr_of "$_t")"
+            [ -n "$_a" ] || fail "no $_t in $ELF"
+            image_words "$OD" "$ELF" 8 --start-address="0x$_a" \
+                --stop-address="$(printf '0x%x' $((0x$_a + 4096)))" >> "$W"
+        done
+        T1="$((0x$(addr_of kickos_arm64_ram_table)))"
+        T2="$((0x$(addr_of kickos_arm64_kernel_ram_table)))" ;;
     rv64_gp | a53_pmcr | arm64_entry | c6_hp | cpu_id) ;;
     *) fail "unknown rule '$RULE'. $_usage" ;;
 esac

@@ -1,0 +1,140 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   f302nucleo
+   arch    armv7m
+   cpu     stm32f302
+   mpu     off
+   sched   tickless
+
+[chaincheck] start
+[chaincheck] ok - i32 add to max
+[chaincheck] ok - i32 sub to negative
+[chaincheck] ok - i32 mul negative
+[chaincheck] ok - i32 mul near max
+[chaincheck] ok - i32 div truncates
+[chaincheck] ok - i32 div both negative
+[chaincheck] ok - i32 mod takes the dividend sign
+[chaincheck] ok - i32 mod by negative
+[chaincheck] ok - i32 div min by 2
+[chaincheck] ok - i32 div min by -2
+[chaincheck] ok - i32 mod min by 3
+[chaincheck] ok - i32 shr negative is arithmetic
+[chaincheck] ok - i16 promotes before mul
+[chaincheck] ok - u16 promotes before add
+[chaincheck] ok - u32 add wraps
+[chaincheck] ok - u32 sub wraps
+[chaincheck] ok - u32 mul wraps
+[chaincheck] ok - u32 div
+[chaincheck] ok - u32 mod
+[chaincheck] ok - u32 div by larger
+[chaincheck] ok - u32 div top bit by itself
+[chaincheck] ok - u32 shl 0
+[chaincheck] ok - u32 shl 31
+[chaincheck] ok - u32 shr 31
+[chaincheck] ok - u8 store wraps
+[chaincheck] ok - i64 add carries
+[chaincheck] ok - i64 sub borrows
+[chaincheck] ok - i64 mul
+[chaincheck] ok - i64 mul negative
+[chaincheck] ok - u64 mul high words
+[chaincheck] ok - u64 mul wraps
+[chaincheck] ok - u64 add wraps
+[chaincheck] ok - u64 sub wraps
+[chaincheck] ok - i64 div
+[chaincheck] ok - i64 mod
+[chaincheck] ok - i64 div truncates
+[chaincheck] ok - i64 mod takes the dividend sign
+[chaincheck] ok - i64 div by negative
+[chaincheck] ok - i64 mod by negative
+[chaincheck] ok - i64 div min by 2
+[chaincheck] ok - i64 div min by -2
+[chaincheck] ok - i64 mod min by 3
+[chaincheck] ok - i64 div by 2^32
+[chaincheck] ok - i64 div by 33 bits
+[chaincheck] ok - i64 mod by 33 bits
+[chaincheck] ok - u64 div
+[chaincheck] ok - u64 mod
+[chaincheck] ok - u64 div by 2^32+1
+[chaincheck] ok - u64 mod by 2^32+1
+[chaincheck] ok - u64 div by 32 bits
+[chaincheck] ok - u64 mod by 32 bits
+[chaincheck] ok - u64 div by 45 bits
+[chaincheck] ok - u64 mod by 45 bits
+[chaincheck] ok - u64 div by larger
+[chaincheck] ok - u64 div top bit by itself
+[chaincheck] ok - u64 shl 0
+[chaincheck] ok - u64 shl 31
+[chaincheck] ok - u64 shl 32
+[chaincheck] ok - u64 shl 33 across words
+[chaincheck] ok - u64 shl 63
+[chaincheck] ok - u64 shr 31
+[chaincheck] ok - u64 shr 32
+[chaincheck] ok - u64 shr 63
+[chaincheck] ok - i64 shr 63 is arithmetic
+[chaincheck] ok - i64 shr 32 is arithmetic
+[chaincheck] ok - i32 widens with its sign
+[chaincheck] ok - u32 widens with zeros
+[chaincheck] ok - u64 narrows to u32
+[chaincheck] ok - i64 compare across words
+[chaincheck] ok - i64 compare negative high words
+[chaincheck] ok - u64 compare across words
+[chaincheck] ok - clz
+[chaincheck] ok - ctz
+[chaincheck] ok - popcount
+[chaincheck] ok - clzll
+[chaincheck] ok - ctzll
+[chaincheck] ok - popcountll
+[chaincheck] ok - bswap16
+[chaincheck] ok - bswap32
+[chaincheck] ok - bswap64
+[chaincheck] ok - memcpy lengths 0-17 at offsets 0-3
+[chaincheck] ok - memset lengths 0-17 at offsets 0-3
+[chaincheck] ok - memmove overlap forward
+[chaincheck] ok - memmove overlap backward
+[chaincheck] ok - memcmp compares bytes unsigned
+[chaincheck] ok - strcmp compares bytes unsigned
+[chaincheck] ok - strlen
+[chaincheck] ok - snprintf returns the untruncated length
+[chaincheck] ok - snprintf truncates and terminates
+[chaincheck] ok - printf %d
+[chaincheck] ok - printf %d int min
+[chaincheck] ok - printf %i
+[chaincheck] ok - printf %u
+[chaincheck] ok - printf %x
+[chaincheck] ok - printf %X
+[chaincheck] ok - printf %o
+[chaincheck] ok - printf %c
+[chaincheck] ok - printf %s
+[chaincheck] ok - printf %%
+[chaincheck] ok - printf %p
+[chaincheck] ok - printf %5d
+[chaincheck] ok - printf %-5d
+[chaincheck] ok - printf %05d
+[chaincheck] ok - printf %+d
+[chaincheck] ok - printf % d
+[chaincheck] ok - printf %#x
+[chaincheck] ok - printf %#x of zero
+[chaincheck] ok - printf %#o
+[chaincheck] ok - printf %.3d
+[chaincheck] ok - printf %8.3d
+[chaincheck] ok - printf %.0d of zero
+[chaincheck] ok - printf %*d
+[chaincheck] ok - printf %*d negative width
+[chaincheck] ok - printf %.*d
+[chaincheck] ok - printf %5s
+[chaincheck] ok - printf %-5s
+[chaincheck] ok - printf %.2s
+[chaincheck] ok - printf %.*s
+[chaincheck] ok - printf %hd
+[chaincheck] ok - printf %hd negative
+[chaincheck] ok - printf %hu
+[chaincheck] ok - printf %hx
+[chaincheck] ok - printf %ld
+[chaincheck] ok - printf %ld long max
+[chaincheck] ok - printf %lu
+[chaincheck] ok - printf %lx
+[chaincheck] PASS (126 arms)

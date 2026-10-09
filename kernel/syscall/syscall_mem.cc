@@ -6,7 +6,10 @@
 
 #include <kickos/arch/arch.h>
 #include <kickos/aspace.h>
+#include <kickos/cap.h>
+#include <kickos/debug.h>
 #include <kickos/domain.h>
+#include <kickos/frame_pool.h>
 #include <kickos/instance.h>
 #include <kickos/irqlock.h>
 #include <kickos/kernel.h>
@@ -19,6 +22,8 @@
 
 #include <kickos/sys/abi.h>
 #include <kickos/sys/atomic.h>
+
+#include <stdint.h>
 
 #include "syscall_internal.h"
 
@@ -460,11 +465,6 @@ namespace kickos
 
     namespace
     {
-#if defined(KICKOS_ENABLE_SELFTEST) and KICKOS_ALIAS_DCACHE
-        // One per core, written with interrupts masked: no increment is lost, and none is an RMW.
-        Atomic<uint32_t, Order::RELAXED> g_alias_syncs[KICKOS_KERNEL_CORES];
-#endif
-
 #if KICKOS_HAVE_ASPACE
         size_t granule_chunk(uintptr_t va, size_t left)
         {
@@ -593,12 +593,6 @@ namespace kickos
 #if KICKOS_ALIAS_DCACHE
     void alias_sync(void const* p, size_t n)
     {
-#if defined(KICKOS_ENABLE_SELFTEST)
-        arch_irq_state_t const s = arch_irq_save();
-        Atomic<uint32_t, Order::RELAXED>& mine = g_alias_syncs[kickos_kernel_core()];
-        mine.store(mine.load() + 1u);
-        arch_irq_restore(s);
-#endif
         arch_dcache_invalidate(const_cast<void*>(p), n);
     }
 #endif
@@ -628,20 +622,6 @@ namespace kickos
             alias_sync(reinterpret_cast<void const*>(base), size);
         }
         ram_owner_set_sync_owed(base, size, nocache);
-    }
-#endif
-
-#if defined(KICKOS_ENABLE_SELFTEST)
-    uint32_t alias_sync_count()
-    {
-        uint32_t sum = 0;
-#if KICKOS_ALIAS_DCACHE
-        for (Atomic<uint32_t, Order::RELAXED> const& n : g_alias_syncs)
-        {
-            sum += n.load();
-        }
-#endif
-        return sum;
     }
 #endif
 
@@ -756,4 +736,148 @@ namespace kickos
         info.reply_cap = reply_cap;
         return kaccess_to_user(ospace, out, &info, sizeof(info));
     }
+#if KICKOS_HAVE_ASPACE
+    namespace
+    {
+        int frame_create_stage(Thread* c, size_t bytes, uint32_t* cap, int* obj, Held held)
+        {
+            Domain* const d = thread_domain(c);
+            VirtualRanges const* const ranges = domain_ranges(d);
+            size_t const g = arch_aspace_granule();
+            if (domain_space(d) == nullptr or ranges == nullptr or bytes == 0
+                or bytes > SIZE_MAX - (g - 1u) or (bytes + g - 1u) / g > VR_MAX_PAGES)
+            {
+                return -KOS_EINVAL;
+            }
+            if (not frame_run_admit(c->task))
+            {
+                return -KOS_EAGAIN;
+            }
+            *obj = frame_run_create_empty(task_handle(c->task));
+            if (*obj == FRAME_RUN_NONE)
+            {
+                return -KOS_ENOMEM;
+            }
+            int const rc = cap_install(c, *obj, CapType::CAP_FRAME, CAP_TRANSFER, cap);
+            if (rc != 0)
+            {
+                frame_run_release(*obj); // empty: frees the slot and no frame
+                return rc;
+            }
+            if (aspace_reserve_stage(ranges, bytes) == 0)
+            {
+                (void)handle_close(c, *cap, held);
+                return -KOS_ENOMEM;
+            }
+            return 0;
+        }
+    }
+
+    int frame_create_call(uintptr_t bytes, uintptr_t out)
+    {
+        Thread* const c = sched::current();
+        if (not cap_check_authority(c, AUTH_MEMORY))
+        {
+            return -KOS_EPERM;
+        }
+        int rc = cap_out_check(out);
+        if (rc != 0)
+        {
+            return rc;
+        }
+        uint32_t cap = KCAP_INVALID;
+        int obj = FRAME_RUN_NONE;
+        {
+            IrqLock lock;
+            rc = frame_create_stage(c, static_cast<size_t>(bytes), &cap, &obj, lock);
+        }
+        if (rc == 0)
+        {
+            presync_run();
+            IrqLock lock;
+            if (not aspace_reserve_run(obj))
+            {
+                (void)handle_close(c, cap, lock); // the empty run: frees no frame
+                rc = -KOS_ENOMEM;
+            }
+        }
+        presync_release(rc == 0);
+        int const delivered = static_cast<int>(cap_out_deliver(out, rc, cap));
+        if (rc == 0 and delivered != 0)
+        {
+            // An unnameable run would stay charged to the task until its holder dies.
+            IrqLock lock;
+            (void)handle_close(c, cap, lock);
+        }
+        return delivered;
+    }
+
+    int aspace_self_call(uintptr_t out)
+    {
+        Thread* const c = sched::current();
+        int rc = cap_out_check(out);
+        if (rc != 0)
+        {
+            return rc;
+        }
+        uint32_t cap = KCAP_INVALID;
+        {
+            IrqLock lock;
+            Domain* const d = thread_domain(c);
+            if (domain_space(d) == nullptr)
+            {
+                return -KOS_EINVAL;
+            }
+            rc = cap_install(c, domain_handle(d), CapType::CAP_ASPACE, CAP_TRANSFER, &cap);
+        }
+        int const delivered = static_cast<int>(cap_out_deliver(out, rc, cap));
+        if (rc == 0 and delivered != 0)
+        {
+            IrqLock lock;
+            (void)handle_close(c, cap, lock);
+        }
+        return delivered;
+    }
+
+    int mem_count_call(uintptr_t which, uintptr_t out)
+    {
+        Thread* const c = sched::current();
+        if (not cap_check_authority(c, AUTH_MEMORY))
+        {
+            return -KOS_EPERM;
+        }
+        int const rc = cap_out_check(out);
+        if (rc != 0)
+        {
+            return rc;
+        }
+        size_t count = 0;
+        {
+            IrqLock lock;
+            if (which == KOS_MEM_FRAMES_FREE)
+            {
+                count = frame_pool_free();
+            }
+            else if (which == KOS_MEM_SPACES_HELD)
+            {
+                count = domain_spaces_held();
+            }
+            else if (which == KOS_MEM_RANGES_FREE)
+            {
+                VirtualRanges const* const ranges = domain_ranges(thread_domain(c));
+                if (ranges == nullptr)
+                {
+                    return -KOS_EINVAL;
+                }
+                count = VirtualRanges::capacity() - ranges->count();
+            }
+            else
+            {
+                return -KOS_EINVAL;
+            }
+        }
+        KICKOS_DEBUG_ASSERT(count <= UINT32_MAX);
+        return static_cast<int>(cap_out_deliver(out, 0, static_cast<uint32_t>(count)));
+    }
+#endif
 }

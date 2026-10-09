@@ -81,30 +81,6 @@ extern "C"
         __asm volatile("tlbi vmalle1" ::: "memory");
     }
 
-    // PAR_EL1 after a stage 1 read translation of va, at EL0 where `user` and at EL1 otherwise.
-    inline uint64_t kickos_armv8a_at_read(uint64_t va, bool user)
-    {
-        if (user)
-        {
-            __asm volatile("at s1e0r, %0" ::"r"(va) : "memory");
-        }
-        else
-        {
-            __asm volatile("at s1e1r, %0" ::"r"(va) : "memory");
-        }
-        __asm volatile("isb" ::: "memory");
-        uint64_t par = 0;
-        __asm volatile("mrs %0, par_el1" : "=r"(par));
-        return par;
-    }
-
-    inline uint64_t kickos_armv8a_read_mair_el1(void)
-    {
-        uint64_t mair = 0;
-        __asm volatile("mrs %0, mair_el1" : "=r"(mair));
-        return mair;
-    }
-
 #else
 
     uint64_t kickos_armv8a_read_tcr_el1(void);
@@ -118,8 +94,6 @@ extern "C"
     void kickos_armv8a_tlbi_page_local(uint64_t page);
     void kickos_armv8a_tlbi_all_is(void);
     void kickos_armv8a_tlbi_all_local(void);
-    uint64_t kickos_armv8a_at_read(uint64_t va, bool user);
-    uint64_t kickos_armv8a_read_mair_el1(void);
 
 #endif
 }

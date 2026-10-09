@@ -12,7 +12,6 @@
 #include <kickos/domain.h>
 #include <kickos/frame_pool.h>
 #include <kickos/instance.h>
-#include <kickos/irq_route.h>
 #include <kickos/irqlock.h>
 #include <kickos/kernel.h>
 #include <kickos/klink.h>
@@ -62,68 +61,17 @@ namespace kickos
         arch_phys_addr_t g_data_template = 0;
         bool g_data_template_filled = false;
 
-#if defined(KICKOS_ENABLE_SELFTEST)
-        // Outstanding acquires, and releases that paired with none.
-        size_t g_acq_live = 0;
-        size_t g_acq_unpaired = 0;
-
-        size_t g_unseated_switch_ins = 0;
-
-        // Peer cores aspace_release found still holding the space it is destroying. A death
-        // that vacates its space before dropping its reference leaves this at 0 forever.
-        size_t g_release_peer_hits = 0;
-
-        size_t g_release_runs = 0;
-
-        // Granules copied under the kernel lock, for a new space's static data or the snapshot.
-        uint32_t g_locked_pages = 0;
-#endif
-
-        // Every acquire in this file goes through these two, or the pairing count escapes.
         void const* acquire_page(struct arch_aspace* space, uintptr_t va)
         {
-            void const* const p = arch_aspace_acquire(space, va, nullptr);
-#if defined(KICKOS_ENABLE_SELFTEST)
-            if (p != nullptr)
-            {
-                g_acq_live++;
-            }
-#endif
-            return p;
+            return arch_aspace_acquire(space, va, nullptr);
         }
 
         void release_page(struct arch_aspace* space, uintptr_t va)
         {
-#if defined(KICKOS_ENABLE_SELFTEST)
-            if (g_acq_live == 0)
-            {
-                g_acq_unpaired++;
-            }
-            else
-            {
-                g_acq_live--;
-            }
-#endif
             arch_aspace_release(space, va);
         }
 
 #if KICKOS_PRESYNC
-#if defined(KICKOS_ENABLE_SELFTEST)
-        // Written under IrqLock.
-        Atomic<uint32_t, Order::RELAXED> g_presync_refusals = 0;
-        Atomic<uint32_t, Order::RELAXED> g_presync_granules = 0;
-        Atomic<uint32_t, Order::RELAXED> g_staged_granules = 0;
-        Atomic<uint32_t, Order::RELAXED> g_presync_masked_max = 0;
-        uint64_t g_presync_masked_ns_max = 0;
-
-        void presync_refused()
-        {
-            g_presync_refusals.store(g_presync_refusals.load() + 1u);
-        }
-#else
-        void presync_refused() {}
-#endif
-
         PresyncRecord* presync_of(Thread const* t)
         {
             int const i = kernel().threads.index_of(t);
@@ -190,115 +138,24 @@ namespace kickos
         class GranuleWindows
         {
           public:
-            explicit GranuleWindows(Thread const* c, PresyncRecord& r)
-                : open_(not c->privileged), r_(r)
+            explicit GranuleWindows(Thread const* c)
+                : open_(not c->privileged)
             {
-#if defined(KICKOS_ENABLE_SELFTEST)
-                line_ = r.inject_line;
-                r.inject_line = 0;
-                idle_ = r.idle_window;
-                r.idle_window = false;
-                from_ = arch_clock_now();
-#endif
-            }
-
-            // Selftest only: the armed line's window, for a run with no granule to open one.
-            void idle()
-            {
-#if defined(KICKOS_ENABLE_SELFTEST)
-                if (open_ and idle_ and line_ != 0)
-                {
-                    inject(line_);
-                    line_ = 0;
-                    r_.windows_opened++;
-                    arch_irq_window();
-                }
-#endif
             }
 
             // One granule synced, cleared, copied or freed, with interrupts masked since the
             // last window.
-            void granule(bool staged)
+            void granule()
             {
-#if defined(KICKOS_ENABLE_SELFTEST)
-                if (staged)
-                {
-                    staged_++;
-                }
-                else
-                {
-                    granules_++;
-                }
-                run_++;
-                uint64_t const ns = arch_clock_now() - from_;
-                if (open_ and run_ > run_max_)
-                {
-                    run_max_ = run_;
-                }
-                if (open_ and ns > ns_max_)
-                {
-                    ns_max_ = ns;
-                }
-#else
-                (void)staged;
-#endif
                 if (not open_)
                 {
                     return;
                 }
-#if defined(KICKOS_ENABLE_SELFTEST)
-                if (line_ != 0)
-                {
-                    inject(line_);
-                    line_ = 0;
-                }
-                r_.windows_opened++;
-#endif
                 arch_irq_window();
-#if defined(KICKOS_ENABLE_SELFTEST)
-                run_ = 0;
-                from_ = arch_clock_now();
-#endif
-            }
-
-            // Takes IrqLock.
-            void publish()
-            {
-#if defined(KICKOS_ENABLE_SELFTEST)
-                IrqLock lock;
-                g_presync_granules.store(g_presync_granules.load() + granules_);
-                g_staged_granules.store(g_staged_granules.load() + staged_);
-                if (run_max_ > g_presync_masked_max.load())
-                {
-                    g_presync_masked_max.store(run_max_);
-                }
-                if (ns_max_ > g_presync_masked_ns_max)
-                {
-                    g_presync_masked_ns_max = ns_max_;
-                }
-#endif
             }
 
           private:
-            // A frame of its own: inlined, the bracket widens the SYSWIN chain's frame.
-            __attribute__((noinline)) static void inject(uint16_t line)
-            {
-                IrqLock lock;
-                irq_inject(static_cast<int>(line), lock);
-            }
-
             bool open_;
-            PresyncRecord& r_;
-#if defined(KICKOS_ENABLE_SELFTEST)
-            uint16_t line_ = 0;
-            bool idle_ = false;
-            uint32_t granules_ = 0;
-            uint32_t staged_ = 0;
-            uint32_t run_ = 0;
-            uint32_t run_max_ = 0;
-            uint64_t from_ = 0;
-            uint64_t ns_max_ = 0;
-#endif
         };
 #endif
 
@@ -318,7 +175,6 @@ namespace kickos
             {
                 return true;
             }
-            presync_refused();
             return false;
 #else
             (void)pa;
@@ -338,10 +194,7 @@ namespace kickos
             }
             // Each editor is reached only from a presync_wanted syscall, whose spans fit.
             PresyncRecord* const r = presync_record();
-            bool kept = r != nullptr and r->active and presync_add(r->edits, pa, pages);
-#if defined(KICKOS_ENABLE_SELFTEST)
-            kept = kept or (r != nullptr and r->probe);
-#endif
+            bool const kept = r != nullptr and r->active and presync_add(r->edits, pa, pages);
             KICKOS_ASSERT(kept);
 #else
             (void)pa;
@@ -482,9 +335,6 @@ namespace kickos
             {
                 return false;
             }
-#if defined(KICKOS_ENABLE_SELFTEST)
-            g_locked_pages += static_cast<uint32_t>(data.pages);
-#endif
             for (size_t i = 0; i < data.pages; i++)
             {
                 if (not copy_data_granule(g_data_template, g_data_home, data.base, i, g))
@@ -562,7 +412,6 @@ namespace kickos
                     or r->staged_pages != data.pages or r->staged_home != home)
                 {
                     r->refused = true;
-                    presync_refused();
                     (void)ranges->release(data.base);
                     return false;
                 }
@@ -579,9 +428,6 @@ namespace kickos
                 (void)ranges->release(data.base);
                 return false;
             }
-#if defined(KICKOS_ENABLE_SELFTEST)
-            g_locked_pages += static_cast<uint32_t>(data.pages);
-#endif
             for (size_t i = 0; i < data.pages; i++)
             {
                 if (not copy_data_granule(run, home, data.base, i, g))
@@ -703,31 +549,6 @@ namespace kickos
             return nullptr;
         }
         return frame_pool_alias(app_pa(va));
-    }
-
-    uintptr_t aspace_frame_token(struct arch_aspace* space, uintptr_t va)
-    {
-        size_t const g = arch_aspace_granule();
-        Extent const text = image_text(g);
-        if (space == nullptr or text.pages == 0)
-        {
-            return 0;
-        }
-        // Compare the frames themselves: a windowed backend answers the same acquire address
-        // for every frame, so unequal frames would compare equal.
-        arch_phys_addr_t const ref = arch_aspace_frame_at(space, text.base);
-        if (ref == 0)
-        {
-            return 0;
-        }
-        arch_phys_addr_t const at = arch_aspace_frame_at(space, va);
-        if (at == 0)
-        {
-            return 0;
-        }
-        // Frames apart, biased so the reference answers 1 and 0 stays "not mapped". Unsigned
-        // wrap below the reference is deliberate: the value is compared, never ordered.
-        return static_cast<uintptr_t>((at - ref) / g) + 1u;
     }
 
     bool aspace_frames_type_ok(arch_phys_addr_t pa, size_t pages, uint8_t memtype,
@@ -892,6 +713,19 @@ namespace kickos
         return va;
     }
 
+    bool aspace_reserve_run(int run_obj)
+    {
+        PresyncRecord* const r = presync_record();
+        if (r == nullptr or r->stage != PresyncStage::CLEAR or not r->staged_full
+            or not frame_run_fill(run_obj, r->staged, r->staged_pages))
+        {
+            return false;
+        }
+        r->staged = 0;
+        presync_unstage(*r);
+        return true;
+    }
+
     void presync_run()
     {
         Thread const* const c = sched::current();
@@ -901,7 +735,7 @@ namespace kickos
             return;
         }
         size_t const g = arch_aspace_granule();
-        GranuleWindows windows(c, *r);
+        GranuleWindows windows(c);
 #if KICKOS_ARCH_ALIAS_DCACHE
         for (uint8_t i = 0; i < r->noted.count; i++)
         {
@@ -916,7 +750,7 @@ namespace kickos
                 arch_irq_state_t const s = arch_irq_save();
                 alias_sync(p, g);
                 arch_irq_restore(s);
-                windows.granule(false);
+                windows.granule();
             }
         }
 #endif
@@ -924,22 +758,9 @@ namespace kickos
         for (uint32_t j = 0; full and j < r->staged_pages; j++)
         {
             full = stage_granule(c, *r, j, g);
-            windows.granule(true);
+            windows.granule();
         }
         r->staged_full = full;
-        windows.idle();
-        windows.publish();
-#if defined(KICKOS_ENABLE_SELFTEST)
-        IrqLock lock;
-        if (r->drops_left != 0)
-        {
-            if (r->drops_left != UINT8_MAX)
-            {
-                r->drops_left--;
-            }
-            presync_drop(*r);
-        }
-#endif
     }
 
     void presync_commit()
@@ -991,7 +812,7 @@ namespace kickos
         // A slay at a window below would drop what a succeeded call delivered.
         KICKOS_ASSERT(not succeeded);
         size_t const g = arch_aspace_granule();
-        GranuleWindows windows(c, *r);
+        GranuleWindows windows(c);
         while (true)
         {
             {
@@ -1006,9 +827,8 @@ namespace kickos
                 r->staged += static_cast<arch_phys_addr_t>(g);
                 r->staged_pages--;
             }
-            windows.granule(true);
+            windows.granule();
         }
-        windows.publish();
         IrqLock lock;
         r->staged = 0;
         presync_unstage(*r);
@@ -1043,82 +863,6 @@ namespace kickos
         r->has_params = false;
         r->has_windows = false;
     }
-
-#if defined(KICKOS_ENABLE_SELFTEST)
-    uint32_t presync_refusals()
-    {
-        return g_presync_refusals.load();
-    }
-
-    uint64_t presync_masked_max()
-    {
-        IrqLock lock;
-        return (g_presync_masked_ns_max << 32) | g_presync_masked_max.load();
-    }
-
-    uint64_t presync_granules()
-    {
-        IrqLock lock;
-        return (static_cast<uint64_t>(g_staged_granules.load()) << 32)
-               | g_presync_granules.load();
-    }
-
-    uint32_t presync_live_count()
-    {
-        IrqLock lock;
-        return kernel().presync_live;
-    }
-
-    bool presync_live_of(Thread const* t)
-    {
-        IrqLock lock;
-        PresyncRecord const* const r = presync_of(t);
-        return r != nullptr and r->live;
-    }
-
-    uint32_t presync_windows_mine()
-    {
-        IrqLock lock;
-        PresyncRecord const* const r = presync_record();
-        if (r == nullptr)
-        {
-            return 0;
-        }
-        return r->windows_opened;
-    }
-
-    void presync_probe(bool on)
-    {
-        PresyncRecord* const r = presync_record();
-        if (r != nullptr)
-        {
-            r->probe = on;
-        }
-    }
-
-    void presync_arm(uint16_t line, uint8_t drops, bool fault_out, bool idle_window)
-    {
-        PresyncRecord* const r = presync_record();
-        if (r != nullptr)
-        {
-            r->inject_line = line;
-            r->drops_left = drops;
-            r->fault_out = fault_out;
-            r->idle_window = idle_window;
-        }
-    }
-
-    bool presync_take_fault_out()
-    {
-        PresyncRecord* const r = presync_record();
-        if (r == nullptr or not r->fault_out)
-        {
-            return false;
-        }
-        r->fault_out = false;
-        return true;
-    }
-#endif
 #endif
 
     namespace
@@ -1133,15 +877,17 @@ namespace kickos
                 // An address this space never reserved, a cross-task self-grant included.
                 return -KOS_EPERM;
             }
+            // Ahead of the already-mapped answer, which would otherwise admit a mapping no
+            // caller reserved. A stack run's base is its guard, so an admitted grant would map
+            // that page too.
+            if (not vr_caller_nameable(e))
+            {
+                return -KOS_EPERM;
+            }
             if (e->state == VirtualState::Granted and (e->rights & rights) == rights
                 and e->memtype == memtype)
             {
                 return 1;
-            }
-            if (not vr_caller_nameable(e))
-            {
-                // A stack run's base is its guard, so an admitted grant would map that page too.
-                return -KOS_EPERM;
             }
             // A window, a handoff or the donor mapping these frames with another type keeps
             // them.
@@ -1351,13 +1097,19 @@ namespace kickos
         return 0;
     }
 
-    int aspace_cap_map(struct arch_aspace* space, VirtualRanges* ranges, uintptr_t va,
+    int aspace_cap_map(struct arch_aspace* space, VirtualRanges* ranges, uintptr_t* at,
                        int run_obj, arch_phys_addr_t base, uint32_t pages, uint32_t rights,
                        enum arch_map_memtype type)
     {
         if (space == nullptr or ranges == nullptr or pages == 0)
         {
             return -KOS_EINVAL;
+        }
+        // No range the kernel places sits at a run's own address, which names the run's frames.
+        uintptr_t va = *at;
+        if (va == 0)
+        {
+            va = aspace_user_va(base);
         }
         size_t const g = arch_aspace_granule();
         if ((va % g) != 0 or (static_cast<uint64_t>(base) % g) != 0)
@@ -1404,6 +1156,7 @@ namespace kickos
         }
         edited(base, pages);
         frame_run_set_sync_owed(run_obj, not cacheable(type));
+        *at = va;
         return 0;
     }
 
@@ -1616,15 +1369,32 @@ namespace kickos
         g_data_home = nullptr;
     }
 
+    void aspace_release_runs(struct arch_aspace* space, VirtualRanges* ranges)
+    {
+        for (size_t i = 0; space != nullptr and ranges != nullptr and i < VirtualRanges::capacity();
+             i++)
+        {
+            VirtualRange const* const e = ranges->at(i);
+            if (e == nullptr or (e->flags & VR_FRAMECAP) == 0)
+            {
+                continue;
+            }
+            // Stored plus one; the VR_FRAMECAP flag is what says this entry named a run at all,
+            // so the subtraction cannot reach VR_RUN_NONE.
+            int const slot = static_cast<int>(e->run) - 1;
+            uintptr_t const base = e->base;
+            (void)arch_aspace_unmap(space, base, e->pages);
+            (void)ranges->release(base);
+            frame_run_release_by_slot(slot);
+        }
+    }
+
     void aspace_release(struct arch_aspace* space, VirtualRanges* ranges)
     {
         if (space == nullptr)
         {
             return;
         }
-#if defined(KICKOS_ENABLE_SELFTEST)
-        g_release_runs++;
-#endif
         // Switch away before freeing active tables. Clear every core's cached root
         // so a later activation cannot skip installing a replacement.
         uint32_t const cpu = arch_cpu_id();
@@ -1634,12 +1404,6 @@ namespace kickos
             {
                 continue;
             }
-#if defined(KICKOS_ENABLE_SELFTEST)
-            if (c != cpu)
-            {
-                g_release_peer_hits++;
-            }
-#endif
             g_current[c] = nullptr;
             if (c == cpu)
             {
@@ -1650,6 +1414,7 @@ namespace kickos
         {
             data_home_leave();
         }
+        aspace_release_runs(space, ranges);
         size_t const g = arch_aspace_granule();
         for (size_t i = 0; ranges != nullptr and i < VirtualRanges::capacity(); i++)
         {
@@ -1680,12 +1445,6 @@ namespace kickos
                 // A window's donor reference is not dropped here: its holder's exit unmapped it
                 // already, and releasing from the teardown would recurse into this function.
                 (void)arch_aspace_unmap(space, e->base, e->pages);
-                if ((e->flags & VR_FRAMECAP) != 0)
-                {
-                    // Stored plus one; the VR_FRAMECAP flag is what says this entry named a
-                    // run at all, so the subtraction cannot reach VR_RUN_NONE.
-                    frame_run_release_by_slot(static_cast<int>(e->run) - 1);
-                }
                 continue;
             }
             if (e->state == VirtualState::Reserved and (e->flags & VR_IMAGE) == 0)
@@ -1703,9 +1462,6 @@ namespace kickos
         struct arch_aspace* const space = domain_space(thread_domain(t));
         if (space == nullptr)
         {
-#if defined(KICKOS_ENABLE_SELFTEST)
-            g_unseated_switch_ins++;
-#endif
 #if KICKOS_KERNEL_CORES > 1
             // On SMP, spaceless threads must install the boot root so they cannot
             // retain a table another core frees. On one core, aspace_release switches
@@ -1733,50 +1489,6 @@ namespace kickos
     {
         seat(arch_aspace_boot());
     }
-
-    void aspace_forget_current(void)
-    {
-        uint32_t const cpu = arch_cpu_id();
-        g_current[cpu] = nullptr;
-    }
-
-#if defined(KICKOS_ENABLE_SELFTEST)
-    uint64_t aspace_acquire_balance(void)
-    {
-        IrqLock lock;
-        return (static_cast<uint64_t>(g_acq_live) << 32) | static_cast<uint64_t>(g_acq_unpaired);
-    }
-
-    uint64_t aspace_unseated_switch_ins(void)
-    {
-        IrqLock lock;
-        return g_unseated_switch_ins;
-    }
-
-    uint64_t aspace_release_peer_hits(void)
-    {
-        IrqLock lock;
-        return g_release_peer_hits;
-    }
-
-    uint64_t aspace_release_runs(void)
-    {
-        IrqLock lock;
-        return g_release_runs;
-    }
-
-    uint64_t aspace_locked_pages(void)
-    {
-        IrqLock lock;
-        return g_locked_pages;
-    }
-
-    void aspace_data_home_forget(void)
-    {
-        IrqLock lock;
-        data_home_leave();
-    }
-#endif
 }
 
 #endif

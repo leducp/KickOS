@@ -37,6 +37,9 @@ namespace kickos
 
         // Frame-free count at the last peer notification, for reclamation-order checks.
         uint32_t frames_freed_at_rendezvous();
+
+        // The satp value the hart last wrote.
+        uint64_t satp_of_hart(uint32_t core);
     }
 }
 

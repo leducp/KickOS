@@ -6,9 +6,10 @@
 # <composition>, built against the build's installed package, whose catalogue carries
 # tests/drivers, and run under QEMU. testline's descriptor numbers its two lines as none a claim
 # takes and states another index for its line 0; the composition binds line 0 to a line at index
-# 2 of its device. Its IRQ thread prints the index its spawn handed it, and its client raises the
-# line the table gives line 0 until the driver reports it. The run passes on index 2, the
-# driver's report of its line and the system ending with status 0.
+# 2 of its device. Its IRQ thread prints the index its spawn handed it; its raiser, holding a
+# SIGNAL-only copy of the line the driver claimed as line 0, raises it until the IRQ thread sees
+# it; its client calls until the driver answers that it did. The run passes on index 2, the
+# driver's report of its line, the client's, and the system ending with status 0.
 #
 #   check_driver_line.sh <kickos-build> <kickos-source> <cmake> <composition>
 
@@ -41,6 +42,8 @@ if has '^=== THREAD FAULT ==='; then
 fi
 require_on_wire 'testline: line 0 is index 2 of its device' "testline's IRQ thread was not handed line 0's index, 2"
 require_on_wire 'testline: line 0 was raised' "testline never saw the line its composition binds"
+require_on_wire 'line: testline reports line 0 raised' \
+    "the client never heard the driver report its line"
 if [ "$RC" -eq 124 ]; then
     fail "the system never ended (timed out)"
 fi

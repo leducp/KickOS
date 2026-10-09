@@ -48,11 +48,18 @@ devices:
     lines: { cmwi0: { number: 30, ref: "Table 15.5 Interrupt Vector Table (1/6), p.521" } }
   # Reaches SLIARn and SLIPRCR past the group registers: they route a source onto vectors 208
   # to 255.
+  # The level groups' parent vectors, armed by the kernel while any source of the group is.
   icu:
     window: [0x00087000, 0xA10]
     owner: kernel
     symbol: ICU
     ref: "Table 5.1 List of I/O Registers (Address Order), p.218"
+    lines:
+      groupbl2: { number: 107, ref: "Table 15.5 Interrupt Vector Table (3/6), p.523" }
+      groupbl0: { number: 110, ref: "Table 15.5 Interrupt Vector Table (3/6), p.523" }
+      groupbl1: { number: 111, ref: "Table 15.5 Interrupt Vector Table (3/6), p.523" }
+      groupal0: { number: 112, ref: "Table 15.5 Interrupt Vector Table (3/6), p.523" }
+      groupal1: { number: 113, ref: "Table 15.5 Interrupt Vector Table (3/6), p.523" }
   mpu: { window: [0x00086400, 0x140], owner: kernel, symbol: MPU, ref: "Table 5.1 List of I/O Registers (Address Order), p.218" }
   # Reaches PRCR at +0x3FE, the key to every clock and module-stop register.
   system:

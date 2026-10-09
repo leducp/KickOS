@@ -7,11 +7,13 @@
 // kernel's half is mapped and reachable at every instant by the privileged side of
 // the same core.
 //
-// THE ADDRESS COMES FROM THE KERNEL. App text cannot name a kernel-half symbol under this
-// board's code model, and an address the app computed itself would assert the layout rather
-// than a word the kernel really owns. kos_guard_addr answers with a word in kernel-side
-// .bss, which is outside every arena and inside no granted range
-// (arch/common/arch_ram_common.cc).
+// THE ADDRESS IS ONE THE KERNEL REALLY OWNS, never one the app computed, which would assert
+// the layout rather than a word of kernel state. On armv8a and rv64imac it comes from the link:
+// _sdata, the first word of the kernel's .data, named by an absolute data word because app text
+// cannot reach a kernel-half symbol under this board's code model. On x86_64 an app word aimed
+// at the kernel's half is a link defect the build and the boot both refuse, so the processor
+// names it instead: sgdt hands ring 3 the base of the running core's descriptor table, which
+// sits in the kernel's per-core block.
 //
 // THE ADDRESS IS ANNOUNCED BEFORE IT IS READ, so the gate can hold the dump's fault address
 // against it: a fault anywhere else says something other than this read broke.
@@ -26,19 +28,50 @@
 
 #include <kickos/libc/fmt.h>
 
+#include <stdint.h>
+
+#if !defined(__x86_64__)
+extern "C" char _sdata[];
+#endif
+
+namespace
+{
+#if defined(__x86_64__)
+    struct __attribute__((packed)) DescriptorTableRegister
+    {
+        uint16_t limit;
+        uint64_t base;
+    };
+
+    // Rests on UMIP being off: with it on, sgdt in ring 3 raises #GP instead.
+    uintptr_t kernel_word()
+    {
+        DescriptorTableRegister gdtr = {};
+        __asm__ volatile("sgdt %0" : "=m"(gdtr));
+        return static_cast<uintptr_t>(gdtr.base);
+    }
+#else
+    char const* volatile g_kernel_data = _sdata;
+
+    uintptr_t kernel_word()
+    {
+        return reinterpret_cast<uintptr_t>(g_kernel_data);
+    }
+#endif
+}
+
 int main(int, char**)
 {
-    void* const word = kos_guard_addr();
-    if (word == nullptr)
+    uintptr_t const word = kernel_word();
+    if (word == 0)
     {
         kos_print("[kernelhalf] ERROR: this board names no privileged-only word\n");
         return 1;
     }
     char msg[96];
-    ksnprintf(msg, sizeof(msg), "[kernelhalf] reading 0x%lx\n",
-              reinterpret_cast<unsigned long>(word));
+    ksnprintf(msg, sizeof(msg), "[kernelhalf] reading 0x%lx\n", static_cast<unsigned long>(word));
     kos_print(msg);
-    volatile uint32_t const* const p = static_cast<volatile uint32_t const*>(word);
+    volatile uint32_t const* const p = reinterpret_cast<volatile uint32_t const*>(word);
     uint32_t const seen = *p;
     ksnprintf(msg, sizeof(msg), "[kernelhalf] ERROR: read 0x%lx from the kernel's half\n",
               static_cast<unsigned long>(seen));

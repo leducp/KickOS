@@ -63,13 +63,6 @@ namespace kickos
     void ktime_disarm(Held held);
 
     void ktime_on_timer();
-
-#if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_KERNEL_CORES > 1
-    // One bit per core whose OWN slice timer took a thread off it: set only where
-    // sched::tick_rr inside ktime_on_timer changed the running thread, so a cross-core
-    // reschedule or a device wake sets nothing.
-    uint32_t ktime_slice_preempt_cores();
-#endif
 }
 
 #endif

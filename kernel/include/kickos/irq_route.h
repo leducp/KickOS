@@ -27,9 +27,9 @@ namespace kickos
 
     // The kernel layer's one way to raise a line in software; the same gate refuses a
     // kernel-layer call to arch_irq_inject anywhere else.
-    inline void irq_inject(int line, Held)
+    [[nodiscard]] inline bool irq_inject(int line, Held)
     {
-        arch_irq_inject(line);
+        return arch_irq_inject(line);
     }
 
     // For a caller that IS the routed core by construction, which here means ISR context

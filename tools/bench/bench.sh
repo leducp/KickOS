@@ -158,13 +158,13 @@ mkdir -p "$SESSION/logs"
 # power up the DAP, and BOOTSEL is the only way back, so every run would otherwise cost a physical
 # power-cycle. KICKOS_SHUTDOWN_TO_BOOTLOADER exists for exactly this: kickos_terminate tries
 # arch_reboot before halting, so the board lands back in BOOTSEL by itself. It touches only the
-# path AFTER the last TAP line, and it requires KICKOS_ENABLE_SELFTEST, which the -st variant has.
+# path AFTER the last TAP line, and it requires KICKOS_REBOOT, passed beside it.
 EXTRA=()
 case $BOARD in
-  picopi|pizero2350) EXTRA+=(-DKICKOS_SHUTDOWN_TO_BOOTLOADER=ON) ;;
+  picopi|pizero2350) EXTRA+=(-DKICKOS_REBOOT=ON -DKICKOS_SHUTDOWN_TO_BOOTLOADER=ON) ;;
   # teensy41: HalfKay is otherwise reachable only by a physical button press. arch_reboot's
   # bkpt #251 is caught by the MKL02 companion, which presents HalfKay itself.
-  teensy41) EXTRA+=(-DKICKOS_SHUTDOWN_TO_BOOTLOADER=ON) ;;
+  teensy41) EXTRA+=(-DKICKOS_REBOOT=ON -DKICKOS_SHUTDOWN_TO_BOOTLOADER=ON) ;;
   *) ;;
 esac
 # EXTRA_CMAKE reaches the configure verbatim.
@@ -289,6 +289,7 @@ EXPECT_ARMS=""
 EXPECT_SKIPS=""
 EXPECT_PARTIALS=""
 EXPECT_FAULTS=""
+LEFT_OUT_FILE=""
 case $APP in
   selftest*)
     # awk and not grep: `^selftest|` is a literal in a basic regex and an ALTERNATION in an
@@ -298,7 +299,7 @@ case $APP in
     [ -n "$MROW" ] || { echo "REFUSING: $MANIFEST carries no row for $APP, so this board's" >&2
       echo "  configure did not emit that image and nothing states how many arms it plans." >&2
       exit 1; }
-    IFS='|' read -r _ EXPECT_ARMS EXPECT_SKIPS EXPECT_PARTIALS EXPECT_FAULTS <<MROW
+    IFS='|' read -r _ EXPECT_ARMS EXPECT_SKIPS EXPECT_PARTIALS EXPECT_FAULTS LEFT_OUT_FILE <<MROW
 $MROW
 MROW
     [ -n "$EXPECT_ARMS" ] || { echo "REFUSING: $MANIFEST's row for $APP states no arm count" >&2; exit 1; }
@@ -526,12 +527,19 @@ rsync -a -s -e "$RSH" "${IMGS[@]}" "$BENCH_HOST:$RRUN/" || { echo "REFUSING: cou
 # AND `bash -s --` DOES NOT REACH THE SPLIT, ONLY THE PARSE: the bench host's zsh parses the
 # joined command string before any `bash` in it runs. printf %q is what survives that parse,
 # as for the mkdir above.
+# The arms the build left out of this image because its arena could not back them: the
+# manifest names the build's list, which exists only once the image is built.
+LEFT_OUT=""
+if [ -n "$LEFT_OUT_FILE" ]; then
+  [ -r "$LEFT_OUT_FILE" ] || { echo "REFUSING: no left-out list at $LEFT_OUT_FILE" >&2; exit 1; }
+  LEFT_OUT=$(paste -sd, "$LEFT_OUT_FILE")
+fi
 ROUT=$(mktemp)
 RARGS=()
 for _ra in "$BOARD" "$APP" "$RRUN/$(basename "$IMG")" "$RLOG" "${SN:--}" "${CAP_SECS:--}" \
            "$RIG_REMOTE_ROOT" "${RIG_REMOTE_PYBIN:--}" "$CONSOLE_USB_CDC" "$EXPECT_COMMIT" \
            "${EXPECT_ARMS:--}" "${EXPECT_SKIPS:--}" "${EXPECT_PARTIALS:--}" "${EXPECT_FAULTS:--}" \
-           "$EXPECT_ARCH" "${PEER_ERASE:--}"; do
+           "$EXPECT_ARCH" "${PEER_ERASE:--}" "${LEFT_OUT:--}"; do
   RARGS+=("$(printf '%q' "$_ra")")
 done
 "${SSH[@]}" bash -s -- "${RARGS[@]}" \
@@ -568,6 +576,7 @@ FAULTS=${14}
 export EXPECT_ARCH="${15}"
 PEER_ERASE=${16}
 [ "$PEER_ERASE" != "-" ] && export PEER_ERASE
+[ "${17}" != "-" ] && export SELFTEST_LEFT_OUT="${17}"
 exec bash "$ROOT/tools/bench/bench-capture.sh" "$1" "$2" "$HOME/$3" "$HOME/$4" "$SN"
 REMOTE
 RC=${PIPESTATUS[0]}

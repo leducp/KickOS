@@ -23,7 +23,7 @@ the kernel correct and the part that merely helps an app find its own bugs.
 The simplest scheme that satisfies "no kernel pointer crosses the boundary" is a single
 kernel-wide pool of objects, named by an index into it. It is opaque, it is bounded, and it
 is checkable -- and it is **ambient**. The name is global, so any thread that can guess or
-forge the integer can name the object: `kos_sem_wait(4)` from anywhere reaches semaphore
+forge the integer can name the object: `kos_sem_wait(4, ...)` from anywhere reaches semaphore
 4. Isolation says a caller should touch only what it has been *given*; a global namespace
 anyone can enumerate is the opposite -- it is ambient authority, and ambient authority
 contradicts the isolation the MPU chapters (Chapter 7) work so hard to build. Fencing a
@@ -128,7 +128,7 @@ if (s == nullptr)
 {
     return -err;             // EBADF or EPERM: object untouched
 }
-sem_wait(s);                 // use, under the SAME lock
+sem_wait(s, timeout_us);     // use, under the SAME lock
 return 0;
 ```
 
@@ -232,7 +232,7 @@ The cautionary example is worth spelling out. Suppose a worker calls a blocking 
 ignores the return value, and proceeds:
 
 ```
-kos_sem_wait(h);   // returns -KOS_EBADF because h did not resolve in THIS thread
+kos_sem_wait(h, KOS_TIMEOUT_NONE);   // returns -KOS_EBADF because h did not resolve in THIS thread
 // ... worker runs on, believing it blocked, but it never did
 ```
 

@@ -81,19 +81,6 @@ namespace kickos
         // The locked pass met a span it owed a sync and this record did not cover, or an image
         // to copy with no full stage for it.
         bool refused = false;
-#if defined(KICKOS_ENABLE_SELFTEST)
-        uint16_t inject_line = 0;
-        // UINT8_MAX drops the record on every round.
-        uint8_t drops_left = 0;
-        // Interrupt windows this thread's calls have opened outside the lock.
-        uint32_t windows_opened = 0;
-        // A kernel probe maps outside any call, and what it maps drops nothing.
-        bool probe = false;
-        // The next handle delivery fails as to an out-word unmapped since its check.
-        bool fault_out = false;
-        // The armed line is injected at the end of a run that opened no window.
-        bool idle_window = false;
-#endif
     };
 
     // False, noting nothing, when the spans are full or the span is empty or too wide.

@@ -16,8 +16,6 @@ manual: "i.MX 8M Plus Applications Processor Reference Manual, IMX8MPRM Rev. 3 (
 # which one it composes. The clusters' caches are not coherent with each other, so memory
 # both reach is shared uncached or with cache maintenance by its users.
 clusters_coherent: false
-# The A53's GIC routing is the seat a doorbell raise is withheld or deferred by.
-doorbell_seat: true
 # PMCCNTR_EL0 counts core cycles and the part reports no core clock to convert them by.
 cycle_counter: { hz: 0 }
 cores:
@@ -59,7 +57,8 @@ devices:
   enet1: { window: [0x30BE0000, 0x1000], bus_master: true, ref: "Table 2-5 AIPS3 Memory Map, p.32" }
 
   # The A53-M7 messaging unit, one side per cluster, each side interrupting its own cluster:
-  # a line that exists for one cluster only. The AMP doorbell, so kernel-owned.
+  # a line that exists for one cluster only. Held for an A53-M7 doorbell, which no build drives
+  # yet, so kernel-owned.
   # Kernel-owned windows are the RM's whole 64 KiB slot.
   mu1_a: { window: [0x30AA0000, 0x10000], owner: kernel, cluster: a53, lines: { to_a53: 88 }, ref: "Table 2-5, p.32" }
   mu1_b: { window: [0x30AB0000, 0x10000], owner: kernel, cluster: m7, lines: { to_m7: 97 }, ref: "Table 2-5, p.32" }

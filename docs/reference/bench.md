@@ -243,7 +243,7 @@ builds the board's AMP partition, every node's image merged into one by the node
 names: `tests/integration/check_c6_amp_capture.sh` on `esp32c6-wroom`, which reads both node
 images' ROM load lines, the LP core's APM witness and the four rounds across, and
 `tests/integration/check_pizero_amp_gate.sh` on `pizero2350`, which reads the ACCESSCTRL readback,
-node 1's bus fault on UART0 and the four rounds across. No emulator runs either partition.
+node 0's read of its UART0 and the four rounds across. No emulator runs either partition.
 
 The console route is derived from the image. Every system target defines
 `kickos_usb_device_console` (`<kickos/usb_console.h>`), 1 where its stdout driver is a USB device
@@ -264,14 +264,26 @@ another image of the same build and commit is refused too, the app stamp naming 
 the second it was compiled in; and a judge's capture reads from that block as it would from a
 banner.
 
-## `fpclass` on the RX72M is captured under both presets
+## `chaincheck`, the whole-chain app, on every board
 
-rxv3 has no QEMU machine, so `tests/integration/gates/fpclass.cmake` registers no test there, and
-the DFPU compare patch's silicon witness is the capture `check_fpclass.sh` judges, owed under the
-enforcing and the flat preset. `FLAT_ALSO` in `bench-fleet.sh` names `rx72m:fpclass`, so a fleet
-pass captures both and its table shows `fpclass (flat)`. By hand:
+`chaincheck` (`user/apps/common/chaincheck/main.c`) checks what the compiler, libgcc, the C
+library and libm make of common patterns: 32- and 64-bit arithmetic, float and double compares
+and classification, conversions, the libm basics with exact answers, and printf of every format.
+It is one image per half, each carrying only its own arms: `chaincheck` (integer, every board),
+`chaincheck_float` (float compute, whose arms report their answers as bits) and
+`chaincheck_full` (float and C99 printf formats). The float image is not built on a chip whose
+flash is 64 KiB or less, which it overflows by 3 to 5 KiB. The full image is not built where
+newlib is the nano profile, which lacks doubles, `long long` and the C99 length modifiers.
+`tests/integration/check_chaincheck.sh <image> <half>` reads the half's arm list off the source
+and requires each arm's line by name, under the emulator gate
+(`tests/integration/gates/chaincheck.cmake`) and over a bench capture alike.
 
-    VARIANT=flat TAG=<tag> APP=fpclass tools/bench/bench.sh rx72m
+rxv3 has no QEMU machine, so the DFPU compare patch's silicon witness is the RX72M capture, owed
+under the enforcing and the flat preset. `FLAT_ALSO` in `bench-fleet.sh` names
+`rx72m:chaincheck_float` and `rx72m:chaincheck_full`, the two images that read the bit, so a
+fleet pass captures both builds and its table shows `chaincheck_float (flat)`. By hand:
+
+    VARIANT=flat TAG=<tag> APP=chaincheck_float tools/bench/bench.sh rx72m
 
 ## The report has to survive the console
 

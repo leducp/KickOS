@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Trace-clock / trace-arch capability declaration.
+# The chip's capability declarations: its trace clock and its code window.
 #
 # The rv32imac arch_trace_now is `rdcycle`, and the ESP32-C6 HP core implements Zicntr
 # nowhere in its CSR set, mcounteren included (C6 TRM v1.2 section 1.5.1). Reading one is an
@@ -13,4 +13,10 @@
 set(KICKOS_TRACE_ARCH 5)
 if(NOT DEFINED KICKOS_HAVE_TRACE_CLOCK)
   set(KICKOS_HAVE_TRACE_CLOCK 0)
+endif()
+
+# The enforcing link's code window (esp32c6.ld). 128K, not 64K: the full-C++ opt-in folds
+# .eh_frame and .gcc_except_table into it, and libstdc++ pushes code and rodata past 64K.
+if(NOT DEFINED KICKOS_CODE_SIZE)
+  set(KICKOS_CODE_SIZE 128K)
 endif()

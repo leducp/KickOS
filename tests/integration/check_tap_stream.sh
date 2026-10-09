@@ -39,6 +39,25 @@ expect_skips="$(printf '%s' "${EXPECT_SKIPS:-}" | tr ',;\t\n' '    ')"
 expect_partials="$(printf '%s' "${EXPECT_PARTIALS:-}" | tr ',;\t\n' '    ')"
 expect_faults="$(printf '%s' "${EXPECT_FAULTS:-}" | tr ',;\t\n' '    ')"
 
+# The arms the image's build left out because its arena could not back them
+# (user/apps/common/selftest/arena_fit.py): SELFTEST_LEFT_OUT_FILE names the build's list, one
+# per line, SELFTEST_LEFT_OUT carries the names themselves (a bench capture). The image plans none
+# of them, so the count and the two sets drop them.
+left_out_names="$(printf '%s' "${SELFTEST_LEFT_OUT:-}" | tr ',;' '  ')"
+if [ -n "${SELFTEST_LEFT_OUT_FILE:-}" ]; then
+    [ -r "$SELFTEST_LEFT_OUT_FILE" ] || fail "no left-out list at $SELFTEST_LEFT_OUT_FILE"
+    left_out_names="$left_out_names $(tr '\n' ' ' < "$SELFTEST_LEFT_OUT_FILE")"
+fi
+for left in $left_out_names; do
+    want_arms=$((want_arms - 1))
+    expect_skips="$(printf ' %s ' "$expect_skips" | sed "s/ $left / /g")"
+    expect_partials="$(printf ' %s ' "$expect_partials" | sed "s/ $left / /g")"
+done
+
+# A run that stopped before its plan says why on a `Bail out!` line, which no later clause reads.
+bail="$(printf '%s\n' "$out" | sed -n 's/^.*\(Bail out!.*\)$/\1/p' | head -1)"
+[ -z "$bail" ] || fail "[$label] the run bailed out: $bail"
+
 # A TAP line split by a whole thread-fault record is re-joined, and nothing else is. An IRQ
 # console drains the TAP stream from a ring well behind the run, while kprintf_fault writes the
 # record to the device at once, so an expected fault can land inside a status line the ring has

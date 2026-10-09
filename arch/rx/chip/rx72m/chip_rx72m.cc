@@ -332,6 +332,13 @@ namespace
         {icu::GRPAL1, icu::GENAL1, icu::GROUPAL1_VECTOR},
     };
     constexpr unsigned GROUP_COUNT = sizeof(GROUPS) / sizeof(GROUPS[0]);
+    // The chip file's kernel-owned lines for these vectors are what keeps them unclaimable.
+    static_assert(icu::GROUPBL0_VECTOR == irq::ICU_GROUPBL0
+                      and icu::GROUPBL1_VECTOR == irq::ICU_GROUPBL1
+                      and icu::GROUPBL2_VECTOR == irq::ICU_GROUPBL2
+                      and icu::GROUPAL0_VECTOR == irq::ICU_GROUPAL0
+                      and icu::GROUPAL1_VECTOR == irq::ICU_GROUPAL1,
+                  "a group vector the kernel arms is not the line the chip file gives the kernel");
     static_assert(kickos::rxv3::GROUP_LINE_STRIDE == 32,
                   "a group register holds exactly 32 sources (ISj/ENj, j = 0..31)");
 }

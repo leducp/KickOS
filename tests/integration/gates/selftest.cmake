@@ -27,6 +27,8 @@ if(NOT KICKOS_ARCH STREQUAL "sim")
   endforeach()
 endif()
 
+include("${PROJECT_SOURCE_DIR}/tests/integration/selftest_partials.cmake")
+
 # The expected-skip list every gate below carries; checked by name in
 # tests/integration/check_tap_stream.sh.
 set(KICKOS_EXPECT_SKIPS "")
@@ -39,20 +41,10 @@ if(KICKOS_KERNEL_CORES GREATER 1)
     mutex_pi_donation mutex_chain_boost mutex_multi_held mutex_deadlock
     prio_self_raise_lower prio_self_boosted
     reply_abandoned_cap call_timeout_revert call_infoless_revert call_close_reply
-    call_donation call_donation_hold call_donation_slow call_donation_pending
+    call_donation_hold call_donation_slow call_donation_pending
     reply_recv_notify reply_recv_notify_park
     cap_reply_bound_fast cap_reply_bound_slow thread_slay_timeout
     mutex_owner_died_nowaiter)
-  # Registered only where tasks have address spaces of their own.
-  if(KICKOS_HAVE_ASPACE)
-    list(APPEND KICKOS_EXPECT_SKIPS aspace_two_spaces_same_grant parked_frame_hostile)
-  endif()
-endif()
-
-# The arms over the sync a system call makes outside the kernel lock, which rv64imac, having no
-# cacheable kernel view of a non-cacheable frame, never makes.
-if(KICKOS_ENABLE_SELFTEST AND KICKOS_HAVE_ASPACE AND KICKOS_ARCH STREQUAL "rv64imac")
-  list(APPEND KICKOS_EXPECT_SKIPS presync_retried presync_race presync_flip presync_cancel)
 endif()
 
 # The refusal arm caps its parked children at 24 (LR_PARK_CAP, selftest_aspace.cc), so a
@@ -94,34 +86,32 @@ if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1 AND _selftest_movabl
   list(APPEND KICKOS_EXPECT_SKIPS migrate_running)
 endif()
 
-# The capability slots main's table holds before any arm runs: the crossings its composition
-# names, delegated from index 1 and at most one per partition port, else the reserved indices,
-# and the two it holds for the run.
+# The capability slots main's table holds before any arm runs: stdout, the crossings its
+# composition names, delegated from index 1 and at most one per partition port, and the two it
+# holds for the run.
 set(_selftest_lifetime_caps 2) # g_lock and g_done, created by main and never closed
-math(EXPR _selftest_cap_seated "1 + ${KICKOS_AMP_PORT_COUNT}")
-if(_selftest_cap_seated LESS KICKOS_CAP_FIRST_DYNAMIC)
-  set(_selftest_cap_seated ${KICKOS_CAP_FIRST_DYNAMIC})
-endif()
-math(EXPR _selftest_cap_seated "${_selftest_cap_seated} + ${_selftest_lifetime_caps}")
+math(EXPR _selftest_cap_seated "1 + ${KICKOS_AMP_PORT_COUNT} + ${_selftest_lifetime_caps}")
 
 # Every arm that asks a pool for more than this posture provisions, by what the arm itself asks
-# for (tests/static/selftest_demands.py): the workers beside main, the capability slots beside the
+# for (tests/static/selftest_demands.py): the workers beside main, the tasks beside main's own and
+# the image's driver tasks, the IRQ lines main's task may bind, the capability slots beside the
 # seated ones, and the objects of each kind main's task budget leaves beside the two semaphores
 # main holds for the run.
 set(_selftest_lifetime_sems 2) # g_lock and g_done
-foreach(_selftest_knob KICKOS_MAX_THREADS KICKOS_CAP_TABLE_SUPPLY KICKOS_TASK_SEMAPHORE_BUDGET
-        KICKOS_TASK_MUTEX_BUDGET KICKOS_TASK_ENDPOINT_BUDGET KICKOS_TASK_NOTIFY_BUDGET)
+foreach(_selftest_knob KICKOS_MAX_THREADS KICKOS_MAX_TASKS KICKOS_TASK_IRQ_HANDLE_BUDGET
+        KICKOS_MAX_SPAWN_GRANTS KICKOS_TASK_SEMAPHORE_BUDGET KICKOS_TASK_MUTEX_BUDGET
+        KICKOS_TASK_ENDPOINT_BUDGET KICKOS_TASK_NOTIFY_BUDGET)
   if(NOT "${${_selftest_knob}}" MATCHES "^[0-9]+$")
     message(FATAL_ERROR "selftest: the generated configuration states no ${_selftest_knob}")
   endif()
 endforeach()
 math(EXPR _selftest_workers "${KICKOS_MAX_THREADS} - 1")
-math(EXPR _selftest_caps "${KICKOS_CAP_TABLE_SUPPLY} - ${_selftest_cap_seated}")
+_selftest_main_caps("${KICKOS_MAX_SPAWN_GRANTS}" "${_selftest_cap_seated}" _selftest_caps)
 math(EXPR _selftest_sems "${KICKOS_TASK_SEMAPHORE_BUDGET} - ${_selftest_lifetime_sems}")
 # The guards an arm's registration sits under, as the compiler sees them.
 set(_selftest_guards --config "KICKOS_KERNEL_CORES=${KICKOS_KERNEL_CORES}")
 foreach(_selftest_knob KICKOS_HAVE_ASPACE KICKOS_HAVE_MPU KICKOS_MEMORY_ENFORCED
-        KICKOS_FAULT_ISOLATION KICKOS_AMP_NODE KICKOS_AMP_OWN_IMAGE)
+        KICKOS_FAULT_ISOLATION KICKOS_AMP_NODE KICKOS_AMP_OWN_IMAGE KICKOS_REBOOT)
   set(_selftest_on 0)
   if(${_selftest_knob})
     set(_selftest_on 1)
@@ -134,46 +124,37 @@ else()
   list(APPEND _selftest_guards --undefined KICKOS_ENABLE_SELFTEST)
 endif()
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
-execute_process(
-  COMMAND "${Python3_EXECUTABLE}" -B "${PROJECT_SOURCE_DIR}/tests/static/selftest_demands.py"
-          "${PROJECT_SOURCE_DIR}/user/apps/common/selftest" ${_selftest_guards} --supply
-          "workers=${_selftest_workers}" "caps=${_selftest_caps}" "sems=${_selftest_sems}"
-          "mutexes=${KICKOS_TASK_MUTEX_BUDGET}" "endpoints=${KICKOS_TASK_ENDPOINT_BUDGET}"
-          "notifies=${KICKOS_TASK_NOTIFY_BUDGET}"
-  OUTPUT_VARIABLE _selftest_short
-  ERROR_VARIABLE _selftest_demands_err
-  RESULT_VARIABLE _selftest_demands_rc)
-if(NOT _selftest_demands_rc EQUAL 0)
-  message(FATAL_ERROR "selftest: the arms' demands could not be read: ${_selftest_demands_err}")
-endif()
+# <driver tasks> <out>: the arms short of this posture with that many driver tasks composed.
+function(_selftest_pool_short driver_tasks out)
+  _selftest_main_tasks(${KICKOS_MAX_TASKS} ${KICKOS_KERNEL_CORES} ${driver_tasks} _tasks)
+  execute_process(
+    COMMAND "${Python3_EXECUTABLE}" -B "${PROJECT_SOURCE_DIR}/tests/static/selftest_demands.py"
+            "${PROJECT_SOURCE_DIR}/user/apps/common/selftest" ${_selftest_guards} --supply
+            "workers=${_selftest_workers}" "tasks=${_tasks}"
+            "irqs=${KICKOS_TASK_IRQ_HANDLE_BUDGET}" "caps=${_selftest_caps}"
+            "sems=${_selftest_sems}" "mutexes=${KICKOS_TASK_MUTEX_BUDGET}"
+            "endpoints=${KICKOS_TASK_ENDPOINT_BUDGET}" "notifies=${KICKOS_TASK_NOTIFY_BUDGET}"
+    OUTPUT_VARIABLE _short
+    ERROR_VARIABLE _err
+    RESULT_VARIABLE _rc)
+  if(NOT _rc EQUAL 0)
+    message(FATAL_ERROR "selftest: the arms' demands could not be read: ${_err}")
+  endif()
+  string(REPLACE "\n" ";" _short "${_short}")
+  set(${out} "${_short}" PARENT_SCOPE)
+endfunction()
+_selftest_pool_short(0 _selftest_short)
 set_property(DIRECTORY "${PROJECT_SOURCE_DIR}" APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
              "${PROJECT_SOURCE_DIR}/tests/static/selftest_demands.py")
 file(GLOB _selftest_sources "${PROJECT_SOURCE_DIR}/user/apps/common/selftest/*.cc")
 set_property(DIRECTORY "${PROJECT_SOURCE_DIR}" APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
              ${_selftest_sources})
-string(REPLACE "\n" ";" _selftest_short "${_selftest_short}")
 list(APPEND KICKOS_EXPECT_SKIPS ${_selftest_short})
 # console_publish_narrow narrows what console_publish_handout published.
 if("console_publish_handout" IN_LIST KICKOS_EXPECT_SKIPS)
   list(APPEND KICKOS_EXPECT_SKIPS console_publish_narrow)
 endif()
 
-# irq_as_event's 4 KiB page and caller_stack's accepted stack come from the arena the image
-# leaves, which on a part of 32 KiB of RAM or less spares neither beside the suite's stacks.
-set(_selftest_arena_partials "")
-if(KICKOS_ENABLE_SELFTEST AND DEFINED KICKOS_CHIP_LINK_RAM_LENGTH)
-  math(EXPR _selftest_ram "${KICKOS_CHIP_LINK_RAM_LENGTH}")
-  if(_selftest_ram LESS_EQUAL 32768)
-    list(APPEND KICKOS_EXPECT_SKIPS irq_as_event)
-    set(_selftest_arena_partials caller_stack)
-  endif()
-endif()
-
-# uart_service where the app pins it out of the arena (user/apps/common/selftest).
-get_target_property(_selftest_defs selftest COMPILE_DEFINITIONS)
-if("KICKOS_SELFTEST_NO_UART_SERVICE=1" IN_LIST _selftest_defs)
-  list(APPEND KICKOS_EXPECT_SKIPS uart_service)
-endif()
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1 AND NOT KICKOS_LIBC_REENT)
   list(APPEND KICKOS_EXPECT_SKIPS reent_per_thread_cores)
 endif()
@@ -181,67 +162,11 @@ endif()
 # Peer-dependent arms skip when an AMP image runs alone; the merged partition gate requires them
 # to run when a peer is available.
 if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
-  list(APPEND KICKOS_EXPECT_SKIPS amp_far_call amp_share_crossing)
-  # The far-reply arms park a call on a far port nobody receives on: with an echo crossing any
-  # far service port, without one the second, a node serving only its first. They skip where
-  # this node's far entries hold none.
-  set(_selftest_far_service 0)
-  set(_selftest_far_echo 0)
-  string(REPLACE "," ";" _selftest_amp_entries "${KICKOS_AMP_PORTS}")
-  foreach(_selftest_entry IN LISTS _selftest_amp_entries)
-    string(REPLACE ":" ";" _selftest_entry "${_selftest_entry}")
-    list(GET _selftest_entry 0 _selftest_entry_node)
-    list(GET _selftest_entry 1 _selftest_entry_port)
-    if(NOT _selftest_entry_node EQUAL KICKOS_AMP_NODE_ID)
-      if(_selftest_entry_port EQUAL 0)
-        set(_selftest_far_echo 1)
-      else()
-        math(EXPR _selftest_far_service "${_selftest_far_service} + 1")
-      endif()
-    endif()
-  endforeach()
-  set(_selftest_far_unanswered 2)
-  if(_selftest_far_echo)
-    set(_selftest_far_unanswered 1)
-  endif()
-  if(_selftest_far_service LESS _selftest_far_unanswered)
-    list(APPEND KICKOS_EXPECT_SKIPS amp_far_reply_guard amp_far_reply_empty)
+  list(APPEND KICKOS_EXPECT_SKIPS amp_far_call amp_far_reply_empty amp_share_crossing)
+  if(KICKOS_HAVE_ASPACE)
+    list(APPEND KICKOS_EXPECT_SKIPS amp_far_reply_unmapped)
   endif()
 endif()
-
-# amp_far_deliver_fault copies a far arrival into a LOCAL thread's buffer and takes that page
-# away under the parked thread, so it needs a backend that translates: a region board's
-# access_copy is an unconditional kmemcpy and refuses nothing, which leaves the overlap arm as
-# that board's only reachable refusal. DERIVED from the backend and not a posture list.
-if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE AND NOT KICKOS_HAVE_ASPACE)
-  list(APPEND KICKOS_EXPECT_SKIPS amp_far_deliver_fault)
-endif()
-
-# amp_reply_reserve skips on the OPPOSITE posture to the three above, which is why it is its own
-# predicate rather than another name on that list. It holds the reply ring toward a peer full so a
-# take has no slot to reserve; under one image the peers are this image's own cores and drain
-# their own rings, so the forge DECLINES rather than fabricating a state they would act on.
-# amp_far_reset_answers and amp_far_answer_deferred decline on the same posture and for the same
-# reason: each stomps a peer's call ring and holds the reply ring toward it, and under one image
-# those peers are this image's own cores, draining both underneath. amp_far_tail_recovery is NOT
-# here, driving the self ring no node produces into, so it runs on every posture.
-if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE AND NOT KICKOS_AMP_OWN_IMAGE)
-  list(APPEND KICKOS_EXPECT_SKIPS amp_reply_reserve amp_far_reset_answers
-       amp_far_answer_deferred)
-endif()
-
-# The arms that skip on a doorbell keeping no seat, where the chip file states none.
-include("${PROJECT_SOURCE_DIR}/tests/integration/selftest_partials.cmake")
-set(_selftest_seat ON)
-if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE)
-  if(NOT KICKOS_CHIP_DOORBELL_SEAT MATCHES "^(ON|OFF)$")
-    message(FATAL_ERROR "selftest: the generated chip.cmake states no KICKOS_CHIP_DOORBELL_SEAT")
-  endif()
-  set(_selftest_seat ${KICKOS_CHIP_DOORBELL_SEAT})
-endif()
-_selftest_seat_skips("${PROJECT_SOURCE_DIR}/user/apps/common/selftest/main.cc" ${_selftest_seat}
-                     _selftest_seat_skips)
-list(APPEND KICKOS_EXPECT_SKIPS ${_selftest_seat_skips})
 
 # The two console_publish arms publish the console themselves, which they refuse to do in an
 # image whose composition names a console driver as `stdout`.
@@ -259,8 +184,6 @@ function(_selftest_names_known what)
     endif()
   endforeach()
 endfunction()
-
-_selftest_starved_arms("${PROJECT_SOURCE_DIR}/user/apps/common/selftest/main.cc" _selftest_starved)
 
 # <names> cut to the members of <keep>, once each, comma-joined into <out>.
 function(_selftest_cut names keep out)
@@ -300,13 +223,13 @@ function(_selftest_image_sets img skips partials out_skips out_partials)
     message(FATAL_ERROR "selftest: the image ${img} names no composition of its own (${_composition})")
   endif()
   _selftest_driver_tasks("${_composition}" _driver_tasks)
-  _selftest_derived_partials("${_selftest_starved}" "${_skips}" ${_driver_tasks} ${KICKOS_MAX_TASKS}
-                             _derived)
-  list(APPEND _partials ${_derived})
-  # caller_stack_overlap runs on caller_stack's block, so it skips wherever that block is short.
-  if("caller_stack" IN_LIST _partials)
-    list(APPEND _skips caller_stack_overlap)
+  if(_driver_tasks GREATER 0)
+    _selftest_pool_short(${_driver_tasks} _short)
+    list(APPEND _skips ${_short})
+    list(REMOVE_DUPLICATES _skips)
   endif()
+  _selftest_derived_partials(${_driver_tasks} ${KICKOS_MAX_TASKS} ${KICKOS_KERNEL_CORES} _derived)
+  list(APPEND _partials ${_derived})
   _selftest_cut("${_skips}" "${_names}" _skips)
   _selftest_cut("${_partials}" "${_names}" _partials)
   set(${out_skips} "${_skips}" PARENT_SCOPE)
@@ -316,21 +239,17 @@ endfunction()
 # The same for the arms that report PARTIAL. A PARTIAL reports `ok`, so neither the plan/case
 # reconciliation nor the skip bookkeeping can see one and this by-name set is the only thing
 # that can. It is NOT derivable from the arm count: the conditions below name the postures.
-set(KICKOS_EXPECT_PARTIALS ${_selftest_arena_partials})
-# Above one kernel core, four tier-1 IRQ arms carry a claim about an event that must NOT happen
+set(KICKOS_EXPECT_PARTIALS "")
+# Above one kernel core, three tier-1 IRQ arms carry a claim about an event that must NOT happen
 # (a service, a redelivery or a wake), and a non-event raises nothing to order a later read
 # after, so there is no closed interval to read the result in. The one-core fleet checks them.
 if(KICKOS_KERNEL_CORES GREATER 1)
-  list(APPEND KICKOS_EXPECT_PARTIALS irq_spurious irq_mask_coalesce irq_discard
-                               irq_stale_register)
+  list(APPEND KICKOS_EXPECT_PARTIALS irq_mask_coalesce irq_discard irq_stale_register)
 endif()
-# irq_kernel_line_reserved tests both claim and injection rejection for a
-# kernel-reserved line. Report PARTIAL when none exists. GIC and RP2350 have
-# such a line when the image uses doorbells. Test KICKOS_NUM_CORES because
-# AMP images also need doorbells even with one kernel core.
-if(KICKOS_ENABLE_SELFTEST
-   AND NOT ((KICKOS_ARCH STREQUAL "armv8a" OR KICKOS_CHIP STREQUAL "rp2350")
-            AND (KICKOS_NUM_CORES GREATER 1 OR KICKOS_AMP_NODE)))
+# irq_kernel_line_reserved claims the lines the kernel's own devices take (KICKOS_KERNEL_LINES),
+# and on a GIC the SGIs. A chip with none has nothing to refuse.
+if(KICKOS_ENABLE_SELFTEST AND NOT KICKOS_ARCH STREQUAL "armv8a"
+   AND KICKOS_KERNEL_LINE_COUNT EQUAL 0)
   list(APPEND KICKOS_EXPECT_PARTIALS irq_kernel_line_reserved)
 endif()
 # periph_reg_write_unheld on every backend whose peripheral model cannot witness the refusal.
@@ -343,31 +262,8 @@ endif()
 if(KICKOS_ARCH STREQUAL "x86_64")
   list(APPEND KICKOS_EXPECT_PARTIALS vector_fault_contained)
 endif()
-# cap_chunk_span needs main's table, a child's, WIDER than the chunk granule
-# (KICKOS_CAP_CHUNK_TARGET) to reach a segmented index. A child's width is
-# KICKOS_MAX_SPAWN_GRANTS + 1.
-math(EXPR _selftest_child_floor "${KICKOS_MAX_SPAWN_GRANTS} + 1")
-if(_selftest_child_floor LESS_EQUAL KICKOS_CAP_CHUNK_TARGET)
-  list(APPEND KICKOS_EXPECT_PARTIALS cap_chunk_span)
-endif()
-# It also needs a free slot BELOW the granule, and main's own creates start above everything
-# seated before its first create.
-if(NOT _selftest_cap_seated LESS KICKOS_CAP_CHUNK_TARGET)
-  list(APPEND KICKOS_EXPECT_PARTIALS cap_chunk_span)
-endif()
-# amp_mint_reply_port holds the peer's echo port as a port the partition does not name. The
-# peer is amp_round_peer's: node 1 for node 0, node 0 for every other.
-if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE)
-  set(_selftest_amp_peer 0)
-  if(KICKOS_AMP_NODE_ID EQUAL 0)
-    set(_selftest_amp_peer 1)
-  endif()
-  if("${KICKOS_AMP_PORTS}" MATCHES "(^|,)${_selftest_amp_peer}:0(,|$)")
-    list(APPEND KICKOS_EXPECT_PARTIALS amp_mint_reply_port)
-  endif()
-endif()
 if(KICKOS_HAVE_MPU AND KICKOS_ENABLE_SELFTEST)
-  # The reserved-overlap matrix needs at least one arch_reserved_blocks entry.
+  # The reserved-block spawn needs at least one arch_reserved_blocks entry.
   if(NOT KICKOS_CHIP_RESERVED_BLOCKS MATCHES "^[0-9]+$")
     message(FATAL_ERROR "selftest: the generated chip.cmake states no KICKOS_CHIP_RESERVED_BLOCKS")
   endif()
@@ -376,6 +272,8 @@ if(KICKOS_HAVE_MPU AND KICKOS_ENABLE_SELFTEST)
   endif()
   if(KICKOS_ARCH STREQUAL "sim")
     list(APPEND KICKOS_EXPECT_PARTIALS dev_window_exclusive)
+    # The sim's pointer checks admit its whole host image, so no kernel word is refused there.
+    list(APPEND KICKOS_EXPECT_PARTIALS confused_deputy endpoint_bound)
   endif()
 endif()
 
@@ -384,7 +282,9 @@ endif()
 # set is the only thing that can tell the two apart (tests/integration/check_tap_stream.sh).
 set(KICKOS_EXPECT_FAULTS "")
 if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION)
-  list(APPEND KICKOS_EXPECT_FAULTS fvic kvic)
+  # kernel_state_unreachable's readers, and the stack arms' threads reading the guard below
+  # their own stacks.
+  list(APPEND KICKOS_EXPECT_FAULTS kvic pstk)
   # window_addr's sibling, reading the window its holder took with it at exit.
   if(KICKOS_CHIP STREQUAL "virt_arm64" OR KICKOS_CHIP STREQUAL "virt_rv64"
      OR KICKOS_CHIP STREQUAL "q35")
@@ -438,8 +338,12 @@ foreach(_mf_img IN LISTS _selftest_manifest_images)
   endif()
   _selftest_image_sets(${_mf_img} "${_selftest_skips_list}" "${_selftest_partials_list}"
                       _mf_skips _mf_partials)
+  get_target_property(_mf_left_out ${_mf_img} KICKOS_SELFTEST_LEFT_OUT)
+  if(NOT _mf_left_out)
+    set(_mf_left_out "")
+  endif()
   string(APPEND _selftest_manifest "${_mf_img}|${_mf_arms}|${_mf_skips}|"
-                                   "${_mf_partials}|${KICKOS_EXPECT_FAULTS}\n")
+                                   "${_mf_partials}|${KICKOS_EXPECT_FAULTS}|${_mf_left_out}\n")
 endforeach()
 file(WRITE "${CMAKE_BINARY_DIR}/kickos-selftest-manifest.txt" "${_selftest_manifest}")
 
@@ -474,6 +378,11 @@ if(_selftest_parts EQUAL 1)
     ARGS ${_selftest_arms})
   if(TEST ${_tag}_selftest)
     set_property(TEST ${_tag}_selftest APPEND PROPERTY ENVIRONMENT ${_selftest_env})
+    get_target_property(_left_out selftest KICKOS_SELFTEST_LEFT_OUT)
+    if(_left_out)
+      set_property(TEST ${_tag}_selftest APPEND PROPERTY ENVIRONMENT
+        "SELFTEST_LEFT_OUT_FILE=${_left_out}")
+    endif()
   endif()
 endif()
 get_target_property(_selftest_rebased selftest KICKOS_REBASED_IMAGE_FILE)
@@ -504,6 +413,11 @@ if(_selftest_parts GREATER 1)
       "EXPECT_SKIPS=${_mb_img_skips}"
       "EXPECT_PARTIALS=${_mb_img_partials}"
       "EXPECT_FAULTS=${KICKOS_EXPECT_FAULTS}")
+    get_target_property(_left_out ${_img} KICKOS_SELFTEST_LEFT_OUT)
+    if(_left_out)
+      set_property(TEST ${_tag}_${_img} APPEND PROPERTY ENVIRONMENT
+        "SELFTEST_LEFT_OUT_FILE=${_left_out}")
+    endif()
   endforeach()
 endif()
 
@@ -625,10 +539,10 @@ if(KICKOS_CHIP AND TARGET kickos_chip_${KICKOS_CHIP})
 endif()
 # The CLASS BACKEND this image actually linked, which is outside the rescan group by
 # construction (it must precede it) and so is in none of the lists above. Without it the
-# shadowing legs below cannot see the very definition they exist to protect: MEASURED, a
-# selftest handed the SPI proxy beside its own mock passed the gate green. Read off the app
-# target rather than off the selection, so an image that declares no class adds nothing and
-# the gate does not inventory a definition this link never had to choose from.
+# shadowing legs below cannot see the very definition they exist to protect, and a second
+# definer of a class symbol passes the gate green. Read off the app target rather than off the
+# selection, so an image that declares no class adds nothing and the gate does not inventory a
+# definition this link never had to choose from.
 get_target_property(_class_backends selftest KICKOS_APP_CLASS_BACKENDS)
 if(_class_backends)
   foreach(_cb ${_class_backends})
@@ -639,6 +553,10 @@ if(TARGET kickos_string)
   list(APPEND _seam_archives "$<TARGET_OBJECTS:kickos_string>")
 endif()
 list(APPEND _seam_archives "$<TARGET_OBJECTS:selftest>")
+get_target_property(_selftest_core selftest KICKOS_SELFTEST_CORE)
+if(_selftest_core)
+  list(APPEND _seam_archives "$<TARGET_OBJECTS:${_selftest_core}>")
+endif()
 add_test(
   NAME    seam_defaults
   COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_seam_defaults.sh"
@@ -648,13 +566,7 @@ add_test(
           ${_seam_archives})
 kickos_host_gate(seam_defaults)
 
-# Driver-class shadowing gate, on the SAME inventory. The last argument before the inventory is
-# 1 when this image compiles the mocks, which is the gate's positive control: it must SEE a
-# class definition on the link line.
-set(_class_expect_app 0)
-if(KICKOS_ENABLE_SELFTEST)
-  set(_class_expect_app 1)
-endif()
+# Driver-class shadowing gate, on the SAME inventory.
 add_test(
   NAME    class_backend
   COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_class_backend.sh"
@@ -662,7 +574,7 @@ add_test(
           # Escaped, because CMake splits an unescaped `;` in a COMMAND argument into
           # separate arguments and the positional ones after it would shift.
           "${PROJECT_SOURCE_DIR}/user/include/kickos/driver\;${PROJECT_SOURCE_DIR}/user/include/kickos\;${PROJECT_SOURCE_DIR}/user/include/kickos/sys"
-          "${_selftest_map}" "${_class_expect_app}"
+          "${_selftest_map}"
           ${_seam_archives})
 kickos_host_gate(class_backend)
 

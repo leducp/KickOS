@@ -38,8 +38,8 @@ g_isr_vector:
     /* External interrupts 0..51 -> the generic IRQ-as-event entry. */
 #if (KICKOS_NUM_CORES > 1 || KICKOS_AMP_NODE)
     /* SIO_IRQ_BELL is dispatched here and never through kickos_isr_irq, so it occupies no
-       kernel irq_table slot. arch_irq_line_kernel_owned (chip_rp2350.cc) is what states that
-       to irq_claim, which refuses a capability over the line. */
+       kernel irq_table slot. KICKOS_KERNEL_LINES (CMakeLists.txt) carries it to irq_claim
+       under the same condition, which refuses a capability over the line. */
     .rept KICKOS_LAYOUT_LINE_SIO_IRQ_BELL
     .word kickos_arm_default_irq
     .endr

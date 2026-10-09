@@ -15,6 +15,7 @@
 #include <kickos/chip_mmap.h>
 #include "board_pins.h"
 #include "irq.h"
+#include <chip_layout.h>
 #include "regs.h"
 #include "uart_baud.h"
 
@@ -41,6 +42,8 @@ namespace
 {
     namespace mmap = kickos::sam3x8e::mmap;
     namespace irq = kickos::sam3x8e::irq;
+    static_assert(irq::TC0_IRQ == KICKOS_LAYOUT_LINE_TC0_IRQ,
+                  "startup.S vectors the clock-wrap ISR at KICKOS_LAYOUT_LINE_TC0_IRQ");
 
     inline volatile uint32_t& r32(uintptr_t a) { return *reinterpret_cast<volatile uint32_t*>(a); }
 
@@ -405,7 +408,7 @@ uint64_t arch_clock_now(void)
     return g_clk.ns_from(tc_ticks());
 }
 
-// TC0 ch0 COVFS ISR, NVIC 27 in startup.S: observes the wrap while no thread reads the clock.
+// TC0 ch0 COVFS ISR, vectored from startup.S: observes the wrap while no thread reads the clock.
 // It runs in the maskable band, so an IrqLock defers it harmlessly.
 void kickos_tc0_clock_isr(void)
 {

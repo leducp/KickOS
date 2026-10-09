@@ -212,7 +212,7 @@ Given the three switches, adding a new capability type `CAP_X` is exactly:
    That is the same additive shape with one extra guarantee, that an increment and the
    unwind of a partly-taken batch cannot drift apart, or move one of an endpoint's two
    counters without the other.
-4. **One resolve case** in `cap_resolve` (Chapter 8.1): `if (want == CAP_X) return
+4. **One resolve case** in `cap_resolve_e` (Chapter 8.1): `if (want == CAP_X) return
    pool.resolve(...)`.
 
 Nothing existing changes shape. This is the mutex (Chapter 2.3) and the endpoint

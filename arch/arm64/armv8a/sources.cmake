@@ -24,9 +24,9 @@ else()
     "2 and 3. The board states it through the Kconfig choice ARM64_GIC_V2 / ARM64_GIC_V3.")
 endif()
 
-# The GIC backend is the backend for arch_irq_line_kernel_owned (the doorbell's SGI) and for
-# arch_irq_route (GICD_IROUTER on v3, GICD_ITARGETSR on v2), so those two fallbacks leave the
-# list.
+# The GIC backend is the backend for arch_irq_line_kernel_owned (the timer's PPI and the
+# doorbell's SGI) and for arch_irq_route (GICD_IROUTER on v3, GICD_ITARGETSR on v2), so those
+# two fallbacks leave the list.
 set(_armv8a_defaults ${KICKOS_SEAM_DEFAULTS_COMMON})
 list(REMOVE_ITEM _armv8a_defaults
   common/arch_irq_line_kernel_owned_default.cc

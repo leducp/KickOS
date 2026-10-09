@@ -48,8 +48,6 @@ namespace tap
             FAIL
         };
         Verdict g_verdict = Verdict::PASS;
-        // The tag of a skip recorded through skip_tagged, 0 for any other.
-        unsigned g_skip_tag = 0;
         char g_msg[192];
         static_assert(sizeof(g_msg) > REASON_CHARS_MAX);
         // Orthogonal to the verdict, and that is the whole of the category: the arm runs and
@@ -61,18 +59,15 @@ namespace tap
         // Repair for the failing path, or null.
         TestFn g_after_failure = nullptr;
 
-        CensusFn g_census = nullptr;
-        char const* g_census_what = "";
-        long g_census_delta = 0;
-
-        long census_read()
+        struct CensusEntry
         {
-            if (g_census == nullptr)
-            {
-                return -1;
-            }
-            return g_census();
-        }
+            CensusFn count;
+            char const* what;
+            long delta;
+            long before;
+        };
+        CensusEntry g_census[CENSUS_MAX] = {};
+        int g_censuses = 0;
 
         void emit(char const* s)
         {
@@ -130,7 +125,7 @@ namespace tap
 
         // The two skip categories rank together: first skip of either kind wins, and a fail
         // recorded later still outranks both.
-        void record_skip(Verdict v, unsigned tag, char const* fmt, va_list ap)
+        void record_skip(Verdict v, char const* fmt, va_list ap)
         {
             if (g_verdict == Verdict::FAIL or g_verdict == Verdict::SKIP
                 or g_verdict == Verdict::SKIP_VACUOUS)
@@ -139,7 +134,6 @@ namespace tap
             }
             record(g_msg, sizeof(g_msg), fmt, ap);
             g_verdict = v;
-            g_skip_tag = tag;
         }
 
         // Is this thread's stdout cap seated (a console driver published the console)?
@@ -182,15 +176,7 @@ namespace tap
     {
         va_list ap;
         va_start(ap, fmt);
-        record_skip(Verdict::SKIP, 0, fmt, ap);
-        va_end(ap);
-    }
-
-    void skip_tagged(unsigned tag, char const* fmt, ...)
-    {
-        va_list ap;
-        va_start(ap, fmt);
-        record_skip(Verdict::SKIP, tag, fmt, ap);
+        record_skip(Verdict::SKIP, fmt, ap);
         va_end(ap);
     }
 
@@ -198,7 +184,7 @@ namespace tap
     {
         va_list ap;
         va_start(ap, fmt);
-        record_skip(Verdict::SKIP_VACUOUS, 0, fmt, ap);
+        record_skip(Verdict::SKIP_VACUOUS, fmt, ap);
         va_end(ap);
     }
 
@@ -232,54 +218,37 @@ namespace tap
         va_end(ap);
     }
 
-    Nested nested_run(TestFn fn, unsigned tag)
+    void bail_out(char const* fmt, ...)
     {
-        Verdict const outer = g_verdict;
-        unsigned const outer_tag = g_skip_tag;
-        char saved[sizeof(g_msg)];
-        memcpy(saved, g_msg, sizeof(g_msg));
-        g_verdict = Verdict::PASS;
-        g_skip_tag = 0;
-        g_msg[0] = 0;
-        fn();
-        Nested end = Nested::RAN;
-        if (g_verdict == Verdict::SKIP and g_skip_tag == tag)
-        {
-            end = Nested::SKIPPED;
-        }
-        else if (g_verdict == Verdict::SKIP or g_verdict == Verdict::SKIP_VACUOUS)
-        {
-            end = Nested::SKIPPED_OTHER;
-            diag("nested arm skipped for another reason: %s", g_msg);
-        }
-        else if (g_verdict == Verdict::FAIL)
-        {
-            end = Nested::FAILED;
-            diag("nested arm failed: %s", g_msg);
-            if (g_after_failure != nullptr)
-            {
-                g_after_failure();
-            }
-        }
-        else
-        {
-            diag("nested arm ran to its end: %s", g_msg);
-        }
-        g_verdict = outer;
-        g_skip_tag = outer_tag;
-        memcpy(g_msg, saved, sizeof(g_msg));
-        return end;
+        va_list ap;
+        va_start(ap, fmt);
+        emitv("Bail out! ", sizeof("Bail out! ") - 1, fmt, ap);
+        va_end(ap);
     }
 
     void set_after_failure(TestFn fn) { g_after_failure = fn; }
 
-    void set_census(CensusFn count, char const* what)
+    void add_census(CensusFn count, char const* what)
     {
-        g_census = count;
-        g_census_what = what;
+        if (g_censuses == CENSUS_MAX)
+        {
+            g_dropped++;
+            return;
+        }
+        g_census[g_censuses] = {count, what, 0, 0};
+        g_censuses++;
     }
 
-    void census_expect(long delta) { g_census_delta = delta; }
+    void census_expect(CensusFn count, long delta)
+    {
+        for (int c = 0; c < g_censuses; c++)
+        {
+            if (g_census[c].count == count)
+            {
+                g_census[c].delta = delta;
+            }
+        }
+    }
 
     int run_all()
     {
@@ -306,24 +275,30 @@ namespace tap
         for (int i = 0; i < g_count; i++)
         {
             g_verdict = Verdict::PASS;
-            g_skip_tag = 0;
             g_msg[0] = 0;
             g_todo = false;
             g_todo_msg[0] = 0;
-            g_census_delta = 0;
-            long const census_before = census_read();
-            g_tests[i].fn();
-            long const census_after = census_read();
-            if (census_before >= 0 and census_after >= 0
-                and census_after != census_before + g_census_delta)
+            for (int c = 0; c < g_censuses; c++)
             {
+                g_census[c].delta = 0;
+                g_census[c].before = g_census[c].count();
+            }
+            g_tests[i].fn();
+            for (int c = 0; c < g_censuses; c++)
+            {
+                CensusEntry const& k = g_census[c];
+                long const after = k.count();
+                if (k.before < 0 or after < 0 or after == k.before + k.delta)
+                {
+                    continue;
+                }
                 if (g_verdict == Verdict::FAIL or g_todo)
                 {
-                    diag("%s: %ld before, %ld after", g_census_what, census_before, census_after);
+                    diag("%s: %ld before, %ld after", k.what, k.before, after);
                 }
                 else
                 {
-                    fail("%s: %ld before, %ld after", g_census_what, census_before, census_after);
+                    fail("%s: %ld before, %ld after", k.what, k.before, after);
                 }
             }
             // Read before the verdict is, because a TODO arm's failure is not the run's.
@@ -381,8 +356,9 @@ namespace tap
         if (g_dropped > 0)
         {
             failed++;
-            emitf("not ok %d - tap_registry_overflow # %d registration(s) dropped past MAX_TESTS=%d",
-                  g_count + 1, g_dropped, MAX_TESTS);
+            emitf("not ok %d - tap_registry_overflow # %d registration(s) dropped past MAX_TESTS=%d"
+                  " or CENSUS_MAX=%d",
+                  g_count + 1, g_dropped, MAX_TESTS, CENSUS_MAX);
         }
         // All five lines are always emitted, zero included: a gate reconciles its by-name
         // permission set against these counts, so an absent line must mean "truncated run",

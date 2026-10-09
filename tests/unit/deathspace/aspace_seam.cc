@@ -9,6 +9,7 @@
 #include <kickos/aspace.h>
 #include <kickos/domain.h>
 #include <kickos/frame_pool.h>
+#include <kickos/irqlock.h>
 #include <kickos/kernel.h>
 #include <kickos/sync.h>
 #include <kickos/task.h>
@@ -63,14 +64,16 @@ namespace kickos
             return as(&g_spaces[i]);
         }
 
-        void install_here(struct arch_aspace* space)
+        void install_boot_here()
         {
-            uint32_t const core = arch_cpu_id();
-            if (core < KICKOS_NUM_CORES)
-            {
-                g_installed[core] = space;
-            }
-            aspace_forget_current();
+            IrqLock lock;
+            aspace_install_boot();
+        }
+
+        void install_for(Thread const* t)
+        {
+            IrqLock lock;
+            (void)aspace_activate_for(t);
         }
 
         void note_member_release()
@@ -85,11 +88,11 @@ namespace kickos
             for (uint32_t c = 0; c < KICKOS_NUM_CORES; c++)
             {
                 g_core = c;
-                install_here(boot_space());
+                install_boot_here();
             }
             g_core = was;
 #else
-            install_here(boot_space());
+            install_boot_here();
 #endif
             g_ustack_frees = 0;
             g_ustack_free_base = 0;

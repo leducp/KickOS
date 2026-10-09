@@ -12,8 +12,10 @@
 
 #include <kickos/aspace.h>    // the kaccess byte-access seam
 #include <kickos/cap.h>       // KCAP_INVALID (the minting out-parameter's failure value)
+#include <kickos/sched.h>     // sched::current (cap_out_deliver's owner)
 #include <kickos/thread.h>    // the IPC state reply_wait_seat writes
 #include <kickos/sys/abi.h>   // kos_thread_params (thread_create_call parameter)
+#include <kickos/sys/errno.h>
 
 namespace kickos
 {
@@ -67,6 +69,27 @@ namespace kickos
     // -KOS_EINVAL, and -KOS_ENOSYS where the arch has no ports.
     int port_reg_write_call(uintptr_t base, uintptr_t offset, uintptr_t value);
 
+#if KICKOS_HAVE_ASPACE
+    // --- Frame runs and address spaces (syscall_mem.cc) ------------------------
+    // A run of fresh, zeroed frames covering `bytes` in whole pages, charged to the caller's
+    // task for its whole life, and a capability naming it, written to the out word `out`. 0,
+    // or in this order: -KOS_EPERM (no AUTH_MEMORY), -KOS_EINVAL / -KOS_EFAULT (`out`),
+    // -KOS_EINVAL (no space, `bytes` 0 or past a run), -KOS_EAGAIN (the task's run budget),
+    // -KOS_ENOMEM (the run pool), -KOS_EMFILE, -KOS_ENOMEM (no run that long, or one not
+    // cleared), -KOS_EFAULT (`out` went away: nothing is left minted).
+    int frame_create_call(uintptr_t bytes, uintptr_t out);
+
+    // A capability naming the caller's own space and holding no reference on it, written to
+    // `out`. 0, or -KOS_EINVAL / -KOS_EFAULT (`out`), -KOS_EINVAL (no space), -KOS_EMFILE.
+    int aspace_self_call(uintptr_t out);
+
+    // One kos_mem_count_id count, read when the call runs, written to `out`. 0, or in this
+    // order: -KOS_EPERM
+    // (no AUTH_MEMORY), -KOS_EINVAL / -KOS_EFAULT (`out`), -KOS_EINVAL (an unknown id, or
+    // RANGES_FREE with no space).
+    int mem_count_call(uintptr_t which, uintptr_t out);
+#endif
+
     // --- The owner of a user end -----------------------------------------------
     // Every access below names the owner each user end belongs to (UserOwner), and a NULL
     // owner means kernel storage. An owner cannot be recovered from an address once two
@@ -102,9 +125,42 @@ namespace kickos
     [[nodiscard]] bool write_recv_info(UserOwner ospace, uintptr_t out, uint32_t badge,
                                        uint32_t reply_cap);
 
+    // --- A mint's out word ------------------------------------------------------
+    // Checked BEFORE the object is created: a mint that cannot deliver its handle leaves
+    // an object nothing can name or close. The kernel writes it privileged, so an
+    // unprivileged caller must own it. kos_thread_t and kos_task_t are 32-bit too; `width` is
+    // a power of two.
+    inline int cap_out_check(uintptr_t out, size_t width = sizeof(uint32_t))
+    {
+        if (out == 0 or (out & (width - 1u)) != 0)
+        {
+            return -KOS_EINVAL;
+        }
+        if (not user_writable_ok(out, width))
+        {
+            return -KOS_EFAULT;
+        }
+        return 0;
+    }
+
+    // Nothing is written on failure: the stub seated its codec's NONE before trapping,
+    // so the sys.h "always written" guarantee already holds.
+    //
+    // cap_out_check proved this word writable and aligned, so one granule holds all of it and
+    // a refusal here moves NO byte: the mapping went away since that check.
+    inline uint64_t cap_out_deliver(uintptr_t out, int rc, uint32_t handle)
+    {
+        if (rc == 0
+            and not kaccess_to_user(user_space_of(sched::current()), out, &handle,
+                                    sizeof(handle)))
+        {
+            rc = -KOS_EFAULT;
+        }
+        return static_cast<uint64_t>(rc);
+    }
+
     // How many calls the trap-handler IPC fastpath COMPLETED; a refusal does not count.
-    // The two paths answer a caller identically, so this is the only thing that separates
-    // them from userspace. Reads 0 on a backend with no fastpath.
+    // Reads 0 on a backend with no fastpath.
     uint32_t ipc_fast_taken_count();
 
     // --- Cap-object creators (syscall_obj.cc) ----------------------------------
@@ -201,6 +257,13 @@ namespace kickos
     // Placement and the scheduling grant. Both are total over every posture: at one kernel
     // core the placement call answers -KOS_ENOSYS and the grant carries its ceiling half only.
     int thread_set_affinity(kos_thread_t thread, uint32_t core_mask);
+#if KICKOS_KERNEL_CORES > 1
+    // The placement reads: each answers a mask, which cannot reach bit 31, or -KOS_E*. The
+    // thread read reaches what thread_set_affinity reaches, the task read what
+    // task_sched_grant reaches, KOS_TASK_NONE naming the caller's own task.
+    int thread_affinity(kos_thread_t thread);
+    int task_cores(kos_task_t task);
+#endif
     // The caller's own handle.
     uint64_t thread_self();
     int task_sched_grant(kos_task_t task, uint8_t prio_ceiling, uint32_t core_mask);
@@ -208,17 +271,6 @@ namespace kickos
     // truncate into range is refused rather than read.
     int thread_set_priority(uintptr_t priority);
     int task_slay(kos_task_t task, uint32_t timeout_us);
-
-#if KICKOS_HAVE_ASPACE && defined(KICKOS_ENABLE_SELFTEST)
-    // Test scaffolding for the address-space seam (syscall_aspace.cc). One scenario per op,
-    // run entirely kernel-side, so no mapping primitive is exposed to a caller.
-    uint64_t aspace_probe(uintptr_t op, uintptr_t a1);
-#endif
-
-#if KICKOS_AMP_NODE && defined(KICKOS_ENABLE_SELFTEST)
-    // Test scaffolding for the shared window (syscall_amp.cc).
-    uint64_t amp_probe(uintptr_t op, uintptr_t a1);
-#endif
 }
 
 #endif

@@ -4,7 +4,6 @@
 #
 # Run the x86-64 address-space probe under QEMU/UEFI and check every result.
 # Usage: run-qemu-x86_64-x5.sh <application.efi> [workdir]
-# Requires a self-test build for invalidation counters.
 # Environment: KICKOS_X5_TOKEN, KICKOS_X5_FIRMWARE (pflash or bios),
 # KICKOS_X5_MACHINE (q35), KICKOS_X5_TIMEOUT (120 seconds),
 # and KICKOS_X86_64_CPU (the QEMU CPU model, required).
@@ -32,8 +31,8 @@ kos_boot "$1" "${2:-}"
 need "the image never reached its arms" "^$TOK arms\$"
 need "no pool report line" \
      "^  $TOK pool base=0x[0-9a-f]\{16\} frames=[1-9][0-9]* va=0x[0-9a-f]\{16\}\$"
-need "no model report line" \
-     "^  $TOK model=0x[0-9a-f]\{16\} levels=[45] tag_bits=[0-9][0-9]* tag_invalidate=[01]\$"
+need "no shape report line" \
+     "^  $TOK levels=[45] tag_bits=[0-9][0-9]* tag_invalidate=[01]\$"
 HEX16='0x[0-9a-f]\{16\}'
 need "no boot-space report line" \
      "^  $TOK boot root=$HEX16 kernel_slots=[1-9][0-9]* user_lo=$HEX16 user_hi=$HEX16\$"
@@ -44,8 +43,6 @@ need "no kernel-window report line" \
 need "no root report line" \
      "^  $TOK roots boot=0x[0-9a-f]\{16\} a=0x[0-9a-f]\{16\} b=0x[0-9a-f]\{16\}\$"
 need "no table-cost report line" "^  $TOK tables per span=[1-9][0-9]*\$"
-need "no invalidation report line" \
-     "^  $TOK tlbi issued=[1-9][0-9]* elided=[0-9][0-9]*\$"
 need "no frame-accounting report line" \
      "^  $TOK frames outstanding=[0-9][0-9]* baseline=[0-9][0-9]* allocations=[1-9][0-9]*\$"
 need "no result-class report line" \
@@ -53,9 +50,6 @@ need "no result-class report line" \
 
 listed=0
 for a in granule_is_4k levels_four_or_five levels_match_control_register \
-         model_granule_bore_out model_physical_range_bore_out \
-         model_identifier_matches_record model_physical_bits_reported \
-         model_one_granule_reported model_identifier_width_is_the_record \
          memtype_normal memtype_nocache memtype_device memtype_unknown_refused \
          boot_space_answered boot_space_is_the_installed_root kernel_half_has_slots \
          user_half_measured boot_maps_this_image \
@@ -127,10 +121,6 @@ for a in granule_is_4k levels_four_or_five levels_match_control_register \
          acquire_after_release_still_answers frame_at_agrees_with_acquire \
          frame_at_drops_the_offset frame_at_of_an_unmapped_page_is_zero \
          frame_at_of_a_null_space_is_zero frame_at_separates_the_two_spaces \
-         fresh_map_issues_one replacing_a_live_page_issues_two and_the_replacement_took \
-         unmap_issues_one a_space_nothing_has_run \
-         map_into_a_space_nothing_has_run_elides \
-         map_into_a_space_this_core_has_left_still_pays \
          borrowed_page_unmapped_before_destroy the_lent_frame_survived_the_unmap \
          a_shared_slot_diverged_by_an_accessed_bit the_diverged_slot_kept_its_table \
          kernel_half_survives_a_destroy the_shared_window_survives_a_destroy \
@@ -141,7 +131,9 @@ for a in granule_is_4k levels_four_or_five levels_match_control_register \
          the_window_survives_the_second_destroy a_frame_for_the_space_to_own \
          mapped_and_left_mapped destroy_reclaimed_the_frame_the_space_mapped \
          every_frame_came_back every_result_class_but_capacity_was_reached \
-         capacity_refusal_is_unproducible root_register_ends_on_the_boot_space
+         capacity_refusal_is_unproducible \
+         ring0_fault_seen ring0_fault_frame_on_block ring0_fault_cs_is_kernel \
+         ring0_fault_not_attributed root_register_ends_on_the_boot_space
 do
     arm_ok "$a"
     listed=$((listed + 1))

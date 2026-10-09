@@ -13,11 +13,10 @@
 # The first index an own-create may take. The well-known indices below it are kernel
 # policy and are named by <kickos/sys/cap_index.h>, which takes the number from here.
 # A renumber may only go DOWNWARD, only for a slot NOTHING seats, and is an ABI break.
-set(KICKOS_CAP_FIRST_DYNAMIC 2)
+set(KICKOS_CAP_FIRST_DYNAMIC 1)
 
 # The storage granule. armv6m has no divide instruction, so it must stay a power of two.
-# Changing it moves KCAP_CHUNK_SHIFT (cap.h), which boards compile the flat decode, and so
-# the cap_chunk_span PARTIAL list in user/apps/common/selftest/CMakeLists.txt.
+# Changing it moves KCAP_CHUNK_SHIFT (cap.h), and so which boards compile the flat decode.
 set(KICKOS_CAP_CHUNK_TARGET 8)
 
 # The runs held by something that is NOT a thread-pool slot: just the one thread_create_call holds

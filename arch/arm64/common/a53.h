@@ -10,6 +10,8 @@
 
 #include <stdint.h>
 
+#include <kickos/arch/gic_ppi.h>
+
 extern "C"
 {
     // VA - PA for the kernel's half, defined by the chip linker script.
@@ -24,6 +26,9 @@ extern "C"
     // This core's hardware edge alone: the distributor's shared half runs once for the machine.
     // A core reaches this with PSTATE.DAIF masked.
     void kickos_armv8a_percore_init(void);
+
+    // Panics where this core's MMU cannot run the port's translation regime.
+    void kickos_armv8a_mmu_check(void);
 }
 
 namespace kickos::arm64
@@ -41,11 +46,6 @@ namespace kickos::arm64
     {
         return reinterpret_cast<volatile uint32_t*>(dev_va(a));
     }
-
-    // The Non-secure EL1 physical timer. ARCHITECTURALLY ASSIGNED AND NOT A CHIP FACT: neither
-    // reference manual documents a PPI number, so this rests on the GIC architecture. It is NOT
-    // a kernel IRQ line: kickos_isr_timer takes no line and the timer is in no dispatch table.
-    constexpr int PPI_EL1_PHYS_TIMER = 30;
 
     constexpr long SYS_EXIT = 0x18;
     constexpr uint64_t ADP_Stopped_ApplicationExit = 0x20026u;

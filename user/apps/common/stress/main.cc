@@ -64,7 +64,7 @@ namespace
     long g_churn_runs = 0;   // total churn-worker runs; expect live*CHURN_GENERATIONS
 
     // Worker threads only: names the counter mutex by its delegated cap.
-    void lock() { kos_sem_wait(CH_MTX); }
+    void lock() { kos_sem_wait(CH_MTX, KOS_TIMEOUT_NONE); }
     void unlock() { kos_sem_post(CH_MTX); }
 
     // Per-thread LCG (seeded off the thread index): deterministic, no shared state.
@@ -80,11 +80,11 @@ namespace
         int i = static_cast<int>(reinterpret_cast<uintptr_t>(arg));
         uint32_t seed = 0x9E3779B9u ^ (static_cast<uint32_t>(i) * 2654435761u);
         // The kick: the token enters A only once every worker of the round exists.
-        kos_sem_wait(CH_START);
+        kos_sem_wait(CH_START, KOS_TIMEOUT_NONE);
         kos_sem_post(CH_A);
         for (int r = 0; r < ROUNDS; r++)
         {
-            kos_sem_wait(CH_A);
+            kos_sem_wait(CH_A, KOS_TIMEOUT_NONE);
             // Occasional nap: interleave the sem path with the tickless one-shot.
             if ((r & 63) == 0)
             {
@@ -102,7 +102,7 @@ namespace
     {
         for (int r = 0; r < ROUNDS; r++)
         {
-            kos_sem_wait(CH_B);
+            kos_sem_wait(CH_B, KOS_TIMEOUT_NONE);
             kos_sem_post(CH_A);
             lock();
             g_handoffs++;
@@ -142,7 +142,7 @@ namespace
     // until one is refused, so the live count == the board's concurrent thread pool.
     void prober(void*)
     {
-        kos_sem_wait(CH_GATE);
+        kos_sem_wait(CH_GATE, KOS_TIMEOUT_NONE);
         kos_sem_post(CH_DONE);
     }
 
@@ -173,7 +173,7 @@ namespace
         }
         for (int i = 0; i < n; i++)
         {
-            kos_sem_wait(g_done); // join (also reclaims their slots)
+            kos_sem_wait(g_done, KOS_TIMEOUT_NONE); // join (also reclaims their slots)
         }
         kos_sem_destroy(g_gate);
         g_gate = KOS_CAP_NONE;
@@ -268,7 +268,7 @@ int run_stress_round(int pairs, int sleepers, int live)
     // timeout catches it as a failure.
     for (int i = 0; i < spawned; i++)
     {
-        kos_sem_wait(g_done);
+        kos_sem_wait(g_done, KOS_TIMEOUT_NONE);
     }
 
     // Churn phase: the conservation workers above are all EXITED now, so their pool
@@ -292,7 +292,7 @@ int run_stress_round(int pairs, int sleepers, int live)
         }
         for (int b = 0; b < batch; b++)
         {
-            kos_sem_wait(g_done); // join only what this batch actually spawned
+            kos_sem_wait(g_done, KOS_TIMEOUT_NONE); // join only what this batch actually spawned
         }
         if (batch != live)
         {

@@ -45,7 +45,7 @@ done
 if [ -n "$first_core" ]; then
     _core="$first_core"
     [ "$_core" = any ] && _core='[0-9][0-9]*'
-    if ! has "\\[errnoprobe\\] F first core $_core switches 0 ok"; then
+    if ! has "\\[errnoprobe\\] F first core $_core ok"; then
         fail "errnoprobe arm F did not report libc on root as core $first_core's first thread,
   before any switch: $(printf '%s\n' "$OUT" | grep '\[errnoprobe\] F' | head -1)"
     fi

@@ -2,10 +2,9 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Runs the arms that need a peer that is running against one: amp_far_call,
-# amp_far_reply_guard, amp_far_reply_empty, the ring half of amp_window,
-# amp_far_deliver_fault, and amp_share_crossing. Each decides at RUNTIME off the peer's own
-# serviced count, or off whether the ring toward that peer has room.
+# Runs the arms that need a peer that is running against one: amp_far_call, amp_far_reply_empty,
+# amp_share_crossing and amp_far_reply_unmapped. Each decides at RUNTIME whether it has one: an
+# echo crossing answers by itself, a service crossing once the peer's own serviced count moved.
 #
 # Any `not ok` line in the capture fails the gate, listed arm or not, a `# TODO` failure being
 # the harness's permitted one. The named set adds what a `not ok` cannot show: that each of these
@@ -14,8 +13,7 @@
 # usage: check_amp_peer_arms.sh <unused.elf> <cmake> <build-dir> <artefact>
 #        check_amp_peer_arms.sh --controls     judges planted captures only
 #
-# The own-image posture expects up to FOUR arms to skip, amp_far_call, amp_far_reply_guard,
-# amp_far_reply_empty and amp_share_crossing (KICKOS_EXPECT_SKIPS in
+# The own-image posture expects these arms to skip (KICKOS_EXPECT_SKIPS in
 # tests/integration/gates/selftest.cmake), because the same image runs standalone and inside
 # a merged partition and only the second has a peer.
 # This gate is what bounds that permission: here the arms must report `ok` and must NOT be
@@ -42,8 +40,7 @@ here="$(dirname "$0")"
 . "$here/../lib/gate.sh"
 : "${QEMU_TIMEOUT:=120}"
 
-ARMS="amp_far_call amp_far_reply_guard amp_far_reply_empty amp_window amp_far_deliver_fault
-amp_share_crossing"
+ARMS="amp_far_call amp_far_reply_empty amp_share_crossing amp_far_reply_unmapped"
 
 # `ok N - <arm>` with no SKIP directive: a skipped arm reports `ok` too, so the directive is
 # what has to be excluded.
@@ -80,9 +77,12 @@ judge() {
     # that. Give a peer a print in its serving loop, or move one of these arms to the front of
     # the selftest order, and its line is back among the banners where it is cut in half on a
     # draw.
-    printf '%s\n' "$OUT" | grep -qE 'amp window: [1-9][0-9]* of [0-9]+ peer node\(s\) answered' \
-        || fail "no peer answered node 0 over the doorbell: the arms below would skip and mean
-  nothing. This is node 0's own reading of the peer's counters, not a line the peer printed."
+    # Every peer named, not one of them: a peer that never answered is the failure.
+    printf '%s\n' "$OUT" | grep -E 'amp far call: [0-9]+ of [0-9]+ peer node\(s\) answered' \
+        | sed 's/.*amp far call: \([0-9]*\) of \([0-9]*\) peer.*/\1 \2/' \
+        | awk '{ if ($1 >= 1 && $1 == $2) ok = 1 } END { exit !ok }' \
+        || fail "not every peer answered node 0's far call: the arms below would skip or mean
+  nothing. This is node 0's own line, not one the peer printed."
 
     # Anywhere on a line, since a peer's byte may land ahead of node 0's.
     _failing="$(printf '%s\n' "$OUT" | grep -E 'not ok [0-9]+' | grep -v ' # TODO ')"
@@ -91,10 +91,6 @@ judge() {
         fail "an arm reported not ok in the merged partition"
     fi
 
-    # amp_far_deliver_fault is here for a reason of its own: its reply half parks a caller on a
-    # far port and a publication into a ring no peer drains is spent for the life of the image,
-    # so in a standalone run that half DECLINES for want of room. This artefact is where the peer
-    # drains, and so the only place that half is ever exercised.
     n_arms=0
     for arm in $ARMS; do
         n_arms=$((n_arms + 1))
@@ -110,7 +106,7 @@ judge() {
 
 if [ "${1:-}" = "--controls" ]; then
     good() { # [skip|drop <arm>]
-        echo "amp window: 1 of 1 peer node(s) answered"
+        echo "amp far call: 1 of 1 peer node(s) answered"
         _n=0
         for _arm in $ARMS; do
             _n=$((_n + 1))
@@ -136,12 +132,16 @@ $_ctl_out"
     }
     ctl 'every arm ok' pass "$(good)"
     ctl 'an unlisted arm not ok' refuse "$(good; echo 'not ok 9 - amp_unlisted')"
+    ctl 'a failing check' refuse "$(good; echo 'not ok 9 - amp_unlisted # main.cc:3662: rc == 0')"
+    ctl 'a failing check, terse' refuse "$(good; echo 'not ok 9 - amp_unlisted # main.cc:3662')"
     ctl 'a not ok behind a peer byte' refuse "$(good; echo 'Knot ok 9 - amp_unlisted')"
     ctl 'a TODO arm not ok' pass "$(good; echo 'not ok 9 - amp_unlisted # TODO owed')"
     ctl 'every arm ok with CR line ends' pass "$(good | sed 's/$/\r/')"
-    ctl 'a listed arm skipped' refuse "$(good skip amp_window)"
+    ctl 'a listed arm skipped' refuse "$(good skip amp_far_call)"
     ctl 'a listed arm absent' refuse "$(good drop amp_far_reply_empty)"
     ctl 'no peer answered' refuse "$(good | grep -v 'peer node(s) answered')"
+    ctl 'one peer of two answered' refuse "$(good | sed 's/1 of 1 peer/1 of 2 peer/')"
+    ctl 'no peer of one answered' refuse "$(good | sed 's/1 of 1 peer/0 of 1 peer/')"
     echo "PASS: the planted captures are judged as stated"
     exit 0
 fi

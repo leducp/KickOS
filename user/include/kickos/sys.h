@@ -91,9 +91,12 @@ void kos_sleep_ns(uint64_t ns);
 // Also returns EINVAL for initial outside [0, KOS_SEM_COUNT_MAX] or a null/
 // misaligned out_cap, and EFAULT if out_cap is not writable (negative codes).
 int kos_sem_create(int initial, kos_cap_t* out_cap);
-// 0, or -KOS_EBADF (bad/stale/closed cap) / -KOS_EACCES (cap lacks WAIT/SIGNAL). A wait
-// also answers -KOS_ECANCELED when the waiter is cancelled, and then holds no token.
-int kos_sem_wait(kos_cap_t sem);
+// 0 with a token taken, waiting at most timeout_us relative microseconds for one
+// (KOS_TIMEOUT_NONE: forever; zero: only a token already banked). -KOS_ETIMEDOUT when none came
+// in time and -KOS_ECANCELED when the waiter is cancelled, both holding no token and leaving the
+// count alone, so a post that lost the race to the deadline is banked for the next wait.
+// -KOS_EBADF (bad/stale/closed cap) / -KOS_EACCES (cap lacks WAIT/SIGNAL).
+int kos_sem_wait(kos_cap_t sem, uint32_t timeout_us);
 // Also -KOS_EOVERFLOW with no waiter and the count at KOS_SEM_COUNT_MAX; the token is
 // not banked.
 int kos_sem_post(kos_cap_t sem);
@@ -128,6 +131,12 @@ int kos_endpoint_create(kos_cap_t* out_cap); // -> 0, or -KOS_ENOMEM/-KOS_EMFILE
 // -KOS_EINVAL (the caller's own node, or a port that node did not mint), plus the mint
 // refusals above.
 int kos_amp_endpoint_create(uint32_t node, uint32_t port, kos_cap_t* out_cap);
+#if defined(KICKOS_AMP_NODE) && KICKOS_AMP_NODE
+// One of `node`'s window counts (enum kos_amp_count_id), as that node last wrote it, into *out: a
+// report, each count its own relaxed read. 0, or -KOS_E*: EINVAL (a null or misaligned out),
+// EFAULT (out), EINVAL (a node outside the partition, an unknown id).
+int kos_amp_count(uint32_t node, uint32_t which, uint32_t* out);
+#endif
 // Send `len` bytes, giving up after `timeout_us` RELATIVE microseconds, or never if that is
 // KOS_TIMEOUT_NONE. The deadline bounds the PARK only: a receiver already waiting
 // rendezvouses regardless of it, and a timeout of 0 never parks.
@@ -263,6 +272,17 @@ int kos_thread_slay(kos_thread_t thread, uint32_t timeout_us);
 // access, EINVAL for a nonzero mask with no machine core, EBADF for an invalid/
 // exited handle, ENOSYS on single-core kernels.
 int kos_thread_set_affinity(kos_thread_t thread, uint32_t core_mask);
+// The core mask `thread` may run on, as kos_thread_set_affinity last left it (a zero request
+// reads back as the task default it resolved to). Reaches what the setter reaches: a thread of
+// the caller's task, or any thread for a privileged caller. The mask (non-negative), or -KOS_E*:
+// EBADF (bad or exited handle), EPERM (another task's thread, unprivileged caller), ENOSYS
+// (one-core kernel).
+int kos_thread_affinity(kos_thread_t thread);
+// The kernel core the caller was running on when the kernel read it, as getcpu answers: it may
+// be stale on return. 0 on a one-core kernel. Never fails.
+int kos_core_current(void);
+// The cores an explicit mask may name and a zero mask never gives: KICKOS_ISOLATED_CORES.
+#define KOS_ISOLATED_CORES ((uint32_t)KICKOS_ISOLATED_CORES)
 // The caller's own handle.
 kos_thread_t kos_thread_self(void);
 // Set the CALLING thread's base priority. Lowering is always allowed; raising is allowed up to
@@ -288,6 +308,10 @@ int kos_task_nonblock(int op);
 // for invalid ceiling or no machine core, EBADF for an invalid handle,
 // EBUSY if the task has a member.
 int kos_task_sched_grant(kos_task_t task, uint8_t prio_ceiling, uint32_t core_mask);
+// The core grant of `task`, KOS_TASK_NONE for the caller's own, as kos_task_sched_grant last left
+// it (every core of this kernel where it never narrowed). The mask (non-negative), or -KOS_E*:
+// EBADF, EPERM (a task the caller did not create), ENOSYS (one-core kernel).
+int kos_task_cores(kos_task_t task);
 
 // Create an empty task with shared data and fault containment. mem_base/size
 // is a region granted read/write to each member, or 0/0 for no shared memory.
@@ -448,67 +472,11 @@ int kos_shutdown(int status);
 // byte by byte, so an unreadable pointer costs the text, not the panic.
 void kos_panic(char const* msg) __attribute__((noreturn));
 
-// Raise `irq` at the controller, standing in for a device that fired. Self-test only, and
-// gated on the LINE and not on the caller: -KOS_EINVAL for a number out of range,
-// -KOS_EPERM for a line the kernel dispatches to a vector of its own (the tick, console TX,
-// the doorbell), which is not a device a caller could be standing in for.
-int kos_irq_inject(int irq);
-
-#if defined(KICKOS_ENABLE_SELFTEST)
+#if defined(KICKOS_REBOOT) && KICKOS_REBOOT
 // Reboot into the chip's bootloader (firmware-download mode). Needs KOS_AUTH_SYSTEM, so like
 // kos_shutdown it is NOT noreturn: the gate can refuse with -KOS_EPERM, and a chip with no
 // bootloader entry returns -KOS_ENOSYS. Does not return on success.
 int kos_reboot(void);
-// Test-only: address of a page that faults on unprivileged access.
-void* kos_guard_addr(void);
-// Test-only: count of IRQs that fired on a line with no driver (masked by the
-// default handler).
-uint32_t kos_irq_spurious_count(void);
-// Test-only: one nested-trap counter, selected by a KOS_NEST_* constant (sys/abi.h).
-// KOS_NEST_UNSET for a figure nothing recorded, and for an unknown selector. The CALLER
-// prints: a kernel-side report would put the console writer inside the syscall red zone.
-uint32_t kos_nest_witness(int which);
-// Test-only: count of calls the trap-handler IPC fastpath COMPLETED. It is the only
-// thing that tells a test which of the two call paths ran, since they answer a caller
-// identically. Reads 0 on a backend whose calls all take the generic path.
-uint32_t kos_ipc_fast_taken(void);
-// Test-only: exercise a Rule 7 grant predicate directly (no descriptor forged).
-// `op` is an enum kos_grant_op (sys/abi_probe.h):
-//   HITS_RESERVED -> grant_hits_reserved(base,size)                  (0/1)
-//   RAM_PRIVILEGED/RAM_UNPRIVILEGED -> grant_region_admissible RAM   (0/1)
-//   DEV_PRIVILEGED/DEV_UNPRIVILEGED -> grant_region_admissible DEV   (0/1)
-//   RESERVED_COUNT -> reserved-block count; RESERVED_BASE/RESERVED_SIZE -> block[base].{base,size}
-//   NOCACHE_SUPPORT -> arch_mpu_nocache_support() as a raw enum, not a predicate
-//   RAM_NOCACHE -> grant_region_admissible RAM|NOCACHE, unprivileged             (0/1)
-// Only meaningful under enforcement (returns -KOS_EINVAL where the kernel has no
-// grant module).
-uintptr_t kos_grant_probe(uintptr_t op, uintptr_t base, uintptr_t size);
-// Test-only: run one address-space seam scenario in the kernel and return its answer (see
-// enum kos_aspace_op in sys/abi_probe.h). The map editor has no syscall of its own, so an arm asks
-// for a whole scenario rather than for a mapping. -KOS_ENOSYS where the board describes
-// regions instead of translating, cast up through the uintptr_t return.
-uintptr_t kos_aspace_probe(uintptr_t op, uintptr_t a1);
-
-// Test-only: run one shared-window scenario in the kernel, or read one of its counters (see
-// enum kos_amp_op in sys/abi_probe.h). -KOS_EINVAL for a bad op and on an image that is not a node
-// of a partition, cast up through the uintptr_t return: a caller reading a counter must read
-// the answer as SIGNED first, or a refusal arrives as a very large count.
-uintptr_t kos_amp_probe(uintptr_t op, uintptr_t a1);
-
-// Test-only: read one of the cross-core doorbell's per-core counts, or the shape of the matrix
-// they are indexed by (see enum kos_doorbell_op in sys/abi_probe.h). -KOS_EINVAL for a bad op, cast
-// up through the return, so read the answer as SIGNED before reading it as a number. Total
-// over every posture: an image whose doorbell folds out answers a real zero, not a refusal.
-uint64_t kos_doorbell_probe(uintptr_t op, uintptr_t a1);
-
-// Test-only: read one item of the CALLER's own scheduling state (see enum kos_sched_op in
-// sys/abi_probe.h). -KOS_EINVAL for a bad op and on an image built without KICKOS_ENABLE_SELFTEST,
-// cast up through the uintptr_t return.
-uintptr_t kos_sched_probe(uintptr_t op);
-// Test-only: enable a controller line directly, so an injected raise reaches the
-// default handler on masked-by-default controllers (ARM NVIC, RX). Needs KOS_AUTH_IRQ.
-// 0, or -KOS_EPERM (no KOS_AUTH_IRQ, or a line the kernel drives) / -KOS_EINVAL (bad line).
-int kos_irq_unmask(int line);
 #endif
 
 // Tier-1 IRQ-as-event. The line IS a capability: claiming it needs KOS_AUTH_IRQ, and the
@@ -543,6 +511,12 @@ int kos_irq_ack(kos_cap_t irq_cap);
 // it between a wait return and the ack, where the ISR has already left the line masked.
 // Needs KOS_CAP_WAIT, and a caller pinned to the line's claim core.
 int kos_irq_discard(kos_cap_t irq_cap); // 0, or -KOS_EBADF/-KOS_EACCES/-KOS_EPERM
+// Raise the line `irq_cap` names at its controller, standing in for its device, as a device
+// firing would: a masked line latches the raise, and it is taken on the line's claim core from
+// any caller core. Needs KOS_CAP_SIGNAL. 0, or -KOS_E*: EBADF (a capability that names no live
+// line), EACCES (no KOS_CAP_SIGNAL), ENOTSUP (a line this controller cannot raise from software,
+// or a banked line, which only the core that holds it could raise).
+int kos_irq_raise(kos_cap_t irq_cap);
 
 // --- Notifications -----------------------------------------------------------------------
 // A notification is a word of 32 badge bits with at most one bound waiter. An IRQ line
@@ -661,6 +635,40 @@ void* kos_ram_alloc(size_t size);
 //   ENOMEM: descriptor budget exhausted.
 int kos_mem_self_grant(void* base, size_t size, uint32_t flags);
 
+#if defined(KICKOS_HAVE_ASPACE) && KICKOS_HAVE_ASPACE
+// Mint a run of fresh, zeroed frames covering `bytes`, rounded up to whole pages, and a
+// capability naming it, carrying KOS_CAP_TRANSFER. The run is charged to the caller's task, one
+// of its KICKOS_TASK_FRAME_RUN_BUDGET, for the run's whole life, wherever it is mapped and
+// whoever holds it. 0, or in this order -KOS_E*: EPERM (no KOS_AUTH_MEMORY), EINVAL (a null or
+// misaligned out_frame), EFAULT (out_frame), EINVAL (a caller with no address space, bytes 0, or
+// more pages than a run can name), EAGAIN (the task's run budget), ENOMEM (the run pool), EMFILE
+// (the caller's cap table), ENOMEM (no free run that long in the pool, or one the kernel could
+// not clear).
+int kos_frame_create(size_t bytes, kos_cap_t* out_frame);
+// A capability naming the calling task's address space, carrying KOS_CAP_TRANSFER, for
+// kos_frame_map and kos_frame_unmap. Needs no authority: those calls need KOS_AUTH_MEMORY. The
+// capability holds no reference: from the instant the task ends it names nothing, and every call
+// that names it answers -KOS_EBADF. 0, or -KOS_E*: EINVAL (a null or misaligned out_space), EFAULT
+// (out_space), EINVAL (a caller with no address space), EMFILE.
+int kos_aspace_self(kos_cap_t* out_space);
+// Map the frame RUN `frame` names into the address space `space` names. *va is where, on a page
+// boundary, or 0 for the kernel to choose: the run's own address, which no range the kernel
+// placed in any space can hold. On 0, *va is where the run was mapped. Needs KOS_AUTH_MEMORY.
+// `flags` is KOS_MEM_*. 0, or -KOS_E*: EPERM (no KOS_AUTH_MEMORY), EINVAL (a null or misaligned
+// va, an address off a page boundary, an undefined flag), EFAULT (va), EBADF (a capability that
+// does not resolve, a stale space capability, an unfilled run), ENOMEM (the space cannot take the
+// range there, the run's own address included), EBUSY (another mapping of the run carries
+// another memory type). *va is written only on 0.
+int kos_frame_map(kos_cap_t frame, kos_cap_t space, uintptr_t* va, uint32_t flags);
+// Unmap a range mapped with kos_frame_map. A receive using that range fails with -KOS_EFAULT,
+// as does its sender. 0, or -KOS_EBADF / -KOS_EINVAL / -KOS_EPERM.
+int kos_frame_unmap(kos_cap_t frame, kos_cap_t space, uintptr_t va);
+// One count, read when the call runs, into *out. Needs KOS_AUTH_MEMORY. 0, or in this order
+// -KOS_E*: EPERM (no KOS_AUTH_MEMORY), EINVAL (a null or misaligned out), EFAULT (out), EINVAL (an
+// unknown id, or KOS_MEM_RANGES_FREE for a caller with no address space).
+int kos_mem_count(uint32_t which, uint32_t* out);
+#endif
+
 // Borrow the KERNEL'S single diagnostic LED, which the kernel also drives for itself (solid
 // on panic). Takes effect on a board whose diag LED the kernel knows.
 void kos_kernel_diag_led_set(int on);
@@ -676,15 +684,5 @@ int64_t kos_bench(uint32_t op, uint32_t a0, uint32_t a1);
 #ifdef __cplusplus
 }
 #endif
-
-
-// Map the frame RUN a capability names into the address space another names, at the
-// address the caller chooses. Needs KOS_AUTH_MEMORY. `flags` is KOS_MEM_*; 0 is Normal
-// memory. Returns 0 or a negative KOS_E*.
-int kos_frame_map(kos_cap_t frame, kos_cap_t space, uintptr_t va, uint32_t flags);
-
-// Unmap a range previously mapped with kos_frame_map. A receive using that
-// range fails with -KOS_EFAULT, as does its sender.
-int kos_frame_unmap(kos_cap_t frame, kos_cap_t space, uintptr_t va);
 
 #endif

@@ -26,6 +26,12 @@ and an init provider that stays resident. `roadmap.md`'s `### M10` section is th
 only place its numbers are assigned; the M10.5 section at the bottom of this file says what the
 last merged milestone's green runs do not.
 
+**M10.6.4 IS CLOSED ON ITS BRANCH AND WAITS FOR ITS SQUASH AND THE MAINTAINER'S PUSH; M10.6.5 IS
+NEXT.** Its record is `TODO.md`'s "M10.6.4, FIRST" entry, and the M10.6.4 section at the bottom
+of this file says what its green runs do not. The toolchain 1.1 release also waits on the
+maintainer: its branch is to be pushed and the release published, and the RX72M capture of
+`chaincheck`'s C99 arms waits on it.
+
 M7 is the multicore milestone and `docs/design-multicore.md` is its contract; every ruling and every
 freeze lives there, `roadmap.md` assigns the numbers, and `git log` carries the order things landed
 in. **What follows is only the causes, measurements, traps and declines that a green run does not
@@ -629,11 +635,6 @@ The whole point of this file. A green fleet pass says none of the following.
   DIFFERS could tell them apart. A backend handed a constant instead of the register passes
   everything.
 
-- **NOTHING WITNESSES THE M6.5 KINDS OUTSIDE A TEST-ONLY MINT.** There is no user-facing way to
-  create a frame-run or address-space capability: both arrive through `KOS_ASPACE_OP_CAP_SEED` and
-  `KOS_ASPACE_OP_CAP_SELF_SPACE`, which are selftest scaffolding. So the OBJECTS, the map pair and
-  the sharing are exercised, and the question of who may mint one is not answered anywhere. A
-  milestone that gives them a real mint decides it.
 - **THE FRAME RUN'S REFCOUNT AND `Domain::borrowed_from` ARE TWO OWNERSHIPS, NOT ONE.** The step
   plan predicted C3 would replace the donor edge and it does not: F10's handoff takes its frames
   from the donor's RESERVATION, which its range list owns, so that path still needs the edge, while
@@ -879,13 +880,6 @@ The whole point of this file. A green fleet pass says none of the following.
 
 ## Debts and declines a command cannot re-derive
 
-- **A PARK THAT IS NEVER WOKEN HANGS THE SUITE INSTEAD OF REDDENING IT, and no arm can bound it.**
-  There is no timed semaphore wait in the ABI, so every counted wait in the selftest is untimed: a
-  dropped latch or a stranded park stops the run with no verdict, which is worse than a failure
-  because a timeout reports nothing about which claim broke. Tree-wide and long-standing; M7.5's
-  gated IRQ arms add counted waits and so add surface, and one of them found it the hard way as a
-  30 second timeout during development. Closing it is an ABI change and belongs to whoever adds the
-  timed wait.
 - **`errno` is not thread-local, and the reason is not in our code.** `_REENT_THREAD_LOCAL` is
   off on all three pinned toolchains; 239 `libc.a` members reference `_impure_ptr` and NONE
   calls `__errno()`, so overriding `__errno` reaches nothing. `sizeof(struct _reent)` is
@@ -972,7 +966,7 @@ The whole point of this file. A green fleet pass says none of the following.
 - **AND THE PATH-PLUS-IDENTIFIER FORM IS WEAKER THAN IT READS.** `doc_names` checks that the path
   resolves and that the identifier exists SOMEWHERE in the tree, never that the identifier is in
   the file named. Found in M8.6 when the probe surface left `abi.h`: a design record citing
-  `KOS_ASPACE_OP_GRANULE` at `abi.h` stayed green with the symbol now in `abi_probe.h`, and the
+  the probe's granule op at `abi.h` stayed green with the symbol now in `abi_probe.h`, and the
   citation was fixed by hand because nothing would have reported it. So a move between headers
   silently falsifies every citation naming the old one.
 - **Turning CONTAINMENT on flips what a gate may assert.** `kernelhalf` and `stackguard` were
@@ -1155,6 +1149,20 @@ missing from one of those QEMU captures under load is this, not a flake to re-ru
   manual prints no encoding for the field. A `c6txidle` capture witnesses it at one baud, 115200,
   and one TX_IDLE_NUM, the reset 256: the field reads 2 while the line shifts and 0 once the last
   frame is out. No other baud or idle count was run.
+
+## M10.6.4: the selftest on the production kernel, and what these green runs do NOT say
+
+- **NO SELFTEST IMAGE HAS RUN ON SILICON SINCE M10.6.4 MOVED EVERY ONE OF THEM.** Every silicon
+  capture of record predates it; the list owed is in the TODO entry.
+- **THE IRQ ABSENCE CHECKS NEED THEIR DRIVERS STRICTLY ABOVE THE CHECKER, AND NO RUN SHOWS IT.**
+  A sim control with the checker at the drivers' priority also failed the planted defects, so the
+  rule rests on reading the latch paths. On GIC and RX silicon the pending line can trail the
+  enable; no one-core board of either is in the fleet.
+- **AN ARM A LEFT-OUT LIST DROPS RUNS ON NO IMAGE OF THAT BOARD.** bluepill-c8 and f302nucleo
+  drop arena arms their images cannot back; the build and the bench name them, and nothing runs
+  them there.
+- **THE ARENA ASK IS NOT CHECKED AGAINST USE.** An ask stated larger than the arm uses, or an arm
+  taking a block from another arm's ask it does not name, passes every check.
 
 ## Where to go next
 

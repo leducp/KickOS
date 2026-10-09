@@ -14,9 +14,11 @@ kickos_add_unit_test(NAME presync
 # own callees need a seam.
 kickos_add_unit_test(NAME presync_map
   SOURCES presync_map.cc "${PROJECT_SOURCE_DIR}/tests/unit/common/kpanic_seam.cc"
+          "${PROJECT_SOURCE_DIR}/tests/unit/common/host_frame_pool.cc"
           "${PROJECT_SOURCE_DIR}/kernel/mem/aspace.cc"
           "${PROJECT_SOURCE_DIR}/kernel/mem/vrange.cc"
           "${PROJECT_SOURCE_DIR}/kernel/init/instance.cc"
+  INCLUDES "${PROJECT_SOURCE_DIR}/tests/unit/common"
   POSTURE KICKOS_HAVE_ASPACE=1 KICKOS_ARCH_ALIAS_DCACHE=1 KICKOS_ARCH_IRQ_WINDOW=1)
 target_compile_options(presync_map PRIVATE -ffunction-sections -fdata-sections)
 target_link_options(presync_map PRIVATE -Wl,--gc-sections)
@@ -26,10 +28,12 @@ set_source_files_properties("${PROJECT_SOURCE_DIR}/kernel/mem/aspace.cc"
   PROPERTIES COMPILE_OPTIONS "-ffreestanding;-fno-exceptions;-fno-rtti;-fno-threadsafe-statics")
 
 # A run staged outside every range over the REAL kernel/mem/aspace.cc: taken only by a locked
-# pass asking for exactly it, given back otherwise. The app's static data is a host array the
-# link places the image bounds around. Built at both translating postures: with a cacheable
-# kernel view of a non-cacheable frame, and without one.
+# pass asking for exactly it, given back otherwise. The app's text and static data are host
+# arrays the link places the image bounds around. Built at both translating postures: with a
+# cacheable kernel view of a non-cacheable frame, and without one.
+include("${PROJECT_SOURCE_DIR}/tests/unit/common/host_image.cmake")
 set(_stage_data_bytes 8192)
+set(_stage_text_bytes 4096)
 foreach(_alias IN ITEMS 1 0)
   set(_stage_name presync_stage)
   set(_stage_prefix "")
@@ -39,16 +43,16 @@ foreach(_alias IN ITEMS 1 0)
   endif()
   kickos_add_unit_test(NAME ${_stage_name} TEST_PREFIX "${_stage_prefix}"
     SOURCES presync_stage.cc "${PROJECT_SOURCE_DIR}/tests/unit/common/kpanic_seam.cc"
+            "${PROJECT_SOURCE_DIR}/tests/unit/common/host_frame_pool.cc"
             "${PROJECT_SOURCE_DIR}/kernel/mem/aspace.cc"
             "${PROJECT_SOURCE_DIR}/kernel/mem/vrange.cc"
             "${PROJECT_SOURCE_DIR}/kernel/init/instance.cc"
+    INCLUDES "${PROJECT_SOURCE_DIR}/tests/unit/common"
     DEFINITIONS PRESYNC_STAGE_DATA_BYTES=${_stage_data_bytes}
+                PRESYNC_STAGE_TEXT_BYTES=${_stage_text_bytes}
     POSTURE KICKOS_HAVE_ASPACE=1 KICKOS_ARCH_ALIAS_DCACHE=${_alias} KICKOS_ARCH_IRQ_WINDOW=1)
   target_compile_options(${_stage_name} PRIVATE -ffunction-sections -fdata-sections)
-  target_link_options(${_stage_name} PRIVATE -no-pie -Wl,--gc-sections
-    -Wl,--defsym=__kickos_app_rom_start=g_stage_sram
-    -Wl,--defsym=__kickos_app_rom_end=g_stage_sram
-    -Wl,--defsym=__kickos_app_sram_start=g_stage_sram
-    -Wl,--defsym=__kickos_app_sram_end=g_stage_sram+${_stage_data_bytes}
-    -Wl,--defsym=__kickos_app_load_delta=0)
+  target_link_options(${_stage_name} PRIVATE -Wl,--gc-sections)
+  kickos_host_image(${_stage_name} TEXT g_stage_rom ${_stage_text_bytes}
+    DATA g_stage_sram ${_stage_data_bytes})
 endforeach()

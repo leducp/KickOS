@@ -95,6 +95,7 @@ namespace kickos
             {
                 // The count is untouched, so a later poster still hands its token to a
                 // genuine waiter.
+                KICKOS_ASSERT_EXCLUSION_HELD();
                 t->wait_queue->unlink(&t->link);
                 break;
             }

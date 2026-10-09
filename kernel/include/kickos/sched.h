@@ -241,9 +241,6 @@ namespace kickos
         }
 #endif
 
-        // Live non-idle thread count (0 => nothing left to run).
-        unsigned live_count();
-
         // The policy's earliest timed event for `t` (ns), or UINT64_MAX for none. `t` may be null.
         uint64_t next_timed_event(Thread const* t);
         // Runs in the timer ISR on every expiry: if the policy has a timed event due at `now`

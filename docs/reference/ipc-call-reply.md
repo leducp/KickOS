@@ -689,7 +689,7 @@ taken by the service pass THE PEER'S OWN DRAIN RAISES. That raise is what makes 
 delay rather than a strand: a take that advances a reply ring's tail rings the node whose answers
 that slot belonged to, because a credit return is not a publication anybody rescans
 (`../design-multicore.md` N6f). The caller sees only the latency; the refusal is
-the serving node's own and reaches userspace as the probe verdict `KOS_AMP_V_RESERVE`, counted in
+the serving node's own, the take's `amp::Verdict::RESERVE`, counted in
 `amp::Counts::reply_reserve` apart from the producer-side `send_refused` so that a take declined
 and a publication refused are never read as one number.
 
@@ -708,9 +708,10 @@ would hand the peer back a slot this node is still being served on.
 halves of that are separate mechanisms. It is reachable only where a peer regressed a tail under a
 reservation it had already granted. The BYTES are gone: the reply capability was spent to reach the
 publication, so nothing holds what would remake them, and `amp::Counts::reply_unsent` counts one,
-readable from userspace through the `KOS_AMP_OP_REPLY_UNSENT` probe op. That op is the only signal
-outside the kernel that an answer was lost, which is why the counter and it land together: the
-exceptional loss would otherwise be invisible exactly where it would be diagnosed.
+readable from userspace as `kos_amp_count(node, KOS_AMP_COUNT_REPLY_UNSENT, &out)`. That count is
+the only signal outside the kernel that an answer was lost, which is why the counter and its read
+land together: the exceptional loss would otherwise be invisible exactly where it would be
+diagnosed.
 The OBLIGATION is not: the record is left pending with its call slot still held, and a later
 service pass publishes an empty `PORT_REPLY` carrying its tag once that ring is believable again
 (`amp::inbound_reply` defers, `amp::node_service` discharges, between the reply drain and the call
@@ -749,7 +750,7 @@ at all: that tail only advances, and this node publishes nothing past `KOS_AMP_R
 the tail it last read. After `amp::DEPTH_STRIKES` consecutive such readings on one reply ring the
 index THIS NODE OWNS is resynchronised to the far tail, the publication that reached the bound is
 taken rather than refused once more, and `amp::Counts::tail_reset` counts one
-(`KOS_AMP_OP_TAIL_RESET`, the producer's counterpart of `KOS_AMP_OP_DEPTH_RESET`). What it abandons is
+(`KOS_AMP_COUNT_TAIL_RESET`, the producer's counterpart of `KOS_AMP_COUNT_DEPTH_RESET`). What it abandons is
 this node's own answers the peer's regression had already declared it would not read, and the far
 index it adopts is still spent modulo the ring's depth alone. Both readers of that tail run it: the
 publication in `amp::send` and the admission test in `take_call`, the second being what makes the
@@ -784,7 +785,7 @@ needs to see.
 
 *Where the distinction does live.* At the node that caused it, as a count, which is what makes it
 diagnosable at all: the resynchronisation's answers and the deferred ones each count
-`amp::Counts::reply_unsent` (`KOS_AMP_OP_REPLY_UNSENT`), where a call refused past its take counts
+`amp::Counts::reply_unsent` (`KOS_AMP_COUNT_REPLY_UNSENT`, read with `kos_amp_count`), where a call refused past its take counts
 nothing of the kind, and the producer's recovery counts `amp::Counts::tail_reset`. So the added
 meanings are one wire shape with a per-node name, not an extra unnamed one.
 
@@ -798,7 +799,7 @@ copy and a refused `write_recv_info` alike reach it as that receive's `-KOS_EFAU
 is an end of the wire that describes a lost buffer differently.
 
 *The count is held apart from `reply_unsent`, and holding it apart is the point of both fields.*
-`amp::Counts::deliver_fault` (`KOS_AMP_OP_DELIVER_FAULT`) counts an arrival this node could not put
+`amp::Counts::deliver_fault` (`KOS_AMP_COUNT_DELIVER_FAULT`) counts an arrival this node could not put
 into a local thread's buffer, once per arrival however many of its copies were refused. Folding it
 into `reply_unsent` was refused: a non-zero row there must keep naming a malformed or regressed
 PEER, where a refused copy is this node's own buffer fault on a message that arrived intact.

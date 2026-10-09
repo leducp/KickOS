@@ -104,7 +104,7 @@ namespace kickos
             {
                 g_core = core;
                 testfix::seat_running_on(t, core);
-                install_here(space_of(task_domain(t->task)));
+                install_for(t);
             }
         }
 
@@ -207,7 +207,7 @@ namespace kickos
 
             g_core = 0;
             testfix::seat_running_on(dying, 0);
-            install_here(boot_space());
+            install_boot_here();
             trace_reset();
             run_exit(0);
 

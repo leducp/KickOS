@@ -14,30 +14,23 @@
 
 // The reserved (well-known) capability indices are kernel policy. An own-create
 // (sem/mutex/endpoint create) NEVER lands below KICKOS_CAP_FIRST_DYNAMIC (enforced in
-// cap_install), and cap_install_at NEVER writes the reserved stdout slot. So on a board
-// that delegates no well-known cap, an app's first create cannot alias a reserved index.
-// The kernel seats the reserved slots (stdout) or a parent delegates them at spawn;
-// userspace only NAMES them by these constants, it does not choose the index.
+// cap_install), and cap_install_at NEVER writes the reserved stdout slot. The kernel seats
+// stdout; userspace only NAMES it by this constant, it does not choose the index. A service
+// is reached by path, never by a well-known index.
 //
 // The range is not frozen, but a renumber may only go DOWNWARD, only for a slot NOTHING
-// seats, and is an ABI break. It is one edit, in cmake/cap_geometry.cmake: the width is
-// summed from it, so the width follows on its own and the usable dynamic count is
-// unchanged. Appending a well-known slot RAISES the last reserved index and
-// KICKOS_CAP_FIRST_DYNAMIC together and costs one slot on every table in the fleet, and
-// it raises the default child width with it. Keep the range SMALL; the floor
-// static_assert in cap.h guarantees at least one dynamic slot remains in the narrowest
-// table.
+// seats, and is an ABI break. It is one edit, in cmake/cap_geometry.cmake. Appending a
+// well-known slot RAISES KICKOS_CAP_FIRST_DYNAMIC and costs one slot on every table in the
+// fleet; the floor static_assert in cap.h guarantees at least one dynamic slot remains in
+// the narrowest table.
 //
-// KOS_SPAWN_DELEGATED_CAP0 (abi.h) is INDEPENDENT of this constant: under DEFAULT
-// placement delegated cap i lands at child index i+1 whatever the reserved range is, so
-// moving KICKOS_CAP_FIRST_DYNAMIC never moves a delegated index. Under that placement the
-// first delegated cap lands on index 1, KOS_CAP_CLOCK; a spawn that must not alias a
-// well-known name names a destination per grant (kos_thread_params::cap_dest).
+// Under DEFAULT placement delegated cap i lands at child index KOS_SPAWN_DELEGATED_CAP0 + i
+// (abi.h), which is KOS_CAP_FIRST_DYNAMIC + i: a fresh child's delegations are the first
+// dynamic slots, and its own-creates follow them.
 
 enum kos_cap_index
 {
-    KOS_CAP_STDOUT = 0,    // send-only console endpoint; cap_install_defaults seats it
-    KOS_CAP_CLOCK = 1,     // reserved: a board's well-known clock/time service cap
+    KOS_CAP_STDOUT = 0, // send-only console endpoint; cap_install_defaults seats it
     KOS_CAP_FIRST_DYNAMIC = KICKOS_CAP_FIRST_DYNAMIC // first index an own-create may take
 };
 

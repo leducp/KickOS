@@ -14,6 +14,7 @@
 
 #include "board_pins.h"
 #include "family_map.h"
+#include <chip_layout.h>
 #include "stm32_gpio.h"
 
 
@@ -31,6 +32,9 @@ extern "C"
 namespace
 {
     using namespace kickos::stm32;
+
+    static_assert(chip::CLK_TIMER_IRQ == KICKOS_LAYOUT_LINE_TIM3_GLOBAL,
+                  "startup.S vectors the clock-wrap ISR at KICKOS_LAYOUT_LINE_TIM3_GLOBAL");
 
     constexpr uintptr_t RCC_APB2ENR = mmap::RCC_BASE + 0x18;
     constexpr uint32_t APB2ENR_AFIOEN = 1u << 0;

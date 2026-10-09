@@ -32,7 +32,7 @@ static void ping(void* arg)
     (void)arg;
     while (true)
     {
-        kos_sem_wait(CH_PING);
+        kos_sem_wait(CH_PING, KOS_TIMEOUT_NONE);
         kos_sleep_ns(BEAT_NS);
         say("ping", ++n);
         kos_sem_post(CH_PONG);
@@ -45,7 +45,7 @@ static void pong(void* arg)
     (void)arg;
     while (true)
     {
-        kos_sem_wait(CH_PONG);
+        kos_sem_wait(CH_PONG, KOS_TIMEOUT_NONE);
         kos_sleep_ns(BEAT_NS);
         say("pong", ++n);
         kos_sem_post(CH_PING);
@@ -88,6 +88,6 @@ int main(int argc, char** argv)
     (void)kos_sem_create(0, &idle);
     while (true)
     {
-        kos_sem_wait(idle);
+        kos_sem_wait(idle, KOS_TIMEOUT_NONE);
     }
 }

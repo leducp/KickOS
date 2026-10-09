@@ -23,18 +23,9 @@ namespace kickos
         void diag_peer_publish();
         // BOUNDED: a peer that never reports costs a line and not a hang.
         void diag_primary_report();
-        // From the ordered terminal path, so every crossing the run made is behind it. Reads
-        // the doorbell's per-core service counter, the one a node can read for a core it does
-        // not drive.
-        //
-        // Its known value is this node's own pair: counts(self).serviced is at least one
-        // (window_init drains once, ringing nothing) and never below arch_ipi_counts(self
-        // core). A reading that breaks either is an artefact.
-        void diag_primary_doorbell_report();
 #else
         inline void diag_peer_publish() {}
         inline void diag_primary_report() {}
-        inline void diag_primary_doorbell_report() {}
 #endif
     }
 }

@@ -1,0 +1,149 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   microbit
+   arch    armv6m
+   cpu     nrf51822
+   mpu     off
+   sched   tickless
+
+[chaincheck] start
+[chaincheck] sizeof(double) 8 DBL_MANT_DIG 53
+[chaincheck] ok - class qnan
+[chaincheck] ok - class 0/0
+[chaincheck] ok - class +inf
+[chaincheck] ok - class -inf
+[chaincheck] ok - class +0
+[chaincheck] ok - class -0
+[chaincheck] ok - class 1
+[chaincheck] ok - class -2.5
+[chaincheck] ok - class max
+[chaincheck] ok - class min
+[chaincheck] ok - class sub
+[chaincheck] ok - class -sub
+[chaincheck] ok - classf nan
+[chaincheck] ok - classf -inf
+[chaincheck] ok - classf -0
+[chaincheck] ok - classf 1
+[chaincheck] ok - classf max
+[chaincheck] ok - classf min
+[chaincheck] ok - signbit -0
+[chaincheck] ok - signbit +0
+[chaincheck] ok - signbit -inf
+[chaincheck] ok - signbit -nan
+[chaincheck] ok - signbit -1f
+[chaincheck] ok - order nan,1
+[chaincheck] ok - order 1,nan
+[chaincheck] ok - order nan,nan
+[chaincheck] ok - order 1,2
+[chaincheck] ok - order 2,1
+[chaincheck] ok - order 1,1
+[chaincheck] ok - order -0,0
+[chaincheck] ok - order -inf,inf
+[chaincheck] ok - orderf nan,1
+[chaincheck] ok - orderf 1,nan
+[chaincheck] ok - orderf 1,2
+[chaincheck] ok - orderf 2,1
+[chaincheck] ok - orderf 1,1
+[chaincheck] ok - orderf -0,0
+[chaincheck] ok - f64 negate +0
+[chaincheck] ok - f64 0 - 0 is +0
+[chaincheck] ok - f64 -0 + -0 is -0
+[chaincheck] ok - f64 0 * -1 is -0
+[chaincheck] ok - f64 add rounds
+[chaincheck] ok - f64 sub rounds
+[chaincheck] ok - f64 mul rounds
+[chaincheck] ok - f64 div 1/3
+[chaincheck] ok - f64 div 1/10
+[chaincheck] ok - f32 negate +0
+[chaincheck] ok - f32 add rounds
+[chaincheck] ok - f32 mul rounds
+[chaincheck] ok - f32 div 1/3
+[chaincheck] ok - f64 to i32 max
+[chaincheck] ok - f64 to i32 min
+[chaincheck] ok - f64 to i32 truncates to min
+[chaincheck] ok - f64 to i32 truncates
+[chaincheck] ok - f64 to u32 max
+[chaincheck] ok - f64 to u32 top bit
+[chaincheck] ok - f64 to u32 truncates to 0
+[chaincheck] ok - f64 to i64 2^53
+[chaincheck] ok - f64 to i64 min
+[chaincheck] ok - f64 to i64 below 2^63
+[chaincheck] ok - f64 to u64 2^63
+[chaincheck] ok - f64 to u64 below 2^64
+[chaincheck] ok - i32 to f64 min
+[chaincheck] ok - u32 to f64 max
+[chaincheck] ok - i64 to f64 ties to even down
+[chaincheck] ok - i64 to f64 ties to even up
+[chaincheck] ok - i64 to f64 min
+[chaincheck] ok - u64 to f64 max
+[chaincheck] ok - u64 to f64 2^63+1
+[chaincheck] ok - f32 to i32 2^24
+[chaincheck] ok - f32 to u32 top bit
+[chaincheck] ok - f32 to i64 min
+[chaincheck] ok - f32 to u64 below 2^64
+[chaincheck] ok - i32 to f32 rounds
+[chaincheck] ok - u32 to f32 max
+[chaincheck] ok - i64 to f32 min
+[chaincheck] ok - u64 to f32 max
+[chaincheck] ok - f64 to f32 rounds
+[chaincheck] ok - f64 to f32 ties to even
+[chaincheck] ok - f64 to f32 above the tie
+[chaincheck] ok - f32 to f64 is exact
+[chaincheck] ok - sqrt 4
+[chaincheck] ok - sqrt 2.25
+[chaincheck] ok - sqrt 2 rounds
+[chaincheck] ok - sqrt -0
+[chaincheck] ok - sqrt inf
+[chaincheck] ok - sqrt -1 is nan
+[chaincheck] ok - sqrtf 2.25
+[chaincheck] ok - sqrtf 2 rounds
+[chaincheck] ok - fabs -0
+[chaincheck] ok - fabs -inf
+[chaincheck] ok - fabs -nan
+[chaincheck] ok - fabsf -3
+[chaincheck] ok - floor -0.5
+[chaincheck] ok - floor -0
+[chaincheck] ok - floor 2.5
+[chaincheck] ok - floor -2.5
+[chaincheck] ok - floor 2^52+1
+[chaincheck] ok - floorf -2.5
+[chaincheck] ok - ceil -0.5
+[chaincheck] ok - ceil 2.1
+[chaincheck] ok - ceilf -0.5
+[chaincheck] ok - trunc -2.7
+[chaincheck] ok - trunc -0.3
+[chaincheck] ok - truncf -2.7
+[chaincheck] ok - round 2.5
+[chaincheck] ok - round -2.5
+[chaincheck] ok - round below one half
+[chaincheck] ok - round -0.4
+[chaincheck] ok - roundf 2.5
+[chaincheck] ok - rint 2.5
+[chaincheck] ok - rint -2.5
+[chaincheck] ok - nearbyint 3.5
+[chaincheck] ok - lround -2.5
+[chaincheck] ok - lrint 2.5
+[chaincheck] ok - fmod 5.5 2
+[chaincheck] ok - fmod -5.5 2
+[chaincheck] ok - fmod 1e300 7
+[chaincheck] ok - fmod 10 0.1
+[chaincheck] ok - fmod by inf
+[chaincheck] ok - fmodf 5.5 2
+[chaincheck] ok - ldexp 0.75 3
+[chaincheck] ok - ldexp 1 -1022
+[chaincheck] ok - ldexp 1 1024 overflows
+[chaincheck] ok - ldexpf 0.75 3
+[chaincheck] ok - frexp 8 fraction
+[chaincheck] ok - frexp 8 exponent
+[chaincheck] ok - frexp -3 fraction
+[chaincheck] ok - frexp -3 exponent
+[chaincheck] ok - frexp 0 fraction
+[chaincheck] ok - frexp 0 exponent
+[chaincheck] ok - modf -3.25 fraction
+[chaincheck] ok - modf -3.25 integer
+[chaincheck] ok - copysign 1 -0
+[chaincheck] PASS (134 arms)

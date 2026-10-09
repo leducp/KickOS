@@ -16,6 +16,7 @@
 // monotonic/trace clock source, and per-arch bring-up.
 
 #include <kickos/arch/arch.h>
+#include <kickos/chip_limits.h> // KICKOS_MAX_IRQ: the NVIC line count
 
 #include <kickos/sys/atomic.h>
 
@@ -247,17 +248,18 @@ void arch_irq_clear_pending(int line)
     reg32(NVIC_ICPR0 + (l >> 5) * 4) = 1u << (l & 31);
 }
 
-void arch_irq_inject(int irq)
+bool arch_irq_inject(int irq)
 {
-    if (irq < 0)
+    if (irq < 0 or irq >= KICKOS_MAX_IRQ)
     {
-        return;
+        return false;
     }
     unsigned l = static_cast<unsigned>(irq);
     // Latch-and-coalesce: the NVIC holds ISPR pending independently of ISER, so a
     // raise on a masked (disabled) line latches and fires the instant the line is
     // enabled: write ISPR unconditionally, do not drop.
     reg32(NVIC_ISPR0 + (l >> 5) * 4) = 1u << (l & 31);
+    return true;
 }
 
 // --- Kernel-facing ISR entries ----------------------------------------------

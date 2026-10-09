@@ -20,7 +20,7 @@ CHIP_VERSIONS = (1,)
 BOARD_VERSIONS = (1,)
 CHIP_FIELDS = (
     "version", "chip", "manual", "arch", "protection", "cores", "clusters_coherent",
-    "partition_gate", "data_cache", "doorbell_seat", "interrupts", "cycle_counter", "c", "reserved",
+    "partition_gate", "data_cache", "interrupts", "cycle_counter", "c", "reserved",
     "devices", "memory", "pins", "esptool_image",
 )
 PROTECTION_FIELDS = (
@@ -32,6 +32,9 @@ DEVICE_FIELDS = (
     "privileged_registers", "cluster", "ref", "symbol", "gate_register",
 )
 MEMORY_FIELDS = ("size", "base", "at", "cluster", "arena", "link", "ref", "symbol")
+# What a line's `when` may state: `doorbell`, a line the kernel takes only where a doorbell rings,
+# above one core or on a node of a partition.
+LINE_CONDITIONS = ("doorbell",)
 INTERRUPT_FIELDS = ("count", "soft_only_from", "free_from", "vectors")
 CYCLE_COUNTER_FIELDS = ("hz", "glitches")
 # The kinds of `partition_gate`: a region gate per security mode, a register per peripheral, and
@@ -139,11 +142,13 @@ class PartitionGate:
 
 
 class Named:
-    """The `ref` and `symbol` an entry states, each None when it states none."""
+    """The `ref` and `symbol` an entry states, each None when it states none, and the condition
+    a line exists under, None for always."""
 
     def __init__(self, ref=None, symbol=None):
         self.ref = ref
         self.symbol = symbol
+        self.when = None
 
 
 class Block:
@@ -214,8 +219,6 @@ class Chip:
         self.clusters = []
         self.multi_arch = False
         self.data_cache = True
-        # Whether its AMP doorbell keeps a per-core seat a raise can be withheld or deferred by.
-        self.doorbell_seat = False
         self.devices = {}
         # {cluster or PART: Protection} for each view whose unit is known.
         self.protection = {}
@@ -276,13 +279,11 @@ def check_chip(path, text, report):
                      "`chip: %s` sits in platform/%s/, which names it `%s`" % (name, folder, folder))
     chip = Chip(folder, path)
 
-    for flag in ("clusters_coherent", "data_cache", "doorbell_seat"):
+    for flag in ("clusters_coherent", "data_cache"):
         if flag in top:
             setting = f.boolean(top[flag], "`%s`" % flag)
             if flag == "data_cache" and setting is False:
                 chip.data_cache = False
-            if flag == "doorbell_seat" and setting is True:
-                chip.doorbell_seat = True
     if "esptool_image" in top:
         chip.esptool_image = words(f, top["esptool_image"], "`esptool_image`")
     if "arch" in top:
@@ -926,10 +927,12 @@ def check_device(f, chip, key, value, windows):
                 lwhat = "line `%s/%s`" % (name, line_name)
                 named = Named()
                 if isinstance(lvalue, MappingNode):
-                    lvalues = f.fields(lvalue, lwhat, ("number", "ref", "symbol"), ("number",))
+                    lvalues = f.fields(lvalue, lwhat, ("number", "ref", "symbol", "when"), ("number",))
                     if lvalues is None or "number" not in lvalues:
                         continue
                     named = check_named(f, lvalues, lwhat)
+                    if "when" in lvalues:
+                        named.when = f.enum(lvalues["when"], "%s `when`" % lwhat, LINE_CONDITIONS)
                     lvalue = lvalues["number"]
                 number = f.integer(lvalue, lwhat, 16)
                 if line is not None and number is not None:

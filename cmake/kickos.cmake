@@ -336,7 +336,7 @@ endfunction()
 #   sources call (spi, i2c, ...), the one thing about a class an application knows. Called
 #   before the app's KickOS::kernel line, which puts each backend archive ahead of the rescan
 #   group. An app that names no class links no backend, which is what keeps a mock-carrying
-#   image (the selftest) free of a second definer.
+#   image free of a second definer.
 # ---------------------------------------------------------------------------
 function(kickos_link_class_backends target)
   foreach(_class IN LISTS ARGN)

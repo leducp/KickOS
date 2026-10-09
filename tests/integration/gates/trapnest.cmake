@@ -17,12 +17,11 @@ endif()
 # of the entry, which is the one thing it is not, so user/apps/common/CMakeLists.txt builds no
 # image on such a variant.
 
-# The interrupt KERNEL DESCENT, read out of the header the prologue itself reads. The gate
-# compares the reported room BELOW the nested frame against it, so the frame's own bytes must
-# not be in the figure: what has to fit under that frame is the ISR alone.
+# The interrupt KERNEL DESCENT and the band each thread poisons, read out of the header the
+# prologue itself reads. The descent is the ISR's alone, without the frame's own bytes.
 set(_tn_hdr
     "${PROJECT_SOURCE_DIR}/arch/riscv/rv32imac/include/kickos/arch/rv_trap_stack.h")
-foreach(_tn_macro TRAP_KERNEL_DEPTH)
+foreach(_tn_macro TRAP_KERNEL_DEPTH TRAP_KERNEL_DEPTH_SYS TRAP_FRAME_SYS)
   file(STRINGS "${_tn_hdr}" _tn_hit
        REGEX "^#define KICKOS_RV_${_tn_macro} +[0-9]+$")
   list(LENGTH _tn_hit _tn_n)
@@ -33,7 +32,9 @@ foreach(_tn_macro TRAP_KERNEL_DEPTH)
   endif()
   string(REGEX REPLACE "^.* " "" _tn_${_tn_macro} "${_tn_hit}")
 endforeach()
+math(EXPR _tn_band_words "(${_tn_TRAP_FRAME_SYS} + ${_tn_TRAP_KERNEL_DEPTH_SYS}) / 4")
 kickos_add_qemu_test(TARGET trapnest
   SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_trapnest.sh"
-  ARGS ${_tn_TRAP_KERNEL_DEPTH})
-kickos_app_judge(trapnest tests/integration/check_trapnest.sh ARGS ${_tn_TRAP_KERNEL_DEPTH})
+  ARGS ${_tn_TRAP_KERNEL_DEPTH} ${_tn_band_words} "${CMAKE_NM}")
+kickos_app_judge(trapnest tests/integration/check_trapnest.sh
+  ARGS ${_tn_TRAP_KERNEL_DEPTH} ${_tn_band_words})

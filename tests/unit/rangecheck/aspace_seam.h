@@ -14,6 +14,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "acquire_holds.h"
+
+struct arch_aspace;
+
 namespace kickos
 {
     struct Domain;
@@ -29,17 +33,22 @@ namespace kickos
         // this, which is the shape of a domain that holds no space at all.
         void drop_space(Domain* d);
 
-        // What arch_aspace_acquire answers in any space: [va, va + bytes) reached at `at`, the
-        // pages from `uncached_va` on reported mapped non-cacheable. Zero bytes backs nothing.
-        struct Backing
-        {
-            uintptr_t va;
-            unsigned char* at;
-            size_t bytes;
-            uintptr_t uncached_va;
-        };
-        extern Backing g_backing;
-        void seat_backing(uintptr_t va, unsigned char* at, size_t bytes, uintptr_t uncached_va);
+        // What arch_aspace_acquire answers, a page at a time: the page at `va` in `space`, or in
+        // every space where it is null, reached at `at`. False, backing nothing, for an unaligned
+        // `va` or past BACKED_PAGES_MAX pages.
+        constexpr size_t BACKED_PAGES_MAX = 8;
+        [[nodiscard]] bool back_page(struct arch_aspace const* space, uintptr_t va,
+                                     unsigned char* at, bool uncached);
+        // [va, va + bytes) reached at `at` in every space, the pages from `uncached_va` on
+        // reported mapped non-cacheable.
+        [[nodiscard]] bool seat_backing(uintptr_t va, unsigned char* at, size_t bytes,
+                                        uintptr_t uncached_va);
+        // Backs nothing, and forgets every hold.
+        void unback_all();
+
+        AcquireHolds const& holds();
+        // The acquires refused because ARCH_ASPACE_ACQUIRE_MIN were already live.
+        size_t holds_refused_past_min();
     }
 }
 

@@ -5,7 +5,6 @@
 
 #if defined(KICKOS_AMP_DIAG_REPORT) && KICKOS_AMP_DIAG_REPORT
 
-#include <kickos/ampwindow.h>
 #include <kickos/kernel.h>
 #include <kickos/arch/amp_shared.h>
 #include <kickos/sys/atomic.h>
@@ -93,30 +92,6 @@ namespace kickos
                     static_cast<unsigned>(g_cells[3]), static_cast<unsigned>(g_cells[4]),
                     static_cast<unsigned>(arch_cpu_clock_hz()));
         }
-
-#if defined(KICKOS_ENABLE_SELFTEST)
-        void diag_primary_doorbell_report()
-        {
-            if (KICKOS_AMP_NODE_ID != 0)
-            {
-                return;
-            }
-            for (uint32_t node = 0; node < NODE_MAX; node++)
-            {
-                // The cells are indexed by CORE and a node is not a core.
-                uint32_t const core = core_of(node);
-                uint32_t const bells = static_cast<uint32_t>(arch_ipi_counts(core));
-                kprintf("# ampdiag: node=%u core=%u bells=%u drains=%u\n",
-                        static_cast<unsigned>(node), static_cast<unsigned>(core),
-                        static_cast<unsigned>(bells),
-                        static_cast<unsigned>(counts(node).serviced.load()));
-            }
-        }
-#else
-        void diag_primary_doorbell_report()
-        {
-        }
-#endif
     }
 }
 
