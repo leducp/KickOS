@@ -361,22 +361,51 @@ namespace
     TEST_F(AmpWindow, send_refuses_a_far_tail_deeper_than_the_ring)
     {
         amp::Ring& r = amp::ring_for(amp::Class::CALL, NODE_A, NODE_B);
-        ASSERT_EQ(0u, r.head.v.load());
-        // Modular: a tail this far behind a head of zero names RING_SLOTS + 1 outstanding.
-        r.tail.v.store(0u - (amp::RING_SLOTS + 1u));
-        r.slot[0].payload[0] = 0x5Cu;
+        // Both indices off zero, so a refusal that reset either one shows, and a call NODE_A
+        // still holds, with its record seated.
+        uint8_t const first[1] = {0x11u};
+        ASSERT_EQ(amp::Sent::OK, send_as(NODE_B, NODE_A, amp::PORT_ECHO, first, 1u));
+        Taken taken;
+        ASSERT_EQ(amp::Verdict::TOOK,
+                  take_as(NODE_A, NODE_B, taken.buf, &taken.len, &taken.port));
+        ASSERT_EQ(amp::Sent::OK, send_as(NODE_B, NODE_A, amp::PORT_ECHO, first, 1u));
+        uint32_t held = 0;
+        ASSERT_EQ(amp::Verdict::TOOK, take_held_as(NODE_A, NODE_B, &held));
+        fix::g_node = NODE_A;
+        uint32_t const token = amp::inbound_seat(NODE_B, held, TAG_CARRIED);
+        fix::g_node = 0;
+        ASSERT_NE(amp::FAR_RECORD_NONE, token);
+
+        uint32_t const head = r.head.v.load();
+        uint32_t const tail_held = r.tail.v.load();
+        ASSERT_NE(0u, head);
+        ASSERT_NE(0u, tail_held);
+        uint32_t const tail = head - (amp::RING_SLOTS + 1u);
+        r.tail.v.store(tail);
+        amp::Slot& next = r.slot[head % amp::RING_SLOTS];
+        next.payload[0] = 0x5Cu;
 
         uint32_t const was_refused = amp::counts(NODE_B).send_refused;
         uint32_t const was_sent = amp::counts(NODE_B).sent;
+        fix::g_sends = 0;
         uint8_t const payload[4] = {1u, 2u, 3u, 4u};
         EXPECT_EQ(amp::Sent::DEPTH, send_as(NODE_B, NODE_A, amp::PORT_ECHO, payload, 4u));
-        EXPECT_EQ(0u, r.head.v.load());
-        EXPECT_EQ(0u, r.slot[0].len.load());
-        EXPECT_EQ(amp::PORT_MAX, r.slot[0].port.load());
-        EXPECT_EQ(0x5Cu, r.slot[0].payload[0]);
+        EXPECT_EQ(head, r.head.v.load()) << "the refused send moved the head";
+        EXPECT_EQ(tail, r.tail.v.load()) << "the producer wrote the consumer's own index";
+        EXPECT_EQ(0u, next.len.load());
+        EXPECT_EQ(amp::PORT_MAX, next.port.load());
+        EXPECT_EQ(0x5Cu, next.payload[0]);
         EXPECT_EQ(was_refused + 1u, amp::counts(NODE_B).send_refused);
         EXPECT_EQ(was_sent, amp::counts(NODE_B).sent);
         EXPECT_EQ(0u, fix::g_sends);
+
+        fix::g_node = NODE_A;
+        EXPECT_NE(nullptr, amp::inbound_at(token))
+            << "the refused send dropped the record the consumer is serving that call on";
+        r.tail.v.store(tail_held);
+        amp::inbound_forget(token);
+        amp::release_call(NODE_B, held);
+        fix::g_node = 0;
     }
 
     TEST_F(AmpWindow, an_overlong_slot_is_dropped_and_the_ring_survives)
@@ -539,56 +568,6 @@ namespace
         EXPECT_EQ(0x31u, good.buf[0]);
     }
 
-    // The strike bound is per RING and not per ordered pair: node_service runs the depth
-    // clause on the call ring whatever that ring holds, so a bound shared between the two
-    // classes is cleared on every service pass and the reply ring never reaches its own. N6f
-    // states that bound as the whole of a wedged reply ring's recovery.
-    TEST_F(AmpWindow, a_call_take_does_not_spend_the_reply_rings_strike_bound)
-    {
-        amp::Ring& reply = amp::ring_for(amp::Class::REPLY, NODE_A, NODE_B);
-
-        // Seat the reply ring's strike row: it is static in the real translation unit and
-        // fix::reset() cannot reach it. An EMPTY reply ring answers before the depth clause,
-        // so only a take that really reaches one clears it.
-        uint8_t const seed[1] = {0x5Au};
-        ASSERT_EQ(amp::Sent::OK, send_as(NODE_B, NODE_A, amp::PORT_REPLY, seed, 1u));
-        Taken seeded;
-        ASSERT_EQ(amp::Verdict::TOOK, take_reply_as(NODE_A, NODE_B, seeded.buf, &seeded.len,
-                                                    &seeded.port, &seeded.tag));
-
-        uint32_t const was_reset = amp::counts(NODE_A).depth_reset;
-        reply.head.v.store(reply.tail.v.load() + amp::RING_SLOTS + 1u);
-
-        // One strike short of the bound, each followed by the call take node_service makes on
-        // the same pair: that ring holds nothing, so its own depth clause is satisfied.
-        for (uint32_t i = 1u; i < amp::DEPTH_STRIKES; i++)
-        {
-            Taken t;
-            EXPECT_EQ(amp::Verdict::DEPTH, take_reply_as(NODE_A, NODE_B, t.buf, &t.len,
-                                                         &t.port, &t.tag));
-            EXPECT_TRUE(t.untouched());
-            Taken idle;
-            EXPECT_EQ(amp::Verdict::EMPTY, take_as(NODE_A, NODE_B, idle.buf, &idle.len,
-                                                   &idle.port));
-        }
-        EXPECT_EQ(was_reset, amp::counts(NODE_A).depth_reset);
-
-        // The bound's own strike, which none of the call takes above may have spent.
-        Taken last;
-        EXPECT_EQ(amp::Verdict::DEPTH, take_reply_as(NODE_A, NODE_B, last.buf, &last.len,
-                                                     &last.port, &last.tag));
-        EXPECT_EQ(was_reset + 1u, amp::counts(NODE_A).depth_reset);
-        EXPECT_EQ(reply.head.v.load(), reply.tail.v.load());
-
-        // And the ring runs again.
-        ASSERT_EQ(amp::Sent::OK, send_as(NODE_B, NODE_A, amp::PORT_REPLY, seed, 1u));
-        Taken good;
-        EXPECT_EQ(amp::Verdict::TOOK, take_reply_as(NODE_A, NODE_B, good.buf, &good.len,
-                                                    &good.port, &good.tag));
-        EXPECT_EQ(1u, good.len);
-        EXPECT_EQ(0x5Au, good.buf[0]);
-    }
-
     // The other direction of the same keying: strikes the reply ring earned may not
     // resynchronise the call ring. That reset abandons every slot the pair holds and every
     // record with them, so a call ring is resynchronised on its own strikes or on none.
@@ -631,6 +610,39 @@ namespace
         // The held slot is still this node's to release, the tail never having left it.
         release_as(NODE_A, NODE_B, held);
         EXPECT_EQ(call_tail + 1u, call.tail.v.load());
+    }
+
+    // One doorbell pass per strike: each leaves the reply drain on its DEPTH and then runs the
+    // same pair's call ring through its depth clause.
+    TEST_F(AmpWindow, reply_ring_strikes_driven_through_the_service_resynchronise_it)
+    {
+        amp::Ring& reply = amp::ring_for(amp::Class::REPLY, NODE_A, NODE_B);
+        fix::g_reply_answer = false;
+        uint8_t const seed[1] = {0x5Au};
+        // A take that reaches the depth clause, which seats the static strike row.
+        ASSERT_EQ(amp::Sent::OK, send_as(NODE_B, NODE_A, amp::PORT_REPLY, seed, 1u));
+        service_as(NODE_A);
+        ASSERT_EQ(1u, fix::g_replies);
+        ASSERT_EQ(reply.head.v.load(), reply.tail.v.load());
+
+        uint32_t const was_reset = amp::counts(NODE_A).depth_reset;
+        reply.head.v.store(reply.tail.v.load() + amp::RING_SLOTS + 1u);
+        for (uint32_t i = 1u; i < amp::DEPTH_STRIKES; i++)
+        {
+            service_as(NODE_A);
+        }
+        EXPECT_EQ(was_reset, amp::counts(NODE_A).depth_reset)
+            << "a pass spent more than one strike";
+        service_as(NODE_A);
+        EXPECT_EQ(was_reset + 1u, amp::counts(NODE_A).depth_reset)
+            << "the call ring's depth clause cleared the reply ring's strikes";
+        EXPECT_EQ(reply.head.v.load(), reply.tail.v.load());
+
+        fix::g_replies = 0;
+        ASSERT_EQ(amp::Sent::OK, send_as(NODE_B, NODE_A, amp::PORT_REPLY, seed, 1u));
+        service_as(NODE_A);
+        EXPECT_EQ(1u, fix::g_replies) << "the resynchronised reply ring delivers nothing";
+        EXPECT_EQ(reply.head.v.load(), reply.tail.v.load());
     }
 
     // The tag is the one far field no arm of the window spends, so what it owes is a
@@ -1054,60 +1066,25 @@ namespace
             << "a node the partition does not hold answered the primary's core";
     }
 
-#if defined(KICKOS_ENABLE_SELFTEST)
-    // OWNERSHIP, not arithmetic: the arm above already covers the refusal. What is asserted
-    // here is that producing it costs the peer nothing, the ring the forge drives being the
-    // self-ring no node produces into and no service drains. A forged consumer index under a
-    // live consumer is what this arm exists to keep out.
-    TEST_F(AmpWindow, the_send_forge_leaves_the_peers_ring_and_its_held_record_alone)
+    // No raise announces a publication made before this node seated itself.
+    TEST_F(AmpWindow, a_publication_made_before_window_init_is_taken_by_it)
     {
-        // NODE_B holding a call from NODE_A: a record live on the slot, and BOTH indices off
-        // zero, which is what a reset to zero has to be told apart from. The first call is
-        // taken and released to move the tail, the second is held.
-        uint8_t const payload[4] = {0xC0u, 0xC1u, 0xC2u, 0xC3u};
-        uint8_t out[amp::SLOT_BYTES];
-        uint32_t len = 0;
-        uint32_t port = amp::PORT_MAX;
-        uint32_t slot = 0;
-        amp::ReplyTag tag = {};
-        ASSERT_EQ(amp::Sent::OK, send_as(NODE_A, NODE_B, amp::PORT_ECHO, payload, 4u));
-        ASSERT_EQ(amp::Verdict::TOOK, take_as(NODE_B, NODE_A, out, &len, &port));
-
-        ASSERT_EQ(amp::Sent::OK, send_as(NODE_A, NODE_B, amp::PORT_ECHO, payload, 4u));
-        fix::g_node = NODE_B;
-        ASSERT_EQ(amp::Verdict::TOOK, amp::take_call(NODE_A, &len, &port, &tag, &slot));
-        uint32_t const token = amp::inbound_seat(NODE_A, slot, TAG_CARRIED);
-        ASSERT_NE(amp::FAR_RECORD_NONE, token);
-
-        amp::Ring& peer = amp::ring_for(amp::Class::CALL, NODE_B, NODE_A);
-        uint32_t const head_was = peer.head.v.load();
-        uint32_t const tail_was = peer.tail.v.load();
-        ASSERT_NE(0u, head_was);
-        ASSERT_NE(0u, tail_was);
+        uint8_t const payload[3] = {0x41u, 0x42u, 0x43u};
+        ASSERT_EQ(amp::Sent::OK, send_as(NODE_B, NODE_A, amp::PORT_ECHO, payload, 3u));
+        amp::Ring const& call = amp::ring_for(amp::Class::CALL, NODE_A, NODE_B);
+        amp::Ring const& answer = amp::ring_for(amp::Class::REPLY, NODE_B, NODE_A);
+        uint32_t const took = amp::counts(NODE_A).took;
 
         fix::g_node = NODE_A;
-        fix::g_sends = 0;
-        EXPECT_EQ(amp::Sent::DEPTH, amp::forge_tail_and_send(NODE_B, amp::RING_SLOTS + 1u));
+        amp::window_init();
+        fix::g_node = 0;
 
-        EXPECT_EQ(head_was, peer.head.v.load())
-            << "the forge wrote the head of a ring a peer is reading";
-        EXPECT_EQ(tail_was, peer.tail.v.load())
-            << "the forge wrote the consumer's own index, which the consumer owns: a peer "
-               "observing it resynchronises or discards real traffic";
-        EXPECT_NE(nullptr, amp::inbound_at(token))
-            << "the forge dropped the record the peer is still serving that call on";
-        EXPECT_EQ(0u, fix::g_sends) << "a refused send rang the doorbell";
-
-        amp::Ring& own = amp::ring_for(amp::Class::CALL, NODE_A, NODE_A);
-        EXPECT_EQ(0u, own.head.v.load()) << "the forge left its own ring holding a publication";
-        EXPECT_EQ(0u, own.tail.v.load());
-
-        fix::g_node = NODE_B;
-        amp::inbound_forget(token);
-        amp::release_call(NODE_A, slot);
-        fix::g_node = NODE_A;
+        EXPECT_EQ(took + 1u, amp::counts(NODE_A).took);
+        EXPECT_EQ(call.head.v.load(), call.tail.v.load()) << "the publication is still unread";
+        ASSERT_EQ(1u, answer.head.v.load()) << "the echo was never answered";
+        EXPECT_EQ(3u, answer.slot[0].len.load());
+        EXPECT_EQ(0x41u, answer.slot[0].payload[0]);
     }
-#endif
 
     // --- A far head that moved BACKWARD -----------------------------------------------------
     // The unread test is modular, so a head that regressed to between the tail and `taken`,
@@ -2173,5 +2150,58 @@ namespace
 
         release_hold_as(NODE_A, fresh);
         EXPECT_EQ(resynced + 1u, in.tail.v.load());
+    }
+
+    // =======================================================================================
+
+    struct AmpCount : public AmpWindow
+    {
+    };
+
+    using CountCell = kickos::Atomic<uint32_t, kickos::Order::RELAXED>;
+
+    // Spelled here and not taken from the kernel's table, so a swapped row there reads wrong.
+    CountCell& count_cell(amp::Counts& row, uint32_t which)
+    {
+        CountCell* const cells[amp::COUNT_IDS] = {
+            &row.took,          &row.depth,      &row.depth_reset, &row.tail_reset,
+            &row.length,        &row.port,       &row.wrong_class, &row.sent,
+            &row.send_refused,  &row.reply_reserve, &row.serviced, &row.reply_drop,
+            &row.reply_unsent,  &row.deliver_fault,
+        };
+        return *cells[which];
+    }
+
+    TEST_F(AmpCount, every_id_reads_the_field_it_names)
+    {
+        // A peer's row, which the read must answer as faithfully as its own.
+        amp::Counts& row = const_cast<amp::Counts&>(amp::counts(NODE_B));
+        uint32_t before[amp::COUNT_IDS] = {};
+        for (uint32_t id = 0; id < amp::COUNT_IDS; id++)
+        {
+            ASSERT_EQ(amp::count_read(NODE_B, id, &before[id]), 0);
+        }
+        for (uint32_t id = 0; id < amp::COUNT_IDS; id++)
+        {
+            CountCell& cell = count_cell(row, id);
+            cell = cell.load() + 1u + id;
+        }
+        for (uint32_t id = 0; id < amp::COUNT_IDS; id++)
+        {
+            uint32_t now = 0;
+            ASSERT_EQ(amp::count_read(NODE_B, id, &now), 0);
+            EXPECT_EQ(now - before[id], 1u + id) << "id " << id << " reads another field";
+        }
+    }
+
+    TEST_F(AmpCount, a_node_outside_the_partition_or_an_unknown_id_is_einval)
+    {
+        uint32_t out = 0xA5A5A5A5u;
+        EXPECT_EQ(amp::count_read(amp::NODE_MAX, 0u, &out), -KOS_EINVAL);
+        EXPECT_EQ(amp::count_read(UINT32_MAX, 0u, &out), -KOS_EINVAL);
+        EXPECT_EQ(amp::count_read(NODE_A, amp::COUNT_IDS, &out), -KOS_EINVAL);
+        EXPECT_EQ(amp::count_read(NODE_A, UINT32_MAX, &out), -KOS_EINVAL);
+        EXPECT_EQ(out, 0xA5A5A5A5u) << "a refused read wrote the out word";
+        EXPECT_EQ(amp::count_read(NODE_A, amp::COUNT_IDS - 1u, &out), 0);
     }
 }

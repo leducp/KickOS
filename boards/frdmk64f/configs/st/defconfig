@@ -3,7 +3,6 @@
 
 CONFIG_BOARD_FRDMK64F=y
 
-# Adds the test-only self-test syscalls the TAP suite calls.
 CONFIG_MEMORY_MODEL_MPU=y
 # Limit threads to fit the enforcing app-data layout. Power-of-two stack
 # strides are required for the SP-derived thread pointer.
@@ -18,3 +17,4 @@ CONFIG_KICKOS_USER_STACK_SIZE=8192
 CONFIG_KICKOS_IDLE_STACK_SIZE=512
 CONFIG_KICKOS_ROOT_STACK_SIZE=8192
 CONFIG_KICKOS_ENABLE_SELFTEST=y
+CONFIG_KICKOS_MAX_SPAWN_GRANTS=9

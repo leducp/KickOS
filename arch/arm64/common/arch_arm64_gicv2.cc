@@ -308,9 +308,11 @@ void arch_irq_clear_pending(int line)
     kickos_armv8a_gic_clear_pending(line);
 }
 
-// The doorbell's SGI is taken by the dispatch ahead of kickos_isr_irq, so it holds no
-// irq_table slot; INTID 0 is inside KICKOS_MAX_IRQ here, the banked SGI and PPI IDs sitting
-// below the SPIs rather than outside them.
+// The selftest expects the doorbell's SGI on an AMP node too, as on GICv3.
+static_assert(not KICKOS_AMP_NODE or KICKOS_NUM_CORES > 1,
+              "an AMP node under GICv2 drives more than one core, so its doorbell is up");
+
+// The doorbell's SGI is the GIC's own, so no chip-file line carries it.
 bool arch_irq_line_kernel_owned(int line)
 {
 #if KICKOS_NUM_CORES > 1
@@ -321,15 +323,17 @@ bool arch_irq_line_kernel_owned(int line)
 #endif
 }
 
-// Test scaffolding (arch.h). ISPENDR pends in the controller, so delivery takes the ordinary
-// path and the latch-while-masked contract needs no software shadow.
-void arch_irq_inject(int irq)
+// ISPENDR pends in the controller, so delivery takes the ordinary path and the latch-while-masked
+// contract needs no software shadow. A banked line would pend on the CALLER's CPU interface, not
+// its claim core's.
+bool arch_irq_inject(int irq)
 {
-    if (irq < 0 or irq >= kickos_gicv2.intid_count)
+    if (irq < GIC_BANKED_INTIDS or irq >= kickos_gicv2.intid_count)
     {
-        return;
+        return false;
     }
     *gicd32(GICD_ISPENDR + (irq / 32) * 4) = 1u << (irq % 32);
+    return true;
 }
 
 // One interrupt per entry: the GIC signals again for anything still pending.

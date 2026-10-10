@@ -379,3 +379,14 @@ TEST(VRange, sync_owed_marks_one_entry_and_survives_a_grant)
     EXPECT_TRUE(v.set_sync_owed(BASE, true));
     EXPECT_TRUE(kickos::vr_caller_nameable(v.at_base(BASE)));
 }
+
+TEST(VRange, a_frame_cap_range_is_not_caller_nameable)
+{
+    kickos::VirtualRanges v = made();
+    ASSERT_TRUE(v.reserve(BASE, 2, kickos::VR_BORROWED | kickos::VR_FRAMECAP, 1u));
+    ASSERT_TRUE(v.reserve(BASE + 4 * G, 2, kickos::VR_BORROWED));
+    EXPECT_FALSE(kickos::vr_caller_nameable(v.at_base(BASE)))
+        << "a frame capability's mapping was admitted as a reservation";
+    // A handoff carries VR_BORROWED too and stays the borrower's to name.
+    EXPECT_TRUE(kickos::vr_caller_nameable(v.at_base(BASE + 4 * G)));
+}

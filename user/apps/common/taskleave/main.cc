@@ -14,22 +14,21 @@
 // top-level entries live in the root page that gets freed, so a miss here is a kernel crash
 // rather than a stray user mapping.
 //
-// WHAT THIS IMAGE ASSERTS is the positive statement: KOS_ASPACE_OP_RELEASE_PEER_HITS, the
-// count of peer cores a destroy has found still holding the space it was destroying, must
-// read 0, the destroy's peer sweep being bookkeeping and never a repair. Beside it
-// KOS_ASPACE_OP_RELEASE_RUNS, without which the 0 is equally the answer for a run in which no
-// destroy happened at all. Plus the run surviving, which is the crash above.
+// WHAT THIS IMAGE ASSERTS is that the run survives every round, and that each round's space
+// was destroyed: the machine's count of live spaces is one above its starting value while the
+// closer is parked, and back to it once the group is gone. Without that second half a run in
+// which no destroy happened at all would pass.
 //
 // THIS IS A CRASH DETECTOR AND NOT A NEGATIVE CONTROL: reverting the fix leaves it PASSING.
 // Whether the second member's release lands inside the first one's sweep is a race this image
 // cannot force: nothing in userspace observes when a peer is inside its own sweep, and
 // nothing it can mint widens that sweep either, cap_teardown's chunk count being fixed by the
 // child's table WIDTH (KICKOS_CAP_CHILD_WIDTH), which userspace cannot move. The
-// deterministic arm for the ORDER is the host gate (tests/unit/deathspace, LeaveSpace).
+// deterministic arm for the ORDER is the host gate (tests/unit/deathspace, LeaveSpace), which
+// also holds that a destroy finds no peer core still holding the space.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
-#include <kickos/sys/abi_probe.h>
 #include <kickos/libc/fmt.h>
 
 namespace
@@ -38,6 +37,10 @@ namespace
     constexpr int SIG = 1;
 
     constexpr int ROUNDS = 8;
+
+    // A destroy can land after the group's last handle closes, from a reclamation.
+    constexpr uint32_t SETTLE_POLLS = 200u;
+    constexpr uint64_t SETTLE_NS = 1000u * 1000u;
 
     void leaver(void*)
     {
@@ -49,13 +52,20 @@ namespace
 
     void closer(void*)
     {
-        kos_sem_wait(SIG);
+        kos_sem_wait(SIG, KOS_TIMEOUT_NONE);
         kos_exit(0);
     }
 }
 
 int main(int, char**)
 {
+    uint32_t base = 0;
+    if (kos_mem_count(KOS_MEM_SPACES_HELD, &base) != 0)
+    {
+        kos::print("[taskleave] ERROR: the live space count is unreadable\n");
+        return 1;
+    }
+    int destroys = 0;
     for (int round = 0; round < ROUNDS; round++)
     {
         kos_task_t group = KOS_TASK_NONE;
@@ -80,6 +90,9 @@ int main(int, char**)
                                                 KOS_POLICY_FIFO, 0, /*privileged=*/false,
                                                 nullptr, 0, 0, nullptr, group,
                                                 nullptr, 0, 1u << 1);
+        // The closer cannot leave before the leaver exists, so the group's space is live here.
+        uint32_t during = 0;
+        int const during_rc = kos_mem_count(KOS_MEM_SPACES_HELD, &during);
         auto const a = kos::thread::create_caps(leaver, nullptr, "leaver", 10, caps, 1,
                                                 KOS_POLICY_FIFO, 0, /*privileged=*/false,
                                                 nullptr, 0, KOS_AUTH_MEMORY, nullptr, group,
@@ -99,26 +112,37 @@ int main(int, char**)
         // The group is empty, so this drops main's creator hold and releases the slot.
         (void)kos_task_kill(group);
         (void)kos_handle_close(sig);
+        if (during_rc != 0)
+        {
+            kos::print("[taskleave] ERROR: the live space count is unreadable\n");
+            return 1;
+        }
+        uint32_t after = during;
+        for (uint32_t polls = 0; after != base and polls < SETTLE_POLLS; polls++)
+        {
+            if (kos_mem_count(KOS_MEM_SPACES_HELD, &after) != 0)
+            {
+                kos::print("[taskleave] ERROR: the live space count is unreadable\n");
+                return 1;
+            }
+            if (after != base)
+            {
+                kos_sleep_ns(SETTLE_NS);
+            }
+        }
+        if (during == base + 1u and after == base)
+        {
+            destroys++;
+        }
     }
 
-    uintptr_t const hits = kos_aspace_probe(KOS_ASPACE_OP_RELEASE_PEER_HITS, 0);
-    uintptr_t const runs = kos_aspace_probe(KOS_ASPACE_OP_RELEASE_RUNS, 0);
     char msg[96];
-    ksnprintf(msg, sizeof(msg), "[taskleave] release peer hits: %llu\n",
-              static_cast<unsigned long long>(hits));
+    ksnprintf(msg, sizeof(msg), "[taskleave] space destroys: %d of %d rounds\n", destroys, ROUNDS);
     kos::print(msg);
-    ksnprintf(msg, sizeof(msg), "[taskleave] space destroys: %llu\n",
-              static_cast<unsigned long long>(runs));
-    kos::print(msg);
-    if (hits != 0u)
+    if (destroys != ROUNDS)
     {
-        kos::print("[taskleave] TASKLEAVE FAIL: a destroy found a peer core holding the space\n");
-        return 1;
-    }
-    if (runs < static_cast<uintptr_t>(ROUNDS))
-    {
-        kos::print("[taskleave] TASKLEAVE FAIL: destroys ran for fewer rounds than this image "
-                   "had,\nso the peer-hit count above answered for a destroy that never ran\n");
+        kos::print("[taskleave] TASKLEAVE FAIL: a round's space was not live with its closer, or "
+                   "outlived its group\n");
         return 1;
     }
     kos::print("[taskleave] TASKLEAVE PASS\n");

@@ -15,9 +15,10 @@
 //      every register-derived clause of the rule says yes and only the stack-bounds test can
 //      refuse it. On RX the frame goes to the ISP instead and the bounds test reads the USP the
 //      exit stub WOULD have run on.
-//   3  the worker points SP at a KERNEL word (kickos_trapstack_witness) and traps. A software
-//      trap prologue that stored the frame through the U-mode SP overwrites that word in
-//      privileged mode; the bounds test refuses the SP before the first store.
+//   3  the worker points SP at a word of MAIN's data and traps. A software trap prologue that
+//      stored the frame through the U-mode SP overwrites that word in privileged mode, where no
+//      protection applies; the bounds test refuses the SP before the first store. Main reads
+//      the word back after the join and prints either verdict.
 //   4  the LOW EDGE, which is legal. The worker runs on a CALLER-PROVIDED stack, so the app
 //      knows stack_lo and poisons a band of its own data immediately below it; the worker then
 //      parks SP with less room under it than the frame plus the kernel descent needs, and
@@ -45,12 +46,6 @@
 #include <kickos/arch/rv_trap_stack.h>
 #endif
 
-#if KICKOS_FS_MODE == 3
-// A kernel .data word (kernel/init/fault.cc, selftest builds), referenced for its ADDRESS only:
-// an unprivileged thread that dereferenced it would fault.
-extern "C" volatile unsigned kickos_trapstack_witness;
-#endif
-
 // A synchronous fault the running instruction owns. The sim reaches the rule through SIGILL. An
 // SP move shares one asm statement with KOS_TRAP_ILLEGAL_INSN, so nothing runs on the moved SP.
 namespace
@@ -59,6 +54,8 @@ namespace
 #if !defined(__riscv) && !defined(__RX__)
 #error "KICKOS_FS_MODE 3 targets the software trap prologue (rv32imac/rxv3) only"
 #endif
+    constexpr unsigned FS_KWORD_POISON = 0x5AFEBA5Eu;
+    volatile unsigned g_fs_kword = FS_KWORD_POISON;
 #endif
 #if KICKOS_FS_MODE == 4
 #if !defined(__riscv)
@@ -144,24 +141,24 @@ namespace
         __asm volatile("mov sp, %0\n\t" KOS_TRAP_ILLEGAL_INSN ::"r"(top) : "memory");
 #endif
 #elif KICKOS_FS_MODE == 3
-        // A prologue that stores through the U-mode SP writes INTO kernel .data. The extent test
+        // A prologue that stores through the U-mode SP writes INTO main's word. The extent test
         // refuses the SP first, and the frame base is ctx.kernel_sp and no function of the SP
-        // anyway.
-        uintptr_t const kw = reinterpret_cast<uintptr_t>(&kickos_trapstack_witness);
+        // anyway. The worker takes the word's ADDRESS only and never writes it itself.
+        uintptr_t const kw = reinterpret_cast<uintptr_t>(&g_fs_kword);
 #if defined(__riscv)
         // trap_entry saves EVERY trap through the same prologue, so an illegal instruction
         // reaches it. The SP below is where a prologue building the frame at sp minus the frame
-        // size would put the s2 slot (F_S2) exactly on the witness word.
+        // size would put the s2 slot (F_S2) exactly on main's word.
         static_assert(KICKOS_RV_TRAP_F_S2 < KICKOS_RV_TRAP_FRAME,
-                      "the s2 slot must lie inside the frame, or this arm aims above the "
-                      "witness and stops testing the prologue");
+                      "the s2 slot must lie inside the frame, or this arm aims above main's "
+                      "word and stops testing the prologue");
         __asm volatile("li s2, 0xC0DEBEEF\n\t"
                        "mv sp, %0\n\t" KOS_TRAP_ILLEGAL_INSN
                        : : "r"(kw + (KICKOS_RV_TRAP_FRAME - KICKOS_RV_TRAP_F_S2)) : "s2", "memory");
 #elif defined(__RX__)
         // `int #1` (kickos_rx_syscall_trap) and not the fault path: on RX the fault path already
         // checks the USP and the hole is in the syscall trap. Its generic arm stores the stacked
-        // userPC/userPSW at USP-8/USP-4, so USP = &witness + 8 lands userPC on the witness.
+        // userPC/userPSW at USP-8/USP-4, so USP = &word + 8 lands userPC on main's word.
         // R0 IS the SP on RX.
         //
         // That head survives the kernel-stack transfer: RX leaves supervisor only by RTE, RTE
@@ -277,6 +274,16 @@ int main(int, char**)
     else
     {
         kos::print("[fs] [lowband] INTACT: the kernel wrote nothing below the parked sp\n");
+    }
+#endif
+#if KICKOS_FS_MODE == 3
+    if (g_fs_kword != FS_KWORD_POISON)
+    {
+        kos::print("[fs] [kword] CORRUPTED: the trap prologue stored through the U-mode sp\n");
+    }
+    else
+    {
+        kos::print("[fs] [kword] INTACT: nothing was stored through the refused sp\n");
     }
 #endif
     if (rc != 0)

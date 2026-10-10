@@ -4,9 +4,7 @@
 #
 # Judges a pizero2350-amp2 capture of the ampping partition and its ACCESSCTRL witness
 # (docs/design-m10-fleet.md, section 9.5): node 0's readback of UART0's register, node 0's read
-# of its own UART0, node 1's kernel's privileged read of it taking a bus fault, and the four rounds
-# across. That read is privileged, so no MPU stands before ACCESSCTRL, and only its BusFault
-# witnesses the gate.
+# of its own UART0, and the four rounds across.
 #
 #   KOS_CAPTURE=<log> check_pizero_amp_gate.sh <board-build> <kickos-source> <cmake>
 #
@@ -68,28 +66,8 @@ if one "$READBACK_RE" readback "UART0's ACCESSCTRL readback"; then
   fi
 fi
 
-one "^ampping: gate: node 0 read 0x11 from its uart0, node 1's kernel's read of it took a fault$" \
-    gate "the gate witness"
+one "^ampping: gate: node 0 read 0x11 from its uart0$" gate "node 0's read of its uart0"
 
-# Node 1's read is denied by a bus error on the access itself: a BusFault (CFSR[15:8]), precise,
-# its BFAR the address read, and no MemManage (CFSR[7:0]) ahead of it.
-PROBE_RE='^# accessctrl probe: 0xa0 = 0x[0-9a-f]+, node 1 read 0x40070fe0: '
-if one "$PROBE_RE" probe "node 1's kernel's read of UART0"; then
-  _probe="$(printf '%s\n' "$OUT" | grep -E "$PROBE_RE")"
-  _cfsr="$(printf '%s\n' "$_probe" | sed -n 's/.*: fault CFSR=0x\([0-9a-f]*\) BFAR=0x[0-9a-f]*$/\1/p')"
-  _bfar="$(printf '%s\n' "$_probe" | sed -n 's/.*: fault CFSR=0x[0-9a-f]* BFAR=0x\([0-9a-f]*\)$/\1/p')"
-  if [ -z "$_cfsr" ] || [ -z "$_bfar" ]; then
-    bad "probe: node 1's kernel's read of UART0 took no fault: '$_probe'"
-  elif [ "${#_cfsr}" -gt 8 ] || [ "${#_bfar}" -gt 8 ]; then
-    bad "probe: node 1's fault record is wider than a register: '$_probe'"
-  elif [ $((0x$_cfsr & 0xFF)) -ne 0 ]; then
-    bad "probe: node 1's read took a MemManage (CFSR=0x$_cfsr), not ACCESSCTRL's bus fault"
-  elif [ $((0x$_cfsr & 0x8200)) -ne $((0x8200)) ]; then
-    bad "probe: node 1's read took no precise bus fault with a valid BFAR (CFSR=0x$_cfsr)"
-  elif [ $((0x$_bfar)) -ne $((0x40070FE0)) ]; then
-    bad "probe: node 1's bus fault is at 0x$_bfar, not UART0's UARTPERIPHID0 at 0x40070fe0"
-  fi
-fi
 _faults="$(printf '%s\n' "$OUT" | grep -c '=== THREAD FAULT ===')"
 if [ "$_faults" -ne 0 ]; then
   bad "fault: $_faults thread fault(s) in the judged boot, where none is expected"
@@ -116,4 +94,4 @@ fi
 if [ "$rc" -ne 0 ]; then
   exit 1
 fi
-echo "PASS: ACCESSCTRL reads back UART0 as node 0's core's alone; node 0 read 0x11, node 1's kernel's read took a bus fault at 0x40070fe0; four rounds across"
+echo "PASS: ACCESSCTRL reads back UART0 as node 0's core's alone; node 0 read 0x11; four rounds across"

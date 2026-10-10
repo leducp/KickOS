@@ -20,13 +20,21 @@ kickos_add_unit_test(NAME drv_bringup
   INCLUDES "${PROJECT_SOURCE_DIR}/user/include" "${PROJECT_SOURCE_DIR}/system/include"
            "${PROJECT_BINARY_DIR}/generated/include")
 
-# A failing UART driver thread by posture: the thread bodies of uart_service.h and
-# user/src/uart_service.cc over the same seam, a trap reaching the host as SIGILL.
+# The UART service over the same seam: a failing driver thread by posture, its trap reaching the
+# host as SIGILL, and serve_one answering the client helpers over a kos_call that hands it the
+# frame. HOST-ONLY: uart_serve.cc defines public kos_* names.
 kickos_add_unit_test(NAME drv_thread_trap
-  SOURCES thread_trap.cc kos_seam.cc
+  SOURCES thread_trap.cc uart_serve.cc kos_seam.cc
           "${PROJECT_SOURCE_DIR}/user/src/driver_service.cc"
           "${PROJECT_SOURCE_DIR}/user/src/uart_service.cc"
           "${PROJECT_SOURCE_DIR}/user/src/console_ring.cc"
+  INCLUDES "${PROJECT_SOURCE_DIR}/user/include" "${PROJECT_SOURCE_DIR}/system/include"
+           "${PROJECT_BINARY_DIR}/generated/include")
+
+# The SPI service's device slots over a mock SPI class. HOST-ONLY: spi_serve.cc defines the
+# public kos_spi_* and kos_* names.
+kickos_add_unit_test(NAME drv_spi_serve
+  SOURCES spi_serve.cc
   INCLUDES "${PROJECT_SOURCE_DIR}/user/include" "${PROJECT_SOURCE_DIR}/system/include"
            "${PROJECT_BINARY_DIR}/generated/include")
 

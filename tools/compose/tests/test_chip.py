@@ -73,7 +73,6 @@ HAND_LIMITS = """#define KICKOS_MAX_IRQ 40
 #define KICKOS_CHIP_CYCCNT_HZ 0
 #define KICKOS_CHIP_CYCCNT_GLITCHES 1
 #define KICKOS_CHIP_DCACHE 1
-#define KICKOS_CHIP_DOORBELL_SEAT 0
 """
 
 
@@ -140,7 +139,9 @@ class Generated(unittest.TestCase):
         self.assertTrue(outputs["chip.cmake"].endswith(
             "\nset(KICKOS_CHIP_REGION_UNIT \"pmsav7\")\nset(KICKOS_CHIP_TRANSLATES OFF)\n"))
         self.assertIn("\nset(KICKOS_CHIP_PRIVILEGE ON)\n", outputs["chip.cmake"])
-        self.assertIn("\nset(KICKOS_CHIP_RESERVED_BLOCKS 2)\n", outputs["chip.cmake"])
+        self.assertIn("\nset(KICKOS_CHIP_KERNEL_LINES \"TIMER_TICK=7\")\n", outputs["chip.cmake"])
+        self.assertIn("\nset(KICKOS_CHIP_RESERVED_BLOCKS 2)\nset(KICKOS_CHIP_RESERVED_BLOCK0 0x50000000 0x4000)\n",
+                      outputs["chip.cmake"])
         self.assertNotIn("KICKOS_CHIP_ESPTOOL_IMAGE", outputs["chip.cmake"])
         self.assertNotIn("KICKOS_QEMU_", outputs["chip.cmake"])
         for name, text in outputs.items():
@@ -168,26 +169,38 @@ class Generated(unittest.TestCase):
             text = chip.generate(self.view(path, ARCHES[name]))["chip.cmake"]
             self.assertIn("\nset(KICKOS_CHIP_PRIVILEGE %s)\n" % privilege, text, name)
 
-    def test_tree_reserved_block_count(self):
-        for name, count in (("sim", 0), ("mps2", 0), ("xmc4800", 3), ("stm32f302", 4)):
+    def test_tree_reserved_blocks(self):
+        for name, count, first in (("sim", 0, None), ("mps2", 0, None),
+                                   ("xmc4800", 3, "0x4000C000 0x4000"),
+                                   ("stm32f302", 4, "0x40000000 0x400"),
+                                   ("esp32c6", 14, "0x60091040 0xFC0"), ("rx72m", 7, "0x8C100 0x100")):
             path = os.path.join(TREE, "platform", name, "chip.yaml")
             text = chip.generate(self.view(path, ARCHES[name]))["chip.cmake"]
             self.assertIn("\nset(KICKOS_CHIP_RESERVED_BLOCKS %d)\n" % count, text, name)
+            if first is None:
+                self.assertNotIn("KICKOS_CHIP_RESERVED_BLOCK0", text, name)
+            else:
+                self.assertIn("\nset(KICKOS_CHIP_RESERVED_BLOCK0 %s)\n" % first, text, name)
 
-    def test_doorbell_seat(self):
-        text = chip.generate(self.view())
-        self.assertIn("\nset(KICKOS_CHIP_DOORBELL_SEAT OFF)\n", text["chip.cmake"])
-        self.assertIn("#define KICKOS_CHIP_DOORBELL_SEAT 0\n", text["chip_limits.h"])
-        self.write(self.path, SMALL.replace("protection:", "doorbell_seat: true\nprotection:", 1))
-        text = chip.generate(self.view())
-        self.assertIn("\nset(KICKOS_CHIP_DOORBELL_SEAT ON)\n", text["chip.cmake"])
-        self.assertIn("#define KICKOS_CHIP_DOORBELL_SEAT 1\n", text["chip_limits.h"])
-
-    def test_tree_doorbell_seat(self):
-        for name, seat in (("virt_arm64", "ON"), ("rp2350", "OFF"), ("esp32c6", "OFF")):
+    def test_tree_kernel_lines(self):
+        for name, lines, doorbell in (
+                ("sim", "", ""), ("mps2", "", ""), ("stm32f411", "TIM2_IRQ=28", ""),
+                ("stm32f103", "TIM3_GLOBAL=29", ""), ("stm32f302", "TIM2_GLOBAL=28", ""),
+                ("sam3x8e", "TC0_IRQ=27", ""),
+                ("rx72m", "CMTW_CMWI0=30;ICU_GROUPBL2=107;ICU_GROUPBL0=110;ICU_GROUPBL1=111;"
+                          "ICU_GROUPAL0=112;ICU_GROUPAL1=113", ""),
+                ("rp2350", "", "SIO_IRQ_BELL=26"), ("virt_arm64", "TIMER_EL1_PHYS=30", ""),
+                ("imx8mp", "MU1_A_TO_A53=120", "")):
             path = os.path.join(TREE, "platform", name, "chip.yaml")
             text = chip.generate(self.view(path, ARCHES[name]))["chip.cmake"]
-            self.assertIn("\nset(KICKOS_CHIP_DOORBELL_SEAT %s)\n" % seat, text, name)
+            self.assertIn("\nset(KICKOS_CHIP_KERNEL_LINES \"%s\")\n" % lines, text, name)
+            self.assertIn("\nset(KICKOS_CHIP_DOORBELL_KERNEL_LINES \"%s\")\n" % doorbell, text, name)
+
+    def test_a_line_s_condition_is_one_the_tool_knows(self):
+        self.write(self.path, SMALL.replace("lines: { tick: 7 }", "lines: { tick: { number: 7, when: always } }"))
+        report = Report()
+        chip.read(self.path, report)
+        self.assertEqual([r.rule for r in report.refusals], ["form.enum"])
 
     def test_tables_follow_ownership(self):
         rows = chip.table_rows(self.view())

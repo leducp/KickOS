@@ -27,7 +27,6 @@ namespace kickos::x86_64
     void apic_eoi(void);
 
     // Zero before apic_init.
-    uint64_t apic_timer_hz(void);
     uint64_t apic_tsc_hz(void);
 
     bool apic_is_x2(void);

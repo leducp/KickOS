@@ -34,11 +34,6 @@ extern "C" void kickos_bench_lock_draw(uint32_t retries, uint32_t queued);
 
 namespace
 {
-#if defined(KICKOS_ENABLE_SELFTEST)
-    // Per-core doorbell services. No counterpart for rendezvous initiated: see arch_ipi_counts.
-    kickos::doorbell::PartCell g_served[KICKOS_DOORBELL_CORES] = {};
-#endif
-
     // The park's resting posture: the two contending arms need this core's interrupts OPEN
     // whatever level it entered the park at, which arch_irq_restore would not give.
     inline void irq_open(void)
@@ -129,10 +124,6 @@ int kickos_lx6_doorbell_pending(void)
 // fetch from.
 kickos::doorbell::Fenced kickos::doorbell::service_fence(Observed)
 {
-#if defined(KICKOS_ENABLE_SELFTEST)
-    uint32_t const me = arch_doorbell_core();
-    g_served[me].v = g_served[me].v.load() + 1u;
-#endif
     return Fenced();
 }
 
@@ -183,25 +174,6 @@ void kickos_doorbell_raise(uint32_t cores)
 void arch_ipi_raise(uint32_t cores)
 {
     kickos_lx6_doorbell_send(cores);
-}
-#endif
-
-#if defined(KICKOS_ENABLE_SELFTEST)
-// Services in the low half, rendezvous initiated in the high half (arch.h, arch_ipi_counts).
-//
-// The high half is structurally zero on this backend, and that is a fact about the part rather
-// than a gap. A rendezvous exists to make a peer run maintenance it cannot be made to run any
-// other way, and this part has neither half of it: no translation to invalidate, and no cache
-// over the memory both cores fetch from. There is therefore no wrapper here pairing a send with
-// a wait; a caller that ever needs one calls arch_ipi_send and arch_ipi_wait, which is what the
-// seam splits them for.
-uint64_t arch_ipi_counts(uint32_t core)
-{
-    if (core >= KICKOS_DOORBELL_CORES)
-    {
-        return 0;
-    }
-    return static_cast<uint64_t>(g_served[core].v.load());
 }
 #endif
 

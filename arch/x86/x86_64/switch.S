@@ -175,9 +175,8 @@ kickos_x86_64_thread_exit:
  * They cannot be interrupted either: IA32_FMASK clears the interrupt flag, and the two
  * classes the flag does not hold off have interrupt-stack-table slots of their own (desc.h).
  *
- * The caller is always at ring 3 here, arranged and not checked: a privileged caller takes
- * karch_syscall below, which calls the dispatch directly, and that is what lets the swapgs be
- * unconditional.
+ * The caller is always at ring 3 here, arranged and not checked: no privileged thread issues
+ * SYSCALL, and that is what lets the swapgs be unconditional.
  * The kernel block is empty on arrival, a thread reaching ring 3 only through the resume
  * epilogue, so the entry may stand at its top.
  */
@@ -248,14 +247,3 @@ arch_syscall64:
     syscall
     ret
     .popsection
-
-/* karch_syscall(nr, a0, a1, a2, a3), and karch_syscall64: the kernel-text trap a privileged
- * caller takes. SYSCALL records no privilege level to branch on, and a privileged caller
- * reaches the dispatch directly, its arguments already in the psABI registers.
- */
-    .balign 16
-    .globl karch_syscall
-    .globl karch_syscall64
-karch_syscall:
-karch_syscall64:
-    jmp     syscall_dispatch

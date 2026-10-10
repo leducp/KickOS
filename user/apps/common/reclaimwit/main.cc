@@ -75,7 +75,7 @@ namespace
                 kos_sleep_ns(1000000000ull);
                 continue;
             }
-            (void)kos_sem_wait(idle);
+            (void)kos_sem_wait(idle, KOS_TIMEOUT_NONE);
         }
     }
 

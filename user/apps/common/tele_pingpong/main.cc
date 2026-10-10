@@ -29,7 +29,7 @@ namespace
     {
         while (true)
         {
-            kos_sem_wait(CH_PING);
+            kos_sem_wait(CH_PING, KOS_TIMEOUT_NONE);
             kos::sleep_ns(BEAT_NS);
             kos_sem_post(CH_PONG);
         }
@@ -38,7 +38,7 @@ namespace
     {
         while (true)
         {
-            kos_sem_wait(CH_PONG);
+            kos_sem_wait(CH_PONG, KOS_TIMEOUT_NONE);
             kos::sleep_ns(BEAT_NS);
             kos_sem_post(CH_PING);
         }

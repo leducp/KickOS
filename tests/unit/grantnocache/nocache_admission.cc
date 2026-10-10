@@ -14,6 +14,8 @@
 
 #include <kickos/sys/errno.h>
 
+#include "grant_seam.h"
+
 #include <gtest/gtest.h>
 
 #include <stddef.h>
@@ -21,25 +23,23 @@
 
 namespace
 {
-    // The whole fake arena, power-of-two and naturally aligned: geometry always passes, so
-    // only the memory type can decide an arm's verdict.
-    constexpr uintptr_t ARENA_BASE = 0x20010000u;
-    constexpr size_t ARENA_SIZE = 0x10000u;
-
     int g_nocache = ARCH_MPU_NOCACHE_ALREADY;
     bool g_owned = true;
 }
+
+struct arch_reserved_span g_reserved = {};
+int g_bitband = 0;
 
 extern "C"
 {
     int arch_mpu_nocache_support(void) { return g_nocache; }
 
-    size_t arch_mpu_min_region(void) { return 32u; }
+    size_t arch_mpu_min_region(void) { return ARENA_REGION; }
     int arch_mpu_region_pow2(void) { return 1; }
 
     bool arch_mpu_region_encodable(uintptr_t base, size_t size)
     {
-        if (size < 32u or (size & (size - 1u)) != 0u)
+        if (size < ARENA_REGION or (size & (size - 1u)) != 0u)
         {
             return false;
         }
@@ -49,13 +49,12 @@ extern "C"
     uintptr_t arch_ram_base(void) { return ARENA_BASE; }
     size_t arch_ram_size(void) { return ARENA_SIZE; }
 
-    // Zero blocks and no bit-band alias, so geometry cannot decide an arm's verdict.
-    struct arch_reserved_span arch_reserved_blocks(void) { return {}; }
+    struct arch_reserved_span arch_reserved_blocks(void) { return g_reserved; }
 
     // The i.MX RT1062's USB OTG1 core, the region chip's one bus master.
     constexpr struct arch_reserved_block BUS_MASTERS[] = {{0x402E0000u, 0x200u}};
     struct arch_reserved_span arch_bus_master_apertures(void) { return {BUS_MASTERS}; }
-    int arch_bitband_present(void) { return 0; }
+    int arch_bitband_present(void) { return g_bitband; }
 }
 
 namespace

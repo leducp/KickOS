@@ -18,10 +18,6 @@ extern "C" void kickos_isr_timer(void);
 
 namespace
 {
-#if defined(KICKOS_ENABLE_SELFTEST)
-    using ServedRow = kickos::doorbell::Row<KICKOS_DOORBELL_LINE>;
-    KICKOS_AMP_SHARED("cells.served") ServedRow g_served[KICKOS_DOORBELL_CORES] = {};
-#endif
     inline volatile uint32_t& r32(uintptr_t a)
     {
         return *reinterpret_cast<volatile uint32_t*>(a);
@@ -44,9 +40,6 @@ namespace
         // between the two is lost.
         __asm volatile("fence iorw, iorw" ::: "memory");
         uint32_t const me = arch_doorbell_core();
-#if defined(KICKOS_ENABLE_SELFTEST)
-        g_served[me].seq[0] = g_served[me].seq[0].load() + 1u;
-#endif
         for (uint32_t from = 0; from < KICKOS_DOORBELL_CORES; from++)
         {
             uint32_t const asked = kickos::doorbell::g_request[from].seq[me].load();
@@ -93,30 +86,6 @@ void arch_ipi_fence(void)
 {
     __asm volatile("fence rw, rw" ::: "memory");
 }
-
-#if defined(KICKOS_ENABLE_SELFTEST)
-uint64_t arch_ipi_counts(uint32_t core)
-{
-    if (core >= KICKOS_DOORBELL_CORES)
-    {
-        return 0;
-    }
-    return static_cast<uint64_t>(g_served[core].seq[0].load());
-}
-
-uint32_t arch_ipi_deferred(uint32_t)
-{
-    return 0;
-}
-
-static_assert(KICKOS_CHIP_DOORBELL_SEAT == 0,
-              "this doorbell keeps no seat, which the chip file must state by leaving "
-              "doorbell_seat out");
-uint32_t arch_ipi_seat_set(uint32_t, uint32_t)
-{
-    return ARCH_IPI_SEAT_NONE;
-}
-#endif
 
 // HP dispatches the PMU source through its interrupt matrix. LP dispatches
 // PMU_LP_INT through its sole interrupt 30. Both reach the same service body.

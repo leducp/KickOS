@@ -24,7 +24,6 @@ extern "C" __attribute__((visibility("hidden"), noreturn)) void kfault_terminate
 #include <kickos/arch/trap.h>
 #include <kickos/arch/x86_64_trap_stack.h>
 #include <kickos/chip_limits.h>
-#include <kickos/sys/atomic.h>
 
 #include <stddef.h>
 #include <stdint.h>
@@ -139,11 +138,6 @@ namespace
     static_assert(KICKOS_KERNEL_STACK_SIZE - sizeof(uint32_t)
                       >= KICKOS_X86_64_TRAP_DEPTH_EXITKSW,
                   "the kernel block cannot hold the relocated death path's switch");
-    static_assert(KICKOS_MIN_STACK_SIZE
-                      >= KICKOS_X86_64_TRAP_NEST + KICKOS_X86_64_TRAP_DEPTH_SYSPRIV,
-                  "the spawn floor cannot hold a privileged caller's syscall");
-    static_assert(KICKOS_MIN_STACK_SIZE >= KICKOS_X86_64_TRAP_DEPTH_SYSPRIVSW,
-                  "the spawn floor cannot hold a privileged caller's syscall through the switch");
     static_assert(KICKOS_MIN_STACK_SIZE >= KICKOS_X86_64_TRAP_NEST + KICKOS_X86_64_TRAP_DEPTH_RET,
                   "the spawn floor cannot hold a privileged thread's entry return");
     static_assert(KICKOS_MIN_STACK_SIZE >= KICKOS_X86_64_TRAP_DEPTH_RETSW,
@@ -472,14 +466,6 @@ int arch_bitband_present(void)
     return 0;
 }
 
-// A word of the kernel's half, which no space maps for ring 3: what the isolation arms read
-// and self-grant and must be refused.
-uintptr_t arch_mpu_probe_addr(void)
-{
-    static volatile uint32_t guard_word = 0;
-    return reinterpret_cast<uintptr_t>(&guard_word);
-}
-
 // The permissions come from the PE32+ SECTION TABLE, walked at runtime from the base the image
 // was LOADED at (ring3_x86_64.cc): the image is built -ffunction-sections -fdata-sections, so
 // the writable set is forty-odd sections interleaved with read-only ones.
@@ -573,12 +559,11 @@ int arch_irq_line_core(int line)
     return static_cast<int>(route - 1u);
 }
 
-// Test scaffolding (arch.h).
-void arch_irq_inject(int irq)
+bool arch_irq_inject(int irq)
 {
     if (irq < 0 or irq >= IRQ_LINES)
     {
-        return;
+        return false;
     }
     uint32_t const bit = 1u << irq;
     if ((__atomic_load_n(&g_irq_masked, __ATOMIC_SEQ_CST) & bit) != 0)
@@ -595,6 +580,7 @@ void arch_irq_inject(int irq)
     {
         ring_line(irq, line_core(irq));
     }
+    return true;
 }
 
 // --- Fault isolation --------------------------------------------------------
@@ -648,29 +634,10 @@ void arch_fault_redirect_to_exit(void* frame)
     f->rsp = kickos_fault_stack_top();
 }
 
-#if defined(KICKOS_ENABLE_SELFTEST)
-// Per core, each written by its own core with interrupts masked.
-static kickos::Atomic<uint32_t, kickos::Order::RELAXED> g_irq_windows[KICKOS_NUM_CORES];
-
-uint32_t arch_irq_windows(void)
-{
-    uint32_t sum = 0;
-    for (kickos::Atomic<uint32_t, kickos::Order::RELAXED> const& n : g_irq_windows)
-    {
-        sum += n.load();
-    }
-    return sum;
-}
-#endif
-
 // STI holds recognition off until the next instruction ends, so the NOP is the window. An
 // interrupt the local APIC has not yet presented may wait for a later window.
 void arch_irq_window(void)
 {
-#if defined(KICKOS_ENABLE_SELFTEST)
-    kickos::Atomic<uint32_t, kickos::Order::RELAXED>& mine = g_irq_windows[arch_cpu_id()];
-    mine.store(mine.load() + 1u);
-#endif
     __asm__ volatile("sti\n\tnop\n\tcli" ::: "memory");
 }
 

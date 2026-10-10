@@ -135,12 +135,11 @@ further down: it binds every tracked file.
     relaxed 64-bit atomic load is a `__atomic_load_8` libcall on every backend including
     armv7m. Say which of the three at the declaration. **not gated**
     **SAY IT ONCE PER FILE where every such word in a translation unit invokes the same
-    exception or exceptions**, at the top rather than on each declaration: the x86_64
-    bring-up probes carry sixty-three between them and sixty-three line comments would say
-    less than one paragraph does. The point of the clause is that a reader can tell an
-    INVOKED exception from an unexamined one, and a file-level statement does that as well
-    as a per-line one. It has to name which exception and be true of every word below it, so
-    a TU whose words split across exceptions says so, as `probe4_x86_64.cc` does.
+    exception or exceptions**, at the top rather than on each declaration: on the x86_64
+    bring-up probes a line comment on every such word would say less than one paragraph
+    does. The point of the clause is that a reader can tell an INVOKED exception from an
+    unexamined one, and a file-level statement does that as well as a per-line one. It has to name which exception and be true of every word below it, so
+    a TU whose words split across exceptions says so, as `probe5_x86_64.cc` does.
     **AN ISR WRITING A FIELD IS THE RULE, NOT AN EXCEPTION TO IT.** That case is the first
     sentence above and its answer is `Atomic`. Where such a field stays `volatile` it is
     because one of the three applies on its own merits, most often because the wrapper

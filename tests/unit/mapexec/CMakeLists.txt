@@ -13,16 +13,19 @@ endif()
 kickos_add_kernel_host_lib(kickos_aspace_armv8a_host
   SOURCES "${_mapexec_backend}" aspace_sysops_seam.cc
           "${PROJECT_SOURCE_DIR}/tests/unit/common/sysops_seam.cc"
+          "${PROJECT_SOURCE_DIR}/tests/unit/common/kpanic_seam.cc"
   INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}" "${PROJECT_SOURCE_DIR}/tests/unit/common"
   POSTURE KICKOS_NUM_CORES=2 KICKOS_KERNEL_CORES=2 KICKOS_MULTICORE_MODEL_SHARED=1
           KICKOS_HAVE_ASPACE=1 KICKOS_ARMV8A_SYSOPS_FROM_SEAM=1)
 kickos_add_unit_test(NAME map_exec SOURCES map_exec.cc
+  INCLUDES "${PROJECT_SOURCE_DIR}/arch/arm64/common"
   LIBRARIES kickos_aspace_armv8a_host)
 
 # Build a one-core variant to check local maintenance and store publication.
 kickos_add_kernel_host_lib(kickos_aspace_armv8a_host_one
   SOURCES "${_mapexec_backend}" aspace_sysops_seam.cc
           "${PROJECT_SOURCE_DIR}/tests/unit/common/sysops_seam.cc"
+          "${PROJECT_SOURCE_DIR}/tests/unit/common/kpanic_seam.cc"
   INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}" "${PROJECT_SOURCE_DIR}/tests/unit/common"
   POSTURE KICKOS_NUM_CORES=1 KICKOS_KERNEL_CORES=1 KICKOS_MULTICORE_MODEL_SHARED=1
           KICKOS_HAVE_ASPACE=1 KICKOS_ARMV8A_SYSOPS_FROM_SEAM=1)

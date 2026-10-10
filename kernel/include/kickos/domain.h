@@ -50,11 +50,12 @@ namespace kickos
         // thrown away with it.
         VirtualRanges ranges;
 #endif
-        // Bumped on every claim, so a capability naming (index, generation) cannot be answered
-        // by a later occupant. NOT reset by claim_slot's reinitialisation, which would defeat it.
+        // Bumped on every claim and at its task's end and death, so a capability naming
+        // (index, generation) cannot be answered by a later occupant or past its task. NOT reset
+        // by claim_slot's reinitialisation, which would defeat it.
         uint16_t generation = 0;
-        // Live tasks holding this domain, plus one per explicit task's creator hold;
-        // 0 and not immortal => free slot.
+        // Live tasks holding this domain, plus one per explicit task's creator hold and one per
+        // borrower; 0 and not immortal => free slot. A CAP_ASPACE capability holds none.
         uint16_t refcount = 0;
         uint8_t region_count = 0;
         bool privileged = false;
@@ -66,17 +67,12 @@ namespace kickos
     size_t domain_region_count(Domain const* d);
     arch_mpu_region const* domain_region_at(Domain const* d, size_t i);
 
-    // A small stable name for the address space this domain holds, or 0 for none. Not a kernel
-    // pointer: the selftest compares two of these across tasks and must learn nothing else.
-    // Null-safe.
-    unsigned domain_space_id(Domain const* d);
-
     // The (index, generation) handle a CAP_ASPACE entry stores, and its inverse; SlotPool's
     // codec. domain_resolve answers null for a slot whose generation has moved.
     int domain_handle(Domain const* d);
     Domain* domain_resolve(int handle);
 
-    // The live hold count, for the ONE site that refuses at the ceiling. Null-safe.
+    // The live hold count. Null-safe.
     uint16_t domain_refcount(Domain const* d);
 
     // The address space this domain's task runs under, or null where the backend
@@ -94,12 +90,13 @@ namespace kickos
     // holds one, so a count above the number of live tasks is not a leak by itself.
     size_t domain_spaces_held(void);
 
-#if defined(KICKOS_ENABLE_SELFTEST)
-    // Bit c set where core c's translation base names a root SOME pool slot still holds; a
-    // core outside this set and the boot root's is translating through tables the frame pool
-    // has taken back.
-    uint32_t domain_cores_on_held_space(void);
-#endif
+    // At its task's end: no handle minted before resolves any more, though the slot may stay
+    // held. Caller holds IrqLock. Null-safe.
+    void domain_retire_handles(Domain* d);
+
+    // At its task's death: the space maps no frame run any more, though the space itself may
+    // live on. Caller holds IrqLock. Null-safe.
+    void domain_retire_space(Domain* d);
 #endif
 
     // Boot: build the two immortal domains (kernel = whole arena/privileged,

@@ -1079,11 +1079,6 @@ namespace kickos
             return false;
         }
 #endif
-        unsigned live_count()
-        {
-            return kernel().live;
-        }
-
         uint64_t next_timed_event(Thread const* t)
         {
             return policy_next_timed_event(t);

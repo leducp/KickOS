@@ -25,7 +25,6 @@ namespace kickos
     namespace
     {
         FrameAllocator g_frames;
-        size_t g_refused = 0;
         uintptr_t g_base = 0;
         uintptr_t g_top = 0;
 
@@ -36,21 +35,6 @@ namespace kickos
         {
             return reinterpret_cast<uintptr_t>(g_pool_delta);
         }
-
-#if defined(KICKOS_ENABLE_SELFTEST)
-        // Every caller holds the IrqLock, so this needs no ordering of its own.
-        size_t g_fail_in = 0;
-
-        bool fail_this_attempt()
-        {
-            if (g_fail_in == 0)
-            {
-                return false;
-            }
-            g_fail_in--;
-            return g_fail_in == 0;
-        }
-#endif
     }
 
     bool frame_pool_init()
@@ -79,35 +63,9 @@ namespace kickos
         return g_frames.frames_free();
     }
 
-    size_t frame_pool_refused()
-    {
-        IrqLock lock;
-        return g_refused;
-    }
-
-#if defined(KICKOS_ENABLE_SELFTEST)
-    void frame_pool_fail_in(size_t nth)
-    {
-        IrqLock lock;
-        g_fail_in = nth;
-    }
-
-    bool frame_pool_fail_armed()
-    {
-        IrqLock lock;
-        return g_fail_in != 0;
-    }
-#endif
-
     arch_phys_addr_t UnwrittenFrames::alloc_run(size_t pages)
     {
         IrqLock lock;
-#if defined(KICKOS_ENABLE_SELFTEST)
-        if (fail_this_attempt())
-        {
-            return 0;
-        }
-#endif
         uintptr_t const p = g_frames.alloc_run(pages);
         if (p == 0)
         {
@@ -169,12 +127,6 @@ extern "C"
 arch_phys_addr_t kickos_frame_alloc(void)
 {
     kickos::IrqLock lock;
-#if defined(KICKOS_ENABLE_SELFTEST)
-    if (kickos::fail_this_attempt())
-    {
-        return 0;
-    }
-#endif
     uintptr_t const p = kickos::g_frames.alloc();
     if (p == 0)
     {
@@ -186,10 +138,7 @@ arch_phys_addr_t kickos_frame_alloc(void)
 void kickos_frame_free(arch_phys_addr_t frame)
 {
     kickos::IrqLock lock;
-    if (not kickos::g_frames.release(static_cast<uintptr_t>(frame) + kickos::pool_delta()))
-    {
-        kickos::g_refused++;
-    }
+    (void)kickos::g_frames.release(static_cast<uintptr_t>(frame) + kickos::pool_delta());
 }
 
 }

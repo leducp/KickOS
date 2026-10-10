@@ -42,7 +42,7 @@ function(_kickos_cap_slab slots child chunk threads off_pool
 endfunction()
 
 # Check root's width and the child floor against the board's supply, and forward both.
-function(kickos_cap_table_resolve out_slots out_chunk out_child_width out_reply_max)
+function(kickos_cap_table_resolve out_slots out_child_width out_reply_max)
   set(_reserved "${KICKOS_CAP_FIRST_DYNAMIC}")
   set(_chunk "${KICKOS_CAP_CHUNK_TARGET}")
   set(_off_pool "${KICKOS_CAP_RUN_OFF_POOL}")
@@ -117,7 +117,6 @@ function(kickos_cap_table_resolve out_slots out_chunk out_child_width out_reply_
                  "plus ${_root_extra} chunk(s) for root's own widening")
 
   set(${out_slots} "${_slots}" PARENT_SCOPE)
-  set(${out_chunk} "${_chunk}" PARENT_SCOPE)
   set(${out_child_width} "${_floor}" PARENT_SCOPE)
   set(${out_reply_max} "${_reply_max}" PARENT_SCOPE)
 endfunction()

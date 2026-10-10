@@ -271,9 +271,8 @@ namespace kickos
             EXPECT_EQ(peer->wait_kind, WAIT_NONE) << "the wait edge is cleared by the waker";
         }
 
-        // A SEMAPHORE park has no error channel at all: sem_wait returns void and reads no
-        // wait_result. The cancel must still reach it, and must leave the count alone so a
-        // later post still hands its token to a genuine waiter.
+        // A SEMAPHORE park: the cancel must reach it, and must leave the count alone so a later
+        // post still hands its token to a genuine waiter.
         TEST_F(TaskDeath, a_semaphore_park_is_reached_and_its_count_untouched)
         {
             Task* const group = task(0);

@@ -13,6 +13,7 @@
 
 #include "board_pins.h"
 #include "family_map.h"
+#include <chip_layout.h>
 #include "regs.h" // arch/arm/common: kickos_armv7m_enable_fpu
 #include "stm32_gpio.h"
 
@@ -31,6 +32,9 @@ extern "C"
 namespace
 {
     using namespace kickos::stm32;
+
+    static_assert(chip::CLK_TIMER_IRQ == KICKOS_LAYOUT_LINE_TIM2_GLOBAL,
+                  "startup.S vectors the clock-wrap ISR at KICKOS_LAYOUT_LINE_TIM2_GLOBAL");
 
     // USART2's PCLK1: the HSI rate until the PLL locks.
     uint32_t pclk1_hz = 8000000u;

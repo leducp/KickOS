@@ -110,7 +110,7 @@ namespace
         *reinterpret_cast<volatile uint32_t*>(0xE000EF00u) = static_cast<uint32_t>(line); // STIR
         __asm volatile("dsb; isb" ::: "memory");
 #else
-        kickos::irq_inject(line, held);
+        (void)kickos::irq_inject(line, held); // a refused raise reads as a silent sample
 #endif
     }
 

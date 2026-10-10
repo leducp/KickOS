@@ -585,11 +585,6 @@ struct arch_context* kickos_rx_bad_usp(uint32_t usp)
     {
         kpanic_enter();
     }
-#if defined(KICKOS_ENABLE_SELFTEST)
-    // Silent when intact, and read on BOTH outcomes: what it witnesses is what the prologue
-    // wrote through the refused USP, which containment does not change.
-    kickos_trapstack_witness_report();
-#endif
     // THE NOUN IS THE DISCRIMINATOR. tests/lib/panic.ere matches "=== <ARCH> EXCEPTION", so a
     // contained refusal spelled that way is indistinguishable from one that ended the system
     // and assert_no_panic stops meaning anything on exactly the arms that now survive.
@@ -642,9 +637,6 @@ void kickos_rx_fault_report(uint32_t cause, uint32_t* saved)
     uint32_t const psw = saved[1];
     rx_mpu_mark('F'); // raw, pre-console: an exception fired rather than a hang
     kpanic_enter();
-#if defined(KICKOS_ENABLE_SELFTEST)
-    kickos_trapstack_witness_report(); // names a U-mode USP that reached kernel memory
-#endif
 #if KICKOS_HAVE_MPU
     // The access exception (+0x54) IS the RX MPU violation, and the RX MPU checks user mode
     // only (UM sec.17.1.1), so one taken with the faulting PSW.PM set is an unprivileged
@@ -1002,9 +994,8 @@ void kickos_rx_icu_line_arm(int line, int on)
 }
 
 // Self-bracketed so the soft-line g_irq_masked/g_irq_pending RMWs are atomic against a
-// device ISR whatever the caller does: kos_irq_inject/unmask reach here without an IrqLock
-// (syscall.cc), and a bare RMW preempted mid-update writes back a stale mask, re-enabling a
-// mid-service line into a phantom wake.
+// device ISR whatever the caller holds: a bare RMW preempted mid-update writes back a stale
+// mask, re-enabling a mid-service line into a phantom wake.
 void arch_irq_mask(int line)
 {
     if (line < 0)
@@ -1092,13 +1083,13 @@ void arch_irq_clear_pending(int line)
     arch_irq_restore(s);
 }
 
-void arch_irq_inject(int irq)
+bool arch_irq_inject(int irq)
 {
     // A real peripheral line cannot be pended from software on RX, so only logical lines
     // are injectable.
     if (irq < 0 or irq >= SOFT_IRQ_LINES)
     {
-        return;
+        return false;
     }
     arch_irq_state_t s = arch_irq_save();
     // A masked soft line latches the raise one-deep, redelivered at unmask.
@@ -1112,6 +1103,7 @@ void arch_irq_inject(int irq)
         reg8(ICU_SWINT2R) = SWINT2R_SWINT2;
     }
     arch_irq_restore(s);
+    return true;
 }
 
 // --- Idle -------------------------------------------------------------------

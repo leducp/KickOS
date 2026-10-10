@@ -41,6 +41,6 @@ int main(int, char**)
     (void)kos_sem_create(0, &idle);
     while (true)
     {
-        kos_sem_wait(idle);
+        kos_sem_wait(idle, KOS_TIMEOUT_NONE);
     }
 }

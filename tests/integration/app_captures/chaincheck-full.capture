@@ -1,0 +1,63 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   f411disco
+   arch    armv7m
+   cpu     cortex-m4
+   mpu     enforce
+   sched   tickless
+
+[chaincheck] start
+[chaincheck] ok - printf %hhd
+[chaincheck] ok - printf %hhu
+[chaincheck] ok - printf %hhx
+[chaincheck] ok - printf %lld min
+[chaincheck] ok - printf %llu max
+[chaincheck] ok - printf %llx
+[chaincheck] ok - printf %lli
+[chaincheck] ok - printf %22lld
+[chaincheck] ok - printf %zu
+[chaincheck] ok - printf %zx
+[chaincheck] ok - printf %jd min
+[chaincheck] ok - printf %ju max
+[chaincheck] ok - printf %td
+[chaincheck] ok - printf PRId64
+[chaincheck] ok - printf PRIx64
+[chaincheck] ok - printf %f 1
+[chaincheck] ok - printf %f -2.5
+[chaincheck] ok - printf %f -0
+[chaincheck] ok - printf %f of a float
+[chaincheck] ok - printf %.20f 0.1
+[chaincheck] ok - printf %.0f 0.5 ties to even
+[chaincheck] ok - printf %.0f 1.5 ties to even
+[chaincheck] ok - printf %.0f 2.5 ties to even
+[chaincheck] ok - printf %.2f 2.675
+[chaincheck] ok - printf %10.3f
+[chaincheck] ok - printf %-10.3f
+[chaincheck] ok - printf %010.2f
+[chaincheck] ok - printf %e
+[chaincheck] ok - printf %E
+[chaincheck] ok - printf %+.2e
+[chaincheck] ok - printf %.3e of zero
+[chaincheck] ok - printf %g 0.1
+[chaincheck] ok - printf %.17g 0.1
+[chaincheck] ok - printf %g 100000
+[chaincheck] ok - printf %g 1e6
+[chaincheck] ok - printf %g 0.0001
+[chaincheck] ok - printf %g 0.00001
+[chaincheck] ok - printf %.3g
+[chaincheck] ok - printf %#g
+[chaincheck] ok - printf %G
+[chaincheck] ok - printf %g 1e300
+[chaincheck] ok - printf %g max
+[chaincheck] ok - printf %g sub
+[chaincheck] ok - printf %f nan
+[chaincheck] ok - printf %f inf
+[chaincheck] ok - printf %e -inf
+[chaincheck] ok - printf %F inf
+[chaincheck] ok - printf %a 1
+[chaincheck] ok - printf %a 0.1
+[chaincheck] PASS (49 arms)

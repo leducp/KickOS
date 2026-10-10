@@ -53,10 +53,6 @@ namespace kickos
     // cacheably: before the kernel reads or writes through it, and again after it writes.
     void alias_sync(void const* p, size_t n);
 #endif
-#if defined(KICKOS_ENABLE_SELFTEST)
-    // alias_sync calls since boot, 0 where none is compiled.
-    uint32_t alias_sync_count();
-#endif
 
 #if KICKOS_ARCH_ARENA_DCACHE and not KICKOS_HAVE_ASPACE
     // Ahead of a memory region of `attr` over [base, base + size): one that is non-cacheable,
@@ -102,6 +98,10 @@ namespace kickos
     // Unmap what the space borrows, return the frames of a reservation it never mapped, then
     // destroy it. The one sanctioned way to end a space; arch_aspace_destroy alone strands both.
     void aspace_release(struct arch_aspace* space, VirtualRanges* ranges);
+
+    // Unmap every frame run the space maps and drop each mapping's reference. Caller holds
+    // IrqLock.
+    void aspace_release_runs(struct arch_aspace* space, VirtualRanges* ranges);
 
     // Whether every live mapping of [pa, pa + pages granules) in any space, `self` aside, carries
     // `memtype`: one block mapped cacheable in one place and not in another is incoherent.
@@ -156,6 +156,9 @@ namespace kickos
     arch_phys_addr_t aspace_reserve_stage(VirtualRanges const* ranges, size_t bytes);
     // Reserve the cleared run in `ranges`: its address, or 0 with the run left staged.
     uintptr_t aspace_reserve_commit(VirtualRanges* ranges);
+    // Hand the cleared run to the empty frame run `run_obj` instead: false, with the run left
+    // staged, unless every granule of it was cleared.
+    bool aspace_reserve_run(int run_obj);
 
 #if KICKOS_ARCH_ALIAS_DCACHE
     // The spans the locked pass of each mapping call below will owe a sync, noted ahead of it.
@@ -167,27 +170,6 @@ namespace kickos
     // A spawn's memory window or a task's data: a whole reservation of `own`'s at `base`.
     void aspace_reservation_note(VirtualRanges const* own, uintptr_t base, size_t bytes,
                                  enum arch_map_memtype type);
-#endif
-#if defined(KICKOS_ENABLE_SELFTEST)
-    uint32_t presync_refusals();
-    // The most granules, low word, and nanoseconds, high word, one unprivileged caller's work
-    // outside the lock ran between two interrupt windows.
-    uint64_t presync_masked_max();
-    // Granules synced, low word, and cleared, copied or freed outside the lock, high word.
-    uint64_t presync_granules();
-    uint32_t presync_live_count();
-    bool presync_live_of(Thread const* t);
-    // Interrupt windows the calling thread's calls have opened outside the lock.
-    uint32_t presync_windows_mine();
-    // The calling thread is a kernel probe mapping outside any call while `on`.
-    void presync_probe(bool on);
-    // Arm the calling thread's next presync_run: inject `line` at its first window, and drop
-    // its record `drops` times, once per round, every round for UINT8_MAX; with `fault_out`
-    // fail its next handle delivery; with `idle_window` open one window for the line in a run
-    // with nothing to do.
-    void presync_arm(uint16_t line, uint8_t drops, bool fault_out, bool idle_window);
-    // Whether the calling thread's handle delivery is armed to fail, disarming it.
-    bool presync_take_fault_out();
 #endif
 #endif
 
@@ -202,15 +184,11 @@ namespace kickos
     // Return null outside the image or if no app window is configured.
     void* aspace_image_alias(void const* app_ptr);
 
-    // Self-test frame identity relative to the first text frame; zero if unmapped.
-    // Values can be compared across spaces but are not physical addresses.
-    uintptr_t aspace_frame_token(struct arch_aspace* space, uintptr_t va);
-
-    // Map a capability-owned frame run at the chosen VA and record it as borrowed.
-    // The capability retains frame ownership. Return -KOS_ENOMEM for unavailable
-    // space, -KOS_EINVAL for an invalid range, or -KOS_EBUSY where another mapping of the
-    // run carries another memory type.
-    int aspace_cap_map(struct arch_aspace* space, VirtualRanges* ranges, uintptr_t va,
+    // Map a capability-owned frame run at *at, or at the run's own address where *at is 0,
+    // and record it as borrowed; on 0, *at is where it was mapped. The capability retains
+    // frame ownership. Return -KOS_ENOMEM for unavailable space, -KOS_EINVAL for an invalid
+    // range, or -KOS_EBUSY where another mapping of the run carries another memory type.
+    int aspace_cap_map(struct arch_aspace* space, VirtualRanges* ranges, uintptr_t* at,
                        int run_obj, arch_phys_addr_t base, uint32_t pages, uint32_t rights,
                        enum arch_map_memtype type);
 
@@ -261,31 +239,6 @@ namespace kickos
     // Install the boot root on THIS core and record it. For a caller about to stop being a
     // member of the space it is running in: the last member's release frees these tables.
     void aspace_install_boot(void);
-
-    void aspace_forget_current(void);
-
-#if defined(KICKOS_ENABLE_SELFTEST)
-    // Outstanding acquires in the high half of the word, releases that paired with no acquire in
-    // the low half. Both must be 0 outside a map-editing call.
-    uint64_t aspace_acquire_balance(void);
-
-    uint64_t aspace_unseated_switch_ins(void);
-
-    // Peer cores a destroy found still holding the space. Must stay 0: a dying member vacates
-    // its space before its reference drops.
-    uint64_t aspace_release_peer_hits(void);
-
-    // Destroys run since boot. The counter above reads 0 for a sweep that found nothing and
-    // for a destroy that never ran, so a caller asserting the 0 needs this beside it.
-    uint64_t aspace_release_runs(void);
-
-    // Granules copied under the kernel lock since boot, for a new space's static data or the
-    // snapshot.
-    uint64_t aspace_locked_pages(void);
-
-    // Drop the space holding the image's own data pages, as its release would.
-    void aspace_data_home_forget(void);
-#endif
 
 #else
 

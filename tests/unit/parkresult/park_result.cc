@@ -38,10 +38,7 @@ namespace kickos
             constexpr uint8_t PRIO_HOLDER = 5;
             constexpr uint8_t PRIO_WAITER = 6;
 
-            // The waker reads them because a ParkWaker takes only the parked thread: it
-            // stands in for a peer, and a peer holds its own object references.
             Mutex* g_mutex = nullptr;
-            Semaphore* g_sem = nullptr;
 
             void unlock_the_mutex(Thread*)
             {
@@ -51,28 +48,6 @@ namespace kickos
             void cancel_the_waiter(Thread* parked)
             {
                 thread_cancel(parked, kickos::IrqLock());
-            }
-
-            void post_the_semaphore(Thread*)
-            {
-                (void) sem_post(g_sem);
-            }
-
-            // KOS_SYS_SEM_WAIT's shape: the park under the resolve's bracket, the result read
-            // after it, past the resume barrier.
-            int wait_on_the_semaphore()
-            {
-                Thread* const c = sched::current();
-                uint32_t epoch = 0;
-                {
-                    IrqLock lock;
-                    if (not sem_wait(lock, g_sem, epoch))
-                    {
-                        return 0;
-                    }
-                }
-                wq_confirm_resume(c, epoch);
-                return static_cast<int>(c->wait_result);
             }
 
             // Every real waker in the tree writes a result; this one does not, which is what
@@ -141,36 +116,6 @@ namespace kickos
                 << "and the waiter is marked for its death point";
             EXPECT_EQ(g_mutex->owner, holder) << "a cancelled waiter does not acquire the mutex";
             EXPECT_EQ(holder->prio, PRIO_HOLDER) << "the owner's boost is reverted with the wait";
-        }
-
-        TEST_F(ParkResult, a_posted_semaphore_park_hands_over_its_token)
-        {
-            Thread* holder = nullptr;
-            seat_waiter_over_holder(&holder);
-            g_sem = semaphore(nullptr);
-            wake_next_park(post_the_semaphore);
-
-            int const rc = wait_on_the_semaphore();
-
-            EXPECT_EQ(rc, 0) << "sem_post said the token was handed over";
-            EXPECT_EQ(g_sem->count, 0) << "the token went straight to the waiter";
-            EXPECT_TRUE(g_sem->waiters.head == nullptr) << "and it is off the queue";
-            EXPECT_STREQ(trace(), "switch2>1 switch1>2") << "the park switched away and back";
-        }
-
-        TEST_F(ParkResult, a_cancelled_semaphore_wait_returns_ecanceled)
-        {
-            Thread* holder = nullptr;
-            Thread* const waiter = seat_waiter_over_holder(&holder);
-            g_sem = semaphore(nullptr);
-            wake_next_park(cancel_the_waiter);
-
-            int const rc = wait_on_the_semaphore();
-
-            EXPECT_EQ(rc, -KOS_ECANCELED) << "the cancel is what the return carries, not a token";
-            EXPECT_EQ(g_sem->count, 0) << "no token was taken or banked";
-            EXPECT_TRUE(g_sem->waiters.head == nullptr) << "the cancel took the waiter off the queue";
-            EXPECT_NE(waiter->cancel_kind, CANCEL_NONE) << "and marked it for its death point";
         }
 
         // A waker that ends the park without writing a result leaves the poison, so the

@@ -294,13 +294,8 @@ kickos_armv8a_el0_irq_entry:
 
 /* --- The user side of the trap --------------------------------------------
  * arch_syscall(nr, a0, a1, a2, a3). arch_syscall64 is the same entry, the seam's psABI pair
- * collapsing at this width.
- *
- * TWO COPIES, one per half of a split image. The ordinary names are the APP's and link
- * into the app's low text, which an EL0 thread executes and which therefore carries
- * privileged-execute-never; the kernel takes the private name, in its own half, mapped
- * through TTBR1 in every space by construction. Both references are explicit calls, so
- * the rename is a source fix and needs no objcopy pass.
+ * collapsing at this width. It links into the app's low text, which an EL0 thread executes
+ * and which therefore carries privileged-execute-never.
  *
  * .apptrap and not .text.*: virt_arm64.ld selects the kernel half by ARCHIVE, and this
  * archive is kernel-side, so the app's copy needs a section name those selectors do not
@@ -315,14 +310,6 @@ arch_syscall64:
     ret
 
     .section .text.switch, "ax"
-/* The kernel's own trap leaf (kickos/arch/arch.h). root_entry descends through it for
- * shutdown and panic, root not always being privileged. */
-    .global karch_syscall
-    .global karch_syscall64
-karch_syscall:
-karch_syscall64:
-    svc     #0
-    ret
 
 /* --- arch_switch's immediate half -----------------------------------------
  * void kickos_armv8a_switch_now(struct arch_context* from, struct arch_context* to)

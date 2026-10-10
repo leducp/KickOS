@@ -152,5 +152,10 @@ namespace kickos
         {
             return g_frames_freed_at_rendezvous;
         }
+
+        uint64_t satp_of_hart(uint32_t core)
+        {
+            return g_satp[core];
+        }
     }
 }

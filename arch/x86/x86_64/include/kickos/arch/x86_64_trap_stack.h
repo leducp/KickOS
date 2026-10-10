@@ -12,9 +12,6 @@
  * block. The double fault, the NMI and the
  * machine check take interrupt-stack-table slots of their own (desc.h).
  *
- * A PRIVILEGED CALLER'S SYSCALL IS A CALL: karch_syscall jumps straight to the dispatch on the
- * caller's own stack with interrupts as they were.
- *
  * NO INTERRUPT NESTS BELOW A SWITCH FRAME: arch_switch runs under the kernel IrqLock and the
  * frame it saves carries that masked flag. So each descent with interrupts live is two classes,
  * the interrupt nested at its deepest byte with the switch cut, and the switch with nothing
@@ -88,13 +85,6 @@
  * presets. */
 #define KICKOS_X86_64_TRAP_DEPTH_SYSWIN 512
 
-/* The same dispatch on a privileged caller's own stack with an interrupt nested below: 1880 on
- * qemu-x86_64, down SYSK's chain. */
-#define KICKOS_X86_64_TRAP_DEPTH_SYSPRIV 1920
-
-/* The same dispatch through the switch: 1880 on qemu-x86_64, down SYSPRIV's chain. */
-#define KICKOS_X86_64_TRAP_DEPTH_SYSPRIVSW 1920
-
 /* The double-fault, NMI and machine-check slots: kickos_x86_64_trap on a static array, 408
  * down IRQ's chain, which bounds the reporter those vectors actually take, and 544 with newlib
  * linked, down the same chain, and 592 on qemu-x86_64-bench. */
@@ -138,12 +128,8 @@
 #define KICKOS_X86_64_TRAP_WINDOW 1128
 #undef KICKOS_X86_64_TRAP_DEPTH_SYSK
 #define KICKOS_X86_64_TRAP_DEPTH_SYSK 2432
-/* SYSK, SYSPRIV and SYSPRIVSW measure 2160 on qemu-x86_64-smp12, a spawn seeding the new task's
- * space from a 32-slot root table. */
-#undef KICKOS_X86_64_TRAP_DEPTH_SYSPRIV
-#define KICKOS_X86_64_TRAP_DEPTH_SYSPRIV 2432
-#undef KICKOS_X86_64_TRAP_DEPTH_SYSPRIVSW
-#define KICKOS_X86_64_TRAP_DEPTH_SYSPRIVSW 2432
+/* SYSK measures 2160 on qemu-x86_64-smp12, a spawn seeding the new task's space from a 32-slot
+ * root table. */
 #undef KICKOS_X86_64_TRAP_DEPTH_IST
 #define KICKOS_X86_64_TRAP_DEPTH_IST 768
 #undef KICKOS_X86_64_TRAP_DEPTH_EXITK
@@ -167,8 +153,6 @@
  * class IRQK      frame=KICKOS_X86_64_TRAP_FRAME depth=KICKOS_X86_64_TRAP_DEPTH_IRQ stack=kernel
  * class SYSK      frame=KICKOS_X86_64_TRAP_FRAME depth=KICKOS_X86_64_TRAP_DEPTH_SYSK stack=kernel
  * class SYSWIN    frame=KICKOS_X86_64_TRAP_WINDOW depth=KICKOS_X86_64_TRAP_DEPTH_SYSWIN stack=kernel at=arch_irq_window
- * class SYSPRIV   frame=KICKOS_X86_64_TRAP_NEST depth=KICKOS_X86_64_TRAP_DEPTH_SYSPRIV
- * class SYSPRIVSW frame=KICKOS_X86_64_TRAP_FRAME_NONE depth=KICKOS_X86_64_TRAP_DEPTH_SYSPRIVSW
  * class IST       frame=KICKOS_X86_64_TRAP_FRAME depth=KICKOS_X86_64_TRAP_DEPTH_IST stack=trap
  * class EXITK     frame=KICKOS_X86_64_TRAP_NEST depth=KICKOS_X86_64_TRAP_DEPTH_EXITK stack=kernel
  * class EXITKSW   frame=KICKOS_X86_64_TRAP_FRAME_NONE depth=KICKOS_X86_64_TRAP_DEPTH_EXITKSW stack=kernel

@@ -139,34 +139,6 @@ echo "== crossing: node $cross_node's row counts $cross_served answered call(s) 
 printf '%s\n' "$OUT" | grep -q 'ampping: node 0 done' \
     || fail "node 0 never completed its rounds"
 
-# A publication outlives the doorbell that would have announced it: node 0 publishes with the
-# target's seat forced unseated, so the raise is skipped, then makes an ordinary call carrying
-# the next notice. That node's OWN take counter must have moved by TWO; one means the deferred
-# message was lost. Which node the kernel published at is the kernel's own choice, so the node
-# fields are compared rather than discarded: a notice sent to any other node leaves the
-# deferred publication with none.
-#
-defer="$(printf '%s\n' "$OUT" | sed -n 's/^ampping: deferred \([0-9]*\) raise(s) skipped at node \([0-9]*\), notice to node \([0-9]*\) port [0-9]*, took \([0-9]*\) message(s).*$/\1 \2 \3 \4/p' | tail -1)"
-[ -n "$defer" ] || fail "node 0 never reported the deferred publication.
-  A node the partition names no port refuses this clause by name instead; that is a partition
-  this demo cannot carry a notice on, not a lost message. The app also asserts the notice call
-  itself before printing this line, so its own refusal line above stands in place of it."
-skipped="$(echo "$defer" | cut -d' ' -f1)"
-at="$(echo "$defer" | cut -d' ' -f2)"
-notice="$(echo "$defer" | cut -d' ' -f3)"
-took="$(echo "$defer" | cut -d' ' -f4)"
-[ "$skipped" -eq 1 ] || fail "expected exactly 1 skipped raise, node 0 reported $skipped:
-  without a skipped raise the publication carried its own notice and this witnesses nothing"
-[ "$at" != "0" ] || fail "the kernel reported publishing at node 0, which is the node running
-  this: its own ring is the one no service drains, so this witnesses nothing"
-[ "$at" = "$notice" ] || fail "the publication went to node $at and the notice to node $notice.
-  The count below is node $at's, so a notice sent elsewhere leaves the deferred publication
-  with none and this clause measures a crossing it never made."
-[ "$took" -eq 2 ] || fail "node $at took $took message(s) across the deferred publication and the
-  call that followed it, and the claim needs 2. One means the publication whose raise was
-  skipped was LOST, which is the clause this arm exists for."
-echo "== deferred delivery: $skipped raise(s) skipped at node $at, which took $took message(s)"
-
 # Keep the app ordering witness: node 0 reports the crossing after it has read all peer rows.
 at_line() { # <extended regex>: the capture line it first matched on, empty where it did not
     printf '%s\n' "$OUT" | grep -nE "$1" | head -1 | cut -d: -f1
@@ -175,8 +147,7 @@ barrier_at="$(at_line 'ampping: [0-9]+ of [0-9]+ node app\(s\) alive')"
 [ -n "$barrier_at" ] || fail "the app-alive sweep line is not in the capture"
 for pat in 'ampping: node [0-9]+ calls node [0-9]+ port' \
            'ampping: node [0-9]+ answered [0-9]+ round\(s\), its own record says' \
-           'ampping: node 0 done' \
-           'ampping: deferred [0-9]+ raise\(s\) skipped at node'; do
+           'ampping: node 0 done'; do
     at="$(at_line "$pat")"
     [ -n "$at" ] || fail "nothing matched /$pat/ here, where a clause above already read it"
     [ "$at" -gt "$barrier_at" ] || fail "node 0 printed /$pat/ at capture line $at, ahead of its

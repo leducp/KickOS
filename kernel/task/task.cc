@@ -119,6 +119,9 @@ namespace kickos
                 return;
             }
             t->marks = static_cast<uint8_t>(t->marks | TASK_MARK_ENDED);
+#if KICKOS_HAVE_ASPACE
+            domain_retire_handles(t->domain);
+#endif
             if (latch)
             {
                 t->exit_status = code;
@@ -133,6 +136,13 @@ namespace kickos
         {
             console_leave(t, held);
             watch_clear(t);
+#if KICKOS_HAVE_ASPACE
+            if ((t->marks & TASK_MARK_ENDED) == 0)
+            {
+                domain_retire_handles(t->domain);
+            }
+            domain_retire_space(t->domain);
+#endif
             domain_release(t->domain);
             // Nulling makes the debris FAIL-CLOSED: task_domain answers null, which every
             // reader already handles, rather than a Domain* the pool may have re-handed.
@@ -450,6 +460,13 @@ namespace kickos
         {
             return;
         }
+#if KICKOS_HAVE_ASPACE
+        if ((t->marks & TASK_MARK_ENDED) == 0)
+        {
+            domain_retire_handles(t->domain);
+        }
+        domain_retire_space(t->domain);
+#endif
         t->marks = static_cast<uint8_t>((t->marks & ~TASK_MARK_READY) | TASK_MARK_DEAD
                                         | TASK_MARK_ENDED);
         watch_raise(t);

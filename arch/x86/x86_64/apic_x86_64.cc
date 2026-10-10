@@ -318,11 +318,6 @@ namespace kickos::x86_64
         }
     }
 
-    uint64_t apic_timer_hz(void)
-    {
-        return g_timer_hz;
-    }
-
     uint64_t apic_tsc_hz(void)
     {
         return g_tsc_hz;

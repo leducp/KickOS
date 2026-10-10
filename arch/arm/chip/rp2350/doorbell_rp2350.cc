@@ -38,9 +38,6 @@ extern "C"
 {
     void kfault_terminate(void) __attribute__((noreturn));
     void kickos_rp2350_doorbell_service(void);
-#if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_AMP_OWN_IMAGE
-    uint32_t kickos_armv7m_probe_read(uintptr_t at, uint32_t* value);
-#endif
 }
 
 namespace
@@ -62,11 +59,6 @@ namespace
     // g_answer[t].seq[i]: how far core t has answered core i. Written by t, read by i.
     KICKOS_AMP_SHARED("cells.request") SeqRow g_request[KICKOS_DOORBELL_CORES] = {};
     KICKOS_AMP_SHARED("cells.answer") SeqRow g_answer[KICKOS_DOORBELL_CORES] = {};
-
-#if defined(KICKOS_ENABLE_SELFTEST)
-    // Per-core doorbell services, read across nodes, so placed with the cells.
-    KICKOS_AMP_SHARED("cells.served") SeqRow g_served[KICKOS_DOORBELL_CORES] = {};
-#endif
 
     // One of the eight flags each way (datasheet 3.1.6). A core has exactly one peer here, so
     // OUT_SET carries no target field and one flag is the whole rendezvous.
@@ -273,9 +265,6 @@ void kickos_rp2350_doorbell_service(void)
     r32(reg::sio::DOORBELL_IN_CLR) = raised;
     __asm volatile("dsb" ::: "memory");
 
-#if defined(KICKOS_ENABLE_SELFTEST)
-    g_served[me].seq[0] = g_served[me].seq[0].load() + 1u;
-#endif
     for (uint32_t from = 0; from < KICKOS_DOORBELL_CORES; from++)
     {
         uint32_t const asked = g_request[from].seq[me].load();
@@ -387,38 +376,6 @@ void arch_ipi_wait(uint32_t cores)
     }
 }
 
-#if defined(KICKOS_ENABLE_SELFTEST)
-// Services in the low half, rendezvous initiated in the high half (arch.h, arch_ipi_counts).
-// The high half is structurally zero here: no translating backend is compiled on this part.
-uint64_t arch_ipi_counts(uint32_t core)
-{
-    if (core >= KICKOS_DOORBELL_CORES)
-    {
-        return 0;
-    }
-    return static_cast<uint64_t>(g_served[core].seq[0].load());
-}
-
-// A real zero and not a stub's: a raise is one write to SIO DOORBELL_OUT_SET naming the other
-// core of the pair, with no per-core state behind it that could hold one back.
-uint32_t arch_ipi_deferred(uint32_t core)
-{
-    (void)core;
-    return 0u;
-}
-
-// With no publication there is no seat to keep.
-static_assert(KICKOS_CHIP_DOORBELL_SEAT == 0,
-              "this doorbell keeps no seat, which the chip file must state by leaving "
-              "doorbell_seat out");
-uint32_t arch_ipi_seat_set(uint32_t core, uint32_t seated)
-{
-    (void)core;
-    (void)seated;
-    return ARCH_IPI_SEAT_NONE;
-}
-#endif
-
 #if KICKOS_AMP_OWN_IMAGE
 // The partition primary launches its peer; the bootrom never does. Both cores enter the
 // bootrom, and core 1 redirects early to a low-power wait for core 0 to hand it an entry point
@@ -504,30 +461,6 @@ void arch_amp_release_peers(void)
             }
         }
     }
-}
-#endif
-
-#if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_AMP_OWN_IMAGE && (KICKOS_AMP_NODE_ID != 0)
-// UART0's UARTPERIPHID0: the device the ampping partition gives node 0.
-int arch_amp_gate_probe(void)
-{
-    constexpr uintptr_t AT = kickos::rp2350::mmap::UART0_BASE + 0xFE0u;
-    constexpr uint32_t UART0_REG = 0xA0u;
-    uint32_t const image = r32(reg::accessctrl::BASE + UART0_REG);
-    uint32_t got = 0;
-    uint32_t const cfsr = kickos_armv7m_probe_read(AT, &got);
-    if (cfsr != 0u)
-    {
-        kickos::kprintf("# accessctrl probe: 0x%x = 0x%x, node %u read 0x%x: fault CFSR=0x%x BFAR=0x%x\n",
-                        static_cast<unsigned>(UART0_REG), static_cast<unsigned>(image),
-                        static_cast<unsigned>(KICKOS_AMP_NODE_ID), static_cast<unsigned>(AT),
-                        static_cast<unsigned>(cfsr), static_cast<unsigned>(got));
-        return 1;
-    }
-    kickos::kprintf("# accessctrl probe: 0x%x = 0x%x, node %u read 0x%x: 0x%x\n", static_cast<unsigned>(UART0_REG),
-                    static_cast<unsigned>(image), static_cast<unsigned>(KICKOS_AMP_NODE_ID),
-                    static_cast<unsigned>(AT), static_cast<unsigned>(got));
-    return 0;
 }
 #endif
 

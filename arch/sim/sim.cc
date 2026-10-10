@@ -113,7 +113,6 @@ namespace
         unsigned char* arena = nullptr; // the mmap'd user-RAM pool
         size_t arena_size = 0;
         size_t arena_used = 0;          // bump allocator (arch_ram_alloc)
-        unsigned char* guard = nullptr; // a reserved arena page no domain owns
         // SIM_PVREG_SPAN bytes at SIM_PVREG_BASE, outside the arena. null => this host
         // refused the fixed mapping, so no DEV window is encodable and the
         // privileged-write seam declines.
@@ -708,8 +707,6 @@ void arch_init(void)
     }
     sim().arena_used = 0;
     sim().applied_n = 0;
-    // Reserve one page no domain is ever granted: the isolation-probe address.
-    sim().guard = static_cast<unsigned char*>(arch_ram_alloc(sim().pagesize));
 
     // The fake write-PV-only register block, OUTSIDE the arena: it must not be reachable as a
     // RAM grant, and arena_lower_to_applied must skip it. MAP_FIXED_NOREPLACE never evicts an
@@ -1441,13 +1438,6 @@ void* arch_ram_alloc(size_t size)
     return reinterpret_cast<void*>(aligned);
 }
 
-#if defined(KICKOS_ENABLE_SELFTEST)
-uintptr_t arch_ram_next(void)
-{
-    return reinterpret_cast<uintptr_t>(sim().arena) + sim().arena_used;
-}
-#endif
-
 // arch_domain_static_regions lives in kernel/domain/domain.cc. On this build the weak
 // __kickos_code_*/__kickos_appdata_* linker symbols are undefined, so it returns 0: the app's
 // code and data are host-process memory and the sim governs only the arena.
@@ -1498,11 +1488,6 @@ bool arch_user_data_writable(uintptr_t ptr, size_t len)
     return arch_user_text_readable(ptr, len);
 }
 
-uintptr_t arch_mpu_probe_addr(void)
-{
-    return reinterpret_cast<uintptr_t>(sim().guard);
-}
-
 // --- Syscall trap -----------------------------------------------------------
 // A direct call, with the privilege raise below emulated. This backend ships no
 // ipc_fastpath.cmake: a caller's continuation here is a host return address on its own stack,
@@ -1549,9 +1534,8 @@ enum
 static_assert(SIM_IRQ_LINES == KICKOS_MAX_IRQ, "the sim's line count is its chip file's");
 
 // Self-bracketed (arch_irq_save/restore) so the irq_masked/irq_pending RMWs are
-// atomic against a device ISR regardless of the caller: kos_irq_inject/unmask reach
-// here without an IrqLock (syscall.cc), and a bare RMW preempted mid-update would
-// write back a stale mask -> re-enable a mid-service line -> phantom wake.
+// atomic against a device ISR regardless of the caller: a bare RMW preempted
+// mid-update would write back a stale mask -> re-enable a mid-service line -> phantom wake.
 void arch_irq_mask(int line)
 {
     if (line < 0 or line >= SIM_IRQ_LINES)
@@ -1594,15 +1578,17 @@ void arch_irq_clear_pending(int line)
     arch_irq_restore(s);
 }
 
-void arch_irq_inject(int irq)
+bool arch_irq_inject(int irq)
 {
+    if (irq < 0 or irq >= SIM_IRQ_LINES)
+    {
+        return false;
+    }
     arch_irq_state_t s = arch_irq_save();
-    // Latch-and-coalesce: a raise on a masked in-range line sets the one-deep pending
-    // bit (redelivered at unmask), NOT dropped. An unmasked line, or a never-maskable
-    // line >= SIM_IRQ_LINES, delivers now (the raise pends under this bracket and lands
-    // at its release, in ISR context).
-    if (irq >= 0 and irq < SIM_IRQ_LINES
-        and (static_cast<unsigned>(sim().irq_masked) & (1u << irq)))
+    // Latch-and-coalesce: a raise on a masked line sets the one-deep pending bit (redelivered
+    // at unmask), NOT dropped. An unmasked line delivers now (the raise pends under this
+    // bracket and lands at its release, in ISR context).
+    if ((static_cast<unsigned>(sim().irq_masked) & (1u << irq)) != 0u)
     {
         sim().irq_pending = sim().irq_pending | static_cast<sig_atomic_t>(1u << irq);
     }
@@ -1612,6 +1598,7 @@ void arch_irq_inject(int irq)
         raise(SIGUSR1);
     }
     arch_irq_restore(s);
+    return true;
 }
 
 // --- Idle -------------------------------------------------------------------

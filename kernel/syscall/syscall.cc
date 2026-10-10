@@ -5,7 +5,7 @@
 
 #include <kickos/irq_route.h>
 #include <kickos/arch/arch.h>
-#include <kickos/arch/doorbell_cells.h> // arch_doorbell_core: which matrix row this core writes
+#include <kickos/ampwindow.h>
 #include <kickos/aspace.h>
 #include <kickos/bench.h>
 #include <kickos/cap.h>
@@ -20,14 +20,12 @@
 #include <kickos/notify.h>
 #include <kickos/irqlock.h>
 #include <kickos/ktrace.h>
-#include <kickos/kruntime.h> // kmemset
 #include <kickos/ramown.h>
 #include <kickos/console_tx.h>
 #include <kickos/domain.h>
 #include <kickos/task.h>
 
 #include <kickos/sys/abi.h>
-#include <kickos/sys/abi_probe.h>
 
 #include "syscall_internal.h"
 
@@ -46,67 +44,8 @@ namespace kickos
 
     namespace
     {
-#if defined(KICKOS_ENABLE_SELFTEST) && not KICKOS_HAVE_ASPACE
-        // KOS_GRANT_OP_ARENA_SCRIBBLE: kos_ram_alloc's authority, over arena nothing holds yet.
-        uint64_t arena_scribble(size_t size)
-        {
-            IrqLock lock;
-            if (not cap_check_authority(sched::current(), AUTH_MEMORY))
-            {
-                return static_cast<uint64_t>(-KOS_EPERM);
-            }
-            uintptr_t const next = arch_ram_next();
-            uintptr_t const end = arch_ram_base() + arch_ram_size();
-            if (next > end or size > end - next)
-            {
-                return 0;
-            }
-            kmemset(reinterpret_cast<void*>(next), KOS_ARENA_SCRIBBLE, size);
-            return next;
-        }
-#endif
-
         // Yield passes the publish drain allows before declaring a stuck chip writer.
         constexpr uint32_t CONSOLE_PUBLISH_DRAIN_MAX = KICKOS_POLL_SPIN_MAX;
-
-        // Checked BEFORE the object is created: a mint that cannot deliver its handle leaves
-        // an object nothing can name or close. The kernel writes it privileged, so an
-        // unprivileged caller must own it. kos_thread_t and kos_task_t are 32-bit too.
-        int cap_out_check(uintptr_t out)
-        {
-            if (out == 0 or (out & (alignof(uint32_t) - 1)) != 0)
-            {
-                return -KOS_EINVAL;
-            }
-            if (not user_writable_ok(out, sizeof(uint32_t)))
-            {
-                return -KOS_EFAULT;
-            }
-            return 0;
-        }
-
-        // Nothing is written on failure: the stub seated its codec's NONE before trapping,
-        // so the sys.h "always written" guarantee already holds.
-        //
-        // cap_out_check proved this word writable and 4-aligned, so one granule holds all of
-        // it and a refusal here moves NO byte: the mapping went away since that check. The
-        // capability stays installed and unnameable until its holder dies.
-        uint64_t cap_out_deliver(uintptr_t out, int rc, uint32_t handle)
-        {
-#if KICKOS_PRESYNC and defined(KICKOS_ENABLE_SELFTEST)
-            if (rc == 0 and presync_take_fault_out())
-            {
-                return static_cast<uint64_t>(-KOS_EFAULT);
-            }
-#endif
-            if (rc == 0
-                and not kaccess_to_user(user_space_of(sched::current()), out, &handle,
-                                        sizeof(handle)))
-            {
-                rc = -KOS_EFAULT;
-            }
-            return static_cast<uint64_t>(rc);
-        }
 
         // The ring refuses an insert it cannot take WHOLE and a CRLF console spends two bytes
         // on a newline, so a chunk of N can need 2N and the smallest configured ring holds
@@ -324,8 +263,8 @@ namespace
     {
         uint32_t attr = ARCH_MPU_R | ARCH_MPU_W;
         if (not cap_check_authority(c, AUTH_MEMORY) or size == 0 or (base + size) < base
-            or not mem_flags_to_attr(flags, &attr) or not grant_nocache_admissible(attr)
-            or user_range_typed_ok(base, size, attr))
+            or not mem_flags_to_attr(flags, &attr)
+            or not grant_nocache_admissible(attr))
         {
             return;
         }
@@ -544,9 +483,14 @@ uint64_t syscall_body(uintptr_t nr,
                 {
                     return static_cast<uint64_t>(-err);
                 }
-                if (not sem_wait(lock, s, epoch))
+                SemWait const got = sem_wait(lock, s, static_cast<uint32_t>(a1), epoch);
+                if (got == SemWait::TAKEN)
                 {
                     return 0;
+                }
+                if (got == SemWait::EMPTY)
+                {
+                    return static_cast<uint64_t>(-KOS_ETIMEDOUT);
                 }
             }
             wq_confirm_resume(c, epoch);
@@ -633,6 +577,25 @@ uint64_t syscall_body(uintptr_t nr,
             rc = amp_endpoint_create(static_cast<uint32_t>(a0), static_cast<uint32_t>(a1), &h);
             return cap_out_deliver(a2, rc, h);
         }
+#if KICKOS_AMP_NODE
+        case KOS_SYS_AMP_COUNT:
+        {
+            int rc = cap_out_check(a2);
+            if (rc != 0)
+            {
+                return static_cast<uint64_t>(rc);
+            }
+            uint32_t const node = static_cast<uint32_t>(a0);
+            uint32_t const which = static_cast<uint32_t>(a1);
+            if (node != a0 or which != a1)
+            {
+                return static_cast<uint64_t>(-KOS_EINVAL);
+            }
+            uint32_t count = 0;
+            rc = amp::count_read(node, which, &count);
+            return cap_out_deliver(a2, rc, count);
+        }
+#endif
         case KOS_SYS_SEND:
         case KOS_SYS_SEND_TIMED:
         {
@@ -877,6 +840,21 @@ uint64_t syscall_body(uintptr_t nr,
                 task_sched_grant(static_cast<kos_task_t>(a0), static_cast<uint8_t>(a1),
                                  static_cast<uint32_t>(a2)));
         }
+#if KICKOS_KERNEL_CORES > 1
+        case KOS_SYS_CORE_CURRENT:
+        {
+            IrqLock lock;
+            return static_cast<uint64_t>(kickos_kernel_core());
+        }
+        case KOS_SYS_THREAD_AFFINITY:
+        {
+            return static_cast<uint64_t>(thread_affinity(static_cast<kos_thread_t>(a0)));
+        }
+        case KOS_SYS_TASK_CORES:
+        {
+            return static_cast<uint64_t>(task_cores(static_cast<kos_task_t>(a0)));
+        }
+#endif
         case KOS_SYS_THREAD_SET_PRIORITY:
         {
             return static_cast<uint64_t>(thread_set_priority(a0));
@@ -927,7 +905,7 @@ uint64_t syscall_body(uintptr_t nr,
             kickos_terminate(static_cast<int>(a0));
             return 0;
         }
-#if defined(KICKOS_ENABLE_SELFTEST)
+#if KICKOS_REBOOT
         case KOS_SYS_REBOOT:
         {
             // AUTH_SYSTEM, fused with shutdown.
@@ -939,284 +917,6 @@ uint64_t syscall_body(uintptr_t nr,
             console_tx_flush_sync(); // empties the ring only
             arch_console_flush_sync(); // FIFO and shift register: a byte here outruns the reset
             return static_cast<uint64_t>(arch_reboot());
-        }
-        case KOS_SYS_IRQ_INJECT:
-        {
-            // Not gated on the CALLER: this simulates a DEVICE firing, and selftest injects
-            // it from an unprivileged thread at authority 0. The gate is on the LINE instead.
-            int irq = static_cast<int>(a0);
-            int const admit = irq_line_admit(irq);
-            if (admit != 0)
-            {
-                return static_cast<uint64_t>(admit);
-            }
-            // The image-wide masked and pending words are read-modify-written here, and the
-            // backend's own bracket excludes this core's handler alone.
-            {
-                IrqLock lock;
-                irq_inject(irq, lock);
-            }
-            return 0;
-        }
-        case KOS_SYS_GUARD_ADDR:
-        {
-            return arch_mpu_probe_addr();
-        }
-        case KOS_SYS_IPC_FAST_TAKEN:
-        {
-            return ipc_fast_taken_count();
-        }
-        case KOS_SYS_IRQ_SPURIOUS:
-        {
-            return static_cast<uint64_t>(irq_spurious_count());
-        }
-#if defined(KICKOS_ENABLE_SELFTEST) && defined(__riscv)
-        case KOS_SYS_NEST_WITNESS:
-        {
-            // A print HERE would put the console writer inside the syscall red zone, so the
-            // caller prints. An unknown selector answers KOS_NEST_UNSET.
-            return static_cast<uint64_t>(kickos_nestwitness_count(static_cast<int>(a0)));
-        }
-#endif
-#if defined(KICKOS_ENABLE_SELFTEST)
-        case KOS_SYS_SCHED_PROBE:
-        {
-            // Pure reads, so not privilege-gated. Every op but KOS_SCHED_OP_PREEMPTED reads
-            // the CALLER's own scheduling state; that one is machine-wide. The placement ops
-            // exist above one core alone, which keeps the placement half out of a one-core
-            // image.
-            IrqLock lock;
-            Thread const* const c = sched::current();
-            switch (static_cast<kos_sched_op>(a0))
-            {
-                case KOS_SCHED_OP_CORE:
-                {
-                    return kickos_kernel_core();
-                }
-                case KOS_SCHED_OP_SWITCHES:
-                {
-                    return c->switch_count.load();
-                }
-#if KICKOS_KERNEL_CORES > 1
-                case KOS_SCHED_OP_AFFINITY:
-                {
-                    return c->affinity;
-                }
-                case KOS_SCHED_OP_TASK_CORES:
-                {
-                    return task_core_set(c->task);
-                }
-                case KOS_SCHED_OP_CEILING:
-                {
-                    return task_prio_ceiling(c->task);
-                }
-                case KOS_SCHED_OP_ISOLATED:
-                {
-                    return static_cast<uint32_t>(KICKOS_ISOLATED_CORES);
-                }
-                case KOS_SCHED_OP_PREEMPTED:
-                {
-                    return ktime_slice_preempt_cores();
-                }
-#endif
-                default:
-                {
-                    break;
-                }
-            }
-            return static_cast<uint64_t>(-KOS_EINVAL);
-        }
-#endif
-#if KICKOS_HAVE_ASPACE && defined(KICKOS_ENABLE_SELFTEST)
-        case KOS_SYS_ASPACE_PROBE:
-        {
-            // Gated per op in syscall_aspace.cc, which refuses the address-taking and
-            // frame-naming ops without AUTH_MEMORY.
-            return aspace_probe(a0, a1);
-        }
-#elif defined(KICKOS_ENABLE_SELFTEST)
-        case KOS_SYS_ASPACE_PROBE:
-        {
-            // Not the unknown-number arm's -KOS_EINVAL, which also means "bad op": a caller
-            // reads this refusal to learn whether the board translates.
-            return static_cast<uint64_t>(-KOS_ENOSYS);
-        }
-#endif
-// The matrix is indexed by MACHINE core, so every posture can answer. Where the doorbell folds
-// out of the image the counters read a real zero.
-#if defined(KICKOS_ENABLE_SELFTEST)
-        case KOS_SYS_DOORBELL_PROBE:
-        {
-            // Pure reads, so not privilege-gated.
-            switch (static_cast<kos_doorbell_op>(a0))
-            {
-                case KOS_DOORBELL_OP_COUNTS:
-                {
-                    return arch_ipi_counts(static_cast<uint32_t>(a1));
-                }
-                case KOS_DOORBELL_OP_WIDTH:
-                {
-                    return static_cast<uint64_t>(KICKOS_DOORBELL_CORES);
-                }
-                case KOS_DOORBELL_OP_SELF:
-                {
-                    return static_cast<uint64_t>(arch_doorbell_core());
-                }
-                case KOS_DOORBELL_OP_KERNEL_LINE:
-                {
-                    for (uintptr_t line = a1; line < static_cast<uintptr_t>(KICKOS_MAX_IRQ); line++)
-                    {
-                        if (arch_irq_line_kernel_owned(static_cast<int>(line)))
-                        {
-                            return static_cast<uint64_t>(line);
-                        }
-                    }
-                    return static_cast<uint64_t>(static_cast<int64_t>(-1));
-                }
-                default:
-                {
-                    break;
-                }
-            }
-            return static_cast<uint64_t>(-KOS_EINVAL);
-        }
-#endif
-#if KICKOS_AMP_NODE && defined(KICKOS_ENABLE_SELFTEST)
-        case KOS_SYS_AMP_PROBE:
-        {
-            // Not privilege-gated as a whole: the ops that forge a publication carry their
-            // own root-task gate, and the rest are counter reads.
-            return amp_probe(a0, a1);
-        }
-#endif
-#if KICKOS_HAVE_MPU
-        case KOS_SYS_GRANT_PROBE:
-        {
-            // Pure reads, so not privilege-gated. The kernel supplies the attr, so userspace
-            // needs no ARCH_MPU_* enum.
-            uintptr_t const op = a0;
-            uintptr_t const base = a1;
-            size_t const size = static_cast<size_t>(a2);
-            uint32_t const rw = ARCH_MPU_R | ARCH_MPU_W;
-            uint32_t const dev = ARCH_MPU_R | ARCH_MPU_W | ARCH_MPU_DEV;
-            bool result = false;
-            switch (op)
-            {
-                case KOS_GRANT_OP_HITS_RESERVED:
-                {
-                    result = grant_hits_reserved(base, size);
-                    break;
-                }
-                case KOS_GRANT_OP_RAM_PRIVILEGED:
-                {
-                    result = grant_region_admissible(base, size, rw, true);
-                    break;
-                }
-                case KOS_GRANT_OP_RAM_UNPRIVILEGED:
-                {
-                    result = grant_region_admissible(base, size, rw, false);
-                    break;
-                }
-                case KOS_GRANT_OP_DEV_PRIVILEGED:
-                {
-                    result = grant_region_admissible(base, size, dev, true);
-                    break;
-                }
-                case KOS_GRANT_OP_DEV_UNPRIVILEGED:
-                {
-                    result = grant_region_admissible(base, size, dev, false);
-                    break;
-                }
-                case KOS_GRANT_OP_NOCACHE_SUPPORT:
-                {
-                    // A raw enum arch_mpu_nocache, not the 0/1 predicate every other op
-                    // answers.
-                    return static_cast<uint64_t>(arch_mpu_nocache_support());
-                }
-                case KOS_GRANT_OP_RAM_NOCACHE:
-                {
-                    result = grant_region_admissible(base, size, rw | ARCH_MPU_NOCACHE, false);
-                    break;
-                }
-#if defined(KICKOS_ENABLE_SELFTEST) && not KICKOS_HAVE_ASPACE
-                case KOS_GRANT_OP_ARENA_SCRIBBLE:
-                {
-                    return arena_scribble(size);
-                }
-                case KOS_GRANT_OP_ALIAS_SYNCS:
-                {
-                    return alias_sync_count();
-                }
-#endif
-                case KOS_GRANT_OP_RESERVED_COUNT:
-                {
-                    return arch_reserved_blocks().count;
-                }
-                case KOS_GRANT_OP_RESERVED_BASE:
-                {
-                    struct arch_reserved_span const blocks = arch_reserved_blocks();
-                    if (base >= blocks.count)
-                    {
-                        return 0;
-                    }
-                    return blocks.rows[base].base;
-                }
-                case KOS_GRANT_OP_RESERVED_SIZE:
-                {
-                    struct arch_reserved_span const blocks = arch_reserved_blocks();
-                    if (base >= blocks.count)
-                    {
-                        return 0;
-                    }
-                    return blocks.rows[base].size;
-                }
-                default:
-                {
-                    return static_cast<uint64_t>(-KOS_EINVAL);
-                }
-            }
-            if (result)
-            {
-                return 1u;
-            }
-            return 0u;
-        }
-#elif defined(KICKOS_ENABLE_SELFTEST) && not KICKOS_HAVE_ASPACE
-        case KOS_SYS_GRANT_PROBE:
-        {
-            // A region board with no unit answers the arena op alone.
-            if (a0 == KOS_GRANT_OP_ARENA_SCRIBBLE)
-            {
-                return arena_scribble(static_cast<size_t>(a2));
-            }
-            if (a0 == KOS_GRANT_OP_ALIAS_SYNCS)
-            {
-                return alias_sync_count();
-            }
-            return static_cast<uint64_t>(-KOS_EINVAL);
-        }
-#endif
-        case KOS_SYS_IRQ_UNMASK:
-        {
-            // Masked-by-default controllers (ARM NVIC, RX) drop an injected raise on an
-            // UNBOUND line until this unmasks it.
-            if (not cap_check_authority(sched::current(), AUTH_IRQ))
-            {
-                return static_cast<uint64_t>(-KOS_EPERM);
-            }
-            int irq = static_cast<int>(a0);
-            int const admit = irq_line_admit(irq);
-            if (admit != 0)
-            {
-                return static_cast<uint64_t>(admit);
-            }
-            // As the inject arm above: the image-wide masked word is read-modify-written
-            // here, and the backend's own bracket excludes this core's handler alone.
-            {
-                IrqLock lock;
-                irq_line_op(irq, LineOp::UNMASK, lock);
-            }
-            return 0;
         }
 #endif
         case KOS_SYS_CLOCK_NOW:
@@ -1304,8 +1004,6 @@ uint64_t syscall_body(uintptr_t nr,
         case KOS_SYS_FRAME_MAP:
         case KOS_SYS_FRAME_UNMAP:
         {
-            // One lock spans resolve-to-use for BOTH capabilities and the edit they drive.
-            IrqLock lock;
             Thread* const c = sched::current();
             if (not cap_check_authority(c, AUTH_MEMORY))
             {
@@ -1313,48 +1011,94 @@ uint64_t syscall_body(uintptr_t nr,
                 // widening it spends the reply sequence packed beside it.
                 return static_cast<uint64_t>(-KOS_EPERM);
             }
-            int ferr = 0;
-            FrameRun* const run = static_cast<FrameRun*>(
-                cap_resolve_e(c, static_cast<uint32_t>(a0), CapType::CAP_FRAME, 0, &ferr));
-            if (run == nullptr)
+            uintptr_t va = a2;
+            if (nr == KOS_SYS_FRAME_MAP)
             {
-                return static_cast<uint64_t>(-ferr);
+                int const orc = cap_out_check(a2, sizeof(uintptr_t));
+                if (orc != 0)
+                {
+                    return static_cast<uint64_t>(orc);
+                }
+                if (not kaccess_from_user(&va, user_space_of(c), a2, sizeof(va)))
+                {
+                    return static_cast<uint64_t>(-KOS_EFAULT);
+                }
             }
-            CapEntry const* const fe = cap_lookup(c, static_cast<uint32_t>(a0));
-            if (fe == nullptr)
+            int mrc = 0;
             {
-                return static_cast<uint64_t>(-KOS_EBADF);
+                // One lock spans resolve-to-use for BOTH capabilities and the edit they drive.
+                IrqLock lock;
+                int ferr = 0;
+                FrameRun* const run = static_cast<FrameRun*>(
+                    cap_resolve_e(c, static_cast<uint32_t>(a0), CapType::CAP_FRAME, 0, &ferr));
+                if (run == nullptr)
+                {
+                    return static_cast<uint64_t>(-ferr);
+                }
+                CapEntry const* const fe = cap_lookup(c, static_cast<uint32_t>(a0));
+                if (fe == nullptr)
+                {
+                    return static_cast<uint64_t>(-KOS_EBADF);
+                }
+                int const run_obj = fe->obj;
+                int aerr = 0;
+                Domain* const target = static_cast<Domain*>(
+                    cap_resolve_e(c, static_cast<uint32_t>(a1), CapType::CAP_ASPACE, 0, &aerr));
+                if (target == nullptr)
+                {
+                    return static_cast<uint64_t>(-aerr);
+                }
+                struct arch_aspace* const sp = domain_space(target);
+                VirtualRanges* const vr = domain_ranges_mut(target);
+                if (sp == nullptr or vr == nullptr)
+                {
+                    return static_cast<uint64_t>(-KOS_EINVAL);
+                }
+                if (nr == KOS_SYS_FRAME_UNMAP)
+                {
+                    return static_cast<uint64_t>(aspace_cap_unmap(sp, vr, a2, run_obj));
+                }
+                uint32_t attr = 0u;
+                if (not mem_flags_to_attr(static_cast<uint32_t>(a3), &attr))
+                {
+                    return static_cast<uint64_t>(-KOS_EINVAL);
+                }
+                mrc = aspace_cap_map(sp, vr, &va, run_obj, run->base, run->pages,
+                                     ARCH_MAP_R | ARCH_MAP_W, map_memtype_of(attr));
+                if (mrc == 0)
+                {
+                    presync_commit();
+                }
             }
-            int const run_obj = fe->obj;
-            int aerr = 0;
-            Domain* const target = static_cast<Domain*>(
-                cap_resolve_e(c, static_cast<uint32_t>(a1), CapType::CAP_ASPACE, 0, &aerr));
-            if (target == nullptr)
+            if (mrc == 0 and not kaccess_word_to_user(user_space_of(c), a2, &va))
             {
-                return static_cast<uint64_t>(-aerr);
-            }
-            struct arch_aspace* const sp = domain_space(target);
-            VirtualRanges* const vr = domain_ranges_mut(target);
-            if (sp == nullptr or vr == nullptr)
-            {
-                return static_cast<uint64_t>(-KOS_EINVAL);
-            }
-            if (nr == KOS_SYS_FRAME_UNMAP)
-            {
-                return static_cast<uint64_t>(aspace_cap_unmap(sp, vr, a2, run_obj));
-            }
-            uint32_t attr = 0u;
-            if (not mem_flags_to_attr(static_cast<uint32_t>(a3), &attr))
-            {
-                return static_cast<uint64_t>(-KOS_EINVAL);
-            }
-            int const mrc = aspace_cap_map(sp, vr, a2, run_obj, run->base, run->pages,
-                                           ARCH_MAP_R | ARCH_MAP_W, map_memtype_of(attr));
-            if (mrc == 0)
-            {
-                presync_commit();
+                // A mapping whose address the caller never learnt could not be unmapped.
+                IrqLock lock;
+                int uerr = 0;
+                Domain* const target = static_cast<Domain*>(
+                    cap_resolve_e(c, static_cast<uint32_t>(a1), CapType::CAP_ASPACE, 0, &uerr));
+                CapEntry const* const fe = cap_lookup(c, static_cast<uint32_t>(a0));
+                if (target != nullptr and fe != nullptr and domain_space(target) != nullptr
+                    and domain_ranges_mut(target) != nullptr)
+                {
+                    (void)aspace_cap_unmap(domain_space(target), domain_ranges_mut(target), va,
+                                           fe->obj);
+                }
+                return static_cast<uint64_t>(-KOS_EFAULT);
             }
             return static_cast<uint64_t>(mrc);
+        }
+        case KOS_SYS_FRAME_CREATE:
+        {
+            return static_cast<uint64_t>(frame_create_call(a0, a1));
+        }
+        case KOS_SYS_ASPACE_SELF:
+        {
+            return static_cast<uint64_t>(aspace_self_call(a0));
+        }
+        case KOS_SYS_MEM_COUNT:
+        {
+            return static_cast<uint64_t>(mem_count_call(a0, a1));
         }
 #endif
         case KOS_SYS_MEM_SELF_GRANT:
@@ -1384,6 +1128,24 @@ uint64_t syscall_body(uintptr_t nr,
             {
                 return static_cast<uint64_t>(-KOS_ENOTSUP);
             }
+#if KICKOS_HAVE_ASPACE
+            // The range must be one this task RESERVED, which refuses an address another task
+            // reserved; the arena and natural-alignment arms below do not apply to frame-pool
+            // frames. Its own already-mapped answer comes after that test: one here would
+            // admit a frame capability's mapping.
+            int const grc = aspace_self_grant(domain_space(thread_domain(c)),
+                                              domain_ranges_mut(thread_domain(c)), base, size,
+                                              ARCH_MAP_R | ARCH_MAP_W, map_memtype_of(attr));
+            if (grc == 0)
+            {
+                presync_commit();
+            }
+            // The range list already carries this mapping, at the EXACT extent, so there is no
+            // region record beside it. That is what moves the -KOS_ENOMEM budget onto
+            // KICKOS_ASPACE_RANGES and what makes the grant reach every sibling, the array
+            // being per-THREAD while the mapping is task-wide.
+            return static_cast<uint64_t>(grc);
+#else
             // Already reachable costs no descriptor. Where the mapping CARRIES the memory type
             // the question is asked of the TYPE in both directions: a request naming no type
             // over a block mapped non-cacheable is the way back from a DMA buffer to ordinary
@@ -1401,23 +1163,6 @@ uint64_t syscall_body(uintptr_t nr,
             {
                 return 0;
             }
-#if KICKOS_HAVE_ASPACE
-            // The range must be one this task RESERVED, which refuses an address another task
-            // reserved; the arena and natural-alignment arms below do not apply to frame-pool
-            // frames.
-            int const grc = aspace_self_grant(domain_space(thread_domain(c)),
-                                              domain_ranges_mut(thread_domain(c)), base, size,
-                                              ARCH_MAP_R | ARCH_MAP_W, map_memtype_of(attr));
-            if (grc == 0)
-            {
-                presync_commit();
-            }
-            // The range list already carries this mapping, at the EXACT extent, so there is no
-            // region record beside it. That is what moves the -KOS_ENOMEM budget onto
-            // KICKOS_ASPACE_RANGES and what makes the grant reach every sibling, the array
-            // being per-THREAD while the mapping is task-wide.
-            return static_cast<uint64_t>(grc);
-#else
             return static_cast<uint64_t>(thread_self_grant(c, base, size, attr));
 #endif
         }
@@ -1555,6 +1300,10 @@ uint64_t syscall_body(uintptr_t nr,
         case KOS_SYS_IRQ_DISCARD:
         {
             return static_cast<uint64_t>(irq_discard(sched::current(), static_cast<uint32_t>(a0)));
+        }
+        case KOS_SYS_IRQ_RAISE:
+        {
+            return static_cast<uint64_t>(irq_raise(sched::current(), static_cast<uint32_t>(a0)));
         }
 #if KICKOS_BENCH
         case KOS_SYS_BENCH:

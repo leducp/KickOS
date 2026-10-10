@@ -112,16 +112,6 @@ namespace
     // Reject hold-count overflow to avoid unmapping a page still in use.
     constexpr uint32_t HOLDS_MAX = 0xFFFFFFFFu;
 
-#if defined(KICKOS_ENABLE_SELFTEST)
-    // Issued and skipped invalidations, protected by the caller's IrqLock.
-    uint32_t g_tlbi_issued = 0;
-    uint32_t g_tlbi_elided = 0;
-#endif
-
-    // Saturating count of unmatched releases outside the direct RAM window.
-    // Updates run with interrupts masked; reporting is self-test-only.
-    uint8_t g_release_mispaired = 0;
-
     uint64_t read_satp()
     {
         return kickos_rv64_read_satp();
@@ -182,9 +172,6 @@ namespace
     // before the next translated access.
     void invalidate_page(uintptr_t va)
     {
-#if defined(KICKOS_ENABLE_SELFTEST)
-        g_tlbi_issued++;
-#endif
         kickos_rv64_fence_w_w();
         kickos_rv64_sfence_page(va);
     }
@@ -194,12 +181,6 @@ namespace
         kickos_rv64_fence_w_w();
         kickos_rv64_sfence_all();
     }
-
-#if KICKOS_KERNEL_CORES > 1
-    // Last installed PPN per core, initialized to the common boot root.
-    // Updated only by write_satp.
-    uint64_t g_installed_root[KICKOS_NUM_CORES] = {};
-#endif
 
     // Root-keyed residency, including harts that switched away.
     kickos::aspace::Residency<KICKOS_NUM_CORES> g_residency;
@@ -214,7 +195,7 @@ namespace
     // not order implicit translation reads (Privileged ISA 11.1.1.11, 12.2.1).
     // Untracked roots fence on every entry. The boot root is already published
     // on every hart, and later edits to it synchronize every hart.
-    // Keep the installed-root and residency records consistent with satp.
+    // Keep the residency record consistent with satp.
     void write_satp(uint64_t satp)
     {
         uint64_t const leaving = kickos_rv64_read_satp();
@@ -228,9 +209,6 @@ namespace
         {
             kickos_rv64_sfence_all();
         }
-#if KICKOS_KERNEL_CORES > 1
-        g_installed_root[core] = entering;
-#endif
     }
 
     // A new non-leaf PTE needs SFENCE.VMA with rs1=x0: by-address fences only
@@ -240,14 +218,8 @@ namespace
     {
         if (not resident)
         {
-#if defined(KICKOS_ENABLE_SELFTEST)
-            g_tlbi_elided++;
-#endif
             return;
         }
-#if defined(KICKOS_ENABLE_SELFTEST)
-        g_tlbi_issued++;
-#endif
         invalidate_all();
     }
 
@@ -272,35 +244,6 @@ namespace
     uint32_t resident_peers(struct arch_aspace*)
     {
         return 0;
-    }
-#endif
-
-#if defined(KICKOS_ENABLE_SELFTEST)
-    bool installed_here(struct arch_aspace* space)
-    {
-        return (read_satp() & SATP_PPN_MASK) == (satp_of(root_of(space)) & SATP_PPN_MASK);
-    }
-
-    // Cores currently using this root, for self-tests only.
-    // Maintenance uses residency, which includes harts that switched away.
-    uint32_t active_cores(struct arch_aspace* space)
-    {
-        uint32_t set = 0;
-        if (installed_here(space))
-        {
-            set |= 1u << arch_cpu_id();
-        }
-#if KICKOS_KERNEL_CORES > 1
-        uint64_t const ppn = satp_of(root_of(space)) & SATP_PPN_MASK;
-        for (uint32_t c = 0; c < KICKOS_NUM_CORES; c++)
-        {
-            if (g_installed_root[c] == ppn)
-            {
-                set |= 1u << c;
-            }
-        }
-#endif
-        return set;
     }
 #endif
 
@@ -338,9 +281,6 @@ namespace
     {
         if (not resident)
         {
-#if defined(KICKOS_ENABLE_SELFTEST)
-            g_tlbi_elided++;
-#endif
             return;
         }
         invalidate_page(va);
@@ -642,8 +582,7 @@ namespace
     }
 
     // Release one hold of (space, page); unmap only after the last hold.
-    // Return whether a matching hold existed.
-    bool window_drop(struct arch_aspace* space, uintptr_t page)
+    void window_drop(struct arch_aspace* space, uintptr_t page)
     {
         size_t const core = static_cast<size_t>(arch_cpu_id());
         for (size_t i = 0; i < ACQUIRE_CAPACITY; i++)
@@ -659,16 +598,15 @@ namespace
             g_slots[core][i].holds--;
             if (g_slots[core][i].holds != 0)
             {
-                return true;
+                return;
             }
             *slot_entry(core, i) = 0;
             kickos_rv64_fence_w_w();
             kickos_rv64_sfence_page(slot_va(core, i));
             g_slots[core][i].space = nullptr;
             g_slots[core][i].page = 0;
-            return true;
+            return;
         }
-        return false;
     }
 
     struct AsidField
@@ -724,46 +662,6 @@ extern "C"
 size_t arch_aspace_granule(void)
 {
     return GRANULE;
-}
-
-uint64_t arch_aspace_model(void)
-{
-    // satp.MODE is WARL, so the mode read back here is one this hart implements.
-    unsigned const mode = static_cast<unsigned>((read_satp() >> SATP_MODE_SHIFT) & SATP_MODE_MASK);
-    uint64_t granules = 0;
-    unsigned pa_bits = 0;
-    if (mode == SATP_MODE)
-    {
-        granules = 1; // the architecture defines one page size for this mode
-        // Use the platform limit; the PPN field can encode unsupported physical addresses.
-        pa_bits = g_phys_bits;
-    }
-    AsidField const asid = g_asid_field;
-    uint64_t out = 0;
-    if (granules != 0 and GRANULE == 4096u)
-    {
-        out |= ARCH_ASPACE_MODEL_GRANULE;
-    }
-    // Contiguity gates the verdict bit and not the reported width.
-    if (asid.contiguous and asid.bits == ASID_BITS_RECORDED)
-    {
-        out |= ARCH_ASPACE_MODEL_ASID;
-    }
-    // Tagging can remain enabled even when the ASID width is below the expected width.
-    if (g_asid_capacity != 0)
-    {
-        out |= ARCH_ASPACE_MODEL_TAGGED;
-    }
-    // The supported physical range must cover the entire kernel RAM window.
-    if (pa_bits != 0
-        and (static_cast<arch_phys_addr_t>(1) << pa_bits) >= g_window_pa_hi)
-    {
-        out |= ARCH_ASPACE_MODEL_PA;
-    }
-    out |= static_cast<uint64_t>(asid.bits) << ARCH_ASPACE_MODEL_ASID_SHIFT;
-    out |= static_cast<uint64_t>(pa_bits) << ARCH_ASPACE_MODEL_PA_SHIFT;
-    out |= granules << ARCH_ASPACE_MODEL_GRAN_SHIFT;
-    return out;
 }
 
 bool arch_aspace_memtype_support(enum arch_map_memtype type)
@@ -990,8 +888,7 @@ void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va, bool* uncache
     return reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(slot) + off);
 }
 
-// Count unmatched window releases without panicking: the fault reporter
-// uses this path. Direct RAM acquisitions have no window hold to release.
+// An unmatched release is ignored, not a panic: the fault reporter uses this path.
 void arch_aspace_release(struct arch_aspace* space, uintptr_t va)
 {
     if (space == nullptr or g_window_leaves == nullptr)
@@ -1005,18 +902,8 @@ void arch_aspace_release(struct arch_aspace* space, uintptr_t va)
         return;
     }
     arch_irq_state_t const s = arch_irq_save();
-    bool defect = false;
-    if (not window_drop(space, page))
-    {
-        // Only frames outside the direct RAM window require a matching slot hold.
-        uint64_t const* const entry = leaf_entry(root_of(space), page);
-        defect = entry != nullptr and not in_kernel_window(pte_pa(*entry));
-    }
+    window_drop(space, page);
     arch_irq_restore(s);
-    if (defect and g_release_mispaired != 0xFFu)
-    {
-        g_release_mispaired++;
-    }
 }
 
 arch_phys_addr_t arch_aspace_frame_at(struct arch_aspace* space, uintptr_t va)
@@ -1060,12 +947,6 @@ void kickos_rv64_aspace_boot(uint64_t* user_root, uint64_t* window_leaves, uintp
     g_boot_ppn = satp_of(user_root) & SATP_PPN_MASK;
     g_asid_field = measure_asid_field();
     g_asid_capacity = asid_capacity_of(g_asid_field);
-#if KICKOS_KERNEL_CORES > 1
-    for (size_t c = 0; c < KICKOS_NUM_CORES; c++)
-    {
-        g_installed_root[c] = g_boot_ppn;
-    }
-#endif
     for (size_t c = 0; c < KICKOS_NUM_CORES; c++)
     {
         for (size_t i = 0; i < ACQUIRE_CAPACITY; i++)
@@ -1076,27 +957,5 @@ void kickos_rv64_aspace_boot(uint64_t* user_root, uint64_t* window_leaves, uintp
         }
     }
 }
-
-#if defined(KICKOS_ENABLE_SELFTEST)
-uint64_t arch_aspace_tlbi_counts(void)
-{
-    uint32_t elided = g_tlbi_elided;
-    if (elided > 0xFFFFFFu)
-    {
-        elided = 0xFFFFFFu; // saturates rather than bleeding into the issued half
-    }
-    return (static_cast<uint64_t>(g_tlbi_issued) << 32) | (static_cast<uint64_t>(elided) << 8)
-           | static_cast<uint64_t>(g_release_mispaired);
-}
-
-uint32_t arch_aspace_active_cores(struct arch_aspace* space)
-{
-    if (space == nullptr)
-    {
-        return 0;
-    }
-    return active_cores(space);
-}
-#endif
 
 }

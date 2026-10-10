@@ -8,15 +8,10 @@
 // memory carries the user bit CLEAR, and the permission ANDs down the walk. The kernel leaves
 // it that way: the firmware's map is the kernel half, supervisor-only, and a task reaches only
 // what its own space maps in the user half (docs/design-m10-kernel-share.md section 1).
-//
-// ring3_grant_range is for the bring-up images alone, which run ring-3 code with no space at
-// all. It sets the bit on every entry from the root to the leaf over a range, and its unit is
-// a LEAF, so a large leaf covering the end of a range exposes every byte to that leaf's end.
-// The census covers only the tables the grant walked; probe4_x86_64.cc is what walks the
-// whole hierarchy.
 
 #include <kickos/arch/desc.h>
 #include <kickos/arch/arch.h>
+#include <kickos/arch/pe_sections.h>
 #include <kickos/arch/regs.h>
 #include <kickos/arch/ring3.h>
 #include <kickos/chip_com1.h>
@@ -51,21 +46,8 @@ namespace kickos::x86_64
 
         constexpr uint64_t efer_sce = 1ull << 0;
 
-        // CR0.WP: with it set, a ring 0 store respects a page's read-only bit.
-        constexpr uint64_t cr0_wp = 1ull << 16;
-
-        constexpr uint64_t cr4_la57 = 1ull << 12;
         constexpr uint64_t cr4_smep = 1ull << 20;
         constexpr uint64_t cr4_smap = 1ull << 21;
-
-        constexpr uint64_t pte_present = 1ull << 0;
-        constexpr uint64_t pte_user = 1ull << 2;
-        constexpr uint64_t pte_large = 1ull << 7;
-        constexpr uint64_t pte_addr_mask = 0x000ffffffffff000ull;
-
-        // The four architecturally defined bits of a PE32+ section header this port reads.
-        constexpr uint32_t scn_mem_discardable = 0x02000000u;
-        constexpr uint32_t scn_mem_write = 0x80000000u;
 
         alignas(64) cpu_block g_cpu[KICKOS_KERNEL_CORES] = {};
 
@@ -101,29 +83,15 @@ namespace kickos::x86_64
             | (1ull << 14)   // nested task
             | (1ull << 18)   // alignment check
             | (1ull << 19) | (1ull << 20); // virtual interrupt, virtual interrupt pending
+        constexpr uint64_t fmask_required =
+            (1ull << 8) | rflags_if | (1ull << 10) | (3ull << 12) | (1ull << 18);
+        static_assert((fmask & fmask_required) == fmask_required,
+                      "the syscall entry must start with TF, IF, DF, AC and IOPL clear");
 
         uintptr_t g_image_base = 0;
         uint32_t g_image_size = 0;
         uint8_t const* g_sections = nullptr;
         unsigned g_nsections = 0;
-
-        unsigned g_granted = 0;
-        unsigned g_already = 0;
-        unsigned g_tables_exposed = 0;
-
-        // The tables the grant walked, by physical address, distinct. Overflowing this is
-        // REFUSED: a census over an incomplete record under-reports and reads as clean.
-        constexpr unsigned max_tables_tracked = 64;
-        uint64_t g_tables[max_tables_tracked] = {};
-        unsigned g_tables_walked = 0;
-        unsigned g_tables_dropped = 0;
-        uint64_t g_control = 0;
-        uint64_t g_control0 = 0;
-
-        void invalidate(uintptr_t va)
-        {
-            __asm__ volatile("invlpg (%0)" ::"r"(va) : "memory");
-        }
 
         [[noreturn]] void refuse(char const* what)
         {
@@ -131,103 +99,6 @@ namespace kickos::x86_64
             com1_puts(what);
             com1_puts("\n");
             kfault_terminate();
-        }
-
-        void note_table(uint64_t pa)
-        {
-            for (unsigned i = 0; i < g_tables_walked; i++)
-            {
-                if (g_tables[i] == pa)
-                {
-                    return;
-                }
-            }
-            if (g_tables_walked >= max_tables_tracked)
-            {
-                g_tables_dropped++;
-                return;
-            }
-            g_tables[g_tables_walked] = pa;
-            g_tables_walked++;
-        }
-
-        // Whether an unprivileged thread can reach `pa` through the live regime. Identity is
-        // the adopted map's property, checked at aspace_init, so a table's own physical address
-        // is the linear address to walk for.
-        bool user_reachable(uint64_t pa, unsigned levels)
-        {
-            uint64_t table = read_cr3() & pte_addr_mask;
-            for (unsigned level = levels; level >= 1; level--)
-            {
-                unsigned const shift = 12 + 9 * (level - 1);
-                unsigned const index = static_cast<unsigned>((pa >> shift) & 0x1ffu);
-                uint64_t const entry = reinterpret_cast<uint64_t const*>(table)[index];
-                if ((entry & pte_present) == 0 or (entry & pte_user) == 0)
-                {
-                    return false;
-                }
-                if ((level == 1) or ((entry & pte_large) != 0))
-                {
-                    return true;
-                }
-                table = entry & pte_addr_mask;
-            }
-            return false;
-        }
-
-        // Set the user bit on every entry from the root to the leaf covering `va`, and return
-        // the size of the leaf that was found so the caller can step past it. 0 says nothing
-        // is mapped there, and the step is then the smallest level's span. The unit granted is
-        // a LEAF, so a large leaf covering the end of a range exposes every byte to its end.
-        uint64_t grant_one(uintptr_t va, unsigned levels)
-        {
-            uint64_t table = read_cr3() & pte_addr_mask;
-            for (unsigned level = levels; level >= 1; level--)
-            {
-                note_table(table);
-                unsigned const shift = 12 + 9 * (level - 1);
-                unsigned const index = static_cast<unsigned>((va >> shift) & 0x1ffu);
-                uint64_t* const entries = reinterpret_cast<uint64_t*>(table);
-                uint64_t const entry = entries[index];
-                if ((entry & pte_present) == 0)
-                {
-                    return 1ull << shift;
-                }
-                bool const leaf = (level == 1) or ((entry & pte_large) != 0);
-                if ((entry & pte_user) != 0)
-                {
-                    if (leaf)
-                    {
-                        g_already++;
-                        return 1ull << shift;
-                    }
-                }
-                else
-                {
-                    entries[index] = entry | pte_user;
-                    if (leaf)
-                    {
-                        g_granted++;
-                    }
-                }
-                if (leaf)
-                {
-                    invalidate(va);
-                    return 1ull << shift;
-                }
-                table = entry & pte_addr_mask;
-            }
-            return 4096;
-        }
-
-        void grant_range(uintptr_t lo, uintptr_t hi, unsigned levels)
-        {
-            uintptr_t va = lo & ~static_cast<uintptr_t>(4095);
-            while (va < hi)
-            {
-                uint64_t const span = grant_one(va, levels);
-                va = (va & ~static_cast<uintptr_t>(span - 1)) + static_cast<uintptr_t>(span);
-            }
         }
 
         // The PE32+ headers, at the image's first byte because the loader maps them with it.
@@ -270,11 +141,6 @@ namespace kickos::x86_64
     void ring3_init(void)
     {
         uint64_t const cr4 = read_cr4();
-        g_control = cr4;
-
-        // Both are refused until each has its own arm: supervisor-mode execution prevention
-        // would stop a bring-up image fetching the probe pages ring3_grant_range opens, and
-        // access prevention has no path here that lifts it.
         if ((cr4 & cr4_smep) != 0)
         {
             refuse("supervisor-mode execution prevention is on and no arm here enables it");
@@ -285,50 +151,11 @@ namespace kickos::x86_64
         }
 
         read_own_headers();
-        g_control0 = read_cr0();
 
         // The gs pair. IA32_KERNEL_GS_BASE holds the per-core pointer while a thread runs at
         // ring 3 and swapgs is what brings it back; WRMSR is privileged, so ring 3 can change
         // the base it is holding but never the one the entry gets.
         ring3_cpu_init();
-    }
-
-    void ring3_grant_range(uintptr_t lo, uintptr_t hi)
-    {
-        // The level count is read from the control register, 4 or 5.
-        unsigned levels = 4;
-        if ((read_cr4() & cr4_la57) != 0)
-        {
-            levels = 5;
-        }
-        // The firmware write-protects its own translation tables against ring 0: they are
-        // mapped read-only and CR0.WP is set, so an edit without this takes a write page fault
-        // at ring 0 on the root itself. WP is cleared for the edits and put back.
-        uint64_t const cr0 = read_cr0();
-        if ((cr0 & cr0_wp) != 0)
-        {
-            write_cr0(cr0 & ~cr0_wp);
-        }
-        grant_range(lo, hi, levels);
-        if ((cr0 & cr0_wp) != 0)
-        {
-            write_cr0(cr0);
-        }
-
-        // The exposure census, after every grant and over every table the grant walked. Each is
-        // asked of the HARDWARE, by the same rule the processor applies.
-        if (g_tables_dropped != 0)
-        {
-            refuse("more translation tables were walked than the exposure census records");
-        }
-        g_tables_exposed = 0;
-        for (unsigned i = 0; i < g_tables_walked; i++)
-        {
-            if (user_reachable(g_tables[i], levels))
-            {
-                g_tables_exposed++;
-            }
-        }
     }
 
     void cpu_set_kernel_sp(uint64_t top)
@@ -343,104 +170,7 @@ namespace kickos::x86_64
 
     bool image_range_mapped(uintptr_t ptr, size_t len, bool need_write)
     {
-        if (len == 0)
-        {
-            return true;
-        }
-        if (g_sections == nullptr)
-        {
-            return false;
-        }
-        uintptr_t const end = ptr + len;
-        if (end < ptr)
-        {
-            return false;
-        }
-        if (ptr < g_image_base or end > g_image_base + g_image_size)
-        {
-            return false;
-        }
-        for (unsigned i = 0; i < g_nsections; i++)
-        {
-            uint8_t const* const s = g_sections + i * 40u;
-            uint32_t const characteristics = *reinterpret_cast<uint32_t const*>(s + 36);
-            // A discardable section is one the loader is free not to map at all, so it is
-            // not part of what this image can promise is there.
-            if ((characteristics & scn_mem_discardable) != 0)
-            {
-                continue;
-            }
-            uint32_t const virtual_size = *reinterpret_cast<uint32_t const*>(s + 8);
-            uint32_t const rva = *reinterpret_cast<uint32_t const*>(s + 12);
-            uint32_t const raw_size = *reinterpret_cast<uint32_t const*>(s + 16);
-            uint32_t span = virtual_size;
-            if (raw_size > span)
-            {
-                span = raw_size;
-            }
-            uintptr_t const lo = g_image_base + rva;
-            if (ptr < lo or end > lo + span)
-            {
-                continue;
-            }
-            if (need_write and (characteristics & scn_mem_write) == 0)
-            {
-                return false;
-            }
-            return true;
-        }
-        return false;
-    }
-
-    uintptr_t image_base(void)
-    {
-        return g_image_base;
-    }
-
-    size_t image_size(void)
-    {
-        return g_image_size;
-    }
-
-    unsigned image_sections(void)
-    {
-        return g_nsections;
-    }
-
-    unsigned user_leaves_granted(void)
-    {
-        return g_granted;
-    }
-
-    unsigned user_leaves_already(void)
-    {
-        return g_already;
-    }
-
-    unsigned user_tables_exposed(void)
-    {
-        return g_tables_exposed;
-    }
-
-    unsigned user_tables_walked(void)
-    {
-        return g_tables_walked;
-    }
-
-    uint64_t control_flags(void)
-    {
-        return g_control;
-    }
-
-    uint64_t control_flags0(void)
-    {
-        return g_control0;
+        return pe_range_mapped(g_image_base, g_image_size, g_sections, g_nsections, ptr, len,
+                               need_write);
     }
 }
-
-#if defined(KICKOS_ENABLE_SELFTEST)
-extern "C" uintptr_t arch_cpu_block_addr(void)
-{
-    return reinterpret_cast<uintptr_t>(&kickos::x86_64::local_cpu());
-}
-#endif

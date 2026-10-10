@@ -93,8 +93,6 @@ namespace kickos
         }
 
 #if KICKOS_HAVE_ASPACE
-        // Apart from obj_ref_drop: the address-space release reaches it, and obj_ref_drop's
-        // domain arm reaches that release, which would close a call cycle.
         void frame_run_drop(int obj_handle)
         {
             Kernel& k = kernel();
@@ -194,8 +192,7 @@ namespace kickos
             }
             case CapType::CAP_ASPACE:
             {
-                domain_release(domain_resolve(obj_handle)); // null-safe; frees at the last hold
-                return;
+                return; // holds no reference: the space retires its handles at its task's end
             }
 #endif
             default:
@@ -484,7 +481,7 @@ namespace kickos
             }
             case CapType::CAP_ASPACE:
             {
-                return false; // the domain's own refcount is this kind's; obj_ref_inc takes it
+                return false; // holds no reference
             }
 #endif
             case CapType::CAP_REPLY:
@@ -534,16 +531,6 @@ namespace kickos
         frame_run_drop(kernel().frame_runs.handle_for(slot));
     }
 
-    uint8_t frame_run_refcount(int obj_handle)
-    {
-        int const idx = kernel().frame_runs.live_index(obj_handle);
-        if (idx < 0)
-        {
-            return 0;
-        }
-        return kernel().frame_run_refs[idx];
-    }
-
     void frame_run_release(int obj_handle)
     {
         frame_run_drop(obj_handle);
@@ -564,7 +551,7 @@ namespace kickos
         }
     }
 
-    int frame_run_create(arch_phys_addr_t base, uint32_t pages)
+    int frame_run_create_empty(kos_task_t minter)
     {
         // Answers a HANDLE, FRAME_RUN_NONE when there is none: every consumer resolves it, so
         // an index must not leave here.
@@ -572,36 +559,40 @@ namespace kickos
         FrameRun* const f = kernel().frame_runs.at(i); // total over alloc()'s -1
         if (f == nullptr)
         {
-            return -1;
+            return FRAME_RUN_NONE;
+        }
+        *f = FrameRun{};
+        f->minter = minter;
+        kernel().frame_run_refs[i] = 1; // the creator's own
+        return kernel().frame_runs.handle_for(i);
+    }
+
+    bool frame_run_fill(int obj_handle, arch_phys_addr_t base, uint32_t pages)
+    {
+        FrameRun* const f = kernel().frame_runs.resolve(obj_handle);
+        if (f == nullptr or f->pages != 0 or pages == 0)
+        {
+            return false;
         }
         f->base = base;
         f->pages = pages;
-        f->sync_owed = false;
-        kernel().frame_run_refs[i] = 1; // the creator's own
-        return kernel().frame_runs.handle_for(i);
+        return true;
+    }
+
+    int frame_run_create(arch_phys_addr_t base, uint32_t pages)
+    {
+        int const obj = frame_run_create_empty(KOS_TASK_NONE);
+        if (obj != FRAME_RUN_NONE and not frame_run_fill(obj, base, pages))
+        {
+            frame_run_release(obj);
+            return FRAME_RUN_NONE;
+        }
+        return obj;
     }
 #endif
 
     bool obj_ref_inc(CapType type, int obj_handle, uint8_t rights)
     {
-#if KICKOS_HAVE_ASPACE
-        // Taken here rather than through ref_counters, whose false means "no counter" and
-        // would silently take none.
-        if (type == CapType::CAP_ASPACE)
-        {
-            Domain* d = domain_resolve(obj_handle);
-            if (d == nullptr)
-            {
-                return true; // stale handle: nothing to hold, and not a refusal
-            }
-            if (domain_refcount(d) == UINT16_MAX)
-            {
-                return false;
-            }
-            domain_ref(d);
-            return true;
-        }
-#endif
         uint8_t* refs = nullptr;
         uint8_t* holders = nullptr;
         uint8_t* handouts = nullptr;
@@ -631,13 +622,6 @@ namespace kickos
 
     void obj_ref_undo(CapType type, int obj_handle, uint8_t rights)
     {
-#if KICKOS_HAVE_ASPACE
-        if (type == CapType::CAP_ASPACE)
-        {
-            domain_release(domain_resolve(obj_handle)); // null-safe
-            return;
-        }
-#endif
         uint8_t* refs = nullptr;
         uint8_t* holders = nullptr;
         uint8_t* handouts = nullptr;
@@ -870,6 +854,24 @@ namespace kickos
         }
     }
 
+#if KICKOS_HAVE_ASPACE
+    bool frame_run_admit(Task const* t)
+    {
+        constexpr int ceiling = ceiling_within(KICKOS_TASK_FRAME_RUN_BUDGET, KICKOS_MAX_FRAME_RUNS);
+        Kernel& k = kernel();
+        kos_task_t const minter = task_handle(t);
+        int charged = 0;
+        for (int i = 0; t != nullptr and i < KICKOS_MAX_FRAME_RUNS; i++)
+        {
+            if (k.frame_run_refs[i] != 0 and k.frame_runs.at(i)->minter == minter)
+            {
+                charged++;
+            }
+        }
+        return t != nullptr and charged < ceiling;
+    }
+#endif
+
     bool task_object_admit(CapType kind, Task const* t)
     {
         if (t == nullptr)
@@ -1046,7 +1048,12 @@ namespace kickos
 #if KICKOS_HAVE_ASPACE
         else if (want == CapType::CAP_FRAME)
         {
-            p = kernel().frame_runs.resolve(e->obj);
+            // A run still being minted names no frame yet.
+            FrameRun* const f = kernel().frame_runs.resolve(e->obj);
+            if (f != nullptr and f->pages != 0)
+            {
+                p = f;
+            }
         }
         else if (want == CapType::CAP_ASPACE)
         {
@@ -1058,12 +1065,6 @@ namespace kickos
             *err = 0;
         }
         return p;
-    }
-
-    void* cap_resolve(Thread* c, uint32_t cap_handle, CapType want, uint8_t need)
-    {
-        int err = 0;
-        return cap_resolve_e(c, cap_handle, want, need, &err);
     }
 
     bool cap_check_authority(Thread* c, uint32_t need)

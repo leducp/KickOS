@@ -6,6 +6,8 @@ CONFIG_BOARD_QEMU_X86_64=y
 # The context-switch microbench. Base posture, this board having no other: it carries one
 # config variant and its protection is the page tables rather than a knob.
 CONFIG_KICKOS_ENABLE_SELFTEST=y
+CONFIG_KICKOS_MAX_SPAWN_GRANTS=9
+CONFIG_KICKOS_REBOOT=y
 CONFIG_KICKOS_BENCH=y
 CONFIG_KICKOS_MAX_THREADS=32
 CONFIG_KICKOS_MAX_ENDPOINTS=16

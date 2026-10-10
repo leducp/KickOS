@@ -37,14 +37,6 @@ extern "C" void kickos_bench_lock_draw(uint32_t retries, uint32_t queued);
 
 namespace
 {
-#if defined(KICKOS_ENABLE_SELFTEST)
-    // Per-core doorbell services, and per-core instruction-side rendezvous initiated. Only
-    // the first is read across nodes, so only it is placed in the shared region.
-    KICKOS_AMP_SHARED("cells.served")
-    kickos::doorbell::PartCell g_served[KICKOS_DOORBELL_CORES] = {};
-    kickos::doorbell::PartCell g_initiated[KICKOS_NUM_CORES] = {};
-#endif
-
     // g_online[i]: nonzero once hart i has reached the park. Written by that hart alone.
     kickos::doorbell::PartCell g_online[KICKOS_NUM_CORES] = {};
 
@@ -124,10 +116,6 @@ int kickos_rv64_doorbell_pending(void)
 kickos::doorbell::Fenced kickos::doorbell::service_fence(Observed)
 {
     __asm volatile("sfence.vma zero, zero" ::: "memory");
-#if defined(KICKOS_ENABLE_SELFTEST)
-    uint32_t const me = arch_doorbell_core();
-    g_served[me].v = g_served[me].v.load() + 1u;
-#endif
     return Fenced();
 }
 
@@ -199,33 +187,11 @@ void arch_ipi_fence(void)
 // The translation half only. RISC-V gives no broadcast form of SFENCE.VMA, so a peer holding a
 // space whose tables changed must be made to run its own. The instruction half would be FENCE.I,
 // absent from this board's ISA baseline, and this call does not stand in for it.
-//
-// arch_ipi_counts calls its high half instruction-side; on this backend it counts these.
 void kickos_rv64_translation_rendezvous(uint32_t peers)
 {
-#if defined(KICKOS_ENABLE_SELFTEST)
-    if (peers != 0)
-    {
-        uint32_t const me = arch_cpu_id();
-        g_initiated[me].v = g_initiated[me].v.load() + 1u;
-    }
-#endif
     arch_ipi_send(peers);
     arch_ipi_wait(peers);
 }
-
-#if defined(KICKOS_ENABLE_SELFTEST)
-// Services in the low half, rendezvous initiated in the high half (arch.h, arch_ipi_counts).
-uint64_t arch_ipi_counts(uint32_t core)
-{
-    if (core >= KICKOS_DOORBELL_CORES)
-    {
-        return 0;
-    }
-    return (static_cast<uint64_t>(g_initiated[core].v.load()) << 32)
-           | static_cast<uint64_t>(g_served[core].v.load());
-}
-#endif
 
 #if KICKOS_KERNEL_CORES > 1
 // The poll in this loop is what keeps the coupling sound: a caller acquires with interrupts

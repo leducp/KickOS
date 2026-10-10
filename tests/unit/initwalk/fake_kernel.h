@@ -160,7 +160,7 @@ namespace fake
 
     struct Config
     {
-        uint32_t cap_reserved = 2;
+        uint32_t cap_reserved = 1;
         uint32_t amp_ports = 0;
         bool multicore = false;
         uint32_t kernel_cores = 1;

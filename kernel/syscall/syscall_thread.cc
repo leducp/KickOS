@@ -1351,6 +1351,47 @@ namespace kickos
 #endif
     }
 
+#if KICKOS_KERNEL_CORES > 1
+    static_assert(KICKOS_KERNEL_CORES <= 31, "a core mask must never read as an error");
+
+    int thread_affinity(kos_thread_t thread)
+    {
+        IrqLock lock;
+        Thread const* const c = sched::current();
+        Thread const* const t = kernel().threads.resolve(thread);
+        if (t == nullptr or t->state == ThreadState::EXITED
+            or t->state == ThreadState::INACTIVE)
+        {
+            return -KOS_EBADF;
+        }
+        if (not task_same_group(c, t) and not c->privileged)
+        {
+            return -KOS_EPERM;
+        }
+        return static_cast<int>(t->affinity);
+    }
+
+    int task_cores(kos_task_t task)
+    {
+        IrqLock lock;
+        Thread* const c = sched::current();
+        Task const* t = c->task;
+        if (task != KOS_TASK_NONE)
+        {
+            t = task_resolve(task);
+            if (t == nullptr)
+            {
+                return -KOS_EBADF;
+            }
+            if (not task_created_by(t, kernel().threads.kill_tag_of(c)))
+            {
+                return -KOS_EPERM;
+            }
+        }
+        return static_cast<int>(task_core_set(t));
+    }
+#endif
+
     int task_sched_grant(kos_task_t task, uint8_t prio_ceiling, uint32_t core_mask)
     {
         IrqLock lock;

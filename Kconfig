@@ -664,14 +664,14 @@ config KICKOS_TASK_SEMAPHORE_BUDGET
 	help
 	  The most semaphores ONE TASK may hold live at once, a delegated and a
 	  kernel-seated capability counting alongside an own-create. Refused with
-	  -KOS_EOVERFLOW at the creator, which is neither -KOS_ENOMEM (the pool had a slot)
+	  -KOS_EAGAIN at the creator, which is neither -KOS_ENOMEM (the pool had a slot)
 	  nor -KOS_EMFILE (the caller's table had one).
 
-	  THESE FOUR BUDGETS ARE THE WHOLE CEILING, one per charged pool. Each is checked
+	  THESE SIX BUDGETS ARE THE WHOLE CEILING, one per charged pool. Each is checked
 	  at BUILD time against its own pool and must sit strictly below it, so no task can
 	  take a pool's last slot and a supervisor respawning a driver still finds one. A
 	  board that narrows a pool narrows the matching budget with it or the build fails
-	  naming both. That is why there are four figures and not one: the pools are sized
+	  naming both. That is why there are six figures and not one: the pools are sized
 	  apart on purpose, and a single budget would price a semaphore at an endpoint.
 
 	  WHAT THEY ARE FOR: without them a task's own-creates are bounded only by its
@@ -731,10 +731,20 @@ config KICKOS_TASK_NOTIFY_BUDGET
 	  As KICKOS_TASK_SEMAPHORE_BUDGET, over the notification pool: strictly below
 	  KICKOS_MAX_NOTIFY or the build fails.
 
+config KICKOS_TASK_FRAME_RUN_BUDGET
+	int "Frame runs one task may mint"
+	range 1 31
+	default 7
+	help
+	  As KICKOS_TASK_SEMAPHORE_BUDGET, over the frame-run pool: strictly below
+	  KICKOS_MAX_FRAME_RUNS or the build fails. CHARGED BY MINT AND NOT BY HOLD: a
+	  run counts against the task that minted it for the run's whole life, wherever it
+	  is mapped and whoever holds a capability to it, so a run delegated or mapped
+	  elsewhere charges its receiver nothing. Only a translating board builds the pool.
+
 config KICKOS_MAX_SPAWN_GRANTS
 	int "Caps one spawn may delegate"
 	range 2 16
-	default 9 if KICKOS_ENABLE_SELFTEST && KICKOS_CAP_TABLE_SUPPLY >= 10
 	default 6
 	help
 	  Costs caller stack, not .bss: thread_create_call stages the grant list in arrays
@@ -745,10 +755,6 @@ config KICKOS_MAX_SPAWN_GRANTS
 	  The floor is 2, not 1: the child width is
 	  this plus one plus the reply peak, and a width inside the reserved index
 	  range leaves a child no slot of its own, which configure refuses.
-
-	  The selftest's main is a composed task with a child's table: 2 reserved
-	  slots, 5 capabilities it holds at once and 3 its deadlock arm skips without.
-	  9 seats all ten where the board's supply backs them.
 
 config KICKOS_MAX_THREAD_WINDOWS
 	int "Windows one thread may hold"
@@ -1030,8 +1036,7 @@ config KICKOS_MIN_STACK_SIZE
 	default 1024 if ARCH_RV32IMAC
 	# An interrupt nests below a privileged thread's return on its own stack.
 	default 2304 if ARCH_RV64IMAC
-	# An interrupt nests below a privileged caller's syscall on its own stack, a spawn seeding
-	# a whole address space at its deepest (x86_64_trap_stack.h).
+	# An interrupt nests below a privileged thread's return on its own stack (x86_64_trap_stack.h).
 	default 3392 if ARCH_X86_64 && KICKOS_KERNEL_CORES > 1
 	default 2752 if ARCH_X86_64
 	# Above one core the PREEMPT zone alone is 960 (lx6_trap_stack.h).
@@ -1170,16 +1175,23 @@ config KICKOS_DEBUG
 	default n
 
 config KICKOS_ENABLE_SELFTEST
-	bool "Test-only self-test syscalls"
+	bool "Build the selftest and diagnostic apps"
+	default n
+	help
+	  Selects apps and their gates. Only the selftest app's own sources see the
+	  definition, so the kernel and every other app build the same either way.
+
+config KICKOS_REBOOT
+	bool "kos_reboot: enter the chip's bootloader on request"
 	default n
 
 config KICKOS_SHUTDOWN_TO_BOOTLOADER
 	bool "Terminating images reboot into the chip bootloader"
-	depends on KICKOS_ENABLE_SELFTEST
+	depends on KICKOS_REBOOT
 	default n
 	help
-	  arch_reboot is compiled out of a production image, so without the self-test
-	  syscalls nothing defines the symbol.
+	  arch_reboot is compiled only under KICKOS_REBOOT, so without it nothing defines
+	  the symbol.
 
 config KICKOS_BENCH
 	bool "Cycle-accurate context-switch microbench"

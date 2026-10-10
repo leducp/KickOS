@@ -4,7 +4,6 @@
 // Minimal in-kernel debug console: write-only, routed to the arch console bottom edge
 // (sim: host stdout). Reserved for panic, early boot and fault reporting.
 
-#include <kickos/ampdiag.h>
 #include <kickos/kernel.h>
 #include <kickos/sched.h>
 #include <kickos/arch/arch.h>
@@ -840,11 +839,6 @@ extern "C" void kickos_bootloader_handover(void)
 // order exists in exactly one place upstream of the per-chip arch_shutdown.
 extern "C" void kickos_terminate(int status)
 {
-#if KICKOS_AMP_NODE
-    // Here and not at boot: it reads the doorbell traffic of the whole run, and this is the
-    // one funnel every ordered terminal path reaches.
-    ::kickos::amp::diag_primary_doorbell_report();
-#endif
     console_tx_flush_sync();
     // The RING being empty is not the DEVICE being idle: arch_shutdown can stop the core with
     // a byte still in the UART FIFO or shift register, truncating the last line. It must NOT

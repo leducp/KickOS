@@ -59,9 +59,6 @@ namespace kickos::x86_64
     // Arm the fast syscall pair and the per-core block. Call AFTER desc_init. Opens nothing to
     // ring 3: a task reaches only what its own space maps.
     void ring3_init(void);
-    // Set the user bit over [lo, hi) in the live regime. The bring-up images alone call it, to
-    // run ring-3 code with no space; the kernel never does.
-    void ring3_grant_range(uintptr_t lo, uintptr_t hi);
     // APs inherit the BSP's shared page tables but need their own GS base and syscall MSRs.
     void ring3_cpu_init(void);
 
@@ -72,27 +69,6 @@ namespace kickos::x86_64
     // Is [ptr, ptr + len) inside ONE section of this image that the loader mapped, and
     // writable where asked?
     bool image_range_mapped(uintptr_t ptr, size_t len, bool need_write);
-
-    uintptr_t image_base(void);
-    size_t image_size(void);
-    unsigned image_sections(void);
-
-    // What ring3_grant_range did, for the boot report. `granted` counts the leaf entries
-    // that gained the user bit; `already` counts those that carried it on arrival.
-    unsigned user_leaves_granted(void);
-    unsigned user_leaves_already(void);
-
-    // The exposure census over the tables this port's own grant walked. `walked` counts the
-    // DISTINCT tables, by physical address; `exposed` counts those an unprivileged thread can
-    // reach. The grant's unit is a leaf, so a large leaf covering the end of a range exposes
-    // every byte to that leaf's end.
-    unsigned user_tables_exposed(void);
-    unsigned user_tables_walked(void);
-    uint64_t control_flags(void);
-
-    // CR0 as ring3_init found it. This firmware sets its write-protect bit and hands over
-    // read-only translation tables, so the grant has to lift it.
-    uint64_t control_flags0(void);
 }
 
 #endif

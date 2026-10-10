@@ -7,10 +7,6 @@
 # stack. rxv3 switches to the ISP on interrupt acceptance and armv7m forces SP_main in
 # handler mode, so on both the nested frame lands on a trusted stack by hardware. main.cc
 # #errors if an image is built elsewhere.
-#
-# The witness the arm reads is kept OUT of a bench build: its call site is inside what the
-# injected-IRQ bench measures. So is the arm, which would report traps=0 and fail for a
-# reason that is not a regression.
 add_executable(trapnest main.cc)
 kickos_app_system(trapnest COMPOSITION system.yaml)
 kickos_emit_image(trapnest)

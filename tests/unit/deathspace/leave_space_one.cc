@@ -85,7 +85,7 @@ namespace kickos
             {
                 kernel().current(testfix::core_at(0)) = t;
                 t->state.to<ThreadState::RUNNING>();
-                install_here(space_of(task_domain(t->task)));
+                install_for(t);
             }
         }
 
@@ -157,7 +157,7 @@ namespace kickos
             ASSERT_EQ(dying->task, nullptr);
 
             kernel().current(testfix::core_at(0)) = dying;
-            install_here(boot_space());
+            install_boot_here();
             trace_reset();
             run_exit(0);
 

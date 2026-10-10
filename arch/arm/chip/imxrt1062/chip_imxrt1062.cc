@@ -722,7 +722,7 @@ int arch_periph_enable(uintptr_t base)
     return 0;
 }
 
-#if defined(KICKOS_ENABLE_SELFTEST)
+#if KICKOS_REBOOT
 // Reboot into HalfKay (Teensy firmware-download mode): the MKL02 companion owns this
 // chip's SWD port, catches the halt, reprograms the flash and presents HalfKay itself.
 // Not vendor-documented (evidence: PJRC's _reboot_Teensyduino_ plus a third-party

@@ -54,7 +54,7 @@
 # one; the match must be UNIQUE, and an ambiguous name is refused rather than guessed at.
 #
 # The top-level CMakeLists registers the gate on every preset of an arch that has a trap-stack
-# header: KICKOS_BENCH, KICKOS_TELEMETRY, KICKOS_ENABLE_SELFTEST, the memory model and the
+# header: KICKOS_BENCH, KICKOS_TELEMETRY, KICKOS_REBOOT, the memory model and the
 # console backend each move a chain, and a board's variants differ by those.
 #
 # lx6 carries one trap class, PREEMPT: CHIP_ESP32 selects no HAS_MPU, so the syscall classes
@@ -120,9 +120,6 @@ root    rv32imac TRAP ?kickos_c6_amp_doorbell_service
 root    rv32imac TRAP kickos_arch_mpu_commit
 root    rv32imac TRAP ?kickos_trace_switch_done
 root    rv32imac TRAP ?kickos_bench_switch_done
-# The .Lintr demux calls this ahead of the arm it picked, in selftest builds only. A sibling of
-# the ISR call rather than an ancestor, so it adds to this class's MAX and not to its chain.
-root    rv32imac TRAP ?kickos_rv_nested_witness
 
 # .Lecall_slow mrets into svc_trampoline, which calls syscall_dispatch; .Lecall calls
 # kickos_ipc_fastpath inline, and the taken fastpath runs the same hooks.
@@ -169,7 +166,6 @@ root    rv32imac NESTED kickos_rv_ext_dispatch_dev
 root    rv32imac NESTED ?kickos_c6_amp_doorbell_service
 root    rv32imac NESTED kickos_rv_fault_report
 root    rv32imac NESTED kickos_fault_stack_top
-root    rv32imac NESTED ?kickos_rv_nested_witness
 # .Ltrap_wild's containment call. A U-MODE entry and not a nested M-mode trap, so it is here
 # for the STACK and not the cause: sp is the trap top at that label, which is the one this
 # class measures. kickos_arch_mpu_commit below it is charged to SWITCH instead, the containment
@@ -284,7 +280,6 @@ root    armv7m RET    kickos_thread_return
 # way into the console tail.
 root    armv7m PANIC  kickos_panic_report
 unsized armv7m kickos_panic_stack_enter 0 reason: switch.S, four instructions that write no stack; bl leaves the return address in LR and the body never spills it
-unsized armv7m kickos_armv7m_probe_word 0 reason: arch_armv7m.cc's top-level asm, a load and bx lr that write no stack
 
 # The AEABI 64-bit divide helpers are libgcc, so they have no .ci entry and neither does
 # __udivmoddi4 below them; measured from libgcc.a for this multilib (thumb/v7e-m+fp/softfp).
@@ -453,19 +448,18 @@ recurse rv64imac aspace_rv64imac.cc:prune_empty 4 reason: one activation per lev
 recurse rv64imac aspace_rv64imac.cc:map_into 4 reason: one activation per level, the leaf level storing descriptors instead
 
 # --- x86_64 --------------------------------------------------------------------
-# THIRTEEN classes. A ring 3 entry builds its frame on the thread's KERNEL BLOCK: an interrupt
+# ELEVEN classes. A ring 3 entry builds its frame on the thread's KERNEL BLOCK: an interrupt
 # or an exception through the task-state segment's rsp0 is IRQK, SYSCALL through the per-core
 # block is SYSK, both with the interrupt flag clear to the return but in arch_irq_window, where a
 # system call syncing frames ahead of the kernel lock takes an interrupt on the block, SYSWIN. A
 # ring 0 interrupt keeps its frame on the rsp it interrupted, IRQ, idle's or a privileged
 # thread's own or a death-path stub's block, and the double fault, NMI and machine check take
-# static interrupt-stack-table arrays, IST. A privileged caller's arch_syscall jumps to the
-# dispatch on its own stack with interrupts live, SYSPRIV.
+# static interrupt-stack-table arrays, IST.
 #
-# The death-path stubs, a privileged thread's return and a privileged syscall run with
-# interrupts live, so each is priced twice: EXITK, RET and SYSPRIV with an interrupt's whole
-# extent nested at the deepest byte and the switch cut, EXITKSW, RETSW and SYSPRIVSW through
-# the switch with nothing below it (x86_64_trap_stack.h).
+# The death-path stubs and a privileged thread's return run with interrupts live, so each is
+# priced twice: EXITK and RET with an interrupt's whole extent nested at the deepest byte and
+# the switch cut, EXITKSW and RETSW through the switch with nothing below it
+# (x86_64_trap_stack.h).
 #
 # The build also compiles the kernel-free boot images' objects, whose declining stubs define
 # the kernel's own entry points, so the corpus is what the application images' maps LOAD.
@@ -480,8 +474,6 @@ root    x86_64 IRQK      kickos_x86_64_trap
 root    x86_64 IST       kickos_x86_64_trap
 root    x86_64 SYSK      syscall_dispatch
 root    x86_64 SYSWIN    syscall_dispatch
-root    x86_64 SYSPRIV   syscall_dispatch
-root    x86_64 SYSPRIVSW syscall_dispatch
 root    x86_64 EXITK     kickos_thread_fault_exit
 root    x86_64 EXITK     kickos_thread_slay_exit
 root    x86_64 EXITKSW   kickos_thread_fault_exit
@@ -491,7 +483,7 @@ root    x86_64 RETSW     kickos_thread_return
 root    x86_64 IDLE      kmain.cc:idle_entry
 root    x86_64 PANIC     kickos_panic_report
 
-exclude x86_64 kickos_x86_64_switch_now class=IRQ,IRQK,IST,SYSPRIV,EXITK,RET reason: below kickos_x86_64_isr g_isr_depth is nonzero for the whole service, so arch_switch books the target and never calls the swap, and neither the containment call nor the report switches. SYSPRIV, EXITK and RET price an interrupt nested at the deepest byte, and none nests below a switch frame, arch_switch running under the kernel IrqLock; SYSPRIVSW, EXITKSW and RETSW walk the swap instead
+exclude x86_64 kickos_x86_64_switch_now class=IRQ,IRQK,IST,EXITK,RET reason: below kickos_x86_64_isr g_isr_depth is nonzero for the whole service, so arch_switch books the target and never calls the swap, and neither the containment call nor the report switches. EXITK and RET price an interrupt nested at the deepest byte, and none nests below a switch frame, arch_switch running under the kernel IrqLock; EXITKSW and RETSW walk the swap instead
 
 # switch.S bodies, each charged its own return-address slot as gcc charges a C body.
 # kickos_x86_64_switch_now is the call's 8, `pushfq` and `subq $KOS_FRAME_SIZE`, then it moves

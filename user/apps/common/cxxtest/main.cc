@@ -195,7 +195,7 @@ int main(int, char**)
         kos::print("SOME FAILED\n"); // spawn failure: fail loud, do not fall back to privileged
         return 1;
     }
-    kos_sem_wait(g_done);
+    kos_sem_wait(g_done, KOS_TIMEOUT_NONE);
     kos_sem_destroy(g_done);
 
     if (g_fails == 0)

@@ -55,8 +55,7 @@ add_test(NAME amp_peer_arms_controls
   COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_amp_peer_arms.sh" --controls)
 kickos_host_gate(amp_peer_arms_controls TIMEOUT 60)
 
-# Not on an address-space board, whose selftest app does not build with the self-test off.
-if(KICKOS_ENABLE_SELFTEST AND NOT KICKOS_HAVE_ASPACE)
+if(KICKOS_ENABLE_SELFTEST)
   add_test(NAME amp_prod_build
     COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_amp_prod_build.sh"
             "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}" "${_fs_preset_key}")

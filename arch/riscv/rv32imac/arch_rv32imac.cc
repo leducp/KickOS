@@ -495,11 +495,11 @@ void arch_irq_clear_pending(int line)
     arch_irq_restore(s);
 }
 
-void arch_irq_inject(int irq)
+bool arch_irq_inject(int irq)
 {
     if (irq < 0 or irq >= 32)
     {
-        return;
+        return false;
     }
     // An ISR reaching arch_irq_mask/unmask touches the same words.
     arch_irq_state_t s = arch_irq_save();
@@ -513,6 +513,7 @@ void arch_irq_inject(int irq)
         arch_rv_inject_deliver(irq);
     }
     arch_irq_restore(s);
+    return true;
 }
 
 // SSIP dispatch (switch.S .Lssoft), ISR context.
@@ -545,32 +546,6 @@ void arch_idle_wait(void)
 {
     __asm volatile("wfi");
 }
-
-// Out of a bench build: it sits inside the window kernel/bench/bench.cc's injected-IRQ arm
-// measures.
-#if defined(KICKOS_ENABLE_SELFTEST) && !KICKOS_BENCH
-// Nested-trap witness (arch.h), from .Lintr once the whole frame is saved at `frame`. An
-// interrupt taken with MPP=M interrupted the kernel; in a syscall dispatch its sp is the
-// CALLING THREAD'S, at any depth, with no bound applied. mstatus comes from the frame rather
-// than the live CSR because .Lrestore is what will consume it.
-void kickos_rv_nested_witness(void* frame)
-{
-    uint32_t const* const f = static_cast<uint32_t const*>(frame);
-    if ((f[F_MSTATUS] & MSTATUS_MPP_M) == 0)
-    {
-        return; // interrupted U-mode, on the bounds-checked thread stack
-    }
-    struct arch_context* const c = g_arch_current;
-    uintptr_t lo = 0;
-    uintptr_t hi = 0;
-    if (c != nullptr)
-    {
-        lo = c->stack_lo;
-        hi = c->stack_hi;
-    }
-    kickos_nestwitness_note(reinterpret_cast<uintptr_t>(frame), lo, hi);
-}
-#endif
 
 // --- Fault isolation ----------------------------------------------------------
 // mstatus.MPP is valid whatever the stack did, but it is NOT the thread's identity: .Lecall
@@ -637,11 +612,6 @@ struct arch_context* kickos_rv_contain_wild_sp(uint32_t sp)
     {
         return nullptr;
     }
-#if defined(KICKOS_ENABLE_SELFTEST)
-    // Read here as well as on .Lfault's path: it witnesses what the prologue wrote through
-    // the refused sp, which containment does not change.
-    kickos_trapstack_witness_report();
-#endif
     // tests/lib/panic.ere matches "=== RISC-V TRAP", so spelling this one that way would
     // make assert_no_panic blind to the difference.
     ::kickos::kprintf("\n=== RISC-V CONTAINED (wild stack) ===\n");
@@ -668,9 +638,6 @@ bool kickos_rv_fault_report(uint32_t mcause, uint32_t mepc, uint32_t mtval,
         return true;
     }
     kpanic_enter();
-#if defined(KICKOS_ENABLE_SELFTEST)
-    kickos_trapstack_witness_report();
-#endif
     // An access fault FROM U-mode (fetch 1, load 5, store 7) is a PMP domain violation. From
     // M-mode it is a kernel bug, M-mode bypassing the unlocked PMP entries, and takes the
     // generic dump.

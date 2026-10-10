@@ -10,7 +10,9 @@
    mpu     enforce
    sched   tickless
 
-[trapnest] worker parks sp at 0x40831e40 (stack_lo 0x40831c00 + 576)
+[trapnest] worker parks sp at 0x40832090 (stack_lo 0x40831c00 + 1168)
 [trapnest] worker done
-[nestwitness] traps=64 onstack=0
+[trapnest] main band intact: 0 of 292 words written below the parked sp
+[trapnest] ticker band intact: 0 of 292 words written below the parked sp
+[trapnest] worker band intact: 0 of 292 words written below the parked sp
 [trapnest] main ran after the worker

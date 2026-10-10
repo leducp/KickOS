@@ -8,7 +8,7 @@
 // by the target's own compile definitions (CMakeLists.txt beside this file), because an image
 // hosting this service may also hold a consumer that reached the public names through the
 // proxy. A FIFTH call that forgets its rename is reported as a duplicate symbol ONLY where
-// another definer of that public name (the proxy, the selftest's mock) is in the same link:
+// another definer of that public name (the proxy, a mock) is in the same link:
 // spi_usic.cc.o is extracted here by its renamed four regardless, so the missed name enters
 // the link as a definition. Forgetting the rename on ALL FOUR is not reported at all; see the
 // shadowing warning in <kickos/driver/spi.h>.

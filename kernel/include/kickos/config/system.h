@@ -140,6 +140,9 @@
 #ifndef KICKOS_TASK_NOTIFY_BUDGET
 #define KICKOS_TASK_NOTIFY_BUDGET 7
 #endif
+#ifndef KICKOS_TASK_FRAME_RUN_BUDGET
+#define KICKOS_TASK_FRAME_RUN_BUDGET 7
+#endif
 
 namespace kickos
 {

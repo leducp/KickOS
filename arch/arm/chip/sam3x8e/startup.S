@@ -8,6 +8,7 @@
  * boot); chip_sam3x8e's Reset_Handler points VTOR at it.
  */
 
+#include <chip_layout.h>
 #include <kickos/chip_limits.h>   /* KICKOS_MAX_IRQ: the NVIC line count */
 #include "core_vectors.inc"        /* shared core-exception vector block */
 
@@ -20,13 +21,13 @@
 g_isr_vector:
     KICKOS_CORE_VECTORS_V7M
 
-    /* Peripheral interrupts 0..44 -> the generic IRQ-as-event entry, except line 27
-     * (TC0 ch0) which carries the monotonic-clock wrap observer (chip_sam3x8e.cc). */
-    .rept 27
+    /* Peripheral interrupts 0..44 -> the generic IRQ-as-event entry, except the TC0 ch0
+     * line, which carries the monotonic-clock wrap observer (chip_sam3x8e.cc). */
+    .rept KICKOS_LAYOUT_LINE_TC0_IRQ
     .word kickos_arm_default_irq
     .endr
-    .word kickos_tc0_clock_isr       /* 27: TC0 ch0 overflow (clock wrap) */
-    .rept (KICKOS_MAX_IRQ - 28)
+    .word kickos_tc0_clock_isr       /* TC0 ch0 overflow (clock wrap) */
+    .rept KICKOS_MAX_IRQ - KICKOS_LAYOUT_LINE_TC0_IRQ - 1
     .word kickos_arm_default_irq
     .endr
 

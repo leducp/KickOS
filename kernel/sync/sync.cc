@@ -8,6 +8,8 @@
 #include <kickos/instance.h>
 #include <kickos/kernel.h>
 #include <kickos/irqlock.h>
+#include <kickos/klock.h>
+#include <kickos/time.h>
 
 #include <kickos/sys/abi.h>
 
@@ -17,6 +19,7 @@ namespace kickos
 {
     Thread* wq_pop_highest(List& q)
     {
+        KICKOS_ASSERT_EXCLUSION_HELD();
         Thread* best = wq_peek_highest(q);
         // The search is recorded whether or not it found anything: an absent record says
         // nobody looked, a different finding from looking and coming back empty.
@@ -104,7 +107,7 @@ namespace kickos
         s->waiters = List{};
     }
 
-    bool sem_wait(IrqLock& held, Semaphore* s, uint32_t& epoch)
+    SemWait sem_wait(IrqLock& held, Semaphore* s, uint32_t timeout_us, uint32_t& epoch)
     {
         Thread* const c = sched::current();
         ParkToken const ask = park_cancel_pending(c);
@@ -115,10 +118,15 @@ namespace kickos
         if (s->count > 0)
         {
             s->count--;
-            return false;
+            return SemWait::TAKEN;
         }
+        if (timeout_us == 0)
+        {
+            return SemWait::EMPTY;
+        }
+        ktime_deadline_arm(c, timeout_us, held);
         epoch = wq_block(ask)(s->waiters, WAIT_SEM, s, nullptr, held);
-        return true;
+        return SemWait::PARKED;
     }
 
     bool sem_post(Semaphore* s)

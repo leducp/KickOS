@@ -48,12 +48,7 @@ _kernel_stack_size = 16K;
    both multiples of _appdata_size, so each region base is naturally aligned to its size.
    Raise _code_size / _appdata_size to the next pow2 if an ASSERT below trips. */
 #if KICKOS_HAVE_MPU
-/* 128K, not 64K: the full-C++ opt-in folds .eh_frame + .gcc_except_table INTO this
-   region (retained, not discarded, see .text) and libstdc++/libsupc++ text pushes real
-   code+rodata past 64K. */
-#ifndef KICKOS_CODE_SIZE
-#define KICKOS_CODE_SIZE 128K
-#endif
+/* KICKOS_CODE_SIZE is set by caps.cmake; a default here would be a second one. */
 _code_size = KICKOS_CODE_SIZE;
 /* App writable window: the pad (window minus app statics + runtime + gp small-data) IS
    the newlib heap. cxxtest's measured peak (~4.2K on RISC-V DWARF) and printf both fit
@@ -290,7 +285,6 @@ SECTIONS
         __kickos_amp_cells_start = .;
         KEEP(*(.amp_shared.cells.request))
         KEEP(*(.amp_shared.cells.answer))
-        KEEP(*(.amp_shared.cells.served))
         KEEP(*(.amp_shared.affinity))
         KEEP(*(.amp_shared.affinity_seated))
         __kickos_amp_cells_end = .;

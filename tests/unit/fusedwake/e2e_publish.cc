@@ -144,9 +144,10 @@ extern "C"
         return g_clock;
     }
 
-    void arch_irq_inject(int)
+    bool arch_irq_inject(int)
     {
         note(INJECT);
+        return true;
     }
 
     arch_irq_state_t arch_irq_save(void)

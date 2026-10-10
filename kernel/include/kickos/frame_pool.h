@@ -12,17 +12,24 @@
 
 #include <kickos/arch/arch.h>
 
+#include <kickos/sys/abi.h> // kos_task_t
+
 #include <stddef.h>
 
 namespace kickos
 {
+    struct Task;
+
     // A capability's unit over this pool: a run, the pool holding thousands of frames against
-    // a spawned thread's single-digit capability table. `base` stays below the resolve
-    // chokepoint, so no address reaches the capability ABI.
+    // a spawned thread's single-digit capability table. No capability carries `base`: the
+    // address a map answers is the run's frames plus the user offset, as kos_ram_alloc's is.
     struct FrameRun
     {
         arch_phys_addr_t base = 0;
         uint32_t pages = 0;
+        // The task charged for the run, for its whole life, wherever it is mapped and whoever
+        // holds it. KOS_TASK_NONE charges no task.
+        kos_task_t minter = KOS_TASK_NONE;
         // A mapping of another type than cacheable has been installed since the last sync of
         // these frames, so a cacheable one owes them one (aspace_cap_map).
         bool sync_owed = false;
@@ -37,14 +44,21 @@ namespace kickos
     // must not learn an address width.
     [[nodiscard]] int frame_run_create(arch_phys_addr_t base, uint32_t pages);
 
+    // Seat a run naming no frame yet, charged to `minter`, with the creator's reference. No
+    // capability resolves it until frame_run_fill. FRAME_RUN_NONE when the pool is full.
+    [[nodiscard]] int frame_run_create_empty(kos_task_t minter);
+    // Hand an empty run its frames. False, changing nothing, unless the run is live and empty.
+    bool frame_run_fill(int obj_handle, arch_phys_addr_t base, uint32_t pages);
+    // Whether `t` may mint one more run: fewer than KICKOS_TASK_FRAME_RUN_BUDGET live runs
+    // charged to it. Caller holds IrqLock.
+    bool frame_run_admit(Task const* t);
+
     // One reference on a frame run for a holder that is not a capability. A mapping is one:
     // without it the last capability's drop frees frames a live leaf still points at. False at
     // the ceiling or on a handle that does not resolve; true means frame_run_slot_of resolves
     // it for as long as the caller's IrqLock is held.
     [[nodiscard]] bool frame_run_ref(int obj_handle);
     void frame_run_release(int obj_handle);
-    // Holders, capabilities and mappings alike. 0 when the handle does not resolve.
-    uint8_t frame_run_refcount(int obj_handle);
     // The frame run slot a handle names, or -1; a VirtualRange stores it plus one.
     int frame_run_slot_of(int obj_handle);
 
@@ -63,10 +77,6 @@ namespace kickos
 
     size_t frame_pool_free();
 
-    // How many times the pool has refused a free: a nonzero count is a frame freed twice or a
-    // frame the pool never owned.
-    size_t frame_pool_refused();
-
     // The pointer the kernel reaches a frame's bytes through, or null when `frame` is not one
     // this pool handed out.
     void* frame_pool_ptr(arch_phys_addr_t frame);
@@ -80,15 +90,6 @@ namespace kickos
 
     // `granule` is the map editor's granule, which is what the run was measured in.
     void frame_pool_free_run(arch_phys_addr_t run, size_t pages, size_t granule);
-
-#if defined(KICKOS_ENABLE_SELFTEST)
-    // Refuse the `nth` next allocation, by any entry point, taking nothing; then disarm.
-    // 0 disarms without refusing.
-    void frame_pool_fail_in(size_t nth);
-
-    // Whether an arming is still waiting for its attempt.
-    bool frame_pool_fail_armed();
-#endif
 
     // The physical frames the pool describes, [*lo, *hi), bitmap included.
     void frame_pool_phys_bounds(arch_phys_addr_t* lo, arch_phys_addr_t* hi);

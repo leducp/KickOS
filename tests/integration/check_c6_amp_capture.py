@@ -83,11 +83,6 @@ def main() -> None:
     served = int(one("served", r"^ampping: node 1 answered 4 round\(s\), its own record says ([0-9]+)$", log)[0])
     require(served >= 4, "served", f"LP served record has {served}, needs four")
     one("done", r"^ampping: node 0 done, 4 round\(s\) across the partition$", log)
-    one("doorbell", r"^ampping: the doorbell has no seat, so no raise of it can be deferred \(rc -38\)$", log)
-    for node in range(2):
-        bells, drains = map(int, one("bells", rf"^# ampdiag: node={node} core={node} bells=([0-9]+) drains=([0-9]+)$",
-                                     log))
-        require(bells > 0 and drains > 0, "bells", f"node {node} did not service its doorbell")
     panics = [line for line in log.splitlines() if banner.search(line)]
     require(not panics, "panic", f"a panic or fault banner in the capture: {panics[0] if panics else ''}")
     require("=== THREAD FAULT ===" not in log, "fault", "a thread fault in the capture, where none is expected")

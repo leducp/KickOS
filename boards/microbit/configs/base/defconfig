@@ -14,6 +14,8 @@ CONFIG_KICKOS_USER_STACK_SIZE=2048
 CONFIG_KICKOS_IDLE_STACK_SIZE=512
 CONFIG_KICKOS_ROOT_STACK_SIZE=2048
 CONFIG_KICKOS_ENABLE_SELFTEST=y
+CONFIG_KICKOS_MAX_SPAWN_GRANTS=9
+CONFIG_KICKOS_REBOOT=y
 
 # A 128-byte line limit keeps the derived TX ring at 256 bytes and covers
 # the board's diagnostics. Further reduction conflicts with fault-record sizing.

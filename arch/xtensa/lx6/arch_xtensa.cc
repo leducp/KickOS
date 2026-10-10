@@ -1020,11 +1020,11 @@ void arch_irq_route(int line, uint32_t core)
 
 // The raise lands on the core the line is routed to, through the cross-core doorbell when that
 // is a peer, and on this core for a line routed nowhere.
-void arch_irq_inject(int irq)
+bool arch_irq_inject(int irq)
 {
-    if (irq < 0)
+    if (irq < 0 or irq >= 32)
     {
-        return;
+        return false;
     }
     // Bracketed like arch_irq_mask/unmask: an ISR reaching those writes the same cells.
     arch_irq_state_t s = arch_irq_save();
@@ -1041,7 +1041,7 @@ void arch_irq_inject(int irq)
         {
             post_to(static_cast<uint32_t>(core), me, 1u << (static_cast<unsigned>(irq) & 31u));
             arch_irq_restore(s);
-            return;
+            return true;
         }
 #endif
         // Recorded BEFORE the doorbell rings: the dispatcher reads it.
@@ -1058,6 +1058,7 @@ void arch_irq_inject(int irq)
         __asm volatile("wsr.intset %0; rsync" ::"a"(bit) : "memory");
     }
     arch_irq_restore(s);
+    return true;
 }
 
 #if KICKOS_KERNEL_CORES > 1

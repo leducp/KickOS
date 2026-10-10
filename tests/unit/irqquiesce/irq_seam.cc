@@ -91,6 +91,9 @@ namespace kickos
         unsigned g_probe_calls = 0;
         void* g_probe_arg = nullptr;
         void (*g_probe_action)() = nullptr;
+        int g_injected_line = -1;
+        unsigned g_injects = 0;
+        bool g_inject_raises = true;
 
         std::atomic<bool> g_lock_blocked{false};
 
@@ -105,6 +108,9 @@ namespace kickos
             g_probe_calls = 0;
             g_probe_arg = nullptr;
             g_probe_action = nullptr;
+            g_injected_line = -1;
+            g_injects = 0;
+            g_inject_raises = true;
             g_lock_blocked.store(false);
             g_hold_line.store(-1);
             g_hold_reached.store(false);
@@ -245,6 +251,7 @@ namespace kickos
     {
         void* g_installed_obj = nullptr;
         int g_installed_handle = -1;
+        uint8_t g_installed_rights = 0;
         unsigned g_closes = 0;
         // The one object every line here signals, and the one entry a CAP_NOTIFY resolve
         // answers. Handle 0 names it; nothing in this gate ever frees it.
@@ -260,9 +267,10 @@ namespace kickos
         }
     }
 
-    int cap_install(Thread*, int obj, CapType, uint8_t, uint32_t* out)
+    int cap_install(Thread*, int obj, CapType, uint8_t rights, uint32_t* out)
     {
         g_installed_handle = obj;
+        g_installed_rights = rights;
         g_installed_obj = kernel().irq_bindings.resolve(obj);
         *out = 1u;
         return 0;
@@ -308,7 +316,7 @@ namespace kickos
         return true;
     }
 
-    void* cap_resolve_e(Thread*, uint32_t, CapType want, uint8_t, int* err)
+    void* cap_resolve_e(Thread*, uint32_t, CapType want, uint8_t need, int* err)
     {
         if (want == CapType::CAP_NOTIFY)
         {
@@ -318,6 +326,11 @@ namespace kickos
         if (g_installed_obj == nullptr)
         {
             *err = KOS_EBADF;
+            return nullptr;
+        }
+        if ((need & ~g_installed_rights) != 0u)
+        {
+            *err = KOS_EACCES;
             return nullptr;
         }
         return g_installed_obj;
@@ -355,7 +368,13 @@ namespace kickos
         {
             g_installed_obj = nullptr;
             g_installed_handle = -1;
+            g_installed_rights = 0;
             g_closes = 0;
+        }
+
+        void narrow_installed_rights(uint8_t rights)
+        {
+            g_installed_rights = rights;
         }
 
         unsigned ipi_sends(uint32_t core)
@@ -474,6 +493,13 @@ void arch_irq_route(int line, uint32_t core)
     kickos::irqfix::g_routed_core = core;
     kickos::irqfix::g_routed_armed =
         kickos::irqfix::last_line_op(line) == static_cast<int>(kickos::irqfix::OP_UNMASK);
+}
+
+bool arch_irq_inject(int irq)
+{
+    kickos::irqfix::g_injected_line = irq;
+    kickos::irqfix::g_injects++;
+    return kickos::irqfix::g_inject_raises;
 }
 
 bool arch_irq_line_kernel_owned(int line)

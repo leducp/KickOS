@@ -53,10 +53,12 @@ namespace kickos
         // Remaining successful allocations before failure. Reset restores full capacity.
         void set_frame_budget(uint32_t frames);
 
-        // For the backend seams. Frame 0 is never handed out: 0 is the pool's failure answer.
+        // For the backend seams. Frame n's PA is pa_base plus n granules: the RAM array's host
+        // address where the backend reaches frames by identity, else 0. Frame 0 is never handed
+        // out: 0 is the pool's failure answer.
         void sysop_record(char const* tag, uint64_t arg);
         void sysop_fire_mid_edit();
-        void sysops_reset_common(size_t first_frame);
+        void sysops_reset_common(size_t first_frame, uintptr_t pa_base = 0);
     }
 }
 

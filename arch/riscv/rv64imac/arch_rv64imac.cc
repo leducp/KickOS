@@ -654,11 +654,11 @@ void arch_irq_clear_pending(int line)
 }
 
 // The raise lands on the hart the line is routed to, through the doorbell when that is a peer.
-void arch_irq_inject(int irq)
+bool arch_irq_inject(int irq)
 {
     if (irq < 0 or irq >= IRQ_LINES)
     {
-        return;
+        return false;
     }
     uint32_t const bit = 1u << irq;
     arch_irq_state_t s = arch_irq_save();
@@ -673,6 +673,7 @@ void arch_irq_inject(int irq)
         post_to(hart, me, bit);
     }
     arch_irq_restore(s);
+    return true;
 }
 
 // Called with the line masked in its old route's row, so no row but the new route's can arm it.
@@ -779,11 +780,11 @@ void arch_irq_clear_pending(int line)
     arch_irq_restore(s);
 }
 
-void arch_irq_inject(int irq)
+bool arch_irq_inject(int irq)
 {
     if (irq < 0 or irq >= IRQ_LINES)
     {
-        return;
+        return false;
     }
     // An ISR reaching arch_irq_mask/unmask touches the same words.
     uint32_t const bit = 1u << irq;
@@ -809,6 +810,7 @@ void arch_irq_inject(int irq)
         }
     }
     arch_irq_restore(s);
+    return true;
 }
 
 // Whether a device line is still latched in the controller above. The doorbell poll reads it
@@ -929,28 +931,9 @@ void arch_fault_redirect_to_exit(void* frame)
     f[KICKOS_RV64_F_SP / 8] = kickos_fault_stack_top();
 }
 
-#if defined(KICKOS_ENABLE_SELFTEST)
-// Per hart, each written by its own hart with interrupts masked.
-static kickos::Atomic<uint32_t, kickos::Order::RELAXED> g_irq_windows[KICKOS_NUM_CORES];
-
-uint32_t arch_irq_windows(void)
-{
-    uint32_t sum = 0;
-    for (kickos::Atomic<uint32_t, kickos::Order::RELAXED> const& n : g_irq_windows)
-    {
-        sum += n.load();
-    }
-    return sum;
-}
-#endif
-
 // A pending interrupt is taken here or at a later window.
 void arch_irq_window(void)
 {
-#if defined(KICKOS_ENABLE_SELFTEST)
-    kickos::Atomic<uint32_t, kickos::Order::RELAXED>& mine = g_irq_windows[arch_cpu_id()];
-    mine.store(mine.load() + 1u);
-#endif
     __asm volatile("csrsi sstatus, 2\n\tnop\n\tcsrci sstatus, 2" ::: "memory");
 }
 

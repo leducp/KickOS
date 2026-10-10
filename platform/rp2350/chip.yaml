@@ -93,7 +93,7 @@ devices:
     window: [0xD0000000, 0x200]
     owner: kernel
     ref: "Table 15 Address map, p.34"
-    lines: { bell: { number: 26, symbol: SIO_IRQ_BELL, ref: "Table 95 System-level interrupts, p.83" } }
+    lines: { bell: { number: 26, symbol: SIO_IRQ_BELL, when: doorbell, ref: "Table 95 System-level interrupts, p.83" } }
 
 memory:
   # The striped SRAM. The two 4 KiB banks above it are left for per-core stacks.

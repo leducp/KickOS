@@ -32,7 +32,7 @@ enum kos_cap_authority
     KOS_AUTH_MEMORY = 1 << 0,  // kos_ram_alloc, a spawn's device window, kos_mem_self_grant
     KOS_AUTH_PINMUX = 1 << 1,  // kos_pinmux_set
     KOS_AUTH_PSTATE = 1 << 2,  // kos_cpu_clock_set
-    KOS_AUTH_IRQ = 1 << 3,     // kos_irq_claim, kos_irq_unmask
+    KOS_AUTH_IRQ = 1 << 3,     // kos_irq_claim
     KOS_AUTH_SYSTEM = 1 << 4,  // kos_shutdown, kos_reboot
     KOS_AUTH_CONSOLE = 1 << 5, // kos_console_publish
     KOS_AUTH_TASKS = 1 << 6,   // kos_task_create, and a spawn that builds a task of its own

@@ -9,12 +9,9 @@
 # Two probe families:
 #   - X1 and X2 carry NO kernel and no interrupt source, over an explicit OBJECT subset, and
 #     take the declining kickos_x86_64_isr fallback so every vector reports.
-#   - X3 carries the real arch and chip ARCHIVES. Archives, because a fallback TU sits beside
-#     the chip's own definition of the same symbol and member order inside a group is what
-#     resolves that; linking the objects raw would be a duplicate definition.
-#
-# The X3 image supplies kickos_isr_timer, kickos_isr_irq and kickos_thread_return itself; the
-# syscall entry every app needs is step X4's.
+#   - X5 and X6 carry the real arch and chip ARCHIVES. Archives, because a fallback TU sits
+#     beside the chip's own definition of the same symbol and member order inside a group is
+#     what resolves that; linking the objects raw would be a duplicate definition.
 
 # The link tool and what it runs: the two guards before every link, and the relocation copy an
 # application image carries for the boot.
@@ -37,8 +34,8 @@ set(KICKOS_X86_64_PROBE_LINK "${KICKOS_X86_64_LINK}" --one-pass
 set(KICKOS_X86_64_PROBE_DEPENDS "${KICKOS_X86_64_LINK}" "${KICKOS_NO_GOT}" "${KICKOS_WEAK_UNDEF}"
     "${KICKOS_X86_64_PE_SCRIPT}")
 
-# arch/include is here for the X3 probe alone; the kernel-free images reach only the two
-# backend directories.
+# arch/include is here for the images that link the archives; the kernel-free images reach only
+# the two backend directories.
 set(KICKOS_X86_64_INCLUDES
   "${KICKOS_X86_64_DIR}/include"
   "${KICKOS_Q35_DIR}/include"
@@ -67,15 +64,15 @@ kickos_apply_freestanding(kickos_x86_64_boot_com1)
 target_include_directories(kickos_x86_64_boot_com1 PRIVATE ${KICKOS_X86_64_INCLUDES})
 
 # The kernel-side symbols the arch and chip archives reference. Every body declines; the
-# kernel-free images below would not link without it, and the X4 image defines the same names
+# kernel-free images below would not link without it, and the X5 image defines the same names
 # itself instead.
 add_library(kickos_x86_64_nokernel OBJECT "${KICKOS_X86_64_DIR}/nokernel_x86_64.cc")
 kickos_apply_freestanding(kickos_x86_64_nokernel)
 target_include_directories(kickos_x86_64_nokernel PRIVATE ${KICKOS_X86_64_INCLUDES})
 
 # The switch accumulator's two symbols. Under KICKOS_BENCH switch.S brackets the swap and
-# reaches the kernel for both, and the three images below carry the arch archive with no
-# kernel behind it.
+# reaches the kernel for both, and the images below carry the arch archive with no kernel
+# behind it.
 add_library(kickos_x86_64_nobench OBJECT "${KICKOS_X86_64_DIR}/nobench_x86_64.cc")
 kickos_apply_freestanding(kickos_x86_64_nobench)
 target_include_directories(kickos_x86_64_nobench PRIVATE ${KICKOS_X86_64_INCLUDES})
@@ -90,11 +87,6 @@ add_library(kickos_x86_64_x2 OBJECT
   "${KICKOS_X86_64_DIR}/landed_x2_x86_64.cc")
 kickos_apply_freestanding(kickos_x86_64_x2)
 target_include_directories(kickos_x86_64_x2 PRIVATE ${KICKOS_X86_64_INCLUDES})
-
-# X3's landing tail and its arms.
-add_library(kickos_x86_64_probe3 OBJECT "${KICKOS_X86_64_DIR}/probe3_x86_64.cc")
-kickos_apply_freestanding(kickos_x86_64_probe3)
-target_include_directories(kickos_x86_64_probe3 PRIVATE ${KICKOS_X86_64_INCLUDES})
 
 # ONE IMAGE PER FAULT CLASS. The report ends the image, so a run witnesses exactly one class;
 # only arch/x86/x86_64/probe_x86_64.cc differs between them.
@@ -140,63 +132,6 @@ foreach(_cls IN LISTS KICKOS_X2_CLASSES)
 endforeach()
 
 set(KICKOS_X1_IMAGE "${KICKOS_X86_64_IMAGE_none}")
-
-# The X3 image. The group is what the application ladder also links with, so a fallback TU
-# and the chip's own definition of the same seam resolve here exactly as they would there.
-set(KICKOS_X3_IMAGE "${PROJECT_BINARY_DIR}/kickos_x86_64_x3.efi")
-add_custom_command(
-  OUTPUT "${KICKOS_X3_IMAGE}"
-  COMMAND ${KICKOS_X86_64_PROBE_LINK}
-          -o "${KICKOS_X3_IMAGE}"
-          $<TARGET_OBJECTS:kickos_x86_64_boot>
-          $<TARGET_OBJECTS:kickos_x86_64_probe3>
-          $<TARGET_OBJECTS:kickos_x86_64_nobench>
-          $<TARGET_OBJECTS:kickos_x86_64_nokernel>
-          -Wl,--start-group
-          "$<TARGET_FILE:kickos_chip_q35>"
-          "$<TARGET_FILE:kickos_arch_x86_64>"
-          -Wl,--end-group
-  # See the per-class link above for why the OBJECTS and not the targets.
-  DEPENDS $<TARGET_OBJECTS:kickos_x86_64_boot>
-          $<TARGET_OBJECTS:kickos_x86_64_probe3>
-          $<TARGET_OBJECTS:kickos_x86_64_nobench>
-          $<TARGET_OBJECTS:kickos_x86_64_nokernel>
-          "$<TARGET_FILE:kickos_chip_q35>"
-          "$<TARGET_FILE:kickos_arch_x86_64>"
-          ${KICKOS_X86_64_PROBE_DEPENDS}
-  COMMENT "x86_64: linking the PE32+ UEFI application ${KICKOS_X3_IMAGE}"
-  COMMAND_EXPAND_LISTS
-  VERBATIM)
-list(APPEND KICKOS_X86_64_IMAGES "${KICKOS_X3_IMAGE}")
-
-# X4's landing tail and its arms.
-add_library(kickos_x86_64_probe4 OBJECT "${KICKOS_X86_64_DIR}/probe4_x86_64.cc"
-                                        "${KICKOS_X86_64_DIR}/probe4_x86_64.S")
-kickos_apply_freestanding(kickos_x86_64_probe4)
-target_include_directories(kickos_x86_64_probe4 PRIVATE ${KICKOS_X86_64_INCLUDES})
-
-set(KICKOS_X4_IMAGE "${PROJECT_BINARY_DIR}/kickos_x86_64_x4.efi")
-add_custom_command(
-  OUTPUT "${KICKOS_X4_IMAGE}"
-  COMMAND ${KICKOS_X86_64_PROBE_LINK}
-          -o "${KICKOS_X4_IMAGE}"
-          $<TARGET_OBJECTS:kickos_x86_64_boot>
-          $<TARGET_OBJECTS:kickos_x86_64_probe4>
-          $<TARGET_OBJECTS:kickos_x86_64_nobench>
-          -Wl,--start-group
-          "$<TARGET_FILE:kickos_chip_q35>"
-          "$<TARGET_FILE:kickos_arch_x86_64>"
-          -Wl,--end-group
-  DEPENDS $<TARGET_OBJECTS:kickos_x86_64_boot>
-          $<TARGET_OBJECTS:kickos_x86_64_probe4>
-          $<TARGET_OBJECTS:kickos_x86_64_nobench>
-          "$<TARGET_FILE:kickos_chip_q35>"
-          "$<TARGET_FILE:kickos_arch_x86_64>"
-          ${KICKOS_X86_64_PROBE_DEPENDS}
-  COMMENT "x86_64: linking the PE32+ UEFI application ${KICKOS_X4_IMAGE}"
-  COMMAND_EXPAND_LISTS
-  VERBATIM)
-list(APPEND KICKOS_X86_64_IMAGES "${KICKOS_X4_IMAGE}")
 
 # X5's landing tail and its arms. The image links the archives and defines the kernel-side
 # symbols itself: the fault reporter has to be this file's for a deliberate translation fault
@@ -278,7 +213,7 @@ add_custom_target(kickos_x1_image ALL DEPENDS ${KICKOS_X86_64_IMAGES} "${KICKOS_
 # Every witness runs on the processor model cmake/kickos.cmake names.
 set(KICKOS_X86_64_QEMU_ENV "${CMAKE_COMMAND}" -E env "KICKOS_X86_64_CPU=${KICKOS_X86_64_QEMU_CPU}")
 
-# The five boot witnesses, each also a ctest case below. The targets stay: a `ninja x<n>-run`
+# The boot witnesses, each also a ctest case below. The targets stay: a `ninja x<n>-run`
 # leaves its serial log where a developer reads it, while the ctest case takes its own
 # workdir so a run under `ctest -j` does not share one.
 add_custom_target(x1-run
@@ -300,26 +235,12 @@ add_custom_target(x2-run
   USES_TERMINAL
   COMMENT "x86_64: taking the X2 descriptor and fault-report witness, one boot per class")
 
-add_custom_target(x4-run
-  COMMAND ${KICKOS_X86_64_QEMU_ENV} "${CMAKE_CURRENT_SOURCE_DIR}/tools/run-qemu-x86_64-x4.sh"
-          "${KICKOS_X4_IMAGE}" "${PROJECT_BINARY_DIR}/x4run"
-  DEPENDS "${KICKOS_X4_IMAGE}"
-  USES_TERMINAL
-  COMMENT "x86_64: taking the X4 ring-3 and syscall witness")
-
 add_custom_target(x5-run
   COMMAND ${KICKOS_X86_64_QEMU_ENV} "${CMAKE_CURRENT_SOURCE_DIR}/tools/run-qemu-x86_64-x5.sh"
           "${KICKOS_X5_IMAGE}" "${PROJECT_BINARY_DIR}/x5run"
   DEPENDS "${KICKOS_X5_IMAGE}"
   USES_TERMINAL
   COMMENT "x86_64: taking the X5 address-space witness")
-
-add_custom_target(x3-run
-  COMMAND ${KICKOS_X86_64_QEMU_ENV} "${CMAKE_CURRENT_SOURCE_DIR}/tools/run-qemu-x86_64-x3.sh"
-          "${KICKOS_X3_IMAGE}" "${PROJECT_BINARY_DIR}/x3run"
-  DEPENDS "${KICKOS_X3_IMAGE}"
-  USES_TERMINAL
-  COMMENT "x86_64: taking the X3 console, timer, interrupt, switch and idle witness")
 
 # The guard's own positive control, registered here because the guard is this board's alone.
 # AR is not in the toolchain file's find_program set, CMake resolving it itself.
@@ -353,7 +274,7 @@ if(KICKOS_BUILD_TESTS)
   # reports that 77 as a failure naming nothing true.
   set_tests_properties(x86_64_x5_aspace PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77)
 
-  # X1 THROUGH X4, for the same reason X5 was registered: each was built by every configure and
+  # X1 AND X2, for the same reason X5 was registered: each was built by every configure and
   # run by nothing. What each reads is in no other gate on this board.
   #
   # The workdir is a LEAF and never PROJECT_BINARY_DIR: each runner builds its own esp.img
@@ -391,16 +312,6 @@ if(KICKOS_BUILD_TESTS)
     set_tests_properties(x86_64_x2_${_cls} PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
   endforeach()
 
-  add_test(NAME x86_64_x3_runtime
-    COMMAND ${KICKOS_X86_64_QEMU_ENV} "${CMAKE_CURRENT_SOURCE_DIR}/tools/run-qemu-x86_64-x3.sh"
-            "${KICKOS_X3_IMAGE}" "${PROJECT_BINARY_DIR}/x3run-ctest")
-  set_tests_properties(x86_64_x3_runtime PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77)
-
-  add_test(NAME x86_64_x4_ring3
-    COMMAND ${KICKOS_X86_64_QEMU_ENV} "${CMAKE_CURRENT_SOURCE_DIR}/tools/run-qemu-x86_64-x4.sh"
-            "${KICKOS_X4_IMAGE}" "${PROJECT_BINARY_DIR}/x4run-ctest")
-  set_tests_properties(x86_64_x4_ring3 PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77)
-
   add_test(NAME x86_64_weak_undef_selftest
     COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_x86_64_weak_undef_selftest.sh"
             "${KICKOS_NO_GOT}" "${KICKOS_WEAK_UNDEF}" "${CMAKE_READELF}" "${CMAKE_C_COMPILER}"
@@ -423,9 +334,8 @@ if(KICKOS_BUILD_TESTS)
   set_tests_properties(x86_64_entry_cld PROPERTIES TIMEOUT 60 LABELS host)
 endif()
 
-message(STATUS "KickOS: x86_64 libraries plus the X1 through X5 images; `ninja x1-run`, "
-               "`ninja x2-run`, `ninja x3-run`, `ninja x4-run` and `ninja x5-run` take the "
-               "witnesses")
+message(STATUS "KickOS: x86_64 libraries plus the X1, X2 and X5 images; `ninja x1-run`, "
+               "`ninja x2-run` and `ninja x5-run` take the witnesses")
 else()
   message(STATUS "KickOS: x86_64 shared-kernel application images with AP startup")
 endif()
@@ -457,8 +367,7 @@ if(NOT "kickos_kernel" IN_LIST _kos_kernel_half)
 endif()
 set(_kos_probe_objects kickos_x86_64_boot_com1)
 if(KICKOS_KERNEL_CORES EQUAL 1)
-  list(APPEND _kos_probe_objects kickos_x86_64_x2 kickos_x86_64_probe3 kickos_x86_64_probe4
-                                 kickos_x86_64_probe5 kickos_x86_64_probe6)
+  list(APPEND _kos_probe_objects kickos_x86_64_x2 kickos_x86_64_probe5 kickos_x86_64_probe6)
   foreach(_cls IN LISTS KICKOS_X2_CLASSES)
     list(APPEND _kos_probe_objects kickos_x86_64_probe_${_cls})
   endforeach()

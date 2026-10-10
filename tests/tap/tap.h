@@ -111,8 +111,6 @@ namespace tap
     // a sub-case unexercised is tap::partial, not this.
     // Like tap::fail it only records and does not return: follow it with `return`.
     void skip(char const* fmt, ...) __attribute__((format(printf, 1, 2)));
-    // tap::skip carrying a nonzero <tag> of the suite's own, which nested_run can ask for.
-    void skip_tagged(unsigned tag, char const* fmt, ...) __attribute__((format(printf, 2, 3)));
 
     // Mark the current test skipped for vacuity: the timing window its claim rests on did
     // not hold on this run, so the arm could assert nothing. The harness emits
@@ -155,18 +153,8 @@ namespace tap
     // Emit a free-form TAP diagnostic (`# <text>`) on the harness's own route.
     void diag(char const* fmt, ...) __attribute__((format(printf, 1, 2)));
 
-    // How a nested_run ended: SKIPPED is a skip carrying the tag asked for.
-    enum class Nested : unsigned char
-    {
-        SKIPPED,
-        SKIPPED_OTHER,
-        RAN,
-        FAILED
-    };
-    // Run fn inside the current test and answer how it ended. The current test's own verdict
-    // and reason are left as they were; every end but SKIPPED is emitted as a diagnostic with
-    // its reason, and a FAILED one runs the set_after_failure repair before this returns.
-    Nested nested_run(TestFn fn, unsigned tag);
+    // Emit `Bail out! <text>` on the same route: the run stops here, with no plan.
+    void bail_out(char const* fmt, ...) __attribute__((format(printf, 1, 2)));
 
     // Register a repair to run after a test that failed, before the next one starts. A
     // failing TAP_CHECK returns mid-test, so a suite sharing state across tests strands
@@ -175,15 +163,16 @@ namespace tap
     // before run_all(); one hook, last writer wins.
     void set_after_failure(TestFn fn);
 
-    // Register a count of what a test must hand back, read before and after every test. A
-    // test that ends on a different count fails even if every check passed; one that failed
-    // already gets a diagnostic. A negative reading judges nothing. Call before run_all(); one
-    // census, last writer wins.
+    // Register a count of what a test must hand back, read before and after every test. A test
+    // that ends on a different count fails even if every check passed; one that failed already
+    // gets a diagnostic. A negative reading judges nothing. Call before run_all(); a census past
+    // CENSUS_MAX is a dropped registration.
     using CensusFn = long (*)();
-    void set_census(CensusFn count, char const* what);
-    // Called inside a test that hands what the census counts to a later test, by design: the
+    constexpr int CENSUS_MAX = 4;
+    void add_census(CensusFn count, char const* what);
+    // Called inside a test that hands what `count` counts to a later test, by design: the
     // count it is to end on, relative to its start. The later test declares the reverse.
-    void census_expect(long delta);
+    void census_expect(CensusFn count, long delta);
 
     // Run every registered test in order, emit TAP, and return the number that
     // failed (0 == all passed). Skips, vacuity skips and partials are counted but are not
@@ -201,19 +190,49 @@ namespace tap
         ::tap::skip_vacuous(fmt __VA_OPT__(, ) __VA_ARGS__);                        \
     } while (0)
 
+// Skip the current test unless `cond` holds, with a printf-style reason, and return from it.
+#define TAP_SKIP_UNLESS(cond, fmt, ...)                                             \
+    do                                                                              \
+    {                                                                               \
+        static_assert(::tap::format_chars_max(fmt) <= ::tap::REASON_CHARS_MAX,      \
+                      "this skip reason can overrun the TAP line: shorten it");     \
+        if (not(cond))                                                              \
+        {                                                                           \
+            ::tap::skip(fmt __VA_OPT__(, ) __VA_ARGS__);                            \
+            return;                                                                 \
+        }                                                                           \
+    } while (0)
+
 // Assert `cond`; on failure record "<file>:<line>: <expr>" and return from the current test,
 // which the harness marks "not ok". Only valid inside a registered test function (void).
+// KICKOS_TAP_TERSE records "<file>:<line>" alone.
 //
 // The return is from the middle of the arm: an arm holding anything out of a shared pool must
 // release it on that path too.
-#define TAP_CHECK(cond)                                          \
-    do                                                           \
-    {                                                            \
-        if (not(cond))                                           \
-        {                                                        \
-            ::tap::fail("%s:%d: %s", __FILE__, __LINE__, #cond); \
-            return;                                              \
-        }                                                        \
+#ifndef KICKOS_TAP_TERSE
+#define KICKOS_TAP_TERSE 0
+#endif
+
+#if KICKOS_TAP_TERSE
+#define TAP_CHECK(cond)                                    \
+    do                                                     \
+    {                                                      \
+        if (not(cond))                                     \
+        {                                                  \
+            ::tap::fail("%s:%d", __FILE_NAME__, __LINE__); \
+            return;                                        \
+        }                                                  \
     } while (0)
+#else
+#define TAP_CHECK(cond)                                               \
+    do                                                                \
+    {                                                                 \
+        if (not(cond))                                                \
+        {                                                             \
+            ::tap::fail("%s:%d: %s", __FILE_NAME__, __LINE__, #cond); \
+            return;                                                   \
+        }                                                             \
+    } while (0)
+#endif
 
 #endif

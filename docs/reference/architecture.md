@@ -411,16 +411,17 @@ per-arch in `arch/<arch>/include/kickos/arch/context.h`.
 - `arch_timer_arm(deadline)` / `arch_timer_disarm()` + `arch_clock_now()` -- monotonic clock +
   one-shot next-event timer. ARM: free-running TIM/DWT + compare (or SysTick). Sim:
   `clock_gettime(MONOTONIC)` + `timer_create`/`SIGALRM`.
-- `arch_mpu_apply(regions, n)` + `arch_mpu_probe_addr()` -- `arch_mpu_apply` **stashes** the
-  incoming region set on switch-in (shared, not overridable); `kickos_arch_mpu_commit()` **programs the
-  hardware** from the switch epilogue, per **chip/arch**: K64F **SYSMPU**, ARM **PMSA** (v6-M/
-  v7-M), RISC-V **PMP**, RX **MPU**. Sim: `arch_mpu_apply` `mprotect`s the arena directly
-  (synchronous switch, no deferred commit). F103: no-op.
+- `arch_mpu_apply(regions, n)` -- **stashes** the incoming region set on switch-in (shared, not
+  overridable); `kickos_arch_mpu_commit()` **programs the hardware** from the switch epilogue, per
+  **chip/arch**: K64F **SYSMPU**, ARM **PMSA** (v6-M/v7-M), RISC-V **PMP**, RX **MPU**. Sim:
+  `arch_mpu_apply` `mprotect`s the arena directly (synchronous switch, no deferred commit). F103:
+  no-op.
 - `arch_syscall(nr, a0..a3)` -- the user->kernel trap; runs `syscall_dispatch()` in privileged
   **thread** context so a blocking syscall is an ordinary synchronous switch (see the contract
   in `arch.h`). 64-bit args/results are split into `uintptr_t` halves (`sys/abi.h`), so no
   separate result-delivery seam is needed. ARM: SVC. Sim: privilege-flipping trampoline.
-- `arch_irq_inject(irq)` -- raise an emulated device line (sim: signal; ARM: pend NVIC).
+- `arch_irq_inject(irq)` -- raise a line as its device would (sim: signal; ARM: pend NVIC);
+  false where the controller cannot raise it from software, or holds it banked per core.
 - `arch_console_write`, `arch_idle_wait`, `arch_init`, `arch_shutdown` -- console bottom edge,
   idle (WFI / `sigsuspend`), bring-up, halt.
 - `kickos_panic_stack_enter(msg, file, line, top)` -- mask, move the stack pointer to `top` and
@@ -574,9 +575,9 @@ is the form that waits. archived `M4_task_layer_record.md` is the record.
   `kernel/syscall/syscall_thread.cc`; documented per call in `user/include/kickos/sys.h`);
   **`ETIMEDOUT`** is a caller-supplied deadline that passed before the operation could happen,
   and it promises that NOTHING happened for the caller: `KOS_SYS_SEND_TIMED`, `KOS_SYS_REPLY_RECV`,
-  `KOS_SYS_CALL_TIMED` and `KOS_SYS_THREAD_JOIN` given a `timeout_us` other than
-  `KOS_TIMEOUT_NONE` expire with no peer, move no bytes, return no reply, and leave the joined
-  thread running. `kernel/time/time.cc` decides only THAT a deadline
+  `KOS_SYS_CALL_TIMED`, `KOS_SYS_SEM_WAIT` and `KOS_SYS_THREAD_JOIN` given a `timeout_us` other
+  than `KOS_TIMEOUT_NONE` expire with no peer, move no bytes, return no reply, take no token,
+  and leave the joined thread running. `kernel/time/time.cc` decides only THAT a deadline
   expired and delegates each park's unwind to `thread_abort_park`
   (`kernel/thread/park.cc`), which unlinks the right queue and reverts the right
   donation; the deadline is cancelled in `sched::wake_no_resched`, the one unpark funnel, so a
@@ -588,11 +589,11 @@ is the form that waits. archived `M4_task_layer_record.md` is the record.
   in, or was about to enter, is abandoned and the thread is expected to exit itself
   (`kernel/thread/park.cc`'s `thread_cancel`/`thread_abort_park` sets `wait_result`, the death point
   is the next syscall ENTRY in `kernel/syscall/syscall.cc`, and `kernel/irq/irq.cc` refuses to
-  re-block an already-cancelled thread). Five syscalls
+  re-block an already-cancelled thread). Four syscalls
   stay OUT of this scheme by return type: `ram_alloc` returns a pointer (every failure is NULL -- a
   negated errno cast to a pointer would be non-NULL); `cpu_clock_hz`/`cpu_clock_set` answer a u64
   Hz and `KOS_SYS_PERIPH_CLOCK_HZ` a u32 Hz, 0 already meaning unknown / no-silicon-clock at
-  either width; and the selftest-only `KOS_SYS_GUARD_ADDR` returns a raw address.
+  either width.
 - **MPU per domain, first-class** (see *Memory domains* below): the running thread's domain
   region set is reloaded on every switch-in (`arch_mpu_apply` stashes it; `kickos_arch_mpu_commit`
   programs the hardware after the physical swap). A thread touching a domain
@@ -872,10 +873,10 @@ controller, the doorbell a service thread rings for an IRQ thread that owns the 
 `discard` (`KOS_SYS_IRQ_DISCARD`) drops whatever the controller has latched for the line while
 masking and unmasking neither);
 backed by an interrupt-controller abstraction in the arch/chip layer (NVIC on ARM;
-sim = signal-driven injection). Userspace never *injects* -- reacting is `register`/`wait`, and
-raw in-handler-mode callbacks are the privileged `irq_attach` (TCB, not defended). `irq_inject`
-is only the sim's fake-a-device-firing mechanism (test scaffolding, gated/privileged),
-never a userspace primitive.
+sim = signal-driven injection). Reacting is `register`/`wait`, and raw in-handler-mode
+callbacks are the privileged `irq_attach` (TCB, not defended). `irq_inject` raises a line from
+software as its device would; userspace reaches it only through `kos_irq_raise`, on a line whose
+capability it holds.
 
 ### Driver packaging: class versus service
 
@@ -1103,8 +1104,8 @@ minted by `cap_install_reply`) are equally live. `CAP_FRAME` (a RUN of physical 
 `CAP_ASPACE` (an address space, named by a generational domain handle) landed at M6.5 C1 and are
 built only where the board translates; the two of them take the last values the type field holds,
 and `CAP_KIND_MAX` is what a third kind would fail against. Each object pool was added additively
-via the recipe in Book ch.8.2, and `CAP_ASPACE` adds none: a `Domain` is already refcounted, so its
-hold is `domain_ref` and its ceiling is refused at `obj_ref_inc`. The contract below is code-synced to `kernel/include/kickos/cap.h`,
+via the recipe in Book ch.8.2, and `CAP_ASPACE` adds none and holds no reference: its handle goes
+stale at its task's end, and the space gives back every run it maps at its task's death. The contract below is code-synced to `kernel/include/kickos/cap.h`,
 `kernel/syscall/cap.cc`, `kernel/syscall/syscall.cc`.
 
 - **Per-thread typed handle table, not global ids or fds.** A global object id every thread can name
@@ -1130,7 +1131,7 @@ hold is `domain_ref` and its ceiling is refused at `obj_ref_inc`. The contract b
   liveness is a global property (the pool + its refcount), capability possession is per-thread. Cost,
   stated honestly: per-thread table RAM + a resolve indirection per syscall + refcount traffic -- an
   isolation trade, not a free win.
-- **One resolve chokepoint (`cap_resolve`).** It validates index / liveness / type / rights
+- **One resolve chokepoint (`cap_resolve_e`).** It validates index / liveness / type / rights
   (`(rights & need) == need`), then WRAPs to the object pool, which re-checks the object-gen. Its
   precondition is the resolve contract: **the caller holds `IrqLock`, and the resolved pointer is
   used under the SAME continuous lock** -- so a concurrent `handle_close` cannot free the object
@@ -1148,9 +1149,9 @@ hold is `domain_ref` and its ceiling is refused at `obj_ref_inc`. The contract b
   no thread leaks references. A teardown-close that would strand a parked waiter LEAKS (floors
   refs at 1), never strands -- unreachable today (every parked waiter pins its own cap).
 - **Well-known reserved cap indices (`system/include/kickos/sys/cap_index.h`).** Indices
-  `[0 .. KICKOS_CAP_FIRST_DYNAMIC)` (today `[0..2)`) are reserved well-known slots: index 0 =
-  `KOS_CAP_STDOUT` (the send-only console endpoint) and index 1 = `KOS_CAP_CLOCK`, held for a
-  board's clock/time-service cap. Axis-3 authority is deliberately **not** one of them: the
+  `[0 .. KICKOS_CAP_FIRST_DYNAMIC)` (today `[0..1)`) are reserved well-known slots, and the one
+  there is index 0 = `KOS_CAP_STDOUT` (the send-only console endpoint). A service is reached by
+  path, never by a well-known index. Axis-3 authority is deliberately **not** one of them: the
   authority word names no pool object, holds no refcount and bumps no generation, so it lives in
   the TCB as `Thread::authority` (8 bits in existing padding) and costs no index on any board.
   `KOS_CAP_AUTHORITY` survives as a **pseudo-handle** -- `0x7FFFFFFF`, whose index field is the
@@ -1167,20 +1168,21 @@ hold is `domain_ref` and its ceiling is refused at `obj_ref_inc`. The contract b
   so no pop can hand back a well-known index. A release goes to the list **tail**, never the head,
   so with `F` free slots each slot's cap-gen advances once per `F` mints instead of one counter
   taking every mint. A reserved slot is seated
-  ONLY by the kernel (`cap_install_defaults` seats stdout, and is the sole writer of index 0) or
-  by explicit spawn delegation, whose `i+1` packing lands delegated cap 0 on the reserved clock
-  index. Userspace only *names* a reserved slot by these constants -- it never chooses the
-  index. The range is not frozen, but either direction is an ABI break: renumber **downward** only
-  for a slot nothing seats, keeping the usable dynamic count constant -- the width follows on its
-  own, since the reserved range lies inside root's table; **append** by raising the last reserved
-  index and `KICKOS_CAP_FIRST_DYNAMIC` together, which costs one slot on every table in the fleet
-  -- so weigh it first against putting the state in the TCB, as the authority word does. The
-  `cap.h` static_assert floors the dynamic count at >=1 either way.
+  ONLY by the kernel (`cap_install_defaults` seats stdout, and is the sole writer of index 0).
+  Userspace only *names* a reserved slot by these constants -- it never chooses the index. The
+  range is not frozen, but either direction is an ABI break: renumber **downward** only for a
+  slot nothing seats -- no width moves, since the reserved range lies inside the board's supply
+  and the child width, so every table gains the slot as a dynamic one; **append** by raising
+  `KICKOS_CAP_FIRST_DYNAMIC`, which costs one slot on every table in the fleet -- so weigh it
+  first against putting the state in the TCB, as the authority word does. The `cap.h`
+  static_assert floors the dynamic count at >=1 either way, and `abi.h` refuses a default
+  delegation index below `KOS_CAP_FIRST_DYNAMIC`.
 - **B1 wire contract (every in-tree app that builds a spawn grant list depends on it):** a fresh
   child table has cap-gen 0 in every slot, so
   on a fresh table `handle == index`; delegation places delegated cap `i` at child index `i + 1`
-  (so delegated cap 0 lands on the reserved clock index and every further one in the dynamic
-  range), and `cap_install_defaults` seats the stdout
+  (`KOS_SPAWN_DELEGATED_CAP0 + i`, which is `KICKOS_CAP_FIRST_DYNAMIC + i`, so a default grant
+  list fills the first dynamic slots and the child's own-creates follow it), and
+  `cap_install_defaults` seats the stdout
   cap at index 0 only once the console is published (pre-publish it seats nothing -- a plain app
   needs no manifest and falls back to `kconsole_write`). Delegation rides
   `kos_thread_params.caps` (each entry `(source_cap, rights_mask)`),
@@ -1193,7 +1195,7 @@ hold is `domain_ref` and its ceiling is refused at `obj_ref_inc`. The contract b
 - **Resolution is cold-path.** A handle is bound to its target at arm time; an ISR **never**
   resolves a cap -- `irq_claim` allocates the `IrqBinding` ONCE and hands `irq_event_isr` that
   binding's own address as its pre-bound argument, so the ISR reaches it with no lookup at all
-  (an ISR runs on a random interrupted thread's table, so `cap_resolve` from ISR context is
+  (an ISR runs on a random interrupted thread's table, so `cap_resolve_e` from ISR context is
   meaningless). Capabilities are an arm-path concern only.
 - **Authenticated grant ownership** is the memory-side twin: a task may grant/share only a
   block it reserved. Same problem as handles, applied to RAM instead of objects; designed

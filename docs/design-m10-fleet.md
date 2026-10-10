@@ -216,8 +216,8 @@ A hand-written symbol that nothing references is dropped rather than described.
 
 The tables are not byte-identical where the rows change (1.2), so they switch in a second
 commit per chip, after the headers, which also brings the span API. That commit is proven on
-target: the selftest's reserved arm already walks every row `KOS_GRANT_OP_RESERVED_COUNT` reports
-and refuses a device grant on each, and the aperture rows are proven by an admitted grant spawning
+target: the selftest's reserved arm refuses a device grant on the chip's first reserved block,
+and the aperture rows are proven by an admitted grant spawning
 on QEMU's translating boards.
 
 ### 1.5 The order
@@ -357,7 +357,7 @@ as root, it spends a task slot and its entry thread from `KICKOS_MAX_THREADS`, w
 was outside both, and its capability table is a child's, `KICKOS_CAP_CHILD_WIDTH` wide, where
 root's was summed. Its declared peak is 5 slots held at once plus 3 the deadlock arm skips without,
 above the `KICKOS_CAP_FIRST_DYNAMIC` reserved ones, and its composition delegates no capability at
-the spawn. `KICKOS_MAX_SPAWN_GRANTS` defaults to 9 where the selftest is built on a board whose
+the spawn. A self-test defconfig states `KICKOS_MAX_SPAWN_GRANTS=9` on a board whose
 `KICKOS_CAP_TABLE_SUPPLY` is 10 or more, a child's 10 slots holding the 2 reserved, the 5 and the 3.
 `bluepill-c8` and `f302nucleo` state a supply of 7 and stay at 6, a child's 7 holding the 2 and
 the 5 exactly, and their gates declare `mutex_deadlock` a skip. On `microbit` the 9 costs each
@@ -400,11 +400,11 @@ whose child never exits (`initdemo`, `tele_pingpong`, `drvdeath`, `rootfault`) e
 | app | class | what its composition holds, or where its witness goes |
 | --- | --- | --- |
 | `ampping` | 2 | one composition per node; the crossings it calls or serves under `/amp` (section 9); `ends: main` on node 0 and `ends: never` on the serving nodes |
-| `aspacefault`, `aspaceufault`, `kernelhalf`, `stackguard` | 1 | the fault is `main`'s; the gate reads the fault report and `KOS_EXIT_FAULT` |
+| `deadstack`, `kernelhalf`, `stackguard` | 1 | the fault is `main`'s, or above one core its reader thread's; the gate reads the fault report and `KOS_EXIT_FAULT` |
 | `bench` (three images) | 2 | `irq` beside the default's three, for the lines it raises past `KICKOS_IRQ_FREE_BASE`, claimed at run time; `main`'s table being a child's, it closes each handle once its peers hold their own |
 | `benchauth` | 2 | `memory`, `system`, `irq`; its root-against-child arms become task-against-child |
-| `blink`, `clocksoak`, `cxxtest`, `fpclass`, `fp_switch`, `hello`, `hello_c` | 1 | |
-| `errnoprobe` | 1 | its arm on a core's first thread before any switch runs as a constructor on root, which runs the app's constructors and is still that thread |
+| `blink`, `chaincheck`, `chaincheck_float`, `chaincheck_full`, `clocksoak`, `cxxtest`, `fp_switch`, `hello`, `hello_c` | 1 | |
+| `errnoprobe` | 1 | its arm on a core's first thread runs as a constructor on root, which runs the app's constructors and is still that thread; a switch-in before it is not excluded |
 | `clockretune` | 2 | `system`, `pstate` |
 | `drvdeath` | 3 | retargeted: `stdout` names the packaged `simcon` with no restart; each death knob is a death or a failed start the init reports, the kernel console back each time; `main` uses and watches `simcon`, so a failed start leaves it dependency-down, the system ending with `KOS_EXIT_CANCELLED`, and a death is read off `/init/events`; the two-thread knob's register holder is the driver task's entry, which the app releases through the driver's test hook; the root-identity arm keeps root's handle, the init's thread, `kos_thread_self` answering none on one core |
 | `fault`, `panicgate`, `pspguard`, `ringpriv`, `specfault` | 1 | `main` is the unprivileged faulter or prober that root was; `specfault` is built only where memory is enforced |
@@ -482,25 +482,24 @@ The ceiling arms read the declared ceiling rather than a constant, so one arm ho
 
 | arms | today | as a task |
 | --- | --- | --- |
-| `authority_cap`, `task_authority`, `pinmux_set`, `console_publish_priv` | root holds every authority | the task holds exactly its composition's word, which the arms assert: every bit of it seats on a child, `pstate` does not, and `cpu_clock_set` from `main` is refused |
+| `authority_cap`, `task_authority`, `console_publish_priv` | root holds every authority | the task holds exactly its composition's word, which the arms assert: every bit of it seats on a child, `pstate` does not, and `cpu_clock_set` from `main` is refused |
 | `console_publish_handout`, `console_publish_narrow` | root publishes its own endpoint | unchanged under `console` authority; skipped where `stdout` names a driver, as today under a service list |
-| `thread_join`, `join_stale_gen`, `task_handles`, `call_from_root`, `bus_device_slots`, `cap_index0`, `thread_slay_gate` | root's thread 0, implicit task handle and slot layout | the task's own, read from `kos_thread_self`, which answers on every kernel |
-| `cap_child_width`, `cap_chunk_span` | root's summed width | the task's table is a child's (section 3), which the arm asserts, beside the init's delegations |
+| `thread_join`, `join_stale_gen`, `task_handles`, `call_from_root`, `thread_slay_gate` | root's thread 0, implicit task handle and slot layout | the task's own, read from `kos_thread_self`, which answers on every kernel |
+| `cap_child_width` | root's summed width | the task's table is a child's (section 3), which the arm asserts, beside the init's delegations |
 | `prio_self_ceiling`, `prio_ceiling_*`, `task_group_kill`, the SMP restore | root's priority and ceiling | the declared priority and ceiling |
 | the IRQ arms | root claims `KICKOS_IRQ_FREE_BASE` lines | the task claims them at run time under `irq` |
-| `caller_stack`, `domain_share`, `cross_task_block`, `writable_global`, `window_get` and the region-set reads | root's region set | the task's, on the same static regions |
-| `stack_grant_refused`, `stack_guard_intact`, `stack_handoff_refused` | root's stack, which the kernel placed | a worker's, the task's own stack being a block the init reserved and handed it |
-| `amp_probe_root_only`, now `amp_probe_crossing_holder` | root holds the partition's ports, and the probe answers root's task | the task holds the crossings its composition names, and the probe answers a task holding a crossing; a task holding `system` and none is refused |
+| `caller_stack`, `domain_share`, `cross_task_block`, `window_get` and the region-set reads | root's region set | the task's, on the same static regions |
+| `stack_grant_refused`, `stack_handoff_refused` | root's stack, which the kernel placed | a worker's, the task's own stack being a block the init reserved and handed it |
+| `amp_probe_root_only`, now `amp_crossing_task_local` | root holds the partition's ports | the task holds the crossings its composition names, and their indices name nothing in another task's table |
 | `amp_port_seating`, `amp_port_unnamed` | the ports at root's seated indices | each named crossing at its delegated slot, and none other |
-| `amp_far_slot_reuse` | closes root's far endpoint, the last capability to it | closes a far endpoint the task alone holds, minted through the probe (`KOS_AMP_MINT_HOLD`): the crossings are copies of root's |
 | `amp_share_window`, `amp_share_crossing` | root holds the user share and hands windows of it | the task reaches the share through its composition's partition region, and naming any part of it itself is refused |
-| `process_data_from_image`, `process_data_template`, `irq_as_event` | root's data pages | the task's: a task a spawn creates copies its spawner's live data, consistent on more than one core only while the spawner's other threads write no static data across the spawn, an explicit task the snapshot |
+| `process_data_from_image`, `irq_as_event` | root's data pages | the task's: a task a spawn creates copies its spawner's live data, consistent on more than one core only while the spawner's other threads write no static data across the spawn, an explicit task the snapshot |
 | an arm reading a pin a board pin map set | the default init applied it | none exists |
 
 The pools follow the task. A task's entry thread and task come out of `KICKOS_MAX_THREADS` and
 `KICKOS_MAX_TASKS`, raised by one on `microbit`, `f302nucleo` and `bluepill-c8` (section 3), and its
-table is a child's: `KICKOS_MAX_SPAWN_GRANTS` defaults to 9 where the selftest is built on a board
-whose supply backs the 3 optional slots, and an AMP node's defconfig widens it for its crossings.
+table is a child's: a self-test defconfig states `KICKOS_MAX_SPAWN_GRANTS=9` on a board whose
+supply backs the 3 optional slots, and an AMP node's defconfig widens it for its crossings.
 
 **Where the selftest overflows an image under its composition, it splits into one more region**,
 as ruled. `main.cc` cuts ten regions, and each board states the first region of each of its
@@ -818,12 +817,10 @@ exists to program. The A53 `virt` machine states no gate and emits none.
   `tests/integration/check_c6_amp_gate.sh` as `bench.sh`'s `JUDGE`.
 - `pizero2350-amp2`, when the bench holds the board: node 0 reads back UART0's ACCESSCTRL register
   as its own core's alone, its task holds UART0, enables it through `kos_periph_enable`, which the
-  RP2350 gains for UART0's reset bit, and reads UARTPERIPHID0 at offset 0xFE0, 0x11 on a PL011;
-  node 1's probe task then asks its kernel for the same register (`KOS_AMP_OP_GATE_PROBE`, a
-  selftest op), which reads it privileged with the fault caught and prints the fault's CFSR and
-  BFAR. The read is privileged, so no MPU region stands before ACCESSCTRL, and the gate is
-  witnessed by that denial alone: `tests/integration/check_pizero_amp_gate.sh` demands a precise
-  BusFault at 0x4007_0FE0 with no MemManage bit, and no thread fault in the boot.
+  RP2350 gains for UART0's reset bit, and reads UARTPERIPHID0 at offset 0xFE0, 0x11 on a PL011,
+  judged by `tests/integration/check_pizero_amp_gate.sh`. Node 1's own refusal of that register
+  is not witnessed: no composition grants the privileged thread the read needs, and the node hook
+  that would make it is owed (TODO.md, M10.6.6).
 
 The partition region and the crossings run in CI on `qemu-arm64-amp2`, `ampping`'s nodes calling
 across and exchanging through one region.

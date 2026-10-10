@@ -26,6 +26,7 @@
 #define KICKOS_MAX_SPAWN_GRANTS (CAPTABLE_GATE_CHILD - 1 - KICKOS_CAP_REPLY_MAX)
 
 #include <kickos/cap.h>
+#include <kickos/sys/abi.h>
 
 using kickos::cap_run_free_build;
 using kickos::cap_run_free_release;
@@ -604,6 +605,43 @@ TEST(CapTable, named_index_unlinks_from_the_middle)
     }
     printf("# width %u: every dynamic index unlinks and returns without cutting the list\n",
            WIDTH);
+}
+
+// A full grant list under default placement fills the first dynamic slots, and the child's
+// own-creates then take exactly the rest: none of them can land on a delegated slot.
+TEST(CapTable, default_delegation_fills_the_first_dynamic_slots)
+{
+    CapChunkList list;
+    CapRun run = {};
+    uint16_t head = KCAP_FREE_NONE;
+    ASSERT_NO_FATAL_FAILURE(fresh(&list, &run, &head));
+
+    constexpr uint32_t GRANTS = KICKOS_MAX_SPAWN_GRANTS;
+    constexpr uint32_t CAP0 = KOS_SPAWN_DELEGATED_CAP0;
+    for (uint32_t i = 0; i < GRANTS; i++)
+    {
+        ASSERT_GE(CAP0 + i, FIRST) << "grant " << i << " lands on a well-known index";
+        install_at(run, CAP0 + i, &head); // thread_create_call's default placement
+    }
+    bool ok = false;
+    uint32_t const len = free_list_walk(run, head, &ok);
+    EXPECT_TRUE(ok and len == SPAN - GRANTS)
+        << "after " << GRANTS << " default grants the list holds " << len << " (want "
+        << (SPAN - GRANTS) << ")";
+
+    uint32_t own = 0;
+    while (own <= SPAN)
+    {
+        uint32_t const index = take(run, &head);
+        if (index == KCAP_NO_SLOT)
+        {
+            break;
+        }
+        ASSERT_FALSE(index >= CAP0 and index < CAP0 + GRANTS)
+            << "own-create " << own << " landed on delegated index " << index;
+        own++;
+    }
+    EXPECT_EQ(own, SPAN - GRANTS) << "the own-creates take every slot the grants left";
 }
 
 // A lone free slot must be reachable whatever the rest of the table looks like, and the

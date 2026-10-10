@@ -153,11 +153,10 @@
  * presets stage at most 9 spawn grants and the partition nodes 12, so arch_armv7m.cc refuses
  * more.
  *
- * A node's self-test drives the doorbell's service body from inside the dispatch (amp_probe
- * -> forge_reply_depth_recovery -> node_service); what wins there is an ordinary far reply
- * publication, endpoint_reply_recv -> endpoint_reply_locked -> inbound_reply -> send. Reached
- * from the doorbell interrupt instead, the same body runs in handler mode on SP_main and is
- * UNMEASURED, per the PENDSV reason in tests/static/trap_redzone_roots.txt.
+ * On a partition node what wins is an ordinary far reply publication, endpoint_reply_recv ->
+ * endpoint_reply_locked -> inbound_reply -> send. The doorbell's service body runs from the
+ * doorbell interrupt, in handler mode on SP_main, and is UNMEASURED, per the PENDSV reason in
+ * tests/static/trap_redzone_roots.txt.
  *
  * NO FALLBACK #define: with -Wundef -Werror an image that lost KICKOS_TELEMETRY or KICKOS_BENCH
  * fails to build, where a fallback would silently reserve the smaller figure. */

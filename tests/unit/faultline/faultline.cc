@@ -54,13 +54,6 @@ TEST(FaultLine, every_fixed_record_fits_the_bound)
     expect_fits(width(KDIAG_F_FAULT_ADDR, wild_ptr()));
 }
 
-// check_faultsurvive.sh greps this one on the wire, so its spelling is fault.cc's and not the
-// catalogue's; it is the sixth kprintf_fault format and belongs in this corpus anyway.
-TEST(FaultLine, the_selftest_trap_witness_record_fits_the_bound)
-{
-    expect_fits(width("[trapwitness] CORRUPTED 0x%x\n", ~0u));
-}
-
 // The banner is the only fault line with an unbounded argument, so the bound spends its whole
 // remainder on the thread name. 38 is that remainder in the longer of the two columns, and
 // every thread name in the tree is six characters or fewer; tests/lib/gate.sh matches the

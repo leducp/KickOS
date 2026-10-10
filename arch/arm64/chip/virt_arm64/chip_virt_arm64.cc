@@ -12,6 +12,7 @@
 
 #include <kickos/arch/amp_shared.h>
 
+#include <chip_layout.h>
 #include <kickos/chip_limits.h>
 #include <kickos/chip_mmap.h>
 #include <kickos/config/limits.h>
@@ -451,6 +452,10 @@ namespace kickos::virt_arm64::console
     }
 }
 #endif
+
+// The chip file's timer line is what keeps the timer unclaimable under GICv2.
+static_assert(KICKOS_LAYOUT_LINE_TIMER_EL1_PHYS == kickos::arm64::PPI_EL1_PHYS_TIMER,
+              "the timer the GIC dispatch takes is not the line the chip file gives the kernel");
 
 extern "C"
 {

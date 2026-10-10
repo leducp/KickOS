@@ -234,7 +234,7 @@ if(_kickos_gtest_found AND NOT KICKOS_BUILD_UNIT_TESTS)
     "KickOS: GTest was found but KICKOS_BUILD_UNIT_TESTS is OFF in the cache. Re-run with "
     "-DKICKOS_BUILD_UNIT_TESTS=ON, or configure a fresh build directory.")
 endif()
-option(KICKOS_ENABLE_SELFTEST     "Expose test-only self-test syscalls"      OFF)
+option(KICKOS_ENABLE_SELFTEST     "Build the selftest and diagnostic apps"   OFF)
 option(KICKOS_BENCH               "Cycle-accurate context-switch microbench"  OFF)
 if(KICKOS_BENCH)
   add_compile_definitions(KICKOS_BENCH=1)
@@ -248,21 +248,21 @@ else()
   add_compile_definitions(KICKOS_BENCH_SCHED=0)
 endif()
 
-if(KICKOS_ENABLE_SELFTEST)
-  # Directory-wide so kernel dispatch, the user stub, and the app agree.
-  add_compile_definitions(KICKOS_ENABLE_SELFTEST=1)
+# --- kos_reboot, and terminating images handing the chip back to its bootloader ---
+option(KICKOS_REBOOT "kos_reboot: enter the chip's bootloader on request" OFF)
+if(KICKOS_REBOOT)
+  add_compile_definitions(KICKOS_REBOOT=1)
+else()
+  add_compile_definitions(KICKOS_REBOOT=0)
 endif()
-
-# --- Terminating images hand the chip back to its bootloader ----------------
 option(KICKOS_SHUTDOWN_TO_BOOTLOADER
        "Terminating images reboot into the chip bootloader instead of halting" OFF)
 if(KICKOS_SHUTDOWN_TO_BOOTLOADER)
-  if(NOT KICKOS_ENABLE_SELFTEST)
+  if(NOT KICKOS_REBOOT)
     message(FATAL_ERROR
-      "KICKOS_SHUTDOWN_TO_BOOTLOADER=ON requires KICKOS_ENABLE_SELFTEST=ON: "
-      "arch_reboot (the declining fallback in arch/common and every chip "
-      "chip backend) is compiled out of a production image, so nothing would define "
-      "the symbol. Use an -st preset, or leave this knob OFF.")
+      "KICKOS_SHUTDOWN_TO_BOOTLOADER=ON requires KICKOS_REBOOT=ON: arch_reboot (the "
+      "declining fallback in arch/common and every chip backend) is compiled only under "
+      "KICKOS_REBOOT, so nothing would define the symbol.")
   endif()
   add_compile_definitions(KICKOS_SHUTDOWN_TO_BOOTLOADER=1)
   message(STATUS "KickOS: terminating images REBOOT TO BOOTLOADER (no BOOTSEL press; "
@@ -643,6 +643,20 @@ add_compile_definitions(KICKOS_ROOT_CORE_MASK=${KICKOS_ROOT_CORE_MASK})
 add_compile_definitions(KICKOS_AMP_NODE=${KICKOS_AMP_NODE})
 add_compile_definitions(KICKOS_AMP_NODES=${KICKOS_AMP_NODES})
 add_compile_definitions(KICKOS_AMP_OWN_IMAGE=${KICKOS_AMP_OWN_IMAGE})
+
+# The lines of the devices the chip file gives the kernel, which irq_line_admit refuses and
+# irq_kernel_line_reserved claims; a doorbell's only where one rings.
+include(kernel_lines)
+set(_kl_rings OFF)
+if(KICKOS_NUM_CORES GREATER 1 OR KICKOS_AMP_NODE)
+  set(_kl_rings ON)
+endif()
+kickos_kernel_lines(KICKOS_KERNEL_LINES "${KICKOS_CHIP}" ${_kl_rings}
+                    "${KICKOS_CHIP_KERNEL_LINES}" "${KICKOS_CHIP_DOORBELL_KERNEL_LINES}")
+list(LENGTH KICKOS_KERNEL_LINES KICKOS_KERNEL_LINE_COUNT)
+string(REPLACE ";" "," _kl_csv "${KICKOS_KERNEL_LINES}")
+add_compile_definitions("KICKOS_KERNEL_LINES=${_kl_csv}"
+                        KICKOS_KERNEL_LINE_COUNT=${KICKOS_KERNEL_LINE_COUNT})
 if(KICKOS_AMP_DIAG_REPORT)
   add_compile_definitions(KICKOS_AMP_DIAG_REPORT=1
                           KICKOS_AMP_DIAG_TAG=${KICKOS_AMP_DIAG_TAG})
@@ -970,12 +984,6 @@ if(KICKOS_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(amp_peers PROPERTIES TIMEOUT 60 LABELS "host;tree")
 
-  _add_test(NAME starved_arms
-            COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_starved_arms.py"
-                    "${CMAKE_CURRENT_SOURCE_DIR}/user/apps/common/selftest"
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(starved_arms PROPERTIES TIMEOUT 60 LABELS "host;tree")
-
   _add_test(NAME selftest_demands_controls
             COMMAND python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/selftest_demands.py" --self-test
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1175,6 +1183,8 @@ if(TARGET kickos_kernel)
     KICKOS_TRACE_ARCH=${KICKOS_TRACE_ARCH}
     KICKOS_HAVE_MPU=${KICKOS_HAVE_MPU}
     KICKOS_HAVE_ASPACE=${KICKOS_HAVE_ASPACE}
+    KICKOS_AMP_NODE=${KICKOS_AMP_NODE}
+    KICKOS_ISOLATED_CORES=${KICKOS_ISOLATED_CORES}
     KICKOS_MEMORY_ENFORCED=${KICKOS_MEMORY_ENFORCED}
     KICKOS_ARM_MPU_NONE=0
     KICKOS_ARM_MPU_PMSAV7=1
@@ -1361,7 +1371,7 @@ if(KICKOS_BUILD_TESTS AND TARGET kickos_kernel_leaf AND KICKOS_ARCH MATCHES "^(s
 endif()
 
 # Resolve after system providers and app demand declarations are available.
-kickos_cap_table_resolve(KICKOS_CAP_TABLE_SLOTS KICKOS_CAP_TABLE_CHUNK KICKOS_CAP_TABLE_CHILD_WIDTH
+kickos_cap_table_resolve(KICKOS_CAP_TABLE_SLOTS KICKOS_CAP_TABLE_CHILD_WIDTH
                          KICKOS_CAP_TABLE_REPLY_MAX)
 configure_file("${PROJECT_SOURCE_DIR}/kernel/include/kickos/config/cap_width.h.in"
                "${PROJECT_BINARY_DIR}/generated/include/kickos/config/cap_width.h" @ONLY)

@@ -105,32 +105,12 @@ void* arch_ram_alloc(size_t size)
     return p;
 }
 
-#if defined(KICKOS_ENABLE_SELFTEST)
-uintptr_t arch_ram_next(void)
-{
-    return reinterpret_cast<uintptr_t>(__kickos_ram_start) + g_ram_used;
-}
-#endif
-
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
 void arch_trace_stamp_id(struct arch_context* ctx, uint16_t id)
 {
     ctx->trace_tid = id;
 }
 #endif
-
-// Kernel word used to test fault isolation. It is inaccessible to userspace
-// under either MPU or MMU enforcement. Return zero when unenforced.
-// The simulator uses an mprotect-protected arena page instead.
-uintptr_t arch_mpu_probe_addr(void)
-{
-#if KICKOS_MEMORY_ENFORCED
-    static volatile uint32_t guard_word = 0;
-    return reinterpret_cast<uintptr_t>(&guard_word);
-#else
-    return 0;
-#endif
-}
 
 bool arch_user_text_readable(uintptr_t ptr, size_t len)
 {

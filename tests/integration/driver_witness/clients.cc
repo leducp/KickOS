@@ -6,55 +6,17 @@
 
 #include <kickos/sys.h>
 #include <kickos/sys/errno.h>
-#include <kickos/sys/table.h>
 
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 
 namespace
 {
     constexpr uint32_t CALL_TIMEOUT_US = 100000u;
     constexpr uint64_t RETRY_NS = 10000000ull; // 10 ms
-    constexpr uint32_t LINE_RAISES = 200u;
-
-    bool same(char const* a, char const* b)
-    {
-        size_t i = 0;
-        while (a[i] == b[i] and a[i] != '\0')
-        {
-            i++;
-        }
-        return a[i] == b[i];
-    }
-
-    // The number the table gives line role `role` of task `task`, or -1 where it names none.
-    int table_line(char const* task, char const* role)
-    {
-        kos_table_header const* const header = kickos_table;
-        auto const tasks = reinterpret_cast<kos_table_task const*>(header + 1);
-        auto const grants = reinterpret_cast<kos_table_grant const*>(tasks + header->task_count);
-        auto const refs = reinterpret_cast<kos_table_ref const*>(grants + header->grant_count);
-        auto const privs = reinterpret_cast<kos_table_priv const*>(refs + header->ref_count);
-        auto const regions = reinterpret_cast<kos_table_region const*>(privs + header->priv_count);
-        auto const strings = reinterpret_cast<char const*>(regions + header->region_count);
-        for (uint16_t t = 0; t < header->task_count; t++)
-        {
-            if (not same(&strings[tasks[t].name], task))
-            {
-                continue;
-            }
-            for (uint16_t k = 0; k < tasks[t].grant_count; k++)
-            {
-                kos_table_grant const& g = grants[tasks[t].first_grant + k];
-                if (g.kind == KOS_GRANT_LINE and same(&strings[g.name], role))
-                {
-                    return g.line;
-                }
-            }
-        }
-        return -1;
-    }
+    // testline's own wait for its line; the client outlasts it by a margin.
+    constexpr uint64_t LINE_WAIT_NS = 20000000000ull;
+    constexpr uint32_t LINE_CALLS = static_cast<uint32_t>(LINE_WAIT_NS / RETRY_NS) + 500u;
 
     void call_until_refused(kos_self_t const* self, char const* path, char const* who)
     {
@@ -94,32 +56,21 @@ extern "C" void fails_client_main(kos_self_t const* self)
     call_until_refused(self, "/svc/fails", "fails");
 }
 
-// Once testline answers its first call, raises the line the table gives its line 0, which a
-// first wait discards until it arms it. Its end ends the system.
+// Calls testline until it answers that its line 0 was raised. Its end ends the system.
 extern "C" void line_client_main(kos_self_t const* self)
 {
     kos_cap_t const ep = kos_grant_endpoint(self, "/svc/line");
-    uint32_t served = 0;
-    int32_t const answered = static_cast<int32_t>(sizeof(served));
-    while (kos_call_timed(ep, &served, 0u, sizeof(served), CALL_TIMEOUT_US) != answered)
+    uint32_t raised = 0;
+    int32_t const answered = static_cast<int32_t>(sizeof(raised));
+    for (uint32_t calls = 0; calls < LINE_CALLS; calls++)
     {
-        kos_sleep_ns(RETRY_NS);
-    }
-    int const line = table_line("line", "routed");
-    if (line < 0)
-    {
-        printf("line: the table gives testline no line 0\n");
-        exit(1);
-    }
-    printf("line: raising line %d\n", line);
-    for (uint32_t raises = 0; raises < LINE_RAISES; raises++)
-    {
-        int const raised = kos_irq_inject(line);
-        if (raised != 0)
+        if (kos_call_timed(ep, &raised, 0u, sizeof(raised), CALL_TIMEOUT_US) == answered
+            and raised != 0u)
         {
-            printf("line: raising line %d answered %d\n", line, raised);
-            exit(1);
+            printf("line: testline reports line 0 raised\n");
+            return;
         }
         kos_sleep_ns(RETRY_NS);
     }
+    printf("line: FAIL: testline never reported line 0 raised\n");
 }

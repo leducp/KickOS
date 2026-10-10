@@ -11,12 +11,13 @@
 #include <kickos/arch/aspace.h>
 #include <kickos/arch/aspace_residency.h>
 #include <kickos/arch/aspace_table.h>
-#include <kickos/arch/regs.h>
 #include <kickos/chip_com1.h>
 #include <kickos/extent.h>
 
 #include <stddef.h>
 #include <stdint.h>
+
+#include "sysops_x86_64.h"
 
 extern "C"
 {
@@ -104,25 +105,8 @@ namespace
     alignas(4096) uint64_t g_kwin_table[LEVEL_MAX - 1][PTES] = {};
     uintptr_t g_kwin_va = 0;
 
-#if defined(KICKOS_ENABLE_SELFTEST)
-    // Invalidation counters, protected by the caller's IrqLock.
-    uint32_t g_tlbi_issued = 0;
-    uint32_t g_tlbi_elided = 0;
-#endif
-
     // Root-keyed residency, updated by install_root and retained after switching away.
     kickos::aspace::Residency<KICKOS_NUM_CORES> g_residency;
-
-    using kickos::x86_64::read_cr3;
-    using kickos::x86_64::read_msr;
-    using kickos::x86_64::write_cr3;
-
-    void cpuid_at(uint32_t leaf, uint32_t sub, uint32_t* a, uint32_t* b, uint32_t* c, uint32_t* d)
-    {
-        __asm__ volatile("cpuid"
-                         : "=a"(*a), "=b"(*b), "=c"(*c), "=d"(*d)
-                         : "a"(leaf), "c"(sub));
-    }
 
     // CPUID 0x80000001, EDX bit 20. The extended leaf need not exist at all, so its own
     // maximum is read first.
@@ -132,12 +116,12 @@ namespace
         uint32_t b = 0;
         uint32_t c = 0;
         uint32_t d = 0;
-        cpuid_at(0x80000000u, 0, &a, &b, &c, &d);
+        kickos_x86_64_cpuid(0x80000000u, 0, &a, &b, &c, &d);
         if (a < 0x80000001u)
         {
             return false;
         }
-        cpuid_at(0x80000001u, 0, &a, &b, &c, &d);
+        kickos_x86_64_cpuid(0x80000001u, 0, &a, &b, &c, &d);
         return (d & (1u << 20)) != 0;
     }
 
@@ -149,11 +133,11 @@ namespace
         uint32_t b = 0;
         uint32_t c = 0;
         uint32_t d = 0;
-        cpuid_at(0x80000000u, 0, &a, &b, &c, &d);
+        kickos_x86_64_cpuid(0x80000000u, 0, &a, &b, &c, &d);
         unsigned bits = 36;
         if (a >= 0x80000008u)
         {
-            cpuid_at(0x80000008u, 0, &a, &b, &c, &d);
+            kickos_x86_64_cpuid(0x80000008u, 0, &a, &b, &c, &d);
             bits = static_cast<unsigned>(a & 0xFFu);
         }
         if (bits > 52)
@@ -187,7 +171,7 @@ namespace
         uint32_t b = 0;
         uint32_t c = 0;
         uint32_t d = 0;
-        cpuid_at(1, 0, &a, &b, &c, &d);
+        kickos_x86_64_cpuid(1, 0, &a, &b, &c, &d);
         return (d & (1u << 16)) != 0;
     }
 
@@ -267,10 +251,7 @@ namespace
     // (Intel SDM Vol. 3, section 5.10.4.1). This core only: peers_reload covers the others.
     void invalidate_page(uintptr_t va)
     {
-#if defined(KICKOS_ENABLE_SELFTEST)
-        g_tlbi_issued++;
-#endif
-        __asm__ volatile("invlpg (%0)" ::"r"(va) : "memory");
+        kickos_x86_64_invlpg(va);
     }
 
     // Every other online core reloads CR3 before this returns, which with PCIDs off drops every
@@ -285,18 +266,10 @@ namespace
 #endif
     }
 
-#if defined(KICKOS_ENABLE_SELFTEST)
-    // The root each core last installed, for the self-test's active-core census.
-    uint64_t g_installed_root[KICKOS_NUM_CORES] = {};
-#endif
-
     // Keep the root register and residency record in sync.
     void install_root(uint64_t cr3)
     {
-        write_cr3(cr3);
-#if defined(KICKOS_ENABLE_SELFTEST)
-        g_installed_root[arch_cpu_id()] = cr3 & PTE_ADDR_MASK;
-#endif
+        kickos_x86_64_write_cr3(cr3);
         g_residency.note(cr3 & PTE_ADDR_MASK, arch_cpu_id());
     }
 
@@ -304,7 +277,7 @@ namespace
     // caches. This backend creates no global entries (section 5.10.4.1).
     void invalidate_all(void)
     {
-        install_root(read_cr3());
+        install_root(kickos_x86_64_read_cr3());
         peers_reload();
     }
 
@@ -326,9 +299,6 @@ namespace
     {
         if (not resident)
         {
-#if defined(KICKOS_ENABLE_SELFTEST)
-            g_tlbi_elided++;
-#endif
             return;
         }
         invalidate_page(va);
@@ -599,6 +569,29 @@ namespace
         return kickos::aspace::table_empty(table, PTES);
     }
 
+    // Whether an unprivileged access reaches any leaf under `table`. The user bit ANDs down
+    // the walk, so a supervisor entry hides its whole subtree.
+    bool user_reaches_a_leaf(uint64_t const* table, int level)
+    {
+        for (size_t i = 0; i < PTES; i++)
+        {
+            uint64_t const desc = table[i];
+            if ((desc & PTE_P) == 0 or (desc & PTE_US) == 0)
+            {
+                continue;
+            }
+            if (is_leaf(desc, level))
+            {
+                return true;
+            }
+            if (user_reaches_a_leaf(table_at(pte_pa(desc)), level - 1))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     // Only slots absent from the boot root are available to userspace.
     bool slot_is_user(size_t slot)
     {
@@ -661,7 +654,7 @@ namespace kickos::x86_64
         {
             return PAT_POWER_UP;
         }
-        return read_msr(MSR_PAT);
+        return kickos_x86_64_read_msr(MSR_PAT);
     }
 
     bool aspace_memtype_bits(uint64_t pat, enum arch_map_memtype type, uint64_t* out)
@@ -703,7 +696,7 @@ namespace kickos::x86_64
 
     void aspace_init(uintptr_t ram_base, size_t ram_size)
     {
-        uint64_t const cr4 = read_cr4();
+        uint64_t const cr4 = kickos_x86_64_read_cr4();
         // A CR3 reload keeps global translations, and the kernel half is the firmware's tables.
         if ((cr4 & CR4_PGE) != 0)
         {
@@ -723,10 +716,10 @@ namespace kickos::x86_64
             refuse("this part reports no execute-disable bit, which every leaf here carries");
         }
         // Existing valid descriptors have bit 63 clear while NXE is disabled.
-        uint64_t const efer = read_msr(MSR_EFER);
+        uint64_t const efer = kickos_x86_64_read_msr(MSR_EFER);
         if ((efer & EFER_NXE) == 0)
         {
-            write_msr(MSR_EFER, efer | EFER_NXE);
+            kickos_x86_64_write_msr(MSR_EFER, efer | EFER_NXE);
         }
 
         uint64_t nocache = 0;
@@ -735,7 +728,8 @@ namespace kickos::x86_64
             g_nocache_bits = nocache;
         }
 
-        g_boot_root = table_at(static_cast<arch_phys_addr_t>(read_cr3() & PTE_ADDR_MASK));
+        g_boot_root =
+            table_at(static_cast<arch_phys_addr_t>(kickos_x86_64_read_cr3() & PTE_ADDR_MASK));
         g_ram_hi = static_cast<arch_phys_addr_t>(ram_base)
                    + static_cast<arch_phys_addr_t>(ram_size);
 
@@ -748,6 +742,10 @@ namespace kickos::x86_64
         if ((phys_of(&g_kwin_table[0][0]) & static_cast<arch_phys_addr_t>(GRANULE - 1)) != 0)
         {
             refuse("the window tables are not granule aligned where the loader put this image");
+        }
+        if (user_reaches_a_leaf(g_boot_root, static_cast<int>(g_levels)))
+        {
+            refuse("the adopted map lets ring 3 reach a leaf of the kernel half");
         }
 
         int const top = static_cast<int>(g_levels);
@@ -768,15 +766,15 @@ namespace kickos::x86_64
         }
         // Temporarily disable write protection to edit firmware tables.
         // Keep every entry in the new chain supervisor-only.
-        uint64_t const cr0 = read_cr0();
+        uint64_t const cr0 = kickos_x86_64_read_cr0();
         if ((cr0 & CR0_WP) != 0)
         {
-            write_cr0(cr0 & ~CR0_WP);
+            kickos_x86_64_write_cr0(cr0 & ~CR0_WP);
         }
         g_boot_root[kwin_slot] = phys_of(&g_kwin_table[top - 2][0]) | PTE_P | PTE_RW;
         if ((cr0 & CR0_WP) != 0)
         {
-            write_cr0(cr0);
+            kickos_x86_64_write_cr0(cr0);
         }
         // Sign-extend the high-half address.
         g_kwin_va = static_cast<uintptr_t>(kwin_slot) << shift_at(top);
@@ -958,7 +956,7 @@ namespace kickos::x86_64
 
     arch_phys_addr_t aspace_root_installed(void)
     {
-        return static_cast<arch_phys_addr_t>(read_cr3() & PTE_ADDR_MASK);
+        return static_cast<arch_phys_addr_t>(kickos_x86_64_read_cr3() & PTE_ADDR_MASK);
     }
 
     unsigned aspace_tag_bits(void)
@@ -968,7 +966,7 @@ namespace kickos::x86_64
         uint32_t c = 0;
         uint32_t d = 0;
         // CPUID leaf 1, ECX bit 17 reports 12-bit PCID support.
-        cpuid_at(1, 0, &a, &b, &c, &d);
+        kickos_x86_64_cpuid(1, 0, &a, &b, &c, &d);
         if ((c & (1u << 17)) == 0)
         {
             return 0;
@@ -982,13 +980,13 @@ namespace kickos::x86_64
         uint32_t b = 0;
         uint32_t c = 0;
         uint32_t d = 0;
-        cpuid_at(0, 0, &a, &b, &c, &d);
+        kickos_x86_64_cpuid(0, 0, &a, &b, &c, &d);
         if (a < 7)
         {
             return false;
         }
         // INVPCID support is independent of PCID support: leaf 7, EBX bit 10.
-        cpuid_at(7, 0, &a, &b, &c, &d);
+        kickos_x86_64_cpuid(7, 0, &a, &b, &c, &d);
         return (b & (1u << 10)) != 0;
     }
 
@@ -1036,31 +1034,6 @@ extern "C"
 size_t arch_aspace_granule(void)
 {
     return GRANULE;
-}
-
-uint64_t arch_aspace_model(void)
-{
-    unsigned const pa_bits = phys_addr_bits();
-    uint64_t const granules = 1;
-    unsigned const tag_bits = kickos::x86_64::aspace_tag_bits();
-    uint64_t out = 0;
-    if (GRANULE == 4096u)
-    {
-        out |= ARCH_ASPACE_MODEL_GRANULE;
-    }
-    if (tag_bits == TAG_BITS_RECORDED)
-    {
-        out |= ARCH_ASPACE_MODEL_ASID;
-    }
-    // The supported physical range must cover the entire frame pool.
-    if (pa_bits != 0 and (static_cast<arch_phys_addr_t>(1) << pa_bits) >= g_ram_hi)
-    {
-        out |= ARCH_ASPACE_MODEL_PA;
-    }
-    out |= static_cast<uint64_t>(tag_bits) << ARCH_ASPACE_MODEL_ASID_SHIFT;
-    out |= static_cast<uint64_t>(pa_bits) << ARCH_ASPACE_MODEL_PA_SHIFT;
-    out |= granules << ARCH_ASPACE_MODEL_GRAN_SHIFT;
-    return out;
 }
 
 bool arch_aspace_memtype_support(enum arch_map_memtype type)
@@ -1303,36 +1276,5 @@ arch_phys_addr_t arch_aspace_frame_at(struct arch_aspace* space, uintptr_t va)
     }
     return kickos::x86_64::aspace_frame_at_unchecked(space, page);
 }
-
-#if defined(KICKOS_ENABLE_SELFTEST)
-uint64_t arch_aspace_tlbi_counts(void)
-{
-    uint32_t elided = g_tlbi_elided;
-    if (elided > 0xFFFFFFu)
-    {
-        elided = 0xFFFFFFu; // saturates rather than bleeding into the issued half
-    }
-    // The low byte is zero: direct acquisition has no window holds to mispair.
-    return (static_cast<uint64_t>(g_tlbi_issued) << 32) | (static_cast<uint64_t>(elided) << 8);
-}
-
-uint32_t arch_aspace_active_cores(struct arch_aspace* space)
-{
-    if (space == nullptr)
-    {
-        return 0;
-    }
-    uint64_t const key = root_key(space);
-    uint32_t set = 0;
-    for (uint32_t c = 0; c < KICKOS_NUM_CORES; c++)
-    {
-        if (g_installed_root[c] == key)
-        {
-            set |= 1u << c;
-        }
-    }
-    return set;
-}
-#endif
 
 }

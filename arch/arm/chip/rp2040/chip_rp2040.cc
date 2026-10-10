@@ -56,7 +56,7 @@ extern "C"
 
 namespace
 {
-#if defined(KICKOS_ENABLE_SELFTEST)
+#if KICKOS_REBOOT
     // Bootrom header accessors (arch_reboot): its magic is bytes and its pointers are
     // halfwords, so neither is reachable through r32.
     // GCC assumes the first min-pagesize bytes are unmapped; 0x0 is the bootrom.
@@ -287,7 +287,7 @@ int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
     return 0;
 }
 
-#if defined(KICKOS_ENABLE_SELFTEST)
+#if KICKOS_REBOOT
 // Reboot into the bootrom's USB download mode via _reset_to_usb_boot (DS 2.8.3).
 // The three magic bytes at 0x10 are the whole validity test the datasheet gives: once
 // they match, the halfword pointers at 0x14+ are valid. The byte at 0x13 is a ROM build

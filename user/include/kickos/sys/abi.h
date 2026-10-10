@@ -3,9 +3,6 @@
 //
 // The KickOS syscall ABI shared by userspace stubs and the kernel dispatch table. Numbers
 // are stable contract; argument packing is uintptr_t-wide.
-//
-// The `op` selectors and result encodings the *_PROBE entries below name are in
-// <kickos/sys/abi_probe.h>, which this header does not include.
 
 #ifndef KICKOS_SYS_ABI_H
 #define KICKOS_SYS_ABI_H
@@ -74,7 +71,8 @@ enum kos_syscall_nr
     KOS_SYS_SEM_CREATE = 4,     // (initial, kos_cap_t* out) -> 0, or -KOS_E* (ENOMEM sem pool,
                                 //   EMFILE caller's cap table, EAGAIN task's sem budget,
                                 //   EINVAL/EFAULT)
-    KOS_SYS_SEM_WAIT = 5,       // (cap)   -> 0, or -KOS_EBADF/-KOS_EACCES/-KOS_ECANCELED
+    KOS_SYS_SEM_WAIT = 5,       // (cap, timeout_us) -> 0, or -KOS_EBADF/-KOS_EACCES/
+                                //   -KOS_ETIMEDOUT/-KOS_ECANCELED
     KOS_SYS_SEM_POST = 6,       // (cap)   -> 0, or -KOS_EBADF/-KOS_EACCES, or -KOS_EOVERFLOW
                                 //   with no waiter and the count at KOS_SEM_COUNT_MAX
     KOS_SYS_HANDLE_CLOSE = 17,  // (cap)   -> 0, -KOS_EBADF (bad cap), -KOS_EBUSY (own a held mutex)
@@ -90,9 +88,12 @@ enum kos_syscall_nr
     KOS_SYS_EXIT = 8,           // (code)                -> does not return. Ends the calling
                                 //   thread, or the SYSTEM when the caller is root, which
                                 //   needs KOS_AUTH_SYSTEM for it and panics without.
-    KOS_SYS_IRQ_INJECT = 9,     // (irq)                 -> 0, -KOS_EINVAL, or -KOS_EPERM
-                                //   for a line the kernel dispatches itself (self-test only)
-    KOS_SYS_GUARD_ADDR = 10,    // ()  -> protected probe addr (self-test only)
+    KOS_SYS_IRQ_RAISE = 9,      // (irq_cap) -> 0, or -KOS_EBADF (no live line), -KOS_EACCES (cap
+                                //   lacks SIGNAL), -KOS_ENOTSUP (a line the controller cannot
+                                //   raise from software, or a banked one)
+    KOS_SYS_AMP_COUNT = 10,     // (node, enum kos_amp_count_id, uint32_t* out) -> 0, or
+                                //   -KOS_EINVAL (out, a node outside the partition, an unknown
+                                //   id), -KOS_EFAULT (out). AMP nodes only.
     KOS_SYS_NOTIFY_CREATE = 11, // (kos_cap_t* out) -> 0, or -KOS_E* (ENOMEM notification
                                 //   pool, EMFILE caller's cap table, EAGAIN task's
                                 //   notification budget, EINVAL/EFAULT out-ptr, EPERM)
@@ -113,10 +114,8 @@ enum kos_syscall_nr
                                 //   waits forever
     KOS_SYS_IRQ_ACK = 16,       // (irq_cap) -> 0, or -KOS_EBADF / -KOS_EACCES (cap lacks WAIT)
                                 //   / -KOS_EINVAL (the line signals no notification)
-    KOS_SYS_IRQ_SPURIOUS = 18,  // ()  -> count of IRQs on unbound lines (self-test only)
     KOS_SYS_DIAG_LED_SET = 19,  // (on)                  -> 0 (kernel diagnostic LED)
     KOS_SYS_DIAG_LED_TOGGLE = 20, // ()                  -> 0 (kernel diagnostic LED)
-    KOS_SYS_IRQ_UNMASK = 21,    // (irq)  -> 0, or -KOS_E* (EPERM/EINVAL; self-test only)
     KOS_SYS_CPU_CLOCK_HZ = 22,  // ()  -> running core clock in Hz (u64), 0 if unknown (NO KOS_E*)
     KOS_SYS_MUTEX_CREATE = 23,  // (kos_cap_t* out) -> 0, or -KOS_E* (ENOMEM mutex pool, EMFILE
                                 //   caller's cap table, EAGAIN task's mutex budget,
@@ -151,12 +150,6 @@ enum kos_syscall_nr
                                   //   reference or receiver count at its ceiling); seats WAIT
                                   //   on a cap without it. KOS_TASK_NONE: the caller's task
     KOS_SYS_CPU_CLOCK_SET = 30,  // (kos_pstate_t as u32) -> landed core Hz (u64); 0 == cannot-change
-    KOS_SYS_GRANT_PROBE = 31,    // (op, base, size) -> Rule 7 grant predicate 0/1, or for ops 6/7
-                                 //   the raw reserved-block base/size; a BAD op returns -KOS_EINVAL,
-                                 //   the arena scribble without KOS_AUTH_MEMORY -KOS_EPERM
-                                 //   (self-test only; compiled out unless KICKOS_HAVE_MPU, and
-                                 //   answering the arena scribble alone on a region board
-                                 //   without it)
     KOS_SYS_PERIPH_CLOCK_HZ = 32, // (base) -> peripheral branch clock in Hz (u32), 0 if unknown (NO KOS_E*)
     KOS_SYS_PINMUX_SET = 33,  // (port, pin, func) -> 0, -KOS_EPERM (no KOS_AUTH_PINMUX), -KOS_EINVAL (range), -KOS_EBUSY (kernel-owned pin), -KOS_ENOSYS (no backend)
     KOS_SYS_CALL = 34,        // (ep_cap, buf, send_len, recv_cap) -> reply bytes (>= 0), or -KOS_E* (EINVAL/EFAULT/EBADF/EACCES/ENOTSUP,
@@ -174,8 +167,8 @@ enum kos_syscall_nr
                               //   MPU cannot decide (any overlap on ARMv8-M); EBUSY the range
                               //   mapped elsewhere with another type.
     KOS_SYS_REBOOT = 38,      // () -> does not return; -KOS_EPERM if refused, -KOS_ENOSYS (no backend)
-                              //   (self-test only: the dispatch arm is compiled out unless
-                              //   KICKOS_ENABLE_SELFTEST, so a production image returns -KOS_EINVAL)
+                              //   (the dispatch arm is compiled out unless KICKOS_REBOOT, and
+                              //   an image without it returns -KOS_EINVAL)
     KOS_SYS_PERIPH_ENABLE = 39, // (base) -> 0, -KOS_EPERM (caller holds no window at that base),
                                 //   -KOS_EINVAL (no table entry), -KOS_EIO (the block never left
                                 //   reset), -KOS_ENOSYS (no backend).
@@ -270,25 +263,27 @@ enum kos_syscall_nr
                                //   ONLY in the trap-handler fastpath; the generic dispatch
                                //   answers KOS_CALL_REG_FALLBACK, the stub's cue to re-issue
                                //   as KOS_SYS_CALL.
-    KOS_SYS_IPC_FAST_TAKEN = 57, // ()  -> count of calls the trap-handler IPC fastpath
-                               //   COMPLETED (self-test only). Reads 0 on a backend whose
-                               //   calls all take the generic path.
-    KOS_SYS_NEST_WITNESS = 58, // (which) -> one nested-trap counter (self-test only), or
-                               //   KOS_NEST_UNSET for a figure nothing recorded.
-    KOS_SYS_ASPACE_PROBE = 59, // (op, a1) -> per-op (see enum kos_aspace_op), or -KOS_EINVAL
-                               //   for a bad op, -KOS_EPERM for an op that mints from a caller
-                               //   the mint gate refuses, and -KOS_ENOSYS on a board that
-                               //   describes regions instead of translating (self-test only). A
-                               //   PRODUCTION image answers -KOS_EINVAL from the unknown-number
-                               //   arm, so a caller reading the refusal to learn whether the
-                               //   board translates must tell ENOSYS from EINVAL.
-    KOS_SYS_FRAME_MAP = 60,    // (frame cap, address-space cap, virtual address, KOS_MEM_*)
-                               //   -> 0, or -KOS_EPERM without AUTH_MEMORY, -KOS_EBADF on a
-                               //   cap that does not resolve, -KOS_EINVAL on a misaligned
-                               //   address, -KOS_ENOMEM when the space cannot take the range
+    KOS_SYS_MEM_COUNT = 57,    // (enum kos_mem_count_id, uint32_t* out) -> 0, or -KOS_EPERM (no
+                               //   AUTH_MEMORY), -KOS_EINVAL (out, an unknown id, or
+                               //   KOS_MEM_RANGES_FREE with no address space), -KOS_EFAULT
+                               //   (out). Translating boards only.
+    KOS_SYS_ASPACE_SELF = 58,  // (kos_cap_t* out) -> 0, or -KOS_EINVAL (out, or a caller with
+                               //   no address space), -KOS_EFAULT (out), -KOS_EMFILE (cap
+                               //   table). Translating boards only.
+    KOS_SYS_FRAME_CREATE = 59, // (bytes, kos_cap_t* out) -> 0, or -KOS_EPERM (no
+                               //   AUTH_MEMORY), -KOS_EINVAL (out, a caller with no address
+                               //   space, bytes 0 or past a run), -KOS_EFAULT (out), -KOS_EAGAIN
+                               //   (the task's run budget), -KOS_ENOMEM (the run pool, or no
+                               //   cleared run that long), -KOS_EMFILE (cap table). Translating
+                               //   boards only.
+    KOS_SYS_FRAME_MAP = 60,    // (frame cap, address-space cap, uintptr_t* va, KOS_MEM_*)
+                               //   -> 0 with *va where the run was mapped, or -KOS_EPERM
+                               //   without AUTH_MEMORY, -KOS_EINVAL (a null or misaligned va,
+                               //   an address off a page boundary, an undefined flag),
+                               //   -KOS_EFAULT (va), -KOS_EBADF on a cap that does not
+                               //   resolve, -KOS_ENOMEM when the space cannot take the range
                                //   there, -KOS_EBUSY while another mapping of the run carries
-                               //   another memory type. The ADDRESS is an argument and never a
-                               //   struct field.
+                               //   another memory type. *va 0 maps at the run's own address.
     KOS_SYS_FRAME_UNMAP = 61,  // (frame cap, address-space cap, virtual address) -> 0, or
                                //    -KOS_EBADF for an invalid cap, -KOS_EINVAL for a nontranslating space,
                                //    -KOS_EPERM for a range not mapped through KOS_SYS_FRAME_MAP.
@@ -313,21 +308,15 @@ enum kos_syscall_nr
                                //   -KOS_EBUSY (the task already has a member).
                                //   NARROWING-ONLY, and 0 in either field leaves that half
                                //   alone.
-    KOS_SYS_SCHED_PROBE = 65,  // (op) -> per-op (see enum kos_sched_op), or -KOS_EINVAL for a
-                               //   bad op (self-test only: the dispatch arm is compiled out
-                               //   unless KICKOS_ENABLE_SELFTEST AND the kernel drives more
-                               //   than one core, so every other image returns -KOS_EINVAL
-                               //   for every op).
-    KOS_SYS_AMP_PROBE = 66,    // (op, a1) -> per-op (see enum kos_amp_op), or -KOS_EINVAL for a
-                               //   bad op, -KOS_EPERM on an op that publishes into a peer from
-                               //   an unprivileged caller, -KOS_ENOSYS where the backend seats
-                               //   no IPI (self-test only: the dispatch arm is compiled out
-                               //   unless KICKOS_ENABLE_SELFTEST AND the image is a node of a
-                               //   partition, so every other image returns -KOS_EINVAL for
-                               //   every op).
-    KOS_SYS_DOORBELL_PROBE = 67, // (op, a1) -> per-op (see enum kos_doorbell_op), or
-                               //    -KOS_EINVAL for a bad op (self-test only). Returns zero when
-                               //    doorbells are compiled out.
+    KOS_SYS_CORE_CURRENT = 65, // () -> the kernel core the caller ran on; cannot fail. Above
+                               //   one kernel core only: the stub answers 0 without trapping.
+    KOS_SYS_THREAD_AFFINITY = 66, // (kos_thread_t) -> the thread's core mask, or -KOS_EBADF
+                               //   (bad or exited handle), -KOS_EPERM (another task's thread,
+                               //   unprivileged caller). Above one kernel core only: the stub
+                               //   answers -KOS_ENOSYS without trapping.
+    KOS_SYS_TASK_CORES = 67,   // (kos_task_t, KOS_TASK_NONE for the caller's) -> the task's core
+                               //   grant, or -KOS_EBADF, -KOS_EPERM (a task the caller did not
+                               //   create). Above one kernel core only, as above.
     KOS_SYS_REPLY_RECV = 68,   // (reply_cap, buf, kos_call_lens_pack(reply_len, recv_cap),
                                //   kos_reply_recv_opts* in-out) -> received bytes, or
                                //   -KOS_ENOTIFY (a notification and no message), -KOS_EINVAL,
@@ -375,9 +364,9 @@ enum kos_syscall_nr
                                //   KICKOS_PRIO_MIN to KICKOS_PRIO_MAX), -KOS_EPERM (above the
                                //   calling task's priority ceiling). The caller's OWN base
                                //   priority; an inherited boost above it stays.
-    KOS_SYS_TASK_NONBLOCK = 78 // (enum kos_nonblock_op) -> the calling task's O_NONBLOCK as
-                               //   the op leaves it, 0 or 1, or -KOS_EINVAL (an unknown op, or
-                               //   a caller in no task). One flag per task, shared by its threads
+    KOS_SYS_TASK_NONBLOCK = 78  // (enum kos_nonblock_op) -> the calling task's O_NONBLOCK as
+                                //   the op leaves it, 0 or 1, or -KOS_EINVAL (an unknown op, or
+                                //   a caller in no task). One flag per task, shared by its threads
 };
 // The raw console write's number, refused in an app as kos_kconsole_write is (<kickos/sys.h>).
 #if defined(main)
@@ -402,6 +391,33 @@ enum kos_task_state
     KOS_TASK_ENDED = 1 << 3  // its status is set and it takes no member; set by its death too
 };
 
+// What KOS_SYS_MEM_COUNT reads, each when the call runs.
+enum kos_mem_count_id
+{
+    KOS_MEM_FRAMES_FREE = 0, // frames free in the pool, machine-wide
+    KOS_MEM_SPACES_HELD = 1, // address spaces alive, machine-wide
+    KOS_MEM_RANGES_FREE = 2  // free range slots in the caller's own task's space
+};
+
+// What KOS_SYS_AMP_COUNT reads: one of a node's window counts, as that node last wrote it.
+enum kos_amp_count_id
+{
+    KOS_AMP_COUNT_TOOK = 0,         // messages it took
+    KOS_AMP_COUNT_DEPTH = 1,        // takes refused on the far head's depth
+    KOS_AMP_COUNT_DEPTH_RESET = 2,  // rings resynchronised after repeated depth refusals
+    KOS_AMP_COUNT_TAIL_RESET = 3,   // reply rings whose far tail it stopped believing
+    KOS_AMP_COUNT_LENGTH = 4,       // slots refused on the far length
+    KOS_AMP_COUNT_PORT = 5,         // slots refused on the far port
+    KOS_AMP_COUNT_WRONG_CLASS = 6,  // a reply on the call ring, or the reverse
+    KOS_AMP_COUNT_SENT = 7,         // messages it published
+    KOS_AMP_COUNT_SEND_REFUSED = 8, // sends it refused
+    KOS_AMP_COUNT_REPLY_RESERVE = 9, // calls left unread for want of a reply slot
+    KOS_AMP_COUNT_SERVICED = 10,    // doorbell services that drained its inboxes
+    KOS_AMP_COUNT_REPLY_DROP = 11,  // replies taken and then refused by the tag validation
+    KOS_AMP_COUNT_REPLY_UNSENT = 12, // answers whose bytes were lost
+    KOS_AMP_COUNT_DELIVER_FAULT = 13 // arrivals it could not put in a local thread's buffer
+};
+
 /* Slots in ONE ring of an ordered pair. The reply-record band the thread pool reserves is sized
    by it, so a second spelling would size that band against a ring the window does not have. */
 #define KOS_AMP_RING_SLOTS 4
@@ -414,14 +430,6 @@ enum
     KOS_AMP_PORT_ECHO = 0, /* the payload comes back to the sender's reply port */
     KOS_AMP_PORT_REPLY = 1 /* a reply, routed to whatever local caller its tag names */
 };
-
-// Selectors for KOS_SYS_NEST_WITNESS. NEST_ROOM is the bytes between the lowest nested frame
-// seen on a thread stack and that stack's base; compare it against the arch's own interrupt
-// red zone, since less than that means the ISR below the frame had no bound.
-#define KOS_NEST_TRAPS   0
-#define KOS_NEST_ONSTACK 1
-#define KOS_NEST_ROOM    2
-#define KOS_NEST_UNSET   0xFFFFFFFFu
 
 // The generic dispatch's answer for KOS_SYS_CALL_REG: retry through KOS_SYS_CALL. Outside the
 // result range by construction, so it can never collide with a real answer.
@@ -673,6 +681,8 @@ enum kos_policy
 // Table index of the FIRST delegated cap (i == 0) under DEFAULT placement: delegated cap
 // i lands at KOS_SPAWN_DELEGATED_CAP0 + i.
 #define KOS_SPAWN_DELEGATED_CAP0 1
+KOS_STATIC_ASSERT(KOS_SPAWN_DELEGATED_CAP0 >= KOS_CAP_FIRST_DYNAMIC,
+                  "a default delegation would land on a well-known index");
 struct kos_cap_grant
 {
     kos_cap_t source_cap; // a cap handle in the SPAWNING thread's table
@@ -753,8 +763,7 @@ struct kos_thread_params
     struct kos_cap_grant const* caps; // optional caps to delegate to the child (0 => none)
     // Optional uint16_t-aligned destination indices, parallel to caps.
     // Null or zero entries use default placement (grant i -> index i+1).
-    // Index 0 is reserved for stdout. The first default slot aliases KOS_CAP_CLOCK;
-    // use an explicit destination to preserve that slot.
+    // Index 0 is reserved for stdout.
     // Reject duplicate destinations or indices outside the child table with EINVAL
     // before creating the thread.
     uint16_t const* cap_dest;

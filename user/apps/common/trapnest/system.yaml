@@ -2,7 +2,7 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # The board's default composition with irq added to main's authority, for the soft-only line it
-# claims at run time and injects into; tasks keeps the deep spawn's refusal in ram_region_admit
+# claims at run time and raises; tasks keeps the deep spawn's refusal in ram_region_admit
 # rather than at the task gate before it.
 
 version: 1

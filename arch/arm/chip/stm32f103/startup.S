@@ -8,6 +8,7 @@
  * no flash config field.
  */
 
+#include <chip_layout.h>
 #include <kickos/chip_limits.h>   /* KICKOS_MAX_IRQ: the NVIC line count */
 #include "core_vectors.inc"        /* shared core-exception vector block */
 
@@ -20,13 +21,13 @@
 g_isr_vector:
     KICKOS_CORE_VECTORS_V7M
 
-    /* External interrupts 0..42 -> the generic IRQ-as-event entry, except NVIC 29
-     * (TIM3) which carries the monotonic-clock wrap observer (chip_stm32f1f3.cc). */
-    .rept 29
+    /* External interrupts 0..42 -> the generic IRQ-as-event entry, except the TIM3
+     * line, which carries the monotonic-clock wrap observer (chip_stm32f1f3.cc). */
+    .rept KICKOS_LAYOUT_LINE_TIM3_GLOBAL
     .word kickos_arm_default_irq
     .endr
-    .word kickos_stm32_clock_isr   /* 29: TIM3 update (clock-chain wrap) */
-    .rept (KICKOS_MAX_IRQ - 30)
+    .word kickos_stm32_clock_isr   /* TIM3 update (clock-chain wrap) */
+    .rept KICKOS_MAX_IRQ - KICKOS_LAYOUT_LINE_TIM3_GLOBAL - 1
     .word kickos_arm_default_irq
     .endr
 

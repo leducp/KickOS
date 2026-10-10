@@ -56,6 +56,8 @@
     X(kDcacheWraps,     "arch_dcache: a maintenance range wraps the address space", "P23")       \
     X(kBootRegionsOverlap, "kmain: idle's or root's regions overlap where the MPU decides \n"   \
                         "       otherwise (mpu_overlap_expressible)",                  "P24")    \
+    X(kMmuNoGranule,    "armv8a: the MMU offers no 4 KiB granule",                   "P25")       \
+    X(kMmuPaNarrow,     "armv8a: the MMU's physical range is narrower than TCR_EL1.IPS", "P26")   \
     X(kBannerRule,      "  ==============================================\n",        "\n")
 
 // The prose table is the only C++ in this header, and kickos/console_tx.h includes the header

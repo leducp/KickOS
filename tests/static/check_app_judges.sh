@@ -11,9 +11,10 @@
 # where op `drop` removes every line carrying the literal, `swap` replaces its first occurrence
 # on each line, `after` adds the replacement as a line after each line carrying it, `order`
 # exchanges the first line carrying the literal with the first line carrying the replacement,
-# `cache` judges the fixture whole with the replacement as the cache line instead, and
+# `cache` judges the fixture whole with the replacement as the cache line instead,
 # `source:<path>` judges it whole over a source tree holding only <path>, the replacement added
-# as a line after each line of it carrying the literal. An edit
+# as a line after each line of it carrying the literal, and `source-swap:<path>` does the same
+# with the literal's first occurrence on each line replaced instead. An edit
 # applies to the fixture and its arrival stamps alike; `log-<op>` edits the fixture alone and
 # `times-<op>` the stamps alone. A second edit applies to the first's result. A judge refuses as `FAIL: <token>: ...` (gate.sh jfail).
 # <judge> is the script, then `;<arg>` for each argument its kickos_app_judge ARGS pass it, and
@@ -273,8 +274,6 @@ tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||round|drop|  ping 
 tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||attempt|after|  ping 4 -> pong 5|  (node 1 answered on attempt 2)
 tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||served|swap|its own record says 4|its own record says 3
 tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||done|drop|ampping: node 0 done|
-tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||doorbell|drop|the doorbell has no seat|
-tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||bells|swap|core=1 bells=6 drains=6|core=1 bells=6 drains=0
 tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||panic|after|ampping: node 0 done|KERNEL PANIC: planted
 tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||panic|after|ampping: node 0 done|=== RISC-V TRAP ===
 tests/integration/check_c6_amp_capture.sh|ampping-c6.capture||fault|after|ampping: node 0 done|=== THREAD FAULT === thread 'ampping' killed, system continues
@@ -282,9 +281,7 @@ tests/integration/check_pizero_amp_gate.sh|ampping-pizero.capture||readback|drop
 tests/integration/check_pizero_amp_gate.sh|ampping-pizero.capture||readback|swap|# accessctrl: 0xa0 = 0x9c|# accessctrl: 0xa0 = 0xbc
 tests/integration/check_pizero_amp_gate.sh|ampping-pizero.capture||banners|after|# accessctrl: 0xa0|   KickOS 0.5.1  -  microkernel RTOS
 tests/integration/check_pizero_amp_gate.sh|ampping-pizero.capture||gate|drop|ampping: gate: node 0 read 0x11|
-tests/integration/check_pizero_amp_gate.sh|ampping-pizero.capture||probe|swap|fault CFSR=0x8200 BFAR=0x40070fe0|0x0
-tests/integration/check_pizero_amp_gate.sh|ampping-pizero.capture||probe|swap|CFSR=0x8200|CFSR=0x8282
-tests/integration/check_pizero_amp_gate.sh|ampping-pizero.capture||probe|swap|BFAR=0x40070fe0|BFAR=0x40070fe4
+tests/integration/check_pizero_amp_gate.sh|ampping-pizero.capture||gate|swap|read 0x11 from its uart0|read 0x11 from its uart0, node 1's kernel's read of it took a fault
 tests/integration/check_pizero_amp_gate.sh|ampping-pizero.capture||fault|after|ampping: node 0 done|=== THREAD FAULT === thread 'ampping' killed, system continues
 tests/integration/check_pizero_amp_gate.sh|ampping-pizero.capture||alive|swap|2 of 2 node app(s)|1 of 2 node app(s)
 tests/integration/check_pizero_amp_gate.sh|ampping-pizero.capture||call|drop|ampping: node 0 calls node 1 port 3|
@@ -335,11 +332,27 @@ tests/integration/check_sched_exit.sh|sched_exit.capture||survived|drop|main: su
 tests/integration/check_sched_exit.sh|sched_exit.capture||child|after|main: survived|parked spawn refused
 tests/integration/check_sched_exit.sh|sched_exit.capture||main-exit|drop|main: exiting with|
 tests/integration/check_sched_exit.sh|sched_exit.capture||panic|after|main: exiting with|KERNEL PANIC: planted
-tests/integration/check_fpclass.sh|fpclass.capture||arm|drop|[fpclass] order 1,2 |
-tests/integration/check_fpclass.sh|fpclass.capture||arm|swap|[0] want [0] ok|[1] want [0] BAD
-tests/integration/check_fpclass.sh|fpclass.capture||verdict|drop|[fpclass] PASS|
-tests/integration/check_fpclass.sh|fpclass.capture||error|swap|[fpclass] PASS|[fpclass] FAIL
-tests/integration/check_fpclass.sh|fpclass.capture||panic|after|[fpclass] PASS|KERNEL PANIC: planted
+tests/integration/check_chaincheck.sh;int|chaincheck.capture||arm|drop|[chaincheck] ok - printf %hd negative|
+tests/integration/check_chaincheck.sh;int|chaincheck.capture||arm|after|[chaincheck] ok - printf %lx|[chaincheck] ok - printf %f 1
+tests/integration/check_chaincheck.sh;int|chaincheck.capture||error|swap|ok - i32 sub to negative|FAIL - i32 sub to negative: got -0xb want -0xc
+tests/integration/check_chaincheck.sh;int|chaincheck.capture||verdict|drop|[chaincheck] PASS|
+tests/integration/check_chaincheck.sh;int|chaincheck.capture||verdict|swap|PASS (126 arms)|PASS (125 arms)
+tests/integration/check_chaincheck.sh;int|chaincheck.capture||panic|after|[chaincheck] PASS|KERNEL PANIC: planted
+tests/integration/check_chaincheck.sh;int|chaincheck.capture||arm|source:user/apps/common/chaincheck/main.c|    ck_i64(\"i32 add to max\"|    ck_i64(\"planted arm\", 0, 0);
+tests/integration/check_chaincheck.sh;int|chaincheck.capture||source|source:user/apps/common/chaincheck/main.c|    ck_i64(\"i32 add to max\"|    ck_i64(\"i32 sub to negative\", 0, 0);
+tests/integration/check_chaincheck.sh;int|chaincheck.capture||source|source:user/apps/common/chaincheck/main.c|    ck_i64(\"i32 add to max\"|    ck_i64(name, 0, 0);
+tests/integration/check_chaincheck.sh;int|chaincheck.capture||source|source:user/apps/common/chaincheck/main.c|static void arith32(void)|#if PLANTED
+tests/integration/check_chaincheck.sh;int|chaincheck.capture||arm|source-swap:user/apps/common/chaincheck/main.c|\"i32 add to max\"|\"i32 add up to max\"
+tests/integration/check_chaincheck.sh;float|chaincheck-float.capture||arm|drop|[chaincheck] ok - u64 to f64 max|
+tests/integration/check_chaincheck.sh;float|chaincheck-float.capture||arm|after|[chaincheck] ok - copysign 1 -0|[chaincheck] ok - printf %f 1
+tests/integration/check_chaincheck.sh;float|chaincheck-float.capture||error|swap|ok - u64 to f64 max|FAIL - u64 to f64 max: got 0x43f0000000000000 want 0x43efffffffffffff
+tests/integration/check_chaincheck.sh;float|chaincheck-float.capture||verdict|swap|PASS (134 arms)|PASS (126 arms)
+tests/integration/check_chaincheck.sh;float|chaincheck-float.capture||source|source:user/apps/common/chaincheck/main.c|static void libm(void)|#if CHAINCHECK_FULL
+tests/integration/check_chaincheck.sh;full|chaincheck-full.capture||arm|drop|[chaincheck] ok - printf %zu|
+tests/integration/check_chaincheck.sh;full|chaincheck-full.capture||arm|after|[chaincheck] ok - printf %a 0.1|[chaincheck] ok - u64 to f64 max
+tests/integration/check_chaincheck.sh;full|chaincheck-full.capture||error|swap|ok - printf %zu|FAIL - printf %zu: got [zu] want [12345]
+tests/integration/check_chaincheck.sh;full|chaincheck-full.capture||verdict|swap|PASS (49 arms)|PASS (48 arms)
+tests/integration/check_chaincheck.sh;full|chaincheck-full.capture||panic|after|[chaincheck] PASS|KERNEL PANIC: planted
 tests/integration/check_app_arms.sh;rootauth;5|rootauth.capture||error|after|[rootauth] ok - declared KOS_AUTH_MEMORY|[rootauth] ERROR: planted
 tests/integration/check_app_arms.sh;rootauth;5|rootauth.capture||arms|drop|[rootauth] ok - main narrowed|
 tests/integration/check_app_arms.sh;rootauth;5|rootauth.capture||verdict|swap|PASS (5 arms)|PASS (4 arms)
@@ -350,13 +363,14 @@ tests/integration/check_app_arms.sh;objbudget;5;endpoint_create at the ceiling r
 tests/integration/check_qemu_fp.sh|fp_switch.capture||error|after|FP OK: 10 rounds|  FP FAIL: s20 = 7, expected 20 (round 11)
 tests/integration/check_qemu_fp.sh|fp_switch.capture||verdict|drop|FP OK:|
 tests/integration/check_qemu_fp.sh|fp_switch.capture||panic|after|FP OK: 20 rounds|KERNEL PANIC: planted
-tests/integration/check_trapnest.sh;480|trapnest.capture||error|after|worker parks sp|[trapnest] ERROR: ticker spawn refused
-tests/integration/check_trapnest.sh;480|trapnest.capture||worker|drop|[trapnest] worker done|
-tests/integration/check_trapnest.sh;480|trapnest.capture||join|drop|main ran after the worker|
-tests/integration/check_trapnest.sh;480|trapnest.capture||tally|drop|[nestwitness] traps=|
-tests/integration/check_trapnest.sh;480|trapnest.capture||traps|swap|traps=64|traps=0
-tests/integration/check_trapnest.sh;480|trapnest.capture||onstack|swap|onstack=0|onstack=3
-tests/integration/check_trapnest.sh;480|trapnest.capture||panic|after|main ran after the worker|KERNEL PANIC: planted
+tests/integration/check_trapnest.sh;480;292|trapnest.capture||error|after|worker parks sp|[trapnest] ERROR: ticker spawn refused
+tests/integration/check_trapnest.sh;480;292|trapnest.capture||worker|drop|[trapnest] worker done|
+tests/integration/check_trapnest.sh;480;292|trapnest.capture||join|drop|main ran after the worker|
+tests/integration/check_trapnest.sh;480;292|trapnest.capture||band|drop|[trapnest] main band intact|
+tests/integration/check_trapnest.sh;480;292|trapnest.capture||band|drop|[trapnest] ticker band intact|
+tests/integration/check_trapnest.sh;480;292|trapnest.capture||band|swap|worker band intact: 0 of 292 words written below the parked sp|worker band CORRUPTED: 3 of 292 words written below the parked sp, the lowest 600 bytes above the band's base
+tests/integration/check_trapnest.sh;480;292|trapnest.capture||band|swap|main band intact: 0 of 292|main band intact: 0 of 291
+tests/integration/check_trapnest.sh;480;292|trapnest.capture||panic|after|main ran after the worker|KERNEL PANIC: planted
 tests/integration/check_gpioblink.sh|gpioblink.capture||start|drop|driving port|
 tests/integration/check_gpioblink.sh|gpioblink.capture||error|after|driving port|[gpioblink] ERROR: pinmux rc -1, window /dev/port/5
 tests/integration/check_gpioblink.sh|gpioblink.capture||cycle|swap|cycle 4 led=1 readback=1|cycle 4 led=1 readback=0
@@ -452,7 +466,9 @@ tests/integration/check_faultsurvive.sh;overflow;rxv3;terminated|faultsurvive-ov
 tests/integration/check_faultsurvive.sh;kwrite;rxv3;contained|faultsurvive-kwrite.capture||refusal|drop|=== RX CONTAINED|
 tests/integration/check_faultsurvive.sh;kwrite;rxv3;contained|faultsurvive-kwrite.capture||survived|drop|[fs] survivor ran|
 tests/integration/check_faultsurvive.sh;kwrite;rxv3;contained|faultsurvive-kwrite.capture||order|order|=== RX CONTAINED|[fs] survivor ran
-tests/integration/check_faultsurvive.sh;kwrite;rxv3;contained|faultsurvive-kwrite.capture||kwrite|after|[fs] worker about to fault|[fs] [trapwitness] CORRUPTED: planted
+tests/integration/check_faultsurvive.sh;kwrite;rxv3;contained|faultsurvive-kwrite.capture||kwrite|after|[fs] worker about to fault|[fs] [kword] CORRUPTED: planted
+tests/integration/check_faultsurvive.sh;kwrite;rxv3;contained|faultsurvive-kwrite.capture||kwrite|drop|[fs] [kword] INTACT|
+tests/integration/check_faultsurvive.sh;kwrite;rxv3;contained|faultsurvive-kwrite.capture||order|order|[fs] survivor ran|[fs] [kword] INTACT
 tests/integration/check_faultsurvive.sh;kwrite;rxv3;contained|faultsurvive-kwrite.capture||panic|after|[fs] survivor ran|KERNEL PANIC: planted
 tests/integration/check_fault_dump.sh;RX EXCEPTION (trap)|fault-rx.capture||marker|drop|=== RX EXCEPTION|
 tests/integration/check_fault_dump.sh;RX EXCEPTION (trap)|fault-rx.capture||doubled|after|PC=0xffc00400|=== RX EXCEPTION (trap) ===
@@ -504,13 +520,15 @@ tests/integration/check_faultsurvive.sh;overflow;rv32imac;contained|faultsurvive
 tests/integration/check_faultsurvive.sh;offstack;rv32imac;contained|faultsurvive-rv32imac-contained.capture||refusal|drop|=== RISC-V CONTAINED|
 tests/integration/check_faultsurvive.sh;offstack;rv32imac;contained|faultsurvive-rv32imac-contained.capture||attribution|swap|thread 'faulter' sp|thread 'other' sp
 tests/integration/check_faultsurvive.sh;offstack;rv32imac;contained|faultsurvive-rv32imac-contained.capture||order|order|=== RISC-V CONTAINED|[fs] survivor ran
-tests/integration/check_faultsurvive.sh;kwrite;rv32imac;contained|faultsurvive-rv32imac-contained.capture||refusal|drop|=== RISC-V CONTAINED|
-tests/integration/check_faultsurvive.sh;kwrite;rv32imac;contained|faultsurvive-rv32imac-contained.capture||attribution|swap|thread 'faulter' sp|thread 'other' sp
-tests/integration/check_faultsurvive.sh;kwrite;rv32imac;contained|faultsurvive-rv32imac-contained.capture||order|order|=== RISC-V CONTAINED|[fs] survivor ran
+tests/integration/check_faultsurvive.sh;kwrite;rv32imac;contained|faultsurvive-rv32imac-kwrite.capture||refusal|drop|=== RISC-V CONTAINED|
+tests/integration/check_faultsurvive.sh;kwrite;rv32imac;contained|faultsurvive-rv32imac-kwrite.capture||attribution|swap|thread 'faulter' sp|thread 'other' sp
+tests/integration/check_faultsurvive.sh;kwrite;rv32imac;contained|faultsurvive-rv32imac-kwrite.capture||order|order|=== RISC-V CONTAINED|[fs] survivor ran
 tests/integration/check_faultsurvive.sh;misalign;rv32imac;contained|faultsurvive-rv32imac-contained.capture||refusal|drop|=== RISC-V CONTAINED|
 tests/integration/check_faultsurvive.sh;misalign;rv32imac;contained|faultsurvive-rv32imac-contained.capture||attribution|swap|thread 'faulter' sp|thread 'other' sp
 tests/integration/check_faultsurvive.sh;misalign;rv32imac;contained|faultsurvive-rv32imac-contained.capture||order|order|=== RISC-V CONTAINED|[fs] survivor ran
-tests/integration/check_faultsurvive.sh;kwrite;rv32imac;contained|faultsurvive-rv32imac-contained.capture||kwrite|after|[fs] worker about to fault|[fs] [trapwitness] CORRUPTED: planted
+tests/integration/check_faultsurvive.sh;kwrite;rv32imac;contained|faultsurvive-rv32imac-kwrite.capture||kwrite|after|[fs] worker about to fault|[fs] [kword] CORRUPTED: planted
+tests/integration/check_faultsurvive.sh;kwrite;rv32imac;contained|faultsurvive-rv32imac-kwrite.capture||kwrite|drop|[fs] [kword] INTACT|
+tests/integration/check_faultsurvive.sh;kwrite;rv32imac;contained|faultsurvive-rv32imac-kwrite.capture||order|order|[fs] survivor ran|[fs] [kword] INTACT
 tests/integration/check_faultsurvive.sh;offstack;rxv3;terminated|faultsurvive-rx-offstack.capture||cause|swap|PSW=0x130003|PSW=0x030003
 tests/integration/check_faultsurvive.sh;offstack;rxv3;terminated|faultsurvive-rx-offstack.capture||dump|drop|=== RX EXCEPTION|
 tests/integration/check_faultsurvive.sh;offstack;rxv3;terminated|faultsurvive-rx-offstack.capture||cause|swap|(privileged instruction)|(undefined instruction)
@@ -563,7 +581,8 @@ tests/integration/check_sched_exit.sh|main's exit with a child alive ended the s
 tests/integration/check_slaypeer.sh|the system exited 0 once main returned past PASS
 tests/integration/check_system_default.sh;sysdefault: main faults;139;main|main's task ending ended the system with status 139
 tests/integration/check_system_default.sh;sysdefault: main returns 3;3|main's task ending ended the system with status 3
-tests/integration/check_system_default.sh;sysdefault: main returns 3 while a thread spins;3|main's task ending ended the system with status 3"
+tests/integration/check_system_default.sh;sysdefault: main returns 3 while a thread spins;3|main's task ending ended the system with status 3
+tests/integration/check_trapnest.sh;480;292|an injected interrupt was taken inside the syscall dispatch"
 
 # --listing <kickos-images.txt>: every judge a build's image listing names, with its arguments,
 # has a row above, so no judged (script, args) pair goes without a fixture.
@@ -706,15 +725,27 @@ while IFS='|' read -r judge fixture cache token op lit rep op2 lit2 rep2; do
         what="'$rep' for its cache"
         judged "$judge" "$rep" "$TMP/good.log"
         jrc=$?
-    elif [ "${op#source:}" != "$op" ]; then
+    elif [ "${op#source:}" != "$op" ] || [ "${op#source-swap:}" != "$op" ]; then
         src="${op#source:}"
+        swap=0
         what="'$rep' after '$lit' in $src"
+        if [ "${op#source-swap:}" != "$op" ]; then
+            src="${op#source-swap:}"
+            swap=1
+            what="'$rep' for '$lit' in $src"
+        fi
         rm -rf "$TMP/source"
         mkdir -p "$TMP/source/$(dirname "$src")"
-        KOS_PLANT_LIT="$lit" KOS_PLANT_NEW="$rep" awk '
-            { print }
-            index($0, ENVIRON["KOS_PLANT_LIT"]) > 0 { print ENVIRON["KOS_PLANT_NEW"] }' "$src" \
-            > "$TMP/source/$src"
+        KOS_PLANT_LIT="$lit" KOS_PLANT_NEW="$rep" awk -v swap="$swap" '
+            {
+                lit = ENVIRON["KOS_PLANT_LIT"]
+                at = index($0, lit)
+                if (swap && at > 0) {
+                    $0 = substr($0, 1, at - 1) ENVIRON["KOS_PLANT_NEW"] substr($0, at + length(lit))
+                }
+                print
+                if (!swap && at > 0) { print ENVIRON["KOS_PLANT_NEW"] }
+            }' "$src" > "$TMP/source/$src"
         if cmp -s "$src" "$TMP/source/$src"; then
             bad "$what leaves $src unchanged"
             continue

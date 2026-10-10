@@ -9,7 +9,6 @@
 
 // Macros and not constexpr: cap.h picks its chunk geometry with an #if on the width.
 #define KICKOS_MAX_HANDLES @KICKOS_CAP_TABLE_SLOTS@
-#define KICKOS_CAP_CHUNK_SLOTS @KICKOS_CAP_TABLE_CHUNK@
 
 // What EVERY spawned child gets; only root holds KICKOS_MAX_HANDLES. It is the GRANT-LIST
 // FLOOR and not a tuning knob: delegated cap i lands at child index i+1 by default, so a

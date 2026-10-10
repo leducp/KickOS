@@ -16,3 +16,4 @@
 === RX CONTAINED (wild stack) ===
   USP=0x8
 [fs] survivor ran after the fault
+[fs] [kword] INTACT: nothing was stored through the refused sp

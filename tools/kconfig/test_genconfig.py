@@ -149,8 +149,8 @@ class Genconfig(unittest.TestCase):
         self.refused(FIX, "CONFIG_KICKOS_MAX_IRQ=64", "no such symbol")
         # The refusal carries the symbol's own help, read out of Kconfig.
         self.refused(FIX, "CONFIG_KICKOS_SHUTDOWN_TO_BOOTLOADER=y",
-                     "unmet dependency: KICKOS_ENABLE_SELFTEST",
-                     "arch_reboot is compiled out of a production image")
+                     "unmet dependency: KICKOS_REBOOT",
+                     "arch_reboot is compiled only under KICKOS_REBOOT")
         self.refused(FIX, "KICKOS_MAX_THREADS=4", "not of the form CONFIG_<name>=<value>")
 
     def test_accepted_overrides(self):

@@ -72,7 +72,7 @@ uint32_t SystemCoreClock = reg::clocks::ROSC_NOMINAL_HZ;
 
 namespace
 {
-#if defined(KICKOS_ENABLE_SELFTEST) || KICKOS_AMP_OWN_IMAGE
+#if KICKOS_REBOOT || KICKOS_AMP_OWN_IMAGE
     // Bootrom header accessors: its magic is bytes and its pointers are halfwords, so neither
     // is reachable through r32.
     // GCC assumes the first min-pagesize bytes are unmapped; 0x0 is the bootrom.
@@ -400,16 +400,6 @@ void arch_init(void)
 #endif
 }
 
-bool arch_irq_line_kernel_owned(int line)
-{
-#if (KICKOS_NUM_CORES > 1 || KICKOS_AMP_NODE)
-    return line == irq::SIO_IRQ_BELL;
-#else
-    (void)line;
-    return false;
-#endif
-}
-
 console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)
 {
 #if KICKOS_AMP_OWN_IMAGE
@@ -481,7 +471,7 @@ int arch_periph_enable(uintptr_t base)
     return 0;
 }
 
-#if defined(KICKOS_ENABLE_SELFTEST)
+#if KICKOS_REBOOT
 // Reboot into BOOTSEL (firmware-download) mode via the bootrom `reboot` entry. The
 // header differs from the RP2040's: the magic third byte is 0x02, and the Arm lookup
 // helper (rom_table_lookup_val, no table argument) is the halfword at 0x16; 0x18 is a

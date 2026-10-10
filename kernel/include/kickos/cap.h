@@ -32,8 +32,8 @@ static_assert(KICKOS_CAP_CHILD_WIDTH > KICKOS_CAP_FIRST_DYNAMIC,
               "no dynamic cap slots left in a spawned child: raise KICKOS_MAX_SPAWN_GRANTS, "
               "or shrink the reserved range");
 
-// Delegated cap i lands at child index i+1, so delegates spend the reserved plane. This assert
-// keeps a full defaulted grant list inside the child width.
+// Delegated cap i lands at child index i+1. This assert keeps a full defaulted grant list inside
+// the child width.
 static_assert(KICKOS_MAX_SPAWN_GRANTS < KICKOS_CAP_CHILD_WIDTH,
               "a full grant list must fit the child table at indices 1..cap_count");
 
@@ -108,6 +108,7 @@ namespace kickos
         CAP_FRAME,    // a RUN of physical frames; `obj` names a frame-run pool slot, and the
                       // run's physical base is a field of that object, never a number here
         CAP_ASPACE,   // an address space; `obj` names a DOMAIN slot by generational handle
+                      // and holds no reference on it (no refcount)
         CAP_NOTIFY,   // a notification object; `obj` names a slot in the notification pool.
                       // The entry's spare bits carry this cap's BADGE (cap_badge_seat below)
         CAP_KIND_MAX  // never stored: STAYS LAST, and the assert below reads it
@@ -118,7 +119,7 @@ namespace kickos
                   "a CapType no longer fits the entry's type field: the call sequence packed "
                   "beside it would be overwritten");
 
-    // Rights bits enforced at cap_resolve ((rights & need) == need); CAP_TRANSFER is
+    // Rights bits enforced at cap_resolve_e ((rights & need) == need); CAP_TRANSFER is
     // enforced at the delegate site instead.
     enum CapRights : uint8_t
     {
@@ -471,8 +472,7 @@ namespace kickos
     }
 
     // Take `index` out of the list. An index below the first dynamic one is a no-op: the
-    // reserved plane is not in the list, yet default spawn placement seats delegated cap 0 on
-    // index 1 (KOS_CAP_CLOCK). Every other index MUST already be linked.
+    // reserved plane is not in the list. Every other index MUST already be linked.
     inline void cap_run_free_unlink(CapRun const& run, uint32_t index, uint16_t* head)
     {
         if (index < KICKOS_CAP_FIRST_DYNAMIC)
@@ -550,13 +550,9 @@ namespace kickos
     // The one resolve chokepoint: validate a per-thread cap handle and return the named
     // global object, or nullptr (bad index, empty, stale cap-gen, wrong type, or
     // missing rights). Returns void* (dispatch-on-type over the object pools); the
-    // caller casts to the type it asked for.
-    void* cap_resolve(Thread* c, uint32_t cap_handle, CapType want, uint8_t need);
-
-    // As cap_resolve, but distinguishes WHY it failed so a syscall can return the right
-    // taxonomy code: on nullptr, *err is KOS_EBADF (bad index / empty / stale gen /
-    // wrong type / stale object) or KOS_EACCES (the cap lacks a required right). *err is
-    // 0 on success. cap_resolve is this with the reason discarded.
+    // caller casts to the type it asked for. On nullptr, *err is KOS_EBADF (bad index /
+    // empty / stale gen / wrong type / stale object) or KOS_EACCES (the cap lacks a
+    // required right); 0 on success.
     void* cap_resolve_e(Thread* c, uint32_t cap_handle, CapType want, uint8_t need, int* err);
 
     // Validate a cap handle and return its table entry (type-agnostic; for delegation

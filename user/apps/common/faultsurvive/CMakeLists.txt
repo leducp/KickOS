@@ -30,8 +30,8 @@ if(NOT (KICKOS_ARCH STREQUAL "sim" OR KICKOS_ARCH STREQUAL "x86_64"))
   target_compile_definitions(faultsurvive_off PRIVATE KICKOS_FS_MODE=2)
 endif()
 
-# The trap-stack security regression: an unprivileged thread aims its SP at a kernel word and
-# traps. Only rv32imac and rxv3 have a SOFTWARE trap prologue to fool; main.cc #errors if an
+# The trap-stack security regression: an unprivileged thread aims its SP at a word of main's data
+# and traps. Only rv32imac and rxv3 have a SOFTWARE trap prologue to fool; main.cc #errors if an
 # image is built anywhere else.
 if(KICKOS_ARCH STREQUAL "rv32imac" OR KICKOS_ARCH STREQUAL "rxv3")
   add_executable(faultsurvive_kwrite main.cc)

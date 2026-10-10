@@ -6,8 +6,8 @@
 # simuart over the sim's loopback line, and require its bytes to come back through the real
 # two-thread driver.
 #
-# This runs the ACTUAL two-thread driver, where the selftest's uart_service case covers the
-# wire ABI and the rings by driving kickos::uart::serve_one in a single thread:
+# This runs the ACTUAL two-thread driver, where the host suite drvbringup covers the wire ABI
+# and the rings by driving kickos::uart::serve_one in a single thread:
 #   - the TX DOORBELL crosses threads. Nothing raises this line: the sim has no
 #     hardware source for it, so the only thing that can move a byte is the service
 #     thread's doorbell raise waking the IRQ thread out of its notification wait. If the doorbell

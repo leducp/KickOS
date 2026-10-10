@@ -28,7 +28,8 @@ TMP="$KOS_TRASH_DIR"
 kos_trap
 
 "$CMAKE" -S "$SRC" -B "$TMP/b" --preset "$PRESET" \
-    -DKICKOS_ENABLE_SELFTEST=OFF -DKICKOS_SHUTDOWN_TO_BOOTLOADER=OFF > "$TMP/cfg.log" 2>&1 \
+    -DKICKOS_ENABLE_SELFTEST=OFF -DKICKOS_REBOOT=OFF -DKICKOS_SHUTDOWN_TO_BOOTLOADER=OFF \
+    > "$TMP/cfg.log" 2>&1 \
     || { tail -n 40 "$TMP/cfg.log" >&2; fail "$PRESET with the self-test off does not configure"; }
 for target in all amp_partition; do
     if ! "$CMAKE" --build "$TMP/b" --target "$target" > "$TMP/$target.log" 2>&1; then

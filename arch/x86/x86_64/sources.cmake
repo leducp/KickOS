@@ -15,7 +15,6 @@
 # copy table and no zero table for a Reset_Handler to walk.
 set(_x86_defaults ${KICKOS_SEAM_DEFAULTS_COMMON})
 list(REMOVE_ITEM _x86_defaults
-  common/arch_cpu_block_addr_default.cc
   common/arch_irq_line_core_default.cc
   common/arch_irq_route_default.cc)
 

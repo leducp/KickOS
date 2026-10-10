@@ -125,8 +125,10 @@ code wins, then this file.
 (`tests/integration/check_qemu_selftest.sh`). N is not a constant: it moves with
 `KICKOS_HAVE_MPU` and `KICKOS_ENABLE_SELFTEST`, each of which compiles in tests that cannot
 run without it (the IRQ suite, the enforcement bound-checks). The one authority for a given
-posture is the `_tap_arms` expression in `../../user/apps/common/selftest/CMakeLists.txt`,
-which is the value the gates are handed.
+posture is the registration list in `../../user/apps/common/selftest/main.cc`: the configure
+counts each image's arms off it under the definitions the selftest compiles with
+(`../../tests/static/selftest_demands.py --count`), and that count is the value the gates are
+handed.
 Where a dated silicon record below still names a count -- "14/14", "17/17",
 "43/43" -- that is the plan size *on the date of that run*, not a target to reproduce. Run the
 board's `-st` preset and read the plan it prints.
@@ -317,7 +319,7 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
   app window is IDENTITY-linked where the RISC-V one links at `0x40000000`
   and loads at `0x80200000`. Its image gates are
   FIFTEEN:
-  `qemu_arm64_hello`, `qemu_arm64_selftest`, `qemu_arm64_fault_dump`, `qemu_arm64_aspace_fault`,
+  `qemu_arm64_hello`, `qemu_arm64_selftest`, `qemu_arm64_fault_dump`, `qemu_arm64_deadstack`,
   `qemu_arm64_stack_guard`, `qemu_arm64_kernel_half`, `qemu_arm64_faultsurvive`,
   `qemu_arm64_tlsprobe`, `qemu_arm64_errnoprobe`, `qemu_arm64_fp_switch` and, since 2026-08-29,
   `qemu_arm64_panicgate1` through `qemu_arm64_panicgate5`; plus the `host`-labelled gates every
@@ -429,7 +431,8 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
   the polled console driver's up line, a stray `x`, then silence: the TAP harness wrote to the kernel
   console, which `console_emit` drops once the UART is `USER_OWNED`, and the `x` was `cap_index0`
   asserting stdout was *not* published. Both were fixed at the source (publish-aware harness,
-  publish-aware `cap_index0`), and each run now names its own transport:
+  publish-aware `cap_index0`, whose stdout check `svc_roundtrip` carries), and each run now
+  names its own transport:
   `# tap route: stdout endpoint -> console driver (service list published)`. Measured with the
   **default full service list** on both boards: 59 cases, 58 `ok`, 1 skip, 0 fail. The skip is
   `mutex_deadlock # SKIP pool too small` on both, a genuine `KICKOS_MAX_THREADS` constraint.
@@ -809,7 +812,7 @@ the board".
   their host checks, and every run claim is read off the bench. Subnormal doubles read as zero on
   RX threads, by choice (maintainer, 2026-10-01): every thread starts with `DPSW.DDN` set
   (`arch/rx/rxv3/arch_rxv3.cc`), so the DFPU handles a denormal operand as 0 rather than raising
-  the unimplemented-processing exception KickOS would have to emulate. `fpclass` reads the bit
+  the unimplemented-processing exception KickOS would have to emulate. `chaincheck` reads the bit
   before it expects either answer.
 - **`f302nucleo` has no RUN gate of any kind.** It is in the `build-boards` sweep and nothing
   else: the `host`-labelled gates over its own build tree, and no QEMU run gate because **no
@@ -871,9 +874,7 @@ the board".
   board takes the nRF51822's 32 KiB variant and QEMU is told the size with
   `-global nrf51-soc.sram-size=32768` (its machine defaults to 16 KiB and ignores `-m`).
   `arch/arm/chip/nrf51/nrf51.ld` carries the reason. At 16 KiB and a 2-slot pool this board
-  skipped TWENTY arms; its gates declare two skips between them, `uart_service` in region 5,
-  which is a deliberate pin and not an arena outcome, and `irq_as_event` in region 8, whose 4 KiB
-  MMIO page no longer fits the arena on 32 KiB. Each `microbit_selftest*` gate sets
+  skipped TWENTY arms; on 32 KiB its gates declare none. Each `microbit_selftest*` gate sets
   `EXPECT_SKIPS` to the test **names** its image cannot host. Every set is **derived, not
   listed**: `tests/integration/gates/selftest.cmake` reads each arm's own demand and holds it
   against the facts that provision it, so growing a set means a board capability changed, and a
@@ -896,7 +897,7 @@ the board".
      wait on each other. Its pool-too-small guard fired *after* the spawns, so on a 2-slot pool
      two started and then blocked forever on `g_done` posts from a call/reply choreography that
      cannot complete with half its cast. A guard for interdependent workers has to ask the pool
-     *before* spawning anything, which is what `pool_can_host` in the suite now does; the test
+     *before* spawning anything, which is what `TAP_ASK` in the suite now does; the test
      reports a real TAP skip instead.
 - **Xtensa is build-only** because upstream QEMU ships no ESP32 machine model. The gate builds
   `esp32-wroom`, `esp32-wroom-st` and `esp32-wroom-smp` (the `-st` config is what is HW-validated),
@@ -1082,13 +1083,17 @@ re-deriving the per-region counts as a whole-suite one.
   through `microbit_selftest_p5`, each with its OWN
   `EXPECT_SKIPS` / `EXPECT_PARTIALS`. A board's sets are DERIVED in
   `tests/integration/gates/selftest.cmake` from the facts that decide them: the workers an arm
-  asks `pool_can_host` for against `KICKOS_MAX_THREADS`, the objects it asks `objects_can_host`
-  for against main's task budgets (`KICKOS_TASK_SEMAPHORE_BUDGET` less the two semaphores main
-  holds for the run, and the mutex, endpoint and notification budgets), the capability slots
-  either ask holds or its skip reason states against the table main has left, `irq_as_event`'s
-  page and `caller_stack`'s stack
-  against the part's RAM, and `uart_service` from the app's own pin
-  (`tests/static/selftest_demands.py` reads the arms). No set names an arm under a board
+  states in its `TAP_ASK` against `KICKOS_MAX_THREADS`, the tasks it asks
+  for against `KICKOS_MAX_TASKS` less main's own and the image's driver tasks, the line it asks for
+  against `KICKOS_TASK_IRQ_HANDLE_BUDGET` (main holds no line between arms; a binding still
+  retiring from the arm before is waited out by the ask, not predicted), the objects it asks for
+  against main's task budgets
+  (`KICKOS_TASK_SEMAPHORE_BUDGET` less the two semaphores main holds for the run, and the mutex,
+  endpoint and notification budgets), the capability slots either ask holds or its skip reason
+  states against the table main has left (`tests/static/selftest_demands.py` reads the arms).
+  The arena blocks the arms use are reserved at image start, and an image whose arena cannot back
+  them leaves the arms out at build and lists them (`user/apps/common/selftest/arena_fit.py`),
+  and the gate drops them from its count and sets. No set names an arm under a board
   predicate, and the `board_predicates` gate refuses one. Each image is judged against the
   members its own regions register, read off the same region bounds in `main.cc` that cut the
   suite. So an arm moving across a boundary takes its permission with it, and a permission left
@@ -1162,7 +1167,7 @@ where `selftest_p2` was 48,496 and `selftest_p3` 48,308, so the two later parts 
 16.7 KiB of free flash each while the first had 52 bytes. Arm counts do not predict image size,
 which is why the drift was invisible -- measured per arm on `bluepill-c8-st`, the base image with
 no arm registered at all is 30,108 B and the 102 arms of that posture cost 71,912 B between them,
-running from 52 B (`cap_reply_bound_slow`) to 4,140 B (`bus_device_slots` + `uart_service`) and
+running from 52 B (`cap_reply_bound_slow`) to 4,140 B (the SPI and UART service arms) and
 5,236 B (the eleven `irq_*` arms, one `#if` block and so one indivisible unit).
 
 The boundaries were chosen against that measurement and have been moved twice since. M8.13 moved
@@ -1171,11 +1176,9 @@ both of the two, and then **a THREE-way cut stopped fitting at all**: the notifi
 `bluepill-c8-st`, 496 bytes of headroom in total, which no re-cut of two boundaries can spread.
 A FOURTH region was cut for it, and a fourth image stopped fitting in turn: the console handover's
 arms left `selftest_p4` overflowing by 1,452 B on `bluepill-c8-st`, and the cut has grown to ten
-regions since. They end after `mutex_pi_donation`, `endpoint_handout`, `call_happy`,
-`call_donation`, `cap_child_width`, `task_exit_member_exit`,
-`task_slay_after_every_sweep`, the IRQ arms and `caller_stack`. `caller_stack` closes region 9 on
-purpose: a stack that fits spends arena that `ram_alloc_zeroed` and the probes before it need on
-`microbit`, which carries region 9 alone.
+regions since. They end after `mutex_pi_donation`, `endpoint_handout`, `call_close_reply`,
+`call_prepop_death`, `cap_child_width`, `task_exit_member_exit`,
+`task_slay_after_every_sweep`, the IRQ arms and `caller_stack`.
 
 The table below is the measurement of the six-region cut, six images; the current cut is the
 ten-image one of `_selftest_firsts`.
@@ -2758,10 +2761,9 @@ left over.
   Anyone reading a residual `pool too small` there and reaching for more arena is chasing the wrong
   resource.
 
-The 16 KiB limits that remain are genuine: `irq_as_event` needs one 4096 B block, and
-`caller_stack`'s accept half needs 2064 B -- it still prints
-`# caller_stack: PARTIAL -- accept half not run (arena cannot spare a stack)`, which is the honest
-shape for a half-run case.
+The 16 KiB limit that remained was genuine: `caller_stack`'s accept half needs 2064 B. An image
+whose arena cannot back it now leaves the arm out at build, and says so, rather than reporting the
+half unrun.
 
 **`f302nucleo` `ringpriv` -- the ring arm, a FIRST for the project (`270b6fa-dirty`).** Board
 `f302nucleo`, banner `mpu off`, real no-MPU armv7m silicon:
@@ -2941,7 +2943,8 @@ on any other ISA -- the rework is arch-neutral but only armv7m ran it. The fourt
 is 0 in every configure in the tree, so its summing path is unexercised on silicon and everywhere
 else. And `t_cap_chunk_span` cannot be mutation-proved even in principle (a consistent bijective
 mis-decode relabels slots and every install/lookup pair still agrees), so its evidence is coverage,
-not detection; `t_cap_gen_reuse` does have a clean kill.
+not detection; `t_cap_gen_reuse` does have a clean kill. The `CapTable` host suite holds the
+decode over every geometry.
 
 **Both logs were checked for the two silent capture failures this bench has produced.** Exactly one
 reader per log with `fuser` confirmed free before arming, no zero-byte log, zero interleaved

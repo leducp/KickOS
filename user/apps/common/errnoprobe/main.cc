@@ -10,7 +10,7 @@
 #include <kickos/board_config.h>
 #include <kickos/kos.h>
 #include <kickos/libc/fmt.h>
-#include <kickos/sys/abi_probe.h>
+#include <kickos/sys.h>
 #include <kickos/sys/atomic.h>
 
 #include <errno.h>
@@ -84,8 +84,8 @@ namespace
     // Root is a core's first thread, entered by arch_start with no switch, so only the FS base
     // that path wrote can hand libc this thread's state. The app's constructors run on root
     // before the init it then runs switches anything in, so the arm is one: strtok and strtol
-    // out of newlib, then the two reads that say no switch-in has seated anything yet and which
-    // core entered root. Nothing here blocks, and its line waits for main to print it.
+    // out of newlib, then which core entered root. Its line waits for main to print it.
+    // Not excluded: an interrupt switching root out and back in before the reads.
     char g_first_line[96];
 
     __attribute__((constructor)) void arm_first_thread()
@@ -100,8 +100,7 @@ namespace
         struct _reent* const r = __getreent();
         uintptr_t fs0 = 0;
         __asm__ volatile("movq %%fs:0, %0" : "=r"(fs0));
-        uintptr_t const switches = kos_sched_probe(KOS_SCHED_OP_SWITCHES);
-        uintptr_t const core = kos_sched_probe(KOS_SCHED_OP_CORE);
+        int const core = kos_core_current();
 
         char const* verdict = "ok";
         if (t0 == nullptr or t1 == nullptr or strcmp(t0, "kick") != 0 or strcmp(t1, "os") != 0)
@@ -120,17 +119,16 @@ namespace
         {
             verdict = "LIBC RAN ON THE PROCESS-WIDE STATE";
         }
-        else if (switches != 0)
+        else if (core < 0)
         {
-            verdict = "ROOT WAS ALREADY SWITCHED IN";
+            verdict = "THE CORE IS UNREADABLE";
         }
         if (verdict[0] != 'o')
         {
             g_bad++;
         }
-        ksnprintf(g_first_line, sizeof(g_first_line),
-                  "[errnoprobe] F first core %u switches %u %s\n", static_cast<unsigned>(core),
-                  static_cast<unsigned>(switches), verdict);
+        ksnprintf(g_first_line, sizeof(g_first_line), "[errnoprobe] F first core %d %s\n", core,
+                  verdict);
     }
 #endif
 

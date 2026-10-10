@@ -56,10 +56,10 @@ holds.
 double-precision compare branches on ORDERED for UNORDERED, and its UN* codes take the branch on
 every ordered pair, so under `-mdfpu` `isnan` reads 1.0 as a NaN and printf prints `nan` for it,
 while `<` and `==` are right. `kickos-rx-dfpu-compare.patch`, applied after the multilib patch,
-turns those branches round; whoever touches the patch re-checks its compares. `fpclass` checks classification and printf of doubles on the board, which the RX72M passes
+turns those branches round; whoever touches the patch re-checks its compares. `chaincheck` checks classification and printf of doubles on the board, which the RX72M passes
 enforcing and flat (M10.2 exit (archived `M10.2_exit.md`), Silicon). A subnormal double reads as
 zero there, which is the DFPU's and not the compiler's: `DPSW.DDN`, set from reset and in every
-thread, handles a denormal operand as 0, and `fpclass` reads the bit before it expects either.
+thread, handles a denormal operand as 0, and `chaincheck` reads the bit before it expects either.
 The bit stays set (maintainer, 2026-10-01): clearing it trades the flush for an
 unimplemented-processing exception on every denormal operand, which KickOS would have to emulate.
 
@@ -909,7 +909,7 @@ hidden header's removal included.
   field and the x87 precision field, compare after being switched out. One arm blocks, the
   voluntary path; one spins past its slice and checks it was preempted, the interrupt-exit path.
 - **State survives a move between cores**, on the SMP presets: a thread loads its pattern, pins
-  itself to another core and compares there, `KOS_SCHED_OP_CORE` confirming the core changed.
+  itself to another core and compares there, `kos_core_current` confirming the core changed.
 - **A new thread starts clean:** a thread in a slot a patterned thread vacated, and one spawned
   in another task, read the initial state, MXCSR 0x1F80, x87 control word 0x37F and every
   register zero. That proves the seeding and the absence of a leak across tasks.
@@ -924,16 +924,14 @@ hidden header's removal included.
   gains arm F. Its first statement in `main`, ahead of every call that can block, runs `strtok`
   over a local buffer and `strtol` past `LONG_MAX`, and requires the two tokens, `errno` equal to
   `ERANGE`, `__getreent()` equal to the word `movq %fs:0` reads and different from
-  `_GLOBAL_REENT`, and its own `switch_count`, read through a new scheduler probe op, equal to 0,
-  which proves no switch-in has seated anything yet, and its core, read through
-  `KOS_SCHED_OP_CORE`; it prints `F first core <n> switches 0`. The witness is those four
-  together: no switch, the core, the FS cell's word and libc's state. On qemu-x86_64 root is the
+  `_GLOBAL_REENT`, and its core, read through `kos_core_current`; it prints `F first core <n>`.
+  The witness is the core, the FS cell's word and libc's state; a switch-in before the reads is
+  no longer excluded, no production call reading a thread's switches. On qemu-x86_64 root is the
   boot core's first thread, and the gate requires core 0. For an AP, one CI build of
   qemu-x86_64-smp2 sets a new configuration value, root's core mask, to core 1: `kmain` creates
   root with that core mask, core 1 enters it through `arch_start` while the boot core enters its
-  idle, and the gate requires core 1. As built, `KOS_SYS_SCHED_PROBE` answers `KOS_SCHED_OP_CORE`
-  and `KOS_SCHED_OP_SWITCHES` at one kernel core as well, its placement ops staying above one;
-  the build of decision 17 is the `qemu-x86_64-smp2root1` preset, `KICKOS_ROOT_CORE_MASK` 0x2,
+  idle, and the gate requires core 1. As built, `kos_core_current` answers 0 at one kernel core without
+  a trap; the build of decision 17 is the `qemu-x86_64-smp2root1` preset, `KICKOS_ROOT_CORE_MASK` 0x2,
   which CI's `qemu-x86_64-ap` job runs for this arm.
 - **Root's core mask is validated twice.** At configure, beside the isolated-core check of
   `cmake/isolated_cores.cmake`, the value must be 0, the default, or a mask whose every bit names
@@ -1008,7 +1006,7 @@ vector_survives_preempt        one core, the interrupt-exit switch
 vector_survives_migrate        across cores
 vector_starts_clean            a reused slot and another task
 vector_fault_contained         #XM and #MF at ring 3
-errnoprobe arm F               libc on a core's first thread, before any switch
+errnoprobe arm F               libc on a core's first thread (a switch-in before it not excluded)
 ```
 
 ### 5.7 The decisions

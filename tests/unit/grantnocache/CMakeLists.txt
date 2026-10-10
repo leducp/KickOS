@@ -8,7 +8,8 @@
 # header inline and not this gate's subject. What no case reaches is dropped at link, so the seam
 # carries only what the cases call.
 kickos_add_unit_test(NAME grant_nocache
-  SOURCES nocache_admission.cc "${PROJECT_SOURCE_DIR}/tests/unit/common/kpanic_seam.cc"
+  SOURCES nocache_admission.cc reserved_overlap.cc
+          "${PROJECT_SOURCE_DIR}/tests/unit/common/kpanic_seam.cc"
           "${PROJECT_SOURCE_DIR}/kernel/grant/grant.cc"
           "${PROJECT_SOURCE_DIR}/kernel/domain/domain.cc"
           "${PROJECT_SOURCE_DIR}/kernel/thread/thread.cc"

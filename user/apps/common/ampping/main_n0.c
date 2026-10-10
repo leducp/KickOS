@@ -14,7 +14,6 @@
 
 #include <kickos/amp.h>
 #include <kickos/sys.h>
-#include <kickos/sys/abi_probe.h>
 
 #define AMPPING_ROUNDS 4
 #define AMPPING_CALL_US (500u * 1000u)
@@ -48,64 +47,6 @@ static uint32_t ampping_server(uint32_t port)
     }
     return KOS_AMP_NO_ENTRY;
 }
-
-#if defined(KICKOS_ENABLE_SELFTEST)
-// The deferred-raise witness: a publication whose doorbell raise is skipped must still arrive,
-// carried by the next call's notice, so the node it went to takes TWO messages across it.
-static void ampping_deferred(kos_self_t const* self)
-{
-    // A far call finding nothing parked on the port is refused on the spot (N6f), so the peer
-    // must be back on its receive first.
-    kos_sleep_ns(AMPPING_SETTLE_NS);
-    unsigned long took0[KICKOS_AMP_NODES];
-    uint32_t row;
-    for (row = 0; row < (uint32_t)KICKOS_AMP_NODES; row++)
-    {
-        took0[row] = (unsigned long)kos_amp_probe(KOS_AMP_OP_TOOK, row);
-    }
-    // A refusal and a packed answer share one unsigned word: read it signed before decoding.
-    uintptr_t const deferred = kos_amp_probe(KOS_AMP_OP_DEFER, 0);
-    if ((intptr_t)deferred < 0)
-    {
-        printf("ampping: the doorbell has no seat, so no raise of it can be deferred (rc %ld)\n",
-               (long)(intptr_t)deferred);
-        return;
-    }
-    unsigned const skipped = (unsigned)(deferred >> 16);
-    uint32_t const at = (uint32_t)(deferred & 0xFFFFu);
-    kos_cap_t ep = KOS_CAP_NONE;
-    uint32_t const port = ampping_crossing(self, KOS_CAP_SIGNAL, at, &ep);
-    if (port == KOS_AMP_NO_ENTRY)
-    {
-        printf("ampping: deferred %u raise(s) skipped at node %u, which this node holds no crossing to\n",
-               skipped, (unsigned)at);
-        return;
-    }
-    unsigned char beat[4] = {0xE0u, 0xE1u, 0xE2u, 0xE3u};
-    int32_t const woke = kos_call_timed(ep, beat, sizeof(beat), sizeof(beat), AMPPING_CALL_US);
-    unsigned long const took1 = (unsigned long)kos_amp_probe(KOS_AMP_OP_TOOK, at);
-    if (woke < 0)
-    {
-        printf("ampping: the notice call to node %u failed, rc %ld\n", (unsigned)at, (long)woke);
-        exit(1);
-    }
-    // Zero is the empty reply a serving node publishes when it refuses past its take.
-    if (woke == 0)
-    {
-        printf("ampping: node %u refused the notice call past its take\n", (unsigned)at);
-        exit(1);
-    }
-    if ((size_t)woke != sizeof(beat))
-    {
-        printf("ampping: node %u answered the notice with %ld of %u byte(s)\n", (unsigned)at, (long)woke,
-               (unsigned)sizeof(beat));
-        exit(1);
-    }
-    printf("ampping: deferred %u raise(s) skipped at node %u, notice to node %u port %u, took %lu message(s), "
-           "call rc %ld\n",
-           skipped, (unsigned)at, (unsigned)at, (unsigned)port, took1 - took0[at], (long)woke);
-}
-#endif
 
 void ampping_main(kos_self_t const* self)
 {
@@ -216,7 +157,4 @@ void ampping_main(kos_self_t const* self)
     printf("ampping: node %u answered %u round(s), its own record says %lu\n", (unsigned)peer, answered, served);
     printf("ampping: node %u done, %d round(s) across the partition\n", (unsigned)KOS_AMP_SELF_NODE,
            AMPPING_ROUNDS);
-#if defined(KICKOS_ENABLE_SELFTEST)
-    ampping_deferred(self);
-#endif
 }

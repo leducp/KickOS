@@ -134,12 +134,20 @@ namespace kickos
     // prevents reading pre-block state. It is a no-op on synchronous-switch backends.
     void wq_confirm_resume(Thread* c, uint32_t epoch);
 
+    enum class SemWait : uint8_t
+    {
+        TAKEN,
+        EMPTY,
+        PARKED,
+    };
+
     void sem_init(Semaphore* s, int initial);
     // `held` is the caller's outermost bracket, spanning the resolve that produced `s`; a
-    // cancel honoured here ends it (sched::exit_current). Returns false with a token taken,
-    // or true once parked with `epoch` sampled: the caller then leaves `held`'s scope, calls
-    // wq_confirm_resume and reads wait_result (0 handed a token, -KOS_ECANCELED cancelled).
-    bool sem_wait(IrqLock& held, Semaphore* s, uint32_t& epoch);
+    // cancel honoured here ends it (sched::exit_current). TAKEN with a token taken, EMPTY where
+    // `timeout_us` is 0 and no token is banked, or PARKED with `epoch` sampled: the caller then
+    // leaves `held`'s scope, calls wq_confirm_resume and reads wait_result (0 handed a token,
+    // -KOS_ETIMEDOUT expired, -KOS_ECANCELED cancelled).
+    SemWait sem_wait(IrqLock& held, Semaphore* s, uint32_t timeout_us, uint32_t& epoch);
     // Hands the token to the highest-priority waiter, else banks it. Thread or ISR context.
     // Returns false only with no waiter and the count already at KOS_SEM_COUNT_MAX, where the
     // post is refused and the count left alone. The syscall reports -KOS_EOVERFLOW.

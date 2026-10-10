@@ -155,7 +155,7 @@ namespace
         while (true)
         {
             vec_dirty();
-            kos_sem_wait(CH_A);
+            kos_sem_wait(CH_A, KOS_TIMEOUT_NONE);
             vec_dirty();
             kos_sem_post(CH_B);
         }
@@ -185,12 +185,12 @@ namespace
             {
                 switch_dither(round);
                 kos_sem_post(CH_A);
-                kos_sem_wait(CH_B);
+                kos_sem_wait(CH_B, KOS_TIMEOUT_NONE);
                 round = g_rounds + 1;
                 g_rounds = round;
             } while ((round % ROUNDS_PER_REPORT) != 0);
             kos_sem_post(CH_GATE);
-            kos_sem_wait(CH_RESUME);
+            kos_sem_wait(CH_RESUME, KOS_TIMEOUT_NONE);
         }
     }
 #endif
@@ -200,19 +200,19 @@ namespace
     void player_b(void*) // caps: A@1, B@2, gate@3, resume@4
     {
         // The reporter opens every burst through resume, the first included.
-        kos_sem_wait(CH_RESUME);
+        kos_sem_wait(CH_RESUME, KOS_TIMEOUT_NONE);
         while (true)
         {
             vec_dirty();
             kos_sem_post(CH_A);
             vec_dirty();
-            kos_sem_wait(CH_B);
+            kos_sem_wait(CH_B, KOS_TIMEOUT_NONE);
             uint32_t const round = g_rounds + 1;
             g_rounds = round;
             if ((round % ROUNDS_PER_REPORT) == 0)
             {
                 kos_sem_post(CH_GATE);
-                kos_sem_wait(CH_RESUME);
+                kos_sem_wait(CH_RESUME, KOS_TIMEOUT_NONE);
 #if BENCH_SWITCH_DITHER
                 player_b_dithered();
 #endif
@@ -299,7 +299,7 @@ namespace
     {
         while (true)
         {
-            if (kos_sem_wait(CH_E2E_GO) != 0)
+            if (kos_sem_wait(CH_E2E_GO, KOS_TIMEOUT_NONE) != 0)
             {
                 break;
             }
@@ -402,7 +402,7 @@ namespace
             return false;
         }
         g_e2e_tid = w.id();
-        kos_sem_wait(g_e2e_ready);
+        kos_sem_wait(g_e2e_ready, KOS_TIMEOUT_NONE);
         if (g_e2e_grant_rc != 0)
         {
             // It already returned. Left named, the sweep below would raise into a line whose
@@ -447,7 +447,7 @@ namespace
             {
                 (void)kos_thread_set_affinity(g_e2e_rid, 1u << c); // -KOS_ENOSYS at one core
                 kos_sem_post(g_e2e_go);
-                kos_sem_wait(g_e2e_pass);
+                kos_sem_wait(g_e2e_pass, KOS_TIMEOUT_NONE);
             }
         }
         char s[64];
@@ -508,7 +508,7 @@ namespace
             uint32_t const prev_rounds = g_rounds;
             uint64_t const prev_ns = kos::clock_now();
             kos_sem_post(g_resume);
-            kos_sem_wait(g_gate);
+            kos_sem_wait(g_gate, KOS_TIMEOUT_NONE);
 
             uint64_t now_ns = kos::clock_now();
             uint32_t rounds = g_rounds;
@@ -541,7 +541,7 @@ namespace
             (void)kos_bench(KOS_BENCH_OP_RESET, 0, 0);
             g_switch_dither = 1;
             kos_sem_post(g_resume);
-            kos_sem_wait(g_gate);
+            kos_sem_wait(g_gate, KOS_TIMEOUT_NONE);
             g_switch_dither = 0;
 #endif
 
@@ -574,7 +574,7 @@ namespace
         g_vec_dirty = 1;
         (void)kos_bench(KOS_BENCH_OP_RESET, 0, 0);
         kos_sem_post(g_resume);
-        kos_sem_wait(g_gate);
+        kos_sem_wait(g_gate, KOS_TIMEOUT_NONE);
         (void)kos_bench(KOS_BENCH_OP_DIST_PRINT, KOS_BENCH_DIST_SWITCH_VEC, 0);
         g_vec_dirty = 0;
 #endif
@@ -809,12 +809,12 @@ namespace
         {
             if (leads != nullptr)
             {
-                if (kos_sem_post(2) != 0 or kos_sem_wait(1) != 0)
+                if (kos_sem_post(2) != 0 or kos_sem_wait(1, KOS_TIMEOUT_NONE) != 0)
                 {
                     break;
                 }
             }
-            else if (kos_sem_wait(1) != 0 or kos_sem_post(2) != 0)
+            else if (kos_sem_wait(1, KOS_TIMEOUT_NONE) != 0 or kos_sem_post(2) != 0)
             {
                 break;
             }
@@ -991,7 +991,7 @@ namespace
     {
         for (uint32_t i = 0; i < W_ROUNDS; i++)
         {
-            kos_sem_wait(W_A);
+            kos_sem_wait(W_A, KOS_TIMEOUT_NONE);
             kos_sem_post(W_B);
         }
     }
@@ -1001,7 +1001,7 @@ namespace
         for (uint32_t i = 0; i < W_ROUNDS; i++)
         {
             kos_sem_post(W_A);
-            kos_sem_wait(W_B);
+            kos_sem_wait(W_B, KOS_TIMEOUT_NONE);
         }
     }
 
@@ -1171,7 +1171,7 @@ namespace
 
     void p_hog0(void*)
     {
-        kos_sem_wait(P_START);
+        kos_sem_wait(P_START, KOS_TIMEOUT_NONE);
         for (uint32_t r = 1; r <= W_PUSH_ROUNDS; r++)
         {
             kos_sem_post(P_H1);
@@ -1195,11 +1195,11 @@ namespace
 
     void p_hog1(void*)
     {
-        kos_sem_wait(P_START);
+        kos_sem_wait(P_START, KOS_TIMEOUT_NONE);
         uint32_t r = 0;
         while (true)
         {
-            kos_sem_wait(P_H1);
+            kos_sem_wait(P_H1, KOS_TIMEOUT_NONE);
             if (g_w_stop != 0)
             {
                 return;
@@ -1215,11 +1215,11 @@ namespace
 
     void p_moved(void*)
     {
-        kos_sem_wait(P_START);
+        kos_sem_wait(P_START, KOS_TIMEOUT_NONE);
         uint32_t r = 0;
         while (true)
         {
-            kos_sem_wait(P_M);
+            kos_sem_wait(P_M, KOS_TIMEOUT_NONE);
             if (g_w_stop != 0)
             {
                 return;
@@ -1231,7 +1231,7 @@ namespace
 
     void p_spinner(void*)
     {
-        kos_sem_wait(P_START);
+        kos_sem_wait(P_START, KOS_TIMEOUT_NONE);
         while (g_w_stop == 0)
         {
         }

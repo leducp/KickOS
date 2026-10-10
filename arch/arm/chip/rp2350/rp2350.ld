@@ -280,7 +280,6 @@ SECTIONS
         __kickos_amp_cells_start = .;
         KEEP(*(.amp_shared.cells.request))
         KEEP(*(.amp_shared.cells.answer))
-        KEEP(*(.amp_shared.cells.served))
         KEEP(*(.amp_shared.affinity))
         KEEP(*(.amp_shared.affinity_seated))
         __kickos_amp_cells_end = .;

@@ -24,10 +24,6 @@ namespace kos
     {
         kos_sleep_ns(ns);
     }
-    inline int irq_inject(int irq)
-    {
-        return kos_irq_inject(irq);
-    }
     inline uint64_t clock_now()
     {
         return kos_clock_now();
@@ -57,12 +53,6 @@ namespace kos
     {
         kos_kernel_diag_led_toggle();
     }
-#if defined(KICKOS_ENABLE_SELFTEST)
-    inline void* guard_addr()
-    {
-        return kos_guard_addr();
-    }
-#endif
     [[noreturn]] inline void exit(int code)
     {
         kos_exit(code);
@@ -116,9 +106,10 @@ namespace kos
         // Return the syscall status (0, or a negative -KOS_E*). On a moved-from / failed /
         // closed handle these do NOT block or signal: they return -KOS_EBADF, so a caller
         // can tell a real wait/post from a no-op instead of proceeding as if synchronized.
-        int wait()
+        // wait(0) is a try: it takes only a token already banked.
+        int wait(uint32_t timeout_us = KOS_TIMEOUT_NONE)
         {
-            return kos_sem_wait(id_);
+            return kos_sem_wait(id_, timeout_us);
         }
         int post()
         {
@@ -270,6 +261,11 @@ namespace kos
         int discard()
         {
             return kos_irq_discard(h_);
+        }
+        // Raise the line as its device firing would; needs KOS_CAP_SIGNAL (see kos_irq_raise).
+        int raise()
+        {
+            return kos_irq_raise(h_);
         }
         kos_cap_t handle() const
         {
@@ -530,6 +526,16 @@ namespace kos::thread
     {
         return kos_thread_set_affinity(thread, 0);
     }
+    // The core the caller ran on when the kernel read it; 0 on a one-core kernel.
+    inline int core()
+    {
+        return kos_core_current();
+    }
+    // The mask `thread` may run on, or a negative -KOS_E* (see kos_thread_affinity).
+    inline int affinity(kos_thread_t thread)
+    {
+        return kos_thread_affinity(thread);
+    }
 
     // Delegate a fixed cap list to the child (B1 default: cap i -> child index i+1, and a
     // grant may name its own index instead).
@@ -555,5 +561,130 @@ namespace kos
         return kos_ram_alloc(size);
     }
 }
+
+#if defined(KICKOS_HAVE_ASPACE) && KICKOS_HAVE_ASPACE
+namespace kos
+{
+    // An owned capability handle and the code its mint returned: move-only, closed by the
+    // destructor. A moved-from object names nothing and answers -KOS_EBADF from error().
+    class OwnedCap
+    {
+    public:
+        OwnedCap(OwnedCap&& o)
+            : h_(o.h_), err_(o.err_)
+        {
+            o.h_ = KOS_CAP_NONE;
+            o.err_ = -KOS_EBADF;
+        }
+        OwnedCap& operator=(OwnedCap&& o)
+        {
+            if (this != &o)
+            {
+                close();
+                h_ = o.h_;
+                err_ = o.err_;
+                o.h_ = KOS_CAP_NONE;
+                o.err_ = -KOS_EBADF;
+            }
+            return *this;
+        }
+        OwnedCap(OwnedCap const&) = delete;
+        OwnedCap& operator=(OwnedCap const&) = delete;
+        ~OwnedCap()
+        {
+            close();
+        }
+        kos_cap_t handle() const
+        {
+            return h_;
+        }
+        bool valid() const
+        {
+            return h_ != KOS_CAP_NONE;
+        }
+        // The code the mint returned; 0 for an adopted cap.
+        int error() const
+        {
+            return err_;
+        }
+
+    protected:
+        OwnedCap(kos_cap_t h, int err)
+            : h_(h), err_(err)
+        {
+        }
+
+    private:
+        void close()
+        {
+            if (h_ != KOS_CAP_NONE)
+            {
+                kos_handle_close(h_);
+                h_ = KOS_CAP_NONE;
+            }
+        }
+        kos_cap_t h_;
+        int err_;
+    };
+
+    // An address-space capability. Two ways in, as with Irq:
+    //   auto space = kos::Space::self();          // the calling task's own
+    //   auto space = kos::Space::adopt(cap_index); // a cap delegated at spawn
+    // It holds no reference on the space.
+    class Space : public OwnedCap
+    {
+    public:
+        static Space self()
+        {
+            kos_cap_t h = KOS_CAP_NONE;
+            int const rc = kos_aspace_self(&h);
+            return Space(h, rc);
+        }
+        static Space adopt(kos_cap_t space_cap)
+        {
+            return Space(space_cap, 0);
+        }
+
+    private:
+        Space(kos_cap_t h, int err)
+            : OwnedCap(h, err)
+        {
+        }
+    };
+
+    // A frame-run capability (see kos_frame_create):
+    //   auto run = kos::Frame::create(bytes);
+    //   uintptr_t va = 0; run.map(space.handle(), &va);   // 0: the kernel chooses
+    // The frames go back to the pool at the run's last holder, a mapping being one.
+    class Frame : public OwnedCap
+    {
+    public:
+        static Frame create(size_t bytes)
+        {
+            kos_cap_t h = KOS_CAP_NONE;
+            int const rc = kos_frame_create(bytes, &h);
+            return Frame(h, rc);
+        }
+        static Frame adopt(kos_cap_t frame_cap)
+        {
+            return Frame(frame_cap, 0);
+        }
+        int map(kos_cap_t space, uintptr_t* va, uint32_t flags = 0)
+        {
+            return kos_frame_map(handle(), space, va, flags);
+        }
+        int unmap(kos_cap_t space, uintptr_t va)
+        {
+            return kos_frame_unmap(handle(), space, va);
+        }
+
+    private:
+        Frame(kos_cap_t h, int err)
+            : OwnedCap(h, err)
+        {
+        }
+    };
+}
+#endif
 
 #endif

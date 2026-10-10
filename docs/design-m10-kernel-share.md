@@ -42,8 +42,7 @@ and `.appbss` sections, apart from kernel, arch and chip code. Each section and
 `ld -m i386pep`. Kernel runtime copies and code that refers to app storage use the
 split-image paths in `kernel/CMakeLists.txt` and `aspace_image_alias`.
 
-The app-side `arch_syscall` body lives in app text; kernel callers use
-`karch_syscall`/`karch_syscall64` in kernel text. No privileged thread runs app-half
+The app-side `arch_syscall` body lives in app text. No privileged thread runs app-half
 code. User entry and return pointers gain U; kernel references that need the loader
 address keep it. `tests/static/check_x86_64_app_split.py` and its allowlist enumerate
 kernel-to-app references and reject app-to-kernel instruction or absolute-data
@@ -278,8 +277,8 @@ to a window uncached (`aspace_frames_type_ok`, `memory_type_free`,
 region board asking the held task domains beside the live threads, an empty task holding its data
 with no member; a list names a block once; and the region set marks its windows, so a region board
 answers none for its stack or data region. `window_memory_ro` witnesses all three. The spawn
-chain's frame sets the x86 reservations, at one core and above: SYSK 1864 and 2432, SYSPRIV and
-SYSPRIVSW 1920 and 2368, and the spawn floor 2752 and 3328.
+chain's frame sets the x86 reservations, at one core and above: SYSK 1864 and 2432, and the
+spawn floor 2752 and 3328.
 
 ## 7. The x86 port grant and `kos_port_reg_write` (M10.1.8)
 
@@ -303,11 +302,10 @@ task-state segment unreachable from ring 3, which is what lets a bitmap in it be
   allowlisted port is never opened in a bitmap. Off x86 the call answers `-KOS_ENOSYS`.
 - **The ports kind** of section 5 stops being refused on this board.
 
-**Arms.** A granted data port reads; a port outside the grant faults the task, as
-`kickos_x86_64_probe_outb` does in the bring-up probes; a direct write to the CMOS index faults,
-the kernel write succeeds, and a value with bit 7 is refused; a second holder and a kernel-owned
-range are refused; two tasks alternating on one core each reach only their own ports; the same
-after a migration on the two-core preset.
+**Arms.** A granted data port reads; a port outside the grant faults the task; a direct write to
+the CMOS index faults, the kernel write succeeds, and a value with bit 7 is refused; a second
+holder and a kernel-owned range are refused; two tasks alternating on one core each reach only
+their own ports; the same after a migration on the two-core preset.
 
 **Backends and cost.** x86_64 and q35, and a portable seam answering `-KOS_ENOSYS` elsewhere. One
 compare per switch, a few bytes written when the port set changes, 8 KiB per core. M10.1's exit
@@ -375,7 +373,6 @@ KICKOS_MAX_THREAD_WINDOWS                /* 5: a thread's window bound, from the
 | `user/include/kickos/kos.h` | 2, 5 | `kos::create`'s authority and window arguments |
 | `system/include/kickos/sys/init.h` | 2 | `kickos_app_authority` and the app authority macro 32 bits |
 | `user/include/kickos/sys/driver_service.h`, `emit.h`, `driver/spi.h`, `driver/i2c.h` | 3 | the no-receiver answers |
-| `user/include/kickos/sys/abi_probe.h` | 3 to 7 | probe selectors the new arms need, selftest only |
 
 `arch/include/kickos/arch/arch.h` changes too -- the window area of section 6, the port seams of
 section 7 -- and is the kernel's internal interface, not the ABI.
@@ -438,8 +435,7 @@ seats in it, or the thread whose spawn built an implicit task (`Thread::task_ent
   its region.
 - **Reservations.** The entry flag in `spawn_masked`'s frame and the explicit task's seed
   posture (`DOM_CALLER_TASK`) carried through the domain claim are on the spawn chain. x86
-  reserves SYSK at 1920 on one core and 2432 above it, SYSPRIV and SYSPRIVSW at 1920 and 2432,
-  and the spawn floor at 2752 and 3392
+  reserves SYSK at 1920 on one core and 2432 above it, and the spawn floor at 2752 and 3392
   (`arch/x86/x86_64/include/kickos/arch/x86_64_trap_stack.h`, `Kconfig`).
 - **Data from the image.** On a translating board an explicit task's space copies its static
   data from one snapshot of root's, taken by the first explicit task's seed (`DOM_CALLER_TASK`),

@@ -156,24 +156,6 @@ namespace kickos
         *b = RamBlock{base, static_cast<uint32_t>(size), tag};
         return true;
     }
-
-#if defined(KICKOS_ENABLE_SELFTEST)
-    bool ram_owner_extent(Task const* owner, uintptr_t addr, uintptr_t* base, size_t* size)
-    {
-        kos_task_t const tag = task_handle(owner);
-        for (RamBlock const& b : blocks())
-        {
-            if (tag != KOS_TASK_NONE and b.size != 0 and b.owner == tag and addr >= b.base
-                and addr <= b.base + (b.size - 1u))
-            {
-                *base = b.base;
-                *size = b.size;
-                return true;
-            }
-        }
-        return false;
-    }
-#endif
 #endif
 }
 

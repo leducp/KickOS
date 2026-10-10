@@ -139,13 +139,24 @@ def mmap_symbols(view):
     return symbols
 
 
-def irq_symbols(view):
-    """[(symbol, line, ref)] of irq.h, each line moved by the cluster's offset."""
-    symbols = []
+def device_lines(view):
+    """[(device, symbol, line, ref, when)] of every line, each moved by the cluster's offset."""
+    lines = []
     for device in view.devices():
-        for symbol, number, ref in line_symbols(device):
-            symbols.append((symbol, number + view.offset, ref))
-    return symbols
+        for (symbol, number, ref), line in zip(line_symbols(device), device.sources):
+            lines.append((device, symbol, number + view.offset, ref, device.line_names[line].when))
+    return lines
+
+
+def irq_symbols(view):
+    """[(symbol, line, ref)] of irq.h."""
+    return [(symbol, number, ref) for _, symbol, number, ref, _ in device_lines(view)]
+
+
+def kernel_lines(view, when):
+    """["SYMBOL=line"] of the kernel's devices' lines that exist under `when`, None for always."""
+    return ["%s=%d" % (symbol, number) for device, symbol, number, _, condition in device_lines(view)
+            if device.owner == "kernel" and condition == when]
 
 
 def limit_values(view):
@@ -163,7 +174,6 @@ def limit_values(view):
     if chip.cycle_counter.get("glitches"):
         values.append(("KICKOS_CHIP_CYCCNT_GLITCHES", 1, chip.refs.get("glitches")))
     values.append(("KICKOS_CHIP_DCACHE", int(chip.data_cache), None))
-    values.append(("KICKOS_CHIP_DOORBELL_SEAT", int(chip.doorbell_seat), None))
     return values
 
 
@@ -389,12 +399,14 @@ def emit_cmake(view):
     privilege = "OFF"
     if not units or any(unit.privilege is not False for unit in units):
         privilege = "ON"
-    seat = "OFF"
-    if view.chip.doorbell_seat:
-        seat = "ON"
+    reserved = table_rows(view)["reserved_blocks"]
     facts = ["set(KICKOS_CHIP_PRIVILEGE %s)\n" % privilege,
-             "set(KICKOS_CHIP_RESERVED_BLOCKS %d)\n" % len(table_rows(view)["reserved_blocks"]),
-             "set(KICKOS_CHIP_DOORBELL_SEAT %s)\n" % seat]
+             "set(KICKOS_CHIP_RESERVED_BLOCKS %d)\n" % len(reserved)]
+    if reserved:
+        facts.append("set(KICKOS_CHIP_RESERVED_BLOCK0 0x%X 0x%X)\n" % (reserved[0][0], reserved[0][1]))
+    facts.append("set(KICKOS_CHIP_KERNEL_LINES \"%s\")\n" % ";".join(kernel_lines(view, None)))
+    facts.append("set(KICKOS_CHIP_DOORBELL_KERNEL_LINES \"%s\")\n"
+                 % ";".join(kernel_lines(view, "doorbell")))
     if view.chip.esptool_image is not None:
         facts.append("set(KICKOS_CHIP_ESPTOOL_IMAGE \"%s\")\n" % ";".join(view.chip.esptool_image))
     if view.board is not None and view.board.emulator is not None:
