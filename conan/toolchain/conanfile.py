@@ -375,11 +375,12 @@ class KickOSToolchain(ConanFile):
             print(f"--- the last {len(tail)} lines of {path} ---\n" + "".join(tail), flush=True)
             raise ConanInvalidConfiguration(f"{argv[0]} failed in {cwd}; its output is in {path}")
 
-    def _make(self, cwd, *targets, env=None):
+    def _make(self, cwd, *targets, env=None, jobs=None):
         # The CPUs this process may use, which an affinity mask or a cpuset makes fewer than
         # the machine's.
-        jobs = str(getattr(os, "process_cpu_count", os.cpu_count)() or 1)
-        self._run(["make", "-j", jobs, "MAKEINFO=true", *targets], cwd, env)
+        if jobs is None:
+            jobs = getattr(os, "process_cpu_count", os.cpu_count)() or 1
+        self._run(["make", "-j", str(jobs), "MAKEINFO=true", *targets], cwd, env)
 
     @contextlib.contextmanager
     def _timed(self, stage):
@@ -441,7 +442,9 @@ class KickOSToolchain(ConanFile):
                        "--disable-gdbserver", "--disable-sim", "--disable-gprofng",
                        *family.get("binutils", [])], binutils, env)
             self._make(binutils, env=env)
-            self._make(binutils, "install-strip", env=env)
+            # One job: each manual's install-info rewrites share/info/dir, and two at once lose
+            # an entry.
+            self._make(binutils, "install-strip", env=env, jobs=1)
 
         # The one compiler: installed alone to build newlib, then its target libraries in the
         # same tree once newlib is in the sysroot.
