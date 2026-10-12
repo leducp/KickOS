@@ -389,33 +389,15 @@ on the `qemu` preset, with the code, and says where `f411disco` differs.
 
 ## The source tree
 
-The tree follows the layering the Book teaches: a small kernel with no hardware
-access of its own, a hardware seam below it, and unprivileged code above it.
-The seam is split three ways so that each layer is written once: what a CPU
-**family** shares, what one **instruction set** (ISA) needs, and what one
-**chip** adds.
-
-| Path | Holds |
-|---|---|
-| `kernel/` | the privileged kernel: scheduler, threads, tasks, synchronisation, time, interrupts, memory domains, capabilities, syscalls |
-| `arch/include/kickos/arch/arch.h` | the porting interface: every hardware operation the kernel may call |
-| `arch/<family>/<isa>/` | one ISA's assembly and core rules: context switch, syscall trap, critical section (`arch/arm/armv7m/`, `arch/riscv/rv32imac/`, ...) |
-| `arch/<family>/chip/<chip>/` | one chip: vector table, `Reset_Handler`, linker script `<chip>.ld`, clocks, console, time base (`arch/arm/chip/mps2/`, ...) |
-| `arch/<family>/common/`, `arch/common/` | code a family, or several families, share; `arch/sim/` is the host backend |
-| `platform/<chip>/` | the chip file and its board files (YAML) |
-| `boards/<board>/` | `board.cmake`, the variants' defconfigs, the default composition |
-| `user/` | what every application links: the `kos_*` API headers, syscall stubs, the newlib glue, and the applications under `user/apps/` |
-| `system/` | the unprivileged system layer: the composed init, user-space drivers per chip, the C++ terminate handler |
-| `lib/`, `include/` | a small freestanding C library for the kernel; headers shared by every layer |
-| `cmake/` | presets, toolchain files, image helpers |
-| `tests/` | host unit tests, per-image integration scripts, static checks over sources and linked images |
-| `tools/` | the composition tool, Kconfig resolution, toolchain provisioning, flashing scripts |
-| `examples/` | applications built outside the tree against an installed KickOS |
-
-[Journey 00](../journey/00-setup.md#a-map-of-the-tree) walks each directory and
-says which Journey chapter visits it;
-[Reference: repo layout](../reference/architecture.md#repo-layout) is the full
-map.
+The tree is organised by role. `kernel/` holds the privileged kernel, and `arch/` the
+hardware seam below it, split into what a CPU family shares, what one instruction set
+needs and what one chip adds, so that each layer is written once. `boards/` holds one
+directory per board with its build configurations, and `platform/` the chip and board
+descriptions in YAML that the configure step turns into headers. `user/` is the runtime
+every application links, `system/` the unprivileged system services, `tests/` the tests
+at every level, and `tools/` the tools the build and the flashing use. The
+[Journey's map of the tree](../journey/00-setup.md#a-map-of-the-tree) walks each
+directory and says which Journey chapter visits it.
 
 ## Where to go next
 

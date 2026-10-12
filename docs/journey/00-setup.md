@@ -187,38 +187,46 @@ Restart QEMU for each run: an image runs once from reset. Kill the emulator when
 
 ## A map of the tree
 
+The tree follows the layering the Book teaches: a small kernel with no hardware access of its
+own, a hardware seam below it, and unprivileged code above it. Two directories run privileged,
+`kernel/` and `arch/`. Everything else, `user/`, `system/` and the applications, runs
+unprivileged and reaches the kernel only through the syscall door.
+
 Only the directories the journey visits are described at length. The
 [Reference: repo layout](../reference/architecture.md#repo-layout) is the full map.
 
 ### `kernel/` - the privileged kernel
 
-The only code that runs privileged after boot. It is plain C++ with no hardware access of
-its own: everything that touches a register goes through the arch seam.
+The kernel itself, in freestanding C++ (C++ without the standard library's runtime). It
+touches no hardware register directly: everything that touches a register goes through the
+arch seam. Its subdirectories group by the four jobs a kernel owns
+([Book: what a kernel must own](../book/what-is-an-os-and-a-kernel.md#what-a-kernel-must-own)),
+and the syscall door sits beside them.
 
-| Directory | What it holds | Journey |
-|---|---|---|
-| `kernel/init/` | `kmain` (the boot sequence and the banner), the kernel console and its TX ring, the fault and panic reporter, the diagnostic LED | 01, 09 |
-| `kernel/sched/` | The scheduler (`sched.cc`): ready queues, picking the next thread, the switch booking; and the FIFO/round-robin policy | 01, 03, 04 |
-| `kernel/thread/` | Creating a thread (`thread_create`), parking and unparking it, its thread-local storage and its C library state | 01, 08 |
-| `kernel/task/` | Tasks: the group of threads that share one memory domain | 08 |
-| `kernel/domain/` | Memory domains: the set of memory regions a task may touch | 01, 06 |
-| `kernel/mem/` | Who owns which arena block, and, on MMU targets, frames, address spaces and user stacks | 06, 10 |
-| `kernel/sync/` | Semaphores, mutexes with priority inheritance, the wait queue; the kernel lock on multicore | 03, 04, 11 |
-| `kernel/time/` | The time base, the sleep queue, the timer re-arm; CPU clock selection | 03 |
-| `kernel/irq/` | Interrupts delivered as events to user space, and which core takes a line | 07 |
-| `kernel/notify/` | Notification objects (a word of pending bits) | 07 |
-| `kernel/grant/` | Device windows and the kernel-reserved blocks a grant may not cover | 06, 07 |
-| `kernel/syscall/` | The syscall dispatcher, the capability table (`cap.cc`), and one file per syscall family | 02, 05, 08 |
-| `kernel/klib/` | `kprintf` formatting and string helpers for the kernel | - |
-| `kernel/ktrace/`, `kernel/bench/` | Telemetry records and benchmark counters | - |
-| `kernel/amp/` | Asymmetric multiprocessing: several kernels sharing one chip | 11 |
-| `kernel/include/kickos/` | The kernel's own headers: `thread.h`, `sched.h`, `cap.h`, `instance.h` (the `Kernel` object) and the rest | all |
+| Directory | Job | What it holds | Journey |
+|---|---|---|---|
+| `kernel/sched/` | Scheduling | The scheduler (`sched.cc`): ready queues, picking the next thread, the switch booking; and the FIFO/round-robin policy | 01, 03, 04 |
+| `kernel/thread/` | Scheduling | Creating a thread (`thread_create`), parking and unparking it, its thread-local storage and its C library state | 01, 08 |
+| `kernel/time/` | Scheduling | The time base, the sleep queue, the timer re-arm; CPU clock selection | 03 |
+| `kernel/domain/` | Memory protection | Memory domains: the set of memory regions a task may touch | 01, 06 |
+| `kernel/mem/` | Memory protection | Who owns which arena block, and, on MMU targets, frames, address spaces and user stacks | 06, 10 |
+| `kernel/task/` | Memory protection | Tasks: the group of threads that share one memory domain | 08 |
+| `kernel/grant/` | Memory protection | Device windows and the kernel-reserved blocks a grant may not cover | 06, 07 |
+| `kernel/sync/` | IPC and synchronization | Semaphores, mutexes with priority inheritance, the wait queue; the kernel lock on multicore | 03, 04, 11 |
+| `kernel/irq/` | Interrupts | Interrupts delivered as events to user space, and which core takes a line | 07 |
+| `kernel/notify/` | Interrupts | Notification objects (a word of pending bits) | 07 |
+| `kernel/syscall/` | The door; IPC | `syscall_dispatch` (`syscall.cc`), which routes each syscall number; the capability table (`cap.cc`), each thread's list of the kernel objects it may use, which every object-naming syscall checks; one file per syscall family, among them the message endpoints (`syscall_ipc.cc`) | 02, 05, 08 |
+| `kernel/init/` | Boot | `kmain` (`kmain.cc`: the boot sequence and the banner), the kernel console and its TX ring, the fault and panic reporter, the diagnostic LED | 01, 09 |
+| `kernel/klib/` | - | `kprintf` formatting and string helpers for the kernel | - |
+| `kernel/ktrace/`, `kernel/bench/` | - | Telemetry records and benchmark counters | - |
+| `kernel/amp/` | - | Asymmetric multiprocessing: several kernels sharing one chip | 11 |
+| `kernel/include/kickos/` | - | The kernel's own headers: `thread.h`, `sched.h`, `cap.h`, `instance.h` (the `Kernel` object) and the rest | all |
 
 ### `arch/` - the hardware seam
 
 `arch/include/kickos/arch/arch.h` is the porting interface: every function the kernel may call
 on the hardware (`arch_init`, `arch_context_init`, `arch_switch`, `arch_timer_arm`,
-`arch_mpu_apply`, ...). Below it, code is split in three layers:
+`arch_mpu_apply`, ...). Below it, code is split in three layers, so that each is written once:
 
 - **Family** (`arch/arm/`, `arch/riscv/`, `arch/arm64/`, `arch/rx/`, `arch/xtensa/`,
   `arch/x86/`, plus `arch/sim/` for the host): what all chips of one family share. For
@@ -241,7 +249,7 @@ and every architecture chapter.
 | Directory | What it holds |
 |---|---|
 | `user/include/kickos/` | The application API: `sys.h` (the C `kos_*` calls), `kos.h` (the C++ `kos::` wrappers), `app.h` (the `main` contract) |
-| `user/src/` | The syscall stubs (`syscall_stubs.cc`), the root thread's entry (`root_entry.cc`), the task entry (`task_trampoline.cc`), and the glue newlib needs: `_sbrk`, the libc lock, the per-thread `_reent`, the other stubs |
+| `user/src/` | The syscall stubs (`syscall_stubs.cc`), the user side of the door: each `kos_*` call packs its arguments and calls `arch_syscall`, which executes the trap; the root thread's entry (`root_entry.cc`), the task entry (`task_trampoline.cc`), and the glue newlib needs: `_sbrk`, the libc lock, the per-thread `_reent`, the other stubs |
 | `user/lib/` | User-side libraries, such as the SPI proxy |
 | `user/apps/common/` | Applications built for every board: `hello`, `hello_c`, `selftest`, `stress`, the fault probes, and many small witnesses |
 | `user/apps/<board>/` | Demos for one board |

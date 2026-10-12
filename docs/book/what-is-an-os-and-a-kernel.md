@@ -391,41 +391,12 @@ Where the hardware has no privilege modes, as on the ESP32's Xtensa LX6 core, th
 syscall becomes a plain function call. The kernel still checks every request's
 authority, but it cannot stop a thread that writes kernel memory directly.
 
-## Where the KickOS kernel lives in the tree
-
-The privileged part of KickOS is two directories.
-
-**`kernel/`** is the kernel itself, in freestanding C++ (C++ without the standard
-library's runtime, Chapter 0.6). It touches no hardware
-register directly. Its subdirectories map onto the four jobs:
-
-| Job | Where |
-|---|---|
-| Scheduling | `kernel/sched/` (ready queues and the scheduling policy, Chapter 2), `kernel/thread/`, `kernel/time/` (the time base and the sleep queue) |
-| Memory protection | `kernel/domain/` (the regions a task may touch), `kernel/mem/`, `kernel/task/` |
-| IPC and synchronization | `kernel/sync/` (semaphores, mutexes, the wait queue), message endpoints in `kernel/syscall/syscall_ipc.cc` (Chapter 8.3) |
-| Interrupts | `kernel/irq/` (interrupts delivered as events), `kernel/notify/` |
-
-The door is `kernel/syscall/`: `syscall_dispatch` in `kernel/syscall/syscall.cc`
-routes each syscall number, and `kernel/syscall/cap.cc` holds the capability table,
-each thread's list of the kernel objects it may use (Part 8), that every
-object-naming syscall checks. Boot starts in `kmain`
-(`kernel/init/kmain.cc`).
-
-**`arch/`** is the hardware seam. `arch/include/kickos/arch/arch.h` lists every
-operation the kernel may ask of the hardware, such as `arch_switch` (the context
-switch), `arch_timer_arm` (the one-shot timer) and `arch_mpu_apply` (the protection
-unit). Below it, each CPU family, ISA and chip supplies its own code, including the
-trap entry in assembly.
-
-Everything else is unprivileged. `user/` is the runtime every application links; its
-`user/src/syscall_stubs.cc` holds the user side of the door: each `kos_*` call packs
-its arguments and calls `arch_syscall`, which executes the trap. `system/` holds **init**
-(`system/init/compose/`), the user program that starts every other task at
-boot, and the user-space drivers in `system/driver/<chip>/`. The
-[Reference: repo layout](../reference/architecture.md#repo-layout) is the full map,
-and [Reference: architecture](../reference/architecture.md) ("User/kernel
-separation") the exact contract.
+In the source tree, the privileged part is two directories: `kernel/` holds the kernel,
+and `arch/` the seam to the hardware. Everything else, the runtime in `user/` that every
+application links and the system layer in `system/`, runs unprivileged and reaches the
+kernel only through the syscall door. The
+[Journey's map of the tree](../journey/00-setup.md#a-map-of-the-tree) walks each
+directory, and shows where each of the four jobs lives.
 
 ## See it in the code
 
