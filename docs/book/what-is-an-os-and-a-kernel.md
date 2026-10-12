@@ -96,14 +96,18 @@ At any moment a thread is in one of three states:
 
 The **scheduler** is the kernel code that picks which ready thread runs next.
 
-A program often needs several threads working on the same data: the f411 example's
-`main`, and a second thread that reads a button. Those threads share memory, and
-the **kernel objects** they were given: the locks, queues and timers the kernel
-keeps on a program's behalf. Tanenbaum calls the unit that owns them a
-**process**: a running program with its own protected memory. KickOS calls it a
-**task**. A KickOS task is a group of threads that share one set of memory and live
-and die together; each of its threads also holds its own list of the kernel objects
-it may use, its capabilities (Part 8).
+One program often does several things at once. Suppose the f411 example, besides
+printing, also counts presses of a button on the board. Waiting for a press and
+printing the count are two separate activities, each with its own flow of calls,
+so the program runs them as two threads. Both use the same variable, the count:
+one thread adds to it, the other prints it. So the two threads must share memory.
+
+The unit that owns that shared memory is what Tanenbaum calls a **process**: a
+running program with its own protected memory. KickOS calls it a **task**. A task
+is a group of threads that share one set of memory and live and die together.
+Each thread of a task also holds its own list of the **kernel objects** it may use
+(the locks, queues and timers the kernel keeps on a program's behalf): its
+capabilities, the subject of Part 8.
 
 What a task's memory looks like depends on the hardware. An **address space** is
 the set of addresses a program can use, and what each of them reaches. On an
