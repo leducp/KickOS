@@ -1,86 +1,16 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
 <!-- Copyright (c) 2026 Philippe Leduc -->
-# How to read this book, and the toolchain
+# The toolchain: from source to a running image
 
-> This Part 0 chapter says who the Book is for, how it fits with the two other
-> KickOS documents, and in what order a newcomer can read them. It then follows
-> a program from source text to a running image: the general pipeline, what a
-> cross toolchain is, and how KickOS configures, builds and runs an image. It
-> ends with a map of the source tree.
+> How does the C you write become bytes in a chip's flash, and what runs between
+> reset and the first line of your `main`? This chapter follows the f411 example
+> from source text to a running board. After it you can build KickOS for a
+> board, build an application against it, put it on the board or run it under
+> QEMU, and find your way around the source tree.
 
 *Further reading: Tanenbaum, Modern Operating Systems, ch.1 (section 1.8, "The
 world according to C": header files, the preprocessor, and how a large program
 is compiled and linked). For the linker in depth: Levine, Linkers and Loaders.*
-
-## Who the Book is for
-
-The Book assumes a reader who can read C and a little C++, and who has compiled
-a program and seen it run. It does not assume an operating-systems course. The
-first chapters of Part 0 build the hardware picture (0.1, 0.2) and the idea of a
-kernel (0.3, 0.4); this chapter supplies the build picture; 0.6 explains what
-sits under `#include`. Parts 1 and later then take KickOS apart one design
-decision at a time.
-
-Part 0 follows one program throughout, **the f411 example**: an application
-whose `main` calls `printf("hello\n")`, running on the `f411disco` board (an
-STM32F411, Cortex-M4F). Its text leaves through the USART2 data register.
-Chapter 0.1 locates that register in the memory map, 0.2 the interrupts and the
-syscall trap on the way, 0.3 why `printf` needs the kernel at all, 0.4 who owns
-the UART, and 0.6 what `printf` pulls in from the C library. This chapter builds
-the example and puts it on the board.
-
-Each chapter follows the same spine: the problem, the ways one could solve it,
-what KickOS chose and why, and where that choice lives in the code. A reader who
-only wants the rule can skip to the last step and follow its link.
-
-## Three documents, three questions
-
-KickOS keeps three bodies of documentation. Each answers one question, and each
-links to the others instead of repeating them.
-
-| Document | Answers | Where |
-|---|---|---|
-| **The Book** | *Why* is it built this way? The concepts, the design space, the choice. | [`./`](README.md) |
-| **The Journey** | *Where, and in what order*, does it happen in the code? A walk through the source, stop by stop, with gdb recipes. | [`../journey/`](../journey/README.md) |
-| **The Reference** | *Exactly what* is the contract? Interfaces, invariants, porting rules, boards. | [`../reference/`](../reference/README.md) |
-
-The Reference is kept in step with the code, and when the two disagree, the code
-wins. The Book can stay timeless because it leaves the exact numbers and rules to
-the Reference. The Journey sits between them: it names a file and a function,
-says what happens there, and links up to the Book for the reason and across to
-the Reference for the rule.
-
-## A reading path for a newcomer
-
-1. **Part 0 in order:** [the machine](the-machine-underneath.md) (0.1),
-   [interrupts and traps](interrupts-and-traps.md) (0.2),
-   [what a kernel is](what-is-an-os-and-a-kernel.md) (0.3),
-   [monolithic versus microkernel](monolithic-vs-microkernel.md) (0.4), this
-   chapter (0.5), and
-   [the C library and C++ runtime](whats-under-include-libc-and-the-cxx-runtime.md)
-   (0.6).
-2. **Build and run once.** Follow [Journey 00, Setup](../journey/00-setup.md) to
-   build the `qemu` preset and attach gdb. Seeing the banner and the first
-   breakpoint makes everything after it concrete.
-3. **Walk power-on.** [Journey 01](../journey/01-power-on.md) goes from reset to
-   the first unprivileged instruction of `main`.
-4. **Alternate Journey and Book.** Read a Journey chapter, then the Book chapter
-   that explains the design it walked:
-
-| Journey chapter | Book chapter beside it |
-|---|---|
-| [02, the first syscall](../journey/02-first-syscall.md) | 3.9, [The syscall path](the-syscall-path-trap-dispatch-return.md) |
-| [03, sleep](../journey/03-sleep.md) | 2.1, [The time base](the-time-base-a-monotonic-clock-you-can-trust.md); 2.2, [The blocking substrate](the-blocking-substrate-one-wait-wake-primitive.md) |
-| [04, a mutex](../journey/04-mutex.md) | 2.3, [Priority inheritance](priority-inheritance-lending-urgency.md) |
-| [05, call and reply](../journey/05-call-and-reply.md) | 8.3, [Endpoints](endpoints-synchronous-ipc-by-rendezvous.md); 8.5, [Call and reply](synchronous-call-and-reply.md) |
-| [06, shared memory](../journey/06-shared-memory.md) | 7.5, [Protection follows the CPU](protection-follows-the-cpu-not-the-schedulers-intent.md) |
-| [07, an interrupt to a driver](../journey/07-interrupt-to-a-driver.md) | 3.8, [A masked interrupt is latched](a-masked-interrupt-is-latched-not-lost.md) |
-| [08, spawn and capabilities](../journey/08-spawn-and-caps.md) | 8.0, [Authority](authority-from-possession-or-from-identity.md); 8.1, [Handles](handles-and-the-resolve-chokepoint.md) |
-| [09, fault and kill](../journey/09-fault-and-kill.md) | 7.4, [Privilege is three axes](privilege-is-three-axes-not-one-bit.md) |
-
-5. **Branch out.** The rest of the Book can be read in any order; each chapter
-   names what it builds on. A porter reads Chapter 6 and
-   [`../reference/porting.md`](../reference/porting.md) next.
 
 ## From source text to a running image
 
@@ -88,6 +18,8 @@ A C or C++ program becomes a running image in a fixed sequence of steps. A
 desktop hides most of them behind one compiler command and a program loader. A
 microcontroller hides almost none, because no loader exists: the hardware starts
 executing at a fixed address, and whatever the build placed there is what runs.
+Code that runs this way, with no operating system underneath it, runs on **bare
+metal**; a kernel is itself such a program.
 
 **Preprocess.** The preprocessor expands `#include`, `#define` and `#if`. The
 output is one long translation unit with no directives left. Configuration
@@ -126,24 +58,27 @@ example the regions are 512 KiB of flash at `0x08000000` and 128 KiB of SRAM at
 `.data` is the interesting case. Its bytes must be in flash, because RAM is lost
 at power-off, yet the code expects to find them at a RAM address. The linker
 script gives it two addresses: a **load address** (LMA) in flash and a **run
-address** (VMA) in RAM. Before `main` runs, startup code copies `.data` from the
-first to the second and zeroes `.bss`. That copy is the C runtime's first job on
-any bare-metal system.
+address** (VMA) in RAM. The image's own code copies the bytes across at reset,
+before anything reads them ([From reset to main](#from-reset-to-main)).
 
 **The ELF file.** The linker writes an **ELF** file: the sections, their
 addresses, the symbol table and, with `-g`, the debug information. A debugger
-reads the symbols from it; an emulator can load it directly. A link **map**,
+reads the symbols from it; an **emulator**, a host program that plays the part
+of the board, can load it directly. A link **map**,
 written beside it on request, lists where every section and symbol landed.
 
 **objcopy.** Flash programmers often want raw bytes rather than ELF. `objcopy -O
 binary` writes the image as a plain `.bin` with no addresses, so the tool must
 be told where it starts. `objcopy -O ihex` writes Intel HEX, which carries the
-addresses inside. Some boot ROMs want their own format again, built from the ELF
-by a vendor tool.
+addresses inside. Some chips run a **boot ROM** first, code their maker fixed
+in the chip that runs at reset and loads or checks the image; such a ROM may
+want its own format again, built from the ELF by a vendor tool.
 
 **Flash or load.** Finally the image reaches the target: written into flash by
-a debug probe or a bootloader, then started by a reset; or loaded into an
-emulator, which plays the part of the board.
+a **debug probe**, the USB adapter (here ST-Link) that writes flash and halts
+the core, or by a **bootloader**, a small program already in flash that
+receives a new image and writes it; then started by a reset. Or it is loaded
+into an emulator.
 
 ### What an ABI is
 
@@ -153,7 +88,8 @@ on so that separately compiled pieces can call each other and share data. The
 source says a function takes two `int`s; the ABI says where they are when the
 call happens. Each platform publishes one: **AAPCS** (the Procedure
 Call Standard for the Arm Architecture) on Arm, the **RISC-V psABI** on RISC-V,
-the **System V** ABI on x86_64. It has three layers.
+the **System V** ABI on x86_64. Several of its rules are about alignment: a
+value is N-aligned when its address is a multiple of N. It has three layers.
 
 - **The calling convention.** Which registers carry the arguments and the
   result, which registers a called function may overwrite (caller-saved) and
@@ -177,20 +113,24 @@ in FPU registers. A `hard` object and a `soft` or `softfp` object disagree about
 where a `float` argument is, and the linker refuses to combine them. The f411
 example is built with `-mcpu=cortex-m4 -mfpu=fpv4-sp-d16 -mfloat-abi=softfp`
 (`arch/arm/chip/stm32f411/cpu.cmake`), kernel and application alike, and links
-the newlib multilib built with the same flags. Its `printf("hello\n")` passes
-the string's address in `r0`, where newlib's separately compiled `printf`
-expects it.
+newlib, its C library (Chapter 0.6), in the build made with those same flags
+(a multilib, described under
+[What a cross toolchain is](#what-a-cross-toolchain-is)). Its
+`printf("hello\n")` passes the string's address in `r0`, where newlib's
+separately compiled `printf` expects it.
 
 KickOS adds its own ABI across the user/kernel boundary. An application traps
 into the kernel rather than calling it, so KickOS states the rules there, in
 `user/include/kickos/sys/abi.h`: the syscall numbers (`enum kos_syscall_nr`),
 which register carries the number and which carry the arguments, and the structures both sides read, such as `struct kos_recv_info`
-and `struct kos_thread_params`. In the f411 example, `_write` ends in
-`kos_kconsole_write`, which calls
+and `struct kos_thread_params`. In the f411 example, `printf` hands its bytes
+to `_write`, the function newlib calls to output them (Chapter 0.6), and
+`_write` ends in `kos_kconsole_write`, which calls
 `arch_syscall(KOS_SYS_KCONSOLE_WRITE, buf, len, 0, 0)`. That is an ordinary
 AAPCS call, so the number lands in `r0` and the buffer and length in `r1` and
 `r2`. The stub moves the fifth word from the stack into `r12` and executes
-`svc #0`; the core saves `r0`-`r3` and `r12` in its exception frame, and the
+`svc #0`; the core saves `r0`-`r3` and `r12` in its **exception frame**, the
+registers the core pushes on the stack itself when it takes a trap, and the
 kernel reads the request from there. `abi.h` pins the shared structures' sizes
 and offsets with static assertions, so both sides read the same bytes.
 Chapter 3.9 explains the register convention
@@ -206,7 +146,7 @@ The machine that builds is the **host**; the machine that runs the image is the
 utilities that run on the host and produce code for the target. Each one is
 named by a **target triple** such as `arm-none-eabi`: the architecture, the
 vendor (none), and the ABI or system. `none` in the system position means
-bare metal: no operating system underneath.
+bare metal.
 
 A toolchain is more than the compiler. It ships the C library and the C++
 runtime the program links against (Chapter 0.6), and the low-level support
@@ -225,7 +165,7 @@ There are three common ways to obtain one:
   same bits.
 
 KickOS chose the third. One pinned release of GCC, binutils, newlib and
-libstdc++ serves every family, and each libstdc++ is compiled against the newlib
+libstdc++ (the C++ standard library) serves every family, and each libstdc++ is compiled against the newlib
 it links with, which is what makes full C++ work on every target. Its families,
 multilibs and reasons live in
 [`../design-m10-toolchain.md`](../design-m10-toolchain.md).
@@ -250,8 +190,9 @@ variable is missing. The exact contract is
 ## Configuring a build: one fact, one home
 
 Before anything is compiled, a build must decide many things: which chip, which
-core flags, how large each kernel pool is, whether memory protection is
-enforced, which tasks start at boot. One could scatter these through
+core flags, how large each kernel pool is (a **pool** is a fixed array of
+kernel objects reserved at build time), whether memory protection is enforced,
+which tasks start at boot. One could scatter these through
 `#ifdef`s in headers, keep a hand-written makefile per board, or describe the
 hardware in a device tree as Linux and Zephyr do. KickOS separates them by
 *who owns the fact*, and gives each kind exactly one file.
@@ -263,13 +204,13 @@ hardware in a device tree as Linux and Zephyr do. KickOS separates them by
 | kernel knobs: pool sizes, stacks, protection posture | the kernel's integrator | `boards/<board>/configs/<variant>/defconfig` (Kconfig) |
 | what the part *is*: memory map, interrupt count, devices | KickOS, once per chip | `platform/<chip>/chip.yaml` |
 | what the board *decides*: console, pins, parts fitted | KickOS, once per board | `platform/<chip>/<board>.yaml` |
-| what *runs*: tasks, grants, heap | the application author | a composition, `boards/<board>/composition.yaml` by default |
+| what *runs*: tasks, their grants (a **grant** is memory or a device a task is given), the heap | the application author | a composition, `boards/<board>/composition.yaml` by default |
 
 **Presets.** A preset names a board and a variant and nothing else. It lives in
 `cmake/presets/*.json` (one file per CPU family, gathered by
 `CMakePresets.json`), and each preset builds in its own `build/<preset>/`
 directory. `f411disco` is the `base` variant of the `f411disco` board;
-`f411disco-flat` is the same board with enforcement turned off.
+`f411disco-flat` is the same board with memory protection not enforced.
 
 **Kconfig.** The kernel's knobs are declared once in `Kconfig`, `arch/Kconfig`
 and `boards/Kconfig`, each with a range and a default; this is the mechanism
@@ -286,7 +227,8 @@ chip's linker script includes, so the memory map is stated once. The
 **composition** says what the system runs: for a plain application, one task
 named `main`. The same tool checks it against the chip, the board and the
 kernel's configuration, refuses it with a message naming the broken rule, or
-emits a constant table that the init walks at boot. No YAML parser runs on the
+emits a constant table that the **init** walks at boot: the first unprivileged
+program, which starts every other task. No YAML parser runs on the
 target.
 
 The rules behind all of this, including how a `-D` on the CMake line becomes a
@@ -354,9 +296,9 @@ cmake --build hello/build
 debugger), `hello.bin` and `hello.hex` (for the flash tool), and `hello.map`.
 
 **Flashing.** The `.bin` carries no address, so the flash tool is told where it
-goes: `0x08000000`, the base of `main_flash` in `platform/stm32f411/chip.yaml`.
-The chip's linker script, `arch/arm/chip/stm32f411/stm32f411.ld`, puts the
-vector table first in that region, and the core reads it at reset. The board's
+goes: `0x08000000`, the base of `main_flash` in `platform/stm32f411/chip.yaml`,
+where the chip's linker script, `arch/arm/chip/stm32f411/stm32f411.ld`, starts
+the image. The board's
 on-board ST-Link writes it with `st-flash`; [`../flashing.md`](../flashing.md)
 gives the exact command and its reset caveats, and `tools/flash.sh f411disco
 <app>` flashes the in-tree images of `build/f411disco/`. The board file
@@ -391,6 +333,57 @@ The in-tree images build the same way: every application under
 `build/qemu/user/apps/common/<app>/`, and `ctest --preset qemu` boots each one
 and judges its output. [Journey 00](../journey/00-setup.md) runs them, starts
 QEMU halted under a gdb server, and attaches gdb.
+
+## From reset to main
+
+The f411 example is now in flash. Between a reset and the first line of its
+`main`, a fixed chain of steps runs, and every step is code inside the image:
+on bare metal nothing else is there to prepare the machine.
+
+1. **The reset vector.** A Cortex-M core does not start by executing an
+   address; it starts by reading one. The linker script places the **vector
+   table** at the start of flash, `0x08000000`, which the STM32F411 also shows
+   at address 0 at boot. Its first word is the initial stack pointer,
+   `_estack`, the top of the 128 KiB of SRAM; its second word, the **reset
+   vector**, is the address of `Reset_Handler`. The core loads both and jumps.
+   The rest of the table holds the addresses of the trap and interrupt handlers
+   of Chapter 0.3.
+2. **The C runtime.** `Reset_Handler`
+   (`arch/arm/chip/stm32f411/chip_stm32f411.cc`) first switches the
+   floating-point unit on, because the compiler may use its instructions in any
+   function and they fault while it is off. Then `kickos_ranges_init` copies
+   `.data` from its load address in flash to its run address in RAM and zeroes
+   `.bss`, walking a copy table and a zero table that the linker script writes.
+   Until then no code may read a global variable.
+3. **Constructors.** C++ runs a **constructor** to give some globals their
+   first value. `Reset_Handler` runs the kernel's list of them, which in a
+   KickOS image is empty: the kernel's globals need no code to initialise, and
+   the linker refuses an image where the list is not empty. The constructors of
+   the application and of the C and C++ libraries go to a second list, run later
+   and unprivileged (step 6); Chapter 0.6 explains why the order matters.
+4. **The chip and the kernel.** `arch_init` brings the chip up: the clock to its
+   final speed, TIM2 counting as the time base, USART2 programmed for the
+   console, in that order since the baud rate depends on the final clock. Then
+   `kmain`, the kernel's own `main`, runs privileged on the boot stack: it prints
+   its banner, puts its pools in their start state and builds the first two
+   threads, **idle**, the thread that runs when nothing else is ready, and
+   **root**, the first unprivileged thread.
+5. **The first thread.** A new thread has never run, so `kmain` writes on its
+   stack the frame a **context switch**, the move of the core from one thread to
+   another, would have saved, and the scheduler starts
+   by "switching back" to root. That first switch also turns the memory
+   protection on, so root's first instruction already runs unprivileged.
+6. **The init and `main`.** Root runs the constructors kept for it in step 3,
+   then becomes the init: it walks the table the composition tool built from
+   `boards/f411disco/composition.yaml`, creates the `main` task and its thread
+   through syscalls, and blocks. The new thread enters `kickos_main`, which
+   calls the application's `main` and passes its return value to `exit`, which
+   ends the system. The build compiles the application with
+   `-Dmain=kickos_app_main`, so the `main` you wrote keeps its name in the
+   source.
+
+[Journey 01, Power-on](../journey/01-power-on.md) walks each step in a debugger
+on the `qemu` preset, with the code, and says where `f411disco` differs.
 
 ## The source tree
 
@@ -427,7 +420,7 @@ map.
 - The hardware the linker script describes: Chapter 0.1,
   [*The machine underneath*](the-machine-underneath.md), and its memory map.
 - Why the f411 example's `printf` cannot write the USART2 register itself and
-  must ask the kernel: Chapter 0.3,
+  must ask the kernel: Chapter 0.2,
   [*What is an OS, and what is a kernel?*](what-is-an-os-and-a-kernel.md); and who owns
   that UART: Chapter 0.4, [*Monolithic vs microkernel*](monolithic-vs-microkernel.md).
 - What the C library and the C++ runtime bring into the link, and why KickOS

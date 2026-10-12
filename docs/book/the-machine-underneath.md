@@ -2,12 +2,12 @@
 <!-- Copyright (c) 2026 Philippe Leduc -->
 # The machine underneath: CPU, memory, and peripherals
 
-> This primer gives later chapters a shared picture of the hardware: a CPU core,
-> memories, and devices connected by an address-based interconnect. It introduces
-> registers, address spaces, buses, memory-mapped I/O, and memory maps. No prior
-> hardware background is needed. It starts from the microcontroller (MCU), the
-> simplest machine KickOS runs on, and then shows what an application processor
-> adds.
+> What does the machine an OS runs on look like to the software? This chapter
+> answers from the microcontroller (MCU), the simplest machine KickOS runs on, and
+> then shows what a larger processor adds. No hardware background is needed.
+> Afterwards you can follow a line of C down to the instructions the core runs,
+> see what a function call leaves on the stack, and read a chip's memory map and
+> register table to find and drive a device.
 
 ## The CPU core and its state
 
@@ -25,7 +25,7 @@ immediate execution state. The important ones are:
   agrees on so that separately compiled pieces can call each other; its
   **calling convention** names which registers carry arguments and results and
   which ones a function must preserve. Chapter 0.5,
-  [*What an ABI is*](how-to-read-this-book-and-the-toolchain.md#what-an-abi-is),
+  [*What an ABI is*](the-toolchain-from-source-to-a-running-image.md#what-an-abi-is),
   covers the rest.
 - **Status / flags register.** Bits that record conditions such as zero, carry,
   or overflow for later instructions to test.
@@ -37,8 +37,9 @@ immediate execution state. The important ones are:
 
 Together these form the core's **machine state**, or *context*. The CPU executes
 one context at a time. An OS saves one thread's context to memory and loads
-another's so they can share a core. Chapter 3.5 (*Context switching and the
-silicon contract*) explains how.
+another's so they can share a core; a **thread** is one flow of instructions the
+OS runs, and Chapter 0.2 teaches threads, processes and tasks. Chapter 3.5
+(*Context switching and the silicon contract*) explains the switch itself.
 
 *Further reading: Tanenbaum, Modern Operating Systems, ch.1 (the processor, its
 registers, and what a program's state is).*
@@ -106,9 +107,85 @@ the compiler places it in a data word next to the code, and the linker writes th
 real address there (Chapter 0.5 covers that step). `lr`, the **link register**,
 holds the return address the call left there, and `bx lr` returns through it.
 
-This is why an interrupt can arrive between the load and the store: the
-addition is three separate instructions, not one. Chapter 2.4, *An atomic buys
-definedness, not atomicity*, builds on that fact.
+This is why an **interrupt**, a hardware signal that makes the core run other
+code between two instructions (Chapter 0.3), can arrive between the load and the
+store: the addition is three separate instructions, not one. Chapter 2.4, *An
+atomic buys definedness, not atomicity*, builds on that fact.
+
+## The stack and a call
+
+`tick` returns through `lr`, so something must have put the return address
+there. That is the call instruction, `bl` (branch with link): it writes the
+address of the instruction after it into `lr`, then branches. `tick` calls
+nothing, so `lr` survives until its `bx lr`, and it never uses the stack.
+
+A function that calls on cannot keep its return address in `lr` alone: its own
+`bl` would overwrite it. It saves `lr` in memory first, on the **stack**: a
+region of SRAM that SP points into. Take a caller of `tick`, in another file:
+
+```c
+void tick(void);
+void read_pair(int *pair);
+
+int step(int x)
+{
+    int pair[2];
+
+    read_pair(pair);
+    tick();
+    return x + pair[0] + pair[1];
+}
+```
+
+Compiled the same way, it gives (trimmed to the instructions):
+
+```
+push  {r4, lr}       @ save r4 and the return address on the stack
+sub   sp, #8         @ reserve 8 bytes below them for pair
+mov   r4, r0         @ keep x in r4 across the calls
+mov   r0, sp         @ pass pair's address as the argument
+bl    read_pair      @ call: lr = the next instruction
+bl    tick           @ call again: lr is overwritten, the saved copy is safe
+ldrd  r2, r3, [sp]   @ load pair[0] and pair[1]
+adds  r0, r4, r2     @ x + pair[0], into r0, the return register
+add   r0, r3         @ + pair[1]
+add   sp, #8         @ release pair
+pop   {r4, pc}       @ restore r4, and load the saved lr straight into PC
+```
+
+The block `step` owns on the stack is its **stack frame**: its saved registers,
+its return address and its locals. While `step` waits for `tick`, it looks like
+this:
+
+```
+higher addresses
+  +----------------------+
+  | caller's frame       |
+  +----------------------+  <- SP when step was entered
+  | saved lr             |
+  | saved r4             |
+  | pair[1]              |
+  | pair[0]              |
+  +----------------------+  <- SP while step runs
+lower addresses
+```
+
+The stack **grows down**: a push lowers SP and stores below the old top, and a
+pop reads and raises it again. Each call adds a frame below its caller's, and
+each return removes it, so the chain of frames records who called whom.
+
+`x` arrives in `r0`, but `read_pair` may overwrite `r0` to `r3`, so `step` moves
+it to `r4`. The ABI makes `r4` to `r11` **callee-saved**: a function that uses
+one must give it back unchanged, which is why `step` pushes `r4` and pops it.
+
+A stack therefore holds the live state of one flow of calls: return addresses,
+saved registers and locals that the code will read back. Two threads cannot share
+one: if thread B pushed onto the stack thread A had left mid-call, B would
+overwrite A's frames, and A would return through a wrong address. Each thread
+gets its own stack, and its saved context includes its own SP. Chapter 3.6,
+*[Thread stacks and the KISS
+tension](thread-stacks-and-the-kiss-tension.md)*, covers where KickOS finds that
+memory.
 
 ## MCU vs application processor: one flat address space, usually no MMU
 
@@ -116,9 +193,11 @@ For an RTOS, the useful distinction is between an **application processor** and
 a **microcontroller**.
 
 Application processors, such as those in phones and laptops, usually have a
-**memory management unit (MMU)**. It translates a program's *virtual* addresses
-into *physical* bus addresses. The OS can give each process its own virtual
-address space, but translation needs page tables and supporting machinery.
+**memory management unit (MMU)**. It translates the *virtual* addresses a
+program uses into the *physical* addresses the bus routes; a **page table** maps
+each block of virtual addresses to a physical one. The OS can give each process,
+a running program with its own protected memory (Chapter 0.2), its own virtual
+address space, at the cost of those tables and the hardware that walks them.
 
 A microcontroller typically puts its core, flash, SRAM, and devices on one chip.
 It usually has:
@@ -134,7 +213,8 @@ It usually has:
 KickOS treats the MCU case as the base: threads share physical addresses, and an
 MPU draws protection boundaries around ranges. This is what "MPU-first" means.
 What an application processor adds is translation, and with it a private virtual
-space per task. Chapter 7 (*Memory protection*) covers how KickOS uses each.
+space per task, KickOS's name for a process (Chapter 0.2). Chapter 7 (*Memory
+protection*) covers how KickOS uses each.
 
 *Further reading: Tanenbaum, Modern Operating Systems, ch.1 (kinds of systems)
 and ch.3 (memory management: what an MMU does, which is exactly what an MCU
@@ -148,8 +228,13 @@ Most MCU block diagrams show the same basic parts:
 - **Interconnect (bus fabric):** routes accesses to the target memory or device
   and returns responses.
 - **Memories:** flash for program code and SRAM for changing data and stacks.
-- **Peripherals:** timers, serial controllers, GPIO, ADCs, DMA engines, and other
-  devices.
+- **Peripherals:** the devices, among them:
+  - **timers**, which count clock ticks and can signal when a count is reached;
+  - **UARTs**, serial controllers that send and receive bytes over a wire;
+  - **GPIO** (general-purpose I/O), pins that software drives high or low, or reads;
+  - **ADCs** (analog-to-digital converters), which measure a voltage as a number;
+  - **DMA engines** (direct memory access), which copy data between memory and a
+    peripheral without the core doing each load and store.
 
 Each memory and peripheral responds to its own range of addresses. The
 interconnect routes a core access to that range and returns a result or an error.
@@ -164,19 +249,19 @@ To start a timer or read a received byte, a program accesses a peripheral
 control register starts the timer; a UART data register returns a byte. Ordinary
 loads and stores perform this **memory-mapped I/O (MMIO)**. The peripheral address
 range is the **peripheral aperture** (often near `0x40000000` on ARM MCUs). In C,
-code commonly accesses it through a pointer to a `volatile` register layout.
+code commonly accesses it through a pointer to a `volatile` register layout:
+`volatile` tells the compiler every access must really happen, in order.
 
 Unlike RAM, **a device register can change state when read**. Reading a UART
 data register may remove a byte from its receive queue; reading a status register
-may clear flags. A write can issue a command. Hardware therefore needs to know
-which ranges are ordinary "Normal" memory and which are "Device" memory, where
-speculative reads and reordering could have unwanted effects. Chapter 7.6
-(*The CPU reads ahead: memory types and speculative access*) explains the memory
-types and their consequences.
+may clear flags. A write can issue a command. Chapter 7.6 (*The CPU reads ahead:
+memory types and speculative access*) shows what that demands of the hardware.
 
 ## Buses and the interconnect: where a guard can sit
 
-The interconnect determines which accesses a protection unit can see. On the
+Every access has two ends: a **master** starts it (the core, a DMA engine), and
+a **slave** answers it (a memory, a peripheral). The interconnect between them
+determines which accesses a protection unit can see. On the
 **CPU side**, before an access enters the fabric, a guard sees every address the
 core emits. On the **bus-slave side**, a guard sees only traffic to the memory or
 device in front of it. A slave-side guard on SRAM cannot protect a peripheral.
@@ -212,7 +297,7 @@ from it:
 - **External memory.** Off-chip flash or RAM reached through a controller (QSPI
   flash or SDRAM). It offers more capacity at higher latency. An address window
   can be larger than the memory fitted behind it; Chapter 7.6 shows why that
-  matters to speculative access.
+  matters.
 
 *Further reading: Hennessy and Patterson, Computer Organization and Design, ch.5
 (the memory hierarchy: why memories trade speed against size and cost).*
@@ -282,16 +367,17 @@ TXE's access type is read-only: software never writes it, only the hardware sets
 and clears it. SR also shows the read side effect described above: its
 receive-error flags clear on a read of SR followed by an access to DR.
 
-`arch/arm/chip/stm32f411/regs/usart.h` spells the same sums in code, and every
-access must be a half-word or a word. The registers a driver uses fit in the first
-`0x20` bytes of the 1 KiB slot, so `0x20` is the window a protection region has to
-cover. Chapters 3.7, 7.3 and 7.6 read real tables the same way, and
-`../reference/boards.md` lists each board's values.
+A register table also says how wide each access must be. USART2's registers
+accept only 16-bit (half-word) or 32-bit (word) reads and writes; a single-byte
+access is not guaranteed to work.
 
 ## Where to go next
 
-- [Interrupts and traps](interrupts-and-traps.md) explains hardware entry into
-  handlers and the kernel, with TIM2's interrupt as the example.
+- Chapter 0.2, *[What an OS and a kernel are](what-is-an-os-and-a-kernel.md)*,
+  is next: what runs on this machine, and the threads and tasks it runs.
+- Chapter 0.3, *[Interrupts and traps](interrupts-and-traps.md)*, explains
+  hardware entry into handlers and the kernel, with TIM2's interrupt as the
+  example.
 - Chapter 3.5, *[Context switching and the silicon
   contract](context-switching-and-the-silicon-contract.md)*, explains how the
   kernel saves and restores CPU state.
@@ -299,6 +385,6 @@ cover. Chapters 3.7, 7.3 and 7.6 read real tables the same way, and
   ceiling](peripheral-isolation-and-the-hardware-ceiling.md)*, shows why guard
   placement determines peripheral isolation.
 - Chapter 7.6, *[The CPU reads ahead](memory-types-and-speculative-access.md)*,
-  explains why Normal and Device memory need different rules.
+  explains why the hardware must treat device addresses differently from RAM.
 - `../reference/architecture.md` ("Memory domains") and
   `../reference/boards.md` hold the exact contracts and per-chip maps.

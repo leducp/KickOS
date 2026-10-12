@@ -86,6 +86,17 @@ registers -- *under its own MMIO grant*, because it is an ordinary unprivileged 
 whose memory-protection regions include exactly that device window and nothing else
 (Chapter 7). Then it replies, and the kernel switches straight back to the caller.
 
+KickOS also has a register form of this handoff, on the architectures with no address
+translation (Armv6-M, Armv7-M, RXv3 and RV32IMAC) and one kernel core: the whole call
+completes inside the trap (`kickos_ipc_fastpath` in `kernel/syscall/syscall_ipc_fast.cc`).
+It applies only when every condition holds: the call is untimed; the request and the
+reply fit in the caller's argument registers; the endpoint is served on this core; a
+server thread is already parked receiving, with interest in replying; the caller does
+not outrank it, since that would need the donation of the next section; and the
+server's table can take the reply capability. Every test runs before the first write,
+so a call that fails one falls through to the general path with nothing changed, and
+that path gives the answer. `../reference/ipc-call-reply.md` has the exact contract.
+
 So the request never passes through privileged code that "does the transaction on the
 client's behalf." The driver is not a syscall; it is a peer in another protection domain,
 reached by a message, doing the work under its own authority. The fast path and the

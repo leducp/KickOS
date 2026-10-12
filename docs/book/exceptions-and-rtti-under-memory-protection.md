@@ -121,6 +121,35 @@ code that both has a thread pointer and runs app-side, where the heap and the re
 list heads already live, so the node it allocates is where the unprivileged unwinder will
 look for it.
 
+## Where an exception stops
+
+### At the app boundary
+
+Only app code enables exceptions. The kernel, its libraries and the arch layer are
+compiled freestanding (Chapter 0.6), so their frames have no unwind tables. The kernel
+enters app code only through `main` or a thread trampoline and never calls an app
+callback from an interrupt handler, so every app call chain starts at one of those
+entries. If an exception escapes the app's outermost frame, the unwinder's search phase
+reaches a frame with no FDE or `.ARM.exidx` entry (under SjLj, the end of the context
+chain) and fails there, before the cleanup phase has unwound anything, kernel state
+included. It then calls `std::terminate -> abort -> kos_exit`.
+
+App code must catch the exceptions it intends to recover from. An uncaught throw from a
+worker thread terminates the whole image, and no exit, not even a normal return, runs
+static destructors or `atexit` handlers.
+
+### A smaller terminate handler
+
+libstdc++'s default `__verbose_terminate_handler` demangles and prints the exception type
+before aborting. On an embedded target that pulls in `__cxa_demangle` and newlib's
+floating-point formatting code, tens of kilobytes for one uncaught-exception message.
+
+KickOS supplies a strong definition of `__verbose_terminate_handler`
+([`system/cxx/vterminate.cc`](../../system/cxx/vterminate.cc)), so the linker leaves
+`vterminate.o` out of `libstdc++.a`, along with its demangler and formatting
+dependencies. The replacement prints the mangled type and `what()`, then aborts.
+Throwing and catching are unchanged; only the message is shorter and the image smaller.
+
 ## Why a protection unit makes this hard
 
 Without protection, all four pieces (heap, tables, unwinder state, RTTI) are just

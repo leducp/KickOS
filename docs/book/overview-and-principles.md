@@ -2,16 +2,17 @@
 <!-- Copyright (c) 2026 Philippe Leduc -->
 # Overview and principles: what KickOS is for
 
-> Part 0 taught the general ideas: the machine, interrupts and traps, what a kernel
-> is, and the microkernel structure. This chapter says what KickOS sets out to be
-> and names the principles every later chapter applies. Each principle comes with
-> its reason and a pointer to where the Book and the Journey develop it. The exact
-> contracts live in `../reference/architecture.md` ("Design pillars", "North star",
-> "Guiding invariants").
->
-> *Further reading: Tanenbaum, Modern Operating Systems, ch.1 (section 1.4, the
-> operating system zoo, from embedded and sensor-node systems to servers; section
-> 1.7, operating system structure).*
+> What is KickOS for, and what rules does every part of it follow? Part 0 taught
+> the general ideas: the machine, what an operating system and a kernel are,
+> interrupts and traps, the microkernel structure, the toolchain, and what lies
+> under `#include`. This chapter says what KickOS sets out to be and names the
+> principles every later chapter applies, each with its reason. Afterwards you can
+> say why KickOS is built the way it is, and find where the Book and the Journey
+> work out each principle.
+
+*Further reading: Tanenbaum, Modern Operating Systems, ch.1 (section 1.4, the
+operating system zoo, from embedded and sensor-node systems to servers; section
+1.7, operating system structure).*
 
 ## What KickOS is
 
@@ -53,9 +54,9 @@ target only one class, and leave the other to someone else.
 **What KickOS chose.** One kernel, with **one address-space abstraction over two
 kinds of protection hardware**. The unit of isolation is the **memory domain**. On a
 region MPU, a domain is a set of regions, and every domain lives in one physical
-address space. On an MMU, a domain owns a page-table root, and the boundary is a
+address space. On an MMU, a domain owns its own page tables, and the boundary is a
 virtual address space. The kernel above the arch layer makes the same calls on both;
-only the arch layer knows which descriptors it writes. A chip declares which kind it
+only the arch layer knows how to program the hardware. A chip declares which kind it
 has in its chip file, a region unit or an MMU, never both.
 
 **The f411 example, at the other end of the scale.** Chapter 0.5 built an
@@ -63,8 +64,9 @@ application whose `main` calls `printf("hello\n")` and ran it on the `f411disco`
 board. There, the task's code, data and stack are MPU regions, and the text leaves
 through USART2. Install the package for `qemu-arm64` instead, a Cortex-A53 with an
 MMU, and the same `main.c` and `CMakeLists.txt` build against it unchanged. The task
-now runs at EL0 in its own address space, and its regions have become page-table
-mappings. The program cannot tell. (The same plain C program lives in the tree as
+now runs at EL0, the unprivileged level of Arm application cores, in its own
+address space, and its regions have become page-table mappings. The program cannot
+tell. (The same plain C program lives in the tree as
 `user/apps/common/sysdefault/`.) A whole system scales the same way:
 `examples/composition/` describes one set of tasks for `xmc4800-relax`, an MPU board,
 and for `qemu-arm64`, a four-core MMU board, in two system files under
@@ -96,10 +98,12 @@ the cost is concrete: a fault in a sensor driver must not stop the control loop.
 - **Drivers are unprivileged tasks.** A driver is granted its device's register
   window and a capability on its interrupt line, and nothing else. When it faults,
   the kernel kills its task, and the rest of the system runs on.
-- **Authority comes from possession.** A task names a kernel object only through a
-  capability, an entry in its own handle table with a type and rights. There are no
-  global ids to guess. A few powers name no single object, such as muxing a pin;
-  those are **authority bits** granted per class, such as `KOS_AUTH_PINMUX`.
+- **Authority comes from possession.** A thread reaches a kernel object only through
+  a capability, an entry in its own capability table with a type and rights, and
+  names it by a handle, the number a thread uses to name a capability-table entry.
+  There are no global ids to guess. A few powers name no single object, such as
+  muxing a pin; those are **authority bits**, one per kind of act that covers every
+  object of that kind, such as `KOS_AUTH_PINMUX` for muxing any pin.
 - **Isolation is as strong as the hardware permits, and a gap is stated, never
   hidden.** A part with a fine-grained protection unit gets fine-grained isolation;
   a part with none, such as the STM32F103 or the ESP32's Xtensa core, still runs the
@@ -139,9 +143,9 @@ KickOS keeps it in one seam: `arch/include/kickos/arch/arch.h` lists every opera
 the kernel may ask of the hardware, such as `arch_switch`, `arch_timer_arm` and
 `arch_mpu_apply`. Below it, `arch/<family>/` holds each ISA's trap entry and context
 switch, and `arch/<family>/chip/<chip>/` each chip's clocks, timer and protection
-unit. The kernel in `kernel/` names no ISA, no register and no descriptor format. The
-host `sim` is one more target of the same seam: it runs the real kernel and its
-userspace as one Linux process, so the semantics can be tested with no board.
+unit. The kernel in `kernel/` names no ISA, no register and no protection-hardware
+format. The host `sim` is one more target of the same seam: it runs the real kernel
+and its userspace as one Linux process, so the semantics can be tested with no board.
 
 Porting is therefore a bounded job: a new chip implements the chip half of the seam,
 and a new ISA the arch half, without restructuring the kernel. The list of arch
@@ -168,20 +172,20 @@ sibling project **KickCAT**, an EtherCAT stack: *write a `main`, that's it.*
 - **Application authors** write a plain `main`, in C or C++, and use the standard
   library: `printf`, `std::cout`, `malloc`. The f411 example is the whole of it: two
   files, linked against `KickOS::kernel` and `KickOS::system_default`, the board's
-  default composition. That composition runs `main` as an unprivileged task with a
-  **sane default set of capabilities**, enough for a plain program, and the
-  value `main` returns ends the system. A plain application never writes a manifest.
+  default composition. That composition runs `main` as an unprivileged task whose
+  thread holds a **sane default set of capabilities**, enough for a plain program,
+  and the value `main` returns ends the system. A plain application never writes a manifest.
   Shaping the capability set, adding tasks and drivers, is opt-in: a system file
   such as those in `examples/composition/systems/` lists the tasks and the authority
-  each one holds. Easy things stay easy, and hard things stay possible.
+  their threads start with. Easy things stay easy, and hard things stay possible.
 - **Porters** implement the small arch/chip seam described above, not a kernel
   restructure.
 
 The capability model is bent to fit this goal, and not the reverse: capabilities
 hide behind defaults, and the runtime wires them before `main` runs.
 
-**Where it is developed.** Chapter 0.5, *[How to read this book, and the
-toolchain](how-to-read-this-book-and-the-toolchain.md)*, builds the f411 example;
+**Where it is developed.** Chapter 0.5, *[The toolchain: from source to a running
+image](the-toolchain-from-source-to-a-running-image.md)*, builds the f411 example;
 Chapter 0.6, *[What's under #include](whats-under-include-libc-and-the-cxx-runtime.md)*,
 explains how `printf` reaches the kernel. In the Journey:
 [1. Power-on](../journey/01-power-on.md) follows the boot to the first instruction of
@@ -199,12 +203,12 @@ boot.
 **What KickOS chose.** KickOS takes seL4's **design principles**:
 
 - a kernel small by nature;
-- capability-based authority, through a per-task table of typed, rights-bearing
-  handles;
+- capability-based authority, through a per-thread table of typed,
+  rights-bearing capabilities named by handles;
 - drivers, file systems and network stacks as unprivileged servers reached by IPC;
 - synchronous endpoints with a one-shot reply capability;
-- services wired at start by a root task that hands each task the capabilities it
-  needs.
+- services wired at start by a root task that hands each thread the capabilities
+  it needs.
 
 It deliberately does **not** pursue formal verification, CapDL or proof engineering;
 its guarantees rest on a small kernel, review and tests. It also leaves out seL4
@@ -235,13 +239,15 @@ Hidden allocation and long kernel paths make the worst case hard to state.
 
 **What KickOS chose.**
 
+- **Priority-based, preemptive scheduling**, FIFO within a priority (first come,
+  first served: a thread runs until it blocks or yields), with round-robin as an
+  option: threads of one priority take turns, each running for at most a quantum, a
+  fixed slice of time. A switch is decided in one place, `pick_and_seat` in
+  `kernel/sched/sched.cc`, whatever triggered it.
 - **Tickless time.** There is no mandatory periodic interrupt. The kernel keeps a
   monotonic clock and arms one one-shot timer for the earliest deadline; a system
-  with nothing timed arms nothing. Every deadline, from a sleep to a round-robin
+  with nothing timed arms nothing. Every deadline, from a sleep to the end of a
   quantum, rests on that clock.
-- **Priority-based, preemptive scheduling**, FIFO within a priority with round-robin
-  as an option, and a switch decided in one place, `pick_and_seat` in
-  `kernel/sched/sched.cc`, whatever triggered it.
 - **Priority inheritance** on the mutex, so a low-priority holder cannot block a
   high-priority waiter behind a medium one; call/reply lends the caller's priority
   to the server the same way.
@@ -274,7 +280,8 @@ others instead of repeating them:
   the code wins.
 
 In the code, a comment explains a hidden constraint, not what the code plainly does.
-Chapter 0.5 gives a reading path through the three documents.
+Chapter 0.0, *[How to read this book](how-to-read-this-book.md)*, gives a reading
+path through the three documents.
 
 ## When the principles pull apart
 
@@ -295,8 +302,10 @@ design.
 
 - The structure these principles rest on: Chapter 0.4, *[Monolithic vs
   microkernel](monolithic-vs-microkernel.md)*.
-- Building and running the f411 example, then a reading path: Chapter 0.5, *[How to
-  read this book, and the toolchain](how-to-read-this-book-and-the-toolchain.md)*.
+- Building and running the f411 example: Chapter 0.5, *[The toolchain: from source
+  to a running image](the-toolchain-from-source-to-a-running-image.md)*.
+- A reading path through the Book, the Journey and the Reference: Chapter 0.0,
+  *[How to read this book](how-to-read-this-book.md)*.
 - The kernel model, starting with time: Chapter 2.1, *[The time base: a monotonic
   clock you can trust](the-time-base-a-monotonic-clock-you-can-trust.md)*.
 - The code from reset: [Journey 01, Power-on](../journey/01-power-on.md).

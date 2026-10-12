@@ -246,6 +246,21 @@ per the section above. There is no revocation, which is question 2 answered deli
 than by omission: the derivation structure that would provide it costs more, on a 16 KiB part,
 than the property is worth here.
 
+What KickOS leaves out of seL4's capability model follows from the same small, static
+tables. seL4 hands out free memory as **untyped** capabilities that a holder **retypes**
+into kernel objects, so every byte of kernel memory is accounted to some capability;
+KickOS's kernel owns its memory and allocates objects itself, and who may obtain memory
+is decided by grants and an authority bit. seL4 arranges capabilities in **capability
+spaces**, trees of tables that can address a very large number of them; a KickOS table
+is one flat array, small and reserved at build time. seL4 keeps the derivation tree
+above to revoke transitively; a KickOS entry has nowhere to put a parent link. seL4 can
+state a whole system's initial capabilities in **CapDL**, a description language its
+proofs and tools check; KickOS states them in the composition, which a build-time tool
+checks. And no hardware resource gets a capability per instance, one per pin or per
+clock: a table reserved for every thread would pay for each one. Those powers are the
+authority bits of the section above. `../reference/architecture.md` ("Non-goals --
+seL4 machinery deliberately NOT adopted") gives the arithmetic behind each refusal.
+
 The exact contract -- entry layout, rights bits, the reserved index convention, the authority
 bits -- is `../reference/architecture.md` ("Object model, capabilities & IPC") and
 `../reference/invariants.md`. This chapter explains why the shape is what it is; the Reference

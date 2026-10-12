@@ -223,7 +223,7 @@ A plain application writes no composition. Each board has a default one,
 links `KickOS::system_default`, and the kernel seats the reserved slots on every
 thread. A system that needs a driver task or a second app writes its own file.
 Chapter 0.5, *[How to read this book, and the
-toolchain](how-to-read-this-book-and-the-toolchain.md)*, shows where the
+toolchain](the-toolchain-from-source-to-a-running-image.md)*, shows where the
 composition sits in the build.
 
 ## The f411 example: what the printf app holds

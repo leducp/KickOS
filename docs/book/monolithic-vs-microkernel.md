@@ -2,19 +2,18 @@
 <!-- Copyright (c) 2026 Philippe Leduc -->
 # Monolithic vs microkernel: how much code to trust
 
-> This primer explains the main ways to structure an operating system: what runs
-> in privileged mode, what runs outside it, and what each choice costs. It
-> introduces the trusted computing base, the microkernel idea, IPC as its central
-> cost, and capabilities as its authority model. Then it shows where KickOS draws
-> the line. The exact contracts live in `../reference/architecture.md`.
+> Which parts of an operating system should run privileged, and which should
+> not? This chapter compares the answers and what each costs in safety and in
+> speed. After it you can say whether a bug in a driver can bring the whole
+> system down, why a microkernel turns a function call into a message, and who
+> owns the f411 example's UART in KickOS.
 >
 > *Further reading: Tanenbaum, Modern Operating Systems, ch.1, section 1.7
-> (operating system structure: monolithic, layered, microkernels, client-server,
-> virtual machines, exokernels).*
+> (operating system structure).*
 
 ## The problem: privileged code can do anything
 
-Chapter 0.1 introduced the privilege bit, and Chapter 0.3, *[What is an OS, and
+Chapter 0.1 introduced the privilege bit, and Chapter 0.2, *[What is an OS, and
 what is a kernel?](what-is-an-os-and-a-kernel.md)*, the kernel as the privileged
 part of the OS. Privileged code can program the
 protection unit, mask interrupts, and touch every device and every byte of memory.
@@ -62,7 +61,9 @@ same.
 
 **Microkernel.** Only the smallest possible core runs privileged. Drivers, file
 systems and network stacks become ordinary unprivileged programs, called
-**servers**. A client reaches a server by **inter-process communication (IPC)**: it
+**servers**, each running as its own **process**: a running program with its own
+protected memory, which KickOS calls a task (Chapter 0.2). A client reaches a
+server by **inter-process communication (IPC)**: it
 sends a message, the kernel delivers it, and the server replies. The TCB shrinks to
 the microkernel plus the servers a given program actually relies on. MINIX 3, QNX,
 the L4 family and seL4 have this shape.
@@ -71,11 +72,10 @@ the L4 family and seL4 have this shape.
 privileged for speed, as Windows NT and macOS's XNU are usually described. Their TCB
 is close to a monolithic one.
 
-**Library OS and unikernel.** The opposite direction: the OS is a library linked
-into the application, and the image runs as one program. The exokernel research
-systems, and unikernels such as MirageOS, do this on top of a hypervisor. On a
-microcontroller the same shape appears naturally: many small RTOSes link the kernel,
-the drivers and the application into one image at one privilege level. It is simple
+**Library OS.** The opposite direction: the OS is a library linked into the
+application, and the image runs as one program. On a microcontroller this shape
+appears naturally: many small RTOSes link the kernel, the drivers and the
+application into one image at one privilege level. It is simple
 and fast, and the TCB is the whole firmware.
 
 | Structure | What runs privileged | Service call | TCB |
@@ -88,7 +88,7 @@ and fast, and the TCB is the whole firmware.
 
 ## The f411 example: who owns the UART
 
-Chapter 0.3 followed `printf("hello\n")` on the STM32F411 to USART2 through a
+Chapter 0.2 followed `printf("hello\n")` on the STM32F411 to USART2 through a
 syscall, and ended on a question: who should own the UART? Each structure answers it
 differently.
 
@@ -101,8 +101,8 @@ differently.
   function, and the driver stores into `0x40004404` itself. It is the shortest path,
   and nothing stops the logger from rewriting the baud-rate register at `0x40004408`
   in the middle of it.
-- **Microkernel.** The UART belongs to a driver task, which alone is granted
-  USART2's 32-byte register window at `0x40004400` and a capability on line 38.
+- **Microkernel.** The UART belongs to a driver task, which alone may touch
+  USART2's 32-byte register window at `0x40004400` and is woken by line 38.
   `printf` ends in a message to that task; the kernel delivers it, and the driver
   stores the bytes. The kernel never touches USART2, and a bug in the driver kills
   the driver, not the app.
@@ -162,8 +162,8 @@ With services as separate programs, a new question appears: who may send to the
 UART driver? One answer is identity: the caller is user 1000, and a table says what
 user 1000 may do. Many microkernels answer with **capabilities**: an unforgeable
 token that both names an object and grants rights on it. A client may send to the
-UART driver only if it holds a capability to the driver's endpoint. Holding it is
-the permission; there is no global name to guess.
+UART driver only if it holds a capability for it. Holding it is the permission;
+there is no global name to guess.
 
 seL4 builds the whole kernel on this idea: every kernel object is reached only
 through a capability, and a program's authority is exactly the set it holds. seL4 is
@@ -195,13 +195,53 @@ running.
   ceiling](peripheral-isolation-and-the-hardware-ceiling.md)*). On a part with no
   protection unit, the structure stays but a stray write is no longer caught.
 
+## What a task and its threads hold
+
+In KickOS, what a program may do is a short list of things it holds. Four words
+name them, and the rest of the Book uses them constantly. A task holds the memory
+its threads share; each thread holds its own capabilities.
+
+- A **grant** is memory or a device a task is given: a range of addresses, with
+  read, write or execute rights, that the protection unit lets its threads reach.
+  The task's code, data and heap, and each thread's stack, are grants; so is a
+  device's register window, given to the driver task that owns the device. An
+  access outside every grant faults.
+- An **endpoint** is a kernel object that carries messages between threads: a
+  server thread waits on it to receive, and clients send to it. A service is
+  reached through its endpoint.
+- A **capability** is the kernel's record that a thread may use one kernel object,
+  such as an endpoint: which object, and which rights over it (send only, for
+  example). Each thread has a small table of them, kept in kernel memory where the
+  thread cannot write.
+- A **handle** is the number a thread passes to the kernel to name an entry in its
+  own table. The number grants nothing by itself: the kernel looks it up in the
+  caller's table, so a guessed number reaches nothing the caller did not already
+  hold.
+
+**The f411 example: what the printf app holds.** A **composition** is the file that
+says which tasks a system runs and what each is given (Chapter 0.5). The board's
+default one, `boards/f411disco/composition.yaml`, runs one task, `main`, whose `main`
+function calls `printf("hello\n")`. The task holds grants on its code, data, stack
+and an 8 KiB heap, and none on USART2: a store from the app to `0x40004404` faults,
+and the kernel kills the task. Slot 0 of its thread's table, `KOS_CAP_STDOUT`, is
+reserved for standard output. This composition leaves standard output with the
+kernel, so the slot stays empty and `printf` ends in a syscall that asks the kernel
+to print; the kernel owns the UART here and writes the bytes itself. When a
+composition names a console driver instead, the kernel fills slot 0 of every thread
+it starts with a send-only capability on that driver's endpoint. Holding it is the
+app's whole permission to write the console, and send is the only right it carries.
+
+Part 8 builds each piece: Chapter 8, *[Capabilities and the object
+model](capabilities.md)*, the whole model; Chapter 8.1 the handle and how the kernel
+checks it; Chapter 8.3 the endpoint. Grants are Chapter 7's subject, *[Memory
+protection](memory-protection.md)*.
+
 ## What KickOS chose, and why
 
 KickOS is a microkernel. Its kernel keeps what fails Liedtke's test: threads, tasks
-and the scheduler (`kernel/thread/`, `kernel/task/`, `kernel/sched/`); the tickless
-time base (`kernel/time/`); semaphores and priority-inheritance mutexes
-(`kernel/sync/`); endpoints, call/reply and notifications
-(`kernel/syscall/syscall_ipc.cc`, `kernel/notify/`); the capability table
+and the scheduler (`kernel/thread/`, `kernel/task/`, `kernel/sched/`); the time base
+(`kernel/time/`); semaphores and priority-inheritance mutexes (`kernel/sync/`);
+endpoints and call/reply (`kernel/syscall/syscall_ipc.cc`); the capability table
 (`kernel/syscall/cap.cc`); protection domains and grants (`kernel/domain/`,
 `kernel/grant/`); and the interrupt entry (`kernel/irq/irq.cc`). The PI mutex shows
 the test at work: lending a thread a higher priority is a scheduler action that no
@@ -213,25 +253,26 @@ a debug console.
 Everything else lives in userspace. A device driver is an unprivileged task, granted
 its device's register block as a memory region and a capability on its interrupt
 line. The kernel's interrupt entry masks the line and wakes the driver's thread; the
-driver services the device in thread mode and re-arms the line. A shared driver is a
-**service**: a thread that receives requests on an endpoint and replies. The same
-driver can instead be linked into a single client as a plain library, the **class**,
-with no IPC at all. The consumer chooses; the kernel does not change. The reasoning
-is in `../reference/architecture.md` ("Drivers & interrupts", "Driver packaging:
-class versus service").
+driver services the device as an ordinary thread, then unmasks the line. A shared
+driver is a **service**: a thread that receives requests on an endpoint and replies.
+The same driver can instead be linked into a single client as a plain library, the
+**class**, with no IPC at all. The consumer chooses; the kernel does not change. The
+reasoning is in `../reference/architecture.md` ("Drivers & interrupts", "Driver
+packaging: class versus service").
 
 **The f411 example: two owners, one at a time.** KickOS uses two of the answers
 above, in turn. The kernel keeps a minimal debug console: on the f411 it drives
-USART2 itself, through a transmit queue it drains on line 38, and an app reaches it
-with the `kos_kconsole_write` syscall. This is the standard microkernel exception
-(seL4 has `seL4_DebugPutChar` for the same reason): a panic, a fault report and
-early boot must print before any driver exists, and while one is dying. The full
+USART2 itself, through a transmit queue it drains on line 38, and the C library
+reaches it through the `kos_kconsole_write` syscall. This is the standard microkernel
+exception (seL4 has `seL4_DebugPutChar` for the same reason): a panic, a fault report
+and early boot must print before any driver exists, and while one is dying. The full
 UART driver, interrupt-driven and buffered, with receive, is a userspace task,
 `f4uartirq` (`system/driver/stm32f411/f4uartirq/`). A system's composition can hand
 it USART2 and name it as standard output, as
 `user/apps/common/selftest/consoles/f411disco/f4uartirq.yaml` does with
-`devices: [/dev/usart2]` and `stdout: /svc/console`. From then on the kernel stops
-touching USART2, until a panic or the driver's death takes it back.
+`devices: [/dev/usart2]` (the composition's name for USART2) and
+`stdout: /svc/console`. From then on the kernel stops touching USART2, until a panic
+or the driver's death takes it back.
 
 `printf` finds the owner by itself. newlib's `_write` calls `stdout_write`
 (`user/include/kickos/sys/emit.h`), which sends the bytes as a message on the
@@ -239,19 +280,18 @@ thread's stdout capability (`KOS_CAP_STDOUT`) and falls back to the kernel conso
 only when no driver serves it. The application is the same either way.
 `../reference/console.md` has the exact ownership rules.
 
-**Privileged threads.** A few threads, such as `idle`, run privileged. Each is a
-hole in the microkernel claim, so the set is fixed at boot and kept small; Chapter
-7.4, *[Privilege is three axes, not one bit](privilege-is-three-axes-not-one-bit.md)*,
-says which are required.
+**Privileged threads.** A few threads run privileged, such as `idle`, the thread that
+runs when nothing else is ready. Each is a hole in the microkernel claim, so the set
+is fixed at boot and kept small; Chapter 7.4, *[Privilege is three axes, not one
+bit](privilege-is-three-axes-not-one-bit.md)*, says which are required.
 
 **The IPC cost.** KickOS pays it the way the L4 family taught. Endpoints are
-synchronous and unbuffered (Chapter 8.3). On several architectures, a small untimed
-call to a server already waiting, from a caller that does not outrank it, takes a
-register fast path that completes the whole handoff inside the trap
-(`kickos_ipc_fastpath` in `kernel/syscall/syscall_ipc_fast.cc`). A hot path that
-needs only a register store, such as toggling a chip select, is not a call at all:
-the task holds the register window, and holding it is the authority (Chapter 8.4,
-*[The fast path is the capability](the-fast-path-is-the-capability-gpio-direct-mmio.md)*).
+synchronous and unbuffered (Chapter 8.3), and on several architectures a small call
+to a server already waiting completes inside the trap itself (Chapter 8.5 gives the
+conditions). A hot path that needs only a register store, such as setting a GPIO pin,
+is not a call at all: the task holds the register window, and holding it is the
+authority (Chapter 8.4, *[The fast path is the
+capability](the-fast-path-is-the-capability-gpio-direct-mmio.md)*).
 
 ## What KickOS takes from seL4, and what it does not
 
@@ -259,20 +299,18 @@ KickOS follows seL4's design principles: a kernel small by design; authority by
 capability, through a per-thread table of typed, rights-bearing handles (Chapter
 8.1); drivers, and any file system or network stack, as unprivileged servers reached
 by IPC; synchronous endpoints with a one-shot **reply capability** (Chapters 8.3 and
-8.5); and services wired up at start by a root task that hands each task the
-capabilities it needs.
+8.5); and each task handed, at start, the capabilities it needs.
 
-It deliberately does not take seL4's verification machinery: **no formal proof**, no
-CapDL capability manifest, no proof engineering. The goal is a low barrier: an
-application author writes a `main`, and the system's composition gives each task a
-sane default set of capabilities. Without a proof, the guarantees rest on a small
-kernel, review, and tests.
+It deliberately does not take seL4's verification machinery: **no formal proof**.
+The goal is a low barrier: an application author writes a `main`, and the system's
+composition gives each task a sane default set of capabilities. Without a proof,
+the guarantees rest on a small kernel, review, and tests.
 
-It also leaves out seL4 mechanisms that a small static RTOS does not need: untyped
-memory and retyping, hierarchical capability spaces, a derivation tree for recursive
-revocation, and one capability per pin or clock. Powers that name no single object,
-such as muxing pins or claiming an interrupt line, are granted per class as
-**authority bits** (`KOS_AUTH_PINMUX`, `KOS_AUTH_IRQ`, and others).
+It also leaves out several seL4 mechanisms that a small static RTOS does not need;
+Chapter 8.0 says which, and why. Powers that name no single object, such as pin
+muxing (choosing which peripheral drives a pin) or claiming an interrupt line, are
+granted as **authority bits**, one per kind of power (`KOS_AUTH_PINMUX`,
+`KOS_AUTH_IRQ`, and others).
 `../reference/architecture.md` ("Non-goals -- seL4 machinery deliberately NOT
 adopted") gives the arithmetic behind each refusal.
 
@@ -285,12 +323,12 @@ The journey walks these paths through the real source:
   register fast path.
 - [7. An interrupt to a driver in user space](../journey/07-interrupt-to-a-driver.md):
   the kernel's whole share of a driver, from the vector to the unprivileged thread
-  that services the device and re-arms the line.
+  that services the device and unmasks the line.
 - [9. Fault and kill](../journey/09-fault-and-kill.md): an unprivileged thread
   faults, the kernel kills its task, and another thread runs on.
-- [18. A real system](../journey/18-a-real-system.md): an SPI bus service and its
+- [18. A real system](../journey/18-a-real-system.md): a bus driver service and its
   client, including what the client sees when the driver dies, and the same client
-  built to own the controller itself.
+  built to own the bus controller itself.
 
 The fault-containment rule is `../reference/porting.md` ("Fault-isolation
 contract"); the call/reply contract, including what each side sees when the other
@@ -298,11 +336,11 @@ dies, is `../reference/ipc-call-reply.md`.
 
 ## Where to go next
 
-- What a kernel is for, and why `printf` needs one: Chapter 0.3, *[What is an OS,
+- What a kernel is for, and why `printf` needs one: Chapter 0.2, *[What is an OS,
   and what is a kernel?](what-is-an-os-and-a-kernel.md)*, the primer this chapter
   builds on.
-- Building the f411 example and flashing it: Chapter 0.5, *[How to read this book,
-  and the toolchain](how-to-read-this-book-and-the-toolchain.md)*.
+- Building the f411 example and flashing it: Chapter 0.5, *[The toolchain: from
+  source to a running image](the-toolchain-from-source-to-a-running-image.md)*.
 - Authority by possession: Chapter 8.0, *[Authority comes from possession, or from
   identity](authority-from-possession-or-from-identity.md)*, then Chapter 8.1,
   *[Naming a kernel object: the handle and the resolve

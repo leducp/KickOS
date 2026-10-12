@@ -74,9 +74,12 @@ switch to a kernel stack, others keep the interrupted stack pointer. The f411 pu
 eight words (more if the thread used the FPU) onto the thread's own stack.
 
 **The interrupt controller.** Something has to enable, mask, latch and prioritise
-device lines. The ISA may define it (the NVIC), leave it to the platform (RISC-V's
-PLIC), or offer a few fixed levels and let the chip route lines onto them (Xtensa's
-interrupt matrix). On the f411, USART2 raises NVIC line 38 and TIM2 line 28.
+device lines. The ISA may define it (the NVIC), leave it to the platform (RISC-V),
+or offer a few fixed levels and let the chip route lines onto them (Xtensa's
+interrupt matrix). A RISC-V platform usually splits it in two: the **CLINT**
+(Core-Local Interruptor) raises each core's timer and software interrupts, and the
+**PLIC** (Platform-Level Interrupt Controller) prioritises device lines and routes
+each to a core. On the f411, USART2 raises NVIC line 38 and TIM2 line 28.
 
 **The timer.** A tickless kernel needs a clock that only moves forward and a
 one-shot timer that fires at a deadline. The ISA may provide both, one, or neither.
