@@ -78,7 +78,9 @@ void tick(void)
 }
 ```
 
-The compiler turns it into four instructions and one data word:
+The code sits in **flash**, the chip's memory that keeps the program without
+power, and `counter` in **SRAM**, its working RAM; both return later in this
+chapter. The compiler turns `tick` into five instructions and one data word:
 
 ```
 ldr  r2, [pc, #8]   @ load the address of counter from the word below
@@ -290,7 +292,8 @@ from it:
   relatively slow; writes and erases are slower and work in blocks. Code often
   *executes in place* from flash.
 - **SRAM.** Fast, byte-writable memory that loses its contents without power. It
-  holds changing data, the heap, and thread stacks.
+  holds changing data, the heap (the memory `malloc` hands out), and thread
+  stacks.
 - **TCM (tightly-coupled memory), split into ITCM and DTCM.** Small SRAM banks
   wired close to the core for fast, predictable access. **ITCM** holds
   instructions; **DTCM** holds data. Not every MCU has them.
@@ -302,8 +305,9 @@ from it:
 *Further reading: Hennessy and Patterson, Computer Organization and Design, ch.5
 (the memory hierarchy: why memories trade speed against size and cost).*
 
-The **memory map** lists these memories and peripherals by address range. Linker
-scripts use it to place code and data; protection hardware uses it to define
+The **memory map** lists these memories and peripherals by address range. The
+**linker script**, the file that tells the linker where each part of the program
+goes (Chapter 0.5), uses it to place code and data; protection hardware uses it to define
 accessible ranges. Per-chip maps live in `../reference/boards.md`, and the
 region/domain contract lives in
 `../reference/architecture.md` ("Memory domains").
@@ -342,7 +346,7 @@ from the reference manual (RM0383):
 
 The two devices sit in the peripheral aperture; the full map holds many more
 between and after them. Each row is one of the address ranges the interconnect
-routes, and the linker script places code and data by the first two.
+routes, and the linker script places code and data in the first two.
 
 USART2's register table gives offsets from its base:
 

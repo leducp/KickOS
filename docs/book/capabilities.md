@@ -222,8 +222,8 @@ A plain application writes no composition. Each board has a default one,
 `boards/<board>/composition.yaml`, with a single task named `main`; the app
 links `KickOS::system_default`, and the kernel seats the reserved slots on every
 thread. A system that needs a driver task or a second app writes its own file.
-Chapter 0.5, *[How to read this book, and the
-toolchain](the-toolchain-from-source-to-a-running-image.md)*, shows where the
+Chapter 0.5, *[The toolchain: from source to a running
+image](the-toolchain-from-source-to-a-running-image.md)*, shows where the
 composition sits in the build.
 
 ## The f411 example: what the printf app holds

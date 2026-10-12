@@ -83,11 +83,13 @@ a Linux program, uses host glibc instead of these stubs.
 
 ## Why the cross-compiled fleet uses newlib
 
-The pinned ARM, RISC-V, RX, and Xtensa vendor toolchains use newlib
-([`../reference/porting.md`](../reference/porting.md)). Their shared symbol
-interface lets one `newlib_stubs.cc` serve the cross-compiled fleet. KickOS builds
-newlib from pinned source for each target multilib and checks its configuration
-headers against the toolchain's copy so `libstdc++` sees compatible types.
+Every cross build takes its compiler from the KickOS toolchain (Chapter 0.5),
+and that toolchain carries newlib, built from the same pinned sources for every
+family and multilib. One symbol interface therefore lets one `newlib_stubs.cc`
+serve the whole cross-compiled fleet. At configure time,
+`cmake/cross_newlib.cmake` checks that the newlib the compiler flags select
+matches what the board asks for: its reentrancy, and the full or the smaller
+"nano" build.
 
 The hosted **sim** uses the host libc and does not compile the stubs. A
 freestanding target with **no C library** has no newlib seam to fill. These
@@ -136,15 +138,15 @@ kernel and its libraries are compiled freestanding by
 The toolchain's `libstdc++` must be paired with a compatible C library. Linking
 it over KickOS's small freestanding libc risks ABI and header mismatches.
 
-The prebuilt `libstdc++` expects the toolchain's newlib headers and ABI. A
-different libc may define shared types or functions differently: `<cstdlib>`
+`libstdc++` is compiled against one C library's headers and ABI. A different
+libc may define shared types or functions differently: `<cstdlib>`
 can disagree with `<stdlib.h>` over `div_t`, and `<cmath>` can miss expected C
 math declarations. The NuttX experience is recorded under "Toolchain-libc
 lesson from NuttX" in `../reference/architecture.md`.
 
-Full-C++ apps therefore link `libstdc++` and `libsupc++` over a compatible
-newlib, rebuilt for the board's multilib and checked against toolchain headers.
-KickOS's freestanding libc does not host that toolchain runtime.
+Full-C++ apps therefore link `libstdc++` and `libsupc++` over the newlib they
+were compiled against, the one in the same KickOS toolchain, for the board's
+multilib. KickOS's freestanding libc does not host that runtime.
 
 Where an exception thrown in app code may travel, and the smaller terminate
 handler KickOS supplies, are in Chapter 7.2,
@@ -157,7 +159,7 @@ the C runtime first. The linker collects the addresses of every global
 constructor into one table, the `.init_array` section, which startup walks.
 KickOS must arrange that order itself: it once ran every `.init_array`
 constructor from `Reset_Handler`, before the clock and scheduler were ready.
-KickCAT, KickOS's sibling EtherCAT stack (Chapter 1), had a constructor that
+KickCAT, KickOS's sibling EtherCAT (industrial Ethernet) stack (Chapter 1), had a constructor that
 called the clock:
 
 ```
@@ -167,7 +169,7 @@ static nanoseconds start_time = now();
 `now()` calls `kos_clock_now`, whose pointer check needs a current thread. At
 that point in boot there was none, so the constructor faulted before `main`.
 
-KickOS now splits `.init_array`. Kernel, arch, chip, and library constructors
+KickOS therefore splits `.init_array`. Kernel, arch, chip, and library constructors
 needed by `kmain` run early. App and toolchain-runtime constructors go into
 `.kickos_app_init_array` and run from `kickos_root_entry`, the entry of the root
 thread, the first unprivileged thread (Chapter 0.5), after the clock and

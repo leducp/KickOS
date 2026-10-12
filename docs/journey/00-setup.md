@@ -5,7 +5,8 @@
 This chapter gets you ready to follow the code. You will build the `qemu` images, run one in
 QEMU, stop it at its first instruction with gdb, and find your way around the source tree.
 For an explanation of compiling, linking and loading, see Part 0 of the Book
-([Book: the C library and the C++ runtime](../book/whats-under-include-libc-and-the-cxx-runtime.md),
+([Book: the toolchain](../book/the-toolchain-from-source-to-a-running-image.md),
+[Book: the C library and the C++ runtime](../book/whats-under-include-libc-and-the-cxx-runtime.md),
 [Book: the machine underneath](../book/the-machine-underneath.md)).
 
 ## What you need

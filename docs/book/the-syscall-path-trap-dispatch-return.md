@@ -4,7 +4,7 @@ Copyright (c) 2026 Philippe Leduc
 -->
 # The syscall path: trap, dispatch, return
 
-> The chapter that closes the user-to-kernel-and-back arc. Chapter 0.2,
+> The chapter that closes the user-to-kernel-and-back arc. Chapter 0.3,
 > *[Interrupts and traps](interrupts-and-traps.md)*, introduced the trap as a
 > deliberate synchronous request and named the instruction on each ISA. Chapter 3.5,
 > *[Context switching and the silicon contract](context-switching-and-the-silicon-contract.md)*,
@@ -456,7 +456,7 @@ lands too.
 ## Where to go next
 
 - The trap-versus-interrupt distinction and the vector table this rides on: Chapter
-  0.2, *[Interrupts and traps](interrupts-and-traps.md)*.
+  0.3, *[Interrupts and traps](interrupts-and-traps.md)*.
 - The saved state the trap freezes and restores, and what a switch costs: Chapter 3.5,
   *[Context switching and the silicon contract](context-switching-and-the-silicon-contract.md)*.
 - The park/wake primitive a blocking syscall lands in: Chapter 2.2,

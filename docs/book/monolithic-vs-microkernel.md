@@ -299,11 +299,11 @@ KickOS follows seL4's design principles: a kernel small by design; authority by
 capability, through a per-thread table of typed, rights-bearing handles (Chapter
 8.1); drivers, and any file system or network stack, as unprivileged servers reached
 by IPC; synchronous endpoints with a one-shot **reply capability** (Chapters 8.3 and
-8.5); and each task handed, at start, the capabilities it needs.
+8.5); and each thread handed, at start, the capabilities it needs.
 
 It deliberately does not take seL4's verification machinery: **no formal proof**.
 The goal is a low barrier: an application author writes a `main`, and the system's
-composition gives each task a sane default set of capabilities. Without a proof,
+composition gives each task's threads a sane default set of capabilities. Without a proof,
 the guarantees rest on a small kernel, review, and tests.
 
 It also leaves out several seL4 mechanisms that a small static RTOS does not need;

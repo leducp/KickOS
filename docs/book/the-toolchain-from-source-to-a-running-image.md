@@ -204,7 +204,7 @@ hardware in a device tree as Linux and Zephyr do. KickOS separates them by
 | kernel knobs: pool sizes, stacks, protection posture | the kernel's integrator | `boards/<board>/configs/<variant>/defconfig` (Kconfig) |
 | what the part *is*: memory map, interrupt count, devices | KickOS, once per chip | `platform/<chip>/chip.yaml` |
 | what the board *decides*: console, pins, parts fitted | KickOS, once per board | `platform/<chip>/<board>.yaml` |
-| what *runs*: tasks, their grants (a **grant** is memory or a device a task is given), the heap | the application author | a composition, `boards/<board>/composition.yaml` by default |
+| what *runs*: tasks, their grants (Chapter 0.4), the heap | the application author | a composition, `boards/<board>/composition.yaml` by default |
 
 **Presets.** A preset names a board and a variant and nothing else. It lives in
 `cmake/presets/*.json` (one file per CPU family, gathered by
@@ -221,14 +221,14 @@ value outside its declared range is refused, not quietly replaced. After the
 first configure the live `.config` in the build directory is what counts.
 
 **The three YAML files.** The chip file and the board file are the hardware
-description. A host tool, `tools/compose` (run through uv), reads them and
+description. A host tool, `tools/compose` (run through uv, a Python package runner), reads them and
 writes the chip headers into the build tree, including the `MEMORY` regions the
 chip's linker script includes, so the memory map is stated once. The
 **composition** says what the system runs: for a plain application, one task
 named `main`. The same tool checks it against the chip, the board and the
 kernel's configuration, refuses it with a message naming the broken rule, or
-emits a constant table that the **init** walks at boot: the first unprivileged
-program, which starts every other task. No YAML parser runs on the
+emits a constant table that init (Chapter 0.2) walks at boot to start every
+other task. No YAML parser runs on the
 target.
 
 The rules behind all of this, including how a `-D` on the CMake line becomes a
@@ -341,8 +341,8 @@ The f411 example is now in flash. Between a reset and the first line of its
 on bare metal nothing else is there to prepare the machine.
 
 1. **The reset vector.** A Cortex-M core does not start by executing an
-   address; it starts by reading one. The linker script places the **vector
-   table** at the start of flash, `0x08000000`, which the STM32F411 also shows
+   address; it starts by reading one. The linker script places the vector
+   table at the start of flash, `0x08000000`, which the STM32F411 also shows
    at address 0 at boot. Its first word is the initial stack pointer,
    `_estack`, the top of the 128 KiB of SRAM; its second word, the **reset
    vector**, is the address of `Reset_Handler`. The core loads both and jumps.
@@ -369,8 +369,7 @@ on bare metal nothing else is there to prepare the machine.
    threads, **idle**, the thread that runs when nothing else is ready, and
    **root**, the first unprivileged thread.
 5. **The first thread.** A new thread has never run, so `kmain` writes on its
-   stack the frame a **context switch**, the move of the core from one thread to
-   another, would have saved, and the scheduler starts
+   stack the frame a context switch (Chapter 0.2) would have saved, and the scheduler starts
    by "switching back" to root. That first switch also turns the memory
    protection on, so root's first instruction already runs unprivileged.
 6. **The init and `main`.** Root runs the constructors kept for it in step 3,

@@ -80,8 +80,9 @@ It has its own context, the registers of Chapter 0.1 (PC, SP, the general-purpos
 registers, the flags, the privilege bit), and its own stack, for the reason
 Chapter 0.1's [*The stack and a call*](the-machine-underneath.md#the-stack-and-a-call)
 gives. To stop a thread, the kernel saves its context to memory; to resume it, the
-kernel loads that context back into the core (Chapter 3.5). The thread cannot tell
-it was stopped.
+kernel loads that context back into the core. Moving the core from one thread to
+another this way is a **context switch** (Chapter 3.5). The thread cannot tell it
+was stopped.
 
 At any moment a thread is in one of three states:
 
@@ -94,7 +95,8 @@ The **scheduler** is the kernel code that picks which ready thread runs next.
 
 A program often needs several threads working on the same data: the f411 example's
 `main`, and a second thread that reads a button. Those threads share memory, and
-the kernel objects they were given. Tanenbaum calls the unit that owns them a
+the **kernel objects** they were given: the locks, queues and timers the kernel
+keeps on a program's behalf. Tanenbaum calls the unit that owns them a
 **process**: a running program with its own protected memory. KickOS calls it a
 **task**. A KickOS task is a group of threads that share one set of memory and live
 and die together; each of its threads also holds its own list of the kernel objects
@@ -155,7 +157,7 @@ It cannot simply call a kernel function. A call changes the program counter and
 nothing else, so it would arrive in kernel code still unprivileged, and at whatever
 address the caller chose.
 
-The answer is a **trap instruction** (`SVC` on Arm, `ecall` on RISC-V, `INT` on RX):
+The answer is a **trap instruction** (`SVC` on Arm, `ecall` on RISC-V, `INT` on Renesas RX):
 an instruction whose only job is to enter the kernel on purpose, the way a fault
 does by accident. Chapter 0.3, *[Interrupts and traps](interrupts-and-traps.md)*,
 describes it. When user code executes it, the hardware switches to privileged mode
@@ -182,7 +184,8 @@ the data register at `0x40004404` (base `0x40004400`, data register at offset
 
 So `printf` ends in a syscall. newlib, the C library (Chapter 0.6), formats the
 text and calls `_write`, and KickOS's `_write` hands the bytes to the kernel through the trap.
-On the trap's far side the kernel console queues them and writes them to the
+On the trap's far side the **kernel console**, the kernel's own small output path
+to the UART, queues them and writes them to the
 USART2 data register one at a time, each time the status register's transmit-empty
 bit says the register is free. Every app's output passes through that one queue,
 and no app can touch the baud rate. The door is the only path
@@ -364,7 +367,8 @@ authority, but it cannot stop a thread that writes kernel memory directly.
 
 The privileged part of KickOS is two directories.
 
-**`kernel/`** is the kernel itself, in freestanding C++. It touches no hardware
+**`kernel/`** is the kernel itself, in freestanding C++ (C++ without the standard
+library's runtime, Chapter 0.6). It touches no hardware
 register directly. Its subdirectories map onto the four jobs:
 
 | Job | Where |
@@ -388,8 +392,9 @@ trap entry in assembly.
 
 Everything else is unprivileged. `user/` is the runtime every application links; its
 `user/src/syscall_stubs.cc` holds the user side of the door: each `kos_*` call packs
-its arguments and calls `arch_syscall`, which executes the trap. `system/` holds the first user program, the init in
-`system/init/compose/`, and the user-space drivers in `system/driver/<chip>/`. The
+its arguments and calls `arch_syscall`, which executes the trap. `system/` holds **init**
+(`system/init/compose/`), the user program that starts every other task at
+boot, and the user-space drivers in `system/driver/<chip>/`. The
 [Reference: repo layout](../reference/architecture.md#repo-layout) is the full map,
 and [Reference: architecture](../reference/architecture.md) ("User/kernel
 separation") the exact contract.

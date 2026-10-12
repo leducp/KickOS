@@ -102,8 +102,8 @@ the cost is concrete: a fault in a sensor driver must not stop the control loop.
   a capability, an entry in its own capability table with a type and rights, and
   names it by a handle, the number a thread uses to name a capability-table entry.
   There are no global ids to guess. A few powers name no single object, such as
-  muxing a pin; those are **authority bits**, one per kind of act that covers every
-  object of that kind, such as `KOS_AUTH_PINMUX` for muxing any pin.
+  muxing a pin; those are **authority bits**, one per kind of power, each covering
+  every object of that kind: `KOS_AUTH_PINMUX` lets its holder mux any pin.
 - **Isolation is as strong as the hardware permits, and a gap is stated, never
   hidden.** A part with a fine-grained protection unit gets fine-grained isolation;
   a part with none, such as the STM32F103 or the ESP32's Xtensa core, still runs the
@@ -174,7 +174,8 @@ sibling project **KickCAT**, an EtherCAT stack: *write a `main`, that's it.*
   files, linked against `KickOS::kernel` and `KickOS::system_default`, the board's
   default composition. That composition runs `main` as an unprivileged task whose
   thread holds a **sane default set of capabilities**, enough for a plain program,
-  and the value `main` returns ends the system. A plain application never writes a manifest.
+  and the value `main` returns ends the system. A plain application never writes a
+  manifest, a file listing every capability each thread starts with.
   Shaping the capability set, adding tasks and drivers, is opt-in: a system file
   such as those in `examples/composition/systems/` lists the tasks and the authority
   their threads start with. Easy things stay easy, and hard things stay possible.
@@ -269,19 +270,11 @@ documentation describes the interface but not the choice. KickOS is meant to be 
 so its documentation is part of the design.
 
 **What KickOS chose.** Three documents, each answering one question and linking to the
-others instead of repeating them:
-
-- **The Book** (this document) answers *why*: the concept, the design space, and the
-  choice. It stays timeless by leaving exact rules to the Reference.
-- **The Journey** (`../journey/`) answers *where, and in what order*: it walks the real
-  source stop by stop, with gdb recipes.
-- **The Reference** (`../reference/`) answers *exactly what*: the interfaces, the
-  invariants and the porting rules, kept in step with the code. When the two disagree,
-  the code wins.
-
-In the code, a comment explains a hidden constraint, not what the code plainly does.
-Chapter 0.0, *[How to read this book](how-to-read-this-book.md)*, gives a reading
-path through the three documents.
+others instead of repeating them: the Book answers *why*, the Journey *where, and in
+what order*, and the Reference *exactly what*. Chapter 0.0, *[How to read this
+book](how-to-read-this-book.md)*, describes them and gives a reading path through
+them. In the code, a comment explains a hidden constraint, not what the code plainly
+does.
 
 ## When the principles pull apart
 

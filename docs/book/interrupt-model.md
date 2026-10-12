@@ -2,7 +2,7 @@
 <!-- Copyright (c) 2026 Philippe Leduc -->
 # The interrupt model: the kernel takes it, a driver serves it
 
-> Chapter 0.2 showed how the CPU stops for an interrupt and enters a handler. This
+> Chapter 0.3 showed how the CPU stops for an interrupt and enters a handler. This
 > chapter asks the question a microkernel adds: if drivers are unprivileged tasks,
 > who runs when their device interrupts? It lays out the general answers, then the
 > one KickOS chose: two tiers of handler behind one dispatch seam, with the console
@@ -33,7 +33,7 @@ The f411 example shows both sides. While the app's `printf("hello\n")` runs, two
 lines can fire on the STM32F411:
 
 - **TIM2, line 28.** The kernel's time base: its counter wraps about every 51
-  seconds, and the wrap must be counted (Chapter 0.2). Nothing outside the kernel
+  seconds, and the wrap must be counted (Chapter 0.3). Nothing outside the kernel
   needs TIM2, and nothing outside it may touch it.
 - **USART2, line 38.** The serial port. Its transmit-empty event says "give me the
   next byte", and its receive event says "a byte arrived". Both belong to whoever
@@ -245,7 +245,7 @@ dispatch must run in a context that can block (Chapter 3.9).
 
 ## Reading map
 
-- **Prerequisite:** Chapter 0.2, *[Interrupts and traps](interrupts-and-traps.md)*:
+- **Prerequisite:** Chapter 0.3, *[Interrupts and traps](interrupts-and-traps.md)*:
   what an interrupt, a vector table, a controller, a trap and a mask are.
 - Chapter 3.5, *[Context switching and the silicon
   contract](context-switching-and-the-silicon-contract.md)*: what a thread's saved

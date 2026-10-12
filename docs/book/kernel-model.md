@@ -16,7 +16,7 @@
 
 ## Why a kernel needs a model of execution
 
-Chapter 0.3 said that a kernel shares the CPU among programs. Sharing is the whole
+Chapter 0.2 said that a kernel shares the CPU among programs. Sharing is the whole
 problem of this part. A core runs one instruction stream at a time, and a system has
 more work than cores: a control loop, a UART driver, a logger, the app's `main`. The
 kernel must answer four questions, over and over:
@@ -152,7 +152,7 @@ sorted list, and the one-shot is armed for the earliest of them, or for the end 
 running thread's quantum if that comes sooner. A system with nothing timed arms nothing
 and takes no timer interrupt at all.
 
-**The f411 example.** Chapter 0.2 met TIM2 on interrupt line 28: it is this chip's
+**The f411 example.** Chapter 0.3 met TIM2 on interrupt line 28: it is this chip's
 `arch_clock_now`, a 32-bit counter whose wraps the TIM2 handler adds into a 64-bit
 count. The one-shot is a different timer, the core's own SysTick. So on the f411, "what
 time is it" and "wake me at T" are two peripherals, and the kernel above them only sees
@@ -194,7 +194,7 @@ Condition variables, read-write locks and barriers are userspace libraries over 
 two. Endpoints (Chapter 8.3) and the notifications that carry interrupts to drivers
 (Chapter 3) park on the same substrate.
 
-**The f411 example.** On their way out through the kernel console (Chapter 0.3), the
+**The f411 example.** On their way out through the kernel console (Chapter 0.2), the
 bytes of `printf("hello\n")` go into its transmit ring, which the USART2 transmit
 interrupt drains into the data register at `0x40004404`. If the ring has no room, the
 writing thread parks (`console_room_wait`, `kernel/thread/park.cc`). When the drain
@@ -246,8 +246,8 @@ Two consequences shape the rest of the kernel:
   therefore still running for a few instructions, which is a hazard Chapter 2.2 closes.
 
 **The f411 example.** The clock read itself is a critical section. TIM2's counter and
-the 64-bit wrap count are two values; the read takes them under an `IrqLock`, so the
-TIM2 handler cannot add a wrap between the two reads (Chapter 0.2).
+the 64-bit wrap count are two values; the read takes them with interrupts masked, so the
+TIM2 handler cannot add a wrap between the two reads (Chapter 0.3).
 
 Not everything shared goes under the lock. A single word that one context writes and
 another reads, such as a console ring index the producer and the drain each advance,

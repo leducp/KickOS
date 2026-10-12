@@ -91,7 +91,7 @@ KickOS keeps the ROM's divisor rather than recomputing it.
 
 ### The memory map and the interrupt lines
 
-Part 0.1 showed how to read a memory map. What changes per chip is every number in
+Chapter 0.1 showed how to read a memory map. What changes per chip is every number in
 it: where flash starts (`0x08000000` on the F411, an external QSPI flash behind an
 execute-in-place window at `0x10000000` on the RP2040), where SRAM starts and how big
 it is (`0x20000000`, 128 KiB on the F411; `0x40800000`, 512 KiB on the ESP32-C6), and

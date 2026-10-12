@@ -272,7 +272,7 @@ looks inside. Chips sit below, in `arch/<family>/chip/`. The host simulator,
 
 **The concepts this part builds on.**
 
-- Chapter 0.2, *[Interrupts and traps](interrupts-and-traps.md)*: vector tables,
+- Chapter 0.3, *[Interrupts and traps](interrupts-and-traps.md)*: vector tables,
   interrupt controllers, masking.
 - Chapter 3.5, *[Context switching and the silicon
   contract](context-switching-and-the-silicon-contract.md)*: what a switch must

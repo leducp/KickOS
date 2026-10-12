@@ -28,7 +28,7 @@ The hardware checks every access against that description, and refuses one that 
 outside it. Three things follow, on any OS:
 
 - **Only privileged code may write the description.** If a program could edit its own
-  fence, the fence would mean nothing. This is why protection is kernel work (Chapter 0.3).
+  fence, the fence would mean nothing. This is why protection is kernel work (Chapter 0.2).
 - **The description changes with the running program.** Each program has its own fence,
   so the kernel reloads the hardware when it switches from one to another.
 - **A refused access is a trap.** The kernel then decides what dies: on KickOS, the
@@ -177,7 +177,7 @@ Three of eight rows. The kernel's data, from `0x20000000` to `0x20008000`, is in
 `main` cannot touch it; the kernel reaches it through the background region. USART2, at
 `0x40004400`, is in no row either. That is why `printf` ends in a syscall: a store from `main`
 to the data register at `0x40004404` would fault, so the bytes go to the kernel, which writes
-the register itself (Chapter 0.3).
+the register itself (Chapter 0.2).
 
 Now install the package for `qemu-arm64`, a Cortex-A53 with an MMU, and build the same
 `main.c`. The task runs at EL0 in its own address space. Its code is mapped read and execute,

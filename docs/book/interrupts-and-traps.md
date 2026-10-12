@@ -2,11 +2,12 @@
 <!-- Copyright (c) 2026 Philippe Leduc -->
 # Interrupts and traps: how the CPU stops what it is doing
 
-> Your program runs one instruction after another. Three things can stop it and
-> run other code first: a device signals (an interrupt), the program asks the
-> kernel for something (a trap), or an instruction cannot complete (a fault). This
-> chapter shows how the core finds the code to run, and how software keeps an
-> interrupt out of a critical moment.
+> What can stop a running program to run other code first, and how does the core
+> find that code? Three things can: a device signals (an interrupt), the program
+> asks the kernel for something (a trap), or an instruction cannot complete (a
+> fault). After this chapter you can follow the f411 example's timer interrupt and
+> its `printf` syscall into their handlers, and keep an interrupt out of a
+> critical moment in your own code.
 >
 > *Further reading: Tanenbaum, Modern Operating Systems, ch.1 (what an OS is) and
 > ch.5 (input/output: interrupts, the I/O software layers).*
@@ -65,7 +66,7 @@ Controller), which manages interrupt enables, pending state, and priorities. Oth
 core families have their own; Chapter 4, *[One kernel, many
 ISAs](one-kernel-many-isas.md)*, compares them.
 
-A **pending** bit can latch an interrupt while its line is masked. When the line
+A **pending** bit can latch (hold on to) an interrupt while its line is masked. When the line
 is enabled again, the controller can deliver the pending interrupt. Chapter 3.8,
 *[A masked interrupt is latched, not lost](a-masked-interrupt-is-latched-not-lost.md)*,
 explains how KickOS preserves this behavior across its driver protocol.

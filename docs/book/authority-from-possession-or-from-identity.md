@@ -6,7 +6,7 @@
 > this object -- is it allowed?* There are two ways to answer it, they are transposes of the
 > same truth, and which one you pick affects things that look unrelated to protection --
 > the work on an IPC path, how you take authority back, and whether recycling a task
-> slot can silently hand away permissions. Prereq: chapter 0.3 (what a kernel is for).
+> slot can silently hand away permissions. Prereq: Chapter 0.2 (what a kernel is for).
 > Full theory: Tanenbaum, *Modern Operating Systems*, ch.9 (Security -- protection domains,
 > access control lists, capabilities).
 
