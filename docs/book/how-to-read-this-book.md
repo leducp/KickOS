@@ -13,7 +13,7 @@
 The Book assumes a reader who can read C and a little C++, and who has compiled
 a program, linked it and put it on a board or run it. It does not assume a
 course on computer architecture or operating systems. Part 0 supplies both, one
-idea at a time:
+concept at a time:
 
 - Chapter 0.1 describes the machine: the processor, memory and devices.
 - Chapter 0.2 says what an operating system is, and which part of it is the
