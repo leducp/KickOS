@@ -230,8 +230,11 @@ machine.
 **Scheduling.** Deciding which thread runs on the CPU, and switching between them,
 means saving one thread's context and loading another's (Chapter 3.5,
 *[Context switching and the silicon contract](context-switching-and-the-silicon-contract.md)*).
-Only code that every program trusts may do this. Timers belong here too: "wake me in
-10 ms" is a scheduling decision driven by a hardware timer.
+Only code that every program trusts may do this. Scheduling needs time, so the
+kernel keeps one hardware timer for itself: it wakes a thread that asked "wake me
+in 10 ms", and takes the CPU back from a thread whose turn is up. The chip's other
+timers are ordinary devices (one that generates a PWM signal for a motor, one that
+measures a pulse), and can be given to a user-space driver like any other device.
 
 **Memory protection.** Only privileged code can program the protection unit, and it
 must be reprogrammed every time the running program changes, since each program has
