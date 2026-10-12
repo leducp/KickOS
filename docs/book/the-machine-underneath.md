@@ -176,10 +176,6 @@ also gives you:
 - **Access type.** Read-only, write-only, read-write, or a special rule such as
   write-1-to-clear. A wrong access may do nothing or change device state.
 
-Find the base, add the offset, then check each field's width, reset value, and
-access type. Chapters 3.7, 7.3, and 7.6 use these steps; per-chip values live in
-`../reference/boards.md`.
-
 ### The f411 example
 
 Part of the STM32F411's memory map, as `platform/stm32f411/chip.yaml` records it
@@ -203,12 +199,19 @@ USART2's register table gives offsets from its base:
 | SR (status) | `0x00` | `0x40004400 + 0x00 = 0x40004400` |
 | DR (data) | `0x04` | `0x40004400 + 0x04 = 0x40004404` |
 
-Bit 7 of SR, TXE, reads 1 when DR can take the next byte; a store to DR sends it.
-SR also shows the read side effect described above: its receive-error flags clear
-on a read of SR followed by an access to DR. `arch/arm/chip/stm32f411/regs/usart.h`
-spells the same sums in code, and every access must be a half-word or a word.
-The registers a driver uses fit in the first `0x20` bytes of the 1 KiB slot, so
-`0x20` is the window a protection region has to cover.
+One bit of SR shows the other three columns at work. Bit 7 is TXE, "transmit
+data register empty": it reads 1 when DR can take the next byte, and a store to DR
+sends that byte. Its reset value is 1 (SR resets to `0x000000C0`), so a UART fresh
+out of reset is ready to send. Its access type is read-only: software never writes
+TXE; the store to DR clears it, and the hardware sets it again once the byte has
+moved on. SR also shows the read side effect described above: its receive-error
+flags clear on a read of SR followed by an access to DR.
+
+`arch/arm/chip/stm32f411/regs/usart.h` spells the same sums in code, and every
+access must be a half-word or a word. The registers a driver uses fit in the first
+`0x20` bytes of the 1 KiB slot, so `0x20` is the window a protection region has to
+cover. Chapters 3.7, 7.3 and 7.6 read real tables the same way, and
+`../reference/boards.md` lists each board's values.
 
 ## Where to go next
 
