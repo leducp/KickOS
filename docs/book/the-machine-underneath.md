@@ -21,6 +21,12 @@ immediate execution state. The important ones are:
   memory area used for return addresses, saved registers, and some local data.
 - **General-purpose registers (GPRs).** Working slots for pointers, counters, and
   intermediate values. The ABI also assigns some to arguments and return values.
+  An **ABI** (application binary interface) is the set of rules compiled code
+  agrees on so that separately compiled pieces can call each other; its
+  **calling convention** names which registers carry arguments and results and
+  which ones a function must preserve. Chapter 0.5,
+  [*What an ABI is*](how-to-read-this-book-and-the-toolchain.md#what-an-abi-is),
+  covers the rest.
 - **Status / flags register.** Bits that record conditions such as zero, carry,
   or overflow for later instructions to test.
 - **Floating-point (FP) registers.** A separate bank on cores with a hardware FP

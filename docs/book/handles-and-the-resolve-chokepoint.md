@@ -114,7 +114,7 @@ first, and does nothing to any object until it has.** Resolve returns the object
 object** -- no queue is linked, no counter moved, no memory dereferenced. The refusal is
 also classified, because the two ways to fail are not the same news for the caller:
 `cap_resolve_e` reports `KOS_EBADF` for a handle that does not name a live object of the
-right type, and `KOS_EPERM` for one that names it but lacks a required right
+right type, and `KOS_EACCES` for one that names it but lacks a required right
 (`kernel/syscall/cap.cc`).
 
 The shape, as `KOS_SYS_SEM_WAIT` has it (`kernel/syscall/syscall.cc`):
@@ -126,7 +126,7 @@ Semaphore* s = static_cast<Semaphore*>(
     cap_resolve_e(sched::current(), handle, CapType::CAP_SEM, CAP_WAIT, &err));
 if (s == nullptr)
 {
-    return -err;             // EBADF or EPERM: object untouched
+    return -err;             // EBADF or EACCES: object untouched
 }
 sem_wait(s, timeout_us);     // use, under the SAME lock
 return 0;
@@ -158,7 +158,7 @@ Two properties make this a *chokepoint* and not merely a check:
    the binding has to store the semaphore's **global** handle, which resolve does not hand
    back. So that arm looks the entry up directly and then performs the same checks in the
    same order under the same lock: live entry, right type, live object, then
-   `CAP_SIGNAL` or `KOS_EPERM`. That is the property to hold onto. The chokepoint is a
+   `CAP_SIGNAL` or `KOS_EACCES`. That is the property to hold onto. The chokepoint is a
    *sequence* that nothing is allowed to skip, and the single function is how it is
    normally reached, not the whole of the rule. An arm that needs the entry rather than
    the object owes the reader the same steps, spelled out, and owes the auditor a reason

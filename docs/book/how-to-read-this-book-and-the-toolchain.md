@@ -96,9 +96,7 @@ decides which code is compiled at all.
 
 **Compile.** The compiler turns one translation unit into assembly for one
 instruction set. It knows the target core through flags such as `-mcpu`, and it
-follows an **ABI** (application binary interface): which registers carry
-arguments, how the stack is laid out, how floating-point values are passed.
-Two objects built for different ABIs cannot be linked together.
+follows the platform's **ABI**, described at the end of this section.
 
 **Assemble.** The assembler turns assembly into an **object file**: machine code
 and data grouped into named **sections**, plus a symbol table and a list of
@@ -146,6 +144,60 @@ by a vendor tool.
 **Flash or load.** Finally the image reaches the target: written into flash by
 a debug probe or a bootloader, then started by a reset; or loaded into an
 emulator, which plays the part of the board.
+
+### What an ABI is
+
+The link step only works because every object it combines follows the same
+**ABI** (application binary interface): the set of rules compiled code agrees
+on so that separately compiled pieces can call each other and share data. The
+source says a function takes two `int`s; the ABI says where they are when the
+call happens. Each platform publishes one: **AAPCS** (the Procedure
+Call Standard for the Arm Architecture) on Arm, the **RISC-V psABI** on RISC-V,
+the **System V** ABI on x86_64. It has three layers.
+
+- **The calling convention.** Which registers carry the arguments and the
+  result, which registers a called function may overwrite (caller-saved) and
+  which it must restore before returning (callee-saved), and how the stack is
+  aligned at a call. On Arm the first four argument words go in `r0`-`r3`, the
+  result comes back in `r0` (`r0:r1` for 64 bits), `r4`-`r11` are
+  callee-saved, and the stack is 8-byte aligned at a call.
+- **Data layout.** The size and alignment of each type, and the padding the
+  compiler inserts in a struct so that every member is aligned.
+  `alignof(uint64_t)` is 8 on Arm but 4 on RX, so one struct can have two
+  layouts on two targets.
+- **The object format.** How sections, symbols and relocations are encoded,
+  ELF for the f411 example.
+
+The linker joins calls but never translates between conventions, so objects
+that disagree must not be linked into one image. The compiler flags choose the
+ABI: `-mcpu` picks the instruction set and, on Arm, `-mfloat-abi` picks how
+floating-point values travel. `soft` uses no FPU instructions; `softfp` uses the
+FPU but still passes `float` and `double` in core registers; `hard` passes them
+in FPU registers. A `hard` object and a `soft` or `softfp` object disagree about
+where a `float` argument is, and the linker refuses to combine them. The f411
+example is built with `-mcpu=cortex-m4 -mfpu=fpv4-sp-d16 -mfloat-abi=softfp`
+(`arch/arm/chip/stm32f411/cpu.cmake`), kernel and application alike, and links
+the newlib multilib built with the same flags. Its `printf("hello\n")` passes
+the string's address in `r0`, where newlib's separately compiled `printf`
+expects it.
+
+KickOS adds its own ABI across the user/kernel boundary. An application traps
+into the kernel rather than calling it, so KickOS states the rules there, in
+`user/include/kickos/sys/abi.h`: the syscall numbers (`enum kos_syscall_nr`),
+which register carries the number and which carry the arguments, and the structures both sides read, such as `struct kos_recv_info`
+and `struct kos_thread_params`. In the f411 example, `_write` ends in
+`kos_kconsole_write`, which calls
+`arch_syscall(KOS_SYS_KCONSOLE_WRITE, buf, len, 0, 0)`. That is an ordinary
+AAPCS call, so the number lands in `r0` and the buffer and length in `r1` and
+`r2`. The stub moves the fifth word from the stack into `r12` and executes
+`svc #0`; the core saves `r0`-`r3` and `r12` in its exception frame, and the
+kernel reads the request from there. `abi.h` pins the shared structures' sizes
+and offsets with static assertions, so both sides read the same bytes.
+Chapter 3.9 explains the register convention
+([*a register ABI*](the-syscall-path-trap-dispatch-return.md#the-number-and-the-arguments-a-register-abi)),
+and Chapter 7.1,
+[*Alignment across the syscall boundary*](alignment-across-the-syscall-boundary.md),
+what goes wrong when the kernel trusts a user pointer's alignment.
 
 ## What a cross toolchain is
 
