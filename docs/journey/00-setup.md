@@ -2,10 +2,10 @@
 <!-- Copyright (c) 2026 Philippe Leduc -->
 # 0. Setup: build, run, debug, and a map of the tree
 
-By the end of this chapter you will have built the `qemu` images, run one on QEMU, stopped it
-at its first instruction under gdb, and you will know which directory holds what. Nothing
-here is KickOS theory. If you want the compile, link and load pipeline itself explained,
-the Book's Part 0 covers it ([Book: the C library and the C++ runtime](../book/whats-under-include-libc-and-the-cxx-runtime.md),
+This chapter gets you ready to follow the code. You will build the `qemu` images, run one in
+QEMU, stop it at its first instruction with gdb, and find your way around the source tree.
+For an explanation of compiling, linking and loading, see Part 0 of the Book
+([Book: the C library and the C++ runtime](../book/whats-under-include-libc-and-the-cxx-runtime.md),
 [Book: the machine underneath](../book/the-machine-underneath.md)).
 
 ## What you need
@@ -20,10 +20,10 @@ The project [`README.md`](../../README.md) ("Building") is the authority for the
   `qemu` board has a default composition (`boards/qemu/composition.yaml`), so it needs uv.
 - **The KickOS toolchain.** Every board builds with KickOS's own GCC, binutils and newlib,
   built from pinned sources. `tools/kickos-toolchain.sh <folder> [family,...]` restores it
-  from a release or builds it once; for the reference walk the `arm-none-eabi` family is
-  enough, and each architecture chapter (10 to 17) names the preset, and so the family, it uses. You
-  then source `<folder>/kickos-toolchain.sh`, which sets `KICKOS_TOOLCHAIN`. The configure
-  step stops if that variable is missing.
+  from a release or builds it. The reference walk needs only the `arm-none-eabi` family;
+  chapters 10 to 17 name the presets for the other architectures. Then source
+  `<folder>/kickos-toolchain.sh` to set `KICKOS_TOOLCHAIN`. Configuration stops if that
+  variable is missing.
 - **QEMU** with `qemu-system-arm`.
 - **A gdb that understands Arm.** On a Debian-like host that is `gdb-multiarch`. The KickOS
   toolchain ships no gdb.
@@ -166,9 +166,9 @@ Reset_Handler () at .../arch/arm/chip/mps2/chip_mps2.cc:112
 112	    kickos_ranges_init();
 ```
 
-The core has not run a single instruction, and yet it is already at `Reset_Handler`, with a
-stack pointer. A Cortex-M core loads both from the first two words of its vector table when
-it leaves reset. [01, Stop 1](01-power-on.md) starts exactly there.
+The core has not run an instruction, but gdb already shows it at `Reset_Handler` with a stack
+pointer. A Cortex-M core loads both from the first two words of its vector table when it
+leaves reset. [01, Stop 1](01-power-on.md) starts there.
 
 To rerun a recipe without typing it, put the commands in a file and run gdb in batch mode:
 

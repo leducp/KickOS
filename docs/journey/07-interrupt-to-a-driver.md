@@ -3,13 +3,13 @@
 # 7. An interrupt to a driver in user space
 
 By the end of this chapter you will have followed one interrupt from the moment a device asks for
-attention to the moment an unprivileged driver thread has dealt with it and opened the line
-again. You will see the vector table send every device line to one kernel entry, the kernel's
+attention to the moment an unprivileged driver thread has handled it and unmasked the line.
+You will see the vector table send every device line to one kernel entry, the kernel's
 table of handlers with its two tiers, the line being claimed and bound to a **notification**
 object, the kernel's first-level handler masking the line before it does anything else, the
 driver thread waking in thread mode, and the line being re-armed. Last, you will watch the
-interrupt controller keep a raise that arrived while the line was masked, and deliver it when
-the driver opens the line again.
+interrupt controller retain a request that arrived while the line was masked and deliver it
+when the driver unmasks the line.
 
 The ideas live in the Book: [Interrupts and traps](../book/interrupts-and-traps.md) for the
 vector table, the interrupt controller and masking, and
@@ -21,7 +21,7 @@ uses the MPU grants of [06](06-shared-memory.md) and the syscall path of
 
 ## What runs on qemu, and what does not
 
-Be clear about one thing first. The `qemu` machine runs **no userspace UART driver**. Its console
+The `qemu` machine runs **no userspace UART driver**. Its console
 is **semihosting**: the kernel hands each byte to the debugger interface of the emulator, which
 has no interrupt line at all (`arch_console_tx_backend` in `arch/common/semihost_console.cc`
 answers line `-1`). There is no driver for the MPS2 UART under `system/driver/`.

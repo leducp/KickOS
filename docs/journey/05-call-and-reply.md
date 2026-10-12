@@ -24,11 +24,11 @@ This chapter assumes [2. The first syscall](02-first-syscall.md) (how a `svc` re
 
 ## The pair we follow
 
-The console is the obvious server to pick, but it never answers a call: it receives
-*info-less*, giving the kernel no place to write a reply capability (Stop 3), so a `kos_call` to
-it bounces with `-KOS_ENOTSUP` (Stop 5 shows the test). The bus services need a chip driver under
-`system/driver/`, and `mps2-an386` has none. So the walk uses a selftest arm that is exactly a
-client and an echo server, in `user/apps/common/selftest/main.cc`:
+The console receives without an info buffer, so the kernel has nowhere to write a reply
+capability (Stop 3). A `kos_call` to it returns `-KOS_ENOTSUP` (Stop 5 shows the test).
+The bus services need a chip driver under `system/driver/`, and `mps2-an386` has none.
+Instead, we use a selftest arm with a client and an echo server in
+`user/apps/common/selftest/main.cc`:
 
 - **`t_call_from_root`** is the client. It is the selftest's `main` thread (named `main`,
   priority 2). It creates an endpoint, spawns the server, and calls it twice with

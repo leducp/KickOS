@@ -2,11 +2,11 @@
 <!-- Copyright (c) 2026 Philippe Leduc -->
 # The KickOS journey
 
-The journey is a walk through the KickOS source. It starts when the CPU leaves reset. It
-follows the code into the kernel, through the first context switch and into an unprivileged
-application. Then it follows the common system calls from end to end. Each chapter is a
-sequence of **stops**. A stop names a file and a function, says what happens there in plain
-English, and gives a short gdb recipe. With the recipe you can watch it happen on an emulator.
+The journey walks through the KickOS source, starting when the CPU leaves reset. It follows
+the code into the kernel, through the first context switch and into an unprivileged
+application. Then it traces common system calls from end to end. Each chapter is a sequence
+of **stops**. Each stop names a file and a function, explains what happens there, and gives
+a short gdb recipe so you can watch it happen on an emulator.
 
 ## Who it is for
 
@@ -20,8 +20,8 @@ The journey sits between the two other documents:
 - **The Book** ([`../book/`](../book/README.md)) teaches the concepts and the design choices:
   why a microkernel, why capabilities, why the protection unit is reprogrammed at the context
   switch. It explains *why*.
-- **The Reference** ([`../reference/`](../reference/README.md)) states the exact contract.
-  It follows the code, and when the two disagree the code wins. It says *exactly what*.
+- **The Reference** ([`../reference/`](../reference/README.md)) states the precise rules
+  implemented by the code. When they disagree, the code is authoritative. It says *exactly what*.
 - **The journey** shows *where and in what order*. It walks the code paths that the Book
   explains and the Reference specifies, and its stops link to both. It does not repeat the
   contract; follow the link when you need the precise rule.
@@ -88,7 +88,7 @@ Every stop has the same shape:
 - **Excerpts** are copied from the source, with `// ...` where lines are left out. They are
   short on purpose. Open the file for the rest.
 - **Try it** shows real gdb output, trimmed. Addresses come from one particular build, so
-  yours can differ by a few bytes. What matters is the shape: which function stops, which
+  yours may differ. What matters is the shape: which function stops, which
   register holds which kind of value. On a chip no emulator models, the Try it reads the
   linked image with the toolchain's `objdump` or `nm`, or is left out.
 

@@ -2,13 +2,12 @@
 <!-- Copyright (c) 2026 Philippe Leduc -->
 # 2. The first syscall: trap, dispatch, the handle resolve, return
 
-By the end of this chapter you will have followed one line of a user program, a
-`kos::print`, from the C++ call down through the trap instruction, into the kernel, through
-every check the kernel makes on what the caller handed it, and back to the caller with a result.
-You will see what the Cortex-M hardware saves on its own when a trap is taken and what the
-software adds, why the kernel leaves the trap handler almost at once, how a pointer from user
-code is checked before the kernel reads through it, and how a handle (the number user code holds
-to name a kernel object) is turned into an object, or refused.
+This chapter follows a `kos::print` call from user code through the trap instruction and
+kernel checks, then back to the caller with a result. You will see what Cortex-M hardware
+saves when it takes a trap and what the kernel saves itself. You will also see why the kernel
+leaves the trap handler almost at once, how it checks a user pointer before reading through
+it, and how it resolves a handle (the number user code uses to name a kernel object) or
+rejects it.
 
 The ideas live in the Book: [The syscall path: trap, dispatch, return](../book/the-syscall-path-trap-dispatch-return.md)
 is the main one, with [Interrupts and traps](../book/interrupts-and-traps.md) for what a trap

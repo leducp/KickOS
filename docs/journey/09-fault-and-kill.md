@@ -8,9 +8,9 @@ different thread prints that it survived. You will see the hardware's own work (
 frame, the fault status registers), the three tests the kernel makes before it decides the
 fault is the thread's and not its own, why the fault handler prints nothing, how the exception
 return is bent so that the dying thread walks into its own exit, and what that exit releases:
-capabilities, mutexes, waiters, the task. You will see who is told, and the system go on. A
-short last section shows the other road, a fault the kernel does not contain, and the kernel's
-own panic.
+capabilities, mutexes, waiters, the task. You will see how other threads learn about the
+death and how the system continues. A short final section follows a fault the kernel cannot
+contain and shows the kernel's panic path.
 
 The ideas live in the Book: [Interrupts and traps](../book/interrupts-and-traps.md) for what
 an exception is, [Privilege is three axes, not one bit](../book/privilege-is-three-axes-not-one-bit.md)
