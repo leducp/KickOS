@@ -374,7 +374,7 @@ holds on every target the project supports, with the same semantics everywhere, 
 that a fault in one task stays in that task.
 
 The kernel is kept small: it owns the four jobs above and little else. Its scheduler
-is priority-based and preemptive, and **tickless**: it programs a one-shot timer, one
+is priority-based, preemptive, and **tickless**: it programs a one-shot timer, one
 that fires once at a chosen time, for the next deadline, instead of waking on a
 periodic tick. Drivers run unprivileged and receive their interrupts from the kernel
 as events. Console output, files and protocols are userspace **servers**, programs
