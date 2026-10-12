@@ -2,6 +2,7 @@
 # Copyright (c) 2026 Philippe Leduc
 
 import collections
+import contextlib
 import glob
 import hashlib
 import lzma
@@ -9,6 +10,8 @@ import os
 import shutil
 import subprocess
 import tarfile
+import threading
+import time
 
 from conan import ConanFile
 from conan.errors import ConanException, ConanInvalidConfiguration
@@ -372,9 +375,45 @@ class KickOSToolchain(ConanFile):
             print(f"--- the last {len(tail)} lines of {path} ---\n" + "".join(tail), flush=True)
             raise ConanInvalidConfiguration(f"{argv[0]} failed in {cwd}; its output is in {path}")
 
-    def _make(self, cwd, *targets, env=None):
-        jobs = str(os.cpu_count() or 1)
-        self._run(["make", "-j", jobs, "MAKEINFO=true", *targets], cwd, env)
+    def _make(self, cwd, *targets, env=None, jobs=None):
+        # The CPUs this process may use, which an affinity mask or a cpuset makes fewer than
+        # the machine's.
+        if jobs is None:
+            jobs = getattr(os, "process_cpu_count", os.cpu_count)() or 1
+        self._run(["make", "-j", str(jobs), "MAKEINFO=true", *targets], cwd, env)
+
+    @contextlib.contextmanager
+    def _timed(self, stage):
+        start = time.monotonic()
+        self.output.info(f"{time.strftime('%H:%M:%S')} {stage}: begins")
+        outcome = "failed after"
+        try:
+            yield
+            outcome = "done in"
+        finally:
+            minutes, seconds = divmod(int(time.monotonic() - start), 60)
+            self.output.info(f"{time.strftime('%H:%M:%S')} {stage}: {outcome} "
+                             f"{minutes}m{seconds:02d}s")
+
+    def _together(self, *stages):
+        # Each (name, function) at once, each make with every CPU; the first failure is raised
+        # once all have ended.
+        failures = []
+
+        def run(name, function):
+            try:
+                with self._timed(name):
+                    function()
+            except BaseException as e:
+                failures.append(e)
+
+        threads = [threading.Thread(target=run, args=stage) for stage in stages]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        if failures:
+            raise failures[0]
 
     def _newlib(self, where, prefix, options, env):
         target = self._target()
@@ -397,19 +436,25 @@ class KickOSToolchain(ConanFile):
                                                           family.get("cxxflags")) if f)
 
         binutils = os.path.join(self.build_folder, "binutils")
-        self._run([os.path.join(src, "binutils", "configure"), f"--target={target}",
-                   f"--prefix={stage}", "--disable-nls", "--disable-werror", "--disable-gdb",
-                   "--disable-gdbserver", "--disable-sim", "--disable-gprofng",
-                   *family.get("binutils", [])], binutils, env)
-        self._make(binutils, env=env)
-        self._make(binutils, "install-strip", env=env)
+        with self._timed("binutils"):
+            self._run([os.path.join(src, "binutils", "configure"), f"--target={target}",
+                       f"--prefix={stage}", "--disable-nls", "--disable-werror", "--disable-gdb",
+                       "--disable-gdbserver", "--disable-sim", "--disable-gprofng",
+                       *family.get("binutils", [])], binutils, env)
+            self._make(binutils, env=env)
+            # One job: each manual's install-info rewrites share/info/dir, and two at once lose
+            # an entry.
+            self._make(binutils, "install-strip", env=env, jobs=1)
 
-        gcc_common = self._gcc_options(stage, os.path.join(stage, target))
-        gcc1 = os.path.join(self.build_folder, "gcc1")
-        self._run([os.path.join(src, "gcc", "configure"), *gcc_common, "--enable-languages=c",
-                   "--without-headers"], gcc1, env)
-        self._make(gcc1, "all-gcc", "all-target-libgcc", env=env)
-        self._make(gcc1, "install-strip-gcc", "install-target-libgcc", env=env)
+        # The one compiler: installed alone to build newlib, then its target libraries in the
+        # same tree once newlib is in the sysroot.
+        gcc = os.path.join(self.build_folder, "gcc")
+        with self._timed("gcc"):
+            self._run([os.path.join(src, "gcc", "configure"),
+                       *self._gcc_options(stage, os.path.join(stage, target)),
+                       "--enable-languages=c,c++"], gcc, env)
+            self._make(gcc, "all-gcc", env=env)
+            self._make(gcc, "install-strip-gcc", env=env)
 
         addition = ""
         if "dynamic_reent" in family:
@@ -429,26 +474,53 @@ class KickOSToolchain(ConanFile):
             newlib_env["CFLAGS_FOR_TARGET"] += " -DGETREENT_PROVIDED"
         if "newlib_include" in family:
             newlib_env["CFLAGS_FOR_TARGET"] += " -I" + os.path.join(src, family["newlib_include"])
-        self._newlib(os.path.join(self.build_folder, "newlib"), stage, family["newlib"],
-                     newlib_env)
-        self._drop_members(stage, family.get("drop", []))
+
+        def newlib():
+            self._newlib(os.path.join(self.build_folder, "newlib"), stage, family["newlib"],
+                         newlib_env)
+            self._drop_members(stage, family.get("drop", []))
+
+        nano = os.path.join(self.build_folder, "nano-stage")
+        stages = [("newlib", newlib)]
         if "nano" in family:
-            nano = os.path.join(self.build_folder, "nano-stage")
-            self._newlib(os.path.join(self.build_folder, "newlib-nano"), nano, family["nano"],
-                         env)
+            stages.append(("newlib-nano", lambda: self._newlib(
+                os.path.join(self.build_folder, "newlib-nano"), nano, family["nano"], env)))
+        self._together(*stages)
+        if "nano" in family:
             self._install_nano(nano, stage)
 
-        gcc = os.path.join(self.build_folder, "gcc")
-        self._run([os.path.join(src, "gcc", "configure"), *gcc_common,
-                   "--enable-languages=c,c++"], gcc, env)
-        self._make(gcc, env=env)
-        self._make(gcc, "install-strip", env=env)
+        with self._timed("libgcc"):
+            self._reconfigure_gcc(gcc, env)
+            self._make(gcc, "all-gcc", "all-target-libgcc", env=env)
+        # Neither make rebuilds what the other reads: the compiler and libgcc are left alone.
+        built = ["-o", "all-gcc", "-o", "all-target-libgcc"]
+        stages = [("libstdc++", lambda: self._make(gcc, *built, "all-target-libstdc++-v3",
+                                                   env=env))]
+        if "nano" in family:
+            stages.append(("libstdc++-nano", lambda: self._nano_cxx(gcc, nano, built, env)))
+        self._together(*stages)
+        with self._timed("install"):
+            self._make(gcc, env=env)
+            self._make(gcc, "install-strip", env=env)
 
         if "nano" in family:
-            self._install_nano_cxx(nano, stage, env)
-        self._check_dropped(stage, family.get("drop", []))
-        self._check_guards(stage, family.get("guards", []))
-        self._check_links(stage, "nano" in family)
+            self._install_nano_cxx(stage)
+        with self._timed("checks"):
+            self._check_dropped(stage, family.get("drop", []))
+            self._check_guards(stage, family.get("guards", []))
+            self._check_links(stage, "nano" in family)
+
+    def _reconfigure_gcc(self, gcc, env):
+        # GCC's configure, run before newlib was in the sysroot, took the target to have no C
+        # library headers (inhibit_libc), and its build made limits.h and the fixed headers
+        # without them. Configured again through the tree's own rule, from its cache, and both
+        # made again from the headers now installed. A configargs.h left in place appends
+        # "(reconfigured)" to what gcc -v prints.
+        host = os.path.join(gcc, "gcc")
+        for made in ("Makefile", "configargs.h", "stmp-fixinc", "stmp-int-hdrs"):
+            if os.path.isfile(os.path.join(host, made)):
+                os.remove(os.path.join(host, made))
+        self._make(gcc, "configure-gcc", env=env)
 
     def _libc_archives(self, stage):
         lib = os.path.join(stage, self._target(), "lib")
@@ -537,18 +609,22 @@ class KickOSToolchain(ConanFile):
                 "--disable-libgomp", "--disable-libquadmath", "--disable-libstdcxx-pch",
                 "--enable-checking=release", *FAMILIES[self._target()]["gcc"]]
 
-    def _install_nano_cxx(self, nano, stage, env):
-        # libstdc++ and libsupc++ again, against the nano newlib's headers: a second GCC whose
-        # sysroot is the nano install builds its target libraries, and only they are kept.
+    def _nano_cxx(self, gcc, nano, built, env):
+        # libstdc++ and libsupc++ again, every multilib, from the same compiler over the nano
+        # newlib's sysroot, in a target directory of their own under a prefix of their own. Run
+        # from a folder of their own, which holds their log.
         target = self._target()
-        prefix = os.path.join(self.build_folder, "nano-cxx-stage")
-        where = os.path.join(self.build_folder, "gcc-nano")
-        self._run([os.path.join(self.source_folder, "gcc", "configure"),
-                   *self._gcc_options(prefix, os.path.join(nano, target)),
-                   "--enable-languages=c,c++"], where, env)
-        self._make(where, "all-gcc", "all-target-libgcc", "all-target-libstdc++-v3", env=env)
-        self._make(where, "install-target-libstdc++-v3", env=env)
-        lib = os.path.join(prefix, target, "lib")
+        overrides = ["-C", gcc, f"prefix={os.path.join(self.build_folder, 'nano-cxx-stage')}",
+                     f"TARGET_SUBDIR={target}-nano",
+                     f"SYSROOT_CFLAGS_FOR_TARGET=--sysroot={os.path.join(nano, target)}"]
+        where = os.path.join(self.build_folder, "nano-cxx")
+        self._make(where, *overrides, *built, "all-target-libstdc++-v3", env=env)
+        self._make(where, *overrides, "-o", "install-target-libgcc",
+                   "install-target-libstdc++-v3", env=env)
+
+    def _install_nano_cxx(self, stage):
+        target = self._target()
+        lib = os.path.join(self.build_folder, "nano-cxx-stage", target, "lib")
         for archive in glob.glob(os.path.join(lib, "**", "libstdc++.a"), recursive=True):
             here = os.path.dirname(archive)
             dest = os.path.join(stage, target, "lib", os.path.relpath(here, lib))

@@ -183,11 +183,12 @@ fewer in `syscall_body` put the ping-pong at 4 mod 8. The trail:
 
 `conan/toolchain` is one Conan recipe with the family as an option. Conan keys a package on the
 host's operating system and architecture and on the option, so one command builds or restores the
-compiler this host runs for that family, and a second host gets its own. The build order is the
-classic one: binutils; a first GCC with C only; newlib, full and, on Cortex-M, nano; the final GCC
-with libstdc++ over that newlib, nano libstdc++ beside it on Cortex-M. GMP, MPFR, MPC and ISL are
-built in GCC's tree from their pinned archives, so the host needs no development packages of its
-own. Documentation is not built.
+compiler this host runs for that family, and a second host gets its own. GCC's compiler is built
+once: binutils; the compiler alone, installed; newlib with it, full and, on Cortex-M, nano at the
+same time; then, in the same GCC tree configured again over the installed newlib, libgcc and
+libstdc++, with the nano libstdc++ beside them from the same compiler over the nano sysroot.
+GMP, MPFR, MPC and ISL are built in GCC's tree from their pinned archives, so the host needs no
+development packages of its own. Documentation is not built.
 
 **The host is not locked.** Linux on any architecture and macOS build it natively with the host's
 C and C++ compiler, GNU make and a POSIX shell; Windows builds it under MSYS2, which Conan drives
