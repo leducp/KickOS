@@ -77,7 +77,8 @@ does without).*
 
 Most MCU block diagrams show the same basic parts:
 
-- **Core:** executes instructions and issues loads and stores.
+- **Core:** executes instructions and issues loads and stores (the instructions
+  that read and write memory).
 - **Interconnect (bus fabric):** routes accesses to the target memory or device
   and returns responses.
 - **Memories:** flash for program code and SRAM for changing data and stacks.
@@ -199,13 +200,21 @@ USART2's register table gives offsets from its base:
 | SR (status) | `0x00` | `0x40004400 + 0x00 = 0x40004400` |
 | DR (data) | `0x04` | `0x40004400 + 0x04 = 0x40004404` |
 
-One bit of SR shows the other three columns at work. Bit 7 is TXE, "transmit
-data register empty": it reads 1 when DR can take the next byte, and a store to DR
-sends that byte. Its reset value is 1 (SR resets to `0x000000C0`), so a UART fresh
-out of reset is ready to send. Its access type is read-only: software never writes
-TXE; the store to DR clears it, and the hardware sets it again once the byte has
-moved on. SR also shows the read side effect described above: its receive-error
-flags clear on a read of SR followed by an access to DR.
+One bit of SR shows the other three columns at work: bit 7, TXE, "transmit data
+register empty". Sending one byte goes like this:
+
+1. **Reset.** SR's reset value is `0x000000C0`, so TXE starts at 1: a UART fresh
+   out of reset is ready to send.
+2. **Check.** Software reads SR and tests bit 7. A 1 means DR can take the next
+   byte.
+3. **Write.** Software writes the byte to DR. The write starts the transmission
+   and clears TXE.
+4. **Ready again.** Once the hardware has moved the byte on, it sets TXE back to 1,
+   and the next byte can go.
+
+TXE's access type is read-only: software never writes it, only the hardware sets
+and clears it. SR also shows the read side effect described above: its
+receive-error flags clear on a read of SR followed by an access to DR.
 
 `arch/arm/chip/stm32f411/regs/usart.h` spells the same sums in code, and every
 access must be a half-word or a word. The registers a driver uses fit in the first
