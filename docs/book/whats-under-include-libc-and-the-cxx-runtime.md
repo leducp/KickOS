@@ -37,7 +37,7 @@ platform supplies a small set of primitives underneath it:
 | `_read` `_close` `_lseek` `_fstat` `_isatty` | the file model stdio is written against |
 | `_exit` `_kill` `_getpid` | process control that `exit`/`abort` bottom out in |
 | `errno` via `_impure_ptr` (newlib's reent) | per-context error state stdio and math set |
-| `__malloc_lock` / `__malloc_unlock` | bracket every arena mutation *when threaded* |
+| `__retarget_lock_*` | the locks around every arena mutation and every stream, *when threaded* |
 
 These primitives are the main porting seam between newlib and KickOS.
 
@@ -61,10 +61,15 @@ Most stubs live in `user/src/newlib_stubs.cc`; `_sbrk` lives separately in
   An allocating app on a board with no bound symbols gets a link error. Current
   chip scripts instead define a span, even if empty, so allocation can fail at
   runtime. The nRF51 script uses a zero-length `.userheap` for this purpose.
-- **`__malloc_lock` and `__malloc_unlock` are weak, empty stubs,** and newlib's
-  stream locks (`__retarget_lock_*`) keep newlib's own no-op defaults.
-  Allocating from multiple threads is unsafe until the app provides real
-  locking or a separate arena; concurrent `malloc` can corrupt the heap.
+- **Every libc lock is one recursive lock per address space.** newlib's
+  retargetable locks (`__retarget_lock_*`, in `user/src/newlib_lock.cc`) all map
+  to one kernel mutex the kernel seats in every thread's capability table at
+  `KOS_CAP_LIBC_LOCK`. The owner and the depth live in the address space's own
+  memory, so taking a lock the thread already holds costs no syscall, and nesting
+  two libc locks is recursion on the one. Threads of one address space share one
+  heap and one `stdout`, so two of them can `malloc` or `printf` at once safely.
+  The exact contract is `libc-lock-one-per-address-space` in
+  `../reference/invariants.md`.
 
 Other stubs reflect the lack of a filesystem: `_read` returns 0,
 `_close`/`_kill` return `-1`, and `_isatty` returns 1. The sim uses host glibc
@@ -210,10 +215,10 @@ call draws on the pieces above in this order:
    `_kickos_heap_limit`. A program that never calls `malloc` still links the
    allocator through `printf`. If `malloc` fails, newlib leaves `stdout`
    unbuffered and writes one byte at a time.
-4. **Locks.** `malloc` brackets the heap with `__malloc_lock`/`__malloc_unlock`,
-   and `printf` brackets the stream with its stream lock. Both are the empty
-   locks of KickOS's bottom edge, so a single-threaded app like this one pays
-   nothing for them.
+4. **Locks.** `malloc` brackets the heap and `printf` brackets the stream, both
+   with the address space's libc lock. The first take is one `kos_mutex_lock`
+   syscall on a free mutex; the nested takes that follow inside the same call
+   are counted in the app's memory and cost no syscall.
 5. **The newline flushes.** `stdout` is line-buffered, so the `\n` makes newlib
    flush the line in one call, `_write(1, "hello\n", 6)`.
 6. **The syscall seam.** `_write` hands the six bytes to
