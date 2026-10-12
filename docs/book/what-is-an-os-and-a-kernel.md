@@ -153,7 +153,9 @@ between them on larger cores. x86 has four levels, called rings 0 to 3: the kern
 runs in ring 0 and user code in ring 3, and most systems leave rings 1 and 2 unused.
 The idea is the same in all of them: at least two levels, a privileged one for the
 kernel and an unprivileged one for programs, and a transfer between them that the
-less privileged side cannot make on its own terms.
+less privileged side cannot make on its own terms. The hardware only provides the
+levels; how much code an OS runs at the privileged one is its own design choice,
+the subject of Chapter 0.4.
 
 Some cores have no privilege modes at all. Then a kernel can still organise the
 machine, but it cannot stop a buggy program from writing the kernel's memory.
