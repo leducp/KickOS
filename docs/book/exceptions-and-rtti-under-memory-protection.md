@@ -7,9 +7,8 @@ Copyright (c) 2026 Philippe Leduc
 > A Chapter-7 companion (prereq: the C++ runtime chapter 0.6,
 > [`whats-under-include-libc-and-the-cxx-runtime.md`](whats-under-include-libc-and-the-cxx-runtime.md),
 > and the memory-protection idea of Chapter 7). That chapter taught *what* the C++
-> runtime is made of -- three stacked libraries -- and ended on a one-paragraph "MPU
-> twist". This chapter is that twist in full: what a `throw`/`catch`/`dynamic_cast`
-> actually touches *at runtime*, why a memory-protection unit makes it hard, and how an
+> runtime is made of -- three stacked libraries -- and left memory protection to
+> this one: what a `throw`/`catch`/`dynamic_cast` actually touches *at runtime*, why a memory-protection unit makes it hard, and how an
 > UNPRIVILEGED thread reaches all of it without a fault. For the exact contract it binds
 > into the Reference: [`../reference/architecture.md`](../reference/architecture.md) (the
 > region-set model -- "Memory domains" and "C++ decisions") and
@@ -57,8 +56,8 @@ vs writable**:
 
 Hold that split, because it is the whole design under protection: **the read-only two
 (tables + RTTI) ride the app's code region for free; the writable two (heap + unwinder
-state) must be placed, deliberately, in the app's granted data region.** Chapter 0.6
-named these; here they earn their placement.
+state) must be placed, deliberately, in the app's granted data region.** Placing any of
+them kernel-side makes the first unprivileged touch fault.
 
 ## Three exception models, and how each is reached unprivileged
 

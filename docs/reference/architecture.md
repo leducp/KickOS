@@ -622,8 +622,12 @@ The unit of memory isolation is a **memory domain** -- a lightweight "process" i
 memory-boundary sense only: no `fork`, no `exec`, no loader and no per-process image. What backs the
 boundary depends on the part. Where the chip carries region descriptors the domain carries a region
 set and every domain lives in ONE physical address space; where the chip translates, the domain
-carries a page-table root and the boundary IS a virtual address space. Nothing above the arch layer
-distinguishes the two. Model borrowed from
+carries a page-table root and the boundary IS a virtual address space. No code above the arch layer
+names an ISA, a register or a descriptor format, and the same call sites serve both. The kernel above
+the seam does know WHICH kind it runs on, deliberately: on `KICKOS_HAVE_ASPACE` the frame pool
+(`FrameAllocator`), the address-space syscalls and the per-task space in the domain layer are
+compiled in, and the region set's enforcing path is compiled out, there being no descriptor for it to
+seat; a region build is the reverse. Model borrowed from
 **Zephyr `k_mem_domain`** / **ARINC 653** spatial partitions (temporal partitioning is *not*
 implied); ThreadX Modules and ChibiOS/SB are the loadable-code cousins.
 
