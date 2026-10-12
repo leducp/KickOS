@@ -148,9 +148,12 @@ access may reach. Only privileged code can change either one.
 
 Each architecture spells this differently. A Cortex-M core runs threads unprivileged
 through the `CONTROL.nPRIV` bit, while interrupt handlers always run privileged.
-RISC-V separates machine mode (M) from user mode (U). x86 calls its levels rings, and
-user code runs in ring 3. The idea is the same in all of them: two levels, and a
-transfer between them that the less privileged side cannot do on its own terms.
+RISC-V separates machine mode (M) from user mode (U), with a supervisor mode (S)
+between them on larger cores. x86 has four levels, called rings 0 to 3: the kernel
+runs in ring 0 and user code in ring 3, and most systems leave rings 1 and 2 unused.
+The idea is the same in all of them: at least two levels, a privileged one for the
+kernel and an unprivileged one for programs, and a transfer between them that the
+less privileged side cannot make on its own terms.
 
 Some cores have no privilege modes at all. Then a kernel can still organise the
 machine, but it cannot stop a buggy program from writing the kernel's memory.
