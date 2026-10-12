@@ -2,12 +2,13 @@
 <!-- Copyright (c) 2026 Philippe Leduc -->
 # The machine underneath: CPU, memory, and peripherals
 
-> What does the machine an OS runs on look like to the software? This chapter
-> answers from the microcontroller (MCU), the simplest machine KickOS runs on, and
-> then shows what a larger processor adds. No hardware background is needed.
-> Afterwards you can follow a line of C down to the instructions the core runs,
-> see what a function call leaves on the stack, and read a chip's memory map and
-> register table to find and drive a device.
+> What does the machine look like to the software running on it?
+>
+> No hardware background is needed. You will learn:
+> - how the core runs a line of C, one instruction at a time;
+> - what a function call leaves on the stack;
+> - how to read a chip's memory map and register table to drive a device;
+> - what a larger processor adds to a microcontroller.
 
 ## The CPU core and its state
 

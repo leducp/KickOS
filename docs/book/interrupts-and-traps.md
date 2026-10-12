@@ -2,12 +2,14 @@
 <!-- Copyright (c) 2026 Philippe Leduc -->
 # Interrupts and traps: how the CPU stops what it is doing
 
-> What can stop a running program to run other code first, and how does the core
-> find that code? Three things can: a device signals (an interrupt), the program
-> asks the kernel for something (a trap), or an instruction cannot complete (a
-> fault). After this chapter you can follow the f411 example's timer interrupt and
-> its `printf` syscall into their handlers, and keep an interrupt out of a
-> critical moment in your own code.
+> What can stop a running program to run other code first?
+>
+> Three things can: a device signals (an interrupt), the program asks the kernel
+> for something (a trap), or an instruction cannot complete (a fault). You will
+> learn:
+> - how the core finds the code to run for each;
+> - how the f411 example's timer interrupt and `printf` reach their handlers;
+> - how to keep an interrupt out of a critical moment in your own code.
 >
 > *Further reading: Tanenbaum, Modern Operating Systems, ch.1 (what an OS is) and
 > ch.5 (input/output: interrupts, the I/O software layers).*

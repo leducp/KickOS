@@ -2,13 +2,12 @@
 <!-- Copyright (c) 2026 Philippe Leduc -->
 # Overview and principles: what KickOS is for
 
-> What is KickOS for, and what rules does every part of it follow? Part 0 taught
-> the general ideas: the machine, what an operating system and a kernel are,
-> interrupts and traps, the microkernel structure, the toolchain, and what lies
-> under `#include`. This chapter says what KickOS sets out to be and names the
-> principles every later chapter applies, each with its reason. Afterwards you can
-> say why KickOS is built the way it is, and find where the Book and the Journey
-> work out each principle.
+> What is KickOS for, and what rules does every part of it follow?
+>
+> You will learn:
+> - what KickOS sets out to be;
+> - the principles every later chapter applies, and why;
+> - where the Book and the Journey work out each one.
 
 *Further reading: Tanenbaum, Modern Operating Systems, ch.1 (section 1.4, the
 operating system zoo, from embedded and sensor-node systems to servers; section

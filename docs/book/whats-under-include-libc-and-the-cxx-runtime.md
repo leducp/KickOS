@@ -2,12 +2,13 @@
 <!-- Copyright (c) 2026 Philippe Leduc -->
 # What's under #include: the C library and the C++ runtime
 
-> What does a line such as `printf("hello\n")` or `std::vector` need underneath
-> it, on a chip where nothing hands it a terminal, a heap or a file? This chapter
-> answers for the C library and for the C++ runtime. Afterwards you can name what
-> an application pulls in when it includes a standard header, say what each piece
-> asks of the operating system, and follow the f411 example's `printf` from the
-> application down to the kernel.
+> What does `printf("hello\n")` need underneath it, on a chip with no terminal and
+> no files?
+>
+> You will learn:
+> - what the C library and the C++ runtime are made of;
+> - what each piece asks of the operating system;
+> - how the f411 example's `printf` travels from the application to the kernel.
 
 On a desktop, `printf` and `std::vector` can look self-contained. On an MCU,
 their dependencies matter: output needs a sink, allocation needs memory, and

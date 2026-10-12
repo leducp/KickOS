@@ -2,11 +2,13 @@
 <!-- Copyright (c) 2026 Philippe Leduc -->
 # How to read this book
 
-> Where should a newcomer start, and what else is there to read? This chapter
-> says who the Book is written for, which example it follows, how it fits with
-> the two other KickOS documents, and in what order to read them. After it you
-> know which chapter to open next, and where to look when you want to see the
-> code or check an exact rule.
+> Where should you start, and what else is there to read?
+>
+> In this chapter:
+> - who the Book is written for;
+> - the example every Part 0 chapter follows;
+> - how the Book fits with the two other KickOS documents;
+> - which chapter to read next.
 
 ## Who the Book is for
 

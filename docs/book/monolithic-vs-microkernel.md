@@ -2,11 +2,13 @@
 <!-- Copyright (c) 2026 Philippe Leduc -->
 # Monolithic vs microkernel: how much code to trust
 
-> Which parts of an operating system should run privileged, and which should
-> not? This chapter compares the answers and what each costs in safety and in
-> speed. After it you can say whether a bug in a driver can bring the whole
-> system down, why a microkernel turns a function call into a message, and who
-> owns the f411 example's UART in KickOS.
+> Which parts of an operating system should run privileged?
+>
+> You will learn:
+> - the main ways to split the work between the kernel and the rest;
+> - what each costs in safety and in speed;
+> - why a microkernel turns a function call into a message;
+> - who owns the f411 example's UART in KickOS.
 >
 > *Further reading: Tanenbaum, Modern Operating Systems, ch.1, section 1.7
 > (operating system structure).*

@@ -2,11 +2,13 @@
 <!-- Copyright (c) 2026 Philippe Leduc -->
 # What is an OS, and what is a kernel?
 
-> What is an operating system for, which part of it is the kernel, and why must the
-> hardware keep programs from doing the kernel's work themselves? After this chapter
-> you can say what a thread and a task are, why one thread waits for another, why
-> `printf` on a microcontroller ends up asking the kernel, and where the KickOS kernel
-> sits in the source tree.
+> What is an operating system for, and which part of it is the kernel?
+>
+> You will learn:
+> - what a thread and a task are;
+> - why one thread sometimes waits for another;
+> - why `printf` on a microcontroller has to ask the kernel;
+> - where the kernel sits in the KickOS source tree.
 >
 > *Further reading: Tanenbaum, Modern Operating Systems, ch.1 (sections 1.1 on what
 > an OS is, 1.4 on the kinds of OS including real-time ones, 1.6 on system calls)

@@ -2,11 +2,13 @@
 <!-- Copyright (c) 2026 Philippe Leduc -->
 # The toolchain: from source to a running image
 
-> How does the C you write become bytes in a chip's flash, and what runs between
-> reset and the first line of your `main`? This chapter follows the f411 example
-> from source text to a running board. After it you can build KickOS for a
-> board, build an application against it, put it on the board or run it under
-> QEMU, and find your way around the source tree.
+> How does the C you write become a program running on a chip?
+>
+> You will learn:
+> - how source text becomes bytes in flash;
+> - what runs between reset and the first line of your `main`;
+> - how to build KickOS and an application, and run it on a board or under QEMU;
+> - how the source tree is organised.
 
 *Further reading: Tanenbaum, Modern Operating Systems, ch.1 (section 1.8, "The
 world according to C": header files, the preprocessor, and how a large program
