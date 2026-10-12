@@ -123,9 +123,26 @@ there. That is the call instruction, `bl` (branch with link): it writes the
 address of the instruction after it into `lr`, then branches. `tick` calls
 nothing, so `lr` survives until its `bx lr`, and it never uses the stack.
 
-A function that calls on cannot keep its return address in `lr` alone: its own
-`bl` would overwrite it. It saves `lr` in memory first, on the **stack**: a
-region of SRAM that SP points into. Take a caller of `tick`, in another file:
+A function that calls other functions has a problem: `lr` holds only one
+address, and every `bl` replaces it. Take a function `step` that calls
+`read_pair` and then `tick`, and follow `lr`:
+
+1. Its caller, say `main`, runs `bl step`: `lr` now holds the address in `main`
+   where `step` must come back to.
+2. `step` runs `bl read_pair`: `lr` now holds an address inside `step`. The way
+   back to `main` is gone from `lr`.
+3. `read_pair` returns through `lr`, back into `step`. That part works.
+4. `step` runs `bl tick`, and `tick` returns into `step` the same way.
+5. `step` is done and must return to `main`, but `lr` holds an address inside
+   `step`. Returning through it would jump back into `step` itself.
+
+Each call and return works on its own; what breaks is `step`'s own way back,
+lost at its first call. So `step` copies `lr` into memory before that first
+`bl`, and reads it back to return. That memory is the **stack**: a region of
+SRAM that SP points into. Copying `lr` into another register only moves the
+problem: that register's old value belongs to the caller and would itself need
+saving, and calls can nest as deep as the program goes. Here is `step`, in
+another file:
 
 ```c
 void tick(void);
@@ -144,17 +161,17 @@ int step(int x)
 Compiled the same way, it gives (trimmed to the instructions):
 
 ```
-push  {r4, lr}       @ save r4 and the return address on the stack
+push  {r4, lr}       @ save r4, and the way back to main, on the stack
 sub   sp, #8         @ reserve 8 bytes below them for pair
 mov   r4, r0         @ keep x in r4 across the calls
 mov   r0, sp         @ pass pair's address as the argument
 bl    read_pair      @ call: lr = the next instruction
-bl    tick           @ call again: lr is overwritten, the saved copy is safe
+bl    tick           @ call again: lr is replaced again, the saved copy is safe
 ldrd  r2, r3, [sp]   @ load pair[0] and pair[1]
 adds  r0, r4, r2     @ x + pair[0], into r0, the return register
 add   r0, r3         @ + pair[1]
 add   sp, #8         @ release pair
-pop   {r4, pc}       @ restore r4, and load the saved lr straight into PC
+pop   {r4, pc}       @ restore r4, and load the way back to main into PC
 ```
 
 The block `step` owns on the stack is its **stack frame**: its saved registers,
