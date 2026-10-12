@@ -43,6 +43,73 @@ silicon contract*) explains how.
 *Further reading: Tanenbaum, Modern Operating Systems, ch.1 (the processor, its
 registers, and what a program's state is).*
 
+## One instruction at a time: fetch, decode, execute
+
+A program is a sequence of instructions in memory, each a few bytes long. The
+core runs it by repeating one cycle:
+
+1. **Fetch.** Read the instruction at the address in PC, and advance PC to the
+   next one.
+2. **Decode.** Work out what the instruction asks for: which operation, which
+   registers, which constant.
+3. **Execute.** Do the operation, for example an addition in the arithmetic unit.
+4. **Memory access.** Only for an instruction that reads or writes memory. A
+   **load** reads a value from a memory address into a register; a **store**
+   writes a register's value to a memory address.
+5. **Write back.** Put the result in its destination register, and update the
+   flags if the instruction sets them.
+
+A branch is an instruction whose execute step writes PC, so the next fetch comes
+from somewhere else. Real cores overlap these steps for consecutive instructions
+(a *pipeline*), but each instruction still goes through them in this order.
+
+On Arm and RISC-V cores, loads and stores are the only instructions that touch
+memory; every computation works on registers. One line of C therefore becomes
+several instructions. Take this function, compiled for the STM32F411's Cortex-M4
+(the f411 example used through Part 0):
+
+```c
+int counter;
+
+void tick(void)
+{
+    counter = counter + 5;
+}
+```
+
+The compiler turns it into four instructions and one data word:
+
+```
+ldr  r2, [pc, #8]   @ load the address of counter from the word below
+ldr  r3, [r2, #0]   @ load counter's value from that address
+adds r3, #5         @ add the constant 5
+str  r3, [r2, #0]   @ store the result back to counter
+bx   lr             @ return to the caller
+.word 0x00000000    @ counter's address, filled in by the linker
+```
+
+Each instruction goes through the cycle:
+
+| Instruction | Fetch | Execute | Memory access | Write back |
+|---|---|---|---|---|
+| `ldr r2, [pc, #8]` | from flash | compute the word's address from PC | **load** the address of `counter` | `r2` |
+| `ldr r3, [r2, #0]` | from flash | use `r2` as the address | **load** `counter` from SRAM | `r3` |
+| `adds r3, #5` | from flash | add 5 to `r3` | none | `r3`, and the flags |
+| `str r3, [r2, #0]` | from flash | use `r2` as the address | **store** `r3` to `counter` | none |
+| `bx lr` | from flash | write PC from `lr` | none | none |
+
+Three things stand out. The constant 5 lives inside the `adds` instruction
+itself, so it costs no memory access. The variable costs two: one load to read
+it and one store to write it back. And the code first has to load the variable's
+*address*, because a 32-bit address does not fit inside a 16-bit instruction:
+the compiler places it in a data word next to the code, and the linker writes the
+real address there (Chapter 0.5 covers that step). `lr`, the **link register**,
+holds the return address the call left there, and `bx lr` returns through it.
+
+This is why an interrupt can arrive between the load and the store: the
+addition is three separate instructions, not one. Chapter 2.4, *An atomic buys
+definedness, not atomicity*, builds on that fact.
+
 ## MCU vs application processor: one flat address space, usually no MMU
 
 For an RTOS, the useful distinction is between an **application processor** and
@@ -77,8 +144,7 @@ does without).*
 
 Most MCU block diagrams show the same basic parts:
 
-- **Core:** executes instructions and issues loads and stores (the instructions
-  that read and write memory).
+- **Core:** executes instructions and issues loads and stores.
 - **Interconnect (bus fabric):** routes accesses to the target memory or device
   and returns responses.
 - **Memories:** flash for program code and SRAM for changing data and stacks.
