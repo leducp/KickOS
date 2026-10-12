@@ -147,9 +147,6 @@ from it:
   can be larger than the memory fitted behind it; Chapter 7.6 shows why that
   matters to speculative access.
 
-Compare memories by whether they survive power loss, how many cycles an access
-takes, and whether the core can fetch instructions directly from them.
-
 *Further reading: Hennessy and Patterson, Computer Organization and Design, ch.5
 (the memory hierarchy: why memories trade speed against size and cost).*
 
