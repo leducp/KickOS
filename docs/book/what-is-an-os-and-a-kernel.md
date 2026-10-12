@@ -194,18 +194,31 @@ and data, not USART2. A store from the app to
 the data register at `0x40004404` (base `0x40004400`, data register at offset
 `0x04`) faults. The app cannot own the UART unchecked, because the UART is shared.
 
-So `printf` ends in a syscall. newlib, the C library (Chapter 0.6), formats the
-text and calls `_write`, and KickOS's `_write` hands the bytes to the kernel through the trap.
-On the trap's far side the **kernel console**, the kernel's own small output path
-to the UART, queues them and writes them to the
-USART2 data register one at a time, each time the status register's transmit-empty
-bit says the register is free. Every app's output passes through that one queue,
-and no app can touch the baud rate. The door is the only path
-from the app to the UART, and the kernel decides what goes through it.
+So `printf` has to go through someone who may touch the UART, and it ends in a
+syscall. newlib, the C library (Chapter 0.6), formats the text and calls `_write`,
+and KickOS's `_write` hands the bytes to the kernel through the trap. What happens
+on the trap's far side depends on how the OS is built. There are two answers:
 
-A UART can also be handed to a user-space driver instead, with the kernel only
-checking who may talk to that driver. Who should own the UART is the question of
-Chapter 0.4.
+1. **The kernel drives the UART itself.** It queues the bytes and writes them to
+   the USART2 data register one at a time, each time the status register's
+   transmit-empty bit says the register is free. Device drivers are part of the
+   kernel, and run privileged with it. This is the **monolithic** answer.
+2. **A separate program drives the UART.** A driver, running unprivileged like the
+   app, is the only program whose protection regions include USART2. The kernel
+   does not touch the UART: it carries the bytes from the app to the driver, and
+   checks that the app is allowed to talk to that driver. This is the
+   **microkernel** answer.
+
+In both, the app never touches the UART, and every app's output passes through
+one owner that alone sets the baud rate and orders the bytes. What differs is how
+much code runs privileged to make that true: in the first answer a bug in the UART
+driver can corrupt the kernel, in the second it can only break the driver.
+
+KickOS is a microkernel and gives its drivers the second answer. It keeps one small
+exception, the **kernel console**: a minimal output path from the kernel to the
+UART, so the kernel can print before any driver runs, and so a program with no
+driver behind its output still prints. The f411 example's default build has no
+UART driver, so its `printf` ends there. Chapter 0.4 weighs the two answers.
 
 ## What a kernel must own
 
