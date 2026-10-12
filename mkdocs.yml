@@ -1,0 +1,98 @@
+site_name: KickOS
+docs_dir: docs
+site_dir: build/docs-site
+use_directory_urls: false
+theme:
+  name: material
+  features: [navigation.tabs, navigation.tabs.sticky, navigation.sections, navigation.top, navigation.indexes, search.highlight, content.code.copy]
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      slugify: !!python/object/apply:pymdownx.slugs.slugify {kwds: {case: lower}}
+  - pymdownx.highlight
+  - pymdownx.superfences
+nav:
+  - Home: README.md
+  - The Book:
+      - book/README.md
+      - "0.0 How to read this book": book/how-to-read-this-book.md
+      - "0.1 The machine underneath: CPU, memory, and peripherals": book/the-machine-underneath.md
+      - "0.2 What is an OS, and what is a kernel?": book/what-is-an-os-and-a-kernel.md
+      - "0.3 Interrupts and traps: how the CPU stops what it is doing": book/interrupts-and-traps.md
+      - "0.4 Monolithic vs microkernel: how much code to trust": book/monolithic-vs-microkernel.md
+      - "0.5 The toolchain: from source to a running image": book/the-toolchain-from-source-to-a-running-image.md
+      - "0.6 What's under #include: the C library and the C++ runtime": book/whats-under-include-libc-and-the-cxx-runtime.md
+      - "1 Overview and principles: what KickOS is for": book/overview-and-principles.md
+      - "2 The kernel model: who runs, when, and what they wait for": book/kernel-model.md
+      - "2.1 The time base: a monotonic clock you can trust": book/the-time-base-a-monotonic-clock-you-can-trust.md
+      - "2.2 The blocking substrate: one wait/wake primitive": book/the-blocking-substrate-one-wait-wake-primitive.md
+      - "2.3 Priority inheritance: lending a thread its blocker's urgency": book/priority-inheritance-lending-urgency.md
+      - "2.4 An atomic buys definedness, not atomicity": book/an-atomic-buys-definedness-not-atomicity.md
+      - "2.5 One kernel lock, many ready queues": book/one-lock-many-ready-queues.md
+      - "3 The interrupt model: the kernel takes it, a driver serves it": book/interrupt-model.md
+      - "3.5 Context switching and the silicon contract": book/context-switching-and-the-silicon-contract.md
+      - "3.6 Thread stacks: who owns the memory?": book/thread-stacks-and-the-kiss-tension.md
+      - "3.7 Peripheral isolation and the hardware ceiling": book/peripheral-isolation-and-the-hardware-ceiling.md
+      - "3.8 A masked interrupt is latched, not lost": book/a-masked-interrupt-is-latched-not-lost.md
+      - "3.9 The syscall path: trap, dispatch, return": book/the-syscall-path-trap-dispatch-return.md
+      - "4 One kernel, many ISAs": book/one-kernel-many-isas.md
+      - "5 What a chip adds to its core": book/what-a-chip-adds.md
+      - "6 Porting KickOS: a new board, a new chip, a new ISA": book/porting-kickos.md
+      - "7 Memory protection: one abstraction over two kinds of hardware": book/memory-protection.md
+      - "7.1 Alignment across the syscall boundary": book/alignment-across-the-syscall-boundary.md
+      - "7.2 Exceptions and RTTI under memory protection": book/exceptions-and-rtti-under-memory-protection.md
+      - "7.3 Where your RAM goes: the full-C++ memory floor and splitting kernel from app in the linker": book/where-your-ram-goes-full-cxx-memory-floor-and-the-linker-split.md
+      - "7.4 Privilege is three axes, not one bit": book/privilege-is-three-axes-not-one-bit.md
+      - "7.5 Protection follows the CPU, not the scheduler's intent": book/protection-follows-the-cpu-not-the-schedulers-intent.md
+      - "7.6 The CPU reads ahead: memory types and speculative access": book/memory-types-and-speculative-access.md
+      - "7.7 Whoever stacks the trap frame owns the bounds check": book/whoever-stacks-the-trap-frame-owns-the-bounds-check.md
+      - "8 Capabilities and the object model: who may do what to which object": book/capabilities.md
+      - "8.0 Authority comes from possession, or from identity: capabilities and access lists": book/authority-from-possession-or-from-identity.md
+      - "8.1 Naming a kernel object: the handle and the resolve chokepoint": book/handles-and-the-resolve-chokepoint.md
+      - "8.2 Adding a kernel object type: the additive recipe": book/adding-a-kernel-object-type-the-additive-recipe.md
+      - "8.3 Endpoints: synchronous IPC by rendezvous": book/endpoints-synchronous-ipc-by-rendezvous.md
+      - "8.4 The fast path is the capability: why a chip-select toggle is direct MMIO, not a syscall": book/the-fast-path-is-the-capability-gpio-direct-mmio.md
+      - "8.5 Synchronous call/reply: the reply capability": book/synchronous-call-and-reply.md
+      - "8.6 Rebooting into the bootloader, and who may ask": book/rebooting-into-the-bootloader-and-who-may-ask.md
+      - "8.7 A stale handle must not be usable: generations, width, and allocation policy": book/stale-handles-generation-width-and-allocation-policy.md
+      - "Porting an RTOS to a New ISA: a RISC-V Worked Example": book/porting-a-new-isa-riscv.md
+  - The Journey:
+      - journey/README.md
+      - "0. Setup: build, run, debug, and a map of the tree": journey/00-setup.md
+      - "1. Power-on: from reset to the first instruction of main": journey/01-power-on.md
+      - "2. The first syscall: trap, dispatch, the handle resolve, return": journey/02-first-syscall.md
+      - "3. Sleep: the time base, the one-shot timer, the park, the wake": journey/03-sleep.md
+      - "4. A mutex: uncontended, contended, priority inheritance": journey/04-mutex.md
+      - "5. Call and reply: endpoints, the rendezvous, the reply capability": journey/05-call-and-reply.md
+      - "6. Shared memory: arena blocks, grants, and the MPU commit": journey/06-shared-memory.md
+      - "7. An interrupt to a driver in user space": journey/07-interrupt-to-a-driver.md
+      - "8. Spawn and capabilities: making threads and tasks, granting and resolving": journey/08-spawn-and-caps.md
+      - "9. Fault and kill: a user fault, the report, the kill, who survives": journey/09-fault-and-kill.md
+      - "10. The same walk with an MMU: qemu-arm64": journey/10-the-mmu.md
+      - "11. Multicore: one kernel on four cores, then one kernel per core": journey/11-multicore.md
+      - "12. ARMv6-M: the same walk on a Cortex-M0 and M0+": journey/12-armv6m.md
+      - "13. ARMv8-M: the same walk on a Cortex-M33": journey/13-armv8m.md
+      - "14. RISC-V: the same walk on RV32, and a look at RV64": journey/14-riscv.md
+      - "15. x86_64: the same walk on a PC": journey/15-x86_64.md
+      - "16. RX: the same walk on a Renesas RXv3": journey/16-rx.md
+      - "17. Xtensa: the same walk on an ESP32": journey/17-xtensa.md
+      - "18. A real system: an SPI bus service and its client": journey/18-a-real-system.md
+  - The Reference:
+      - reference/README.md
+      - "KickOS -- Architecture": reference/architecture.md
+      - "The bench chain": reference/bench.md
+      - "KickOS board support": reference/boards.md
+      - "The SPI / I2C bus-service contract": reference/bus-service.md
+      - "The kernel console": reference/console.md
+      - "KickOS invariants": reference/invariants.md
+      - "Synchronous call/reply IPC -- the reply capability": reference/ipc-call-reply.md
+      - "KickOS porting guide": reference/porting.md
+      - "House style": reference/style.md
+      - "KickOS telemetry / kernel-observability": reference/telemetry.md
+plugins:
+  - search
+  - offline
