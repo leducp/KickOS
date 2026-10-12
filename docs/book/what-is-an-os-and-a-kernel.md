@@ -5,6 +5,7 @@
 > What is an operating system for, and which part of it is the kernel?
 >
 > You will learn:
+>
 > - what a thread and a task are;
 > - why one thread sometimes waits for another;
 > - why `printf` on a microcontroller has to ask the kernel;

@@ -2562,6 +2562,7 @@ exit (`SYS_EXIT_EXTENDED`), so it needs no UART; its linker script maps code at
 
 Two toolchain/QEMU gotchas the chip layer resolves (both documented at their fix
 site):
+
 - **Default linker script.** The pinned Arm GNU toolchain (newlib) injects no
   default linker script, so the app's board script applies cleanly. The app link
   passes its script with a **driver-level `-T`** (not `-Wl,-T`) regardless -- it

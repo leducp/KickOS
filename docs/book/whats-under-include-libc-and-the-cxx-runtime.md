@@ -6,6 +6,7 @@
 > no files?
 >
 > You will learn:
+>
 > - what the C library and the C++ runtime are made of;
 > - what each piece asks of the operating system;
 > - how the f411 example's `printf` travels from the application to the kernel.

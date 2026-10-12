@@ -7,6 +7,7 @@
 > Three things can: a device signals (an interrupt), the program asks the kernel
 > for something (a trap), or an instruction cannot complete (a fault). You will
 > learn:
+>
 > - how the core finds the code to run for each;
 > - how the f411 example's timer interrupt and `printf` reach their handlers;
 > - how to keep an interrupt out of a critical moment in your own code.

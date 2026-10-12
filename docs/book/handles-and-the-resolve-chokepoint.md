@@ -23,8 +23,8 @@ the kernel correct and the part that merely helps an app find its own bugs.
 The simplest scheme that satisfies "no kernel pointer crosses the boundary" is a single
 kernel-wide pool of objects, named by an index into it. It is opaque, it is bounded, and it
 is checkable -- and it is **ambient**. The name is global, so any thread that can guess or
-forge the integer can name the object: `kos_sem_wait(4, ...)` from anywhere reaches semaphore
-4. Isolation says a caller should touch only what it has been *given*; a global namespace
+forge the integer can name the object: `kos_sem_wait(4, ...)` from anywhere reaches
+semaphore 4. Isolation says a caller should touch only what it has been *given*; a global namespace
 anyone can enumerate is the opposite -- it is ambient authority, and ambient authority
 contradicts the isolation the MPU chapters (Chapter 7) work so hard to build. Fencing a
 caller's *memory* while leaving the *object namespace* open would be half a boundary.

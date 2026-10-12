@@ -5,6 +5,7 @@
 > What is KickOS for, and what rules does every part of it follow?
 >
 > You will learn:
+>
 > - what KickOS sets out to be;
 > - the principles every later chapter applies, and why;
 > - where the Book and the Journey work out each one.

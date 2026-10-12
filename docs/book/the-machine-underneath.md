@@ -5,6 +5,7 @@
 > What does the machine look like to the software running on it?
 >
 > No hardware background is needed. You will learn:
+>
 > - how the core runs a line of C, one instruction at a time;
 > - what a function call leaves on the stack;
 > - how to read a chip's memory map and register table to drive a device;

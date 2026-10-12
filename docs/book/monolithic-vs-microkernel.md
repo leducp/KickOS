@@ -5,6 +5,7 @@
 > Which parts of an operating system should run privileged?
 >
 > You will learn:
+>
 > - the main ways to split the work between the kernel and the rest;
 > - what each costs in safety and in speed;
 > - why a microkernel turns a function call into a message;

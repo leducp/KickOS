@@ -38,6 +38,7 @@ section 3).
 ## Prior art (NuttX, FreeRTOS -- grounded in the local trees, credited not ranked)
 
 Both converge on the exact shape here, which validates it:
+
 - **FreeRTOS**: empty **trace-hook macros** gated by `configUSE_TRACE_FACILITY`
   (`traceTASK_SWITCHED_IN/OUT` at `tasks.c:3767`, `traceISR_ENTER/EXIT`), `#define`d
   to a recorder -> our compile-out `ktrace_*`. CPU% via `configGENERATE_RUN_TIME_STATS`
@@ -199,6 +200,7 @@ sink (UART binary, socket) wraps records in COBS *at that sink*.
 ## 3. Frontend -- layered so golden vectors are deterministic
 
 Two layers:
+
 - **Pure encoders** `encode_<event>(buf, seq, t, payload...)`
   (`include/kickos/trace/record.h`) -- header-only, no globals, no clock read.
   The CI golden-vector gate drives these with scripted `seq`/`t` -> the byte
@@ -446,6 +448,7 @@ uncorrected the baseline-vs-MPU comparison survives (absolute baselines use
 ## 12. Kernel-aware debugging (the second half of the charter)
 
 The same instrumented stream gives, at increasing cost:
+
 1. **Live scheduling view (shipped).** The SWITCH/SYSCALL/IRQ stream *is* a
    SystemView/Tracealyzer-style timeline (scheduling, ISR nesting, CPU%) without
    halting: `kicktrace.py --follow` for a live record scroll, `--chrome` for the

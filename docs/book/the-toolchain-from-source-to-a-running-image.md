@@ -5,6 +5,7 @@
 > How does the C you write become a program running on a chip?
 >
 > You will learn:
+>
 > - how source text becomes bytes in flash;
 > - what runs between reset and the first line of your `main`;
 > - how to build KickOS and an application, and run it on a board or under QEMU;

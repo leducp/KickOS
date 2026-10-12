@@ -5,6 +5,7 @@
 > Where should you start, and what else is there to read?
 >
 > In this chapter:
+>
 > - who the Book is written for;
 > - the example every Part 0 chapter follows;
 > - how the Book fits with the two other KickOS documents;

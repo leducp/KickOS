@@ -252,6 +252,7 @@ x86 sim. Most (RTEMS, microC/OS, RT-Thread core) are flat-memory. **ThreadX Modu
 **ChibiOS/SB** are the closest prior art and the references we lean on for the isolation model.
 
 Key borrowed ideas, attributed:
+
 - **NuttX** -- `FLAT`/`PROTECTED`/`KERNEL` build-mode taxonomy (KickOS is a **PROTECTED build** on
   every board: one kernel image, one privilege crossing, and no separately-loaded user binary. The
   region boards are PROTECTED in NuttX's own sense, MPU plus a trap; the translating boards keep the
@@ -486,6 +487,7 @@ pass that does not take that thread places it. No caller is privileged
 over another -- **the tick is not special.**
 
 **Triggers (all equal):**
+
 1. `thread_yield()` -- voluntary.
 2. Block on empty `sem_wait`/`mutex_lock`/endpoint recv -> wait queue -> reschedule.
 3. Wake from **thread** ctx: `sem_post` readies a waiter; if higher prio, reschedule now.
@@ -1270,6 +1272,7 @@ structs or a tiny IDL.
 ## Verification
 
 **Sim (automated, CI -- `cmake --preset sim && ctest`):**
+
 - Two-thread FIFO ordering; higher-priority thread preempts on ready.
 - Semaphore post (thread-ctx *and* IRQ-ctx) triggers a switch **with the tick disabled**.
 - RR round-robins equal-priority threads only when enabled.

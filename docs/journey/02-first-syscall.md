@@ -651,8 +651,8 @@ changes for them. Because the dispatch runs in thread mode on the thread's own k
 blocking call is just C++ code that decides to park the thread and asks the scheduler for another
 one. The other thread runs; the half-finished syscall stays frozen on the parked thread's kernel
 stack, below the header the trampoline wrote; and when the thread is woken it resumes inside the
-kernel function that parked it, returns into `syscall_body`, and takes the same way back as Stop
-11. There is no separate "continuation" object: the call stack is the continuation.
+kernel function that parked it, returns into `syscall_body`, and takes the same way back as
+Stop 11. There is no separate "continuation" object: the call stack is the continuation.
 
 [The next chapter](03-sleep.md) follows exactly that, with a sleep.
 
