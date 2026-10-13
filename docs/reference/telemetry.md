@@ -38,6 +38,7 @@ section 3).
 ## Prior art (NuttX, FreeRTOS -- grounded in the local trees, credited not ranked)
 
 Both converge on the exact shape here, which validates it:
+
 - **FreeRTOS**: empty **trace-hook macros** gated by `configUSE_TRACE_FACILITY`
   (`traceTASK_SWITCHED_IN/OUT` at `tasks.c:3767`, `traceISR_ENTER/EXIT`), `#define`d
   to a recorder -> our compile-out `ktrace_*`. CPU% via `configGENERATE_RUN_TIME_STATS`
@@ -67,8 +68,8 @@ Declared in `arch/include/kickos/arch/arch.h`, next to `arch_clock_now`:
 // A dedicated high-resolution monotonic counter for telemetry timestamps: the
 // ns arch_clock_now is too coarse to time a context switch (~1-5 us). u32 by
 // design (wraps; the decoder reconstructs absolute time from the SESSION
-// anchors). A target that has no such source does NOT define
-// KICKOS_HAVE_TRACE_CLOCK and cannot enable telemetry (build-time FATAL).
+// anchors). A target that has no such source does NOT select
+// HAS_TRACE_CLOCK and cannot enable telemetry (refused at configure).
 uint32_t arch_trace_now(void);
 ```
 
@@ -105,10 +106,10 @@ error, and it likely cannot resolve the M2 MPU-reprogram cost on an M0+ (may be
 sub-us). RP2040 gives coarse-but-real operational numbers; **the M2-gating
 baseline is defended on XMC/DWT** (cycle-accurate), where the MPU delta is visible.
 
-**Gate mechanism -- the capability var, not the seam:** the CMake capability var
-`KICKOS_HAVE_TRACE_CLOCK` (root `CMakeLists.txt`; defaulted per arch/chip,
-overridable by a board/chip/preset) is checked at configure ->
-`FATAL_ERROR` if `KICKOS_TELEMETRY=rtt` without it; an unresolved strong reference
+**Gate mechanism -- the capability, not the seam:** Kconfig's `HAS_TRACE_CLOCK`
+(defaulted per arch, selected per chip in `arch/Kconfig`, read by CMake and C as
+`KICKOS_HAVE_TRACE_CLOCK`) is what `TELEMETRY_RTT` depends on, so a request for
+telemetry without it is refused at configure; an unresolved strong reference
 is the link-time backstop. `arch_trace_now` has an **armv7m-layer fallback TU (DWT)**
 (`arch_trace_now_default.cc`); a chip whose DWT is unusable defines its own --
 **mps2 defines a semihosting `SYS_CLOCK`** one (the same source it already uses for
@@ -199,6 +200,7 @@ sink (UART binary, socket) wraps records in COBS *at that sink*.
 ## 3. Frontend -- layered so golden vectors are deterministic
 
 Two layers:
+
 - **Pure encoders** `encode_<event>(buf, seq, t, payload...)`
   (`include/kickos/trace/record.h`) -- header-only, no globals, no clock read.
   The CI golden-vector gate drives these with scripted `seq`/`t` -> the byte
@@ -301,8 +303,8 @@ thread-pool slot inside `g_instance` and idle's is `Kernel::idle_tcb`, so
 `KICKOS_TELEMETRY = off | rtt` (cache STRING, per-board default `off`). `off` =>
 every `ktrace_*` an empty inline, the asm hooks `#if`-compiled out,
 `arch_trace_now` unreferenced -> literal zero cost. `rtt` requires
-`KICKOS_HAVE_TRACE_CLOCK` (section 1) AND `KICKOS_CONSOLE in {rtt, both}`, else
-configure `FATAL_ERROR`. The build bakes the SESSION arch id in as
+`HAS_TRACE_CLOCK` (section 1) AND `KICKOS_CONSOLE in {rtt, both}`, else the
+configure refuses it. The build bakes the SESSION arch id in as
 `KICKOS_TRACE_ARCH` (section 14). Ready-made presets: `sim-telem`
 (`KICKOS_CONSOLE=both`, `KICKOS_RTT_CH1_SIZE=16384`) and `qemu-telem`
 (`KICKOS_CONSOLE=both`), in `cmake/presets/`. Growth path (NuttX-style, section
@@ -391,7 +393,7 @@ live stream via `--follow` (stdin/fifo, e.g. `JLinkRTTLogger -RTTChannel 1`;
    decoder was never taught trips CI instead of silently mislabelling a trace.
    Complements the in-source `static_assert` in
    `include/kickos/trace/record.h`, which pins every `ArchId` value so a reorder trips
-   the *build* (`KICKOS_TRACE_ARCH` in CMake must match the enum). **Durable fix (TODO):**
+   the *build* (`KICKOS_TRACE_ARCH` in `arch/Kconfig` must match the enum). **Durable fix (TODO):**
    generate both decoder tables from the C++ source, so there is one source of truth
    rather than two hand-maintained copies this gate merely cross-checks.
 
@@ -446,6 +448,7 @@ uncorrected the baseline-vs-MPU comparison survives (absolute baselines use
 ## 12. Kernel-aware debugging (the second half of the charter)
 
 The same instrumented stream gives, at increasing cost:
+
 1. **Live scheduling view (shipped).** The SWITCH/SYSCALL/IRQ stream *is* a
    SystemView/Tracealyzer-style timeline (scheduling, ISR nesting, CPU%) without
    halting: `kicktrace.py --follow` for a live record scroll, `--chrome` for the

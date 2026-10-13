@@ -176,12 +176,12 @@ part is knowing *which* claims your cheapest test environment is able to carry, 
 be the only witness for the ones it cannot.
 
 One last observation, about testability rather than correctness. The write predicate is the later
-twin of the read one, and its absence is invisible for exactly as long as the callers exercising
-that path are privileged -- because a privileged caller short-circuits the whole check before
-either arm runs (Chapter 7.4,
-*[Privilege is three axes, not one bit](privilege-is-three-axes-not-one-bit.md)*, axis 2). A
-boundary check whose only exerciser sits on the bypass side of the boundary is not a tested check.
-It is a check that has never run.
+twin of the read one, and a predicate some callers skip is invisible for exactly as long as only
+those callers exercise its path. No caller skips this one: the one privileged thread, `idle`,
+makes no system call (Chapter 7.4,
+*[Privilege is three axes, not one bit](privilege-is-three-axes-not-one-bit.md)*, axis 2), so
+every caller runs both arms. A boundary check whose only exerciser sits on the bypass side of the
+boundary is not a tested check. It is a check that has never run.
 
 *Points into:* `../reference/architecture.md` ("Syscall-argument validation (the soundness
 floor)", "User/kernel separation"); the confused-deputy floor it extends. Further reading:

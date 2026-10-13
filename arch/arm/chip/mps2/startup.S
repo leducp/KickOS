@@ -17,7 +17,11 @@
     .align 8                         /* 256-byte aligned (VTOR requirement) */
     .global g_isr_vector
 g_isr_vector:
+#if defined(__ARM_ARCH_8M_MAIN__)
+    KICKOS_CORE_VECTORS_V8M
+#else
     KICKOS_CORE_VECTORS_V7M
+#endif
 
     /* External interrupts 0..47 -> the generic IRQ-as-event entry. */
     .rept KICKOS_MAX_IRQ

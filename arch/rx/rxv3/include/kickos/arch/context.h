@@ -1,24 +1,18 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// rxv3: struct arch_context for the Renesas RX72M (RXv3 core). Every switch is
-// deferred through the SWINT handler (switch.S), which saves the FULL interrupted
-// register set (R1-R15, FPSW, the two accumulators, and the INT-stacked PC/PSW) on
-// the thread's own stack. So the only per-thread state the kernel holds is the saved
-// stack pointer: PC/PSW/GPRs all live in the frame that `sp` points at.
+// rxv3: struct arch_context. Every switch is deferred through the SWINT handler
+// (switch.S), which saves the full interrupted register set on the thread's own stack, so
+// the saved stack pointer is the only per-thread state: PC, PSW and the registers live in
+// the frame `sp` points at.
 //
-// Every KickOS thread runs on its own stack selected by PSW.U=1 (the USP), in
-// supervisor (PM=0) for a kernel thread or user (PM=1) for a user thread. The
-// interrupt stack (ISP, PSW.U=0) is reserved for exception entry and boot, so a
-// thread blocked mid-syscall keeps its continuation on its own per-thread USP.
+// Every thread runs on its own USP (PSW.U=1), supervisor (PM=0) for a kernel thread and user
+// (PM=1) for a user one. The ISP is reserved for exception entry and boot.
 
 #ifndef KICKOS_ARCH_CONTEXT_H
 #define KICKOS_ARCH_CONTEXT_H
 
-// Bytes the ABI reserves BELOW the thread pointer, which the TLS carve has to
-// carry on top of .tdata + .tbss.
-// RX has no thread pointer and no native TLS; the emutls override owns the block
-// layout end to end, so it reserves nothing the compiler knows about.
+// RX has no thread pointer and no native TLS: the emutls override owns the block layout.
 #define KICKOS_ARCH_TLS_TCB 0
 
 #include <stdint.h>

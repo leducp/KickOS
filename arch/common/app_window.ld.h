@@ -19,9 +19,8 @@
  *
  * At FILE SCOPE there is no section to be relative to, so the same expression is absolute and
  * the first ASSERT compares the address the body produced against the one the body claims. An
- * assert on the low bits alone would not: ten of the twelve f411disco images were 8-aligned
- * by accident and would have satisfied it, and a base written below the aligned end would
- * overlap app data.
+ * assert on the low bits alone passes an image 8-aligned by accident, and a base written below
+ * the aligned end would overlap app data.
  *
  * The second holds the window's base to _kernel_data_top, where kernel_data_reserve.ld.h pins
  * it, or to kernel .bss's end on a script that declares no pin, within the coarsest MPU granule

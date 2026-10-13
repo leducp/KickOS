@@ -18,6 +18,8 @@
 
 #include <gtest/gtest.h>
 
+#include "region_seam.h"
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -50,6 +52,11 @@ namespace
     size_t g_data_count = 0;
 }
 
+RegionSeam g_region_seam = {.ram_base = reinterpret_cast<uintptr_t>(g_arena),
+                            .ram_size = sizeof(g_arena),
+                            .pow2 = 1,
+                            .nocache = ARCH_MPU_NOCACHE_PROGRAMMED};
+
 extern "C"
 {
     void arch_dcache_invalidate(void* p, size_t n)
@@ -70,51 +77,6 @@ extern "C"
         void* const p = &g_arena[g_arena_used];
         g_arena_used += size;
         return p;
-    }
-
-    uintptr_t arch_ram_base(void)
-    {
-        return reinterpret_cast<uintptr_t>(g_arena);
-    }
-
-    size_t arch_ram_size(void)
-    {
-        return sizeof(g_arena);
-    }
-
-    int arch_mpu_nocache_support(void)
-    {
-        return ARCH_MPU_NOCACHE_PROGRAMMED;
-    }
-
-    size_t arch_mpu_min_region(void)
-    {
-        return 32u;
-    }
-
-    int arch_mpu_region_pow2(void)
-    {
-        return 1;
-    }
-
-    bool arch_mpu_region_encodable(uintptr_t base, size_t size)
-    {
-        return size != 0 and (base & (size - 1u)) == 0u;
-    }
-
-    struct arch_reserved_span arch_reserved_blocks(void)
-    {
-        return {};
-    }
-
-    struct arch_reserved_span arch_bus_master_apertures(void)
-    {
-        return {};
-    }
-
-    int arch_bitband_present(void)
-    {
-        return 0;
     }
 
     uint32_t arch_mpu_encode(struct arch_mpu_region const*, size_t n, struct arch_mpu_encoded* out)

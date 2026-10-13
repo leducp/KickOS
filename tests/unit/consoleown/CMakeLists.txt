@@ -20,9 +20,10 @@
 # the chip path, which consumes a mask gap; publish_handoff.cc offsets its gap ordinals by
 # that, so both console postures race the window each test names.
 kickos_add_unit_test(NAME console_ownership
-  SOURCES console_ownership.cc "${PROJECT_SOURCE_DIR}/tests/unit/consoleseam/console_alone.cc"
+  SOURCES console_ownership.cc ${_console_alone}
           "${PROJECT_SOURCE_DIR}/kernel/init/console.cc"
           "${PROJECT_SOURCE_DIR}/lib/rtt.cc"
+  INCLUDES "${PROJECT_SOURCE_DIR}/tests/unit/common"
   KERNEL)
 
 # Both console translation units compiled together: kernel/init/console.cc (ownership) and
@@ -32,30 +33,38 @@ kickos_add_unit_test(NAME console_ownership
 # HOST-ONLY: the publish must land inside a specific mask gap of the writer it races, which
 # needs an instrumented arch_irq_save/restore and no second thread.
 #
+# panic_race.cc: a panic landing between a writer's ownership read and its insert.
+#
+# clock_retune.cc: kernel/time/clock_select.cc's console coherence, the ownership it refuses on
+# and the ring it keeps across the retune.
+#
 # masked_window.cc: the interrupt-masked window of console_tx_insert_line, which any
 # unprivileged thread drives through kos_kconsole_write. Host-only: the metric is bytes pushed
 # per masked span, and no board can report that without an instrumented mask.
 kickos_add_unit_test(NAME console_publish_handoff
-  SOURCES publish_handoff.cc masked_window.cc
-          "${PROJECT_SOURCE_DIR}/tests/unit/consoleseam/console_seam.cc"
+  SOURCES publish_handoff.cc masked_window.cc panic_race.cc clock_retune.cc
+          ${_console_seam}
           "${PROJECT_SOURCE_DIR}/kernel/irq/irq_route.cc"
           "${PROJECT_SOURCE_DIR}/kernel/init/console.cc"
           "${PROJECT_SOURCE_DIR}/kernel/init/console_tx.cc"
+          "${PROJECT_SOURCE_DIR}/kernel/time/clock_select.cc"
           "${PROJECT_SOURCE_DIR}/lib/rtt.cc"
-  INCLUDES "${PROJECT_SOURCE_DIR}/tests/unit/consoleseam"
+  INCLUDES "${PROJECT_SOURCE_DIR}/tests/unit/consoleseam" "${PROJECT_SOURCE_DIR}/tests/unit/common"
   KERNEL)
 
 # kernel/init/console.cc at an own-image AMP node's posture, where a user writer carries a
 # half-sent CR between offers.
 kickos_add_unit_test(NAME console_cr_pending
-  SOURCES console_cr_pending.cc "${PROJECT_SOURCE_DIR}/tests/unit/consoleseam/console_alone.cc"
+  SOURCES console_cr_pending.cc ${_console_alone}
           "${PROJECT_SOURCE_DIR}/kernel/init/console.cc"
           "${PROJECT_SOURCE_DIR}/lib/rtt.cc"
-  POSTURE KICKOS_AMP_OWN_IMAGE=1)
+  INCLUDES "${PROJECT_SOURCE_DIR}/tests/unit/common"
+  POSTURE KICKOS_AMP_OWN_IMAGE=1 KICKOS_AMP_CONSOLE_CLAIM=1)
 
 # kernel/init/console.cc's polled line writer at a CRLF console's posture.
+# terminal_paths.cc: which of kernel/init/console.cc's ends takes the terminal outcome.
 kickos_add_unit_test(NAME console_line_sync
-  SOURCES line_sync.cc "${PROJECT_SOURCE_DIR}/tests/unit/consoleseam/console_alone.cc"
+  SOURCES line_sync.cc terminal_paths.cc ${_console_alone}
           "${PROJECT_SOURCE_DIR}/kernel/init/console.cc"
           "${PROJECT_SOURCE_DIR}/lib/rtt.cc"
   POSTURE KICKOS_CONSOLE_CRLF=1)

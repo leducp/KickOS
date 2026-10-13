@@ -10,6 +10,13 @@
 
 #include <string>
 
+namespace kickos
+{
+    struct Endpoint;
+    struct Task;
+    struct Thread;
+}
+
 namespace darkseam
 {
     // Bytes the device took, in order.
@@ -18,10 +25,12 @@ namespace darkseam
     extern uint32_t g_reclaims;
     // Whether the console's register window is free.
     extern bool g_window_free;
-    // Whether arch_console_write inserts into the ring an arm armed, rather than writing.
-    extern bool g_ring_backed;
 
     void reset();
+
+    // KOS_SYS_CONSOLE_PUBLISH's console sequence, with no writer in flight to drain: `publisher`
+    // publishes `ep` for `served`. False, with nothing handed over, where the publish is refused.
+    bool publish(kickos::Thread* publisher, kickos::Endpoint* ep, kickos::Task* served);
 }
 
 #endif

@@ -9,7 +9,7 @@
 #ifndef KICKOS_ARCH_ARM64_COMMON_VMSA_H
 #define KICKOS_ARCH_ARM64_COMMON_VMSA_H
 
-/* Level-1 block descriptor (4 KiB granule, so one block spans 1 GiB). */
+/* Descriptor bits (4 KiB granule: a level-1 block spans 1 GiB, a level-2 block 2 MiB). */
 #define BLOCK           (1 << 0)        /* valid, and a block rather than a table */
 #define AF              (1 << 10)       /* access flag: 0 faults on first touch */
 #define SH_INNER        (3 << 8)        /* inner shareable, for Normal memory */
@@ -24,13 +24,17 @@
 #define AP_RW_EL1       (0 << 6)        /* AP=0b00: read/write at EL1, no access at EL0 */
 #define AP_RO_EL1       (2 << 6)        /* AP=0b10: read-only at EL1, no access at EL0 */
 
-/* TTBR1 maps DRAM without EL0 access; TTBR0 uses a separate level-2 table.
- * The boot TTBR0 identity map permits EL0 access and is replaced before
- * userspace runs. EL0-writable memory cannot execute at EL1, so code and
- * data need separate blocks. The linker aligns and checks code against
- * the 2 MiB block size; 4 KiB pages would need a runtime third-level table.
+/* Both boot roots grant EL1 only; a task's own TTBR0 root replaces the boot one. EL0-writable
+ * memory cannot execute at EL1, so code and data need separate blocks. The linker aligns and
+ * checks code against the 2 MiB block size; 4 KiB pages would need a third-level table.
  */
 #define L2_BLOCK_SIZE   0x200000
+
+#define L2_ENTRIES      512             /* one 4 KiB table of 8-byte descriptors */
+/* One level-1 entry spans a whole level-2 table. Every chip links DRAM at 1 GiB, so its entry is
+ * index 1 in both roots and a level-2 table's slot 0 describes the VA one level-1 entry up. */
+#define L1_BLOCK_SIZE   (L2_ENTRIES * L2_BLOCK_SIZE)
+#define DRAM_L1_ENTRY   1
 
 /* MAIR_EL1: Attr0 Normal write-back, read/write-allocate; Attr1 Device-nGnRnE;
  * Attr2 Normal inner/outer noncacheable. For Attr2, both nibbles are 0b0100;

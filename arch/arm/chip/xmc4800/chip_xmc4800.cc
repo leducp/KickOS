@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Infineon XMC4800 (XMC4800 Relax Kit, Cortex-M4F) chip backend. Registers from the
-// XMC4700/XMC4800 Reference Manual.
+// Infineon XMC4800 (XMC4800 Relax Kit, Cortex-M4F) chip backend (XMC4700/XMC4800 RM V1.3).
 //
-// The watchdog is OFF at reset (WDT_CTR.ENB = 0). clock_init() runs the SCU from the
-// 12 MHz crystal PLL: the uncalibrated fOFI (~24 MHz) is too inaccurate for a stable
-// UART baud.
+// clock_init() runs the SCU from the 12 MHz crystal PLL: the uncalibrated fOFI (~24 MHz) is too
+// inaccurate for a stable UART baud.
 
 #include "regs.h"
 #include <kickos/chip_mmap.h>
@@ -18,9 +16,11 @@
 #include "regs/usic.h"
 
 #include <kickos/arch/arch.h>
+#include <kickos/arch/bounded_wait.h>
 #include "pin_guard.h"
 #include <kickos/arch/clk_anchor.h>
 #include <kickos/console_tx.h>
+#include <kickos/io/mmio.h>
 
 #include <kickos/sys/abi.h>
 
@@ -57,14 +57,9 @@ extern "C"
 
 namespace
 {
-    inline volatile uint32_t& r32(uintptr_t a) { return *reinterpret_cast<volatile uint32_t*>(a); }
-
     // ---- Clock tree: 12 MHz XTAL -> system PLL -> fSYS=fCPU=144 MHz -----------
-    // Sequence, the 144 MHz NDIV/PDIV/K2DIV profile and the staged K2DIV ramp are the
-    // XMC4700/4800 RM V1.3 crystal-PLL bring-up (SCU clock/PLL + flash chapters).
-
-    // 144 MHz profile: fVCO = 12 MHz * NDIV/PDIV = 12*24/1 = 288 MHz;
-    // fPLL = fVCO/K2DIV = 288/2 = 144 MHz. Each PLLCON1 field is written as (value-1).
+    // fVCO = 12 MHz * NDIV/PDIV = 288 MHz; fPLL = fVCO/K2DIV. Each PLLCON1 field is written as
+    // (value-1).
     uint32_t pllcon1_value(uint32_t k2div)
     {
         return ((scu::PLL_NDIV - 1u) << scu::PLLCON1_NDIV_SHIFT)
@@ -72,47 +67,17 @@ namespace
              | ((scu::PLL_PDIV - 1u) << scu::PLLCON1_PDIV_SHIFT);
     }
 
-    // Bounded: a missing crystal must degrade to a return, not hang the boot.
-    constexpr uint32_t CLOCK_POLL_TIMEOUT = 1000000u;
-
-    bool clock_wait_set(uintptr_t addr, uint32_t mask)
-    {
-        for (uint32_t i = 0; i < CLOCK_POLL_TIMEOUT; i++)
-        {
-            if ((r32(addr) & mask) == mask)
-            {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    void clock_wait_clear(uintptr_t addr, uint32_t mask)
-    {
-        for (uint32_t i = 0; i < CLOCK_POLL_TIMEOUT; i++)
-        {
-            if ((r32(addr) & mask) == 0)
-            {
-                return;
-            }
-        }
-    }
-
     // --- CCU40: the monotonic time base (RM ch.23) ------------------------------
-    // Not DWT_CYCCNT: its reads are unreliable on this silicon (core debug power domain;
-    // observed returning DWT_CTRL's value), and a 32->64 software wrap-extension turns one
-    // bad read into a phantom 2^32 jump that strands every timed wait. CCU40's four 16-bit
-    // slices are chained (CC41/CC42/CC43 each count the overflow of the slice below) into
-    // ONE free-running 64-bit HARDWARE counter on fCCU, so no read can manufacture a wrap.
-    // arch_trace_now and the KICKOS_BENCH timestamps stay on raw DWT_CYCCNT.
+    // Not DWT_CYCCNT: its reads are unreliable on this silicon (observed returning DWT_CTRL's
+    // value), and a 32->64 wrap extension turns one bad read into a phantom 2^32 jump that
+    // strands every timed wait. CCU40's four 16-bit slices are chained into ONE free-running
+    // 64-bit HARDWARE counter on fCCU, so no read can manufacture a wrap.
     //
-    // CLKSET.CCUCEN alone is not enough: CCU40 also comes out of SCU reset both
-    // CLOCK-GATED (CGATCLR0) and held in PERIPHERAL RESET (PRCLR0), and needs the module
-    // prescaler run bit (GIDLC.SPRB). All three are required before any slice advances.
-    // SLEEPCR.CCUCR (RM SCU): keep fCCU running while the core is in SLEEP. The idle path
-    // is a plain WFI (SLEEP, not DEEPSLEEP) and the CCU clock gates off in SLEEP by
-    // default, which freezes this counter on every tickless idle. A DEEPSLEEP user must
-    // set DSLEEPCR too.
+    // CLKSET.CCUCEN alone is not enough: CCU40 also comes out of SCU reset CLOCK-GATED (CGATCLR0)
+    // and held in PERIPHERAL RESET (PRCLR0), and needs the prescaler run bit (GIDLC.SPRB).
+    // SLEEPCR.CCUCR keeps fCCU running in SLEEP: the idle path is a plain WFI and the CCU clock
+    // gates off in SLEEP by default, which would freeze this counter on every tickless idle. A
+    // DEEPSLEEP user must set DSLEEPCR too.
 
     inline volatile uint32_t& cc4(unsigned slice, uintptr_t reg)
     {
@@ -121,26 +86,24 @@ namespace
 
     void ccu4_clock_init()
     {
-        // Boot-order constraint: arch_clock_now MUST NOT run before this. CCU40 is
-        // clock-gated + in reset out of SCU reset, so a TIMER read would BusFault.
+        // arch_clock_now MUST NOT run before this: a TIMER read of the gated CCU40 BusFaults.
         r32(scu::CLKSET) = scu::CLKSET_CCUCEN;
-        r32(scu::CCUCLKCR) &= ~scu::CCUCLKCR_CCUDIV;    // CCUDIV=0 -> fCCU = fSYS = SystemCoreClock
+        r32(scu::CCUCLKCR) &= ~scu::CCUCLKCR_CCUDIV;    // fCCU = fSYS
         r32(scu::CGATCLR0) = scu::CCU40_GATE_BIT;
         r32(scu::PRCLR0) = scu::CCU40_RESET_BIT;
         r32(scu::SLEEPCR) |= scu::SLEEPCR_CCUCR;
 
-        // Clear idle for all four slices AND start the module prescaler in one write;
-        // without SPRB the slice clock never runs and every TIMER stays 0.
+        // Without SPRB the slice clock never runs and every TIMER stays 0.
         r32(ccu4::GIDLC) = ccu4::GIDLC_SPRB | ccu4::GIDLC_CLEAR_ALL;
 
         for (unsigned s = 0; s < 4; s++)
         {
-            cc4(s, ccu4::slice_off::TC) = 0;                    // edge-aligned up-count, no external events
-            cc4(s, ccu4::slice_off::PSC) = 0;                  // CC40 = fCCU/1; the linked slices ignore PSC
-            cc4(s, ccu4::slice_off::PRS) = ccu4::PERIOD_MAX;   // wrap at 0xFFFF so each slice carries the next
+            cc4(s, ccu4::slice_off::TC) = 0;
+            cc4(s, ccu4::slice_off::PSC) = 0;                  // the linked slices ignore PSC
+            cc4(s, ccu4::slice_off::PRS) = ccu4::PERIOD_MAX;   // 0xFFFF carries into the next slice
         }
-        // Concatenate: CC41/CC42/CC43 count the overflow of the slice below; CC40 (the
-        // 16 LSBs) must keep TCE=0 and counts fCCU directly (RM 23.2.9).
+        // CC41..CC43 count the overflow of the slice below; CC40 (the 16 LSBs) must keep TCE=0
+        // (RM 23.2.9).
         cc4(0, ccu4::slice_off::CMC) = 0;
         cc4(1, ccu4::slice_off::CMC) = ccu4::CMC_TCE;
         cc4(2, ccu4::slice_off::CMC) = ccu4::CMC_TCE;
@@ -154,12 +117,10 @@ namespace
         }
     }
 
-    // Coherent 64-bit read of the concatenated CC40..CC43 counter (counts UP). Only
-    // CC40 advances every fCCU tick; the upper slices carry rarely. Read the top three
-    // slices then the low one, and retry while any upper slice changed across the low
-    // read: a carry crossing ANY slice boundary during the window flips one of the
-    // re-verified words, so the returned snapshot can never straddle a wrap. Every load
-    // re-reads hardware (no cached word), so this is concurrency-safe with no IRQ save.
+    // Coherent 64-bit read of CC40..CC43. The top three slices are read, then the low one, and
+    // retried while any upper slice changed across the low read: a carry crossing ANY boundary
+    // flips one of the re-verified words, so the snapshot cannot straddle a wrap. Needs no IRQ
+    // save.
     uint64_t ccu4_ticks()
     {
         uint32_t s3;
@@ -181,10 +142,10 @@ namespace
                | lo;
     }
 
-    // Let a K2DIV step settle before the next one (~50 us, ample at every ramp point).
+    // Lets a K2DIV step settle (~50 us).
     void clock_delay()
     {
-        // The counter is volatile so -Os keeps the wait.
+        // Volatile so -Os keeps the wait.
         for (volatile uint32_t i = 0; i < 8000u;)
         {
             i = i + 1;
@@ -192,15 +153,13 @@ namespace
         }
     }
 
-    // arch_clock_now epoch anchor. Written ONLY at a rate edge: init() in arch_init and
-    // reprice() in arch_cpu_clock_set. The CCU40 counter runs at fCCU = fSYS =
-    // SystemCoreClock, so that is the rate handed to it.
+    // Written ONLY at a rate edge: init() in arch_init and reprice() in arch_cpu_clock_set. The
+    // rate is fCCU = fSYS = SystemCoreClock.
     kickos::arch_clk_anchor g_clk;
 
-    // FCON.WSPFLASH[3:0]: flash read wait-states in fCPU cycles. An fCPU increase past
-    // the current wait-state's access window makes an instruction fetch from flash
-    // return before the data is valid -> a fetch fault, not merely wrong timing (RM
-    // 8.4.4). Widen WS before a rise, relax after a fall.
+    // Flash read wait-states: an fCPU increase past the current setting's access window makes a
+    // fetch return before the data is valid, a fault and not merely wrong timing (RM 8.4.4).
+    // Widen before a rise, relax after a fall.
     void set_flash_ws(uint32_t ws)
     {
         uint32_t fcon = r32(flash::FCON);
@@ -209,11 +168,9 @@ namespace
         r32(flash::FCON) = fcon;
     }
 
-    // Walk K2DIV one step at a time from `from` to `to` (fPLL = fVCO/K2DIV = 288/K2DIV),
-    // settling between steps. A large K2DIV DECREASE (a frequency RISE) draws a current
-    // step the core supply cannot service in one edge (a VDDC droop), so never jump. The
-    // PLL stays LOCKED across a K2DIV change (only the output divider moves), so there is
-    // no relock to poll.
+    // Walks K2DIV one step at a time: a large K2DIV DECREASE (a frequency RISE) draws a current
+    // step the core supply cannot service in one edge (a VDDC droop), so never jump. The PLL
+    // stays locked across a K2DIV change.
     void pll_k2div_staircase(uint32_t from_k2, uint32_t to_k2)
     {
         uint32_t k = from_k2;
@@ -233,15 +190,13 @@ namespace
 
     void clock_init()
     {
-        // Flash read wait-states MUST be raised to the 144 MHz value BEFORE the
-        // CPU clock is scaled up, else instruction fetches from flash fault (RM
-        // flash chapter: widen the access window before increasing fCPU).
+        // Wait-states MUST be raised BEFORE the CPU clock scales up, else flash fetches fault.
         uint32_t fcon = r32(flash::FCON);
         fcon &= ~flash::FCON_WSPFLASH_MASK;
         fcon |= flash::FCON_WSPFLASH_4CYC;
         r32(flash::FCON) = fcon;
 
-        // Disable + clear the OSC/VCO-lock traps so bring-up transients don't trap.
+        // Bring-up transients must not trap.
         uint32_t traps = scu::TRAP_SOSCWDGT | scu::TRAP_SVCOLCKT | scu::TRAP_UVCOLCKT;
         r32(scu::TRAPDIS) |= traps;
         r32(scu::TRAPCLR) = traps;
@@ -252,21 +207,21 @@ namespace
         {
             uint32_t osc = r32(scu::OSCHPCTRL);
             osc &= ~(scu::OSCHPCTRL_MODE_MASK | scu::OSCHPCTRL_OSCVAL_MASK);
-            osc |= scu::OSCHPCTRL_OSCVAL; // MODE=0 external crystal + OSCVAL=3
+            osc |= scu::OSCHPCTRL_OSCVAL;
             r32(scu::OSCHPCTRL) = osc;
 
-            r32(scu::PLLCON2) &= ~scu::PLLCON2_PINSEL; // PLL input <- OSC_HP
-            r32(scu::PLLCON0) &= ~scu::PLLCON0_OSCRES; // restart OSC watchdog
+            r32(scu::PLLCON2) &= ~scu::PLLCON2_PINSEL;
+            r32(scu::PLLCON0) &= ~scu::PLLCON0_OSCRES;
 
-            if (not clock_wait_set(scu::PLLSTAT, scu::PLLSTAT_OSC_USABLE))
+            if (not kickos::arch::wait_set(r32(scu::PLLSTAT), scu::PLLSTAT_OSC_USABLE))
             {
-                SystemCoreClock = 24000000u; // no usable crystal -> CPU stays on fOFI
-                return;                       // SysTick tracks it
+                SystemCoreClock = 24000000u; // no usable crystal: the CPU stays on fOFI
+                return;
             }
             r32(scu::TRAPDIS) &= ~scu::TRAP_SOSCWDGT;
         }
 
-        // Lock first at a low K2DIV (~24 MHz), then ramp down to 144 MHz below.
+        // Lock first at a low K2DIV, then ramp.
         r32(scu::PLLCON0) |= scu::PLLCON0_VCOBYP;
         r32(scu::PLLCON0) |= scu::PLLCON0_FINDIS;
         r32(scu::PLLCON1) = pllcon1_value(12); // 288/12 = 24 MHz
@@ -274,46 +229,42 @@ namespace
         r32(scu::PLLCON0) &= ~scu::PLLCON0_FINDIS;
         r32(scu::PLLCON0) |= scu::PLLCON0_RESLD;
 
-        if (not clock_wait_set(scu::PLLSTAT, scu::PLLSTAT_VCOLOCK))
+        if (not kickos::arch::wait_set(r32(scu::PLLSTAT), scu::PLLSTAT_VCOLOCK))
         {
-            SystemCoreClock = 24000000u; // PLL never locked -> CPU stays on fOFI
-            return;                      // SysTick tracks it
+            SystemCoreClock = 24000000u; // PLL never locked: the CPU stays on fOFI
+            return;
         }
 
         r32(scu::PLLCON0) &= ~scu::PLLCON0_VCOBYP;
-        clock_wait_clear(scu::PLLSTAT, scu::PLLSTAT_VCOBYST);
-        // Re-arm the trap for the PLL we just locked (system VCO), not the USB VCO
-        // (never powered here); SOSCWDGT was already re-armed above.
+        (void)kickos::arch::wait_clear(r32(scu::PLLSTAT), scu::PLLSTAT_VCOBYST);
+        // Re-arm the trap for the system VCO, not the USB VCO (never powered here).
         r32(scu::TRAPDIS) &= ~scu::TRAP_SVCOLCKT;
 
-        // Clock dividers: fSYS = fPLL/1, fCPU = fSYS/1, fPERIPH = fCPU/2 = 72 MHz.
+        // fSYS = fPLL, fCPU = fSYS, fPERIPH = fCPU/2.
         r32(scu::SYSCLKCR) = scu::SYSCLKCR_SYSSEL_PLL;
-        r32(scu::CPUCLKCR) = 0;                        // CPUDIV disabled -> fCPU = fSYS
+        r32(scu::CPUCLKCR) = 0;
         r32(scu::PBCLKCR) = scu::PBCLKCR_PBDIV_DIV2;
 
-        // Ramp K2DIV down to the final 144 MHz in steps to avoid a VDDC droop on
-        // a large jump (K2DIV = fVCO/target).
+        // Stepped, to avoid a VDDC droop.
         r32(scu::PLLCON0) &= ~scu::PLLCON0_OSCDISCDIS;
         r32(scu::PLLCON1) = pllcon1_value(6); clock_delay(); // 288/6 = 48 MHz
         r32(scu::PLLCON1) = pllcon1_value(4); clock_delay(); // 288/4 = 72 MHz
         r32(scu::PLLCON1) = pllcon1_value(3); clock_delay(); // 288/3 = 96 MHz
         r32(scu::PLLCON1) = pllcon1_value(2); clock_delay(); // 288/2 = 144 MHz
 
-        // Keep the system clock on fPLL through SLEEP so a post-print WFI does not
-        // rescale the USIC baud mid-shift (see scu::SLEEPCR_SYSSEL_PLL).
+        // fPLL stays the system clock through SLEEP, or a post-print WFI rescales the USIC baud
+        // mid-shift.
         r32(scu::SLEEPCR) |= scu::SLEEPCR_SYSSEL_PLL;
     }
 
-    // Privileged-write allowlist for KOS_SYS_PERIPH_REG_WRITE, keyed on the EXACT
-    // register address (block base + offset), never on a block or a range.
+    // Privileged-write allowlist for KOS_SYS_PERIPH_REG_WRITE, keyed on the EXACT register
+    // address, never on a block or a range.
     //
-    // FDR (0x010), BRG (0x014) and CCR (0x040) are Write = PV with no U (RM Table
-    // 18-20): an unprivileged store inside a granted channel window is discarded with
-    // no fault (measured, user/apps/xmc4800-relax/pvprobe).
+    // FDR, BRG and CCR are Write = PV with no U (RM Table 18-20): an unprivileged store inside a
+    // granted channel window is discarded with no fault (measured, pvprobe).
     //
-    // U0C0 carries a CCR entry ONLY (the IRQ-driven console driver's TBIEN). It has no
-    // FDR and no BRG entry: the kernel owns that channel's baud (usic_uart.cc), which
-    // cpu_clock_set's retune veto assumes. An absent entry is a refusal.
+    // U0C0 carries a CCR entry ONLY (the console driver's TBIEN): the kernel owns that channel's
+    // baud (usic_uart.cc), which cpu_clock_set's retune veto assumes. An absent entry is a refusal.
     struct PrivWriteReg
     {
         uintptr_t base;
@@ -326,31 +277,24 @@ namespace
     static_assert(ru::U0C1_BASE == mmap::USIC0_CH0_BASE + USIC_CHANNEL_STRIDE,
                   "U0C1 is USIC0's second channel");
 
-    // Per-entry value masks. The store is one whole 32-bit word, so without a mask an
-    // entry hands back every bit of a register the bus withholds entirely; for CCR that
-    // is the channel's whole interrupt block. A value with a bit set outside its entry's
-    // mask is REFUSED (-KOS_EINVAL): the seam never masks the value and never
-    // read-modify-writes.
+    // Per-entry value masks. The store is one whole 32-bit word, so without a mask an entry hands
+    // back every bit of a register the bus withholds entirely. A value with a bit outside its
+    // entry's mask is REFUSED (-KOS_EINVAL): the seam never masks and never read-modify-writes.
     //
-    // CCR (RM V1.3 p.18-160..162): MODE[3:0] selects the protocol, RIEN(14)/AIEN(15)
-    // are the receive interrupt enables xmcssc arms last. WITHHELD: HPCEN[7:6],
-    // PM[9:8], RSIEN(10), DLIEN(11), TSIEN(12), TBIEN(13), BRGIEN(16), and the
-    // read-only [5:4]/[31:17].
+    // CCR: MODE[3:0], RIEN and AIEN (the receive interrupt enables xmcssc arms last). WITHHELD:
+    // HPCEN, PM, RSIEN, DLIEN, TSIEN, TBIEN, BRGIEN and the read-only bits.
     constexpr uint32_t CCR_GRANT = ru::CCR_MODE_MASK | ru::CCR_RIEN | ru::CCR_AIEN;
-    // Console channel: the U0C0 holder additionally needs TBIEN.
-    // BRGIEN stays WITHHELD: it is clocked by the baud generator, so it free-runs even
-    // with the driver doing nothing.
+    // The console channel's holder additionally needs TBIEN. BRGIEN stays WITHHELD: the baud
+    // generator clocks it, so it free-runs with the driver doing nothing.
     constexpr uint32_t CCR_CONSOLE_GRANT = CCR_GRANT | ru::CCR_TBIEN;
-    // FDR (RM V1.3 p.18-178): STEP[9:0] and DM[15:14] are the whole divider setting.
-    // WITHHELD: RESULT[25:16] (type rh, driven by the divider), the read-only [13:10]
-    // and [29:26], and [31:30], which the RM requires be written 0.
+    // FDR: STEP and DM are the whole divider setting. WITHHELD: RESULT (driven by the divider),
+    // the read-only bits, and [31:30], which must be written 0.
     constexpr uint32_t FDR_GRANT = ru::FDR_STEP_MASK | ru::FDR_DM_MASK;
-    // BRG (RM V1.3 p.18-179..181): every writable field. Only the reserved read-only
-    // bits are withheld, so this mask is near-meaningless as an isolation bound.
+    // BRG: every writable field, so this mask is near-meaningless as an isolation bound.
     constexpr uint32_t BRG_GRANT = ~ru::BRG_RESERVED_MASK;
 
-    // The composed grants against the words they must equal: a field-mask edit in
-    // regs/usic.h cannot silently widen what the seam hands an unprivileged caller.
+    // A field-mask edit in regs/usic.h cannot silently widen what the seam hands an unprivileged
+    // caller.
     static_assert(CCR_GRANT == 0x0000C00Fu, "CCR grant is MODE[3:0]|RIEN|AIEN");
     static_assert(CCR_CONSOLE_GRANT == 0x0000E00Fu, "console CCR grant is MODE[3:0]|TBIEN|RIEN|AIEN");
     static_assert(FDR_GRANT == 0x0000C3FFu, "FDR grant is STEP[9:0]|DM[15:14]");
@@ -380,27 +324,23 @@ extern "C"
 
 void arch_init(void)
 {
-    // clock_init FIRST: the console baud follows the live fPERIPH and SysTick derives
-    // from fCPU.
+    // clock_init FIRST: the baud follows the live fPERIPH and SysTick derives from fCPU.
     clock_init();
     ccu4_clock_init();
-    g_clk.init(SystemCoreClock); // anchor ONCE from the final fCCU = fSYS
+    g_clk.init(SystemCoreClock);
     kickos_xmc_usic_init();
     kickos_armv7m_init();
 }
 
-// Pure epoch read: the anchor holds the rate, so a read in the window around a retune
-// cannot bake a phantom rate jump into the epoch.
+// Must stay a pure read: deriving the rate here would reprice all elapsed history.
 uint64_t arch_clock_now(void)
 {
     return g_clk.ns_from(ccu4_ticks());
 }
 
-// Clock-select MECHANISM (arch.h): retune fSYS among the locked-PLL points via the
-// K2DIV staircase, fold the re-anchor into the rate edge, return the LANDED Hz. The
-// generic coherence tail (baud re-derive, SysTick re-arm) runs in cpu_clock_set. Called
-// privileged, IRQs already masked (single-core: the timer is quiesced). fCCU=fSYS and
-// fPERIPH=fCPU/2 both follow SystemCoreClock, so the CCU40 clock AND the USIC baud move.
+// Retunes fSYS among the locked-PLL points via the K2DIV staircase, folds the re-anchor into the
+// rate edge and returns the LANDED Hz. fCCU and fPERIPH both follow SystemCoreClock, so the
+// CCU40 clock AND the USIC baud move.
 uint64_t arch_cpu_clock_set(uint32_t target)
 {
     uint32_t const previous = SystemCoreClock;
@@ -429,51 +369,42 @@ uint64_t arch_cpu_clock_set(uint32_t target)
     {
         return previous;
     }
-    // Only retune BETWEEN the known locked-PLL points. A boot that fell back to fOFI
-    // (~24 MHz, PLL never locked) or any unexpected state is left untouched: a K2DIV
-    // staircase off a bypassed PLL is not valid, so return the truthful current Hz.
+    // Only BETWEEN the known locked-PLL points: a boot that fell back to fOFI is left untouched,
+    // a K2DIV staircase off a bypassed PLL being invalid.
     uint32_t cur_k2;
     if (previous == 144000000u) { cur_k2 = 2u; }
     else if (previous == 96000000u) { cur_k2 = 3u; }
     else if (previous == 48000000u) { cur_k2 = 6u; }
     else { return previous; }
 
-    // Re-anchor capture AT the edge: history priced at the OLD mult before it moves.
+    // Capture AT the edge: history is priced at the OLD rate before it moves.
     uint64_t const t0 = ccu4_ticks();
     uint64_t const ns0 = g_clk.ns_from(t0);
 
     if (want_hz > previous)
     {
-        // RISE: widen flash wait-states BEFORE the frequency climbs, then walk
-        // K2DIV DOWN the staircase (every intermediate point is <= want_hz, so want_ws
-        // covers them all).
+        // Wait-states BEFORE the frequency climbs; every intermediate point is <= want_hz, so
+        // want_ws covers them all.
         set_flash_ws(want_ws);
         pll_k2div_staircase(cur_k2, want_k2);
     }
     else
     {
-        // FALL: drop the frequency first (K2DIV UP), THEN relax flash wait-states; the
-        // old (higher) WS is safe across the whole descent.
+        // Frequency first, then relax the wait-states: the old ones are safe across the descent.
         pll_k2div_staircase(cur_k2, want_k2);
         set_flash_ws(want_ws);
     }
 
-    SystemCoreClock = want_hz; // fCCU=fSYS and fPERIPH=fCPU/2 both track this now
+    SystemCoreClock = want_hz;
 
-    // Commit the NEW pricing. base_ns holds history at old pricing, base_ticks the
-    // tick at the edge, so `now` is continuous (no jump): ticks in the brief masked
-    // staircase are the only ones mispriced (frozen skew).
+    // Ticks in the brief masked staircase are the only ones mispriced.
     g_clk.reprice(t0, ns0, want_hz);
     return want_hz;
 }
 
-// Branch-clock oracle (arch.h): report the branch clock feeding a peripheral block so a
-// userspace driver derives its own divisor. Every XMC4800 USIC runs at fPERIPH, which is
-// fCPU divided by PBCLKCR.PBDIV. BOTH TERMS ARE READ LIVE and neither is assumed: a
-// clock-select retune moves SystemCoreClock, and clock_init writes PBCLKCR only after its
-// two degrade returns, so on the fOFI path PBDIV is still its reset 0 and fPERIPH equals
-// fCPU rather than half of it. The three USIC modules are two 0x200 channels each:
-// USIC0 @0x40030000, USIC1 @0x48020000, USIC2 @0x48024000. Any other block returns 0.
+// Every USIC runs at fPERIPH = fCPU / PBCLKCR.PBDIV. BOTH TERMS ARE READ LIVE: clock_init
+// writes PBCLKCR only after its two degrade returns, so on the fOFI path PBDIV is still 0 and
+// fPERIPH equals fCPU. Any other block returns 0.
 uint32_t arch_periph_clock_hz(uintptr_t base)
 {
     bool in_usic = base >= mmap::USIC0_CH0_BASE and base < mmap::USIC0_CH0_BASE + USIC_MODULE_SPAN;
@@ -496,17 +427,14 @@ uint32_t arch_periph_clock_hz(uintptr_t base)
     return 0;
 }
 
-// Privileged single-register write (arch.h). The caller's possession of the block at
-// `base` is already checked in the syscall layer; this decides whether that exact
-// register is on the allowlist above AND whether the value stays inside the entry's
-// mask. Nothing here is derived from a range, so a holder of one channel window can
-// never name the sibling channel's registers.
+// The syscall layer has checked the caller holds the block at `base`; this decides whether that
+// exact register is on the allowlist AND the value stays inside the entry's mask, so a holder of
+// one channel window can never name the sibling channel's registers.
 //
-// This definition MUST stay in this TU because this member is ALWAYS ANCHORED
-// (-u g_isr_vector reaches it through startup.S). Moving it to a dedicated TU that
-// nothing else references would leave the declining fallback in arch/common to answer
-// the reference, with NO link error and a silent decline at runtime. The
-// seam_defaults ctest gate (leg 2) is what catches that.
+// This definition MUST stay in this TU because the member is ALWAYS ANCHORED (-u g_isr_vector
+// reaches it through startup.S): in a TU nothing else references, the declining fallback in
+// arch/common would answer the reference with NO link error and a silent decline at runtime. The
+// seam_defaults gate (leg 2) catches that.
 int arch_periph_reg_write(uintptr_t base, uintptr_t offset, uint32_t value)
 {
     for (PrivWriteReg const& e : PRIV_WRITE_REGS)
@@ -524,17 +452,11 @@ int arch_periph_reg_write(uintptr_t base, uintptr_t offset, uint32_t value)
     return -KOS_EINVAL;
 }
 
-int arch_console_write(char const* buf, size_t n)
-{
-    return console_tx_insert_line(buf, n, KICKOS_CONSOLE_CRLF);
-}
-
 bool arch_console_write_sync(char const* buf, size_t n)
 {
     return kickos_xmc_usic_write(buf, n);
 }
 
-// XMC ports are always clocked (no per-port gate).
 void arch_diag_led_init(void)
 {
     uintptr_t const iocr = KICKOS_BOARD_LED_PORT_BASE + rp::iocr_off(KICKOS_BOARD_LED_BIT);
@@ -554,9 +476,8 @@ void arch_diag_led_set(int on)
     }
 }
 
-// One-shot pin-function config (KOS_SYS_PINMUX_SET). IOCR address + PC-field encoding
-// come from regs/port.h (shared with the console pin setup). func = the raw 5-bit PC
-// code (0x10 = output push-pull general-purpose; 0x12 = PP alt-func-2, the console TX).
+// KOS_SYS_PINMUX_SET. func is the raw 5-bit PC code (0x10 = output push-pull general-purpose;
+// 0x12 = push-pull alt-func-2, the console TX).
 int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
 {
     if (port > 15u or pin > 15u or func > rp::PC_FIELD_MASK)
@@ -584,7 +505,7 @@ int arch_bitband_present(void)
 void Reset_Handler(void)
 {
     kickos_armv7m_enable_fpu();
-    r32(kickos::arm::SCB_VTOR) = mmap::FLASH_CACHED_BASE; // vectors live at the cached flash alias
+    r32(kickos::arm::SCB_VTOR) = mmap::FLASH_CACHED_BASE;
 
     kickos_ranges_init();
     for (void (**fn)() = __init_array_start; fn != __init_array_end; fn++)

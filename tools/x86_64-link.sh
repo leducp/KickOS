@@ -11,9 +11,11 @@
 # input files pass; any other argument, and a response file, is refused, since no driver is
 # here to consume it. Each -l is resolved here to the archive path ld is then handed, so that
 # tools/check-x86_64-no-got.sh and tools/check-x86_64-weak-undef.sh read exactly the files ld
-# links. An application image is linked twice so that it carries a copy of its own relocation
-# directory (tools/x86_64-krel.sh), and the second link writes <image>.map beside it;
-# --one-pass is a single link, which writes no map. A failed link leaves neither file.
+# links. The inputs are first pre-linked into one ELF object with --gc-sections, which the PE
+# emulation does not apply. An application image is then linked twice so that it carries a copy
+# of its own relocation directory (tools/x86_64-krel.sh), and <image>.map beside it names every
+# input as the two maps do together (tools/x86_64-map.awk). --one-pass is a single link, which
+# writes no map. A failed link leaves neither file.
 set -u
 
 nl='
@@ -30,7 +32,8 @@ fail() {
 
 cleanup() {
     if [ -n "$out" ]; then
-        rm -f "$out.first" "$out.krel.bin" "$out.krel.o"
+        rm -f "$out.first" "$out.krel.bin" "$out.krel.o" "$out.pre.ld" "$out.pre.o" \
+            "$out.premap" "$out.pemap"
     fi
 }
 trap cleanup EXIT
@@ -111,8 +114,13 @@ resolve() {
     return 1
 }
 
-args=""
+# The pre-link (rargs) takes the inputs, their grouping, the symbols that root or rename their
+# resolution, and --wrap, which must apply once; the PE link (pargs) takes every other argument
+# and the pre-link's one object.
+rargs=""
+pargs=""
 inputs=""
+pe_script=""
 pending=""
 for t in $toks; do
     kind="${t%"${t#?}"}"
@@ -131,6 +139,23 @@ for t in $toks; do
             v="-l$v"
             pending=""
             ;;
+        r)
+            rargs="$rargs$v$nl"
+            pending=""
+            continue
+            ;;
+        b)
+            rargs="$rargs$v$nl"
+            pargs="$pargs$v$nl"
+            pending=""
+            continue
+            ;;
+        T)
+            pe_script="$(absolute "$v")"
+            pargs="$pargs$pe_script$nl"
+            pending=""
+            continue
+            ;;
     esac
     case "$v" in
         -o) pending="o"; continue ;;
@@ -139,28 +164,65 @@ for t in $toks; do
         -l) pending="l"; continue ;;
         -l*)
             f="$(resolve "${v#-l}")" || fail "$v: no such archive under the -L directories"
-            args="$args$f$nl"
+            rargs="$rargs$f$nl"
             inputs="$inputs$f$nl"
             continue
             ;;
     esac
     if [ "$kind" = "W" ]; then
-        args="$args$v$nl"
+        case "$v" in
+            --start-group|--end-group|-\(|-\)|--wrap=*) rargs="$rargs$v$nl" ;;
+            --wrap) rargs="$rargs$v$nl"; pending="r" ;;
+            -u|--undefined|--require-defined) rargs="$rargs$v$nl"; pargs="$pargs$v$nl"; pending="b" ;;
+            -u?*|--undefined=*|--require-defined=*) rargs="$rargs$v$nl"; pargs="$pargs$v$nl" ;;
+            -T) pargs="$pargs$v$nl"; pending="T" ;;
+            *) pargs="$pargs$v$nl" ;;
+        esac
         continue
     fi
     case "$v" in
         -*) fail "refusing '$v': not a linker argument (spell a linker flag -Wl,<flag>)" ;;
         *.o|*.obj|*.a)
             f="$(absolute "$v")"
-            args="$args$f$nl"
+            rargs="$rargs$f$nl"
             inputs="$inputs$f$nl"
             ;;
-        *) args="$args$(absolute "$v")$nl" ;;
+        *) pargs="$pargs$(absolute "$v")$nl" ;;
     esac
 done
 [ -z "$pending" ] || fail "-$pending names nothing"
 [ -n "$out" ] || fail "no -o"
+[ -n "$pe_script" ] || fail "no -T names the PE section script"
 rm -f "$out" "$out.map"
+
+# The pre-link's own script, from the PE script's kernel claims: each archive or object
+# selector line becomes part of a .kickos.kernel.* section the PE script then places by name.
+# The app's constructors and the unwind tables are kept whole, the collection dropping an
+# orphan .eh_frame entirely.
+prelink_script="$out.pre.ld"
+awk '
+    /^ *(KEEP \()?\*[^ ]*(\.a:|\.dir\/)\*\(/ {
+        if ($0 ~ /\.init_array/) { init = init $0 "\n" }
+        else if ($0 ~ /\(\.text /) { text = text $0 "\n" }
+        else if ($0 ~ /\(\.data /) { data = data $0 "\n" }
+        else if ($0 ~ /\(\.rodata /) { rodata = rodata $0 "\n" }
+        else if ($0 ~ /\(\.bss /) { bss = bss $0 "\n" }
+        else { print "unclassified kernel claim: " $0 > "/dev/stderr"; bad = 1 }
+    }
+    END {
+        if (bad || text == "") { exit 1 }
+        print "SECTIONS\n{"
+        printf "  .kickos.kernel.text : {\n%s  }\n", text
+        printf "  .kickos.kernel.data : {\n%s  }\n", data
+        printf "  .kickos.kernel.init_array : {\n%s  }\n", init
+        printf "  .kickos.kernel.rodata : {\n%s  }\n", rodata
+        printf "  .kickos.kernel.bss : {\n%s  }\n", bss
+        print "  .init_array : { KEEP (*(SORT(.init_array.*))) KEEP (*(.init_array)) }"
+        print "  .fini_array : { KEEP (*(SORT(.fini_array.*))) KEEP (*(.fini_array)) }"
+        print "  .eh_frame : { KEEP (*(.eh_frame .eh_frame.*)) }"
+        print "}"
+    }
+' "$pe_script" > "$prelink_script" || fail "no kernel claim in $pe_script to pre-link by"
 
 # shellcheck disable=SC2086
 set -- $inputs
@@ -168,9 +230,24 @@ IFS="$old_ifs"
 "$HERE/check-x86_64-no-got.sh" "$READELF" "$@" || fail "the global-offset-table guard refused"
 "$HERE/check-x86_64-weak-undef.sh" "$READELF" "$@" || fail "the weak-undefined guard refused"
 
+# The relocatable pre-link collects the garbage, which the PE emulation does not.
+premap=""
+if [ "$one_pass" -eq 0 ]; then
+    premap="-Map$nl$out.premap$nl"
+fi
 IFS="$nl"
 # shellcheck disable=SC2086
-set -- $args
+set -- $premap $rargs
+IFS="$old_ifs"
+# -d places a COMMON symbol by its input's claim, so a kernel one cannot
+# reach the PE script's *(COMMON) in the app window.
+LC_ALL=C "$LD" -m elf_x86_64 -r --force-group-allocation -d \
+    --gc-sections -e efi_main -T "$prelink_script" \
+    -o "$out.pre.o" "$@" || fail "ld refused the pre-link"
+IFS="$nl"
+set -f
+# shellcheck disable=SC2086
+set -- $pargs "$out.pre.o"
 IFS="$old_ifs"
 set +f
 
@@ -180,7 +257,9 @@ set +f
 # -b names the INPUT format: binutils 2.42's ld under this emulation reads an ELF archive's
 # symbol index and still extracts no member for an undefined symbol. The KickOS toolchain's 2.47
 # extracts either way, so only CI's probe reports whether the flag is load-bearing.
-FIXED="-m i386pep --subsystem=10 --image-base=0x400000 -e efi_main --no-insert-timestamp -b elf64-x86-64"
+# --discard-locals drops the assembler's temporary labels, which the pre-link keeps.
+FIXED="-m i386pep --subsystem=10 --image-base=0x400000 -e efi_main --no-insert-timestamp"
+FIXED="$FIXED -b elf64-x86-64 --discard-locals"
 
 if [ "$one_pass" -eq 1 ]; then
     # shellcheck disable=SC2086
@@ -199,7 +278,9 @@ LC_ALL=C "$LD" $FIXED -o "$out.first" "$@" || fail "ld refused the first link"
     --rename-section .data=.krel,alloc,load,readonly,data,contents \
     "$out.krel.bin" "$out.krel.o" || fail "objcopy refused the relocation copy"
 # shellcheck disable=SC2086
-LC_ALL=C "$LD" $FIXED -Map "$out.map" -o "$out" "$@" "$out.krel.o" \
+LC_ALL=C "$LD" $FIXED -Map "$out.pemap" -o "$out" "$@" "$out.krel.o" \
     || fail "ld refused the second link"
+awk -v pre="$out.pre.o" -f "$HERE/x86_64-map.awk" "$out.premap" "$out.pemap" > "$out.map" \
+    || fail "could not write the link map"
 "$HERE/x86_64-krel.sh" check "$OBJDUMP" "$OBJCOPY" "$out.first" "$out" \
     || fail "the second link moved the relocation directory"

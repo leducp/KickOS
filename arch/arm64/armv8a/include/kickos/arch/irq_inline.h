@@ -10,13 +10,10 @@
 #ifndef KICKOS_ARCH_IRQ_INLINE_H
 #define KICKOS_ARCH_IRQ_INLINE_H
 
-// A host unit fixture can carry this arch's include directory (tests/unit/mapfence) while
-// answering the seam with a definition of its own, so the bodies must appear only for a real
-// compile of this ISA; anywhere else the seam stays the out-of-line declaration and the
-// fixture's definition is the one that links. __aarch64__ ALONE DOES NOT SAY THAT, being true on
-// an ordinary build host as well; the freestanding test is what keeps the bodies out of a
-// hosted gate. The markers precede the arch.h include because arch.h declares the halves
-// they do not claim, and a declaration ahead of these static bodies does not compile.
+// A host unit fixture can carry this include directory (tests/unit/mapfence) and define the
+// seam itself, so the bodies appear only in a freestanding compile: __aarch64__ alone is true
+// on an aarch64 build host too. The markers precede the arch.h include because a declaration
+// ahead of these static bodies does not compile.
 #if defined(__aarch64__) && __STDC_HOSTED__ == 0
 #define KICKOS_ARCH_IRQ_SAVE_INLINE 1
 #define KICKOS_ARCH_IRQ_RESTORE_INLINE 1

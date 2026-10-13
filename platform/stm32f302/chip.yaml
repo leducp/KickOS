@@ -11,6 +11,8 @@ arch: armv7m
 protection: { unit: none }
 data_cache: false
 c: { namespace: kickos::stm32 }
+family: { dir: arm/chip/stm32f1f3, sources: [arm/chip/stm32f1f3/chip_stm32f1f3.cc] }
+exits_on_fault: false
 
 interrupts: { count: { value: 82, ref: "Table 41 STM32F302x6/8 vector table, p.217" } }
 

@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 
 #include <kickos/arch/arch.h>
+#include <kickos/chip_limits.h>
 #include "ctx_redirect.h"
 #include <kickos/arch/rx_trap_stack.h>
 #include <kickos/units.h>
@@ -163,9 +164,6 @@ static_assert(KICKOS_RX_TRAP_NEST_EXIT == 8 + KICKOS_RX_TRAP_REDZONE_PENDSW,
 static_assert(KICKOS_KERNEL_STACK_SIZE - sizeof(uint32_t)
                   >= KICKOS_RX_TRAP_NEST_EXIT + KICKOS_RX_TRAP_KERNEL_DEPTH_EXITK,
               "the kernel block cannot hold the relocated death path plus its canary word");
-static_assert(KICKOS_MIN_STACK_SIZE
-                  >= KICKOS_RX_TRAP_NEST_EXIT + KICKOS_RX_TRAP_KERNEL_DEPTH_RET,
-              "the spawn floor cannot hold a privileged thread's entry return");
 static_assert(KICKOS_KERNEL_STACK_SIZE - sizeof(uint32_t) >= KICKOS_RX_TRAP_NEED_SYSK,
               "KICKOS_KERNEL_STACK_SIZE is below the rxv3 syscall kernel-stack requirement "
               "plus its canary word: raise the per-arch default in Kconfig, never the depth, "
@@ -213,14 +211,14 @@ namespace
         constexpr uintptr_t SCI6_SSR = KICKOS_LAYOUT_SCI6_BASE + 0x04; // TDRE = b7
         constexpr uintptr_t SCI6_TDR = KICKOS_LAYOUT_SCI6_BASE + 0x03;
         uint32_t spin = 0;
-        while ((reg8(SCI6_SSR) & (1u << 7)) == 0)
+        while ((r8(SCI6_SSR) & (1u << 7)) == 0)
         {
             if (++spin > 200000u)
             {
                 return; // a wedged FIFO must not block the localizer itself
             }
         }
-        reg8(SCI6_TDR) = static_cast<uint8_t>(c);
+        r8(SCI6_TDR) = static_cast<uint8_t>(c);
     }
 #else
     inline void rx_mpu_mark(char) {}
@@ -259,7 +257,7 @@ namespace
     {
         // The wrap-extend read must be atomic against a concurrent reader.
         arch_irq_state_t s = arch_irq_save();
-        uint32_t cur = reg32(CMTW1_BASE + CMTW_CMWCNT);
+        uint32_t cur = r32(CMTW1_BASE + CMTW_CMWCNT);
         if (cur < g_cyc_last)
         {
             ++g_cyc_high;
@@ -291,7 +289,7 @@ namespace
     inline void icu_ier_set(int line, bool on)
     {
         unsigned l = static_cast<unsigned>(line);
-        volatile uint8_t& ier = reg8(ICU_IER_BASE + (l >> 3));
+        volatile uint8_t& ier = r8(ICU_IER_BASE + (l >> 3));
         uint8_t bit = static_cast<uint8_t>(1u << (l & 7));
         // IER packs 8 lines per byte, so this RMW must be atomic against a device ISR's
         // arch_irq_mask on a SIBLING line. Reachable from unlocked syscall context.
@@ -514,9 +512,9 @@ bool arch_fault_is_user_thread(void* frame)
     // where it was and the containment test above passes with nothing left below. MPDEA is
     // the only register that says so, and supervisor bypasses the RX MPU, so a stub run on
     // the exhausted stack smashes its way out untrapped.
-    if (ff->cause == 0x54 and (reg32(MPU_MPESTS) & MPU_MPESTS_DMPER) != 0)
+    if (ff->cause == 0x54 and (r32(MPU_MPESTS) & MPU_MPESTS_DMPER) != 0)
     {
-        if (kickos_fault_below_stack(reg32(MPU_MPDEA)))
+        if (kickos_fault_below_stack(r32(MPU_MPDEA)))
         {
             return false;
         }
@@ -537,10 +535,10 @@ void arch_fault_redirect_to_exit(void* frame)
     {
         // MPESTS carries IMPER/DMPER/DRW, so it says more here than the cause does.
         status_name = "MPESTS";
-        status = reg32(MPU_MPESTS);
+        status = r32(MPU_MPESTS);
         if ((status & MPU_MPESTS_DMPER) != 0)
         {
-            addr = reg32(MPU_MPDEA);
+            addr = r32(MPU_MPDEA);
             addr_valid = 1;
         }
         else if ((status & MPU_MPESTS_IMPER) != 0)
@@ -550,7 +548,7 @@ void arch_fault_redirect_to_exit(void* frame)
         }
         // Latched, and cleared only through MPECLR: a bit left set labels the NEXT thread's
         // fault with it.
-        reg32(MPU_MPECLR) = MPU_MPECLR_CLR;
+        r32(MPU_MPECLR) = MPU_MPECLR_CLR;
     }
 #endif
     kickos_fault_record(status_name, status, ff->saved[0], addr, addr_valid);
@@ -633,6 +631,7 @@ void kickos_rx_fault_report(uint32_t cause, uint32_t* saved)
     {
         return;
     }
+    kickos_fault_report_begin();
     uint32_t const pc = saved[0];
     uint32_t const psw = saved[1];
     rx_mpu_mark('F'); // raw, pre-console: an exception fired rather than a hang
@@ -645,20 +644,20 @@ void kickos_rx_fault_report(uint32_t cause, uint32_t* saved)
     // PC). From supervisor it cannot be an MPU fault, so it falls to the generic dump.
     if (cause == 0x54 and (psw & PSW_PM) != 0)
     {
-        uint32_t const sts = reg32(MPU_MPESTS);
+        uint32_t const sts = r32(MPU_MPESTS);
         if ((sts & (MPU_MPESTS_IMPER | MPU_MPESTS_DMPER)) != 0)
         {
             uintptr_t addr = pc;
             int is_write = 0;
             if ((sts & MPU_MPESTS_DMPER) != 0)
             {
-                addr = reg32(MPU_MPDEA);
+                addr = r32(MPU_MPDEA);
                 if ((sts & MPU_MPESTS_DRW) != 0)
                 {
                     is_write = 1;
                 }
             }
-            reg32(MPU_MPECLR) = MPU_MPECLR_CLR;
+            r32(MPU_MPECLR) = MPU_MPECLR_CLR;
             kickos_isr_fault(addr, is_write); // names the task, then arch_shutdown (noreturn)
         }
     }
@@ -702,11 +701,10 @@ uint64_t arch_clock_now(void)
 
 // --- Trace clock (telemetry timestamp seam) ---------------------------------
 // The free-running 32-bit CMTW1 counter, read raw: it wraps on its own and the host
-// reconstructs absolute time from the SESSION clock_hz anchors (arch.h). Same source as
-// arch_clock_now.
+// reconstructs absolute time from the SESSION clock_hz anchors (arch.h).
 uint32_t arch_trace_now(void)
 {
-    return reg32(CMTW1_BASE + CMTW_CMWCNT);
+    return r32(CMTW1_BASE + CMTW_CMWCNT);
 }
 
 
@@ -743,21 +741,21 @@ void arch_timer_arm(uint64_t deadline_ns)
     {
         cyc = 1;
     }
-    reg16(CMTW0_BASE + CMTW_CMWSTR) = 0;
-    reg32(CMTW0_BASE + CMTW_CMWCNT) = 0;
-    reg32(CMTW0_BASE + CMTW_CMWCOR) = static_cast<uint32_t>(cyc);
-    reg16(CMTW0_BASE + CMTW_CMWCR) = CMWCR_CKS_PCLK8 | CMWCR_CCLR_ON_MATCH | CMWCR_CMWIE;
+    r16(CMTW0_BASE + CMTW_CMWSTR) = 0;
+    r32(CMTW0_BASE + CMTW_CMWCNT) = 0;
+    r32(CMTW0_BASE + CMTW_CMWCOR) = static_cast<uint32_t>(cyc);
+    r16(CMTW0_BASE + CMTW_CMWCR) = CMWCR_CKS_PCLK8 | CMWCR_CCLR_ON_MATCH | CMWCR_CMWIE;
     // The gate that actually arms the CMWCOR compare: without it the counter free-runs past
     // CMWCOR with no clear and no CMWI (UM sec.32.2.3). Reset value is 0, and it is
     // rewritten on each arm so no path can leave it clear.
-    reg16(CMTW0_BASE + CMTW_CMWIOR) = CMWIOR_CMWE;
-    reg16(CMTW0_BASE + CMTW_CMWSTR) = CMWSTR_STR;
+    r16(CMTW0_BASE + CMTW_CMWIOR) = CMWIOR_CMWE;
+    r16(CMTW0_BASE + CMTW_CMWSTR) = CMWSTR_STR;
 }
 
 void arch_timer_disarm(void)
 {
-    reg16(CMTW0_BASE + CMTW_CMWSTR) = 0;
-    reg8(ICU_IR_BASE + CMWI0_VECTOR) = 0;
+    r16(CMTW0_BASE + CMTW_CMWSTR) = 0;
+    r8(ICU_IR_BASE + CMWI0_VECTOR) = 0;
 }
 
 // The RX MPU (UM sec.17) checks user mode only. arch_mpu_apply only stashes the set; SWINT
@@ -797,7 +795,7 @@ extern "C" void kickos_bench_mpu_commit(uint32_t delta);
 // Inline counter reads so PH_NULL accounts for their overhead.
 static __attribute__((always_inline)) inline uint32_t mpu_bench_cyc(void)
 {
-    return reg32(CMTW1_BASE + CMTW_CMWCNT) << 5;
+    return r32(CMTW1_BASE + CMTW_CMWCNT) << 5;
 }
 #endif
 
@@ -809,9 +807,8 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n,
     g_pend_image = image;
 }
 
-// From the SWINT switcher (kickos_rx_pendsw to kickos_rx_restore, and the arch_start
-// first-entry path) after the physical swap. That handler already runs with PSW.I=0; the
-// bracket keeps the seam callable from anywhere else.
+// Programs the stashed set after the physical swap. The SWINT path already runs with
+// PSW.I=0; the bracket covers any other caller.
 void kickos_arch_mpu_commit(void)
 {
 #if KICKOS_BENCH
@@ -819,7 +816,6 @@ void kickos_arch_mpu_commit(void)
 #endif
     arch_irq_state_t const irq = arch_irq_save();
     struct arch_mpu_encoded const* const img = g_pend_image;
-    // Do not record an empty commit: it writes no descriptors.
     if (img == nullptr)
     {
         arch_irq_restore(irq);
@@ -835,9 +831,9 @@ void kickos_arch_mpu_commit(void)
     static bool mpu_ready = false;
     if (not mpu_ready)
     {
-        reg16(MPU_MPOPI) = MPU_MPOPI_INV;
-        reg32(MPU_MPBAC) = 0;
-        reg32(MPU_MPEN) = MPU_MPEN_MPEN;
+        r16(MPU_MPOPI) = MPU_MPOPI_INV;
+        r32(MPU_MPBAC) = 0;
+        r32(MPU_MPEN) = MPU_MPEN_MPEN;
         // MPOPI.INV clears every region's V bit, so nothing the record claimed still holds.
         g_mpu_held_valid = false;
         mpu_ready = true;
@@ -864,12 +860,12 @@ void kickos_arch_mpu_commit(void)
         }
         if (repage != 0)
         {
-            reg32(rsp) = rspage;
-            reg32(rep) = repage;
+            r32(rsp) = rspage;
+            r32(rep) = repage;
         }
         else
         {
-            reg32(rep) = 0; // clears V -> slot inactive
+            r32(rep) = 0; // clears V -> slot inactive
         }
         g_mpu_held.rspage[i] = rspage;
         g_mpu_held.repage[i] = repage;
@@ -882,7 +878,7 @@ void kickos_arch_mpu_commit(void)
     // wait for.
     if (wrote)
     {
-        uint32_t const mpu_sync = reg32(MPU_MPEN);
+        uint32_t const mpu_sync = r32(MPU_MPEN);
         __asm volatile("" ::"r"(mpu_sync) : "memory");
     }
     if (g_in_isr)
@@ -931,28 +927,18 @@ void arch_mpu_apply_now(struct arch_mpu_region const* regions, size_t n,
 }
 #endif
 
-size_t arch_mpu_min_region(void)
-{
-    // RX MPU page = 16 bytes (RSPAGEn/REPAGEn address[31:4], UM sec.17.1.2). The
-    // hardware takes arbitrary page-granular bounds, so this page size is also the
-    // alloc/linker rounding granule.
-    return 16u;
-}
+// 16-byte pages: RSPAGEn/REPAGEn hold addr[31:4], any page-granular bounds.
+constexpr size_t RX_MPU_PAGE = 16u;
+static_assert(KICKOS_CHIP_REGION_GRANULE == RX_MPU_PAGE and KICKOS_CHIP_REGION_POW2 == 0,
+              "the chip file's protection rule is not the RX MPU's");
 
-// 16-byte pages: RSPAGEn/REPAGEn hold addr[31:4].
 bool arch_mpu_region_encodable(uintptr_t base, size_t size)
 {
-    if (size < 16u)
+    if (size < RX_MPU_PAGE)
     {
         return false;
     }
-    return (base & 15u) == 0 and (size & 15u) == 0;
-}
-
-// The RSPAGEn/REPAGEn pair holds arbitrary 16-byte-page bounds, so a region size is free.
-int arch_mpu_region_pow2(void)
-{
-    return 0;
+    return (base & (RX_MPU_PAGE - 1u)) == 0 and (size & (RX_MPU_PAGE - 1u)) == 0;
 }
 
 // An RX MPU region pair encodes permissions only, and every RX part in tree runs the arena
@@ -986,7 +972,7 @@ void kickos_rx_icu_line_arm(int line, int on)
 {
     if (on != 0)
     {
-        reg8(ICU_IPR_BASE + vector_to_ipr(line)) = static_cast<uint8_t>(IPL_DEVICE);
+        r8(ICU_IPR_BASE + vector_to_ipr(line)) = static_cast<uint8_t>(IPL_DEVICE);
         icu_ier_set(line, true);
         return;
     }
@@ -1028,13 +1014,11 @@ void arch_irq_unmask(int line)
     if (line < SOFT_IRQ_LINES)
     {
         g_irq_masked &= ~(1u << line);
-        // A raise taken while the line was masked redelivers now through SWINT2, on the
-        // normal ISR path rather than as a direct post.
         if ((g_irq_pending & (1u << static_cast<unsigned>(line))) != 0)
         {
             g_irq_pending &= ~(1u << line);
             g_inject_line = line;
-            reg8(ICU_SWINT2R) = SWINT2R_SWINT2;
+            r8(ICU_SWINT2R) = SWINT2R_SWINT2;
         }
     }
     else if (line >= GROUP_LINE_BASE)
@@ -1050,7 +1034,7 @@ void arch_irq_unmask(int line)
         // index comes from vector_to_ipr and NOT the vector; IR/IER stay vector-indexed.
         // IR latches a request while IER=0, so re-enabling here fires a raise taken while
         // masked.
-        reg8(ICU_IPR_BASE + vector_to_ipr(line)) = static_cast<uint8_t>(IPL_DEVICE);
+        r8(ICU_IPR_BASE + vector_to_ipr(line)) = static_cast<uint8_t>(IPL_DEVICE);
         icu_ier_set(line, true);
     }
     arch_irq_restore(s);
@@ -1078,7 +1062,7 @@ void arch_irq_clear_pending(int line)
     else
     {
         // Only an EDGE vector's IR may be written; see ICU_IR_BASE.
-        reg8(ICU_IR_BASE + static_cast<unsigned>(line)) = 0;
+        r8(ICU_IR_BASE + static_cast<unsigned>(line)) = 0;
     }
     arch_irq_restore(s);
 }
@@ -1092,7 +1076,6 @@ bool arch_irq_inject(int irq)
         return false;
     }
     arch_irq_state_t s = arch_irq_save();
-    // A masked soft line latches the raise one-deep, redelivered at unmask.
     if ((g_irq_masked & (1u << static_cast<unsigned>(irq))) != 0)
     {
         g_irq_pending |= (1u << irq);
@@ -1100,7 +1083,7 @@ bool arch_irq_inject(int irq)
     else
     {
         g_inject_line = irq; // recorded BEFORE the doorbell (the ISR reads it)
-        reg8(ICU_SWINT2R) = SWINT2R_SWINT2;
+        r8(ICU_SWINT2R) = SWINT2R_SWINT2;
     }
     arch_irq_restore(s);
     return true;
@@ -1153,7 +1136,7 @@ __attribute__((interrupt)) void kickos_rx_console_txi_isr(void)
 // survives acceptance, and leaving it set re-fires the doorbell forever.
 __attribute__((interrupt)) void kickos_rx_swint2(void)
 {
-    reg8(ICU_IR_BASE + SWINT2_VECTOR) = 0;
+    r8(ICU_IR_BASE + SWINT2_VECTOR) = 0;
     g_in_isr = g_in_isr + 1;
     int line = g_inject_line;
     g_inject_line = -1;
@@ -1198,9 +1181,9 @@ void kickos_rxv3_init(void)
     // from an ISR is accepted only after every other ISR drains, and below IPL_LOCK so an
     // IrqLock masks it and the switch fires as the lock releases. SWINT and SWINT2 share
     // this IPR (regs.h).
-    reg8(ICU_IPR_SWINT) = static_cast<uint8_t>(IPL_PENDSW);
-    reg8(ICU_IER_BASE + (SWINT_VECTOR >> 3)) =
-        static_cast<uint8_t>(reg8(ICU_IER_BASE + (SWINT_VECTOR >> 3)) |
+    r8(ICU_IPR_SWINT) = static_cast<uint8_t>(IPL_PENDSW);
+    r8(ICU_IER_BASE + (SWINT_VECTOR >> 3)) =
+        static_cast<uint8_t>(r8(ICU_IER_BASE + (SWINT_VECTOR >> 3)) |
                              (1u << (SWINT_VECTOR & 7)));
 
     // SWINT2, the software-inject doorbell, shares SWINT's IPR set above but needs its own
@@ -1209,11 +1192,11 @@ void kickos_rxv3_init(void)
 
     // CMTW1: CCLR=001 disables clearing, so the 32-bit counter wraps at 2^32 on its own and
     // is read-extended in software. Also the raw telemetry trace clock (arch_trace_now).
-    reg16(CMTW1_BASE + CMTW_CMWSTR) = 0;
-    reg32(CMTW1_BASE + CMTW_CMWCNT) = 0;
-    reg32(CMTW1_BASE + CMTW_CMWCOR) = 0xFFFFFFFFu;
-    reg16(CMTW1_BASE + CMTW_CMWCR) = CMWCR_CKS_PCLK8 | CMWCR_CCLR_FREERUN;
-    reg16(CMTW1_BASE + CMTW_CMWSTR) = CMWSTR_STR;
+    r16(CMTW1_BASE + CMTW_CMWSTR) = 0;
+    r32(CMTW1_BASE + CMTW_CMWCNT) = 0;
+    r32(CMTW1_BASE + CMTW_CMWCOR) = 0xFFFFFFFFu;
+    r16(CMTW1_BASE + CMTW_CMWCR) = CMWCR_CKS_PCLK8 | CMWCR_CCLR_FREERUN;
+    r16(CMTW1_BASE + CMTW_CMWSTR) = CMWSTR_STR;
 }
 
 }

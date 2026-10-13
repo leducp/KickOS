@@ -63,13 +63,13 @@ namespace
       protected:
         void SetUp() override
         {
-            g_reserved = arch_reserved_span(BLOCKS);
+            g_region_seam.reserved = arch_reserved_span(BLOCKS);
         }
 
         void TearDown() override
         {
-            g_reserved = arch_reserved_span();
-            g_bitband = 0;
+            g_region_seam.reserved = arch_reserved_span();
+            g_region_seam.bitband = 0;
         }
 
         static bool hits(uintptr_t base, size_t size)
@@ -120,7 +120,7 @@ namespace
     {
         uintptr_t const image_end = alias_of(HIGH_END);
         EXPECT_FALSE(hits(alias_of(LOW), 4u)) << "a chip with no bit-band";
-        g_bitband = 1;
+        g_region_seam.bitband = 1;
         EXPECT_TRUE(hits(alias_of(LOW), 4u));
         EXPECT_TRUE(hits(image_end - 4u, 4u)) << "the highest block's image, last word";
         EXPECT_FALSE(hits(image_end, 4u)) << "the word past it";
@@ -129,8 +129,8 @@ namespace
 
     TEST_F(ReservedOverlap, a_block_outside_the_peripheral_region_has_no_bit_band_image)
     {
-        g_reserved = arch_reserved_span(BLOCKS_AND_PAST_PERI);
-        g_bitband = 1;
+        g_region_seam.reserved = arch_reserved_span(BLOCKS_AND_PAST_PERI);
+        g_region_seam.bitband = 1;
         EXPECT_TRUE(hits(PAST_PERI, PAST_PERI_SIZE)) << "the block itself";
         EXPECT_FALSE(hits(alias_of(PAST_PERI), 4u));
     }
@@ -139,7 +139,7 @@ namespace
     {
         EXPECT_TRUE(admitted(PERI_ALIAS, DEVICE_SIZE, DEV, true)) << "a chip with no bit-band";
         EXPECT_TRUE(admitted(SRAM_ALIAS, DEVICE_SIZE, DEV, true)) << "a chip with no bit-band";
-        g_bitband = 1;
+        g_region_seam.bitband = 1;
         EXPECT_FALSE(admitted(PERI_ALIAS, DEVICE_SIZE, DEV, true)) << "the peripheral alias";
         EXPECT_FALSE(admitted(SRAM_ALIAS, DEVICE_SIZE, DEV, true)) << "the SRAM alias";
     }
@@ -152,7 +152,7 @@ namespace
 
     TEST_F(ReservedOverlap, a_reserved_block_inside_the_arena_is_no_ram_grant)
     {
-        g_reserved = arch_reserved_span(ARENA_BLOCK);
+        g_region_seam.reserved = arch_reserved_span(ARENA_BLOCK);
         EXPECT_FALSE(admitted(IN_ARENA, IN_ARENA_SIZE, RW, true));
         EXPECT_FALSE(admitted(IN_ARENA, IN_ARENA_SIZE, RW, false));
         EXPECT_TRUE(admitted(IN_ARENA + IN_ARENA_SIZE, IN_ARENA_SIZE, RW, false))

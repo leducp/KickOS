@@ -814,25 +814,6 @@ namespace kickos
                 EXPECT_EQ(space_self(&acap), 0) << "the undelivered capability kept its slot";
             }
 
-            TEST_F(SpaceSelf, no_space_is_einval)
-            {
-                int derr = 0;
-                Task* tk = nullptr;
-                {
-                    IrqLock lock;
-                    tk = task_for(DOM_CALLER_PRIVILEGED, nullptr, 0, nullptr, &derr);
-                }
-                ASSERT_NE(tk, nullptr);
-                Thread* const p = seat_pool(2, MAIN_PRIO);
-                p->privileged = true;
-                attach_caps(p, CAPS);
-                join_task(p, tk);
-                running() = p;
-                int32_t const rc = aspace_self_call(uva(MAIN_OUT));
-                running() = main_;
-                EXPECT_EQ(rc, -KOS_EINVAL);
-            }
-
             TEST_F(MemCount, each_id_answers_its_source)
             {
                 EXPECT_EQ(count(KOS_MEM_FRAMES_FREE), frame_pool_free());

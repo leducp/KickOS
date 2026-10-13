@@ -27,12 +27,14 @@ set_source_files_properties("${PROJECT_SOURCE_DIR}/kernel/mem/aspace.cc"
   PROPERTIES COMPILE_OPTIONS "-ffunction-sections;-fdata-sections")
 kickos_add_kseam(kickos_kseam_rangecheck_aspace
   EXTRA aspace_seam.cc dcache_seam.cc
+        "${PROJECT_SOURCE_DIR}/tests/unit/common/aspace_leaves.cc"
         "${PROJECT_SOURCE_DIR}/kernel/mem/aspace.cc"
         "${PROJECT_SOURCE_DIR}/kernel/mem/vrange.cc"
         "${PROJECT_SOURCE_DIR}/kernel/syscall/syscall_mem.cc"
   INCLUDES "${PROJECT_SOURCE_DIR}/kernel/syscall" "${CMAKE_CURRENT_SOURCE_DIR}"
            "${PROJECT_SOURCE_DIR}/tests/unit/common"
-  POSTURE KICKOS_HAVE_ASPACE=1 KICKOS_ARCH_ALIAS_DCACHE=1 KICKOS_ARCH_IRQ_WINDOW=1)
+  POSTURE KICKOS_HAVE_ASPACE=1 KICKOS_MAX_MUTEXES=24
+          KICKOS_ARCH_ALIAS_DCACHE=1 KICKOS_ARCH_IRQ_WINDOW=1)
 kickos_add_unit_test(NAME range_check_aspace SOURCES range_check.cc
   TEST_PREFIX aspace_
   LIBRARIES kickos_kseam_rangecheck_aspace)

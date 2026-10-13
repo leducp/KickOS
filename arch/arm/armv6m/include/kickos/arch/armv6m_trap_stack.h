@@ -91,38 +91,24 @@
      _PENDSV   0  handler mode uses SP_main.
      _SVC      0  svc_trampoline moves SP to ctx.kernel_sp before it calls anything, so the
                   whole dispatch tree is measured as _SVCK.
-     _SVCK   808  picopi-st at 528, the deepest of this arch's four declared presets, a spawn
-                  staging KICKOS_MAX_SPAWN_GRANTS 9 grants and seating its windows:
-                    syscall_dispatch[56] -> thread_create_call[8] -> spawn_masked[304]
-                    -> thread_regions_stage[40] -> seat_windows[40] -> MpuSet::add[16]
-                    -> MpuSet::encode[8] -> arch_mpu_encode[40]
-                    -> arch_mpu_region_encodable[16]
-                  microbit, picopi and picopi-flat read 520, the exit path below.
+     _SVCK   808  528 measured at the deepest preset, a spawn staging KICKOS_MAX_SPAWN_GRANTS 9
+                  grants and seating its windows (the others read 520, the exit path below).
                   arch_armv6m.cc refuses more than 9 grants.
 
-   THE PANIC REPORTER IS NOT ON THIS CHAIN. kpanic leaves this stack before it prints
-   (kickos_panic_stack_enter, switch.S), so what 520 measures at picopi is the exit path
-   under endpoint_reply_recv and no console backend at all:
-     syscall_dispatch[56] -> endpoint_reply_recv[120] -> exit_current[48] -> cap_teardown[40]
-     -> teardown_entry[24] -> obj_close_protocol[16] -> endpoint_rights_dropped[24]
-     -> refuse_senders[16] -> wake[8] -> resched_after_wake[8] -> pick_and_seat[16]
-     -> ktime_rearm[16] -> arch_timer_arm[32] -> __aeabi_ldivmod[96]
-   808 IS ENFORCED OVER THAT 528 ON PURPOSE, as headroom a future change is measured against
-   rather than slack to spend. Cutting it to the measurement returns 280 per
-   KICKOS_THREAD_SLOTS, the block falling from 896 to 616, and buys the next added assert a
-   gate failure on whichever preset happens to be deepest.
+   THE PANIC REPORTER IS NOT ON THIS CHAIN: kpanic leaves this stack before it prints
+   (kickos_panic_stack_enter, switch.S).
 
-   On arm-none-eabi the compiler's reported frame is the prologue push plus the sub, with the
-   return address arriving in LR and no incoming slot, so a frameless leaf is 0 and a chain is
-   not missing a per-level 4.
+   808 IS ENFORCED OVER THE 528 ON PURPOSE, as headroom a future change is measured against
+   rather than slack to spend.
+
+   On arm-none-eabi the compiler's reported frame is the prologue push plus the sub, the
+   return address arriving in LR, so a frameless leaf is 0 and a chain is not missing a
+   per-level 4.
 
    tests/static/trap_redzone_indirect.txt binds every reachable indirect site to the one slot
-   that call reaches, and the gate refuses to answer while a reachable site is unbound.
-
-   ONE RESIDUAL, picopi's alone: arch_reboot calls the RP2040 bootrom through two pointers
-   read out of ROM, which no call graph can follow and the datasheet gives no stack figure
-   for, so a reboot syscall descends an unknown depth of ROM code on the calling thread's
-   kernel block. trap_redzone_indirect.txt declares those two sites at 0 and states it. */
+   that call reaches, and the gate refuses to answer while a reachable site is unbound. A
+   bootrom routine, whose depth no call graph sees, runs on a stack of its own
+   (kickos_rp_rom_call), so only the trampoline's push is charged here. */
 #define KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_PENDSV 0
 #define KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_SVC 0
 #define KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_SVCK 808
@@ -142,33 +128,15 @@
 
 /* The measured descent of the two stubs a dying thread runs PRIVILEGED on its own KERNEL
    BLOCK, kickos_fault_stack_top answering with ctx.kernel_sp: kickos_thread_fault_exit and
-   kickos_thread_slay_exit. 384, identical on all four presets: what the fault stub descends is
-   the pick its teardown's wake performs, ending in the 64-bit divide arch_timer_arm needs.
-     kickos_thread_fault_exit[32] -> exit_current[48] -> cap_teardown[40] -> teardown_entry[40]
-     -> obj_close_protocol[32] -> mutex_force_unlock[16] -> wake[16] -> resched_after_wake[16]
-     -> pick_and_seat[16] -> ktime_rearm[16] -> arch_timer_arm[32] -> __aeabi_ldivmod[96]
+   kickos_thread_slay_exit. 384 measured on every preset: the fault stub ends in the pick its
+   teardown's wake performs, with the 64-bit divide arch_timer_arm needs.
 
-   NO POSTURE LADDER on this arch: it has neither a telemetry nor a bench variant, so one
-   figure covers every registered preset. This arch selects
-   ARCH_KERNEL_STACKS_MANDATORY, so no kstacks=0 fallback class stands beside it the way one
-   does on armv7m.
+   NO POSTURE LADDER: this arch has neither a telemetry nor a bench variant, and
+   ARCH_KERNEL_STACKS_MANDATORY leaves no kstacks=0 fallback class.
 
-   IT NEVER BINDS, WHICH IS WHY IT IS ROUNDED LIKE A THREAD-STACK FIGURE. A kernel-block
-   figure is normally left at its measurement because it sizes KICKOS_KERNEL_STACK_SIZE and a
-   byte there costs KICKOS_THREAD_SLOTS; this class sizes nothing, SVCK winning the block on
-   every registered preset, so the reason for that convention does not reach it. 448 stands
-   over the 384 measured: 68 + 448 = 516 against 892 usable,
-   where SVCK asks 892 exactly, so this would have to grow 376 more before it bound. */
+   IT NEVER BINDS: SVCK wins the block on every preset, so 448 is rounded like a thread-stack
+   figure and sizes nothing. */
 #define KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_EXITK 448
-
-/* kickos_thread_return ALONE: an ordinary privileged thread's entry returning, with no fault
-   and no redirect to relocate it, so it runs at whatever depth the entry returned from on the
-   thread's own stack. 504 enforced, 360 measured on picopi: the pick the teardown's wake
-   performs, and no longer the panic reporter under it.
-     kickos_thread_return[8] -> exit_current[48] -> cap_teardown[40] -> teardown_entry[40]
-     -> obj_close_protocol[32] -> mutex_force_unlock[16] -> wake[16] -> resched_after_wake[16]
-     -> pick_and_seat[16] -> ktime_rearm[16] -> arch_timer_arm[32] -> __aeabi_ldivmod[96] */
-#define KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_RET 504
 
 /* What each guarded site enforces, in bytes below the live PSP: a class's structural half
    plus its measured one, which is also what the gate compares against KICKOS_MIN_STACK_SIZE.
@@ -201,7 +169,7 @@
 #define KICKOS_ARMV6M_CTX_OFF_TRACE_TID 24
 
 /* THE PANIC REPORTER'S OWN STACK, which kickos_panic_stack_enter (switch.S) moves to before a
- * banner is printed, so an assert on EXITK, RET or SVCK costs those figures its call site and
+ * banner is printed, so an assert on EXITK or SVCK costs those figures its call site and
  * nothing under it. THE FAULT REPORTER IS A DIFFERENT CHAIN and is not priced here: it runs in
  * thread context on the dying thread's own block and is what EXITK still measures.
  *
@@ -210,7 +178,7 @@
  * the reporter is on. A plain integer because check_trap_redzone.sh scrapes it as an immediate;
  * arch_armv6m.cc asserts it against KICKOS_ARMV6M_TRAP_FRAME.
  *
- * 128 MEASURED on the three picopi presets and 120 on microbit, under an enforced 320. */
+ * 128 is the deepest reading, under an enforced 320. */
 #define KICKOS_ARMV6M_PANIC_FRAME 32
 #define KICKOS_ARMV6M_PANIC_DEPTH 320
 
@@ -222,11 +190,9 @@
  * class PENDSV frame=KICKOS_ARMV6M_TRAP_FRAME depth=KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_PENDSV
  * class SVC    frame=KICKOS_ARMV6M_TRAP_NEST_SVC depth=KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_SVC
  *
- * The death path. EXITK is the two relocating stubs on the block; RET is kickos_thread_return,
- * which cannot move and stays against the spawn floor.
+ * The death path: EXITK is the two relocating stubs on the block.
  *
  * class EXITK  frame=KICKOS_ARMV6M_TRAP_NEST_EXIT depth=KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_EXITK stack=kernel
- * class RET    frame=KICKOS_ARMV6M_TRAP_NEST_EXIT depth=KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_RET
  * class SVCK   frame=KICKOS_ARMV6M_TRAP_NEST_SVCK depth=KICKOS_ARMV6M_TRAP_KERNEL_DEPTH_SVCK stack=kernel
  * class PANIC  frame=KICKOS_ARMV6M_PANIC_FRAME depth=KICKOS_ARMV6M_PANIC_DEPTH stack=panic
  */

@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// XMC4800 GPIO port registers + IOCR PC-field encoding (RM ch.26). Clean-room
-// from the XMC4700/XMC4800 Reference Manual (V1.3, 2016-07). The PC codes and
-// the shift/mask helpers are SHARED by the pinmux and GPIO backends and the
-// console pin setup, so a single definition keeps their views identical.
+// XMC4800 GPIO port registers and IOCR PC-field encoding (RM V1.3 ch.26). The PC codes and the
+// shift/mask helpers are SHARED by the pinmux and GPIO backends and the console pin setup.
 
 #ifndef KICKOS_ARCH_ARM_CHIP_XMC4800_REGS_PORT_H
 #define KICKOS_ARCH_ARM_CHIP_XMC4800_REGS_PORT_H

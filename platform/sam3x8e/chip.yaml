@@ -8,9 +8,11 @@ chip: sam3x8e
 manual: "Atmel SAM3X / SAM3A Datasheet, Atmel-11057C-ATARM (23-Mar-15)"
 arch: armv7m
 # The Cortex-M3 carries an MPU, which no build drives.
-protection: { unit: pmsav7, covers_devices: true, memory_type: true, driven: false }
+protection: { unit: pmsav7, granule: 32, covers_devices: true, memory_type: true, driven: false }
 data_cache: false
 
+family: none
+exits_on_fault: false
 # A line is its peripheral's identifier.
 interrupts: { count: { value: 45, ref: "Table 9-1 Peripheral Identifiers, p.39" } }
 

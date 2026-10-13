@@ -8,8 +8,8 @@
  * A U-MODE TRAP BUILDS ITS FRAME ON THE THREAD'S KERNEL BLOCK and runs its dispatch there with
  * SIE clear, but for arch_irq_window, where a system call lets an interrupt nest on the block
  * (SYSWIN); nothing nests under IRQK or SYSK otherwise. AN S-MODE INTERRUPT RUNS ITS WHOLE
- * DISPATCH ON THE STACK IT INTERRUPTED: idle's, a privileged thread's own, or a death-path
- * stub's kernel block. AN S-MODE EXCEPTION takes the per-hart trap stack.
+ * DISPATCH ON THE STACK IT INTERRUPTED: idle's or a death-path stub's kernel block. AN S-MODE
+ * EXCEPTION takes the per-hart trap stack.
  *
  * NO INTERRUPT NESTS BELOW A SWITCH FRAME: arch_switch runs under the kernel IrqLock. So each
  * death-path descent is two classes, the interrupt nested at its deepest byte with the switch
@@ -75,26 +75,17 @@
  * kickos_rv64_fault_report[64]. */
 #define KICKOS_RV64_TRAP_NESTED_DEPTH 960
 
-/* The fault and slay stubs on the block with an interrupt nested below. 1136 on
+/* The fault and slay stubs on the block with an interrupt nested below. 1024 on
  * qemu-riscv64-benchsmp and -benchsmp2, the space release freeing the child's tables:
- *   kickos_thread_fault_exit[32] -> exit_current[128] -> cap_teardown[80] -> teardown_entry[64]
- *   -> obj_ref_drop[48] -> domain_release[16] -> drop_space[32] -> aspace_release[96]
- *   -> arch_aspace_destroy[48] -> free_subtree[80]x4 -> kickos_frame_free[48] -> klock_enter
- *   -> ... -> arch_irq_unmask
+ *   kickos_thread_fault_exit[32] -> exit_current[128] -> aspace_window_unmap_holder[96]
+ *   -> domain_release[16] -> drop_space[32] -> aspace_release[96] -> arch_aspace_destroy[48]
+ *   -> free_subtree[80]x4 -> kickos_frame_free[48] -> klock_enter -> ... -> arch_irq_unmask
  * Reserved at 2048, as SYSK is; NEST + 2048 = 3200 is the block's deepest need. */
 #define KICKOS_RV64_TRAP_DEPTH_EXITK 2048
 
-/* The same stubs through the switch: 1136 on the same two presets, down the same chain, and
+/* The same stubs through the switch: 1024 on the same two presets, down the same chain, and
  * reserved at 2048. */
 #define KICKOS_RV64_TRAP_DEPTH_EXITKSW 2048
-
-/* kickos_thread_return on a privileged thread's own stack with an interrupt nested below. 1104
- * on qemu-riscv64-benchsmp and -benchsmp2, down EXITK's chain from kickos_thread_return[16].
- * NEST + 1152 = 2304 is what sets KICKOS_MIN_STACK_SIZE. */
-#define KICKOS_RV64_TRAP_DEPTH_RET 1152
-
-/* The same return through the switch: 1104, down the same chain. */
-#define KICKOS_RV64_TRAP_DEPTH_RETSW 1152
 
 /* idle_entry's own frame, above the interrupt idle waits for: 16 on every preset. */
 #define KICKOS_RV64_TRAP_DEPTH_IDLE 64
@@ -109,16 +100,14 @@
  * one line each; tests/static/trap_redzone_roots.txt says what each option means and roots
  * every class.
  *
- * class IRQ     frame=KICKOS_RV64_TRAP_FRAME depth=KICKOS_RV64_TRAP_DEPTH_IRQ
+ * class IRQ     frame=KICKOS_RV64_TRAP_FRAME depth=KICKOS_RV64_TRAP_DEPTH_IRQ stack=idle
  * class IRQK    frame=KICKOS_RV64_TRAP_FRAME depth=KICKOS_RV64_TRAP_DEPTH_IRQ stack=kernel
  * class SYSK    frame=KICKOS_RV64_TRAP_FRAME depth=KICKOS_RV64_TRAP_DEPTH_SYSK stack=kernel
  * class SYSWIN  frame=KICKOS_RV64_TRAP_WINDOW depth=KICKOS_RV64_TRAP_DEPTH_SYSWIN stack=kernel at=arch_irq_window
  * class NESTED  frame=KICKOS_RV64_TRAP_FRAME depth=KICKOS_RV64_TRAP_NESTED_DEPTH stack=trap
  * class EXITK   frame=KICKOS_RV64_TRAP_NEST depth=KICKOS_RV64_TRAP_DEPTH_EXITK stack=kernel
  * class EXITKSW frame=KICKOS_RV64_TRAP_FRAME_NONE depth=KICKOS_RV64_TRAP_DEPTH_EXITKSW stack=kernel
- * class RET     frame=KICKOS_RV64_TRAP_NEST depth=KICKOS_RV64_TRAP_DEPTH_RET
- * class RETSW   frame=KICKOS_RV64_TRAP_FRAME_NONE depth=KICKOS_RV64_TRAP_DEPTH_RETSW
- * class IDLE    frame=KICKOS_RV64_TRAP_NEST depth=KICKOS_RV64_TRAP_DEPTH_IDLE
+ * class IDLE    frame=KICKOS_RV64_TRAP_NEST depth=KICKOS_RV64_TRAP_DEPTH_IDLE stack=idle
  * class PANIC   frame=KICKOS_RV64_PANIC_FRAME depth=KICKOS_RV64_PANIC_DEPTH stack=panic
  */
 

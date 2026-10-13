@@ -5,7 +5,6 @@
 
 #include <kickos/arch/arch.h>
 #include <kickos/console_tx.h>
-#include <kickos/irq.h>
 #include <kickos/instance.h>
 
 #include <atomic>
@@ -82,7 +81,7 @@ namespace
     }
 
     console_tx_backend const g_backend = {mock_slot_free, mock_push, mock_irq_enable,
-                                          mock_irq_disable};
+                                          mock_irq_disable, nullptr};
 }
 
 namespace consoletxsmp
@@ -164,130 +163,84 @@ extern "C"
 {
     void console_tx_room_freed(void) {}
 
+    void console_write_line_sync(char const*, size_t) {}
 
-// At one core, arch_cpu_id is a macro folding to a literal and no other source may define
-// it; the assert above pins which arm this translation unit is on.
+// At one core, arch_cpu_id is a macro folding to a literal and no other source may define it; the
+// assert above pins which arm this translation unit is on.
 #if KICKOS_NUM_CORES > 1
-uint32_t arch_cpu_id(void)
-{
-    return consoletxsmp::g_core;
-}
+    uint32_t arch_cpu_id(void)
+    {
+        return consoletxsmp::g_core;
+    }
 #endif
 
-// Per-thread, so a producer's mask reaches only the core it speaks as. A shared depth here
-// would make one core's critical section exclude the other's and hide the overlap these
-// arms exist to read.
-arch_irq_state_t arch_irq_save(void)
-{
-    arch_irq_state_t const prior = static_cast<arch_irq_state_t>(g_mask_depth);
-    g_mask_depth++;
-    return prior;
-}
-
-void arch_irq_restore(arch_irq_state_t state)
-{
-    g_mask_depth = static_cast<int>(state);
-}
-
-int arch_in_isr(void)
-{
-    return 0;
-}
-
-// Excludes and nothing else, as arch/xtensa/lx6/klock_lx6.cc does. The owner is published
-// under the claim and withdrawn before the release, so a reader inside a push names the core
-// whose critical section it landed in.
-void arch_kernel_lock(void)
-{
-    uint32_t const me = arch_cpu_id();
-    while (true)
+    // Per-thread, so a producer's mask reaches only the core it speaks as. A shared depth here
+    // would make one core's critical section exclude the other's and hide the overlap these
+    // arms exist to read.
+    arch_irq_state_t arch_irq_save(void)
     {
-        if (g_lock_word.try_lock())
-        {
-            g_lock_owner.store(static_cast<int>(me));
-            return;
-        }
-        g_contended.store(true);
-        std::this_thread::yield();
+        arch_irq_state_t const prior = static_cast<arch_irq_state_t>(g_mask_depth);
+        g_mask_depth++;
+        return prior;
     }
-}
 
-void arch_kernel_unlock(void)
-{
-    g_lock_owner.store(-1);
-    g_lock_word.unlock();
-}
+    void arch_irq_restore(arch_irq_state_t state)
+    {
+        g_mask_depth = static_cast<int>(state);
+    }
+
+    // Excludes and nothing else, as arch/xtensa/lx6/klock_lx6.cc does. The owner is published
+    // under the claim and withdrawn before the release, so a reader inside a push names the
+    // core whose critical section it landed in.
+    void arch_kernel_lock(void)
+    {
+        uint32_t const me = arch_cpu_id();
+        while (true)
+        {
+            if (g_lock_word.try_lock())
+            {
+                g_lock_owner.store(static_cast<int>(me));
+                return;
+            }
+            g_contended.store(true);
+            std::this_thread::yield();
+        }
+    }
+
+    void arch_kernel_unlock(void)
+    {
+        g_lock_owner.store(-1);
+        g_lock_word.unlock();
+    }
 
 #if KICKOS_DEBUG
-int arch_kernel_lock_held(void)
-{
-    if (g_lock_owner.load() < 0)
+    int arch_kernel_lock_held(void)
     {
-        return 0;
+        if (g_lock_owner.load() < 0)
+        {
+            return 0;
+        }
+        return 1;
     }
-    return 1;
-}
 #endif
 
-void arch_ipi_raise(uint32_t)
-{
-}
+    void arch_ipi_raise(uint32_t) {}
+    void arch_ipi_send(uint32_t) {}
+    void arch_ipi_wait(uint32_t) {}
 
-void arch_ipi_send(uint32_t)
-{
-}
-
-void arch_ipi_wait(uint32_t)
-{
-}
-
-// Unmasked on every backend, so these bytes reach the wire without a lock owner to name.
-bool arch_console_write_sync(char const* buf, size_t n)
-{
-    for (size_t i = 0; i < n; i++)
+    // Unmasked on every backend, so these bytes reach the wire without a lock owner to name.
+    bool arch_console_write_sync(char const* buf, size_t n)
     {
-        mock_push(static_cast<uint8_t>(buf[i]));
+        for (size_t i = 0; i < n; i++)
+        {
+            mock_push(static_cast<uint8_t>(buf[i]));
+        }
+        return true;
     }
-    return true;
-}
-
-void arch_irq_mask(int)
-{
-}
-
-void arch_irq_unmask(int)
-{
-}
-
-void arch_irq_clear_pending(int)
-{
-}
-
-console_tx_backend const* arch_console_tx_backend(char**, uint32_t*, int*)
-{
-    return nullptr; // the fixture arms the ring through console_tx_init
-}
-
-// Stubs console.cc's version; the insert reaches it only for the unarmed ring, where there
-// is nothing to interleave with, so these suites need only the symbol.
-void console_write_line_sync(char const*, size_t)
-{
-}
 }
 
 namespace kickos
 {
-    bool irq_attach(int, IrqHandler, void*)
-    {
-        return true;
-    }
-
-    void irq_detach(int)
-    {
-    }
-
     // The lock's release publishes what the scheduler staged, and this gate stages nothing.
-    void sched_flush_owed(uint32_t)
-    {
-    }
+    void sched_flush_owed(uint32_t) {}
 }

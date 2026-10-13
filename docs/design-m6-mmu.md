@@ -350,7 +350,7 @@ board can state it and disagree with its own backend. Rule 7 and reserved-block 
 it, and T5 made the self-grant a refusal by name rather than a silent widening. **THE SPLIT IS
 COMPLETE, and the pair of static-data hooks section 3.3 carries was its last half.**
 `arch_user_text_readable` and `arch_user_data_writable` (`arch/common/arch_ram_common.cc`) are keyed on
-`KICKOS_MEMORY_ENFORCED`, as is `arch_mpu_probe_addr` beside them, and that file names
+`KICKOS_MEMORY_ENFORCED`, as is the MPU probe-address function (formerly `arch_mpu_probe_addr`) beside them, and that file names
 `KICKOS_HAVE_MPU` nowhere at all. What the old keying did on this board was take the non-enforcing arm
 and admit app globals out of a linker whitelist; the re-key did not widen that whitelist, it replaced
 the oracle, and the reasoning is 3.3's. A whitelist answers about an ADDRESS, and an address cannot
@@ -380,7 +380,7 @@ and `_sdata` are the self-describing choices, both far below `__kickos_ram_start
 both aligned enough that the geometry arm cannot claim the refusal first. **The arena is high-half
 here until T6 moves it**, at which point the wording can tighten; T8 does not wait for that.
 **T5b.3 supplied the address without naming a linker symbol**, and a hostile witness should take the
-same one: `arch_mpu_probe_addr` is now keyed on `KICKOS_MEMORY_ENFORCED` and answers with a word in
+same one: the MPU probe-address function is now keyed on `KICKOS_MEMORY_ENFORCED` and answers with a word in
 kernel-side `.bss`. App text cannot name a kernel-half symbol at all under this board's code model,
 so a witness worded against one is a witness that does not link.
 
@@ -482,7 +482,7 @@ the same. A divergence there is a fact about the emulator worth recording, not a
 this.
 
 **TAKEN at M6.2's close and NOT at S2, and the model agrees with the manuals on all three.**
-`arch_aspace_model` (`arch/arm64/armv8a/aspace_armv8a.cc`) reads `ID_AA64MMFR0_EL1` and the
+The aspace model function (formerly `arch_aspace_model`; `arch/arm64/armv8a/aspace_armv8a.cc`) reads `ID_AA64MMFR0_EL1` and the
 `aspace_model` arm reported it (the arm is gone: the boot now refuses an MMU without the 4 KiB
 granule or with a physical range narrower than `TCR_EL1.IPS`): granules `0x5` -- 4 KiB and 64 KiB supported, **16 KiB NOT** -- with
 16 identifier bits and a 40-bit physical range, which is the A53 reset value F7 took from DDI 0500J
@@ -1022,7 +1022,7 @@ granted, so nothing enters it that no reservation named. `user_range_ok`
 (`kernel/syscall/syscall_mem.cc`) consults it BESIDE the region-set walk rather than in place of it:
 the region array is what every grant path records and the only oracle a descriptor board has, so the
 walk stays live on both, and the list answers for what no region array on this backend describes.
-`arch_mpu_probe_addr` (`arch/common/arch_ram_common.cc`) reads as a question about descriptors, and
+The MPU probe-address function (`arch/common/arch_ram_common.cc`) reads as a question about descriptors, and
 went with them anyway: on the keying it used to carry it answered 0 on exactly the board carrying the
 strongest denial, so it is keyed on `KICKOS_MEMORY_ENFORCED` too and the file names `KICKOS_HAVE_MPU`
 nowhere. R3's denial arm takes its address from it.

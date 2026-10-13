@@ -2,8 +2,8 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The cross-core doorbell protocol shared by every backend: the request and answer cells, the
-// raise, the rendezvous wait, and the primary's bring-up check of the kernel lock's coupling to
-// the doorbell.
+// raise, the rendezvous wait, and the primary's boot check of the kernel lock's coupling to the
+// doorbell.
 //
 // The controller carries only the wake and the answer travels in the cells: no controller
 // reached from here tells a sender that a target serviced a raise. Every cell has exactly one
@@ -26,7 +26,17 @@
 
 #include <type_traits>
 
-extern "C" void kfault_terminate(void) __attribute__((noreturn));
+namespace kickos
+{
+    void kprintf(char const* fmt, ...);
+}
+
+extern "C"
+{
+    void kfault_terminate(void) __attribute__((noreturn));
+    void kpanic_enter(void);
+    void kpanic_refuse_unlocked_hex(char const* head, unsigned value) __attribute__((noreturn));
+}
 
 namespace kickos::doorbell
 {
@@ -45,7 +55,8 @@ namespace kickos::doorbell
         constexpr uint32_t CLOCK_CHECK_SPINS = 256u;
         static_assert((CLOCK_CHECK_SPINS & (CLOCK_CHECK_SPINS - 1u)) == 0u, "tested as a mask");
 
-        constexpr char NL[] = "\n";
+        constexpr char UNANSWERED[]
+            = "KickOS: " KICKOS_DOORBELL_TAG " doorbell unanswered by core ";
 
         // The requests the service answers, one row per core: on the stack they would deepen
         // every trap class that polls the doorbell by a word per core. One row is enough because
@@ -136,16 +147,6 @@ namespace kickos::doorbell
         return false;
     }
 
-    void hex1(uint32_t v)
-    {
-        char c = static_cast<char>('0' + (v & 0xFu));
-        if ((v & 0xFu) > 9u)
-        {
-            c = static_cast<char>('a' + (v & 0xFu) - 10u);
-        }
-        part_write(&c, 1);
-    }
-
 #if KICKOS_NUM_CORES > 1
     Seq g_contend = {};
     PartCell g_held[KICKOS_NUM_CORES] = {};
@@ -169,9 +170,17 @@ namespace kickos::doorbell
         static_assert(CHECK_ROUNDS <= 0xFFu, "the round count is printed in two digits");
         static_assert(KICKOS_NUM_CORES <= 0xFu, "a core count is printed in one digit");
 
-        constexpr char CHECK_HEAD[] = "# doorbell: ";
-        constexpr char CHECK_TAIL[] = " core(s) answered, rounds 0x";
-        constexpr char CHECK_UNMOVED[] = ", unmoved 0x";
+        constexpr char CHECK[]
+            = "# doorbell: %x core(s) answered, rounds 0x%x%x, unmoved 0x%x\n";
+
+        constexpr char EARLY_WAIT[] = "KickOS: " KICKOS_DOORBELL_TAG
+            " doorbell wait returned unanswered, rounds 0x%x%x\n";
+        constexpr char NO_CONTEND[]
+            = "KickOS: " KICKOS_DOORBELL_TAG " kernel lock uncontended, peers %x\n";
+        constexpr char NO_SPIN[] = "KickOS: " KICKOS_DOORBELL_TAG
+            " no peer reached the acquire loop, spinning mask 0x%x\n";
+        constexpr char STILL_SETTLED[] = "KickOS: " KICKOS_DOORBELL_TAG
+            " doorbell round settled a request that never moved, peers %x\n";
 
         // The sequence each peer owes this core, chosen before the raise and never read back
         // from the request cell afterwards: a send that stored nothing satisfies that readback
@@ -291,7 +300,7 @@ namespace kickos::doorbell
 #endif
 }
 
-#if KICKOS_KERNEL_CORES > 1 && defined(KICKOS_DEBUG) && KICKOS_DEBUG
+#if KICKOS_KERNEL_CORES > 1 && KICKOS_DEBUG
 namespace kickos::klock
 {
     uint32_t g_owner[KICKOS_NUM_CORES] = {};
@@ -304,25 +313,21 @@ extern "C"
 // Snapshot, fence, drain, answer, in the only order the step types allow. A fence or a drain run
 // before the request is loaded attests to nothing the initiator published ahead of its raise, and
 // an answer stored ahead of either reports work this core has not done.
-//
-// rv32imac links this file without a service_fence: its node keeps its own service body, and this
-// one is collected unreferenced.
 void kickos_doorbell_service(void)
 {
     using kickos::doorbell::Service;
 
     kickos::doorbell::Snapshot const s = Service::snapshot();
-    if (not s.owed())
+    if (s.owed())
     {
-        return;
+        kickos::doorbell::Fenced const f = kickos::doorbell::service_fence(s.observed());
+        kickos::doorbell::Drained const d = Service::drain(f);
+        Service::publish_answers(s, d);
     }
-    kickos::doorbell::Fenced const f = kickos::doorbell::service_fence(s.observed());
-    kickos::doorbell::Drained const d = Service::drain(f);
-    Service::publish_answers(s, d);
 #if KICKOS_AMP_NODE
     // After the answers: an AMP payload drain may not delay the rendezvous a shared kernel's
-    // callers wait on through this same body. The early return above cannot lose a payload wake,
-    // a send raising the request cell like any other.
+    // callers wait on through this same body. Run whether or not a request was owed: a raise
+    // that bumped no request cell still wakes the node for its payloads.
     kickos_amp_node_service();
 #endif
 }
@@ -396,10 +401,8 @@ void arch_ipi_wait(uint32_t cores)
                 }
                 else if (now > deadline)
                 {
-                    part_write(PART_UNANSWERED, sizeof(PART_UNANSWERED) - 1);
-                    hex1(to);
-                    part_write(NL, sizeof(NL) - 1);
-                    kfault_terminate();
+                    // This core may be inside the kernel lock's acquisition or holding it bare.
+                    kpanic_refuse_unlocked_hex(UNANSWERED, to);
                 }
             }
             kickos_doorbell_poll();
@@ -427,13 +430,13 @@ bool arch_ipi_answered(uint32_t cores)
 }
 
 #if KICKOS_NUM_CORES > 1
-// The primary's bring-up check of the doorbell, run once with every secondary parked. Every round
+// The primary's boot check of the doorbell, run once with every secondary parked. Every round
 // holds the kernel lock across a raise and a rendezvous, so the far side answers while the
 // initiator holds what the far side contends for.
 //
 // No round may depend on winning a race: each phase drives the peers into its state and waits,
 // bounded, to observe them there. An expired bound is a mechanism failure and stays fatal.
-void kickos_doorbell_selfcheck(void)
+void kickos_doorbell_boot_check(void)
 {
     using namespace kickos::doorbell;
 
@@ -500,9 +503,8 @@ void kickos_doorbell_selfcheck(void)
     if (spinning_rounds != POLL_ROUNDS)
     {
         g_contend = CONTEND_PARK;
-        part_write(PART_NO_SPIN, sizeof(PART_NO_SPIN) - 1);
-        hex1(spinning_seen);
-        part_write(NL, sizeof(NL) - 1);
+        kpanic_enter();
+        kickos::kprintf(NO_SPIN, spinning_seen);
         kfault_terminate();
     }
 
@@ -513,10 +515,8 @@ void kickos_doorbell_selfcheck(void)
 
     if (settled_rounds != CHECK_ROUNDS)
     {
-        part_write(PART_EARLY_WAIT, sizeof(PART_EARLY_WAIT) - 1);
-        hex1(settled_rounds / 16u);
-        hex1(settled_rounds % 16u);
-        part_write(NL, sizeof(NL) - 1);
+        kpanic_enter();
+        kickos::kprintf(EARLY_WAIT, settled_rounds / 16u, settled_rounds % 16u);
         kfault_terminate();
     }
 
@@ -524,34 +524,25 @@ void kickos_doorbell_selfcheck(void)
     // satisfy by standing still.
     if (unmoved != peer_count)
     {
-        part_write(PART_STILL_SETTLED, sizeof(PART_STILL_SETTLED) - 1);
-        hex1(peer_count - unmoved);
-        part_write(NL, sizeof(NL) - 1);
+        kpanic_enter();
+        kickos::kprintf(STILL_SETTLED, peer_count - unmoved);
         kfault_terminate();
     }
 
 #if KICKOS_KERNEL_CORES > 1
     if (contended != peer_count)
     {
-        part_write(PART_NO_CONTEND, sizeof(PART_NO_CONTEND) - 1);
-        hex1(contended);
-        part_write(NL, sizeof(NL) - 1);
+        kpanic_enter();
+        kickos::kprintf(NO_CONTEND, contended);
         kfault_terminate();
     }
 #endif
 
-    part_write(CHECK_HEAD, sizeof(CHECK_HEAD) - 1);
-    hex1(peer_count + 1u);
-    part_write(CHECK_TAIL, sizeof(CHECK_TAIL) - 1);
-    hex1(settled_rounds / 16u);
-    hex1(settled_rounds % 16u);
-    part_write(CHECK_UNMOVED, sizeof(CHECK_UNMOVED) - 1);
-    hex1(unmoved);
-    part_write(NL, sizeof(NL) - 1);
+    kickos::kprintf(CHECK, peer_count + 1u, settled_rounds / 16u, settled_rounds % 16u, unmoved);
 }
 #endif
 
-#if KICKOS_KERNEL_CORES > 1 && defined(KICKOS_DEBUG) && KICKOS_DEBUG
+#if KICKOS_KERNEL_CORES > 1 && KICKOS_DEBUG
 int arch_kernel_lock_held(void)
 {
     return static_cast<int>(kickos::klock::g_owner[arch_cpu_id()]);

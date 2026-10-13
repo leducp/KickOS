@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// ESP32 (WROOM-32) chip backend. Register addresses are clean-room facts
-// transcribed from the ESP32 TRM v5.8 (peripheral base addresses per Table 3.3-6 in
-// chapter 3, "System and Memory"; UART/WDT register offsets per the UART and Watchdog
-// chapters). Hand-rolled, no ESP-IDF/HAL sources.
+// ESP32 (WROOM-32) chip backend. Register addresses are from the ESP32 TRM v5.8
+// (peripheral base addresses per Table 3.3-6; UART/WDT offsets per the UART and Watchdog
+// chapters).
 
 #include <kickos/arch/arch.h>
+#include <arch_reboot_tail.h>
+#include <kickos/diag.h>
 #include "crt_tail.h"
 #include "pin_guard.h"
 #include <kickos/arch/doorbell_protocol.h>
@@ -14,6 +15,7 @@
 #include <kickos/arch/clk_q32.h>
 #include <kickos/config/limits.h>
 #include <kickos/console_tx.h>
+#include <kickos/io/mmio.h>
 #include <kickos/sys/abi.h>
 
 #include <stdint.h>
@@ -24,11 +26,17 @@
 #include "irq.h"
 #include "routing.h"
 #include "regs/uart.h"
+#include "esp_uart_console.h"
 #include "regs/timg.h"
 #include "regs/rtc_cntl.h"
 #include "regs/dport.h"
 #include "regs/gpio.h"
 #include "regs/system.h"
+
+namespace kickos
+{
+    void kprintf(char const* fmt, ...);
+}
 
 namespace mmap = kickos::esp32::mmap;
 namespace reg = kickos::esp32::reg;
@@ -40,10 +48,11 @@ extern "C"
 #if KICKOS_NUM_CORES > 1
     void _kickos_lx6_core1_entry(void);
     void kfault_terminate(void) __attribute__((noreturn));
+    void kpanic_enter(void);
 #endif
 
     // Add a (CPU interrupt, logical line) device route and arm that CPU interrupt in
-    // INTENABLE, which then serves as the line's kernel-owned mask (RULE L1). The
+    // INTENABLE, which then serves as the line's kernel-owned mask. The
     // per-transfer gate stays at the peripheral, in the driver-owned reg::uart::INT_ENA.
     void kickos_lx6_bind_dev_int(int cpu_int, int line, int core);
 
@@ -55,28 +64,11 @@ extern "C"
 
 namespace
 {
-    inline volatile uint32_t& r32(uintptr_t a) { return *reinterpret_cast<volatile uint32_t*>(a); }
-
 #if KICKOS_NUM_CORES > 1
     // Sized far over: an expiry means the mechanism failed, not that a core was slow.
     constexpr uint64_t ESP32_ARRIVAL_WAIT_NS = 1000ull * 1000ull * 1000ull;
 
-    char const NO_ARRIVE[] = "KickOS: esp32 APP_CPU released and never arrived, core ";
-    char const NL[] = "\n";
-    // These print through arch_console_write_sync: every site runs before kmain arms the
-    // console ring (arch_init) or inside an interrupt, where the buffered writer drops.
-    char const ARRIVED[] = "# cores: ";
-    char const ARRIVED_TAIL[] = " arrived\n";
-
-    void hex1(uint32_t v)
-    {
-        char c = static_cast<char>('0' + (v & 0xFu));
-        if ((v & 0xFu) > 9u)
-        {
-            c = static_cast<char>('a' + (v & 0xFu) - 10u);
-        }
-        arch_console_write_sync(&c, 1);
-    }
+    char const NO_ARRIVE[] = "KickOS: esp32 APP_CPU released and never arrived, core %x\n";
 #endif
 
     // Point ONE core's matrix bank at `cpu_int` for `source` and sink it in every other
@@ -196,9 +188,7 @@ namespace
         r32(reg::rtc_cntl::DBIAS_REG) = dbias;
         delay_us(3, 40);
 
-        // Program the BBPLL to 480 MHz for a 40 MHz crystal: div_ref=0, div7_0=28,
-        // div10_8=0, lref=0, dcur=6, bw=3. OC_LREF=(lref<<7)|(div10_8<<4)|div_ref=0,
-        // OC_DIV_7_0=div7_0=28, OC_DCUR=(bw<<6)|dcur=0xC6.
+        // 480 MHz from the 40 MHz crystal: div_ref=0, div7_0=28, OC_DCUR=(bw=3)<<6|(dcur=6).
         bbpll_write(11, 0xC3); // ENDIV5    (480 MHz)
         bbpll_write(9, 0x74);  // BBADC_DSMP (480 MHz)
         bbpll_write(2, 0x00);  // OC_LREF
@@ -214,8 +204,8 @@ namespace
         clk |= reg::rtc_cntl::SOC_CLK_SEL_PLL << reg::rtc_cntl::SOC_CLK_SEL_SHIFT;
         r32(reg::rtc_cntl::CLK_CONF) = clk;
 
-        // CCOUNT/CCOMPARE0 now tick at 240 MHz: publish it so arch_xtensa.cc's
-        // ns<->cycle math (which reads SystemCoreClock live) stays coherent.
+        // CCOUNT/CCOMPARE0 now tick at 240 MHz; arch_xtensa.cc's ns<->cycle math reads this
+        // live.
         SystemCoreClock = reg::system::CPU_CLOCK_HZ;
         delay_us(30, 240);
 
@@ -245,9 +235,7 @@ namespace
 
     void timg_clock_init()
     {
-        // Runs before any arch_clock_now and after clock_init_240mhz: on the 40 MHz XTAL
-        // APB the counter ticks at half rate. No DPORT clock ungate: the ROM armed TIMG0's
-        // MWDT, so its APB clock is live.
+        // After clock_init_240mhz: on the 40 MHz XTAL APB the counter ticks at half rate.
         r32(TIMG0_T0CONFIG) = reg::timg::T0_INCREASE | (reg::timg::DIVIDER << reg::timg::T0_DIVIDER_SHIFT);
         r32(TIMG0_T0LOADLO) = 0;
         r32(TIMG0_T0LOADHI) = 0;
@@ -256,9 +244,9 @@ namespace
             reg::timg::T0_EN | reg::timg::T0_INCREASE | (reg::timg::DIVIDER << reg::timg::T0_DIVIDER_SHIFT);
     }
 
-    // The live counter is not directly readable: write T0UPDATE to latch it into the T0LO/T0HI
-    // shadow regs, then read LO+HI; a bare LO/HI read without the latch is stale. On the classic ESP32 T0UPDATE has no ready/self-clearing bit (that is an
-    // S2/S3 addition), so a single write latches synchronously.
+    // The live counter is read through a latch: write T0UPDATE, then read LO and HI; a read
+    // without it is stale. On the classic ESP32 T0UPDATE has no ready bit, so one write
+    // latches synchronously.
     //
     // The shadow is one resource for both CPUs: a peer's UPDATE can land between this core's LO
     // and HI reads, and no local interrupt mask excludes it, tearing the pair across a low-word
@@ -278,42 +266,6 @@ namespace
             }
         }
     }
-
-    // irq_enable/disable gate TXFIFO_EMPTY_INT AT THE PERIPHERAL; the CPU line's INTENABLE bit
-    // is the kernel's mask and is not touched here. The source is a latch, dropped by the
-    // INT_CLR writes in esp32_tx_push and esp32_tx_irq_enable.
-    uint32_t uart0_txfifo_cnt()
-    {
-        return (r32(reg::uart::STATUS) >> reg::uart::TXFIFO_CNT_S) & reg::uart::TXFIFO_CNT_MASK;
-    }
-
-    int esp32_tx_slot_free(void)
-    {
-        return uart0_txfifo_cnt() < reg::uart::TXFIFO_LIMIT;
-    }
-    void esp32_tx_push(uint8_t b)
-    {
-        r32(reg::uart::FIFO) = b;
-        // Drop the TX-empty latch after every push. UART_INT_RAW is self-set and cleared only
-        // by INT_CLR (regs/uart.h), so once the FIFO has passed the threshold the latch, and
-        // with it the matrix source, stays asserted on a condition that is no longer true.
-        // The kernel drain runs with the line UNMASKED (irq_attach, not a tier-1 binding), so
-        // an undropped latch re-enters the dispatcher forever whenever the FIFO fills before
-        // the ring empties.
-        r32(reg::uart::INT_CLR) = reg::uart::TXFIFO_EMPTY_INT;
-    }
-    void esp32_tx_irq_enable(void)
-    {
-        r32(reg::uart::INT_CLR) = reg::uart::TXFIFO_EMPTY_INT; // any latch left from a stopped burst
-        r32(reg::uart::INT_ENA) = r32(reg::uart::INT_ENA) | reg::uart::TXFIFO_EMPTY_INT;
-    }
-    void esp32_tx_irq_disable(void)
-    {
-        r32(reg::uart::INT_ENA) = r32(reg::uart::INT_ENA) & ~reg::uart::TXFIFO_EMPTY_INT;
-    }
-    char console_tx_buf[KICKOS_CONSOLE_TX_SIZE];
-    console_tx_backend const esp32_console_backend = {
-        esp32_tx_slot_free, esp32_tx_push, esp32_tx_irq_enable, esp32_tx_irq_disable};
 
     // The window arch_console_reclaim rewrites. UART0 owns 0x3FF4_0000 to 0x3FF4_0FFF
     // (TRM Table 3.3-6); UART1 starts at 0x3FF5_0000.
@@ -400,7 +352,7 @@ extern "C"
 // ISR context. Every UART0 sub-source shares one interrupt-matrix source and one CPU
 // interrupt, so this is where they are told apart; 0 posts is a valid outcome.
 // INT_ST is already INT_RAW & INT_ENA, so a disabled source cannot appear here. The
-// driver owns every clear: this posts and returns, per RULE L1.
+// driver owns every clear: this posts and returns.
 void kickos_lx6_dispatch_dev(int cpu_int)
 {
     if (cpu_int != static_cast<int>(irq::UART0_CPU_INT))
@@ -659,9 +611,8 @@ uint32_t kickos_esp32_release_secondaries(void)
         {
             if (arch_clock_now() > deadline)
             {
-                arch_console_write_sync(NO_ARRIVE, sizeof(NO_ARRIVE) - 1);
-                hex1(core);
-                arch_console_write_sync(NL, sizeof(NL) - 1);
+                kpanic_enter();
+                kickos::kprintf(NO_ARRIVE, core);
                 kfault_terminate();
             }
         }
@@ -681,11 +632,9 @@ void arch_init(void)
 #if KICKOS_NUM_CORES > 1
     // After the console is routed, so the release can report.
     uint32_t const arrived = kickos_esp32_release_secondaries();
-    arch_console_write_sync(ARRIVED, sizeof(ARRIVED) - 1);
-    hex1(arrived);
-    arch_console_write_sync(ARRIVED_TAIL, sizeof(ARRIVED_TAIL) - 1);
+    kickos::kprintf("# cores: %x arrived\n", arrived);
     // After arrival: the check needs every peer's route live and its mask open.
-    kickos_doorbell_selfcheck();
+    kickos_doorbell_boot_check();
 #endif
 }
 
@@ -704,30 +653,9 @@ uint32_t arch_trace_now(void)
     return static_cast<uint32_t>(timg_ticks());
 }
 
-int arch_console_write(char const* buf, size_t n)
-{
-    return console_tx_insert_line(buf, n, KICKOS_CONSOLE_CRLF);
-}
-
-// Overrides a fallback that would re-enter the buffered writer from the panic path.
 bool arch_console_write_sync(char const* buf, size_t n)
 {
-    for (size_t i = 0; i < n; i++)
-    {
-        uint32_t spin = 0;
-        while (((r32(reg::uart::STATUS) >> reg::uart::TXFIFO_CNT_S) & reg::uart::TXFIFO_CNT_MASK) >=
-               reg::uart::TXFIFO_LIMIT)
-        {
-            // A local bound, not KICKOS_POLL_SPIN_MAX: this is a per-byte loop on the
-            // panic path.
-            if (++spin > 200000u)
-            {
-                return false; // bounded: a wedged UART must not hang the panic path (drop)
-            }
-        }
-        r32(reg::uart::FIFO) = static_cast<uint8_t>(buf[i]);
-    }
-    return true;
+    return kickos::espuart::console::write_sync(buf, n);
 }
 
 // Block until UART0 is transmission-complete. STATUS.TXFIFO_CNT reaching 0 is only
@@ -753,19 +681,28 @@ void arch_console_flush_sync(void)
     }
 }
 
-console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)
+console_tx_backend const* arch_console_tx_backend(int* irq_line)
 {
-    *storage = console_tx_buf;
-    *size = KICKOS_CONSOLE_TX_SIZE;
     *irq_line = irq::CONSOLE_TX_LINE;
-    return &esp32_console_backend;
+    return &kickos::espuart::console::backend;
+}
+
+int arch_reboot(uint32_t outcome)
+{
+    if (outcome != KOS_SHUTDOWN_REBOOT)
+    {
+        return -KOS_ENOSYS;
+    }
+    __asm volatile("rsil a0, 15" ::: "a0", "memory");
+    r32(reg::rtc_cntl::OPTIONS0) |= reg::rtc_cntl::SW_SYS_RST;
+    kickos::arch::reset_settle();
+    kickos::arch::reboot_failed(kickos::diag::kResetNotTaken);
 }
 
 void arch_shutdown(int status)
 {
     (void)status;
-    // WAITI writes PS.INTLEVEL from its immediate, so it must be 15, not 0 (waiti 0 would
-    // unmask everything the rsil masked).
+    // WAITI writes PS.INTLEVEL from its immediate: 15, not 0, or it unmasks what rsil masked.
     __asm volatile("rsil a0, 15" ::: "a0", "memory");
     while (true)
     {

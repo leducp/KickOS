@@ -16,8 +16,8 @@ static kos_cap_t g_ping = KOS_CAP_NONE; // MAIN's cap
 static kos_cap_t g_pong = KOS_CAP_NONE;
 
 // Both sems are delegated on every spawn; a fresh child table makes handle == index.
-static kos_cap_t const CH_PING = 1;
-static kos_cap_t const CH_PONG = 2;
+static kos_cap_t const CH_PING = KOS_SPAWN_DELEGATED_CAP0;
+static kos_cap_t const CH_PONG = KOS_SPAWN_DELEGATED_CAP0 + 1;
 
 static void say(char const* who, int n)
 {

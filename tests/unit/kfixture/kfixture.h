@@ -46,6 +46,8 @@ namespace kickos
         // Value returned by arch_in_isr. Invalid call context is checked by death tests.
         extern bool g_in_isr;
         extern uint64_t g_now_ns;
+        // What installing a thread's MPU set at a switch moves the clock by.
+        extern uint64_t g_seat_cost_ns;
 
         // Separate creator and member references. Reserve one more domain than task
         // slots so task-pool exhaustion can be tested after successful admission.

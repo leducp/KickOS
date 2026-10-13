@@ -1,18 +1,17 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The bodies every STM32 F0/F1/F3 chip backend spells the same way: the PLL bring-up,
-// the monotonic clock over a free-running counter, and the buffered USART console.
-// Everything a part answers differently reaches here as a compile-time constant or an
-// inline read from its own family_map.h, so this compiles per chip into that chip's
-// archive and folds to what the chip translation unit emitted before.
+// The bodies every STM32 F0/F1/F3 chip backend shares: the PLL bring-up, the monotonic clock over
+// a free-running counter, and the buffered USART console. What a part answers differently reaches
+// here as a compile-time constant or inline read from its own family_map.h.
 
 #include <kickos/arch/arch.h>
-#include <kickos/arch/clk_anchor.h> // shared tickless-clock epoch anchor (B2)
+#include <kickos/arch/console_poll.h>
+#include <kickos/arch/clk_anchor.h>
 #include <kickos/config/limits.h>
 #include <kickos/console_tx.h>
 
-#include "family_map.h" // the chip's own answers, on its include path
+#include "family_map.h"
 #include "stm32f1f3.h"
 
 #include <stdint.h>
@@ -21,9 +20,8 @@ namespace
 {
     using namespace kickos::stm32;
 
-    // Bounded ready-flag poll: true once (reg & mask) == mask, false if the bit never
-    // sets within the budget, so a dead crystal degrades the boot to the reset clock
-    // instead of hanging it.
+    // False if the bit never sets within the budget, so a dead crystal degrades the boot to the
+    // reset clock instead of hanging it.
     bool poll_set(uintptr_t reg, uint32_t mask)
     {
         for (uint32_t i = 0; i < chip::POLL_LIMIT; i++)
@@ -36,12 +34,10 @@ namespace
         return false;
     }
 
-    // Software 64-bit extension of the chip's 32-bit counter. The wrap is folded either
-    // by a thread read or, when the system is idle with the tickless timer disarmed, by
-    // the overflow ISR below, exactly once: whoever reads first advances g_clk_last, so
-    // the other sees no backward step. Without that ISR a wrap across a fully quiescent
-    // idle would be lost. The two words are ONE value, and the crit section is what keeps
-    // them coherent against the ISR, not the atomicity of either word.
+    // Software 64-bit extension of the 32-bit counter. The wrap is folded exactly once, by a
+    // thread read or by the overflow ISR below: whoever reads first advances g_clk_last. Without
+    // that ISR a wrap across a quiescent idle would be lost. The two words are ONE value; the
+    // crit section keeps them coherent against the ISR.
     uint32_t g_clk_high = 0;
     uint32_t g_clk_last = 0;
 
@@ -54,12 +50,10 @@ namespace
         uint32_t const last = g_clk_last;
         if (cur < last)
         {
-            // A counter chained out of two 16-bit halves admits a master-wrap before
-            // slave-increment SKEW, reading up to one low half BELOW the last value. A
-            // magnitude discriminator tells that tear from a real wrap (gap ~2^32) and
-            // clamps it, since reading a tear as a wrap leaps the clock a whole period.
-            // A counter that is one 32-bit register cannot tear, and there a backward
-            // step of any size is a wrap.
+            // A counter chained out of two 16-bit halves can SKEW, reading up to one low half
+            // BELOW the last value. A magnitude test tells that tear from a real wrap (gap ~2^32)
+            // and clamps it: a tear read as a wrap leaps the clock a whole period. A single
+            // 32-bit register cannot tear, so there any backward step is a wrap.
             if (not chip::CLK_COUNTER_TEARS or last - cur > 0x80000000u)
             {
                 ++g_clk_high;
@@ -75,24 +69,23 @@ namespace
         return (high << 32) | cur;
     }
 
-    // --- Buffered console TX backend (console_tx.h). The ring drains via the USART TXE
-    // (TX-data-register-empty) interrupt, which is level-triggered: arming TXEIE while
-    // TXE is set raises it immediately. ---
+    // --- Buffered console TX backend. TXE is level-triggered: arming TXEIE while TXE is set
+    // raises the IRQ at once. ---
     int stm32_tx_slot_free(void) { return (reg32(chip::USART_SR) & chip::USART_TXE) != 0; }
     void stm32_tx_push(uint8_t b) { reg32(chip::USART_DR) = b; }
     void stm32_tx_irq_enable(void) { reg32(chip::USART_CR1) |= chip::CR1_TXEIE; }
     void stm32_tx_irq_disable(void) { reg32(chip::USART_CR1) &= ~chip::CR1_TXEIE; }
-    char console_tx_buf[KICKOS_CONSOLE_TX_SIZE];
     console_tx_backend const stm32_console_backend = {
-        stm32_tx_slot_free, stm32_tx_push, stm32_tx_irq_enable, stm32_tx_irq_disable};
+        stm32_tx_slot_free, stm32_tx_push, stm32_tx_irq_enable, stm32_tx_irq_disable,
+        &kickos_console_tx_storage};
 }
 
 namespace kickos::stm32
 {
     bool clock_init()
     {
-        // Flash wait states go in BEFORE the clock rises, else an instruction fetch at
-        // the new rate fails. More states than the rate needs is always safe.
+        // Wait states BEFORE the clock rises, else a fetch at the new rate fails; more than the
+        // rate needs is safe.
         uint32_t acr = reg32(FLASH_ACR);
         acr &= ~ACR_LATENCY_MASK;
         acr |= chip::FLASH_LATENCY | ACR_PRFTBE;
@@ -139,50 +132,27 @@ namespace kickos::stm32
 extern "C"
 {
 
-// Monotonic clock: free-running counter ticks -> ns, the required per-chip
-// arch_clock_now. Pure epoch read: the anchor holds the rate, so no divide and no rate
-// derivation happens here.
+// Must stay a pure read: deriving the rate here would reprice all elapsed history.
 uint64_t arch_clock_now(void)
 {
     return g_clk.ns_from(clk_ticks());
 }
 
-// Counter-overflow ISR, vectored by each chip's startup.S. Observes the wrap while the
-// tickless timer is disarmed and no thread reads the clock; clk_ticks folds it into
-// g_clk_high (idempotent against a concurrent thread read). Runs in the maskable band,
-// so an IrqLock defers it harmlessly.
+// Observes the wrap while no thread reads the clock; clk_ticks folds it idempotently against a
+// concurrent read. Runs in the maskable band, so an IrqLock defers it harmlessly.
 void kickos_stm32_clock_isr(void)
 {
     reg32(chip::CLK_TIMER_SR) = ~TIM_SR_UIF; // ack the update flag (rc_w0)
     clk_ticks();
 }
 
-int arch_console_write(char const* buf, size_t n)
-{
-    return console_tx_insert_line(buf, n, KICKOS_CONSOLE_CRLF);
-}
-
 bool arch_console_write_sync(char const* buf, size_t n)
 {
-    for (size_t i = 0; i < n; i++)
-    {
-        uint32_t spin = 0;
-        while ((reg32(chip::USART_SR) & chip::USART_TXE) == 0)
-        {
-            if (++spin > KICKOS_POLL_SPIN_MAX)
-            {
-                return false; // bounded: a wedged UART must not hang the panic path (drop)
-            }
-        }
-        reg32(chip::USART_DR) = static_cast<uint8_t>(buf[i]);
-    }
-    return true;
+    return kickos::console_poll::write<stm32_tx_slot_free, stm32_tx_push>(buf, n);
 }
 
-console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)
+console_tx_backend const* arch_console_tx_backend(int* irq_line)
 {
-    *storage = console_tx_buf;
-    *size = KICKOS_CONSOLE_TX_SIZE;
     *irq_line = chip::CONSOLE_IRQ;
     return &stm32_console_backend;
 }

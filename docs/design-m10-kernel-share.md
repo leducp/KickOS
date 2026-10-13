@@ -19,7 +19,7 @@ structures or per-core block.
 
 `aspace_init` adopts the firmware root. Its mapped slots form the supervisor-only kernel
 half, shared by task roots; slot 0 stays unavailable to users. Empty slots from slot 1
-up form the user half. `aspace_user_lo` supplies the offset U between a physical frame
+up form the user half. `arch_aspace_user_offset` supplies the offset U between a physical frame
 and its user address. Boot derives U from the firmware root and paging depth, then
 checks that the app image and frame pool fit in unmapped user slots without overflow.
 The other translating backends answer U=0 through the same arch hook.
@@ -85,7 +85,7 @@ to sections 7 and 6.
 - **The word is 32 bits wherever it appears**: `kos_thread_params::authority`,
   `Thread::authority`, `CapAuthority` and its mirror `kos_cap_authority` in
   `user/include/kickos/sys/abi.h`, the mask `kos_cap_narrow(KOS_CAP_AUTHORITY, mask)` takes, and
-  `kickos_app_authority()` with the app authority macro in `system/include/kickos/sys/init.h`.
+  the app authority accessor (formerly `kickos_app_authority()`) with the app authority macro in `system/include/kickos/sys/init.h`.
   In `kos_thread_params` it moves beside `core_mask`, the other 32-bit word, and `cap_count`
   moves behind `privileged`, keeping the struct's size. Spawn rejects undefined authority bits;
   `kos_cap_narrow` intersects its mask with held bits and cannot grant new ones.
@@ -371,7 +371,7 @@ KICKOS_MAX_THREAD_WINDOWS                /* 5: a thread's window bound, from the
 | `system/include/kickos/sys/errno.h` | 3 | the refused errno, 111; `KOS_EPIPE` and `KOS_EAGAIN` reworded |
 | `user/include/kickos/sys.h` | 3 to 7 | the wrappers `kos_task_watch`, `kos_task_state`, `kos_window_get`, `kos_port_reg_write`; the `kos_ram_alloc` comment |
 | `user/include/kickos/kos.h` | 2, 5 | `kos::create`'s authority and window arguments |
-| `system/include/kickos/sys/init.h` | 2 | `kickos_app_authority` and the app authority macro 32 bits |
+| `system/include/kickos/sys/init.h` | 2 | the app authority accessor and the app authority macro 32 bits |
 | `user/include/kickos/sys/driver_service.h`, `emit.h`, `driver/spi.h`, `driver/i2c.h` | 3 | the no-receiver answers |
 
 `arch/include/kickos/arch/arch.h` changes too -- the window area of section 6, the port seams of

@@ -43,6 +43,8 @@ class Manifest:
         # port list as (node, port) pairs.
         self.amp_node = None
         self.amp_nodes = None
+        # The node whose kernel may reset the chip.
+        self.amp_reset_owner = 0
         self.amp_list = []
         # The partition's node slices as (base, stride) and its shared window as (base, size).
         self.amp_slices = None
@@ -233,7 +235,8 @@ def check_target(f, node, manifest):
 
 def check_amp(f, node, manifest):
     values = f.fields(node, "`target` amp",
-                      ("node", "nodes", "ports", "share", "share_cache", "slices", "window", "image"),
+                      ("node", "nodes", "ports", "share", "share_cache", "slices", "window", "image",
+                       "reset_owner"),
                       ("node", "nodes", "ports", "share", "share_cache"))
     if values is None:
         return
@@ -258,6 +261,13 @@ def check_amp(f, node, manifest):
         if own is not None and nodes is not None and own >= nodes:
             f.refuse(values["node"], "manifest.amp",
                      "`target` amp node %d is not one of the partition's %d" % (own, nodes))
+    if "reset_owner" in values:
+        owner = f.integer(values["reset_owner"], "`target` amp reset_owner", 8)
+        if owner is not None and nodes is not None and owner >= nodes:
+            f.refuse(values["reset_owner"], "manifest.amp",
+                     "`target` amp reset_owner %d is not one of the partition's %d" % (owner, nodes))
+        elif owner is not None:
+            manifest.amp_reset_owner = owner
     if "ports" in values:
         ports = f.sequence(values["ports"], "`target` amp ports") or ()
         manifest.amp_ports = len(ports)

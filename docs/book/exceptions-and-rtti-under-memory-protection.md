@@ -75,10 +75,10 @@ unwinder finds them through **linker-defined symbols** `__exidx_start`/`__exidx_
 that bracket the index. There is **no runtime registration step at all** -- the linker
 bakes the bounds in, and the tables are pure read-only data. For an unprivileged thread
 this is the easy case: the tables sit in the code region (see
-[`arch/arm/chip/xmc4800/xmc4800.ld`](../../arch/arm/chip/xmc4800/xmc4800.ld), where
-`.ARM.exidx`/`.ARM.extab` are placed explicitly in FLASH so the app reads them via its RX
-code grant), and the only writable state is `eh_globals` + the emergency pool in the app
-data region. This is the model on **K64F, XMC, and RP2040**.
+[`arch/arm/common/cortexm.ld.h`](../../arch/arm/common/cortexm.ld.h), the body every
+Cortex-M chip script shares, where `.ARM.exidx`/`.ARM.extab` are placed explicitly in FLASH
+so the app reads them via its RX code grant), and the only writable state is `eh_globals` +
+the emergency pool in the app data region. This is the model on **K64F, XMC, and RP2040**.
 
 ### SjLj (RX) -- a runtime context chain, no frame registration
 
@@ -107,12 +107,12 @@ linked `-nostartfiles` has no `frame_dummy`, so **KickOS registers the frame its
 thing on the root thread, ahead of the app's constructors** (a weak `__register_frame`
 resolved only in an image that carries the unwinder; see
 [`user/src/root_entry.cc`](../../user/src/root_entry.cc) and the `.eh_frame` homing in
-[`arch/riscv/chip/esp32c6/esp32c6.ld`](../../arch/riscv/chip/esp32c6/esp32c6.ld), which
-`KEEP`s the table in the code region and appends a `LONG(0)` CIE terminator to stand in
-for the `crtend` `__FRAME_END__` that is not linked). The registry's list heads
-(`seen_objects`/`unseen_objects`) and the malloc'd node are **writable**; the `.eh_frame`
-table itself is **read-only**. This is the model on **ESP32-C6**, **ESP32** and the RISC-V
-and AArch64 machines.
+[`arch/riscv/common/rv32imac.ld.h`](../../arch/riscv/common/rv32imac.ld.h), the RV32 body
+`esp32c6.ld` includes, which `KEEP`s the table in the code region and appends a `LONG(0)`
+CIE terminator to stand in for the `crtend` `__FRAME_END__` that is not linked). The
+registry's list heads (`seen_objects`/`unseen_objects`) and the malloc'd node are
+**writable**; the `.eh_frame` table itself is **read-only**. This is the model on
+**ESP32-C6**, **ESP32** and the RISC-V and AArch64 machines.
 
 The registration *placement* is the subtle part. `__register_frame` mallocs, and malloc
 finds its libc state through the running thread: where that state hangs off the thread
@@ -200,8 +200,7 @@ them.
 The design collapses to a single invariant that holds on every arch: **the read-only two
 pieces (EH tables + RTTI) ride the app's code grant, the writable two (heap + unwinder
 state) ride the app's data grant, and a confined unprivileged thread never reaches past
-either.** A worker spawned unprivileged (`kos::thread::create(cxx_worker, ...,
-privileged=false)`) can throw, catch, unwind a non-trivial local destructor,
+either.** A worker spawned unprivileged (`kos::thread::create(cxx_worker, ...)`) can throw, catch, unwind a non-trivial local destructor,
 `dynamic_cast`, and `typeid` entirely inside its own granted regions -- the same region
 count as a bare freestanding thread (code + data + stack), no extra region for the
 runtime.

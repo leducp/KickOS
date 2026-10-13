@@ -14,6 +14,7 @@ set(KICKOS_KERNEL_SOURCES
   ktrace/ktrace.cc
   init/console.cc
   init/console_tx.cc
+  init/terminal.cc
   init/fault.cc
   init/led.cc
   init/instance.cc
@@ -99,25 +100,17 @@ set_source_files_properties("${_kos_build_stamp}" PROPERTIES GENERATED TRUE)
 target_sources(kickos_kernel PRIVATE "${_kos_build_stamp}")
 add_dependencies(kickos_kernel kickos_build_stamp_gen)
 
-# The switch-completion hook (kickos_trace_switch_done in ktrace.cc) runs in the ARM PendSV
-# tail with the incoming thread's FP registers still live, so its emit path must not touch
-# any FP register.
-if(KICKOS_TELEMETRY_ON AND (KICKOS_ARCH STREQUAL "armv7m" OR KICKOS_ARCH STREQUAL "armv6m"))
-  set_source_files_properties(ktrace/ktrace.cc PROPERTIES COMPILE_OPTIONS "-mgeneral-regs-only")
-endif()
-
-# console_tx_isr drains the ring from ISR context, so its emit path must take no
-# FP register (no lazy FP stacking on the drain), same treatment as ktrace.
+# The PendSV tail (the trace and bench switch hooks) and the console drain ISR run with an FP
+# context live, so their paths take no FP register.
 if(KICKOS_ARCH STREQUAL "armv7m" OR KICKOS_ARCH STREQUAL "armv6m")
-  set_source_files_properties(init/console_tx.cc PROPERTIES COMPILE_OPTIONS "-mgeneral-regs-only")
-endif()
-
-# armv7m only: kickos_bench_switch_done runs in the PendSV tail with the incoming thread's
-# lazily-stacked FP live, so its path must take no FP register. -mgeneral-regs-only is not
-# valid on rxv3/rv32imac, and neither needs it: rxv3 calls it before the FP restore, and
-# rv32imac has no hazard.
-if(KICKOS_BENCH AND KICKOS_ARCH STREQUAL "armv7m")
-  set_source_files_properties(bench/bench.cc PROPERTIES COMPILE_OPTIONS "-mgeneral-regs-only")
+  set(_kickos_no_fp init/console_tx.cc)
+  if(KICKOS_TELEMETRY_ON)
+    list(APPEND _kickos_no_fp ktrace/ktrace.cc)
+  endif()
+  if(KICKOS_BENCH AND KICKOS_ARCH STREQUAL "armv7m")
+    list(APPEND _kickos_no_fp bench/bench.cc)
+  endif()
+  set_source_files_properties(${_kickos_no_fp} PROPERTIES COMPILE_OPTIONS "-mgeneral-regs-only")
 endif()
 target_include_directories(kickos_kernel PUBLIC
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
@@ -131,45 +124,27 @@ target_include_directories(kickos_kernel PRIVATE
   "${PROJECT_SOURCE_DIR}/arch/common")
 target_link_libraries(kickos_kernel PUBLIC kickos_arch_${KICKOS_ARCH} kickos_lib)
 
-# Identity baked into the boot banner (kmain kbanner()).
-# The CPU is the token of the resolved compiler CPU flag: -mcpu where the family has one, else
-# -march, else RX's -misa, whose version is an RX ISA level and only ever an RX one.
-set(_kickos_cpu "")
-if(KICKOS_MCPU_FLAGS MATCHES "-mcpu=([^ ;]+)")
-  set(_kickos_cpu "${CMAKE_MATCH_1}")
-elseif(KICKOS_MCPU_FLAGS MATCHES "-march=([^ ;]+)")
-  set(_kickos_cpu "${CMAKE_MATCH_1}")
+# The CPU on the boot banner (kmain kbanner()): the core the compiler flag names, the RX ISA level
+# -misa names, the chip file's `cpu` where no flag selects one, else the host's.
+if(KICKOS_MCPU_FLAGS MATCHES "-m(cpu|arch)=([^ ;]+)")
+  set(_kickos_cpu "${CMAKE_MATCH_2}")
 elseif(KICKOS_MCPU_FLAGS MATCHES "-misa=([^ ;]+)")
   set(_kickos_cpu "rx${CMAKE_MATCH_1}")
-elseif(IS_DIRECTORY "${PROJECT_SOURCE_DIR}/arch/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}")
-  # No flag names the core on this family, so the chip states it: the compiler driver serves
-  # more than one core and cannot answer which one a part has.
-  include("${PROJECT_SOURCE_DIR}/arch/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/cpu.cmake"
-          OPTIONAL RESULT_VARIABLE _kickos_cpu_decl)
-  set(_kickos_cpu "${KICKOS_CPU}")
-  if(_kickos_cpu STREQUAL "")
-    message(FATAL_ERROR
-      "KickOS: board '${KICKOS_BOARD}' resolved no CPU name for the boot banner. No compiler "
-      "flag carries one on ${KICKOS_ARCH_FAMILY}, so arch/${KICKOS_ARCH_FAMILY}/chip/"
-      "${KICKOS_CHIP}/cpu.cmake must set KICKOS_CPU (declaration read: ${_kickos_cpu_decl})")
-  endif()
-else()
-  # No chip backend and no CPU flag: the host build, where the platform's own declaration is the
-  # only authority there is.
+elseif(KICKOS_CHIP_CPU)
+  set(_kickos_cpu "${KICKOS_CHIP_CPU}")
+elseif(KICKOS_ARCH STREQUAL "sim")
   set(_kickos_cpu "${CMAKE_SYSTEM_PROCESSOR}")
+else()
+  message(FATAL_ERROR
+    "KickOS: board '${KICKOS_BOARD}' resolved no CPU name for the boot banner. No compiler "
+    "flag carries one on ${KICKOS_ARCH_FAMILY}, so platform/${KICKOS_CHIP}/chip.yaml must "
+    "state `cpu`.")
 endif()
 target_compile_definitions(kickos_kernel PRIVATE ${KICKOS_BANNER_IDENTITY}
-  KICKOS_ARCH_NAME="${KICKOS_ARCH}")
-if(NOT _kickos_cpu STREQUAL "")
-  target_compile_definitions(kickos_kernel PRIVATE KICKOS_CPU_NAME="${_kickos_cpu}")
-endif()
+  KICKOS_ARCH_NAME="${KICKOS_ARCH}" KICKOS_CPU_NAME="${_kickos_cpu}")
 
 set_target_properties(kickos_kernel PROPERTIES EXPORT_NAME kernel_archive)
 kickos_export_targets(kickos_kernel)
-
-if(KICKOS_SCHED_PERIODIC_TICK)
-  target_compile_definitions(kickos_kernel PUBLIC KICKOS_SCHED_PERIODIC_TICK=1)
-endif()
 
 # No preset turns KICKOS_SMP_TRACE on, so its arm is compiled here once more, under the kernel's
 # own flags, into objects nothing links: a renamed hook or a moved record field fails the build.

@@ -342,7 +342,7 @@ namespace kickos
         m->next_held = nullptr;
     }
 
-    int mutex_lock(Mutex* m)
+    int mutex_lock(Mutex* m, uint32_t timeout_us)
     {
         Thread* c = sched::current();
         uint32_t epoch = 0;
@@ -364,6 +364,10 @@ namespace kickos
             if (m->owner == c)
             {
                 return -KOS_EDEADLK;
+            }
+            if (timeout_us == 0)
+            {
+                return -KOS_ETIMEDOUT;
             }
             // Pass 1: cycle detection, READ ONLY, so a refusal writes no boost. The depth
             // bound only stops the walk on a PRE-EXISTING foreign cycle.
@@ -414,6 +418,7 @@ namespace kickos
             }
             // WAIT_MUTEX is what puts c on the chain walk above for the next blocker. A
             // waker transfers ownership and writes wait_result.
+            ktime_deadline_arm(c, timeout_us, lock);
             epoch = wq_block(ask)(m->waiters, WAIT_MUTEX, m, nullptr, lock);
         }
         // The wait_result read must be BOTH outside the critical section AND after the

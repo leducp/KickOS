@@ -118,6 +118,7 @@ def manifest(facts, knobs):
         target["amp"] = {
             "node": facts["amp"]["node"],
             "nodes": knob(knobs, "KICKOS_AMP_NODES"),
+            "reset_owner": knob(knobs, "KICKOS_AMP_RESET_OWNER", 0),
             "ports": facts["amp"]["ports"],
             "share": Hex(knob(knobs, "KICKOS_AMP_USER_SHARE_SIZE", 0)),
             "share_cache": "cached",

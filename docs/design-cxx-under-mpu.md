@@ -11,7 +11,7 @@ Scope: make the full-C++ opt-in (exceptions + STL + RTTI, commit dc632bd [DEAD H
 UNPRIVILEGED, MPU-isolated userspace thread -- the convergence the north star needs
 (unprivileged C++ servers/drivers reached by IPC). `cxxtest` was gated
 `AND NOT KICKOS_HAVE_MPU`; this doc scopes lifting that gate. The committed `cxxtest` now spawns
-an UNPRIVILEGED worker (`kos::thread::create(cxx_worker, ..., privileged=false)`, 8 KB app-arena
+an UNPRIVILEGED worker (`kos::thread::create(cxx_worker, ...)`, 8 KB app-arena
 stack) that runs the whole throw/catch/unwind + STL + RTTI body under the MPU. On qemu-riscv
 (rv32imac PMP) that is RUN-PROVEN: `ctest -R qemu_riscv_cxxtest` is ALL PASS from the U-mode
 worker -- the deterministic RISC-V/PMP gate. On silicon, frdmk64f (SYSMPU, EHABI), xmc4800-relax
@@ -24,8 +24,8 @@ is its only remaining silicon U-mode proof) -- but its v6-M PMSA cross-domain fa
 
 ## Verdict
 
-**Feasible; the confined U-mode throw is RUN-PROVEN on qemu-riscv (PMP) and on frdmk64f + xmc4800-relax
-+ rx72m + esp32c6 silicon (2026-07-19); only rp2040 remains U-mode build-only, and its v6-M enforcement
+**Feasible; the confined U-mode throw is RUN-PROVEN on qemu-riscv (PMP) and on frdmk64f + xmc4800-relax +
+rx72m + esp32c6 silicon (2026-07-19); only rp2040 remains U-mode build-only, and its v6-M enforcement
 fault trap is itself silicon-proven.** cxxtest -- exceptions caught by exact
 type and `std::exception` base, stack-unwind dtors, `std::vector`, `std::string`, virtual
 dispatch, `dynamic_cast` hit+miss, `typeid` -- runs to completion under enforcement. The committed
@@ -45,12 +45,14 @@ fault trap is silicon-proven). The five gated blockers are all real; four are ch
 The fleet spans **three EH models** -- EHABI (ARM: K64F, XMC, rp2040), SjLj (RX72M), and DWARF
 (RISC-V esp32c6/virt + Xtensa esp32). All three keep their EH tables in read-only sections that
 already ride the per-app **code region** granted RX, so unwinding *reads* them for free:
+
 - DWARF (RISC-V): `.eh_frame` + `.gcc_except_table` sit inside the `.text` output section.
 - SjLj (RX72M): the setjmp/longjmp landing-pad tables (`.gcc_except_table`) are homed in ROM,
   inside the code region. No `.eh_frame`, no `__register_frame`.
 - EHABI (ARM): `.ARM.exidx`/`.ARM.extab` ride the code region, found via linker symbols.
 
 RTTI `type_info`/vtables (`.rodata`) also live in the code region.
+
 - The runtime's *writable* state (heap, FDE registry, malloc bins, newlib reent, the libsupc++
   `eh_globals` + emergency pool) is the problem: it lands **kernel-side**, unreachable by the
   unprivileged thread. Fixing that is blockers #4 + the `gp` issue below.
@@ -155,6 +157,7 @@ This is the blocker the other docs did not name, and the one that cost the most:
    loads (verified: boot wedges in `_malloc_r`).
 
 **Solution that works (proven):** stop fighting `gp` -- move `gp` itself.
+
 - Anchor `__global_pointer$` **inside** the appdata region and route all app + toolchain-runtime
   `.data/.sdata/.bss/.sbss` there (via the colon selectors), so `gp`-relative small-data lands
   in-region and the app keeps small-data enabled (unwinding works).
@@ -211,10 +214,11 @@ an RX-mangled `sbrk` sufficed.
 qemu-riscv `virt`, `cmake --preset qemu-riscv` (its base variant enforces by default), RISCStar
 newlib toolchain. The original throwaway app
 `cxxumpu` -- root, privileged as it still was then, spawns an **unprivileged** worker
-(`kos::thread::create(..., privileged=false)`) that runs full C++ -- has since been folded into the
+(`kos::thread::create(...)`) that runs full C++ -- has since been folded into the
 committed `cxxtest` (same spawn shape, now the standing `qemu_riscv_cxxtest` gate), so the
 U-mode-confined claim now rests on a running in-tree test, not this record. The changes below are
 all LANDED:
+
 - `virt_rv32.ld`: `_code_size`/`_appdata_size` = 128 K; colon-selectors routing app + libc/libgcc/
   libstdc++/libkickos_user `.data/.sdata/.bss/.sbss` into `.appdata`/`.appbss`; `__global_pointer$`
   anchored inside `.appdata`; the init tables list `.appdata`'s copy ahead of `.data`.

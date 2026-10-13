@@ -80,10 +80,10 @@ int kos_mutex_create(kos_cap_t* out_cap)
                                          reinterpret_cast<uintptr_t>(out_cap), 0, 0, 0));
 }
 
-int kos_mutex_lock(kos_cap_t mtx)
+int kos_mutex_lock(kos_cap_t mtx, uint32_t timeout_us)
 {
-    return static_cast<int>(arch_syscall(KOS_SYS_MUTEX_LOCK,
-                                         static_cast<uintptr_t>(mtx), 0, 0, 0));
+    return static_cast<int>(arch_syscall(KOS_SYS_MUTEX_LOCK, static_cast<uintptr_t>(mtx),
+                                         static_cast<uintptr_t>(timeout_us), 0, 0));
 }
 
 int kos_mutex_unlock(kos_cap_t mtx)
@@ -97,15 +97,6 @@ int kos_endpoint_create(kos_cap_t* out_cap)
     cap_out_clear(out_cap);
     return static_cast<int>(arch_syscall(KOS_SYS_ENDPOINT_CREATE,
                                          reinterpret_cast<uintptr_t>(out_cap), 0, 0, 0));
-}
-
-int kos_amp_endpoint_create(uint32_t node, uint32_t port, kos_cap_t* out_cap)
-{
-    cap_out_clear(out_cap);
-    return static_cast<int>(arch_syscall(KOS_SYS_AMP_ENDPOINT_CREATE,
-                                         static_cast<uintptr_t>(node),
-                                         static_cast<uintptr_t>(port),
-                                         reinterpret_cast<uintptr_t>(out_cap), 0));
 }
 
 #if KICKOS_AMP_NODE
@@ -402,11 +393,16 @@ void kos_exit(int code)
     __builtin_unreachable();
 }
 
-// NOT noreturn, unlike kos_exit: the privilege gate can refuse.
-int kos_shutdown(int status)
+int kos_shutdown(int status, enum kos_shutdown_outcome outcome)
 {
-    return static_cast<int>(arch_syscall(KOS_SYS_SHUTDOWN,
-                                         static_cast<uintptr_t>(status), 0, 0, 0));
+    return static_cast<int>(arch_syscall(KOS_SYS_SHUTDOWN, static_cast<uintptr_t>(status),
+                                         static_cast<uintptr_t>(outcome), 0, 0));
+}
+
+int kos_terminal_outcome(enum kos_shutdown_outcome outcome)
+{
+    return static_cast<int>(
+        arch_syscall(KOS_SYS_TERMINAL_OUTCOME, static_cast<uintptr_t>(outcome), 0, 0, 0));
 }
 
 void kos_panic(char const* msg)
@@ -415,23 +411,13 @@ void kos_panic(char const* msg)
     __builtin_unreachable();
 }
 
-// Planted by the arch as the return address of an UNPRIVILEGED thread's entry: such a worker
-// must reach the kernel exit path through the syscall trap, never by calling
-// kickos_thread_return, which is the privileged threads' path.
+// Planted by the arch as the return address of a thread's entry: the thread reaches the kernel
+// exit path through the syscall trap, never by calling kernel text.
 void kickos_user_thread_return(void)
 {
     kos_exit(0);
     __builtin_unreachable();
 }
-
-#if defined(KICKOS_REBOOT) && KICKOS_REBOOT
-// NOT noreturn, like kos_shutdown: the privilege gate can refuse, and a chip with no
-// bootloader entry declines.
-int kos_reboot(void)
-{
-    return static_cast<int>(arch_syscall(KOS_SYS_REBOOT, 0, 0, 0, 0));
-}
-#endif
 
 int kos_irq_claim(int line, unsigned int flags, kos_cap_t* out_cap)
 {
@@ -617,7 +603,7 @@ void kos_kernel_diag_led_toggle(void)
     arch_syscall(KOS_SYS_DIAG_LED_TOGGLE, 0, 0, 0, 0);
 }
 
-#if defined(KICKOS_BENCH) && KICKOS_BENCH
+#if KICKOS_BENCH
 static_assert(sizeof(kos_bench(0, 0, 0)) == 8, "must be exactly 8 bytes");
 
 int64_t kos_bench(uint32_t op, uint32_t a0, uint32_t a1)

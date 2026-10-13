@@ -64,7 +64,7 @@ enum
 };
 
 // What a per-thread cap entry NAMES. A thread's caps[] index IS its child cap index offset
-// from KOS_SPAWN_DELEGATED_CAP0: caps[0] lands at index 1, caps[1] at index 2.
+// from KOS_SPAWN_DELEGATED_CAP0: caps[0] lands there, caps[1] one above.
 //
 // KOS_DRV_RES_NOTIFY is the one notification this bring-up creates. Every claimed line
 // signals it, line i on bit i, so a driver's badge space starts at bit line_count and the
@@ -139,9 +139,9 @@ enum kos_drv_ep
     // USER_OWNED and a kernel-console write is DROPPED until recv_holders reaches 0, so every
     // diagnostic below drops the caller's WAIT on E before it prints.
     KOS_DRV_EP_HANDOVER = 0,
-    // No publish. The init keeps a WAIT-bearing cap on the endpoint, so recv_holders never
-    // reaches 0 and the last-receiver-gone wake never fires: a failing driver thread under
-    // this posture traps, never exits.
+    // No publish. The init keeps SIGNAL, TRANSFER and HANDOUT on the endpoint and never
+    // receives, so a caller is answered -KOS_EAGAIN while no server receives. A failing driver
+    // thread under this posture traps, never exits.
     KOS_DRV_EP_RETAIN = 1
 };
 

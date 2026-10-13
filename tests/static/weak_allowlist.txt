@@ -12,11 +12,6 @@
 # The C++ ABI's per-DSO handle.
 __dso_handle
 ___dso_handle
-# newlib's malloc re-entrancy hooks; KickOS supplies no-ops.
-__malloc_lock
-___malloc_lock
-__malloc_unlock
-___malloc_unlock
 
 # --- hand-rolled vague linkage -----------------------------------------------
 # kickos/app.h defines the per-app stamp inline and the build force-includes that header

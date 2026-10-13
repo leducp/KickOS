@@ -3,15 +3,14 @@
  *
  * Node 1's vector table, and the park handler every line but the doorbell points at.
  *
- * The reset table (startup.S) funnels every external line into kickos_arm_default_irq,
- * which reaches kernel() through kickos_instance_index(); node 1 runs no scheduler, and with
- * multi-instance off that Kernel is core 0's LIVE state. N5's launch hands core 1 its own
- * VTOR, so this table closes that path structurally.
+ * The reset table (startup.S) funnels every external line into kickos_arm_default_irq, which
+ * reaches kernel() through kickos_instance_index(); node 1 runs no scheduler, and with
+ * multi-instance off that Kernel is core 0's LIVE state. The launch hands core 1 this table's
+ * VTOR, closing that path.
  *
- * Guarded to one image driving several cores, where a node core runs no scheduler of its own.
- * Under one image per node a peer runs a whole kernel, and a table parking every line but the
- * doorbell would park its own SysTick, SVC and PendSV; that posture pins VTOR at each node's
- * own g_isr_vector instead (chip_rp2350.cc).
+ * Only for one image driving several cores. Under one image per node a peer runs a whole kernel,
+ * and a table parking every line but the doorbell would park its own SysTick, SVC and PendSV; that
+ * posture pins VTOR at each node's own g_isr_vector (chip_rp2350.cc).
  */
 
 #include <chip_layout.h>

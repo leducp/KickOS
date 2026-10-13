@@ -109,11 +109,8 @@ void arch_shutdown(int status)
 
 void Reset_Handler(void)
 {
+    kickos_armv7m_enable_fpu(); // before any code a hard-float ABI might emit FP into
     kickos_ranges_init();
-    // Enable the FPU BEFORE running static constructors: with the hard-float ABI
-    // the compiler may emit FP instructions in a global initializer, which would
-    // UsageFault (CP10/CP11 disabled at reset) -> HardFault before kmain.
-    kickos_armv7m_enable_fpu();
     kickos_crt_tail();
 }
 

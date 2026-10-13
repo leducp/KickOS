@@ -44,8 +44,7 @@
 // multiply.
 //
 // Register addresses / bit fields are clean-room from the XMC4700/XMC4800 Reference
-// Manual (V1.3, 2016-07); no XMCLib/DAVE/CMSIS vendor source. Diagnostic app
-// (kickos_add_diagnostic_apps): never a production image.
+// Manual (V1.3, 2016-07); no XMCLib/DAVE/CMSIS vendor source.
 //
 // The kernel console_tx path is the target, so its composition's stdout is the kernel's: a
 // console driver's handover would deinit it. The heartbeat is a raw kernel console write, which waits for
@@ -353,7 +352,7 @@ extern "C" void inprstorm_main(kos_self_t const* self)
     // hogging the CPU, so a wedged console isolates the foreign-SR0 storm as the cause. The beat
     // is spawned at the entry's own priority, so it first runs once the entry drops.
     auto const p = kos::thread::create(heartbeat, nullptr, "inprstorm-beat", 2, KOS_POLICY_FIFO,
-                                       0, /*privileged=*/false);
+                                       0);
     if (not p.valid())
     {
         char e[64];

@@ -23,6 +23,7 @@
 #include <unistd.h>
 
 #include "console_seam.h"
+#include "isolated_arm.h"
 
 namespace
 {
@@ -64,9 +65,7 @@ namespace
     void publish_lock_held(void)
     {
         g_writers_at_handover = console_chip_writers();
-        kickos::IrqLock lock;
-        console_handover_begin();
-        consoleseam::set_isr_runs_in_gap(false); // irq_detach plus the NVIC line mask
+        consoleseam::publish_begin();
     }
 
     // The same syscall's tail, run once the publisher is rescheduled. Root may spawn the
@@ -79,30 +78,7 @@ namespace
             g_drain_passes = g_drain_passes + 1;
             ASSERT_LT(g_drain_passes, 1000) << "the publish drain did not converge";
         }
-        console_owner_set_user();
-        consoleseam::note_commit();
-    }
-
-    // The ownership state is a one-way street, so each arm gets its own process.
-    void run_isolated(void (*body)())
-    {
-        fflush(nullptr);
-        pid_t const pid = fork();
-        ASSERT_NE(pid, -1) << "fork failed, the arm did not run";
-        if (pid == 0)
-        {
-            body();
-            fflush(nullptr);
-            if (::testing::Test::HasFailure())
-            {
-                _exit(1);
-            }
-            _exit(0);
-        }
-        int status = 0;
-        ASSERT_EQ(waitpid(pid, &status, 0), pid);
-        ASSERT_TRUE(WIFEXITED(status)) << "the arm died on a signal";
-        ASSERT_EQ(WEXITSTATUS(status), 0) << "see the arm's own failure text above";
+        consoleseam::publish_end();
     }
 
     // The seam's kfault_terminate status. An arm that expects the panic path must not accept
@@ -255,5 +231,48 @@ TEST(ConsolePublishHandoff, HandingOverWithAWriterStillCountedIsRefused)
         consoleseam::run_in_gap(kGapAfterInsert, publish_without_draining);
         std::string const in = message();
         kickos::kconsole_write(in.data(), in.size());
+    });
+}
+
+// A panic landing while the publish drains its writers, on another core, reclaims the device: the
+// publish's last step must not hand a reclaimed console to the driver.
+TEST(ConsolePublishHandoff, APanicDuringTheDrainKeepsTheConsole)
+{
+    run_isolated([]() {
+        consoleseam::reset(kRing);
+        consoleseam::run_in_gap(kGapAfterInsert, []() {
+            publish_lock_held();
+            kpanic_enter();
+        });
+        std::string const in = message();
+        kickos::kconsole_write(in.data(), in.size());
+        ASSERT_TRUE(consoleseam::seat_fired());
+        publish_tail();
+        kickos::kputs("after the panic\n");
+        EXPECT_EQ(consoleseam::wire(), in + "after the panic\n")
+            << "the publish handed a reclaimed console to the driver";
+    });
+}
+
+// One hand-off at a time: a publish arriving while another still drains is refused.
+TEST(ConsolePublishHandoff, AHandOffInProgressRefusesASecondPublish)
+{
+    run_isolated([]() {
+        consoleseam::reset(kRing);
+        EXPECT_EQ(console_handover_refused(), 0);
+        publish_lock_held();
+        EXPECT_NE(console_handover_refused(), 0) << "a second publish could start mid hand-off";
+        publish_tail();
+        EXPECT_EQ(console_handover_refused(), 0) << "a finished hand-off still refused a publish";
+    });
+}
+
+// After a panic no publish takes the device back.
+TEST(ConsolePublishHandoff, APanicRefusesEveryLaterPublish)
+{
+    run_isolated([]() {
+        consoleseam::reset(kRing);
+        kpanic_enter();
+        EXPECT_NE(console_handover_refused(), 0) << "a publish could follow a panic";
     });
 }

@@ -1,19 +1,22 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# QEMU's RV32 `virt` machine. Values from arch_mpu_min_region, arch_mpu_nocache_support and the
-# PMP commit in arch/riscv/rv32imac/arch_rv32imac.cc; the CLINT layout from the RISC-V Privileged
-# ISA v1.10 and QEMU's `virt` memory map.
+# QEMU's RV32 `virt` machine. Values from arch_mpu_nocache_support and the PMP commit in
+# arch/riscv/rv32imac/arch_rv32imac.cc; the CLINT layout from the RISC-V Privileged ISA v1.10 and
+# QEMU's `virt` memory map.
 
 version: 1
 chip: virt_rv32
 manual: "QEMU 11.1 `virt` machine (hw/riscv/virt.c), RISC-V Privileged Architecture"
 arch: rv32imac
 
-# PMP checks every user-mode access, device windows included, and its entry carries no type.
-protection: { unit: pmp, covers_devices: true, memory_type: false }
+# PMP checks every user-mode access, device windows included, and its entry carries no type. A
+# region is a NAPOT entry, 8 bytes at the least.
+protection: { unit: pmp, granule: 8, covers_devices: true, memory_type: false }
 # No data cache sits over the RAM: the arena is reached uncached.
 data_cache: false
+family: { dir: common, sources: [common/semihost_console.cc] }
+exits_on_fault: true
 # `rdcycle` under the emulator answers the host's tick source, so no rate converts a reading.
 cycle_counter: { hz: 0 }
 
@@ -24,6 +27,8 @@ devices:
   # the supervisor software interrupt.
   # Machine-mode timer and software interrupts: msip, mtimecmp and mtime.
   clint: { window: [0x02000000, 0x10000], owner: kernel, ref: "virt_memmap[VIRT_CLINT]" }
+  # SiFive test device: its reset word restarts the machine.
+  test_finisher: { window: [0x00100000, 0x1000], owner: kernel, ref: "virt_memmap[VIRT_TEST]" }
 
 memory:
   dram: { base: 0x80000000, size: 0x800000, arena: true, link: { region: RAM, access: rwx } }

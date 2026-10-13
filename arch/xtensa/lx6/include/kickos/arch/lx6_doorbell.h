@@ -17,7 +17,7 @@ extern "C"
 {
 
 // Raise the doorbell on every core named in `cores`, a bitmask of core indices. The calling
-// core's bit is serviced by the caller and must not be raised here.
+// core's own bit is valid and must raise it: Part::raise_self sends exactly that.
 //
 // The body owes the ordering: it makes the caller's prior stores visible before the trigger
 // write, or a receiver woken by the trigger reads a cell the sender has not yet published.

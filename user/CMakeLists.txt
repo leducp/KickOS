@@ -16,7 +16,7 @@ if(KICKOS_ARCH STREQUAL "sim")
   list(APPEND KICKOS_USER_SOURCES src/sim_exit.cc)
 else()
   list(APPEND KICKOS_USER_SOURCES src/newlib_stubs.cc src/newlib_sbrk.cc src/newlib_fcntl.cc)
-  list(APPEND KICKOS_USER_SOURCES src/newlib_reent.cc)
+  list(APPEND KICKOS_USER_SOURCES src/newlib_reent.cc src/newlib_lock.cc)
 endif()
 
 add_library(kickos_user STATIC ${KICKOS_USER_SOURCES} src/banner_identity.cc
@@ -37,6 +37,12 @@ target_include_directories(kickos_user PRIVATE
   "${PROJECT_SOURCE_DIR}/system/include"
   "${PROJECT_SOURCE_DIR}/kernel/include")
 target_link_libraries(kickos_user PUBLIC kickos_arch_${KICKOS_ARCH} kickos_lib)
+# libc.a carries a no-op default of every lock hook, which the archive order picks unless
+# newlib_lock.cc's object is in the link before libc is searched.
+if(NOT KICKOS_ARCH STREQUAL "sim")
+  target_link_options(kickos_user INTERFACE
+    "LINKER:-u,${KICKOS_C_SYMBOL_PREFIX}__retarget_lock_acquire_recursive")
+endif()
 kickos_export_targets(kickos_user)
 
 add_subdirectory(lib)

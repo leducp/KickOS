@@ -1,26 +1,14 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Core-generic ARM Cortex-M arch backend: the parts of the arch.h seam whose
-// implementation is IDENTICAL on ARMv6-M and ARMv7-M (deferred PendSV switch,
-// SysTick one-shot timer, the whole NVIC line set, the default-IRQ entry, the
-// wild-PSP and no-kernel-block reports, the idle wait, and the SysTick ISR
-// entry). Compiled into BOTH kickos_arch_armv6m and kickos_arch_armv7m.
-//
-// What differs per profile arrives through <arm_isa.h>, one copy per ISA
-// directory and one on the include path per archive.
-//
-// The arch-profile-specific edges stay in arch_armv{6,7}m.cc: context init (the
-// v7-M frame carries an EXC_RETURN word), the critical section (PRIMASK vs
-// BASEPRI), the fault reporter (v6-M has no fault-status registers at all), the
-// monotonic/trace clock source, and per-arch bring-up.
+// The arch.h seam parts that are identical on ARMv6-M and ARMv7-M, compiled into both
+// kickos_arch_armv6m and kickos_arch_armv7m. What differs per profile arrives through
+// <arm_isa.h>, one copy per ISA directory.
 
 #include <kickos/arch/arch.h>
 #include <kickos/chip_limits.h> // KICKOS_MAX_IRQ: the NVIC line count
 
 #include <kickos/sys/atomic.h>
-
-
 #include <kickos/units.h> // _s literal (== 1e9 ns) for the ns/cycle conversions
 
 #include <arm_isa.h> // per-profile: the panic banners and the device-priority write
@@ -43,7 +31,6 @@ namespace
     using kickos::Order;
 }
 
-// kfault_terminate is the shared panic/fault dead-end (kernel.h).
 namespace kickos
 {
     void kprintf(char const* fmt, ...);
@@ -54,11 +41,8 @@ extern "C" void kfault_terminate(void) __attribute__((noreturn));
 extern "C"
 {
 
-    // CMSIS convention: the core clock in Hz, defined + maintained by the chip.
     extern uint32_t SystemCoreClock;
 
-    // Shared with switch.S (the PendSV/arch_start switch targets): written by C
-    // (arch_switch) and by asm (PendSV).
     Atomic<struct arch_context*, Order::RELAXED> g_arch_current = nullptr;
     Atomic<struct arch_context*, Order::RELAXED> g_arch_next = nullptr;
 
@@ -116,15 +100,11 @@ int arch_in_isr(void)
 {
     uint32_t ipsr;
     __asm volatile("mrs %0, ipsr" : "=r"(ipsr));
-    // 9-bit exception-number mask (v7-M IPSR width). Correct on v6-M too: a
-    // v6-M IPSR never exceeds 0x3F, so the wider mask yields the same result.
+    // The 9-bit v7-M IPSR mask is correct on v6-M too: its IPSR never exceeds 0x3F.
     uint32_t const exc = ipsr & 0x1FFu;
-    // 11 is SVCall. This predicate is asked whether a switch requested here would DEFER,
-    // and inside the syscall trap it would not: the trap runs on behalf of the thread that
-    // issued the SVC, and the IPC fastpath blocks and performs the switch there. Ungated by
-    // the fastpath because no backend runs any C at all in SVCall without one, so no reader
-    // can observe the difference, and a predicate that answered differently per build knob
-    // would be a second truth.
+    // 11 is SVCall. Asked whether a switch requested here would DEFER: inside the syscall
+    // trap it would not, the IPC fastpath blocks and switches there on the issuing thread's
+    // behalf. Not gated on the IPC fastpath: the answer must not vary per build knob.
     if (exc == 11u)
     {
         return 0;
@@ -137,13 +117,10 @@ uint64_t arch_cpu_clock_hz(void)
     return SystemCoreClock;
 }
 
-// --- One-shot timer (SysTick). Clock (arch_clock_now) is a per-CHIP contract on
-// every ARM arch; there is no arch-level fallback. --------------------------
-// RELOADS UNCONDITIONALLY, AND THE SKIP IS THE KERNEL'S. Blindly reloading SYST_CVR resets
-// the countdown, so a far deadline reached only while lower-prio threads switch faster than
-// it can expire (e.g. a bench reporter's 0.5 s sleep behind two CPU-bound players) would
-// starve forever; what keeps that from happening is kickos::ktime_rearm skipping the call
-// when the deadline it holds is already the one programmed.
+// --- One-shot timer (SysTick). arch_clock_now is the chip's. -------------------
+// RELOADS UNCONDITIONALLY: writing SYST_CVR resets the countdown, so a far deadline would
+// starve under threads switching faster than it expires. kickos::ktime_rearm skips the call
+// when the programmed deadline is already the one held.
 void arch_timer_arm(uint64_t deadline_ns)
 {
     uint64_t now = arch_clock_now();
@@ -152,12 +129,9 @@ void arch_timer_arm(uint64_t deadline_ns)
     {
         delta_ns = deadline_ns - now;
     }
-    // Clamp the delta to the one-shot range BEFORE converting, so a far-future
-    // (or saturated UINT64_MAX) deadline can't overflow the ns*freq product. A
-    // clamped deadline fires early and the kernel re-arms the remainder from
-    // kickos_isr_timer (a harmless extra wake).
-    // max_delta_ns depends only on the clock; cache it so a variable 64-bit divide
-    // does not run on every arm (recomputed only when the clock changes at boot).
+    // Clamp BEFORE converting, so a far-future or UINT64_MAX deadline cannot overflow the
+    // ns*freq product; a clamped deadline fires early and the kernel re-arms the remainder.
+    // max_delta_ns depends only on the clock, so the 64-bit divide is cached.
     uint64_t f = SystemCoreClock;
     static uint64_t cached_f = 0;
     static uint64_t cached_max_delta = ~0ull;
@@ -197,15 +171,12 @@ void arch_timer_arm(uint64_t deadline_ns)
 void arch_timer_disarm(void)
 {
     reg32(SYST_CSR) = 0;
-    // "disarm" must mean no callback: clear a SysTick that pended while the line
-    // was masked, else it fires once on lock release after we disarmed.
+    // A SysTick pended while masked would otherwise fire once on lock release.
     reg32(SCB_ICSR) = ICSR_PENDSTCLR;
 }
 
 // --- MPU ---------------------------------------------------------------------
-// The stash every ARM backend reads, and the two apply entries, are their own archive
-// member: arch/common/arch_mpu_stash.cc. The PMSAv7 descriptor writer is
-// arch_arm_mpu_pmsav7.cc; SYSMPU and PMSAv8 program their own from their own commits.
+// The stash and the two apply entries are arch/common/arch_mpu_stash.cc.
 
 // --- Interrupt controller (NVIC) --------------------------------------------
 void arch_irq_mask(int line)
@@ -243,7 +214,7 @@ void arch_irq_clear_pending(int line)
         return;
     }
     unsigned l = static_cast<unsigned>(line);
-    // Drain any pending device write before dropping the latched NVIC pending.
+    // Drain a preceding device-flag clear before dropping the latched pending bit.
     __asm volatile("dsb" ::: "memory");
     reg32(NVIC_ICPR0 + (l >> 5) * 4) = 1u << (l & 31);
 }
@@ -255,9 +226,8 @@ bool arch_irq_inject(int irq)
         return false;
     }
     unsigned l = static_cast<unsigned>(irq);
-    // Latch-and-coalesce: the NVIC holds ISPR pending independently of ISER, so a
-    // raise on a masked (disabled) line latches and fires the instant the line is
-    // enabled: write ISPR unconditionally, do not drop.
+    // ISPR pends independently of ISER, so a raise on a masked line latches: write it
+    // unconditionally.
     reg32(NVIC_ISPR0 + (l >> 5) * 4) = 1u << (l & 31);
     return true;
 }
@@ -267,12 +237,10 @@ bool arch_irq_inject(int irq)
 // writes this same SYST_CSR = 0 plus the PENDSTCLR that only it ever wrote.
 void SysTick_Handler(void)
 {
-    kickos_isr_timer(); // disarms, then re-arms the next deadline
+    kickos_isr_timer();
 }
 
-// The exception number in IPSR is 16 + the external line. The mask is the 9-bit v7-M IPSR
-// width and is correct on v6-M too, whose IPSR never exceeds 0x3F (arch_in_isr above reads
-// it the same way).
+// IPSR holds 16 + the external line.
 void kickos_arm_default_irq(void)
 {
     uint32_t ipsr;
@@ -296,11 +264,8 @@ void kickos_arm_bad_psp(uint32_t psp, uint32_t need, uint32_t lo, uint32_t hi)
 #if KICKOS_KERNEL_STACKS
     int const contained = kickos_arm_contain_wild_sp();
 #else
-    // NO BLOCK TO REBUILD ON, so this board cannot contain: arch_ctx_redirect falls back to
-    // fabricating the privileged exit frame on the thread's OWN USER STACK, which is the
-    // write the guard above exists to refuse. A whole-board property (armv7m is the one arch
-    // that resolves this knob to 0, on f302nucleo and bluepill-c8), so it is decided here and
-    // not per thread, and the CONTAINED spelling below is compiled out with it.
+    // NO BLOCK TO REBUILD ON, so this board cannot contain: arch_ctx_redirect would fabricate
+    // the privileged exit frame on the thread's OWN USER STACK, the write the guard refuses.
     int const contained = 0;
 #endif
     if (contained == 0)

@@ -252,6 +252,7 @@ x86 sim. Most (RTEMS, microC/OS, RT-Thread core) are flat-memory. **ThreadX Modu
 **ChibiOS/SB** are the closest prior art and the references we lean on for the isolation model.
 
 Key borrowed ideas, attributed:
+
 - **NuttX** -- `FLAT`/`PROTECTED`/`KERNEL` build-mode taxonomy (KickOS is a **PROTECTED build** on
   every board: one kernel image, one privilege crossing, and no separately-loaded user binary. The
   region boards are PROTECTED in NuttX's own sense, MPU plus a trap; the translating boards keep the
@@ -292,8 +293,8 @@ native **newlib** on every arch, no per-toolchain libc special-casing; our `newl
 fits directly. **Design rule: keep KickOS's own libc newlib-*family*-compatible** so the *sim*
 can ride host `libstdc++` and so freestanding/newlib interop stays clean. What remains on target
 is only the well-trodden **syscall-stub** porting layer -- uniformly the newlib bottom edge
-(`_sbrk`, `_write/_read/_close/_fstat/_isatty/_exit/_fcntl`, `_impure_ptr`/reent, `__malloc_lock` when
-threaded, C++ guard/lock hooks) routed to KickOS syscalls. (Honest caveat: that stub tax is real
+(`_sbrk`, `_write/_read/_close/_fstat/_isatty/_exit/_fcntl`, `_impure_ptr`/reent, newlib's
+retargetable locks, C++ guard/lock hooks) routed to KickOS syscalls. (Honest caveat: that stub tax is real
 -- we sidestep the header/ABI class, not the bottom-edge class.)
 
 ---
@@ -332,7 +333,7 @@ KickOS/
       armv7m/                       # M3/M4/M4F/M7/M33: BASEPRI crit, CLZ, ctx-switch asm, cache
       chip/{mps2,an505,nrf51,mk64f,rp2040,rp2350,imxrt1062,stm32f411,stm32f103,stm32f302,sam3x8e,xmc4800}/
       chip/stm32f1f3/               # chip-FAMILY unit shared by stm32f103 + stm32f302,
-                                    #   compiled into each of their archives (family.cmake);
+                                    #   compiled into each of their archives (chip file `family`);
                                     #   chip/mps2/ is an505's family the same way
     arm64/
       common/                       # shared A53 glue: the GICv2 and GICv3 backends, the
@@ -422,8 +423,9 @@ per-arch in `arch/<arch>/include/kickos/arch/context.h`.
   separate result-delivery seam is needed. ARM: SVC. Sim: privilege-flipping trampoline.
 - `arch_irq_inject(irq)` -- raise a line as its device would (sim: signal; ARM: pend NVIC);
   false where the controller cannot raise it from software, or holds it banked per core.
-- `arch_console_write`, `arch_idle_wait`, `arch_init`, `arch_shutdown` -- console bottom edge,
-  idle (WFI / `sigsuspend`), bring-up, halt.
+- `arch_console_tx_backend`, `arch_console_write_sync`, `arch_idle_wait`, `arch_init`,
+  `arch_shutdown` -- the console's TX edge and polled writer (`console.md`), idle (WFI /
+  `sigsuspend`), bring-up, halt.
 - `kickos_panic_stack_enter(msg, file, line, top)` -- mask, move the stack pointer to `top` and
   branch into `kickos_panic_report`, so the panic reporter's console descent lands on an array
   of its own and no trap red zone reserves for it. Everything travels in registers because the
@@ -486,6 +488,7 @@ pass that does not take that thread places it. No caller is privileged
 over another -- **the tick is not special.**
 
 **Triggers (all equal):**
+
 1. `thread_yield()` -- voluntary.
 2. Block on empty `sem_wait`/`mutex_lock`/endpoint recv -> wait queue -> reschedule.
 3. Wake from **thread** ctx: `sem_post` readies a waiter; if higher prio, reschedule now.
@@ -612,7 +615,10 @@ is the form that waits. archived `M4_task_layer_record.md` is the record.
   (`grant-refuses-kernel-reserved-blocks`) mechanically refuses an inadmissible region for
   **every** granter, privileged ones included. What the sim still cannot
   reproduce is the user<->kernel boundary itself -- a Linux process has no CPU privilege level --
-  so a reserved arena page stands in for it, and that one boundary is hardware-only.
+  so a reserved arena page stands in for it, and that one boundary is hardware-only. Nor can it
+  separate an instance's threads inside the C library: it runs them on one host thread, and the
+  host libc's stdio and malloc locks key on that thread, so the libc lock has no sim counterpart
+  and the `libcrace` witness is declared inapplicable there.
 
 ---
 
@@ -855,26 +861,26 @@ API. Two flavors:
 - **Userspace drivers (unprivileged -- the goal)** -- a user task granted, at creation:
   (1) **MMIO** -- the device register block added to its MPU regions (device attrs, RW,
   no-execute); (2) **IRQ-as-event** -- a `CAP_IRQ` capability on the line, minted by a
-  bring-up path holding `AUTH_IRQ` (`irq_claim`) and DELEGATED to the driver at spawn, which
-  then loops `irq_wait(cap)` / service.
-  The kernel's generic ISR stub masks the line, posts the driver's notification
-  (a semaphore), flags reschedule -> PendSV switches to the now-ready driver task; the next
-  `irq_wait` auto-re-arms the consumed line, so no explicit ack is needed (`irq_ack(h)` stays an
-  OPTIONAL early re-arm that reacts sooner to a latched raise; the latch-and-coalesce contract
-  keeps the event either way). The
-  driver never runs in handler mode.
+  bring-up path holding `AUTH_IRQ` (`kos_irq_claim`) and DELEGATED to the driver at spawn, which
+  binds the line to a notification (`kos_irq_bind_notify`) and then loops `kos_notify_wait` /
+  service.
+  The kernel's generic ISR stub masks the line, raises the binding's bit in that notification,
+  flags reschedule -> PendSV switches to the now-ready driver task; the next `kos_notify_wait`
+  re-arms the consumed line, so no explicit ack is needed (`kos_irq_ack` stays an OPTIONAL early
+  re-arm that reacts sooner to a latched raise; the latch-and-coalesce contract keeps the event
+  either way). The driver never runs in handler mode.
 
 **API sketch (arch-neutral):** `irq_attach/detach` (in-kernel);
-`irq_claim/wait/ack/notify/discard/unmask`
-(userspace, CAPABILITY-based -- the C++ `kos::Irq` owns the cap and closes it on destruction, so
-root writes `auto irq = kos::Irq::claim(line);` and the driver `auto irq = kos::Irq::adopt(cap);`,
-backed by the existing Semaphore as the notification; `notify` posts it WITHOUT touching the
-controller, the doorbell a service thread rings for an IRQ thread that owns the registers, and
-`discard` (`KOS_SYS_IRQ_DISCARD`) drops whatever the controller has latched for the line while
-masking and unmasking neither);
-backed by an interrupt-controller abstraction in the arch/chip layer (NVIC on ARM;
-sim = signal-driven injection). Reacting is `register`/`wait`, and raw in-handler-mode
-callbacks are the privileged `irq_attach` (TCB, not defended). `irq_inject` raises a line from
+`kos_irq_claim/bind_notify/ack/discard/raise`
+(userspace, CAPABILITY-based: the C++ `kos::Irq` owns the cap and closes it on destruction, so
+root writes `auto irq = kos::Irq::claim(line);` and the driver `auto irq = kos::Irq::adopt(cap);`).
+The notification is the delivery object (`notification-is-the-delivery-object` in
+`invariants.md`): `kos_notify` raises it WITHOUT touching the controller, the doorbell a service
+thread rings for an IRQ thread that owns the registers, and `kos_irq_discard`
+(`KOS_SYS_IRQ_DISCARD`) drops whatever the controller has latched for the line while masking and
+unmasking neither. All of it is backed by an interrupt-controller abstraction in the arch/chip
+layer (NVIC on ARM; sim = signal-driven injection). Raw in-handler-mode callbacks are the
+privileged `irq_attach` (TCB, not defended). `irq_inject` raises a line from
 software as its device would; userspace reaches it only through `kos_irq_raise`, on a line whose
 capability it holds.
 
@@ -962,7 +968,9 @@ feeds the slave app.
 ## C++ decisions
 
 - **Kernel**: freestanding C++ -- `-ffreestanding -fno-exceptions -fno-rtti
-  -fno-threadsafe-statics -fno-use-cxa-atexit`. Bring-up: run `.init_array` ctors in startup.
+  -fno-threadsafe-statics -fno-use-cxa-atexit`. Bring-up runs only the KickOS-owned
+  `.init_array` set before `kmain`; every other constructor runs from the root thread with the
+  kernel live (`ctors-run-before-init-entry` in `invariants.md`).
   Of the usual ABI stubs only `__dso_handle` exists (`user/src/newlib_stubs.cc`, and it is in
   `tests/static/weak_allowlist.txt`): `-fno-use-cxa-atexit` removes the need for `__cxa_atexit`, and
   `__cxa_pure_virtual` is never emitted because nothing declares a pure virtual. **`operator
@@ -978,7 +986,7 @@ feeds the slave app.
   (`_sbrk`, `_write/_read/_close/_fstat/_isatty/_exit/_kill/_getpid`, `_fcntl`, whose
   `F_SETFL`/`F_GETFL` carry `O_NONBLOCK` for stdout and stderr (`console.md`, "Non-blocking
   stdout"), `_impure_ptr`/reent,
-  `__malloc_lock` when threaded, and C++ guard/lock hooks) routed to KickOS
+  newlib's retargetable locks, and C++ guard/lock hooks) routed to KickOS
   syscalls: the same seam under both the sim's host `libstdc++` and a target full-C++ app's
   pinned newlib -- one newlib seam fleet-wide. (The full seam detail: `docs/design-kickcat-k64f.md`.)
 - **Per-thread reentrant state**: on every board but the sim, whose libc is the host's, gives every
@@ -995,6 +1003,16 @@ feeds the slave app.
   `thread_local`, is what makes `errno` follow the thread.
   `_REENT_INIT_PTR` aims every copy's `_stdin`/`_stdout`/`_stderr` at the one global `__sf[3]`, so
   **stdio buffering stays process-wide** however many copies exist.
+- **The libc lock**: every newlib static lock and every `FILE` lock is ONE recursive lock
+  (`user/src/newlib_lock.cc`), so nesting two of them is recursion on one. Owner and depth live
+  in userspace, the owner read through `kos_thread_self`; under them is the kernel mutex seated at
+  `KOS_CAP_LIBC_LOCK`, so priority inheritance holds and a holder's death hands the lock over
+  `-KOS_EOWNERDEAD`, which the lock takes as acquired; a try-acquire tries the mutex with a zero
+  deadline. There is one per address space, which is
+  one per heap: a region board's tasks share the image's, and a translating board gives each task
+  its own. The toolchain's newlib must be built with retargetable locking (release 1.1 on): the
+  TU refuses to compile against one without it, and a link forces its object in ahead of libc's
+  no-op defaults.
 
 ---
 
@@ -1068,8 +1086,8 @@ feeds the slave app.
   thing in the tree that reads an installed package from outside.
   KickOS's own warning flags are **never** part of that interface -- they are this project's
   hygiene policy, applied `PRIVATE` to targets we own, and a consumer's diagnostics stay theirs.
-- **Declaring a driver / QEMU test / board provider.** Three macros in `cmake/kickos.cmake` give
-  each its single shape: `kickos_add_driver(<name> [SOURCES] [CLASS] [REGDIR] [THREAD ...]...)`, a freestanding,
+- **Declaring a driver.** The installed package's `kickos.cmake` gives a driver its single shape:
+  `kickos_add_driver(<name> [SOURCES] [CLASS] [REGDIR] [THREAD ...]...)`, a freestanding,
   exported driver-lib linking `kickos_user`, its `.data`/`.bss` landing app-side, and with a `THREAD`
   a packaged driver whose declaration generates both its descriptor, the `KICKOS_DRIVER_DESCRIPTOR`
   of `<kickos/driver/declared/<name>.h>`, and the export manifest's catalogue. Every driver a service
@@ -1077,11 +1095,12 @@ feeds the slave app.
   module whose channels share their lines, as the XMC's USIC is, where the role is `irq`. A
   composition binds each role to a line, and the init hands the driver's `START` a
   `kos_driver_instance` carrying each line as its number and its index among its device's lines:
-  `bring_up` claims the instance's lines; `kickos_add_qemu_test(NAME
-  TARGET BOARD SCRIPT ...)` -- a QEMU boot gate (exit 77 = SKIP) that keeps the per-board QEMU env
-  prefix in exactly one place. The `KICKOS_BOARD` cache-var help and the MPU-enforcement
-  board list are **derived from globs** over `boards/*/board.cmake`, so neither goes stale against
-  the fleet.
+  `bring_up` claims the instance's lines. The `KICKOS_BOARD` cache-var help and the
+  MPU-enforcement board list are **derived from globs** over `boards/*/board.cmake`, so neither
+  goes stale against the fleet.
+- **Declaring a QEMU test.** The test helpers are the tree's own, in the uninstalled
+  `tests/cmake/kickos_tests.cmake`: `kickos_add_qemu_test([NAME] TARGET SCRIPT ...)` is a QEMU
+  boot gate (exit 77 = SKIP) that keeps the per-board QEMU env prefix in exactly one place.
 - **CTest** runs the sim ELF natively in CI.
 - **`KICKOS_SMP_TRACE`** (CMake `option()`, default `OFF`, selected by no preset) compiles the
   per-core park/wake event ring (`kickos/smptrace.h`) into `smptrace.cc`, `sync.cc` and `sched.cc`;
@@ -1149,8 +1168,9 @@ stale at its task's end, and the space gives back every run it maps at its task'
   no thread leaks references. A teardown-close that would strand a parked waiter LEAKS (floors
   refs at 1), never strands -- unreachable today (every parked waiter pins its own cap).
 - **Well-known reserved cap indices (`system/include/kickos/sys/cap_index.h`).** Indices
-  `[0 .. KICKOS_CAP_FIRST_DYNAMIC)` (today `[0..1)`) are reserved well-known slots, and the one
-  there is index 0 = `KOS_CAP_STDOUT` (the send-only console endpoint). A service is reached by
+  `[0 .. KICKOS_CAP_FIRST_DYNAMIC)` (today `[0..2)`) are reserved well-known slots: index 0 =
+  `KOS_CAP_STDOUT` (the send-only console endpoint) and index 1 = `KOS_CAP_LIBC_LOCK` (the mutex
+  behind every newlib lock of the thread's address space). A service is reached by
   path, never by a well-known index. Axis-3 authority is deliberately **not** one of them: the
   authority word names no pool object, holds no refcount and bumps no generation, so it lives in
   the TCB as `Thread::authority` (8 bits in existing padding) and costs no index on any board.
@@ -1168,18 +1188,20 @@ stale at its task's end, and the space gives back every run it maps at its task'
   so no pop can hand back a well-known index. A release goes to the list **tail**, never the head,
   so with `F` free slots each slot's cap-gen advances once per `F` mints instead of one counter
   taking every mint. A reserved slot is seated
-  ONLY by the kernel (`cap_install_defaults` seats stdout, and is the sole writer of index 0).
+  ONLY by the kernel: `cap_install_defaults` seats stdout, and every spawn and root's boot seat
+  the libc lock (`cap_libc_lock_take`, a copy of the one a live thread of the same address space
+  holds, else a fresh mutex, the spawn refused `-KOS_ENOMEM` when the pool has none).
   Userspace only *names* a reserved slot by these constants -- it never chooses the index. The
   range is not frozen, but either direction is an ABI break: renumber **downward** only for a
   slot nothing seats -- no width moves, since the reserved range lies inside the board's supply
   and the child width, so every table gains the slot as a dynamic one; **append** by raising
   `KICKOS_CAP_FIRST_DYNAMIC`, which costs one slot on every table in the fleet -- so weigh it
   first against putting the state in the TCB, as the authority word does. The `cap.h`
-  static_assert floors the dynamic count at >=1 either way, and `abi.h` refuses a default
-  delegation index below `KOS_CAP_FIRST_DYNAMIC`.
+  static_assert floors the dynamic count at >=1 either way, and `abi.h` defines the default
+  delegation index as `KOS_CAP_FIRST_DYNAMIC`.
 - **B1 wire contract (every in-tree app that builds a spawn grant list depends on it):** a fresh
   child table has cap-gen 0 in every slot, so
-  on a fresh table `handle == index`; delegation places delegated cap `i` at child index `i + 1`
+  on a fresh table `handle == index`; delegation places delegated cap `i` at child index `i + 2`
   (`KOS_SPAWN_DELEGATED_CAP0 + i`, which is `KICKOS_CAP_FIRST_DYNAMIC + i`, so a default grant
   list fills the first dynamic slots and the child's own-creates follow it), and
   `cap_install_defaults` seats the stdout
@@ -1266,6 +1288,7 @@ structs or a tiny IDL.
 ## Verification
 
 **Sim (automated, CI -- `cmake --preset sim && ctest`):**
+
 - Two-thread FIFO ordering; higher-priority thread preempts on ready.
 - Semaphore post (thread-ctx *and* IRQ-ctx) triggers a switch **with the tick disabled**.
 - RR round-robins equal-priority threads only when enabled.

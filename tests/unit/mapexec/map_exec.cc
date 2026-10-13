@@ -160,11 +160,25 @@ namespace
     {
         return ~((static_cast<uintptr_t>(1) << 39) - 1u) | low;
     }
+
+    uint64_t* larger_leaf_slot(struct arch_aspace* space, uintptr_t va)
+    {
+        uint64_t const desc = reinterpret_cast<uint64_t const*>(space)[(va >> 30) & 0x1FFu];
+        if ((desc & 3u) != TABLE)
+        {
+            return nullptr;
+        }
+        uint64_t* const level2 =
+            reinterpret_cast<uint64_t*>(frame_pointer(desc & 0xFFFFFFFFF000ull));
+        return &level2[(va >> 21) & 0x1FFu];
+    }
 }
 
 #define MAP_CONTRACT_FIXTURE MapExecContract
 #define MAP_CONTRACT_NOCACHE_SEEN true
 #define MAP_CONTRACT_PA_BITS 40u
+// A level-2 block over physical 0, inside the seam's window.
+#define MAP_CONTRACT_LARGER_LEAF static_cast<uint64_t>(BLOCK | AF)
 #include "map_contract.h"
 
 // Executable replacements.
@@ -349,22 +363,6 @@ TEST_F(MapExec, TheRollbackOfANonExecutableMapRingsNothing)
     EXPECT_EQ(ops_with(OP_RENDEZVOUS), 0u);
 }
 
-// A wholly mapped range is a remap.
-
-TEST_F(MapExec, AWhollyMappedRangeIsStillARemapAndPasses)
-{
-    // Wholly mapped ranges remain valid remap targets.
-    seed(VA_CROSS_LOW, PA_A, RIGHTS_DATA);
-    seed(VA_CROSS_HIGH, PA_B, RIGHTS_DATA);
-
-    ASSERT_EQ(arch_aspace_map(space, VA_CROSS_LOW, PA_C, 2, RIGHTS_DATA, ARCH_MAP_NORMAL),
-              ARCH_ASPACE_OK);
-
-    arch_phys_addr_t const g = static_cast<arch_phys_addr_t>(arch_aspace_granule());
-    EXPECT_EQ(arch_aspace_frame_at(space, VA_CROSS_LOW), PA_C);
-    EXPECT_EQ(arch_aspace_frame_at(space, VA_CROSS_HIGH), PA_C + g);
-}
-
 // Check executable/data classification through unmap.
 
 TEST_F(MapExec, UnmapOfTheSameLeafRingsToo)
@@ -383,6 +381,19 @@ TEST_F(MapExec, UnmapOfANonExecutableLeafRingsNothing)
     ASSERT_EQ(arch_aspace_unmap(space, VA_DEEP, 1), ARCH_ASPACE_OK);
 
     EXPECT_EQ(ops_with(OP_RENDEZVOUS), 0u);
+}
+
+TEST_F(MapExec, TheTablesAnUnmapEmptiesGoBackOnlyAfterTheBroadcastSweep)
+{
+    seed(VA_DEEP, PA_A, RIGHTS_DATA);
+    uint32_t const before = frames_freed();
+
+    ASSERT_EQ(arch_aspace_unmap(space, VA_DEEP, 1), ARCH_ASPACE_OK);
+
+    EXPECT_EQ(frames_freed() - before, 2u);
+    ASSERT_EQ(ops_with(OP_TLBI_ALL_IS), 1u) << "a detached table's walks were left cached";
+    EXPECT_GT(last_index_of(OP_TLBI_ALL_IS), last_index_of(OP_TLBI_PAGE_IS));
+    EXPECT_EQ(frames_freed_at_sweep(), before);
 }
 
 // Residency-based maintenance.

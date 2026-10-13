@@ -70,6 +70,8 @@ namespace kickos::rp2350::reg::clocks
     // approximate SysTick timing if the crystal never comes up. Nominal only, DS 8.3.1
     // gives the randomised spread as 18.4 to 96 MHz.
     constexpr uint32_t ROSC_NOMINAL_HZ = 48000000u;
+    // The bootrom's aux mux keeps clk_sys on the ROSC until the PLL switch moves it.
+    constexpr uint32_t CLK_SYS_NO_PLL_HZ = ROSC_NOMINAL_HZ;
 }
 
 #endif

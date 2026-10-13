@@ -497,7 +497,7 @@ int main(int, char**)
     }
 #endif
     kos::thread::Handle const w =
-        kos::thread::create(wild, &g_arm, "wild", 10, KOS_POLICY_FIFO, 0, /*privileged=*/false,
+        kos::thread::create(wild, &g_arm, "wild", 10, KOS_POLICY_FIFO, 0,
                             mem, mem_size, st, STACK_BYTES);
     if (not w.valid())
     {
@@ -518,7 +518,7 @@ int main(int, char**)
     // reservation must live where the refused frame put it.
     kos::thread::Handle const fc =
         kos::thread::create(fpcheck, &g_arm, "fpcheck", 10, KOS_POLICY_FIFO, 0,
-                            /*privileged=*/false, st, STACK_BYTES);
+                            st, STACK_BYTES);
     if (not fc.valid())
     {
         kos::print("[pspguard] ERROR: fpcheck spawn refused\n");

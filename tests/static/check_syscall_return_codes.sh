@@ -454,7 +454,7 @@ fi
 
 # --- the corpus ---------------------------------------------------------------
 corpus "$TMP/all" "kernel or arch source file" \
-    'kernel/*.cc' 'kernel/*.h' 'arch/*.cc' 'arch/*.h' 'system/*.cc' 'system/*.h'
+    'kernel/*.cc' 'kernel/*.h' 'arch/*.cc' 'arch/*.h' 'system/*.cc' 'system/*.h' ':(exclude)*.ld.h'
 grep -qxF "$DISPATCH" "$TMP/all" \
     || fail "$DISPATCH is not in the corpus; the dispatch arms would go unread and every entry would read clean"
 N="$(wc -l < "$TMP/all" | tr -d ' ')"

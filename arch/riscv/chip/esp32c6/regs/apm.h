@@ -1,14 +1,12 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// ESP32-C6 access-permission (HP_APM, LP_APM) and TEE registers (TRM v1.2 ch.16). The
-// bus-side, per-security-mode permission unit that sits IN SERIES with PMP on this
-// core (TRM 16.1): a U-mode (REE) access to an HP peripheral is checked by PMP first
-// (CPU-side, per-hart) then APM (bus-side, per security mode). The default APM
-// posture DENIES all REE access to every peripheral (region 0 catch-all, TRM
-// 16.3.2 Note), so a U-mode driver reaches nothing until node 0 programs the gate.
+// ESP32-C6 access-permission (HP_APM, LP_APM) and TEE registers. APM is the bus-side,
+// per-security-mode unit IN SERIES with PMP: PMP checks first, then APM. The reset posture
+// denies all REE access to every peripheral (region 0 catch-all), so a U-mode driver reaches
+// nothing until node 0 programs the gate.
 //
-// APM QUIRKS worth flagging:
+// APM QUIRKS:
 //  - An APM denial does NOT trap (TRM 16.5): a read returns 0, a write is dropped,
 //    and a separate HP_APM interrupt fires. Only PMP produces a load/store fault. So
 //    per-thread isolation proofs must ride the PMP fault, never APM.

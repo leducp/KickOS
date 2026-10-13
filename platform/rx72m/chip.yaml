@@ -8,12 +8,15 @@ chip: rx72m
 manual: "RX72M Group User's Manual: Hardware, R01UH0804EJ0120 Rev.1.20 (November 15, 2023)"
 arch: rxv3
 # The unit checks every user-mode access, the I/O registers included, so a device window is
-# enforced per task.
-protection: { unit: rxmpu, covers_devices: true, memory_type: false }
+# enforced per task. A region's bounds are 16-byte pages (RSPAGEn/REPAGEn address[31:4], UM
+# 17.1.2).
+protection: { unit: rxmpu, granule: 16, covers_devices: true, memory_type: false }
 # The ROM cache fronts the code flash only; nothing caches the RAM.
 data_cache: false
 c: { namespace: kickos::rx, line_enum: vector }
 
+family: none
+exits_on_fault: false
 interrupts:
   # The 256 vectors, then 32 lines for each of the five level groups BL0, BL1, BL2, AL0 and
   # AL1. The edge groups IE0 and BE0 carry none.

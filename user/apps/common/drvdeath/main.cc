@@ -123,17 +123,17 @@ namespace
     // Change that encoding and this case silently names some other thread instead.
     constexpr kos_thread_t ROOT_THREAD = 0;
 
-    void nest_grandchild(void*) // caps: park@1
+    void nest_grandchild(void*) // caps: park@2
     {
         kos_sem_wait(KOS_SPAWN_DELEGATED_CAP0, KOS_TIMEOUT_NONE); // never posted: alive until its spawner cancels it
         kos_exit(0);
     }
 
-    void nest_child(void*) // caps: done@1, park@2, probe@3
+    void nest_child(void*) // caps: done@2, park@3, probe@4
     {
         kos_cap_grant const caps[1] = {{NEST_PARK, KOS_CAP_WAIT}};
         g_grandchild = kos::thread::create(nest_grandchild, nullptr, "nestgc", 9,
-                                           KOS_POLICY_FIFO, 0, /*privileged=*/false,
+                                           KOS_POLICY_FIFO, 0,
                                            nullptr, 0, nullptr, 0, nullptr, 0, caps, 1)
                            .id();
         // Root is unkillable: it leaves spawner_tag at KILL_TAG_NONE and kill_tag_of never
@@ -181,7 +181,7 @@ namespace
         }
         kos_cap_grant const caps[3] = {{done, CAP_FULL}, {park, CAP_FULL}, {probe, CAP_FULL}};
         auto const child = kos::thread::create(nest_child, nullptr, "nestch", 9,
-                                               KOS_POLICY_FIFO, 0, /*privileged=*/false,
+                                               KOS_POLICY_FIFO, 0,
                                                nullptr, 0, nullptr, 0, nullptr, 0, caps, 3);
         if (not child.valid())
         {
@@ -249,7 +249,7 @@ extern "C" void drvdeath_main(kos_self_t const* self)
     {
         kos::thread::Handle const faulter =
             kos::thread::create(fault_now, nullptr, "dfault", WRITER_PRIO, KOS_POLICY_FIFO, 0,
-                                /*privileged=*/false, nullptr, 0, nullptr, 0, nullptr, 0, nullptr,
+                                nullptr, 0, nullptr, 0, nullptr, 0, nullptr,
                                 0, 0, nullptr, fault_task);
         faulted_rc = faulter.join(WRITER_DONE_US);
         (void)kos_task_kill(fault_task);

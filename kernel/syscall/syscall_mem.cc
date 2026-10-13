@@ -100,10 +100,6 @@ namespace kickos
         {
             return false;
         }
-        if (c->privileged)
-        {
-            return true;
-        }
         if (len == 0)
         {
             return true;
@@ -211,10 +207,6 @@ namespace kickos
         if (c == nullptr)
         {
             return false;
-        }
-        if (c->privileged)
-        {
-            return true;
         }
         return mmio_block_of(c, base) != 0;
     }
@@ -325,7 +317,7 @@ namespace kickos
         IrqLock lock;
         Thread* const c = sched::current();
         uintptr_t const port = base + offset;
-        bool held = c != nullptr and c->privileged;
+        bool held = false;
         for (uint8_t r = 0; c != nullptr and r < c->ctx.port_count; r++)
         {
             if (port >= c->ctx.ports[r].base and port <= c->ctx.ports[r].last)
@@ -352,10 +344,6 @@ namespace kickos
         if (c == nullptr)
         {
             return false;
-        }
-        if (c->privileged)
-        {
-            return true;
         }
         size_t const size = mmio_block_of(c, base);
         if (size == 0)
@@ -398,10 +386,6 @@ namespace kickos
         bool write_seen = false;
         if (c != nullptr)
         {
-            if (c->privileged)
-            {
-                return true;
-            }
             read_seen = (read_len == 0);
             write_seen = (write_len == 0);
             // A wrapping extent asks the set nothing and is still offered to the arch hook.
@@ -823,12 +807,8 @@ namespace kickos
         uint32_t cap = KCAP_INVALID;
         {
             IrqLock lock;
-            Domain* const d = thread_domain(c);
-            if (domain_space(d) == nullptr)
-            {
-                return -KOS_EINVAL;
-            }
-            rc = cap_install(c, domain_handle(d), CapType::CAP_ASPACE, CAP_TRANSFER, &cap);
+            rc = cap_install(c, domain_handle(thread_domain(c)), CapType::CAP_ASPACE, CAP_TRANSFER,
+                             &cap);
         }
         int const delivered = static_cast<int>(cap_out_deliver(out, rc, cap));
         if (rc == 0 and delivered != 0)

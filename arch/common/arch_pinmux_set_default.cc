@@ -4,8 +4,7 @@
 // Lone-TU fallback (arch/CMakeLists.txt states the rule): exactly one symbol, so a
 // backend definition keeps this archive member unextracted.
 //
-// -KOS_ENOSYS, not 0: a bare "applied" would make a non-empty board pin-map a silent
-// no-op success.
+// -KOS_ENOSYS, not 0: success would make a non-empty board pin map a silent no-op.
 
 #include <kickos/arch/arch.h>
 

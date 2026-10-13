@@ -174,7 +174,7 @@ kos::thread::Handle spawn_one(Thread const& t, struct kos_driver_instance const&
     // bringing one is refused -KOS_EINVAL.
     auto h = kos::thread::create(t.entry, arg, name,
                                  static_cast<uint8_t>(in.priority + t.prio_delta),
-                                 KOS_POLICY_FIFO, /*quantum_ns=*/0, /*privileged=*/false,
+                                 KOS_POLICY_FIFO, /*quantum_ns=*/0,
                                  /*mem=*/nullptr, /*mem_size=*/0,
                                  /*stack=*/nullptr, /*stack_size=*/0,
                                  &win, win_count, grants, t.cap_count,

@@ -5,8 +5,6 @@
 
 #include <kickos/arch/arch.h>
 #include <kickos/console_tx.h>
-#include <kickos/irq.h>
-#include <kickos/irqlock.h>
 
 namespace
 {
@@ -22,8 +20,8 @@ namespace
     uint32_t g_push_seat_ordinal = 0;
     void (*g_push_seat_fn)(void) = nullptr;
     bool g_push_seat_fired = false;
-    void (*g_barrier_seat_fn)(void) = nullptr;
-    bool g_barrier_seat_fired = false;
+    void (*g_copy_seat_fn)(void) = nullptr;
+    bool g_copy_seat_fired = false;
     std::string g_wire;
     char g_storage[4096];
 
@@ -67,39 +65,7 @@ namespace
     }
 
     console_tx_backend const g_backend = {mock_slot_free, mock_push, mock_irq_enable,
-                                          mock_irq_disable};
-
-    // The bounded synchronous line writer a chip takes for a line the ring refused: one mask
-    // across the device writes, with '\n' lowered in the writer rather than in a cooked
-    // caller buffer.
-    void write_line_sync(char const* buf, size_t n, int crlf)
-    {
-        kickos::IrqLock lock;
-        if (crlf == 0)
-        {
-            arch_console_write_sync(buf, n);
-            return;
-        }
-        static char const CRLF[2] = {'\r', '\n'};
-        size_t start = 0;
-        for (size_t i = 0; i < n; i++)
-        {
-            if (buf[i] != '\n')
-            {
-                continue;
-            }
-            if (i > start)
-            {
-                arch_console_write_sync(buf + start, i - start);
-            }
-            arch_console_write_sync(CRLF, sizeof(CRLF));
-            start = i + 1;
-        }
-        if (n > start)
-        {
-            arch_console_write_sync(buf + start, n - start);
-        }
-    }
+                                          mock_irq_disable, nullptr};
 }
 
 namespace consoleline
@@ -118,8 +84,8 @@ namespace consoleline
         g_push_seat_ordinal = 0;
         g_push_seat_fn = nullptr;
         g_push_seat_fired = false;
-        g_barrier_seat_fn = nullptr;
-        g_barrier_seat_fired = false;
+        g_copy_seat_fn = nullptr;
+        g_copy_seat_fired = false;
         g_wire.clear();
         for (size_t i = 0; i < sizeof(g_storage); i++)
         {
@@ -175,20 +141,20 @@ namespace consoleline
         return g_max_push_depth;
     }
 
-    void run_at_publish_barrier(void (*fn)(void))
+    void run_inside_the_copy(void (*fn)(void))
     {
-        g_barrier_seat_fn = fn;
-        g_barrier_seat_fired = false;
+        g_copy_seat_fn = fn;
+        g_copy_seat_fired = false;
     }
 
-    bool barrier_seat_fired()
+    bool copy_seat_fired()
     {
-        return g_barrier_seat_fired;
+        return g_copy_seat_fired;
     }
 
-    // Every chip's arch_console_write, which is one call with no branch: a line the ring
-    // cannot take does not go out. A fallback here would put a second writer at the device
-    // and split a line, which is the defect the drop rule removes.
+    // The kernel's line write, one call with no branch: a line the ring cannot take does not go
+    // out. A fallback here would put a second writer at the device and split a line, which is
+    // the defect the drop rule removes.
     int write_line(char const* buf, size_t n, int crlf)
     {
         return console_tx_insert_line(buf, n, crlf);
@@ -199,84 +165,46 @@ extern "C"
 {
     void console_tx_room_freed(void) {}
 
-
-// Disarmed before the seated call so a line inserted from inside the copy reaches the barrier
-// without seating itself again.
-void consoleline_publish_barrier(void)
-{
-    __asm volatile("" ::: "memory");
-    if (g_barrier_seat_fn == nullptr)
+    void console_write_line_sync(char const* buf, size_t n)
     {
-        return;
+        static_assert(KICKOS_CONSOLE_CRLF == 0, "this writer does not lower '\\n'");
+        (void)arch_console_write_sync(buf, n);
     }
-    void (*fn)(void) = g_barrier_seat_fn;
-    g_barrier_seat_fn = nullptr;
-    g_barrier_seat_fired = true;
-    fn();
-}
 
-arch_irq_state_t arch_irq_save(void)
-{
-    arch_irq_state_t const prior = static_cast<arch_irq_state_t>(g_mask_depth);
-    g_mask_depth++;
-    return prior;
-}
-
-void arch_irq_restore(arch_irq_state_t state)
-{
-    g_mask_depth = static_cast<int>(state);
-}
-
-int arch_in_isr(void)
-{
-    return 0;
-}
-
-// Reaches the same mock edge as the ring's own pushes, so a fallback byte and a drained byte
-// sit on one wire in the order they were written.
-bool arch_console_write_sync(char const* buf, size_t n)
-{
-    for (size_t i = 0; i < n; i++)
+    // Disarmed before the seated call so a line inserted from inside the copy reaches the
+    // hook without seating itself again.
+    void kickos_line_step(void)
     {
-        mock_push(static_cast<uint8_t>(buf[i]));
+        if (g_copy_seat_fn == nullptr)
+        {
+            return;
+        }
+        void (*fn)(void) = g_copy_seat_fn;
+        g_copy_seat_fn = nullptr;
+        g_copy_seat_fired = true;
+        fn();
     }
-    return true;
-}
 
-void arch_irq_mask(int)
-{
-}
-
-void arch_irq_unmask(int)
-{
-}
-
-void arch_irq_clear_pending(int)
-{
-}
-
-console_tx_backend const* arch_console_tx_backend(char**, uint32_t*, int*)
-{
-    return nullptr; // the fixture arms the ring through console_tx_init
-}
-
-// console.cc's, and the insert reaches it for the UNARMED ring alone: before console_tx_init
-// there is no ring to interleave with, so that line goes straight at the device. The arms
-// that exercise it read the wire, so it lands there like every other push.
-void console_write_line_sync(char const* buf, size_t n)
-{
-    write_line_sync(buf, n, KICKOS_CONSOLE_CRLF);
-}
-}
-
-namespace kickos
-{
-    bool irq_attach(int, IrqHandler, void*)
+    arch_irq_state_t arch_irq_save(void)
     {
+        arch_irq_state_t const prior = static_cast<arch_irq_state_t>(g_mask_depth);
+        g_mask_depth++;
+        return prior;
+    }
+
+    void arch_irq_restore(arch_irq_state_t state)
+    {
+        g_mask_depth = static_cast<int>(state);
+    }
+
+    // Reaches the same mock edge as the ring's own pushes, so a fallback byte and a drained
+    // byte sit on one wire in the order they were written.
+    bool arch_console_write_sync(char const* buf, size_t n)
+    {
+        for (size_t i = 0; i < n; i++)
+        {
+            mock_push(static_cast<uint8_t>(buf[i]));
+        }
         return true;
-    }
-
-    void irq_detach(int)
-    {
     }
 }

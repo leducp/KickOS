@@ -10,6 +10,8 @@
 #include <kickos/sync.h>
 
 #include <setjmp.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 #include "sys_fixture.h"
 
@@ -41,7 +43,13 @@ namespace kickos
 
             PresyncRecord& record_of(Thread const* t)
             {
-                return kernel().presync[kernel().threads.index_of(t)];
+                int const i = kernel().threads.index_of(t);
+                if (i < 0)
+                {
+                    printf("FIXTURE FAIL: a thread outside the pool has no presync record\n");
+                    exit(1);
+                }
+                return kernel().presync[i];
             }
 
             // presync_drop, which aspace.cc keeps file-local.
@@ -344,21 +352,6 @@ namespace kickos
                 EXPECT_EQ(spawn(g_main, window_spawn(blk, PAGES * G, into), MAIN_OUT, &child), 0);
                 EXPECT_NE(child, KOS_THREAD_NONE);
                 expect_rounds_dropped(PAGES);
-            }
-
-            TEST_F(SysPresync, a_privileged_caller_s_call_opens_no_window)
-            {
-                RunCaps const run = mint(PAGES);
-                ASSERT_NE(run.obj, FRAME_RUN_NONE);
-                g_main->privileged = true;
-                g_drops_left = DROPS;
-                on_window(drop_hook);
-                EXPECT_EQ(err(call_as(g_main, KOS_SYS_FRAME_MAP, run.fcap, run.acap,
-                                      va_word(RUN_VA), KOS_MEM_NOCACHE)),
-                          0);
-                EXPECT_EQ(g_syncs, PAGES) << "only the first round, which no window dropped";
-                EXPECT_EQ(g_windows, 0u);
-                g_main->privileged = false;
             }
 
             TEST_F(SysPresync, a_frame_map_completed_in_the_window_sends_a_frame_map_round)

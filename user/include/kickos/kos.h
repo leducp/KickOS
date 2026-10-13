@@ -135,8 +135,8 @@ namespace kos
 
     // Owning priority-inheritance mutex: ctor creates, dtor closes its cap (last
     // close frees the object). Non-copyable, movable (a moved-from handle is emptied
-    // so the dtor won't double-close). lock/unlock return the raw syscall codes (see
-    // kos_mutex_lock: 0, -KOS_EOWNERDEAD, -KOS_EBADF, -KOS_EDEADLK). ROBUST-MUTEX CAVEAT:
+    // so the dtor won't double-close). lock, try_lock_for and unlock return the raw syscall
+    // codes (see kos_mutex_lock). ROBUST-MUTEX CAVEAT:
     // -KOS_EOWNERDEAD means the lock IS held (owner died), so do NOT treat every rc < 0 as
     // "not acquired" or you strand the mutex; special-case rc == -KOS_EOWNERDEAD as held.
     class Mutex
@@ -182,7 +182,16 @@ namespace kos
 
         int lock()
         {
-            return kos_mutex_lock(id_);
+            return kos_mutex_lock(id_, KOS_TIMEOUT_NONE);
+        }
+        // True with the mutex held; false when held elsewhere, or on a failed handle.
+        bool try_lock()
+        {
+            return kos_mutex_lock(id_, 0) == 0;
+        }
+        int try_lock_for(uint32_t timeout_us)
+        {
+            return kos_mutex_lock(id_, timeout_us);
         }
         int unlock()
         {
@@ -467,8 +476,8 @@ namespace kos::thread
         int err_ = -KOS_EBADF;
     };
 
-    // Create an unprivileged thread by default. Creation does not preempt the
-    // caller; the new thread runs after it blocks or yields.
+    // Create an unprivileged thread. Creation does not preempt the caller; the new thread runs
+    // after it blocks or yields.
     // mem/mem_size grants domain data; stack/stack_size optionally supplies a
     // caller-owned stack, otherwise KICKOS_USER_STACK_SIZE is used.
     // windows/window_count is this thread's window list (kos_window); a device window
@@ -477,8 +486,7 @@ namespace kos::thread
     // independent fault containment: a fault terminates the whole task.
     inline Handle create(void (*entry)(void*), void* arg, char const* name,
                         uint8_t prio, uint8_t policy = KOS_POLICY_FIFO,
-                        uint32_t quantum_ns = 0, bool privileged = false,
-                        void* mem = nullptr, uint32_t mem_size = 0,
+                        uint32_t quantum_ns = 0, void* mem = nullptr, uint32_t mem_size = 0,
                         void* stack = nullptr, uint32_t stack_size = 0,
                         kos_window const* windows = nullptr, uint16_t window_count = 0,
                         kos_cap_grant const* caps = nullptr, uint8_t cap_count = 0,
@@ -492,7 +500,6 @@ namespace kos::thread
         p.prio = prio;
         p.policy = policy;
         p.quantum_ns = quantum_ns;
-        p.privileged = static_cast<uint8_t>(privileged);
         p.mem_base = mem;
         p.mem_size = mem_size;
         p.windows = windows;
@@ -537,19 +544,18 @@ namespace kos::thread
         return kos_thread_affinity(thread);
     }
 
-    // Delegate a fixed cap list to the child (B1 default: cap i -> child index i+1, and a
+    // Delegate a fixed cap list to the child (B1 default: cap i -> child index KOS_SPAWN_DELEGATED_CAP0 + i, and a
     // grant may name its own index instead).
     inline Handle create_caps(void (*entry)(void*), void* arg, char const* name, uint8_t prio,
                              kos_cap_grant const* caps, uint8_t cap_count,
                              uint8_t policy = KOS_POLICY_FIFO, uint32_t quantum_ns = 0,
-                             bool privileged = false, void* mem = nullptr, uint32_t mem_size = 0,
+                             void* mem = nullptr, uint32_t mem_size = 0,
                              uint32_t authority = 0, uint16_t const* cap_dest = nullptr,
                              kos_task_t task = KOS_TASK_NONE, void* stack = nullptr,
                              uint32_t stack_size = 0, uint32_t core_mask = 0)
     {
-        return create(entry, arg, name, prio, policy, quantum_ns, privileged, mem, mem_size,
-                     stack, stack_size, nullptr, 0, caps, cap_count, authority, cap_dest, task,
-                     core_mask);
+        return create(entry, arg, name, prio, policy, quantum_ns, mem, mem_size, stack,
+                     stack_size, nullptr, 0, caps, cap_count, authority, cap_dest, task, core_mask);
     }
 }
 

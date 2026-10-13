@@ -5,10 +5,9 @@
  * switch.S and by the linker scripts' cpp pass, so plain integer #defines only: the gate reads
  * each one as an immediate.
  *
- * AN EL1h INTERRUPT RUNS ITS WHOLE DISPATCH ON THE STACK IT INTERRUPTED: idle's, a privileged
- * thread's own, or a death-path stub's kernel block. An EL0 entry masks interrupts until its
- * eret but in arch_irq_window, so nothing nests on a block under IRQK, and under SYSK only below
- * that one callee (SYSWIN).
+ * AN EL1h INTERRUPT RUNS ITS WHOLE DISPATCH ON THE STACK IT INTERRUPTED: idle's or a death-path
+ * stub's kernel block. An EL0 entry masks interrupts until its eret but in arch_irq_window, so
+ * nothing nests on a block under IRQK, and under SYSK only below that one callee (SYSWIN).
  *
  * NO INTERRUPT NESTS BELOW A SWITCH FRAME: arch_switch runs under the kernel IrqLock and the
  * incoming side's unlock runs before the eret restores its mask. So each death-path descent is
@@ -34,16 +33,18 @@
 #define KICKOS_ARMV8A_TRAP_ENTRY_FRAME 0
 #define KICKOS_ARMV8A_TRAP_NEED_USER 0
 
-/* IRQ and IRQK. 736 on qemu-arm64-amp, 672 benchgicv3 and benchsmp12, 656 gicv3, 560 benchsmp
- * and benchsmp2, 544 smp and smpiso, 464 amp3, 448 amp2, 432 bench, 384 qemu-arm64 and
- * imx8mp-evk. The AMP doorbell's payload drain wins:
+/* IRQ and IRQK. 752 on qemu-arm64-benchgicv3 and benchsmp12, 720 amp, 704 gicv3, 624 benchsmp,
+ * 576 smp, 528 amp2, 432 qemu-arm64 and imx8mp-evk. Above one core it is the console drain's
+ * wake, whose switch spins on the kernel lock and services a route ask that GICv3 refuses:
+ *   kickos_armv8a_irq[32] -> kickos_armv8a_gic_dispatch[48] -> kickos_isr_irq[32]
+ *   -> console_tx_isr[80] -> console_tx_room_freed[48] -> console_dark_wake[48] -> sched::wake
+ *   -> pick_and_seat[80] -> klock_attach[48] -> arch_kernel_lock -> kickos_doorbell_poll
+ *   -> kickos_doorbell_service -> kickos_irq_route_service[48] -> arch_irq_mask[48]
+ *   -> wait_gicd_rwp[48] -> kpanic_refuse_unlocked[32]
+ * On one kernel core the AMP doorbell's payload drain wins:
  *   kickos_armv8a_irq[32] -> kickos_armv8a_gic_dispatch[32] -> kickos_doorbell_service[32]
- *   -> amp::node_service[144] -> amp::take_call[160] -> amp::depth_ok[96] -> amp::send[64]
- *   -> amp::send_on[64] -> arch_ipi_send[32] -> kickos_armv8a_gic_doorbell_send[96]
- * Above one core it is an interrupt event's wake whose switch spins on the kernel lock and
- * services a route ask: ... notify_raise -> sched::wake -> pick_and_seat -> klock_attach
- * -> arch_kernel_lock -> kickos_doorbell_poll -> kickos_doorbell_service
- * -> kickos_irq_route_service -> arch_irq_mask -> wait_gicd_rwp -> kfault_terminate. */
+ *   -> amp::node_service[144] -> amp::take_reply[128] -> amp::depth_ok[96] -> amp::send[112]
+ *   -> kickos_armv8a_gic_doorbell_send[80] */
 #define KICKOS_ARMV8A_TRAP_DEPTH_IRQ 768
 
 /* An interrupt's whole extent below the sp it interrupts, FRAME + DEPTH_IRQ, which
@@ -73,13 +74,11 @@
  * WINDOW + 1024 = 3392 against 4092 above the canary. */
 #define KICKOS_ARMV8A_TRAP_DEPTH_SYSWIN 1024
 
-/* The fault and slay stubs on the block with an interrupt nested below. 1248 on
- * qemu-arm64-benchgicv3 and benchsmp12, the space release's rendezvous timing out into the console:
- *   kickos_thread_fault_exit -> exit_current[128] -> cap_teardown[96] -> teardown_entry
- *   -> obj_ref_drop -> domain_release -> drop_space -> aspace_release[96]
- *   -> arch_aspace_destroy -> kickos_arm64_instruction_side_rendezvous -> arch_ipi_wait
- *   -> doorbell::hex1 -> console_tx_insert_line[112] -> console_write_line_sync[80]
- *   -> klock_enter -> ... -> wait_gicd_rwp -> kfault_terminate
+/* The fault and slay stubs on the block with an interrupt nested below. 1056 on
+ * qemu-arm64-benchgicv3 and benchsmp12, the fault report's line waking the publisher it raced:
+ *   kickos_thread_fault_exit[48] -> kprintf_fault[368] -> console_emit[80]
+ *   -> console_chip_writer_leave[48] -> console_dark_wake[48] -> ... -> klock_attach[48]
+ *   -> arch_kernel_lock -> ... -> wait_gicd_rwp[48] -> kpanic_refuse_unlocked[32]
  * NEST + 2048 = 3616 is the block's deepest need, against 4092 above the canary. */
 #define KICKOS_ARMV8A_TRAP_DEPTH_EXITK 2048
 
@@ -90,18 +89,9 @@
  *   -> sched_flush_owed -> klock_resched_ask -> resched_owe */
 #define KICKOS_ARMV8A_TRAP_DEPTH_EXITKSW 2048
 
-/* kickos_thread_return on a privileged thread's own stack with an interrupt nested below. 1216
- * on qemu-arm64-benchgicv3 and benchsmp12, down EXITK's chain. NEST + 1280 = 2848 is what sets
- * KICKOS_MIN_STACK_SIZE. */
-#define KICKOS_ARMV8A_TRAP_DEPTH_RET 1280
-
-/* The same return through the switch. 1520 on qemu-arm64-benchgicv3, cap_teardown's endpoint
- * close waking into kickos_armv8a_switch_now[800]. */
-#define KICKOS_ARMV8A_TRAP_DEPTH_RETSW 1792
-
-/* A privileged fault's reporter, kickos_armv8a_exception, on the stack that faulted. 1168 on
- * qemu-arm64-benchgicv3 and benchsmp12: kprintf[560] into the console and the kernel lock under
- * it. */
+/* A privileged fault's reporter, kickos_armv8a_exception, on idle's stack, the one privileged
+ * thread's. 1168 on qemu-arm64-benchgicv3 and benchsmp12: kprintf[560] into the console and the
+ * kernel lock under it. */
 #define KICKOS_ARMV8A_TRAP_DEPTH_FAULT 2048
 
 /* idle_entry's own frame, above the interrupt idle waits for: 16 on every preset. */
@@ -117,16 +107,14 @@
  * one line each; tests/static/trap_redzone_roots.txt says what each option means and roots
  * every class.
  *
- * class IRQ     frame=KICKOS_ARMV8A_TRAP_FRAME depth=KICKOS_ARMV8A_TRAP_DEPTH_IRQ
+ * class IRQ     frame=KICKOS_ARMV8A_TRAP_FRAME depth=KICKOS_ARMV8A_TRAP_DEPTH_IRQ stack=idle
  * class IRQK    frame=KICKOS_ARMV8A_TRAP_FRAME depth=KICKOS_ARMV8A_TRAP_DEPTH_IRQ stack=kernel
  * class SYSK    frame=KICKOS_ARMV8A_TRAP_FRAME depth=KICKOS_ARMV8A_TRAP_DEPTH_SYSK stack=kernel
  * class SYSWIN  frame=KICKOS_ARMV8A_TRAP_WINDOW depth=KICKOS_ARMV8A_TRAP_DEPTH_SYSWIN stack=kernel at=arch_irq_window
  * class EXITK   frame=KICKOS_ARMV8A_TRAP_NEST depth=KICKOS_ARMV8A_TRAP_DEPTH_EXITK stack=kernel
  * class EXITKSW frame=KICKOS_ARMV8A_TRAP_FRAME_NONE depth=KICKOS_ARMV8A_TRAP_DEPTH_EXITKSW stack=kernel
- * class RET     frame=KICKOS_ARMV8A_TRAP_NEST depth=KICKOS_ARMV8A_TRAP_DEPTH_RET
- * class RETSW   frame=KICKOS_ARMV8A_TRAP_FRAME_NONE depth=KICKOS_ARMV8A_TRAP_DEPTH_RETSW
- * class FAULT   frame=KICKOS_ARMV8A_TRAP_FRAME_NONE depth=KICKOS_ARMV8A_TRAP_DEPTH_FAULT
- * class IDLE    frame=KICKOS_ARMV8A_TRAP_NEST depth=KICKOS_ARMV8A_TRAP_DEPTH_IDLE
+ * class FAULT   frame=KICKOS_ARMV8A_TRAP_FRAME_NONE depth=KICKOS_ARMV8A_TRAP_DEPTH_FAULT stack=idle
+ * class IDLE    frame=KICKOS_ARMV8A_TRAP_NEST depth=KICKOS_ARMV8A_TRAP_DEPTH_IDLE stack=idle
  * class PANIC   frame=KICKOS_ARMV8A_PANIC_FRAME depth=KICKOS_ARMV8A_PANIC_DEPTH stack=panic
  */
 

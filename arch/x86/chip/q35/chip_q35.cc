@@ -9,7 +9,10 @@
 
 #include <kickos/arch/apic.h>
 #include <kickos/arch/arch.h>
+#include <arch_reboot_tail.h>
+#include <kickos/diag.h>
 #include <kickos/arch/aspace.h>
+#include <kickos/arch/console_poll.h>
 #include <kickos/arch/desc.h>
 #include <kickos/arch/portio.h>
 #include <kickos/arch/ring3.h>
@@ -23,7 +26,7 @@
 
 #include <fatal_status.ld.h>
 
-#include <kickos/sys/errno.h>
+#include <kickos/sys/abi.h>
 
 #include <stdint.h>
 
@@ -32,7 +35,6 @@ namespace
     using namespace kickos::q35;
     using namespace kickos::x86_64;
 
-    // The i8259 pair.
     constexpr uint16_t pic1_command = mmap::PIC_MASTER_BASE;
     constexpr uint16_t pic1_data = mmap::PIC_MASTER_BASE + 1u;
     constexpr uint16_t pic2_command = mmap::PIC_SLAVE_BASE;
@@ -67,6 +69,11 @@ namespace
     // the FADT, and nothing here reads either.
     constexpr uint16_t pm1a_control = mmap::ACPI_PM_BASE + 4u;
     constexpr uint16_t pm1a_soft_off = (0u << 10) | (1u << 13);
+
+    // The ICH9 reset control register: SYS_RST arms the platform reset that RST_CPU then fires.
+    constexpr uint16_t reset_control = 0xcf9;
+    constexpr uint8_t reset_sys = 0x02;
+    constexpr uint8_t reset_sys_cpu = 0x06;
 
     uintptr_t g_ram_base = 0;
     size_t g_ram_size = 0;
@@ -158,6 +165,8 @@ int arch_port_reg_write(uint16_t port, uint8_t value)
 extern "C"
 {
 
+void kickos_terminal_outcome_apply(void);
+
 #if KICKOS_KERNEL_CORES > 1
 uint32_t kickos_x86_64_online_cores(void)
 {
@@ -211,8 +220,6 @@ void arch_init(void)
     // AFTER desc_init, which loads a null gs selector and would zero the base this seats, and
     // BEFORE any interrupt source is armed: it programs the fast syscall entry's flag mask.
     ring3_init();
-    // BEFORE any interrupt source is armed: adopting the live regime writes one entry into a
-    // table the firmware owns.
     aspace_init(arch_ram_base(), arch_ram_size());
     apic_init();
     // The reserved rows name the chip file's LAPIC page, so a relocated xAPIC would be grantable.
@@ -248,7 +255,7 @@ void arch_init(void)
             __asm__ volatile("pause" ::: "memory");
         }
     }
-    kickos_doorbell_selfcheck();
+    kickos_doorbell_boot_check();
 #endif
 }
 
@@ -259,14 +266,7 @@ void arch_init(void)
 // Raw bytes: no newline translation here, unlike com1_puts.
 bool arch_console_write_sync(char const* buf, size_t n)
 {
-    for (size_t i = 0; i < n; i++)
-    {
-        if (not com1_putc(buf[i]))
-        {
-            return false;
-        }
-    }
-    return true;
+    return kickos::console_poll::write<com1_slot_free, com1_push>(buf, n);
 }
 
 void arch_console_flush_sync(void)
@@ -296,7 +296,7 @@ void* arch_ram_alloc(size_t size)
     size_t const ralign = arch_ram_region_align(size);
     arch_irq_state_t const state = arch_irq_save();
     void* out = nullptr;
-    // Natural (absolute) alignment: the base must be aligned to the region size.
+    // A region's base is aligned to its own size.
     uintptr_t const aligned = (g_ram_next + (ralign - 1)) & ~static_cast<uintptr_t>(ralign - 1);
     size_t const off = static_cast<size_t>(aligned - g_ram_base);
     if (aligned >= g_ram_next and off <= g_ram_size and rsz <= g_ram_size - off)
@@ -351,9 +351,24 @@ void arch_shutdown(int status)
     }
 }
 
+int arch_reboot(uint32_t outcome)
+{
+    if (outcome != KOS_SHUTDOWN_REBOOT)
+    {
+        return -KOS_ENOSYS;
+    }
+    __asm__ volatile("cli" ::: "memory");
+    outb(reset_control, reset_sys);
+    outb(reset_control, reset_sys_cpu);
+    kickos::arch::reset_settle();
+    kickos::arch::reboot_failed(kickos::diag::kResetNotTaken);
+}
+
 // The shared panic/fault dead-end (kernel.h).
 void kfault_terminate(void)
 {
+    arch_console_flush_sync();
+    kickos_terminal_outcome_apply();
     arch_shutdown(KICKOS_FATAL_STATUS);
 }
 

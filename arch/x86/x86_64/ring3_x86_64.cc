@@ -11,7 +11,6 @@
 
 #include <kickos/arch/desc.h>
 #include <kickos/arch/arch.h>
-#include <kickos/arch/pe_sections.h>
 #include <kickos/arch/regs.h>
 #include <kickos/arch/ring3.h>
 #include <kickos/chip_com1.h>
@@ -25,11 +24,6 @@ extern "C" void kfault_terminate(void) __attribute__((noreturn));
 // an external function and `ld -m i386pep` neither builds that table nor relaxes the form
 // (tools/check-x86_64-no-got.sh).
 extern "C" __attribute__((visibility("hidden"))) void kickos_x86_64_syscall_entry(void);
-
-// The linker's own symbol for the image's first byte. Taken PC-relative, so it is the address
-// firmware LOADED the image at; the PE carries an empty base-relocation directory, so nothing
-// else here may be an absolute either.
-extern "C" __attribute__((visibility("hidden"))) char __ImageBase[];
 
 namespace kickos::x86_64
 {
@@ -88,34 +82,12 @@ namespace kickos::x86_64
         static_assert((fmask & fmask_required) == fmask_required,
                       "the syscall entry must start with TF, IF, DF, AC and IOPL clear");
 
-        uintptr_t g_image_base = 0;
-        uint32_t g_image_size = 0;
-        uint8_t const* g_sections = nullptr;
-        unsigned g_nsections = 0;
-
         [[noreturn]] void refuse(char const* what)
         {
             com1_puts("\nx86_64 ring3: ");
             com1_puts(what);
             com1_puts("\n");
             kfault_terminate();
-        }
-
-        // The PE32+ headers, at the image's first byte because the loader maps them with it.
-        void read_own_headers(void)
-        {
-            uint8_t const* const image = reinterpret_cast<uint8_t const*>(__ImageBase);
-            g_image_base = reinterpret_cast<uintptr_t>(image);
-            uint32_t const pe_offset = *reinterpret_cast<uint32_t const*>(image + 0x3c);
-            uint8_t const* const pe = image + pe_offset;
-            if (pe[0] != 'P' or pe[1] != 'E' or pe[2] != 0 or pe[3] != 0)
-            {
-                refuse("this image carries no PE signature, so it cannot describe itself");
-            }
-            g_nsections = *reinterpret_cast<uint16_t const*>(pe + 6);
-            uint16_t const optional_size = *reinterpret_cast<uint16_t const*>(pe + 20);
-            g_image_size = *reinterpret_cast<uint32_t const*>(pe + 24 + 56);
-            g_sections = pe + 24 + optional_size;
         }
     }
 
@@ -150,8 +122,6 @@ namespace kickos::x86_64
             refuse("supervisor-mode access prevention is on and no path here lifts it");
         }
 
-        read_own_headers();
-
         // The gs pair. IA32_KERNEL_GS_BASE holds the per-core pointer while a thread runs at
         // ring 3 and swapgs is what brings it back; WRMSR is privileged, so ring 3 can change
         // the base it is holding but never the one the entry gets.
@@ -166,11 +136,5 @@ namespace kickos::x86_64
     uint64_t cpu_kernel_sp(void)
     {
         return local_cpu().kernel_sp;
-    }
-
-    bool image_range_mapped(uintptr_t ptr, size_t len, bool need_write)
-    {
-        return pe_range_mapped(g_image_base, g_image_size, g_sections, g_nsections, ptr, len,
-                               need_write);
     }
 }

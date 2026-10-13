@@ -1,18 +1,15 @@
 /* SPDX-License-Identifier: CECILL-C
  * Copyright (c) 2026 Philippe Leduc
  *
- * Raspberry Pi RP2040 (Pico), Cortex-M0+ startup: the application reset vector
- * table. It sits at flash 0x1000_0100 (immediately after the 256-byte boot2, see
- * rp2040.ld); boot2 points VTOR here and loads the initial MSP from word 0 before
- * branching to Reset_Handler. SVC/PendSV/SysTick come from the armv6m arch layer;
- * each external line routes to the generic kickos_arm_default_irq (line=IPSR-16).
+ * Raspberry Pi RP2040 (Pico), Cortex-M0+ startup: the vector table, at flash 0x1000_0100
+ * after the 256-byte boot2 (rp2040.ld). boot2 points VTOR here and loads the initial MSP from
+ * word 0 before branching to Reset_Handler.
  *
- * The RP2040 wires 26 NVIC lines (IRQ0..25); the table is padded to 32 to match
- * KICKOS_MAX_IRQ for this board (the in-kernel IRQ table size).
+ * The chip wires 26 NVIC lines (IRQ0..25); the table is padded to KICKOS_MAX_IRQ.
  */
 
-#include <kickos/chip_limits.h>   /* KICKOS_MAX_IRQ: the NVIC line count */
-#include "core_vectors.inc"        /* shared core-exception vector block */
+#include <kickos/chip_limits.h>
+#include "core_vectors.inc"
 
     .syntax unified
     .thumb
@@ -24,15 +21,12 @@
 g_isr_vector:
     KICKOS_CORE_VECTORS_V6M
 
-    /* External interrupts 0..31 -> the generic IRQ-as-event entry. */
     .rept KICKOS_MAX_IRQ
     .word kickos_arm_default_irq
     .endr
 
     .text
     .thumb_func
-    /* File-local: the vector word above is the only reference, and a chip that wants a
-     * real NMI handler edits this startup.S. */
 NMI_Handler:
     b       .
 

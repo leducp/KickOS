@@ -2,8 +2,9 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The own-image AMP console claim: a hardware spinlock serialises the two nodes, and a
-// partition-shared owner and deadline bound how long a node keeps it. The unit including this
-// header defines the primitives declared first.
+// partition-shared owner and deadline bound how long a node keeps it. Beside them, one
+// partition-shared waiting word per node, which the release clears and rings. The unit including
+// this header defines the primitives declared first.
 //
 // No writer renews an ended grant here: owner and deadline are two words beside the lock, so
 // a renewal could not exclude a peer's steal already under way.
@@ -28,6 +29,8 @@ namespace kickos::rp2350::console
     // Any write frees the spinlock, whichever core holds it.
     void lock_free(void);
     void fence(void);
+    // Raises node's doorbell.
+    void ring(uint32_t node);
 
     // 512 bytes at 115200 8N1 take 44.4 ms.
     constexpr uint32_t HOLD_MAX_US = 50000u;
@@ -42,9 +45,10 @@ namespace kickos::rp2350::console
     {
     public:
         // `owner` is 0 when free, else the holder's node id + 1; `deadline` is in now()'s
-        // microseconds. Both are partition-shared.
-        constexpr Claim(uint32_t self, Word& owner, Word& deadline)
-            : self_(self), owner_(owner), deadline_(deadline)
+        // microseconds; `waiting` holds one word per node, `nodes` of them. All are
+        // partition-shared.
+        constexpr Claim(uint32_t self, Word& owner, Word& deadline, Word* waiting, uint32_t nodes)
+            : self_(self), owner_(owner), deadline_(deadline), waiting_(waiting), nodes_(nodes)
         {
         }
 
@@ -97,6 +101,26 @@ namespace kickos::rp2350::console
             return held_ or try_take();
         }
 
+        // A user writer the claim refused, masked until it parks: marks this node waiting, then
+        // offers once. 0 once this node holds the claim, else the microseconds to park for, which
+        // the release of the grant that refused it cuts short by ringing this node.
+        uint32_t wait(void)
+        {
+            waiting_[self_ - 1u] = 1u;
+            fence(); // pairs with the release's: either it reads this mark or this reads it free
+            if (try_open())
+            {
+                waiting_[self_ - 1u] = 0;
+                return 0;
+            }
+            uint32_t const rest = left();
+            if (owner_ == 0 or rest == 0)
+            {
+                return HOLD_MAX_US;
+            }
+            return rest;
+        }
+
         void drop(bool ended_line)
         {
             if (not held_)
@@ -115,13 +139,31 @@ namespace kickos::rp2350::console
             owner_ = 0;
             fence(); // no peer may read this node as owner past the free
             lock_free();
+            ring_waiting();
         }
 
     private:
         uint32_t self_;
         Word& owner_;
         Word& deadline_;
+        Word* waiting_;
+        uint32_t nodes_;
         bool held_ = false;
+
+        // A clear landing between a waiter's mark and its park is safe: the ring after it wakes
+        // every waiter of that node, and each marks itself again.
+        void ring_waiting(void)
+        {
+            fence();
+            for (uint32_t node = 0; node < nodes_; node++)
+            {
+                if (waiting_[node] != 0)
+                {
+                    waiting_[node] = 0;
+                    ring(node);
+                }
+            }
+        }
 
         // Microseconds left on the published grant, 0 once it has ended. A live deadline lies
         // at most one hold ahead: a dead holder's deadline would read as live again half a

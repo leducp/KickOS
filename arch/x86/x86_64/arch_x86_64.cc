@@ -28,22 +28,26 @@ extern "C" __attribute__((visibility("hidden"), noreturn)) void kfault_terminate
 #include <stddef.h>
 #include <stdint.h>
 
-// switch.S. HIDDEN is load-bearing on the trampoline whose ADDRESS is taken below: -fpie emits
-// a global-offset-table load for the address of an external function, `ld -m i386pep` neither
-// builds that table nor relaxes the form, and `&f` then comes out as the first eight bytes OF
-// f. tools/check-x86_64-no-got.sh refuses the relocation.
+extern "C" void kpanic_enter(void);
+namespace kickos
+{
+    void kputs(char const* s);
+}
+
+// HIDDEN is load-bearing on any external function whose ADDRESS is taken: -fpie emits a
+// global-offset-table load for it, `ld -m i386pep` neither builds that table nor relaxes the
+// form, and `&f` then comes out as the first eight bytes OF f. tools/check-x86_64-no-got.sh
+// refuses the relocation.
 #define KICKOS_X86_64_LOCAL __attribute__((visibility("hidden")))
 extern "C" KICKOS_X86_64_LOCAL void kickos_x86_64_switch_now(struct arch_context* from,
                                                              struct arch_context* to);
 extern "C" KICKOS_X86_64_LOCAL void kickos_x86_64_start(struct arch_context* first);
-extern "C" KICKOS_X86_64_LOCAL void kickos_x86_64_thread_exit(void);
 #if KICKOS_BENCH
 extern "C" KICKOS_X86_64_LOCAL void kickos_x86_64_bench_open(void);
 #endif
 
 // The app's own return path (user/src/syscall_stubs.cc), which reaches the kernel exit through
-// the syscall trap. An unprivileged thread's entry returns HERE and never into
-// kickos_thread_return, which is kernel text it may not call.
+// the syscall trap.
 extern "C" KICKOS_X86_64_LOCAL void kickos_user_thread_return(void);
 
 namespace
@@ -138,10 +142,6 @@ namespace
     static_assert(KICKOS_KERNEL_STACK_SIZE - sizeof(uint32_t)
                       >= KICKOS_X86_64_TRAP_DEPTH_EXITKSW,
                   "the kernel block cannot hold the relocated death path's switch");
-    static_assert(KICKOS_MIN_STACK_SIZE >= KICKOS_X86_64_TRAP_NEST + KICKOS_X86_64_TRAP_DEPTH_RET,
-                  "the spawn floor cannot hold a privileged thread's entry return");
-    static_assert(KICKOS_MIN_STACK_SIZE >= KICKOS_X86_64_TRAP_DEPTH_RETSW,
-                  "the spawn floor cannot hold a privileged entry return through the switch");
     static_assert(KICKOS_IDLE_STACK_SIZE >= KICKOS_X86_64_TRAP_NEST + KICKOS_X86_64_TRAP_DEPTH_IDLE,
                   "a ring 0 interrupt does not fit this board's idle stack");
     static_assert(KICKOS_PANIC_STACK_SIZE >= KICKOS_X86_64_PANIC_FRAME + KICKOS_X86_64_PANIC_DEPTH,
@@ -286,7 +286,8 @@ void arch_context_init(struct arch_context* ctx,
     // must see rsp 8 modulo 16, which the return-address slot below produces. It sits at the
     // top of the thread's OWN stack at either level, where the entry function's `ret` looks,
     // and below the 16-byte reentrancy cell an unprivileged thread keeps above it
-    // (arch_context_seat_reent).
+    // (arch_context_seat_reent). A privileged thread's slot stays unwritten: its entry must not
+    // return.
     uintptr_t const top = ctx->stack_hi & ~static_cast<uintptr_t>(15);
     uintptr_t return_slot = top - 8;
     if (privileged == 0)
@@ -305,7 +306,6 @@ void arch_context_init(struct arch_context* ctx,
     uintptr_t frame_top = return_slot;
     uint64_t code_selector = kickos::x86_64::sel_kernel_code;
     uint64_t stack_selector = kickos::x86_64::sel_kernel_data;
-    uint64_t returns_to = reinterpret_cast<uint64_t>(&kickos_x86_64_thread_exit);
     if (privileged == 0)
     {
         // Never zero here: the one TCB outside the pool is the privileged idle, and
@@ -313,18 +313,14 @@ void arch_context_init(struct arch_context* ctx,
         frame_top = ctx->kernel_sp;
         code_selector = kickos::x86_64::sel_user_code;
         stack_selector = kickos::x86_64::sel_user_data;
-        // App text, which the thread reaches at its alias.
-        returns_to = reinterpret_cast<uint64_t>(&kickos_user_thread_return)
-                     + kickos::x86_64::user_alias_offset();
+        // App text, which the thread reaches at its alias. The thread's stack is where ITS space
+        // maps it, not the space running this; the kernel writes the slot through its own view
+        // of the same frame.
+        uint64_t const returns_to = reinterpret_cast<uint64_t>(&kickos_user_thread_return)
+                                    + kickos::x86_64::user_alias_offset();
+        uintptr_t const slot_view = return_slot - kickos::x86_64::user_alias_offset();
+        *reinterpret_cast<uint64_t*>(slot_view) = returns_to;
     }
-    // An unprivileged thread's stack is where ITS space maps it, not the space running this; the
-    // kernel writes the slot through its own view of the same frame.
-    uintptr_t slot_view = return_slot;
-    if (privileged == 0)
-    {
-        slot_view = return_slot - kickos::x86_64::user_alias_offset();
-    }
-    *reinterpret_cast<uint64_t*>(slot_view) = returns_to;
 
     // A zero header makes XRSTOR load every component's initial state, so no register of the
     // slot's previous occupant reaches this thread. MXCSR is read from the area all the same.
@@ -411,8 +407,8 @@ void arch_start(struct arch_context* boot, struct arch_context* first)
     // thread, whose base is 0.
     if (kickos::x86_64::read_msr(KICKOS_X86_64_MSR_FS_BASE) != first->fs_base)
     {
-        static char const msg[] = "\nx86_64: arch_start: IA32_FS_BASE is not the first thread's\n";
-        arch_console_write_sync(msg, sizeof(msg) - 1);
+        kpanic_enter();
+        kickos::kputs("\nx86_64: arch_start: IA32_FS_BASE is not the first thread's\n");
         kfault_terminate();
     }
     kickos_x86_64_start(first);
@@ -466,21 +462,19 @@ int arch_bitband_present(void)
     return 0;
 }
 
-// The permissions come from the PE32+ SECTION TABLE, walked at runtime from the base the image
-// was LOADED at (ring3_x86_64.cc): the image is built -ffunction-sections -fdata-sections, so
-// the writable set is forty-odd sections interleaved with read-only ones.
-//
-// The arena is not admitted here: a thread's own stack is a region the kernel composes
-// (thread.cc), and admitting the whole conventional-memory range would hand every caller every
-// other thread's stack.
+// A thread names only what its own space maps, and the kernel checks that range record first.
 bool arch_user_text_readable(uintptr_t ptr, size_t len)
 {
-    return kickos::x86_64::image_range_mapped(ptr, len, false);
+    (void)ptr;
+    (void)len;
+    return false;
 }
 
 bool arch_user_data_writable(uintptr_t ptr, size_t len)
 {
-    return kickos::x86_64::image_range_mapped(ptr, len, true);
+    (void)ptr;
+    (void)len;
+    return false;
 }
 
 // --- Data cache -------------------------------------------------------------
@@ -586,25 +580,15 @@ bool arch_irq_inject(int irq)
 // --- Fault isolation --------------------------------------------------------
 // No register records the interrupted privilege level here; the only record is the cs the
 // hardware PUSHED, which is memory. The block test comes FIRST and is what makes that word
-// believable, the frame of a ring 3 fault being placed by the hardware at the top of the
-// running thread's own kernel block. The cs test is needed as well: a kernel bug taken during a
-// syscall dispatch builds its frame on that same block, and its pushed cs names the kernel
-// selector.
+// believable: the hardware places a ring 3 fault's frame at the top of the running thread's own
+// kernel block.
 bool arch_fault_is_user_thread(void* frame)
 {
     if (not kickos_fault_frame_on_kernel_stack(frame, sizeof(trap_frame)))
     {
         return false;
     }
-    trap_frame const* const f = static_cast<trap_frame const*>(frame);
-    // The vector is read ahead of the cs: a vector at or above 32 is an external delivery,
-    // asynchronous to the thread it interrupted, so its pushed cs names whoever happened to be
-    // running.
-    if (f->vector >= 32)
-    {
-        return false;
-    }
-    return (f->cs & 3u) == 3;
+    return kickos::x86_64::trap_frame_from_ring3(*static_cast<trap_frame const*>(frame));
 }
 
 // iretq reloads the code selector, the stack selector, the flags and the stack pointer along
@@ -642,18 +626,10 @@ void arch_irq_window(void)
 }
 
 // --- Idle -------------------------------------------------------------------
-// HLT wakes ONLY with the interrupt flag set: a HLT under a mask parks the processor until
-// reset. STI leaves a one-instruction shadow in which no interrupt is taken, which is what
-// makes `sti; hlt` race-free.
+// STI holds recognition off until HLT has begun, so a caller that tested for work masked loses
+// no wake between its test and the sleep. Returns masked.
 void arch_idle_wait(void)
 {
-    uint64_t flags = 0;
-    __asm__ volatile("pushfq\n\tpop %0" : "=r"(flags)::"memory");
-    if ((flags & RFLAGS_IF) != 0)
-    {
-        __asm__ volatile("hlt" ::: "memory");
-        return;
-    }
     __asm__ volatile("sti\n\thlt\n\tcli" ::: "memory");
 }
 

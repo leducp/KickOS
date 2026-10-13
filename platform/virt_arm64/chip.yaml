@@ -22,6 +22,8 @@ cores: { count: [1, 4], smp: true }
 
 # PMCCNTR_EL0 answers the emulator's own virtual clock rather than guest cycles.
 cycle_counter: { hz: 0 }
+family: none
+exits_on_fault: true
 
 interrupts: { count: 288, free_from: 200 }
 

@@ -1,11 +1,8 @@
 /* SPDX-License-Identifier: CECILL-C
  * Copyright (c) 2026 Philippe Leduc
  *
- * ESP32-C6-WROOM-1 (ESP-RISC-V, RV32IMAC) startup. The ROM first-stage loader
- * copies the image segments into HP SRAM and enters at _start in MACHINE mode.
- * _start sets the global pointer + boot stack, then hands off to the C runtime
- * (Reset_Handler: .data/.bss/init_array + arch_init + kmain). mtvec is installed
- * later by kickos_rv32_init (from arch_init), so no trap must occur before then.
+ * ESP32-C6 entry from the ROM loader, in M mode. mtvec is installed later by
+ * kickos_rv32_init, so no trap may occur before then.
  */
 
     .section .text.init, "ax"

@@ -4,10 +4,9 @@
 // Lone-TU fallback (arch/CMakeLists.txt states the rule): exactly one symbol, so a
 // backend definition keeps this archive member unextracted.
 //
-// PMSA carries a memory type in every region descriptor (PMSAv7 RASR TEX/S/C/B, PMSAv8
-// RLAR AttrIndx). Two chips answer for themselves in their own always-anchored TU:
-// mk64f (a SYSMPU descriptor names no memory type) and imxrt1062 (the one ARM part in
-// tree with a D-cache).
+// PMSA carries a memory type in every region descriptor (PMSAv7 RASR TEX/S/C/B, PMSAv8 RLAR
+// AttrIndx). A chip whose descriptor names none, or that has a D-cache, answers in its own
+// always-anchored TU.
 
 #include <kickos/arch/arch.h>
 

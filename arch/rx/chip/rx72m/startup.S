@@ -1,13 +1,9 @@
 /* SPDX-License-Identifier: CECILL-C
  * Copyright (c) 2026 Philippe Leduc
  *
- * RX72M startup: option-setting memory, the two vector tables, and _start.
- *   - .ofsm     : MDE/OFS0/OFS1 option words (little-endian, WDT/LVD off).
- *   - .rvectors : the 256-entry relocatable interrupt table (INTB); the syscall
- *                 trap sits at slot 1, the CMTW0 compare-match ISR at slot 30.
- *   - .fvectors : the fixed exception table at 0xFFFFFF80 whose last word
- *                 (0xFFFFFFFC) is the reset vector (UM sec.2.6.1, sec.5.5.6).
- *   - _start    : set the ISP + INTB, then hand off to the C runtime init.
+ * RX72M startup: option-setting memory, the two vector tables, and _start. The fixed
+ * table sits at 0xFFFFFF80 and its last word (0xFFFFFFFC) is the reset vector (UM sec.2.6.1,
+ * sec.5.5.6).
  *
  * (RX72M Group User's Manual: Hardware, r01uh0804ej0120, Rev.1.20.)
  */
@@ -17,9 +13,9 @@
     .text
 
 /* ------------------------------------------------------------------------- */
-/* Option-setting memory (UM sec.7). All-ones = little-endian (MDE sec.7.2.5), WDT   */
-/* stopped after reset (OFS0 sec.7.2.3), LVD/HOCO off (OFS1 sec.7.2.4). Emitted so    */
-/* the boot config is deterministic, not dependent on erased-flash values.      */
+/* Option-setting memory (UM sec.7). All-ones = little-endian (MDE sec.7.2.5), WDT       */
+/* stopped after reset (OFS0 sec.7.2.3), LVD/HOCO off (OFS1 sec.7.2.4). Emitted so the   */
+/* boot config does not depend on erased-flash values.                                   */
 /* ------------------------------------------------------------------------- */
     .section .ofsm, "a"
     .balign 4
@@ -29,15 +25,11 @@
     .word 0xFFFFFFFF            /* 0xFE7F5D0C reserved (write 1) */
 
 /* ------------------------------------------------------------------------- */
-/* Relocatable interrupt vector table (INTB). Slot n -> handler for INT/IRQ n.  */
-/* Slots 0..15 carry no peripheral source; slot 1 = syscall trap (regs.h        */
-/* SYSCALL_VECTOR), slot 27 = SWINT (the deferred context switch),               */
-/* slot 30 = CMTW0 compare match (CMWI0), slot 86 = SCI6 RXI6, slot 87 = SCI6 TXI6 */
-/* (buffered console drain, or a userspace TX driver after the console handover).  */
-/* Slot 26 = SWINT2, the software-inject doorbell: arch_irq_inject latches         */
-/* the logical line + pends SWINT2, and kickos_rx_swint2 dispatches it.            */
-/* Every other device slot goes to the shared default entry, which asks the chip   */
-/* to demux; that is how the group vectors (106..113) are served.                  */
+/* Relocatable interrupt vector table (INTB). Slot n -> handler for INT/IRQ n. Slots     */
+/* 0..15 carry no peripheral source. Slot 87 (TXI6) serves the console drain, or a        */
+/* userspace TX driver after the console handover. Every other device slot goes to the    */
+/* shared default entry, which asks the chip to demux: that serves the group vectors      */
+/* (106..113).                                                                            */
 /* ------------------------------------------------------------------------- */
     .section .rvectors, "a"
     .balign 4
@@ -63,9 +55,7 @@ _g_rvectors:
     .endr
 
 /* ------------------------------------------------------------------------- */
-/* Fixed exception vector table @ 0xFFFFFF80 (EXTB reset). Offsets from ISA UM  */
-/* sec.5.5: privileged +0x50, access +0x54, undefined +0x5C, address +0x60, FP     */
-/* +0x64, NMI +0x78, reset +0x7C (= 0xFFFFFFFC).                                */
+/* Fixed exception vector table @ 0xFFFFFF80 (EXTB reset). Offsets from ISA UM sec.5.5.  */
 /* ------------------------------------------------------------------------- */
     .section .fvectors, "a"
     .balign 4
@@ -88,24 +78,20 @@ _g_fvectors:
     .word _start                      /* 0x7C reset (0xFFFFFFFC) */
 
 /* ------------------------------------------------------------------------- */
-/* _start: reset entry. Supervisor mode, ISP undefined. Set the ISP and the    */
-/* INTB, then enter the C runtime init (never returns).                        */
+/* _start: reset entry. Supervisor mode, ISP undefined.                        */
 /* ------------------------------------------------------------------------- */
     .text
     .global _start
 _start:
-    mov.l   #_istack, r0          /* ISP = top of SRAM (U=0 at reset -> R0 = ISP) */
+    mov.l   #_istack, r0          /* U=0 at reset: R0 = ISP */
     mov.l   #_g_rvectors, r5
-    mvtc    r5, intb              /* relocatable interrupt table base */
-    bra.a   _rx_reset_handler     /* C runtime init + kmain (noreturn) */
+    mvtc    r5, intb
+    bra.a   _rx_reset_handler
 
-/* Exception entry shims (fixed vector table). On an RX exception the CPU pushes  */
-/* PC then PSW to the ISP (so [R0]=PC, 4[R0]=PSW) and clears U (R0 = ISP). Each    */
-/* shim tags the cause (its fixed-vector offset) in r1, passes the saved pair in   */
-/* r2, and CALLS the C reporter. bsr, not bra: the reporter RETURNS when it         */
-/* redirected the fault to the thread-exit stub (it rewrote the pair), and the RTE  */
-/* below is what lands there; its panic path never returns at all. bsr's own push   */
-/* sits BELOW the pair, so r2 stays the frame address across the call.              */
+/* Exception entry shims: r1 = cause (the fixed-vector offset), r2 = the [PC][PSW] pair on   */
+/* the ISP. bsr, not bra: the reporter RETURNS when it redirected the fault to the           */
+/* thread-exit stub by rewriting the pair, and the RTE below is what lands there. bsr's own   */
+/* push sits BELOW the pair, so r2 stays the frame address across the call.                   */
     .global _rx_ex_priv
 _rx_ex_priv:
     mov     #0x50, r1
@@ -131,6 +117,6 @@ _rx_ex_fp:
 _rx_trap:
     mov     #0, r1
 1:
-    mov.l   r0, r2                /* r2 = &[PC][PSW] on the ISP */
+    mov.l   r0, r2
     bsr.a   _kickos_rx_fault_report
     rte                           /* -> kickos_thread_fault_exit, supervisor-on-USP */

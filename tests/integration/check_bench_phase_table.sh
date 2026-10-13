@@ -60,6 +60,10 @@ low_n_reason() { # <row>
             echo "this image reports 'mpu off' in its banner, so no descriptor is ever
       programmed and the commit bracket cannot be reached"
         fi
+        if [ "$mpu_posture" = mmu ]; then
+            echo "this image reports 'mmu' in its banner: it translates and programs no
+      descriptor, so the commit bracket cannot be reached"
+        fi
         ;;
     # CMake disables KICKOS_LIBC_REENT on the sim, whose libc is the host's.
     REENT_SEAT)
@@ -92,6 +96,7 @@ read_report() { # <report text>
     read -r want rows term mpu_posture bench_arch <<EOF
 $(printf '%s\n' "$1" | awk '
     /^   mpu +/  && mpu  == "" { mpu  = $2 }
+    /^   mmu +/  && mpu  == "" { mpu  = "mmu" }
     /^   arch +/ && arch == "" { arch = $2 }
     /^  phase table \([0-9]+ rows; / {
         want = $0
@@ -129,7 +134,7 @@ phase_table_arms() {
     fi
 
     # Stop if the build configuration needed by the population waivers is missing.
-    if [ "$mpu_posture" != enforce ] && [ "$mpu_posture" != off ]; then
+    if [ "$mpu_posture" != enforce ] && [ "$mpu_posture" != off ] && [ "$mpu_posture" != mmu ]; then
         fail "the banner states no MPU posture, so whether MPU_COMMIT is meant to carry samples
   cannot be read from this capture and a zero there cannot be told from the blindness this
   arm exists to catch"
@@ -263,7 +268,7 @@ ctl_x86() {
 '   board   qemu-x86_64' \
 '   arch    x86_64' \
 '   cpu     x86-64' \
-'   mpu     off' \
+'   mmu     enforce' \
 '   sched   tickless' \
 '  phase table (8 rows; cyc avg/max, min last and a floor; leaf -= NULL, composite -= NULL + k*(NEST-NULL)):' \
 '    NULL             15/4500  min=1  n=260000' \
@@ -343,6 +348,8 @@ if [ "$controls_only" -eq 1 ]; then
         "$(ctl_rv32 | sed 's|^   mpu     off|   mpu     enforce|')"
     ctl 'MPU_COMMIT fed under mpu off' refuse 1 \
         "$(ctl_rv32 | sed 's|^\(    MPU_COMMIT  *\)0/0  min=0  n=0|\158/5140  min=40  n=520039|')"
+    ctl 'MPU_COMMIT fed under mmu' refuse 1 \
+        "$(ctl_x86 | sed 's|^\(    MPU_COMMIT  *\)0/0  min=0  n=0|\158/5140  min=40  n=520039|')"
     ctl 'REENT_SEAT zeroed on an arch that seats it' refuse 1 \
         "$(ctl_rv32 | sed 's|^\(    REENT_SEAT  *\)283/27100  min=240  n=520039|\10/0  min=0  n=0|')"
     ctl 'REENT_SEAT zeroed on x86-64, which seats it' refuse 1 \

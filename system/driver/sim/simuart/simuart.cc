@@ -18,7 +18,6 @@
 #include <kickos/sys/driver_service.h>
 #include <kickos/sys/uart_service.h>
 
-#include <stddef.h> // offsetof
 #include <stdint.h>
 
 // The host write(2), declared rather than included: this TU is built freestanding and
@@ -88,32 +87,18 @@ namespace
 
     void uart_irq_thread(void* arg)
     {
-        uart::Shared* sh = static_cast<uart::Shared*>(arg);
+        uart::Shared* sh = &static_cast<uart::Ctx*>(arg)->sh;
         LoopUart dev;
         dev.sh = sh;
         (void)dev.configure(115200u, 8u, KOS_UART_PARITY_NONE, 1u);
         uart::irq_loop(dev, sh); // parks in irq_wait; never returns
     }
 
-    void uart_service_thread(void* arg)
-    {
-        uart::Shared* sh = static_cast<uart::Shared*>(arg);
-        uart::serve_loop(sh); // parks in recv; returns when the endpoint dies
-        kos_exit(0);
-    }
-
     int block_init(void* blk, struct kos_driver_instance const*)
     {
-        uart::shared_init(static_cast<uart::Shared*>(blk));
+        uart::shared_init(&static_cast<uart::Ctx*>(blk)->sh);
         return 0;
     }
-
-    // The block is a bare Shared, not a Ctx: this backend opens no kos_uart, so there is no
-    // class config to carry. KOS_UART_READY_OFFSET still locates the latch only because
-    // Ctx's first member IS the Shared, which is what this pins.
-    static_assert(uart::KOS_UART_READY_OFFSET == offsetof(uart::Shared, ready),
-                  "the sim block is a bare Shared, so the latch must sit at the Shared's "
-                  "own offset");
 
     constexpr drv::Descriptor k_desc = KICKOS_DRIVER_DESCRIPTOR;
 

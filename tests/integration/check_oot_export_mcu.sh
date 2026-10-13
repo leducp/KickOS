@@ -62,10 +62,12 @@ knob() {
 }
 EXPECT_MAX_THREADS="$(knob KICKOS_MAX_THREADS)"
 EXPECT_USER_STACK_SIZE="$(knob KICKOS_USER_STACK_SIZE)"
+EXPECT_BENCH="$(knob KICKOS_BENCH)"
 # An empty value passes as a -D nothing defines, and the example's #ifdef then skips the
 # assertion in silence.
 [ -n "$EXPECT_MAX_THREADS" ] || fail "$BOARD_CFG states no KICKOS_MAX_THREADS"
 [ -n "$EXPECT_USER_STACK_SIZE" ] || fail "$BOARD_CFG states no KICKOS_USER_STACK_SIZE"
+[ -n "$EXPECT_BENCH" ] || fail "$BOARD_CFG states no KICKOS_BENCH"
 
 echo "== installing MCU KickOS package to $TMP/prefix =="
 "$CMAKE" --install "$KICKOS_BUILD" --prefix "$TMP/prefix" >/dev/null \
@@ -144,7 +146,8 @@ echo "== configuring out-of-tree MCU app with the shipped toolchain (no -DKICKOS
   -DCMAKE_TOOLCHAIN_FILE="$TC" -DCMAKE_PREFIX_PATH="$TMP/prefix" \
   -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
   -DKICKOS_EXPECT_MAX_THREADS="$EXPECT_MAX_THREADS" \
-  -DKICKOS_EXPECT_USER_STACK_SIZE="$EXPECT_USER_STACK_SIZE" >/dev/null \
+  -DKICKOS_EXPECT_USER_STACK_SIZE="$EXPECT_USER_STACK_SIZE" \
+  -DKICKOS_EXPECT_BENCH="$EXPECT_BENCH" >/dev/null \
   || fail "out-of-tree MCU configure (find_package) failed"
 
 echo "== building out-of-tree MCU app =="

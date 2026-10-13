@@ -41,8 +41,8 @@
 # host is ssh_config's: a port is passed only where the rig names one, so an ssh alias
 # carrying its own Port and User works as itself.
 #
-# The -st variant states the enforcing posture itself; there is no posture flag. VARIANT set
-# empty builds the board's own preset.
+# VARIANT names the preset variant, bench_default_variant's (board-rows.sh) when unset; set empty
+# it builds the board's own preset.
 #
 # PACKAGE_PROJECT names a consumer project, relative to the tree, built against the board build's
 # installed package as the golden and composition gates build one (tests/lib/package_image.sh);
@@ -60,7 +60,7 @@
 # row's args, unless JUDGE names another: an image's kickos_app_judge, or the TAP validator for a
 # selftest image, which the capture runs itself:
 #
-#   VARIANT=st APP=xmcspi tools/bench/bench.sh xmc4800-relax
+#   APP=xmcspi tools/bench/bench.sh xmc4800-relax
 #
 # An image that no row and no JUDGE judges is refused, and so is one its row marks emulator-judged,
 # human-judged or inapplicable; JUDGE=none takes the capture unjudged.
@@ -141,10 +141,9 @@ if [ -z "$SN" ] && [ "${LIST_IMAGES:-0}" != "1" ]; then
     echo "=== $BOARD  SN $SN, read off $BENCH_WHERE"
   fi
 fi
-# The preset variant. `st` states the enforcing posture and the selftest syscalls; `bench`
-# states the same posture plus the microbench. The variant is part of the BUILD DIR so a
-# bench capture and a selftest capture at one TAG cannot share a tree.
-VARIANT="${VARIANT-$BENCH_DEFAULT_VARIANT}"
+# The preset variant. The variant is part of the BUILD DIR so a bench capture and a selftest
+# capture at one TAG cannot share a tree.
+VARIANT="${VARIANT-$(bench_default_variant . "$BOARD")}"
 PRESET="$BOARD"
 BUILD="build/$TAG-$BOARD"
 if [ -n "$VARIANT" ]; then
@@ -154,19 +153,11 @@ fi
 LOG="$SESSION/logs/$TAG-$BOARD-$APP.log"
 mkdir -p "$SESSION/logs"
 
-# The RP boards cannot be reflashed once KickOS runs: J-Link finds the SW-DP and then fails to
-# power up the DAP, and BOOTSEL is the only way back, so every run would otherwise cost a physical
-# power-cycle. KICKOS_SHUTDOWN_TO_BOOTLOADER exists for exactly this: kickos_terminate tries
-# arch_reboot before halting, so the board lands back in BOOTSEL by itself. It touches only the
-# path AFTER the last TAP line, and it requires KICKOS_REBOOT, passed beside it.
+# The RP boards cannot be reflashed once KickOS runs (J-Link finds the SW-DP and then fails to
+# power up the DAP), and teensy41's HalfKay is otherwise reachable only by a button press. The
+# selftest and bench apps end by asking for the bootloader, so those land back in it by
+# themselves; any other app, and a panic, leaves the board to a physical press.
 EXTRA=()
-case $BOARD in
-  picopi|pizero2350) EXTRA+=(-DKICKOS_REBOOT=ON -DKICKOS_SHUTDOWN_TO_BOOTLOADER=ON) ;;
-  # teensy41: HalfKay is otherwise reachable only by a physical button press. arch_reboot's
-  # bkpt #251 is caught by the MKL02 companion, which presents HalfKay itself.
-  teensy41) EXTRA+=(-DKICKOS_REBOOT=ON -DKICKOS_SHUTDOWN_TO_BOOTLOADER=ON) ;;
-  *) ;;
-esac
 # EXTRA_CMAKE reaches the configure verbatim.
 if [ -n "${EXTRA_CMAKE:-}" ]; then
   # Deliberately unquoted: the caller passes one or more -D words.

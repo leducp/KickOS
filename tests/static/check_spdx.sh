@@ -35,8 +35,8 @@ require_repo_root
 # One tracked path -> need | none | refuse.
 #
 # The single by-NAME exemption: tests/lib/panic.ere is read as an ERE by two consumers
-# (tests/lib/gate.sh cats it into KOS_PANIC_RE; the root CMakeLists takes its first line as
-# a FAIL_REGULAR_EXPRESSION), so a header line on top breaks both.
+# (tests/lib/gate.sh cats it into KOS_PANIC_RE; tests/cmake/kickos_tests.cmake takes its first
+# line as a FAIL_REGULAR_EXPRESSION), so a header line on top breaks both.
 classify() {
     case "$1" in
         tests/lib/panic.ere)

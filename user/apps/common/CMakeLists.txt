@@ -22,8 +22,12 @@
 function(_kos_chip_defines out symbol)
   set(_defined OFF)
   if(TARGET kickos_chip_${KICKOS_CHIP})
-    _kickos_target_cc_sources(kickos_chip_${KICKOS_CHIP} "${PROJECT_SOURCE_DIR}/arch" _srcs)
+    get_target_property(_srcs kickos_chip_${KICKOS_CHIP} SOURCES)
+    list(FILTER _srcs INCLUDE REGEX "\\.cc$")
     foreach(_src IN LISTS _srcs)
+      if(NOT IS_ABSOLUTE "${_src}")
+        set(_src "${PROJECT_SOURCE_DIR}/arch/${_src}")
+      endif()
       set_property(DIRECTORY "${CMAKE_SOURCE_DIR}" APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
                    "${_src}")
       file(READ "${_src}" _txt)
@@ -47,17 +51,19 @@ if(KICKOS_KERNEL_STACKS AND KICKOS_KSTACK_REPORT)
   add_subdirectory(stackdepth)
 endif()
 
-kickos_add_diagnostic_apps(fault panicgate)
+add_subdirectory(fault)
+add_subdirectory(panicgate)
 
 # --- A C library on the target -----------------------------------------------------------
 if(KICKOS_HAVE_LIBC)
   add_subdirectory(chaincheck)
   add_subdirectory(libc_exit)
+  add_subdirectory(libcrace)
   add_subdirectory(sysdefault)
-  kickos_add_diagnostic_apps(rootfault rootauth reclaimwit)
-  if(KICKOS_REBOOT)
-    kickos_add_diagnostic_apps(rebootdemo)
-  endif()
+  add_subdirectory(rootfault)
+  add_subdirectory(rootauth)
+  add_subdirectory(reclaimwit)
+  add_subdirectory(rebootdemo)
 endif()
 # objbudget fills main's endpoint budget and asks that the refusal be the budget's, so both the
 # pool and main's table must have room for that budget: the pool has none to spare where the
@@ -65,12 +71,12 @@ endif()
 # (KICKOS_MAX_SPAWN_GRANTS + 1), part of it held from the start.
 if(KICKOS_HAVE_LIBC AND NOT KICKOS_AMP_PORTS
    AND KICKOS_TASK_ENDPOINT_BUDGET LESS KICKOS_MAX_SPAWN_GRANTS)
-  kickos_add_diagnostic_apps(objbudget)
+  add_subdirectory(objbudget)
 endif()
 # mpu_fault grants a region to one thread of a task, which a backend that translates cannot:
 # its unit of memory is the task's space.
 if(KICKOS_HAVE_LIBC AND NOT KICKOS_HAVE_ASPACE)
-  kickos_add_diagnostic_apps(mpu_fault)
+  add_subdirectory(mpu_fault)
 endif()
 
 # --- Memory enforcement --------------------------------------------------------------------
@@ -78,27 +84,34 @@ endif()
 # enforces memory the read is the bus's to answer: it returns on esp32-wroom, and faults on
 # f302nucleo only because no slave sits there, which is no claim of the kernel's.
 if(KICKOS_MEMORY_ENFORCED)
-  kickos_add_diagnostic_apps(specfault)
+  add_subdirectory(specfault)
 endif()
 
 # --- Fault isolation, translation, and the host sim --------------------------------------
 if(KICKOS_FAULT_ISOLATION)
-  kickos_add_diagnostic_apps(faultsurvive)
+  add_subdirectory(faultsurvive)
 endif()
 if(KICKOS_HAVE_ASPACE)
-  kickos_add_diagnostic_apps(deadstack kernelhalf stackguard)
+  add_subdirectory(deadstack)
+  add_subdirectory(kernelhalf)
+  add_subdirectory(stackguard)
 endif()
 # Sim only: each drives something that is only automatable on the host, a loopback "device"
 # that is the host wire, a published posture, or __builtin_trap.
 if(KICKOS_ARCH STREQUAL "sim")
-  kickos_add_diagnostic_apps(pubpanic simconabi uartloop drvdeath conrestart)
+  add_subdirectory(pubpanic)
+  add_subdirectory(simconabi)
+  add_subdirectory(uartloop)
+  add_subdirectory(drvdeath)
+  add_subdirectory(conrestart)
 endif()
 
 # --- Per-ISA ------------------------------------------------------------------------------
 # The PSP-bounds and privilege-ring probes move SP with ARM asm and read ARM system registers;
 # each main.cc #errors anywhere else.
 if(KICKOS_ARCH STREQUAL "armv7m" OR KICKOS_ARCH STREQUAL "armv6m")
-  kickos_add_diagnostic_apps(ringpriv pspguard)
+  add_subdirectory(ringpriv)
+  add_subdirectory(pspguard)
 endif()
 # The nested-trap witness: rv32imac is the one backend that runs syscall dispatch on the
 # caller's own stack AND builds its trap frames in software, so it is the only one where an
@@ -169,10 +182,10 @@ if(KICKOS_TELEMETRY_ON AND KICKOS_ARCH STREQUAL "sim")
 endif()
 
 # --- FP context-switch torture test -------------------------------------------------------
-# Uses vldmia/vstmia {s16-s31}, so an armv7m core with an FPU, which a float ABI other than soft
-# states, or any armv8a one.
+# An armv7m core with an FPU, which a float ABI other than soft states, and every armv8a, x86_64
+# and lx6 one.
 if((KICKOS_ARCH STREQUAL "armv7m" AND NOT KICKOS_MFLOAT_ABI STREQUAL "soft")
-   OR KICKOS_ARCH STREQUAL "armv8a")
+   OR KICKOS_ARCH MATCHES "^(armv8a|x86_64|lx6)$")
   add_subdirectory(fp_switch)
 endif()
 
@@ -190,10 +203,9 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/gpioblink/systems/${KICKOS_BOARD}.yaml")
 endif()
 
 # --- Bring-up LED blink -------------------------------------------------------------------
-# On a chip whose arch_diag_led_set is the no-op fallback it would blink nothing and read as a
-# dead board.
-_kos_chip_defines(_kos_led arch_diag_led_set)
-if(_kos_led)
+# Where the board file gives the kernel no LED, arch_diag_led_set is the no-op fallback and blink
+# would read as a dead board.
+if(KICKOS_KERNEL_LED)
   add_subdirectory(blink)
 endif()
 

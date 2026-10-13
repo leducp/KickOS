@@ -16,7 +16,7 @@
 #     granted to any task but the one `stdout` names;
 #   * `restart` on the task `ends` names, whose one exit ends the system;
 #   * a grant the platform cannot enforce, unless the limitation the chip file names is listed
-#     under `accepts` (none is needed on the XMC4800);
+#     under `accepts`;
 #   * a task writing stdout declared before the task `stdout` names;
 #   * a priority outside the kernel build's range, an `entry` task stating no `ceiling` or one
 #     below its `priority`, and counts and sizes past what the kernel build exports, a supply
@@ -53,13 +53,15 @@ tasks:
   # `lines` binds each line role the driver's exported metadata declares, `irq` alone for both
   # drivers here, to the line it takes. The chip lets either USIC0 channel raise either module
   # line, so nothing else says which is whose; admission refuses an unbound role and a line
-  # two tasks take.
+  # two tasks take. USIC0 is one gate, so each of the two drivers holding one of its channels
+  # accepts `coarse_gate`: either can stop or signal the other's channel.
   - name: console
     driver: xmcuartirq
     devices: [/dev/usic0/ch0]
     lines: { irq: /dev/usic0/sr0 }
     serves: /svc/console
     priority: 12
+    accepts: [coarse_gate]
 
   - name: spi0
     driver: xmcssc
@@ -68,6 +70,7 @@ tasks:
     serves: /svc/spi0
     priority: 11
     restart: { max: 3 }
+    accepts: [coarse_gate]
 
   # User code from here on. `entry` is a symbol in this project's sources, and `ceiling` the
   # highest priority the task's threads may take, here the task's own.

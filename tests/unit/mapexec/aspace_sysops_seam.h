@@ -35,6 +35,9 @@ namespace kickos
 
         // Puts every core on no translation, empties the frame pool and clears the record.
         void sysops_reset();
+
+        // Frame-free count at the last whole-TLB invalidate, for reclamation-order checks.
+        uint32_t frames_freed_at_sweep();
     }
 }
 

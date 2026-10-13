@@ -26,12 +26,12 @@
 
 namespace
 {
-    // Delegated cap i lands at child table index i+1. The child parks on CH_HOLD, which
+    // Delegated cap i lands at child table index KOS_SPAWN_DELEGATED_CAP0 + i. The child parks on CH_HOLD, which
     // nobody posts, so its domain is still referenced when main makes the write below. It
     // must not park on CH_DONE: until main is parked there, that wait takes back the child's
     // own post and main waits forever.
-    constexpr int CH_DONE = 1;
-    constexpr int CH_HOLD = 2;
+    constexpr int CH_DONE = KOS_SPAWN_DELEGATED_CAP0;
+    constexpr int CH_HOLD = KOS_SPAWN_DELEGATED_CAP0 + 1;
 
     void confined_child(void* arg)
     {
@@ -87,7 +87,7 @@ int main(int, char**)
 #endif
     auto const child = kos::thread::create_caps(confined_child, rA, "confined", 10,
                                              caps, 2, KOS_POLICY_FIFO, 0,
-                                             /*privileged=*/false, rA, 4096, 0, nullptr,
+                                             rA, 4096, 0, nullptr,
                                              KOS_TASK_NONE, nullptr, 0, core_mask);
     if (not child.valid())
     {

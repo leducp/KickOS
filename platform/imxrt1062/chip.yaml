@@ -13,11 +13,14 @@ arch: armv7m
 # denial is a bus error.
 protection:
   unit: pmsav7
+  granule: 32
   covers_devices: true
   memory_type: true
   bus_gate: { kind: aips_opacr, per_thread: false, traps: true }
 data_cache: true
 
+family: none
+exits_on_fault: false
 interrupts: { count: { value: 160, ref: "Table 4-2 CM7 domain interrupt summary, p.52" } }
 
 devices:

@@ -3,7 +3,8 @@
 //
 // The own-image AMP console claim: one partition-shared word holds a grant's deadline in its
 // high half and its owner in its low half, and a node writes the PL011 only under its own
-// grant. The unit including this header defines the primitives declared first.
+// grant. Beside it, one partition-shared waiting word per node, which the release clears and
+// rings. The unit including this header defines the primitives declared first.
 
 #ifndef KICKOS_ARCH_ARM64_CHIP_VIRT_ARM64_CONSOLE_CLAIM_H
 #define KICKOS_ARCH_ARM64_CHIP_VIRT_ARM64_CONSOLE_CLAIM_H
@@ -26,13 +27,20 @@ namespace kickos::virt_arm64::console
     // False once a bounded wait for TX FIFO room has run out.
     bool wait_room(void);
     void store(char c);
+    uint32_t waiting(uint32_t node);
+    void set_waiting(uint32_t node, uint32_t value);
+    // A full store-to-load barrier.
+    void fence(void);
+    // Raises node's doorbell.
+    void ring(uint32_t node);
 
     using kickos::console_retry::Put;
 
     class Claim
     {
     public:
-        explicit constexpr Claim(uint32_t owner) : owner_(owner) {}
+        // `owner` is the node index + 1; `nodes` counts the partition's nodes.
+        constexpr Claim(uint32_t owner, uint32_t nodes) : owner_(owner), nodes_(nodes) {}
 
         bool held(void) const { return token_ != 0; }
 
@@ -49,11 +57,47 @@ namespace kickos::virt_arm64::console
             for (uint32_t i = 0; i < KICKOS_POLL_SPIN_MAX; i++)
             {
                 uint64_t expected = token;
-                if (compare_exchange(expected, 0) or expected != token)
+                if (compare_exchange(expected, 0))
+                {
+                    ring_waiting();
+                    return;
+                }
+                if (expected != token)
                 {
                     return;
                 }
             }
+        }
+
+        // One masked attempt: drops a grant this node no longer holds, then takes a free or
+        // ended one.
+        bool open(uint32_t budget)
+        {
+            if (held() and not holding(budget))
+            {
+                release();
+            }
+            return held() or try_acquire(budget);
+        }
+
+        // A user writer the claim refused, masked until it parks: marks this node waiting, then
+        // offers once. 0 once this node holds the claim, else the ticks to park for, which the
+        // release of the grant that refused it cuts short by ringing this node.
+        uint32_t wait(uint32_t budget)
+        {
+            set_waiting(owner_ - 1u, 1u);
+            fence(); // pairs with the release's: either it reads this mark or this reads it free
+            if (open(budget))
+            {
+                set_waiting(owner_ - 1u, 0);
+                return 0;
+            }
+            uint32_t const rest = left(load(), budget);
+            if (rest == 0)
+            {
+                return budget;
+            }
+            return rest;
         }
 
         // The holder stops a margin short of its deadline, so a byte checked just before its
@@ -70,14 +114,23 @@ namespace kickos::virt_arm64::console
             {
                 return false;
             }
+            // A store-exclusive can fail with the word unchanged: only a changed word refuses.
             uint64_t const token = grant(budget);
-            if (not compare_exchange(expected, token))
+            for (uint32_t i = 0; i < KICKOS_POLL_SPIN_MAX; i++)
             {
-                return false;
+                uint64_t seen = expected;
+                if (compare_exchange(seen, token))
+                {
+                    token_ = token;
+                    kernel_bytes_ = 0;
+                    return true;
+                }
+                if (seen != expected)
+                {
+                    return false;
+                }
             }
-            token_ = token;
-            kernel_bytes_ = 0;
-            return true;
+            return false;
         }
 
         // A kernel line: renews an ended grant no peer took.
@@ -119,6 +172,7 @@ namespace kickos::virt_arm64::console
         };
 
         uint32_t owner_;
+        uint32_t nodes_;
         uint64_t token_ = 0;
         uint32_t kernel_bytes_ = 0; // bytes a renewing writer put under this grant
         kickos::console_retry::PolledLine polled_;
@@ -165,6 +219,21 @@ namespace kickos::virt_arm64::console
                 release();
             }
             return Put::STORED;
+        }
+
+        // A clear landing between a waiter's mark and its park is safe: the ring after it wakes
+        // every waiter of that node, and each marks itself again.
+        void ring_waiting(void)
+        {
+            fence();
+            for (uint32_t node = 0; node < nodes_; node++)
+            {
+                if (waiting(node) != 0)
+                {
+                    set_waiting(node, 0);
+                    ring(node);
+                }
+            }
         }
 
         bool acquire(uint32_t budget)

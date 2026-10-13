@@ -16,9 +16,13 @@
 // is the SCI + CMTW clock.
 
 #include <kickos/arch/arch.h>
+#include <arch_reboot_tail.h>
+#include <kickos/diag.h>
+#include <kickos/arch/console_poll.h>
 #include "crt_tail.h"
 #include "pin_guard.h"
 #include <kickos/console_tx.h>
+#include <kickos/io/mmio.h>
 #include <kickos/sys/abi.h>
 
 #include <stdint.h>
@@ -57,10 +61,6 @@ extern "C"
 
 namespace
 {
-    inline volatile uint32_t& r32(uintptr_t a) { return *reinterpret_cast<volatile uint32_t*>(a); }
-    inline volatile uint16_t& r16(uintptr_t a) { return *reinterpret_cast<volatile uint16_t*>(a); }
-    inline volatile uint8_t& r8(uintptr_t a) { return *reinterpret_cast<volatile uint8_t*>(a); }
-
     // A clock/console misconfiguration must degrade, never hang the boot. Sized for the
     // LOCO-clocked worst case (settling counts run off the ~240 kHz LOCO).
     constexpr uint32_t CLOCK_POLL_LIMIT = 2000000u;
@@ -126,30 +126,26 @@ namespace
         return false;
     }
 
-    // Bring ICLK to 240 MHz via the PLL (UM sec.9.6 procedure, case 1: LOCO -> PLL,
-    // main clock as the PLL source). Returns false (leaving the chip on the LOCO
-    // reset clock) if the oscillator or PLL never reports stable. Must run inside the
-    // PRCR unlock (clock regs are PRC0).
+    // ICLK to 240 MHz via the PLL (UM sec.9.6 case 1). Returns false, leaving the chip on
+    // the LOCO, if the oscillator or PLL never reports stable. Runs inside the PRCR unlock.
     bool clock_to_pll_240mhz()
     {
-        r8(cgc::MOFCR) = cgc::MOFCR_XTAL_24MHZ;    // 1. crystal drive range
-        r8(cgc::MOSCWTCR) = cgc::MOSCWTCR_MSTS;    // 2. oscillation settling count
-        r8(cgc::MOSCCR) = cgc::MOSCCR_MAIN_RUN;    // 3. start the main clock oscillator
-        uint8_t mosccr_rb = r8(cgc::MOSCCR);       // read back before dependent writes (sec.9.2.8)
+        r8(cgc::MOFCR) = cgc::MOFCR_XTAL_24MHZ;
+        r8(cgc::MOSCWTCR) = cgc::MOSCWTCR_MSTS;
+        r8(cgc::MOSCCR) = cgc::MOSCCR_MAIN_RUN;
+        uint8_t mosccr_rb = r8(cgc::MOSCCR); // read back before dependent writes (sec.9.2.8)
         (void)mosccr_rb;
         if (not poll_flag(cgc::OSCOVFSR, cgc::OSCOVFSR_MOOVF, CLOCK_POLL_LIMIT))
         {
             return false;
         }
-        // ICLK will exceed 120 MHz, so the code flash needs one wait state; set it
-        // BEFORE running the PLL, per the sec.9.8 case (1) step order (step 4, ahead of
-        // PLLCR). Read back so it is in effect before ICLK can rise. MEMWAIT=1 is
-        // legal at any ICLK (Table 9.3), so it is harmless if the PLL never locks.
-        r8(cgc::MEMWAIT) = cgc::MEMWAIT_ONE_WAIT;  // 4. one wait state (>120 MHz)
+        // One flash wait state BEFORE the PLL runs (sec.9.8 case 1), read back so it holds
+        // before ICLK can rise. Legal at any ICLK (Table 9.3).
+        r8(cgc::MEMWAIT) = cgc::MEMWAIT_ONE_WAIT;
         uint8_t memwait_rb = r8(cgc::MEMWAIT);
         (void)memwait_rb;
-        r16(cgc::PLLCR) = cgc::PLLCR_PLL_240MHZ;   // 5. multiplier + input divider
-        r8(cgc::PLLCR2) = cgc::PLLCR2_PLL_RUN;     // 6. run the PLL
+        r16(cgc::PLLCR) = cgc::PLLCR_PLL_240MHZ;
+        r8(cgc::PLLCR2) = cgc::PLLCR2_PLL_RUN;
         if (not poll_flag(cgc::OSCOVFSR, cgc::OSCOVFSR_PLOVF, CLOCK_POLL_LIMIT))
         {
             return false;
@@ -158,7 +154,7 @@ namespace
         // divisors apply to ~240 kHz, so no peripheral overshoots when the PLL
         // becomes the source on the next write.
         r32(cgc::SCKCR) = cgc::SCKCR_240MHZ;
-        r16(cgc::SCKCR3) = cgc::SCKCR3_CKSEL_PLL;  // 8. ICLK <- PLL
+        r16(cgc::SCKCR3) = cgc::SCKCR3_CKSEL_PLL;
         return true;
     }
 
@@ -311,9 +307,9 @@ namespace
     void rx_tx_push(uint8_t b) { r8(sci::TDR) = b; }
     void rx_tx_irq_enable(void) { r8(sci::SCR) = static_cast<uint8_t>(r8(sci::SCR) | sci::SCR_TIE); }
     void rx_tx_irq_disable(void) { r8(sci::SCR) = static_cast<uint8_t>(r8(sci::SCR) & ~sci::SCR_TIE); }
-    char console_tx_buf[KICKOS_CONSOLE_TX_SIZE];
     console_tx_backend const rx_console_backend = {
-        rx_tx_slot_free, rx_tx_push, rx_tx_irq_enable, rx_tx_irq_disable};
+        rx_tx_slot_free, rx_tx_push, rx_tx_irq_enable, rx_tx_irq_disable,
+        &kickos_console_tx_storage};
 
     // One row per group, indexed by the group_index of the logical-line arithmetic in
     // <kickos/arch/rx_group.h>. The ORDER IS THE ABI: it fixes TEI6 = 268 and ERI6 = 269
@@ -350,16 +346,14 @@ void arch_init(void)
 {
     unlock_registers(true);
     (void)clock_to_pll_240mhz(); // the landed tree is read back below, not assumed here
-    // UM sec.11 MSTPCR.
     r32(cgc::MSTPCRA) &= ~(cgc::MSTPA_CMTW0 | cgc::MSTPA_CMTW1);
     r32(cgc::MSTPCRB) &= ~cgc::MSTPB_SCI6;
     unlock_registers(false);
 
     rom_cache_enable(); // MEMWAIT set above; ROM cache is not PRCR-gated
 
-    // Read back, not assumed from the bring-up's return: a bring-up that degraded to the
-    // LOCO must price its ticks and its baud at the rate it actually landed on. A tree the
-    // derivation cannot describe leaves both at their reset nominals rather than at zero.
+    // Read back: a bring-up that degraded to the LOCO prices ticks and baud at the rate it
+    // landed on. An undescribable tree leaves both at their reset nominals, not zero.
     uint32_t const src = clock_source_hz();
     uint32_t const ick = (r32(cgc::SCKCR) >> cgc::SCKCR_ICK_S) & cgc::SCKCR_DIV_MASK;
     if (src != 0u and ick <= cgc::SCKCR_DIV_MAX)
@@ -381,16 +375,10 @@ void arch_init(void)
     kickos_rxv3_init();
 }
 
-// Arch seam (arch_rxv3.cc): arm or disarm ONE group source, and the group vector itself.
-//
-// The group vector is armed lazily, and must be: nothing reaches the CPU unless the
-// vector is enabled, yet it is not a claimable line (owning "the group" would starve every
-// other source in it), so a source's own mask is what arms it. Arming every group vector
-// at init leaves a first-level ISR reachable with the status word zero, which on a LEVEL
-// input is a silent storm rather than a diagnosable fault.
-//
-// GENxxx is the only record of which sources are armed, so repeated masks and unmasks have
-// no shadow count to desynchronize (the tier-1 rearm path unmasks on every wait).
+// Arms or disarms ONE group source and, with the first or last one, the group vector.
+// The vector is armed lazily: arming every group vector at init leaves a first-level ISR
+// reachable with the status word zero, which on a LEVEL input is a silent storm.
+// GENxxx is the only record of which sources are armed; there is no shadow count.
 //
 // Both orderings follow UM sec.15.7.1/15.7.2 p.545: ENj before IERm.IENj when arming,
 // IERm.IENj before ENj when disarming.
@@ -429,12 +417,9 @@ void kickos_rx_group_arm(int line, int on)
     arch_irq_restore(s);
 }
 
-// Arch seam (arch_rxv3.cc): the chip's device demux, in ISR context. Only group vectors
-// route here; every dedicated source (CMWI0, the two SCI6 vectors, both software
-// interrupts) has its own INTB slot.
-//
-// One group assertion can carry several ISj bits (UM sec.15.5.4 Fig.15.17 p.542), hence
-// the loop.
+// The device demux, in ISR context. Only group vectors route here; every dedicated source
+// has its own INTB slot. One group assertion can carry several ISj bits (UM sec.15.5.4
+// Fig.15.17 p.542).
 //
 // The status word must be SNAPSHOTTED before the first post: kickos_isr_irq runs
 // irq_event_isr, which masks the source at GENxxx.ENj, and clearing ENj also clears that
@@ -533,28 +518,9 @@ int arch_periph_enable(uintptr_t base)
     return 0;
 }
 
-int arch_console_write(char const* buf, size_t n)
-{
-    return console_tx_insert_line(buf, n, KICKOS_CONSOLE_CRLF);
-}
-
-// Bounded polled writer: panic / fault / pre-arm boot route here (console.cc). Must stay
-// reachable with the scheduler and IRQs down, so it polls TDRE directly.
 bool arch_console_write_sync(char const* buf, size_t n)
 {
-    for (size_t i = 0; i < n; i++)
-    {
-        uint32_t spin = 0;
-        while ((r8(sci::SSR) & sci::SSR_TDRE) == 0)
-        {
-            if (++spin >= CONSOLE_POLL_LIMIT)
-            {
-                return false; // drop, never hang
-            }
-        }
-        r8(sci::TDR) = static_cast<uint8_t>(buf[i]);
-    }
-    return true;
+    return kickos::console_poll::write<rx_tx_slot_free, rx_tx_push>(buf, n);
 }
 
 // Block until the shift register is idle, not merely the holding register: SSR.TEND is set
@@ -562,14 +528,11 @@ bool arch_console_write_sync(char const* buf, size_t n)
 // also sets it (UM sec.42.2.11 p.2171).
 void arch_console_flush_sync(void)
 {
-    // A wedged SCI costs the tail of a line, not a hang.
     (void)poll_flag(sci::SSR, sci::SSR_TEND, CONSOLE_POLL_LIMIT);
 }
 
-console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)
+console_tx_backend const* arch_console_tx_backend(int* irq_line)
 {
-    *storage = console_tx_buf;
-    *size = KICKOS_CONSOLE_TX_SIZE;
     *irq_line = irq::SCI6_TXI;
     return &rx_console_backend;
 }
@@ -669,10 +632,23 @@ int arch_pinmux_set(uint32_t p, uint32_t pin, uint32_t func)
     return 0;
 }
 
+int arch_reboot(uint32_t outcome)
+{
+    if (outcome != KOS_SHUTDOWN_REBOOT)
+    {
+        return -KOS_ENOSYS;
+    }
+    __asm volatile("mvtipl #15" ::: "memory");
+    r16(cgc::PRCR) = cgc::PRCR_UNLOCK;
+    r16(cgc::SWRR) = cgc::SWRR_RESET;
+    kickos::arch::reset_settle();
+    kickos::arch::reboot_failed(kickos::diag::kResetNotTaken);
+}
+
 void arch_shutdown(int status)
 {
     (void)status;
-    __asm volatile("mvtipl #15" ::: "memory"); // mask all maskable interrupts
+    __asm volatile("mvtipl #15" ::: "memory");
     while (true)
     {
         __asm volatile("wait");

@@ -2,24 +2,25 @@
 # Copyright (c) 2026 Philippe Leduc
 
 # KICKOS_HAVE_ASPACE=1 is set here: no board the host arch answers for translates, so the preset
-# never carries it.
+# never carries it, nor the mutex pool a translating board keeps a libc lock per task in.
 set(_aspace "${PROJECT_SOURCE_DIR}/kernel/mem/aspace.cc"
             "${PROJECT_SOURCE_DIR}/kernel/mem/vrange.cc")
 set_source_files_properties(${_aspace} DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
   PROPERTIES COMPILE_OPTIONS "-ffunction-sections;-fdata-sections")
+set(_leaves "${PROJECT_SOURCE_DIR}/tests/unit/common/aspace_leaves.cc")
 kickos_add_kseam(kickos_kseam_aspace
-  EXTRA aspace_seam.cc ${_aspace}
+  EXTRA aspace_seam.cc ${_leaves} ${_aspace}
   POSTURE KICKOS_NUM_CORES=2 KICKOS_KERNEL_CORES=2 KICKOS_MULTICORE_MODEL_SHARED=1
-          KICKOS_HAVE_ASPACE=1)
+          KICKOS_HAVE_ASPACE=1 KICKOS_MAX_MUTEXES=24)
 kickos_add_unit_test(NAME leave_space SOURCES leave_space.cc
   LIBRARIES kickos_kseam_aspace)
 
 # exit_current's reroot arm is guarded on KICKOS_KERNEL_CORES > 1, so the guard itself needs a
 # translation unit where the macro is 1.
 kickos_add_kseam(kickos_kseam_aspace_one
-  EXTRA aspace_seam.cc ${_aspace}
+  EXTRA aspace_seam.cc ${_leaves} ${_aspace}
   POSTURE KICKOS_NUM_CORES=1 KICKOS_KERNEL_CORES=1 KICKOS_MULTICORE_MODEL_SHARED=1
-          KICKOS_HAVE_ASPACE=1)
+          KICKOS_HAVE_ASPACE=1 KICKOS_MAX_MUTEXES=24)
 kickos_add_unit_test(NAME leave_space_one SOURCES leave_space_one.cc
   LIBRARIES kickos_kseam_aspace_one)
 target_link_options(leave_space PRIVATE -Wl,--gc-sections)

@@ -33,8 +33,8 @@
 
 namespace
 {
-    // Main's semaphore, delegated to both members at their table index 1.
-    constexpr int SIG = 1;
+    // Main's semaphore, delegated to both members at their table index 2.
+    constexpr int SIG = KOS_SPAWN_DELEGATED_CAP0;
 
     constexpr int ROUNDS = 8;
 
@@ -87,14 +87,14 @@ int main(int, char**)
         // The closer first: the leaver runs on its own core and may be gone before a later
         // spawn, which would reclaim its slot and leave its handle stale for the join below.
         auto const b = kos::thread::create_caps(closer, nullptr, "closer", 10, caps, 1,
-                                                KOS_POLICY_FIFO, 0, /*privileged=*/false,
+                                                KOS_POLICY_FIFO, 0,
                                                 nullptr, 0, 0, nullptr, group,
                                                 nullptr, 0, 1u << 1);
         // The closer cannot leave before the leaver exists, so the group's space is live here.
         uint32_t during = 0;
         int const during_rc = kos_mem_count(KOS_MEM_SPACES_HELD, &during);
         auto const a = kos::thread::create_caps(leaver, nullptr, "leaver", 10, caps, 1,
-                                                KOS_POLICY_FIFO, 0, /*privileged=*/false,
+                                                KOS_POLICY_FIFO, 0,
                                                 nullptr, 0, KOS_AUTH_MEMORY, nullptr, group,
                                                 nullptr, 0, 1u << 0);
         if (not a.valid() or not b.valid())

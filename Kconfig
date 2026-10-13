@@ -19,7 +19,8 @@ config HAS_TRACE_CLOCK
 	help
 	  An arch_trace_now exists AND the core it runs on implements the counter it
 	  reads. A chip that has a usable counter selects it back on. rv32imac is
-	  per-chip: the arch reader is rdcycle, which traps on the ESP32-C6 HP core.
+	  per-chip: the arch reader is rdcycle, which traps on the ESP32-C6 HP core,
+	  whose Zicntr is absent from its CSR set (C6 TRM v1.2 section 1.5.1).
 
 config HAS_ASPACE
 	bool
@@ -39,15 +40,10 @@ config KICKOS_HAVE_ASPACE
 	  cannot compute, so it is what the agreement check in CMakeLists.txt compares
 	  against.
 
-config KICKOS_TRACE_CLOCK_DECLARED
+config KICKOS_HAVE_TRACE_CLOCK
 	int
 	default 1 if HAS_TRACE_CLOCK
 	default 0
-	help
-	  HAS_TRACE_CLOCK as a number the generated fragment can carry. The capability
-	  is stated twice: here, and by arch/<family>/chip/<chip>/caps.cmake plus the
-	  arch ladder in CMakeLists.txt. This is the half CMake cannot compute, so it is
-	  what the agreement check there compares against.
 
 source "boards/Kconfig"
 source "arch/Kconfig"
@@ -99,18 +95,23 @@ choice
 
 config KICKOS_MULTICORE_SHARED
 	bool "One kernel across every core"
+	depends on ARCH_SMP_COHERENT && ARCH_SMP_EXCLUSION && ARCH_SMP_IDENTITY
+	depends on CHIP_SMP_INTERRUPT && CHIP_SMP_SYMMETRIC && CHIP_SMP_TARGETING
+	depends on !ARCH_HAS_IPC_FASTPATH
 	help
-	  An arch that declares no smp.cmake is refused at configure rather than at run
-	  time: that declaration asserts coherent shared memory, an inter-core exclusion
-	  primitive, an inter-core interrupt, a per-core identity, symmetric cores and
-	  per-line interrupt targeting. A part meeting all six but the last runs this model
-	  correctly and is declined it on the cost of the software that stands in.
+	  Offered where the arch and the part select all six properties of arch/Kconfig:
+	  coherent shared memory, an inter-core exclusion primitive, a per-core identity, an
+	  inter-core interrupt, symmetric cores and per-line interrupt targeting. A part
+	  meeting all but the last runs this model correctly and is declined it on the cost of
+	  the software that stands in. A part that fails them runs AMP, one kernel per core
+	  over disjoint memory: bracketing with the LOCAL interrupt mask across cores is a
+	  correctness bug, not a slow choice.
 
 config KICKOS_MULTICORE_AMP
 	bool "One kernel per core, over disjoint memory"
 	help
 	  Each core runs its own kernel and its own memory, so no core needs another's
-	  exclusion, and the predicate above does not apply. The cores reach each other
+	  exclusion, and the six properties above are not asked. The cores reach each other
 	  through the doorbell and a shared window, and every index and length read from
 	  that window is another node's writing.
 
@@ -121,8 +122,7 @@ config KICKOS_MULTICORE_MODEL_SHARED
 	default 1 if KICKOS_MULTICORE_SHARED
 	default 0
 	help
-	  The model above as a number CMake reads, which is what the shared-kernel
-	  predicate is refused against.
+	  The model above as a number CMake and C read.
 
 config KICKOS_KERNEL_CORES
 	int
@@ -236,6 +236,16 @@ config KICKOS_AMP_NODE_ID
 	  learn it: on the CV1800B mhartid is hardwired to zero in the openc906 release
 	  and customised per integrator, so there is no register to stand on.
 
+config KICKOS_AMP_RESET_OWNER
+	int "The node whose kernel may reset the chip"
+	depends on !KICKOS_AMP_POSTURE_NONE
+	range 0 31
+	default 0
+	help
+	  A reset, a bootloader entry and a terminal outcome other than halt end every node
+	  of the partition, so this node's kernel alone admits them and every other node
+	  refuses them -KOS_EPERM. A halt stays each node's own.
+
 # Derive each AMP node's memory range from common partition geometry.
 
 config KICKOS_AMP_PARTITION_BASE
@@ -243,7 +253,7 @@ config KICKOS_AMP_PARTITION_BASE
 	depends on KICKOS_AMP_POSTURE_OWN_IMAGE
 	default 0x0
 	help
-	  Where node 0's image starts. A zero here is refused by CMakeLists.txt: a board
+	  Where node 0's image starts. A zero here is refused by genconfig.py: a board
 	  that states no geometry would otherwise link every node at the same address.
 
 config KICKOS_AMP_NODE_SHARE
@@ -294,7 +304,7 @@ config KICKOS_AMP_TEXT_BASE
 	help
 	  Where node 0's text starts, when that is not where its data starts. Zero means
 	  the part has one span and KICKOS_AMP_PARTITION_BASE describes all of it.
-	  CMakeLists.txt refuses this stated without KICKOS_AMP_TEXT_SHARE beside it.
+	  genconfig.py refuses this stated without KICKOS_AMP_TEXT_SHARE beside it.
 
 config KICKOS_AMP_TEXT_SHARE
 	hex "Bytes of that aperture one node's text owns"
@@ -304,7 +314,7 @@ config KICKOS_AMP_TEXT_SHARE
 	  The stride between node images in the text aperture, so a node's text base is
 	  its index times this. No shared region sits above these; it lives in the span
 	  the three facts above describe.
-	  CMakeLists.txt refuses this stated without KICKOS_AMP_TEXT_BASE beside it.
+	  genconfig.py refuses this stated without KICKOS_AMP_TEXT_BASE beside it.
 
 config KICKOS_AMP_DIAG_REPORT
 	int "A peer node reports its own boot state into the shared region (0/1)"
@@ -341,7 +351,7 @@ config KICKOS_AMP_NODE_CORES
 	depends on KICKOS_AMP_POSTURE_OWN_IMAGE
 	default ""
 	help
-	  The partition's node-to-core map. CMakeLists.txt refuses a list whose length is
+	  The partition's node-to-core map. genconfig.py refuses a list whose length is
 	  not KICKOS_AMP_NODES, or that names a core twice, or a core the partition does
 	  not span. A node index is not a core index and nothing derives one from the
 	  other.
@@ -357,7 +367,7 @@ config KICKOS_AMP_PORTS
 	  this image holds and calls. Node 0 and node 1 derive opposite roles from the
 	  same entries, so a second list would be a second truth.
 
-	  CMakeLists.txt refuses a malformed entry, a node the partition does not hold,
+	  genconfig.py refuses a malformed entry, a node the partition does not hold,
 	  a port outside the mint's 32-bit width, a repeated crossing, and port 1, which
 	  is the port every reply travels on and which no node can therefore serve.
 	  PORT 0 IS NOT REFUSED: it is the window layer's echo, answered with no thread
@@ -563,8 +573,15 @@ config KICKOS_MAX_SEMAPHORES
 
 config KICKOS_MAX_MUTEXES
 	int "CAP_MUTEX pool"
-	range 0 32
+	range 2 32
+	default 24 if HAS_ASPACE
 	default 8
+	help
+	  Holds one libc lock per address space beside what tasks create: one for the
+	  image on a region board, one for every task but idle's on a translating one,
+	  where KICKOS_MAX_TASKS bounds them. A create never takes a slot an address space
+	  could still need, and the pool must hold those plus KICKOS_TASK_MUTEX_BUDGET or
+	  the build fails.
 
 config KICKOS_MAX_ENDPOINTS
 	int "IPC endpoint pool"
@@ -697,11 +714,11 @@ config KICKOS_TASK_MUTEX_BUDGET
 	range 1 31
 	default 7
 	help
-	  As KICKOS_TASK_SEMAPHORE_BUDGET, over the mutex pool: strictly below
-	  KICKOS_MAX_MUTEXES or the build fails. TWO is a selftest image's own demand, the
-	  deadlock arm holding two at once; at one, five mutex arms go RED on qemu rather
-	  than skipping, and the failures cascade into every later arm that wanted an
-	  object.
+	  As KICKOS_TASK_SEMAPHORE_BUDGET, over the mutex pool: at most KICKOS_MAX_MUTEXES
+	  less the libc locks the pool keeps, or the build fails. The task's own libc lock
+	  counts against it. THREE is a selftest image's own demand, the deadlock arm holding
+	  two at once beside the libc lock; below it mutex arms go RED on qemu rather than
+	  skipping, and the failures cascade into every later arm that wanted an object.
 
 config KICKOS_TASK_ENDPOINT_BUDGET
 	int "Endpoints one task may hold"
@@ -753,8 +770,8 @@ config KICKOS_MAX_SPAWN_GRANTS
 	  refuses more until they are re-measured. lx6 runs a system call as a plain call on
 	  the caller's own stack, which no trap figure prices, so it refuses nothing here.
 	  The floor is 2, not 1: the child width is
-	  this plus one plus the reply peak, and a width inside the reserved index
-	  range leaves a child no slot of its own, which configure refuses.
+	  this plus the reserved index range, and a child keeping no slot of its own
+	  beside the reply peak is refused at configure.
 
 config KICKOS_MAX_THREAD_WINDOWS
 	int "Windows one thread may hold"
@@ -769,7 +786,7 @@ config KICKOS_MAX_THREAD_WINDOWS
 
 config KICKOS_CAP_TABLE_SUPPLY
 	int "Capability slots this board's RAM can back"
-	range 7 64
+	range 8 64
 	default 16
 	help
 	  SUPPLY, not demand. The width is summed from declared demand and refused
@@ -1024,36 +1041,21 @@ config KICKOS_TLS
 config KICKOS_MIN_STACK_SIZE
 	int
 	default 896 if ARCH_ARMV6M
-	# This chain holds IrqLock, so the model excludes another interrupt frame.
-	default 1088 if ARCH_ARMV7M && TELEMETRY_RTT
 	default 960 if ARCH_ARMV7M
 	default 1024 if ARCH_RXV3
-	# An interrupt nests below the death path on the thread's own stack.
-	default 2848 if ARCH_ARMV8A
-	# Bench and own-image AMP need the wider privileged syscall/return reservation.
-	# Other rv32imac boards keep their smaller measured floor. rv_trap_stack.h.
-	default 1088 if ARCH_RV32IMAC && (KICKOS_BENCH || KICKOS_AMP_POSTURE_OWN_IMAGE)
-	default 1024 if ARCH_RV32IMAC
-	# An interrupt nests below a privileged thread's return on its own stack.
-	default 2304 if ARCH_RV64IMAC
-	# An interrupt nests below a privileged thread's return on its own stack (x86_64_trap_stack.h).
-	default 3392 if ARCH_X86_64 && KICKOS_KERNEL_CORES > 1
-	default 2752 if ARCH_X86_64
 	# Above one core the PREEMPT zone alone is 960 (lx6_trap_stack.h).
 	default 960 if ARCH_LX6 && KICKOS_KERNEL_CORES > 1
 	default 896 if ARCH_LX6
 	default 1024
 	help
-	  The floor for a caller-provided stack: the arch's deepest thread-exit dispatch,
-	  measured. A stack below it passes the spawn check and then overflows on exit.
+	  The floor for a caller-provided stack: the deepest descent the arch prices on a
+	  thread's own stack, measured. A stack below it passes the spawn check and then
+	  overflows or is refused.
 
-	  WHAT IT STILL COVERS, now that a thread has a kernel block.
 	  kickos_fault_stack_top answers with ctx.kernel_sp, so kickos_thread_fault_exit and
 	  kickos_thread_slay_exit run on the dying thread's KERNEL block and are measured
-	  against that block, as EXITK, not against this floor. What this floor holds is
-	  kickos_thread_return, measured as RET: an entry return, with no fault and no
-	  redirect, so no entry design relocates it. armv7m carries a third class, EXIT, for
-	  the presets that carve no block and where all three stubs therefore stay here.
+	  against that block, as EXITK, not against this floor. armv7m carries a class, EXIT,
+	  for the presets that carve no block and where both stubs therefore stay here.
 
 	  THE FRAME TERM IS NOT ZERO ON ANY ARCH. Each stub is entered by an exception
 	  return, in thread mode, with interrupts enabled, and its exit_current reschedules,
@@ -1070,19 +1072,9 @@ config KICKOS_MIN_STACK_SIZE
 	  two trap arms leave on the caller's own USP, which they leave there because the
 	  ISA's return path computes the resume SP from where that save sits.
 
-	  RV32IMAC ENFORCES NONE, its entry having moved every U-mode frame onto the
-	  thread's kernel stack, so there this floor covers the two descents that still
-	  spend a thread's own stack. A PRIVILEGED thread's SYSCALL is one: its ecall
-	  arrives with mstatus.MPP=M and keeps frame and dispatch on the sp it interrupted,
-	  and no bound exists to refuse a floor-sized privileged thread's syscall. The death
-	  path is the other, and it spends the stack of every thread whatever its privilege.
-
-	  THE ARM BACKENDS AND RXV3 HAVE NO SUCH SPLIT. SVC_Handler clears CONTROL.nPRIV for
-	  every caller and svc_trampoline transfers on a PSP write rather than on a cause
-	  branch, so a privileged thread's syscall runs on its kernel block exactly as an
-	  unprivileged one's does. RX is the same shape for the same reason: INT #SYS is one
-	  vector whichever mode issued it, its rewrite clears PSW.PM unconditionally, and
-	  the transfer is a write to R0.
+	  RV32IMAC, ARMV8A, RV64IMAC AND X86_64 ENFORCE NONE, their entries building every
+	  user-mode frame on the thread's kernel block, so there the floor holds no kernel
+	  descent but rv32imac's first switch frame (SWITCH).
 
 	  TWO THINGS CHECK THE RELATION, AND THEY ARE NOT THE SAME CHECK.
 	  check_trap_redzone.sh compares this floor against every class that spends a thread
@@ -1173,25 +1165,6 @@ menu "Debug and test"
 config KICKOS_DEBUG
 	bool "Internal-consistency guards"
 	default n
-
-config KICKOS_ENABLE_SELFTEST
-	bool "Build the selftest and diagnostic apps"
-	default n
-	help
-	  Selects apps and their gates. Only the selftest app's own sources see the
-	  definition, so the kernel and every other app build the same either way.
-
-config KICKOS_REBOOT
-	bool "kos_reboot: enter the chip's bootloader on request"
-	default n
-
-config KICKOS_SHUTDOWN_TO_BOOTLOADER
-	bool "Terminating images reboot into the chip bootloader"
-	depends on KICKOS_REBOOT
-	default n
-	help
-	  arch_reboot is compiled only under KICKOS_REBOOT, so without it nothing defines
-	  the symbol.
 
 config KICKOS_BENCH
 	bool "Cycle-accurate context-switch microbench"

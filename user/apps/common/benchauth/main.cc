@@ -31,7 +31,7 @@ namespace
     constexpr uint32_t NO_SUCH_CAP = 30;
     // The child's only cap: a signal-only copy of the line main claimed. It cannot wait, so
     // the arm must refuse a holder that cannot wait on the line it would name.
-    constexpr int CH_IRQ_SIGNAL = 1;
+    constexpr int CH_IRQ_SIGNAL = KOS_SPAWN_DELEGATED_CAP0;
 
     kickos::apps::ArmCount harness("benchauth");
 

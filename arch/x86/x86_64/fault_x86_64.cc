@@ -16,6 +16,7 @@
 #include <stdint.h>
 
 extern "C" bool kickos_fault_kill_thread(void* frame);
+extern "C" void kickos_fault_report_begin(void);
 
 namespace
 {
@@ -218,8 +219,6 @@ namespace
         bit(" if=", frame->rflags, 9);
         com1_puts("\n");
 
-        // Which stack the report is running on: the double-fault gate names an
-        // interrupt-stack-table slot.
         uintptr_t const here = reinterpret_cast<uintptr_t>(frame);
         com1_puts("  stack=");
         if (here >= kickos::x86_64::fault_stack_lo() and here < kickos::x86_64::fault_stack_hi())
@@ -257,5 +256,6 @@ extern "C" kickos::x86_64::trap_frame* kickos_x86_64_trap(kickos::x86_64::trap_f
     {
         return frame;
     }
+    kickos_fault_report_begin();
     report(frame);
 }

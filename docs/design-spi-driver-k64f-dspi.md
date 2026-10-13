@@ -65,7 +65,7 @@ kernel code recovers that. The decision that follows from it is decision 1.
 
 7. **W1C the status flag BEFORE the line is re-armed.** An uncleared level re-asserts on unmask and
    STORMS the line -- the exact PIT `TIF` hazard `k64drv` hit. The re-arm is the loop's next
-   `kos_irq_wait` (auto-re-arm); an explicit `kos_irq_ack` is an OPTIONAL early re-arm for the
+   IRQ wait (formerly `kos_irq_wait`; auto-re-arm); an explicit `kos_irq_ack` is an OPTIONAL early re-arm for the
    compute-then-wait shape. Either way, W1C comes first.
 
 8. **Hardware `PCS` was the recommendation; the shipped driver uses a GPIO CS.** The brief chose HW

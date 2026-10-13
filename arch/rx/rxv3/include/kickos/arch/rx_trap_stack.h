@@ -96,7 +96,7 @@
  *                    INCOMING thread's stack pays, checked against this same figure when it
  *                    was switched out. 44 on rx72m-bench, whose phase bracket is the deepest:
  *                    kickos_arch_mpu_commit[32] -> kickos_bench_mpu_commit[4]
- *                    -> bench_phase_add[8]. 32 on rx72m and rx72m-st,
+ *                    -> bench_phase_add[8]. 32 on rx72m,
  *                    kickos_arch_mpu_commit[28] -> arch_irq_restore[4], and 4 on rx72m-flat.
  *   _SYS          0  svc_trampoline moves R0 to ctx.kernel_sp before it calls anything.
  *   _SYS_FAST    44  the same epilogue and so the same chain as _PENDSW, kept a macro of its
@@ -110,18 +110,18 @@
  *                    -> kprintf_paced[284] -> console_emit[36]
  *                    -> console_tx_insert_record_line[44] -> drain_in_producer[32]
  *                    -> wait_slot[20] -> rx_tx_slot_free[4].
- *                    rx72m-st reads 556, a spawn of 9 grants seating its default
+ *                    rx72m reads 552, a spawn of 9 grants seating its default
  *                    capabilities; arch_rxv3.cc refuses more than 9:
  *                    syscall_dispatch[52] -> thread_create_call[4] -> spawn_masked[300]
- *                    -> cap_install_defaults[20] -> cap_seat_stdout[40] -> obj_ref_drop[24]
+ *                    -> cap_install_defaults[20] -> cap_seat_stdout[40] -> obj_ref_drop[20]
  *                    -> irq_ref_drop[24] -> irq_detach[12] -> irq_line_op[4]
  *                    -> arch_irq_mask[12] -> kickos_rx_group_arm[32]
  *                    -> kickos_rx_icu_line_arm[4] -> icu_ier_set[24] -> arch_irq_restore[4].
- *                    rx72m and rx72m-flat read 508, the exit path:
+ *                    rx72m-flat reads 504, the exit path:
  *                    syscall_dispatch[52] -> endpoint_reply_recv[116] -> exit_current[40]
  *                    -> cap_teardown[40] -> teardown_entry[40] -> obj_close_protocol[24]
  *                    -> endpoint_rights_dropped[28] -> refuse_senders[20] -> wake[8]
- *                    -> resched_after_wake[4] -> pick_and_seat[24] -> ktime_rearm[24]
+ *                    -> resched_after_wake[4] -> pick_and_seat[20] -> ktime_rearm[24]
  *                    -> arch_timer_arm[24] -> arch_clock_now[32] -> __divdi3[32].
  *                    ONE FIGURE COVERS EVERY POSTURE, as rv32imac's _SYS does.
  *
@@ -129,8 +129,8 @@
  * figure says so. _SYSK is NOT rounded, a kernel block being sized to it directly, so a byte of
  * slack there costs KICKOS_THREAD_SLOTS bytes.
  *
- * rx72m is the only chip that selects ARCH_RXV3 and the gate runs on all four of its presets,
- * so a figure here is the worst of four readings. No telemetry build is among
+ * rx72m is the only chip that selects ARCH_RXV3 and the gate runs on all three of its presets,
+ * so a figure here is the worst of three readings. No telemetry build is among
  * them: _PENDSW's optional trace root is ABSENT from every graph. A re-measurement MUST carry
  * this board's -misa=v3 -mdfpu baseline; at the compiler's default -misa=v1 with no DFPU every
  * figure comes out smaller than the truth. */
@@ -160,9 +160,8 @@
 
 /* The measured descent of the two stubs a dying thread runs PRIVILEGED on its own KERNEL
  * BLOCK, kickos_fault_stack_top answering with ctx.kernel_sp: kickos_thread_fault_exit and
- * kickos_thread_slay_exit. 388 on rx72m-bench and 368 on the other three presets: the fault
- * stub descends the timer rearm its teardown's wake performs, the same chain _RET walks from
- * the other stub. On rx72m-bench:
+ * kickos_thread_slay_exit. 388 on rx72m-bench and 376 on the other two presets: the fault
+ * stub descends the timer rearm its teardown's wake performs. On rx72m-bench:
  *   kickos_thread_fault_exit[32] -> exit_current[48] -> cap_teardown[44] -> teardown_entry[48]
  *   -> obj_close_protocol[24] -> endpoint_rights_dropped[32] -> wake[8] -> resched_after_wake[4]
  *   -> pick_and_seat[32] -> ktime_rearm[28] -> arch_timer_arm[24] -> arch_clock_now[32]
@@ -171,19 +170,6 @@
  * Rounded like a thread-stack figure because it never binds: 308 + 448 = 756 against 1116
  * usable, where SYSK asks 1104. 448 is enforced over the 388 measured. */
 #define KICKOS_RX_TRAP_KERNEL_DEPTH_EXITK 448
-
-/* kickos_thread_return ALONE: an ordinary privileged thread's entry returning, with no fault
- * and no redirect, so it runs at whatever depth the entry returned from on the thread's own
- * stack. 480 enforced; 360 measured on rx72m-bench and 340 on the other three presets.
- * 308 + 480 = 788 against a 1024-byte KICKOS_MIN_STACK_SIZE, so the floor holds this figure
- * up to 716.
- *
- * The panic reporter is not under it. What it measures is the timer rearm the teardown's wake
- * performs, on rx72m-bench: kickos_thread_return[4] -> exit_current[48] -> cap_teardown[44]
- * -> teardown_entry[48] -> obj_close_protocol[24] -> endpoint_rights_dropped[32] -> wake[8]
- * -> resched_after_wake[4] -> pick_and_seat[32] -> ktime_rearm[28] -> arch_timer_arm[24]
- * -> arch_clock_now[32] -> __divdi3[32]. */
-#define KICKOS_RX_TRAP_KERNEL_DEPTH_RET 480
 
 /* What each guard enforces: room below the USP, in bytes.
  *
@@ -252,7 +238,7 @@
 #endif
 
 /* THE PANIC REPORTER'S OWN STACK, which kickos_panic_stack_enter (switch.S) moves to before a
- * banner is printed. The walk stops at that body, so an assert on SYSK, EXITK or RET costs
+ * banner is printed. The walk stops at that body, so an assert on SYSK or EXITK costs
  * those figures its call site and nothing under it, and the panic console is priced here
  * instead. THE FAULT REPORTER IS A DIFFERENT CHAIN and is not priced here: it runs in thread
  * context on the dying thread's own block and is what EXITK still measures.
@@ -261,14 +247,11 @@
  * there on and an exception, which RX accepts on the ISP, lands on a stack this array does not
  * share.
  *
- * 156 MEASURED on rx72m, rx72m-st and rx72m-flat, under an enforced 320, and what the reporter
- * descends is the UART RECLAIM's baud arithmetic:
- *   kickos_panic_report[8] -> kfault_terminate[20] -> kpanic_enter[4] -> arch_console_reclaim[12]
- *   -> rx::reg::sci::baud_select[80] -> __divdi3[32]
- * rx72m-bench measures 168, down the console:
- *   kickos_panic_report[8] -> kputs[8] -> kconsole_write[4] -> console_emit[36]
- *   -> arch_console_write[4] -> console_tx_insert_line[48] -> console_write_line_sync[32]
- *   -> bench_lock_hold_add[20]
+ * 200 MEASURED on rx72m and rx72m-flat and 216 on rx72m-bench, under an enforced 320,
+ * and what the reporter descends is the UART RECLAIM's baud arithmetic, from its refusal arm:
+ *   kickos_panic_report[8] -> refusal_report[28] -> kfault_terminate[20] -> kpanic_enter[12]
+ *   -> console_flush_then_reclaim[8] -> arch_console_reclaim[12] -> rx::reg::sci::baud_select[80]
+ *   -> __divdi3[32]
  * KICKOS_PANIC_STACK_SIZE (Kconfig) cuts the array and is what the gate compares this against;
  * arch_rxv3.cc static_asserts the two agree. */
 #define KICKOS_RX_PANIC_FRAME 0
@@ -286,10 +269,9 @@
  *
  * THE DEATH PATH. The backend rewrites the stacked PC so the RTE lands in a stub with R0 at
  * kickos_fault_stack_top, which answers with ctx.kernel_sp. EXITK is the two relocating stubs on
- * the block; RET is kickos_thread_return, which cannot move.
+ * the block.
  *
  * class EXITK    frame=KICKOS_RX_TRAP_NEST_EXIT depth=KICKOS_RX_TRAP_KERNEL_DEPTH_EXITK stack=kernel
- * class RET      frame=KICKOS_RX_TRAP_NEST_EXIT depth=KICKOS_RX_TRAP_KERNEL_DEPTH_RET
  * class PANIC    frame=KICKOS_RX_PANIC_FRAME depth=KICKOS_RX_PANIC_DEPTH stack=panic
  */
 

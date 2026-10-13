@@ -80,6 +80,7 @@ def admit_partition(paths, manifest_path, node):
         return report, None
     partition = Partition(paths, admitted, manifest)
     check_devices(files, admitted)
+    check_reset_owner(files, admitted, manifest)
     check_unserved(files, admitted, manifest)
     place_regions(files, admitted, manifest)
     check_cached(files, admitted)
@@ -117,6 +118,21 @@ def check_devices(files, admitted):
                                     % (grant.task.label(), grant.path, k, shared, held.task.label(), j,
                                        files[j].filename, line_of(held.node)))
                     break
+
+
+def check_reset_owner(files, admitted, manifest):
+    """partition.bootloader: `bootloader` held on a node that does not own the chip's reset, whose
+    kernel refuses every reset."""
+    owner = manifest.amp_reset_owner
+    for k, made in enumerate(admitted):
+        if k == owner:
+            continue
+        for task in made.tasks:
+            node = task.authority_nodes.get("bootloader")
+            if node is not None:
+                files[k].refuse(node, "partition.bootloader",
+                                "%s holds `bootloader` on node %d, and node %d owns the chip's reset"
+                                % (task.label(), k, owner))
 
 
 def check_unserved(files, admitted, manifest):

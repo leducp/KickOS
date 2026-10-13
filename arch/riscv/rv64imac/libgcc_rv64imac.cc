@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The two compiler-runtime helpers kernel text calls on this arch, in the kernel's own half.
-// cmake/kernel_runtime_rv64imac.syms rewrites the kernel archives' references to these names,
-// so a rename here has to happen there too.
+// Compiler-runtime helpers for kernel text. cmake/kernel_runtime_rv64imac.syms rewrites the
+// kernel archives' references to these names, so a rename here has to happen there too.
 //
 // Undefined at zero, as libgcc's own are.
 

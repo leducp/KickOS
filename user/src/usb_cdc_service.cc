@@ -8,8 +8,6 @@
 
 #include <kickos/sys/usb_cdc_service.h>
 
-#include <stdlib.h>
-
 namespace kickos::usb
 {
 
@@ -20,8 +18,8 @@ void shared_init(Shared* s)
 
 void console_serve_loop(Shared* sh)
 {
-    console::console_serve_loop<Transport>(sh);
-    exit(0);
+    (void)console::console_serve_loop<Transport>(sh);
+    driver::trap();
 }
 
 }

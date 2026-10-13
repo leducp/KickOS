@@ -18,8 +18,7 @@
  */
 
 #include <kickos/arch/armv7m_trap_stack.h>
-/* KICKOS_KERNEL_STACK_SIZE, which PendSV_Handler compares a PSP against. Pure integer
-   macros, generated, and already included from startup.S. */
+/* KICKOS_KERNEL_STACK_SIZE, which PendSV_Handler compares a PSP against. */
 #include <kickos/board_config.h>
 
 #if KICKOS_BENCH && KICKOS_KERNEL_CORES > 1
@@ -89,17 +88,13 @@
 
     .text
 
-/* ------------------------------------------------------------------------- */
-/* PendSV_Handler runs at the lowest priority, after every other exception    */
-/* tail-chains, so a switch requested from an ISR happens on the way back to  */
-/* thread level.                                                              */
-/* ------------------------------------------------------------------------- */
+/* PendSV_Handler runs at the lowest priority, so a switch requested from an ISR happens on
+   the way back to thread level. */
     .thumb_func
     .global PendSV_Handler
 PendSV_Handler:
 #if KICKOS_BENCH
-    /* DWT CYCCNT @ 0xE0001004. r0/r1 are caller-saved and already HW-stacked, so they
-       are free here. */
+    /* DWT CYCCNT. */
     ldr     r0, =0xE0001004
     ldr     r0, [r0]
     ldr     r1, =g_bench_sw_start
@@ -152,17 +147,15 @@ PendSV_Handler:
 #endif
     stmdb   r0!, {r4-r11, lr}       /* push callee regs + EXC_RETURN */
     str     r0, [r2]                /* outgoing->sp = r0 (ctx.sp is field 0) */
-    mrs     r0, control             /* save the outgoing thread's CURRENT */
-    and     r0, r0, #1              /* privilege (nPRIV): a thread blocked mid- */
-    str     r0, [r2, #4]            /* syscall is privileged and must resume so */
+    mrs     r0, control             /* the CURRENT nPRIV: a thread blocked mid-syscall */
+    and     r0, r0, #1              /* is privileged and must resume so */
+    str     r0, [r2, #4]
 1:
-    /* g_arch_next and the deferred MPU stash are ONE pair, written together under the
-       kernel lock, and PendSV must consume them as one. A device IRQ (PRIO_DEVICE, above
-       PRIO_PENDSV) preempting between the two reschedules and replaces BOTH, so an
-       unmasked PendSV can restore one thread's PSP and then program the other thread's
-       regions, and the resumed thread faults on its own stack. PRIMASK masks PendSV
-       itself, so entry here implies PRIMASK==0 and the cpsie below restores the entry
-       state exactly; the kernel lock uses BASEPRI and is untouched by this. */
+    /* g_arch_next and the MPU stash are ONE pair and PendSV must consume them as one: a device
+       IRQ (above PRIO_PENDSV) preempting between the two reschedules and replaces BOTH, so
+       one thread's PSP could be restored under the other's regions. Entry implies
+       PRIMASK==0, so the cpsie below restores it exactly; the kernel lock's BASEPRI is
+       untouched. */
     cpsid   i
     ldr     r1, =g_arch_next
     ldr     r1, [r1]                /* incoming ctx* */
@@ -181,10 +174,9 @@ PendSV_Handler:
     msr     control, r3
     isb
 #if KICKOS_BENCH
-    /* Bench: delta = now - entry stamp. Read BEFORE any telemetry emit, so the measured
-       window brackets the save/restore alone. The balanced push/pop preserves r1 (incoming
-       ctx*) and the entry-spilled {r2,r3} beneath it, keeps MSP 8-byte aligned and saves
-       EXC_RETURN. */
+    /* Read BEFORE any telemetry emit, so the window brackets the save/restore alone. The
+       push/pop keeps r1 (incoming ctx*), the telemetry spill below it, EXC_RETURN, and MSP
+       8-byte aligned. */
     push    {r0, r1, r2, lr}
     ldr     r0, =0xE0001004
     ldr     r0, [r0]
@@ -195,10 +187,8 @@ PendSV_Handler:
     pop     {r0, r1, r2, lr}
 #endif
 #if KICKOS_TELEMETRY
-    /* SWITCH completion hook. Emit {from,to} from the PHYSICALLY-swapped contexts: r1 is
-       the incoming ctx* loaded above, r2 the outgoing ctx* spilled at entry. from = 0xFFFF
-       on the first switch, where the outgoing ctx* is 0. EXC_RETURN (lr) is saved across
-       the bl and MSP kept 8-byte aligned. */
+    /* Emit {from,to} from the physically swapped contexts: r1 incoming, r2 the outgoing
+       spilled at entry. from = 0xFFFF on the first switch, where the outgoing ctx* is 0. */
     pop     {r2, r3}                /* r2 = outgoing ctx* (r3 = alignment pad) */
     ldr     r1, [r1, #F_CTX_TRACE_TID] /* r1 = to_tid (incoming.trace_tid) */
     movw    r0, #0xFFFF             /* default from = no-thread */
@@ -210,22 +200,17 @@ PendSV_Handler:
     bl      kickos_trace_switch_done /* (r0=from_tid, r1=to_tid) */
     pop     {r0, lr}                /* restore EXC_RETURN */
 #endif
-    /* Deferred MPU commit, after the physical PSP/register swap (shared seam,
-       arch_arm_common.cc). Applying the incoming regions in switch_to instead would run the
-       OUTGOING thread under them until PendSV fires, faulting it on its own stack. Callee
-       regs (r4-r11) survive the call (AAPCS), r0-r3/r12 are reloaded from the HW frame on
-       exception return, and lr holds EXC_RETURN and must be preserved across the bl (the r0
-       pad keeps MSP 8-byte aligned). */
+    /* Deferred MPU commit, after the physical swap: committing in arch_switch would run the
+       OUTGOING thread under the incoming regions and fault it on its own stack. lr holds
+       EXC_RETURN and survives the bl through the push; r0 pads MSP to 8 bytes. */
     push    {r0, lr}
     bl      kickos_arch_mpu_commit
     pop     {r0, lr}
     cpsie   i                       /* pair consumed; never resume a thread masked */
     bx      lr                      /* EXC_RETURN -> resume incoming on PSP */
 
-/* A syscall with no current thread has no bounds to check, and the slow path below this
-   handler still writes through the PSP. Unreachable today: g_arch_current is the first-start
-   sentinel only until arch_start's first switch, and nothing traps before then. The bounds go
-   out as [0, 0), which the reporter's own upper-bound test describes as an unseated pair.
+/* A syscall with no current thread has no bounds to check, and the slow path below still
+   writes through the PSP. The bounds go out as [0, 0), an unseated pair to the reporter.
    Never returns. */
 .Lsvc_nothread:
     movw    r1, #KICKOS_ARMV7M_TRAP_NEED_SVC
@@ -511,10 +496,8 @@ svc_trampoline:
     bx      lr                      /* -> arch_syscall's caller, r0:r1=result */
 
 /* A thread whose ctx.kernel_sp is 0 reached the syscall path, so the transfer has nowhere to
-   build. Unreachable today: thread_create seats a block on every pool thread, and idle is the
-   only TCB outside the pool, privileged and running arch_idle_wait alone. Reported rather
-   than argued, so a future TCB that reaches it finds a refusal instead of a store through
-   0xFFFFFFF0. r0 is the PSP the thread would have resumed on.
+   build; refusing here replaces a store through 0xFFFFFFF0. r0 is the PSP the thread would
+   have resumed on.
 
    THE REPORTER RUNS ON THE MSP. This site is in THREAD mode on the thread's own PSP, and the
    reporter's console chain measures 488 bytes against the 180 the SVC guard reserved below

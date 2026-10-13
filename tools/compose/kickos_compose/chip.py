@@ -11,7 +11,7 @@ import subprocess
 import tempfile
 
 from .descriptions import (
-    check_board, check_chip, device_layout, device_symbols, line_macro, line_symbols, memory_layout,
+    POW2_UNITS, check_board, check_chip, device_layout, device_symbols, line_macro, line_symbols, memory_layout,
     memory_symbol, reaches, unit_views,
 )
 from .subset import Report, read_utf8
@@ -159,6 +159,21 @@ def kernel_lines(view, when):
             if device.owner == "kernel" and condition == when]
 
 
+def region_rule(view):
+    """(granule, pow2) arch_mpu_min_region and arch_mpu_region_pow2 answer on this build, or None where
+    the granule is the page of the host the build runs on."""
+    units = view.units()
+    if any(unit.unit == "mprotect" for unit in units):
+        return None
+    rules = {(unit.granule, int(unit.unit in POW2_UNITS)) for unit in units if unit.granule is not None}
+    if len(rules) > 1:
+        raise Failure("chip `%s`'s cores state the region rules %s; one build rounds by one"
+                      % (view.chip.name, ", ".join("%d/%d" % rule for rule in sorted(rules))))
+    if not rules:
+        return 0, 0
+    return rules.pop()
+
+
 def limit_values(view):
     """[(macro, value, ref)] of chip_limits.h."""
     chip = view.chip
@@ -174,6 +189,10 @@ def limit_values(view):
     if chip.cycle_counter.get("glitches"):
         values.append(("KICKOS_CHIP_CYCCNT_GLITCHES", 1, chip.refs.get("glitches")))
     values.append(("KICKOS_CHIP_DCACHE", int(chip.data_cache), None))
+    rule = region_rule(view)
+    if rule is not None:
+        values.append(("KICKOS_CHIP_REGION_GRANULE", rule[0], None))
+        values.append(("KICKOS_CHIP_REGION_POW2", rule[1], None))
     return values
 
 
@@ -409,6 +428,23 @@ def emit_cmake(view):
                  % ";".join(kernel_lines(view, "doorbell")))
     if view.chip.esptool_image is not None:
         facts.append("set(KICKOS_CHIP_ESPTOOL_IMAGE \"%s\")\n" % ";".join(view.chip.esptool_image))
+    exits = "OFF"
+    if view.chip.exits_on_fault:
+        exits = "ON"
+    facts.append("set(KICKOS_CHIP_EXITS_ON_FAULT %s)\n" % exits)
+    if view.chip.family is not None:
+        facts.append("set(KICKOS_CHIP_FAMILY_DIR \"%s\")\nset(KICKOS_CHIP_FAMILY_SOURCES \"%s\")\n"
+                     % (view.chip.family[0], ";".join(view.chip.family[1])))
+    if view.chip.cpu is not None:
+        facts.append("set(KICKOS_CHIP_CPU \"%s\")\n" % view.chip.cpu)
+    rule = region_rule(view)
+    if rule is not None:
+        facts.append("set(KICKOS_CHIP_REGION_GRANULE %d)\nset(KICKOS_CHIP_REGION_POW2 %d)\n" % rule)
+    if view.board is not None:
+        led = "OFF"
+        if view.board.kernel_led is not None:
+            led = "ON"
+        facts.append("set(KICKOS_KERNEL_LED %s)\n" % led)
     if view.board is not None and view.board.emulator is not None:
         facts.extend(emulator_cmake(view, view.board.emulator, lengths))
     return "%s%s%sset(KICKOS_CHIP_REGION_UNIT \"%s\")\nset(KICKOS_CHIP_TRANSLATES %s)\n" % (

@@ -6,12 +6,9 @@
 #ifndef KICKOS_ARCH_IRQ_INLINE_H
 #define KICKOS_ARCH_IRQ_INLINE_H
 
-// A host unit fixture can carry this arch's include directory (tests/unit/mapfence) while
-// answering the seam with a definition of its own, so the bodies appear only for a real
-// compile of this ISA; anywhere else the seam stays the out-of-line declaration and the
-// fixture's definition is the one that links. The markers precede the arch.h include
-// because arch.h declares the halves they do not claim, and a declaration ahead of these
-// static bodies does not compile.
+// Host unit fixtures (tests/unit/mapfence) carry this include directory and define the seam
+// themselves, so the inline bodies exist only under a RISC-V compile. The markers precede the
+// arch.h include: a declaration ahead of a static body does not compile.
 #if defined(__riscv)
 #define KICKOS_ARCH_IRQ_SAVE_INLINE 1
 #define KICKOS_ARCH_IRQ_RESTORE_INLINE 1
@@ -34,8 +31,8 @@ static inline __attribute__((always_inline)) arch_irq_state_t arch_irq_save(void
 
 static inline __attribute__((always_inline)) void arch_irq_restore(arch_irq_state_t state)
 {
-    // csrs only SETS bits, and state is 0 or SSTATUS_SIE, so this re-enables SIE exactly
-    // when the paired save disabled it. That is what makes it nesting-safe.
+    // csrs only sets bits and state is 0 or SSTATUS_SIE: SIE is re-enabled only if the paired
+    // save cleared it.
     __asm volatile("csrs sstatus, %0" ::"r"(static_cast<uint64_t>(state)) : "memory");
 }
 

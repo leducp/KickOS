@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// XMC4800 USIC channel registers + bit fields, ASC (UART) and SSC (SPI) mode
-// layers, from the XMC4700/XMC4800 Reference Manual (V1.3, 2016-07). "RM p.NN" are
-// the manual's printed pages.
+// XMC4800 USIC channel registers and bit fields, ASC (UART) and SSC (SPI) modes (XMC4700/XMC4800
+// RM V1.3). "RM p.NN" are the manual's printed pages.
 
 #ifndef KICKOS_ARCH_ARM_CHIP_XMC4800_REGS_USIC_H
 #define KICKOS_ARCH_ARM_CHIP_XMC4800_REGS_USIC_H
@@ -105,11 +104,6 @@ namespace kickos::xmc::reg::usic
     // ASC MODE ONLY: RM 18.4.5.2 lists PSR[9:5] as reserved in SSC, and in IIC bit 9 is ACK.
     constexpr uint32_t PSR_BUSY = 1u << 9;
 
-    // RBUFSR (RM p.18-204): RDV0/RDV1 "Receive Data Valid"; RBUF.DSR[15:0] word.
-    constexpr uint32_t RBUFSR_RDV0 = 1u << 13;
-    constexpr uint32_t RBUFSR_RDV1 = 1u << 14;
-    constexpr uint32_t RBUF_DSR_MASK = 0xFFFFu;
-
     // FIFO TBCTR/RBCTR field positions (RM p.18-214 / 18-218).
     constexpr uint32_t FIFO_DPTR_SHIFT = 0;   // [5:0]
     constexpr uint32_t FIFO_LIMIT_SHIFT = 8;  // [13:8]
@@ -140,13 +134,6 @@ namespace kickos::xmc::reg::usic
 
     // CCR (RM p.18-160): MODE[3:0]=2 selects ASC; writing it last enables the channel.
     constexpr uint32_t CCR_MODE_ASC = 0x2u;
-
-    // ASC-mode PSR line-error flags (RM p.18-70/71). Parity is not enabled.
-    constexpr uint32_t PSR_RNS = 1u << 4;   // receiver noise
-    constexpr uint32_t PSR_FER0 = 1u << 5;  // stop-bit framing error 0
-    constexpr uint32_t PSR_FER1 = 1u << 6;  // stop-bit framing error 1
-    constexpr uint32_t PSR_DLIF = 1u << 11; // data-lost (RX overrun)
-    constexpr uint32_t ASC_ERR_MASK = PSR_RNS | PSR_FER0 | PSR_FER1 | PSR_DLIF;
 
     // ---- SSC (SPI) mode field constants --------------------------------------
 

@@ -11,8 +11,8 @@ set(KICKOS_ARCH_SOURCES
   common/arch_ram_common.cc
   common/startup_ranges.cc
   ${KICKOS_SEAM_DEFAULTS_COMMON}
-  rx/rxv3/kickos_rx_dev_dispatch_default.cc
-  rx/rxv3/kickos_rx_group_arm_default.cc
+  ${KICKOS_SEAM_DEFAULTS_DIR}/kickos_rx_dev_dispatch_default.cc
+  ${KICKOS_SEAM_DEFAULTS_DIR}/kickos_rx_group_arm_default.cc
   rx/rxv3/switch.S)
 
 set(KICKOS_ARCH_PRIVATE_INCLUDE_DIRS

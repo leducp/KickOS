@@ -11,12 +11,16 @@
 kickos_add_unit_test(NAME ram_owner
   SOURCES owner_table.cc
           block_clear.cc
+          "${PROJECT_SOURCE_DIR}/tests/unit/common/region_seam.cc"
           "${PROJECT_SOURCE_DIR}/kernel/mem/ramown.cc"
   INCLUDES $<TARGET_PROPERTY:kickos_kernel,INCLUDE_DIRECTORIES>
+           "${PROJECT_SOURCE_DIR}/tests/unit/common"
   DEFINITIONS $<TARGET_PROPERTY:kickos_kernel,COMPILE_DEFINITIONS> KICKOS_ARCH_ARENA_DCACHE=1)
 
 # The same table at the three-instance posture owner_instances.h sets.
 kickos_add_unit_test(NAME ram_owner_instances
   SOURCES owner_instances.cc owner_instances_shim.cc
+          "${PROJECT_SOURCE_DIR}/tests/unit/common/region_seam.cc"
   INCLUDES $<TARGET_PROPERTY:kickos_kernel,INCLUDE_DIRECTORIES>
+           "${PROJECT_SOURCE_DIR}/tests/unit/common"
   DEFINITIONS $<TARGET_PROPERTY:kickos_kernel,COMPILE_DEFINITIONS>)

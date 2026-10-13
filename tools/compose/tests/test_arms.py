@@ -63,17 +63,23 @@ WATCHED = ("\n  - name: health\n", "".join("\n  - name: w%d\n    entry: w%d_main
 WATCHES_33 = ", ".join(["sensor"] + ["w%d" % n for n in range(32)])
 WATCHES_32 = ", ".join(["w%d" % n for n in range(32)])
 
+# virt_rv32's kernel-owned blocks, each given up.
+RV32_UNRESERVED = [("[0x02000000, 0x10000], owner: kernel, ", "[0x02000000, 0x10000], "),
+                   ("[0x00100000, 0x1000], owner: kernel, ", "[0x00100000, 0x1000], ")]
+
 ARMS = [
     ("chip.line-order", "xmc4800/chip.yaml", [("      sr1: 85\n      sr2: 86\n", "      sr2: 86\n      sr1: 85\n")], False),
     (None, "rx72m/chip.yaml", [("      rxi: { number: 86", "      rx0: { number: 86")], False),
     ("form.unknown-field", "stm32f411/chip.yaml", [("chip: stm32f411\n", "chip: stm32f411\nvendor: st\n")], False),
     ("form.unknown-field", "stm32f411/chip.yaml",
-     [("protection: { unit: pmsav7, covers_devices: true, memory_type: true }",
-       "protection: { unit: pmsav7, covers_devices: true, memory_type: true, granule: 32 }")], False),
+     [("protection: { unit: pmsav7, granule: 32, covers_devices: true, memory_type: true }",
+       "protection: { unit: pmsav7, granule: 32, covers_devices: true, memory_type: true, regions: 8 }")], False),
     ("form.unknown-field", "mk64f/chip.yaml",
      [("  uart1: { window: [0x4006B000, 0x20],", "  uart1: { window: [0x4006B000, 0x20], irq: 31,")], False),
     ("form.unknown-field", "xmc4800/chip.yaml",
      [("ch0: { window: [0x40030000, 0x200] }", "ch0: { window: [0x40030000, 0x200], fifo: 64 }")], False),
+    ("form.inapplicable", "xmc4800/chip.yaml",
+     [("  port14: { window: [0x48028E00, 0x100],", "  port14: { module_gate: true, window: [0x48028E00, 0x100],")], False),
     ("form.unknown-field", "imx8mp/chip.yaml", [("    smp: true\n", "    smp: true\n    big: true\n")], False),
     ("form.unknown-field", "mk64f/chip.yaml", [("    per_thread: false\n", "    per_thread: false\n    slots: 2\n")], False),
     ("form.unknown-field", "esp32c6/chip.yaml", [("traps: false }", "traps: false, latch: true }")], False),
@@ -96,6 +102,18 @@ ARMS = [
     ("form.unknown-field", "mk64f/frdmk64f.yaml",
      [("    chip_selects: [PTC4]\n", "    chip_selects: [PTC4]\n    speed: 1000000\n")], False),
     ("form.boolean", "stm32f411/chip.yaml", [("covers_devices: true,", "covers_devices: yes,")], False),
+    ("form.boolean", "mps2/chip.yaml", [("exits_on_fault: true", "exits_on_fault: yes")], False),
+    ("form.name", "esp32/chip.yaml", [("cpu: lx6", "cpu: LX6")], False),
+    ("form.name", "rp2040/chip.yaml", [("dir: arm/chip/rp2xxx,", "dir: ../rp2xxx,")], False),
+    ("form.missing", "rp2040/chip.yaml",
+     [("sources: [arm/chip/rp2xxx/chip_rp2xxx.cc, arm/chip/rp2xxx/rom_call.S] }", "sources: [] }")], False),
+    ("form.missing", "stm32f103/chip.yaml",
+     [("family: { dir: arm/chip/stm32f1f3, sources: [arm/chip/stm32f1f3/chip_stm32f1f3.cc] }",
+       "family: { dir: arm/chip/stm32f1f3 }")], False),
+    ("form.unknown-field", "stm32f103/chip.yaml", [("family: { dir:", "family: { include: x, dir:")], False),
+    ("form.missing", "stm32f411/chip.yaml", [("family: none\n", "")], True),
+    ("form.missing", "stm32f411/chip.yaml", [("exits_on_fault: false\n", "")], True),
+    ("form.enum", "stm32f411/chip.yaml", [("family: none\n", "family: nil\n")], False),
     ("form.boolean", "stm32f411/chip.yaml", [("covers_devices: true,", "covers_devices: no,")], False),
     ("form.boolean", "stm32f411/chip.yaml", [("covers_devices: true,", "covers_devices: on,")], False),
     ("form.boolean", "stm32f411/chip.yaml", [("covers_devices: true,", "covers_devices: off,")], False),
@@ -140,8 +158,9 @@ ARMS = [
      False),
     (None, "stm32f411/chip.yaml", [("[0x40004400, 0x20]", "[0xFFFFFFE0, 0x20]")], False),
     (None, "virt_arm64/chip.yaml", [("[0x09030000, 0x1000]", "[0xFFFFFFFFFFFFE000, 0x1000]")], False),
-    ("chip.reserved", "virt_rv32/chip.yaml", [("owner: kernel, ", "")], True),
-    (None, "virt_rv32/chip.yaml", [("owner: kernel, ", ""), ("\ndevices:\n", "\nreserved: none\n\ndevices:\n")], False),
+    ("chip.reserved", "virt_rv32/chip.yaml", RV32_UNRESERVED, True),
+    (None, "virt_rv32/chip.yaml",
+     RV32_UNRESERVED + [("\ndevices:\n", "\nreserved: none\n\ndevices:\n")], False),
     ("chip.reserved", "xmc4800/chip.yaml", [("\ndevices:\n", "\nreserved: none\n\ndevices:\n")], False),
     ("form.enum", "virt_rv32/chip.yaml", [("\ndevices:\n", "\nreserved: all\n\ndevices:\n")], False),
     ("form.text", "xmc4800/chip.yaml", [('ref: "Table 7-2 Memory Map, p.7-5"', 'ref: "Table 7-2 */ p.7-5"')], False),
@@ -155,7 +174,13 @@ ARMS = [
     ("form.inapplicable", "q35/chip.yaml", [("memory_type: true, io_ports: true }", "memory_type: true, io_ports: true, driven: false }")],
      False),
     ("form.inapplicable", "esp32c6/chip.yaml", [("  hp:\n", "  hp:\n    line_offset: 0\n")], False),
-    ("form.missing", "stm32f411/chip.yaml", [("unit: pmsav7, covers_devices: true,", "unit: pmsav7,")], False),
+    ("form.missing", "stm32f411/chip.yaml", [("granule: 32, covers_devices: true,", "granule: 32,")], False),
+    ("form.missing", "stm32f411/chip.yaml", [("unit: pmsav7, granule: 32,", "unit: pmsav7,")], False),
+    ("form.missing", "esp32c6/chip.yaml", [("      granule: 8\n", "")], True),
+    ("chip.granule-size", "stm32f411/chip.yaml", [("granule: 32,", "granule: 24,")], False),
+    ("chip.zero-size", "rx72m/chip.yaml", [("granule: 16,", "granule: 0,")], False),
+    ("form.inapplicable", "virt_rv64/chip.yaml", [("page: 0x1000,", "page: 0x1000, granule: 0x1000,")], False),
+    ("form.inapplicable", "nrf51/chip.yaml", [("{ unit: none,", "{ unit: none, granule: 32,")], False),
     ("form.missing", "stm32f411/chip.yaml", [(", memory_type: true }", " }")], False),
     ("form.missing", "esp32c6/chip.yaml", [("      memory_type: false\n", "")], True),
     (None, "esp32c6/chip.yaml", [("{ unit: none, privilege: false }", "{ unit: none, privilege: false, memory_type: false }")],
@@ -251,7 +276,7 @@ ARMS = [
     ("chip.cluster-unknown", "stm32f411/chip.yaml", [("  spi1: { window", "  spi1: { cluster: m4, window")], False),
     ("chip.kernel-window", "stm32f411/chip.yaml", [("\ndevices:\n", "\ndevices:\n  iwdg: { owner: kernel }\n")], False),
     ("chip.memory-required", "q35/chip.yaml",
-     [("unit: mmu, page: 0x1000, covers_devices: true,", "unit: pmp, covers_devices: true,")], True),
+     [("unit: mmu, page: 0x1000, covers_devices: true,", "unit: pmp, granule: 8, covers_devices: true,")], True),
     ("chip.arena", "stm32f411/chip.yaml", [("arena: true", "arena: false")], True),
     ("chip.arena", "stm32f411/chip.yaml",
      [("\nmemory:\n", "\nmemory:\n  ccm: { base: 0x10000000, size: 0x10000, arena: true }\n")], True),
@@ -735,6 +760,16 @@ PORTS = ("    maps: { /shm/history: rw }\n", "    maps: { /shm/history: rw }\n  
 SENSOR_ALARM = ("devices: [/dev/rtc]", "devices: [/dev/rtc]\n    lines: { alarm: /dev/rtc/alarm }")
 DRIVERS_UNNOTIFIED = [("    notifications: 1\n    block: none\n", "    notifications: 0\n    block: none\n"),
                       ("    notifications: 1\n    block: 1024\n", "    notifications: 0\n    block: 1024\n")]
+XMC_CONSOLE = "    devices: [/dev/usic0/ch0]\n    lines: { irq: /dev/usic0/sr0 }\n    serves: /svc/console\n    priority: 12\n"
+# Each USIC0 driver's `accepts: [coarse_gate]`, dropped.
+XMC_CONSOLE_ACCEPTS = (XMC_CONSOLE + "    accepts: [coarse_gate]\n", XMC_CONSOLE)
+XMC_SPI_ACCEPTS = ("    restart: { max: 3 }\n    accepts: [coarse_gate]\n", "    restart: { max: 3 }\n")
+# The console left on the kernel: USIC0's channel 0 is then the kernel's.
+XMC_KERNEL_CONSOLE = [("stdout: /svc/console", "stdout: kernel"),
+                      ("  - name: console\n    driver: xmcuartirq\n" + XMC_CONSOLE + "    accepts: [coarse_gate]\n\n", "")]
+# The app holding both channels of USIC1, a module nothing else touches.
+XMC_APP_USIC1 = ("    uses: [/svc/sensor]\n", "    uses: [/svc/sensor]\n    devices: [/dev/usic1/ch0, /dev/usic1/ch1]\n")
+XMC_SPI = "    devices: [/dev/usic0/ch1]\n    lines: { irq: /dev/usic0/sr1 }\n    serves: /svc/spi0\n    priority: 11\n    restart: { max: 3 }\n"
 SENSOR_LINES = ("    maps: { /shm/history: rw }\n", "    maps: { /shm/history: rw }\n    lines: { a: /dev/usic0/sr2, b: /dev/usic0/sr3 }\n")
 
 # A packaged driver of one window role, and a task running it on q35 over `device`.
@@ -782,6 +817,16 @@ ADMISSION_ARMS = [
     ("enforcement.unneeded", "xmc4800-relax.yaml",
      [("    maps: { /shm/history: rw }\n", "    maps: { /shm/history: rw }\n    devices: [/dev/port/3]\n    accepts: [coarse_gate]\n")],
      [], False),
+    ("enforcement.coarse-gate", "xmc4800-relax.yaml", [XMC_CONSOLE_ACCEPTS], [], False),
+    (None, "xmc4800-relax.yaml", XMC_KERNEL_CONSOLE, [], False),
+    (None, "xmc4800-relax.yaml", [XMC_APP_USIC1], [], False),
+    ("enforcement.unneeded", "xmc4800-relax.yaml",
+     [(XMC_APP_USIC1[0], XMC_APP_USIC1[1] + "    accepts: [coarse_gate]\n")], [], False),
+    # spi0 unresolved: it counts as no holder, so the console needs no `coarse_gate`.
+    (("name.device-unknown", "driver.window-role"), "xmc4800-relax.yaml",
+     [XMC_CONSOLE_ACCEPTS, ("devices: [/dev/usic0/ch1]", "devices: [/dev/usic0/ch1, /dev/usic9]")], [], False),
+    ("enforcement.coarse-gate", "xmc4800-relax.yaml", XMC_KERNEL_CONSOLE + [(XMC_SPI + "    accepts: [coarse_gate]\n", XMC_SPI)], [],
+     False),
     ("enforcement.no-protection", "xmc4800-relax.yaml", [], UNENFORCED, True),
     (None, "xmc4800-relax.yaml", [NO_PROTECTION], UNENFORCED, False),
     (None, "xmc4800-relax.yaml", [("ends: never\n", "ends: never\naccepts: [no_protection]\n")], [], False),
@@ -813,7 +858,8 @@ ADMISSION_ARMS = [
      [("  xmcssc:\n    windows: [regs]\n    lines: [irq]\n", "  xmcssc:\n    windows: [regs]\n    lines: [sr1]\n")], False),
     ("driver.window-role", "xmc4800-relax.yaml",
      [("devices: [/dev/usic0/ch1]", "devices: [/dev/usic0/ch1, /dev/port/3]")], [], False),
-    ("driver.window-role", "xmc4800-relax.yaml", [("    devices: [/dev/usic0/ch1]\n", "")], [], True),
+    ("driver.window-role", "xmc4800-relax.yaml", [("    devices: [/dev/usic0/ch1]\n", ""), XMC_CONSOLE_ACCEPTS, XMC_SPI_ACCEPTS],
+     [], True),
     ("driver.authority", "xmc4800-relax.yaml", [("    driver: xmcssc\n", "    driver: xmcssc\n    authority: [irq]\n")], [],
      False),
     ("driver.port-window", "qemu-x86_64.yaml", [com2_driver("/dev/com2")], PORT_DRIVER, False),
@@ -1058,6 +1104,7 @@ MANIFEST_ARMS = [
     (None, [("  kernel_cores: 1\n  isolated_cores: 0x0\n", "  kernel_cores: 2\n  isolated_cores: 0x2\n"), (MANIFEST_AMP, "")],
      False),
     ("manifest.amp", [("    node: 0\n", "    node: 2\n")], False),
+    ("manifest.amp", [("    node: 0\n", "    node: 0\n    reset_owner: 2\n")], False),
     ("manifest.amp", [("[[0, 2], [1, 3]]", "[[0, 2], [2, 3]]")], False),
     ("form.missing", [("    share: 0x4000\n", "")], True),
     ("form.range", [("    share: 0x4000\n", "    share: 0x100000000\n")], False),
@@ -1609,7 +1656,8 @@ C6_WATCHERS = [("    maps: { /shm/state: rw }\n",
                 "    maps: { /shm/state: rw }\n"
                 "  - name: first\n    entry: first_main\n    stack: 1024\n    priority: 8\n    ceiling: 8\n    watches: [blink]\n"
                 "  - name: second\n    entry: second_main\n    stack: 1024\n    priority: 8\n    ceiling: 8\n    watches: [blink]\n")]
-LP_PROTECTED = [("{ unit: none, privilege: false }", "{ unit: pmp, covers_devices: true, memory_type: false }")]
+LP_PROTECTED = [("{ unit: none, privilege: false }",
+                 "{ unit: pmp, granule: 8, covers_devices: true, memory_type: false }")]
 
 
 def diagnostic_app(name, grants, expect):
@@ -1780,6 +1828,8 @@ ARM64_CROSSING_ONLY = [("shared:\n  - name: /shm/book\n    size: 64\n    cache: 
 LOCAL = ("    partition: true\n", "")
 ARM64_AMP3 = mutate(ARM64_AMP, [("    nodes: 2\n", "    nodes: 3\n")])[0]
 ARM64_SHARED = mutate(ARM64_AMP, [("    share_cache: uncached\n", "    share_cache: uncached\n    image: shared\n")])[0]
+ARM64_AMP_OWNER1 = mutate(ARM64_AMP, [("    nodes: 2\n", "    nodes: 2\n    reset_owner: 1\n")])[0]
+BOOTLOADER = ("    maps: { /shm/book: rw }\n", "    maps: { /shm/book: rw }\n    authority: [system, bootloader]\n")
 
 
 def partitioned(name, texts, edits, expect, manifest, platform_edits=(), paths=None, names=None):
@@ -2065,6 +2115,13 @@ SCENARIOS = [
                                    [(1, "    serves: ", "partition.port")], ARM64_AMP)),
     ("partition.port", partitioned("arm64", ARM64_PAIR, {1: [SPARE]}, [(1, "    serves:  /amp/3", "partition.port")],
                                    ARM64_AMP)),
+    # `bootloader` is the reset owner's alone: node 0 by default, node 1 where the manifest says.
+    (None, partitioned("arm64", ARM64_PAIR, {0: [BOOTLOADER]}, [], ARM64_AMP)),
+    ("partition.bootloader", partitioned("arm64", ARM64_PAIR, {1: [BOOTLOADER]},
+                                         [(1, "    authority: ", "partition.bootloader")], ARM64_AMP)),
+    (None, partitioned("arm64", ARM64_PAIR, {1: [BOOTLOADER]}, [], ARM64_AMP_OWNER1)),
+    ("partition.bootloader", partitioned("arm64", ARM64_PAIR, {0: [BOOTLOADER]},
+                                         [(0, "    authority: ", "partition.bootloader")], ARM64_AMP_OWNER1)),
     ("partition.port", partitioned("arm64", ARM64_PAIR, {}, [(0, "    uses: ", "partition.port"),
                                                              (1, "    serves: ", "partition.port")],
                                    ARM64_AMP.replace("[[0, 2], [1, 3], [1, 4]]", "[[0, 3], [1, 3]]"))),
@@ -2322,6 +2379,15 @@ class Arms(unittest.TestCase):
             if not reddened:
                 unarmed.append("%s:%d" % (os.path.basename(site[0]), site[1]))
         self.assertEqual(unarmed, [])
+
+
+class Reload(unittest.TestCase):
+    def test_a_refused_text_is_refused_on_every_load(self):
+        text = "chip: a\nchip: b\n"
+        for path in ("first.yaml", "second.yaml"):
+            report = subset.Report()
+            subset.File(path, report).load(text)
+            self.assertEqual([(r.path, r.rule) for r in report.refusals], [(path, "form.duplicate-key")])
 
 
 class NeverAssigned(unittest.TestCase):

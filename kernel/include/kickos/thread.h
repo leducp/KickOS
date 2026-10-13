@@ -293,20 +293,22 @@ namespace kickos
         // under IrqLock, single-writer at every stage.
         size_t call_rx_cap = 0;
         uint16_t call_seq = 0;
-        // A bitfield pair, and it has to stay one: the four bytes here are saturated against
-        // `wait_obj`'s alignment, so a separate byte for the flag would cost every TCB four.
-        // CallState spends two bits; AMP's console retry state uses the spare bit without
-        // growing any TCB.
-        uint8_t call_state : 6 = CALL_NONE;
+        // One bitfield byte, and it has to stay one: the four bytes here are saturated against
+        // `wait_obj`'s alignment, so a separate byte for a flag would cost every TCB four.
+        // CallState spends two bits; the console's flags take spare ones without growing any TCB.
+        uint8_t call_state : 5 = CALL_NONE;
         // Set only by the trap-handler IPC fastpath, which parks a caller with no kernel
         // continuation: nothing reads wait_result on that thread's behalf, so the switch that
         // resumes it stores the result into the saved frame. Cleared there, by the one writer.
         uint8_t call_frame_parked : 1 = 0;
-#if KICKOS_AMP_OWN_IMAGE
+#if KICKOS_AMP_CONSOLE_CLAIM
         // The syscall's newline emitted CR but lost the UART claim before LF. Its next offer
         // must send LF alone, even if another thread used the shared UART meanwhile.
         uint8_t console_cr_pending : 1 = 0;
 #endif
+        // Inside the kernel console's chip-writer bracket in thread context, which a slay can end
+        // before its leave (kconsole_slain). Written under IrqLock by the thread itself.
+        uint8_t console_writing : 1 = 0;
         WaitKind wait_kind = WAIT_NONE;
 #if KICKOS_AMP_NODE
         // The amp hold this thread must land or give back, biased by one so a fresh TCB holds

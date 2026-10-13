@@ -98,15 +98,6 @@ inline WriteResult stdout_write(char const* s, size_t total)
         {
             return {sent, r};
         }
-        // THE PEER CLOSING DOES NOT FREE THIS SIDE. -KOS_ECONNREFUSED means the driver died and
-        // nothing may restart it, and this cap is now the only thing pinning its endpoint slot,
-        // so close it or the slot is stranded for this task's whole life. -KOS_EAGAIN keeps the
-        // cap: a restarted driver serves it again. -KOS_EBADF is pre-publish: index 0 is empty
-        // and there is nothing to close.
-        if (r == -KOS_ECONNREFUSED)
-        {
-            (void)kos_handle_close(KOS_CAP_STDOUT);
-        }
         // Remainder only: resending from the start duplicates the chunks the driver already
         // took.
         WriteResult const k = kconsole_offer(s + sent, total - sent);

@@ -10,12 +10,6 @@
       "cacheVariables": { "KICKOS_BOARD": "rx72m" }
     },
     {
-      "name": "rx72m-st",
-      "displayName": "Renesas RX72M (RXv3) + selftest (full IRQ suite)",
-      "inherits": "rx72m",
-      "cacheVariables": { "KICKOS_CONFIG_VARIANT": "st" }
-    },
-    {
       "name": "rx72m-flat",
       "displayName": "Renesas RX72M with no RX-MPU enforcement",
       "inherits": "rx72m",
@@ -30,7 +24,6 @@
   ],
   "buildPresets": [
     { "name": "rx72m", "configurePreset": "rx72m" },
-    { "name": "rx72m-st", "configurePreset": "rx72m-st" },
     { "name": "rx72m-flat", "configurePreset": "rx72m-flat" },
     { "name": "rx72m-bench", "configurePreset": "rx72m-bench" }
   ]

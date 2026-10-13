@@ -31,7 +31,7 @@ extern "C"
     arch_irq_state_t arch_irq_save(void) { return 0; }
     void arch_irq_restore(arch_irq_state_t) {}
 
-    int arch_console_write(char const*, size_t n) { return static_cast<int>(n); }
+    int console_tx_insert_line(char const*, size_t n, int) { return static_cast<int>(n); }
     bool arch_console_write_sync(char const* buf, size_t n)
     {
         g_sync_calls = g_sync_calls + 1;

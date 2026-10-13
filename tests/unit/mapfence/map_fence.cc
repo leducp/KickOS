@@ -149,11 +149,28 @@ namespace
     {
         return ~((static_cast<uintptr_t>(1) << (KICKOS_RV64_VA_BITS - 1)) - 1u) | low;
     }
+
+    constexpr uint64_t PTE_V = 1u << 0;
+    constexpr uint64_t PTE_RWX = 7u << 1;
+
+    uint64_t* larger_leaf_slot(struct arch_aspace* space, uintptr_t va)
+    {
+        uint64_t const desc = reinterpret_cast<uint64_t const*>(space)[(va >> 30) & 0x1FFu];
+        if ((desc & PTE_V) == 0 or (desc & PTE_RWX) != 0)
+        {
+            return nullptr;
+        }
+        uint64_t* const level1 =
+            reinterpret_cast<uint64_t*>(frame_pointer(((desc >> 10) << GRANULE_SHIFT)));
+        return &level1[(va >> 21) & 0x1FFu];
+    }
 }
 
 #define MAP_CONTRACT_FIXTURE MapFenceContract
 #define MAP_CONTRACT_NOCACHE_SEEN false
 #define MAP_CONTRACT_PA_BITS 40u
+// A user-readable megapage over physical 0, inside the seam's window: V, R, U and A.
+#define MAP_CONTRACT_LARGER_LEAF static_cast<uint64_t>(0x53u)
 #include "map_contract.h"
 
 // Never-run spaces skip invalidation.
@@ -335,9 +352,8 @@ TEST_F(MapFence, UnmapOfASpaceAHartHasLeftFencesEachPageAndRings)
     EXPECT_EQ(arch_aspace_frame_at(space, VA_DEEP), 0u);
 }
 
-TEST_F(MapFence, UnmapOfASpaceNoHartHasRunFencesNothingAndStillRings)
+TEST_F(MapFence, UnmapOfASpaceNoHartHasRunFencesAndRingsNothing)
 {
-    // Unmap still calls the rendezvous with an empty mask.
     struct arch_aspace* const unrun = arch_aspace_create();
     ASSERT_NE(unrun, nullptr);
     ASSERT_EQ(arch_aspace_map(unrun, VA_DEEP, PA_A, 1, RIGHTS_DATA, ARCH_MAP_NORMAL),
@@ -347,9 +363,24 @@ TEST_F(MapFence, UnmapOfASpaceNoHartHasRunFencesNothingAndStillRings)
     ASSERT_EQ(arch_aspace_unmap(unrun, VA_DEEP, 1), ARCH_ASPACE_OK);
 
     EXPECT_EQ(ops_with(OP_SFENCE_PAGE), 0u);
-    ASSERT_EQ(ops_with(OP_RENDEZVOUS), 1u);
-    EXPECT_EQ(arg_of_nth(OP_RENDEZVOUS, 0), 0u);
+    EXPECT_EQ(ops_with(OP_SFENCE_ALL), 0u);
+    EXPECT_EQ(ops_with(OP_RENDEZVOUS), 0u);
     EXPECT_EQ(arch_aspace_frame_at(unrun, VA_DEEP), 0u);
+}
+
+TEST_F(MapFence, TheTablesAnUnmapEmptiesGoBackOnlyAfterEveryHartFences)
+{
+    seed(VA_DEEP, PA_A, RIGHTS_DATA);
+    uint32_t const before = frames_freed();
+
+    ASSERT_EQ(arch_aspace_unmap(space, VA_DEEP, 1), ARCH_ASPACE_OK);
+
+    EXPECT_EQ(frames_freed() - before, 2u);
+    ASSERT_EQ(ops_with(OP_SFENCE_ALL), 1u) << "a detached table's walks were left cached";
+    EXPECT_GT(last_index_of(OP_SFENCE_ALL), last_index_of(OP_SFENCE_PAGE));
+    ASSERT_EQ(ops_with(OP_RENDEZVOUS), 1u);
+    EXPECT_GT(last_index_of(OP_RENDEZVOUS), last_index_of(OP_SFENCE_ALL));
+    EXPECT_EQ(frames_freed_at_rendezvous(), before);
 }
 
 // Sample peers before edits.

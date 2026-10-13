@@ -281,12 +281,13 @@ namespace
         EXPECT_EQ(g_kconsole_writes, 0);
     }
 
-    // A driver that cannot come back closes the stdout capability before the fallback.
-    TEST(StdoutWrite, ARefusedConnectionClosesStdout)
+    // A driver that cannot come back leaves the stdout seat naming its endpoint until the next
+    // publish moves it, the seat being the kernel's: the writer falls back and closes nothing.
+    TEST(StdoutWrite, ARefusedConnectionFallsBackWithoutAClose)
     {
         reset({-KOS_ECONNREFUSED}, {TAKE_ALL});
         kickos::emit("line\n");
-        EXPECT_EQ(g_closes, 1);
+        EXPECT_EQ(g_closes, 0);
         EXPECT_EQ(g_kconsole, "line\n");
     }
 

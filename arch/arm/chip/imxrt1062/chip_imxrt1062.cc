@@ -1,19 +1,21 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// NXP i.MX RT1062 (Teensy 4.1) chip backend, Cortex-M7. Register addresses/fields
-// are from the i.MX RT1060 Processor Reference Manual, Rev. 3 (IMXRT1060RM).
+// NXP i.MX RT1062 (Teensy 4.1) chip backend, Cortex-M7. RM numbers are IMXRT1060RM Rev. 3.
 //
-// Boots as a FlexSPI serial-NOR XIP image (RM 9.6/9.7): a 512-byte FlexSPI config
-// block at flash offset 0, the IVT at 0x1000, code executing in place from
-// 0x6000_0000, writable state in OCRAM2.
+// Boots as a FlexSPI serial-NOR XIP image (RM 9.6/9.7): a 512-byte FlexSPI config block at
+// flash offset 0, the IVT at 0x1000, code executing in place from 0x6000_0000, writable state
+// in OCRAM2.
 
 #include <kickos/arch/arch.h>
+#include <arch_reboot_tail.h>
+#include <kickos/arch/bounded_wait.h>
+#include <kickos/arch/console_poll.h>
 #include "pin_guard.h"
-#include <kickos/config/limits.h>
 #include <kickos/diag.h>
 #include <kickos/arch/clk_q32.h>
 #include <kickos/console_tx.h>
+#include <kickos/io/mmio.h>
 #include <kickos/sys/abi.h>
 #include <kickos/usb_console.h>
 
@@ -34,8 +36,6 @@
 
 #include <stddef.h>
 #include <stdint.h>
-
-#include <fatal_status.ld.h>
 
 namespace mmap = kickos::imxrt1062::mmap;
 namespace reg = kickos::imxrt1062::reg;
@@ -60,23 +60,15 @@ extern "C"
     extern uint32_t g_isr_vector[];       // @ 0x6000_2000, not the flash base
     extern char __boot_image_length[];    // on-flash image extent
 
-    // Core clock (AHB_CLK_ROOT), Hz. clock_init() leaves the boot ROM's CCM tree in place,
-    // NOT the reset default. RM (IMXRT1060RM rev3) Table 9-7
-    // "ROM Clock Setting" fixes that tree; Table 9-5 confirms 396 MHz is the default
-    // boot frequency (BOOT_FREQ=0, LPB_BOOT=0). Field-by-field from Table 9-7:
-    //   CCM_ANALOG_PLL_ARM = 0x80002042: LOCK|ENABLE, DIV_SELECT[6:0]=0x42=66
-    //     -> PLL_ARM = 24 MHz * 66 / 2 = 792 MHz (RM 14.8.1 PLL_ARM formula).
-    //   CCM_CACRR = 0x00000001: ARM_PODF[2:0]=1 -> /2 -> 396 MHz (RM 14.7.7).
-    //   CCM_CBCMR = 0x75AE8104: PRE_PERIPH_CLK_SEL[19:18]=0b11 -> divided PLL1 (RM 14.7.5).
-    //   CCM_CBCDR = 0x000A8200: PERIPH_CLK_SEL[25]=0 -> pre_periph; AHB_PODF[12:10]=0
-    //     -> /1 -> AHB_CLK_ROOT = 396 MHz (RM 14.7.4, clock tree Fig 14-2).
-    // SysTick and the DWT both count this clock, so a wrong value skews every timed sleep.
+    // Core clock (AHB_CLK_ROOT), Hz. clock_init() leaves the boot ROM's CCM tree in place
+    // (RM Table 9-7, "ROM Clock Setting"): PLL_ARM 792 MHz, ARM_PODF /2, AHB_PODF /1. SysTick
+    // and the DWT both count this clock, so a wrong value skews every timed sleep.
     uint32_t SystemCoreClock = 396000000u;
 }
 
 // ===========================================================================
-// FlexSPI serial-NOR boot header (RM chapter 9). ROM-consumed data placed at
-// fixed flash offsets by imxrt1062.ld; KEEP + `used` retain it.
+// FlexSPI serial-NOR boot header (RM chapter 9): ROM-consumed data at fixed flash offsets set
+// by imxrt1062.ld.
 // ===========================================================================
 namespace
 {
@@ -129,9 +121,8 @@ namespace
     static_assert(offsetof(flexspi_mem_config, serialClkFreq) == 0x046, "serialClkFreq @0x46");
     static_assert(offsetof(flexspi_mem_config, lookupTable) == 0x080, "lookupTable @0x80");
 
-    // Serial-NOR configuration block (RM 9.6.3.2, 512 bytes total). The RM's
-    // Table 9-18 tail is imprecise; this mirrors the ROM's flexspi_nor_config_t
-    // so the whole block is exactly 512 B.
+    // Serial-NOR configuration block (RM 9.6.3.2). The RM's Table 9-18 tail is imprecise; this
+    // mirrors the ROM's flexspi_nor_config_t so the block is exactly 512 B.
     struct flexspi_nor_config
     {
         flexspi_mem_config memConfig;     // 0x000
@@ -149,10 +140,9 @@ namespace
     };
     static_assert(sizeof(flexspi_nor_config) == 0x200, "serial-NOR FCB must be 512 B");
 
-    // Single-pad (1-1-1) 0x03 normal read at 30 MHz; no quad-mode enable needed. LUT
-    // instruction = (opcode<<10)|(pads<<8)|operand, two per 32-bit word (RM 9.6.3.1
-    // note 2 / Table 9-16). seq0 = CMD 0x03 (1-pad) + 24-bit RADDR (1-pad) + READ (1-pad).
-    // The LUT and serialClkFreq are specific to the board's NOR part.
+    // Single-pad 0x03 normal read at 30 MHz, no quad-mode enable. LUT instruction =
+    // (opcode<<10)|(pads<<8)|operand, two per word (RM Table 9-16). The LUT and serialClkFreq
+    // are specific to the board's NOR part.
     __attribute__((section(".boot_fcb"), used))
     const flexspi_nor_config g_flexspi_config = {
         // memConfig
@@ -226,10 +216,8 @@ namespace
     __attribute__((section(".boot_ivt"), used))
     const boot_ivt g_boot_ivt = {
         0x412000D1u,  // header: tag 0xD1, len 0x0020, version 0x41 (RM 9.7.1.1)
-        // entry: &_boot_entry. The Thumb LSB is already set by the function-symbol
-        // relocation; an explicit `| 1` would make this non-constant and demote the
-        // whole IVT to a runtime initializer (a write to XIP flash -> a 0 entry in
-        // the image). Keep it a pure address constant.
+        // A pure address constant: the Thumb LSB comes with the function symbol, and an explicit
+        // `| 1` would demote the whole IVT to a runtime initializer, a write to XIP flash.
         static_cast<uint32_t>(reinterpret_cast<uintptr_t>(&_boot_entry)),
         0,
         0,            // dcd: none (ROM defaults; no SDRAM/SEMC)
@@ -242,23 +230,17 @@ namespace
 
 namespace
 {
-    inline volatile uint32_t& r32(uintptr_t a) { return *reinterpret_cast<volatile uint32_t*>(a); }
-    inline volatile uint16_t& r16(uintptr_t a) { return *reinterpret_cast<volatile uint16_t*>(a); }
-
-    // Watchdogs (RM ch.57 WDOG1/2, ch.58 RTWDOG). The RT1062 hands over ARMED watchdogs:
-    // WDOG1/2 WMCR.PDE (reset 1) is a 16 s power-down counter, and the RTWDOG (WDOG3)
-    // resets to CS.EN=1 and the boot ROM RE-ENABLES it on exit (RM 58.4) with a short
-    // LPO timeout. Nothing services them, so all three are disabled first thing at reset.
+    // The part hands over ARMED watchdogs: WDOG1/2 WMCR.PDE is a 16 s power-down counter, and
+    // the boot ROM RE-ENABLES the RTWDOG on exit (RM 58.4) with a short LPO timeout. Nothing
+    // services them, so all three are disabled first thing at reset.
     void watchdog_disable()
     {
-        // WDOG1/2 main timer is WDE=0 (off) at reset; only the 16 s power-down counter
-        // needs clearing. 16-bit access ONLY (RM 57.8.1: a 32-bit access is illegal).
+        // 16-bit access ONLY (RM 57.8.1: a 32-bit access is illegal).
         r16(reg::wdog::WDOG1_WMCR) = 0;
         r16(reg::wdog::WDOG2_WMCR) = 0;
-        // RTWDOG: an app reconfig only takes effect >= 2.5 LPO(32 kHz) clocks (~76 us)
-        // after the ROM exits (RM 58.4); attempted earlier it is silently dropped. Spin
-        // past that window, then unlock + clear EN (IRQs masked across the 128-bus-clock
-        // window, TOVAL non-zero), and CONFIRM via CS.RCS; retry if the write missed.
+        // A reconfig earlier than ~76 us after the ROM exits is silently dropped (RM 58.4), so
+        // spin past it, then unlock and clear EN with IRQs masked across the 128-bus-clock
+        // window, and CONFIRM via CS.RCS, retrying if the write missed.
         for (volatile uint32_t d = 0; d < 200000u;)
         {
             d = d + 1;
@@ -291,20 +273,15 @@ namespace
     // lpuart::UART_CLK_ROOT_HZ are that tree's values.
     void clock_init() {}
 
-    constexpr uint32_t POLL_TIMEOUT_USB = 1000000u;
-
-    // Monotonic clock: GPT1 free-running (RM ch.52), not the DWT, which is debug-domain on
-    // the M7 (lockable, absent under a debugger reset). Sourced from ipg_clk_24M
-    // (CLKSRC=0b101 + EN_24M, RM Table 52-3), so it stays 24 MHz across an ARM-PLL retune
-    // and needs no re-anchor. The 32-bit counter (RM 52.7.1.2 FRR=1) is extended to 64
-    // bits in software, so it must be read at least once per wrap (2^32/24e6 ~= 179 s).
-    uint32_t g_gpt_hi = 0;   // software high word; read/updated under the crit section
+    // Monotonic clock: GPT1 free-running, not the DWT, which is debug-domain on the M7. Sourced
+    // from ipg_clk_24M, so it stays 24 MHz across an ARM-PLL retune. The 32-bit counter is
+    // extended to 64 bits in software and must be read at least once per wrap (~179 s).
+    uint32_t g_gpt_hi = 0;   // under the crit section
     uint32_t g_gpt_last = 0;
 
     uint64_t gpt_ticks()
     {
-        // Runs in thread and ISR context: the wrap-extend read must be atomic
-        // against a concurrent reader, so run it under the crit section.
+        // Thread and ISR context: the wrap extension must be atomic against a concurrent reader.
         arch_irq_state_t s = arch_irq_save();
         uint32_t cur = r32(reg::gpt::GPT1_CNT);
         if (cur < g_gpt_last)
@@ -378,45 +355,34 @@ namespace
         r32(reg::lpuart::LPUART6_CTRL) = reg::lpuart::CTRL_TE | reg::lpuart::CTRL_RE; // TIE stays clear; the ring primes it
     }
 
-    // The USB1 clock tree and PHY: the CCGR6 gate, PLL_USB1 and USBPHY1, none of which the
-    // unprivileged driver can reach (CCM is in arch_reserved_blocks, the PHY is outside the
-    // granted window). RM Table 9-6 lists CCM_CCGR6_CG0 among the gates the boot ROM leaves
-    // DISABLED, so without the first write below every register in the driver's window is
-    // dead.
+    // The USB1 clock tree and PHY, none of which the unprivileged driver can reach (CCM is in
+    // arch_reserved_blocks, the PHY is outside the granted window). The boot ROM leaves the
+    // CCGR6 gate DISABLED (RM Table 9-6), so without the first write below every register in
+    // the driver's window is dead.
     void usb_clock_init()
     {
         r32(reg::usbphy::CCGR6) |= reg::usbphy::CCGR6_USBOH3;
 
-        // PLL_USB1 to 480 MHz. DIV_SELECT stays 0 (Fref * 20). RM Table 9-7 says the boot
-        // ROM already leaves this at PLL_ROM_SETTING, so the lock wait normally falls
-        // straight through.
+        // PLL_USB1 to 480 MHz (DIV_SELECT 0); the boot ROM normally leaves it locked.
         r32(reg::usbphy::PLL_USB1_SET) = reg::usbphy::PLL_POWER | reg::usbphy::PLL_ENABLE
                                          | reg::usbphy::PLL_EN_USB_CLKS;
-        for (uint32_t spin = 0; spin < POLL_TIMEOUT_USB; spin++)
-        {
-            if ((r32(reg::usbphy::PLL_USB1) & reg::usbphy::PLL_LOCK) != 0u)
-            {
-                break;
-            }
-        }
+        (void)kickos::arch::wait_set(r32(reg::usbphy::PLL_USB1), reg::usbphy::PLL_LOCK);
         r32(reg::usbphy::PLL_USB1_CLR) = reg::usbphy::PLL_BYPASS;
 
-        // USBPHY1 (RM 43.4.4): out of soft reset, then ungate the UTMI clocks, then power the
-        // analog blocks up. RM 43.4.1 requires the PHY clocks to be running BEFORE PWD is
-        // programmed, which is why that write is last.
+        // The PHY clocks must be running BEFORE PWD is programmed (RM 43.4.1), so that write is
+        // last.
         r32(reg::usbphy::PHY1_CTRL_CLR) = reg::usbphy::CTRL_SFTRST;
         r32(reg::usbphy::PHY1_CTRL_CLR) = reg::usbphy::CTRL_CLKGATE;
         r32(reg::usbphy::PHY1_PWD) = reg::usbphy::PWD_ALL_UP;
 
-        // Over-current detection off: the RT1062 gates the port on that input and the Teensy
-        // 4.1 routes no over-current sense to it, so a floating pad could hold the port down.
-        // Read-modify-write, not an absolute store: RM 42.6 says to preserve reserved bits.
+        // Over-current detection off: the port is gated on that input and the Teensy 4.1 routes
+        // no sense to it, so a floating pad could hold the port down. Read-modify-write
+        // preserves reserved bits (RM 42.6).
         r32(reg::usbphy::USBNC_OTG1_CTRL) |= reg::usbphy::OTG_CTRL_OVER_CUR_DIS;
 
-        // Read back, because a gate that did not take is indistinguishable from one that did
-        // until the driver's first register access bus-errors. Want: ccgr6 low 2 bits set,
-        // pll1 bit31 LOCK set and bit16 BYPASS clear, phyctrl bits 31/30 (SFTRST/CLKGATE)
-        // clear, phypwd zero, id 0xE4A1FA05 (the read-only USB1 ID register, RM 42.7.1).
+        // Read back: a gate that did not take is indistinguishable from one that did until the
+        // driver's first access bus-errors. Want ccgr6 low 2 bits set, pll1 LOCK set and BYPASS
+        // clear, phyctrl SFTRST/CLKGATE clear, phypwd zero, id 0xE4A1FA05.
         kickos::kprintf("[usbclk] ccgr6=%x pll1=%x phyctrl=%x phypwd=%x id=%x\n",
                         r32(reg::usbphy::CCGR6), r32(reg::usbphy::PLL_USB1),
                         r32(reg::usbphy::PHY1_CTRL), r32(reg::usbphy::PHY1_PWD),
@@ -424,10 +390,9 @@ namespace
     }
 
 #ifdef KICKOS_UART_BEACON
-    // Baud-beacon diagnostic: a FIXED SBR (independent of UART_CLK_ROOT_HZ) and 0x55
-    // forever. The host reader baud that reads clean 0x55 is the on-wire baud, so
-    //   real_uart_clk = clean_reader_baud * (OSR+1) * BEACON_SBR = clean_reader_baud * 176.
-    // At the RM-derived 20 MHz root this is 20e6/(16*11) = 113636 baud, clean at host 115200.
+    // Baud beacon: a FIXED SBR (independent of UART_CLK_ROOT_HZ) and 0x55 forever. The host
+    // baud that reads clean 0x55 is the on-wire baud, so
+    // real_uart_clk = clean_reader_baud * (OSR+1) * BEACON_SBR.
     constexpr uint32_t BEACON_SBR = 11u;
     void uart6_beacon(void)
     {
@@ -448,12 +413,12 @@ namespace
     void lp6_tx_push(uint8_t b) { r32(reg::lpuart::LPUART6_DATA) = b; }
     void lp6_tx_irq_enable(void) { r32(reg::lpuart::LPUART6_CTRL) |= reg::lpuart::CTRL_TIE; }
     void lp6_tx_irq_disable(void) { r32(reg::lpuart::LPUART6_CTRL) &= ~reg::lpuart::CTRL_TIE; }
-    char console_tx_buf[KICKOS_CONSOLE_TX_SIZE];
     console_tx_backend const lp6_console_backend = {
-        lp6_tx_slot_free, lp6_tx_push, lp6_tx_irq_enable, lp6_tx_irq_disable};
+        lp6_tx_slot_free, lp6_tx_push, lp6_tx_irq_enable, lp6_tx_irq_disable,
+        &kickos_console_tx_storage};
 
-    // The window arch_console_reclaim reports: LPUART6's whole AIPS-2 slot, 4019_8000 to
-    // 4019_BFFF (RM Table 3-3), not its 0x30 register block.
+    // The window arch_console_reclaim reports: LPUART6's whole AIPS-2 slot (RM Table 3-3), not
+    // its 0x30 register block.
     constexpr uintptr_t CONSOLE_WIN_BASE = mmap::LPUART6_BASE;
     constexpr size_t CONSOLE_WIN_SIZE = KICKOS_BOARD_CONSOLE_SIZE;
 
@@ -472,9 +437,9 @@ namespace
 extern "C"
 {
 
-// The M7 caches OCRAM, and the arena lives there (imxrt1062.ld RAM at 0x20200000); DTCM
-// would not be cached. arch_init enables the D-cache only inside its KICKOS_HAVE_MPU guard,
-// so moving either that enable or the arena must change this answer too.
+// The M7 caches OCRAM, where the arena lives (DTCM would not be cached). arch_init enables the
+// D-cache only under KICKOS_HAVE_MPU, so moving that enable or the arena must change this
+// answer too.
 int arch_mpu_nocache_support(void)
 {
 #if KICKOS_HAVE_MPU && defined(KICKOS_IMXRT_DCACHE) && KICKOS_IMXRT_DCACHE
@@ -487,11 +452,10 @@ int arch_mpu_nocache_support(void)
 void arch_init(void)
 {
 #if KICKOS_HAVE_MPU
-    // M7 XIP anti-speculation + L1 caches (ERR011573). ORDER IS LOAD-BEARING: the fixed
-    // MPU regions mark the unbacked external Normal bands (FlexSPI beyond the 8 MiB
-    // image + the SEMC aperture) as Device, so the M7 cannot speculatively prefetch
-    // into an AHB slave that never responds. They must be LIVE BEFORE the cache is
-    // enabled; a cache is what arms that speculation.
+    // ORDER IS LOAD-BEARING (ERR011573): the fixed MPU regions mark the unbacked external
+    // bands as Device so the M7 cannot speculatively prefetch into an AHB slave that never
+    // responds. They must be LIVE BEFORE the cache is enabled; a cache is what arms that
+    // speculation.
     kickos_arm_mpu_fixed_init();
     kickos_armv7m_icache_enable();
 #if defined(KICKOS_IMXRT_DCACHE) && KICKOS_IMXRT_DCACHE
@@ -499,7 +463,7 @@ void arch_init(void)
 #endif
 #endif
     clock_init();
-    gpt_clock_init(); // monotonic clock up before the scheduler reads it
+    gpt_clock_init();
     uart6_init();
     if (kickos_usb_device_console != 0)
     {
@@ -512,14 +476,11 @@ void arch_init(void)
 }
 
 #if KICKOS_HAVE_MPU
-// Chip fixed (thread-invariant) MPU regions, programmed once into the LOW slots by the
-// shared kickos_arm_mpu_fixed_init; per-thread grants sit above them (higher slot wins).
-// ERR011573 / Arm 1013783-B: the M7 speculatively prefetches Normal memory, and the
-// ARMv7-M default map leaves 0x6000_0000-0x9FFF_FFFF Normal, so speculation past the
-// populated 8 MiB of flash, or into the unbacked SEMC aperture, hits an AHB slave that
-// never responds and stalls the core with NO fault. Wrap both external Normal bands
-// Device + XN + no-access; overlay the real 8 MiB as Normal cacheable priv-RO+X.
-// PRIVDEFENA stays on for RAM/peripherals.
+// Chip fixed MPU regions, in the LOW slots; per-thread grants sit above them. ERR011573 /
+// Arm 1013783-B: the default map leaves 0x6000_0000-0x9FFF_FFFF Normal, so M7 speculation
+// past the populated flash, or into the unbacked SEMC aperture, hits an AHB slave that never
+// responds and stalls the core with NO fault. Both external bands are wrapped Device + XN +
+// no-access, and the populated flash overlaid as Normal cacheable priv-RO+X.
 extern "C"
 {
     size_t kickos_arm_mpu_fixed(struct kickos_arm_mpu_fixed_region const** out)
@@ -543,32 +504,13 @@ extern "C"
 }
 #endif
 
-int arch_console_write(char const* buf, size_t n)
-{
-    return console_tx_insert_line(buf, n, KICKOS_CONSOLE_CRLF);
-}
-
 bool arch_console_write_sync(char const* buf, size_t n)
 {
-    for (size_t i = 0; i < n; i++)
-    {
-        uint32_t spin = 0;
-        while ((r32(reg::lpuart::LPUART6_STAT) & reg::lpuart::STAT_TDRE) == 0)
-        {
-            if (++spin > KICKOS_POLL_SPIN_MAX)
-            {
-                return false; // bounded: a wedged UART must not hang the panic path (drop)
-            }
-        }
-        r32(reg::lpuart::LPUART6_DATA) = static_cast<uint8_t>(buf[i]);
-    }
-    return true;
+    return kickos::console_poll::write<lp6_tx_slot_free, lp6_tx_push>(buf, n);
 }
 
-console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)
+console_tx_backend const* arch_console_tx_backend(int* irq_line)
 {
-    *storage = console_tx_buf;
-    *size = KICKOS_CONSOLE_TX_SIZE;
     *irq_line = irq::LPUART6_IRQ;
     return &lp6_console_backend;
 }
@@ -579,19 +521,15 @@ void arch_console_reclaim_window(uintptr_t* base, size_t* size)
     *size = CONSOLE_WIN_SIZE;
 }
 
-// Panic-path reclaim: force LPUART6 back to a polled-ready 8N1 TX channel
-// after a userspace driver may have garbled every writable register in the window. Runs with
-// IRQs masked, privileged; MUST be idempotent and re-entrant, so straight-line ABSOLUTE
-// stores only, no read-modify-write and no loops.
-// RM 49.6.1.4: GLOBAL[RST] "resets all internal logic and registers, except the Global
-// Register", immediately and with "no minimum delay required before clearing", so one store
-// restores the whole register file and discards whatever a dead driver left queued.
-// The pin mux (arch_pinmux_set refuses the console pads) and the CCGR3 gate in CCM are both out
-// of any driver's reach, so neither needs restoring.
+// Panic-path reclaim after a userspace driver may have garbled every register in the window.
+// Runs privileged with IRQs masked; MUST be idempotent and re-entrant, so straight-line
+// ABSOLUTE stores only, no read-modify-write and no loops. GLOBAL[RST] resets every register
+// at once with no minimum delay (RM 49.6.1.4). The pin mux and the CCGR3 gate are out of any
+// driver's reach, so neither needs restoring.
 void arch_console_reclaim(void)
 {
-    // Silence and stop first: a stale TIE storms the console IRQ through the whole dump, and
-    // RM 49.6.1.8 requires CTRL to be altered only with transmitter and receiver disabled.
+    // Silence first: a stale TIE storms the console IRQ through the whole dump, and CTRL may be
+    // altered only with transmitter and receiver disabled (RM 49.6.1.8).
     r32(reg::lpuart::LPUART6_CTRL) = 0;
 
     r32(reg::lpuart::LPUART6_GLOBAL) = reg::lpuart::GLOBAL_RST;
@@ -606,27 +544,18 @@ void arch_console_reclaim(void)
     r32(reg::lpuart::LPUART6_CTRL) = reg::lpuart::CTRL_TE | reg::lpuart::CTRL_RE;
 }
 
-// Console coherence (arch.h): block until LPUART6 is transmission-complete. STAT[TDRE]
-// clear only means the holding register took the byte; STAT[TC] stays clear until the last
-// stop bit has left the shift register and the pin has gone idle (RM 49.6.1.7).
+// Blocks until LPUART6 is transmission-complete: TDRE only means the holding register took the
+// byte, TC waits for the last stop bit (RM 49.6.1.7).
 void arch_console_flush_sync(void)
 {
-    uint32_t spin = 0;
-    while ((r32(reg::lpuart::LPUART6_STAT) & reg::lpuart::STAT_TC) == 0)
-    {
-        if (++spin > KICKOS_POLL_SPIN_MAX)
-        {
-            return; // bounded, as arch.h requires: a wedged UART drops the tail, never hangs
-        }
-    }
+    (void)kickos::arch::wait_set(r32(reg::lpuart::LPUART6_STAT), reg::lpuart::STAT_TC);
 }
 
 void arch_diag_led_init(void)
 {
     r32(reg::ccm::CCGR0) |= reg::ccm::CCGR0_GPIO2;
-    // GPIO2 and GPIO7 drive the SAME pad and GPR27 bit n picks which (RM 11.3.28); a write
-    // to the instance that does not own the bit is silently ignored. Bit clear = GPIO2, the
-    // instance regs/gpio.h maps.
+    // GPIO2 and GPIO7 drive the SAME pad and GPR27 bit n picks which (RM 11.3.28); a write to
+    // the instance that does not own the bit is silently ignored. Clear = GPIO2.
     r32(reg::iomuxc::GPR27) &= ~LED_BIT;
     r32(reg::iomuxc::sw_mux(KICKOS_BOARD_LED_PORT, KICKOS_BOARD_LED_BIT)) = reg::iomuxc::MUX_ALT5;
     // Dark BEFORE the pin becomes an output, so bring-up never flashes it.
@@ -648,20 +577,19 @@ void arch_diag_led_set(int on)
     }
 }
 
-// Daisy (SELECT_INPUT) table, keyed by func's OWN index bits[15:8]: a SELECT_INPUT belongs
-// to a (pad, MUX_MODE) pair, not to a pad.
+// Daisy (SELECT_INPUT) table, keyed by func bits[15:8]: a SELECT_INPUT belongs to a
+// (pad, MUX_MODE) pair, not to a pad.
 static uintptr_t const imxrt_daisy[] = {
     reg::iomuxc::LPUART6_RX_SELECT_INPUT, // index 0
 };
 
-// One-shot pin-function config (KOS_SYS_PINMUX_SET). func encoding:
+// KOS_SYS_PINMUX_SET. func encoding:
 //   bits[4:0]  = MUX_MODE | SION (SION = bit4), written to SW_MUX_CTL_PAD
 //   bit[16]    = has-daisy
 //   bits[15:8] = daisy-table index (imxrt_daisy)
 //   bits[23:20]= daisy value written to the SELECT_INPUT register
-// SW_PAD_CTL stays at its reset default, which is NOT safe for every pad
-// (drive/pull/hysteresis depend on the pad + net). All validation happens BEFORE any
-// register write (no half-applied pad on a rejected request).
+// SW_PAD_CTL stays at its reset default, NOT safe for every pad. All validation happens BEFORE
+// any register write.
 int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
 {
     if (not pad_listed(port, pin))
@@ -686,7 +614,6 @@ int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
     return 0;
 }
 
-// Required here: the armv7m layer provides no arch_clock_now fallback.
 uint64_t arch_clock_now(void)
 {
     uint64_t ticks = gpt_ticks();
@@ -694,18 +621,16 @@ uint64_t arch_clock_now(void)
     return kickos::arch_clk_mul_q32(ticks, MULT);
 }
 
-// Replaces the WFI idle fallback. The tickless wakeup timer is SysTick, clocked off the
-// core clock, which the RT106x halts under WFI: SysTick stops counting and a sleep with
-// every thread idle never wakes (the GPT monotonic clock keeps running, but it is not
-// the wakeup source). Spin so the core clock, and thus SysTick, stays alive.
+// No WFI: the core clock halts under it, and with it SysTick, the wakeup source, so a sleep
+// with every thread idle would never wake.
 void arch_idle_wait(void)
 {
     __asm volatile("nop");
 }
 
-// See arch.h. Bridge access only; usb_clock_init already did USB1's clock half. Exact base
-// match, never a range: a base earns an entry only once the rest of its 16 KiB AIPS slot is
-// reserved in arch_reserved_blocks.
+// Bridge access only; usb_clock_init did USB1's clock half. Exact base match, never a range: a
+// base earns an entry only once the rest of its 16 KiB AIPS slot is reserved in
+// arch_reserved_blocks.
 int arch_periph_enable(uintptr_t base)
 {
     if (base != mmap::USB1_BASE)
@@ -722,35 +647,32 @@ int arch_periph_enable(uintptr_t base)
     return 0;
 }
 
-#if KICKOS_REBOOT
-// Reboot into HalfKay (Teensy firmware-download mode): the MKL02 companion owns this
-// chip's SWD port, catches the halt, reprograms the flash and presents HalfKay itself.
-// Not vendor-documented (evidence: PJRC's _reboot_Teensyduino_ plus a third-party
-// bare-metal Rust port).
-// On non-Teensy RT1062 hardware (no MKL02, no armed debug host) the bkpt escalates to a
+// The bootloader is HalfKay: the MKL02 companion owns the SWD port, catches the halt and
+// presents HalfKay itself. Not vendor-documented. Without an MKL02 the bkpt escalates to a
 // fault instead of rebooting.
-int arch_reboot(void)
+int arch_reboot(uint32_t outcome)
 {
+    if (outcome == KOS_SHUTDOWN_REBOOT)
+    {
+        kickos::arm::system_reset_request();
+        kickos::arch::reset_settle();
+        kickos::arch::reboot_failed(kickos::diag::kResetNotTaken);
+    }
+    if (outcome != KOS_SHUTDOWN_BOOTLOADER)
+    {
+        return -KOS_ENOSYS;
+    }
     __asm volatile("cpsid i" ::: "memory"); // dispatch runs in thread mode with IRQs live
     __asm volatile("bkpt #251");
-    // Reached from kfault_terminate, where kpanic itself ends, so a kpanic here would
-    // re-enter a console kpanic_enter has already reclaimed. arch_console_write_sync is the
-    // writer arch.h states is safe with interrupts down.
-    char const REBOOT_RETURNED_NL[] = "\n";
-    arch_console_write_sync(kickos::diag::kRebootImxrt,
-                            sizeof(kickos::diag::kRebootImxrt) - 1);
-    arch_console_write_sync(REBOOT_RETURNED_NL, sizeof(REBOOT_RETURNED_NL) - 1);
-    arch_shutdown(KICKOS_FATAL_STATUS);
+    kickos::arch::reboot_failed(kickos::diag::kRebootImxrt);
 }
-#endif
 
 void Reset_Handler(void)
 {
-    // MSP was set by _boot_entry (the ROM enters via IVT.entry, not the reset
-    // vector). Point VTOR at our table (@ 0x6000_2000, not flash base) before any
-    // interrupt path runs.
+    // MSP was set by _boot_entry: the ROM enters via IVT.entry, not the reset vector. VTOR must
+    // name our table (0x6000_2000, not the flash base) before any interrupt path runs.
     watchdog_disable(); // FIRST: the ROM hands off a running RTWDOG (RM 58.4)
-    kickos_armv7m_enable_fpu(); // before ANY later code that could emit FP (softfp ABI)
+    kickos_armv7m_enable_fpu(); // before ANY later code that could emit FP
     r32(kickos::arm::SCB_VTOR) = reinterpret_cast<uintptr_t>(g_isr_vector);
     __asm volatile("dsb" ::: "memory");
     __asm volatile("isb" ::: "memory");

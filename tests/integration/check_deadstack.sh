@@ -8,8 +8,9 @@
 #
 # Each encoding is spelled out here rather than derived, so this gate asserts the encoding
 # instead of restating whatever the source happens to produce:
-#   armv8a    ESR_EL1 0x92000007 is EC 0x24 (data abort, lower exception level), IL 1, WnR
-#             clear (a read) and DFSC 0b000111 (translation fault, level 3) (DDI 0487 M.b).
+#   armv8a    ESR_EL1 0x92000004 to 0x92000007 is EC 0x24 (data abort, lower exception level),
+#             IL 1, WnR clear (a read) and DFSC 0b0001LL (translation fault, level LL) (DDI 0487
+#             M.b). The walk stops at level 3 only while another page keeps the leaf table.
 #   rv64imac  scause 13 is a load page fault, the whole of what the arch publishes about the
 #             access (RISC-V Privileged ISA, Supervisor Cause Register).
 #   x86_64    vector 14 with error code 0x4: P clear (not present), W clear (a read), U/S set
@@ -60,8 +61,15 @@ case "$arch" in
     armv8a)
         field_matcher_control
         require_field_on_wire ADDR "0x${page}" 'ADDR=|ESR_EL1=' "$_where"
-        require_field_on_wire ESR_EL1 0x92000007 'ESR_EL1=' \
-            "the syndrome is not a level-3 translation fault on a read from the lower level"
+        esr=0x92000007
+        for dfsc in 4 5 6; do
+            count_field ESR_EL1 "0x9200000${dfsc}"
+            if [ "$KOS_COUNT" -gt 0 ]; then
+                esr="0x9200000${dfsc}"
+            fi
+        done
+        require_field_on_wire ESR_EL1 "$esr" 'ESR_EL1=' \
+            "the syndrome is not a translation fault on a read from the lower level"
         ;;
     rv64imac)
         require_rv64_fault_at "$page" "the page the victim's exit unmapped" \

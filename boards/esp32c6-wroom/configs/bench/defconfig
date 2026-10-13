@@ -7,6 +7,7 @@ CONFIG_BOARD_ESP32C6_WROOM=y
 # spans close before the lock does and are readable; the LX6 swaps inline and its composites
 # read as elapsed-until-resumed.
 CONFIG_MEMORY_MODEL_MPU=y
+CONFIG_KICKOS_MAX_THREADS=15
 CONFIG_KICKOS_USER_STACK_SIZE=8192
 CONFIG_KICKOS_IDLE_STACK_SIZE=512
 CONFIG_KICKOS_ROOT_STACK_SIZE=8192

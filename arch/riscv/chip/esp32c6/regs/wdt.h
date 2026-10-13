@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// ESP32-C6 watchdog registers (TRM v1.2 ch.14 MWDT in TIMG0/TIMG1, ch.15 RWDT/SWD in
-// the LP domain). ALL must be disabled at boot or the ROM-armed WDTs reset the part
-// within seconds. Each guards its config behind a write-protect key.
+// ESP32-C6 watchdogs: MWDT in TIMG0/TIMG1, RWDT/SWD in the LP domain. ALL are ROM-armed and
+// must be disabled at boot. Each guards its config behind a write-protect key.
 
 #ifndef KICKOS_ARCH_RISCV_CHIP_ESP32C6_REGS_WDT_H
 #define KICKOS_ARCH_RISCV_CHIP_ESP32C6_REGS_WDT_H

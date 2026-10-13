@@ -34,14 +34,17 @@ constexpr uint32_t kickos_console_tx_pow2(uint32_t need)
 
 constexpr uint32_t KICKOS_CONSOLE_TX_SIZE =
     kickos_console_tx_pow2(2u * (KICKOS_DIAG_LINE_MAX - 1u) + 1u);
-#endif
 
-// Publish barrier between the ring payload store and the head update. Compiler-only by
-// default, which holds on an in-order single-core M-class part; a weakly-ordered core
-// must inject a real fence via -DKICKOS_CONSOLE_TX_BARRIER=... (same seam as rtt.h).
-// The head is published under IrqLock, so this pins only the compiler's store order.
-#ifndef KICKOS_CONSOLE_TX_BARRIER
-#define KICKOS_CONSOLE_TX_BARRIER() __asm volatile("" ::: "memory")
+namespace kickos
+{
+    template <typename T>
+    struct InstanceLocal;
+}
+
+using console_tx_storage_t = kickos::InstanceLocal<char[KICKOS_CONSOLE_TX_SIZE]>;
+
+// The kernel's ring storage, which a backend names: an image whose chip has none links none.
+extern console_tx_storage_t kickos_console_tx_storage;
 #endif
 
 #ifdef __cplusplus
@@ -59,6 +62,11 @@ struct console_tx_backend
     void (*push)(uint8_t b);   // write one byte to the TX data register
     void (*irq_enable)(void);  // enable the TX-empty / transmit-buffer interrupt
     void (*irq_disable)(void); // disable it
+#ifdef __cplusplus
+    console_tx_storage_t* storage; // &kickos_console_tx_storage
+#else
+    void* storage;
+#endif
 };
 
 // Arm the buffered path. `size` MUST be a power of two (index masking); usable
@@ -69,7 +77,7 @@ struct console_tx_backend
 void console_tx_init(struct console_tx_backend const* be, char* storage, uint32_t size,
                      int irq_line);
 
-// Nonzero once console_tx_init has run (the routing guard in console.cc reads it).
+// Nonzero while the ring is armed.
 int console_tx_armed(void);
 
 // One line, indivisibly, or nothing: returns n or 0. NEVER WAITS UNDER THE MASK, so it is safe
@@ -130,14 +138,21 @@ void console_tx_isr(void);
 // drain). Panic uses this to flush queued bytes before printing, preserving order.
 void console_tx_flush_sync(void);
 
-// Arch seam. The fallback TU returns null, which leaves the console on the synchronous
-// path (sim and polled-only chips).
-struct console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size,
-                                                         int* irq_line);
+// From here on an insert writes its line with console_write_line_sync. Caller holds IrqLock
+// across the flush before it, or a line inserted between the two is never sent; the unlocked
+// panic entry calls it alone, and what the ring holds is then never sent.
+void console_tx_disarm(void);
+
+// The drain turned back on where the ring holds bytes, after the device was reprogrammed under
+// it: its TX interrupt enabled and a free slot given the next byte. Caller holds IrqLock.
+void console_tx_reprime(void);
+
+// Arch seam: the chip's TX edge, and in irq_line the line console_tx_init takes. The fallback TU
+// returns null, which leaves the console on the synchronous path.
+struct console_tx_backend const* arch_console_tx_backend(int* irq_line);
 
 // Relinquish the buffered TX path so a userspace driver can take the UART. Idempotent.
-// Caller holds IrqLock, with the ownership state held at HANDING_OFF across it. See the
-// console-handover design (D2).
+// Caller holds IrqLock, with the ownership state held at HANDING_OFF across it.
 void console_tx_deinit(void);
 
 // Kernel records held for a published console's driver, in the disarmed ring's storage. Every
@@ -163,24 +178,26 @@ uint32_t console_held_ready(void);
 char const* console_held_data(void);
 void console_held_take(uint32_t n);
 
-// Console device-ownership seam (state in console.cc). Every kernel-owned device poke
-// MUST be bracketed by enter/leave, else kos_console_publish cannot drain an in-flight
-// writer before handing the UART over. See the console-handover design (D1/D3).
+// Console device-ownership seam (state in console.cc). A kernel chip write is counted from
+// console_emit's state read to its leave, or kos_console_publish cannot drain it before handing
+// the UART over.
 int console_owner_is_kernel(void);   // nonzero while the kernel owns the UART (KERNEL_OWNED)
 void console_chip_writer_leave(void);
-int console_chip_writers(void);      // in-flight kernel chip writers (publish drain spin)
+int console_chip_writers(void);      // in-flight kernel chip writers (console_publish_drain)
 
 // The console handover, in the two halves the drain has to sit between.
 //
 // begin: refuse every NEW kernel chip writer and relinquish the ring, leaving the UART
 // kernel-owned, and retire any pending death note, which named the console being replaced.
-// set_user: hand it to the driver, or reclaim it where the task this publish named died since.
+// set_user: hand it to the driver, or reclaim it where the task this publish named died since;
+// nothing where a panic took the device during the drain.
 //
-// Between them the caller MUST spin console_chip_writers() down to zero. A writer already
-// counted when begin ran can still be mid-message with no buffered path left; it finishes
-// synchronously on the still-kernel-owned UART, and set_user before that drain would put it
-// on the driver's device. The drain converges only because begin refuses new writers, so
+// Between them the caller MUST drain console_chip_writers() to zero (console_publish_drain). A
+// writer already counted when begin ran can still be mid-message with no buffered path left; it
+// finishes synchronously on the still-kernel-owned UART, and set_user before that drain would
+// put it on the driver's device. The drain ends only because begin refuses new writers, so
 // nothing may increment the count outside a bracket.
+int console_handover_refused(void); // nonzero during a hand-off and after a panic
 void console_handover_begin(void);
 void console_owner_set_user(void);
 

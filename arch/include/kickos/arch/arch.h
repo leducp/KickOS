@@ -47,6 +47,11 @@
 #define KICKOS_AMP_OWN_IMAGE 0
 #endif
 
+// Whether this own-image node writes a console UART it shares with its peers under a claim.
+#ifndef KICKOS_AMP_CONSOLE_CLAIM
+#define KICKOS_AMP_CONSOLE_CLAIM 0
+#endif
+
 // Several AMP nodes share one image; the core register identifies each node.
 #define KICKOS_AMP_SHARED_IMAGE (KICKOS_AMP_NODE && !KICKOS_AMP_OWN_IMAGE)
 
@@ -132,13 +137,13 @@ void arch_init(void);
 // Targets without these tables need not call this.
 void kickos_ranges_init(void);
 
-// Terminate the whole system with the given process/exit status. On the sim this ends the host
-// process; on MCUs it halts.
+// Terminate the whole system with the given exit status.
 void arch_shutdown(int status) __attribute__((noreturn));
 
-// Reboot into the chip's bootloader (firmware-download mode). Returns -KOS_ENOSYS on a chip with
-// no such entry; success never returns. The backend masks interrupts itself before handing over.
-int arch_reboot(void);
+// End the system by `outcome`, KOS_SHUTDOWN_REBOOT or KOS_SHUTDOWN_BOOTLOADER (abi.h). Returns
+// -KOS_ENOSYS, having changed nothing, for an outcome this chip has no entry for; success never
+// returns. The backend masks interrupts itself before handing over.
+int arch_reboot(uint32_t outcome);
 
 // Enter the panic reporter on its per-core stack. In order:
 // 1. Mask interrupts before changing stacks.
@@ -152,7 +157,8 @@ void kickos_panic_stack_enter(char const* msg, char const* file, unsigned line,
                               uintptr_t top) __attribute__((noreturn));
 
 // Panic reporter, entered on the panic stack. Exactly one of msg and file
-// is non-null; line is meaningful only with file.
+// is non-null; line is meaningful only with file. A refusal under no lock passes both, file
+// being a tag of console.cc's and line its value.
 void kickos_panic_report(char const* msg, char const* file,
                          unsigned line) __attribute__((noreturn));
 
@@ -218,7 +224,7 @@ void arch_amp_release_peers(void);
 #if KICKOS_KERNEL_CORES > 1
 void arch_kernel_lock(void);
 void arch_kernel_unlock(void);
-#if defined(KICKOS_DEBUG) && KICKOS_DEBUG
+#if KICKOS_DEBUG
 // Nonzero while the calling core holds the lock. A release where this reads zero hands the lock
 // to a ticket nobody drew, and every core then spins for good. Defined once for all backends,
 // which write its cell (<kickos/arch/klock_owner.h>).
@@ -332,7 +338,7 @@ void arch_console_retune(void);
 
 // High-resolution telemetry counter in backend-defined units. The u32 value
 // wraps; session anchors let the decoder reconstruct time. Targets without
-// a source leave KICKOS_HAVE_TRACE_CLOCK undefined and reject telemetry builds.
+// a source do not select HAS_TRACE_CLOCK, and Kconfig refuses telemetry there.
 uint32_t arch_trace_now(void);
 
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
@@ -412,8 +418,8 @@ size_t arch_mpu_min_region(void);
 
 // Region encoding, queried only when arch_mpu_min_region() is nonzero:
 // 1 requires power-of-two size and natural alignment; 0 allows base/limit
-// in multiples of the minimum region size. cmake/boot_arena.cmake parses this
-// body: keep a plain return <integer>; and no closing brace in body comments.
+// in multiples of the minimum region size. Both come from the chip file's
+// protection unit (<kickos/chip_limits.h>) on every target but the sim.
 int arch_mpu_region_pow2(void);
 
 // Whether one MPU descriptor covers (base, size) exactly. Do not round MMIO
@@ -471,7 +477,7 @@ static inline size_t arch_ram_region_align(size_t want)
             geometry = arch_ram_region_size(want);
         }
     }
-#if defined(KICKOS_TLS) && KICKOS_TLS && KICKOS_TLS_FROM_SP
+#if KICKOS_TLS && KICKOS_TLS_FROM_SP
     if (arch_ram_region_size(want) == KICKOS_TLS_STRIDE and KICKOS_TLS_STRIDE > geometry)
     {
         return KICKOS_TLS_STRIDE;
@@ -756,24 +762,23 @@ int arch_irq_line_core(int line);
 // in KICKOS_KERNEL_LINES. The fallback returns false.
 bool arch_irq_line_kernel_owned(int line);
 
-// Console output:
-// write returns how many bytes of buf went out or were queued. A ring chip inserts
-// the line with console_tx_insert_line, whole or not at all, and a rejected line
-// must not bypass the ring: that would interleave device writes. An AMP image
-// sharing a UART writes polled and stops at the first byte its claim no longer
-// covers, so its count can be short. A CR may already have gone out for an uncounted newline;
-// the retry seam below remembers it until LF lands.
-// write_sync is bounded, polled output for panic, faults and startup, safe
-// without scheduling or IRQs. It answers false once the channel stalled, so more bytes
-// would stall too, having dropped what it could not send. A line an own-image AMP node
-// lost to a peer's claim is dropped and answers true. Each chip must define it; the
-// fallback forwards to write and cannot provide those guarantees.
-int arch_console_write(char const* buf, size_t n);
-#if KICKOS_AMP_OWN_IMAGE
-// A syscall writer's arch_console_write: carries its half-sent CR across short writes, and
-// stops at an ended claim, which a kernel line on ARM64 renews when no peer took it.
+// Console output. The kernel queues its lines in the console ring (console_tx.h).
+#if KICKOS_AMP_CONSOLE_CLAIM
+// An AMP node sharing its console UART under a claim: its line writer, in place of the ring:
+// how many bytes of buf went out or were queued. A UART shared between images is written polled
+// and stops at the first byte the node's claim no longer covers, so the count can be short. A CR
+// may already have gone out for an uncounted newline: cr_pending carries it until the LF lands. A
+// null cr_pending is a kernel line, which on ARM64 renews a claim no peer took.
 int arch_console_write_retry(char const* buf, size_t n, bool* cr_pending);
+// A user writer the claim refused, called masked from the park: marks this node waiting and
+// offers once more. 0 once this node holds the claim, else the microseconds to park for at most:
+// the release of the grant that refused it rings this node's doorbell.
+uint32_t arch_console_claim_wait(void);
 #endif
+// Bounded, polled output for panic, faults and startup, safe without scheduling or IRQs. It
+// answers false once the channel stalled, so more bytes would stall too, having dropped what it
+// could not send. A line an own-image AMP node lost to a peer's claim is dropped and answers
+// true.
 bool arch_console_write_sync(char const* buf, size_t n);
 
 // Restore the console UART for panic output after user access. Handover
@@ -811,13 +816,13 @@ bool arch_fault_is_user_thread(void* frame);
 void arch_fault_redirect_to_exit(void* frame);
 
 // --- Idle -------------------------------------------------------------------
-// Block until the next interrupt (ARM WFI; sim sigsuspend).
+// Block until the next interrupt.
 void arch_idle_wait(void);
 
 // --- Provided by the kernel for the arch backend ---------------------------
 // Next-event timer expired (tickless deadline or, if enabled, periodic tick).
 void kickos_isr_timer(void);
-// Device interrupt line `irq` fired (sim: injected event; ARM: NVIC line).
+// Device interrupt line `irq` fired.
 void kickos_isr_irq(int irq);
 // A thread's entry function returned; the arch trampoline routes here.
 void kickos_thread_return(void) __attribute__((noreturn));
@@ -825,7 +830,7 @@ void kickos_thread_return(void) __attribute__((noreturn));
 // results. A 32-bit caller reads the low half.
 uint64_t syscall_dispatch(uintptr_t nr,
                           uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3);
-// A memory-protection violation was caught (sim: SIGSEGV over the arena).
+// A memory-protection violation was caught.
 void kickos_isr_fault(uintptr_t addr, int is_write);
 
 #if KICKOS_KERNEL_CORES > 1
@@ -876,6 +881,10 @@ void arch_frame_pool_bounds(uintptr_t* base, uintptr_t* top);
 // Try fault isolation before printing. True means the handler must return
 // through the redirected frame to kickos_thread_fault_exit; false means panic.
 bool kickos_fault_kill_thread(void* frame);
+
+// Call on a terminal fault before its report. A fault inside the report re-enters the
+// handler, and the re-entry ends the system here instead of reporting again.
+void kickos_fault_report_begin(void);
 
 // Check that [frame, frame + bytes) lies in the running thread's stack.
 // Return false for no current thread, idle, or no recorded stack. Always

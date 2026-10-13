@@ -94,21 +94,10 @@ if(EXISTS "${KICKOS_DEFCONFIG}")
     string(REPLACE ";" "\\;" _kcfg_val "${_kcfg_val}")
     list(APPEND _kcfg_req "${_kcfg_shape}:${_kcfg_v}=${_kcfg_val}")
   endforeach()
-  # Translate these promptless values into explicit choice requests.
-  if(DEFINED KICKOS_CONSOLE)
-    string(TOUPPER "${KICKOS_CONSOLE}" _kcfg_console)
-    list(APPEND _kcfg_req "CONFIG_CONSOLE_${_kcfg_console}=y")
-  endif()
-  # Each node of an AMP partition derives these itself, so the peer seed carries none.
-  set(KICKOS_KCONFIG_DERIVED KICKOS_NEWLIB_NANO)
   if(KICKOS_NEWLIB_FLAVOR STREQUAL "nano")
     list(APPEND _kcfg_req "CONFIG_KICKOS_NEWLIB_NANO=y")
   else()
     list(APPEND _kcfg_req "CONFIG_KICKOS_NEWLIB_NANO=n")
-  endif()
-  if(DEFINED KICKOS_TELEMETRY)
-    string(TOUPPER "${KICKOS_TELEMETRY}" _kcfg_telem)
-    list(APPEND _kcfg_req "CONFIG_TELEMETRY_${_kcfg_telem}=y")
   endif()
 
   kickos_kconfig_generate("${CMAKE_CURRENT_SOURCE_DIR}" "${KICKOS_DEFCONFIG}"
@@ -170,21 +159,10 @@ else()
     "defconfig under boards/${KICKOS_BOARD}/configs/, not a -D.")
 endif()
 
-# Publish numeric flags for -Wundef-clean consumers. PE32+ holds no undefined symbol, so an
-# image there may not lean on a weak undefined reference resolving to zero.
 set(KICKOS_HAVE_LIBC 1)
-set(KICKOS_LIBC_REENT 1)
-set(KICKOS_LINKER_WEAK_UNDEF 1)
-if(KICKOS_ARCH STREQUAL "sim")
-  set(KICKOS_LIBC_REENT 0)
-endif()
-if(KICKOS_ARCH STREQUAL "x86_64")
-  set(KICKOS_LINKER_WEAK_UNDEF 0)
-endif()
 add_compile_definitions(KICKOS_LIBC_REENT=${KICKOS_LIBC_REENT}
                         KICKOS_LINKER_WEAK_UNDEF=${KICKOS_LINKER_WEAK_UNDEF})
 
-option(KICKOS_SCHED_PERIODIC_TICK "Force a classic periodic scheduler tick" OFF)
 option(KICKOS_BUILD_APPS          "Build in-tree demo applications"          ON)
 option(KICKOS_BUILD_TESTS         "Register CTest cases"                     ON)
 # A package built with them carries their archives and lists them in its catalogue, so only a
@@ -234,53 +212,20 @@ if(_kickos_gtest_found AND NOT KICKOS_BUILD_UNIT_TESTS)
     "KickOS: GTest was found but KICKOS_BUILD_UNIT_TESTS is OFF in the cache. Re-run with "
     "-DKICKOS_BUILD_UNIT_TESTS=ON, or configure a fresh build directory.")
 endif()
-option(KICKOS_ENABLE_SELFTEST     "Build the selftest and diagnostic apps"   OFF)
-option(KICKOS_BENCH               "Cycle-accurate context-switch microbench"  OFF)
-if(KICKOS_BENCH)
-  add_compile_definitions(KICKOS_BENCH=1)
-else()
-  add_compile_definitions(KICKOS_BENCH=0)
-endif()
-option(KICKOS_BENCH_SCHED "The scheduler's own bench counters, above one kernel core" OFF)
-if(KICKOS_BENCH_SCHED)
-  add_compile_definitions(KICKOS_BENCH_SCHED=1)
-else()
-  add_compile_definitions(KICKOS_BENCH_SCHED=0)
-endif()
-
-# --- kos_reboot, and terminating images handing the chip back to its bootloader ---
-option(KICKOS_REBOOT "kos_reboot: enter the chip's bootloader on request" OFF)
-if(KICKOS_REBOOT)
-  add_compile_definitions(KICKOS_REBOOT=1)
-else()
-  add_compile_definitions(KICKOS_REBOOT=0)
-endif()
-option(KICKOS_SHUTDOWN_TO_BOOTLOADER
-       "Terminating images reboot into the chip bootloader instead of halting" OFF)
-if(KICKOS_SHUTDOWN_TO_BOOTLOADER)
-  if(NOT KICKOS_REBOOT)
-    message(FATAL_ERROR
-      "KICKOS_SHUTDOWN_TO_BOOTLOADER=ON requires KICKOS_REBOOT=ON: arch_reboot (the "
-      "declining fallback in arch/common and every chip backend) is compiled only under "
-      "KICKOS_REBOOT, so nothing would define the symbol.")
+# The bools a header an application includes reads without the generated board_config.h: every
+# in-tree TU takes them here and a consumer through kickos_core's interface, both from this list.
+set(KICKOS_APP_BOOL_DEFS "")
+foreach(_k KICKOS_BENCH KICKOS_BENCH_SCHED KICKOS_MULTI_INSTANCE)
+  if(${_k})
+    list(APPEND KICKOS_APP_BOOL_DEFS ${_k}=1)
+  else()
+    list(APPEND KICKOS_APP_BOOL_DEFS ${_k}=0)
   endif()
-  add_compile_definitions(KICKOS_SHUTDOWN_TO_BOOTLOADER=1)
-  message(STATUS "KickOS: terminating images REBOOT TO BOOTLOADER (no BOOTSEL press; "
-                 "a chip with no arch_reboot backend still halts)")
-else()
-  add_compile_definitions(KICKOS_SHUTDOWN_TO_BOOTLOADER=0)
-endif()
+endforeach()
+add_compile_definitions(${KICKOS_APP_BOOL_DEFS})
 
 # CMake's stock MinSizeRel flags drop -g.
 add_compile_options($<$<CONFIG:MinSizeRel>:-g>)
-
-# Changes an inline in a shipped header (<kickos/list.h>), so it must reach consumers (ODR).
-option(KICKOS_DEBUG "Build the internal-consistency guards (list membership, ...)" OFF)
-if(KICKOS_DEBUG)
-  add_compile_definitions(KICKOS_DEBUG=1)
-else()
-  add_compile_definitions(KICKOS_DEBUG=0)
-endif()
 
 option(KICKOS_SMP_TRACE "Record a per-core park/wake event ring for SMP diagnosis" OFF)
 if(KICKOS_SMP_TRACE)
@@ -300,11 +245,9 @@ elseif(KICKOS_CONSOLE STREQUAL "rtt")
 elseif(KICKOS_CONSOLE STREQUAL "both")
   set(_con_chip 1)
   set(_con_rtt 1)
-elseif(KICKOS_CONSOLE STREQUAL "none")
+else()
   set(_con_chip 0)
   set(_con_rtt 0)
-else()
-  message(FATAL_ERROR "KICKOS_CONSOLE must be chip|rtt|both|none (got '${KICKOS_CONSOLE}')")
 endif()
 # Bare-metal UART consoles need '\n' lowered to CR+LF. The sim must stay raw, else '\r'
 # leaks into the TAP stream and breaks the test harness.
@@ -316,22 +259,10 @@ endif()
 add_compile_definitions(KICKOS_CONSOLE_CHIP=${_con_chip} KICKOS_CONSOLE_RTT=${_con_rtt} KICKOS_CONSOLE_CRLF=${_con_crlf})
 message(STATUS "KickOS: console=${KICKOS_CONSOLE} (chip=${_con_chip} rtt=${_con_rtt} crlf=${_con_crlf})")
 
-# Changes kernel() in a shipped header, so it must reach consumers (ODR). The instance COUNT
-# rides in the generated board_config.h with the other provisioning knobs.
-if(KICKOS_MULTI_INSTANCE)
-  add_compile_definitions(KICKOS_MULTI_INSTANCE=1)
-else()
-  add_compile_definitions(KICKOS_MULTI_INSTANCE=0)
-endif()
-
 include("${CMAKE_SOURCE_DIR}/cmake/boot_arena.cmake")
 # What the link spells before a C name, which a toolchain whose ABI adds one declares.
 if(NOT DEFINED KICKOS_C_SYMBOL_PREFIX)
   set(KICKOS_C_SYMBOL_PREFIX "")
-endif()
-# Always defined, so every `#if KICKOS_TLS_FROM_SP` site is -Wundef-clean.
-if(NOT DEFINED KICKOS_TLS_FROM_SP)
-  set(KICKOS_TLS_FROM_SP 0)
 endif()
 add_compile_definitions(KICKOS_TLS_FROM_SP=${KICKOS_TLS_FROM_SP})
 if(KICKOS_TLS)
@@ -364,65 +295,31 @@ if(KICKOS_TLS)
     math(EXPR _tls_p "${_tls_p} * 2")
     math(EXPR _tls_log2 "${_tls_log2} + 1")
   endwhile()
-  add_compile_definitions(KICKOS_TLS=1
-                          KICKOS_TLS_STRIDE=${_tls_stride}
-                          KICKOS_TLS_STRIDE_LOG2=${_tls_log2})
+  set(_kickos_tls_defs KICKOS_TLS=1 KICKOS_TLS_STRIDE=${_tls_stride}
+                       KICKOS_TLS_STRIDE_LOG2=${_tls_log2})
   if(KICKOS_TLS_FROM_SP)
     message(STATUS "KickOS: the thread pointer is SP masked to the stride")
     set(KICKOS_STACK_STRIDE ${_tls_stride})
   endif()
   message(STATUS "KickOS: TLS stride ${_tls_stride} (1 << ${_tls_log2})")
 else()
-  # Always defined, so every `#if KICKOS_TLS` site is -Wundef-clean.
-  add_compile_definitions(KICKOS_TLS=0)
+  set(_kickos_tls_defs KICKOS_TLS=0)
 endif()
+# The shipped arch.h reads the stride wherever the generated header turns KICKOS_TLS on.
+add_compile_definitions(${_kickos_tls_defs})
 
-# Where libc asks __getreent the thread pointer answers it: lx6 above one kernel core, and every
-# armv8a, rv64imac and x86_64 image, whose newlib the KickOS toolchain builds dynamic-reent.
-# Elsewhere one word is seated at every switch, which is correct only while one core runs its
-# readers.
-set(KICKOS_REENT_PER_THREAD 0)
-set(KICKOS_REENT_IN_TCB 0)
-if(KICKOS_LIBC_REENT)
-  if(KICKOS_ARCH STREQUAL "rv64imac" OR KICKOS_ARCH STREQUAL "x86_64")
-    set(KICKOS_REENT_PER_THREAD 1)
-  elseif(KICKOS_ARCH STREQUAL "armv8a"
-         OR (KICKOS_ARCH STREQUAL "lx6" AND KICKOS_KERNEL_CORES GREATER 1))
-    if(NOT KICKOS_TLS)
-      message(FATAL_ERROR
-        "KickOS: KICKOS_TLS is off on arch '${KICKOS_ARCH}' with "
-        "KICKOS_KERNEL_CORES=${KICKOS_KERNEL_CORES}. There each thread reaches its libc "
-        "reentrant state through the first word of its TLS control block at the thread "
-        "pointer, and only KICKOS_TLS carves that block and seats the register. Set "
-        "KICKOS_TLS=y in boards/${KICKOS_BOARD}/configs/<variant>/defconfig.")
-    endif()
-    set(KICKOS_REENT_PER_THREAD 1)
-    set(KICKOS_REENT_IN_TCB 1)
-  endif()
+if(KICKOS_REENT_IN_TCB AND NOT KICKOS_TLS)
+  message(FATAL_ERROR
+    "KickOS: KICKOS_TLS is off on arch '${KICKOS_ARCH}' with "
+    "KICKOS_KERNEL_CORES=${KICKOS_KERNEL_CORES}. There each thread reaches its libc "
+    "reentrant state through the first word of its TLS control block at the thread "
+    "pointer, and only KICKOS_TLS carves that block and seats the register. Set "
+    "KICKOS_TLS=y in boards/${KICKOS_BOARD}/configs/<variant>/defconfig.")
 endif()
 add_compile_definitions(KICKOS_REENT_PER_THREAD=${KICKOS_REENT_PER_THREAD}
-                        KICKOS_REENT_IN_TCB=${KICKOS_REENT_IN_TCB})
+                        KICKOS_REENT_IN_TCB=${KICKOS_REENT_IN_TCB}
+                        KICKOS_ARCH_SIM=${KICKOS_ARCH_SIM})
 
-# Positive identification: a new arch lands in the 0 branch of every `#if KICKOS_ARCH_SIM`.
-if(KICKOS_ARCH STREQUAL "sim")
-  set(_arch_sim 1)
-else()
-  set(_arch_sim 0)
-endif()
-add_compile_definitions(KICKOS_ARCH_SIM=${_arch_sim})
-
-# Chips and architectures opt into capabilities through named .cmake files.
-# Include them in this scope so their variables reach subdirectories.
-# Where Kconfig declares the same capability, require a matching opt-in file.
-
-# Trace IDs must match record.h and kicktrace.py. Include chip capabilities
-# first so chip-specific values override architecture defaults.
-if(KICKOS_CHIP)
-  set(_caps_optin "${CMAKE_CURRENT_SOURCE_DIR}/arch/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/caps.cmake")
-  if(EXISTS "${_caps_optin}")
-    include("${_caps_optin}")
-  endif()
-endif()
 # The chip file's facts: its protection unit, which Kconfig's selection is held to below, and
 # whether its cores have an unprivileged mode at all.
 include("${PROJECT_BINARY_DIR}/generated/chip/chip.cmake")
@@ -437,53 +334,12 @@ endif()
 # sim is x86_64-only: arch_fault_is_user_thread reads a host layout it only knows there.
 set(KICKOS_FAULT_ISOLATION 0)
 set(KICKOS_FAULT_OUTCOME panic)
-if(KICKOS_HAVE_PRIV_RING
-    AND (KICKOS_ARCH STREQUAL "armv7m"
-      OR KICKOS_ARCH STREQUAL "armv6m"
-      OR KICKOS_ARCH STREQUAL "rv32imac"
-      OR KICKOS_ARCH STREQUAL "rxv3"
-      OR KICKOS_ARCH STREQUAL "armv8a"
-      OR KICKOS_ARCH STREQUAL "rv64imac"
-      OR KICKOS_ARCH STREQUAL "x86_64"
-      OR (KICKOS_ARCH STREQUAL "sim" AND CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "x86_64")))
+if(KICKOS_HAVE_PRIV_RING AND KICKOS_ARCH_FAULT_ISOLATION
+   AND NOT (KICKOS_ARCH STREQUAL "sim" AND NOT CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "x86_64"))
   set(KICKOS_FAULT_ISOLATION 1)
   set(KICKOS_FAULT_OUTCOME thread-kill)
 endif()
 add_compile_definitions(KICKOS_FAULT_ISOLATION=${KICKOS_FAULT_ISOLATION})
-if(NOT DEFINED KICKOS_TRACE_ARCH)
-  set(KICKOS_TRACE_ARCH 0)
-  if(KICKOS_ARCH STREQUAL "armv7m")
-    set(KICKOS_TRACE_ARCH 1)
-  elseif(KICKOS_ARCH STREQUAL "armv6m")
-    set(KICKOS_TRACE_ARCH 2)
-  elseif(KICKOS_ARCH STREQUAL "lx6")
-    set(KICKOS_TRACE_ARCH 3)
-  elseif(KICKOS_ARCH STREQUAL "rxv3")
-    set(KICKOS_TRACE_ARCH 4)
-  elseif(KICKOS_ARCH STREQUAL "rv32imac")
-    set(KICKOS_TRACE_ARCH 5)
-  endif()
-endif()
-# rv32imac and armv6m are per-chip; see the HAS_TRACE_CLOCK help in Kconfig.
-if(NOT DEFINED KICKOS_HAVE_TRACE_CLOCK)
-  set(KICKOS_HAVE_TRACE_CLOCK 0)
-  if(KICKOS_ARCH STREQUAL "sim" OR KICKOS_ARCH STREQUAL "armv7m"
-     OR KICKOS_ARCH STREQUAL "rxv3" OR KICKOS_ARCH STREQUAL "lx6")
-    set(KICKOS_HAVE_TRACE_CLOCK 1) # sim clock/1000; armv7m DWT fallback; rxv3 CMTW1; lx6 CCOUNT
-  endif()
-endif()
-
-if(NOT KICKOS_HAVE_TRACE_CLOCK EQUAL KICKOS_TRACE_CLOCK_DECLARED)
-  message(FATAL_ERROR
-    "The two declarations of the trace clock disagree on board '${KICKOS_BOARD}' "
-    "(arch=${KICKOS_ARCH} chip=${KICKOS_CHIP}): Kconfig resolves HAS_TRACE_CLOCK to "
-    "${KICKOS_TRACE_CLOCK_DECLARED}, while arch/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/"
-    "caps.cmake plus the arch ladder in CMakeLists.txt compute "
-    "KICKOS_HAVE_TRACE_CLOCK=${KICKOS_HAVE_TRACE_CLOCK}. Fix whichever is wrong: the arch "
-    "default and the per-chip `select HAS_TRACE_CLOCK` live in Kconfig and arch/Kconfig, "
-    "the CMake half in the chip's caps.cmake (KICKOS_HAVE_TRACE_CLOCK) and the ladder "
-    "above. A chip that gained or lost arch_trace_now has to be stated in both.")
-endif()
 
 kickos_chip_protection_disagreement(_chip_disagrees "${KICKOS_HAVE_MPU}" "${KICKOS_HAVE_ASPACE}"
   "${KICKOS_CHIP_REGION_UNIT}" "${KICKOS_CHIP_TRANSLATES}" "platform/${KICKOS_CHIP}/chip.yaml")
@@ -506,16 +362,6 @@ if(_kickos_qemu_machine MATCHES "^mps2-")
 endif()
 
 add_compile_definitions(KICKOS_HAVE_ASPACE=${KICKOS_HAVE_ASPACE})
-
-# terminate.cmake selects process-exit fault termination instead of the LED fallback.
-set(KICKOS_CHIP_EXITS_ON_FAULT OFF)
-if(KICKOS_CHIP)
-  set(_terminate_optin
-      "${CMAKE_CURRENT_SOURCE_DIR}/arch/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/terminate.cmake")
-  if(EXISTS "${_terminate_optin}")
-    include("${_terminate_optin}")
-  endif()
-endif()
 
 # Read only by kickos_split_image_tu (cmake/kickos.cmake); empty leaves that function inert.
 # Set here because kernel/CMakeLists.txt calls the same function and cannot see arch/'s scope.
@@ -547,45 +393,7 @@ add_compile_definitions(
   KICKOS_ARM_MPU_SYSMPU=3
   KICKOS_ARM_MPU=${_kickos_arm_mpu})
 
-# The IPC fastpath flag must agree across syscall stubs, architecture entry
-# and the kernel leaf implementation.
-set(KICKOS_ARCH_HAS_IPC_FASTPATH 0)
-set(_ipc_fastpath_optin
-  "${CMAKE_CURRENT_SOURCE_DIR}/arch/${KICKOS_ARCH_FAMILY}/${KICKOS_ARCH}/ipc_fastpath.cmake")
-if(KICKOS_ARCH_FAMILY STREQUAL KICKOS_ARCH)
-  # The sim's backend sits at arch/sim, with no family level.
-  set(_ipc_fastpath_optin
-    "${CMAKE_CURRENT_SOURCE_DIR}/arch/${KICKOS_ARCH}/ipc_fastpath.cmake")
-endif()
-if(EXISTS "${_ipc_fastpath_optin}")
-  include("${_ipc_fastpath_optin}")
-endif()
 add_compile_definitions(KICKOS_ARCH_HAS_IPC_FASTPATH=${KICKOS_ARCH_HAS_IPC_FASTPATH})
-
-# --- Shared-kernel hardware predicate ---------------------------------------
-include(smp_predicate)
-kickos_smp_predicate(
-  SOURCE_DIR   "${CMAKE_CURRENT_SOURCE_DIR}"
-  ARCH         "${KICKOS_ARCH}"
-  ARCH_FAMILY  "${KICKOS_ARCH_FAMILY}"
-  CHIP         "${KICKOS_CHIP}"
-  BOARD        "${KICKOS_BOARD}"
-  NUM_CORES    "${KICKOS_NUM_CORES}"
-  MODEL_SHARED "${KICKOS_MULTICORE_MODEL_SHARED}")
-
-# Reject multicore IPC fastpaths after checking hardware support.
-# The implementation also has a compile-time assertion.
-if(KICKOS_ARCH_HAS_IPC_FASTPATH AND KICKOS_KERNEL_CORES GREATER 1)
-  message(FATAL_ERROR
-    "KickOS: arch '${KICKOS_ARCH}' opts into the trap-handler IPC fastpath in "
-    "${_ipc_fastpath_optin}, and KICKOS_KERNEL_CORES=${KICKOS_KERNEL_CORES} puts one kernel "
-    "on more than one core. The fastpath holds NO lock object: it is entered with the local "
-    "interrupt mask the trap took and mutates a peer's thread control block, its endpoint "
-    "and its capability table under that mask alone, which is exclusion on one core and "
-    "nothing on another (docs/design-multicore.md section 4 gap 1, ruled on by N10). Either "
-    "delete ${_ipc_fastpath_optin}, or select one kernel core: the AMP model runs a kernel "
-    "per core over disjoint memory and keeps the fastpath on each of them.")
-endif()
 
 # The generated header guards its own define with #ifndef, so this wins where both are seen.
 add_compile_definitions(KICKOS_NUM_CORES=${KICKOS_NUM_CORES})
@@ -596,15 +404,7 @@ add_compile_definitions(KICKOS_KERNEL_CORES=${KICKOS_KERNEL_CORES})
 # Beside them again, for an app TU that has to ask which MODEL it runs under.
 add_compile_definitions(KICKOS_MULTICORE_MODEL_SHARED=${KICKOS_MULTICORE_MODEL_SHARED})
 
-# Size the doorbell matrix from the partition or image core count.
-# Shared-image node IDs are core indices and must fit this matrix.
-if(KICKOS_DOORBELL_CORES LESS KICKOS_NUM_CORES)
-  message(FATAL_ERROR
-    "KickOS: KICKOS_DOORBELL_CORES resolves ${KICKOS_DOORBELL_CORES} and this image drives "
-    "${KICKOS_NUM_CORES} cores. The matrix is indexed by machine core and cannot be narrower "
-    "than the cores the image drives. KICKOS_NUM_CORES is the authority and the width derives "
-    "from it in Kconfig, so this says the derivation is broken rather than a defconfig.")
-endif()
+# Shared-image node IDs are core indices and must fit the doorbell matrix.
 if(KICKOS_AMP_NODE AND NOT KICKOS_AMP_OWN_IMAGE
    AND KICKOS_AMP_NODES GREATER KICKOS_DOORBELL_CORES)
   message(FATAL_ERROR
@@ -616,10 +416,6 @@ if(KICKOS_AMP_NODE AND NOT KICKOS_AMP_OWN_IMAGE
     "boards/${KICKOS_BOARD}/configs/${KICKOS_CONFIG_VARIANT}/defconfig.")
 endif()
 
-# Non-shared configurations have no isolated cores.
-if(NOT DEFINED KICKOS_ISOLATED_CORES OR KICKOS_ISOLATED_CORES STREQUAL "")
-  set(KICKOS_ISOLATED_CORES 0)
-endif()
 include(isolated_cores)
 kickos_isolated_cores_check(
   ISOLATED      "${KICKOS_ISOLATED_CORES}"
@@ -628,9 +424,6 @@ kickos_isolated_cores_check(
 # An APP TU asks this to know which cores it may pin onto.
 add_compile_definitions(KICKOS_ISOLATED_CORES=${KICKOS_ISOLATED_CORES})
 
-if(NOT DEFINED KICKOS_ROOT_CORE_MASK OR KICKOS_ROOT_CORE_MASK STREQUAL "")
-  set(KICKOS_ROOT_CORE_MASK 0)
-endif()
 kickos_root_core_mask_check(
   MASK          "${KICKOS_ROOT_CORE_MASK}"
   KERNEL_CORES  "${KICKOS_KERNEL_CORES}"
@@ -666,13 +459,6 @@ endif()
 
 include("${CMAKE_SOURCE_DIR}/cmake/amp_partition.cmake")
 
-# Architecture-specific minimum stack for thread-exit cleanup.
-if(NOT DEFINED KICKOS_MIN_STACK_SIZE)
-  message(FATAL_ERROR
-    "KickOS: no KICKOS_MIN_STACK_SIZE. The generated kickos_config.cmake carries it, "
-    "derived per arch in Kconfig, so an empty value here means the fragment was not "
-    "read or the arch resolved to none.")
-endif()
 add_compile_definitions(KICKOS_MIN_STACK_SIZE=${KICKOS_MIN_STACK_SIZE})
 message(STATUS "KickOS: caller-stack floor KICKOS_MIN_STACK_SIZE=${KICKOS_MIN_STACK_SIZE} (arch=${KICKOS_ARCH})")
 
@@ -681,21 +467,9 @@ if(DEFINED KICKOS_RX_MPU_TRACE)
   add_compile_definitions(KICKOS_RX_MPU_TRACE=${KICKOS_RX_MPU_TRACE})
 endif()
 
-if(KICKOS_TELEMETRY STREQUAL "off")
-  set(_telem 0)
-elseif(KICKOS_TELEMETRY STREQUAL "rtt")
+set(_telem 0)
+if(KICKOS_TELEMETRY STREQUAL "rtt")
   set(_telem 1)
-  if(NOT KICKOS_HAVE_TRACE_CLOCK)
-    message(FATAL_ERROR "KICKOS_TELEMETRY=rtt requires a trace clock (arch_trace_now), "
-      "but board '${KICKOS_BOARD}' (arch=${KICKOS_ARCH} chip=${KICKOS_CHIP}) does not "
-      "provide one (KICKOS_HAVE_TRACE_CLOCK unset)")
-  endif()
-  if(NOT (KICKOS_CONSOLE STREQUAL "rtt" OR KICKOS_CONSOLE STREQUAL "both"))
-    message(FATAL_ERROR "KICKOS_TELEMETRY=rtt needs the RTT transport: set "
-      "KICKOS_CONSOLE=rtt or both (got '${KICKOS_CONSOLE}')")
-  endif()
-else()
-  message(FATAL_ERROR "KICKOS_TELEMETRY must be off|rtt (got '${KICKOS_TELEMETRY}')")
 endif()
 add_compile_definitions(KICKOS_TELEMETRY=${_telem} KICKOS_TELEMETRY_RTT=${_telem}
                         KICKOS_TRACE_ARCH=${KICKOS_TRACE_ARCH})
@@ -723,409 +497,7 @@ include(GNUInstallDirs)
 set(KICKOS_CMAKE_DIR "${CMAKE_INSTALL_LIBDIR}/cmake/KickOS")
 
 if(KICKOS_BUILD_TESTS)
-  enable_testing()
-
-  if(KICKOS_BUILD_UNIT_TESTS)
-    include(GoogleTest)
-  endif()
-
-  # Read from the one file tests/lib/gate.sh also reads (same ERE dialect). It must not
-  # contain a `;`: FAIL_REGULAR_EXPRESSION is a CMake list of regexes.
-  file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/tests/lib/panic.ere" KICKOS_PANIC_REGEX LIMIT_COUNT 1)
-  if(KICKOS_PANIC_REGEX STREQUAL "")
-    message(FATAL_ERROR "tests/lib/panic.ere is empty; the sim panic gates would register "
-                        "an empty regex and no fault would ever fail a test")
-  endif()
-
-  # Every test's TIMEOUT reaches it as KOS_CTEST_TIMEOUT_S, which tests/lib/gate.sh charges each
-  # boot's bound against. Deferred to the end of each directory, where every site's own
-  # set_tests_properties has run.
-  function(kickos_hand_timeouts)
-    get_property(_names DIRECTORY PROPERTY TESTS)
-    foreach(_name IN LISTS _names)
-      get_test_property("${_name}" TIMEOUT _timeout)
-      if(_timeout)
-        set_property(TEST "${_name}" APPEND PROPERTY ENVIRONMENT "KOS_CTEST_TIMEOUT_S=${_timeout}")
-      endif()
-    endforeach()
-  endfunction()
-  macro(kickos_arm_timeouts)
-    get_property(_kickos_timeouts_armed DIRECTORY PROPERTY kickos_timeouts_armed)
-    if(NOT _kickos_timeouts_armed)
-      set_property(DIRECTORY PROPERTY kickos_timeouts_armed ON)
-      cmake_language(DEFER CALL kickos_hand_timeouts)
-    endif()
-  endmacro()
-  kickos_arm_timeouts()
-
-  # One CTest fixture (SETUP) so no test can run a stale binary; every test registered below
-  # is auto-wired to require it by the add_test wrapper just after.
-  add_test(NAME kickos_build COMMAND "${CMAKE_COMMAND}" --build "${PROJECT_BINARY_DIR}")
-  set_tests_properties(kickos_build PROPERTIES FIXTURES_SETUP kickos_build TIMEOUT 900)
-
-  # A macro preserves the directory scope of the test being configured.
-  # Register kickos_build outside it to avoid a self-dependency.
-  macro(add_test)
-    _add_test(${ARGV})
-    kickos_arm_timeouts()
-    if("${ARGV0}" STREQUAL "NAME")
-      set(_kickos_test_name "${ARGV1}")
-    else()
-      set(_kickos_test_name "${ARGV0}")
-    endif()
-    set_property(TEST "${_kickos_test_name}" APPEND PROPERTY FIXTURES_REQUIRED kickos_build)
-    # <image>|<test> for each image the test's command names, which the image listing reads.
-    string(REGEX MATCHALL "\\$<TARGET_FILE:[^>]+>" _kickos_test_images "${ARGV}")
-    foreach(_kickos_test_image IN LISTS _kickos_test_images)
-      string(REGEX REPLACE "^\\$<TARGET_FILE:(.+)>$" "\\1" _kickos_test_image
-             "${_kickos_test_image}")
-      set_property(DIRECTORY APPEND PROPERTY kickos_image_tests
-                   "${_kickos_test_image}|${_kickos_test_name}")
-    endforeach()
-    if(NOT KICKOS_BUILD_INTEGRATION_TESTS)
-      # cmake_language(DEFER CALL) expands its arguments when the call RUNS, so a per-test
-      # defer would see the LAST name registered in the directory and decline only that one.
-      set_property(DIRECTORY APPEND PROPERTY kickos_declinable "${_kickos_test_name}")
-      get_property(_kickos_armed DIRECTORY PROPERTY kickos_decline_armed)
-      if(NOT _kickos_armed)
-        set_property(DIRECTORY PROPERTY kickos_decline_armed ON)
-        # End of this directory: the earliest point where every site's own
-        # set_tests_properties has run and the `host` label is readable.
-        cmake_language(DEFER CALL kickos_decline_image_tests)
-      endif()
-    endif()
-  endmacro()
-
-  function(kickos_decline_image_tests)
-    get_property(_names DIRECTORY PROPERTY kickos_declinable)
-    foreach(_name IN LISTS _names)
-      get_test_property("${_name}" LABELS _labels)
-      if(NOT "host" IN_LIST _labels)
-        set_tests_properties("${_name}" PROPERTIES DISABLED TRUE)
-      endif()
-    endforeach()
-  endfunction()
-
-  # Tree checks must depend only on source files, not preset output.
-  # Register without the build fixture and run from the repository root.
-  _add_test(NAME doc_names
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_doc_names.sh"
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(doc_names PROPERTIES TIMEOUT 120 LABELS "host;tree")
-
-  _add_test(NAME extern_c_linkage
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_extern_c_linkage.sh"
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(extern_c_linkage PROPERTIES TIMEOUT 120 LABELS "host;tree")
-
-  _add_test(NAME ascii
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_ascii.sh"
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(ascii PROPERTIES TIMEOUT 120 LABELS "host;tree")
-
-  _add_test(NAME spdx
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_spdx.sh"
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(spdx PROPERTIES TIMEOUT 120 LABELS "host;tree")
-
-  _add_test(NAME include_guards
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_include_guards.sh"
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(include_guards PROPERTIES TIMEOUT 120 LABELS "host;tree")
-
-  _add_test(NAME shell_special_names
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_shell_special_names.sh"
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(shell_special_names PROPERTIES TIMEOUT 120 LABELS "host;tree")
-
-  _add_test(NAME dash_punct
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_dash_punct.sh"
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  # 300 and not the 120 its siblings take, measured rather than guessed: this is the heaviest
-  # corpus scan in the set at 21 s idle against 6 s for the next, and a contended box has taken
-  # it to 117 s. A gate that runs out of budget is reported as a FAILURE by anything counting
-  # failures, so a thin budget here reads as a corpus defect that did not happen.
-  set_tests_properties(dash_punct PROPERTIES TIMEOUT 300 LABELS "host;tree")
-
-  _add_test(NAME ternary
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_ternary.sh"
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(ternary PROPERTIES TIMEOUT 120 LABELS "host;tree")
-
-  _add_test(NAME panic_banners
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_panic_banners.sh"
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(panic_banners PROPERTIES TIMEOUT 120 LABELS "host;tree")
-
-  _add_test(NAME syscall_return_codes
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_syscall_return_codes.sh"
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(syscall_return_codes PROPERTIES TIMEOUT 120 LABELS "host;tree")
-
-  _add_test(NAME death_stack_seating
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_death_stack_seating.sh"
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(death_stack_seating PROPERTIES TIMEOUT 120 LABELS "host;tree")
-
-  _add_test(NAME panic_stack_seat
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_panic_stack_seat.sh"
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(panic_stack_seat PROPERTIES TIMEOUT 120 LABELS "host;tree")
-
-  _add_test(NAME mpu_record
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_mpu_record.sh"
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(mpu_record PROPERTIES TIMEOUT 120 LABELS "host;tree")
-
-  _add_test(NAME park_death_point
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_park_death_point.sh"
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(park_death_point PROPERTIES TIMEOUT 120 LABELS "host;tree")
-
-  _add_test(NAME geometry_emitted
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_geometry_emitted.sh"
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(geometry_emitted PROPERTIES TIMEOUT 120 LABELS "host;tree")
-
-  set(_fs_own_image OFF)
-  if(KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
-    set(_fs_own_image ON)
-  endif()
-  kickos_preset_key(_fs_preset_key "${KICKOS_BOARD}" "${KICKOS_CONFIG_VARIANT}"
-                    "${_fs_own_image}" "${KICKOS_AMP_NODE_ID}")
-
-  # Every preset of an arch with a trap-stack header measures its trap descent.
-  file(GLOB _fs_trap_stack_header
-       "${PROJECT_SOURCE_DIR}/arch/*/${KICKOS_ARCH}/include/kickos/arch/*_trap_stack.h")
-  if(_fs_trap_stack_header)
-    _add_test(NAME trap_redzone
-              COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_trap_redzone.sh"
-                      "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}"
-                      "${_fs_preset_key}" "${KICKOS_ARCH}")
-    set_tests_properties(trap_redzone PROPERTIES TIMEOUT 1800 LABELS host)
-    if(KICKOS_FULL_NEWLIB)
-      # The callgraph scratch tree must use the same explicit comparison profile.
-      set_tests_properties(trap_redzone PROPERTIES
-                           ENVIRONMENT "KICKOS_FULL_NEWLIB=ON")
-    endif()
-  endif()
-
-  _add_test(NAME trap_redzone_walk
-            COMMAND python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/test_trap_redzone.py")
-  set_tests_properties(trap_redzone_walk PROPERTIES TIMEOUT 120 LABELS "host;tree")
-
-  _add_test(NAME app_stack_control
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_app_stack.sh"
-                    "${CMAKE_CXX_COMPILER}"
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(app_stack_control PROPERTIES TIMEOUT 120 LABELS "host;tree")
-
-  # Every translating preset walks the fault-record console route, as a clause of trap_redzone.
-  if(KICKOS_HAVE_ASPACE AND _fs_trap_stack_header)
-    set_property(TEST trap_redzone APPEND PROPERTY ENVIRONMENT "KICKOS_CONSOLE_REACH=1")
-  endif()
-
-  _add_test(NAME amp_no_xip_pin
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_amp_no_xip_pin.sh"
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(amp_no_xip_pin PROPERTIES TIMEOUT 300 LABELS "host;tree")
-
-  _add_test(NAME atomic_rmw
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_atomic_rmw.sh"
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(atomic_rmw PROPERTIES TIMEOUT 120 LABELS "host;tree")
-
-  # The host fixture cannot interrupt between slot validation and use;
-  # check the single-snapshot rule statically.
-  _add_test(NAME amp_slot_snapshot
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_amp_slot_snapshot.sh"
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(amp_slot_snapshot PROPERTIES TIMEOUT 120 LABELS "host;tree")
-
-  # Test the named-test helper with a stub ctest; registration is checked per preset.
-  _add_test(NAME ci_named_lists
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_ci_named_lists.sh"
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(ci_named_lists PROPERTIES TIMEOUT 120 LABELS "host;tree")
-
-  # No gawk-only extension in an awk program this tree runs: a non-gawk awk REFUSES such a
-  # program, which leaves the calling gate reporting its own clause instead of the awk.
-  _add_test(NAME awk_portable
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_awk_portable.sh"
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(awk_portable PROPERTIES TIMEOUT 120 LABELS "host;tree")
-
-  _add_test(NAME gate_lib
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/lib/check_gate.sh" 120
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(gate_lib PROPERTIES TIMEOUT 120 LABELS "host;tree")
-
-  _add_test(NAME poll_stop_lines
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_poll_stop_lines.sh"
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(poll_stop_lines PROPERTIES TIMEOUT 120 LABELS "host;tree")
-
-  _add_test(NAME tap_stream_sets
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_tap_stream_sets.sh"
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(tap_stream_sets PROPERTIES TIMEOUT 60 LABELS "host;tree")
-
-  _add_test(NAME stamp_lines
-            COMMAND python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tools/bench/test_stamp_lines.py")
-  set_tests_properties(stamp_lines PROPERTIES TIMEOUT 60 LABELS "host;tree")
-
-  _add_test(NAME capture_teardown
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_capture_teardown.sh"
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(capture_teardown PROPERTIES TIMEOUT 60 LABELS "host;tree")
-
-  _add_test(NAME amp_peers
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_amp_peers.sh"
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(amp_peers PROPERTIES TIMEOUT 60 LABELS "host;tree")
-
-  _add_test(NAME selftest_demands_controls
-            COMMAND python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/selftest_demands.py" --self-test
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(selftest_demands_controls PROPERTIES TIMEOUT 60 LABELS "host;tree")
-
-  file(GLOB _kos_gate_fragments "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/gates/*.cmake")
-  _add_test(NAME board_predicates
-            COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_board_predicates.py"
-                    ${_kos_gate_fragments}
-                    "${CMAKE_CURRENT_SOURCE_DIR}/user/apps/common/CMakeLists.txt"
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(board_predicates PROPERTIES TIMEOUT 60 LABELS "host;tree")
-
-  _add_test(NAME boot_tp_controls
-            COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_boot_tp.py" --self-test
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(boot_tp_controls PROPERTIES TIMEOUT 60 LABELS "host;tree")
-
-  _add_test(NAME sweep_checkout
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_sweep_checkout.sh"
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(sweep_checkout PROPERTIES TIMEOUT 60 LABELS "host;tree")
-
-  _add_test(NAME rig_shells
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_rig_shells.sh"
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(rig_shells PROPERTIES TIMEOUT 60 LABELS "host;tree" SKIP_RETURN_CODE 77)
-
-  _add_test(NAME app_judges
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_app_judges.sh"
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(app_judges PROPERTIES TIMEOUT 120 LABELS "host;tree")
-
-  _add_test(NAME bench_fleet_controls
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_bench_fleet.sh" "${CMAKE_COMMAND}"
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(bench_fleet_controls PROPERTIES TIMEOUT 120 LABELS "host;tree")
-
-  _add_test(NAME bench_banner_controls
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_bench_banner.sh"
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(bench_banner_controls PROPERTIES TIMEOUT 60 LABELS "host;tree")
-
-  _add_test(NAME stlink_capture_controls
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_stlink_capture.sh"
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(stlink_capture_controls PROPERTIES TIMEOUT 60 LABELS "host;tree")
-
-  _add_test(NAME no_eh_runtime_controls
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/check_no_eh_runtime.sh" --self-test)
-  set_tests_properties(no_eh_runtime_controls PROPERTIES TIMEOUT 60 LABELS "host;tree")
-
-  _add_test(NAME no_libnosys_controls
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/check_no_libnosys.sh" --self-test)
-  set_tests_properties(no_libnosys_controls PROPERTIES TIMEOUT 60 LABELS "host;tree")
-
-  _add_test(NAME string_provider_controls
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/check_string_provider.sh"
-                    --self-test "${CMAKE_C_COMPILER}" "${CMAKE_AR}" "${CMAKE_NM}")
-  set_tests_properties(string_provider_controls PROPERTIES TIMEOUT 60 LABELS "host;tree")
-
-  _add_test(NAME ctors_kept_controls
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/check_ctors_kept.sh" --self-test)
-  set_tests_properties(ctors_kept_controls PROPERTIES TIMEOUT 60 LABELS "host;tree")
-
-  _add_test(NAME image_listing_controls
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/check_image_listing.sh" --self-test)
-  set_tests_properties(image_listing_controls PROPERTIES TIMEOUT 60 LABELS "host;tree")
-
-  # The kernel-core seam against the machine's core identity. Corpus-wide source scan, so it
-  # is registered from every board and reads no build output.
-  _add_test(NAME kernel_core_index
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_kernel_core_index.sh"
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(kernel_core_index PROPERTIES TIMEOUT 120 LABELS "host;tree")
-
-  _add_test(NAME preset_defconfig
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_preset_defconfig.sh"
-                    "${CMAKE_COMMAND}" "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(preset_defconfig PROPERTIES TIMEOUT 120 LABELS "host;tree")
-
-  kickos_find_kconfig(_kconfig_py _kconfig_found)
-  _add_test(NAME kconfig_gen
-            COMMAND "${_kconfig_py}" -B
-                    "${CMAKE_CURRENT_SOURCE_DIR}/tools/kconfig/test_genconfig.py" "${CMAKE_COMMAND}")
-  set_tests_properties(kconfig_gen PROPERTIES TIMEOUT 300 LABELS "host;tree")
-
-  include("${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_smp_predicate.cmake")
-
-  include("${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_isolated_cores.cmake")
-
-  # Test the AMP user share's refusal past its window using synthetic values.
-  _add_test(NAME amp_share
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_amp_share.sh"
-                    "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_COMMAND}")
-  set_tests_properties(amp_share PROPERTIES TIMEOUT 120 LABELS "host;tree")
-
-  _add_test(NAME chip_kconfig
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_chip_kconfig.sh"
-                    "${_kconfig_py}" "${PROJECT_BINARY_DIR}"
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(chip_kconfig PROPERTIES TIMEOUT 300 LABELS "host;tree")
-
-  _add_test(NAME driver_metadata
-            COMMAND "${CMAKE_COMMAND}" "-DKICKOS_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
-                    -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_driver_metadata.cmake")
-  set_tests_properties(driver_metadata PROPERTIES TIMEOUT 120 LABELS "host;tree")
-
-  _add_test(NAME chip_protection
-            COMMAND "${CMAKE_COMMAND}" "-DKICKOS_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
-                    "-DKICKOS_SCRATCH=${PROJECT_BINARY_DIR}/chip_protection"
-                    -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_chip_protection.cmake")
-  set_tests_properties(chip_protection PROPERTIES TIMEOUT 60 LABELS "host;tree")
-
-  _add_test(NAME selftest_partials
-            COMMAND "${CMAKE_COMMAND}" "-DKICKOS_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
-                    "-DSCRATCH=${CMAKE_CURRENT_BINARY_DIR}/selftest_partials"
-                    -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_selftest_partials.cmake")
-  set_tests_properties(selftest_partials PROPERTIES TIMEOUT 60 LABELS "host;tree")
-
-  # A first run fetches the tool's locked dependencies into the build directory.
-  foreach(_compose_mode descriptions compositions arms coverage)
-    _add_test(NAME platform_${_compose_mode}
-              COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_platform.sh"
-                      "${PROJECT_BINARY_DIR}" "${_compose_mode}"
-              WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-    set_tests_properties(platform_${_compose_mode} PROPERTIES TIMEOUT 300 LABELS "host;tree")
-  endforeach()
-  # The walker runs, so the compiler must be the host's, which only the sim builds with.
-  if(KICKOS_ARCH STREQUAL "sim")
-    _add_test(NAME platform_tables
-              COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_platform.sh"
-                      "${PROJECT_BINARY_DIR}" tables "${CMAKE_C_COMPILER}" "${PROJECT_BINARY_DIR}/generated/include"
-              WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-    set_tests_properties(platform_tables PROPERTIES TIMEOUT 300 LABELS "host;tree")
-    _add_test(NAME usb_identity_controls
-              COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_usb_identity.sh"
-                      "${CMAKE_CXX_COMPILER}"
-              WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-    set_tests_properties(usb_identity_controls PROPERTIES TIMEOUT 120 LABELS "host;tree")
-  endif()
-
+  include(tests/cmake/kickos_tests.cmake)
 endif()
 
 # The version and board the boot banner names, and the identity rows a USB device console repeats
@@ -1174,10 +546,6 @@ if(TARGET kickos_kernel)
   target_compile_definitions(kickos_core INTERFACE
     "$<$<STREQUAL:$<TARGET_PROPERTY:TYPE>,EXECUTABLE>:KICKOS_APP_IMAGE=\"$<TARGET_PROPERTY:NAME>\">")
   # Export every macro affecting shipped layouts or inline definitions to avoid ODR mismatch.
-  set(_kos_iface_sim 0)
-  if(KICKOS_ARCH STREQUAL "sim")
-    set(_kos_iface_sim 1)
-  endif()
   target_compile_definitions(kickos_core INTERFACE
     KICKOS_TELEMETRY=${_telem} KICKOS_TELEMETRY_RTT=${_telem}
     KICKOS_TRACE_ARCH=${KICKOS_TRACE_ARCH}
@@ -1191,11 +559,11 @@ if(TARGET kickos_kernel)
     KICKOS_ARM_MPU_PMSAV8=2
     KICKOS_ARM_MPU_SYSMPU=3
     KICKOS_ARM_MPU=${_kickos_arm_mpu}
-    KICKOS_ARCH_SIM=${_kos_iface_sim}
+    KICKOS_ARCH_SIM=${KICKOS_ARCH_SIM}
     KICKOS_LIBC_REENT=${KICKOS_LIBC_REENT}
     KICKOS_LINKER_WEAK_UNDEF=${KICKOS_LINKER_WEAK_UNDEF}
-    KICKOS_MULTI_INSTANCE=$<BOOL:${KICKOS_MULTI_INSTANCE}>
-    KICKOS_DEBUG=$<BOOL:${KICKOS_DEBUG}>
+    ${KICKOS_APP_BOOL_DEFS}
+    ${_kickos_tls_defs}
     # Always define SPI backend flags because app builds use -Wundef.
     KICKOS_SPI_LOCAL=$<BOOL:${KICKOS_SPI_LOCAL_ENGINE}>)
   target_compile_options(kickos_core INTERFACE -include kickos/app.h)
@@ -1249,7 +617,7 @@ if(TARGET kickos_kernel)
     set_property(TARGET kickos_core APPEND PROPERTY INTERFACE_LINK_DEPENDS
       "$<BUILD_INTERFACE:${_kos_pe_script}>"
       "$<INSTALL_INTERFACE:${_kos_pe_script_installed}>")
-    foreach(_kos_tool x86_64-link.sh x86_64-krel.sh check-x86_64-no-got.sh
+    foreach(_kos_tool x86_64-link.sh x86_64-krel.sh x86_64-map.awk check-x86_64-no-got.sh
                       check-x86_64-weak-undef.sh)
       set_property(TARGET kickos_core APPEND PROPERTY INTERFACE_LINK_DEPENDS
         "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/tools/${_kos_tool}>"
@@ -1364,6 +732,7 @@ endif()
 # Register tests after app targets exist.
 if(KICKOS_BUILD_TESTS)
   add_subdirectory(tests/integration)
+  add_subdirectory(tests/static)
 endif()
 
 if(KICKOS_BUILD_TESTS AND TARGET kickos_kernel_leaf AND KICKOS_ARCH MATCHES "^(sim|x86_64)$")
@@ -1373,50 +742,24 @@ endif()
 # Resolve after system providers and app demand declarations are available.
 kickos_cap_table_resolve(KICKOS_CAP_TABLE_SLOTS KICKOS_CAP_TABLE_CHILD_WIDTH
                          KICKOS_CAP_TABLE_REPLY_MAX)
-configure_file("${PROJECT_SOURCE_DIR}/kernel/include/kickos/config/cap_width.h.in"
-               "${PROJECT_BINARY_DIR}/generated/include/kickos/config/cap_width.h" @ONLY)
-configure_file("${PROJECT_SOURCE_DIR}/kernel/include/kickos/config/amp_ports.h.in"
-               "${PROJECT_BINARY_DIR}/generated/include/kickos/config/amp_ports.h" @ONLY)
-configure_file("${PROJECT_SOURCE_DIR}/kernel/include/kickos/config/priorities.h.in"
-               "${PROJECT_BINARY_DIR}/generated/include/kickos/config/priorities.h" @ONLY)
-configure_file("${PROJECT_SOURCE_DIR}/kernel/include/kickos/config/stack_geometry.h.in"
-               "${PROJECT_BINARY_DIR}/generated/include/kickos/config/stack_geometry.h" @ONLY)
-configure_file("${PROJECT_SOURCE_DIR}/user/include/kickos/sys/driver_geometry.h.in"
-               "${PROJECT_BINARY_DIR}/generated/include/kickos/sys/driver_geometry.h" @ONLY)
-configure_file("${PROJECT_SOURCE_DIR}/user/include/kickos/sys/table_version.h.in"
-               "${PROJECT_BINARY_DIR}/generated/include/kickos/sys/table_version.h" @ONLY)
-configure_file("${PROJECT_SOURCE_DIR}/user/include/kickos/sys/init_geometry.h.in"
-               "${PROJECT_BINARY_DIR}/generated/include/kickos/sys/init_geometry.h" @ONLY)
+# Every generated header the package installs.
+set(_kos_generated_headers board_config.h chip_mmap.h chip_limits.h config/mpu_geometry.h
+                           sys/exit_status.h)
+foreach(_in kernel/include/kickos/config/cap_width.h kernel/include/kickos/config/amp_ports.h
+            kernel/include/kickos/config/priorities.h kernel/include/kickos/config/stack_geometry.h
+            user/include/kickos/sys/driver_geometry.h user/include/kickos/sys/table_version.h
+            user/include/kickos/sys/init_geometry.h)
+  string(REGEX REPLACE "^[a-z]+/include/kickos/" "" _h "${_in}")
+  configure_file("${PROJECT_SOURCE_DIR}/${_in}.in"
+                 "${PROJECT_BINARY_DIR}/generated/include/kickos/${_h}" @ONLY)
+  list(APPEND _kos_generated_headers "${_h}")
+endforeach()
 if(TARGET kickos_core)
   # The in-tree include_directories at the top of this file does not reach an
   # add_subdirectory/FetchContent consumer's own targets; this does.
   target_include_directories(kickos_core INTERFACE
     "$<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/generated/include>"
     "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
-endif()
-
-# Registered HERE and not beside the static gates above: it needs KICKOS_ARCH_INCLUDE_DIR
-# (set by add_subdirectory(arch)) and the header generated just above.
-if(KICKOS_BUILD_TESTS)
-  if(NOT CMAKE_C_COMPILER)
-    message(FATAL_ERROR "No CMAKE_C_COMPILER, so the C-facing headers cannot be compiled as C "
-                        "and check_public_headers.sh --tree would have nothing to run. project() "
-                        "declares LANGUAGES C; a toolchain file that unsets the C compiler must "
-                        "be fixed.")
-  endif()
-  set(_kos_c_hdr_roots "${PROJECT_BINARY_DIR}/generated/include")
-  # Several arch directories provide the same kickos/arch/context.h, so the gate takes the
-  # one this board builds instead of deriving all of them.
-  foreach(_d KICKOS_ARCH_INCLUDE_DIR KICKOS_CHIP_INCLUDE_DIR KICKOS_BOARD_INCLUDE_DIR)
-    if(${_d})
-      list(APPEND _kos_c_hdr_roots "${${_d}}")
-    endif()
-  endforeach()
-  _add_test(NAME c_headers
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_public_headers.sh" --tree
-                    "${CMAKE_C_COMPILER}" ${_kos_c_hdr_roots}
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(c_headers PROPERTIES TIMEOUT 120 LABELS host)
 endif()
 
 # After every subdirectory, so the driver catalogue is whole.
@@ -1502,37 +845,6 @@ function(_kickos_write_images)
   endif()
 endfunction()
 cmake_language(DEFER DIRECTORY "${PROJECT_SOURCE_DIR}" CALL _kickos_write_images)
-if(KICKOS_BUILD_TESTS)
-  _add_test(NAME platform_manifest
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_platform.sh"
-                    "${PROJECT_BINARY_DIR}" manifest "${PROJECT_BINARY_DIR}/export/manifest.yaml"
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(platform_manifest PROPERTIES TIMEOUT 300 LABELS host)
-  # Each packaged driver of this build's catalogue in a composition the board admits.
-  _add_test(NAME platform_drivers
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_platform.sh"
-                    "${PROJECT_BINARY_DIR}" drivers "${PROJECT_BINARY_DIR}/export/manifest.yaml" "${KICKOS_BOARD}"
-            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(platform_drivers PROPERTIES TIMEOUT 300 LABELS host)
-  set(KICKOS_GOLDEN_COMPOSITION "" CACHE STRING
-      "A golden composition this build targets, relative to the source root, admitted against its manifest")
-  if(NOT KICKOS_GOLDEN_COMPOSITION STREQUAL "")
-    _add_test(NAME platform_golden
-              COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_platform.sh"
-                      "${PROJECT_BINARY_DIR}" golden "${PROJECT_BINARY_DIR}/export/manifest.yaml"
-                      "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_GOLDEN_COMPOSITION}"
-              WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-    set_tests_properties(platform_golden PROPERTIES TIMEOUT 300 LABELS host)
-    _add_test(NAME platform_golden_table
-              COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_platform.sh"
-                      "${PROJECT_BINARY_DIR}" table "${PROJECT_BINARY_DIR}/export/manifest.yaml"
-                      "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_GOLDEN_COMPOSITION}" "${CMAKE_C_COMPILER}"
-                      "${PROJECT_BINARY_DIR}/generated/include"
-              WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-    set_tests_properties(platform_golden_table PROPERTIES TIMEOUT 300 LABELS host)
-  endif()
-endif()
-
 # --- Install / export: the dependency-inversion package --------------------
 include(CMakePackageConfigHelpers)
 
@@ -1540,8 +852,6 @@ include(CMakePackageConfigHelpers)
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE"
         DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/licenses/${PROJECT_NAME}")
 
-# Use the include path reported by the architecture target.
-# Ship mpu_encoded.h only when this build enables an MPU.
 set(_kos_hdr_exclude "")
 if(NOT KICKOS_HAVE_MPU)
   set(_kos_hdr_exclude PATTERN "mpu_encoded.h" EXCLUDE)
@@ -1558,28 +868,12 @@ install(DIRECTORY
         PATTERN "*.h.in" EXCLUDE
         ${_kos_hdr_exclude})
 
-# An installed consumer that includes a kernel header must take the same width as the
-# prebuilt libraries, or its sizeof(Thread) does not match theirs.
-install(FILES "${PROJECT_BINARY_DIR}/generated/include/kickos/config/cap_width.h"
-        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/kickos/config")
-
-# The partition's port list an app's <kickos/amp.h> derives its capability indices from.
-install(FILES "${PROJECT_BINARY_DIR}/generated/include/kickos/config/amp_ports.h"
-        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/kickos/config")
-
-install(FILES "${PROJECT_BINARY_DIR}/generated/include/kickos/config/priorities.h"
-              "${PROJECT_BINARY_DIR}/generated/include/kickos/config/stack_geometry.h"
-              "${PROJECT_BINARY_DIR}/generated/include/kickos/config/mpu_geometry.h"
-        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/kickos/config")
-install(FILES "${PROJECT_BINARY_DIR}/generated/include/kickos/sys/driver_geometry.h"
-              "${PROJECT_BINARY_DIR}/generated/include/kickos/sys/table_version.h"
-              "${PROJECT_BINARY_DIR}/generated/include/kickos/sys/init_geometry.h"
-              "${PROJECT_BINARY_DIR}/generated/include/kickos/sys/exit_status.h"
-        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/kickos/sys")
-
-# The generated provisioning header is the one the prebuilt libs were compiled against.
-install(FILES "${PROJECT_BINARY_DIR}/generated/include/kickos/board_config.h"
-        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/kickos")
+# The generated headers the prebuilt libraries were compiled against: a consumer including a
+# kernel header under another cap width disagrees with them on sizeof(Thread).
+foreach(_h IN LISTS _kos_generated_headers)
+  get_filename_component(_d "${CMAKE_INSTALL_INCLUDEDIR}/kickos/${_h}" DIRECTORY)
+  install(FILES "${PROJECT_BINARY_DIR}/generated/include/kickos/${_h}" DESTINATION "${_d}")
+endforeach()
 
 # The chip's constants, which config/board.h requires for KICKOS_MAX_IRQ (see the check at
 # the top of this file).
@@ -1587,10 +881,6 @@ if(KICKOS_CHIP_INCLUDE_DIR)
   install(DIRECTORY "${KICKOS_CHIP_INCLUDE_DIR}/"
           DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
 endif()
-install(FILES "${PROJECT_BINARY_DIR}/generated/include/kickos/chip_mmap.h"
-              "${PROJECT_BINARY_DIR}/generated/include/kickos/chip_limits.h"
-        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/kickos")
-
 if(KICKOS_BOARD_INCLUDE_DIR)
   install(DIRECTORY "${KICKOS_BOARD_INCLUDE_DIR}/"
           DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")

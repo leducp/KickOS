@@ -19,13 +19,6 @@ extern "C" void kickos_x86_64_ap_start(uint32_t apic_id);
 // X6 has no kernel. These bodies are never entered in the AP-arrival arm.
 extern "C" void kickos_isr_timer(void) {}
 extern "C" void kickos_isr_irq(int) {}
-extern "C" [[noreturn]] void kickos_thread_return(void)
-{
-    while (true)
-    {
-        __asm__ volatile("cli\n\thlt");
-    }
-}
 
 namespace
 {

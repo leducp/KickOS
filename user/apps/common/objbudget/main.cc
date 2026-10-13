@@ -28,7 +28,8 @@ namespace
     // page and main reads the value it started with, which reads as a child that never ran.
     // The endpoint is one MAIN already created and delegated SIGNAL-only, so the reporting
     // channel costs the pool nothing and leaves main at its ceiling while the child creates.
-    constexpr kos_cap_t REPLY_EP = 1; // grants land at child indices 1..cap_count
+    // grants land at child indices 2..cap_count + 1
+    constexpr kos_cap_t REPLY_EP = KOS_SPAWN_DELEGATED_CAP0;
 
     void child_creates_an_endpoint(void*)
     {
@@ -112,7 +113,7 @@ int main(int, char**)
         };
         auto const c = kos::thread::create_caps(child_creates_an_endpoint, nullptr, "objb", 10,
                                                 caps, 1, KOS_POLICY_FIFO, 0,
-                                                /*privileged=*/false, nullptr, 0,
+                                                nullptr, 0,
                                                 KOS_AUTH_MEMORY, nullptr, group);
         if (c.valid())
         {

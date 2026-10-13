@@ -176,27 +176,31 @@ direction: the switch record is emitted from the tids read out of the two contex
 *physically* swapped, never by re-reading the scheduler's decision, because a preempting
 ISR can rewrite the decision between the logical `switch_to` and the physical swap
 (`switch-record-from-physical-contexts`). Naming, protection, and any other
-context-keyed fact must all be read or written at the true switch point, not the
-intended one.
+context-keyed fact must all follow the physical switch, not the intended one.
 
 ## The general rule, and the forward tie
 
 State it once, for every resource the hardware keys to "the current context":
 
-> Any hardware-enforced *current-context* resource -- an MPU region set, an MMU
-> page-table root, banked FPU/lazy-stacking state, an address-space id
-> -- must be switched in lockstep with the physical register-and-stack swap, at the true
-> switch point. Committing it at the scheduler's logical decision opens a window in
-> which the running code is governed by the next thread's context while it is still the
-> previous thread executing.
+> For any hardware-enforced *current-context* resource (an MPU region set, an MMU
+> page-table root, banked FPU or lazy-stacking state, an address-space id), no access the
+> resource governs may run between its switch and the physical register-and-stack swap.
+> Otherwise the running code is governed by the next thread's context while it is still
+> the previous thread executing.
+
+Committing the resource at the swap itself is the simplest way to guarantee that, and
+where the swap is deferred it is the only way: between the scheduler's decision and the
+deferred swap, the outgoing thread may run on for an unknown stretch. Where the swap is
+immediate, a switch made a few instructions earlier also holds, as long as nothing in
+those instructions touches what the resource governs.
 
 The tie to translation is direct, and it is the same rule rather than an analogy. A
 page-table root is exactly such a resource: swap it a few instructions too early and the
 outgoing thread runs against the incoming thread's address space, with faults or silent
-cross-space access of precisely the shape above. So a root write belongs at the true
-switch point for the same reason a region commit does, and where a backend translates
-the resource being committed is the root rather than a descriptor list -- protection
-follows the CPU, not the scheduler's intent. [`../reference/porting.md`](../reference/porting.md)
+cross-space access of precisely the shape above. So a root write obeys the same rule a
+region commit does, and where a backend translates, the resource being committed is the
+root rather than a descriptor list. Protection follows the CPU, not the scheduler's
+intent. [`../reference/porting.md`](../reference/porting.md)
 names the seam each backend writes its root from.
 
 ## Where to go next

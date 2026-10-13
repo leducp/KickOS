@@ -19,10 +19,10 @@ export LC_ALL
 # banner shape, because a substring match on "fault" also hits "EFAULT" and "default" in
 # benign output.
 #
-# It lives in tests/lib/panic.ere, one line, and has two consumers: this file and the root
-# CMakeLists, which registers it as a ctest FAIL_REGULAR_EXPRESSION. Read once, and refuse an
-# empty result: an empty ERE matches nothing, so every panic gate in the suite would silently
-# stop failing.
+# It lives in tests/lib/panic.ere, one line, and has two consumers: this file and
+# tests/cmake/kickos_tests.cmake, which registers it as a ctest FAIL_REGULAR_EXPRESSION. Read once,
+# and refuse an empty result: an empty ERE matches nothing, so every panic gate in the suite would
+# silently stop failing.
 KOS_PANIC_RE="$(cat "$(dirname "$0")/../lib/panic.ere")"
 if [ -z "$KOS_PANIC_RE" ]; then
     echo "FAIL: tests/lib/panic.ere is empty or unreadable; every panic gate would pass" >&2
@@ -51,20 +51,28 @@ bad() { echo "FAIL: $*" >&2; rc=1; }
 TAB="$(printf '\t')"
 
 # One handler for the whole library, because a second `trap ... EXIT` replaces the first and
-# would drop whatever the earlier owner registered. Two owners register here: the scratch
-# directory and a polled image's child.
+# would drop whatever the earlier owner registered. Three owners register here: the scratch
+# directory, a polled image's child and a UEFI boot's directory.
 #
-# The signals are trapped beside EXIT. A ctest TIMEOUT signals the script, and under an
-# EXIT-only trap the emulator outlives it and holds the console the next test opens, which
-# surfaces as that test failing rather than as this one being killed. Each signal arm exits, and
-# the EXIT arm then runs the handler a second time, so the handler clears every record it acts
-# on.
+# The signals are trapped beside EXIT, so an interrupted run still stops its emulator. A ctest
+# TIMEOUT is a SIGKILL, which no trap sees. Each signal arm exits, and the EXIT arm then runs the
+# handler a second time, so the handler clears every record it acts on.
 KOS_TRASH_DIR=""
 KOS_TRASH_FILE=""
 KOS_CHILD_PID=""
+KOS_BOOT_DIR=""
+
+kos_drop_boot_dir() {
+    if [ -n "$KOS_BOOT_DIR" ]; then
+        _kd_d="$KOS_BOOT_DIR"
+        KOS_BOOT_DIR=""
+        rm -rf "$_kd_d"
+    fi
+}
 
 kos_cleanup() {
     kos_stop_child
+    kos_drop_boot_dir
     if [ -n "$KOS_TRASH_FILE" ]; then
         _kc_f="$KOS_TRASH_FILE"
         KOS_TRASH_FILE=""
@@ -738,10 +746,12 @@ package_image() { # <kickos-build> <cmake> <project-dir> <target> [<cmake-arg>..
 # same banner. The variable store is copied, because the shipped one is root-owned and
 # read-only and firmware writes to it. And -no-reboot is not cosmetic: an absent or malformed
 # interrupt table triple-faults, which resets the machine, so without it the run loops instead
-# of ending.
+# of ending. A gate witnessing a reset sets KOS_ALLOW_RESET=1 and lets its bound end the loop.
 #
-# The scratch lives beside the image and not under /tmp: it is tens of megabytes, and the
-# gates that use it also call scratch_dir(), whose EXIT trap would replace any trap set here.
+# The scratch is per boot: ctest -j runs several gates on one image at once.
+#
+# Its name carries the gate's PID, and a boot removes every sibling whose gate is dead: a ctest
+# TIMEOUT kills with SIGKILL, so no trap removes that gate's scratch.
 KOS_OVMF_CODE="${KICKOS_OVMF_CODE:-/usr/share/OVMF/OVMF_CODE_4M.fd}"
 KOS_OVMF_VARS="${KICKOS_OVMF_VARS:-/usr/share/OVMF/OVMF_VARS_4M.fd}"
 
@@ -760,14 +770,29 @@ boot_args() { # <image>
         echo "SKIP: no UEFI firmware at $KOS_OVMF_CODE / $KOS_OVMF_VARS (Debian: ovmf)"
         exit 77
     fi
-    KOS_BOOT_DIR="$1.boot"
-    rm -rf "$KOS_BOOT_DIR"
-    mkdir -p "$KOS_BOOT_DIR" || fail "cannot create $KOS_BOOT_DIR"
+    kos_drop_boot_dir
+    for _bd in "$1".boot.*; do
+        _bp="${_bd#"$1".boot.}"
+        _bp="${_bp%%.*}"
+        if [ ! -d "$_bd" ] || [ -z "$_bp" ] || [ -n "$(printf '%s' "$_bp" | tr -d 0-9)" ]; then
+            continue
+        fi
+        if ! kill -0 "$_bp" 2>/dev/null; then
+            rm -rf "$_bd"
+        fi
+    done
+    KOS_BOOT_DIR="$(mktemp -d "$1.boot.$$.XXXXXX")" \
+        || fail "cannot create a boot directory beside $1"
+    kos_trap
     "$(dirname "$0")/../../tools/esp-x86_64.sh" "$1" "$KOS_BOOT_DIR/esp.img" >/dev/null \
         || fail "could not build the EFI system partition for $1"
     cp "$KOS_OVMF_VARS" "$KOS_BOOT_DIR/vars.fd" || fail "cannot copy $KOS_OVMF_VARS"
     chmod u+w "$KOS_BOOT_DIR/vars.fd" || fail "cannot make $KOS_BOOT_DIR/vars.fd writable"
-    KOS_BOOT_ARGS="-m 512 -net none -no-reboot \
+    _kos_no_reboot="-no-reboot"
+    if [ "${KOS_ALLOW_RESET:-0}" = 1 ]; then
+        _kos_no_reboot=""
+    fi
+    KOS_BOOT_ARGS="-m 512 -net none $_kos_no_reboot \
 -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
 -drive format=raw,file=$KOS_BOOT_DIR/esp.img \
 -drive if=pflash,format=raw,unit=0,readonly=on,file=$KOS_OVMF_CODE \
@@ -786,9 +811,9 @@ KOS_BOOT_BOUND_S=0
 # The worst case of the boots this gate has made so far, each bound and the stop after it.
 KOS_BOOTS_SPENT_S=0
 
-# Charge a boot, its image bounded at <seconds>, to this gate's ctest TIMEOUT, which the root
-# CMakeLists hands every test as KOS_CTEST_TIMEOUT_S, and refuse the boot it cannot cover: ctest
-# would kill the gate at the instant `timeout` fires and report no finding.
+# Charge a boot, its image bounded at <seconds>, to this gate's ctest TIMEOUT, which
+# tests/cmake/kickos_tests.cmake hands every test as KOS_CTEST_TIMEOUT_S, and refuse the boot it
+# cannot cover: ctest would kill the gate at the instant `timeout` fires and report no finding.
 boot_bound() { # <seconds>
     KOS_BOOT_BOUND_S="$1"
     if [ "${KICKOS_BOOT:-kernel}" = "uefi-pe" ]; then
@@ -1054,10 +1079,9 @@ has() { printf '%s\n' "$OUT" | grep -q "$1"; }
 has_e() { printf '%s\n' "$OUT" | grep -qE "$1"; }
 has_f() { printf '%s\n' "$OUT" | grep -qF -- "$1"; }
 
-# Above one core the wire has no per-line atomicity: arch_console_write is a byte-at-a-time
-# device loop under no lock, so one core's line arrives shuffled into another's, character by
-# character, and a byte-exact grep stops meaning what its author expects. Measured over 1440
-# four-core captures of one image: a third of them carried such a collision.
+# Above one core the console keeps a line whole only within one write, so a line sent in several
+# writes can arrive with another core's line among its pieces, and a byte-exact grep stops
+# meaning what its author expects.
 #
 # wire_has answers whether <literal> reached the wire with its own bytes in order, allowing
 # foreign bytes among them across a bounded span. The bound is what one status line can

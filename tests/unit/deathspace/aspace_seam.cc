@@ -4,11 +4,9 @@
 // See aspace_seam.h.
 
 #include <stdint.h>
-#include <string.h>
 
 #include <kickos/aspace.h>
 #include <kickos/domain.h>
-#include <kickos/frame_pool.h>
 #include <kickos/irqlock.h>
 #include <kickos/kernel.h>
 #include <kickos/sync.h>
@@ -34,7 +32,6 @@ namespace kickos
             {
                 return reinterpret_cast<struct arch_aspace*>(p);
             }
-
         }
 
         uint32_t g_ustack_frees = 0;
@@ -104,17 +101,6 @@ namespace kickos
         return testfix::space_of(d);
     }
 
-    // No test creates CAP_ASPACE capabilities; all handles are invalid.
-    Domain* domain_resolve(int)
-    {
-        return nullptr;
-    }
-
-    uint16_t domain_refcount(Domain const* d)
-    {
-        return testfix::domain_refs(d);
-    }
-
     void ustack_free(Domain* d, uintptr_t base, size_t bytes)
     {
         // This maintenance requires the old root to remain installed.
@@ -128,14 +114,6 @@ namespace kickos
         testfix::g_ustack_free_base = base;
         (void)bytes;
     }
-
-    // No thread in these tests holds a window, so the exit path's unmap has nothing to take.
-    VirtualRanges* domain_ranges_mut(Domain*)
-    {
-        return nullptr;
-    }
-
-    void frame_pool_free_run(arch_phys_addr_t, size_t, size_t) {}
 }
 
 extern "C"
@@ -159,20 +137,5 @@ extern "C"
     struct arch_aspace* arch_aspace_boot(void)
     {
         return kickos::testfix::boot_space();
-    }
-
-    enum arch_aspace_result arch_aspace_unmap(struct arch_aspace*, uintptr_t, size_t)
-    {
-        return ARCH_ASPACE_OK;
-    }
-
-    void* kmemset(void* dst, int c, size_t n)
-    {
-        return memset(dst, c, n);
-    }
-
-    size_t arch_aspace_granule(void)
-    {
-        return 4096u;
     }
 }

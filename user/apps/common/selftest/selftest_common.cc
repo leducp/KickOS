@@ -98,9 +98,9 @@ namespace selftest
     // Above every batch an arm asks for: a crowd of one per kernel core plus one, or four.
     constexpr int POOL_PROBES_MAX = KICKOS_KERNEL_CORES + 4;
 
-    void pool_gated_worker(void*) // caps: gate@1
+    void pool_gated_worker(void*) // caps: gate@2
     {
-        kos_sem_wait(1, KOS_TIMEOUT_NONE);
+        kos_sem_wait(2, KOS_TIMEOUT_NONE);
     }
 
     namespace
@@ -482,43 +482,9 @@ namespace selftest
 #endif
         }
 
-#if KICKOS_HAVE_ASPACE
-        void seat_noop(void*) {}
-
-        // The page tables main's first memory window needs stay in its space after the holder
-        // ends: seated here, before any arm's census.
-        bool seat_window_tables()
-        {
-            void* const blk = kos_ram_alloc(ASPACE_GRANULE);
-            if (blk == nullptr)
-            {
-                tap::bail_out("the seat could not reserve the window's block");
-                return false;
-            }
-            kos_window const w = {reinterpret_cast<uintptr_t>(blk), ASPACE_GRANULE,
-                                  KOS_WINDOW_MEMORY, 0};
-            kos::thread::Handle t = kos::thread::create(seat_noop, nullptr, "seatw", 10,
-                                                        KOS_POLICY_FIFO, 0, false, nullptr, 0,
-                                                        nullptr, 0, &w, 1);
-            if (not t.valid())
-            {
-                tap::bail_out("the seat's window spawn answered %d", t.error());
-                return false;
-            }
-            int const joined = t.join(STALL_TOLERANT_US);
-            if (joined != 0)
-            {
-                tap::bail_out("the seat's window holder joined %d", joined);
-                return false;
-            }
-            return true;
-        }
-#endif
-
-#if KICKOS_SELFTEST_FIT or KICKOS_HAVE_ASPACE
+#if KICKOS_SELFTEST_FIT
         // As many workers at once as the image's widest ask: on a bump arena their stacks come
-        // before the first block, as arena_fit.py's ASSERT places them; under translation the
-        // page tables their stacks need stay in main's space.
+        // before the first block, as arena_fit.py's ASSERT places them.
         bool seat_thread_stacks()
         {
             kos_cap_t gate = KOS_CAP_NONE;
@@ -675,6 +641,52 @@ namespace selftest
                 above = align;
             }
         }
+
+#if KICKOS_HAVE_ASPACE
+        // A grant never unmaps, so the tables an arm's grant of its block keeps would otherwise
+        // be taken inside that arm's census. One granule mapped for the run on each side of the
+        // blocks keeps them, while the blocks lie between the two within two leaf tables' reach.
+        constexpr uintptr_t LEAF_TABLE_SPAN = ASPACE_GRANULE / sizeof(uint64_t) * ASPACE_GRANULE;
+
+        uintptr_t seat_granule()
+        {
+            void* const seat = kos_ram_alloc(ASPACE_GRANULE);
+            if (seat == nullptr)
+            {
+                tap::bail_out("the seat could not reserve its granule");
+                return 0;
+            }
+            int const rc = kos_mem_self_grant(seat, ASPACE_GRANULE, 0);
+            if (rc != 0)
+            {
+                tap::bail_out("the seat's grant answered %d", rc);
+                return 0;
+            }
+            return reinterpret_cast<uintptr_t>(seat);
+        }
+
+        bool blocks_between(uintptr_t lo, uintptr_t hi)
+        {
+            uintptr_t const first = lo & ~(LEAF_TABLE_SPAN - 1u);
+            uintptr_t const last = hi & ~(LEAF_TABLE_SPAN - 1u);
+            if (last - first > LEAF_TABLE_SPAN)
+            {
+                return false;
+            }
+            for (RamNode const* n = g_ram_first; n != nullptr; n = n->next)
+            {
+                for (int i = 0; i < n->count; i++)
+                {
+                    uintptr_t const b = reinterpret_cast<uintptr_t>(n->block[i]);
+                    if (b < lo or b + st_ram_bytes(n->size[i]) > hi)
+                    {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+#endif
     }
 
     bool st_ram_seat()
@@ -695,21 +707,27 @@ namespace selftest
         }
         g_granule = static_cast<size_t>(static_cast<char*>(q) - static_cast<char*>(p));
 #endif
-        if (not reserve_asks())
-        {
-            return false;
-        }
 #if KICKOS_HAVE_ASPACE
-        // After the blocks, on the frames later stacks are taken from.
-        if (not seat_thread_stacks() or not seat_window_tables())
+        uintptr_t const lo = seat_granule();
+        if (lo == 0 or not reserve_asks())
         {
             return false;
         }
-#endif
+        uintptr_t const hi = seat_granule();
+        if (hi == 0)
+        {
+            return false;
+        }
+        if (not blocks_between(lo, hi))
+        {
+            tap::bail_out("the arms' blocks do not lie between the two seats keeping their tables");
+            return false;
+        }
         return true;
+#else
+        return reserve_asks();
+#endif
     }
 
-#if defined(KICKOS_ENABLE_SELFTEST)
     kos_cap_t g_pl_ep = KOS_CAP_NONE;
-#endif
 }

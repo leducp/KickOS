@@ -123,12 +123,9 @@
  *
  *   _PENDSV   0  handler mode uses SP_main.
  *   _SVC    512  KICKOS_KERNEL_STACKS 0 ONLY: the whole dispatch tree runs on the caller's
- *                PSP. The spawn stages its grant list on this stack: due-st, at
- *                KICKOS_MAX_SPAWN_GRANTS 9, measures 500, rounded up to the next multiple of
- *                64, and the presets at 6 (bluepill-c8, bluepill-c8-st, due, f302nucleo,
- *                f302nucleo-st) measure 428. arch_armv7m.cc refuses more than 9. It is not
- *                zeroed at KICKOS_KERNEL_STACKS 1: the gate scrapes it on every preset, and
- *                its class line below is kstacks=0.
+ *                PSP. The spawn stages its grant list on this stack: 9 grants measure 496,
+ *                6 measure 440; arch_armv7m.cc refuses more than 9. Not zeroed at
+ *                KICKOS_KERNEL_STACKS 1: the gate scrapes it on every preset.
  *   _SVCK        the same dispatch on the kernel block, posture-dependent, below.
  *
  * THE PANIC REPORTER IS ON NEITHER THIS CLASS NOR _SVCK: kpanic leaves the stack it was called
@@ -145,17 +142,14 @@
  * and 224 spare bytes per slot, so the telemetry figure fails to link it.
  *
  * KICKOS_BENCH is a smaller knob of the same kind, its arm printing from inside the dispatch:
- * 832 enforced against 672 measured at f411disco-bench and 664 at xmc4800-relax-bench, the only
- * two. Off both, 768 enforced: the 33 ordinary presets read 428 to 568, and the two partition
- * nodes pizero2350-amp2-n0 and -n1 read 592 and 600. 1240 enforced against 992 measured at
- * qemu-telem through arch_shutdown's telemetry tail, the only telemetry variant of any armv7m
- * board. All three are enforced above their measurement, as headroom. The bench and telemetry
- * presets stage at most 9 spawn grants and the partition nodes 12, so arch_armv7m.cc refuses
- * more.
+ * 832 enforced against 672 measured. Off both, 768 enforced against 568 on the ordinary
+ * presets and 600 on the partition nodes. 1240 enforced against 992 measured through
+ * arch_shutdown's telemetry tail. Bench and telemetry presets stage at most 9 spawn grants
+ * and the partition nodes 12; arch_armv7m.cc refuses more.
  *
  * On a partition node what wins is an ordinary far reply publication, endpoint_reply_recv ->
- * endpoint_reply_locked -> inbound_reply -> send. The doorbell's service body runs from the
- * doorbell interrupt, in handler mode on SP_main, and is UNMEASURED, per the PENDSV reason in
+ * endpoint_reply_locked -> inbound_reply -> send. The doorbell's service body runs in handler
+ * mode on SP_main and is UNMEASURED, per the PENDSV reason in
  * tests/static/trap_redzone_roots.txt.
  *
  * NO FALLBACK #define: with -Wundef -Werror an image that lost KICKOS_TELEMETRY or KICKOS_BENCH
@@ -180,18 +174,13 @@
  * reschedules. */
 #define KICKOS_ARMV7M_TRAP_NEST_EXIT 208
 
-/* The measured descent of the three stubs a dying thread runs PRIVILEGED on its own stack:
- * kickos_thread_fault_exit, kickos_thread_slay_exit and kickos_thread_return. The fault stub
- * is the deepest at every posture, reaching the console through kprintf_fault, which formats
+/* The measured descent of the two stubs a dying thread runs PRIVILEGED on its own stack:
+ * kickos_thread_fault_exit and kickos_thread_slay_exit. The fault stub is the deeper at every
+ * posture, reaching the console through kprintf_fault, which formats
  * into KDIAG_FAULT_LINE_MAX bytes and not the 256 an ordinary kprintf gets.
  *
- * The kstacks=0 fallback and nothing else, so it carries no posture ladder: the six presets
- * that enforce it have neither a telemetry nor a bench variant and all six measure 296.
- * Where a block IS seated the two relocating stubs are EXITK below and kickos_thread_return
- * is RET.
- *
- * 448 is enforced over the 296 measured. 208 + 448 = 656 is under _SVC's 184 + 512 = 696, the
- * largest thread-stack requirement on those six presets, 264 under the 960 floor. */
+ * The kstacks=0 fallback, with no posture ladder: its presets have neither a telemetry nor a
+ * bench variant and all measure 296. Where a block IS seated they are EXITK below. */
 #define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_EXIT 448
 
 /* THE SAME TWO STUBS ON THE KERNEL BLOCK. kickos_fault_stack_top answers with ctx.kernel_sp,
@@ -199,33 +188,13 @@
  * dispatch frames it held. That discard keeps the block requirement the MAX of SVCK and this
  * rather than their sum.
  *
- * Rounded like a thread-stack figure because it never binds: SVCK wins the block on every
- * registered preset. Off telemetry it measures 296, and 328 on the two bench presets, under an
- * enforced 448; on telemetry 952 stands over 800, down arch_shutdown's drain.
- *
- * 208 + 448 = 656 against 1004 usable off telemetry and 1068 on the bench, 208 + 952 = 1160
- * against 1468 on telemetry, where SVCK asks 992, 1056 and 1464. */
+ * It never binds: SVCK wins the block on every registered preset. Off telemetry it measures
+ * 296 (328 on bench) under an enforced 448; on telemetry 952 stands over 800, down
+ * arch_shutdown's drain. */
 #if KICKOS_TELEMETRY
 #define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_EXITK 952
 #else
 #define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_EXITK 448
-#endif
-
-/* kickos_thread_return ALONE: an ordinary privileged thread's entry returning, with no fault
- * and no redirect to relocate it, so it runs on the thread's own stack under BOTH designs.
- *
- * 312 on both armv7m bench presets, f411disco-bench and xmc4800-relax-bench, under an enforced
- * 352: the IrqLock bracket samples the outermost masked window inline, which costs a stack slot
- * on the chain. 264 on the other 35 non-telemetry presets, under an enforced 312, so no
- * non-bench floor reserves for that bracket. Under telemetry it measures 784 under an enforced
- * 800, down arch_shutdown's drain, and carries the KICKOS_MIN_STACK_SIZE pressure on
- * qemu-telem. */
-#if KICKOS_TELEMETRY
-#define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_RET 800
-#elif KICKOS_BENCH
-#define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_RET 352
-#else
-#define KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_RET 312
 #endif
 
 /* What each guarded site enforces: room below the live PSP, in bytes. Both are loaded with
@@ -266,8 +235,7 @@
  * anything refuses at run time, every byte of it being written by privileged code through a
  * pointer the kernel seated. It resolves per POSTURE, of which there are three, so that the
  * Kconfig ceiling, arch_armv7m.cc's static_assert and check_trap_redzone.sh all price the same
- * one: 224 + 768 is 992 off both knobs, 224 + 832 is 1056 on the bench and 224 + 1240 is 1464
- * on telemetry. Kconfig adds the canary word and rounds to 16. */
+ * one. Kconfig adds the canary word and rounds to 16. */
 #define KICKOS_ARMV7M_TRAP_NEED_SVCK \
     (KICKOS_ARMV7M_TRAP_NEST_SVCK + KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVCK)
 
@@ -293,9 +261,8 @@
  * two agree.
  *
  * Telemetry is its own size class, as it is for the kernel block: arch_shutdown's ring drain
- * sits under kfault_terminate, inside the reporter. 160 is the deepest non-telemetry reading,
- * at xmc4800-relax-bench, and 760 the telemetry one at qemu-telem, under an enforced 320 and
- * 832. */
+ * sits under kfault_terminate, inside the reporter. The deepest readings are 160 and 760,
+ * under the enforced 320 and 832. */
 #define KICKOS_ARMV7M_PANIC_FRAME 100
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
 #define KICKOS_ARMV7M_PANIC_DEPTH 832
@@ -318,24 +285,19 @@
  * class SVC    frame=KICKOS_ARMV7M_TRAP_NEST_SVC_DISPATCH depth=KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVC kstacks=0
  * class SVCK   frame=KICKOS_ARMV7M_TRAP_NEST_SVCK depth=KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_SVCK stack=kernel
  *
- * The death path: no prologue guards these three classes.
+ * The death path: no prologue guards these two classes.
  *
  * EXITK is the two relocating stubs wherever a block is seated. kickos_fault_stack_top answers
  * with ctx.kernel_sp, so the fault redirect and the slay rebuild both land at the block TOP.
  *
  * class EXITK  frame=KICKOS_ARMV7M_TRAP_NEST_EXIT depth=KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_EXITK stack=kernel
  *
- * EXIT is the fallback: f302nucleo, f302nucleo-st, due, due-st, bluepill-c8 and bluepill-c8-st
- * resolve KICKOS_KERNEL_STACKS 0, so all three stubs stay on the thread's own stack against the
- * spawn floor. KICKOS_KERNEL_STACKS needs the chip's HAS_MPU, which stm32f103, stm32f302 and
+ * EXIT is the fallback where KICKOS_KERNEL_STACKS resolves 0: both stubs stay on the thread's
+ * own stack. KICKOS_KERNEL_STACKS needs the chip's HAS_MPU, which stm32f103, stm32f302 and
  * sam3x8e do not select.
  *
  * class EXIT   frame=KICKOS_ARMV7M_TRAP_NEST_EXIT depth=KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_EXIT kstacks=0
  *
- * RET is unmarked because it applies under BOTH designs: kickos_thread_return is an ordinary
- * privileged thread's entry returning, with no fault and no redirect, so nothing relocates it.
- *
- * class RET    frame=KICKOS_ARMV7M_TRAP_NEST_EXIT depth=KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_RET
  * class PANIC  frame=KICKOS_ARMV7M_PANIC_FRAME depth=KICKOS_ARMV7M_PANIC_DEPTH stack=panic
  */
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The APIC timer is the only interrupt source this port arms.
+// The local APIC: the timer and the doorbell, the only vectors this port arms.
 
 #ifndef KICKOS_ARCH_APIC_H
 #define KICKOS_ARCH_APIC_H

@@ -83,12 +83,14 @@ namespace kickos
         void kbanner()
         {
             char const* sched = "tickless";
-#if defined(KICKOS_SCHED_PERIODIC_TICK)
+#if KICKOS_SCHED_PERIODIC_TICK
             sched = "periodic tick";
 #endif
+#if not KICKOS_HAVE_ASPACE
             char const* mpu = "off";
 #if KICKOS_HAVE_MPU
             mpu = "enforce";
+#endif
 #endif
             char const* rule = diag::kBannerRule;
             kputs("\n");
@@ -98,7 +100,11 @@ namespace kickos
             kprintf(KDIAG_F_BANNER_BOARD, KICKOS_BOARD_NAME);
             kprintf(KDIAG_F_BANNER_ARCH, KICKOS_ARCH_NAME);
             kprintf(KDIAG_F_BANNER_CPU, KICKOS_CPU_NAME);
+#if KICKOS_HAVE_ASPACE
+            kprintf(KDIAG_F_BANNER_MMU);
+#else
             kprintf(KDIAG_F_BANNER_MPU, mpu);
+#endif
             kprintf(KDIAG_F_BANNER_SCHED, sched);
             kprintf(KDIAG_F_BANNER_BUILD, kickos_build_time);
             // Read through the link-time word above and, where the image is split, through
@@ -397,11 +403,14 @@ namespace kickos
         KICKOS_ASSERT(not root_tcb->kstack_owned);
 #endif
         // Ordering matters twice: after thread_create, which zeroes the cap table and would
-        // wipe the seat; before sched::start(), so the seat is in place before root's first
-        // instruction. IrqLock is cap_seat_authority's documented precondition.
+        // wipe the seats; before sched::start(), so they are in place before root's first
+        // instruction.
         {
             IrqLock lock;
             cap_seat_authority(root_tcb, CAP_AUTH_ALL);
+            int const libc_lock = cap_libc_lock_take(root_tcb->task, lock);
+            KICKOS_ASSERT(libc_lock != KCAP_LIBC_LOCK_NONE);
+            cap_seat_libc_lock(root_tcb, libc_lock);
         }
 #if KICKOS_AMP_NODE
         // THE FIRST DYNAMIC INSTALL INTO ROOT'S RUN: <kickos/amp.h> derives a capability index
@@ -432,7 +441,7 @@ namespace kickos
     }
 }
 
-#if defined(KICKOS_TLS) && KICKOS_TLS
+#if KICKOS_TLS
 #if !KICKOS_TLS_FROM_SP
 #include <kickos/arch/idle_floor.h>
 #endif

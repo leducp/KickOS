@@ -9,9 +9,15 @@
 // means the chip has no MPU, where only the 16-byte arena rule applies.
 
 #include <kickos/arch/arch.h>
+#include <kickos/chip_limits.h>
 
 #include <stddef.h>
 #include <stdint.h>
+
+// Every ARM region unit names 32 bytes at the least: the PMSAv6/v7 SIZE floor, the PMSAv8 and
+// SYSMPU 32-byte bounds the encoders test.
+static_assert(KICKOS_CHIP_REGION_GRANULE == 0 or KICKOS_CHIP_REGION_GRANULE == 32,
+              "the chip file's protection granule is not the 32 bytes every ARM region unit names");
 
 extern "C" bool arch_mpu_region_encodable(uintptr_t base, size_t size)
 {

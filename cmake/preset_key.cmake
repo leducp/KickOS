@@ -2,8 +2,9 @@
 # Copyright (c) 2026 Philippe Leduc
 
 # kickos_preset_key(<out> <board> <variant> <own-image> <node>)
-#   The name a per-preset gate registers under. CMake names no preset, so the root CMakeLists
-#   builds it from the configured facts and tests/static/preset_boards.cmake from the presets'.
+#   The name a per-preset gate registers under. CMake names no preset, so
+#   tests/cmake/kickos_tests.cmake builds it from the configured facts and
+#   tests/static/preset_boards.cmake from the presets'.
 function(kickos_preset_key out board variant own_image node)
   set(_key "${board}")
   if(NOT variant STREQUAL "base")

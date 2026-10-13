@@ -1,18 +1,14 @@
 /* SPDX-License-Identifier: CECILL-C
  * Copyright (c) 2026 Philippe Leduc
  *
- * STM32F411 (Cortex-M4F) startup: reset vector table (16 core + 86 NVIC lines).
- * The kernel exception handlers (SVC/PendSV/SysTick) come from the armv7m arch
- * layer; every external line routes to the generic kickos_arm_default_irq
- * (line = IPSR-16). STM32 runs from internal flash at 0x0800_0000 (aliased to
- * 0x0 at boot). No VTOR write is needed: the M4 boots with VTOR=0 pointing at the
- * flash-alias table and the linker places .isr_vector at flash start. There is no
- * flash config field on this part.
+ * STM32F411 (Cortex-M4F) startup: the vector table. Runs from internal flash at 0x0800_0000
+ * (aliased to 0x0 at boot); no VTOR write is needed, the M4 boots with VTOR=0 and the linker
+ * places .isr_vector at flash start.
  */
 
 #include <chip_layout.h>
-#include <kickos/chip_limits.h>   /* KICKOS_MAX_IRQ: the NVIC line count */
-#include "core_vectors.inc"        /* shared core-exception vector block */
+#include <kickos/chip_limits.h>
+#include "core_vectors.inc"
 
     .syntax unified
     .thumb
@@ -35,7 +31,6 @@ g_isr_vector:
 
     .text
     .thumb_func
-    /* Only reference is the vector word above; override here for a real handler. */
 NMI_Handler:
     b       .
 

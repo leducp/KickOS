@@ -18,9 +18,8 @@
 
 /* Real-device external interrupts: the CPU interrupt ID a hardware peripheral source is
  * routed onto (via the interrupt matrix), distinct from the software-inject doorbell.
- * switch.S sends this ID to .Lextdev; a chip maps its device source(s) to it. First user:
- * the ESP32-C6 UART0 TX-empty line driving the buffered console ring. Same valid-ID
- * constraint as the doorbell (avoid 3=msip, 7=mtip, 1=ssip). */
+ * switch.S sends this ID to .Lextdev; a chip maps its device source(s) to it. Same
+ * valid-ID constraint as the doorbell (avoid 3=msip, 7=mtip, 1=ssip). */
 #define KICKOS_RV_DEV_CPU_INT 30
 
 /* ESP32-C6 HP PMU signal carrying the LP node's AMP doorbell. */

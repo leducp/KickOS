@@ -178,7 +178,7 @@ jobs:
       - run: ctest --test-dir build/sim-ubsan -LE tree --no-tests=error --output-on-failure
 
   # Build and boot the Cortex-M boards QEMU runs: the four MPS2 machines, enforcing and flat,
-  # and the micro:bit.
+  # the AN386 on the periodic scheduler tick, and the micro:bit.
   qemu-arm:
     needs: toolchain-arm-none-eabi
     runs-on: ubuntu-26.04
@@ -215,6 +215,14 @@ jobs:
           tests/ci/ctest_named.sh 'mpu_fault|rootfault' \
             --preset qemu --no-tests=error --output-on-failure --repeat until-pass:2
           tests/ci/ctest_named.sh '^qemu_sysdefault$|qemu_sysdefault_spin|qemu_sysdefault_fault|qemu_sysdefault_no_eh_runtime|qemu_sysdefault_no_driver_path|^qemu_cxxterm$|qemu_cxxterm_eh_control|qemu_nvic' --preset qemu --no-tests=error --output-on-failure
+      - name: armv7m with the periodic scheduler tick (mps2-an386)
+        run: |
+          cmake --preset qemu-tick
+          cmake --build --preset qemu-tick
+          ctest --preset qemu-tick -E "$POLLED" -LE tree --no-tests=error --output-on-failure
+          tests/ci/ctest_named.sh "$POLLED" --preset qemu-tick --no-tests=error --output-on-failure --repeat until-pass:2
+          tests/ci/ctest_named.sh 'mpu_fault|rootfault' \
+            --preset qemu-tick --no-tests=error --output-on-failure --repeat until-pass:2
       # Cover PMSAv8 on M33, the larger M7 MPU, and the soft-float M3 switch path.
       - name: armv8-m mainline (mps2-an505, Cortex-M33)
         run: |
@@ -562,16 +570,7 @@ jobs:
           case "$out" in
             *Skipped*) echo "a system link gate SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
-          # Build larger selftest and benchmark images to check flash capacity.
-          cmake --preset esp32c6-wroom-st
-          cmake --build --preset esp32c6-wroom-st
-          ctest --test-dir build/esp32c6-wroom-st -L host -LE tree --no-tests=error --output-on-failure
-          out=$(tests/ci/ctest_named.sh 'esp32c6_wroom_system_link_none|esp32c6_wroom_system_link_two|esp32c6_wroom_system_link_entry|esp32c6_wroom_system_link_refused|esp32c6_wroom_system_link_notool|esp32c6_wroom_system_link_nocc|esp32c6_wroom_system_link_rerun|esp32c6_wroom_system_link_noheap|esp32c6_wroom_system_link_stack|esp32c6_wroom_system_link_arena|esp32c6_wroom_system_link_heap' \
-            --test-dir build/esp32c6-wroom-st --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
-          printf '%s\n' "$out"
-          case "$out" in
-            *Skipped*) echo "a system link gate SKIPPED, which ctest reports as success"; exit 1 ;;
-          esac
+          # Build the larger benchmark images to check flash capacity.
           cmake --preset esp32c6-wroom-bench
           cmake --build --preset esp32c6-wroom-bench
           ctest --test-dir build/esp32c6-wroom-bench -L host -LE tree --no-tests=error --output-on-failure
@@ -698,7 +697,7 @@ jobs:
           cmake --preset qemu-riscv64-smp
           cmake --build --preset qemu-riscv64-smp
           ctest --preset qemu-riscv64-smp -LE tree --no-tests=error --output-on-failure
-          # Require tests that depend on the hart count and selftest configuration.
+          # Require tests that depend on the hart count.
           out=$(tests/ci/ctest_named.sh 'smp_threads|taskleave|slaypeer|qemu_riscv64_deadstack|^qemu_riscv64_sysdefault$|qemu_riscv64_sysdefault_spin|qemu_riscv64_sysdefault_fault|qemu_riscv64_system_link_none|qemu_riscv64_system_link_two|qemu_riscv64_system_link_entry|qemu_riscv64_system_link_refused|qemu_riscv64_system_link_notool|qemu_riscv64_system_link_nocc|qemu_riscv64_system_link_rerun|qemu_riscv64_system_link_noheap' \
             --preset qemu-riscv64-smp --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
@@ -852,12 +851,6 @@ jobs:
           cmake --build --preset esp32-wroom
           ctest --test-dir build/esp32-wroom -L host -LE tree --no-tests=error --output-on-failure
           tests/ci/ctest_named.sh 'esp32_wroom_system_link_none|esp32_wroom_system_link_two|esp32_wroom_system_link_entry|esp32_wroom_system_link_refused|esp32_wroom_system_link_notool|esp32_wroom_system_link_nocc|esp32_wroom_system_link_rerun|esp32_wroom_system_link_noheap' --test-dir build/esp32-wroom --no-tests=error --output-on-failure
-      - name: xtensa lx6 + selftest config
-        run: |
-          cmake --preset esp32-wroom-st
-          cmake --build --preset esp32-wroom-st
-          ctest --test-dir build/esp32-wroom-st -L host -LE tree --no-tests=error --output-on-failure
-          tests/ci/ctest_named.sh 'esp32_wroom_system_link_none|esp32_wroom_system_link_two|esp32_wroom_system_link_entry|esp32_wroom_system_link_refused|esp32_wroom_system_link_notool|esp32_wroom_system_link_nocc|esp32_wroom_system_link_rerun|esp32_wroom_system_link_noheap' --test-dir build/esp32-wroom-st --no-tests=error --output-on-failure
       - name: xtensa lx6 on both cores
         run: |
           cmake --preset esp32-wroom-smp
@@ -882,7 +875,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        preset: [rx72m, rx72m-st, rx72m-flat, rx72m-bench]
+        preset: [rx72m, rx72m-flat, rx72m-bench]
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/kconfiglib
@@ -917,15 +910,12 @@ jobs:
         preset: [frdmk64f-flat, f411disco-flat, blackpill-flat, bluepill-c8, picopi-flat,
                  f302nucleo, due, xmc4800-relax-flat, qemu-telem, teensy41-flat,
                  pizero2350-flat]
-        # Build selftest variants in the same jobs. Enforcing boards are handled
-        # in build-boards-mpu; qemu-telem has no selftest variant.
+        # The two boards whose suite needs pools of its own build that provisioning too.
         include:
           - preset: bluepill-c8
             st: bluepill-c8-st
           - preset: f302nucleo
             st: f302nucleo-st
-          - preset: due
-            st: due-st
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/kconfiglib
@@ -953,7 +943,7 @@ jobs:
               bluepill-c8|bluepill-c8-st) printf '%s' 'bluepill_c8_system_link_none|bluepill_c8_system_link_two|bluepill_c8_system_link_entry|bluepill_c8_system_link_refused|bluepill_c8_system_link_notool|bluepill_c8_system_link_nocc|bluepill_c8_system_link_rerun|bluepill_c8_system_link_noheap' ;;
               picopi-flat) printf '%s' 'picopi_system_link_none|picopi_system_link_two|picopi_system_link_entry|picopi_system_link_refused|picopi_system_link_notool|picopi_system_link_nocc|picopi_system_link_rerun|picopi_system_link_noheap' ;;
               f302nucleo|f302nucleo-st) printf '%s' 'f302nucleo_system_link_none|f302nucleo_system_link_two|f302nucleo_system_link_entry|f302nucleo_system_link_refused|f302nucleo_system_link_notool|f302nucleo_system_link_nocc|f302nucleo_system_link_rerun|f302nucleo_system_link_noheap' ;;
-              due|due-st) printf '%s' 'due_system_link_none|due_system_link_two|due_system_link_entry|due_system_link_refused|due_system_link_notool|due_system_link_nocc|due_system_link_rerun|due_system_link_noheap' ;;
+              due) printf '%s' 'due_system_link_none|due_system_link_two|due_system_link_entry|due_system_link_refused|due_system_link_notool|due_system_link_nocc|due_system_link_rerun|due_system_link_noheap' ;;
               teensy41-flat) printf '%s' 'teensy41_system_link_none|teensy41_system_link_two|teensy41_system_link_entry|teensy41_system_link_refused|teensy41_system_link_notool|teensy41_system_link_nocc|teensy41_system_link_rerun|teensy41_system_link_noheap' ;;
               pizero2350-flat) printf '%s' 'pizero2350_system_link_none|pizero2350_system_link_two|pizero2350_system_link_entry|pizero2350_system_link_refused|pizero2350_system_link_notool|pizero2350_system_link_nocc|pizero2350_system_link_rerun|pizero2350_system_link_noheap' ;;
               *) echo "no system link gates are listed for $1" >&2; return 1 ;;
@@ -1007,20 +997,19 @@ jobs:
       - run: cmake --build --preset ${{ matrix.preset }}
       # Require the system link gates of each preset built; on xmc4800-relax also the golden
       # system and the restart witness linked against the package of a board no emulator runs,
-      # and a default package that carries no test driver. Each board's larger selftest image is
-      # built with the same memory protection layout.
+      # and a default package that carries no test driver.
       - name: checks
         run: |
           # The system link gates <preset> registers: its default composition's refusals.
           links() { # <preset>
             case "$1" in
-              frdmk64f|frdmk64f-st) printf '%s' 'frdmk64f_system_link_none|frdmk64f_system_link_two|frdmk64f_system_link_entry|frdmk64f_system_link_refused|frdmk64f_system_link_notool|frdmk64f_system_link_nocc|frdmk64f_system_link_rerun|frdmk64f_system_link_noheap|frdmk64f_system_link_heap' ;;
-              f411disco|f411disco-st) printf '%s' 'f411disco_system_link_none|f411disco_system_link_two|f411disco_system_link_entry|f411disco_system_link_refused|f411disco_system_link_notool|f411disco_system_link_nocc|f411disco_system_link_rerun|f411disco_system_link_noheap|f411disco_system_link_heap' ;;
-              xmc4800-relax|xmc4800-relax-st) printf '%s' 'xmc4800_relax_system_link_none|xmc4800_relax_system_link_two|xmc4800_relax_system_link_entry|xmc4800_relax_system_link_refused|xmc4800_relax_system_link_notool|xmc4800_relax_system_link_nocc|xmc4800_relax_system_link_rerun|xmc4800_relax_system_link_noheap|xmc4800_relax_system_link_heap' ;;
-              blackpill|blackpill-st) printf '%s' 'blackpill_system_link_none|blackpill_system_link_two|blackpill_system_link_entry|blackpill_system_link_refused|blackpill_system_link_notool|blackpill_system_link_nocc|blackpill_system_link_rerun|blackpill_system_link_noheap|blackpill_system_link_heap' ;;
-              pizero2350|pizero2350-st) printf '%s' 'pizero2350_system_link_none|pizero2350_system_link_two|pizero2350_system_link_entry|pizero2350_system_link_refused|pizero2350_system_link_notool|pizero2350_system_link_nocc|pizero2350_system_link_rerun|pizero2350_system_link_noheap|pizero2350_system_link_heap' ;;
-              teensy41|teensy41-st) printf '%s' 'teensy41_system_link_none|teensy41_system_link_two|teensy41_system_link_entry|teensy41_system_link_refused|teensy41_system_link_notool|teensy41_system_link_nocc|teensy41_system_link_rerun|teensy41_system_link_noheap|teensy41_system_link_heap' ;;
-              picopi|picopi-st) printf '%s' 'picopi_system_link_none|picopi_system_link_two|picopi_system_link_entry|picopi_system_link_refused|picopi_system_link_notool|picopi_system_link_nocc|picopi_system_link_rerun|picopi_system_link_noheap|picopi_system_link_heap' ;;
+              frdmk64f) printf '%s' 'frdmk64f_system_link_none|frdmk64f_system_link_two|frdmk64f_system_link_entry|frdmk64f_system_link_refused|frdmk64f_system_link_notool|frdmk64f_system_link_nocc|frdmk64f_system_link_rerun|frdmk64f_system_link_noheap|frdmk64f_system_link_heap' ;;
+              f411disco) printf '%s' 'f411disco_system_link_none|f411disco_system_link_two|f411disco_system_link_entry|f411disco_system_link_refused|f411disco_system_link_notool|f411disco_system_link_nocc|f411disco_system_link_rerun|f411disco_system_link_noheap|f411disco_system_link_heap' ;;
+              xmc4800-relax) printf '%s' 'xmc4800_relax_system_link_none|xmc4800_relax_system_link_two|xmc4800_relax_system_link_entry|xmc4800_relax_system_link_refused|xmc4800_relax_system_link_notool|xmc4800_relax_system_link_nocc|xmc4800_relax_system_link_rerun|xmc4800_relax_system_link_noheap|xmc4800_relax_system_link_heap' ;;
+              blackpill) printf '%s' 'blackpill_system_link_none|blackpill_system_link_two|blackpill_system_link_entry|blackpill_system_link_refused|blackpill_system_link_notool|blackpill_system_link_nocc|blackpill_system_link_rerun|blackpill_system_link_noheap|blackpill_system_link_heap' ;;
+              pizero2350) printf '%s' 'pizero2350_system_link_none|pizero2350_system_link_two|pizero2350_system_link_entry|pizero2350_system_link_refused|pizero2350_system_link_notool|pizero2350_system_link_nocc|pizero2350_system_link_rerun|pizero2350_system_link_noheap|pizero2350_system_link_heap' ;;
+              teensy41) printf '%s' 'teensy41_system_link_none|teensy41_system_link_two|teensy41_system_link_entry|teensy41_system_link_refused|teensy41_system_link_notool|teensy41_system_link_nocc|teensy41_system_link_rerun|teensy41_system_link_noheap|teensy41_system_link_heap' ;;
+              picopi) printf '%s' 'picopi_system_link_none|picopi_system_link_two|picopi_system_link_entry|picopi_system_link_refused|picopi_system_link_notool|picopi_system_link_nocc|picopi_system_link_rerun|picopi_system_link_noheap|picopi_system_link_heap' ;;
               *) echo "no system link gates are listed for $1" >&2; return 1 ;;
             esac
           }
@@ -1030,14 +1019,8 @@ jobs:
             names="$names|xmc4800_relax_golden_link|xmc4800_relax_restart_witness_link|test_drivers_absent"
           fi
           tests/ci/ctest_named.sh "$names" --test-dir build/${{ matrix.preset }} --no-tests=error --output-on-failure
-          cmake --preset ${{ matrix.preset }}-st
-          cmake --build --preset ${{ matrix.preset }}-st
-          ctest --test-dir build/${{ matrix.preset }}-st -LE tree --no-tests=error --output-on-failure
-          names=$(links ${{ matrix.preset }}-st)
-          tests/ci/ctest_named.sh "$names" --test-dir build/${{ matrix.preset }}-st --no-tests=error --output-on-failure
 
-  # Build RP2350 shared-image and separate-image configurations, including
-  # a production build without selftests.
+  # Build RP2350 shared-image and separate-image configurations.
   pizero2350-amp:
     needs: toolchain-arm-none-eabi
     runs-on: ubuntu-26.04
@@ -1060,7 +1043,7 @@ jobs:
           ctest --test-dir build/pizero2350-amp -L host -LE tree --no-tests=error --output-on-failure
           tests/ci/ctest_named.sh 'pizero2350_system_link_none|pizero2350_system_link_two|pizero2350_system_link_entry|pizero2350_system_link_refused|pizero2350_system_link_notool|pizero2350_system_link_nocc|pizero2350_system_link_rerun|pizero2350_system_link_noheap|pizero2350_system_link_heap' \
             --test-dir build/pizero2350-amp --no-tests=error --output-on-failure
-      - name: armv8-M own-image partition, both nodes, self-test on
+      - name: armv8-M own-image partition, both nodes
         run: |
           for node in 0 1; do
             cmake --preset pizero2350-amp2-n$node
@@ -1069,24 +1052,12 @@ jobs:
             tests/ci/ctest_named.sh 'pizero2350_system_link_none|pizero2350_system_link_two|pizero2350_system_link_entry|pizero2350_system_link_refused|pizero2350_system_link_notool|pizero2350_system_link_nocc|pizero2350_system_link_rerun|pizero2350_system_link_noheap|pizero2350_system_link_heap' \
               --test-dir build/pizero2350-amp2-n$node --no-tests=error --output-on-failure
           done
-          # Merge this posture too: the merge compares every peer's .amp_shared with node 0's.
-          cmake --build build/pizero2350-amp2-n0 --target amp_partition
-      - name: armv8-M own-image partition, the PRODUCTION posture (self-test off)
-        run: |
-          # Disable reboot and shutdown-to-bootloader along with the self-test.
-          # Use a separate build directory to avoid cached options. Build only:
-          # preset-based gates would rebuild the standard variant instead.
-          for node in 0 1; do
-            cmake --preset pizero2350-amp2-n$node -B build/pizero2350-amp2-prod-n$node \
-              -DKICKOS_ENABLE_SELFTEST=OFF -DKICKOS_REBOOT=OFF -DKICKOS_SHUTDOWN_TO_BOOTLOADER=OFF
-            cmake --build build/pizero2350-amp2-prod-n$node
-          done
       - name: armv8-M own-image partition, the MERGED artefact
         run: |
           # Build the flashable merged partition. This also builds the peer and checks
           # that the Kconfig fingerprints and the .amp_shared layouts agree.
-          cmake --build build/pizero2350-amp2-prod-n0 --target amp_partition
-          ls -l build/pizero2350-amp2-prod-n0/kickos-partition.elf
+          cmake --build build/pizero2350-amp2-n0 --target amp_partition
+          ls -l build/pizero2350-amp2-n0/kickos-partition.elf
 
   # Run microbenchmark presets without a job-level QEMU_TIMEOUT: each gate
   # sets its own limit. Four-core runs need sufficient host CPU time.
@@ -1169,6 +1140,17 @@ jobs:
           esac
           out=$(tests/ci/ctest_named.sh 'qemu_riscv64_bench_percore|qemu_riscv64_bench_doorbell|qemu_riscv64_bench_lock|qemu_riscv64_bench_cyccnt|qemu_riscv64_bench_saturate|qemu_riscv64_bench_phase_table|qemu_riscv64_benchauth' \
             --test-dir build/qemu-riscv64-benchsmp --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
+          printf '%s\n' "$out"
+          case "$out" in
+            *Skipped*) echo "a bench gate SKIPPED, which ctest reports as success"; exit 1 ;;
+          esac
+      - name: four-core microbench with the scheduler's own counters
+        run: |
+          cmake --preset qemu-arm64-benchsched
+          cmake --build --preset qemu-arm64-benchsched
+          ctest --test-dir build/qemu-arm64-benchsched -L host -LE tree --no-tests=error --output-on-failure
+          out=$(tests/ci/ctest_named.sh 'qemu_arm64_bench_percore|qemu_arm64_bench_doorbell|qemu_arm64_bench_lock|qemu_arm64_bench_cyccnt|qemu_arm64_bench_saturate|qemu_arm64_bench_phase_table|qemu_arm64_benchauth' \
+            --test-dir build/qemu-arm64-benchsched --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
             *Skipped*) echo "a bench gate SKIPPED, which ctest reports as success"; exit 1 ;;

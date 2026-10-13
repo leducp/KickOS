@@ -3,9 +3,9 @@
 
 # ROOT's capability-table width is the board's supply, KICKOS_CAP_TABLE_SUPPLY (its defconfig):
 # root is the init, and admission counts what the init holds against that supply. Every spawned
-# child gets KICKOS_CAP_CHILD_WIDTH, the grant-list floor KICKOS_MAX_SPAWN_GRANTS + 1: a full
-# grant list lands at child indices 1..cap_count with no runtime check (cap.h), and nothing can
-# ask for another width.
+# child gets KICKOS_CAP_CHILD_WIDTH, the grant-list floor KICKOS_MAX_SPAWN_GRANTS +
+# KICKOS_CAP_FIRST_DYNAMIC: a full grant list lands above the reserved indices (cap.h), and
+# nothing can ask for another width.
 #
 # Every input is a number the build states: the provisioning integers come from the generated
 # CMake fragment and the structural constants from cmake/cap_geometry.cmake.
@@ -62,7 +62,7 @@ function(kickos_cap_table_resolve out_slots out_child_width out_reply_max)
   # MIRRORS KICKOS_THREAD_SLOTS in kernel/include/kickos/config/system.h.
   math(EXPR _pool "${_threads} + 1")
 
-  math(EXPR _floor "${_grants} + 1")
+  math(EXPR _floor "${_grants} + ${_reserved}")
   # Of cap.h's three bounds on the child width, this is the one that does not hold by
   # construction: a small enough KICKOS_MAX_SPAWN_GRANTS puts a child's WHOLE table inside
   # the reserved range.
@@ -71,14 +71,15 @@ function(kickos_cap_table_resolve out_slots out_child_width out_reply_max)
       "KickOS: a spawned child's capability table would be ${_floor} slot(s), which is "
       "entirely inside the ${_reserved}-slot reserved index range (KICKOS_CAP_FIRST_DYNAMIC), "
       "so no child could ever create a capability of its own. Every spawned child is seated "
-      "at this width, KICKOS_MAX_SPAWN_GRANTS=${_grants} + 1; raise KICKOS_MAX_SPAWN_GRANTS.")
+      "at this width, KICKOS_MAX_SPAWN_GRANTS=${_grants} + ${_reserved}; raise "
+      "KICKOS_MAX_SPAWN_GRANTS.")
   endif()
   if(_floor GREATER _supply)
     math(EXPR _short "${_floor} - ${_supply}")
     message(FATAL_ERROR
       "KickOS: a full spawn grant list cannot fit root's capability table on board "
       "'${KICKOS_BOARD}': KICKOS_MAX_SPAWN_GRANTS=${_grants} needs ${_floor} slot(s) (grant i "
-      "lands at child index i+1, and nothing checks it at runtime), and the board supplies "
+      "lands at child index i+${_reserved}), and the board supplies "
       "${_supply}; short by ${_short}. Lower KICKOS_MAX_SPAWN_GRANTS, or raise the board's "
       "KICKOS_CAP_TABLE_SUPPLY if its RAM really can back it.")
   endif()

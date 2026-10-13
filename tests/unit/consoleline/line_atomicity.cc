@@ -149,11 +149,11 @@ namespace
 TEST_F(ConsoleTxLine, ALineInsertedInsideAnotherCopyIsRefused)
 {
     g_nested_took = -1;
-    consoleline::run_at_publish_barrier(insert_from_inside_the_copy);
+    consoleline::run_inside_the_copy(insert_from_inside_the_copy);
 
     ASSERT_EQ(consoleline::write_line("OUTER", 5, 0), 5);
-    ASSERT_TRUE(consoleline::barrier_seat_fired()) << "the seated line never entered the "
-                                                      "insert, so no re-entry was attempted";
+    ASSERT_TRUE(consoleline::copy_seat_fired()) << "the seated line never entered the insert, "
+                                                   "so no re-entry was attempted";
     EXPECT_EQ(g_nested_took, 0);
     EXPECT_EQ(consoleline::wire(), std::string("OUTER"))
         << "the nested line reached the device, so the outer copy was published over it";

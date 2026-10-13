@@ -51,6 +51,49 @@
                <= KICKOS_AMP_KERNEL_SHARED_SIZE,                              \
            "KickOS: the AMP shared objects overflow KICKOS_AMP_SHARED_SIZE less the tasks' KICKOS_AMP_USER_SHARE_SIZE at its top. Raise the first or lower the second in the partition's defconfig, in every node's, or narrow KICKOS_AMP_NODES / KICKOS_AMP_PARTITION_CORES")
 
+/* The region every node writes, in one order on every node, so an object placed here cannot
+ * land at two addresses. NOLOAD: a region carrying bytes is written at load time, and by then a
+ * peer may already have published into it. Outside .bss, so no C runtime clears it;
+ * arch_amp_shared_zero does, from the primary's Reset_Handler, before it releases any peer.
+ * .amp_shared.diag is last with no ALIGN ahead of it: it is empty unless
+ * KICKOS_AMP_DIAG_REPORT is on, and anywhere else turning that on would move every object
+ * below it.
+ */
+#define KICKOS_AMP_SHARED_SECTION(region)                                     \
+    .amp_shared (NOLOAD) : ALIGN(64)                                          \
+    {                                                                         \
+        __kickos_amp_shared_start = .;                                        \
+        __kickos_amp_cells_start = .;                                         \
+        KEEP(*(.amp_shared.cells.request))                                    \
+        KEEP(*(.amp_shared.cells.answer))                                     \
+        KEEP(*(.amp_shared.affinity))                                         \
+        KEEP(*(.amp_shared.affinity_seated))                                  \
+        __kickos_amp_cells_end = .;                                           \
+        . = ALIGN(64);                                                        \
+        __kickos_amp_window_start = .;                                        \
+        KEEP(*(.amp_shared.window))                                           \
+        __kickos_amp_window_end = .;                                          \
+        . = ALIGN(64);                                                        \
+        __kickos_amp_counts_start = .;                                        \
+        KEEP(*(.amp_shared.counts))                                           \
+        __kickos_amp_counts_end = .;                                          \
+        __kickos_amp_chip_start = .;                                          \
+        KEEP(*(.amp_shared.chip))                                             \
+        __kickos_amp_chip_end = .;                                            \
+        KEEP(*(.amp_shared.diag))                                             \
+        __kickos_amp_shared_end = .;                                          \
+    } > region
+
+/* A KICKOS_AMP_SHARED that expanded to nothing leaves its section EMPTY and every node on a
+ * private copy, the failure no run reports. */
+#define KICKOS_AMP_SHARED_FILLED_ASSERT()                                     \
+    ASSERT(__kickos_amp_cells_end > __kickos_amp_cells_start,                 \
+           "KickOS: .amp_shared.cells is empty: the doorbell backend's rendezvous cells are not placed in the shared region, so each node would rendezvous with itself") \
+    ASSERT(__kickos_amp_window_end > __kickos_amp_window_start,               \
+           "KickOS: .amp_shared.window is empty: kernel/amp/ampwindow.cc's window is not placed in the shared region, so each node would publish into a ring no peer reads") \
+    ASSERT(__kickos_amp_counts_end > __kickos_amp_counts_start,               \
+           "KickOS: .amp_shared.counts is empty: a node sweeping a peer's row would read its own")
+
 /* [lo, hi) of this image in the span at base, inside this node's share of it. */
 #define KICKOS_AMP_SLICE_ASSERT(lo, hi, base, share)                          \
     ASSERT((lo) >= KICKOS_AMP_SLICE_BASE(base, share)                         \

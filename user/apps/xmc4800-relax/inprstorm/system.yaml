@@ -13,3 +13,4 @@ tasks:
     priority: 2
     ceiling: 2
     devices: [/dev/usic0/ch1]
+    accepts: [coarse_gate] # USIC0 is one gate, and the kernel's console is its channel 0

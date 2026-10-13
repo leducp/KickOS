@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// STM32F103C8 ("Blue Pill", Cortex-M3) chip backend. The PLL bring-up, the monotonic clock and
-// the buffered console are shared in ../stm32f1f3/chip_stm32f1f3.cc. Registers clean-room from
-// RM0008; no vendor HAL/CMSIS. No FPU, no MPU and no watchdog at reset: the reset path is
-// C-runtime only.
+// STM32F103C8 ("Blue Pill", Cortex-M3) chip backend (RM0008). The PLL bring-up, the monotonic
+// clock and the buffered console are in ../stm32f1f3/chip_stm32f1f3.cc. No FPU, no MPU and no
+// watchdog at reset: the reset path is C-runtime only.
 
 #include <kickos/arch/arch.h>
 #include "crt_tail.h"
@@ -81,9 +80,8 @@ namespace
 
     void timer_clock_init()
     {
-        // Boot-order: nothing before arch_init may read the clock. A static ctor
-        // (__init_array) calling ktime_now()/arch_clock_now() BusFaults here on
-        // the ungated APB1 access.
+        // Nothing before arch_init may read the clock: a static ctor calling arch_clock_now()
+        // BusFaults on the ungated APB1 access.
         reg32(RCC_APB1ENR) |= APB1ENR_TIM2EN | APB1ENR_TIM3EN;
 
         reg32(mmap::TIM2_BASE + TIM_CR1) = 0;
@@ -99,13 +97,12 @@ namespace
         reg32(mmap::TIM3_BASE + TIM_SMCR) = (0x1u << 4) | (0x7u << 0); // TS=ITR1, SMS=ext clock 1
         reg32(mmap::TIM3_BASE + TIM_EGR) = TIM_EGR_UG;
         reg32(chip::CLK_TIMER_SR) = ~TIM_SR_UIF;   // drop the UG-induced UIF before arming the IRQ
-        reg32(mmap::TIM3_BASE + TIM_DIER) = TIM_DIER_UIE; // wrap observer for the disarmed-timer idle case
+        reg32(mmap::TIM3_BASE + TIM_DIER) = TIM_DIER_UIE;
 
         // Slave before master, or a master TRGO edge is missed.
         reg32(mmap::TIM3_BASE + TIM_CR1) = TIM_CR1_CEN;
         reg32(mmap::TIM2_BASE + TIM_CR1) = TIM_CR1_CEN;
-        // No arch_irq_clear_pending: a pend latched here (latch-and-coalesce) redelivers
-        // one benign kickos_isr_timer tick on enable, which the tickless handler tolerates.
+        // A pend latched here redelivers one benign kickos_isr_timer tick on enable.
         arch_irq_unmask(chip::CLK_TIMER_IRQ);
     }
 
@@ -129,25 +126,17 @@ extern "C"
 
 void arch_init(void)
 {
-    // Clock first: the console's BRR derives from the final PCLK2.
+    // Clock first: the BRR derives from the final PCLK2.
     if (kickos::stm32::clock_init())
     {
         SystemCoreClock = 72000000u;
     }
     timer_clock_init();
-    // Anchor the clock ONCE, from the FINAL rate: the chained counter's LSB increments
-    // at TIM2's kernel clock and, with HPRE=/1 and PPRE1 in {/1,/2}, the STM32 APB
-    // timer-clock doubler makes that equal HCLK == SystemCoreClock.
+    // The chained counter's LSB increments at TIM2's kernel clock, which with HPRE=/1 and PPRE1 in
+    // {/1,/2} the APB timer-clock doubler makes equal to SystemCoreClock.
     kickos::stm32::clock_anchor(SystemCoreClock);
     usart1_init();
     kickos_armv7m_init();
-}
-
-// ST omits the MPU from the STM32F1 Cortex-M3, where a reader expects one: 0 is the
-// seam's no-MPU granule (arch.h), not a tuning choice.
-size_t arch_mpu_min_region(void)
-{
-    return 0u;
 }
 
 void arch_diag_led_init(void)

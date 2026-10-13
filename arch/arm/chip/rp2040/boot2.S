@@ -1,26 +1,20 @@
 /* SPDX-License-Identifier: CECILL-C
  * Copyright (c) 2026 Philippe Leduc
  *
- * RP2040 second-stage bootloader (boot2). Clean-room from the RP2040 datasheet
- * (sec.2.8.1 boot sequence, sec.4.10 SSI); no vendor sources consulted.
+ * RP2040 second-stage bootloader (datasheet sec.2.8.1, sec.4.10).
  *
- * Context: the bootrom copies the first 256 bytes of flash into SRAM5, verifies
- * the CRC-32/MPEG-2 over bytes 0..251 (checksum tool: cmake/rp2040_checksum.py),
- * then JUMPS into this payload running FROM SRAM. At that point the bootrom has
- * already muxed the QSPI pins and left the Synopsys SSI enabled in a plain 1-bit
- * SPI mode used for the 03h reads that loaded us. Our only job (sec.2.8.1.3) is to
- * reconfigure the SSI for execute-in-place so the CPU can fetch directly from the
- * 0x1000_0000 XIP window, then hand control to the application vector table.
+ * The bootrom copies the first 256 bytes of flash into SRAM5, verifies the CRC-32/MPEG-2 over
+ * bytes 0..251 (cmake/rp2040_checksum.py) and jumps into this payload running FROM SRAM, with
+ * the QSPI pins muxed and the SSI in the plain 1-bit SPI mode of its 03h reads. The job
+ * (sec.2.8.1.3) is to reconfigure the SSI for execute-in-place at the 0x1000_0000 window and
+ * hand control to the application vector table.
  *
- * XIP mode here is the near-universal "03h serial read per access" (sec.4.10.3):
- * each XIP access issues an 8-bit 0x03 command + 24-bit address, then clocks in
- * data on a single line. Slow but compatible with any SPI flash. All other setup
- * (PLLs, regulator, faster QSPI modes) is the platform's job over XIP, per the
- * datasheet.
+ * XIP here is the universal "03h serial read per access" (sec.4.10.3): an 8-bit 0x03 command and
+ * a 24-bit address, data on a single line, compatible with any SPI flash.
  *
- * This code is position-independent (runs from SRAM at a bootrom-chosen address):
- * only PC-relative branches and literal-pool loads; the sole absolute code target
- * is the app vector table, a data constant.
+ * Position-independent: it runs from SRAM at a bootrom-chosen address, so only PC-relative
+ * branches and literal-pool loads; the sole absolute code target is the app vector table, a data
+ * constant.
  */
 
     .syntax unified

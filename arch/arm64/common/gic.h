@@ -4,10 +4,8 @@
 // The arm64 family's interrupt-controller interface, with one backend linked per image. The
 // backend also defines arch.h's mask/unmask/clear triad and arch_irq_inject.
 //
-// A chip declares WHICH controller it has, and where, by defining that backend's map: GICv2's
-// is gicv2.h, GICv3's gicv3.h. NOTHING HERE NAMES A REGISTER, so a core-index mask is the only
-// currency that crosses this boundary: a target list plus a filter is GICv2's register in
-// disguise, and affinity plus a routing mode is GICv3's.
+// A chip selects the backend by defining its map: gicv2.h or gicv3.h. Nothing here names a
+// register, so a core-index mask is the only currency that crosses this boundary.
 
 #ifndef KICKOS_ARCH_ARM64_COMMON_GIC_H
 #define KICKOS_ARCH_ARM64_COMMON_GIC_H

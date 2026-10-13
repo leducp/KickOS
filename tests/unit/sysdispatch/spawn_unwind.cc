@@ -16,6 +16,9 @@
 #include "region_seam.h"
 #include "syscall_internal.h"
 
+extern "C" uint64_t syscall_dispatch(uintptr_t nr, uintptr_t a0, uintptr_t a1, uintptr_t a2,
+                                     uintptr_t a3);
+
 #if not KICKOS_MEMORY_ENFORCED or not KICKOS_HAVE_MPU or KICKOS_HAVE_ASPACE
 #error "this gate refuses a spawn over a region set"
 #endif
@@ -23,6 +26,13 @@
 namespace
 {
     unsigned char g_code[64];
+
+    // The params a spawn names lie in a region the spawner holds.
+    struct alignas(kickos::testfix::REGION_MIN) ParamBlock
+    {
+        kos_thread_params p;
+    };
+    ParamBlock g_block;
 }
 
 namespace kickos
@@ -55,15 +65,16 @@ namespace kickos
                 Kernel& k = kernel();
                 ASSERT_EQ(ARCH_MPU_OVERLAP, ARCH_MPU_OVERLAP_HIGHER);
 
-                // A privileged spawner, so the unprivileged child builds a task of its own.
-                int derr = 0;
-                Task* const own = task_for(DOM_CALLER_PRIVILEGED, nullptr, 0, nullptr, &derr);
-                ASSERT_NE(own, nullptr);
+                // A data grant of the spawner's own, so the child builds a task of its own.
+                Task* const own = task(0);
                 Thread* const spawner = seat_pool(2, 5);
-                spawner->privileged = true;
-                spawner->task = own;
-                task_ref(own);
+                join_task(spawner, own);
+                cap_seat_authority(spawner, AUTH_MEMORY | AUTH_TASKS);
                 k.current(kickos_kernel_core()) = spawner;
+                ASSERT_TRUE(spawner->mpu.add(reinterpret_cast<uintptr_t>(&g_block),
+                                             sizeof(g_block), ARCH_MPU_R | ARCH_MPU_W));
+                uintptr_t const grant = syscall_dispatch(KOS_SYS_RAM_ALLOC, REGION_MIN, 0, 0, 0);
+                ASSERT_NE(grant, 0u);
 
                 // Slot 1 is reclaimable, with a region set of its own left from its occupant.
                 Thread& was = k.threads.slots[1];
@@ -82,10 +93,13 @@ namespace kickos
                                    arch_ram_region_size(KICKOS_USER_STACK_SIZE), ARCH_MPU_R};
                 dom->region_count = 1;
 
-                kos_thread_params p = {};
+                kos_thread_params& p = g_block.p;
+                p = {};
                 p.entry = entry;
                 p.name = "refused";
                 p.prio = 1;
+                p.mem_base = reinterpret_cast<void*>(grant);
+                p.mem_size = REGION_MIN;
                 kos_thread_t out = 0;
                 EXPECT_EQ(thread_create_call(&p, &out), -KOS_EINVAL);
                 EXPECT_EQ(out, KOS_THREAD_NONE);

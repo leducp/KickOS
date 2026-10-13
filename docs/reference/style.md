@@ -88,7 +88,9 @@ further down: it binds every tracked file.
     libcall on armv6m and rxv3 that a freestanding link cannot resolve, but that only rules
     out taking one from the toolchain -- a lock-bracketed RMW is implementable everywhere.
     It stays closed because the cheapest CORRECT mechanism differs per backend, so an RMW
-    belongs behind a per-arch seam like the MPU backends, and no such seam exists yet.
+    belongs behind a per-arch seam like the MPU backends. One exists, for one site:
+    `arch_swap_u32` (`kickos/arch/atomic_swap.h`) on the arches that run a shared kernel above
+    one core, used only by the console's panic claim; the wrapper's surface stays closed.
     archived `M7_smp_candidate_spike.md` carries the measured costs and the one correctness rule such a
     seam would have to enforce, namely that `IrqLock`-bracketing is wrong on a dual-core part.
     The gate catches the named spellings outright (`.fetch_add(`, `.exchange(`,
@@ -139,7 +141,7 @@ further down: it binds every tracked file.
     bring-up probes a line comment on every such word would say less than one paragraph
     does. The point of the clause is that a reader can tell an INVOKED exception from an
     unexamined one, and a file-level statement does that as well as a per-line one. It has to name which exception and be true of every word below it, so
-    a TU whose words split across exceptions says so, as `probe5_x86_64.cc` does.
+    a TU whose words split across exceptions says so.
     **AN ISR WRITING A FIELD IS THE RULE, NOT AN EXCEPTION TO IT.** That case is the first
     sentence above and its answer is `Atomic`. Where such a field stays `volatile` it is
     because one of the three applies on its own merits, most often because the wrapper

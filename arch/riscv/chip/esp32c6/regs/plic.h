@@ -9,8 +9,7 @@
 // on silicon, and applying INTPRI's offsets to it (or these to INTPRI) writes the
 // priority of CPU int n into the threshold register and masks the line.
 //
-// mie bit N gates CPU int N (TRM section 1.6.2 item 2); enable/type/per-int priority/
-// threshold live here.
+// mie bit N gates CPU int N.
 
 #ifndef KICKOS_ARCH_RISCV_CHIP_ESP32C6_REGS_PLIC_H
 #define KICKOS_ARCH_RISCV_CHIP_ESP32C6_REGS_PLIC_H

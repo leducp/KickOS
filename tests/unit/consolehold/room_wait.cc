@@ -8,8 +8,6 @@
 #include <string.h>
 
 #include <stdio.h>
-#include <sys/wait.h>
-#include <unistd.h>
 
 #include <string>
 
@@ -23,6 +21,7 @@
 #include <kickos/sys/errno.h>
 
 #include "dark_seam.h"
+#include "isolated_arm.h"
 #include "kseam_test.h"
 
 using namespace kickos;
@@ -60,28 +59,7 @@ namespace
     {
     }
 
-    console_tx_backend const kBackend = {slot_free, push, gate, gate};
-
-    void run_isolated(void (*body)())
-    {
-        fflush(nullptr);
-        pid_t const pid = fork();
-        ASSERT_NE(pid, -1) << "fork failed, the arm did not run";
-        if (pid == 0)
-        {
-            body();
-            fflush(nullptr);
-            if (::testing::Test::HasFailure())
-            {
-                _exit(1);
-            }
-            _exit(0);
-        }
-        int status = 0;
-        ASSERT_EQ(waitpid(pid, &status, 0), pid);
-        ASSERT_TRUE(WIFEXITED(status)) << "the arm died on a signal";
-        ASSERT_EQ(WEXITSTATUS(status), 0) << "see the arm's own failure text above";
-    }
+    console_tx_backend const kBackend = {slot_free, push, gate, gate, nullptr};
 
     std::string const kQueued(kRing - 8u, 'L');
 
@@ -92,7 +70,6 @@ namespace
     void stage(int irq_line, GapAction preempted = nullptr)
     {
         darkseam::reset();
-        darkseam::g_ring_backed = true;
         g_pushes = 0;
         g_park_kind = WAIT_NONE;
         g_writer_parked = false;
@@ -165,7 +142,7 @@ TEST_F(ConsoleRoom, a_non_blocking_writer_the_ring_refuses_is_answered_at_once)
             g_writer_parked = true;
             console_tx_isr();
         });
-        EXPECT_EQ(kconsole_write_user(kLine.data(), kLine.size(), false), 0);
+        EXPECT_EQ(kconsole_write_user(kLine.data(), kLine.size(), false), -KOS_ETIMEDOUT);
         EXPECT_FALSE(g_writer_parked) << "a non-blocking writer waited";
     });
 }

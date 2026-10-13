@@ -1,19 +1,15 @@
 /* SPDX-License-Identifier: CECILL-C
  * Copyright (c) 2026 Philippe Leduc
  *
- * The AArch64 EL1 exception vector table. VBAR_EL1 holds its base, which the chip's
- * _start installs (arch/arm64/chip/virt_arm64/startup.S).
+ * The AArch64 EL1 exception vector table, installed in VBAR_EL1 by boot_el1.inc.
  *
- * The table's shape is architectural: 2 KiB aligned, sixteen slots of 0x80 bytes, in
- * four groups of four (synchronous, IRQ, FIQ, SError) by where the exception came from.
- * EVERY slot is filled, including the ones this stage cannot service, because the
- * alternative is not "nothing happens": an unfilled slot runs whatever bytes follow the
- * table, which is the silent death that has already cost this port one step. An
- * unexpected slot therefore reports which slot it was and stops.
+ * 2 KiB aligned, sixteen slots of 0x80 bytes, in four groups of four (synchronous, IRQ, FIQ,
+ * SError) by where the exception came from. Every slot is filled: an unfilled one runs whatever
+ * bytes follow the table. A slot that is not serviced reports its index and stops.
  *
- * Nothing here returns, so a slot may clobber freely. It passes the slot index and the
- * interrupted x30, the two facts the reporter cannot recover for itself: everything else
- * it needs is in ESR_EL1, FAR_EL1, ELR_EL1 and SPSR_EL1.
+ * A reporting slot never returns, so it may clobber freely. It passes the slot index and the
+ * interrupted x30; everything else the reporter needs is in ESR_EL1, FAR_EL1, ELR_EL1 and
+ * SPSR_EL1.
  */
 
 #include <kickos/board_config.h>
@@ -25,29 +21,21 @@
     b       kickos_armv8a_exception
     .endm
 
-/* An IRQ slot RESUMES, so unlike the reporting slots it has to preserve everything a callee
- * may clobber, plus ELR_EL1 and SPSR_EL1: those two are the return address and processor
- * state the eret consumes, and any later exception would overwrite them. x19-x28 are
- * callee-saved, so the C dispatcher preserves those itself. The body lives in switch.S with
- * the frame it shares with the switcher: one format resumes a preempted thread and a thread
- * that switched of its own accord.
+/* An IRQ slot resumes, so unlike the reporting slots it preserves everything a callee may
+ * clobber plus ELR_EL1 and SPSR_EL1. The body lives in switch.S with the frame it shares with
+ * the switcher: one format resumes a preempted thread and one that switched voluntarily.
  */
     .macro  IRQ_SLOT
     .balign 128
     b       kickos_armv8a_irq_entry
     .endm
 
-/* A lower-EL slot that only REPORTS still seats SP_EL1 from the kernel's own record. The
- * syscall and IRQ entries trust the register (switch.S), but they are the classes this port
- * enters: these slots are AArch32 entries and an EL0 SError, so reaching one means the core
- * was configured behind the kernel's back and SP_EL1 carries no promise. Unseated, the
- * reporter would build privileged frames on memory an unprivileged thread can write. Nothing
- * is preserved on this path, so it needs no scratch register.
+/* A lower-EL reporting slot seats SP_EL1 from the kernel's own record: reaching one (an AArch32
+ * entry or an EL0 SError) means SP_EL1 carries no promise, and the reporter would otherwise
+ * build privileged frames on memory an unprivileged thread can write.
  *
- * The block is per core and kernel_sp sits at displacement 0 (percpu.h, which static_asserts
- * it). At one core the array's first element IS this core's block, so the address is a
- * link-time constant; above one core it is TPIDR_EL1's value, seated on each core before that
- * core turns translation on (secondary.S, arch_armv8a.cc).
+ * kernel_sp sits at displacement 0 of the per-core block (percpu.h static_asserts it). Above
+ * one core the block address is TPIDR_EL1, seated before the core turns translation on.
  */
     .macro  LOWER_EL_SLOT index
     .balign 128
@@ -68,17 +56,15 @@
     .balign 2048
     .global kickos_armv8a_vectors
 kickos_armv8a_vectors:
-    /* Current EL, SP_EL0. SPSel comes out of reset selecting SP_ELx and nothing here
-       clears it, so these four are unreachable-by-construction rather than unimplemented. */
+    /* Current EL, SP_EL0: unreachable while SPSel is 1. */
     VEC_SLOT 0                      /* 0x000 synchronous */
     VEC_SLOT 1                      /* 0x080 IRQ         */
     VEC_SLOT 2                      /* 0x100 FIQ         */
     VEC_SLOT 3                      /* 0x180 SError      */
 
-    /* Current EL, SP_ELx: the kernel's own faults. Slot 4 is the one a wild access in
-       privileged code arrives at, and the only slot this stage services. */
+    /* Current EL, SP_ELx: the kernel's own faults. */
     VEC_SLOT 4                      /* 0x200 synchronous */
-    IRQ_SLOT                        /* 0x280 IRQ: the only interrupt this stage takes */
+    IRQ_SLOT                        /* 0x280 IRQ         */
     VEC_SLOT 6                      /* 0x300 FIQ         */
     VEC_SLOT 7                      /* 0x380 SError      */
 
@@ -90,8 +76,7 @@ kickos_armv8a_vectors:
     LOWER_EL_SLOT 10                /* 0x500 FIQ         */
     LOWER_EL_SLOT 11                /* 0x580 SError      */
 
-    /* Lower EL in AArch32, which this port never enters, so these mean the core was
-       configured behind the kernel's back. */
+    /* Lower EL in AArch32, which this port never enters. */
     LOWER_EL_SLOT 12                /* 0x600 synchronous */
     LOWER_EL_SLOT 13                /* 0x680 IRQ         */
     LOWER_EL_SLOT 14                /* 0x700 FIQ         */

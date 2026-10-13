@@ -12,7 +12,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#if defined(KICKOS_TLS) && KICKOS_TLS
+#if KICKOS_TLS
 
 // Bytes carved off the bottom of every thread's stack for this image's thread_local
 // storage. A KNOB, where the backends with real TLS relocations have a MEASUREMENT: GNURX
@@ -112,9 +112,7 @@ namespace
 // a thread with an empty stack has R0 exactly at base + stride, which masks to the NEXT
 // block and hands it its neighbour's storage. Masking R0 - 1 puts every R0 in
 // (base, base + stride] on base. R0 == base cannot occur: the block below is carved off the
-// stack and ctx.stack_lo is raised above it. On RX the edge happens to be unobservable from
-// inside this function, a bsr entry pushing the return address, but ARM's __aeabi_read_tp
-// is entered by a bl with the caller's SP intact and does see it.
+// stack and ctx.stack_lo is raised above it.
 extern "C" void* __emutls_get_address(void* anchor)
 {
     // THE ANCHOR IS THE ONLY UNTRUSTED INPUT and everything below walks a table reached

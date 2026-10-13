@@ -144,9 +144,8 @@ namespace kickos
 
     enum RamAdmit : uint8_t
     {
-        RAM_ADMIT_GRANT,     // a region of another thread or task
-        RAM_ADMIT_SELF,      // the granter's own: its regions do not hold the block against it
-        RAM_ADMIT_PRIVILEGED // a privileged child's window: Rule 7 and the owner are waived
+        RAM_ADMIT_GRANT, // a region of another thread or task
+        RAM_ADMIT_SELF   // the granter's own: its regions do not hold the block against it
     };
 
     // The admission of one RAM data region `granter` names, on the extent its descriptor

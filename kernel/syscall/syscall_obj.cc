@@ -70,6 +70,10 @@ namespace kickos
         {
             return -KOS_EAGAIN;
         }
+        if (not cap_mutex_create_admitted())
+        {
+            return -KOS_ENOMEM;
+        }
         int const i = kernel().mutexes.alloc();
         Mutex* const m = kernel().mutexes.at(i); // total over alloc()'s -1
         if (m == nullptr)

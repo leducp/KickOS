@@ -63,9 +63,8 @@ void shared_init(Shared* s)
 
 // Handle one request in place and return the response length. Read request
 // fields before overwriting them. Every path must build a response.
-// mode is null when unframed console output and SET_MODE are unsupported.
 template <typename Transport, typename Shared>
-size_t serve_one(Shared* sh, Atomic<uint32_t, Order::RELAXED>* mode, uint8_t* buf, size_t n)
+size_t serve_one(Shared* sh, uint8_t* buf, size_t n)
 {
     if (n < sizeof(struct kos_uart_req))
     {
@@ -120,7 +119,7 @@ size_t serve_one(Shared* sh, Atomic<uint32_t, Order::RELAXED>* mode, uint8_t* bu
     }
     case KOS_UART_SET_MODE:
     {
-        return reply_status(buf, mode_apply(mode, req.flags, Transport::MODE_REQUIRED), 0);
+        return reply_status(buf, mode_apply(&sh->mode, req.flags, Transport::MODE_REQUIRED), 0);
     }
     case KOS_UART_CONFIGURE:
     {
@@ -167,7 +166,7 @@ int32_t console_serve_loop(Shared* sh)
         }
         if (opts.info.reply_cap != KOS_CAP_NONE)
         {
-            reply_len = serve_one<Transport>(sh, &sh->mode, msg, static_cast<size_t>(n));
+            reply_len = serve_one<Transport>(sh, msg, static_cast<size_t>(n));
             reply_cap = opts.info.reply_cap;
             continue;
         }

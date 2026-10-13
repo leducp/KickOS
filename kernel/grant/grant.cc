@@ -111,8 +111,8 @@ namespace kickos
         {
             return false;
         }
-        // Rule 7 core: a grant touching ANY reserved block is refused UNCONDITIONALLY;
-        // privileged callers bind too. A wrapping range is refused there as well.
+        // Rule 7 core: a grant touching ANY reserved block is refused UNCONDITIONALLY. A
+        // wrapping range is refused there as well.
         if (grant_hits_reserved(base, size))
         {
             return false;
@@ -157,8 +157,8 @@ namespace kickos
         {
             return false;
         }
-        // Choice 10C: confine RAM to the user arena for EVERY caller (no privileged
-        // waiver). Guard an absent arena (arch_ram_size() == 0 -> nothing admissible).
+        // Choice 10C: confine RAM to the user arena for EVERY caller. Guard an absent arena
+        // (arch_ram_size() == 0 -> nothing admissible).
         size_t const ram_size = arch_ram_size();
         if (ram_size == 0)
         {

@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Atmel/Microchip AT91SAM3X8E (Arduino Due, Cortex-M3) chip backend. Registers
-// clean-room from the SAM3X/SAM3A datasheet (Atmel-11057); no ASF.
+// Atmel/Microchip AT91SAM3X8E (Arduino Due, Cortex-M3) chip backend (datasheet Atmel-11057).
 
 #include <kickos/arch/arch.h>
+#include <kickos/arch/console_poll.h>
 #include "crt_tail.h"
 #include "pin_guard.h"
 #include <kickos/config/limits.h>
 #include <kickos/arch/clk_anchor.h>
 #include <kickos/console_tx.h>
+#include <kickos/io/mmio.h>
 #include <kickos/sys/abi.h>
 
 #include <kickos/chip_mmap.h>
@@ -45,15 +46,11 @@ namespace
     static_assert(irq::TC0_IRQ == KICKOS_LAYOUT_LINE_TC0_IRQ,
                   "startup.S vectors the clock-wrap ISR at KICKOS_LAYOUT_LINE_TC0_IRQ");
 
-    inline volatile uint32_t& r32(uintptr_t a) { return *reinterpret_cast<volatile uint32_t*>(a); }
-
     constexpr uintptr_t WDT_MR = mmap::WDT_BASE + 0x04; // write-once
     constexpr uint32_t WDT_MR_WDDIS = 1u << 15;
 
-    // EEFC (sec.18): the two flash banks. FWS (EEFC_FMR bits 11:8) sets the flash
-    // read/write wait states; per sec.45 the AC-flash table, FWS=4 (5 read cycles)
-    // covers up to 90 MHz at VDDCORE 1.8V, required for 84 MHz. Set BEFORE the
-    // clock is raised.
+    // EEFC (sec.18): the two flash banks. FWS=4 covers up to 90 MHz (sec.45) and is required for
+    // 84 MHz; set BEFORE the clock is raised.
     constexpr uintptr_t EEFC0_FMR = mmap::EEFC0_BASE + 0x00;
     constexpr uintptr_t EEFC1_FMR = mmap::EEFC1_BASE + 0x00;
     constexpr uint32_t FMR_FWS_4 = 4u << 8;
@@ -63,18 +60,16 @@ namespace
     constexpr uintptr_t PMC_MCKR = mmap::PMC_BASE + 0x30;
     constexpr uintptr_t PMC_SR = mmap::PMC_BASE + 0x68;
 
-    // CKGR_MOR (sec.28): crystal oscillator. KEY 0x37 (bits 23:16) gates the write;
-    // MOSCXTST (15:8) is the crystal startup counter (in SLCK/8); keep the fast RC
-    // (MOSCRCEN) enabled while the crystal warms up, then MOSCSEL picks the crystal.
+    // CKGR_MOR (sec.28): KEY 0x37 gates the write; MOSCXTST is the crystal startup counter in
+    // SLCK/8; the fast RC (MOSCRCEN) stays on while the crystal warms up, then MOSCSEL picks the
+    // crystal.
     //
-    // MOSCXTS asserts when the MOSCXTST counter expires, NOT on physical crystal
-    // detection, so MOSCXTST MUST cover the crystal's worst-case warm-up or the
-    // status lies and PLLA locks on a still-settling MAINCK (the intermittent-boot
-    // race). SLCK is the on-chip slow RC, spec'd 22..42 kHz, so size the count at
-    // the FAST end. Time = MOSCXTST * 8 / SLCK. 0x80 = 128 -> 24.4 ms @42 kHz,
-    // 31.2 ms @32 kHz, 46.5 ms @22 kHz, comfortably past the ~15 ms crystal spec.
-    // GUESS pending Due silicon: confirm the crystal's startup spec before trimming
-    // toward the ~15 ms figure (0x50 gives ~15.2 ms @42 kHz, no margin).
+    // MOSCXTS asserts when the MOSCXTST counter expires, NOT on physical crystal detection, so
+    // MOSCXTST MUST cover the crystal's worst-case warm-up or PLLA locks on a still-settling
+    // MAINCK (the intermittent-boot race). SLCK is the slow RC, 22..42 kHz, so the count is sized
+    // at the FAST end: 0x80 gives 24.4 ms at 42 kHz and 46.5 ms at 22 kHz, past the ~15 ms
+    // crystal spec. Unconfirmed on silicon: do not trim toward 15 ms, 0x50 has no margin at
+    // 42 kHz.
     constexpr uint32_t MOR_KEY = 0x37u << 16;
     constexpr uint32_t MOR_MOSCXTEN = 1u << 0;
     constexpr uint32_t MOR_MOSCRCEN = 1u << 3;
@@ -82,8 +77,7 @@ namespace
     constexpr uint32_t MOR_MOSCSEL = 1u << 24;
     constexpr uint32_t MOR_CRYSTAL = MOR_KEY | MOR_MOSCXTST | MOR_MOSCRCEN | MOR_MOSCXTEN;
 
-    // CKGR_PLLAR (sec.28): PLLA = MAINCK * (MULA+1) / DIVA. ONE (bit 29) reads 1;
-    // PLLCOUNT (13:8) = LOCK delay in SLCK; MULA (26:16), DIVA (7:0).
+    // PLLA = MAINCK * (MULA+1) / DIVA. ONE (bit 29) reads 1; PLLCOUNT is the LOCK delay in SLCK.
     constexpr uint32_t PLLA_MUL = 14u;
     constexpr uint32_t PLLA_DIV = 1u;
     constexpr uint32_t PLLA_HZ = MAINCK_XTAL_HZ * PLLA_MUL / PLLA_DIV;
@@ -92,7 +86,6 @@ namespace
     constexpr uint32_t PLLAR_COUNT = 0x3Fu << 8;
     constexpr uint32_t PLLAR_DIVA = PLLA_DIV << 0;
 
-    // PMC_MCKR (sec.28.15.11): CSS (1:0) source, PRES (6:4) prescaler.
     constexpr uint32_t MCKR_CSS_MASK = 3u << 0;
     constexpr uint32_t MCKR_CSS_MAIN = 1u << 0;
     constexpr uint32_t MCKR_CSS_PLLA = 2u << 0;
@@ -125,7 +118,7 @@ namespace
         return src / div;
     }
 
-    // The part's own maximum, and the bound FWS=4 was chosen against (sec.45 covers 90 MHz).
+    // The part's own maximum, and the bound FWS=4 was chosen against.
     constexpr uint32_t MCK_MAX_HZ = 84000000u;
 
     static_assert(mck_for(MCKR_MAIN, MAINCK_XTAL_HZ) == MAINCK_XTAL_HZ,
@@ -165,8 +158,7 @@ namespace
     // (sec.28.15.11), so step 3's MOSCSEL moves MCK with no PMC_MCKR write of its own.
     void clock_init()
     {
-        // 1. Flash wait states first, both banks (sec.18 / sec.45), before raising
-        //    MCK. Over-provisioning is safe: FWS=4 also covers the RC/main fallbacks.
+        // 1. Flash wait states first, both banks; FWS=4 also covers the fallbacks.
         r32(EEFC0_FMR) = FMR_FWS_4;
         r32(EEFC1_FMR) = FMR_FWS_4;
 
@@ -196,19 +188,15 @@ namespace
             return;
         }
 
-        // 4. PLLA (sec.28 CKGR_PLLAR). If it never locks, MCK is already stable on the
-        //    crystal, so stay there (console still off: 12 MHz divides to 107143 baud,
-        //    outside 8N1 tolerance).
+        // 4. PLLA. If it never locks, MCK is already stable on the crystal, so stay there.
         r32(CKGR_PLLAR) = PLLAR_ONE | PLLAR_MULA | PLLAR_COUNT | PLLAR_DIVA;
         if (not pmc_wait(SR_LOCKA))
         {
             return;
         }
 
-        // 5. Switch MCK to PLLA/2. sec.28.12 mandates, for a PLL source: set PRES, wait
-        //    MCKRDY, then set CSS, wait MCKRDY (two writes, not one). THE FIRST WRITE
-        //    HALVES MAINCK, so the intermediate state is 6 MHz and not 12: PRES divides
-        //    whatever CSS names, and CSS still names MAINCK here.
+        // 5. Switch MCK to PLLA/2. A PLL source needs PRES set, MCKRDY, then CSS set, MCKRDY
+        //    (sec.28.12). THE FIRST WRITE HALVES MAINCK, so the intermediate state is 6 MHz.
         mckr_select(MCKR_MAIN_DIV2, MAINCK_XTAL_HZ);
         if (not pmc_wait(SR_MCKRDY))
         {
@@ -235,14 +223,13 @@ namespace
     static_assert(KICKOS_BOARD_CONSOLE_TX_SELECT == 0 and KICKOS_BOARD_CONSOLE_RX_SELECT == 0,
                   "the console pins stay on peripheral A, the ABSR reset value this backend leaves");
 
-    // PMC_PCER0 clock bit = 11+port (PIOA is peripheral ID 11). func selects the routing:
+    // PMC_PCER0 clock bit = 11+port. func selects the routing:
     //   0x00 = GPIO output (PIO_PER + PIO_OER), 0x01 = GPIO input (PIO_PER + PIO_ODR),
     //   0x10 = peripheral A (ABSR bit CLEAR, then PIO_PDR),
     //   0x11 = peripheral B (ABSR bit SET,   then PIO_PDR).
-    // The ABSR write MUST precede PDR (PDR hands the pin to whichever peripheral
-    // ABSR currently selects). The OER/ODR write is MANDATORY: PER alone leaves the
-    // output driver at its reset state, giving a dead output. Pull-ups are on at reset
-    // and this backend leaves PUER/PUDR alone.
+    // The ABSR write MUST precede PDR, which hands the pin to whichever peripheral ABSR selects.
+    // The OER/ODR write is MANDATORY: PER alone leaves a dead output. Pull-ups are on at reset
+    // and left alone.
     constexpr uintptr_t PIO_PER_OFF = 0x00;
     constexpr uintptr_t PIO_PDR_OFF = 0x04;
     constexpr uintptr_t PIO_OER_OFF = 0x10;
@@ -297,18 +284,14 @@ namespace
     constexpr uint32_t IER_TXRDY = 1u << 1; // TXRDY bit in IER/IDR/IMR (same position as SR)
     constexpr uint32_t CONSOLE_BAUD = 115200u;
 
-    // This UART has no fractional divisor and a fixed 16x oversample, so what it can reach
-    // is set by MCK: 84 MHz gives CD 46 = 114130 baud (-0.93%), while NONE of the three
-    // degrade rates reaches 115200 at all: 12 MHz gives CD 7 = 107143 (-7.0%), 6 MHz CD 3 =
-    // 125000 (+8.5%) and 4 MHz CD 2 = 125000 (+8.5%), every one past what 8N1 framing
-    // tolerates.
+    // The UART has no fractional divisor and a fixed 16x oversample: 84 MHz gives CD 46 = 114130
+    // baud (-0.93%), while NONE of the degrade rates (12, 6, 4 MHz) reaches 115200 within what
+    // 8N1 tolerates, so the console is off on those.
 
-    // --- TC0 channel 0: the monotonic time base (SAM3X datasheet sec.37) --------
-    // Not DWT_CYCCNT: on parts in this fleet it intermittently reads aliased garbage, which the
-    // 32->64 wrap extension turns into a phantom 2^32 jump that strands every timed wait.
-    // TC0 ch0 free-runs in capture mode (WAVE=0, CPCTRG=0 so RC never resets it) off
-    // TIMER_CLOCK1 = MCK/2. arch_trace_now stays on raw DWT_CYCCNT. No driver on this port
-    // uses TC0.
+    // --- TC0 channel 0: the monotonic time base --------------------------------------
+    // Not DWT_CYCCNT: it intermittently reads aliased garbage here, which the 32->64 wrap
+    // extension turns into a phantom 2^32 jump that strands every timed wait. TC0 ch0 free-runs
+    // in capture mode (RC never resets it) off TIMER_CLOCK1 = MCK/2.
     constexpr uintptr_t TC0_CCR0 = mmap::TC0_BASE + 0x00;
     constexpr uintptr_t TC0_CMR0 = mmap::TC0_BASE + 0x04;
     constexpr uintptr_t TC0_CV0 = mmap::TC0_BASE + 0x10;
@@ -320,34 +303,29 @@ namespace
     constexpr uint32_t TC_SR_COVFS = 1u << 0;
     constexpr uint32_t PID_TC0 = 1u << 27;    // TC0 channel 0 = peripheral ID 27
 
-    // 64-bit extension of TC_CV0, which wraps every 2^32/42e6 ~= 102 s. The wrap is folded
-    // exactly once, by whichever comes first of a thread read or the COVFS ISR; without that
-    // ISR a wrap across a quiescent >102 s idle is lost. The two words are ONE value: the
-    // IrqLock in tc_ticks keeps them coherent against the ISR, not the atomicity of either.
+    // 64-bit extension of TC_CV0, which wraps every ~102 s. The wrap is folded exactly once, by
+    // whichever comes first of a thread read or the COVFS ISR; without that ISR a wrap across a
+    // quiescent >102 s idle is lost. The two words are ONE value: the IrqLock in tc_ticks keeps
+    // them coherent against the ISR.
     uint32_t g_clk_high = 0;
     uint32_t g_clk_last = 0;
 
-    // arch_clock_now epoch anchor (B2, shared: kickos/arch/clk_anchor.h). Sole writer
-    // is init() in arch_init; this chip never retunes at runtime. A retune added later
-    // must call reprice() at the rate edge; the read must stay pure.
+    // Sole writer is init() in arch_init; a runtime retune must call reprice() at the rate edge.
     kickos::arch_clk_anchor g_clk;
 
     void tc_clock_init()
     {
-        // Boot-order: nothing before arch_init may read the clock. A static ctor
-        // (__init_array) calling ktime_now()/arch_clock_now() BusFaults here on
-        // the ungated TC access.
-        // WFI-clocking constraint: TC0 keeps counting in WFI only in Sleep mode
-        // (PMC_FSMR.LPM=0, the default). If Wait mode is ever selected MCK stops,
-        // freezing TC0 AND SysTick: the whole time base halts, not just this clock.
+        // Nothing before arch_init may read the clock: a static ctor calling arch_clock_now()
+        // BusFaults on the ungated TC access.
+        // TC0 keeps counting in WFI only in Sleep mode (PMC_FSMR.LPM=0, the default): Wait mode
+        // stops MCK, freezing TC0 AND SysTick.
         r32(PMC_PCER0) = PID_TC0;
-        r32(TC0_CMR0) = TC_CMR_TCCLKS_MCK2;       // MCK/2, capture, RC does not reset
+        r32(TC0_CMR0) = TC_CMR_TCCLKS_MCK2;
         r32(TC0_CCR0) = TC_CCR_CLKEN | TC_CCR_SWTRG;
-        uint32_t drop = r32(TC0_SR0);             // read-to-clear any pending status
+        uint32_t drop = r32(TC0_SR0);             // read-to-clear
         (void)drop;                               // ((void)r32) would elide the access
-        r32(TC0_IER0) = TC_SR_COVFS;              // wrap observer for the idle case
-        // No arch_irq_clear_pending: a pend latched here (latch-and-coalesce) redelivers
-        // one benign kickos_isr_timer tick on enable, which the tickless handler tolerates.
+        r32(TC0_IER0) = TC_SR_COVFS;
+        // A pend latched here redelivers one benign kickos_isr_timer tick on enable.
         arch_irq_unmask(irq::TC0_IRQ);
     }
 
@@ -377,15 +355,14 @@ namespace
         r32(UART_CR) = CR_RXEN_TXEN;
     }
 
-    // TXRDY is level-triggered: writing IER.TXRDY while SR.TXRDY=1 raises the IRQ
-    // immediately. IER/IDR are write-1-to-set/clear, so no RMW.
+    // TXRDY is level-triggered: writing IER.TXRDY while SR.TXRDY=1 raises the IRQ at once.
     int sam_tx_slot_free(void) { return (r32(UART_SR) & SR_TXRDY) != 0; }
     void sam_tx_push(uint8_t b) { r32(UART_THR) = b; }
     void sam_tx_irq_enable(void) { r32(UART_IER) = IER_TXRDY; }
     void sam_tx_irq_disable(void) { r32(UART_IDR) = IER_TXRDY; }
-    char console_tx_buf[KICKOS_CONSOLE_TX_SIZE];
     console_tx_backend const sam_console_backend = {
-        sam_tx_slot_free, sam_tx_push, sam_tx_irq_enable, sam_tx_irq_disable};
+        sam_tx_slot_free, sam_tx_push, sam_tx_irq_enable, sam_tx_irq_disable,
+        &kickos_console_tx_storage};
 
 }
 
@@ -396,53 +373,34 @@ void arch_init(void)
 {
     clock_init();
     tc_clock_init();
-    // Anchor the clock ONCE, from the FINAL rate: TC0 ch0 runs on TIMER_CLOCK1 = MCK/2
-    // and MCK == SystemCoreClock, so the ticks advance at half the core clock.
+    // TC0 ch0 ticks at MCK/2.
     g_clk.init(SystemCoreClock / 2u);
     uart_init();
     kickos_armv7m_init();
 }
 
+// Must stay a pure read: deriving the rate here would reprice all elapsed history.
 uint64_t arch_clock_now(void)
 {
     return g_clk.ns_from(tc_ticks());
 }
 
-// TC0 ch0 COVFS ISR, vectored from startup.S: observes the wrap while no thread reads the clock.
-// It runs in the maskable band, so an IrqLock defers it harmlessly.
+// Observes the wrap while no thread reads the clock. Runs in the maskable band, so an IrqLock
+// defers it harmlessly.
 void kickos_tc0_clock_isr(void)
 {
-    uint32_t drop = r32(TC0_SR0); // read-to-clear acks COVFS ((void)r32 would elide)
+    uint32_t drop = r32(TC0_SR0); // read-to-clear acks COVFS
     (void)drop;
     tc_ticks();
 }
 
-int arch_console_write(char const* buf, size_t n)
-{
-    return console_tx_insert_line(buf, n, KICKOS_CONSOLE_CRLF);
-}
-
 bool arch_console_write_sync(char const* buf, size_t n)
 {
-    for (size_t i = 0; i < n; i++)
-    {
-        uint32_t spin = 0;
-        while ((r32(UART_SR) & SR_TXRDY) == 0)
-        {
-            if (++spin > KICKOS_POLL_SPIN_MAX)
-            {
-                return false; // bounded: a wedged UART must not hang the panic path (drop)
-            }
-        }
-        r32(UART_THR) = static_cast<uint8_t>(buf[i]);
-    }
-    return true;
+    return kickos::console_poll::write<sam_tx_slot_free, sam_tx_push>(buf, n);
 }
 
-console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)
+console_tx_backend const* arch_console_tx_backend(int* irq_line)
 {
-    *storage = console_tx_buf;
-    *size = KICKOS_CONSOLE_TX_SIZE;
     *irq_line = irq::UART_IRQ;
     return &sam_console_backend;
 }
@@ -506,7 +464,7 @@ int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
         {
             absr &= ~mask;
         }
-        r32(base + PIO_ABSR_OFF) = absr; // ABSR before PDR: PDR hands the pin to the selected peripheral
+        r32(base + PIO_ABSR_OFF) = absr;
         r32(base + PIO_PDR_OFF) = mask;
     }
     return 0;
@@ -514,11 +472,9 @@ int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
 
 void Reset_Handler(void)
 {
-    // FIRST: the watchdog is enabled at reset and WDT_MR is write-once, so disable
-    // it before anything else can burn the (~16 s) budget or the write.
+    // FIRST: the watchdog is enabled at reset and WDT_MR is write-once.
     r32(WDT_MR) = WDT_MR_WDDIS;
-    // Flash (hence the vector table) lives at 0x0008_0000; point VTOR there (the
-    // reset SP/PC were fetched via the 0x0 boot alias, which mirrors it).
+    // The vector table lives at 0x0008_0000; reset fetched it through the 0x0 boot alias.
     r32(kickos::arm::SCB_VTOR) = mmap::FLASH_BASE;
 
     uint32_t* src = &_sidata;

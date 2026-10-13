@@ -11,53 +11,42 @@
 
 #ifndef __ASSEMBLER__
 
-// Bytes the ABI reserves BELOW the thread pointer, which the TLS carve has to
-// carry on top of .tdata + .tbss.
-// M-profile AAPCS TLS is variant 1: tp points at a reserved two-word TCB
-// and the first thread_local sits above it. __aeabi_read_tp returns tp, and the
-// compiler adds the offset the linker computed.
+// Bytes the TLS carve carries on top of .tdata + .tbss: AAPCS TLS is variant 1, tp pointing at
+// a reserved two-word TCB with the first thread_local above it.
 #define KICKOS_ARCH_TLS_TCB 8
-
 
 #include <stdint.h>
 
 struct arch_context
 {
-    // Saved PSP: lowest word of this thread's saved frame (the PendSV-pushed
-    // {r4-r11}, below the hardware exception frame). Thread returns are always the
-    // non-FP 0xFFFFFFFD, reconstructed on switch-in rather than kept in the frame.
+    // Saved PSP: the lowest word of the PendSV-pushed {r4-r11} block. EXC_RETURN is always
+    // 0xFFFFFFFD, rebuilt on switch-in.
     uint32_t sp;
 
-    // CONTROL.nPRIV: 0 = privileged (kernel), 1 = unprivileged (user). Saved on
-    // switch-out and restored on switch-in like a register (a thread blocked
-    // mid-syscall runs privileged and must resume so).
+    // CONTROL.nPRIV, saved and restored like a register: a thread blocked mid-syscall runs
+    // privileged and must resume so.
     uint32_t npriv;
 
-    // Fixed resting privilege (set once at init); the SVC trampoline restores it
-    // on syscall return so a privileged thread issuing a syscall is not demoted.
+    // The fixed resting privilege, restored on syscall return so a privileged thread is not
+    // demoted.
     uint32_t resting_npriv;
 
-    // The thread's stack, checked by PendSV and by the SVC fastpath before either
-    // pushes {r4-r11} through the live PSP. Read as plain words at F_CTX_STACK_LO /
-    // F_CTX_STACK_HI in switch.S, which are UNCONDITIONAL offsets: a telemetry-dependent
-    // pair would make the guard read trace_tid as a bound in one build posture and pass a
-    // PSP it must refuse. An unseated pair reads as [0, 0), which the upper bound refuses.
+    // The PSP guard's bounds, read as plain words at F_CTX_STACK_LO / F_CTX_STACK_HI in
+    // switch.S. The offsets are UNCONDITIONAL: a telemetry-dependent pair would make the guard
+    // read trace_tid as a bound in one posture. An unseated pair reads [0, 0), which the upper
+    // bound refuses.
     uint32_t stack_lo;
     uint32_t stack_hi;
 
-    // TOP of the kernel stack this thread's privileged dispatch runs on, seated once per pool
-    // thread by thread_create and preserved across arch_ctx_redirect. NOT saved by a switch:
-    // it is write-once per slot and every switch-path reference is a load, `sp` above being
-    // the one field that tracks where the thread is. svc_trampoline relocates sp onto this
-    // before it calls anything, and PendSV's guard accepts a PSP inside the block below it as
-    // well as one inside the user stack, because a thread preempted mid-dispatch is running
-    // there. Read at F_CTX_KERNEL_SP in switch.S. Zero for a TCB outside the pool, which
-    // reaches neither site.
+    // TOP of the kernel stack this thread's privileged dispatch runs on, seated once by
+    // thread_create and preserved across arch_ctx_redirect; never saved by a switch. PendSV's
+    // guard accepts a PSP inside the block below it as well as one inside the user stack,
+    // because a thread preempted mid-dispatch runs there. Zero for a TCB outside the pool.
     uintptr_t kernel_sp;
 
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
-    // Owning thread's trace id (stamped in thread_create). switch.S reads it at
-    // F_CTX_TRACE_TID from the physically-swapped contexts to emit the SWITCH record.
+    // Owning thread's trace id; switch.S reads it from the physically swapped contexts to
+    // emit the SWITCH record.
     uint32_t trace_tid;
 #endif
 };

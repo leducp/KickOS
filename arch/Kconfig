@@ -77,61 +77,182 @@ config ARCH_TLS_FROM_SP
 
 	  ARCH_SIM does not select it and cannot: it does not select ARCH_HAS_TLS either.
 
+config ARCH_HAS_IPC_FASTPATH
+	bool
+	help
+	  The arch completes a register-form IPC call inside its trap handler: switch.S
+	  branches to the leaf from the syscall trap and the backend's
+	  arch_ctx_set_syscall_result writes the saved frame, so the exception return lands in
+	  the server. The leaf holds no lock object, only the local interrupt mask the trap
+	  took, which is exclusion on one core and nothing on another, so one kernel across
+	  cores is not offered beside it (docs/design-multicore.md section 4 gap 1).
+
+config KICKOS_ARCH_HAS_IPC_FASTPATH
+	int
+	default 1 if ARCH_HAS_IPC_FASTPATH
+	default 0
+
+# The six properties one kernel image across cores requires, which KICKOS_MULTICORE_SHARED
+# depends on. An ARCH stanza selects the first three, which the ISA gives every part it defines,
+# and a CHIP stanza the last three, which are the part's: an arch selecting a part's property
+# certifies it for parts nobody has seen, and a chip selecting the ISA's satisfies it for itself
+# alone (tools/kconfig/test_genconfig.py holds each to its owner). The launch is not one of the
+# six: two parts of one arch that meet all six can still release a secondary differently.
+
+config ARCH_SMP_COHERENT
+	bool
+	help
+	  Coherent shared memory, with no software maintenance for shared kernel state.
+
+config ARCH_SMP_EXCLUSION
+	bool
+	help
+	  An inter-core exclusion primitive the kernel lock takes its word with.
+
+config ARCH_SMP_IDENTITY
+	bool
+	help
+	  A per-core identity arch_cpu_id reads.
+
+config CHIP_SMP_INTERRUPT
+	bool
+	help
+	  An inter-core interrupt.
+
+config CHIP_SMP_SYMMETRIC
+	bool
+	help
+	  Cores a thread runs the same on, whichever it lands on.
+
+config CHIP_SMP_TARGETING
+	bool
+	help
+	  Per-line interrupt targeting, so a line is pinned to a core rather than masked on the
+	  cores that must not take it.
+
+config ARCH_HAS_FAULT_ISOLATION
+	bool
+	help
+	  The arch ships arch_fault_is_user_thread and arch_fault_redirect_to_exit, so where the
+	  chip has a privilege ring a fault in an unprivileged thread ends that thread's task
+	  rather than the kernel.
+
+config KICKOS_ARCH_FAULT_ISOLATION
+	int
+	default 1 if ARCH_HAS_FAULT_ISOLATION
+	default 0
+
+config CHIP_AMP_CONSOLE_CLAIM
+	bool
+	help
+	  The chip's own-image AMP nodes write one console UART polled, each under a
+	  partition-shared claim, and arm no ring.
+
+config KICKOS_AMP_CONSOLE_CLAIM
+	int
+	default 1 if CHIP_AMP_CONSOLE_CLAIM && KICKOS_AMP_POSTURE_OWN_IMAGE
+	default 0
+
 config ARCH_ARMV6M
 	bool
+	select ARCH_HAS_FAULT_ISOLATION
 	select ARCH_HAS_TLS
 	select ARCH_TLS_FROM_SP
 	select ARCH_HAS_KERNEL_STACKS
 	select ARCH_KERNEL_STACKS_MANDATORY
+	select ARCH_HAS_IPC_FASTPATH
 
 config ARCH_ARMV7M
 	bool
+	select ARCH_HAS_FAULT_ISOLATION
 	select ARCH_HAS_TLS
 	select ARCH_TLS_FROM_SP
 	select ARCH_HAS_KERNEL_STACKS
+	select ARCH_HAS_IPC_FASTPATH
 
 # The kernel-stack pair is mandatory: a trap from EL0 selects SP_EL1, and the entry has no
 # red-zone path beside the transfer.
+#
+# Coherent: the architecture defines the inner-shareable domain and the shareability attribute
+# that places Normal memory in it. A CHIP OWES SH=0b11 ON ITS NORMAL BOOT DESCRIPTORS for that to
+# hold, which the boot tables in each chip's startup.S and aspace_armv8a.cc program; a chip
+# mapping kernel state non-shareable breaks this silently. Exclusion: LDXR/STXR over that domain,
+# architectural rather than an integration option. Identity: MPIDR_EL1.
 config ARCH_ARMV8A
 	bool
+	select ARCH_HAS_FAULT_ISOLATION
 	select ARCH_HAS_TLS
 	select ARCH_HAS_KERNEL_STACKS
 	select ARCH_KERNEL_STACKS_MANDATORY
+	select ARCH_SMP_COHERENT
+	select ARCH_SMP_EXCLUSION
+	select ARCH_SMP_IDENTITY
 
 config ARCH_RXV3
 	bool
+	select ARCH_HAS_FAULT_ISOLATION
 	select ARCH_HAS_TLS
 	select ARCH_TLS_FROM_SP
 	select ARCH_HAS_KERNEL_STACKS
 	select ARCH_KERNEL_STACKS_MANDATORY
+	select ARCH_HAS_IPC_FASTPATH
 
 config ARCH_RV32IMAC
 	bool
+	select ARCH_HAS_FAULT_ISOLATION
 	select ARCH_HAS_TLS
 	select ARCH_HAS_KERNEL_STACKS
 	select ARCH_KERNEL_STACKS_MANDATORY
+	select ARCH_HAS_IPC_FASTPATH
 
 # The kernel-stack pair is mandatory: the entry loads the block from sscratch before it
 # stores anything. A translating chip matches no `default 1` on KICKOS_KERNEL_STACKS, so
 # without this the knob resolves 0 and the backend fails to compile.
+#
+# Coherent: RVWMO is one coherent memory over every hart and this port programs no cacheability
+# distinction, so no maintenance is owed. Exclusion: LR/SC (Zalrsc in this port's baseline).
+# Identity: a dense index published in sscratch at bring-up (rv64imac/percpu.h), NOT mhartid,
+# which is integrator-chosen.
 config ARCH_RV64IMAC
 	bool
+	select ARCH_HAS_FAULT_ISOLATION
 	select ARCH_HAS_KERNEL_STACKS
 	select ARCH_KERNEL_STACKS_MANDATORY
+	select ARCH_SMP_COHERENT
+	select ARCH_SMP_EXCLUSION
+	select ARCH_SMP_IDENTITY
 
+# Coherent: the ISA defines no coherency protocol and no maintenance for a memory no cache sits
+# on, so shared kernel state there is coherent by absence. A CHIP OWES THAT PLACEMENT AS A
+# LINK-TIME REFUSAL: one letting kernel state land behind a cache breaks this silently. Ordering
+# is the Multiprocessor Synchronization Option's L32AI/S32RI (ISA summary 4.3.12, p.115).
+# Exclusion: S32C1I against SCOMPARE1 (Conditional Store Option, 4.3.13), acquire and release on
+# its own (4.3.13.5, p.122), so the claim needs no barrier and the release does. ATOMCTL, SR 99,
+# DECIDES WHETHER IT REACHES THE BUS AT ALL (4.3.13.4, Table 52, p.121): its local arm excludes a
+# core from itself and from nobody else. Identity: PRID, SR 235 (6.4, p.255), loaded from pins
+# and only TYPICALLY 0..NPROCESSORS-1, so the dense index is a per-part mapping that refuses a
+# value it does not know.
 config ARCH_LX6
 	bool
 	select ARCH_HAS_TLS
+	select ARCH_SMP_COHERENT
+	select ARCH_SMP_EXCLUSION
+	select ARCH_SMP_IDENTITY
 
 # The kernel-stack pair is mandatory: SYSCALL loads NO stack pointer (AMD APM Vol 2 6.1.1),
 # so no hardware stack exists for a red-zone path to fall back on.
 config ARCH_X86_64
 	bool
+	select ARCH_HAS_FAULT_ISOLATION
 	select ARCH_HAS_KERNEL_STACKS
 	select ARCH_KERNEL_STACKS_MANDATORY
+	select ARCH_SMP_COHERENT
+	select ARCH_SMP_EXCLUSION
+	select ARCH_SMP_IDENTITY
 
 config ARCH_SIM
 	bool
+	select ARCH_HAS_FAULT_ISOLATION
 
 config KICKOS_ARCH
 	string
@@ -144,6 +265,53 @@ config KICKOS_ARCH
 	default "lx6" if ARCH_LX6
 	default "x86_64" if ARCH_X86_64
 	default "sim" if ARCH_SIM
+
+# The SESSION record's arch id, a wire value: enum ArchId (include/kickos/trace/record.h), which
+# each arch backend static_asserts against this.
+config KICKOS_TRACE_ARCH
+	int
+	default 1 if ARCH_ARMV7M
+	default 2 if ARCH_ARMV6M
+	default 3 if ARCH_LX6
+	default 4 if ARCH_RXV3
+	default 5 if ARCH_RV32IMAC
+	default 0
+
+# Positive identification: a new arch lands in the 0 branch of every `#if KICKOS_ARCH_SIM`.
+config KICKOS_ARCH_SIM
+	int
+	default 1 if ARCH_SIM
+	default 0
+
+# PE32+ holds no undefined symbol, so an image there may not lean on a weak undefined reference
+# resolving to zero.
+config KICKOS_LINKER_WEAK_UNDEF
+	int
+	default 0 if ARCH_X86_64
+	default 1
+
+config KICKOS_LIBC_REENT
+	int
+	default 0 if ARCH_SIM
+	default 1
+
+# Where libc asks __getreent the thread pointer answers it: lx6 above one kernel core, and every
+# armv8a, rv64imac and x86_64 image, whose newlib the KickOS toolchain builds dynamic-reent.
+# Elsewhere one word is seated at every switch, which is correct only while one core runs its
+# readers.
+config KICKOS_REENT_PER_THREAD
+	int
+	default 1 if ARCH_RV64IMAC || ARCH_X86_64 || ARCH_ARMV8A
+	default 1 if ARCH_LX6 && KICKOS_KERNEL_CORES > 1
+	default 0
+
+# The reentrant state is the first word of the thread's TLS control block, so KICKOS_TLS must
+# carve it (CMakeLists.txt refuses KICKOS_TLS=n here).
+config KICKOS_REENT_IN_TCB
+	int
+	default 1 if ARCH_ARMV8A
+	default 1 if ARCH_LX6 && KICKOS_KERNEL_CORES > 1
+	default 0
 
 config KICKOS_ARCH_FAMILY
 	string
@@ -190,6 +358,7 @@ config CHIP_RP2350
 	bool
 	select ARCH_ARMV7M
 	select HAS_MPU
+	select CHIP_AMP_CONSOLE_CLAIM
 
 config CHIP_SAM3X8E
 	bool
@@ -213,9 +382,24 @@ config CHIP_XMC4800
 	select ARCH_ARMV7M
 	select HAS_MPU
 
+# Interrupt: four GLOBAL single-bit triggers, DPORT_CPU_INTR_FROM_CPU_0..3_REG at 0x3FF000DC + 4n,
+# bit 0, R/W, reset 0 (TRM v5.8 Register 12.24, p.258), raised as matrix sources 24..27 (Table
+# 8.3-1, p.176). One bit is one source, not per target core, and each CPU's matrix bank routes it
+# independently. The register is plain R/W where a self-clearing bit reads R/W/SC and no prose
+# states a hardware clear, so the receiver clears by writing it and a set racing that write is a
+# real lost edge to design against. Symmetric for SCHEDULING: RTC FAST is PRO_CPU's alone
+# (3.3.2.7, p.70) and the PID controller is two behind one range (3.3.5.1, p.74), neither of
+# which a thread reaches. Targeting: a bank of 69 map registers per CPU (PRO DPORT+0x104..0x214,
+# APP +0x218..0x328); 8.3.3 (p.179) disables a source for one CPU by mapping it to an input wired
+# to neither core (6, 7, 11, 15, 16, 29). TRIGGER TYPE AND PRIORITY ARE FIXED PER INPUT (Table
+# 8.3-2, p.178), so choosing a target chooses the type the line is taken with. The launch: APP_CPU
+# comes up on six DPORT and RTC_CNTL writes, and its clock gate resets CLOSED.
 config CHIP_ESP32
 	bool
 	select ARCH_LX6
+	select CHIP_SMP_INTERRUPT
+	select CHIP_SMP_SYMMETRIC
+	select CHIP_SMP_TARGETING
 
 config CHIP_ESP32C6
 	bool
@@ -228,20 +412,43 @@ config CHIP_VIRT_RV32
 	select HAS_MPU
 	select HAS_TRACE_CLOCK
 
+# Interrupt: the die's GIC-500, SGIs 0..15 through ICC_SGI1R_EL1, with no version to choose.
+# Symmetric is the CLUSTER's: the four Cortex-A53s; the Cortex-M7 beside them has its own NVIC
+# and instruction set, an AMP node no image spans. Targeting: GICD_IROUTER pins a shared line.
+# The launch has no vehicle on this machine, and chip_imx8mp.cc refuses a count above one.
 config CHIP_IMX8MP
 	bool
 	select ARCH_ARMV8A
 	select HAS_ASPACE
+	select CHIP_SMP_INTERRUPT
+	select CHIP_SMP_SYMMETRIC
+	select CHIP_SMP_TARGETING
 
+# Interrupt: GIC SGIs, a GICv2 by default and a GICv3 under gic-version=3, a machine option here.
+# Symmetric: one cluster of identical Cortex-A53s. Targeting: GICD_ITARGETSR on a GICv2,
+# GICD_IROUTER on a GICv3. The launch: secondaries held in PSCI, released by CPU_ON over HVC.
 config CHIP_VIRT_ARM64
 	bool
 	select ARCH_ARMV8A
 	select HAS_ASPACE
+	select CHIP_SMP_INTERRUPT
+	select CHIP_SMP_SYMMETRIC
+	select CHIP_SMP_TARGETING
+	select CHIP_AMP_CONSOLE_CLAIM
 
+# Interrupt: a CLINT msip word per hart, raising a MACHINE software interrupt with mideleg
+# read-only zero, so the receive side runs through this chip's machine-mode trampoline
+# (startup.S); a supervisor store to a peer's msip word is permitted, so the send has no
+# machine-mode leg. Symmetric: identical harts. Targeting: the PLIC's enables are per hart
+# context. THIS PORT DRIVES NO PLIC LINE, so the claim is the machine's: its interrupt controller
+# is the software one in arch_rv64imac.cc, whose lines are per hart already.
 config CHIP_VIRT_RV64
 	bool
 	select ARCH_RV64IMAC
 	select HAS_ASPACE
+	select CHIP_SMP_INTERRUPT
+	select CHIP_SMP_SYMMETRIC
+	select CHIP_SMP_TARGETING
 
 # The QEMU `q35` machine (ICH9). Translating: the firmware's identity map is the kernel half,
 # supervisor-only, and a task reaches its frames and the app window one user slot above their
@@ -250,6 +457,9 @@ config CHIP_Q35
 	bool
 	select ARCH_X86_64
 	select HAS_ASPACE
+	select CHIP_SMP_INTERRUPT
+	select CHIP_SMP_SYMMETRIC
+	select CHIP_SMP_TARGETING
 
 config CHIP_RX72M
 	bool

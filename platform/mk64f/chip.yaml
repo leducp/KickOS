@@ -12,9 +12,11 @@ arch: armv7m
 # The SYSMPU sits on the bus-slave side and never sees the peripheral bridge, so it isolates
 # memory per thread and devices not at all. Devices are gated by the AIPS bridge instead: per
 # 4 KiB slot, per privilege, and once a slot is opened every unprivileged thread reaches it.
-# So a device grant here is a statement, not an enforcement, and admission must say so.
+# So a device grant here is a statement, not an enforcement, and admission must say so. A region
+# descriptor's start and end are 32-byte aligned.
 protection:
   unit: sysmpu
+  granule: 32
   covers_devices: false
   memory_type: false
   # The two bridges' slots. GPIO at 0x400FF000 is a crossbar slave behind neither.
@@ -26,6 +28,8 @@ protection:
 
 data_cache: false
 
+family: none
+exits_on_fault: false
 interrupts: { count: { value: 86, ref: "Table 3-5 Interrupt vector assignments, p.76" } }
 
 devices:

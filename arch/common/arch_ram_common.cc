@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 
-// Linker-defined user RAM and trace helpers shared by MCU backends.
-// The simulator uses its own mmap-backed arena.
+// Linker-defined user RAM shared by MCU backends.
 
 #include <kickos/arch/arch.h>
 #include <kickos/klink.h>
@@ -28,19 +27,16 @@ extern "C"
 
 namespace
 {
-    // Bump-allocated; freed only wholesale (matches the sim arena's model).
-    // Read-modify-written under arch_irq_save/restore in arch_ram_alloc.
+    // Bump-allocated, never freed; written under arch_irq_save in arch_ram_alloc.
     uint32_t g_ram_used = 0;
 
 #if !KICKOS_MEMORY_ENFORCED
     bool range_within(uintptr_t ptr, uintptr_t end, uintptr_t start, uintptr_t stop)
     {
-        // Use integer addresses to avoid comparing extern arrays directly.
         return stop > start and ptr >= start and end <= stop;
     }
 
-    // Static RAM includes app data, BSS and heap. Arena allocations are checked
-    // against the caller's regions instead.
+    // App data, BSS and heap; the arena is checked against the caller's regions instead.
     bool in_static_ram(uintptr_t ptr, uintptr_t end)
     {
         if (range_within(ptr, end, reinterpret_cast<uintptr_t>(__kickos_sram_start),
@@ -53,7 +49,6 @@ namespace
                             reinterpret_cast<uintptr_t>(__kickos_app_sram_end));
     }
 
-    // Code + rodata: the chip's own extent, plus the app's where the image is split.
     bool in_code(uintptr_t ptr, uintptr_t end)
     {
         if (range_within(ptr, end, reinterpret_cast<uintptr_t>(__kickos_rom_start),
@@ -93,7 +88,7 @@ void* arch_ram_alloc(size_t size)
     arch_irq_state_t s = arch_irq_save();
     void* p = nullptr;
     uintptr_t const cur = base + g_ram_used;
-    // Natural (absolute) alignment: PMSA/NAPOT require base aligned to size.
+    // Absolute alignment: PMSA and NAPOT want the base aligned to the size.
     uintptr_t const aligned = (cur + (ralign - 1)) & ~static_cast<uintptr_t>(ralign - 1);
     size_t const off = static_cast<size_t>(aligned - base);
     if (aligned >= cur and off <= total and rsz <= total - off)
@@ -115,12 +110,10 @@ void arch_trace_stamp_id(struct arch_context* ctx, uint16_t id)
 bool arch_user_text_readable(uintptr_t ptr, size_t len)
 {
 #if KICKOS_MEMORY_ENFORCED
-    // Under enforcement, validate against the caller's regions or mapped ranges.
     (void)ptr;
     (void)len;
     return false;
 #else
-    // Without enforcement, accept only linker-defined memory windows.
     // The kernel must not dereference holes or device addresses.
     if (len == 0)
     {
@@ -146,7 +139,6 @@ bool arch_user_data_writable(uintptr_t ptr, size_t len)
     (void)len;
     return false;
 #else
-    // Only static RAM is writable here. Arena ranges require a region check.
     if (len == 0)
     {
         return true;

@@ -169,12 +169,14 @@ far from the chip that lied. Compare the honest refusal: the caller gets a negat
 errno, on the spot, from the syscall it just made, and a bench script can branch on it
 and fall back to asking a human for the button.
 
-A **stub that pretends to be a reset** -- reaching for the architectural core reset
-because it is available and looks close enough -- is worse still, in a quieter way. It
-succeeds at *something*, so nothing reports an error, and the board comes back running
-the very image you were trying to replace. Now the loop appears to work and silently
-tests a stale binary. Substituting a different act because it is the one you can perform
-is how a portable seam becomes a lie that no test catches.
+Asking for the act by name is what keeps the refusal honest. A request that says only
+"reboot" invites the seam to perform whichever reset the part happens to have, and a core
+reset standing in for bootloader entry succeeds at *something*: nothing reports an error,
+and the board comes back running the very image you were trying to replace. So the request
+carries its outcome -- halt, restart, or bootloader -- and the seam answers each outcome on
+its own: a part with an architectural reset restarts and still declines the bootloader, a
+part with a ROM download entry may do both. Substituting a neighbouring act because it is
+the one you can perform is how a portable seam becomes a lie that no test catches.
 
 Two other honest answers exist and are worth naming. A part where entry is a physical
 act can decline and let the workflow keep the button press, which is a real answer rather
@@ -228,16 +230,15 @@ why am I not using it".
 
 Now the authority question. Superficially it is settled before it is asked: bootloader
 entry ends the running system, ending the running system is what shutdown does, so
-bootloader entry goes wherever shutdown went. In a system with a small fixed budget of
-named authorities -- the device-class authority that already covers ending the system and
-taking over the console, say -- the fusion is nearly free and needs no new machinery.
+bootloader entry goes wherever shutdown went.
 
-Materially the two acts are not the same cost, and the difference is a category and not a
+Materially the acts are not the same cost, and the difference is a category and not a
 degree.
 
 **Shutdown costs availability.** The system stops. Whatever was running is gone, and
 somebody has to intervene. That is a denial of service against the board, and against the
-board only; the image in flash is untouched and the next power cycle runs it.
+board only; the image in flash is untouched and the next power cycle runs it. A restart of
+the same image costs the same thing and less of it: the board comes back on its own.
 
 **Bootloader entry costs integrity, persistently.** A board sitting in firmware-download
 mode will accept *arbitrary* firmware from whoever reaches the transport, and the
@@ -246,36 +247,23 @@ Anything that can put the board into that mode can therefore replace everything 
 is -- not stop it, replace it. Recovery is not a power cycle; recovery is reflashing from
 a trusted host, if you still have one.
 
-So fusing them means that anything permitted to end the system, or to publish a console,
-is also permitted to hand the board to an attacker permanently. That is the honest
-statement of the cost, and it should be written down wherever the fusion is made rather
-than discovered later by someone reading the rights bits.
+So the authorities split along that line. The right to end the system covers halting and
+restarting, the two acts that cost availability. Bootloader entry takes a second, separate
+right **beside** it: a request for the bootloader is still a request to end the system, so it
+needs both, and a holder of the first alone can stop the board but cannot hand it to anyone.
+Fusing them would mean that every task trusted to end the system -- which in a small system
+is often every application's main -- is also trusted to replace the firmware. Kept apart, the
+dangerous right is granted only where a reflash loop wants it, and every other image simply
+never holds it.
 
-There are real reasons a design may still fuse them.
-
-**A rights-bit budget is finite, and spending is irreversible-ish.** When authorities live
-as bits in a fixed-size rights field, the last free bit is worth more than the
-distinction it would buy, because the *next* authority after it has no home at all --
-adding one means merging two existing authorities, or growing a frozen structure. Naming a
-new authority is cheap only until it is not, and a design gets exactly one chance to spend
-the last bit well. (What that budget is and why it is fixed is
+That is also why the act can be present in every image rather than compiled out of the ones
+that ship. Absence from the image is a strong guarantee, but it couples two decisions that
+want to be separate -- whether the code exists, and who may use it -- and it makes the bench
+image and the production image different programs, so what the bench tested is not what
+shipped. An authority nobody is granted gives the same protection to the production image
+while keeping one kernel for both. (What an authority is, and why it lives in droppable data
+rather than an identity bit, is
 [*Privilege is three axes, not one bit*](privilege-is-three-axes-not-one-bit.md).)
-
-**A feature absent from the image carries a different risk calculus.** An act compiled out
-of production builds cannot be reached by any caller, authorised or not, which is a
-stronger guarantee than any run-time check -- absence beats refusal, because absence has
-no bug in it. If bootloader entry exists only in bench images, the population that can
-reach the fused authority is the population you already trust with the bench.
-
-And the counter-argument has a cost worth stating plainly, so the trade is visible in both
-directions. Fusion couples the two acts *for as long as the fusion lasts*, and the build
-switch is the only thing separating them. The day the facility is wanted in an image that
-ships, the authority model has to be split first -- and splitting it later is more
-expensive than splitting it now, because by then the fused authority has other holders who
-were granted it for the other reasons it covers. A recorded counter-argument with a named
-escape route (which two authorities to merge to free a bit) is not the same thing as
-having gotten the answer right; it is the minimum needed for the decision to be revisitable
-by someone who was not there.
 
 ## Scoped authority and systemic authority
 
@@ -316,10 +304,10 @@ question does not apply. Two consequences follow, and neither is a matter of tas
 Bootloader entry is the cleanest systemic act there is, which is what makes it a good
 teaching example rather than a special case. Its effect is not merely system-wide, it is
 *system-replacing*. No window, no line, no object stands in the right relationship to it.
-Notice that this reasoning is independent of the rights-budget argument in the previous
-section: *that* it needs a named authority is settled by scope, and only *which* named
-authority it gets is a budget question. Conflating the two is how systemic acts end up
-riding on a resource grant because the resource grant happened to be nearby.
+Notice that this reasoning is independent of the cost argument in the previous section:
+*that* it needs a named authority is settled by scope, and *which* named authority it gets
+is settled by what it costs. Conflating the two is how systemic acts end up riding on a
+resource grant because the resource grant happened to be nearby.
 
 The general rule for placing any act in a capability system is therefore one question,
 asked before the plumbing: **what resource is this act keyed to?** If the answer names
@@ -445,15 +433,27 @@ flushing a log, releasing a bus, dropping a chip select, parking an actuator, ha
 board back to its bootloader -- has to be attached to each of them, or explicitly declined
 for the ones where it cannot run.
 
-And "attached to each" is not the same as pasting the same code everywhere, because a fault
-path is the one context where doing *less* is right. It cannot take a lock, cannot send a
-message, cannot trust the stack it is standing on, and should not wait on a device. So the
-question per exit is not only whether the act belongs there but whether it can survive
-there. A bootloader hand-back happens to fare unusually well by that test -- a register
-write or a ROM call needs no scheduler, no allocator and no working stack beyond a few
-words, which makes it one of the few useful things a dying image can still do. Other exit
-acts fail the test outright, and for those the honest answer is that this way of dying does
-not get them.
+Attaching it to each does not mean deciding it at each. The choice of how a dying system
+ends is one choice, and it belongs to whoever is entitled to make it: so it can be made
+**once**, early, by a holder of the bootloader right, stored where every dead-end can read it
+without a lock, and read by each of them on its way down. The panic path and every fault
+handler then take the same outcome without any of them knowing who chose it, and an image
+that never makes the choice halts as it always did. Two refinements keep that honest. A
+deliberate request still means what it says -- a task that asks to halt is halted, because
+the stored choice answers for the deaths nobody asked for, not for the ones somebody did.
+And the stored choice outlives the task that made it, so it has to be written in a form a
+dying system can distrust: a value stored beside its own complement is read only when the two
+agree, and anything else is taken as "halt".
+
+The dead-end is also the one context where doing *less* is right. It cannot take a lock,
+cannot send a message, should not wait on a device, and cannot trust the stack it is
+standing on. A bootloader hand-back fares unusually well by that test -- a register write or
+a ROM call needs no scheduler and no allocator -- with one exception worth taking seriously:
+a ROM routine's stack use is not something your call graph can see, and a panic reporter's
+stack is sized for the reporter. So the ROM call runs on a stack of its own, reserved for it
+and touched by nothing else, and the only depth your own analysis has to charge is the few
+instructions that switch to it. Other exit acts fail the test outright, and for those the
+honest answer is that this way of dying does not get them.
 
 ## A development affordance, not a system service
 
@@ -464,19 +464,11 @@ mechanism exists on a minority of parts and is different on each of them. Its su
 is unwitnessable from inside, and provable only by what it lets a host do next. Nothing on
 that list describes a system service; all of it describes a tool.
 
-The design consequence is to treat it as one, which means keeping it out of images where
-its justification does not apply. A build switch that leaves the syscall, the seam, and the
-gate out of production builds costs nothing in a bench image and removes the entire
-question from a shipped one -- no reachable gate, no authority to reason about, no attack
-surface to argue over. That is a stronger guarantee than any run-time check can offer,
-because an act that is not in the image cannot be reached by a caller who was not supposed
-to reach it, nor by one who was supposed to and had a bug.
-
-It also puts the fused-authority trade in its proper place. The fusion is defensible for a
-facility that is absent from production images, and it is only defensible *because* of
-that absence. So the build switch is not a convenience wrapped around the feature; it is
-load-bearing in the authority argument, and anything that would make the facility
-generally available has to revisit the authority split first, not afterwards.
+The design consequence is to treat it as one, which here means through the authority rather
+than through the build: the facility is in every image, and only an image whose composition
+grants the bootloader right can reach it. A shipped image that grants it to nobody has no
+caller who may use it, authorised or buggy, and the bench image that does grant it is
+otherwise the same program -- so what the bench exercised is what ships.
 
 ## The transferable rules
 
@@ -502,13 +494,16 @@ generally available has to revisit the authority split first, not afterwards.
   path and by making the halt visible.
 - **Count the ways the system dies.** Ordered exits and faults do not converge, so an exit
   act wired only on the deliberate path is missing from every image that ends by accident --
-  the ones you most wanted it for. Enumerate the terminal paths, and for each one either
-  attach the act or say why it cannot run there.
+  the ones you most wanted it for. Enumerate the terminal paths, let an entitled caller make
+  the choice once, and have every dead-end read it; a deliberate request still means what it
+  asked.
+- **Split authorities by cost, not by convenience.** Ending a system and replacing its
+  firmware both end it, but one costs availability and the other integrity; give the second
+  its own right, required beside the first.
 
 ## Where to go next
 
-- What the authority half of "privileged" is, why it lives in droppable data, and where
-  the rights-bit budget comes from: Chapter 7.4,
+- What the authority half of "privileged" is, and why it lives in droppable data: Chapter 7.4,
   [*Privilege is three axes, not one bit*](privilege-is-three-axes-not-one-bit.md).
 - Why an OS cannot promise what the silicon will not do, worked on peripheral isolation:
   [*Peripheral isolation and the hardware ceiling*](peripheral-isolation-and-the-hardware-ceiling.md).

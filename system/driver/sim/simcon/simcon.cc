@@ -111,7 +111,7 @@ namespace
             kos_window const win = {b + SIMCON_WIN_AT, SIMCON_WIN, KOS_WINDOW_DEVICE, 0};
             t = kos::thread::create(
                 entry, nullptr, name, prio, KOS_POLICY_FIFO, /*quantum_ns=*/0,
-                /*privileged=*/false, /*mem=*/nullptr, /*mem_size=*/0,
+                /*mem=*/nullptr, /*mem_size=*/0,
                 /*stack=*/nullptr, /*stack_size=*/0,
                 /*windows=*/&win, 1, win_caps, 1,
                 /*authority=*/0, /*cap_dest=*/nullptr, task);
@@ -443,7 +443,7 @@ extern "C"
         }
         kos::thread::Handle const entry = kos::thread::create(
             simconsole_entry_thread, nullptr, "simconent", in->ceiling, KOS_POLICY_FIFO, 0,
-            /*privileged=*/false, nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0, 0, nullptr,
+            nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0, 0, nullptr,
             task);
         if (not entry.valid())
         {

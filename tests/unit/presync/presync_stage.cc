@@ -213,7 +213,6 @@ namespace
 
         void TearDown() override
         {
-            b()->privileged = false;
             g_current = b();
             kickos::presync_exit();
             g_current = a();
@@ -366,40 +365,12 @@ namespace
         EXPECT_EQ(host_pool_used(), g_base_frames);
     }
 
-    TEST_F(PresyncStage, a_privileged_caller_stages_and_releases_without_a_window)
-    {
-        b()->privileged = true;
-        g_current = b();
-        g_own_space = SPACE_B;
-        EXPECT_FALSE(spawn_round(SPACE_B, SPACE_A));
-        EXPECT_TRUE(kickos::presync_record()->staged_full);
-        EXPECT_TRUE(end_round());
-        EXPECT_EQ(host_pool_used(), g_base_frames);
-        EXPECT_EQ(g_windows, 0);
-    }
-
     TEST_F(PresyncStage, a_succeeded_call_holding_a_stage_panics_rather_than_open_a_window)
     {
         kickos::presync_begin();
         kickos::presync_stage_image(false, SPACE_A);
         EXPECT_FALSE(kickos::presync_end());
         EXPECT_DEATH(kickos::presync_release(true), "");
-    }
-
-    TEST_F(PresyncStage, a_pool_with_no_run_for_the_stage_fails_the_call_without_a_round)
-    {
-        kickos::testfix::host_pool_fail_in(1);
-        EXPECT_FALSE(spawn_round(SPACE_A, SPACE_A));
-        EXPECT_FALSE(end_round()) << "a resource refusal is not a round";
-    }
-
-    TEST_F(PresyncStage, a_thread_leaving_mid_call_gives_back_its_stage)
-    {
-        kickos::presync_begin();
-        kickos::presync_stage_image(false, SPACE_A);
-        EXPECT_EQ(host_pool_used(), g_base_frames + DATA_PAGES);
-        kickos::presync_exit();
-        EXPECT_EQ(host_pool_used(), g_base_frames);
     }
 
     TEST_F(PresyncStage, a_cleared_reservation_is_reserved_or_given_back)

@@ -4,12 +4,11 @@
 // Lone-TU fallback (arch/CMakeLists.txt states the rule): exactly one symbol, so a
 // backend definition keeps this archive member unextracted.
 //
-// The real-hardware dead-end: three 0.2 s blinks then a 2 s gap, forever, so a board
-// with no console still says "panicked" at a glance. A chip that terminates through a
-// debug channel (semihosting exit) defines its own. See kernel/include/kickos/kernel.h.
+// The real-hardware dead-end: three 0.2 s blinks then a 2 s gap, forever. A chip that
+// terminates through a debug channel defines its own.
 //
-// The kernel-side declarations are repeated here rather than included: the arch layer
-// deliberately carries no kernel/include path (arch/CMakeLists.txt).
+// The kernel-side declarations are repeated, not included: the arch layer has no
+// kernel/include path (arch/CMakeLists.txt).
 
 #include <kickos/arch/arch.h>
 
@@ -23,14 +22,13 @@ namespace kickos
 extern "C"
 {
     void kpanic_enter(void);
-    void kickos_bootloader_handover(void);
+    void kickos_terminal_outcome_apply(void);
 }
 
 namespace
 {
-    // Wall-clock so the pattern is the SAME real duration on every board. A dead clock
-    // (a pre-clock-init fault) never advances: probe for one tick and give up rather
-    // than hang, then trust it.
+    // A dead clock (a fault before clock init) never advances: probe for one tick and give up
+    // rather than hang.
     void panic_delay_ms(uint32_t ms)
     {
         uint64_t const start = arch_clock_now();
@@ -55,8 +53,8 @@ extern "C" __attribute__((noreturn)) void kfault_terminate(void)
     // Before kpanic_enter, which reclaims the console and may reset the TX FIFO: a reporter's
     // bytes are still queued in that FIFO. Bounded, per arch.h.
     arch_console_flush_sync();
-    kpanic_enter(); // idempotent; masks IRQs for any path reaching here directly
-    kickos_bootloader_handover();
+    kpanic_enter(); // idempotent; masks IRQs for a path reaching here directly
+    kickos_terminal_outcome_apply();
     while (true)
     {
         for (int b = 0; b < 3; b++)
@@ -66,6 +64,6 @@ extern "C" __attribute__((noreturn)) void kfault_terminate(void)
             ::kickos::kdiag_led_set(false);
             panic_delay_ms(200);
         }
-        panic_delay_ms(2000); // 2 s dark gap before the next burst
+        panic_delay_ms(2000);
     }
 }

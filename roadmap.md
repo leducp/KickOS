@@ -45,6 +45,7 @@ selftest under enforcement plus a cross-domain `mpu_fault` trap; the arch-indepe
 (memory domains, per-thread private stacks, pow2 region placement, confused-deputy out-pointer
 copy-in) is in. Remaining tail (C6 peripheral APM open, the deferred syscall-buffer bounds) is tracked in `TODO.md` / `docs/m2-readiness.md`.
 Two halves:
+
 - **Mechanism, per chip** -- `arch_mpu_apply()` backends wired into the task-switch hook, one
   distinct mechanism class at a time (the discipline: prove `{base,size,attr}` is sufficient,
   never leak a per-arch field). Reference pair first: **RISC-V PMP/NAPOT** (traps in CI without
@@ -57,6 +58,7 @@ Two halves:
 
 ### M3 -- capabilities & object model (and user clock-select)
 The object/credential model on top of M2's enforcement:
+
 - **Per-task typed handle table** (Zircon/seL4 shape) replacing global object ids -- rights bits,
   refcounted, destroy-on-last-close; **authenticated grant ownership** as its memory-side twin.
   **LANDED -- the first M3 capability:** the semaphore syscall ABI migrated from global object ids
@@ -83,6 +85,7 @@ M3 proved the mechanisms (endpoints/IPC, console handover, panic reclaim, clock-
 on ONE or TWO chips. The driver era reuses them and makes them REAL ACROSS THE FLEET, then grows
 a driver framework on top. Single-core throughout. Full gap list + sequencing in
 `docs/design-driver-era-scope.md`.
+
 - **The objective: driver support is the VEHICLE that validates the service APIs against real
   hardware variation** -- prove the console/UART, gpio, pinmux, clock/power, and bus (SPI/I2C)
   service APIs are genuinely vendor-neutral, not accidentally shaped around one vendor. Full
@@ -280,7 +283,7 @@ boards, chips or knobs exist -- not by naming them, not by globbing for them, an
 reimplementing a tool that already knows. Nine of today's 26 CMake functions pass, eleven are
 deleted outright, four are ported, and two fail for a different reason and survive anyway.
 
-**Two orderings bind.** The dead `kos_service_cfg` fields must be deleted in M4.7.4, before a
+**Two orderings bind.** The dead service-config (formerly `kos_service_cfg`) fields must be deleted in M4.7.4, before a
 generator exists that would emit them; and the per-board ladders must move into Kconfig before the
 driver wave, not after, or the wave writes roughly 564 hand-maintained artifacts that the scheme then
 deletes. `kconfiglib` is ISC, one pure-Python file, build-time only, and never in a shipped artefact.
@@ -308,8 +311,8 @@ the same resolution the compile reads. The structural constants the width is sum
 other way: they are declared in `cmake/cap_geometry.cmake` and emitted to C through the generated
 `config/cap_width.h`, because a value the BUILD must read cannot be owned by C without a probe to
 read it back. They are not configuration and get no Kconfig symbol -- nothing selects one, and no
-defconfig can state one. What survives is the function-body parser, which reads a C++ RETURN
-LITERAL rather than a macro and is a different problem.
+defconfig can state one. The function-body parser went later: the region rule it read is the
+chip file's, which the compose tool emits to both sides.
 
 **Kconfig would be additive, not a replacement**: it owns the knobs and emits a generated header,
 while CMake keeps the build graph.
@@ -345,7 +348,7 @@ already requires `Python3` for the RP2040/RP2350 second-stage checksum, in CI as
 The tree pins `cxx_std_17`, which is why twelve aggregate initialisers carry `/*field=*/`
 comment labels: a label can sit beside the wrong field and still compile, and the language
 had no way to say it. Designated initializers are C99 in C and C++20 in C++, so a C
-consumer of `kos_service_cfg` can already write `.name =` today while the in-tree C++ that
+consumer of the service-config structure can already write `.name =` today while the in-tree C++ that
 defines those same structures cannot.
 
 **No compiler in the fleet blocks it.** RX GNURX 14.2 is the oldest, then ARM 15, the host
@@ -354,6 +357,7 @@ the one to build FIRST: it is a vendor fork and the only family with no CI, so a
 there surfaces on the bench rather than in a pull request.
 
 **What earns the bump, in order of what it buys this kernel:**
+
 - **`constinit`** asserts an object is constant-initialised: no runtime static initialiser,
   no guard variable. The tree already gates on this at link time (`kernel_ctor_placement`
   proves no kernel ctor leaked into the app-ctor window); `constinit` makes it a per-object
@@ -401,6 +405,7 @@ makes it a prerequisite for the KickCAT work rather than a sibling of it.
 
 The second half is single-core work that pays off under any M6 outcome and needs none of M6's
 decisions:
+
 - **Bound the IPC critical section** -- a seL4-style WORK fastpath beside today's RENDEZVOUS one.
   A wall of refusals leaving a capability lookup, a queue pop and register moves, with no memory
   copy. A register-payload call shape is the KickOS equivalent, since with one physical address
@@ -1031,7 +1036,7 @@ itself applied to the panic stack: what buys nothing owed is headroom, not loss.
 **RECORDED AND NOT TAKEN: PLACING THE WINDOW AT THE RAM BASE INSTEAD OF ABOVE KERNEL DATA**, two
 `MEMORY` regions rather than one, which removes the quantum entirely -- the base is aligned for
 free, kernel `.bss` growth costs its own size and nothing more -- and returns 14,336 bytes at no
-cost in heap or in MPU descriptors. It moves every RAM address on the board, `arch_mpu_probe_addr`'s
+cost in heap or in MPU descriptors. It moves every RAM address on the board, the MPU probe's (formerly `arch_mpu_probe_addr`)
 `guard_word` in kernel `.bss` included, so the PMSAv7 silicon witness recorded in
 `docs/reference/boards.md` stops matching what the board would print; and it makes one chip
 diverge from the nine-script reserve class M8.5 has just landed. `rx72m` and `esp32c6-wroom` are
@@ -1201,8 +1206,8 @@ theirs at all: `hello` is the smallest image that boots a chip, so barrier, door
 gates ride it; `selftest` is the richest, so every gate that inspects a linked ELF rides that. Above
 them the parent descends unconditionally into 45 directories and selects nothing, so 47 of the 67
 children bail out themselves and 35 then re-check `NOT TARGET` in case the declaration they just
-asked for declined. Two wrappers declare an app (`kickos_add_diagnostic_app` 47 uses,
-`kickos_add_application` 29), and the keyword DSL one of them parses, with the validation its own
+asked for declined. Two wrappers declare an app (the diagnostic-app wrapper (formerly `kickos_add_diagnostic_app`) with 47 uses,
+the application wrapper (formerly `kickos_add_application`) with 29), and the keyword DSL one of them parses, with the validation its own
 keywords make necessary, serves FIVE apps.
 
 **The target shape is `hello_c`, and it is reachable rather than aspirational**: 62 of the 67 apps
@@ -1214,8 +1219,8 @@ holds, **an app declares** itself and stops, **a test names the subject it rides
 side, and **an authority is total** rather than fatal-or-silent with a sentinel at every call site.
 
 **THE UNIT FILES CARRY THE MIRROR IMAGE OF THE SAME FAULT: THREE HELPERS FOR THE EASY CASE AND NONE
-FOR THE RECURRING HARD ONE.** `kickos_add_unit_test`, `kickos_add_kseam_gate` and
-`kickos_discover_unit_tests` are called 18, 10 and 8 times, and yet seven gates still hand-roll a
+FOR THE RECURRING HARD ONE.** `kickos_add_unit_test`, the K-seam gate helper (formerly `kickos_add_kseam_gate`) and
+the unit-test discovery helper (formerly `kickos_discover_unit_tests`) are called 18, 10 and 8 times, and yet seven gates still hand-roll a
 `$<FILTER:>` source genex and four stand up their own object library, the largest at 93 lines.
 What they are all re-implementing is one thing: COMPILE THESE KERNEL SOURCES AT A CHOSEN POSTURE
 AGAINST A SEAM. That is the abstraction the directory needs and does not have, and the filtering the
@@ -1558,8 +1563,8 @@ default outside the `microbit` QEMU test board. The nano profile builds from tha
 source and selects the matching Arm multilib's nano header and C++ archives. It must keep the
 normal freestanding app path, prove the libc and reentrancy checks on QEMU, and measure flash
 and static RAM on a small board.
-Arm's nano C++ archives do not carry the unwind path the `kickos_cxx` exception contract needs,
-so that leaf is absent in this profile; full C++ keeps the full profile.
+Arm's nano C++ archives do not carry the unwind path the full-C++ leaf (formerly `kickos_cxx`)
+exception contract needs, so that leaf is absent in this profile; full C++ keeps the full profile.
 
 **M9.9 PUTS AN AMP PAIR ON THE BENCH THAT NEEDS NO HAND.** The ESP32-C6 HP and LP cores run
 separate own-image kernels from disjoint HP SRAM slices. One flashed ROM image carries both load
@@ -1657,6 +1662,7 @@ file names is absent rather than guessed.
 **THE FORMAT IS SHAPED BY THE STRANGEST PARTS IN THE FLEET NOW, BECAUSE LATER IS DEARER.** Each
 class below already exists on the bench, and each forces something on the descriptions or on
 admission:
+
 - **A protection unit on the CPU's path** (PMSAv7 on the F411, XMC and i.MX RT; PMSAv6 on the
   RP2040; PMSAv8 on the RP2350; PMP; the RX MPU) enforces a device window per thread. Admission
   checks each window against the unit's encoding -- power of two and naturally aligned, or a
@@ -1812,9 +1818,9 @@ instance's threads held, and the init keeps its endpoint and ring block for the 
 | M10.5 | the fleet, from what the golden systems showed: a chip file for every chip with the kernel's headers generated from it, the partition build (a partition gate's assignment derived, a device two nodes grant refused, a region cached across nodes), every board's minimal default composition, every app on compositions, packaged drivers taking their lines from the composition, the old mechanisms deleted, x86_64 linking through `add_executable`, the out-of-tree examples on `KickOS::system_default`, the plain app's thread cost measured on the smallest boards, the fleet sweep and the silicon witnesses |
 | M10.5.1 | the design (`docs/design-m10-fleet.md`): the chip-file additions and the generator, every board's files and default, the smallest-board measurement, every app classified, lines from the composition, the partition's kernel share and build, x86_64 through `add_executable`, the deletions and their order, and the silicon witnesses |
 | M10.5.2 | the generator, `kickos_compose chip`, writing the chip headers, the link values, the reserved and aperture tables and the protection facts at configure, with the symbol compare and the emitted-code compare and their controls; the nine described chips switched, headers then tables, the table seams answering a span over the generated arrays; each translating chip's devices audited before they become apertures; the Kconfig-against-chip-file gate |
-| M10.5.3 | x86_64 linking through `add_executable`: the link rule and its wrapper in the installed toolchain file, the per-language `.efi` suffix, `-Wl,` flags translated for `ld`, the map the gates read, the boot objects as usage requirements; every `kickos_add_app_target` renamed, and the deferred image link deleted |
+| M10.5.3 | x86_64 linking through `add_executable`: the link rule and its wrapper in the installed toolchain file, the per-language `.efi` suffix, `-Wl,` flags translated for `ld`, the map the gates read, the boot objects as usage requirements; every call of the old app-target helper (formerly `kickos_add_app_target`) renamed, and the deferred image link deleted |
 | M10.5.4 | the remaining chips by family, the AN505 as its own chip over an `mps2` family, and the sim's chip file; a board file and a default composition for every board, the sim and the i.MX 8M Plus EVK included; each board's own Kconfig classified; the coverage gate; a board without a default refused at configure and the stub deleted |
-| M10.5.5 | the smallest boards measured before their apps move: a plain `main` and the largest selftest image on the freestanding leaf, on `kickos_cxx` and on `KickOS::kernel` with a system target, on `microbit`, `f302nucleo` and `bluepill-c8`, recorded in archived `M10.5_smallest_boards_meas.md`; and per board, what the selftest as a task costs, its task and thread slot and a child's capability table, met by raising the pools where RAM allows, a misfit raised to the maintainer |
+| M10.5.5 | the smallest boards measured before their apps move: a plain `main` and the largest selftest image on the freestanding leaf, on the full-C++ leaf and on `KickOS::kernel` with a system target, on `microbit`, `f302nucleo` and `bluepill-c8`, recorded in archived `M10.5_smallest_boards_meas.md`; and per board, what the selftest as a task costs, its task and thread slot and a child's capability table, met by raising the pools where RAM allows, a misfit raised to the maintainer |
 | M10.5.6 | the out-of-tree examples on `KickOS::kernel` and `KickOS::system_default`, built and, where an emulator runs, run by their gates on every arch |
 | M10.5.7 | the catalogue completed with every driver a service list carries (`k64dspi`, `simcon`, `simuart`, `rpusb`, `rt1062usb`, and two polled console drivers since removed); the driver instance carrying each line's number and index, and `bring_up` given an instance claiming the instance's lines |
 | M10.5.8 | the partition's kernel share, each change with its arm: a Kconfig user share of the AMP shared window, root seating it on every node, the arena confinement admitting a window inside it, its mapping on a translating node, and its cache attribute |
@@ -1822,7 +1828,7 @@ instance's threads held, and the init keeps its endpoint and ring block for the 
 | M10.5.10 | the host and emulated apps on compositions: the default for those that need nothing more, their own for the rest, the root and old-init tests retargeted or deleted with their witness kept, the sim's published-console gates on compositions |
 | M10.5.11 | the silicon per-board apps on compositions, `f411spi` and the XMC's hand-rolled bring-up rewritten as composed tasks, `k64drv` on LPTMR0, `conreclaim` over a test-owned console driver, and a judge per app that prints |
 | M10.5.12 | the selftest as a task under its own composition on every board, one more per console driver a board has, its priorities under each, its root arms reading the task, AMP nodes naming their crossings |
-| M10.5.13 | the deletions, in order: the service lists with the service ABI, the drivers' line numbers and the bring-up without an instance, the bench's lists and the sweep tool; the default init with the pin maps and the app authority macro; `kickos_root_lower`; the cap-table summing; the heap knob; the root-only wait; the old leaves last; every page naming them updated |
+| M10.5.13 | the deletions, in order: the service lists with the service ABI, the drivers' line numbers and the bring-up without an instance, the bench's lists and the sweep tool; the default init with the pin maps and the app authority macro; the root lowering (formerly `kickos_root_lower`); the cap-table summing; the heap knob; the root-only wait; the old leaves last; every page naming them updated |
 | M10.5.14 | the fleet sweep over every preset, the silicon witnesses through `tools/bench` with a judge per capture, and M10.5's ten-angle review |
 | M10.6 | a cleanup pass before the exit record, under one rule: at the same features, less. M10.5 grew the product by about 3k lines and the tests and tools by about 31k; the steps run in the order that removes the most for the least risk, so the cuts that are read-only on the host come before the folds that need silicon, and nothing is folded that a later step would delete. Each step's close records its lines split as kernel, arch, userspace, build, tests, tools and apps, with no ratio |
 | M10.6.0 | the misses found after M10.5 merged, each fixed with its arm before the cleanup moves code |
@@ -1830,15 +1836,15 @@ instance's threads held, and the init keeps its endpoint and ring block for the 
 | M10.6.2 | the gates and CI, sized before it starts: every static gate and unit suite answers four questions (which bug class; has it ever fired on a real change; can the compiler, the linker script or `-Werror` hold the rule; can the build generate the thing it compares) and is deleted, replaced, derived or kept on the answer; the planted-control harness, the corpus walk and the comment stripper live once in `tests/lib/gate.sh`, so a gate is its rule and one planted file; the lint gates become one rule table; a hand list derived from the tree goes with the gate that compared it; shared parsing in one library; the gate that races a configure, apps built by board name or never run, presets CI does not build, and the bench fleet run across boards in parallel |
 | M10.6.3 | the DRY pass over the inventory taken after M10.5, re-ranked by lines removed per unit of risk now that the gate audit has settled which gates pin which names: second truths and copied mechanisms in arch, kernel, userspace, build and tools, one kernel-under-test library for the unit suites, the static asserts that only witness a hand copy, and the port number in the generated pin lists; the silicon-only folds ride M10.6.6's bench passes |
 | M10.6.4 | no self-test code in the kernel: the probes replaced by production calls (a frame-run and own-space mint, a claimed line's raise, the placement reads, the memory and AMP counts, a timed semaphore wait) and their failure cases held by host suites on the real kernel sources; the selftest ordered by events, every arm bounded and releasing what it created on every path, the census between arms judging capabilities, frames, ranges and spaces; one ask per arm, the arena blocks reserved at image start under a link assertion, the arm counts and skip sets derived; the bloat audit, `chaincheck`, and the selftest app built with the self-test off on every board; every selftest image and the silicon-only arms owed to M10.6.6's bench |
-| M10.6.5 | the console read through: its contract written once and what does not serve it cut, and the own-image AMP writer woken by a doorbell; and the build and `arch/` lean pass: Kconfig facts no longer restated in CMake, test registration out of the product build, shared linker-script bodies, generated fallbacks, `arch/` comments to the kernel's weight, at the same features |
-| M10.6.6 | the hardware tail: the interrupt stack bounded on ARMv7-M, ARMv6-M and RX, the ESP32's code space beyond its 128 KiB of IRAM, and the ESP32-C6 PLL, with the silicon-only folds of M10.6.3 on the same bench passes |
+| M10.6.5 | the console read through and the build and `arch/` lean pass: the console's contract written once, every kernel line through its gate and the per-chip write seam gone, the own-image AMP writer woken by its claim's release; newlib's stdio and malloc behind one lock per address space over a kernel mutex, which takes a deadline; a shutdown that names its outcome, a reset on every chip that has one, and a terminal outcome the bootloader authority sets; idle the one privileged thread; a setting in Kconfig when only kernel and arch code read it, else in the chip, board or composition file; test registration out of the product build, shared linker-script bodies and generated fallbacks; one page-table walker that gives back the tables an unmap empties, and the doorbell loops written once with a parked core testing for work masked; the silicon-only folds written; the self-test knob gone and the whole selftest on every board's base; `arch/` comments cut to what the code needs |
+| M10.6.6 | the hardware tail: the interrupt stack bounded on ARMv7-M, ARMv6-M and RX, the ESP32's code space beyond its 128 KiB of IRAM, and the ESP32-C6 PLL, with every silicon image M10.6.3 to M10.6.5 moved captured on the same bench passes |
 | M10.7 | the exit record, and the reference documents reconciled against what shipped |
 
 **THE TOOLCHAIN IS KICKOS'S OWN, BUILT FROM PINNED SOURCES ON ANY HOST** (maintainer,
 2026-09-30). C and full C++ on every target, x86_64 included, from one toolchain version the tree
 pins: binutils, GCC, newlib and libstdc++ built together per target family, for the multilibs the
 boards' CPU flags name, with libstdc++ built against KickOS's newlib, so no vendor's bundled
-release matters and `kickos_cxx` exists everywhere. The host is not locked. A Conan recipe builds
+release matters and full C++ exists everywhere. The host is not locked. A Conan recipe builds
 it from source on Linux of any architecture, macOS and Windows and caches it per user, and CI
 publishes prebuilt packages for Linux x86_64 and macOS arm64. Xtensa builds from Espressif's
 sources with the ESP32 overlay, and x86_64's binutils writes PE32+ images. It is M10.2, taken
@@ -1914,7 +1920,7 @@ requirement-5 ruling for clusters that share an ISA without sharing a performanc
 port's to make.
 
 **THE DRIVER-FACING MAPPING API WAS A ROW HERE, AND M10 ANSWERED IT.** M8.13 assigned
-`kos_vmem_alloc` then `kos_memmap` here. M10 ruled instead that a device window comes from the
+a vmem-alloc call (formerly `kos_vmem_alloc`) then a memory-map call (formerly `kos_memmap`) here. M10 ruled instead that a device window comes from the
 composition and is looked up by name, never mapped at run time, and that runtime mapping of
 runtime objects goes through the calls that already exist. What stays here is whatever the
 drivers of this era show that ruling cannot express, and DMA, deferred to this era already.
@@ -1935,6 +1941,12 @@ timers, a metered budget and an overrun action, after reading seL4's and Fiasco.
 contexts); loadable
 MPU-isolated user modules; POSIX / CMSIS-RTOS2 compat; TLSF heap; RP2040 AMP; Renode CI; and
 **the Book** as the durable how-&-why reference (see `docs/book/`).
+
+### The KickOS journey: a walk through the code (anytime coherence, after M10.6.5)
+The intermediate tier between the Book (concepts) and the Reference (contracts): a beginner's
+walk through the code, from power-on to userspace and then through the common syscalls end to end,
+on the `qemu` Cortex-M4 so every stop can be stepped in gdb; then the MMU, multicore, and each arch
+as a difference from that walk. Code-synced like the Reference. The items are in `TODO.md`.
 
 ### RISC-V context-switch cost -- optimization (M8.11) -- REFUSED
 **Measured and refused on 2026-09-18; neither lever is built.** The record with the evidence and
@@ -1969,8 +1981,8 @@ Today the user's `main` doubles as pid-1: it IS the init entry, holds full users
 rights, and spawns every task -- so (1) the app's `main` is really the SYSTEM init wearing
 the app's name, and (2) that init pattern (create endpoint, publish console, spawn the
 driver with caps, close the parent cap, spawn apps -- exactly the M3 handover choreography)
-gets re-hand-rolled by every root task. Idea: rename the entry (`kos_init_entry` /
-`kos_init_userspace`) to separate init from the app, and ship a DEFAULT init service that
+gets re-hand-rolled by every root task. Idea: rename the entry (an init entry and
+a userspace entry (formerly `kos_init_entry` and `kos_init_userspace`)) to separate init from the app, and ship a DEFAULT init service that
 does configurable bring-up then calls the real user `main` with a configurable capability
 set. A power user links their OWN init service instead. Constraints: keep the LOW-BARRIER
 zero-config default (a plain app still writes no manifest -- the default init wires the sane
@@ -2012,6 +2024,7 @@ machinery -> userspace service, kernel keeps only the re-anchor + privileged-ste
 ### Platform targets past the A53 (captured, not scheduled)
 The MMU itself is **M6** and multicore is **M7**; what stays here is the hardware these two unlock,
 each wanting a feasibility spike rather than a slot:
+
 - **x86_64 as a PC target, beyond the M6.4 backend** -- M6.4 brings up x86_64 as the entry-path
   falsifier, on QEMU with UEFI firmware and under a hypervisor as a second firmware, rather than as a
   product. What stays captured here is the rest of

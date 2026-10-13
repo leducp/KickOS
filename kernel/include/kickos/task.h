@@ -174,7 +174,7 @@ namespace kickos
     // member from here on, the creator's watch is raised, and `code` is its status when `latch`
     // holds, the ending thread being uncancelled; otherwise it keeps KOS_EXIT_CANCELLED. A later
     // end raises and latches nothing. Every other member is slain (CANCEL_SLAY), with or without
-    // a creator, and a privileged one killed (CANCEL_KILL).
+    // a creator.
     void task_end(Task* t, int code, bool latch, Held held);
     // Kill and slay: `t` ends now, before its members have run to their deaths, and every member
     // is stopped.
@@ -275,9 +275,7 @@ namespace kickos
 
     // Slay every live member: each is marked and woken out of whatever it is parked on, and its
     // next resume is claimed, so it reaches its own death point. The group dies by ONE rule:
-    // there is no exception argument, and thread_cancel_kind already refuses a dying thread. A
-    // privileged member, which no explicit task has, takes CANCEL_KILL instead: its frames may
-    // hold kernel work, as thread_slay refuses it for.
+    // there is no exception argument, and thread_cancel_kind already refuses a dying thread.
     void task_cancel_group(Task* t, Held held);
 }
 

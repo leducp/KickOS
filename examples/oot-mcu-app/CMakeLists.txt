@@ -15,7 +15,7 @@ add_executable(oot_mcu_app main.cc)
 target_link_libraries(oot_mcu_app PRIVATE KickOS::kernel KickOS::system_default)
 kickos_emit_image(oot_mcu_app)
 
-foreach(_expect KICKOS_EXPECT_MAX_THREADS KICKOS_EXPECT_USER_STACK_SIZE)
+foreach(_expect KICKOS_EXPECT_MAX_THREADS KICKOS_EXPECT_USER_STACK_SIZE KICKOS_EXPECT_BENCH)
   if(DEFINED ${_expect})
     target_compile_definitions(oot_mcu_app PRIVATE ${_expect}=${${_expect}})
   endif()

@@ -17,9 +17,12 @@ data_cache: false
 # the SPI pins, and reads a QIO header there unreliably (`load:0xffffffff,len:-1`, then an
 # RTC-WDT reset loop).
 esptool_image: [--flash-mode, dio]
+cpu: lx6
 c: { line_enum: kernel_line }
 cores: { count: [1, 2], smp: true }
 
+family: none
+exits_on_fault: false
 interrupts: { count: { value: 32, ref: "8.3.2 CPU Interrupt, p.178" } }
 
 devices:

@@ -36,6 +36,7 @@ service wire contract carried over it).
 ### State & roadmap -- where we are / what's next
 **The re-grounding path is four files, in this order.** Stop as soon as you have what you came
 for; nothing below is a prerequisite for reading the Reference.
+
 1. **`../STATE.md`** -- current state (above). Usually enough on its own.
 2. **`../TODO.md`** -- the detailed, actionable task items, and every open blocker in full.
 3. **`m2-readiness.md`** -- the **enforcement ledger**: the board/console readiness matrix, the

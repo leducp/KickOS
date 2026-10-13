@@ -105,10 +105,10 @@ if [ "$MODE" = coverage ]; then
         chip=$(sed -n 's/^set(KICKOS_CHIP[[:space:]]*"\([^"]*\)").*/\1/p' "$desc")
         echo "${board%/board.cmake} ${chip:--}"
     done > "$TMP/boards"
-    grep '/family\.cmake$' "$TMP/files" | while IFS= read -r family; do
-        sed -n 's|^set(KICKOS_CHIP_FAMILY_DIR "${CMAKE_CURRENT_LIST_DIR}/\.\./\([^"]*\)").*|\1|p' "$family"
-    done | sort -u > "$TMP/families"
-    [ -s "$TMP/families" ] || fail "no family.cmake names a chip family directory, so every family would read as a chip"
+    grep '^platform/[^/]*/chip\.yaml$' "$TMP/files" | while IFS= read -r family; do
+        sed -n -e 's|^family: *{ *dir: *\([^,} ]*\).*|\1|p' -e 's|^  dir: *\([^,} ]*\).*|\1|p' "$family"
+    done | sed 's|.*/||' | sort -u > "$TMP/families"
+    [ -s "$TMP/families" ] || fail "no chip file names a family directory, so every family would read as a chip"
     coverage_findings "$TMP/files" "$TMP/boards" "$TMP/families" > "$TMP/found"
     if [ -s "$TMP/found" ]; then
         sed 's/^/FAIL: /' "$TMP/found" >&2

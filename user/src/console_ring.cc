@@ -13,10 +13,6 @@ namespace kickos::console
 
 int32_t mode_apply(Atomic<uint32_t, Order::RELAXED>* mode, uint32_t flags, uint32_t required)
 {
-    if (mode == nullptr)
-    {
-        return -KOS_ENOSYS;
-    }
     if ((flags & ~static_cast<uint32_t>(KOS_CONSOLE_MODE_MASK)) != 0u)
     {
         return -KOS_EINVAL;

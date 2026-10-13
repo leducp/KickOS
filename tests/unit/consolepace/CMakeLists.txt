@@ -13,7 +13,7 @@
 # board can supply.
 kickos_add_unit_test(NAME console_pace
   SOURCES pace.cc
-          "${PROJECT_SOURCE_DIR}/tests/unit/consoleseam/console_seam.cc"
+          ${_console_seam}
           "${PROJECT_SOURCE_DIR}/kernel/irq/irq_route.cc"
           "${PROJECT_SOURCE_DIR}/kernel/init/console.cc"
           "${PROJECT_SOURCE_DIR}/kernel/init/console_tx.cc"

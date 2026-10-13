@@ -11,6 +11,7 @@
 # producer's mask never reached.
 kickos_add_unit_test(NAME console_tx_smp
   SOURCES tail_writers.cc tx_smp_seam.cc "${PROJECT_SOURCE_DIR}/tests/unit/common/kpanic_seam.cc"
+          "${_cs}/ring_leaves.cc"
           "${PROJECT_SOURCE_DIR}/kernel/init/console_tx.cc"
           "${PROJECT_SOURCE_DIR}/kernel/sync/klock.cc"
           "${PROJECT_SOURCE_DIR}/kernel/irq/irq_route.cc"

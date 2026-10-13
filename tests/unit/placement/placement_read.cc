@@ -63,14 +63,12 @@ TEST_F(PlacementRead, a_zero_request_reads_back_resolved)
     EXPECT_EQ(thread_affinity(handle(mate_)), static_cast<int>(task_default_cores(mine_)));
 }
 
-TEST_F(PlacementRead, another_task_s_thread_is_eperm_unless_privileged)
+TEST_F(PlacementRead, another_task_s_thread_is_eperm)
 {
     Thread* const stranger = seat_pool(3, PRIO);
     join_task(stranger, task(1));
     EXPECT_EQ(thread_affinity(handle(stranger)), -KOS_EPERM)
-        << "an unprivileged caller read another task's placement";
-    main_->privileged = true;
-    EXPECT_EQ(thread_affinity(handle(stranger)), static_cast<int>(stranger->affinity));
+        << "a caller read another task's placement";
 }
 
 TEST_F(PlacementRead, an_exited_thread_is_ebadf)

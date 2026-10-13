@@ -18,7 +18,8 @@ check precedes every kernel chip write.
 `console_tx_deinit` flushes to shift idle, disables the TX interrupt, detaches and masks
 the line, and disarms the ring. Publish retains a kernel reference on the endpoint,
 updates the stdout target, drains writers that sampled the old state, then completes
-the move to `USER_OWNED`. The drain yields so a lower-priority writer can finish.
+the move to `USER_OWNED`. The drain parks until the last of those writers leaves, so a
+lower-priority writer can finish.
 A publisher cannot start console-dependent tasks between publish and a successful
 driver spawn. It drops its own WAIT-bearing capability after spawning the driver;
 otherwise the driver's death cannot take `recv_holders` to zero and wake senders.

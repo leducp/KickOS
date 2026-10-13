@@ -16,7 +16,7 @@
 set(_x86_defaults ${KICKOS_SEAM_DEFAULTS_COMMON})
 list(REMOVE_ITEM _x86_defaults
   common/arch_irq_line_core_default.cc
-  common/arch_irq_route_default.cc)
+  ${KICKOS_SEAM_DEFAULTS_DIR}/arch_irq_route_default.cc)
 
 set(KICKOS_ARCH_SOURCES
   x86/x86_64/arch_x86_64.cc

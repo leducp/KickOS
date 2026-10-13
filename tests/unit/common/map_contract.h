@@ -11,6 +11,10 @@
 //   MAP_CONTRACT_NOCACHE_SEEN  whether acquire reports a non-cacheable leaf as uncached, false
 //                         where the kernel's view takes the leaf's type
 //   MAP_CONTRACT_PA_BITS  the physical address width the seam's machine reports
+//   larger_leaf_slot(space, va)  the entry one level above the leaf that `va` walks through,
+//                         where the space already maps `va`
+//   MAP_CONTRACT_LARGER_LEAF  a valid leaf descriptor for that entry, over a 2 MiB output the
+//                         editor may read as memory
 
 #ifndef KICKOS_TESTS_UNIT_COMMON_MAP_CONTRACT_H
 #define KICKOS_TESTS_UNIT_COMMON_MAP_CONTRACT_H
@@ -45,6 +49,49 @@ namespace
         EXPECT_EQ(kickos::testfix::frames_allocated(), allocated);
         EXPECT_EQ(kickos::testfix::ops_count(), 0u);
         EXPECT_EQ(arch_aspace_frame_at(space, watch), 0u);
+    }
+
+    // What the pool handed out and took back since construction.
+    struct FrameCensus
+    {
+        uint32_t taken() const { return kickos::testfix::frames_allocated() - allocated; }
+        uint32_t given() const { return kickos::testfix::frames_freed() - freed; }
+
+        uint32_t allocated = kickos::testfix::frames_allocated();
+        uint32_t freed = kickos::testfix::frames_freed();
+    };
+
+    // The tables a clean map of [va, va + pages) takes in a space mapping nothing.
+    uint32_t tables_for(uintptr_t va, size_t pages)
+    {
+        struct arch_aspace* const probe = arch_aspace_create();
+        if (probe == nullptr)
+        {
+            return 0;
+        }
+        FrameCensus const census;
+        uint32_t taken = 0;
+        if (arch_aspace_map(probe, va, PA_DEVICE, pages, ARCH_MAP_R, ARCH_MAP_DEVICE)
+            == ARCH_ASPACE_OK)
+        {
+            taken = census.taken();
+            (void)arch_aspace_unmap(probe, va, pages);
+        }
+        arch_aspace_destroy(probe);
+        return taken;
+    }
+
+    bool none_mapped(struct arch_aspace* space, uintptr_t va, size_t pages)
+    {
+        size_t const g = arch_aspace_granule();
+        for (size_t i = 0; i < pages; i++)
+        {
+            if (arch_aspace_frame_at(space, va + i * g) != 0)
+            {
+                return false;
+            }
+        }
+        return true;
     }
 }
 
@@ -221,6 +268,163 @@ TEST_F(MAP_CONTRACT_FIXTURE, ASpaceCycleGivesBackEveryFrameItTookAndNoneTwice)
     EXPECT_GT(kickos::testfix::frames_allocated(), allocated);
     EXPECT_EQ(kickos::testfix::frames_freed() - freed,
               kickos::testfix::frames_allocated() - allocated);
+}
+
+TEST_F(MAP_CONTRACT_FIXTURE, AMapOutOfFramesBeforeItsFirstLeafGivesBackItsTables)
+{
+    uint32_t const chain = tables_for(va_a, 1);
+    ASSERT_GT(chain, 1u) << "a page needs a table below the root, then its leaf table";
+    FrameCensus const census;
+    kickos::testfix::set_frame_budget(chain - 1u);
+
+    EXPECT_EQ(arch_aspace_map(space, va_a, PA_DEVICE, 1, ARCH_MAP_R, ARCH_MAP_DEVICE),
+              ARCH_ASPACE_ENOMEM);
+
+    EXPECT_EQ(census.taken(), chain - 1u);
+    EXPECT_EQ(census.given(), census.taken()) << "the unwind kept a table it built";
+    EXPECT_EQ(arch_aspace_frame_at(space, va_a), 0u);
+    kickos::testfix::set_frame_budget(kickos::testfix::SYSOPS_FRAMES);
+    ASSERT_EQ(arch_aspace_map(space, va_a, PA_DEVICE, 1, ARCH_MAP_R, ARCH_MAP_DEVICE),
+              ARCH_ASPACE_OK);
+    EXPECT_EQ(arch_aspace_frame_at(space, va_a), PA_DEVICE);
+    ASSERT_EQ(arch_aspace_unmap(space, va_a, 1), ARCH_ASPACE_OK);
+}
+
+TEST_F(MAP_CONTRACT_FIXTURE, AMapOutOfFramesPartwayUnwindsEveryLeafAndTable)
+{
+    size_t const g = arch_aspace_granule();
+    uintptr_t const table_span = static_cast<uintptr_t>((g / sizeof(uint64_t)) * g);
+    // One page below a leaf-table boundary, a whole table, then half of a third.
+    uintptr_t const start = va_a + table_span - g;
+    size_t const pages = 1 + table_span / g + table_span / g / 2;
+    uint32_t const tables = tables_for(start, pages);
+    ASSERT_GT(tables, 3u);
+    FrameCensus const census;
+    // The last leaf table fails, after every leaf the first two hold went in.
+    kickos::testfix::set_frame_budget(tables - 1u);
+
+    EXPECT_EQ(arch_aspace_map(space, start, PA_DEVICE, pages, ARCH_MAP_R, ARCH_MAP_DEVICE),
+              ARCH_ASPACE_ENOMEM);
+
+    EXPECT_TRUE(none_mapped(space, start, pages)) << "the unwind left a leaf of the run";
+    EXPECT_EQ(census.taken(), tables - 1u);
+    EXPECT_EQ(census.given(), census.taken()) << "the unwind kept a table it built";
+}
+
+TEST_F(MAP_CONTRACT_FIXTURE, AMapOutOfFramesBesideALivePageKeepsThePageAndItsTables)
+{
+    size_t const g = arch_aspace_granule();
+    uintptr_t const table_span = static_cast<uintptr_t>((g / sizeof(uint64_t)) * g);
+    uintptr_t const start = va_a + table_span - g;
+    size_t const pages = 1 + table_span / g + table_span / g / 2;
+    // In the run's last leaf table, just past its end.
+    uintptr_t const live = start + pages * g;
+    ASSERT_EQ(arch_aspace_map(space, live, PA_UNPOOLED, 1, RIGHTS_RW, ARCH_MAP_NORMAL),
+              ARCH_ASPACE_OK);
+    FrameCensus const census;
+    // The run's first leaf table goes in, its second fails.
+    kickos::testfix::set_frame_budget(1);
+
+    EXPECT_EQ(arch_aspace_map(space, start, PA_DEVICE, pages, ARCH_MAP_R, ARCH_MAP_DEVICE),
+              ARCH_ASPACE_ENOMEM);
+
+    EXPECT_EQ(arch_aspace_frame_at(space, live), PA_UNPOOLED) << "the unwind took the live page";
+    EXPECT_TRUE(none_mapped(space, start, pages));
+    EXPECT_EQ(census.taken(), 1u);
+    EXPECT_EQ(census.given(), census.taken());
+    ASSERT_EQ(arch_aspace_unmap(space, live, 1), ARCH_ASPACE_OK);
+}
+
+TEST_F(MAP_CONTRACT_FIXTURE, AWhollyMappedRangeIsRemappedInPlace)
+{
+    size_t const g = arch_aspace_granule();
+    // The last page of one leaf table and the first of the next.
+    uintptr_t const low = va_a + (g / sizeof(uint64_t)) * g - g;
+    ASSERT_EQ(arch_aspace_map(space, low, PA_UNPOOLED, 2, RIGHTS_RW, ARCH_MAP_NORMAL),
+              ARCH_ASPACE_OK);
+    FrameCensus const census;
+
+    ASSERT_EQ(arch_aspace_map(space, low, PA_DEVICE, 2, ARCH_MAP_R, ARCH_MAP_DEVICE),
+              ARCH_ASPACE_OK);
+
+    EXPECT_EQ(arch_aspace_frame_at(space, low), PA_DEVICE);
+    EXPECT_EQ(arch_aspace_frame_at(space, low + g), PA_DEVICE + g);
+    EXPECT_EQ(census.taken(), 0u);
+    EXPECT_EQ(census.given(), 0u);
+    ASSERT_EQ(arch_aspace_unmap(space, low, 2), ARCH_ASPACE_OK);
+}
+
+TEST_F(MAP_CONTRACT_FIXTURE, AnUnmapGivesBackEveryTableItEmptied)
+{
+    size_t const g = arch_aspace_granule();
+    uintptr_t const table_span = static_cast<uintptr_t>((g / sizeof(uint64_t)) * g);
+    uintptr_t const start = va_a + table_span - g;
+    size_t const pages = 1 + table_span / g + table_span / g / 2;
+    FrameCensus const census;
+    ASSERT_EQ(arch_aspace_map(space, start, PA_DEVICE, pages, ARCH_MAP_R, ARCH_MAP_DEVICE),
+              ARCH_ASPACE_OK);
+    uint32_t const tables = census.taken();
+    ASSERT_GT(tables, 3u);
+
+    ASSERT_EQ(arch_aspace_unmap(space, start, pages), ARCH_ASPACE_OK);
+
+    EXPECT_EQ(census.given(), tables) << "the unmap kept a table it emptied";
+    ASSERT_EQ(arch_aspace_map(space, start, PA_DEVICE, 1, ARCH_MAP_R, ARCH_MAP_DEVICE),
+              ARCH_ASPACE_OK);
+    EXPECT_EQ(arch_aspace_frame_at(space, start), PA_DEVICE);
+    ASSERT_EQ(arch_aspace_unmap(space, start, 1), ARCH_ASPACE_OK);
+}
+
+TEST_F(MAP_CONTRACT_FIXTURE, AnUnmapKeepsATableAnotherPageStillUses)
+{
+    size_t const g = arch_aspace_granule();
+    uint32_t const chain = tables_for(va_a, 1);
+    ASSERT_EQ(arch_aspace_map(space, va_a, PA_UNPOOLED, 2, RIGHTS_RW, ARCH_MAP_NORMAL),
+              ARCH_ASPACE_OK);
+    FrameCensus const census;
+
+    ASSERT_EQ(arch_aspace_unmap(space, va_a, 1), ARCH_ASPACE_OK);
+
+    EXPECT_EQ(census.given(), 0u) << "the unmap took a table a live page uses";
+    EXPECT_EQ(arch_aspace_frame_at(space, va_a + g), PA_UNPOOLED + g);
+    ASSERT_EQ(arch_aspace_unmap(space, va_a + g, 1), ARCH_ASPACE_OK);
+    EXPECT_EQ(census.given(), chain);
+}
+
+TEST_F(MAP_CONTRACT_FIXTURE, AMapUnderALargerLeafIsRefusedAndTheLeafStands)
+{
+    size_t const g = arch_aspace_granule();
+    ASSERT_EQ(arch_aspace_map(space, va_a, PA_UNPOOLED, 1, RIGHTS_RW, ARCH_MAP_NORMAL),
+              ARCH_ASPACE_OK);
+    uint64_t* const slot = larger_leaf_slot(space, va_a);
+    ASSERT_NE(slot, nullptr);
+    uint64_t const table = *slot;
+    *slot = MAP_CONTRACT_LARGER_LEAF;
+    FrameCensus const census;
+    kickos::testfix::ops_clear();
+
+    EXPECT_EQ(arch_aspace_map(space, va_a + g, PA_UNPOOLED, 1, RIGHTS_RW, ARCH_MAP_NORMAL),
+              ARCH_ASPACE_EINVAL);
+
+    EXPECT_EQ(*slot, MAP_CONTRACT_LARGER_LEAF) << "the larger leaf was replaced";
+    EXPECT_EQ(census.taken(), 0u);
+    EXPECT_EQ(kickos::testfix::ops_count(), 0u);
+    *slot = table;
+    ASSERT_EQ(arch_aspace_unmap(space, va_a, 1), ARCH_ASPACE_OK);
+}
+
+TEST_F(MAP_CONTRACT_FIXTURE, TheBootSpaceIsNeverEdited)
+{
+    FrameCensus const census;
+    kickos::testfix::ops_clear();
+
+    EXPECT_EQ(arch_aspace_map(arch_aspace_boot(), va_a, PA_UNPOOLED, 1, RIGHTS_RW,
+                              ARCH_MAP_NORMAL),
+              ARCH_ASPACE_EINVAL);
+
+    EXPECT_EQ(arch_aspace_frame_at(arch_aspace_boot(), va_a), 0u);
+    EXPECT_EQ(census.taken(), 0u);
+    EXPECT_EQ(kickos::testfix::ops_count(), 0u);
 }
 
 struct MapRefusal

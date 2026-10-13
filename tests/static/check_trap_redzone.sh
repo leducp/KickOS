@@ -14,6 +14,8 @@
 #   trap    a static per-hart stack the arch owns, which no fit clause here applies to.
 #   panic   the reporter's own array, which kpanic switches to before it prints. Compared
 #           against KICKOS_PANIC_STACK_SIZE.
+#   idle    idle's own stack, the one privileged thread's. Compared against
+#           KICKOS_IDLE_STACK_SIZE.
 #
 # How it measures: tests/lib/scratch_ci.sh configures a scratch tree of its own with
 # -fcallgraph-info=su,da, which makes gcc drop a .ci file next to every object carrying that
@@ -118,10 +120,11 @@ KCORES="$(sed -n 's/^[[:space:]]*set(KICKOS_KERNEL_CORES[[:space:]]\{1,\}\([0-9]
 [ -r "$HEADER" ] || fail "cannot read $HEADER, so the enforced red zone cannot be read;
     this gate compares a measurement against that header and has no default to fall back on"
 
-# A figure in that header can be posture-dependent (rv32imac's SYSPRIV depth resolves per
-# KICKOS_BENCH), so a sed over the source would see both branches of that ladder and refuse the
-# macro as defined twice, or take the first and compare against the wrong posture's number. The
-# compiler resolves it instead, and the scrape below runs over its macro dump.
+# A figure in that header can be posture-dependent (armv7m's SVCK depth resolves per
+# KICKOS_TELEMETRY and KICKOS_BENCH), so a sed over the source would see every branch of that
+# ladder and refuse the macro as defined twice, or take the first and compare against the wrong
+# posture's number. The compiler resolves it instead, and the scrape below runs over its macro
+# dump.
 #
 # The flags are the image's, from compile_commands.json of the tree just built, restricted to a
 # translation unit of the arch directory the header belongs to (its `include/` parent). That TU
@@ -268,6 +271,15 @@ if awk -F"$TAB" '{ if ($4 == "panic") { found = 1 } } END { exit !found }' "$TMP
     fi
 fi
 
+# --- idle's own stack, for the stack=idle classes --------------------------------
+ISIZE=""
+if awk -F"$TAB" '{ if ($4 == "idle") { found = 1 } } END { exit !found }' "$TMP/classes"; then
+    BOARDCFG="$BUILD/generated/include/kickos/board_config.h"
+    [ -r "$BOARDCFG" ] || fail "cannot read $BOARDCFG, which is where the gate reads
+    KICKOS_IDLE_STACK_SIZE, the stack a stack=idle class is measured against"
+    ISIZE="$(scrape_macro "$BOARDCFG" KICKOS_IDLE_STACK_SIZE)" || exit 1
+fi
+
 ENFORCED_ARGS=""
 rc=0
 
@@ -276,6 +288,9 @@ echo "trap_redzone: header  $HEADER"
 echo "trap_redzone: floor   KICKOS_MIN_STACK_SIZE=$FLOOR (from $CFGFILE)"
 if [ -n "$PSIZE" ]; then
     echo "trap_redzone: panic   KICKOS_PANIC_STACK_SIZE=$PSIZE (from $BUILD/generated/include/kickos/board_config.h)"
+fi
+if [ -n "$ISIZE" ]; then
+    echo "trap_redzone: idle    KICKOS_IDLE_STACK_SIZE=$ISIZE (from $BUILD/generated/include/kickos/board_config.h)"
 fi
 if [ -n "$KSIZE" ]; then
     echo "trap_redzone: block   KICKOS_KERNEL_STACK_SIZE=$KSIZE, $KUSABLE usable above the canary"
@@ -317,6 +332,18 @@ while IFS="$TAB" read -r cls frame_macro depth_macro onstack kstacks; do
     REMEDY: raise the per-arch default in $SRC/Kconfig (config KICKOS_PANIC_STACK_SIZE,
     'default <n> if ARCH_$(printf '%s' "$ARCH" | tr '[:lower:]' '[:upper:]')') from $PSIZE to
     at least $zone. Do NOT shrink the depth to fit: it is a measurement."
+        fi
+        continue
+    fi
+    # A stack=idle class spends idle's own stack, which no spawn sizes: idle is the one
+    # privileged thread, and the kernel makes it.
+    if [ "$onstack" = idle ]; then
+        if [ "$zone" -gt "$ISIZE" ]; then
+            bad "IDLE STACK BELOW ITS REQUIREMENT: $ARCH needs $zone bytes of idle's own stack
+    for a $cls descent ($frame_macro=$frame + $depth_macro=$depth) but KICKOS_IDLE_STACK_SIZE is
+    $ISIZE. Idle overruns its stack on that descent, below every other boot stack.
+    REMEDY: raise KICKOS_IDLE_STACK_SIZE in this board's defconfig to at least $zone. Do NOT
+    shrink the depth to fit: it is a measurement."
         fi
         continue
     fi

@@ -141,12 +141,12 @@ Presets select a board and configuration variant. Each uses a separate directory
 [`cmake/presets/`](cmake/presets/).
 
 ```sh
-cmake --preset frdmk64f        # base configuration
-cmake --preset frdmk64f-st     # self-test configuration
-cmake --preset frdmk64f-flat   # MPU enforcement disabled
+cmake --preset f411disco        # base configuration
+cmake --preset f411disco-bench  # context-switch microbench
+cmake --preset f411disco-flat   # MPU enforcement disabled
 ```
 
-Available variants depend on the board. They include self-tests, benchmarks, telemetry,
+Available variants depend on the board. They include self-test provisioning, benchmarks, telemetry,
 shared-kernel multicore builds, isolated cores and AMP partitions with separate kernels.
 MPU boards generally provide a `-flat` variant. Sim always uses `mprotect`; MMU targets
 select address-space support through their chip configuration.

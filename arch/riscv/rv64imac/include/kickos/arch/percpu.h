@@ -10,8 +10,8 @@
 // can reach a field, and an sp above the top is already refused by the entry's range test.
 //
 // S-mode has no hart-identity CSR: mhartid is machine-mode only, and tp is U-mode writable and
-// holds the resumed thread's libc state. sscratch is neither readable nor writable from U-mode, so the identity a
-// row carries cannot be forged from below.
+// holds the resumed thread's libc state. sscratch is inaccessible from U-mode, so the identity
+// a row carries cannot be forged from below.
 
 #ifndef KICKOS_ARCH_PERCPU_H
 #define KICKOS_ARCH_PERCPU_H
@@ -21,9 +21,7 @@
 
 #include <stdint.h>
 
-// C++ ONLY, as arch.h itself is: the extern "C" below is UNGUARDED, so a C includer breaks
-// here. Nothing but this arch's own C++ backend includes it, switch.S reaching the block by
-// displacement off sscratch.
+// C++ ONLY, as arch.h is: the extern "C" below is unguarded.
 extern "C"
 {
 

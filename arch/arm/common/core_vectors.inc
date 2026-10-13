@@ -1,20 +1,10 @@
 /* SPDX-License-Identifier: CECILL-C
  * Copyright (c) 2026 Philippe Leduc
  *
- * Shared core-exception vector block for the ARM Cortex-M chip startup tables.
- * Slots 0..15 are architecturally fixed and character-identical across the
- * fleet; only the device-IRQ table below slot 15 (and any clock-ISR splice)
- * varies per chip and stays open-coded in each startup.S. A chip invokes the
- * macro for its profile right after its own .section/.align/g_isr_vector header:
- *
- *   KICKOS_CORE_VECTORS_V7M : Cortex-M3/M4 (v7-M): MemManage/BusFault/Usage
- *   KICKOS_CORE_VECTORS_V6M : Cortex-M0/M0+ (v6-M): slots 4/5/6 reserved
- *   KICKOS_CORE_VECTORS_V8M : Cortex-M33 (v8-M): slot 7 = SecureFault
- *
- * The words reference Reset_Handler/SVC_Handler/PendSV_Handler/SysTick_Handler
- * (arch layer), HardFault_Handler (chip), NMI_Handler (file-local, per chip) and
- * _estack (linker). Expanding the macro emits the same relocations the chips
- * spelled by hand, so the linked .isr_vector bytes are unchanged.
+ * Core-exception vector slots 0..15 for the chip startup tables, one macro per profile
+ * (V7M, V6M with slots 4..6 reserved, V8M with slot 7 = SecureFault). A chip invokes it right
+ * after its own .section/.align/g_isr_vector header; the device-IRQ table below slot 15 stays
+ * per chip. NMI_Handler is file-local to each chip.
  */
 
 #ifndef KICKOS_ARCH_ARM_COMMON_CORE_VECTORS_INC

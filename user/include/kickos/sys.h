@@ -107,15 +107,19 @@ int kos_sem_post(kos_cap_t sem);
 // boosted to the waiter's priority until it unlocks. Not recursive: locking a mutex you
 // already hold returns -KOS_EDEADLK.
 int kos_mutex_create(kos_cap_t* out_cap); // -> 0, or -KOS_ENOMEM/-KOS_EMFILE/-KOS_EAGAIN/-KOS_EINVAL/-KOS_EFAULT
-// Acquire (ALL error-shaped codes are negative: see <kickos/sys/errno.h>):
+// Acquire, waiting at most timeout_us relative microseconds for a holder to release it
+// (KOS_TIMEOUT_NONE: forever; zero: a try, which lends the holder no priority). ALL
+// error-shaped codes are negative (see <kickos/sys/errno.h>):
 //   0               acquired, protected state consistent
 //   -KOS_EOWNERDEAD acquired and the lock IS HELD, but the previous owner died holding it and
 //                   the state may be torn: repair the invariant, then unlock as normal
+//   -KOS_ETIMEDOUT  the time ran out, or a try found it held, NOT acquired
+//   -KOS_ECANCELED  the waiter was cancelled, NOT acquired
 //   -KOS_EBADF      bad/stale cap, NOT acquired
-//   -KOS_EDEADLK    self/recursive lock or a lock that would close a wait cycle, NOT acquired
+//   -KOS_EDEADLK    a lock the caller holds, or one whose wait would close a cycle, NOT acquired
 // A negative return does NOT uniformly mean "not held": treating every rc < 0 as a failed
 // acquire STRANDS the mutex on the -KOS_EOWNERDEAD path.
-int kos_mutex_lock(kos_cap_t mtx);
+int kos_mutex_lock(kos_cap_t mtx, uint32_t timeout_us);
 // 0, -KOS_EBADF (bad cap), or -KOS_EPERM (caller is not the owner). Only the owner unlocks.
 int kos_mutex_unlock(kos_cap_t mtx);
 
@@ -124,13 +128,6 @@ int kos_mutex_unlock(kos_cap_t mtx);
 // a peer and copy min(sent, capacity) bytes. Truncation is allowed.
 // Sends above KOS_EP_MSG_MAX fail with EINVAL; receive capacities are clamped.
 int kos_endpoint_create(kos_cap_t* out_cap); // -> 0, or -KOS_ENOMEM/-KOS_EMFILE/-KOS_EAGAIN/-KOS_EINVAL/-KOS_EFAULT
-// The same endpoint, with its receiver in the kernel running on `node`: locality is settled
-// at the mint and never reaches a caller of kos_send. Privileged, and the cap it grants
-// carries SIGNAL alone, so a far endpoint is never received on or served locally.
-// -> 0, or -KOS_ENOSYS (this image runs one kernel), -KOS_EPERM (unprivileged caller),
-// -KOS_EINVAL (the caller's own node, or a port that node did not mint), plus the mint
-// refusals above.
-int kos_amp_endpoint_create(uint32_t node, uint32_t port, kos_cap_t* out_cap);
 #if defined(KICKOS_AMP_NODE) && KICKOS_AMP_NODE
 // One of `node`'s window counts (enum kos_amp_count_id), as that node last wrote it, into *out: a
 // report, each count its own relaxed read. 0, or -KOS_E*: EINVAL (a null or misaligned out),
@@ -207,8 +204,9 @@ int kos_reply_recv(kos_cap_t reply_cap, void* buf, uintptr_t lens,
 // Re-callable to re-point at a fresh driver: every cap 0 naming the console it replaces follows,
 // and a sender parked there is answered -KOS_EAGAIN. -> 0, -KOS_EPERM (no
 // KOS_AUTH_CONSOLE, or a task the caller did not create), -KOS_EBADF (bad / non-endpoint / stale
-// cap, or a task handle naming nothing), -KOS_EBUSY (a task that has already ended, or the
-// console's registers held by a thread outside that task), -KOS_EACCES
+// cap, or a task handle naming nothing), -KOS_EBUSY (a task that has already ended, the
+// console's registers held by a thread outside that task, another publish still handing the
+// console over, or a panic), -KOS_EACCES
 // (`ep` lacks HANDOUT, a WAIT-only cap included), or -KOS_EOVERFLOW (a reference or receiver
 // count is at its ceiling). A refusal publishes nothing and leaves the kernel console untouched.
 int kos_console_publish(kos_cap_t ep, kos_task_t task);
@@ -222,24 +220,24 @@ int32_t kos_console_flush(uint32_t timeout_us);
 
 // Drop THIS thread's capability. Type-agnostic and refcounted: the underlying object is
 // destroyed only at the LAST close across all holders, and a close touches no waiters.
-// Returns 0, -KOS_EBADF (bad/stale cap), or -KOS_EBUSY (a mutex you still hold; unlock it
-// first).
+// Returns 0, -KOS_EBADF (bad/stale cap), -KOS_EBUSY (a mutex you still hold; unlock it
+// first), or -KOS_EPERM (a reserved index below KOS_CAP_FIRST_DYNAMIC, the kernel's seat).
 int kos_handle_close(kos_cap_t cap);
 int kos_sem_destroy(kos_cap_t cap); // alias of kos_handle_close
 
 // Start a thread. A thread handle spends the whole 32-bit word (abi.h, kos_thread_t) and
 // cannot share a return value with an errno: this returns 0 and writes the child's handle
 // to `*out_thread`, or a negative -KOS_E* (EINVAL/EFAULT malformed params or out-pointer,
-// EPERM privilege or authority, EACCES a grant whose source cap lacks TRANSFER or a right it
-// asks to pass on, EBADF a grant naming no live cap, EBUSY an MMIO window a live thread holds,
-// ENOMEM thread pool / stack arena / domain pool, EAGAIN a destination task at one of its
-// pool budgets, EOVERFLOW a delegated object's refcount at its ceiling). `*out_thread` is
-// ALWAYS written, KOS_THREAD_NONE on every failure, and the out-pointer is validated BEFORE
-// the child is created.
+// EPERM authority, ownership or a priority ceiling, EACCES a grant whose source cap lacks
+// TRANSFER or a right it asks to pass on, EBADF a grant naming no live cap, EBUSY an MMIO window
+// a live thread holds, ENOMEM thread pool / stack arena / domain pool, EAGAIN a destination task
+// at one of its pool budgets, EOVERFLOW a delegated object's refcount at its ceiling).
+// `*out_thread` is ALWAYS written, KOS_THREAD_NONE on every failure, and the out-pointer is
+// validated BEFORE the child is created.
 int kos_thread_create(struct kos_thread_params const* params, kos_thread_t* out_thread);
 
 // End the CALLING thread with `code`, or the whole system when the caller is root: root's
-// exit is a kos_shutdown(code), exactly as returning from main is, so plain C exit() and
+// exit is a halting kos_shutdown(code), exactly as returning from main is, so plain C exit() and
 // abort() from main end the system with children still alive. Root therefore needs
 // KOS_AUTH_SYSTEM to call this at all (see <kickos/sys/init.h>) and panics without it.
 void kos_exit(int code) __attribute__((noreturn));
@@ -259,13 +257,13 @@ int kos_thread_kill(kos_thread_t thread);
 // ETIMEDOUT means termination is irreversible but cleanup remains pending.
 // ECANCELED means the waiting caller was cancelled; the target still terminates.
 // Other errors: EBADF for invalid/exited handles, EPERM for a different parent,
-// EINVAL for self, idle, or privileged targets. Error codes are negative.
+// EINVAL for self or idle. Error codes are negative.
 // The target gets no device-cleanup window and must be scheduled for teardown.
 // A task's entry thread dying this way ends its task (kos_task_kill).
 int kos_thread_slay(kos_thread_t thread, uint32_t timeout_us);
 
-// Set allowed cores for a thread in the caller's task; cross-task changes
-// require privilege. Intersect nonzero masks with the machine and task grant.
+// Set allowed cores for a thread in the caller's task; another task's thread is refused.
+// Intersect nonzero masks with the machine and task grant.
 // Zero selects the task default set, excluding isolated cores. An explicit
 // mask may include isolated cores; a single bit pins the thread.
 // Returns 0 or -KOS_E*: EPERM for no permitted core or unauthorized cross-task
@@ -274,9 +272,8 @@ int kos_thread_slay(kos_thread_t thread, uint32_t timeout_us);
 int kos_thread_set_affinity(kos_thread_t thread, uint32_t core_mask);
 // The core mask `thread` may run on, as kos_thread_set_affinity last left it (a zero request
 // reads back as the task default it resolved to). Reaches what the setter reaches: a thread of
-// the caller's task, or any thread for a privileged caller. The mask (non-negative), or -KOS_E*:
-// EBADF (bad or exited handle), EPERM (another task's thread, unprivileged caller), ENOSYS
-// (one-core kernel).
+// the caller's task. The mask (non-negative), or -KOS_E*: EBADF (bad or exited handle), EPERM
+// (another task's thread), ENOSYS (one-core kernel).
 int kos_thread_affinity(kos_thread_t thread);
 // The kernel core the caller was running on when the kernel read it, as getcpu answers: it may
 // be stale on return. 0 on a one-core kernel. Never fails.
@@ -316,7 +313,7 @@ int kos_task_cores(kos_task_t task);
 // Create an empty task with shared data and fault containment. mem_base/size
 // is a region granted read/write to each member, or 0/0 for no shared memory.
 // Apply the same memory checks as spawn. Only the creator may add members.
-// Members cannot be privileged or supply separate mem_base; MMIO is per thread.
+// Members cannot supply separate mem_base; MMIO is per thread.
 // mem_flags must match every other mapping of the block: a self-grant, a window, or another
 // task's data; one with another memory type answers -KOS_EBUSY.
 // Where each task has an address space, the task's static data starts as root's stood at the
@@ -328,14 +325,13 @@ int kos_task_create(void* mem_base, uint32_t mem_size, uint32_t mem_flags,
 
 // End a task YOU created at once, as a process is killed: every live member is stopped and runs
 // no further instruction of its own, a member that makes no system call included, and the handle
-// stops naming anything. A privileged member is killed instead, and stops at its next system
-// call. 0 means the stop is committed, not that every member is gone: kos_task_slay is the form
-// that waits. Returns 0, -KOS_EBADF (bad / stale handle, KOS_TASK_NONE included) or -KOS_EPERM
-// (you did not create it). A task also ENDS when its entry thread dies by any cause, a return,
-// an exit, a fault, or kos_thread_kill or kos_thread_slay of the entry alone, the entry being
-// the first member a non-member seated, or when any member faults: every other member is
-// stopped as here, and it takes no new member. Every other member's own death ends that member
-// alone.
+// stops naming anything. 0 means the stop is committed, not that every member is gone:
+// kos_task_slay is the form that waits. Returns 0, -KOS_EBADF (bad / stale handle, KOS_TASK_NONE
+// included) or -KOS_EPERM (you did not create it). A task also ENDS when its entry thread dies
+// by any cause, a return, an exit, a fault, or kos_thread_kill or kos_thread_slay of the entry
+// alone, the entry being the first member a non-member seated, or when any member faults: every
+// other member is stopped as here, and it takes no new member. Every other member's own death
+// ends that member alone.
 int kos_task_kill(kos_task_t task);
 
 // Watch a task YOU created: `notify_cap`'s badge is raised when the task ends, when it is dead,
@@ -439,10 +435,9 @@ _Pragma("GCC diagnostic pop")
 // does not keep, or a bit it withholds) or -KOS_ENOSYS (an arch with no ports).
 int kos_port_reg_write(uint16_t base, uint16_t offset, uint8_t value);
 
-// Forcibly terminate every member of a task created by the caller, without
-// a cleanup window; a privileged member is killed instead. The task ends at once, as
-// kos_task_kill ends it. Wait timeout_us relative microseconds (KOS_TIMEOUT_NONE:
-// forever; zero: request only). An empty task whose members' teardown is done
+// Forcibly terminate every member of a task created by the caller, without a cleanup window.
+// The task ends at once, as kos_task_kill ends it. Wait timeout_us relative microseconds
+// (KOS_TIMEOUT_NONE: forever; zero: request only). An empty task whose members' teardown is done
 // succeeds immediately. Returns 0 once empty, every member's teardown done, and
 // released. ETIMEDOUT leaves termination pending and the handle valid for
 // another wait. ECANCELED cancels only the wait.
@@ -457,11 +452,21 @@ int kos_task_slay(kos_task_t task, uint32_t timeout_us);
 // EDEADLK for self. Handles remain valid after exit until the slot is reused.
 int kos_thread_join(kos_thread_t thread, uint32_t timeout_us);
 
-// End the WHOLE system with `status`: drain the buffered console, then hand over to the
-// chip's shutdown, which is also what a returning kickos_init_entry does (see
-// <kickos/sys/init.h>). Needs KOS_AUTH_SYSTEM, so it is NOT noreturn: it returns -KOS_EPERM
-// to a caller that may not end the system, and does not return at all on success.
-int kos_shutdown(int status);
+// End the WHOLE system with `status`, by `outcome`: drain the kernel console, then halt
+// (what a returning kickos_init_entry does, see <kickos/sys/init.h>), reset, or reset into the
+// chip's bootloader (firmware-download mode). NOT noreturn: -KOS_EPERM to a caller without
+// KOS_AUTH_SYSTEM, or without KOS_AUTH_BOOTLOADER for the bootloader, or for a reset on an AMP
+// node other than the partition's reset owner; -KOS_ENOSYS, the system still running, for an
+// outcome this chip has no entry for; -KOS_EINVAL for an unknown outcome.
+// Bytes a console driver still holds are not drained: kos_console_flush first.
+int kos_shutdown(int status, enum kos_shutdown_outcome outcome);
+
+// Set, once per boot, what a panic or a fault the system does not survive does: halt (the
+// default), reset, or enter the chip's bootloader. An outcome the chip lacks halts; an ordered
+// end (kos_shutdown, a returning main, the last thread) does what it asks and reads none of it.
+// -> 0, -KOS_EPERM (needs KOS_AUTH_SYSTEM and KOS_AUTH_BOOTLOADER, and for a reset the AMP
+// partition's reset owner), -KOS_EINVAL (unknown outcome), -KOS_EALREADY (already set this boot).
+int kos_terminal_outcome(enum kos_shutdown_outcome outcome);
 
 // End the system through the kernel's panic path, printing `msg`: mask interrupts, force the
 // console back to a polled channel, flush, print KERNEL PANIC. Does not return, needs no
@@ -471,13 +476,6 @@ int kos_shutdown(int status);
 // `msg` is copied into a bounded kernel buffer (longer messages are truncated) and checked
 // byte by byte, so an unreadable pointer costs the text, not the panic.
 void kos_panic(char const* msg) __attribute__((noreturn));
-
-#if defined(KICKOS_REBOOT) && KICKOS_REBOOT
-// Reboot into the chip's bootloader (firmware-download mode). Needs KOS_AUTH_SYSTEM, so like
-// kos_shutdown it is NOT noreturn: the gate can refuse with -KOS_EPERM, and a chip with no
-// bootloader entry returns -KOS_ENOSYS. Does not return on success.
-int kos_reboot(void);
-#endif
 
 // Tier-1 IRQ-as-event. The line IS a capability: claiming it needs KOS_AUTH_IRQ, and the
 // resulting cap is delegable to an unprivileged driver at spawn. The first-level ISR masks
@@ -586,7 +584,8 @@ int kos_periph_reg_write(uintptr_t base, uintptr_t offset, uint32_t value);
 // drops everything; absent bits cannot be added. Only a spawning parent can set initial
 // authority. Dropping KOS_CAP_WAIT from an endpoint cap stops the caller being a receiver,
 // which is how a creator keeps KOS_CAP_HANDOUT alone.
-// Returns 0, or -KOS_EBADF if no authority remains or cap names nothing.
+// Returns 0, -KOS_EBADF if no authority remains or cap names nothing, or -KOS_EPERM for a
+// reserved index below KOS_CAP_FIRST_DYNAMIC, the kernel's seat.
 int kos_cap_narrow(kos_cap_t cap, uint32_t mask);
 
 // One-shot init-time pin-function config: point pin `pin` of port `port` at raw
@@ -649,7 +648,7 @@ int kos_frame_create(size_t bytes, kos_cap_t* out_frame);
 // kos_frame_map and kos_frame_unmap. Needs no authority: those calls need KOS_AUTH_MEMORY. The
 // capability holds no reference: from the instant the task ends it names nothing, and every call
 // that names it answers -KOS_EBADF. 0, or -KOS_E*: EINVAL (a null or misaligned out_space), EFAULT
-// (out_space), EINVAL (a caller with no address space), EMFILE.
+// (out_space), EMFILE.
 int kos_aspace_self(kos_cap_t* out_space);
 // Map the frame RUN `frame` names into the address space `space` names. *va is where, on a page
 // boundary, or 0 for the kernel to choose: the run's own address, which no range the kernel
@@ -674,7 +673,7 @@ int kos_mem_count(uint32_t which, uint32_t* out);
 void kos_kernel_diag_led_set(int on);
 void kos_kernel_diag_led_toggle(void);
 
-#if defined(KICKOS_BENCH) && KICKOS_BENCH
+#if KICKOS_BENCH
 // The microbenchmark's own scaffolding, and the ONLY way an app reaches it. `op` is an enum
 // kos_bench_op (abi.h); the meaning of a0/a1 and of the return is per-op and documented
 // there. Returns -KOS_EINVAL for an unknown op or a bad IRQ line.

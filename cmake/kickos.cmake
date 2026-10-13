@@ -421,10 +421,11 @@ set(KICKOS_X86_64_QEMU_CPU
     CACHE INTERNAL "The -cpu model every x86_64 emulation runs")
 
 # ---------------------------------------------------------------------------
-# kickos_qemu_machine(<board> <out_env> <out_machine>)
+# kickos_qemu_machine(<board> <out_env> <out_machine> [<out_cpus>])
 #   The emulator the configured board's board file states (its `emulator`, which chip.cmake
 #   carries), as the environment a gate runs under and the QEMU machine: out_machine comes back
-#   EMPTY for a board no emulator runs. <board> must be the configured board.
+#   EMPTY for a board no emulator runs. <board> must be the configured board. out_cpus is the
+#   machine's -smp count, 1 without one.
 #
 #   -smp is what makes a multi-core build's cores exist, and under one image per node the
 #   machine's cores and memory are the PARTITION's: sized from KICKOS_NUM_CORES instead, a PSCI
@@ -435,6 +436,15 @@ function(kickos_qemu_machine board out_env out_machine)
   if(NOT board STREQUAL KICKOS_BOARD)
     message(FATAL_ERROR "kickos_qemu_machine: answers for the configured board '${KICKOS_BOARD}', "
       "not '${board}'")
+  endif()
+  set(_cpus 1)
+  if(KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
+    set(_cpus ${KICKOS_AMP_PARTITION_CORES})
+  elseif(KICKOS_NUM_CORES GREATER 1)
+    set(_cpus ${KICKOS_NUM_CORES})
+  endif()
+  if(ARGC GREATER 3)
+    set(${ARGV3} ${_cpus} PARENT_SCOPE)
   endif()
   if("${KICKOS_QEMU_MACHINE}" STREQUAL "")
     set(${out_env} "" PARENT_SCOPE)
@@ -449,9 +459,9 @@ function(kickos_qemu_machine board out_env out_machine)
   if(KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
     math(EXPR _part_mib
          "(${KICKOS_AMP_NODES} * ${KICKOS_AMP_NODE_SHARE} + ${KICKOS_AMP_SHARED_SIZE} + 1048575) / 1048576")
-    list(APPEND _extra -smp ${KICKOS_AMP_PARTITION_CORES} -m ${_part_mib}M)
-  elseif(KICKOS_NUM_CORES GREATER 1)
-    list(APPEND _extra -smp ${KICKOS_NUM_CORES})
+    list(APPEND _extra -smp ${_cpus} -m ${_part_mib}M)
+  elseif(_cpus GREATER 1)
+    list(APPEND _extra -smp ${_cpus})
   endif()
   set(_env "QEMU=${KICKOS_QEMU_BINARY}")
   if(_extra)
@@ -470,262 +480,6 @@ function(kickos_qemu_machine board out_env out_machine)
   endif()
   set(${out_env} "${_env}" PARENT_SCOPE)
   set(${out_machine} "${_machine}" PARENT_SCOPE)
-endfunction()
-
-# ---------------------------------------------------------------------------
-# kickos_add_qemu_test([NAME <n>] TARGET <app> SCRIPT <sh>
-#                      [MACHINE <m>] [BOOTS <n>] [WORK <s>] [ARGS <arg...>])
-#   Register a QEMU boot gate: run SCRIPT against the app's ELF and treat exit 77 as SKIP (a
-#   missing qemu-system is a skip, not a failure).
-#
-#   TOTAL over the fleet: a board with no emulator registers nothing and says nothing, so a
-#   call site owes no board predicate. What a call site still owes is any condition that is
-#   about the CLAIM rather than about the emulator: an arch, an MPU posture, a core count, or
-#   the existence of the target this gate rides.
-#
-#   NAME defaults to <board tag>_<target>, the board name with `-` turned into `_`; state it
-#   explicitly where the ctest name is not that (one target carrying several gates, or one
-#   gate whose name is the claim rather than the image).
-#   QEMU_MACHINE is always passed: check_fault_dump.sh reads an UNSET QEMU_MACHINE as "this
-#   is the sim, run natively", and most boards would otherwise take the mps2-an386 fallback.
-#   MACHINE overrides the board default. ARGS are extra script arguments after the ELF.
-#   BOOTS and WORK size the TIMEOUT, see kickos_boot_timeout.
-#   TARGET names an app target, whose image is $<TARGET_FILE:>.
-# ---------------------------------------------------------------------------
-function(kickos_add_qemu_test)
-  cmake_parse_arguments(QT "" "NAME;TARGET;SCRIPT;MACHINE;BOOTS;WORK" "ARGS" ${ARGN})
-  if(NOT QT_TARGET OR NOT QT_SCRIPT)
-    message(FATAL_ERROR "kickos_add_qemu_test: TARGET and SCRIPT are required")
-  endif()
-  if(NOT QT_NAME)
-    string(REPLACE "-" "_" _tag "${KICKOS_BOARD}")
-    set(QT_NAME "${_tag}_${QT_TARGET}")
-  endif()
-  kickos_qemu_machine("${KICKOS_BOARD}" _env _machine)
-  if(_machine STREQUAL "")
-    return()
-  endif()
-  if(QT_MACHINE)
-    set(_machine "${QT_MACHINE}")
-  endif()
-  list(APPEND _env QEMU_MACHINE=${_machine})
-  add_test(NAME "${QT_NAME}"
-    COMMAND "${CMAKE_COMMAND}" -E env ${_env}
-            "${QT_SCRIPT}" "$<TARGET_FILE:${QT_TARGET}>" ${QT_ARGS})
-  set_tests_properties("${QT_NAME}" PROPERTIES SKIP_RETURN_CODE 77)
-  kickos_boot_timeout("${QT_NAME}" "${QT_SCRIPT}" BOOTS ${QT_BOOTS} WORK ${QT_WORK})
-endfunction()
-
-# ---------------------------------------------------------------------------
-# kickos_boot_timeout(<test> <script> [BOOTS <n>] [WORK <s>])
-#   Register the TIMEOUT of a test booting the configured board's image, under its emulator or
-#   natively on the sim, as the charge tests/lib/gate.sh's boot_bound puts on its boots, plus one
-#   second, so that charge can refuse only a test whose BOOTS is miscounted. Each boot is bounded
-#   at the QEMU_TIMEOUT (on the sim, SIM_TIMEOUT) this configure sees, else at <script>'s own
-#   default, else at run_image's, and carries gate.sh's firmware allowance under uefi-pe and its
-#   stop. A ctest run under another bound needs a reconfigure.
-#
-#   BOOTS (default 1) counts the boots gate.sh charges, those of a script <script> runs
-#   included. WORK is what the test spends beside them, such as building the image it boots.
-# ---------------------------------------------------------------------------
-function(kickos_boot_timeout test script)
-  cmake_parse_arguments(QB "" "BOOTS;WORK" "" ${ARGN})
-  if(NOT DEFINED QB_BOOTS)
-    set(QB_BOOTS 1)
-  endif()
-  if(NOT DEFINED QB_WORK)
-    set(QB_WORK 0)
-  endif()
-  set(_lib "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../tests/lib/gate.sh")
-  set(_var QEMU_TIMEOUT)
-  if(KICKOS_ARCH STREQUAL "sim")
-    set(_var SIM_TIMEOUT)
-  endif()
-  set(_default_re "(^: |boot_bound )\"\\$\\{${_var}:[-=][0-9]+\\}\"")
-  set(_bound "$ENV{${_var}}")
-  if(_bound STREQUAL "")
-    file(STRINGS "${script}" _bound REGEX "${_default_re}" LIMIT_COUNT 1)
-  endif()
-  if(_bound STREQUAL "")
-    file(STRINGS "${_lib}" _bound REGEX "${_default_re}" LIMIT_COUNT 1)
-  endif()
-  string(REGEX REPLACE "^.*${_var}:[-=]([0-9]+)}\"$" "\\1" _bound "${_bound}")
-  file(STRINGS "${_lib}" _firmware REGEX "^KOS_UEFI_FIRMWARE_S=[0-9]+$")
-  file(STRINGS "${_lib}" _ticks REGEX "^KOS_STOP_TICKS=[0-9]+$")
-  string(REPLACE "KOS_UEFI_FIRMWARE_S=" "" _firmware "${_firmware}")
-  string(REPLACE "KOS_STOP_TICKS=" "" _ticks "${_ticks}")
-  foreach(_n IN ITEMS _bound _firmware _ticks)
-    if(NOT "${${_n}}" MATCHES "^[0-9]+$")
-      message(FATAL_ERROR "kickos_boot_timeout(${test}): ${_n} reads '${${_n}}', not whole "
-        "seconds, from ${_var}, ${script} or ${_lib}")
-    endif()
-  endforeach()
-  kickos_qemu_machine("${KICKOS_BOARD}" _env _machine)
-  if(NOT "KICKOS_BOOT=uefi-pe" IN_LIST _env)
-    set(_firmware 0)
-  endif()
-  math(EXPR _timeout "${QB_WORK} + ${QB_BOOTS} * (${_bound} + ${_firmware} + ${_ticks} / 5) + 1")
-  set_tests_properties("${test}" PROPERTIES TIMEOUT ${_timeout})
-endfunction()
-
-# ---------------------------------------------------------------------------
-# kickos_host_gate(<name>... [TIMEOUT <s>])
-#   The tail a gate that runs on the BUILD HOST owes: the `host` label the root's decline pass
-#   reads, and a timeout, defaulting to 120s. A gate without the label is taken for a runner of
-#   an image and declined wherever the integration tests are off.
-#
-#   It states the TAIL and not the add_test, and widening it to carry the COMMAND would be a
-#   defect: an argument holding an escaped `;` survives a literal add_test and is SPLIT by any
-#   re-expansion through cmake_parse_arguments, shifting every positional after it.
-# ---------------------------------------------------------------------------
-function(kickos_host_gate)
-  cmake_parse_arguments(HG "" "TIMEOUT" "" ${ARGN})
-  if(NOT HG_UNPARSED_ARGUMENTS)
-    message(FATAL_ERROR "kickos_host_gate: at least one registered test name is required")
-  endif()
-  if(NOT HG_TIMEOUT)
-    set(HG_TIMEOUT 120)
-  endif()
-  set_tests_properties(${HG_UNPARSED_ARGUMENTS} PROPERTIES TIMEOUT ${HG_TIMEOUT} LABELS host)
-endfunction()
-
-# kickos_image_rule(<rule> <target> [<arg>...])
-#   Host gate image_<rule>: tests/static/check_image_rules.sh's <rule> over <target>'s image.
-function(kickos_image_rule rule target)
-  add_test(NAME image_${rule}_${target}
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_image_rules.sh" ${rule} "${CMAKE_OBJDUMP}"
-            "$<TARGET_FILE:${target}>" ${ARGN})
-  kickos_host_gate(image_${rule}_${target})
-endfunction()
-
-# ---------------------------------------------------------------------------
-# The host gate seam: real kernel translation units compiled for the build host at a
-# POSTURE the running preset does not carry.
-#
-# A posture is a set of KICKOS_* macros whose value decides which arms of a kernel source
-# exist at all. Overriding one is not a matter of appending a -D: the value reaches every
-# in-tree TU through the root's add_compile_definitions, and TWO -D of one macro with
-# different values is a redefinition -Werror refuses. It arrives by two separate routes that
-# both have to be cut, and cutting one silently leaves the preset's value in force:
-#   the DIRECTORY property a test directory inherits from the root, and
-#   kickos_kernel's own COMPILE_DEFINITIONS, which the gate reads to compile the same
-#   translation unit that ships.
-# kickos_posture_scrub does the cutting; nothing else in the tree may spell the filter.
-#
-# kickos_posture_scrub(<out> <MACRO=VALUE>...)
-#   Drops exactly the macros named here from the CALLER'S directory property (a function
-#   shares its caller's directory scope), and returns in <out> the definition list a host
-#   target compiling kernel sources wants: kickos_kernel's own definitions with those same
-#   macros filtered out, then the given values.
-function(kickos_posture_scrub out)
-  set(_names "")
-  foreach(_d IN LISTS ARGN)
-    if(NOT _d MATCHES "^([A-Za-z_][A-Za-z0-9_]*)=")
-      message(FATAL_ERROR "kickos_posture_scrub: '${_d}' is not <MACRO>=<VALUE>")
-    endif()
-    list(APPEND _names "${CMAKE_MATCH_1}")
-  endforeach()
-  set(_kernel_defs "$<TARGET_PROPERTY:kickos_kernel,COMPILE_DEFINITIONS>")
-  if(_names)
-    list(REMOVE_DUPLICATES _names)
-    string(REPLACE ";" "|" _alt "${_names}")
-    set(_re "^(${_alt})=")
-    get_directory_property(_dirdefs COMPILE_DEFINITIONS)
-    list(FILTER _dirdefs EXCLUDE REGEX "${_re}")
-    set_directory_properties(PROPERTIES COMPILE_DEFINITIONS "${_dirdefs}")
-    set(_kernel_defs "$<FILTER:${_kernel_defs},EXCLUDE,${_re}>")
-  endif()
-  set(${out} "${_kernel_defs}" ${ARGN} PARENT_SCOPE)
-endfunction()
-
-# kickos_add_kernel_host_lib(<name> SOURCES <cc...> [INCLUDES <dirs...>]
-#                            [POSTURE <MACRO=VALUE>...])
-#   Kernel sources compiled for the host at a posture, as an OBJECT library SEVERAL gates
-#   link. It carries its include path, definitions and C++ standard PUBLIC, so a gate that
-#   links it inherits the whole posture and its own TU is compiled the same way.
-#
-#   The kernel's COMPILE_OPTIONS are deliberately NOT inherited: -ffreestanding, -fno-common
-#   and -fno-use-cxa-atexit describe an image with no host libc, and a gate is a hosted
-#   program that needs stdio, setjmp and atexit. The three LANGUAGE flags below are the ones
-#   that change what a translation unit MEANS, so they are carried by hand.
-#
-#   The posture is recorded on the target: kickos_add_unit_test scrubs a linking gate's
-#   directory for it, so a consumer states nothing.
-function(kickos_add_kernel_host_lib name)
-  cmake_parse_arguments(KHL "" "" "SOURCES;INCLUDES;POSTURE" ${ARGN})
-  if(NOT KHL_SOURCES)
-    message(FATAL_ERROR "kickos_add_kernel_host_lib(${name}): SOURCES is required")
-  endif()
-  kickos_posture_scrub(_khl_defs ${KHL_POSTURE})
-  add_library(${name} OBJECT ${KHL_SOURCES})
-  target_compile_features(${name} PUBLIC ${KICKOS_CXX_STANDARD})
-  target_include_directories(${name} PUBLIC
-    $<TARGET_PROPERTY:kickos_kernel,INCLUDE_DIRECTORIES> ${KHL_INCLUDES})
-  target_compile_definitions(${name} PUBLIC ${_khl_defs})
-  target_compile_options(${name} PRIVATE ${KICKOS_WARN_FLAGS}
-    -fno-exceptions -fno-rtti -fno-threadsafe-statics)
-  set_property(TARGET ${name} PROPERTY KICKOS_POSTURE "${KHL_POSTURE}")
-endfunction()
-
-# ---------------------------------------------------------------------------
-# kickos_add_unit_test(NAME <target> SOURCES <cc...> [INCLUDES <dirs...>]
-#                     [DEFINITIONS <defs...>] [LIBRARIES <libs...>]
-#                     [KERNEL] [POSTURE <MACRO=VALUE>...] [TEST_PREFIX <p>])
-#   One host unit-test executable on GoogleTest, with PER-CASE ctest entries.
-#
-#   KERNEL adds kickos_kernel's include path and its definitions VERBATIM, for a gate that
-#   compiles a kernel translation unit or includes a kernel header: a divergent config would
-#   gate a different translation unit than the one that ships. POSTURE is the same with the
-#   named macros replaced, and implies KERNEL.
-#
-#   TEST_PREFIX is for a gate built SEVERAL times from one source: every binary defines the
-#   same gtest suite and case names, and without a prefix they would register under one
-#   ctest name and only one geometry would be checked.
-#
-#   gtest_discover_tests writes its add_test calls at BUILD time, so the root CMakeLists
-#   wrapper that appends the build fixture never sees them: the `host` label and
-#   FIXTURES_REQUIRED have to be passed through PROPERTIES here.
-function(kickos_add_unit_test)
-  cmake_parse_arguments(UT "KERNEL" "NAME;TEST_PREFIX"
-    "SOURCES;INCLUDES;DEFINITIONS;LIBRARIES;POSTURE" ${ARGN})
-  if(NOT UT_NAME OR NOT UT_SOURCES)
-    message(FATAL_ERROR "kickos_add_unit_test: NAME and SOURCES are required")
-  endif()
-  # A linked posture library carries its macros PUBLIC, so this directory's inherited copy
-  # of them collides exactly as an own POSTURE would.
-  set(_posture ${UT_POSTURE})
-  foreach(_lib IN LISTS UT_LIBRARIES)
-    if(TARGET ${_lib})
-      get_target_property(_lib_posture ${_lib} KICKOS_POSTURE)
-      if(_lib_posture)
-        list(APPEND _posture ${_lib_posture})
-      endif()
-    endif()
-  endforeach()
-  if(_posture OR UT_KERNEL)
-    kickos_posture_scrub(_ut_kernel_defs ${_posture})
-  endif()
-  add_executable(${UT_NAME} ${UT_SOURCES})
-  target_link_libraries(${UT_NAME} PRIVATE ${UT_LIBRARIES} GTest::gtest_main)
-  target_compile_features(${UT_NAME} PRIVATE ${KICKOS_CXX_STANDARD})
-  target_compile_options(${UT_NAME} PRIVATE ${KICKOS_WARN_FLAGS})
-  if(UT_KERNEL OR UT_POSTURE)
-    target_include_directories(${UT_NAME} PRIVATE
-      $<TARGET_PROPERTY:kickos_kernel,INCLUDE_DIRECTORIES>)
-  endif()
-  if(UT_INCLUDES)
-    target_include_directories(${UT_NAME} PRIVATE ${UT_INCLUDES})
-  endif()
-  if(UT_KERNEL OR UT_POSTURE)
-    target_compile_definitions(${UT_NAME} PRIVATE ${_ut_kernel_defs})
-  endif()
-  if(UT_DEFINITIONS)
-    target_compile_definitions(${UT_NAME} PRIVATE ${UT_DEFINITIONS})
-  endif()
-  gtest_discover_tests(${UT_NAME}
-    TEST_PREFIX "${UT_TEST_PREFIX}"
-    PROPERTIES TIMEOUT 30 LABELS host FIXTURES_REQUIRED kickos_build
-    DISCOVERY_TIMEOUT 60)
 endfunction()
 
 # ---------------------------------------------------------------------------

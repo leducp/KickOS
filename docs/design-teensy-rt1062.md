@@ -100,6 +100,6 @@ Program `IOMUXC_GPR_GPR16`/`GPR17` for a deterministic split; move `.data`/`.bss
 copy latency-critical code to ITCM (a second load region), for real M7 speed.
 
 ### 4. Full C++ opt-in, and flashing
-`kickos_cxx` leaf (exceptions/RTTI over newlib) as a later design-reviewed pass. Flashing is
+full-C++ leaf (formerly `kickos_cxx`; exceptions/RTTI over newlib) as a later design-reviewed pass. Flashing is
 HalfKay (`teensy_loader_cli` / Teensy Loader) with a `.hex`; the FCB read LUT plus `serialClkFreq`
 and the UART clock root were the on-bench validate items.

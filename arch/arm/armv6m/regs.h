@@ -1,11 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Minimal ARMv6-M (Cortex-M0/M0+) core register definitions, arch-internal,
-// clean-room (offsets from the ARMv6-M Architecture Reference Manual). Versus
-// v7-M: NO BASEPRI (critical section is PRIMASK = mask all), NO DWT cycle
-// counter (the monotonic clock is chip-provided), and SHPR/NVIC-IPR are
-// word-access only (no byte writes).
+// ARMv6-M (Cortex-M0/M0+) core registers, arch-internal. Versus v7-M: NO BASEPRI (the critical
+// section is PRIMASK = mask all), NO DWT cycle counter, and SHPR/NVIC-IPR are word-access only.
 
 #ifndef KICKOS_ARCH_ARM_ARMV6M_REGS_H
 #define KICKOS_ARCH_ARM_ARMV6M_REGS_H

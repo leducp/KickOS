@@ -27,10 +27,10 @@
 # Spelled out here rather than derived, so this gate asserts the encoding instead of
 # restating whatever the source happens to produce.
 #
-# ABOVE ONE CORE THE WIRE HAS NO PER-LINE ATOMICITY, arch_console_write being a byte-at-a-time
-# device loop under no lock, so a core printing a status line lands it INSIDE another's line
-# character by character. The MARKER is a presence, so it is matched byte-exact first and a
-# split is tolerated second, through require_on_wire, which reports the span it allowed.
+# ABOVE ONE CORE A LINE CAN ARRIVE SPLIT: the console keeps a line whole only within one write,
+# so a line sent in several writes can take another core's line between its pieces. The MARKER
+# is a presence, so it is matched byte-exact first and a split is tolerated second, through
+# require_on_wire, which reports the span it allowed.
 #
 # THE THREE READS THAT CARRY A VALUE STAY BYTE-EXACT, and that is not a gap: a bounded in-order
 # match answers whether a literal reached the wire and never which value it carried, so one

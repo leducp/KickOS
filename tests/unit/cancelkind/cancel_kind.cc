@@ -149,16 +149,13 @@ namespace kickos
             EXPECT_EQ(victim->cancel_kind, CANCEL_KILL) << "still the kind the first call wrote";
         }
 
-        TEST_F(CancelWiring, a_group_cancel_slays_every_member_and_kills_a_privileged_one)
+        TEST_F(CancelWiring, a_group_cancel_slays_every_member)
         {
             Task* const group = task(0);
             Thread* const a = seat_pool(SLOT_VICTIM, PRIO_LOW);
             Thread* const b = seat_pool(SLOT_PEER, PRIO_LOW);
-            Thread* const r = seat_pool(SLOT_KILLER, PRIO_LOW);
-            r->privileged = true;
             join_task(a, group);
             join_task(b, group);
-            join_task(r, group);
 
             {
                 IrqLock lock;
@@ -167,7 +164,6 @@ namespace kickos
 
             EXPECT_EQ(a->cancel_kind, CANCEL_SLAY) << "the group form slays";
             EXPECT_EQ(b->cancel_kind, CANCEL_SLAY) << "every member, not just the first";
-            EXPECT_EQ(r->cancel_kind, CANCEL_KILL) << "a privileged member's frames may hold kernel work";
         }
 
         // --- the escalation order ------------------------------------------------------

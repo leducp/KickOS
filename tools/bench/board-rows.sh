@@ -23,9 +23,15 @@
 # onboard probes do, so a wildcard row for one of those boards reports the other board's
 # probe as its own.
 
+# bench_default_variant <tree> <board>
+#
 # The preset variant a board's capture builds where the caller names none, bench.sh's and the
-# fleet pass's first.
-BENCH_DEFAULT_VARIANT=st
+# fleet pass's first: `st` on a board whose tree carries one, its base preset elsewhere.
+bench_default_variant() {
+    if [ -d "$1/boards/$2/configs/st" ]; then
+        printf 'st\n'
+    fi
+}
 
 # board_probe_rows <board>
 #

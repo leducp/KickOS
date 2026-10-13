@@ -183,7 +183,7 @@ int main(int, char**)
         if (stack != nullptr and kos_mem_self_grant(stack, CALLER_STACK, 0) == 0)
         {
             rc = kos::thread::create(worker, reinterpret_cast<void*>(static_cast<uintptr_t>(2)),
-                                     "tlsc", 10, KOS_POLICY_FIFO, 0, false, nullptr, 0, stack,
+                                     "tlsc", 10, KOS_POLICY_FIFO, 0, nullptr, 0, stack,
                                      CALLER_STACK)
                      .error();
         }

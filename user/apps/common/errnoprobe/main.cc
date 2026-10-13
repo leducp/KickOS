@@ -358,10 +358,10 @@ namespace
 
     Fast g_fast = {};
 
-    constexpr kos_cap_t FAST_EP = 1;
-    constexpr kos_cap_t FAST_READY = 2;
-    constexpr kos_cap_t FAST_SRV_DONE = 3;
-    constexpr kos_cap_t FAST_CLI_DONE = 2;
+    constexpr kos_cap_t FAST_EP = KOS_SPAWN_DELEGATED_CAP0;
+    constexpr kos_cap_t FAST_READY = KOS_SPAWN_DELEGATED_CAP0 + 1;
+    constexpr kos_cap_t FAST_SRV_DONE = KOS_SPAWN_DELEGATED_CAP0 + 2;
+    constexpr kos_cap_t FAST_CLI_DONE = KOS_SPAWN_DELEGATED_CAP0 + 1;
 
     void fast_server(void*)
     {
@@ -516,7 +516,7 @@ namespace
     // than passing.
     constexpr unsigned long PREEMPT_SPIN_LIMIT = 1000000000ul;
 
-    constexpr kos_cap_t PRE_DONE = 1;
+    constexpr kos_cap_t PRE_DONE = KOS_SPAWN_DELEGATED_CAP0;
 
     void preempt_high(void*)
     {

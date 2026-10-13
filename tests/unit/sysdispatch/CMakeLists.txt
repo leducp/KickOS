@@ -12,11 +12,13 @@ include("${PROJECT_SOURCE_DIR}/tests/unit/common/host_image.cmake")
 set(_k "${PROJECT_SOURCE_DIR}/kernel")
 set(_common "${PROJECT_SOURCE_DIR}/tests/unit/common")
 set(_sys_aspace "${_k}/syscall/syscall.cc" "${_k}/syscall/syscall_thread.cc"
+                "${_k}/init/terminal.cc"
                 "${_k}/syscall/syscall_mem.cc" "${_k}/syscall/syscall_obj.cc"
                 "${_k}/mem/aspace.cc" "${_k}/mem/vrange.cc" "${_k}/mem/ustack.cc"
                 "${_k}/domain/domain.cc" "${_k}/thread/thread.cc" "${_k}/thread/tls.cc"
                 "${_k}/grant/grant.cc")
 set(_sys_region "${_k}/syscall/syscall.cc" "${_k}/syscall/syscall_thread.cc"
+                "${_k}/init/terminal.cc"
                 "${_k}/syscall/syscall_mem.cc" "${_k}/syscall/syscall_obj.cc"
                 "${_k}/mem/ramown.cc" "${_k}/thread/thread.cc" "${_k}/thread/tls.cc"
                 "${_k}/grant/grant.cc")
@@ -26,8 +28,9 @@ kickos_add_kseam(kickos_kseam_sysdispatch
   EXTRA sys_seam.cc stub_seam.cc "${_common}/host_aspace.cc" "${_common}/host_frame_pool.cc"
         ${_sys_aspace}
   INCLUDES "${_k}/syscall" "${_common}" "${CMAKE_CURRENT_SOURCE_DIR}"
-  POSTURE KICKOS_HAVE_ASPACE=1 KICKOS_ARCH_ALIAS_DCACHE=1 KICKOS_ARCH_IRQ_WINDOW=1
-          KSEAM_REAL_DOMAIN=1 KICKOS_REBOOT=0)
+  POSTURE KICKOS_HAVE_ASPACE=1 KICKOS_MAX_MUTEXES=24
+          KICKOS_ARCH_ALIAS_DCACHE=1 KICKOS_ARCH_IRQ_WINDOW=1
+          KSEAM_REAL_DOMAIN=1)
 set(_image_bytes 8192)
 kickos_add_unit_test(NAME sys_presync SOURCES presync_loop.cc
   DEFINITIONS SYS_IMAGE_BYTES=${_image_bytes}
@@ -47,12 +50,16 @@ endforeach()
 
 kickos_add_kseam(kickos_kseam_sysdispatch_region
   EXTRA region_seam.cc stub_seam.cc ${_sys_region}
-  INCLUDES "${_k}/syscall" "${CMAKE_CURRENT_SOURCE_DIR}"
-  POSTURE KICKOS_REBOOT=0)
+  INCLUDES "${_k}/syscall" "${CMAKE_CURRENT_SOURCE_DIR}")
 kickos_add_unit_test(NAME sys_ram_clear SOURCES ram_clear.cc
   LIBRARIES kickos_kseam_sysdispatch_region)
 kickos_add_unit_test(NAME spawn_unwind SOURCES spawn_unwind.cc task_stop.cc
   LIBRARIES kickos_kseam_sysdispatch_region)
-foreach(_gate IN ITEMS sys_ram_clear spawn_unwind)
+# The fault dead-end of an emulated chip, whose arch_shutdown the seam answers.
+kickos_add_unit_test(NAME sys_shutdown
+  SOURCES shutdown.cc "${PROJECT_SOURCE_DIR}/arch/common/kfault_terminate_shutdown.cc"
+  INCLUDES "${PROJECT_SOURCE_DIR}/arch/common"
+  LIBRARIES kickos_kseam_sysdispatch_region)
+foreach(_gate IN ITEMS sys_ram_clear spawn_unwind sys_shutdown)
   target_link_options(${_gate} PRIVATE -Wl,--gc-sections)
 endforeach()

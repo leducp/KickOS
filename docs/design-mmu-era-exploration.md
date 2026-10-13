@@ -183,12 +183,13 @@ This would be KickOS's FIRST non-embedded, first-MMU, first-ring-based arch.
 
 **QEMU-first path.** `qemu-system-x86_64 -serial stdio -m ...` with a multiboot2
 or a small hand-rolled stage; console is COM1 (already the "minimal debug
-console" seam, `arch_console_write*`). No new hardware to buy; the sim-first
+console" seam, `arch_console_write_sync`). No new hardware to buy; the sim-first
 discipline KickOS already lives by carries over. Boot a multiboot2 ELF via QEMU's
 `-kernel` to skip writing a disk bootloader initially.
 
 **Boot model (the genuinely new arch surface).** Coming up on x86_64 is a
 sequence KickOS has never needed:
+
 - Land in 32-bit protected mode (multiboot2 hands you this), build a minimal GDT
   with a 64-bit code + data segment (x86 needs a GDT even without segmentation).
 - Build initial page tables: identity-map low physical for the transition, plus
@@ -215,8 +216,8 @@ first: CR3 == the aspace root, `map()` edits the 4-level table, TLB invalidation
 via `invlpg` / CR3 reload. A Domain -> one PML4.
 
 **APIC/interrupt model vs the arch IRQ seam.** The `arch_irq_mask/unmask/inject`
-triad (arch.h:246-266) is deliberately thin, which HELPS: the Local APIC + IOAPIC
-+ (optionally) the APIC timer back onto it. `arch_timer_arm` -> APIC timer
+triad (arch.h:246-266) is deliberately thin, which HELPS: the Local APIC + IOAPIC +
+(optionally) the APIC timer back onto it. `arch_timer_arm` -> APIC timer
 one-shot (TSC-deadline mode is the clean tickless fit). `arch_clock_now` -> TSC
 (with the same monotonic-clock discipline KickOS already fought for on other
 arches; see the DWT/CCOUNT clock history). The thin seam was designed for exactly
@@ -230,8 +231,8 @@ IRQ triad, idle (HLT). GENUINELY new: GDT/IDT/TSS setup, long-mode boot, the
 MSR plumbing, and per-CPU state via GS-base (the x86 analog of the per-core
 globals archived `M7_smp_candidate_spike.md` calls out).
 
-**Rough effort shape.** Medium-large but well-trodden. Order of magnitude: boot
-+ long mode + GDT/IDT (small, copy-the-wiki), thin IRQ/timer/console/switch
+**Rough effort shape.** Medium-large but well-trodden. Order of magnitude: boot +
+long mode + GDT/IDT (small, copy-the-wiki), thin IRQ/timer/console/switch
 (small, it is the existing seam), the aspace/paging allocator (LARGE -- the
 section-2 rewrite, shared with all future MMU targets so it pays for itself).
 A single-address-space "flat" x86_64 port (physical == virtual, identity map,

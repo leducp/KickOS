@@ -15,6 +15,10 @@ bool kickos_fault_kill_thread(void* frame)
     return false;
 }
 
+void kickos_fault_report_begin(void)
+{
+}
+
 bool kickos_fault_frame_on_kernel_stack(void const* frame, size_t bytes)
 {
     (void)frame;

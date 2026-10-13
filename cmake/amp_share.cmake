@@ -35,9 +35,8 @@ function(kickos_amp_share_check)
   endif()
 endfunction()
 
-# The share is one region of the build's protection unit: MIN_REGION and POW2 are
-# arch_mpu_min_region and arch_mpu_region_pow2 as the boot arena model scrapes them, and a
-# MIN_REGION of 0 states no unit to describe.
+# The share is one region of the build's protection unit: MIN_REGION and POW2 are the chip file's
+# region rule, and a MIN_REGION of 0 states no unit to describe.
 function(kickos_amp_share_granule_check)
   set(_one SHARE BASE MIN_REGION POW2 ORIGIN)
   cmake_parse_arguments(AG "" "${_one}" "" ${ARGN})

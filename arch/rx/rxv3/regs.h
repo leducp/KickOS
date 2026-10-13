@@ -11,15 +11,12 @@
 #include <stdint.h>
 
 #include <kickos/arch/rx_group.h>
+#include <kickos/io/mmio.h>
 
 namespace kickos
 {
     namespace rxv3
     {
-        inline volatile uint32_t& reg32(uintptr_t a) { return *reinterpret_cast<volatile uint32_t*>(a); }
-        inline volatile uint16_t& reg16(uintptr_t a) { return *reinterpret_cast<volatile uint16_t*>(a); }
-        inline volatile uint8_t& reg8(uintptr_t a) { return *reinterpret_cast<volatile uint8_t*>(a); }
-
         // --- PSW bit positions (ISA UM sec.1.2.2.4 / HW UM sec.2.2.2.5) ---
         constexpr uint32_t PSW_I = 1u << 16;  // interrupt enable
         constexpr uint32_t PSW_U = 1u << 17;  // stack-pointer select (1 => USP)
@@ -43,8 +40,8 @@ namespace kickos
         // (edge sources accept only a 0 write to IRn.IR).
         constexpr uint8_t SWINTR_SWINT = 1u << 0;
         constexpr int SWINT_VECTOR = 27;
-        // SWINT is the deferred-switch line (the PendSV analog): give it the lowest active
-        // priority so it is accepted only after every other ISR drains.
+        // SWINT is the deferred-switch line: the lowest active priority, so it is accepted
+        // only after every other ISR drains.
         constexpr uint32_t IPL_PENDSW = 1; // lowest active level (< IPL_LOCK)
         // SWINT2 is the arch_irq_inject doorbell.
         constexpr uint8_t SWINT2R_SWINT2 = 1u << 0;

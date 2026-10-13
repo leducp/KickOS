@@ -1,39 +1,35 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Standard-RISC-V facts (Privileged ISA v1.10 + the QEMU `virt` memory map): CLINT
-// at 0x0200_0000, with msip (hart 0) @+0x0000, mtimecmp @+0x4000, mtime @+0xBFF8; the
-// `virt` mtime runs at 10 MHz. Run with: qemu-system-riscv32 -M virt -bios none
-// -nographic -semihosting -kernel <elf>.
-//
-// Virtual board, no pads (semihosting console); arch_pinmux_set is intentionally
-// left to the declining ENOSYS fallback.
+// QEMU `virt` RV32 chip: CLINT (msip, mtimecmp, mtime at 10 MHz) and a semihosting console.
+// Run with: qemu-system-riscv32 -M virt -bios none -nographic -semihosting -kernel <elf>.
 
 #include <kickos/arch/arch.h>
+#include <arch_reboot_tail.h>
+#include <kickos/diag.h>
+#include "clint_rv32.h"
 #include "crt_tail.h"
 #include "semihost.h"
 #include <kickos/arch/clk_q32.h>
+#include <kickos/io/mmio.h>
 
 #include <stdint.h>
 
 #include <kickos/chip_mmap.h>
+#include <kickos/sys/abi.h>
 
 extern "C"
 {
     void kickos_rv32_init(void);
 
-    // The arch layer's deferred-switch software-interrupt register (CLINT msip),
-    // set here so switch.S can pend/clear it.
+    // CLINT msip, which switch.S pends and clears.
     extern volatile uint32_t* g_clint_msip;
 
-    // No core clock on this machine: MTIME_HZ below is the CLINT rate, not a core rate.
     uint32_t SystemCoreClock = 0;
 }
 
 namespace
 {
-    inline volatile uint32_t* r32p(uintptr_t a) { return reinterpret_cast<volatile uint32_t*>(a); }
-
     // QEMU `virt` CLINT (hart 0).
     using kickos::virt_rv32::mmap::CLINT_BASE;
     constexpr uintptr_t CLINT_MSIP = CLINT_BASE + 0x0000;
@@ -48,51 +44,45 @@ extern "C"
 
 void arch_init(void)
 {
-    g_clint_msip = r32p(CLINT_MSIP);
-    // mtimecmp = max: mtip stays low until arch_timer_arm programs a deadline.
-    r32p(CLINT_MTIMECMP)[0] = 0xFFFFFFFFu;
-    r32p(CLINT_MTIMECMP)[1] = 0xFFFFFFFFu;
+    g_clint_msip = &r32(CLINT_MSIP);
+    // mtip stays low until arch_timer_arm programs a deadline.
+    kickos::rv32::clint::disarm(CLINT_MTIMECMP);
     kickos_rv32_init();
-    // No chip external interrupt controller is wired on virt (the console is
-    // semihosting), so arch_irq_* stay on the arch-provided SSIP software channel.
+    // No external interrupt controller: arch_irq_* use the arch SSIP channel.
 }
 
 uint64_t arch_clock_now(void)
 {
-    volatile uint32_t* mt = r32p(CLINT_MTIME);
-    uint32_t hi, lo, hi2;
-    // Re-read the high half to guard against a low-half rollover mid-read.
-    do
-    {
-        hi = mt[1];
-        lo = mt[0];
-        hi2 = mt[1];
-    } while (hi != hi2);
-    uint64_t t = (static_cast<uint64_t>(hi) << 32) | lo;
-    return t * NS_PER_TICK;
+    return kickos::rv32::clint::read(CLINT_MTIME) * NS_PER_TICK;
 }
 
 void arch_timer_arm(uint64_t deadline_ns)
 {
-    uint64_t ticks = deadline_ns / NS_PER_TICK;
-    volatile uint32_t* cmp = r32p(CLINT_MTIMECMP);
-    // Safe 64-bit write on RV32: park the high half so no spurious match can fire
-    // between the two 32-bit stores, then commit lo then hi.
-    cmp[1] = 0xFFFFFFFFu;
-    cmp[0] = static_cast<uint32_t>(ticks);
-    cmp[1] = static_cast<uint32_t>(ticks >> 32);
+    kickos::rv32::clint::arm(CLINT_MTIMECMP, deadline_ns / NS_PER_TICK);
 }
 
 void arch_timer_disarm(void)
 {
-    volatile uint32_t* cmp = r32p(CLINT_MTIMECMP);
-    cmp[0] = 0xFFFFFFFFu;
-    cmp[1] = 0xFFFFFFFFu;
+    kickos::rv32::clint::disarm(CLINT_MTIMECMP);
 }
 
 void arch_shutdown(int status)
 {
     kickos::semihost::exit(status);
+}
+
+// The SiFive test finisher's reset word restarts the machine.
+int arch_reboot(uint32_t outcome)
+{
+    if (outcome != KOS_SHUTDOWN_REBOOT)
+    {
+        return -KOS_ENOSYS;
+    }
+    constexpr uint32_t FINISHER_RESET = 0x7777;
+    __asm volatile("csrci mstatus, 0x8" ::: "memory");
+    r32(kickos::virt_rv32::mmap::TEST_FINISHER_BASE) = FINISHER_RESET;
+    kickos::arch::reset_settle();
+    kickos::arch::reboot_failed(kickos::diag::kResetNotTaken);
 }
 
 void Reset_Handler(void)

@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Single source for the tickless-clock Q32.32 fixed-point math shared by every
-// chip's arch_clock_now. A tick rate is turned into a Q32 reciprocal once, then
-// ticks->ns is a 64x64->64 multiply with no per-read divide.
+// The Q32.32 tick-to-ns math of every chip's arch_clock_now: the rate becomes a reciprocal once,
+// and a read is a multiply with no divide.
 
 #ifndef KICKOS_ARCH_CLK_Q32_H
 #define KICKOS_ARCH_CLK_Q32_H
@@ -17,17 +16,14 @@ namespace kickos
     // Canonical nanoseconds per second. Sole spelling of the bare 1e9 constant.
     constexpr uint64_t KICKOS_NS_PER_SEC = 1_s;
 
-    // Q32.32 reciprocal of a tick rate: (1e9 << 32) / hz, rounded to nearest.
-    // The `+ (hz >> 1)` bias is LOAD-BEARING: it is the round-to-nearest term;
-    // without it every ticks->ns conversion is biased low by up to one ns.
-    // Caller must ensure hz != 0.
+    // (1e9 << 32) / hz, rounded to nearest by the `+ (hz >> 1)` term: without it every
+    // conversion is biased low by up to one ns. hz must be nonzero.
     constexpr uint64_t arch_clk_recip_q32(uint64_t hz)
     {
         return ((KICKOS_NS_PER_SEC << 32) + (hz >> 1)) / hz;
     }
 
-    // (ticks * mult_q32) >> 32, split hi/lo so the full product never overflows
-    // 64 bits. Returns ns (the caller adds any epoch base).
+    // (ticks * mult_q32) >> 32, split hi/lo so the product never overflows 64 bits.
     constexpr uint64_t arch_clk_mul_q32(uint64_t ticks, uint64_t mult_q32)
     {
         uint64_t a = ticks >> 32, b = ticks & 0xFFFFFFFFull;

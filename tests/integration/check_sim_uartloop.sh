@@ -7,7 +7,7 @@
 # two-thread driver.
 #
 # This runs the ACTUAL two-thread driver, where the host suite drvbringup covers the wire ABI
-# and the rings by driving kickos::uart::serve_one in a single thread:
+# and the rings by driving kickos::console::serve_one in a single thread:
 #   - the TX DOORBELL crosses threads. Nothing raises this line: the sim has no
 #     hardware source for it, so the only thing that can move a byte is the service
 #     thread's doorbell raise waking the IRQ thread out of its notification wait. If the doorbell

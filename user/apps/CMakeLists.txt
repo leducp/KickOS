@@ -1,23 +1,6 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-# kickos_add_diagnostic_apps(<dir>...)
-#   A DIAGNOSTIC app is a test image that deliberately faults or provokes a refusal, so it is
-#   built ONLY under KICKOS_ENABLE_SELFTEST. The posture
-#   is named HERE, where the tree decides what applies, and not inside the app: that is what
-#   lets an app file be its three lines and never ask whether it applies at all.
-#
-#   Defined in this file rather than in common/ because the per-board parents below need it
-#   too, and a command defined in a subdirectory that happens to be added first is a coupling
-#   nothing states.
-macro(kickos_add_diagnostic_apps)
-  if(KICKOS_ENABLE_SELFTEST)
-    foreach(_kos_diag_dir ${ARGN})
-      add_subdirectory(${_kos_diag_dir})
-    endforeach()
-  endif()
-endmacro()
-
 # kickos_app_system(<app> COMPOSITION <file> [SYSTEM <system>])
 # kickos_app_system(<app> PARTITION <node0> <node1>... [SYSTEM <system>])
 #   Links <app> against KickOS::kernel and the system composed from <file>, or from this build's

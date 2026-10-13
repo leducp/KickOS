@@ -1,9 +1,8 @@
 /* SPDX-License-Identifier: CECILL-C
  * Copyright (c) 2026 Philippe Leduc
  *
- * A TRANSLATION UNIT OF ITS OWN, and that is the point: the UEFI probe images link
- * libkickos_arch_x86_64.a WITHOUT the kernel, so a member they already pull for another symbol
- * may carry no reference to one. Both of the symbols below are the kernel's.
+ * A translation unit of its own: the UEFI probe images link libkickos_arch_x86_64.a without
+ * the kernel, so no member they pull may reference kickos_panic_report.
  */
 /* kickos_panic_stack_enter(msg, file, line, top): leave the interrupted stack for the
  * reporter's own (arch.h). rdi, rsi and edx pass through untouched; rcx is the seat.

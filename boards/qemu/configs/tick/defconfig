@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+CONFIG_BOARD_QEMU=y
+
+# The base posture with the classic periodic scheduler tick in place of the tickless one.
+CONFIG_MEMORY_MODEL_MPU=y
+CONFIG_KICKOS_USER_STACK_SIZE=8192
+CONFIG_KICKOS_IDLE_STACK_SIZE=512
+CONFIG_KICKOS_ROOT_STACK_SIZE=8192
+
+CONFIG_KICKOS_MAX_SPAWN_GRANTS=9
+CONFIG_KICKOS_SCHED_PERIODIC_TICK=y

@@ -18,6 +18,8 @@ protection: { unit: mmu, page: 0x1000, covers_devices: true, memory_type: true, 
 
 cores: { count: [1, 12], smp: true }
 
+family: none
+exits_on_fault: false
 # The ICH9 I/O APIC's redirection entries.
 interrupts: { count: 24 }
 

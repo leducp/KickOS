@@ -47,7 +47,7 @@ was honest about it; this document is what lifted that.
 
 3. **A SEPARATE TU selected by presence-in-link, not an `#ifdef` fork inside one function.** The
    PMSAv8 definitions live in `arch/arm/common/arch_arm_pmsav8.cc` (+ `regs_v8m.h`), which is NOT
-   in the always-compiled `kickos_arch_armv7m` source list; a chip opts in through its own
+   in the always-compiled armv7m arch library's (formerly `kickos_arch_armv7m`) source list; a chip opts in through its own
    `mpu.cmake` (the `KICKOS_ARM_PMSAV8_SOURCE` seam), which `target_sources` it into the chip
    library so the v7-M fallback TUs are never extracted. A v7-M chip's `mpu.cmake` never adds it
    and its fallback stands. The alternative -- one `arch_mpu_apply` forked by `#if` on a compile

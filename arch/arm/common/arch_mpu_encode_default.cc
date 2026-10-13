@@ -1,12 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 
-// Lone-TU fallback (arch/CMakeLists.txt states the rule): exactly one symbol, so a
-// backend definition keeps this archive member unextracted.
-//
-// PMSAv7 region encoding (F411/XMC on v7-M, RP2040/microbit on v6-M). A chip with a
-// different MPU (K64F SYSMPU) or a v8-M core (arch_arm_pmsav8.cc) defines its own
-// arch_mpu_encode beside its own commit.
+// Lone-TU fallback (arch/CMakeLists.txt states the rule): exactly one symbol, so a backend
+// definition keeps this archive member unextracted. PMSAv7 region encoding; a chip with a
+// different MPU or a v8-M core defines its own arch_mpu_encode beside its own commit.
 
 #include <kickos/arch/arch.h>
 
@@ -16,18 +13,14 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// KICKOS_ARM_MPU_PMSAV7 already implies KICKOS_HAVE_MPU (CMakeLists.txt resolves the
-// selector to NONE whenever the build has no MPU), so no separate KICKOS_HAVE_MPU test.
+// KICKOS_ARM_MPU_PMSAV7 implies KICKOS_HAVE_MPU.
 #if KICKOS_ARM_MPU == KICKOS_ARM_MPU_PMSAV7
 
 namespace
 {
-    // One region as an MPU_RASR value. attr is the UNPRIVILEGED access (supervisor comes
-    // from the PRIVDEFENA background region): a code region is R+X (RO, executable); data
-    // / stack / device is RW + execute-never, and data without W is read-only to it. Device
-    // memory gets the ordered device type.
-    // `size` is a power of two >= 32 with a naturally aligned base, which is what
-    // arch_mpu_region_encodable admits.
+    // One region as an MPU_RASR value. attr is the UNPRIVILEGED access; supervisor comes from
+    // the PRIVDEFENA background. `size` is a power of two >= 32 with a naturally aligned base,
+    // which is what arch_mpu_region_encodable admits.
     uint32_t mpu_rasr(size_t size, uint32_t attr)
     {
         using namespace kickos::arm;

@@ -11,8 +11,7 @@
 
 #include <stddef.h>
 
-#if KICKOS_HAVE_ASPACE && defined(KICKOS_ENABLE_SELFTEST) && KICKOS_FAULT_ISOLATION         \
-    && defined(__x86_64__) && not KICKOS_ARCH_SIM
+#if KICKOS_HAVE_ASPACE && KICKOS_FAULT_ISOLATION && defined(__x86_64__) && not KICKOS_ARCH_SIM
 
 namespace selftest
 {
@@ -196,13 +195,13 @@ namespace selftest
     Atomic<uint32_t, Order::RELAXED> g_vb_holder_done{0};
     uint32_t g_vb_poster_after = 0;
 
-    void vb_holder(void*) // caps: S(WAIT)@1
+    void vb_holder(void*) // caps: S(WAIT)@2
     {
         g_vb_rc[0] = selftest_vec_hold(&g_vb_load[0], &g_vb_seen[0], KOS_SYS_SEM_WAIT,
                                            KOS_SPAWN_DELEGATED_CAP0, KOS_TIMEOUT_NONE);
         g_vb_holder_done = 1;
     }
-    void vb_poster(void*) // caps: S(SIGNAL)@1
+    void vb_poster(void*) // caps: S(SIGNAL)@2
     {
         g_vb_rc[1] = selftest_vec_hold(&g_vb_load[1], &g_vb_seen[1], KOS_SYS_SEM_POST,
                                            KOS_SPAWN_DELEGATED_CAP0, 0);
@@ -228,11 +227,11 @@ namespace selftest
         kos_cap_grant const hcaps[] = {{s, KOS_CAP_WAIT}};
         kos_cap_grant const pcaps[] = {{s, KOS_CAP_SIGNAL}};
         h = kos::thread::create_caps(vb_holder, nullptr, "vbhold", TAP_PRIO_PARKS + 1, hcaps, 1,
-                                     KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr,
+                                     KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
                                      KOS_TASK_NONE, nullptr, 0, TAP_PIN_CORE);
         TAP_CHECK(h.valid());
         p = kos::thread::create_caps(vb_poster, nullptr, "vbpost", TAP_PRIO_PARKS, pcaps, 1,
-                                     KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr,
+                                     KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
                                      KOS_TASK_NONE, nullptr, 0, TAP_PIN_CORE);
         TAP_CHECK(p.valid());
         TAP_CHECK(hold.joined());
@@ -310,7 +309,7 @@ namespace selftest
         {
             w[i] = kos::thread::create_caps(vp_spinner, reinterpret_cast<void*>(i), "vpspin",
                                             TAP_PRIO_PARKS, nullptr, 0, KOS_POLICY_RR, quantum,
-                                            false, nullptr, 0, 0, nullptr, KOS_TASK_NONE,
+                                            nullptr, 0, 0, nullptr, KOS_TASK_NONE,
                                             nullptr, 0, TAP_PIN_CORE);
             TAP_CHECK(w[i].valid());
         }
@@ -429,7 +428,7 @@ namespace selftest
         TAP_CHECK(kos_task_create(nullptr, 0, 0, &task) == 0);
         kos_cap_grant const caps[] = {{ep, KOS_CAP_SIGNAL}};
         other = kos::thread::create(selftest_vec_clean_entry, nullptr, "vctask", TAP_PRIO_PARKS,
-                                    KOS_POLICY_FIFO, 0, false, nullptr, 0, nullptr, 0, nullptr, 0,
+                                    KOS_POLICY_FIFO, 0, nullptr, 0, nullptr, 0, nullptr, 0,
                                     caps, 1, 0, nullptr, task);
         TAP_CHECK(other.valid());
         VecVerdict v;
@@ -463,7 +462,7 @@ namespace selftest
         }
         return opts.info.reply_cap;
     }
-    void vf_xm_victim(void*) // caps: E(WAIT)@1
+    void vf_xm_victim(void*) // caps: E(WAIT)@2
     {
         kos_cap_t const call = vf_take_call();
         uint32_t const word = selftest_vec_fault_xm();
@@ -471,14 +470,14 @@ namespace selftest
         (void)kos_reply(call, &word, sizeof(word));
         kos_exit(1);
     }
-    void vf_mf_victim(void*) // caps: E(WAIT)@1
+    void vf_mf_victim(void*) // caps: E(WAIT)@2
     {
         kos_cap_t const call = vf_take_call();
         uint32_t const word = selftest_vec_fault_mf();
         (void)kos_reply(call, &word, sizeof(word));
         kos_exit(1);
     }
-    void vf_sibling(void*) // caps: park@1
+    void vf_sibling(void*) // caps: park@2
     {
         kos_sem_wait(KOS_SPAWN_DELEGATED_CAP0, KOS_TIMEOUT_NONE);
         kos_exit(1);
@@ -507,10 +506,10 @@ namespace selftest
         TAP_CHECK(kos_task_create(nullptr, 0, 0, &task) == 0);
         kos_cap_grant const pcaps[] = {{park, KOS_CAP_WAIT}};
         kos_cap_grant const vcaps[] = {{ep, KOS_CAP_WAIT}};
-        sib = kos::thread::create(vf_sibling, nullptr, "vfsib", 10, KOS_POLICY_FIFO, 0, false,
+        sib = kos::thread::create(vf_sibling, nullptr, "vfsib", 10, KOS_POLICY_FIFO, 0,
                                   nullptr, 0, nullptr, 0, nullptr, 0, pcaps, 1, 0, nullptr, task);
         TAP_CHECK(sib.valid());
-        vic = kos::thread::create(victim, nullptr, name, 10, KOS_POLICY_FIFO, 0, false, nullptr,
+        vic = kos::thread::create(victim, nullptr, name, 10, KOS_POLICY_FIFO, 0, nullptr,
                                   0, nullptr, 0, nullptr, 0, vcaps, 1, 0, nullptr, task);
         TAP_CHECK(vic.valid());
         int32_t const n = kos_call_timed(ep, word, 0, sizeof(*word), STALL_TOLERANT_US);
@@ -609,7 +608,7 @@ namespace selftest
         ArmHold hold;
         TAP_HOLD(hold.thread(&t));
         t = kos::thread::create_caps(vm_mover, nullptr, "vmmove", TAP_PRIO_PARKS, nullptr, 0,
-                                     KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr,
+                                     KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
                                      KOS_TASK_NONE, nullptr, 0, TAP_PIN_CORE);
         TAP_CHECK(t.valid());
         TAP_CHECK(hold.joined());

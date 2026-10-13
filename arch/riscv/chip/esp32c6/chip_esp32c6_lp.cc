@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// ESP32-C6 LP node. It has RV32IMAC in M mode only and runs its image from
-// node 1's HP-SRAM slice. The HP node loads the LP SRAM reset vector and wakes
-// this core through PMU; the common RV32 switcher handles its one vector.
+// ESP32-C6 LP node (RV32IMAC, M mode only), running from node 1's HP-SRAM slice; HP loads the
+// LP SRAM reset vector and wakes it through PMU.
 
 #include <kickos/arch/arch.h>
 #include "crt_tail.h"
+#include <kickos/io/mmio.h>
 
 #if KICKOS_RV32_LP
 
@@ -24,11 +24,6 @@ extern "C"
 
 namespace
 {
-    inline volatile uint32_t& r32(uintptr_t a)
-    {
-        return *reinterpret_cast<volatile uint32_t*>(a);
-    }
-
     constexpr uintptr_t RTC = 0x600B0C00u;
     uint64_t rtc_ticks()
     {
@@ -63,9 +58,8 @@ uint64_t arch_clock_now(void)
 void arch_timer_arm(uint64_t deadline_ns)
 {
     uint32_t const hz = kickos_c6_amp_rtc_hz;
-    // Splitting at a second keeps the product in range for the RTC's whole
-    // 48-bit lifetime. The divisor is constant, so no variable 64-bit divide
-    // sits in the masked timer-arm path.
+    // Splitting at a second keeps the product in range for the RTC's 48-bit lifetime and
+    // the divisor constant: no variable 64-bit divide in the masked arm path.
     uint64_t const ticks = (deadline_ns / 1000000000ull) * hz
                            + ((deadline_ns % 1000000000ull) * hz) / 1000000000ull;
     r32(RTC + 0x0Cu) = 0;
@@ -79,22 +73,7 @@ void arch_timer_disarm(void)
     r32(RTC + 0x44u) = 1u << 31;
 }
 
-int arch_console_write(char const*, size_t n)
-{
-    // This port wires no LP UART. The LP's boot and served-call witnesses travel
-    // through the shared AMP diagnostic and app records, which HP reports.
-    return static_cast<int>(n);
-}
-
-int arch_console_write_retry(char const* buf, size_t n, bool* cr_pending)
-{
-    if (cr_pending != nullptr)
-    {
-        *cr_pending = false;
-    }
-    return arch_console_write(buf, n);
-}
-
+// No LP UART: witnesses travel through the shared AMP diagnostic and app records, which HP reports.
 bool arch_console_write_sync(char const*, size_t)
 {
     return true;

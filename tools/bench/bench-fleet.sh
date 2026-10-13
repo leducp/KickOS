@@ -72,7 +72,7 @@ images_for() { # <board> <stderr out> [variant]
 
 # EVERY VARIANT A BOARD DECLARES, read off the tree's presets, `<board>-<variant>` each, or
 # status 1 where the tree cannot list them. The default variant is bench.sh's own
-# (BENCH_DEFAULT_VARIANT), the one the pass below takes first; every other one is a build of its
+# (bench_default_variant), the one the pass below takes first; every other one is a build of its
 # own, and a capture of one of its images lands under that variant's tag, so two builds' logs of
 # one image never share a name.
 variants_of() { # <board>
@@ -384,7 +384,8 @@ ROWS
     continue
   fi
   for variant in $VARIANTS; do
-    if [ "$variant" = "$BENCH_DEFAULT_VARIANT" ] || partition_part "$variant" "$VARIANTS"; then
+    if [ "$variant" = "$(bench_default_variant "${TREE:-$RIG_TREE}" "$board")" ] \
+      || partition_part "$variant" "$VARIANTS"; then
       continue
     fi
     if partition_first "$variant"; then

@@ -24,6 +24,7 @@ tasks:
     lines: { irq: /dev/usic0/sr0 }
     serves: /svc/console
     priority: 12
+    accepts: [coarse_gate]
 
   - name: spi0
     driver: xmcssc
@@ -32,6 +33,7 @@ tasks:
     serves: /svc/spi0
     priority: 11
     restart: { max: 3 }
+    accepts: [coarse_gate]
 
   - name: sensor
     entry: restart_sensor_main

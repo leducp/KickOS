@@ -82,6 +82,9 @@ metadata declares, as `lines: { irq: /dev/usic0/sr1 }`.
 | `partition_gate` | mapping | no | a bus-enforced assignment of devices to nodes: its `kind` (`apm`, `accessctrl`, `rdc`), and either the `device` it is programmed through, a per-peripheral gate each device names its register in by `gate_register` with the registers no node is assigned `never_assigned` (each a name and its offset), or its `gates`, each a device of the chip with the `regions` it holds (its catch-all among them), the device `ranges` it fronts, the `memory` it fronts for every other node, and the ranges every other node's `kernel` holds through it, each a `window` and its `access` |
 | `data_cache` | boolean | no | whether a data cache sits over the part's RAM; absent is read as `true` |
 | `esptool_image` | list | no | where the ROM boots only esptool's image format, the `elf2image` options of that image, each a word |
+| `family` | mapping or `none` | yes | translation units several chips share, compiled into this chip's archive against its own headers: `dir`, the family directory put on its include path, and `sources`, each a path below `arch/` |
+| `exits_on_fault` | boolean | yes | whether `arch_shutdown` ends the run with a status the harness reads, so a fault exits rather than blinking the LED |
+| `cpu` | string | no | the core the boot banner names, where no compiler flag names one |
 | `devices` | mapping | yes | one entry per device, keyed by its name |
 | `memory` | mapping | on a part with a core that does not translate | ordinary memory windows -- on-chip RAM, flash, apertures -- each a `size` and either a `base` or, where clusters' maps differ, `at`, one base per cluster, or neither for the arena of a part the host runs, which the host places and the link has no region for, and `cluster` on an entry one cluster alone reaches; for the part, or each of its clusters, that does not translate, exactly one entry it reaches is marked `arena: true`, the RAM its user arena is carved from |
 | `pins` | mapping | no | each pin's functions |
@@ -92,14 +95,17 @@ metadata declares, as `lines: { irq: /dev/usic0/sr1 }`.
 
 `protection` has a `unit` (`pmsav7`, `pmsav8`, `pmsav6`, `pmp`, `rxmpu`, `sysmpu`, `mprotect`,
 `mmu`, `none`), `covers_devices` and `memory_type` unless the unit is `none`, `page` on `mmu` and only
-there, and where they apply `device_gate` (a gate coarser than a
-window: kind, size, whether it is per thread), `bus_gate` (a second unit in series: kind, per
-thread, whether a denial traps), `privilege`, `io_ports`, and `driven: false` on a region unit no
-kernel build drives, which no build then enforces and Kconfig selects no `HAS_MPU` for. A
-`device_gate` may list the
-`ranges`, each `[base, size]`, that its gate fronts, and without them it gates every device
-window; a device window a range holds only in part is refused. The window encoding rule and the
-region budget belong to the unit and come from the kernel build's export, not from this file.
+there, `granule` on a region unit (every unit but `mprotect`, `mmu` and `none`) and only there,
+the smallest region its descriptor names, a power of two, and where they apply `device_gate` (a
+gate coarser than a window: kind, size, whether it is per thread), `bus_gate` (a second unit in
+series: kind, per thread, whether a denial traps), `privilege`, `io_ports`, and `driven: false` on
+a region unit no kernel build drives, which no build then enforces and Kconfig selects no
+`HAS_MPU` for. A `device_gate` may list the `ranges`, each `[base, size]`, that its gate fronts,
+and without them it gates every device window; a device window a range holds only in part is
+refused. The window encoding rule belongs to the unit: a power of two on its own alignment on
+`pmsav6`, `pmsav7` and `pmp`, a multiple of the granule on the others. The generator emits it with
+the granule into `chip_limits.h` and `chip.cmake`, and the kernel build's export carries it with
+the region budget.
 `memory_type` states whether the unit's descriptor or page-table entry carries a memory type, a
 fact of the hardware. With `data_cache` and whether the build enforces its unit it decides
 `uncached`: refused where a data cache sits over the memory and the entry carries no type,
@@ -117,7 +123,8 @@ which case its `window` or `ports` is required, so its reserved range is checked
 and a device reached through system registers alone, as the generic timer is, says so with
 `sysreg: true` instead; `host: true` for a device the host reaches for it, with no window, which
 only a part the host runs has, its unit being `mprotect`; `privileged_registers` for registers
-inside the window only privilege can write; and `cluster` on a multi-architecture part. Every limitation that makes a grant
+inside the window only privilege can write; `module_gate: true` when a register inside each
+channel's window reaches the whole module; and `cluster` on a multi-architecture part. Every limitation that makes a grant
 unenforceable has a name here, which a refusal quotes and a composition's `accepts` lists.
 
 Any device, channel, line, block or memory entry may carry `ref`, where in the manual its value
@@ -200,8 +207,9 @@ driver name are lowercase identifiers, `[a-z][a-z0-9_]*`; `core` is below 32, th
 carries it.
 
 `authority` lists names for the bits of the kernel's authority word: `memory`, `pinmux`,
-`pstate`, `irq`, `system`, `console`, `tasks`, the task-creation authority M10.1 adds, and
-`bus_master`, which a spawn's window over a bus master takes beside `memory`. It
+`pstate`, `irq`, `system`, `console`, `tasks`, the task-creation authority M10.1 adds,
+`bus_master`, which a spawn's window over a bus master takes beside `memory`, and `bootloader`,
+which a shutdown into the chip's bootloader takes beside `system`. It
 is empty unless declared, since authority is never a default; the init passes it as the spawn's
 authority word, which can only narrow what the init itself holds, so admission refuses a task
 declaring more than the init has. The boot init holds every authority, so against it a name has
@@ -236,7 +244,7 @@ file states what the part is, never a verdict -- and each name says where it may
 | `no_protection` | composition | nothing is isolated | `protection.unit: none`, or a build with the unit off (the nRF51, the STM32F103, the F302R8, the LX6) |
 | `no_privilege_split` | composition | a task cannot be held unprivileged | `privilege: false` (the nRF51's M0, the LX6, the ESP32-C6's LP core) |
 | `device_not_isolated` | task | a device grant the unit cannot see | `covers_devices: false` (the K64F) |
-| `coarse_gate` | task | a gate wider than the window, so the neighbours come along | a `device_gate` wider than the window, a whole-port register bank, or two devices in one translating page by `stride` |
+| `coarse_gate` | task | a gate wider than the window, so the neighbours come along | a `device_gate` wider than the window, a whole-port register bank, two devices in one translating page by `stride`, or the channels of a `module_gate` module held by different tasks, the kernel's console counting as one |
 | `bus_master` | task | a device that writes memory by physical address | `bus_master: true` (DMA engines, virtio, Ethernet and USB controllers) |
 | `cached_incoherent` | composition | a `cached` region shared without coherence | `clusters_coherent: false`, `data_cache`, or a `bus_master` reaching the region |
 
@@ -354,7 +362,7 @@ Each refusal names the rule it breaks, the rules of each class listed after it:
   (`kickos_compose(<system> PARTITION <node0.yaml>...)`, `kickos_compose partition`,
   `docs/design-m10-fleet.md` section 9): `partition.device`, `partition.port`,
   `partition.unserved`, `partition.region`, `partition.cached-incoherent`,
-  `partition.gate-budget` and `partition.lone`. Before it, a device two nodes of a partition grant, and a `cached` region shared across
+  `partition.gate-budget`, `partition.lone` and `partition.bootloader`. Before it, a device two nodes of a partition grant, and a `cached` region shared across
   nodes the chip file does not declare coherent, unless accepted. One composition's admission
   cannot see either: they need the partition's node compositions admitted together, the partition
   build `roadmap.md` places in M10.5.
@@ -480,8 +488,8 @@ installed beside the package's CMake files, where `kickos_compose` finds it.
 | section | contents | from |
 | --- | --- | --- |
 | `abi` | `table`, the version of the emitted table's layout; `cap_reserved`, the capability indices the kernel reserves in every table; `symbol_prefix`, what the link spells before a C name, `""` or rx-elf's `_` | declared in `cmake/manifest.cmake`, `KICKOS_CAP_FIRST_DYNAMIC` in `cmake/cap_geometry.cmake`, and the prefix in the toolchain file of an ABI that adds one |
-| `target` | board, chip, arch; cores, kernel cores, isolated cores; on an AMP node, its node, the partition's nodes, its ports and the bytes of its user share | the resolved Kconfig, and the node and port list as `cmake/amp_partition.cmake` parses them |
-| `protection` | whether the build enforces its unit; the window rule, `pow2` (a power of two, naturally aligned), `granule` (a multiple of the smallest window, 16 bytes on a region build whose seam states no unit) or `none` (a translating build, whose page is its chip file's), and the smallest window, as the seams state them whether or not the build enforces, the kernel rounding every arena block and checking every device window by them either way; `KICKOS_MAX_THREAD_WINDOWS` as `thread_windows`; whether a fault ends its task rather than the system, as `fault_isolation` | `KICKOS_MEMORY_ENFORCED`, `KICKOS_FAULT_ISOLATION`, `KICKOS_HAVE_ASPACE`, the `arch_mpu_min_region` and `arch_mpu_region_pow2` seams as `cmake/boot_arena.cmake` reads them, and the resolved Kconfig |
+| `target` | board, chip, arch; cores, kernel cores, isolated cores; on an AMP node, its node, the partition's nodes, its ports and the bytes of its user share | the resolved Kconfig, and the node and port list as `tools/kconfig/genconfig.py` derives them |
+| `protection` | whether the build enforces its unit; the window rule, `pow2` (a power of two, naturally aligned), `granule` (a multiple of the smallest window, 16 bytes on a region build whose seam states no unit) or `none` (a translating build, whose page is its chip file's), and the smallest window, as the seams state them whether or not the build enforces, the kernel rounding every arena block and checking every device window by them either way; `KICKOS_MAX_THREAD_WINDOWS` as `thread_windows`; whether a fault ends its task rather than the system, as `fault_isolation` | `KICKOS_MEMORY_ENFORCED`, `KICKOS_FAULT_ISOLATION`, `KICKOS_HAVE_ASPACE`, the chip file's region rule, and the resolved Kconfig |
 | `pools` | every `KICKOS_MAX_*` but `KICKOS_MAX_THREAD_WINDOWS`, every `KICKOS_TASK_*_BUDGET`, `KICKOS_MAX_SPAWN_GRANTS`, `KICKOS_CAP_TABLE_SUPPLY`, `KICKOS_RAM_OWNER_SLOTS`, `KICKOS_ASPACE_RANGES` | the resolved Kconfig |
 | `threads` | the priority range; `KICKOS_MIN_STACK_SIZE` as `min_stack`; `KICKOS_USER_STACK_SIZE`, the stack a runtime spawn defaults to, as `user_stack`; the idle and root stacks; `KICKOS_STACK_ALIGN` as `stack_align`; `stack_stride`, the block every stack is where the thread pointer is SP masked, or `none` | declared in `cmake/sched_geometry.cmake` and `cmake/stack_geometry.cmake`, the stride as the top-level `CMakeLists.txt` derives it, and the resolved Kconfig |
 | `descriptions` | the board's chip and board files, by their path beside the manifest, on a board that has them; admission and emission against the manifest read the board and chip there and nowhere else | `platform/<chip>/<board>.yaml` and its chip file, copied beside the manifest |

@@ -5,7 +5,7 @@
 // later workers away from their valid console capability.
 // The counting console driver does not print, so exit status reports whether
 // it received the expected payload. QEMU reads the semihosting exit code.
-// This test uses shared globals on the non-enforcing mps2 variant.
+// Its globals cross tasks: on the flat mps2 image every thread reaches the app's data.
 
 #include <kickos/board_config.h>
 #include <kickos/kos.h>
@@ -37,13 +37,13 @@ namespace
         "[worker] initdemo payload line 3\n";
     constexpr size_t PAYLOAD_LEN = sizeof(WORKER_PAYLOAD) - 1;
 
-    // Cross-thread channel (shared address space on this non-enforcement board).
+    // Cross-task channel: one address space on the flat mps2 image.
     // g_worker_done is set after the worker's final fflush, before it exits.
     Atomic<int32_t, Order::RELAXED> g_driver_bytes{0};
     Atomic<int, Order::RELAXED> g_worker_done{0};
 
     // A no-hardware sink: counts the bytes it receives on the delegated endpoint cap
-    // (B1: first delegated cap lands at child table index 1). A negative recv (dead endpoint)
+    // (B1: first delegated cap lands at child table index 2). A negative recv (dead endpoint)
     // ends it; otherwise it parks in recv until shutdown.
     void console_sink(void*)
     {
@@ -102,13 +102,13 @@ int main(int, char**)
     }
 
     // Spawn the counting sink with a narrowed {ep | WAIT} recv cap (lands at child
-    // index 1). No SIGNAL/TRANSFER: it only receives.
+    // index 2). No SIGNAL/TRANSFER: it only receives.
     kos_cap_grant const caps[1] = {
         { .source_cap = ep, .rights_mask = KOS_CAP_WAIT },
     };
     auto const drv = kos::thread::create_caps(console_sink, nullptr, "sink", DRIVER_PRIO,
                                               caps, /*cap_count=*/1, KOS_POLICY_FIFO, 0,
-                                              /*privileged=*/false, nullptr, 0, 0, nullptr,
+                                              nullptr, 0, 0, nullptr,
                                               sink_task, sink_stack, SINK_STACK);
     if (not drv.valid())
     {

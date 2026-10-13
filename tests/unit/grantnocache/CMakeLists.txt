@@ -10,11 +10,13 @@
 kickos_add_unit_test(NAME grant_nocache
   SOURCES nocache_admission.cc reserved_overlap.cc
           "${PROJECT_SOURCE_DIR}/tests/unit/common/kpanic_seam.cc"
+          "${PROJECT_SOURCE_DIR}/tests/unit/common/region_seam.cc"
           "${PROJECT_SOURCE_DIR}/kernel/grant/grant.cc"
           "${PROJECT_SOURCE_DIR}/kernel/domain/domain.cc"
           "${PROJECT_SOURCE_DIR}/kernel/thread/thread.cc"
           "${PROJECT_SOURCE_DIR}/kernel/init/instance.cc"
   INCLUDES $<TARGET_PROPERTY:kickos_kernel,INCLUDE_DIRECTORIES>
+           "${PROJECT_SOURCE_DIR}/tests/unit/common"
   DEFINITIONS $<TARGET_PROPERTY:kickos_kernel,COMPILE_DEFINITIONS>)
 target_compile_options(grant_nocache PRIVATE -ffunction-sections -fdata-sections)
 target_link_options(grant_nocache PRIVATE -Wl,--gc-sections)

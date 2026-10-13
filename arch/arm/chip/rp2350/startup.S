@@ -1,29 +1,20 @@
 /* SPDX-License-Identifier: CECILL-C
  * Copyright (c) 2026 Philippe Leduc
  *
- * Raspberry Pi RP2350 (Cortex-M33, Secure state) startup: the application reset
- * vector table PLUS the boot IMAGE_DEF block. Both live in flash at the XIP image
- * base 0x1000_0000 (see rp2350.ld).
+ * Raspberry Pi RP2350 (Cortex-M33, Secure state) startup: the vector table PLUS the boot
+ * IMAGE_DEF block, both at the XIP image base 0x1000_0000.
  *
- * Unlike the RP2040, there is NO 256-byte checksummed boot2 at flash 0 and no
- * SSI/XIP setup stage: the RP2350 bootrom does its own best-effort QSPI XIP setup
- * during the flash scan, then enters the image (datasheet 5.9.5). What the image
- * MUST carry instead is an IMAGE_DEF block somewhere in the first 4 KiB
- * (datasheet 5.1.5.2, 5.9.5): the bootrom scans for the block-loop start marker,
- * validates the IMAGE_DEF, then, with no ENTRY_POINT/VECTOR_TABLE item present,
- * reads the initial SP from [base+0] and the reset PC from [base+4] of the
- * vector table at the image base (datasheet 5.9.3.3, 5.9.5.1). So the vector
- * table is PINNED at 0x1000_0000 and the IMAGE_DEF sits immediately after it.
+ * There is no boot2 stage: the bootrom does its own QSPI XIP setup, scans the first 4 KiB for an
+ * IMAGE_DEF block, and with no ENTRY_POINT/VECTOR_TABLE item reads the initial SP and reset PC
+ * from the vector table at the image base (datasheet 5.9.3.3, 5.9.5.1). So the table is PINNED
+ * at 0x1000_0000 and the IMAGE_DEF follows it.
  *
- * SVC/PendSV/SysTick come from the armv7m arch layer (armv8-m reuses the v7-m
- * thread/switch/NVIC path); each external line routes to the generic
- * kickos_arm_default_irq (line = IPSR-16). The RP2350 wires 52 NVIC inputs
- * (IRQ0..51; 46..51 are spare/never-fire), matching KICKOS_MAX_IRQ.
+ * The chip wires 52 NVIC inputs (IRQ0..51; 46..51 are spare), matching KICKOS_MAX_IRQ.
  */
 
 #include <chip_layout.h>
-#include <kickos/chip_limits.h>   /* KICKOS_MAX_IRQ: the NVIC line count */
-#include "core_vectors.inc"        /* shared core-exception vector block */
+#include <kickos/chip_limits.h>
+#include "core_vectors.inc"
 
     .syntax unified
     .thumb
@@ -35,7 +26,6 @@
 g_isr_vector:
     KICKOS_CORE_VECTORS_V8M
 
-    /* External interrupts 0..51 -> the generic IRQ-as-event entry. */
 #if (KICKOS_NUM_CORES > 1 || KICKOS_AMP_NODE)
     /* SIO_IRQ_BELL is dispatched here and never through kickos_isr_irq, so it occupies no
        kernel irq_table slot. KICKOS_KERNEL_LINES (CMakeLists.txt) carries it to irq_claim
@@ -53,15 +43,11 @@ g_isr_vector:
     .endr
 #endif
 
-    /* --- Boot IMAGE_DEF block (datasheet 5.9.5.1 "Minimum Arm IMAGE_DEF") ------
-     * The verbatim 20-byte block the RP2350 bootrom accepts for an UNSIGNED image.
-     * On a chip that is not secured (CRIT1.SECURE_BOOT_ENABLE clear) no SIGNATURE/
-     * HASH_DEF item is required. The image_type_flags word (0x1021) marks:
-     *   EXE(1) | Security=S(2) | CPU=ARM(0) | CHIP=RP2350(1).
-     * Security=S matches the state the M33 boots in (we do not use TrustZone / drop
-     * to Non-secure). The block links to itself (LINK=0) as a single-block loop.
-     * Kept because nothing references it: KEEP(*(.image_def)) in rp2350.ld, and the
-     * object is already pulled in via the -u,g_isr_vector force-ref. */
+    /* The datasheet 5.9.5.1 "Minimum Arm IMAGE_DEF": the 20-byte block the bootrom accepts for
+     * an UNSIGNED image on a chip with CRIT1.SECURE_BOOT_ENABLE clear. image_type_flags 0x1021 =
+     * EXE | Security=S (the M33 boots Secure; no TrustZone) | CPU=ARM | CHIP=RP2350. LINK=0 makes
+     * it a single-block loop. Nothing references it: KEEP(*(.image_def)) in rp2350.ld retains
+     * it, and the -u,g_isr_vector force-ref pulls this object. */
     .section .image_def, "a"
     .align 2
     .global g_image_def
@@ -74,7 +60,6 @@ g_image_def:
 
     .text
     .thumb_func
-    /* Only reference is the vector word above; override here for a real handler. */
 NMI_Handler:
     b       .
 

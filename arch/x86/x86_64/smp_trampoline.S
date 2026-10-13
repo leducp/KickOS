@@ -1,11 +1,10 @@
 /* SPDX-License-Identifier: CECILL-C
  * Copyright (c) 2026 Philippe Leduc
  *
- * SIPI enters at a reserved physical page below 1 MiB. The whole
- * blob is copied there. All references within it are offsets from the copied
- * start; the 64-bit destination, stack, CR3, CR4 bits and GDT base are patched by the BSP.
- * The AP uses the BSP's identity-mapped UEFI root after ExitBootServices, so it takes the
- * BSP's paging depth too: CR4.LA57 cannot change once long mode is active.
+ * SIPI enters at a reserved physical page below 1 MiB, where the whole blob is copied. Its
+ * references are offsets from the copied start; the BSP patches the 64-bit destination, stack,
+ * CR3, CR4 bits and GDT base. The AP takes the BSP's paging depth with the BSP's root:
+ * CR4.LA57 cannot change once long mode is active.
  */
 
     .section .rodata.ap_trampoline, "a"

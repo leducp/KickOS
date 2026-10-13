@@ -7,8 +7,7 @@
  *
  * NO TRAP FIGURE HERE RESERVES AN UNPRIVILEGED THREAD'S STACK: a U-mode entry builds its frame
  * on ctx.kernel_sp and only remembers and bounds the sp the thread chose, because mret resumes
- * on it. TWO DESCENTS STILL SPEND A THREAD STACK: a privileged thread's syscall (SYSPRIV), whose
- * ecall keeps the frame on the sp it interrupted, and kickos_thread_return (RET).
+ * on it.
  *
  * The depths are the longest weighted path tests/static/check_trap_redzone.sh measures under
  * -fcallgraph-info=su,da; none counts the panic reporter, which kpanic reaches only through
@@ -18,8 +17,8 @@
 #ifndef KICKOS_ARCH_RV_TRAP_STACK_H
 #define KICKOS_ARCH_RV_TRAP_STACK_H
 
-/* KICKOS_BENCH and KICKOS_AMP_OWN_IMAGE select figures below and have no fallback #define:
-   with -Wundef -Werror an image that lost either fails instead of reserving a smaller figure. */
+/* KICKOS_AMP_OWN_IMAGE selects figures below and has no fallback #define: with -Wundef -Werror
+   an image that lost it fails instead of reserving a smaller figure. */
 
 /* trap_entry's save frame: `addi sp, sp, -128`, 30 word stores plus the F_SP slot. switch.S and
  * arch_rv32imac.cc assert against it. */
@@ -43,37 +42,10 @@
 #define KICKOS_RV_TRAP_KERNEL_DEPTH 480
 #define KICKOS_RV_TRAP_KERNEL_DEPTH_SYS 912
 
-/* _SYS's dispatch on a PRIVILEGED thread's own stack. A separate macro for the rounding, a
- * thread-stack figure being a multiple of 64, and for the posture: KICKOS_BENCH adds a syscall arm
- * nothing else compiles. Both figures are reserves above the measurements below, kept as headroom;
- * the red-zone gate fails a measurement past them.
- *
- *   KICKOS_BENCH 0, 576 on esp32c6-wroom at KICKOS_MAX_SPAWN_GRANTS 6:
- *     syscall_dispatch[64] -> thread_create_call[272] -> thread_create[80] -> seat_windows[64]
- *     -> MpuSet::add[16] -> MpuSet::encode -> arch_mpu_encode[80]
- *   672 on qemu-riscv and esp32c6-wroom-st at 9, where spawn_masked[336] leaves
- *   thread_create_call[32]; qemu-riscv-flat reads 608, down thread_create[96] -> seat_windows[64]
- *   -> arch_ram_region_size[16].
- *   KICKOS_BENCH 1, 768 on qemu-riscv-bench and 752 on esp32c6-wroom-bench, down the console.
- *   C6 AMP node 0, 800 via the self-test diagnostic on exit; node 1 measures 608.
- * thread_create_call stages the spawn's grant list: qemu-riscv reads 672 at
- * KICKOS_MAX_SPAWN_GRANTS 9, 704 at 11, 720 at 12 and 784 at 15, so arch_rv32imac.cc refuses
- * more than 11 under the 704 figure. C6 AMP node 0 still reads 800 at 15. */
-#if KICKOS_BENCH || KICKOS_AMP_OWN_IMAGE
-#define KICKOS_RV_TRAP_KERNEL_DEPTH_SYSPRIV 832
-#else
-#define KICKOS_RV_TRAP_KERNEL_DEPTH_SYSPRIV 704
-#endif
-
 /* ENTRY_FRAME is spent ABOVE the validated sp, and a U-mode trap writes nothing on the thread's
  * own stack: trap_entry's csrrw moves to the trap stack before its first store. */
 #define KICKOS_RV_TRAP_ENTRY_FRAME 0
 #define KICKOS_RV_TRAP_NEED_USER 0
-
-/* The one figure a privileged thread's stack has to hold. No bound on an M-mode sp exists to
- * refuse it at run time. */
-#define KICKOS_RV_TRAP_NEED_SYSPRIV \
-    (KICKOS_RV_TRAP_FRAME_SYS + KICKOS_RV_TRAP_KERNEL_DEPTH_SYSPRIV)
 
 /* The death path's frame term is the msip frame: a stub's exit_current pends msip, and an msip
  * trap from M-mode keeps its frame on the interrupted sp. A plain integer the gate scrapes;
@@ -87,20 +59,6 @@
 #define KICKOS_RV_TRAP_KERNEL_DEPTH_EXITK 640
 #else
 #define KICKOS_RV_TRAP_KERNEL_DEPTH_EXITK 576
-#endif
-
-/* kickos_thread_return on a privileged thread's own stack. C6 AMP node 0 measures 624
- * through its self-test diagnostic; the bench presets measure 384:
- *   kickos_thread_return -> exit_current[80] -> cap_teardown -> teardown_entry
- *   -> obj_close_protocol -> endpoint_rights_dropped -> sched::wake -> pick_and_seat
- *   -> arch_ctx_redirect[32] -> arch_context_init[32]
- * KICKOS_MIN_STACK_SIZE is set by NEED_SYSPRIV, not by this class. */
-#if KICKOS_AMP_OWN_IMAGE
-#define KICKOS_RV_TRAP_KERNEL_DEPTH_RET 640
-#elif KICKOS_BENCH
-#define KICKOS_RV_TRAP_KERNEL_DEPTH_RET 448
-#else
-#define KICKOS_RV_TRAP_KERNEL_DEPTH_RET 384
 #endif
 
 /* A syscall holds TWO frames: a blocking dispatch or a tick's wake pends msip, and that trap
@@ -177,14 +135,12 @@
  *
  * class TRAP    frame=KICKOS_RV_TRAP_FRAME depth=KICKOS_RV_TRAP_KERNEL_DEPTH stack=kernel
  * class SYS     frame=KICKOS_RV_TRAP_FRAME_SYS depth=KICKOS_RV_TRAP_KERNEL_DEPTH_SYS stack=kernel
- * class SYSPRIV frame=KICKOS_RV_TRAP_FRAME_SYS depth=KICKOS_RV_TRAP_KERNEL_DEPTH_SYSPRIV
  * class FAULT   frame=KICKOS_RV_TRAP_FRAME depth=KICKOS_RV_TRAP_NESTED_DEPTH stack=kernel
  * class SWITCH  frame=KICKOS_RV_TRAP_FRAME depth=KICKOS_RV_TRAP_SWITCH_DEPTH
  * class NESTED  frame=KICKOS_RV_TRAP_FRAME depth=KICKOS_RV_TRAP_NESTED_DEPTH stack=trap
  * class EXITK   frame=KICKOS_RV_TRAP_NEST_EXIT depth=KICKOS_RV_TRAP_KERNEL_DEPTH_EXITK stack=kernel
- * class RET     frame=KICKOS_RV_TRAP_NEST_EXIT depth=KICKOS_RV_TRAP_KERNEL_DEPTH_RET
  * class PANIC   frame=KICKOS_RV_PANIC_FRAME depth=KICKOS_RV_PANIC_DEPTH stack=panic
- * class IDLE    frame=KICKOS_RV_TRAP_FRAME depth=KICKOS_RV_TRAP_DEPTH_IDLE
+ * class IDLE    frame=KICKOS_RV_TRAP_FRAME depth=KICKOS_RV_TRAP_DEPTH_IDLE stack=idle
  */
 
 #endif /* KICKOS_ARCH_RV_TRAP_STACK_H */

@@ -7,8 +7,8 @@
 // klock_rv64imac.cc.
 //
 // A raise arrives at the peer as a MACHINE software interrupt, cause 3, which mideleg holds
-// read-only zero (measured on qemu-riscv64: writing all ones reads back 0x3666). The chip's
-// machine-mode trampoline lowers it to mip.SSIP, where the supervisor dispatch demuxes it.
+// read-only zero. The chip's machine-mode trampoline lowers it to mip.SSIP, where the
+// supervisor dispatch demuxes it.
 
 #ifndef KICKOS_ARCH_RV64_DOORBELL_H
 #define KICKOS_ARCH_RV64_DOORBELL_H
@@ -26,8 +26,8 @@ extern "C"
 // A publish the far side must observe is ordered by the caller ahead of this, so the body owes
 // the fence that makes its own stores visible before the raise.
 //
-// SUPERVISOR MODE MAY DO THIS WRITE WITH NO MACHINE-MODE LEG: PMP entry 0 grants the whole
-// space and QEMU's CLINT gates the msip write on no privilege, both measured on qemu-riscv64.
+// Supervisor mode makes this write directly: PMP entry 0 grants the whole space and QEMU's
+// CLINT does not gate the msip write on privilege.
 void kickos_rv64_doorbell_send(uint32_t cores);
 
 // Whether any peer has asked this core for something it has not answered. THE CELL, NOT THE
@@ -35,7 +35,7 @@ void kickos_rv64_doorbell_send(uint32_t cores);
 int kickos_rv64_doorbell_pending(void);
 
 // Where a released secondary lands: seats this hart's supervisor state, publishes its arrival
-// and parks it on the doorbell. Never returns. Called from the chip's supervisor landing pad.
+// and parks it on the doorbell. Never returns.
 void kickos_rv64_secondary_entry(void) __attribute__((noreturn));
 
 // One poke and one wait over `peers`: every serviced hart runs the SFENCE.VMA in the doorbell's
@@ -46,7 +46,7 @@ void kickos_rv64_translation_rendezvous(uint32_t peers);
 // clears the one cause every raise arrives on, so it must know what it did not service.
 int kickos_rv64_inject_owed(void);
 
-// Nonzero once hart `id` has reached the park. Read by the chip's arrival wait.
+// Nonzero once hart `id` has reached the park.
 uint32_t kickos_rv64_core_online_read(uint32_t id);
 
 }

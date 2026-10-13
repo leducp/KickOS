@@ -169,7 +169,7 @@ TEST(ConsoleHeld, ARecordItsWriterWasSlainInsideIsDroppedForTheNext)
         publish();
         consoleseam::g_current = thread(1);
         kickos::kprintf_fault(kHead, "t1");
-        kickos::krecord_abandon();
+        kickos::kconsole_slain();
         consoleseam::g_current = thread(2);
         record("t2", 0x200u);
         EXPECT_EQ(held(), text("t2", 0x200u));

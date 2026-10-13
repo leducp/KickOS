@@ -2,11 +2,12 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The handover fires on a TIMEOUT, so a board whose image is otherwise misbehaving still
-// comes back for a reflash without a button press. Main makes the call.
+// comes back for a reflash without a button press.
 //
-// On a chip with a backend (rp2040 -> PICOBOOT/UF2, rp2350 -> BOOTSEL, imxrt1062 ->
+// On a chip with a bootloader entry (rp2040 -> PICOBOOT/UF2, rp2350 -> BOOTSEL, imxrt1062 ->
 // HalfKay) the countdown is the last line printed and the board reappears as a flashing
-// device; otherwise the fallback declines and the rc line is the verdict.
+// device. Otherwise the chip declines, the rc line is the verdict, and the image asks for a
+// plain reset: a chip with one boots the image again, which asks again.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -23,12 +24,14 @@ int main(int, char**)
     kos::print("[rebootdemo] handing the chip to its bootloader in 3s\n");
     kos::sleep_ns(ARM_NS);
 
-    int const rc = kos_reboot();
+    int const rc = kos_shutdown(0, KOS_SHUTDOWN_BOOTLOADER);
 
-    // Reached only where the chip declined: a backend that took the call never returns.
     char msg[80];
     ksnprintf(msg, sizeof(msg), "[rebootdemo] reboot declined: rc=%d\n", rc);
     kos::print(msg);
-    kos_shutdown(0);
+
+    int const reset = kos_shutdown(0, KOS_SHUTDOWN_REBOOT);
+    ksnprintf(msg, sizeof(msg), "[rebootdemo] reset declined: rc=%d\n", reset);
+    kos::print(msg);
     return 0;
 }

@@ -10,7 +10,7 @@
  * pointer, then resumes the incoming thread with a windowed return (retw), whose
  * underflow handler lazily reloads the incoming caller's window from ITS stack.
  *
- * Why only 3 saved words (sp/ps/pc) suffice: after SPILL_ALL_WINDOWS the register
+ * Why 3 saved words (sp/ps/pc) suffice: after SPILL_ALL_WINDOWS the register
  * file holds only the current (switch) window; WindowStart has a single bit set.
  * The base-save-area convention (Xtensa ISA, Windowed Register Option) puts each
  * frame's a0-a3, including its a1 (SP), at [callee_sp - 16 .. callee_sp - 4].
@@ -21,6 +21,10 @@
  * arch/xtensa/chip/esp32/startup.S.
  *
  * arch_context layout (context.h, offsets hard-coded here): sp@0, ps@4, pc@8.
+ *
+ * FCR and FSR (rounding mode, exception enables and flags) are thread state the windowed
+ * return does not carry: they go into the switch frame (xtensa_frame.h) and every retw tail
+ * reloads them, the one in _kickos_int_level1 included.
  */
 
 /* PS bit fields (Xtensa ISA / corebits.h): WOE=bit18, UM=bit5, EXCM=bit4,
@@ -129,6 +133,7 @@ xtensa_switch:
     movi    a5, RESUME_COOP
     s32i    a5, a2, CTX_KIND      /* from->resume_kind = COOP (retw resume) */
     s32i    a3, a1, 0             /* stash `to` across the spill (defensive) */
+    COOP_FP_CTL_SAVE a5
 
     /* Flush every live window of `from` to its stack. EPC1 is dead in thread
        context (we are not inside an exception), so it need not be preserved. */
@@ -149,6 +154,7 @@ xtensa_switch:
     bnez    a5, .Lsw_resume_irq
     l32i    a1, a3, CTX_SP        /* a1 = to->sp   (switch stacks) */
     SWITCH_UNLOCK                 /* standing on the incoming frame; a3 survives call4 */
+    COOP_FP_CTL_RESTORE a4
     l32i    a4, a3, CTX_PS        /* to->ps */
     l32i    a0, a3, CTX_PC        /* to->pc (return addr, carries CALLINC) */
     /* The bench window is NOT closed here. arch_switch stamps the end cell where this retw
@@ -202,6 +208,7 @@ arch_start:
     l32i    a5, a3, CTX_KIND      /* first->resume_kind */
     bnez    a5, .Lstart_resume_irq
     l32i    a1, a3, CTX_SP       /* a1 = first->sp */
+    COOP_FP_CTL_RESTORE a4
     l32i    a4, a3, CTX_PS       /* first->ps */
     l32i    a0, a3, CTX_PC       /* first->pc */
     wsr.ps  a4

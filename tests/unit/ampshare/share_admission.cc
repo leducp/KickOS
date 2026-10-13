@@ -11,6 +11,8 @@
 
 #include <gtest/gtest.h>
 
+#include "region_seam.h"
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -28,18 +30,12 @@ namespace
 
 extern "C"
 {
-    int arch_mpu_nocache_support(void) { return ARCH_MPU_NOCACHE_ALREADY; }
-    size_t arch_mpu_min_region(void) { return MIN_REGION; }
-    int arch_mpu_region_pow2(void) { return 0; }
-    bool arch_mpu_region_encodable(uintptr_t, size_t) { return false; }
-    uintptr_t arch_ram_base(void) { return ARENA_BASE; }
-    size_t arch_ram_size(void) { return ARENA_SIZE; }
     void* arch_ram_alloc(size_t) { return nullptr; }
-    struct arch_reserved_span arch_reserved_blocks(void) { return {}; }
-    struct arch_reserved_span arch_bus_master_apertures(void) { return {}; }
-    int arch_bitband_present(void) { return 0; }
     size_t arch_domain_static_regions(struct arch_mpu_region*, size_t) { return 0; }
 }
+
+RegionSeam g_region_seam = {
+    .ram_base = ARENA_BASE, .ram_size = ARENA_SIZE, .min_region = MIN_REGION};
 
 namespace kickos
 {

@@ -30,8 +30,8 @@ namespace
     using kickos::Order;
 
     // TWO INDEPENDENT BUFFERS SHARE ONE RING, and only the ordinary one sizes it. A fault
-    // record wider than an ordinary line would be refused, and the reporter would take the
-    // locked writer on the descent the red-zone gate measures.
+    // record line wider than an ordinary one may not fit the ring, which refuses a line
+    // whole, and the record would never reach the wire.
     static_assert(KDIAG_FAULT_LINE_MAX <= KICKOS_DIAG_LINE_MAX,
                   "the fault reporter's line is wider than the one the console ring is sized "
                   "from, so the ring cannot take it whole");
@@ -111,6 +111,10 @@ namespace
     void console_tx_isr_trampoline(void*) { console_tx_isr(); }
 }
 
+// Outside the ring's fields, which have nonzero initialisers: inside them it is .data. Only a
+// backend names it, so an image with none links no storage.
+constinit console_tx_storage_t kickos_console_tx_storage;
+
 extern "C"
 {
 
@@ -135,6 +139,17 @@ int console_tx_armed(void) { return static_cast<int>(tx().armed); }
 
 static __attribute__((noinline)) void drain_in_producer(uint32_t until);
 
+#ifdef KICKOS_LINE_STEP
+// A host test's hook, run inside an insert's copy with the line stored and the head not yet moved.
+extern "C" void kickos_line_step(void);
+#define LINE_STEP() kickos_line_step()
+#else
+#define LINE_STEP() \
+    do              \
+    {               \
+    } while (false)
+#endif
+
 static uint32_t line_needed(char const* buf, size_t n, int crlf)
 {
     uint32_t needed = static_cast<uint32_t>(n);
@@ -151,7 +166,8 @@ static uint32_t line_needed(char const* buf, size_t n, int crlf)
     return needed;
 }
 
-// Caller holds IrqLock over an armed ring. Copies the whole line or nothing.
+// Caller holds IrqLock over an armed ring. Copies the whole line or nothing, then turns the drain
+// on; an empty line only does the latter.
 //
 // noinline, as drain_in_producer: tests/static/trap_redzone_indirect.txt binds the backend calls
 // to these two bodies by name.
@@ -180,14 +196,18 @@ static __attribute__((noinline)) bool insert_locked(char const* buf, size_t n, i
         r.buf[idx] = buf[i];
         idx = (idx + 1u) & r.mask;
     }
-    KICKOS_CONSOLE_TX_BARRIER();
+    // The line stored before the head moves: a synchronous fault nested in the copy flushes up
+    // to the head.
+    std::atomic_signal_fence(std::memory_order_release);
+    LINE_STEP();
     r.queued = r.queued + ((idx - r.head) & r.mask);
     r.head = idx;
     r.inserting = false;
     r.backend->irq_enable();
 
     // With a transition-triggered TX interrupt, enabling the IRQ on an idle channel raises
-    // nothing: only this byte's completion event starts the drain ISR.
+    // nothing: only this byte's completion event starts the drain ISR. The channel is idle where
+    // the ring was empty, and may be where an empty line re-primes it after a reprogramming.
     //   RX SCI TXI: REQUIRED. RX72M HW manual Rev.1.20 section 42.12.2(1) p.2308, a TXI request
     //               is not generated "by setting the SCR.TIE bit to 1 while the setting of the
     //               SCR.TE bit is 1". Same page, Note 2: gate a burst at the ICU and NEVER by
@@ -198,7 +218,7 @@ static __attribute__((noinline)) bool insert_locked(char const* buf, size_t n, i
     //               52.3.5; S1 resets to 0xC0 untransmitted).
     //   PL011 FEN=0: the priming runs there on the analogy above, not on a citation.
     uint32_t const tail = r.tail;
-    if (was_empty and not r.pushing and idx != tail and r.backend->slot_free() != 0)
+    if ((was_empty or n == 0) and not r.pushing and idx != tail and r.backend->slot_free() != 0)
     {
         r.backend->push(static_cast<uint8_t>(r.buf[tail]));
         r.tail = (tail + 1u) & r.mask;
@@ -509,21 +529,32 @@ void console_tx_flush_sync(void)
     }
 }
 
+void console_tx_disarm(void)
+{
+    tx().armed = false;
+}
+
+void console_tx_reprime(void)
+{
+    ConsoleTxRing const& r = tx();
+    if (r.armed and r.used() != 0)
+    {
+        (void)insert_locked(nullptr, 0, 0);
+    }
+}
+
 // Call once, after irq_init(). The TX line's priority must land in the IrqLock-maskable
-// band. No-op on sim and polled-only chips.
+// band. No-op on a chip that supplies no backend.
 void console_buffer_init(void)
 {
-    char* buf = nullptr;
-    uint32_t size = 0;
     int line = -1;
-    console_tx_backend const* be = arch_console_tx_backend(&buf, &size, &line);
-    if (be == nullptr or buf == nullptr or size == 0)
+    console_tx_backend const* be = arch_console_tx_backend(&line);
+    if (be == nullptr)
     {
         return;
     }
-    // A dropped attach would leave the ring armed but never drained: output fills it, falls
-    // back to the bounded sync path, and looks like it works while every buffered write
-    // stalls. A misconfigured TX line at boot is a port bug, so panic.
+    // A dropped attach would leave the ring armed but never drained: it fills, and every line
+    // after is refused with nothing said. A misconfigured TX line at boot is a port bug, so panic.
     if (line >= 0 and not kickos::irq_attach(line, console_tx_isr_trampoline, nullptr))
     {
         kickos::kpanic(kickos::diag::kConsoleAttach);
@@ -531,7 +562,7 @@ void console_buffer_init(void)
     // Arm the ring BEFORE the line can fire: the latch-and-coalesce contract redelivers any
     // pend latched on this line before boot the instant ISER is set, and console_tx_isr on a
     // zero-init ring would deref a NULL backend.
-    console_tx_init(be, buf, size, line);
+    console_tx_init(be, be->storage->get(), KICKOS_CONSOLE_TX_SIZE, line);
     if (line >= 0)
     {
         kickos::IrqLock lock;
@@ -617,6 +648,28 @@ static uint32_t held_fit(ConsoleTxRing const& r, uint32_t at, uint32_t end)
     return size;
 }
 
+// The entries of [at, end) that fit, in order, stopping at the first that does not:
+//   for (HeldWalk w(r, from, end); w.size != 0; w.next()) { w.at, w.size }
+// always_inline: console_held_append runs on kprintf_fault's descent.
+struct HeldWalk
+{
+    __attribute__((always_inline)) HeldWalk(ConsoleTxRing const& ring, uint32_t from, uint32_t to)
+        : r(ring), at(from), end(to), size(held_fit(ring, from, to))
+    {
+    }
+
+    __attribute__((always_inline)) void next()
+    {
+        at = at + size;
+        size = held_fit(r, at, end);
+    }
+
+    ConsoleTxRing const& r;
+    uint32_t at;
+    uint32_t end;
+    uint32_t size;
+};
+
 static bool held_record_fits(ConsoleTxRing const& r, uint32_t at, uint32_t end)
 {
     return at < end and end - at >= HELD_HEADER and held_len(r, at) <= end - at - HELD_HEADER;
@@ -637,48 +690,36 @@ static uint32_t held_key_at(ConsoleTxRing const& r, uint32_t at)
     return key;
 }
 
-static uint32_t held_find(ConsoleTxRing const& r, uint32_t key)
+// The marker of the open record whose key, or else whose id, is `value`; held_head for none.
+static uint32_t held_mark(ConsoleTxRing const& r, bool by_key, uint32_t value)
 {
-    uint32_t at = r.held_open;
-    for (uint32_t size = held_fit(r, at, r.held_head); size != 0;
-         size = held_fit(r, at, r.held_head))
+    for (HeldWalk w(r, r.held_open, r.held_head); w.size != 0; w.next())
     {
-        if (held_is_mark(r, at) and held_key_at(r, at) == key)
+        if (held_is_mark(r, w.at))
         {
-            return at;
+            uint32_t have = held_id(r, w.at);
+            if (by_key)
+            {
+                have = held_key_at(r, w.at);
+            }
+            if (have == value)
+            {
+                return w.at;
+            }
         }
-        at = at + size;
     }
     return r.held_head;
-}
-
-static bool held_id_used(ConsoleTxRing const& r, uint8_t id)
-{
-    uint32_t at = r.held_open;
-    for (uint32_t size = held_fit(r, at, r.held_head); size != 0;
-         size = held_fit(r, at, r.held_head))
-    {
-        if (held_is_mark(r, at) and held_id(r, at) == id)
-        {
-            return true;
-        }
-        at = at + size;
-    }
-    return false;
 }
 
 static uint32_t held_record_bytes(ConsoleTxRing const& r, uint8_t id)
 {
     uint32_t bytes = 0;
-    uint32_t at = r.held_open;
-    for (uint32_t size = held_fit(r, at, r.held_head); size != 0;
-         size = held_fit(r, at, r.held_head))
+    for (HeldWalk w(r, r.held_open, r.held_head); w.size != 0; w.next())
     {
-        if (not held_is_mark(r, at) and held_id(r, at) == id)
+        if (not held_is_mark(r, w.at) and held_id(r, w.at) == id)
         {
-            bytes = bytes + size - HELD_LINE;
+            bytes = bytes + w.size - HELD_LINE;
         }
-        at = at + size;
     }
     return bytes;
 }
@@ -745,16 +786,13 @@ static void held_settle(ConsoleTxRing& r)
 static void held_drop(ConsoleTxRing& r, uint8_t id)
 {
     uint32_t dst = r.held_open;
-    uint32_t at = r.held_open;
-    for (uint32_t size = held_fit(r, at, r.held_head); size != 0;
-         size = held_fit(r, at, r.held_head))
+    for (HeldWalk w(r, r.held_open, r.held_head); w.size != 0; w.next())
     {
-        if (held_id(r, at) != id)
+        if (held_id(r, w.at) != id)
         {
-            held_move_down(r.buf, dst, at, at + size);
-            dst = dst + size;
+            held_move_down(r.buf, dst, w.at, w.at + w.size);
+            dst = dst + w.size;
         }
-        at = at + size;
     }
     r.held_head = dst;
     HELD_STEP();
@@ -776,11 +814,11 @@ int console_held_append(uint32_t key, char const* buf, uint32_t n, uint32_t max)
     {
         return 0;
     }
-    uint32_t const mark = held_find(r, key);
+    uint32_t const mark = held_mark(r, true, key);
     if (mark == r.held_head)
     {
         uint8_t id = 0;
-        while (id != HELD_ID_COUNT and held_id_used(r, id))
+        while (id != HELD_ID_COUNT and held_mark(r, false, id) != r.held_head)
         {
             id++;
         }
@@ -819,7 +857,7 @@ int console_held_append(uint32_t key, char const* buf, uint32_t n, uint32_t max)
 int console_held_commit(uint32_t key)
 {
     ConsoleTxRing& r = tx();
-    uint32_t const mark = held_find(r, key);
+    uint32_t const mark = held_mark(r, true, key);
     if (mark == r.held_head)
     {
         return 0;
@@ -829,32 +867,27 @@ int console_held_commit(uint32_t key)
     // The record's entries gathered at the front of the open area, in their order, by rotating
     // each one down over the entries of other records it passes.
     uint32_t gathered = r.held_open;
-    uint32_t at = r.held_open;
-    for (uint32_t size = held_fit(r, at, r.held_head); size != 0;
-         size = held_fit(r, at, r.held_head))
+    for (HeldWalk w(r, r.held_open, r.held_head); w.size != 0; w.next())
     {
-        uint32_t const end = at + size;
-        if (held_id(r, at) == id)
+        if (held_id(r, w.at) == id)
         {
-            held_reverse(r.buf, gathered, at);
-            held_reverse(r.buf, at, end);
+            uint32_t const end = w.at + w.size;
+            held_reverse(r.buf, gathered, w.at);
+            held_reverse(r.buf, w.at, end);
             held_reverse(r.buf, gathered, end);
-            gathered = gathered + size;
+            gathered = gathered + w.size;
         }
-        at = end;
     }
     // Then their headers dropped behind one length. The marker comes first and is wider than
     // that length, so every copy lands below the entry it reads.
     uint32_t dst = r.held_open + HELD_HEADER;
-    at = r.held_open;
-    for (uint32_t size = held_fit(r, at, gathered); size != 0; size = held_fit(r, at, gathered))
+    for (HeldWalk w(r, r.held_open, gathered); w.size != 0; w.next())
     {
-        if (not held_is_mark(r, at))
+        if (not held_is_mark(r, w.at))
         {
-            held_move_down(r.buf, dst, at + HELD_LINE, at + size);
-            dst = dst + size - HELD_LINE;
+            held_move_down(r.buf, dst, w.at + HELD_LINE, w.at + w.size);
+            dst = dst + w.size - HELD_LINE;
         }
-        at = at + size;
     }
     uint32_t const len = dst - r.held_open - HELD_HEADER;
     if (len == 0)
@@ -880,7 +913,7 @@ int console_held_commit(uint32_t key)
 void console_held_abandon(uint32_t key)
 {
     ConsoleTxRing& r = tx();
-    uint32_t const mark = held_find(r, key);
+    uint32_t const mark = held_mark(r, true, key);
     if (mark == r.held_head)
     {
         return;
@@ -935,23 +968,20 @@ void console_held_write_sync(void)
         at = end;
     }
     // Each open record's lines in their order, records in the order they opened.
-    uint32_t mark = open;
-    for (uint32_t size = held_fit(r, mark, head); size != 0; size = held_fit(r, mark, head))
+    for (HeldWalk m(r, open, head); m.size != 0; m.next())
     {
-        if (held_is_mark(r, mark))
+        if (not held_is_mark(r, m.at))
         {
-            uint8_t const id = held_id(r, mark);
-            at = mark + size;
-            for (uint32_t line = held_fit(r, at, head); line != 0; line = held_fit(r, at, head))
+            continue;
+        }
+        uint8_t const id = held_id(r, m.at);
+        for (HeldWalk w(r, m.at + m.size, head); w.size != 0; w.next())
+        {
+            if (not held_is_mark(r, w.at) and held_id(r, w.at) == id)
             {
-                if (not held_is_mark(r, at) and held_id(r, at) == id)
-                {
-                    held_write(r, at + HELD_LINE, line - HELD_LINE);
-                }
-                at = at + line;
+                held_write(r, w.at + HELD_LINE, w.size - HELD_LINE);
             }
         }
-        mark = mark + size;
     }
 }
 

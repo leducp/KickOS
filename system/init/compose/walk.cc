@@ -884,6 +884,7 @@ namespace kickos::init
         flush();
         driver_path::drain(*this);
         Message answer;
-        refused("kos_shutdown", KOS_TABLE_NONE, answer.add(kos_shutdown(status)).text());
+        refused("kos_shutdown", KOS_TABLE_NONE,
+                answer.add(kos_shutdown(status, KOS_SHUTDOWN_HALT)).text());
     }
 }

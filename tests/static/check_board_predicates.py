@@ -13,9 +13,9 @@
 #   an expected arm    an expected-skip or expected-partial set naming an arm is a measurement
 #                      of one board taken once; it is derived from the facts that decide it
 #                      instead. A set carrying only a derived variable is not a list and passes.
-#   an app selection   add_subdirectory or kickos_add_diagnostic_apps, keyed on what the app
-#                      needs instead. A file the app ships for the board, which an EXISTS or
-#                      IS_DIRECTORY operand asks after, is such a fact.
+#   an app selection   add_subdirectory, keyed on what the app needs instead. A file the app
+#                      ships for the board, which an EXISTS or IS_DIRECTORY operand asks after,
+#                      is such a fact.
 #
 #   python3 tests/static/check_board_predicates.py <cmake file>...
 
@@ -29,7 +29,7 @@ RETURN_RE = re.compile(r'^\s*return\s*\(', re.I)
 SET_RE = re.compile(r'^\s*(?:set|list\s*\(\s*(?:APPEND|PREPEND|INSERT))\s*\(?\s*([A-Za-z_][A-Za-z0-9_]*)(.*)$',
                     re.I)
 CALL_RE = re.compile(r'^\s*kickos_add_qemu_test\s*\(', re.I)
-SELECT_RE = re.compile(r'^\s*(?:add_subdirectory|kickos_add_diagnostic_apps)\s*\(', re.I)
+SELECT_RE = re.compile(r'^\s*add_subdirectory\s*\(', re.I)
 FILE_TEST_RE = re.compile(r'\b(?:EXISTS|IS_DIRECTORY)\s+(?:"[^"]*"|\S+)')
 EXPECT_RE = re.compile(r'^(KICKOS_EXPECT_(?:SKIPS|PARTIALS)|\w*_(?:skips|partials))$', re.I)
 ENV_RE = re.compile(r'"EXPECT_(?:SKIPS|PARTIALS)=([^"]*)"')
@@ -151,7 +151,7 @@ endif()
 if(_c)
   kickos_add_qemu_test(TARGET c SCRIPT c.sh)
 endif()
-if(KICKOS_BOARD STREQUAL "f302nucleo" AND KICKOS_ENABLE_SELFTEST)
+if(KICKOS_BOARD STREQUAL "f302nucleo" AND KICKOS_DIAG_TERSE)
   set(_f3_skips
       mutex_basic prio_self_raise_lower)
 endif()
@@ -164,7 +164,7 @@ if(KICKOS_BOARD STREQUAL "frdmk64f"
   add_subdirectory(gpioblink)
 endif()
 if(_c)
-  kickos_add_diagnostic_apps(fault)
+  add_subdirectory(fault)
 endif()
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_BOARD}.cmake")
   kickos_add_qemu_test(TARGET f SCRIPT f.sh)
@@ -211,7 +211,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/gpioblink/systems/${KICKOS_BOARD}.yaml"
   add_subdirectory(gpioblink)
 endif()
 if(KICKOS_MEMORY_ENFORCED)
-  kickos_add_diagnostic_apps(specfault)
+  add_subdirectory(specfault)
 endif()
 '''
 

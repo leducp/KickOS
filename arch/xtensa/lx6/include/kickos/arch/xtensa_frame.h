@@ -3,11 +3,12 @@
  *
  * The Xtensa LX6 level-1 interrupt-frame layout, indexed by both the save/restore asm
  * (arch/xtensa/chip/esp32/startup.S) and the C++ fabricator arch_context_init
- * (arch/xtensa/lx6/arch_xtensa.cc), so the offsets live here once.
+ * (arch/xtensa/lx6/arch_xtensa.cc), so the offsets live here once; and the cooperative switch
+ * frame's FP control slots, which both retw tails reload.
  *
  * Asm-safe: plain object and function-like #defines only, with no C types and no literal
- * suffixes gas cannot parse. No C struct mirrors the frame, so nothing static_asserts the F_*
- * offsets.
+ * suffixes gas cannot parse. arch_xtensa.cc static_asserts F_SIZE and KICKOS_LX6_CTX_TLS_BASE;
+ * no C struct mirrors the frame, so nothing checks the other F_* offsets.
  */
 #ifndef KICKOS_ARCH_XTENSA_FRAME_H
 #define KICKOS_ARCH_XTENSA_FRAME_H
@@ -38,13 +39,18 @@
 #define F_A15     F_AREG(15)
 
 /* Single-precision FPU (CP0): f0..f15 contiguous, 4 bytes each, so through 0x9C, then FCR and
-   FSR. Banked only on the preemptive path. */
+   FSR. The f-registers are banked only on the preemptive path. */
 #define F_F0   0x60
 #define F_FCR  0xA0
 #define F_FSR  0xA4
 
 /* Frame size, 16-byte aligned. */
 #define F_SIZE 0x100
+
+/* xtensa_switch's own frame (`entry a1, 32`): FCR and FSR of the thread suspended there, which
+   every retw tail onto that frame reloads. Slot 0 carries `to` across the spill. */
+#define SW_FCR 4
+#define SW_FSR 8
 
 /* arch_context.tls_base (context.h), which trace_tid precedes where telemetry is compiled. */
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
@@ -54,7 +60,7 @@
 #endif
 
 #ifdef __ASSEMBLER__
-#if defined(KICKOS_TLS) && KICKOS_TLS
+#if KICKOS_TLS
 /* Seat THREADPTR for the thread whose context pointer is in \ctx. EVERY SWITCH-IN INVOKES THIS,
  * the preemptive one at the tail of _kickos_int_level1 included: a missed site leaves the
  * incoming thread on the outgoing thread's thread_local storage and libc state. */
@@ -66,6 +72,21 @@
     .macro  SEAT_THREADPTR ctx, tmp
     .endm
 #endif
+
+    .macro  COOP_FP_CTL_SAVE tmp
+    rur.fcr \tmp
+    s32i    \tmp, a1, SW_FCR
+    rur.fsr \tmp
+    s32i    \tmp, a1, SW_FSR
+    .endm
+
+/* a1 must name the incoming thread's switch frame. */
+    .macro  COOP_FP_CTL_RESTORE tmp
+    l32i    \tmp, a1, SW_FCR
+    wur.fcr \tmp
+    l32i    \tmp, a1, SW_FSR
+    wur.fsr \tmp
+    .endm
 #endif // __ASSEMBLER__
 
 #endif

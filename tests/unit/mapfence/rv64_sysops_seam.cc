@@ -24,11 +24,12 @@ namespace
     static_assert((size_t{1} << KICKOS_RV64_GRANULE_SHIFT) == SYSOPS_GRANULE,
                   "the shared frame pool hands out frames of the Sv39 granule");
 
-    // Reserve frame 0 for allocation failure, frame 1 for the boot root,
-    // and frame 2 for the transient-window leaf table.
+    // Frame 0 is the pool's failure answer. The boot root reaches the transient window's leaf
+    // table through a kernel-half table, a slot every space copies and shares.
     constexpr size_t FRAME_BOOT_ROOT = 1;
     constexpr size_t FRAME_WINDOW_LEAVES = 2;
-    constexpr size_t FRAME_POOL_FIRST = 3;
+    constexpr size_t FRAME_KERNEL_TABLE = 3;
+    constexpr size_t FRAME_POOL_FIRST = 4;
 
     constexpr uintptr_t SEAM_WINDOW_VA = 0xFFFFFFD000000000ull;
     constexpr unsigned SEAM_PHYS_BITS = 40;
@@ -48,6 +49,12 @@ namespace
     uint64_t* frame_ptr(size_t frame)
     {
         return reinterpret_cast<uint64_t*>(&g_phys[frame * SYSOPS_GRANULE]);
+    }
+
+    uint64_t table_pte(size_t frame)
+    {
+        uint64_t const pa = static_cast<uint64_t>(frame) * SYSOPS_GRANULE;
+        return ((pa >> KICKOS_RV64_GRANULE_SHIFT) << 10) | 1u;
     }
 
     uint64_t boot_satp()
@@ -122,6 +129,10 @@ namespace kickos
             {
                 g_phys[i] = 0;
             }
+            frame_ptr(FRAME_BOOT_ROOT)[(SEAM_WINDOW_VA >> 30) & 0x1FFu] =
+                table_pte(FRAME_KERNEL_TABLE);
+            frame_ptr(FRAME_KERNEL_TABLE)[(SEAM_WINDOW_VA >> 21) & 0x1FFu] =
+                table_pte(FRAME_WINDOW_LEAVES);
             // Initialize every hart with the boot root before handover.
             for (uint32_t c = 0; c < KICKOS_NUM_CORES; c++)
             {

@@ -4,8 +4,8 @@
 # The fastpath's decide-before-mutate rule, over kernel/syscall/syscall_ipc_fast.cc itself.
 #
 # THE K-SEAM SOURCES AGAIN, with KICKOS_ARCH_HAS_IPC_FASTPATH FORCED TO 1: the knob is an arch
-# backend's own declaration (arch/<family>/<arch>/ipc_fastpath.cmake) and takes no -D in either
-# direction, no board the host arch answers for ships that file, and so the whole translation
+# backend's own declaration (ARCH_HAS_IPC_FASTPATH in arch/Kconfig) and takes no -D in either
+# direction, no board the host arch answers for selects it, and so the whole translation
 # unit under test compiles to nothing at the preset's posture. The force goes through the
 # POSTURE scrub and not a second -D.
 #

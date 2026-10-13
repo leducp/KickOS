@@ -9,27 +9,24 @@
 
 /* The app window is pow2-sized and pow2-ALIGNED, so basing it on the alignment above kernel
  * .bss makes ONE BYTE of kernel .bss cost a WHOLE window: the window, the newlib heap and the
- * user-RAM arena above them all slide one _appdata_size higher and the link stays green.
- * The gap that opens is arbitrary modulo the window, so no threshold on it is principled.
- * The base is
- * DECLARED instead, _kernel_data_top = <kernel data base> + _kernel_data_reserve, and the
- * window, the heap and the arena then stop moving with kernel .bss at all.
+ * user-RAM arena above them all slide one _appdata_size higher and the link stays green. The
+ * base is DECLARED instead, _kernel_data_top = <kernel data base> + _kernel_data_reserve, and
+ * they stop moving with kernel .bss.
  *
  * A chip states its reserve as a whole number of windows, through a KICKOS_KERNEL_DATA_RESERVE
- * default a preset can raise, so a posture that does not fit pays the arena where the cost is
- * visible rather than losing a window unremarked.
+ * default a preset can raise.
  *
  * THE PIN IS MAX(., _kernel_data_top) in the .appdata section's own ADDRESS expression, which
  * KICKOS_APPDATA_SECTION spells once; the section's body, region and AT clause stay per chip
- * after it. Two ld facts fix that spelling. A bare address fails the link with ld's backwards-move error the
- * moment kernel .bss overflows, and ld evaluates every ASSERT AFTER layout, so an overflowing
- * link must still lay out (one window higher) for the ASSERT below to be the thing that
- * prints. And the same MAX written as a pad INSIDE an output section body does not work: an
- * expression assigned to `.` inside a body is taken as an OFFSET FROM THE SECTION START
- * whenever it evaluates absolute, so `. = MAX(., <absolute>)` lands the section a whole image
- * higher and reports `will not fit in region` at a nonsense address, while a purely absolute
- * right-hand side with no `.` in it is refused outright as `invalid assignment to location
- * counter`. ABSOLUTE(.) rescues neither spelling.
+ * after it. Two ld facts fix that spelling. A bare address fails the link with ld's
+ * backwards-move error the moment kernel .bss overflows, and ld evaluates every ASSERT AFTER
+ * layout, so an overflowing link must still lay out (one window higher) for the ASSERT below to
+ * be the thing that prints. And the same MAX written as a pad INSIDE an output section body
+ * does not work: an expression assigned to `.` inside a body is taken as an OFFSET FROM THE
+ * SECTION START whenever it evaluates absolute, so `. = MAX(., <absolute>)` lands the section a
+ * whole image higher and reports `will not fit in region` at a nonsense address, while a purely
+ * absolute right-hand side with no `.` in it is refused outright as `invalid assignment to
+ * location counter`. ABSOLUTE(.) rescues neither spelling.
  */
 
 /* Invoked where the base is in scope: at file scope on a chip whose kernel .data starts at

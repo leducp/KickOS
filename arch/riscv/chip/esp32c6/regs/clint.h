@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// ESP32-C6 core-local CLINT registers (TRM v1.2 ch.1.7): MSIP (machine software int =
-// deferred switch, mcause 3) + MTIME/MTIMECMP (machine timer = tickless tick, mcause 7).
-// MTIME does not count until MTIMECTL.MTCE is set, and counts CPU_CLK (mtime_conv.h).
+// ESP32-C6 core-local CLINT: MSIP (mcause 3) and MTIME/MTIMECMP (mcause 7). MTIME does not
+// count until MTIMECTL.MTCE is set, and counts CPU_CLK (mtime_conv.h).
 
 #ifndef KICKOS_ARCH_RISCV_CHIP_ESP32C6_REGS_CLINT_H
 #define KICKOS_ARCH_RISCV_CHIP_ESP32C6_REGS_CLINT_H

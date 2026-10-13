@@ -29,13 +29,20 @@ if(KICKOS_BUILD_UNIT_TESTS)
       POSTURE ${KS_POSTURE})
   endfunction()
 
+  set(_cs "${PROJECT_SOURCE_DIR}/tests/unit/consoleseam")
+  set(_console_alone "${_cs}/console_alone.cc" "${_cs}/console_leaves.cc"
+                     "${PROJECT_SOURCE_DIR}/lib/libc/fmt.cc")
+  set(_console_seam "${_cs}/console_seam.cc" "${_cs}/ring_leaves.cc" "${_cs}/console_leaves.cc"
+                    "${PROJECT_SOURCE_DIR}/lib/libc/fmt.cc")
+
   # Independent targets; consumers of shared fixture libraries follow their providers.
   foreach(_unit IN ITEMS
-      ampconsole amphold ampshare ampwindow benchdist c6apm capreply captable consolebaud consoleline consoleown
+      ampconsole amphold ampreset ampshare ampwindow benchdist c6apm capreply captable consolebaud consoleline consoleown
       consolepace consolering consoletxsmp ctxredirect dcacheplan
-      deathspace drvbringup fastrefuse faultline frame fusedwake grantlookup grantnocache initwalk irqquiesce kstring
+      deathspace doorbell drvbringup fastrefuse faultline frame fusedwake grantlookup grantnocache
+      initwalk irqquiesce kstring
       k64fsysmpu ktime mapexec mapfence mapshoot mpuoverlap mpuskip mtimeconv placeadmit presync ramalign ramowner regionsync
-      reschedowed rp2350gate slotpool
+      reschedowed rp2350gate rp2xxxbringup slotpool
       stdoutwrite taskbudget uartclass vrange windowholder)
     add_subdirectory(${_unit})
   endforeach()
@@ -44,7 +51,7 @@ if(KICKOS_BUILD_UNIT_TESTS)
   # macros and avoid conflicts with preset definitions.
   add_subdirectory(kfixture)
   foreach(_unit IN ITEMS
-      cancelkind capbadge capprobe capsweep consolepub faultband irqbindown parkresult priodonor rangecheck rootslot
+      cancelkind capbadge capprobe capsweep consolepub faultband irqbindown libclock parkresult priodonor rangecheck rootslot
       rrslice schedwake slayhook taskdeath taskpool v6mframe wildstack)
     add_subdirectory(${_unit})
   endforeach()
@@ -52,7 +59,7 @@ if(KICKOS_BUILD_UNIT_TESTS)
   add_subdirectory(exitquiesce)
   add_subdirectory(reentseat)
   add_subdirectory(sysdispatch)
-  foreach(_unit IN ITEMS consolehold irqlinecore parkdeath placement schedring semtimed
+  foreach(_unit IN ITEMS consolehold irqlinecore parkdeath placement schedring semtimed mutextimed
       slaypeer tlscarve)
     add_subdirectory(${_unit})
   endforeach()

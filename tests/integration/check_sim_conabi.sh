@@ -10,8 +10,7 @@
 # two protocols leaves the caller blocked forever. A hang is indistinguishable from slow,
 # so this test's TIMEOUT is part of the assertion.
 #
-# The sim driver answers on its own code, not on uart_service.h's serve_one, so this is its
-# only coverage; serve_one is the selftest's.
+# The sim driver answers on its own code, so this gate is that code's only coverage.
 #
 # usage: check_sim_conabi.sh <simconabi>
 

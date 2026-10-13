@@ -33,8 +33,7 @@
 static inline __attribute__((always_inline)) arch_irq_state_t arch_irq_save(void)
 {
     uint32_t ps;
-    // RSIL atomically returns the old PS and raises PS.INTLEVEL. Nesting-safe: the whole
-    // PS is saved/restored, so a prior raised level is preserved.
+    // The whole PS is saved and restored, so nesting preserves a prior raised level.
     __asm volatile("rsil %0, %1" : "=a"(ps) : "i"(KICKOS_LX6_IRQ_LOCK_LEVEL) : "memory");
     return ps;
 }

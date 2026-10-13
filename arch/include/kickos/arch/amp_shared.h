@@ -3,18 +3,15 @@
 //
 // Placement in the region every node of an AMP partition writes.
 //
-// An object two kernels share cannot be an ordinary static: each image would allocate its own,
-// both would link, and the first rendezvous would spin to its bound. So it is placed here by
-// name, at an address two link scripts derive from one partition geometry
-// (arch/common/amp_partition.ld.h).
+// An object two kernels share cannot be an ordinary static: each image would allocate its own
+// and both would link. It is placed here by name, at an address two link scripts derive from one
+// partition geometry (arch/common/amp_partition.ld.h).
 //
-// The chip script places these sections NOLOAD: a region carrying bytes is written at load
-// time, and by then a peer may already have published into it. That also leaves the region
-// outside every image's .bss, so no C runtime clears it; arch_amp_shared_zero does, called from
-// the chip's reset path before arch_init.
+// The chip script places these sections NOLOAD: a region carrying bytes is written at load time,
+// when a peer may already have published into it. Outside every image's .bss, no C runtime
+// clears it; arch_amp_shared_zero does, from the chip's reset path before arch_init.
 //
-// A chip with no such section refuses the LINK: an image links --orphan-handling=error, so a
-// part that has not written its placement contract cannot build an own-image node at all.
+// A chip with no such section fails the link (--orphan-handling=error).
 
 #ifndef KICKOS_ARCH_AMP_SHARED_H
 #define KICKOS_ARCH_AMP_SHARED_H

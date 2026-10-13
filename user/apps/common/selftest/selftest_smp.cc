@@ -10,7 +10,7 @@
 #include <errno.h>
 #include <stdlib.h>
 
-#if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_KERNEL_CORES > 1 && defined(__x86_64__)
+#if KICKOS_KERNEL_CORES > 1 && defined(__x86_64__)
 // XCR0, in assembly of its own: tests/static/check_x86_64_no_vector.sh admits the vector-state
 // instructions of the selftest by the name of the function carrying them.
 extern "C" KICKOS_SELFTEST_LOCAL uint64_t selftest_vec_xcr0(void);
@@ -30,7 +30,7 @@ __asm__(".pushsection .text, \"ax\", @progbits\n"
 
 namespace selftest
 {
-#if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_KERNEL_CORES > 1
+#if KICKOS_KERNEL_CORES > 1
     // --- Placement: affinity, the task's core set, and the isolated cores -----------------
     // A worker reads its own placement: what the kernel seated on it, not what main asked for.
     constexpr uint64_t PLACE_STEP_NS = 500000ull;
@@ -40,9 +40,9 @@ namespace selftest
     kos_cap_t g_pl_gate = KOS_CAP_NONE;
 
     // Keeps its task non-empty until main posts the gate.
-    void pl_gate_worker(void*) // caps: gate@1
+    void pl_gate_worker(void*) // caps: gate@2
     {
-        kos_sem_wait(1, KOS_TIMEOUT_NONE);
+        kos_sem_wait(2, KOS_TIMEOUT_NONE);
     }
 
     Atomic<uint32_t, Order::RELAXED> g_pl_go{0};
@@ -123,7 +123,7 @@ namespace selftest
         ArmHold hold;
         TAP_HOLD(hold.thread(&w));
         w = kos::thread::create_caps(pl_sample_worker, nullptr, "plsmp", 12, nullptr, 0,
-                                     KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr,
+                                     KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
                                      KOS_TASK_NONE, nullptr, 0, mask);
         TAP_CHECK(w.valid());
         if (place)
@@ -168,7 +168,7 @@ namespace selftest
         return 0;
     }
 
-    // Seats `entry` with g_pl_ep's `rights` at index 1 and takes the report it sends there: in a
+    // Seats `entry` with g_pl_ep's `rights` at index 2 and takes the report it sends there: in a
     // fresh task granted `cores`, the grant's answer in *granted, or in main's own when `cores` is
     // 0.
     void pl_member_report(void (*entry)(void*), uint32_t cores, uint8_t rights,
@@ -186,7 +186,7 @@ namespace selftest
         }
         kos_cap_grant caps[] = {{g_pl_ep, rights}};
         m = kos::thread::create_caps(entry, nullptr, "plmem", 11, caps, 1, KOS_POLICY_FIFO, 0,
-                                     false, nullptr, 0, authority, nullptr, t);
+                                     nullptr, 0, authority, nullptr, t);
         TAP_CHECK(m.valid());
         TAP_CHECK(report_await(g_pl_ep, rep, len));
         TAP_CHECK(hold.joined());
@@ -249,7 +249,7 @@ namespace selftest
         XS_WORDS = 4
     };
     // Pins a SIBLING in its own task: the task's single grant bounds the placement.
-    void sib_pin_worker(void*) // caps: E(SIGNAL)@1
+    void sib_pin_worker(void*) // caps: E(SIGNAL)@2
     {
         int32_t rep[XS_WORDS] = {0, 0, -99, -99};
         rep[XS_CORES] = static_cast<int32_t>(kos_task_cores(KOS_TASK_NONE));
@@ -263,7 +263,7 @@ namespace selftest
             g_pl_stop = 1;
             (void)s.join(STALL_TOLERANT_US);
         }
-        (void)kos_send(1, rep, sizeof(rep));
+        (void)kos_send(2, rep, sizeof(rep));
     }
 
     void t_pin_beyond_grant_refused()
@@ -358,7 +358,7 @@ namespace selftest
         ArmHold hold(2u * STALL_TOLERANT_US);
         TAP_HOLD(hold.thread(&w) and hold.thread(&d));
         w = kos::thread::create_caps(pl_spin_worker, nullptr, "migr", 12, nullptr, 0,
-                                     KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr,
+                                     KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
                                      KOS_TASK_NONE, nullptr, 0, 1u << away);
         TAP_CHECK(w.valid());
         // Set before the driver exists, so the relaxed cell needs no publication order.
@@ -396,7 +396,7 @@ namespace selftest
         TAP_CHECK(kos_task_create(nullptr, 0, 0, &t) == 0);
         kos_cap_grant caps[] = {{g_pl_gate, CH_FULL}};
         m = kos::thread::create_caps(pl_gate_worker, nullptr, "xtask", 9, caps, 1,
-                                     KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr, t);
+                                     KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr, t);
         TAP_CHECK(m.valid());
         int const rc = kos_thread_set_affinity(m.id(), 0x1u);
         kos_sem_post(g_pl_gate);
@@ -413,13 +413,13 @@ namespace selftest
         GN_CORE = 2,  // the core it was reading this on
         GN_WORDS = 3
     };
-    void gn_worker(void*) // caps: E(SIGNAL)@1
+    void gn_worker(void*) // caps: E(SIGNAL)@2
     {
         int32_t rep[GN_WORDS];
         rep[GN_CORES] = static_cast<int32_t>(kos_task_cores(KOS_TASK_NONE));
         rep[GN_AFF] = static_cast<int32_t>(kos_thread_affinity(kos_thread_self()));
         rep[GN_CORE] = static_cast<int32_t>(kos_core_current());
-        (void)kos_send(1, rep, sizeof(rep));
+        (void)kos_send(2, rep, sizeof(rep));
     }
 
     void t_grant_narrows()
@@ -465,29 +465,29 @@ namespace selftest
         GI_CORES = 2,  // and the set that member reports
         GI_WORDS = 3
     };
-    void gi_child(void*) // caps: E(SIGNAL)@1
+    void gi_child(void*) // caps: E(SIGNAL)@2
     {
         int32_t rep[GI_WORDS] = {1, 1,
                                  static_cast<int32_t>(kos_task_cores(KOS_TASK_NONE))};
-        (void)kos_send(1, rep, sizeof(rep));
+        (void)kos_send(2, rep, sizeof(rep));
     }
-    void gi_worker(void*) // caps: E(SIGNAL)@1
+    void gi_worker(void*) // caps: E(SIGNAL)@2
     {
         int32_t rep[GI_WORDS] = {0, 0, -1};
         kos_task_t u = KOS_TASK_NONE;
         if (kos_task_create(nullptr, 0, 0, &u) != 0)
         {
-            (void)kos_send(1, rep, sizeof(rep));
+            (void)kos_send(2, rep, sizeof(rep));
             return;
         }
         rep[GI_MADE] = 1;
-        kos_cap_grant caps[] = {{1, KOS_CAP_SIGNAL}};
+        kos_cap_grant caps[] = {{2, KOS_CAP_SIGNAL}};
         auto c = kos::thread::create_caps(gi_child, nullptr, "ginh", 11, caps, 1,
-                                          KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr, u);
+                                          KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr, u);
         if (not c.valid())
         {
             (void)kos_task_kill(u);
-            (void)kos_send(1, rep, sizeof(rep));
+            (void)kos_send(2, rep, sizeof(rep));
             return;
         }
         // The CHILD answers on the same endpoint, so this thread sends nothing more.
@@ -528,7 +528,7 @@ namespace selftest
         int const empty_ok = kos_task_sched_grant(t, 0, 0x3);
         kos_cap_grant caps[] = {{g_pl_gate, CH_FULL}};
         m = kos::thread::create_caps(pl_gate_worker, nullptr, "gbusy", 9, caps, 1,
-                                     KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr, t);
+                                     KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr, t);
         TAP_CHECK(m.valid());
         int const busy = kos_task_sched_grant(t, 0, 0x1);
         kos_sem_post(g_pl_gate);
@@ -838,7 +838,7 @@ namespace selftest
                 w[i] = kos::thread::create_caps(entry,
                                                 reinterpret_cast<void*>(static_cast<uintptr_t>(i)),
                                                 "burn", 12, nullptr, 0, KOS_POLICY_RR,
-                                                static_cast<uint32_t>(quantum), false, nullptr, 0,
+                                                static_cast<uint32_t>(quantum), nullptr, 0,
                                                 0, nullptr, KOS_TASK_NONE, nullptr, 0, pin);
                 TAP_CHECK(w[i].valid());
             }
@@ -1039,11 +1039,11 @@ namespace selftest
     Atomic<int32_t, Order::RELAXED> g_xc_call_rc{-99};
     Atomic<int32_t, Order::RELAXED> g_xc_serve_rc{-99};
 
-    void xc_server(void*) // caps: E(WAIT)@1, gate@2
+    void xc_server(void*) // caps: E(WAIT)@2, gate@3
     {
         char buf[16];
         struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, 1, 0, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&opts, 2, 0, KOS_TIMEOUT_NONE);
         int32_t const got =
             kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts);
         if (got < 0 or opts.info.reply_cap == KOS_CAP_NONE)
@@ -1052,25 +1052,25 @@ namespace selftest
             return;
         }
         // Reply only once the caller is parked for it and the spinner holds the caller's core.
-        kos_sem_wait(2, KOS_TIMEOUT_NONE);
+        kos_sem_wait(3, KOS_TIMEOUT_NONE);
         kos_cap_t const reply = opts.info.reply_cap;
-        kos_reply_recv_opts_init(&opts, 1, 0, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&opts, 2, 0, KOS_TIMEOUT_NONE);
         memcpy(buf, "pong!", 5);
         g_xc_serve_rc = kos_reply_recv(reply, buf, kos_call_lens_pack(5, sizeof(buf)), &opts);
     }
-    void xc_caller(void*) // caps: E(SIGNAL)@1
+    void xc_caller(void*) // caps: E(SIGNAL)@2
     {
         char buf[16];
         memcpy(buf, "ping", 4);
-        g_xc_call_rc = kos_call(1, buf, 4, sizeof(buf));
+        g_xc_call_rc = kos_call(2, buf, 4, sizeof(buf));
     }
     // The spinner yields its core only to a preemption and the reply follows its post, so the
     // core it posts from is held when the reply lands. A spin count cannot witness that: a
     // reschedule arriving before the first iteration leaves it at zero.
-    void xc_spinner(void*) // caps: gate@1
+    void xc_spinner(void*) // caps: gate@2
     {
         g_xc_spin_core = pl_core();
-        kos_sem_post(1); // the core is ours; the server may answer now
+        kos_sem_post(2); // the core is ours; the server may answer now
         while (g_xc_stop.load() == 0)
         {
         }
@@ -1106,16 +1106,16 @@ namespace selftest
         kos_cap_grant ccaps[] = {{g_xc_ep, KOS_CAP_SIGNAL}};
         kos_cap_grant pcaps[] = {{g_xc_gate, CH_FULL}};
         sv = kos::thread::create_caps(xc_server, nullptr, "xcS", XC_SERVER_PRIO, vcaps, 2,
-                                      KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr,
+                                      KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
                                       KOS_TASK_NONE, nullptr, 0, 1u << PL_HOME);
         TAP_CHECK(sv.valid());
         // The spinner shares the caller's core below it, so it runs only once the caller parks.
         cl = kos::thread::create_caps(xc_caller, nullptr, "xcC", XC_CALLER_PRIO, ccaps, 1,
-                                      KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr,
+                                      KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
                                       KOS_TASK_NONE, nullptr, 0, 1u << away);
         TAP_CHECK(cl.valid());
         sp = kos::thread::create_caps(xc_spinner, nullptr, "xcP", XC_SPIN_PRIO, pcaps, 1,
-                                      KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr,
+                                      KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
                                       KOS_TASK_NONE, nullptr, 0, 1u << away);
         TAP_CHECK(sp.valid());
         // Bounded so a missing reschedule request fails instead of hanging.
@@ -1204,13 +1204,13 @@ namespace selftest
         if (away != home)
         {
             x = kos::thread::create(pd_spinner, nullptr, "pdX", PD_EQUAL, KOS_POLICY_FIFO, 0,
-                                    false, nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0, 0,
+                                    nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0, 0,
                                     nullptr, KOS_TASK_NONE, 1u << away);
         }
         if (x.valid())
         {
             w = kos::thread::create(pd_waiter, nullptr, "pdW", PD_EQUAL, KOS_POLICY_FIFO, 0,
-                                    false, nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0, 0,
+                                    nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0, 0,
                                     nullptr, KOS_TASK_NONE, 1u << away);
         }
         int widened = -99;
@@ -1282,7 +1282,7 @@ namespace selftest
     kos::thread::Handle xirq_spawn(void (*entry)(void*), void* arg, char const* name, uint32_t core)
     {
         return kos::thread::create_caps(entry, arg, name, XIRQ_PRIO, nullptr, 0, KOS_POLICY_FIFO,
-                                        0, false, nullptr, 0, KOS_AUTH_IRQ, nullptr,
+                                        0, nullptr, 0, KOS_AUTH_IRQ, nullptr,
                                         KOS_TASK_NONE, nullptr, 0, 1u << core);
     }
 
@@ -1290,7 +1290,7 @@ namespace selftest
     Atomic<uint32_t, Order::RELAXED> g_xr_core{0xffu};
     Atomic<uint32_t, Order::RELAXED> g_xr_unmade{0};
 
-    void xirq_raiser(void*) // caps: irq(SIGNAL)@1
+    void xirq_raiser(void*) // caps: irq(SIGNAL)@2
     {
         g_xr_core = pl_core();
         g_xr_rc = kos_irq_raise(KOS_SPAWN_DELEGATED_CAP0);
@@ -1303,7 +1303,7 @@ namespace selftest
         g_xr_core = 0xffu;
         kos_cap_grant const caps[] = {{irq, KOS_CAP_SIGNAL}};
         auto r = kos::thread::create_caps(xirq_raiser, nullptr, "xirqR", XIRQ_PRIO, caps, 1,
-                                          KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr,
+                                          KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
                                           KOS_TASK_NONE, nullptr, 0, 1u << core);
         if (not r.valid())
         {

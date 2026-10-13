@@ -1,14 +1,12 @@
 /* SPDX-License-Identifier: CECILL-C
  * Copyright (c) 2026 Philippe Leduc
  *
- * MK64FN1M0 (FRDM-K64F) startup: reset vector table (16 core + 86 NVIC lines,
- * K64 has IRQ0..85) and the Flash Configuration Field. The kernel exception
- * handlers (SVC/PendSV/SysTick) come from the armv7m arch layer; every external
- * line routes to the generic kickos_arm_default_irq (line = IPSR-16).
+ * MK64FN1M0 (FRDM-K64F) startup: the vector table and the Flash Configuration Field. Every
+ * external line routes to kickos_arm_default_irq.
  */
 
-#include <kickos/chip_limits.h>   /* KICKOS_MAX_IRQ: the NVIC line count */
-#include "core_vectors.inc"        /* shared core-exception vector block */
+#include <kickos/chip_limits.h>
+#include "core_vectors.inc"
 
     .syntax unified
     .thumb
@@ -19,14 +17,12 @@
 g_isr_vector:
     KICKOS_CORE_VECTORS_V7M
 
-    /* External interrupts 0..85 -> the generic IRQ-as-event entry. */
     .rept KICKOS_MAX_IRQ
     .word kickos_arm_default_irq
     .endr
 
-    /* Flash Configuration Field @ 0x400 (placed by mk64f.ld .fcf). All-ones
-       except FSEC = 0xFE (unsecured: SEC=10, MEEN/FSLACC/KEYEN=11) at byte
-       0x40C, so word[3] = 0xFFFFFFFE. Zeroing this bricks debug access. */
+    /* Flash Configuration Field @ 0x400 (placed by mk64f.ld .fcf): all-ones except FSEC = 0xFE
+       (unsecured). Zeroing this bricks debug access. */
     .section .fcf, "a"
     .align 2
     .word 0xFFFFFFFF                 /* 0x400: Backdoor key [0..3] */
@@ -36,8 +32,6 @@ g_isr_vector:
 
     .text
     .thumb_func
-    /* File-local: the vector word above is the only reference, and a chip that wants a
-     * real NMI handler edits this startup.S. */
 NMI_Handler:
     b       .
 

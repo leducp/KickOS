@@ -29,6 +29,9 @@ namespace kickos::esp32::reg::rtc_cntl
     constexpr uint32_t SW_STALL_APPCPU_C0_MASK = 0x3u << 0;
     constexpr uint32_t SW_STALL_APPCPU_C1_MASK = 0x3Fu << 20;
 
+    // OPTIONS0 SW_SYS_RST: a software reset of the whole digital system, both CPUs included.
+    constexpr uint32_t SW_SYS_RST = 1u << 31;
+
     // OPTIONS0 analog force-power-down bits (clear to power the block up).
     constexpr uint32_t BB_I2C_FORCE_PD = 1u << 6;
     constexpr uint32_t BBPLL_I2C_FORCE_PD = 1u << 8;

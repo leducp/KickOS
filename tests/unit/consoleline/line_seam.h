@@ -45,9 +45,9 @@ namespace consoleline
     uint32_t nested_pushes();
     uint32_t max_push_depth();
 
-    // Run `fn` once at the next ring copy's publish barrier.
-    void run_at_publish_barrier(void (*fn)(void));
-    bool barrier_seat_fired();
+    // Run `fn` once inside the next ring copy (kickos_line_step).
+    void run_inside_the_copy(void (*fn)(void));
+    bool copy_seat_fired();
 
     // One line through a chip's console route: the ring takes it whole, or the refusal goes
     // straight at the device under one mask, with '\n' lowered as `crlf` asks. Returns what

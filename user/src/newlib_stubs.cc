@@ -135,9 +135,8 @@ int _getentropy(void*, size_t)
 }
 #endif
 
-// Wall-clock offset over the monotonic kos_clock_now(): unix_ns = now() + offset.
-// Default 0 -> wall time reads boot-relative until kos_clock_set_realtime syncs it.
-// No RTC/NTP source yet; this is the only writer.
+// Wall-clock offset over the monotonic kos_clock_now(): unix_ns = now() + offset. Wall time
+// reads boot-relative until kos_clock_set_realtime syncs it.
 static uint64_t s_wall_offset_ns = 0;
 
 void kos_clock_set_realtime(uint64_t unix_ns)
@@ -197,22 +196,4 @@ int getentropy(void* buf, size_t len) __attribute__((alias("_getentropy")));
 // its own keeps ownership of the handle the atexit registrations key on.
 __attribute__((weak)) void* __dso_handle = nullptr;
 #endif
-
-// Newlib brackets every arena mutation with __malloc_lock/__malloc_unlock. No-op weak
-// stubs (allowlisted in tests/static/weak_allowlist.txt) so a full-C++ app that heap-allocates
-// links and a thread-safe libc port can replace them; the pinned vendor toolchains are
-// all built --disable-threads, so nothing else needs the guard.
-//
-// They must STAY no-ops: newlib takes this lock recursively (`_free_r` acquires it and
-// calls `_malloc_trim_r`, which acquires it again), so a plain lock self-deadlocks and a
-// re-entry detector fires on a valid free; and userspace has neither an owner identity
-// nor a lock object two threads can name to build a recursive one from. Consequence: a
-// full-C++ app that heap-allocates from more than one thread corrupts the arena
-// silently. Keep such apps single-alloc-thread.
-__attribute__((weak)) void __malloc_lock(void*)
-{
-}
-__attribute__((weak)) void __malloc_unlock(void*)
-{
-}
 }

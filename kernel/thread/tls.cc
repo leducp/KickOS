@@ -13,7 +13,7 @@
 namespace kickos
 {
 
-#if defined(KICKOS_TLS) && KICKOS_TLS
+#if KICKOS_TLS
 
 extern "C"
 {

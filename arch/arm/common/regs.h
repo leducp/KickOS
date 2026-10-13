@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Only registers whose offsets and bit values are identical on ARMv6-M and ARMv7-M
-// (clean-room, from the ARM Architecture Reference Manuals); anything profile-specific
-// belongs in the per-arch regs.h.
+// Registers whose offsets and bit values are identical on ARMv6-M and ARMv7-M; anything
+// profile-specific belongs in the per-arch regs.h.
 
 #ifndef KICKOS_ARCH_ARM_COMMON_REGS_H
 #define KICKOS_ARCH_ARM_COMMON_REGS_H
@@ -55,10 +54,28 @@ namespace kickos
         // --- System Control Block ---
         constexpr uintptr_t SCB_ICSR = 0xE000ED04;
         constexpr uintptr_t SCB_VTOR = 0xE000ED08;
+        constexpr uintptr_t SCB_AIRCR = 0xE000ED0C;
         constexpr uintptr_t SCB_CPACR = 0xE000ED88;
         constexpr uint32_t ICSR_PENDSVSET = 1u << 28;
         constexpr uint32_t ICSR_PENDSTCLR = 1u << 25;
         constexpr uint32_t CPACR_CP10_CP11_FULL = 0xFu << 20;
+        constexpr uint32_t AIRCR_VECTKEY = 0x05FAu << 16;
+        constexpr uint32_t AIRCR_LOW_HALF = 0xFFFFu;
+        constexpr uint32_t AIRCR_SYSRESETREQ = 1u << 2;
+
+#if not KICKOS_ARM_REGS_FROM_SEAM
+        // The rest of the low half-word is written back as read: PRIGROUP, and on v8-M the
+        // Secure-only BFHFNMINS, PRIS and SYSRESETREQS. The reset lands some cycles after the
+        // write, so the caller waits for it (arch/common/arch_reboot_tail.h).
+        inline void system_reset_request(void)
+        {
+            __asm volatile("cpsid i" ::: "memory");
+            barrier_dsb();
+            reg32(SCB_AIRCR) =
+                AIRCR_VECTKEY | (reg32(SCB_AIRCR) & AIRCR_LOW_HALF) | AIRCR_SYSRESETREQ;
+            barrier_dsb();
+        }
+#endif
 
         // --- SysTick ---
         constexpr uintptr_t SYST_CSR = 0xE000E010;
@@ -84,8 +101,6 @@ namespace kickos
         constexpr uint32_t MPU_CTRL_ENABLE = 1u << 0;
         constexpr uint32_t MPU_CTRL_PRIVDEFENA = 1u << 2; // priv uses the default map
         constexpr uint32_t MPU_RASR_ENABLE = 1u << 0;
-        // RASR fields: SIZE[5:1] (region = 2^(SIZE+1)); memory-type TEX[21:19]/
-        // S[18]/C[17]/B[16]; AP[26:24] (access permission); XN[28] (execute-never).
         constexpr uint32_t MPU_RASR_XN = 1u << 28;
         constexpr uint32_t MPU_RASR_AP_RW = 0x3u << 24; // priv RW, unpriv RW
         constexpr uint32_t MPU_RASR_AP_RO = 0x6u << 24; // priv RO, unpriv RO
@@ -103,6 +118,7 @@ namespace kickos
         constexpr uintptr_t SCB_SHCSR = 0xE000ED24;
         constexpr uint32_t SHCSR_MEMFAULTENA = 1u << 16;
         constexpr uint32_t SHCSR_BUSFAULTENA = 1u << 17;
+        constexpr uint32_t SHCSR_USGFAULTENA = 1u << 18;
     }
 }
 

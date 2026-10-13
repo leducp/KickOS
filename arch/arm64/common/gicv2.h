@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// What a part declares to select the GICv2 backend (arch_arm64_gicv2.cc). The interface that
-// backend implements is gic.h, and everything the backend holds beyond this struct is
-// architected by ARM.
+// What a part declares to select the GICv2 backend (arch_arm64_gicv2.cc); the interface it
+// implements is gic.h.
 
 #ifndef KICKOS_ARCH_ARM64_COMMON_GICV2_H
 #define KICKOS_ARCH_ARM64_COMMON_GICV2_H

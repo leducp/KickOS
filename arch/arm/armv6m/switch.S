@@ -20,8 +20,7 @@
  */
 
 #include <kickos/arch/armv6m_trap_stack.h>
-/* KICKOS_KERNEL_STACK_SIZE, which PendSV_Handler compares a PSP against. Pure integer
-   macros, generated, and already included from startup.S. */
+/* KICKOS_KERNEL_STACK_SIZE, which PendSV_Handler compares a PSP against. */
 #include <kickos/board_config.h>
 
     .syntax unified
@@ -187,9 +186,8 @@ PendSV_Handler:
 4:
     bl      kickos_trace_switch_done /* (r0=from_tid, r1=to_tid) */
 #endif
-    /* Deferred MPU commit: must run after the physical PSP/register swap (shared seam,
-       arch_arm_common.cc). r4-r11 are callee-saved across the call, r0-r3/r12 are
-       reloaded from the HW frame on exception return, and lr is rebuilt right below. */
+    /* Deferred MPU commit: must run after the physical swap. r4-r11 survive the call, r0-r3
+       and r12 reload from the HW frame, and lr is rebuilt below. */
     bl      kickos_arch_mpu_commit
     cpsie   i                       /* pair consumed; never resume a thread masked */
     ldr     r0, =0xFFFFFFFD         /* EXC_RETURN: thread mode, PSP */
@@ -197,11 +195,9 @@ PendSV_Handler:
     bx      lr
 
 /* A syscall with no current thread has no bounds to check, and the generic path below this
-   handler still writes through the PSP. Unreachable today: g_arch_current is the first-start
-   sentinel only until arch_start's first switch, and nothing traps before then. The bounds go
-   out as [0, 0), which the reporter's own upper-bound test describes as an unseated pair.
-   Never returns, so r4 is free to carry the target: a v6-M ldr literal cannot reach r12, and
-   a plain b is a +-2 KB reach that --gc-sections can outrun. */
+   handler still writes through the PSP. The bounds go out as [0, 0), an unseated pair to the
+   reporter. Never returns, so r4 is free to carry the target: a v6-M ldr literal cannot reach
+   r12, and a plain b is a +-2 KB reach that --gc-sections can outrun. */
 .Lsvc_nothread:
     ldr     r1, =KICKOS_ARMV6M_TRAP_NEED_SVC
     movs    r2, #0
@@ -419,10 +415,8 @@ svc_trampoline:
     bx      lr                      /* -> arch_syscall's caller, r0:r1=result */
 
 /* A thread whose ctx.kernel_sp is 0 reached the syscall path, so the transfer has nowhere to
-   build. Unreachable today: thread_create seats a block on every pool thread, and idle is the
-   only TCB outside the pool, privileged and running arch_idle_wait alone. Reported rather
-   than argued, so a future TCB that reaches it finds a refusal instead of a store through
-   0xFFFFFFF0. Reached through a literal for the reason .Lpsp_wild is. */
+   build; refusing here replaces a store through 0xFFFFFFF0. Reached through a literal for the
+   reason .Lpsp_wild is. */
 .Lsvc_nokstack:
     /* PRIMASK IS SET BEFORE SPSEL MOVES, and the order is load-bearing. The exception
        return into svc_trampoline dropped below PRIO_SVCALL, so PendSV is live here. Its

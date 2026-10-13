@@ -9,12 +9,14 @@ chip: xmc4800
 manual: "XMC4700/XMC4800 Reference Manual, V1.3 2016-07"
 arch: armv7m
 # The unit sits on the CPU's access path, so a device window is enforced per task.
-protection: { unit: pmsav7, covers_devices: true, memory_type: true }
+protection: { unit: pmsav7, granule: 32, covers_devices: true, memory_type: true }
 data_cache: false
 c: { namespace: kickos::xmc, line_enum: "node : int" }
 # DWT CYCCNT reads can glitch on this part, and a glitched read only inflates a delta.
 cycle_counter: { glitches: true }
 
+family: none
+exits_on_fault: false
 interrupts: { count: { value: 112, ref: "4.1 Features, p.4-4" } }
 
 devices:
@@ -24,7 +26,10 @@ devices:
   # and a composition binds one to a driver explicitly; admission refuses a line bound twice.
   # The driver learns which line it was given from its lookup and programs INPR to match.
   # The module clock gate and reset sit in the SCU, which the kernel owns.
+  # A module is one gate all the same: KSCFG.MODEN in each channel window stops the whole module
+  # (RM 18.9, p.18-165), and FMR and INPR there raise any of its lines.
   usic0:
+    module_gate: true
     lines:
       sr0: { number: 84, ref: "Table 4-3 Interrupt Node assignment, p.4-7" }
       sr1: 85
@@ -41,11 +46,13 @@ devices:
     # which bits is kernel policy and stays in the kernel.
     privileged_registers: { fdr: 0x010, brg: 0x014, ccr: 0x040 }
   usic1:
+    module_gate: true
     ref: "Table 18-21, p.18-157"
     channels:
       ch0: { window: [0x48020000, 0x200] }
       ch1: { window: [0x48020200, 0x200] }
   usic2:
+    module_gate: true
     ref: "Table 18-21, p.18-157"
     channels:
       ch0: { window: [0x48024000, 0x200] }

@@ -26,8 +26,7 @@ if(NOT KICKOS_ARCH STREQUAL "sim" AND NOT KICKOS_HAVE_ASPACE)
   kickos_export_targets(kickos_string)
 endif()
 
-# The ch1 telemetry ring writer (kickos_rtt_write_record_ch1) is called from the
-# ARM PendSV tail via the switch hook, so it too must be FP-register-free there.
+# The ch1 telemetry writer runs in the ARM PendSV tail with an FP context live.
 if(KICKOS_TELEMETRY_ON AND (KICKOS_ARCH STREQUAL "armv7m" OR KICKOS_ARCH STREQUAL "armv6m"))
   set_source_files_properties(rtt.cc PROPERTIES COMPILE_OPTIONS "-mgeneral-regs-only")
 endif()

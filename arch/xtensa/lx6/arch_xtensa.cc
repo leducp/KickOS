@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 #include <kickos/arch/arch.h>
+#include <kickos/chip_limits.h>
 #include <kickos/arch/doorbell_protocol.h>
 #include <kickos/arch/idle_floor.h>
 #include <kickos/arch/lx6_doorbell.h>
@@ -24,8 +25,12 @@ static_assert(KICKOS_TRACE_ARCH == kickos::trace::ARCH_XTENSA,
 namespace kickos
 {
     void kprintf(char const* fmt, ...);
+    void kputs(char const* s);
 }
 extern "C" void kpanic_enter(void);
+extern "C" void kpanic_refuse_unlocked(char const* line) __attribute__((noreturn));
+extern "C" void kpanic_refuse_unlocked_hex(char const* head, unsigned value)
+    __attribute__((noreturn));
 extern "C" void kfault_terminate(void) __attribute__((noreturn));
 
 // 0 keeps only the one-line fault marker.
@@ -59,7 +64,7 @@ static_assert(offsetof(struct arch_context, resume_kind) == 12,
 static_assert(offsetof(struct arch_context, trace_tid) == 16,
               "asm (CTX_TID) telemetry hook expects ctx.trace_tid @16");
 #endif
-#if defined(KICKOS_TLS) && KICKOS_TLS
+#if KICKOS_TLS
 static_assert(offsetof(struct arch_context, tls_base) == KICKOS_LX6_CTX_TLS_BASE,
               "SEAT_THREADPTR expects ctx.tls_base @KICKOS_LX6_CTX_TLS_BASE");
 
@@ -91,13 +96,6 @@ namespace
 
     // XCHAL_INTLEVEL1_MASK for this LX6 config.
     constexpr uint32_t KICKOS_L1_INT_MASK = 0x000637FFu;
-
-    // LIMITATION: at 240 MHz CCOUNT wraps every ~17.9 s, and a wrap not observed within one
-    // 2^32-cycle period is missed. The two words are ONE value, touched only inside the
-    // interrupt bracket in now_cycles. Each CPU counts its own cycles, unsynchronised.
-    // Unused on ESP32, where chip_esp32.cc overrides arch_clock_now with the TIMG count.
-    uint32_t g_cyc_high[KICKOS_NUM_CORES] = {};
-    uint32_t g_cyc_last[KICKOS_NUM_CORES] = {};
 
     inline uint32_t rd_ccount()
     {
@@ -147,21 +145,6 @@ namespace
 
     char const ATOMCTL_REFUSED[] =
         "KickOS: lx6 ATOMCTL does not select the RCW bus transaction, read 0x";
-    char const ATOMCTL_NL[] = "\n";
-
-    void hex2(uint32_t v)
-    {
-        for (int shift = 4; shift >= 0; shift -= 4)
-        {
-            uint32_t const nib = (v >> shift) & 0xFu;
-            char c = static_cast<char>('0' + nib);
-            if (nib > 9u)
-            {
-                c = static_cast<char>('a' + nib - 10u);
-            }
-            arch_console_write_sync(&c, 1);
-        }
-    }
 
     // Must run on every core before it can reach a kernel lock. The read-back refuses a part
     // whose ATOMCTL fields are not writable, where S32C1I would silently exclude nothing.
@@ -172,10 +155,8 @@ namespace
         __asm volatile("rsr.atomctl %0" : "=a"(got));
         if ((got & ATOMCTL_S32C1I_FIELDS) != ATOMCTL_ALL_RCW)
         {
-            arch_console_write_sync(ATOMCTL_REFUSED, sizeof(ATOMCTL_REFUSED) - 1);
-            hex2(got);
-            arch_console_write_sync(ATOMCTL_NL, sizeof(ATOMCTL_NL) - 1);
-            kfault_terminate();
+            // Unlocked: the kernel lock excludes nothing on this core yet.
+            kpanic_refuse_unlocked_hex(ATOMCTL_REFUSED, got & 0xFFu);
         }
     }
 
@@ -198,7 +179,6 @@ namespace
     kickos::Atomic<uint32_t, kickos::Order::ACQUIRE | kickos::Order::RELEASE>
         g_core_arrived[KICKOS_NUM_CORES] = {};
 
-    // Nonzero once kickos_lx6_init has run on this core.
     uint32_t g_core_seated[KICKOS_NUM_CORES] = {};
 
     // Written before this core's interrupts open and read-only afterwards, so it needs no
@@ -206,8 +186,8 @@ namespace
     uint32_t g_doorbell_cpu_int = 0;
 #endif
 
-    // INTENABLE is a device line's kernel-owned mask (RULE L1); the peripheral's own enable
-    // register belongs to the driver. The mask is COARSE: masking one line masks every sibling
+    // INTENABLE is a device line's kernel-owned mask; the peripheral's own enable register
+    // belongs to the driver. The mask is COARSE: masking one line masks every sibling
     // naming the same cpu_int.
     constexpr unsigned LX6_DEV_ROUTES = 4;
     Atomic<int8_t, Order::RELAXED> g_dev_cpu_int[LX6_DEV_ROUTES] = {-1, -1, -1, -1};
@@ -269,8 +249,8 @@ namespace
         int const core = routed_core(line);
         if (core >= 0 and core != static_cast<int>(arch_cpu_id()))
         {
-            arch_console_write_sync(WRONG_CORE, sizeof(WRONG_CORE) - 1);
-            kfault_terminate();
+            // Unlocked: the route service runs this inside the kernel lock's acquire poll.
+            kpanic_refuse_unlocked(WRONG_CORE);
         }
 #else
         (void)line;
@@ -332,7 +312,6 @@ extern "C"
     // does not mean a preemption is pending.
     kickos::Atomic<uint32_t, kickos::Order::RELAXED> g_arch_switch_pending[KICKOS_NUM_CORES] = {};
 
-    // Maintained by the level-1 interrupt entry (startup.S).
     uint32_t g_isr_depth[KICKOS_NUM_CORES] = {};
 
     // startup.S carries both with l32i/s32i, and indexes them with addx4.
@@ -456,34 +435,6 @@ namespace
 {
     using namespace kickos::units;
 
-    inline uint64_t now_cycles()
-    {
-        // The wrap-extend read must be atomic against a concurrent reader (thread + ISR).
-        arch_irq_state_t s = arch_irq_save();
-        uint32_t cur = rd_ccount();
-        uint32_t const core = arch_cpu_id();
-        if (cur < g_cyc_last[core])
-        {
-            ++g_cyc_high[core];
-        }
-        g_cyc_last[core] = cur;
-        uint64_t hi = g_cyc_high[core];
-        arch_irq_restore(s);
-        return (hi << 32) | cur;
-    }
-
-    inline uint64_t cycles_to_ns(uint64_t cyc)
-    {
-        uint64_t f = SystemCoreClock;
-        if (f == 0)
-        {
-            return 0;
-        }
-        uint64_t sec = cyc / f;
-        uint64_t rem = cyc % f;
-        return sec * 1_s + (rem * 1_s) / f;
-    }
-
     inline uint64_t ns_to_cycles(uint64_t ns)
     {
         uint64_t f = SystemCoreClock;
@@ -527,9 +478,9 @@ void arch_context_init(struct arch_context* ctx,
     // EXCM keeps the restore's PS write from being interrupted mid-sequence; rfe clears
     // it. CALLINC=1 opens a CALL4 frame. INTLEVEL=0: the thread runs interrupts enabled.
     set(F_PS, PS_UM | PS_WOE | PS_EXCM | PS_CALLINC1);
-    set(f_areg(1), static_cast<uint32_t>(top));         // a1 = stack top (entry's input SP)
-    set(f_areg(6), reinterpret_cast<uint32_t>(entry));  // a6 -> trampoline a2 (entry fn)
-    set(f_areg(7), reinterpret_cast<uint32_t>(arg));    // a7 -> trampoline a3 (arg)
+    set(f_areg(1), static_cast<uint32_t>(top));
+    set(f_areg(6), reinterpret_cast<uint32_t>(entry));  // a6 -> trampoline a2
+    set(f_areg(7), reinterpret_cast<uint32_t>(arg));    // a7 -> trampoline a3
     // a0/a4 already 0: a0 is discarded by the entry rotation, and a4 becomes the
     // trampoline's a0 (its return address), where 0 is the safe outermost value.
 
@@ -537,7 +488,7 @@ void arch_context_init(struct arch_context* ctx,
     ctx->ps = 0;                                        // PS/PC live in the frame
     ctx->pc = 0;
     ctx->resume_kind = KICKOS_RESUME_IRQ;
-#if defined(KICKOS_TLS) && KICKOS_TLS
+#if KICKOS_TLS
     // The carve sits directly below the stack this is handed.
     ctx->tls_base = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(stack_base)
                                           - ::kickos::tls_block_size());
@@ -553,11 +504,11 @@ void arch_context_init(struct arch_context* ctx,
 void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
                        void* stack_base, size_t stack_size)
 {
-#if defined(KICKOS_TLS) && KICKOS_TLS
+#if KICKOS_TLS
     uint32_t const tls_base = ctx->tls_base;
 #endif
     arch_context_init(ctx, entry, nullptr, stack_base, stack_size, 1);
-#if defined(KICKOS_TLS) && KICKOS_TLS
+#if KICKOS_TLS
     ctx->tls_base = tls_base;
 #endif
 }
@@ -568,8 +519,6 @@ void arch_switch(struct arch_context* from, struct arch_context* to)
     uint32_t const core = arch_cpu_id();
     if (g_isr_depth[core] != 0)
     {
-        // The physical swap happens at level-1 interrupt exit (startup.S
-        // _kickos_int_level1), which saves g_arch_current in the interrupt-frame format.
         g_arch_next[core] = to;
         g_arch_switch_pending[core].store(1);
         return;
@@ -600,8 +549,8 @@ void kickos_lx6_dispatch_l1(void)
     // is kickos_lx6_init having run on this core before its interrupts opened.
     if (g_core_seated[arch_cpu_id()] == 0u)
     {
-        arch_console_write_sync(UNSEATED, sizeof(UNSEATED) - 1);
-        kfault_terminate();
+        // Unlocked: the kernel lock excludes nothing on this core yet.
+        kpanic_refuse_unlocked(UNSEATED);
     }
 #endif
     uint32_t pending = rd_interrupt() & rd_intenable() & KICKOS_L1_INT_MASK;
@@ -635,8 +584,8 @@ void kickos_lx6_dispatch_l1(void)
     }
 #endif
 
-    // Clear the latch first, or it redelivers forever. Do NOT mask the line here: the bound
-    // handler masks as needed, and a tier-2 irq_attach line would stay masked for good.
+    // Clear the latch first, or it redelivers forever. Do NOT mask the line here: a tier-2
+    // irq_attach line would stay masked for good.
     if ((pending & (1u << SW_INT_L1)) != 0)
     {
         uint32_t bit = 1u << SW_INT_L1;
@@ -688,6 +637,7 @@ void kickos_lx6_dispatch_l1(void)
 void kickos_lx6_fault_report(uint32_t exccause, uint32_t excvaddr,
                              uint32_t epc1, uint32_t ps)
 {
+    kickos_fault_report_begin();
     kpanic_enter();
     char const* what = "exception";
     if (exccause == 0)
@@ -742,17 +692,11 @@ void kickos_lx6_fault_report(uint32_t exccause, uint32_t excvaddr,
     kfault_terminate();
 }
 
-// --- Tickless clock (CCOUNT) + one-shot timer (CCOMPARE0) --------------------
-uint64_t kickos_lx6_ccount_ns(void)
-{
-    return cycles_to_ns(now_cycles());
-}
-
+// --- One-shot timer (CCOMPARE0) ---------------------------------------------
 uint64_t arch_cpu_clock_hz(void)
 {
     return SystemCoreClock;
 }
-
 
 // Tuning only: the arm loop below keeps correctness independent of it.
 static constexpr uint32_t CCOMPARE_MIN_CYCLES = 64;
@@ -831,11 +775,7 @@ void arch_mpu_apply_now(struct arch_mpu_region const* regions, size_t n,
     arch_mpu_apply(regions, n, image);
 }
 
-// 0 keeps arch_ram_alloc byte-granular.
-size_t arch_mpu_min_region(void)
-{
-    return 0u;
-}
+static_assert(KICKOS_CHIP_REGION_GRANULE == 0, "the chip file states a region unit LX6 has none of");
 
 // Advisory: it feeds the admission arithmetic, never a register.
 bool arch_mpu_region_encodable(uintptr_t base, size_t size)
@@ -847,12 +787,6 @@ bool arch_mpu_region_encodable(uintptr_t base, size_t size)
     return (base & 15u) == 0 and (size & 15u) == 0;
 }
 
-// Unreached: arch_mpu_min_region() is 0, which short-circuits both inlines first.
-int arch_mpu_region_pow2(void)
-{
-    return 1;
-}
-
 // The classic ESP32 cache covers external flash and PSRAM only; the arena is internal SRAM.
 int arch_mpu_nocache_support(void)
 {
@@ -861,7 +795,7 @@ int arch_mpu_nocache_support(void)
 
 
 
-// --- The kernel-owned mask for a REAL device line (RULE L1) -------------------
+// --- The kernel-owned mask for a REAL device line -----------------------------
 // The INTENABLE read-modify-write is atomic only because phys_int_* raises PS.INTLEVEL
 // around it and closes with rsync; a bare wsr.intenable would be neither.
 void kickos_lx6_hw_mask(int line)
@@ -1110,7 +1044,8 @@ void kickos_lx6_bind_dev_int(int cpu_int, int line, int core)
             if (g_dev_cpu_int[i] == cpu_int
                 and g_dev_line[i] != static_cast<int8_t>(static_cast<unsigned>(line) & 31u))
             {
-                arch_console_write_sync(SHARED_CPU_INT, sizeof(SHARED_CPU_INT) - 1);
+                kpanic_enter();
+                kickos::kputs(SHARED_CPU_INT);
                 kfault_terminate();
             }
 #endif
@@ -1141,7 +1076,7 @@ void arch_idle_wait(void)
 }
 
 // --- Syscall: a plain call on a core with one privilege level -----------------
-// No ipc_fastpath.cmake here: the dispatch is already a plain call, and
+// ARCH_LX6 selects no ARCH_HAS_IPC_FASTPATH: the dispatch is already a plain call, and
 // Thread::call_frame_parked needs a saved register frame to seat a reply in, while this path
 // answers in the caller's own registers.
 uint64_t arch_syscall64(uintptr_t nr,
@@ -1187,11 +1122,8 @@ void kickos_lx6_init(void)
     phys_int_enable(1u << g_doorbell_cpu_int);
 #endif
     // CP0 (the FPU), on for every thread. CPENABLE is per CORE and not per thread: the switch
-    // banks the FP data registers, not this enable. Only the level-1 interrupt frame saves
-    // f0-f15, FCR and FSR; the cooperative switch relies on FP regs being caller-saved.
+    // banks the FP state, not this enable.
     __asm volatile("wsr.cpenable %0; rsync" ::"a"(1u) : "memory");
-    g_cyc_high[arch_cpu_id()] = 0;
-    g_cyc_last[arch_cpu_id()] = 0;
 #if KICKOS_NUM_CORES > 1
     // LAST, once every register and route above is in place.
     g_core_seated[arch_cpu_id()] = 1u;

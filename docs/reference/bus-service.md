@@ -265,9 +265,9 @@ the driver thread. A thread that routes its device's events onto one of the devi
 its device's lines, read back with `line_index_of`, which the engine is handed as
 `kos_spi_bus_config::irq_index`. A driver's badge space therefore starts at bit `line_count`, and leg L13 refuses
 a doorbell badge below it: a badge inside the lines' range would read as a device interrupt. A bus takes
-the `KOS_DRV_EP_RETAIN` posture: root keeps the full-rights cap so the app can delegate a narrowed
-copy per client, which also means root never stops being a receiver, so NO failure path in the
-driver thread may `exit()` under it. The privileged, per-class bring-up stays in the driver's
+the `KOS_DRV_EP_RETAIN` posture: the init keeps SIGNAL, TRANSFER and HANDOUT on the endpoint, so
+it can delegate a narrowed copy per client, and never receives; a failing step traps the driver
+thread and never exits it. The privileged, per-class bring-up stays in the driver's
 start, ahead of `bring_up`: `k64dspi_spi_start` muxes the pins the board file wires to its DSPI
 there (`k64dspi_bus_mux`, reading the generated `board_buses.h`), on the init's thread, because
 the driver's own threads hold no `pinmux` authority.

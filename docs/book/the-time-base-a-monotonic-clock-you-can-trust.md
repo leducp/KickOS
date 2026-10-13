@@ -271,7 +271,8 @@ the port.
 blink) each carry a fallback body in a translation unit of its own, which a
 chip's own definition displaces. Whether the clock gets one is decided by the
 checklist above, per ISA: where the core offers a counter that passes it, the
-arch may supply a fallback (Xtensa LX6's `CCOUNT` plus a software wrap); where
+arch may supply the clock itself (ARMv8-A's architected counter `CNTPCT_EL0`,
+64 bits wide and outside the debug block, so there is no wrap to extend); where
 the only core-local candidate fails it -- ARMv7-M, whose only wide-enough counter
 sits in the debug domain -- there is deliberately none, and a chip that forgets
 `arch_clock_now()` fails to link. That is the point of leaving it out: a porter

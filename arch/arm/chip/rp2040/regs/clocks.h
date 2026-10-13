@@ -33,6 +33,13 @@ namespace kickos::rp2040::reg::clocks
     constexpr uint32_t CLK_SYS_SELECTED_REF = 1u << 0;
     constexpr uint32_t CLK_SYS_SELECTED_AUX = 1u << 1;
     constexpr uint32_t CLK_SYS_HZ = 125000000u; // clk_sys once on PLL_SYS
+    // clk_sys follows clk_ref, so without the PLL it runs on the crystal.
+    constexpr uint32_t CLK_SYS_NO_PLL_HZ = 12000000u;
+
+    // The ROSC's reset frequency, uncalibrated: clk_ref and clk_sys both run on it when the
+    // crystal never comes up. CLK_REF_DIV.INT resets to 1 and nothing on this part writes it.
+    constexpr uint32_t ROSC_NOMINAL_HZ = 6500000u;
+    constexpr uint32_t CLK_REF_ROSC_NOMINAL_HZ = ROSC_NOMINAL_HZ;
 
     // clk_peri: ENABLE(bit11) | AUXSRC. XOSC_CLKSRC=0x4 (12 MHz, used if the PLL
     // never locks); CLK_SYS=0x0 tracks clk_sys (125 MHz on PLL, ROSC in fallback).

@@ -101,8 +101,11 @@ kickos_armv8a_secondary_entry:
  * the physical alias the untranslated half needed.
  */
     .section .text.secondary_high, "ax"
+    .cfi_sections .debug_frame              /* an .eh_frame cannot reach the high half */
     .global kickos_armv8a_secondary_high
 kickos_armv8a_secondary_high:
+    .cfi_startproc
+    .cfi_undefined x30
     adrp    x0, kickos_armv8a_boot_sp
     add     x0, x0, #:lo12:kickos_armv8a_boot_sp
     ldr     x1, [x0, x19, lsl #3]
@@ -112,11 +115,13 @@ kickos_armv8a_secondary_high:
     msr     vbar_el1, x0
     isb
 
+    mov     x29, xzr
     mov     x0, x19
     bl      kickos_armv8a_park_core         /* noreturn (arch_armv8a.cc) */
 .Lsecondary_high_stop:
     wfi
     b       .Lsecondary_high_stop
+    .cfi_endproc
 
 #endif
 

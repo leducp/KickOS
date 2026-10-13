@@ -126,7 +126,7 @@ int main(int, char**)
 #endif
     uint8_t const ncaps = static_cast<uint8_t>(sizeof(caps) / sizeof(caps[0]));
     auto const v = kos::thread::create_caps(victim, nullptr, "victim", 10, caps, ncaps,
-                                            KOS_POLICY_FIFO, 0, /*privileged=*/false, nullptr,
+                                            KOS_POLICY_FIFO, 0, nullptr,
                                             0, 0, nullptr, KOS_TASK_NONE, nullptr, 0,
                                             victim_mask);
     if (not v.valid() or kos_sem_wait(ready, KOS_TIMEOUT_NONE) != 0)
@@ -136,7 +136,7 @@ int main(int, char**)
     }
 #if KICKOS_KERNEL_CORES > 1
     auto const r = kos::thread::create(reader, nullptr, "reader", PRIO_SPINNER, KOS_POLICY_FIFO,
-                                       0, /*privileged=*/false, nullptr, 0, nullptr, 0, nullptr,
+                                       0, nullptr, 0, nullptr, 0, nullptr,
                                        0, nullptr, 0, 0, nullptr, KOS_TASK_NONE,
                                        1u << core_reader);
     if (not r.valid())

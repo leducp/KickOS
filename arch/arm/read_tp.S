@@ -1,12 +1,10 @@
 /* SPDX-License-Identifier: CECILL-C
  * Copyright (c) 2026 Philippe Leduc
  *
- * __aeabi_read_tp, shared by armv6m and armv7m. Defined by NEITHER libc.a NOR libgcc.a on
- * the arm-none-eabi toolchain: the compiler emits a call to it for every thread_local
- * access it cannot cache, and the kernel is what has to answer.
+ * __aeabi_read_tp, shared by armv6m and armv7m; neither libc.a nor libgcc.a defines it.
  */
 
-#if defined(KICKOS_TLS) && KICKOS_TLS
+#if KICKOS_TLS
 
     .syntax unified
     .thumb

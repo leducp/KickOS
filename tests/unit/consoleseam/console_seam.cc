@@ -7,12 +7,10 @@
 #include <kickos/bench.h>
 #include <kickos/console_tx.h>
 #include <kickos/irq.h>
+#include <kickos/irqlock.h>
 #include <kickos/kernel.h>
 #include <kickos/sched.h>
 
-#include <stdarg.h>
-#include <stdio.h>
-#include <stdlib.h>
 
 namespace
 {
@@ -32,6 +30,7 @@ namespace
     bool g_in_gap = false;
     bool g_seat_fired = false;
     void (*g_seat_fn)(void) = nullptr;
+    void (*g_mask_fn)(void) = nullptr;
     uint32_t g_sync_pushes = 0;
     uint32_t g_sync_seat = 0;
     void (*g_sync_fn)(void) = nullptr;
@@ -82,7 +81,7 @@ namespace
     }
 
     console_tx_backend const g_backend = {mock_slot_free, mock_push, mock_irq_enable,
-                                          mock_irq_disable};
+                                          mock_irq_disable, nullptr};
 
     // The mask just fell to zero: this is where a real TX-empty ISR would land.
     void on_gap(void)
@@ -164,6 +163,7 @@ namespace consoleseam
         g_in_gap = false;
         g_seat_fired = false;
         g_seat_fn = nullptr;
+        g_mask_fn = nullptr;
         g_sync_pushes = 0;
         g_sync_seat = 0;
         g_sync_fn = nullptr;
@@ -211,8 +211,31 @@ namespace consoleseam
         return g_seat_fired;
     }
 
+    void run_at_mask(void (*fn)(void))
+    {
+        g_mask_fn = fn;
+    }
+
+    void set_tx_irq_enabled(bool on)
+    {
+        g_tx_irq_on = on;
+    }
+
     void note_commit()
     {
+        g_committed = true;
+    }
+
+    void publish_begin()
+    {
+        kickos::IrqLock lock;
+        console_handover_begin();
+        g_isr_runs = false;
+    }
+
+    void publish_end()
+    {
+        console_owner_set_user();
         g_committed = true;
     }
 
@@ -237,6 +260,12 @@ extern "C"
 {
     arch_irq_state_t arch_irq_save(void)
     {
+        void (*const fn)(void) = g_mask_fn;
+        g_mask_fn = nullptr;
+        if (fn != nullptr)
+        {
+            fn();
+        }
         arch_irq_state_t const prior = static_cast<arch_irq_state_t>(g_mask_depth);
         g_mask_depth++;
         return prior;
@@ -251,11 +280,6 @@ extern "C"
             g_cur_stalls = 0;
             on_gap();
         }
-    }
-
-    int arch_in_isr(void)
-    {
-        return 0;
     }
 
     // Counted against the masked-push metric whenever the caller holds the mask.
@@ -287,46 +311,6 @@ extern "C"
         return true;
     }
 
-    void arch_irq_mask(int)
-    {
-    }
-
-    void arch_irq_unmask(int)
-    {
-    }
-
-    void arch_irq_clear_pending(int)
-    {
-    }
-
-    console_tx_backend const* arch_console_tx_backend(char**, uint32_t*, int*)
-    {
-        return nullptr; // the fixture arms the ring through console_tx_init
-    }
-}
-
-namespace kickos
-{
-    // What irq_detach nulls is modelled by set_isr_runs_in_gap; these only have to link.
-    bool irq_attach(int, IrqHandler, void*)
-    {
-        return true;
-    }
-
-    void irq_detach(int)
-    {
-    }
-}
-
-extern "C"
-{
-    // Every buffered chip's arch_console_write is exactly this, so the routing decision in
-    // console.cc reaches the real ring producer.
-    int arch_console_write(char const* buf, size_t n)
-    {
-        return console_tx_insert_line(buf, n, KICKOS_CONSOLE_CRLF);
-    }
-
     void arch_console_flush_sync(void)
     {
         void (*const hook)(void) = consoleseam::g_flush_hook;
@@ -340,45 +324,6 @@ extern "C"
     void arch_console_reclaim(void)
     {
         consoleseam::g_reclaims = consoleseam::g_reclaims + 1;
-    }
-
-    void arch_console_reclaim_window(uintptr_t* base, size_t* size)
-    {
-        *base = 0x40000000u;
-        *size = 0x100u;
-    }
-
-    int kvsnprintf(char* buf, size_t size, char const* fmt, va_list ap)
-    {
-        return vsnprintf(buf, size, fmt, ap);
-    }
-
-    // Distinct statuses: an arm that expects the panic path must be able to tell it from an
-    // ordinary failed expectation.
-    void arch_shutdown(int status)
-    {
-        printf("SEAM: arch_shutdown(%d)\n", status);
-        exit(43);
-    }
-
-    int arch_reboot(void)
-    {
-        return 0;
-    }
-
-    void kfault_terminate(void)
-    {
-        printf("SEAM: kfault_terminate\n");
-        exit(42);
-    }
-
-    // No stack switch, as on ARCH_SIM: a host thread stack is megabytes and no red-zone
-    // class measures one.
-    void kickos_panic_stack_enter(char const* msg, char const* file, unsigned line,
-                                  uintptr_t top)
-    {
-        (void)top;
-        kickos_panic_report(msg, file, line);
     }
 }
 
@@ -400,11 +345,6 @@ namespace kickos
     bool dev_window_free(uintptr_t, size_t)
     {
         return consoleseam::g_window_free;
-    }
-
-    bool dev_window_held_outside(uintptr_t, size_t, Task const*)
-    {
-        return false;
     }
 
     bool task_serves_console(Task const*)

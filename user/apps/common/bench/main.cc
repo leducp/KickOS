@@ -7,6 +7,7 @@
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 #include <kickos/sys/atomic.h>
+#include <kickos/sys/driver_service.h>
 #include <kickos/sys/irq_free.h>
 #include <kickos/sys/init.h>
 #include <kickos/libc/fmt.h>
@@ -73,7 +74,8 @@ namespace
     // through.
     constexpr uint32_t E2E_SWEEP_PASSES =
         KICKOS_KERNEL_CORES * E2E_PAIRS_PER_CORE * static_cast<uint32_t>(E2E_SAMPLES);
-    // A yield count, not a time: the bound on each wait for the waiter to park or to close.
+    // A yield count, not a time: the bound on the settle poll, whose shortfall is stated and not
+    // refused.
     constexpr int E2E_TRIES = 2000;
     // The tare, once per run: the return to userspace, the device read and the trap back in.
     constexpr int E2E_TARE_SAMPLES = 64;
@@ -86,8 +88,8 @@ namespace
     constexpr uint32_t DOORBELL_ROUNDS = KOS_BENCH_ROUNDS_MAX;
     // Bounds the walk only; the kernel's refusal ends it. A core set is a 32-bit mask.
     constexpr uint32_t CORE_WALK_MAX = 32;
-    // Bounded so main RETURNS: its task's end ends the system, and a board built with
-    // KICKOS_SHUTDOWN_TO_BOOTLOADER re-enters its bootloader without a button press.
+    // Bounded so main RETURNS, through finish: a board with a bootloader entry then re-enters
+    // it without a button press.
     constexpr unsigned THROUGHPUT_REPORTS = 3;
 #if KICKOS_KERNEL_CORES > 1
     constexpr uint32_t TAG_CALLREPLY = 0;
@@ -129,10 +131,12 @@ namespace
 
     // Child cap indices (a fresh child table makes handle == index). MAIN delegates the
     // sems per spawn in this order.
-    constexpr int CH_A = 1;
-    constexpr int CH_B = 2;
-    constexpr int CH_GATE = 3;   // reporter-wake gate, delegated to player_b only
-    constexpr int CH_RESUME = 4; // posted by the reporter as the next window opens, player_b only
+    constexpr int CH_A = KOS_SPAWN_DELEGATED_CAP0;
+    constexpr int CH_B = KOS_SPAWN_DELEGATED_CAP0 + 1;
+    // reporter-wake gate, delegated to player_b only
+    constexpr int CH_GATE = KOS_SPAWN_DELEGATED_CAP0 + 2;
+    // posted by the reporter as the next window opens, player_b only
+    constexpr int CH_RESUME = KOS_SPAWN_DELEGATED_CAP0 + 3;
     constexpr uint8_t CH_FULL = KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER;
     // Both players on one core: the throughput row is the same-core handoff. Under a wider
     // mask the placement invariant would spread the equal-priority pair across cores.
@@ -150,7 +154,7 @@ namespace
         return static_cast<uint32_t>(rc);
     }
 
-    void player_a(void*) // caps: A@1, B@2
+    void player_a(void*) // caps: A@2, B@3
     {
         while (true)
         {
@@ -197,7 +201,7 @@ namespace
 
     // Parks for the whole report, with player_a parked on A behind it: above one kernel core the
     // reporter's probes and sweeps take it off the players' core, and the pair runs there again.
-    void player_b(void*) // caps: A@1, B@2, gate@3, resume@4
+    void player_b(void*) // caps: A@2, B@3, gate@4, resume@5
     {
         // The reporter opens every burst through resume, the first included.
         kos_sem_wait(CH_RESUME, KOS_TIMEOUT_NONE);
@@ -223,11 +227,16 @@ namespace
     // --- the end-to-end span ---------------------------------------------------
     // Both ends are spawned threads of main's own task, so main can place either.
     // The waiter holds the line, so nothing else in the image may.
-    constexpr int CH_E2E_IRQ = 1;   // waiter: the claimed line, WAIT only
-    constexpr int CH_E2E_READY = 2; // waiter: posted once, after the tare, before the first park
-    constexpr int CH_E2E_NOTE = 3;  // waiter: the object that line signals, WAIT only
-    constexpr int CH_E2E_GO = 1;    // raiser: one post per pass
-    constexpr int CH_E2E_PASS = 2;  // raiser: posted when a pass has run its samples
+    // waiter: the claimed line, WAIT only
+    constexpr int CH_E2E_IRQ = KOS_SPAWN_DELEGATED_CAP0;
+    // waiter: posted once, after the tare, before the first park
+    constexpr int CH_E2E_READY = KOS_SPAWN_DELEGATED_CAP0 + 1;
+    // waiter: the object that line signals, WAIT only
+    constexpr int CH_E2E_NOTE = KOS_SPAWN_DELEGATED_CAP0 + 2;
+    // raiser: one post per pass
+    constexpr int CH_E2E_GO = KOS_SPAWN_DELEGATED_CAP0;
+    // raiser: posted when a pass has run its samples
+    constexpr int CH_E2E_PASS = KOS_SPAWN_DELEGATED_CAP0 + 1;
 
     // Main attaches the line with an unbadged copy, so it raises bit 0.
     constexpr uint32_t E2E_LINE_BIT = 1u << 0;
@@ -252,6 +261,8 @@ namespace
     Atomic<int32_t, Order::RELAXED> g_e2e_grant_rc{0};
     // Passes whose set-up settled before their first raise, published by the pass handshake.
     Atomic<uint32_t, Order::RELAXED> g_e2e_settled{0};
+    // Set once the waiter went a whole close ceiling without parking or closing; no raise follows.
+    Atomic<uint32_t, Order::RELAXED> g_e2e_stalled{0};
 
     void e2e_waiter(void*)
     {
@@ -292,6 +303,36 @@ namespace
         }
     }
 
+    // Bounded on the clock and never by a yield count: an emulator's host can stall the waiter's
+    // core for longer than any number of this thread's yields takes.
+    bool e2e_raise_parked()
+    {
+        uint64_t const t0 = kos_clock_now();
+        while (kos_bench(KOS_BENCH_OP_E2E_RAISE, 0, 0) != 0)
+        {
+            if (kos_clock_now() - t0 > KOS_BENCH_E2E_SPAN_MAX_NS)
+            {
+                return false;
+            }
+            kos_yield();
+        }
+        return true;
+    }
+
+    bool e2e_await_close(uint32_t before)
+    {
+        uint64_t const t0 = kos_clock_now();
+        while (g_e2e_done == before)
+        {
+            if (kos_clock_now() - t0 > KOS_BENCH_E2E_SPAN_MAX_NS)
+            {
+                return false;
+            }
+            kos_yield();
+        }
+        return true;
+    }
+
     // Ranks below the waiter, so every raise runs to the waiter's close before this thread is
     // scheduled again at one kernel core; above one the done counter is what orders it. Ends
     // only by cancellation, which is what unblocks its wait.
@@ -315,22 +356,13 @@ namespace
             {
                 g_e2e_settled = g_e2e_settled + 1;
             }
-            for (int i = 0; i < E2E_SAMPLES; i++)
+            // A stall ends the sweep, and e2e-passes reports what it left unraised.
+            for (int i = 0; i < E2E_SAMPLES and g_e2e_stalled == 0; i++)
             {
                 uint32_t const before = g_e2e_done;
-                int t = 0;
-                while (t < E2E_TRIES and kos_bench(KOS_BENCH_OP_E2E_RAISE, 0, 0) != 0)
+                if (not e2e_raise_parked() or not e2e_await_close(before))
                 {
-                    kos_yield();
-                    t++;
-                }
-                if (t >= E2E_TRIES)
-                {
-                    continue; // the waiter never parked; the probe line reports the shortfall
-                }
-                for (t = 0; t < E2E_TRIES and g_e2e_done == before; t++)
-                {
-                    kos_yield();
+                    g_e2e_stalled = 1;
                 }
             }
             kos_sem_post(CH_E2E_PASS);
@@ -390,7 +422,7 @@ namespace
                                 {g_e2e_ready, CH_FULL},
                                 {note, KOS_CAP_WAIT}};
         auto w = kos::thread::create_caps(e2e_waiter, nullptr, "e2ewait", 15, caps, 3,
-                                          KOS_POLICY_FIFO, 0, /*privileged=*/false, nullptr, 0,
+                                          KOS_POLICY_FIFO, 0, nullptr, 0,
                                           KOS_AUTH_MEMORY, nullptr, KOS_TASK_NONE, nullptr, 0,
                                           E2E_LINE_CORES);
         kos_handle_close(note); // the waiter's bind and the line's attach both hold their own
@@ -441,6 +473,7 @@ namespace
             return;
         }
         g_e2e_settled = 0;
+        g_e2e_stalled = 0;
         for (uint32_t c = 0; c < KICKOS_KERNEL_CORES; c++)
         {
             for (uint32_t d = 0; d < E2E_PAIRS_PER_CORE; d++)
@@ -600,12 +633,12 @@ namespace
     constexpr uintptr_t CR_XTASK = 1u << 11;
     static_assert(KOS_EP_MSG_MAX <= CR_LEN_MASK, "a message length must fit its field");
 
-    void callreply_server(void*) // caps: E(WAIT)@1, done@2
+    void callreply_server(void*) // caps: E(WAIT)@2, done@3
     {
         unsigned char buf[KOS_EP_MSG_MAX];
         struct kos_reply_recv_opts opts;
         memset(&opts, 0, sizeof(opts));
-        opts.ep = 1;
+        opts.ep = 2;
         opts.timeout_us = KOS_TIMEOUT_NONE;
         kos_cap_t reply_cap = KOS_CAP_NONE;
         size_t reply_len = 0;
@@ -628,9 +661,9 @@ namespace
         {
             kos_reply(reply_cap, buf, reply_len);
         }
-        kos_sem_post(2);
+        kos_sem_post(3);
     }
-    void callreply_caller(void* arg) // caps: E(SIGNAL)@1, done@2
+    void callreply_caller(void* arg) // caps: E(SIGNAL)@2, done@3
     {
         uintptr_t const params = reinterpret_cast<uintptr_t>(arg);
         unsigned char buf[KOS_EP_MSG_MAX];
@@ -647,7 +680,7 @@ namespace
         {
             while (reps < CALLREPLY_REPS)
             {
-                if (kos_call_generic(1, buf, len, len) < 0)
+                if (kos_call_generic(2, buf, len, len) < 0)
                 {
                     break;
                 }
@@ -659,7 +692,7 @@ namespace
             while (reps < CALLREPLY_REPS)
             {
                 // In place: the reply lands back in the request buffer.
-                if (kos_call(1, buf, len, len) < 0)
+                if (kos_call(2, buf, len, len) < 0)
                 {
                     break;
                 }
@@ -702,7 +735,7 @@ namespace
                 static_cast<unsigned>(d_ns / 1000000ull), path, shape);
             kos::print(s);
         }
-        kos_sem_post(2);
+        kos_sem_post(3);
     }
     // endpoint_call's D1 donation is guarded on caller_prio strictly greater than
     // server_prio, so an equal-priority step leaves that phase row with zero samples.
@@ -731,14 +764,14 @@ namespace
             return;
         }
         kos::Semaphore done(0);
-        kos_cap_grant scaps[] = {{ep, KOS_CAP_WAIT}, {done.id(), CH_FULL}};   // E(WAIT)@1, done@2
-        kos_cap_grant ccaps[] = {{ep, KOS_CAP_SIGNAL}, {done.id(), CH_FULL}}; // E(SIGNAL)@1, done@2
+        kos_cap_grant scaps[] = {{ep, KOS_CAP_WAIT}, {done.id(), CH_FULL}};   // E(WAIT)@2, done@3
+        kos_cap_grant ccaps[] = {{ep, KOS_CAP_SIGNAL}, {done.id(), CH_FULL}}; // E(SIGNAL)@2, done@3
         auto sv = kos::thread::create_caps(callreply_server, nullptr, "cr_srv", server_prio, scaps, 2,
-                                           KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr,
+                                           KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
                                            server_task);
         auto cl = kos::thread::create_caps(callreply_caller, reinterpret_cast<void*>(params),
                                            "cr_cl", caller_prio, ccaps, 2,
-                                           KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr,
+                                           KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
                                            caller_task);
         if (not sv.valid() or not cl.valid())
         {
@@ -800,7 +833,7 @@ namespace
         kos::print(s);
     }
 
-    // caps: own@1, peer@2, done@3. The leader posts first and times the whole run.
+    // caps: own@2, peer@3, done@4. The leader posts first and times the whole run.
     void xt_player(void* leads)
     {
         uint64_t const t0 = kos::clock_now();
@@ -809,12 +842,12 @@ namespace
         {
             if (leads != nullptr)
             {
-                if (kos_sem_post(2) != 0 or kos_sem_wait(1, KOS_TIMEOUT_NONE) != 0)
+                if (kos_sem_post(3) != 0 or kos_sem_wait(2, KOS_TIMEOUT_NONE) != 0)
                 {
                     break;
                 }
             }
-            else if (kos_sem_wait(1, KOS_TIMEOUT_NONE) != 0 or kos_sem_post(2) != 0)
+            else if (kos_sem_wait(2, KOS_TIMEOUT_NONE) != 0 or kos_sem_post(3) != 0)
             {
                 break;
             }
@@ -829,7 +862,7 @@ namespace
                       static_cast<unsigned>(d_ns / 1000000ull));
             row(s);
         }
-        kos_sem_post(3);
+        kos_sem_post(4);
     }
 
     bool xt_task_pair(kos_task_t* a, kos_task_t* b)
@@ -870,10 +903,10 @@ namespace
         kos_cap_grant acaps[] = {{x.id(), CH_FULL}, {y.id(), CH_FULL}, {done.id(), CH_FULL}};
         kos_cap_grant bcaps[] = {{y.id(), CH_FULL}, {x.id(), CH_FULL}, {done.id(), CH_FULL}};
         auto pa = kos::thread::create_caps(xt_player, &x, "xt_a", CR_PRIO, acaps, 3,
-                                           KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr, ta,
+                                           KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr, ta,
                                            nullptr, 0, PLAYER_CORES);
         auto pb = kos::thread::create_caps(xt_player, nullptr, "xt_b", CR_PRIO, bcaps, 3,
-                                           KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr, tb,
+                                           KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr, tb,
                                            nullptr, 0, PLAYER_CORES);
         if (pa.valid() and pb.valid())
         {
@@ -950,7 +983,7 @@ namespace
                 break;
             }
             auto h = kos::thread::create_caps(spawn_child, nullptr, "sp_k", CR_PRIO, nullptr, 0,
-                                              KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr,
+                                              KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
                                               t);
             bool const ran = h.valid() and h.join(KOS_TIMEOUT_NONE) == 0;
             if (kos_task_slay(t, KOS_TIMEOUT_NONE) != 0 or not ran)
@@ -981,11 +1014,11 @@ namespace
     constexpr uint32_t W_SPIN_POLL = 1u << 16;
     constexpr uint32_t W_RESEAT_ROUNDS = 500;
 
-    // A ping-pong pair's caps: A@1, B@2. Main's own table is a child's, sized for no more
+    // A ping-pong pair's caps: A@2, B@3. Main's own table is a child's, sized for no more
     // than a few pairs at once, so it closes its handles once the players hold theirs and
     // joins the players instead of waiting on a third semaphore.
-    constexpr int W_A = 1;
-    constexpr int W_B = 2;
+    constexpr int W_A = KOS_SPAWN_DELEGATED_CAP0;
+    constexpr int W_B = KOS_SPAWN_DELEGATED_CAP0 + 1;
 
     void w_player_a(void*)
     {
@@ -1027,10 +1060,10 @@ namespace
         }
         kos_cap_grant caps[] = {{a, CH_FULL}, {b, CH_FULL}};
         out->a = kos::thread::create_caps(w_player_a, nullptr, "w_a", W_PRIO, caps, 2,
-                                          KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr,
+                                          KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
                                           KOS_TASK_NONE, nullptr, 0, mask);
         out->b = kos::thread::create_caps(w_player_b, nullptr, "w_b", W_PRIO, caps, 2,
-                                          KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr,
+                                          KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
                                           KOS_TASK_NONE, nullptr, 0, mask);
         kos_handle_close(a);
         kos_handle_close(b);
@@ -1131,9 +1164,12 @@ namespace
     Atomic<uint32_t, Order::RELAXED> g_h1_on{0};
     Atomic<uint32_t, Order::RELAXED> g_park_req{0};
     Atomic<uint32_t, Order::RELAXED> g_moved{0};
-    constexpr int P_START = 1; // every probe thread: waited once before it begins
-    constexpr int P_H1 = 2;    // hog 0 and hog 1: hog 1's release
-    constexpr int P_M = 3;     // hog 0 and the moved thread: the moved thread's release
+    // every probe thread: waited once before it begins
+    constexpr int P_START = KOS_SPAWN_DELEGATED_CAP0;
+    // hog 0 and hog 1: hog 1's release
+    constexpr int P_H1 = KOS_SPAWN_DELEGATED_CAP0 + 1;
+    // hog 0 and the moved thread: the moved thread's release
+    constexpr int P_M = KOS_SPAWN_DELEGATED_CAP0 + 2;
 
     // Spins until `cell` reads `want`, false once W_PUSH_GIVEUP_NS have passed.
     bool p_await(Atomic<uint32_t, Order::RELAXED>& cell, uint32_t want)
@@ -1257,16 +1293,16 @@ namespace
         kos::thread::Handle hs[6] = {};
         uint32_t k = 0;
         hs[k++] = kos::thread::create_caps(p_hog0, nullptr, "p_hog0", W_HOG_PRIO, caps, 3,
-                                           KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr,
+                                           KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
                                            KOS_TASK_NONE, nullptr, 0, 1u << 0);
         hs[k++] = kos::thread::create_caps(p_hog1, nullptr, "p_hog1", W_HOG_PRIO, caps, 3,
-                                           KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr,
+                                           KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
                                            KOS_TASK_NONE, nullptr, 0, 1u << 1);
         hs[k++] = kos::thread::create_caps(p_moved, nullptr, "p_moved", W_MOVED_PRIO, caps, 3);
         for (uint32_t c = 2; c < n and k < 6; c++)
         {
             hs[k++] = kos::thread::create_caps(p_spinner, nullptr, "p_spin", W_HOG_PRIO, caps, 3,
-                                               KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr,
+                                               KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
                                                KOS_TASK_NONE, nullptr, 0, 1u << c);
         }
         kos_handle_close(h1);
@@ -1319,7 +1355,7 @@ namespace
     {
         g_w_stop = 0;
         auto t = kos::thread::create_caps(w_spinner, nullptr, "r_spin", W_MOVED_PRIO, nullptr, 0,
-                                          KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr,
+                                          KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
                                           KOS_TASK_NONE, nullptr, 0, 1u << 1);
         if (not t.valid())
         {
@@ -1344,8 +1380,22 @@ namespace
 }
 #endif
 
+namespace
+{
+    // A chip with a bootloader entry is handed back to it, so a bench reflashes the next image
+    // without a button press.
+    int finish(int status)
+    {
+        (void)kos_console_flush(kickos::driver::KOS_DRV_HANDOVER_PROBE_US);
+        (void)kos_shutdown(status, KOS_SHUTDOWN_BOOTLOADER);
+        return status;
+    }
+}
+
 int main(int, char**)
 {
+    // A run that panics or faults hands the board back to its bootloader too.
+    (void)kos_terminal_outcome(KOS_SHUTDOWN_BOOTLOADER);
     kos::print("microbenchmark: context-switch throughput (all arches) + per-switch cost\n");
     kos::print("+ IRQ-entry latency where a cycle counter exists. Reporter woken by the\n");
     kos::print("workload, not a timer. Telemetry OFF for clean numbers.\n");
@@ -1396,30 +1446,30 @@ int main(int, char**)
         or kos_sem_create(0, &g_gate) != 0 or kos_sem_create(0, &g_resume) != 0)
     {
         kos::print("bench: FAILED to create the players' semaphores\n");
-        return 1;
+        return finish(1);
     }
 
     // Players at prio 1 (KICKOS_PRIO_MIN), below main's prio 2, so the reporter preempts
     // them when player_b posts the gate.
-    kos_cap_grant acaps[] = {{a, CH_FULL}, {b, CH_FULL}}; // A@1, B@2
+    kos_cap_grant acaps[] = {{a, CH_FULL}, {b, CH_FULL}}; // A@2, B@3
     kos_cap_grant bcaps[] = {{a, CH_FULL},
                              {b, CH_FULL},
                              {g_gate, CH_FULL},
-                             {g_resume, CH_FULL}}; // +gate@3, resume@4
+                             {g_resume, CH_FULL}}; // +gate@4, resume@5
     auto ra = kos::thread::create_caps(player_a, nullptr, "bench_a", 1, acaps, 2, KOS_POLICY_FIFO,
-                                       0, /*privileged=*/false, nullptr, 0, 0, nullptr,
+                                       0, nullptr, 0, 0, nullptr,
                                        KOS_TASK_NONE, nullptr, 0, PLAYER_CORES);
     auto rb = kos::thread::create_caps(player_b, nullptr, "bench_b", 1, bcaps, 4, KOS_POLICY_FIFO,
-                                       0, /*privileged=*/false, nullptr, 0, 0, nullptr,
+                                       0, nullptr, 0, 0, nullptr,
                                        KOS_TASK_NONE, nullptr, 0, PLAYER_CORES);
     kos_handle_close(a);
     kos_handle_close(b);
     if (not ra.valid() or not rb.valid())
     {
-        // Do not park here: on a bootloader-handover board a parked app costs a physical
-        // button press, which the bounded reporter exists to avoid.
+        // Do not park here: on a board that returns to its bootloader a parked app costs a
+        // physical button press, which the bounded reporter exists to avoid.
         kos::print("bench: FAILED to spawn players (thread pool too small?)\n");
-        return 1;
+        return finish(1);
     }
 
     reporter_loop();
@@ -1439,5 +1489,5 @@ int main(int, char**)
     // The kernel refuses it, and prints nothing, where no backend keeps the watch.
     (void)kos_bench(KOS_BENCH_OP_FASTPATH_WATCH, 0, 0);
     kos::print("bench: done\n");
-    return 0;
+    return finish(0);
 }

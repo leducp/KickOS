@@ -2,7 +2,7 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # QEMU `mps2-an505`. The kernel console is Arm semihosting (chip_mps2.cc, which
-# an505/family.cmake compiles into this chip).
+# the chip file's `family` compiles into this chip).
 
 version: 1
 board: qemu-m33

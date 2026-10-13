@@ -13,11 +13,11 @@
 # syscall, not from the kernel dereferencing the caller's pointer.
 #
 # ABOVE ONE CORE EVERY LINE HERE CAN ARRIVE SPLIT, and that is permitted behaviour rather
-# than a defect: arch_console_write is a byte-at-a-time device loop under no lock, so two harts
-# emit into one wire with no per-line atomicity anywhere in the kernel. A peer starting the app
-# while the boot hart prints its status lines lands one of them INSIDE the app's line or inside
-# the panic line, and the collision is CHARACTER BY CHARACTER rather than a whole line inserted
-# at a line break, so deleting the known status lines and rejoining does not recover it. The
+# than a defect: the console keeps a line whole only within one write, so a line sent in several
+# writes can take a peer's line between its pieces. A peer starting the app while the boot hart
+# prints its status lines lands one of them INSIDE the app's line or inside the panic line, at a
+# piece boundary rather than a line break, so deleting the known status lines and rejoining does
+# not recover it. The
 # strict match is tried first; a split is tolerated only above one core and only through
 # wire_has, whose span bound is what one status line can contribute, so a literal absent for
 # any other reason still fails. Every tolerated split is REPORTED.

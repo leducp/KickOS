@@ -1,19 +1,10 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// K64F UART0 class-driver leaf (driver-model rule 6). A FREESTANDING,
-// STATELESS register-logic core: a free function taking the UART module base
-// explicitly, no ctor/dtor, no mutable static state. Built as part of the
-// kickos_class_mk64f static lib on a bare include path (repo include/ + this
-// chip's register dir ONLY, never kernel/include), so the SAME object could link
-// unchanged into BOTH the kernel and an unprivileged userspace UART driver.
-//
-// The kernel console (chip_mk64f.cc arch_console_write_sync / k64_tx_slot_free)
-// reads the same S1.TDRE bit but does not consume this leaf; today it serves only
-// the userspace k64uartirq driver.
-//
-// The register map it reads (S1, RM 52.3.5) comes from the chip's shared
-// regs/uart.h, not a local copy.
+// K64F UART0 class-driver leaf (driver-model rule 6): freestanding and stateless, a free function
+// taking the module base. Built into kickos_class_mk64f on a bare include path (repo include/ and
+// this chip's register dir only), so the same object links into the kernel or an unprivileged
+// userspace driver. The register map (S1, RM 52.3.5) is the chip's regs/uart.h.
 
 #ifndef KICKOS_ARCH_ARM_CHIP_MK64F_CLASS_UART_CLASS_H
 #define KICKOS_ARCH_ARM_CHIP_MK64F_CLASS_UART_CLASS_H

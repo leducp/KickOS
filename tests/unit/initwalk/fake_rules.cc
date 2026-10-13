@@ -275,7 +275,7 @@ namespace
         p.prio = 0;
         EXPECT_EQ(spawn(p), -KOS_EINVAL);
         p.prio = 10;
-        p.authority = 1u << 8;
+        p.authority = static_cast<uint32_t>(KOS_AUTH_ALL) + 1u;
         EXPECT_EQ(spawn(p), -KOS_EINVAL);
     }
 

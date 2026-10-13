@@ -24,12 +24,23 @@ namespace kickos
     // -KOS_EBUSY where the console is published and the caller's own stdout send would be
     // taken now: nothing was written. Where `wait` holds it waits for room in a full ring, for a
     // peer node's claim on a shared UART, and in the dark window (console_dark) for the reclaim
-    // or a publish, and writes then; where it does not, it answers 0 at a full ring or a claim
-    // and -KOS_EAGAIN in the dark window. -KOS_ECANCELED where the writer is cancelled.
+    // or a publish, and writes then; where it does not, it answers -KOS_ETIMEDOUT wherever it
+    // would wait. -KOS_ECANCELED where the writer is cancelled.
     int kconsole_write_user(char const* buf, size_t n, bool wait);
 
     void kputs(char const* s);
     void kprintf(char const* fmt, ...) __attribute__((format(printf, 1, 2)));
+
+    // KOS_SYS_TERMINAL_OUTCOME's word: 0 unset, else the outcome plus one in the low half-word
+    // and its complement in the high one. It outlives the thread that set it, so a dying system
+    // reads it only when the halves agree, and halts otherwise.
+    extern Atomic<uint32_t, Order::ACQUIRE | Order::RELEASE> g_terminal_outcome;
+
+    // KOS_SYS_TERMINAL_OUTCOME for `caller`.
+    int terminal_outcome_set(Thread* caller, uint32_t outcome);
+    // False on an AMP node other than the partition's KICKOS_AMP_RESET_OWNER: a reset there
+    // would end every node.
+    bool reset_owned_here(void);
 
 #if KICKOS_BENCH
     // kprintf that offers a refused line again: the console takes a whole line or none, and
@@ -42,8 +53,10 @@ namespace kickos
     // A thread-fault record: the kprintf_fault lines a thread prints before its krecord_end.
     void kprintf_fault(char const* fmt, ...) __attribute__((format(printf, 1, 2)));
     void krecord_end(void);
-    // A thread slain inside its record never reaches krecord_end; its open record is dropped.
-    void krecord_abandon(void);
+    // A thread slain inside its record, its kernel console write or its publish's drain never
+    // reaches their ends: its open record is dropped, its chip-writer bracket left, and its
+    // hand-off abandoned, the console then the kernel's, polled.
+    void kconsole_slain(void);
 
     // Whether a live thread outside `t` holds the console's registers. Caller holds IrqLock.
     bool console_window_held_outside(Task const* t);
@@ -147,16 +160,28 @@ namespace kickos
 // drain the ring so the dump prints in order. Idempotent.
 extern "C" void kpanic_enter(void);
 
+// For a core that may be inside the kernel lock's acquisition or holding it bare: no lock taken.
+extern "C" void kpanic_refuse_unlocked(char const* line) __attribute__((noreturn));
+extern "C" void kpanic_refuse_unlocked_hex(char const* head, unsigned value)
+    __attribute__((noreturn));
+extern "C" void kpanic_enter_unlocked(void);
+extern "C" void kpanic_write_unlocked(char const* buf, size_t n);
+
 // Terminal for the panic / fault dead-end, shared by kpanic and the arch fault handlers. The
 // fallback blinks the diag LED forever; host and QEMU override it across TUs to exit with a
 // fault status. An ARM MPU/hard fault terminates HERE, never through kickos_terminate.
 extern "C" void kfault_terminate(void) __attribute__((noreturn));
 
-// The chokepoint every ORDERED terminal path goes through: KOS_SYS_SHUTDOWN, KOS_SYS_EXIT by
+// The chokepoint every ORDERED halt goes through: KOS_SYS_SHUTDOWN's halt, KOS_SYS_EXIT by
 // ROOT, last-thread-out and the software fault reporter. Drains the console, then ends the
-// system via arch_shutdown. Under KICKOS_SHUTDOWN_TO_BOOTLOADER it tries arch_reboot first; a
-// chip with no bootloader entry declines with -KOS_ENOSYS and halts.
+// system via arch_shutdown: it halts, whatever terminal outcome is set.
 extern "C" void kickos_terminate(int status) __attribute__((noreturn));
+
+// Hands the chip to the terminal outcome KOS_SYS_TERMINAL_OUTCOME set: returns where none is
+// set, it is halt, its word does not check, or the chip has no entry for it. Every
+// kfault_terminate and the software fault reporter call it once the console is drained; it takes
+// no lock and prints nothing.
+extern "C" void kickos_terminal_outcome_apply(void);
 
 #if KICKOS_DIAG_TERSE
 #define KICKOS_ASSERT(cond)                               \

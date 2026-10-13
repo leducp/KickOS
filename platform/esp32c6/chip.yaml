@@ -21,9 +21,11 @@ c: { line_enum: "kernel_line : int", led: addressable }
 cores:
   hp:
     # PMP is per thread and faults. APM behind it is per security mode, opened once at boot
-    # for the whole user mode, and a denial does not trap: a read returns 0, a write drops.
+    # for the whole user mode, and a denial does not trap: a read returns 0, a write drops. A
+    # region is a NAPOT entry, 8 bytes at the least.
     protection:
       unit: pmp
+      granule: 8
       covers_devices: true
       memory_type: false
       bus_gate: { kind: apm, per_thread: false, traps: false }
@@ -51,6 +53,8 @@ partition_gate:
         - { window: [0x70000000, 0x400], access: rwx }
         - { window: [0x600B0C00, 0x400], access: rw, ref: "RTC_TIMER, Table 5.3-2, p.176" }
 
+family: none
+exits_on_fault: false
 interrupts: { count: { value: 32, ref: "10.3.2 CPU Interrupts, p.384" }, soft_only_from: 26 }
 
 devices:

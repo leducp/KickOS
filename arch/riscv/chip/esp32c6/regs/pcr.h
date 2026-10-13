@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// ESP32-C6 PCR (Power/Clock/Reset) registers (TRM v1.2 ch.8, offsets from section 8.5.1).
-// On this core the peripheral clock source select + divider live here, not in the
-// peripheral's own SYS_CONF, and PCR is an owns-for-life reserved MPU block.
+// ESP32-C6 PCR (Power/Clock/Reset) registers. Peripheral clock select and divider live here,
+// not in the peripheral's SYS_CONF. Reserved MPU block, kernel-owned.
 
 #ifndef KICKOS_ARCH_RISCV_CHIP_ESP32C6_REGS_PCR_H
 #define KICKOS_ARCH_RISCV_CHIP_ESP32C6_REGS_PCR_H
@@ -55,9 +54,8 @@ namespace kickos::esp32c6::reg::pcr
     constexpr uint32_t CPU_HS_DIV_NUM_MASK = 0xFFu;
     constexpr uint32_t CPU_HS_120M_FORCE = 1u << 16;
 
-    // PLL_F80M is the SPLL/6 tap and the TRM names it at 80 MHz (Register 8.68). SPLL's own
-    // rate lives in PCR_PLL_FREQ, which is HRO: "Only hardware can read from this
-    // register/field" (TRM Access Types glossary), so it has no software read-back.
+    // PLL_F80M is the SPLL/6 tap, 80 MHz per TRM Register 8.68. SPLL's own rate
+    // (PCR_PLL_FREQ) is HRO and cannot be read back.
     constexpr uint32_t PLL_F80M_HZ = 80000000u;
 }
 

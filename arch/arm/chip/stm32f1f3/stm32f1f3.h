@@ -1,23 +1,20 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The register contract the STM32 F0/F1/F3 parts share: one RCC block at 0x4002_1000
-// whose PLL is programmed through RCC_CFGR (PLLSRC/PLLMUL), one FLASH_ACR, and one
-// general-purpose TIM register map. The F2/F4/F7 line drives its PLL from RCC_PLLCFGR
-// and shares none of this.
+// The register contract the STM32 F0/F1/F3 parts share: one RCC block at 0x4002_1000 whose PLL
+// is programmed through RCC_CFGR, one FLASH_ACR, and one general-purpose TIM register map. The
+// F2/F4/F7 line drives its PLL from RCC_PLLCFGR and shares none of this.
 //
-// A chip joins by shipping family.cmake, family_map.h, and a chip file whose generated map and
-// lines are in namespace kickos::stm32. family_map.h states, in namespace kickos::stm32::chip,
-// the values chip_stm32f1f3.cc reads: FLASH_LATENCY,
-// PLL_SRC_ON, PLL_SRC_RDY, CFGR_CLEAR, CFGR_SET, POLL_LIMIT, CLK_TIMER_SR,
-// CLK_COUNTER_TEARS, clk_counter(), USART_SR, USART_TXE, USART_DR, USART_CR1,
-// CR1_TXEIE and CONSOLE_IRQ. That TU is compiled into the chip's OWN archive, once per
-// chip, so every one of them reaches it as a compile-time constant.
+// A chip joins by shipping family_map.h and a chip file naming this `family`. family_map.h
+// states, in kickos::stm32::chip, the values chip_stm32f1f3.cc reads: FLASH_LATENCY, PLL_SRC_ON,
+// PLL_SRC_RDY, CFGR_CLEAR, CFGR_SET, POLL_LIMIT, CLK_TIMER_SR, CLK_COUNTER_TEARS, clk_counter(),
+// USART_SR, USART_TXE, USART_DR, USART_CR1, CR1_TXEIE and CONSOLE_IRQ. That TU is compiled into
+// each chip's OWN archive, so every one reaches it as a compile-time constant.
 
 #ifndef KICKOS_ARCH_ARM_CHIP_STM32F1F3_STM32F1F3_H
 #define KICKOS_ARCH_ARM_CHIP_STM32F1F3_STM32F1F3_H
 
-#include "regs.h" // arch/arm/common: kickos::arm::reg32
+#include "regs.h"
 #include "stm32_usart.h"
 
 #include <kickos/chip_mmap.h>

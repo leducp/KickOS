@@ -4,13 +4,10 @@
 
     .section .text, "ax"
 
-/* int kickos_rv64_privilege_probe(void): 1 when the hart is in supervisor mode, 0 when it is
- * still in machine mode.
+/* int kickos_rv64_privilege_probe(void): 1 in supervisor mode, 0 in machine mode.
  *
- * Current privilege is not readable on RISC-V, so the answer comes from a read that must be
- * REFUSED. mstatus is a machine CSR, so csrr on it is an illegal instruction from S-mode, and
- * startup.S delegates that exception (medeleg bit 2) to stvec. t2 carries the caller's stvec
- * across the trap: the hardware saves no register and the landing pad writes only a0.
+ * csrr of mstatus is an illegal instruction from S-mode, which startup.S delegates
+ * (medeleg bit 2) to stvec. t2 carries the caller's stvec across the trap.
  *
  * THE TRAP LEG CLEARS sstatus.SIE AND NEVER sret's IT BACK, so this must run before any
  * interrupt is enabled.

@@ -5,17 +5,14 @@ CONFIG_BOARD_MICROBIT=y
 
 # Use 32 KiB SRAM for the emulated target; hardware has 16 KiB.
 # Five threads, one of them the selftest's main, leave room for kernel stacks and libc state.
-# Use 2048-byte stacks for power-of-two TLS strides. Enable self-test
-# syscalls in the base configuration used by CI.
+# Use 2048-byte stacks for power-of-two TLS strides.
 CONFIG_KICKOS_MAX_THREADS=5
 CONFIG_KICKOS_MAX_TASKS=7
 CONFIG_KICKOS_MAX_DOMAINS=6
 CONFIG_KICKOS_USER_STACK_SIZE=2048
 CONFIG_KICKOS_IDLE_STACK_SIZE=512
 CONFIG_KICKOS_ROOT_STACK_SIZE=2048
-CONFIG_KICKOS_ENABLE_SELFTEST=y
 CONFIG_KICKOS_MAX_SPAWN_GRANTS=9
-CONFIG_KICKOS_REBOOT=y
 
 # A 128-byte line limit keeps the derived TX ring at 256 bytes and covers
 # the board's diagnostics. Further reduction conflicts with fault-record sizing.

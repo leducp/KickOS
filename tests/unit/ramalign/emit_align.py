@@ -11,7 +11,7 @@ import sys
 from kickos_compose import region
 
 STRIDES = (0, 8192)
-# (arch_mpu_min_region, arch_mpu_region_pow2); a no-unit board scrapes pow2 1 off the v7-M fallback.
+# (arch_mpu_min_region, arch_mpu_region_pow2).
 GEOMETRIES = ((0, 0), (0, 1), (32, 0), (64, 0), (256, 0), (32, 1), (256, 1))
 WANTS = (0, 1, 16, 31, 96, 100, 512, 1000, 4096, 4097, 8160, 8172, 8192, 8193, 8224, 12000, 16384,
          0x80000001, 0x100000001, 0x8000000000000000, 0x8000000000000001, 0xFFFFFFFFFFFFFF00,

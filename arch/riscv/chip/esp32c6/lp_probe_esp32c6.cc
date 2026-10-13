@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// M9.9 silicon bring-up witness for c6lpprobe. This member is extracted only by
-// a link that names kickos_c6_lp_marker; arch_init reaches the body through a
-// weak reference, so every other C6 image carries neither.
+// LP bring-up witness for c6lpprobe, linked only where kickos_c6_lp_marker is named;
+// arch_init reaches it through a weak reference.
 
 #include <kickos/arch/arch.h>
+#include <kickos/io/mmio.h>
 
 #if !KICKOS_HAVE_MPU && !KICKOS_AMP_OWN_IMAGE
 
@@ -18,8 +18,14 @@
 
 namespace reg = kickos::esp32c6::reg;
 
+namespace kickos
+{
+    void kputs(char const* s);
+}
+
 extern "C"
 {
+    void kpanic_enter(void);
     extern uint32_t kickos_c6_lp_probe_start[];
     extern uint32_t kickos_c6_lp_probe_end[];
     extern uint32_t kickos_c6_lp_payload_start[];
@@ -27,19 +33,10 @@ extern "C"
     alignas(64) uint32_t kickos_c6_lp_marker[28] = {};
 }
 
-namespace
-{
-    inline volatile uint32_t& r32(uintptr_t a)
-    {
-        return *reinterpret_cast<volatile uint32_t*>(a);
-    }
-}
-
 extern "C" void kickos_c6_lp_probe_boot(void)
 {
-    // The LP domain registers are inaccessible to an ordinary U-mode thread, even
-    // in the flat memory posture, so the HP kernel loads and wakes the probe
-    // before kmain.
+    // LP domain registers are inaccessible to U-mode even in the flat posture, so the HP
+    // kernel loads and wakes the probe before kmain.
     constexpr uintptr_t lp_mem = 0x50000000u;
     constexpr uintptr_t lp_image = 0x40840000u;
     uintptr_t const marker = reinterpret_cast<uintptr_t>(kickos_c6_lp_marker);
@@ -60,9 +57,9 @@ extern "C" void kickos_c6_lp_probe_boot(void)
     }
     if (not kickos::esp32c6::apm::lp_probe_fits(kickos_gate_rows, kickos_gate_row_count))
     {
-        static char const why[] = "KickOS: c6lpprobe: the partition gate's rows hold the APM regions the "
-                                  "LP probe programs\n";
-        arch_console_write_sync(why, sizeof(why) - 1u);
+        kpanic_enter();
+        kickos::kputs("KickOS: c6lpprobe: the partition gate's rows hold the APM regions the LP "
+                      "probe programs\n");
         arch_shutdown(1);
     }
     uint32_t const count = static_cast<uint32_t>(size / 4u);
@@ -86,12 +83,10 @@ extern "C" void kickos_c6_lp_probe_boot(void)
     }
     __asm volatile("fence iorw, iorw" ::: "memory");
     r32(lpbus) = (r32(lpbus) & ~(1u << 31)) | (1u << 30);
-    // LP CPU remains in its reset REE2 mode. The reset APM catch-all
-    // denies every access, so grant only this stub's executable LP SRAM
-    // and its one HP SRAM marker page. Region 1 overlaps the deny-all
-    // region 0, and TRM 16.3.2.3 resolves that overlap to the permit.
-    // The LP APM exception recorder reports the reset fetch at
-    // 0x70000080, the LP bus alias of the 0x50000080 reset PC.
+    // The LP CPU stays in its reset REE2 mode and the catch-all denies everything, so grant
+    // only the stub's executable LP SRAM and its HP SRAM marker page. A region overlapping
+    // the deny-all region 0 resolves to the permit (TRM 16.3.2.3). 0x70000000 is the LP bus
+    // alias of LP SRAM at 0x50000000.
     r32(lp_apm + 0x1Cu) = 0x70000000u;
     r32(lp_apm + 0x20u) = 0x700003FFu;
     r32(lp_apm + 0x24u) = 0x700u;

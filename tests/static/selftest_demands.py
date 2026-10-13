@@ -480,7 +480,7 @@ PLANTED = [
     '    TAP_ADD("c", t_c);\n    TAP_ADD("d", t_d);\n    TAP_ADD("j", t_j);\n    TAP_ADD("k", t_k);\n'
     '    TAP_ADD("l", t_l);\n'
     '#if defined(X) && KICKOS_KERNEL_CORES > 1\n    TAP_ADD("f", t_f);\n#endif\n'
-    '#if defined(KICKOS_ENABLE_SELFTEST)\n    TAP_ADD("g", t_g);\n#endif\n'
+    '#if defined(KICKOS_SELFTEST_SPARE_DEV)\n    TAP_ADD("g", t_g);\n#endif\n'
     '#if KICKOS_KERNEL_CORES > 1 \\\n    and not KICKOS_HAVE_ASPACE\n'
     '    TAP_ADD("h", t_h);\n#endif\n'
     '}\n']
@@ -549,8 +549,8 @@ def self_test():
         print('FAIL: an arm registered only above one core is expected of a one-core build')
         return 1
     for config, absent, present in (
-            ({'KICKOS_ENABLE_SELFTEST': UNDEFINED}, 'g', None),
-            ({'KICKOS_ENABLE_SELFTEST': 1}, None, 'g'),
+            ({'KICKOS_SELFTEST_SPARE_DEV': UNDEFINED}, 'g', None),
+            ({'KICKOS_SELFTEST_SPARE_DEV': 1}, None, 'g'),
             ({'KICKOS_HAVE_ASPACE': 1}, 'h', None),
             ({'KICKOS_HAVE_ASPACE': 0}, None, 'h')):
         config['KICKOS_KERNEL_CORES'] = 2

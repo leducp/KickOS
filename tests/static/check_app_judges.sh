@@ -314,6 +314,15 @@ tests/integration/check_qemu_cxxterm.sh|cxxterm.capture||returned|after|cxxterm:
 tests/integration/check_qemu_cxxterm.sh|cxxterm.capture||terminate|swap|[St13runtime_error]|[St9exception]
 tests/integration/check_qemu_cxxterm.sh|cxxterm.capture||terminate|drop|terminate: uncaught|
 tests/integration/check_qemu_cxxterm.sh|cxxterm.capture||panic|after|terminate: uncaught|KERNEL PANIC: planted
+tests/integration/check_libcrace.sh|libcrace.capture||start|drop|libcrace: 4 workers|
+tests/integration/check_libcrace.sh|libcrace.capture||torn|swap|w1 i1 iiii|w1 i1 iiij
+tests/integration/check_libcrace.sh|libcrace.capture||torn|swap|w2 i0 o|w2 i0libcrace w1 i0 o
+tests/integration/check_libcrace.sh|libcrace.capture||duplicated|after|libcrace w0 i1 |libcrace w0 i1 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+tests/integration/check_libcrace.sh|libcrace.capture||lost|drop|libcrace w3 i1 |
+tests/integration/check_libcrace.sh|libcrace.capture||lost|drop|libcrace w2 done|
+tests/integration/check_libcrace.sh|libcrace.capture||heap|swap|w3 done torn=0|w3 done torn=1
+tests/integration/check_libcrace.sh|libcrace.capture||done|drop|libcrace: all workers done|
+tests/integration/check_libcrace.sh|libcrace.capture||panic|after|libcrace w0 done|KERNEL PANIC: planted
 tests/integration/check_libc_exit.sh;--atexit|libc_exit.capture||spawn|after|regression|worker spawn refused
 tests/integration/check_libc_exit.sh;--atexit|libc_exit.capture||worker|drop|worker: exit()|
 tests/integration/check_libc_exit.sh;--atexit|libc_exit.capture||survived|drop|main: survived|
@@ -574,6 +583,7 @@ tests/integration/check_faultsurvive.sh;survive;armv7m;terminated|the system exi
 tests/integration/check_faultsurvive.sh;survive;rv32imac;terminated|the system exited 0 once main returned
 tests/integration/check_faultsurvive.sh;survive;rxv3;terminated|the system exited 0 once main returned
 tests/integration/check_libc_exit.sh;--atexit|main's exit() ended the system with status 7
+tests/integration/check_libcrace.sh|main returned 0
 tests/integration/check_qemu_cxxterm.sh|terminate stopped the image
 tests/integration/check_reclaimwit.sh;drain|the drain arm shut the system down with status 0
 tests/integration/check_rootfault.sh;thread-kill|main's fault ended the system with KOS_EXIT_FAULT (139)
@@ -674,7 +684,6 @@ same_pair() {
 
 # <judge> <cache line> <capture>: the judge's exit status over the capture.
 judged() {
-    mkdir -p "$TMP/build"
     printf '%s\n' "$2" > "$TMP/build/CMakeCache.txt"
     _jd_log="$3"
     _jd_ifs="$IFS"
@@ -698,6 +707,7 @@ owed_differs() {
     [ "$_od_got" != "$_od_want" ]
 }
 
+mkdir -p "$TMP/build" "$TMP/fixtures"
 passed=""
 goodruns=""
 while IFS='|' read -r judge fixture cache token op lit rep op2 lit2 rep2; do
@@ -705,11 +715,14 @@ while IFS='|' read -r judge fixture cache token op lit rep op2 lit2 rep2; do
     [ -f "${judge%%;*}" ] || fail "no judge ${judge%%;*}"
     [ -f "tests/integration/app_captures/$fixture" ] || fail "no fixture $fixture"
     [ -n "$token" ] || fail "the row for $judge over $fixture names no token"
-    plant_pair "tests/integration/app_captures/$fixture" none "" "" "$TMP/good.log"
+    good="$TMP/fixtures/$fixture"
+    if [ ! -f "$good" ]; then
+        plant_pair "tests/integration/app_captures/$fixture" none "" "" "$good"
+    fi
     case "$passed" in
         *"|$judge $fixture $cache|"*) ;;
         *)
-            if ! judged "$judge" "$cache" "$TMP/good.log"; then
+            if ! judged "$judge" "$cache" "$good"; then
                 bad "$judge refuses its fixture $fixture: $(tail -n 1 "$TMP/judge.out")"
             elif owed_differs "$judge" "$TMP/judge.out"; then
                 bad "$judge over $fixture names NOT EVALUATED [$(sed -n 's/^NOT EVALUATED: //p' \
@@ -723,7 +736,7 @@ while IFS='|' read -r judge fixture cache token op lit rep op2 lit2 rep2; do
     what="the $op of '$lit'"
     if [ "$op" = cache ]; then
         what="'$rep' for its cache"
-        judged "$judge" "$rep" "$TMP/good.log"
+        judged "$judge" "$rep" "$good"
         jrc=$?
     elif [ "${op#source:}" != "$op" ] || [ "${op#source-swap:}" != "$op" ]; then
         src="${op#source:}"
@@ -750,10 +763,10 @@ while IFS='|' read -r judge fixture cache token op lit rep op2 lit2 rep2; do
             bad "$what leaves $src unchanged"
             continue
         fi
-        JUDGE_SOURCE="$TMP/source" judged "$judge" "$cache" "$TMP/good.log"
+        JUDGE_SOURCE="$TMP/source" judged "$judge" "$cache" "$good"
         jrc=$?
     else
-        plant_pair "$TMP/good.log" "$op" "$lit" "$rep" "$TMP/bad.log"
+        plant_pair "$good" "$op" "$lit" "$rep" "$TMP/bad.log"
         if [ -n "$op2" ]; then
             what="$what and the $op2 of '$lit2'"
             plant_pair "$TMP/bad.log" "$op2" "$lit2" "$rep2" "$TMP/bad2.log"
@@ -763,7 +776,7 @@ while IFS='|' read -r judge fixture cache token op lit rep op2 lit2 rep2; do
                 mv "$TMP/bad2.log.times" "$TMP/bad.log.times"
             fi
         fi
-        if same_pair "$TMP/good.log" "$TMP/bad.log"; then
+        if same_pair "$good" "$TMP/bad.log"; then
             bad "$what leaves $fixture unchanged"
             continue
         fi
@@ -849,7 +862,6 @@ fi
 # A fitting reaches a judge as an argument and from nowhere else: a judge run straight from a
 # shell that exports a fitting list judges the unjumpered capture as unwired.
 plant tests/integration/app_captures/f411spi-unwired.capture none "" "" "$TMP/good.log"
-mkdir -p "$TMP/build"
 : > "$TMP/build/CMakeCache.txt"
 if ! KOS_WIRED=spi1-loopback KOS_FITTINGS=spi1-loopback KOS_CAPTURE="$TMP/good.log" \
         sh tests/integration/check_f411spi.sh "$TMP/build" "$PWD" cmake > "$TMP/judge.out" 2>&1; then
