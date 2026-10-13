@@ -2,11 +2,10 @@
 <!-- Copyright (c) 2026 Philippe Leduc -->
 # Context switching and the silicon contract
 
-> The conceptual chapter behind the per-ISA context-switch
-> sections (Chapter 4). It teaches *what* a context switch must preserve and *why*
-> that forces assembly and a precise CPU/silicon contract; each ISA's concrete
-> realisation (register set, trap entry, exception-return instruction) is a section
-> of Chapter 4. Points into `../reference/invariants.md` for the exact, code-synced
+> The conceptual chapter behind Chapter 4, *One kernel, many ISAs*. It teaches
+> *what* a context switch must preserve and *why* that forces assembly and a precise
+> CPU/silicon contract; each ISA's concrete realisation (register set, trap entry,
+> exception-return instruction) is walked in the Journey's arch chapters. Points into `../reference/invariants.md` for the exact, code-synced
 > contract -- this chapter explains, the invariants bind.
 
 ## What a context switch actually is
@@ -227,7 +226,8 @@ exception vectors, the windowed handlers, and the context switch itself.
   FP save/restore," "Deferred switch," and "Syscall, privilege & the user/kernel
   boundary" sections).
 - Each ISA's concrete realisation -- register set, trap entry, timer, IRQ controller:
-  Chapter 4, *Per-ISA guided tour*. A fully worked port is
+  Chapter 4, *[One kernel, many ISAs](one-kernel-many-isas.md)*, and the Journey's
+  arch chapters, [12](../journey/12-armv6m.md) to [17](../journey/17-xtensa.md). A fully worked port is
   [`porting-a-new-isa-riscv.md`](porting-a-new-isa-riscv.md).
 - The privilege/isolation half of a thread's context (which memory it may touch):
   Chapter 7, *Memory protection*.

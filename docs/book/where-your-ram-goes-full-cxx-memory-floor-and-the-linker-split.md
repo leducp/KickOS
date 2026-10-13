@@ -187,8 +187,12 @@ Two properties make this the right design:
   -- falls into the `.appdata` catch-all. An unmatched archive therefore lands **app-side**
   (reachable, it works), never kernel-side (where it would fault the unprivileged thread).
   The dangerous failure would be silently *leaking kernel writable state into the app
-  window*; that shows up as an empty kernel `.bss`, which the script's
-  `ASSERT(_ebss > _sbss, ...)` catches loudly.
+  window*. A selector that matches nothing at all leaves the kernel `.bss` empty, which
+  the script's `ASSERT(_ebss > _sbss, ...)` catches loudly; one renamed selector drops a
+  single archive app-side and the link stays green. The link map names the archive
+  member behind every input section, so
+  [`check_appdata_no_kernel.sh`](../../tests/static/check_appdata_no_kernel.sh) reads it
+  and refuses any KickOS-owned member inside the app window.
 - **It selects by `archive:member`, not `EXCLUDE_FILE`.** The design intended "exclude the
   kernel from the app window" via `EXCLUDE_FILE`, but this binutils (arm-none-eabi 15.3)
   **does not match archive members inside `EXCLUDE_FILE`** -- a bare `*libkickos_kernel.a`

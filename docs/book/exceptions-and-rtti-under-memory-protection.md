@@ -7,9 +7,8 @@ Copyright (c) 2026 Philippe Leduc
 > A Chapter-7 companion (prereq: the C++ runtime chapter 0.6,
 > [`whats-under-include-libc-and-the-cxx-runtime.md`](whats-under-include-libc-and-the-cxx-runtime.md),
 > and the memory-protection idea of Chapter 7). That chapter taught *what* the C++
-> runtime is made of -- three stacked libraries -- and ended on a one-paragraph "MPU
-> twist". This chapter is that twist in full: what a `throw`/`catch`/`dynamic_cast`
-> actually touches *at runtime*, why a memory-protection unit makes it hard, and how an
+> runtime is made of -- three stacked libraries -- and left memory protection to
+> this one: what a `throw`/`catch`/`dynamic_cast` actually touches *at runtime*, why a memory-protection unit makes it hard, and how an
 > UNPRIVILEGED thread reaches all of it without a fault. For the exact contract it binds
 > into the Reference: [`../reference/architecture.md`](../reference/architecture.md) (the
 > region-set model -- "Memory domains" and "C++ decisions") and
@@ -57,8 +56,8 @@ vs writable**:
 
 Hold that split, because it is the whole design under protection: **the read-only two
 (tables + RTTI) ride the app's code region for free; the writable two (heap + unwinder
-state) must be placed, deliberately, in the app's granted data region.** Chapter 0.6
-named these; here they earn their placement.
+state) must be placed, deliberately, in the app's granted data region.** Placing any of
+them kernel-side makes the first unprivileged touch fault.
 
 ## Three exception models, and how each is reached unprivileged
 
@@ -121,6 +120,35 @@ reset path dereferences whatever the register held at reset. The root thread is 
 code that both has a thread pointer and runs app-side, where the heap and the registry's
 list heads already live, so the node it allocates is where the unprivileged unwinder will
 look for it.
+
+## Where an exception stops
+
+### At the app boundary
+
+Only app code enables exceptions. The kernel, its libraries and the arch layer are
+compiled freestanding (Chapter 0.6), so their frames have no unwind tables. The kernel
+enters app code only through `main` or a thread trampoline and never calls an app
+callback from an interrupt handler, so every app call chain starts at one of those
+entries. If an exception escapes the app's outermost frame, the unwinder's search phase
+reaches a frame with no FDE or `.ARM.exidx` entry (under SjLj, the end of the context
+chain) and fails there, before the cleanup phase has unwound anything, kernel state
+included. It then calls `std::terminate -> abort -> kos_exit`.
+
+App code must catch the exceptions it intends to recover from. An uncaught throw from a
+worker thread terminates the whole image, and no exit, not even a normal return, runs
+static destructors or `atexit` handlers.
+
+### A smaller terminate handler
+
+libstdc++'s default `__verbose_terminate_handler` demangles and prints the exception type
+before aborting. On an embedded target that pulls in `__cxa_demangle` and newlib's
+floating-point formatting code, tens of kilobytes for one uncaught-exception message.
+
+KickOS supplies a strong definition of `__verbose_terminate_handler`
+([`system/cxx/vterminate.cc`](../../system/cxx/vterminate.cc)), so the linker leaves
+`vterminate.o` out of `libstdc++.a`, along with its demangler and formatting
+dependencies. The replacement prints the mangled type and `what()`, then aborts.
+Throwing and catching are unchanged; only the message is shorter and the image smaller.
 
 ## Why a protection unit makes this hard
 
