@@ -20,10 +20,10 @@ concurrency:
 
 jobs:
   # One job per KickOS toolchain family (conan/toolchain): when the cache, keyed on the recipe's
-  # files, lacks the family, it restores it from the release toolchain-<version>, or else builds
-  # it and uploads the archive as an artifact for that release. The jobs below restore it from
-  # the cache rather than build it inside their own timeout. A job needs only the families it
-  # builds with.
+  # files, lacks the family, it restores it from the release toolchain-<version>-<revision>, or
+  # else builds it and uploads the archive as an artifact for that release. The jobs below
+  # restore it from the cache rather than build it inside their own timeout. A job needs only
+  # the families it builds with.
   #
   # Build or restore arm-none-eabi, the family every Cortex-M board builds with.
   toolchain-arm-none-eabi:

@@ -9,9 +9,9 @@
 #   . <output-folder>/kickos-toolchain.sh
 #
 # The families default to every one conan/toolchains lists. A family whose package the release
-# toolchain-<version> holds for this host is restored from it, and built otherwise;
-# KICKOS_TOOLCHAIN_NO_RELEASE set skips the release, and KICKOS_TOOLCHAIN_NO_BUILD set fails where
-# neither the cache nor the release holds a family. KICKOS_TOOLCHAIN_SOURCES may name a folder
+# toolchain-<version>-<revision> of the recipe holds for this host is restored from it, and built
+# otherwise; KICKOS_TOOLCHAIN_NO_RELEASE set skips the release, and KICKOS_TOOLCHAIN_NO_BUILD set
+# fails where neither the cache nor the release holds a family. KICKOS_TOOLCHAIN_SOURCES may name a folder
 # holding the pinned archives or the release's sources archive, each checked as a download is.
 #
 # POSIX sh (dash-clean).
@@ -29,7 +29,8 @@ ALL=$(sed -n '/^FAMILIES = (/,/)$/p' "$ROOT/conan/toolchains/conanfile.py" | tr 
 FAMILIES="${2:-$ALL}"
 
 VERSION=$(sed -n 's/^    version = "\(.*\)"$/\1/p' "$ROOT/conan/toolchain/conanfile.py")
-RELEASE="https://github.com/leducp/KickOS/releases/download/toolchain-$VERSION"
+REVISION=$(sed -n 's/^PACKAGE_REVISION = \([0-9]*\)$/\1/p' "$ROOT/conan/toolchain/conanfile.py")
+RELEASE="https://github.com/leducp/KickOS/releases/download/toolchain-$VERSION-$REVISION"
 HOST="$(uname -s)-$(uname -m)"
 
 conan profile detect --exist-ok > /dev/null

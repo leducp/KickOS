@@ -3,13 +3,14 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # Assemble the files of the KickOS toolchain's GitHub release (docs/design-m10-toolchain.md
-# section 1), for the maintainer to upload under the tag toolchain-<version>:
+# section 1), which the toolchain-release workflow publishes under the tag
+# toolchain-<version>-<revision> of conan/toolchain/conanfile.py:
 #
 #   tools/kickos-toolchain-release.sh <output-folder> [family,family,...]
 #
-# One archive of the sources, kickos-toolchain-sources-<version>.tar.xz at xz -9e: every source
-# conan/toolchain/conandata.yml pins, taken from KICKOS_TOOLCHAIN_SOURCES where it holds the
-# file, else from its upstream, and checked against its sha256, and each patch from
+# One archive of the sources, kickos-toolchain-sources-<version>-<revision>.tar.xz at xz -9e:
+# every source conan/toolchain/conandata.yml pins, taken from KICKOS_TOOLCHAIN_SOURCES where it
+# holds the file, else from its upstream, and checked against its sha256, and each patch from
 # conan/toolchain/patches. A source that conandata.yml gives a tar_sha256 and a `stored` name is
 # stored under that name, as xz, checked by the hash of its uncompressed tar, which the upstream
 # file's gzip stream reproduces; the recipe reads the same `stored`.
@@ -33,6 +34,7 @@ ALL=$(sed -n '/^FAMILIES = (/,/)$/p' "$ROOT/conan/toolchains/conanfile.py" | tr 
     | sed 's/^FAMILIES=(\(.*\))$/\1/; s/,$//')
 FAMILIES="${2-$ALL}"
 VERSION=$(sed -n 's/^    version = "\(.*\)"$/\1/p' "$ROOT/conan/toolchain/conanfile.py")
+REVISION=$(sed -n 's/^PACKAGE_REVISION = \([0-9]*\)$/\1/p' "$ROOT/conan/toolchain/conanfile.py")
 mkdir -p "$OUT"
 
 sha256() {
@@ -45,7 +47,7 @@ sha256() {
 
 STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
-TOP="kickos-toolchain-sources-$VERSION"
+TOP="kickos-toolchain-sources-$VERSION-$REVISION"
 mkdir -p "$STAGE/$TOP"
 
 # One line per source: its archive's name, its upstream URL or "-", its sha256, its tar sha256 or
@@ -123,4 +125,4 @@ done
 (cd "$OUT" && for file in *; do
     [ "$file" = SHA256SUMS ] || echo "$(sha256 "$file")  $file"
 done > SHA256SUMS)
-echo "upload every file in $OUT to the release toolchain-$VERSION"
+echo "every file in $OUT is the release toolchain-$VERSION-$REVISION"

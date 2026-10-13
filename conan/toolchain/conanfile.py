@@ -175,11 +175,15 @@ GUARDS = sorted({g for family in FAMILIES.values() for g in family.get("guards",
 
 PREFIX = "kickos-toolchain-"
 
+# This version's release is the tag toolchain-<version>-<PACKAGE_REVISION>. The shell tools and
+# the release workflow read this line and `version` by pattern.
+PACKAGE_REVISION = 1
+
 # The GitHub release's one archive of every pinned source and patch (design section 1). A source
 # conandata.yml gives a `tar_sha256` is stored as .tar.xz in place of its .tar.gz, and checked by
 # the hash of its uncompressed tar.
-RELEASE = "https://github.com/leducp/KickOS/releases/download/toolchain-{version}/"
-SOURCES = "kickos-toolchain-sources-{version}.tar.xz"
+RELEASE = "https://github.com/leducp/KickOS/releases/download/toolchain-{version}-{revision}/"
+SOURCES = "kickos-toolchain-sources-{version}-{revision}"
 
 
 class KickOSToolchain(ConanFile):
@@ -192,13 +196,14 @@ class KickOSToolchain(ConanFile):
     built it is no part of what it is.
     """
 
-    version = "1.1"
+    version = "1.1.0"
     license = "GPL-3.0-or-later WITH GCC-exception-3.1 AND BSD-3-Clause (newlib COPYING.NEWLIB)"
     description = "The KickOS cross toolchain for one target family"
     package_type = "application"
     settings = "os", "arch"
     # `exports`, not `exports_sources`: `conan cache save --no-source` keeps the export folder.
     exports = "conandata.yml", "patches/*"
+    _jobserver = None
 
     def export(self):
         # The guards the tree's images run, copied rather than restated so there is one of each.
@@ -243,6 +248,9 @@ class KickOSToolchain(ConanFile):
         # tools/kickos-toolchain-release.sh reads too, else the archive's own.
         return self.conan_data["sources"][key].get("stored", self._archive(key))
 
+    def _sources_top(self):
+        return SOURCES.format(version=self.version, revision=PACKAGE_REVISION)
+
     def _local(self, key, destination):
         # The copy KICKOS_TOOLCHAIN_SOURCES holds, a pinned archive or the release's sources
         # archive, checked as a download is, or "".
@@ -252,7 +260,7 @@ class KickOSToolchain(ConanFile):
         path = os.path.join(local, self._archive(key))
         if os.path.isfile(path):
             return self._checked(key, path)
-        archive = os.path.join(local, SOURCES.format(version=self.version))
+        archive = os.path.join(local, self._sources_top() + ".tar.xz")
         if os.path.isfile(archive):
             return self._extract(key, archive, destination)
         return ""
@@ -274,7 +282,7 @@ class KickOSToolchain(ConanFile):
         path = os.path.join(destination, name)
         with tarfile.open(archive, "r:xz") as tar:
             try:
-                member = tar.getmember(f"kickos-toolchain-sources-{self.version}/{name}")
+                member = tar.getmember(f"{self._sources_top()}/{name}")
             except KeyError:
                 member = None
             if member is None or not member.isfile():
@@ -296,10 +304,10 @@ class KickOSToolchain(ConanFile):
     def _release_sources(self):
         # Downloaded once per package, and only where an upstream failed.
         archive = os.path.join(os.path.dirname(self.source_folder),
-                               SOURCES.format(version=self.version))
+                               self._sources_top() + ".tar.xz")
         if not os.path.isfile(archive):
-            download(self, RELEASE.format(version=self.version) + os.path.basename(archive),
-                     archive)
+            release = RELEASE.format(version=self.version, revision=PACKAGE_REVISION)
+            download(self, release + os.path.basename(archive), archive)
         return archive
 
     def _fetch(self, key, destination):
@@ -348,7 +356,7 @@ class KickOSToolchain(ConanFile):
                         os.utime(os.path.join(tree, generated))
         finally:
             sources = os.path.join(os.path.dirname(self.source_folder),
-                                   SOURCES.format(version=self.version))
+                                   self._sources_top() + ".tar.xz")
             if os.path.isfile(sources):
                 os.remove(sources)
 
@@ -362,30 +370,45 @@ class KickOSToolchain(ConanFile):
         self._run(["patch", "-p1", "--no-backup-if-mismatch", "-i", path], tree)
         save(self, stamp, "")
 
-    def _run(self, argv, cwd, env=None):
+    def _run(self, argv, cwd, env=None, pass_fds=()):
         os.makedirs(cwd, exist_ok=True)
         path = os.path.join(cwd, "kickos-build.log")
         with open(path, "a") as log:
             log.write("$ " + " ".join(argv) + "\n")
             log.flush()
-            rc = subprocess.run(argv, cwd=cwd, env=env, stdout=log, stderr=subprocess.STDOUT)
+            rc = subprocess.run(argv, cwd=cwd, env=env, stdout=log, stderr=subprocess.STDOUT,
+                                pass_fds=pass_fds)
         if rc.returncode != 0:
             with open(path, errors="replace") as log:
                 tail = collections.deque(log, maxlen=80)
             print(f"--- the last {len(tail)} lines of {path} ---\n" + "".join(tail), flush=True)
             raise ConanInvalidConfiguration(f"{argv[0]} failed in {cwd}; its output is in {path}")
 
-    def _make(self, cwd, *targets, env=None, jobs=None):
+    @staticmethod
+    def _cpus():
         # The CPUs this process may use, which an affinity mask or a cpuset makes fewer than
         # the machine's.
+        return getattr(os, "process_cpu_count", os.cpu_count)() or 1
+
+    def _make(self, cwd, *targets, env=None, jobs=None):
+        if jobs is None and self._jobserver:
+            # A make given -j would start a jobserver of its own instead of joining this one.
+            read, write = self._jobserver
+            env = dict(os.environ if env is None else env)
+            env["MAKEFLAGS"] = f"-j{self._cpus()} --jobserver-auth={read},{write}"
+            self._run(["make", "MAKEINFO=true", *targets], cwd, env, pass_fds=(read, write))
+            return
         if jobs is None:
-            jobs = getattr(os, "process_cpu_count", os.cpu_count)() or 1
+            jobs = self._cpus()
         self._run(["make", "-j", str(jobs), "MAKEINFO=true", *targets], cwd, env)
+
+    def _free(self):
+        return f"{shutil.disk_usage(self.build_folder).free / (1 << 30):.1f}G free"
 
     @contextlib.contextmanager
     def _timed(self, stage):
         start = time.monotonic()
-        self.output.info(f"{time.strftime('%H:%M:%S')} {stage}: begins")
+        self.output.info(f"{time.strftime('%H:%M:%S')} {stage}: begins, {self._free()}")
         outcome = "failed after"
         try:
             yield
@@ -393,12 +416,21 @@ class KickOSToolchain(ConanFile):
         finally:
             minutes, seconds = divmod(int(time.monotonic() - start), 60)
             self.output.info(f"{time.strftime('%H:%M:%S')} {stage}: {outcome} "
-                             f"{minutes}m{seconds:02d}s")
+                             f"{minutes}m{seconds:02d}s, {self._free()}")
 
     def _together(self, *stages):
-        # Each (name, function) at once, each make with every CPU; the first failure is raised
-        # once all have ended.
+        # Each (name, function) at once, their makes sharing one jobserver of a job per CPU; the
+        # first failure is raised once all have ended. A make runs one job without a token, and a
+        # stage that ends hands that job on.
+        if self._cpus() < len(stages):
+            for name, function in stages:
+                with self._timed(name):
+                    function()
+            return
         failures = []
+        read, write = os.pipe()
+        os.write(write, b"+" * max(0, self._cpus() - len(stages)))
+        self._jobserver = (read, write)
 
         def run(name, function):
             try:
@@ -406,12 +438,19 @@ class KickOSToolchain(ConanFile):
                     function()
             except BaseException as e:
                 failures.append(e)
+            finally:
+                os.write(write, b"+")
 
-        threads = [threading.Thread(target=run, args=stage) for stage in stages]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join()
+        try:
+            threads = [threading.Thread(target=run, args=stage) for stage in stages]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+        finally:
+            self._jobserver = None
+            os.close(read)
+            os.close(write)
         if failures:
             raise failures[0]
 
@@ -445,6 +484,7 @@ class KickOSToolchain(ConanFile):
             # One job: each manual's install-info rewrites share/info/dir, and two at once lose
             # an entry.
             self._make(binutils, "install-strip", env=env, jobs=1)
+        shutil.rmtree(binutils)
 
         # The one compiler: installed alone to build newlib, then its target libraries in the
         # same tree once newlib is in the sysroot.
@@ -475,16 +515,22 @@ class KickOSToolchain(ConanFile):
         if "newlib_include" in family:
             newlib_env["CFLAGS_FOR_TARGET"] += " -I" + os.path.join(src, family["newlib_include"])
 
+        # A build tree goes once nothing reads it: a CI runner's disk does not hold them all.
         def newlib():
-            self._newlib(os.path.join(self.build_folder, "newlib"), stage, family["newlib"],
-                         newlib_env)
+            where = os.path.join(self.build_folder, "newlib")
+            self._newlib(where, stage, family["newlib"], newlib_env)
             self._drop_members(stage, family.get("drop", []))
+            shutil.rmtree(where)
+
+        def newlib_nano():
+            where = os.path.join(self.build_folder, "newlib-nano")
+            self._newlib(where, nano, family["nano"], env)
+            shutil.rmtree(where)
 
         nano = os.path.join(self.build_folder, "nano-stage")
         stages = [("newlib", newlib)]
         if "nano" in family:
-            stages.append(("newlib-nano", lambda: self._newlib(
-                os.path.join(self.build_folder, "newlib-nano"), nano, family["nano"], env)))
+            stages.append(("newlib-nano", newlib_nano))
         self._together(*stages)
         if "nano" in family:
             self._install_nano(nano, stage)
@@ -503,8 +549,11 @@ class KickOSToolchain(ConanFile):
             self._make(gcc, env=env)
             self._make(gcc, "install-strip", env=env)
 
+        shutil.rmtree(gcc)
         if "nano" in family:
             self._install_nano_cxx(stage)
+            shutil.rmtree(nano)
+            shutil.rmtree(os.path.join(self.build_folder, "nano-cxx-stage"))
         with self._timed("checks"):
             self._check_dropped(stage, family.get("drop", []))
             self._check_guards(stage, family.get("guards", []))
@@ -621,6 +670,7 @@ class KickOSToolchain(ConanFile):
         self._make(where, *overrides, *built, "all-target-libstdc++-v3", env=env)
         self._make(where, *overrides, "-o", "install-target-libgcc",
                    "install-target-libstdc++-v3", env=env)
+        shutil.rmtree(where)
 
     def _install_nano_cxx(self, stage):
         target = self._target()

@@ -4,8 +4,8 @@
 # job fills, then indexed into ~/kickos-toolchain with every family this job restored before it,
 # and named by KICKOS_TOOLCHAIN. Each family is its own `conan cache save` archive: one Conan
 # store restored twice keeps only the second. The `toolchain` job fills the cache from the
-# release toolchain-<version> where that holds the family, and otherwise builds it and uploads
-# the archive as an artifact under its release name.
+# release toolchain-<version>-<revision> where that holds the family, and otherwise builds it and
+# uploads the archive as an artifact under its release name.
 name: KickOS toolchain family
 description: Restore (or, in the toolchain job, provide) one KickOS toolchain family and index it.
 

@@ -64,10 +64,13 @@ The bit stays set (maintainer, 2026-10-01): clearing it trades the flush for an
 unimplemented-processing exception on every denormal operand, which KickOS would have to emulate.
 
 **Every pinned source and every prebuilt package live in one GitHub release per toolchain
-version** on this repository (maintainer, 2026-09-30), in the files a user fetches alone: one
-package archive per family and host, `kickos-toolchain-<family>-<os>-<arch>.tgz`, and one
-archive of every pinned source and patch, `kickos-toolchain-sources-<version>.tar.xz` at
-`xz -9e` (maintainer, 2026-10-04), with the sha256 list of every file beside them. The recipe
+version and packaging revision** on this repository (maintainer, 2026-09-30), tagged
+`toolchain-<version>-<revision>`: the recipe's three-part `version` and its `PACKAGE_REVISION`,
+which a fetcher reads to find its release (maintainer, 2026-10-13). The release holds the files a
+user fetches alone: one package archive per family and host,
+`kickos-toolchain-<family>-<os>-<arch>.tgz`, and one archive of every pinned source and patch,
+`kickos-toolchain-sources-<version>-<revision>.tar.xz` at `xz -9e` (maintainer, 2026-10-04),
+with the sha256 list of every file beside them. The recipe
 fetches each source from its upstream and, where that download fails, from the sources archive,
 and every patch from the copy it exports from this repository. A source GitHub or GNU serves as
 gzip is stored in the archive as xz, so its sha256 no longer matches; `conandata.yml` pins the
@@ -76,9 +79,10 @@ reproduces, and the name it is stored under as `stored`, which the recipe and th
 both read; the recipe checks the archive's member against that, never against a hash the
 archive carries. The archive's own `SHA256SUMS` and `TAR-SHA256` list its members for an auditor.
 Distributing GCC binaries obliges us to make their exact sources available, which the archive
-does. A script assembles the release's files for the maintainer to upload, and the
-`toolchain-release` workflow's artifacts are those files: one per toolchain, named as its file,
-and one of the sources and the sha256 list.
+does. A script assembles the release's files, and the `toolchain-release` workflow builds them
+as artifacts, one per toolchain named as its file and one of the sources and the sha256 list. A
+pushed tag that names the recipe's version and revision publishes them as its release; any other
+`toolchain-*` tag fails before the builds, and a run by hand builds without publishing.
 
 ## 2. The families
 
