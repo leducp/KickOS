@@ -1791,9 +1791,10 @@ int kos_task_exit_status(kos_task_t task, int* status)
     return finish(call, 0);
 }
 
-int kos_shutdown(int status)
+int kos_shutdown(int status, enum kos_shutdown_outcome outcome)
 {
-    size_t const call = record("kos_shutdown", {static_cast<uint64_t>(static_cast<int64_t>(status))});
+    size_t const call = record("kos_shutdown", {static_cast<uint64_t>(static_cast<int64_t>(status)),
+                                                static_cast<uint64_t>(outcome)});
     int const rc = scripted(call);
     if (rc != 1)
     {

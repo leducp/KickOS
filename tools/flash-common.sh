@@ -90,8 +90,8 @@ flash_resolve() {
     fi
 
     # Build dir defaults to build/<board>; override with FLASH_BUILD to flash a
-    # variant preset's output (e.g. FLASH_BUILD=build/rx72m-st for the selftest build,
-    # which carries the diagnostic apps that the plain board build does not).
+    # variant preset's output (e.g. FLASH_BUILD=build/bluepill-c8-st for the selftest's own
+    # provisioning on a board whose base cannot seat it).
     local bd="${FLASH_BUILD:-$FL_ROOT/build/$FL_BOARD}"
     # kickos_emit_image outputs: ELF, .hex, .bin, and .app.bin for Espressif.
     # In-tree apps are looked up with _app_base (board-specific dir, then common/).
@@ -109,7 +109,7 @@ flash_resolve() {
        fleet-wide:     $bd/user/apps/common/$FL_APP/
        in-tree:     cmake --preset $FL_BOARD && cmake --build $bd --target $FL_APP
        out-of-tree: FLASH_IMAGE=<path/to/$FL_APP.hex> tools/flash.sh $FL_BOARD $FL_APP
-       (selftest/diagnostic build: FLASH_BUILD=$FL_ROOT/build/$FL_BOARD-st)"
+       variant:     FLASH_BUILD=$FL_ROOT/build/$FL_BOARD-<variant> tools/flash.sh $FL_BOARD $FL_APP"
     fi
     FL_ELF="$base"; FL_BIN="$base.bin"; FL_HEX="$base.hex"; FL_APPBIN="$base.app.bin"
     # Only reachable with FLASH_IMAGE: _app_base already proved the in-tree image.

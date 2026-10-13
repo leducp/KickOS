@@ -42,8 +42,8 @@
 
 // The scheduler's own counters (KICKOS_BENCH_SCHED): off, the bench measures the kernel without
 // them.
-#if defined(KICKOS_BENCH) && KICKOS_BENCH && KICKOS_KERNEL_CORES > 1 \
-    && defined(KICKOS_BENCH_SCHED) && KICKOS_BENCH_SCHED
+#if KICKOS_BENCH && KICKOS_KERNEL_CORES > 1 \
+    && KICKOS_BENCH_SCHED
 #define KICKOS_BENCH_SCHED_ON 1
 #else
 #define KICKOS_BENCH_SCHED_ON 0
@@ -189,7 +189,7 @@ namespace kickos
     };
 }
 
-#if defined(KICKOS_BENCH) && KICKOS_BENCH
+#if KICKOS_BENCH
 
 // Use kickos_kernel_core(), not arch_cpu_id(): an AMP machine core ID
 // can exceed this kernel's row count.
@@ -525,7 +525,7 @@ namespace kickos
 #endif
 
 // Macros, so no other build references a bench declaration.
-#if defined(KICKOS_BENCH) && KICKOS_BENCH
+#if KICKOS_BENCH
 #define KICKOS_BENCH_LOCK_OPEN() ::kickos::bench_lock_open()
 #define KICKOS_BENCH_LOCK_CLOSE() ::kickos::bench_lock_close()
 #define KICKOS_BENCH_LOCK_DETACH(var) uint32_t const var = ::kickos::bench_lock_detach()

@@ -8,9 +8,13 @@ version: 1
 chip: an505
 manual: "QEMU 11.1 `mps2-an505` machine (hw/arm/mps2-tz.c)"
 arch: armv7m
-protection: { unit: pmsav8, covers_devices: true, memory_type: true }
+protection: { unit: pmsav8, granule: 32, covers_devices: true, memory_type: true }
 data_cache: false
 reserved: none
+family:
+  dir: arm/chip/mps2
+  sources: [arm/chip/mps2/chip_mps2.cc, arm/chip/mps2/startup.S, common/semihost_console.cc]
+exits_on_fault: true
 
 interrupts: { count: { value: 140, ref: "QEMU 11.1 `info qtree`: armv7m_nvic num-irq" } }
 

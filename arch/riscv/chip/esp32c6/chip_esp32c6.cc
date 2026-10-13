@@ -1,16 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Core-local CLINT (TRM ch.1.7): MSIP = the deferred-switch software interrupt
-// (mcause 3), MTIME/MTIMECMP = the tickless timer (mcause 7). MTIME does not run
-// until MTIMECTL.MTCE is set. The console is UART0, bridged to the host by the
-// board's CH343P, NOT the native USB Serial/JTAG (see arch_console_write). Device
-// IRQs are enabled through the undocumented 0x2000_1000 controller window, not the
-// documented INTPRI block (see regs/plic.h and inject_doorbell_init).
-//
-// Register addresses: ESP32-C6 TRM v1.2 (memory map Table 5.3-2; CLINT ch.1.7;
-// watchdogs ch.14/15; UART ch.27; INTMTX ch.10 + section 1.6). Hand-rolled, no
-// ESP-IDF/HAL sources.
+// ESP32-C6 HP node backend: CLINT timer, UART0 console, interrupt routing, diagnostic LED,
+// APM partition gate. Register addresses from ESP32-C6 TRM v1.2.
 
 #if KICKOS_AMP_OWN_IMAGE
 #if KICKOS_AMP_NODE_ID == 1
@@ -24,12 +16,16 @@
 #if !KICKOS_C6_LP_NODE
 
 #include <kickos/arch/arch.h>
+#include <arch_reboot_tail.h>
+#include <kickos/diag.h>
+#include "clint_rv32.h"
 #include "crt_tail.h"
 #include "pin_guard.h"
 #include <kickos/arch/amp_shared.h>
 #include <kickos/arch/rv_trap_ids.h>
 #include <kickos/config/limits.h> // KICKOS_POLL_SPIN_MAX
 #include <kickos/console_tx.h>
+#include <kickos/io/mmio.h>
 #include <kickos/kernel.h>
 #include <kickos/sys/abi.h> // KOS_E* taxonomy (arch_pinmux_set)
 #include <kickos/sys/atomic.h>
@@ -44,6 +40,7 @@
 #include "regs/apm.h"
 #include "regs/clint.h"
 #include "regs/uart.h"
+#include "esp_uart_console.h"
 #include "regs/wdt.h"
 #include "regs/intmtx.h"
 #include "regs/intpri.h"
@@ -64,9 +61,9 @@ extern "C"
 
     extern uint32_t _sidata, _sdata, _edata, _sbss, _ebss;
 #if !KICKOS_HAVE_MPU && !KICKOS_AMP_OWN_IMAGE
-    // Defined by lp_probe_esp32c6.cc, which only c6lpprobe's link extracts.
+    // Defined only in c6lpprobe's link (lp_probe_esp32c6.cc).
     void kickos_c6_lp_probe_boot(void) __attribute__((weak));
-    // Defined by txidle_probe_esp32c6.cc, which only c6txidle's link extracts.
+    // Defined only in c6txidle's link (txidle_probe_esp32c6.cc).
     void kickos_c6_txidle_probe(void) __attribute__((weak));
 #endif
 #if KICKOS_AMP_OWN_IMAGE
@@ -76,10 +73,8 @@ extern "C"
 #endif
 
 #if KICKOS_HAVE_MPU
-    // App-data NAPOT region (esp32c6.ld). .appdata holds the app + C++-runtime .data and
-    // the gp small-data window. No AT clause on any loadable section of this chip (the ROM
-    // loader places every segment at its VMA), so LMA == VMA is pinned by an ASSERT and the
-    // copy is a no-op, like .data's; the .appbss + pad zero after it is the real work.
+    // App-data NAPOT region (esp32c6.ld). LMA == VMA is asserted by the linker script, so
+    // the .appdata copy is a no-op; the .appbss + pad zeroing is the real work.
     extern uint32_t _appdata_lma, __kickos_appdata_start, __kickos_appbss_start,
         __kickos_appdata_end;
 #endif
@@ -90,8 +85,6 @@ extern "C"
 
 namespace
 {
-    inline volatile uint32_t* r32p(uintptr_t a) { return reinterpret_cast<volatile uint32_t*>(a); }
-    inline volatile uint32_t& r32(uintptr_t a) { return *r32p(a); }
 
     using kickos::esp32c6::mtime_ns_to_ticks;
     using kickos::esp32c6::mtime_ticks_to_ns;
@@ -121,10 +114,9 @@ namespace
 #else
     inline void c6_early_mark(char) {}
 #endif
-    // UART0 TX-empty interrupt (buffered console ring). The CONDITION is level (TX FIFO
-    // count below CONF1.TXFIFO_EMPTY_THRHD, TRM section 27.4.11), but the INT_RAW bit it
-    // sets is a LATCH, so enabling INT_ENA on an idle channel raises at once AND the source
-    // stays asserted after the FIFO refills until INT_CLR is written (c6_tx_push).
+    // TX-empty interrupt threshold. The condition is level but the INT_RAW bit is a latch:
+    // enabling INT_ENA on an idle channel raises at once, and the source stays asserted
+    // after the FIFO refills until INT_CLR is written (esp_uart_console.h).
     constexpr uint32_t CONSOLE_TXFIFO_EMPTY_THRHD = 32;
 
     // The window arch_console_reclaim rewrites, and the one a userspace console driver is
@@ -136,8 +128,7 @@ namespace
                   "the console pads keep IO MUX function 0, their reset value, which this backend leaves");
     constexpr size_t CONSOLE_WIN_SIZE = KICKOS_BOARD_CONSOLE_SIZE;
 
-    // Every offset the reclaim body writes must lie inside that window. Adding a store
-    // outside it fails to build instead of silently widening the reclaim's reach.
+    // Every offset the reclaim body writes must lie inside that window.
     static_assert(reg::uart::OFF_INT_ENA < CONSOLE_WIN_SIZE
                       and reg::uart::OFF_INT_CLR < CONSOLE_WIN_SIZE
                       and reg::uart::OFF_CLKDIV < CONSOLE_WIN_SIZE
@@ -149,10 +140,9 @@ namespace
                       and reg::uart::OFF_REG_UPDATE < CONSOLE_WIN_SIZE,
                   "arch_console_reclaim writes outside the window it reports");
 
-    // The ROM's baud divisor, captured by arch_init. KickOS never programs UART0, so this
-    // is the only record of the working value: the divisor's correct setting depends on
-    // the clock source PCR selected, which is not derivable from anything in the window.
-    // 0 means arch_init has not run yet, and the reclaim then leaves the divisor alone.
+    // The ROM's baud divisor, captured by arch_init: its correct value depends on the PCR
+    // clock source, which cannot be derived from the window. 0 = not captured, and the
+    // reclaim leaves the divisor alone.
     constinit uint32_t g_console_clkdiv = 0;
 
     // A UART core whose synchronisation never completes must cost the panic path a bounded
@@ -170,27 +160,21 @@ namespace
         }
     }
 
-    // --- Inject doorbell. The C6 has no S-mode, so the arch's SSIP inject is a no-op here: a
-    //     FROM_CPU source (level) is routed through the matrix to a CPU interrupt, which the
-    //     C6 vectors as mcause = ID, not the standard mcause = 11. ONE doorbell carries every
-    //     logical inject line (arch keeps g_inject_line).
+    // --- Inject doorbell. A level FROM_CPU source routed through the matrix to a CPU
+    //     interrupt, which the C6 vectors as mcause = ID. ONE doorbell carries every logical
+    //     inject line (arch keeps g_inject_line).
 
-    // Enable, type, per-int priority and threshold are all driven through the
-    // undocumented 0x2000_1000 controller window (regs/plic.h), not the documented INTPRI
-    // block at 0x600C_5000; INTPRI is touched only for its FROM_CPU source triggers.
-    // Do not "restore" this to INTPRI without a bench read-back (regs/plic.h).
+    // Enable, type, per-int priority and threshold go through the undocumented 0x2000_1000
+    // window, INTPRI only for the FROM_CPU triggers. Do not "restore" this to INTPRI
+    // (regs/plic.h).
 
-    // Dedicated CPU interrupt ID for the inject doorbell. Must be one of the C6's
-    // external IDs (1-2, 5-6, 8-31; local CLINT owns 0/3/4/7) and not collide with
-    // the switch.S demux (3=msip, 7=mtip). Shared with switch.S's .Lext arm via
-    // rv_trap_ids.h.
+    // Must be one of the C6's external IDs (1-2, 5-6, 8-31; CLINT owns 0/3/4/7) and distinct
+    // from the switch.S demux (3=msip, 7=mtip).
     constexpr uint32_t DOORBELL_CPU_INT = KICKOS_RV_INJECT_DOORBELL_CPU_INT;
     constexpr uint32_t DOORBELL_PRIO = 7; // 1..15; same level as the device routes below
 
-    // --- Real-device line routing. One entry per logical line that reaches hardware; a
-    //     line absent from the table has no routing and stays on the software doorbell.
-    //     map_reg selects the target CPU interrupt for one interrupt-matrix source (TRM
-    //     section 10.4.1); cpu_int is then configured in the CPU interrupt controller.
+    // --- Real-device line routing. A line absent from the table stays on the software
+    //     doorbell. map_reg selects cpu_int for one interrupt-matrix source (TRM 10.4.1).
     struct dev_route
     {
         int line;
@@ -236,10 +220,8 @@ namespace
     static_assert(irq::UART0_TX_LINE >= 0 and irq::UART0_TX_LINE < 32,
                   "a demuxed logical line must fit the software-controller line space");
 
-    // UART0 quiesce, done ONCE and only while the kernel still owns the block: silence
-    // every source, drop the ROM's latches, and own the TX-empty threshold. Repeating it
-    // on a later rearm would write UART_INT_ENA/UART_INT_CLR after the block has been
-    // granted to a userspace driver, which is the driver's register, not the kernel's.
+    // Done ONCE, while the kernel still owns the block: a repeat after the grant to a
+    // userspace driver would write that driver's UART_INT_ENA/UART_INT_CLR.
     bool g_uart0_quiesced = false;
 
     void uart0_quiesce_once()
@@ -279,10 +261,8 @@ namespace
         r32(mmap::RTC_WDT_BASE + reg::wdt::RTC_SWD_WPROTECT) = 0;
     }
 
-    // One-time inject-doorbell wiring, entered with MIE still 0, per the TRM's
-    // "configure the interrupt controller with interrupts globally disabled" rule. The
-    // C6's mie bit N gates CPU int N, with bits 3/7 = the standard msip/mtip. FROM_CPU_0
-    // is left de-asserted.
+    // Entered with MIE still 0: the controller is configured with interrupts globally
+    // disabled. mie bit N gates CPU int N.
     void inject_doorbell_init()
     {
         r32(reg::intmtx::FROM_CPU_0_MAP) = DOORBELL_CPU_INT;
@@ -315,7 +295,6 @@ namespace
 
     inline uint32_t ws_word(uint32_t thigh, uint32_t tlow)
     {
-        // pulse0 = high for thigh (level 1), pulse1 = low for tlow (level 0).
         return thigh | (1u << 15) | (tlow << 16);
     }
 
@@ -345,8 +324,7 @@ namespace
         r32(reg::rmt::CH0CONF0) = RMT_CH0_CFG | reg::rmt::CONF_UPDATE;
         r32(reg::rmt::CH0CONF0) = RMT_CH0_CFG | reg::rmt::TX_START;
 
-        // Blocking (panic ctx: interrupts masked, no DMA). Bounded so a wedged RMT never
-        // hangs the fault path; ~25 words * 1.25 us + 60 us latch is < 100 us.
+        // Bounded so a wedged RMT never hangs the fault path.
         uint32_t spin = 0;
         while ((r32(reg::rmt::INT_RAW) & reg::rmt::CH0_TX_END) == 0)
         {
@@ -361,53 +339,13 @@ namespace
 extern "C"
 {
 
-// --- Console: UART0, bridged to the host by the on-board CH343P. The native
-//     USB-Serial-JTAG at 0x6000_F000 does not reliably deliver output once the app takes
-//     over: it is gated on the host draining CDC and it re-enumerates on reset. UART0 has
-//     neither behaviour.
-int arch_console_write(char const* buf, size_t n)
-{
-    return console_tx_insert_line(buf, n, KICKOS_CONSOLE_CRLF);
-}
-
-#if KICKOS_AMP_OWN_IMAGE
-int arch_console_write_retry(char const* buf, size_t n, bool* cr_pending)
-{
-    // The LP node relays its report through the shared ring; only HP owns
-    // UART0, so this writer either queues the whole line or queues none.
-    if (cr_pending != nullptr)
-    {
-        *cr_pending = false;
-    }
-    return arch_console_write(buf, n);
-}
-#endif
-
-// Overrides a fallback that would re-enter the buffered writer from the panic path.
 bool arch_console_write_sync(char const* buf, size_t n)
 {
-    for (size_t i = 0; i < n; i++)
-    {
-        uint32_t spin = 0;
-        while (((r32(reg::uart::STATUS) >> reg::uart::TXFIFO_CNT_S) & reg::uart::TXFIFO_CNT_MASK) >=
-               reg::uart::TXFIFO_LIMIT)
-        {
-            // A local bound, not KICKOS_POLL_SPIN_MAX: this is a per-byte loop on the
-            // panic path.
-            if (++spin > 200000u)
-            {
-                return false; // FIFO not draining -> drop (never block the kernel)
-            }
-        }
-        r32(reg::uart::FIFO) = static_cast<uint8_t>(buf[i]);
-    }
-    return true;
+    return kickos::espuart::console::write_sync(buf, n);
 }
 
-// Block until UART0 is transmission-complete. STATUS.TXFIFO_CNT reaching 0 is only
-// buffer-empty and leaves up to one frame still clocking out of the shifter;
-// FSM_STATUS.ST_UTX_OUT is the transmitter state machine itself (C6 TRM section 27.7.1,
-// Register 27.24).
+// STATUS.TXFIFO_CNT reaching 0 leaves up to one frame still clocking out of the shifter;
+// FSM_STATUS.ST_UTX_OUT idle means the transmitter is done.
 void arch_console_flush_sync(void)
 {
     uint32_t spin = 0;
@@ -423,100 +361,49 @@ void arch_console_flush_sync(void)
         }
         if (++spin > KICKOS_POLL_SPIN_MAX)
         {
-            return; // bounded, as arch.h requires: a wedged UART drops the tail, never hangs
+            return; // a wedged UART drops the tail, never hangs
         }
     }
 }
 
 uint64_t arch_clock_now(void)
 {
-    volatile uint32_t* mt = r32p(reg::clint::MTIME);
-    uint32_t hi, lo, hi2;
-    do
-    {
-        hi = mt[1];
-        lo = mt[0];
-        hi2 = mt[1];
-    } while (hi != hi2);
-    uint64_t t = (static_cast<uint64_t>(hi) << 32) | lo;
-    return mtime_ticks_to_ns(t, g_mtime_shift);
+    return mtime_ticks_to_ns(kickos::rv32::clint::read(reg::clint::MTIME), g_mtime_shift);
 }
 
 void arch_timer_arm(uint64_t deadline_ns)
 {
-    uint64_t ticks = mtime_ns_to_ticks(deadline_ns, g_mtime_shift);
-    volatile uint32_t* cmp = r32p(reg::clint::MTIMECMP);
-    cmp[1] = 0xFFFFFFFFu; // park high half so no spurious match between the two stores
-    cmp[0] = static_cast<uint32_t>(ticks);
-    cmp[1] = static_cast<uint32_t>(ticks >> 32);
+    kickos::rv32::clint::arm(reg::clint::MTIMECMP, mtime_ns_to_ticks(deadline_ns, g_mtime_shift));
 }
 
 void arch_timer_disarm(void)
 {
-    volatile uint32_t* cmp = r32p(reg::clint::MTIMECMP);
-    cmp[0] = 0xFFFFFFFFu;
-    cmp[1] = 0xFFFFFFFFu;
+    kickos::rv32::clint::disarm(reg::clint::MTIMECMP);
 }
 
 // The ESP32-C6 HP core traps (illegal instruction) on `csrw mcounteren`, so the
 // generic rv32 bring-up must not write it.
 int arch_rv_has_mcounteren(void) { return 0; }
 
-// The arch fallback raises SSIP, a no-op on this M/U-only core. The logical line is already
-// in g_inject_line.
+// The arch fallback raises SSIP, a no-op on this M/U-only core. The logical line is already in
+// g_inject_line.
 void arch_rv_inject_deliver(int line)
 {
     (void)line;
     r32(reg::intpri::FROM_CPU_0) = 1;
 }
 
-// EOI, run at the head of the .Lext trap: de-assert the level source so it does not
-// re-fire on mret, then fence so the de-assert settles (INTPRI is APB, multi-cycle).
+// De-assert the level source so it does not re-fire on mret; the fence settles the APB write.
 void arch_rv_ext_eoi(void)
 {
     r32(reg::intpri::FROM_CPU_0) = 0;
     __asm volatile("fence" ::: "memory");
 }
 
-// --- Buffered console TX backend (console_tx.h). The ring drains via UART0's TXFIFO_EMPTY
-// interrupt, routed through the interrupt matrix to a real CPU int (KICKOS_RV_DEV_CPU_INT,
-// distinct from the software-inject doorbell). The source is a latch, dropped by the
-// INT_CLR write in c6_tx_push.
-static int c6_tx_slot_free(void)
-{
-    if (((r32(reg::uart::STATUS) >> reg::uart::TXFIFO_CNT_S) & reg::uart::TXFIFO_CNT_MASK) <
-        reg::uart::TXFIFO_LIMIT)
-    {
-        return 1;
-    }
-    return 0;
-}
-static void c6_tx_push(uint8_t b)
-{
-    r32(reg::uart::FIFO) = b;
-    // Drop the TX-empty latch after every push. UART_INT_RAW is self-set and cleared only
-    // by INT_CLR, so once the FIFO has passed the threshold the latch, and with it the
-    // matrix source, stays asserted on a condition that is no longer true. The kernel
-    // drain runs with the line UNMASKED (irq_attach, not a tier-1 binding), so an
-    // undropped latch re-enters the dispatcher forever whenever the FIFO fills before the
-    // ring empties.
-    r32(reg::uart::INT_CLR) = reg::uart::TXFIFO_EMPTY_INT;
-}
-static void c6_tx_irq_enable(void)
-{
-    r32(reg::uart::INT_CLR) = reg::uart::TXFIFO_EMPTY_INT;                              // clear any stale latch
-    r32(reg::uart::INT_ENA) = r32(reg::uart::INT_ENA) | reg::uart::TXFIFO_EMPTY_INT;
-}
-static void c6_tx_irq_disable(void)
-{
-    r32(reg::uart::INT_ENA) = r32(reg::uart::INT_ENA) & ~reg::uart::TXFIFO_EMPTY_INT;
-}
-
-static char console_tx_buf[KICKOS_CONSOLE_TX_SIZE];
-console_tx_backend const c6_console_backend = {
-    c6_tx_slot_free, c6_tx_push, c6_tx_irq_enable, c6_tx_irq_disable};
-
-console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)
+// The console is UART0 (CH343P bridge): the native USB-Serial-JTAG gates output on the host
+// draining CDC and re-enumerates on reset. The ring drains via the TXFIFO_EMPTY interrupt on
+// KICKOS_RV_DEV_CPU_INT.
+console_tx_backend const* arch_console_tx_backend(int* irq_line)
 {
 #if !KICKOS_HAVE_MPU && !KICKOS_AMP_OWN_IMAGE
     // After the banner and before the ring, so the witness's line is the boot's own.
@@ -525,37 +412,26 @@ console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size
         kickos_c6_txidle_probe();
     }
 #endif
-    *storage = console_tx_buf;
-    *size = KICKOS_CONSOLE_TX_SIZE;
     *irq_line = irq::UART0_TX_LINE;
-    return &c6_console_backend;
+    return &kickos::espuart::console::backend;
 }
 
-// UART0 @ 0x6000_0000 (TRM v1.2, memory map Table 5.3-2), the whole block c6uart is
-// granted. On that driver the IRQ thread holds the grant, not the service thread whose
-// death notes the console dead.
+// The whole UART0 block c6uart is granted; the IRQ thread holds the grant, not the service
+// thread whose death notes the console dead.
 void arch_console_reclaim_window(uintptr_t* base, size_t* size)
 {
     *base = CONSOLE_WIN_BASE;
     *size = CONSOLE_WIN_SIZE;
 }
 
-// Panic-path reclaim (console.cc D6): force UART0 back to a known polled-ready 8N1 channel
-// after a userspace driver may have garbled every writable register in its granted window.
-// Runs with IRQs masked, privileged; MUST be idempotent + re-entrant, so it is straight-line
-// ABSOLUTE stores only, NO read-modify-write: an RMW on a garbled value is not safe to
-// repeat from a nested-fault re-entry.
+// Panic-path reclaim: force UART0 back to a polled-ready 8N1 channel after a userspace driver
+// may have garbled every register in its window. Privileged, IRQs masked. MUST be idempotent
+// and re-entrant: absolute stores only, no read-modify-write, since a nested-fault re-entry
+// would repeat an RMW on a garbled value. Each store prevents a named silent-loss failure.
 //
-// Reclaim depth = the in-window registers a driver can set to cause SILENT LOSS, each named
-// below with the failure it prevents. There are no init values to restore beyond the baud
-// divisor: KickOS never programs UART0, it inherits the ROM's setup. The clock source and
-// its divider (PCR) and the pad mux (IO MUX) are privileged blocks outside the window, out
-// of the driver's reach.
-//
-// The TX FIFO is deliberately NOT reset, unlike the esp32 body: it is 128 bytes deep, and on
-// a panic from KERNEL_OWNED it holds bytes the TX ISR pushed and already removed from the
-// ring, which kpanic_enter's flush therefore cannot re-send. Dropping them would cut a hole
-// in the middle of the log; keeping them costs ~11 ms of stale bytes ahead of the dump.
+// The TX FIFO is NOT reset: after a panic from KERNEL_OWNED it holds bytes the TX ISR already
+// removed from the ring, which kpanic_enter's flush cannot re-send; resetting would cut a hole
+// in the log, keeping them costs ~11 ms of stale bytes ahead of the dump.
 void arch_console_reclaim(void)
 {
     // Silence first: a stale enabled source would storm the dispatcher through the whole
@@ -566,11 +442,9 @@ void arch_console_reclaim(void)
     // TX_SCLK_EN clear stops the transmitter dead and TX_RST_CORE set holds it in reset.
     r32(reg::uart::CLK_CONF) = reg::uart::CLK_CONF_RUN;
 
-    // The one reclaim body here that is not straight-line. The _SYNC stores below reach the
-    // UART core only on the REG_UPDATE write that ends the body, and waiting for the PREVIOUS
-    // synchronisation first is the TRM's own step (section 27.5.2.2): skip it and these
-    // stores are dropped rather than applied. The wait is bounded and read-only, so a
-    // nested-fault re-entry repeats it harmlessly.
+    // The _SYNC stores below reach the UART core only on the final REG_UPDATE write, and the
+    // PREVIOUS synchronisation must have completed first (TRM 27.5.2.2) or they are dropped.
+    // The wait is bounded and read-only, so a re-entry repeats it harmlessly.
     uart_reg_update_wait();
     if (g_console_clkdiv != 0)
     {
@@ -585,8 +459,7 @@ void arch_console_reclaim(void)
     r32(reg::uart::REG_UPDATE) = reg::uart::REG_UPDATE_BIT;
 }
 
-// A line with no route stays on the software doorbell. The UART's own TXFIFO_EMPTY enable is
-// toggled per-burst by whoever owns the block (c6_tx_irq_enable/disable for the console).
+// The UART's own TXFIFO_EMPTY enable is toggled per burst by the block's owner.
 void arch_rv_hw_unmask(int line)
 {
     dev_route const* const r = dev_route_of(line);
@@ -606,15 +479,9 @@ void arch_rv_hw_unmask(int line)
     __asm volatile("csrs mie, %0" ::"r"(1u << r->cpu_int) : "memory");
 }
 
-// The kernel-owned half of the pair: clear exactly what arch_rv_hw_unmask set, so a mask
-// really disarms the line instead of only setting the arch's software bit.
-//
-// COARSE: the enable gates a whole CPU interrupt, so every interrupt-matrix source routed
-// to that CPU int is masked together. Per-MATRIX-SOURCE masking is kernel-owned (write 0 to
-// the source's INTMTX map register, TRM section 10.3.3.3) but UART0 is the only source on
-// this CPU int. Per-SUB-SOURCE masking would need UART_INT_ENA, which lives inside the
-// register block granted to the driver and which the kernel must therefore not write; hence
-// one grouped logical line for the C6 UART.
+// COARSE: the enable gates a whole CPU interrupt, so every matrix source routed to it is
+// masked together (UART0 is the only one). Sub-source masking would need UART_INT_ENA, inside
+// the block granted to the driver, so the C6 UART is one grouped logical line.
 void arch_rv_hw_mask(int line)
 {
     dev_route const* const r = dev_route_of(line);
@@ -629,14 +496,10 @@ void arch_rv_hw_mask(int line)
     __asm volatile("fence" ::: "memory"); // TRM section 1.6.3.2: settle before MIE is restored
 }
 
-// Real-device dispatch (switch.S .Lextdev). Reads UART_INT_ST once and posts every logical
-// line an asserted sub-source belongs to, at most once per pass.
-//
-// It does NOT write the UART block: clearing INT_CLR here would consume a latch that the
-// owner of the block has to see (an overrun/framing/parity count would vanish), and on a
-// tier-1 binding the storm is already prevented by irq_event_isr's mask. An asserted source
-// outside the table still gets a post, so a bound handler masks and counts it instead of
-// re-entering forever.
+// Reads UART_INT_ST once and posts each logical line an asserted sub-source belongs to, at
+// most once per pass. INT_CLR is left to the block's owner: clearing here would consume
+// latches (overrun/framing/parity counts) it must see. An asserted source outside the table
+// still gets a post, so a bound handler masks it instead of re-entering forever.
 void kickos_rv_ext_dispatch_dev(void)
 {
     uint32_t const st = r32(reg::uart::INT_ST); // INT_RAW & INT_ENA (TRM Register 27.4)
@@ -685,8 +548,7 @@ void arch_diag_led_init(void)
     rmt_send_ws2812(0); // start dark
 }
 
-// The board's LED2 is RGB-ordered (first byte = red), NOT the usual GRB: confirmed on
-// silicon (0x00FF00 lit green), so red is the MSB byte 0xFF0000.
+// The board's LED2 is RGB-ordered (red is the MSB byte), not the usual GRB.
 void arch_diag_led_set(int on)
 {
     uint32_t rgb = 0;
@@ -697,12 +559,9 @@ void arch_diag_led_set(int on)
     rmt_send_ws2812(rgb);
 }
 
-// One-shot pin-function config (KOS_SYS_PINMUX_SET), covering BOTH permission stages a
-// pad passes on this family: the IO_MUX pad function and the GPIO matrix out-sel that
-// picks which internal signal drives it. Leaving the matrix stage out would make the
-// kernel-owned refusal below bypassable: a caller could aim a peripheral signal at
-// the console pins or the LED's without ever touching their IO_MUX word. func packs both stages;
-// the encoding is chip-local (reg::gpio::PINMUX_*).
+// Covers BOTH stages a pad passes: the IO_MUX pad function and the GPIO matrix out-sel. The
+// matrix stage must be covered or the kernel-owned refusal is bypassable by aiming a
+// peripheral signal at a kernel pin. func packs both (reg::gpio::PINMUX_*).
 int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
 {
     if (port != 0u or pin > 30u)
@@ -732,17 +591,12 @@ int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
     return 0;
 }
 
-// Branch-clock oracle (arch.h): report the function clock feeding a peripheral block so a
-// userspace driver derives its own divisor. On this chip the select AND the divider live in
-// PCR, which is a Rule 7 reserved block, so the holder of a UART window cannot read either
-// and this is the only way it learns its own rate. Every field is read LIVE: a select the
-// ROM or a later bootloader changed is reflected, and nothing here is compiled in.
+// Function clock feeding a peripheral block, read live from PCR (a reserved block, so a UART
+// window holder cannot read it).
 //
-// TWO LEAVES CANNOT BE READ BACK, and both answer 0 rather than a guess. RC_FAST_CLK is
-// "17.5 MHz by default ... with adjustable frequency" (TRM section 8.2.3) and the only
-// register naming it, PCR_FOSC_FREQ, is HRO and reads 20; a wrong branch clock silently
-// garbles the wire, so a UART sourced from it has no reportable rate. Select 0 is no clock
-// at all. The crystal IS readable (PCR_CLK_XTAL_FREQ, RO, MHz).
+// TWO LEAVES CANNOT BE READ BACK and answer 0 rather than a guess: RC_FAST_CLK is adjustable
+// (TRM 8.2.3) and its only register, PCR_FOSC_FREQ, is HRO; select 0 is no clock. A wrong
+// branch clock silently garbles the wire. The crystal is readable (PCR_CLK_XTAL_FREQ, MHz).
 uint32_t arch_periph_clock_hz(uintptr_t base)
 {
     if (base != mmap::UART0_BASE)
@@ -752,7 +606,7 @@ uint32_t arch_periph_clock_hz(uintptr_t base)
     uint32_t const conf = r32(reg::pcr::UART0_SCLK_CONF);
     if ((conf & reg::pcr::UART0_SCLK_EN) == 0u)
     {
-        return 0; // the function clock is gated: the block is not counting anything
+        return 0; // function clock gated
     }
     uint32_t src = 0;
     uint32_t const sel = (conf >> reg::pcr::UART0_SCLK_SEL_S) & reg::pcr::UART0_SCLK_SEL_MASK;
@@ -770,11 +624,9 @@ uint32_t arch_periph_clock_hz(uintptr_t base)
     {
         return 0;
     }
-    // The TRM contradicts itself on which of DIV_A and DIV_B is the numerator: section 8.5.1
-    // calls DIV_A the denominator, while the two chapters that actually write the equation
-    // for an identical PCR divider (I2C section 29.4.1, RMT section 37.3.3) put DIV_A over
-    // DIV_B. With both fields zero the two readings agree and the divisor is DIV_NUM + 1; a
-    // non-zero fraction is refused rather than resolved from the wrong one.
+    // The TRM contradicts itself on which of DIV_A and DIV_B is the numerator (section 8.5.1
+    // vs I2C 29.4.1 and RMT 37.3.3). With both zero the readings agree and the divisor is
+    // DIV_NUM + 1; a non-zero fraction answers 0.
     uint32_t const div_a = (conf >> reg::pcr::UART0_SCLK_DIV_A_S) & reg::pcr::UART0_SCLK_DIV_A_MASK;
     uint32_t const div_b = (conf >> reg::pcr::UART0_SCLK_DIV_B_S) & reg::pcr::UART0_SCLK_DIV_B_MASK;
     if (div_a != 0u or div_b != 0u)
@@ -794,7 +646,8 @@ static void apm_write(uintptr_t at, uint32_t value)
 // A refusal ahead of arch_init must not leave the ROM-armed watchdogs to reset into it again.
 static void c6_refuse_n(char const* msg, size_t n)
 {
-    arch_console_write_sync(msg, n);
+    kpanic_enter();
+    (void)kickos::kconsole_write(msg, n);
     wdt_disable_all();
     arch_shutdown(1);
 }
@@ -809,8 +662,7 @@ static void c6_refuse(char const* msg)
     c6_refuse_n(msg, n);
 }
 
-// Every node's rows at once: node 1's stay inert until arch_amp_release_peers moves the LP
-// CPU to their mode.
+// Node 1's rows stay inert until arch_amp_release_peers moves the LP CPU to their mode.
 static void apm_program_gate(void)
 {
     namespace apm = kickos::esp32c6::apm;
@@ -889,11 +741,11 @@ void arch_init(void)
     // working baud (see g_console_clkdiv).
     g_console_clkdiv = r32(reg::uart::CLKDIV);
 
-    g_clint_msip = r32p(reg::clint::MSIP);
+    g_clint_msip = &r32(reg::clint::MSIP);
 #if KICKOS_BENCH
     // The C6 traps on `rdcycle`; MTIME counts CPU cycles. Set before any switch.
     extern volatile uint32_t* g_bench_cycle_src;
-    g_bench_cycle_src = r32p(reg::clint::MTIME);
+    g_bench_cycle_src = &r32(reg::clint::MTIME);
 #endif
     arch_timer_disarm();
     r32(reg::clint::MTIMECTL) = reg::clint::MTIMECTL_MTCE | reg::clint::MTIMECTL_MTIE;
@@ -924,9 +776,24 @@ void arch_init(void)
 #endif
 }
 
+// LP_AON_SYS_CFG_REG.HPSYS_SW_RESET (LP_AON +0x34, bit 31): a software reset of the HP system.
+int arch_reboot(uint32_t outcome)
+{
+    if (outcome != KOS_SHUTDOWN_REBOOT)
+    {
+        return -KOS_ENOSYS;
+    }
+    constexpr uintptr_t LP_AON_SYS_CFG = mmap::LP_AON_BASE + 0x34u;
+    constexpr uint32_t HPSYS_SW_RESET = 1u << 31;
+    __asm volatile("csrci mstatus, 0x8" ::: "memory");
+    r32(LP_AON_SYS_CFG) |= HPSYS_SW_RESET;
+    kickos::arch::reset_settle();
+    kickos::arch::reboot_failed(kickos::diag::kResetNotTaken);
+}
+
 void arch_shutdown(int status)
 {
-    (void)status; // no exit on bare metal
+    (void)status;
     __asm volatile("csrci mstatus, 0x8" ::: "memory"); // mask interrupts (clear MIE)
     while (true)
     {
@@ -937,8 +804,7 @@ void arch_shutdown(int status)
 void Reset_Handler(void)
 {
     c6_early_mark('A'); // reset entry reached (gp/sp/tp already set by _start)
-    // The ROM loader copies the image segments to SRAM at their VMAs, so LMA == VMA and
-    // this loop is a no-op.
+    // LMA == VMA (ROM loader), so this copy is a no-op.
     uint32_t* src = &_sidata;
     uint32_t* dst = &_sdata;
     while (dst < &_edata)
@@ -984,17 +850,15 @@ void arch_amp_release_peers(void)
     uintptr_t const stub_end = reinterpret_cast<uintptr_t>(kickos_c6_amp_lp_stub_end);
     uintptr_t const image_base = KICKOS_AMP_PARTITION_BASE + KICKOS_AMP_NODE_SHARE;
     uintptr_t const stub_size = stub_end - stub_begin;
-    // The ESP32-C6 ROM placed both node LOAD segments from the one flashed
-    // partition image. Node 0 copies only the small reset vector into LP SRAM.
+    // The ROM placed both nodes' LOAD segments; node 0 copies only the reset vector to LP SRAM.
     if (r32(image_base) == 0u or stub_size == 0u or stub_size > 1024u
         or (stub_size & 3u) != 0u)
     {
-        constexpr char msg[] = "KickOS: ESP32-C6 AMP LP segment absent or stub invalid\n";
-        arch_console_write_sync(msg, sizeof(msg) - 1u);
+        kpanic_enter();
+        kickos::kputs("KickOS: ESP32-C6 AMP LP segment absent or stub invalid\n");
         arch_shutdown(1);
     }
-    // Measure the LP RTC clock against HP's clock before wake. Its silicon rate
-    // depends on the ROM's clock selection and oscillator trim.
+    // The LP RTC rate depends on the ROM's clock selection and oscillator trim.
     constexpr uintptr_t rtc = 0x600B0C00u;
     auto rtc_ticks = [rtc]() -> uint64_t {
         r32(rtc + 0x10u) |= 1u << 28;
@@ -1015,8 +879,8 @@ void arch_amp_release_peers(void)
     // the fastest.
     if (rtc_hz < 16000u or rtc_hz > 272000u)
     {
-        constexpr char msg[] = "KickOS: ESP32-C6 LP RTC rate invalid\n";
-        arch_console_write_sync(msg, sizeof(msg) - 1u);
+        kpanic_enter();
+        kickos::kputs("KickOS: ESP32-C6 LP RTC rate invalid\n");
         arch_shutdown(1);
     }
     kickos_c6_amp_rtc_hz = rtc_hz;

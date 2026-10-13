@@ -20,9 +20,9 @@ namespace
     kos::Semaphore* g_ping = nullptr;
     kos::Semaphore* g_pong = nullptr;
 
-    // B1 well-known child cap indices: (ping_s, pong_s) delegated -> ping@1, pong@2.
-    constexpr int CH_PING = 1;
-    constexpr int CH_PONG = 2;
+    // B1 well-known child cap indices: (ping_s, pong_s) delegated -> ping@2, pong@3.
+    constexpr int CH_PING = KOS_SPAWN_DELEGATED_CAP0;
+    constexpr int CH_PONG = KOS_SPAWN_DELEGATED_CAP0 + 1;
     constexpr uint8_t CH_FULL = KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER;
 
     void ping(void*)

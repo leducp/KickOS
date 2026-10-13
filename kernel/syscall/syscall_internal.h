@@ -26,10 +26,10 @@ namespace kickos
     // See syscall_mem.cc for the full per-function invariants.
 
     // A range lies within one region the current thread is granted with `need`
-    // access. Privileged callers and len==0 pass.
+    // access. len==0 passes.
     bool user_range_ok(uintptr_t ptr, size_t len, uint32_t need);
 
-    // The same scan without the privileged and len==0 short-circuits: does a region the caller
+    // The same scan without the len==0 short-circuit: does a region the caller
     // already carries describe this range with exactly `need`, memory type included?
     bool user_range_typed_ok(uintptr_t ptr, size_t len, uint32_t need);
 
@@ -179,11 +179,9 @@ namespace kickos
     // release it before the resume barrier; an outer lock would livelock ARM.
     // Untimed calls use KOS_TIMEOUT_NONE.
     int endpoint_create(uint32_t* out_cap);
-    // The receiver runs in another node's kernel. Privileged, and -KOS_ENOSYS where the
-    // image runs one kernel over one core.
-    int amp_endpoint_create(uint32_t node, uint32_t port, uint32_t* out_cap);
 #if KICKOS_AMP_NODE
-    // The same mint with the privilege gate left to the caller. Caller holds IrqLock.
+    // An endpoint whose receiver runs in another node's kernel, seated at boot. Caller holds
+    // IrqLock.
     int amp_endpoint_mint(Thread* c, uint32_t node, uint32_t port, uint8_t rights, uint32_t* out_cap);
 #endif
     int32_t endpoint_send(uint32_t cap, uintptr_t buf, size_t len, uint32_t timeout_us);

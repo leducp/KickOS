@@ -17,6 +17,7 @@
 #include <kickos/sched.h>
 #include <kickos/thread.h>
 #include <kickos/arch/arch.h>
+#include <kickos/sys/abi.h>
 #include <kickos/sys/atomic.h>
 #include <kickos/sys/errno.h>
 
@@ -1744,8 +1745,8 @@ namespace kickos
             return -KOS_EBUSY;
         }
         uint64_t const dns = end - g_e2e_t0;
-        // Reject spans over UINT32_MAX ns. Capping would insert stalls into the distribution.
-        if (dns > 0xFFFFFFFFull)
+        // Rejected, not capped: capping would insert stalls into the distribution.
+        if (dns > KOS_BENCH_E2E_SPAN_MAX_NS)
         {
             g_e2e_dropped = g_e2e_dropped + 1;
             return -KOS_EBUSY;

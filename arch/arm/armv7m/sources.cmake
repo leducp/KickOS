@@ -13,11 +13,15 @@ set(KICKOS_ARCH_SOURCES
   common/startup_ranges.cc
   ${KICKOS_SEAM_DEFAULTS_COMMON}
   ${KICKOS_SEAM_DEFAULTS_ARM}
-  arm/armv7m/arch_fault_report_extra_default.cc
-  arm/armv7m/arch_fault_chip_addr_default.cc
+  ${KICKOS_SEAM_DEFAULTS_DIR}/arch_fault_report_extra_default.cc
+  ${KICKOS_SEAM_DEFAULTS_DIR}/arch_fault_chip_addr_default.cc
   arm/armv7m/arch_trace_now_default.cc
   arm/read_tp.S
   arm/armv7m/switch.S)
+
+if(KICKOS_NUM_CORES GREATER 1 OR KICKOS_AMP_NODE)
+  list(APPEND KICKOS_ARCH_SOURCES common/doorbell_protocol.cc)
+endif()
 
 # The DWT arch_trace_now fallback runs on the PendSV-tail emit path, so its TU (and
 # arch_armv7m.cc, which carries the rest of that path) must be FP-register-free.

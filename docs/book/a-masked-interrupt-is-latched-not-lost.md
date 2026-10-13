@@ -13,16 +13,16 @@
 ## The window nobody opened on purpose
 
 A tier-1 interrupt in KickOS is not handled in interrupt context. The first-level ISR
-does the least it can: it **masks** the line so it cannot re-fire, posts the line's
-bound notification (a semaphore), and returns. The real work happens later, in the
-driver thread, which wakes from `irq_wait`, services the device, and loops back to
-`irq_wait` -- and that next `irq_wait` is what **re-arms** (unmasks) the line. The
-design is deliberate: the driver is an ordinary unprivileged thread, scheduled by
+does the least it can: it **masks** the line so it cannot re-fire, raises the line's
+badge bit in the notification the line is bound to, and returns. The real work happens
+later, in the driver thread, which wakes from `kos_notify_wait`, services the device, and
+loops back to `kos_notify_wait`. That next wait is what **re-arms** (unmasks) the line.
+The design is deliberate: the driver is an ordinary unprivileged thread, scheduled by
 priority like any other, and the line stays masked for exactly as long as it takes that
 thread to run.
 
 That "exactly as long as it takes" is a window. Between the ISR masking the line and
-the driver's next `irq_wait` unmasking it, the line is masked -- and the device does
+the driver's next `kos_notify_wait` unmasking it, the line is masked, and the device does
 not know that. A second event can arrive in that window. Nothing in the design opened
 this window on purpose; it is the unavoidable cost of moving the handler out of
 interrupt context. The driver cannot close it -- the window exists *because* the driver
@@ -41,11 +41,11 @@ tests that exercise it are written on hardware fast enough that the driver alway
 re-arms before the second raise lands.
 
 It is a lie because the tier-1 contract makes a promise the drop breaks. The promise is
-that the semaphore *is* the event record: a driver that calls `irq_wait` receives every
-event, in order, one wake per event, and never has to poll the device to find an
-interrupt the kernel forgot. `wait` is lossless. Drop-on-masked silently voids that
+that the notification *is* the event record: a driver that calls `kos_notify_wait`
+learns of every event, and never has to poll the device to find an interrupt the kernel
+forgot. `wait` is lossless. Drop-on-masked silently voids that
 promise for any event unlucky enough to fall in the window -- and the failure is not a
-dropped byte or a late wake. It is a driver blocked in `irq_wait` forever, because the
+dropped byte or a late wake. It is a driver blocked in `kos_notify_wait` forever, because the
 wake that would have freed it was thrown away while the line was masked, and nothing
 will ever raise it again.
 
@@ -92,13 +92,13 @@ carry a single "pending while masked" bit that mirrors it.
 
 The two latches stack cleanly. The controller's pending bit is the *hardware* latch that
 bridges the masked window: it holds the fact "an event arrived" across the interval the
-line is disabled. The semaphore is the *software* latch that makes `wait` lossless: when
-the line is unmasked, the held pending fires the normal ISR, which posts the sem, and
-the driver's `wait` returns. A counting semaphore even absorbs the harmless case where
-the post beats the wait. The event flows hardware-latch to software-latch to driver,
-and no link in that chain is allowed to be `unmask` reaching in and posting the sem
-itself -- redelivery must go through the real ISR path, so the same masking and
-re-arm bookkeeping runs as for any other interrupt.
+line is disabled. The notification is the *software* latch that makes `wait` lossless:
+when the line is unmasked, the held pending fires the normal ISR, which raises the badge
+bit, and the driver's `wait` returns. The bit stays set until a wait consumes it, so it
+also absorbs the harmless case where the raise beats the wait. The event flows
+hardware-latch to software-latch to driver, and no link in that chain is allowed to be
+`unmask` reaching in and raising the bit itself: redelivery must go through the real ISR
+path, so the same masking and re-arm bookkeeping runs as for any other interrupt.
 
 ## How many events is a burst? Exactly one
 

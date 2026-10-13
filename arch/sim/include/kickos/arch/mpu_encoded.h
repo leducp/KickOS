@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// sim: mprotect takes the addresses themselves, so there is nothing to pre-encode. The
-// image carries only which regions the arena can enforce, which is what keeps the seam's
-// refusal answer the same shape here as on silicon.
+// mprotect takes the addresses themselves: the image carries only which regions the arena can
+// enforce.
 
 #ifndef KICKOS_ARCH_MPU_ENCODED_H
 #define KICKOS_ARCH_MPU_ENCODED_H

@@ -146,6 +146,7 @@ Two things can go wrong on that walk, and they force it to be **two passes**:
 ```
 c = current
 if m->owner == c:  return -KOS_EDEADLK   // locking a mutex you hold: self-deadlock
+if timeout == 0:   return -KOS_ETIMEDOUT // a try lends nothing and parks nothing
 
 // PASS 1 -- detect a cycle, write nothing:
 t = m->owner
@@ -162,31 +163,25 @@ while t != nullptr:
     if t->wait_mutex() == nullptr:  break
     t = t->wait_mutex()->owner
 
+arm the deadline, unless timeout is forever
 wq_block(m->waiters, WAIT_MUTEX, m)   // parks AND seats the wait edge
 return current's wait_result           // what the waker wrote: the grant, or a refusal
 ```
 
 Returning from `wq_block` is not itself the acquire. The waker writes the outcome into
-`wait_result` (below), and a cancel ends the same park *without* transferring ownership:
-that unwind unlinks the waiter and recomputes the owner's inherited priority without it,
-and the lock call reports the failure. Only a status that says the mutex was granted
-means the mutex is held.
+`wait_result` (below). A cancel and an expired deadline end the same park *without*
+transferring ownership, answering `-KOS_ECANCELED` and `-KOS_ETIMEDOUT`: that unwind
+unlinks the waiter and recomputes each owner up the chain without it, stopping at the first
+whose priority does not change, and the lock call reports the failure. Only a status that
+says the mutex was granted means the mutex is held.
 
-A cancel is the *only* way out of this park that is not a grant, and that is structural
-rather than a gap in the interface. Locking a mutex takes no deadline argument, so no
-timer is ever armed against a mutex wait; correspondingly, the timer expiry dispatch
-carries an arm for each kind of wait a deadline *can* be attached to and none for this
-one, and would treat a mutex waiter arriving there as a kernel invariant violation
-rather than something to unwind. The absence is enforced from both ends, not merely
-unexposed at the syscall.
-
-The contrast with the endpoint parks of Chapter 8.3 is the thing to take away. A message
-may never come at all, so waiting for one has to be bounded by something outside the
-wait. A *contended* mutex always has a live owner, and the boost above is the mechanism
-pushing that owner through its critical section; the wait is bounded by the owner's
-remaining section rather than by the clock. A deadline would hand the caller a way to
-abandon a wait it is simultaneously lending its urgency to, which is close to the
-opposite of what the boost exists to do.
+The deadline is the caller's, as on every other blocking call: a thread that would rather
+do something else than wait past a point says so, and a try (a deadline of zero) asks only
+whether the mutex is free. A try that finds it held answers at once, before either pass
+below, so it lends no priority and never parks. A waiting caller lends its urgency for as
+long as it waits and takes it back when it stops, which is all I2 asks: the boost is
+justified by a donor that is parked, and it goes when the donor does, by grant, cancel or
+expiry alike.
 
 The park and the edge are seated by the same call, and the waker clears both when it hands
 the mutex over. Neither may be left to the parked thread to do after it resumes: on an
@@ -266,7 +261,8 @@ The mutex is the first real user of the `wait_result` status channel (Chapter 2.
 values are drawn from the one fleet-wide error taxonomy every syscall returns from
 (Chapter 3.9): `0` for a normal grant, and otherwise a negated `KOS_E*` code. Some of
 those end the park without the mutex, `-KOS_EDEADLK` for the refusals the walk above
-found, `-KOS_ECANCELED` for a waiter cancelled while parked. And one does not.
+found, `-KOS_ECANCELED` for a waiter cancelled while parked, `-KOS_ETIMEDOUT` for one whose
+deadline passed or a try that found the mutex held. And one does not.
 
 That one arises at thread exit. If a thread exits while owning a mutex, its teardown
 (Chapter 8.2, the exit path that closes a thread's capabilities) **force-unlocks** each
@@ -291,7 +287,7 @@ walks away from a mutex it is holding and strands every waiter behind it, perman
 The correct shape tests that code by name:
 
 ```
-int const rc = kos_mutex_lock(m);
+int const rc = kos_mutex_lock(m, KOS_TIMEOUT_NONE);
 if (rc == -KOS_EOWNERDEAD)
 {
     // HELD. Repair or discard whatever the mutex protected, then carry on and unlock.

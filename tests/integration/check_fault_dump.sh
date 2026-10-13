@@ -16,9 +16,9 @@
 # with the status the marker implies, and both of those are asserted positively below. The EXIT
 # STATUS is the half no shuffle can reach, the emulator reporting it rather than the wire.
 #
-# ABOVE ONE CORE THE MARKER CAN ARRIVE SPLIT: arch_console_write is a byte-at-a-time device loop
-# under no lock, so a core printing a status line lands it INSIDE another's line character by
-# character. The byte-exact match is tried first and a split is tolerated only where the image
+# ABOVE ONE CORE THE MARKER CAN ARRIVE SPLIT: the console keeps a line whole only within one
+# write, so a line sent in several writes can take another core's line between its pieces. The
+# byte-exact match is tried first and a split is tolerated only where the image
 # reported more than one core, through require_on_wire, which reports every split it allows with
 # its span. The count ABOVE ONE stays byte-exact: an interleave hides a marker and can never
 # manufacture a second one. This gate reads no field off the wire, so nothing here is a VALUE a
@@ -28,8 +28,8 @@
 # `fault` runs its illegal instruction from main, the default composition's task, which is
 # unprivileged in every posture, so a backend that opted into fault isolation kills the
 # thread ("THREAD FAULT", KOS_EXIT_FAULT, which ends main's task and the system through the
-# init) where the others panic ("HARD FAULT" / "SIM FAULT" / "RISC-V TRAP", 132 from
-# kfault_terminate).
+# init) where the others panic ("USAGE FAULT" / "HARD FAULT" / "SIM FAULT" / "RISC-V TRAP",
+# 132 from kfault_terminate).
 #
 # Coverage: the sim is the one wired target that ARMS a console ring, so it is the armed-ring
 # path this gate witnesses; the other wired targets are polled semihosting. The ring-arming

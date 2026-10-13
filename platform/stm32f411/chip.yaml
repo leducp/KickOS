@@ -8,9 +8,11 @@ version: 1
 chip: stm32f411
 manual: "RM0383 STM32F411xC/E Reference Manual, Rev 4 (May 2025)"
 arch: armv7m
-protection: { unit: pmsav7, covers_devices: true, memory_type: true }
+protection: { unit: pmsav7, granule: 32, covers_devices: true, memory_type: true }
 data_cache: false
 
+family: none
+exits_on_fault: false
 interrupts: { count: { value: 86, ref: "Table 37 Vector table, p.205" } }
 
 devices:

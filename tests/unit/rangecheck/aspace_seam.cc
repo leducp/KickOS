@@ -11,7 +11,6 @@
 #include <kickos/arch/arch.h>
 #include <kickos/aspace.h>
 #include <kickos/domain.h>
-#include <kickos/frame_pool.h>
 #include <kickos/kernel.h>
 #include <kickos/sync.h>
 #include <kickos/task.h>
@@ -28,7 +27,6 @@ namespace kickos
     {
         namespace
         {
-            // Use a distinct address per simulated space.
             uint8_t g_spaces[FIXTURE_DOMAIN_SLOTS] = {};
         }
 
@@ -155,50 +153,16 @@ namespace kickos
         return &d->ranges;
     }
 
-    // No test creates CAP_ASPACE capabilities; all handles are invalid.
-    Domain* domain_resolve(int)
-    {
-        return nullptr;
-    }
-
-    uint16_t domain_refcount(Domain const* d)
-    {
-        return testfix::domain_refs(d);
-    }
-
     void ustack_free(Domain*, uintptr_t, size_t) {}
-
-    // No thread in these tests holds a window.
-    VirtualRanges* domain_ranges_mut(Domain*)
-    {
-        return nullptr;
-    }
-
-    void frame_pool_free_run(arch_phys_addr_t, size_t, size_t) {}
 }
 
 extern "C"
 {
     void arch_aspace_activate(struct arch_aspace*) {}
     struct arch_aspace* arch_aspace_boot(void) { return nullptr; }
-    enum arch_aspace_result arch_aspace_unmap(struct arch_aspace*, uintptr_t, size_t)
-    {
-        return ARCH_ASPACE_OK;
-    }
-
-    void* kmemset(void* dst, int c, size_t n)
-    {
-        return memset(dst, c, n);
-    }
-
     void* kmemcpy(void* dst, void const* src, size_t n)
     {
         return memcpy(dst, src, n);
-    }
-
-    size_t arch_aspace_granule(void)
-    {
-        return 4096u;
     }
 
     uintptr_t arch_aspace_user_offset(void)

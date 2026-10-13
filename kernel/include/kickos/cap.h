@@ -32,10 +32,10 @@ static_assert(KICKOS_CAP_CHILD_WIDTH > KICKOS_CAP_FIRST_DYNAMIC,
               "no dynamic cap slots left in a spawned child: raise KICKOS_MAX_SPAWN_GRANTS, "
               "or shrink the reserved range");
 
-// Delegated cap i lands at child index i+1. This assert keeps a full defaulted grant list inside
-// the child width.
-static_assert(KICKOS_MAX_SPAWN_GRANTS < KICKOS_CAP_CHILD_WIDTH,
-              "a full grant list must fit the child table at indices 1..cap_count");
+// Delegated cap i lands at child index KICKOS_CAP_FIRST_DYNAMIC + i. This assert keeps a full
+// defaulted grant list inside the child width.
+static_assert(KICKOS_CAP_FIRST_DYNAMIC + KICKOS_MAX_SPAWN_GRANTS <= KICKOS_CAP_CHILD_WIDTH,
+              "a full grant list must fit the child table above the reserved indices");
 
 namespace kickos
 {
@@ -165,7 +165,8 @@ namespace kickos
         AUTH_SYSTEM = KOS_AUTH_SYSTEM,
         AUTH_CONSOLE = KOS_AUTH_CONSOLE,
         AUTH_TASKS = KOS_AUTH_TASKS,
-        AUTH_BUS_MASTER = KOS_AUTH_BUS_MASTER
+        AUTH_BUS_MASTER = KOS_AUTH_BUS_MASTER,
+        AUTH_BOOTLOADER = KOS_AUTH_BOOTLOADER
     };
 
     // arch_periph_enable carries NO authority bit and must not be given one: it is gated on
@@ -571,8 +572,8 @@ namespace kickos
                                   uint32_t* out_cap);
 
     // Install at a specified empty index without changing the refcount.
-    // Delegated cap i uses child index i+1. Returns the entry, or nullptr for an
-    // invalid index. Asserts that the slot is empty to protect the free list.
+    // Delegated cap i uses child index KICKOS_CAP_FIRST_DYNAMIC + i. Returns the entry, or
+    // nullptr for an invalid index. Asserts that the slot is empty to protect the free list.
     //
     // `badge` is NOT defaulted, and that is the whole of it: a released entry keeps the spare
     // bits its last occupant left, so every install site has to say what this one carries.
@@ -615,7 +616,8 @@ namespace kickos
 
     // Type-agnostic close: bump the slot's cap-gen (stale the handle), empty the entry,
     // then drop one reference to the named object (freeing it at refs -> 0). Returns 0,
-    // or -KOS_EBADF if the handle does not resolve. Succeeds while other holders remain open.
+    // -KOS_EBADF if the handle does not resolve, or -KOS_EPERM for a reserved index, the
+    // kernel's seat. Succeeds while other holders remain open.
     int handle_close(Thread* c, uint32_t cap_handle, Held held);
 
     // Slots released per IrqLock hold in cap_teardown: the cap on the interrupt-masked window.
@@ -642,9 +644,10 @@ namespace kickos
 
     // Seat (or re-seat) thread t's reserved stdout slot (index 0) as a SEND-ONLY (CAP_SIGNAL)
     // copy of console endpoint `target`. This and cap_install_defaults are the only paths that
-    // seat the reserved slot, and neither bumps its cap-gen; a thread that closes handle 0 itself
-    // does bump it, and a re-seat afterwards no longer answers KOS_CAP_STDOUT. Takes the new ref
-    // BEFORE dropping any prior one, so re-seating the same endpoint never transiently frees it.
+    // seat the reserved slot, and nothing bumps its cap-gen: no holder may close it, and it names
+    // the published endpoint, a dead one included, until the next publish moves it. Takes the
+    // new ref BEFORE dropping any prior one, so re-seating the same endpoint never transiently
+    // frees it.
     // False = nothing seated and any prior seat left exactly as it was.
     bool cap_seat_stdout(Thread* t, int target, Held held);
 
@@ -652,6 +655,21 @@ namespace kickos
     // NOTHING (index 0 empty; write() falls back to kconsole_write). Post-publish it seats
     // a send-only (CAP_SIGNAL) copy of the console endpoint at index 0. See D4.
     void cap_install_defaults(Thread* child, Held held);
+
+    // "No libc lock": the all-ones index, which SlotPool never seats. Compared by equality.
+    static constexpr int KCAP_LIBC_LOCK_NONE = -1;
+
+    // The libc lock of the address space task `tk` runs in, with one reference taken for a new
+    // member: the mutex a live thread of that space holds at KOS_CAP_LIBC_LOCK, else a fresh one.
+    // KCAP_LIBC_LOCK_NONE when the mutex pool is empty or the reference at its ceiling.
+    [[nodiscard]] int cap_libc_lock_take(Task const* tk, Held held);
+    // Hands back a take that was never seated.
+    void cap_libc_lock_give(int lock, Held held);
+    // Seats a take at `t`'s empty KOS_CAP_LIBC_LOCK, lock and unlock its only use.
+    void cap_seat_libc_lock(Thread* t, int lock);
+    // Whether a mutex_create may take a pool slot: one is kept for every address space that
+    // could still need its libc lock.
+    bool cap_mutex_create_admitted();
 
     // Move the kernel's stdout-target ref to `obj_handle` AND seat `publisher`'s own slot 0 on
     // it. Both refs are taken before either seat moves, and the new ones
@@ -747,8 +765,8 @@ namespace kickos
     [[nodiscard]] bool task_object_admit_binding_notify(int binding_slot, int notify_handle);
 
     // The single authority chokepoint: may thread `c` ask the kernel to do `need` (one or more
-    // AUTH_* bits)? True if it is privileged, or if its authority word carries every requested
-    // bit. nullptr is false. The ONE cap.h entry point that does NOT require IrqLock: it reads
+    // AUTH_* bits)? True if its authority word carries every requested bit. nullptr is
+    // false. The ONE cap.h entry point that does NOT require IrqLock: it reads
     // `c`'s own TCB word, written only by that thread or by its parent before it first runs.
     bool cap_check_authority(Thread* c, uint32_t need);
 
@@ -760,8 +778,9 @@ namespace kickos
     // Narrow in place, never widening (the rule a cap_grant mask and
     // kos_thread_params::authority obey): thread c's authority word where `cap_handle` is
     // KOS_CAP_AUTHORITY, the rights of the cap it names otherwise. Dropping CAP_WAIT or
-    // CAP_HANDOUT from an endpoint cap moves its holder counts as a close would. Returns 0 or
-    // -KOS_EBADF (c holds no authority, or the handle names no cap).
+    // CAP_HANDOUT from an endpoint cap moves its holder counts as a close would. Returns 0,
+    // -KOS_EBADF (c holds no authority, or the handle names no cap), or -KOS_EPERM (a reserved
+    // index).
     int cap_narrow(Thread* c, uint32_t cap_handle, uint32_t mask, Held held);
 
 #if KICKOS_AMP_NODE

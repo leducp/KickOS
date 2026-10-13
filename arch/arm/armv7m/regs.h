@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// ARMv7-M core peripheral registers, arch-internal, NOT part of the porting ABI. Offsets
-// are from the ARMv7-M Architecture Reference Manual, not vendor headers.
+// ARMv7-M core peripheral registers, arch-internal.
 
 #ifndef KICKOS_ARCH_ARM_ARMV7M_REGS_H
 #define KICKOS_ARCH_ARM_ARMV7M_REGS_H
 
 #include <stdint.h>
 
-#include "../common/regs.h" // reg32, SCB_ICSR/ICSR_*, SysTick, NVIC ISER/ICER/ISPR (shared)
+#include "../common/regs.h"
 
 namespace kickos
 {
@@ -36,13 +35,9 @@ namespace kickos
         constexpr uint32_t DEMCR_TRCENA = 1u << 24;
         constexpr uint32_t DWT_CTRL_CYCCNTENA = 1u << 0;
 
-        // System-handler / IRQ priority bytes (only the top implementation-defined bits are
-        // implemented; writing the full byte is fine, low bits read back zero).
-        // Ordering that the BASEPRI critical section relies on:
-        //   lock threshold (0x20) < device band (>= 0x30) < SysTick/SVCall (0xE0)
-        //   < PendSV (0xF0, lowest). BASEPRI = 0x20 masks everything numerically
-        //   >= 0x20, i.e. all kernel exceptions + device IRQs, leaving only a
-        //   future 0x00/0x10 zero-latency band unmaskable by the kernel.
+        // The BASEPRI critical section relies on this order: lock threshold (0x20) < device band
+        // (>= 0x30) < SysTick/SVCall (0xE0) < PendSV (0xF0, lowest). BASEPRI = 0x20 masks every
+        // kernel exception and device IRQ.
         constexpr uint32_t PRIO_LOCK_BASEPRI = 0x20;
         constexpr uint32_t PRIO_DEVICE = 0x30;  // default device-IRQ priority: masked by the lock
         constexpr uint32_t PRIO_SYSTICK = 0xE0;

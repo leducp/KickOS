@@ -41,8 +41,9 @@ thread  armv7m reclaimwit       rwdrv root=main.cc:console_sink stack=RW_DRIVER_
 thread  armv7m reclaimwit_drain rwdrv root=main.cc:console_sink stack=RW_DRIVER_STACK \
                reason: the published console driver, spawned on a stack main allocates
 unsized armv7m arch_syscall 0 reason: switch.S, a load, the svc and bx lr, which write no stack
-unsized armv7m _free_r 16 calls=__malloc_lock,__malloc_unlock \
-               reason: newlib nano, measured on the linked image: push {r4, lr} then sp lowered by 8, and __malloc_unlock is a tail call
+unsized armv7m arch_syscall64 0 reason: switch.S, the same entry as arch_syscall
+unsized armv7m _free_r 16 calls=__retarget_lock_acquire_recursive,__retarget_lock_release_recursive \
+               reason: newlib nano, measured on the linked image: push {r4, lr} then sp lowered by 8, and its __malloc_lock and __malloc_unlock branch to the hooks with no frame
 
 # --- armv6m ------------------------------------------------------------------------------
 need    armv6m header=arch/arm/armv6m/include/kickos/arch/armv6m_trap_stack.h \
@@ -53,8 +54,9 @@ thread  armv6m reclaimwit       rwdrv root=main.cc:console_sink stack=RW_DRIVER_
 thread  armv6m reclaimwit_drain rwdrv root=main.cc:console_sink stack=RW_DRIVER_STACK \
                reason: the published console driver, spawned on a stack main allocates
 unsized armv6m arch_syscall 4 reason: switch.S, a push {r4} popped again ahead of the svc, then bx lr
-unsized armv6m _free_r 16 calls=__malloc_lock,__malloc_unlock \
-               reason: newlib nano, measured on the linked microbit image: push {r4, r5, r6, lr} and no sub
+unsized armv6m arch_syscall64 4 reason: switch.S, the same entry as arch_syscall
+unsized armv6m _free_r 24 calls=__retarget_lock_acquire_recursive,__retarget_lock_release_recursive \
+               reason: newlib nano, measured on the linked microbit image: push {r4, r5, r6, lr} and no sub, then its __malloc_lock or __malloc_unlock, push {r4, lr} and a call into the hook
 
 # --- rv32imac ----------------------------------------------------------------------------
 need    rv32imac header=arch/riscv/rv32imac/include/kickos/arch/rv_trap_stack.h \
@@ -65,6 +67,7 @@ thread  rv32imac reclaimwit       rwdrv root=main.cc:console_sink stack=RW_DRIVE
 thread  rv32imac reclaimwit_drain rwdrv root=main.cc:console_sink stack=RW_DRIVER_STACK \
                reason: the published console driver, spawned on a stack main allocates
 unsized rv32imac arch_syscall 0 reason: switch.S, an ecall and a ret, which write no stack
+unsized rv32imac arch_syscall64 0 reason: switch.S, the same entry as arch_syscall
 
 # --- rxv3 --------------------------------------------------------------------------------
 need    rxv3 header=arch/rx/rxv3/include/kickos/arch/rx_trap_stack.h \
@@ -75,6 +78,7 @@ thread  rxv3 reclaimwit       rwdrv root=main.cc:console_sink stack=RW_DRIVER_ST
 thread  rxv3 reclaimwit_drain rwdrv root=main.cc:console_sink stack=RW_DRIVER_STACK \
                reason: the published console driver, spawned on a stack main allocates
 unsized rxv3 arch_syscall 4 reason: switch.S, an int #1 and an rts; the 4 is the return address the caller pushed, which an rx-elf frame charges to the callee
+unsized rxv3 arch_syscall64 4 reason: switch.S, the same entry as arch_syscall
 
 # --- lx6 ---------------------------------------------------------------------------------
 # No user mode: a syscall is a plain call, so the walk runs down the kernel's own paths, and a
@@ -86,8 +90,8 @@ thread  lx6 reclaimwit       rwdrv root=main.cc:console_sink stack=RW_DRIVER_STA
                reason: the published console driver, spawned on a stack main allocates
 thread  lx6 reclaimwit_drain rwdrv root=main.cc:console_sink stack=RW_DRIVER_STACK \
                reason: the published console driver, spawned on a stack main allocates
-unsized lx6 _free_r 32 calls=__malloc_lock,__malloc_unlock \
-               reason: newlib, measured on the linked images: entry a1 32 and call8 into the two
+unsized lx6 _free_r 64 calls=__retarget_lock_acquire_recursive,__retarget_lock_release_recursive \
+               reason: newlib, measured on the linked images: entry a1 32 and call8 into its __malloc_lock or __malloc_unlock, each entry a1 32 and a callx8 into the hook
 unsized lx6 __umoddi3 32 reason: libgcc's _umoddi3.o, entry a1 32, and it references no other symbol
 
 # --- armv8a ------------------------------------------------------------------------------
@@ -99,6 +103,7 @@ thread  armv8a reclaimwit       rwdrv root=main.cc:console_sink stack=RW_DRIVER_
 thread  armv8a reclaimwit_drain rwdrv root=main.cc:console_sink stack=RW_DRIVER_STACK \
                reason: the published console driver, spawned on a stack main allocates
 unsized armv8a arch_syscall 0 reason: switch.S, an svc and a ret, which write no stack
+unsized armv8a arch_syscall64 0 reason: switch.S, the same entry as arch_syscall
 
 # --- rv64imac ----------------------------------------------------------------------------
 need    rv64imac header=arch/riscv/rv64imac/include/kickos/arch/rv64_trap_stack.h \
@@ -109,6 +114,7 @@ thread  rv64imac reclaimwit       rwdrv root=main.cc:console_sink stack=RW_DRIVE
 thread  rv64imac reclaimwit_drain rwdrv root=main.cc:console_sink stack=RW_DRIVER_STACK \
                reason: the published console driver, spawned on a stack main allocates
 unsized rv64imac arch_syscall 0 reason: switch.S, an ecall and a ret, which write no stack
+unsized rv64imac arch_syscall64 0 reason: switch.S, the same entry as arch_syscall
 
 # --- x86_64 ------------------------------------------------------------------------------
 need    x86_64 header=arch/x86/x86_64/include/kickos/arch/x86_64_trap_stack.h \
@@ -119,3 +125,4 @@ thread  x86_64 reclaimwit       rwdrv root=main.cc:console_sink stack=RW_DRIVER_
 thread  x86_64 reclaimwit_drain rwdrv root=main.cc:console_sink stack=RW_DRIVER_STACK \
                reason: the published console driver, spawned on a stack main allocates
 unsized x86_64 arch_syscall 8 reason: switch.S, a move, the syscall and a ret; the 8 is the return address the caller pushed, which an x86_64 gcc frame charges to the callee
+unsized x86_64 arch_syscall64 8 reason: switch.S, the same entry as arch_syscall

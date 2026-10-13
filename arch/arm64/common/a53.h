@@ -2,18 +2,25 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The Cortex-A53 facts both arm64 chips rest on: the kernel's device window, the semihosting
-// call and the timer PPI. A chip keeps its UART, its reserved-block list, its EL handover and
-// its reset path.
+// call, the EL refusal and the C runtime ranges.
 
 #ifndef KICKOS_ARCH_ARM64_COMMON_A53_H
 #define KICKOS_ARCH_ARM64_COMMON_A53_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #include <kickos/arch/gic_ppi.h>
 
+#include <fatal_status.ld.h>
+
 extern "C"
 {
+    extern uint32_t _sidata, _sdata, _edata, _sbss, _ebss;
+    // The app's .bss lives in the low window, outside _sbss.._ebss, so the boot zeroing
+    // covers it separately. Its .data needs no copy: the low window links VMA == LMA.
+    extern uint32_t __kickos_appbss_start, __kickos_appbss_end;
+
     // VA - PA for the kernel's half, defined by the chip linker script.
     extern unsigned char __kickos_arm64_va_base[];
 
@@ -33,10 +40,9 @@ extern "C"
 
 namespace kickos::arm64
 {
-    // EVERY DEVICE REGISTER IS REACHED THROUGH THE KERNEL'S OWN HALF. The device gigabyte is
-    // mapped at PA + __kickos_arm64_va_base by TTBR1, which every address space shares; TTBR0
-    // carries a per-process root that maps no device at all, so a low literal here would
-    // translate against whatever process happened to be running.
+    // Every device register is reached through the kernel's half (TTBR1, PA +
+    // __kickos_arm64_va_base): TTBR0's per-process root maps no device, so a low literal would
+    // translate against whatever process is running.
     inline uintptr_t dev_va(uintptr_t pa)
     {
         return pa + reinterpret_cast<uintptr_t>(__kickos_arm64_va_base);
@@ -68,6 +74,50 @@ namespace kickos::arm64
         while (true)
         {
             __asm volatile("wfi");
+        }
+    }
+
+    using boot_write_fn = void (*)(char const* buf, size_t n);
+
+    // The body of a chip's kickos_arm64_bad_el: head, the entry level, tail, then exit. write is
+    // the chip's boot-span writer and the strings sit in the boot span too, since this runs
+    // before .data and .bss exist and with the MMU off.
+    inline __attribute__((always_inline, noreturn)) void bad_el_exit(unsigned long el,
+                                                                     boot_write_fn write,
+                                                                     char const* head, size_t head_n,
+                                                                     char const* tail, size_t tail_n)
+    {
+        char const digit = static_cast<char>('0' + (el & 3));
+        write(head, head_n);
+        write(&digit, 1);
+        write(tail, tail_n);
+
+        // 16-byte aligned: every access is Device-nGnRnE while the MMU is off, which faults on
+        // an unaligned one whatever SCTLR_EL1.A says, and the compiler stores this pair wide.
+        uint64_t block[2] __attribute__((aligned(16)));
+        block[0] = ADP_Stopped_ApplicationExit;
+        block[1] = KICKOS_FATAL_STATUS;
+        semihost(SYS_EXIT, block);
+
+        halt_masked();
+    }
+
+    // Copies .data and zeroes both .bss ranges, ahead of the constructors.
+    inline __attribute__((always_inline)) void crt_ranges_init(void)
+    {
+        uint32_t* src = &_sidata;
+        uint32_t* dst = &_sdata;
+        while (dst < &_edata)
+        {
+            *dst++ = *src++;
+        }
+        for (uint32_t* b = &_sbss; b < &_ebss; b++)
+        {
+            *b = 0;
+        }
+        for (uint32_t* b = &__kickos_appbss_start; b < &__kickos_appbss_end; b++)
+        {
+            *b = 0;
         }
     }
 }

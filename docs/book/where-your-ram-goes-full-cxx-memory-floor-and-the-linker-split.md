@@ -14,9 +14,10 @@ Copyright (c) 2026 Philippe Leduc
 > an app side so a memory-protection unit can fence them apart**. For the exact contract
 > it binds into the Reference: [`../reference/architecture.md`](../reference/architecture.md)
 > (the region-set model and budget) and [`../reference/porting.md`](../reference/porting.md)
-> (the RISC-V `gp` anchor); the worked linker example is
-> [`../../arch/arm/chip/mk64f/mk64f.ld`](../../arch/arm/chip/mk64f/mk64f.ld). This chapter is
-> the LAYOUT: which side of the wall each byte lands on.
+> (the RISC-V `gp` anchor); the worked linker example is the body every Cortex-M chip script
+> shares, [`../../arch/arm/common/cortexm.ld.h`](../../arch/arm/common/cortexm.ld.h), as
+> [`../../arch/arm/chip/mk64f/mk64f.ld`](../../arch/arm/chip/mk64f/mk64f.ld) uses it. This
+> chapter is the LAYOUT: which side of the wall each byte lands on.
 
 A KickOS app's own writable state is a few globals and its stack. Full C++ --
 `-fexceptions -frtti`, the toolchain's `libstdc++`/`libsupc++` in the link -- puts a floor
@@ -142,10 +143,12 @@ is decided entirely in the chip linker script. KickOS links the kernel, the arch
 backends, the app, and the whole toolchain runtime into **one ELF image**. A
 memory-protection unit then needs that one image partitioned so an unprivileged thread
 reaches its own code and data but never the kernel's. The linker script is where that
-partition is authored. Read
-[`../../arch/arm/chip/mk64f/mk64f.ld`](../../arch/arm/chip/mk64f/mk64f.ld) alongside this
-section; it is the worked example this chapter quotes, and every other chip's script is
-recognisably the same scheme. Where they differ is the granularity of the protected
+partition is authored. Read the shared Cortex-M body
+[`../../arch/arm/common/cortexm.ld.h`](../../arch/arm/common/cortexm.ld.h) alongside this
+section, with [`../../arch/arm/chip/mk64f/mk64f.ld`](../../arch/arm/chip/mk64f/mk64f.ld), a
+chip script that includes it. It is the worked example this chapter quotes, the snippets
+showing it as it expands for mk64f, and every other family's body is recognisably the same
+scheme. Where they differ is the granularity of the protected
 window, which the next sections show changing the shape of one check.
 
 ### The inverted colon selector: capture the kernel, let the rest fall through
@@ -344,7 +347,8 @@ On mk64f the EHABI tables go into FLASH:
 The other models home their tables the same way in their own scripts: RX puts
 `.gcc_except_table` in ROM ([`rx72m.ld`](../../arch/rx/chip/rx72m/rx72m.ld)), RISC-V folds
 `.eh_frame` + `.gcc_except_table` into the `.text` code region and `KEEP`s them with a
-`LONG(0)` terminator ([`esp32c6.ld`](../../arch/riscv/chip/esp32c6/esp32c6.ld)). In every
+`LONG(0)` terminator ([`rv32imac.ld.h`](../../arch/riscv/common/rv32imac.ld.h), the RV32
+body). In every
 case the placement is deliberate: the tables must sit **inside** the code region the
 unprivileged thread was granted, or the unwinder faults reading them.
 
@@ -417,10 +421,13 @@ top-to-bottom as a sequence of decisions:
 5. **Does RAM get stood up before C runs?** The copy/zero tables (the zeroed pad is the
    heap), and (RISC-V) the `.appdata` LMA->VMA copy in `Reset_Handler`.
 
-To *author* a new chip's script, copy mk64f.ld (ARM SYSMPU/PMSA), rx72m.ld (RX MPU, SjLj,
-exact-size), or esp32c6.ld (RISC-V PMP, DWARF, `gp` anchor) as the nearest template,
-change the `MEMORY` map and the `chip` archive name in the colon selectors, size
-`_appdata_size`/`_code_size` for the part, and keep the `ASSERT`s. The isolation is only
+To *author* a new chip's script, start from the nearest chip of its family. On Cortex-M
+(`mk64f.ld` over `cortexm.ld.h`) and on RV32 (`esp32c6.ld` over `rv32imac.ld.h`, PMP, DWARF,
+`gp` anchor) the chip script is a thin head around the shared body: its `MEMORY` map, its
+vector placement and its window sizes, while the build fills the arch and chip archive
+names into the colon selectors (`KICKOS_LD_ARCH_LIB`, `KICKOS_LD_CHIP_LIB`). `rx72m.ld`
+(RX MPU, SjLj, exact-size) is a whole script of its own. Either way, size
+`_appdata_size`/`_code_size` for the part and keep the `ASSERT`s. The isolation is only
 ever as good as the selector list being complete and the window being a shape the unit can
 grant -- both of which the `ASSERT`s check at link time so a mistake is a build failure,
 not a silent leak.

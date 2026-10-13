@@ -16,11 +16,11 @@
 # VMALLE1IS pair the same way at op2=0b000. So CRm=7 is LOCAL and CRm=3 is BROADCAST. Any other
 # CRm is a shareability this gate was not written to judge, and is refused rather than passed.
 #
-# Above one core, the maintenance arch_aspace_unmap reaches is judged by its result instead:
-# deadstack reads a page from a peer core across its unmap, and on qemu-arm64-smp a local form
-# there leaves that core reading the withdrawn page. What arch_aspace_map and
-# arch_aspace_destroy reach beyond it, the full flush, stays judged here: planted local, it
-# reddens no emulator arm.
+# Above one core, the by-address invalidates arch_aspace_unmap reaches are judged by their result
+# instead: deadstack reads a page from a peer core across its unmap, and on qemu-arm64-smp a local
+# form there leaves that core reading the withdrawn page. Every full flush stays judged here,
+# whichever root reaches it: planted local, it reddens no emulator arm. A by-address form is an
+# odd op2 (C5.5: VAE1, VAAE1, VALE1, VAALE1).
 #
 # arch_aspace_activate is asserted LOCAL at EVERY core count: a root change concerns the PE whose
 # register changed, so a uniform edit that turned the whole file broadcast must redden this gate.
@@ -50,6 +50,9 @@ ROOTS="arch_aspace_map arch_aspace_unmap arch_aspace_destroy arch_aspace_activat
 SYM_FLOOR=100
 # The transitive walk's bound, per root.
 WALK_CAP=100000
+# Followed no further: the panic stack switch never returns to its caller, and the reporter past
+# it maintains no mapping a peer still uses.
+STOP="kickos_panic_stack_enter"
 # The two CRm values C5.5 gives the pair, handed to the scanner and to the verdict from ONE
 # place, so a control cannot be judged by a different reading from the tree's.
 CRM_BCAST=3
@@ -108,7 +111,7 @@ judge() { # <nm listing> <disassembly> <cores>
 
     # Records out of one pass: TOTAL <n>, BAD <crm> <word> <sym>, MISSING <root>, OVERRUN <root>,
     # and ROOT <root> <sym> <crm> <word> for every TLBI the walk from <root> reaches.
-    awk -F'\t' -v roots="$ROOTS" -v cap="$WALK_CAP" -v bcast="$CRM_BCAST" \
+    awk -F'\t' -v roots="$ROOTS" -v stop="$STOP" -v cap="$WALK_CAP" -v bcast="$CRM_BCAST" \
         -v local_crm="$CRM_LOCAL" -v directive="$DIRECTIVE" '
         function hex2num(s,   i, c, v, n) {
             n = 0
@@ -173,6 +176,10 @@ judge() { # <nm listing> <disassembly> <cores>
         }
         END {
             print "TOTAL " total + 0
+            ns = split(stop, stops, " ")
+            for (i = 1; i <= ns; i++) {
+                isstop[stops[i]] = 1
+            }
             nr = split(roots, root, " ")
             for (i = 1; i <= nr; i++) {
                 r = root[i]
@@ -198,7 +205,7 @@ judge() { # <nm listing> <disassembly> <cores>
                             print "ROOT " r " " s " " part[j] " " part[j + 1]
                         }
                     }
-                    if (s in edges) {
+                    if ((s in edges) && !(s in isstop)) {
                         n = split(edges[s], part, " ")
                         for (j = 1; j <= n; j++) {
                             if (!(part[j] in seen)) {
@@ -236,8 +243,12 @@ judge() { # <nm listing> <disassembly> <cores>
     # --- the verdict, per root ------------------------------------------------
     : > "$_t/witnessed"
     if [ "$_cores" -gt 1 ]; then
-        awk '$1 == "ROOT" && $2 == "arch_aspace_unmap" { print $3 }' "$_t/rec" \
-            | sort -u > "$_t/witnessed"
+        awk '$1 == "ROOT" && $2 == "arch_aspace_unmap" {
+                nib = index("0123456789abcdef", substr($5, 7, 1)) - 1
+                if (int(nib / 2) % 2 == 1) {
+                    print $3 " " $5
+                }
+            }' "$_t/rec" | sort -u > "$_t/witnessed"
     fi
     : > "$_t/judged"
     for root in $ROOTS; do
@@ -267,7 +278,7 @@ judge() { # <nm listing> <disassembly> <cores>
             label=local
         else
             awk -v f="$_t/witnessed" 'BEGIN { while ((getline l < f) > 0) w[l] = 1 }
-                !($3 in w)' "$_t/root" > "$_t/kept"
+                !(($3 " " $5) in w)' "$_t/root" > "$_t/kept"
             mv "$_t/kept" "$_t/root"
             n="$(wc -l < "$_t/root" | tr -d ' ')"
         fi

@@ -2,8 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The console seams of a semihosting chip. SYS_WRITEC hands each byte to the host inside the
-// call: no channel to wait on, no completion to interrupt on, nothing ever in flight, so
-// arch_console_flush_sync is left to its no-op fallback.
+// call, so nothing is ever in flight and arch_console_flush_sync keeps its no-op fallback.
 
 #include <kickos/arch/arch.h>
 #include <kickos/console_tx.h>
@@ -24,18 +23,13 @@ namespace
     void semihost_tx_irq_enable(void) {}
     void semihost_tx_irq_disable(void) {}
 
-    char console_tx_buf[KICKOS_CONSOLE_TX_SIZE];
     console_tx_backend const semihost_console_backend = {
-        semihost_tx_slot_free, semihost_tx_push, semihost_tx_irq_enable, semihost_tx_irq_disable};
+        semihost_tx_slot_free, semihost_tx_push, semihost_tx_irq_enable, semihost_tx_irq_disable,
+        &kickos_console_tx_storage};
 }
 
 extern "C"
 {
-
-int arch_console_write(char const* buf, size_t n)
-{
-    return console_tx_insert_line(buf, n, KICKOS_CONSOLE_CRLF);
-}
 
 bool arch_console_write_sync(char const* buf, size_t n)
 {
@@ -46,10 +40,8 @@ bool arch_console_write_sync(char const* buf, size_t n)
     return true;
 }
 
-console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)
+console_tx_backend const* arch_console_tx_backend(int* irq_line)
 {
-    *storage = console_tx_buf;
-    *size = KICKOS_CONSOLE_TX_SIZE;
     *irq_line = -1;
     return &semihost_console_backend;
 }

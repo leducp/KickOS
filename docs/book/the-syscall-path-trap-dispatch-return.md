@@ -150,7 +150,7 @@ context switch inline instead of asking for one later, so the caller genuinely d
 execute again until it is replied to.
 
 That the licence generalises is itself the lesson. The shape is an opt-in an arch
-declares for itself (`arch/*/*/ipc_fastpath.cmake`, which sets
+declares for itself (`select ARCH_HAS_IPC_FASTPATH` in `arch/Kconfig`, which sets
 `KICKOS_ARCH_HAS_IPC_FASTPATH`), and what decides whether an arch *can* opt in is not
 the ISA's temperament but whether it has an exception entry worth skipping. The two
 backends with no trap have nothing to gain: their dispatch is already a plain call on

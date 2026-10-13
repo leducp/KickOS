@@ -349,7 +349,6 @@ namespace kickos
         {
             kernel().current(me) = next;
             next->state.to<ThreadState::RUNNING>();
-            policy_on_switch_in(next);
         }
 
 #if KICKOS_LIBC_REENT
@@ -426,6 +425,8 @@ namespace kickos
             seat_level(next, me, held);
             KICKOS_BENCH_DECIDE_CLOSE();
 #endif
+            // Stamp after the seating, or its cost eats the slice.
+            policy_on_switch_in(next);
             // Must arm for the incoming thread before the jump: nothing else programs its
             // policy deadline (RR slice).
             ktime_rearm(next, held);
@@ -478,12 +479,6 @@ namespace kickos
                 }
             }
             if (bad == nullptr)
-            {
-                return nullptr;
-            }
-            // Privileged wild pointers are kernel bugs, not containable thread faults.
-            // Idle is outside ThreadPool and has already been excluded.
-            if (bad->privileged)
             {
                 return nullptr;
             }
@@ -734,6 +729,7 @@ namespace kickos
 #if KICKOS_LIBC_REENT
             seat_reent(rspace, first);
 #endif
+            policy_on_switch_in(first);
             ktime_rearm(first, lock);
 #if KICKOS_KERNEL_CORES > 1
             // A core that starts declines what it holds below `first`, and its level falls from
@@ -742,7 +738,7 @@ namespace kickos
             kernel().seated_prio[me] = first->rq_prio;
             drop_scan(me, lock);
 #endif
-            // arch_start does not return, so the bracket above is dropped by hand.
+            // Dropped by hand: arch_start may never return, or switch at the IrqLock's release.
             klock_drop();
 #if KICKOS_KERNEL_CORES > 1
             sched_flush(me);
@@ -1150,6 +1146,6 @@ extern "C" void kickos_thread_slay_exit(void* arg)
     KICKOS_ASSERT(::kickos::sched::current()->ctx.kernel_sp == 0
                   or kickos_fault_frame_on_kernel_stack(__builtin_stack_address(), 0));
 #endif
-    ::kickos::krecord_abandon();
+    ::kickos::kconsole_slain();
     ::kickos::sched::exit_current(KOS_EXIT_CANCELLED, ::kickos::sched::EXIT_RETURN);
 }

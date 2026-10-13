@@ -11,15 +11,9 @@
 # producer's mask never reached.
 kickos_add_unit_test(NAME console_tx_line
   SOURCES line_atomicity.cc producer_drain.cc amp_retry.cc line_seam.cc
+          "${_cs}/ring_leaves.cc"
           "${PROJECT_SOURCE_DIR}/tests/unit/common/kpanic_seam.cc"
           "${PROJECT_SOURCE_DIR}/kernel/init/console_tx.cc"
           "${PROJECT_SOURCE_DIR}/kernel/irq/irq_route.cc"
   KERNEL
-  DEFINITIONS KICKOS_CONSOLE_TX_BARRIER=consoleline_publish_barrier)
-
-# The publish barrier is the one point inside a ring copy the kernel translation unit calls
-# out to, and kickos/console_tx.h opens it for a weakly-ordered core to inject a fence. Bound
-# to the seam's hook here, which carries that fence and one seated call. The declaration has
-# to reach console_tx.cc, whose include block this gate may not change, so it is forced in.
-target_compile_options(console_tx_line PRIVATE
-  -include "${CMAKE_CURRENT_SOURCE_DIR}/line_barrier.h")
+  DEFINITIONS KICKOS_LINE_STEP=1)

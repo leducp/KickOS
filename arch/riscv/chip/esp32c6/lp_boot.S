@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: CECILL-C
  * Copyright (c) 2026 Philippe Leduc
  *
- * The LP reset PC is 0x50000080. HP copies this vector and jump to LP SRAM
- * before the PMU wake; the LP kernel's own mtvec replaces it after entry.
+ * LP reset vector: the LP reset PC is 0x50000080. HP copies it to LP SRAM before the PMU
+ * wake; the LP kernel's own mtvec replaces it after entry.
  */
 
 #if KICKOS_AMP_OWN_IMAGE && KICKOS_AMP_NODE_ID == 0

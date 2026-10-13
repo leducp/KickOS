@@ -254,7 +254,7 @@ int main(int, char**)
     }
     kos::thread::Handle const w = kos::thread::create_caps(
         worker, nullptr, "tnwork", 10, wcaps, nwcaps, KOS_POLICY_FIFO, 0,
-        /*privileged=*/false, nullptr, 0, 0, nullptr, KOS_TASK_NONE,
+        nullptr, 0, 0, nullptr, KOS_TASK_NONE,
         reinterpret_cast<void*>(lo), TN_STACK_SIZE);
     if (not w.valid())
     {

@@ -80,14 +80,15 @@ cat > "$TMP/tree/CMakePresets.json" <<'EOF'
     { "name": "rx72m-flat", "generator": "Ninja", "binaryDir": "b1" },
     { "name": "esp32c6-wroom-amp2-n0", "generator": "Ninja", "binaryDir": "b2" },
     { "name": "esp32c6-wroom-amp2-n1", "generator": "Ninja", "binaryDir": "b3" },
-    { "name": "esp32-wroom-st", "generator": "Ninja", "binaryDir": "b4" },
+    { "name": "f302nucleo-st", "generator": "Ninja", "binaryDir": "b4" },
     { "name": "esp32-wroom-smp", "generator": "Ninja", "binaryDir": "b5" },
     { "name": "esp32-wroom-bench", "generator": "Ninja", "binaryDir": "b6" }
   ]
 }
 EOF
 printf 'RIG_SESSION=%s\nRIG_TREE=%s\n' "$TMP/session" "$TMP/tree" > "$TMP/rig.conf"
-mkdir -p "$TMP/tree/boards/esp32-wroom/configs/bench"
+mkdir -p "$TMP/tree/boards/esp32-wroom/configs/bench" "$TMP/tree/boards/f302nucleo/configs/st" \
+    "$TMP/tree/boards/rx72m/configs/base"
 printf 'CONFIG_KICKOS_BENCH=y\n' > "$TMP/tree/boards/esp32-wroom/configs/bench/defconfig"
 
 F="$TMP/fixture"
@@ -195,12 +196,15 @@ grep -q '^rx72m  *REFUSED (the tree was not able to list its presets' "$TMP/flee
     || bad "a tree whose presets cannot be listed is not reported"
 cp "$TMP/presets.keep" "$TMP/tree/CMakePresets.json"
 
-# The default variant has one definition, which bench.sh and the fleet pass both read.
-defs=$(grep -lE 'VARIANT=st$|VARIANT:?-st\}' tools/bench/*.sh)
-[ "$defs" = tools/bench/board-rows.sh ] \
-    || bad "the default variant is defined in [$(printf '%s' "$defs" | tr '\n' ' ')], not in board-rows.sh alone"
-grep -qF 'VARIANT="${VARIANT-$BENCH_DEFAULT_VARIANT}"' tools/bench/bench.sh \
-    || bad "bench.sh does not default its variant to BENCH_DEFAULT_VARIANT"
+# The default variant is a board's `st` where its tree carries one and its base elsewhere, and
+# bench.sh and the fleet pass both read it there.
+dv=$(. "$TMP/tools/bench/board-rows.sh" && bench_default_variant "$TMP/tree" f302nucleo)
+[ "$dv" = st ] || bad "a board carrying an st config defaults to [$dv], not st"
+dv=$(. "$TMP/tools/bench/board-rows.sh" && bench_default_variant "$TMP/tree" rx72m)
+[ -z "$dv" ] || bad "a board carrying no st config defaults to [$dv], not its base"
+[ -d "$TMP/tree/boards/rx72m" ] || bad "the base-default case names a board the fixture tree lacks"
+grep -qF 'VARIANT="${VARIANT-$(bench_default_variant . "$BOARD")}"' tools/bench/bench.sh \
+    || bad "bench.sh does not default its variant to bench_default_variant"
 
 # Every variant the tree declares for a board, each under its own tag; a measurement posture is
 # reported and not flashed.
@@ -235,6 +239,17 @@ got=$?
 [ "$got" -eq 1 ] || bad "a pass where an smp image names no judge exits $got, not 1"
 grep -qE '^  esp32-wroom +slaypeer \(smp\) +NO JUDGE$' "$TMP/fleet.out" \
     || bad "an smp image that names no judge is not reported NO JUDGE"
+
+# A board whose default is its st variant captures it once, and not again as a variant.
+printf 'hello|kernel|tests/integration/check_qemu_hello.sh|\n' > "$F/f302nucleo.images"
+fleet '0483:374b STLINK' f302nucleo
+got=$?
+[ "$got" -eq 0 ] || bad "a pass over a board whose default is its st variant exits $got, not 0"
+grep -qxF 'f302nucleo - hello 0 planted' "$F/flashed" \
+    || bad "the f302nucleo pass did not take its default variant"
+if grep -q '^f302nucleo st ' "$F/flashed"; then
+    bad "the f302nucleo pass took its default variant a second time, as a variant of its own"
+fi
 
 # A capture whose judge rests on a bench fitting: the rig declares it or the clause is owed, and
 # no rig line at all declares nothing.

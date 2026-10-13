@@ -2,8 +2,8 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # The isolated-core and root core-mask refusals (cmake/isolated_cores.cmake) over synthetic
-# values, one ctest case each. Included by the root CMakeLists, it registers the cases; each case
-# runs it again in script mode, which calls the function the build calls:
+# values, one ctest case each. Included by tests/static/CMakeLists.txt, it registers the cases;
+# each case runs it again in script mode, which calls the function the build calls:
 #
 #   cmake -DCHECK=<isolated|root> -DMASK=<mask> -DCORES=<n> -DSHARED=<0|1>
 #         -P tests/static/check_isolated_cores.cmake

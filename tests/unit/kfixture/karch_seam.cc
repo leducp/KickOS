@@ -56,6 +56,7 @@ extern "C"
 
     void arch_mpu_apply(struct arch_mpu_region const*, size_t, struct arch_mpu_encoded const*)
     {
+        kickos::testfix::g_now_ns += kickos::testfix::g_seat_cost_ns;
     }
 
     // This fixture describes MPU regions but does not enforce them.
@@ -230,6 +231,11 @@ extern "C"
         return static_cast<int>(kickos::testfix::g_console_dark);
     }
 
+    int console_chip_writers(void)
+    {
+        return 0;
+    }
+
     // No ring: a refused writer offers its line again at once.
     int console_tx_make_room(char const*, size_t, int)
     {
@@ -282,7 +288,7 @@ namespace kickos
     {
     }
 
-    void krecord_abandon(void)
+    void kconsole_slain(void)
     {
     }
 

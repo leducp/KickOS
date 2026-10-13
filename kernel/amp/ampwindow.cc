@@ -10,6 +10,7 @@
 #include <kickos/endpoint.h>
 #include <kickos/irqlock.h>
 #include <kickos/kruntime.h>
+#include <kickos/sync.h>
 #include <kickos/sys/errno.h>
 
 // The doorbell root brackets with IrqLock, which above one kernel core would draw a second
@@ -1130,6 +1131,9 @@ extern "C" void kickos_amp_node_service(void)
 {
     ::kickos::IrqLock lock;
     ::kickos::amp::node_service(lock);
+#if KICKOS_AMP_CONSOLE_CLAIM
+    ::kickos::console_claim_rung(lock);
+#endif
 }
 
 #endif

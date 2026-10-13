@@ -23,10 +23,10 @@ add_custom_command(
   VERBATIM)
 
 kickos_add_unit_test(NAME ram_align_copies TEST_PREFIX stride_
-  SOURCES align_copies.cc "${_ra_table}"
-  INCLUDES "${CMAKE_CURRENT_BINARY_DIR}"
+  SOURCES align_copies.cc "${_ra_table}" "${PROJECT_SOURCE_DIR}/tests/unit/common/region_seam.cc"
+  INCLUDES "${CMAKE_CURRENT_BINARY_DIR}" "${PROJECT_SOURCE_DIR}/tests/unit/common"
   POSTURE KICKOS_TLS=1 KICKOS_TLS_FROM_SP=1 KICKOS_TLS_STRIDE=8192 KICKOS_TLS_STRIDE_LOG2=13)
 kickos_add_unit_test(NAME ram_align_copies_unstrided TEST_PREFIX unstrided_
-  SOURCES align_copies.cc "${_ra_table}"
-  INCLUDES "${CMAKE_CURRENT_BINARY_DIR}"
+  SOURCES align_copies.cc "${_ra_table}" "${PROJECT_SOURCE_DIR}/tests/unit/common/region_seam.cc"
+  INCLUDES "${CMAKE_CURRENT_BINARY_DIR}" "${PROJECT_SOURCE_DIR}/tests/unit/common"
   POSTURE KICKOS_TLS=0)

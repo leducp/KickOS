@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# CI gate against doc rot: every KICKOS_* / KOS_* / CAP_* / AUTH_* identifier and
-# every in-repo file path a markdown file NAMES must still resolve in the tree.
+# CI gate against doc rot: every KICKOS_* / KOS_* / CAP_* / AUTH_* identifier, every
+# kickos_* / kos_* / arch_* name and every in-repo file path a markdown file NAMES must still
+# resolve in the tree, and every list must open after a blank line.
 #
 # Run from the repo root, no arguments, no build directory:
 #   tests/static/check_doc_names.sh
@@ -31,6 +32,16 @@
 #                    (KICKOS_SYS_ABI_H). Neither is a symbol reference; the reference
 #                    that matters for a guard is the header path, checked below.
 #                  - a token that is a real symbol plus an English plural `s`.
+#                A name inside "(formerly ...)" is a design record keeping an old spelling
+#                findable, and is not checked.
+#                The lowercase families (kickos_, kos_, arch_) follow the same rules, and
+#                also drop a token followed by `.` and a letter or by `/`: that is a file
+#                or directory name, which the path rule judges.
+#
+#   lists        a list item (`- `, `* `, `+ `, `1. `, `1) `) whose previous line is text
+#                that is neither a heading nor part of a list, inside a blockquote too. The
+#                docs site's Markdown reads such an item as more of the paragraph, table or
+#                fence above it.
 #
 #   paths        matched anywhere on a non-fenced line, but only where the shape is
 #                unambiguous, because `ldrex/strex` and `PA4/PA5` are not paths.
@@ -55,8 +66,8 @@
 #   - the scan reads unfenced prose, plain path shapes and the four named identifier
 #     families. Fenced code, `<kickos/sys/x.h>` include forms, globs and <placeholder>
 #     spellings, a first component that is not a tracked top-level entry
-#     (`esp32c6/mpu.cmake`), and lowercase wrapper names (`kos_send`, `arch_mpu_apply`)
-#     are all outside it.
+#     (`esp32c6/mpu.cmake`), and lowercase names outside the three families are all
+#     outside it.
 #   - the valid set comes from CODE with comments stripped, so a name kept alive only by a
 #     stale comment reads as dangling: a half-completed rename is caught, not just a
 #     deleted symbol. A file whose extension the stripper does not recognise is the one
@@ -139,12 +150,15 @@ FNR == 1 {
 # The left boundary, spelled here rather than in the alphabet: `\b` is not a word boundary
 # in awk, where it reads as a backspace and the scan then matches nothing and says so calmly.
 # A match whose left neighbour is a name character is dropped whole, so KCAP_X never yields
-# its CAP_X tail.
-function emit(s,   p, pre) {
+# its CAP_X tail. Leading underscores alone are skipped: RX assembly spells kickos_rx_restore
+# as _kickos_rx_restore, and a linker symbol may carry two.
+function emit(s,   p, q, pre) {
     while (match(s, CORE)) {
         p = RSTART
+        q = p - 1
+        while (q > 0 && substr(s, q, 1) == "_") { q-- }
         pre = ""
-        if (p > 1) { pre = substr(s, p - 1, 1) }
+        if (q > 0) { pre = substr(s, q, 1) }
         if (pre !~ /[A-Za-z0-9_]/) { print substr(s, p, RLENGTH) }
         s = substr(s, p + RLENGTH)
     }
@@ -152,7 +166,7 @@ function emit(s,   p, pre) {
 AWK
 
 # The one alphabet, matched by awk and never by grep, whose -o is not standard.
-ID_CORE='(KICKOS|KOS|KCAP|CAP|AUTH)_[A-Za-z0-9_]*[A-Za-z0-9]'
+ID_CORE='(KICKOS|KOS|KCAP|CAP|AUTH|kickos|kos|arch)_[A-Za-z0-9_]*[A-Za-z0-9]'
 
 # awk must have OPENED every member: xargs splits the list, and a file awk cannot open drops
 # the rest of its batch while the pipeline reports sort's status. The unread are named.
@@ -171,7 +185,9 @@ mkdir -p "$TMP/st"
 cat > "$TMP/st/code.c" <<'EOF'
 #define KICKOS_ST_DEFINED 1
 enum { KOS_ST_ENUM = 2 };
-// KICKOS_ST_LINE_COMMENT is prose, not a definition
+int kos_st_call(void);
+    .global _kos_st_asm_label
+// KICKOS_ST_LINE_COMMENT is prose, not a definition, and so is kos_st_line_comment
 /* KICKOS_ST_BLOCK_COMMENT spans
    KICKOS_ST_BLOCK_SECOND_LINE too */
 EOF
@@ -183,12 +199,12 @@ printf '%s\n' "$TMP/st/code.c" "$TMP/st/code.cmake" > "$TMP/st/list"
 
 harvest_ids "$TMP/st/list" "$TMP/st/ids" \
     || fail "the harvest refused its planted corpus, so it cannot judge the tree"
-for _want in KICKOS_ST_DEFINED KOS_ST_ENUM KICKOS_ST_OPTION; do
+for _want in KICKOS_ST_DEFINED KOS_ST_ENUM KICKOS_ST_OPTION kos_st_call kos_st_asm_label; do
     grep -qx "$_want" "$TMP/st/ids" \
         || fail "the harvest missed $_want, planted in CODE; it would report live names dangling"
 done
 for _no in KICKOS_ST_LINE_COMMENT KICKOS_ST_BLOCK_COMMENT KICKOS_ST_BLOCK_SECOND_LINE \
-           KICKOS_ST_HASH_COMMENT; do
+           KICKOS_ST_HASH_COMMENT kos_st_line_comment; do
     ! grep -qx "$_no" "$TMP/st/ids" \
         || fail "the harvest took $_no out of a COMMENT; a name nothing builds would validate itself"
 done
@@ -259,6 +275,14 @@ function norm(p,   n, c, i, out, top) {
 
 function report(f, l, msg) { printf "%s:%d: %s\n", f, l, msg; findings++ }
 
+# Whether position at sits inside a "(formerly ...)" span opened earlier on the line.
+function formerly(t, at,   head, k, p) {
+  head = substr(t, 1, at - 1)
+  p = 0
+  while ((k = index(substr(head, p + 1), "(formerly ")) > 0) { p = p + k }
+  return p > 0 && index(substr(head, p), ")") == 0
+}
+
 BEGIN {
   load(T "/valid_ids.txt",   VALID_ID)
   load(T "/valid_paths.txt", VALID_PATH)
@@ -279,6 +303,7 @@ BEGIN {
   if (file != prevfile) {
     if (prevfile != "" && infence) { report(prevfile, fenceline, "unbalanced ``` fence opened here and never closed; extraction cannot trust this file") }
     prevfile = file; infence = 0; fenceline = 0
+    prevtext = 0; prevhead = 0; inlist = 0; afterblank = 1; prevdepth = 0
     n = split(file, fc, "/"); dir = ""
     for (i = 1; i < n; i++) {
       if (i > 1) { dir = dir "/" }
@@ -286,8 +311,37 @@ BEGIN {
     }
   }
 
-  if (text ~ /^ *```/) { if (infence) { infence = 0 } else { infence = 1; fenceline = lineno }; next }
+  if (text ~ /^ *```/) {
+    if (infence) { infence = 0 } else { infence = 1; fenceline = lineno }
+    if (text !~ /^ /) { inlist = 0 }
+    prevtext = 1; prevhead = 0; afterblank = 0
+    next
+  }
   if (infence) { next }
+
+  # ---- lists ---------------------------------------------------------------
+  # A blank line keeps a list open for an indented continuation, fence or the next item; the
+  # first unindented text after one closes it. Outside a list, four spaces make a code block.
+  # A blockquote is judged on its own text, and a change of quote depth starts a new block.
+  # No {m,n} interval: mawk before 1.3.4-20200120 reads one as literal text.
+  q = text
+  depth = 0
+  while (q ~ /^ ? ? ?>/) { sub(/^ ? ? ?> ?/, "", q); depth++ }
+  if (depth != prevdepth) { prevtext = 0; prevhead = 0; inlist = 0; afterblank = 1 }
+  item = (q ~ /^ ? ? ?([-*+]|[0-9]+[.)])[ \t]/ || (inlist && q ~ /^[ \t]*([-*+]|[0-9]+[.)])[ \t]/))
+  blank = (q ~ /^[ \t]*$/)
+  if (item) {
+    if (prevtext && !prevhead && !inlist) {
+      report(file, lineno, "list item with no blank line before it: the docs site renders it as text of the block above")
+    }
+    inlist = 1
+  } else if (!blank && afterblank && q !~ /^[ \t]/) {
+    inlist = 0
+  }
+  prevtext = !blank
+  prevhead = (q ~ /^#/)
+  afterblank = blank
+  prevdepth = depth
 
   # ---- identifiers ----------------------------------------------------------
   # Lowercase is admitted after the prefix ON PURPOSE: `KOS_SYS_cpu_clock_hz` is not a
@@ -299,7 +353,7 @@ BEGIN {
   # Both sides must agree, or every KCAP_ name in a doc reads as an unknown CAP_ one.
   rest = text
   off  = 0
-  while (match(rest, /(KICKOS|KOS|KCAP|CAP|AUTH)_[A-Za-z0-9_]*[A-Za-z0-9]/)) {
+  while (match(rest, /(KICKOS|KOS|KCAP|CAP|AUTH|kickos|kos|arch)_[A-Za-z0-9_]*[A-Za-z0-9]/)) {
     abs  = off + RSTART
     prev = ""
     if (abs > 1) { prev = substr(text, abs - 1, 1) }
@@ -308,7 +362,10 @@ BEGIN {
     off  = abs + RLENGTH - 1
     rest = substr(rest, RSTART + RLENGTH)
     if (prev ~ /[A-Za-z0-9_]/) { continue }
+    if (formerly(text, abs)) { continue }                       # a recorded old name
     if (tail == "*" || tail == "_") { continue }                # wildcard family / bare prefix
+    lower = (tok ~ /^[a-z]/)
+    if (lower && (tail == "/" || substr(rest, 1, 2) ~ /^\.[A-Za-z]/)) { continue }  # a file name
     if (tok ~ /_[A-Za-z0-9]$/) { continue }                     # placeholder (CAP_X) / include guard (..._H)
 
     # THE PLURAL AND MIS-CASED FALLBACKS ONLY APPLY WHEN TOK ITSELF IS NOT ALREADY VALID.
@@ -324,7 +381,7 @@ BEGIN {
       if (singular in VALID_ID) { continue }                    # English plural of a real symbol
 
       up = toupper(tok)
-      if (!(up in VALID_ID)) {
+      if (lower || !(up in VALID_ID)) {
         report(file, lineno, "identifier does not exist anywhere in the tree: " tok)
         continue
       }
@@ -415,9 +472,9 @@ END {
 }
 AWKEOF
 
-# --- the planted citations: a dead identifier and a dead path, beside their live twins -----
+# --- the planted citations: dead names, a dead path and a glued list, beside their live twins --
 mkdir -p "$TMP/rt"
-printf '%s\n' KICKOS_RT_LIVE > "$TMP/rt/valid_ids.txt"
+printf '%s\n' KICKOS_RT_LIVE kos_rt_live > "$TMP/rt/valid_ids.txt"
 printf '%s\n' docs kernel docs/rt.md kernel/rt_live.cc > "$TMP/rt/valid_paths.txt"
 printf '%s\n' docs kernel > "$TMP/rt/toplevel.txt"
 printf '%s\n' md cc > "$TMP/rt/exts.txt"
@@ -425,7 +482,18 @@ printf '%s\n' 'KOS_SYS_RT 7' > "$TMP/rt/sysnum.txt"
 
 cat > "$TMP/rt/clean" <<'RTEOF'
 docs/rt.md:1:KICKOS_RT_LIVE is the knob
-docs/rt.md:2:the body is in kernel/rt_live.cc today
+docs/rt.md:2:the body is in kernel/rt_live.cc today, called as `kos_rt_live()`
+docs/rt.md:3:
+docs/rt.md:4:- an item
+docs/rt.md:5:  continued
+docs/rt.md:6:- another item
+docs/rt.md:7:
+docs/rt.md:8:## A heading
+docs/rt.md:9:- an item under it
+docs/rt.md:10:
+docs/rt.md:11:> A quote
+docs/rt.md:12:>
+docs/rt.md:13:> - an item in it, `kos_rt_live` (formerly `kos_rt_gone` and `KICKOS_RT_GONE`)
 RTEOF
 if ! awk -v T="$TMP/rt" -v ABIH="$ABI" -F: -f "$TMP/report.awk" \
         < "$TMP/rt/clean" > "$TMP/rt/clean.out"; then
@@ -436,25 +504,29 @@ fi
 
 cat > "$TMP/rt/dirty" <<'RTEOF'
 docs/rt.md:1:KICKOS_RT_GONE is the knob
-docs/rt.md:2:the body is in kernel/rt_gone.cc today
+docs/rt.md:2:the body is in kernel/rt_gone.cc today, called as `kos_rt_gone()`
+docs/rt.md:3:The steps are:
+docs/rt.md:4:- an item glued to the text above
+docs/rt.md:5:
+docs/rt.md:6:> A quote
+docs/rt.md:7:> - an item glued inside it
 RTEOF
 if awk -v T="$TMP/rt" -v ABIH="$ABI" -F: -f "$TMP/report.awk" \
        < "$TMP/rt/dirty" > "$TMP/rt/dirty.out"; then
-    fail "THE REPORTING PASS FOUND NOTHING in a corpus citing the identifier KICKOS_RT_GONE
-      and the path kernel/rt_gone.cc, neither of which exists. It cannot report a dead
-      citation, which is the one thing this gate is for, so a green run over the tree
-      witnesses nothing."
+    fail "THE REPORTING PASS FOUND NOTHING in a corpus citing KICKOS_RT_GONE, kos_rt_gone
+      and kernel/rt_gone.cc, none of which exists, beside a list glued to its paragraph.
+      It cannot report a dead citation, which is the one thing this gate is for, so a
+      green run over the tree witnesses nothing."
 fi
 _rt_n="$(wc -l < "$TMP/rt/dirty.out" | tr -d " ")"
-[ "$_rt_n" -eq 2 ] \
+[ "$_rt_n" -eq 5 ] \
     || fail "the reporting pass made $_rt_n finding(s) on a planted corpus carrying exactly
-      one dead identifier and one dead path: $(cat "$TMP/rt/dirty.out")"
-grep -q "KICKOS_RT_GONE" "$TMP/rt/dirty.out" \
-    || fail "the reporting pass made two findings and neither names the dead identifier
-      KICKOS_RT_GONE: $(cat "$TMP/rt/dirty.out")"
-grep -q "kernel/rt_gone.cc" "$TMP/rt/dirty.out" \
-    || fail "the reporting pass made two findings and neither names the dead path
-      kernel/rt_gone.cc: $(cat "$TMP/rt/dirty.out")"
+      two dead names, one dead path and two glued lists: $(cat "$TMP/rt/dirty.out")"
+for _rt_want in KICKOS_RT_GONE kos_rt_gone kernel/rt_gone.cc 'rt.md:4: list item' \
+                'rt.md:7: list item'; do
+    grep -q "$_rt_want" "$TMP/rt/dirty.out" \
+        || fail "no finding of the planted corpus names $_rt_want: $(cat "$TMP/rt/dirty.out")"
+done
 
 awk -v T="$TMP" -v ABIH="$ABI" -F: -f "$TMP/report.awk" \
     < "$TMP/corpus.txt" > "$TMP/findings.txt"
@@ -468,9 +540,9 @@ if [ "$RC" -ne 0 ]; then
   echo "per-file finding count:" >&2
   cut -d: -f1 "$TMP/findings.txt" | sort | uniq -c | sort -rn >&2
   echo "" >&2
-  echo "FAIL: $(wc -l < "$TMP/findings.txt" | tr -d ' ') unresolved doc reference(s)." >&2
+  echo "FAIL: $(wc -l < "$TMP/findings.txt" | tr -d ' ') doc finding(s)." >&2
   echo "      Fix the doc, or delete the claim. Widening this gate is not the fix." >&2
   exit 1
 fi
 
-echo "PASS: every named identifier and in-repo path resolves"
+echo "PASS: every named identifier and in-repo path resolves, every list opens after a blank line"

@@ -168,9 +168,9 @@ resolve_console() {
 }
 
 # A reader for a console that DOES NOT EXIST YET, spinning on the path from before the
-# flash. The device appears when the image boots and leaves when it ends, and with
-# KICKOS_SHUTDOWN_TO_BOOTLOADER=ON that is about as long as a poll loop takes to notice, so
-# the reader must already be waiting.
+# flash. The device appears when the image boots and leaves when it ends, and for an app that
+# ends in the bootloader that is about as long as a poll loop takes to notice, so the reader
+# must already be waiting.
 #
 # The glob resolves per open, the path not existing to pin when this is armed.
 #
@@ -1634,9 +1634,9 @@ EOF
 # NO `$` ANCHOR. Every console line here ends CRLF, and GNU grep counts the CR as part of the
 # line while this box's grep (ugrep) does not, so an anchored pattern passes a local test and
 # fails on the bench host against byte-identical input.
-MPU=$(grep -aoE 'mpu +(enforce|off)' "$LOG" | tail -1)
+MPU=$(grep -aoE '(mpu +(enforce|off)|mmu +enforce)' "$LOG" | tail -1)
 if [ -z "$MPU" ]; then
-  MPU=$(grep -aoE '^m (enforce|off)' "$LOG" | tail -1)
+  MPU=$(grep -aoE '^(m (enforce|off)|M enforce)' "$LOG" | tail -1)
 fi
 
 printf 'bytes:  %s\n' "$BYTES"

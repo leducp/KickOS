@@ -44,9 +44,6 @@ namespace kickos
 
     namespace
     {
-        // Yield passes the publish drain allows before declaring a stuck chip writer.
-        constexpr uint32_t CONSOLE_PUBLISH_DRAIN_MAX = KICKOS_POLL_SPIN_MAX;
-
         // The ring refuses an insert it cannot take WHOLE and a CRLF console spends two bytes
         // on a newline, so a chunk of N can need 2N and the smallest configured ring holds
         // 2 * (KICKOS_DIAG_LINE_MAX - 1). Anything wider than that is refused on a board at the
@@ -76,7 +73,7 @@ namespace kickos
                 return 0;
             }
             size_t done = 0;
-            int32_t none = -KOS_EAGAIN;
+            int32_t none = 0;
             while (done < len)
             {
                 size_t n = len - done;
@@ -107,10 +104,6 @@ namespace kickos
             }
             if (done == 0)
             {
-                if (none == -KOS_EAGAIN and not wait)
-                {
-                    return -KOS_ETIMEDOUT;
-                }
                 return none;
             }
             return static_cast<int32_t>(done);
@@ -124,8 +117,6 @@ namespace kickos
             char buf[64];
             buf[0] = '\0';
             UserOwner const space = user_space_of(sched::current());
-            // A privileged caller passes user_readable_ok wholesale, so null must be
-            // rejected here and not by the per-byte check.
             if (msg != 0)
             {
                 // Each source byte is checked before the privileged copy dereferences it, so
@@ -361,7 +352,7 @@ namespace
         {
             sched::exit_current(KOS_EXIT_CANCELLED, sched::EXIT_RETURN);
         }
-        if (c != nullptr and not c->privileged)
+        if (c != nullptr)
         {
             arch_irq_window();
         }
@@ -541,14 +532,14 @@ uint64_t syscall_body(uintptr_t nr,
                 return static_cast<uint64_t>(-err);
             }
             // -KOS_EOWNERDEAD is negative but still an ACQUIRE.
-            return static_cast<uint64_t>(mutex_lock(m));
+            return static_cast<uint64_t>(mutex_lock(m, static_cast<uint32_t>(a1)));
         }
         case KOS_SYS_MUTEX_UNLOCK:
         {
             IrqLock lock;
             int err = 0;
             Mutex* m = static_cast<Mutex*>(
-                cap_resolve_e(sched::current(), static_cast<int>(a0), CapType::CAP_MUTEX, 0, &err));
+                cap_resolve_e(sched::current(), static_cast<uint32_t>(a0), CapType::CAP_MUTEX, 0, &err));
             if (m == nullptr)
             {
                 return static_cast<uint64_t>(-err);
@@ -565,17 +556,6 @@ uint64_t syscall_body(uintptr_t nr,
             uint32_t h = KCAP_INVALID;
             rc = endpoint_create(&h);
             return cap_out_deliver(a0, rc, h);
-        }
-        case KOS_SYS_AMP_ENDPOINT_CREATE:
-        {
-            int rc = cap_out_check(a2);
-            if (rc != 0)
-            {
-                return static_cast<uint64_t>(rc);
-            }
-            uint32_t h = KCAP_INVALID;
-            rc = amp_endpoint_create(static_cast<uint32_t>(a0), static_cast<uint32_t>(a1), &h);
-            return cap_out_deliver(a2, rc, h);
         }
 #if KICKOS_AMP_NODE
         case KOS_SYS_AMP_COUNT:
@@ -689,7 +669,7 @@ uint64_t syscall_body(uintptr_t nr,
                         return static_cast<uint64_t>(-KOS_EPERM);
                     }
                 }
-                if (task_ended(served_by))
+                if (task_ended(served_by) or console_handover_refused() != 0)
                 {
                     return static_cast<uint64_t>(-KOS_EBUSY);
                 }
@@ -705,32 +685,9 @@ uint64_t syscall_body(uintptr_t nr,
                 // with no buffered path left, and it finishes synchronously here.
                 console_handover_begin();
             }
-            // Drains, with the lock RELEASED, every chip writer counted before the refusal
-            // above. A bare busy-spin LIVELOCKS under strict priority: a writer preempted mid
-            // arch_console_write_sync may be LOWER priority than this publisher, hence the
-            // drop to the minimum real priority plus a yield each pass.
-            Thread* pub = sched::current();
-            uint8_t const saved_prio = pub->prio;
-            // The lock must stay released across the yield below, so this bracket covers the
-            // ready-list move alone.
-            {
-                IrqLock lock;
-                sched::set_prio(pub, KICKOS_PRIO_MIN, lock);
-            }
-            uint32_t guard = 0;
-            while (console_chip_writers() != 0)
-            {
-                sched::yield();
-                guard = guard + 1;
-                if (guard >= CONSOLE_PUBLISH_DRAIN_MAX)
-                {
-                    kpanic(diag::kPublishNoDrain);
-                }
-            }
-            {
-                IrqLock lock;
-                sched::set_prio(pub, saved_prio, lock);
-            }
+            // With the lock RELEASED: a writer counted before the refusal above may be
+            // preempted below this publisher's priority.
+            console_publish_drain();
             console_owner_set_user(); // must be LAST, and strictly after the drain
             return 0;
         }
@@ -898,27 +855,36 @@ uint64_t syscall_body(uintptr_t nr,
         case KOS_SYS_SHUTDOWN:
         {
             Thread* c = sched::current();
+            uint32_t const outcome = static_cast<uint32_t>(a1);
             if (not cap_check_authority(c, AUTH_SYSTEM))
             {
                 return static_cast<uint64_t>(-KOS_EPERM);
             }
-            kickos_terminate(static_cast<int>(a0));
-            return 0;
-        }
-#if KICKOS_REBOOT
-        case KOS_SYS_REBOOT:
-        {
-            // AUTH_SYSTEM, fused with shutdown.
-            Thread* c = sched::current();
-            if (not cap_check_authority(c, AUTH_SYSTEM))
+            if (outcome > KOS_SHUTDOWN_BOOTLOADER)
+            {
+                return static_cast<uint64_t>(-KOS_EINVAL);
+            }
+            if (outcome == KOS_SHUTDOWN_BOOTLOADER and not cap_check_authority(c, AUTH_BOOTLOADER))
             {
                 return static_cast<uint64_t>(-KOS_EPERM);
+            }
+            if (outcome != KOS_SHUTDOWN_HALT and not reset_owned_here())
+            {
+                return static_cast<uint64_t>(-KOS_EPERM);
+            }
+            if (outcome == KOS_SHUTDOWN_HALT)
+            {
+                kickos_terminate(static_cast<int>(a0));
             }
             console_tx_flush_sync(); // empties the ring only
             arch_console_flush_sync(); // FIFO and shift register: a byte here outruns the reset
-            return static_cast<uint64_t>(arch_reboot());
+            return static_cast<uint64_t>(arch_reboot(outcome));
         }
-#endif
+        case KOS_SYS_TERMINAL_OUTCOME:
+        {
+            return static_cast<uint64_t>(
+                terminal_outcome_set(sched::current(), static_cast<uint32_t>(a0)));
+        }
         case KOS_SYS_CLOCK_NOW:
         {
             // No user pointer and no way to fail: every value in the u64 range is a valid
@@ -958,8 +924,7 @@ uint64_t syscall_body(uintptr_t nr,
 #if KICKOS_HAVE_ASPACE
             // A page-aligned range RESERVED in the calling task's own space, mapped nowhere;
             // the frames under it make it a globally unique name the handoff can carry, and
-            // they are cleared before the range names them. A privileged caller gets null: the
-            // kernel domain carries no space.
+            // they are cleared before the range names them.
             {
                 IrqLock lock;
                 Thread* const c = sched::current();
@@ -1271,7 +1236,6 @@ uint64_t syscall_body(uintptr_t nr,
         }
         case KOS_SYS_IRQ_BIND_NOTIFY:
         {
-            IrqLock lock;
             return static_cast<uint64_t>(irq_bind_notify(sched::current(),
                                                          static_cast<uint32_t>(a0),
                                                          static_cast<uint32_t>(a1)));
@@ -1310,8 +1274,8 @@ uint64_t syscall_body(uintptr_t nr,
         {
             // Print without IrqLock held. Counts are validated here to keep checks out of the
             // measured helpers.
-            // These ops call irq_attach, whose own syscall (KOS_SYS_IRQ_ATTACH) takes
-            // AUTH_IRQ; reaching it through here must not be the cheaper route.
+            // These ops attach a kernel handler to a line, which a claim does only under
+            // AUTH_IRQ; reaching a line through here must not be the cheaper route.
             if ((a0 == KOS_BENCH_OP_IRQ_SETUP or a0 == KOS_BENCH_OP_IRQ_SWEEP
                  or a0 == KOS_BENCH_OP_IRQ_WCASE)
                 and not cap_check_authority(sched::current(), AUTH_IRQ))

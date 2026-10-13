@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Volatile MMIO accessors for the userspace drivers that reach a granted register window.
-// The lvalue reference is what allows `r32(base + OFF) = v` and `r32(base + OFF) |= bit`;
-// static inline keeps the poke site a bare volatile load/store with no call.
+// Volatile MMIO accessors, for chip code and for a driver's granted register window.
 
 #ifndef KICKOS_IO_MMIO_H
 #define KICKOS_IO_MMIO_H

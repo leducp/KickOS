@@ -14,8 +14,8 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <sys/wait.h>
-#include <unistd.h>
+
+#include "isolated_arm.h"
 
 namespace
 {
@@ -31,8 +31,8 @@ namespace
     // Whether the writing thread's own stdout send would be taken, and how often it was asked.
     bool g_serves = false;
     int g_serves_asked = 0;
-    // Never dereferenced: it only names the writer to the predicate above.
-    alignas(16) unsigned char g_writer[64];
+    // The writing thread.
+    kickos::Thread g_writer;
     // The dark-window wait: how often a writer entered it, and what it answers. Answering 0
     // stands for the reclaim that ended it, so the wait frees the window and lands it first.
     int g_dark_waits = 0;
@@ -49,6 +49,13 @@ namespace
         }
         g_poke_writers = console_chip_writers();
     }
+
+    // KOS_SYS_CONSOLE_PUBLISH's console sequence, with no writer in flight to drain.
+    void publish()
+    {
+        console_handover_begin();
+        console_owner_set_user();
+    }
 }
 
 extern "C"
@@ -58,13 +65,13 @@ extern "C"
         if (g_flip_at_mask)
         {
             g_flip_at_mask = false;
-            console_owner_set_user();
+            publish();
         }
         return 0;
     }
     void arch_irq_restore(arch_irq_state_t) {}
 
-    int arch_console_write(char const*, size_t) { note_poke(); return 1; }
+    int console_tx_insert_line(char const*, size_t, int) { note_poke(); return 1; }
     bool arch_console_write_sync(char const*, size_t)
     {
         note_poke();
@@ -100,41 +107,18 @@ namespace kickos
     bool cap_console_serves(Thread const* t)
     {
         g_serves_asked = g_serves_asked + 1;
-        EXPECT_EQ(static_cast<void const*>(t), static_cast<void const*>(g_writer));
+        EXPECT_EQ(t, &g_writer);
         return g_serves;
     }
 
     namespace sched
     {
-        Thread* current() { return reinterpret_cast<Thread*>(g_writer); }
+        Thread* current() { return &g_writer; }
     }
 }
 
 namespace
 {
-    // The ownership state is a one-way street: nothing returns it to KERNEL_OWNED, and the
-    // arms below need it as their starting state, so each arm gets its own process.
-    void run_isolated(void (*body)())
-    {
-        fflush(nullptr);
-        pid_t const pid = fork();
-        ASSERT_NE(pid, -1) << "fork failed, the arm did not run";
-        if (pid == 0)
-        {
-            body();
-            fflush(nullptr);
-            if (::testing::Test::HasFailure())
-            {
-                _exit(1);
-            }
-            _exit(0);
-        }
-        int status = 0;
-        ASSERT_EQ(waitpid(pid, &status, 0), pid);
-        ASSERT_TRUE(WIFEXITED(status)) << "the arm died on a signal";
-        ASSERT_EQ(WEXITSTATUS(status), 0) << "see the arm's own failure text above";
-    }
-
     // Anti-vacuity premise for the arms that assert NO poke reached the device.
     TEST(ConsoleOwnership, KernelOwnedWriteReachesTheDeviceAndReleasesTheBracket)
     {
@@ -185,7 +169,7 @@ namespace
     TEST(ConsoleOwnership, ADeathNoteReclaimsThePublishedConsole)
     {
         run_isolated([]() {
-            console_owner_set_user();
+            publish();
             console_note_driver_death();
             console_on_driver_death(kickos::IrqLock());
             EXPECT_EQ(g_reclaims, 1);
@@ -201,7 +185,7 @@ namespace
     TEST(ConsoleOwnership, AReclaimedWriterThatLosesARePublishNeverReachesTheDevice)
     {
         run_isolated([]() {
-            console_owner_set_user();
+            publish();
             console_note_driver_death();
             console_on_driver_death(kickos::IrqLock());
             ASSERT_EQ(g_reclaims, 1) << "the console never reached RECLAIMED";
@@ -222,7 +206,7 @@ namespace
     TEST(ConsoleOwnership, ARefusedReclaimIsRetriedWhenTheWindowIsReleased)
     {
         run_isolated([]() {
-            console_owner_set_user();
+            publish();
             console_note_driver_death();
             g_window_free = false;
             console_on_driver_death(kickos::IrqLock());
@@ -238,14 +222,13 @@ namespace
     TEST(ConsoleOwnership, ARePublishRetiresAStaleDeathNote)
     {
         run_isolated([]() {
-            console_owner_set_user(); // the first driver's publish
+            publish(); // the first driver's publish
             console_note_driver_death();
             g_window_free = false; // its IRQ thread still holds the registers
             console_on_driver_death(kickos::IrqLock());
             ASSERT_EQ(g_reclaims, 0) << "the reclaim did not defer, so no stale note can exist";
 
-            console_handover_begin(); // the supervisor publishes a NEW endpoint
-            console_owner_set_user();
+            publish(); // the supervisor publishes a NEW endpoint
 
             g_window_free = true; // the OLD driver's IRQ thread finally exits
             console_on_driver_death(kickos::IrqLock());
@@ -266,11 +249,11 @@ namespace
     TEST(ConsoleOwnership, AFallbackAfterARePublishIsHandedBackToTheServedEndpoint)
     {
         run_isolated([]() {
-            console_owner_set_user();
+            publish();
             console_note_driver_death();
             console_on_driver_death(kickos::IrqLock());
             ASSERT_EQ(g_reclaims, 1) << "the console never reached RECLAIMED";
-            console_owner_set_user(); // the restart's publish
+            publish(); // the restart's publish
             g_pokes = 0;
             g_serves = true;
             EXPECT_EQ(kickos::kconsole_write_user("line 6\n", 7, true), -KOS_EBUSY);
@@ -288,7 +271,7 @@ namespace
             EXPECT_GT(kickos::kconsole_write_user("boot\n", 5, true), 0);
             EXPECT_EQ(g_pokes, 1);
             EXPECT_EQ(g_serves_asked, 0) << "a kernel-owned console asked about the endpoint";
-            console_owner_set_user();
+            publish();
             g_pokes = 0;
             g_serves = false;
             EXPECT_EQ(kickos::kconsole_write_user("lost\n", 5, true), 5);
@@ -306,7 +289,7 @@ namespace
     TEST(ConsoleOwnership, AWriterInTheDarkWindowWaitsAndWritesOnceTheReclaimLands)
     {
         run_isolated([]() {
-            console_owner_set_user();
+            publish();
             console_note_driver_death();
             g_window_free = false;
             console_on_driver_death(kickos::IrqLock());
@@ -326,12 +309,12 @@ namespace
     TEST(ConsoleOwnership, ANonBlockingWriterInTheDarkWindowIsAnsweredAtOnce)
     {
         run_isolated([]() {
-            console_owner_set_user();
+            publish();
             console_note_driver_death();
             g_window_free = false;
             console_on_driver_death(kickos::IrqLock());
             g_serves = false;
-            EXPECT_EQ(kickos::kconsole_write_user("line 6\n", 7, false), -KOS_EAGAIN);
+            EXPECT_EQ(kickos::kconsole_write_user("line 6\n", 7, false), -KOS_ETIMEDOUT);
             EXPECT_EQ(g_dark_waits, 0) << "a non-blocking writer waited";
             EXPECT_EQ(g_pokes, 0);
             EXPECT_EQ(console_chip_writers(), 0);
@@ -342,7 +325,7 @@ namespace
     TEST(ConsoleOwnership, ACancelledWaitEndsTheWrite)
     {
         run_isolated([]() {
-            console_owner_set_user();
+            publish();
             console_note_driver_death();
             g_window_free = false;
             console_on_driver_death(kickos::IrqLock());
@@ -358,7 +341,7 @@ namespace
     TEST(ConsoleOwnership, TheReclaimAndAPublishWakeTheDarkWindowsWriters)
     {
         run_isolated([]() {
-            console_owner_set_user();
+            publish();
             int const after_publish = g_dark_wakes;
             EXPECT_GE(after_publish, 1) << "a publish did not wake the dark window's writers";
             console_note_driver_death();

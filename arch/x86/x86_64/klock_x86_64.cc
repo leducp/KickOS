@@ -19,9 +19,8 @@ extern "C" void kickos_bench_lock_draw_clh(void);
 
 namespace
 {
-    // One request per core plus the initially granted sentinel. On release a
-    // core gives its request to its successor and reuses the predecessor's.
-    // The interrupt mask permits at most one outstanding request per core.
+    // One request per core plus the initially granted sentinel; the interrupt mask keeps at
+    // most one request outstanding per core.
     struct alignas(64) ClhRequest
     {
         uint32_t pending;
@@ -39,6 +38,33 @@ namespace
     constinit ClhRequest g_clh_request[KICKOS_KERNEL_CORES + 1] = {};
     constinit ClhNode g_clh_node[KICKOS_KERNEL_CORES] = {};
     constinit ClhRequest* g_clh_tail = &g_clh_request[KICKOS_KERNEL_CORES];
+
+    struct Part
+    {
+        // The poll leaves the delivery in the local APIC, whose vector then finds nothing owed.
+        static void clear(void)
+        {
+        }
+        static void raise_self(void)
+        {
+            kickos::x86_64::apic_doorbell();
+        }
+        static bool inject_owed(void)
+        {
+            return false;
+        }
+        static void sleep(void)
+        {
+            arch_idle_wait();
+        }
+        static void open(void)
+        {
+            arch_irq_window();
+        }
+        static void before_start(void)
+        {
+        }
+    };
 }
 
 // Drops this core's non-global translations before the answer.
@@ -53,17 +79,7 @@ extern "C"
 
 void kickos_doorbell_poll(void)
 {
-    if (not kickos::doorbell::pending())
-    {
-        return;
-    }
-    arch_irq_state_t const state = arch_irq_save();
-    kickos_doorbell_service();
-    if (kickos_kernel_core_resched_owed() != 0)
-    {
-        kickos::x86_64::apic_doorbell();
-    }
-    arch_irq_restore(state);
+    kickos::doorbell::poll<Part>();
 }
 
 void kickos_doorbell_raise(uint32_t cores)
@@ -106,11 +122,8 @@ void arch_kernel_lock(void)
 #if KICKOS_BENCH
     kickos_bench_lock_draw_clh();
 #endif
-    while (__atomic_load_n(&node.predecessor->pending, __ATOMIC_ACQUIRE) != 0u)
-    {
-        kickos_doorbell_poll();
-        __asm__ volatile("pause" ::: "memory");
-    }
+    kickos::doorbell::await_turn(
+        [&node] { return __atomic_load_n(&node.predecessor->pending, __ATOMIC_ACQUIRE) == 0u; });
     kickos::klock::owner_take();
 }
 
@@ -122,39 +135,9 @@ void arch_kernel_unlock(void)
     node.mine = node.predecessor;
 }
 
-// A peer without a scheduled idle thread has only its local APIC doorbell live.
-// It parks here until the primary publishes the scheduler seat.
 void kickos_x86_64_doorbell_park(void)
 {
-    using namespace kickos::doorbell;
-    __asm__ volatile("sti" ::: "memory");
-    uint32_t const me = arch_cpu_id();
-    while (true)
-    {
-        if (kickos_kernel_core_startable() != 0)
-        {
-            (void)arch_irq_save();
-            kickos_kernel_core_start();
-        }
-        uint32_t const contend = g_contend.load();
-        if (contend == CONTEND_PARK)
-        {
-            __asm__ volatile("hlt" ::: "memory");
-            continue;
-        }
-        if (contend == CONTEND_OPEN)
-        {
-            __asm__ volatile("pause" ::: "memory");
-            continue;
-        }
-        arch_irq_state_t const state = arch_irq_save();
-        g_spinning[me].v = 1u;
-        arch_kernel_lock();
-        g_held[me].v = g_held[me].v.load() + 1u;
-        arch_kernel_unlock();
-        g_spinning[me].v = 0u;
-        arch_irq_restore(state);
-    }
+    kickos::doorbell::park<Part>();
 }
 
 }

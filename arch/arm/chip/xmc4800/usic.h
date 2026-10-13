@@ -8,6 +8,7 @@
 #define KICKOS_ARCH_ARM_CHIP_XMC4800_USIC_H
 
 #include "regs/usic.h"
+#include <kickos/io/mmio.h>
 
 #include <stddef.h>
 #include <stdint.h>
@@ -18,8 +19,6 @@ namespace xmc
 {
 namespace usic
 {
-    inline volatile uint32_t& reg32(uintptr_t a) { return *reinterpret_cast<volatile uint32_t*>(a); }
-
     using namespace kickos::xmc::reg::usic;
 
     // The point for a branch clock, or false where no point covers it. Keyed on fPERIPH
@@ -56,12 +55,6 @@ namespace usic
     void tx_irq_route(uintptr_t base, uint32_t srx);
     void tx_irq_enable(uintptr_t base);
     void tx_irq_disable(uintptr_t base);
-
-    bool rx_ready(uintptr_t base); // a received word is waiting in the buffer
-    uint8_t rx_get(uintptr_t base); // read + release the receive buffer
-
-    // Read PSR, clear the masked flags via PSCR, return the masked bits that were set.
-    uint32_t status_read_clear(uintptr_t base, uint32_t mask);
 }
 }
 }

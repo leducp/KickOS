@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   rx72m
+   arch    rxv3
+   cpu     rxv3
+   mpu     enforce
+   sched   tickless
+
+libcrace: 4 workers x 3 rounds
+libcrace w3 i0 vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
+libcrace w0 i0 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+libcrace w2 i0 oooooooooooooooooooooooooooooooooooooooo
+libcrace w1 i0 hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh
+libcrace w3 i1 wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww
+libcrace w1 i1 iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii
+libcrace w2 i1 pppppppppppppppppppppppppppppppppppppppp
+libcrace w0 i1 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+libcrace w1 i2 jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj
+libcrace w1 done torn=0
+libcrace w3 i2 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+libcrace w3 done torn=0
+libcrace w0 i2 cccccccccccccccccccccccccccccccccccccccc
+libcrace w0 done torn=0
+libcrace w2 i2 qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq
+libcrace w2 done torn=0
+libcrace: all workers done

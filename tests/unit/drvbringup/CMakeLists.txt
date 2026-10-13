@@ -20,13 +20,14 @@ kickos_add_unit_test(NAME drv_bringup
   INCLUDES "${PROJECT_SOURCE_DIR}/user/include" "${PROJECT_SOURCE_DIR}/system/include"
            "${PROJECT_BINARY_DIR}/generated/include")
 
-# The UART service over the same seam: a failing driver thread by posture, its trap reaching the
-# host as SIGILL, and serve_one answering the client helpers over a kos_call that hands it the
+# The UART and USB CDC services over the same seam: a failing driver thread, its trap reaching
+# the host as SIGILL, and serve_one answering the client helpers over a kos_call that hands it the
 # frame. HOST-ONLY: uart_serve.cc defines public kos_* names.
 kickos_add_unit_test(NAME drv_thread_trap
   SOURCES thread_trap.cc uart_serve.cc kos_seam.cc
           "${PROJECT_SOURCE_DIR}/user/src/driver_service.cc"
           "${PROJECT_SOURCE_DIR}/user/src/uart_service.cc"
+          "${PROJECT_SOURCE_DIR}/user/src/usb_cdc_service.cc"
           "${PROJECT_SOURCE_DIR}/user/src/console_ring.cc"
   INCLUDES "${PROJECT_SOURCE_DIR}/user/include" "${PROJECT_SOURCE_DIR}/system/include"
            "${PROJECT_BINARY_DIR}/generated/include")

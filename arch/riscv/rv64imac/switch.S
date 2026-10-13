@@ -72,7 +72,7 @@
 
 /* Displacements into this hart's per-CPU block (percpu.h), static_asserted against offsetof in
    arch_rv64imac.cc. The block begins where the trap stack ends, so its address IS the value
-   sscratch carries and no second base register exists. */
+   sscratch carries. */
 #define PERCPU_CTX_CURRENT 0
 #define PERCPU_SWITCH_TO   8
 #define PERCPU_ISR_DEPTH   16
@@ -105,15 +105,15 @@
     .endm
 
 #if KICKOS_BENCH
-/* The switch window (kernel/bench/bench.cc). It encloses the SOFTWARE REGISTER SAVE and the
-   stack-pointer swap, and NOT the software restore: .Lrestore reloads t0-t2 near its top and
-   leaves nothing free at the sret, and it is shared with every non-switch trap return.
+/* The switch window (kernel/bench/bench.cc): the register save and the stack-pointer swap. The
+   restore is outside it: .Lrestore leaves no register free at the sret and is shared with every
+   trap return.
 
-   THE STAMP IS THIS HART'S CELL. A word shared with a peer subtracts one hart's open from
-   another's close, which wraps near 2^32 whenever the peer opened later.
+   THE STAMP IS THIS HART'S CELL: a word shared with a peer subtracts one hart's open from
+   another's close.
 
-   The cycle CSR is 64 bits and the accumulator is 32: `sw`/`lw`/`subw` keep the low word
-   alone, which is exact for any delta shorter than 2^32 ticks. */
+   The cycle CSR is 64 bits and the accumulator 32: `sw`/`lw`/`subw` keep the low word, exact
+   for any delta shorter than 2^32 ticks. */
     .macro  BENCH_SW_OPEN
     rdcycle t0
     PERCPU_CELL t1, PERCPU_BENCH_SW_START

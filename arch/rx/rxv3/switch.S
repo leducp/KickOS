@@ -204,7 +204,6 @@ _kickos_rx_pendsw:
     mov.l   #ICU_IR_SWINT, r15
     mov.b   #0, [r15]
 #if KICKOS_BENCH
-    /* Balanced push/pop keeps the ISP frame. */
     pushm   r14-r15
     mov.l   #CMTW1_CMWCNT, r15
     mov.l   [r15], r14
@@ -293,13 +292,12 @@ _kickos_rx_pendsw:
     mov.l   [r14], r15
     mov.l   [r15], r0          /* reload R0 = incoming->sp (SP survived the call) */
 #endif
-    /* Shared restore epilogue (also entered by arch_start). R0 = incoming frame. */
+    /* Shared restore epilogue. R0 = incoming frame. */
     .global _kickos_rx_restore
 _kickos_rx_restore:
-    /* Deferred MPU commit, after the physical swap and
-       before the frame is popped and RTE drops to user mode. R0 survives the call (RX psABI)
-       and the C function pushes BELOW the incoming frame; every register in the frame is
-       popped next, so the caller-saved clobbers are harmless. */
+    /* The MPU commit runs after the physical swap and before RTE drops to user mode. R0
+       survives the call and the C function pushes BELOW the incoming frame; the pops that
+       follow reload every register the call clobbers. */
     bsr.a   _kickos_arch_mpu_commit
     mov.l   #_g_arch_current, r15
     mov.l   [r15], r15
@@ -682,17 +680,16 @@ _svc_trampoline:
     mov.l   r14, r0            /* on the calling thread's kernel block from here */
     bsr.a   _syscall_dispatch  /* (R1-R4, [SP]=a3) -> result in R1:R2 */
     mov.l   4[r0], r0          /* the resume USP, read before R0 leaves the block */
-    /* rte pops PC+PSW only, so the R1:R2 pair reaches the caller untouched. */
     rte                        /* PC=userPC, PSW=userPSW -> back in arch_syscall (R1:R2=result) */
 
 /* A thread whose ctx.kernel_sp is 0 reached the syscall path, so the transfer has nowhere to
    build. thread_create seats a block on every pool thread and idle runs arch_idle_wait alone,
    so this refuses rather than storing through 0.
 
-   THE REPORTER RUNS ON THE ISP. This site is supervisor-on-USP: R0 is the thread's own stack
-   with KICKOS_RX_TRAP_REDZONE_SYS less the eight-byte head, 300 bytes, under it, and the
-   reporter's console chain measures 596 on rx72m-st, so reporting on the USP overflows the
-   thread's stack while printing.
+   THE REPORTER RUNS ON THE ISP. This site is supervisor-on-USP with only
+   KICKOS_RX_TRAP_REDZONE_SYS less the eight-byte head under R0, which is less than the
+   reporter's console chain descends, so reporting on the USP overflows the thread's stack
+   while printing.
    .Lsys_bad_usp and .Lpendsw_bad_usp need no such switch, both being inside a trap prologue
    already on the ISP. clrpsw is taken AFTER R0 is copied, so the reported USP is the
    thread's. The ISP here is the 8K boot/interrupt stack (_kernel_stack_size, rx72m.ld). */

@@ -31,6 +31,7 @@ namespace kickos
     {
         bool g_in_isr = false;
         uint64_t g_now_ns = 0;
+        uint64_t g_seat_cost_ns = 0;
 
         Domain g_domains[FIXTURE_DOMAIN_SLOTS] = {};
         uint16_t g_domain_refs[FIXTURE_DOMAIN_SLOTS] = {};
@@ -374,6 +375,7 @@ namespace kickos
             new (&g_fx) Fixture{};
             g_in_isr = false;
             g_now_ns = 0;
+            g_seat_cost_ns = 0;
             for (int i = 0; i < FIXTURE_DOMAIN_SLOTS; i++)
             {
                 g_domains[i] = Domain{};

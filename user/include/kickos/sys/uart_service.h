@@ -25,7 +25,6 @@
 
 #include <stdint.h>
 #include <stddef.h>
-#include <stdlib.h>
 
 namespace kickos::uart
 {
@@ -128,8 +127,7 @@ constexpr uint32_t KOS_UART_IRQ_SEG = 64;
 // `struct kos_uart*` deduces the template and asks for a service_irq() that does not exist.
 void irq_pass(struct kos_uart* dev, Shared* sh);
 
-// The arm for a backend that carries a service_irq() method instead of the class API: the
-// sim loopback in system/driver/sim/simuart/simuart.cc.
+// The arm for a backend that carries a service_irq() method in place of the class API.
 template <typename Uart>
 inline void irq_pass(Uart* dev, Shared*)
 {
@@ -229,7 +227,7 @@ void irq_loop(Uart& dev, Shared* sh)
 constexpr uint32_t KOS_UART_TX_SPIN_MAX = 1000000u;
 
 // Direct-to-device diagnostic, not stdio and not the ring, and legal only before the
-// line's first irq_wait.
+// first wait on the line's notification.
 void win_puts(struct kos_uart* dev, char const* s);
 
 // `prime` is NOT derivable from the trigger mode: xmcuartirq is EDGE and primes, rxsci is
@@ -253,14 +251,14 @@ void irq_thread(Ctx* ctx, UartParams const& p)
     {
         driver::trap();
     }
-    // The marker must precede the first pass: only a pend latched before the line's FIRST
-    // irq_wait is discarded.
+    // The marker must precede the first pass: only a pend latched before the FIRST wait on the
+    // line's notification is discarded.
     win_puts(&dev, p.announce);
     if (p.prime)
     {
         irq_pass(&dev, &ctx->sh);
     }
-    irq_loop(dev, &ctx->sh); // parks in irq_wait; never returns
+    irq_loop(dev, &ctx->sh); // parks in kos_notify_wait; never returns
 }
 
 // ---------------------------------------------------------------------------------
@@ -281,26 +279,15 @@ struct Transport
     static uint32_t tx_lost(Shared const*) { return 0u; }
 };
 
-// The service thread. Replies out of ring state and never touches the device.
-//
-// `mode` is null for a service with no unframed console arm, which is what makes
-// KOS_UART_SET_MODE refuse there instead of storing a mode nothing reads.
-size_t serve_one(Shared* sh, Atomic<uint32_t, Order::RELAXED>* mode, uint8_t* buf, size_t n);
-
-// Recv/dispatch loop with no console arm. Returns only when the endpoint dies, which is the
-// respawn signal.
-void serve_loop(Shared* sh);
-
-int32_t console_serve_loop(Shared* sh);
-
-// The console service thread entry: its ARG is the Ctx the bring-up granted.
+// The service thread entry: its ARG is the Ctx the bring-up granted. Replies out of ring state,
+// never touches the device, and traps once its receive fails.
 void console_thread(void* arg);
 
 // ---------------------------------------------------------------------------------
 // The class-side half of the descriptor check. The generic validator cannot know that the
 // loops above read KOS_UART_CAP_EP == 1, KOS_UART_CAP_DOORBELL == 2 and KOS_UART_CAP_LINE ==
 // 1, so a descriptor that grants the right caps in the wrong ORDER passes valid() and stalls
-// silently. Nothing else in the tree checks this.
+// silently.
 //
 // valid() only RANGE-checks ready_offset, so a literal there can land on a field already
 // non-zero when the poll first reads it, which turns the barrier into a silent no-op.

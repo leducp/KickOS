@@ -15,6 +15,7 @@
 #include <kickos/sync.h>
 #include <kickos/thread.h>
 
+#include <kickos/sys/abi.h>
 #include <kickos/sys/errno.h>
 
 #include "kseam_test.h"
@@ -91,7 +92,7 @@ namespace kickos
             g_mutex = own_mutex(holder, &handle);
             wake_next_park(unlock_the_mutex);
 
-            int const rc = mutex_lock(g_mutex);
+            int const rc = mutex_lock(g_mutex, KOS_TIMEOUT_NONE);
 
             EXPECT_EQ(rc, 0) << "the transfer said the lock was acquired";
             EXPECT_EQ(g_mutex->owner, waiter) << "ownership moved to the woken waiter";
@@ -109,7 +110,7 @@ namespace kickos
             g_mutex = own_mutex(holder, &handle);
             wake_next_park(cancel_the_waiter);
 
-            int const rc = mutex_lock(g_mutex);
+            int const rc = mutex_lock(g_mutex, KOS_TIMEOUT_NONE);
 
             EXPECT_EQ(rc, -KOS_ECANCELED) << "the cancel is what the return carries";
             EXPECT_NE(waiter->cancel_kind, CANCEL_NONE)
@@ -129,7 +130,7 @@ namespace kickos
             g_mutex = own_mutex(holder, &handle);
             wake_next_park(end_the_park_writing_nothing);
 
-            int const rc = mutex_lock(g_mutex);
+            int const rc = mutex_lock(g_mutex, KOS_TIMEOUT_NONE);
 
             EXPECT_EQ(rc, static_cast<int>(WAIT_RESULT_POISON))
                 << "the return carries the fixture's poison, not a waker's answer";
@@ -164,7 +165,8 @@ namespace kickos
             int handle = 0;
             g_mutex = own_mutex(holder, &handle);
 
-            KICKOS_EXPECT_FIXTURE_REFUSAL(mutex_lock(g_mutex), "no waker armed for the park");
+            KICKOS_EXPECT_FIXTURE_REFUSAL(mutex_lock(g_mutex, KOS_TIMEOUT_NONE),
+                                          "no waker armed for the park");
         }
     }
 }

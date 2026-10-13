@@ -15,21 +15,29 @@ from .subset import (
 )
 
 UNITS = ("pmsav7", "pmsav8", "pmsav6", "pmp", "rxmpu", "sysmpu", "mprotect", "mmu", "none")
+# The units a region descriptor programs, each stating its `granule`, and those whose region is a
+# power of two on its own alignment.
+REGION_UNITS = ("pmsav7", "pmsav8", "pmsav6", "pmp", "rxmpu", "sysmpu")
+POW2_UNITS = ("pmsav7", "pmsav6", "pmp")
 
 CHIP_VERSIONS = (1,)
 BOARD_VERSIONS = (1,)
 CHIP_FIELDS = (
     "version", "chip", "manual", "arch", "protection", "cores", "clusters_coherent",
     "partition_gate", "data_cache", "interrupts", "cycle_counter", "c", "reserved",
-    "devices", "memory", "pins", "esptool_image",
+    "devices", "memory", "pins", "esptool_image", "family", "exits_on_fault", "cpu",
 )
+FAMILY_FIELDS = ("dir", "sources")
+# A path below arch/, one name per level and no level above it.
+ARCH_PATH = re.compile(r"[a-z0-9_]+(/[A-Za-z0-9_][A-Za-z0-9_.-]*)*")
 PROTECTION_FIELDS = (
-    "unit", "covers_devices", "memory_type", "page", "device_gate", "bus_gate", "privilege", "io_ports", "driven",
+    "unit", "covers_devices", "memory_type", "page", "granule", "device_gate", "bus_gate", "privilege", "io_ports",
+    "driven",
 )
 CLUSTER_FIELDS = ("arch", "count", "smp", "protection", "line_offset")
 DEVICE_FIELDS = (
     "window", "ports", "channels", "blocks", "count", "stride", "lines", "bus_master", "owner", "sysreg", "host",
-    "privileged_registers", "cluster", "ref", "symbol", "gate_register",
+    "privileged_registers", "cluster", "ref", "symbol", "gate_register", "module_gate",
 )
 MEMORY_FIELDS = ("size", "base", "at", "cluster", "arena", "link", "ref", "symbol")
 # What a line's `when` may state: `doorbell`, a line the kernel takes only where a doorbell rings,
@@ -100,6 +108,8 @@ class Device:
         self.sysreg = False
         self.host = False
         self.bus_master = False
+        # Its channels are one gate: a register inside each channel's window reaches them all.
+        self.module_gate = False
         self.cluster = None
         # The offset of each privileged register, in the chip file's order.
         self.registers = []
@@ -207,6 +217,7 @@ class Protection:
         self.covers_devices = None
         self.memory_type = None
         self.page = None
+        self.granule = None
         self.privilege = True
         self.io_ports = None
         self.driven = True
@@ -256,6 +267,13 @@ class Chip:
         self.partition_gate = None
         # The esptool elf2image options of the image its ROM boots, or None where the ROM boots none.
         self.esptool_image = None
+        # (dir, [sources]) below arch/ that this chip's archive compiles against its own headers,
+        # or None where the file states `family: none`.
+        self.family = None
+        # Whether arch_shutdown ends the run with a status the harness reads, so a fault exits.
+        self.exits_on_fault = None
+        # The core's name on the boot banner, where no compiler flag names it.
+        self.cpu = None
 
 
 # A part with no clusters reaches its windows as one view, named by None.
@@ -268,7 +286,8 @@ def check_chip(path, text, report):
     root = f.load(text)
     if root is None:
         return None
-    top = f.fields(root, "the chip file", CHIP_FIELDS, ("version", "chip", "manual", "interrupts", "devices"))
+    top = f.fields(root, "the chip file", CHIP_FIELDS,
+                   ("version", "chip", "manual", "interrupts", "devices", "family", "exits_on_fault"))
     if top is None or not f.version(top, "the chip file", CHIP_VERSIONS):
         return None
     folder = os.path.basename(os.path.dirname(os.path.abspath(path)))
@@ -286,6 +305,12 @@ def check_chip(path, text, report):
                 chip.data_cache = False
     if "esptool_image" in top:
         chip.esptool_image = words(f, top["esptool_image"], "`esptool_image`")
+    if "exits_on_fault" in top:
+        chip.exits_on_fault = f.boolean(top["exits_on_fault"], "`exits_on_fault`") is True
+    if "cpu" in top:
+        chip.cpu = f.name(top["cpu"], "`cpu`", IDENTIFIER)
+    if "family" in top:
+        chip.family = check_family(f, top["family"])
     if "arch" in top:
         chip.arch = f.name(top["arch"], "`arch`", IDENTIFIER)
     if "manual" in top:
@@ -650,6 +675,18 @@ def check_protection(f, node, what, chip, view):
         if page is not None and unit is not None and unit != "mmu":
             f.refuse(values["page"], "chip.page-unit", "%s has a `page`, which only a translating unit has" % what)
         protection.page = page
+    if unit in REGION_UNITS and "granule" not in values:
+        f.refuse(node, "form.missing", "%s needs `granule`, the smallest region the unit describes" % what)
+    if "granule" in values:
+        granule = check_size(f, values["granule"], "%s `granule`" % what, 32)
+        if granule is not None and granule & (granule - 1):
+            f.refuse(values["granule"], "chip.granule-size", "%s `granule` %d is not a power of two" % (what, granule))
+            granule = None
+        if granule is not None and unit is not None and unit not in REGION_UNITS:
+            f.refuse(values["granule"], "form.inapplicable",
+                     "%s has a `granule`, which only a region unit has" % what)
+            granule = None
+        protection.granule = granule
     if unit is not None:
         chip.protection[view] = protection
     if "device_gate" in values:
@@ -945,10 +982,13 @@ def check_device(f, chip, key, value, windows):
             f.refuse(lkey, "chip.name-collision",
                      "`/dev/%s/%s` names both a channel and a line of %s" % (name, line, what))
 
-    for flag in ("bus_master", "sysreg", "host"):
+    for flag in ("bus_master", "sysreg", "host", "module_gate"):
         if flag in values:
             if f.boolean(values[flag], "%s `%s`" % (what, flag)):
                 setattr(device, flag, True)
+    if device.module_gate and "channels" not in values:
+        f.refuse(values["module_gate"], "form.inapplicable",
+                 "%s is one gate across its channels, so it has `channels`" % what)
     if device.sysreg and shapes:
         f.refuse(values["sysreg"], "form.exclusive",
                  "%s is reached through system registers alone, so it has no `%s`" % (what, shapes[0]))
@@ -1556,6 +1596,27 @@ def words(f, node, what):
     if None in found:
         return None
     return found
+
+
+def check_family(f, node):
+    """(dir, [sources]) of a `family`, each a path below arch/, or None for `none` or once refused."""
+    if not isinstance(node, MappingNode):
+        f.enum(node, "`family`", ("none",))
+        return None
+    values = f.fields(node, "`family`", FAMILY_FIELDS, FAMILY_FIELDS)
+    if values is None or len(values) != len(FAMILY_FIELDS):
+        return None
+    folder = f.name(values["dir"], "`family` dir", ARCH_PATH)
+    items = f.sequence(values["sources"], "`family` sources")
+    if folder is None or items is None:
+        return None
+    sources = [f.name(item, "a `family` source", ARCH_PATH) for item in items]
+    if None in sources:
+        return None
+    if not sources:
+        f.refuse(values["sources"], "form.missing", "`family` names no source")
+        return None
+    return folder, sources
 
 
 def check_emulator(f, node):

@@ -1,24 +1,18 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The cross-core doorbell for the RP2350, and the core identity it is keyed on.
-//
-// A doorbell flag says a raise LANDED, never that the far side has serviced it, so SIO carries
-// the wake and the answer travels in the cells below. Every cell has exactly one writer: the
-// core asking writes a request word, the core answering writes an answer word.
-//
-// No row padding: this part caches only XIP and SRAM0-7 stripe on address bits 3:2 (RP2350
-// datasheet RP-008373-DS-2, 2.2.3), so adjacent cells already answer from different banks.
+// The RP2350's doorbell under the shared protocol, the core identity it is keyed on, and the AMP
+// partition's launch of its peer. A SIO doorbell flag carries only the wake.
 
 #include <kickos/arch/arch.h>
 #include <kickos/chip_limits.h>
-#include <kickos/arch/doorbell_cells.h>
+#include <kickos/arch/doorbell_protocol.h>
+#include <kickos/io/mmio.h>
 
 #include "accessctrl_rows.h"
 #include "regs/accessctrl.h"
 #include "regs/sio_mc.h"
 
-#include <kickos/sys/atomic.h>
 #include <kickos/sys/partition_gate.h>
 
 #include <stdint.h>
@@ -37,79 +31,34 @@ namespace kickos
 extern "C"
 {
     void kfault_terminate(void) __attribute__((noreturn));
-    void kickos_rp2350_doorbell_service(void);
+    void kpanic_enter(void);
 }
 
 namespace
 {
-    inline volatile uint32_t& r32(uintptr_t a)
-    {
-        return *reinterpret_cast<volatile uint32_t*>(a);
-    }
-
-    constexpr size_t RP2350_DOORBELL_LINE = alignof(uint32_t);
-
-    using Seq = kickos::doorbell::Seq;
-    using SeqRow = kickos::doorbell::Row<RP2350_DOORBELL_LINE>;
-
-    // Both nodes write these, so under one image per node they sit in the region the two link
-    // scripts agree on rather than being allocated per image.
-    //
-    // g_request[i].seq[t]: how many times core i has asked core t. Written by i, read by t.
-    // g_answer[t].seq[i]: how far core t has answered core i. Written by t, read by i.
-    KICKOS_AMP_SHARED("cells.request") SeqRow g_request[KICKOS_DOORBELL_CORES] = {};
-    KICKOS_AMP_SHARED("cells.answer") SeqRow g_answer[KICKOS_DOORBELL_CORES] = {};
-
     // One of the eight flags each way (datasheet 3.1.6). A core has exactly one peer here, so
     // OUT_SET carries no target field and one flag is the whole rendezvous.
     constexpr uint32_t DOORBELL_BIT = 1u;
 
-    // How long a peer may leave a request unanswered before it is taken as lost, and the spins
-    // between two clock reads while waiting. A duration, never an iteration count: a spinning
-    // waiter's rate is not the peer's.
-    constexpr uint64_t DOORBELL_WAIT_NS = 5ull * 1000ull * 1000ull * 1000ull;
-    constexpr uint32_t CLOCK_CHECK_SPINS = 256u;
-    static_assert((CLOCK_CHECK_SPINS & (CLOCK_CHECK_SPINS - 1u)) == 0u, "tested as a mask");
-
-    char const WAIT_STUCK[] = "KickOS: rp2350 doorbell unanswered by core ";
-    char const WAIT_STUCK_NL[] = "\n";
-
-    void hex1(uint32_t v)
+    struct Part
     {
-        char c = static_cast<char>('0' + (v & 0xFu));
-        if ((v & 0xFu) > 9u)
+        // The DSB puts the acknowledge on SIO ahead of the request reads, so a raise concurrent
+        // with it cannot be both cleared here and missed by the service.
+        static void clear(void)
         {
-            c = static_cast<char>('a' + (v & 0xFu) - 10u);
+            uint32_t const raised = r32(reg::sio::DOORBELL_IN_CLR);
+            r32(reg::sio::DOORBELL_IN_CLR) = raised;
+            __asm volatile("dsb" ::: "memory");
         }
-        arch_console_write(&c, 1);
-    }
-
-    // Whether any peer has asked this core for something it has not answered.
-    bool doorbell_pending(void)
-    {
-        uint32_t const me = arch_doorbell_core();
-        for (uint32_t from = 0; from < KICKOS_DOORBELL_CORES; from++)
+        static void raise_self(void)
         {
-            if (g_request[from].seq[me].load() != g_answer[me].seq[from].load())
-            {
-                return true;
-            }
+            r32(reg::sio::DOORBELL_IN_SET) = DOORBELL_BIT;
         }
-        return false;
-    }
-
-    // Masked: the body is not re-entrant against itself, an answer write preempted between its
-    // read and its store publishing a stale sequence an initiator waits on forever.
-    void doorbell_poll(void)
-    {
-        if (not doorbell_pending())
+        static bool inject_owed(void)
         {
-            return;
+            return false;
         }
-        arch_irq_state_t const state = arch_irq_save();
-        kickos_rp2350_doorbell_service();
-        arch_irq_restore(state);
-    }
+    };
 
 #if KICKOS_AMP_OWN_IMAGE
     // FIFO_ST (datasheet Table 37, 3.1.11): bit 0 VLD, this core's RX FIFO holds a word;
@@ -122,9 +71,10 @@ namespace
     constexpr uint32_t LAUNCH_SPINS = 4000000u;
     constexpr uint32_t LAUNCH_RESTARTS = 16u;
 
-    char const LAUNCH_HEAD[] = "KickOS: RP2350 AMP node ";
-    char const LAUNCH_NO_ANSWER[] = " did not answer its launch handshake\r\n";
-    char const LAUNCH_NO_SYNC[] = " never synchronised its launch handshake\r\n";
+    char const LAUNCH_NO_ANSWER[] =
+        "KickOS: RP2350 AMP node %u did not answer its launch handshake\n";
+    char const LAUNCH_NO_SYNC[] =
+        "KickOS: RP2350 AMP node %u never synchronised its launch handshake\n";
 
     // Polled and not WFE-parked: parking rests on the receiving core taking an event when its
     // RX FIFO fills, and a missed event there is this core asleep forever at boot.
@@ -159,12 +109,10 @@ namespace
         return false;
     }
 
-    [[noreturn]] void launch_failed(uint32_t node, char const* tail, size_t tail_len)
+    [[noreturn]] void launch_failed(uint32_t node, char const* fmt)
     {
-        arch_console_write(LAUNCH_HEAD, sizeof(LAUNCH_HEAD) - 1);
-        char const digit = static_cast<char>('0' + (node % 10u));
-        arch_console_write(&digit, 1);
-        arch_console_write(tail, tail_len);
+        kpanic_enter();
+        kickos::kprintf(fmt, static_cast<unsigned>(node));
         kfault_terminate();
     }
 #endif
@@ -230,6 +178,12 @@ namespace
 #endif
 }
 
+// No barrier: this part has no translation to invalidate and caches only XIP.
+kickos::doorbell::Fenced kickos::doorbell::service_fence(Observed)
+{
+    return Fenced();
+}
+
 extern "C"
 {
 
@@ -246,73 +200,33 @@ uint32_t arch_cpu_id(void)
 }
 #endif
 
-// The far side of the doorbell, on the calling core. Always entered with interrupts masked,
-// whether from hardware or from a poll.
-//
-// ITS STACK DEPTH IS UNMEASURED. Entered from the vector table this body runs in handler mode,
-// where ARMv7-M forces SP_main, and tests/static/trap_redzone_roots.txt roots no armv7m class
-// on the MSP: the descent through kickos_amp_node_service is gated by nothing. What would
-// bound it is a root set over every handler-mode entry, measured against the _kernel_stack_size
-// the chip's linker script reserves, 8 KiB in rp2350.ld.
+// The vector's entry to the shared service, in handler mode on SP_main. ITS DEPTH IS UNMEASURED:
+// tests/static/trap_redzone_roots.txt roots no armv7m class on the MSP, so the descent through
+// kickos_amp_node_service is bounded only by the _kernel_stack_size rp2350.ld reserves.
 void kickos_rp2350_doorbell_service(void)
 {
-    uint32_t const me = arch_doorbell_core();
-
-    // A raise landing after this clear stays pending and is delivered again. The DSB puts the
-    // acknowledge on SIO ahead of the request reads, so a raise concurrent with it cannot be
-    // both cleared here and missed by the loop below.
-    uint32_t const raised = r32(reg::sio::DOORBELL_IN_CLR);
-    r32(reg::sio::DOORBELL_IN_CLR) = raised;
-    __asm volatile("dsb" ::: "memory");
-
-    for (uint32_t from = 0; from < KICKOS_DOORBELL_CORES; from++)
-    {
-        uint32_t const asked = g_request[from].seq[me].load();
-        if (asked != g_answer[me].seq[from].load())
-        {
-            g_answer[me].seq[from] = asked;
-        }
-    }
-#if KICKOS_AMP_NODE
-    // AFTER THE ANSWERS, and that order is the contract: an AMP payload drain may not delay
-    // the rendezvous an initiator waits on through this same body.
-    kickos_amp_node_service();
-#endif
+    Part::clear();
+    kickos_doorbell_service();
 }
 
-// The calling core's own bit is serviced HERE rather than raised: a core that raised the
-// doorbell on itself and then waited with interrupts masked would wait on a handler it is
-// keeping out. Its request cell is bumped like any other, so the answer cells describe the
-// whole mask.
-void arch_ipi_send(uint32_t cores)
+void kickos_doorbell_poll(void)
 {
-    uint32_t const me = arch_doorbell_core();
+    kickos::doorbell::poll<Part>();
+}
 
-    for (uint32_t to = 0; to < KICKOS_DOORBELL_CORES; to++)
+// The calling core's own bit reaches here only on an AMP node, where its own IN flag carries the
+// service once it unmasks.
+void kickos_doorbell_raise(uint32_t cores)
+{
+    uint32_t const self = 1u << arch_doorbell_core();
+    if ((cores & self) != 0)
     {
-        if ((cores & (1u << to)) != 0)
-        {
-            // Single writer, so a load and a store rather than an increment.
-            g_request[me].seq[to] = g_request[me].seq[to].load() + 1u;
-        }
-    }
-    if ((cores & (1u << me)) != 0)
-    {
-#if KICKOS_AMP_OWN_IMAGE
-        // Raised in hardware, never serviced inline: an inline call would put
-        // kickos_amp_node_service under amp::send, which reaches here, and no stack figure can
-        // price a recursion. These are this core's own IN bits, so its doorbell interrupt
-        // carries the service once it unmasks.
         r32(reg::sio::DOORBELL_IN_SET) = DOORBELL_BIT;
-#else
-        doorbell_poll();
-#endif
     }
-    if ((cores & ~(1u << me)) != 0)
+    if ((cores & ~self) != 0)
     {
-        // The request cells are Normal memory and SIO is Device, which are reorderable
-        // against each other: without this the raise can reach the peer ahead of the cell it
-        // is about.
+        // The request cells are Normal memory and SIO is Device, which are reorderable against
+        // each other: without this the raise can reach the peer ahead of the cell it is about.
         __asm volatile("dsb" ::: "memory");
         r32(reg::sio::DOORBELL_OUT_SET) = DOORBELL_BIT;
     }
@@ -325,55 +239,6 @@ void arch_ipi_send(uint32_t cores)
 void arch_ipi_fence(void)
 {
     __asm volatile("dmb" ::: "memory");
-}
-
-// Spins on the answer cells alone, the calling core's own bit excepted: the send answered that
-// one synchronously. SERVICES ITS OWN DOORBELL WHILE IT SPINS: two cores can each be an
-// initiator waiting on the other.
-//
-// A THREAD-MODE DESCENT INTO THE SERVICE BODY: under KICKOS_AMP_NODE the poll below reaches
-// kickos_amp_node_service on the CALLER'S per-thread kernel block, not on SP_main. Its one
-// kernel caller, line_op_ask, is compiled out at KICKOS_KERNEL_CORES == 1, which every AMP
-// posture is (Kconfig, the multicore-model choice); one that appears is priced under class
-// SVCK by tests/static/check_trap_redzone.sh, which walks the callgraph and fails by name.
-void arch_ipi_wait(uint32_t cores)
-{
-    uint32_t const me = arch_doorbell_core();
-    uint32_t const peers = cores & ~(1u << me);
-
-    // Zero until the first clock read arms it, so the bound runs from when an answer was first
-    // missing.
-    uint64_t deadline = 0;
-    for (uint32_t to = 0; to < KICKOS_DOORBELL_CORES; to++)
-    {
-        if ((peers & (1u << to)) == 0)
-        {
-            continue;
-        }
-        uint32_t const asked = g_request[me].seq[to].load();
-        uint32_t spins = 0;
-        while (g_answer[to].seq[me].load() != asked)
-        {
-            spins++;
-            if ((spins & (CLOCK_CHECK_SPINS - 1u)) == 0u)
-            {
-                uint64_t const now = arch_clock_now();
-                if (deadline == 0)
-                {
-                    deadline = now + DOORBELL_WAIT_NS;
-                }
-                else if (now > deadline)
-                {
-                    arch_console_write(WAIT_STUCK, sizeof(WAIT_STUCK) - 1);
-                    hex1(to);
-                    arch_console_write(WAIT_STUCK_NL, sizeof(WAIT_STUCK_NL) - 1);
-                    kfault_terminate();
-                }
-            }
-            doorbell_poll();
-            __asm volatile("yield" ::: "memory");
-        }
-    }
 }
 
 #if KICKOS_AMP_OWN_IMAGE
@@ -446,7 +311,7 @@ void arch_amp_release_peers(void)
             uint32_t response = 0;
             if (not fifo_push(cmd) or not fifo_pop(&response))
             {
-                launch_failed(node, LAUNCH_NO_ANSWER, sizeof(LAUNCH_NO_ANSWER) - 1);
+                launch_failed(node, LAUNCH_NO_ANSWER);
             }
             if (response == cmd)
             {
@@ -457,7 +322,7 @@ void arch_amp_release_peers(void)
             restarts++;
             if (restarts > LAUNCH_RESTARTS)
             {
-                launch_failed(node, LAUNCH_NO_SYNC, sizeof(LAUNCH_NO_SYNC) - 1);
+                launch_failed(node, LAUNCH_NO_SYNC);
             }
         }
     }

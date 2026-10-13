@@ -61,11 +61,14 @@ compose well with a preemptive kernel.
 
 ## 2. The trap: one door, many reasons
 
-RISC-V has a single machine-mode trap vector, `mtvec`. In *direct* mode every
+RISC-V has a single machine-mode trap vector register, `mtvec`. In *direct* mode every
 trap -- timer interrupt, software interrupt, an `ecall`, a fault -- enters the same
-handler, which reads `mcause` to learn *why*. (There is a *vectored* mode too;
-KickOS uses direct because one well-understood entry point is easier to reason
-about than a table of them.)
+handler, which reads `mcause` to learn *why*. In *vectored* mode an interrupt instead
+enters at an offset that its cause selects, while exceptions still take the base.
+KickOS sets vectored mode, because it is the only mode the ESP32-C6 core supports.
+Yet every slot of its table (`kickos_rv_mtvec`) is a jump to the same `trap_entry`, so
+there is still one door: one well-understood entry point is easier to reason about
+than a table of them.
 
 So the very first thing the handler does, before it knows anything, is **save the
 full register context** onto the running thread's own stack, then demux:

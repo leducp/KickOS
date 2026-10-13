@@ -136,7 +136,7 @@ if(KICKOS_AMP_NODE_ID EQUAL 0)
   # The second artefact: node 0 is the selftest and node 1 a peer that echoes, so the arms
   # needing a running peer have one. They are compiled on every posture and decide at runtime,
   # so this changes the ANSWER they get and not which of them exist.
-  if(TARGET selftest AND KICKOS_ENABLE_SELFTEST)
+  if(TARGET selftest)
     set(_amp_st_artefact "${CMAKE_BINARY_DIR}/kickos-partition-selftest.elf")
     add_custom_command(OUTPUT "${_amp_st_artefact}"
       COMMAND "${PROJECT_SOURCE_DIR}/tools/amp/build-partition.sh"

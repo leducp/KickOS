@@ -275,6 +275,7 @@ _kickos_int_level1:
        rebuilds the incoming chain from incoming->sp. */
     l32i    a1, a3, CTX_SP        /* incoming->sp (switch frame) */
     SWITCH_UNLOCK                 /* standing on the incoming frame; a3 survives call4 */
+    COOP_FP_CTL_RESTORE a4
     l32i    a4, a3, CTX_PS
     l32i    a0, a3, CTX_PC        /* return addr, carries CALLINC */
     wsr.ps  a4

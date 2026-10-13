@@ -20,8 +20,7 @@ namespace kickos
     namespace arm
     {
         // The MPU_RBAR low attribute bits (SH|AP|XN). attr is the UNPRIVILEGED access;
-        // supervisor comes from the PRIVDEFENA background. Code is RO+executable, data/stack
-        // RW+execute-never, and a read-only data region RO-any.
+        // supervisor comes from the PRIVDEFENA background.
         inline uint32_t pmsav8_rbar_attr(uint32_t attr)
         {
             if (attr & ARCH_MPU_X)

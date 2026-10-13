@@ -1,40 +1,33 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// ARMv7-M L1 cache bring-up and data-cache maintenance (Cortex-M7). The SCB cache-maintenance
-// registers exist only on cache-equipped v7-M; on M3/M4 the CCR IC/DC bits are reserved and on
-// v6-M the registers are absent, so bring-up is OPT-IN by call (a chip invokes it from
-// arch_init), never ambient, and maintenance does nothing while CCR.DC is clear. Clean-room
-// from the ARMv7-M ARM / Cortex-M7 TRM.
+// ARMv7-M L1 cache bring-up and data-cache maintenance (Cortex-M7). The cache registers exist
+// only on cache-equipped v7-M, so bring-up is OPT-IN by call from a chip's arch_init, and
+// maintenance does nothing while CCR.DC is clear.
 //
-// M7 gotcha: enabling a cache ARMS speculative prefetch of Normal memory, so the
-// MPU anti-speculation regions MUST already be programmed (cache-after-MPU)
-// before calling this, else the M7 speculates into unbacked external memory and
-// the AHB stalls with no fault.
+// Enabling a cache ARMS speculative prefetch of Normal memory, so the MPU anti-speculation
+// regions MUST already be programmed (cache-after-MPU), else the M7 speculates into unbacked
+// external memory and the AHB stalls with no fault.
 
 #include <kickos/arch/arch.h>
 #include <kickos/chip_limits.h>
+#include <kickos/io/mmio.h>
 
 #include <stddef.h>
 #include <stdint.h>
 
 namespace
 {
-    inline volatile uint32_t& r32(uintptr_t a)
-    {
-        return *reinterpret_cast<volatile uint32_t*>(a);
-    }
     constexpr uintptr_t SCB_CCR = 0xE000ED14;    // Configuration and Control
     constexpr uintptr_t SCB_ICIALLU = 0xE000EF50; // I-cache invalidate all to PoU
     constexpr uint32_t CCR_IC = 1u << 17;
 }
 
-// Enable the L1 instruction cache. Invalidate to PoU first (reset state is garbage).
 extern "C" void kickos_armv7m_icache_enable(void)
 {
     __asm volatile("dsb" ::: "memory");
     __asm volatile("isb" ::: "memory");
-    r32(SCB_ICIALLU) = 0u; // invalidate whole I-cache (also flushes the branch predictor)
+    r32(SCB_ICIALLU) = 0u; // reset state is garbage; also flushes the branch predictor
     __asm volatile("dsb" ::: "memory");
     __asm volatile("isb" ::: "memory");
     r32(SCB_CCR) |= CCR_IC;
@@ -105,8 +98,7 @@ namespace
         {
             return;
         }
-        // Maintenance by address or by set/way is unordered against the stores before it
-        // without a DSB (ARMv7-M ARM B2.2.7, p.B2-579).
+        // Maintenance is unordered against the stores before it without a DSB.
         __asm volatile("dsb" ::: "memory");
         if (plan.kind == kickos::armv7m::DcachePlan::Kind::SET_WAY)
         {
@@ -133,9 +125,8 @@ extern "C" void arch_dcache_invalidate(void* addr, size_t bytes)
     dcache_maintain(SCB_DCCIMVAC, SCB_DCCISW, reinterpret_cast<uintptr_t>(addr), bytes);
 }
 
-// Enable the L1 data cache. INVALIDATE the whole cache by set/way first, never clean:
-// RAM is live at boot and the cache lines are garbage, so a clean would write trash over
-// RAM. Caller must have the MPU memory attributes correct first (cache-after-MPU).
+// INVALIDATE by set/way first, never clean: the lines are garbage at boot and a clean would
+// write them over live RAM.
 extern "C" void kickos_armv7m_dcache_enable(void)
 {
     r32(SCB_CSSELR) = 0u; // select L1 data cache

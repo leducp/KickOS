@@ -60,8 +60,9 @@ knew it moved.
 
 ## KickOS's bottom edge
 
-The seam lives in `user/src/newlib_stubs.cc`, with one deliberate exile in
-`user/src/newlib_sbrk.cc` that the heap bullet below explains. It is small on purpose --
+The seam lives mostly in `user/src/newlib_stubs.cc`. The locks have a file of their own,
+`user/src/newlib_lock.cc`, and so does `_sbrk`, `user/src/newlib_sbrk.cc`, for a reason the
+heap bullet below explains. It is small on purpose --
 each stub is the thinnest possible bridge from a newlib expectation to a KickOS syscall:
 
 - **`_write` -> the debug console.** Pre-driver, all stdio (any `fd`) falls to
@@ -83,20 +84,25 @@ each stub is the thinnest possible bridge from a newlib expectation to a KickOS 
   neither bound turns an allocating app into a **link** error on an undefined
   `_kickos_heap_start`, and a script that defines an empty span lets the same app link
   and take a NULL from `malloc` at run time. The chip scripts in this tree all take the
-  second option, the zero-heap board explicitly so
-  (`../../arch/arm/chip/nrf51/nrf51.ld` keeps a zero-length `.userheap` section for no
-  other reason than to define the two symbols). Either answer is defensible; what the
+  second option: on a Cortex-M chip with no MPU, the shared body
+  (`../../arch/arm/common/cortexm.ld.h`) keeps a `.userheap` section even at zero length,
+  for no other reason than to define the two symbols. Either answer is defensible; what the
   separate translation unit buys is that the board gets to pick one, rather than having
   the link error forced on every image or made unreachable for all of them.
-- **`__malloc_lock` as a no-op -- and the footgun.** newlib brackets every arena
-  mutation with `__malloc_lock`/`__malloc_unlock`. The pinned vendor toolchains are all
-  built single-thread (`--disable-threads`), so KickOS provides **weak, empty** stubs:
-  a full-C++ app that allocates from one thread links and runs with zero locking
-  overhead, and a future thread-safe libc can override the weak symbols. The footgun,
-  called out in the file: an app that spawns threads and heap-allocates from *more than
-  one* gets no reentrancy guard -- concurrent `malloc` silently corrupts the arena.
-  Real stubs (an `IrqLock` or a per-domain arena) are the prerequisite for
-  multi-threaded full-C++ allocation; without them, keep such apps single-alloc-thread.
+- **The locks: one recursive lock per address space.** newlib brackets every arena
+  mutation with `__malloc_lock`/`__malloc_unlock`, and every stream operation with that
+  `FILE`'s lock. Built with retargetable locking, newlib routes all of them through a few
+  `__retarget_lock_*` hooks, and `user/src/newlib_lock.cc` defines those hooks: every
+  static lock and every `FILE` lock is ONE recursive lock over a kernel mutex, one per
+  address space, so nesting two of them is recursion on one. The owner and the depth live
+  in the address space the lock guards, so only the outermost acquire and release reach
+  the kernel. The trade is worth seeing. One lock is coarse: two threads printing to
+  different streams take turns. But libc can never deadlock on its own lock order, and a
+  `FILE` costs no kernel object. The trap it closes is a silent one: newlib's default
+  hooks are no-ops, and an image that linked them would let two allocating threads
+  corrupt the arena with no error at all. So the tree refuses to compile against a newlib
+  without retargetable locking, and forces its own lock object into every link. The exact
+  contract is `libc-lock-one-per-address-space` in `../reference/invariants.md`.
 
 The rest (`_read` returns 0, `_close`/`_kill` return `-1`, `_isatty` returns 1) are
 honest stubs for a system with no filesystem: enough for the library to be *coherent*,
@@ -220,7 +226,7 @@ the toolchain C++ runtime.
 Mixing `-fexceptions` app code with `-fno-exceptions` kernel/lib/arch code is sound not
 by luck but by *how it fails*. Only the app is `-fexceptions`; everything below has no
 unwind tables at all. The only kernel-to-app entries are the app `main` and the thread
-trampoline, and the IRQ model is wait-on-semaphore (no kernel-invoked app callbacks), so
+trampoline, and the IRQ model is a wait on a notification (no kernel-invoked app callbacks), so
 there is no throw path threading back through an ISR. When an exception *escapes* an app
 entry -- an uncaught throw, a `bad_alloc`, a throwing global constructor -- it reaches a
 frame with **no FDE / no `.exidx` entry**. Both the DWARF and the ARM-EHABI unwinders
@@ -287,15 +293,16 @@ expects. Kernel/arch/chip/lib constructors -- the ones `kmain` itself needs -- s
 libstdc++/libsupc++'s, KickCAT's) is routed by the linker into a separate
 `.kickos_app_init_array` section and run later from `root_entry` -- the kernel's first
 thread, with the scheduler and clock fully live -- just before `kickos_app_main`. That
-restores the normal C++ contract: runtime up, then static init, then `main`. The split is
-fanned out across every chip linker, and the bounds `root_entry` walks are a *strong*
+restores the normal C++ contract: runtime up, then static init, then `main`. Every
+target's linker script carries the split, and the bounds `root_entry` walks are a *strong*
 reference: every target has to state its window, so a chip whose script forgot to
 partition `.init_array` fails to link instead of quietly skipping the walk. The sim host
 -- whose own runtime already sequences `.init_array` before `main` -- states an
 explicitly empty one, which the walk steps over in zero iterations. See
 `../../kernel/init/kmain.cc` (`root_entry`), `../../arch/sim/start.cc`,
 `../../user/include/kickos/app.h`, and the `.init_array` / `.kickos_app_init_array` split
-in `../../arch/arm/chip/mk64f/mk64f.ld`.
+in `KICKOS_CORTEXM_CTORS`, the body every Cortex-M chip script shares
+(`../../arch/arm/common/cortexm.ld.h`).
 
 This is the exact mirror of the bottom-edge story this chapter opened with. There, the
 runtime needs the OS *underneath* it -- `malloc` needs `_sbrk`, `printf` needs `_write`.
@@ -325,8 +332,9 @@ every access.
   code region that is granted read+execute, so unwinding *reads* them with no extra
   region. The full EH+RTTI+heap footprint costs **zero additional MPU regions**.
 
-How that split is *expressed* is one linker file, `../../arch/arm/chip/mk64f/mk64f.ld`,
-and it carries a gotcha worth the ink. The scheme is **inverted and fail-safe**: the
+How that split is *expressed* is one shared linker body, `KICKOS_CORTEXM_DATA` in
+`../../arch/arm/common/cortexm.ld.h`, which every Cortex-M chip script includes, and it
+carries a gotcha worth the ink. The scheme is **inverted and fail-safe**: the
 closed KickOS-owned archive set (`libkickos_{kernel,arch,chip,lib}.a`) is captured
 *first* into the kernel's `.data`/`.bss`; the `.appdata`/`.appbss` catch-alls that follow
 take *everything else* -- the app's own objects, the toolchain runtime (newlib, libgcc,
@@ -344,6 +352,7 @@ colon-inclusion, `*libkickos_kernel.a:*(...)`, which selects members by archive;
 rest fall through." Same isolation, opposite selector.
 
 Two arch wrinkles worth naming:
+
 - **DWARF vs ARM-EHABI FDE registration.** On the DWARF arches the `.eh_frame`
   table must be *registered* at runtime via `__register_frame` -- KickOS does it first
   thing on the root thread, whose thread pointer already names its libc state, so the

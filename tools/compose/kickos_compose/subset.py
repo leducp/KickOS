@@ -29,7 +29,7 @@ RULES = (
     "form.exclusive", "form.inapplicable", "form.range", "form.layout", "form.unreadable",
     "chip.name-mismatch", "chip.name-collision", "chip.overlap", "chip.cluster-unknown",
     "chip.kernel-window", "chip.memory-required", "chip.arena", "chip.page-unit", "chip.page-size",
-    "chip.core-count", "chip.zero-size", "chip.device-unknown", "chip.register-outside", "chip.gate-straddle",
+    "chip.granule-size", "chip.core-count", "chip.zero-size", "chip.device-unknown", "chip.register-outside", "chip.gate-straddle",
     "chip.gate-register",
     "chip.block-outside", "chip.line-range", "chip.link-duplicate", "chip.symbol-collision", "chip.reserved",
     "chip.address-width", "chip.line-order", "form.text",
@@ -59,7 +59,7 @@ RULES = (
     "manifest.bound", "manifest.console", "manifest.block-cache",
     "manifest.target", "manifest.receiver",
     "partition.device", "partition.port", "partition.unserved", "partition.region", "partition.cached-incoherent",
-    "partition.gate-budget", "partition.lone",
+    "partition.gate-budget", "partition.lone", "partition.bootloader",
 )
 
 HEX = re.compile(r"0x[0-9A-Fa-f]+")
@@ -81,6 +81,10 @@ PIN = re.compile(r"[A-Z][A-Z0-9_]*(\.[0-9]+)?")
 SELECTOR = re.compile(r"[a-z][a-z0-9]*")
 FUNCTION = re.compile(r"[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+")
 GPIO_FUNCTION = re.compile(r"[a-z][a-z0-9_]*(\.(0|[1-9][0-9]*)){1,2}")
+
+# The root of each text loaded without a refusal, shared by every later load of that text, so no
+# caller may modify a node.
+COMPOSED = {}
 
 
 def unknown_field(what, name, allowed):
@@ -163,6 +167,10 @@ class File:
 
     def load(self, text):
         """The root node of the one document, or None once refused."""
+        root = COMPOSED.get(text)
+        if root is not None:
+            return root
+        refused = len(self.report.refusals)
         yaml = YAML(typ="rt", pure=True)
         try:
             tokens = list(yaml.scan(text))
@@ -193,7 +201,10 @@ class File:
         self.refuse_keys(events)
         if documents != 1 or has_alias:
             return None
-        return yaml.compose(text)
+        root = yaml.compose(text)
+        if len(self.report.refusals) == refused:
+            COMPOSED[text] = root
+        return root
 
     def refuse_keys(self, events):
         """Merge keys and duplicate keys in every document. A schema walk skips both silently."""

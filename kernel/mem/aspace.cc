@@ -133,30 +133,6 @@ namespace kickos
             r.staged_home = nullptr;
         }
 
-        // An unprivileged caller's work outside the lock, and the interrupt window after each
-        // granule of it.
-        class GranuleWindows
-        {
-          public:
-            explicit GranuleWindows(Thread const* c)
-                : open_(not c->privileged)
-            {
-            }
-
-            // One granule synced, cleared, copied or freed, with interrupts masked since the
-            // last window.
-            void granule()
-            {
-                if (not open_)
-                {
-                    return;
-                }
-                arch_irq_window();
-            }
-
-          private:
-            bool open_;
-        };
 #endif
 
         // The locked pass's half of the sync a mapping of another memory type than its frames
@@ -735,7 +711,6 @@ namespace kickos
             return;
         }
         size_t const g = arch_aspace_granule();
-        GranuleWindows windows(c);
 #if KICKOS_ARCH_ALIAS_DCACHE
         for (uint8_t i = 0; i < r->noted.count; i++)
         {
@@ -750,7 +725,7 @@ namespace kickos
                 arch_irq_state_t const s = arch_irq_save();
                 alias_sync(p, g);
                 arch_irq_restore(s);
-                windows.granule();
+                arch_irq_window();
             }
         }
 #endif
@@ -758,7 +733,7 @@ namespace kickos
         for (uint32_t j = 0; full and j < r->staged_pages; j++)
         {
             full = stage_granule(c, *r, j, g);
-            windows.granule();
+            arch_irq_window();
         }
         r->staged_full = full;
     }
@@ -812,7 +787,6 @@ namespace kickos
         // A slay at a window below would drop what a succeeded call delivered.
         KICKOS_ASSERT(not succeeded);
         size_t const g = arch_aspace_granule();
-        GranuleWindows windows(c);
         while (true)
         {
             {
@@ -827,7 +801,7 @@ namespace kickos
                 r->staged += static_cast<arch_phys_addr_t>(g);
                 r->staged_pages--;
             }
-            windows.granule();
+            arch_irq_window();
         }
         IrqLock lock;
         r->staged = 0;

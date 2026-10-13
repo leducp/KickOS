@@ -23,7 +23,7 @@ struct arch_context
     uintptr_t stack_lo;
     uintptr_t stack_hi;
 
-#if defined(KICKOS_TLS) && KICKOS_TLS
+#if KICKOS_TLS
     // tp while this thread runs. Written once per thread, so no switch saves it.
     uintptr_t tls_base;
 #endif

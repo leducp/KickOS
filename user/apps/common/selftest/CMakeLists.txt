@@ -4,22 +4,12 @@
 # A list: on a split board these have to reach EVERY image, or the parts get different
 # suites.
 set(_selftest_defs "")
-# The only sources that see it: the kernel and every other app build the same either way.
-if(KICKOS_ENABLE_SELFTEST)
-  list(APPEND _selftest_defs KICKOS_ENABLE_SELFTEST=1)
-endif()
 
-# The two `return <int>;` literals cmake/boot_arena.cmake scraped out of the backend .cc this
-# link resolves. Unset on the sim, which reaches no scrape. Both derefs MUST stay quoted:
-# get_property leaves the variable UNSET for a property never set, and an unquoted unset name
-# compares as its own literal, so the guard would pass and define both macros EMPTY, which
-# still satisfies `#if defined`.
-get_property(_mpu_min_region_cfg GLOBAL PROPERTY KICKOS_MPU_MIN_REGION_CFG)
-get_property(_mpu_region_pow2_cfg GLOBAL PROPERTY KICKOS_MPU_REGION_POW2_CFG)
-if(NOT "${_mpu_min_region_cfg}" STREQUAL "" AND NOT "${_mpu_region_pow2_cfg}" STREQUAL "")
+# The chip file's region rule, unset on the sim, whose granule is the host page.
+if(DEFINED KICKOS_CHIP_REGION_GRANULE)
   list(APPEND _selftest_defs
-    KICKOS_MPU_MIN_REGION_CFG=${_mpu_min_region_cfg}
-    KICKOS_MPU_REGION_POW2_CFG=${_mpu_region_pow2_cfg})
+    KICKOS_MPU_MIN_REGION_CFG=${KICKOS_CHIP_REGION_GRANULE}
+    KICKOS_MPU_REGION_POW2_CFG=${KICKOS_CHIP_REGION_POW2})
 endif()
 
 # A device the kernel never drives on each translating machine, which window_addr and window_get
@@ -175,8 +165,7 @@ list(LENGTH _selftest_bound _selftest_parts)
 list(APPEND _selftest_defs KICKOS_SELFTEST_REGIONS=${_selftest_regions})
 # The one statement of which boards size their images (selftest.h reads it as KICKOS_SELFTEST_FIT).
 set(_selftest_fit OFF)
-if(NOT KICKOS_HAVE_ASPACE AND NOT "${_mpu_min_region_cfg}" STREQUAL ""
-   AND NOT "${_mpu_region_pow2_cfg}" STREQUAL "")
+if(NOT KICKOS_HAVE_ASPACE AND DEFINED KICKOS_CHIP_REGION_GRANULE)
   set(_selftest_fit ON)
   list(APPEND _selftest_defs KICKOS_SELFTEST_FIT=1)
 else()
@@ -194,17 +183,16 @@ set(_selftest_srcs main.cc selftest_common.cc
 # conditions here spare that parse and must therefore MATCH those guards. Getting one wrong
 # cannot shrink a suite: the registration list names every arm, so a file this list omits while
 # main.cc still registers its arms is an undefined reference at link.
-if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST)
+if(KICKOS_HAVE_ASPACE)
   list(APPEND _selftest_srcs selftest_aspace.cc)
 endif()
-if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION
-   AND KICKOS_ARCH STREQUAL "x86_64")
+if(KICKOS_HAVE_ASPACE AND KICKOS_FAULT_ISOLATION AND KICKOS_ARCH STREQUAL "x86_64")
   list(APPEND _selftest_srcs selftest_vector.cc)
 endif()
-if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE)
+if(KICKOS_AMP_NODE)
   list(APPEND _selftest_srcs selftest_amp.cc)
 endif()
-if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1)
+if(KICKOS_KERNEL_CORES GREATER 1)
   list(APPEND _selftest_srcs selftest_smp.cc)
 endif()
 
@@ -364,11 +352,9 @@ message(STATUS "selftest: ${_selftest_declared_n} arm(s) declared in selftest.h,
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 set(_selftest_count "${PROJECT_SOURCE_DIR}/tests/static/selftest_demands.py"
     "${CMAKE_CURRENT_SOURCE_DIR}")
-# Undefined unless a definition below names them: no header defines either. The per-image
+# Undefined unless a definition below names it: no header defines it. The per-image
 # KICKOS_SELFTEST_CONSOLE_DRIVER is given to no count, so a guard reading it is refused.
-foreach(_name KICKOS_ENABLE_SELFTEST KICKOS_SELFTEST_SPARE_DEV)
-  list(APPEND _selftest_count --undefined ${_name})
-endforeach()
+list(APPEND _selftest_count --undefined KICKOS_SELFTEST_SPARE_DEV)
 if(KICKOS_ARCH STREQUAL "x86_64")
   list(APPEND _selftest_count --config __x86_64__)
 else()
@@ -446,39 +432,38 @@ foreach(_img IN LISTS _selftest_images)
   foreach(_region RANGE ${_img_lo} ${_img_hi})
     list(APPEND _img_names ${_selftest_arm_names_r${_region}})
   endforeach()
-  set(_img_seat 0)
-  foreach(_row IN LISTS _selftest_workers_rows)
-    string(REGEX REPLACE " workers=.*" "" _arm "${_row}")
-    string(REGEX REPLACE ".* workers=" "" _workers "${_row}")
-    if(_arm IN_LIST _img_names AND _workers GREATER _img_seat)
-      set(_img_seat ${_workers})
-    endif()
-  endforeach()
-  if(_img_seat GREATER _selftest_worker_pool)
-    set(_img_seat ${_selftest_worker_pool})
-  endif()
   set(_img_compile ${_img})
+  set(_img_left_out "${CMAKE_CURRENT_BINARY_DIR}/${_img}_left_out.cc")
+  set(_img_seat_line "")
   if(_selftest_fit)
+    set(_img_seat 0)
+    foreach(_row IN LISTS _selftest_workers_rows)
+      string(REGEX REPLACE " workers=.*" "" _arm "${_row}")
+      string(REGEX REPLACE ".* workers=" "" _workers "${_row}")
+      if(_arm IN_LIST _img_names AND _workers GREATER _img_seat)
+        set(_img_seat ${_workers})
+      endif()
+    endforeach()
+    if(_img_seat GREATER _selftest_worker_pool)
+      set(_img_seat ${_selftest_worker_pool})
+    endif()
     set(_img_compile ${_img}_core)
+    target_compile_definitions(${_img_compile} PRIVATE KICKOS_SELFTEST_SEAT_WORKERS=${_img_seat})
+    set(_img_left_out "${CMAKE_CURRENT_BINARY_DIR}/${_img}_sizing_left_out.cc")
+    set(_img_seat_line
+        "    extern __attribute__((visibility(\"hidden\"))) int const st_seat_workers = 0;\n")
   endif()
-  target_compile_definitions(${_img_compile} PRIVATE KICKOS_TAP_MAX_TESTS=${_img_arms}
-                                                     KICKOS_SELFTEST_SEAT_WORKERS=${_img_seat})
+  target_compile_definitions(${_img_compile} PRIVATE KICKOS_TAP_MAX_TESTS=${_img_arms})
   # One bit per registration, the same size in the sizing link and the image.
   math(EXPR _img_left_out_bytes "(${_img_arms} + 7) / 8")
   set_target_properties(${_img} PROPERTIES KICKOS_SELFTEST_LEFT_OUT_BYTES ${_img_left_out_bytes})
-  set(_img_left_out "${CMAKE_CURRENT_BINARY_DIR}/${_img}_left_out.cc")
-  if(_selftest_fit)
-    set(_img_left_out "${CMAKE_CURRENT_BINARY_DIR}/${_img}_sizing_left_out.cc")
-    set(_img_seat 0)
-  endif()
   # A sizing link, or an image no link sizes, leaves no arm out.
   file(CONFIGURE OUTPUT "${_img_left_out}" CONTENT
 "// GENERATED by user/apps/common/selftest/CMakeLists.txt for ${_img}.
 namespace selftest
 {
     extern __attribute__((visibility(\"hidden\"))) unsigned char const st_left_out[${_img_left_out_bytes}] = {};
-    extern __attribute__((visibility(\"hidden\"))) int const st_seat_workers = ${_img_seat};
-}
+${_img_seat_line}}
 ")
   set_target_properties(${_img} PROPERTIES KICKOS_TAP_ARMS "${_img_arms}"
                                            KICKOS_SELFTEST_ARM_NAMES "${_img_names}")
@@ -486,8 +471,8 @@ namespace selftest
 endforeach()
 # The sizing link of each image on a region board, and what its map leaves out.
 if(_selftest_fit)
-  kickos_ram_region_rule("${_mpu_min_region_cfg}" "${_mpu_region_pow2_cfg}" _selftest_stack_rule
-                         "${KICKOS_USER_STACK_SIZE}")
+  kickos_ram_region_rule("${KICKOS_CHIP_REGION_GRANULE}" "${KICKOS_CHIP_REGION_POW2}"
+                         _selftest_stack_rule "${KICKOS_USER_STACK_SIZE}")
   list(GET _selftest_stack_rule 0 _selftest_stack_size)
   list(GET _selftest_stack_rule 1 _selftest_stack_align)
   math(EXPR _selftest_stack_stride "(${_selftest_stack_size} + ${_selftest_stack_align} - 1)

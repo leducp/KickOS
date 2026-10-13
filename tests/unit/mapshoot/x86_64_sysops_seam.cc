@@ -31,9 +31,6 @@ namespace
     constexpr uint32_t CPUID_EDX_PAT = 1u << 16;
     constexpr uint32_t CPUID_EDX_NX = 1u << 20;
 
-    constexpr uint64_t CR0_PE = 1ull << 0;
-    constexpr uint64_t CR0_WP = 1ull << 16;
-    constexpr uint64_t CR0_PG = 1ull << 31;
     constexpr uint64_t CR4_PAE = 1ull << 5;
     constexpr uint64_t CR4_LA57 = 1ull << 12;
     constexpr uint64_t EFER_LME_LMA = 0x500;
@@ -48,7 +45,6 @@ namespace
 
     alignas(GRANULE) unsigned char g_ram[kickos::testfix::SYSOPS_FRAMES * GRANULE] = {};
 
-    uint64_t g_cr0 = 0;
     uint64_t g_cr3[KICKOS_NUM_CORES] = {};
     uint64_t g_cr4 = 0;
     uint64_t g_efer = 0;
@@ -131,16 +127,6 @@ extern "C"
                                       kickos::x86_64::aspace_leaf_desc(g_watch, va));
     }
 
-    uint64_t kickos_x86_64_read_cr0(void)
-    {
-        return g_cr0;
-    }
-
-    void kickos_x86_64_write_cr0(uint64_t v)
-    {
-        g_cr0 = v;
-    }
-
     uint64_t kickos_x86_64_read_cr3(void)
     {
         return g_cr3[kickos::testfix::cpu()];
@@ -149,6 +135,7 @@ extern "C"
     void kickos_x86_64_write_cr3(uint64_t v)
     {
         g_cr3[kickos::testfix::cpu()] = v;
+        kickos::testfix::sysop_record(kickos::testfix::OP_WRITE_CR3, v);
     }
 
     uint64_t kickos_x86_64_read_cr4(void)
@@ -198,6 +185,7 @@ namespace kickos
         char const* const OP_INVLPG = "invlpg";
         char const* const OP_INVLPG_LEAF = "invlpg leaf";
         char const* const OP_RENDEZVOUS = "translation_rendezvous";
+        char const* const OP_WRITE_CR3 = "mov cr3";
 
         void sysops_reset()
         {
@@ -214,7 +202,6 @@ namespace kickos
             // Slot 0, where device and unpooled outputs sit: acquire reaches a frame by identity.
             identity_slot(0, g_firmware[3]);
 
-            g_cr0 = CR0_PE | CR0_WP | CR0_PG;
             g_cr4 = CR4_PAE;
             g_efer = EFER_LME_LMA;
             g_pat = PAT_POWER_UP;
@@ -292,6 +279,11 @@ namespace kickos
         void adopt()
         {
             kickos::x86_64::aspace_init(0, 0);
+        }
+
+        void set_pat(uint64_t pat)
+        {
+            g_pat = pat;
         }
     }
 }

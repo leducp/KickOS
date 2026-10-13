@@ -12,6 +12,9 @@
 #include <kickos/kernel.h>
 #include <kickos/task.h>
 
+#include <kickos/sys/errno.h>
+
+#include "stub_seam.h"
 #include "syscall_internal.h"
 
 namespace
@@ -28,11 +31,6 @@ namespace kickos
     int endpoint_create(uint32_t*)
     {
         unreached("endpoint_create");
-    }
-
-    int amp_endpoint_create(uint32_t, uint32_t, uint32_t*)
-    {
-        unreached("amp_endpoint_create");
     }
 
     int32_t endpoint_send(uint32_t, uintptr_t, size_t, uint32_t)
@@ -86,8 +84,39 @@ namespace kickos
     }
 }
 
+namespace kickos
+{
+    namespace testfix
+    {
+        uint32_t g_reboot_outcome = REBOOT_NONE;
+        uint32_t g_console_drains = 0;
+    }
+}
+
 extern "C"
 {
+    void console_tx_flush_sync(void)
+    {
+        kickos::testfix::g_console_drains++;
+    }
+
+    void arch_console_flush_sync(void)
+    {
+    }
+
+    int arch_reboot(uint32_t outcome)
+    {
+        kickos::testfix::g_reboot_outcome = outcome;
+        printf("SEAM: arch_reboot(%u)\n", static_cast<unsigned>(outcome));
+        return -KOS_ENOSYS;
+    }
+
+    void arch_shutdown(int status)
+    {
+        printf("SEAM: arch_shutdown(%d)\n", status);
+        exit(0);
+    }
+
     // Every user address the gate hands the kernel lies in a range the caller was granted.
     bool arch_user_text_readable(uintptr_t, size_t)
     {
@@ -161,14 +190,14 @@ extern "C"
         unreached("arch_pinmux_set");
     }
 
+    int console_handover_refused(void)
+    {
+        unreached("console_handover_refused");
+    }
+
     void console_handover_begin(void)
     {
         unreached("console_handover_begin");
-    }
-
-    uint32_t console_chip_writers(void)
-    {
-        unreached("console_chip_writers");
     }
 
     void console_owner_set_user(void)

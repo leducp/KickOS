@@ -4,6 +4,7 @@
 // RISC-V RV32IMAC arch backend, ISA-generic half; switch.S and arch/riscv/chip/ hold the rest.
 
 #include <kickos/arch/arch.h>
+#include <kickos/chip_limits.h>
 #include "ctx_redirect.h"
 #include <kickos/arch/idle_floor.h>
 #include <kickos/arch/rv_trap_stack.h>
@@ -70,7 +71,7 @@ static_assert(offsetof(struct arch_context, stack_hi) == KICKOS_RV_CTX_OFF_STACK
               "switch.S reads stack_hi at F_CTX_STACK_HI");
 static_assert(offsetof(struct arch_context, kernel_sp) == KICKOS_RV_CTX_OFF_KERNEL_SP,
               "a trusted entry loads ctx.kernel_sp at F_CTX_KERNEL_SP");
-#if defined(KICKOS_TLS) && KICKOS_TLS
+#if KICKOS_TLS
 static_assert(offsetof(struct arch_context, tls_base) == KICKOS_RV_CTX_OFF_KERNEL_SP + 4,
               ".Lrestore loads ctx.tls_base at F_CTX_TLS_BASE");
 
@@ -79,18 +80,8 @@ namespace kickos
     size_t tls_block_size();
 }
 #endif
-// The panic reporter's stack (kernel/init/console.cc) is sized by Kconfig; a board may only
-// RAISE it.
 static_assert(KICKOS_PANIC_STACK_SIZE >= KICKOS_RV_PANIC_FRAME + KICKOS_RV_PANIC_DEPTH,
               "KICKOS_PANIC_STACK_SIZE is below what this arch's panic reporter descends");
-#if not (KICKOS_BENCH or KICKOS_AMP_OWN_IMAGE)
-// The spawn stages its grant list on a privileged caller's stack, and _SYSPRIV holds the list
-// it was measured at (rv_trap_stack.h).
-static_assert(KICKOS_MAX_SPAWN_GRANTS <= 11,
-              "KICKOS_RV_TRAP_KERNEL_DEPTH_SYSPRIV holds a spawn staging 11 grants on a "
-              "privileged caller's stack, and 12 measure past it: re-measure with "
-              "tests/static/check_trap_redzone.sh and raise the figure first");
-#endif
 // The link checks the same floor above idle's thread-local carve.
 static_assert(KICKOS_IDLE_STACK_SIZE >= KICKOS_ARCH_IDLE_FLOOR,
               "the switch frame does not fit this board's idle stack");
@@ -109,26 +100,13 @@ static_assert(FRAME_WORDS * 4 == KICKOS_RV_TRAP_FRAME,
 // on the kernel stack.
 static_assert(KICKOS_RV_TRAP_FRAME_SYS == 2 * KICKOS_RV_TRAP_FRAME,
               "the syscall requirement must hold exactly two frames");
-// SYSPRIV is the SYS chain with a subtree removed. Both are scraped as plain immediates, so
-// only this catches a swap between them.
-static_assert(KICKOS_RV_TRAP_KERNEL_DEPTH_SYSPRIV <= KICKOS_RV_TRAP_KERNEL_DEPTH_SYS,
-              "the tail-excluded syscall depth exceeds the tail-included one");
-// A privileged thread's ecall arrives with MPP=M, so .Ltrap_from_m_ctx keeps frame and
-// dispatch on its OWN sp. No bound refuses an M-mode sp, so a floor under this requirement
-// overflows rather than refuses.
-static_assert(KICKOS_MIN_STACK_SIZE >= KICKOS_RV_TRAP_NEED_SYSPRIV,
-              "the spawn floor cannot hold a privileged thread's own syscall dispatch");
 // The fault and slay stubs relocate to the thread's kernel block (kickos_fault_stack_top
-// answers ctx.kernel_sp), so the block above its canary holds them; kickos_thread_return does
-// not relocate, so the spawn floor holds it.
+// answers ctx.kernel_sp), so the block above its canary holds them.
 static_assert(KICKOS_RV_TRAP_NEST_EXIT == KICKOS_RV_TRAP_FRAME,
               "the death path's frame term is the msip frame a reschedule puts below it");
 static_assert(KICKOS_KERNEL_STACK_SIZE - sizeof(uint32_t)
                   >= KICKOS_RV_TRAP_NEST_EXIT + KICKOS_RV_TRAP_KERNEL_DEPTH_EXITK,
               "the kernel block cannot hold the relocated death path plus its canary word");
-static_assert(KICKOS_MIN_STACK_SIZE
-                  >= KICKOS_RV_TRAP_NEST_EXIT + KICKOS_RV_TRAP_KERNEL_DEPTH_RET,
-              "the spawn floor cannot hold a privileged thread's entry return");
 // With no block seated every U-mode trap takes the refusal path. ARCH_KERNEL_STACKS_MANDATORY
 // forces the knob to 1; this fires if that select is dropped.
 static_assert(KICKOS_KERNEL_STACKS != 0,
@@ -247,7 +225,7 @@ void arch_context_init(struct arch_context* ctx,
     // stores a frame through it.
     ctx->stack_lo = reinterpret_cast<uint32_t>(stack_base);
     ctx->stack_hi = static_cast<uint32_t>(top);
-#if defined(KICKOS_TLS) && KICKOS_TLS
+#if KICKOS_TLS
     // The carve sits directly below the stack this is handed.
     ctx->tls_base = ctx->stack_lo - static_cast<uint32_t>(::kickos::tls_block_size());
 #endif
@@ -267,11 +245,11 @@ void arch_ctx_set_syscall_result(struct arch_context* ctx, uint32_t result)
 void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
                        void* stack_base, size_t stack_size)
 {
-#if defined(KICKOS_TLS) && KICKOS_TLS
+#if KICKOS_TLS
     uint32_t const tls_base = ctx->tls_base;
 #endif
     arch_ctx_redirect_to_block(ctx, entry, stack_base, stack_size);
-#if defined(KICKOS_TLS) && KICKOS_TLS
+#if KICKOS_TLS
     ctx->tls_base = tls_base;
 #endif
 }
@@ -303,11 +281,8 @@ int arch_in_isr(void)
 
 // --- Trace clock --------------------------------------------------------------
 // 32-bit and wraps; the host reconstructs absolute time from the SESSION clock_hz anchors.
-// U-mode can read it only where kickos_rv32_init enabled mcounteren.CY.
-//
-// Without Zicntr this instruction is illegal in M-mode too; the ESP32-C6 HP core is such a
-// part and declares KICKOS_HAVE_TRACE_CLOCK 0. A chip whose counter is not rdcycle overrides
-// this function.
+// U-mode can read it only where kickos_rv32_init enabled mcounteren.CY. Without Zicntr rdcycle
+// is illegal in M-mode too; a chip whose counter is not rdcycle overrides this function.
 uint32_t arch_trace_now(void)
 {
     uint32_t v;
@@ -328,11 +303,9 @@ uint32_t arch_mpu_encode(struct arch_mpu_region const* regions, size_t n,
 extern "C" struct arch_mpu_encoded const* g_pend_image;
 
 #if KICKOS_BENCH
-// Declared rather than included: this TU is below <kickos/bench.h>.
 extern "C" void kickos_bench_mpu_commit(uint32_t delta);
 
-// always_inline: an out-of-line copy charges two call/ret pairs to a delta PH_NULL prices as
-// two bare counter reads.
+// always_inline: a call would add to the measured delta.
 static __attribute__((always_inline)) inline uint32_t mpu_bench_cyc(void)
 {
     if (::g_bench_cycle_src != nullptr)
@@ -361,9 +334,8 @@ void kickos_arch_mpu_commit(void)
     // bootstrap TOR entry is safe: the kernel is in M-mode here and bypasses PMP. csrw takes
     // an IMMEDIATE CSR number, so the entries are spelled out rather than indexed.
     //
-    // EVERY ENTRY, EVERY COMMIT, by measurement: skipping an entry costs a load and a taken
-    // branch where writing it costs a load and a csrw (docs/reference/invariants.md,
-    // mpu-commit-writes-what-changed).
+    // EVERY ENTRY, EVERY COMMIT: skipping an entry costs more than writing it
+    // (docs/reference/invariants.md, mpu-commit-writes-what-changed).
     __asm volatile("csrw pmpaddr0, %0" ::"r"(addr[0]) : "memory");
     __asm volatile("csrw pmpaddr1, %0" ::"r"(addr[1]) : "memory");
     __asm volatile("csrw pmpaddr2, %0" ::"r"(addr[2]) : "memory");
@@ -386,23 +358,18 @@ void kickos_arch_mpu_commit(void)
 void kickos_arch_mpu_commit(void) {}
 #endif
 
-size_t arch_mpu_min_region(void)
-{
-    return 8u; // RISC-V PMP NAPOT minimum region size
-}
+// A NAPOT entry names a power of two of 8 bytes at the least.
+constexpr size_t PMP_NAPOT_MIN = 8u;
+static_assert(KICKOS_CHIP_REGION_GRANULE == PMP_NAPOT_MIN and KICKOS_CHIP_REGION_POW2 == 1,
+              "the chip file's protection rule is not PMP NAPOT's");
 
 bool arch_mpu_region_encodable(uintptr_t base, size_t size)
 {
-    if (size < 8u or (size & (size - 1)) != 0)
+    if (size < PMP_NAPOT_MIN or (size & (size - 1)) != 0)
     {
         return false;
     }
     return (base & (size - 1)) == 0;
-}
-
-int arch_mpu_region_pow2(void)
-{
-    return 1;
 }
 
 // A PMP entry carries no memory type, and the parts in tree reach the arena uncached, so it
@@ -637,6 +604,7 @@ bool kickos_rv_fault_report(uint32_t mcause, uint32_t mepc, uint32_t mtval,
     {
         return true;
     }
+    kickos_fault_report_begin();
     kpanic_enter();
     // An access fault FROM U-mode (fetch 1, load 5, store 7) is a PMP domain violation. From
     // M-mode it is a kernel bug, M-mode bypassing the unlocked PMP entries, and takes the

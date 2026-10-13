@@ -10,18 +10,24 @@
 
 #include <stdint.h>
 
+#include <string>
+
 namespace
 {
     namespace console = kickos::rp2350::console;
 
     constexpr uint32_t SELF = 1u;
     constexpr uint32_t PEER = 2u;
+    constexpr uint32_t NODES = 2u;
     constexpr uint32_t STALL_US = 3u * console::HOLD_MAX_US;
 
     console::Word g_owner = 0;
     console::Word g_deadline = 0;
+    console::Word g_waiting[NODES] = {};
     uint32_t g_now = 0;
     bool g_locked = false;
+    // The order of the spinlock's accesses, the fences and the rings.
+    std::string g_trace;
 
     // The peer's whole steal of an ended grant, taken a millisecond ago.
     void peer_steals(void)
@@ -40,9 +46,12 @@ namespace
             g_deadline = 0;
             g_now = 1000u;
             g_locked = false;
+            g_waiting[0] = 0;
+            g_waiting[1] = 0;
+            g_trace.clear();
         }
 
-        console::Claim claim{SELF, g_owner, g_deadline};
+        console::Claim claim{SELF, g_owner, g_deadline, g_waiting, NODES};
 
         void begin(void)
         {
@@ -65,6 +74,7 @@ namespace kickos::rp2350::console
 
     bool lock_take(void)
     {
+        g_trace += 'T';
         if (g_locked)
         {
             return false;
@@ -75,11 +85,18 @@ namespace kickos::rp2350::console
 
     void lock_free(void)
     {
+        g_trace += 'U';
         g_locked = false;
     }
 
     void fence(void)
     {
+        g_trace += 'F';
+    }
+
+    void ring(uint32_t node)
+    {
+        g_trace += "R" + std::to_string(node);
     }
 }
 
@@ -150,4 +167,66 @@ TEST_F(Rp2350Claim, StealsAGrantPastItsDeadline)
     EXPECT_TRUE(claim.try_open());
     EXPECT_EQ(uint32_t(g_owner), SELF);
     EXPECT_TRUE(g_locked);
+}
+
+// A waiter marks itself before it tries the spinlock, across a full fence, and a release frees
+// the spinlock before it reads the marks, across another.
+TEST_F(Rp2350Claim, AWaiterIsMarkedAheadOfItsOfferAndToldTheGrantsRest)
+{
+    peer_steals();
+    uint32_t const rest = uint32_t(g_deadline) - g_now;
+    g_trace.clear();
+    uint32_t const park = claim.wait();
+    EXPECT_EQ(uint32_t(g_waiting[SELF - 1u]), 1u);
+    EXPECT_EQ(g_trace.substr(0, 2), "FT") << "the mark is not fenced ahead of the offer";
+    EXPECT_GT(park, 0u);
+    EXPECT_LE(park, rest);
+}
+
+// A waiter that takes the claim leaves no mark, so its own release rings no one.
+TEST_F(Rp2350Claim, AWaiterTakesAFreeClaimAndClearsItsMark)
+{
+    EXPECT_EQ(claim.wait(), 0u);
+    EXPECT_TRUE(claim.holding());
+    EXPECT_EQ(uint32_t(g_waiting[SELF - 1u]), 0u)
+        << "the waiter kept its mark after taking the claim";
+}
+
+// A spinlock held with no owner published yet has no deadline to wait out: a whole hold, which
+// the release cuts short.
+TEST_F(Rp2350Claim, AWaiterOnAnUnpublishedOwnerParksAWholeHold)
+{
+    g_locked = true;
+    EXPECT_EQ(claim.wait(), console::HOLD_MAX_US);
+}
+
+TEST_F(Rp2350Claim, AReleaseRingsEveryMarkedNodeAndClearsItsMark)
+{
+    begin();
+    g_waiting[PEER - 1u] = 1u;
+    g_trace.clear();
+    claim.drop(true);
+    EXPECT_EQ(uint32_t(g_waiting[PEER - 1u]), 0u);
+    EXPECT_EQ(g_trace, "FUFR1")
+        << "the release does not fence its free ahead of reading the marks, or rings no one";
+}
+
+TEST_F(Rp2350Claim, AReleaseRingsNoUnmarkedNode)
+{
+    begin();
+    g_trace.clear();
+    claim.drop(true);
+    EXPECT_EQ(g_trace, "FUF");
+}
+
+TEST_F(Rp2350Claim, AStolenGrantRingsNoOne)
+{
+    begin();
+    g_now += STALL_US;
+    peer_steals();
+    g_waiting[PEER - 1u] = 1u;
+    g_trace.clear();
+    claim.drop(true);
+    EXPECT_EQ(g_trace, "");
+    EXPECT_EQ(uint32_t(g_waiting[PEER - 1u]), 1u);
 }

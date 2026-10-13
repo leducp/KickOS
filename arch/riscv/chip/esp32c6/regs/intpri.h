@@ -1,13 +1,10 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// ESP32-C6 Interrupt Priority Register block (INTPRI) (TRM v1.2 section 1.6 + ch.10;
-// base 0x600C_5000 per Table 5.3-2). TRM section 1.6.2 makes this THE CPU interrupt
-// controller, but the tree drives enable/type/priority/threshold through the
-// 0x2000_1000 window instead (regs/plic.h says why), and touches INTPRI only for its
-// software-settable FROM_CPU source triggers. That one doorbell carries every logical
-// software-inject line: the C6 has no S-mode, so the arch's SSIP inject channel is a
-// no-op and this raises a real machine interrupt instead.
+// ESP32-C6 INTPRI block (base 0x600C_5000). Only the software-settable FROM_CPU source
+// triggers are used; enable/type/priority/threshold go through the 0x2000_1000 window
+// (regs/plic.h). The C6 has no S-mode, so this doorbell raises a real machine interrupt for
+// every logical software-inject line.
 
 #ifndef KICKOS_ARCH_RISCV_CHIP_ESP32C6_REGS_INTPRI_H
 #define KICKOS_ARCH_RISCV_CHIP_ESP32C6_REGS_INTPRI_H

@@ -6,8 +6,7 @@
 
 namespace kickos::arm64
 {
-    // The Non-secure EL1 physical timer. ARCHITECTURALLY ASSIGNED AND NOT A CHIP FACT: neither
-    // reference manual documents a PPI number, so this rests on the GIC architecture.
+    // The Non-secure EL1 physical timer; the number is architecturally assigned by the GIC.
     constexpr int PPI_EL1_PHYS_TIMER = 30;
 }
 

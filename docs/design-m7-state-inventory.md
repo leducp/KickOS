@@ -73,7 +73,7 @@ This is the half an inventory of the struct does not see. Classification as abov
 | `g_idle_tcb` (`kernel/init/kmain.cc`) | **per-core**, and it had to move INTO `Kernel` first. **RESOLVED, section 6**: it is `Kernel::idle_tcb` (`kernel/include/kickos/instance.h`) | the one thread the pool does not seat; its own comment already tagged it instance-scoping residue |
 | `g_fault` (`kernel/init/fault.cc`) | **per-core** | two cores can fault at once, and the record assumes one faulting thread |
 | `g_tx` (`kernel/init/console_tx.cc`) | global | one physical UART; the ring is the arbitration point and needs a lock, not replication |
-| `g_console_panicking` | global | a panic on either core must force every core polled |
+| `g_publisher` | global | one console hand-off at a time; a second publish is refused while one runs |
 | `g_console_state` | global | ownership of one device |
 | `g_console_driver_died` | global | a property of one endpoint |
 | `g_chip_writers` | global | **and it is the one to look at twice**: it counts writers ACROSS cores, which is what makes the drain-to-zero handshake mean anything. It is `Order::RELAXED` today and that is CORRECT today -- `console.cc` requires every access, mutator and reader alike, to run under `IrqLock`, and on one core that is exclusion. Under a shared kernel the lock stops excluding and the handshake needs release/acquire. **A present-tense reading of this row is wrong**; it is M7 work, not a bug |

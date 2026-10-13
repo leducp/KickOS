@@ -644,7 +644,7 @@ address to a figure; the row above is the aggregate at the instant IT was read.
 
 **AND THE MAX IS OFTEN THE CONSOLE RATHER THAN A KERNEL CRITICAL SECTION.** Measured on
 `esp32c6-wroom-bench`: the site resolves inside `console_emit`, at the arm that hands a whole
-line to `arch_console_write`. So a reader taking this row for the kernel's longest masked window
+line to `console_tx_insert_line`. So a reader taking this row for the kernel's longest masked window
 is reading how much the report printed. Resolve the site before drawing any conclusion from the
 figure, and expect a row that moves when the console's output moves.
 
@@ -666,7 +666,7 @@ A round is ONE RAISE ACROSS EVERY PEER AND THE RENDEZVOUS THAT FOLLOWS IT: this 
 cell bumped for each peer, the single write to the interrupt controller, each far side taking
 the raise and storing its answer, and this core observing the LAST of those answers. That is
 what `arch_ipi_send` followed by `arch_ipi_wait` costs a caller, and the tree has no
-single-peer form of it: every caller passes the mask it needs, and the bring-up self-check's own
+single-peer form of it: every caller passes the mask it needs, and the doorbell boot check's own
 round (`arch/common/doorbell_protocol.cc`) passes every peer.
 
 THE OTHER READING IS A DIFFERENT NUMBER AND SMALLER. Raise-to-one-peer's-answer shares the
@@ -687,8 +687,8 @@ without entering a scheduler. That matters on `armv8a`, `rv64imac`, the LX6 and 
 The probe's own window is ONE `lock-hold` sample, the `IrqLock` enclosing every round in a burst.
 
 WHAT FEEDS IT. A shared-kernel SMP board performs no raise-and-rendezvous in steady state: the
-kernel's rendezvous sites are the bring-up self-check, address-space maintenance on the
-translating backends, and the LX6's cross-core line routing. The bring-up rounds are wiped by
+kernel's rendezvous sites are the doorbell boot check, address-space maintenance on the
+translating backends, and the LX6's cross-core line routing. The boot check's rounds are wiped by
 the reset that opens each report window, so the distribution is driven by a probe
 (`KOS_BENCH_OP_DOORBELL_PROBE`) that runs a fixed burst of real rounds through the same seam,
 once per kernel core, before each report.
@@ -836,9 +836,15 @@ by it on the same terms as the locality rows.
 `e2e-passes: asked=N raised=M` IS THE DENOMINATOR `closed` AND `dropped` CANNOT SUPPLY,
 because the raise loop is the app's. `asked` is the pass count the app handed
 `KOS_BENCH_OP_E2E_PRINT`; `raised` is the raises the kernel accepted. The raise answers
-`-KOS_EBUSY` until the waiter has published its park, and the app retries a bounded number of
-times before abandoning the pass -- and an abandoned pass opens no span, so it moves neither
-`closed` nor `dropped` and the rows read as a complete sweep at whatever size they reached.
+`-KOS_EAGAIN` until the waiter has published its park, and the app retries. Both of the app's
+waits, for the park and then for the close, are bounded on `kos_clock_now` at
+`KOS_BENCH_E2E_SPAN_MAX_NS`, the widest span the close accepts, and a wait that runs out ends
+the sweep -- and a pass left unraised opens no span, so it moves neither `closed` nor `dropped`
+and the rows read as a complete sweep at whatever size they reached. NO COUNT OF THE RAISER'S
+OWN YIELDS BOUNDS EITHER WAIT, because under an emulator the waiter's core is a host thread the
+host can deschedule for longer than the count takes: a bound of 2000 yields abandoned samples on
+`qemu-x86_64-smp4` with the host oversubscribed, and the waiter then parked and closed every
+raise it was given.
 `tests/integration/check_bench_irqspan.sh` refuses `raised` below `asked`, refuses a `closed`
 that does not equal `raised`, and refuses a capture carrying no such line at all.
 `irq-probe`'s own `raised=` is the same job one level in, and the kernel can count that one
@@ -876,7 +882,7 @@ a race the instrument's own shape excludes; what may not stand is a page saying 
 safe when the ordering is what makes them unnecessary.
 
 **THE RAISE READS NOTHING OF THE WAITER'S BUT WHAT THE WAITER PUBLISHED.** It answers
-`-KOS_EBUSY` until the parked state is up, and the app retries. The mark that puts it up is
+`-KOS_EAGAIN` until the parked state is up, and the app retries. The mark that puts it up is
 taken on the waiter's own way into the block and under the kernel lock the waking post has to
 take, so a line injected once the raiser has seen it cannot be delivered before the park it
 announces. That placement is not an optimisation: with the raise let through earlier the rv64
@@ -890,7 +896,8 @@ links it and switches it in before root parks again. Raised into that, a pass's 
 measures the set-up and not the delivery. So before its first raise the raiser polls
 `KOS_BENCH_OP_E2E_QUIET`, which answers under the kernel lock from the cores' own seats and ring
 indices: 1 once every other kernel core runs its idle thread and no thread is on its way to any
-core. The poll is bounded like the raise retries, and a pass that never settles raises anyway.
+core. The poll is bounded by a count of the raiser's yields, and a pass that never settles
+raises anyway.
 So each sweep ends in `e2e-settle: settled=N/P`, the passes whose poll saw that state out of the
 `P` the sweep ran, the same count on every kernel core. `tests/integration/check_bench_irqspan.sh`
 refuses a report with no such mark, one that does not parse, and one no sweep could print, and
@@ -912,7 +919,7 @@ the claimer's mask is exactly its own core, a wait unless the waiter's mask is e
 core, and the line is routed to the claim core whoever injects it. So root pins itself to core 0
 for its claim, and the waiter is spawned pinned to core 0 and never moved. A waiter on any other
 mask cannot wait at all: the refusal ends its loop, and every raise after it answers
-`-KOS_EBUSY` until the sweep abandons it.
+`-KOS_EAGAIN` until the raiser's wait runs out and ends the sweep.
 
 The raiser walks every kernel core, two passes on each, and that moves only where the raise is
 injected: the ISR runs on the claim core and wakes a waiter that can run nowhere else. EVERY
@@ -1131,8 +1138,8 @@ closed span is a board that cannot deliver an injected line, which is refused.
   condition is the whole end-to-end body and not the accounting line alone: the block is one
   print, so the window owes exactly one `e2e-probe` beside its accounting, and a probe that
   closed spans owes a locality row to carry them. `raised` must EQUAL `asked`:
-  below it the sweep abandoned passes that opened no span, above it one of the two counts is
-  not counting what it names. `closed` must equal `raised`, the locality rows must total
+  below it the sweep ended on a stalled waiter with passes unraised, above it one of the two
+  counts is not counting what it names. `closed` must equal `raised`, the locality rows must total
   `closed`, and a dropped sample is refused. An accounting line that is present and does not
   read as counts decides nothing, and may not resolve to satisfied. Each side of every one of
   those has its own plant.

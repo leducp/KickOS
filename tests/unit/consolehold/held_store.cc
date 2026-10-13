@@ -203,7 +203,7 @@ TEST(ConsoleHeldStore, AbandoningOneOpenRecordKeepsTheOthersWhole)
         as(1);
         kickos::kprintf_fault("a3\n");
         as(2);
-        kickos::krecord_abandon();
+        kickos::kconsole_slain();
         as(3);
         kickos::krecord_end();
         as(1);
@@ -274,7 +274,7 @@ TEST(ConsoleHeldStore, ACorruptByteNeverLeadsAWalkOffTheRing)
                 as(2);
                 kickos::krecord_end();
                 as(3);
-                kickos::krecord_abandon();
+                kickos::kconsole_slain();
                 as(1);
                 kickos::kprintf_fault("a3\n");
                 task_ends();

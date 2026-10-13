@@ -182,14 +182,9 @@ KICKOS_POOL_ARENA_ASSERT(__kickos_ram_start, __kickos_ram_end)
 ASSERT(_sidata == _sdata,
        "KickOS: .data LMA != VMA: the ROM loader places segments at their VMAs, so the LMA holds no image bytes (drop the AT clause)")
 
-ASSERT(__kickos_app_fini_array_end == __kickos_app_fini_array_start,
-       "KickOS: .fini_array is non-empty: a global with a non-trivial destructor? Static destructors are not supported; nothing would ever run it")
+KICKOS_FINI_EMPTY_ASSERT()
 
-/* Opt-in link-time heap floor (undefined by default). */
-#ifdef KICKOS_HEAP_MIN
-ASSERT(_kickos_heap_limit - _kickos_heap_start >= KICKOS_HEAP_MIN,
-       "KickOS: heap below KICKOS_HEAP_MIN")
-#endif
+KICKOS_HEAP_MIN_ASSERT()
 
 /* --- The coherency condition, as a refusal ---------------------------------------------
  * Both CPUs reach embedded memory with no cache in the path: the two 32 KiB caches are

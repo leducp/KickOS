@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// ESP32-C6 UART registers (TRM v1.2 ch.27, offsets from section 27.7.1). The board console
-// is UART0. Transmitter and receiver each own a 128 x 8-bit FIFO RAM (TRM section 27.4.2).
+// ESP32-C6 UART registers; the board console is UART0.
 
 #ifndef KICKOS_ARCH_RISCV_CHIP_ESP32C6_REGS_UART_H
 #define KICKOS_ARCH_RISCV_CHIP_ESP32C6_REGS_UART_H
@@ -59,9 +58,9 @@ namespace kickos::esp32c6::reg::uart
     constexpr uint32_t TXFIFO_LEN = 128u;
     constexpr uint32_t TXFIFO_LIMIT = TXFIFO_LEN - 2u;      // push stops here, 2 spare entries
 
-    // FSM_STATUS (TRM Register 27.24, p.770): ST_UTX_OUT [7:4] is the transmitter state machine;
-    // [3:0] is the receiver's, which reads idle through a whole transmission. The idle encoding
-    // is taken from ESP32 TRM v5.8 Register 19.8; the C6 TRM prints none.
+    // FSM_STATUS: ST_UTX_OUT [7:4] is the transmitter state machine; [3:0] is the receiver's,
+    // which reads idle through a whole transmission. The idle encoding is from ESP32 TRM v5.8
+    // Register 19.8; the C6 TRM prints none.
     constexpr uintptr_t OFF_TX_FSM = OFF_FSM_STATUS;
     constexpr uint32_t ST_UTX_OUT_S = 4u;
     constexpr uint32_t ST_UTX_OUT_MASK = 0xFu;
@@ -83,15 +82,14 @@ namespace kickos::esp32c6::reg::uart
     constexpr uint32_t TXFIFO_EMPTY_THRHD_S = 8u;
     constexpr uint32_t TXFIFO_EMPTY_THRHD_MASK = 0xFFu;
 
-    // CLKDIV_SYNC fractional divisor (TRM Register 27.7): integer [11:0], 1/16 fraction
-    // [23:20]. The integer part is TWELVE bits here, not the 20 the earlier Espressif parts
-    // gave it.
+    // CLKDIV_SYNC: integer part [11:0] (twelve bits, not the 20 of earlier Espressif parts),
+    // 1/16 fraction [23:20].
     constexpr uint32_t CLKDIV_INT_MASK = 0xFFFu;
     constexpr uint32_t CLKDIV_FRAG_S = 20u;
     constexpr uint32_t CLKDIV_FRAG_MASK = 0xFu;
 
-    // CONF0_SYNC framing (TRM Register 27.9). STOP_BIT_NUM 0 is "Invalid. No effect", so a
-    // zeroed field is not one stop bit.
+    // CONF0_SYNC framing. STOP_BIT_NUM 0 is "Invalid. No effect": a zeroed field is not one
+    // stop bit.
     constexpr uint32_t CONF0_PARITY = 1u << 0; // 0 even, 1 odd
     constexpr uint32_t CONF0_PARITY_EN = 1u << 1;
     constexpr uint32_t CONF0_BIT_NUM_S = 2u; // 0:5b 1:6b 2:7b 3:8b
@@ -105,8 +103,8 @@ namespace kickos::esp32c6::reg::uart
     // finished.
     constexpr uint32_t REG_UPDATE_BIT = 1u << 0;
 
-    // --- Reclaim values (arch_console_reclaim). Each is the register's RESET value, which
-    //     is also the polled-ready console configuration; the ROM leaves UART0 there.
+    // --- Reclaim values: each is the register's reset value, which is also the polled-ready
+    //     console configuration.
 
     constexpr uint32_t CONF0_MEM_CLK_EN = 1u << 20;
     constexpr uint32_t CONF0_8N1 =

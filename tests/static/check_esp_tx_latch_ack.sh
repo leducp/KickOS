@@ -13,9 +13,9 @@
 #
 # TWO CLAUSES, and they bind different sets:
 #   push:   every TX push body drops the latch AFTER writing the FIFO.
-#   enable: the two KERNEL console backends drop it BEFORE arming INT_ENA. The userspace
-#           driver is excluded by ruling: a burst there stops on a full FIFO and re-arms to be
-#           re-raised by the latch it left standing (system/driver/espuart/uart_esp.cc).
+#   enable: the KERNEL console backend drops it BEFORE arming INT_ENA. The userspace driver is
+#           excluded by ruling: a burst there stops on a full FIFO and re-arms to be re-raised
+#           by the latch it left standing (system/driver/espuart/uart_esp.cc).
 #
 # STRUCTURAL, and it is the only instrument the tree has for this: no emulator in the fleet
 # models either part's UART, so nothing can raise the interrupt whose acknowledgement this is.
@@ -90,11 +90,9 @@ judge push "$TMP/planted.cc" planted_commented | grep -q 'drops no TX-empty latc
 while read -r clause rel fn; do
     judge "$clause" "$ROOT/$rel" "$fn" >> "$TMP/findings"
 done <<'BODIES'
-push arch/xtensa/chip/esp32/chip_esp32.cc esp32_tx_push
-push arch/riscv/chip/esp32c6/chip_esp32c6.cc c6_tx_push
+push arch/common/esp_uart_console.h tx_push
 push system/driver/espuart/uart_esp.cc kos_uart_write
-enable arch/xtensa/chip/esp32/chip_esp32.cc esp32_tx_irq_enable
-enable arch/riscv/chip/esp32c6/chip_esp32c6.cc c6_tx_irq_enable
+enable arch/common/esp_uart_console.h tx_irq_enable
 BODIES
 if [ -s "$TMP/findings" ]; then
     sed 's/^/      /' "$TMP/findings" >&2
@@ -102,5 +100,5 @@ if [ -s "$TMP/findings" ]; then
       on a condition the FIFO has already left and the drain storms the dispatcher; before an
       arm, a latch from the last burst raises the instant the source is armed."
 fi
-echo "PASS: the three ESP UART push bodies drop the TX-empty latch after writing the FIFO, and
-      both console arm bodies drop it before arming the source"
+echo "PASS: the two ESP UART push bodies drop the TX-empty latch after writing the FIFO, and
+      the console arm body drops it before arming the source"

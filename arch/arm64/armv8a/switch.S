@@ -3,16 +3,14 @@
  *
  * The AArch64 context switcher, and the exception frame it shares with the trap entries.
  *
- * ONE FRAME FORMAT FOR EVERY PATH: a preempted thread and a thread that switched of its own
- * accord resume through the same instructions, at the cost of the caller-saved half a
- * cooperative switch does not need. Every resume is an `eret`, EL1 to EL1 included, so the
- * frame carries ELR and SPSR rather than a saved x30 to `ret` through.
+ * One frame format for every path: a preempted thread and a thread that switched of its own
+ * accord resume through the same instructions. Every resume is an `eret`, EL1 to EL1 included,
+ * so the frame carries ELR and SPSR rather than an x30 to `ret` through.
  *
- * ALL THIRTY-TWO VECTOR REGISTERS, because an asynchronous entry interrupted code that
- * called nothing, so anything the AAPCS lets a call clobber may be live in it. No FP
- * opt-in gates this: AArch64 GCC stages a wide struct copy through q registers with no
- * source-level FP in sight, so the callee-saved subset would corrupt any thread
- * interrupted mid-copy. FPCR and FPSR are thread state for the same reason.
+ * All thirty-two vector registers: an asynchronous entry may land with anything the AAPCS lets
+ * a call clobber live, and GCC stages wide struct copies through q registers with no
+ * source-level FP, so the callee-saved subset would corrupt a thread interrupted mid-copy.
+ * FPCR and FPSR are thread state for the same reason.
  */
 
 #include <kickos/board_config.h>
@@ -34,20 +32,18 @@
    TPIDR_EL1 above one (percpu.h). static_asserted against offsetof in arch_armv8a.cc. */
 #define PERCPU_CTX_CURRENT  8
 #define PERCPU_SWITCH_TO    16
-#define PERCPU_BENCH_SW_START 32
+#define PERCPU_BENCH_SW_START 28
 
 /* Ends the kernel lock's span over the swap. CALL ONLY where the outgoing frame is parked and
-   sp already names the incoming one: the call frame then lands on the incoming thread's own
-   stack below its saved frame, and RESTORE_FRAME_AND_ERET reloads every register the call is
-   free to clobber. */
+   sp already names the incoming one: the call frame lands below the incoming saved frame, and
+   RESTORE_FRAME_AND_ERET reloads every register the call clobbers. */
     .macro  SWITCH_UNLOCK
 #if KICKOS_KERNEL_CORES > 1
     bl      kickos_switch_unlock
 #endif
     .endm
 
-/* One cell of this core's block, addressed. Above one core the base is TPIDR_EL1, seated on
-   each core before that core turns translation on (secondary.S, arch_armv8a.cc). */
+/* One cell of this core's per-CPU block, addressed. */
     .macro  PERCPU_CELL reg, disp
 #if KICKOS_NUM_CORES > 1
     mrs     \reg, tpidr_el1
@@ -59,25 +55,20 @@
     .endm
 
 #if KICKOS_BENCH
-/* The switch window (kernel/bench/bench.cc). It encloses the SOFTWARE REGISTER SAVE and the
-   stack-pointer swap, and NOT the software restore: RESTORE_FRAME_AND_ERET reloads every GPR
-   and all 32 FP registers before the eret, so no register is free to close a window on there,
-   and that macro is shared with every non-switch exception return.
+/* The switch window (kernel/bench/bench.cc): the register save and the stack-pointer swap,
+   not the restore, which reloads every register before the eret and is shared with every
+   non-switch return.
 
-   THE STAMP IS THIS CORE'S CELL. A word shared with a peer subtracts one core's open from
-   another's close, which wraps near 2^32 whenever the peer opened later.
-
-   PMCCNTR_EL0 is 64 bits and the accumulator is 32: the low word alone is kept, which is
-   exact for any delta shorter than 2^32 ticks. */
+   The stamp is this core's cell: a word shared with a peer wraps near 2^32 whenever the peer
+   opened later. PMCCNTR_EL0 is 64 bits; the low word is exact for any delta under 2^32. */
     .macro  BENCH_SW_OPEN
     mrs     x2, pmccntr_el0
     PERCPU_CELL x3, PERCPU_BENCH_SW_START
     str     w2, [x3]
     .endm
 
-/* CALL ONLY where SWITCH_UNLOCK may be called, and ABOVE it so the kernel lock's release
-   falls outside the window: sp already names the incoming frame, and the restore below
-   reloads every register this clobbers. */
+/* CALL ONLY where SWITCH_UNLOCK may be called, and above it so the lock's release falls
+   outside the window. */
     .macro  BENCH_SW_CLOSE
     mrs     x2, pmccntr_el0
     PERCPU_CELL x3, PERCPU_BENCH_SW_START
@@ -105,7 +96,7 @@
     stp     x26, x27, [sp, #208]
     stp     x28, x29, [sp, #224]
     str     x30, [sp, #F_X30]
-    /* x16/x17, already in the frame here: x0/x1 still hold switch_now's live arguments. */
+    /* x16/x17 are already saved; x0/x1 still hold switch_now's arguments. */
     mrs     x16, fpcr
     mrs     x17, fpsr
     stp     x16, x17, [sp, #F_FPCR]
@@ -177,8 +168,7 @@
     .section .text.switch, "ax"
 
 /* --- The IRQ path (vectors.S branches here) --------------------------------
- * The deferred switch below hands this exact frame to the scheduler as a suspended thread,
- * so a cheaper entry would owe a second resume path.
+ * The deferred switch below hands this frame to the scheduler as a suspended thread.
  */
     .global kickos_armv8a_irq_entry
 kickos_armv8a_irq_entry:
@@ -189,8 +179,7 @@ kickos_armv8a_irq_entry:
 
     bl      kickos_armv8a_irq
 
-    /* The PendSV/msip model without the software interrupt: the interrupted thread's state
-       is already in the frame below sp, so the swap is two stores and two loads. */
+    /* The interrupted thread's state is already in the frame below sp. */
     PERCPU_CELL x0, PERCPU_SWITCH_TO
     ldr     x1, [x0]
     cbz     x1, .Lirq_resume
@@ -207,18 +196,12 @@ kickos_armv8a_irq_entry:
     RESTORE_FRAME_AND_ERET
 
 /* --- The EL0 side ---------------------------------------------------------
- * SP_EL1 ALREADY NAMES THIS THREAD'S KERNEL BLOCK, so the entry seats nothing and spends no
- * scratch register. EL0 cannot write SP_EL1, and every path that puts a thread at EL0 is an
- * eret off a frame that stood on its own block: arch_context_init builds an EL0 thread's
- * first frame there (arch_armv8a.cc), and every frame after it is one this macro pushed. The
- * frame is popped before the eret, so SP_EL1 is at the block top whenever EL0 is running.
+ * SP_EL1 already names this thread's kernel block, so the entry seats nothing and spends no
+ * scratch register, which leaves TPIDR_EL1 to the per-CPU block (percpu.h). EL0 cannot write
+ * SP_EL1, and every path to EL0 is an eret off a frame that stood on its own block, popped
+ * before the eret.
  *
- * This is what releases TPIDR_EL1, which the per-CPU block is reached through above one core
- * (percpu.h). The reporting slots in vectors.S still seat SP_EL1 from that block, because a
- * slot this port never enters proves nothing about the register.
- *
- * The transfer is all this arch writes: no red-zone check and no validation of the
- * interrupted sp, the sp being replaced being SP_EL0 and the one stored through SP_EL1.
+ * The interrupted sp is SP_EL0 and the frame is stored through SP_EL1, so nothing validates it.
  */
     .macro  ENTER_FROM_EL0
     SAVE_FRAME
@@ -229,9 +212,8 @@ kickos_armv8a_irq_entry:
     str     x0, [sp, #F_SP_EL0]
     .endm
 
-/* Synchronous from EL0: every such exception an EL0 thread raises, faults included, so the
- * class is decoded before anything is treated as a call. Skip it and a data abort dispatches
- * as a syscall, its faulting registers read as a call number and arguments.
+/* Synchronous from EL0, faults included: the class is decoded before anything is treated as a
+ * call, or a data abort dispatches as a syscall.
  */
     .global kickos_armv8a_el0_sync_entry
 kickos_armv8a_el0_sync_entry:
@@ -240,27 +222,24 @@ kickos_armv8a_el0_sync_entry:
     lsr     x0, x0, #26                     /* ESR_EL1.EC */
     cmp     x0, #0x15                       /* SVC instruction executed in AArch64 state */
     b.ne    .Lel0_fault
-    /* The psABI put nr and a0..a3 in x0..x4 at the caller and the frame holds them, so this
-       reloads what the mrs pair above clobbered and nothing else. syscall_dispatch runs on
-       this thread's kernel block in privileged THREAD context, as arch.h requires:
-       arch_in_isr counts IRQ depth alone, so it reads false throughout. */
+    /* nr and a0..a3 sit in x0..x4 in the frame; reload what the mrs pair clobbered.
+       syscall_dispatch runs in privileged thread context, as arch.h requires: arch_in_isr
+       counts IRQ depth alone and reads false. */
     ldp     x0, x1, [sp, #0]
     ldp     x2, x3, [sp, #16]
     ldr     x4, [sp, #32]
     bl      syscall_dispatch
-    /* uint64_t returns in x0 at this width, so the arch_syscall64 pair collapses. */
+    /* uint64_t returns in x0. */
     str     x0, [sp, #0]
     RESTORE_FRAME_AND_ERET
 
-/* A fault. The frame ENTER_FROM_EL0 just built is resumable, so containment is an ordinary
- * exception return off it: kickos_fault_kill_thread rewrites ELR and SPSR when the kill rule
- * holds (arch_fault_redirect_to_exit) and the eret lands in kickos_thread_fault_exit at EL1.
+/* A fault: kickos_fault_kill_thread rewrites ELR and SPSR in the frame when the kill rule
+ * holds (arch_fault_redirect_to_exit), and the eret lands in kickos_thread_fault_exit at EL1.
  *
- * NOTHING MAY PRINT ABOVE THIS CALL. kickos_armv8a_exception enters kpanic_enter, whose
+ * Nothing may print above this call: kickos_armv8a_exception enters kpanic_enter, whose
  * console reclaim is permanent, and this fault is meant to be survivable.
  *
- * The call clobbers x0-x18 and x30, all of which the frame holds and the restore reloads, so
- * the panic arm below reads x30 back out of the frame rather than trusting the register.
+ * The panic arm reads x30 back out of the frame, the call having clobbered it.
  */
 .Lel0_fault:
     mov     x0, sp
@@ -272,7 +251,7 @@ kickos_armv8a_el0_sync_entry:
     ldr     x1, [sp, #F_X30]
     b       kickos_armv8a_exception
 
-/* IRQ from EL0: an unprivileged thread preempted. Same deferred switch as the EL1 slot. */
+/* IRQ from EL0: the same deferred switch as the EL1 slot. */
     .global kickos_armv8a_el0_irq_entry
 kickos_armv8a_el0_irq_entry:
     ENTER_FROM_EL0
@@ -293,13 +272,11 @@ kickos_armv8a_el0_irq_entry:
     RESTORE_FRAME_AND_ERET
 
 /* --- The user side of the trap --------------------------------------------
- * arch_syscall(nr, a0, a1, a2, a3). arch_syscall64 is the same entry, the seam's psABI pair
- * collapsing at this width. It links into the app's low text, which an EL0 thread executes
- * and which therefore carries privileged-execute-never.
+ * arch_syscall(nr, a0, a1, a2, a3); arch_syscall64 is the same entry. It links into the app's
+ * low text, which an EL0 thread executes and which therefore carries privileged-execute-never.
  *
- * .apptrap and not .text.*: virt_arm64.ld selects the kernel half by ARCHIVE, and this
- * archive is kernel-side, so the app's copy needs a section name those selectors do not
- * match.
+ * The section is .apptrap, not .text.*: the linker script selects the kernel half by archive,
+ * and this archive is kernel-side.
  */
     .section .apptrap, "ax"
     .global arch_syscall
@@ -313,8 +290,8 @@ arch_syscall64:
 
 /* --- arch_switch's immediate half -----------------------------------------
  * void kickos_armv8a_switch_now(struct arch_context* from, struct arch_context* to)
- * Thread context, so there is no exception frame to inherit and this one is synthesised:
- * ELR is the return address, SPSR the state to resume with.
+ * Thread context: the frame is synthesised, ELR the return address and SPSR the state to
+ * resume with.
  */
     .global kickos_armv8a_switch_now
 kickos_armv8a_switch_now:
@@ -324,9 +301,7 @@ kickos_armv8a_switch_now:
     SAVE_FRAME
     str     x30, [sp, #F_ELR]               /* resume where our caller expects to continue */
     mrs     x2, daif                        /* keep the caller's interrupt state exactly */
-    mov     x3, #0x5                        /* M[3:0] = EL1h: same level, its own SP.
-                                               Not an orr immediate: 0b101 does not repeat,
-                                               and only repeating patterns encode. */
+    mov     x3, #0x5                        /* M[3:0] = EL1h; 0b101 is no orr immediate */
     orr     x2, x2, x3
     str     x2, [sp, #F_SPSR]
     mov     x2, sp
@@ -341,8 +316,7 @@ kickos_armv8a_switch_now:
 
 /* --- arch_start -----------------------------------------------------------
  * void kickos_armv8a_start(struct arch_context* first)
- * The boot context is abandoned, as arch.h permits: the system ends through arch_shutdown
- * and never by unwinding to boot.
+ * The boot context is abandoned.
  */
     .global kickos_armv8a_start
 kickos_armv8a_start:
@@ -356,11 +330,10 @@ kickos_armv8a_thread_exit:
     b       kickos_thread_return
 
 /* kickos_panic_stack_enter(msg, file, line, top): leave the interrupted stack for the
-   reporter's own (arch.h). x0-x2 pass through untouched; x3 is the seat, so this body is the
-   same on one core or four and needs no per-core word to race over.
-   DAIF masked before the move, or an interrupt taken between the two stacks on the stack this
-   exists to leave. `b` and not `bl`: the -fcallgraph-info walk stops at a body with no call
-   edge, which is what keeps the console tail off every measured chain. */
+   reporter's own (arch.h). x0-x2 pass through; x3 is the seat.
+   DAIF is masked before the move, or an interrupt could land on the stack being left. `b`, not
+   `bl`: the -fcallgraph-info walk stops at a body with no call edge, which keeps the console
+   tail off every measured chain. */
     .global kickos_panic_stack_enter
 kickos_panic_stack_enter:
     msr     daifset, #0xf

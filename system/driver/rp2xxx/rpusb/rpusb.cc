@@ -36,7 +36,6 @@
 #include "rp_usb_regs.h"
 
 #include <stdint.h>
-#include <stdlib.h> // exit
 
 namespace drv = kickos::driver;
 namespace reg = kickos::rpusb::reg;
@@ -375,7 +374,7 @@ namespace
         {
             // Leaving the ready latch clear is the report: drv::bring_up gives up on it
             // and unwinds.
-            exit(0);
+            drv::trap();
         }
         usb::irq_loop(cdc, sh); // parks in irq_wait; never returns
     }

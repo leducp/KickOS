@@ -3,9 +3,8 @@
 //
 // AArch64: the state a vector slot must reach without a TCB, one block per core.
 //
-// TPIDR_EL1 is what a multi-core arm reads this block's address out of, and it is free for
-// that because ENTER_FROM_EL0 (switch.S) does not spend it as scratch. Nothing seats it at
-// one core, where the block is a link-time address.
+// A multi-core image reads this block's address out of TPIDR_EL1, which ENTER_FROM_EL0
+// (switch.S) must not spend as scratch. At one core the block is a link-time address.
 
 #ifndef KICKOS_ARCH_PERCPU_H
 #define KICKOS_ARCH_PERCPU_H
@@ -14,9 +13,8 @@
 
 #include <stdint.h>
 
-// C++ ONLY, as arch.h itself is: the extern "C" below is UNGUARDED, so a C includer breaks
-// here. Nothing but this arch's own C++ backend includes it, vectors.S and switch.S reaching
-// the block by symbol name and displacement.
+// C++ only, as arch.h is: the extern "C" below is unguarded. vectors.S and switch.S reach the
+// block by symbol name and displacement.
 extern "C"
 {
 
@@ -30,9 +28,8 @@ struct alignas(64) armv8a_percpu_block
     uintptr_t kernel_sp;
 
     // The context PHYSICALLY on the CPU, which is not arch_switch's `from`: one ISR can
-    // reschedule several times, and every call after the first names a thread the scheduler
-    // has merely published, whose registers are still nowhere. The IRQ exit in switch.S saves
-    // through this cell and re-seats it to the incoming context.
+    // reschedule several times, and every call after the first names a thread whose registers
+    // are still nowhere. The IRQ exit in switch.S saves through this cell and re-seats it.
     struct arch_context* ctx_current;
 
     // The deferred switch's target, consumed at the exception exit. A target alone, so the
@@ -43,11 +40,6 @@ struct alignas(64) armv8a_percpu_block
     // alone, under the mask the exception itself applies.
     uint32_t isr_depth;
 
-    // Nesting depth of the fault reporter, reached by index and not through armv8a_percpu():
-    // VEC_SLOT (vectors.S) seats no TPIDR_EL1, so on the slots that report a privileged fault
-    // the register carries no promise.
-    uint32_t report_depth;
-
 #if KICKOS_BENCH
     // PMCCNTR_EL0 at the switch window's open, read back at its close by the same core.
     uint32_t bench_sw_start;
@@ -56,11 +48,9 @@ struct alignas(64) armv8a_percpu_block
 
 extern struct armv8a_percpu_block kickos_armv8a_percpu[KICKOS_NUM_CORES];
 
-// At one core the block is the array's first element and the accessor is a FOLD, so the
-// image carries no load and no branch to find it: the property arch.h holds for arch_cpu_id,
-// for the same reason. The multi-core arm is a DECLARATION ONLY, reading
-// TPIDR_EL1 which secondary bring-up seats, so a port that raises KICKOS_NUM_CORES and
-// ships no definition is a LINK error rather than a kernel that believes it is on core 0.
+// At one core the accessor folds to the array's first element. The multi-core arm is a
+// declaration only (it reads TPIDR_EL1, seated by secondary bring-up), so a port that raises
+// KICKOS_NUM_CORES and ships no definition fails to link rather than believing it is core 0.
 #if KICKOS_NUM_CORES > 1
 struct armv8a_percpu_block* armv8a_percpu(void);
 #else

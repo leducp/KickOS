@@ -34,14 +34,42 @@ extern "C" void kickos_bench_lock_draw(uint32_t retries, uint32_t queued);
 
 namespace
 {
-    // The park's resting posture: the two contending arms need this core's interrupts OPEN
-    // whatever level it entered the park at, which arch_irq_restore would not give.
-    inline void irq_open(void)
+    struct Part
     {
-        uint32_t ps = 0;
-        __asm volatile("rsil %0, 0" : "=a"(ps) : : "memory");
-        (void)ps;
-    }
+        static void clear(void)
+        {
+            kickos_lx6_doorbell_clear();
+        }
+        static void raise_self(void)
+        {
+            kickos_lx6_doorbell_send(1u << arch_cpu_id());
+        }
+        static bool inject_owed(void)
+        {
+#if KICKOS_KERNEL_CORES > 1
+            return kickos_lx6_inject_owed() != 0;
+#else
+            return false;
+#endif
+        }
+        // WAITI takes PS.INTLEVEL from its immediate: the unmask and the sleep in one
+        // instruction. Inline, as tests/static/check_lx6_park_mask.sh reads it in the park.
+        static __attribute__((always_inline)) void sleep(void)
+        {
+            __asm volatile("waiti 0" ::: "memory");
+        }
+        // To level 0 whatever level the park was entered at, which arch_irq_restore would not
+        // give.
+        static __attribute__((always_inline)) void open(void)
+        {
+            uint32_t ps = 0;
+            __asm volatile("rsil %0, 0" : "=a"(ps) : : "memory");
+            (void)ps;
+        }
+        static void before_start(void)
+        {
+        }
+    };
 
 #if KICKOS_KERNEL_CORES > 1
     // Adjacent and unpadded: KICKOS_DOORBELL_LINE is 4 on this part because no cache covers the
@@ -130,37 +158,9 @@ kickos::doorbell::Fenced kickos::doorbell::service_fence(Observed)
 extern "C"
 {
 
-// Masked: the body is not re-entrant against itself, an answer write preempted between its
-// read and its store publishing a stale sequence an initiator waits on forever.
-//
-// Decides from the CELLS and never from the trigger, a lost wake being what the set/clear
-// race can still cost.
 void kickos_doorbell_poll(void)
 {
-    if (kickos_lx6_doorbell_pending() == 0)
-    {
-        return;
-    }
-    arch_irq_state_t const state = arch_irq_save();
-    // Before the service: a set landing after this stays asserted and is delivered again.
-    kickos_lx6_doorbell_clear();
-    kickos_doorbell_service();
-#if KICKOS_KERNEL_CORES > 1
-    // After the clear that absorbed it. A self raise sets this same trigger, so the clear above
-    // drops a reschedule this core owes itself. klock_leave carries it for an ordinary critical
-    // section; the park and the selfcheck release through arch_kernel_unlock and read no cell,
-    // so without this the ask stays owed with the trigger clear.
-    if (kickos_kernel_core_resched_owed() != 0)
-    {
-        arch_ipi_raise(1u << arch_cpu_id());
-    }
-    // A peer's device-line post rides the same trigger, and the clear dropped it too.
-    if (kickos_lx6_inject_owed() != 0)
-    {
-        kickos_lx6_doorbell_send(1u << arch_cpu_id());
-    }
-#endif
-    arch_irq_restore(state);
+    kickos::doorbell::poll<Part>();
 }
 
 void kickos_doorbell_raise(uint32_t cores)
@@ -178,14 +178,6 @@ void arch_ipi_raise(uint32_t cores)
 #endif
 
 #if KICKOS_KERNEL_CORES > 1
-// The poll in this loop is what keeps the coupling sound: a caller acquires with interrupts
-// masked, so a raise aimed at this core is pending and undeliverable while an initiator holding
-// the lock waits on it.
-//
-// The turn test precedes the poll: when the turn has come the previous holder has released, so
-// no lock-holding initiator can be waiting on this core's answer and the skipped poll strands
-// nobody. The draw carries no poll either, so a core observed spinning answers only once it has
-// finished drawing.
 void arch_kernel_lock(void)
 {
     uint32_t retries = 0u;
@@ -193,16 +185,8 @@ void arch_kernel_lock(void)
 #if KICKOS_BENCH
     kickos_bench_lock_draw(retries, ticket - now_serving());
 #endif
-    while (true)
-    {
-        if (now_serving() == ticket)
-        {
-            kickos::klock::owner_take();
-            return;
-        }
-        kickos_doorbell_poll();
-        kickos::doorbell::part_spin();
-    }
+    kickos::doorbell::await_turn([ticket] { return now_serving() == ticket; });
+    kickos::klock::owner_take();
 }
 
 // S32RI, the ISA's store-release (Multiprocessor Synchronization Option, ISA summary 4.3.12,
@@ -223,78 +207,11 @@ void arch_kernel_unlock(void)
 }
 #endif
 
-// Where a core with no thread to run waits for a doorbell. Its vectors, its mask and its matrix
-// bank are already seated (kickos_lx6_init), so a raise arrives as an ordinary level-1
-// interrupt.
-//
-// The unmask is here and not in the caller: until kickos_lx6_init has pointed this core's bank
-// at the doorbell, an arriving raise is a line this core has no handler for.
-//
-// Nothing is narrowed on the way in, and none is owed: INTENABLE is per core and kickos_lx6_init
-// left this one carrying the doorbell alone. CCOMPARE0 is enabled by arch_timer_arm, which this
-// core does not reach before its scheduler, and a device route is armed only where g_dev_core
-// names this core, which the primary's binds do not.
-//
-// g_contend picks which state the check wants this core in, and the two contending states are
-// what make each half of the coupling checkable: interrupts open, so the dispatch is what
-// answers, or the kernel lock taken under this core's own mask, where only the poll in the
-// acquire loop can. The spinning cell is what tells the initiator this core is in the second.
-//
-// A shared kernel leaves this loop for good once it has published a thread for this core.
+// Nothing to narrow on the way in: kickos_lx6_init left this core's INTENABLE carrying the
+// doorbell alone.
 void kickos_lx6_doorbell_park(void)
 {
-    using namespace kickos::doorbell;
-
-    uint32_t const me = arch_cpu_id();
-    while (true)
-    {
-        // Masked across every test below. A raise taken and cleared between a test and the
-        // WAITI is a wake this core never sleeps on, and the core-start raise is a single
-        // edge: the core would stay asleep until the primary's bound expired.
-        (void)arch_irq_save();
-#if KICKOS_KERNEL_CORES > 1
-        if (kickos_kernel_core_startable() != 0)
-        {
-            // Masked and never restored: the scheduler's first resume stands on a frame
-            // carrying its own interrupt state.
-            kickos_kernel_core_start();
-        }
-#endif
-        uint32_t const contend = g_contend.load();
-        if (contend == CONTEND_PARK)
-        {
-            // WAITI takes PS.INTLEVEL from its immediate, so this one instruction is the
-            // unmask and the sleep together and nothing lands between them. A core in WAITI
-            // observes no store, so the primary's publication alone cannot wake it: the
-            // doorbell raise that follows the publication is what does, and this loop re-reads
-            // the cells on the way back out, under the mask above.
-            __asm volatile("waiti 0");
-            continue;
-        }
-        if (contend == CONTEND_OPEN)
-        {
-            // No WAITI: this arm has to observe the next store, and it takes its raise through
-            // the dispatch rather than through any poll of its own.
-            irq_open();
-            part_spin();
-            continue;
-        }
-        // Set under the mask above and cleared before the reopen, so the flag is never set
-        // with this core's interrupts open: that is the whole content of what a reader
-        // concludes from it.
-        g_spinning[me].v = 1u;
-        arch_kernel_lock();
-        g_held[me].v = g_held[me].v.load() + 1u;
-        // Cleared under the lock, ahead of the release. The flag's whole content is that this
-        // core is between publishing intent and releasing the lock, and clearing it after the
-        // release leaves a window in which it says so about a core that has already left.
-        // A reader concludes from it only while it holds the lock, so a clear published from
-        // under the lock is one such a reader cannot catch half-done.
-        g_spinning[me].v = 0u;
-        arch_kernel_unlock();
-        irq_open();
-        part_spin();
-    }
+    kickos::doorbell::park<Part>();
 }
 
 }

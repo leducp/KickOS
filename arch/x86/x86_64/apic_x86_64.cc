@@ -17,6 +17,11 @@
 #include <stdint.h>
 
 extern "C" void kfault_terminate(void) __attribute__((noreturn));
+extern "C" void kpanic_enter(void);
+namespace kickos
+{
+    void kputs(char const* s);
+}
 
 namespace kickos::x86_64
 {
@@ -121,16 +126,10 @@ namespace kickos::x86_64
             return *reinterpret_cast<volatile uint32_t*>(g_mmio + reg);
         }
 
-        // The length is counted here: the arch archive links into images with no C library,
-        // and the builtin over a runtime pointer lowers to a strlen call.
         [[noreturn]] void refuse(char const* what)
         {
-            size_t n = 0;
-            while (what[n] != '\0')
-            {
-                n++;
-            }
-            arch_console_write_sync(what, n);
+            kpanic_enter();
+            kickos::kputs(what);
             kfault_terminate();
         }
 
@@ -160,7 +159,7 @@ namespace kickos::x86_64
             }
         }
 
-        // Both frequencies come out of ONE window, so they stay consistent with each other.
+        // One window yields both frequencies, so they stay consistent.
         void calibrate(void)
         {
             // One-shot (mode bits 18:17 clear) and MASKED: the countdown runs whether or not
@@ -177,7 +176,7 @@ namespace kickos::x86_64
 
             apic_write(reg_ticr, 0);
 
-            // Each of the three is a divisor or a numerator below.
+            // Each is a divisor or numerator below.
             if (reference == 0)
             {
                 refuse("KickOS: x86_64 chip reference timebase did not advance\n");
@@ -252,9 +251,7 @@ namespace kickos::x86_64
 
     void apic_init_secondary(void)
     {
-        // The BSP has already selected x2APIC or xAPIC and calibrated the
-        // shared timer rate. The controller enable and LVT registers are local
-        // to each processor, so the AP must install them for itself.
+        // The enable and LVT registers are per processor.
         uint64_t base = read_msr(msr_apic_base);
         if ((base & apic_base_enable) == 0)
         {
@@ -308,8 +305,7 @@ namespace kickos::x86_64
             {
                 continue;
             }
-            // The q35 SMP posture requires x2APIC and uses APIC IDs 0..N-1.
-            // INIT/SIPI discovery verifies that correspondence before releasing a peer.
+            // SMP requires x2APIC and APIC IDs 0..N-1, which INIT/SIPI discovery verifies.
             if (g_x2)
             {
                 write_msr(msr_x2apic_icr,
@@ -343,8 +339,7 @@ namespace kickos::x86_64
         return scale(rdtsc(), g_tsc_hz, ::kickos::KICKOS_NS_PER_SEC);
     }
 
-    // The initial-count register starts a countdown, so the delta is recomputed on every arm
-    // and the dedup stops a repeated arm of one deadline from restarting it.
+    // Every arm restarts the countdown, so the delta is recomputed against the clock each time.
     void timer_arm(uint64_t deadline_ns)
     {
         uint64_t const now = clock_now();

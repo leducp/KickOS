@@ -1000,7 +1000,8 @@ namespace
         use(patched);
         Outcome const outcome = run();
         ASSERT_EQ(outcome.kind, Outcome::Kind::PANIC);
-        EXPECT_EQ(outcome.message, "init: `sensor` delegates a capability at slot 2, past its 1");
+        EXPECT_EQ(outcome.message, "init: `sensor` delegates a capability at slot "
+                                       + std::to_string(CAP0 + 1) + ", past its 1");
         EXPECT_TRUE(fake::calls_of("kos_notify_create").empty());
     }
 

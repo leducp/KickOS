@@ -61,38 +61,27 @@ fi
 need_qemu_machine
 need_qemu
 
-# THE BACKEND'S OWN WORDING, and it is PER BACKEND: each refusal is spelled by the backend that
-# emits it, so a gate carrying one backend's text greps the other for lines it cannot print and
-# four arms below assert nothing. Each is matched as a literal and passes require_literal first.
+# Each refusal names its backend by the tag the part header spells as the arch's name, and each
+# is matched as a literal that passes require_literal first.
 CHECK_HEAD="# doorbell: "
 CHECK_TAIL=" core(s) answered, rounds 0x"
 CHECK_UNMOVED=", unmoved 0x"
-case "$backend" in
-    armv8a) # arch/arm64/armv8a/klock_armv8a.cc
-        UNANSWERED="KickOS: armv8a doorbell unanswered by core "
-        EARLY_WAIT="KickOS: armv8a doorbell wait returned unanswered, rounds 0x"
-        NO_CONTEND="KickOS: armv8a kernel lock uncontended, peers "
-        NO_SPIN="KickOS: armv8a no peer reached the acquire loop, spinning mask 0x"
-        STILL_SETTLED="KickOS: armv8a doorbell round settled a request that never moved, peers "
-        ;;
-    rv64imac) # arch/riscv/rv64imac/klock_rv64imac.cc
-        UNANSWERED="KickOS: rv64 doorbell unanswered by core "
-        EARLY_WAIT="KickOS: rv64 doorbell wait returned early, rounds settled 0x"
-        NO_CONTEND="KickOS: rv64 peers never completed an acquisition, held "
-        NO_SPIN="KickOS: rv64 peers never reached the acquire loop, seen 0x"
-        STILL_SETTLED="KickOS: rv64 doorbell round settled a request that never moved, peers "
-        ;;
-    *)
-        fail "check_smp_doorbell.sh knows no backend '$backend'. Every refusal below is spelled
-  by the backend that emits it, so an unlisted one would grep for text the image cannot print
-  and pass without asserting anything" ;;
-esac
+UNANSWERED="KickOS: $backend doorbell unanswered by core "
+EARLY_WAIT="KickOS: $backend doorbell wait returned unanswered, rounds 0x"
+NO_CONTEND="KickOS: $backend kernel lock uncontended, peers "
+NO_SPIN="KickOS: $backend no peer reached the acquire loop, spinning mask 0x"
+STILL_SETTLED="KickOS: $backend doorbell round settled a request that never moved, peers "
 BANNER_HEAD="# smp: "
 for _m in "$UNANSWERED" "$EARLY_WAIT" "$NO_CONTEND" "$NO_SPIN" "$STILL_SETTLED" \
           "$CHECK_HEAD" "$CHECK_TAIL" "$CHECK_UNMOVED" "$BANNER_HEAD"; do
     require_literal "$_m" "a doorbell marker"
 done
 literal_matcher_control
+# A refusal this image cannot print is one whose absence below asserts nothing.
+for _m in "$UNANSWERED" "$EARLY_WAIT" "$NO_CONTEND" "$NO_SPIN" "$STILL_SETTLED"; do
+    grep -q -a -F -e "$_m" "$elf" || fail "the image carries no '$_m', so the arm reading the
+  wire for it could not fail: the part's tag and this gate's backend name disagree"
+done
 
 # WHAT THE EMULATOR CAN SEE OF THE DOORBELL, PER BACKEND, AND ONE BACKEND SEES LESS.
 #

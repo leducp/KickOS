@@ -16,6 +16,8 @@ namespace kickos::rx::reg::cgc
 {
     // --- Register protection (UM sec.13) ---
     constexpr uintptr_t PRCR = mmap::SYSTEM + 0x03FE; // 16-bit protect register
+    constexpr uintptr_t SWRR = mmap::SYSTEM + 0x00C2; // 16-bit software reset, PRC1-gated
+    constexpr uint16_t SWRR_RESET = 0xA501;
     constexpr uint16_t PRCR_UNLOCK = 0xA50B;          // key 0xA5 + PRC0|PRC1|PRC3
     constexpr uint16_t PRCR_LOCK = 0xA500;            // key 0xA5, all protect bits 0
 

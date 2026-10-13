@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// q35 AP bootstrap. Reserve one SIPI page while UEFI owns its memory map, then
-// copy and patch the real-mode trampoline after ExitBootServices. APs are
-// released one at a time, so the page's destination and stack words are not
-// rewritten until the preceding AP has left the trampoline.
+// q35 AP bootstrap. The one SIPI page is reserved while UEFI owns its memory map; the
+// trampoline is copied and patched after ExitBootServices. APs are released one at a time, so
+// the page's destination and stack words are rewritten only once the previous AP has left it.
 
 #include <kickos/arch/apic.h>
 #include <kickos/arch/regs.h>

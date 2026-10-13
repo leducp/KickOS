@@ -8,18 +8,17 @@
 // THE PARTITION IS TARGET-KEYED: trigger n wakes core n, so the register name's "FROM" reads
 // as "for". Two writers per trigger is sound because both only ever SET it.
 //
-// TRIGGERS 2 AND 3 ARE RESERVED. They sink in both banks so no source reaches either core, and
-// they are the room a higher-priority second doorbell class would need.
+// TRIGGERS 2 AND 3 sink in both banks, so no source reaches either core.
 //
-// NO DPORT READ APPEARS ON THIS PATH. The part's known DPORT/APB concurrency hazard is a
-// read-side one and no errata for it is on hand, so the raise and the clear are writes and the
-// map registers are written once at bring-up.
+// THE RAISE AND THE CLEAR ARE WRITES: the part's DPORT/APB concurrency hazard is a read-side
+// one, so the map registers are written once at bring-up and never read back.
 
 #include <kickos/arch/lx6_doorbell.h>
 
 #if KICKOS_NUM_CORES > 1
 
 #include <kickos/arch/arch.h>
+#include <kickos/io/mmio.h>
 
 #include <stdint.h>
 
@@ -32,11 +31,6 @@ namespace irq = kickos::esp32::irq;
 
 namespace
 {
-    inline volatile uint32_t& r32(uintptr_t a)
-    {
-        return *reinterpret_cast<volatile uint32_t*>(a);
-    }
-
     // Orders this core's prior stores ahead of the trigger write, and the trigger write ahead
     // of the caller's next load. MEMW performs every earlier load and store before any later
     // one (ISA summary 8.3.164, p.490); the ISA carves out no peripheral space from it.

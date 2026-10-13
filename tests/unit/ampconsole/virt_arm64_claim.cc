@@ -21,6 +21,7 @@ namespace
     constexpr uint32_t STALL = 3u * BUDGET;
     constexpr uint32_t SELF = 1u;
     constexpr uint32_t PEER = 2u;
+    constexpr uint32_t NODES = 2u;
 
     uint64_t g_word = 0;
     uint32_t g_now = 0;
@@ -41,6 +42,9 @@ namespace
     bool g_peer_swaps_first = false;
     bool g_peer_swaps_after_stall = false;
     uint32_t g_spurious_after_stall = 0;
+    uint32_t g_waiting[NODES] = {};
+    // The order of the claim word's and the waiting words' accesses, the fences and the rings.
+    std::string g_trace;
 
     uint64_t token(uint32_t deadline, uint32_t owner)
     {
@@ -69,9 +73,12 @@ namespace
             g_peer_swaps_first = false;
             g_peer_swaps_after_stall = false;
             g_spurious_after_stall = 0;
+            g_waiting[0] = 0;
+            g_waiting[1] = 0;
+            g_trace.clear();
         }
 
-        console::Claim claim{SELF};
+        console::Claim claim{SELF, NODES};
 
         size_t kernel(std::string const& s) { return claim.kernel_write(s.data(), s.size(), BUDGET); }
 
@@ -92,11 +99,13 @@ namespace kickos::virt_arm64::console
 
     uint64_t load(void)
     {
+        g_trace += 'L';
         return g_word;
     }
 
     bool compare_exchange(uint64_t& expected, uint64_t desired)
     {
+        g_trace += 'C';
         if (g_peer_swaps_first)
         {
             g_peer_swaps_first = false;
@@ -140,6 +149,28 @@ namespace kickos::virt_arm64::console
     void store(char c)
     {
         g_wire.push_back(c);
+    }
+
+    uint32_t waiting(uint32_t node)
+    {
+        g_trace += 'w';
+        return g_waiting[node];
+    }
+
+    void set_waiting(uint32_t node, uint32_t value)
+    {
+        g_trace += "m" + std::to_string(node) + std::to_string(value);
+        g_waiting[node] = value;
+    }
+
+    void fence(void)
+    {
+        g_trace += 'F';
+    }
+
+    void ring(uint32_t node)
+    {
+        g_trace += "R" + std::to_string(node);
     }
 }
 
@@ -267,4 +298,67 @@ TEST_F(VirtArm64Claim, UserBytesDoNotSpendAKernelLinesBound)
     ASSERT_TRUE(claim.held());
     g_stall_at = {g_wire.size() + 1u};
     EXPECT_EQ(kernel("ab"), 2u);
+}
+
+// The claim's two halves of the store-then-load pairing: a waiter marks itself before it reads the
+// claim, and a release frees the claim before it reads the marks, each across a full fence.
+TEST_F(VirtArm64Claim, AWaiterIsMarkedAheadOfItsOfferAndToldTheGrantsRest)
+{
+    g_word = token(g_now + 4000u, PEER);
+    EXPECT_EQ(claim.wait(BUDGET), 4000u);
+    EXPECT_EQ(g_waiting[SELF - 1u], 1u);
+    EXPECT_EQ(g_trace.substr(0, 4), "m01F") << "the mark is not fenced ahead of the offer";
+    EXPECT_EQ(g_trace.find('R'), std::string::npos);
+}
+
+// A waiter that takes the claim leaves no mark, so its own release rings no one.
+TEST_F(VirtArm64Claim, AWaiterTakesAFreeClaimAndClearsItsMark)
+{
+    EXPECT_EQ(claim.wait(BUDGET), 0u);
+    EXPECT_TRUE(claim.held());
+    EXPECT_EQ(g_word, token(g_now + BUDGET, SELF));
+    EXPECT_EQ(g_waiting[SELF - 1u], 0u)
+        << "the waiter kept its mark after taking the claim";
+}
+
+// A store-exclusive that fails with the word unchanged is no holder: only a changed word makes the
+// waiter park.
+TEST_F(VirtArm64Claim, AWaiterTakesAnEndedGrantThroughAFailedStoreExclusive)
+{
+    g_word = token(g_now - 1u, PEER);
+    g_spurious = 1u;
+    EXPECT_EQ(claim.wait(BUDGET), 0u) << "a spurious store-exclusive failure parked the waiter";
+    EXPECT_TRUE(claim.held());
+}
+
+TEST_F(VirtArm64Claim, AReleaseRingsEveryMarkedNodeAndClearsItsMark)
+{
+    ASSERT_EQ(user("ab"), 2u);
+    g_waiting[PEER - 1u] = 1u;
+    g_trace.clear();
+    EXPECT_EQ(user("\n"), 1u);
+    EXPECT_EQ(g_word, 0u);
+    EXPECT_EQ(g_waiting[PEER - 1u], 0u);
+    size_t const freed = g_trace.rfind('C');
+    ASSERT_NE(freed, std::string::npos);
+    EXPECT_EQ(g_trace.substr(freed), "CFwwm10R1")
+        << "the release does not fence its free ahead of reading the marks, or rings no one";
+}
+
+TEST_F(VirtArm64Claim, AReleaseRingsNoUnmarkedNode)
+{
+    ASSERT_EQ(user("ab\n"), 3u);
+    EXPECT_EQ(g_trace.find('R'), std::string::npos);
+}
+
+// A grant a peer replaced was not this node's to free, so its release rings no one: the peer's
+// will.
+TEST_F(VirtArm64Claim, ALostGrantRingsNoOne)
+{
+    g_stall_at = {1u};
+    g_peer_steals = true;
+    g_waiting[PEER - 1u] = 1u;
+    EXPECT_EQ(user("ab\n"), 1u);
+    EXPECT_EQ(g_trace.find('R'), std::string::npos);
+    EXPECT_EQ(g_waiting[PEER - 1u], 1u);
 }

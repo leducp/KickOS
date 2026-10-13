@@ -12,11 +12,10 @@
 // installed beside the others, so a missing one is an include failure, not a silent 0.
 #include <kickos/config/cap_width.h>
 
-// The reserved (well-known) capability indices are kernel policy. An own-create
-// (sem/mutex/endpoint create) NEVER lands below KICKOS_CAP_FIRST_DYNAMIC (enforced in
-// cap_install), and cap_install_at NEVER writes the reserved stdout slot. The kernel seats
-// stdout; userspace only NAMES it by this constant, it does not choose the index. A service
-// is reached by path, never by a well-known index.
+// The reserved (well-known) capability indices are kernel policy. An own-create or a
+// delegation NEVER lands below KICKOS_CAP_FIRST_DYNAMIC (enforced in cap_install_at): the kernel
+// seats the reserved slots, and userspace only NAMES them by these constants. A service is
+// reached by path, never by a well-known index.
 //
 // The range is not frozen, but a renumber may only go DOWNWARD, only for a slot NOTHING
 // seats, and is an ABI break. It is one edit, in cmake/cap_geometry.cmake. Appending a
@@ -30,7 +29,8 @@
 
 enum kos_cap_index
 {
-    KOS_CAP_STDOUT = 0, // send-only console endpoint; cap_install_defaults seats it
+    KOS_CAP_STDOUT = 0,    // send-only console endpoint, seated once the console is published
+    KOS_CAP_LIBC_LOCK = 1, // the mutex behind every newlib lock, one per address space
     KOS_CAP_FIRST_DYNAMIC = KICKOS_CAP_FIRST_DYNAMIC // first index an own-create may take
 };
 

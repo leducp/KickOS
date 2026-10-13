@@ -24,6 +24,10 @@ SECTIONS
    * and goes to the app window further down, which a task reaches at its alias (the loader
    * address plus the user offset) and which is the only part of this image a ring-3 access
    * can reach. An input section goes to the first output section that names it.
+   *
+   * tools/x86_64-link.sh pre-links the inputs into one object first, turning each archive and
+   * object selector line below into a .kickos.kernel.* section that the line after the block
+   * places. A kernel selector must stay on one line.
    */
   .text  __image_base__ + ( __section_alignment__ < 0x1000 ? . : __section_alignment__ ) :
   {
@@ -36,6 +40,7 @@ SECTIONS
     *kickos_x86_64_landed_kernel.dir/*(.text .text.*)
     *kickos_x86_64_nobench.dir/*(.text .text.*)
     *kickos_x86_64_nokernel.dir/*(.text .text.*)
+    *(.kickos.kernel.text)
     . = ALIGN(8);
     KEEP (*(SORT_NONE(.fini)))
     PROVIDE (etext = .);
@@ -51,6 +56,7 @@ SECTIONS
     *kickos_x86_64_landed_kernel.dir/*(.data .data.*)
     *kickos_x86_64_nobench.dir/*(.data .data.*)
     *kickos_x86_64_nokernel.dir/*(.data .data.*)
+    *(.kickos.kernel.data)
     __data_end__ = . ;
   }
   /* PE section names must fit in eight bytes without an image string table. Only the
@@ -72,6 +78,7 @@ SECTIONS
     KEEP (*kickos_x86_64_landed_kernel.dir/*(SORT(.init_array.*) .init_array))
     KEEP (*kickos_x86_64_nobench.dir/*(SORT(.init_array.*) .init_array))
     KEEP (*kickos_x86_64_nokernel.dir/*(SORT(.init_array.*) .init_array))
+    KEEP (*(.kickos.kernel.init_array))
     __init_array_end = . ;
   }
   .rdata BLOCK(__section_alignment__) :
@@ -84,6 +91,7 @@ SECTIONS
     *kickos_x86_64_landed_kernel.dir/*(.rodata .rodata.*)
     *kickos_x86_64_nobench.dir/*(.rodata .rodata.*)
     *kickos_x86_64_nokernel.dir/*(.rodata .rodata.*)
+    *(.kickos.kernel.rodata)
     . = ALIGN(4);
     __rt_psrelocs_start = .;
     KEEP(*(.rdata_runtime_pseudo_reloc))
@@ -166,6 +174,7 @@ SECTIONS
     *kickos_x86_64_landed_kernel.dir/*(.bss .bss.* COMMON)
     *kickos_x86_64_nobench.dir/*(.bss .bss.* COMMON)
     *kickos_x86_64_nokernel.dir/*(.bss .bss.* COMMON)
+    *(.kickos.kernel.bss)
     __bss_end__ = . ;
   }
   /* The app window: contiguous from __kickos_app_rom_start to __kickos_app_sram_end, so one

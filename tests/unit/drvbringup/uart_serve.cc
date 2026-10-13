@@ -24,7 +24,8 @@ extern "C"
     int32_t kos_call(kos_cap_t, void* buf, size_t send_len, size_t)
     {
         return static_cast<int32_t>(
-            uart::serve_one(&g_sh, &g_sh.mode, static_cast<uint8_t*>(buf), send_len));
+            kickos::console::serve_one<uart::Transport>(&g_sh, static_cast<uint8_t*>(buf),
+                                                        send_len));
     }
 }
 

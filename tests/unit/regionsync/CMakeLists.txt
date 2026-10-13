@@ -9,12 +9,13 @@
 # a seam.
 kickos_add_unit_test(NAME region_sync
   SOURCES region_sync.cc "${PROJECT_SOURCE_DIR}/tests/unit/common/kpanic_seam.cc"
+          "${PROJECT_SOURCE_DIR}/tests/unit/common/region_seam.cc"
           "${PROJECT_SOURCE_DIR}/kernel/thread/thread.cc"
           "${PROJECT_SOURCE_DIR}/kernel/syscall/syscall_mem.cc"
           "${PROJECT_SOURCE_DIR}/kernel/grant/grant.cc"
           "${PROJECT_SOURCE_DIR}/kernel/mem/ramown.cc"
           "${PROJECT_SOURCE_DIR}/kernel/init/instance.cc"
-  INCLUDES "${PROJECT_SOURCE_DIR}/kernel/syscall"
+  INCLUDES "${PROJECT_SOURCE_DIR}/kernel/syscall" "${PROJECT_SOURCE_DIR}/tests/unit/common"
   POSTURE KICKOS_ARCH_ARENA_DCACHE=1)
 target_compile_options(region_sync PRIVATE -ffunction-sections -fdata-sections)
 target_link_options(region_sync PRIVATE -Wl,--gc-sections)

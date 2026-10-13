@@ -5,14 +5,14 @@
 // kernel/init/console_tx.cc, for the K-seam built with KSEAM_REAL_CONSOLE: a polled device whose
 // bytes are recorded, a reclaim that is counted, and a register window held until a test frees it.
 
-#include <stdarg.h>
-#include <stdio.h>
-#include <stdlib.h>
-
 #include <string>
 
 #include <kickos/arch/arch.h>
+#include <kickos/cap.h>
 #include <kickos/console_tx.h>
+#include <kickos/endpoint.h>
+#include <kickos/instance.h>
+#include <kickos/irqlock.h>
 #include <kickos/kernel.h>
 
 #include "dark_seam.h"
@@ -22,29 +22,34 @@ namespace darkseam
     std::string g_wire;
     uint32_t g_reclaims = 0;
     bool g_window_free = true;
-    bool g_ring_backed = false;
 
     void reset()
     {
         g_wire.clear();
         g_reclaims = 0;
         g_window_free = true;
-        g_ring_backed = false;
+    }
+
+    bool publish(kickos::Thread* publisher, kickos::Endpoint* ep, kickos::Task* served)
+    {
+        using namespace kickos;
+        {
+            IrqLock lock;
+            int const handle = kernel().endpoints.handle_for(kernel().endpoints.index_of(ep));
+            if (not cap_console_publish(publisher, handle, lock))
+            {
+                return false;
+            }
+            cap_console_serve(served, lock);
+            console_handover_begin();
+        }
+        console_owner_set_user();
+        return true;
     }
 }
 
 extern "C"
 {
-    int arch_console_write(char const* buf, size_t n)
-    {
-        if (darkseam::g_ring_backed)
-        {
-            return console_tx_insert_line(buf, n, 0);
-        }
-        darkseam::g_wire.append(buf, n);
-        return static_cast<int>(n);
-    }
-
     bool arch_console_write_sync(char const* buf, size_t n)
     {
         darkseam::g_wire.append(buf, n);
@@ -60,43 +65,9 @@ extern "C"
         darkseam::g_reclaims = darkseam::g_reclaims + 1;
     }
 
-    void arch_console_reclaim_window(uintptr_t* base, size_t* size)
-    {
-        *base = 0x40000000u;
-        *size = 0x100u;
-    }
-
-    int kvsnprintf(char* buf, size_t size, char const* fmt, va_list ap)
-    {
-        return vsnprintf(buf, size, fmt, ap);
-    }
-
-    struct console_tx_backend const* arch_console_tx_backend(char**, uint32_t*, int*)
+    struct console_tx_backend const* arch_console_tx_backend(int*)
     {
         return nullptr;
-    }
-
-    void arch_shutdown(int status)
-    {
-        printf("FIXTURE FAIL: arch_shutdown(%d) ended the arm\n", status);
-        exit(1);
-    }
-
-    int arch_reboot(void)
-    {
-        return 0;
-    }
-
-    void kfault_terminate(void)
-    {
-        printf("FIXTURE FAIL: a panic ended the arm\n");
-        fflush(stdout);
-        exit(1);
-    }
-
-    void kickos_panic_stack_enter(char const* msg, char const* file, unsigned line, uintptr_t)
-    {
-        kickos_panic_report(msg, file, line);
     }
 
 #if KICKOS_CONSOLE_RTT
@@ -109,10 +80,5 @@ namespace kickos
     bool dev_window_free(uintptr_t, size_t)
     {
         return darkseam::g_window_free;
-    }
-
-    bool dev_window_held_outside(uintptr_t, size_t, Task const*)
-    {
-        return false;
     }
 }

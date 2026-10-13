@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// STM32F411 USART register map (RM0383 sec.19.6), classic SR/DR layout. Clean-room from
-// RM0383 Rev 4; no vendor HAL/CMSIS source.
+// STM32F411 USART register map (RM0383 sec.19.6), classic SR/DR layout.
 //
 // TWO SPELLINGS OF THE SAME REGISTER. The *_OFFSET constants are instance-relative and are
 // what a driver granted one window uses; the bare names below are the console instance

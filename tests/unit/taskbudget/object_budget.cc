@@ -919,6 +919,7 @@ namespace kickos
                 for (int f = 1; f < KICKOS_MAX_ENDPOINTS; f++)
                 {
                     int const fi = kernel().endpoints.index_of(endpoint());
+                    ASSERT_GE(fi, 0) << "fixture: a filler endpoint outside the pool";
                     kernel().endpoint_refs[fi] = 1;
                     if (filler_obj < 0)
                     {

@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Included into arch/CMakeLists.txt's own directory scope: every source path below is
-# relative to arch/, not to this directory, and the list order is the archive's member order.
+# Included into arch/CMakeLists.txt's scope: source paths are relative to arch/, and the list
+# order is the archive's member order.
 
 # ARMv8-A in AArch64 state (QEMU virt, Cortex-A53).
 if(KICKOS_ARM64_GIC_VERSION EQUAL 2)
@@ -29,8 +29,8 @@ endif()
 # two fallbacks leave the list.
 set(_armv8a_defaults ${KICKOS_SEAM_DEFAULTS_COMMON})
 list(REMOVE_ITEM _armv8a_defaults
-  common/arch_irq_line_kernel_owned_default.cc
-  common/arch_irq_route_default.cc)
+  ${KICKOS_SEAM_DEFAULTS_DIR}/arch_irq_line_kernel_owned_default.cc
+  ${KICKOS_SEAM_DEFAULTS_DIR}/arch_irq_route_default.cc)
 
 set(KICKOS_ARCH_SOURCES
   arm64/armv8a/arch_armv8a.cc
@@ -48,8 +48,7 @@ set(KICKOS_ARCH_SOURCES
   # (arm64/common/gicv2.h, gicv3.h).
   ${_kos_gic_src}
   # The A53 seams that name no device: the architected generic timer and the semihosting
-  # dead end. No fallback for any of them sits in this archive; the definitions come from
-  # the chip archive the group scans first.
+  # dead end.
   arm64/common/arch_arm64_a53.cc
   common/arch_ram_common.cc
   common/startup_ranges.cc

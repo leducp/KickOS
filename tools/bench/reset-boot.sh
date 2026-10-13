@@ -14,6 +14,7 @@ RESET_BOOT_ROW_RE='^('\
 '   arch    [a-z][a-z0-9_]*|a [a-z][a-z0-9_]*|'\
 '   cpu     [A-Za-z0-9_.+-]+|u [A-Za-z0-9_.+-]+|'\
 '   mpu     (off|enforce)|m (off|enforce)|'\
+'   mmu     enforce|M enforce|'\
 '   sched   (tickless|periodic tick)|s (tickless|periodic tick)|'\
 "   build   $_rb_stamp|t $_rb_stamp|"\
 "   app     $_rb_app|p $_rb_app|"\

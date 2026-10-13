@@ -33,7 +33,7 @@ archived() { # <name>
     [ -n "$(find "$TMP/prefix" -name "libkickos_$1.a" -print)" ]
 }
 exported() { # <name>
-    grep -rqw "kickos_$1" "$TMP/prefix/lib/cmake/KickOS"
+    grep -rqF "/libkickos_$1.a\"" "$TMP/prefix/lib/cmake/KickOS"
 }
 
 CONTROL="$(sed -n '/^drivers:/,/^[^ ]/s/^  \([a-z0-9_]*\):$/\1/p' "$MANIFEST" | head -n 1)"

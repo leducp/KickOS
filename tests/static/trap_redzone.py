@@ -157,6 +157,7 @@ class Decl(object):
         self.trap_stack = set()                      # classes declared stack=trap
         self.kernel_stack = set()                    # classes declared stack=kernel
         self.panic_stack = set()                     # classes declared stack=panic
+        self.idle_stack = set()                      # classes declared stack=idle
         self.at = {}                                 # class -> the one callee it prices below
         self.roots = collections.OrderedDict()        # class -> [(symbol, optional)]
         self.rootless = {}                            # class -> declared reason
@@ -325,6 +326,7 @@ class Decl(object):
         on_trap = False
         on_kernel = False
         on_panic = False
+        on_idle = False
         at = None
         for opt in f[1:]:
             if opt.startswith('frame='):
@@ -339,6 +341,8 @@ class Decl(object):
                 on_kernel = True
             elif opt == 'stack=panic':
                 on_panic = True
+            elif opt == 'stack=idle':
+                on_idle = True
             elif opt in ('kstacks=0', 'kstacks=1'):
                 # Read by check_trap_redzone.sh, which owns the live posture knob. Accepted
                 # here only so a marked record parses: a .ci tree carries no board config to
@@ -348,7 +352,7 @@ class Decl(object):
                 die('%s: unknown class option "%s"' % (where, opt))
         if frame is None or depth is None:
             die('%s: class %s needs both frame= and depth=' % (where, name))
-        if (on_trap + on_kernel + on_panic) > 1:
+        if (on_trap + on_kernel + on_panic + on_idle) > 1:
             die('%s: class %s names two stacks; a frame goes on one of them' % (where, name))
         if name in self.macros:
             die('%s: class %s declared twice' % (where, name))
@@ -358,6 +362,8 @@ class Decl(object):
             self.kernel_stack.add(name)
         if on_panic:
             self.panic_stack.add(name)
+        if on_idle:
+            self.idle_stack.add(name)
         if at is not None:
             self.at[name] = at
         self.classes.append(name)
@@ -394,7 +400,7 @@ class Decl(object):
 
     def off_thread(self):
         """Classes whose descent spends no unprivileged thread stack."""
-        return self.trap_stack | self.kernel_stack | self.panic_stack
+        return self.trap_stack | self.kernel_stack | self.panic_stack | self.idle_stack
 
 
 def split_site_key(key):
@@ -685,9 +691,8 @@ class Graph(object):
     """This build's .ci files merged, minus the ones the link threw away.
 
     Compiled is not linked. Beside every backend sits an unextracted <symbol>_default.cc seam
-    fallback, and reading it inflates depths and invents recursion, a console cycle through
-    arch_console_write_sync_default.cc among them; dropped_tus() skips those. A `link` record
-    narrows the corpus further, to the units an image's map LOADs.
+    fallback, and reading it inflates depths and invents recursion; dropped_tus() skips those.
+    A `link` record narrows the corpus further, to the units an image's map LOADs.
     """
 
     def __init__(self, ci_dir, link_maps=None, renames=None):
@@ -1202,7 +1207,7 @@ def print_classes(path):
                 frame = opt[len('frame='):]
             elif opt.startswith('depth='):
                 depth = opt[len('depth='):]
-            elif opt in ('stack=trap', 'stack=kernel', 'stack=panic'):
+            elif opt in ('stack=trap', 'stack=kernel', 'stack=panic', 'stack=idle'):
                 onstack = opt[len('stack='):]
             elif opt in ('kstacks=0', 'kstacks=1'):
                 kstacks = opt[len('kstacks='):]
@@ -1479,6 +1484,8 @@ def run(argv):
             where = 'on the per-thread kernel stack, exclusions NOT applied'
         if cls in decl.panic_stack:
             where = 'on the panic reporter stack, exclusions NOT applied'
+        if cls in decl.idle_stack:
+            where = 'on idle\'s stack, exclusions NOT applied'
         if cls in not_compiled:
             where += ', NOT ENFORCED: this image does not compile the entry design this' \
                      ' class describes'

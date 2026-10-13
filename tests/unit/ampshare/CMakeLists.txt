@@ -8,6 +8,8 @@ kickos_add_unit_test(NAME amp_share_admission
   SOURCES share_admission.cc "${PROJECT_SOURCE_DIR}/tests/unit/common/kpanic_seam.cc"
           "${PROJECT_SOURCE_DIR}/kernel/grant/grant.cc"
           "${PROJECT_SOURCE_DIR}/kernel/mem/ramown.cc"
+          "${PROJECT_SOURCE_DIR}/tests/unit/common/region_seam.cc"
+  INCLUDES "${PROJECT_SOURCE_DIR}/tests/unit/common"
   POSTURE KICKOS_AMP_OWN_IMAGE=1
           KICKOS_AMP_USER_SHARE_ADDR=0x2007C000
           KICKOS_AMP_USER_SHARE_SIZE=0x4000)
@@ -20,7 +22,7 @@ kickos_add_unit_test(NAME amp_share_window
           "${PROJECT_SOURCE_DIR}/kernel/amp/ampshare.cc"
           "${PROJECT_SOURCE_DIR}/kernel/mem/vrange.cc"
           "${PROJECT_SOURCE_DIR}/kernel/init/instance.cc"
-  POSTURE KICKOS_HAVE_ASPACE=1
+  POSTURE KICKOS_HAVE_ASPACE=1 KICKOS_MAX_MUTEXES=24
           KICKOS_AMP_OWN_IMAGE=1
           KICKOS_AMP_NODES=2
           KICKOS_AMP_NODE_ID=0
@@ -37,7 +39,7 @@ kickos_add_unit_test(NAME amp_share_type_aspace
           "${PROJECT_SOURCE_DIR}/kernel/mem/aspace.cc"
           "${PROJECT_SOURCE_DIR}/kernel/mem/vrange.cc"
           "${PROJECT_SOURCE_DIR}/kernel/init/instance.cc"
-  POSTURE KICKOS_HAVE_ASPACE=1
+  POSTURE KICKOS_HAVE_ASPACE=1 KICKOS_MAX_MUTEXES=24
           KICKOS_AMP_OWN_IMAGE=1
           KICKOS_AMP_NODES=2
           KICKOS_AMP_NODE_ID=0
@@ -52,7 +54,7 @@ kickos_add_unit_test(NAME amp_share_type_aspace_cached TEST_PREFIX cached_
           "${PROJECT_SOURCE_DIR}/kernel/mem/aspace.cc"
           "${PROJECT_SOURCE_DIR}/kernel/mem/vrange.cc"
           "${PROJECT_SOURCE_DIR}/kernel/init/instance.cc"
-  POSTURE KICKOS_HAVE_ASPACE=1
+  POSTURE KICKOS_HAVE_ASPACE=1 KICKOS_MAX_MUTEXES=24
           KICKOS_AMP_OWN_IMAGE=1
           KICKOS_AMP_NODES=2
           KICKOS_AMP_NODE_ID=0

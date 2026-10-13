@@ -48,7 +48,7 @@ TEST(ConsoleHeldRtt, ADarkWindowWriterReachesRttOnce)
             console_on_driver_death(lock);
         }
         ASSERT_NE(console_dark(), 0);
-        consoleseam::g_current = reinterpret_cast<kickos::Thread*>(0x100u);
+        consoleseam::g_current = thread(1);
         consoleseam::g_dark_wait = reclaim_in_the_wait;
         g_rtt.clear();
         EXPECT_EQ(kickos::kconsole_write_user("line\n", 5, true), 5);
@@ -63,13 +63,13 @@ TEST(ConsoleHeldRtt, ARefusedUserLineIsNotOnRtt)
     run_isolated([]() {
         consoleseam::reset(kRing);
         consoleseam::set_slot_free(0);
-        consoleseam::g_current = reinterpret_cast<kickos::Thread*>(0x100u);
+        consoleseam::g_current = thread(1);
         std::string const fill(1u, 'f');
-        while (kickos::kconsole_write_user(fill.data(), fill.size(), false) != 0)
+        while (kickos::kconsole_write_user(fill.data(), fill.size(), false) > 0)
         {
         }
         g_rtt.clear();
-        EXPECT_EQ(kickos::kconsole_write_user("line\n", 5, false), 0);
+        EXPECT_EQ(kickos::kconsole_write_user("line\n", 5, false), -KOS_ETIMEDOUT);
         EXPECT_EQ(g_rtt, "") << "a line the console refused reached RTT";
     });
 }
@@ -84,5 +84,17 @@ TEST(ConsoleHeldRtt, AKernelLineReachesRttUnderADriver)
         kickos::kputs("kernel\n");
         EXPECT_EQ(g_rtt, "kernel\n");
         EXPECT_EQ(consoleseam::pushes_after_commit(), 0u);
+    });
+}
+
+// A refusal under no lock reaches RTT as well as the chip.
+TEST(ConsoleHeldRtt, AnUnlockedRefusalReachesRtt)
+{
+    run_isolated([]() {
+        consoleseam::reset(kRing);
+        g_rtt.clear();
+        kpanic_enter_unlocked();
+        kpanic_write_unlocked("refused\n", 8);
+        EXPECT_EQ(g_rtt, "refused\n") << "an RTT console printed no refusal";
     });
 }

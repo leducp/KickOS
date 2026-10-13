@@ -13,33 +13,20 @@
 #include <climits>
 
 #include "align_table.h"
+#include "region_seam.h"
 
 static_assert(sizeof(size_t) * CHAR_BIT == REGION_WORD_BITS,
               "the table's figures are the tool's for a word of another width");
 
+RegionSeam g_region_seam;
+
 namespace
 {
-    size_t g_min_region = 0;
-    int g_pow2 = 0;
-
-#if defined(KICKOS_TLS) && KICKOS_TLS && KICKOS_TLS_FROM_SP
+#if KICKOS_TLS && KICKOS_TLS_FROM_SP
     constexpr size_t STRIDE = KICKOS_TLS_STRIDE;
 #else
     constexpr size_t STRIDE = 0;
 #endif
-}
-
-extern "C"
-{
-    size_t arch_mpu_min_region(void)
-    {
-        return g_min_region;
-    }
-
-    int arch_mpu_region_pow2(void)
-    {
-        return g_pow2;
-    }
 }
 
 namespace
@@ -70,8 +57,8 @@ namespace
                 continue;
             }
             rows++;
-            g_min_region = c.min_region;
-            g_pow2 = c.pow2;
+            g_region_seam.min_region = c.min_region;
+            g_region_seam.pow2 = c.pow2;
             if (c.refused)
             {
                 EXPECT_FALSE(rounds(c, arch_ram_region_size(c.want)))
@@ -90,11 +77,11 @@ namespace
         EXPECT_NE(rows, 0u) << "the table holds no row at this build's stride";
     }
 
-#if defined(KICKOS_TLS) && KICKOS_TLS && KICKOS_TLS_FROM_SP
+#if KICKOS_TLS && KICKOS_TLS_FROM_SP
     void geometry(size_t min_region, int pow2)
     {
-        g_min_region = min_region;
-        g_pow2 = pow2;
+        g_region_seam.min_region = min_region;
+        g_region_seam.pow2 = pow2;
     }
 
     TEST(RamAlign, ABaseLimitMpuStridesOnlyAStackSizedBlock)

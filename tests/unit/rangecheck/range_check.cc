@@ -241,15 +241,8 @@ namespace kickos
                 expect_agrees(BASE, 64, 64);
             }
 
-            TEST_F(RangeCheck, a_privileged_caller_passes_without_a_region)
-            {
-                caller_->privileged = true;
-                EXPECT_TRUE(user_readable_and_writable_ok(BASE, 64, 64));
-                expect_agrees(BASE, 64, 64);
-            }
-
             // NO CURRENT THREAD AT ALL, which every arm above seats past. The merged walk has
-            // no set and no privilege posture to read, so both halves fall through to their
+            // no set to read, so both halves fall through to their
             // own arch hook; a walk that admitted a caller it cannot name would answer true
             // where the separate pair answers false.
             TEST_F(RangeCheck, no_current_thread_falls_through_to_both_hooks)
@@ -337,21 +330,14 @@ namespace kickos
 #endif
 
             // The sweep the named arms above are legible samples of: every combination of a
-            // caller posture, a region set, the list's rights, a pair of lengths, an offset
+            // wrapping region, a region set, the list's rights, a pair of lengths, an offset
             // and both hook answers, compared against the reference verdict.
             TEST_F(RangeCheck, the_combined_verdict_matches_the_separate_ones_everywhere)
             {
-                struct Posture
-                {
-                    bool privileged;
-                    bool wrapping;
-                };
-                // The named arms above seat nothing beside the posture they name: the
-                // privileged one no region at all, the wrapping one no second region, no
-                // list and no hook answer. Both are dimensions here so that the walk meets
-                // them with every other answerer in play.
-                static constexpr Posture POSTURES[] = {
-                    {false, false}, {false, true}, {true, false}, {true, true}};
+                // The named wrapping arm above seats no second region, no list and no hook
+                // answer. It is a dimension here so that the walk meets it with every other
+                // answerer in play.
+                static constexpr bool WRAPPING[] = {false, true};
                 static constexpr uint32_t ATTRS[] = {ARCH_MPU_R, ARCH_MPU_W,
                                                      ARCH_MPU_R | ARCH_MPU_W,
                                                      ARCH_MPU_R | ARCH_MPU_W | ARCH_MPU_DEV};
@@ -367,9 +353,8 @@ namespace kickos
                 static constexpr uint32_t VRIGHTS[] = {0};
 #endif
 
-                for (Posture const& posture : POSTURES)
+                for (bool const wrapping : WRAPPING)
                 {
-                    caller_->privileged = posture.privileged;
                     for (uint32_t vrights : VRIGHTS)
                     {
                         for (uint32_t first : ATTRS)
@@ -381,7 +366,7 @@ namespace kickos
                                     g_text_readable = ((hooks & 1) != 0);
                                     g_data_writable = ((hooks & 2) != 0);
                                     caller_->mpu.clear();
-                                    if (posture.wrapping)
+                                    if (wrapping)
                                     {
                                         grant(BASE, WRAP_SPAN, ARCH_MPU_R | ARCH_MPU_W);
                                     }

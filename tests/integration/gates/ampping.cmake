@@ -2,9 +2,8 @@
 # Copyright (c) 2026 Philippe Leduc
 
 # The gates riding the own-image AMP partition. Two boot the merged artefact, one builds the
-# partition with the self-test off. The
-# artefacts themselves are BUILD targets assembled in the app file, which records each path on
-# ampping_n0 so this side states no path of its own.
+# partition in a tree of its own. The artefacts themselves are BUILD targets assembled in the app
+# file, which records each path on ampping_n0 so this side states no path of its own.
 
 if(NOT TARGET ampping_n0)
   return()
@@ -21,8 +20,8 @@ if(NOT KICKOS_AMP_NODE_ID EQUAL 0)
 endif()
 
 get_target_property(_amp_artefact ampping_n0 KICKOS_AMP_ARTEFACT)
-# Unset unless the selftest artefact was assembled, which needs the selftest target and the
-# selftest posture. A property that is not set reads as false here.
+# Unset unless the selftest artefact was assembled, which needs the selftest target. A property
+# that is not set reads as false here.
 get_target_property(_amp_st_artefact ampping_n0 KICKOS_AMP_ARTEFACT_SELFTEST)
 
 # Two gates boot the artefact and need an emulator. kickos_add_qemu_test registers nothing at
@@ -55,12 +54,10 @@ add_test(NAME amp_peer_arms_controls
   COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_amp_peer_arms.sh" --controls)
 kickos_host_gate(amp_peer_arms_controls TIMEOUT 60)
 
-if(KICKOS_ENABLE_SELFTEST)
-  add_test(NAME amp_prod_build
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_amp_prod_build.sh"
-            "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}" "${_fs_preset_key}")
-  kickos_host_gate(amp_prod_build TIMEOUT 1800)
-endif()
+add_test(NAME amp_fresh_tree_build
+  COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_amp_fresh_tree_build.sh"
+          "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}" "${_fs_preset_key}")
+kickos_host_gate(amp_fresh_tree_build TIMEOUT 1800)
 
 if(_amp_emulated)
   # The gate boots the ARTEFACT, and building it is the first thing the script does.

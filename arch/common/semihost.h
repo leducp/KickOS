@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The semihosting console, clock and exit of the chips QEMU runs with -semihosting. A chip
-// takes the console seams by compiling semihost_console.cc into its own archive (family.cmake).
+// takes the console seams by compiling semihost_console.cc into its own archive (`family`).
 
 #ifndef KICKOS_ARCH_COMMON_SEMIHOST_H
 #define KICKOS_ARCH_COMMON_SEMIHOST_H

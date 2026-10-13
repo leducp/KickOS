@@ -58,7 +58,7 @@ with fallback TUs, so the port is a chip-backend fill and not arch-layer surgery
   SET it per-core is the question. Either a CLINT-like MSIP register, in which case
   `g_clint_msip` is just a different address and there is zero arch change, or assertion
   via a custom CSR or SIO doorbell, in which case the arch's "write a word through a
-  pointer" contract must widen to a chip hook (`arch_rv_pend_switch`, fallback TU keeping
+  pointer" contract must widen to a chip hook (a pend-switch hook (formerly `arch_rv_pend_switch`), fallback TU keeping
   the MMIO write for C6/virt). **This is the most likely place the arch layer needs a
   touch.**
 - **4.2 Machine timer. Hazard3 unknown [to-verify: RP-008373 3.1.8]:** a RISC-V platform
@@ -116,8 +116,8 @@ so a wrong clock/boot/ARCHSEL config cannot brick it.
    than pure C hooks. The C6 already needed a `.Lext`/`.Lextdev` demux, so the arch has
    precedent -- but the CSR facts are new. Pin this FIRST; it gates the effort estimate.
 2. **Software-interrupt assertion path (4.1):** is the deferred-switch pend a writable
-   MMIO word (`g_clint_msip` reused as-is) or a CSR/SIO doorbell (needs a small arch hook
-   `arch_rv_pend_switch`)? Most likely place the arch layer itself needs a touch.
+   MMIO word (`g_clint_msip` reused as-is) or a CSR/SIO doorbell (needs a small arch pend-switch
+   hook)? Most likely place the arch layer itself needs a touch.
 3. **RISC-V platform timer (4.2):** base, rate, per-core-ness. Lower risk -- a
    `mtime`/`mtimecmp` pair is expected (DS 3.1.8); the ARM TIMER0 is a fallback
    `arch_clock_now` source.

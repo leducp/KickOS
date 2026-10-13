@@ -28,6 +28,8 @@ SRC = os.path.dirname(os.path.dirname(HERE))
 GEN = os.path.join(HERE, "genconfig.py")
 FIX = os.path.join(SRC, "boards", "xmc4800-relax", "configs", "base", "defconfig")
 AMP = os.path.join(SRC, "boards", "qemu-arm64", "configs", "amp", "defconfig")
+# An own-image node of two, the one its seed and fingerprint are written for.
+AMP_OWN = os.path.join(SRC, "boards", "qemu-arm64", "configs", "amp2", "defconfig")
 CMAKE = None
 
 sys.path.insert(0, HERE)
@@ -84,6 +86,28 @@ def oracle(kconf, config):
             shown = "ON" if got == "y" else "OFF"
         want[sym.name] = "set(%s %s)" % (sym.name, shown)
     return want
+
+
+def header_oracle(kconf, config):
+    """The board_config.h define each KICKOS_* symbol is owed, by name: a bool as 0 or 1 even
+    off its dependencies, a number as kconfiglib spells it and only where it resolved."""
+    kconf.load_config(config)
+    want = {}
+    for sym in kconf.unique_defined_syms:
+        if not sym.name.startswith("KICKOS_"):
+            continue
+        got = sym.str_value
+        if sym.type == kconfiglib.BOOL:
+            want[sym.name] = "#define %s %d" % (sym.name, got == "y")
+        elif sym.type in (kconfiglib.INT, kconfiglib.HEX) and got:
+            want[sym.name] = "#define %s %s" % (sym.name, got)
+    return want
+
+
+def header_defines(out):
+    path = os.path.join(out, "include/kickos/board_config.h")
+    return {l.split()[1]: l for l in read(path).splitlines()
+            if l.startswith("#define KICKOS_") and l.split()[1] != "KICKOS_BOARD_CONFIG_H"}
 
 
 class Genconfig(unittest.TestCase):
@@ -148,9 +172,9 @@ class Genconfig(unittest.TestCase):
         # No symbol sets the interrupt-line count, so a request for one is refused outright.
         self.refused(FIX, "CONFIG_KICKOS_MAX_IRQ=64", "no such symbol")
         # The refusal carries the symbol's own help, read out of Kconfig.
-        self.refused(FIX, "CONFIG_KICKOS_SHUTDOWN_TO_BOOTLOADER=y",
-                     "unmet dependency: KICKOS_REBOOT",
-                     "arch_reboot is compiled only under KICKOS_REBOOT")
+        self.refused(FIX, "CONFIG_KICKOS_ISOLATED_CORES=0x1",
+                     "unmet dependency: KICKOS_MULTICORE_SHARED",
+                     "A bitmask of cores subtracted from the DEFAULT core set")
         self.refused(FIX, "KICKOS_MAX_THREADS=4", "not of the form CONFIG_<name>=<value>")
 
     def test_accepted_overrides(self):
@@ -161,9 +185,13 @@ class Genconfig(unittest.TestCase):
                       self.accepted(AMP, 'CONFIG_KICKOS_AMP_PORTS="0:2,1:0"'))
 
     def test_string_reaches_cmake_inert(self):
-        # A raw ';' splits a CMake list and a raw '$' expands even inside a quoted set().
-        run, out = gen(AMP, 'CONFIG_KICKOS_AMP_PORTS="0:2;two$LEAK_ME"')
+        # A raw ';' splits a CMake list and a raw '$' expands even inside a quoted set(). No
+        # request carries either past the partition's refusals, so the writer is asked directly.
+        run, out = gen(AMP)
         self.assertEqual(run.returncode, 0, run.stderr)
+        self.kconf.load_config(os.path.join(out, ".config"))
+        self.kconf.syms["KICKOS_AMP_PORTS"].set_value("0:2;two$LEAK_ME")
+        genconfig.write_cmake_fragment(os.path.join(out, "kickos_config.cmake"), self.kconf, [], FIX)
         self.assertIn('set(KICKOS_AMP_PORTS "0:2\\;two\\$LEAK_ME")', fragment(out))
         verify = os.path.join(out, "verify.cmake")
         with open(verify, "w") as f:
@@ -216,6 +244,9 @@ class Genconfig(unittest.TestCase):
                 self.assertIn("KICKOS_BOARD", want)
                 frag = set(fragment(out))
                 self.assertEqual({n: l for n, l in want.items() if l not in frag}, {})
+                owed = header_oracle(self.kconf, os.path.join(out, ".config"))
+                self.assertIn("KICKOS_DEBUG", owed)
+                self.assertEqual(header_defines(out), owed)
 
     def test_every_prompted_symbol_offered(self):
         # Each prompted non-choice symbol offered its own resolved value: a type derived wrongly
@@ -247,9 +278,156 @@ class Genconfig(unittest.TestCase):
         frag = self.accepted(FIX, "assert:KICKOS_NOSUCHKNOB=1")
         self.assertFalse([l for l in frag if "KICKOS_NOSUCHKNOB" in l])
 
+    def test_choice_value(self):
+        # A -D of the console or telemetry by value resolves as the menu choosing its member does.
+        for request, member in (("assert:KICKOS_CONSOLE=rtt", "CONFIG_CONSOLE_RTT=y"),
+                                ("assert:KICKOS_CONSOLE=RTT", "CONFIG_CONSOLE_RTT=y"),
+                                ("offer:KICKOS_CONSOLE=chip", "CONFIG_CONSOLE_CHIP=y"),
+                                ("assert:KICKOS_TELEMETRY=rtt", "CONFIG_TELEMETRY_RTT=y"),
+                                ("assert:KICKOS_TELEMETRY=off", "CONFIG_TELEMETRY_OFF=y")):
+            run, by_value = gen(FIX, request)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            run, by_member = gen(FIX, member)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            self.assertEqual(read(os.path.join(by_value, ".config")),
+                             read(os.path.join(by_member, ".config")), request)
+        self.assertIn('set(KICKOS_CONSOLE "rtt")', self.accepted(FIX, "offer:KICKOS_CONSOLE=Rtt"))
+        self.refused(FIX, "assert:KICKOS_CONSOLE=nosuch",
+                     "REFUSED -DKICKOS_CONSOLE=nosuch: not one of both, chip, none, rtt")
+        self.refused(FIX, "offer:KICKOS_CONSOLE=nosuch", "not one of both, chip, none, rtt")
+        run, _ = gen(FIX, "assert:KICKOS_CONSOLE=rtt", "CONFIG_CONSOLE_RTT=y")
+        self.assertNotEqual(run.returncode, 0, "one member requested twice was accepted")
+        self.assertIn("is requested twice", run.stderr)
+        run, _ = gen(FIX, "assert:KICKOS_CONSOLE=chip", "assert:KICKOS_TELEMETRY=rtt")
+        self.assertNotEqual(run.returncode, 0, "telemetry over RTT without an RTT console was accepted")
+        self.assertIn("REFUSED CONFIG_TELEMETRY_RTT=y: unmet dependency", run.stderr)
+
+    def test_shared_kernel_predicate(self):
+        smp = os.path.join(SRC, "boards", "qemu-arm64", "configs", "smp", "defconfig")
+        self.assertIn("set(KICKOS_MULTICORE_MODEL_SHARED 1)", self.accepted(smp))
+        # A part meeting none of the six still takes the count under AMP.
+        amp = os.path.join(SRC, "boards", "pizero2350", "configs", "amp", "defconfig")
+        frag = self.accepted(amp)
+        self.assertIn("set(KICKOS_NUM_CORES 2)", frag)
+        self.assertIn("set(KICKOS_MULTICORE_MODEL_SHARED 0)", frag)
+        self.refused(amp, "CONFIG_KICKOS_MULTICORE_SHARED=y", "unmet dependency", "ARCH_SMP_COHERENT",
+                     "CHIP_SMP_TARGETING", "!ARCH_HAS_IPC_FASTPATH")
+        # Two cores and no model on a part that cannot take the shared default.
+        base = os.path.join(SRC, "boards", "pizero2350", "configs", "base", "defconfig")
+        self.refused(base, "CONFIG_KICKOS_CORES_TWO=y", "its default KICKOS_MULTICORE_SHARED is unavailable",
+                     "State one of KICKOS_MULTICORE_AMP")
+
+    def test_smp_properties_selected_by_their_owner(self):
+        # An arch stanza selects the ISA's three and a chip stanza the part's three, each all of
+        # its three or none.
+        owners = {"ARCH_SMP_": "ARCH_", "CHIP_SMP_": "CHIP_"}
+        selected = {}
+        for sym in self.kconf.unique_defined_syms:
+            for target, _cond in sym.selects:
+                for prop, owner in owners.items():
+                    if target.name.startswith(prop):
+                        self.assertTrue(sym.name.startswith(owner) and not sym.name.startswith(prop),
+                                        "%s selects %s" % (sym.name, target.name))
+                        selected.setdefault(sym.name, set()).add(target.name)
+        self.assertIn("CHIP_ESP32", selected)
+        self.assertIn("ARCH_LX6", selected)
+        for name, props in selected.items():
+            prefix = name.split("_")[0] + "_SMP_"
+            every = {s.name for s in self.kconf.unique_defined_syms if s.name.startswith(prefix)}
+            self.assertEqual(props, every, name)
+
+    def test_amp_partition_facts(self):
+        frag = fragment(self.fix)
+        for line in ("set(KICKOS_AMP_SELF_NODE 0)", "set(KICKOS_AMP_PORT_COUNT 0)",
+                     'set(KICKOS_AMP_PORT_NODE_INIT "")', 'set(KICKOS_AMP_PORT_PORT_INIT "")'):
+            self.assertIn(line, frag)
+        self.assertFalse([l for l in frag if "KICKOS_AMP_SELF_CORE" in l or "_FP_" in l])
+        # The shared image seats for node 0, whatever node an entry names.
+        run, out = gen(AMP)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        for line in ("set(KICKOS_AMP_SELF_NODE 0)", "set(KICKOS_AMP_PORT_COUNT 3)",
+                     "set(KICKOS_AMP_PORT_LOCAL 1)", 'set(KICKOS_AMP_PORT_NODE_INIT "0,1,1")',
+                     'set(KICKOS_AMP_PORT_PORT_INIT "2,0,3")'):
+            self.assertIn(line, fragment(out))
+        self.assertFalse(os.path.exists(os.path.join(out, "amp-peer-seed.cmake")))
+        frag = self.accepted(AMP_OWN, "assert:KICKOS_AMP_NODE_ID=1")
+        for line in ("set(KICKOS_AMP_SELF_CORE 1)", "set(KICKOS_AMP_SELF_NODE 1)",
+                     "set(KICKOS_AMP_PORT_COUNT 3)", "set(KICKOS_AMP_PORT_LOCAL 2)",
+                     'set(KICKOS_AMP_PORT_NODE_INIT "0,1,1")', 'set(KICKOS_AMP_PORT_PORT_INIT "2,3,4")'):
+            self.assertIn(line, frag)
+
+    def test_amp_partition_refusals(self):
+        for requests, phrase in (
+                (["assert:KICKOS_AMP_SHARED_SIZE=0"], "KICKOS_AMP_SHARED_SIZE is unstated"),
+                (["assert:KICKOS_AMP_PARTITION_BASE=0x0"], "KICKOS_AMP_PARTITION_BASE is unstated"),
+                (["assert:KICKOS_AMP_TEXT_BASE=0x10000000"], "describe one aperture"),
+                (["assert:KICKOS_AMP_TEXT_SHARE=0x100000"], "describe one aperture"),
+                (["assert:KICKOS_AMP_NODE_ID=2"], "KICKOS_AMP_NODE_ID=2: the partition holds 2 node(s)"),
+                (["assert:KICKOS_AMP_NODE_CORES=0"], "it names 1 core(s) for a partition of 2 node(s)"),
+                (["assert:KICKOS_AMP_NODE_CORES=0,x"], "entry 'x' is not a core index"),
+                (["assert:KICKOS_AMP_NODE_CORES=0,2"], "node 1 is on core 2 and the partition spans 2"),
+                (["assert:KICKOS_AMP_NODE_CORES=0,0"], "two nodes are on core 0"),
+                (["assert:KICKOS_AMP_NODE_CORES=1,0"], "node 0 is on core 1"),
+                (["assert:KICKOS_AMP_PORTS="], "names no crossing"),
+                (["assert:KICKOS_AMP_PORTS=0:2,x"], "entry 'x' is not a node:port pair"),
+                (["assert:KICKOS_AMP_PORTS=0:2,2:3"], "names node 2 and the partition holds 2"),
+                (["assert:KICKOS_AMP_PORTS=0:2,1:1"], "names port 1"),
+                (["assert:KICKOS_AMP_PORTS=0:0,1:3"], "names port 0 for this image's own node"),
+                (["assert:KICKOS_AMP_PORTS=0:2,1:32"], "31 is its last port"),
+                (["assert:KICKOS_AMP_PORTS=0:2,0:02"], "node 0 port 2 is named twice"),
+                (["assert:KICKOS_MAX_ENDPOINTS=3"], "names 3 crossing(s) and the board provisions 3")):
+            with self.subTest(requests=requests):
+                run, _ = gen(AMP_OWN, *requests)
+                self.assertNotEqual(run.returncode, 0, "%s was accepted" % requests)
+                self.assertIn("REFUSED", run.stderr)
+                self.assertIn(phrase, run.stderr)
+        # Port 0 is the echo of a node that runs no kernel, so a peer may serve it.
+        self.accepted(AMP_OWN, "assert:KICKOS_AMP_PORTS=0:2,1:0")
+        self.accepted(AMP_OWN, "assert:KICKOS_AMP_TEXT_BASE=0x10000000", "assert:KICKOS_AMP_TEXT_SHARE=0x100000")
+
+    def test_amp_fingerprint_leaves_the_node_out(self):
+        def fp(*requests):
+            run, out = gen(AMP_OWN, *requests)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            return [l for l in fragment(out) if l.startswith("set(KICKOS_AMP_CONFIG_FP_")]
+        node0 = fp()
+        self.assertEqual(len(node0), 2)
+        self.assertEqual(node0, fp("assert:KICKOS_AMP_NODE_ID=1"))
+        self.assertNotEqual(node0, fp("assert:KICKOS_MAX_THREADS=12"))
+
+    def test_amp_seed_configures_a_peer_alike(self):
+        run, out = gen(AMP_OWN, "assert:KICKOS_AMP_NODE_ID=1", "CONFIG_KICKOS_NEWLIB_NANO=n")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        seed = read(os.path.join(out, "amp-peer-seed.cmake")).splitlines()
+        self.assertEqual(seed[0], "# Written by node 1's configure. Read by tools/amp/build-partition.sh.")
+        for line in ('set(KICKOS_AMP_PORTS "0:2,1:3,1:4" CACHE STRING "" FORCE)',
+                     'set(KICKOS_CONSOLE "chip" CACHE STRING "" FORCE)',
+                     'set(KICKOS_TELEMETRY "off" CACHE STRING "" FORCE)',
+                     'set(KICKOS_AMP_USER_SHARE_UNCACHED ON CACHE BOOL "" FORCE)',
+                     'set(KICKOS_MULTI_INSTANCE OFF CACHE BOOL "" FORCE)'):
+            self.assertIn(line, seed)
+        # Each node names these itself: build-partition.sh the board and the node, the build the
+        # newlib flavour.
+        for name in ("KICKOS_AMP_NODE_ID", "KICKOS_BOARD", "KICKOS_NEWLIB_NANO"):
+            self.assertFalse([l for l in seed if l.startswith("set(%s " % name)], name)
+        # Node 0 configured from the seed, as build-partition.sh configures a peer, resolves alike.
+        offers = []
+        for line in seed[1:]:
+            name, value = re.fullmatch(r'set\((\w+) "?(.*?)"? CACHE \w+ "" FORCE\)', line).groups()
+            offers.append("offer:%s=%s" % (name, value))
+        run, peer = gen(AMP_OWN, "assert:KICKOS_AMP_NODE_ID=0", "CONFIG_KICKOS_NEWLIB_NANO=n", *offers)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        run, node0 = gen(AMP_OWN, "assert:KICKOS_AMP_NODE_ID=0", "CONFIG_KICKOS_NEWLIB_NANO=n")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(read(os.path.join(peer, ".config")), read(os.path.join(node0, ".config")))
+
     def test_flag_both_ways(self):
         self.assertIn("set(KICKOS_TLS ON)", fragment(self.fix))
-        self.assertIn("set(KICKOS_TLS OFF)", self.accepted(FIX, "offer:KICKOS_TLS=OFF"))
+        self.assertEqual(header_defines(self.fix)["KICKOS_TLS"], "#define KICKOS_TLS 1")
+        run, out = gen(FIX, "offer:KICKOS_TLS=OFF")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("set(KICKOS_TLS OFF)", fragment(out))
+        self.assertEqual(header_defines(out)["KICKOS_TLS"], "#define KICKOS_TLS 0")
         self.refused(FIX, "offer:KICKOS_MAX_THREADS=999", "outside the declared range")
 
 

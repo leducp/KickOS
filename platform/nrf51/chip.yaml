@@ -10,6 +10,10 @@ arch: armv6m
 # The Cortex-M0 has no MPU, and no unprivileged mode: every thread runs privileged.
 protection: { unit: none, privilege: false }
 data_cache: false
+family: { dir: common, sources: [common/semihost_console.cc] }
+# The board has a diag LED, and CI runs the same binary under QEMU, where a blink would spin to
+# the harness timeout: arch_shutdown is a semihosting exit carrying the status it reads.
+exits_on_fault: true
 
 interrupts: { count: 32 }
 

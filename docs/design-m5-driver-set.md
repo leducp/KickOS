@@ -54,7 +54,7 @@ is host fd 1 with TX fed back into RX.
 
 Every UART driver on real silicon (`mk64f`, `xmc4800`, `stm32f411`, `rx72m`, `esp32c6`, `esp32`)
 runs as the console service kind instead. They share the `<kickos/driver/uart.h>` register backend and the
-two-thread `irq_loop`/`serve_loop` framework, so THAT much is silicon-judged. What is not judged is
+two-thread `irq_loop`/`console_serve_loop` framework, so THAT much is silicon-judged. What is not judged is
 the port contract itself: back-pressure with a real producer, baud mismatch, and overrun on a
 controller that can actually overrun.
 
@@ -89,7 +89,7 @@ driver include directory, mirroring its four-symbol shape; a per-chip engine; th
 marshals onto a service endpoint; and a service driver. **That is porting work against a designed
 ABI**, not architecture. The first two have since landed against `design-m5-i2c-seam.md`
 (`user/include/kickos/driver/i2c.h` and the RIICa engine `system/driver/rx72m/i2c_riic.cc`,
-target `kickos_i2c_rxriic`); the proxy and the service driver are still owed, and no driver
+the `i2c_rxriic` driver); the proxy and the service driver are still owed, and no driver
 registers the I2C service kind even though the kind is spelled in the service header.
 
 Several chips already driven here have an I2C-capable peripheral beside the block the tree already
@@ -133,7 +133,7 @@ several chips.
 
 Note also that a UART service EXISTING is not the same as a board USING it: only `frdmk64f` and
 `xmc4800-relax` set the service-list selection knob in their Kconfig at all. Every other board defaults to
-`kickos_services_none`, with the repeated comment "no silicon witness yet". That is a
+the empty service list (formerly `kickos_services_none`), with the repeated comment "no silicon witness yet". That is a
 default-selection gap, not a driver gap, and it should not be counted as missing work.
 
 ## 7. The scope question, stated for a decision rather than assumed

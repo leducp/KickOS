@@ -3,10 +3,9 @@
 #
 # QEMU virt (RV64): the rv64imac multilib, soft float.
 #
-# The extensions are spelled out because binutils 2.4x splits what rv64imac used to imply:
-# zmmul is the multiply half of M, zaamo and zalrsc the two halves of A, zca the integer
-# half of C. Naming them selects the same multilib the short form used to, as does zicsr,
-# which the trap and switch paths need for csrr/csrw/sret.
+# The extensions are spelled out because binutils 2.4x splits rv64imac: zmmul is the multiply
+# half of M, zaamo and zalrsc the two halves of A, zca the integer half of C, zicsr the
+# csrr/csrw/sret the trap and switch paths need.
 #
 # medany: startup.S's pre-translation code reaches its own symbols PC-relative at the
 # physical alias the image is loaded at, while every VMA is high.

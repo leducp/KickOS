@@ -2,5 +2,7 @@
 # Copyright (c) 2026 Philippe Leduc
 
 # A round-robin slice that ran out while its thread was preempted, taken on the host fixture.
+# The seating cost is charged in arch_mpu_apply, which a posture without an MPU never calls.
+kickos_add_kseam(kickos_kseam_mpu POSTURE KICKOS_HAVE_MPU=1)
 kickos_add_unit_test(NAME rr_slice SOURCES slice_spent.cc
-  LIBRARIES kickos_kseam)
+  LIBRARIES kickos_kseam_mpu)

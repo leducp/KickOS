@@ -95,9 +95,9 @@ namespace
 // builds its frame through SP_EL1, which EL0 cannot write, so no wild sp reaches a frame and
 // there is no stack-bounds refusal on that backend for this arm to witness.
     // Outside every thread stack, and inside the app's own granted data so the frame is really
-    // WRITTEN rather than faulting a second time. The whole frame has to land inside it: armv7m
-    // may stack an FP frame of 104 bytes and the RISC-V trap prologue pushes 128.
-    alignas(16) volatile unsigned char g_offstack[512];
+    // WRITTEN rather than faulting a second time. The whole frame has to land inside it: lx6's
+    // trap frame is 256 bytes, the widest.
+    alignas(16) volatile unsigned char g_offstack[320];
 #endif
 
 #if KICKOS_FS_MODE == 1
@@ -248,7 +248,7 @@ int main(int, char**)
     }
     kos::print("[fs] spawning the faulter\n");
     kos::thread::Handle t = kos::thread::create(faulter, nullptr, "faulter", 10,
-                                                KOS_POLICY_FIFO, 0, /*privileged=*/false,
+                                                KOS_POLICY_FIFO, 0,
                                                 nullptr, 0, stack, stack_size,
                                                 nullptr, 0, nullptr, 0, 0, nullptr, victim);
     int const rc = t.join(KOS_TIMEOUT_NONE);

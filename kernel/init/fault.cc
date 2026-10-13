@@ -180,9 +180,9 @@ extern "C" bool kickos_fault_kill_thread(void* frame)
     }
     ::kickos::Thread* const c = ::kickos::sched::current();
     // The core's own half of the rule, stated here so it does not rest on every backend's
-    // predicate being exact: nothing to kill before the scheduler runs, and neither idle
-    // nor a privileged thread may be killed.
-    if (c == nullptr or c == ::kickos::sched::idle() or c->privileged)
+    // predicate being exact: nothing to kill before the scheduler runs, and idle may not be
+    // killed.
+    if (c == nullptr or c == ::kickos::sched::idle())
     {
         return false;
     }

@@ -18,11 +18,10 @@ namespace kickos::arm64
     constexpr uintptr_t GICD_ICPENDR = 0x280;
     constexpr uintptr_t GICD_IPRIORITYR = 0x400;
 
-    // The kind, as a value range rather than a separate field. Below 32 an INTID is the calling
-    // core's own: GICv2 banks it in the distributor, GICv3 under affinity routing reaches it in
-    // that core's redistributor, the distributor's first word being RES0 there. At or above 32
-    // an interrupt is global and reaches no core until it is routed. Every arch_irq_* body
-    // branches on this boundary and nothing else does.
+    // Below 32 an INTID is the calling core's own: GICv2 banks it in the distributor, GICv3
+    // under affinity routing reaches it in that core's redistributor (the distributor's first
+    // word is RES0 there). At or above 32 an interrupt is global and reaches no core until
+    // it is routed.
     constexpr int GIC_BANKED_INTIDS = 32;
 }
 

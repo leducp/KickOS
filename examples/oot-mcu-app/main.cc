@@ -10,6 +10,11 @@ static_assert(KICKOS_CAP_CHILD_WIDTH <= KICKOS_MAX_HANDLES,
               "the installed kickos/config/cap_width.h is the one the libraries were built "
               "with");
 
+// sys.h declares the bench call only where the package's interface carries KICKOS_BENCH.
+#if defined(KICKOS_EXPECT_BENCH) && KICKOS_EXPECT_BENCH
+[[maybe_unused]] static auto const g_oot_bench = &kos_bench;
+#endif
+
 // The one include compiling the installed kickos/board_config.h and the chip's headers.
 #include <kickos/config.h>
 #ifdef KICKOS_EXPECT_MAX_THREADS

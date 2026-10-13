@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Self-test of tests/lib/gate.sh: the boot ledger against the ctest TIMEOUT the root CMakeLists
-# hands every test as KOS_CTEST_TIMEOUT_S, and the capture readers the restart witnesses rest on,
-# each against planted captures of four cores:
+# Self-test of tests/lib/gate.sh: the boot ledger against the ctest TIMEOUT
+# tests/cmake/kickos_tests.cmake hands every test as KOS_CTEST_TIMEOUT_S, and the capture readers
+# the restart witnesses rest on, each against planted captures of four cores:
 #   boot_bound          this test is handed the TIMEOUT it is registered with; a uefi-pe boot's
 #                       bound carries the firmware allowance, a kernel boot's is the image's
 #                       alone, each boot is charged on top of the ones before it, a TIMEOUT a

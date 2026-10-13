@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// XMC4800 CCU40 registers: four 16-bit slices chained into one free-running
-// 64-bit hardware counter used as the monotonic time base. Clean-room from the
-// XMC4700/XMC4800 Reference Manual (V1.3, 2016-07, ch.23). The module also needs
-// its SCU clock-gate/reset released and the module prescaler started (see
-// regs/scu.h CCU40_GATE_BIT/CCU40_RESET_BIT + GIDLC_SPRB) before any slice runs.
+// XMC4800 CCU40 registers: four 16-bit slices chained into one free-running 64-bit hardware
+// counter (RM V1.3 ch.23). No slice runs until the SCU clock gate and reset are released
+// (regs/scu.h CCU40_GATE_BIT/CCU40_RESET_BIT) and the prescaler started (GIDLC_SPRB).
 
 #ifndef KICKOS_ARCH_ARM_CHIP_XMC4800_REGS_CCU4_H
 #define KICKOS_ARCH_ARM_CHIP_XMC4800_REGS_CCU4_H

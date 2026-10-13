@@ -16,8 +16,9 @@
 
 namespace
 {
-    // The rows the bench phase table prints, at its width and its count.
+    // As many rows as the bench phase table prints.
     constexpr uint32_t kRows = 42u;
+    constexpr char kRow[] = "    ROW%u %u/%u  min=%u  n=%u\n";
     constexpr uint32_t kGapBudget = 4u;
 
     void arm(uint32_t gap_budget)
@@ -38,7 +39,7 @@ namespace
         for (uint32_t i = 0; i < kRows; i++)
         {
             char want[16];
-            snprintf(want, sizeof(want), "ROW%02u ", static_cast<unsigned>(i));
+            snprintf(want, sizeof(want), "ROW%u ", static_cast<unsigned>(i));
             size_t const hit = wire.find(want, at);
             if (hit == std::string::npos)
             {
@@ -63,16 +64,26 @@ namespace
         {
             if (paced)
             {
-                kickos::kprintf_paced("    ROW%02u %u/%u  min=%u  n=%u\n",
-                                      static_cast<unsigned>(i), 3418u, 3883u, 3238u, 200000u);
+                kickos::kprintf_paced(kRow, static_cast<unsigned>(i), 3418u, 3883u, 3238u, 200000u);
             }
             else
             {
-                kickos::kprintf("    ROW%02u %u/%u  min=%u  n=%u\n", static_cast<unsigned>(i),
-                                3418u, 3883u, 3238u, 200000u);
+                kickos::kprintf(kRow, static_cast<unsigned>(i), 3418u, 3883u, 3238u, 200000u);
             }
         }
         console_tx_flush_sync();
+    }
+
+    size_t burst_bytes()
+    {
+        size_t bytes = 0;
+        for (uint32_t i = 0; i < kRows; i++)
+        {
+            char row[64];
+            bytes += static_cast<size_t>(snprintf(row, sizeof(row), kRow, static_cast<unsigned>(i),
+                                                  3418u, 3883u, 3238u, 200000u));
+        }
+        return bytes;
     }
 }
 
@@ -80,6 +91,8 @@ namespace
 // refused whole.
 TEST(ConsolePace, UnpacedPrinterLosesTheTailOfTheBurst)
 {
+    ASSERT_GT(burst_bytes(), static_cast<size_t>(KICKOS_CONSOLE_TX_SIZE))
+        << "the burst fits the ring, so no row can be lost";
     arm(kGapBudget);
     print_table(false);
     uint32_t first_missing = 0;
@@ -99,8 +112,8 @@ TEST(ConsolePace, PacedPrinterLandsEveryRow)
 }
 
 // A WEDGED CHANNEL MUST NOT HANG THE RUN. Nothing drains, so the paced printer loses the
-// lines a plain one would and returns, which is what keeps a bench bounded on a board that
-// gets itself back through KICKOS_SHUTDOWN_TO_BOOTLOADER.
+// lines a plain one would and returns, which is what keeps a bench bounded on a board whose
+// app hands it back to its bootloader at its end.
 TEST(ConsolePace, PacedPrinterGivesUpOnAChannelThatNeverDrains)
 {
     arm(kGapBudget);

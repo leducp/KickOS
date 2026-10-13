@@ -95,7 +95,7 @@ SECTIONS
         __init_array_end = .;
     } > KTEXT
 
-    /* .fini_array, ASSERTed empty below; nothing walks it. (READONLY) for the reason above. */
+    /* .fini_array, ASSERTed empty below. (READONLY) for the reason above. */
     .kickos_app_fini_array (READONLY) :
         AT(ADDR(.kickos_app_fini_array) - KICKOS_RV64_VA_BASE) ALIGN(8)
     {
@@ -134,8 +134,7 @@ SECTIONS
         /* DWARF EH unwind + landing-pad tables for the full-C++ opt-in. KEEP so --gc-sections
            cannot drop it, contiguous, with the LONG(0) terminator standing in for crtend's
            __FRAME_END__. App-side: an FDE reaches the code it describes with a 32-bit
-           PC-relative field, and the registrar that walks it is libgcc's. Registration is in
-           kickos_root_entry, which runs with this window mapped (user/src/root_entry.cc). */
+           PC-relative field, and the registrar that walks it is libgcc's. */
         *(.gcc_except_table .gcc_except_table.*)
         . = ALIGN(8);
         __eh_frame_start = .;
@@ -182,8 +181,7 @@ SECTIONS
 #if KICKOS_NUM_CORES > 1
     /* The boot handshake (startup.S): the per-hart claim, release and probe words every hart
        reaches untranslated before the boot hart has run the C runtime. LOADED and outside
-       _sbss.._ebss for the reason .mmu_leaves is, and absent at one core so a single-core
-       image carries no section for a handshake it has nobody to make. */
+       _sbss.._ebss for the reason .mmu_leaves is. */
     .smpboot : AT(ADDR(.smpboot) - KICKOS_RV64_VA_BASE) ALIGN(8)
     {
         KEEP(*(.smpboot))
@@ -285,10 +283,10 @@ KICKOS_TLS_FIT_ASSERT()
 ASSERT(__kickos_ram_start <= __kickos_ram_end,
        "KickOS: static data overflows RAM (no room for the user-RAM pool + boot stack)")
 
-/* The root spends ONE level-2 slot on the kernel window, and a level-2 slot spans 1 GiB. */
 ASSERT(KICKOS_RV64_HART_STACK_STRIDE >= 0x2000,
        "KickOS: the per-hart boot stack stride is under 8 KiB; a parked secondary builds an interrupt frame on it")
 
+/* The root spends ONE level-2 slot on the kernel window, and a level-2 slot spans 1 GiB. */
 ASSERT(_estack <= ORIGIN(KTEXT) + 0x40000000,
        "KickOS: the image outgrows the 1 GiB the root's kernel-window level-1 table maps; startup.S owes a second level-2 entry")
 
@@ -329,8 +327,7 @@ ASSERT(ORIGIN(KTEXT) - (ORIGIN(APPDATA) + LENGTH(APPDATA)) > 0x80000000,
 KICKOS_BOOT_ARENA_ASSERT(__kickos_ram_start, __kickos_ram_end)
 
 KICKOS_POOL_ARENA_ASSERT(__kickos_ram_start, __kickos_ram_end)
-ASSERT(__kickos_app_fini_array_end == __kickos_app_fini_array_start,
-       "KickOS: .fini_array is non-empty: a global with a non-trivial destructor? Static destructors are not supported; nothing would ever run it")
+KICKOS_FINI_EMPTY_ASSERT()
 
 /* The gp small-data window must fit __global_pointer$ +/- 0x800 (psABI reach); past that
    reach, gp-relative loads resolve at the wrong addresses. */
@@ -345,11 +342,7 @@ ASSERT(SIZEOF(.kickos_kernel_sdata) == 0,
 ASSERT(_ebss > _sbss,
        "KickOS: kernel .bss empty: closed-set archive selector matched nothing (renamed lib?)")
 
-/* Opt-in link-time heap floor (undefined by default). */
-#ifdef KICKOS_HEAP_MIN
-ASSERT(_kickos_heap_limit - _kickos_heap_start >= KICKOS_HEAP_MIN,
-       "KickOS: heap below KICKOS_HEAP_MIN")
-#endif
+KICKOS_HEAP_MIN_ASSERT()
 
 /* The app windows this script does not carve, stated EMPTY rather than left absent:
    the kernel's references are strong, so an omitted bound is a link error. */

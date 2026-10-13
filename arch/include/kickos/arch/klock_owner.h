@@ -7,9 +7,8 @@
 // that some core has an outstanding ticket, so a release taken on a core holding nothing reads
 // as legal, advances the turn onto a ticket nobody drew, and every later draw spins for good.
 //
-// One word per core, written by that core alone. A single word naming the holder would answer
-// the same question in fewer bytes, but it would be written by two cores exactly when the
-// protocol it checks has already let two cores in, which is the only time it is read.
+// One word per core, written by that core alone: a single word naming the holder would be
+// written by two cores exactly when the protocol has let two in.
 //
 // At KICKOS_DEBUG=0 the two calls below expand to nothing and no cell is allocated, so
 // arch_kernel_unlock stays the leaf tests/static/trap_redzone_roots.txt prices it as.
@@ -21,7 +20,7 @@
 
 #include <stdint.h>
 
-#if KICKOS_KERNEL_CORES > 1 && defined(KICKOS_DEBUG) && KICKOS_DEBUG
+#if KICKOS_KERNEL_CORES > 1 && KICKOS_DEBUG
 
 namespace kickos::klock
 {

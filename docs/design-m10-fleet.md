@@ -191,8 +191,7 @@ What the chip code decides rather than what the part is:
   the board file has no field for;
 - the translating chips' virtual layout (`boot_layout.ld.h` keeps its kernel addresses) and the AMP
   slicing in the chip scripts;
-- `caps.cmake` and `terminate.cmake`, which state what the kernel's tracer and exit port do, not
-  what the part is.
+- the trace clock, which the chip's Kconfig stanza selects, since a Kconfig dependency reads it.
 
 A hand-written symbol that nothing references is dropped rather than described.
 
@@ -338,7 +337,7 @@ move costs there. Three builds of one tree, one plain C `main` that prints a lin
 | image | links | isolates |
 | --- | --- | --- |
 | A | the `kickos` leaf, `main` as root under the default init | today's baseline |
-| B | the `kickos_cxx` leaf, `main` as root | dropping the freestanding leaf: full C++ flags, `libstdc++` and `libsupc++` in the group, the runtime objects |
+| B | the full-C++ leaf (formerly `kickos_cxx`), `main` as root | dropping the freestanding leaf: full C++ flags, `libstdc++` and `libsupc++` in the group, the runtime objects |
 | C | `KickOS::kernel` and `KickOS::system_default` | the init, the table and `main` as a task |
 
 The same three for the largest selftest image of each `-st` preset, C there being a size link
@@ -513,12 +512,12 @@ in M10.6.
 
 | list | becomes |
 | --- | --- |
-| `kickos_services_none` | the default composition |
-| `kickos_services_frdmk64f` (a polled console driver, since removed, and `k64dspi`) | `k64console`'s and `k64dspi`'s compositions |
-| `kickos_services_xmc4800relax` (a polled console driver, since removed, and `xmcssc`), `_xmc4800relax_console` | `consoledemo`'s and `xmcssc`'s |
+| the empty service list (formerly `kickos_services_none`) | the default composition |
+| the K64F service list (formerly `kickos_services_frdmk64f`; a polled console driver, since removed, and `k64dspi`) | `k64console`'s and `k64dspi`'s compositions |
+| the XMC4800 service list (formerly `kickos_services_xmc4800relax`; a polled console driver, since removed, and `xmcssc`) and its console-only list | `consoledemo`'s and `xmcssc`'s |
 | each `_uartirq` list (`k64uartirq`, `xmcuartirq`, `c6uart`, `lx6uart`, `rxsci`, `f4uartirq`) | the selftest's composition naming that console driver on its board |
 | the `_usbcdc` lists (`rpusb`, `rt1062usb`) | `usbcdcwit`'s compositions and the selftest's composition naming that console driver on its board |
-| `kickos_services_sim` (`simcon`), `kickos_services_simuart` | the compositions of `drvdeath`, `pubpanic`, `simconabi`, `faultsurvive_published`, the published selftest, and `uartloop` |
+| the sim service list (formerly `kickos_services_sim`, with `simcon`) and its UART list (formerly `kickos_services_simuart`) | the compositions of `drvdeath`, `pubpanic`, `simconabi`, `faultsurvive_published`, the published selftest, and `uartloop` |
 
 The catalogue gains every driver a list carried that it lacks: `k64dspi`, `simcon`, `simuart`,
 `rpusb` and `rt1062usb`, each declared on `kickos_add_driver` with its roles, threads and `START`. The local SPI engines and `i2c_rxriic` stay libraries a task links.
@@ -527,7 +526,7 @@ The catalogue gains every driver a list carried that it lacks: `k64dspi`, `simco
 
 The composition, driver and console witnesses and the system-link probes already compose. Their
 x86_64 branch becomes `add_executable` with every other image (section 7).
-`tests/lib/package_names` loses its `kickos_cxx` and mixed probes, and `tests/composition`
+`tests/lib/package_names` loses its full-C++ and mixed probes, and `tests/composition`
 compiles against `KickOS::kernel`.
 
 ## 5. Packaged drivers take their lines from the composition
@@ -536,7 +535,7 @@ The instance becomes the whole of what `START` is given. `struct kos_driver_inst
 task's name and priority, each window role's base and size, each line as its number and its
 index within its device, the core mask, whether the table names it the console driver, the badged
 copy of this start, the endpoint, the ring block and the task handle the bring-up writes back.
-`kos_service_cfg` and `kos_svc_kind` go with the service lists that were their last other reader
+The service config (formerly `kos_service_cfg`) and the service-kind enum (formerly `kos_svc_kind`) go with the service lists that were their last other reader
 (`TODO.md`, "WHAT M10 DELETES").
 
 A driver's `Descriptor` keeps each line's role and trigger and loses its number. `bring_up`
@@ -563,7 +562,7 @@ and `bring_up` given an instance claiming the instance's lines, so every compose
 takes its lines from the composition while the service lists still run. The deletions row then
 removes, with the service lists, the descriptor's numbers (`Descriptor::Line::number`), the line
 argument of `KICKOS_UART_CONSOLE_SERVICE`, `bring_up` given no instance with the posture bit a
-driver thread reads to choose between trapping and panicking, and `kos_service_cfg`, `START`
+driver thread reads to choose between trapping and panicking, and the service config, `START`
 taking the instance alone. Every failing driver thread then traps.
 
 ## 6. The deletions
@@ -573,15 +572,15 @@ x86_64's move to `add_executable`.
 
 | mechanism | replaced by | gates, tests and docs that change |
 | --- | --- | --- |
-| the service lists: every `system/init/<board>/service_list*.cc`, `services_none.cc`, `service_list_run.cc`, `kos_service_list`, `kos_service_bringup`, `kickos_board_services`, `kickos_service_list_run`, the service-list selection knob and the two board defaults | compositions (4.5) | `check_service_lists.sh` and `service_lists.txt` deleted; `kconfig_gen`'s string arm moves to another string knob; the `check_sim_*.sh` gates configure compositions instead of `-D` lists; `boards.md`, `architecture.md`, `invariants.md`, `porting.md` |
-| `kos_service_cfg`, `kos_svc_kind`, the descriptor's line numbers, the line argument of `KICKOS_UART_CONSOLE_SERVICE`, `bring_up` given no instance and the posture bit | `START` taking the instance (section 5) | `tests/unit/drvbringup/bringup_unwind.cc`'s number-mismatch and service-list cases; the size assert on the cfg |
-| `kickos_add_board_provider` and `cmake/cap_table.cmake`'s summing, with `kickos_declare_app_capabilities` and `kickos_declare_app_endpoints` | root, which is the init, gets a table `KICKOS_CAP_TABLE_SUPPLY` wide, the supply admission already counts the init against; the init's endpoints are admission's `supply.budget` | the selftest gate's partials on the summed width; `architecture.md` |
+| the service lists: every `system/init/<board>/service_list*.cc`, `services_none.cc`, `service_list_run.cc`, the service-list array and bring-up entry types (formerly `kos_service_list`, `kos_service_bringup`), the board-services symbol (formerly `kickos_board_services`), the list runner (formerly `kickos_service_list_run`), the service-list selection knob and the two board defaults | compositions (4.5) | `check_service_lists.sh` and `service_lists.txt` deleted; `kconfig_gen`'s string arm moves to another string knob; the `check_sim_*.sh` gates configure compositions instead of `-D` lists; `boards.md`, `architecture.md`, `invariants.md`, `porting.md` |
+| the service config, the service-kind enum, the descriptor's line numbers, the line argument of `KICKOS_UART_CONSOLE_SERVICE`, `bring_up` given no instance and the posture bit | `START` taking the instance (section 5) | `tests/unit/drvbringup/bringup_unwind.cc`'s number-mismatch and service-list cases; the size assert on the cfg |
+| the board-provider helper (formerly `kickos_add_board_provider`) and `cmake/cap_table.cmake`'s summing, with the app-capability and app-endpoint declaration helpers (formerly `kickos_declare_app_capabilities`, `kickos_declare_app_endpoints`) | root, which is the init, gets a table `KICKOS_CAP_TABLE_SUPPLY` wide, the supply admission already counts the init against; the init's endpoints are admission's `supply.budget` | the selftest gate's partials on the summed width; `architecture.md` |
 | the pin maps, the pin-map selection knob, `pinmap.h`, `pinmux_run.cc` | a task muxes its own pins under `pinmux`; the board file states the wiring | `check_provider_alias.sh` and its fixture; `boards.md` |
-| the default init: `kickos_default_init`, the init-provider cache variable, the app authority macro, its default definition's source file | the composed init, authority per task | the `init_flush` host test is deleted, the walk's host tests holding the stdout drain at the ending; `check_seam_defaults.sh` loses those archives |
-| `kickos_root_lower` | `kickos_root_entry` runs the constructors and calls the init, which lowers itself | the link group and `kernel/init/kmain.cc`'s reference |
-| the old leaves `kickos` and `kickos_cxx`, `KickOS::kickos`, `KickOS::kickos_cxx`, and the leaf-mixing refusal | `KickOS::kernel` alone | `check_oot_export_mcu.sh`'s probes; `tests/lib/package_names` |
+| the default init: its entry symbol (formerly `kickos_default_init`), the init-provider cache variable, the app authority macro, its default definition's source file | the composed init, authority per task | the `init_flush` host test is deleted, the walk's host tests holding the stdout drain at the ending; `check_seam_defaults.sh` loses those archives |
+| the root lowering step (formerly `kickos_root_lower`) | `kickos_root_entry` runs the constructors and calls the init, which lowers itself | the link group and `kernel/init/kmain.cc`'s reference |
+| the two old leaves, freestanding and full C++, their `KickOS::` names, and the leaf-mixing refusal | `KickOS::kernel` alone | `check_oot_export_mcu.sh`'s probes; `tests/lib/package_names` |
 | `KICKOS_USER_HEAP_SIZE` the knob: Kconfig, three board overrides, the defconfigs, the leaves' `--defsym`, x86's knob path | every composition's `heap` (maintainer, 2026-10-03); the link symbol of that name stays, defined by the system target alone | `cmake/kernel_leaf.ld`'s fallback; `check_heap_symbol.cmake`; `porting.md`, `boards.md` |
-| `kos_wait_last` and its system call, root-only | `ends`, and the task end that stops a task's members | `sched_exit`'s arm; `abi.h`'s row |
+| the wait-for-last call (formerly `kos_wait_last`) and its system call, root-only | `ends`, and the task end that stops a task's members | `sched_exit`'s arm; `abi.h`'s row |
 | the service-list sweep tool | the fleet sweep over every preset | `boards.md` |
 | the bench's `SERVICE_LIST`, and `bench-fleet.sh`'s list discovery | the bench names an image, and the fleet runs each selftest composition of the board as its own image | `tools/bench/bench.sh`, `tools/bench/bench-fleet.sh`; the USB console's clock and capture route read from the image (2.1) |
 | the hand-written chip headers, `mpu.cmake`, `aspace.cmake`, the reserved arrays and their fixed bound | section 1 | the configure-time pair checks; `porting.md`'s chip-header steps |
@@ -589,14 +588,14 @@ x86_64's move to `add_executable`.
 
 Order: the service lists, the service ABI and the drivers' numbers, the bench's lists and the
 sweep tool go together, then the default init with the pin maps and the app authority macro, then
-`kickos_root_lower`, then the cap-table summing, then the heap knob, then the root-only wait,
+the root lowering, then the cap-table summing, then the heap knob, then the root-only wait,
 then the old leaves last, since every earlier deletion leaves them nothing to carry. The chip
 headers and the stub go as section 1 and section 2 land.
 
 ## 7. x86_64 through `add_executable`
 
-This lands right after the board files and before any app moves onto a composition, so the old
-leaves `kickos` and `kickos_cxx` carry the same x86_64 usage requirements as `KickOS::kernel` until
+This lands right after the board files and before any app moves onto a composition, so the two old
+leaves carry the same x86_64 usage requirements as `KickOS::kernel` until
 they are deleted, and no app's CMakeLists is rewritten twice.
 
 The installed `cmake/toolchain-x86_64-uefi.cmake` sets the executable link rule of C and C++ to a
@@ -641,7 +640,7 @@ witnessed. It writes the map beside the image as `<TARGET>.map`, the path the ga
   the same tool's `--one-pass`: they are bring-up images, not apps.
 - **The configure's own compiler checks** stay static libraries, as
   `kickos_toolchain_bare_metal_rules` already sets them, so they never reach the wrapper.
-- **What goes**: `kickos_add_app_target`, the OBJECT branch, `kickos_x86_64_link_image` and its
+- **What goes**: the app-target helper (formerly `kickos_add_app_target`), the OBJECT branch, the x86_64 link-image function (formerly `kickos_x86_64_link_image`) and its
   deferral to the end of the configure, the system targets' `KICKOS_SYSTEM_*` properties that
   exist only for it, and the x86 groups `KickOSConfig.cmake` bakes. `kickos_emit_image` keeps
   only its mixed-leaf refusal on x86_64. An app calling a driver class names it through
@@ -720,6 +719,7 @@ partition build:
 | `partition.device` | a device, or a gate around it, two nodes grant | two node compositions granting `/dev/rtc` on `qemu-arm64`, in the tool's tests |
 | `partition.port` | an `/amp` port the manifest does not list or lists for two nodes, port 1, a `serves` on a node not its server, a port two tasks of one node serve, a task that serves and uses one port, a packaged driver serving one | a mutated node composition each |
 | `partition.unserved` | an `/amp` port a node uses that no task of its server serves | the server's `serves` removed |
+| `partition.bootloader` | `bootloader` held on a node other than the partition's reset owner (`KICKOS_AMP_RESET_OWNER`, node 0 unless stated), whose kernel refuses every reset | the grant on node 1, then on node 0 with the manifest naming node 1 the owner, beside both accepted grants |
 | `partition.region` | a partition region two nodes declare with different sizes, one another node declares without `partition: true`, one whose `cache` is not the share's one type (so two nodes never differ in it), the regions past the user share, or one where the kernel build states no AMP shared window | a size changed on one node; `partition: true` dropped on node 1, on node 0, and on two nodes of three, and dropped on both nodes admitted; a `cache` changed on one; a size past the share on both; a node composition emitted alone against a build stating no window |
 | `partition.lone` | on an AMP build, a crossing or a partition region in a composition admitted apart from its partition, whose system target no other node's admission sees | a node composition emitted alone against node 0's manifest, once holding its region and once its crossing |
 | `partition.cached-incoherent` | a `cached` partition region shared by nodes that are not coherent, unless every node that maps it accepts `cached_incoherent` | the i.MX 8M Plus's clusters as a two-node fixture, refused, admitted with the acceptance on both, refused with it on one |

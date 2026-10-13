@@ -493,7 +493,7 @@ svc_trampoline:
        the LIVE app small-data window and U-mode can write gp, so the next thread's
        gp-relative loads would otherwise resolve at addresses the last one chose. */
     la      gp, __global_pointer$
-#if defined(KICKOS_TLS) && KICKOS_TLS
+#if KICKOS_TLS
     /* tp = the running thread's TLS block base, from its context and NEVER from the incoming
        tp, which U-mode can write. */
     la      tp, g_arch_current

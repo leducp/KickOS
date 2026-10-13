@@ -181,7 +181,7 @@ system with its code.
 | sim | the host process exits with the status |
 | QEMU `virt`, A53 | a semihosting exit: QEMU exits with the status |
 | QEMU q35 | COM1 prints `KICKOS-EXIT status <n>`, then the debug-exit port ends QEMU |
-| silicon | interrupts masked and the core halted, or with `KICKOS_SHUTDOWN_TO_BOOTLOADER` a reboot into the chip's bootloader |
+| silicon | interrupts masked and the core halted |
 
 ### 1.6 The blocks and their failures
 
@@ -290,8 +290,9 @@ system, a driver's trap included, and nothing falls back to `exit`: the manifest
 (`restart.no-isolation`). That replaces the
 `kos_panic` on a failed open in `system/driver/xmc4800/xmcssc/xmcssc.cc`,
 `system/driver/mk64f/k64dspi/k64dspi.cc` and the IRQ thread of
-`user/include/kickos/sys/uart_service.h`, and the `exit(0)` that ends a UART driver's IRQ thread
-and its console receiver (`user/src/uart_service.cc`) once a wait or a receive fails; the
+`user/include/kickos/sys/uart_service.h`, and the `exit(0)` that ended a UART or USB CDC driver's
+IRQ thread (`uart_service.h`, `usb_cdc_service.h`, the two USB drivers' bring-up) and its console
+receiver (`uart_service.cc`, `usb_cdc_service.cc`) once a bring-up, a wait or a receive failed; the
 receiver is not the entry thread, so its exit would end it alone and leave the task alive. Every
 failing driver thread traps (`kickos::driver::trap`); the service lists that kept a second
 posture until M10.5 are deleted.
@@ -709,7 +710,7 @@ CMake side: `kickos_add_driver` and its catalogue, `cmake/driver_geometry.cmake`
 `tests/lib/gate.sh`.
 
 **Left, and since done by M10.5.** the service-list selection knob, the pin-map selection knob, the init-provider cache variable,
-the app authority macro and the default init behind the old `kickos` and `kickos_cxx` leaves;
+the app authority macro and the default init behind the old freestanding and full-C++ leaves (formerly `kickos` and `kickos_cxx`);
 `KICKOS_USER_HEAP_SIZE` sizing those leaves' heap; the service lists' types; the line numbers in
 driver descriptors; chip headers generated from chip files; the partition build; x86 linking
 through `add_executable`; the out-of-tree examples on `KickOS::system_default`.

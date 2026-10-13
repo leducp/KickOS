@@ -5,26 +5,24 @@
 // SiFive test finisher at 0x0010_0000. Run with:
 // qemu-system-riscv64 -M virt -bios none -nographic -kernel <elf>.
 //
-// THE MMIO ADDRESSES BELOW ARE VIRTUAL, and they are the kernel's own alias of a physical
-// register rather than its identity: KICKOS_RV64_VA_BASE plus the physical address, the same
-// delta the kernel window uses (startup.S). Every leaf that names them is U-clear, so an
-// access below is reachable from supervisor mode only.
+// THE MMIO ADDRESSES BELOW ARE VIRTUAL: KICKOS_RV64_VA_BASE plus the physical address, the
+// same delta the kernel window uses (startup.S). Every leaf that names them is U-clear.
 //
-// THE TIMEBASE IS Sstc AND THAT IS A CHIP FACT, NOT AN ARCH ONE. This core carries the
-// extension, so supervisor code owns its own comparator: arch_timer_arm writes stimecmp
-// directly and no machine-mode shim stays resident. startup.S sets menvcfg.STCE and
-// mcounteren.TM in machine mode, without which both CSR accesses below trap.
+// THE TIMEBASE IS Sstc, A CHIP FACT: supervisor code owns its comparator and arch_timer_arm
+// writes stimecmp directly. startup.S sets menvcfg.STCE and mcounteren.TM in machine mode,
+// without which both CSR accesses below trap.
 //
-// A PART WITHOUT Sstc SUPPLIES ITS OWN PATH FROM HERE: the C906 reaches firmware by
-// ECALL-from-S, and startup.S leaves medeleg bit 9 UNDELEGATED, so that ecall goes to
-// machine mode where firmware wants it instead of into stvec. The trap entry spends no
-// cause on it.
-//
-// Virtual board, no pads; arch_pinmux_set is left to the declining ENOSYS fallback.
+// startup.S leaves medeleg bit 9 undelegated, so a part without Sstc can reach firmware by
+// ECALL-from-S.
 
 #include <kickos/arch/arch.h>
+#include <arch_reboot_tail.h>
+#include <kickos/diag.h>
+#include <kickos/arch/console_poll.h>
 #include "crt_tail.h"
 #include <kickos/console_tx.h>
+#include <kickos/io/mmio.h>
+#include <kickos/sys/abi.h>
 #include <kickos/arch/clk_q32.h> // KICKOS_NS_PER_SEC (canonical 1e9 ns/sec)
 #include <kickos/arch/doorbell_protocol.h>
 #include <kickos/arch/rv64_doorbell.h>
@@ -35,49 +33,38 @@
 
 extern "C"
 {
-    // arch/riscv/rv64imac: stvec, the trap stack and the supervisor-mode confirmation.
     void kickos_rv64_init(void);
 
-    // startup.S: the one root, already in satp at the configured paging mode.
     extern uint64_t kickos_rv64_root[];
 
-    // startup.S: the transient window's level-0 table, whose leaves the map editor writes.
     extern uint64_t kickos_rv64_window_l0[];
 
-    // arch/riscv/rv64imac/aspace_rv64imac.cc: the boot root, the window, the kernel window's
-    // output range and the physical extent this platform implements, handed over before the
-    // first space exists.
     void kickos_rv64_aspace_boot(uint64_t* boot_root, uint64_t* window_leaves,
                                  uintptr_t window_va, uintptr_t window_delta,
                                  arch_phys_addr_t pa_lo, arch_phys_addr_t pa_hi,
                                  unsigned phys_bits);
 
-    // Linker-script symbols (virt_rv64.ld).
     extern uintptr_t _sidata, _sdata, _edata, _sbss, _ebss;
 
-    // The app's zero range (virt_rv64.ld), in the app's own VIRTUAL addresses. Reset_Handler
-    // runs before any space exists, so nothing maps that half yet and these are reached
-    // through the kernel's own alias of the same frames instead.
+    // The app's zero range, in the app's own VIRTUAL addresses: no space maps that half yet, so
+    // Reset_Handler reaches it through the kernel's alias of the same frames.
     extern uintptr_t __kickos_appbss_start[], __kickos_appbss_end[];
 }
 
 namespace
 {
     // LINK-TIME WORDS: kernel text must not materialise an app-half address, and a missed one
-    // links SILENTLY rather than failing, medlow's absolute reach covering the app's base
-    // (tests/static/check_riscv_kernel_apphalf.sh). VOLATILE is what keeps each a word rather
-    // than a value the optimiser folds back into the reference it came from.
+    // links SILENTLY, medlow's absolute reach covering the app's base
+    // (tests/static/check_riscv_kernel_apphalf.sh). VOLATILE keeps each a word the optimiser
+    // cannot fold back into the reference it came from.
     uintptr_t* const volatile g_appbss_lo = __kickos_appbss_start;
     uintptr_t* const volatile g_appbss_hi = __kickos_appbss_end;
 
-    inline volatile uint8_t* r8p(uintptr_t a) { return reinterpret_cast<volatile uint8_t*>(a); }
-    inline volatile uint32_t* r32p(uintptr_t a) { return reinterpret_cast<volatile uint32_t*>(a); }
-
     // EVERY DEVICE IS NAMED AT THE KERNEL'S OWN ALIAS OF ITS PHYSICAL ADDRESS, one uniform
-    // delta with the kernel window beside it (startup.S maps physical 0 there). Identity would
-    // put the device leaf in a level-2 slot of the LOW half, which every space copies from the
-    // boot root, and that would refuse a per-space mapping anywhere in the first gigabyte.
-    // The physical values below are what a grant names.
+    // delta with the kernel window beside it (startup.S). Identity would put the device leaf in
+    // a level-2 slot of the LOW half, which every space copies from the boot root, and refuse a
+    // per-space mapping anywhere in the first gigabyte. The physical values are what a grant
+    // names.
     constexpr uintptr_t DEV_VA = KICKOS_RV64_VA_BASE;
 
     // QEMU `virt` NS16550A. Byte registers: THR at +0, LSR at +5 with bit 5 = holding
@@ -90,18 +77,17 @@ namespace
     constexpr uint8_t UART_LSR_TEMT = 1u << 6;
     constexpr uint32_t UART_POLL_BOUND = KICKOS_RV64_UART_POLL_BOUND;
 
-    int ns16550_tx_slot_free(void) { return (*r8p(UART_LSR) & UART_LSR_THRE) != 0; }
-    void ns16550_tx_push(uint8_t b) { *r8p(UART_THR) = b; }
+    int ns16550_tx_slot_free(void) { return (r8(UART_LSR) & UART_LSR_THRE) != 0; }
+    void ns16550_tx_push(uint8_t b) { r8(UART_THR) = b; }
     void ns16550_tx_irq_enable(void) {}
     void ns16550_tx_irq_disable(void) {}
 
-    char console_tx_buf[KICKOS_CONSOLE_TX_SIZE];
     console_tx_backend const ns16550_console_backend = {
-        ns16550_tx_slot_free, ns16550_tx_push, ns16550_tx_irq_enable, ns16550_tx_irq_disable};
+        ns16550_tx_slot_free, ns16550_tx_push, ns16550_tx_irq_enable, ns16550_tx_irq_disable,
+        &kickos_console_tx_storage};
 
-    // QEMU `virt` CLINT: the machine timer and the per-hart software interrupt. The timebase
-    // here is the time/stimecmp CSR pair; the msip words are the cross-hart doorbell, and
-    // boot_layout.ld.h is where the address lives because startup.S needs it too.
+    // QEMU `virt` CLINT: the per-hart msip words are the cross-hart doorbell. The address is in
+    // boot_layout.ld.h because startup.S needs it too.
     constexpr uintptr_t CLINT_PA = KICKOS_RV64_CLINT_PA;
 
     // The `virt` timebase, which both mtime and the time CSR are driven from.
@@ -115,40 +101,39 @@ namespace
     constexpr uint64_t STIMECMP_NEVER = ~static_cast<uint64_t>(0);
 
 #if KICKOS_NUM_CORES > 1
-    // Bring-up bound, sized far over rather than tuned: under emulation without icount the
-    // guest clock tracks HOST time, so a contended host spends this budget while the guest
-    // barely executes.
+    // Sized far over rather than tuned: under emulation without icount the guest clock tracks
+    // HOST time, so a contended host spends this budget while the guest barely executes.
     constexpr uint64_t RV64_BRINGUP_WAIT_NS = 5ull * 1000ull * 1000ull * 1000ull;
 
-    char const NO_ARRIVAL[] = "KickOS: hart never reached the supervisor park: hart ";
-    char const SMP_HEAD[] = "# smp: ";
-    char const SMP_TAIL[] = " core(s) online\n";
-    char const SMP_NL[] = "\n";
-    static_assert(KICKOS_NUM_CORES <= 9, "the core count is printed as one decimal digit");
+    char const NO_ARRIVAL[] = "KickOS: hart never reached the supervisor park: hart %u\n";
 #endif
 
-    // QEMU `virt` SiFive test finisher: the only way this machine stops itself with a
-    // status a harness can read. Named in boot_layout.ld.h, the pre-translation prologue
-    // refusing an unimplemented paging mode through the same register.
+    // QEMU `virt` SiFive test finisher: the only way this machine stops itself with a status a
+    // harness can read.
     constexpr uintptr_t TEST_FINISHER = DEV_VA + KICKOS_RV64_TEST_FINISHER_PA;
     constexpr uint32_t FINISHER_PASS = KICKOS_RV64_FINISHER_PASS;
     constexpr uint32_t FINISHER_FAIL = KICKOS_RV64_FINISHER_FAIL;
+    constexpr uint32_t FINISHER_RESET = 0x7777;
+}
+
+namespace kickos
+{
+    void kprintf(char const* fmt, ...);
 }
 
 extern "C"
 {
 
 #if KICKOS_NUM_CORES > 1
-// startup.S's .smpboot carve: one doubleword per hart, and nothing else writes them.
-// volatile and not Atomic because the word is 64-bit, where a relaxed atomic load is a
-// __atomic_load_8 libcall a freestanding link cannot resolve (docs/reference/style.md).
+// startup.S's .smpboot carve: one doubleword per hart. volatile, not Atomic: Atomic refuses a
+// type wider than 4 bytes.
 extern volatile uint64_t kickos_rv64_hart_release[KICKOS_NUM_CORES];
 
 extern "C" void kfault_terminate(void) __attribute__((noreturn));
+extern "C" void kpanic_enter(void);
 
-// Lets every parked hart out of _start's release loop and waits, bounded, for each to reach the
-// supervisor park. THE RELEASE WORD IS THE WHOLE PROTOCOL: startup.S left every secondary
-// spinning on it, so nothing before this point runs on more than one hart.
+// Releases every parked hart and waits, bounded, for each to reach the supervisor park.
+// Nothing before this point runs on more than one hart.
 void release_secondaries(void)
 {
     // Everything this hart wrote for a secondary publishes before the word that frees it.
@@ -170,19 +155,14 @@ void release_secondaries(void)
         {
             if (arch_clock_now() > deadline)
             {
-                arch_console_write(NO_ARRIVAL, sizeof(NO_ARRIVAL) - 1);
-                char const digit = static_cast<char>('0' + index);
-                arch_console_write(&digit, 1);
-                arch_console_write(SMP_NL, sizeof(SMP_NL) - 1);
+                kpanic_enter();
+                kickos::kprintf(NO_ARRIVAL, index);
                 kfault_terminate();
             }
         }
     }
 
-    arch_console_write(SMP_HEAD, sizeof(SMP_HEAD) - 1);
-    char const count = static_cast<char>('0' + KICKOS_NUM_CORES);
-    arch_console_write(&count, 1);
-    arch_console_write(SMP_TAIL, sizeof(SMP_TAIL) - 1);
+    kickos::kprintf("# smp: %x core(s) online\n", static_cast<unsigned>(KICKOS_NUM_CORES));
 }
 #endif
 
@@ -206,13 +186,13 @@ void arch_init(void)
     // here runs a kickos_rv64_init of its own against tables this hart has already installed.
     release_secondaries();
 #if KICKOS_KERNEL_CORES > 1
-    kickos_doorbell_selfcheck();
+    kickos_doorbell_boot_check();
 #endif
 #endif
 }
 
 // A pure read, as the seam requires. The counter is 64-bit at this XLEN, so it comes back in
-// one csrr with no high-half re-read, and ticks*100 needs 58 years to overflow.
+// one csrr with no high-half re-read, and ticks*100 needs 584 years to overflow.
 uint64_t arch_clock_now(void)
 {
     uint64_t t = 0;
@@ -220,17 +200,16 @@ uint64_t arch_clock_now(void)
     return t * NS_PER_TICK;
 }
 
-// Idempotent, so no armed-deadline dedup is owed. Dividing rather than multiplying is what
-// keeps a UINT64_MAX deadline from overflowing. A deadline already past leaves the compare
-// met, which asserts STIP now.
+// Dividing rather than multiplying keeps a UINT64_MAX deadline from overflowing. A deadline
+// already past leaves the compare met, which asserts STIP now.
 void arch_timer_arm(uint64_t deadline_ns)
 {
     uint64_t const ticks = deadline_ns / NS_PER_TICK;
     __asm volatile("csrw stimecmp, %0" ::"r"(ticks) : "memory");
 }
 
-// Disarm has to mean no callback fires. STIP follows the comparator with no latch of its own,
-// so parking it deasserts the pending bit and no sip write is owed.
+// STIP follows the comparator with no latch of its own, so parking it deasserts the pending
+// bit and no sip write is owed.
 void arch_timer_disarm(void)
 {
     __asm volatile("csrw stimecmp, %0" ::"r"(STIMECMP_NEVER) : "memory");
@@ -241,25 +220,22 @@ void arch_timer_disarm(void)
 // mideleg cannot delegate. The machine-mode trampoline in startup.S clears the word and
 // re-raises it as mip.SSIP.
 //
-// SUPERVISOR MODE MAY DO THIS WRITE WITH NO MACHINE-MODE LEG (the mideleg and PMP/CLINT
-// measurements this depends on are on kickos_rv64_doorbell_send in
-// arch/riscv/rv64imac/include/kickos/arch/rv64_doorbell.h).
+// SUPERVISOR MODE MAY DO THIS WRITE WITH NO MACHINE-MODE LEG (measurements on
+// kickos_rv64_doorbell_send in arch/riscv/rv64imac/include/kickos/arch/rv64_doorbell.h).
 //
 // THE DENSE CORE INDEX IS THE HART INDEX HERE: startup.S seats each hart's row from its own
-// mhartid, so msip[index] is that core's word. A part whose ids are not dense would owe a
-// published map instead.
+// mhartid, so msip[index] is that core's word.
 void kickos_rv64_doorbell_send(uint32_t cores)
 {
     if (cores == 0)
     {
         return;
     }
-    // THE SUCCESSOR IS A DEVICE STORE, SO THE SUCCESSOR SET MUST NAME THE I/O DOMAIN. RISC-V's
-    // FENCE carries separate predecessor and successor bits for memory (R, W) and for device
-    // (I, O) accesses, and the CLINT sits in an I/O PMA: a successor set of `w` names memory
-    // writes only and so orders nothing against the msip store below. Predecessor `rw` is this
-    // hart's own memory work, the tables and the request cell it published; successor `ow`
-    // names the device write that raises the doorbell, and the memory writes that follow it.
+    // THE SUCCESSOR IS A DEVICE STORE, SO THE SUCCESSOR SET MUST NAME THE I/O DOMAIN: the CLINT
+    // sits in an I/O PMA, and a successor set of `w` names memory writes only and orders
+    // nothing against the msip store. Predecessor `rw` is this hart's own memory work;
+    // successor `ow` names the device write that raises the doorbell and the memory writes
+    // after it.
     __asm volatile("fence rw, ow" ::: "memory");
     for (uint32_t index = 0; index < KICKOS_NUM_CORES; index++)
     {
@@ -271,50 +247,25 @@ void kickos_rv64_doorbell_send(uint32_t cores)
 }
 #endif
 
-int arch_console_write(char const* buf, size_t n)
-{
-    return console_tx_insert_line(buf, n, KICKOS_CONSOLE_CRLF);
-}
-
-// The UART comes out of QEMU's reset already usable at the machine's default baud, so the
-// polled path needs no bring-up. Bounded because this body is the panic path's writer, where
-// a wedged UART must cost a dropped tail.
 bool arch_console_write_sync(char const* buf, size_t n)
 {
-    for (size_t i = 0; i < n; i++)
-    {
-        uint32_t spin = 0;
-        while ((*r8p(UART_LSR) & UART_LSR_THRE) == 0 and spin < UART_POLL_BOUND)
-        {
-            spin++;
-        }
-        if (spin == UART_POLL_BOUND)
-        {
-            return false;
-        }
-        *r8p(UART_THR) = static_cast<uint8_t>(buf[i]);
-    }
-    return true;
+    return kickos::console_poll::write<ns16550_tx_slot_free, ns16550_tx_push>(buf, n);
 }
 
-console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)
+console_tx_backend const* arch_console_tx_backend(int* irq_line)
 {
-    *storage = console_tx_buf;
-    *size = KICKOS_CONSOLE_TX_SIZE;
     *irq_line = -1; // no TX line is routed through the PLIC; the producer drains
     return &ns16550_console_backend;
 }
 
 // THRE says the holding register can take a byte; TEMT says the FIFO and the shift register
-// are both idle, which is what arch_shutdown and a clock retune actually ask. UNWITNESSABLE
-// HERE, and kept anyway: QEMU's NS16550A hands each byte to its chardev on the register write
-// and reports TEMT set with it, so a truncation cannot be produced. Taking the fallback
-// instead would ASSERT that this console cannot outrun a shutdown, which the 16-byte TX FIFO
-// and the shift register make false on the part.
+// are both idle, which is what arch_shutdown and a clock retune ask. UNWITNESSABLE HERE: QEMU's
+// NS16550A hands each byte to its chardev on the register write and reports TEMT set with it.
+// The wait stays because the part's 16-byte TX FIFO and shift register can outrun a shutdown.
 void arch_console_flush_sync(void)
 {
     uint32_t spin = 0;
-    while ((*r8p(UART_LSR) & UART_LSR_TEMT) == 0 and spin < UART_POLL_BOUND)
+    while ((r8(UART_LSR) & UART_LSR_TEMT) == 0 and spin < UART_POLL_BOUND)
     {
         spin++;
     }
@@ -327,13 +278,25 @@ void arch_shutdown(int status)
     {
         word = FINISHER_FAIL | (static_cast<uint32_t>(status) << 16);
     }
-    *r32p(TEST_FINISHER) = word;
-    // If the finisher is absent, mask interrupts and park.
+    r32(TEST_FINISHER) = word;
     __asm volatile("csrci sstatus, 0x2" ::: "memory");
     while (true)
     {
         __asm volatile("wfi");
     }
+}
+
+// The finisher's reset word restarts the machine: no SBI answers under `-bios none`.
+int arch_reboot(uint32_t outcome)
+{
+    if (outcome != KOS_SHUTDOWN_REBOOT)
+    {
+        return -KOS_ENOSYS;
+    }
+    __asm volatile("csrci sstatus, 0x2" ::: "memory");
+    r32(TEST_FINISHER) = FINISHER_RESET;
+    kickos::arch::reset_settle();
+    kickos::arch::reboot_failed(kickos::diag::kResetNotTaken);
 }
 
 void Reset_Handler(void)

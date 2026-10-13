@@ -4,9 +4,8 @@
 // Lone-TU fallback (arch/CMakeLists.txt states the rule): exactly one symbol, so a
 // backend definition keeps this archive member unextracted.
 //
-// No chip fixed regions. The i.MX RT1062 (anti-speculation wrap) defines its own.
-// Added to the arch library only under KICKOS_HAVE_MPU, the posture that declares the
-// region type.
+// No chip fixed regions. Added only under KICKOS_HAVE_MPU, the posture that declares the region
+// type.
 
 #include <kickos/arch/arch.h>
 

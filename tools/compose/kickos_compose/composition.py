@@ -20,14 +20,16 @@ TASK_FIELDS = (
 )
 SHARED_FIELDS = ("name", "size", "cache", "partition")
 SHARED_REQUIRED = ("name", "size", "cache")
-AUTHORITIES = ("memory", "pinmux", "pstate", "irq", "system", "console", "tasks", "bus_master")
+AUTHORITIES = ("memory", "pinmux", "pstate", "irq", "system", "console", "tasks", "bus_master",
+               "bootloader")
 NOT_NEEDED = {
     "no_protection": ("a build that enforces nothing or a unit `none`, and every unit here translates, "
                       "which no build turns off"),
     "no_privilege_split": "a unit with `privilege: false`",
     "cached_incoherent": "a `cached` region over a data cache while a task holds a bus master",
     "device_not_isolated": "a device window granted where the unit has `covers_devices: false`",
-    "coarse_gate": "a device window a `device_gate`, a translating page or a pin's port bank opens with its neighbours",
+    "coarse_gate": ("a device window a `device_gate`, a translating page or a pin's port bank opens with its neighbours, "
+                    "or a channel of a `module_gate` module whose other channel a task or the kernel's console holds"),
     "bus_master": "a grant of a `bus_master` device",
 }
 NOCACHE_REFUSED = "refused"
@@ -116,6 +118,8 @@ class Task:
         self.line_names = []
         self.modes = {}
         self.authority = []
+        # Each held authority's node, for a refusal that names its line.
+        self.authority_nodes = {}
         self.restart_max = 0
 
     def label(self):
@@ -695,6 +699,7 @@ def check_task(f, item, index, chip, cluster, board_less, base_stack):
                 held.append((name, node))
         unique(f, held, "%s authority" % what)
         task.authority = [name for name, node in held]
+        task.authority_nodes = dict(held)
     if "accepts" in values:
         task.accepts = check_accepts(f, values["accepts"], "%s accepts" % what, TASK_LIMITATIONS)
     if "restart" in values:
@@ -1220,41 +1225,74 @@ def check_encoding(f, tasks, chip, cluster, manifest):
                                                                                 manifest.thread_windows))
 
 
-def grant_limits(chip, cluster, board, windows, grant):
-    """Each limitation that makes `grant` unenforceable, as {name: (rule, reason)}."""
+def grant_limits(chip, cluster, board, windows, grant, modules):
+    """Each limitation that makes `grant` unenforceable, as {name: [(rule, reason)]}, every cause
+    listed. `modules` maps a `module_gate` device's name to each (task, path) holding one of its
+    channels, the kernel's console channel as (None, path)."""
     limits = {}
     if grant.device.bus_master:
-        limits["bus_master"] = ("enforcement.bus-master",
-                                "a bus master that reaches memory by physical address past every unit")
+        limits["bus_master"] = [("enforcement.bus-master",
+                                 "a bus master that reaches memory by physical address past every unit")]
     if grant.space != "mem":
         return limits
+    coarse = []
     for pin in sorted(chip.pins or {}):
         if gpio_path(chip.pins[pin].get("gpio")) == grant.path and pin in board.wired:
-            limits["coarse_gate"] = ("enforcement.port-bank",
-                                     "whose registers drive pin `%s` too, the board's %s"
-                                     % (pin, board.wired[pin]))
+            coarse.append(("enforcement.port-bank",
+                           "whose registers drive pin `%s` too, the board's %s" % (pin, board.wired[pin])))
             break
+    for task, path in modules.get(grant.device.name, []):
+        if task is not grant.task:
+            holder = "the kernel's console"
+            if task is not None:
+                holder = task.label()
+            coarse.append(("enforcement.coarse-gate",
+                           "a channel of module `%s`, which is one gate, and %s holds `%s`"
+                           % (grant.device.name, holder, path)))
+            break
+    # One view's gate or page cause stands for every view.
+    viewed = False
     for view, unit in unit_views(chip, cluster):
         if unit.covers_devices is False and "device_not_isolated" not in limits:
-            limits["device_not_isolated"] = ("enforcement.device-not-isolated",
-                                             "a device window the unit of %s does not see" % view_name(chip, view))
-        if "coarse_gate" in limits:
+            limits["device_not_isolated"] = [("enforcement.device-not-isolated",
+                                              "a device window the unit of %s does not see" % view_name(chip, view))]
+        if viewed:
             continue
         gate = chip.gates.get(view)
         if gate is not None and (gate[2] is None or covered(gate[2], (grant.base, grant.end()))):
             kind, size, ranges = gate
             if grant.base % size or grant.end() % size:
-                limits["coarse_gate"] = ("enforcement.coarse-gate",
-                                         "which the 0x%X-byte %s of %s opens with what sits beside it"
-                                         % (size, kind, view_name(chip, view)))
+                coarse.append(("enforcement.coarse-gate",
+                               "which the 0x%X-byte %s of %s opens with what sits beside it"
+                               % (size, kind, view_name(chip, view))))
+                viewed = True
                 continue
         if unit.page is not None and not whole_pages(unit.page, grant):
             neighbour = page_neighbour(unit.page, windows, grant)
             if neighbour is not None:
-                limits["coarse_gate"] = ("encoding.page-shared",
-                                         "whose 0x%X-byte page of %s also holds `%s`"
-                                         % (unit.page, view_name(chip, view), neighbour))
+                coarse.append(("encoding.page-shared",
+                               "whose 0x%X-byte page of %s also holds `%s`"
+                               % (unit.page, view_name(chip, view), neighbour)))
+                viewed = True
+    if coarse:
+        limits["coarse_gate"] = coarse
     return limits
+
+
+def kernel_console_channel(chip, board, tasks):
+    """(module, path) of the board's console channel when it is a `module_gate` module's and no task
+    holds it, the kernel then holding it; else None."""
+    if board is None or board.console is None:
+        return None
+    parts = board.console.split("/")
+    device = chip_device(chip, parts, (4,))
+    if device is None or not device.module_gate:
+        return None
+    for task in tasks:
+        for grant in task.grants:
+            if grant.path == board.console:
+                return None
+    return (device.name, board.console)
 
 
 def check_enforcement(f, root, tasks, chip, cluster, board, manifest, accepts):
@@ -1287,15 +1325,27 @@ def check_enforcement(f, root, tasks, chip, cluster, board, manifest, accepts):
                      "in its `accepts`" % (reason, name))
 
     windows = device_windows(chip, cluster)
+    modules = {}
+    for task in tasks:
+        if task.unresolved:
+            continue
+        for grant in task.grants:
+            if grant.device.module_gate:
+                modules.setdefault(grant.device.name, []).append((grant.task, grant.path))
+    console = kernel_console_channel(chip, board, tasks)
+    if console is not None:
+        modules.setdefault(console[0], []).append((None, console[1]))
     for task in tasks:
         accepted = [name for name, node in task.accepts]
         needs = set()
         for grant in task.grants:
             if no_build_protects:
                 break
-            for name, (rule, reason) in grant_limits(chip, cluster, board, windows, grant).items():
+            for name, causes in grant_limits(chip, cluster, board, windows, grant, modules).items():
                 needs.add(name)
-                if name not in accepted and "no_protection" not in needed:
+                if name in accepted or "no_protection" in needed:
+                    continue
+                for rule, reason in causes:
                     f.refuse(grant.node, rule, "%s holds `%s`, %s, so it needs `%s` in its `accepts`"
                              % (task.label(), grant.path, reason, name))
         if task.unresolved:

@@ -46,10 +46,6 @@ enum
 
 // Apply a KOS_UART_SET_MODE request. Returns 0, or the negative KOS_E* to reply with.
 //
-// `mode` is null for a service with NO unframed console arm: such a service must refuse,
-// because a mode it stored would never be read and a caller would believe byte loss was
-// enabled when the writes still block.
-//
 // `required` names mode bits the transport cannot clear. A ring whose consumer may never
 // exist cannot honour a blocking write, that being unbounded, so it requires
 // KOS_UART_F_NONBLOCK and REFUSES a request to clear it. A caller asking for back-pressure

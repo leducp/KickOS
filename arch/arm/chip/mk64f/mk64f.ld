@@ -14,28 +14,24 @@
  */
 
 #include <chip_layout.h>
-#include <sections.ld.h>
+#include <cortexm.ld.h>
 
 ENTRY(Reset_Handler)
 
-/* SRAM is two banks joined at 0x2000_0000 (SRAM_L below, SRAM_U above). Aligned
- * CPU word accesses cross it fine; unaligned/burst accesses across the seam are
- * unsupported (RM 3.5.3.1); see -mno-unaligned-access in the toolchain, and
- * split this region if a DMA/burst buffer ever needs to straddle 0x2000_0000. */
+/* SRAM is two banks joined at 0x2000_0000. Aligned CPU word accesses cross the seam;
+ * unaligned and burst accesses across it are unsupported (RM 3.5.3.1), hence
+ * -mno-unaligned-access in the toolchain, and a DMA or burst buffer must not straddle it. */
 MEMORY
 {
     KICKOS_LINK_FLASH
     KICKOS_LINK_RAM
 }
 
-_estack = ORIGIN(RAM) + LENGTH(RAM);   /* initial MSP: top of SRAM_U */
-_kernel_stack_size = 8K;               /* boot/handler (MSP) stack */
+_estack = ORIGIN(RAM) + LENGTH(RAM);
+_kernel_stack_size = 8K;
 
-/* App-owned globals get their own MPU region so an unprivileged thread reaches its
-   own .data/.bss but not the kernel's. SYSMPU is byte/32-granular: the region base
-   need only be 32-byte aligned and the size a 32-byte multiple (not pow2). The app
-   data is padded up to _appdata_size so the granted window has a fixed size; a real
-   app whose globals exceed it trips the ASSERT below. */
+/* SYSMPU is 32-byte granular with an arbitrary base: the app window needs no pow2 size or
+   base, only a 32-byte multiple. */
 #if KICKOS_HAVE_MPU
 #ifndef KICKOS_APPDATA_SIZE
 #define KICKOS_APPDATA_SIZE 128K
@@ -50,8 +46,7 @@ SECTIONS
         KEEP(*(.isr_vector))
     } > FLASH
 
-    /* Flash Configuration Field at a fixed 0x400; the vector table (102 words =
-       0x198) fits below it, code follows above 0x410. */
+    /* The vector table (0x198 bytes) fits below the field; code follows above 0x410. */
     .fcf 0x00000400 :
     {
         KEEP(*(.fcf))
@@ -59,249 +54,25 @@ SECTIONS
 
     .text :
     {
-        *(.text .text.*)
-        *(.rodata .rodata.*)
-        *(.glue_7) *(.glue_7t)
-        KICKOS_CODE_DEBRIS_SECTIONS
-        KEEP(*(.init))
-        KEEP(*(.fini))
-        . = ALIGN(4);
+        KICKOS_CORTEXM_TEXT
     } > FLASH
 
-    /* EHABI unwind instructions + LSDA (read-only). Placed explicitly in the FLASH code
-       window so the unprivileged app domain reads them via its RX code grant. libstdc++
-       emits .gcc_except_table even on EHABI. */
-    .ARM.extab :
-    {
-        *(.ARM.extab* .gnu.linkonce.armextab.*)
-    } > FLASH
-
-    .gcc_except_table :
-    {
-        *(.gcc_except_table .gcc_except_table.*)
-    } > FLASH
-
-    /* Global ctors are SPLIT. .init_array keeps ONLY the closed KickOS-owned set
-       (kernel/arch/chip/lib): Reset_Handler runs these before kmain, so the kernel
-       instance is constructed before kmain uses it. Every OTHER ctor (app, libstdc++/
-       libsupc++, KickCAT, newlib) lands in .kickos_app_init_array below and runs from
-       root_entry, in a thread with the kernel live, because a ctor may call a KickOS
-       syscall (kos_clock_now), which needs the clock + a current thread. Colon
-       selectors (not EXCLUDE_FILE) per the .appdata note above. */
-    .init_array :
-    {
-        __init_array_start = .;
-        KEEP(*libkickos_kernel.a:*(SORT(.init_array.*) .init_array))
-        KEEP(*libkickos_arch_armv7m.a:*(SORT(.init_array.*) .init_array))
-        KEEP(*libkickos_chip_mk64f.a:*(SORT(.init_array.*) .init_array))
-        KEEP(*libkickos_lib.a:*(SORT(.init_array.*) .init_array))
-        __init_array_end = .;
-    } > FLASH
-
-    /* .fini_array, app side, ASSERTed empty below; nothing walks it. See
-       arch/arm/chip/stm32f411/stm32f411.ld. */
-    .kickos_app_fini_array :
-    {
-        __kickos_app_fini_array_start = .;
-        KEEP(*(SORT(.fini_array.*)))
-        KEEP(*(.fini_array))
-        __kickos_app_fini_array_end = .;
-    } > FLASH
-
-    KICKOS_TLS_TEMPLATE(FLASH)
-
-    .kickos_app_init_array :
-    {
-        __kickos_app_init_array_start = .;
-        KEEP(*(SORT(.init_array.*)))
-        KEEP(*(.init_array))
-        __kickos_app_init_array_end = .;
-    } > FLASH
-
-    .ARM.exidx :
-    {
-        __exidx_start = .;
-        *(.ARM.exidx* .gnu.linkonce.armexidx.*)
-        __exidx_end = .;
-    } > FLASH
-
+    KICKOS_CORTEXM_EH
+    KICKOS_CORTEXM_CTORS
+    KICKOS_CORTEXM_EXIDX
     KICKOS_INIT_TABLES(FLASH)
+    KICKOS_CORTEXM_DATA(.appdata : ALIGN(32))
 
-    _sidata = LOADADDR(.data);
-
-#if KICKOS_HAVE_MPU
-    /* Enforcement layout. Writable state is split into a KERNEL side and an app side.
-       Selection is INVERTED so that the app window is fail-safe: the CLOSED
-       KickOS-owned set (kernel/arch/chip/lib) is captured FIRST, in script order,
-       into the kernel .data/.bss below; the appdata catch-alls that follow then take
-       EVERYTHING ELSE: the app's own objects, the toolchain runtime (libc/libgcc/
-       libstdc++/libsupc++), KickCAT, and any unknown NEW archive. An unmatched
-       archive therefore lands app-side (reachable, works), never kernel-side (faults).
-
-       The set is selected by the `archive:member` colon syntax, NOT EXCLUDE_FILE:
-       this binutils does not match archive members inside EXCLUDE_FILE (a bare
-       `*libkickos_kernel.a` there matches nothing, verified with nm), whereas
-       `*libkickos_kernel.a:*(...)` does. A bare `*user*` likewise matched only an
-       archive member's basename, missing libkickos_user.a's s_heap and the whole
-       toolchain runtime; the colon inversion is path- and name-substring-independent.
-       Kernel data sits at the RAM base; the app window is placed above it (SYSMPU is
-       32-byte granular with an arbitrary base, so the window needs no pow2 base). */
-    .data : ALIGN(4)
-    {
-        _sdata = .;
-        *libkickos_kernel.a:*(.data .data.*)
-        *libkickos_arch_armv7m.a:*(.data .data.*)
-        *libkickos_chip_mk64f.a:*(.data .data.*)
-        *libkickos_lib.a:*(.data .data.*)
-        . = ALIGN(4);
-        _edata = .;
-    } > RAM AT > FLASH
-
-    .bss (NOLOAD) : ALIGN(4)
-    {
-        _sbss = .;
-        *libkickos_kernel.a:*(.bss .bss.*)
-        *libkickos_arch_armv7m.a:*(.bss .bss.*)
-        *libkickos_chip_mk64f.a:*(.bss .bss.*)
-        *libkickos_lib.a:*(.bss .bss.*)
-        *libkickos_kernel.a:*(COMMON)
-        *libkickos_arch_armv7m.a:*(COMMON)
-        *libkickos_chip_mk64f.a:*(COMMON)
-        *libkickos_lib.a:*(COMMON)
-        . = ALIGN(4);
-        _ebss = .;
-    } > RAM
-
-    /* App-granted RW window: all remaining .data/.bss/COMMON (app + runtime + KickCAT).
-       .appdata is loaded from flash; .appbss + the pad are zeroed (no stale read-back
-       through the grant). */
-    .appdata : ALIGN(32)
-    {
-        __kickos_appdata_start = .;
-        *(.data .data.*)
-        . = ALIGN(8);
-        __kickos_appdata_load_end = .;
-    } > RAM AT > FLASH
-
-    /* Pin the base to the window (start + SIZEOF .appdata), NOT the default location
-       counter: an EMPTY .appdata (an app with no initialized globals, e.g. the bench) does
-       not carry the section ALIGN forward, so a defaulted .appbss falls back to
-       kernel-.bss-end. Harmless here (ALIGN 32, so the gap is nil) but kept uniform with
-       the pow2-window chips where the same fallback lands BELOW the granted window. */
-    .appbss (__kickos_appdata_start + SIZEOF(.appdata)) (NOLOAD) : ALIGN(4)
-    {
-        *(.bss .bss.* COMMON)
-        . = ALIGN(4);
-        _appdata_used_end = .;
-        /* ld evaluates ASSERTs after layout, so a bare `. = start + size` that moved
-           backwards would fail the link ahead of the overflow ASSERT below. MAX keeps
-           that ASSERT the thing that prints. */
-        . = MAX(., __kickos_appdata_start + _appdata_size); /* pad the granted window */
-        __kickos_appdata_end = .;
-        /* The newlib heap IS the window pad: [ALIGN(used_end,8), window end). That ALIGN is
-           relative to this section's start, which is why .appdata closes on ALIGN(8);
-           app_window.ld.h holds the rule and the file-scope ASSERT that reads it back. */
-        _kickos_heap_start = ALIGN(_appdata_used_end, 8);
-        _kickos_heap_limit = __kickos_appdata_end;
-    } > RAM
-#else
-    .data : ALIGN(4)
-    {
-        _sdata = .;
-        *(.data .data.*)
-        . = ALIGN(4);
-        _edata = .;
-    } > RAM AT > FLASH
-
-    .bss (NOLOAD) : ALIGN(4)
-    {
-        _sbss = .;
-        *(.bss .bss.*)
-        *(COMMON)
-        . = ALIGN(4);
-        _ebss = .;
-    } > RAM
-#endif
-
-#if !KICKOS_HAVE_MPU
-    /* Non-enforcement build: no .appdata window, so the newlib heap is an explicit
-       section carved from RAM before the thread arena. */
-    .userheap (NOLOAD) :
-    {
-        . = ALIGN(8);
-        _kickos_heap_start = .;
-        . += KICKOS_USER_HEAP_SIZE;
-        _kickos_heap_limit = .;
-    } > RAM
-#endif
-
-    . = ALIGN(32);
-    __kickos_ram_start = .;
-    __kickos_ram_end = _estack - _kernel_stack_size;
-
-    /* Chip memory extents read by the non-enforcing user-pointer admission
-       (arch_ram_common.cc). Symbols only, no layout effect. */
-    __kickos_rom_start = ORIGIN(FLASH);
-    __kickos_rom_end = ORIGIN(FLASH) + LENGTH(FLASH);
-    __kickos_sram_start = ORIGIN(RAM);
-
-    /* App code region for unprivileged threads (RX): the whole flash. SYSMPU is
-       byte/32-granular (no pow2 rule), so this is start=0/end=1M-1. Lets an
-       unprivileged thread fetch its code + read flash rodata via the core's code
-       bus (crossbar master 0). Cleanly disjoint from the RAM arena/stacks. */
+    /* The whole flash as the app's RX region, read through the core's code bus. */
     __kickos_code_start = ORIGIN(FLASH);
     __kickos_code_end = ORIGIN(FLASH) + LENGTH(FLASH);
 
-    /DISCARD/ : { *(.ARM.attributes) }
-
-    KICKOS_NONALLOC_SECTIONS
+    KICKOS_CORTEXM_DISCARD
 }
 
-KICKOS_STATIC_RELOC_ASSERT()
-KICKOS_TLS_ALIGN_ASSERT()
-KICKOS_TLS_FIT_ASSERT()
-
-ASSERT(__kickos_ram_start <= __kickos_ram_end,
-       "KickOS: static data overflows RAM (no room for the user-RAM pool + stack)")
+KICKOS_CORTEXM_ASSERTS()
+KICKOS_KERNEL_CTORS_NONE_ASSERT()
 
 #include <boot_arena.ld.h>
 KICKOS_BOOT_ARENA_ASSERT(__kickos_ram_start, __kickos_ram_end)
-
 KICKOS_POOL_ARENA_ASSERT(__kickos_ram_start, __kickos_ram_end)
-ASSERT(__kickos_app_fini_array_end == __kickos_app_fini_array_start,
-       "KickOS: .fini_array is non-empty: a global with a non-trivial destructor? Static destructors are not supported; nothing would ever run it")
-KICKOS_KERNEL_CTORS_NONE_ASSERT()
-
-/* App globals must fit _appdata_size, the app's MPU-granted .data/.bss window.
-   SYSMPU is 32-byte granular, so any 32-byte multiple works here.
-   A zero-sized used-end means the user-path selector matched nothing. */
-#if KICKOS_HAVE_MPU
-ASSERT(_appdata_used_end <= __kickos_appdata_start + _appdata_size,
-       "KickOS: app .data/.bss overflow _appdata_size (raise it, 32-byte granular on SYSMPU)")
-/* Lower bound: an empty .appdata dropping its ALIGN would place .appbss below the base. */
-ASSERT(ADDR(.appbss) >= __kickos_appdata_start,
-       "KickOS: .appbss placed below the app-data window base (empty .appdata alignment-drop regression)")
-/* Selector-mismatch guard. The inverted scheme captures the CLOSED KickOS-owned set
-   (kernel/arch/chip/lib) into kernel .data/.bss and lets .appdata/.appbss catch the
-   rest, so a broken selector shows up as an EMPTY KERNEL side (kernel writable state
-   silently leaked into the app window); that is the failure to catch, and an empty
-   .bss is the loud signal. Only the kernel side is asserted: an empty .appdata is
-   legitimate, a minimal freestanding app having had its app-side state --gc-sections'd
-   away. The appdata_no_kernel ctest (tests/static/check_appdata_no_kernel.sh) is what
-   establishes that no privileged archive lands inside the granted window. */
-ASSERT(_ebss > _sbss,
-       "KickOS: kernel .bss empty: closed-set archive selector matched nothing (renamed lib?)")
-#endif
-
-/* Opt-in link-time heap floor (undefined by default). */
-#ifdef KICKOS_HEAP_MIN
-ASSERT(_kickos_heap_limit - _kickos_heap_start >= KICKOS_HEAP_MIN,
-       "KickOS: heap below KICKOS_HEAP_MIN")
-#endif
-
-/* The app windows this script does not carve, stated EMPTY rather than left absent:
-   the kernel's references are strong, so an omitted bound is a link error. */
-#if !KICKOS_HAVE_MPU
-KICKOS_APP_DATA_WINDOW_NONE()
-#endif
-KICKOS_APP_IMAGE_SPLIT_NONE()

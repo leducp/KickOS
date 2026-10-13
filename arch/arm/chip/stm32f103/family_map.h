@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// STM32F103C8 answers to the STM32 F0/F1/F3 family contract (../stm32f1f3/stm32f1f3.h),
-// clean-room from RM0008. Read by chip_stm32f1f3.cc and by chip_stm32f103.cc.
+// STM32F103C8's answers to the STM32 F0/F1/F3 family contract (../stm32f1f3/stm32f1f3.h), from
+// RM0008.
 
 #ifndef KICKOS_ARCH_ARM_CHIP_STM32F103_FAMILY_MAP_H
 #define KICKOS_ARCH_ARM_CHIP_STM32F103_FAMILY_MAP_H

@@ -2,15 +2,13 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // satp access and fences for the RV64 map editor.
-// FENCE w,w orders explicit stores. SFENCE.VMA orders translation reads
-// and invalidates cached translations.
 
 #ifndef KICKOS_ARCH_RISCV_RV64IMAC_SYSOPS_RV64IMAC_H
 #define KICKOS_ARCH_RISCV_RV64IMAC_SYSOPS_RV64IMAC_H
 
 #include <stdint.h>
 
-// Host tests provide these operations through rv64_sysops_seam.cc.
+// Host tests provide these through rv64_sysops_seam.cc.
 #ifndef KICKOS_RV64_SYSOPS_FROM_SEAM
 #define KICKOS_RV64_SYSOPS_FROM_SEAM 0
 #endif
@@ -27,7 +25,7 @@ extern "C"
         return satp;
     }
 
-    // Write only; callers supply any required translation fence.
+    // Callers supply any required translation fence.
     inline void kickos_rv64_write_satp(uint64_t satp)
     {
         __asm volatile("csrw satp, %0" ::"r"(satp) : "memory");

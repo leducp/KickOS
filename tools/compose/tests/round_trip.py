@@ -9,6 +9,7 @@
 #   round_trip.py <host C compiler> <the build's generated include directory>
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -316,8 +317,11 @@ class RoundTrip(unittest.TestCase):
             write(manifest, MANIFESTS["qemu-arm64.yaml"])
             report, table = emit.table_of(os.path.join(SYSTEMS, "qemu-arm64.yaml"), manifest)
             granted = [grant for grant in table.grants if grant.cap_slot is not None][0]
+            # The first slot a grant ordinal lands on is the build's first dynamic index.
+            width = read(os.path.join(INCLUDE, "kickos", "config", "cap_width.h"))
+            first = int(re.search(r"#define KICKOS_CAP_FIRST_DYNAMIC (\d+)", width).group(1))
             results = []
-            for ordinal in (0xFFFD, 0xFFFE):
+            for ordinal in (0xFFFF - first - 1, 0xFFFF - first):
                 granted.cap_slot = ordinal
                 source = os.path.join(scratch, "table-%d.c" % ordinal)
                 write(source, emit.render(table, "qemu-arm64.yaml"))

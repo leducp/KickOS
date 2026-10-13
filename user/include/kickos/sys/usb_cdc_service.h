@@ -59,7 +59,6 @@
 
 #include <stdint.h>
 #include <stddef.h>
-#include <stdlib.h>
 
 namespace kickos::usb
 {
@@ -700,7 +699,8 @@ private:
 
 // ---------------------------------------------------------------------------------
 // The IRQ thread. Owns every register and the whole control endpoint; parks in irq_wait and
-// services one pass per wake.
+// services one pass per wake. A failure traps, never exits: an exited IRQ thread leaves the
+// service thread accepting stdout into a ring nothing drains.
 template <typename UsbDev>
 void irq_loop(Cdc<UsbDev>& cdc, Shared* sh)
 {
@@ -708,7 +708,7 @@ void irq_loop(Cdc<UsbDev>& cdc, Shared* sh)
     // object and delivered to whoever binds next, so nothing is lost either way.
     if (kos_notify_bind(KOS_USB_CAP_NOTIFY) != 0)
     {
-        exit(0);
+        driver::trap();
     }
     sh->ready = 1;
     while (true)
@@ -718,7 +718,7 @@ void irq_loop(Cdc<UsbDev>& cdc, Shared* sh)
         if (kos_notify_wait(KOS_USB_CAP_NOTIFY, KOS_USB_ACCEPT, KOS_TIMEOUT_NONE, nullptr)
             != 0)
         {
-            break; // the cap went away: the line is gone, so this thread has no work
+            driver::trap();
         }
         kos_counter_increment(&sh->stats.irq_wakes, 1u);
         uint32_t const rx_before = kos_counter_load(&sh->stats.rx_bytes);
@@ -730,7 +730,6 @@ void irq_loop(Cdc<UsbDev>& cdc, Shared* sh)
             kos_counter_increment(&sh->stats.irq_spurious, 1u);
         }
     }
-    exit(0);
 }
 
 // USB CDC uses console_service.h with nonblocking mode required: the host
@@ -765,9 +764,9 @@ struct Transport
 
 // ---------------------------------------------------------------------------------
 // The service thread. Parks in recv, replies out of ring state, never touches the device.
-// A kos_call is a <kickos/sys/uart.h> frame; a plain send is a raw console write. Returns
-// only when the endpoint dies.
-void console_serve_loop(Shared* sh);
+// A kos_call is a <kickos/sys/uart.h> frame; a plain send is a raw console write. Traps once
+// its receive fails: this is not the entry thread, so its exit would leave the task alive.
+[[noreturn]] void console_serve_loop(Shared* sh);
 
 // ---------------------------------------------------------------------------------
 // The class-side half of the descriptor check. The generic validator cannot know that the

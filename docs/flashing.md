@@ -124,7 +124,7 @@ wire by construction but `bluepill-c8`'s 4-pin header does not carry. So
 `tools/flash-stlink.sh` defaults it **on** for `f411disco` and `f302nucleo` and off
 elsewhere; `STLINK_UNDER_RESET=1` forces it on, `=0` off.
 ```sh
-FLASH_BUILD=$PWD/build/f411disco-st tools/flash.sh f411disco selftest
+FLASH_BUILD=$PWD/build/f302nucleo-st tools/flash.sh f302nucleo selftest
 ```
 Nucleo consoles reach the ST-Link VCP (`ttyACM*`) with no
 wiring; the F411-DISCO does **not** route USART2 to its VCP -- use an external
@@ -198,15 +198,11 @@ help: the J-Link Pro (SN `000177003338`) reports `VTref=0.000V` / `ITarget=0mA` 
 i.e. the probe is not wired to the Pi-Zero's SWD pads at all. **SWD remains unavailable here**, so
 BOOTSEL is the only channel; budget captures accordingly, or wire SWD first.
 
-`kos_reboot()` (built under `KICKOS_REBOOT`, default OFF) at the end of `main` closes that loop
-for an app that reaches it, and `-DKICKOS_SHUTDOWN_TO_BOOTLOADER=ON` extends it to any image,
-including one that ends in a fault: the knob (default OFF, requires `KICKOS_REBOOT`) puts the
-handover in the kernel's two
-terminal dead-ends, `kickos_terminate` (shutdown syscall, last-thread-out, `kickos_isr_fault`) and
-`kfault_terminate` (`kpanic`, and every ARM MemManage/HardFault; the handover sits in its
-fallback body, `arch/common/kfault_terminate_default.cc`). Both drain the console
-first. **Leave it OFF for a bench or soak image**, which must stay resident. The silicon witness for
-both dead-ends is in `reference/boards.md`.
+An app holding `bootloader` beside `system` in its composition's `authority` closes that loop
+twice: `kos_shutdown(status, KOS_SHUTDOWN_BOOTLOADER)` at the end of `main` hands the chip back when
+the run ends, and `kos_terminal_outcome(KOS_SHUTDOWN_BOOTLOADER)` at its start does the same when it
+panics or faults instead. The selftest and bench apps do both; any other image halts. A chip with
+no bootloader entry halts. The silicon witness is in `reference/boards.md`.
 
 ### `due` (SAM3X8E) -- bossac over the Programming port
 
@@ -338,8 +334,8 @@ arm-none-eabi-gdb build/xmc4800-relax/user/apps/common/blink/blink \      # term
 ### Console
 
 The `ttyACM0` VCOM is driven by USIC0 in ASC (UART) mode on P1.5/P1.4 at 115200 --
-open it for the KickOS banner + TAP. `arch_console_write` is buffered (the console
-ring drains via the USIC TX interrupt); panics/faults use the bounded polled
+open it for the KickOS banner + TAP. The kernel console is buffered (the ring
+drains via the USIC TX interrupt); panics/faults use the bounded polled
 `arch_console_write_sync`. The XMC also defaults to `KICKOS_CONSOLE=both`, so a
 **SEGGER RTT** backend runs alongside the VCOM, giving a UART-free console over the
 debug probe -- `JLinkRTTClient` (or `JLinkRTTViewer`) shows the same banner + TAP

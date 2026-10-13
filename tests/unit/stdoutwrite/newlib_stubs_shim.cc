@@ -25,7 +25,5 @@
 #define getentropy kos_ut_plain_getentropy
 #define kos_clock_set_realtime kos_ut_clock_set_realtime
 #define __dso_handle kos_ut_dso_handle
-#define __malloc_lock kos_ut_malloc_lock
-#define __malloc_unlock kos_ut_malloc_unlock
 
 #include "../../../user/src/newlib_stubs.cc"

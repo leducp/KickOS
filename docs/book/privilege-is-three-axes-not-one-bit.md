@@ -134,9 +134,10 @@ not about what the thread's own instructions may touch. When the kernel derefere
 a pointer a caller supplied, it does so *privileged*, so it must first check that the
 caller could have reached that memory itself -- the confused-deputy floor (Chapter
 7.1, *[Alignment across the syscall boundary](alignment-across-the-syscall-boundary.md)*).
-That check begins by asking whether the caller is privileged and, if so, admits the
-range wholesale. So the flag decides both what the thread may touch directly and what
-the kernel will touch on its behalf unchecked. Two mechanisms, one flag, same axis.
+That check asks the caller's own grants and nothing else: the one privileged thread,
+`idle`, makes no system call, so there is no caller for whom a flag could admit a range
+wholesale. The flag decides what a thread may touch directly, and the kernel touches on a
+caller's behalf only what that caller could have touched itself.
 
 ## Axis 3: authority, which is not a mode at all
 
@@ -205,9 +206,10 @@ the flag.
 | Authority | an authority word on the thread | at creation, narrowable | yes |
 
 `Thread::privileged` survives the split with a narrowed meaning. It still selects the
-memory posture, it is still the confused-deputy bypass, and it stays the home for one
-authority that is deliberately **not** a capability: **may spawn a privileged child**.
-That exemption deserves its reason stated, because it looks like an inconsistency:
+memory posture, and only the kernel sets it.
+One power is deliberately **not** a capability, nor an authority bit, nor anything a
+caller can ask for: **spawning a privileged child**. That deserves its reason stated,
+because it looks like an inconsistency:
 
 > A capability to create privileged threads is equivalent to holding every authority,
 > forever, and to being able to hand that on.
@@ -215,9 +217,9 @@ That exemption deserves its reason stated, because it looks like an inconsistenc
 A thread that can create a privileged child can create one that does anything at all,
 including creating more of them -- so narrowing such a capability is meaningless, and
 delegating it is unbounded escalation with extra steps. There is nothing to gain from
-making it nameable, and a great deal to lose. So it stays where it cannot be handed
-around: a property of the creating thread, checked directly (`thread_create_call` refuses an
-unprivileged caller with `-KOS_EPERM`; invariant `privilege-escalation-gated`).
+making it nameable, and a great deal to lose. So the spawn cannot express it at all:
+`kos_thread_params` carries no privilege, and the kernel makes `idle` privileged and
+nothing else (invariant `privilege-escalation-gated`).
 
 ## What a privileged thread IS: a kthread
 
@@ -298,9 +300,8 @@ thread is a choice somebody made, and choices are the ones worth auditing.
 Put the spawn rule together with the exemption and a strong, non-obvious property
 falls out.
 
-Creating a privileged thread requires already being one, and that authority is
-deliberately not a capability -- so it cannot be delegated, narrowed, or acquired.
-Therefore **once the first application thread is created unprivileged, no privileged
+No spawn can ask for privilege, and that power is deliberately not a capability, so it
+cannot be delegated, narrowed, or acquired. Therefore **once the first application thread is created unprivileged, no privileged
 thread can come into existence for the rest of the system's life.** The privileged
 population is exactly what the boot path created; it can shrink when one of them
 exits, and it can never grow.
@@ -402,16 +403,14 @@ writer. Structural impossibility is worth more than a correct refusal, because a
 refusal is a line of code that a later reader can find redundant and delete.
 
 **One question at every gate.** Every gate asks
-`cap_check_authority(caller, AUTH_x)`, which is true when the caller is privileged
-**or** holds that bit. "Privileged implies every authority" is therefore stated once,
-inside that function, instead of once per call site. Two things fall out of that. The
-set of authority decisions in the kernel is enumerable by grepping one name, which is
-the only way a claim like "these are all the gates" gets checked rather than asserted
--- and a count that was right the day it was written is exactly what lets the next
-decision hide. And a privileged caller takes the same arm it would have taken with no
-authority bits in the system at all, so every gate is exercised by the whole fleet from
-the moment it is written, instead of lying unexercised until the first thing that needs
-the other arm.
+`cap_check_authority(caller, AUTH_x)`, which is true when the caller's authority word
+holds that bit, and for no other reason. Two things fall out of that. The set of
+authority decisions in the kernel is enumerable by grepping one name, which is the only
+way a claim like "these are all the gates" gets checked rather than asserted, and a
+count that was right the day it was written is exactly what lets the next decision
+hide. And no caller skips the question, so every gate is exercised by the whole fleet
+from the moment it is written, both arms, instead of one arm lying unexercised until
+the first thing that needs it.
 
 ## Why this is worth doing at all: revocation
 
@@ -485,7 +484,7 @@ each one separately. Passing one does not imply the other.
 **1. Confined execution -- run it where accesses are actually checked.** The code
 under test must run in an **unprivileged** thread, so its every load and store is
 subject to the protection unit. In KickOS that is
-`kos::thread::create(..., privileged = false)` -- the default. `cxxtest` does exactly
+`kos::thread::create(...)`, which makes nothing else. `cxxtest` does exactly
 this: rather than run the body inline, it spawns `cxx_worker` unprivileged
 (`user/apps/common/cxxtest/main.cc`) and the throw/catch/unwind/RTTI/STL all execute
 there, under the unit, reaching only the worker's granted regions. `selftest`

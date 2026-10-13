@@ -168,15 +168,26 @@ TEST_F(MapPublish, AFreshRootIsPublishedBeforeItCanBeHandedOut)
 
 TEST_F(MapPublish, AFailedMapsUnwindPublishesItsClearsAtOneCore)
 {
-    // Rollback barriers must also run on one core.
     seed(fresh, VA_CROSS_BELOW, PA_A);
     set_frame_budget(0);
 
     ASSERT_EQ(arch_aspace_map(fresh, VA_CROSS_LOW, PA_C, 2, RIGHTS_DATA, ARCH_MAP_NORMAL),
               ARCH_ASPACE_ENOMEM);
 
-    EXPECT_EQ(ops_with(OP_TLBI_ALL_LOCAL), 2u);
-    EXPECT_EQ(ops_with(OP_TLBI_ALL_IS), 0u);
-    EXPECT_GE(ops_with(OP_DSB_ISHST), 2u);
+    EXPECT_EQ(ops_with(OP_DSB_ISHST), 1u) << "the unwind's clear was left for the walker to miss";
     EXPECT_EQ(arch_aspace_frame_at(fresh, VA_CROSS_LOW), 0u);
+}
+
+TEST_F(MapPublish, TheTablesAnUnwindDetachesAreSweptLocallyAtOneCore)
+{
+    // The low page's table and the one above it go in, the high page's table fails.
+    set_frame_budget(2);
+    uint32_t const freed = frames_freed();
+
+    ASSERT_EQ(arch_aspace_map(running, VA_CROSS_LOW, PA_C, 2, RIGHTS_DATA, ARCH_MAP_NORMAL),
+              ARCH_ASPACE_ENOMEM);
+
+    EXPECT_EQ(frames_freed() - freed, 2u);
+    EXPECT_EQ(ops_with(OP_TLBI_ALL_LOCAL), 1u);
+    EXPECT_EQ(ops_with(OP_TLBI_ALL_IS), 0u);
 }

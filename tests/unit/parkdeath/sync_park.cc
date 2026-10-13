@@ -36,7 +36,7 @@ namespace kickos
 
             void lock_the_mutex()
             {
-                (void)mutex_lock(&g_mutex);
+                (void)mutex_lock(&g_mutex, KOS_TIMEOUT_NONE);
             }
         }
 

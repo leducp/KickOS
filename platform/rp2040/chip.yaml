@@ -8,8 +8,10 @@ chip: rp2040
 manual: "RP2040 Datasheet, RP-008371-DS-1, build-version 3184e62"
 arch: armv6m
 # The unit sits on the CPU's access path, so a device window is enforced per task.
-protection: { unit: pmsav6, covers_devices: true, memory_type: true }
+protection: { unit: pmsav6, granule: 32, covers_devices: true, memory_type: true }
 data_cache: false
+family: { dir: arm/chip/rp2xxx, sources: [arm/chip/rp2xxx/chip_rp2xxx.cc, arm/chip/rp2xxx/rom_call.S] }
+exits_on_fault: false
 
 # Lines 26 to 31 are tied to zero, so only software ever pends them.
 interrupts:
@@ -33,6 +35,8 @@ devices:
 
   clocks: { window: [0x40008000, 0x4000], owner: kernel, ref: "2.2.2 Detail, p.25" }
   resets: { window: [0x4000C000, 0x4000], owner: kernel, ref: "2.2.2 Detail, p.25" }
+  # Which blocks a watchdog reset takes down.
+  psm: { window: [0x40010000, 0x4000], owner: kernel, ref: "2.2.2 Detail, p.25" }
   # Every pin's function select and pad. A pin is muxed through kos_pinmux_set, never through a
   # granted window.
   io_bank0: { window: [0x40014000, 0x4000], owner: kernel, ref: "2.2.2 Detail, p.25" }

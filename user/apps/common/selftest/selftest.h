@@ -87,24 +87,45 @@ namespace selftest
     extern KICKOS_SELFTEST_LOCAL kos_thread_t g_main; // main's own thread
 
     // Well-known child cap indices: a fresh child table has cap-gen 0, so delegated cap i
-    // lands at index i+1 (index 0 reserved). Every spawn must delegate in exactly this order.
-    constexpr int CH_DONE = 1;  // delegated FIRST to every worker
-    constexpr int CH_LOCK = 2;  // delegated SECOND (logging workers only)
-    constexpr int CH_AUX = 3;
-    constexpr int CH_READY = 2; // IRQ-driver tests
-    constexpr int CH_IRQ = 3;   // IRQ-driver tests: the LINE, for ack and discard
-    constexpr int CH_NOTE = 4;  // IRQ-driver tests: the notification that line signals, which
-                                // is what the driver binds and waits on
-    constexpr int CH_REL = 4;   // main-to-child release, where the child has no other park
-                                // between signaling readiness and waiting for release
+    // lands at KOS_SPAWN_DELEGATED_CAP0 + i. Every spawn must delegate in exactly this order.
+    // delegated FIRST to every worker
+    constexpr int CH_DONE = KOS_SPAWN_DELEGATED_CAP0;
+    // delegated SECOND (logging workers only)
+    constexpr int CH_LOCK = KOS_SPAWN_DELEGATED_CAP0 + 1;
+    constexpr int CH_AUX = KOS_SPAWN_DELEGATED_CAP0 + 2;
+    // IRQ-driver tests
+    constexpr int CH_READY = KOS_SPAWN_DELEGATED_CAP0 + 1;
+    // IRQ-driver tests: the LINE, for ack and discard
+    constexpr int CH_IRQ = KOS_SPAWN_DELEGATED_CAP0 + 2;
+    // IRQ-driver tests: the notification that line signals, which is what the driver binds and
+    // waits on
+    constexpr int CH_NOTE = KOS_SPAWN_DELEGATED_CAP0 + 3;
+    // main-to-child release, where the child has no other park between signaling readiness and
+    // waiting for release
+    constexpr int CH_REL = KOS_SPAWN_DELEGATED_CAP0 + 3;
     constexpr uint8_t CH_FULL =
         KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER;
 
-    // main's `authority` in system.yaml and consoles/*.yaml. Never KOS_AUTH_PSTATE: a retune
-    // would retime every deadline the timing arms assert.
-    constexpr uint32_t SELFTEST_AUTHORITY = KOS_AUTH_MEMORY | KOS_AUTH_SYSTEM | KOS_AUTH_PINMUX
-                                            | KOS_AUTH_IRQ | KOS_AUTH_CONSOLE | KOS_AUTH_TASKS
-                                            | KOS_AUTH_BUS_MASTER;
+#if KICKOS_AMP_NODE && KICKOS_AMP_OWN_IMAGE
+    constexpr bool SELFTEST_OWNS_RESET = KICKOS_AMP_NODE_ID == KICKOS_AMP_RESET_OWNER;
+#else
+    constexpr bool SELFTEST_OWNS_RESET = true;
+#endif
+
+    // main's `authority` in system.yaml, consoles/*.yaml and systems/: `bootloader` only on the
+    // node owning the chip's reset, the partition refusing it elsewhere. Never KOS_AUTH_PSTATE:
+    // a retune would retime every deadline the timing arms assert.
+    constexpr uint32_t selftest_authority(void)
+    {
+        uint32_t authority = KOS_AUTH_MEMORY | KOS_AUTH_SYSTEM | KOS_AUTH_PINMUX | KOS_AUTH_IRQ
+                             | KOS_AUTH_CONSOLE | KOS_AUTH_TASKS | KOS_AUTH_BUS_MASTER;
+        if (SELFTEST_OWNS_RESET)
+        {
+            authority = authority | KOS_AUTH_BOOTLOADER;
+        }
+        return authority;
+    }
+    constexpr uint32_t SELFTEST_AUTHORITY = selftest_authority();
 
     // main's region set is [app code RX, app static data RW, its own stack], and
     // kos_ram_alloc grants the caller nothing: a test that must touch its own allocation
@@ -137,13 +158,13 @@ namespace selftest
     inline kos::thread::Handle irq_spawn(void (*entry)(void*), void* arg, char const* name,
                                          uint8_t prio, kos_cap_grant const* caps, uint8_t count,
                                          uint8_t policy = KOS_POLICY_FIFO,
-                                         uint32_t quantum_ns = 0, bool privileged = false,
+                                         uint32_t quantum_ns = 0,
                                          void* mem = nullptr, uint32_t mem_size = 0,
                                          uint32_t authority = 0,
                                          uint16_t const* cap_dest = nullptr)
     {
         return kos::thread::create_caps(entry, arg, name, prio, caps, count, policy, quantum_ns,
-                                        privileged, mem, mem_size, authority, cap_dest,
+                                        mem, mem_size, authority, cap_dest,
                                         KOS_TASK_NONE, nullptr, 0, TAP_PIN_CORE);
     }
 
@@ -410,11 +431,11 @@ namespace selftest
         return 0;
     }
 
-    // KICKOS_SELFTEST_FIT, from this directory's CMakeLists: a region board whose MPU geometry the
-    // build scraped, where each image is sized by a first link (arena_fit.py).
+    // KICKOS_SELFTEST_FIT, from this directory's CMakeLists: a region board, where each image is
+    // sized by a first link (arena_fit.py).
 #if KICKOS_SELFTEST_FIT
-    // arch_ram_region_size and arch_ram_region_align over the two literals the build scraped out
-    // of this link's backend.
+    // arch_ram_region_size and arch_ram_region_align over the chip file's region rule, as the build
+    // hands it over.
     constexpr size_t st_region_size(size_t want)
     {
         size_t const min = KICKOS_MPU_MIN_REGION_CFG;
@@ -448,7 +469,7 @@ namespace selftest
                 geometry = st_region_size(want);
             }
         }
-#if defined(KICKOS_TLS) && KICKOS_TLS && KICKOS_TLS_FROM_SP
+#if KICKOS_TLS && KICKOS_TLS_FROM_SP
         if (st_region_size(want) == KICKOS_TLS_STRIDE and KICKOS_TLS_STRIDE > geometry)
         {
             return KICKOS_TLS_STRIDE;
@@ -602,14 +623,12 @@ namespace selftest
     }
 #endif
 
-#if defined(KICKOS_ENABLE_SELFTEST)
     // A member of ANOTHER task gets its own copy of this image's static data, so every report
     // from one crosses on an ENDPOINT and every release crosses on a semaphore. A global
     // would be written in the member's copy and read in main's.
-    extern KICKOS_SELFTEST_LOCAL kos_cap_t g_pl_ep; // main's report endpoint, delegated at child index 1
-#endif
+    extern KICKOS_SELFTEST_LOCAL kos_cap_t g_pl_ep; // main's report endpoint, delegated at child index 2
 
-#if KICKOS_HAVE_ASPACE && defined(KICKOS_ENABLE_SELFTEST)
+#if KICKOS_HAVE_ASPACE
     inline constexpr RamAsk SEAM_RAM = {256u};
     inline constexpr RamAsk SP_RAM = {256u};
     inline constexpr RamAsk PW_RAM = {256u, 256u};
@@ -617,7 +636,7 @@ namespace selftest
     inline constexpr RamAsk HO_RAM = {256u, 256u};
     inline constexpr RamAsk SL_RAM = {ST_GRANULES(2)};
     inline constexpr RamAsk DX_RAM = {64u, 256u};
-#if defined(KICKOS_TLS) && KICKOS_TLS
+#if KICKOS_TLS
     // One stride-aligned victim stack of a stride and a verdict slot, whatever the base.
     inline constexpr RamAsk PFH_RAM = {3u * KICKOS_TLS_STRIDE};
 #else
@@ -669,7 +688,7 @@ namespace selftest
     KICKOS_SELFTEST_LOCAL void t_app_pointers_relocated();
 #endif
 
-#if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_AMP_NODE
+#if KICKOS_AMP_NODE
     constexpr uint32_t AG_BLK = 256;
     inline constexpr RamAsk AG_RAM = {AG_BLK};
     inline constexpr RamAsk ASW_RAM = {ST_GRANULES(1)};
@@ -691,7 +710,7 @@ namespace selftest
 #endif
 #endif
 
-#if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_KERNEL_CORES > 1
+#if KICKOS_KERNEL_CORES > 1
     KICKOS_SELFTEST_LOCAL void t_pin_places();
     KICKOS_SELFTEST_LOCAL void t_unpin_restores();
     KICKOS_SELFTEST_LOCAL void t_pin_beyond_grant_refused();

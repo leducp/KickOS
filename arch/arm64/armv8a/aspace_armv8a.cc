@@ -7,7 +7,6 @@
 
 #include <kickos/arch/arch.h>
 #include <kickos/arch/aspace_residency.h>
-#include <kickos/arch/aspace_table.h>
 #include <kickos/diag.h>
 #include <kickos/extent.h>
 
@@ -18,11 +17,8 @@
 
 extern "C"
 {
-    // Required linker symbol for the physical RAM mapping.
+    // VA - PA of the kernel half.
     extern unsigned char __kickos_arm64_va_base[];
-
-    arch_phys_addr_t kickos_frame_alloc(void);
-    void kickos_frame_free(arch_phys_addr_t frame);
 
 #if KICKOS_KERNEL_CORES > 1
     void kickos_arm64_instruction_side_rendezvous(uint32_t peers);
@@ -31,16 +27,17 @@ extern "C"
 
 namespace
 {
-    // Table sizes and index widths use the 4 KiB granule configured in startup.S.
+    // Table sizes and index widths use the 4 KiB granule of vmsa.h.
     constexpr unsigned GRANULE_SHIFT = 12;
     constexpr size_t GRANULE = static_cast<size_t>(1) << GRANULE_SHIFT;
     constexpr size_t PTES = GRANULE / sizeof(uint64_t);
+    constexpr unsigned INDEX_BITS = 9;
     constexpr int LEVEL_ROOT = 1;
     constexpr int LEVEL_LEAF = 3;
+    constexpr int HEIGHT_ROOT = LEVEL_LEAF - LEVEL_ROOT;
     static_assert(LEVEL_LEAF - LEVEL_ROOT + 1 == 3,
                   "tests/static/trap_redzone_roots.txt bounds each table walk at 3 activations");
 
-    // Acquire uses the direct RAM mapping and needs no temporary slots.
     constexpr size_t ACQUIRE_CAPACITY = SIZE_MAX;
 
     // Descriptor fields, Table D8-50 and Table D8-52 (DDI 0487 M.b section D8.3).
@@ -58,7 +55,7 @@ namespace
     // The widest output a descriptor of this format can carry, whatever the machine implements.
     constexpr unsigned DESC_OA_BITS = 48;
 
-    // MAIR_EL1 attribute slots, in the order startup.S programs them.
+    // MAIR_EL1 attribute slots (MAIR_VALUE in vmsa.h).
     constexpr uint64_t ATTR_NORMAL = 0;
     constexpr uint64_t ATTR_DEVICE = 1;
     constexpr uint64_t ATTR_NOCACHE = 2;
@@ -104,8 +101,9 @@ namespace
         }
         return bits;
     }
-
 }
+
+#include "aspace_walk.h"
 
 namespace kickos
 {
@@ -191,19 +189,6 @@ namespace
         return reinterpret_cast<uint64_t*>(space);
     }
 
-    size_t index_at(uintptr_t va, int level)
-    {
-        unsigned const shift = GRANULE_SHIFT + static_cast<unsigned>(LEVEL_LEAF - level) * 9u;
-        return static_cast<size_t>((va >> shift) & (PTES - 1));
-    }
-
-    // Bytes one entry at `level` spans: 1 GiB at level 1, 2 MiB at level 2, 4 KiB at 3.
-    uintptr_t span_at(int level)
-    {
-        unsigned const shift = GRANULE_SHIFT + static_cast<unsigned>(LEVEL_LEAF - level) * 9u;
-        return static_cast<uintptr_t>(1) << shift;
-    }
-
     // The descriptor write must reach the walker before the invalidate, and the invalidate
     // must complete before the next translated access (DDI 0487 M.b section D8.17).
     void invalidate_page(uintptr_t va)
@@ -220,8 +205,7 @@ namespace
         kickos_armv8a_isb();
     }
 
-    // Root-keyed ASIDs and cores that may retain translations.
-    // write_ttbr0 records residency when it installs a root.
+    // Root-keyed ASIDs and the cores that may retain translations; write_ttbr0 records them.
     kickos::aspace::Residency<KICKOS_NUM_CORES> g_residency;
 
     uint64_t root_key(struct arch_aspace* space)
@@ -266,15 +250,6 @@ namespace
     }
 #endif
 
-    void invalidate_page_if(uintptr_t va, bool resident)
-    {
-        if (not resident)
-        {
-            return;
-        }
-        invalidate_page(va);
-    }
-
     // Complete descriptor stores before a table walk, including on one core.
     // ISB only synchronizes context; it does not complete stores
     // (DDI 0487 M.b, D8.17.1).
@@ -298,7 +273,7 @@ namespace
 
     // The fault reporter needs the boot root's low-address device mappings.
     uint64_t g_boot_ttbr0 = 0;
-    // Track capture separately because a boot TTBR0 value of zero is valid.
+    // Separate from the value: a boot TTBR0 of zero is valid.
     bool g_boot_captured = false;
 
     void capture_boot()
@@ -393,151 +368,68 @@ namespace
     // leaf_attrs sets PXN on every entry it builds, so UXN alone carries the execute permission
     // (DDI 0487 M.b section D8.3, Table D8-52).
 #if KICKOS_KERNEL_CORES > 1
-    bool removal_owes_rendezvous(uint64_t desc)
+    bool removal_owes(uint64_t desc)
     {
         return (desc & DESC_VALID) != 0 and (desc & DESC_UXN) == 0;
     }
 #else
-    bool removal_owes_rendezvous(uint64_t)
+    bool removal_owes(uint64_t)
     {
         return false;
     }
 #endif
 
-    void free_subtree(uint64_t* table, int level)
+    int walk_top()
     {
-        for (size_t i = 0; i < PTES; i++)
+        return HEIGHT_ROOT;
+    }
+
+    arch_phys_addr_t entry_pa(uint64_t desc)
+    {
+        return static_cast<arch_phys_addr_t>(desc & DESC_OA_MASK);
+    }
+
+    // DESC_BIT1 clear above level 3 is a block.
+    bool entry_table(uint64_t desc, int)
+    {
+        return (desc & DESC_VALID) != 0 and (desc & DESC_BIT1) != 0;
+    }
+
+    bool root_slot_kept(uint64_t const*, size_t)
+    {
+        return false;
+    }
+
+    uint64_t leaf_desc(uint64_t attrs, arch_phys_addr_t pa)
+    {
+        return attrs | (static_cast<uint64_t>(pa) & DESC_OA_MASK);
+    }
+
+    void link_table(uint64_t* entry, arch_phys_addr_t table, Edit const&)
+    {
+        kickos_armv8a_dsb_ishst();
+        *entry = static_cast<uint64_t>(table) | DESC_VALID | DESC_BIT1;
+    }
+
+    // A detached table needs the whole sweep: a by-address invalidate drops the walks of that
+    // address only.
+    void edits_done(Edit const& e)
+    {
+        publish_edits();
+        if (e.detached != 0 and e.resident)
         {
-            uint64_t const desc = table[i];
-            if ((desc & DESC_VALID) == 0)
-            {
-                continue;
-            }
-            arch_phys_addr_t const out = static_cast<arch_phys_addr_t>(desc & DESC_OA_MASK);
-            // A block descriptor at a non-leaf level is an output, not a table, and
-            // recursing into one would read its frame as descriptors.
-            if (level < LEVEL_LEAF and (desc & DESC_BIT1) != 0)
-            {
-                free_subtree(table_at(out), level + 1);
-            }
-            // The allocator ignores outputs it does not own, such as device pages.
-            kickos_frame_free(out);
-            table[i] = 0;
+            invalidate_all();
+        }
+        if (e.owed)
+        {
+            instruction_side_rendezvous(e.peers);
         }
     }
 
-    // Recursion is bounded by the level count.
-    enum arch_aspace_result map_into(uint64_t* table, int level, uintptr_t va, size_t pages,
-                                     arch_phys_addr_t pa, uint64_t leaf, bool resident,
-                                     bool* broke_executable)
+    Edit edit_of(struct arch_aspace* space)
     {
-        while (pages != 0)
-        {
-            size_t const idx = index_at(va, level);
-            if (level == LEVEL_LEAF)
-            {
-                if ((table[idx] & DESC_VALID) != 0)
-                {
-                    // Read execute permission before clearing the descriptor.
-                    // Peers using executable mappings also need an ISB.
-                    if (removal_owes_rendezvous(table[idx]))
-                    {
-                        *broke_executable = true;
-                    }
-                    // Break before make: invalidate between clearing and replacing the entry.
-                    table[idx] = 0;
-                    invalidate_page_if(va, resident);
-                }
-                table[idx] = leaf | (static_cast<uint64_t>(pa) & DESC_OA_MASK);
-                // ARM64 does not cache faulting entries. Invalidate for replacements
-                // (DDI 0487 M.b, D8.17, IWZCBG).
-                invalidate_page_if(va, resident);
-                va += GRANULE;
-                pa += GRANULE;
-                pages--;
-                continue;
-            }
-
-            uint64_t desc = table[idx];
-            if ((desc & DESC_VALID) == 0)
-            {
-                arch_phys_addr_t const frame = kickos_frame_alloc();
-                if (frame == 0)
-                {
-                    return ARCH_ASPACE_ENOMEM;
-                }
-                kickos::aspace::zero_table(table_at(frame), PTES);
-                desc = static_cast<uint64_t>(frame) | DESC_VALID | DESC_BIT1;
-                kickos_armv8a_dsb_ishst();
-                table[idx] = desc;
-                // The leaf invalidations also cover intermediate entries for each address.
-            }
-
-            uintptr_t const span = span_at(level);
-            uintptr_t const next = (va + span) & ~(span - 1);
-            size_t const here_max = static_cast<size_t>((next - va) / GRANULE);
-            size_t here = pages;
-            if (here > here_max)
-            {
-                here = here_max;
-            }
-            arch_phys_addr_t const child_pa = static_cast<arch_phys_addr_t>(desc & DESC_OA_MASK);
-            enum arch_aspace_result const rc =
-                map_into(table_at(child_pa), level + 1, va, here, pa, leaf, resident,
-                         broke_executable);
-            if (rc != ARCH_ASPACE_OK)
-            {
-                return rc;
-            }
-            va += static_cast<uintptr_t>(here) * GRANULE;
-            pa += static_cast<arch_phys_addr_t>(here) * GRANULE;
-            pages -= here;
-        }
-        return ARCH_ASPACE_OK;
-    }
-
-    // Free empty child tables after leaf rollback; return whether this table is empty.
-    bool prune_empty(uint64_t* table, int level)
-    {
-        if (level == LEVEL_LEAF)
-        {
-            return kickos::aspace::table_empty(table, PTES);
-        }
-        for (size_t i = 0; i < PTES; i++)
-        {
-            uint64_t const desc = table[i];
-            if ((desc & DESC_VALID) == 0)
-            {
-                continue;
-            }
-            arch_phys_addr_t const child = static_cast<arch_phys_addr_t>(desc & DESC_OA_MASK);
-            if (prune_empty(table_at(child), level + 1))
-            {
-                table[i] = 0;
-                kickos_frame_free(child);
-            }
-        }
-        return kickos::aspace::table_empty(table, PTES);
-    }
-
-    // Return null for an unmapped leaf.
-    uint64_t* leaf_entry(uint64_t* table, uintptr_t va)
-    {
-        for (int level = LEVEL_ROOT; level < LEVEL_LEAF; level++)
-        {
-            uint64_t const desc = table[index_at(va, level)];
-            if ((desc & DESC_VALID) == 0 or (desc & DESC_BIT1) == 0)
-            {
-                return nullptr;
-            }
-            table = table_at(static_cast<arch_phys_addr_t>(desc & DESC_OA_MASK));
-        }
-        uint64_t* const entry = &table[index_at(va, LEVEL_LEAF)];
-        if ((*entry & DESC_VALID) == 0)
-        {
-            return nullptr;
-        }
-        return entry;
+        Edit const e = {resident_anywhere(space), resident_peers(space), false, 0};
+        return e;
     }
 
     // Reject the kernel half before walking: its index bits can alias user entries.
@@ -610,7 +502,7 @@ struct arch_aspace* arch_aspace_create(void)
         return nullptr;
     }
     uint64_t* const table = table_at(root);
-    kickos::aspace::zero_table(table, PTES);
+    zero_table(table);
     kickos_armv8a_dsb_ishst();
     // Destroy invalidates the old root before its frame or ASID can be reused.
     g_residency.open(static_cast<uint64_t>(root), asid_capacity());
@@ -637,7 +529,7 @@ void arch_aspace_destroy(struct arch_aspace* space)
     invalidate_all();
     // Release the ASID only after all resident cores have invalidated it.
     g_residency.close(key);
-    free_subtree(table, LEVEL_ROOT);
+    free_subtree(table, HEIGHT_ROOT, true);
     kickos_frame_free(phys_of(table));
     instruction_side_rendezvous(peers);
 }
@@ -646,7 +538,7 @@ enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
                                         arch_phys_addr_t pa, size_t pages,
                                         uint32_t rights, enum arch_map_memtype type)
 {
-    if (space == nullptr or not range_ok(va, pages))
+    if (space == nullptr or root_of(space) == boot_root() or not range_ok(va, pages))
     {
         return ARCH_ASPACE_EINVAL;
     }
@@ -659,96 +551,16 @@ enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
     {
         return ARCH_ASPACE_EINVAL;
     }
-    // Reject partially mapped ranges: rollback would remove existing leaves.
-    // Wholly mapped ranges can be remapped without allocating tables.
-    size_t mapped = 0;
-    for (size_t i = 0; i < pages; i++)
-    {
-        if (leaf_entry(root_of(space), va + static_cast<uintptr_t>(i) * GRANULE) != nullptr)
-        {
-            mapped++;
-        }
-    }
-    if (mapped != 0 and mapped != pages)
-    {
-        return ARCH_ASPACE_EINVAL; // partially mapped, and nothing has been edited
-    }
-    // Never-run spaces need publication but no invalidation.
-    bool const resident = resident_anywhere(space);
-    uint32_t const peers = resident_peers(space);
-    bool broke_executable = false;
-    enum arch_aspace_result const rc =
-        map_into(root_of(space), LEVEL_ROOT, va, pages, pa, leaf, resident, &broke_executable);
-    publish_edits();
-    if (rc != ARCH_ASPACE_OK)
-    {
-        // Mask interrupts so no walk can occur between invalidation and table free.
-        arch_irq_state_t const s = arch_irq_save();
-        // Clear leaves before freeing tables. Mapping proceeds in address order,
-        // so the first missing leaf ends rollback.
-        for (size_t i = 0; i < pages; i++)
-        {
-            uint64_t* const entry =
-                leaf_entry(root_of(space), va + static_cast<uintptr_t>(i) * GRANULE);
-            if (entry == nullptr)
-            {
-                break;
-            }
-            // Rollback of executable leaves also requires peer instruction synchronization.
-            if (removal_owes_rendezvous(*entry))
-            {
-                broke_executable = true;
-            }
-            *entry = 0;
-        }
-        // One sweep each side of the frees.
-        invalidate_all();
-        (void)prune_empty(root_of(space), LEVEL_ROOT);
-        invalidate_all();
-        arch_irq_restore(s);
-    }
-    // Synchronize peers after both replacement and rollback of executable mappings.
-    if (broke_executable)
-    {
-        instruction_side_rendezvous(peers);
-    }
-    return rc;
+    return walk_map(root_of(space), va, pa, pages, leaf, edit_of(space));
 }
 
 enum arch_aspace_result arch_aspace_unmap(struct arch_aspace* space, uintptr_t va, size_t pages)
 {
-    if (space == nullptr or not range_ok(va, pages))
+    if (space == nullptr or root_of(space) == boot_root() or not range_ok(va, pages))
     {
         return ARCH_ASPACE_EINVAL;
     }
-    for (size_t i = 0; i < pages; i++)
-    {
-        if (leaf_entry(root_of(space), va + static_cast<uintptr_t>(i) * GRANULE) == nullptr)
-        {
-            return ARCH_ASPACE_EINVAL; // not wholly mapped, and nothing has been cleared
-        }
-    }
-    bool const resident = resident_anywhere(space);
-    uint32_t const peers = resident_peers(space);
-    bool executable = false;
-    for (size_t i = 0; i < pages; i++)
-    {
-        uintptr_t const at = va + static_cast<uintptr_t>(i) * GRANULE;
-        uint64_t* const entry = leaf_entry(root_of(space), at);
-        if (removal_owes_rendezvous(*entry))
-        {
-            executable = true;
-        }
-        *entry = 0;
-        invalidate_page_if(at, resident);
-    }
-    publish_edits();
-    if (executable)
-    {
-        instruction_side_rendezvous(peers);
-    }
-    // Empty tables are reclaimed by destroy.
-    return ARCH_ASPACE_OK;
+    return walk_unmap(root_of(space), va, pages, edit_of(space));
 }
 
 void arch_aspace_activate(struct arch_aspace* space)

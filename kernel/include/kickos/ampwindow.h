@@ -15,9 +15,8 @@
 // PROTOCOL SCAFFOLDING, AND NOT AN ISOLATION BOUNDARY BETWEEN KERNELS. Every node maps the
 // same writable kernel RAM, so a compromised peer KERNEL can rewrite the mint, the counters
 // and every other node's kernel data whatever this file validates. What the validation below
-// defends a node against is a MALFORMED peer, never a hostile one. Per-node memory
-// partitioning is the AMP partition layout the contract leaves open, and until it lands
-// nothing here may be read as a privilege boundary.
+// defends a node against is a MALFORMED peer, never a hostile one, so nothing here may be read
+// as a privilege boundary.
 
 #ifndef KICKOS_AMPWINDOW_H
 #define KICKOS_AMPWINDOW_H

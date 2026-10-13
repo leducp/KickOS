@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// sim: struct arch_context is opaque storage for a ucontext_t plus the entry
-// trampoline payload. Kept as a raw aligned buffer so the freestanding kernel
-// TUs that embed it in the TCB never pull in <ucontext.h>. The sim backend
-// casts this to its private layout and static_asserts the size fits.
+// A raw aligned buffer, so the freestanding kernel TUs that embed it in the TCB never pull in
+// <ucontext.h>. The sim backend casts it to its private layout and static_asserts the fit.
 
 #ifndef KICKOS_ARCH_CONTEXT_H
 #define KICKOS_ARCH_CONTEXT_H

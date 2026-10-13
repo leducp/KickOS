@@ -1,15 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The v7-M arch carries three MPU designs, because a chip may replace the core PMSAv7
-// backend (the unit its chip file states): PMSAv8 on a Cortex-M33 and the K64F's
-// crossbar SYSMPU. Each writes a different descriptor, so each gets its own image.
-// KICKOS_ARM_MPU (CMakeLists.txt) names which one this build is; this header is only
-// included where KICKOS_HAVE_MPU (arch/include/kickos/arch/arch.h), so it never sees
-// KICKOS_ARM_MPU_NONE.
-//
-// The slot index is positional in all three, so the hardware region number comes from the
-// image index and is not carried in the words.
+// One image layout per MPU design (PMSAv7, PMSAv8, the K64F's crossbar SYSMPU), chosen by
+// KICKOS_ARM_MPU. The slot index is positional: the hardware region number is the image
+// index and is not carried in the words.
 
 #ifndef KICKOS_ARCH_MPU_ENCODED_H
 #define KICKOS_ARCH_MPU_ENCODED_H

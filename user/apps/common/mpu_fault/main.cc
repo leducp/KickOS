@@ -67,7 +67,7 @@ int main(int, char**)
     kos::print(msg);
 
     kos::thread::create(domainA_worker, rA, "domainA", 10, KOS_POLICY_FIFO, 0,
-                        /*privileged=*/false, rA, REGION);
+                        rA, REGION);
     kos_cap_t idle = KOS_CAP_NONE;
     (void)kos_sem_create(0, &idle);
     while (true)

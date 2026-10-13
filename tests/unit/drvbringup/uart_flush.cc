@@ -209,7 +209,7 @@ namespace
         g_script[0] = "hello\n";
         g_script[1] = "";
         g_script_len = 2u;
-        EXPECT_EQ(uart::console_serve_loop(&g_sh), -KOS_EBADF);
+        EXPECT_EQ(kickos::console::console_serve_loop<uart::Transport>(&g_sh), -KOS_EBADF);
         EXPECT_EQ(g_fifo_at_return, 0u)
             << "the receive came back with bytes still in the device's FIFO";
         EXPECT_EQ(g_wire_at_return.find("hello"), 0u) << "wire: " << g_wire_at_return;

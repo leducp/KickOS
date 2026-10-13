@@ -2,7 +2,7 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # Irq beside the default's authority, for the lines the bench raises past KICKOS_IRQ_FREE_BASE,
-# claimed at run time; the three bench images share it.
+# claimed at run time, and bootloader for the terminal outcome; the three bench images share it.
 
 version: 1
 stdout: kernel
@@ -13,4 +13,4 @@ tasks:
     entry: kickos_main
     priority: 2
     ceiling: 31
-    authority: [memory, system, tasks, irq]
+    authority: [memory, system, tasks, irq, bootloader]

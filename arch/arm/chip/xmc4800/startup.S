@@ -1,14 +1,12 @@
 /* SPDX-License-Identifier: CECILL-C
  * Copyright (c) 2026 Philippe Leduc
  *
- * Infineon XMC4800 (Cortex-M4F) startup: reset vector table (16 core + 112
- * interrupt nodes, IRQ0..IRQ111). SVC/PendSV/SysTick come from the armv7m arch
- * layer; every external line routes to kickos_arm_default_irq (line=IPSR-16).
- * Linked at the cached flash alias 0x0800_0000; chip_xmc4800 sets VTOR to it.
+ * Infineon XMC4800 (Cortex-M4F) startup: the vector table, linked at the cached flash alias
+ * 0x0800_0000; chip_xmc4800 sets VTOR to it.
  */
 
-#include <kickos/chip_limits.h>   /* KICKOS_MAX_IRQ: the NVIC line count */
-#include "core_vectors.inc"        /* shared core-exception vector block */
+#include <kickos/chip_limits.h>
+#include "core_vectors.inc"
 
     .syntax unified
     .thumb
@@ -19,15 +17,12 @@
 g_isr_vector:
     KICKOS_CORE_VECTORS_V7M
 
-    /* Interrupt nodes IRQ0..IRQ111 -> the generic IRQ-as-event entry. */
     .rept KICKOS_MAX_IRQ
     .word kickos_arm_default_irq
     .endr
 
     .text
     .thumb_func
-    /* File-local: the vector word above is the only reference, and a chip that wants a
-     * real NMI handler edits this startup.S. */
 NMI_Handler:
     b       .
 

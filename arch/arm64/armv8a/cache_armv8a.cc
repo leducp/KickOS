@@ -12,9 +12,8 @@
 
 namespace
 {
-    // CTR_EL0.DminLine is log2 of the smallest data line in WORDS across every level, which
-    // is the figure a by-address loop must step by: the A53's is 16 words, but a part with a
-    // smaller line elsewhere in its hierarchy would leave lines untouched at 64.
+    // CTR_EL0.DminLine is log2 of the smallest data line in words across every level: a
+    // by-address loop stepping by more would leave lines untouched.
     size_t dcache_line()
     {
         uint64_t ctr = 0;
@@ -23,8 +22,8 @@ namespace
         return static_cast<size_t>(words) * 4u;
     }
 
-    // The half-open line-aligned span, or false where there is nothing to do. The end is
-    // computed before the alignment so a caller's unaligned tail is inside the last line.
+    // The half-open span from the aligned first line, or false where there is nothing to do. The
+    // end is not aligned down, so the line holding an unaligned tail is still visited.
     bool span_of(void const* addr, size_t bytes, uintptr_t* first, uintptr_t* end,
                  size_t* line)
     {
@@ -61,9 +60,8 @@ void arch_dcache_flush(void const* addr, size_t bytes)
     {
         __asm volatile("dc cvac, %0" ::"r"(p) : "memory");
     }
-    // SY, the scope over which a cache maintenance instruction is guaranteed complete for an
-    // observer outside this CPU's coherency domain (ARM DDI 0487 B2.6.9). An ISH barrier
-    // completes it for coherent peers alone.
+    // SY: completion for an observer outside this CPU's coherency domain (DDI 0487 B2.6.9);
+    // ISH covers coherent peers only.
     __asm volatile("dsb sy" ::: "memory");
 }
 
@@ -78,9 +76,8 @@ void arch_dcache_invalidate(void* addr, size_t bytes)
     }
     for (; p < end; p += line)
     {
-        // CIVAC and not IVAC: the first and last lines are shared with whatever sits beside
-        // the buffer, and a plain invalidate discards their dirty bytes with no way for the
-        // caller to have prevented it.
+        // CIVAC, not IVAC: the first and last lines are shared with the neighbours of the
+        // buffer, and a plain invalidate discards their dirty bytes.
         __asm volatile("dc civac, %0" ::"r"(p) : "memory");
     }
     __asm volatile("dsb sy" ::: "memory");

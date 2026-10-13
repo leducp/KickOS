@@ -71,9 +71,9 @@ INHERIT_LINES="$(sed -n -e '/^KICKOS_AMP_NODE_ID:/d' -e '/^KICKOS_MANIFEST:/d' \
 
 SEED="$NODE0_BUILD/generated/amp-peer-seed.cmake"
 [ -f "$SEED" ] || {
-    echo "build-partition.sh: node 0's build wrote no peer seed at $SEED. It is written by" >&2
-    echo "  the own-image AMP block of the root CMakeLists.txt from the resolved .config, so" >&2
-    echo "  either that build is not an own-image node 0 or its configure is stale." >&2
+    echo "build-partition.sh: node 0's build wrote no peer seed at $SEED. genconfig.py writes" >&2
+    echo "  it from an own-image node's resolved configuration, so either that build is not" >&2
+    echo "  an own-image node 0 or its configure is stale." >&2
     exit 1
 }
 

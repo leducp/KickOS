@@ -73,7 +73,7 @@ namespace kickos
     namespace detail
     {
         InstanceLocal<Kernel> g_instance;
-#if defined(KICKOS_MULTI_INSTANCE) && KICKOS_MULTI_INSTANCE
+#if KICKOS_MULTI_INSTANCE
         // instance.cc is not linked here, so the selector's storage is owed too. One
         // instance, so the index stays 0.
         __thread unsigned g_instance_index __attribute__((tls_model("initial-exec"))) = 0;

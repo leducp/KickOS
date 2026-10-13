@@ -44,7 +44,7 @@ struct arch_context
     uint32_t trace_tid;
 #endif
 
-#if defined(KICKOS_TLS) && KICKOS_TLS
+#if KICKOS_TLS
     // THREADPTR while this thread runs, written by every switch-in and never read back from
     // the register, which any code can write. Write-once per thread.
     uint32_t tls_base;

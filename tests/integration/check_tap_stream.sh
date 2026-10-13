@@ -214,9 +214,9 @@ if [ -n "$_rj_notes" ]; then
     out="$(printf '%s\n' "$out" | rejoin_fault_splits "$expect_faults")"
 fi
 
-# The verdict is the harness's own tally. Above one core arch_console_write is a byte-at-a-time
-# device loop under no lock, so a peer's status line lands inside another line character by
-# character and carries its own newline in with it: `not ok 7 - x` reaches the wire as `not `
+# The verdict is the harness's own tally. Above one core the console keeps a line whole only
+# within one write, so a peer's status line can land between the pieces of another line and
+# carries its own newline in with it: `not ok 7 - x` reaches the wire as `not `
 # plus a foreign line, then `ok 7 - x` on the next one. A grep for the forbidden literal cannot
 # see that, and every way it can be wrong ends in a pass. run_all() emits exactly one final
 # verdict line whatever the outcome, so reading that is a positive claim: a shredded one does

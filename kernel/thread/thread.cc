@@ -349,9 +349,8 @@ namespace kickos
         }
         // Rule 7 bounds the arena, not who inside it reserved what: a sibling task's block is
         // in-arena too.
-        if (how != RAM_ADMIT_PRIVILEGED
-            and (not grant_region_admissible(base, rsz, attr, false)
-                 or not ram_owner_nameable(granter->task, base, size)))
+        if (not grant_region_admissible(base, rsz, attr, false)
+            or not ram_owner_nameable(granter->task, base, size))
         {
             return -KOS_EPERM;
         }

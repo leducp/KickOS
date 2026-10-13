@@ -1,15 +1,13 @@
 /* SPDX-License-Identifier: CECILL-C
  * Copyright (c) 2026 Philippe Leduc
  *
- * STM32F302R8 (Cortex-M4F) startup: reset vector table (16 core + 82 NVIC lines;
- * the F302x6/8 vector table tops out at position 81 = FPU). SVC/PendSV/SysTick
- * come from the armv7m arch layer; every external line routes to
- * kickos_arm_default_irq (line = IPSR-16). Runs from flash at 0x0800_0000.
+ * STM32F302R8 (Cortex-M4F) startup: the vector table, which tops out at position 81 (FPU).
+ * Runs from flash at 0x0800_0000.
  */
 
 #include <chip_layout.h>
-#include <kickos/chip_limits.h>   /* KICKOS_MAX_IRQ: the NVIC line count */
-#include "core_vectors.inc"        /* shared core-exception vector block */
+#include <kickos/chip_limits.h>
+#include "core_vectors.inc"
 
     .syntax unified
     .thumb
@@ -32,8 +30,6 @@ g_isr_vector:
 
     .text
     .thumb_func
-    /* File-local: the vector word above is the only reference, and a chip that wants a
-     * real NMI handler edits this startup.S. */
 NMI_Handler:
     b       .
 

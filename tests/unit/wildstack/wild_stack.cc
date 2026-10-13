@@ -2,8 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // What kickos_thread_contain_wild_stack REFUSES. Containing the wrong thread is worse than
-// ending the system: slaying idle leaves the scheduler nothing to run, and containing a
-// privileged thread hides a kernel bug behind a thread death.
+// ending the system: slaying idle leaves the scheduler nothing to run.
 
 #include <kickos/arch/arch.h>
 
@@ -49,15 +48,6 @@ namespace kickos
                     << "slaying idle leaves the scheduler nothing to run";
                 EXPECT_NE(victim->cancel_kind, CANCEL_SLAY)
                     << "and the refusal must come BEFORE the slay, not after it";
-            }
-
-            TEST_F(WildStack, a_privileged_thread_is_refused)
-            {
-                Thread* const t = seat_pool(SLOT_VICTIM, PRIO_LOW);
-                t->privileged = true;
-                kernel().current(kickos_kernel_core()) = t;
-                EXPECT_EQ(kickos_thread_contain_wild_stack(&t->ctx, nullptr), nullptr)
-                    << "a privileged thread's wild pointer is a kernel bug, not a thread's";
             }
 
             TEST_F(WildStack, a_context_no_slot_owns_is_refused)

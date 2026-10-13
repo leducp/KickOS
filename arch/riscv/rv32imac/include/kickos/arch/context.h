@@ -39,7 +39,7 @@ struct arch_context
     // saves it. Zero for a TCB outside the pool.
     uintptr_t kernel_sp;
 
-#if defined(KICKOS_TLS) && KICKOS_TLS
+#if KICKOS_TLS
     // tp while this thread runs, written at every resume and never read back from the
     // register, which U-mode can write. Write-once per thread.
     uint32_t tls_base;

@@ -1,20 +1,19 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// STM32F302R8 (Nucleo-F302R8, Cortex-M4F) chip backend. The PLL bring-up, the monotonic clock
-// and the buffered console are shared in ../stm32f1f3/chip_stm32f1f3.cc. Registers clean-room
-// from RM0365; no vendor HAL. No MPU, and no watchdog at reset.
+// STM32F302R8 (Nucleo-F302R8, Cortex-M4F) chip backend (RM0365). The PLL bring-up, the monotonic
+// clock and the buffered console are in ../stm32f1f3/chip_stm32f1f3.cc.
 
 #include <kickos/arch/arch.h>
+#include <kickos/arch/bounded_wait.h>
 #include "crt_tail.h"
 #include "pin_guard.h"
-#include <kickos/config/limits.h>
 #include <kickos/sys/abi.h>
 
 #include "board_pins.h"
 #include "family_map.h"
 #include <chip_layout.h>
-#include "regs.h" // arch/arm/common: kickos_armv7m_enable_fpu
+#include "regs.h"
 #include "stm32_gpio.h"
 
 
@@ -92,20 +91,18 @@ namespace
 
     void tim2_clock_init()
     {
-        // Boot-order: nothing before arch_init may read the clock. A static ctor
-        // (__init_array) calling ktime_now()/arch_clock_now() BusFaults here on
-        // the ungated APB1 access.
+        // Nothing before arch_init may read the clock: a static ctor calling arch_clock_now()
+        // BusFaults on the ungated APB1 access.
         // The F3 has no APB1LPENR: TIM2 keeps counting in WFI by default.
         reg32(RCC_APB1ENR) |= APB1ENR_TIM2EN;
         reg32(mmap::TIM2_BASE + TIM_CR1) = 0;
         reg32(mmap::TIM2_BASE + TIM_PSC) = 0;
         reg32(mmap::TIM2_BASE + TIM_ARR) = 0xFFFFFFFFu;
-        reg32(mmap::TIM2_BASE + TIM_EGR) = TIM_EGR_UG;  // latch PSC/ARR into the shadows (sets UIF)
+        reg32(mmap::TIM2_BASE + TIM_EGR) = TIM_EGR_UG;  // latches PSC/ARR; sets UIF
         reg32(chip::CLK_TIMER_SR) = ~TIM_SR_UIF;        // drop that UIF before arming the IRQ
-        reg32(mmap::TIM2_BASE + TIM_DIER) = TIM_DIER_UIE; // wrap observer for the disarmed idle case
+        reg32(mmap::TIM2_BASE + TIM_DIER) = TIM_DIER_UIE;
         reg32(mmap::TIM2_BASE + TIM_CR1) = TIM_CR1_CEN;
-        // No arch_irq_clear_pending: a pend latched here (latch-and-coalesce) redelivers
-        // one benign kickos_isr_timer tick on enable, which the tickless handler tolerates.
+        // A pend latched here redelivers one benign kickos_isr_timer tick on enable.
         arch_irq_unmask(chip::CLK_TIMER_IRQ);
     }
 
@@ -129,41 +126,25 @@ extern "C"
 
 void arch_init(void)
 {
-    // Clock first: the console's BRR derives from the final PCLK1.
+    // Clock first: the BRR derives from the final PCLK1.
     if (kickos::stm32::clock_init())
     {
         SystemCoreClock = 64000000u;
         pclk1_hz = 32000000u;
     }
     tim2_clock_init();
-    // Anchor the clock ONCE, from the FINAL rate: TIM2 is on APB1 and, with HPRE=/1
-    // and PPRE1 in {/1,/2}, the STM32 APB timer-clock doubler makes the timer kernel
-    // clock equal HCLK == SystemCoreClock (retuning PPRE1 to /4+ would break that).
+    // With HPRE=/1 and PPRE1 in {/1,/2} the APB timer-clock doubler makes TIM2's clock equal
+    // SystemCoreClock; PPRE1 /4 or more would break that.
     kickos::stm32::clock_anchor(SystemCoreClock);
     usart2_init();
     kickos_armv7m_init();
 }
 
-// The STM32F302x8 has no MPU, unlike the F302xB/xC line: 0 is the seam's no-MPU
-// granule (arch.h), not a tuning choice.
-size_t arch_mpu_min_region(void)
-{
-    return 0u;
-}
-
-// ISR.TC, not ISR.TXE: TXE says the data register took the byte, TC says the shift register
-// finished clocking it out. kickos_terminate stops the core right after this, so waiting on
-// TXE would still lose the last character.
+// TC, not TXE: TXE only says the data register took the byte. kickos_terminate stops the core
+// right after this, so waiting on TXE would still lose the last character.
 void arch_console_flush_sync(void)
 {
-    uint32_t spin = 0;
-    while ((reg32(chip::USART_SR) & chip::USART_TC) == 0)
-    {
-        if (++spin > KICKOS_POLL_SPIN_MAX)
-        {
-            return; // bounded, as arch.h requires: a wedged UART drops the tail, never hangs
-        }
-    }
+    (void)kickos::arch::wait_set(reg32(chip::USART_SR), chip::USART_TC);
 }
 
 void arch_diag_led_init(void)

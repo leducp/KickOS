@@ -6,7 +6,7 @@
 #
 # The sourcing script sets these before calling kos_boot, and keeps the environment knobs they
 # come from (KICKOS_XN_FIRMWARE and friends) beside its own arms:
-#   KOS_STEP       X1 .. X5, named in the diagnostics
+#   KOS_STEP       X1 or X2, named in the diagnostics
 #   KOS_TOKEN      the token this step's arms hold the image to
 #   KOS_FIRMWARE   pflash (split OVMF_CODE_4M plus OVMF_VARS_4M) or bios (combined OVMF.fd)
 #   KOS_MACHINE    qemu machine type

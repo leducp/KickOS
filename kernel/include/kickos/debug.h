@@ -11,9 +11,7 @@
 #ifndef KICKOS_DEBUG_H
 #define KICKOS_DEBUG_H
 
-#ifndef KICKOS_DEBUG
-#define KICKOS_DEBUG 0
-#endif
+#include <kickos/board_config.h>
 
 #if KICKOS_DEBUG
 namespace kickos

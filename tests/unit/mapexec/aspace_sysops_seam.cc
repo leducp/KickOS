@@ -25,6 +25,7 @@ namespace
 
     uint64_t g_tcr = TCR_DEFAULT;
     uint64_t g_mmfr0 = MMFR0_DEFAULT;
+    uint32_t g_freed_at_sweep = 0;
 }
 
 extern "C"
@@ -89,11 +90,13 @@ extern "C"
 
     void kickos_armv8a_tlbi_all_is(void)
     {
+        g_freed_at_sweep = kickos::testfix::frames_freed();
         sysop_record(kickos::testfix::OP_TLBI_ALL_IS, 0);
     }
 
     void kickos_armv8a_tlbi_all_local(void)
     {
+        g_freed_at_sweep = kickos::testfix::frames_freed();
         sysop_record(kickos::testfix::OP_TLBI_ALL_LOCAL, 0);
     }
 }
@@ -146,6 +149,12 @@ namespace kickos
             }
             g_tcr = TCR_DEFAULT;
             g_mmfr0 = MMFR0_DEFAULT;
+            g_freed_at_sweep = 0;
+        }
+
+        uint32_t frames_freed_at_sweep()
+        {
+            return g_freed_at_sweep;
         }
     }
 }

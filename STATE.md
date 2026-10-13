@@ -19,18 +19,24 @@ A milestone's own section leaves this file once the milestone after it merges, a
 
 ## Where we are
 
-**M10 HAS MERGED THROUGH M10.5, AND M10.6, THE CLEANUP PASS, IS OPEN.** M9's answer is that the
-one big kernel lock stays, with per-core ready queues and per-pair rings under it and CLH
+**M10 HAS MERGED THROUGH M10.6.4, AND M10.6, THE CLEANUP PASS, IS OPEN.** M9's answer is that
+the one big kernel lock stays, with per-core ready queues and per-pair rings under it and CLH
 arbitration on x86_64 alone. M10 is static composition: a declared system, admitted on the host,
 and an init provider that stays resident. `roadmap.md`'s `### M10` section is the ledger and the
-only place its numbers are assigned; the M10.5 section at the bottom of this file says what the
-last merged milestone's green runs do not.
+only place its numbers are assigned; the sections at the bottom of this file say what each
+milestone's green runs do not.
 
-**M10.6.4 IS CLOSED ON ITS BRANCH AND WAITS FOR ITS SQUASH AND THE MAINTAINER'S PUSH; M10.6.5 IS
-NEXT.** Its record is `TODO.md`'s "M10.6.4, FIRST" entry, and the M10.6.4 section at the bottom
-of this file says what its green runs do not. The toolchain 1.1 release also waits on the
-maintainer: its branch is to be pushed and the release published, and the RX72M capture of
-`chaincheck`'s C99 arms waits on it.
+**M10.6.5 IS CLOSED ON ITS BRANCH AND WAITS FOR ITS SQUASH AND THE MAINTAINER'S PUSH; M10.6.6, THE
+BENCH, IS NEXT.** Its record is the M10.6.5 entries of `TODO.md`'s M10.6 section, and the M10.6.5
+section at the bottom of this file says what its green runs do not. The tree requires toolchain
+1.1, so CI on it is green only once that release is published, which is the maintainer's.
+
+**THE ORDER IS LOCKED: M10.6.6, THEN M10.7.** Every silicon image has moved since the last bench
+pass and none of the moved images has run, so the bench pass comes first: `TODO.md`'s "THE BENCH
+PASS, BOARD BY BOARD" is its list, and the ESP32 IRAM, the interrupt stacks and the C6 PLL ride the
+same passes. M10.7, the exit record, reconciles the references against what shipped, so it waits
+for the bench. The KickOS journey and the mutex fast path carry no number: both start once M10.6.5
+merges.
 
 M7 is the multicore milestone and `docs/design-multicore.md` is its contract; every ruling and every
 freeze lives there, `roadmap.md` assigns the numbers, and `git log` carries the order things landed
@@ -95,10 +101,10 @@ reset a stopped counter would read a constant with a plausible frequency beside 
 shape that HANGS a bounded wait rather than reddening it.**
 
 **NO BOARD IN THE TREE FAILS THE PART'S HALF OF THE PREDICATE WHILE PASSING THE ARCH'S**, every chip
-that ships a declaration declaring all three, so the predicate is one authority driven twice: the
-build calls it and `tests/static/check_smp_predicate.cmake` calls the same function over SYNTHETIC
-declaration trees, each case against a control differing in one clause and **each checked by
-MUTATION rather than by passing.**
+that ships a declaration declaring all three, so the predicate is one authority: the shared
+model's `depends on` over the arch and chip selects in `arch/Kconfig`, which
+`tools/kconfig/test_genconfig.py` holds to their owners, **each case checked by MUTATION rather
+than by passing.**
 
 **RELEASED IS NOT ARRIVED, and that distinction is the only reason the bring-up has a witness.**
 PSCI answering SUCCESS says a core was STARTED; a core handed a bad entry, a bad stack or a
@@ -484,10 +490,10 @@ The whole point of this file. A green fleet pass says none of the following.
 - **WHICH ROUTE INTERLEAVES, MEASURED PER ROUTE.** Stated this way because a reader who takes
   the widest form will distrust a published capture that is fine, or hunt for a lock that should
   not exist.
-  - **The kernel's DIAGNOSTIC route, the chip UART, interleaves at BYTE granularity.** That is
-    what the banner, the status lines and the fault reporter use. `console_emit` brackets only
-    the ownership-count read with `IrqLock` and leaves the device write outside it deliberately;
-    on this board `arch_console_write` is an unlocked byte loop.
+  - **The kernel's DIAGNOSTIC route, the chip UART, interleaves at LINE granularity.** That is
+    what the banner, the status lines and the fault reporter use. The ring takes a whole line
+    under one `IrqLock` or refuses it (`console.md`, clause 2); only lines written polled after a
+    panic, which take no lock, can interleave byte by byte (clause 8).
   - **The PUBLISHED route does not interleave kernel records with each other or with the
     driver's output.** A fault record is held whole for the driver and handed over between two
     of its receives, at once to a parked receiver or ahead of every queued sender at its next
@@ -496,7 +502,7 @@ The whole point of this file. A green fleet pass says none of the following.
     The kernel pops `wq_pop_highest(recv_waiters)`, so a driver parking more than one thread gets
     its records spread across them with no ordering enforced between their device writes. A
     future multi-writer console driver breaks this property without touching the kernel.
-  - **RTT does not interleave**: the whole write runs under `IrqLock`.
+  - **RTT does not interleave before a panic**: the whole write runs under `IrqLock`.
 - **THE MECHANICAL COSTS, WHICH BOUND THE IMPLEMENTATION RATHER THAN DECIDE THE QUESTION.**
   `console.cc` carries the sharpest: the chip transport "must NEVER be held under IrqLock across
   a whole transmission: a 256 B write at 115200 would mask interrupts for ~22 ms". Beside it, a
@@ -672,8 +678,8 @@ The whole point of this file. A green fleet pass says none of the following.
   on this bench, and the first bus master is where that stops being true.
 - **The x86_64 board runs the aspace family since M10.1.1.** q35 selects `HAS_ASPACE`, its frame
   pool is the UEFI arena's remainder, and the self-test's family arms run on `qemu-x86_64` and
-  its two-core preset. X5 stays, as the registered `x86_64_x5_aspace`, for the out-of-frames
-  unwind no application image drives on demand.
+  its two-core preset. The out-of-frames unwind no application image drives on demand is held by
+  host cases on the real `aspace_x86_64.cc`, the X5 probe being gone.
 - **THE RV64 MODEL LINE READS `32 PA bits` SINCE THE 2026-08-29 RE-REVIEW, NOT 56, AND NO COUNT
   MOVED WITH IT.** The 56 was the PTE's PPN field, which is the architecture's output width for
   every RV64 mode; the physical extent is a PLATFORM figure and RISC-V publishes no register for it,
@@ -740,17 +746,10 @@ The whole point of this file. A green fleet pass says none of the following.
   by graded controls alone.
 - **A MISPAIRED WINDOW RELEASE IS NOW DETECTED BY A TEST RATHER THAN REFUSED IN PRODUCTION.**
   `arch_aspace_release` on rv64 used to `kpanic` on a release that named no hold and whose frame
-  lay outside the kernel window; it counts instead, in the low byte of
-  `arch_aspace_tlbi_counts`, and `map_tlbi_elided` is the only thing that reads it. So an image
-  built without the self-test records the defect and reports it nowhere, and no board refuses
-  one at run time any more. What bought that: the member sits on the fault reporter's descent
-  (`kaccess_to_user` reaches it through `access_copy`), so the panic fired inside the record it
-  was writing; and rv64 is the only backend that does the work at all. **The arm is NOT vacuous
-  and that was measured three ways**: inverting the classifier turns it red, a genuine double
-  release inside `op_acquire_dup` turns it red, and a genuine double release of every page
-  `access_copy` touches leaves it GREEN, because an offset-route hold spends no slot and a
-  repeat surrenders nothing. That last case was invisible to the panic too, so the change costs
-  the refusal and not the coverage.
+  lay outside the kernel window; it ignores it instead. The member sits on the fault reporter's
+  descent (`kaccess_to_user` reaches it through `access_copy`), so the panic fired inside the
+  record it was writing; and rv64 is the only backend that does the work at all. No board
+  refuses one at run time, and no counter or test reports one.
 - **`aspace_frame_token`'s CONVERSION to the seam member is unwitnessed while the member's ANSWER is
   witnessed.** Reverting that caller to the two-acquire-pointer arithmetic is green, because every
   frame it is asked about sits inside the kernel window where `arch_aspace_acquire` is an addition
@@ -770,9 +769,9 @@ The whole point of this file. A green fleet pass says none of the following.
   medlow-absolute encodings; the comment is still there.
 - **Sv57 IS ONE CHOICE ENTRY AWAY AND IS NOT OFFERED**, the emulated core accepting it, because a
   mode the board does not run is a claim with no arm behind it. Two postures ship, Sv39 and Sv48.
-- **Neither RX nor LX6 has an emulator, and only RX has no CI gate either.** `ci.yml` runs a
-  dedicated `xtensa` job that builds `esp32-wroom` and `-st` and runs `ctest -L host`; `rx72m`
-  appears in no job at all, so `rx72m` silicon is the only check that arch ever gets.
+- **Neither RX nor LX6 has an emulator, and only RX has no CI gate either.** The `xtensa` job
+  builds the ESP32 presets and runs their host gates; `rx72m` appears in no job at all, so `rx72m`
+  silicon is the only check that arch ever gets.
 - **An RX `pspguard` is OWED.** `pspguard` is armv7m/armv6m only, and `.Lsvc_nokstack` is
   structurally unreachable on RX, so nothing there can reach the REFUSE side of the
   trusted-stack guard. Green on RX means "accepts what it must", never "refuses what it must".
@@ -781,8 +780,8 @@ The whole point of this file. A green fleet pass says none of the following.
   fault can carry an intact-stack claim. The band must be poisoned ABOVE the parked sp too.
   T6a's `parked_frame_hostile` is NOT this arm: it corrupts a SIBLING's parked frame and says
   nothing about the death path.
-- **SIX armv7m presets rest a blocking syscall's continuation on the USER stack**: `f302nucleo`,
-  `f302nucleo-st`, `due`, `due-st`, `bluepill-c8` and `bluepill-c8-st`, `CHIP_STM32F103` selecting
+- **FIVE armv7m presets rest a blocking syscall's continuation on the USER stack**: `f302nucleo`,
+  `f302nucleo-st`, `due`, `bluepill-c8` and `bluepill-c8-st`, `CHIP_STM32F103` selecting
   no MPU exactly as the other two chips do. Those are
   the presets where `KICKOS_KERNEL_STACKS` resolves 0, and it is deliberate.
   `roadmap.md`'s "either a lower thread ceiling or continuation-style blocking" is a false
@@ -885,9 +884,9 @@ The whole point of this file. A green fleet pass says none of the following.
   calls `__errno()`, so overriding `__errno` reaches nothing. `sizeof(struct _reent)` is
   512/284/288 across the three. RX has no thread-pointer register at all and falls back to a
   single-threaded `emutls.o` with no diagnostic.
-- **A kernel-mediated `brk` would NOT make multithreaded `malloc` safe.** It closes one race,
-  and `__malloc_lock` is a no-op, so shipping a serialized `_sbrk` reads as a safety it does not
-  provide. Declined on that ground, not on cost.
+- **A kernel-mediated `brk` was declined because it would NOT have made multithreaded `malloc`
+  safe**: it closed one race while `__malloc_lock` was a no-op. M10.6.5's libc lock is the answer
+  instead, so do not reopen `brk` for safety.
 - **The reclaim-window invariant is ONE-WAY.** The window must COVER what the reclaim WRITES; it
   need not match the service-list grant. `dev_window_free` tests OVERLAP. So this is not a
   coupling wanting enforcement across `arch/` and `system/init/`.
@@ -1016,22 +1015,6 @@ The whole point of this file. A green fleet pass says none of the following.
   preset, `bench-fleet.sh` does not list the board, and no aarch64 round-trip figure exists
   anywhere. Recorded as a debt at T7 and in `TODO.md` since 2026-08-26, so this line is no longer
   the only thing that says so.
-- **THE CONSOLE HAS NO CROSS-CORE EXCLUSION ANYWHERE, AND A RED `qemu-riscv64-smp` UNDER LOAD IS
-  THAT, NOT NEW BREAKAGE.** No `arch_console_write` backend excludes a second core: seven are bare
-  device loops and the other eleven reach the burst producer (since deleted), which held the kernel
-  lock for one ring chunk and dropped it between chunks. `kernel/init/console.cc` (`kconsole_write_impl`) states
-  the opposite -- "the chip transport locks internally" -- which is why the chip arm deliberately
-  takes no lock, and that sentence is true of no backend. The chip arm's writer tally
-  counts writers for the publish drain and excludes nothing. **The rate is load-dependent and only
-  that**: idle, the preset's whole CI job is green thirty runs out of thirty; loaded it costs the
-  TAP stream about seven times in thirty. So the figure to distrust is an unloaded one, and a red
-  here is read against what the box was doing. The repair is M9's, which owns console locking;
-  `TODO.md` carries the measurements and the two failure signatures.
-- **The boot identity root still grants EL0 read-write over all of low DRAM**, the kernel's own
-  `.data` and `.bss` at their LOAD addresses included. No unprivileged thread runs under it today,
-  and revoking EL0 there was MEASURED green -- but that root is what the fault reporter and
-  `aspace_release` install and what `arch_aspace_boot` hands out, so revoking changes what the space
-  MEANS. It wants a decision, not a patch.
 
 ## A commit hash is never a record
 
@@ -1111,6 +1094,7 @@ stop at the first stall and drop the rest of the line, like every other chip's. 
 missing from one of those QEMU captures under load is this, not a flake to re-run away.
 
 **WHAT IT DOES NOT SAY.**
+
 - No silicon has run the last merge: stdout's byte count on a refused or cancelled write,
   `consoledemo` and `k64console` on their IRQ console drivers, and the XMC4800 and K64F with their
   polled console drivers gone. Sweep 4 and the host tests are its only witnesses.
@@ -1153,7 +1137,7 @@ missing from one of those QEMU captures under load is this, not a flake to re-ru
 ## M10.6.4: the selftest on the production kernel, and what these green runs do NOT say
 
 - **NO SELFTEST IMAGE HAS RUN ON SILICON SINCE M10.6.4 MOVED EVERY ONE OF THEM.** Every silicon
-  capture of record predates it; the list owed is in the TODO entry.
+  capture of record predates it; the list owed is `TODO.md`'s bench pass.
 - **THE IRQ ABSENCE CHECKS NEED THEIR DRIVERS STRICTLY ABOVE THE CHECKER, AND NO RUN SHOWS IT.**
   A sim control with the checker at the drivers' priority also failed the planted defects, so the
   rule rests on reading the latch paths. On GIC and RX silicon the pending line can trail the
@@ -1163,6 +1147,31 @@ missing from one of those QEMU captures under load is this, not a flake to re-ru
   them there.
 - **THE ARENA ASK IS NOT CHECKED AGAINST USE.** An ask stated larger than the arm uses, or an arm
   taking a block from another arm's ask it does not name, passes every check.
+
+## M10.6.5: the console and the lean pass, and what these green runs do NOT say
+
+- **NO SILICON HAS RUN THIS TREE, AND EVERY SILICON IMAGE MOVED.** The libc lock, the console core,
+  the spawn and mutex paths and the reset backends are in every kernel. Every claim below about a
+  chip rests on an emulator, a host suite or a reading; `TODO.md`'s bench pass is the list.
+- **THE SIM CANNOT WITNESS THE LIBC LOCK.** It runs an instance's threads on one host thread over
+  the host's libc, so `libcrace` is declared inapplicable there; only the emulators and silicon run
+  it.
+- **A ROUND-ROBIN QUANTUM SHORTER THAN THE SWITCH STARVES ITS OWN THREADS, BY CONTRACT.** No floor
+  (ruled): the cost lands only on the threads that carry that quantum. The case was reproduced only
+  under an emulator clock stretched against instructions, with libcrace's 20 us stress quantum.
+- **ON ARMV6-M THE FAULT-REPORT RE-ENTRY GUARD NEVER RUNS.** A fault inside HardFault locks the
+  core up, so a planted fault in the report shows a QEMU lockup with the guard and without it.
+- **NO PLAIN RESET HAS RUN ON SILICON.** Every chip but the sim resets now, witnessed by two boot
+  banners on each emulated machine. On the RP boards a terminal panic or fault enters the
+  bootloader through the ROM on a reserved stack of its own; how deep the ROM goes on it is
+  measured nowhere.
+- **A REFUSAL RAISED INSIDE THE KERNEL LOCK'S ACQUISITION GIVES UP LINES BY CONTRACT.** It writes
+  its own line polled without the lock, so the ring's tail and the held records may not reach the
+  wire, and two failing cores' lines may interleave. The RP2350's own doorbell wait takes that path and
+  no emulator plant reaches it there.
+- **THE WALKER'S DETACH, SWEEP AND FREE ORDER IS HELD BY HOST CASES AND QEMU ONLY**, and QEMU models
+  no stale walk. No translating silicon is on the bench, so `imx8mp-evk` is its only silicon target
+  and it is not here.
 
 ## Where to go next
 

@@ -23,8 +23,8 @@ the kernel correct and the part that merely helps an app find its own bugs.
 The simplest scheme that satisfies "no kernel pointer crosses the boundary" is a single
 kernel-wide pool of objects, named by an index into it. It is opaque, it is bounded, and it
 is checkable -- and it is **ambient**. The name is global, so any thread that can guess or
-forge the integer can name the object: `kos_sem_wait(4, ...)` from anywhere reaches semaphore
-4. Isolation says a caller should touch only what it has been *given*; a global namespace
+forge the integer can name the object: `kos_sem_wait(4, ...)` from anywhere reaches
+semaphore 4. Isolation says a caller should touch only what it has been *given*; a global namespace
 anyone can enumerate is the opposite -- it is ambient authority, and ambient authority
 contradicts the isolation the MPU chapters (Chapter 7) work so hard to build. Fencing a
 caller's *memory* while leaving the *object namespace* open would be half a boundary.
@@ -151,18 +151,15 @@ Two properties make this a *chokepoint* and not merely a check:
    would put a check on a path that can never violate it, which is how a field starts
    being checked twice and enforced nowhere.
 
-   One arm does open-code the sequence, and it is worth knowing which and why, because a
-   reader who believes the check exists in exactly one function will not think to audit
-   it. Attaching an interrupt line to a semaphore does not want the semaphore *pointer*:
-   an ISR may never resolve a capability (the last section of this chapter says why), so
-   the binding has to store the semaphore's **global** handle, which resolve does not hand
-   back. So that arm looks the entry up directly and then performs the same checks in the
-   same order under the same lock: live entry, right type, live object, then
-   `CAP_SIGNAL` or `KOS_EPERM`. That is the property to hold onto. The chokepoint is a
-   *sequence* that nothing is allowed to skip, and the single function is how it is
-   normally reached, not the whole of the rule. An arm that needs the entry rather than
-   the object owes the reader the same steps, spelled out, and owes the auditor a reason
-   to look at it.
+   Binding an interrupt line to a notification shows how an arm that must outlive the
+   call still goes through it. An ISR may never resolve a capability (the last section of
+   this chapter says why), so the binding resolves the notification once, at bind time,
+   with `CAP_SIGNAL` required, and keeps the object with a reference of its own; the ISR
+   then reaches the object through the binding and never through a name. That is the
+   property to hold onto. The chokepoint is a *sequence* that nothing is allowed to skip,
+   and the single function is how it is reached. An arm that ever needs the entry rather
+   than the object owes the reader the same steps, spelled out, and owes the auditor a
+   reason to look at it.
 2. **Resolve and use happen under the same continuous `IrqLock`.** The pointer resolve
    hands back is only valid while the lock is held; releasing it between resolve and use
    would let a concurrent close/destroy free the slot underneath a validated pointer. This

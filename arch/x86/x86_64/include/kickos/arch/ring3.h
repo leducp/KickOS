@@ -65,10 +65,6 @@ namespace kickos::x86_64
     // The running thread's kernel stack top, published to the block above.
     void cpu_set_kernel_sp(uint64_t top);
     uint64_t cpu_kernel_sp(void);
-
-    // Is [ptr, ptr + len) inside ONE section of this image that the loader mapped, and
-    // writable where asked?
-    bool image_range_mapped(uintptr_t ptr, size_t len, bool need_write);
 }
 
 #endif

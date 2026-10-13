@@ -38,12 +38,12 @@
     X(kBlockInIsr,      "kickos: blocking operation from ISR context",               "P05")       \
     X(kResumeNoSwitch,  "wq_confirm_resume: switch never landed",                    "P06")       \
     X(kUserPanicNoMsg,  "user panic (no readable message)",                          "P08")       \
-    X(kPublishNoDrain,  "console_publish: chip-writer drain did not converge",       "P09")       \
     X(kRootExitRefused, "root: exit shutdown refused",                               "P10")       \
     X(kPastExitCurrent, "unreachable: thread continued past exit_current",           "P11")       \
     X(kRebootRp2040,    "arch_reboot: rp2040 _reset_to_usb_boot returned",           "P13")       \
     X(kRebootRp2350,    "arch_reboot: rp2350 bootrom reboot returned",               "P14")       \
     X(kRebootImxrt,     "arch_reboot: imxrt1062 bkpt resumed (no MKL02?)",           "P15")       \
+    X(kResetNotTaken,   "arch_reboot: the reset was requested and did not take",     "P27")       \
     X(kParkNoKind,      "unreachable: park abort on a thread with no wait edge",     "P16")       \
     X(kKstackOverflow,  "kernel stack canary broken on this thread's slot",          "P17")       \
     X(kBootFramePool,   "kmain: the frame carve is too small to describe",           "P18")       \
@@ -85,6 +85,7 @@ namespace kickos
 #define KDIAG_F_BANNER_ARCH  KICKOS_DIAG_PICK("   arch    %s\n", "a %s\n")
 #define KDIAG_F_BANNER_CPU   KICKOS_DIAG_PICK("   cpu     %s\n", "u %s\n")
 #define KDIAG_F_BANNER_MPU   KICKOS_DIAG_PICK("   mpu     %s\n", "m %s\n")
+#define KDIAG_F_BANNER_MMU   KICKOS_DIAG_PICK("   mmu     enforce\n", "M enforce\n")
 #define KDIAG_F_BANNER_SCHED KICKOS_DIAG_PICK("   sched   %s\n", "s %s\n")
 #define KDIAG_F_BANNER_BUILD KICKOS_DIAG_PICK("   build   %s\n", "t %s\n")
 #define KDIAG_F_BANNER_APP   KICKOS_DIAG_PICK("   app     %s\n", "p %s\n")

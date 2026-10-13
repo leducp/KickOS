@@ -604,8 +604,8 @@ namespace kickos
         b->next_signaller = NOTIFY_SIGNALLER_NONE;
         b->badge = 0;
         b->line = line;
-        // The first irq_wait arms the line: a claim leaves it masked, so there is no window
-        // in which the line is armed and unowned.
+        // The first wait over the line's bit arms it: a claim leaves it masked, so there is no
+        // window in which the line is armed and unowned.
         b->needs_rearm = true;
         b->armed_once = false;
         b->trigger = IRQ_EDGE;
@@ -630,8 +630,8 @@ namespace kickos
             return rc;
         }
         // After the last exit that can fail: a refused claim must not leave the line routed to
-        // a core that owns nothing. The line is masked until the first irq_wait arms it, so
-        // the route is programmed while nothing can be delivered against it.
+        // a core that owns nothing. The line is masked until the first wait arms it, so the
+        // route is programmed while nothing can be delivered against it.
         arch_irq_route(line, kickos_kernel_core());
 #if KICKOS_KERNEL_CORES > 1
         b->claim_core = static_cast<uint8_t>(kickos_kernel_core());

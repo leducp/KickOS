@@ -2,9 +2,8 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Gate for the FP context-switch test: boot `fp_switch` on a QEMU Cortex-M4F, or read a silicon
-# capture of it, and assert the callee-saved FP bank (s16-s31) survived the checker's rounds
-# against the trasher. Proves the PendSV FP save/restore on armv7m.
+# Gate for the FP context-switch test: boot `fp_switch` on an emulator, or read a silicon capture
+# of it, and assert the FP state a switch owes survived the checker's rounds against the trasher.
 #
 #   check_qemu_fp.sh <fp_switch.elf>
 #   KOS_CAPTURE=<log> check_qemu_fp.sh <board-build> <kickos-source> <cmake>
@@ -37,14 +36,14 @@ fi
 # app that produced nothing.
 if has "FP FAIL:"; then
     printf '%s\n' "$OUT" | grep "FP FAIL:"
-    cfail error "FP register bank corrupted across a context switch"
+    cfail error "FP state corrupted across a context switch"
 fi
 if [ "$POLL_OK" -ne 1 ]; then
-    cfail verdict "no 'FP OK:' line: the app completed no batch of rounds with s16-s31 intact
+    cfail verdict "no 'FP OK:' line: the app completed no batch of rounds with its FP state intact
   (it did not boot, or every round it judged was corrupt)"
 fi
 
 assert_no_panic "fp_switch panicked"
 
-echo "PASS: s16-s31 preserved across context switches"
+echo "PASS: FP state preserved across context switches"
 exit 0

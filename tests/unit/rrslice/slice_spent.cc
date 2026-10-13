@@ -92,3 +92,27 @@ TEST_F(RrSlice, a_fresh_thread_is_armed_a_whole_quantum)
     }
     EXPECT_EQ(a->slice_deadline_ns, g_now_ns + QUANTUM_NS);
 }
+
+// A seating that outlasts the quantum, charged to the incoming slice, would leave the expiry
+// pending at the return: every rotation then seats a thread that is rotated out before it runs.
+TEST_F(RrSlice, a_rotation_starts_the_incoming_slice_after_seating_it)
+{
+    Thread* const a = rr(0);
+    g_now_ns = 1000000u;
+    {
+        IrqLock lock;
+        sched::reschedule(nullptr, lock);
+    }
+    ASSERT_EQ(kernel().current(kickos_kernel_core()), a);
+    Thread* const b = rr(1);
+    uint64_t const expiry = a->slice_deadline_ns;
+    g_now_ns = expiry;
+    g_seat_cost_ns = 2u * QUANTUM_NS;
+    {
+        IrqLock lock;
+        sched::tick_rr(g_now_ns, lock);
+    }
+    ASSERT_EQ(kernel().current(kickos_kernel_core()), b);
+    ASSERT_EQ(g_now_ns, expiry + g_seat_cost_ns) << "the seating charged no time";
+    EXPECT_EQ(b->slice_deadline_ns, g_now_ns + QUANTUM_NS);
+}

@@ -46,16 +46,22 @@ namespace
     kos_cap_t g_start = KOS_CAP_NONE; // posted once per pair once every worker exists, MAIN's cap
 
     // Well-known child cap indices (fresh child table => handle == index; delegated
-    // cap i -> index i+1). MAIN creates the sems and delegates them per spawn in a fixed
+    // cap i -> index KOS_SPAWN_DELEGATED_CAP0 + i). MAIN creates the sems and delegates them per spawn in a fixed
     // order so the worker helpers can name them by these constants. Main closes its copies
     // of a pair's two sems once the pair is spawned: its table is a child's, so it cannot
     // hold every pair's at once.
-    constexpr int CH_DONE = 1; // completion counter, delegated FIRST to every worker
-    constexpr int CH_MTX = 2;  // counter mutex, delegated SECOND (all conservation workers)
-    constexpr int CH_A = 3;    // ping-pong pair sem A (delegated THIRD to ping/pong)
-    constexpr int CH_B = 4;    // ping-pong pair sem B (delegated FOURTH to ping/pong)
-    constexpr int CH_START = 5; // the start gate (delegated FIFTH, to ping alone)
-    constexpr int CH_GATE = 2; // budget-probe gate for the prober (done@1, gate@2)
+    // completion counter, delegated FIRST to every worker
+    constexpr int CH_DONE = KOS_SPAWN_DELEGATED_CAP0;
+    // counter mutex, delegated SECOND (all conservation workers)
+    constexpr int CH_MTX = KOS_SPAWN_DELEGATED_CAP0 + 1;
+    // ping-pong pair sem A (delegated THIRD to ping/pong)
+    constexpr int CH_A = KOS_SPAWN_DELEGATED_CAP0 + 2;
+    // ping-pong pair sem B (delegated FOURTH to ping/pong)
+    constexpr int CH_B = KOS_SPAWN_DELEGATED_CAP0 + 3;
+    // the start gate (delegated FIFTH, to ping alone)
+    constexpr int CH_START = KOS_SPAWN_DELEGATED_CAP0 + 4;
+    // budget-probe gate for the prober (done@2, gate@3)
+    constexpr int CH_GATE = KOS_SPAWN_DELEGATED_CAP0 + 1;
     constexpr uint8_t CH_FULL = KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER;
 
     // Shared conservation counters (g_mtx serializes every access).

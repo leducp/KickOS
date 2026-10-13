@@ -23,6 +23,7 @@ namespace kickos
         extern char const* const OP_INVLPG;
         extern char const* const OP_INVLPG_LEAF;
         extern char const* const OP_RENDEZVOUS;
+        extern char const* const OP_WRITE_CR3;
 
         // Rebuild the firmware root, adopt it through aspace_init, then clear the record.
         // Spaces left open by an earlier case keep their residency rows.
@@ -40,6 +41,8 @@ namespace kickos
         void firmware_user_chain(int leaf_level, int clear_level, bool five_levels);
         // Adopt the firmware root again, as it now stands.
         void adopt();
+        // The attribute table the model-specific register holds from now on.
+        void set_pat(uint64_t pat);
     }
 }
 

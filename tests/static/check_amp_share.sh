@@ -26,9 +26,9 @@ command -v "$CMAKE" >/dev/null 2>&1 || [ -x "$CMAKE" ] || fail "cmake not execut
 grep -q 'kickos_amp_share_check' "$SRC/cmake/amp_partition.cmake" \
     || fail "cmake/amp_partition.cmake does not call kickos_amp_share_check, so the refusals
     this gate exercises are wired to nothing"
-grep -q 'kickos_amp_share_granule_check' "$SRC/arch/CMakeLists.txt" \
-    || fail "arch/CMakeLists.txt does not call kickos_amp_share_granule_check, so the granule
-    refusal this gate exercises is wired to nothing"
+grep -q 'kickos_amp_share_granule_check' "$SRC/cmake/amp_partition.cmake" \
+    || fail "cmake/amp_partition.cmake does not call kickos_amp_share_granule_check, so the
+    granule refusal this gate exercises is wired to nothing"
 
 scratch_dir
 

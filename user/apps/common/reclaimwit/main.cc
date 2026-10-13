@@ -151,7 +151,7 @@ int main(int, char**)
     kos_cap_grant const caps[1] = {{ep, KOS_CAP_WAIT}};
     auto const drv = kos::thread::create_caps(console_sink, nullptr, "rwdrv", DRIVER_PRIO,
                                               caps, /*cap_count=*/1, KOS_POLICY_FIFO, 0,
-                                              /*privileged=*/false, nullptr, 0, 0, nullptr,
+                                              nullptr, 0, 0, nullptr,
                                               drv_task, drv_stack, RW_DRIVER_STACK);
     if (not drv.valid())
     {

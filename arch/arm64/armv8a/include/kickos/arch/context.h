@@ -23,29 +23,22 @@ struct arch_context
     uintptr_t sp;
 
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
-    // Telemetry only: the owning thread's trace id, stamped once by
-    // arch_trace_stamp_id (thread_create) and read by the switch path to emit the
-    // {from,to} SWITCH record from the physically-swapped contexts.
+    // The owning thread's trace id, stamped once by arch_trace_stamp_id.
     uint32_t trace_tid;
 #endif
 
-    // Bookkeeping only here: no trap entry validates an sp against them, a trap from EL0
-    // replacing SP_EL0 with SP_EL1 rather than storing through the sp the thread chose.
-    // Read by arch_ctx_redirect and by the frame guards in kernel/init/fault.cc.
+    // Bookkeeping only: no trap entry validates an sp against them.
     uintptr_t stack_lo;
     uintptr_t stack_hi;
 
-#if defined(KICKOS_TLS) && KICKOS_TLS
-    // TPIDR_EL0 while this thread runs. SEATED rather than masked out of the stack pointer,
-    // which is what frees this arch of the power-of-two stride the mask imposes.
-    // Write-once per thread, so no switch saves it.
+#if KICKOS_TLS
+    // TPIDR_EL0 while this thread runs. Write-once per thread, so no switch saves it.
     uintptr_t tls_base;
 #endif
 
     // TOP of this thread's kernel stack, seated by thread_create BEFORE arch_context_init,
-    // which reads it to place an unprivileged thread's first frame, and preserved across
-    // arch_ctx_redirect. Write-once per slot, so no switch saves it. Zero for a TCB outside
-    // the pool, which is privileged and never returns to EL0.
+    // which reads it to place an unprivileged thread's first frame. Write-once per slot, so no
+    // switch saves it. Zero for a TCB outside the pool, which never returns to EL0.
     uintptr_t kernel_sp;
 };
 

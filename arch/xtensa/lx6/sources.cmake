@@ -9,7 +9,7 @@
 set(_lx6_defaults ${KICKOS_SEAM_DEFAULTS_COMMON})
 list(REMOVE_ITEM _lx6_defaults common/arch_irq_line_core_default.cc)
 if(KICKOS_KERNEL_CORES GREATER 1)
-  list(REMOVE_ITEM _lx6_defaults common/arch_irq_route_default.cc)
+  list(REMOVE_ITEM _lx6_defaults ${KICKOS_SEAM_DEFAULTS_DIR}/arch_irq_route_default.cc)
 endif()
 
 set(KICKOS_ARCH_SOURCES
@@ -19,6 +19,4 @@ set(KICKOS_ARCH_SOURCES
   common/arch_ram_common.cc
   common/startup_ranges.cc
   ${_lx6_defaults}
-  xtensa/lx6/arch_clock_now_default.cc
-  xtensa/lx6/arch_trace_now_default.cc
   xtensa/lx6/switch.S)

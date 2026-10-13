@@ -66,6 +66,13 @@ namespace consoleseam
     // Run `fn` once, in the `ordinal`th mask gap counted since reset().
     void run_in_gap(uint32_t ordinal, void (*fn)(void));
 
+    // Run `fn` once, at the next mask entry, before it masks.
+    void run_at_mask(void (*fn)(void));
+
+    // What the mock's TX-interrupt enable reads from now on, as a device reprogrammed under the
+    // ring leaves it.
+    void set_tx_irq_enabled(bool on);
+
     // Whether that seated function ran.
     bool seat_fired();
 
@@ -83,9 +90,14 @@ namespace consoleseam
     // Called at the instant USER_OWNED is flipped.
     void note_commit();
 
+    // KOS_SYS_CONSOLE_PUBLISH's console sequence in its two halves: the lock-held one, which
+    // also takes the drain ISR off its line, and the tail, run once no counted writer is left.
+    void publish_begin();
+    void publish_end();
+
     // cap_console_deliver calls, each one a record handed on for a receiver to take.
     extern uint32_t g_deliveries;
-    // What sched::current() answers: the thread a record is printed by. Never dereferenced.
+    // What sched::current() answers: the thread a record is printed by.
     extern kickos::Thread* g_current;
     // What dev_window_free answers for the console's reclaim window.
     extern bool g_window_free;

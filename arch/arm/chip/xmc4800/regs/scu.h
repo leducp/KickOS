@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// XMC4800 SCU registers: clock control, PLL, OSC, peripheral clock gates and
-// resets, traps. Clean-room from the XMC4700/XMC4800 Reference Manual (V1.3,
-// 2016-07). Register addresses are the sub-unit bases in mmap.h plus the
-// offsets below. USIC0 and CCU40 share the same CGATCLR0/PRCLR0 gate/reset
-// register pair (different bits), so both are defined here.
+// XMC4800 SCU registers: clock control, PLL, OSC, peripheral clock gates and resets, traps (RM
+// V1.3). Addresses are the sub-unit bases in mmap.h plus the offsets below. USIC0 and CCU40 share
+// the CGATCLR0/PRCLR0 gate/reset pair (different bits), so both are defined here.
 
 #ifndef KICKOS_ARCH_ARM_CHIP_XMC4800_REGS_SCU_H
 #define KICKOS_ARCH_ARM_CHIP_XMC4800_REGS_SCU_H

@@ -166,10 +166,12 @@ consumed on EVERY exit (one-shot). `len > KOS_EP_MSG_MAX` is clamped (the caller
 | `-KOS_EFAULT` | `buf` not readable by the server for `len`, or the reply copy was refused (see below). The cap is consumed either way |
 | `-KOS_ESRCH` | the caller is gone/aborted/reused (stale resolve); the cap is still consumed |
 
-`ESRCH` is REACHABLE, by exactly one route: `kos_call_timed`. A caller whose deadline
-expires is unwound out of `CALL_REPLY_WAIT` and left `CALL_NONE`, while the server keeps
-the reply cap it was minted; the server's eventual `kos_reply` then resolves the cap, finds
-no caller in `CALL_REPLY_WAIT`, consumes the cap and answers `-KOS_ESRCH`. The full
+`ESRCH` is REACHABLE by every route that ends a caller's reply wait before the reply: a
+`kos_call_timed` deadline, and a kill or slay of the parked caller (`thread_abort_park`, its
+`WAIT_EP_REPLY` arm). The caller is unwound out of `CALL_REPLY_WAIT` and left `CALL_NONE`, its
+`call_seq` moved on, while the server keeps the reply cap it was minted; the server's eventual
+`kos_reply` then resolves the cap, finds no caller in `CALL_REPLY_WAIT`, consumes the cap and
+answers `-KOS_ESRCH`. The full
 stale-resolve in `cap_reply_caller` is what makes that safe: it rejects on four independent
 grounds (index out of pool range, thread-slot generation mismatch, the `CALL_REPLY_WAIT`
 test, and a rolled `call_seq`) before anything is consumed.
@@ -501,8 +503,8 @@ and cannot fail -- the unmap route does not exist there, the frame syscalls bein
 **Which is why `kernel/syscall/syscall_ipc_fast.cc` discards its `write_recv_info` answer, and is
 not a third undisclosed mint.** A reader counting the sites that mint a reply cap and then disclose
 its handle finds three, and only two carry the retraction above. That file compiles under
-`KICKOS_ARCH_HAS_IPC_FASTPATH` alone, which is set by the armv6m, armv7m, rxv3 and rv32imac
-`ipc_fastpath.cmake` ladders and by no translating arch, the two capability families being
+`KICKOS_ARCH_HAS_IPC_FASTPATH` alone, which the armv6m, armv7m, rxv3 and rv32imac arch
+stanzas select in `arch/Kconfig` and no translating arch does, the two capability families being
 exclusive. So `write_recv_info` there reduces to that `kmemcpy` and cannot refuse, and a retraction arm
 beside it would be code no board can enter.
 
@@ -569,7 +571,6 @@ root before root's first instruction (`../design-multicore.md` N6g). An entry's 
 list is its capability handle, `KOS_CAP_FIRST_DYNAMIC + i`, and `<kickos/amp.h>` is how an app
 spells it: `kos_amp_port(node, port)` answers the handle, or `KOS_CAP_NONE` for a crossing the
 partition does not name. No syscall is involved and nothing is minted at run time.
-`KOS_SYS_AMP_ENDPOINT_CREATE` remains the privileged mint of N8 and has no caller in the tree.
 
 **A NODE THAT SERVES MUST NOT RETURN FROM `main`.** Root returning ends the system
 (`<kickos/sys/init.h>`), and the nodes of an AMP partition share one machine, so a serving
@@ -584,7 +585,7 @@ node is a FAR endpoint carrying `CAP_SIGNAL` and no `CAP_WAIT`, which is what re
 receive's resolve with no branch of `endpoint_recv_locked` having to learn about locality. Each
 seated entry also carries `CAP_TRANSFER`, so root, the init, delegates it to the task a
 composition's crossing names (`docs/design-m10-fleet.md` section 9.2), narrowed to WAIT for its
-server and SIGNAL for a user; `KOS_SYS_AMP_ENDPOINT_CREATE` mints `CAP_SIGNAL` alone.
+server and SIGNAL for a user.
 
 **A pooled slot keeps its last occupant's fields**, so a far endpoint that is closed would
 leave its route standing for whatever local endpoint lands on that slot next. Both fields
@@ -625,19 +626,19 @@ from inside the doorbell service body, so this core's interrupts are masked and 
 is the exclusion; no `IrqLock` is taken. FIVE clauses, and any failure counts
 `amp::Counts::reply_drop` and the service releases the reply's slot itself, nobody landing it:
 
-1-4. `cap_reply_thread(tag.thread, amp::reply_seq(tag.seq), amp::REPLY_SEQ_MASK)`, which is the
-   same body `cap_reply_caller` runs over a `CAP_REPLY` entry: index in range, thread-slot gen
-   match, `state == BLOCKED` with `call_state == CALL_REPLY_WAIT`, and the sequence match under
-   the mask this arm's storage carries -- all 16 bits here, the 8 a `CAP_REPLY` entry can hold
-   there. One body and not a copy -- a second set of these clauses would be a second answer to
-   whether a reply may land. A node whose `ThreadPool` is zeroed has `next == 0` and refuses every index at
-   the first clause, which is what makes the same call inert on a peer that runs no kernel
-   of its own.
-5. **The cross-node clause**, which the four above cannot carry: the resolved caller must
-   be parked on a far endpoint whose node equals the RING the reply arrived on
-   (`caller->wait_far_endpoint()`, `WAIT_EP_FAR_REPLY`). The four above are satisfied by any
-   caller parked in a call, a LOCAL one included, so without this node 2 can complete a call
-   node 0 made to node 1.
+- **Clauses 1 to 4**: `cap_reply_thread(tag.thread, amp::reply_seq(tag.seq),
+  amp::REPLY_SEQ_MASK)`, the same body `cap_reply_caller` runs over a `CAP_REPLY` entry: index
+  in range, thread-slot gen match, `state == BLOCKED` with `call_state == CALL_REPLY_WAIT`, and
+  the sequence match under the mask this arm's storage carries (all 16 bits here, the 8 a
+  `CAP_REPLY` entry can hold there). One body, so there is one answer to whether a reply may
+  land. A node whose `ThreadPool` is zeroed has `next == 0` and refuses every index at the
+  first clause, which is what makes the same call inert on a peer that runs no kernel of its
+  own.
+- **Clause 5, the cross-node clause**, which the four above cannot carry: the resolved caller
+  must be parked on a far endpoint whose node equals the RING the reply arrived on
+  (`caller->wait_far_endpoint()`, `WAIT_EP_FAR_REPLY`). The four above are satisfied by any
+  caller parked in a call, a LOCAL one included, so without this node 2 can complete a call
+  node 0 made to node 1.
 
 On success NOTHING IS COPIED: the caller is handed the reply's slot as a hold
 (`Thread::far_hold`), the length clamped into `call_rx_cap` as its `wait_result`, then
@@ -936,7 +937,10 @@ walks a shorter chain and never a torn one.
 - **Single-level donation only.** A nested call (service A `kos_call`s service B while
   serving C) does NOT propagate C's boost through A to B. The chain walk follows the
   `WAIT_MUTEX` edge only; a `WAIT_EP_REPLY` park names its server but no walk consumes that
-  edge yet. No current consumer nests calls (SPI/I2C services call no one).
+  edge yet. No current consumer nests calls (SPI/I2C services call no one). The revert when a
+  mutex waiter stops waiting (expiry or cancel) walks the same edges and stops at the same
+  place, so a mutex owner parked in a call does not lower the server it donates to until that
+  server's own next recompute.
 - **D2 through an already-held mutex is not re-boosted.** If the server is parked on a
   mutex when a high caller enqueues, D2 writes `ep->server`'s field but the mutex owner is
   not re-boosted (the chain walk runs only at `mutex_lock`). No current consumer takes a
@@ -950,8 +954,8 @@ walks a shorter chain and never a torn one.
   caller holding a valid `CAP_SIGNAL` with no receiver ever parking is parked forever, and
   root is a pool thread like any other. Nothing else ends that park: root leaves
   `spawner_tag` at `KILL_TAG_NONE` so `kos_thread_kill` refuses it `-KOS_EPERM`
-  (`kernel/syscall/syscall_thread.cc`), a cancel would only wake an `irq_wait` park in any
-  case, and `kernel().live` never reaches 0 while root is parked, so shutdown never fires.
+  (`kernel/syscall/syscall_thread.cc`), and `kernel().live` never reaches 0 while root is
+  parked, so shutdown never fires.
   Where a worker's park costs one thread, root's costs the image. `kos_call_timed` is the
   answer, and root is exactly where it is worth paying for.
 - **Root holding a mutex the service takes is an undetected deadlock.** Root locks a mutex,

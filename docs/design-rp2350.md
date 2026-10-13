@@ -60,7 +60,7 @@ BOOTSEL-recoverable, so a wrong clock or boot config cannot brick it.
    ROSC nominal in both; the dead-PLL case still has a crystal, so the UART goes on XOSC. The
    board always reaches a console.
 
-8. **Release UART reset AFTER `clocks_init`.** It is on `clk_peri`, and releasing before that
+8. **Release UART reset AFTER the clock bring-up.** It is on `clk_peri`, and releasing before that
    clock is live hangs forever on `RESET_DONE` -- the RP2040 lesson, unchanged here.
 
 9. **Leave the UART FIFO disabled (`FEN = 0`).** The buffered console-TX ring's idle-to-busy prime
@@ -110,7 +110,7 @@ and better motivated once there is something to share it with.
 
 ## Also deferred
 
-- **Full C++ under enforcement** (`kickos_cxx`, `-fexceptions`/`-frtti`): the EHABI
+- **Full C++ under enforcement** (the full-C++ leaf (formerly `kickos_cxx`), `-fexceptions`/`-frtti`): the EHABI
   `.ARM.exidx`/`.extab`/`.gcc_except_table` are already homed in flash by `rp2350.ld`, so
   libstdc++/libsupc++ over newlib links cleanly on the M33.
 - **UF2 emission**: `.bin` + `.hex` are emitted today; a `.uf2` needs the RP2350 family-id and the

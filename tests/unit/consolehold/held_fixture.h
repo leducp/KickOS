@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The steps the console_held arms share: a publish, a thread-fault record, and a forked arm.
+// The steps the console_held arms share: a publish and a thread-fault record.
 
 #ifndef KICKOS_TESTS_UNIT_CONSOLEHOLD_HELD_FIXTURE_H
 #define KICKOS_TESTS_UNIT_CONSOLEHOLD_HELD_FIXTURE_H
@@ -16,10 +16,9 @@
 #include <kickos/sync.h>
 
 #include <stdio.h>
-#include <sys/wait.h>
-#include <unistd.h>
 
 #include "console_seam.h"
+#include "isolated_arm.h"
 
 namespace heldfix
 {
@@ -44,10 +43,11 @@ namespace heldfix
         kickos::krecord_end();
     }
 
-    // A thread's identity; the seam never dereferences it.
+    // The n-th of a few threads a record is printed by.
     inline kickos::Thread* thread(uintptr_t n)
     {
-        return reinterpret_cast<kickos::Thread*>(n * 0x100u);
+        static kickos::Thread threads[160];
+        return &threads[n];
     }
 
     // The committed record the driver would receive next.
@@ -71,13 +71,8 @@ namespace heldfix
     // KOS_SYS_CONSOLE_PUBLISH's console sequence, with no writer in flight to drain.
     inline void publish()
     {
-        {
-            kickos::IrqLock lock;
-            console_handover_begin();
-        }
-        consoleseam::set_isr_runs_in_gap(false);
-        console_owner_set_user();
-        consoleseam::note_commit();
+        consoleseam::publish_begin();
+        consoleseam::publish_end();
     }
 
     // What the end of the console's task does (cap_console_task_ended).
@@ -86,28 +81,6 @@ namespace heldfix
         kickos::IrqLock lock;
         console_note_driver_death();
         console_on_driver_death(lock);
-    }
-
-    // The ownership state is a one-way street, so each arm gets its own process.
-    inline void run_isolated(void (*body)())
-    {
-        fflush(nullptr);
-        pid_t const pid = fork();
-        ASSERT_NE(pid, -1) << "fork failed, the arm did not run";
-        if (pid == 0)
-        {
-            body();
-            fflush(nullptr);
-            if (::testing::Test::HasFailure())
-            {
-                _exit(1);
-            }
-            _exit(0);
-        }
-        int status = 0;
-        ASSERT_EQ(waitpid(pid, &status, 0), pid);
-        ASSERT_TRUE(WIFEXITED(status)) << "the arm died on a signal";
-        ASSERT_EQ(WEXITSTATUS(status), 0) << "see the arm's own failure text above";
     }
 }
 

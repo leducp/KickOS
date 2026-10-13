@@ -2,15 +2,12 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // x86-64 page tables (Intel SDM Vol. 3, chapter 5).
-// Adopt the firmware root and its runtime paging depth. New spaces copy
-// its kernel entries and share the child tables. Acquire checks the boot
-// mapping instead of assuming identity mapping. PCIDs are disabled;
-// CR3 writes invalidate non-global translations.
+// Adopts the firmware root and its runtime paging depth; new spaces copy its kernel entries and
+// share the child tables. PCIDs are off, so a CR3 write drops every non-global translation.
 
 #include <kickos/arch/arch.h>
 #include <kickos/arch/aspace.h>
 #include <kickos/arch/aspace_residency.h>
-#include <kickos/arch/aspace_table.h>
 #include <kickos/chip_com1.h>
 #include <kickos/extent.h>
 
@@ -21,8 +18,6 @@
 
 extern "C"
 {
-    arch_phys_addr_t kickos_frame_alloc(void);
-    void kickos_frame_free(arch_phys_addr_t frame);
     void kfault_terminate(void) __attribute__((noreturn));
     // The app window, where the loader put it (arch/x86/x86_64/pe_image.ld).
     extern unsigned char __kickos_app_rom_start[];
@@ -37,17 +32,13 @@ namespace
 {
     using namespace kickos::q35;
 
-    // The granule is 4 KiB; 2 MiB and 1 GiB mappings use larger leaves.
     constexpr unsigned GRANULE_SHIFT = 12;
     constexpr size_t GRANULE = static_cast<size_t>(1) << GRANULE_SHIFT;
     constexpr size_t PTES = GRANULE / sizeof(uint64_t);
     constexpr unsigned INDEX_BITS = 9;
-    constexpr int LEVEL_LEAF = 1;
-    // PS is valid only at levels 2 and 3, never at the root or level 4.
-    constexpr int LEVEL_LARGEST_LEAF = 3;
-    constexpr int LEVEL_MAX = 5;
+    // PS is defined only at levels 2 and 3, never at the root or level 4.
+    constexpr int HEIGHT_LARGEST_LEAF = 2;
 
-    // Acquire uses no temporary slots.
     constexpr size_t ACQUIRE_CAPACITY = SIZE_MAX;
 
     // Entry bits (Intel SDM Vol 3 chapter 5).
@@ -65,7 +56,6 @@ namespace
     constexpr uint64_t PTE_XD = 1ull << 63;
     constexpr uint64_t PTE_ADDR_MASK = 0x000ffffffffff000ull;
 
-    constexpr uint64_t CR0_WP = 1ull << 16;
     constexpr uint64_t CR4_PGE = 1ull << 7;
     constexpr uint64_t CR4_LA57 = 1ull << 12;
     constexpr uint32_t MSR_EFER = 0xc0000080;
@@ -81,8 +71,13 @@ namespace
     constexpr uint64_t PAT_POWER_UP = 0x0007040600070406ull;
     constexpr unsigned PAT_FIELDS = 8;
 
-    // This backend does not allocate PCIDs.
     constexpr unsigned TAG_BITS_RECORDED = 0;
+}
+
+#include "aspace_walk.h"
+
+namespace
+{
 
     // The live regime, read once at aspace_init.
     unsigned g_levels = 0;
@@ -95,15 +90,6 @@ namespace
     uint64_t g_nocache_bits = ~0ull;
     uintptr_t g_user_lo = 0;
     uintptr_t g_user_hi = 0;
-    unsigned g_kernel_slots = 0;
-    // Present entries in the table under the boot root's first present slot, which is what
-    // decides where a kernel range of this port's own can go.
-    unsigned g_first_child_entries = 0;
-
-    // Static kernel-window tables, needed before the frame pool is initialized.
-    // Indexed by level minus one; initially unmapped.
-    alignas(4096) uint64_t g_kwin_table[LEVEL_MAX - 1][PTES] = {};
-    uintptr_t g_kwin_va = 0;
 
     // Root-keyed residency, updated by install_root and retained after switching away.
     kickos::aspace::Residency<KICKOS_NUM_CORES> g_residency;
@@ -125,8 +111,7 @@ namespace
         return (d & (1u << 20)) != 0;
     }
 
-    // Read MAXPHYADDR, capped at 52 bits. Use 36 if the CPUID leaf is absent
-    // (Intel SDM Vol. 3, section 5.1.4).
+    // MAXPHYADDR capped at 52 bits, 36 where the leaf is absent (Intel SDM Vol 3, section 5.1.4).
     unsigned phys_addr_bits(void)
     {
         uint32_t a = 0;
@@ -147,8 +132,8 @@ namespace
         return bits;
     }
 
-    // Validate alignment and the whole physical range against MAXPHYADDR and
-    // the 52-bit descriptor limit to prevent truncation into low memory.
+    // The whole range must fit MAXPHYADDR and the 52-bit descriptor: a truncated address would
+    // land in low memory.
     bool phys_range_ok(arch_phys_addr_t pa, size_t pages)
     {
         if ((pa & ~PTE_ADDR_MASK) != 0)
@@ -164,7 +149,6 @@ namespace
                <= (static_cast<arch_phys_addr_t>(1) << phys_addr_bits());
     }
 
-    // CPUID leaf 1, EDX bit 16.
     bool pat_supported(void)
     {
         uint32_t a = 0;
@@ -212,43 +196,37 @@ namespace
         return reinterpret_cast<uint64_t*>(space);
     }
 
-    arch_phys_addr_t pte_pa(uint64_t pte)
+    arch_phys_addr_t entry_pa(uint64_t pte)
     {
         return static_cast<arch_phys_addr_t>(pte & PTE_ADDR_MASK);
     }
 
-    unsigned shift_at(int level)
+    int walk_top()
     {
-        return GRANULE_SHIFT + static_cast<unsigned>(level - 1) * INDEX_BITS;
+        return static_cast<int>(g_levels) - 1;
     }
 
-    size_t index_at(uintptr_t va, int level)
+    bool is_leaf(uint64_t desc, int height)
     {
-        return static_cast<size_t>((va >> shift_at(level)) & (PTES - 1));
-    }
-
-    uintptr_t span_at(int level)
-    {
-        return static_cast<uintptr_t>(1) << shift_at(level);
-    }
-
-    // Recognize large leaves only at levels 2 and 3, where PS is defined.
-    bool is_leaf(uint64_t desc, int level)
-    {
-        if (level == LEVEL_LEAF)
+        if (height == 0)
         {
             return true;
         }
-        if (level > LEVEL_LARGEST_LEAF)
+        if (height > HEIGHT_LARGEST_LEAF)
         {
             return false;
         }
         return (desc & PTE_PS) != 0;
     }
 
-    // INVLPG also invalidates paging-structure caches for this PCID, so newly
-    // installed table entries need no separate invalidation
-    // (Intel SDM Vol. 3, section 5.10.4.1). This core only: peers_reload covers the others.
+    bool entry_table(uint64_t desc, int height)
+    {
+        return (desc & PTE_P) != 0 and not is_leaf(desc, height);
+    }
+
+    // INVLPG also drops paging-structure caches, so a newly installed table entry needs no
+    // other invalidation (Intel SDM Vol 3, section 5.10.4.1). This core only; peers_reload
+    // covers the others.
     void invalidate_page(uintptr_t va)
     {
         kickos_x86_64_invlpg(va);
@@ -266,15 +244,13 @@ namespace
 #endif
     }
 
-    // Keep the root register and residency record in sync.
     void install_root(uint64_t cr3)
     {
         kickos_x86_64_write_cr3(cr3);
         g_residency.note(cr3 & PTE_ADDR_MASK, arch_cpu_id());
     }
 
-    // Reload CR3 to invalidate non-global translations and paging-structure
-    // caches. This backend creates no global entries (section 5.10.4.1).
+    // No global entries exist, so a CR3 reload drops everything (section 5.10.4.1).
     void invalidate_all(void)
     {
         install_root(kickos_x86_64_read_cr3());
@@ -286,25 +262,13 @@ namespace
         return static_cast<uint64_t>(phys_of(root_of(space))) & PTE_ADDR_MASK;
     }
 
-    // Use recorded residency for maintenance, including spaces switched away from. Exact only
-    // because install_root, like every caller of this, runs under the kernel lock.
+    // Includes spaces switched away from. Exact only because install_root, like every caller
+    // of this, runs under the kernel lock.
     bool resident_anywhere(struct arch_aspace* space)
     {
         return g_residency.cores(root_key(space)) != 0;
     }
 
-    // No core has ever installed a space it is not resident on, so none can hold a
-    // translation of it: an edit there needs no invalidation at any core count.
-    void invalidate_page_if(uintptr_t va, bool resident)
-    {
-        if (not resident)
-        {
-            return;
-        }
-        invalidate_page(va);
-    }
-
-    // Compose leaf memory-type bits using the live PAT.
     bool memtype_bits(enum arch_map_memtype type, uint64_t* out)
     {
         return kickos::x86_64::aspace_memtype_bits(kickos::x86_64::aspace_attribute_table(), type,
@@ -319,7 +283,6 @@ namespace
         {
             return false;
         }
-        // Enforce W^X for userspace.
         if ((rights & ARCH_MAP_W) != 0 and (rights & ARCH_MAP_X) != 0)
         {
             return false;
@@ -355,23 +318,23 @@ namespace
                                                     arch_phys_addr_t* pa, uint64_t* type)
     {
         uint64_t const* table = root;
-        for (int level = static_cast<int>(g_levels); level >= LEVEL_LEAF; level--)
+        for (int height = walk_top(); height >= 0; height--)
         {
-            uint64_t const desc = table[index_at(va, level)];
+            uint64_t const desc = table[index_at(va, height)];
             if ((desc & PTE_P) == 0)
             {
                 return false;
             }
-            if (is_leaf(desc, level))
+            if (is_leaf(desc, height))
             {
                 // A large leaf's address field has its low bits reserved to zero, so the mask
                 // gives the leaf's base and the offset inside it comes from `va`.
-                uintptr_t const inside = va & (span_at(level) - 1);
-                *pa = pte_pa(desc) + static_cast<arch_phys_addr_t>(inside & ~(GRANULE - 1));
+                uintptr_t const inside = va & (span_at(height) - 1);
+                *pa = entry_pa(desc) + static_cast<arch_phys_addr_t>(inside & ~(GRANULE - 1));
                 if (type != nullptr)
                 {
                     uint64_t bits = desc & (PTE_PWT | PTE_PCD);
-                    if (level == LEVEL_LEAF)
+                    if (height == 0)
                     {
                         bits |= desc & PTE_PAT_4K;
                     }
@@ -383,7 +346,7 @@ namespace
                 }
                 return true;
             }
-            table = table_at(pte_pa(desc));
+            table = table_at(entry_pa(desc));
         }
         return false;
     }
@@ -398,28 +361,6 @@ namespace
         return walk(root, va, pa, type);
     }
 
-    // Return a 4 KiB leaf or null. This editor cannot split large leaves.
-    uint64_t* leaf_entry(uint64_t* root, uintptr_t va)
-    {
-        uint64_t* table = root;
-        for (int level = static_cast<int>(g_levels); level > LEVEL_LEAF; level--)
-        {
-            uint64_t const desc = table[index_at(va, level)];
-            if ((desc & PTE_P) == 0 or is_leaf(desc, level))
-            {
-                return nullptr;
-            }
-            table = table_at(pte_pa(desc));
-        }
-        uint64_t* const entry = &table[index_at(va, LEVEL_LEAF)];
-        if ((*entry & PTE_P) == 0)
-        {
-            return nullptr;
-        }
-        return entry;
-    }
-
-    // Check whether the boot mapping maps this physical address to itself.
     bool identity_maps(arch_phys_addr_t pa)
     {
         if (g_boot_root == nullptr)
@@ -434,144 +375,53 @@ namespace
         return back == (pa & ~static_cast<arch_phys_addr_t>(GRANULE - 1));
     }
 
-    // Present boot-root slots are shared kernel tables. Compare slot presence,
-    // not descriptor equality: hardware can set accessed/dirty bits independently
-    // in each root (Intel SDM Vol. 3, section 5.8).
-    bool slot_is_shared(uint64_t const* keep, size_t slot)
+    // Slot presence, not descriptor equality: hardware sets accessed and dirty bits in each
+    // root independently (Intel SDM Vol 3, section 5.8).
+    bool root_slot_kept(uint64_t const*, size_t slot)
     {
-        if (keep == nullptr)
-        {
-            return false;
-        }
-        return (keep[slot] & PTE_P) != 0;
+        return (g_boot_root[slot] & PTE_P) != 0;
     }
 
-    // Frees every table under `table` and every leaf output it names. `keep` is the boot root's
-    // entry array at the top level and null below it.
-    void free_subtree(uint64_t* table, int level, uint64_t const* keep)
+    uint64_t leaf_desc(uint64_t attrs, arch_phys_addr_t pa)
     {
-        for (size_t i = 0; i < PTES; i++)
-        {
-            uint64_t const desc = table[i];
-            if ((desc & PTE_P) == 0)
-            {
-                continue;
-            }
-            if (slot_is_shared(keep, i))
-            {
-                continue;
-            }
-            arch_phys_addr_t const out = pte_pa(desc);
-            if (not is_leaf(desc, level))
-            {
-                free_subtree(table_at(out), level - 1, nullptr);
-            }
-            // The allocator ignores outputs it does not own, such as device pages.
-            kickos_frame_free(out);
-            table[i] = 0;
-        }
+        return attrs | (static_cast<uint64_t>(pa) & PTE_ADDR_MASK);
     }
 
-    // Recursion is bounded by the level count.
-    enum arch_aspace_result map_into(uint64_t* table, int level, uintptr_t va, size_t pages,
-                                    arch_phys_addr_t pa, uint64_t leaf, bool resident)
+    void link_table(uint64_t* entry, arch_phys_addr_t table, Edit const&)
     {
-        while (pages != 0)
-        {
-            size_t const idx = index_at(va, level);
-            if (level == LEVEL_LEAF)
-            {
-                if ((table[idx] & PTE_P) != 0)
-                {
-                    // Invalidate between clearing and replacing the entry (section 5.10.4.4).
-                    table[idx] = 0;
-                    invalidate_page_if(va, resident);
-                }
-                table[idx] = leaf | (static_cast<uint64_t>(pa) & PTE_ADDR_MASK);
-                // Invalidate fresh entries too; skipping requires proof that every earlier
-                // clear of this slot was invalidated (section 5.10.4.3).
-                invalidate_page_if(va, resident);
-                va += GRANULE;
-                pa += GRANULE;
-                pages--;
-                continue;
-            }
-
-            uint64_t desc = table[idx];
-            if ((desc & PTE_P) == 0)
-            {
-                arch_phys_addr_t const frame = kickos_frame_alloc();
-                if (frame == 0)
-                {
-                    return ARCH_ASPACE_ENOMEM;
-                }
-                kickos::aspace::zero_table(table_at(frame), PTES);
-                desc = table_desc_user(frame);
-                table[idx] = desc;
-            }
-            else if (is_leaf(desc, level))
-            {
-                // A larger leaf already covers this range: replacing it would change the mapping
-                // of pages this call was not asked about.
-                return ARCH_ASPACE_EINVAL;
-            }
-
-            uintptr_t const span = span_at(level);
-            uintptr_t const next = (va + span) & ~(span - 1);
-            size_t const here_max = static_cast<size_t>((next - va) / GRANULE);
-            size_t here = pages;
-            if (here > here_max)
-            {
-                here = here_max;
-            }
-            enum arch_aspace_result const rc =
-                map_into(table_at(pte_pa(desc)), level - 1, va, here, pa, leaf, resident);
-            if (rc != ARCH_ASPACE_OK)
-            {
-                return rc;
-            }
-            va += static_cast<uintptr_t>(here) * GRANULE;
-            pa += static_cast<arch_phys_addr_t>(here) * GRANULE;
-            pages -= here;
-        }
-        return ARCH_ASPACE_OK;
+        *entry = table_desc_user(table);
     }
 
-    // Free empty child tables, excluding boot entries; return whether this table is empty.
-    bool prune_empty(uint64_t* table, int level, uint64_t const* keep)
+    bool removal_owes(uint64_t)
     {
-        if (level == LEVEL_LEAF)
+        return false;
+    }
+
+    // Only a CR3 reload drops a detached table's paging-structure entries walked for other
+    // addresses (section 5.10.4.1).
+    void edits_done(Edit const& e)
+    {
+        if (not e.resident)
         {
-            return kickos::aspace::table_empty(table, PTES);
+            return;
         }
-        for (size_t i = 0; i < PTES; i++)
+        if (e.detached != 0)
         {
-            uint64_t const desc = table[i];
-            if ((desc & PTE_P) == 0)
-            {
-                continue;
-            }
-            if (slot_is_shared(keep, i))
-            {
-                continue;
-            }
-            if (is_leaf(desc, level))
-            {
-                continue;
-            }
-            arch_phys_addr_t const child = pte_pa(desc);
-            if (prune_empty(table_at(child), level - 1, nullptr))
-            {
-                table[i] = 0;
-                kickos_frame_free(child);
-            }
+            invalidate_all();
+            return;
         }
-        return kickos::aspace::table_empty(table, PTES);
+        peers_reload();
+    }
+
+    Edit edit_of(struct arch_aspace* space)
+    {
+        Edit const e = {resident_anywhere(space), 0, false, 0};
+        return e;
     }
 
     // Whether an unprivileged access reaches any leaf under `table`. The user bit ANDs down
     // the walk, so a supervisor entry hides its whole subtree.
-    bool user_reaches_a_leaf(uint64_t const* table, int level)
+    bool user_reaches_a_leaf(uint64_t const* table, int height)
     {
         for (size_t i = 0; i < PTES; i++)
         {
@@ -580,11 +430,11 @@ namespace
             {
                 continue;
             }
-            if (is_leaf(desc, level))
+            if (is_leaf(desc, height))
             {
                 return true;
             }
-            if (user_reaches_a_leaf(table_at(pte_pa(desc)), level - 1))
+            if (user_reaches_a_leaf(table_at(entry_pa(desc)), height - 1))
             {
                 return true;
             }
@@ -592,7 +442,6 @@ namespace
         return false;
     }
 
-    // Only slots absent from the boot root are available to userspace.
     bool slot_is_user(size_t slot)
     {
         if (g_boot_root == nullptr)
@@ -617,8 +466,8 @@ namespace
         {
             return false;
         }
-        // Check every slot in the range; user slots need not be contiguous.
-        int const top = static_cast<int>(g_levels);
+        // User slots need not be contiguous, so every slot in the range is checked.
+        int const top = walk_top();
         uintptr_t at = va;
         while (at < end)
         {
@@ -709,13 +558,11 @@ namespace kickos::x86_64
             g_levels = 5;
         }
 
-        // Require execute-disable support to enforce non-executable mappings.
         // EFER.NXE must be set before PTE_XD is used.
         if (not nx_supported())
         {
             refuse("this part reports no execute-disable bit, which every leaf here carries");
         }
-        // Existing valid descriptors have bit 63 clear while NXE is disabled.
         uint64_t const efer = kickos_x86_64_read_msr(MSR_EFER);
         if ((efer & EFER_NXE) == 0)
         {
@@ -733,90 +580,33 @@ namespace kickos::x86_64
         g_ram_hi = static_cast<arch_phys_addr_t>(ram_base)
                    + static_cast<arch_phys_addr_t>(ram_size);
 
-        // Verify identity mapping before walking tables by physical address.
-        if (not identity_maps(phys_of(&g_kwin_table[0][0])))
+        if (not identity_maps(phys_of(&g_boot_root)))
         {
             refuse("the adopted regime does not map this image at its own physical address");
         }
-        // Misaligned table addresses would be truncated by the descriptor mask.
-        if ((phys_of(&g_kwin_table[0][0]) & static_cast<arch_phys_addr_t>(GRANULE - 1)) != 0)
-        {
-            refuse("the window tables are not granule aligned where the loader put this image");
-        }
-        if (user_reaches_a_leaf(g_boot_root, static_cast<int>(g_levels)))
+        if (user_reaches_a_leaf(g_boot_root, walk_top()))
         {
             refuse("the adopted map lets ring 3 reach a leaf of the kernel half");
         }
 
-        int const top = static_cast<int>(g_levels);
+        int const top = walk_top();
 
-        // Reserve a free high-half root slot before any user root copies it.
-        size_t kwin_slot = PTES;
-        for (size_t i = PTES; i > PTES / 2; i--)
+        bool maps_any = false;
+        for (size_t i = 0; i < PTES; i++)
         {
-            if ((g_boot_root[i - 1] & PTE_P) == 0)
+            if ((g_boot_root[i] & PTE_P) != 0)
             {
-                kwin_slot = i - 1;
+                maps_any = true;
                 break;
             }
         }
-        if (kwin_slot == PTES)
-        {
-            refuse("the adopted root leaves no high-half slot for this port's kernel range");
-        }
-        // Temporarily disable write protection to edit firmware tables.
-        // Keep every entry in the new chain supervisor-only.
-        uint64_t const cr0 = kickos_x86_64_read_cr0();
-        if ((cr0 & CR0_WP) != 0)
-        {
-            kickos_x86_64_write_cr0(cr0 & ~CR0_WP);
-        }
-        g_boot_root[kwin_slot] = phys_of(&g_kwin_table[top - 2][0]) | PTE_P | PTE_RW;
-        if ((cr0 & CR0_WP) != 0)
-        {
-            kickos_x86_64_write_cr0(cr0);
-        }
-        // Sign-extend the high-half address.
-        g_kwin_va = static_cast<uintptr_t>(kwin_slot) << shift_at(top);
-        if (kwin_slot >= PTES / 2)
-        {
-            g_kwin_va |= ~((static_cast<uintptr_t>(1) << (shift_at(top) + INDEX_BITS)) - 1);
-        }
-
-        // Include the new window in the shared kernel slots.
-        size_t first_present = PTES;
-        g_kernel_slots = 0;
-        g_user_lo = 0;
-        g_user_hi = 0;
-        for (size_t i = 0; i < PTES; i++)
-        {
-            if ((g_boot_root[i] & PTE_P) == 0)
-            {
-                continue;
-            }
-            g_kernel_slots++;
-            if (first_present == PTES)
-            {
-                first_present = i;
-            }
-        }
-        if (first_present == PTES)
+        if (not maps_any)
         {
             refuse("the adopted root maps nothing, so there is no kernel half to share");
         }
-        g_first_child_entries = 0;
-        if (not is_leaf(g_boot_root[first_present], top))
-        {
-            uint64_t const* const child = table_at(pte_pa(g_boot_root[first_present]));
-            for (size_t i = 0; i < PTES; i++)
-            {
-                if ((child[i] & PTE_P) != 0)
-                {
-                    g_first_child_entries++;
-                }
-            }
-        }
-        // Exclude slot 0 to keep null pointers unmapped.
+        // Slot 0 stays unmapped so a null pointer faults.
+        g_user_lo = 0;
+        g_user_hi = 0;
         size_t const low_slots = PTES / 2;
         for (size_t i = 1; i < low_slots; i++)
         {
@@ -826,9 +616,9 @@ namespace kickos::x86_64
             }
             if (g_user_lo == 0)
             {
-                g_user_lo = static_cast<uintptr_t>(i) << shift_at(top);
+                g_user_lo = static_cast<uintptr_t>(i) * span_at(top);
             }
-            g_user_hi = (static_cast<uintptr_t>(i) + 1) << shift_at(top);
+            g_user_hi = (static_cast<uintptr_t>(i) + 1) * span_at(top);
         }
         if (g_user_hi == 0)
         {
@@ -850,154 +640,12 @@ namespace kickos::x86_64
         invalidate_all();
     }
 
-    unsigned aspace_levels(void)
-    {
-        return g_levels;
-    }
-
-    uintptr_t aspace_kernel_window(void)
-    {
-        return g_kwin_va;
-    }
-
-    size_t aspace_kernel_window_pages(void)
-    {
-        if (g_kwin_va == 0)
-        {
-            return 0;
-        }
-        return PTES;
-    }
-
-    bool aspace_kernel_map(size_t page, arch_phys_addr_t pa)
-    {
-        if (g_kwin_va == 0 or page >= PTES)
-        {
-            return false;
-        }
-        if (not phys_range_ok(pa, 1))
-        {
-            return false;
-        }
-        uint64_t memtype = 0;
-        if (not memtype_bits(ARCH_MAP_NORMAL, &memtype))
-        {
-            return false;
-        }
-        arch_irq_state_t const s = arch_irq_save();
-        uintptr_t const va = g_kwin_va + page * GRANULE;
-        int const top = static_cast<int>(g_levels);
-        // Build child tables on demand under the shared root entry.
-        for (int level = top - 1; level > LEVEL_LEAF; level--)
-        {
-            uint64_t* const table = &g_kwin_table[level - 1][0];
-            size_t const idx = index_at(va, level);
-            if ((table[idx] & PTE_P) == 0)
-            {
-                table[idx] = phys_of(&g_kwin_table[level - 2][0]) | PTE_P | PTE_RW;
-            }
-        }
-        uint64_t* const leaves = &g_kwin_table[LEVEL_LEAF - 1][0];
-        size_t const leaf = index_at(va, LEVEL_LEAF);
-        if ((leaves[leaf] & PTE_P) != 0)
-        {
-            leaves[leaf] = 0;
-            invalidate_page(va);
-        }
-        leaves[leaf] = (static_cast<uint64_t>(pa) & PTE_ADDR_MASK) | PTE_P | PTE_RW | PTE_A
-                       | PTE_D | PTE_XD | memtype;
-        invalidate_page(va);
-        peers_reload();
-        arch_irq_restore(s);
-        return true;
-    }
-
-    bool aspace_kernel_unmap(size_t page)
-    {
-        if (g_kwin_va == 0 or page >= PTES)
-        {
-            return false;
-        }
-        arch_irq_state_t const s = arch_irq_save();
-        uintptr_t const va = g_kwin_va + page * GRANULE;
-        uint64_t* const leaves = &g_kwin_table[LEVEL_LEAF - 1][0];
-        size_t const leaf = index_at(va, LEVEL_LEAF);
-        if ((leaves[leaf] & PTE_P) == 0)
-        {
-            arch_irq_restore(s);
-            return false;
-        }
-        leaves[leaf] = 0;
-        invalidate_page(va);
-        peers_reload();
-        arch_irq_restore(s);
-        return true;
-    }
-
-    uintptr_t aspace_user_lo(void)
-    {
-        return g_user_lo;
-    }
-
-    uintptr_t aspace_user_hi(void)
-    {
-        return g_user_hi;
-    }
-
-    unsigned aspace_kernel_slots(void)
-    {
-        return g_kernel_slots;
-    }
-
-    unsigned aspace_first_child_entries(void)
-    {
-        return g_first_child_entries;
-    }
-
-    arch_phys_addr_t aspace_root_installed(void)
-    {
-        return static_cast<arch_phys_addr_t>(kickos_x86_64_read_cr3() & PTE_ADDR_MASK);
-    }
-
-    unsigned aspace_tag_bits(void)
-    {
-        uint32_t a = 0;
-        uint32_t b = 0;
-        uint32_t c = 0;
-        uint32_t d = 0;
-        // CPUID leaf 1, ECX bit 17 reports 12-bit PCID support.
-        kickos_x86_64_cpuid(1, 0, &a, &b, &c, &d);
-        if ((c & (1u << 17)) == 0)
-        {
-            return 0;
-        }
-        return 12;
-    }
-
-    bool aspace_tag_invalidate_present(void)
-    {
-        uint32_t a = 0;
-        uint32_t b = 0;
-        uint32_t c = 0;
-        uint32_t d = 0;
-        kickos_x86_64_cpuid(0, 0, &a, &b, &c, &d);
-        if (a < 7)
-        {
-            return false;
-        }
-        // INVPCID support is independent of PCID support: leaf 7, EBX bit 10.
-        kickos_x86_64_cpuid(7, 0, &a, &b, &c, &d);
-        return (b & (1u << 10)) != 0;
-    }
-
-    // Backend-only table walk without user-range validation.
-    arch_phys_addr_t aspace_frame_at_unchecked(struct arch_aspace* space, uintptr_t va)
+    static arch_phys_addr_t aspace_frame_at_unchecked(struct arch_aspace* space, uintptr_t va)
     {
         if (space == nullptr)
         {
             return 0;
         }
-        // Protect the table walk from concurrent rollback and table reclamation.
         arch_irq_state_t const s = arch_irq_save();
         arch_phys_addr_t frame = 0;
         if (not resolve(root_of(space), va & ~static_cast<uintptr_t>(GRANULE - 1), &frame))
@@ -1054,12 +702,11 @@ struct arch_aspace* arch_aspace_create(void)
         return nullptr;
     }
     uint64_t* const table = table_at(root);
-    // Copy kernel root entries; their child tables remain shared.
     for (size_t i = 0; i < PTES; i++)
     {
         table[i] = g_boot_root[i];
     }
-    // Destroy invalidates the old root before its frame can be reused.
+    // A recycled root frame needs no flush here: destroy invalidated it on every core first.
     g_residency.open(static_cast<uint64_t>(root) & PTE_ADDR_MASK);
     return reinterpret_cast<struct arch_aspace*>(table);
 }
@@ -1071,17 +718,16 @@ void arch_aspace_destroy(struct arch_aspace* space)
         return;
     }
     uint64_t* const table = root_of(space);
-    // The boot tables belong to firmware, not the frame pool.
+    // The boot tables are firmware's, not the frame pool's.
     if (table == g_boot_root)
     {
         return;
     }
     uint64_t const key = root_key(space);
-    // Invalidate cached walks before freeing tables.
+    // Invalidate on every online core, close residency, then free: a freed table can be reused.
     invalidate_all();
-    // Remove residency after invalidation and before reusing the root.
     g_residency.close(key);
-    free_subtree(table, static_cast<int>(g_levels), g_boot_root);
+    free_subtree(table, walk_top(), true);
     kickos_frame_free(phys_of(table));
 }
 
@@ -1089,16 +735,10 @@ enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
                                         arch_phys_addr_t pa, size_t pages, uint32_t rights,
                                         enum arch_map_memtype type)
 {
-    if (space == nullptr or not range_ok(va, pages))
+    if (space == nullptr or root_of(space) == g_boot_root or not range_ok(va, pages))
     {
         return ARCH_ASPACE_EINVAL;
     }
-    // Do not edit the boot root through the user mapping API.
-    if (root_of(space) == g_boot_root)
-    {
-        return ARCH_ASPACE_EINVAL;
-    }
-    // Validate the whole range before making any edits.
     if (not phys_range_ok(pa, pages))
     {
         return ARCH_ASPACE_EINVAL;
@@ -1108,84 +748,16 @@ enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
     {
         return ARCH_ASPACE_EINVAL;
     }
-    // Reject partially mapped ranges: rollback would remove existing leaves.
-    // Wholly mapped ranges can be remapped without allocating tables.
-    size_t mapped = 0;
-    for (size_t i = 0; i < pages; i++)
-    {
-        if (leaf_entry(root_of(space), va + static_cast<uintptr_t>(i) * GRANULE) != nullptr)
-        {
-            mapped++;
-        }
-    }
-    if (mapped != 0 and mapped != pages)
-    {
-        return ARCH_ASPACE_EINVAL; // partially mapped, and nothing has been edited
-    }
-    // Never-run spaces have no cached translations to invalidate.
-    bool const resident = resident_anywhere(space);
-    enum arch_aspace_result const rc =
-        map_into(root_of(space), static_cast<int>(g_levels), va, pages, pa, leaf, resident);
-    if (rc == ARCH_ASPACE_OK and resident)
-    {
-        peers_reload();
-    }
-    if (rc != ARCH_ASPACE_OK)
-    {
-        // Mask interrupts so no walk can occur between invalidation and table free.
-        arch_irq_state_t const s = arch_irq_save();
-        // Clear leaves before freeing tables. Mapping proceeds in address order,
-        // so the first missing leaf ends rollback.
-        for (size_t i = 0; i < pages; i++)
-        {
-            uint64_t* const entry =
-                leaf_entry(root_of(space), va + static_cast<uintptr_t>(i) * GRANULE);
-            if (entry == nullptr)
-            {
-                break;
-            }
-            *entry = 0;
-        }
-        // One sweep each side of the frees.
-        invalidate_all();
-        (void)prune_empty(root_of(space), static_cast<int>(g_levels), g_boot_root);
-        invalidate_all();
-        arch_irq_restore(s);
-    }
-    return rc;
+    return walk_map(root_of(space), va, pa, pages, leaf, edit_of(space));
 }
 
 enum arch_aspace_result arch_aspace_unmap(struct arch_aspace* space, uintptr_t va, size_t pages)
 {
-    if (space == nullptr or not range_ok(va, pages))
+    if (space == nullptr or root_of(space) == g_boot_root or not range_ok(va, pages))
     {
         return ARCH_ASPACE_EINVAL;
     }
-    if (root_of(space) == g_boot_root)
-    {
-        return ARCH_ASPACE_EINVAL;
-    }
-    for (size_t i = 0; i < pages; i++)
-    {
-        if (leaf_entry(root_of(space), va + static_cast<uintptr_t>(i) * GRANULE) == nullptr)
-        {
-            return ARCH_ASPACE_EINVAL; // not wholly mapped, and nothing has been cleared
-        }
-    }
-    bool const resident = resident_anywhere(space);
-    for (size_t i = 0; i < pages; i++)
-    {
-        uintptr_t const at = va + static_cast<uintptr_t>(i) * GRANULE;
-        uint64_t* const entry = leaf_entry(root_of(space), at);
-        *entry = 0;
-        invalidate_page_if(at, resident);
-    }
-    if (resident)
-    {
-        peers_reload();
-    }
-    // Empty tables are reclaimed by destroy.
-    return ARCH_ASPACE_OK;
+    return walk_unmap(root_of(space), va, pages, edit_of(space));
 }
 
 void arch_aspace_activate(struct arch_aspace* space)
@@ -1194,9 +766,6 @@ void arch_aspace_activate(struct arch_aspace* space)
     {
         return;
     }
-    // All roots share kernel mappings. Reloading CR3 invalidates non-global
-    // translations and paging-structure caches (section 5.10.4.1).
-    // Mask interrupts while updating CR3 and its residency record.
     arch_irq_state_t const s = arch_irq_save();
     install_root(static_cast<uint64_t>(phys_of(root_of(space))));
     arch_irq_restore(s);
@@ -1262,7 +831,6 @@ void arch_aspace_release(struct arch_aspace* space, uintptr_t va)
     (void)va;
 }
 
-// Validate against user slots before walking the mapping.
 arch_phys_addr_t arch_aspace_frame_at(struct arch_aspace* space, uintptr_t va)
 {
     if (space == nullptr)

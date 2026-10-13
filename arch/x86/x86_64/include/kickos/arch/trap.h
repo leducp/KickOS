@@ -37,6 +37,18 @@ namespace kickos::x86_64
         uint64_t rsp;
         uint64_t ss;
     };
+
+    // Whether a frame on the running thread's own kernel block is a fault its ring 3 code took.
+    // A kernel fault during a syscall dispatch builds its frame on that same block, and a vector
+    // at or above 32 is an external delivery whose pushed cs names whoever was running.
+    inline bool trap_frame_from_ring3(trap_frame const& f)
+    {
+        if (f.vector >= 32)
+        {
+            return false;
+        }
+        return (f.cs & 3u) == 3;
+    }
 }
 
 // trap_x86_64.S: 256 stubs and a table of their offsets from the base. Index through the

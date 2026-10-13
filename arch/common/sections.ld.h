@@ -70,6 +70,21 @@
     ASSERT(__kickos_relocs_end == __kickos_relocs_start,                      \
            "KickOS: the link kept dynamic relocations, which nothing in a KickOS image applies; a PIE or shared-object flag reached the link")
 
+#define KICKOS_FINI_EMPTY_ASSERT()                                            \
+    ASSERT(KICKOS_LD_C_SYM(__kickos_app_fini_array_end)                       \
+               == KICKOS_LD_C_SYM(__kickos_app_fini_array_start),             \
+           "KickOS: .fini_array is non-empty: a global with a non-trivial destructor? Static destructors are not supported; nothing would ever run it")
+
+/* An opt-in floor under the newlib heap, undefined by default. */
+#ifdef KICKOS_HEAP_MIN
+#define KICKOS_HEAP_MIN_ASSERT()                                              \
+    ASSERT(KICKOS_LD_C_SYM(_kickos_heap_limit) - KICKOS_LD_C_SYM(_kickos_heap_start) \
+               >= KICKOS_HEAP_MIN,                                            \
+           "KickOS: heap below KICKOS_HEAP_MIN")
+#else
+#define KICKOS_HEAP_MIN_ASSERT()
+#endif
+
 /* The PT_TLS template: the bytes each thread's TLS block is initialised FROM, not the block
  * itself.
  *
@@ -132,7 +147,7 @@
 #define KICKOS_TLS_CARVE_ASSERT(size, floor, tls_msg)                          \
     ASSERT(SIZEOF(.tdata) + SIZEOF(.tbss) == 0 || KICKOS_TLS_CLEARS(size, floor), tls_msg)
 
-#if defined(KICKOS_TLS) && KICKOS_TLS && !KICKOS_TLS_FROM_SP
+#if KICKOS_TLS && !KICKOS_TLS_FROM_SP
 #include <kickos/arch/idle_floor.h>
 #define KICKOS_TLS_IDLE_ASSERT()                                              \
     KICKOS_LD_C_SYM(__kickos_tls_idle_checked) = 1;                           \
@@ -145,7 +160,7 @@
 /* __kickos_tls_carve: the block a stack pays for the linked image's thread-local data, as
  * KICKOS_TLS_CARVE_ASSERT counts it. A system target's asserts read it. A comparison is 0 or 1.
  */
-#if defined(KICKOS_TLS) && KICKOS_TLS
+#if KICKOS_TLS
 #define KICKOS_TLS_CARVE_SYMBOL()                                             \
     KICKOS_LD_C_SYM(__kickos_tls_carve) = (SIZEOF(.tdata) + SIZEOF(.tbss) != 0) \
                              * ALIGN(__kickos_tbss_end - __kickos_tdata_start \
@@ -158,7 +173,7 @@
 #define KICKOS_TLS_CARVE_SYMBOL() KICKOS_LD_C_SYM(__kickos_tls_carve) = 0;
 #endif
 
-#if defined(KICKOS_TLS) && KICKOS_TLS
+#if KICKOS_TLS
 #define KICKOS_TLS_FIT_ASSERT()                                               \
     KICKOS_TLS_CARVE_SYMBOL()                                                 \
     ASSERT(SIZEOF(.tdata) + SIZEOF(.tbss) == 0                                \
@@ -191,7 +206,7 @@
  *
  * The rxv3 chip script must invoke it: arch/CMakeLists.txt requires it there.
  */
-#if defined(KICKOS_TLS) && KICKOS_TLS
+#if KICKOS_TLS
 #define KICKOS_TLS_EMUTLS_ASSERT(start, end) /* the override answers the calls */
 #else
 #define KICKOS_TLS_EMUTLS_ASSERT(start, end)                                  \

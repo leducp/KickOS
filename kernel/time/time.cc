@@ -73,7 +73,7 @@ namespace kickos
             next = event;
         }
 
-#if defined(KICKOS_SCHED_PERIODIC_TICK)
+#if KICKOS_SCHED_PERIODIC_TICK
         uint64_t periodic = ktime_now() + KICKOS_TICK_PERIOD_NS;
         if (periodic < next)
         {

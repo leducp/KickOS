@@ -62,7 +62,7 @@ if(DEFINED KICKOS_ISOLATED_CORES AND NOT KICKOS_ISOLATED_CORES STREQUAL "")
 endif()
 # Five placement arms assert something about an ISOLATED core, and a posture that isolates
 # none has no such core to assert it of. They run on qemu-arm64's smpiso variant.
-if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1 AND _selftest_isolated EQUAL 0)
+if(KICKOS_KERNEL_CORES GREATER 1 AND _selftest_isolated EQUAL 0)
   list(APPEND KICKOS_EXPECT_SKIPS
     isolated_single_grant_ok isolated_unpinned_never isolated_unpin_excludes
     isolated_takes_pinned isolated_mixed_mask_ok)
@@ -82,21 +82,22 @@ if(KICKOS_KERNEL_CORES GREATER 1)
     endif()
   endforeach()
 endif()
-if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1 AND _selftest_movable LESS 1)
+if(KICKOS_KERNEL_CORES GREATER 1 AND _selftest_movable LESS 1)
   list(APPEND KICKOS_EXPECT_SKIPS migrate_running)
 endif()
 
-# The capability slots main's table holds before any arm runs: stdout, the crossings its
-# composition names, delegated from index 1 and at most one per partition port, and the two it
-# holds for the run.
+# The capability slots main's table holds before any arm runs: the reserved ones, the crossings
+# its composition names, delegated from the first dynamic index and at most one per partition
+# port, and the two it holds for the run.
 set(_selftest_lifetime_caps 2) # g_lock and g_done, created by main and never closed
-math(EXPR _selftest_cap_seated "1 + ${KICKOS_AMP_PORT_COUNT} + ${_selftest_lifetime_caps}")
+math(EXPR _selftest_cap_seated
+  "${KICKOS_CAP_FIRST_DYNAMIC} + ${KICKOS_AMP_PORT_COUNT} + ${_selftest_lifetime_caps}")
 
 # Every arm that asks a pool for more than this posture provisions, by what the arm itself asks
 # for (tests/static/selftest_demands.py): the workers beside main, the tasks beside main's own and
 # the image's driver tasks, the IRQ lines main's task may bind, the capability slots beside the
 # seated ones, and the objects of each kind main's task budget leaves beside the two semaphores
-# main holds for the run.
+# main holds for the run, and the one mutex its task holds for libc.
 set(_selftest_lifetime_sems 2) # g_lock and g_done
 foreach(_selftest_knob KICKOS_MAX_THREADS KICKOS_MAX_TASKS KICKOS_TASK_IRQ_HANDLE_BUDGET
         KICKOS_MAX_SPAWN_GRANTS KICKOS_TASK_SEMAPHORE_BUDGET KICKOS_TASK_MUTEX_BUDGET
@@ -108,21 +109,17 @@ endforeach()
 math(EXPR _selftest_workers "${KICKOS_MAX_THREADS} - 1")
 _selftest_main_caps("${KICKOS_MAX_SPAWN_GRANTS}" "${_selftest_cap_seated}" _selftest_caps)
 math(EXPR _selftest_sems "${KICKOS_TASK_SEMAPHORE_BUDGET} - ${_selftest_lifetime_sems}")
+math(EXPR _selftest_mutexes "${KICKOS_TASK_MUTEX_BUDGET} - 1")
 # The guards an arm's registration sits under, as the compiler sees them.
 set(_selftest_guards --config "KICKOS_KERNEL_CORES=${KICKOS_KERNEL_CORES}")
 foreach(_selftest_knob KICKOS_HAVE_ASPACE KICKOS_HAVE_MPU KICKOS_MEMORY_ENFORCED
-        KICKOS_FAULT_ISOLATION KICKOS_AMP_NODE KICKOS_AMP_OWN_IMAGE KICKOS_REBOOT)
+        KICKOS_FAULT_ISOLATION KICKOS_AMP_NODE KICKOS_AMP_OWN_IMAGE)
   set(_selftest_on 0)
   if(${_selftest_knob})
     set(_selftest_on 1)
   endif()
   list(APPEND _selftest_guards --config "${_selftest_knob}=${_selftest_on}")
 endforeach()
-if(KICKOS_ENABLE_SELFTEST)
-  list(APPEND _selftest_guards --config KICKOS_ENABLE_SELFTEST=1)
-else()
-  list(APPEND _selftest_guards --undefined KICKOS_ENABLE_SELFTEST)
-endif()
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 # <driver tasks> <out>: the arms short of this posture with that many driver tasks composed.
 function(_selftest_pool_short driver_tasks out)
@@ -132,7 +129,7 @@ function(_selftest_pool_short driver_tasks out)
             "${PROJECT_SOURCE_DIR}/user/apps/common/selftest" ${_selftest_guards} --supply
             "workers=${_selftest_workers}" "tasks=${_tasks}"
             "irqs=${KICKOS_TASK_IRQ_HANDLE_BUDGET}" "caps=${_selftest_caps}"
-            "sems=${_selftest_sems}" "mutexes=${KICKOS_TASK_MUTEX_BUDGET}"
+            "sems=${_selftest_sems}" "mutexes=${_selftest_mutexes}"
             "endpoints=${KICKOS_TASK_ENDPOINT_BUDGET}" "notifies=${KICKOS_TASK_NOTIFY_BUDGET}"
     OUTPUT_VARIABLE _short
     ERROR_VARIABLE _err
@@ -155,13 +152,13 @@ if("console_publish_handout" IN_LIST KICKOS_EXPECT_SKIPS)
   list(APPEND KICKOS_EXPECT_SKIPS console_publish_narrow)
 endif()
 
-if(KICKOS_ENABLE_SELFTEST AND KICKOS_KERNEL_CORES GREATER 1 AND NOT KICKOS_LIBC_REENT)
+if(KICKOS_KERNEL_CORES GREATER 1 AND NOT KICKOS_LIBC_REENT)
   list(APPEND KICKOS_EXPECT_SKIPS reent_per_thread_cores)
 endif()
 
 # Peer-dependent arms skip when an AMP image runs alone; the merged partition gate requires them
 # to run when a peer is available.
-if(KICKOS_ENABLE_SELFTEST AND KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
+if(KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
   list(APPEND KICKOS_EXPECT_SKIPS amp_far_call amp_far_reply_empty amp_share_crossing)
   if(KICKOS_HAVE_ASPACE)
     list(APPEND KICKOS_EXPECT_SKIPS amp_far_reply_unmapped)
@@ -248,8 +245,7 @@ if(KICKOS_KERNEL_CORES GREATER 1)
 endif()
 # irq_kernel_line_reserved claims the lines the kernel's own devices take (KICKOS_KERNEL_LINES),
 # and on a GIC the SGIs. A chip with none has nothing to refuse.
-if(KICKOS_ENABLE_SELFTEST AND NOT KICKOS_ARCH STREQUAL "armv8a"
-   AND KICKOS_KERNEL_LINE_COUNT EQUAL 0)
+if(NOT KICKOS_ARCH STREQUAL "armv8a" AND KICKOS_KERNEL_LINE_COUNT EQUAL 0)
   list(APPEND KICKOS_EXPECT_PARTIALS irq_kernel_line_reserved)
 endif()
 # periph_reg_write_unheld on every backend whose peripheral model cannot witness the refusal.
@@ -262,7 +258,7 @@ endif()
 if(KICKOS_ARCH STREQUAL "x86_64")
   list(APPEND KICKOS_EXPECT_PARTIALS vector_fault_contained)
 endif()
-if(KICKOS_HAVE_MPU AND KICKOS_ENABLE_SELFTEST)
+if(KICKOS_HAVE_MPU)
   # The reserved-block spawn needs at least one arch_reserved_blocks entry.
   if(NOT KICKOS_CHIP_RESERVED_BLOCKS MATCHES "^[0-9]+$")
     message(FATAL_ERROR "selftest: the generated chip.cmake states no KICKOS_CHIP_RESERVED_BLOCKS")
@@ -281,7 +277,7 @@ endif()
 # arm dying the wrong way, and a contained fault reconciles the plan and the case count, so this
 # set is the only thing that can tell the two apart (tests/integration/check_tap_stream.sh).
 set(KICKOS_EXPECT_FAULTS "")
-if(KICKOS_HAVE_ASPACE AND KICKOS_ENABLE_SELFTEST AND KICKOS_FAULT_ISOLATION)
+if(KICKOS_HAVE_ASPACE AND KICKOS_FAULT_ISOLATION)
   # kernel_state_unreachable's readers, and the stack arms' threads reading the guard below
   # their own stacks.
   list(APPEND KICKOS_EXPECT_FAULTS kvic pstk)

@@ -4,9 +4,7 @@
 // Lone-TU fallback (arch/CMakeLists.txt states the rule): exactly one symbol, so a
 // backend definition keeps this archive member unextracted.
 //
-// Raise the physical doorbell over mip.SSIP (the qemu-virt path). The ESP32-C6 defines
-// its own (interrupt matrix FROM_CPU source). The raise happens with MIE=0, so it fires
-// at arch_irq_restore, the normal ISR path, not a direct post.
+// The doorbell over mip.SSIP. Raised with MIE=0, so it fires at arch_irq_restore.
 
 #include <kickos/arch/arch.h>
 

@@ -24,7 +24,7 @@ using namespace kickos::arm;
 extern "C"
 {
 
-// Read the shared pending stash written by arch_mpu_apply (arch_arm_common.cc).
+// The shared stash arch_mpu_apply writes (arch/common/arch_mpu_stash.cc).
 struct arch_mpu_encoded const* kickos_arm_mpu_pending(void);
 
 // The descriptor words this core's MPU holds, and whether that record may be believed.
@@ -38,14 +38,13 @@ struct arch_mpu_encoded const* kickos_arm_mpu_pending(void);
 static struct arch_mpu_encoded g_mpu_held[KICKOS_NUM_CORES];
 static bool g_mpu_held_valid[KICKOS_NUM_CORES];
 
-// One-time PMSAv8 setup: the MAIR attribute indirection + MemManage enable. Must run
-// BEFORE the scheduler starts. This is also the LINK ANCHOR: chip_rp2350.o, always
-// pulled for arch_init, references this symbol, which is defined ONLY here, so GNU ld
-// pulls this member and resolves kickos_arch_mpu_commit / arch_mpu_region_encodable to
-// the overrides below. Without that reference the fallback TU answers them first and
-// the board silently declines.
+// One-time PMSAv8 setup: the MAIR attribute indirection and MemManage enable. Runs once PER
+// CORE (the MPU is banked), before the scheduler starts.
 //
-// The MPU is per-core banked, so this must run once PER CORE at bring-up.
+// LINK ANCHOR: the chip file's arch_init references this symbol, defined only here, so GNU ld
+// pulls this member and kickos_arch_mpu_commit / arch_mpu_region_encodable resolve to the
+// overrides below. Without the reference the fallback TU answers first and the board
+// silently declines.
 void kickos_arm_pmsav8_init(void)
 {
     // kickos_arch_mpu_commit zeroes MPU_CTRL and reprograms per-thread rows ONLY, so a chip
@@ -96,13 +95,11 @@ uint32_t arch_mpu_encode(struct arch_mpu_region const* regions, size_t n,
     return pmsav8_encode(regions, n, out);
 }
 
-// Replaces the PMSAv7 kickos_arch_mpu_commit fallback. Programs the running thread's
-// per-thread regions from the shared stash into RBAR/RLAR, disabling the unused
-// descriptors up to MPU_TYPE.DREGION. Runs AFTER the physical swap. cpsid brackets the
-// disable/reprogram/re-enable: PendSV is lowest priority, so a device IRQ could
-// otherwise preempt a half-programmed MPU, the caller's BASEPRI IrqLock having lapsed
-// by the time the deferred commit runs. Every descriptor on the M33 is a per-thread
-// grant, which is what makes the MPU_CTRL zeroing below sound.
+// Programs the running thread's regions from the stash into RBAR/RLAR and disables the rest up
+// to MPU_TYPE.DREGION. Runs AFTER the physical swap. cpsid brackets the disable/reprogram/
+// re-enable: PendSV is lowest priority, so a device IRQ could otherwise preempt a
+// half-programmed MPU, the caller's BASEPRI IrqLock having lapsed by then. Every descriptor
+// here is a per-thread grant, which is what makes the MPU_CTRL zeroing below sound.
 void kickos_arch_mpu_commit(void)
 {
 #if KICKOS_BENCH
@@ -170,7 +167,6 @@ void kickos_arch_mpu_commit(void)
 
 // PMSAv8 is byte-granular on a 32-byte page: a window is encodable EXACTLY iff base and
 // base+size both land on a 32-byte boundary, any multiple of the granule being nameable.
-// arch_mpu_min_region keeps the shared 32-byte answer.
 bool arch_mpu_region_encodable(uintptr_t base, size_t size)
 {
     if (size < 32u)
@@ -178,13 +174,6 @@ bool arch_mpu_region_encodable(uintptr_t base, size_t size)
         return false;
     }
     return (base & 31u) == 0 and (size & 31u) == 0;
-}
-
-// Replaces the v7-M fallback 1. Reached only in an enforcement build, this TU sitting
-// inside KICKOS_HAVE_MPU.
-int arch_mpu_region_pow2(void)
-{
-    return 0;
 }
 
 }

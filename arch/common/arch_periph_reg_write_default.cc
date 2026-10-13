@@ -4,9 +4,7 @@
 // Lone-TU fallback (arch/CMakeLists.txt states the rule): exactly one symbol, so a
 // backend definition keeps this archive member unextracted.
 //
-// This chip has no privileged-write allowlist. -KOS_ENOSYS, not 0: a caller reaching
-// for this seam has a register the bus refuses it, so a success answer would report a
-// store that never happened. See arch.h for the contract.
+// -KOS_ENOSYS, not 0: success would report a store that never happened.
 
 #include <kickos/arch/arch.h>
 

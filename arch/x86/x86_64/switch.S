@@ -156,18 +156,6 @@ kickos_x86_64_start:
     xrstor64 KOS_CTX_XSAVE(%rdi)
     jmp     kickos_x86_64_resume
 
-/* The address arch_context_init leaves at the top of a new thread's stack, so the entry
- * function's own `ret` lands here. The `call` is what leaves the stack 16-byte aligned at
- * kickos_thread_return's entry, as the SysV convention wants. */
-    .balign 16
-    .globl kickos_x86_64_thread_exit
-kickos_x86_64_thread_exit:
-    call    kickos_thread_return
-.Lexit_dead:
-    cli
-    hlt
-    jmp     .Lexit_dead
-
 /* --- The fast syscall entry ------------------------------------------------
  * Privileged execution begins on the stack pointer the CALLER chose, and the three
  * instructions below are what leave it. NONE of the three may dereference it or push: the

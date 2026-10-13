@@ -63,9 +63,9 @@ arch/x86/x86_64/fault_x86_64.cc
 arch/xtensa/lx6/arch_xtensa.cc
 arch/sim/sim.cc'
 
-# The armv7m reporter picks between HARD, MPU and BUS. Fewer resolved labels means the
+# The armv7m reporter picks between HARD, MPU, BUS and USAGE. Fewer resolved labels means the
 # label scan went vacuous, which would otherwise read as a clean tree.
-MIN_LABELS=3
+MIN_LABELS=4
 
 # THE SET CANNOT SHRINK QUIETLY. Every other leg here is per-file or per-site: a reporter that
 # loses one of two banners still yields one, its labels still resolve, and the site it no

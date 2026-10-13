@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// RP2350 ACCESSCTRL bus access registers (RP2350 datasheet RP-008373-DS-2, 10.6). Offsets are
-// ACCESSCTRL_BASE-relative (10.6.3, p.826; Table 911, pp.827-829).
+// RP2350 ACCESSCTRL bus access registers (datasheet RP-008373-DS-2, 10.6), offsets from
+// ACCESSCTRL_BASE (Table 911).
 
 #ifndef KICKOS_ARCH_ARM_CHIP_RP2350_REGS_ACCESSCTRL_H
 #define KICKOS_ARCH_ARM_CHIP_RP2350_REGS_ACCESSCTRL_H

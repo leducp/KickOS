@@ -7,9 +7,11 @@ version: 1
 chip: mps2
 manual: "QEMU 11.1 `mps2-an385`, `mps2-an386` and `mps2-an500` machines (hw/arm/mps2.c)"
 arch: armv7m
-protection: { unit: pmsav7, covers_devices: true, memory_type: true }
+protection: { unit: pmsav7, granule: 32, covers_devices: true, memory_type: true }
 data_cache: false
 reserved: none
+family: { dir: common, sources: [common/semihost_console.cc] }
+exits_on_fault: true
 
 interrupts: { count: { value: 48, ref: "QEMU 11.1 `info qtree`: armv7m_nvic num-irq" } }
 

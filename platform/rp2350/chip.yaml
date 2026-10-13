@@ -8,8 +8,10 @@ chip: rp2350
 manual: "RP2350 Datasheet, RP-008373-DS-2"
 arch: armv7m
 # The unit sits on the CPU's access path, so a device window is enforced per task.
-protection: { unit: pmsav8, covers_devices: true, memory_type: true }
+protection: { unit: pmsav8, granule: 32, covers_devices: true, memory_type: true }
 data_cache: false
+family: { dir: arm/chip/rp2xxx, sources: [arm/chip/rp2xxx/chip_rp2xxx.cc, arm/chip/rp2xxx/rom_call.S] }
+exits_on_fault: false
 
 interrupts:
   count: { value: 52, ref: "3.2 Interrupts, p.82" }

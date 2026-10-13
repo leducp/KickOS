@@ -154,6 +154,7 @@ The switcher banks DR0-DR15 224 bytes below the USP it is taken on, the operand 
 are 64 bits wide, and a bank at 4 mod 8 moves every double in two beats, 13 cycles a half. Nothing
 in `switch.S` chose that residue: the caller's frame sizes did, and GCC 16.2 saving one register
 fewer in `syscall_body` put the ping-pong at 4 mod 8. The trail:
+
 - M10.2.3 aligns R0 down to 8 across the `mvtc` in `_arch_irq_restore`, which is where a switch
   pended under the lock is taken, so that path banks aligned whatever the frames above add up to.
 - The other ways into the bank, preemption, the register-form call's fastpath and the first-run
@@ -214,7 +215,7 @@ kickos-toolchain.cmake     the index: one bin directory per family, and the pack
 
 The vendor downloads in `.github/actions/*-toolchain`, the hint URLs in `cmake/toolchain-*.cmake`,
 `conan/newlib` and `conan/board`, `cmake/cross_newlib.cmake` down to the stamp check, the per-vendor
-configure mirroring and its checks, and every `KICKOS_NEWLIB_*` variable. `kickos_cxx` exists on
+configure mirroring and its checks, and every `KICKOS_NEWLIB_*` variable. Full C++ exists on
 every board, the nano profile included once the `cxxtest` gate passes on it: Arm's own nano C++
 archives were built without the unwind path, which ours need not be. It passed every check on
 `qemu-m3` built nano. `microbit`, the one board nano by default, stays off the `cxxtest` list:
@@ -223,7 +224,7 @@ allocations, though its exceptions unwind there.
 
 ## 5. Full C and C++ on q35 (M10.2.4)
 
-Today q35 refuses every vector and x87 instruction: `kickos_x86_64_fp_trap` in
+Today q35 refuses every vector and x87 instruction: the FP-trap setup (formerly `kickos_x86_64_fp_trap`) in
 `arch/x86/x86_64/entry_x86_64.cc` sets CR0.EM, TS and MP and clears CR4.OSFXSR, OSXMMEXCPT and
 OSXSAVE on every core, the whole tree is compiled `-mno-sse -mno-mmx -mno-80387`, and
 `KICKOS_HAVE_LIBC` is 0. The x86-64 psABI passes floating point in SSE registers, and the

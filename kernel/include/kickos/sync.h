@@ -109,8 +109,13 @@ namespace kickos
     // is no longer dark, or -KOS_ECANCELED where the caller is cancelled, before or during it.
     // Caller holds no lock.
     int console_dark_wait(void);
-    // Wake every writer console_dark_wait or console_room_wait parked.
+    // Wake every thread parked on the console.
     void console_dark_wake(Held held);
+
+    // A publish's drain: returns once every kernel chip writer counted before its handover began
+    // has left, parked until the last one's leave wakes it. A cancel does not end it: those
+    // writers never block, so the wait is theirs alone. Caller holds no lock.
+    void console_publish_drain(void);
 
     // The ring refused the calling writer's line: on a backend with no TX interrupt the writer
     // drains it itself until the line fits, and on one whose TX interrupt drains it the writer
@@ -119,11 +124,15 @@ namespace kickos
     // before or during it. Caller holds no lock.
     int console_room_wait(char const* buf, size_t n, int crlf);
 
-    // Park the calling writer for `timeout_us` while a peer node's claim on a shared UART refuses
-    // its line: nothing marks the end of that claim. 0 to offer the line again, at the timeout or
-    // at a console_dark_wake, or -KOS_ECANCELED where the caller is cancelled, before or during it.
-    // Caller holds no lock.
-    int console_claim_wait(uint32_t timeout_us);
+#if KICKOS_AMP_CONSOLE_CLAIM
+    // Park the calling writer while a node's claim on a shared UART refuses its line, until that
+    // claim's release rings this node (console_claim_rung) or the grant's deadline. 0 to offer the
+    // line again, or -KOS_ECANCELED where the caller is cancelled, before or during it. Caller
+    // holds no lock.
+    int console_claim_wait(void);
+    // The doorbell service's half: wakes the writers console_claim_wait parked.
+    void console_claim_rung(Held held);
+#endif
 
     // After blocking, release IrqLock and call wq_confirm_resume before reading
     // waker-written state such as wait_result:
@@ -161,11 +170,14 @@ namespace kickos
     // read outside any lock. A spanning caller lock keeps BASEPRI raised past that read
     // (see wq_confirm_resume).
     void mutex_init(Mutex* m);
+    // KOS_TIMEOUT_NONE waits forever and 0 is a try.
     // Returns 0 when locked; -KOS_EOWNERDEAD when handed the mutex by a dying owner, where
-    // the lock is held and this is not a failed acquire; or -KOS_EDEADLK when the acquire
-    // would deadlock (self-lock or a wait cycle), refused without parking and without
-    // leaking a boost. The -KOS_EBADF bad-cap reject happens at the syscall resolve.
-    int mutex_lock(Mutex* m);
+    // the lock is held and this is not a failed acquire; -KOS_ETIMEDOUT when held elsewhere
+    // past the deadline, or at once for a try, which lends no priority; -KOS_ECANCELED when
+    // cancelled waiting; or -KOS_EDEADLK when the acquire would deadlock (self-lock or a wait
+    // cycle), refused without parking and without leaking a boost. The -KOS_EBADF bad-cap
+    // reject happens at the syscall resolve.
+    int mutex_lock(Mutex* m, uint32_t timeout_us);
     // Hands off to the highest waiter, then recomputes the ex-owner's effective priority over
     // what it still holds. Returns 0, or -KOS_EPERM if the caller is not the owner.
     int mutex_unlock(Mutex* m);

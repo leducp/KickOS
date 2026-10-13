@@ -81,11 +81,6 @@ namespace
             return std::string{p.param.name};
         });
 
-    TEST(ModeApply, a_service_with_no_console_arm_refuses)
-    {
-        EXPECT_EQ(console::mode_apply(nullptr, KOS_UART_F_NONBLOCK, 0u), -KOS_ENOSYS);
-    }
-
     TEST(ModeApply, an_unknown_bit_is_refused_whole_and_stores_nothing)
     {
         kickos::Atomic<uint32_t, kickos::Order::RELAXED> mode{0};

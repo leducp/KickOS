@@ -34,7 +34,6 @@
 
 #include <stddef.h>
 #include <stdint.h>
-#include <stdlib.h> // exit
 
 namespace drv = kickos::driver;
 namespace reg = kickos::rtusb::reg;
@@ -747,7 +746,7 @@ namespace
         {
             // Leaving the ready latch clear is the report: drv::bring_up gives up on it, and
             // rtusb_console_start prints the stage this thread left behind.
-            exit(0);
+            drv::trap();
         }
         usb::irq_loop(cdc, &blk->sh); // parks in irq_wait; never returns
     }

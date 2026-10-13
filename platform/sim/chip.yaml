@@ -13,6 +13,8 @@ protection: { unit: mprotect, covers_devices: true, memory_type: false }
 data_cache: false
 reserved: none
 
+family: none
+exits_on_fault: false
 interrupts: { count: 32 }
 
 devices:

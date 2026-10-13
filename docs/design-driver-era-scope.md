@@ -28,7 +28,7 @@ Each mechanism's exact contract is `reference/architecture.md`, `console.md`, `i
   file. G1 survives only for the boards the 2.1 table below still marks GAP.
 - **Panic reclaim**: most of the fleet now carries a real body. The set is whatever
   `grep -rln '^void arch_console_reclaim(void)' arch/*/chip/` lists; every chip NOT in it falls back
-  to `arch/common/arch_console_reclaim_default.cc`, which is a SILENT reclaim failure, so a
+  to the no-op fallback in `arch/seam_defaults.cmake`, which is a SILENT reclaim failure, so a
   driver-garbled UART eats the panic banner on those chips only (G2). The porting invariant
   forbidding that is `invariants.md`, `panic-console-probe-independent`.
 - **Clock-select** (`arch_cpu_clock_set`, #30): XMC full (144/48), K64F staged (120/20.97), every
@@ -88,6 +88,7 @@ Effort **S-M** for the remaining port; the register list is the work.
 
 ### G3. Handover validation per board (PARTLY CLOSED)
 Functional handover wherever a driver exists; ISOLATION only where the MPU permits.
+
 - **K64F functional half CLOSED** (frdmk64f, 2026-07-30): the full service list (the polled
   console driver since removed, and `k64dspi`) reported the console driver up and ran the whole
   66-case TAP suite through the driver. Its reclaim body is written and still UNWITNESSED, the open remainder here.
@@ -127,8 +128,8 @@ power-manager service (G7, sections 3 and 6).
   driver needs BOTH the per-thread PMP grant and the one-time global open; the register-level model
   is `reference/architecture.md` (the peripheral-MMIO matrix). An APM denial does NOT trap the way a
   PMP violation does, so a bad region hangs instead of faulting.
-- **RX real-peripheral-IRQ demux: CLOSED, and this entry named a symbol that never shipped.**
-  `kickos_rx_dev_pending_line` exists in no source file in the tree; the single-line hook was
+- **RX real-peripheral-IRQ demux: CLOSED, and the symbol this entry named never shipped**
+  (formerly `kickos_rx_dev_pending_line`). It exists in no source file in the tree; the single-line hook was
   replaced by `kickos_rx_dev_dispatch` (`arch/rx/rxv3/arch_rxv3.cc`,
   `arch/rx/chip/rx72m/chip_rx72m.cc`), which is what the shipping `rxsci` driver dispatches
   through, and the GROUPBL0 group table it needed is in the chip
@@ -145,7 +146,7 @@ power-manager service (G7, sections 3 and 6).
 The driver-lib + demo split is under way, not finished. `system/driver/<chip>/{xmcssc,
 k64dspi}` are LIBS (`add_library`) with a demo app linking them, while
 `user/apps/<board>/{xmcspi, f411spi, k64drv, rxdrv}` are still monolithic DIAGNOSTIC apps
-(`kickos_add_diagnostic_apps`) with driver and demo fused.
+with driver and demo fused.
 
 **The open question is build layering, not packaging.** A chip driver lib lives under `system/`
 because it is board support a consumer links on top of the OS rather than an app, even though it
@@ -183,6 +184,7 @@ the bus/device split). What a driver CONTRACT looks like is section 3.
 ### G8. Gaps XMC-only testing HID (OPEN)
 Per-chip hazards one-chip testing could not surface. Each is a prediction until that chip's driver
 runs.
+
 - **Flush-to-shift-idle differs per UART.** Reclaim and deinit must wait for the SHIFT register to
   drain, not just the holding register, or the last bits truncate. XMC USIC, K64F single-reg, PL011
   FIFO and ESP FIFO all differ. Relatedly, **FIFO UARTs** (PL011, ESP, some SCI) need a FIFO flush on
@@ -254,6 +256,7 @@ The init service (G7) brings them up in this order.
 ```
 
 Three distinct foundational SHAPES, matched to how often each CHANGES at runtime.
+
 - **CLOCK-TREE, a RUNTIME service** (persistent). Owner of the shared PLL, dividers and central
   gates. A rate change cascades to every derived-clock consumer (UART re-derives baud, SPI its
   prescaler) through a Common-Clock-Framework-shape notifier. Central and refcounted, so a branch
@@ -280,10 +283,10 @@ path. That is why init is a GATING enabler for the driver era rather than a nice
 
 **The bring-up inputs are CONSUMER DATA, not tree literals** (spike `design-m4-oot-board-config.md`,
 mechanism landed M4.4). kickos supplies MECHANISM; the board or product supplies POLICY as two POD
-tables plus a `main`: `kos_board_pinmap` (`{port, pin, func}` routing) and `kos_service_list` (ordered
-`kos_service_bringup {start, cfg}` entries the default init walks BEFORE `main`). Per-instance
+tables plus a `main`: the board pin map (formerly `kos_board_pinmap`; `{port, pin, func}` routing) and the service list (formerly `kos_service_list`; ordered
+`{start, cfg}` bring-up entries (formerly `kos_service_bringup`) the default init walks BEFORE `main`). Per-instance
 parameters (register base, grant window, priority, target hz, CS choice, I2C address) travel as DATA
-in `kos_service_cfg` rather than baked into the driver TU, so the SAME driver-class target serves N
+in the service config (formerly `kos_service_cfg`) rather than baked into the driver TU, so the SAME driver-class target serves N
 instances by config alone (the LPUART1..8 and N-SPI case). Each list and pinmap definition is one
 strong symbol chosen by a CMake target knob (the service-list selection knob / the pin-map selection knob), fail-loud
 on a missing or misspelled target: no runtime manifest and no silent fallback, which is the anti-CapDL
@@ -317,6 +320,7 @@ I2C, later block and net).
 
 ### 3.3 Multi-instance threading (the "4 SPI" question)
 A chip with N SPI peripherals admits two shapes.
+
 - **Thread-per-instance** (LEAN): N driver threads, each with its OWN SPI MMIO grant and its own
   request endpoint. One window, one thread, one boundary, so a fault in SPI2's driver cannot touch
   SPI1. Natural on the CPU-side-MPU boards. Cost: N threads (a stack each) and N endpoints.
@@ -338,6 +342,7 @@ full isolation hole: the MPU protects CPU accesses only, and the DMA master is a
 it never sees. Second axis: **a DMA controller is a SHARED resource** (channels feeding many
 peripherals) like the clock tree and pinmux, so it wants a CENTRAL owner allocating channels and
 validating descriptors rather than a per-driver grant of the whole block. Options.
+
 - **Kernel-mediated DMA setup**: a syscall validates the descriptor's src/dst against the driver's
   granted regions before arming the channel. The driver never writes the DMA address registers
   (privileged, outside the grant window) and instead asks the kernel to program a descriptor it has
@@ -411,15 +416,16 @@ kernel-mediated fleet default. Verdict: direct-MMIO mode-2 CS is viable on every
 toggle nowhere hot.
 
 **Still DEFERRED, all four verified unbuilt.**
+
 - **N MMIO windows per creation.** `thread_create_call` carries exactly ONE window (`attr.mmio_base`,
   `user/include/kickos/sys/abi.h`), while an XMC SPI driver with a mode-2 CS needs TWO (USIC channel
   plus port) and a C6 driver needs its peripheral window plus the W1TS/W1TC entry. Additive: a small
   bounded N, each admissibility-checked and region/PMP-budget-checked as today, no new object model.
   Zero windows needed on K64F or WROOM (open floor).
-- **The vendor-neutral `kos_gpio` helper.** `kos_gpio_claim_out` (cold arbitration plus mux verify)
+- **The vendor-neutral GPIO helper.** Its claim-out call (cold arbitration plus mux verify)
   returning a descriptor `{mode, set_addr, clr_addr, in_addr, mask}` with the per-chip styles folded
-  in, so `kos_gpio_set/clear/get` inline to one store or load (BSET/BCLR on RX) and the SAME driver
-  logic runs on all five chips. `kos_gpio_require_direct` fails LOUD at bring-up so a hot-CS driver
+  in, so its set, clear and get calls inline to one store or load (BSET/BCLR on RX) and the SAME driver
+  logic runs on all five chips. Its require-direct check (formerly `kos_gpio_require_direct`) fails LOUD at bring-up so a hot-CS driver
   never runs degraded on a chip that can only offer the kernel path.
 - **Runtime mint-and-delegate** of a per-pin window to an already-running holder. NO forcing consumer
   exists, since every M4 CS is known at bring-up and served by grant-at-spawn, and it is a kernel
@@ -494,6 +500,7 @@ wherever the MMU work is scheduled.
 
 Within the driver era. The init-service entry seam and the call/reply layer are landed, so they are
 prerequisites rather than steps.
+
 1. **Foundational services** (3.1): pinmux (landed), clock gating at bring-up, the GPIO direct-grant
    path. Mix of **NOW** (design/sim) and **HW** (validate).
 2. **Fleet console drivers + reclaim** (G1/G2/G3), silicon-available first: RX72M and ESP32-C6, each
@@ -630,6 +637,7 @@ the services must be CONSOLE-OBSERVABLE to be brought up on those two boards at 
 can only be diagnosed through a debugger cannot be brought up on half the neutrality matrix.
 
 Consequences.
+
 - Console/UART is the FIRST driver on every matrix board, not just the interesting-isolation ones,
   because it is the observability substrate every other bring-up on rx72m and c6 depends on. This is
   why console/UART is the one class that wants all four boards (7.2).

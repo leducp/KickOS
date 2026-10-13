@@ -10,7 +10,7 @@
 
 namespace selftest
 {
-#if defined(KICKOS_ENABLE_SELFTEST) && KICKOS_AMP_NODE
+#if KICKOS_AMP_NODE
     // Under one image the kernel runs on core 0 alone, so this thread is always node 0's.
 #if KICKOS_AMP_OWN_IMAGE
     constexpr unsigned AMP_SELF_ROW = KICKOS_AMP_NODE_ID;
@@ -293,10 +293,6 @@ namespace selftest
         // One live peer admits the arm and every peer must then answer: a deployment that starts
         // one peer starts all of them.
         TAP_CHECK(live == named);
-        // main is unprivileged, so no user thread reaches the far-endpoint mint.
-        kos_cap_t refused = KOS_CAP_NONE;
-        TAP_CHECK(kos_amp_endpoint_create(first, KOS_AMP_PORT_ECHO, &refused) == -KOS_EPERM);
-        TAP_CHECK(refused == KOS_CAP_NONE);
         // Far endpoints have only CAP_SIGNAL, so receive resolution must fail.
         char rbuf[AMP_FAR_LEN];
         struct kos_reply_recv_opts fo;
@@ -558,7 +554,7 @@ namespace selftest
         TAP_HOLD(hold.task(&t) and hold.thread(&w));
         TAP_CHECK(kos_task_create(blk, AG_BLK, 0, &t) == 0);
         w = kos::thread::create_caps(amp_crossing_worker, blk, "ampgat", 10, nullptr, 0,
-                                     KOS_POLICY_FIFO, 0, false, nullptr, 0, 0, nullptr, t);
+                                     KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr, t);
         TAP_CHECK(w.valid());
         TAP_CHECK(hold.joined());
         tap::diag("main's crossing %u: %ld from another task, %ld from main",
@@ -577,11 +573,11 @@ namespace selftest
     // pool's width. The arm below needs the pool full and bump-allocated to its last index, or
     // the create after its close lands on a fresh slot instead of the freed one. main's
     // own AMP port capabilities count against its ceiling.
-    constexpr int CH_FILL_REPORT = 1;
-    constexpr int CH_FILL_GATE = 2;
+    constexpr int CH_FILL_REPORT = KOS_SPAWN_DELEGATED_CAP0;
+    constexpr int CH_FILL_GATE = KOS_SPAWN_DELEGATED_CAP0 + 1;
 
     // Fills after main has, so it also takes the slot main gave back.
-    void amp_pool_filler(void*) // caps: report@1, gate@2
+    void amp_pool_filler(void*) // caps: report@2, gate@3
     {
         kos_sem_wait(CH_FILL_GATE, KOS_TIMEOUT_NONE);
         kos_cap_t mine[AMP_REUSE_SLOTS];
@@ -620,7 +616,7 @@ namespace selftest
         TAP_CHECK(kos_task_create(nullptr, 0, 0, &group) == 0);
         kos_cap_grant caps[] = {{report, KOS_CAP_SIGNAL}, {gate, KOS_CAP_WAIT}};
         filler = kos::thread::create_caps(amp_pool_filler, nullptr, "ampfill", 10, caps, 2,
-                                          KOS_POLICY_FIFO, 0, false, nullptr, 0,
+                                          KOS_POLICY_FIFO, 0, nullptr, 0,
                                           KOS_AUTH_MEMORY, nullptr, group);
         TAP_CHECK(filler.valid());
 
@@ -745,7 +741,7 @@ namespace selftest
         ArmHold hold;
         TAP_HOLD(hold.thread(&child));
         child = kos::thread::create(amp_share_child, nullptr, "shx", 10, KOS_POLICY_FIFO, 0,
-                                    false, nullptr, 0, nullptr, 0, &w, 1);
+                                    nullptr, 0, nullptr, 0, &w, 1);
         int const window = child.error();
         tap::diag("share named by main: grant %ld, the other type %ld, a child's window %ld",
                   static_cast<long>(grant), static_cast<long>(other), static_cast<long>(window));
@@ -789,15 +785,15 @@ namespace selftest
     // lands between the request's copy and the reply's.
     constexpr uint8_t AMP_HOLD_MARK = 0xD0u;
     constexpr uintptr_t AMP_HOLD_WORD = 8u;
-    constexpr kos_cap_t CH_ARU_FRAME = 1;
-    constexpr kos_cap_t CH_ARU_SPACE = 2;
+    constexpr kos_cap_t CH_ARU_FRAME = KOS_SPAWN_DELEGATED_CAP0;
+    constexpr kos_cap_t CH_ARU_SPACE = KOS_SPAWN_DELEGATED_CAP0 + 1;
     uintptr_t g_aru_va = 0;
     uintptr_t g_aru_hold = 0;
     Atomic<uint32_t, Order::RELAXED> g_aru_seq{0};
     Atomic<int32_t, Order::RELAXED> g_aru_unmap{1};
 
     // Below main's priority, so it runs once main's call has parked.
-    void amp_ru_unmapper(void*) // caps: frame@1, space@2
+    void amp_ru_unmapper(void*) // caps: frame@2, space@3
     {
         g_aru_unmap = kos_frame_unmap(CH_ARU_FRAME, CH_ARU_SPACE, g_aru_va);
         reinterpret_cast<Atomic<uint32_t, Order::RELEASE>*>(g_aru_hold)->store(g_aru_seq.load());
@@ -842,7 +838,7 @@ namespace selftest
         kos_cap_grant caps[] = {{frame, KOS_CAP_TRANSFER}, {space, KOS_CAP_TRANSFER}};
         w = kos::thread::create_caps(amp_ru_unmapper, nullptr, "ampru",
                                      static_cast<uint8_t>(g_self->priority - 1u), caps, 2,
-                                     KOS_POLICY_FIFO, 0, false, nullptr, 0, KOS_AUTH_MEMORY);
+                                     KOS_POLICY_FIFO, 0, nullptr, 0, KOS_AUTH_MEMORY);
         TAP_CHECK(w.valid());
         int64_t const fault0 = amp_count(AMP_SELF_ROW, KOS_AMP_COUNT_DELIVER_FAULT);
         int32_t const got = kos_call_timed(far, req, AMP_FAR_LEN, AMP_FAR_LEN, STALL_TOLERANT_US);

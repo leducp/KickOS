@@ -1,28 +1,23 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
+//
+// What the shared doorbell protocol takes from THIS PART: the padding a cell owes, the spin a
+// wait costs, and the tag each refusal names it by.
 
 #ifndef KICKOS_ARCH_DOORBELL_PART_H
 #define KICKOS_ARCH_DOORBELL_PART_H
 
 #include <kickos/arch/arch.h>
 
-#include <stddef.h>
-
-// ESP32-C6 HP SRAM supports atomics across its two cores. A line per writer
-// avoids sharing an ownership unit if a later silicon revision adds caching.
+// A cell per writer, padded to this size.
 #define KICKOS_DOORBELL_LINE 64u
+
+// Must equal the doorbell gate's backend argument: the gate greps the image for each refusal.
+#define KICKOS_DOORBELL_TAG "rv32imac"
 
 namespace kickos::doorbell
 {
     inline void part_spin(void) { __asm volatile("nop" ::: "memory"); }
-    inline void part_write(char const* buf, size_t n) { arch_console_write(buf, n); }
-
-    constexpr char PART_UNANSWERED[] = "KickOS: C6 doorbell unanswered by core ";
-    constexpr char PART_EARLY_WAIT[] = "KickOS: C6 doorbell wait returned early, rounds settled 0x";
-    constexpr char PART_NO_CONTEND[] = "KickOS: C6 peers never completed an acquisition, held ";
-    constexpr char PART_NO_SPIN[] = "KickOS: C6 peers never reached the acquire loop, seen 0x";
-    constexpr char PART_STILL_SETTLED[] =
-        "KickOS: C6 doorbell round settled a request that never moved, peers ";
 }
 
 #endif

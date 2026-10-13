@@ -1,11 +1,6 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-# The arm toolchain does not set KICKOS_ARCH_FAMILY; every other family's toolchain does.
-if(NOT KICKOS_ARCH_FAMILY)
-  set(KICKOS_ARCH_FAMILY "arm")
-endif()
-
 if(KICKOS_CHIP STREQUAL "esp32c6" AND KICKOS_AMP_OWN_IMAGE AND KICKOS_AMP_NODE_ID EQUAL 1)
   add_compile_definitions(KICKOS_RV32_LP=1)
 else()
@@ -15,7 +10,8 @@ endif()
 # --- Seam fallbacks: the lone-TU rule ----------------------------------------
 # A seam whose backend is optional gets its fallback in a translation unit of its own,
 # <symbol>_default.cc, defining exactly one symbol: a second symbol drags the member in beside
-# a backend that defines the seam, and the two collide.
+# a backend that defines the seam, and the two collide. The one-definition fallbacks are rows
+# of seam_defaults.cmake, generated into the build tree.
 #
 # How a seam resolves:
 #   Within one archive, the first member in member order (the source order of add_library())
@@ -35,35 +31,36 @@ endif()
 # reference first and the board silently declines at runtime.
 # tests/static/check_seam_defaults.sh enforces the one-symbol rule, the archive separation and
 # the anchoring.
+include(${CMAKE_CURRENT_SOURCE_DIR}/seam_defaults.cmake)
 set(KICKOS_SEAM_DEFAULTS_COMMON
-  common/arch_console_flush_sync_default.cc
-  common/arch_console_reclaim_default.cc
-  common/arch_console_retune_default.cc
-  common/arch_console_tx_backend_default.cc
-  common/arch_console_reclaim_window_default.cc
-  common/arch_console_write_sync_default.cc
-  common/arch_cpu_clock_set_default.cc
-  common/arch_diag_led_init_default.cc
-  common/arch_diag_led_set_default.cc
+  ${KICKOS_SEAM_DEFAULTS_DIR}/arch_console_flush_sync_default.cc
+  ${KICKOS_SEAM_DEFAULTS_DIR}/arch_console_reclaim_default.cc
+  ${KICKOS_SEAM_DEFAULTS_DIR}/arch_console_retune_default.cc
+  ${KICKOS_SEAM_DEFAULTS_DIR}/arch_console_tx_backend_default.cc
+  ${KICKOS_SEAM_DEFAULTS_DIR}/arch_console_reclaim_window_default.cc
+  ${KICKOS_SEAM_DEFAULTS_DIR}/arch_cpu_clock_set_default.cc
+  ${KICKOS_SEAM_DEFAULTS_DIR}/arch_diag_led_init_default.cc
+  ${KICKOS_SEAM_DEFAULTS_DIR}/arch_diag_led_set_default.cc
   common/arch_irq_line_core_default.cc
-  common/arch_irq_line_kernel_owned_default.cc
-  common/arch_irq_route_default.cc
-  common/arch_fault_is_user_thread_default.cc
-  common/arch_fault_redirect_to_exit_default.cc
+  ${KICKOS_SEAM_DEFAULTS_DIR}/arch_irq_line_kernel_owned_default.cc
+  ${KICKOS_SEAM_DEFAULTS_DIR}/arch_irq_route_default.cc
+  ${KICKOS_SEAM_DEFAULTS_DIR}/arch_fault_is_user_thread_default.cc
+  ${KICKOS_SEAM_DEFAULTS_DIR}/arch_fault_redirect_to_exit_default.cc
   common/arch_frame_pool_bounds_default.cc
-  common/arch_periph_clock_hz_default.cc
-  common/arch_periph_enable_default.cc
+  ${KICKOS_SEAM_DEFAULTS_DIR}/arch_periph_clock_hz_default.cc
+  ${KICKOS_SEAM_DEFAULTS_DIR}/arch_periph_enable_default.cc
   common/arch_periph_reg_write_default.cc
   common/arch_pinmux_set_default.cc
   common/kfault_terminate_default.cc)
-# arch_reboot is absent from an image without KICKOS_REBOOT, fallback included.
-if(KICKOS_REBOOT)
-  list(APPEND KICKOS_SEAM_DEFAULTS_COMMON common/arch_reboot_default.cc)
+# An M-profile part resets through the architecture; anything else declines unless its chip
+# answers.
+if(NOT KICKOS_ARCH_FAMILY STREQUAL "arm")
+  list(APPEND KICKOS_SEAM_DEFAULTS_COMMON ${KICKOS_SEAM_DEFAULTS_DIR}/arch_reboot_default.cc)
 endif()
 if(KICKOS_FAULT_ISOLATION)
   list(REMOVE_ITEM KICKOS_SEAM_DEFAULTS_COMMON
-    common/arch_fault_is_user_thread_default.cc
-    common/arch_fault_redirect_to_exit_default.cc)
+    ${KICKOS_SEAM_DEFAULTS_DIR}/arch_fault_is_user_thread_default.cc
+    ${KICKOS_SEAM_DEFAULTS_DIR}/arch_fault_redirect_to_exit_default.cc)
 endif()
 # Swapped, not added: both TUs define kfault_terminate.
 if(KICKOS_CHIP_EXITS_ON_FAULT)
@@ -72,13 +69,12 @@ if(KICKOS_CHIP_EXITS_ON_FAULT)
 endif()
 
 set(KICKOS_SEAM_DEFAULTS_ARM
-  arm/common/arch_bitband_present_default.cc
-  arm/common/arch_idle_wait_default.cc
-  arm/common/arch_mpu_min_region_default.cc
+  ${KICKOS_SEAM_DEFAULTS_DIR}/arch_bitband_present_default.cc
+  ${KICKOS_SEAM_DEFAULTS_DIR}/arch_idle_wait_default.cc
   arm/common/arch_mpu_nocache_support_default.cc
   arm/common/arch_mpu_region_encodable_default.cc
-  arm/common/arch_mpu_region_pow2_default.cc
-  arm/common/arch_shutdown_default.cc
+  ${KICKOS_SEAM_DEFAULTS_DIR}/arch_shutdown_default.cc
+  arm/common/arch_reboot_default.cc
   arm/common/kickos_arch_mpu_commit_default.cc)
 if(KICKOS_HAVE_MPU)
   list(APPEND KICKOS_SEAM_DEFAULTS_ARM
@@ -113,6 +109,10 @@ if(NOT KICKOS_ARCH_SOURCES)
 endif()
 
 list(APPEND KICKOS_ARCH_SOURCES common/arch_chip_tables.cc)
+# Unset on the sim, whose granule is the host page.
+if(DEFINED KICKOS_CHIP_REGION_GRANULE)
+  list(APPEND KICKOS_ARCH_SOURCES common/arch_mpu_region_rule.cc)
+endif()
 add_library(kickos_arch_${KICKOS_ARCH} STATIC ${KICKOS_ARCH_SOURCES})
 if(KICKOS_ARCH_HOSTED)
   kickos_apply_hosted(kickos_arch_${KICKOS_ARCH})
@@ -135,9 +135,10 @@ target_include_directories(kickos_arch_${KICKOS_ARCH} PRIVATE "${CMAKE_CURRENT_S
 kickos_export_targets(kickos_arch_${KICKOS_ARCH})
 set(KICKOS_ARCH_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/${_kos_arch_dir}/include" PARENT_SCOPE)
 
-# kickos_system sits above the arch layer: include its headers, never link it.
+# kickos_system sits above the arch layer: include its headers, never link it. user/include
+# is for abi.h's selectors, the KOS_SHUTDOWN_* an arch reset reads.
 target_include_directories(kickos_arch_${KICKOS_ARCH} PRIVATE
-  "${CMAKE_CURRENT_SOURCE_DIR}/../system/include")
+  "${CMAKE_CURRENT_SOURCE_DIR}/../system/include" "${CMAKE_CURRENT_SOURCE_DIR}/../user/include")
 
 if(KICKOS_HAVE_ASPACE)
   kickos_privatise_runtime(kickos_arch_${KICKOS_ARCH})
@@ -204,31 +205,20 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
     list(APPEND _chip_src "${KICKOS_ARM_PMSAV8_SOURCE}")
   endif()
 
-  # A family.cmake names TUs several chips share (a vendor family's bodies, the semihosting
-  # console). They are compiled into this chip's archive, once per chip, against the chip's own
-  # family_map.h and regs/, so every per-part value stays a compile-time constant. They must
-  # not get an archive of their own:
-  # the chip linker scripts select .data/.bss by archive:member, so a new archive falls through
-  # to the app catch-all, and a family may straddle two ISAs (RP2040 armv6m, RP2350 armv7m).
-  set(_family_optin
-      "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/family.cmake")
-  if(EXISTS "${_family_optin}")
-    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_family_optin}")
-    include("${_family_optin}")
-    if(NOT KICKOS_CHIP_FAMILY_SOURCES OR NOT KICKOS_CHIP_FAMILY_DIR)
+  # The chip file's `family` names TUs several chips share (a vendor family's bodies, the
+  # semihosting console). They are compiled into this chip's archive, once per chip, against the
+  # chip's own family_map.h and regs/, so every per-part value stays a compile-time constant.
+  # They must not get an archive of their own: the chip linker scripts select .data/.bss by
+  # archive:member, so a new archive falls through to the app catch-all, and a family may
+  # straddle two ISAs (RP2040 armv6m, RP2350 armv7m).
+  foreach(_family_src IN LISTS KICKOS_CHIP_FAMILY_SOURCES)
+    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_family_src}")
       message(FATAL_ERROR
-        "KickOS: ${_family_optin} sets no KICKOS_CHIP_FAMILY_SOURCES/KICKOS_CHIP_FAMILY_DIR, "
-        "so the family bodies would silently not be compiled and the seams they define "
-        "would resolve to their arch fallbacks.")
+        "KickOS: platform/${KICKOS_CHIP}/chip.yaml's family names arch/${_family_src}, which "
+        "does not exist.")
     endif()
-    foreach(_family_src IN LISTS KICKOS_CHIP_FAMILY_SOURCES)
-      if(NOT EXISTS "${_family_src}")
-        message(FATAL_ERROR
-          "KickOS: ${_family_optin} names ${_family_src}, which does not exist.")
-      endif()
-    endforeach()
-    list(APPEND _chip_src ${KICKOS_CHIP_FAMILY_SOURCES})
-  endif()
+    list(APPEND _chip_src "${CMAKE_CURRENT_SOURCE_DIR}/${_family_src}")
+  endforeach()
 
   # boot2.S is a second-stage loader the boot ROM CRC-checks, so it is linked to a raw binary,
   # checksummed, and re-emitted as a .boot2 data blob instead of being compiled into the
@@ -328,7 +318,7 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
   # path, so a family TU's #include "regs/<periph>.h" resolves to that chip's copy.
   if(KICKOS_CHIP_FAMILY_DIR)
     target_include_directories(kickos_chip_${KICKOS_CHIP} PRIVATE
-      "${KICKOS_CHIP_FAMILY_DIR}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_CHIP_FAMILY_DIR}"
       "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}")
   endif()
   kickos_export_targets(kickos_chip_${KICKOS_CHIP})
@@ -365,32 +355,13 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
   # A chip may ship no script: x86_64 is a PE32+ UEFI image linked by its own `ld -m i386pep`
   # command, not through the driver the -T below reaches.
   if(EXISTS "${_ld}")
-    file(READ "${_ld}" _ld_sections_txt)
-    set(_ld_required KICKOS_CODE_DEBRIS_SECTIONS KICKOS_NONALLOC_SECTIONS
-                     KICKOS_STATIC_RELOC_ASSERT KICKOS_TLS_TEMPLATE KICKOS_TLS_FIT_ASSERT)
-    # rxv3 alone has no TLS sections for the fit assert to read: its thread_local is an emutls
-    # control block, and only its own script can name the span they are gathered into.
-    if(KICKOS_ARCH STREQUAL "rxv3")
-      list(APPEND _ld_required KICKOS_TLS_EMUTLS_ASSERT)
-    endif()
-    if(KICKOS_ARCH STREQUAL "armv7m")
-      list(APPEND _ld_required KICKOS_KERNEL_CTORS_NONE_ASSERT)
-    endif()
-    foreach(_m IN LISTS _ld_required)
-      if(NOT "${_ld_sections_txt}" MATCHES "${_m}")
-        message(FATAL_ERROR
-          "KickOS: ${_ld} does not invoke ${_m}. Every image links with "
-          "--orphan-handling=error, so an input section no rule names is a link failure. "
-          "Include <sections.ld.h> and invoke KICKOS_CODE_DEBRIS_SECTIONS inside the output "
-          "section holding .text, KICKOS_NONALLOC_SECTIONS as the last statement in SECTIONS, "
-          "and KICKOS_STATIC_RELOC_ASSERT() beside the other asserts.")
-      endif()
-    endforeach()
-
     # The generated script keeps the <chip>.ld name for the INSTALL_INTERFACE -T path.
     set(_ld_gen "${CMAKE_CURRENT_BINARY_DIR}/${KICKOS_CHIP}.ld")
     set(_ld_defs -DKICKOS_HAVE_MPU=${KICKOS_HAVE_MPU})
     list(APPEND _ld_defs "-I${PROJECT_BINARY_DIR}/generated/chip")
+    # The kernel-side archives a script's closed-set selectors name.
+    list(APPEND _ld_defs -DKICKOS_LD_ARCH_LIB=libkickos_arch_${KICKOS_ARCH}.a
+                         -DKICKOS_LD_CHIP_LIB=libkickos_chip_${KICKOS_CHIP}.a)
     # A chip whose boot handshake needs storage outside .bss carves it per hart, so its script
     # must know the count; at one core the carve is absent rather than empty.
     list(APPEND _ld_defs -DKICKOS_NUM_CORES=${KICKOS_NUM_CORES})
@@ -412,8 +383,8 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
     endif()
     # KICKOS_TLS_FIT_ASSERT reads the knob, the stride and the arch's ABI bias, scraped from
     # the context.h the compiler reads so the two cannot disagree.
-    list(APPEND _ld_defs -DKICKOS_TLS=$<BOOL:${KICKOS_TLS}>)
     if(KICKOS_TLS)
+      list(APPEND _ld_defs -DKICKOS_TLS=1)
       set(_tls_tcb_hdr "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/${KICKOS_ARCH}/include/kickos/arch/context.h")
       if(NOT EXISTS "${_tls_tcb_hdr}")
         message(FATAL_ERROR "KickOS: no ${_tls_tcb_hdr} to read KICKOS_ARCH_TLS_TCB from")
@@ -436,6 +407,8 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
                            -DKICKOS_ROOT_STACK_SIZE=${KICKOS_ROOT_STACK_SIZE}
                            -DKICKOS_MIN_STACK_SIZE=${KICKOS_MIN_STACK_SIZE}
                            -DKICKOS_KERNEL_CORES=${KICKOS_KERNEL_CORES})
+    else()
+      list(APPEND _ld_defs -DKICKOS_TLS=0)
     endif()
     # Unset keeps the chip script's default code window, which a script reads only where it
     # offers the knob.
@@ -461,49 +434,86 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
     # KICKOS_BOOT_ARENA_ASSERT: the arena must hold kmain's idle and root stacks including the
     # alignment padding the bump allocator pays. A .ld without the assert fails the configure.
     include("${CMAKE_SOURCE_DIR}/cmake/boot_arena.cmake")
-    kickos_boot_arena_defs("${CMAKE_CURRENT_SOURCE_DIR}"
-                           "kickos_arch_${KICKOS_ARCH}" "kickos_chip_${KICKOS_CHIP}"
-                           "${_ld}" _boot_defs
-                           _mpu_min_region_cfg _mpu_region_pow2_cfg)
+    kickos_boot_arena_defs("${_ld}" _boot_defs)
     list(APPEND _ld_defs ${_boot_defs})
-    # Unset on the sim, which has no KICKOS_CHIP and never enters this block.
-    set_property(GLOBAL PROPERTY KICKOS_MPU_MIN_REGION_CFG "${_mpu_min_region_cfg}")
-    set_property(GLOBAL PROPERTY KICKOS_MPU_REGION_POW2_CFG "${_mpu_region_pow2_cfg}")
-    if(KICKOS_AMP_OWN_IMAGE)
-      include(amp_share)
-      kickos_amp_share_granule_check(SHARE "${_amp_user_share}" BASE "${KICKOS_AMP_USER_SHARE_ADDR}"
-        MIN_REGION "${_mpu_min_region_cfg}" POW2 "${_mpu_region_pow2_cfg}"
-        ORIGIN "${KICKOS_DEFCONFIG}")
+    # Preprocessed at configure, so the readers below see the script the link reads, every
+    # macro expanded. The script is the forced include so that app_window.ld.h follows it,
+    # binding every script whatever that script includes.
+    set(_ld_cpp ${CMAKE_C_COMPILER} -E -P -x c ${_ld_defs}
+                "-I${CMAKE_CURRENT_SOURCE_DIR}/common"
+                "-I${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/common"
+                # An arch may state a geometry both its own code and a chip's script read.
+                "-I${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/${KICKOS_ARCH}/include"
+                -include "${_ld}" "${CMAKE_CURRENT_SOURCE_DIR}/common/app_window.ld.h")
+    execute_process(COMMAND ${_ld_cpp} -MD -MF "${_ld_gen}.d" -MQ "${_ld_gen}" -o "${_ld_gen}.new"
+                    RESULT_VARIABLE _rc ERROR_VARIABLE _err)
+    if(_rc EQUAL 0)
+      # -dU lists each macro expanded, nested ones included, or tested by #ifdef/defined().
+      execute_process(COMMAND ${_ld_cpp} -dU -o "${_ld_gen}.macros"
+                      RESULT_VARIABLE _rc ERROR_VARIABLE _err)
     endif()
-    # The static regions arch_domain_static_regions seats in root's region set: the code its
-    # script bounds, and the .appdata window the script carves only under KICKOS_HAVE_MPU.
+    if(NOT _rc EQUAL 0)
+      message(FATAL_ERROR "KickOS: preprocessing ${_ld} failed:\n${_err}")
+    endif()
+    file(COPY_FILE "${_ld_gen}.new" "${_ld_gen}" ONLY_IF_DIFFERENT)
+    file(REMOVE "${_ld_gen}.new")
+    # The depfile is make syntax: `\ ` is a space in a path, `$$` a dollar, `\#` a hash, and a
+    # backslash before a newline continues the line. Configure outputs are regenerated with the
+    # configure, so only sources re-run it.
+    file(READ "${_ld_gen}.d" _ld_deps)
+    string(REPLACE "\\\n" " " _ld_deps "${_ld_deps}")
+    string(REPLACE "\\ " "<kickos-space>" _ld_deps "${_ld_deps}")
+    string(REPLACE "$$" "$" _ld_deps "${_ld_deps}")
+    string(REPLACE "\\#" "#" _ld_deps "${_ld_deps}")
+    string(REGEX REPLACE "^[^ ]*: *" "" _ld_deps "${_ld_deps}")
+    string(REGEX REPLACE "[ \t\r\n]+" ";" _ld_deps "${_ld_deps}")
+    foreach(_dep IN LISTS _ld_deps)
+      string(REPLACE "<kickos-space>" " " _dep "${_dep}")
+      if(_dep STREQUAL "")
+        continue()
+      endif()
+      cmake_path(IS_PREFIX PROJECT_BINARY_DIR "${_dep}" NORMALIZE _dep_generated)
+      if(NOT _dep_generated)
+        set_property(DIRECTORY "${PROJECT_SOURCE_DIR}" APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_dep}")
+      endif()
+    endforeach()
+
+    file(READ "${_ld_gen}.macros" _ld_macros)
+    set(_ld_required KICKOS_CODE_DEBRIS_SECTIONS KICKOS_NONALLOC_SECTIONS
+                     KICKOS_STATIC_RELOC_ASSERT KICKOS_TLS_TEMPLATE KICKOS_TLS_FIT_ASSERT)
+    # rxv3 alone has no TLS sections for the fit assert to read: its thread_local is an emutls
+    # control block, and only its own script can name the span they are gathered into.
+    if(KICKOS_ARCH STREQUAL "rxv3")
+      list(APPEND _ld_required KICKOS_TLS_EMUTLS_ASSERT)
+    endif()
+    if(KICKOS_ARCH STREQUAL "armv7m")
+      list(APPEND _ld_required KICKOS_KERNEL_CTORS_NONE_ASSERT)
+    endif()
+    foreach(_m IN LISTS _ld_required)
+      if(NOT "${_ld_macros}" MATCHES "(^|\n)#define ${_m}[ (]")
+        message(FATAL_ERROR
+          "KickOS: ${_ld} does not invoke ${_m}. Every image links with "
+          "--orphan-handling=error, so an input section no rule names is a link failure. "
+          "Include <sections.ld.h> and invoke KICKOS_CODE_DEBRIS_SECTIONS inside the output "
+          "section holding .text, KICKOS_NONALLOC_SECTIONS as the last statement in SECTIONS, "
+          "and KICKOS_STATIC_RELOC_ASSERT() beside the other asserts.")
+      endif()
+    endforeach()
+
+    # The static regions arch_domain_static_regions seats in root's region set: each window
+    # the script carves, an uncarved one being stated as 0.
+    file(READ "${_ld_gen}" _ld_txt)
     set(_root_statics 0)
-    if("${_ld_sections_txt}" MATCHES "__kickos_code_start *=")
-      math(EXPR _root_statics "${_root_statics} + 1")
-    endif()
-    if(KICKOS_HAVE_MPU AND "${_ld_sections_txt}" MATCHES "__kickos_appdata_start *=")
-      math(EXPR _root_statics "${_root_statics} + 1")
-    endif()
+    foreach(_w code appdata)
+      string(REGEX MATCHALL "__kickos_${_w}_start *=[^=;][^;]*" _ld_sets "${_ld_txt}")
+      foreach(_set IN LISTS _ld_sets)
+        if(NOT _set MATCHES "= *0 *$")
+          math(EXPR _root_statics "${_root_statics} + 1")
+          break()
+        endif()
+      endforeach()
+    endforeach()
     set_property(GLOBAL PROPERTY KICKOS_ROOT_STATIC_REGIONS "${_root_statics}")
-    # -MD/DEPFILE and not a longer DEPENDS list: a chip script may include headers of its own
-    # beside the two common ones, and cpp is what knows which. The script is the forced include
-    # so that app_window.ld.h follows it, binding every script whatever that script includes.
-    add_custom_command(
-      OUTPUT "${_ld_gen}"
-      COMMAND ${CMAKE_C_COMPILER} -E -P -x c ${_ld_defs}
-              "-I${CMAKE_CURRENT_SOURCE_DIR}/common"
-              # An arch may state a geometry both its own code and a chip's script read.
-              "-I${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/${KICKOS_ARCH}/include"
-              -MD -MF "${_ld_gen}.d" -MT "${_ld_gen}"
-              -include "${_ld}" "${CMAKE_CURRENT_SOURCE_DIR}/common/app_window.ld.h"
-              -o "${_ld_gen}"
-      DEPENDS "${_ld}" "${CMAKE_CURRENT_SOURCE_DIR}/common/boot_arena.ld.h"
-              "${CMAKE_CURRENT_SOURCE_DIR}/common/sections.ld.h"
-              "${CMAKE_CURRENT_SOURCE_DIR}/common/app_window.ld.h"
-      DEPFILE "${_ld_gen}.d"
-      COMMENT "linker: preprocess ${KICKOS_CHIP}.ld (KICKOS_HAVE_MPU=${KICKOS_HAVE_MPU})"
-      VERBATIM)
-    add_custom_target(kickos_ldscript_${KICKOS_CHIP} ALL DEPENDS "${_ld_gen}")
     # The `kickos` INTERFACE's INSTALL_INTERFACE -T points at this copy.
     install(FILES "${_ld_gen}" DESTINATION "${CMAKE_INSTALL_LIBDIR}/kickos")
     set(KICKOS_LINKER_SCRIPT "${_ld_gen}" PARENT_SCOPE)

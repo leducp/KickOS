@@ -13,10 +13,9 @@
 #define KICKOS_RV64_DRAM_BASE KICKOS_LAYOUT_DRAM_BASE
 #define KICKOS_RV64_DRAM_SIZE KICKOS_LAYOUT_DRAM_SIZE
 
-/* The physical extent this platform implements, in bits, and a BOARD fact: RISC-V publishes no
- * identity register reporting it, and the PTE's PPN field is 44 bits in every RV64 mode.
- * The map editor is handed this to refuse a range the machine does
- * not implement before the leaf is written.
+/* The physical extent this platform implements, in bits, a BOARD fact: RISC-V publishes no
+ * identity register reporting it, and the PTE's PPN field is 44 bits in every RV64 mode. The
+ * map editor refuses a range beyond it before the leaf is written.
  */
 #define KICKOS_RV64_PHYS_ADDR_BITS 32
 
@@ -26,9 +25,8 @@
  */
 #define KICKOS_RV64_VA_BASE 0xFFFFFFFF00000000
 
-/* The console and the finisher, physical: reached untranslated before paging is on, to
- * refuse a paging mode this hart does not implement, and at KICKOS_RV64_VA_BASE plus these
- * once it is.
+/* The console and the finisher, physical: reached untranslated before paging is on, and at
+ * KICKOS_RV64_VA_BASE plus these once it is.
  *
  * The paging mode is a Kconfig choice and lives in <kickos/arch/rv64_paging.h>, which this file
  * may not include: the linker script reads it with no arch include directory.
@@ -36,11 +34,8 @@
 #define KICKOS_RV64_UART0_PA         KICKOS_LAYOUT_UART0_BASE
 
 /* The CLINT, whose msip word per hart IS the cross-hart doorbell. startup.S's machine-mode
- * trampoline lowers a raise on it to mip.SSIP, and arch_ipi_send writes a peer's word from
- * SUPERVISOR mode with no machine-mode leg (the PMP/CLINT measurements this depends on are on
- * kickos_rv64_doorbell_send in arch/riscv/rv64imac/include/kickos/arch/rv64_doorbell.h). The
- * trampoline reaches it UNTRANSLATED, so this is the address it uses; a supervisor writer adds
- * the device window's base.
+ * trampoline lowers a raise on it to mip.SSIP and reaches it UNTRANSLATED at this address; a
+ * supervisor writer adds KICKOS_RV64_VA_BASE.
  */
 #define KICKOS_RV64_CLINT_PA         KICKOS_LAYOUT_CLINT_BASE
 
@@ -56,14 +51,14 @@
 #define KICKOS_RV64_FINISHER_PASS    0x5555
 #define KICKOS_RV64_FINISHER_FAIL    0x3333
 
-/* The finisher's FAIL word carries the process exit status in its top half, and 0 there exits
- * 0, which reads as a pass, so the pre-translation prologue shifts KICKOS_FATAL_STATUS in.
+/* The finisher's FAIL word carries the exit status in its top half, and 0 there exits 0, which
+ * reads as a pass, so the pre-translation prologue shifts KICKOS_FATAL_STATUS in.
  */
 #include <fatal_status.ld.h>
 
 /* The app's half. Its text, rodata, data and bss link at KICKOS_RV64_APP_VA_BASE, which a
  * per-space root names and the boot root leaves empty. The app links low and loads high over
- * one uniform delta, which is what __kickos_app_load_delta carries to aspace_image_seed.
+ * one uniform delta, __kickos_app_load_delta.
  *
  * The base is one whole level-2 slot, index 1, empty at every level in the boot tables, so a
  * space built by copying the boot root owns the subtree under it outright.

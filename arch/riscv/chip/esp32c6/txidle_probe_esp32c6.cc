@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The console flush's transmission-complete witness for c6txidle, run in M-mode once the banner
-// is out and before the ring is armed. Not from U-mode: there an ungranted UART0 read returns 0
-// without a trap, which is the idle encoding under test.
+// Transmission-complete witness for the console flush (c6txidle), run in M-mode after the banner
+// and before the ring is armed: an ungranted U-mode UART0 read returns 0, the idle encoding
+// under test.
 
 #include <kickos/arch/arch.h>
 
 #if !KICKOS_HAVE_MPU && !KICKOS_AMP_OWN_IMAGE
 
 #include <kickos/config/limits.h>
+#include <kickos/io/mmio.h>
 
 #include <stddef.h>
 #include <stdint.h>
@@ -54,11 +55,6 @@ namespace
     uint64_t hold_ticks()
     {
         return SystemCoreClock / 500u;
-    }
-
-    inline volatile uint32_t& r32(uintptr_t a)
-    {
-        return *reinterpret_cast<volatile uint32_t*>(a);
     }
 
     uint64_t ticks()

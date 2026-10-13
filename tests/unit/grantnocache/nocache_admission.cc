@@ -23,39 +23,17 @@
 
 namespace
 {
-    int g_nocache = ARCH_MPU_NOCACHE_ALREADY;
     bool g_owned = true;
-}
-
-struct arch_reserved_span g_reserved = {};
-int g_bitband = 0;
-
-extern "C"
-{
-    int arch_mpu_nocache_support(void) { return g_nocache; }
-
-    size_t arch_mpu_min_region(void) { return ARENA_REGION; }
-    int arch_mpu_region_pow2(void) { return 1; }
-
-    bool arch_mpu_region_encodable(uintptr_t base, size_t size)
-    {
-        if (size < ARENA_REGION or (size & (size - 1u)) != 0u)
-        {
-            return false;
-        }
-        return (base & (size - 1u)) == 0u;
-    }
-
-    uintptr_t arch_ram_base(void) { return ARENA_BASE; }
-    size_t arch_ram_size(void) { return ARENA_SIZE; }
-
-    struct arch_reserved_span arch_reserved_blocks(void) { return g_reserved; }
 
     // The i.MX RT1062's USB OTG1 core, the region chip's one bus master.
     constexpr struct arch_reserved_block BUS_MASTERS[] = {{0x402E0000u, 0x200u}};
-    struct arch_reserved_span arch_bus_master_apertures(void) { return {BUS_MASTERS}; }
-    int arch_bitband_present(void) { return g_bitband; }
 }
+
+RegionSeam g_region_seam = {.ram_base = ARENA_BASE,
+                            .ram_size = ARENA_SIZE,
+                            .min_region = ARENA_REGION,
+                            .pow2 = 1,
+                            .bus_masters = arch_reserved_span(BUS_MASTERS)};
 
 namespace
 {
@@ -65,19 +43,19 @@ namespace
     class NocacheAdmission : public ::testing::Test
     {
     protected:
-        void TearDown() override { g_nocache = ARCH_MPU_NOCACHE_ALREADY; }
+        void TearDown() override { g_region_seam.nocache = ARCH_MPU_NOCACHE_ALREADY; }
     };
 
     // THE POSITIVE CONTROL, and it may not be removed.
     TEST_F(NocacheAdmission, a_chip_that_programs_the_attribute_admits_the_grant)
     {
-        g_nocache = ARCH_MPU_NOCACHE_PROGRAMMED;
+        g_region_seam.nocache = ARCH_MPU_NOCACHE_PROGRAMMED;
         EXPECT_TRUE(kickos::grant_region_admissible(ARENA_BASE, 4096u, RW_NC, false));
     }
 
     TEST_F(NocacheAdmission, a_chip_with_no_cache_in_the_path_admits_the_grant)
     {
-        g_nocache = ARCH_MPU_NOCACHE_ALREADY;
+        g_region_seam.nocache = ARCH_MPU_NOCACHE_ALREADY;
         EXPECT_TRUE(kickos::grant_region_admissible(ARENA_BASE, 4096u, RW_NC, false));
     }
 
@@ -85,20 +63,20 @@ namespace
     // region it cannot encode in silence, so no later point could report it.
     TEST_F(NocacheAdmission, a_chip_that_cannot_express_the_attribute_refuses_the_grant)
     {
-        g_nocache = ARCH_MPU_NOCACHE_REFUSED;
+        g_region_seam.nocache = ARCH_MPU_NOCACHE_REFUSED;
         EXPECT_FALSE(kickos::grant_region_admissible(ARENA_BASE, 4096u, RW_NC, false));
     }
 
     // The refusal is keyed on the REQUEST, not on the chip.
     TEST_F(NocacheAdmission, a_refusing_chip_still_admits_an_ordinary_grant)
     {
-        g_nocache = ARCH_MPU_NOCACHE_REFUSED;
+        g_region_seam.nocache = ARCH_MPU_NOCACHE_REFUSED;
         EXPECT_TRUE(kickos::grant_region_admissible(ARENA_BASE, 4096u, RW, false));
     }
 
     TEST_F(NocacheAdmission, the_memory_type_never_widens_what_geometry_refuses)
     {
-        g_nocache = ARCH_MPU_NOCACHE_PROGRAMMED;
+        g_region_seam.nocache = ARCH_MPU_NOCACHE_PROGRAMMED;
         EXPECT_FALSE(kickos::grant_region_admissible(ARENA_BASE + 1u, 4096u, RW_NC, false));
         EXPECT_FALSE(kickos::grant_region_admissible(0x40000000u, 4096u, RW_NC, false));
         EXPECT_FALSE(kickos::grant_region_admissible(ARENA_BASE, 0u, RW_NC, false));
@@ -145,7 +123,7 @@ namespace kickos
         protected:
             void TearDown() override
             {
-                g_nocache = ARCH_MPU_NOCACHE_ALREADY;
+                g_region_seam.nocache = ARCH_MPU_NOCACHE_ALREADY;
                 g_owned = true;
                 domain_release(held_);
                 held_ = nullptr;
@@ -159,7 +137,7 @@ namespace kickos
             // A task's data region over BLOCK, committed non-cacheable.
             void hold_uncached()
             {
-                g_nocache = ARCH_MPU_NOCACHE_PROGRAMMED;
+                g_region_seam.nocache = ARCH_MPU_NOCACHE_PROGRAMMED;
                 int err = 0;
                 held_ = domain_for(0u, reinterpret_cast<void*>(BLOCK), BLOCK_SIZE,
                                    ARCH_MPU_NOCACHE, nullptr, &err);
@@ -208,7 +186,7 @@ namespace kickos
     // backend as on a translating one.
     TEST_F(DomainAdmit, an_unhonoured_memory_type_answers_enotsup)
     {
-        g_nocache = ARCH_MPU_NOCACHE_REFUSED;
+        g_region_seam.nocache = ARCH_MPU_NOCACHE_REFUSED;
         int err = 0;
 
         EXPECT_EQ(domain_for(0u, ARENA_RAM, 64u, ARCH_MPU_NOCACHE, nullptr, &err), nullptr);
@@ -217,7 +195,7 @@ namespace kickos
 
     TEST_F(DomainAdmit, an_honoured_memory_type_is_admitted)
     {
-        g_nocache = ARCH_MPU_NOCACHE_PROGRAMMED;
+        g_region_seam.nocache = ARCH_MPU_NOCACHE_PROGRAMMED;
         int err = 0;
 
         EXPECT_NE(domain_for(0u, ARENA_RAM, 64u, ARCH_MPU_NOCACHE, nullptr, &err), nullptr);
@@ -243,13 +221,13 @@ namespace kickos
 
     TEST_F(DomainAdmit, the_memory_type_is_asked_before_the_shape)
     {
-        g_nocache = ARCH_MPU_NOCACHE_REFUSED;
+        g_region_seam.nocache = ARCH_MPU_NOCACHE_REFUSED;
         EXPECT_EQ(admit(UNALIGNED, RW_NC), -KOS_ENOTSUP);
     }
 
     TEST_F(DomainAdmit, the_memory_type_is_asked_before_the_owner)
     {
-        g_nocache = ARCH_MPU_NOCACHE_REFUSED;
+        g_region_seam.nocache = ARCH_MPU_NOCACHE_REFUSED;
         g_owned = false;
         EXPECT_EQ(admit(BLOCK, RW_NC), -KOS_ENOTSUP);
     }
@@ -263,12 +241,6 @@ namespace kickos
     {
         g_owned = false;
         EXPECT_EQ(admit(BLOCK, RW), -KOS_EPERM);
-    }
-
-    TEST_F(DomainAdmit, a_privileged_child_s_window_waives_the_arena_and_the_owner)
-    {
-        g_owned = false;
-        EXPECT_EQ(admit(ARENA_BASE + ARENA_SIZE, RW, RAM_ADMIT_PRIVILEGED), 0);
     }
 
     TEST_F(DomainAdmit, a_block_held_with_another_type_answers_ebusy)

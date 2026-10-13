@@ -13,7 +13,7 @@
 # The first index an own-create may take. The well-known indices below it are kernel
 # policy and are named by <kickos/sys/cap_index.h>, which takes the number from here.
 # A renumber may only go DOWNWARD, only for a slot NOTHING seats, and is an ABI break.
-set(KICKOS_CAP_FIRST_DYNAMIC 1)
+set(KICKOS_CAP_FIRST_DYNAMIC 2)
 
 # The storage granule. armv6m has no divide instruction, so it must stay a power of two.
 # Changing it moves KCAP_CHUNK_SHIFT (cap.h), and so which boards compile the flat decode.

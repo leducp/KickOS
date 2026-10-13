@@ -8,8 +8,6 @@
 #include <string.h>
 
 #include <stdio.h>
-#include <sys/wait.h>
-#include <unistd.h>
 
 #include <kickos/cap.h>
 #include <kickos/console_tx.h>
@@ -24,6 +22,7 @@
 #include <kickos/sys/errno.h>
 
 #include "dark_seam.h"
+#include "isolated_arm.h"
 #include "kseam_test.h"
 
 using namespace kickos;
@@ -54,43 +53,14 @@ namespace
             sched::reschedule(nullptr, lock);
         }
         ASSERT_EQ(sched::current(), g_writer);
-        Endpoint* const ep = endpoint();
         Task* const served = task(0);
-        {
-            IrqLock lock;
-            int const handle = kernel().endpoints.handle_for(kernel().endpoints.index_of(ep));
-            ASSERT_TRUE(cap_console_publish(g_writer, handle, lock));
-            cap_console_serve(served, lock);
-            console_handover_begin();
-        }
-        console_owner_set_user();
+        ASSERT_TRUE(darkseam::publish(g_writer, endpoint(), served));
         darkseam::g_window_free = false;
         {
             IrqLock lock;
             task_end(served, 0, true, lock);
         }
         ASSERT_NE(console_dark(), 0) << "fixture: the console is not dark";
-    }
-
-    void run_isolated(void (*body)())
-    {
-        fflush(nullptr);
-        pid_t const pid = fork();
-        ASSERT_NE(pid, -1) << "fork failed, the arm did not run";
-        if (pid == 0)
-        {
-            body();
-            fflush(nullptr);
-            if (::testing::Test::HasFailure())
-            {
-                _exit(1);
-            }
-            _exit(0);
-        }
-        int status = 0;
-        ASSERT_EQ(waitpid(pid, &status, 0), pid);
-        ASSERT_TRUE(WIFEXITED(status)) << "the arm died on a signal";
-        ASSERT_EQ(WEXITSTATUS(status), 0) << "see the arm's own failure text above";
     }
 }
 

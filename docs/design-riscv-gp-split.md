@@ -77,7 +77,7 @@ region instead. The PREBUILT vendor libs are not compiled that way.
    - `libkickos_arch_rv32imac.a`: `.sbss g_arch_current, g_arch_next, g_isr_depth, g_clint_msip`;
      `.sdata g_irq_masked, g_inject_line`, i.e. the scheduler's most sensitive state (the
      current/next context pointers and the CLINT msip doorbell) lives in the gp window.
-   - `libkickos_kernel.a`: `.sbss g_kernel, g_default_user, g_console_panicking, g_led_on`.
+   - `libkickos_kernel.a`: `.sbss g_kernel, g_default_user, g_led_on`.
    - `libkickos_chip_virt.a`: `.sdata SystemCoreClock`. `libkickos_lib.a`: none.
    So the window is NOT app-only, and granting it to U-mode without emptying it first would let an
    unprivileged thread overwrite `g_arch_current` or `g_clint_msip`. Total compromise. This is why
@@ -108,6 +108,7 @@ region instead. The PREBUILT vendor libs are not compiled that way.
 Recompile libstdc++/libsupc++/libgcc (and libc, since `_impure_ptr`/malloc small-data also ride
 the window) so their writable globals land in ordinary `.data`/`.bss`, captured by the existing
 app-side catch-all.
+
 - Fixes both boards: yes (backend-shared). PMP entries: +0. Context-switch: +0.
 - REJECTED as the primary fix, kept only as the theoretical root-cause baseline. Burden is HIGH and
   against the house rule: `-msmall-data-limit` is a per-TU compile flag baked into the prebuilt

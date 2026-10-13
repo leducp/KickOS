@@ -11,12 +11,12 @@
 # being written, which no image can arrange.
 kickos_add_unit_test(NAME console_held
   SOURCES held_record.cc held_store.cc record_room.cc
-          "${PROJECT_SOURCE_DIR}/tests/unit/consoleseam/console_seam.cc"
+          ${_console_seam}
           "${PROJECT_SOURCE_DIR}/kernel/irq/irq_route.cc"
           "${PROJECT_SOURCE_DIR}/kernel/init/console.cc"
           "${PROJECT_SOURCE_DIR}/kernel/init/console_tx.cc"
           "${PROJECT_SOURCE_DIR}/lib/rtt.cc"
-  INCLUDES "${PROJECT_SOURCE_DIR}/tests/unit/consoleseam"
+  INCLUDES "${PROJECT_SOURCE_DIR}/tests/unit/consoleseam" "${PROJECT_SOURCE_DIR}/tests/unit/common"
   DEFINITIONS KICKOS_HELD_STEP=1
   KERNEL)
 
@@ -24,11 +24,11 @@ kickos_add_unit_test(NAME console_held
 # itself, for a user line the kernel console is offered more than once.
 kickos_add_unit_test(NAME console_held_rtt
   SOURCES held_rtt.cc
-          "${PROJECT_SOURCE_DIR}/tests/unit/consoleseam/console_seam.cc"
+          ${_console_seam}
           "${PROJECT_SOURCE_DIR}/kernel/irq/irq_route.cc"
           "${PROJECT_SOURCE_DIR}/kernel/init/console.cc"
           "${PROJECT_SOURCE_DIR}/kernel/init/console_tx.cc"
-  INCLUDES "${PROJECT_SOURCE_DIR}/tests/unit/consoleseam"
+  INCLUDES "${PROJECT_SOURCE_DIR}/tests/unit/consoleseam" "${PROJECT_SOURCE_DIR}/tests/unit/common"
   POSTURE KICKOS_CONSOLE_RTT=1)
 
 # console_held_recv: the real receive and hand-off of kernel/syscall/syscall_ipc.cc over the
@@ -49,12 +49,12 @@ kickos_add_unit_test(NAME console_live SOURCES live_console.cc
 # device.
 kickos_add_kseam(kickos_kseam_console
   EXTRA "${PROJECT_SOURCE_DIR}/tests/unit/fusedwake/ipc_seam.cc"
-        dark_seam.cc
+        dark_seam.cc "${_cs}/console_leaves.cc" "${PROJECT_SOURCE_DIR}/lib/libc/fmt.cc"
         "${PROJECT_SOURCE_DIR}/kernel/syscall/syscall_ipc.cc"
         "${PROJECT_SOURCE_DIR}/kernel/init/console.cc"
         "${PROJECT_SOURCE_DIR}/kernel/init/console_tx.cc"
-  INCLUDES "${PROJECT_SOURCE_DIR}/tests/unit/fusedwake"
-           "${PROJECT_SOURCE_DIR}/kernel/syscall"
+  INCLUDES "${PROJECT_SOURCE_DIR}/tests/unit/fusedwake" "${PROJECT_SOURCE_DIR}/kernel/syscall"
+           "${PROJECT_SOURCE_DIR}/tests/unit/common"
   POSTURE KSEAM_REAL_CONSOLE=1)
 
 kickos_add_unit_test(NAME console_dark SOURCES dark_e2e.cc
@@ -67,3 +67,54 @@ kickos_add_unit_test(NAME console_own_task SOURCES own_console.cc
 # console_room: a writer the ring refuses, drained by the producer or woken by the TX drain.
 kickos_add_unit_test(NAME console_room SOURCES room_wait.cc
   LIBRARIES kickos_kseam_console)
+
+# console_drain: a publish's drain waits for the writer it raced, on a context of the writer's own.
+kickos_add_unit_test(NAME console_drain SOURCES publish_drain.cc
+  LIBRARIES kickos_kseam_console)
+
+# console_room_amp: the same cases at an own-image AMP node's posture with no console claim, the
+# ESP32-C6 nodes': a writer its ring refuses waits for room there.
+kickos_add_kseam(kickos_kseam_console_amp
+  EXTRA "${PROJECT_SOURCE_DIR}/tests/unit/fusedwake/ipc_seam.cc"
+        dark_seam.cc "${_cs}/console_leaves.cc" "${PROJECT_SOURCE_DIR}/lib/libc/fmt.cc"
+        "${PROJECT_SOURCE_DIR}/kernel/syscall/syscall_ipc.cc"
+        "${PROJECT_SOURCE_DIR}/kernel/init/console.cc"
+        "${PROJECT_SOURCE_DIR}/kernel/init/console_tx.cc"
+  INCLUDES "${PROJECT_SOURCE_DIR}/tests/unit/fusedwake" "${PROJECT_SOURCE_DIR}/kernel/syscall"
+           "${PROJECT_SOURCE_DIR}/tests/unit/common"
+  POSTURE KSEAM_REAL_CONSOLE=1 KICKOS_AMP_OWN_IMAGE=1)
+
+kickos_add_unit_test(NAME console_room_amp SOURCES room_wait.cc TEST_PREFIX amp_
+  LIBRARIES kickos_kseam_console_amp)
+
+# console_claim: an own-image AMP node's writer a peer's claim refuses, parked until the release
+# rings its node, over the same seam at that posture and the real virt_arm64 claim.
+kickos_add_kseam(kickos_kseam_console_claim
+  EXTRA "${PROJECT_SOURCE_DIR}/tests/unit/fusedwake/ipc_seam.cc"
+        dark_seam.cc "${_cs}/console_leaves.cc" "${PROJECT_SOURCE_DIR}/lib/libc/fmt.cc"
+        "${PROJECT_SOURCE_DIR}/kernel/syscall/syscall_ipc.cc"
+        "${PROJECT_SOURCE_DIR}/kernel/init/console.cc"
+        "${PROJECT_SOURCE_DIR}/kernel/init/console_tx.cc"
+  INCLUDES "${PROJECT_SOURCE_DIR}/tests/unit/fusedwake" "${PROJECT_SOURCE_DIR}/kernel/syscall"
+           "${PROJECT_SOURCE_DIR}/tests/unit/common"
+  POSTURE KSEAM_REAL_CONSOLE=1 KICKOS_AMP_OWN_IMAGE=1 KICKOS_AMP_CONSOLE_CLAIM=1)
+
+kickos_add_unit_test(NAME console_claim SOURCES claim_wait.cc
+  INCLUDES "${PROJECT_SOURCE_DIR}"
+  LIBRARIES kickos_kseam_console_claim)
+
+# console_panic_unlocked: a refusal on a core holding the kernel lock outside an IrqLock, over the
+# same seam at two kernel cores.
+kickos_add_kseam(kickos_kseam_console_smp
+  EXTRA "${PROJECT_SOURCE_DIR}/tests/unit/fusedwake/ipc_seam.cc"
+        dark_seam.cc "${_cs}/console_leaves.cc" "${PROJECT_SOURCE_DIR}/lib/libc/fmt.cc"
+        "${PROJECT_SOURCE_DIR}/kernel/syscall/syscall_ipc.cc"
+        "${PROJECT_SOURCE_DIR}/kernel/init/console.cc"
+        "${PROJECT_SOURCE_DIR}/kernel/init/console_tx.cc"
+  INCLUDES "${PROJECT_SOURCE_DIR}/tests/unit/fusedwake" "${PROJECT_SOURCE_DIR}/kernel/syscall"
+           "${PROJECT_SOURCE_DIR}/tests/unit/common"
+  POSTURE KSEAM_REAL_CONSOLE=1 KICKOS_NUM_CORES=2 KICKOS_KERNEL_CORES=2
+          KICKOS_MULTICORE_MODEL_SHARED=1)
+
+kickos_add_unit_test(NAME console_panic_unlocked SOURCES panic_unlocked.cc
+  LIBRARIES kickos_kseam_console_smp)

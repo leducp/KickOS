@@ -149,7 +149,7 @@ declaration rests on; the measurement is what made the declaration worth attempt
 **THE FAILURE THIS CLOSES IS SILENT AND IT IS THE ONLY KIND HERE THAT IS.** A part selecting the
 core-local arm executes every instruction of `arch_kernel_lock` and excludes a core from itself and
 from nobody else: the lock appears to work while excluding nothing, and no fault is raised
-anywhere. `arch/xtensa/lx6/smp.cmake` states that hazard in its `exclusion` predicate and could not
+anywhere. `ARCH_LX6` in `arch/Kconfig` states that hazard beside its `exclusion` select and could not
 check it, a predicate being a configure-time declaration; `tests/static/check_lx6_park_mask.sh` reads
 the seat and the read-back out of the linked image, and the die's answer stays the board's.
 
@@ -1151,16 +1151,16 @@ kernel of its own can answer, and may not name it for a node that runs one, sinc
 binds every port the partition names it and would take the echo from the layer that owns it.
 
 **THE OUTBOUND SIDE TAKES THE SAME SHAPE, AND THAT CLOSES A HOLE RATHER THAN WORKING AROUND ONE.**
-Section 7 recorded that `KOS_SYS_AMP_ENDPOINT_CREATE` has no reachable caller, root being
+Section 7 recorded that the far-endpoint mint syscall had no reachable caller, root being
 unprivileged from its first instruction, and that the arms reached the mint body through probe
 scaffolding instead. Under this freeze the far endpoint has an origin that is not a syscall, so
-the scaffolding goes and the syscall stays as what N8 makes it: the privileged path, whose
-REFUSAL is what a run witnesses and what an arm asserts. One shape, one origin, both directions.
+the scaffolding goes, and so does the syscall: the partition is the one origin. One shape, one
+origin, both directions.
 
 **WHAT AN APP WRITES IS A PLAIN `add_executable` LINKING `kickos` WITH A PURE C `main`.**
 `<kickos/amp.h>` is a header of static inline functions over a generated table: no syscall, no
 kernel type, no C++. A node's app names a crossing and gets a capability it then spends through
-the ordinary `kos_send`, `kos_call`, `kos_recv` and `kos_reply`, which is N7's one mechanism
+the ordinary `kos_send`, `kos_call`, the receive call (formerly `kos_recv`) and `kos_reply`, which is N7's one mechanism
 reaching userspace unchanged.
 
 **WHAT THIS DOES NOT SETTLE.** WHO may state the list is the partition integrator and nothing

@@ -65,7 +65,7 @@ the physical swap). The decisions inside that split:
   after).
 - **RX and rv32imac keep a LOCAL stash.** Each is its own arch lib with no ARM-common link, so
   there is no cross-arch symbol sharing to collide and no accessor is needed.
-- **The hook goes only on the paths that PHYSICALLY swap.** RX calls it from `kickos_rx_restore`,
+- **The hook goes only on the paths that PHYSICALLY swap.** RX calls it from the restore path of its switcher,
   which the syscall and timer-ISR returns never reach (they `rte` on their own). rv32imac calls it
   from `.Lswitch` and `arch_start`, NOT from the shared `.Lrestore`, which timer/ssoft/ext/syscall
   returns reach without swapping.

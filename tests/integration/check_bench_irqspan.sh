@@ -58,11 +58,11 @@
 #            entry row with nothing refused as foreign is a board that delivers no injected
 #            interrupt, and anything else is a waiter that never woke. They are branches, not
 #            arms, the first implying the second.
-#   passes   the sweep's own denominator, which closed and dropped are not. A pass whose waiter
-#            never parks is abandoned after the app's retry bound and moves neither counter, so
-#            the rows would report the passes that ran as though they were all of them. `asked`
-#            is the sweep size the app ran, `raised` what the kernel let through, and every
-#            raise owes a counted close.
+#   passes   the sweep's own denominator, which closed and dropped are not. A waiter that goes
+#            the close's 4.29 s ceiling without parking or closing ends the sweep, and the passes
+#            left unraised move neither counter, so the rows would report the passes that ran as
+#            though they were all of them. `asked` is the sweep size the app ran, `raised` what
+#            the kernel let through, and every raise owes a counted close.
 #   settle   the app's own mark of how many passes waited out their set-up before their first
 #            raise, out of how many it ran. A pass whose poll ran out raises anyway, so its first
 #            sample may price the set-up: the count is refused only where it cannot be a count,
@@ -393,19 +393,24 @@ irq_arms() {
     # --- the sweep's denominator -----------------------------------------------
     if [ "$qseen" -ne 1 ]; then
         bad "the capture carried no e2e-passes line, so the sweep states no denominator and a
-      run that abandoned most of its passes reports the rest as the whole population"
+      sweep a stalled waiter ended early reports the passes that ran as the whole population"
     else
         field_parsed "$qpa" "e2e-passes" "asked="
         field_parsed "$qpr" "e2e-passes" "raised="
         if [ "$qraised" -ne "$qasked" ]; then
             bad "the sweep asked for $qasked pass(es) and the kernel let $qraised raise(s)
-      through; the rest were abandoned with the waiter never parked, and they close nothing, so
-      neither closed nor dropped moves and the rows read as a complete sweep"
+      through; the waiter went the close's 4.29 s ceiling without parking or closing, which ends
+      the sweep, and the rest close nothing, so neither closed nor dropped moves and the rows read
+      as a complete sweep"
         fi
-        if [ "$qraised" -ne "$pclosed" ]; then
+        if [ "$qraised" -gt "$pclosed" ]; then
+            bad "the kernel let $qraised raise(s) through and the probe reports $pclosed closed: a
+      raise whose close never came, which is a waiter that went the close's 4.29 s ceiling
+      without closing and ended the sweep. On the sweep's last raise that leaves raised equal to
+      asked, and this is then the only arm that names the stall"
+        elif [ "$qraised" -lt "$pclosed" ]; then
             bad "the kernel let $qraised raise(s) through and the probe reports $pclosed closed;
-      every raise opens a span that owes a counted close, so the difference is spans that ended
-      somewhere this accounting does not name"
+      every close answers one raise, so the extra closes are spans this accounting does not name"
         fi
     fi
 
@@ -826,19 +831,19 @@ ctl 'a worst-case row that names no span' 1 refuse \
     "$(ctl_one | sed 's|wcase-irq\[1024B\]:|wcase-irq[]:      |')"
 
 # --- the sweep's denominator, one clause per plant ---------------------------
-# The raiser gives a pass up after its retry bound and reports nothing: thirteen abandoned and
-# the rest closing cleanly reads as a full report.
-ctl 'a sweep that abandoned passes' 1 refuse \
+# A waiter that stops parking ends the sweep with nothing left to close: thirteen passes
+# unraised and the rest closing cleanly reads as a full report.
+ctl 'a sweep a stalled waiter ended early' 1 refuse \
     "$(ctl_one \
         | sed 's|asked=50 raised=50|asked=50 raised=37|' \
         | sed 's|closed=50|closed=37|' \
         | sed 's|^\(  e2e-local: .*\)n=50)|\1n=37)|')"
-# Every pass raised and a quarter of them closing nowhere. The locality total still agrees with
-# `closed`, so the e2e arm cannot reach it.
-ctl 'raises that closed nothing' 1 refuse \
+# The stall on the sweep's last raise: every pass raised and the last one closing nowhere. The
+# locality total still agrees with `closed`, so the e2e arm cannot reach it.
+ctl 'the last raise closing nothing' 1 refuse \
     "$(ctl_one \
-        | sed 's|closed=50|closed=37|' \
-        | sed 's|^\(  e2e-local: .*\)n=50)|\1n=37)|')"
+        | sed 's|closed=50|closed=49|' \
+        | sed 's|^\(  e2e-local: .*\)n=50)|\1n=49)|')"
 ctl 'a sweep with no denominator at all' 1 refuse \
     "$(ctl_one | sed '/^  e2e-passes: /d')"
 
@@ -972,7 +977,7 @@ ctl 'the local row at the tare' 4 refuse \
 # --- the recorded-capture path, which no control above reaches -----------------
 # Every silicon verdict comes through BENCH_CAPTURE=, which differs from the polled path in the
 # CR every console line ends in and in holding several report windows. The broken window is the
-# 'sweep that abandoned passes' report entire, so these controls prove which windows are read
+# 'sweep a stalled waiter ended early' report entire, so these controls prove which windows are read
 # rather than which arm reads them.
 ctl_windows() { # <how many> <broken index, 0 for none>
     _cw_i=1

@@ -11,6 +11,8 @@
 
 #include <gtest/gtest.h>
 
+#include "region_seam.h"
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -25,14 +27,11 @@ namespace
     size_t g_arena_used = 0;
 }
 
+RegionSeam g_region_seam = {
+    .ram_base = ARENA_BASE, .ram_size = ARENA_SIZE, .min_region = MIN_REGION};
+
 extern "C"
 {
-    size_t arch_mpu_min_region(void) { return MIN_REGION; }
-    int arch_mpu_region_pow2(void) { return 0; }
-
-    uintptr_t arch_ram_base(void) { return ARENA_BASE; }
-    size_t arch_ram_size(void) { return ARENA_SIZE; }
-
     // The bump allocator's shape, not its code: natural alignment and a watermark that
     // never goes back. The watermark is what an arm reads to say whether a refusal SPENT
     // arena.

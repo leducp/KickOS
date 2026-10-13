@@ -58,12 +58,6 @@
       "cacheVariables": { "KICKOS_BOARD": "esp32c6-wroom" }
     },
     {
-      "name": "esp32c6-wroom-st",
-      "displayName": "ESP32-C6-WROOM-1 (RISC-V RV32IMAC) + selftest (full IRQ suite)",
-      "inherits": "esp32c6-wroom",
-      "cacheVariables": { "KICKOS_CONFIG_VARIANT": "st" }
-    },
-    {
       "name": "qemu-riscv64-bench",
       "displayName": "QEMU virt (RV64, S-mode) + KICKOS_BENCH - context-switch microbench",
       "inherits": "qemu-riscv64",
@@ -117,7 +111,6 @@
     { "name": "qemu-riscv64-benchsmp", "configurePreset": "qemu-riscv64-benchsmp" },
     { "name": "qemu-riscv64-benchsmp2", "configurePreset": "qemu-riscv64-benchsmp2" },
     { "name": "esp32c6-wroom", "configurePreset": "esp32c6-wroom" },
-    { "name": "esp32c6-wroom-st", "configurePreset": "esp32c6-wroom-st" },
     { "name": "esp32c6-wroom-flat", "configurePreset": "esp32c6-wroom-flat" },
     { "name": "esp32c6-wroom-bench", "configurePreset": "esp32c6-wroom-bench" },
     { "name": "esp32c6-wroom-amp2-n0", "configurePreset": "esp32c6-wroom-amp2-n0" },

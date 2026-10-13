@@ -21,6 +21,7 @@ tasks:
   - name: xmcssc
     driver: xmcssc
     devices: [/dev/usic0/ch1]
+    accepts: [coarse_gate] # USIC0 is one gate, and the kernel's console is its channel 0
     lines: { irq: /dev/usic0/sr1 }
     core: 0
     serves: /svc/xmcssc

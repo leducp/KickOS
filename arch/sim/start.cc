@@ -1,15 +1,12 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// sim startup glue: the host process entry. Brings up the arch backend then
-// enters the kernel. On MCU targets the equivalent is the reset handler.
-//
-// Under KICKOS_MULTI_INSTANCE the process hosts several independent kernels, one per
-// emulated MCU, so this is also where instances are handed to host threads.
+// The host process entry. Under KICKOS_MULTI_INSTANCE the process hosts several independent
+// kernels, one per emulated MCU, handed to host threads here.
 
 #include <kickos/arch/arch.h>
 
-#if defined(KICKOS_MULTI_INSTANCE) && KICKOS_MULTI_INSTANCE
+#if KICKOS_MULTI_INSTANCE
 #include <kickos/instance_local.h>
 
 #include <pthread.h>
@@ -25,11 +22,9 @@ namespace kickos
 }
 #endif
 
-// Explicitly EMPTY app-ctor window: the host runtime has already run every app ctor
-// before main, so kmain's walk must see start == end (walking again would construct
-// them twice). kmain's bounds are STRONG, so a target with no window fails the link.
-// Labels rather than a zero-length array: two distinct C++ objects are not guaranteed
-// to share an address, and start == end must hold exactly.
+// An EMPTY app-ctor window: the host runtime has run every app ctor before main, so kmain's
+// walk must see start == end or it constructs them twice. Labels, not a zero-length array: two
+// distinct objects need not share an address.
 asm(".pushsection .kickos_app_init_array,\"a\"\n"
     ".globl __kickos_app_init_array_start\n"
     ".globl __kickos_app_init_array_end\n"
@@ -37,9 +32,9 @@ asm(".pushsection .kickos_app_init_array,\"a\"\n"
     "__kickos_app_init_array_end:\n"
     ".popsection\n");
 
-// The windows a hosted image has none of, stated EMPTY for the same reason: kmain and
-// domain.cc reference these bounds strongly, so absent would be a link error and not a zero.
-// Labels rather than absolute zeros, so each pair is start == end at a real address.
+// The windows a hosted image has none of, stated empty: kmain and domain.cc reference these
+// bounds strongly, so absent is a link error. Labels, so each pair is start == end at a real
+// address.
 asm(".pushsection .kickos_link_bounds,\"a\"\n"
     ".globl __kickos_code_start\n"
     ".globl __kickos_code_end\n"
@@ -55,7 +50,7 @@ asm(".pushsection .kickos_link_bounds,\"a\"\n"
     "_kickos_heap_limit:\n"
     ".popsection\n");
 
-#if defined(KICKOS_MULTI_INSTANCE) && KICKOS_MULTI_INSTANCE
+#if KICKOS_MULTI_INSTANCE
 
 namespace
 {
@@ -70,15 +65,13 @@ namespace
     void* node_entry(void* arg)
     {
         Node* const n = static_cast<Node*>(arg);
-        // Before anything instance-scoped: an unadopted host thread holds index 0 and
-        // would run inside instance 0's kernel without saying so.
+        // An unadopted host thread holds index 0 and would run inside instance 0's kernel.
         kickos::instance_select(n->index);
         n->status = arch_sim_instance_run(n->argc, n->argv);
         return nullptr;
     }
 
-    // How many kernels this process hosts. An env knob rather than an argument because
-    // argv belongs to the app inside each instance and is handed on unchanged.
+    // An env knob, not an argument: argv belongs to the app inside each instance.
     unsigned instance_count()
     {
         char const* const spec = getenv("KICKOS_SIM_INSTANCES");
@@ -121,8 +114,7 @@ int main(int argc, char** argv)
         int const rc = pthread_create(&threads[i], nullptr, node_entry, &nodes[i]);
         if (rc != 0)
         {
-            // Report before joining: the instances already running still get to finish,
-            // but the run no longer means what it was asked to mean.
+            // Instances already running still finish; the exit status then reports the failure.
             fprintf(stderr, "[KickOS] instance %u: pthread_create failed (%d)\n", i, rc);
             break;
         }

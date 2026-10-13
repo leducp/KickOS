@@ -13,8 +13,10 @@ Design + build-only (F411 not on the bench; K64F is). The CANONICAL per-thread
 peripheral-MMIO isolation reference on ARMv7-M PMSA -- the result the fleet was missing.
 Counterpart of `design-spi-driver-k64f-dspi.md` (coarse AIPS ceiling) and the XMC/USIC
 brief. Builds on the landed MMIO-grant seam (`design-task9-mmio-driver.md`;
-`kos_thread_params.mmio_base/mmio_size`), the tier-1 IRQ path (`kos_irq_claim`/`kos_irq_wait`/`kos_irq_ack`; the call was spelled
-`kos_irq_register` when this was written, renamed in M4.6.1), and the k64drv privileged-shim -> unprivileged-driver structure
+`kos_thread_params.mmio_base/mmio_size`), the tier-1 IRQ path (`kos_irq_claim`, the IRQ wait
+call of the time (formerly `kos_irq_wait`) and `kos_irq_ack`; the claim call was spelled
+differently when this was written (formerly `kos_irq_register`), renamed in M4.6.1), and the
+k64drv privileged-shim -> unprivileged-driver structure
 (`user/apps/frdmk64f/k64drv/main.cc`).
 
 ## Why this exists -- the honest gap it closes (read first)
@@ -96,9 +98,9 @@ and reuses the k64drv/tier-1 mechanism verbatim (register/wait). The RXNE-clean-
 the-next-wait step is the SPI analogue of k64drv's TFLG W1C:
 
 Per word: bounded-poll `SR.TXE` (in-window) -> write `DR`=tx (starts the exchange) ->
-`kos_irq_wait` on line 35 -> read `DR`=rx (this CLEARS RXNE and de-asserts the line, so it
+the IRQ wait on line 35 -> read `DR`=rx (this CLEARS RXNE and de-asserts the line, so it
 does not storm on unmask -- the mandatory quiesce, still required BEFORE the re-arm; SPI has
-no W1C flag) -> `kos_irq_ack` (OPTIONAL: the loop's next `kos_irq_wait` auto-re-arms line 35;
+no W1C flag) -> `kos_irq_ack` (OPTIONAL: the loop's next IRQ wait auto-re-arms line 35;
 keep the explicit ack only for the compute-then-wait shape).
 Only RXNEIE is armed (CR2 b6), so although line 35 is a single vector for all SPI1 sources,
 only RXNE wakes it (mirror of the K64F EOQF-only pattern). RXNEIE is armed once in-window

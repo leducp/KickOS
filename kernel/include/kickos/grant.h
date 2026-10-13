@@ -75,8 +75,8 @@ namespace kickos
     //   DEV : authorized caller + exactly-encodable + not a bit-band alias
     //   RAM : exactly encodable + confined to the user arena (every caller)
     //
-    // `caller_authorized` is AUTH_MEMORY on the caller's authority cap, NOT
-    // `Thread::privileged`. Only the DEV arm reads it.
+    // `caller_authorized` is AUTH_MEMORY on the caller's authority cap. Only the DEV arm reads
+    // it.
     bool grant_region_admissible(uintptr_t base, size_t size, uint32_t attr,
                                  bool caller_authorized);
 

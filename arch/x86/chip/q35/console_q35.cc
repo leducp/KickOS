@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The buffered console TX half of the q35 seam. KEEP IT IN A TRANSLATION UNIT OF ITS OWN: it
-// calls into the kernel, and the x86_64 bring-up images link this chip's archive with no
-// kernel at all, so arch_console_write must sit in a member they do not extract.
+// The buffered console TX half of the q35 seam.
 
 #include <kickos/arch/arch.h>
 #include <kickos/chip_com1.h>
@@ -23,24 +21,17 @@ namespace
     void q35_tx_irq_enable(void) {}
     void q35_tx_irq_disable(void) {}
 
-    char console_tx_buf[KICKOS_CONSOLE_TX_SIZE];
     console_tx_backend const q35_console_backend = {
-        q35_tx_slot_free, q35_tx_push, q35_tx_irq_enable, q35_tx_irq_disable};
+        q35_tx_slot_free, q35_tx_push, q35_tx_irq_enable, q35_tx_irq_disable,
+        &kickos_console_tx_storage};
 }
 
 extern "C"
 {
 
-int arch_console_write(char const* buf, size_t n)
+console_tx_backend const* arch_console_tx_backend(int* irq_line)
 {
-    return console_tx_insert_line(buf, n, KICKOS_CONSOLE_CRLF);
-}
-
-console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)
-{
-    *storage = console_tx_buf;
-    *size = KICKOS_CONSOLE_TX_SIZE;
-    *irq_line = -1; // no TX event can fire here; the producer drains
+    *irq_line = -1;
     return &q35_console_backend;
 }
 

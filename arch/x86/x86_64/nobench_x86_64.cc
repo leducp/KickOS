@@ -3,13 +3,13 @@
 //
 // The switch accumulator's two symbols, for the kernel-free images. Under KICKOS_BENCH
 // switch.S brackets the swap and reaches kernel/bench/bench.cc for both of these, and the
-// X5 and X6 images carry the arch archive with no kernel behind it.
+// X6 image carries the arch archive with no kernel behind it.
 
 #include <kickos/board_config.h>
 
 #include <stdint.h>
 
-#if defined(KICKOS_BENCH) && KICKOS_BENCH
+#if KICKOS_BENCH
 extern "C"
 {
 

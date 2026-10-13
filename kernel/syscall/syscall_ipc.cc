@@ -264,7 +264,8 @@ namespace kickos
         }
         Endpoint* ep = nullptr;
         int const i = endpoint_claim_created(&ep);
-        if (i < 0)
+        // The bound, not the sign: an index this unit cannot bound reads as out of range below.
+        if (kernel().endpoints.at(i) == nullptr)
         {
             return -KOS_ENOMEM;
         }
@@ -302,7 +303,8 @@ namespace kickos
         }
         Endpoint* ep = nullptr;
         int const i = endpoint_slot_claim(&ep);
-        if (i < 0)
+        // As endpoint_create's.
+        if (kernel().endpoints.at(i) == nullptr)
         {
             return -KOS_ENOMEM;
         }
@@ -321,26 +323,6 @@ namespace kickos
         return 0;
     }
 #endif
-
-    // Create an endpoint in another node. Only privileged callers may use crossings
-    // listed in the static configuration; no capability grants a crossing.
-    int amp_endpoint_create(uint32_t node, uint32_t port, uint32_t* out_cap)
-    {
-        *out_cap = KCAP_INVALID;
-#if KICKOS_AMP_NODE
-        IrqLock lock;
-        Thread* c = sched::current();
-        if (not c->privileged)
-        {
-            return -KOS_EPERM;
-        }
-        return amp_endpoint_mint(c, node, port, CAP_SIGNAL, out_cap);
-#else
-        (void)node;
-        (void)port;
-        return -KOS_ENOSYS;
-#endif
-    }
 
     // Return bytes sent or -KOS_E*. timeout_us bounds only the parked wait, and 0 never parks:
     // it answers -KOS_ETIMEDOUT instead, as does the published console to a non-blocking
@@ -1193,7 +1175,8 @@ namespace kickos
         }
         Endpoint* ep = nullptr;
         int const i = endpoint_slot_claim(&ep);
-        if (i < 0)
+        // As endpoint_create's.
+        if (kernel().endpoints.at(i) == nullptr)
         {
             return -KOS_ENOMEM;
         }
