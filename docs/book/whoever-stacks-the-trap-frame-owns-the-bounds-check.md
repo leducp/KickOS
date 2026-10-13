@@ -23,7 +23,7 @@ Copyright (c) 2026 Philippe Leduc
 
 ## The problem: the frame has to go somewhere, and only one pointer is available
 
-A trap is an involuntary function call (Chapter 0.2). The core stops the running
+A trap is an involuntary function call (Chapter 0.3). The core stops the running
 instruction stream at an arbitrary instruction and transfers to a handler, and the
 handler needs the registers for its own work. So the interrupted values have to be
 written to memory before the handler can use those registers, and they have to be written

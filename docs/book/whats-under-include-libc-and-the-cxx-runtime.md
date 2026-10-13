@@ -2,48 +2,36 @@
 <!-- Copyright (c) 2026 Philippe Leduc -->
 # What's under #include: the C library and the C++ runtime
 
-> A Part-0 concept chapter (prereq: minimal C/C++ + the
-> compile/link/flash pipeline of 0.5). It teaches *what a C library actually is* --
-> a bag of functions plus a bottom edge -- and *what the C++ runtime is made of* --
-> three stacked libraries -- so a reader understands why "just `#include <vector>`"
-> is a decision with a cost, not a given. KickOS is the worked example. Points into
-> `../reference/architecture.md` ("C++ decisions", "Toolchain-libc lesson from NuttX")
-> for the authoritative in-repo statement; this chapter explains, that section binds.
+> What does `printf("hello\n")` need underneath it, on a chip with no terminal and
+> no files?
+>
+> You will learn:
+>
+> - what the C library and the C++ runtime are made of;
+> - what each piece asks of the operating system;
+> - how the f411 example's `printf` travels from the application to the kernel.
 
-You write `#include <cstdio>`, call `printf`, and something prints. You write
-`#include <vector>`, push a million ints, and it grows. On a hosted desktop this is
-invisible plumbing. On a microcontroller with 64 KiB of RAM and no operating system
-underneath *until you write one*, the plumbing is the whole story: every one of those
-lines lands, eventually, on a function *you* have to supply. This chapter is a map of
-that plumbing -- the C library's bottom edge, the three layers of the C++ runtime, and
-the choice KickOS makes about how much of it an app pays for.
+On a desktop, `printf` and `std::vector` can look self-contained. On an MCU,
+their dependencies matter: output needs a sink, allocation needs memory, and
+full C++ brings runtime code and data.
 
-*Further reading: Tanenbaum, Modern Operating Systems, ch.1 -- the operating system as
-an extended machine and a resource manager, the system-call interface, and why the C
-library is the layer that turns library calls into system calls. Chapter 1 is the spine
-for this whole chapter; each section names the idea it draws from.*
+*Further reading: Tanenbaum, Modern Operating Systems, ch.1 (the system-call
+interface and the OS as a resource manager).*
 
-## A C library is two things: a bag of functions and a bottom edge
+## What a C library needs from the OS
 
-Split the standard C library in half by *what it needs to work*.
+The standard C library has functions with different needs:
 
-- **The self-contained half.** `memcpy`, `strlen`, `strtol`, `snprintf` into a
-  caller's buffer, `qsort`, the `<math.h>` functions -- pure computation. Given a
-  compiler they run on bare metal with no OS at all. This is the half the C standard
-  calls **freestanding**: the language plus the headers that demand nothing of an
-  environment (`<stddef.h>`, `<stdint.h>`, `<limits.h>`, `<stdbool.h>`, and friends).
-- **The half with a bottom edge.** `malloc` needs memory *from somewhere*. `printf`
-  to `stdout` needs a *sink*. `exit` needs somewhere to *go*. `fopen` needs *files*.
-  These cannot be pure computation -- they are requests to an operating system. The C
-  standard calls a library that provides *all* of it, stdio and heap and `exit` and
-  the rest, **hosted**. (Tanenbaum ch.1: these are exactly the system-call surface --
-  process control, file I/O, memory.)
+- **Self-contained operations** such as `memcpy`, `strlen`, and `qsort` work
+  without an OS. A **freestanding** C environment guarantees only a limited set
+  of headers and facilities; implementations may provide more.
+- **Environment-dependent operations** need services underneath: `malloc` needs
+  an arena (the block of memory it carves allocations from), `printf` needs
+  output, `fopen` needs files, and `exit` needs a way to terminate. A
+  **hosted** C environment provides the full standard library.
 
-The crucial fact for anyone porting a libc to a new system: that second half is not
-re-implemented per platform. A portable libc (newlib is the canonical one) implements
-`malloc`, `printf`, `fprintf`, buffering, all of it, *once*, in terms of a **tiny set
-of primitive calls it expects the platform to supply**. Porting the library to KickOS
-is porting that set -- nothing more:
+A portable libc such as newlib implements most of the second group itself. The
+platform supplies a small set of primitives underneath it:
 
 | Primitive | What the library needs it for |
 |---|---|
@@ -52,334 +40,215 @@ is porting that set -- nothing more:
 | `_read` `_close` `_lseek` `_fstat` `_isatty` | the file model stdio is written against |
 | `_exit` `_kill` `_getpid` | process control that `exit`/`abort` bottom out in |
 | `errno` via `_impure_ptr` (newlib's reent) | per-context error state stdio and math set |
-| `__malloc_lock` / `__malloc_unlock` | bracket every arena mutation *when threaded* |
+| `__retarget_lock_*` | the locks around every arena mutation and every stream, *when threaded* |
 
-That is the entire porting seam. Everything else in the C library is written above it,
-platform-independent. Get these right and `#include <cstdio>` works; the library never
-knew it moved.
+newlib keeps `errno` and its other per-thread state in a `struct _reent`, its
+reentrancy structure, so that it can be reentrant: safe in two threads at once,
+since each keeps its own state. These primitives are the main porting seam
+between newlib and KickOS.
 
 ## KickOS's bottom edge
 
-The seam lives mostly in `user/src/newlib_stubs.cc`. The locks have a file of their own,
-`user/src/newlib_lock.cc`, and so does `_sbrk`, `user/src/newlib_sbrk.cc`, for a reason the
-heap bullet below explains. It is small on purpose --
-each stub is the thinnest possible bridge from a newlib expectation to a KickOS syscall:
+Most stubs live in `user/src/newlib_stubs.cc`; `_sbrk` lives separately in
+`user/src/newlib_sbrk.cc`. Each bridges a newlib expectation to KickOS:
 
-- **`_write` -> the debug console.** Pre-driver, all stdio (any `fd`) falls to
-  `kos_kconsole_write`; KickOS has no `fd` namespace yet, so `fd` is ignored. Once a
-  userspace console driver exists, stdout routes to it instead.
-- **`_sbrk` over a bump arena whose bounds are linker symbols.** The heap is not a
-  static array. `_kickos_heap_start` and `_kickos_heap_limit` are defined by the chip's
-  linker script, and `_sbrk` bumps a pointer between them, refusing (`-1`) when the next
-  bump would leave the span. There is no `free` back to the OS; `malloc`'s own free list
-  reuses within the arena. Where those two symbols come from is the whole story, and
-  Chapter 7.3 tells it: on a protected chip the heap is the *unused pad* of the one
-  window already granted to the app, so a bigger heap is a bigger grant rather than a
-  bigger array. That is also why this one stub lives in its own translation unit, and the
-  reasoning is worth following because it is a design *choice* about where a heapless
-  board should hear about it. The stubs file proper is force-linked into every image, so
-  a strong reference to `_kickos_heap_start` from there would resolve-or-fail in every
-  link, heap or no heap. Kept apart, `_sbrk`'s object is pulled only by a real allocator
-  reference, which leaves the diagnosis to the linker script: a script that defines
-  neither bound turns an allocating app into a **link** error on an undefined
-  `_kickos_heap_start`, and a script that defines an empty span lets the same app link
-  and take a NULL from `malloc` at run time. The chip scripts in this tree all take the
-  second option: on a Cortex-M chip with no MPU, the shared body
-  (`../../arch/arm/common/cortexm.ld.h`) keeps a `.userheap` section even at zero length,
-  for no other reason than to define the two symbols. Either answer is defensible; what the
-  separate translation unit buys is that the board gets to pick one, rather than having
-  the link error forced on every image or made unreachable for all of them.
-- **The locks: one recursive lock per address space.** newlib brackets every arena
-  mutation with `__malloc_lock`/`__malloc_unlock`, and every stream operation with that
-  `FILE`'s lock. Built with retargetable locking, newlib routes all of them through a few
-  `__retarget_lock_*` hooks, and `user/src/newlib_lock.cc` defines those hooks: every
-  static lock and every `FILE` lock is ONE recursive lock over a kernel mutex, one per
-  address space, so nesting two of them is recursion on one. The owner and the depth live
-  in the address space the lock guards, so only the outermost acquire and release reach
-  the kernel. The trade is worth seeing. One lock is coarse: two threads printing to
-  different streams take turns. But libc can never deadlock on its own lock order, and a
-  `FILE` costs no kernel object. The trap it closes is a silent one: newlib's default
-  hooks are no-ops, and an image that linked them would let two allocating threads
-  corrupt the arena with no error at all. So the tree refuses to compile against a newlib
-  without retargetable locking, and forces its own lock object into every link. The exact
-  contract is `libc-lock-one-per-address-space` in `../reference/invariants.md`.
+- **`_write` reaches the console.** It ignores `fd`, since KickOS has no file
+  descriptor namespace, and hands the bytes to `kickos::stdout_write`
+  (`user/include/kickos/sys/emit.h`): a send to the console driver where one
+  serves stdout, the kernel's debug console (`kos_kconsole_write`) otherwise.
+  `../reference/console.md` has the exact routing.
+- **`_sbrk` grows a linker-bounded heap.** The chip linker script defines
+  `_kickos_heap_start` and `_kickos_heap_limit`; `_sbrk` advances within that
+  span and fails at the limit. `malloc` can reuse freed blocks inside the arena,
+  but does not return the arena to the OS. On a protected chip, the heap occupies
+  unused space in the app's granted data window (Chapter 7.3).
+- **`_sbrk` is linked only when needed.** The main stubs file is force-linked;
+  keeping `_sbrk` separate means a heapless app need not resolve heap bounds.
+  An allocating app on a board with no bound symbols gets a link error. Current
+  chip scripts instead define a span, even if empty, so allocation can fail at
+  runtime. The nRF51 script uses a zero-length `.userheap` for this purpose.
+- **Every libc lock is one recursive lock per address space.** A recursive lock
+  is a lock its holder may take again; an address space is a task's protected
+  memory (Chapter 0.2). newlib's retargetable locks (`__retarget_lock_*`, in
+  `user/src/newlib_lock.cc`) all map to one kernel mutex the kernel seats in
+  every thread's capability table at `KOS_CAP_LIBC_LOCK`. The owner and the
+  depth live in the address space's own memory, so taking a lock the thread
+  already holds costs no syscall, and nesting two libc locks is recursion on the
+  one. Threads of one address space share one heap and one `stdout`, so two of
+  them can `malloc` or `printf` at once safely.
+  The exact contract is `libc-lock-one-per-address-space` in
+  `../reference/invariants.md`.
 
-The rest (`_read` returns 0, `_close`/`_kill` return `-1`, `_isatty` returns 1) are
-honest stubs for a system with no filesystem: enough for the library to be *coherent*,
-not enough to pretend files exist. The sim never compiles this file -- host glibc
-already owns these symbols.
+Other stubs reflect the lack of a filesystem: `_read` returns 0,
+`_close`/`_kill` return `-1`, and `_isatty` returns 1. The sim, KickOS built as
+a Linux program, uses host glibc instead of these stubs.
 
-## Why "newlib" is the through-line of the cross-compiled fleet
+## Why the cross-compiled fleet uses newlib
 
-A board that cross-compiles its userspace against a **pinned vendor toolchain** needs a libc
-compatible with that toolchain's C++ runtime. These toolchains use newlib: Arm GNU Toolchain
-(ARM), RISCStar (RISC-V), GNURX (RX) and Espressif (Xtensa), each pinned in exactly one place
-([`../reference/porting.md`](../reference/porting.md)). That is not a coincidence to shrug
-at: it is what keeps the seam *singular* across that set. Because every one of those
-toolchains use newlib, the bottom edge above is the **same set of symbols on every one
-of those arches**, so a single `newlib_stubs.cc` serves them with no per-toolchain libc
-variant to maintain. KickOS builds newlib from pinned source for each target multilib and
-checks its configuration headers against the toolchain's copy, so its `libstdc++` sees the
-types and declarations it was built against (the point of the NuttX section below). One
-seam, many chips: the uniform-fleet thesis applied to the libc.
+Every cross build takes its compiler from the KickOS toolchain (Chapter 0.5),
+and that toolchain carries newlib, built from the same pinned sources for every
+family and multilib. One symbol interface therefore lets one `newlib_stubs.cc`
+serve the whole cross-compiled fleet. At configure time,
+`cmake/cross_newlib.cmake` checks that the newlib the compiler flags select
+matches what the board asks for: its reentrancy, and the full or the smaller
+"nano" build.
 
-**The through-line depends on the toolchains using newlib, so read the claim at that
-width.** Two postures sit outside it, and each is a different answer to the same
-question rather than an exception to be patched. The hosted **sim** links the host's own
-libc, which already owns every symbol in the table above, so the porting seam is not
-compiled there at all. And a board whose toolchain builds a freestanding image against **no
-C library** has no newlib to stub, no `struct _reent` to seat and no `_sbrk` to serve: the
-seam is an ABSENCE, and what such a posture must supply instead is only what KickOS's own
-userspace layer calls by a C-library name. Both are why the reentrancy machinery is
-selected by a knob of its own rather than read off the arch: two postures reach zero for
-opposite reasons, one because the libc owns its state and one because there is no libc.
-Which board sits where is the Reference's to state
-([`../reference/boards.md`](../reference/boards.md)); what the Book claims is only that the
-seam's shape follows the toolchain.
+The hosted **sim** uses the host libc and does not compile the stubs. A
+freestanding target with **no C library** has no newlib seam to fill. These
+postures explain why reentrancy support is selected separately from the
+architecture. Board-specific choices live in
+[`../reference/boards.md`](../reference/boards.md).
 
 ## The C++ runtime is three stacked libraries
 
-A C++ program that throws, allocates, and uses the STL does not link against one "C++
-library." It links against **three**, bottom to top, each depending only on the ones
-below it:
+A full C++ program draws on three runtime layers:
 
-1. **libgcc -- the unwinder and compiler runtime.** The bottom layer, and it is
-   *libc-independent*. It provides the stack unwinder (`_Unwind_RaiseException`,
-   `_Unwind_Resume`, the `_Unwind_*` family) that walks frames when an exception
-   propagates, plus the frame-description-entry (FDE) machinery that says how to unwind
-   each frame, plus integer/float helpers the compiler emits calls to. It knows nothing
-   about `std::` or even about C++ types -- it is the mechanism, not the policy.
-2. **libsupc++ -- the C++ ABI support layer.** The `__cxa_*` runtime that the *language*
-   compiles down to: `__cxa_throw`, `__cxa_begin_catch`, `__cxa_allocate_exception`,
-   the `eh_globals` (per-context in-flight-exception state), the **emergency pool** that
-   lets `throw std::bad_alloc` work when the heap is exhausted, `__new_handler`, and the
-   default `operator new`/`operator delete`. It sits on libgcc's unwinder and turns raw
-   frame-walking into typed C++ exception semantics (matching a `catch` to a thrown
-   type, running destructors on the way out) and RTTI (`typeid`, `dynamic_cast`).
-3. **libstdc++ -- the standard library.** The part you actually `#include`: containers,
-   `<algorithm>`, iostreams, `std::string`, locale. It is built *on top of* libsupc++
-   (it throws, so it needs the ABI layer) and the C library (it allocates and does
-   I/O). This is the biggest layer and the one whose optional pieces -- locale in
-   particular -- cost the most code.
+1. **libgcc:** compiler helpers and the unwinder, the code that walks the stack
+   frames (Chapter 0.1, *[The stack and a call](the-machine-underneath.md#the-stack-and-a-call)*)
+   back to a matching `catch` during an exception. It provides mechanism, not
+   C++ types or `std::` facilities.
+2. **libsupc++:** C++ ABI support for throwing, catching, RTTI (run-time type
+   information, the type descriptions `typeid` and `dynamic_cast` read),
+   `operator new`, and emergency exception storage. It uses libgcc's unwinder.
+3. **libstdc++:** containers, strings, algorithms, streams, and locale. It uses
+   libsupc++ and the C library for allocation and I/O.
 
-The dependency direction is strict and worth holding: **libstdc++ -> libsupc++ ->
-libgcc -> libc**. Exceptions are a *libgcc + libsupc++* feature; the STL is
-libstdc++; RTTI is libsupc++. You can have the bottom layers without the top (that is
-freestanding C++, next), but never the reverse.
+The standard library sits above ABI support and compiler runtime. Exceptions
+need libgcc and libsupc++; containers and streams need libstdc++.
 
-## Freestanding C++ vs full C++ -- and what full costs
+## Freestanding and full C++
 
-C++ has the same freestanding/hosted split as C, and KickOS uses it as the axis of a
-deliberate cost decision.
+KickOS uses different C++ runtime levels for the kernel and applications:
 
-- **The kernel and the libraries are freestanding C++, at zero overhead.** They compile
-  `-fno-exceptions -fno-rtti` and link `-nostdlib++` (the exact set is
-  `KICKOS_FREESTANDING_CXX_FLAGS` in `cmake/kickos.cmake`:
-  `-fno-exceptions -fno-rtti -fno-threadsafe-statics -fno-use-cxa-atexit`). You get
-  classes, templates, RAII, constexpr -- the whole *language* minus the two features
-  that need a runtime. No `.eh_frame`, no unwind tables, no libsupc++, no libstdc++.
-  The freestanding subset of the headers (`<type_traits>`, `<utility>`, `<array>`, ...)
-  is still available because it needs no runtime.
-- **An app is full C++, and it is not free.** An app compiles its C++ TUs
-  `-fexceptions -frtti` and *drops* the `-nostdlib++`, so the toolchain's
-  own `libstdc++`/`libsupc++` join the link. Now you have exceptions, RTTI, and the STL
-  -- and you pay for them: the EH/unwind tables (`.eh_frame` and `.gcc_except_table` on
-  DWARF arches, `.ARM.exidx`/`.ARM.extab` on ARM) run **~10-15 KiB** of read-only data,
-  plus the libsupc++/libstdc++ code, plus locale if something (`std::stringstream`,
-  `std::to_string`) drags it in. That cost is libc-independent -- it is the price of the
-  feature, not of a brand.
+- **The kernel and its libraries use freestanding C++.** They compile with
+  `-fno-exceptions -fno-rtti -fno-threadsafe-statics -fno-use-cxa-atexit` and
+  link with `-nostdlib++`. Classes, templates, RAII (a destructor releasing what
+  its constructor acquired), and runtime-free headers remain available;
+  exceptions, RTTI, and the standard library runtime do not.
+  See `KICKOS_FREESTANDING_CXX_FLAGS` in `cmake/kickos.cmake`.
+- **Applications can use full C++.** They enable exceptions and RTTI and link
+  the toolchain's `libsupc++` and `libstdc++`. Exception tables can add roughly
+  10-15 KiB of read-only data, plus runtime code and optional facilities such as
+  locale. Chapter 7.3 measures the memory cost.
 
-The plumbing is the one target an app links: `KickOS::kernel`, full C++ (`-fexceptions
--frtti`, `libstdc++`/`libsupc++` kept) on every board, with no init in its link; the app
-also links a system target that carries the init. The kernel and
-libs are clamped freestanding directly via `kickos_apply_freestanding()` and are never
-consumers.
+An app links `KickOS::kernel` and a system target that supplies startup. The
+kernel and its libraries are compiled freestanding by
+`kickos_apply_freestanding()`; the app uses the full C++ settings.
 
-## The cross-libc trap: never host toolchain C++ on your own libc
+## Match the C++ runtime to its C library
 
-Here is the mistake this layering is built to avoid. It is tempting to write your *own* small
-libc (KickOS has one, for its own freestanding code) and then link the *toolchain's*
-`libstdc++` on top of it -- one libc to maintain, full C++ for free. It does not work,
-and the reason is instructive.
+The toolchain's `libstdc++` must be paired with a compatible C library. Linking
+it over KickOS's small freestanding libc risks ABI and header mismatches.
 
-The toolchain's `libstdc++` was **compiled against the toolchain's newlib headers and ABI**.
-Its headers and the libc's headers agree on subtle shared types and declarations --
-`div_t`/`ldiv_t`, what `std::abs` in `<cmath>` resolves to, the locale facets, the
-`_impure_ptr` reent that `vterminate` reaches for. Host that pre-built `libstdc++` over
-a *different* libc whose headers disagree even slightly, and you get a steady stream of
-**header/type/namespace ABI mismatches** -- `<cstdlib>` fighting your `<stdlib.h>` over
-`div_t`, `<cmath>` failing to find the C math it expects. NuttX ships its own
-deliberately-non-newlib libc and offers `CONFIG_LIBCXXTOOLCHAIN` for the toolchain
-runtime; that configuration is where the mismatch class shows up, which is how it is
-documented. (This is the "Toolchain-libc lesson from NuttX" in
-`../reference/architecture.md`.)
+`libstdc++` is compiled against one C library's headers and ABI. A different
+libc may define shared types or functions differently: `<cstdlib>`
+can disagree with `<stdlib.h>` over `div_t`, and `<cmath>` can miss expected C
+math declarations. The NuttX experience is recorded under "Toolchain-libc
+lesson from NuttX" in `../reference/architecture.md`.
 
-**KickOS's rule: never put toolchain C++ on our own libc.** A full-C++ app links
-`libstdc++`/`libsupc++` over a **compatible newlib**, rebuilt for the board's multilib from
-pinned source and checked against the toolchain's headers. That keeps the C++ and C layouts
-aligned without a cross-libc shim. Our own freestanding libc is kept newlib-*family*-compatible for a
-different reason -- so the sim can ride host `libstdc++` cleanly -- but it never hosts
-the toolchain C++ runtime.
+Full-C++ apps therefore link `libstdc++` and `libsupc++` over the newlib they
+were compiled against, the one in the same KickOS toolchain, for the board's
+multilib. KickOS's freestanding libc does not host that runtime.
 
-### The boundary discipline, and how it fails safe
+Where an exception thrown in app code may travel, and the smaller terminate
+handler KickOS supplies, are in Chapter 7.2,
+[*Exceptions and RTTI under memory protection*](exceptions-and-rtti-under-memory-protection.md).
 
-Mixing `-fexceptions` app code with `-fno-exceptions` kernel/lib/arch code is sound not
-by luck but by *how it fails*. Only the app is `-fexceptions`; everything below has no
-unwind tables at all. The only kernel-to-app entries are the app `main` and the thread
-trampoline, and the IRQ model is a wait on a notification (no kernel-invoked app callbacks), so
-there is no throw path threading back through an ISR. When an exception *escapes* an app
-entry -- an uncaught throw, a `bad_alloc`, a throwing global constructor -- it reaches a
-frame with **no FDE / no `.exidx` entry**. Both the DWARF and the ARM-EHABI unwinders
-fail in *phase 1* (the search phase), **before any frame is popped**, so `__cxa_throw`
-goes straight to `std::terminate -> abort -> kos_exit` with no half-unwound kernel state
-left behind. Consequences an app author must know: catch your own exceptions; an escape
-from a worker thread terminates the *whole image*, not just the thread; static
-destructors and `atexit` do not run on the normal return path.
+## Global constructors and boot order
 
-### The terminate handler: what an uncaught throw drags in, and trimming it
-
-When an uncaught exception reaches `std::terminate`, libstdc++'s *default* terminate
-handler is `__gnu_cxx::__verbose_terminate_handler` -- and it tries to be helpful in a
-way that only makes sense on a hosted system: it **demangles** the exception's type name
-and prints it, along with `what()`, before aborting. That politeness is expensive on a
-freestanding target. Pulling in that one handler drags in `__cxa_demangle` -- a full
-Itanium-ABI name demangler -- and, through it, newlib's floating-point `printf`/`dtoa`:
-tens of kilobytes of code the embedded image never calls for any purpose other than
-pretty-printing the message of a crash it is about to `abort` on. A microcontroller has a
-debugger on the fault, or it has nothing; either way it has no reader for that line.
-
-The lever that removes it is a property of **how a linker pulls objects out of an
-archive**: a member is extracted only to satisfy a symbol that is otherwise *undefined*.
-`__verbose_terminate_handler` lives in its own object (`vterminate.o`) inside
-`libstdc++.a`. If the program already provides a **strong definition** of that symbol,
-the reference is satisfied before the archive is even scanned, the member is never
-extracted, and the demangler + float-`dtoa` it would have pulled in never enter the link.
-So a freestanding runtime supplies its own **lean** handler -- print the *mangled* type
-name and `what()`, then `abort` -- and reclaims the whole demangler/`dtoa` tail. Exceptions
-still throw and catch exactly as before; only the message printed on an *uncaught* abort
-changes, from a demangled type name to a mangled one. On the tightest parts that reclaimed
-tail is the difference between a full-EH+RTTI+STL image fitting in flash and not. It is the
-same principle as the freestanding/full split that opened this section, applied one symbol
-at a time: pay only for the runtime you actually use, and a demangled abort message is a
-line item a headless system can decline.
-
-## When the runtime starts: global constructors and boot order
-
-The C++ runtime does not only sit *on* the OS -- it assumes the OS is already *running*
-when it starts. Global constructors (the functions the compiler collects in
-`.init_array`) run before `main`, and the language guarantees they run in a live world:
-on a hosted system the C runtime start-up brings libc up first, then walks `.init_array`,
-then calls `main`. Static initialization never sees a half-built environment.
-
-A freestanding OS gets no such guarantee for free -- it has to *reconstruct* that
-ordering by hand, and KickOS learned it the hard way. Its reset path ran `.init_array`
-straight out of `Reset_Handler`, *before* `kmain` brought up `arch_init`, the clock,
-and the scheduler. That is harmless for a constructor that only touches memory, and a
-trap for one that touches the OS. KickCAT has exactly such a constructor:
+Global constructors run before `main`. On a hosted system, startup initializes
+the C runtime first. The linker collects the addresses of every global
+constructor into one table, the `.init_array` section, which startup walks.
+KickOS must arrange that order itself: it once ran every `.init_array`
+constructor from `Reset_Handler`, before the clock and scheduler were ready.
+KickCAT, KickOS's sibling EtherCAT (industrial Ethernet) stack (Chapter 1), had a constructor that
+called the clock:
 
 ```
 static nanoseconds start_time = now();
 ```
 
-`now()` bottoms out in a KickOS clock syscall (`kos_clock_now`, an `SVC`). The syscall
-floor bound-checks its out-pointer against the *current thread* (the confused-deputy
-floor) -- but at static-init time, at boot, there is no current thread yet. The result
-was a fault *before* `main`, before even the banner printed: silent, and baffling until
-you see that a library global ran an OS call before the OS existed.
+`now()` calls `kos_clock_now`, whose pointer check needs a current thread. At
+that point in boot there was none, so the constructor faulted before `main`.
 
-The fix is to **split `.init_array`** so the runtime starts in the order the language
-expects. Kernel/arch/chip/lib constructors -- the ones `kmain` itself needs -- stay in
-`.init_array` and run early from `Reset_Handler`. *Every other* constructor (the app's,
-libstdc++/libsupc++'s, KickCAT's) is routed by the linker into a separate
-`.kickos_app_init_array` section and run later from `root_entry` -- the kernel's first
-thread, with the scheduler and clock fully live -- just before `kickos_app_main`. That
-restores the normal C++ contract: runtime up, then static init, then `main`. Every
-target's linker script carries the split, and the bounds `root_entry` walks are a *strong*
-reference: every target has to state its window, so a chip whose script forgot to
-partition `.init_array` fails to link instead of quietly skipping the walk. The sim host
--- whose own runtime already sequences `.init_array` before `main` -- states an
-explicitly empty one, which the walk steps over in zero iterations. See
-`../../kernel/init/kmain.cc` (`root_entry`), `../../arch/sim/start.cc`,
+KickOS therefore splits `.init_array`. Kernel, arch, chip, and library constructors
+needed by `kmain` run early. App and toolchain-runtime constructors go into
+`.kickos_app_init_array` and run from `kickos_root_entry`, the entry of the root
+thread, the first unprivileged thread (Chapter 0.5), after the clock and
+scheduler start and before `kickos_app_main`. A strong reference to the section
+bounds makes a missing linker-script definition a link error. The sim defines
+an empty app array because its host runtime already runs constructors. See
+`../../user/src/root_entry.cc` (`kickos_root_entry`), `../../arch/sim/start.cc`,
 `../../user/include/kickos/app.h`, and the `.init_array` / `.kickos_app_init_array` split
 in `KICKOS_CORTEXM_CTORS`, the body every Cortex-M chip script shares
 (`../../arch/arm/common/cortexm.ld.h`).
 
-This is the exact mirror of the bottom-edge story this chapter opened with. There, the
-runtime needs the OS *underneath* it -- `malloc` needs `_sbrk`, `printf` needs `_write`.
-Here, the OS must *sequence* the runtime above it: a freestanding kernel has to stand its
-own syscalls, clock, and thread context up before it runs the library and app
-constructors that may call into them. Get the bottom edge wrong and the library cannot
-reach the OS; get the boot order wrong and the OS is not there yet when the library
-reaches for it.
+The ordering matters for the same reason as the libc stubs: constructors may
+call OS services, so those services must exist before the constructors run.
 
-## The MPU twist: the runtime's writable state must be granted
+## The f411 example: what printf pulls in
 
-Under per-task MPU isolation (Chapter 7), one extra fact matters: the C++ runtime's
-**writable state must land in a region the isolated thread was granted**, while its
-read-only tables come along for free. An unprivileged thread running the full runtime --
-exceptions, RTTI, the STL all live -- reaches all of it only because every writable
-runtime global was placed inside one of its granted regions; an app
-runs out of its own granted regions with the protection unit enforcing on
-every access.
+The f411 example's `main` is one call, `printf("hello\n")`. (A compiler may
+rewrite a constant format ending in a newline as `puts("hello")`; the path from
+the stream down is the same.) Linked with `KickOS::kernel` for `f411disco`, the
+call draws on the pieces above in this order:
 
-- **Writable, must be in the granted data region:** the libc heap arena, the
-  newlib malloc bins and reent (`_impure_*`), libgcc's FDE registry list heads, and
-  libsupc++'s `eh_globals` + emergency pool. If any of these land kernel-side, the
-  unprivileged thread faults the first time the runtime touches them.
-- **Read-only, rides the code region for free:** the EH tables (`.eh_frame` /
-  `.gcc_except_table`, or `.ARM.exidx` / `.ARM.extab`), RTTI `type_info` and vtables
-  (`.rodata`), and landing pads (`.text`). All of these already sit inside the per-app
-  code region that is granted read+execute, so unwinding *reads* them with no extra
-  region. The full EH+RTTI+heap footprint costs **zero additional MPU regions**.
+1. **newlib's `printf`.** It finds the running thread's reentrancy structure
+   through `_REENT` and formats into `stdout` with `_vfprintf_r`. Formatting is
+   a self-contained operation; the steps below need the OS. The first use of
+   `stdout` runs `__sinit`, which sets up the three standard streams.
+2. **The reentrancy structure.** On a single-core Cortex-M such as the
+   STM32F411, newlib reaches it through one word, `_impure_ptr`. KickOS keeps
+   one `struct _reent` per thread slot (`s_reent` in
+   `../../user/src/newlib_reent.cc`) and describes them to the kernel through
+   `kickos_reent_seam`. The kernel rewrites `_impure_ptr` at every context
+   switch, so each thread has its own `errno`.
+   `../../kernel/include/kickos/reent.h` states the seam.
+3. **A buffer, so a heap.** Before the first write, newlib asks what the stream
+   is. `_fstat` answers a character device and `_isatty` answers yes, so newlib
+   makes `stdout` line-buffered and `malloc`s a 1 KiB buffer for it: `malloc`
+   calls `_sbrk`, which carves the span between `_kickos_heap_start` and
+   `_kickos_heap_limit`. A program that never calls `malloc` still links the
+   allocator through `printf`. If `malloc` fails, newlib leaves `stdout`
+   unbuffered and writes one byte at a time.
+4. **Locks.** `malloc` brackets the heap and `printf` brackets the stream, both
+   with the address space's libc lock. The first take is one `kos_mutex_lock`
+   syscall on a free mutex; the nested takes that follow inside the same call
+   are counted in the app's memory and cost no syscall.
+5. **The newline flushes.** `stdout` is line-buffered, so the `\n` makes newlib
+   flush the line in one call, `_write(1, "hello\n", 6)`.
+6. **The syscall seam.** `_write` hands the six bytes to
+   `kickos::stdout_write`. The example's composition says `stdout: kernel`
+   (`../../boards/f411disco/composition.yaml`): no console driver serves stdout,
+   so the bytes go to the kernel console through `kos_kconsole_write`, a trap.
+   Chapter 0.2 follows them from there to the USART2 data register.
 
-How that split is *expressed* is one shared linker body, `KICKOS_CORTEXM_DATA` in
-`../../arch/arm/common/cortexm.ld.h`, which every Cortex-M chip script includes, and it
-carries a gotcha worth the ink. The scheme is **inverted and fail-safe**: the
-closed KickOS-owned archive set (`libkickos_{kernel,arch,chip,lib}.a`) is captured
-*first* into the kernel's `.data`/`.bss`; the `.appdata`/`.appbss` catch-alls that follow
-take *everything else* -- the app's own objects, the toolchain runtime (newlib, libgcc,
-libstdc++, libsupc++), and KickCAT. An unmatched archive therefore lands app-side
-(reachable, it works), never kernel-side (where it would fault). The app-granted
-`.appdata` window ends up holding exactly the runtime's writable state -- the heap,
-newlib's `_impure_ptr`/`__malloc_av_`, and libsupc++'s `eh_globals` + emergency pool --
-while the read-only EH tables (`.ARM.exidx`/`.ARM.extab`), `type_info`, and vtables ride
-flash. Isolation is checkable with `nm`: no kernel writable symbol may sit inside the app
-window. The gotcha: `EXCLUDE_FILE` looks like the natural tool for the split, but **this
-binutils (arm-none-eabi 15.3) does not match archive members inside `EXCLUDE_FILE`** -- a
-bare `*libkickos_kernel.a` there matches nothing. The mechanism that *does* work is
-colon-inclusion, `*libkickos_kernel.a:*(...)`, which selects members by archive; so
-"exclude the kernel from the app window" becomes "include the kernel first, let the
-rest fall through." Same isolation, opposite selector.
+A C++ version, `std::cout << "hello\n"`, adds the layers above newlib.
+libstdc++ supplies `std::cout`; synchronised with C stdio by default, it writes
+through newlib's `stdout`, so steps 3 to 6 do not change. Before `main`,
+`kickos_root_entry` runs libstdc++'s constructor for the standard streams and
+libsupc++'s emergency exception pool, whose constructor takes its buffer from
+the same heap. Exceptions and RTTI bring their tables, the unwinder, and the
+terminate handler (Chapter 7.2).
 
-Two arch wrinkles worth naming:
+## Under memory protection
 
-- **DWARF vs ARM-EHABI FDE registration.** On the DWARF arches the `.eh_frame`
-  table must be *registered* at runtime via `__register_frame` -- KickOS does it first
-  thing on the root thread, whose thread pointer already names its libc state, so the
-  registry node lands in the granted heap. That is the RISC-V story, and it is the story any other
-  DWARF-unwinding arch would take; RX is not a case of it at all, because the GNURX
-  toolchain unwinds by setjmp/longjmp and has no `.eh_frame` to register
-  (Chapter 7.2 has all three models side by side). ARM-EHABI needs **no
-  runtime registration at all**:
-  `.ARM.exidx` is found through linker-defined symbols, sidestepping the whole issue --
-  the K64F proof leaned on exactly this, with no `__register_frame` in the picture.
-- **The RISC-V `gp` wrinkle.** RISC-V's small-data optimization addresses globals relative
-  to the `gp` register, and the flag used to route app globals out of the kernel-side `gp`
-  window (`-msmall-data-limit=0`) *breaks* DWARF unwinding on a `-fexceptions` TU. The fix
-  is to stop fighting `gp` and move it: anchor `__global_pointer$` inside the granted data
-  region so small-data lands in-region and unwinding keeps working. This is RISC-V-only;
-  ARM and RX have no `gp` small-data model. The full account is the companion chapter
-  [*Exceptions and RTTI under memory protection*](exceptions-and-rtti-under-memory-protection.md);
-  the porting contract is `../reference/porting.md` (RISC-V arch, `gp` anchor).
+When the MPU confines each app thread, an unprivileged thread must reach every
+piece above: the heap, the reentrancy structures and the unwinder's state through
+its data grant, the tables through its code grant. Chapter 7.2,
+[*Exceptions and RTTI under memory protection*](exceptions-and-rtti-under-memory-protection.md),
+explains what the runtime touches and how each exception model reaches it.
+Chapter 7.3,
+[*Where your RAM goes*](where-your-ram-goes-full-cxx-memory-floor-and-the-linker-split.md),
+shows how the linker script places each byte and where the heap span comes from.
 
 ## Where to go next
 
-- The authoritative in-repo contract: `../reference/architecture.md` -- the "C++ decisions",
-  "Memory domains", and "Toolchain-libc lesson from NuttX" sections.
-- Full C++ under memory protection, in depth: the companion chapters
-  [*Exceptions and RTTI under memory protection*](exceptions-and-rtti-under-memory-protection.md)
-  and [*Where your RAM goes*](where-your-ram-goes-full-cxx-memory-floor-and-the-linker-split.md).
-- The libc strategy and the newlib seam: `../reference/architecture.md` ("C++ decisions").
-- The actual bottom-edge stubs: `../../user/src/newlib_stubs.cc`.
-- Memory protection, which decides where the runtime's writable state must live:
-  Chapter 7, *Memory protection*.
+- `../reference/architecture.md` states the C++ and memory-domain contracts.
+- `../reference/console.md` states where `_write`'s bytes go.
+- [*Exceptions and RTTI under memory protection*](exceptions-and-rtti-under-memory-protection.md)
+  and [*Where your RAM goes*](where-your-ram-goes-full-cxx-memory-floor-and-the-linker-split.md)
+  place the runtime under memory protection and measure its memory cost.
+- [*Power-on*](../journey/01-power-on.md) in the Journey runs the app
+  constructors on the root thread in a debugger.
+- `../../user/src/newlib_stubs.cc` contains the libc stubs.
