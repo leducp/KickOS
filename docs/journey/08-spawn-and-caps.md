@@ -577,6 +577,7 @@ check that can be done up front has passed, so a refused spawn leaves nothing be
    how the init, which narrowed `WAIT` away in Stop 4, still starts a server on its endpoint.
    Each grant lands at child slot `KOS_SPAWN_DELEGATED_CAP0 + i` unless the caller names a
    slot, and two grants may not land on the same slot.
+
 4. **The task.** A named task must resolve, must have been created by the spawner
    (`task_created_by`), and must not have ended. With no task named, the child joins the
    spawner's own task, unless it brings a memory grant, in which case the spawn builds a task
