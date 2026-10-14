@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
 site_name: KickOS
 docs_dir: docs
 site_dir: build/docs-site
@@ -83,13 +86,13 @@ nav:
       - "18. A real system: an SPI bus service and its client": journey/18-a-real-system.md
   - The Reference:
       - reference/README.md
-      - "KickOS -- Architecture": reference/architecture.md
+      - "KickOS architecture": reference/architecture.md
       - "The bench chain": reference/bench.md
       - "KickOS board support": reference/boards.md
       - "The SPI / I2C bus-service contract": reference/bus-service.md
       - "The kernel console": reference/console.md
       - "KickOS invariants": reference/invariants.md
-      - "Synchronous call/reply IPC -- the reply capability": reference/ipc-call-reply.md
+      - "Synchronous call/reply IPC: the reply capability": reference/ipc-call-reply.md
       - "KickOS porting guide": reference/porting.md
       - "House style": reference/style.md
       - "KickOS telemetry / kernel-observability": reference/telemetry.md

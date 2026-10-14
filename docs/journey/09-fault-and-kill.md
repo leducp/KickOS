@@ -422,6 +422,7 @@ the kernel block top, inside `g_kstacks`, the array of per-thread kernel stacks.
   (139), and raises the task's watch if anyone set one (Stop 9). Then, if the task has other
   members, `task_cancel_group` slays every one of them. A faulting thread takes the rest of
   its task with it. `faulter` is alone in its task, so nobody else is cancelled here.
+
 - `c->mpu.drop_devices()`: give back any device window the thread held, so a supervisor that
   restarts a driver can claim the device again.
 - `task_release`: the thread leaves its task. It is counted as **sweeping** until its

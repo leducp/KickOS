@@ -189,8 +189,9 @@ Rebooting into the bootloader replaces the firmware itself. None of these names
 an object a capability could point to, so each is a bit in the authority word,
 and the kernel asks one question: does the caller hold the bit?
 
-`KOS_AUTH_SYSTEM` is the clearest case. It gates `kos_shutdown` and `kos_reboot`,
-the request to restart into the chip's firmware-download mode. Chapter 8.6,
+`KOS_AUTH_SYSTEM` is the clearest case. It gates `kos_shutdown`, which can halt
+the system, reset the chip, or restart it into its firmware-download mode; that
+last outcome also asks for `KOS_AUTH_BOOTLOADER`. Chapter 8.6,
 *[Rebooting into the bootloader, and who may
 ask](rebooting-into-the-bootloader-and-who-may-ask.md)*, separates the acts
 hiding in "reboot", explains why an act keyed to no resource needs an explicit
