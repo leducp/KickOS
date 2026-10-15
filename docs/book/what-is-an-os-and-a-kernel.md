@@ -81,7 +81,7 @@ The problem above spoke of "activities". An OS needs two sharper words for them.
 A **thread** is one flow of instructions that the kernel can stop and later resume.
 It has its own context, the registers of Chapter 0.1 (PC, SP, the general-purpose
 registers, the flags, the privilege bit), and its own stack, for the reason
-Chapter 0.1's [*The stack and a call*](the-machine-underneath.md#the-stack-and-a-call)
+Chapter 0.1's [*A call and the stack*](the-machine-underneath.md#a-call-and-the-stack)
 gives. To stop a thread, the kernel saves its context to memory; to resume it, the
 kernel loads that context back into the core. Moving the core from one thread to
 another this way is a **context switch** (Chapter 3.5). The thread cannot tell it

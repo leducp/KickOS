@@ -104,7 +104,7 @@ architecture. Board-specific choices live in
 A full C++ program draws on three runtime layers:
 
 1. **libgcc:** compiler helpers and the unwinder, the code that walks the stack
-   frames (Chapter 0.1, *[The stack and a call](the-machine-underneath.md#the-stack-and-a-call)*)
+   frames (Chapter 0.1, *[A call and the stack](the-machine-underneath.md#a-call-and-the-stack)*)
    back to a matching `catch` during an exception. It provides mechanism, not
    C++ types or `std::` facilities.
 2. **libsupc++:** C++ ABI support for throwing, catching, RTTI (run-time type
