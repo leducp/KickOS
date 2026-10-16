@@ -533,6 +533,11 @@ int kos_periph_enable(uintptr_t base)
     return static_cast<int>(arch_syscall(KOS_SYS_PERIPH_ENABLE, base, 0, 0, 0));
 }
 
+int kos_periph_disable(uintptr_t base)
+{
+    return static_cast<int>(arch_syscall(KOS_SYS_PERIPH_DISABLE, base, 0, 0, 0));
+}
+
 int kos_periph_reg_write(uintptr_t base, uintptr_t offset, uint32_t value)
 {
     return static_cast<int>(arch_syscall(KOS_SYS_PERIPH_REG_WRITE, base, offset,

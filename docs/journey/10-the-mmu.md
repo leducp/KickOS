@@ -76,13 +76,14 @@ The addresses in the outputs below come from one build. Yours may differ by a fe
 shapes will not.
 
 One helper makes the page-table stops readable. Paste it into gdb (or a file you `source`). It
-walks the CURRENT user root, the one in `TTBR0_EL1`, for one virtual address. It assumes the
-root is a task's own, which holds only tables and 4 KiB pages:
+walks the CURRENT user root for one virtual address. It reads the root from this core's
+`user_ttbr0` cell, not from `TTBR0_EL1`: inside a trap on this core the register holds the
+empty root (Stop 7). It assumes the root is a task's own, which holds only tables and 4 KiB pages:
 
 ```
 define uwalk
   set $kva = 0xffffff8000000000
-  set $tbl = ($TTBR0_EL1 & 0x0000FFFFFFFFF000) + $kva
+  set $tbl = (kickos_armv8a_percpu[0].user_ttbr0 & 0x0000FFFFFFFFF000) + $kva
   set $va = (unsigned long long)$arg0
   set $lvl = 1
   set $shift = 30
@@ -259,7 +260,7 @@ lacks the 4 KiB granule or cannot output as many physical address bits as `TCR` 
 `continue`, `info registers sp VBAR_EL1`. You should see:
 
 ```
-pc             0xffffff8040019788  0xffffff8040019788 <kickos_arm64_boot_high>
+pc             0xffffff8040019a18  0xffffff8040019a18 <kickos_arm64_boot_high>
 sp             0x44000000          0x44000000
 SCTLR_EL1      0xc5183d            12916797
 TTBR0_EL1      0x40001000          1073745920
@@ -325,8 +326,9 @@ build `claim_slot` does three things:
    from the kernel is copied in: the kernel lives in TTBR1, so a user root starts empty.
 2. `aspace_image_seed` maps the app's code and data. The app text is mapped read and execute,
    pointing at the frames the loader put it in, so every task shares one physical copy. The app
-   data is mapped read and write. The first space, root's, maps the image's own data frames;
-   every later space gets a private copy.
+   data is mapped read and write. The first space, root's, maps the image's own data frames,
+   after copying them into a pristine image no space ever writes; every later space gets a
+   private copy of that image, never of a running space's data.
 3. Back in `kmain`, `ustack_alloc` takes a run of frames for root's stack and maps all but the
    lowest one. That lowest frame is the **guard page**: it is never mapped, so a store just
    below the stack has no translation and faults.
@@ -339,10 +341,10 @@ address. `arch_aspace_user_offset` answers 0 here. So in the outputs below VA an
 `p/x rights` each time. You should see:
 
 ```
-#1  ... in kickos::(anonymous namespace)::claim_slot (caller=caller@entry=0, ...) at .../kernel/domain/domain.cc:90
+#1  ... in kickos::(anonymous namespace)::claim_slot (err=err@entry=0xffffff8043ffff8c) at .../kernel/domain/domain.cc:85
 #2  ... in kickos::domain_for (...)
 #3  ... in kickos::task_for (...)
-#4  ... in kickos::kmain (argc=argc@entry=0, argv=argv@entry=0x0) at .../kernel/init/kmain.cc:336
+#4  ... in kickos::kmain (argc=argc@entry=0, argv=argv@entry=0x0) at .../kernel/init/kmain.cc:351
 Value returned is $1 = (arch_aspace *) 0xffffff8040325000
 
 arch_aspace_map (space=0xffffff8040325000, va=1074810880, pa=1074810880, pages=15, rights=5, ...)
@@ -455,7 +457,7 @@ seam), [Book: Privilege is three axes](../book/privilege-is-three-axes-not-one-b
 ### Stop 7: installing the space at the first switch
 **Where:** `kernel/sched/sched.cc`, `sched::start`, `switch_book`; `kernel/mem/aspace.cc`,
 `aspace_activate_for`, `seat`; `arch/arm64/armv8a/aspace_armv8a.cc`, `arch_aspace_activate`,
-`write_ttbr0`, `capture_boot`
+`write_ttbr0`
 
 Here is the place where the ONE abstraction is easiest to see. The scheduler installs what the
 incoming thread may touch with two lines, the same two lines on every board:
@@ -483,9 +485,19 @@ the TTBR0 value, root frame plus ASID in bits [63:48], masks interrupts and call
 ```
     void write_ttbr0(uint64_t ttbr)
     {
-        uint64_t const leaving = kickos_armv8a_read_ttbr0_el1();
-        kickos_armv8a_write_ttbr0_el1(ttbr);
-        kickos_armv8a_isb();
+        uint64_t leaving = 0;
+        if (kickos_armv8a_root_deferred())
+        {
+            uint64_t* const cell = kickos_armv8a_user_ttbr0_cell();
+            leaving = *cell;
+            *cell = ttbr;
+        }
+        else
+        {
+            leaving = kickos_armv8a_read_ttbr0_el1();
+            kickos_armv8a_write_ttbr0_el1(ttbr);
+            kickos_armv8a_isb();
+        }
         if (asid_of(leaving) == 0)
         {
             kickos_armv8a_tlbi_all_local();
@@ -496,37 +508,47 @@ the TTBR0 value, root frame plus ASID in bits [63:48], masks interrupts and call
     }
 ```
 
+The A53 takes the first branch. It has no PAN, the ARMv8.1 bit that makes an EL1 access to an EL0
+page fault, so the kernel keeps itself out of user pages another way: EL1 never runs on a task's
+root at all. `write_ttbr0` only records the value in this core's `user_ttbr0` cell; the `eret` to
+EL0 installs it (Stop 8), and every entry from EL0 puts back an empty root (Stop 9). On a core
+with PAN, such as the `qemu-arm64-a710` preset's, the second branch writes the register here.
+
 Why flush only when LEAVING ASID 0? The boot root has ASID 0 and its entries are global (no `nG`
 bit). A global TLB entry matches every ASID, so after a switch away from the boot root its
 entries could still answer for the new space. Switching between two tagged roots needs no flush
-at all: their entries carry different ASIDs and cannot be confused. Switching INTO the boot root
-needs none either, because the task entries left behind are tagged and the boot root's lookups
-use ASID 0.
+at all: their entries carry different ASIDs and cannot be confused. Switching INTO the empty root
+below needs none either: it holds no valid entry, so it leaves nothing in the TLB, and its lookups
+use an ASID no task holds.
 
-`capture_boot` records the boot root on the first activation. The fault reporter and
-`aspace_release` switch back to it later.
+The boot root is left at this first activation and never installed again. Where the kernel needs
+a root that is no task's (`aspace_release`, a thread with no space, the fault reporter),
+`arch_aspace_boot` answers an empty, read-only table instead, whose ASID no task is given.
 
-Why is it safe to write TTBR0 at the decision, here, when the Cortex-M build waits for the
+Why is it safe to choose the root at the decision, here, when the Cortex-M build waits for the
 physical switch? Between `switch_book` and the return to EL0, only EL1 kernel code runs, and the
 kernel runs from TTBR1. It never dereferences a user address through TTBR0 on that path (Stop 10
-shows how it reaches user memory instead). The outgoing thread's own user code cannot run again
-before the switch completes.
+shows how it reaches user memory instead), and on this core it could not: TTBR0 at EL1 is the
+empty root. The outgoing thread's own user code cannot run again before the switch completes.
 
 **Try it:** `break arch_aspace_activate`, `continue`, `bt 6`, `info registers TTBR0_EL1`,
-`finish`, `info registers TTBR0_EL1`. You should see:
+`finish`, `info registers TTBR0_EL1`, `p/x kickos_armv8a_percpu[0].user_ttbr0`. You should see:
 
 ```
-#4  kickos::aspace_activate_for (t=t@entry=0xffffff8040313c50 <kickos::detail::g_instance+8544>) at .../kernel/mem/aspace.cc:1447
-#5  0xffffff8040016040 in kickos::sched::start () at .../kernel/sched/sched.cc:726
+#4  kickos::aspace_activate_for (t=t@entry=0xffffff8040313c58 <kickos::detail::g_instance+8032>) at .../kernel/mem/aspace.cc:1447
+#5  0xffffff80400160e0 in kickos::sched::start () at .../kernel/sched/sched.cc:727
 TTBR0_EL1      0x40001000          1073745920
 ...
-TTBR0_EL1      0x1000040325000     281476053749760
+TTBR0_EL1      0x40001000          1073745920
+$1 = 0x1000040325000
 ```
 
-Before: the boot identity root, ASID 0. After: root's own table `0x40325000`, ASID 1. To see the
-flush rule, run `disassemble '(anonymous namespace)::write_ttbr0(uint64_t)'`, find its
-`tlbi vmalle1`, and put a breakpoint on that instruction's address. On `selftest` it fires only on an
-activation whose previous `TTBR0_EL1` had ASID 0 (`0x40001000`), never between two tasks.
+The register still holds the boot identity root, ASID 0, and the cell holds root's own table
+`0x40325000`, ASID 1. To see the flush rule, run
+`disassemble arch_aspace_activate` (the compiler folds `write_ttbr0` into it), find its `tlbi vmalle1`, and put a
+breakpoint on that instruction's address. On `selftest` it never fires: the cell starts out
+holding the empty root, no task there runs untagged, and the boot root's global entries are
+dropped once, by `arch_start`, when the core first leaves it.
 
 **Why, and the contract:** [Book: Protection follows the CPU](../book/protection-follows-the-cpu-not-the-schedulers-intent.md),
 [Reference: invariants.md](../reference/invariants.md) (`mpu-apply-on-every-switch-in`)
@@ -545,14 +567,16 @@ The user stack is mapped task-wide, so another thread of the same task could wri
 your first `eret`. The kernel block is in the kernel half, which EL0 cannot reach.
 
 `arch_start` hands the frame to `kickos_armv8a_start`, which sets SP and runs
-`RESTORE_FRAME_AND_ERET`. After the `eret`, `SP_EL1` sits at the top of the kernel block. Every
+`RESTORE_FRAME_AND_ERET`. Because the frame's saved `SPSR` names EL0t, the macro first installs
+the space Stop 7 left in this core's `user_ttbr0` cell, and the `eret` makes it live. After the
+`eret`, `SP_EL1` sits at the top of the kernel block. Every
 later trap from this thread lands on that block (Stop 9).
 
 **Try it:** `break kickos_root_entry`, `continue`,
 `info registers pc cpsr sp SP_EL0 SP_EL1 TTBR0_EL1`, `p/x ($cpsr >> 2) & 3`. You should see:
 
 ```
-pc             0x401095a4          0x401095a4 <kickos_root_entry(void*)>
+pc             0x40109664          0x40109664 <kickos_root_entry(void*)>
 cpsr           0x200               [ EL=0 D BTYPE=0 ]
 sp             0x40342000          0x40342000
 SP_EL0         0x40342000          1077157888
@@ -608,7 +632,10 @@ Compare with the Cortex-M. There the hardware stacks eight registers on the THRE
 calls the dispatcher in privileged thread mode. Here nothing is stacked by hardware: the return
 address is in `ELR_EL1` and the old state in `SPSR_EL1`. `ENTER_FROM_EL0` saves all registers,
 those two, and `SP_EL0` into a frame on the thread's kernel block, where `SP_EL1` already
-points. `syscall_dispatch` then runs at EL1 on that block, still in the calling thread's context,
+points. Then it installs the empty root in `TTBR0_EL1`, with an ISB, so for the rest of the trap a
+stray kernel load of a user address faults instead of reading the task's page; on a core with PAN
+the hardware does that on entry and this step is skipped. `RESTORE_FRAME_AND_ERET` puts the
+task's root back when the frame it pops returns to EL0. `syscall_dispatch` then runs at EL1 on that block, still in the calling thread's context,
 so it can block like any kernel code. The result goes back into the saved `x0` and
 `RESTORE_FRAME_AND_ERET` returns to EL0. A class other than 0x15 goes to `.Lel0_fault` and
 `kickos_fault_kill_thread` ([chapter 9](09-fault-and-kill.md)).
@@ -623,17 +650,17 @@ x0             0x47                71
 => 0x40105040 <arch_syscall64>:	svc	#0x0
    0x40105044 <arch_syscall64+4>:	ret
 ...
-pc             0xffffff8040017918  0xffffff8040017918 <kickos_armv8a_el0_sync_entry>
+pc             0xffffff804001793c  0xffffff804001793c <kickos_armv8a_el0_sync_entry>
 sp             0xffffff8040301080  0xffffff8040301080 <kickos::(anonymous namespace)::g_kstacks+4096>
 cpsr           0x3c5               [ SP EL=1 F I A D BTYPE=0 ]
 ELR_EL1        0x40105044          1074810948
-SPSR_EL1       0x80000200          2147484160
+SPSR_EL1       0x60000200          1610613248
 ESR_EL1        0x56000000          1442840576
 $1 = 0x15
 ...
 #0  syscall_dispatch (nr=71, a0=0, a1=0, a2=0, a3=0) at .../kernel/syscall/syscall.cc:371
-#1  0xffffff80400179dc in kickos_armv8a_el0_sync_entry () at .../arch/arm64/armv8a/switch.S:250
-#2  0x00000000401071dc in kos_thread_self () at .../user/src/syscall_stubs.cc:256
+#1  0xffffff8040017a14 in kickos_armv8a_el0_sync_entry () at .../arch/arm64/armv8a/switch.S:252
+#2  0x00000000401071e0 in kos_thread_self () at .../user/src/syscall_stubs.cc:256
 sp             0xffffff8040300d60  0xffffff8040300d60 <kickos::(anonymous namespace)::g_kstacks+3296>
 ```
 
@@ -765,10 +792,10 @@ L3[318] = 0x006000004033ef43
 and on the Cortex-M4F:
 
 ```
-kickos::thread_self_grant (c=c@entry=0x20004d40 <kickos::detail::g_instance+1424>, base=base@entry=537018368, size=size@entry=64, attr=attr@entry=3)
+kickos::thread_self_grant (c=c@entry=0x20004d88 <kickos::detail::g_instance+1496>, base=base@entry=537018368, size=size@entry=64, attr=attr@entry=3)
 #1  ... in (anonymous namespace)::syscall_body (nr=<optimized out>, a0=537018368, a1=64, ...)
 #2  syscall_dispatch (nr=<optimized out>, a0=537018368, a1=64, ...)
-#3  0x00018246 in svc_trampoline () at .../arch/arm/armv7m/switch.S:496
+#3  0x00018572 in svc_trampoline () at .../arch/arm/armv7m/switch.S:537
 ```
 
 Same call number (37), same 64-byte grant. On one build it becomes a page-table leaf for a task,
@@ -789,8 +816,8 @@ context `arch_switch` calls `kickos_armv8a_switch_now`, which parks the outgoing
 IRQ exit path (`kickos_armv8a_irq_entry`, `kickos_armv8a_el0_irq_entry`) swaps the frames. What is
 new here is the address space, and it changes in `switch_book`, before either path.
 
-When the incoming thread belongs to another task, `seat` writes a new `TTBR0_EL1`. The value
-carries an ASID, so the outgoing task's TLB entries can stay cached. If the scheduler comes back
+When the incoming thread belongs to another task, `seat` records a new `TTBR0_EL1` value for the
+next return to EL0 (Stop 7). The value carries an ASID, so the outgoing task's TLB entries can stay cached. If the scheduler comes back
 to that task soon, its translations may still be there. Without ASIDs every root write would have
 to flush the whole TLB.
 
@@ -798,7 +825,7 @@ ASIDs are a small resource, and `Residency` hands them out. `arch_aspace_create`
 by the root's physical address and takes the lowest free ASID, bounded by what the hardware
 supports (`asid_capacity`, 8 or 16 bits) and by the number of domain slots. Each row also records
 which cores have used that root. ASID 0 is never handed out: it marks the boot root, whose
-entries are global. An ASID is given back only after its TLB entries are gone (Stop 13).
+entries are global. Nor is the top one: it marks the empty root. An ASID is given back only after its TLB entries are gone (Stop 13).
 
 **Try it:** on `selftest`, set a breakpoint that logs and continues:
 
@@ -806,7 +833,7 @@ entries are global. An ASID is given back only after its TLB entries are gone (S
 break arch_aspace_activate
 commands
 silent
-printf "activate space=%p  TTBR0 before=0x%llx\n", space, $TTBR0_EL1
+printf "activate space=%p  TTBR0=0x%llx  cell before=0x%llx\n", space, $TTBR0_EL1, kickos_armv8a_percpu[0].user_ttbr0
 continue
 end
 break arch_aspace_destroy
@@ -818,29 +845,31 @@ end
 continue
 ```
 
-Let it run for some seconds and interrupt. You should see lines like:
+Let it run: the selftest ends by itself. You should see lines like:
 
 ```
-activate space=0xffffff8040325000  TTBR0 before=0x40001000
-activate space=0xffffff8040353000  TTBR0 before=0x1000040325000
-activate space=0xffffff80403c0000  TTBR0 before=0x2000040353000
-activate space=0xffffff8040353000  TTBR0 before=0x30000403c0000
-activate space=0xffffff80403c0000  TTBR0 before=0x2000040353000
-activate space=0xffffff8040001000  TTBR0 before=0x30000403c0000
+activate space=0xffffff8040325000  TTBR0=0x40001000  cell before=0xffff00004001b000
+activate space=0xffffff8040353000  TTBR0=0xffff00004001b000  cell before=0x1000040325000
+activate space=0xffffff80403c0000  TTBR0=0xffff00004001b000  cell before=0x2000040353000
+activate space=0xffffff8040353000  TTBR0=0xffff00004001b000  cell before=0x30000403c0000
+activate space=0xffffff80403c0000  TTBR0=0xffff00004001b000  cell before=0x2000040353000
+activate space=0xffffff804001b000  TTBR0=0xffff00004001b000  cell before=0x30000403c0000
 destroy space=0xffffff80403c0000
-activate space=0xffffff8040353000  TTBR0 before=0x40001000
+activate space=0xffffff8040353000  TTBR0=0xffff00004001b000  cell before=0xffff00004001b000
 ...
-activate space=0xffffff80403c4000  TTBR0 before=0x2000040353000
-activate space=0xffffff8040353000  TTBR0 before=0x30000403c4000
+activate space=0xffffff80403c4000  TTBR0=0xffff00004001b000  cell before=0x2000040353000
+activate space=0xffffff804001b000  TTBR0=0xffff00004001b000  cell before=0x30000403c4000
 ```
 
-Read the top 16 bits of each "before" value: ASID 1 is root, ASID 2 the selftest's main task,
-ASID 3 a child task. When the child exits, `aspace_release` moves this core to the boot root
-(`0xffffff8040001000`, ASID 0) before it frees the child's tables. The next child, a different
-root at `0x403c4000`, gets ASID 3 again, because it was given back.
+The register reads the empty root, `0x4001b000` under ASID `0xffff`, from the first trap on:
+EL1 never runs on a task's root. Read the top 16 bits of each "cell before" value: ASID 1 is
+root, ASID 2 the selftest's main task, ASID 3 a child task. When the child exits,
+`aspace_release` moves this core to the empty root (`0xffffff804001b000`) before it frees the
+child's tables. The next child, a different root at `0x403c4000`, gets ASID 3 again, because it
+was given back.
 
-Add a third logging breakpoint on `kickos::aspace_activate_for` and count. In one run of about 25
-seconds it was reached 2159 times and `arch_aspace_activate` 251 times: `seat` skips every switch
+Add a third logging breakpoint on `kickos::aspace_activate_for` and count. In one whole run it was
+reached 2180 times and `arch_aspace_activate` 247 times: `seat` skips every switch
 that stays inside one task.
 
 **Why, and the contract:** [Book: Protection follows the CPU](../book/protection-follows-the-cpu-not-the-schedulers-intent.md),
@@ -917,7 +946,8 @@ L3[434] = 0x0000000000000000
 
 A thread of the selftest's main task (`TTBR0` with ASID 2) exits, and `ustack_free` unmaps its
 three stack pages. The leaf that pointed at `0x403b2000` is zero after the unmap. `uwalk` reads
-`TTBR0_EL1`, so it only shows the right space while that space is installed, as it is here.
+the `user_ttbr0` cell, so it shows the space of the core's current task, which is the exiting
+thread's own here.
 
 **Why, and the contract:** [Reference: porting.md](../reference/porting.md) (the `arch_aspace_*`
 seam and the cross-core maintenance), [Reference: invariants.md](../reference/invariants.md)
@@ -927,9 +957,9 @@ seam and the cross-core maintenance), [Reference: invariants.md](../reference/in
 - [Chapter 6, shared memory](06-shared-memory.md): the same reservation and grant on the region
   backend, in full.
 - [Chapter 9, fault and kill](09-fault-and-kill.md): what `.Lel0_fault` does with a data abort
-  from EL0, and why the fault exit keeps the dying task's `TTBR0` installed.
+  from EL0, and how the fault exit ends the thread.
 - [Chapter 11, multicore](11-multicore.md): the `is` forms of the TLB maintenance, the residency
-  mask, and why a core that runs a thread with no space installs the boot root.
+  mask, and why a core that runs a thread with no space installs the empty root.
 - [Chapter 15, x86_64](15-x86_64.md) and [chapter 14, RISC-V](14-riscv.md): the other
   translating backends, which share `aspace_walk.h` and differ in their hooks.
 
@@ -945,6 +975,7 @@ seam and the cross-core maintenance), [Reference: invariants.md](../reference/in
    task, so every switch between them is skipped by `seat`. Check with `break kickos_init_entry`
    and a breakpoint on `ping`, reading `TTBR0_EL1` at each.)
 3. **When does the full flush fire?** Break on the `tlbi vmalle1` inside `write_ttbr0` and log
-   `TTBR0_EL1` at each `arch_aspace_activate`. Predict which activations reach the flush. (Only
-   those whose previous `TTBR0` had ASID 0: the first one, and the first after a task's release
-   moved the core to the boot root.)
+   `kickos_armv8a_percpu[0].user_ttbr0` at each `arch_aspace_activate`. Predict which activations
+   reach the flush. (None: the cell starts out holding the empty root, whose top ASID owes no
+   flush to leave, and no task here runs untagged. The boot root's global entries go once, in
+   `arch_start`.)

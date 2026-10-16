@@ -20,7 +20,8 @@
 #   - the real app_stack_roots.txt parses, every image it names is one an app CMakeLists.txt
 #     names, and every arch it declares threads for has a trap-stack header;
 #   - each arch's real need record, read through its own header, passes a planted thread at
-#     exactly its need and fails one a byte deeper.
+#     exactly its need and fails one a byte deeper;
+#   - a need's via= frame is charged below the root, and one no loaded unit sizes fails.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
@@ -68,7 +69,7 @@ def edge(a, b, loc):
 
 
 def plant(stack='(PLANT_BASE + 278)', carve=0, sys_sized=True, indirect=False, both=False,
-          fflag='', map1=True, bound=False, roots_sys=None, need=None, map_suffix=''):
+          fflag='', map1=True, bound=False, roots_sys=None, need=None, map_suffix='', via=None):
     for d in (src, build):
         subprocess.run(['rm', '-rf', d])
     write(os.path.join(src, 'hdr.h'),
@@ -86,6 +87,7 @@ def plant(stack='(PLANT_BASE + 278)', carve=0, sys_sized=True, indirect=False, b
     a = ('graph: { title: "%s/a.cc"\n' % src
          + node('%s/a.cc:_ZL5entryPv' % src, 'void entry(void*)', 100)
          + node('helper', 'void helper()', 50)
+         + node('start', 'void start()', 24)
          + ref('libfn', 'void libfn()')
          + ref('sys', 'void sys()')
          + edge('%s/a.cc:_ZL5entryPv' % src, 'helper', '%s/a.cc:3:3' % src)
@@ -107,7 +109,10 @@ def plant(stack='(PLANT_BASE + 278)', carve=0, sys_sized=True, indirect=False, b
     write(os.path.join(build, 'app2', 'app2.map'), 'LOAD a.cc.o\nLOAD c.cc.o\n' + carve_line)
     if need is None:
         need = ('hdr.h', 'PLANT_FRAME', 'PLANT_ZONE')
-    decl = 'need plant header=%s frame=%s zone=%s reason: planted\n' % need
+    decl = 'need plant header=%s frame=%s zone=%s' % need
+    if via is not None:
+        decl += ' via=%s' % via
+    decl += ' reason: planted\n'
     decl += 'thread plant app1 t root=a.cc:entry stack=PLANT_STACK reason: planted\n'
     decl += 'need other header=hdr.h frame=PLANT_FRAME zone=PLANT_ZONE reason: planted\n'
     decl += 'thread other app3 t root=a.cc:entry stack=PLANT_STACK reason: planted\n'
@@ -173,6 +178,9 @@ expect('an arch with no thread whose tree links no bounded image passes', 0,
        ['no app thread for bare'], arch='bare', map1=False)
 expect('a map named for an executable suffix is the image\'s', 0, ['app_stack: OK'],
        map_suffix='.efi')
+expect('the frame every entry is called from is charged below it', 1,
+       ['via start 24', '= 902 bytes', 'STACK BELOW ITS THREAD'], via='start')
+expect('a via no loaded unit sizes fails', 2, ['via nosuch is no sized node'], via='nosuch')
 
 # The real declarations parse, for every arch they name, on a host that builds none of them.
 sys.path.insert(0, os.path.dirname(os.path.abspath(tool)))

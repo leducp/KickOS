@@ -82,9 +82,8 @@ namespace kickos
 namespace
 {
     using kickos::Domain;
-    using kickos::DOM_CALLER_TASK;
 
-    // The first seed of the process takes the image's data as its home.
+    // The first seed of the process maps the image's data and captures its pristine copy.
     class DomainSpace : public ::testing::Test
     {
       protected:
@@ -230,20 +229,10 @@ namespace
 
     TEST_F(DomainUnwind, every_allocation_of_a_create_refused_in_turn_unwinds_whole)
     {
-        struct Row
-        {
-            char const* name;
-            uint32_t caller;
-        };
-        Row const rows[] = {{"a spawn's create", 0}, {"a task create", DOM_CALLER_TASK}};
-        for (Row const& row : rows)
-        {
-            SCOPED_TRACE(row.name);
-            size_t const points = attempts_of_one_create(row.caller, nullptr, 0, nullptr);
-            EXPECT_GE(points, MIN_CREATE_ALLOCS);
-            EXPECT_EQ(sweep(row.caller, nullptr, 0, nullptr), points)
-                << "the sweep refused fewer allocations than a create makes";
-        }
+        size_t const points = attempts_of_one_create(0, nullptr, 0, nullptr);
+        EXPECT_GE(points, MIN_CREATE_ALLOCS);
+        EXPECT_EQ(sweep(0, nullptr, 0, nullptr), points)
+            << "the sweep refused fewer allocations than a create makes";
     }
 
     // The borrower's unwind unmaps the donor's frames and frees none of them.

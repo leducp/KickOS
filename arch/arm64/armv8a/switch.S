@@ -33,6 +33,7 @@
 #define PERCPU_CTX_CURRENT  8
 #define PERCPU_SWITCH_TO    16
 #define PERCPU_BENCH_SW_START 28
+#define PERCPU_USER_TTBR0   32
 
 /* Ends the kernel lock's span over the swap. CALL ONLY where the outgoing frame is parked and
    sp already names the incoming one: the call frame lands below the incoming saved frame, and
@@ -118,10 +119,22 @@
     stp     q30, q31, [sp, #F_FP + 480]
     .endm
 
-/* x0 is the scratch until it is the last register loaded. */
+/* x0 is the scratch until it is the last register loaded.
+
+   Under the reserved-root form an eret to EL0t installs the space the cell names; the eret is
+   the context synchronisation that makes it live. Every EL1 return keeps the empty root. */
     .macro  RESTORE_FRAME_AND_ERET
     ldr     x0, [sp, #F_SPSR]
     msr     spsr_el1, x0
+    tst     x0, #0xf                        /* M[3:0] == 0 is EL0t */
+    b.ne    9f
+    adrp    x0, kickos_armv8a_el1_root
+    ldr     x0, [x0, #:lo12:kickos_armv8a_el1_root]
+    cbz     x0, 9f
+    PERCPU_CELL x0, PERCPU_USER_TTBR0
+    ldr     x0, [x0]
+    msr     ttbr0_el1, x0
+9:
     ldr     x0, [sp, #F_ELR]
     msr     elr_el1, x0
     ldr     x0, [sp, #F_SP_EL0]
@@ -210,6 +223,14 @@ kickos_armv8a_irq_entry:
     stp     x0, x1, [sp, #F_ELR]
     mrs     x0, sp_el0
     str     x0, [sp, #F_SP_EL0]
+    /* The reserved-root form: EL1 runs on the empty root (arch_armv8a.cc). The ISB is what puts
+       the C code after it on that root. */
+    adrp    x0, kickos_armv8a_el1_root
+    ldr     x0, [x0, #:lo12:kickos_armv8a_el1_root]
+    cbz     x0, 8f
+    msr     ttbr0_el1, x0
+    isb
+8:
     .endm
 
 /* Synchronous from EL0, faults included: the class is decoded before anything is treated as a
@@ -301,7 +322,8 @@ kickos_armv8a_switch_now:
     SAVE_FRAME
     str     x30, [sp, #F_ELR]               /* resume where our caller expects to continue */
     mrs     x2, daif                        /* keep the caller's interrupt state exactly */
-    mov     x3, #0x5                        /* M[3:0] = EL1h; 0b101 is no orr immediate */
+    adrp    x3, kickos_armv8a_spsr_el1h     /* EL1h, and PAN: arch_armv8a.cc */
+    ldr     x3, [x3, #:lo12:kickos_armv8a_spsr_el1h]
     orr     x2, x2, x3
     str     x2, [sp, #F_SPSR]
     mov     x2, sp

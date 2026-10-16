@@ -32,6 +32,16 @@ constexpr uint32_t ARMV7M_CFSR_PRECISERR = 1u << 9;
 constexpr uint32_t ARMV7M_CFSR_IMPRECISERR = 1u << 10;
 constexpr uint32_t ARMV7M_CFSR_BFARVALID = 1u << 15;
 constexpr uint32_t ARMV7M_CFSR_UFSR = 0xFFFF0000u;
+constexpr uint32_t ARMV7M_CFSR_STKOF = 1u << 20;
+
+// A violation at exception entry sets SP to the limit and stacks nothing (ARMv8-M ARM,
+// PushStack), so a STKOF frame AT the limit may hold the stack's own data. AMBIGUOUS: an
+// instruction's violation leaves SP alone and stacks a whole frame, which lands exactly at the
+// limit when the old SP sat one frame (32 or 104 bytes) above it.
+static inline bool armv7m_stkof_frame_clamped(uint32_t cfsr, uintptr_t frame, uint32_t limit)
+{
+    return (cfsr & ARMV7M_CFSR_STKOF) != 0u and frame == limit;
+}
 
 // Whether an address arch_fault_chip_addr latched can explain this fault: a bus fault the core
 // holds no address for, imprecise or precise with BFAR invalid, and no other fault beside it.

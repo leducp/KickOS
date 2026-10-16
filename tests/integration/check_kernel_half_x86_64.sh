@@ -13,17 +13,40 @@
 # kernel half rather than a refused one. The thread-kill record prints the pair as
 # vec:err=0x<vector><error, 8 digits>. Spelled out here rather than derived, so the gate
 # asserts the encoding instead of restating whatever the source happens to produce.
+#
+# <model> `on` boots the processor model every gate runs; `no-smep-smap` boots the same image
+# on it less those two, the one run of a part that offers neither. The banner's `uaccess` line
+# must say `smep smap`, or `none`.
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
 : "${QEMU_TIMEOUT:=30}"
 
-_usage="usage: check_kernel_half_x86_64.sh <kernelhalf.efi> <dump-marker> <expect-status>"
+_usage="usage: check_kernel_half_x86_64.sh <kernelhalf.efi> <dump-marker> <expect-status> <on|no-smep-smap>"
 elf="${1:?$_usage}"
 marker="${2:?$_usage}"
 expect_status="${3:?$_usage}"
+model="${4:?$_usage}"
 require_number "$expect_status" "the expected exit status"
+case "$model" in
+    on) guard="smep smap" ;;
+    no-smep-smap) guard=none ;;
+    *) fail "the model must be on or no-smep-smap, not '$model'" ;;
+esac
+for _f in smep smap; do
+    case ",${KICKOS_X86_64_CPU:-}," in
+        *",+$_f,"*) ;;
+        *) fail "the processor model offers no $_f to take away: '${KICKOS_X86_64_CPU:-}'" ;;
+    esac
+done
+if [ "$model" = no-smep-smap ]; then
+    KICKOS_X86_64_CPU="$(printf '%s' "$KICKOS_X86_64_CPU" | sed 's/,+smep//; s/,+smap//')"
+    export KICKOS_X86_64_CPU
+fi
 
 run_faulting_image "$elf"
+
+require_on_wire "   uaccess $guard" \
+    "the banner does not name the guard as $guard on the $model processor model"
 
 addr="$(printf '%s\n' "$OUT" | sed -n 's/.*\[kernelhalf\] reading 0x\([0-9a-f]*\).*/\1/p' | tail -n 1)"
 if [ -z "$addr" ]; then

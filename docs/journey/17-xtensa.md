@@ -70,16 +70,16 @@ runs the constructors, calls `arch_init`, and enters `kmain`, exactly as on the 
 above, with `rsync` after each special-register write:
 
 ```
-40081e18:	f01c      	movi.n	a0, 31
-40081e1a:	13e600        	wsr.ps	a0
+40081ea4:	f01c      	movi.n	a0, 31
+40081ea6:	13e600        	wsr.ps	a0
 ...
-40081e22:	134800        	wsr.windowbase	a0
+40081eae:	134800        	wsr.windowbase	a0
 ...
-40081e2a:	134900        	wsr.windowstart	a0
+40081eb6:	134900        	wsr.windowstart	a0
 ...
-40081e36:	13e700        	wsr.vecbase	a0
+40081ec2:	13e700        	wsr.vecbase	a0
 ...
-40081e45:	007595        	call4	400825a0 <Reset_Handler>
+40081ed1:	007cd5        	call4	400826a0 <Reset_Handler>
 ```
 
 **Why, and the contract:** [Book: context switching, "Startup"](../book/context-switching-and-the-silicon-contract.md),
@@ -110,8 +110,8 @@ overwrite it. And because the saved values land in each frame's base save area o
 stack, the switch can push them there by forcing the overflows, then rebuild everything lazily
 through underflows. Stop 9 shows this.
 
-**Try it:** `xtensa-esp32-elf-nm -n hello | head -20`. The handlers start the IRAM, 64 bytes
-apart:
+**Try it:** `xtensa-esp32-elf-nm -n hello | grep -E ' t _(Window|Level2|User)'`. The handlers
+start the IRAM, 64 bytes apart:
 
 ```
 40080000 t _WindowOverflow4
@@ -121,7 +121,6 @@ apart:
 40080100 t _WindowOverflow12
 40080140 t _WindowUnderflow12
 40080180 t _Level2InterruptVector
-...
 40080340 t _UserExceptionVector
 ```
 
@@ -283,7 +282,8 @@ Note what the frame does not carry: a privilege bit. `arch_context_init` receive
 discards it. There is nothing to put it in.
 
 **Try it:** `xtensa-esp32-elf-objdump -d hello | grep -A5 '<_thread_trampoline>:'` shows the four
-instructions above (`call8` is at `0x40082b8b` in this build). Live: `break _thread_trampoline`
+instructions above (`call8` is at `0x40082c97` in this build, after an `or a1, a1, a1`
+padding word the assembler places before it). Live: `break _thread_trampoline`
 and read `$a2` and `$a3` after `entry`: the entry function and its argument.
 <!-- unverified (the live half): no ESP32 emulator -->
 
@@ -312,16 +312,16 @@ lost is the barrier: nothing stops application code from calling kernel function
 from writing kernel memory (Stop 10). The register IPC fast path is also absent here: it seats a
 reply into a saved register frame, and a plain call has none.
 
-**Try it:** `xtensa-esp32-elf-objdump -d hello | grep -A8 '<arch_syscall>:'`:
+**Try it:** `xtensa-esp32-elf-objdump -d hello | grep -A9 '<arch_syscall>:'`:
 
 ```
-400829e0 <arch_syscall>:
-400829e0:	004136        	entry	a1, 32
-400829e3:	02ad      	mov.n	a10, a2
+40082ae4 <arch_syscall>:
+40082ae4:	004136        	entry	a1, 32
+40082ae7:	02ad      	mov.n	a10, a2
 ...
-400829ed:	03b565        	call8	40086544 <syscall_dispatch>
-400829f0:	0a2d      	mov.n	a2, a10
-400829f2:	f01d      	retw.n
+40082af1:	03bda5        	call8	400866cc <syscall_dispatch>
+40082af4:	0a2d      	mov.n	a2, a10
+40082af6:	f01d      	retw.n
 ```
 
 **Why, and the contract:** [Book: the syscall path](../book/the-syscall-path-trap-dispatch-return.md),

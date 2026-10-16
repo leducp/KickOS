@@ -14,14 +14,16 @@
 #include <kickos/sys/atomic.h>
 
 #include "../common/gic.h"
+#include "uguard_armv8a.h"
 
 #include <stddef.h>
 #include <stdint.h>
 
-// The arch layer carries no kernel headers, so the fault path's three are declared here.
+// The arch layer carries no kernel headers, so what its fault paths call is declared here.
 namespace kickos
 {
     void kprintf(char const* fmt, ...);
+    void kpanic(char const* msg) __attribute__((noreturn));
 }
 extern "C" void kpanic_enter(void);
 extern "C" void kfault_terminate(void) __attribute__((noreturn));
@@ -31,9 +33,8 @@ extern "C" void kfault_terminate(void) __attribute__((noreturn));
 extern "C" void kickos_armv8a_percore_init(void);
 #endif
 
-// aspace_armv8a.cc. Terminal paths only: it discards the running space, and the contained
-// fault path prints the dead thread's name out of app text.
-extern "C" void kickos_armv8a_ttbr0_to_boot(void);
+// aspace_armv8a.cc. Terminal paths only: it discards the running space.
+extern "C" void kickos_armv8a_ttbr0_to_empty(void);
 
 // switch.S.
 extern "C" void kickos_armv8a_switch_now(struct arch_context* from, struct arch_context* to);
@@ -43,6 +44,7 @@ extern "C" void kickos_armv8a_thread_exit(void);
 // switch.S spells these as literal displacements, so a change on one side alone is a silent
 // wrong offset.
 constexpr size_t ARMV8A_FRAME_SIZE = KICKOS_ARMV8A_TRAP_FRAME;
+constexpr size_t ARMV8A_F_X1 = 8;
 constexpr size_t ARMV8A_F_X30 = 240;
 constexpr size_t ARMV8A_F_ELR = 248;
 constexpr size_t ARMV8A_F_SPSR = 256;
@@ -59,6 +61,9 @@ static_assert(ARMV8A_F_FP % 16 == 0, "the vector bank needs 16-byte alignment fo
 
 static_assert(KICKOS_KERNEL_STACKS != 0,
               "armv8a selects ARCH_KERNEL_STACKS_MANDATORY, so the blocks must exist");
+
+static_assert(KICKOS_MIN_STACK_SIZE >= KICKOS_ARMV8A_TASK_START,
+              "a thread on the least stack a spawn admits may run its space's startup");
 
 // The spawn stages its grant list on the kernel block, and _SYSK holds the list it was measured
 // at (armv8a_trap_stack.h).
@@ -94,7 +99,109 @@ static_assert(KICKOS_IDLE_STACK_SIZE >= KICKOS_ARCH_IDLE_FLOOR,
 extern "C"
 {
     struct armv8a_percpu_block kickos_armv8a_percpu[KICKOS_NUM_CORES] = {};
+
+    // M[3:0] = EL1h, with SPSR.PAN where the cores run PAN. An eret restores PSTATE.PAN from
+    // SPSR, so every SPSR the kernel builds for an EL1 resume is built from this word.
+    uint64_t kickos_armv8a_spsr_el1h = 0x5;
+
+    // Nonzero on a core without PAN: the empty root every entry from EL0 installs. Its ASID, not
+    // TCR_EL1.EPD0, is what keeps the TLB entries EL0 left from answering at EL1.
+    uint64_t kickos_armv8a_el1_root = 0;
+
+    uint64_t kickos_armv8a_empty_ttbr(void); // aspace_armv8a.cc
 }
+
+namespace
+{
+    // The boot core's choice; every later core must make the same one.
+    kickos::armv8a::UGuard g_uguard = kickos::armv8a::UGuard::UNSET;
+
+    constexpr uint64_t SCTLR_SPAN = 1ull << 23;
+    constexpr uint64_t SPSR_PAN = 1ull << 22;
+
+    // PSTATE.PAN through its system-register name, which is UNDEFINED on ARMv8.0.
+    uint64_t read_pan()
+    {
+        uint64_t pan = 0;
+        __asm volatile("mrs %0, s3_0_c4_c2_3" : "=r"(pan));
+        return pan;
+    }
+
+    void pan_on()
+    {
+        uint64_t sctlr = 0;
+        __asm volatile("mrs %0, sctlr_el1" : "=r"(sctlr));
+        // SPAN clear: every exception taken to EL1 sets PSTATE.PAN. Its reset value is UNKNOWN.
+        sctlr &= ~SCTLR_SPAN;
+        __asm volatile("msr sctlr_el1, %0\n\tisb" ::"r"(sctlr) : "memory");
+        // msr pan, #1, encoded: the image is built for an ARMv8.0 core.
+        __asm volatile(".inst 0xd500419f" ::: "memory");
+        __asm volatile("mrs %0, sctlr_el1" : "=r"(sctlr));
+        if ((sctlr & SCTLR_SPAN) != 0 or read_pan() == 0)
+        {
+            kickos::kpanic(kickos::diag::kUguardNotTaken);
+        }
+    }
+}
+
+// Per core, from kickos_armv8a_percore_init: the boot core before any peer is released.
+extern "C" void kickos_armv8a_uguard_init(void)
+{
+    uint64_t mmfr1 = 0;
+    __asm volatile("mrs %0, id_aa64mmfr1_el1" : "=r"(mmfr1));
+    kickos::armv8a::UGuard const mine = kickos::armv8a::uguard_of(mmfr1);
+    char const* const why = kickos::armv8a::uguard_refusal(g_uguard, mine);
+    if (why != nullptr)
+    {
+        kickos::kpanic(why);
+    }
+    // The boot core stores the system's form; every later core only compares against it.
+    bool const boot_core = (g_uguard == kickos::armv8a::UGuard::UNSET);
+    if (mine == kickos::armv8a::UGuard::PAN)
+    {
+        if (boot_core)
+        {
+            kickos_armv8a_spsr_el1h |= SPSR_PAN;
+            g_uguard = mine;
+        }
+        pan_on();
+        return;
+    }
+    uint64_t const empty = kickos_armv8a_empty_ttbr();
+    char const* const no_asid = kickos::armv8a::uguard_root_refusal(empty);
+    if (no_asid != nullptr)
+    {
+        kickos::kpanic(no_asid);
+    }
+    if (boot_core)
+    {
+        kickos_armv8a_el1_root = empty;
+        g_uguard = mine;
+    }
+    else if (empty != kickos_armv8a_el1_root)
+    {
+        kickos::kpanic(kickos::diag::kUguardMixed);
+    }
+    // A zero cell would send the first eret to EL0 through a table at physical 0.
+    armv8a_percpu()->user_ttbr0 = empty;
+}
+
+extern "C" char const* arch_uaccess_guard(void)
+{
+    if (g_uguard == kickos::armv8a::UGuard::PAN)
+    {
+        return "pan";
+    }
+    return "ttbr0";
+}
+
+#if defined(KICKOS_WITNESS_UACCESS) && KICKOS_WITNESS_UACCESS
+// No flag the interrupted context controls lifts this guard.
+extern "C" int arch_witness_irq_lift_flag(void)
+{
+    return -1;
+}
+#endif
 static_assert(offsetof(struct armv8a_percpu_block, kernel_sp) == 0,
               "vectors.S loads the kernel stack pointer at displacement 0 of the block");
 static_assert(offsetof(struct armv8a_percpu_block, ctx_current) == 8,
@@ -105,6 +212,8 @@ static_assert(offsetof(struct armv8a_percpu_block, switch_to) == 16,
 static_assert(offsetof(struct armv8a_percpu_block, bench_sw_start) == 28,
               "switch.S spells PERCPU_BENCH_SW_START as 28");
 #endif
+static_assert(offsetof(struct armv8a_percpu_block, user_ttbr0) == 32,
+              "switch.S spells PERCPU_USER_TTBR0 as 32");
 static_assert(sizeof(struct armv8a_percpu_block) == 64,
               "the block must fill its line, and secondary.S spells PERCPU_SIZE as 64");
 
@@ -210,8 +319,13 @@ static_assert(ARMV8A_FRAME_SIZE % 16 == 0, "SP must stay 16-byte aligned");
 namespace
 {
     // SPSR for a thread: debug masked, interrupts and SError live.
-    constexpr uint64_t SPSR_EL1H_IRQ_ON = (1ULL << 9) | 0x5ULL;
-    constexpr uint64_t SPSR_EL0T_IRQ_ON = (1ULL << 9);
+    constexpr uint64_t SPSR_D = 1ULL << 9;
+    constexpr uint64_t SPSR_EL0T_IRQ_ON = SPSR_D;
+
+    uint64_t spsr_el1h(uint64_t daif)
+    {
+        return daif | kickos_armv8a_spsr_el1h;
+    }
 
     // Indexed by the slot vectors.S passes.
     char const* const VECTOR_NAMES[] = {
@@ -359,7 +473,7 @@ void arch_context_init(struct arch_context* ctx,
     if (privileged != 0)
     {
         f[ARMV8A_F_X30 / 8] = reinterpret_cast<uint64_t>(&kickos_armv8a_thread_exit);
-        f[ARMV8A_F_SPSR / 8] = SPSR_EL1H_IRQ_ON;
+        f[ARMV8A_F_SPSR / 8] = spsr_el1h(SPSR_D);
     }
     else
     {
@@ -368,6 +482,11 @@ void arch_context_init(struct arch_context* ctx,
         f[ARMV8A_F_SP_EL0 / 8] = user_top; // its own stack, whole: no frame stands on it
     }
     ctx->sp = base;
+}
+
+void arch_context_second_arg(struct arch_context* ctx, uintptr_t value)
+{
+    reinterpret_cast<uint64_t*>(ctx->sp)[ARMV8A_F_X1 / 8] = value;
 }
 
 // Resumes the thread at `entry`, privileged, on its own KERNEL block: the death path must
@@ -415,6 +534,13 @@ void arch_start(struct arch_context* boot, struct arch_context* first)
 #if KICKOS_TLS
     armv8a_seat_thread_pointer(first);
 #endif
+    // The bring-up is over on this core, so the boot root goes, with the global entries it
+    // left in the TLB.
+    if (kickos_armv8a_el1_root != 0)
+    {
+        __asm volatile("msr ttbr0_el1, %0\n\tisb\n\ttlbi vmalle1\n\tdsb nsh\n\tisb"
+                       ::"r"(kickos_armv8a_el1_root) : "memory");
+    }
     kickos_armv8a_start(first);
 
     while (true)
@@ -475,9 +601,7 @@ bool arch_fault_is_user_thread(void* frame)
 
 // Rewriting ELR and SPSR is the redirect; the pop seats the stub's SP at the block top.
 //
-// TTBR0 is left on the faulting space: the stub prints the dead thread's name, a literal in app
-// text that only that space maps. The release path puts the dying space back
-// (kernel/mem/aspace.cc).
+// The stub reads no user memory: the thread's name is the kernel's own copy.
 void arch_fault_redirect_to_exit(void* frame)
 {
     uint64_t esr = 0;
@@ -496,7 +620,7 @@ void arch_fault_redirect_to_exit(void* frame)
 
     uint64_t* const f = static_cast<uint64_t*>(frame);
     f[ARMV8A_F_ELR / 8] = reinterpret_cast<uint64_t>(&kickos_thread_fault_exit);
-    f[ARMV8A_F_SPSR / 8] = SPSR_EL1H_IRQ_ON;
+    f[ARMV8A_F_SPSR / 8] = spsr_el1h(SPSR_D);
 }
 
 // --- Exceptions -------------------------------------------------------------
@@ -506,7 +630,7 @@ void kickos_armv8a_exception(unsigned long slot, unsigned long lr)
 {
     // First, ahead of the space swap and the console, which can fault back into here.
     kickos_fault_report_begin();
-    kickos_armv8a_ttbr0_to_boot(); // before the console is touched
+    kickos_armv8a_ttbr0_to_empty(); // a fault in the reporter cannot reach a user page
     kpanic_enter();
     if (slot == SLOT_SP_EL1_SYNC or slot == SLOT_EL0_SYNC)
     {

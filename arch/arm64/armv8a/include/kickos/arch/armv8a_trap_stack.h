@@ -21,6 +21,13 @@
 #ifndef KICKOS_ARCH_ARMV8A_TRAP_STACK_H
 #define KICKOS_ARCH_ARMV8A_TRAP_STACK_H
 
+/* The image's startup on an unprivileged thread's OWN stack, which any thread of a space may
+ * carry (kickos_task_start): the unwind-table registration, the toolchain runtime's constructors
+ * and their malloc and libc-lock calls. 400 on every qemu-arm64 preset's cxxtest, read off a
+ * painted stack the least a spawn admits, entry included. Reserved at 512;
+ * KICKOS_MIN_STACK_SIZE must hold it. An app's own deeper constructors are not in it. */
+#define KICKOS_ARMV8A_TASK_START 512
+
 /* SAVE_FRAME's extent; switch.S subtracts this macro. */
 #define KICKOS_ARMV8A_TRAP_FRAME 800
 

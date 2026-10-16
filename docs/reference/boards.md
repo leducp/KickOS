@@ -106,7 +106,7 @@ code wins, then this file.
 | `imx8mp-evk` | QEMU imx8mp-evk / NXP i.MX 8M Plus, quad Cortex-A53 | -- | i.MX UART1 at `0x30860000` | `ctest --preset imx8mp-evk` | (!) **emulated only, and BUILD-ONLY in CI** (the `host` gates; the run gate is a bench step, no runner's emulator modelling the die): witnessed 2026-09-02 under `qemu-system-aarch64` 11.1.0 at 48 of 48. The SECOND armv8a part and the first whose interrupt controller is the die's rather than a machine option. **ONE CORE OF THE FOUR**: the machine models no way to release a secondary -- see *Per-board caveats* below |
 | `qemu-riscv64` | QEMU virt / RV64IMAC (QEMU's generic `rv64` core, no `-cpu`) | -- | NS16550A UART at `0x10000000` | `ctest --preset qemu-riscv64` | (!) **emulated only, and gated in CI**: witnessed 2026-08-29 under `qemu-system-riscv64` 11.0.3 with `-M virt -bios none` at 52 of 52. Sv39 paging, the **base** posture. There is no rv64 silicon on this bench, so there is no hardware run. See *Per-board caveats* below |
 | `qemu-riscv64-sv48` | the SAME board and image, `KICKOS_CONFIG_VARIANT=sv48` | -- | as above | `ctest --preset qemu-riscv64-sv48` | (!) **emulated only, and gated in CI**: witnessed 2026-08-29 at 52 of 52, same QEMU, the same set as the base posture. **Sv48 paging: one more table level and one more boot table page**, out of one source tree with no edit between the two postures. See *Per-board caveats* below |
-| `qemu-x86_64` | QEMU q35 (ICH9) / x86_64 | -- | COM1, a 16550 at I/O port `0x3f8`, 115200 | `ctest --preset qemu-x86_64` | (!) **emulated only, and gated in CI**: witnessed 2026-08-28 under `qemu-system-x86_64` 11.0.3 on TCG with OVMF (EDK II) firmware, the image booted as a PE32+ UEFI application off an EFI system partition built per run. There is no x86 silicon on this bench, so there is no hardware run; the chip translates, and the kernel half carries no U/S bit, so ring 3 cannot reach kernel memory. See *Per-board caveats* below |
+| `qemu-x86_64` | QEMU q35 (ICH9) / x86_64 | -- | COM1, a 16550 at I/O port `0x3f8`, 115200 | `ctest --preset qemu-x86_64` | (!) **emulated only, and gated in CI**: witnessed 2026-08-28 under `qemu-system-x86_64` 11.0.3 on TCG with OVMF (EDK II) firmware, the image booted as a PE32+ UEFI application off an EFI system partition built per run. There is no x86 silicon on this bench, so there is no hardware run; the chip translates, and the kernel half carries no U/S bit, so ring 3 cannot reach kernel memory; SMEP and SMAP keep the kernel out of user pages where the processor offers them (`qemu_x86_64_uaccess`). See *Per-board caveats* below |
 | `esp32c6-wroom` | ESP32-C6-WROOM-1 / RV32IMAC | GP8 (WS2812B, LED2) | UART0, GP16/GP17, 115200 -> CH343P VCOM (`/dev/ttyACM0`) | esptool | [x] **the selftest is FOUR images on the enforcing variants (FIVE on the bench one)** (see *The selftest ships as SEVERAL images on five boards*), full selftest + PMP NAPOT enforcement + `mpu_fault` trap + diag-LED + bench; the `c6blink` granted-GPIO window is the canonical per-thread PMP proof. **The core runs at 40 MHz**, the reset selection (XTAL / 1) the ROM leaves: KickOS sets no clock tree, `MTIME` counts `CPU_CLK`, and `Reset_Handler` reads that rate off PCR before the constructors, so a boot that keeps the PLL converts at its rate instead, and a rate that is not 160 MHz >> n stops the boot with a printed refusal that only a reset leaves; `wallclock` holds a kernel sleep against the capture host's arrival stamps. **Second board with an UNPRIVILEGED root, and the first on RISC-V PMP** (2026-07-28) -- see *Unprivileged root* below. **Multiple physical units exist, and the 2026-07-28 pass was luck-dependent**: `esp32c6.ld` linked `.data` with an LMA outside every loaded segment, so `Reset_Handler` copied uninitialised SRAM over correctly-placed `.data`. Whether that corrupted anything load-bearing varied by die and power-on history. Fixed 2026-07-30 and pinned by an `ASSERT` (`_sidata == _sdata` in the shared RV32 body `arch/riscv/common/rv32imac.ld.h`, which `esp32c6.ld` enables with `KICKOS_RV32_LOADS_AT_VMA`), and the post-fix re-witness closes the owed `c6blink` mux-write arm -- see *M4.5.6* below |
 | `esp32-wroom` | ESP32 / Xtensa LX6 @240 MHz | GP2 (D2, active-high) | UART0, GP1/GP3, 115200 -> CH340 (`/dev/ttyUSB1`) | esptool | [x] 8/8 apps incl fault dump + bench |
 | `rx72m` | RX72M / RXv3 @240 MHz | -- (LED6, P80, is `rxdrv`'s) | SCI6 ASC, PB1/PB0, 115200 -> FT232 (`/dev/ttyUSB0`); ring | `rfp-cli` (Renesas Flash Programmer) | [x] full selftest + stress + `RX EXCEPTION` dump (2026-07-09); RX-MPU enforcement selftest + `mpu_fault` cross-domain trap + `rxdrv` granted peripheral window (2026-07-17); DPFPU switch + bench. **Fourth board with an UNPRIVILEGED root, and the only one on the RX MPU** (2026-07-28) -- see *Unprivileged root* below. Re-witnessed 2026-07-30 at a clean `270b6fa`, closing the owed stage-4 `rxdrv` mux-write arm and the M4.5.5 granular-shaping debt in one visit -- see *M4.5.6* below. **No CI gate** -- see *CI coverage* below |
@@ -325,6 +325,18 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
   `qemu_arm64_panicgate1` through `qemu_arm64_panicgate5`; plus the `host`-labelled gates every
   build tree registers, one of which is the fleet-wide `ascii` gate and one `console_reach`,
   registered on the translating presets only. A full run read 42 of 42 on this tree on 2026-08-29.
+- **`qemu-arm64` RUNS THE A53'S SOFTWARE FORM OF PAN, AND `qemu-arm64-a710` THE HARDWARE ONE, ON THE
+  SAME IMAGE.** The A53 is ARMv8.0 and has no `PSTATE.PAN`, so on it EL1 runs on an empty TTBR0
+  root and an `eret` to EL0 installs the space; the banner's `uaccess` line reads `ttbr0`. The
+  `qemu-arm64-a710` preset boots the same build on four `-cpu cortex-a710` cores
+  (`KICKOS_QEMU_CPU`, which replaces the board's `-cpu`), where each core sets PAN and the line reads
+  `pan`. A kernel dereference of an app-half pointer faults under either, and `qemu_arm64_uaccess`
+  holds it on every arm64 preset that boots under QEMU. **What no run here witnesses**: that the reserved root's ASID
+  keeps a stale user entry from answering at EL1 (QEMU's TLB is not ASID-tagged), and the software
+  form's price on A53 silicon, about 14 instructions a trap under `-icount` and unmeasured as cycles.
+  On QEMU every ASID change also flushes the emulator's own TLB, so a trap-heavy wall-clock bench
+  row on an A53 preset reads two to three times its old value. `imx8mp-evk` takes the software form
+  too, unwitnessed on silicon.
 - **`qemu-arm64`'s selftest declares exactly one PARTIAL and zero skips**, over 134 arms
   (re-derived 2026-08-29, the plan line reading `1..134`). The partial is
   `periph_reg_write_unheld`: `virt_arm64` names no MMIO window a driver could be granted -- its
@@ -361,10 +373,11 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
     unprivileged thread can reach any of it (`U` is clear on every leaf), but the kernel can write
     RAM outside its own 64 MiB share through the window, and 448 of the 512 leaves are over addresses
     no RAM answers at all. archived `M6_implementation_record.md` R2.3 carries the arithmetic and what would bound it.
-  - **`sstatus.SUM` is never set, so a kernel dereference of an app-half pointer FAULTS.** Every
-    kernel touch of process memory goes through the `kaccess` seam instead. That is stricter than
-    `qemu-arm64`, and it means a kernel-side bug that would silently corrupt the running process on
-    another board is a loud fault here.
+  - **`sstatus.SUM` is clear, so a kernel dereference of an app-half pointer FAULTS.** Every hart
+    clears it at bring-up whatever firmware left and reads it back, a hart that kept it refusing
+    to boot (P31). Every kernel touch of process memory goes through the `kaccess` seam instead,
+    and the banner's `uaccess` line, named from the read-back, reads `sum clear`.
+    `qemu_riscv64_uaccess` holds it.
 
 - **`qemu-x86_64` is EMULATED ONLY, and nothing on this bench can change that either.** There is
   no x86 target board here, so every x86_64 claim in this file is emulator-grade: the port is witnessed
@@ -388,10 +401,10 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
     (`../../arch/x86/chip/q35/cpu.cmake`), threads get x87, SSE and AVX while the kernel half is
     compiled without them, and `efi_main` first runs a check compiled for the base level
     (`../../arch/x86/x86_64/floor_x86_64.cc`) that hands a processor below it back to firmware
-    with a line on firmware's console. Every emulation runs `qemu64` plus the level's features
-    and XSAVEOPT, without which QEMU 11.1's TCG spins on the write that enables XSAVE,
-    `KICKOS_X86_64_QEMU_CPU` in `../../cmake/kickos.cmake`, and `x86_64_x1_floor` boots plain
-    `qemu64` and requires the refusal.
+    with a line on firmware's console. Every emulation runs `qemu64` plus the level's features,
+    XSAVEOPT, without which QEMU 11.1's TCG spins on the write that enables XSAVE, and SMEP and
+    SMAP, which `qemu64` does not offer, `KICKOS_X86_64_QEMU_CPU` in `../../cmake/kickos.cmake`,
+    and `x86_64_x1_floor` boots plain `qemu64` and requires the refusal.
   - **Its exit status crosses a seven-bit device.** `isa-debug-exit` reports `(status << 1) | 1`
     into an 8-bit process exit code, so only 0 through 127 round-trip and 139 arrives as 11.
     `arch_shutdown` therefore prints the full byte on the console as `KICKOS-EXIT status <n>`, and
@@ -422,6 +435,23 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
     raise its own privilege level or write the MSR the syscall entry takes its pointer from.
     `../../tests/integration/check_kernel_half_x86_64.sh` witnesses the kernel half: a ring-3 read
     of kernel state is killed by a page fault on a PRESENT page, not a missing one.
+  - **SMEP and SMAP keep the kernel out of user pages wherever the processor offers them.**
+    Every core sets both in CR4 where CPUID leaf 7 offers them and never lifts them; the kernel
+    reaches a task's memory only through `arch_aspace_acquire`'s kernel-half view. RFLAGS.AC would
+    lift SMAP and ring 3 can set it, so SYSCALL clears it through IA32_FMASK and the interrupt
+    entry resets RFLAGS before any C, with a `popfq`: a constant cost per entry of the order of
+    tens of cycles, not measured on silicon. The banner's `uaccess` line names the guard from CR4
+    (`smep smap`, `smep`, `smap` or `none`), every other core must match the boot core, and a
+    processor offering neither, which the x86-64-v3 floor admits (Haswell has SMEP and no SMAP),
+    runs with the line saying so. `qemu_x86_64_uaccess` witnesses it (2026-10-13, QEMU 11.1.2,
+    one and four cores): a ring 0 read, write and call of a user page, a read after a park, in the
+    fault-exit stub and in a timer interrupt taken by a thread that set AC each end in one page
+    fault dump with the error code the guard gives and the fatal status 132, and a read under the
+    firmware's root faults not present, that root mapping nothing in the user half. Its control
+    boots the read on the model less SMEP and SMAP, where the banner must say `none` and ring 0
+    must reach the word, which shows the faults are the guard's. The kernel-half gate runs that
+    model too and requires `none` on it. Not witnessed: a real NMI or machine check taken at ring 3,
+    which no gate can raise; their route to the panic is the unit `fault_frame`.
 - **`pizero2350`** -- Cortex-M33, but it reuses the **armv7m** arch backend verbatim (armv8-M is
   a superset for the switch/NVIC/SVC/PendSV path); only the MPU differs, and PMSAv8 has its own
   backend (`base+limit` RBAR/RLAR + MAIR, compile-gated so the v7-M/v6-M fleet is byte-identical).
@@ -754,7 +784,7 @@ the board".
 | rv32imac | `qemu-riscv`, `esp32c6-wroom` | `qemu-riscv` run gate in both postures; `qemu-riscv-bench` and C6 plain, flat, `-bench` and both `-amp2` node images build-only, including the merged AMP partition | **runtime** (PMP, the `qemu-riscv-mpu` job) |
 | armv7m | `qemu`, `qemu-m33`, `qemu-m7`, `qemu-m3`, `qemu-telem`, the board sweep with the two `-st` provisionings, the two `-bench` presets, and the `pizero2350-amp` family | eight MPS2 run gates, the four machines (an386/an505/an500/an385) each in both postures, + the two telemetry image arms on `qemu-telem` + build sweep, each silicon board in its base and flat posture, and `bluepill-c8` and `f302nucleo` in their selftest provisioning too, + `f411disco-bench` and `xmc4800-relax-bench` + the RP2350 AMP partitions, build-only | **runtime** (PMSAv7 on M4/M7/M3, **PMSAv8** on the M33) |
 | armv6m | `microbit`, `picopi` | `microbit` run gate + `picopi` build, enforcing and flat | **build only** |
-| armv8a | `qemu-arm64`, `qemu-arm64-smp`, `qemu-arm64-smpiso`, `qemu-arm64-gicv3`, the `qemu-arm64-amp` family, `qemu-arm64-bench`, `qemu-arm64-benchsmp`, `imx8mp-evk` | run gates at one kernel core, at four cores, at four cores with one isolated and at four cores under a GICv3, plus the AMP partition at one, two and three images, plus the microbench gates at one core and at four; `imx8mp-evk` is BUILD-ONLY here, its run gate staying a bench step because no runner's emulator models the die | -- (no region MPU; enforcement is VMSAv8 page tables and it is LIVE in every one of them) |
+| armv8a | `qemu-arm64`, `qemu-arm64-smp`, `qemu-arm64-smpiso`, `qemu-arm64-gicv3`, `qemu-arm64-a710`, the `qemu-arm64-amp` family, `qemu-arm64-bench`, `qemu-arm64-benchsmp`, `imx8mp-evk` | run gates at one kernel core, at four cores, at four cores with one isolated, at four cores under a GICv3 and at four Cortex-A710 cores under PAN, plus the AMP partition at one, two and three images, plus the microbench gates at one core and at four; `imx8mp-evk` is BUILD-ONLY here, its run gate staying a bench step because no runner's emulator models the die | -- (no region MPU; enforcement is VMSAv8 page tables and it is LIVE in every one of them) |
 | rv64imac | `qemu-riscv64`, `qemu-riscv64-sv48`, `qemu-riscv64-smp`, `qemu-riscv64-bench`, `qemu-riscv64-benchsmp` | one job, three run gates: Sv39, Sv48 and the four-hart shared kernel; the microbench gates at one hart and at four ride the `bench` job | -- (no region MPU; enforcement is Sv39/Sv48 page tables, live in both paging postures) |
 | Xtensa LX6 | `esp32-wroom` | build only, plain, `-smp` and `-bench` | -- (no per-domain unit) |
 | RXv3 | `rx72m` | build only, plain, `-flat` and `-bench` | -- |
@@ -1275,7 +1305,7 @@ a capture-tooling fault, not a board fault), and cost no press.
 the faulting context still live, and the `rebootdemo` witness above covers only thread mode on an
 ordered exit. Steps 1, 3 and 7 are exactly that bootrom call returning the board to BOOTSEL.
 
-**Owed to M10.6.6, on `picopi`, `pizero2350` and `teensy41`:** `selftest` and `bench`, configured
+**Owed to M10.6.8, on `picopi`, `pizero2350` and `teensy41`:** `selftest` and `bench`, configured
 with no `-D`, ask for the bootloader at their end and set it as their terminal outcome at their
 start: after the last TAP line (or the bench's `bench: done`) the board re-enumerates as its
 bootloader device (RP2040 `2e8a:0003`, RP2350 `2e8a:000f`, HalfKay `16c0:0478`) and the next image

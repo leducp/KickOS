@@ -50,6 +50,24 @@
 #define KICKOS_KERNEL_STACKS 0
 #endif
 
+/* ARMv8-M Mainline's PSPLIM and MSPLIM, from the chip file's `stack_limit`. Every SP write and
+ * every exception entry is checked against the live one; a handler's push through a general
+ * register is not. */
+#if defined(KICKOS_HAVE_STACK_LIMIT) && KICKOS_HAVE_STACK_LIMIT
+#define KICKOS_ARMV7M_SPLIM 1
+#else
+#define KICKOS_ARMV7M_SPLIM 0
+#endif
+#if KICKOS_ARMV7M_SPLIM && !KICKOS_KERNEL_STACKS
+#error "the stack limit is programmed only around the kernel blocks' syscall entry; the red-zone dispatch would run privileged on the limited user stack"
+#endif
+
+/* How far above a stack's base its limit sits: the {r4-r11, EXC_RETURN} and {s16-s31} block
+ * PendSV and the SVC fastpath push below a PSP, which no limit checks, rounded up to the
+ * registers' 8-byte granule. On a kernel block the extra word is the canary. A plain integer:
+ * tests/integration/gates/pspguard.cmake scrapes it. */
+#define KICKOS_ARMV7M_SPLIM_ROOM 104
+
 /* The software block PendSV and the SVC fastpath push below the live PSP, counted off the
  * emitted code:
  *   stmdb r0!, {r4-r11, lr}     9 words                                        36
@@ -213,7 +231,12 @@
 /* Resolved by which entry design this build compiles, so switch.S's guard, arch_armv7m.cc's
  * floor assert, kickos_arm_bad_psp's reported count and user/apps/common/pspguard's
  * expectation are one value and not four agreements. */
-#if KICKOS_KERNEL_STACKS
+#if KICKOS_KERNEL_STACKS && KICKOS_ARMV7M_SPLIM
+/* The window's checked part (NEST_SVC less the PendSV block) must clear PSPLIM: a violation in
+ * the privileged trampoline is the kernel's and panics. */
+#define KICKOS_ARMV7M_TRAP_NEED_SVC \
+    (KICKOS_ARMV7M_TRAP_NEST_SVC - KICKOS_ARMV7M_TRAP_FRAME_MAX + KICKOS_ARMV7M_SPLIM_ROOM)
+#elif KICKOS_KERNEL_STACKS
 #define KICKOS_ARMV7M_TRAP_NEED_SVC KICKOS_ARMV7M_TRAP_NEST_SVC
 #else
 #define KICKOS_ARMV7M_TRAP_NEED_SVC \
@@ -247,7 +270,12 @@
 #define KICKOS_ARMV7M_CTX_OFF_STACK_LO 12
 #define KICKOS_ARMV7M_CTX_OFF_STACK_HI 16
 #define KICKOS_ARMV7M_CTX_OFF_KERNEL_SP 20
+#if KICKOS_ARMV7M_SPLIM
+#define KICKOS_ARMV7M_CTX_OFF_SPLIM 24
+#define KICKOS_ARMV7M_CTX_OFF_TRACE_TID 28
+#else
 #define KICKOS_ARMV7M_CTX_OFF_TRACE_TID 24
+#endif
 
 /* THE PANIC REPORTER'S OWN STACK, which kickos_panic_stack_enter (switch.S) moves to before a
  * banner is printed. The PANIC console is priced here and on no other class of this arch: SVC,
@@ -268,6 +296,22 @@
 #define KICKOS_ARMV7M_PANIC_DEPTH 832
 #else
 #define KICKOS_ARMV7M_PANIC_DEPTH 320
+#endif
+
+/* THE MAIN STACK'S OVERFLOW REPORT, on an array of its own where the core has stack limits:
+ * kickos_armv7m_stkof (arch_armv7m.cc) moves MSP to its top and MSPLIM to its base before any
+ * C runs, so the report of an MSP overflow cannot descend into the arena below the main stack.
+ * Any fault taken on that array ends the system from its top, through kfault_terminate.
+ *
+ * The class is measured on every armv7m preset, the fault reporter being the same chain on the
+ * main stack of a core without limits; only a core with them allocates the array. FRAME as for
+ * PANIC. Telemetry is its own size class, as for PANIC. The deepest readings are 544 and 840,
+ * under the enforced 768 and 1024; on the stack-limit presets, 520. */
+#define KICKOS_ARMV7M_STKOF_FRAME 100
+#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
+#define KICKOS_ARMV7M_STKOF_DEPTH 1024
+#else
+#define KICKOS_ARMV7M_STKOF_DEPTH 768
 #endif
 
 /*
@@ -299,6 +343,7 @@
  * class EXIT   frame=KICKOS_ARMV7M_TRAP_NEST_EXIT depth=KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_EXIT kstacks=0
  *
  * class PANIC  frame=KICKOS_ARMV7M_PANIC_FRAME depth=KICKOS_ARMV7M_PANIC_DEPTH stack=panic
+ * class STKOF  frame=KICKOS_ARMV7M_STKOF_FRAME depth=KICKOS_ARMV7M_STKOF_DEPTH stack=trap
  */
 
 #endif /* KICKOS_ARCH_ARMV7M_TRAP_STACK_H */

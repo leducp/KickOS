@@ -76,8 +76,11 @@ _add_test(NAME amp_share
 _add_test(NAME driver_metadata
           COMMAND "${CMAKE_COMMAND}" "-DKICKOS_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
                   -P "${CMAKE_CURRENT_SOURCE_DIR}/check_driver_metadata.cmake")
+_add_test(NAME qemu_cpu
+          COMMAND "${CMAKE_COMMAND}" "-DKICKOS_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
+                  -P "${CMAKE_CURRENT_SOURCE_DIR}/check_qemu_cpu.cmake")
 kickos_tree_gate(trap_redzone_walk app_stack_control gate_lib bench_fleet_controls
-                 preset_defconfig amp_share driver_metadata)
+                 preset_defconfig amp_share driver_metadata qemu_cpu)
 
 _add_test(NAME chip_protection
           COMMAND "${CMAKE_COMMAND}" "-DKICKOS_SOURCE_DIR=${PROJECT_SOURCE_DIR}"

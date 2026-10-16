@@ -492,7 +492,7 @@ The ceiling arms read the declared ceiling rather than a constant, so one arm ho
 | `amp_probe_root_only`, now `amp_crossing_task_local` | root holds the partition's ports | the task holds the crossings its composition names, and their indices name nothing in another task's table |
 | `amp_port_seating`, `amp_port_unnamed` | the ports at root's seated indices | each named crossing at its delegated slot, and none other |
 | `amp_share_window`, `amp_share_crossing` | root holds the user share and hands windows of it | the task reaches the share through its composition's partition region, and naming any part of it itself is refused |
-| `process_data_from_image`, `irq_as_event` | root's data pages | the task's: a task a spawn creates copies its spawner's live data, consistent on more than one core only while the spawner's other threads write no static data across the spawn, an explicit task the snapshot |
+| `process_data_from_image`, `irq_as_event` | root's data pages | the task's, a copy of the image's pristine data whichever way the task was made (M10.6.6, `space-data-starts-from-the-image`) |
 | an arm reading a pin a board pin map set | the default init applied it | none exists |
 
 The pools follow the task. A task's entry thread and task come out of `KICKOS_MAX_THREADS` and
@@ -820,7 +820,7 @@ exists to program. The A53 `virt` machine states no gate and emits none.
   RP2350 gains for UART0's reset bit, and reads UARTPERIPHID0 at offset 0xFE0, 0x11 on a PL011,
   judged by `tests/integration/check_pizero_amp_gate.sh`. Node 1's own refusal of that register
   is not witnessed: no composition grants the privileged thread the read needs, and the node hook
-  that would make it is owed (TODO.md, M10.6.6).
+  that would make it is owed (TODO.md, M10.6.8).
 
 The partition region and the crossings run in CI on `qemu-arm64-amp2`, `ampping`'s nodes calling
 across and exchanging through one region.

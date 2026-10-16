@@ -322,6 +322,36 @@ namespace kickos
             EXPECT_EQ(g_mutex->owner, waiter);
         }
 
+        // A holder that dies with nobody waiting leaves the death for the next taker, once, by a
+        // waiting lock and by a try alike.
+        TEST_F(MutexTimed, a_death_with_no_waiter_reaches_the_next_taker_once)
+        {
+            Thread* const waiter = seat_waiter_over_holder();
+            {
+                IrqLock lock;
+                mutex_force_unlock(g_mutex, g_holder, lock);
+            }
+            EXPECT_EQ(g_mutex->owner, nullptr);
+
+            EXPECT_EQ(mutex_lock(g_mutex, TIMEOUT_US), -KOS_EOWNERDEAD);
+            EXPECT_EQ(g_mutex->owner, waiter) << "the owner-died answer is an acquire";
+            EXPECT_EQ(mutex_unlock(g_mutex), 0);
+            EXPECT_EQ(mutex_lock(g_mutex, 0), 0) << "the death was reported twice";
+            EXPECT_EQ(mutex_unlock(g_mutex), 0);
+
+            Mutex second;
+            mutex_init(&second);
+            second.owner = g_holder;
+            g_holder->held_list = &second;
+            {
+                IrqLock lock;
+                mutex_force_unlock(&second, g_holder, lock);
+            }
+            EXPECT_EQ(mutex_lock(&second, 0), -KOS_EOWNERDEAD) << "a try missed the death";
+            EXPECT_EQ(mutex_unlock(&second), 0);
+            EXPECT_EQ(g_switches, 0u);
+        }
+
         // The holder waits on a mutex the waiter holds, so the waiter's lock closes a cycle.
         TEST_F(MutexTimed, a_timed_wait_that_closes_a_cycle_is_refused_before_it_parks)
         {
@@ -334,6 +364,92 @@ namespace kickos
             EXPECT_EQ(g_holder->prio, PRIO_HOLDER);
             EXPECT_EQ(g_switches, 0u);
             EXPECT_EQ(kernel().sleepq, nullptr);
+        }
+
+        // The boost runs to the end of a chain longer than the mutex pool, and the expiry takes
+        // it back off every link. No thread is on the chain twice, so its length is bounded by
+        // the threads, not by the pool.
+        Thread* g_chain_tail = nullptr;
+        uint8_t g_chain_tail_prio_parked = 0;
+
+        void note_the_chain_tail_then_expire(Thread*)
+        {
+            g_chain_tail_prio_parked = g_chain_tail->prio;
+            deadline_fires();
+        }
+
+        TEST_F(MutexTimed, a_boost_reaches_the_end_of_a_chain_longer_than_the_mutex_pool)
+        {
+            constexpr int CHAIN = KICKOS_MAX_MUTEXES + 2;
+            constexpr int SLOT_CHAIN = SLOT_DONOR + 1;
+            static_assert(SLOT_CHAIN + CHAIN <= KICKOS_THREAD_SLOTS,
+                          "the chain needs a thread slot per link");
+            (void)seat_waiter_over_holder();
+            Mutex chain[CHAIN];
+            Thread* links[CHAIN];
+            for (int i = 0; i < CHAIN; i++)
+            {
+                links[i] = seat_pool(SLOT_CHAIN + i, PRIO_FAR);
+                chain[i].owner = links[i];
+                links[i]->held_list = &chain[i];
+            }
+            for (int i = 0; i < CHAIN - 1; i++)
+            {
+                park_mutex_waiter(links[i], &chain[i + 1]);
+            }
+            g_chain_tail = links[CHAIN - 1];
+            g_chain_tail_prio_parked = 0;
+            wake_next_park(note_the_chain_tail_then_expire);
+
+            EXPECT_EQ(mutex_lock(&chain[0], TIMEOUT_US), -KOS_ETIMEDOUT);
+            EXPECT_EQ(g_chain_tail_prio_parked, PRIO_WAITER)
+                << "the boost stopped short of the chain's end";
+            for (int i = 0; i < CHAIN; i++)
+            {
+                EXPECT_EQ(links[i]->prio, PRIO_FAR) << "link " << i << " kept the expired boost";
+            }
+            for (int i = 0; i < CHAIN - 1; i++)
+            {
+                IrqLock lock;
+                links[i]->wait_queue->unlink(&links[i]->link);
+            }
+        }
+
+        // Mutexes outside the pool count too, so a cycle can be longer than the pool is wide; the
+        // walk is bounded by the threads, which an acyclic chain visits once each.
+        TEST_F(MutexTimed, a_cycle_longer_than_the_mutex_pool_is_refused)
+        {
+            constexpr int CHAIN = KICKOS_MAX_MUTEXES + 2;
+            constexpr int SLOT_CHAIN = SLOT_DONOR + 1;
+            static_assert(SLOT_CHAIN + CHAIN <= KICKOS_THREAD_SLOTS,
+                          "the chain needs a thread slot per link");
+            Thread* const waiter = seat_waiter_over_holder();
+            Mutex mine;
+            mine.owner = waiter;
+            waiter->held_list = &mine;
+            Mutex chain[CHAIN];
+            Thread* links[CHAIN];
+            for (int i = 0; i < CHAIN; i++)
+            {
+                links[i] = seat_pool(SLOT_CHAIN + i, PRIO_FAR);
+                chain[i].owner = links[i];
+                links[i]->held_list = &chain[i];
+            }
+            for (int i = 0; i < CHAIN - 1; i++)
+            {
+                park_mutex_waiter(links[i], &chain[i + 1]);
+            }
+            park_mutex_waiter(links[CHAIN - 1], &mine);
+            wake_next_park(expire);
+
+            EXPECT_EQ(mutex_lock(&chain[0], TIMEOUT_US), -KOS_EDEADLK);
+            EXPECT_EQ(g_switches, 0u) << "the waiter parked on a cycle through itself";
+            EXPECT_EQ(links[0]->prio, PRIO_FAR) << "a refused lock lent its priority";
+            for (int i = 0; i < CHAIN; i++)
+            {
+                IrqLock lock;
+                links[i]->wait_queue->unlink(&links[i]->link);
+            }
         }
     }
 }

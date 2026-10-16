@@ -33,7 +33,7 @@ kickos_add_kseam(kickos_kseam_rangecheck_aspace
         "${PROJECT_SOURCE_DIR}/kernel/syscall/syscall_mem.cc"
   INCLUDES "${PROJECT_SOURCE_DIR}/kernel/syscall" "${CMAKE_CURRENT_SOURCE_DIR}"
            "${PROJECT_SOURCE_DIR}/tests/unit/common"
-  POSTURE KICKOS_HAVE_ASPACE=1 KICKOS_MAX_MUTEXES=24
+  POSTURE KICKOS_HAVE_ASPACE=1
           KICKOS_ARCH_ALIAS_DCACHE=1 KICKOS_ARCH_IRQ_WINDOW=1)
 kickos_add_unit_test(NAME range_check_aspace SOURCES range_check.cc
   TEST_PREFIX aspace_

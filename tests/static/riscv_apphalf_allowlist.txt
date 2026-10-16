@@ -11,6 +11,7 @@
 # An entry no kernel-text instruction reaches any more is stale and fails the gate.
 
 kickos_root_entry           # a PC: kmain hands it to thread_create as the root thread's entry, never dereferenced
+kickos_task_start           # a PC: thread_create enters a space's first thread there, never dereferenced
 kickos_user_thread_return   # a PC: arch_context_init seats it as the return address of an unprivileged frame, never dereferenced
 _kickos_heap_start          # a bound: kmain prints the newlib heap's size, never dereferenced
 _kickos_heap_limit          # a bound: the other end of the same printed subtraction, never dereferenced

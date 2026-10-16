@@ -61,6 +61,8 @@ int main()
     KOS_SYS_TASK_EXIT_STATUS,
     KOS_SYS_THREAD_SET_PRIORITY,
     KOS_SYS_TASK_NONBLOCK,
+    KOS_SYS_PERIPH_DISABLE,
+    KOS_SYS_WITNESS_UACCESS,
     };
     for (kos_syscall_nr s : calls)
     {

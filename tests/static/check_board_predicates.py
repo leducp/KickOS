@@ -9,7 +9,9 @@
 #
 #   an emulator gate   kickos_add_qemu_test is total over the fleet, so the only condition a
 #                      call owes is the fact its claim rests on: an arch, a Kconfig symbol, the
-#                      emulated machine, the existence of an image.
+#                      emulated machine, the existence of an image or of a test. A raw add_test
+#                      handed QEMU_MACHINE is one too. A board compared with a variable no board
+#                      condition set is the board a map names, and not a name.
 #   an expected arm    an expected-skip or expected-partial set naming an arm is a measurement
 #                      of one board taken once; it is derived from the facts that decide it
 #                      instead. A set carrying only a derived variable is not a list and passes.
@@ -29,6 +31,9 @@ RETURN_RE = re.compile(r'^\s*return\s*\(', re.I)
 SET_RE = re.compile(r'^\s*(?:set|list\s*\(\s*(?:APPEND|PREPEND|INSERT))\s*\(?\s*([A-Za-z_][A-Za-z0-9_]*)(.*)$',
                     re.I)
 CALL_RE = re.compile(r'^\s*kickos_add_qemu_test\s*\(', re.I)
+ADD_TEST_RE = re.compile(r'^\s*add_test\s*\(.*\bQEMU_MACHINE=', re.I)
+TEST_TEST_RE = re.compile(r'\bTEST\s+(?:"[^"]*"|\S+)')
+BOARD_VAR_RE = re.compile(r'\b(KICKOS_BOARD\w*)\s+STREQUAL\s+([A-Za-z_][A-Za-z0-9_]*)\b')
 SELECT_RE = re.compile(r'^\s*add_subdirectory\s*\(', re.I)
 FILE_TEST_RE = re.compile(r'\b(?:EXISTS|IS_DIRECTORY)\s+(?:"[^"]*"|\S+)')
 EXPECT_RE = re.compile(r'^(KICKOS_EXPECT_(?:SKIPS|PARTIALS)|\w*_(?:skips|partials))$', re.I)
@@ -75,7 +80,13 @@ def literal_names(values):
             if w not in ('APPEND', 'PREPEND', 'INSERT', 'PARENT_SCOPE')]
 
 
+def emulator_gate(st):
+    return CALL_RE.match(st) or ADD_TEST_RE.match(st)
+
+
 def reads_board(cond, tainted):
+    cond = TEST_TEST_RE.sub(' ', cond)
+    cond = BOARD_VAR_RE.sub(lambda m: m.group(0) if m.group(2) in tainted else ' ', cond)
     if BOARD_RE.search(cond):
         return True
     return any(word in tainted for word in re.findall(r'[A-Za-z_][A-Za-z0-9_]*', cond))
@@ -126,7 +137,7 @@ def problems(path, text):
         if m and (under[0] or BOARD_RE.search(m.group(2))):
             tainted.add(m.group(1))
             continue
-        if CALL_RE.match(st) and where[0]:
+        if emulator_gate(st) and where[0]:
             out.append('%s:%d: an emulator gate registered %s' % (path, n, where[0]))
         if SELECT_RE.match(st) and where[1]:
             out.append('%s:%d: an app selected %s' % (path, n, where[1]))
@@ -172,6 +183,9 @@ endif()
 if(KICKOS_BOARD_INCLUDE_DIR MATCHES "f302")
   list(APPEND KICKOS_EXPECT_SKIPS mutex_basic)
 endif()
+if(KICKOS_BOARD_ID STREQUAL "qemu-m33")
+  add_test(NAME g COMMAND ${CMAKE_COMMAND} -E env QEMU_MACHINE=x g.sh)
+endif()
 if(NOT _tag STREQUAL "microbit")
   return()
 endif()
@@ -213,13 +227,20 @@ endif()
 if(KICKOS_MEMORY_ENFORCED)
   add_subdirectory(specfault)
 endif()
+file(STRINGS map.txt _m REGEX "covers")
+if(_m AND KICKOS_BOARD STREQUAL _m)
+  add_test(NAME h COMMAND ${CMAKE_COMMAND} -E env QEMU_MACHINE=x h.sh)
+endif()
+if(TEST ${_tag}_selftest)
+  add_test(NAME i COMMAND ${CMAKE_COMMAND} -E env QEMU_MACHINE=x i.sh)
+endif()
 '''
 
 
 def main(argv):
     bad = problems('planted', PLANTED_BAD)
-    if len(bad) != 12:
-        print('FAIL: the planted board-name statements read as %s, expected twelve refusals' % bad)
+    if len(bad) != 13:
+        print('FAIL: the planted board-name statements read as %s, expected thirteen refusals' % bad)
         return 1
     good = problems('planted', PLANTED_GOOD)
     if good:
@@ -234,7 +255,7 @@ def main(argv):
     for path in argv[1:]:
         with open(path) as fh:
             text = fh.read()
-        calls += sum(1 for _, st in statements(text) if CALL_RE.match(st))
+        calls += sum(1 for _, st in statements(text) if emulator_gate(st))
         selections += sum(1 for _, st in statements(text) if SELECT_RE.match(st))
         found += problems(path, text)
     for p in found:

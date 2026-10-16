@@ -11,6 +11,7 @@
 # refused as stale.
 
 kickos_root_entry         handed to thread_create as root's entry: kmain adds the user offset
+kickos_task_start         the entry thread_create gives a space's first thread: aspace_task_start adds the user offset
 kickos_user_thread_return seated as an unprivileged thread's return address: arch_context_init adds user_alias_offset
 _kickos_heap_start        kmain prints the heap's size, subtracting the two bounds
 _kickos_heap_limit        the other end of the same subtraction

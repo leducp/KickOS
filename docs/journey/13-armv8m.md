@@ -10,7 +10,7 @@ SysTick, the NVIC, PendSV, SVCall) v8-M Mainline is a superset of v7-M, so KickO
 **armv7m** backend on the M33 unchanged. What differs is the memory protection unit, which
 keeps its register addresses but changes what they mean. By the end you will have seen the
 chip choose the new MPU backend, the base-plus-limit descriptors it writes, the security state
-the image runs in, and the stack limit registers that the M33 has and KickOS leaves alone.
+the image runs in, and the stack limit registers that v7-M lacks and KickOS programs here.
 
 The concept chapters are [Context switching and the silicon contract](../book/context-switching-and-the-silicon-contract.md)
 and [Protection follows the CPU, not the scheduler's intent](../book/protection-follows-the-cpu-not-the-schedulers-intent.md).
@@ -62,7 +62,7 @@ The vector table is the reference chip's (`KICKOS_CORE_VECTORS_V7M`). The RP2350
 **Try it:** connect, then before `continue`:
 ```
 (gdb) x/2wx 0x10000000
-0x10000000:  0x38200000  0x10001d59
+0x10000000:  0x38200000  0x10001dbd
 (gdb) info registers msp msp_s msp_ns control_s control_ns
 msp         0x38200000
 msp_s       0x38200000
@@ -149,8 +149,9 @@ basepri  0x20
 primask  0x0
 control  0x2
 ```
-Then `delete`, `break PendSV_Handler` and `continue` a few times with `p/x $lr`: the first
-reads `0xfffffff9`, the following ones `0xfffffffd`.
+For `EXC_RETURN`, use a fresh run: `break arch_start`, `continue`, `break PendSV_Handler`,
+`continue` and `p/x $lr` reads `0xfffffff9`; `continue` again and it reads `0xfffffffd`. The
+`arch_switch` stop above comes after the first PendSV, so it cannot show the first value.
 
 **Why, and the contract:** [Book: Context switching and the silicon contract](../book/context-switching-and-the-silicon-contract.md),
 [Reference: porting, context switch and first-thread start](../reference/porting.md)
@@ -200,12 +201,12 @@ written, and the loop skips a slot whose two words already stand:
 0xe000ed9c:  0x38010003  0x3801ffe1
 (gdb) set {unsigned}0xE000ED98 = 2
 (gdb) x/2wx 0xE000ED9C
-0xe000ed9c:  0x38026003  0x38027fe1
+0xe000ed9c:  0x38022003  0x38023fe1
 (gdb) set {unsigned}0xE000ED98 = 3
 (gdb) x/2wx 0xE000ED9C
 0xe000ed9c:  0x00000000  0x00000000
 (gdb) p *g_arch_current.v_._M_b._M_p
-$1 = {sp = 939687868, npriv = 1, resting_npriv = 1, stack_lo = 939679744, stack_hi = 939687936, kernel_sp = 939526208}
+$1 = {sp = 939671484, npriv = 1, resting_npriv = 1, stack_lo = 939663360, stack_hi = 939671552, kernel_sp = 939525200, splim = 939663464}
 ```
 `MPU_CTRL` = 5 (`ENABLE` and `PRIVDEFENA`). Writing `MPU_RNR` from gdb is safe here: the
 commit sets it before every write. Stop 5 decodes the three descriptors.
@@ -252,9 +253,9 @@ Now decode Stop 4's words. Descriptor 0: base `0x10000000`, `AP` = `11` (read-on
 privilege), `XN` clear; limit `0x103fffe0` plus 31, so up to `0x103fffff`; `AttrIndx` 0
 (Normal); enabled. That is the 4 MiB code bank, readable and executable by the thread.
 Descriptor 1: `0x38010000` to `0x3801ffff`, `AP` = `01` (read-write, any), `XN` set: the
-application's data. Descriptor 2: `0x38026000` to `0x38027fff`, read-write, execute-never: the
-thread's own 8 KiB stack, and you can check it against `stack_lo` and `stack_hi` (`0x38026000`
-and `0x38028000`) in the context printed above. Descriptor 3 is disabled.
+application's data. Descriptor 2: `0x38022000` to `0x38023fff`, read-write, execute-never: the
+thread's own 8 KiB stack, and you can check it against `stack_lo` and `stack_hi` (`0x38022000`
+and `0x38024000`) in the context printed above. Descriptor 3 is disabled.
 
 A region the encoder cannot name exactly gets `RLAR` = 0, which leaves the slot disabled. It is
 never widened to the nearest boundary, because widening would grant bytes nobody asked for.
@@ -274,33 +275,41 @@ which feeds `pmsav8_encode` a region set and asks what the hardware would decide
 
 **Why, and the contract:** [Reference: porting, ARMv8-M PMSAv8](../reference/porting.md)
 
-### Stop 6: stack limit registers, present and unused
-**Where:** `arch/arm/armv7m/switch.S`, `PSP_GUARD`; `arch/arm/armv7m/include/kickos/arch/armv7m_trap_stack.h`
+### Stop 6: stack limit registers
+**Where:** `arch/arm/armv7m/switch.S`, `PendSV_Handler` and `svc_trampoline`;
+`arch/arm/armv7m/arch_armv7m.cc`, `arch_context_init` and `kickos_armv7m_init`;
+`arch/arm/armv7m/include/kickos/arch/armv7m_trap_stack.h`, `KICKOS_ARMV7M_SPLIM_ROOM`
 
 ARMv8-M Mainline adds two registers v7-M lacks: `MSPLIM` and `PSPLIM`, one per stack pointer.
-When set, the core raises a UsageFault (`STKOF`) the moment a push would take the stack
-pointer below the limit. It is a hardware stack-overflow check.
+Every write to SP and every exception entry is checked against the live one, and a push that
+would take the stack pointer below it raises a UsageFault (`STKOF`) before a byte lands there.
+It is a hardware stack-overflow check, and the chip file turns it on (`stack_limit: true`).
 
-KickOS does not program them. Because the M33 runs the armv7m backend unchanged, it guards its
-stacks the way the reference does: in software, `PSP_GUARD` in `PendSV_Handler` and
-`SVC_Handler` refuses a process stack pointer with no room below it for the frame about to be
-pushed, and under enforcement the thread's MPU stack region (descriptor 2 above) faults any
-access past either end. The limit registers stay at their reset value, 0, which means no
-check.
+`MSPLIM` is set once at boot to the base of the main stack. `PSPLIM` is part of each thread's
+context, like `CONTROL.nPRIV`: `arch_context_init` seats it in `ctx.splim`, and PendSV saves and
+restores it with the rest. It sits 104 bytes above `stack_lo`, not at it. The hardware checks
+its own entry frame, but not the `{r4-r11, EXC_RETURN}` block PendSV then pushes below the PSP
+through a general register; the room is that block, rounded to the registers' 8-byte granule.
+So the software guard in `PendSV_Handler` keeps only its upper bound on this core.
 
 **Try it:** run to the end of the first commit as in Stop 4, then:
 ```
 (gdb) info registers psp psplim msplim control
-psp     0x38027fe0
-psplim  0x0
-msplim  0x0
-control 0x1
+psp            0x38023fe0
+psplim         0x38022068
+msplim         0x381fc000
+control        0x1
+(gdb) p/x ((unsigned*)g_arch_current.v_._M_b._M_p)[3]
+$1 = 0x38022000
+(gdb) p/x &__kickos_ram_end
+$2 = 0x381fc000
 ```
-A thread is about to resume on its process stack, and no limit is set. (`control` shows
+A thread is about to resume on its process stack. `PSPLIM` is its `stack_lo` (the fourth word
+of its context) plus 0x68, and `MSPLIM` is the base of the main stack. (`control` shows
 `nPRIV` = 1 for the unprivileged thread; in handler mode the stack-select bit reads 0.)
 
 **Why, and the contract:** [Book: Whoever stacks the trap frame owns the bounds check](../book/whoever-stacks-the-trap-frame-owns-the-bounds-check.md),
-[Book: Thread stacks](../book/thread-stacks-and-the-kiss-tension.md)
+[Reference: porting, ARMv8-M stack limit registers](../reference/porting.md)
 
 ### Stop 7: a violation is still a MemManage
 **Where:** `arch/arm/armv7m/arch_armv7m.cc`, `HardFault_Handler`, `kickos_armv7m_fault_report`;
@@ -346,7 +355,7 @@ address the thread touched, one no region of its set covers. After `continue` th
 2. In Stop 4, `finish` once more from a later commit, between two threads of the same task.
    Predict which of the three descriptors the commit actually rewrites, then step through the
    loop to check.
-3. Stop 6: if `PSPLIM` were set to each thread's `stack_lo` at switch-in, which software check
-   would it duplicate, and which kind of overflow would it catch earlier? Find in
-   `PendSV_Handler` where the write would have to go so that a thread never runs with another
-   thread's limit.
+3. Stop 6: `svc_trampoline` moves SP from the thread's stack onto its kernel block, which lies
+   below it in memory here, and writes the block's limit beside the move with interrupts
+   masked. Say what an interrupt taken between the two instructions would be checked against
+   in each order, and which order faults without the mask.

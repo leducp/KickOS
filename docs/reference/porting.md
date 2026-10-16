@@ -336,7 +336,10 @@ believe before it reads them, and this is the part that is easy to get wrong.
   causes (`0x50` privileged, `0x54` access, `0x5C` undefined, `0x60` address, `0x64` FP) may kill a
   thread; the `_rx_trap` catch-all is cause `0`, and it carries the NMI, which is accepted at an
   instruction boundary with `PSW.PM` still set. Without the filter a chip-level NMI would kill
-  whichever thread happened to be running.
+  whichever thread happened to be running. x86_64 filters the same way: `trap_frame_from_ring3`
+  refuses the NMI (2), the double fault (8), the machine check (18) and the virtualisation and
+  security exceptions (28 to 30) as it refuses every vector from 32 up, so each reaches the panic
+  report whatever level it lands on.
 - The sim carries an extra term (an x86_64 host) because its seam rewrites the host
   `ucontext` register file directly. On a host layout it does not know
   `arch_fault_is_user_thread` declines, and the gates would then assert an outcome the
@@ -715,7 +718,7 @@ silicon-proven unless the row says otherwise:
 | `virt_rv64` | qemu-riscv64 / qemu-riscv64-sv48 / qemu-riscv64-smp | RV64IMAC | **Sv39 + Sv48 MMU** | QEMU (three runnable CI gates in one job: both paging postures at 52 arms each, re-derived 2026-08-29 by `ctest -N`, and a four-hart shared kernel), **plus runtime translation-enforcement gates**: an UNPRIVILEGED read of a dead thread's stack page after its unmap (`qemu_riscv64_deadstack`), a stack guard, a kernel-half denial and a surviving fault. Both paging postures run because a level-count bug shows in only one (`../reference/boards.md`, *CI coverage*) |
 | `virt_arm64` | qemu-arm64 (+ `-smp`, `-smpiso`, `-gicv3`, the `-amp` family) | Cortex-A53 | **VMSAv8 MMU** | QEMU (runnable CI gates at one kernel core -- the `qemu-arm64` job, 42 ctest arms re-derived 2026-08-29 by `ctest -N` -- at four cores, at four cores with one isolated, at four cores under a GICv3, and as an AMP partition of one, two and three images, **plus runtime translation-enforcement gates**) |
 | `imx8mp` | imx8mp-evk | quad Cortex-A53 (one brought up) | **VMSAv8 MMU** | QEMU, **NOT IN CI**: `.github/workflows/ci.yml` carries no job for it, so the board is LOCAL `ctest` only (`--preset imx8mp-evk`), 48 arms (`ctest -N` 2026-09-02), **plus runtime translation-enforcement gates**. The second armv8a chip, and what moved the shared-kernel predicate's per-part half out of the arch. Hands over at EL3 with no firmware, wires a GIC-500, and brings up ONE core because the machine models no secondary release (`../reference/boards.md`, *Per-board caveats*) |
-| `q35` | qemu-x86_64 | x86_64 | **x86-64 paging MMU** | QEMU (runnable CI gate, the `qemu-x86_64` job), booted as a PE32+ UEFI application under OVMF firmware the job resolves rather than names, because `-kernel` cannot start such an image at all. The chip translates (`HAS_ASPACE`, `arch/x86/x86_64/aspace_x86_64.cc`): the firmware's identity map is the kernel half and carries no U/S bit, the boot refuses a map that lets ring 3 reach it, and each task runs in its own address space, **plus a runtime translation-enforcement gate**, a ring-3 reach into the kernel half (`tests/integration/check_kernel_half_x86_64.sh`) (`../reference/boards.md`, *CI coverage*) |
+| `q35` | qemu-x86_64 | x86_64 | **x86-64 paging MMU** | QEMU (runnable CI gate, the `qemu-x86_64` job), booted as a PE32+ UEFI application under OVMF firmware the job resolves rather than names, because `-kernel` cannot start such an image at all. The chip translates (`HAS_ASPACE`, `arch/x86/x86_64/aspace_x86_64.cc`): the firmware's identity map is the kernel half and carries no U/S bit, the boot refuses a map that lets ring 3 reach it, each task runs in its own address space, and SMEP and SMAP keep the kernel out of user pages wherever CPUID offers them, the interrupt entry resetting RFLAGS so ring 3's AC cannot lift SMAP, **plus a runtime translation-enforcement gate**, a ring-3 reach into the kernel half (`tests/integration/check_kernel_half_x86_64.sh`) (`../reference/boards.md`, *CI coverage*) |
 | `xmc4800` | xmc4800-relax | M4F | PMSAv7 | **hardware** (LED + USIC VCOM console over the buffered ring; enforcement + the canonical per-thread peripheral-isolation proof) |
 | `stm32f411` | f411disco / blackpill | M4F | PMSAv7 | **hardware** (LED + UART + ping-pong; enforcement selftest + `mpu_fault` MemManage denial + an unprivileged root, all on `f411disco` 2026-07-29). Witnessed on one of the two boards; `blackpill` shares this backend and was not re-run |
 | `stm32f302` | f302nucleo | M4 | -- | **hardware** (LED PB13 + console; the full suite at the `f302nucleo-st` provisioning -- 63 ok / 0 not ok / 5 skipped on 16 KiB SRAM, measured at `124b68c`). Not an enforcement target: the F302R8 line has no MPU, so its chip file states `protection: { unit: none }` and `arch_mpu_min_region()` returns 0 |
@@ -811,6 +814,37 @@ reached from userspace as syscall `KOS_SYS_PERIPH_ENABLE` (39) via
 the register block at `base`, and it is **idempotent**, so a driver calls it as its
 first act without knowing whether the board already did.
 
+**The disable half closes the bus gate again.** `int arch_periph_disable(uintptr_t base)`,
+reached as `KOS_SYS_PERIPH_DISABLE` (79) via `kos_periph_disable` under the same possession
+gate, restores the supervisor-protect the enable dropped for the same exact base. It re-gates
+and nothing more: it quiesces nothing, the module is left as it stands, mid-transfer included,
+and the next open's idle writes recover it; and the kernel console reclaims UART0 after its
+driver's death, so the clock stays on. A backend needs one only where the enable opened a
+gate that is per privilege rather
+than per thread, which on `mk64f`'s `AIPS0` opens the slot to every unprivileged thread. `mk64f`
+defines it over the enable's own table; every other chip keeps the `-KOS_ENOSYS` fallback, its
+core MPU gating each unprivileged access per thread already. It is idempotent and an untabled
+base touches nothing.
+
+`imxrt1062` is the case that looks like `mk64f` and is not. Its enable clears USB1's
+Supervisor-Protect bit in the AIPS-TZ bridge too, and nothing sets it back, which is sound: the
+bit is not the gate there. The M7's PMSAv7 MPU runs with `PRIVDEFENA` set
+(`arch/arm/common/arch_arm_mpu_pmsav7.cc`), and under it an unprivileged access that matches no
+enabled region faults (ARMv7-M ARM, DDI 0403E, B3.5.8 `MPU_CTRL.PRIVDEFENA`: the default map is
+a background region for privileged access only). The chip's fixed regions cover only the
+FlexSPI and SEMC apertures, so the one region over USB1 an unprivileged thread can hold is its
+window, and a thread without it faults at the core before the bridge is asked. The K64F's M4 has
+no core MPU at all, only the bus-side SYSMPU, whose slave ports leave the peripheral bridge out,
+which is why `AIPS0`'s bit is the only gate there and the only one this seam closes. A flat
+build enforces neither and claims nothing. A bus engine's close calls it last, after its own register stores.
+The kernel calls it too, for every device window a dying thread holds, in `sched::exit_current`
+while the window is still that thread's, so the block is closed before a second holder can be
+admitted to it: a slot `AIPS0` opens to all user code stays open exactly as long as one thread
+holds the window.
+On `mk64f` the DSPI engine's and the UART backend's closes re-protect their blocks too, so
+DSPI0's and UART0's registers fault from the close to the next open; that guarantee is the
+chip's, and the SPI and UART classes promise it nowhere else.
+
 `base` is the register-**BLOCK** base and must match a per-chip table **EXACTLY**; a
 backend never range-matches. Both the register and the bit are derived from `base`, so
 the ABI carries no register address and no bit number, and a caller cannot name a
@@ -841,7 +875,7 @@ adding one must check this before the datasheet. The K64F PIT is the worked case
 which `arch_reserved_blocks` protects by address. So the PIT gets no entry and
 `pit_clock_init` gates it at boot instead (`arch/arm/chip/mk64f/chip_mk64f.cc`).
 
-Backends exist for **four** chips; every other chip keeps the fallback, deliberately
+Backends exist for **five** chips; every other chip keeps the fallback, deliberately
 including `esp32c6` (its bus-side APM rows are derived by `arch_init` from the image's
 composition, not opened per block):
 
@@ -849,11 +883,13 @@ composition, not opened per block):
 |------|-------|------------|-------------|
 | `mk64f` | UART0 `0x4006A000` | `SIM_SCGC4` bit 10 | `AIPS0` slot 106, PACR `0x40000064` bit 22 |
 | `mk64f` | DSPI0 `0x4002C000` | `SIM_SCGC6` bit 12 | `AIPS0` slot 44, PACR `0x40000044` bit 14 |
+| `mk64f` | LPTMR0 `0x40040000` | `SIM_SCGC5` bit 0 | `AIPS0` slot 64, PACR `0x40000050` bit 30 |
 | `stm32f411` | SPI1 `0x40013000` | `RCC_APB2ENR` bit 12 | -- none exists for this bus |
 | `rx72m` | RIIC0 `0x00088300` | `MSTPCRB` bit 21 | -- none exists for this bus |
 | `rx72m` | RIIC1 `0x00088320` | `MSTPCRB` bit 20 | -- none exists for this bus |
 | `rx72m` | RIIC2 `0x00088340` | `MSTPCRC` bit 17 | -- none exists for this bus |
 | `imxrt1062` | USB1 `0x402E0000` | already done by `usb_clock_init` | `AIPSTZ3` OPACR, the USB1 slot's SP bit |
+| `rp2350` | UART0 `0x40070000` | `RESETS` bit 26 released, `-KOS_EIO` if it never leaves reset | -- none exists for this bus |
 
 The `mk64f` PACR register and bit are **computed** from `base` (`slot_of` / `pacr_of` /
 `pacr_sp_bit`, `arch/arm/chip/mk64f/regs/aips.h`) rather than tabled, and the clock is
@@ -1168,18 +1204,17 @@ after these bullets.** The worst case each backend runs with interrupts masked:
   (`chunk_copy`: the source before the copy, the destination before and after it), and a message
   is at most `KOS_EP_MSG_MAX` (256) bytes: at most 5 lines a sweep at 64-byte lines, 15
   operations, and 9 lines a sweep at 32-byte lines, 27 operations.
-- armv8a, x86_64 and rv64imac clear a new reservation's frames (`kos_ram_alloc`) and copy a new
-  space's static data from its spawner's space or from the snapshot (a spawn that builds a task,
-  an explicit task) outside the kernel lock in the same way, one granule under the lock at a time
-  with an interrupt window after each, into a run no range names yet (`presync_run`). The copy is
-  therefore no snapshot of one instant, on any core count: a store the spawner's other threads
-  make to static data while it runs can reach the child torn. A run the round does not take is
-  freed the same way, a granule a window (`presync_release`). A call refused its authority or its
-  out-word stages nothing, and nor does a spawn its arguments refuse: its plan and its locked
-  pass share one admission (`spawn_admit`), and only the grant list's entries, the priority
-  ceiling and the pools are left to the locked pass. The snapshot itself is taken once, under
-  the lock, at the first explicit task or at root's release, a copy the size of the image's
-  static data and no task's choice.
+- armv8a, x86_64 and rv64imac clear a new reservation's frames (`kos_ram_alloc`) and copy the
+  pristine image of the static data into a new space (a spawn that builds a task, an explicit
+  task) outside the kernel lock in the same way, one granule under the lock at a time with an
+  interrupt window after each, into a run no range names yet (`presync_run`). The source is
+  written once, before any space runs, so the copy is whole however it is interleaved. A run the
+  round does not take is freed the same way, a granule a window (`presync_release`). A call
+  refused its authority or its out-word stages nothing, and nor does a spawn its arguments
+  refuse: its plan and its locked pass share one admission (`spawn_admit`), and only the grant
+  list's entries, the priority ceiling and the pools are left to the locked pass. The image
+  itself is captured once, under the lock, at the first space's seed, a copy the size of the
+  image's static data and no task's choice.
 
 Not covered, each running in one masked span that scales with a size a task chose: a mapping's
 page-table edit, under the kernel lock, one entry per granule of the mapping; the free of a run
@@ -1190,6 +1225,11 @@ between granules: its sync, clear, copy and release run at the caller's own inte
 one span the size of what it stages wherever that state is masked. A region chip's clear of a
 new arena block (`ram_block_clear`) is no masked span: it runs outside the kernel lock in the
 system call's trampoline, with interrupts open.
+
+Nor is a new space's startup bounded, though it masks nothing: the first thread of a task that
+runs, one a spawn builds included, walks the image's constructors in `kickos_task_start` before
+its entry, preemptibly, at its own priority, for as long as the app's constructors take, and its
+task's other threads wait for it on the task's libc lock (`space-data-starts-from-the-image`).
 
 **A store into frames whose mapping their owning task is changing may be lost.** From the call's
 entry to its return, a store the task's other threads make through one of its mappings of those
@@ -1263,6 +1303,53 @@ to reach the figure, so a holder that goes deeper, or a figure left above the de
 fails there. **A caller of the seam owes the other half:** a walk over many pages releases each
 before taking the next.
 
+### The kernel cannot reach a user page (`KICKOS_ARCH_UGUARD`, `arch_uaccess_guard`)
+
+Every kernel access to memory a process owns goes through the acquire pair above. A translating
+backend whose hardware can enforce that makes a privileged access to a user-accessible page FAULT,
+set once per core at bring-up and never lifted, and opts in by defining `KICKOS_ARCH_UGUARD` in
+its `context.h` and answering `arch_uaccess_guard()` with the form in force, which the banner prints
+on its `uaccess` line. The mechanism is the ISA's: rv64imac never sets `sstatus.SUM`; x86_64 sets
+CR4.SMEP and CR4.SMAP where CPUID leaf 7 offers them; armv8a has two forms, chosen per core at run
+time from `ID_AA64MMFR1_EL1.PAN` so one image serves both.
+
+- **A flag the interrupted code controls must not reach ring 0.** x86_64's RFLAGS.AC lifts SMAP,
+  ring 3 sets it with `popf`, and interrupt and exception delivery keep it: IA32_FMASK clears it
+  on SYSCALL and the interrupt entry resets RFLAGS (`push $2; popfq`) before any C, on a part
+  without SMAP too, where `clac` would raise #UD.
+
+- **PAN (ARMv8.1 and later).** Clear `SCTLR_EL1.SPAN`, whose reset value is UNKNOWN, so every
+  exception into EL1 sets `PSTATE.PAN`, set PAN, and read both back. **An exception return restores
+  PAN from SPSR, so every SPSR the backend BUILDS for a privileged resume carries the bit**: a
+  voluntary switch frame, a privileged thread's first frame, every redirect. armv8a builds them all
+  from one word so that no site can drop it; a frame built without it resumes unguarded until the
+  next exception, which only the witness's park and fault-exit arms see.
+- **The reserved root (ARMv8.0, the A53).** Every entry from EL0 installs an empty, read-only TTBR0
+  table under an ASID no space is given, then an ISB; an `eret` whose SPSR names EL0t installs the
+  space the per-core `user_ttbr0` cell names, and every EL1 return keeps the empty root. The cell
+  starts out holding the empty root, and a part with no ASID width refuses the form.
+  `arch_aspace_activate` fills the cell instead of the register, and the sweep owed on leaving ASID
+  0 reads the root being left from the cell, since the register at EL1 always holds the empty root.
+  `TCR_EL1.EPD0` is not a substitute: it stops walks and leaves the entries EL0 just filled in the
+  TLB answering. Costs about 14 instructions per trap; on QEMU each ASID change also flushes the
+  emulator's own TLB.
+- **The root a core falls back to (`arch_aspace_boot`) maps nothing ring 0 could reach in the low
+  half.** PAN polices user-accessible pages only, so a supervisor-only identity map
+  installed after boot defeats it silently. armv8a answers the empty root there, the boot identity
+  root being used only by each core's own bring-up.
+- **Every core of one kernel takes the same form**; a core that disagrees with the boot core
+  refuses to come up rather than mix them, since a thread may resume on another core than the one
+  that built its frame.
+
+The witness is `tests/integration/check_uaccess.sh`, registered for an arch in
+`tests/integration/gates/uaccess.cmake` with the posture its banner prints: a kernel built with
+`KICKOS_WITNESS_UACCESS` in a scratch tree of the preset touches a user word from ring 0 on a fresh
+entry (a read and a write), after a park, under the fallback root and in the fault-exit stub, and
+each must fault with the class the guard gives. That knob makes a read and write primitive of the
+kernel, so the configure refuses it without the marker only the gate passes, the call refuses a
+caller without the whole authority word, and the banner says `witness uaccess`. A new arch adds its
+name, its posture and a `judge_<arch>` reading its own dump.
+
 ### Naming the frame behind a page (`arch_aspace_frame_at`)
 
 `arch_phys_addr_t arch_aspace_frame_at(struct arch_aspace* space, uintptr_t va)` answers the
@@ -1278,6 +1365,25 @@ of slots the same small number comes back for every frame in the system, so code
 identity reports "the same frame" for frames that differ and SUCCEEDS. That is the shape to reach
 for whenever a caller wants to know WHICH frame rather than to read one
 (`../design-m6-mmu.md` F8).
+
+### A space's startup (`arch_context_second_arg`)
+
+`void arch_context_second_arg(struct arch_context* ctx, uintptr_t value)` makes a context
+`arch_context_init` has just built for an unprivileged thread, before its first switch-in, enter
+its entry with `value` as the second argument register (x1, a1, rsi). Every space starts from
+the image's pristine data, which no constructor has run over, so `thread_create` enters every
+unprivileged thread at `kickos_task_start(arg, entry)` (`<kickos/sys/init.h>`), which runs the
+image's startup once per space and then `entry(arg)`; this call is how the real entry reaches it.
+Only a translating backend declares and defines it, writing the register's slot of the frame the
+context resumes from.
+
+The startup runs on the stack of whichever thread of the space arrives first, so any thread of
+a translating board may carry it, and `KICKOS_MIN_STACK_SIZE` must hold it: the unwind-table
+registration, the toolchain runtime's constructors and their calls into malloc and the libc
+lock. Each translating backend states the measured figure as `<ARCH>_TASK_START` in its
+`<arch>_trap_stack.h` and asserts the floor above it; the compose check and the spawn's stack
+admission both read the floor, so neither admits a stack the startup would overrun. The figure
+is the toolchain runtime's: an app whose own constructors go deeper sizes its stacks for them.
 
 ### Privileged register write (`arch_periph_reg_write`)
 
@@ -1978,7 +2084,7 @@ requirement, for a zero-skip run:
 | `KICKOS_MAX_THREADS` | 16 (`config/system.h`) | `thread.h` (`ThreadPool`) | **>= 4** | 2 |
 | `KICKOS_MAX_SEMAPHORES` | 16 (`system.h`) | `instance.h` (`sems`) | **>= 6** | 4 (f302) |
 | `KICKOS_CAP_TABLE_SUPPLY` | 16 (`system.h`) | per-thread cap table | **>= 11** | 8 |
-| `KICKOS_MAX_MUTEXES` | 8 (`system.h`) | `instance.h` (`mutexes`) | >= 3, the libc lock one of them | 4 (c8) |
+| `KICKOS_MAX_MUTEXES` | 8 (`system.h`) | `instance.h` (`mutexes`) | >= 3; the libc locks are not drawn from it | 4 (c8) |
 | `KICKOS_MAX_ENDPOINTS` | 4 (`system.h`) | `instance.h` (`endpoints`) | >= 1 | 4 |
 | `KICKOS_MAX_IRQ_HANDLES` | 8 (`system.h`) | `instance.h` (`irq_bindings`) | >= 1 | 4 (f302) |
 | `KICKOS_MAX_DOMAINS` | 20 translating / 18 region (`system.h`) | `instance.h` (`domains`) | a domain per live task plus the two immortal singletons on a translating board; one per thread at most on a region one | 4 |
@@ -2017,9 +2123,9 @@ alike. The other 61 cases
 need no 4th worker, so a small part loses one chained-priority-inheritance case and
 one call/reply case, not the suite. The 6-semaphore peak is `mutex_deadlock`: two permanent
 plus the four semaphores `t_mutex_deadlock` creates, but on an 8-handle board the **cap
-table** binds first, since `KICKOS_CAP_FIRST_DYNAMIC 2`
+table** binds first, since `KICKOS_CAP_FIRST_DYNAMIC 1`
 (`../../system/include/kickos/sys/cap_index.h`) plus the suite's two permanent caps
-leaves 4 free against the 6 that case wants live (rationale: `t_mutex_deadlock`'s refusal
+leaves 5 free against the 6 that case wants live (rationale: `t_mutex_deadlock`'s refusal
 branch).
 
 `f302nucleo` walked that ladder one knob at a time: at `KICKOS_MAX_THREADS=4` plus
@@ -2108,7 +2214,7 @@ besides, plus power-of-two natural alignment on every block where
 `arch_mpu_region_pow2()` is 1 (a base+limit backend pays only one granule per block). One of
 the five is not a RAM question at all: `mutex_deadlock` wants the suite's 3 OPTIONAL
 capabilities, so it needs a board whose `KICKOS_CAP_TABLE_SUPPLY` covers the demand
-of 10: 2 reserved (`KICKOS_CAP_FIRST_DYNAMIC`) + the suite's 5 mandatory peak + 3
+of 9: 1 reserved (`KICKOS_CAP_FIRST_DYNAMIC`) + the suite's 5 mandatory peak + 3
 optional. Only `bluepill-c8` and `f302nucleo` still supply 8
 (`grep -rn KICKOS_CAP_TABLE_SUPPLY boards/`); `microbit` dropped its own and takes the default 16,
 so on that part the cap table is no longer what binds.
@@ -2518,6 +2624,46 @@ Encoding actually used (`arch/arm/common/arch_arm_pmsav8.cc`, field defs in
   RP2350 implements 8, the same budget as the rest of the fleet.
 - Violations raise **MemManage** with `MMFSR`/`MMFAR` exactly as v7-M, so the shared ARMv7-M
   reporter needs no change.
+
+### ARMv8-M stack limit registers (`PSPLIM`, `MSPLIM`)
+
+Mainline adds one limit register per stack pointer. Every SP write (`push`, `sub sp`, `mov sp`)
+and every exception entry is checked against the live one, and a violation raises UsageFault
+with `CFSR.STKOF` (bit 20) before a byte lands under it. A chip opts in with `stack_limit: true`
+in its chip file (`an505`, `rp2350`), which `arch_armv7m.cc` holds against
+`__ARM_ARCH_8M_MAIN__`; the contract is invariant `v8m-psplim-names-the-live-stack`.
+
+| Stack | Limit | Written by |
+|---|---|---|
+| a thread's user stack | `ceil8(stack_lo) + KICKOS_ARMV7M_SPLIM_ROOM` | `arch_context_init` into `ctx.splim`, restored on every switch-in |
+| its kernel block | block base + `KICKOS_ARMV7M_SPLIM_ROOM` | `svc_trampoline` on the way in; the fault stub; `arch_context_init` on a rebuild |
+| the privileged trampoline on the user stack | the caller's own limit | carried in the continuation header's `[T-4]` word |
+| the main stack | `__kickos_ram_end`, per image and so per AMP node | `kickos_armv7m_init` |
+| the panic seat | its base, in the live stack's register | `kickos_panic_stack_enter` |
+| the main stack's overflow report | the base of `kickos_armv7m_stkof_stack` | `kickos_armv7m_stkof` |
+| an RP2350 ROM call | its core's 512-byte slice base, both registers, the caller's put back before its SP | `kickos_rp_rom_call` |
+
+- **The room is for software, not for the entry frame.** Entry stacking is itself checked, so a
+  limit needs no room for it. What is not checked is the `{r4-r11, EXC_RETURN}` (and
+  `{s16-s31}`) block PendSV and the SVC fastpath push through a general register below a PSP:
+  `KICKOS_ARMV7M_SPLIM_ROOM` is that block, 100 bytes, rounded up to the registers' 8-byte
+  granule. With it, PendSV's lower leg can never refuse and is not compiled.
+- **Every stack crossing is masked.** In either order a limit write and an SP move leave one
+  instruction where an entry is checked against the other stack's limit, and the kernel blocks
+  sit below the user stacks here.
+- **The SVC guard asks 184, not 180.** The trampoline runs privileged on the user stack, and a
+  violation there would be the kernel's: the window's checked part (8 + 104 - 32) has to clear
+  the limit.
+- **A violation at entry stacks nothing.** SP is set to the limit, and the frame there may be
+  the stack's own data (`armv7m_stkof_frame_clamped`); an instruction's violation can also land
+  a whole frame exactly there, so the reporter prints those words as unverified. The interrupted exception stays pending, so
+  the kill clears a pending SVCall; the lazy-FP reservation at `FPCAR` lies under the limit and is
+  dropped. On the MSP the naked handler moves the report onto an array of its own, `MSPLIM` at
+  its base, before any C runs: the main stack's base is the arena's top, so a report descending
+  from there writes into the arena. The array is trap class `STKOF`, and a fault inside the
+  report, its own overflow included, restarts at its top and terminates.
+- Both parts run Secure, so the `_S` registers are the live ones and no exception stacks the
+  additional state context.
 
 **A whole separate `armv8m` arch directory was rejected**, and the reason generalises to the next
 ARMv8-M part: Mainline is a superset of v7-M for everything the arch layer touches -- BASEPRI

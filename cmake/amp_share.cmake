@@ -61,3 +61,17 @@ function(kickos_amp_share_granule_check)
       "every node's.")
   endif()
 endfunction()
+
+# Several kernel instances over one image share its one heap and stdio, while each instance's
+# libc locks are its own kernel's, so nothing would serialise them unless every task has an
+# address space of its own. The sim runs on the host's libc.
+function(kickos_multi_instance_heap_check)
+  cmake_parse_arguments(MI "" "MULTI;TRANSLATES;ARCH;ORIGIN" "" ${ARGN})
+  if(MI_MULTI AND NOT MI_TRANSLATES AND NOT MI_ARCH STREQUAL "sim")
+    message(FATAL_ERROR
+      "KickOS: ${MI_ORIGIN} runs several kernel instances over one image with no address space "
+      "between them, so their threads share one heap and one stdio while each instance's libc "
+      "locks are its own kernel's: no lock would serialise them. Run one instance "
+      "(KICKOS_MULTI_INSTANCE off), or use a translating board, whose tasks each have their own.")
+  endif()
+endfunction()

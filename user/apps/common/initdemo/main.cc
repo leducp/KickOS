@@ -43,7 +43,7 @@ namespace
     Atomic<int, Order::RELAXED> g_worker_done{0};
 
     // A no-hardware sink: counts the bytes it receives on the delegated endpoint cap
-    // (B1: first delegated cap lands at child table index 2). A negative recv (dead endpoint)
+    // (B1: first delegated cap is the child's kos::child_cap(0)). A negative recv (dead endpoint)
     // ends it; otherwise it parks in recv until shutdown.
     void console_sink(void*)
     {
@@ -101,8 +101,8 @@ int main(int, char**)
         return 2;
     }
 
-    // Spawn the counting sink with a narrowed {ep | WAIT} recv cap (lands at child
-    // index 2). No SIGNAL/TRANSFER: it only receives.
+    // Spawn the counting sink with a narrowed {ep | WAIT} recv cap (the child's
+    // kos::child_cap(0)). No SIGNAL/TRANSFER: it only receives.
     kos_cap_grant const caps[1] = {
         { .source_cap = ep, .rights_mask = KOS_CAP_WAIT },
     };

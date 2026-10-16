@@ -15,6 +15,7 @@ family:
   dir: arm/chip/mps2
   sources: [arm/chip/mps2/chip_mps2.cc, arm/chip/mps2/startup.S, common/semihost_console.cc]
 exits_on_fault: true
+stack_limit: true
 
 interrupts: { count: { value: 140, ref: "QEMU 11.1 `info qtree`: armv7m_nvic num-irq" } }
 

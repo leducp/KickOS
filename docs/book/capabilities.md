@@ -246,12 +246,10 @@ tasks:
 So the thread that runs `main` holds:
 
 - **Slot 0, `KOS_CAP_STDOUT`: empty.** No console driver was published.
-- **Slot 1, `KOS_CAP_LIBC_LOCK`: a mutex with no rights**, the C library's lock
-  for this address space, which `printf` and `malloc` take (Chapter 0.6,
+- **Every other slot: empty**, for objects the app creates itself. The C
+  library's two locks are not in the table at all; they belong to whatever owns
+  the heap (Chapter 0.6,
   *[What's under #include](whats-under-include-libc-and-the-cxx-runtime.md)*).
-  Locking it needs no right, and without `KOS_CAP_TRANSFER` it can never be
-  passed on.
-- **Every other slot: empty**, for objects the app creates itself.
 - **The authority word: `memory`, `system`, `tasks`.** `hello` uses none of
   them; the board's default grants them so a plain `main` can reserve RAM, start
   tasks, and shut down without a manifest.

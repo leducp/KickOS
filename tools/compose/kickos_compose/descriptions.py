@@ -26,6 +26,7 @@ CHIP_FIELDS = (
     "version", "chip", "manual", "arch", "protection", "cores", "clusters_coherent",
     "partition_gate", "data_cache", "interrupts", "cycle_counter", "c", "reserved",
     "devices", "memory", "pins", "esptool_image", "family", "exits_on_fault", "cpu",
+    "stack_limit",
 )
 FAMILY_FIELDS = ("dir", "sources")
 # A path below arch/, one name per level and no level above it.
@@ -274,6 +275,8 @@ class Chip:
         self.exits_on_fault = None
         # The core's name on the boot banner, where no compiler flag names it.
         self.cpu = None
+        # Whether the core checks each stack pointer against a limit register.
+        self.stack_limit = False
 
 
 # A part with no clusters reaches its windows as one view, named by None.
@@ -309,10 +312,16 @@ def check_chip(path, text, report):
         chip.exits_on_fault = f.boolean(top["exits_on_fault"], "`exits_on_fault`") is True
     if "cpu" in top:
         chip.cpu = f.name(top["cpu"], "`cpu`", IDENTIFIER)
+    if "stack_limit" in top:
+        chip.stack_limit = f.boolean(top["stack_limit"], "`stack_limit`") is True
     if "family" in top:
         chip.family = check_family(f, top["family"])
     if "arch" in top:
         chip.arch = f.name(top["arch"], "`arch`", IDENTIFIER)
+    if chip.stack_limit and chip.arch is not None and chip.arch != "armv7m":
+        f.refuse(top["stack_limit"], "chip.stack-limit-arch",
+                 "`stack_limit` names the ARMv8-M Mainline limit registers, which only an armv7m "
+                 "chip's core can carry")
     if "manual" in top:
         chip.manual = check_text(f, top["manual"], "`manual`")
     if "c" in top:

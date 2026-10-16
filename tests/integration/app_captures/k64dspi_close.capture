@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   frdmk64f
+   arch    armv7m
+   cpu     cortex-m4
+   mpu     enforce
+   sched   tickless
+   build   2026-10-04 12:00:00 +0200
+   app     Oct  4 2026 12:00:01 +0200
+   commit  65fa3473
+   heap    15 KiB available
+   kstack  1008 B x 9 = 9072 B
+
+[k64dspi] transfer rc=4 (want 4)
+[k64dspi] halted transfer rc=-5 (want -5)
+[k64dspi] transfer after the halt rc=4 (want 4)
+[k64dspi] slowest pair at 261 Hz
+[k64dspi] slowest-pair transfer rc=2 (want 2)
+[k64dspi] bus close rc=0 (want 0)
+[k64dspi] after the close, a thread holding no window reads MCR
+
+=== THREAD FAULT === thread 'k64cprb' killed, system continues
+  PC=0x00002a1c CFSR=0x8200
+  ADDR=0x4002c000
+[k64dspi] the holder ended; a task holding no window reads MCR
+
+=== THREAD FAULT === thread 'k64dprb' killed, system continues
+  PC=0x00002a1c CFSR=0x8200
+  ADDR=0x4002c000
+[k64dspi] PASS: the probe after the holder's end faulted

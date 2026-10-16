@@ -44,6 +44,10 @@ struct arch_context
     // because a thread preempted mid-dispatch runs there. Zero for a TCB outside the pool.
     uintptr_t kernel_sp;
 
+#if defined(KICKOS_HAVE_STACK_LIMIT) && KICKOS_HAVE_STACK_LIMIT
+    uint32_t splim;
+#endif
+
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
     // Owning thread's trace id; switch.S reads it from the physically swapped contexts to
     // emit the SWITCH record.

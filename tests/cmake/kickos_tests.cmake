@@ -108,10 +108,11 @@ endfunction()
 #   claim rather than its image).
 #   QEMU_MACHINE is always passed: check_fault_dump.sh reads an UNSET QEMU_MACHINE as "this
 #   is the sim, run natively". MACHINE overrides the board default. ARGS are extra script
-#   arguments after the ELF. BOOTS and WORK size the TIMEOUT, see kickos_boot_timeout.
+#   arguments after the ELF. BOOTS, WORK and BOUND size the TIMEOUT, see kickos_boot_timeout; BOUND
+#   is also exported to the script as its QEMU_TIMEOUT.
 # ---------------------------------------------------------------------------
 function(kickos_add_qemu_test)
-  cmake_parse_arguments(QT "" "NAME;TARGET;SCRIPT;MACHINE;BOOTS;WORK" "ARGS" ${ARGN})
+  cmake_parse_arguments(QT "" "NAME;TARGET;SCRIPT;MACHINE;BOOTS;WORK;BOUND" "ARGS" ${ARGN})
   if(NOT QT_TARGET OR NOT QT_SCRIPT)
     message(FATAL_ERROR "kickos_add_qemu_test: TARGET and SCRIPT are required")
   endif()
@@ -127,21 +128,27 @@ function(kickos_add_qemu_test)
     set(_machine "${QT_MACHINE}")
   endif()
   list(APPEND _env QEMU_MACHINE=${_machine})
+  set(_bound)
+  if(DEFINED QT_BOUND)
+    list(APPEND _env QEMU_TIMEOUT=${QT_BOUND})
+    set(_bound BOUND ${QT_BOUND})
+  endif()
   add_test(NAME "${QT_NAME}"
     COMMAND "${CMAKE_COMMAND}" -E env ${_env}
             "${QT_SCRIPT}" "$<TARGET_FILE:${QT_TARGET}>" ${QT_ARGS})
   set_tests_properties("${QT_NAME}" PROPERTIES SKIP_RETURN_CODE 77)
-  kickos_boot_timeout("${QT_NAME}" "${QT_SCRIPT}" BOOTS ${QT_BOOTS} WORK ${QT_WORK})
+  kickos_boot_timeout("${QT_NAME}" "${QT_SCRIPT}" BOOTS ${QT_BOOTS} WORK ${QT_WORK} ${_bound})
 endfunction()
 
 # ---------------------------------------------------------------------------
-# kickos_boot_timeout(<test> <script> [BOOTS <n>] [WORK <s>])
+# kickos_boot_timeout(<test> <script> [BOOTS <n>] [WORK <s>] [BOUND <s>])
 #   Register the TIMEOUT of a test booting the configured board's image, under its emulator or
 #   natively on the sim, as the charge tests/lib/gate.sh's boot_bound puts on its boots, plus one
 #   second, so that charge can refuse only a test whose BOOTS is miscounted. Each boot is bounded
-#   at the QEMU_TIMEOUT (on the sim, SIM_TIMEOUT) this configure sees, else at <script>'s own
-#   default, else at run_image's, and carries gate.sh's firmware allowance under uefi-pe and its
-#   stop. A ctest run under another bound needs a reconfigure.
+#   at BOUND, for a test whose command sets that bound itself, else at the QEMU_TIMEOUT (on the
+#   sim, SIM_TIMEOUT) this configure sees, else at <script>'s own default, else at run_image's,
+#   and carries gate.sh's firmware allowance under uefi-pe and its stop. A ctest run under
+#   another bound needs a reconfigure.
 #
 #   BOOTS (default 1) counts the boots gate.sh charges, those of a script <script> runs
 #   included. WORK is what the test spends beside them, such as building the image it boots.
@@ -149,7 +156,7 @@ endfunction()
 #   An emulated test holds one ctest slot per emulated core.
 # ---------------------------------------------------------------------------
 function(kickos_boot_timeout test script)
-  cmake_parse_arguments(QB "" "BOOTS;WORK" "" ${ARGN})
+  cmake_parse_arguments(QB "" "BOOTS;WORK;BOUND" "" ${ARGN})
   if(NOT DEFINED QB_BOOTS)
     set(QB_BOOTS 1)
   endif()
@@ -163,6 +170,9 @@ function(kickos_boot_timeout test script)
   endif()
   set(_default_re "(^: |boot_bound )\"\\$\\{${_var}:[-=][0-9]+\\}\"")
   set(_bound "$ENV{${_var}}")
+  if(DEFINED QB_BOUND)
+    set(_bound "${QB_BOUND}")
+  endif()
   if(_bound STREQUAL "")
     file(STRINGS "${script}" _bound REGEX "${_default_re}" LIMIT_COUNT 1)
   endif()

@@ -86,14 +86,14 @@ the first syscall fail at Stop 8.
 **Try it:** `break kos_send`, `continue`, then `bt`. You stop in the stub, called from the print:
 
 ```
-#0  kos_send (ep=0, buf=0xf243, len=29) at .../user/src/syscall_stubs.cc:113
-#1  0x00001930 in kickos::stdout_write (s=0xf243 "hello from KickOS userspace!\n", total=29) at .../emit.h:88
-#2  kos_print (s=0xf243 "hello from KickOS userspace!\n") at .../user/src/print.cc:11
-#3  0x0000019a in kos::print (...) at .../user/include/kickos/kos.h:17
+#0  kos_send (ep=0, buf=0xf343, len=29) at .../user/src/syscall_stubs.cc:113
+#1  0x00001930 in kickos::stdout_write (s=0xf343 "hello from KickOS userspace!\n", total=29) at .../emit.h:88
+#2  kos_print (s=0xf343 "hello from KickOS userspace!\n") at .../user/src/print.cc:11
+#3  0x0000019a in kos::print (...) at .../user/include/kickos/kos.h:23
 #4  kickos_app_main () at .../user/apps/common/hello/main.cc:58
 ```
 
-`buf=0xf243` is an address in flash, where the string literal lives. `p $control` prints `3`:
+`buf=0xf343` is an address in flash, where the string literal lives. `p $control` prints `3`:
 bit 0 (`nPRIV`) set means unprivileged, bit 1 (`SPSEL`) set means the thread runs on the process
 stack pointer, `PSP`. This is user mode.
 
@@ -146,7 +146,7 @@ in memory the caller could change while the kernel reads it.
 ```
 r0             0x1b                27
 r1             0x0                 0
-r2             0xf243              62019
+r2             0xf343              62275
 r3             0x1d                29
 ```
 
@@ -192,13 +192,13 @@ lr             0xfffffffd
 (gdb) p/x $xpsr
 $2 = 0x100000b
 (gdb) x/8wx $psp
-0x20027ed8:    0x0000001b    0x00000000    0x0000f243    0x0000001d
-0x20027ee8:    0x00000000    0x000016c7    0x000024b8    0x01000000
+0x20027ed8:    0x0000001b    0x00000000    0x0000f343    0x0000001d
+0x20027ee8:    0x00000000    0x000016c7    0x0000253c    0x01000000
 ```
 
-Read the frame left to right: `r0`=27 (the number), `r1`=0 (the handle), `r2`=0xf243 (the
+Read the frame left to right: `r0`=27 (the number), `r1`=0 (the handle), `r2`=0xf343 (the
 buffer), `r3`=29 (the length), `r12`=0 (the fifth argument), `lr`=0x16c7 (where `kos_send`
-continues after its call to `arch_syscall`, with bit 0 set for Thumb), `pc`=0x24b8 (the `bx lr`
+continues after its call to `arch_syscall`, with bit 0 set for Thumb), `pc`=0x253c (the `bx lr`
 right after the `svc`), `xPSR`=0x01000000 (Thumb bit, thread mode). The `PSP` moved down by 32
 bytes, one frame. `xPSR` ends in `0xb`, exception 11, and `EXC_RETURN` 0xfffffffd means "return to
 thread mode, on the `PSP`, with no floating-point state in the frame".
@@ -258,7 +258,7 @@ kernel data structure.
 (gdb) info registers r0 r1 r2 r3 r12 lr sp
 r0             0x1b                27
 r1             0x0                 0
-r2             0xf243              62019
+r2             0xf343              62275
 r3             0x1d                29
 r12            0x0                 0
 lr             0x16c7              5831
@@ -309,7 +309,7 @@ return to, and the user `PSP` to come back to. Then it calls `syscall_dispatch` 
 **Try it:** `break syscall_dispatch`, `continue`:
 
 ```
-Breakpoint 3, syscall_dispatch (nr=27, a0=0, a1=62019, a2=29, a3=0) at .../kernel/syscall/syscall.cc:371
+Breakpoint 3, syscall_dispatch (nr=27, a0=0, a1=62275, a2=29, a3=0) at .../kernel/syscall/syscall.cc:371
 (gdb) info registers sp
 sp             0x20000830          0x20000830 <kickos::(anonymous namespace)::g_kstacks+2000>
 (gdb) x/4wx $sp
@@ -360,7 +360,7 @@ values (the clock read) and the ones that return a small signed count.
 `IrqLock` is the kernel's critical section: on Cortex-M it raises `BASEPRI` so that interrupts
 which could touch kernel state wait until it is released. You will see one in almost every case.
 
-**Try it:** at the `syscall_dispatch` stop, `info args` prints `nr = 27, a0 = 0, a1 = 62019, a2 = 29,
+**Try it:** at the `syscall_dispatch` stop, `info args` prints `nr = 27, a0 = 0, a1 = 62275, a2 = 29,
 a3 = 0`: the same five words, now C++ parameters.
 
 **Why, and the contract:** [Book: the syscall path](../book/the-syscall-path-trap-dispatch-return.md)
@@ -404,7 +404,7 @@ region table.
 `break kickos::user_readable_ok` and `continue`:
 
 ```
-Breakpoint 2, kickos::user_readable_ok (ptr=62019, len=29) at .../kernel/syscall/syscall_mem.cc:364
+Breakpoint 2, kickos::user_readable_ok (ptr=62275, len=29) at .../kernel/syscall/syscall_mem.cc:364
 (gdb) p kickos::sched::current()->name
 $1 = "main", '\000' <repeats 11 times>
 (gdb) p kickos::sched::current()->mpu.regions_[0]
@@ -414,7 +414,7 @@ $4 = {base = 536936448, size = 65536, attr = 3}
 ```
 
 Region 0 is the 4 MiB of flash with `attr = 5`, which is read plus execute (`ARCH_MPU_R` is 1,
-`ARCH_MPU_W` 2, `ARCH_MPU_X` 4, in `arch/include/kickos/arch/arch.h`). The string at 0xf243 lies
+`ARCH_MPU_W` 2, `ARCH_MPU_X` 4, in `arch/include/kickos/arch/arch.h`). The string at 0xf343 lies
 inside it, so `finish` prints `Value returned is ... = true`.
 
 **Why, and the contract:** [Book: alignment across the syscall boundary](../book/alignment-across-the-syscall-boundary.md)
@@ -472,8 +472,8 @@ For `hello`'s `main`, slot 0 has never been filled.
 **Try it:** `break kickos::cap_resolve_e if cap_handle == 0`, `continue`:
 
 ```
-Breakpoint 1, kickos::cap_resolve_e (c=c@entry=0x20004e90 <...>, cap_handle=cap_handle@entry=0,
-    want=want@entry=kickos::CapType::CAP_ENDPOINT, need=need@entry=2 '\002', err=...) at .../kernel/syscall/cap.cc:1019
+Breakpoint 1, kickos::cap_resolve_e (c=c@entry=0x20004ed8 <...>, cap_handle=cap_handle@entry=0,
+    want=want@entry=kickos::CapType::CAP_ENDPOINT, need=need@entry=2 '\002', err=...) at .../kernel/syscall/cap.cc:1010
 (gdb) p c->name
 $1 = "main", '\000' <repeats 11 times>
 (gdb) p c->caps.chunk[0][0]
@@ -483,7 +483,7 @@ Value returned is $4 = (void *) 0x0
 ```
 
 `type = 0` is `CapType::CAP_EMPTY`. To see a resolve succeed, look at the `ping` thread a little
-later: `delete`, `break kos_sem_post`, `continue` (it stops with `sem=3`), then
+later: `delete`, `break kos_sem_post`, `continue` (it stops with `sem=2`), then
 `break kickos::cap_resolve_e`, `continue`:
 
 ```
@@ -494,10 +494,10 @@ $6 = {obj = 1, type = 1 '\001', seq_lo = 0 '\000', rights = 7 '\a', seq_hi = 0 '
 (gdb) finish
 Value returned is $7 = (void *) 0x200048f4 <kickos::detail::g_instance+324>
 (gdb) p *(kickos::Semaphore*)$
-$8 = {count = 0, waiters = {head = 0x20005148 <kickos::detail::g_instance+2456>, tail = 0x20005148 <...>}}
+$8 = {count = 0, waiters = {head = 0x20005190 <kickos::detail::g_instance+2528>, tail = 0x20005190 <...>}}
 ```
 
-Slot 3 holds a semaphore (`type = 1`, `CAP_SEM`) with all three rights (wait, signal, transfer).
+Slot 2 holds a semaphore (`type = 1`, `CAP_SEM`) with all three rights (wait, signal, transfer).
 The resolve returns the kernel's `Semaphore`, and its wait list already holds one thread: `pong`,
 waiting for this very post.
 
@@ -520,7 +520,7 @@ The `-9` travels back up the same path you will see in Stop 11, and `stdout_writ
 **Try it:** `break kos_send`, `continue`, `finish`:
 
 ```
-kickos::stdout_write (s=0xf243 "hello from KickOS userspace!\n", total=29) at .../emit.h:92
+kickos::stdout_write (s=0xf343 "hello from KickOS userspace!\n", total=29) at .../emit.h:92
 92            if (r >= 0)
 Value returned is $1 = -9
 ```
@@ -572,10 +572,10 @@ and it works exactly like the sleep in the next chapter.
 
 ```
 #0  kickos::kaccess_from_user (kdst=kdst@entry=0x20000768 <...g_kstacks+1800>, sspace=sspace@entry=0x0,
-    usrc=usrc@entry=62019, n=n@entry=29) at .../kernel/syscall/syscall_mem.cc:643
-#1  0x00007b24 in kickos::(anonymous namespace)::console_write_user (buf=buf@entry=62019, len=len@entry=29) at .../syscall.cc:84
-#2  0x00007cac in (anonymous namespace)::syscall_body (nr=1, a0=62019, ...) at .../syscall.cc:432
-#3  syscall_dispatch (nr=1, a0=62019, a1=<optimized out>, a2=0, a3=0) at .../syscall.cc:400
+    usrc=usrc@entry=62275, n=n@entry=29) at .../kernel/syscall/syscall_mem.cc:643
+#1  0x00007cb4 in kickos::(anonymous namespace)::console_write_user (buf=buf@entry=62275, len=len@entry=29) at .../syscall.cc:84
+#2  0x00007e3e in (anonymous namespace)::syscall_body (nr=1, a0=62275, ...) at .../syscall.cc:432
+#3  syscall_dispatch (nr=1, a0=62275, a1=<optimized out>, a2=0, a3=0) at .../syscall.cc:400
 ```
 
 `kdst` is inside `g_kstacks`: the chunk buffer lives on `main`'s kernel stack.
@@ -620,8 +620,8 @@ No exception return happens on the way out. The exception ended at Stop 4; this 
 function return in thread mode.
 
 **Try it:** the last `bx lr` has no symbol of its own. `disassemble svc_trampoline` and find the
-`bx lr` just before the `cpsid i`; in this build it is at 0x247c. While stopped inside the console
-write (Stop 10), `delete`, `break *0x247c`, `continue`, then:
+`bx lr` just before the `cpsid i`; in this build it is at 0x2500. While stopped inside the console
+write (Stop 10), `delete`, `break *0x2500`, `continue`, then:
 
 ```
 (gdb) info registers r0 r1 lr sp
@@ -676,22 +676,22 @@ through semihosting, and on the F411 `arch/arm/chip/stm32f411/chip_stm32f411.cc`
 - [4. Mutex](04-mutex.md): a contended object, where the handle resolve and the park meet.
 - [5. Call and reply](05-call-and-reply.md): the `KOS_SYS_CALL_REG` fast path that `SVC_Handler`
   tests for.
-- [8. Spawn and capabilities](08-spawn-and-caps.md): how slot 3 of `ping`'s table got its semaphore.
+- [8. Spawn and capabilities](08-spawn-and-caps.md): how slot 2 of `ping`'s table got its semaphore.
 - [9. Fault and kill](09-fault-and-kill.md): what happens when the `PSP_GUARD` check fails.
 - [14. RISC-V](14-riscv.md): the same stops through `ecall` and a different trap entry;
   [13. ARMv8-M](13-armv8m.md) shows this chapter's trap running unchanged on a Cortex-M33.
 
 ## Exercises
 
-1. `main`'s capability table has 11 slots (`p c->cap_width` at a `cap_resolve_e` stop). Predict
+1. `main`'s capability table has 10 slots (`p c->cap_width` at a `cap_resolve_e` stop). Predict
    what `kos_send(40, "x", 1)` from `main` returns and which test in `cap_lookup` refuses it. Then
-   predict the answer for `(1u << 16) | 3`, which names slot 3 with the wrong generation, once
-   `main` has created its semaphores. Check both with `break kickos::cap_resolve_e if cap_handle == 40`
-   (and the second value) and `finish`.
+   predict the answer for `(1u << 16) | 2`, which names slot 2 with the wrong generation, once
+   `main` has created its semaphores (slots 1 and 2). Check both with
+   `break kickos::cap_resolve_e if cap_handle == 40` (and the second value) and `finish`.
 2. In a scratch app, write to a kernel address through the public fallback:
    `kickos::kconsole_offer(reinterpret_cast<char const*>(0x20004000), 4)` (the raw
    `kos_kconsole_write` is poisoned in app code). Predict the `error` field of the result and the
    function that decides it. In gdb, `finish` out of `kickos::user_readable_ok` and read the answer.
 3. At the `svc_trampoline` stop, `x/8wx $sp-32` shows the words the hardware frame occupied a moment
-   ago. Which one now holds `svc_trampoline`'s address (0x2438 in this build), and why does the
+   ago. Which one now holds `svc_trampoline`'s address (0x24bc in this build), and why does the
    word before it still point into `kos_send`?

@@ -234,6 +234,13 @@ jobs:
           tests/ci/ctest_named.sh 'mpu_fault|rootfault' \
             --preset qemu-m33 --no-tests=error --output-on-failure --repeat until-pass:2
           tests/ci/ctest_named.sh '^qemu_m33_sysdefault$|qemu_m33_sysdefault_spin|qemu_m33_sysdefault_fault|qemu_m33_sysdefault_no_eh_runtime|qemu_m33_sysdefault_no_driver_path|^qemu_m33_cxxterm$|qemu_m33_cxxterm_eh_control|qemu_m33_nvic' --preset qemu-m33 --no-tests=error --output-on-failure
+          # Require the stack-limit gates, and the splim plant this MPU build registers.
+          out=$(tests/ci/ctest_named.sh '^qemu_m33_faultoverflow$|^qemu_m33_faultoverflow_mpu$|^qemu_m33_pspguard$|^qemu_m33_pspguard_svcstkof$|^qemu_m33_splim_plant$' \
+            --preset qemu-m33 --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
+          printf '%s\n' "$out"
+          case "$out" in
+            *Skipped*) echo "a stack-limit gate SKIPPED, which ctest reports as success"; exit 1 ;;
+          esac
       - name: armv7m (mps2-an500, Cortex-M7)
         run: |
           cmake --preset qemu-m7
@@ -278,6 +285,15 @@ jobs:
             if [ "$b" = qemu-m3 ]; then
               tests/ci/ctest_named.sh '^qemu_m3_diag_terse$' --preset "$b-flat" --no-tests=error --output-on-failure
             fi
+            # The flat M33 build registers the stack-limit gates too, all but the MPU-only ones.
+            if [ "$b" = qemu-m33 ]; then
+              out=$(tests/ci/ctest_named.sh '^qemu_m33_faultoverflow$|^qemu_m33_pspguard$|^qemu_m33_pspguard_svcstkof$' \
+                --preset "$b-flat" --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
+              printf '%s\n' "$out"
+              case "$out" in
+                *Skipped*) echo "a stack-limit gate SKIPPED, which ctest reports as success"; exit 1 ;;
+              esac
+            fi
           done
       - name: armv6m (microbit)
         run: |
@@ -318,7 +334,7 @@ jobs:
           cmake --build --preset qemu-arm64
           ctest --preset qemu-arm64 -LE tree --no-tests=error --output-on-failure
           # Require the kernel-stack and TLS tests for this architecture, and the default system's.
-          out=$(tests/ci/ctest_named.sh 'death_stack_seating|no_privileged_tls|qemu_arm64_tlsprobe|qemu_arm64_sysdefault_no_eh_runtime|qemu_arm64_sysdefault_no_driver_path|^qemu_arm64_sysdefault$|qemu_arm64_sysdefault_spin|qemu_arm64_sysdefault_fault|qemu_arm64_system_link_none|qemu_arm64_system_link_two|qemu_arm64_system_link_entry|qemu_arm64_system_link_refused|qemu_arm64_system_link_notool|qemu_arm64_system_link_nocc|qemu_arm64_system_link_rerun|qemu_arm64_system_link_noheap|qemu_arm64_system_link_stack' \
+          out=$(tests/ci/ctest_named.sh 'death_stack_seating|no_privileged_tls|qemu_arm64_tlsprobe|qemu_arm64_uaccess|qemu_arm64_sysdefault_no_eh_runtime|qemu_arm64_sysdefault_no_driver_path|^qemu_arm64_sysdefault$|qemu_arm64_sysdefault_spin|qemu_arm64_sysdefault_fault|qemu_arm64_system_link_none|qemu_arm64_system_link_two|qemu_arm64_system_link_entry|qemu_arm64_system_link_refused|qemu_arm64_system_link_notool|qemu_arm64_system_link_nocc|qemu_arm64_system_link_rerun|qemu_arm64_system_link_noheap|qemu_arm64_system_link_stack' \
             --preset qemu-arm64 --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
@@ -368,7 +384,7 @@ jobs:
           cmake --build --preset qemu-arm64-smp
           ctest --preset qemu-arm64-smp -LE tree --no-tests=error --output-on-failure
           # Require tests that depend on the configured core count, and the default system's.
-          out=$(tests/ci/ctest_named.sh 'qemu_arm64_smp_arrival|qemu_arm64_smp_doorbell|qemu_arm64_smp_threads|qemu_arm64_slaypeer|qemu_arm64_deadstack|qemu_arm64_golden_system|qemu_arm64_restart_witness|qemu_arm64_line_taker|qemu_arm64_driver_restart|qemu_arm64_driver_line|qemu_arm64_console_restart|^qemu_arm64_sysdefault$|qemu_arm64_sysdefault_spin|qemu_arm64_sysdefault_fault|qemu_arm64_system_link_none|qemu_arm64_system_link_two|qemu_arm64_system_link_entry|qemu_arm64_system_link_refused|qemu_arm64_system_link_notool|qemu_arm64_system_link_nocc|qemu_arm64_system_link_rerun|qemu_arm64_system_link_noheap|qemu_arm64_system_link_stack' \
+          out=$(tests/ci/ctest_named.sh 'qemu_arm64_uaccess|qemu_arm64_smp_arrival|qemu_arm64_smp_doorbell|qemu_arm64_smp_threads|qemu_arm64_slaypeer|qemu_arm64_deadstack|qemu_arm64_golden_system|qemu_arm64_restart_witness|qemu_arm64_line_taker|qemu_arm64_driver_restart|qemu_arm64_driver_line|qemu_arm64_console_restart|^qemu_arm64_sysdefault$|qemu_arm64_sysdefault_spin|qemu_arm64_sysdefault_fault|qemu_arm64_system_link_none|qemu_arm64_system_link_two|qemu_arm64_system_link_entry|qemu_arm64_system_link_refused|qemu_arm64_system_link_notool|qemu_arm64_system_link_nocc|qemu_arm64_system_link_rerun|qemu_arm64_system_link_noheap|qemu_arm64_system_link_stack' \
             --preset qemu-arm64-smp --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
@@ -388,6 +404,44 @@ jobs:
           ctest --preset qemu-arm64-smpiso -LE tree --no-tests=error --output-on-failure
           out=$(tests/ci/ctest_named.sh 'isolated_cores|qemu_arm64_selftest|^qemu_arm64_sysdefault$|qemu_arm64_sysdefault_spin|qemu_arm64_sysdefault_fault|qemu_arm64_system_link_none|qemu_arm64_system_link_two|qemu_arm64_system_link_entry|qemu_arm64_system_link_refused|qemu_arm64_system_link_notool|qemu_arm64_system_link_nocc|qemu_arm64_system_link_rerun|qemu_arm64_system_link_noheap|qemu_arm64_system_link_stack' \
             --preset qemu-arm64-smpiso --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
+          printf '%s\n' "$out"
+          case "$out" in
+            *Skipped*) echo "a required gate SKIPPED, which ctest reports as success"; exit 1 ;;
+          esac
+
+  # The A53 image on four Cortex-A710 cores: hardware PAN where the A53 presets run the
+  # reserved-root form, and the core any later ARMv8.x protection is witnessed on. An emulator
+  # without the model must fail this job, not skip it.
+  qemu-arm64-a710:
+    needs: toolchain-aarch64-none-elf
+    runs-on: ubuntu-26.04
+    timeout-minutes: 40
+    env:
+      QEMU_TIMEOUT: "180"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/kconfiglib
+      - uses: ./.github/actions/build-tools
+        with:
+          packages: cmake ninja-build qemu-system-arm curl xz-utils
+      - uses: ./.github/actions/kickos-toolchain
+        with:
+          family: aarch64-none-elf
+      - name: the emulator and the core every image gate in this job boots on
+        run: |
+          command -v qemu-system-aarch64 >/dev/null 2>&1 \
+            || { echo "qemu-system-aarch64 is absent: every image arm below would SKIP and ctest would still exit 0"; exit 1; }
+          # Starting the model, stopped, and quitting it at once: a listing's format can change.
+          echo quit | timeout 60 qemu-system-aarch64 -M virt -cpu cortex-a710 -display none \
+              -nodefaults -S -monitor stdio >/dev/null 2>&1 \
+            || { echo "this qemu-system-aarch64 cannot start a cortex-a710, so nothing here would run under PAN"; exit 1; }
+      - name: armv8a (virt) four Cortex-A710 cores, hardware PAN
+        run: |
+          cmake --preset qemu-arm64-a710
+          cmake --build --preset qemu-arm64-a710
+          ctest --preset qemu-arm64-a710 -LE tree --no-tests=error --output-on-failure
+          out=$(tests/ci/ctest_named.sh 'qemu_arm64_uaccess|qemu_arm64_selftest|qemu_arm64_smp_arrival|qemu_arm64_smp_threads|qemu_arm64_fault_dump|qemu_arm64_kernel_half' \
+            --preset qemu-arm64-a710 --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
             *Skipped*) echo "a required gate SKIPPED, which ctest reports as success"; exit 1 ;;
@@ -428,7 +482,7 @@ jobs:
           cmake --build --preset qemu-arm64-gicv3
           ctest --preset qemu-arm64-gicv3 -LE tree --no-tests=error --output-on-failure
           # Require tests that depend on the configured kernel-core count, and the default system's.
-          out=$(tests/ci/ctest_named.sh 'qemu_arm64_smp_arrival|qemu_arm64_smp_doorbell|qemu_arm64_smp_threads|qemu_arm64_slaypeer|^qemu_arm64_sysdefault$|qemu_arm64_sysdefault_spin|qemu_arm64_sysdefault_fault|qemu_arm64_system_link_none|qemu_arm64_system_link_two|qemu_arm64_system_link_entry|qemu_arm64_system_link_refused|qemu_arm64_system_link_notool|qemu_arm64_system_link_nocc|qemu_arm64_system_link_rerun|qemu_arm64_system_link_noheap|qemu_arm64_system_link_stack' \
+          out=$(tests/ci/ctest_named.sh 'qemu_arm64_uaccess|qemu_arm64_smp_arrival|qemu_arm64_smp_doorbell|qemu_arm64_smp_threads|qemu_arm64_slaypeer|^qemu_arm64_sysdefault$|qemu_arm64_sysdefault_spin|qemu_arm64_sysdefault_fault|qemu_arm64_system_link_none|qemu_arm64_system_link_two|qemu_arm64_system_link_entry|qemu_arm64_system_link_refused|qemu_arm64_system_link_notool|qemu_arm64_system_link_nocc|qemu_arm64_system_link_rerun|qemu_arm64_system_link_noheap|qemu_arm64_system_link_stack' \
             --preset qemu-arm64-gicv3 --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
@@ -675,7 +729,7 @@ jobs:
           cmake --build --preset qemu-riscv64
           ctest --preset qemu-riscv64 -LE tree --no-tests=error --output-on-failure
           # Require tests that depend on memory enforcement, and the default system's.
-          out=$(tests/ci/ctest_named.sh 'rootfault|qemu_riscv64_sysdefault_no_eh_runtime|qemu_riscv64_sysdefault_no_driver_path|^qemu_riscv64_cxxterm$|qemu_riscv64_cxxterm_eh_control|^qemu_riscv64_sysdefault$|qemu_riscv64_sysdefault_spin|qemu_riscv64_sysdefault_fault|qemu_riscv64_system_link_none|qemu_riscv64_system_link_two|qemu_riscv64_system_link_entry|qemu_riscv64_system_link_refused|qemu_riscv64_system_link_notool|qemu_riscv64_system_link_nocc|qemu_riscv64_system_link_rerun|qemu_riscv64_system_link_noheap' \
+          out=$(tests/ci/ctest_named.sh 'rootfault|qemu_riscv64_uaccess|qemu_riscv64_sysdefault_no_eh_runtime|qemu_riscv64_sysdefault_no_driver_path|^qemu_riscv64_cxxterm$|qemu_riscv64_cxxterm_eh_control|^qemu_riscv64_sysdefault$|qemu_riscv64_sysdefault_spin|qemu_riscv64_sysdefault_fault|qemu_riscv64_system_link_none|qemu_riscv64_system_link_two|qemu_riscv64_system_link_entry|qemu_riscv64_system_link_refused|qemu_riscv64_system_link_notool|qemu_riscv64_system_link_nocc|qemu_riscv64_system_link_rerun|qemu_riscv64_system_link_noheap' \
             --preset qemu-riscv64 --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
@@ -698,7 +752,7 @@ jobs:
           cmake --build --preset qemu-riscv64-smp
           ctest --preset qemu-riscv64-smp -LE tree --no-tests=error --output-on-failure
           # Require tests that depend on the hart count.
-          out=$(tests/ci/ctest_named.sh 'smp_threads|taskleave|slaypeer|qemu_riscv64_deadstack|^qemu_riscv64_sysdefault$|qemu_riscv64_sysdefault_spin|qemu_riscv64_sysdefault_fault|qemu_riscv64_system_link_none|qemu_riscv64_system_link_two|qemu_riscv64_system_link_entry|qemu_riscv64_system_link_refused|qemu_riscv64_system_link_notool|qemu_riscv64_system_link_nocc|qemu_riscv64_system_link_rerun|qemu_riscv64_system_link_noheap' \
+          out=$(tests/ci/ctest_named.sh 'smp_threads|taskleave|slaypeer|qemu_riscv64_uaccess|qemu_riscv64_deadstack|^qemu_riscv64_sysdefault$|qemu_riscv64_sysdefault_spin|qemu_riscv64_sysdefault_fault|qemu_riscv64_system_link_none|qemu_riscv64_system_link_two|qemu_riscv64_system_link_entry|qemu_riscv64_system_link_refused|qemu_riscv64_system_link_notool|qemu_riscv64_system_link_nocc|qemu_riscv64_system_link_rerun|qemu_riscv64_system_link_noheap' \
             --preset qemu-riscv64-smp --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
           printf '%s\n' "$out"
           case "$out" in
@@ -778,8 +832,29 @@ jobs:
           case "$out" in
             *Skipped*) echo "a bench gate SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
+
+  # Above one core, apart from the one-core job so that neither runs into the job bound.
+  qemu-x86_64-smp:
+    needs: toolchain-x86_64-elf
+    runs-on: ubuntu-26.04
+    timeout-minutes: 40
+    env:
+      QEMU_TIMEOUT: "180"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/kconfiglib
+      - uses: ./.github/actions/build-tools
+        with:
+          packages: cmake ninja-build g++ qemu-system-x86 ovmf mtools
+      - uses: ./.github/actions/kickos-toolchain
+        with:
+          family: x86_64-elf
+      - name: The OVMF firmware pair
+        run: tests/ci/resolve_ovmf.sh >> "$GITHUB_ENV"
       - name: x86_64 (q35) two cores
         run: |
+          command -v qemu-system-x86_64 >/dev/null 2>&1 \
+            || { echo "qemu-system-x86_64 is absent: every image gate below would SKIP and ctest would still exit 0"; exit 1; }
           cmake --preset qemu-x86_64-smp2
           cmake --build build/qemu-x86_64-smp2
           ctest --test-dir build/qemu-x86_64-smp2 -LE tree --no-tests=error --output-on-failure

@@ -38,14 +38,6 @@ namespace kickos
             return g_stdout_target.get();
         }
 
-        // The mutex pool slots holding a libc lock, a bit per slot.
-        constinit InstanceLocal<uint32_t> g_libc_lock_slots = {0u};
-
-        uint32_t& libc_lock_slots()
-        {
-            return g_libc_lock_slots.get();
-        }
-
         CapEntry* stdout_on_console(Thread const* t)
         {
             if (not cap_run_held(t->caps))
@@ -154,7 +146,6 @@ namespace kickos
                 // An owner's own cap pins a ref through the close-of-owned refusal, and the exit
                 // path force-unlocks before this drop.
                 KICKOS_ASSERT(m->owner == nullptr);
-                libc_lock_slots() = libc_lock_slots() & ~(1u << static_cast<unsigned>(idx));
                 k.mutexes.free(obj_handle);
                 return;
             }
@@ -1142,7 +1133,6 @@ namespace kickos
         {
             cap_state().free_chunks.push(&cap_state().chunks[(c - 1) * KCAP_CHUNK_SLOTS]);
         }
-        libc_lock_slots() = 0u;
     }
 
     bool cap_slab_attach(CapRun* run, uint32_t width, uint16_t* free_head, uint16_t* out_width)
@@ -1565,97 +1555,74 @@ namespace kickos
 
     namespace
     {
-        // One address space, so one heap and one libc: a task's own on a translating board, the
-        // whole image's on a region board.
-        bool shares_heap(Thread const* t, Task const* tk)
+        // The libc locks of the heap `t` allocates from, whose owner holds malloc's and stdio's
+        // state: the space on a translating board, the image on a region board, which the build
+        // refuses to share between instances.
+        Mutex* libc_heap_owner(Thread const* t)
         {
 #if KICKOS_HAVE_ASPACE
-            return task_domain(t->task) == task_domain(tk);
+            Domain* const d = task_domain(t->task);
+            if (d == nullptr)
+            {
+                return nullptr;
+            }
+            return d->libc_locks;
 #else
             (void)t;
-            (void)tk;
-            return true;
+            return kernel().libc_locks;
 #endif
         }
     }
 
     namespace
     {
-#if KICKOS_HAVE_ASPACE
-        // Every task but idle's can be an address space of its own.
-        constexpr int KCAP_LIBC_LOCKS = KICKOS_MAX_TASKS - 1;
-#else
-        constexpr int KCAP_LIBC_LOCKS = 1;
-#endif
-    }
-    static_assert(KICKOS_MAX_MUTEXES >= KCAP_LIBC_LOCKS + KICKOS_TASK_MUTEX_BUDGET,
-                  "the mutex pool keeps a libc lock for every address space beside one task's "
-                  "KICKOS_TASK_MUTEX_BUDGET: raise KICKOS_MAX_MUTEXES or lower the budget");
-
-    bool cap_mutex_create_admitted()
-    {
-        Kernel& k = kernel();
-        int live = 0;
-        for (int i = 0; i < KICKOS_MAX_MUTEXES; i++)
-        {
-            if (k.mutex_refs[i] != 0)
-            {
-                live++;
-            }
-        }
-        int const owed = KCAP_LIBC_LOCKS - task_object_count(libc_lock_slots());
-        return KICKOS_MAX_MUTEXES - live > owed;
+        // Indexed by LibcLockIndex.
+        constexpr uint32_t LIBC_LOCK_HANDLES[LIBC_LOCK_COUNT] = {KOS_CAP_LIBC_LOCK,
+                                                                 KOS_CAP_MALLOC_LOCK};
     }
 
-    int cap_libc_lock_take(Task const* tk, Held)
+    Mutex* cap_libc_lock(Thread const* t, uint32_t handle)
     {
-        Kernel& k = kernel();
-        for (int i = 0; i < KICKOS_THREAD_SLOTS; i++)
+        for (int i = 0; i < LIBC_LOCK_COUNT; i++)
         {
-            Thread const* const th = &k.threads.slots[i];
-            if (not cap_run_held(th->caps) or not shares_heap(th, tk))
+            if (handle != LIBC_LOCK_HANDLES[i])
             {
                 continue;
             }
-            CapEntry const* const e = cap_slot(th->caps, KOS_CAP_LIBC_LOCK);
-            if (e->type != static_cast<uint8_t>(CapType::CAP_MUTEX))
+            Mutex* const locks = libc_heap_owner(t);
+            if (locks == nullptr)
             {
-                continue;
+                return nullptr;
             }
-            if (not obj_ref_inc(CapType::CAP_MUTEX, e->obj, 0))
-            {
-                return KCAP_LIBC_LOCK_NONE;
-            }
-            return e->obj;
+            return &locks[i];
         }
-        int const i = k.mutexes.alloc();
-        Mutex* const m = k.mutexes.at(i);
-        if (m == nullptr)
+        return nullptr;
+    }
+
+    Mutex* cap_resolve_mutex(Thread* c, uint32_t cap_handle, int* err)
+    {
+        Mutex* const libc = cap_libc_lock(c, cap_handle);
+        if (libc != nullptr)
         {
-            return KCAP_LIBC_LOCK_NONE;
+            return libc;
         }
-        mutex_init(m);
-        k.mutex_refs[i] = 1;
-        libc_lock_slots() = libc_lock_slots() | (1u << static_cast<unsigned>(i));
-        return k.mutexes.handle_for(i);
+        return static_cast<Mutex*>(cap_resolve_e(c, cap_handle, CapType::CAP_MUTEX, 0, err));
     }
 
-    void cap_libc_lock_give(int lock, Held held)
+    void cap_libc_locks_release(Thread* dying, Held held)
     {
-        CapEntry e = {};
-        e.obj = lock;
-        e.type = static_cast<uint8_t>(CapType::CAP_MUTEX);
-        obj_ref_drop(e, /*teardown=*/false, held);
-    }
-
-    void cap_seat_libc_lock(Thread* t, int lock)
-    {
-        CapEntry& e = *cap_slot(t->caps, KOS_CAP_LIBC_LOCK);
-        KICKOS_ASSERT(e.type == static_cast<uint8_t>(CapType::CAP_EMPTY));
-        e.obj = lock;
-        e.type = static_cast<uint8_t>(CapType::CAP_MUTEX);
-        e.rights = 0;
-        cap_badge_seat(&e, KCAP_BADGE_NONE);
+        Mutex* const locks = libc_heap_owner(dying);
+        if (locks == nullptr)
+        {
+            return;
+        }
+        for (int i = 0; i < LIBC_LOCK_COUNT; i++)
+        {
+            if (locks[i].owner == dying)
+            {
+                mutex_force_unlock(&locks[i], dying, held);
+            }
+        }
     }
 
     void cap_install_defaults(Thread* child, Held held)

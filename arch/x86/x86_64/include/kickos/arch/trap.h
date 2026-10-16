@@ -38,12 +38,20 @@ namespace kickos::x86_64
         uint64_t ss;
     };
 
+    // The vectors below 32 that the instruction ring 3 ran does not raise: NMI (2), double fault
+    // (8, the kernel failing to deliver another), machine check (18), and the hypervisor
+    // injection, VMM communication and security exceptions (28, 29, 30), which this kernel does
+    // not serve (Intel SDM Vol 3 Table 6-1; AMD APM Vol 2 section 8.2).
+    constexpr uint32_t trap_platform_vectors =
+        (1u << 2) | (1u << 8) | (1u << 18) | (1u << 28) | (1u << 29) | (1u << 30);
+
     // Whether a frame on the running thread's own kernel block is a fault its ring 3 code took.
     // A kernel fault during a syscall dispatch builds its frame on that same block, and a vector
-    // at or above 32 is an external delivery whose pushed cs names whoever was running.
+    // at or above 32 or among trap_platform_vectors names whoever was running, not what it did:
+    // those reach the panic report.
     inline bool trap_frame_from_ring3(trap_frame const& f)
     {
-        if (f.vector >= 32)
+        if (f.vector >= 32 or ((trap_platform_vectors >> f.vector) & 1u) != 0)
         {
             return false;
         }

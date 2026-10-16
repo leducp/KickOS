@@ -123,6 +123,36 @@ tests/integration/check_k64dspi.sh|k64dspi-lan9252-unwired.capture||byte-test|dr
 tests/integration/check_k64dspi.sh|k64dspi-lan9252-unwired.capture||byte-test|drop|BYTE_TEST MISMATCH|
 tests/integration/check_k64dspi.sh|k64dspi-lan9252-unwired.capture||byte-test|order|BYTE_TEST attempt 1:|BYTE_TEST MISMATCH
 tests/integration/check_k64dspi.sh|k64dspi-lan9252-unwired.capture||device-open|drop|device open rc=|
+tests/integration/check_k64dspi_witness.sh;death|k64dspi_death.capture||transfer|drop|[k64dspi] transfer rc=4 (want 4)|
+tests/integration/check_k64dspi_witness.sh;death|k64dspi_death.capture||halted|swap|halted transfer rc=-5 (want -5)|halted transfer rc=200 (want -5)
+tests/integration/check_k64dspi_witness.sh;death|k64dspi_death.capture||recovered|drop|transfer after the halt|
+tests/integration/check_k64dspi_witness.sh;death|k64dspi_death.capture||slowest|swap|slowest-pair transfer rc=2 (want 2)|slowest-pair transfer rc=-5 (want 2)
+tests/integration/check_k64dspi_witness.sh;death|k64dspi_death.capture||close|drop|bus close rc=0|
+tests/integration/check_k64dspi_witness.sh;death|k64dspi_death.capture||error|after|slowest pair at|[k64dspi] ERROR: planted rc -1
+tests/integration/check_k64dspi_witness.sh;death|k64dspi_death.capture||open|after|reads MCR|[k64dspi] the probe read MCR=0x80000000: the slot stayed open
+tests/integration/check_k64dspi_witness.sh;death|k64dspi_death.capture||killed|drop|thread 'k64dprb' killed|
+tests/integration/check_k64dspi_witness.sh;death|k64dspi_death.capture||kill-address|swap|ADDR=0x4002c000|ADDR=0x4002c004
+tests/integration/check_k64dspi_witness.sh;death|k64dspi_death.capture||death-announce|drop|the holder ended; a task holding no window|
+tests/integration/check_k64dspi_witness.sh;death|k64dspi_death.capture||verdict|drop|PASS: the probe after|
+tests/integration/check_k64dspi_witness.sh;death|k64dspi_death.capture||panic|after|PASS: the probe after|KERNEL PANIC: planted
+tests/integration/check_k64dspi_witness.sh;close|k64dspi_close.capture||transfer|drop|[k64dspi] transfer rc=4 (want 4)|
+tests/integration/check_k64dspi_witness.sh;close|k64dspi_close.capture||halted|swap|halted transfer rc=-5 (want -5)|halted transfer rc=200 (want -5)
+tests/integration/check_k64dspi_witness.sh;close|k64dspi_close.capture||recovered|drop|transfer after the halt|
+tests/integration/check_k64dspi_witness.sh;close|k64dspi_close.capture||slowest|swap|slowest-pair transfer rc=2 (want 2)|slowest-pair transfer rc=-5 (want 2)
+tests/integration/check_k64dspi_witness.sh;close|k64dspi_close.capture||close|drop|bus close rc=0|
+tests/integration/check_k64dspi_witness.sh;close|k64dspi_close.capture||error|after|slowest pair at|[k64dspi] ERROR: planted rc -1
+tests/integration/check_k64dspi_witness.sh;close|k64dspi_close.capture||open|after|reads MCR|[k64dspi] the probe read MCR=0x80000000: the slot stayed open
+tests/integration/check_k64dspi_witness.sh;close|k64dspi_close.capture||killed|drop|thread 'k64dprb' killed|
+tests/integration/check_k64dspi_witness.sh;close|k64dspi_close.capture||kill-address|swap|ADDR=0x4002c000|ADDR=0x4002c004
+tests/integration/check_k64dspi_witness.sh;close|k64dspi_close.capture||death-announce|drop|the holder ended; a task holding no window|
+tests/integration/check_k64dspi_witness.sh;close|k64dspi_close.capture||verdict|drop|PASS: the probe after|
+tests/integration/check_k64dspi_witness.sh;close|k64dspi_close.capture||panic|after|PASS: the probe after|KERNEL PANIC: planted
+tests/integration/check_k64dspi_witness.sh;death|k64dspi_death.capture||reopen|drop|transfer after the reopen|
+tests/integration/check_k64dspi_witness.sh;death|k64dspi_death.capture||returns|drop|the holder returns with the bus open|
+tests/integration/check_k64dspi_witness.sh;close|k64dspi_close.capture||announce|drop|after the close, a thread holding no window|
+tests/integration/check_k64dspi_witness.sh;close|k64dspi_close.capture||killed|drop|thread 'k64cprb' killed|
+tests/integration/check_k64dspi_witness.sh;close|k64dspi_close.capture||killed|after|after the close, a thread holding no window|[k64dspi] the holder outlived its probe
+tests/integration/check_k64dspi_witness.sh;death|k64dspi_death.capture||error|after|the holder returns with the bus open|[k64dspi] FAIL: the holder did not end within 30 s
 tests/integration/check_k64dspi.sh|k64dspi-lan9252-unwired.capture||driver-up|drop|SPI service up|
 tests/integration/check_k64dspi.sh|k64dspi-lan9252-unwired.capture||error|after|BYTE_TEST attempt 2:|[k64dspi] ERROR: planted
 tests/integration/check_k64dspi.sh|k64dspi-lan9252-unwired.capture||panic|after|BYTE_TEST MISMATCH|KERNEL PANIC: planted
@@ -315,6 +345,12 @@ tests/integration/check_qemu_cxxterm.sh|cxxterm.capture||terminate|swap|[St13run
 tests/integration/check_qemu_cxxterm.sh|cxxterm.capture||terminate|drop|terminate: uncaught|
 tests/integration/check_qemu_cxxterm.sh|cxxterm.capture||panic|after|terminate: uncaught|KERNEL PANIC: planted
 tests/integration/check_libcrace.sh|libcrace.capture||start|drop|libcrace: 4 workers|
+tests/integration/check_libcrace.sh|libcrace.capture||malloc-kill|drop|killed waiting for malloc|
+tests/integration/check_libcrace.sh|libcrace.capture||libc-kill|drop|holding the libc lock handed|
+tests/integration/check_libcrace.sh|libcrace.capture||malloc-dead|drop|dead malloc holder arms did not run|
+tests/integration/check_libcrace.sh|libcrace.capture||malloc-dead|cache||KICKOS_LIBCRACE_DEAD_ARMS:INTERNAL=1
+tests/integration/check_libcrace.sh|libcrace.capture||malloc-wait|drop|a printf completed while malloc|
+tests/integration/check_libcrace.sh|libcrace.capture||malloc-wait|swap|a printf completed while malloc was held|a printf waited behind the malloc lock
 tests/integration/check_libcrace.sh|libcrace.capture||torn|swap|w1 i1 iiii|w1 i1 iiij
 tests/integration/check_libcrace.sh|libcrace.capture||torn|swap|w2 i0 o|w2 i0libcrace w1 i0 o
 tests/integration/check_libcrace.sh|libcrace.capture||duplicated|after|libcrace w0 i1 |libcrace w0 i1 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
@@ -323,6 +359,11 @@ tests/integration/check_libcrace.sh|libcrace.capture||lost|drop|libcrace w2 done
 tests/integration/check_libcrace.sh|libcrace.capture||heap|swap|w3 done torn=0|w3 done torn=1
 tests/integration/check_libcrace.sh|libcrace.capture||done|drop|libcrace: all workers done|
 tests/integration/check_libcrace.sh|libcrace.capture||panic|after|libcrace w0 done|KERNEL PANIC: planted
+tests/integration/check_libcrace.sh|libcrace-dead.capture|KICKOS_LIBCRACE_DEAD_ARMS:INTERNAL=1|malloc-dead|drop|from a dead holder ended its task|
+tests/integration/check_libcrace.sh|libcrace-dead.capture|KICKOS_LIBCRACE_DEAD_ARMS:INTERNAL=1|malloc-dead|swap|from a dead holder ended its task|from a dead holder did not end its task
+tests/integration/check_libcrace.sh|libcrace-dead.capture|KICKOS_LIBCRACE_DEAD_ARMS:INTERNAL=1|malloc-unwatched|drop|died in unwatched ended the next taker|
+tests/integration/check_libcrace.sh|libcrace-dead.capture|KICKOS_LIBCRACE_DEAD_ARMS:INTERNAL=1|malloc-unwatched|swap|unwatched ended the next taker's task|unwatched let the next taker run
+tests/integration/check_libcrace.sh|libcrace-dead.capture|KICKOS_LIBCRACE_DEAD_ARMS:INTERNAL=1|malloc-dead|cache||KICKOS_LIBCRACE_DEAD_ARMS:INTERNAL=0
 tests/integration/check_libc_exit.sh;--atexit|libc_exit.capture||spawn|after|regression|worker spawn refused
 tests/integration/check_libc_exit.sh;--atexit|libc_exit.capture||worker|drop|worker: exit()|
 tests/integration/check_libc_exit.sh;--atexit|libc_exit.capture||survived|drop|main: survived|
@@ -502,6 +543,15 @@ tests/integration/check_fault_dump.sh;SIM FAULT|fault-sim.capture||order|order|[
 tests/integration/check_faultsurvive.sh;survive;armv7m;terminated|faultsurvive-armv7m.capture||killed|drop|=== THREAD FAULT|
 tests/integration/check_faultsurvive.sh;survive;armv7m;terminated|faultsurvive-armv7m.capture||order|order|=== THREAD FAULT|[fs] survivor ran
 tests/integration/check_faultsurvive.sh;survive;armv7m;terminated|faultsurvive-armv7m.capture||order|order|[fs] worker about to fault|=== THREAD FAULT
+tests/integration/check_faultsurvive.sh;stkof;armv7m;contained|faultsurvive-armv7m-stkof.capture||reached|drop|[fs] worker about to fault|
+tests/integration/check_faultsurvive.sh;stkof;armv7m;contained|faultsurvive-armv7m-stkof.capture||killed|drop|=== THREAD FAULT|
+tests/integration/check_faultsurvive.sh;stkof;armv7m;contained|faultsurvive-armv7m-stkof.capture||cause|drop|CFSR=0x100000|
+tests/integration/check_faultsurvive.sh;stkof;armv7m;contained|faultsurvive-armv7m-stkof.capture||cause|swap|CFSR=0x100000|CFSR=0x92
+tests/integration/check_faultsurvive.sh;stkof;armv7m;contained|faultsurvive-armv7m-stkof.capture||cause|swap|CFSR=0x100000|CFSR=0x100010
+tests/integration/check_faultsurvive.sh;stkof;armv7m;contained|faultsurvive-armv7m-stkof.capture||survived|drop|[fs] survivor ran|
+tests/integration/check_faultsurvive.sh;stkof;armv7m;contained|faultsurvive-armv7m-stkof.capture||order|order|=== THREAD FAULT|[fs] survivor ran
+tests/integration/check_faultsurvive.sh;stkof;armv7m;contained|faultsurvive-armv7m-stkof.capture||order|order|[fs] worker about to fault|=== THREAD FAULT
+tests/integration/check_faultsurvive.sh;stkof;armv7m;contained|faultsurvive-armv7m-stkof.capture||panic|after|[fs] survivor ran|KERNEL PANIC: planted
 tests/integration/check_faultsurvive.sh;overflow;armv7m;terminated|faultsurvive-armv7m-overflow.capture||dump|drop|=== MPU FAULT|
 tests/integration/check_faultsurvive.sh;overflow;armv7m;terminated|faultsurvive-armv7m-overflow.capture||cause|swap|CFSR=0x92|CFSR=0x2
 tests/integration/check_faultsurvive.sh;overflow;armv7m;terminated|faultsurvive-armv7m-overflow.capture||order|order|[fs] worker about to fault|=== MPU FAULT
@@ -580,6 +630,7 @@ tests/integration/check_faultsurvive.sh;overflow;rv32imac;contained|the system e
 tests/integration/check_faultsurvive.sh;overflow;rxv3;terminated|the escalation ended the system with exit 0
 tests/integration/check_faultsurvive.sh;survive;armv6m;terminated|the system exited 0 once main returned
 tests/integration/check_faultsurvive.sh;survive;armv7m;terminated|the system exited 0 once main returned
+tests/integration/check_faultsurvive.sh;stkof;armv7m;contained|the system exited 0 once main returned
 tests/integration/check_faultsurvive.sh;survive;rv32imac;terminated|the system exited 0 once main returned
 tests/integration/check_faultsurvive.sh;survive;rxv3;terminated|the system exited 0 once main returned
 tests/integration/check_libc_exit.sh;--atexit|main's exit() ended the system with status 7

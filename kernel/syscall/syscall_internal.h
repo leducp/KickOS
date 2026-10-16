@@ -15,6 +15,7 @@
 #include <kickos/sched.h>     // sched::current (cap_out_deliver's owner)
 #include <kickos/thread.h>    // the IPC state reply_wait_seat writes
 #include <kickos/sys/abi.h>   // kos_thread_params (thread_create_call parameter)
+#include <kickos/sys/witness.h>
 #include <kickos/sys/errno.h>
 
 namespace kickos
@@ -158,6 +159,10 @@ namespace kickos
         }
         return static_cast<uint64_t>(rc);
     }
+
+#if KICKOS_WITNESS_UACCESS
+    int64_t witness_uaccess(uintptr_t op, uintptr_t uaddr, uintptr_t ns);
+#endif
 
     // How many calls the trap-handler IPC fastpath COMPLETED; a refusal does not count.
     // Reads 0 on a backend with no fastpath.

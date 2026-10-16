@@ -236,10 +236,12 @@ becoming a silent no-op.
    kernel init. An image linking `KickOS::kernel` takes it from its system target's
    `KickOS::init`, which walks the image's composition and grants each task the authority its
    `authority:` list declares. App/libstdc++ global ctors run in the root thread BEFORE the
-   seam; RETURNING from the seam is a single-shot shutdown with that status -- through the
-   `kos_shutdown` syscall, so it needs `AUTH_SYSTEM` and panics `"root: shutdown refused"` if root
-   narrowed that bit away -- and a persistent init never returns (parks/loops). A missing init is
-   a build-time error, never a silent fallback.
+   seam, and on a translating board again, once, in every other space, whose data starts from
+   the image's pristine copy, ahead of the entry of whichever of its threads runs first
+   (`kickos_task_start`); RETURNING from the seam is a single-shot shutdown with that status --
+   through the `kos_shutdown` syscall, so it needs `AUTH_SYSTEM` and panics `"root: shutdown
+   refused"` if root narrowed that bit away -- and a persistent init never returns
+   (parks/loops). A missing init is a build-time error, never a silent fallback.
 9. **Conventions.** `style.md` is the contract: Allman everywhere, 4-space indent, traditional
    include guards, no ternary, spelled logical operators, fixed-width types, and comments only for
    hidden constraints. Shared in shape with the sibling projects `../KickCAT` / `../kickmsg`.
@@ -617,7 +619,7 @@ is the form that waits. archived `M4_task_layer_record.md` is the record.
   reproduce is the user<->kernel boundary itself -- a Linux process has no CPU privilege level --
   so a reserved arena page stands in for it, and that one boundary is hardware-only. Nor can it
   separate an instance's threads inside the C library: it runs them on one host thread, and the
-  host libc's stdio and malloc locks key on that thread, so the libc lock has no sim counterpart
+  host libc's stdio and malloc locks key on that thread, so the libc locks have no sim counterpart
   and the `libcrace` witness is declared inapplicable there.
 
 ---
@@ -628,7 +630,11 @@ The unit of memory isolation is a **memory domain** -- a lightweight "process" i
 memory-boundary sense only: no `fork`, no `exec`, no loader and no per-process image. What backs the
 boundary depends on the part. Where the chip carries region descriptors the domain carries a region
 set and every domain lives in ONE physical address space; where the chip translates, the domain
-carries a page-table root and the boundary IS a virtual address space. No code above the arch layer
+carries a page-table root and the boundary IS a virtual address space. Ring 0 reaches a task's memory
+only through the kaccess seam's kernel alias of its frames, never through the task's own addresses,
+and the hardware holds it to that: PAN, or an empty TTBR0 root at EL1 on a core without PAN, on
+armv8a; `sstatus.SUM` never set on rv64imac; SMEP and SMAP on x86_64, with the interrupt entry
+clearing the RFLAGS.AC that would lift SMAP. No code above the arch layer
 names an ISA, a register or a descriptor format, and the same call sites serve both. The kernel above
 the seam does know WHICH kind it runs on, deliberately: on `KICKOS_HAVE_ASPACE` the frame pool
 (`FrameAllocator`), the address-space syscalls and the per-task space in the domain layer are
@@ -715,7 +721,10 @@ Every `PACR` resets to `0x4444_4444` on this part -- every nibble `SP = 1` -- so
 peripheral slot is supervisor-only until something clears it, and the coarse granularity is the
 whole 4 KiB slot: `arch_periph_enable` therefore has no PIT entry, because clearing slot 55's `SP`
 for a granted channel-2 window would equally expose the chained ch0+ch1 pair the timebase runs on.
-The full DSPI0 register map is in `bus-service.md`.
+A cleared `SP` lasts exactly as long as a holder: `arch_periph_disable` sets it back when the
+holder's bus engine closes and when the holder dies (`sched::exit_current`, while the window is
+still held), so a slot admits all user code only while one thread holds its window, and the
+`mk64f` table keeps at most one block per slot. The full DSPI0 register map is in `bus-service.md`.
 
 **The ESP32-C6 has TWO units in series, and only the CPU-side one faults.** An HP-CPU access to an
 HP peripheral in user (REE) mode passes PMP first and APM second, and APM is consulted only if PMP
@@ -1007,16 +1016,25 @@ feeds the slave app.
   `thread_local`, is what makes `errno` follow the thread.
   `_REENT_INIT_PTR` aims every copy's `_stdin`/`_stdout`/`_stderr` at the one global `__sf[3]`, so
   **stdio buffering stays process-wide** however many copies exist.
-- **The libc lock**: every newlib static lock and every `FILE` lock is ONE recursive lock
-  (`user/src/newlib_lock.cc`), so nesting two of them is recursion on one. Owner and depth live
-  in userspace, the owner read through `kos_thread_self`; under them is the kernel mutex seated at
-  `KOS_CAP_LIBC_LOCK`, so priority inheritance holds and a holder's death hands the lock over
-  `-KOS_EOWNERDEAD`, which the lock takes as acquired; a try-acquire tries the mutex with a zero
-  deadline. There is one per address space, which is
-  one per heap: a region board's tasks share the image's, and a translating board gives each task
-  its own. The toolchain's newlib must be built with retargetable locking (release 1.1 on): the
-  TU refuses to compile against one without it, and a link forces its object in ahead of libc's
-  no-op defaults.
+- **The libc locks**: malloc's lock is its own, and every other newlib static lock and every
+  `FILE` lock is ONE recursive lock, the libc lock (`user/src/newlib_lock.cc`), so a `printf`
+  that allocates nothing never waits behind an allocation and nesting two stdio locks is
+  recursion on one. A stdio call that allocates still waits on malloc's lock while it holds the
+  libc lock. newlib takes malloc's lock inside the libc lock and never the reverse, and a thread
+  taking the libc lock while it holds malloc's traps. Owner and depth live in userspace, the
+  owner read through `kos_thread_self`; under each is a kernel mutex the heap's owner carries (a
+  translating board's `Domain`, a region board's image, which the configure refuses to share
+  between kernel instances), named by the pseudo-handles `KOS_CAP_LIBC_LOCK` and
+  `KOS_CAP_MALLOC_LOCK`, which only the mutex calls accept and which resolve against the caller's
+  own space. So priority inheritance holds. A holder that dies inside stdio hands the libc lock
+  over `-KOS_EOWNERDEAD`, which that lock takes as acquired; one that dies inside malloc leaves
+  the heap torn, and the malloc lock's next taker traps, ending its task. A try-acquire tries the
+  mutex with a zero deadline. There is one pair per address space, which is one per heap: a
+  region board's tasks share the image's, and any of their threads can take it, so one thread
+  can stall every task's stdio and malloc; a translating board gives each task its own. They
+  cost no capability slot, no mutex-pool slot and no task budget. The toolchain's newlib must be
+  built with retargetable locking (release 1.1 on): the TU refuses to compile against one
+  without it, and a link forces its object in ahead of libc's no-op defaults.
 
 ---
 
@@ -1172,9 +1190,9 @@ stale at its task's end, and the space gives back every run it maps at its task'
   no thread leaks references. A teardown-close that would strand a parked waiter LEAKS (floors
   refs at 1), never strands -- unreachable today (every parked waiter pins its own cap).
 - **Well-known reserved cap indices (`system/include/kickos/sys/cap_index.h`).** Indices
-  `[0 .. KICKOS_CAP_FIRST_DYNAMIC)` (today `[0..2)`) are reserved well-known slots: index 0 =
-  `KOS_CAP_STDOUT` (the send-only console endpoint) and index 1 = `KOS_CAP_LIBC_LOCK` (the mutex
-  behind every newlib lock of the thread's address space). A service is reached by
+  `[0 .. KICKOS_CAP_FIRST_DYNAMIC)` (today `[0..1)`) are reserved well-known slots: index 0 =
+  `KOS_CAP_STDOUT` (the send-only console endpoint). The C library's locks hold no slot: they
+  are pseudo-handles the mutex calls resolve against the caller's heap owner. A service is reached by
   path, never by a well-known index. Axis-3 authority is deliberately **not** one of them: the
   authority word names no pool object, holds no refcount and bumps no generation, so it lives in
   the TCB as `Thread::authority` (8 bits in existing padding) and costs no index on any board.
@@ -1192,21 +1210,20 @@ stale at its task's end, and the space gives back every run it maps at its task'
   so no pop can hand back a well-known index. A release goes to the list **tail**, never the head,
   so with `F` free slots each slot's cap-gen advances once per `F` mints instead of one counter
   taking every mint. A reserved slot is seated
-  ONLY by the kernel: `cap_install_defaults` seats stdout, and every spawn and root's boot seat
-  the libc lock (`cap_libc_lock_take`, a copy of the one a live thread of the same address space
-  holds, else a fresh mutex, the spawn refused `-KOS_ENOMEM` when the pool has none).
+  ONLY by the kernel: `cap_install_defaults` seats stdout.
   Userspace only *names* a reserved slot by these constants -- it never chooses the index. The
   range is not frozen, but either direction is an ABI break: renumber **downward** only for a
-  slot nothing seats -- no width moves, since the reserved range lies inside the board's supply
-  and the child width, so every table gains the slot as a dynamic one; **append** by raising
-  `KICKOS_CAP_FIRST_DYNAMIC`, which costs one slot on every table in the fleet -- so weigh it
+  slot nothing seats -- root's table, the board's supply, gains it as a dynamic slot, while a
+  child's, `KICKOS_MAX_SPAWN_GRANTS + KICKOS_CAP_FIRST_DYNAMIC` wide, narrows by it; **append**
+  by raising `KICKOS_CAP_FIRST_DYNAMIC`, which widens every child's table and takes a dynamic
+  slot from root's -- so weigh it
   first against putting the state in the TCB, as the authority word does. The `cap.h`
   static_assert floors the dynamic count at >=1 either way, and `abi.h` defines the default
   delegation index as `KOS_CAP_FIRST_DYNAMIC`.
 - **B1 wire contract (every in-tree app that builds a spawn grant list depends on it):** a fresh
   child table has cap-gen 0 in every slot, so
-  on a fresh table `handle == index`; delegation places delegated cap `i` at child index `i + 2`
-  (`KOS_SPAWN_DELEGATED_CAP0 + i`, which is `KICKOS_CAP_FIRST_DYNAMIC + i`, so a default grant
+  on a fresh table `handle == index`; delegation places delegated cap `i` at child index
+  `KOS_SPAWN_DELEGATED_CAP0 + i` (`KICKOS_CAP_FIRST_DYNAMIC + i`, today `i + 1`, so a default grant
   list fills the first dynamic slots and the child's own-creates follow it), and
   `cap_install_defaults` seats the stdout
   cap at index 0 only once the console is published (pre-publish it seats nothing -- a plain app

@@ -33,6 +33,11 @@ namespace kickos
         uint64_t tcr_a53_without_as();
         uint64_t mmfr0_with_asid_bits(uint64_t field);
 
+        // The reserved-root form: activation fills a per-core cell and leaves the register.
+        void set_root_deferred(bool on);
+        uint64_t user_ttbr0_of(uint32_t core);
+        void set_user_ttbr0(uint32_t core, uint64_t ttbr);
+
         // Puts every core on no translation, empties the frame pool and clears the record.
         void sysops_reset();
 

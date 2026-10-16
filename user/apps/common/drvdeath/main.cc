@@ -123,13 +123,13 @@ namespace
     // Change that encoding and this case silently names some other thread instead.
     constexpr kos_thread_t ROOT_THREAD = 0;
 
-    void nest_grandchild(void*) // caps: park@2
+    void nest_grandchild(void*) // caps: park@0
     {
         kos_sem_wait(KOS_SPAWN_DELEGATED_CAP0, KOS_TIMEOUT_NONE); // never posted: alive until its spawner cancels it
         kos_exit(0);
     }
 
-    void nest_child(void*) // caps: done@2, park@3, probe@4
+    void nest_child(void*) // caps: done@0, park@1, probe@2
     {
         kos_cap_grant const caps[1] = {{NEST_PARK, KOS_CAP_WAIT}};
         g_grandchild = kos::thread::create(nest_grandchild, nullptr, "nestgc", 9,

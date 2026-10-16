@@ -11,6 +11,11 @@
    sched   tickless
 
 libcrace: 4 workers x 3 rounds
+libcrace: a thread killed waiting for malloc ended alone
+libcrace: a thread killed holding the libc lock handed it over
+libcrace: no task-private heap with a contained fault, so the dead malloc holder arms did not run
+libcrace: printf beside the malloc lock 1
+libcrace: a printf completed while malloc was held
 libcrace w3 i0 vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
 libcrace w0 i0 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 libcrace w2 i0 oooooooooooooooooooooooooooooooooooooooo

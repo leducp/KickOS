@@ -18,9 +18,12 @@ kickos_add_kernel_host_lib(kickos_aspace_x86_64_host
            "${PROJECT_SOURCE_DIR}/arch/x86/x86_64/include"
            "${PROJECT_SOURCE_DIR}/arch/x86/chip/q35/include"
   POSTURE KICKOS_NUM_CORES=2 KICKOS_KERNEL_CORES=2 KICKOS_MULTICORE_MODEL_SHARED=1
-          KICKOS_HAVE_ASPACE=1 KICKOS_MAX_MUTEXES=24 KICKOS_X86_64_SYSOPS_FROM_SEAM=1)
+          KICKOS_HAVE_ASPACE=1 KICKOS_X86_64_SYSOPS_FROM_SEAM=1)
 kickos_add_unit_test(NAME map_shoot SOURCES map_shoot.cc
   LIBRARIES kickos_aspace_x86_64_host)
 
 kickos_add_unit_test(NAME fault_frame SOURCES fault_frame.cc
+  INCLUDES "${PROJECT_SOURCE_DIR}/arch/x86/x86_64/include")
+
+kickos_add_unit_test(NAME guard_match SOURCES guard_match.cc
   INCLUDES "${PROJECT_SOURCE_DIR}/arch/x86/x86_64/include")

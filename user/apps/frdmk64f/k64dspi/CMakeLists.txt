@@ -22,3 +22,19 @@ option(K64DSPI_LOOPBACK "Build k64dspi as the SOUT->SIN loopback self-test inste
 if(K64DSPI_LOOPBACK)
   target_compile_definitions(k64dspi PRIVATE K64DSPI_LOOPBACK=1)
 endif()
+
+# The slot witness on the local engine, both endings in every configure: k64dspi_death ends the
+# holder with the bus open, k64dspi_close closes it first and probes from the holder's own task.
+# Neither needs a fitting.
+foreach(_arm death close)
+  add_executable(k64dspi_${_arm} witness.cc)
+  if(_arm STREQUAL "close")
+    target_compile_definitions(k64dspi_${_arm} PRIVATE K64DSPI_CLOSE_ARM=1)
+  else()
+    target_compile_definitions(k64dspi_${_arm} PRIVATE K64DSPI_CLOSE_ARM=0)
+  endif()
+  target_link_libraries(k64dspi_${_arm} PRIVATE KickOS::kickos_spi_k64dspi)
+  kickos_app_system(k64dspi_${_arm} COMPOSITION systems/witness.yaml)
+  kickos_emit_image(k64dspi_${_arm})
+  kickos_app_judge(k64dspi_${_arm} tests/integration/check_k64dspi_witness.sh ARGS ${_arm})
+endforeach()

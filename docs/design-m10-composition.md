@@ -85,6 +85,7 @@ metadata declares, as `lines: { irq: /dev/usic0/sr1 }`.
 | `family` | mapping or `none` | yes | translation units several chips share, compiled into this chip's archive against its own headers: `dir`, the family directory put on its include path, and `sources`, each a path below `arch/` |
 | `exits_on_fault` | boolean | yes | whether `arch_shutdown` ends the run with a status the harness reads, so a fault exits rather than blinking the LED |
 | `cpu` | string | no | the core the boot banner names, where no compiler flag names one |
+| `stack_limit` | boolean | no | whether the core checks each stack pointer against a limit register (ARMv8-M Mainline's `PSPLIM` and `MSPLIM`), refused on a chip whose `arch` is not `armv7m`; absent is read as `false` |
 | `devices` | mapping | yes | one entry per device, keyed by its name |
 | `memory` | mapping | on a part with a core that does not translate | ordinary memory windows -- on-chip RAM, flash, apertures -- each a `size` and either a `base` or, where clusters' maps differ, `at`, one base per cluster, or neither for the arena of a part the host runs, which the host places and the link has no region for, and `cluster` on an entry one cluster alone reaches; for the part, or each of its clusters, that does not translate, exactly one entry it reaches is marked `arena: true`, the RAM its user arena is carved from |
 | `pins` | mapping | no | each pin's functions |

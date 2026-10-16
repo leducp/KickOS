@@ -29,8 +29,7 @@
 
 enum kos_cap_index
 {
-    KOS_CAP_STDOUT = 0,    // send-only console endpoint, seated once the console is published
-    KOS_CAP_LIBC_LOCK = 1, // the mutex behind every newlib lock, one per address space
+    KOS_CAP_STDOUT = 0, // send-only console endpoint, seated once the console is published
     KOS_CAP_FIRST_DYNAMIC = KICKOS_CAP_FIRST_DYNAMIC // first index an own-create may take
 };
 
@@ -45,5 +44,11 @@ enum kos_cap_index
 // Its low KCAP_INDEX_BITS are all ones, and the codec's capacity rule (cap.h) reserves that
 // index and never seats a slot on it, so no table can mint this word at any width.
 #define KOS_CAP_AUTHORITY 0x7FFFFFFFu
+
+// The calling thread's address space's C library locks, which only the mutex lock and unlock
+// calls accept: no table holds them, so none can close, narrow or delegate one. The malloc lock
+// is its own; every other newlib lock is the libc lock. Same reserved index as above.
+#define KOS_CAP_LIBC_LOCK 0x7FFEFFFFu
+#define KOS_CAP_MALLOC_LOCK 0x7FFDFFFFu
 
 #endif

@@ -85,4 +85,12 @@ if(KICKOS_ARCH STREQUAL "armv7m")
   target_link_libraries(pspguard_below PRIVATE KickOS::kernel KickOS::system_default)
   kickos_emit_image(pspguard_below)
   target_compile_definitions(pspguard_below PRIVATE KICKOS_PSPGUARD_MODE=4)
+
+  # The SVC entry that violates the stack limit, on the cores that have one.
+  if(KICKOS_HAVE_STACK_LIMIT)
+    add_executable(pspguard_svcstkof main.cc)
+    target_link_libraries(pspguard_svcstkof PRIVATE KickOS::kernel KickOS::system_default)
+    kickos_emit_image(pspguard_svcstkof)
+    target_compile_definitions(pspguard_svcstkof PRIVATE KICKOS_PSPGUARD_MODE=7)
+  endif()
 endif()

@@ -269,7 +269,8 @@ That one arises at thread exit. If a thread exits while owning a mutex, its tear
 owned mutex: pop the highest waiter, transfer ownership to it, set its `wait_result` to
 `-KOS_EOWNERDEAD`, boost it from the remaining waiters, and wake it. The woken thread's
 lock call returns that code, telling it the data the mutex protected may be
-inconsistent, because the previous holder died mid-critical-section. This is the POSIX
+inconsistent, because the previous holder died mid-critical-section. With nobody waiting,
+the mutex keeps the news: the next lock or try returns the same code, once. This is the POSIX
 `EOWNERDEAD` idea reduced to one return value, with no robust-list machinery. What the
 woken thread does about it is its own policy; the kernel's job is only to never strand
 the waiter and to tell it the truth.

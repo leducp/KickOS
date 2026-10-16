@@ -11,6 +11,12 @@
 
 namespace kos
 {
+    // Delegated capability i of a freshly spawned thread, where a default grant list seats it.
+    constexpr kos_cap_t child_cap(int i)
+    {
+        return static_cast<kos_cap_t>(KOS_SPAWN_DELEGATED_CAP0 + i);
+    }
+
     // kos_print: the whole line to stdout, as libc's write(1) sends it.
     inline void print(char const* s)
     {

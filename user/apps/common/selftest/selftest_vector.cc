@@ -195,13 +195,13 @@ namespace selftest
     Atomic<uint32_t, Order::RELAXED> g_vb_holder_done{0};
     uint32_t g_vb_poster_after = 0;
 
-    void vb_holder(void*) // caps: S(WAIT)@2
+    void vb_holder(void*) // caps: S(WAIT)@0
     {
         g_vb_rc[0] = selftest_vec_hold(&g_vb_load[0], &g_vb_seen[0], KOS_SYS_SEM_WAIT,
                                            KOS_SPAWN_DELEGATED_CAP0, KOS_TIMEOUT_NONE);
         g_vb_holder_done = 1;
     }
-    void vb_poster(void*) // caps: S(SIGNAL)@2
+    void vb_poster(void*) // caps: S(SIGNAL)@0
     {
         g_vb_rc[1] = selftest_vec_hold(&g_vb_load[1], &g_vb_seen[1], KOS_SYS_SEM_POST,
                                            KOS_SPAWN_DELEGATED_CAP0, 0);
@@ -462,7 +462,7 @@ namespace selftest
         }
         return opts.info.reply_cap;
     }
-    void vf_xm_victim(void*) // caps: E(WAIT)@2
+    void vf_xm_victim(void*) // caps: E(WAIT)@0
     {
         kos_cap_t const call = vf_take_call();
         uint32_t const word = selftest_vec_fault_xm();
@@ -470,14 +470,14 @@ namespace selftest
         (void)kos_reply(call, &word, sizeof(word));
         kos_exit(1);
     }
-    void vf_mf_victim(void*) // caps: E(WAIT)@2
+    void vf_mf_victim(void*) // caps: E(WAIT)@0
     {
         kos_cap_t const call = vf_take_call();
         uint32_t const word = selftest_vec_fault_mf();
         (void)kos_reply(call, &word, sizeof(word));
         kos_exit(1);
     }
-    void vf_sibling(void*) // caps: park@2
+    void vf_sibling(void*) // caps: park@0
     {
         kos_sem_wait(KOS_SPAWN_DELEGATED_CAP0, KOS_TIMEOUT_NONE);
         kos_exit(1);

@@ -469,6 +469,12 @@ namespace kickos
                 {
                     return -KOS_EPERM;
                 }
+                // The kernel seats the child's thread-local block through this alias only, and
+                // a granted range no pool frame backs (the AMP share) has none.
+                if (cr != nullptr and ustack_kptr(base) == nullptr)
+                {
+                    return -KOS_EPERM;
+                }
 #else
                 // An out-of-arena stack_base would grant an R|W window over peripheral or kernel
                 // SRAM.
@@ -686,7 +692,7 @@ namespace kickos
         }
         if (builds)
         {
-            presync_stage_image(false, domain_space(thread_domain(c)));
+            presync_stage_image();
         }
 #if KICKOS_ARCH_ALIAS_DCACHE
         VirtualRanges const* const own = domain_ranges(thread_domain(c));
@@ -720,7 +726,7 @@ namespace kickos
         {
             return;
         }
-        presync_stage_image(true, domain_space(thread_domain(c)));
+        presync_stage_image();
 #if KICKOS_ARCH_ALIAS_DCACHE
         if (mem_base == nullptr or mem_size == 0)
         {
@@ -852,17 +858,15 @@ namespace kickos
                 deleg_obj[ci] = se->obj;
                 deleg_kind[ci] = kcap_grant_pack(se->type, mask);
                 deleg_badge[ci] = cap_badge(*se);
-                // An absent array, or a 0 entry, means default placement. 0 is free as a
-                // sentinel: the reserved indices are the kernel's seats.
+                // An absent array, or a 0 entry, means default placement, and 0 is the only
+                // reserved index, so no destination names a reserved slot.
+                static_assert(KOS_CAP_FIRST_DYNAMIC == 1,
+                              "a second reserved index needs a destination refusal here");
                 unsigned dest = dbuf[ci];
                 if (dest == 0u)
                 {
                     dest = static_cast<unsigned>(KOS_SPAWN_DELEGATED_CAP0) +
                            static_cast<unsigned>(ci);
-                }
-                if (dest < static_cast<unsigned>(KOS_CAP_FIRST_DYNAMIC))
-                {
-                    return -KOS_EINVAL;
                 }
                 deleg_dest[ci] = static_cast<uint16_t>(dest);
             }
@@ -918,7 +922,8 @@ namespace kickos
                 return -KOS_EPERM;
             }
             int derr = 0;
-            tk = task_for(0, p->mem_base, p->mem_size, thread_domain(spawner), &derr);
+            tk = task_for(DOM_CALLER_UNPRIVILEGED, p->mem_base, p->mem_size,
+                          thread_domain(spawner), &derr);
             if (tk == nullptr)
             {
                 return -derr;
@@ -1114,14 +1119,6 @@ namespace kickos
             return -KOS_EAGAIN; // the destination task holds its ceiling of one of the pools
         }
 
-        int const libc_lock = cap_libc_lock_take(tk, lock);
-        if (libc_lock == KCAP_LIBC_LOCK_NONE)
-        {
-            cap_slab_detach(&attr.cap_run, &attr.cap_free_head, &attr.cap_width);
-            spawn_unwind(k, attr, tk, stack, stack_size, i, lock);
-            return -KOS_ENOMEM;
-        }
-
         // obj_ref_inc must stay the last fallible step: after thread_create the unwind would
         // also owe the task reference and the child's already-seated caps.
         for (int ci = 0; ci < ncaps; ci++)
@@ -1136,7 +1133,6 @@ namespace kickos
                 obj_ref_undo(static_cast<CapType>(kcap_grant_type(deleg_kind[cj])),
                              deleg_obj[cj], kcap_grant_rights(deleg_kind[cj]));
             }
-            cap_libc_lock_give(libc_lock, lock);
             cap_slab_detach(&attr.cap_run, &attr.cap_free_head, &attr.cap_width);
             spawn_unwind(k, attr, tk, stack, stack_size, i, lock);
             return -KOS_EOVERFLOW; // an object refcount is at its ceiling
@@ -1146,7 +1142,6 @@ namespace kickos
         // and the reference loop already holds a reference for every cap seated here.
         Thread* const child = &k.threads.slots[i];
         cap_install_defaults(child, lock);
-        cap_seat_libc_lock(child, libc_lock);
         cap_seat_authority(child, p->authority);
         for (int ci = 0; ci < ncaps; ci++)
         {

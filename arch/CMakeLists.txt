@@ -49,6 +49,7 @@ set(KICKOS_SEAM_DEFAULTS_COMMON
   common/arch_frame_pool_bounds_default.cc
   ${KICKOS_SEAM_DEFAULTS_DIR}/arch_periph_clock_hz_default.cc
   ${KICKOS_SEAM_DEFAULTS_DIR}/arch_periph_enable_default.cc
+  ${KICKOS_SEAM_DEFAULTS_DIR}/arch_periph_disable_default.cc
   common/arch_periph_reg_write_default.cc
   common/arch_pinmux_set_default.cc
   common/kfault_terminate_default.cc)
@@ -114,6 +115,24 @@ if(DEFINED KICKOS_CHIP_REGION_GRANULE)
   list(APPEND KICKOS_ARCH_SOURCES common/arch_mpu_region_rule.cc)
 endif()
 add_library(kickos_arch_${KICKOS_ARCH} STATIC ${KICKOS_ARCH_SOURCES})
+# Test-only: the stack-limit plant check_splim_plant.sh configures a tree of its own with.
+set(KICKOS_SPLIM_PLANT "" CACHE STRING "test-only: msp or kblock, a privileged stack overflow")
+option(KICKOS_SPLIM_PLANT_UNLIMITED "test-only: the plant with the live stack's limit lifted" OFF)
+if(KICKOS_SPLIM_PLANT)
+  if(NOT "${KICKOS_SPLIM_PLANT_SCRATCH}" STREQUAL "check_splim_plant.sh")
+    message(FATAL_ERROR "KickOS: KICKOS_SPLIM_PLANT builds a kernel that overflows a privileged "
+      "stack on purpose. Only tests/integration/check_splim_plant.sh configures it, in a scratch "
+      "tree of its own.")
+  endif()
+  if(NOT KICKOS_HAVE_STACK_LIMIT OR NOT KICKOS_SPLIM_PLANT MATCHES "^(msp|kblock)$")
+    message(FATAL_ERROR "KICKOS_SPLIM_PLANT is msp or kblock, on a chip with stack limit registers")
+  endif()
+  string(TOUPPER "${KICKOS_SPLIM_PLANT}" _plant)
+  target_compile_definitions(kickos_arch_${KICKOS_ARCH} PRIVATE KICKOS_SPLIM_PLANT_${_plant}=1)
+  if(KICKOS_SPLIM_PLANT_UNLIMITED)
+    target_compile_definitions(kickos_arch_${KICKOS_ARCH} PRIVATE KICKOS_SPLIM_PLANT_UNLIMITED=1)
+  endif()
+endif()
 if(KICKOS_ARCH_HOSTED)
   kickos_apply_hosted(kickos_arch_${KICKOS_ARCH})
 else()

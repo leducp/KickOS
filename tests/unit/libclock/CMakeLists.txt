@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-# The kernel's libc lock seat over the K-seam fixture, at the preset's posture.
-kickos_add_unit_test(NAME libc_lock_seat SOURCES seat.cc LIBRARIES kickos_kseam)
+# The kernel's libc locks over the K-seam fixture, at the preset's posture.
+kickos_add_unit_test(NAME libc_lock_space SOURCES space.cc LIBRARIES kickos_kseam)
 
 # user/src/newlib_lock.cc against a scripted kernel mutex. newlib/ stands in for the toolchain's
 # headers, which the host libc does not have.

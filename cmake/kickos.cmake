@@ -20,11 +20,12 @@
 get_filename_component(KICKOS_BOARDS_DIR "${CMAKE_CURRENT_LIST_DIR}/../boards" ABSOLUTE)
 
 # List-dir-relative: cap_table.cmake, driver_geometry.cmake, driver_metadata.cmake,
-# heap_symbol.cmake and compose.cmake must be installed beside this file.
+# heap_symbol.cmake, qemu_cpu.cmake and compose.cmake must be installed beside this file.
 include("${CMAKE_CURRENT_LIST_DIR}/cap_table.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/driver_geometry.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/driver_metadata.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/heap_symbol.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/qemu_cpu.cmake")
 
 # In-tree vs installed-package signal: a source tree has boards/ beside cmake/; an
 # installed package ships kickos.cmake with no boards/ sibling.
@@ -416,9 +417,26 @@ endfunction()
 # +xsaveopt is not in x86-64-v3 and the port never executes it: QEMU 11.1's TCG spins on the
 # CR4 write that sets OSXSAVE for a model reporting XSAVE without it, measured, so the boot
 # never reaches its first thread.
+#
+# +smep and +smap are not in x86-64-v3 either: qemu64 offers neither, and without them every gate
+# runs a kernel that can read, write and run user pages.
 set(KICKOS_X86_64_QEMU_CPU
-    "qemu64,+ssse3,+sse4.1,+sse4.2,+popcnt,+cx16,+lahf-lm,+avx,+avx2,+bmi1,+bmi2,+fma,+f16c,+movbe,+abm,+xsave,+xsaveopt"
+    "qemu64,+ssse3,+sse4.1,+sse4.2,+popcnt,+cx16,+lahf-lm,+avx,+avx2,+bmi1,+bmi2,+fma,+f16c,+movbe,+abm,+xsave,+xsaveopt,+smep,+smap"
     CACHE INTERNAL "The -cpu model every x86_64 emulation runs")
+
+# The processor a preset runs the board's image on instead of the one the board's emulator line
+# names: the same image on a later core, where a feature the board's core lacks is witnessed.
+set(KICKOS_QEMU_CPU "" CACHE STRING
+    "The emulated -cpu, in place of the board's; empty keeps the board's")
+
+# ---------------------------------------------------------------------------
+# kickos_qemu_cpu(<out>)
+#   The processor model the configured board's emulator runs (kickos_qemu_cpu_model).
+# ---------------------------------------------------------------------------
+function(kickos_qemu_cpu out)
+  kickos_qemu_cpu_model(_cpu "${KICKOS_QEMU_CPU}" "${KICKOS_MCPU_FLAGS}" ${KICKOS_QEMU_OPTIONS})
+  set(${out} "${_cpu}" PARENT_SCOPE)
+endfunction()
 
 # ---------------------------------------------------------------------------
 # kickos_qemu_machine(<board> <out_env> <out_machine> [<out_cpus>])
@@ -455,7 +473,7 @@ function(kickos_qemu_machine board out_env out_machine)
   if(KICKOS_ARM64_GIC_VERSION EQUAL 3 AND NOT "${KICKOS_QEMU_GICV3_MACHINE}" STREQUAL "")
     set(_machine "${KICKOS_QEMU_GICV3_MACHINE}")
   endif()
-  set(_extra ${KICKOS_QEMU_OPTIONS})
+  kickos_qemu_cpu_line(_extra "${KICKOS_QEMU_CPU}" "${board}" ${KICKOS_QEMU_OPTIONS})
   if(KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
     math(EXPR _part_mib
          "(${KICKOS_AMP_NODES} * ${KICKOS_AMP_NODE_SHARE} + ${KICKOS_AMP_SHARED_SIZE} + 1048575) / 1048576")

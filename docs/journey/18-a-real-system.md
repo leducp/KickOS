@@ -53,25 +53,24 @@ of Try-it follow. The static ones read the linked images with `arm-none-eabi-nm`
 were all checked on the two builds below, and the addresses come from them. The live ones need a
 FRDM-K64F with a debugger attached, and are marked unverified.
 
-`k64dspi` is a diagnostic application: it is built only by a configuration that enables the
-self-test (`CONFIG_KICKOS_ENABLE_SELFTEST`), and only on an enforcing build (its source stops with
-`#error` without one). So the preset is `frdmk64f-st`, not `frdmk64f`. The option
+`k64dspi` is built only on an enforcing build (its source stops with `#error` without one), so
+the preset is `frdmk64f`, not `frdmk64f-flat`. The option
 `KICKOS_SPI_LOCAL_ENGINE` picks the build: off (the default) is the service and its proxy client,
 on is the client owning the controller (Stop 10).
 
 ```sh
-cmake --preset frdmk64f-st -B build/frdmk64f-st
-cmake --build build/frdmk64f-st --target k64dspi
-cmake --preset frdmk64f-st -B build/frdmk64f-st-local -DKICKOS_SPI_LOCAL_ENGINE=ON
-cmake --build build/frdmk64f-st-local --target k64dspi
+cmake --preset frdmk64f -B build/frdmk64f
+cmake --build build/frdmk64f --target k64dspi
+cmake --preset frdmk64f -B build/frdmk64f-local -DKICKOS_SPI_LOCAL_ENGINE=ON
+cmake --build build/frdmk64f-local --target k64dspi
 ```
 
 The image is `user/apps/frdmk64f/k64dspi/k64dspi` under each build directory. The Try-its below
 name the two images by shell variables:
 
 ```sh
-PROXY=build/frdmk64f-st/user/apps/frdmk64f/k64dspi/k64dspi
-LOCAL=build/frdmk64f-st-local/user/apps/frdmk64f/k64dspi/k64dspi
+PROXY=build/frdmk64f/user/apps/frdmk64f/k64dspi/k64dspi
+LOCAL=build/frdmk64f-local/user/apps/frdmk64f/k64dspi/k64dspi
 ```
 
 For a live session, flash and attach with the J-Link GDB server, as the
@@ -153,8 +152,8 @@ admission alone from `tools/compose`, with the Python the build made for the too
 
 ```
 $ cd tools/compose
-$ ../../build/frdmk64f-st/kickos_compose/venv/bin/python -m kickos_compose admit \
-      /tmp/noaccepts.yaml --manifest ../../build/frdmk64f-st/export/manifest.yaml
+$ ../../build/frdmk64f/kickos_compose/venv/bin/python -m kickos_compose admit \
+      /tmp/noaccepts.yaml --manifest ../../build/frdmk64f/export/manifest.yaml
 /tmp/noaccepts.yaml:13: enforcement.coarse-gate: task `k64dspi` holds `/dev/dspi0`, which the
   0x1000-byte aips_slot of chip `mk64f` opens with what sits beside it, so it needs `coarse_gate`
   in its `accepts`
@@ -182,7 +181,7 @@ The application's `CMakeLists.txt` picks the composition (`kickos_app_system(k64
 systems/proxy.yaml)`), and the configure step runs `kickos_compose emit` on it. `build` in
 `emit.py` walks the admitted tasks and makes one **task entry** per task and one **grant entry**
 per thing a task holds; `render` writes them as C, into
-`build/frdmk64f-st/kickos_compose/k64dspi_system/table.c`. That table is linked into the image as
+`build/frdmk64f/kickos_compose/k64dspi_system/table.c`. That table is linked into the image as
 `kickos_table`, and the init walks it at boot ([01, Stop 16](01-power-on.md)).
 
 Three grants come out of this composition. The driver gets a `KOS_GRANT_WINDOW` (base
@@ -218,7 +217,7 @@ and so on), so the service's engine and the client's proxy can sit in one image 
 **Try it:** read the grants in the emitted table, then the symbols in the image.
 
 ```
-$ grep -E '\.kind|\.cap_slot|\.base|\.size' build/frdmk64f-st/kickos_compose/k64dspi_system/table.c
+$ grep -E '\.kind|\.cap_slot|\.base|\.size' build/frdmk64f/kickos_compose/k64dspi_system/table.c
             .kind = KOS_GRANT_WINDOW,
             .cap_slot = KOS_TABLE_NONE,
             .base = 0x4002C000u,
@@ -229,10 +228,10 @@ $ grep -E '\.kind|\.cap_slot|\.base|\.size' build/frdmk64f-st/kickos_compose/k64
             .kind = KOS_GRANT_ENDPOINT_USE,
             .cap_slot = KOS_SPAWN_DELEGATED_CAP0 + 0,
 $ arm-none-eabi-nm $PROXY | grep -E ' T (kos_spi|k64dspi)_(bus|device|transfer)'
-00002154 T k64dspi_bus_close
-00001ebc T k64dspi_bus_open
-00001ef8 T k64dspi_device_open
-00002074 T k64dspi_transfer
+00002210 T k64dspi_bus_close
+00001edc T k64dspi_bus_open
+00001f1c T k64dspi_device_open
+00002098 T k64dspi_transfer
 000019e6 T kos_spi_bus_open
 00001a00 T kos_spi_device_open
 00001af0 T kos_spi_transfer
@@ -303,9 +302,9 @@ itself is the path [08](08-spawn-and-caps.md) walks from Stop 8 on.
 
 ```
 $ arm-none-eabi-objdump -d -C --no-show-raw-insn $PROXY --disassemble=k64dspi_spi_start | grep -E 'bl|b\.w'
-    1e2e:	bl	1e78 <k64dspi_service_bus_mux>
-    1e3e:	b.w	2b68 <kickos::driver::bring_up(kickos::driver::Descriptor const&, kos_driver_instance*)>
-    1e44:	bl	252a <kos_print>
+    1e2e:	bl	1e98 <k64dspi_service_bus_mux>
+    1e3e:	b.w	2c3c <kickos::driver::bring_up(kickos::driver::Descriptor const&, kos_driver_instance*)>
+    1e44:	bl	25fe <kos_print>
 ```
 
 On a board: `break k64dspi_spi_start`, `continue`, then `p *instance`. Expect `mmio_base =
@@ -374,21 +373,23 @@ is open, it is open for every unprivileged thread on the chip, which is exactly 
 
 ```
 $ arm-none-eabi-objdump -d -C --no-show-raw-insn $PROXY --disassemble=k64dspi_bus_open | grep -E 'bl|str'
-    1ec6:	str	r3, [r4, #4]
-    1eca:	str	r0, [r4, #0]
-    1ecc:	str	r3, [r4, #8]
-    1ece:	bl	1e54 <(anonymous namespace)::chip_selects_idle(unsigned int)>
-    1ed2:	bl	24ec <kos_periph_enable>
-    1edc:	str	r2, [r3, #0]
-    1ee2:	str	r2, [r3, #0]
+    1ee8:	str	r3, [r4, #0]
+    1eec:	str	r3, [r4, #4]
+    1ef0:	str	r3, [r4, #8]
+    1ef2:	bl	1e54 <(anonymous namespace)::chip_selects_idle(unsigned int)>
+    1ef6:	bl	25ac <kos_periph_enable>
+    1f00:	str	r3, [r4, #0]
+    1f02:	str	r2, [r3, #0]
+    1f08:	str	r2, [r3, #0]
 $ arm-none-eabi-objdump -d --no-show-raw-insn $PROXY --disassemble=kos_periph_enable | grep -E 'movs|bl'
-    24ee:	movs	r3, #0
-    24f6:	movs	r0, #39	@ 0x27
-    24f8:	bl	430e <arch_syscall>
+    25ae:	movs	r3, #0
+    25b6:	movs	r0, #39	@ 0x27
+    25b8:	bl	44b6 <arch_syscall>
 ```
 
-The three stores into `r4` fill the `kos_spi_bus` struct; the two stores at the end are the two
-`MCR` writes; `39` is `KOS_SYS_PERIPH_ENABLE`.
+The first three stores into `r4` fill the `kos_spi_bus` struct (its base stays 0 until the clock
+is on); the fourth, after the call returns, records the base; the two stores through `r3` at the
+end are the two `MCR` writes; `39` is `KOS_SYS_PERIPH_ENABLE`.
 
 On a board: `break '(anonymous namespace)::bus_thread'`, `continue`, `p/x $r0`. Expect
 `0x4002c000`: the window base, passed as a value. Then `break arch_periph_enable`, `continue`,
@@ -499,8 +500,8 @@ slot, nothing more.
 
 ```
 $ arm-none-eabi-objdump -d -C --no-show-raw-insn $PROXY --disassemble=k64dspi_main | grep -E '\bbl\b' | head -4
-     426:	bl	2f54 <kos_grant_endpoint>
-     430:	bl	252a <kos_print>
+     426:	bl	3028 <kos_grant_endpoint>
+     430:	bl	25fe <kos_print>
      440:	bl	19e6 <kos_spi_bus_open>
      45a:	bl	1a00 <kos_spi_device_open>
 ```
@@ -554,7 +555,7 @@ $ arm-none-eabi-objdump -d -C --no-show-raw-insn $PROXY --disassemble=kos_spi_tr
     1b7c:	bl	19d4 <mem_copy(void*, void const*, unsigned int)>
     1b86:	bl	19d4 <mem_copy(void*, void const*, unsigned int)>
     1b92:	bl	19d4 <mem_copy(void*, void const*, unsigned int)>
-    1ba4:	bl	221a <kos_call>
+    1ba4:	bl	22da <kos_call>
     1bb6:	bl	19d4 <mem_copy(void*, void const*, unsigned int)>
     1bdc:	bl	19d4 <mem_copy(void*, void const*, unsigned int)>
 ```
@@ -613,24 +614,31 @@ one store to `PSOR`:
     // ...
     while (popped < len)
     {
+        bool moved = false;
         if (kickos::mk64f::driver::dspi_rx_count(win) > 0u)
         {
             buf[popped] = static_cast<unsigned char>(*popr & 0xFFu);
             popped++;
+            moved = true;
         }
         if (pushed < len and (pushed - popped) < RX_FIFO_DEPTH
             and ((*sr >> 12) & 0xFu) < TX_FIFO_DEPTH)
         {
             *pushr = static_cast<uint32_t>(buf[pushed]) & 0xFFu;
             pushed++;
+            moved = true;
         }
+        // ... a poll that moved nothing counts toward stall_polls; at the bound the engine
+        // halts the controller, releases the chip select and returns -KOS_EIO
     }
 
     cs_write(d, GPIO_PSOR);
 ```
 
 This is a **polled** transaction: the driver thread spins on the FIFO counters, it does not
-sleep on an interrupt. The controller's FIFOs are 4 deep each way. Each turn of the loop first
+sleep on an interrupt. The spin is bounded: a frame that never completes (the module halted, a
+received byte lost) ends the transfer once a count of polls has moved no byte, and the engine then
+halts the controller, releases the chip select and returns `-KOS_EIO`. The controller's FIFOs are 4 deep each way. Each turn of the loop first
 drains one received byte if there is one (at `POPR_OFFSET`), then pushes the next byte to send
 (at `PUSHR_OFFSET`) if fewer than four are in flight and the TX FIFO has room. The in-flight
 bound is what keeps the RX FIFO from overflowing: a byte that completes always finds a free slot.
@@ -652,23 +660,28 @@ line. The XMC4800 service at the end of this chapter takes that interrupt-paced 
 **Try it:** the service's copy of the engine, in the image.
 
 ```
-$ arm-none-eabi-objdump -d -C --no-show-raw-insn $PROXY --disassemble=k64dspi_transfer | grep -E '#12\]|#44|#52|#56|0xc000|rx_count'
-    20d0:	str	r3, [r5, #12]
-    20d8:	str.w	r3, [sl], #44
-    20fa:	bl	31c0 <kickos::mk64f::driver::dspi_rx_count(unsigned int)>
-    2100:	ldr	r3, [r5, #56]	@ 0x38
-    2118:	tst.w	r3, #49152	@ 0xc000
-    2122:	streq	r3, [r5, #52]	@ 0x34
-$ arm-none-eabi-objdump -s -j .text --start-address=0x2148 --stop-address=0x2154 $PROXY | tail -1
- 2148 010c0080 08f00f40 04f00f40           .......@...@
+$ arm-none-eabi-objdump -d -C --no-show-raw-insn $PROXY --disassemble=k64dspi_transfer | grep -E '#12\]|#44|#52|#56|0xc000|rx_count|cs_write'
+    20fe:	str.w	r3, [r8, #12]
+    2108:	str.w	r3, [r9], #44
+    2110:	bl	1e78 <(anonymous namespace)::cs_write(kos_spi_device const*, unsigned int)>
+    2190:	bl	32f8 <kickos::mk64f::driver::dspi_rx_count(unsigned int)>
+    2198:	ldr.w	r2, [r8, #56]	@ 0x38
+    21b4:	ands.w	r2, r2, #49152	@ 0xc000
+    21be:	str.w	r1, [r8, #52]	@ 0x34
+    21d2:	bl	1e78 <(anonymous namespace)::cs_write(kos_spi_device const*, unsigned int)>
+    21f0:	bl	1e78 <(anonymous namespace)::cs_write(kos_spi_device const*, unsigned int)>
+$ arm-none-eabi-objdump -s -j .text --start-address=0x2200 --stop-address=0x2204 $PROXY | tail -1
+ 2200 010c0080                             ....
 ```
 
-`r5` is the window base. `#12` is `CTAR0_OFFSET`, `#56` (`0x38`) is `POPR_OFFSET`, `#52`
-(`0x34`) is `PUSHR_OFFSET`; the `MCR` store post-increments `sl` by 44 to `SR_OFFSET` (`0x2C`).
-The compiler turned `((*sr >> 12) & 0xF) < 4` into a test of bits 14 and 15. The literal pool
-holds `0x80000C01` (`MCR_MSTR | MCR_CLR_TXF | MCR_CLR_RXF | MCR_HALT`), then `0x400FF008` and
-`0x400FF004`: GPIO port A's `PCOR` and `PSOR`, to which `cs_write` adds the chip select's port
-times the port stride.
+`r8` is the window base. `#12` is `CTAR0_OFFSET`, `#56` (`0x38`) is `POPR_OFFSET`, `#52`
+(`0x34`) is `PUSHR_OFFSET`; the `MCR` store that releases the halt post-increments `r9` by 44 to
+`SR_OFFSET` (`0x2C`). The compiler turned `((*sr >> 12) & 0xF) < 4` into a test of bits 14 and 15.
+The chip select is `cs_write`, a small function of its own: the first call passes `r1 = 8`
+(`PCOR`), the last passes `r1 = 4` (`PSOR`), and the call at `21f0` is the same release on the
+stall path. The first word of the literal pool, at `2200`, is `0x80000C01` (`MCR_MSTR |
+MCR_CLR_TXF | MCR_CLR_RXF | MCR_HALT`), the store that halts the controller at `20f8` before
+CTAR0 is written and again on the stall path.
 
 On a board: `break k64dspi_transfer`, run until the client's BYTE_TEST call, then
 `set $b = $r3` and `x/7xb $b` (the outgoing buffer: expect `03 00 64 00 00 00 00`), `finish`,
@@ -814,25 +827,25 @@ consumer chooses the coupling" seen from the code.
 
 ```
 $ arm-none-eabi-nm $LOCAL | grep -E ' T (kos_spi|k64dspi)_'
-000018a4 T k64dspi_bus_mux
+000018c4 T k64dspi_bus_mux
 00000410 T k64dspi_main
-000018e8 T kos_spi_bus_open
-00001924 T kos_spi_device_open
-00001aa0 T kos_spi_transfer
+00001908 T kos_spi_bus_open
+00001948 T kos_spi_device_open
+00001ac4 T kos_spi_transfer
 $ arm-none-eabi-objdump -d -C --no-show-raw-insn $LOCAL --disassemble=k64dspi_main | grep -E '\bbl\b' | head -4
-     42a:	bl	2024 <kos_grant_mmio>
-     43c:	bl	18a4 <k64dspi_bus_mux>
-     44e:	bl	18e8 <kos_spi_bus_open>
-     468:	bl	1924 <kos_spi_device_open>
+     42a:	bl	20e0 <kos_grant_mmio>
+     43c:	bl	18c4 <k64dspi_bus_mux>
+     44e:	bl	1908 <kos_spi_bus_open>
+     468:	bl	1948 <kos_spi_device_open>
 $ arm-none-eabi-size $PROXY $LOCAL
    text	   data	    bss	    dec	    hex	filename
-  67684	   1528	 148976	 218188	  3544c	.../frdmk64f-st/user/apps/frdmk64f/k64dspi/k64dspi
-  62528	   1528	 148976	 213032	  34028	.../frdmk64f-st-local/user/apps/frdmk64f/k64dspi/k64dspi
+  68312	   1544	 149024	 218880	  35700	.../frdmk64f/user/apps/frdmk64f/k64dspi/k64dspi
+  63132	   1544	 149024	 213700	  342c4	.../frdmk64f-local/user/apps/frdmk64f/k64dspi/k64dspi
 ```
 
 No `k64dspi_transfer`, no `bus_thread`, no `serve_one`: the public `kos_spi_transfer` is now the
 engine itself (it starts with the segment check, then stores `0x80000C01` to `MCR`). In the
-emitted table (`build/frdmk64f-st-local/kickos_compose/k64dspi_system/table.c`), the one task has
+emitted table (`build/frdmk64f-local/kickos_compose/k64dspi_system/table.c`), the one task has
 `.authority = KOS_AUTH_PINMUX`, and its window grant has `.window = 0`, a place in the client's
 own spawn list, where the driver's grant had `KOS_TABLE_NONE`.
 
@@ -951,12 +964,12 @@ after `serve_loop` returns.
 
 ```
 $ arm-none-eabi-objdump -d -C --no-show-raw-insn $PROXY --start-address=0x1d94 --stop-address=0x1e28 | grep -E '\bbl\b'
-    1dae:	bl	1ebc <k64dspi_bus_open>
-    1db8:	bl	252a <kos_print>
-    1dbc:	bl	2918 <kickos::driver::trap()>
-    1dc2:	bl	252a <kos_print>
-    1dea:	bl	2430 <kos_reply_recv>
-    1df8:	bl	2154 <k64dspi_bus_close>
+    1dae:	bl	1edc <k64dspi_bus_open>
+    1db8:	bl	25fe <kos_print>
+    1dbc:	bl	29ec <kickos::driver::trap()>
+    1dc2:	bl	25fe <kos_print>
+    1dea:	bl	24f0 <kos_reply_recv>
+    1df8:	bl	2210 <k64dspi_bus_close>
     1e16:	bl	1c10 <kickos::spi::serve_one(kos_spi_bus*, kickos::spi::SlotTable&, unsigned char*, unsigned int)>
 ```
 

@@ -42,7 +42,8 @@ kernel code recovers that. The decision that follows from it is decision 1.
 
 2. **The boundary K64F actually draws is kernel-vs-user, per SLOT, decided by whether the shim
    opens it.** Not per-thread, and not per-register-window. Say so rather than implying the window
-   is the boundary.
+   is the boundary. The slot is open exactly while a holder holds the window: the bus close and
+   the holder's death both set its `SP` bit back (`arch_periph_disable`).
 
 3. **The escalation surfaces stay privileged and out of the driver's reach regardless**: the SIM
    clock gates (could ungate any peripheral) and the PORTD pin mux (could re-mux SPI onto or off

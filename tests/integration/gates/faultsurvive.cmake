@@ -28,6 +28,12 @@ if(KICKOS_ARCH MATCHES "^(armv7m|armv6m|rv32imac|rxv3)$")
     set(_fs_unprivileged ON)
   endif()
 endif()
+# A core with stack limit registers stops the overflow itself, with or without an MPU, and the
+# fault is the thread's.
+set(_fs_stklim OFF)
+if(KICKOS_HAVE_STACK_LIMIT AND KICKOS_FAULT_ISOLATION)
+  set(_fs_stklim ON)
+endif()
 set(_fs_privileged_why "faults are not isolated")
 if(KICKOS_FAULT_ISOLATION)
   set(_fs_privileged_why "tasks run privileged, so the privilege test refuses the frame first")
@@ -36,7 +42,16 @@ endif()
 if(_fs_judged)
   kickos_app_judge(faultsurvive tests/integration/check_faultsurvive.sh
     ARGS survive ${KICKOS_ARCH} terminated)
-  if(_fs_guarded)
+  if(_fs_stklim)
+    kickos_app_judge(faultsurvive_ovf tests/integration/check_faultsurvive.sh
+      ARGS stkof ${KICKOS_ARCH} contained)
+    # The limit stops a recursion before the MPU sees it, so the MPU's stacking abort is
+    # reached through an SP aimed above the stack.
+    if(TARGET faultsurvive_ovfmpu)
+      kickos_app_judge(faultsurvive_ovfmpu tests/integration/check_faultsurvive.sh
+        ARGS overflow ${KICKOS_ARCH} terminated)
+    endif()
+  elseif(_fs_guarded)
     kickos_app_judge(faultsurvive_ovf tests/integration/check_faultsurvive.sh
       ARGS overflow ${KICKOS_ARCH} ${_fs_outcome})
   else()
@@ -108,7 +123,16 @@ kickos_add_qemu_test(TARGET faultsurvive
   SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh"
   ARGS survive ${KICKOS_ARCH} terminated)
 
-if(_fs_guarded)
+if(_fs_stklim)
+  kickos_add_qemu_test(NAME ${_tag}_faultoverflow TARGET faultsurvive_ovf
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh"
+    ARGS stkof ${KICKOS_ARCH} contained)
+  if(TARGET faultsurvive_ovfmpu)
+    kickos_add_qemu_test(NAME ${_tag}_faultoverflow_mpu TARGET faultsurvive_ovfmpu
+      SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh"
+      ARGS overflow ${KICKOS_ARCH} terminated)
+  endif()
+elseif(_fs_guarded)
   kickos_add_qemu_test(NAME ${_tag}_faultoverflow TARGET faultsurvive_ovf
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh"
     ARGS overflow ${KICKOS_ARCH} ${_fs_outcome})

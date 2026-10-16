@@ -157,7 +157,9 @@ extern "C"
 
     // Clock one transaction to `d`: apply its profile, assert its chip select, clock `len`
     // bytes full duplex across `nseg` segments, release the chip select. Returns `len`, or a
-    // negative kos_errno.
+    // negative kos_errno. An engine that finds its controller no longer moving bytes answers
+    // -KOS_EIO, with the controller stopped and the chip select released; `buf` is then
+    // unspecified.
     //
     // `buf` IS IN PLACE AND FULL DUPLEX: it holds the bytes to send on entry and the bytes
     // received on return, one byte per frame. A caller that wants its outgoing bytes back
@@ -181,8 +183,10 @@ extern "C"
     // Idempotent.
     //
     // RELEASES NOTHING. The window grant, the line cap and the endpoint cap belong to the
-    // consumer that acquired them and are still held after this returns. Device handles
-    // issued against this bus are dead once it returns and must not be transferred through.
+    // consumer that acquired them and are still held after this returns. A block the open
+    // enabled through kos_periph_enable is disabled again, which on a chip whose bus gates it per
+    // privilege makes its registers fault until the next open. Device handles issued against
+    // this bus are dead once it returns and must not be transferred through.
     int32_t kos_spi_bus_close(struct kos_spi_bus* b);
 
     // BLOCKING, WITH NO DEADLINE ANY ARGUMENT HERE CAN EXPRESS. A caller parked in kos_call

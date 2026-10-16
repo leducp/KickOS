@@ -56,11 +56,26 @@ namespace kickos::x86_64
     // completes, arch_cpu_id reads cpu_block::core_id with one GS-relative load.
     uint32_t boot_apic_id(void);
 
+    // CR4.SMEP and CR4.SMAP (Intel SDM Vol 3, section 2.5).
+    constexpr uint64_t cr4_guard = (1ull << 20) | (1ull << 21);
+
+    // Whether a core reading back `core_cr4` holds the SMEP and SMAP the boot core's `boot_cr4`
+    // does; the other CR4 bits may differ.
+    constexpr bool guard_matches(uint64_t boot_cr4, uint64_t core_cr4)
+    {
+        return ((boot_cr4 ^ core_cr4) & cr4_guard) == 0;
+    }
+
     // Arm the fast syscall pair and the per-core block. Call AFTER desc_init. Opens nothing to
-    // ring 3: a task reaches only what its own space maps.
+    // ring 3: a task reaches only what its own space maps. Records the boot core's SMEP and SMAP
+    // as CR4 reads them back, which arch_uaccess_guard names.
     void ring3_init(void);
     // APs inherit the BSP's shared page tables but need their own GS base and syscall MSRs.
+    // Also sets CR4.SMEP and CR4.SMAP where this processor's CPUID offers them.
     void ring3_cpu_init(void);
+    // Whether this core's SMEP and SMAP, read back from CR4, are the boot core's. After
+    // ring3_init on the boot core and ring3_cpu_init on this one; ap_main refuses the boot on false.
+    bool ring3_guard_matches_boot(void);
 
     // The running thread's kernel stack top, published to the block above.
     void cpu_set_kernel_sp(uint64_t top);

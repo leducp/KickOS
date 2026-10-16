@@ -115,8 +115,8 @@ slot in `main`'s handle table. That slot, in turn, stores the endpoint pool's ow
 other ([Book: Naming a kernel object](../book/handles-and-the-resolve-chokepoint.md)).
 
 **Try it:** after the prelude, `break kos_endpoint_create`, `continue`, `finish`, then
-`p/x '(anonymous namespace)::g_ep'`. You should see something like `$3 = 0x9f0008`: the low 16
-bits (`KCAP_INDEX_BITS`) are the slot index in `main`'s table (8), the high bits the slot's
+`p/x '(anonymous namespace)::g_ep'`. You should see something like `$3 = 0x9f0009`: the low 16
+bits (`KCAP_INDEX_BITS`) are the slot index in `main`'s table (9), the high bits the slot's
 generation.
 
 **Why, and the contract:** [Book: Endpoints](../book/endpoints-synchronous-ipc-by-rendezvous.md),
@@ -142,8 +142,8 @@ In the kernel, `spawn_masked` checks each grant before building anything: the so
 `CAP_TRANSFER`, and the mask may only narrow the source's rights, never widen them. Then
 `obj_ref_inc` raises the object's counts (for an endpoint granted `CAP_WAIT`, that includes
 `recv_holders`), and `cap_install_at` seats grant `i` at index `KOS_SPAWN_DELEGATED_CAP0 + i`
-in the child. That is why `echo_server` names its endpoint as capability `3`: index 2 is the
-semaphore, index 3 the endpoint. [8. Spawn and capabilities](08-spawn-and-caps.md) walks this code.
+in the child. That is why `echo_server` names its endpoint as `child_cap(1)`: delegated cap 0
+is the semaphore, delegated cap 1 the endpoint. [8. Spawn and capabilities](08-spawn-and-caps.md) walks this code.
 
 Here the client is `main` itself, which keeps its all-rights capability. In the fastpath arm
 (Stop 11) the client is a spawned thread, and it receives `EP_SIGNAL_ONLY`: a client can call
@@ -151,9 +151,9 @@ but not receive, a server can receive but not call. Neither could manufacture th
 right.
 
 **Try it:** after the prelude, `break kickos::cap_install_at`, `continue`. The first stop is
-Stop 1's own install, reached from `cap_install`: `main`'s table, `index=8`,
+Stop 1's own install, reached from `cap_install`: `main`'s table, `index=9`,
 `type=kickos::CapType::CAP_ENDPOINT`, `rights=15` (all four rights), `obj_handle=786432`.
-`continue` twice more. The third stop is the server's: `p c->name` gives `"rtS"`, `index=3`,
+`continue` twice more. The third stop is the server's: `p c->name` gives `"rtS"`, `index=2`,
 the same `obj_handle=786432`, `rights=1` (`KOS_CAP_WAIT`), and `bt 2` shows `spawn_masked` as
 the caller. Two table entries, one endpoint, different rights.
 
@@ -201,7 +201,7 @@ with `KOS_RECV_NO_INFO` sets it to 0, and that 0 is what makes a call refuse thi
 and reschedules. The server's kernel stack, frozen inside `endpoint_reply_recv`, is its
 continuation ([3. Sleep](03-sleep.md) walked the same park).
 
-**Try it:** after the prelude, `break kickos::endpoint_recv_locked`, `continue`: `cap=3`,
+**Try it:** after the prelude, `break kickos::endpoint_recv_locked`, `continue`: `cap=2`,
 and `p c->name` gives `"rtS"`. (Stopping here first matters: `main` parked just before, waiting
 for the witness thread as `WAIT_JOIN`, and a `park_queueless` breakpoint set from the prelude
 would stop on that park.) `delete`, `break kickos::park_queueless`, `continue`. You should
@@ -241,7 +241,7 @@ parked yet (half B, Stop 10), or the endpoint lives in another kernel (an AMP bu
 [11. Multicore](11-multicore.md)).
 
 **Try it:** after the prelude, `break kickos::endpoint_call`, `continue`. gdb shows
-`cap=10420232` (that is `0x9f0008`, `g_ep` from Stop 1), `send_len=4`, `recv_cap=16`,
+`cap=10420233` (that is `0x9f0009`, `g_ep` from Stop 1), `send_len=4`, `recv_cap=16`,
 `timeout_us=5000000`. `bt 4` shows `syscall_body (nr=46, ...)` under it and `svc_trampoline`
 below that.
 
@@ -311,8 +311,8 @@ the reply object. `write_recv_info` then writes `{badge, reply_cap}` into the se
 `break kickos::ep_copy`, `continue`: `n=4`, and `x/4c src` prints `'p' 'i' 'n' 'g'`. Then
 `delete`, `break kickos::cap_install_reply`, `continue`: `p c->name` is `"rtS"` (the table
 being written), `p caller->name` is `"main"`, `p caller->call_seq` is `1`. `finish` back
-into `endpoint_call` and `p/x rcap`: `0x4`, generation 0, slot 4 of the server's table (2 and
-3 were granted at spawn).
+into `endpoint_call` and `p/x rcap`: `0x3`, generation 0, slot 3 of the server's table (1 and
+2 were granted at spawn).
 
 **Why, and the contract:** [Book: What KickOS chose: the parked caller IS the reply object](../book/synchronous-call-and-reply.md),
 [Reference: The reply capability (`CAP_REPLY`)](../reference/ipc-call-reply.md)
@@ -406,7 +406,7 @@ The test is against `KOS_CAP_NONE`, never a sign test: a handle fills all 32 bit
 `kos_send` arrival would have delivered `KOS_CAP_NONE` here, with nothing to answer.
 
 **Try it:** after the prelude, `break kos_reply`, `continue`. gdb shows
-`kos_reply (reply_cap=4, buf=0x20029fc8, len=5)`, and `bt 2` names `echo_server`. `x/5c buf`
+`kos_reply (reply_cap=3, buf=0x20029fc8, len=5)`, and `bt 2` names `echo_server`. `x/5c buf`
 prints `'p' 'o' 'n' 'g' '!'`.
 
 **Why, and the contract:** [Reference: The receive out-struct](../reference/ipc-call-reply.md),
@@ -665,9 +665,9 @@ The exception return then lands in `arch_syscall_reg` just after its `svc`, whic
 `r5`-`r9` back into `io`, and `kos_call` copies the reply bytes into the user's `buf`.
 
 **Try it:** start fresh, `break (anonymous namespace)::t_call_reg_fastpath`, `continue`,
-`delete`, `break kos_call`, `continue`: `kos_call (ep=2, buf=..., send_len=8, recv_cap=8)`;
+`delete`, `break kos_call`, `continue`: `kos_call (ep=1, buf=..., send_len=8, recv_cap=8)`;
 `set $ret = $lr & ~1`, `delete`. Then `break arch_syscall_reg`, `continue`, `x/8wx $r0`:
-`0x00000038 0x00000002 0x00001008 0x04030201 0x08070605 0x00000000 ...` (56, endpoint 2, the
+`0x00000038 0x00000001 0x00001008 0x04030201 0x08070605 0x00000000 ...` (56, endpoint 1, the
 packed 8|8, the payload bytes 1 to 8). `delete`, `break kickos_ipc_fastpath`, `continue`,
 `bt 2` shows `SVC_Handler` as the caller, and `x/8wx args` shows the same words from `args[1]`
 on (`args[0]` is whatever `r4` held). `delete`, `break kickos::cap_install_reply`, `continue`:
@@ -721,5 +721,5 @@ file discards its `write_recv_info` answer), [12. ARMv6-M](12-armv6m.md),
    Then predict whether this call takes the register fastpath (look at the priorities
    `serve_one_call` uses). Check with `break kickos_ipc_fastpath` and `finish`: what does it
    return, and which refusal produced that?
-3. After Stop 8, the server's slot 4 was vacated. Predict what a second
-   `kos_reply(4, ...)` would return, and which test in `endpoint_reply_locked` returns it.
+3. After Stop 8, the server's slot 3 was vacated. Predict what a second
+   `kos_reply(3, ...)` would return, and which test in `endpoint_reply_locked` returns it.

@@ -95,14 +95,21 @@ namespace kickos
     }
 
     // ustack_alloc maps the run at its own physical base plus the user offset, which is what
-    // lets a stack address name its frame here and in ustack_free.
+    // lets a stack address name its frame here and in ustack_free. A caller's stack need not
+    // start on a granule.
     void* ustack_kptr(uintptr_t base)
     {
         if (base == 0)
         {
             return nullptr;
         }
-        return frame_pool_ptr(aspace_frame_of(base));
+        uintptr_t const in = base & (arch_aspace_granule() - 1u);
+        void* const frame = frame_pool_ptr(aspace_frame_of(base - in));
+        if (frame == nullptr)
+        {
+            return nullptr;
+        }
+        return static_cast<unsigned char*>(frame) + in;
     }
 }
 

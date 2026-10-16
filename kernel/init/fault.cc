@@ -18,6 +18,16 @@
 #include <kickos/thread.h>
 
 #include <kickos/sys/abi.h> // KOS_EXIT_FAULT
+#include <kickos/sys/witness.h>
+
+#if KICKOS_WITNESS_UACCESS
+namespace kickos
+{
+    // syscall_witness.cc: a ring-0 read the witness armed for this thread, here where the frame
+    // the kill redirect built is running.
+    void witness_uaccess_fault_exit(Thread const* c);
+}
+#endif
 
 namespace
 {
@@ -34,6 +44,9 @@ namespace
         uintptr_t addr;
         bool addr_valid;
         bool valid;
+#if KICKOS_HAVE_STACK_LIMIT
+        bool pc_valid;
+#endif
     };
 
     // Indexed by arch_cpu_id().
@@ -57,7 +70,19 @@ extern "C" void kickos_fault_record(char const* status_name, uint64_t status,
     r.addr = addr;
     r.addr_valid = (addr_valid != 0);
     r.valid = true;
+#if KICKOS_HAVE_STACK_LIMIT
+    r.pc_valid = true;
+#endif
 }
+
+#if KICKOS_HAVE_STACK_LIMIT
+extern "C" void kickos_fault_record_no_pc(char const* status_name, uint64_t status,
+                                          uintptr_t addr, int addr_valid)
+{
+    kickos_fault_record(status_name, status, 0, addr, addr_valid);
+    fault_record().pc_valid = false;
+}
+#endif
 
 extern "C" bool kickos_fault_frame_trusted(void const* frame, size_t bytes)
 {
@@ -200,6 +225,9 @@ extern "C" bool kickos_fault_kill_thread(void* frame)
 extern "C" void kickos_thread_fault_exit(void)
 {
     ::kickos::Thread* const c = ::kickos::sched::current();
+#if KICKOS_WITNESS_UACCESS
+    ::kickos::witness_uaccess_fault_exit(c);
+#endif
     char const* who = "?";
     if (c != nullptr)
     {
@@ -226,7 +254,16 @@ extern "C" void kickos_thread_fault_exit(void)
         // Consumed, so a later kill that somehow reaches here without a fresh capture
         // prints nothing rather than this fault's PC.
         r.valid = false;
+#if KICKOS_HAVE_STACK_LIMIT
+        if (not r.pc_valid)
+        {
+            ::kickos::kprintf_fault(KDIAG_F_FAULT_NO_PC, r.status_name,
+                                    static_cast<unsigned long long>(r.status));
+        }
+        else if (r.status_name == nullptr)
+#else
         if (r.status_name == nullptr)
+#endif
         {
             // status_name is null on v6-M, whose profile supplies the PC alone.
             ::kickos::kprintf_fault(KDIAG_F_FAULT_PC, reinterpret_cast<void*>(r.pc));

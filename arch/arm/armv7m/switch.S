@@ -32,6 +32,9 @@
     .equ F_CTX_STACK_HI, KICKOS_ARMV7M_CTX_OFF_STACK_HI
     .equ F_CTX_KERNEL_SP, KICKOS_ARMV7M_CTX_OFF_KERNEL_SP
     .equ F_CTX_TRACE_TID, KICKOS_ARMV7M_CTX_OFF_TRACE_TID
+#if KICKOS_ARMV7M_SPLIM
+    .equ F_CTX_SPLIM, KICKOS_ARMV7M_CTX_OFF_SPLIM
+#endif
 
 /* The deepest a PSP may sit inside a kernel block and still be accepted by PendSV's block leg,
    as a distance DOWN from the block's top because that is what the compare there holds. SIZE,
@@ -136,7 +139,16 @@ PendSV_Handler:
                                        exactly at the bound wherever the block has no slack. */
 2:
 #endif
+#if KICKOS_ARMV7M_SPLIM
+    /* Every PSP an entry stacked from sits at or above PSPLIM, SPLIM_ROOM over the base, and
+       every stack crossing moves the limit with SP under PRIMASK: only the upper bound is left
+       to software. */
+    ldr     r12, [r2, #F_CTX_STACK_HI]
+    cmp     r0, r12
+    bhs     .Lpsp_wild_pendsv_hi
+#else
     PSP_GUARD KICKOS_ARMV7M_TRAP_NEED_PENDSV, 1, .Lpsp_wild_pendsv
+#endif
 #if KICKOS_KERNEL_STACKS
 3:
 #endif
@@ -150,6 +162,10 @@ PendSV_Handler:
     mrs     r0, control             /* the CURRENT nPRIV: a thread blocked mid-syscall */
     and     r0, r0, #1              /* is privileged and must resume so */
     str     r0, [r2, #4]
+#if KICKOS_ARMV7M_SPLIM
+    mrs     r0, psplim
+    str     r0, [r2, #F_CTX_SPLIM]
+#endif
 1:
     /* g_arch_next and the MPU stash are ONE pair and PendSV must consume them as one: a device
        IRQ (above PRIO_PENDSV) preempting between the two reschedules and replaces BOTH, so
@@ -168,6 +184,10 @@ PendSV_Handler:
     vldmiaeq r0!, {s16-s31}
 #endif
     msr     psp, r0
+#if KICKOS_ARMV7M_SPLIM
+    ldr     r12, [r1, #F_CTX_SPLIM]
+    msr     psplim, r12
+#endif
     ldr     r2, [r1, #4]            /* incoming->npriv */
     mrs     r3, control
     bfi     r3, r2, #0, #1          /* CONTROL.nPRIV = incoming npriv */
@@ -220,6 +240,10 @@ PendSV_Handler:
 
 /* The PendSV entry alone, because .Lpsp_wild below is shared with the SVC site, which makes
    no such push and whose telemetry tail is not the one that would pop it. */
+#if KICKOS_ARMV7M_SPLIM
+.Lpsp_wild_pendsv_hi:
+    movw    r1, #KICKOS_ARMV7M_TRAP_NEED_PENDSV
+#endif
 .Lpsp_wild_pendsv:
 #if KICKOS_TELEMETRY
     pop     {r2, r3}                /* the entry spill: r2 is the same ctx* it already holds */
@@ -293,6 +317,10 @@ PendSV_Handler:
     vldmiaeq r0!, {s16-s31}
 #endif
     msr     psp, r0
+#if KICKOS_ARMV7M_SPLIM
+    ldr     r12, [r1, #F_CTX_SPLIM]
+    msr     psplim, r12
+#endif
     ldr     r2, [r1, #4]            /* incoming->npriv */
     mrs     r3, control
     bfi     r3, r2, #0, #1
@@ -386,6 +414,10 @@ SVC_Handler:
     mrs     r1, control
     and     r1, r1, #1              /* the caller's own nPRIV: this path never raised it */
     str     r1, [r3, #4]
+#if KICKOS_ARMV7M_SPLIM
+    mrs     r1, psplim
+    str     r1, [r3, #F_CTX_SPLIM]
+#endif
     str     r0, [r2]                /* g_arch_current = incoming */
     ldr     r1, [r0]                /* incoming->sp */
 #if KICKOS_TELEMETRY
@@ -398,6 +430,10 @@ SVC_Handler:
     vldmiaeq r1!, {s16-s31}
 #endif
     msr     psp, r1
+#if KICKOS_ARMV7M_SPLIM
+    ldr     r2, [r0, #F_CTX_SPLIM]
+    msr     psplim, r2
+#endif
     ldr     r2, [r0, #4]            /* incoming->npriv */
     mrs     r3, control
     bfi     r3, r2, #0, #1
@@ -451,7 +487,8 @@ SVC_Handler:
 /*     [T-16]  a3, the AAPCS fifth argument, which syscall_dispatch reads at [sp]          */
 /*     [T-12]  the caller-return this exits to                                             */
 /*     [T-8]   the PSP the thread resumes on                                               */
-/*     [T-4]   the word that keeps sp 8-byte aligned for the call                          */
+/*     [T-4]   the word that keeps sp 8-byte aligned for the call; with a stack limit, the */
+/*             caller's PSPLIM, put back on the way out                                    */
 /* The resume PSP lives HERE and not in a register or a second context field: a blocking   */
 /* dispatch has PendSV freeze its continuation BELOW this header, so the header survives   */
 /* the block for free, and ctx.sp names whichever stack the thread was preempted on.       */
@@ -475,13 +512,40 @@ svc_trampoline:
     str     r1, [r0, #-8]
     str     lr, [r0, #-12]
     str     r12, [r0, #-16]         /* a3 into the fifth-argument slot */
+#if KICKOS_ARMV7M_SPLIM
+    /* The caller's limit rides the header's alignment word. */
+    mrs     r1, psplim
+    str     r1, [r0, #-4]
+    movw    lr, #(KICKOS_KERNEL_STACK_SIZE - KICKOS_ARMV7M_SPLIM_ROOM)
+    sub     lr, r0, lr              /* the block's limit; lr is back from the header later */
+#endif
     sub     r12, r0, #16            /* r12 is free once a3 is in the header */
     pop     {r0, r1}
+#if KICKOS_ARMV7M_SPLIM
+    /* Masked: an entry stacked between the limit write and the move would be checked against
+       the other stack's limit. PRIMASK is 0 here, an SVC being untakeable under it. */
+    cpsid   i
+    msr     psplim, lr
+    mov     sp, r12
+    cpsie   i
+#else
     mov     sp, r12                 /* on the calling thread's kernel block from here */
+#endif
+#if defined(KICKOS_SPLIM_PLANT_KBLOCK)
+    bl      kickos_splim_plant      /* test-only: overflow this kernel block, privileged */
+#endif
     bl      syscall_dispatch        /* (r0..r3, [sp]=a3) -> result in r0:r1 */
     ldr     lr, [sp, #4]            /* the caller-return */
     ldr     r2, [sp, #8]            /* the resume PSP, read before sp leaves this block */
+#if KICKOS_ARMV7M_SPLIM
+    ldr     r3, [sp, #12]           /* the caller's limit */
+    cpsid   i
+    msr     psplim, r3
     mov     sp, r2
+    cpsie   i
+#else
+    mov     sp, r2
+#endif
     /* Restore the caller's RESTING privilege, so a privileged thread issuing a syscall keeps
        its posture. g_arch_current is this thread again here, PendSV having restored it across
        any block. r2/r3 only: r0:r1 carry the result pair (AAPCS long long) out of this
@@ -623,6 +687,25 @@ arch_syscall_reg:
     .global kickos_panic_stack_enter
 kickos_panic_stack_enter:
     cpsid   i
+#if KICKOS_ARMV7M_SPLIM
+    /* The live stack's limit to the seat's base, before SP moves: the seat may lie above it.
+       Handler mode runs on the MSP whatever CONTROL.SPSEL holds. */
+    mrs     r12, ipsr
+    cmp     r12, #0
+    bne     1f
+    mrs     r12, control
+    tst     r12, #2
+    beq     1f
+    movw    r12, #KICKOS_PANIC_STACK_SIZE
+    sub     r12, r3, r12
+    msr     psplim, r12
+    b       2f
+1:
+    movw    r12, #KICKOS_PANIC_STACK_SIZE
+    sub     r12, r3, r12
+    msr     msplim, r12
+2:
+#endif
     mov     sp, r3
     b       kickos_panic_report
 

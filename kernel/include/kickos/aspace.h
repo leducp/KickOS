@@ -85,15 +85,15 @@ namespace kickos
         return static_cast<arch_phys_addr_t>(va - arch_aspace_user_offset());
     }
 
-    // Seed shared RX text, private RW data and matching validation ranges.
-    // The first space uses the image data. A later one copies the snapshot of
-    // root's data where `from_snapshot`, an explicit task's, the first such seed
-    // taking it out of the live root; any other copies `spawner`'s live data where
-    // it names a space, else the live root while it lives and the snapshot after,
-    // which root's release takes if nothing did. Fail if no source exists. On
-    // failure, release the partially built space with aspace_release.
-    bool aspace_image_seed(struct arch_aspace* space, VirtualRanges* ranges, bool from_snapshot,
-                           struct arch_aspace* spawner);
+    // Seed shared RX text, private RW data and matching validation ranges. The first space
+    // seeded maps the loader's data frames, after copying them as the pristine image every
+    // later space's data is copied from; no space's live data is ever a source. On failure,
+    // release the partially built space with aspace_release.
+    bool aspace_image_seed(struct arch_aspace* space, VirtualRanges* ranges);
+
+    // kickos_task_start where every space reaches it: the entry thread_create gives every
+    // unprivileged thread.
+    void (*aspace_task_start())(void*);
 
     // Unmap what the space borrows, return the frames of a reservation it never mapped, then
     // destroy it. The one sanctioned way to end a space; arch_aspace_destroy alone strands both.
@@ -134,9 +134,8 @@ namespace kickos
     // Note a span the locked pass will owe a sync. Frames outside the pool are not noted.
     void presync_note(arch_phys_addr_t pa, size_t pages);
 #endif
-    // Stage the copy of the image's static data that aspace_image_seed, called with these
-    // arguments, will map into a new space.
-    void presync_stage_image(bool from_snapshot, struct arch_aspace* spawner);
+    // Stage the copy of the pristine image that aspace_image_seed will map into a new space.
+    void presync_stage_image();
     // No lock held: sync every noted frame, then fill the staged run.
     void presync_run();
     // The call completed: every other live record meeting what its locked pass mapped is dropped.

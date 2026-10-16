@@ -42,6 +42,7 @@ namespace kickos
     struct Thread;   // kickos/thread.h
     struct Task;     // kickos/task.h
     struct Endpoint; // kickos/endpoint.h
+    struct Mutex;    // kickos/mutex.h
 
     // A cap handle is (gen << KCAP_INDEX_BITS) | index. The split is FIXED fleet-wide and
     // never derived from KICKOS_MAX_HANDLES, so a per-board RAM decision cannot renumber
@@ -57,7 +58,7 @@ namespace kickos
 
     // THE CAPACITY RULE. This one index value is RESERVED and is never seated as a slot, so
     // a table holds at most KCAP_RESERVED_INDEX entries. Every word carrying it as its
-    // index is then unmintable, which is what the two pseudo-handles below stand on.
+    // index is then unmintable, which is what the pseudo-handles below stand on.
     static constexpr uint32_t KCAP_RESERVED_INDEX = KCAP_INDEX_MASK;
     static_assert(KICKOS_MAX_HANDLES <= KCAP_RESERVED_INDEX,
                   "a table of 2^KCAP_INDEX_BITS slots would seat the reserved index and "
@@ -73,6 +74,9 @@ namespace kickos
     // could be narrowed as if it were the authority word.
     static_assert((KOS_CAP_AUTHORITY & KCAP_INDEX_MASK) == KCAP_RESERVED_INDEX,
                   "KOS_CAP_AUTHORITY must carry the reserved index");
+    static_assert((KOS_CAP_LIBC_LOCK & KCAP_INDEX_MASK) == KCAP_RESERVED_INDEX
+                      and (KOS_CAP_MALLOC_LOCK & KCAP_INDEX_MASK) == KCAP_RESERVED_INDEX,
+                  "a libc lock pseudo-handle must carry the reserved index");
 
     // CAP_REPLY names the parked caller by generational THREAD handle, and that handle gets
     // the WHOLE of CapEntry::obj. The caller's call_seq low byte rides the spare bits beside
@@ -656,20 +660,15 @@ namespace kickos
     // a send-only (CAP_SIGNAL) copy of the console endpoint at index 0. See D4.
     void cap_install_defaults(Thread* child, Held held);
 
-    // "No libc lock": the all-ones index, which SlotPool never seats. Compared by equality.
-    static constexpr int KCAP_LIBC_LOCK_NONE = -1;
-
-    // The libc lock of the address space task `tk` runs in, with one reference taken for a new
-    // member: the mutex a live thread of that space holds at KOS_CAP_LIBC_LOCK, else a fresh one.
-    // KCAP_LIBC_LOCK_NONE when the mutex pool is empty or the reference at its ceiling.
-    [[nodiscard]] int cap_libc_lock_take(Task const* tk, Held held);
-    // Hands back a take that was never seated.
-    void cap_libc_lock_give(int lock, Held held);
-    // Seats a take at `t`'s empty KOS_CAP_LIBC_LOCK, lock and unlock its only use.
-    void cap_seat_libc_lock(Thread* t, int lock);
-    // Whether a mutex_create may take a pool slot: one is kept for every address space that
-    // could still need its libc lock.
-    bool cap_mutex_create_admitted();
+    // The libc lock a pseudo-handle names in `t`'s address space, or null for any other word or
+    // a thread with no space.
+    Mutex* cap_libc_lock(Thread const* t, uint32_t handle);
+    // The mutex `cap_handle` names for `c`: a libc lock, else a CAP_MUTEX capability. Null with
+    // *err set as cap_resolve_e sets it.
+    Mutex* cap_resolve_mutex(Thread* c, uint32_t cap_handle, int* err);
+    // Hands each libc lock `dying` holds to its next waiter, as a dead owner's. Before `dying`
+    // leaves its task, whose space holds the locks.
+    void cap_libc_locks_release(Thread* dying, Held held);
 
     // Move the kernel's stdout-target ref to `obj_handle` AND seat `publisher`'s own slot 0 on
     // it. Both refs are taken before either seat moves, and the new ones

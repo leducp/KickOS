@@ -2,6 +2,8 @@
 // Copyright (c) 2026 Philippe Leduc
 
 #include <kickos/arch/arch.h>
+#include <kickos/arch/x2probe.h>
+#include <kickos/chip_com1.h>
 
 #include <stddef.h>
 #include <stdint.h>
@@ -39,6 +41,19 @@ void kickos_fault_record(char const* status_name, uint64_t status,
     (void)pc;
     (void)addr;
     (void)addr_valid;
+}
+
+void kickos_x86_64_fault_report_open(void)
+{
+}
+
+[[noreturn]] void kickos_x86_64_fault_report_close(void)
+{
+    kickos::q35::com1_puts("  " KICKOS_X2_TOKEN " halting\n");
+    while (true)
+    {
+        __asm__ volatile("cli\n\thlt");
+    }
 }
 
 [[noreturn]] void kickos_thread_fault_exit(void)

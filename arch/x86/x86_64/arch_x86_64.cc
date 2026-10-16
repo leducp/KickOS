@@ -111,6 +111,8 @@ namespace
                   "x86_64's syscall entry loads the kernel stack out of ctx.kernel_sp");
     static_assert(KICKOS_KERNEL_STACK_SIZE % 16 == 0,
                   "a block's top must land on the psABI stack alignment the entry needs");
+    static_assert(KICKOS_MIN_STACK_SIZE >= KICKOS_X86_64_TASK_START,
+                  "a thread on the least stack a spawn admits may run its space's startup");
 
     // The spawn stages its grant list on the kernel block, and _SYSK holds the list it was
     // measured at (x86_64_trap_stack.h).
@@ -159,6 +161,9 @@ namespace
         uint32_t isr_depth;
         struct arch_context* ctx_current;
         struct arch_context* switch_to;
+#if defined(KICKOS_WITNESS_UACCESS) && KICKOS_WITNESS_UACCESS
+        uint64_t witness_rflags;
+#endif
     };
     CpuState g_cpu_state[KICKOS_KERNEL_CORES] = {};
 
@@ -347,6 +352,11 @@ void arch_context_init(struct arch_context* ctx,
     // what its own paired save set, so nothing earlier can perform it.
     f->rflags = RFLAGS_IF | RFLAGS_RESERVED_ONE;
     ctx->sp = base;
+}
+
+void arch_context_second_arg(struct arch_context* ctx, uintptr_t value)
+{
+    reinterpret_cast<trap_frame*>(ctx->sp)->rsi = value;
 }
 
 // Resumes the thread at `entry`, privileged, on its own KERNEL block: the death path must not
@@ -664,6 +674,9 @@ kickos::x86_64::trap_frame* kickos_x86_64_isr(kickos::x86_64::trap_frame* frame)
     cpu.isr_depth++;
     if (vector == kickos::x86_64::vector_timer)
     {
+#if defined(KICKOS_WITNESS_UACCESS) && KICKOS_WITNESS_UACCESS
+        cpu.witness_rflags = frame->rflags;
+#endif
         kickos_isr_timer();
     }
     else
@@ -684,6 +697,14 @@ kickos::x86_64::trap_frame* kickos_x86_64_isr(kickos::x86_64::trap_frame* frame)
     // store; the incoming context's own frame is what the epilogue then pops.
     struct arch_context* const to = cpu.switch_to;
     cpu.switch_to = nullptr;
+    // Booked back onto the interrupted context: trap_x86_64.S releases only on a new frame.
+    if (to == cpu.ctx_current)
+    {
+#if KICKOS_KERNEL_CORES > 1
+        kickos_switch_unlock();
+#endif
+        return frame;
+    }
     // The vector state goes with the frame. trap_x86_64.S unlocks after this returns, and
     // nothing between the restore and its iretq touches that state.
     if (cpu.ctx_current != nullptr)
@@ -697,5 +718,12 @@ kickos::x86_64::trap_frame* kickos_x86_64_isr(kickos::x86_64::trap_frame* frame)
     __asm__ volatile("xrstor64 %0" : : "m"(to->xsave), "a"(KICKOS_X86_64_XCR0), "d"(0));
     return reinterpret_cast<kickos::x86_64::trap_frame*>(to->sp);
 }
+
+#if defined(KICKOS_WITNESS_UACCESS) && KICKOS_WITNESS_UACCESS
+int arch_witness_irq_lift_flag(void)
+{
+    return static_cast<int>((local_state().witness_rflags >> 18) & 1u);
+}
+#endif
 
 }

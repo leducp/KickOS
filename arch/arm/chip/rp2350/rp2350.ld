@@ -99,6 +99,15 @@ ASSERT(ADDR(.text) == ORIGIN(FLASH),
 ASSERT(g_image_def < ORIGIN(FLASH) + 0x1000,
        "KickOS: RP2350 IMAGE_DEF must be within the bootrom's first-4-KiB scan window")
 
+#if KICKOS_HAVE_MPU
+/* Last in .bss puts the ROM slice above the kernel blocks and the panic seat, so a ROM call made
+   from either returns to a stack below the slice's limit: the case kickos_rp_rom_call restores
+   the caller's limits ahead of SP for, which the bench's reboot captures run. */
+PROVIDE(kickos_rp_rom_stack = _ebss - 1024); /* an image that makes no ROM call */
+ASSERT(kickos_rp_rom_stack + 1024 == _ebss,
+       "KickOS: kickos_rp_rom_stack is no longer the last .bss object, so the bench's ROM calls no longer return to a stack below the slice")
+#endif
+
 #if KICKOS_AMP_OWN_IMAGE
 KICKOS_AMP_SHARED_ASSERT(ADDR(.amp_shared))
 KICKOS_AMP_SHARED_FILLED_ASSERT()

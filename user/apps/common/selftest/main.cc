@@ -343,7 +343,7 @@ namespace
     }
 
     // --- FIFO ordering ---------------------------------------------------------
-    void fifo_worker(void* arg) // caps: done@2, lock@3
+    void fifo_worker(void* arg) // caps: done@0, lock@1
     {
         log_put(arg_char(arg));
     }
@@ -368,12 +368,12 @@ namespace
 
     // --- Priority preempt on ready (thread-ctx sem post) -----------------------
     kos_cap_t g_go = KOS_CAP_NONE;
-    void preempt_high(void*) // caps: done@2, lock@3, go@4
+    void preempt_high(void*) // caps: done@0, lock@1, go@2
     {
         kos_sem_wait(CH_AUX, KOS_TIMEOUT_NONE); // g_go
         log_put('H');
     }
-    void preempt_low(void*) // caps: done@2, lock@3, go@4
+    void preempt_low(void*) // caps: done@0, lock@1, go@2
     {
         log_put('l');
         kos_sem_post(CH_AUX); // g_go
@@ -474,7 +474,7 @@ namespace
         return note;
     }
 
-    void irq_waiter(void*) // caps: done@2, lock@3, line(WAIT)@4, note@5
+    void irq_waiter(void*) // caps: done@0, lock@1, line(WAIT)@2, note@3
     {
         auto note = kos::Notification::adopt(CH_NOTE);
         note.bind();
@@ -482,7 +482,7 @@ namespace
         log_put('W');
     }
     int g_irq_raised = -99;
-    void irq_raiser(void*) // caps: done@2, lock@3, line(SIGNAL)@4
+    void irq_raiser(void*) // caps: done@0, lock@1, line(SIGNAL)@2
     {
         log_put('i');
         g_irq_raised = kos_irq_raise(CH_AUX);
@@ -535,12 +535,12 @@ namespace
     volatile int g_rr_stack_swap = 0;
 
     // No order of two logged characters is asserted: a slice's length is not established.
-    void rr_burner(void*) // caps: done@2, lock@3, gate@4
+    void rr_burner(void*) // caps: done@0, lock@1, gate@2
     {
         // Arrival, posted BEFORE the turnstile: the gate proves both workers were spawned,
         // not that both reached it.
         kos_sem_post(CH_DONE);
-        stage_wait(4);
+        stage_wait(child_cap(2));
         volatile uint32_t me = RR_BURNER_SENTINEL;
         uint64_t const before = g_rr_spins;
         uint64_t const start = kos_clock_now();
@@ -559,10 +559,10 @@ namespace
         g_rr_stop = 1;
     }
 
-    void rr_spinner(void*) // caps: done@2, lock@3, gate@4
+    void rr_spinner(void*) // caps: done@0, lock@1, gate@2
     {
         kos_sem_post(CH_DONE);
-        stage_wait(4);
+        stage_wait(child_cap(2));
         volatile uint32_t me = RR_SPINNER_SENTINEL;
         while (g_rr_stop == 0)
         {
@@ -691,7 +691,7 @@ namespace
     // The blocker must detach from the ready list before parking on the wait queue (they
     // share one link node), or the second waiter is orphaned and never wakes.
     kos_cap_t g_multi = KOS_CAP_NONE;
-    void multi_worker(void* arg) // caps: done@2, lock@3, multi@4
+    void multi_worker(void* arg) // caps: done@0, lock@1, multi@2
     {
         kos_sem_wait(CH_AUX, KOS_TIMEOUT_NONE); // g_multi
         log_put(arg_char(arg));
@@ -733,12 +733,12 @@ namespace
     // Above the floor others_parked() drops main to, so an absence check waits these drivers out.
     constexpr uint8_t IRQ_DRV_PRIO = KICKOS_PRIO_MIN + 1;
 
-    void irq_driver(void*)
+    void irq_driver(void* mmio)
     {
         auto irq = kos::Irq::adopt(CH_IRQ);
         auto note = kos::Notification::adopt(CH_NOTE);
         note.bind();
-        volatile int* const dev = static_cast<volatile int*>(g_mmio);
+        volatile int* const dev = static_cast<volatile int*>(mmio);
         kos_sem_post(CH_READY); // g_irq_ready: bound to the object + about to park
         for (int i = 0; i < 3; i++)
         {
@@ -783,7 +783,7 @@ namespace
                                 {g_irq_ready, CH_FULL},
                                 {irq, KOS_CAP_WAIT},
                                 {note, CH_FULL}};
-        drv = irq_spawn(irq_driver, nullptr, "irqdrv", 15, caps, 4,
+        drv = irq_spawn(irq_driver, g_mmio, "irqdrv", 15, caps, 4,
                         KOS_POLICY_FIFO, 0, g_mmio, IRQDRV_BLK);
         TAP_CHECK(drv.valid());
         // The driver is the notification's sole holder, so its exit frees it.
@@ -1150,13 +1150,13 @@ namespace
     // --- Refcounted close of a DELEGATED sem: object survives while a co-holder is
     // parked; the last close frees it.
     kos_cap_t g_dsem = KOS_CAP_NONE;
-    void destroy_waiter(void*) // caps: g_dsem@2
+    void destroy_waiter(void*) // caps: g_dsem@0
     {
-        kos_sem_wait(2, KOS_TIMEOUT_NONE);
+        kos_sem_wait(child_cap(0), KOS_TIMEOUT_NONE);
     }
-    void destroy_poster(void*) // caps: g_dsem@2
+    void destroy_poster(void*) // caps: g_dsem@0
     {
-        kos_sem_post(2);
+        kos_sem_post(child_cap(0));
     }
     void t_sem_destroy_busy()
     {
@@ -1214,7 +1214,7 @@ namespace
 
     // --- Timed semaphore wait ---------------------------------------------------
     constexpr uint32_t SEM_TIMEOUT_US = 2000;
-    void sem_timed_poster(void*) // caps: S(SIGNAL)@2
+    void sem_timed_poster(void*) // caps: S(SIGNAL)@0
     {
         (void)kos_sem_post(KOS_SPAWN_DELEGATED_CAP0);
     }
@@ -1253,15 +1253,15 @@ namespace
     // A mutex cap carries CAP_TRANSFER only, so it must be delegated with a TRANSFER-only
     // mask: a CH_FULL mask is not a subset and delegation would reject it.
     constexpr uint8_t CH_MTX = KOS_CAP_TRANSFER;
-    void mtx_basic_worker(void*) // caps: done@2, mutex@3
+    void mtx_basic_worker(void*) // caps: done@0, mutex@1
     {
         for (int i = 0; i < MTX_ITERS; i++)
         {
-            kos_mutex_lock(3, KOS_TIMEOUT_NONE); // the delegated mutex cap
+            kos_mutex_lock(child_cap(1), KOS_TIMEOUT_NONE); // the delegated mutex cap
             int tmp = g_mtx_shared;
             kos_yield();
             g_mtx_shared = tmp + 1;
-            kos_mutex_unlock(3);
+            kos_mutex_unlock(child_cap(1));
         }
     }
     void t_mutex_basic()
@@ -1341,30 +1341,30 @@ namespace
     // waiter, ordering low -> high -> medium.
     uint64_t g_mtx_unit = 1000000ull;
     kos_cap_t g_pi_go = KOS_CAP_NONE;
-    void pi_low(void*) // caps: done@2, lock@3, mutex@4, gate@5, go@6
+    void pi_low(void*) // caps: done@0, lock@1, mutex@2, gate@3, go@4
     {
-        stage_wait(5);
-        kos_mutex_lock(4, KOS_TIMEOUT_NONE);
+        stage_wait(child_cap(3));
+        kos_mutex_lock(child_cap(2), KOS_TIMEOUT_NONE);
         log_put('l');
-        kos_sem_post(6);
+        kos_sem_post(child_cap(4));
         log_put('u');
-        kos_mutex_unlock(4);
+        kos_mutex_unlock(child_cap(2));
         log_put('z');        // reached only after med (12) has run -> proves revert
     }
-    void pi_high(void*) // caps: done@2, lock@3, mutex@4, gate@5, go@6
+    void pi_high(void*) // caps: done@0, lock@1, mutex@2, gate@3, go@4
     {
-        stage_wait(5);
-        kos_sem_wait(6, KOS_TIMEOUT_NONE);
+        stage_wait(child_cap(3));
+        kos_sem_wait(child_cap(4), KOS_TIMEOUT_NONE);
         log_put('h');
-        kos_sem_post(6);
-        kos_mutex_lock(4, KOS_TIMEOUT_NONE); // low holds it -> block, boost low to 20
+        kos_sem_post(child_cap(4));
+        kos_mutex_lock(child_cap(2), KOS_TIMEOUT_NONE); // low holds it -> block, boost low to 20
         log_put('H');
-        kos_mutex_unlock(4);
+        kos_mutex_unlock(child_cap(2));
     }
-    void pi_med(void*) // caps: done@2, lock@3, gate@4, go@5
+    void pi_med(void*) // caps: done@0, lock@1, gate@2, go@3
     {
-        stage_wait(4);
-        kos_sem_wait(5, KOS_TIMEOUT_NONE);
+        stage_wait(child_cap(2));
+        kos_sem_wait(child_cap(3), KOS_TIMEOUT_NONE);
         log_put('m');
     }
     void t_mutex_pi()
@@ -1411,45 +1411,45 @@ namespace
     // two single-hop walks a one-hop kernel reproduces.
     kos_cap_t g_ch_up = KOS_CAP_NONE; // C <-> B: M2 is held, then M1 is held and B is about to block
     kos_cap_t g_ch_on = KOS_CAP_NONE; // C -> A -> D: B is blocked on M2, then the chain has formed
-    void ch_c(void*) // caps: done@2, lock@3, M2@4, gate@5, up@6, on@7
+    void ch_c(void*) // caps: done@0, lock@1, M2@4, gate@3, up@4, on@5
     {
-        stage_wait(5);
-        kos_mutex_lock(4, KOS_TIMEOUT_NONE); // M2
+        stage_wait(child_cap(3));
+        kos_mutex_lock(child_cap(2), KOS_TIMEOUT_NONE); // M2
         log_put('c');
-        kos_sem_post(6);   // M2 is held: B may take M1
+        kos_sem_post(child_cap(4));   // M2 is held: B may take M1
         // B hands 5 back before blocking on M2, and B's block is what boosts us onto the CPU,
         // so getting past this wait means B is ALREADY a waiter on M2.
-        kos_sem_wait(6, KOS_TIMEOUT_NONE);
-        kos_sem_post(7);          // only now may A block on M1
+        kos_sem_wait(child_cap(4), KOS_TIMEOUT_NONE);
+        kos_sem_post(child_cap(5));          // only now may A block on M1
         mtx_spin(g_mtx_unit * 8); // A blocks on M1 inside this
         log_put('e');
-        kos_mutex_unlock(4);
+        kos_mutex_unlock(child_cap(2));
         log_put('C');
     }
-    void ch_b(void*) // caps: done@2, lock@3, M1@4, M2@5, up@6
+    void ch_b(void*) // caps: done@0, lock@1, M1@4, M2@5, up@4
     {
-        kos_sem_wait(6, KOS_TIMEOUT_NONE);
-        kos_mutex_lock(4, KOS_TIMEOUT_NONE); // M1 (before A tries it)
+        kos_sem_wait(child_cap(4), KOS_TIMEOUT_NONE);
+        kos_mutex_lock(child_cap(2), KOS_TIMEOUT_NONE); // M1 (before A tries it)
         log_put('b');
-        kos_sem_post(6);
+        kos_sem_post(child_cap(4));
         // M2: C holds it -> block, boost C to 10, which resumes C's wait
-        kos_mutex_lock(5, KOS_TIMEOUT_NONE);
-        kos_mutex_unlock(5);
-        kos_mutex_unlock(4);
+        kos_mutex_lock(child_cap(3), KOS_TIMEOUT_NONE);
+        kos_mutex_unlock(child_cap(3));
+        kos_mutex_unlock(child_cap(2));
     }
-    void ch_a(void*) // caps: done@2, lock@3, M1@4, on@5
+    void ch_a(void*) // caps: done@0, lock@1, M1@4, on@3
     {
-        kos_sem_wait(5, KOS_TIMEOUT_NONE);
-        kos_sem_post(5);
+        kos_sem_wait(child_cap(3), KOS_TIMEOUT_NONE);
+        kos_sem_post(child_cap(3));
         // M1: B holds it AND waits on M2 -> boost B to 20, then C to 20
-        kos_mutex_lock(4, KOS_TIMEOUT_NONE);
-        kos_mutex_unlock(4);
+        kos_mutex_lock(child_cap(2), KOS_TIMEOUT_NONE);
+        kos_mutex_unlock(child_cap(2));
     }
-    void ch_d(void*) // caps: done@2, lock@3, on@4
+    void ch_d(void*) // caps: done@0, lock@1, on@2
     {
         // Index 4, not the 5 A posts on: holding no mutex cap shifts the same semaphore one
         // slot down. Waiting on the wrong index returns at once and 'd' precedes 'e'.
-        kos_sem_wait(4, KOS_TIMEOUT_NONE);
+        kos_sem_wait(child_cap(2), KOS_TIMEOUT_NONE);
         log_put('d');
     }
     void t_mutex_chain()
@@ -1473,7 +1473,7 @@ namespace
         TAP_CHECK(kos_sem_create(0, &g_gate) == 0);
         TAP_CHECK(kos_sem_create(0, &g_ch_up) == 0);
         TAP_CHECK(kos_sem_create(0, &g_ch_on) == 0);
-        // Six grants, exactly KICKOS_MAX_SPAWN_GRANTS. g_done stays at index 2, unposted, so
+        // Six grants, exactly KICKOS_MAX_SPAWN_GRANTS. g_done stays at child_cap(0), unposted, so
         // log_put finds the log lock at CH_LOCK.
         kos_cap_grant ccaps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}, {m2, CH_MTX},
                                  {g_gate, CH_FULL}, {g_ch_up, CH_FULL}, {g_ch_on, CH_FULL}};
@@ -1501,21 +1501,21 @@ namespace
     // An owner that exits first force-unlocks with nobody queued, and the waiter's plain 0 is
     // indistinguishable from the defect.
     int g_od_result = -99;
-    void od_owner(void*) // caps: mutex@2, holds@3
+    void od_owner(void*) // caps: mutex@0, holds@1
     {
-        kos_mutex_lock(2, KOS_TIMEOUT_NONE);
-        kos_sem_post(3);
+        kos_mutex_lock(child_cap(0), KOS_TIMEOUT_NONE);
+        kos_sem_post(child_cap(1));
         kos_exit(0);     // exits still owning -> force-unlock
     }
-    void od_waiter(void*) // caps: mutex@2, holds@3
+    void od_waiter(void*) // caps: mutex@0, holds@1
     {
-        kos_sem_wait(3, KOS_TIMEOUT_NONE);
-        g_od_result = kos_mutex_lock(2, KOS_TIMEOUT_NONE);
+        kos_sem_wait(child_cap(1), KOS_TIMEOUT_NONE);
+        g_od_result = kos_mutex_lock(child_cap(0), KOS_TIMEOUT_NONE);
         // -KOS_EOWNERDEAD is a HELD acquire: unlock it too, or the robust mutex is stranded.
         // A plain `>= 0` test would skip this, since owner-died is a NEGATIVE code.
         if (g_od_result == 0 or g_od_result == -KOS_EOWNERDEAD)
         {
-            kos_mutex_unlock(2);
+            kos_mutex_unlock(child_cap(0));
         }
     }
     void t_mutex_owner_died()
@@ -1541,30 +1541,31 @@ namespace
 
     // --- Deadlock refused -KOS_EDEADLK (H6): self-lock + a two-mutex wait cycle -
     int g_cyc_rb = -99;
-    void cyc_a(void*) // caps: done@2, M1@2, M2@3, have1@4, goA@6
+    void cyc_a(void*) // caps: done@0, M1@2, M2@3, have1@4, goA@4
     {
-        kos_mutex_lock(3, KOS_TIMEOUT_NONE); // M1
-        kos_sem_post(5);   // have1
-        kos_sem_wait(6, KOS_TIMEOUT_NONE);   // goA
+        kos_mutex_lock(child_cap(1), KOS_TIMEOUT_NONE); // M1
+        kos_sem_post(child_cap(3));   // have1
+        kos_sem_wait(child_cap(4), KOS_TIMEOUT_NONE);   // goA
         // M2: B holds -> block; later handed off (r==0)
-        int r = kos_mutex_lock(4, KOS_TIMEOUT_NONE);
+        int r = kos_mutex_lock(child_cap(2), KOS_TIMEOUT_NONE);
         if (r == 0)
         {
-            kos_mutex_unlock(4);
+            kos_mutex_unlock(child_cap(2));
         }
-        kos_mutex_unlock(3);
+        kos_mutex_unlock(child_cap(1));
     }
-    void cyc_b(void*) // caps: done@2, M2@2, M1@3, have2@4, goB@6
+    void cyc_b(void*) // caps: done@0, M2@2, M1@3, have2@4, goB@4
     {
-        kos_mutex_lock(3, KOS_TIMEOUT_NONE); // M2
-        kos_sem_post(5);   // have2
-        kos_sem_wait(6, KOS_TIMEOUT_NONE);   // goB
-        g_cyc_rb = kos_mutex_lock(4, KOS_TIMEOUT_NONE); // M1: closes the cycle -> refused
+        kos_mutex_lock(child_cap(1), KOS_TIMEOUT_NONE); // M2
+        kos_sem_post(child_cap(3));   // have2
+        kos_sem_wait(child_cap(4), KOS_TIMEOUT_NONE);   // goB
+        // M1: closes the cycle -> refused
+        g_cyc_rb = kos_mutex_lock(child_cap(2), KOS_TIMEOUT_NONE);
         if (g_cyc_rb == 0)
         {
-            kos_mutex_unlock(4);
+            kos_mutex_unlock(child_cap(2));
         }
-        kos_mutex_unlock(3); // release M2 -> hands it to A
+        kos_mutex_unlock(child_cap(1)); // release M2 -> hands it to A
     }
 
     constexpr uint32_t MUTEX_EXPIRY_US = 2000;
@@ -1628,16 +1629,16 @@ namespace
 
     // --- ArmHold releases every kind it holds -----------------------------------
     int g_ah_locked = -99;
-    void ah_parked(void*) // caps: gate@2
+    void ah_parked(void*) // caps: gate@0
     {
-        kos_sem_wait(2, KOS_TIMEOUT_NONE);
+        kos_sem_wait(child_cap(0), KOS_TIMEOUT_NONE);
     }
-    void ah_locker(void*) // caps: mutex@2
+    void ah_locker(void*) // caps: mutex@0
     {
-        g_ah_locked = kos_mutex_lock(2, KOS_TIMEOUT_NONE);
+        g_ah_locked = kos_mutex_lock(child_cap(0), KOS_TIMEOUT_NONE);
         if (g_ah_locked == 0)
         {
-            kos_mutex_unlock(2);
+            kos_mutex_unlock(child_cap(0));
         }
     }
     void ah_last(void*) {}
@@ -1739,31 +1740,31 @@ namespace
     // when B releases M2. B must retain H's donation rather than return to base
     // priority and let D run. Semaphore priority orders the setup.
     kos_cap_t g_mh_go = KOS_CAP_NONE;
-    void mh_b(void*) // caps: done@2, lock@3, M1@4, M2@5, gate@6, go@7
+    void mh_b(void*) // caps: done@0, lock@1, M1@4, M2@5, gate@4, go@5
     {
-        stage_wait(6);
-        kos_mutex_lock(4, KOS_TIMEOUT_NONE); // M1
-        kos_mutex_lock(5, KOS_TIMEOUT_NONE); // M2
+        stage_wait(child_cap(4));
+        kos_mutex_lock(child_cap(2), KOS_TIMEOUT_NONE); // M1
+        kos_mutex_lock(child_cap(3), KOS_TIMEOUT_NONE); // M2
         log_put('b');
-        kos_sem_post(7);
-        kos_mutex_unlock(5); // release M2; H on M1 must keep B boosted
+        kos_sem_post(child_cap(5));
+        kos_mutex_unlock(child_cap(3)); // release M2; H on M1 must keep B boosted
         log_put('x');
-        kos_mutex_unlock(4); // release M1 -> hand to H, B drops to base
+        kos_mutex_unlock(child_cap(2)); // release M1 -> hand to H, B drops to base
     }
-    void mh_h(void*) // caps: done@2, lock@3, M1@4, gate@5, go@6
+    void mh_h(void*) // caps: done@0, lock@1, M1@4, gate@3, go@4
     {
-        stage_wait(5);
-        kos_sem_wait(6, KOS_TIMEOUT_NONE);
+        stage_wait(child_cap(3));
+        kos_sem_wait(child_cap(4), KOS_TIMEOUT_NONE);
         log_put('h');
-        kos_sem_post(6);
-        kos_mutex_lock(4, KOS_TIMEOUT_NONE); // M1: B holds -> block, boost B to 20
+        kos_sem_post(child_cap(4));
+        kos_mutex_lock(child_cap(2), KOS_TIMEOUT_NONE); // M1: B holds -> block, boost B to 20
         log_put('H');
-        kos_mutex_unlock(4);
+        kos_mutex_unlock(child_cap(2));
     }
-    void mh_d(void*) // caps: done@2, lock@3, gate@4, go@5
+    void mh_d(void*) // caps: done@0, lock@1, gate@2, go@3
     {
-        stage_wait(4);
-        kos_sem_wait(5, KOS_TIMEOUT_NONE);
+        stage_wait(child_cap(2));
+        kos_sem_wait(child_cap(3), KOS_TIMEOUT_NONE);
         log_put('d');
     }
     void t_mutex_multi_held()
@@ -1810,9 +1811,9 @@ namespace
     // The owner check is reachable from an untrusted caller, so it must return an
     // error code here, never panic.
     int g_nonowner_rc = -99;
-    void nonowner_unlock(void*) // caps: done@2, mutex@3
+    void nonowner_unlock(void*) // caps: done@0, mutex@1
     {
-        g_nonowner_rc = kos_mutex_unlock(3);
+        g_nonowner_rc = kos_mutex_unlock(child_cap(1));
     }
     void t_mutex_unlock_errors()
     {
@@ -1834,11 +1835,11 @@ namespace
         TAP_CHECK(hold.close(&m) == 0);
     }
 
-    // --- Owner dies holding with NO waiter: m->owner cleared, re-lockable -------
-    void od_solo_owner(void*) // caps: mutex@2
+    // --- Owner dies holding with NO waiter: the next lock reports it, once ------
+    void od_solo_owner(void*) // caps: mutex@0
     {
-        kos_mutex_lock(2, KOS_TIMEOUT_NONE);
-        kos_exit(0); // exits owning, no waiter -> force-unlock nulls m->owner
+        kos_mutex_lock(child_cap(0), KOS_TIMEOUT_NONE);
+        kos_exit(0); // exits owning, no waiter -> force-unlock leaves the death for the next take
     }
     void t_mutex_owner_died_nowaiter()
     {
@@ -1853,17 +1854,19 @@ namespace
         ow = kos::thread::create_caps(od_solo_owner, nullptr, "odSolo", 8, ocaps, 1);
         TAP_CHECK(ow.valid());
         TAP_CHECK(hold.joined()); // the owner acquired, then exited owning
-        // If force-unlock did not null m->owner, this lock would block forever on a
-        // dead owner. It must acquire cleanly (fresh, uncontended -> 0).
+        // A lock left on the dead owner would block forever; this one acquires, told of the
+        // death, and the one after it is told nothing.
+        TAP_CHECK(kos_mutex_lock(m, KOS_TIMEOUT_NONE) == -KOS_EOWNERDEAD);
+        TAP_CHECK(kos_mutex_unlock(m) == 0);
         TAP_CHECK(kos_mutex_lock(m, KOS_TIMEOUT_NONE) == 0);
         TAP_CHECK(kos_mutex_unlock(m) == 0);
         TAP_CHECK(hold.close(&m) == 0);
     }
 
     // --- Delegated-mutex refcount: child closes its cap, parent still locks ------
-    void deleg_closer(void*) // caps: done@2, mutex@3
+    void deleg_closer(void*) // caps: done@0, mutex@1
     {
-        kos_handle_close(3);   // drop the child's delegated cap (refs 2 -> 1)
+        kos_handle_close(child_cap(1));   // drop the child's delegated cap (refs 2 -> 1)
     }
     void t_mutex_deleg_refcount()
     {
@@ -1899,19 +1902,19 @@ namespace
     kos_cap_t g_sp_go = KOS_CAP_NONE;
     int g_sp_raise = -99;
     int g_sp_lower = -99;
-    void sp_self(void*) // caps: done@2, lock@3, gate@4, go@5
+    void sp_self(void*) // caps: done@0, lock@1, gate@2, go@3
     {
-        stage_wait(4);
+        stage_wait(child_cap(2));
         g_sp_raise = kos_thread_set_priority(SP_HIGH);
-        kos_sem_post(5);
+        kos_sem_post(child_cap(3));
         log_put('r');
         g_sp_lower = kos_thread_set_priority(SP_LOW);
         log_put('l');
     }
-    void sp_peer(void*) // caps: done@2, lock@3, gate@4, go@5
+    void sp_peer(void*) // caps: done@0, lock@1, gate@2, go@3
     {
-        stage_wait(4);
-        kos_sem_wait(5, KOS_TIMEOUT_NONE);
+        stage_wait(child_cap(2));
+        kos_sem_wait(child_cap(3), KOS_TIMEOUT_NONE);
         log_put('p');
     }
     void t_prio_self_raise_lower()
@@ -1953,33 +1956,33 @@ namespace
     constexpr uint8_t PB_HIGH = 20;
     kos_cap_t g_pb_go = KOS_CAP_NONE;
     int g_pb_set = -99;
-    void pb_low(void*) // caps: done@2, lock@3, mutex@4, gate@5, go@6
+    void pb_low(void*) // caps: done@0, lock@1, mutex@2, gate@3, go@4
     {
-        stage_wait(5);
-        kos_mutex_lock(4, KOS_TIMEOUT_NONE);
+        stage_wait(child_cap(3));
+        kos_mutex_lock(child_cap(2), KOS_TIMEOUT_NONE);
         log_put('l');
-        kos_sem_post(6);
+        kos_sem_post(child_cap(4));
         g_pb_set = kos_thread_set_priority(PB_BASE);
         log_put('u');
-        kos_mutex_unlock(4);
+        kos_mutex_unlock(child_cap(2));
         log_put('z');
     }
-    void pb_high(void*) // caps: done@2, lock@3, mutex@4, gate@5, go@6
+    void pb_high(void*) // caps: done@0, lock@1, mutex@2, gate@3, go@4
     {
-        stage_wait(5);
-        kos_sem_wait(6, KOS_TIMEOUT_NONE);
+        stage_wait(child_cap(3));
+        kos_sem_wait(child_cap(4), KOS_TIMEOUT_NONE);
         log_put('h');
         // M takes the first token and K, still short of its own wait, the banked second.
-        kos_sem_post(6);
-        kos_sem_post(6);
-        kos_mutex_lock(4, KOS_TIMEOUT_NONE); // L holds it -> block, boost L to 20
+        kos_sem_post(child_cap(4));
+        kos_sem_post(child_cap(4));
+        kos_mutex_lock(child_cap(2), KOS_TIMEOUT_NONE); // L holds it -> block, boost L to 20
         log_put('H');
-        kos_mutex_unlock(4);
+        kos_mutex_unlock(child_cap(2));
     }
-    void pb_waiter(void* arg) // caps: done@2, lock@3, gate@4, go@5
+    void pb_waiter(void* arg) // caps: done@0, lock@1, gate@2, go@3
     {
-        stage_wait(4);
-        kos_sem_wait(5, KOS_TIMEOUT_NONE);
+        stage_wait(child_cap(2));
+        kos_sem_wait(child_cap(3), KOS_TIMEOUT_NONE);
         log_put(arg_char(arg));
     }
     void t_prio_self_boosted()
@@ -2028,8 +2031,9 @@ namespace
     // Both spawns below must fail, so this body is deliberately never reached.
     void capdest_never_runs(void*) { kos_exit(0); }
 
-    // Posts from a NON-default index. Ignoring the placement puts the semaphore at index 2, the
-    // post at index 4 then finds nothing, and the semaphore stays one short of its ceiling.
+    // Posts from a NON-default index. Ignoring the placement puts the semaphore at
+    // child_cap(0), the post at child_cap(2) then finds nothing, and the semaphore stays one
+    // short of its ceiling.
     void capdest_probe(void*) { kos_sem_post(CH_IRQ); }
 
     void t_cap_dest()
@@ -2058,14 +2062,7 @@ namespace
                                            far_off)
                       .error() == -KOS_EINVAL);
 
-        // A reserved index is the kernel's seat.
-        uint16_t const reserved[] = {KOS_CAP_LIBC_LOCK, 0};
-        TAP_CHECK(kos::thread::create_caps(capdest_never_runs, nullptr, "cd4", 10, caps, 2,
-                                           KOS_POLICY_FIFO, 0, nullptr, 0, 0,
-                                           reserved)
-                      .error() == -KOS_EINVAL);
-
-        // A collision with a DEFAULTED entry counts too: entry 0 defaults to index 2 and
+        // A collision with a DEFAULTED entry counts too: entry 0 defaults to child_cap(0) and
         // entry 1 names it explicitly.
         uint16_t const vs_default[] = {0, CH_DONE};
         TAP_CHECK(kos::thread::create_caps(capdest_never_runs, nullptr, "cd3", 10, caps, 2,
@@ -2073,8 +2070,8 @@ namespace
                                            vs_default)
                       .error() == -KOS_EINVAL);
 
-        // The POSITIVE half: the semaphore at index 4 with nothing at 2 or 3. Its post
-        // takes it to the ceiling, where main's own post is refused.
+        // The POSITIVE half: the semaphore at child_cap(2) with nothing at child_cap(0) or
+        // child_cap(1). Its post takes it to the ceiling, where main's own post is refused.
         uint16_t const at3[] = {CH_IRQ};
         w = kos::thread::create_caps(capdest_probe, nullptr, "cdp", 15, caps, 1,
                                      KOS_POLICY_FIFO, 0, nullptr, 0, 0, at3);
@@ -2186,7 +2183,7 @@ namespace
         TAP_ASK_LINE(&first, .workers = 1, .notifies = 1, .irq_line = RECLAIM_LINE);
         g_reclaim_note = notify_for_line(first);
         TAP_CHECK(g_reclaim_note != KOS_CAP_NONE);
-        // done@2, line@4, index 3 deliberately EMPTY.
+        // done@0, line@2, @1 deliberately EMPTY.
         kos_cap_grant caps[] = {{g_done, CH_FULL}, {first, KOS_CAP_WAIT}};
         uint16_t const dest[] = {CH_DONE, CH_IRQ};
         w = irq_spawn(reclaim_worker, nullptr, "reclaim", 15, caps, 2,
@@ -2218,7 +2215,7 @@ namespace
     Atomic<uint32_t, Order::RELAXED> g_ho_bound{0};
     kos_cap_t g_ho_release = KOS_CAP_NONE;
 
-    // caps: done@2 (unposted), ready@3, note@4, release@5. The LINE is not delegated: the
+    // caps: done@0 (unposted), ready@1, note@2, release@3. The LINE is not delegated: the
     // successor's own wait is what rearms it, which is the second half of this arm.
     void ho_leaver(void*)
     {
@@ -2630,13 +2627,13 @@ namespace
     int g_dreadback = -1;
     constexpr int DOM_SENTINEL = 0x5A5A;
     constexpr RamAsk DOM_RAM = {256};
-    void dom_writer(void*) // caps: g_dwrote@2 (CH_DONE)
+    void dom_writer(void*) // caps: g_dwrote@0 (CH_DONE)
     {
         (void)kos_mem_self_grant(const_cast<int*>(g_dshared), 256, 0);
         *g_dshared = DOM_SENTINEL;
         kos_sem_post(CH_DONE);     // g_dwrote
     }
-    void dom_reader(void*) // caps: g_dwrote@2 (CH_DONE)
+    void dom_reader(void*) // caps: g_dwrote@0 (CH_DONE)
     {
         (void)kos_mem_self_grant(const_cast<int*>(g_dshared), 256, 0);
         kos_sem_wait(CH_DONE, KOS_TIMEOUT_NONE);    // g_dwrote: after the writer stored the sentinel
@@ -2690,7 +2687,7 @@ namespace
 #endif
     constexpr RamAsk XG_RAM = {XG_STK};
     void xg_noop(void*) {}
-    void xg_worker(void* arg) // caps: done@2, E(SIGNAL)@3
+    void xg_worker(void* arg) // caps: done@0, E(SIGNAL)@1
     {
         int32_t rep[XG_WORDS] = {1, 1, 1, 1};
         rep[XG_AUTH] = kos_mem_self_grant(arg, 0, 0);
@@ -2701,7 +2698,7 @@ namespace
                                               0, arg, XG_STK).error();
         rep[XG_STACK] = kos::thread::create(xg_noop, nullptr, "xgstk", 10, KOS_POLICY_FIFO,
                                             0, nullptr, 0, arg, XG_STK).error();
-        (void)kos_send(3, rep, sizeof(rep));
+        (void)kos_send(child_cap(1), rep, sizeof(rep));
     }
     void t_cross_task_block()
     {
@@ -2764,7 +2761,7 @@ namespace
     };
     Atomic<int32_t, Order::RELAXED> g_wro_put{-1}; // what the child writes, or -1 for none
     Atomic<int32_t, Order::RELAXED> g_wro_wrote{0}; // seen by main for a child of its own task
-    void wro_child(void* arg) // caps: E(SIGNAL)@2
+    void wro_child(void* arg) // caps: E(SIGNAL)@0
     {
         kos_window w = {};
         void* at = nullptr;
@@ -2779,7 +2776,7 @@ namespace
             }
             seen.read = *static_cast<volatile unsigned char*>(at);
         }
-        (void)kos_send(2, &seen, sizeof(seen));
+        (void)kos_send(child_cap(0), &seen, sizeof(seen));
         if (seen.read >= 0 and g_wro_put >= 0)
         {
             *static_cast<volatile unsigned char*>(at) = static_cast<unsigned char>(g_wro_put.load());
@@ -2788,9 +2785,9 @@ namespace
         kos_exit(0);
     }
     // Parks holding its window until main posts `hold`.
-    void wro_hold_child(void*) // caps: hold@2
+    void wro_hold_child(void*) // caps: hold@0
     {
-        kos_sem_wait(2, KOS_TIMEOUT_NONE);
+        kos_sem_wait(child_cap(0), KOS_TIMEOUT_NONE);
         kos_exit(0);
     }
 #if not KICKOS_HAVE_ASPACE
@@ -2800,7 +2797,7 @@ namespace
     Atomic<int32_t, Order::RELAXED> g_wro_sys{-1};
     void wro_sys_child(void* arg)
     {
-        g_wro_sys = kos_call_timed(2, arg, 0, sizeof(uint32_t), 1000);
+        g_wro_sys = kos_call_timed(child_cap(0), arg, 0, sizeof(uint32_t), 1000);
         kos_exit(0);
     }
 #endif
@@ -3047,7 +3044,7 @@ namespace
         TAP_CHECK(g_stkarena_rc == -KOS_EPERM);
     }
 
-    // the holder gate, delegated SECOND (done@2, hold@3)
+    // the holder gate, delegated SECOND (done@0, hold@1)
     constexpr int CH_DEVHOLD = KOS_SPAWN_DELEGATED_CAP0 + 1;
     // --- Rule 7 at the spawn: a grant outside the arena or over a reserved block -----
     // The predicates themselves are held on the host (grantnocache); these are the two
@@ -3089,7 +3086,7 @@ namespace
     // between two spawns otherwise letting it exit and turning every refusal into an
     // admission. The window is DISCOVERED; the sim admits exactly one, so a WIN-sized search
     // there reports PARTIAL while on any other enforcing board it must FAIL.
-    void devexcl_hold(void*) // caps: done@2, hold@3
+    void devexcl_hold(void*) // caps: done@0, hold@1
     {
         kos_sem_wait(CH_DEVHOLD, KOS_TIMEOUT_NONE); // hold the window until main releases it
     }
@@ -3272,7 +3269,7 @@ namespace
     int g_cd_badname_spawn[UNREACHED] = {};  // spawn rc with the subject as NAME -> expect 0
     int g_cd_badname_ran[UNREACHED] = {};    // that child ran (kernel walked the bad name safely)
 #endif
-    void cd_kid(void* arg) // caps: g_cd_kidsem@2 (CH_DONE), delegated by cd_worker
+    void cd_kid(void* arg) // caps: g_cd_kidsem@0 (CH_DONE), delegated by cd_worker
     {
         *static_cast<int*>(arg) = 1;
         kos_sem_post(CH_DONE); // g_cd_kidsem (this grandchild's delegated cap)
@@ -3289,7 +3286,7 @@ namespace
         // it to a grandchild: nested delegation requires the source cap carry TRANSFER,
         // which sem_create grants. g_cd_kidsem is cd_worker's cap value (its table).
         kos_sem_create(0, &g_cd_kidsem);
-        kos_cap_grant kidcaps[] = {{g_cd_kidsem, CH_FULL}};  // grandchild's index 2
+        kos_cap_grant kidcaps[] = {{g_cd_kidsem, CH_FULL}};  // grandchild's child_cap(0)
         // A child NAMED from .rodata: the kernel bounds + copies the string. Userspace
         // cannot read a TCB name back, so acceptance shows as the child running.
         // Each grandchild is joined before the next spawn: it holds a slot and a stack the next spawn
@@ -3480,7 +3477,7 @@ namespace
     };
     // Refusals only: the placement reads do not reach the kernel at one kernel core and this arm
     // runs on every posture.
-    void pc_narrow_worker(void*) // caps: E(SIGNAL)@2
+    void pc_narrow_worker(void*) // caps: E(SIGNAL)@0
     {
         int32_t rep[PN_WORDS] = {0, -99, -99};
         kos_task_t u = KOS_TASK_NONE;
@@ -3491,7 +3488,7 @@ namespace
             rep[PN_SAME] = kos_task_sched_grant(u, PC_CEILING, 0);
             (void)kos_task_kill(u);
         }
-        (void)kos_send(2, rep, sizeof(rep));
+        (void)kos_send(child_cap(0), rep, sizeof(rep));
     }
 
     void t_prio_ceiling_narrow_only()
@@ -3534,9 +3531,9 @@ namespace
     constexpr size_t SB_LEN = 32;
     char g_sb_buf[SB_LEN];
     int32_t g_sb_sent = 1; // 1 is no answer a send can give
-    void sb_sender(void*)  // caps: done@2, E(SIGNAL)@3
+    void sb_sender(void*)  // caps: done@0, E(SIGNAL)@1
     {
-        g_sb_sent = kos_send(3, g_sb_buf, SB_LEN);
+        g_sb_sent = kos_send(child_cap(1), g_sb_buf, SB_LEN);
     }
     void t_ipc_one_buffer_both_ends()
     {
@@ -3622,7 +3619,7 @@ namespace
     }
 
     // --- Endpoint IPC: synchronous rendezvous send/recv ----------
-    // The endpoint cap is delegated to workers at child index 3 (done@2, E@3). Workers
+    // The endpoint cap is delegated to workers as child_cap(1) (done@0, E@1). Workers
     // are UNPRIVILEGED so the kernel's copy into/from a parked peer runs against real
     // enforcement (the cross-domain privileged write).
     char const EP_MSG[] = "hello-endpoint"; // no NUL sent
@@ -3636,14 +3633,14 @@ namespace
     Atomic<int, Order::RELAXED> g_ep_rcap{64}; // capacity the recv worker passes
     Atomic<int32_t, Order::RELAXED> g_ep_sn{-99}; // worker send return
 
-    void ep_recv_worker(void*) // caps: done@2, E@3 (unpriv)
+    void ep_recv_worker(void*) // caps: done@0, E@1 (unpriv)
     {
         // Keep the recv buffer thread-private: a global one is also accepted
         // (user_writable_ok has a static-data fallback, covered by endpoint_zero_accept) and
         // would make this arm about the writable check instead of the rendezvous.
         char buf[64];
         struct kos_reply_recv_opts o;
-        kos_reply_recv_opts_init(&o, 3, 0, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&o, child_cap(1), 0, KOS_TIMEOUT_NONE);
         o.info.badge = 0xdeadu; // sentinel: both outputs must be overwritten
         o.info.reply_cap = 0x55;
         int32_t n = kos_reply_recv(KOS_CAP_NONE, buf,
@@ -3662,9 +3659,9 @@ namespace
             memcpy(g_ep_rbuf, buf, k);
         }
     }
-    void ep_send_worker(void*) // caps: done@2, E@3 (unpriv)
+    void ep_send_worker(void*) // caps: done@0, E@1 (unpriv)
     {
-        g_ep_sn = kos_send(3, EP_MSG, strlen(EP_MSG));
+        g_ep_sn = kos_send(child_cap(1), EP_MSG, strlen(EP_MSG));
     }
 
     void t_endpoint_rendezvous()
@@ -3758,12 +3755,12 @@ namespace
     // --- Rights denial: send needs SIGNAL, recv needs WAIT -----------------------
     Atomic<int, Order::RELAXED> g_ep_wait_send_rc{-99};   // WAIT-only cap send -> -KOS_EACCES
     Atomic<int, Order::RELAXED> g_ep_signal_recv_rc{-99}; // SIGNAL-only cap recv -> -KOS_EACCES
-    void ep_rights_worker(void*) // caps: done@2, E(WAIT)@3, E(SIGNAL)@4
+    void ep_rights_worker(void*) // caps: done@0, E(WAIT)@1, E(SIGNAL)@2
     {
         char b[8] = {0};
-        g_ep_wait_send_rc = static_cast<int>(kos_send(3, b, 1));
+        g_ep_wait_send_rc = static_cast<int>(kos_send(child_cap(1), b, 1));
         struct kos_reply_recv_opts o;
-        kos_reply_recv_opts_init(&o, 4, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&o, child_cap(2), KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
         g_ep_signal_recv_rc = static_cast<int>(
             kos_reply_recv(KOS_CAP_NONE, b, kos_call_lens_pack(0, sizeof(b)), &o));
     }
@@ -3775,7 +3772,8 @@ namespace
         TAP_HOLD(hold.cap(&g_ep) and hold.thread(&w));
         TAP_CHECK(kos_endpoint_create(&g_ep) == 0);
         g_ep_wait_send_rc = -99; g_ep_signal_recv_rc = -99;
-        // Two narrowed caps to the same endpoint: WAIT-only at index 3, SIGNAL-only at 4.
+        // Two narrowed caps to the same endpoint: WAIT-only at child_cap(1), SIGNAL-only at
+        // child_cap(2).
         kos_cap_grant caps[] = {{g_done, CH_FULL}, {g_ep, EP_WAIT_ONLY}, {g_ep, EP_SIGNAL_ONLY}};
         w = kos::thread::create_caps(ep_rights_worker, nullptr, "eprt", 12, caps, 3,
                                      KOS_POLICY_FIFO, 0);
@@ -3800,12 +3798,12 @@ namespace
     constexpr uint32_t HO_SEATED_TIMEOUT_US = 50000u;
     Atomic<int32_t, Order::RELAXED> g_ho_rn{-99};
     kos_cap_t g_ho_gate = KOS_CAP_NONE;
-    void ho_receiver(void*) // caps: done@2, E(WAIT)@3, gate@4
+    void ho_receiver(void*) // caps: done@0, E(WAIT)@1, gate@2
     {
-        kos_sem_wait(4, KOS_TIMEOUT_NONE);
+        kos_sem_wait(child_cap(2), KOS_TIMEOUT_NONE);
         char buf[sizeof(EP_MSG)];
         struct kos_reply_recv_opts o;
-        kos_reply_recv_opts_init(&o, 3, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&o, child_cap(1), KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
         g_ho_rn = kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &o);
     }
     int32_t ho_seat(kos::thread::Handle* out)
@@ -3857,9 +3855,10 @@ namespace
     // the parked sender is answered what a new caller would be, -KOS_EAGAIN. Then main closes
     // the cap, the handout right going with it, and the parked sender is refused.
     Atomic<int32_t, Order::RELAXED> g_hp_rc{-99};
-    void hp_sender(void*) // caps: done@2, E(SIGNAL)@3
+    void hp_sender(void*) // caps: done@0, E(SIGNAL)@1
     {
-        g_hp_rc = kos_send(3, EP_MSG, strlen(EP_MSG)); // parks: a receiver exists, none waits
+        // parks: a receiver exists, none waits
+        g_hp_rc = kos_send(child_cap(1), EP_MSG, strlen(EP_MSG));
     }
     void t_endpoint_handout_parked()
     {
@@ -3924,7 +3923,7 @@ namespace
 #endif
     }
 
-    void za_receiver(void*) // caps: done@2, E(WAIT)@3
+    void za_receiver(void*) // caps: done@0, E(WAIT)@1
     {
         size_t const n = strlen(ZA_MSG);
         size_t got = 0;
@@ -3942,7 +3941,7 @@ namespace
             }
             g_za_posted = g_za_posted.load() + 1;
             struct kos_reply_recv_opts o;
-            kos_reply_recv_opts_init(&o, 3, KOS_RECV_NO_INFO, STALL_TOLERANT_US);
+            kos_reply_recv_opts_init(&o, child_cap(1), KOS_RECV_NO_INFO, STALL_TOLERANT_US);
             rc = kos_reply_recv(KOS_CAP_NONE, g_za_buf + got, kos_call_lens_pack(0, cap), &o);
             if (rc < 0)
             {
@@ -3954,7 +3953,7 @@ namespace
         g_za_got = static_cast<int>(got);
     }
 
-    void za_writer(void*) // caps: done@2, E(SIGNAL)@3
+    void za_writer(void*) // caps: done@0, E(SIGNAL)@1
     {
         size_t const n = strlen(ZA_MSG);
         size_t sent = 0;
@@ -3962,7 +3961,7 @@ namespace
         g_za_raised = kos_thread_set_priority(ZA_WRITER_PRIO);
         while (sent < n)
         {
-            int32_t const rc = kos_send(3, ZA_MSG + sent, n - sent);
+            int32_t const rc = kos_send(child_cap(1), ZA_MSG + sent, n - sent);
             sends++;
             if (rc < 0)
             {
@@ -4049,15 +4048,15 @@ namespace
         int32_t rc;
         uint32_t waited_us;
     };
-    void ep_timed_worker(void*) // caps: done@2, E(SIGNAL)@3
+    void ep_timed_worker(void*) // caps: done@0, E(SIGNAL)@1
     {
         EpTimedSend r;
         uint64_t const t0 = kos_clock_now();
         r.rc = static_cast<int32_t>(
-            kos_send_timed(3, EP_MSG, strlen(EP_MSG), EP_SEND_TIMEOUT_US));
+            kos_send_timed(child_cap(1), EP_MSG, strlen(EP_MSG), EP_SEND_TIMEOUT_US));
         r.waited_us = static_cast<uint32_t>((kos_clock_now() - t0) / 1000ull);
         g_ep_timed_returned = 1;
-        (void)kos_send(3, &r, sizeof(r)); // untimed: parks until main's recv, long after
+        (void)kos_send(child_cap(1), &r, sizeof(r)); // untimed: parks until main's recv, long after
     }
     void t_endpoint_send_timeout()
     {
@@ -4103,17 +4102,18 @@ namespace
     // The endpoint HAS a conventional server (main's warm-up recv seats ep->server) but
     // nobody is in recv when the call lands, so the caller parks as CALL_SEND_WAIT and the
     // unwind has a real D2 boost to revert rather than the null-server shortcut.
-    void ep_call_pending_worker(void*) // caps: done@2, E(SIGNAL)@3
+    void ep_call_pending_worker(void*) // caps: done@0, E(SIGNAL)@1
     {
         char warm[1] = {0};
-        kos_send(3, warm, sizeof(warm)); // main's warm-up recv takes this and seats ep->server
+        // main's warm-up recv takes this and seats ep->server
+        kos_send(child_cap(1), warm, sizeof(warm));
         char buf[8] = {0};
         EpTimedSend r;
         uint64_t const t0 = kos_clock_now();
-        r.rc = kos_call_timed(3, buf, 4, sizeof(buf), EP_CALL_TIMEOUT_US);
+        r.rc = kos_call_timed(child_cap(1), buf, 4, sizeof(buf), EP_CALL_TIMEOUT_US);
         r.waited_us = static_cast<uint32_t>((kos_clock_now() - t0) / 1000ull);
         g_ep_timed_returned = 1;
-        (void)kos_send(3, &r, sizeof(r)); // untimed: parks until main's recv, long after
+        (void)kos_send(child_cap(1), &r, sizeof(r)); // untimed: parks until main's recv, long after
     }
     void t_call_timeout_pending()
     {
@@ -4157,17 +4157,17 @@ namespace
     // fast path every rc, duration and cap assertion still passes; only the caller's mark,
     // read by main before its recv, separates them.
     Atomic<int, Order::RELAXED> g_cltr_calling{0};
-    void ep_call_reply_worker(void*) // caps: done@2, E(SIGNAL)@3, go(SIGNAL)@4
+    void ep_call_reply_worker(void*) // caps: done@0, E(SIGNAL)@1, go(SIGNAL)@2
     {
         char buf[8] = {0};
         EpTimedSend r;
-        kos_sem_post(4);
+        kos_sem_post(child_cap(2));
         g_cltr_calling = 1;
         uint64_t const t0 = kos_clock_now();
-        r.rc = kos_call_timed(3, buf, 4, sizeof(buf), EP_CALL_REPLY_TIMEOUT_US);
+        r.rc = kos_call_timed(child_cap(1), buf, 4, sizeof(buf), EP_CALL_REPLY_TIMEOUT_US);
         r.waited_us = static_cast<uint32_t>((kos_clock_now() - t0) / 1000ull);
         g_ep_timed_returned = 1;
-        (void)kos_send(3, &r, sizeof(r));
+        (void)kos_send(child_cap(1), &r, sizeof(r));
     }
     void t_call_timeout_reply()
     {
@@ -4236,16 +4236,16 @@ namespace
     // staging fails on the mark instead of duplicating the reply-wait arm.
     Atomic<int, Order::RELAXED> g_rpst_main_receiving{0};
     Atomic<int, Order::RELAXED> g_rpst_caller_saw{-1};
-    void ep_reply_stale_worker(void*) // caps: done@2, E(SIGNAL)@3
+    void ep_reply_stale_worker(void*) // caps: done@0, E(SIGNAL)@1
     {
         char buf[8] = {0};
         EpTimedSend r;
         g_rpst_caller_saw = g_rpst_main_receiving.load();
         uint64_t const t0 = kos_clock_now();
-        r.rc = kos_call_timed(3, buf, 4, sizeof(buf), EP_CALL_TIMEOUT_US);
+        r.rc = kos_call_timed(child_cap(1), buf, 4, sizeof(buf), EP_CALL_TIMEOUT_US);
         r.waited_us = static_cast<uint32_t>((kos_clock_now() - t0) / 1000ull);
         g_ep_timed_returned = 1;
-        (void)kos_send(3, &r, sizeof(r));
+        (void)kos_send(child_cap(1), &r, sizeof(r));
     }
     void t_reply_stale_caller()
     {
@@ -4309,20 +4309,21 @@ namespace
     // Main's mark before its first receive, and what the caller read of it before calling.
     Atomic<int, Order::RELAXED> g_sr_main_receiving{0};
     Atomic<int, Order::RELAXED> g_sr_caller_saw{-1};
-    void sr_caller(void*) // caps: done@2, lock@3, E1(SIGNAL)@4, go@5
+    void sr_caller(void*) // caps: done@0, lock@1, E1(SIGNAL)@2, go@3
     {
         char buf[8] = {0};
         g_sr_caller_saw = g_sr_main_receiving.load();
-        if (kos_call_timed(4, buf, 4, sizeof(buf), EP_CALL_TIMEOUT_US) == -KOS_ETIMEDOUT)
+        if (kos_call_timed(child_cap(2), buf, 4, sizeof(buf), EP_CALL_TIMEOUT_US) == -KOS_ETIMEDOUT)
         {
             log_put('T');
         }
-        kos_sem_post(5); // the second server may receive: the first call has left the endpoint
+        // the second server may receive: the first call has left the endpoint
+        kos_sem_post(child_cap(3));
         bool ok = true;
         for (int k = 0; k < SR_ALIAS_CALL; k++)
         {
             memcpy(buf, "req2", 4);
-            int32_t const rc = kos_call(4, buf, 4, sizeof(buf));
+            int32_t const rc = kos_call(child_cap(2), buf, 4, sizeof(buf));
             if (rc != 4 or memcmp(buf, SR_GOOD, 4) != 0)
             {
                 ok = false; // one log entry for the whole loop: 255 of these say nothing
@@ -4335,27 +4336,28 @@ namespace
         }
         log_put(c);
     }
-    void sr_second_server(void*) // caps: done@2, E1(FULL)@3, E2(FULL)@4, go@5
+    void sr_second_server(void*) // caps: done@0, E1(FULL)@1, E2(FULL)@2, go@3
     {
         char buf[8];
-        kos_sem_wait(5, KOS_TIMEOUT_NONE);
+        kos_sem_wait(child_cap(3), KOS_TIMEOUT_NONE);
         for (int k = 0; k < SR_ALIAS_CALL - 1; k++)
         {
             struct kos_recv_info info = {0, KOS_CAP_NONE};
             struct kos_reply_recv_opts opts;
-            kos_reply_recv_opts_init(&opts, 3, 0, KOS_TIMEOUT_NONE);
+            kos_reply_recv_opts_init(&opts, child_cap(1), 0, KOS_TIMEOUT_NONE);
             kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts);
             info = opts.info;
             kos_reply(info.reply_cap, SR_GOOD, 4);
         }
         struct kos_recv_info last = {0, KOS_CAP_NONE};
         struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, 3, 0, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&opts, child_cap(1), 0, KOS_TIMEOUT_NONE);
         kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts); // the aliasing call, held unanswered
         last = opts.info;
-        kos_send(4, "rdy", 3);                // rendezvous: completes only in main's recv
+        // rendezvous: completes only in main's recv
+        kos_send(child_cap(2), "rdy", 3);
         struct kos_reply_recv_opts opts2;
-        kos_reply_recv_opts_init(&opts2, 4, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&opts2, child_cap(2), KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
         kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts2);
         kos_reply(last.reply_cap, SR_GOOD, 4);
     }
@@ -4502,11 +4504,11 @@ namespace
     // defect, into a failure instead of a hang.
     Atomic<uint32_t, Order::RELAXED> g_ctr_spoiler_ran{0};
     constexpr uint64_t CTR_GIVE_UP_NS = 5000000000ull;
-    void ctr_server(void*) // caps: done@2, lock@3, E(WAIT)@4
+    void ctr_server(void*) // caps: done@0, lock@1, E(WAIT)@2
     {
         char buf[16];
         struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, 4, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&opts, child_cap(2), KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
         kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts); // takes main's plain send; ep->server = us
         log_put('a');
         window_open(g_ctr_spin1);
@@ -4519,13 +4521,13 @@ namespace
         }
         log_put('z');
     }
-    void ctr_caller(void*) // caps: done@2, lock@3, E(SIGNAL)@4
+    void ctr_caller(void*) // caps: done@0, lock@1, E(SIGNAL)@2
     {
         char buf[8] = {0};
         kos_sleep_ns(g_call_unit * 2); // wake mid-spin: the server is not in recv, so we park
         uint32_t const deadline_us = static_cast<uint32_t>((g_call_unit * 8ull) / 1000ull);
         g_ctr_call_at = stamp_now();
-        int32_t const rc = kos_call_timed(4, buf, 4, sizeof(buf), deadline_us);
+        int32_t const rc = kos_call_timed(child_cap(2), buf, 4, sizeof(buf), deadline_us);
         char c = 'X';
         if (rc == -KOS_ETIMEDOUT)
         {
@@ -4533,7 +4535,7 @@ namespace
         }
         log_put(c);
     }
-    void ctr_spoiler(void*) // caps: done@2, lock@3 (medium prio)
+    void ctr_spoiler(void*) // caps: done@0, lock@1 (medium prio)
     {
         g_ctr_spoiler_due = stamp_due(g_call_unit * 4);
         kos_sleep_ns(g_call_unit * 4); // ready while the server is boosted, so it must wait
@@ -4602,50 +4604,50 @@ namespace
     // the call, rejects it, and parks. main must not add another sender.
     Atomic<int32_t, Order::RELAXED> g_ci_rc{-99};
     kos_cap_t g_ci_bounced = KOS_CAP_NONE; // caller -> filler: the call has bounced
-    void ci_server(void*) // caps: done@2, lock@3, E(WAIT)@4, stage@5
+    void ci_server(void*) // caps: done@0, lock@1, E(WAIT)@2, stage@3
     {
         char buf[16];
         struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, 4, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&opts, child_cap(2), KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
         // Receive the filler's first send and register this server.
         kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts);
         log_put('a');
         // Only now is the caller released: the D2 boost is conditional on ep->server, which
         // recv#1 above is what seats, so a caller that ran first would boost nothing.
-        kos_sem_post(5);
+        kos_sem_post(child_cap(3));
         mtx_spin(g_call_unit * 4);              // the caller D2-boosted us inside this
         log_put('u');
         struct kos_reply_recv_opts opts2;
-        kos_reply_recv_opts_init(&opts2, 4, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&opts2, child_cap(2), KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
         // Reject the queued call, remove its donation, then park.
         kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts2);
         log_put('z');                          // reached at base prio: spoiler ran first IFF we reverted
     }
-    void ci_caller(void*) // caps: done@2, lock@3, E(SIGNAL)@4, stage@5, bounced@6
+    void ci_caller(void*) // caps: done@0, lock@1, E(SIGNAL)@2, stage@3, bounced@4
     {
         char buf[8] = {0};
-        kos_sem_wait(5, KOS_TIMEOUT_NONE);                       // the server is seated
-        kos_sem_post(5);
-        g_ci_rc = kos_call(4, buf, 4, sizeof(buf));
+        kos_sem_wait(child_cap(3), KOS_TIMEOUT_NONE);                       // the server is seated
+        kos_sem_post(child_cap(3));
+        g_ci_rc = kos_call(child_cap(2), buf, 4, sizeof(buf));
         log_put('c');
         // The reject and the park are one masked window, so the bounce returning here is
         // the proof recv#2 is already on recv_waiters.
-        kos_sem_post(6);
+        kos_sem_post(child_cap(4));
     }
-    void ci_spoiler(void*) // caps: done@2, lock@3, stage@4 (medium prio)
+    void ci_spoiler(void*) // caps: done@0, lock@1, stage@2 (medium prio)
     {
         // Index 4, not the 5 its posters use: holding no endpoint cap shifts the same
         // semaphore one slot down. The wrong index returns at once and this logs first,
         // which reads as a lost boost.
-        kos_sem_wait(4, KOS_TIMEOUT_NONE);
+        kos_sem_wait(child_cap(2), KOS_TIMEOUT_NONE);
         log_put('m');
     }
-    void ci_filler(void*) // caps: done@2, lock@3, E(SIGNAL)@4, bounced@5
+    void ci_filler(void*) // caps: done@0, lock@1, E(SIGNAL)@2, bounced@3
     {
         char b[4] = {0};
-        kos_send(4, b, 4);                     // the only sender recv#1 can see
-        kos_sem_wait(5, KOS_TIMEOUT_NONE);
-        kos_send(4, b, 4);                     // wakes the parked recv#2
+        kos_send(child_cap(2), b, 4);                     // the only sender recv#1 can see
+        kos_sem_wait(child_cap(3), KOS_TIMEOUT_NONE);
+        kos_send(child_cap(2), b, 4);                     // wakes the parked recv#2
     }
     void t_call_infoless_revert()
     {
@@ -4699,22 +4701,22 @@ namespace
     // and (b) deflate the server BEFORE waking, so the higher caller runs before the server
     // proceeds: 'c' strictly before 's'.
     Atomic<int32_t, Order::RELAXED> g_cc_rc{-99};
-    void cc_server(void*) // caps: done@2, lock@3, E(WAIT)@4
+    void cc_server(void*) // caps: done@0, lock@1, E(WAIT)@2
     {
         char buf[16];
         struct kos_recv_info info = {0, KOS_CAP_NONE};
         struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, 4, 0, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&opts, child_cap(2), 0, KOS_TIMEOUT_NONE);
         // Accept the call, inherit its priority, and obtain a reply cap.
         kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts);
         info = opts.info;
         kos_handle_close(info.reply_cap);     // close instead of reply: EPIPE the caller + deflate us
         log_put('s');                         // server proceeds: must be AFTER the caller ran
     }
-    void cc_caller(void*) // caps: done@2, lock@3, E(SIGNAL)@4
+    void cc_caller(void*) // caps: done@0, lock@1, E(SIGNAL)@2
     {
         char buf[8] = {0};
-        g_cc_rc = kos_call(4, buf, 4, sizeof(buf));
+        g_cc_rc = kos_call(child_cap(2), buf, 4, sizeof(buf));
         log_put('c');
     }
     void t_call_close_reply()
@@ -4745,12 +4747,12 @@ namespace
     // An echo server: records the request it receives and replies "pong!".
     Atomic<int32_t, Order::RELAXED> g_echo_reqn{-99}; // request bytes the server observed
     char g_echo_reqbuf[8];           // request content the server observed
-    void echo_server(void*)          // caps: done@2, E(WAIT)@3
+    void echo_server(void*)          // caps: done@0, E(WAIT)@1
     {
         char buf[16];
         struct kos_recv_info info = {0, KOS_CAP_NONE};
         struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, 3, 0, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&opts, child_cap(1), 0, KOS_TIMEOUT_NONE);
         int32_t n = kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts);
         info = opts.info;
         g_echo_reqn = n;
@@ -4772,12 +4774,12 @@ namespace
     // the first reply while receiving the second request.
     Atomic<int32_t, Order::RELAXED> g_frr_served{-99}; // requests the fused loop served
     Atomic<int32_t, Order::RELAXED> g_frr_ok{-99};     // round trips the caller got right
-    void frr_server(void*)                             // caps: done@2, E(WAIT)@3
+    void frr_server(void*)                             // caps: done@0, E(WAIT)@1
     {
         char buf[16];
         struct kos_reply_recv_opts opts;
         memset(&opts, 0, sizeof(opts));
-        opts.ep = 3;
+        opts.ep = child_cap(1);
         opts.timeout_us = KOS_TIMEOUT_NONE;
         kos_cap_t reply_cap = KOS_CAP_NONE;
         int served = 0;
@@ -4805,14 +4807,14 @@ namespace
         }
         g_frr_served = served;
     }
-    void frr_caller(void*) // caps: done@2, E(SIGNAL)@3
+    void frr_caller(void*) // caps: done@0, E(SIGNAL)@1
     {
         char buf[16];
         int32_t ok = 0;
         for (int i = 0; i < 2; i++)
         {
             memcpy(buf, "ping", 4);
-            int32_t const rc = kos_call(3, buf, 4, sizeof(buf));
+            int32_t const rc = kos_call(child_cap(1), buf, 4, sizeof(buf));
             if (rc == 5 and memcmp(buf, "pong!", 5) == 0)
             {
                 ok++;
@@ -4826,11 +4828,11 @@ namespace
     Atomic<int32_t, Order::RELAXED> g_frb_rc{-99};
     Atomic<uint32_t, Order::RELAXED> g_frb_caller_ran{0};  // written by the caller only
     Atomic<uint32_t, Order::RELAXED> g_frb_server_saw{9u}; // what the server read after its refusal
-    void frb_server(void*)                                 // caps: done@2, E(WAIT)@3
+    void frb_server(void*)                                 // caps: done@0, E(WAIT)@1
     {
         char buf[16];
         struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, 3, 0, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&opts, child_cap(1), 0, KOS_TIMEOUT_NONE);
         int32_t const got =
             kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts);
         if (got < 0 or opts.info.reply_cap == KOS_CAP_NONE)
@@ -4845,11 +4847,11 @@ namespace
         g_frb_rc = kos_reply_recv(reply, buf, kos_call_lens_pack(5, sizeof(buf)), &opts);
         g_frb_server_saw = g_frb_caller_ran.load();
     }
-    void frb_caller(void*) // caps: done@2, E(SIGNAL)@3
+    void frb_caller(void*) // caps: done@0, E(SIGNAL)@1
     {
         char buf[16];
         memcpy(buf, "ping", 4);
-        (void)kos_call(3, buf, 4, sizeof(buf));
+        (void)kos_call(child_cap(1), buf, 4, sizeof(buf));
         g_frb_caller_ran = 1;
     }
     void t_reply_recv_bad_ep_wakes_caller()
@@ -4896,11 +4898,11 @@ namespace
     Atomic<int32_t, Order::RELAXED> g_f4_served{-99};
     Atomic<int32_t, Order::RELAXED> g_f4_dropped{-99};
 
-    void f4_service(void*) // caps: done@2, E(WAIT)@3
+    void f4_service(void*) // caps: done@0, E(WAIT)@1
     {
         struct kos_reply_recv_opts opts;
         memset(&opts, 0, sizeof(opts));
-        opts.ep = 3;
+        opts.ep = child_cap(1);
         opts.timeout_us = STALL_TOLERANT_US;
         kos_cap_t reply_cap = KOS_CAP_NONE;
         size_t reply_len = 0;
@@ -4939,12 +4941,12 @@ namespace
         g_f4_served = served;
         g_f4_dropped = dropped;
     }
-    void f4_client(void*) // caps: done@2, E(SIGNAL)@3
+    void f4_client(void*) // caps: done@0, E(SIGNAL)@1
     {
         memcpy(g_f4_aliased, "ping", F4_REQ_LEN);
-        g_f4_bad = kos_call_timed(3, g_f4_aliased, F4_REQ_LEN, F4_CAP, F4_CALL_US);
+        g_f4_bad = kos_call_timed(child_cap(1), g_f4_aliased, F4_REQ_LEN, F4_CAP, F4_CALL_US);
         memcpy(g_f4_clean, "ping", F4_REQ_LEN);
-        g_f4_good = kos_call_timed(3, g_f4_clean, F4_REQ_LEN, F4_CAP, F4_CALL_US);
+        g_f4_good = kos_call_timed(child_cap(1), g_f4_clean, F4_REQ_LEN, F4_CAP, F4_CALL_US);
     }
     void t_service_survives_client_fault()
     {
@@ -5005,7 +5007,7 @@ namespace
     Atomic<uint32_t, Order::RELAXED> g_frn_mask{0};
     Atomic<uint32_t, Order::RELAXED> g_frn_m1{0};
     Atomic<uint32_t, Order::RELAXED> g_frn_m2{0};
-    void frr_notify_server(void*) // caps: done@2, E(WAIT)@3, note@4, go@5
+    void frr_notify_server(void*) // caps: done@0, E(WAIT)@1, note@2, go@3
     {
         char buf[16];
         if (kos_notify_bind(FRN_CH_NOTE) != 0)
@@ -5064,9 +5066,9 @@ namespace
     // Claim, attach, bind and arm without raising the line; only the timeout can end the
     // wait.
     Atomic<int32_t, Order::RELAXED> g_irqto_rc{-99};
-    void irqto_worker(void*) // caps: done@2, note(FULL)@3
+    void irqto_worker(void*) // caps: done@0, note(FULL)@1
     {
-        auto note = kos::Notification::adopt(3);
+        auto note = kos::Notification::adopt(child_cap(1));
         if (note.bind() != 0)
         {
             return;
@@ -5098,10 +5100,10 @@ namespace
     Atomic<int32_t, Order::RELAXED> g_frp_rc{-99};
     Atomic<uint32_t, Order::RELAXED> g_frp_bits{0};
     Atomic<uint32_t, Order::RELAXED> g_frp_mask{0};
-    void frp_server(void*) // caps: done@2, E(WAIT)@3, note@4
+    void frp_server(void*) // caps: done@0, E(WAIT)@1, note@2
     {
         char buf[16];
-        if (kos_notify_bind(4) != 0)
+        if (kos_notify_bind(child_cap(2)) != 0)
         {
             return;
         }
@@ -5109,7 +5111,7 @@ namespace
         g_frp_mask = mask;
         struct kos_reply_recv_opts opts;
         memset(&opts, 0, sizeof(opts));
-        opts.ep = 3;
+        opts.ep = child_cap(1);
         opts.notify = mask; // no event pending; this receive must park
         opts.timeout_us = FRN_WAIT_US;
         g_frp_rc =
@@ -5117,9 +5119,9 @@ namespace
         g_frp_bits = opts.notify;
     }
     Atomic<int32_t, Order::RELAXED> g_frp_raised{-99};
-    void frp_raiser(void*) // caps: done@2, line(SIGNAL)@3
+    void frp_raiser(void*) // caps: done@0, line(SIGNAL)@1
     {
-        g_frp_raised = kos_irq_raise(3);
+        g_frp_raised = kos_irq_raise(child_cap(1));
     }
     void t_reply_recv_notify_park()
     {
@@ -5262,12 +5264,12 @@ namespace
     size_t g_fp_send_len = 0;
     size_t g_fp_recv_cap = 0;
 
-    void fp_server(void*) // caps: E(WAIT)@2
+    void fp_server(void*) // caps: E(WAIT)@0
     {
         unsigned char buf[64];
         struct kos_recv_info info = {0, KOS_CAP_NONE};
         struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, 2, 0, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&opts, child_cap(0), 0, KOS_TIMEOUT_NONE);
         int32_t const n = kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts);
         info = opts.info;
         g_fp_reqn = n;
@@ -5280,14 +5282,14 @@ namespace
             kos_reply(info.reply_cap, buf, static_cast<size_t>(n));
         }
     }
-    void fp_caller(void*) // caps: E(SIGNAL)@2
+    void fp_caller(void*) // caps: E(SIGNAL)@0
     {
         unsigned char buf[64];
         for (size_t i = 0; i < sizeof(buf); i++)
         {
             buf[i] = static_cast<unsigned char>(i + 1); // no zero byte: a cleared buffer shows
         }
-        g_fp_rc = kos_call(2, buf, g_fp_send_len, g_fp_recv_cap);
+        g_fp_rc = kos_call(child_cap(0), buf, g_fp_send_len, g_fp_recv_cap);
         int32_t const rc = g_fp_rc;
         if (rc > 0)
         {
@@ -5426,7 +5428,7 @@ namespace
     }
 
     // Spawns `server` at TAP_PRIO_PARKS, lets it park in recv, then `caller` above it, and
-    // joins both: the one-call shape of the arms below. Both take E@2.
+    // joins both: the one-call shape of the arms below. Both take E@0.
     bool serve_one_call(void (*server)(void*), void (*caller)(void*), ArmHold& hold,
                         kos::thread::Handle& sv, kos::thread::Handle& cl)
     {
@@ -5450,12 +5452,12 @@ namespace
     char g_trunc_reqbuf[4];
     Atomic<int32_t, Order::RELAXED> g_trunc_rc{-99}; // caller's kos_call return (clamped to recv_cap)
     char g_trunc_rplbuf[4];
-    void trunc_server(void*) // caps: E(WAIT)@2
+    void trunc_server(void*) // caps: E(WAIT)@0
     {
         char buf[3]; // smaller than the 8-byte request
         struct kos_recv_info info = {0, KOS_CAP_NONE};
         struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, 2, 0, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&opts, child_cap(0), 0, KOS_TIMEOUT_NONE);
         int32_t n = kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts);
         info = opts.info;
         g_trunc_reqn = n;
@@ -5472,11 +5474,11 @@ namespace
             kos_reply(info.reply_cap, rpl, 8); // 8 offered, caller cap is 3 -> clamps to 3
         }
     }
-    void trunc_caller(void*) // caps: E(SIGNAL)@2
+    void trunc_caller(void*) // caps: E(SIGNAL)@0
     {
         char buf[8];
         memcpy(buf, "ABCDEFGH", 8);
-        g_trunc_rc = kos_call(2, buf, 8, 3); // recv_cap = 3 -> the reply clamps into it
+        g_trunc_rc = kos_call(child_cap(0), buf, 8, 3); // recv_cap = 3 -> the reply clamps into it
         if (g_trunc_rc > 0)
         {
             size_t k = static_cast<size_t>(g_trunc_rc);
@@ -5508,10 +5510,10 @@ namespace
     // WAIT cap; closing it drives recv_holders to 0, which drains send_waiters and refuses
     // the parked call.
     Atomic<int32_t, Order::RELAXED> g_pp_callrc{-99};
-    void pp_caller(void*) // caps: E(SIGNAL)@2
+    void pp_caller(void*) // caps: E(SIGNAL)@0
     {
         char buf[8] = {0};
-        g_pp_callrc = kos_call(2, buf, 4, sizeof(buf)); // parks SEND_WAIT; woken refused
+        g_pp_callrc = kos_call(child_cap(0), buf, 4, sizeof(buf)); // parks SEND_WAIT; woken refused
     }
     void t_call_prepop_death()
     {
@@ -5537,18 +5539,19 @@ namespace
     // the caller ('c') before the spoiler ('m').
     Atomic<int32_t, Order::RELAXED> g_don_rc{-99};
     char g_don_rpl[8];
-    void don_server(void*) // caps: done@2, lock@3, E(WAIT)@4, mutex@5, go@6
+    void don_server(void*) // caps: done@0, lock@1, E(WAIT)@2, mutex@3, go@4
     {
-        kos_mutex_lock(5, KOS_TIMEOUT_NONE);
+        kos_mutex_lock(child_cap(3), KOS_TIMEOUT_NONE);
         char buf[16];
         struct kos_recv_info info = {0, KOS_CAP_NONE};
         struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, 4, 0, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&opts, child_cap(2), 0, KOS_TIMEOUT_NONE);
         kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts); // parks first (no senders); D1-boosted at the call
         info = opts.info;
         log_put('a');
-        kos_sem_post(6); // the spoiler is ready from here, under the boost
-        kos_mutex_unlock(5); // the recompute under test: the reply donor must hold the boost
+        kos_sem_post(child_cap(4)); // the spoiler is ready from here, under the boost
+        // the recompute under test: the reply donor must hold the boost
+        kos_mutex_unlock(child_cap(3));
         log_put('r');
         if (info.reply_cap != KOS_CAP_NONE)
         {
@@ -5557,13 +5560,13 @@ namespace
             kos_reply(info.reply_cap, rpl, 5);
         }
     }
-    void don_caller(void*) // caps: done@2, lock@3, E(SIGNAL)@4, go@5
+    void don_caller(void*) // caps: done@0, lock@1, E(SIGNAL)@2, go@3
     {
         char buf[8];
-        kos_sem_wait(5, KOS_TIMEOUT_NONE);
+        kos_sem_wait(child_cap(3), KOS_TIMEOUT_NONE);
         log_put('k');
         memcpy(buf, "req", 3);
-        g_don_rc = kos_call(4, buf, 3, sizeof(buf));
+        g_don_rc = kos_call(child_cap(2), buf, 3, sizeof(buf));
         if (g_don_rc > 0)
         {
             size_t k = static_cast<size_t>(g_don_rc);
@@ -5572,9 +5575,9 @@ namespace
         }
         log_put('c');
     }
-    void don_spoiler(void*) // caps: done@2, lock@3, go@4 (medium prio)
+    void don_spoiler(void*) // caps: done@0, lock@1, go@2 (medium prio)
     {
-        kos_sem_wait(4, KOS_TIMEOUT_NONE);
+        kos_sem_wait(child_cap(2), KOS_TIMEOUT_NONE);
         log_put('m');
     }
     // Spawns the donation trio and starts the caller once every party has parked. `mutex` is
@@ -5637,20 +5640,20 @@ namespace
     //
     // Staged by handoff on one semaphore, never by a duration: the first post makes the slowpath
     // call, the second readies the spoiler under the boost.
-    void ds_server(void*) // caps: done@2, lock@3, E(WAIT)@4, mutex@5, go@6
+    void ds_server(void*) // caps: done@0, lock@1, E(WAIT)@2, mutex@3, go@4
     {
         char buf[16];
         struct kos_recv_info info = {0, KOS_CAP_NONE};
-        kos_mutex_lock(5, KOS_TIMEOUT_NONE);
+        kos_mutex_lock(child_cap(3), KOS_TIMEOUT_NONE);
         log_put('s');
-        kos_sem_post(6);
+        kos_sem_post(child_cap(4));
         struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, 4, 0, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&opts, child_cap(2), 0, KOS_TIMEOUT_NONE);
         kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts);
         info = opts.info;
         log_put('a');
-        kos_sem_post(6);
-        kos_mutex_unlock(5); // the recompute under test
+        kos_sem_post(child_cap(4));
+        kos_mutex_unlock(child_cap(3)); // the recompute under test
         log_put('r');
         if (info.reply_cap != KOS_CAP_NONE)
         {
@@ -5702,13 +5705,13 @@ namespace
     // caller's SECOND call arrives while the server is awake (slowpath -> D2 boost).
     Atomic<int, Order::RELAXED> g_dp_call2{0};
     Atomic<int, Order::RELAXED> g_dp_parked{-1};
-    void dp_server(void*) // caps: done@2, lock@3, E(WAIT)@4, mutex@5, go@6
+    void dp_server(void*) // caps: done@0, lock@1, E(WAIT)@2, mutex@3, go@4
     {
         char buf[16];
         struct kos_recv_info i1 = {0, KOS_CAP_NONE};
-        kos_mutex_lock(5, KOS_TIMEOUT_NONE);
+        kos_mutex_lock(child_cap(3), KOS_TIMEOUT_NONE);
         struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, 4, 0, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&opts, child_cap(2), 0, KOS_TIMEOUT_NONE);
         kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts); // call #1, fastpath
         i1 = opts.info;
         if (i1.reply_cap != KOS_CAP_NONE)
@@ -5719,12 +5722,13 @@ namespace
         }
         g_dp_parked = g_dp_call2.load();
         log_put('a');
-        kos_sem_post(6);         // the spoiler is ready from here
-        kos_mutex_unlock(5);     // the recompute under test: the SEND_WAIT donor must hold it
+        kos_sem_post(child_cap(4));         // the spoiler is ready from here
+        // the recompute under test: the SEND_WAIT donor must hold it
+        kos_mutex_unlock(child_cap(3));
         log_put('r');
         struct kos_recv_info i2 = {0, KOS_CAP_NONE};
         struct kos_reply_recv_opts opts2;
-        kos_reply_recv_opts_init(&opts2, 4, 0, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&opts2, child_cap(2), 0, KOS_TIMEOUT_NONE);
         kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts2);
         i2 = opts2.info;
         if (i2.reply_cap != KOS_CAP_NONE)
@@ -5734,15 +5738,16 @@ namespace
             kos_reply(i2.reply_cap, rpl, 1);
         }
     }
-    void dp_caller(void*) // caps: done@2, lock@3, E(SIGNAL)@4, go@5
+    void dp_caller(void*) // caps: done@0, lock@1, E(SIGNAL)@2, go@3
     {
         char buf[8];
-        kos_sem_wait(5, KOS_TIMEOUT_NONE);
+        kos_sem_wait(child_cap(3), KOS_TIMEOUT_NONE);
         memcpy(buf, "a", 1);
-        int32_t const r1 = kos_call(4, buf, 1, sizeof(buf));
+        int32_t const r1 = kos_call(child_cap(2), buf, 1, sizeof(buf));
         memcpy(buf, "b", 1);
         g_dp_call2 = 1;
-        int32_t const r2 = kos_call(4, buf, 1, sizeof(buf)); // server is awake -> slowpath
+        // server is awake -> slowpath
+        int32_t const r2 = kos_call(child_cap(2), buf, 1, sizeof(buf));
         g_don_rc = r1 + r2;
         log_put('c');
     }
@@ -5794,7 +5799,7 @@ namespace
     Atomic<int32_t, Order::RELAXED> g_ep_badrecv_rc[UNREACHED];
     Atomic<int32_t, Order::RELAXED> g_ep_badsend_rc[UNREACHED];
     Atomic<int32_t, Order::RELAXED> g_ep_badopts_rc[UNREACHED];
-    void ep_bound_worker(void*) // caps: done@2, E@3 (unpriv)
+    void ep_bound_worker(void*) // caps: done@0, E@1 (unpriv)
     {
         for (int i = 0; i < UNREACHED; i++)
         {
@@ -5804,9 +5809,10 @@ namespace
                 continue;
             }
             struct kos_reply_recv_opts opts;
-            kos_reply_recv_opts_init(&opts, 3, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
+            kos_reply_recv_opts_init(&opts, child_cap(1), KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
             g_ep_badrecv_rc[i] = kos_reply_recv(KOS_CAP_NONE, bad, kos_call_lens_pack(0, 8), &opts); // write oracle -> -KOS_EFAULT
-            g_ep_badsend_rc[i] = kos_send(3, static_cast<char const*>(bad), 8); // cross-domain read -> -KOS_EFAULT
+            // cross-domain read -> -KOS_EFAULT
+            g_ep_badsend_rc[i] = kos_send(child_cap(1), static_cast<char const*>(bad), 8);
             // The opts struct is IN-OUT, and both subjects are word-aligned, so this clears
             // the alignment gate above and lands on the readable+writable check. The message
             // buffer is a valid stack local: the refusal is about opts alone.
@@ -5857,11 +5863,11 @@ namespace
     // A round trip and not a pair of reports: the worker's memory grant makes it a task of
     // its own, so an app global it writes is its own copy. Its verdict comes back over the
     // endpoint.
-    void xd_worker(void* arg) // caps: E(FULL)@2; arg = domain buffer
+    void xd_worker(void* arg) // caps: E(FULL)@0; arg = domain buffer
     {
         char* b = static_cast<char*>(arg);
         struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, 2, KOS_RECV_NO_INFO, STALL_TOLERANT_US);
+        kos_reply_recv_opts_init(&opts, child_cap(0), KOS_RECV_NO_INFO, STALL_TOLERANT_US);
         int32_t const n = kos_reply_recv(KOS_CAP_NONE, b, kos_call_lens_pack(0, 8), &opts);
         int32_t verdict = n;
         for (int i = 0; i < 8; i++)
@@ -5871,7 +5877,7 @@ namespace
                 verdict = -1;
             }
         }
-        (void)kos_send_timed(2, &verdict, sizeof(verdict), STALL_TOLERANT_US);
+        (void)kos_send_timed(child_cap(0), &verdict, sizeof(verdict), STALL_TOLERANT_US);
     }
     constexpr RamAsk XD_RAM = {256};
     void t_endpoint_crossdomain()
@@ -6060,7 +6066,7 @@ namespace
 
     // Marks one '#' per capability it got: the width it was seated with, minus the reserved
     // plane, minus its two grants.
-    void width_child(void*) // caps: done@2, lock@3
+    void width_child(void*) // caps: done@0, lock@1
     {
         kos_cap_t held[KICKOS_MAX_HANDLES];
         int n = 0;
@@ -6118,12 +6124,12 @@ namespace
     // Holds A's reply capability across a SECOND recv, so B's call meets the bound. main's
     // first plain send is what unparks that second recv; the reply to A follows it, and that
     // is what lifts the bound for B's retry. main's second plain send ends the run.
-    void rb_server(void* arg) // caps: done@2, lock@3, E(WAIT)@4, go@5
+    void rb_server(void* arg) // caps: done@0, lock@1, E(WAIT)@2, go@3
     {
         char b[8];
         if (arg != nullptr)
         {
-            kos_sem_wait(5, KOS_TIMEOUT_NONE);
+            kos_sem_wait(child_cap(3), KOS_TIMEOUT_NONE);
         }
         struct kos_recv_info first = {0, KOS_CAP_NONE};
         struct kos_reply_recv_opts opts;
@@ -6168,24 +6174,24 @@ namespace
             kos_reply(info.reply_cap, "r", 1);
         }
     }
-    void rb_caller_a(void*) // caps: done@2, lock@3, E(SIGNAL)@4, go@5
+    void rb_caller_a(void*) // caps: done@0, lock@1, E(SIGNAL)@2, go@3
     {
         char b[8] = {0};
-        kos_sem_wait(5, KOS_TIMEOUT_NONE);
+        kos_sem_wait(child_cap(3), KOS_TIMEOUT_NONE);
         if (kos_call_timed(CH_AUX, b, 4, sizeof(b), STALL_TOLERANT_US) == 1)
         {
             log_put('A');
         }
     }
-    void rb_caller_b(void*) // caps: done@2, lock@3, E(SIGNAL)@4, go@5
+    void rb_caller_b(void*) // caps: done@0, lock@1, E(SIGNAL)@2, go@3
     {
         char b[8] = {0};
-        kos_sem_wait(5, KOS_TIMEOUT_NONE);
+        kos_sem_wait(child_cap(3), KOS_TIMEOUT_NONE);
         if (kos_call_timed(CH_AUX, b, 4, sizeof(b), STALL_TOLERANT_US) == -KOS_EMFILE)
         {
             log_put('E'); // refused against the SERVER's reply bound, not against our table
         }
-        kos_sem_wait(5, KOS_TIMEOUT_NONE); // main's go once A has been replied to
+        kos_sem_wait(child_cap(3), KOS_TIMEOUT_NONE); // main's go once A has been replied to
         if (kos_call_timed(CH_AUX, b, 4, sizeof(b), STALL_TOLERANT_US) == 1)
         {
             log_put('K'); // and admitted once A's reply capability was consumed
@@ -6271,7 +6277,7 @@ namespace
     // Serves calls until main's plain send ends the run, which main makes once every caller has
     // finished. arg != 0 consumes the FIRST reply capability with kos_handle_close rather than
     // kos_reply: a release path kos_reply does not cover, and the caller sees -KOS_EPIPE.
-    void rp_server(void* arg) // caps: done@2, lock@3, E(WAIT)@4
+    void rp_server(void* arg) // caps: done@0, lock@1, E(WAIT)@2
     {
         char b[8];
         for (int i = 0; i < 3; i++)
@@ -6296,10 +6302,10 @@ namespace
             kos_reply(info.reply_cap, "r", 1);
         }
     }
-    void rp_caller(void*) // caps: done@2, lock@3, E(SIGNAL)@4, go@5
+    void rp_caller(void*) // caps: done@0, lock@1, E(SIGNAL)@2, go@3
     {
         char b[8] = {0};
-        kos_sem_wait(5, KOS_TIMEOUT_NONE);
+        kos_sem_wait(child_cap(3), KOS_TIMEOUT_NONE);
         int32_t const rc = kos_call_timed(CH_AUX, b, 4, sizeof(b), STALL_TOLERANT_US);
         if (rc == -KOS_EPIPE)
         {
@@ -6360,7 +6366,7 @@ namespace
 
     // Takes a call and EXITS holding the reply capability: the teardown sweep is what has to
     // account it, or the slot's next occupant refuses its own first caller.
-    void rr_dying_server(void*) // caps: done@2, lock@3, E(WAIT)@4
+    void rr_dying_server(void*) // caps: done@0, lock@1, E(WAIT)@2
     {
         char b[8];
         struct kos_reply_recv_opts opts;
@@ -6396,11 +6402,11 @@ namespace
 
     // --- console_publish needs AUTH_CONSOLE; a bad cap is rejected with no side effect ---
     int g_pub_rc = -99;
-    void pub_denied_worker(void*) // caps: done@2
+    void pub_denied_worker(void*) // caps: done@0
     {
         // Unprivileged caller: rejected before any console state change, so this never
         // actually hands over the console. The rest of the suite keeps printing.
-        g_pub_rc = kos_console_publish(2, KOS_TASK_NONE);
+        g_pub_rc = kos_console_publish(child_cap(0), KOS_TASK_NONE);
     }
     void t_console_publish()
     {
@@ -6433,7 +6439,7 @@ namespace
     constexpr uint32_t CON_PARK_US = 1000;
     kos_cap_t g_con_ep = KOS_CAP_NONE;
     // Takes one message and exits.
-    void con_driver(void*) // caps: the console endpoint@2, WAIT only
+    void con_driver(void*) // caps: the console endpoint@0, WAIT only
     {
         char got[4];
         struct kos_reply_recv_opts o;
@@ -6442,7 +6448,7 @@ namespace
     }
 
     // The driver task's entry: it holds no right on the console and lives until main lets it go.
-    void con_keeper(void*) // caps: hold@2
+    void con_keeper(void*) // caps: hold@0
     {
         (void)kos_sem_wait(KOS_SPAWN_DELEGATED_CAP0, KOS_TIMEOUT_NONE);
     }
@@ -6512,7 +6518,7 @@ namespace
 
     // Non-blocking writes against a console whose task lives and nobody receives on: nothing is
     // taken and the writer carries on at once. Nothing before the first post can wait.
-    void con_nb_probe(void*) // caps: go@2, back@3
+    void con_nb_probe(void*) // caps: go@0, back@1
     {
         char const probe = 'x';
         int seen = NB_RAN;
@@ -6731,7 +6737,8 @@ namespace
             drv_task = KOS_TASK_NONE;
         }
         int32_t const after = kos_send_timed(KOS_CAP_STDOUT, &probe, 0, STALL_TOLERANT_US);
-        // The reserved seats are the kernel's: their holder can neither close nor narrow them.
+        // The reserved seat is the kernel's: its holder can neither close nor narrow it. A libc
+        // lock is no capability at all.
         int const seat_closed = kos_handle_close(KOS_CAP_STDOUT);
         int const seat_narrowed = kos_cap_narrow(KOS_CAP_STDOUT, 0);
         int const lock_closed = kos_handle_close(KOS_CAP_LIBC_LOCK);
@@ -6744,8 +6751,8 @@ namespace
         int32_t const gone = kos_send_timed(KOS_CAP_STDOUT, &probe, 0, STALL_TOLERANT_US);
         TAP_CHECK(seat_closed == -KOS_EPERM);
         TAP_CHECK(seat_narrowed == -KOS_EPERM);
-        TAP_CHECK(lock_closed == -KOS_EPERM);
-        TAP_CHECK(lock_narrowed == -KOS_EPERM);
+        TAP_CHECK(lock_closed == -KOS_EBADF);
+        TAP_CHECK(lock_narrowed == -KOS_EBADF);
         TAP_CHECK(created == 0);
         TAP_CHECK(pub == 0);
         TAP_CHECK(parked == -KOS_ETIMEDOUT);
@@ -6848,7 +6855,7 @@ namespace
     Atomic<int32_t, Order::RELAXED> g_auth_dropped{-99};   // and the gate that accepted it now refuses
     kos_thread_params g_auth_kid;  // deliberately static: see auth_worker
     kos_cap_grant g_auth_two[2];   // ditto
-    void auth_worker(void*) // UNPRIVILEGED, authority = AUTH_PINMUX; caps: done@2
+    void auth_worker(void*) // UNPRIVILEGED, authority = AUTH_PINMUX; caps: done@0
     {
         // The bit it HOLDS: past the gate, so pinmux answers for itself, refusing an
         // out-of-range port and pin before any hardware write.
@@ -7042,8 +7049,8 @@ namespace
     }
 
     // --- Peripheral enable: possession is the whole gate ------------------------
-    // kos_periph_enable is authorised by holding a live ARCH_MPU_DEV region whose base is
-    // EXACTLY the argument, and no authority bit gates it. The possession check runs before
+    // kos_periph_enable and kos_periph_disable are authorised by holding a live ARCH_MPU_DEV
+    // region whose base is EXACTLY the argument, and no authority bit gates them. The possession check runs before
     // the chip backend, so both arms stop in kernel code and never reach silicon, and both
     // run in an UNPRIVILEGED child, a privileged caller bypassing possession. Arm 1 holds no
     // DEV region; arm 2 holds an R|W region whose base matches exactly and must STILL be
@@ -7052,16 +7059,29 @@ namespace
     Atomic<int32_t, Order::RELAXED> g_pe_unheld{1}; // sentinel: the contract returns 0 or a negative code
     Atomic<int32_t, Order::RELAXED> g_pe_ram{1};
     Atomic<int, Order::RELAXED> g_pe_ram_ran{0};
+    constexpr uint8_t PD_UNHELD_OK = 1u << 0;
+    constexpr uint8_t PD_RAM_OK = 1u << 1;
+    Atomic<uint8_t, Order::RELAXED> g_pd{0};
     constexpr RamAsk PE_RAM = {1};
     void periph_enable_worker(void*)
     {
         g_pe_unheld = kos_periph_enable(PE_BASE);
+        uint8_t pd = 0u;
+        if (kos_periph_disable(PE_BASE) == -KOS_EPERM)
+        {
+            pd = static_cast<uint8_t>(pd | PD_UNHELD_OK);
+        }
         void* const p = st_ram<PE_RAM, 0>();
         if (p != nullptr and kos_mem_self_grant(p, 1, 0) == 0)
         {
             g_pe_ram = kos_periph_enable(reinterpret_cast<uintptr_t>(p));
             g_pe_ram_ran = 1;
+            if (kos_periph_disable(reinterpret_cast<uintptr_t>(p)) == -KOS_EPERM)
+            {
+                pd = static_cast<uint8_t>(pd | PD_RAM_OK);
+            }
         }
+        g_pd = pd;
     }
     void t_periph_enable_unheld()
     {
@@ -7080,6 +7100,8 @@ namespace
         TAP_CHECK(pe_ram_ran == 1);
         int32_t const pe_ram = g_pe_ram;
         TAP_CHECK(pe_ram == -KOS_EPERM);
+        uint8_t const pd = g_pd;
+        TAP_CHECK(pd == (PD_UNHELD_OK | PD_RAM_OK));
     }
 
     // --- Privileged register write: the same possession gate, plus the refusal ------
@@ -7345,7 +7367,7 @@ namespace
     constexpr unsigned WL_ADDR_OK = 1u << 2; // each window answers at its place, nothing past
 
     Atomic<unsigned char, Order::RELAXED> g_wl{0};
-    void wl_holder(void* arg) // caps: done@2, hold@3
+    void wl_holder(void* arg) // caps: done@0, hold@1
     {
         uintptr_t const pv = reinterpret_cast<uintptr_t>(arg);
         unsigned seen = 0;
@@ -7375,19 +7397,19 @@ namespace
     Atomic<int32_t, Order::RELAXED> g_wl_call{-99};
     Atomic<int32_t, Order::RELAXED> g_wl_respawn{-99};
     void wl_noop(void*) {}
-    void wl_server(void*) // caps: done@2, E(WAIT)@3
+    void wl_server(void*) // caps: done@0, E(WAIT)@1
     {
         char b[4];
         struct kos_reply_recv_opts o;
-        kos_reply_recv_opts_init(&o, 3, 0, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&o, child_cap(1), 0, KOS_TIMEOUT_NONE);
         (void)kos_reply_recv(KOS_CAP_NONE, b, kos_call_lens_pack(0, sizeof(b)), &o);
         kos_exit(0); // holding the call, whose caller the teardown answers -KOS_EPIPE
     }
-    void wl_caller(void* arg) // caps: done@2, E(SIGNAL)@3
+    void wl_caller(void* arg) // caps: done@0, E(SIGNAL)@1
     {
         uintptr_t const pv = reinterpret_cast<uintptr_t>(arg);
         char b[4] = {};
-        g_wl_call = kos_call_timed(3, b, sizeof(b), sizeof(b), STALL_TOLERANT_US);
+        g_wl_call = kos_call_timed(child_cap(1), b, sizeof(b), sizeof(b), STALL_TOLERANT_US);
         auto const again = kos::thread::create(wl_noop, nullptr, "wlN", 10, KOS_POLICY_FIFO, 0,
                                                nullptr, 0, nullptr, 0,
                                                DeviceWindow(pv, PVS_WIN).list(), 1);
@@ -7478,7 +7500,7 @@ namespace
     // caps: none. Exists only to occupy a slot and free it again.
     void join_probe(void*) {}
 
-    void join_stranger(void*) // caps: done@2, lock@3
+    void join_stranger(void*) // caps: done@0, lock@1
     {
         // main is the init's child and not this thread's. Issued from a CHILD because main
         // naming itself is the -KOS_EDEADLK case below and would witness nothing about the gate.
@@ -7542,9 +7564,9 @@ namespace
     constexpr kos_thread_t JOIN_SLOT_MASK = 0xFFFFu;
     constexpr int JOIN_RESEAT_TRIES = 3;
 
-    void join_holder(void*) // caps: hold@2
+    void join_holder(void*) // caps: hold@0
     {
-        kos_sem_wait(2, KOS_TIMEOUT_NONE);
+        kos_sem_wait(child_cap(0), KOS_TIMEOUT_NONE);
     }
 
     void t_join_stale_gen()
@@ -7610,9 +7632,9 @@ namespace
     // --- Join: a target that outlives its deadline ------------------------------
     constexpr uint32_t JOIN_TIMEOUT_US = 4000;
 
-    void join_slow(void*) // caps: gate@2
+    void join_slow(void*) // caps: gate@0
     {
-        kos_sem_wait(2, KOS_TIMEOUT_NONE);
+        kos_sem_wait(child_cap(0), KOS_TIMEOUT_NONE);
     }
 
     void t_join_timeout()
@@ -7699,7 +7721,7 @@ namespace
     // is deliberately not enough, the codec being guessable. The stranger reports over an
     // ENDPOINT and main receives with a DEADLINE: a stranger that never answers must fail
     // this arm rather than hang it.
-    void task_stranger(void* arg) // caps: E@2
+    void task_stranger(void* arg) // caps: E@0
     {
         kos_task_t const t = static_cast<kos_task_t>(reinterpret_cast<uintptr_t>(arg));
         unsigned char answer[3] = {0u, 0u, 0u};
@@ -7781,13 +7803,13 @@ namespace
         kos_reply_recv_opts_init(&o, ep, KOS_RECV_NO_INFO, STALL_TOLERANT_US);
         (void)kos_reply_recv(KOS_CAP_NONE, b, kos_call_lens_pack(0, sizeof(b)), &o);
     }
-    void tw_member(void*) // caps: watched E(WAIT)@2, other E(WAIT)@3
+    void tw_member(void*) // caps: watched E(WAIT)@0, other E(WAIT)@1
     {
-        tw_recv(3);
-        tw_recv(3);
-        tw_recv(2);
-        tw_recv(2);
-        tw_recv(3);
+        tw_recv(child_cap(1));
+        tw_recv(child_cap(1));
+        tw_recv(child_cap(0));
+        tw_recv(child_cap(0));
+        tw_recv(child_cap(1));
         kos_exit(0);
     }
     struct TwRun
@@ -7973,22 +7995,22 @@ namespace
         }
         (void)kos_send_timed(ep, &spun, 1, TX_WAIT_US);
     }
-    void tx_entry_returns(void*) // caps: E(SIGNAL)@2
+    void tx_entry_returns(void*) // caps: E(SIGNAL)@0
     {
         (void)kos::thread::create(tx_spins, nullptr, "txs", KICKOS_PRIO_MIN,
                                   KOS_POLICY_FIFO, 0, nullptr, 0, nullptr, 0, nullptr, 0,
                                   nullptr, 0, 0, nullptr, KOS_TASK_NONE, TAP_PIN_CORE);
-        tx_report_spun(2);
+        tx_report_spun(child_cap(0));
     }
-    void tx_entry_exits(void*) // caps: go@2, E(SIGNAL)@3
+    void tx_entry_exits(void*) // caps: go@0, E(SIGNAL)@1
     {
         auto const quits = kos::thread::create(tx_quits, nullptr, "txq", 9);
         if (quits.valid())
         {
             (void)quits.join(TX_WAIT_US);
         }
-        (void)kos_send_timed(3, "r", 1, TX_WAIT_US);
-        kos_sem_wait(2, KOS_TIMEOUT_NONE);
+        (void)kos_send_timed(child_cap(1), "r", 1, TX_WAIT_US);
+        kos_sem_wait(child_cap(0), KOS_TIMEOUT_NONE);
         kos_exit(TX_ENTRY_EXIT);
     }
     // A timed receive of one byte on `ep`: what kos_reply_recv answered.
@@ -8191,12 +8213,12 @@ namespace
     };
     TeRun g_te;
     Atomic<int32_t, Order::RELAXED> g_te_seq{0};
-    void te_entry(void*) // caps: E(SIGNAL)@2
+    void te_entry(void*) // caps: E(SIGNAL)@0
     {
         char b[4] = {};
-        g_te.entry_call = kos_call_timed(2, b, sizeof(b), sizeof(b), TX_WAIT_US);
+        g_te.entry_call = kos_call_timed(child_cap(0), b, sizeof(b), sizeof(b), TX_WAIT_US);
     }
-    void te_sibling(void*) // caps: E(WAIT)@2, probe E(WAIT) in the last slot
+    void te_sibling(void*) // caps: E(WAIT)@0, probe E(WAIT) in the last slot
     {
         for (int i = 0; i < TD_LOAD; i++)
         {
@@ -8207,10 +8229,10 @@ namespace
             }
         }
     }
-    void te_watcher(void*) // caps: probe E(SIGNAL)@2
+    void te_watcher(void*) // caps: probe E(SIGNAL)@0
     {
         char b[4] = {};
-        g_te.probe_call = kos_call_timed(2, b, sizeof(b), sizeof(b), TX_WAIT_US);
+        g_te.probe_call = kos_call_timed(child_cap(0), b, sizeof(b), sizeof(b), TX_WAIT_US);
         g_te_seq = g_te_seq + 1;
         g_te.watcher_seq = g_te_seq;
     }
@@ -8436,7 +8458,7 @@ namespace
         *static_cast<volatile uint32_t*>(r->absent) = 1u;
         kos_exit(TX_SIBLING_EXIT); // unreachable: the store faults
     }
-    void tx_entry_waits(void* arg) // caps: go@2
+    void tx_entry_waits(void* arg) // caps: go@0
     {
         TxReport volatile* const r = static_cast<TxReport volatile*>(arg);
         (void)kos::thread::create(tx_spins_marked, arg, "txs", KICKOS_PRIO_MIN, KOS_POLICY_FIFO,
@@ -8445,7 +8467,8 @@ namespace
         (void)kos::thread::create(tx_touches_once_spinning, arg, "txf", 9, KOS_POLICY_FIFO, 0,
                                   nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0, 0,
                                   nullptr, KOS_TASK_NONE, TX_ONE_CORE);
-        kos_sem_wait(2, KOS_TIMEOUT_NONE); // nothing posts it, and the sibling's fault slays this thread in it
+        // nothing posts it, and the sibling's fault slays this thread in it
+        kos_sem_wait(child_cap(0), KOS_TIMEOUT_NONE);
         r->woke = 1;
         kos_yield();
         r->called = 1;
@@ -8485,13 +8508,13 @@ namespace
     // The entry, killed by main while parked, faults on its way out: the task ends, so it takes
     // no member, but the fault is the canceller's doing and gives it no status. The fault stops
     // the spinning sibling at once, whose first turn tells main the entry has parked.
-    void tx_killed_faults(void* arg) // caps: go@2
+    void tx_killed_faults(void* arg) // caps: go@0
     {
         TxReport volatile* const r = static_cast<TxReport volatile*>(arg);
         (void)kos::thread::create(tx_spins_marked, arg, "txs", KICKOS_PRIO_MIN, KOS_POLICY_FIFO,
                                   0, nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0, 0,
                                   nullptr, KOS_TASK_NONE, TX_ONE_CORE);
-        kos_sem_wait(2, KOS_TIMEOUT_NONE); // nothing posts it: the kill ends this wait
+        kos_sem_wait(child_cap(0), KOS_TIMEOUT_NONE); // nothing posts it: the kill ends this wait
         *static_cast<volatile uint32_t*>(r->absent) = 1u;
         kos_exit(TX_ENTRY_EXIT); // unreachable: the store faults
     }
@@ -8534,9 +8557,9 @@ namespace
     // A task no creator holds, built by a spawn bringing its own memory: nobody can slay it,
     // so its entry's fault slays the sibling spinning with no system call, and the task
     // empties. main sees the last receive right on its endpoint go.
-    void tx_implicit_entry(void* arg) // caps: E(WAIT|TRANSFER)@2
+    void tx_implicit_entry(void* arg) // caps: E(WAIT|TRANSFER)@0
     {
-        kos_cap_grant const caps[] = {{2, KOS_CAP_WAIT}};
+        kos_cap_grant const caps[] = {{child_cap(0), KOS_CAP_WAIT}};
         (void)kos::thread::create(tx_spins, nullptr, "txs", KICKOS_PRIO_MIN, KOS_POLICY_FIFO, 0,
                                   nullptr, 0, nullptr, 0, nullptr, 0, caps, 1);
         *static_cast<volatile uint32_t*>(arg) = 1u;
@@ -8579,18 +8602,18 @@ namespace
     // The entry, parked, killed by its spawner and then slain: either death ends the task, so
     // the sibling parked on `go`, which nothing posts, is slain, and the task answers
     // KOS_EXIT_CANCELLED.
-    void tx_waits_on_go(void*) // caps: go@2
+    void tx_waits_on_go(void*) // caps: go@0
     {
-        kos_sem_wait(2, KOS_TIMEOUT_NONE);
+        kos_sem_wait(child_cap(0), KOS_TIMEOUT_NONE);
         kos_exit(TX_SIBLING_EXIT);
     }
-    void tx_entry_parks(void*) // caps: go@2, park@3, E(SIGNAL)@4
+    void tx_entry_parks(void*) // caps: go@0, park@1, E(SIGNAL)@2
     {
-        kos_cap_grant const caps[] = {{2, KOS_CAP_WAIT}};
+        kos_cap_grant const caps[] = {{child_cap(0), KOS_CAP_WAIT}};
         (void)kos::thread::create(tx_waits_on_go, nullptr, "txw", 9, KOS_POLICY_FIFO, 0,
                                   nullptr, 0, nullptr, 0, nullptr, 0, caps, 1);
-        (void)kos_send_timed(4, "r", 1, TX_WAIT_US);
-        kos_sem_wait(3, KOS_TIMEOUT_NONE); // nothing posts it: the cancel ends this wait
+        (void)kos_send_timed(child_cap(2), "r", 1, TX_WAIT_US);
+        kos_sem_wait(child_cap(1), KOS_TIMEOUT_NONE); // nothing posts it: the cancel ends this wait
         kos_exit(TX_ENTRY_EXIT);
     }
     struct TxCancelled
@@ -8739,11 +8762,11 @@ namespace
 #endif
         }
     }
-    void wg_holder(void* arg) // caps: hold@2
+    void wg_holder(void* arg) // caps: hold@0
     {
         WgHold* const h = static_cast<WgHold*>(arg);
         h->rc = kos_window_get(0, &h->got);
-        kos_sem_wait(2, KOS_TIMEOUT_NONE);
+        kos_sem_wait(child_cap(0), KOS_TIMEOUT_NONE);
     }
     // Spawns a child holding `list`: its handle once it has been joined, else invalid.
     kos::thread::Handle wg_spawn(void (*entry)(void*), kos_window const* list, int n)
@@ -8926,7 +8949,7 @@ namespace
     bool g_ug_nocache = false;
     Atomic<int32_t, Order::RELAXED> g_ug_rc[5];
     // A fresh region set of its own, which main's is not by this point of the run.
-    void ug_receiver(void*) // caps: E(WAIT)@2
+    void ug_receiver(void*) // caps: E(WAIT)@0
     {
         uint32_t flags[2] = {0, 0};
         if (g_ug_nocache)
@@ -8940,7 +8963,7 @@ namespace
         for (int i = 0; i < 2; i++)
         {
             struct kos_reply_recv_opts o;
-            kos_reply_recv_opts_init(&o, 2, KOS_RECV_NO_INFO, STALL_TOLERANT_US);
+            kos_reply_recv_opts_init(&o, child_cap(0), KOS_RECV_NO_INFO, STALL_TOLERANT_US);
             int32_t const n =
                 kos_reply_recv(KOS_CAP_NONE, g_ug_blk[i], kos_call_lens_pack(0, UG_LEN), &o);
             int32_t rc = n;
@@ -9134,11 +9157,11 @@ namespace
     // One member parks on a semaphore nothing posts, the other spins in its own code. The arm
     // shows that the spinner ran, and that after the kill both joined and the member did not
     // report again.
-    void task_member(void*) // caps: E(SIGNAL)@2, park@3
+    void task_member(void*) // caps: E(SIGNAL)@0, park@1
     {
-        tx_report_spun(2);
-        kos_sem_wait(3, KOS_TIMEOUT_NONE);
-        (void)kos_sem_post(3);
+        tx_report_spun(child_cap(0));
+        kos_sem_wait(child_cap(1), KOS_TIMEOUT_NONE);
+        (void)kos_sem_post(child_cap(1));
         kos_exit(1);
     }
 
@@ -9263,12 +9286,12 @@ namespace
     // look slain.
     Atomic<int, Order::RELAXED> g_slay_window{0};
 
-    // caps: done@2, park@3. Announces itself, then parks on a semaphore NOTHING ever posts,
+    // caps: done@0, park@1. Announces itself, then parks on a semaphore NOTHING ever posts,
     // so the only way past that wait is a cancellation breaking the park.
     void slay_window_worker(void*)
     {
         kos_sem_post(CH_DONE);
-        kos_sem_wait(3, KOS_TIMEOUT_NONE);
+        kos_sem_wait(child_cap(1), KOS_TIMEOUT_NONE);
         g_slay_window = g_slay_window + 1;
         kos_exit(0); // never returns: the kernel ends the thread at this syscall's entry
     }
@@ -9337,7 +9360,7 @@ namespace
     }
 
     // The gate, which is the kill gate unchanged: slay reaches exactly the set kill reaches.
-    void slay_gate_probe(void*) // caps: done@2
+    void slay_gate_probe(void*) // caps: done@0
     {
         // main is the init's child and not this thread's, so this is the parenthood arm and
         // not the self arm.
@@ -9406,7 +9429,7 @@ namespace
         TAP_CHECK(hold.close(&park) == 0);
     }
 
-    void task_slay_stranger(void* arg) // caps: done@2, lock@3
+    void task_slay_stranger(void* arg) // caps: done@0, lock@1
     {
         kos_task_t const task = static_cast<kos_task_t>(reinterpret_cast<uintptr_t>(arg));
         char c = 'x';
@@ -9458,14 +9481,14 @@ namespace
     void ts_entry(void*)
     {
     }
-    void ts_sibling(void*) // caps: E(WAIT)@2, probe E(WAIT) in the last slot
+    void ts_sibling(void*) // caps: E(WAIT)@0, probe E(WAIT) in the last slot
     {
         kos_yield();
     }
-    void ts_watcher(void*) // caps: probe E(SIGNAL)@2
+    void ts_watcher(void*) // caps: probe E(SIGNAL)@0
     {
         char b[4] = {};
-        (void)kos_call_timed(2, b, sizeof(b), sizeof(b), TX_WAIT_US);
+        (void)kos_call_timed(child_cap(0), b, sizeof(b), sizeof(b), TX_WAIT_US);
         g_ts_seq = g_ts_seq + 1;
         g_ts.watcher_seq = g_ts_seq;
     }
@@ -9734,7 +9757,7 @@ namespace
 #endif
     }
 
-    void selfgrant_worker(void*) // caps: E(SIGNAL)@2
+    void selfgrant_worker(void*) // caps: E(SIGNAL)@0
     {
         SgReport rep = {0, 0, 0, -1};
         // Size-0 refusal costs no descriptor. The address is a valid stack local, so the
@@ -9766,7 +9789,7 @@ namespace
             rep.readback = *static_cast<volatile int*>(p) - i;
             rep.ok = rep.ok + 1;
         }
-        (void)kos_send(2, &rep, sizeof(rep));
+        (void)kos_send(child_cap(0), &rep, sizeof(rep));
     }
     void t_selfgrant()
     {
@@ -10195,6 +10218,10 @@ extern "C" void selftest_main(kos_self_t const* self)
     TAP_ADD("frame_run_slot_recycle", t_frame_run_slot_recycle);
     TAP_ADD("call_reply_undisclosed", t_call_reply_undisclosed);
     TAP_ADD("process_data_from_image", t_process_data_from_image, FI_RAM);
+    TAP_ADD_PINNED("task_start_once", t_task_start_once, TS_RAM);
+#if KICKOS_FAULT_ISOLATION
+    TAP_ADD_PINNED("task_start_dead_starter", t_task_start_dead_starter, DS_RAM);
+#endif
 #endif
     TAP_ADD_IRQ("irq_kernel_line_reserved", t_irq_kernel_line_reserved);
     TAP_ADD("prio_ceiling_refused", t_prio_ceiling_refused);

@@ -227,6 +227,34 @@ add_compile_definitions(${KICKOS_APP_BOOL_DEFS})
 # CMake's stock MinSizeRel flags drop -g.
 add_compile_options($<$<CONFIG:MinSizeRel>:-g>)
 
+# A kernel built with this carries a system call that reads and writes user memory from ring 0
+# on request, so only the uaccess witness's scratch configure, which also passes the marker below,
+# may turn it on.
+option(KICKOS_WITNESS_UACCESS "Plant a ring-0 access to a user pointer, for the uaccess witness" OFF)
+if(KICKOS_WITNESS_UACCESS)
+  if(NOT "${KICKOS_WITNESS_UACCESS_SCRATCH}" STREQUAL "check_uaccess.sh")
+    message(FATAL_ERROR "KickOS: WITNESS_UACCESS_REFUSED: KICKOS_WITNESS_UACCESS builds a kernel that "
+      "reads and writes user memory on request. Only tests/integration/check_uaccess.sh "
+      "configures it, in a scratch tree of its own.")
+  endif()
+  add_compile_definitions(KICKOS_WITNESS_UACCESS=1)
+endif()
+
+# A kernel built with this runs scheduler passes no workload asked for, so only the repass
+# witness's scratch configure, which also passes the marker below, may turn it on.
+option(KICKOS_WITNESS_REPASS "Plant a second pass and a switch back, for the repass witness" OFF)
+if(KICKOS_WITNESS_REPASS)
+  if(NOT "${KICKOS_WITNESS_REPASS_SCRATCH}" STREQUAL "check_repass.sh")
+    message(FATAL_ERROR "KickOS: WITNESS_REPASS_REFUSED: KICKOS_WITNESS_REPASS builds a "
+      "kernel that runs extra scheduler passes on purpose. Only "
+      "tests/integration/check_repass.sh configures it, in a scratch tree of its own.")
+  endif()
+  if(NOT KICKOS_KERNEL_CORES GREATER 1)
+    message(FATAL_ERROR "KICKOS_WITNESS_REPASS needs more than one kernel core")
+  endif()
+  add_compile_definitions(KICKOS_WITNESS_REPASS=1)
+endif()
+
 option(KICKOS_SMP_TRACE "Record a per-core park/wake event ring for SMP diagnosis" OFF)
 if(KICKOS_SMP_TRACE)
   add_compile_definitions(KICKOS_SMP_TRACE=1)
@@ -328,6 +356,12 @@ if(KICKOS_CHIP_PRIVILEGE)
 else()
   set(KICKOS_HAVE_PRIV_RING 0)
 endif()
+if(KICKOS_CHIP_STACK_LIMIT)
+  set(KICKOS_HAVE_STACK_LIMIT 1)
+else()
+  set(KICKOS_HAVE_STACK_LIMIT 0)
+endif()
+add_compile_definitions(KICKOS_HAVE_STACK_LIMIT=${KICKOS_HAVE_STACK_LIMIT})
 
 # Do not override fault isolation: duplicate architecture and fallback
 # definitions would make archive order select the implementation.
@@ -362,6 +396,10 @@ if(_kickos_qemu_machine MATCHES "^mps2-")
 endif()
 
 add_compile_definitions(KICKOS_HAVE_ASPACE=${KICKOS_HAVE_ASPACE})
+
+include(amp_share)
+kickos_multi_instance_heap_check(MULTI "${KICKOS_MULTI_INSTANCE}" TRANSLATES "${KICKOS_HAVE_ASPACE}"
+                                 ARCH "${KICKOS_ARCH}" ORIGIN "board '${KICKOS_BOARD}'")
 
 # Read only by kickos_split_image_tu (cmake/kickos.cmake); empty leaves that function inert.
 # Set here because kernel/CMakeLists.txt calls the same function and cannot see arch/'s scope.
@@ -551,6 +589,7 @@ if(TARGET kickos_kernel)
     KICKOS_TRACE_ARCH=${KICKOS_TRACE_ARCH}
     KICKOS_HAVE_MPU=${KICKOS_HAVE_MPU}
     KICKOS_HAVE_ASPACE=${KICKOS_HAVE_ASPACE}
+    KICKOS_HAVE_STACK_LIMIT=${KICKOS_HAVE_STACK_LIMIT}
     KICKOS_AMP_NODE=${KICKOS_AMP_NODE}
     KICKOS_ISOLATED_CORES=${KICKOS_ISOLATED_CORES}
     KICKOS_MEMORY_ENFORCED=${KICKOS_MEMORY_ENFORCED}
@@ -933,7 +972,8 @@ install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/tools/compose/pyproject.toml"
         DESTINATION "${KICKOS_CMAKE_DIR}/compose")
 
 # kickos.cmake include()s cap_table.cmake, driver_geometry.cmake, driver_metadata.cmake,
-# heap_symbol.cmake and compose.cmake list-dir-relative, so they must land beside it.
+# heap_symbol.cmake, qemu_cpu.cmake and compose.cmake list-dir-relative, so they must land
+# beside it.
 install(FILES
           "${CMAKE_CURRENT_BINARY_DIR}/KickOSConfig.cmake"
           "${CMAKE_CURRENT_BINARY_DIR}/KickOSConfigVersion.cmake"
@@ -942,6 +982,7 @@ install(FILES
           "${CMAKE_CURRENT_SOURCE_DIR}/cmake/driver_geometry.cmake"
           "${CMAKE_CURRENT_SOURCE_DIR}/cmake/driver_metadata.cmake"
           "${CMAKE_CURRENT_SOURCE_DIR}/cmake/heap_symbol.cmake"
+          "${CMAKE_CURRENT_SOURCE_DIR}/cmake/qemu_cpu.cmake"
           "${CMAKE_CURRENT_SOURCE_DIR}/cmake/compose.cmake"
         DESTINATION "${KICKOS_CMAKE_DIR}")
 

@@ -105,6 +105,8 @@ namespace selftest
     constexpr int CH_REL = KOS_SPAWN_DELEGATED_CAP0 + 3;
     constexpr uint8_t CH_FULL =
         KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER;
+    // A worker comment's `name@i` is its child_cap(i).
+    using kos::child_cap;
 
 #if KICKOS_AMP_NODE && KICKOS_AMP_OWN_IMAGE
     constexpr bool SELFTEST_OWNS_RESET = KICKOS_AMP_NODE_ID == KICKOS_AMP_RESET_OWNER;
@@ -626,7 +628,8 @@ namespace selftest
     // A member of ANOTHER task gets its own copy of this image's static data, so every report
     // from one crosses on an ENDPOINT and every release crosses on a semaphore. A global
     // would be written in the member's copy and read in main's.
-    extern KICKOS_SELFTEST_LOCAL kos_cap_t g_pl_ep; // main's report endpoint, delegated at child index 2
+    // main's report endpoint, delegated as child_cap(0)
+    extern KICKOS_SELFTEST_LOCAL kos_cap_t g_pl_ep;
 
 #if KICKOS_HAVE_ASPACE
     inline constexpr RamAsk SEAM_RAM = {256u};
@@ -645,7 +648,9 @@ namespace selftest
     inline constexpr RamAsk PI_RAM = {256u, 256u};
     inline constexpr RamAsk KW_RAM = {64u};
     inline constexpr RamAsk UA_RAM = {128u, 128u, ST_GRANULES(32)};
-    inline constexpr RamAsk FI_RAM = {8u};
+    inline constexpr RamAsk FI_RAM = {24u};
+    inline constexpr RamAsk TS_RAM = {32u};
+    inline constexpr RamAsk DS_RAM = {24u};
     KICKOS_SELFTEST_LOCAL void t_cap_map();
     KICKOS_SELFTEST_LOCAL void t_stack_slot_returns();
     KICKOS_SELFTEST_LOCAL void t_cap_map_over_stack();
@@ -685,6 +690,10 @@ namespace selftest
     KICKOS_SELFTEST_LOCAL void t_frame_run_slot_recycle();
     KICKOS_SELFTEST_LOCAL void t_call_reply_undisclosed();
     KICKOS_SELFTEST_LOCAL void t_process_data_from_image();
+    KICKOS_SELFTEST_LOCAL void t_task_start_once();
+#if KICKOS_FAULT_ISOLATION
+    KICKOS_SELFTEST_LOCAL void t_task_start_dead_starter();
+#endif
     KICKOS_SELFTEST_LOCAL void t_app_pointers_relocated();
 #endif
 

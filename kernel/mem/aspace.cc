@@ -21,6 +21,7 @@
 #include <kickos/thread.h>
 
 #include <kickos/sys/errno.h>
+#include <kickos/sys/init.h>
 
 extern "C"
 {
@@ -51,25 +52,10 @@ namespace kickos
         // The last space written to this core's translation root.
         struct arch_aspace* g_current[KICKOS_NUM_CORES] = {};
 
-        // The space holding the image's own static-data pages. Written by the first seed and
-        // by that space's release, and cleared only after the snapshot beside it is frozen.
-        struct arch_aspace* g_data_home = nullptr;
-
-        // The static-data snapshot an explicit task's space copies from, and every space once
-        // root is gone. Its frames leave the pool while root is seeded; the bytes are filled at
-        // the first explicit task's seed, or at root's release if that comes first.
+        // The pristine image of the app's static data, every space's but the first one's
+        // source: filled from the loader's frames before the first space maps them, and never
+        // written again.
         arch_phys_addr_t g_data_template = 0;
-        bool g_data_template_filled = false;
-
-        void const* acquire_page(struct arch_aspace* space, uintptr_t va)
-        {
-            return arch_aspace_acquire(space, va, nullptr);
-        }
-
-        void release_page(struct arch_aspace* space, uintptr_t va)
-        {
-            arch_aspace_release(space, va);
-        }
 
 #if KICKOS_PRESYNC
         PresyncRecord* presync_of(Thread const* t)
@@ -130,7 +116,6 @@ namespace kickos
             r.staged_pages = 0;
             r.stage = PresyncStage::NONE;
             r.staged_full = false;
-            r.staged_home = nullptr;
         }
 
 #endif
@@ -263,87 +248,20 @@ namespace kickos
             (void)ranges->grant(e.base, e.pages, rights, ARCH_MAP_NORMAL);
         }
 
-        // Copies granule `i` of the image's static data based at `base` into the run at `to`,
-        // from the live `home` or from the snapshot where it is null; false when either end is
+        // Copies granule `i` of the pristine image into the run at `to`; false when the run is
         // gone. Both ends are cacheable (an image range refuses a memory-type change), so no
         // alias sync is owed. Out of line: inlined, it widens the seed's frame on the spawn chain.
-        __attribute__((noinline)) bool copy_data_granule(arch_phys_addr_t to,
-                                                         struct arch_aspace* home, uintptr_t base,
-                                                         size_t i, size_t g)
+        __attribute__((noinline)) bool copy_data_granule(arch_phys_addr_t to, size_t i, size_t g)
         {
             arch_phys_addr_t const step = static_cast<arch_phys_addr_t>(i * g);
             void* const dst = frame_pool_ptr(to + step);
-            if (dst == nullptr)
-            {
-                return false;
-            }
-            if (home == nullptr)
-            {
-                void const* const src = frame_pool_ptr(g_data_template + step);
-                if (src == nullptr)
-                {
-                    return false;
-                }
-                kmemcpy(dst, src, g);
-                return true;
-            }
-            uintptr_t const va = base + static_cast<uintptr_t>(i * g);
-            void const* const src = acquire_page(home, va);
-            if (src == nullptr)
+            void const* const src = frame_pool_ptr(g_data_template + step);
+            if (dst == nullptr or src == nullptr)
             {
                 return false;
             }
             kmemcpy(dst, src, g);
-            release_page(home, va);
             return true;
-        }
-
-        // Runs with the home's mappings still standing: at the first explicit task's seed and
-        // on the home's way out. Inlined: a frame of its own deepens a dying thread's chain
-        // through its space's release.
-        __attribute__((always_inline)) inline bool data_template_fill(Extent const& data, size_t g)
-        {
-            if (g_data_template_filled)
-            {
-                return true;
-            }
-            if (g_data_template == 0 or g_data_home == nullptr)
-            {
-                return false;
-            }
-            for (size_t i = 0; i < data.pages; i++)
-            {
-                if (not copy_data_granule(g_data_template, g_data_home, data.base, i, g))
-                {
-                    return false;
-                }
-            }
-            g_data_template_filled = true;
-            return true;
-        }
-
-        // The source a new space's static data is copied from: the live `*home`, or the
-        // snapshot where it is null; false when there is none. The stage a system call makes
-        // ahead of its lock and the locked seed both ask here: a seed that disagrees with its
-        // stage refuses it, and the call goes round again forever.
-        bool image_data_source(bool from_snapshot, struct arch_aspace* spawner,
-                               Extent const& data, size_t g, struct arch_aspace** home)
-        {
-            if (g_data_home == nullptr and not g_data_template_filled)
-            {
-                return false;
-            }
-            *home = nullptr;
-            if (from_snapshot)
-            {
-                return data_template_fill(data, g);
-            }
-            *home = g_data_home;
-            if (spawner != nullptr)
-            {
-                *home = spawner;
-            }
-            return *home != nullptr or g_data_template_filled;
         }
 
         // Maps the written `run` as `data`, whose range is claimed; frees both on a refusal.
@@ -365,9 +283,9 @@ namespace kickos
             return true;
         }
 
-        // Copies data from the source image_data_source chose, under IrqLock.
+        // Copies the pristine image into a new space, under IrqLock.
         bool data_copy(struct arch_aspace* space, VirtualRanges* ranges, Extent const& data,
-                       size_t g, struct arch_aspace* home)
+                       size_t g)
         {
             if (not claim(ranges, data, VR_IMAGE))
             {
@@ -375,7 +293,7 @@ namespace kickos
             }
 #if KICKOS_PRESYNC
             // A system call copies ahead of its lock (presync_stage_image), and goes round
-            // again when what it copied is not what this space takes.
+            // again when its stage is not a whole copy.
             PresyncRecord* const r = presync_record();
             if (r != nullptr and r->active and r->staged_short)
             {
@@ -385,7 +303,7 @@ namespace kickos
             if (r != nullptr and r->active)
             {
                 if (r->stage != PresyncStage::IMAGE or not r->staged_full
-                    or r->staged_pages != data.pages or r->staged_home != home)
+                    or r->staged_pages != data.pages)
                 {
                     r->refused = true;
                     (void)ranges->release(data.base);
@@ -406,7 +324,7 @@ namespace kickos
             }
             for (size_t i = 0; i < data.pages; i++)
             {
-                if (not copy_data_granule(run, home, data.base, i, g))
+                if (not copy_data_granule(run, i, g))
                 {
                     frame_pool_free_run(run, data.pages, g);
                     (void)ranges->release(data.base);
@@ -420,9 +338,9 @@ namespace kickos
     namespace
     {
 #if KICKOS_PRESYNC
-        // Writes granule `j` of `r`'s staged run, cleared or copied from its source; false when
-        // the source has gone. Takes IrqLock for the one granule.
-        bool stage_granule(Thread const* c, PresyncRecord const& r, uint32_t j, size_t g)
+        // Writes granule `j` of `r`'s staged run, cleared or copied from the pristine image;
+        // false when the run's frame has gone. Takes IrqLock for the one granule.
+        bool stage_granule(PresyncRecord const& r, uint32_t j, size_t g)
         {
             IrqLock lock;
             if (r.stage == PresyncStage::CLEAR)
@@ -435,19 +353,12 @@ namespace kickos
                 kmemset(dst, 0, g);
                 return true;
             }
-            // Root's space may be released between two granules.
-            if (r.staged_home != nullptr and r.staged_home != g_data_home
-                and r.staged_home != domain_space(thread_domain(c)))
-            {
-                return false;
-            }
-            return copy_data_granule(r.staged, r.staged_home, image_data(g).base, j, g);
+            return copy_data_granule(r.staged, j, g);
         }
 #endif
     }
 
-    bool aspace_image_seed(struct arch_aspace* space, VirtualRanges* ranges, bool from_snapshot,
-                           struct arch_aspace* spawner)
+    bool aspace_image_seed(struct arch_aspace* space, VirtualRanges* ranges)
     {
         size_t const g = arch_aspace_granule();
         if (not ranges->init(g))
@@ -477,27 +388,27 @@ namespace kickos
         {
             return true;
         }
-        struct arch_aspace* home = nullptr;
-        if (image_data_source(from_snapshot, spawner, data, g, &home))
-        {
-            return data_copy(space, ranges, data, g, home);
-        }
-        // Only the first seed finds no template; every later one with no source is refused.
         if (g_data_template != 0)
         {
-            return false;
+            return data_copy(space, ranges, data, g);
         }
-        // The first space uses the image data initialized by root constructors.
+        // The first seed, before anything runs in a space: the loader's bytes become the
+        // pristine image, and then this space's own data.
         if (not claim(ranges, data, VR_IMAGE | VR_BORROWED))
         {
             return false;
         }
-        // Uncleared: data_template_fill writes every byte, and no seed reads it until it has.
+        // Uncleared: the loop below writes every byte of every page.
         arch_phys_addr_t const tmpl = AspaceUnwritten::alloc_run(data.pages);
         if (tmpl == 0)
         {
             (void)ranges->release(data.base);
             return false;
+        }
+        for (size_t i = 0; i < data.pages; i++)
+        {
+            arch_phys_addr_t const step = static_cast<arch_phys_addr_t>(i * g);
+            kmemcpy(frame_pool_alias(tmpl + step), frame_pool_alias(app_pa(data.base) + step), g);
         }
         if (arch_aspace_map(space, data.base, app_pa(data.base), data.pages,
                             ARCH_MAP_R | ARCH_MAP_W, ARCH_MAP_NORMAL) != ARCH_ASPACE_OK)
@@ -508,8 +419,13 @@ namespace kickos
         }
         commit(ranges, data, ARCH_MAP_R | ARCH_MAP_W);
         g_data_template = tmpl;
-        g_data_home = space;
         return true;
+    }
+
+    void (*aspace_task_start())(void*)
+    {
+        return reinterpret_cast<void (*)(void*)>(reinterpret_cast<uintptr_t>(kickos_task_start)
+                                                 + arch_aspace_user_offset());
     }
 
     void* aspace_image_alias(void const* app_ptr)
@@ -623,14 +539,12 @@ namespace kickos
     }
 #endif
 
-    void presync_stage_image(bool from_snapshot, struct arch_aspace* spawner)
+    void presync_stage_image()
     {
         PresyncRecord* const r = presync_record();
         size_t const g = arch_aspace_granule();
         Extent const data = image_data(g);
-        struct arch_aspace* home = nullptr;
-        if (r == nullptr or data.pages == 0
-            or not image_data_source(from_snapshot, spawner, data, g, &home))
+        if (r == nullptr or data.pages == 0 or g_data_template == 0)
         {
             return;
         }
@@ -645,7 +559,6 @@ namespace kickos
         r->staged = run;
         r->staged_pages = static_cast<uint32_t>(data.pages);
         r->stage = PresyncStage::IMAGE;
-        r->staged_home = home;
     }
 
     arch_phys_addr_t aspace_reserve_stage(VirtualRanges const* ranges, size_t bytes)
@@ -732,7 +645,7 @@ namespace kickos
         bool full = r->stage != PresyncStage::NONE;
         for (uint32_t j = 0; full and j < r->staged_pages; j++)
         {
-            full = stage_granule(c, *r, j, g);
+            full = stage_granule(*r, j, g);
             arch_irq_window();
         }
         r->staged_full = full;
@@ -1335,14 +1248,6 @@ namespace kickos
         activate_locked(space);
     }
 
-    // The snapshot is filled while root's static data still exists; a failure leaves it unfilled.
-    static void data_home_leave()
-    {
-        size_t const g = arch_aspace_granule();
-        (void)data_template_fill(image_data(g), g);
-        g_data_home = nullptr;
-    }
-
     void aspace_release_runs(struct arch_aspace* space, VirtualRanges* ranges)
     {
         for (size_t i = 0; space != nullptr and ranges != nullptr and i < VirtualRanges::capacity();
@@ -1383,10 +1288,6 @@ namespace kickos
             {
                 activate_locked(arch_aspace_boot());
             }
-        }
-        if (g_data_home == space)
-        {
-            data_home_leave();
         }
         aspace_release_runs(space, ranges);
         size_t const g = arch_aspace_granule();

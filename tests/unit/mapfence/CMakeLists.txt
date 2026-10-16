@@ -18,7 +18,7 @@ kickos_add_kernel_host_lib(kickos_aspace_rv64imac_host
            "${PROJECT_SOURCE_DIR}/arch/common"
            "${PROJECT_SOURCE_DIR}/arch/riscv/rv64imac/include"
   POSTURE KICKOS_NUM_CORES=2 KICKOS_KERNEL_CORES=2 KICKOS_MULTICORE_MODEL_SHARED=1
-          KICKOS_HAVE_ASPACE=1 KICKOS_MAX_MUTEXES=24
+          KICKOS_HAVE_ASPACE=1
           KICKOS_RV64_SYSOPS_FROM_SEAM=1 KICKOS_RV64_SATP_MODE=8)
 kickos_add_unit_test(NAME map_fence SOURCES map_fence.cc
   LIBRARIES kickos_aspace_rv64imac_host)

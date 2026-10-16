@@ -21,6 +21,7 @@
 
 #include <kickos/arch/arch.h>
 #include <kickos/config.h> // KICKOS_MPU_MAX_REGIONS
+#include <kickos/mutex.h>
 #include <kickos/vrange.h>
 
 namespace kickos
@@ -49,6 +50,9 @@ namespace kickos
         // What that space names, and the syscall entry's oracle. Seeded with the space and
         // thrown away with it.
         VirtualRanges ranges;
+        // The C library's locks for this space's one heap and stdio. Idle once the space has no
+        // member, since a member's exit hands over what it holds.
+        Mutex libc_locks[LIBC_LOCK_COUNT];
 #endif
         // Bumped on every claim and at its task's end and death, so a capability naming
         // (index, generation) cannot be answered by a later occupant or past its task. NOT reset
@@ -108,13 +112,13 @@ namespace kickos
     // translating one each such task instantiates it into a slot of its own.
     Domain* domain_default_user(void);
 
-    // The caller's posture as one word: domain_for and task_for sit on the deepest chain the
-    // syscall dispatch has, and every further argument is a word the trap red zone of a
-    // KICKOS_KERNEL_STACKS=0 board is measured against.
+    // The `caller` word of domain_for and task_for. Both sit on the deepest chain the syscall
+    // dispatch has, which the trap red zone of a KICKOS_KERNEL_STACKS=0 board is measured
+    // against, so an argument added to either deepens it.
     enum : uint32_t
     {
-        DOM_CALLER_PRIVILEGED = 1u << 0, // resolves the kernel domain, whole arena
-        DOM_CALLER_TASK = 1u << 2        // an explicit task's: its data is the image snapshot's
+        DOM_CALLER_UNPRIVILEGED = 0u,
+        DOM_CALLER_PRIVILEGED = 1u << 0 // resolves the kernel domain, whole arena
     };
 
     // Resolve the domain a group of threads shares. privileged -> kernel; with a data region ->

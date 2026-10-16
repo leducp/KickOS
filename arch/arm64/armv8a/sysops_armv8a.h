@@ -14,10 +14,29 @@
 #define KICKOS_ARMV8A_SYSOPS_FROM_SEAM 0
 #endif
 
+#if !KICKOS_ARMV8A_SYSOPS_FROM_SEAM
+#include <kickos/arch/percpu.h>
+#endif
+
 extern "C"
 {
 
 #if !KICKOS_ARMV8A_SYSOPS_FROM_SEAM
+
+    // Nonzero on a core without PAN: the TTBR0_EL1 value every entry from EL0 installs
+    // (arch_armv8a.cc, switch.S).
+    extern uint64_t kickos_armv8a_el1_root;
+
+    // Whether a space goes live at the eret to EL0 rather than at its activation.
+    inline bool kickos_armv8a_root_deferred(void)
+    {
+        return kickos_armv8a_el1_root != 0;
+    }
+
+    inline uint64_t* kickos_armv8a_user_ttbr0_cell(void)
+    {
+        return &armv8a_percpu()->user_ttbr0;
+    }
 
     inline uint64_t kickos_armv8a_read_tcr_el1(void)
     {
@@ -83,6 +102,8 @@ extern "C"
 
 #else
 
+    bool kickos_armv8a_root_deferred(void);
+    uint64_t* kickos_armv8a_user_ttbr0_cell(void);
     uint64_t kickos_armv8a_read_tcr_el1(void);
     uint64_t kickos_armv8a_read_mmfr0_el1(void);
     uint64_t kickos_armv8a_read_ttbr0_el1(void);

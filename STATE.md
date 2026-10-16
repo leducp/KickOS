@@ -19,24 +19,30 @@ A milestone's own section leaves this file once the milestone after it merges, a
 
 ## Where we are
 
-**M10 HAS MERGED THROUGH M10.6.4, AND M10.6, THE CLEANUP PASS, IS OPEN.** M9's answer is that
+**M10 HAS MERGED THROUGH M10.6.5, AND M10.6, THE CLEANUP PASS, IS OPEN.** M9's answer is that
 the one big kernel lock stays, with per-core ready queues and per-pair rings under it and CLH
 arbitration on x86_64 alone. M10 is static composition: a declared system, admitted on the host,
 and an init provider that stays resident. `roadmap.md`'s `### M10` section is the ledger and the
 only place its numbers are assigned; the sections at the bottom of this file say what each
 milestone's green runs do not.
 
-**M10.6.5 IS CLOSED ON ITS BRANCH AND WAITS FOR ITS SQUASH AND THE MAINTAINER'S PUSH; M10.6.6, THE
-BENCH, IS NEXT.** Its record is the M10.6.5 entries of `TODO.md`'s M10.6 section, and the M10.6.5
-section at the bottom of this file says what its green runs do not. The tree requires toolchain
-1.1, so CI on it is green only once that release is published, which is the maintainer's.
+**M10.6.5 HAS MERGED (PR #123). M10.6.6, THE HARDENING, IS CLOSED ON ITS BRANCH AND WAITS FOR ITS
+SQUASH AND THE MAINTAINER'S PUSH; NEXT IS M10.6.7.** Its record is the M10.6.6 entries of
+`TODO.md`, and the M10.6.6 section at the bottom of this file says what its green runs do not. The
+tree requires toolchain 1.1, published as release `toolchain-1.1.0-1`.
 
-**THE ORDER IS LOCKED: M10.6.6, THEN M10.7.** Every silicon image has moved since the last bench
-pass and none of the moved images has run, so the bench pass comes first: `TODO.md`'s "THE BENCH
-PASS, BOARD BY BOARD" is its list, and the ESP32 IRAM, the interrupt stacks and the C6 PLL ride the
-same passes. M10.7, the exit record, reconciles the references against what shipped, so it waits
-for the bench. The KickOS journey and the mutex fast path carry no number: both start once M10.6.5
-merges.
+**THE ORDER IS LOCKED: M10.6.6, THEN M10.6.7, THEN M10.6.8, THEN M10.7** (maintainer, 2026-10-13,
+M10.6.7 inserted 2026-10-14); M10.6.6 is done on its branch and M10.6.7 is next. M10.6.6 is the
+hardening, isolation as strong as the hardware permits, and the libc lock split, which is not
+measure-gated because malloc's hold time is unbounded. M10.6.7 is the uncontended mutex taking no
+syscall, numbered on the libc measurement and placed before the bench so one pass captures its
+images. Every silicon image has moved since the last bench pass and none of the moved images has
+run: M10.6.8's pass, `TODO.md`'s "THE BENCH PASS, BOARD BY BOARD", captures them, M10.6.6's and
+M10.6.7's included, with the ESP32 IRAM, the interrupt stacks and the C6 PLL riding the same
+passes. M10.7, the exit record, reconciles the references against what shipped, so it waits for
+the bench. The KickOS journey, its PL022 capstone and the docs site land as a maintainer PR
+outside the numbering now that M10.6.5 has merged; the lock-free yield and the shared sleep
+deadline are measure-first and carry no number.
 
 M7 is the multicore milestone and `docs/design-multicore.md` is its contract; every ruling and every
 freeze lives there, `roadmap.md` assigns the numbers, and `git log` carries the order things landed
@@ -1134,20 +1140,6 @@ missing from one of those QEMU captures under load is this, not a flake to re-ru
   and one TX_IDLE_NUM, the reset 256: the field reads 2 while the line shifts and 0 once the last
   frame is out. No other baud or idle count was run.
 
-## M10.6.4: the selftest on the production kernel, and what these green runs do NOT say
-
-- **NO SELFTEST IMAGE HAS RUN ON SILICON SINCE M10.6.4 MOVED EVERY ONE OF THEM.** Every silicon
-  capture of record predates it; the list owed is `TODO.md`'s bench pass.
-- **THE IRQ ABSENCE CHECKS NEED THEIR DRIVERS STRICTLY ABOVE THE CHECKER, AND NO RUN SHOWS IT.**
-  A sim control with the checker at the drivers' priority also failed the planted defects, so the
-  rule rests on reading the latch paths. On GIC and RX silicon the pending line can trail the
-  enable; no one-core board of either is in the fleet.
-- **AN ARM A LEFT-OUT LIST DROPS RUNS ON NO IMAGE OF THAT BOARD.** bluepill-c8 and f302nucleo
-  drop arena arms their images cannot back; the build and the bench name them, and nothing runs
-  them there.
-- **THE ARENA ASK IS NOT CHECKED AGAINST USE.** An ask stated larger than the arm uses, or an arm
-  taking a block from another arm's ask it does not name, passes every check.
-
 ## M10.6.5: the console and the lean pass, and what these green runs do NOT say
 
 - **NO SILICON HAS RUN THIS TREE, AND EVERY SILICON IMAGE MOVED.** The libc lock, the console core,
@@ -1172,6 +1164,54 @@ missing from one of those QEMU captures under load is this, not a flake to re-ru
 - **THE WALKER'S DETACH, SWEEP AND FREE ORDER IS HELD BY HOST CASES AND QEMU ONLY**, and QEMU models
   no stale walk. No translating silicon is on the bench, so `imx8mp-evk` is its only silicon target
   and it is not here.
+
+## M10.6.6: the hardening, and what these green runs do NOT say
+
+- **THE A53 SILICON COST OF THE RESERVED-TTBR0 FORM IS UNMEASURED, AND ITS ASID CLAIM IS
+  UNWITNESSED.** Under icount it is 14 instructions per trap; no A53 silicon is on the bench.
+  QEMU's TLB is not ASID-tagged, so the reserved ASID keeping a stale user entry from answering at
+  EL1 is shown by nothing.
+- **THE FPCCR.LSPACT CLEAR ON A V8-M STACK OVERFLOW HAS NO RED ARM.** QEMU discards the pending
+  lazy save on the return to the exit stub, with or without the clear. Silicon is unchecked.
+- **THE RP2350 ROM CALL'S LIMIT RESTORE ORDER HAS ONLY A LINK-TIME ASSERT AND THE BENCH.** No
+  emulator runs the RP2350; the order (limits, then SP, then PRIMASK) is read, not run.
+- **NMI AND MACHINE CHECK TAKEN AT RING 3 ON X86_64 ARE UNIT-PINNED ONLY.** A software `int` from
+  ring 3 is a #GP, and no gate raises a real NMI or machine check.
+- **THE X86_64 IRQ ARM COVERS THE TIMER LINE ONLY.** The RFLAGS reset on every other line is the
+  static entry gate's.
+- **THE POPFQ ENTRY'S SILICON COST IS UNMEASURED.** Under icount it is one instruction against
+  `cld`.
+- **THE K64F DSPI DISABLE RE-GATES ONLY.** The module and its clock stay on (the console reclaims
+  UART0), and every DSPI0 claim waits for the bench.
+- **A MALLOC-LOCK HOLDER'S DEATH NOW ENDS THE NEXT TAKER'S TASK.** A torn heap is refused, where it
+  was silently tolerated before.
+- **UNDER A HOST HOG SHARING QEMU'S CORES, LIBCRACE RUNS SLOWER WITH TWO LIBC LOCKS THAN ONE.** The
+  kernel-lock holder's vCPU is preempted, which is why its local bound is a 240 s hang detector (900 s above one core); CI's
+  `QEMU_TIMEOUT` of 180 holds only on its unloaded runners.
+- **PAN AT ONE KERNEL CORE HAS NO IMAGE ARM.** No preset runs a PAN core at one kernel core; the
+  fallback root the first spaceless thread now gets there is held by a unit only.
+- **IMX8MP-EVK'S UACCESS GATE RUNS LOCALLY ONLY.** CI boots that machine without the gate.
+- **THE PANIC REPORT'S STACK LIMIT HAS NO RUNTIME RED ARM.** The panic entry now sets the live
+  stack's limit to its seat's base instead of zero; no plant overflows the panic seat (that needs a
+  hook inside the kernel's panic reporter), so only the suites' panic arms still passing hold it.
+- **`faultsurvive_off` ON BLUEPILL-C8 SITS 32 BYTES INSIDE ITS ARENA ASSERTION.** Any static growth
+  of that image trips the link.
+- **A SMALL HEAP SIZED TO THE OLD SINGLE-LOCK PEAK CAN NOW GET NULL.** Since the libc split, a program
+  whose heap was sized to that peak can see malloc fail (microbit's 1 KiB heap fills under `libcrace`);
+  that is correct malloc behaviour.
+- **TASK CREATION ON ARM64 COSTS ABOUT 255 US AGAINST ABOUT 150 US BEFORE THE PRISTINE SEEDING.** The
+  constructors run per space; thread creation is unchanged. A zygote form (root frozen after its
+  constructors) is the only way back and was not taken.
+- **A STARTUP WAITER BLOCKING IS NOT WITNESSED, NOR ARE AN APP'S DEEPER CONSTRUCTORS.** Nothing shows a
+  waiter blocking, rather than spinning, while the starter runs on another core; nothing shows an app's
+  own constructors running deeper than the measured runtime depth (the 512-byte floor).
+- **THE REPASS GATE WITNESSES X86_64 ONLY.** On arm64 and rv64 the slay redirect fix is held by the
+  `peer_slay` unit arms (an injected run did crash them before the fix). On one core nothing records
+  the physical thread, so the redirect still assumes a parked frame; no path was found that breaks it.
+  A reent-seat slay inside a switch booked back onto the interrupted thread could still reach the
+  redirect; no workload does.
+- **QEMU-X86_64-SMP4'S LIBCRACE UNDER A HOST HOG RUNS 226-393 S, SO ITS BOUND IS 900 S.** QEMU's TCG
+  `pause` exits; the base ran 61-166 s.
 
 ## Where to go next
 

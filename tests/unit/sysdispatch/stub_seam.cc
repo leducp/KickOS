@@ -13,6 +13,7 @@
 #include <kickos/task.h>
 
 #include <kickos/sys/errno.h>
+#include <kickos/sys/init.h>
 
 #include "stub_seam.h"
 #include "syscall_internal.h"
@@ -90,6 +91,8 @@ namespace kickos
     {
         uint32_t g_reboot_outcome = REBOOT_NONE;
         uint32_t g_console_drains = 0;
+        uintptr_t g_context_entry = 0;
+        uintptr_t g_second_arg = 0;
     }
 }
 
@@ -128,7 +131,20 @@ extern "C"
         return false;
     }
 
-    void arch_context_init(struct arch_context*, void (*)(void*), void*, void*, size_t, int) {}
+    void arch_context_init(struct arch_context*, void (*entry)(void*), void*, void*, size_t, int)
+    {
+        kickos::testfix::g_context_entry = reinterpret_cast<uintptr_t>(entry);
+        kickos::testfix::g_second_arg = 0;
+    }
+
+#if KICKOS_HAVE_ASPACE
+    void arch_context_second_arg(struct arch_context*, uintptr_t value)
+    {
+        kickos::testfix::g_second_arg = value;
+    }
+
+    void kickos_task_start(void*, void (*)(void*)) {}
+#endif
 
     uint64_t arch_clock_now(void)
     {

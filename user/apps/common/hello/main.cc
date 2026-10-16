@@ -17,7 +17,7 @@ namespace
     kos::Semaphore* g_pong = nullptr;
 
     // B1 well-known child cap indices (fresh child table => handle == index). Both players
-    // get (ping_sem, pong_sem) delegated in that order -> ping@2, pong@3.
+    // get (ping_sem, pong_sem) delegated in that order.
     constexpr int CH_PING = KOS_SPAWN_DELEGATED_CAP0;
     constexpr int CH_PONG = KOS_SPAWN_DELEGATED_CAP0 + 1;
     constexpr uint8_t CH_FULL = KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER;

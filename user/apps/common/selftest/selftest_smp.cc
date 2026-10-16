@@ -40,9 +40,9 @@ namespace selftest
     kos_cap_t g_pl_gate = KOS_CAP_NONE;
 
     // Keeps its task non-empty until main posts the gate.
-    void pl_gate_worker(void*) // caps: gate@2
+    void pl_gate_worker(void*) // caps: gate@0
     {
-        kos_sem_wait(2, KOS_TIMEOUT_NONE);
+        kos_sem_wait(child_cap(0), KOS_TIMEOUT_NONE);
     }
 
     Atomic<uint32_t, Order::RELAXED> g_pl_go{0};
@@ -168,7 +168,8 @@ namespace selftest
         return 0;
     }
 
-    // Seats `entry` with g_pl_ep's `rights` at index 2 and takes the report it sends there: in a
+    // Seats `entry` with g_pl_ep's `rights` at child_cap(0) and takes the report it sends there: in
+    // a
     // fresh task granted `cores`, the grant's answer in *granted, or in main's own when `cores` is
     // 0.
     void pl_member_report(void (*entry)(void*), uint32_t cores, uint8_t rights,
@@ -249,7 +250,7 @@ namespace selftest
         XS_WORDS = 4
     };
     // Pins a SIBLING in its own task: the task's single grant bounds the placement.
-    void sib_pin_worker(void*) // caps: E(SIGNAL)@2
+    void sib_pin_worker(void*) // caps: E(SIGNAL)@0
     {
         int32_t rep[XS_WORDS] = {0, 0, -99, -99};
         rep[XS_CORES] = static_cast<int32_t>(kos_task_cores(KOS_TASK_NONE));
@@ -263,7 +264,7 @@ namespace selftest
             g_pl_stop = 1;
             (void)s.join(STALL_TOLERANT_US);
         }
-        (void)kos_send(2, rep, sizeof(rep));
+        (void)kos_send(child_cap(0), rep, sizeof(rep));
     }
 
     void t_pin_beyond_grant_refused()
@@ -413,13 +414,13 @@ namespace selftest
         GN_CORE = 2,  // the core it was reading this on
         GN_WORDS = 3
     };
-    void gn_worker(void*) // caps: E(SIGNAL)@2
+    void gn_worker(void*) // caps: E(SIGNAL)@0
     {
         int32_t rep[GN_WORDS];
         rep[GN_CORES] = static_cast<int32_t>(kos_task_cores(KOS_TASK_NONE));
         rep[GN_AFF] = static_cast<int32_t>(kos_thread_affinity(kos_thread_self()));
         rep[GN_CORE] = static_cast<int32_t>(kos_core_current());
-        (void)kos_send(2, rep, sizeof(rep));
+        (void)kos_send(child_cap(0), rep, sizeof(rep));
     }
 
     void t_grant_narrows()
@@ -465,29 +466,29 @@ namespace selftest
         GI_CORES = 2,  // and the set that member reports
         GI_WORDS = 3
     };
-    void gi_child(void*) // caps: E(SIGNAL)@2
+    void gi_child(void*) // caps: E(SIGNAL)@0
     {
         int32_t rep[GI_WORDS] = {1, 1,
                                  static_cast<int32_t>(kos_task_cores(KOS_TASK_NONE))};
-        (void)kos_send(2, rep, sizeof(rep));
+        (void)kos_send(child_cap(0), rep, sizeof(rep));
     }
-    void gi_worker(void*) // caps: E(SIGNAL)@2
+    void gi_worker(void*) // caps: E(SIGNAL)@0
     {
         int32_t rep[GI_WORDS] = {0, 0, -1};
         kos_task_t u = KOS_TASK_NONE;
         if (kos_task_create(nullptr, 0, 0, &u) != 0)
         {
-            (void)kos_send(2, rep, sizeof(rep));
+            (void)kos_send(child_cap(0), rep, sizeof(rep));
             return;
         }
         rep[GI_MADE] = 1;
-        kos_cap_grant caps[] = {{2, KOS_CAP_SIGNAL}};
+        kos_cap_grant caps[] = {{child_cap(0), KOS_CAP_SIGNAL}};
         auto c = kos::thread::create_caps(gi_child, nullptr, "ginh", 11, caps, 1,
                                           KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr, u);
         if (not c.valid())
         {
             (void)kos_task_kill(u);
-            (void)kos_send(2, rep, sizeof(rep));
+            (void)kos_send(child_cap(0), rep, sizeof(rep));
             return;
         }
         // The CHILD answers on the same endpoint, so this thread sends nothing more.
@@ -1039,11 +1040,11 @@ namespace selftest
     Atomic<int32_t, Order::RELAXED> g_xc_call_rc{-99};
     Atomic<int32_t, Order::RELAXED> g_xc_serve_rc{-99};
 
-    void xc_server(void*) // caps: E(WAIT)@2, gate@3
+    void xc_server(void*) // caps: E(WAIT)@0, gate@1
     {
         char buf[16];
         struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, 2, 0, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&opts, child_cap(0), 0, KOS_TIMEOUT_NONE);
         int32_t const got =
             kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts);
         if (got < 0 or opts.info.reply_cap == KOS_CAP_NONE)
@@ -1052,25 +1053,25 @@ namespace selftest
             return;
         }
         // Reply only once the caller is parked for it and the spinner holds the caller's core.
-        kos_sem_wait(3, KOS_TIMEOUT_NONE);
+        kos_sem_wait(child_cap(1), KOS_TIMEOUT_NONE);
         kos_cap_t const reply = opts.info.reply_cap;
-        kos_reply_recv_opts_init(&opts, 2, 0, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&opts, child_cap(0), 0, KOS_TIMEOUT_NONE);
         memcpy(buf, "pong!", 5);
         g_xc_serve_rc = kos_reply_recv(reply, buf, kos_call_lens_pack(5, sizeof(buf)), &opts);
     }
-    void xc_caller(void*) // caps: E(SIGNAL)@2
+    void xc_caller(void*) // caps: E(SIGNAL)@0
     {
         char buf[16];
         memcpy(buf, "ping", 4);
-        g_xc_call_rc = kos_call(2, buf, 4, sizeof(buf));
+        g_xc_call_rc = kos_call(child_cap(0), buf, 4, sizeof(buf));
     }
     // The spinner yields its core only to a preemption and the reply follows its post, so the
     // core it posts from is held when the reply lands. A spin count cannot witness that: a
     // reschedule arriving before the first iteration leaves it at zero.
-    void xc_spinner(void*) // caps: gate@2
+    void xc_spinner(void*) // caps: gate@0
     {
         g_xc_spin_core = pl_core();
-        kos_sem_post(2); // the core is ours; the server may answer now
+        kos_sem_post(child_cap(0)); // the core is ours; the server may answer now
         while (g_xc_stop.load() == 0)
         {
         }
@@ -1290,7 +1291,7 @@ namespace selftest
     Atomic<uint32_t, Order::RELAXED> g_xr_core{0xffu};
     Atomic<uint32_t, Order::RELAXED> g_xr_unmade{0};
 
-    void xirq_raiser(void*) // caps: irq(SIGNAL)@2
+    void xirq_raiser(void*) // caps: irq(SIGNAL)@0
     {
         g_xr_core = pl_core();
         g_xr_rc = kos_irq_raise(KOS_SPAWN_DELEGATED_CAP0);

@@ -13,12 +13,14 @@
 #include <string>
 
 #include "aspace_sysops_seam.h"
+#include "uguard_armv8a.h"
 #include "vmsa.h"
 
 using namespace kickos::testfix;
 
 // The seam's physical window (aspace_sysops_seam.cc).
 extern "C" unsigned char __kickos_arm64_va_base[];
+extern "C" uint64_t kickos_armv8a_empty_ttbr(void);
 
 namespace
 {
@@ -622,12 +624,66 @@ TEST_F(MapExec, AnEightBitFieldStillTagsBecauseTheRowCountIsTheNarrowerBound)
     arch_aspace_destroy(narrow);
 }
 
-// Boot-root protection.
+// The reserved-root form, on a core without PAN: EL1 stays on the empty root, so activation
+// fills the core's cell and the sweep rule reads the cell.
 
-TEST_F(MapExec, DestroyingTheBootRootIsRefusedBeforeItReachesThePool)
+// As kickos_armv8a_uguard_init leaves a core without PAN: every cell seeded with the empty root.
+void enter_reserved_root()
 {
-    // The seam captures frame zero as the boot root. Check that destroy refuses
-    // the handle returned by arch_aspace_boot without freeing any frame.
+    set_root_deferred(true);
+    for (uint32_t c = 0; c < KICKOS_NUM_CORES; c++)
+    {
+        set_user_ttbr0(c, kickos_armv8a_empty_ttbr());
+    }
+}
+
+TEST_F(MapExec, UnderTheReservedRootActivationFillsTheCellAndWritesNoRegister)
+{
+    enter_reserved_root();
+    ops_clear();
+
+    arch_aspace_activate(elsewhere);
+
+    EXPECT_EQ(ops_with(OP_WRITE_TTBR0), 0u);
+    EXPECT_EQ(user_ttbr0_of(RUNNING_CORE) & 0x0000FFFFFFFFF000ull, root_pa(elsewhere));
+    EXPECT_NE(user_ttbr0_of(RUNNING_CORE) >> 48, 0u);
+    EXPECT_EQ(user_ttbr0_of(PEER_CORE), kickos_armv8a_empty_ttbr());
+}
+
+TEST_F(MapExec, UnderTheReservedRootTheFirstActivationLeavesTheSeedAndOwesNoSweep)
+{
+    enter_reserved_root();
+    ops_clear();
+
+    arch_aspace_activate(space);
+
+    EXPECT_EQ(ops_with(OP_TLBI_ALL_LOCAL), 0u);
+}
+
+TEST_F(MapExec, UnderTheReservedRootLeavingACellWithNoIdentifierSweeps)
+{
+    enter_reserved_root();
+    set_mmfr0(mmfr0_with_asid_bits(1));
+    struct arch_aspace* const plain = arch_aspace_create();
+    ASSERT_NE(plain, nullptr);
+    set_mmfr0(mmfr0_with_asid_bits(2));
+    arch_aspace_activate(plain);
+    ASSERT_EQ(user_ttbr0_of(RUNNING_CORE) >> 48, 0u);
+    ops_clear();
+
+    arch_aspace_activate(space);
+    EXPECT_EQ(ops_with(OP_TLBI_ALL_LOCAL), 1u);
+
+    ops_clear();
+    arch_aspace_activate(elsewhere);
+    EXPECT_EQ(ops_with(OP_TLBI_ALL_LOCAL), 0u);
+    arch_aspace_destroy(plain);
+}
+
+// The empty root, which a core installs once no space is its own.
+
+TEST_F(MapExec, DestroyingTheEmptyRootIsRefusedBeforeItReachesThePool)
+{
     uint32_t const freed = frames_freed();
     ops_clear();
 
@@ -650,18 +706,42 @@ TEST_F(MapExec, DestroyingTheBootRootIsRefusedBeforeItReachesThePool)
     EXPECT_EQ(ops_with(OP_TLBI_ALL_IS), 1u);
 }
 
-TEST_F(MapExec, TheBootRootIsLatchedOnTheFirstCaptureAndNotByALaterActivate)
+TEST_F(MapExec, TheEmptyRootIsOneHandleThatNothingMapsInto)
 {
-    // The initially zero boot TTBR0 must stay latched after installing user roots.
-    struct arch_aspace* const boot = arch_aspace_boot();
+    struct arch_aspace* const empty = arch_aspace_boot();
 
     set_cpu(PEER_CORE);
     arch_aspace_activate(elsewhere);
     set_cpu(RUNNING_CORE);
 
-    EXPECT_EQ(arch_aspace_boot(), boot);
-    EXPECT_NE(arch_aspace_boot(), space);
-    EXPECT_NE(arch_aspace_boot(), elsewhere);
+    EXPECT_EQ(arch_aspace_boot(), empty);
+    EXPECT_NE(empty, space);
+    EXPECT_NE(empty, elsewhere);
+    EXPECT_EQ(arch_aspace_map(empty, VA_DEEP, PA_A, 1, RIGHTS_DATA, ARCH_MAP_NORMAL),
+              ARCH_ASPACE_EINVAL);
+    EXPECT_EQ(arch_aspace_acquire(empty, VA_DEEP, nullptr), nullptr);
+}
+
+TEST_F(MapExec, TheEmptyRootRunsUnderTheTopIdentifierAndLeavingItSweepsNothing)
+{
+    arch_aspace_activate(arch_aspace_boot());
+    EXPECT_EQ(last_identifier(), 0xFFFFu);
+    ops_clear();
+
+    arch_aspace_activate(space);
+
+    EXPECT_EQ(ops_with(OP_TLBI_ALL_LOCAL), 0u);
+    EXPECT_EQ(ops_with(OP_WRITE_TTBR0), 1u);
+}
+
+TEST_F(MapExec, AnEightBitFieldGivesTheEmptyRootTheTopEightBitIdentifier)
+{
+    set_tcr(tcr_a53_without_as());
+
+    arch_aspace_activate(arch_aspace_boot());
+    EXPECT_EQ(last_identifier(), 0xFFu);
+
+    set_tcr(tcr_a53());
 }
 
 // What the boot core refuses to drive.
@@ -715,4 +795,52 @@ TEST(MmuRefusal, TheCoreCheckRefusesAnMmuItCannotDrive)
             kickos_armv8a_mmu_check();
         },
         std::string("KERNEL PANIC: ") + kickos::diag::kMmuNoGranule);
+}
+
+// Which form keeps a core's EL1 out of user pages, and the agreement every core owes.
+
+using kickos::armv8a::UGuard;
+
+TEST(UGuard, TheReservedRootIsRefusedWithoutAnIdentifier)
+{
+    EXPECT_STREQ(kickos::armv8a::uguard_root_refusal(0x4001b000ull), kickos::diag::kUguardNoAsid);
+    EXPECT_EQ(kickos::armv8a::uguard_root_refusal(0xFFFF00004001b000ull), nullptr);
+    EXPECT_EQ(kickos::armv8a::uguard_root_refusal(0x00FF00004001b000ull), nullptr);
+}
+
+TEST(UGuard, AnMmuWithNoIdentifierWidthGivesTheEmptyRootNoneAndIsRefused)
+{
+    sysops_reset();
+    set_mmfr0(mmfr0_with_asid_bits(1)); // reserved: the port reads no width
+    EXPECT_STREQ(kickos::armv8a::uguard_root_refusal(kickos_armv8a_empty_ttbr()),
+                 kickos::diag::kUguardNoAsid);
+    set_mmfr0(mmfr0_with_asid_bits(2));
+    EXPECT_EQ(kickos::armv8a::uguard_root_refusal(kickos_armv8a_empty_ttbr()), nullptr);
+}
+
+TEST(UGuard, ACoreWithNoPanFieldTakesTheReservedRoot)
+{
+    EXPECT_EQ(kickos::armv8a::uguard_of(0), UGuard::ROOT);
+    // The fields either side of ID_AA64MMFR1_EL1.PAN [23:20] say nothing about it.
+    EXPECT_EQ(kickos::armv8a::uguard_of(0xFull << 16), UGuard::ROOT);
+    EXPECT_EQ(kickos::armv8a::uguard_of(0xFull << 24), UGuard::ROOT);
+}
+
+TEST(UGuard, EveryPanLevelTakesPan)
+{
+    EXPECT_EQ(kickos::armv8a::uguard_of(1ull << 20), UGuard::PAN);
+    EXPECT_EQ(kickos::armv8a::uguard_of(2ull << 20), UGuard::PAN);
+    EXPECT_EQ(kickos::armv8a::uguard_of(3ull << 20), UGuard::PAN);
+}
+
+TEST(UGuard, TheBootCoreChoosesAndALaterCoreMustAgree)
+{
+    EXPECT_EQ(kickos::armv8a::uguard_refusal(UGuard::UNSET, UGuard::PAN), nullptr);
+    EXPECT_EQ(kickos::armv8a::uguard_refusal(UGuard::UNSET, UGuard::ROOT), nullptr);
+    EXPECT_EQ(kickos::armv8a::uguard_refusal(UGuard::PAN, UGuard::PAN), nullptr);
+    EXPECT_EQ(kickos::armv8a::uguard_refusal(UGuard::ROOT, UGuard::ROOT), nullptr);
+    EXPECT_STREQ(kickos::armv8a::uguard_refusal(UGuard::PAN, UGuard::ROOT),
+                 kickos::diag::kUguardMixed);
+    EXPECT_STREQ(kickos::armv8a::uguard_refusal(UGuard::ROOT, UGuard::PAN),
+                 kickos::diag::kUguardMixed);
 }

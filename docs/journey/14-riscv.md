@@ -120,15 +120,15 @@ replaces it with the thread's real regions (Stop 10).
 **Try it:** `break kickos_rv32_init`, `continue`, `finish`:
 ```
 (gdb) info registers mtvec mscratch mie pmpcfg0 pmpaddr0
-mtvec     0x80002601
-mscratch  0x80048820
+mtvec     0x80002701
+mscratch  0x80048870
 mie       0x8a
 pmpcfg0   0xf
 pmpaddr0  0xffffffff
 (gdb) p/x &kickos_rv_mtvec
-$2 = 0x80002600
+$2 = 0x80002700
 (gdb) p/x &g_rv_trap_stack
-$3 = 0x80048460
+$3 = 0x800484b0
 ```
 `mtvec` is the table address with mode bit 0 set (vectored). `mscratch` is the end of the trap
 stack. `mie` = `0x8a`: bits 1, 3 and 7.
@@ -246,12 +246,12 @@ from its own values on every return.
 $1 = 0x80
 (gdb) info registers sp mscratch
 sp        0x8005bf80
-mscratch  0x80048820
+mscratch  0x80048870
 (gdb) p *g_arch_current.v_._M_b._M_p
 $2 = {sp = 2147860352, stack_lo = 2147852288, stack_hi = 2147860480, kernel_sp = 2147747056, tls_base = 2147852288}
 (gdb) stepi 3
 (gdb) info registers sp mscratch
-sp        0x80048820
+sp        0x80048870
 mscratch  0x8005bf80
 ```
 `MPP` is 0, so the trap came from user mode. Before the swap `sp` is the user's (inside
@@ -290,17 +290,17 @@ user for an unprivileged thread, `ra` = the return stub, `a0` = the argument.
 $2 = 0x1880
 (gdb) info registers sp
 sp   0x80040400   <kickos::(anonymous namespace)::g_kstacks+944>
-(gdb) info symbol 0x8000dd44
+(gdb) info symbol 0x8000de68
 kickos::notify_wait(...) + 196 in section .text
 ```
-(`0x8000dd44` is `mepc`; `p/a $mepc` may print it without a name.) `MPP` = 3: the interrupted
+(`0x8000de68` is `mepc`; `p/a $mepc` may print it without a name.) `MPP` = 3: the interrupted
 code was machine mode, on a kernel stack, inside `notify_wait`. Then watch a thread being
 restored: `delete`, `break *kickos_arch_mpu_commit if $mcause == 0x80000003`, `continue`:
 ```
 (gdb) info registers sp
 sp   0x8005ff80
 (gdb) x/2wx $sp
-0x8005ff80:  0x80001c5a  0x00000080
+0x8005ff80:  0x80001c5e  0x00000080
 (gdb) info symbol *(unsigned*)$sp
 kickos::init::task_trampoline(void*) in section .text
 ```
@@ -325,7 +325,7 @@ reloads the registers, loads `sp` last, and `mret`s.
 $1 = 0
 (gdb) info registers sp gp tp
 sp   0x8005c000
-gp   0x80050d60
+gp   0x80050d78
 tp   0x8005a000
 ```
 The first thread runs in user mode. `tp` is the context's `tls_base`, which
@@ -372,9 +372,9 @@ $1 = 3
 $2 = 0x8
 (gdb) info registers a0 sp
 a0   0x47
-sp   0x80040910   <kickos::(anonymous namespace)::g_kstacks+2240>
+sp   0x80040470   <kickos::(anonymous namespace)::g_kstacks+1056>
 (gdb) x/2wx $sp
-0x80040910:  0x80002a3a  0x00000080
+0x80040470:  0x80002b3a  0x00000080
 (gdb) info symbol *(unsigned*)$sp
 arch_syscall64 in section .text
 ```
@@ -416,9 +416,9 @@ for pends msip, which is taken right after the `mret`.
 (gdb) p/x $mcause
 $1 = 0x80000007
 (gdb) x/2wx 0x2004000
-0x2004000:  0x003f380a  0x00000000
+0x2004000:  0x003e7759  0x00000000
 (gdb) x/2wx 0x200bff8
-0x200bff8:  0x003fa9e4  0x00000000
+0x200bff8:  0x003e9aed  0x00000000
 ```
 `mtimecmp` (at CLINT + `0x4000`) has been passed by `mtime` (at CLINT + `0xBFF8`).
 

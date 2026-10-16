@@ -118,7 +118,7 @@ which vector it came through, only which line.
 
 ```
 (gdb) x/wx 0x5c
-0x5c:	0x00017f01
+0x5c:	0x00018229
 (gdb) info symbol *(unsigned *)0x5c
 kickos_arm_default_irq + 1 in section .text
 ```
@@ -164,12 +164,12 @@ A row is then taken in one of two ways, the **two tiers**:
 
 ```
 (gdb) p/x 'kickos::detail::g_instance'.per_instance[0].irq_table[7]
-$4 = {handler = 0x20495, arg = 0x20006e90}
+$4 = {handler = 0x207e1, arg = 0x20006ed8}
 (gdb) p/x 'kickos::detail::g_instance'.per_instance[0].irq_table[8]
-$5 = {handler = 0x20479, arg = 0x8}
-(gdb) info symbol 0x20495
+$5 = {handler = 0x207c5, arg = 0x8}
+(gdb) info symbol 0x207e1
 kickos::(anonymous namespace)::irq_event_isr(void*) + 1 in section .text
-(gdb) info symbol 0x20479
+(gdb) info symbol 0x207c5
 kickos::(anonymous namespace)::irq_default_handler(void*) + 1 in section .text
 ```
 
@@ -193,14 +193,14 @@ binding:
         b->next_signaller = NOTIFY_SIGNALLER_NONE;
         b->badge = 0;
         b->line = line;
-        // The first irq_wait arms the line: a claim leaves it masked, so there is no window
-        // in which the line is armed and unowned.
+        // The first wait over the line's bit arms it: a claim leaves it masked, so there is no
+        // window in which the line is armed and unowned.
         b->needs_rearm = true;
         b->armed_once = false;
         b->trigger = IRQ_EDGE;
 ```
 
-(`irq_wait` in that comment is the notification wait of Stop 6.) The claimer gets a capability with
+The claimer gets a capability with
 `CAP_WAIT | CAP_SIGNAL | CAP_TRANSFER`, and only then is the row of Stop 2 pointed at the binding,
 with `line_bind(line, irq_event_isr, b)`. The line stays **masked**: the claim does not enable it.
 
@@ -213,7 +213,7 @@ delegates it.
 **Try it:** `break kickos::irq_claim`, `continue`, `finish`, then look at the binding:
 
 ```
-Breakpoint 2, kickos::irq_claim (c=0x20004e90 <...>, line=line@entry=7, flags=flags@entry=0, out_cap=...) at .../kernel/irq/irq.cc:543
+Breakpoint 2, kickos::irq_claim (c=0x20004ed8 <...>, line=line@entry=7, flags=flags@entry=0, out_cap=...) at .../kernel/irq/irq.cc:543
 (gdb) finish
 Value returned is $3 = 0
 (gdb) p *(kickos::IrqBinding*)'kickos::detail::g_instance'.per_instance[0].irq_table[7].arg
@@ -266,7 +266,7 @@ everything the first-level handler needs is already sitting in the binding.
 ```
 Value returned is $7 = 0
 (gdb) p *(kickos::IrqBinding*)'kickos::detail::g_instance'.per_instance[0].irq_table[7].arg
-$8 = {notify = 0x20006f38 <kickos::detail::g_instance+10120>, line = 7, next_signaller = 0 '\000', badge = 0 '\000', needs_rearm = true, trigger = 0 '\000', armed_once = false}
+$8 = {notify = 0x20006f80 <kickos::detail::g_instance+10192>, line = 7, next_signaller = 0 '\000', badge = 0 '\000', needs_rearm = true, trigger = 0 '\000', armed_once = false}
 ```
 
 **Why, and the contract:** [Reference: Invariants](../reference/invariants.md),
@@ -318,10 +318,10 @@ the most urgent, which `BASEPRI` cannot block; hence the write before every enab
 `bt 3`, then `finish` and read the line's priority byte and `ISER0`:
 
 ```
-Breakpoint 5, arch_irq_clear_pending (line=7) at .../arch/arm/common/arch_arm_common.cc:241
-#1  0x000204d0 in kickos::(anonymous namespace)::rearm_locked (b=0x20006e90 <...>, held=...) at .../kernel/irq/irq.cc:185
-#3  kickos::irq_ack (c=0x20004e90 <...>, cap_handle=cap_handle@entry=17104902) at .../kernel/irq/irq.cc:835
-Breakpoint 6, arch_irq_unmask (line=7) at .../arch/arm/common/arch_arm_common.cc:223
+Breakpoint 5, arch_irq_clear_pending (line=7) at .../arch/arm/common/arch_arm_common.cc:212
+#1  0x0002081c in kickos::(anonymous namespace)::rearm_locked (b=0x20006ed8 <...>, held=...) at .../kernel/irq/irq.cc:185
+#3  kickos::irq_ack (c=0x20004ed8 <...>, cap_handle=cap_handle@entry=17104902) at .../kernel/irq/irq.cc:835
+Breakpoint 6, arch_irq_unmask (line=7) at .../arch/arm/common/arch_arm_common.cc:194
 (gdb) info registers basepri
 basepri        0x20                32
 (gdb) finish
@@ -372,8 +372,8 @@ blocking substrate of [03](03-sleep.md).
 **Try it:** `break kickos::notify_wait`, `continue`, `bt 4`, `p c->name`:
 
 ```
-Breakpoint 7, kickos::notify_wait (c=0x20004fe0 <...>, cap_handle=cap_handle@entry=5, mask=mask@entry=4294967295, timeout_us=timeout_us@entry=4294967295, out_bits=...) at .../kernel/notify/notify.cc:367
-#1  0x0001d076 in (anonymous namespace)::syscall_body (nr=15, a0=5, a1=4294967295, a2=4294967295, a3=537042916) at .../kernel/syscall/syscall.cc:1224
+Breakpoint 7, kickos::notify_wait (c=0x20005028 <...>, cap_handle=cap_handle@entry=4, mask=mask@entry=4294967295, timeout_us=timeout_us@entry=4294967295, out_bits=...) at .../kernel/notify/notify.cc:367
+#1  0x0001d4e4 in (anonymous namespace)::syscall_body (nr=15, a0=4, a1=4294967295, a2=4294967295, a3=537042916) at .../kernel/syscall/syscall.cc:1240
 (gdb) p c->name
 $5 = "irqdrv\000\000\000\000\000\000\000\000\000"
 ```
@@ -390,9 +390,8 @@ then `kos_irq_raise(irq)`. The kernel checks `CAP_SIGNAL` on the capability and 
 `arch_irq_inject`, which writes the line's bit into **ISPR** (interrupt set-pending):
 
 ```
-    // Latch-and-coalesce: the NVIC holds ISPR pending independently of ISER, so a
-    // raise on a masked (disabled) line latches and fires the instant the line is
-    // enabled: write ISPR unconditionally, do not drop.
+    // ISPR pends independently of ISER, so a raise on a masked line latches: write it
+    // unconditionally.
     reg32(NVIC_ISPR0 + (l >> 5) * 4) = 1u << (l & 31);
 ```
 
@@ -407,7 +406,7 @@ at the end of `irq_raise`, and the exception is taken right there.
 `ISPR0` and `ISER0`:
 
 ```
-Breakpoint 3, arch_irq_inject (irq=7) at .../arch/arm/common/arch_arm_common.cc:253
+Breakpoint 3, arch_irq_inject (irq=7) at .../arch/arm/common/arch_arm_common.cc:224
 (gdb) info registers basepri
 basepri        0x20                32
 (gdb) finish
@@ -456,7 +455,7 @@ looked up.
 Breakpoint 4, kickos_isr_irq (irq=7) at .../kernel/irq/irq.cc:922
 #0  kickos_isr_irq (irq=7) at .../kernel/irq/irq.cc:922
 #1  <signal handler called>
-#2  0x0002086a in kickos::irq_raise (c=0x20004e90 <...>, cap_handle=cap_handle@entry=17104902) at .../kernel/irq/irq.cc:876
+#2  0x00020bb6 in kickos::irq_raise (c=0x20004ed8 <...>, cap_handle=cap_handle@entry=17104902) at .../kernel/irq/irq.cc:876
 (gdb) x/wx 0xE000E300
 0xe000e300:	0x00000080
 (gdb) p/x $xpsr
@@ -508,7 +507,7 @@ the scheduler picks the driver and pends a switch.
 ```
 Breakpoint 3, kickos::notify_raise (n=0x20006f38 <...>, bit=1) at .../kernel/notify/notify.cc:173
 (gdb) p/x *n
-$1 = {pending = 0x0, bound = 0x20004fe0, accept = 0xffffffff, signallers = 0x6}
+$1 = {pending = 0x0, bound = 0x20005028, accept = 0xffffffff, signallers = 0x6}
 (gdb) p n->bound->name
 $2 = "irqdrv\000\000\000\000\000\000\000\000\000"
 (gdb) p n->bound->state
@@ -554,14 +553,14 @@ works. That is the window the Book chapter is about.
 `break kickos::irq_signallers_owe_rearm`, `continue`, `bt 3`:
 
 ```
-Breakpoint 4, PendSV_Handler () at .../arch/arm/armv7m/switch.S:108
+Breakpoint 4, PendSV_Handler () at .../arch/arm/armv7m/switch.S:106
 #1  <signal handler called>
-#2  0x0002086a in kickos::irq_raise (...) at .../kernel/irq/irq.cc:876
+#2  0x00020bb6 in kickos::irq_raise (...) at .../kernel/irq/irq.cc:876
 Breakpoint 5, kickos::irq_signallers_owe_rearm (n=n@entry=0x20006f38 <...>, taken=taken@entry=1) at .../kernel/irq/irq.cc:747
-#1  0x00020dd2 in kickos::(anonymous namespace)::take_pending (n=0x20006f38 <...>, mask=4294967295) at .../kernel/notify/notify.cc:55
+#1  0x0002111e in kickos::(anonymous namespace)::take_pending (n=0x20006f38 <...>, mask=4294967295) at .../kernel/notify/notify.cc:55
 #2  kickos::notify_wait (c=<optimized out>, cap_handle=cap_handle@entry=5, mask=mask@entry=4294967295, ...) at .../kernel/notify/notify.cc:429
 (gdb) p/x *n
-$6 = {pending = 0x0, bound = 0x20004fe0, accept = 0x0, signallers = 0x6}
+$6 = {pending = 0x0, bound = 0x20005028, accept = 0x0, signallers = 0x6}
 ```
 
 PendSV interrupted the same `irq_raise` frame as the IRQ did: the two exceptions ran back to back.
@@ -585,7 +584,7 @@ straight from `r0`, because at that breakpoint gdb cannot yet see the parameter 
 read the block:
 
 ```
-Breakpoint 2, kickos::irq_ack (c=0x20004fe0 <...>, cap_handle=cap_handle@entry=4) at .../kernel/irq/irq.cc:815
+Breakpoint 2, kickos::irq_ack (c=0x20005028 <...>, cap_handle=cap_handle@entry=3) at .../kernel/irq/irq.cc:815
 (gdb) x/4wx '(anonymous namespace)::g_mmio'
 0x20033f20:	0x00000101	0x00000101	0x00000000	0x00000000
 ```
@@ -656,9 +655,9 @@ would wake the driver for nothing.
 `continue`, `bt 3`, `finish`, `x/wx 0xE000E100`:
 
 ```
-Breakpoint 8, arch_irq_unmask (line=7) at .../arch/arm/common/arch_arm_common.cc:223
-#1  0x000207fa in kickos::(anonymous namespace)::rearm_locked (held=..., b=<optimized out>) at .../kernel/irq/irq.cc:182
-#2  kickos::irq_ack (c=0x20004fe0 <...>, cap_handle=cap_handle@entry=4) at .../kernel/irq/irq.cc:835
+Breakpoint 8, arch_irq_unmask (line=7) at .../arch/arm/common/arch_arm_common.cc:194
+#1  0x00020b46 in kickos::(anonymous namespace)::rearm_locked (held=..., b=<optimized out>) at .../kernel/irq/irq.cc:182
+#2  kickos::irq_ack (c=0x20005028 <...>, cap_handle=cap_handle@entry=3) at .../kernel/irq/irq.cc:835
 (gdb) x/wx 0xE000E100
 0xe000e100:	0x00000000
 (gdb) finish
@@ -667,7 +666,7 @@ Breakpoint 8, arch_irq_unmask (line=7) at .../arch/arm/common/arch_arm_common.cc
 ```
 
 `arch_irq_clear_pending` was not hit: this is the second arm of an edge line. `irq_ack` is called
-by `c=0x20004fe0`, the driver, not by `main` (`0x20004e90`) as in Stop 5.
+by `c=0x20005028`, the driver, not by `main` (`0x20004ed8`) as in Stop 5.
 
 **Why, and the contract:** [Reference: Invariants](../reference/invariants.md),
 `isr-mask-then-wake-wait-rearm`; the `kos_irq_ack` and `kos_irq_discard` comments in
@@ -705,8 +704,8 @@ third raise:
 
 Breakpoint 5, kickos_isr_irq (irq=6) at .../kernel/irq/irq.cc:922
 #1  <signal handler called>
-#2  0x000207e6 in kickos::irq_ack (c=0x20004fe0 <...>, cap_handle=cap_handle@entry=4) at .../kernel/irq/irq.cc:837
-#3  0x0001d0d0 in (anonymous namespace)::syscall_body (nr=16, a0=4, ...) at .../kernel/syscall/syscall.cc:1254
+#2  0x00020b32 in kickos::irq_ack (c=0x20005028 <...>, cap_handle=cap_handle@entry=3) at .../kernel/irq/irq.cc:837
+#3  0x0001d538 in (anonymous namespace)::syscall_body (nr=16, a0=3, ...) at .../kernel/syscall/syscall.cc:1269
 ```
 
 The latched interrupt is taken inside the driver's own `kos_irq_ack`, as its lock drops. The

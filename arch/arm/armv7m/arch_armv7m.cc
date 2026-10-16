@@ -136,6 +136,19 @@ static_assert(KICKOS_MIN_STACK_SIZE
 static_assert(offsetof(struct arch_context, trace_tid) == KICKOS_ARMV7M_CTX_OFF_TRACE_TID,
               "switch.S telemetry hook reads ctx.trace_tid at F_CTX_TRACE_TID");
 #endif
+#if KICKOS_ARMV7M_SPLIM != (defined(__ARM_ARCH_8M_MAIN__) || defined(__ARM_ARCH_8_1M_MAIN__))
+#error "the chip file's stack_limit disagrees with the compiler's ARMv8-M Mainline target"
+#endif
+#if KICKOS_ARMV7M_SPLIM
+static_assert(offsetof(struct arch_context, splim) == KICKOS_ARMV7M_CTX_OFF_SPLIM,
+              "switch.S saves and restores PSPLIM at F_CTX_SPLIM");
+static_assert(KICKOS_ARMV7M_SPLIM_ROOM >= KICKOS_ARMV7M_TRAP_FRAME_MAX + sizeof(uint32_t)
+                  and KICKOS_ARMV7M_SPLIM_ROOM % 8 == 0,
+              "a limit must leave the unchecked PendSV block and the kernel block's canary "
+              "above the base, on the registers' 8-byte granule");
+static_assert(KICKOS_KERNEL_STACK_SIZE - KICKOS_ARMV7M_SPLIM_ROOM <= 0xFFFF,
+              "svc_trampoline loads the block's limit offset with movw");
+#endif
 static_assert(kickos::armv7m::PRIO_LOCK_BASEPRI == 0x20,
               "SVC_Handler's fastpath raises this level as a literal");
 
@@ -215,6 +228,9 @@ void arch_context_init(struct arch_context* ctx,
     // high edge.
     ctx->stack_lo = reinterpret_cast<uint32_t>(stack_base);
     ctx->stack_hi = static_cast<uint32_t>(top);
+#if KICKOS_ARMV7M_SPLIM
+    ctx->splim = ((ctx->stack_lo + 7u) & ~7u) + KICKOS_ARMV7M_SPLIM_ROOM;
+#endif
 
     // ctx->kernel_sp IS UNTOUCHED: thread_create seats it before this call, and zero is its
     // no-block marker.
@@ -265,6 +281,9 @@ namespace kickos
 }
 extern "C" void kpanic_enter(void);
 extern "C" void kfault_terminate(void) __attribute__((noreturn));
+#if defined(KICKOS_SPLIM_PLANT_MSP)
+extern "C" void kickos_splim_plant_report(void);
+#endif
 
 extern "C"
 {
@@ -285,6 +304,20 @@ bool arch_fault_is_user_thread(void* frame)
     {
         return false;
     }
+#if KICKOS_ARMV7M_SPLIM
+    // A frame at the limit may be the thread's own data, so thread mode is the PSP being the
+    // stack the fault came from.
+    uint32_t psplim;
+    __asm volatile("mrs %0, psplim" : "=r"(psplim));
+    if (armv7m_stkof_frame_clamped(kickos::arm::reg32(SCB_CFSR),
+                                   reinterpret_cast<uintptr_t>(frame), psplim))
+    {
+        uint32_t psp;
+        __asm volatile("mrs %0, psp" : "=r"(psp));
+        return reinterpret_cast<uintptr_t>(frame) == psp
+            and kickos_fault_frame_trusted(frame, ARMV7M_BASIC_FRAME_BYTES);
+    }
+#endif
     if (not armv7m_fault_frame_readable(kickos::arm::reg32(SCB_CFSR)))
     {
         return false;
@@ -305,8 +338,17 @@ bool arch_fault_is_user_thread(void* frame)
 // exists to leave. Thread mode does not change SPSEL, so this writes the PSP.
 __attribute__((naked, noreturn)) void kickos_armv7m_fault_stack_reset(void)
 {
+#if KICKOS_ARMV7M_SPLIM
+    // Entered with PRIMASK set by the redirect, so nothing stacks under the old limit before
+    // the block's, carried in r1, is seated.
+    __asm volatile("msr psplim, r1\n\t"
+                   "mov sp, r0\n\t"
+                   "cpsie i\n\t"
+                   "b   kickos_thread_fault_exit");
+#else
     __asm volatile("mov sp, r0\n\t"
                    "b   kickos_thread_fault_exit");
+#endif
 }
 
 void arch_fault_redirect_to_exit(void* frame)
@@ -335,7 +377,28 @@ void arch_fault_redirect_to_exit(void* frame)
         addr_valid = 1;
     }
     uint32_t* const f = static_cast<uint32_t*>(frame);
+#if KICKOS_ARMV7M_SPLIM
+    uint32_t psplim;
+    __asm volatile("mrs %0, psplim" : "=r"(psplim));
+    bool const clamped =
+        armv7m_stkof_frame_clamped(cfsr, reinterpret_cast<uintptr_t>(frame), psplim);
+    if (clamped)
+    {
+        kickos_fault_record_no_pc("CFSR", cfsr, addr, addr_valid);
+    }
+    else
+    {
+        kickos_fault_record("CFSR", cfsr, f[6], addr, addr_valid);
+    }
+    // An SVC whose entry stacking violated the limit stays pending, and would tail-chain into
+    // the stub's place with this dying thread's frame.
+    if ((cfsr & ARMV7M_CFSR_STKOF) != 0u)
+    {
+        kickos::arm::reg32(SCB_SHCSR) &= ~SHCSR_SVCALLPENDED;
+    }
+#else
     kickos_fault_record("CFSR", cfsr, f[6], addr, addr_valid);
+#endif
     // Write-1-to-clear and sticky: a bit left set mislabels the NEXT thread's fault.
     kickos::arm::reg32(SCB_CFSR) = cfsr;
     kickos::arm::reg32(SCB_HFSR) = hfsr;
@@ -345,17 +408,44 @@ void arch_fault_redirect_to_exit(void* frame)
     // SP; clear IT/ICI (bits 26:25 and 15:10): a fault inside an IT block would otherwise
     // resume with stale condition state and conditionally skip the stub's first instructions.
     f[7] = (f[7] & ~((3u << 25) | (0x3Fu << 10))) | (1u << 24);
+#if KICKOS_ARMV7M_SPLIM
+    if (clamped)
+    {
+        f[7] = 1u << 24;
+    }
+    if (f[6] == (reinterpret_cast<uint32_t>(&kickos_armv7m_fault_stack_reset) & ~1u))
+    {
+        // The stub's stack is the thread's kernel block where one is seated and its own user
+        // stack otherwise, whose limit is the live one.
+        f[1] = psplim;
+        if (kickos_fault_frame_on_kernel_stack(reinterpret_cast<void const*>(f[0] - 4u), 4u))
+        {
+            f[1] = f[0] - KICKOS_KERNEL_STACK_SIZE + KICKOS_ARMV7M_SPLIM_ROOM;
+        }
+        // An unprivileged thread cannot have set PRIMASK, so the stub's cpsie restores it.
+        __asm volatile("cpsid i" ::: "memory");
+    }
+#endif
     kickos_arm_fault_resume_privileged();
 }
 
 // `frame` points at the hardware-stacked exception frame {r0,r1,r2,r3,r12,lr,pc,xPSR};
 // `exc_return` is the EXC_RETURN in LR, whose bit 2 selects the pre-fault stack.
+#if KICKOS_ARMV7M_SPLIM
+// `limit` is that stack's limit register as the fault found it.
+void kickos_armv7m_fault_report(uint32_t* frame, uint32_t exc_return, uint32_t limit)
+#else
 void kickos_armv7m_fault_report(uint32_t* frame, uint32_t exc_return)
+#endif
 {
     // HardFault_Handler reaches here by a plain `b`, so this function's own return IS the
     // exception return. Nothing may print above this: kpanic_enter's console reclaim is
     // permanent and this fault is survivable.
     bool const frame_read = armv7m_fault_frame_readable(kickos::arm::reg32(SCB_CFSR));
+#if KICKOS_ARMV7M_SPLIM
+    bool const unverified = armv7m_stkof_frame_clamped(kickos::arm::reg32(SCB_CFSR),
+                                                       reinterpret_cast<uintptr_t>(frame), limit);
+#endif
     if (kickos_fault_kill_thread(frame))
     {
         return;
@@ -386,6 +476,12 @@ void kickos_armv7m_fault_report(uint32_t* frame, uint32_t exc_return)
     ::kickos::kprintf("\n=== %s ===\n", label);
     if (frame_read)
     {
+#if KICKOS_ARMV7M_SPLIM
+        if (unverified)
+        {
+            ::kickos::kprintf(KDIAG_F_ARM_UNVERIFIED, reinterpret_cast<uint32_t>(frame), stk);
+        }
+#endif
         ::kickos::kprintf(KDIAG_F_ARM_REGS1, frame[6], frame[5], frame[7], stk);
         ::kickos::kprintf(KDIAG_F_ARM_REGS2, frame[0], frame[1], frame[2], frame[3], frame[4]);
     }
@@ -412,7 +508,13 @@ void kickos_armv7m_fault_report(uint32_t* frame, uint32_t exc_return)
     (void)frame;
     (void)exc_return;
     (void)frame_read;
+#if KICKOS_ARMV7M_SPLIM
+    (void)unverified;
+#endif
     ::kickos::kprintf("\n=== HARD FAULT ===\n");
+#endif
+#if defined(KICKOS_SPLIM_PLANT_MSP)
+    kickos_splim_plant_report();
 #endif
     kfault_terminate();
 }
@@ -421,6 +523,21 @@ void kickos_armv7m_fault_report(uint32_t* frame, uint32_t exc_return)
 // vectors all here.
 __attribute__((naked)) void HardFault_Handler(void)
 {
+#if KICKOS_ARMV7M_SPLIM
+    __asm volatile(
+        "tst lr, #4          \n"
+        "itete eq            \n"
+        "mrseq r0, msp       \n"
+        "mrsne r0, psp       \n"
+        "mrseq r2, msplim    \n"
+        "mrsne r2, psplim    \n"
+        "mov r1, lr          \n"
+        "ldr r3, =0xE000ED28 \n"
+        "ldr r3, [r3]        \n"
+        "tst r3, #0x100000   \n"
+        "bne kickos_armv7m_stkof \n"
+        "b kickos_armv7m_fault_report \n");
+#else
     __asm volatile(
         "tst lr, #4          \n"
         "ite eq              \n"
@@ -428,12 +545,150 @@ __attribute__((naked)) void HardFault_Handler(void)
         "mrsne r0, psp       \n"
         "mov r1, lr          \n"
         "b kickos_armv7m_fault_report \n");
+#endif
 }
+
+#if KICKOS_ARMV7M_SPLIM
+#define KICKOS_ARMV7M_STKOF_STACK_SIZE                                                             \
+    ((KICKOS_ARMV7M_STKOF_FRAME + KICKOS_ARMV7M_STKOF_DEPTH + 7) & ~7)
+#define KICKOS_ARMV7M_STR2(x) #x
+#define KICKOS_ARMV7M_STR(x) KICKOS_ARMV7M_STR2(x)
+
+static_assert(KICKOS_ARMV7M_STKOF_FRAME == KICKOS_ARMV7M_TRAP_FRAME_MAX,
+              "the STKOF frame term is the hardware frame, which switch.S cannot compute");
+static_assert(KICKOS_KERNEL_CORES == 1, "the main stack's overflow report has one array per image");
+
+// Kernel .bss, below the app window and the arena: no grant reaches it.
+__attribute__((used, aligned(8))) unsigned char kickos_armv7m_stkof_stack[KICKOS_ARMV7M_STKOF_STACK_SIZE];
+
+__attribute__((noreturn)) void kickos_armv7m_stkof_report(uint32_t* frame, uint32_t exc_return,
+                                                          uint32_t limit)
+{
+    // Off the array, an exception return would pop a frame that is not there.
+    kickos_armv7m_fault_report(frame, exc_return, limit);
+    kfault_terminate();
+}
+
+// A violation at entry leaves a lazy FP save pending at FPCAR, under the limit. CFSR.STKOF stays
+// set through the report, so any fault inside the MSP report comes back here and restarts at the
+// array's top, which the reporter takes as a second arrival.
+__attribute__((naked)) void kickos_armv7m_stkof(void)
+{
+    __asm volatile(
+#if defined(__ARM_FP)
+        "ldr r3, =0xE000EF34 \n"
+        "ldr r12, [r3]       \n"
+        "bic r12, r12, #1    \n"
+        "str r12, [r3]       \n"
+        "dsb                 \n"
+        "isb                 \n"
+#endif
+        "tst lr, #4          \n"
+        "bne kickos_armv7m_fault_report \n"
+        "ldr r3, =kickos_armv7m_stkof_stack \n"
+        "ldr r12, =kickos_armv7m_stkof_stack + " KICKOS_ARMV7M_STR(KICKOS_ARMV7M_STKOF_STACK_SIZE) " \n"
+        "msr msplim, r3      \n"
+        "mov sp, r12         \n"
+        "b kickos_armv7m_stkof_report \n");
+}
+#endif
+
+#if defined(KICKOS_SPLIM_PLANT_MSP) || defined(KICKOS_SPLIM_PLANT_KBLOCK)
+// Test-only (KICKOS_SPLIM_PLANT): a privileged recursion off the stack it starts on. `prev`
+// keeps one live frame per level at -Os.
+static __attribute__((noinline)) unsigned splim_plant_burn(unsigned depth, volatile unsigned* prev)
+{
+    volatile unsigned pad[32];
+    for (unsigned i = 0; i < 32; i++)
+    {
+        pad[i] = depth + i;
+    }
+    if (prev != nullptr)
+    {
+        pad[0] = prev[31];
+    }
+    if (depth == 0)
+    {
+        return pad[0];
+    }
+    return pad[31] + splim_plant_burn(depth - 1, pad);
+}
+
+#if defined(KICKOS_SPLIM_PLANT_MSP)
+// The arena's top, just below the main stack's base, which no part of the MSP report may reach.
+static constexpr uint32_t SPLIM_PLANT_CANARY = 0x5AC0FFEEu;
+static constexpr uint32_t SPLIM_PLANT_CANARY_WORDS = KICKOS_ARMV7M_STKOF_STACK_SIZE / 4u;
+
+static uint32_t volatile* splim_plant_canary(void)
+{
+    extern char __kickos_ram_end[];
+    return reinterpret_cast<uint32_t volatile*>(reinterpret_cast<uintptr_t>(__kickos_ram_end)
+                                                - SPLIM_PLANT_CANARY_WORDS * 4u);
+}
+
+// Called by the report, on its own array: checks the canary, then overflows that array too.
+extern "C" void kickos_splim_plant_report(void)
+{
+    uint32_t const volatile* const canary = splim_plant_canary();
+    uint32_t lost = 0;
+    for (uint32_t i = 0; i < SPLIM_PLANT_CANARY_WORDS; i++)
+    {
+        if (canary[i] != SPLIM_PLANT_CANARY)
+        {
+            lost++;
+        }
+    }
+    if (lost == 0u)
+    {
+        ::kickos::kprintf("splim plant: arena canary intact (%u words)\n", SPLIM_PLANT_CANARY_WORDS);
+    }
+    else
+    {
+        ::kickos::kprintf("splim plant: arena canary overwritten (%u of %u words)\n", lost,
+                          SPLIM_PLANT_CANARY_WORDS);
+    }
+    (void)splim_plant_burn(1u << 20, nullptr);
+}
+#endif
+
+extern "C" void kickos_splim_plant(void)
+{
+#if defined(KICKOS_SPLIM_PLANT_MSP)
+    uint32_t volatile* const canary = splim_plant_canary();
+    for (uint32_t i = 0; i < SPLIM_PLANT_CANARY_WORDS; i++)
+    {
+        canary[i] = SPLIM_PLANT_CANARY;
+    }
+#endif
+#if defined(KICKOS_SPLIM_PLANT_UNLIMITED)
+    // The red control: the live stack's limit lifted, so nothing stops the recursion.
+    uint32_t const zero = 0;
+    uint32_t control;
+    __asm volatile("mrs %0, control" : "=r"(control));
+    if ((control & 2u) != 0u)
+    {
+        __asm volatile("msr psplim, %0" ::"r"(zero));
+    }
+    else
+    {
+        __asm volatile("msr msplim, %0" ::"r"(zero));
+    }
+#endif
+    (void)splim_plant_burn(1u << 20, nullptr);
+}
+#endif
 
 // --- One-time core bring-up ------------------------------------------------
 void kickos_armv7m_init(void)
 {
     reg32(SCB_SHCSR) |= SHCSR_USGFAULTENA | SHCSR_BUSFAULTENA;
+#if KICKOS_ARMV7M_SPLIM
+    {
+        extern char __kickos_ram_end[];
+        uint32_t const lim = reinterpret_cast<uint32_t>(__kickos_ram_end);
+        __asm volatile("msr msplim, %0" ::"r"(lim));
+    }
+#endif
 
     // SHPR2[31:24] = SVCall (#11); SHPR3[23:16] = PendSV (#14), [31:24] = SysTick.
     reg32(SCB_SHPR2) = (reg32(SCB_SHPR2) & 0x00FFFFFFu) | (PRIO_SVCALL << 24);
@@ -444,6 +699,9 @@ void kickos_armv7m_init(void)
     reg32(DCB_DEMCR) |= DEMCR_TRCENA;
     reg32(DWT_CYCCNT) = 0;
     reg32(DWT_CTRL) |= DWT_CTRL_CYCCNTENA;
+#if defined(KICKOS_SPLIM_PLANT_MSP)
+    kickos_splim_plant();
+#endif
 }
 
 }

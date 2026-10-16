@@ -52,6 +52,10 @@ if(KICKOS_BENCH)
   list(APPEND KICKOS_KERNEL_SOURCES bench/bench.cc)
 endif()
 
+if(KICKOS_WITNESS_UACCESS)
+  list(APPEND KICKOS_KERNEL_SOURCES syscall/syscall_witness.cc)
+endif()
+
 # The kernel's own copies of the runtime, under the private names cmake/kernel_runtime.syms lists.
 # ONLY where a translating backend splits the image in two: a region backend serves both
 # privilege levels from one text mapping, so there the header aliases the app's names and a

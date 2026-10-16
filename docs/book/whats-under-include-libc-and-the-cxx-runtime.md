@@ -67,16 +67,21 @@ Most stubs live in `user/src/newlib_stubs.cc`; `_sbrk` lives separately in
   An allocating app on a board with no bound symbols gets a link error. Current
   chip scripts instead define a span, even if empty, so allocation can fail at
   runtime. The nRF51 script uses a zero-length `.userheap` for this purpose.
-- **Every libc lock is one recursive lock per address space.** A recursive lock
-  is a lock its holder may take again; an address space is a task's protected
-  memory (Chapter 0.2). newlib's retargetable locks (`__retarget_lock_*`, in
-  `user/src/newlib_lock.cc`) all map to one kernel mutex the kernel seats in
-  every thread's capability table at `KOS_CAP_LIBC_LOCK`. The owner and the
-  depth live in the address space's own memory, so taking a lock the thread
-  already holds costs no syscall, and nesting two libc locks is recursion on the
-  one. Threads of one address space share one heap and one `stdout`, so two of
-  them can `malloc` or `printf` at once safely.
-  The exact contract is `libc-lock-one-per-address-space` in
+- **The C library takes two recursive locks per address space: malloc's, and
+  one for everything else.** A recursive lock is a lock its holder may take
+  again; an address space is a task's protected memory (Chapter 0.2). newlib's
+  retargetable locks (`__retarget_lock_*`, in `user/src/newlib_lock.cc`) map
+  malloc's lock to one kernel mutex and every other lock, each stream's
+  included, to a second, so a `printf` never waits behind another thread's
+  allocation, unless that `printf` must allocate itself. Both mutexes belong to
+  whatever owns the heap, the task's address space or the whole image, and are named by
+  `KOS_CAP_MALLOC_LOCK` and `KOS_CAP_LIBC_LOCK`, which are no capability: the
+  kernel resolves them against the calling thread's own space. The owner and
+  the depth live in the address space's own memory, so taking a lock the thread
+  already holds costs no syscall, and nesting two stdio locks is recursion on
+  the one. Threads of one address space share one heap and one `stdout`, so two
+  of them can `malloc` or `printf` at once safely.
+  The exact contract is `libc-locks-belong-to-the-heap-owner` in
   `../reference/invariants.md`.
 
 Other stubs reflect the lack of a filesystem: `_read` returns 0,
@@ -175,9 +180,15 @@ KickOS therefore splits `.init_array`. Kernel, arch, chip, and library construct
 needed by `kmain` run early. App and toolchain-runtime constructors go into
 `.kickos_app_init_array` and run from `kickos_root_entry`, the entry of the root
 thread, the first unprivileged thread (Chapter 0.5), after the clock and
-scheduler start and before `kickos_app_main`. A strong reference to the section
-bounds makes a missing linker-script definition a link error. The sim defines
-an empty app array because its host runtime already runs constructors. See
+scheduler start and before `kickos_app_main`. Where each task has an address
+space of its own, a task starts from the program's untouched data, as a new
+process does, so it walks the same table again in its own space, once, from
+`kickos_task_start`: the first of its threads to run does, and the others wait
+for it. That walk runs as that thread, with its priority, its stack and its
+authority, so a constructor must need nothing the task is not granted. A
+strong reference to the section bounds makes a missing linker-script
+definition a link error. The sim defines an empty app array because its host
+runtime already runs constructors. See
 `../../user/src/root_entry.cc` (`kickos_root_entry`), `../../arch/sim/start.cc`,
 `../../user/include/kickos/app.h`, and the `.init_array` / `.kickos_app_init_array` split
 in `KICKOS_CORTEXM_CTORS`, the body every Cortex-M chip script shares
@@ -211,10 +222,10 @@ call draws on the pieces above in this order:
    `_kickos_heap_limit`. A program that never calls `malloc` still links the
    allocator through `printf`. If `malloc` fails, newlib leaves `stdout`
    unbuffered and writes one byte at a time.
-4. **Locks.** `malloc` brackets the heap and `printf` brackets the stream, both
-   with the address space's libc lock. The first take is one `kos_mutex_lock`
-   syscall on a free mutex; the nested takes that follow inside the same call
-   are counted in the app's memory and cost no syscall.
+4. **Locks.** `printf` brackets the stream with the address space's libc lock,
+   and `malloc` brackets the heap with its own lock inside it. Each first take
+   is one `kos_mutex_lock` syscall on a free mutex; the nested takes that follow
+   inside the same call are counted in the app's memory and cost no syscall.
 5. **The newline flushes.** `stdout` is line-buffered, so the `\n` makes newlib
    flush the line in one call, `_write(1, "hello\n", 6)`.
 6. **The syscall seam.** `_write` hands the six bytes to

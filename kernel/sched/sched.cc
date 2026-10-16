@@ -345,6 +345,17 @@ namespace kickos
         }
 #endif
 
+        // Whether core `me` holds `t`'s registers. At one core nothing records it, and a rebuild
+        // assumes the frame parked.
+        inline bool frame_live_on([[maybe_unused]] Thread const* t, [[maybe_unused]] KernelCore me)
+        {
+#if KICKOS_KERNEL_CORES > 1
+            return t == kernel().on_cpu[me];
+#else
+            return false;
+#endif
+        }
+
         inline __attribute__((always_inline)) void seat_running(Thread* next, KernelCore me)
         {
             kernel().current(me) = next;
@@ -435,6 +446,8 @@ namespace kickos
             // restarting cap_teardown after it releases IrqLock between chunks.
             if (thread_slay_claim_pending(next))
             {
+                // available_to alone keeps a slain thread whose frame the core holds from here.
+                KICKOS_DEBUG_ASSERT(not frame_live_on(next, me));
                 arch_ctx_redirect(&next->ctx, kickos_thread_slay_exit, next->stack_base,
                                   next->stack_size);
             }
@@ -564,6 +577,33 @@ namespace kickos
             switch_to(next, me, held);
             KICKOS_BENCH_SPAN(PH_SWITCH_TO, bm_switch);
         }
+
+#if defined(KICKOS_WITNESS_REPASS) && KICKOS_WITNESS_REPASS
+        bool g_repass_second = false;
+        bool g_repass_back = false;
+
+        // Test-only, each once, after a doorbell pass took the core off the thread it interrupted:
+        // off a slain one, a second pass of the same exception; off the core's idle, a switch
+        // booked back onto it, its frame still the one the core stands on.
+        void witness_repass(Thread* interrupted, KernelCore me, Held held)
+        {
+            if (kernel().current(me) == interrupted)
+            {
+                return;
+            }
+            if (not g_repass_second and thread_slay_claim_pending(interrupted))
+            {
+                g_repass_second = true;
+                pick_and_seat(nullptr, held);
+            }
+            else if (not g_repass_back and interrupted == kernel().idle(me))
+            {
+                g_repass_back = true;
+                switch_to(interrupted, me, held);
+                klock_resched_self();
+            }
+        }
+#endif
     }
 
 #if KICKOS_KERNEL_CORES > 1
@@ -722,9 +762,16 @@ namespace kickos
             Thread* first = policy_pick_next();
             seat_running(first, me);
 #if KICKOS_KERNEL_CORES > 1
+            kernel().on_cpu[me] = first;
             policy_on_start(me);
 #endif
-            [[maybe_unused]] struct arch_aspace* const rspace = aspace_activate_for(first);
+            struct arch_aspace* const rspace = aspace_activate_for(first);
+            // At one core a spaceless first thread would keep the bring-up root, whose
+            // supervisor-only low half no user-page guard polices.
+            if (rspace == nullptr)
+            {
+                aspace_install_boot();
+            }
             first->mpu.apply();
 #if KICKOS_LIBC_REENT
             seat_reent(rspace, first);
@@ -928,6 +975,7 @@ namespace kickos
                 // across one of those gaps is a wake into a thread already in teardown.
                 // Unconsumed bits are left pending for the next server.
                 notify_unbind_self(c);
+                cap_libc_locks_release(c, lock);
                 // A fault ends the group (task_end), and so does the entry's death by any cause.
                 // A cancelled thread latches nothing: the task keeps KOS_EXIT_CANCELLED.
                 if (cause == EXIT_FAULTED or c->task_entry)
@@ -963,7 +1011,16 @@ namespace kickos
 #endif
 #endif
                 // Release the device windows before teardown can wake a supervisor into a
-                // respawn that asks for them. No return to user code follows.
+                // respawn that asks for them. No return to user code follows. Each block is
+                // re-gated while its window is still held, so no second holder is admitted first.
+                for (arch_mpu_region const& r : c->mpu)
+                {
+                    if ((r.attr & ARCH_MPU_DEV) != 0)
+                    {
+                        // -KOS_ENOSYS and -KOS_EINVAL are the answers for a block nothing gates.
+                        (void)arch_periph_disable(r.base);
+                    }
+                }
                 c->mpu.drop_devices();
 #if KICKOS_ARCH_HAS_PORTS
                 // Its ports too: the next switch on this core closes them.
@@ -1131,7 +1188,13 @@ extern "C" void kickos_kernel_core_resched_if_owed(void)
     // A drop ask always carries a raise to its holder, so the dispatch that raise enters is
     // where it is answered, and no ordinary pass reads the drop cells.
     ::kickos::push_take(me, lock);
+#if defined(KICKOS_WITNESS_REPASS) && KICKOS_WITNESS_REPASS
+    ::kickos::Thread* const interrupted = ::kickos::kernel().on_cpu[me];
+#endif
     ::kickos::sched::reschedule(nullptr, lock);
+#if defined(KICKOS_WITNESS_REPASS) && KICKOS_WITNESS_REPASS
+    ::kickos::witness_repass(interrupted, me, lock);
+#endif
 }
 #endif
 
@@ -1147,5 +1210,11 @@ extern "C" void kickos_thread_slay_exit(void* arg)
                   or kickos_fault_frame_on_kernel_stack(__builtin_stack_address(), 0));
 #endif
     ::kickos::kconsole_slain();
+#if defined(KICKOS_WITNESS_REPASS) && KICKOS_WITNESS_REPASS
+    if (::kickos::g_repass_second and ::kickos::g_repass_back)
+    {
+        ::kickos::kputs("[repass] claimed after a second pass and a switch back\n");
+    }
+#endif
     ::kickos::sched::exit_current(KOS_EXIT_CANCELLED, ::kickos::sched::EXIT_RETURN);
 }

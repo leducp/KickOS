@@ -46,6 +46,8 @@ extern "C"
     extern char _kickos_heap_limit[] KICKOS_LINK_BOUND;
 }
 
+#include <kickos/sys/witness.h>
+
 #include <stdint.h>
 
 namespace kickos
@@ -102,6 +104,12 @@ namespace kickos
             kprintf(KDIAG_F_BANNER_CPU, KICKOS_CPU_NAME);
 #if KICKOS_HAVE_ASPACE
             kprintf(KDIAG_F_BANNER_MMU);
+#if KICKOS_ARCH_UGUARD
+            kprintf(KDIAG_F_BANNER_UGUARD, arch_uaccess_guard());
+#endif
+#if KICKOS_WITNESS_UACCESS
+            kprintf(KDIAG_F_BANNER_WITNESS);
+#endif
 #else
             kprintf(KDIAG_F_BANNER_MPU, mpu);
 #endif
@@ -339,7 +347,8 @@ namespace kickos
         // not name. After idle is built, too: task_for takes no reference, so an uncommitted
         // task slot is still free and idle's own resolve would take root's.
         int root_derr = 0;
-        Task* const root_task = task_for(0, nullptr, 0, nullptr, &root_derr);
+        Task* const root_task =
+            task_for(DOM_CALLER_UNPRIVILEGED, nullptr, 0, nullptr, &root_derr);
         if (root_task == nullptr)
         {
             kpanic(diag::kBootRootStack);
@@ -402,15 +411,11 @@ namespace kickos
         // size class is KICKOS_USER_STACK_SIZE, and there is no ustack_free on these boards.
         KICKOS_ASSERT(not root_tcb->kstack_owned);
 #endif
-        // Ordering matters twice: after thread_create, which zeroes the cap table and would
-        // wipe the seats; before sched::start(), so they are in place before root's first
-        // instruction.
+        // Ordering matters twice: after thread_create, which zeroes the TCB and would wipe the
+        // word; before sched::start(), so it is in place before root's first instruction.
         {
             IrqLock lock;
             cap_seat_authority(root_tcb, CAP_AUTH_ALL);
-            int const libc_lock = cap_libc_lock_take(root_tcb->task, lock);
-            KICKOS_ASSERT(libc_lock != KCAP_LIBC_LOCK_NONE);
-            cap_seat_libc_lock(root_tcb, libc_lock);
         }
 #if KICKOS_AMP_NODE
         // THE FIRST DYNAMIC INSTALL INTO ROOT'S RUN: <kickos/amp.h> derives a capability index

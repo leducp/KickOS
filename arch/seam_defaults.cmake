@@ -120,6 +120,13 @@ int arch_periph_enable(uintptr_t base)
     return -KOS_ENOSYS;
 }]])
 
+kickos_seam_default(arch_periph_disable [[
+int arch_periph_disable(uintptr_t base)
+{
+    (void)base;
+    return -KOS_ENOSYS;
+}]])
+
 kickos_seam_default(arch_reboot [[
 int arch_reboot(uint32_t outcome)
 {

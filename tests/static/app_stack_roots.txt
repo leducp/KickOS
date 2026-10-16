@@ -5,7 +5,7 @@
 # scratch tree: WHICH application threads are bounded, on WHAT stack, and what the arch's trap
 # entry reserves below each one's deepest sp.
 #
-#   need    <arch> header=<path> frame=<MACRO> zone=<MACRO> reason: <text>
+#   need    <arch> header=<path> frame=<MACRO> zone=<MACRO> [via=<symbol>] reason: <text>
 #   thread  <arch> <image> <name> root=<symbol> stack=<MACRO> reason: <text>
 #   unsized <arch> <symbol> <bytes> [calls=[?]<symbol>[,...]] reason: <text>
 #
@@ -13,6 +13,10 @@
 # image's __kickos_tls_carve. The walk covers the units the image's link map LOADs and nothing
 # else, and it refuses what it cannot bound instead of charging it nothing: a reachable node
 # with no frame and no unsized record, an indirect call, a dynamic stack object, a cycle.
+#
+# via= is the function every thread's entry is called from, whose own frame stands below the
+# root's for the thread's life: kickos_task_start on a translating arch. Only its frame is
+# charged; the startup it runs first returns before the entry and is the stack floor's.
 #
 # stack= is a macro of the unit that defines the root, and the spawn has to pass exactly it.
 # Every macro resolves under that unit's own compile command, ISA flags included. A thread is
@@ -96,7 +100,7 @@ unsized lx6 __umoddi3 32 reason: libgcc's _umoddi3.o, entry a1 32, and it refere
 
 # --- armv8a ------------------------------------------------------------------------------
 need    armv8a header=arch/arm64/armv8a/include/kickos/arch/armv8a_trap_stack.h \
-               frame=KICKOS_ARMV8A_TRAP_ENTRY_FRAME zone=KICKOS_ARMV8A_TRAP_NEED_USER \
+               frame=KICKOS_ARMV8A_TRAP_ENTRY_FRAME zone=KICKOS_ARMV8A_TRAP_NEED_USER via=kickos_task_start \
                reason: an EL0 entry runs on SP_EL1 and builds its frame on the kernel block, writing nothing on the thread's stack
 thread  armv8a reclaimwit       rwdrv root=main.cc:console_sink stack=RW_DRIVER_STACK \
                reason: the published console driver, spawned on a stack main allocates
@@ -107,7 +111,7 @@ unsized armv8a arch_syscall64 0 reason: switch.S, the same entry as arch_syscall
 
 # --- rv64imac ----------------------------------------------------------------------------
 need    rv64imac header=arch/riscv/rv64imac/include/kickos/arch/rv64_trap_stack.h \
-               frame=KICKOS_RV64_TRAP_ENTRY_FRAME zone=KICKOS_RV64_TRAP_NEED_USER \
+               frame=KICKOS_RV64_TRAP_ENTRY_FRAME zone=KICKOS_RV64_TRAP_NEED_USER via=kickos_task_start \
                reason: a U-mode trap swaps to the trap stack before its first store and builds its frame on the kernel block
 thread  rv64imac reclaimwit       rwdrv root=main.cc:console_sink stack=RW_DRIVER_STACK \
                reason: the published console driver, spawned on a stack main allocates
@@ -118,7 +122,7 @@ unsized rv64imac arch_syscall64 0 reason: switch.S, the same entry as arch_sysca
 
 # --- x86_64 ------------------------------------------------------------------------------
 need    x86_64 header=arch/x86/x86_64/include/kickos/arch/x86_64_trap_stack.h \
-               frame=KICKOS_X86_64_TRAP_ENTRY_FRAME zone=KICKOS_X86_64_TRAP_NEED_USER \
+               frame=KICKOS_X86_64_TRAP_ENTRY_FRAME zone=KICKOS_X86_64_TRAP_NEED_USER via=kickos_task_start \
                reason: a ring 3 entry lands on rsp0, an IST slot or the per-core kernel sp, and -mno-red-zone leaves nothing live below rsp
 thread  x86_64 reclaimwit       rwdrv root=main.cc:console_sink stack=RW_DRIVER_STACK \
                reason: the published console driver, spawned on a stack main allocates

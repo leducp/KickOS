@@ -21,7 +21,7 @@ Two images from the `qemu` build contend a mutex for real:
 
 - **`libcrace`** (`user/apps/common/libcrace/main.cc`). Four worker threads at the same
   priority call `printf`, `malloc` and `free` in a loop. Every one of those C library calls takes
-  the C library's lock, which is a kernel mutex. With four threads and a short round-robin
+  one of the C library's two locks, each a kernel mutex. With four threads and a short round-robin
   slice, the lock is contended thousands of times. This is the plain contended case: no
   priority differences, so no boost.
 - **`selftest`** (`user/apps/common/selftest/main.cc`). Its mutex arms build exact scenarios:
@@ -70,77 +70,90 @@ owner died holding it). A caller that treats every negative return as "not acqui
 from a mutex it owns. Stop 12 shows where that code comes from.
 
 **Try it:** `break kos_mutex_lock` then `continue` on `libcrace`. You stop in the stub with
-`mtx=1`. That is not a handle main created: it is the C library's lock (next stop).
+`mtx=2147418111`, which is `0x7FFEFFFF`. That is not a handle main created: it is the C
+library's lock (next stop).
 
 ```
-Breakpoint 1, kos_mutex_lock (mtx=1) at .../user/src/syscall_stubs.cc
+Breakpoint 1, kos_mutex_lock (mtx=2147418111, timeout_us=4294967295) at .../user/src/syscall_stubs.cc:85
 ```
 
 **Why, and the contract:** [Book: The syscall path](../book/the-syscall-path-trap-dispatch-return.md),
 [Reference: Object model, capabilities & IPC](../reference/architecture.md#object-model-capabilities--ipc)
 
-### Stop 2: the C library's lock is a kernel mutex
-**Where:** `user/src/newlib_lock.cc`, `libc_lock_acquire`, `libc_lock_release`,
-`__retarget_lock_acquire_recursive`; `system/include/kickos/sys/cap_index.h`, `KOS_CAP_LIBC_LOCK`;
-`kernel/syscall/cap.cc`, `cap_libc_lock_take`, `cap_seat_libc_lock`
+### Stop 2: the C library's locks are kernel mutexes
+**Where:** `user/src/newlib_lock.cc`, `libc_lock_acquire`, `libc_lock_take`, `libc_lock_release`,
+`lock_of`; `system/include/kickos/sys/cap_index.h`, `KOS_CAP_LIBC_LOCK`, `KOS_CAP_MALLOC_LOCK`;
+`kernel/syscall/cap.cc`, `cap_libc_lock`, `cap_resolve_mutex`
 
 The C library (newlib) protects its own shared state, the `FILE` buffers and the heap, with
 locks. It lets the system supply them by defining the `__retarget_lock_*` functions. KickOS
-defines all of them over **one** kernel mutex per address space (an address space is the
-memory a set of threads share: the whole image on this MPU board). The kernel seats that
-mutex at capability index 1, `KOS_CAP_LIBC_LOCK`, in every thread before its first
-instruction: `cap_libc_lock_take` finds the mutex another thread of the same address space
-already holds there, or makes a fresh one, and `cap_seat_libc_lock` writes it into the new
-thread's table. That is why `mtx` was 1 above.
+maps them onto **two** kernel mutexes owned by whatever owns the heap (on this MPU board, the
+whole image): one for `malloc`, one for everything else, so a `printf` does not wait behind
+another thread's allocation. Neither is in any capability table. User code names them by two
+fixed words, `KOS_CAP_LIBC_LOCK` (`0x7FFEFFFF`) and `KOS_CAP_MALLOC_LOCK` (`0x7FFDFFFF`), whose
+index field is one no table can hold; the kernel's mutex calls alone accept them
+(`cap_resolve_mutex`), resolving them against the calling thread's heap owner. That is why
+`mtx` was `0x7FFEFFFF` above.
 
-newlib nests its locks (`printf` can take the stdio lock and then a `FILE` lock), and one kernel
-mutex is not recursive: locking it twice returns `-KOS_EDEADLK`. So the recursion is done in
-userspace, with an owner and a depth kept in the address space's own memory:
+newlib nests its locks (`printf` can take a `FILE` lock and then the FILE table's), and one
+kernel mutex is not recursive: locking it twice returns `-KOS_EDEADLK`. So the recursion is done
+in userspace, with an owner and a depth per lock kept in the address space's own memory:
 
 ```cpp
         kos_thread_t const self = kos_thread_self();
-        if (__atomic_load_n(&s_owner, __ATOMIC_RELAXED) == self)
+        if (__atomic_load_n(&l.owner, __ATOMIC_RELAXED) == self)
         {
-            s_depth++;
+            l.depth++;
             return;
         }
         // ...
-        __atomic_store_n(&s_owner, self, __ATOMIC_RELAXED);
-        s_depth = 1;
+        __atomic_store_n(&l.owner, self, __ATOMIC_RELAXED);
+        l.depth = 1;
 ```
 
-Only the thread holding the kernel mutex writes `s_owner`, so a thread that reads its own handle
-there really is the owner. The release clears `s_owner` **before** it unlocks, so the next owner
-never sees a stale name. Any refusal other than `0` or `-KOS_EOWNERDEAD` traps the thread: a C
-library running unlocked would corrupt the heap silently.
+Only the thread holding the kernel mutex writes `owner`, so a thread that reads its own handle
+there really is the owner. The release clears `owner` **before** it unlocks, so the next owner
+never sees a stale name. A wait a kill cancelled asks again, and the kernel ends the thread at
+that entry. Any refusal other than `0` or `-KOS_EOWNERDEAD` traps the thread, and so does
+`-KOS_EOWNERDEAD` on malloc's lock: a C library running unlocked, or on a heap a dead thread
+left half edited, would corrupt it silently.
 
 **Try it:** `break kos_mutex_lock`, `continue`, then `bt`. The first lock in `libcrace` is main's
 first `printf`:
 
 ```
-#0  kos_mutex_lock (mtx=1) at .../user/src/syscall_stubs.cc
-#1  (anonymous namespace)::libc_lock_acquire () at .../user/src/newlib_lock.cc
-#2  __sfp_lock_acquire () at .../newlib/libc/stdio/findfp.c
-#3  __sinit (s=...) at .../newlib/libc/stdio/findfp.c
-#4  _vfprintf_r (...)
-#5  printf (fmt=0x14254 "libcrace: %d workers x %d rounds\n")
-#6  kickos_app_main () at .../user/apps/common/libcrace/main.cc
+#0  kos_mutex_lock (mtx=2147418111, timeout_us=4294967295) at .../user/src/syscall_stubs.cc:85
+#1  (anonymous namespace)::libc_lock_take (l=..., self=1, timeout_us=4294967295) at .../user/src/newlib_lock.cc:46
+#2  __sfp_lock_acquire () at .../newlib/libc/stdio/findfp.c:269
+#3  __sinit (s=0x20010840 <s_reent+320>) at .../newlib/libc/stdio/findfp.c:247
+#4  _vfprintf_r (data=0x20010840 <s_reent+320>, fp=0x20011cdc <__sf+104>, ...) at .../newlib/libc/stdio/vfprintf.c:599
+#5  printf (fmt=0x14848 "libcrace: %d workers x %d rounds\n") at .../newlib/libc/stdio/printf.c:56
+#6  kickos_app_main () at .../user/apps/common/libcrace/main.cc:440
 ```
 
-Then `finish` (the call returns `0`), `next` twice, and `p '(anonymous namespace)::s_owner'`:
-it now holds main's thread handle, `1`. At the matching `kos_mutex_unlock` it is back to
-`4294967295` (`KOS_THREAD_NONE`) before the trap is even taken.
+Then `finish` twice (the lock returns `0`, the take `true`) and print both locks:
+
+```
+(gdb) p '(anonymous namespace)::s_libc'
+$4 = {mutex = 2147418111, owner = 1, depth = 1}
+(gdb) p '(anonymous namespace)::s_malloc'
+$5 = {mutex = 2147352575, owner = 4294967295, depth = 0}
+```
+
+The libc lock now holds main's thread handle, `1`; malloc's is free. At the matching
+`kos_mutex_unlock` the libc lock's owner is back to `4294967295` (`KOS_THREAD_NONE`) before the
+trap is even taken.
 
 **Why, and the contract:** [Book: What's under #include](../book/whats-under-include-libc-and-the-cxx-runtime.md),
-[Reference: invariants](../reference/invariants.md) (`libc-lock-one-per-address-space`)
+[Reference: invariants](../reference/invariants.md) (`libc-locks-belong-to-the-heap-owner`)
 
 ### Stop 3: the kernel object
-**Where:** `kernel/include/kickos/sync.h`, `struct Mutex`; `kernel/include/kickos/instance.h`,
-`mutexes`, `mutex_refs`; `kernel/syscall/syscall_obj.cc`, `mutex_create`;
+**Where:** `kernel/include/kickos/mutex.h`, `struct Mutex`; `kernel/include/kickos/instance.h`,
+`mutexes`, `mutex_refs`, `libc_locks`; `kernel/syscall/syscall_obj.cc`, `mutex_create`;
 `kernel/include/kickos/thread.h`, `Thread` fields `prio`, `base_prio`, `held_list`,
 `wait_kind`, `wait_obj`, `wait_result`
 
-The whole mutex is three fields:
+The whole mutex is four fields:
 
 ```cpp
     struct Mutex
@@ -148,20 +161,23 @@ The whole mutex is three fields:
         Thread* owner = nullptr;
         List waiters;
         Mutex* next_held = nullptr; // intrusive link in the owner's held list
+        bool owner_died = false;
     };
 ```
 
 `owner` is the lock state: null means free. `waiters` is a **wait queue**, the same intrusive
 list of parked threads every blocking object uses ([sleep](03-sleep.md) met it). `next_held`
 chains every mutex one thread owns into that thread's `held_list`; priority inheritance needs
-that list to answer "who is waiting on anything I hold?".
+that list to answer "who is waiting on anything I hold?". `owner_died` is set when a holder
+died and no waiter took the mutex over; Stop 12 shows it.
 
-Mutexes live in a fixed pool, `SlotPool<Mutex, KICKOS_MAX_MUTEXES> mutexes`, inside the one
-kernel instance, with a reference count per slot in `mutex_refs` (one per capability that names
-it). There is no heap in the kernel. `mutex_create` checks two budgets first: the task's own
-share (`task_object_admit`, refused `-KOS_EAGAIN`) and a reserve kept so every address space can
-still get its C library lock (`cap_mutex_create_admitted`, refused `-KOS_ENOMEM`). Then it takes
-a slot, runs `mutex_init` and installs a capability with `cap_install`.
+Mutexes a task creates live in a fixed pool, `SlotPool<Mutex, KICKOS_MAX_MUTEXES> mutexes`,
+inside the one kernel instance, with a reference count per slot in `mutex_refs` (one per
+capability that names it). There is no heap in the kernel. `mutex_create` checks the task's own
+share first (`task_object_admit`, refused `-KOS_EAGAIN`), then takes a slot (`-KOS_ENOMEM` when
+none is free), runs `mutex_init` and installs a capability with `cap_install`. The C library's
+two mutexes are not in that pool: they sit beside it, in `libc_locks` (on a translating board,
+in each address space's `Domain`).
 
 The other half of the state is on the threads. Each `Thread` carries two priorities: `prio`,
 the **effective** priority the scheduler reads, and `base_prio`, the one it was given.
@@ -173,8 +189,8 @@ writes the outcome.
 the C library mutex free, in the kernel instance:
 
 ```
-Breakpoint 1, kickos::mutex_lock (m=0x200049ec <kickos::detail::g_instance+572>) at .../kernel/sync/sync.cc
-$1 = {owner = 0x0, waiters = {head = 0x0, tail = 0x0}, next_held = 0x0}
+Breakpoint 1, kickos::mutex_lock (m=0x20004ab0 <kickos::detail::g_instance+768>, timeout_us=timeout_us@entry=4294967295) at .../kernel/sync/sync.cc:348
+$1 = {owner = 0x0, waiters = {head = 0x0, tail = 0x0}, next_held = 0x0, owner_died = false}
 ```
 
 **Why, and the contract:** [Book: Adding a kernel object type](../book/adding-a-kernel-object-type-the-additive-recipe.md),
@@ -187,15 +203,17 @@ $1 = {owner = 0x0, waiters = {head = 0x0, tail = 0x0}, next_held = 0x0}
 [The first syscall](02-first-syscall.md) brought us to `syscall_body`, the big switch on the
 syscall number. The lock arm does two things, and their split matters.
 
-First it resolves the handle: `cap_resolve_e` checks the index, the generation and the type
-(`CapType::CAP_MUTEX`), and returns the `Mutex*`. It asks for no right (`need` is `0`), because
-holding the capability is the authority. This runs inside its own short `IrqLock` scope (the
+First it resolves the handle (`cap_resolve_mutex`). One of the C library's two pseudo-handles
+resolves to that lock of the caller's heap owner; anything else goes to `cap_resolve_e`, which
+checks the index, the generation and the type (`CapType::CAP_MUTEX`) and returns the `Mutex*`.
+It asks for no right (`need` is `0`), because holding the capability is the authority. This runs inside its own short `IrqLock` scope (the
 kernel's critical section: it masks this core's interrupts, on Cortex-M by raising BASEPRI).
 
 Then, **after** that scope has closed, it calls `mutex_lock(m)`. Most arms keep one `IrqLock`
 across resolve and use. This one cannot, because `mutex_lock` may park, and the parked thread
 must read its result with the lock released (Stop 8 explains why). The mutex cannot vanish in
-the gap: the caller's own capability holds a reference to it.
+the gap: the caller's own capability holds a reference to it, or, for a C library lock, the
+caller's own membership of the heap owner keeps that owner alive.
 
 The unlock arm is the ordinary shape: one `IrqLock`, resolve, `mutex_unlock(m)`, return. A
 non-owner gets `-KOS_EPERM`.
@@ -203,14 +221,15 @@ non-owner gets `-KOS_EPERM`.
 **Try it:** `break kickos::mutex_lock`, `continue`, `bt`:
 
 ```
-#0  kickos::mutex_lock (m=0x200049ec <kickos::detail::g_instance+572>) at .../kernel/sync/sync.cc
-#1  (anonymous namespace)::syscall_body (nr=24, a0=1, ...) at .../kernel/syscall/syscall.cc
-#2  syscall_dispatch (nr=24, a0=1, ...) at .../kernel/syscall/syscall.cc
-#3  svc_trampoline () at .../arch/arm/armv7m/switch.S
+#0  kickos::mutex_lock (m=0x20004ab0 <kickos::detail::g_instance+768>, ...) at .../kernel/sync/sync.cc:348
+#1  (anonymous namespace)::syscall_body (nr=24, a0=2147418111, ...) at .../kernel/syscall/syscall.cc:534
+#2  syscall_dispatch (nr=24, a0=2147418111, ...) at .../kernel/syscall/syscall.cc:400
+#3  svc_trampoline () at .../arch/arm/armv7m/switch.S:537
 ```
 
-`nr=24` is `KOS_SYS_MUTEX_LOCK`, `a0=1` is the handle. The backtrace stops at `svc_trampoline`
-because the user frames are on the other stack (the process stack, PSP).
+`nr=24` is `KOS_SYS_MUTEX_LOCK`, `a0=2147418111` is the handle, `KOS_CAP_LIBC_LOCK`. The
+backtrace stops at `svc_trampoline` because the user frames are on the other stack (the
+process stack, PSP).
 
 **Why, and the contract:** [Book: The syscall path](../book/the-syscall-path-trap-dispatch-return.md),
 [Reference: invariants](../reference/invariants.md) (`object-access-via-per-thread-cap`)
@@ -228,6 +247,11 @@ the fast path:
             {
                 m->owner = c;
                 held_push(c, m);
+                if (m->owner_died)
+                {
+                    m->owner_died = false;
+                    return static_cast<int>(MUTEX_OWNER_DIED);
+                }
                 return 0;
             }
             if (m->owner == c)
@@ -237,7 +261,8 @@ the fast path:
 ```
 
 A free mutex costs two stores: the owner, and a push onto the owner's held list. No priority is
-touched, no queue is scanned. This is the case that dominates real programs, and plain priority
+touched, no queue is scanned. (If the last holder died with nobody waiting, `owner_died` is set,
+and this first take clears it and answers `-KOS_EOWNERDEAD` instead of `0`: Stop 12.) This is the case that dominates real programs, and plain priority
 inheritance is chosen partly because it costs nothing here. Locking a mutex you already own is
 refused, not counted: the kernel mutex is not recursive (the C library builds recursion on top,
 Stop 2).
@@ -247,7 +272,7 @@ returned is `0`. Then:
 
 ```
 (gdb) p *$m
-$3 = {owner = 0x20004e90 <kickos::detail::g_instance+1760>, waiters = {head = 0x0, tail = 0x0}, next_held = 0x0}
+$3 = {owner = 0x20004ed8 <kickos::detail::g_instance+1832>, waiters = {head = 0x0, tail = 0x0}, next_held = 0x0, owner_died = false}
 (gdb) p $m->owner->name
 $4 = "main", '\000' <repeats 11 times>
 (gdb) p $m->owner->held_list == $m
@@ -324,16 +349,18 @@ The queue is not sorted. A thread is appended at the tail, and the waker scans f
 priority at pop time. That is what lets a boost change a parked thread's priority with no
 re-queue.
 
-**Try it:** on `libcrace`, `break kickos::mutex_lock if m->owner != 0`, `continue`, `next` (so
-`c` is set), then save what you see:
+**Try it:** on `libcrace`, `break kickos::mutex_lock if m->owner != 0 && $_streq(m->owner->name, "racer")`,
+`continue`, `next` (so `c` is set), then save what you see. The condition skips the
+witnesses `libcrace` runs before its workers start, whose threads have other names
+(`mholder`, `mwaiter`, `mvictim`, `mprint` and the like):
 
 ```
 (gdb) p c
-$1 = (kickos::Thread *) 0x20004fe0 <kickos::detail::g_instance+2096>
+$1 = (kickos::Thread *) 0x20005178 <kickos::detail::g_instance+2504>
 (gdb) p c->prio
 $2 = 10 '\n'
 (gdb) p m->owner
-$3 = (kickos::Thread *) 0x20005130 <kickos::detail::g_instance+2432>
+$3 = (kickos::Thread *) 0x20005418 <kickos::detail::g_instance+3176>
 (gdb) p m->owner->prio
 $4 = 10 '\n'
 (gdb) p $m = m
@@ -349,7 +376,7 @@ $9 = {v_ = kickos::ThreadState::BLOCKED}
 (gdb) p $c->wait_kind
 $10 = kickos::WAIT_MUTEX
 (gdb) p $c->wait_obj
-$11 = (void *) 0x200049ec <kickos::detail::g_instance+572>
+$11 = (void *) 0x20004ab0 <kickos::detail::g_instance+768>
 ```
 
 All workers have the same name, `racer`, so compare thread addresses, not names. You may find
@@ -402,9 +429,9 @@ happened. Only then is `wait_result` the waker's value.
 `continue`, `finish`, then `p $w = $`:
 
 ```
-Value returned is $1 = (kickos::Thread *) 0x20005130 <kickos::detail::g_instance+2432>
+Value returned is $1 = (kickos::Thread *) 0x20005178 <kickos::detail::g_instance+2504>
 (gdb) p m->owner
-$3 = (kickos::Thread *) 0x20004fe0 <kickos::detail::g_instance+2096>
+$3 = (kickos::Thread *) 0x20005028 <kickos::detail::g_instance+2168>
 (gdb) p $w->state
 $4 = {v_ = kickos::ThreadState::BLOCKED}
 (gdb) p $w->wait_kind
@@ -427,10 +454,11 @@ $8 = true
 the releaser, which keeps the CPU until its slice ends.
 
 For the waiter's side, start again with
-`break kickos::wq_confirm_resume if $_caller_is("kickos::mutex_lock")`, `continue`:
+`break kickos::wq_confirm_resume if $_caller_is("kickos::mutex_lock") && $_streq(c->name, "racer")`,
+`continue`:
 
 ```
-Breakpoint 1.1, kickos::wq_confirm_resume (c=0x20005280 <...+2768>, epoch=1) at .../kernel/sync/sync.cc
+Breakpoint 1.1, kickos::wq_confirm_resume (c=0x20005178 <...+2504>, epoch=1) at .../kernel/sync/sync.cc:67
 (gdb) p c->switch_count
 $2 = {v_ = {... _M_i = 2}, ...}
 (gdb) delete
@@ -499,7 +527,7 @@ ready list and its wait queue is not sorted, so the value is simply written.
 `continue`. The first boost of the run is this one:
 
 ```
-Breakpoint 1, kickos::sched::set_prio (t=0x20004fe0 <...+2096>, p=20 '\024', held=...) at .../kernel/sched/sched.cc
+Breakpoint 1, kickos::sched::set_prio (t=t@entry=0x20005028 <...+2168>, p=20 '\024', held=held@entry=...) at .../kernel/sched/sched.cc:862
 (gdb) p t->name
 $1 = "piLo", '\000' <repeats 11 times>
 (gdb) p t->prio
@@ -537,7 +565,8 @@ along was boosted at least that high when its own waiter blocked. A thread parke
 **semaphore** answers null too, so inheritance stops there; a semaphore has no owner to boost.
 Pass 1 follows the same edges first, read-only. If they lead back to the caller, the lock would
 deadlock. It is refused before pass 2 has boosted anyone, so a refused lock leaves no boost
-behind. A depth bound of `KICKOS_MAX_MUTEXES` backs both walks up.
+behind. A depth bound of `KICKOS_THREAD_SLOTS` backs both walks up: an acyclic chain visits each
+thread once, and a mutex need not come from the pool (the C library's do not).
 
 **Try it:** on `selftest`, stop only at a boost of a thread that is itself waiting on a mutex:
 
@@ -546,7 +575,7 @@ break kickos::sched::set_prio if $_caller_is("kickos::mutex_lock") && t->wait_ki
 ```
 
 ```
-Breakpoint 1, kickos::sched::set_prio (t=0x20005130 <...+2432>, p=20 '\024', held=...) at .../kernel/sched/sched.cc
+Breakpoint 1, kickos::sched::set_prio (t=t@entry=0x20005178 <...+2504>, p=20 '\024', held=held@entry=...) at .../kernel/sched/sched.cc:862
 (gdb) p t->name
 $1 = "chB", '\000' <repeats 12 times>
 (gdb) p t->state
@@ -639,7 +668,7 @@ itself after lowering.
 `break kickos::wq_confirm_resume if $_caller_is("kickos::mutex_lock")`, `continue`:
 
 ```
-Breakpoint 2.1, kickos::wq_confirm_resume (c=0x20005130 <...+2432>, epoch=2) at .../kernel/sync/sync.cc
+Breakpoint 2.1, kickos::wq_confirm_resume (c=0x20005178 <...+2504>, epoch=2) at .../kernel/sync/sync.cc:67
 (gdb) p c->name
 $4 = "piHi", '\000' <repeats 11 times>
 (gdb) p c->prio
@@ -689,7 +718,8 @@ capabilities are closed one by one, and `obj_close_protocol` handles the mutex c
 ```
 
 `mutex_force_unlock` is the unlock without the recompute: it hands the mutex to the highest
-waiter with `MUTEX_OWNER_DIED` (`-KOS_EOWNERDEAD`) as the result. The dying thread keeps its
+waiter with `MUTEX_OWNER_DIED` (`-KOS_EOWNERDEAD`) as the result. With no waiter it frees the
+mutex and sets `owner_died`, so the next thread to take it is the one that is told. The dying thread keeps its
 boost for the rest of its teardown. A live owner that tries to close its handle while still
 holding is refused `-KOS_EBUSY` instead: the handle is the only way to unlock, so dropping it
 would strand the waiters. The C++ `kos::Mutex` destructor runs into exactly that refusal if you
@@ -698,7 +728,7 @@ let a locked `kos::Mutex` go out of scope.
 **Try it:** on `selftest`, `break kickos::mutex_force_unlock`, `continue`:
 
 ```
-Breakpoint 1, kickos::mutex_force_unlock (m=0x20004a1c <...+620>, dying=0x20004fe0 <...+2096>, held=...) at .../kernel/sync/sync.cc
+Breakpoint 1, kickos::mutex_force_unlock (m=0x20004a00 <...+592>, dying=0x20005028 <...+2168>, held=...) at .../kernel/sync/sync.cc:476
 (gdb) p dying->name
 $1 = "odOwn\000\000\000\000\000\000\000\000\000\000"
 (gdb) p dying->prio
@@ -762,17 +792,18 @@ a second kernel object:
 - A semaphore's rights are split (`CAP_WAIT`, `CAP_SIGNAL`), checked at resolve. A mutex asks
   for none.
 
-**Try it:** on `libcrace`, `break kickos::sem_post`, `continue`. The first post is a worker
-reporting done to main, which is parked in `kos_sem_wait` on the `done` semaphore:
+**Try it:** on `libcrace`, `break kickos::sem_post`, `continue`. The first post is the malloc
+holder of the first witness telling main it now holds the malloc lock; main is parked in
+`kos_sem_wait` on that semaphore, which reaches the holder as its first delegated capability:
 
 ```
-Breakpoint 2, kickos::sem_post (s=0x200048e8 <kickos::detail::g_instance+312>) at .../kernel/sync/sync.cc
-#1  (anonymous namespace)::syscall_body (nr=6, a0=2, ...) at .../kernel/syscall/syscall.cc
+Breakpoint 2, kickos::sem_post (s=0x200048f4 <kickos::detail::g_instance+324>) at .../kernel/sync/sync.cc:134
+#1  (anonymous namespace)::syscall_body (nr=6, a0=1, ...) at .../kernel/syscall/syscall.cc:500
 (gdb) p *s
-$7 = {count = 0, waiters = {head = 0x20004ea8 <kickos::detail::g_instance+1784>, tail = 0x20004ea8 <kickos::detail::g_instance+1784>}}
+$7 = {count = 0, waiters = {head = 0x20004ef0 <kickos::detail::g_instance+1856>, tail = 0x20004ef0 <kickos::detail::g_instance+1856>}}
 ```
 
-One waiter: `0x20004ea8` is the `link` inside main's `Thread` (main is at `+1760`, Stop 5).
+One waiter: `0x20004ef0` is the `link` inside main's `Thread` (main is at `+1832`, Stop 5).
 
 **Why, and the contract:** [Book: The blocking substrate](../book/the-blocking-substrate-one-wait-wake-primitive.md),
 [Reference: Object model, capabilities & IPC](../reference/architecture.md#object-model-capabilities--ipc)

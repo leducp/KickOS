@@ -649,7 +649,22 @@ namespace kickos
         // it.
         KICKOS_ASSERT(attr.privileged or t->ctx.kernel_sp != 0);
 #endif
-        arch_context_init(&t->ctx, entry, arg, ustack, usize, attr.privileged);
+        void (*first)(void*) = entry;
+#if KICKOS_HAVE_ASPACE
+        // Every unprivileged thread, root's included, enters through the image's startup,
+        // which runs once per space.
+        if (not attr.privileged)
+        {
+            first = aspace_task_start();
+        }
+#endif
+        arch_context_init(&t->ctx, first, arg, ustack, usize, attr.privileged);
+#if KICKOS_HAVE_ASPACE
+        if (not attr.privileged)
+        {
+            arch_context_second_arg(&t->ctx, reinterpret_cast<uintptr_t>(entry));
+        }
+#endif
 #if KICKOS_LIBC_REENT
         // Selection only: priming happens at this thread's first switch-in, and the shared
         // state is never primed, being what every prime copies from.

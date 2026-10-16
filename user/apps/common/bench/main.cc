@@ -129,6 +129,9 @@ namespace
 #endif
     }
 
+    // A worker comment's `name@i` is its child_cap(i).
+    using kos::child_cap;
+
     // Child cap indices (a fresh child table makes handle == index). MAIN delegates the
     // sems per spawn in this order.
     constexpr int CH_A = KOS_SPAWN_DELEGATED_CAP0;
@@ -154,7 +157,7 @@ namespace
         return static_cast<uint32_t>(rc);
     }
 
-    void player_a(void*) // caps: A@2, B@3
+    void player_a(void*) // caps: A@0, B@1
     {
         while (true)
         {
@@ -201,7 +204,7 @@ namespace
 
     // Parks for the whole report, with player_a parked on A behind it: above one kernel core the
     // reporter's probes and sweeps take it off the players' core, and the pair runs there again.
-    void player_b(void*) // caps: A@2, B@3, gate@4, resume@5
+    void player_b(void*) // caps: A@0, B@1, gate@2, resume@3
     {
         // The reporter opens every burst through resume, the first included.
         kos_sem_wait(CH_RESUME, KOS_TIMEOUT_NONE);
@@ -633,12 +636,12 @@ namespace
     constexpr uintptr_t CR_XTASK = 1u << 11;
     static_assert(KOS_EP_MSG_MAX <= CR_LEN_MASK, "a message length must fit its field");
 
-    void callreply_server(void*) // caps: E(WAIT)@2, done@3
+    void callreply_server(void*) // caps: E(WAIT)@0, done@1
     {
         unsigned char buf[KOS_EP_MSG_MAX];
         struct kos_reply_recv_opts opts;
         memset(&opts, 0, sizeof(opts));
-        opts.ep = 2;
+        opts.ep = child_cap(0);
         opts.timeout_us = KOS_TIMEOUT_NONE;
         kos_cap_t reply_cap = KOS_CAP_NONE;
         size_t reply_len = 0;
@@ -661,9 +664,9 @@ namespace
         {
             kos_reply(reply_cap, buf, reply_len);
         }
-        kos_sem_post(3);
+        kos_sem_post(child_cap(1));
     }
-    void callreply_caller(void* arg) // caps: E(SIGNAL)@2, done@3
+    void callreply_caller(void* arg) // caps: E(SIGNAL)@0, done@1
     {
         uintptr_t const params = reinterpret_cast<uintptr_t>(arg);
         unsigned char buf[KOS_EP_MSG_MAX];
@@ -680,7 +683,7 @@ namespace
         {
             while (reps < CALLREPLY_REPS)
             {
-                if (kos_call_generic(2, buf, len, len) < 0)
+                if (kos_call_generic(child_cap(0), buf, len, len) < 0)
                 {
                     break;
                 }
@@ -692,7 +695,7 @@ namespace
             while (reps < CALLREPLY_REPS)
             {
                 // In place: the reply lands back in the request buffer.
-                if (kos_call(2, buf, len, len) < 0)
+                if (kos_call(child_cap(0), buf, len, len) < 0)
                 {
                     break;
                 }
@@ -735,7 +738,7 @@ namespace
                 static_cast<unsigned>(d_ns / 1000000ull), path, shape);
             kos::print(s);
         }
-        kos_sem_post(3);
+        kos_sem_post(child_cap(1));
     }
     // endpoint_call's D1 donation is guarded on caller_prio strictly greater than
     // server_prio, so an equal-priority step leaves that phase row with zero samples.
@@ -764,8 +767,8 @@ namespace
             return;
         }
         kos::Semaphore done(0);
-        kos_cap_grant scaps[] = {{ep, KOS_CAP_WAIT}, {done.id(), CH_FULL}};   // E(WAIT)@2, done@3
-        kos_cap_grant ccaps[] = {{ep, KOS_CAP_SIGNAL}, {done.id(), CH_FULL}}; // E(SIGNAL)@2, done@3
+        kos_cap_grant scaps[] = {{ep, KOS_CAP_WAIT}, {done.id(), CH_FULL}};   // E(WAIT)@0, done@1
+        kos_cap_grant ccaps[] = {{ep, KOS_CAP_SIGNAL}, {done.id(), CH_FULL}}; // E(SIGNAL)@0, done@1
         auto sv = kos::thread::create_caps(callreply_server, nullptr, "cr_srv", server_prio, scaps, 2,
                                            KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
                                            server_task);
@@ -833,7 +836,7 @@ namespace
         kos::print(s);
     }
 
-    // caps: own@2, peer@3, done@4. The leader posts first and times the whole run.
+    // caps: own@0, peer@1, done@2. The leader posts first and times the whole run.
     void xt_player(void* leads)
     {
         uint64_t const t0 = kos::clock_now();
@@ -842,12 +845,14 @@ namespace
         {
             if (leads != nullptr)
             {
-                if (kos_sem_post(3) != 0 or kos_sem_wait(2, KOS_TIMEOUT_NONE) != 0)
+                if (kos_sem_post(child_cap(1)) != 0
+                    or kos_sem_wait(child_cap(0), KOS_TIMEOUT_NONE) != 0)
                 {
                     break;
                 }
             }
-            else if (kos_sem_wait(2, KOS_TIMEOUT_NONE) != 0 or kos_sem_post(3) != 0)
+            else if (kos_sem_wait(child_cap(0), KOS_TIMEOUT_NONE) != 0
+                     or kos_sem_post(child_cap(1)) != 0)
             {
                 break;
             }
@@ -862,7 +867,7 @@ namespace
                       static_cast<unsigned>(d_ns / 1000000ull));
             row(s);
         }
-        kos_sem_post(4);
+        kos_sem_post(child_cap(2));
     }
 
     bool xt_task_pair(kos_task_t* a, kos_task_t* b)
@@ -1014,7 +1019,7 @@ namespace
     constexpr uint32_t W_SPIN_POLL = 1u << 16;
     constexpr uint32_t W_RESEAT_ROUNDS = 500;
 
-    // A ping-pong pair's caps: A@2, B@3. Main's own table is a child's, sized for no more
+    // A ping-pong pair's caps: A@0, B@1. Main's own table is a child's, sized for no more
     // than a few pairs at once, so it closes its handles once the players hold theirs and
     // joins the players instead of waiting on a third semaphore.
     constexpr int W_A = KOS_SPAWN_DELEGATED_CAP0;
@@ -1451,11 +1456,11 @@ int main(int, char**)
 
     // Players at prio 1 (KICKOS_PRIO_MIN), below main's prio 2, so the reporter preempts
     // them when player_b posts the gate.
-    kos_cap_grant acaps[] = {{a, CH_FULL}, {b, CH_FULL}}; // A@2, B@3
+    kos_cap_grant acaps[] = {{a, CH_FULL}, {b, CH_FULL}}; // A@0, B@1
     kos_cap_grant bcaps[] = {{a, CH_FULL},
                              {b, CH_FULL},
                              {g_gate, CH_FULL},
-                             {g_resume, CH_FULL}}; // +gate@4, resume@5
+                             {g_resume, CH_FULL}}; // +gate@2, resume@3
     auto ra = kos::thread::create_caps(player_a, nullptr, "bench_a", 1, acaps, 2, KOS_POLICY_FIFO,
                                        0, nullptr, 0, 0, nullptr,
                                        KOS_TASK_NONE, nullptr, 0, PLAYER_CORES);

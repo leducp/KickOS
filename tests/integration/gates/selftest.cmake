@@ -97,7 +97,7 @@ math(EXPR _selftest_cap_seated
 # for (tests/static/selftest_demands.py): the workers beside main, the tasks beside main's own and
 # the image's driver tasks, the IRQ lines main's task may bind, the capability slots beside the
 # seated ones, and the objects of each kind main's task budget leaves beside the two semaphores
-# main holds for the run, and the one mutex its task holds for libc.
+# main holds for the run.
 set(_selftest_lifetime_sems 2) # g_lock and g_done
 foreach(_selftest_knob KICKOS_MAX_THREADS KICKOS_MAX_TASKS KICKOS_TASK_IRQ_HANDLE_BUDGET
         KICKOS_MAX_SPAWN_GRANTS KICKOS_TASK_SEMAPHORE_BUDGET KICKOS_TASK_MUTEX_BUDGET
@@ -109,7 +109,7 @@ endforeach()
 math(EXPR _selftest_workers "${KICKOS_MAX_THREADS} - 1")
 _selftest_main_caps("${KICKOS_MAX_SPAWN_GRANTS}" "${_selftest_cap_seated}" _selftest_caps)
 math(EXPR _selftest_sems "${KICKOS_TASK_SEMAPHORE_BUDGET} - ${_selftest_lifetime_sems}")
-math(EXPR _selftest_mutexes "${KICKOS_TASK_MUTEX_BUDGET} - 1")
+set(_selftest_mutexes "${KICKOS_TASK_MUTEX_BUDGET}")
 # The guards an arm's registration sits under, as the compiler sees them.
 set(_selftest_guards --config "KICKOS_KERNEL_CORES=${KICKOS_KERNEL_CORES}")
 foreach(_selftest_knob KICKOS_HAVE_ASPACE KICKOS_HAVE_MPU KICKOS_MEMORY_ENFORCED
@@ -278,9 +278,9 @@ endif()
 # set is the only thing that can tell the two apart (tests/integration/check_tap_stream.sh).
 set(KICKOS_EXPECT_FAULTS "")
 if(KICKOS_HAVE_ASPACE AND KICKOS_FAULT_ISOLATION)
-  # kernel_state_unreachable's readers, and the stack arms' threads reading the guard below
-  # their own stacks.
-  list(APPEND KICKOS_EXPECT_FAULTS kvic pstk)
+  # kernel_state_unreachable's readers, the stack arms' threads reading the guard below
+  # their own stacks, and task_start_dead_starter's thread finding its space half constructed.
+  list(APPEND KICKOS_EXPECT_FAULTS kvic pstk dsA)
   # window_addr's sibling, reading the window its holder took with it at exit.
   if(KICKOS_CHIP STREQUAL "virt_arm64" OR KICKOS_CHIP STREQUAL "virt_rv64"
      OR KICKOS_CHIP STREQUAL "q35")

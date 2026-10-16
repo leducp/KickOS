@@ -208,7 +208,8 @@ namespace kickos
             *err = KOS_EPERM; // a creator that matches nobody could never name the result
             return nullptr;
         }
-        Domain* const d = domain_for(DOM_CALLER_TASK, mem_base, mem_size, mem_attr, donor, err);
+        Domain* const d =
+            domain_for(DOM_CALLER_UNPRIVILEGED, mem_base, mem_size, mem_attr, donor, err);
         if (d == nullptr)
         {
             return nullptr;

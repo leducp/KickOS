@@ -14,9 +14,9 @@
 // peer is claimed by the switch that peer takes anyway.
 //
 // WHAT THIS IMAGE ASSERTS is that kos_thread_slay RETURNS 0 within a bound. On a tree whose
-// available_to admits a slain current, the victim's core re-picks it on every pass forever and
-// the call answers -KOS_ETIMEDOUT, which is the control: the bound is what turns a hang into a
-// verdict.
+// available_to admits a slain thread whose frame the core holds, the victim's core re-picks it on
+// every pass forever and the call answers -KOS_ETIMEDOUT, which is the control: the bound is what
+// turns a hang into a verdict.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>

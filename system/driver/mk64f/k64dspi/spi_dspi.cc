@@ -19,9 +19,10 @@
 #include <kickos/driver/spi.h>
 
 #include <kickos/chip_mmap.h>
-#include <kickos/io/mmio.h>   // r32
-#include <kickos/sys.h>       // kos_periph_enable, kos_periph_clock_hz, kos_pinmux_set
-#include <kickos/sys/errno.h> // KOS_EPERM, KOS_EINVAL, KOS_ENOSYS, KOS_ENOTSUP
+#include <kickos/io/mmio.h>       // r32
+#include <kickos/poll_bound.h>    // KICKOS_POLL_SPIN_MAX
+#include <kickos/sys.h>           // kos_periph_enable/disable, kos_periph_clock_hz, kos_pinmux_set
+#include <kickos/sys/errno.h>     // KOS_EPERM, KOS_EINVAL, KOS_ENOSYS, KOS_ENOTSUP, KOS_EIO
 
 #include <board_buses.h>
 #include <dspi_class.h> // shared DSPI RX-FIFO fill-level read
@@ -96,6 +97,15 @@ namespace
     constexpr uint32_t CTAR_LSBFE = 1u << 24;
     constexpr unsigned CTAR_FMSZ_SHIFT = 27u;
     constexpr unsigned CTAR_PBR_SHIFT = 16u;
+    // The three delays (RM 50.3.3): PCS-to-SCK, after-SCK and between frames, each a prescaler
+    // field of 1/3/5/7 times a scaler field of 2^(n+1) bus clocks.
+    constexpr unsigned CTAR_PCSSCK_SHIFT = 22u;
+    constexpr unsigned CTAR_PASC_SHIFT = 20u;
+    constexpr unsigned CTAR_PDT_SHIFT = 18u;
+    constexpr unsigned CTAR_CSSCK_SHIFT = 12u;
+    constexpr unsigned CTAR_ASC_SHIFT = 8u;
+    constexpr unsigned CTAR_DT_SHIFT = 4u;
+    constexpr uint32_t DELAY_PRESCALE[4] = {1u, 3u, 5u, 7u};
 
     // PUSHR (RM 50.3.7, master): TXDATA[15:0], CTAS=0, no PCS/CONT, no EOQ.
 
@@ -117,6 +127,37 @@ namespace
     constexpr unsigned PROG_CS = 1u;
     constexpr uint32_t PROG_CS_PORT_SHIFT = 5u;
     constexpr uint32_t PROG_CS_BIT_MASK = 0x1Fu;
+
+    uint32_t delay_bus_clocks(uint32_t ctar, unsigned prescale_shift, unsigned scale_shift)
+    {
+        return DELAY_PRESCALE[(ctar >> prescale_shift) & 0x3u]
+               * (2u << ((ctar >> scale_shift) & 0xFu));
+    }
+
+    // The bus clocks one frame takes under a CTAR word: FMSZ+1 bits of PBR * BR / (1 + DBR)
+    // each, plus its three delays.
+    uint32_t frame_bus_clocks(uint32_t ctar)
+    {
+        uint32_t const pbr = PBR_DIV[(ctar >> CTAR_PBR_SHIFT) & 0x3u];
+        uint32_t const br = BR_DIV[ctar & 0xFu];
+        uint32_t const bits = ((ctar >> CTAR_FMSZ_SHIFT) & 0xFu) + 1u;
+        uint32_t clocks = bits * pbr * br;
+        if ((ctar & CTAR_DBR) != 0u)
+        {
+            clocks /= 2u;
+        }
+        clocks += delay_bus_clocks(ctar, CTAR_PCSSCK_SHIFT, CTAR_CSSCK_SHIFT);
+        clocks += delay_bus_clocks(ctar, CTAR_PASC_SHIFT, CTAR_ASC_SHIFT);
+        clocks += delay_bus_clocks(ctar, CTAR_PDT_SHIFT, CTAR_DT_SHIFT);
+        return clocks;
+    }
+
+    // HALT stops the clock generator with both FIFOs flushed. MDIS is left CLEAR so the window
+    // stays readable for a later transfer or reopen.
+    void halt_flushed(uintptr_t win)
+    {
+        r32(win + MCR_OFFSET) = MCR_MSTR | MCR_CLR_TXF | MCR_CLR_RXF | MCR_HALT;
+    }
 
     // The rate a CTAR word produces off `f_periph`: f * (1 + DBR) / (PBR * BR).
     uint32_t ctar_rate(uint32_t f_periph, uint32_t ctar)
@@ -206,20 +247,21 @@ int32_t kos_spi_bus_open(struct kos_spi_bus* b, struct kos_spi_bus_config const*
     {
         return -KOS_EINVAL;
     }
-    b->base = cfg->base;
+    b->base = 0u;
     b->ep = cfg->ep;
     b->irq = cfg->irq; // the pump polls; recorded so the POD carries what it was opened with
 
     // BEFORE the periph_enable check: ordered after it, a refusal would leave each chip select
     // a floating input (PDDR resets to 0).
-    chip_selects_idle(b->base);
+    chip_selects_idle(cfg->base);
 
     // Until this returns, the window reads supervisor-only and the block is unclocked: it
     // ungates SPI0 and clears DSPI0's AIPS0 slot 44 SP bit (RM 20.2).
-    if (kos_periph_enable(b->base) != 0)
+    if (kos_periph_enable(cfg->base) != 0)
     {
         return -KOS_EPERM;
     }
+    b->base = cfg->base;
 
     // MCR resets to 0x0000_4001 (MDIS=1, HALT=1): the first write clears MDIS, flushes both
     // FIFOs and sets master, the second releases HALT. CTAR0 keeps its reset value until a
@@ -358,7 +400,7 @@ int32_t kos_spi_transfer(struct kos_spi_device* d, struct kos_bus_seg const* seg
     // CTAR0 is writable only while HALTed, and the same write flushes both FIFOs, which must
     // already be drained here (the pump below pops all it pushes). SCK idles at the PREVIOUS
     // profile's CPOL, so a CPOL=1 device sees one idle-level change before its own CS asserts.
-    r32(win + MCR_OFFSET) = MCR_MSTR | MCR_CLR_TXF | MCR_CLR_RXF | MCR_HALT;
+    halt_flushed(win);
     r32(win + CTAR0_OFFSET) = d->prog[PROG_CTAR];
     r32(win + MCR_OFFSET) = MCR_MSTR; // release HALT -> RUNNING
 
@@ -368,23 +410,47 @@ int32_t kos_spi_transfer(struct kos_spi_device* d, struct kos_bus_seg const* seg
 
     cs_write(d, GPIO_PCOR);
 
-    // Drain FIRST: the 4-deep RX FIFO must never overflow, or the dropped byte hangs this
+    // A frame that never completes (the module halted or disabled, a received byte lost) ends
+    // the transfer once this many polls have moved no byte. The frame term is a healthy frame's
+    // whole length in bus clocks, delays included, and a poll costs at least one bus clock, so
+    // the bound outlasts that frame whatever the divider pair and delays programmed.
+    uint32_t const stall_polls = KICKOS_POLL_SPIN_MAX + frame_bus_clocks(d->prog[PROG_CTAR]);
+
+    // Drain FIRST: the 4-deep RX FIFO must never overflow, or the dropped byte stalls this
     // loop. Push only while fewer than RX_FIFO_DEPTH bytes are IN FLIGHT (TX FIFO + shifter +
     // RX FIFO), so a completed frame always has a free RX slot.
     uint32_t pushed = 0u;
     uint32_t popped = 0u;
+    uint32_t idle = 0u;
     while (popped < len)
     {
+        bool moved = false;
         if (kickos::mk64f::driver::dspi_rx_count(win) > 0u)
         {
             buf[popped] = static_cast<unsigned char>(*popr & 0xFFu);
             popped++;
+            moved = true;
         }
         if (pushed < len and (pushed - popped) < RX_FIFO_DEPTH
             and ((*sr >> 12) & 0xFu) < TX_FIFO_DEPTH)
         {
             *pushr = static_cast<uint32_t>(buf[pushed]) & 0xFFu;
             pushed++;
+            moved = true;
+        }
+        if (moved)
+        {
+            idle = 0u;
+        }
+        else
+        {
+            idle++;
+            if (idle >= stall_polls)
+            {
+                halt_flushed(win);
+                cs_write(d, GPIO_PSOR);
+                return -KOS_EIO;
+            }
         }
     }
 
@@ -398,12 +464,12 @@ int32_t kos_spi_bus_close(struct kos_spi_bus* b)
     {
         return 0; // never opened, or already closed
     }
-    // HALT stops the clock generator with both FIFOs flushed. MDIS is left CLEAR so the window
-    // stays readable for a later reopen.
-    r32(b->base + MCR_OFFSET) = MCR_MSTR | MCR_CLR_TXF | MCR_CLR_RXF | MCR_HALT;
+    halt_flushed(b->base);
     chip_selects_idle(b->base);
+    // Last: every register access above needs the slot open.
+    int32_t const rc = kos_periph_disable(b->base);
     b->base = 0u;
-    return 0;
+    return rc;
 }
 
 }
