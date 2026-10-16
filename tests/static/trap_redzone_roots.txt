@@ -264,8 +264,14 @@ root    armv7m EXIT   kickos_thread_slay_exit
 # way into the console tail.
 root    armv7m PANIC  kickos_panic_report
 exclude armv7m console_chip_writer_leave class=PANIC reason: a panic stores PANICKED before it prints, nothing leaves PANICKED, and a PANICKED writer is not counted, so no line of the panic leaves the bracket
-unsized armv7m kickos_panic_stack_enter 0 reason: switch.S, four instructions that write no stack; bl leaves the return address in LR and the body never spills it
+unsized armv7m kickos_panic_stack_enter 0 reason: switch.S, a limit write and an SP move that write no stack; bl leaves the return address in LR and the body never spills it
 unsized armv7m kickos_rp_rom_call 16 reason: rp2xxx/rom_call.S, push {r4-r6,lr}; the bootrom routine it calls runs on kickos_rp_rom_stack, which no class measures
+
+# The main stack's overflow report, on the array kickos_armv7m_stkof moves to; that naked body
+# branches to the first root. The second is the same reporter wherever no limit exists to call
+# for the array, so the class prices the chain on every armv7m preset.
+root    armv7m STKOF  ?kickos_armv7m_stkof_report
+root    armv7m STKOF  kickos_armv7m_fault_report
 
 # The AEABI 64-bit divide helpers are libgcc, so they have no .ci entry and neither does
 # __udivmoddi4 below them; measured from libgcc.a for this multilib (thumb/v7e-m+fp/softfp).

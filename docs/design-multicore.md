@@ -1568,7 +1568,9 @@ never reaches the store, and an outgoing thread that parked or exited never pass
 asks a pass owes are raised together, once, from the pass's own frame.
 
 `available_to` is the other half of the same seam: for the thread a core is CURRENTLY running it
-returns the placement test rather than a bare true. That is what stops a core re-picking the thread
+returns the placement test rather than a bare true, and it declines a slain thread whose
+registers the core still holds (`on_cpu`, which `current` runs ahead of between a switch an
+exception books and the exit that performs it). That is what stops a core re-picking the thread
 it must give up, and it is what makes `reschedule()` the thing that moves a thread rather than any
 yank.
 

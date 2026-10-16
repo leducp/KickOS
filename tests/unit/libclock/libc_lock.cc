@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// newlib's locks over one kernel mutex. The kernel here is a host mutex behind
-// kos_mutex_lock/unlock that answers as the kernel does: a holder relocking is -KOS_EDEADLK, a
-// try on a mutex another thread holds -KOS_ETIMEDOUT, a non-holder unlocking -KOS_EPERM. Each
-// host thread is a KickOS thread of its own.
+// newlib's locks over the address space's two kernel mutexes, the libc lock's and malloc's. The
+// kernel here is a host mutex per lock behind kos_mutex_lock/unlock that answers as the kernel
+// does: a holder relocking is -KOS_EDEADLK, a try on a mutex another thread holds -KOS_ETIMEDOUT,
+// a non-holder unlocking -KOS_EPERM. Each host thread is a KickOS thread of its own.
 
 #include <gtest/gtest.h>
 
@@ -14,21 +14,34 @@
 #include <thread>
 #include <vector>
 
+#include <unistd.h>
+
 #include <kickos/sys.h>
 
 #include <sys/lock.h>
 
 namespace
 {
-    std::mutex g_kernel;
-    std::atomic<kos_thread_t> g_holder{KOS_THREAD_NONE};
+    struct KernelMutex
+    {
+        std::mutex m;
+        std::atomic<kos_thread_t> holder{KOS_THREAD_NONE};
+    };
+    KernelMutex g_libc;
+    KernelMutex g_malloc;
     std::atomic<int> g_locks{0};
     std::atomic<int> g_unlocks{0};
     std::atomic<int> g_other_caps{0};
     std::atomic<int> g_tries_refused{0};
-    // The kernel's answer to the next lock it grants, or -KOS_EBADF for no lock at the index.
+    // The kernel's answer to the next lock it grants, or -KOS_EBADF for no lock at the handle.
     std::atomic<int> g_lock_answer{0};
     std::atomic<int> g_unlock_answer{0};
+    // Cancelled waits the kernel answers before it grants, and every lock call it is asked.
+    std::atomic<int> g_cancels_before_grant{0};
+    std::atomic<int> g_lock_calls{0};
+    // A thread whose cancelled wait asks again this often is taken as ended at its entry.
+    constexpr int CANCEL_ENTRIES_BOUND = 1000;
+    constexpr int ENDED_AT_ENTRY = 42;
     // The unlocking thread is preempted on its way out, so a waiter runs before it returns.
     std::atomic<bool> g_preempt_after_unlock{false};
     // Serialises the tallies a non-holder writes: the next thread handle and a stray cap.
@@ -88,11 +101,15 @@ namespace
             g_lock_answer = 0;
             g_unlock_answer = 0;
             g_other_caps = 0;
+            g_cancels_before_grant = 0;
+            g_lock_calls = 0;
         }
         void TearDown() override
         {
-            EXPECT_EQ(g_holder.load(), KOS_THREAD_NONE) << "an arm left the kernel mutex held";
-            EXPECT_EQ(g_other_caps.load(), 0) << "a lock reached a mutex other than the libc one";
+            EXPECT_EQ(g_libc.holder.load(), KOS_THREAD_NONE) << "an arm left the libc lock held";
+            EXPECT_EQ(g_malloc.holder.load(), KOS_THREAD_NONE)
+                << "an arm left the malloc lock held";
+            EXPECT_EQ(g_other_caps.load(), 0) << "a lock reached a mutex other than the two";
         }
     };
 
@@ -104,25 +121,58 @@ extern "C" kos_thread_t kos_thread_self(void)
     return self();
 }
 
-extern "C" int kos_mutex_lock(kos_cap_t mtx, uint32_t timeout_us)
+namespace
 {
-    if (mtx != KOS_CAP_LIBC_LOCK)
+    KernelMutex* kernel_mutex(kos_cap_t mtx)
     {
+        if (mtx == KOS_CAP_LIBC_LOCK)
+        {
+            return &g_libc;
+        }
+        if (mtx == KOS_CAP_MALLOC_LOCK)
+        {
+            return &g_malloc;
+        }
         std::lock_guard<std::mutex> const hold(g_tally);
         g_other_caps.store(g_other_caps.load() + 1);
+        return nullptr;
     }
-    int const answer = g_lock_answer.load();
-    if (answer == -KOS_EBADF)
+
+    Named const& malloc_lock()
     {
-        return answer;
+        return g_static[3];
     }
-    if (g_holder.load() == self())
+}
+
+extern "C" int kos_mutex_lock(kos_cap_t mtx, uint32_t timeout_us)
+{
+    KernelMutex* const k = kernel_mutex(mtx);
+    int const answer = g_lock_answer.load();
+    g_lock_calls.store(g_lock_calls.load() + 1);
+    if (k == nullptr or answer == -KOS_EBADF)
+    {
+        return -KOS_EBADF;
+    }
+    if (g_cancels_before_grant.load() > 0)
+    {
+        g_cancels_before_grant.store(g_cancels_before_grant.load() - 1);
+        return -KOS_ECANCELED;
+    }
+    if (answer == -KOS_ECANCELED)
+    {
+        if (g_lock_calls.load() >= CANCEL_ENTRIES_BOUND)
+        {
+            _exit(ENDED_AT_ENTRY);
+        }
+        return -KOS_ECANCELED;
+    }
+    if (k->holder.load() == self())
     {
         return -KOS_EDEADLK;
     }
     if (timeout_us == 0)
     {
-        if (not g_kernel.try_lock())
+        if (not k->m.try_lock())
         {
             g_tries_refused.store(g_tries_refused.load() + 1);
             return -KOS_ETIMEDOUT;
@@ -131,31 +181,31 @@ extern "C" int kos_mutex_lock(kos_cap_t mtx, uint32_t timeout_us)
     else
     {
         EXPECT_EQ(timeout_us, KOS_TIMEOUT_NONE) << "a libc lock waited with a deadline";
-        g_kernel.lock();
+        k->m.lock();
     }
-    g_holder = self();
+    k->holder = self();
     g_locks.store(g_locks.load() + 1);
     return answer;
 }
 
 extern "C" int kos_mutex_unlock(kos_cap_t mtx)
 {
-    if (mtx != KOS_CAP_LIBC_LOCK)
+    KernelMutex* const k = kernel_mutex(mtx);
+    if (k == nullptr)
     {
-        std::lock_guard<std::mutex> const hold(g_tally);
-        g_other_caps.store(g_other_caps.load() + 1);
+        return -KOS_EBADF;
     }
     if (g_unlock_answer.load() != 0)
     {
         return g_unlock_answer.load();
     }
-    if (g_holder.load() != self())
+    if (k->holder.load() != self())
     {
         return -KOS_EPERM;
     }
-    g_holder = KOS_THREAD_NONE;
+    k->holder = KOS_THREAD_NONE;
     g_unlocks.store(g_unlocks.load() + 1);
-    g_kernel.unlock();
+    k->m.unlock();
     if (g_preempt_after_unlock.load())
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -163,18 +213,26 @@ extern "C" int kos_mutex_unlock(kos_cap_t mtx)
     return 0;
 }
 
-TEST_F(LibcLock, every_newlib_lock_is_the_one_kernel_mutex)
+TEST_F(LibcLock, every_newlib_lock_but_mallocs_is_the_libc_mutex)
 {
     _LOCK_T file_lock = nullptr;
     __retarget_lock_init_recursive(&file_lock);
-    std::vector<Named> all(std::begin(g_static), std::end(g_static));
+    std::vector<Named> all;
+    for (Named const& n : g_static)
+    {
+        if (n.lock != malloc_lock().lock)
+        {
+            all.push_back(n);
+        }
+    }
     all.push_back({file_lock, true});
     for (Named const& n : all)
     {
         int const locks = g_locks;
         int const unlocks = g_unlocks;
         acquire(n);
-        EXPECT_EQ(g_holder.load(), self());
+        EXPECT_EQ(g_libc.holder.load(), self());
+        EXPECT_EQ(g_malloc.holder.load(), KOS_THREAD_NONE);
         EXPECT_EQ(g_locks.load(), locks + 1);
         release(n);
         EXPECT_EQ(g_unlocks.load(), unlocks + 1);
@@ -182,35 +240,82 @@ TEST_F(LibcLock, every_newlib_lock_is_the_one_kernel_mutex)
     __retarget_lock_close_recursive(file_lock);
 }
 
-TEST_F(LibcLock, nesting_two_locks_is_recursion_on_one)
+TEST_F(LibcLock, malloc_takes_a_mutex_of_its_own)
+{
+    acquire(malloc_lock());
+    EXPECT_EQ(g_malloc.holder.load(), self());
+    EXPECT_EQ(g_libc.holder.load(), KOS_THREAD_NONE);
+    release(malloc_lock());
+}
+
+// The witness at its unit: the stdio side of newlib completes while another thread holds malloc.
+TEST_F(LibcLock, a_file_lock_is_taken_while_another_thread_holds_malloc)
+{
+    acquire(malloc_lock());
+    std::atomic<bool> printed{false};
+    std::thread other([&] {
+        _LOCK_T file_lock = nullptr;
+        __retarget_lock_init_recursive(&file_lock);
+        __retarget_lock_acquire_recursive(file_lock);
+        __retarget_lock_acquire_recursive(&__lock___sfp_recursive_mutex);
+        __retarget_lock_release_recursive(&__lock___sfp_recursive_mutex);
+        __retarget_lock_release_recursive(file_lock);
+        printed = true;
+    });
+    other.join();
+    EXPECT_TRUE(printed.load());
+    EXPECT_EQ(g_malloc.holder.load(), self());
+    release(malloc_lock());
+}
+
+TEST_F(LibcLock, nesting_two_libc_locks_is_recursion_on_one)
 {
     int const locks = g_locks;
     int const unlocks = g_unlocks;
     for (Named const& n : g_static)
     {
-        acquire(n);
+        if (n.lock != malloc_lock().lock)
+        {
+            acquire(n);
+        }
     }
     EXPECT_EQ(g_locks.load(), locks + 1);
     for (Named const& n : g_static)
     {
-        EXPECT_EQ(g_unlocks.load(), unlocks);
-        release(n);
+        if (n.lock != malloc_lock().lock)
+        {
+            EXPECT_EQ(g_unlocks.load(), unlocks);
+            release(n);
+        }
     }
     EXPECT_EQ(g_unlocks.load(), unlocks + 1);
 }
 
+TEST_F(LibcLock, malloc_inside_the_libc_lock_takes_both_mutexes)
+{
+    int const locks = g_locks;
+    acquire(g_static[0]);
+    acquire(malloc_lock());
+    EXPECT_EQ(g_locks.load(), locks + 2);
+    EXPECT_EQ(g_libc.holder.load(), self());
+    EXPECT_EQ(g_malloc.holder.load(), self());
+    release(malloc_lock());
+    EXPECT_EQ(g_malloc.holder.load(), KOS_THREAD_NONE);
+    EXPECT_EQ(g_libc.holder.load(), self());
+    release(g_static[0]);
+}
+
 TEST_F(LibcLock, the_depth_counts_down_to_the_unlock)
 {
-    Named const& malloc_lock = g_static[3];
     int const unlocks = g_unlocks;
-    acquire(malloc_lock);
-    acquire(malloc_lock);
-    acquire(malloc_lock);
-    release(malloc_lock);
-    release(malloc_lock);
-    EXPECT_EQ(g_holder.load(), self());
+    acquire(malloc_lock());
+    acquire(malloc_lock());
+    acquire(malloc_lock());
+    release(malloc_lock());
+    release(malloc_lock());
+    EXPECT_EQ(g_malloc.holder.load(), self());
     EXPECT_EQ(g_unlocks.load(), unlocks);
-    release(malloc_lock);
+    release(malloc_lock());
     EXPECT_EQ(g_unlocks.load(), unlocks + 1);
 }
 
@@ -252,42 +357,54 @@ TEST_F(LibcLock, a_releaser_preempted_after_its_unlock_leaves_the_next_owner_who
     EXPECT_TRUE(nested.load());
 }
 
-TEST_F(LibcLock, a_dead_owner_hands_the_lock_over_held)
+TEST_F(LibcLock, a_dead_owner_of_the_libc_lock_hands_it_over_held)
 {
     g_lock_answer = -KOS_EOWNERDEAD;
     int const locks = g_locks;
-    acquire(g_static[3]);
     acquire(g_static[0]);
-    EXPECT_EQ(g_holder.load(), self());
+    acquire(g_static[1]);
+    EXPECT_EQ(g_libc.holder.load(), self());
     EXPECT_EQ(g_locks.load(), locks + 1);
+    release(g_static[1]);
     release(g_static[0]);
-    release(g_static[3]);
+}
+
+TEST_F(LibcLock, a_cancelled_wait_asks_again_and_takes_the_lock_once)
+{
+    g_cancels_before_grant = 1;
+    int const locks = g_locks;
+    acquire(g_static[0]);
+    EXPECT_EQ(g_lock_calls.load(), 2) << "the cancelled wait did not ask exactly once more";
+    EXPECT_EQ(g_locks.load(), locks + 1);
+    EXPECT_EQ(g_libc.holder.load(), self());
+    release(g_static[0]);
+    EXPECT_EQ(g_libc.holder.load(), KOS_THREAD_NONE) << "the take left a depth other than one";
 }
 
 TEST_F(LibcLock, a_try_takes_a_free_lock)
 {
     int const locks = g_locks;
     EXPECT_EQ(__retarget_lock_try_acquire_recursive(&__lock___sfp_recursive_mutex), 1);
-    EXPECT_EQ(g_holder.load(), self());
+    EXPECT_EQ(g_libc.holder.load(), self());
     EXPECT_EQ(g_locks.load(), locks + 1);
     EXPECT_EQ(__retarget_lock_try_acquire(&__lock___tz_mutex), 1) << "the owner's try is a nest";
     EXPECT_EQ(g_locks.load(), locks + 1);
     release(g_static[5]);
     release(g_static[0]);
-    EXPECT_EQ(g_holder.load(), KOS_THREAD_NONE);
+    EXPECT_EQ(g_libc.holder.load(), KOS_THREAD_NONE);
 }
 
 TEST_F(LibcLock, a_try_on_a_lock_another_thread_holds_fails_and_holds_nothing)
 {
-    acquire(g_static[3]);
+    acquire(g_static[1]);
     int const refused = g_tries_refused;
     std::atomic<int> tried{-1};
     std::thread other([&] { tried = __retarget_lock_try_acquire(&__lock___tz_mutex); });
     other.join();
     EXPECT_EQ(tried.load(), 0);
     EXPECT_EQ(g_tries_refused.load(), refused + 1) << "the try never reached the kernel";
-    EXPECT_EQ(g_holder.load(), self());
-    release(g_static[3]);
+    EXPECT_EQ(g_libc.holder.load(), self());
+    release(g_static[1]);
     std::thread after([&] {
         tried = __retarget_lock_try_acquire_recursive(&__lock___sfp_recursive_mutex);
         if (tried == 1)
@@ -310,13 +427,13 @@ TEST_F(LibcLock, contending_threads_keep_a_shared_count_whole)
         workers.emplace_back([&] {
             for (int i = 0; i < ROUNDS; i++)
             {
-                acquire(g_static[3]);
                 acquire(g_static[0]);
+                acquire(malloc_lock());
                 int const seen = count;
                 std::this_thread::yield();
                 count = seen + 1;
+                release(malloc_lock());
                 release(g_static[0]);
-                release(g_static[3]);
             }
         });
     }
@@ -331,6 +448,38 @@ TEST_F(LibcLockDeathTest, a_missing_lock_traps)
 {
     g_lock_answer = -KOS_EBADF;
     EXPECT_EXIT(acquire(g_static[3]), ::testing::KilledBySignal(SIGILL), "");
+    g_lock_answer = 0;
+}
+
+TEST_F(LibcLockDeathTest, a_dead_owner_of_the_malloc_lock_traps)
+{
+    g_lock_answer = -KOS_EOWNERDEAD;
+    EXPECT_EXIT(acquire(malloc_lock()), ::testing::KilledBySignal(SIGILL), "");
+    g_lock_answer = 0;
+}
+
+TEST_F(LibcLockDeathTest, the_libc_lock_taken_inside_mallocs_traps)
+{
+    EXPECT_EXIT(
+        {
+            acquire(malloc_lock());
+            acquire(g_static[0]);
+        },
+        ::testing::KilledBySignal(SIGILL), "");
+    EXPECT_EXIT(
+        {
+            acquire(malloc_lock());
+            (void)__retarget_lock_try_acquire_recursive(&__lock___sfp_recursive_mutex);
+        },
+        ::testing::KilledBySignal(SIGILL), "");
+}
+
+// The re-ask loop is sound only because the kernel ends a cancelled thread at its next entry.
+// This kernel never grants, and stands for that end after a bound so the test cannot hang.
+TEST_F(LibcLockDeathTest, a_wait_cancelled_for_good_ends_at_an_entry_and_never_traps)
+{
+    g_lock_answer = -KOS_ECANCELED;
+    EXPECT_EXIT(acquire(g_static[0]), ::testing::ExitedWithCode(ENDED_AT_ENTRY), "");
     g_lock_answer = 0;
 }
 

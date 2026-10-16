@@ -574,14 +574,10 @@ config KICKOS_MAX_SEMAPHORES
 config KICKOS_MAX_MUTEXES
 	int "CAP_MUTEX pool"
 	range 2 32
-	default 24 if HAS_ASPACE
 	default 8
 	help
-	  Holds one libc lock per address space beside what tasks create: one for the
-	  image on a region board, one for every task but idle's on a translating one,
-	  where KICKOS_MAX_TASKS bounds them. A create never takes a slot an address space
-	  could still need, and the pool must hold those plus KICKOS_TASK_MUTEX_BUDGET or
-	  the build fails.
+	  The mutexes tasks create. The C library's locks are not drawn from it: each
+	  address space carries its own.
 
 config KICKOS_MAX_ENDPOINTS
 	int "IPC endpoint pool"
@@ -714,10 +710,9 @@ config KICKOS_TASK_MUTEX_BUDGET
 	range 1 31
 	default 7
 	help
-	  As KICKOS_TASK_SEMAPHORE_BUDGET, over the mutex pool: at most KICKOS_MAX_MUTEXES
-	  less the libc locks the pool keeps, or the build fails. The task's own libc lock
-	  counts against it. THREE is a selftest image's own demand, the deadlock arm holding
-	  two at once beside the libc lock; below it mutex arms go RED on qemu rather than
+	  As KICKOS_TASK_SEMAPHORE_BUDGET, over the mutex pool: strictly below
+	  KICKOS_MAX_MUTEXES or the build fails. TWO is a selftest image's own demand, the
+	  deadlock arm holding two at once; below it mutex arms go RED on qemu rather than
 	  skipping, and the failures cascade into every later arm that wanted an object.
 
 config KICKOS_TASK_ENDPOINT_BUDGET
@@ -1074,7 +1069,10 @@ config KICKOS_MIN_STACK_SIZE
 
 	  RV32IMAC, ARMV8A, RV64IMAC AND X86_64 ENFORCE NONE, their entries building every
 	  user-mode frame on the thread's kernel block, so there the floor holds no kernel
-	  descent but rv32imac's first switch frame (SWITCH).
+	  descent but rv32imac's first switch frame (SWITCH). On the three translating ones it
+	  holds the image's startup instead, which any thread of a space may run on its own
+	  stack before its entry: each backend asserts the floor above its <arch>_trap_stack.h
+	  TASK_START.
 
 	  TWO THINGS CHECK THE RELATION, AND THEY ARE NOT THE SAME CHECK.
 	  check_trap_redzone.sh compares this floor against every class that spends a thread

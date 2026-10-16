@@ -109,7 +109,7 @@ namespace kickos
             {
                 memset(g_sys_image, 0x5A, SYS_IMAGE_BYTES);
                 static VirtualRanges root;
-                ASSERT_TRUE(aspace_image_seed(arch_aspace_create(), &root, false, nullptr));
+                ASSERT_TRUE(aspace_image_seed(arch_aspace_create(), &root));
                 g_sys_suite_mark = host_pool_mark();
             }
 

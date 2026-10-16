@@ -5,27 +5,60 @@
 # Threads printing and allocating through one C library at once, on one boot of libcrace under
 # QEMU.
 #
-#   check_libcrace.sh <libcrace image>
+#   check_libcrace.sh <libcrace image> [<runs the dead malloc holder arms, default 1>]
 #   KOS_CAPTURE=<log> check_libcrace.sh <board-build> <kickos-source> <cmake>
 #
 # Every worker line is one known text: `libcrace w<w> i<i> ` and forty copies of one letter,
 # 'a' + (7w + i) mod 26. A line reaches the wire whole and exactly once, and every worker ends
-# reporting no block of its own torn.
+# reporting no block of its own torn. Before the workers start: a thread killed while it waits
+# for the malloc lock ends alone, its task going on, and so does one holding the libc lock, which
+# it hands over; a malloc lock taken from a holder that died holding it ends the taker's task,
+# whether the taker waited at the death or came after it;
+# and a printf completes while another thread holds the malloc lock.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
-: "${QEMU_TIMEOUT:=30}"
+# A hang detector, not a speed bound. An SMP board gets a larger one from libcrace.cmake.
+: "${QEMU_TIMEOUT:=240}"
 
+dead=1
 if judging_capture; then
+    dead=0
+    build="${1:?usage: KOS_CAPTURE=<log> check_libcrace.sh <board-build> <kickos-source> <cmake>}"
+    if grep -q '^KICKOS_LIBCRACE_DEAD_ARMS:INTERNAL=1$' "$build/CMakeCache.txt" 2>/dev/null; then
+        dead=1
+    fi
     judge_capture libcrace
 else
-    run_image "${1:?usage: check_libcrace.sh <libcrace.elf>}" > /dev/null
+    run_image "${1:?usage: check_libcrace.sh <libcrace.elf> [<dead arms>]}" > /dev/null
+    dead="${2:-1}"
 fi
 
 assert_no_panic "panic while the workers raced"
 shape="$(printf '%s\n' "$OUT" | sed -n 's/^libcrace: \([0-9][0-9]*\) workers x \([0-9][0-9]*\) rounds$/\1 \2/p')"
 if [ -z "$shape" ]; then
     cfail start "main never announced its workers"
+fi
+if ! has_f "libcrace: a thread killed waiting for malloc ended alone"; then
+    cfail malloc-kill "a thread killed waiting for the malloc lock took its task down with it"
+fi
+if ! has_f "libcrace: a thread killed holding the libc lock handed it over"; then
+    cfail libc-kill "a thread killed holding the libc lock did not hand it over"
+fi
+if [ "$dead" = 1 ]; then
+    if ! has_f "libcrace: a malloc lock taken from a dead holder ended its task"; then
+        cfail malloc-dead "a malloc lock taken from a dead holder left the taker's task running"
+    fi
+    if ! has_f "libcrace: a malloc lock its holder died in unwatched ended the next taker's task"
+    then
+        cfail malloc-unwatched "a malloc lock whose holder died unwatched let its next taker run"
+    fi
+elif ! has_f "libcrace: no task-private heap with a contained fault, so the dead malloc holder "\
+"arms did not run"; then
+    cfail malloc-dead "the dead malloc holder arms ran where their torn heap would be every task's"
+fi
+if ! has_f "libcrace: a printf completed while malloc was held"; then
+    cfail malloc-wait "a printf waited behind another thread's malloc lock, or never ran beside it"
 fi
 verdict="$(printf '%s\n' "$OUT" | awk -v shape="$shape" '
     function found(what) { out = what; exit }
@@ -78,5 +111,5 @@ if ! has "libcrace: all workers done"; then
 fi
 status_clause "main returned 0" 0
 
-echo "PASS: every worker line reached the wire whole and once, and no worker found a block torn"
+echo "PASS: killed malloc waiters ended alone, a dead malloc holder's lock ended its taker's task, a printf completed beside a held malloc lock, every worker line reached the wire whole and once, and no worker found a block torn"
 exit 0

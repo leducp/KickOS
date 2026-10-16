@@ -39,6 +39,11 @@
 # caller and not matched loosely, so an image built against the other profile's parameters
 # fails here instead of passing on the shared wording.
 #
+# OUTCOME `stkof` IS A CORE WITH A STACK LIMIT, where the hardware refuses the PSP before any
+# software leg sees it: the wild thread dies by a UsageFault whose record carries STKOF and no
+# stacking abort, no software refusal reaches the wire, and main outlives it. <need>, <site>
+# and <why> are unused there.
+#
 # usage: check_pspguard.sh <pspguard.elf> <mode> <need> <site> <why> <banner> <outcome>
 
 set -u
@@ -99,19 +104,43 @@ if [ "$mode" = 5 ]; then
     exit 0
 fi
 
-# The noun is the outcome: CONTAINED is spelled so it does NOT match tests/lib/panic.ere.
-_noun=CONTAINED
-if [ "$outcome" = terminated ]; then
-    _noun=EXCEPTION
-fi
-if ! has "=== $banner $_noun (wild PSP: $why) ==="; then
-    fail "no $banner refusal classified '$why' reached the wire as $outcome: the PSP was accepted, another bound fired, or the outcome is not the declared one"
-fi
-if ! has "in $site PSP=" ; then
-    fail "the refusal did not come from $site: the other guarded push is the one that fired"
-fi
-if ! has "need=$need "; then
-    fail "the refusal reported a byte count other than need=$need (wrong leg, or the FP block was not measured)"
+if [ "$outcome" = stkof ]; then
+    if has "(wild PSP:"; then
+        fail "mode=$mode: a software guard refused the PSP, so the stack limit did not, or an
+    SVCall left pending by the violating entry ran in the dead thread's place"
+    fi
+    announced="$(line_of "\\[pspguard\\] arm: mode=$mode ")"
+    killed="$(line_of "$(thread_fault_re wild)")"
+    if [ -z "$killed" ]; then
+        fail "mode=$mode: no thread kill for 'wild', so the stack limit did not stop it"
+    fi
+    if [ "$killed" -le "$announced" ]; then
+        fail "mode=$mode: the kill at line $killed is not after the arm's announcement"
+    fi
+    cfsr="$(printf '%s\n' "$OUT" | sed -n "$killed,\$p" | sed -n 's/.*CFSR=0x\([0-9a-fA-F]*\).*/\1/p' | head -n1)"
+    [ -n "$cfsr" ] || fail "mode=$mode: the kill record carries no CFSR"
+    if [ $(( 0x$cfsr & 0x100000 )) -eq 0 ]; then
+        fail "mode=$mode: CFSR=0x$cfsr has no STKOF, so something other than the limit refused"
+    fi
+    if [ $(( 0x$cfsr & 0x1818 )) -ne 0 ]; then
+        fail "mode=$mode: CFSR=0x$cfsr carries a stacking abort, so a write below the limit reached the bus"
+    fi
+    assert_no_panic "mode=$mode: the wild thread was killed AND the system panicked"
+else
+    # The noun is the outcome: CONTAINED is spelled so it does NOT match tests/lib/panic.ere.
+    _noun=CONTAINED
+    if [ "$outcome" = terminated ]; then
+        _noun=EXCEPTION
+    fi
+    if ! has "=== $banner $_noun (wild PSP: $why) ==="; then
+        fail "no $banner refusal classified '$why' reached the wire as $outcome: the PSP was accepted, another bound fired, or the outcome is not the declared one"
+    fi
+    if ! has "in $site PSP=" ; then
+        fail "the refusal did not come from $site: the other guarded push is the one that fired"
+    fi
+    if ! has "need=$need "; then
+        fail "the refusal reported a byte count other than need=$need (wrong leg, or the FP block was not measured)"
+    fi
 fi
 
 # MODE 6 IS THE BLOCK LEG'S ROOM BOUND. The worker parks its PSP inside its OWN kernel block,
@@ -148,7 +177,7 @@ if [ "$mode" = 1 ]; then
 fi
 
 contained="\[pspguard\] contained: the wild thread was slain and main outlived it"
-if [ "$outcome" = contained ]; then
+if [ "$outcome" = contained ] || [ "$outcome" = stkof ]; then
     if ! has "$contained"; then
         fail "the refusal was not contained: main never ran again, so the whole system paid
     for one thread's pointer"
@@ -165,8 +194,12 @@ elif [ "$outcome" = terminated ]; then
         fail "the refusal ended the system and the image still exited 0"
     fi
 else
-    fail "unknown outcome '$outcome': expected 'contained' or 'terminated'"
+    fail "unknown outcome '$outcome': expected 'contained', 'terminated' or 'stkof'"
 fi
 
+if [ "$outcome" = stkof ]; then
+    echo "PASS: mode=$mode killed by STKOF (CFSR=0x$cfsr) at line $killed, main outlived it"
+    exit 0
+fi
 echo "PASS: mode=$mode refused in $site as '$why' with need=$need, outcome $outcome"
 exit 0

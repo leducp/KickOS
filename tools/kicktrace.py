@@ -83,6 +83,7 @@ SYSCALL_NAME = {
     69: "notify_badge", 70: "irq_bind_notify", 71: "thread_self",
     72: "task_watch", 73: "task_state", 74: "window_get", 75: "port_reg_write",
     76: "task_exit_status", 77: "thread_set_priority", 78: "task_nonblock",
+    79: "periph_disable", 80: "witness_uaccess",
 }
 
 TRACE_MAGIC = 0x4B545243

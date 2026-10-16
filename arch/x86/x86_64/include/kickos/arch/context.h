@@ -35,6 +35,8 @@
 #define KICKOS_ARCH_HAS_PORTS 1
 #define KICKOS_ARCH_PORT_RANGES 4
 
+#define KICKOS_ARCH_UGUARD 1
+
 // The kernel reaches frames through the firmware's write-back identity map whatever a task's leaf
 // says.
 #define KICKOS_ARCH_ALIAS_DCACHE 1

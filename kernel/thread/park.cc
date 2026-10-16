@@ -84,7 +84,7 @@ namespace kickos
                 KICKOS_ASSERT(m != nullptr); // WAIT_MUTEX never parks without one
                 t->wait_queue->unlink(&t->link);
                 Thread* owner = m->owner;
-                for (int depth = 0; owner != nullptr and depth <= KICKOS_MAX_MUTEXES; depth++)
+                for (int depth = 0; owner != nullptr and depth <= KICKOS_THREAD_SLOTS; depth++)
                 {
                     uint8_t const p = thread_effective_prio(owner);
                     if (p == owner->prio)
@@ -156,6 +156,7 @@ namespace kickos
         {
             return;
         }
+        // An ISR-context slay would need on_cpu here: there current may be booked, not entered.
         if (t == sched::current())
         {
             return; // it is inside the kernel already and will see this on its way out

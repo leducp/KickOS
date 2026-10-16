@@ -78,7 +78,7 @@
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
 
-_usage="usage: check_faultsurvive.sh <elf> <arm: survive|overflow|offstack|kwrite|lowedge|misalign|unread> <arch> <outcome: contained|terminated>
+_usage="usage: check_faultsurvive.sh <elf> <arm: survive|overflow|stkof|offstack|kwrite|lowedge|misalign|unread> <arch> <outcome: contained|terminated>
        KOS_CAPTURE=<log> check_faultsurvive.sh <board-build> <kickos-source> <cmake> <arm> <arch> <outcome>"
 if judging_capture; then
     shift 3
@@ -168,6 +168,36 @@ case "$arm" in
         fi
         status_clause "the system exited 0 once main returned" 0
         echo "PASS: 'faulter' died at line $killed and main ran at line $survived"
+        ;;
+    stkof)
+        # The overflow on a core with stack limit registers: the recursion's own push, or the
+        # entry that would stack below the limit, raises STKOF before a byte lands under it,
+        # so the thread is killed and the system carries on. Keyed on the kill's own record,
+        # and a stacking-abort bit beside STKOF means the MPU and not the limit stopped it.
+        [ "$outcome" = contained ] || fail "stkof: the only outcome this arm has is 'contained'"
+        killed="$(line_of "$(thread_fault_re faulter)")"
+        if [ -z "$killed" ]; then
+            cfail killed "stkof: no thread-kill for 'faulter', so the stack limit did not stop the overflow"
+        fi
+        after_about "$killed" "the kill"
+        survived="$(line_of "\[fs\] survivor ran after the fault")"
+        if [ -z "$survived" ]; then
+            cfail survived "stkof: main never ran again after the overflow"
+        fi
+        if [ "$survived" -le "$killed" ]; then
+            cfail order "stkof: main's line is at $survived, not after the kill at $killed"
+        fi
+        cfsr="$(printf '%s\n' "$OUT" | sed -n "$killed,\$p" | sed -n 's/.*CFSR=0x\([0-9a-fA-F]*\).*/\1/p' | head -n1)"
+        [ -n "$cfsr" ] || cfail cause "stkof: the kill record carries no CFSR"
+        if [ $(( 0x$cfsr & 0x100000 )) -eq 0 ]; then
+            cfail cause "stkof: CFSR=0x$cfsr has no STKOF, so something other than the limit stopped the overflow"
+        fi
+        if [ $(( 0x$cfsr & 0x1818 )) -ne 0 ]; then
+            cfail cause "stkof: CFSR=0x$cfsr carries a stacking abort, so a write below the limit reached the bus"
+        fi
+        assert_no_panic "stkof: the worker was killed AND the system panicked"
+        status_clause "the system exited 0 once main returned" 0
+        echo "PASS: 'faulter' overflowed into STKOF (CFSR=0x$cfsr), died at line $killed, main ran at line $survived"
         ;;
     overflow | offstack | kwrite | misalign | unread)
         if has_e "$(thread_fault_re faulter)"; then

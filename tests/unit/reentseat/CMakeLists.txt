@@ -11,7 +11,7 @@ kickos_add_kseam(kickos_kseam_reent
   EXTRA "${PROJECT_SOURCE_DIR}/tests/unit/deathspace/aspace_seam.cc"
         "${PROJECT_SOURCE_DIR}/tests/unit/common/aspace_leaves.cc" ${_reent}
   INCLUDES "${PROJECT_SOURCE_DIR}/tests/unit/deathspace"
-  POSTURE KICKOS_HAVE_ASPACE=1 KICKOS_MAX_MUTEXES=24 KICKOS_LIBC_REENT=1 KICKOS_REENT_PER_THREAD=1
+  POSTURE KICKOS_HAVE_ASPACE=1 KICKOS_LIBC_REENT=1 KICKOS_REENT_PER_THREAD=1
           KICKOS_REENT_IN_TCB=0)
 kickos_add_unit_test(NAME reent_seat SOURCES reent_seat.cc
   LIBRARIES kickos_kseam_reent)

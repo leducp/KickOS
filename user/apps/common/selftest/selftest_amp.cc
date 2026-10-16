@@ -577,7 +577,7 @@ namespace selftest
     constexpr int CH_FILL_GATE = KOS_SPAWN_DELEGATED_CAP0 + 1;
 
     // Fills after main has, so it also takes the slot main gave back.
-    void amp_pool_filler(void*) // caps: report@2, gate@3
+    void amp_pool_filler(void*) // caps: report@0, gate@1
     {
         kos_sem_wait(CH_FILL_GATE, KOS_TIMEOUT_NONE);
         kos_cap_t mine[AMP_REUSE_SLOTS];
@@ -793,7 +793,7 @@ namespace selftest
     Atomic<int32_t, Order::RELAXED> g_aru_unmap{1};
 
     // Below main's priority, so it runs once main's call has parked.
-    void amp_ru_unmapper(void*) // caps: frame@2, space@3
+    void amp_ru_unmapper(void*) // caps: frame@0, space@1
     {
         g_aru_unmap = kos_frame_unmap(CH_ARU_FRAME, CH_ARU_SPACE, g_aru_va);
         reinterpret_cast<Atomic<uint32_t, Order::RELEASE>*>(g_aru_hold)->store(g_aru_seq.load());

@@ -8,11 +8,14 @@
 // owes. The window is the seam's: a case acts there as the thread an interrupt would wake.
 
 #include <kickos/sync.h>
+#include <kickos/sys/init.h>
+#include <kickos/ustack.h>
 
 #include <setjmp.h>
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "stub_seam.h"
 #include "sys_fixture.h"
 
 #if not KICKOS_PRESYNC or not KICKOS_ARCH_ALIAS_DCACHE
@@ -635,6 +638,23 @@ namespace kickos
                 EXPECT_EQ(g_syncs, 0u);
             }
 
+            TEST_F(SysPresync, every_unprivileged_thread_enters_through_the_image_s_startup)
+            {
+                uintptr_t const grant = reserve_only(G);
+                ASSERT_NE(grant, 0u);
+                uintptr_t const p = building_spawn(grant);
+                sys_seam_reset();
+                kos_thread_t child = KOS_THREAD_NONE;
+                ASSERT_EQ(spawn(g_main, p, MAIN_OUT, &child), 0);
+                EXPECT_EQ(g_context_entry, reinterpret_cast<uintptr_t>(kickos_task_start));
+                EXPECT_EQ(g_second_arg, reinterpret_cast<uintptr_t>(params(p)->entry));
+                uintptr_t const q = spawn_params(MAIN_PARAMS, 0, 0, 0, KOS_TASK_NONE);
+                ASSERT_EQ(spawn(g_main, q, MAIN_OUT, &child), 0);
+                EXPECT_EQ(g_context_entry, reinterpret_cast<uintptr_t>(kickos_task_start))
+                    << "a member of a running space skipped the startup's once-guard";
+                EXPECT_EQ(g_second_arg, reinterpret_cast<uintptr_t>(params(q)->entry));
+            }
+
             TEST_F(SysPresync, a_call_refused_its_authority_or_its_out_word_stages_nothing)
             {
                 uintptr_t const grant = reserve_only(G);
@@ -878,6 +898,58 @@ namespace kickos
                 EXPECT_EQ(spawn(g_main, p, MAIN_OUT, &child), -KOS_EPERM)
                     << "a stack over a frame capability's mapping was admitted";
                 EXPECT_EQ(call_as(g_main, KOS_SYS_FRAME_UNMAP, run.fcap, run.acap, RUN_VA), 0u);
+            }
+
+            constexpr uint32_t CALLER_STACK = (KICKOS_MIN_STACK_SIZE + 15u) & ~15u;
+            constexpr size_t CALLER_PAGES = (CALLER_STACK + 64u + G - 1u) / G;
+
+            TEST_F(SysPresync, a_caller_stack_in_a_reservation_has_a_kernel_alias_and_is_admitted)
+            {
+                uintptr_t const own = reserve(g_main, CALLER_PAGES * G, 0);
+                uintptr_t const handed = reserve_only(CALLER_PAGES * G);
+                ASSERT_NE(own, 0u);
+                ASSERT_NE(handed, 0u);
+                kos_task_t const into = new_task(g_main, handed, CALLER_PAGES * G, 0);
+                ASSERT_NE(into, KOS_TASK_NONE);
+                struct
+                {
+                    char const* what;
+                    uintptr_t base;
+                    kos_task_t into;
+                } const cases[] = {
+                    {"own reservation", own, KOS_TASK_NONE},
+                    {"own reservation off its granule", own + 64u, KOS_TASK_NONE},
+                    {"a block handed to the task joined", handed + 64u, into},
+                };
+                for (auto const& c : cases)
+                {
+                    EXPECT_NE(ustack_kptr(c.base), nullptr) << c.what;
+                    uintptr_t const p = spawn_params(MAIN_PARAMS, 0, 0, 0, c.into);
+                    params(p)->stack_base = reinterpret_cast<void*>(c.base);
+                    params(p)->stack_size = CALLER_STACK;
+                    kos_thread_t child = KOS_THREAD_NONE;
+                    EXPECT_EQ(spawn(g_main, p, MAIN_OUT, &child), 0) << c.what;
+                }
+            }
+
+            // As the AMP share is in its init's space.
+            TEST_F(SysPresync, a_caller_stack_no_pool_frame_backs_is_eperm_and_claims_nothing)
+            {
+                uintptr_t const va = RUN_VA2 + PAGES * G;
+                VirtualRanges* const r = domain_ranges_mut(thread_domain(g_main));
+                ASSERT_NE(r, nullptr);
+                ASSERT_TRUE(r->reserve(va, CALLER_PAGES, VR_SHARE));
+                ASSERT_TRUE(r->grant(va, CALLER_PAGES, ARCH_MAP_R | ARCH_MAP_W, ARCH_MAP_NORMAL));
+                ASSERT_EQ(ustack_kptr(va + 64u), nullptr);
+                uintptr_t const p = spawn_params(MAIN_PARAMS, 0, 0, 0, KOS_TASK_NONE);
+                params(p)->stack_base = reinterpret_cast<void*>(va + 64u);
+                params(p)->stack_size = CALLER_STACK;
+                sys_seam_reset();
+                kos_thread_t child = KOS_THREAD_NONE;
+                EXPECT_EQ(spawn(g_main, p, MAIN_OUT, &child), -KOS_EPERM);
+                EXPECT_EQ(child, KOS_THREAD_NONE);
+                EXPECT_EQ(host_pool_attempts(), 0u);
+                EXPECT_TRUE(r->release(va));
             }
 
             TEST_F(SysPresync, a_wide_block_syncs_each_granule_once_per_mapping_call)

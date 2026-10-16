@@ -289,6 +289,44 @@ namespace
 
     // K64 SYSMPU (RM section 19), not the ARM core MPU. RGD0 supplies supervisor access; RGD1..11
     // hold user regions (sysmpu_rights.h); permissions are the union of matching descriptors.
+
+    // The blocks the periph seam opens, by exact base: the SIM gate of each and its AIPS0 slot.
+    // At most one entry per slot: a disable closes the whole slot, a second entry's holder too.
+    //
+    // No PIT entry: PACR slot 55 covers the whole 4 KB block, so clearing SP for a granted ch2
+    // window would expose the chained ch0+ch1 pair arch_clock_now uses, which arch_reserved_blocks
+    // protects by address.
+    struct PeriphGate
+    {
+        uintptr_t scgc;
+        uint32_t scgc_bit;
+        uint32_t slot;
+    };
+
+    bool periph_gate_of(uintptr_t base, PeriphGate* g)
+    {
+        if (base == mmap::UART0_BASE)
+        {
+            g->scgc = reg::sim::SCGC4;
+            g->scgc_bit = reg::sim::SCGC4_UART0; // RM 12.2.11
+        }
+        else if (base == mmap::DSPI0_BASE)
+        {
+            g->scgc = reg::sim::SCGC6;
+            g->scgc_bit = reg::sim::SCGC6_SPI0; // RM 12.2.13
+        }
+        else if (base == mmap::LPTMR0_BASE)
+        {
+            g->scgc = reg::sim::SCGC5;
+            g->scgc_bit = reg::sim::SCGC5_LPTMR0; // RM 12.2.12
+        }
+        else
+        {
+            return false;
+        }
+        g->slot = reg::aips::slot_of(base);
+        return g->slot != reg::aips::SLOT_NONE;
+    }
 }
 
 extern "C"
@@ -396,41 +434,29 @@ uint32_t arch_periph_clock_hz(uintptr_t base)
 
 // Ungates the block's SIM clock and clears its AIPS0 Supervisor-Protect bit. Exact-base match,
 // never a range.
-//
-// No PIT entry: PACR slot 55 covers the whole 4 KB block, so clearing SP for a granted ch2 window
-// would expose the chained ch0+ch1 pair arch_clock_now uses, which arch_reserved_blocks protects
-// by address.
 int arch_periph_enable(uintptr_t base)
 {
-    uint32_t scgc_bit;
-    uintptr_t scgc;
-    if (base == mmap::UART0_BASE)
-    {
-        scgc = reg::sim::SCGC4;
-        scgc_bit = reg::sim::SCGC4_UART0; // RM 12.2.11
-    }
-    else if (base == mmap::DSPI0_BASE)
-    {
-        scgc = reg::sim::SCGC6;
-        scgc_bit = reg::sim::SCGC6_SPI0; // RM 12.2.13
-    }
-    else if (base == mmap::LPTMR0_BASE)
-    {
-        scgc = reg::sim::SCGC5;
-        scgc_bit = reg::sim::SCGC5_LPTMR0; // RM 12.2.12
-    }
-    else
+    PeriphGate g;
+    if (not periph_gate_of(base, &g))
     {
         return -KOS_EINVAL;
     }
-    uint32_t const slot = reg::aips::slot_of(base);
-    if (slot == reg::aips::SLOT_NONE)
-    {
-        return -KOS_EINVAL; // outside AIPS0
-    }
     // Clock FIRST: a PACR-open but ungated block BusFaults on the holder's first access.
-    r32(scgc) |= scgc_bit;
-    r32(reg::aips::pacr_of(slot)) &= ~reg::aips::pacr_sp_bit(slot);
+    r32(g.scgc) |= g.scgc_bit;
+    r32(reg::aips::pacr_of(g.slot)) &= ~reg::aips::pacr_sp_bit(g.slot);
+    return 0;
+}
+
+// Sets the slot's SP bit back. The clock stays: the kernel console reclaims UART0 after its
+// driver's death.
+int arch_periph_disable(uintptr_t base)
+{
+    PeriphGate g;
+    if (not periph_gate_of(base, &g))
+    {
+        return -KOS_EINVAL;
+    }
+    r32(reg::aips::pacr_of(g.slot)) |= reg::aips::pacr_sp_bit(g.slot);
     return 0;
 }
 

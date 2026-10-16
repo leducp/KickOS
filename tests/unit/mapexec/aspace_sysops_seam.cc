@@ -14,6 +14,8 @@ namespace
     using kickos::testfix::sysop_record;
 
     uint64_t g_ttbr0[KICKOS_NUM_CORES] = {};
+    uint64_t g_user_ttbr0[KICKOS_NUM_CORES] = {};
+    bool g_deferred = false;
 
     // TCR_EL1 as startup.S programs it: T0SZ 25, so a 39-bit low half whose walk starts at
     // level 1, IPS 0b010 for a 40-bit output, and AS for a 16-bit identifier.
@@ -38,6 +40,16 @@ extern "C"
     void kickos_arm64_instruction_side_rendezvous(uint32_t peers)
     {
         sysop_record(kickos::testfix::OP_RENDEZVOUS, peers);
+    }
+
+    bool kickos_armv8a_root_deferred(void)
+    {
+        return g_deferred;
+    }
+
+    uint64_t* kickos_armv8a_user_ttbr0_cell(void)
+    {
+        return &g_user_ttbr0[cpu()];
     }
 
     uint64_t kickos_armv8a_read_tcr_el1(void)
@@ -125,6 +137,21 @@ namespace kickos
             g_mmfr0 = mmfr0;
         }
 
+        void set_root_deferred(bool on)
+        {
+            g_deferred = on;
+        }
+
+        uint64_t user_ttbr0_of(uint32_t core)
+        {
+            return g_user_ttbr0[core];
+        }
+
+        void set_user_ttbr0(uint32_t core, uint64_t ttbr)
+        {
+            g_user_ttbr0[core] = ttbr;
+        }
+
         uint64_t tcr_a53()
         {
             return TCR_DEFAULT;
@@ -146,10 +173,12 @@ namespace kickos
             for (uint32_t c = 0; c < KICKOS_NUM_CORES; c++)
             {
                 g_ttbr0[c] = 0;
+                g_user_ttbr0[c] = 0;
             }
             g_tcr = TCR_DEFAULT;
             g_mmfr0 = MMFR0_DEFAULT;
             g_freed_at_sweep = 0;
+            g_deferred = false;
         }
 
         uint32_t frames_freed_at_sweep()

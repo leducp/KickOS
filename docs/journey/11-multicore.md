@@ -128,7 +128,7 @@ constructors) and read what it wrote:
 (gdb) p/x kickos_armv8a_boot_regs
 $1 = {mair = 0x4400ff, tcr = 0x12b5193519, ttbr0 = 0x40001000, ttbr1 = 0x40002000, sctlr = 0xc5183d, cpacr = 0x300000}
 (gdb) p/x kickos_armv8a_boot_sp
-$2 = {0xffffff804033ab30, 0xffffff804034ab30, 0xffffff804035ab30, 0xffffff804036ab30}
+$2 = {0xffffff804033afb0, 0xffffff804034afb0, 0xffffff804035afb0, 0xffffff804036afb0}
 ```
 
 The two table roots are physical addresses, because the secondary will load them with its MMU
@@ -175,10 +175,10 @@ on with a missing core would hand threads to a core that does not exist.
 there, and `info threads` now shows the release in progress:
 
 ```
-Thread 2 hit Breakpoint 1, kickos_armv8a_secondary_entry () at .../secondary.S
-  1    Thread 1.1 (CPU#0 [running]) 0xffffff804001cf40 in (anonymous namespace)::release_secondaries () at .../chip_virt_arm64.cc
-* 2    Thread 1.2 (CPU#1 [running]) kickos_armv8a_secondary_entry () at .../secondary.S
-  3    Thread 1.3 (CPU#2 [running]) kickos_armv8a_secondary_entry () at .../secondary.S
+Thread 3 hit Breakpoint 1, kickos_armv8a_secondary_entry () at .../secondary.S
+  1    Thread 1.1 (CPU#0 [running]) (anonymous namespace)::release_secondaries () at .../chip_virt_arm64.cc
+  2    Thread 1.2 (CPU#1 [running]) kickos_armv8a_secondary_entry () at .../secondary.S
+* 3    Thread 1.3 (CPU#2 [running]) kickos_armv8a_secondary_entry () at .../secondary.S
   4    Thread 1.4 (CPU#3 [running]) kickos_armv8a_secondary_entry () at .../secondary.S
 ```
 
@@ -228,7 +228,7 @@ from `kickos_armv8a_boot_sp[index]`, and calls `kickos_armv8a_park_core(index)`.
 Thread 3 hit Breakpoint 2, kickos_armv8a_park_core (id=2) at .../arch_armv8a.cc
 (gdb) bt
 #0  kickos_armv8a_park_core (id=2) at .../arch_armv8a.cc
-#1  0xffffff804001bf2c in kickos_armv8a_secondary_high () at .../secondary.S
+#1  0xffffff804001c038 in kickos_armv8a_secondary_high () at .../secondary.S
 ```
 
 The secondary is now in the high half. `p kickos_armv8a_core_online` shows the boot core's byte
@@ -281,9 +281,9 @@ the park's `wfi`:
 
 ```
 * 1    Thread 1.1 (CPU#0 [running]) kickos::corestart_seat (cores=cores@entry=14) at .../corestart.cc
-  2    Thread 1.2 (CPU#1 [halted ]) 0xffffff8040019ec4 in arch_idle_wait () at .../arch_armv8a.cc
-  3    Thread 1.3 (CPU#2 [halted ]) 0xffffff8040019ec4 in arch_idle_wait () at .../arch_armv8a.cc
-  4    Thread 1.4 (CPU#3 [halted ]) 0xffffff8040019ec4 in arch_idle_wait () at .../arch_armv8a.cc
+  2    Thread 1.2 (CPU#1 [halted ]) 0xffffff804001a09c in arch_idle_wait () at .../arch_armv8a.cc
+  3    Thread 1.3 (CPU#2 [halted ]) 0xffffff804001a09c in arch_idle_wait () at .../arch_armv8a.cc
+  4    Thread 1.4 (CPU#3 [halted ]) 0xffffff804001a09c in arch_idle_wait () at .../arch_armv8a.cc
 ```
 
 `cores` is `14`, binary `1110`: cores 1, 2 and 3.
@@ -388,10 +388,10 @@ scheduler, where root is waiting.
 
 ```
 #0  kickos::kickos_kernel_core_start () at .../corestart.cc
-#1  0xffffff804001c080 in kickos::doorbell::park<(anonymous namespace)::Part> () at .../doorbell_protocol.h
+#1  0xffffff804001c188 in kickos::doorbell::park<(anonymous namespace)::Part> () at .../doorbell_protocol.h
 #2  kickos_armv8a_doorbell_park () at .../klock_armv8a.cc
-#3  0xffffff8040019a54 in kickos_armv8a_park_core (id=3) at .../arch_armv8a.cc
-#4  0xffffff804001bf2c in kickos_armv8a_secondary_high () at .../secondary.S
+#3  0xffffff8040019c24 in kickos_armv8a_park_core (id=1) at .../arch_armv8a.cc
+#4  0xffffff804001c038 in kickos_armv8a_secondary_high () at .../secondary.S
 ```
 
 Then `delete`, `break kickos::sched::start`, `continue`, `info threads`: core 0 is in
@@ -461,24 +461,24 @@ then no other core may pick that thread up.
 `break arch_kernel_lock`, `continue`:
 
 ```
-Thread 2 hit Breakpoint 2, arch_kernel_lock () at .../klock_armv8a.cc
+Thread 3 hit Breakpoint 2, arch_kernel_lock () at .../klock_armv8a.cc
   1    Thread 1.1 (CPU#0 [running]) (anonymous namespace)::counter_now () at .../arch_arm64_a53.cc
-* 2    Thread 1.2 (CPU#1 [running]) arch_kernel_lock () at .../klock_armv8a.cc
-  3    Thread 1.3 (CPU#2 [running]) (anonymous namespace)::kernel_lock_draw () at .../klock_armv8a.cc
-  4    Thread 1.4 (CPU#3 [halted ]) 0xffffff8040019ec4 in arch_idle_wait () at .../arch_armv8a.cc
+  2    Thread 1.2 (CPU#1 [running]) (anonymous namespace)::kernel_lock_draw () at .../klock_armv8a.cc
+* 3    Thread 1.3 (CPU#2 [running]) arch_kernel_lock () at .../klock_armv8a.cc
+  4    Thread 1.4 (CPU#3 [running]) (anonymous namespace)::dev_va (pa=<optimized out>) at .../arch_arm64_gicv2.cc
 (gdb) p '(anonymous namespace)::g_next_ticket'
-$1 = 1491
+$1 = 2250
 (gdb) p '(anonymous namespace)::g_now_serving'
-$2 = 1491
+$2 = 2250
 (gdb) finish
 (gdb) p '(anonymous namespace)::g_next_ticket'
-$3 = 1492
+$3 = 2251
 (gdb) p '(anonymous namespace)::g_now_serving'
-$4 = 1491
+$4 = 2250
 ```
 
-The lock was free (next equals serving). CPU#1 drew ticket 1491 and, since serving is 1491, holds
-it. Two cores are in the lock code at the same instant: CPU#2 is drawing its own ticket. The
+The lock was free (next equals serving). CPU#2 drew ticket 2250 and, since serving is 2250, holds
+it. Two cores are in the lock code at the same instant: CPU#1 is drawing its own ticket. The
 large number counts every acquisition of the lock since reset.
 
 **Why, and the contract:** [Book: The separate question of kernel exclusion](../book/one-lock-many-ready-queues.md#the-separate-question-of-kernel-exclusion),
@@ -545,8 +545,8 @@ Thread 1 hit Breakpoint 1, kickos::(anonymous namespace)::hand_to (t=..., home=h
 #2  kickos::(anonymous namespace)::place (t=t@entry=..., me=me@entry=0, held=...)
 #3  kickos::(anonymous namespace)::pick_and_seat (woken=..., held=...)
 #4  kickos::sem_post (s=...)
-#5  (anonymous namespace)::syscall_body (nr=6, a0=2, a1=0, a2=0, a3=0)
-#6  syscall_dispatch (nr=6, a0=2, a1=0, a2=0, a3=0)
+#5  (anonymous namespace)::syscall_body (nr=6, a0=1, a1=0, a2=0, a3=0)
+#6  syscall_dispatch (nr=6, a0=1, a1=0, a2=0, a3=0)
 #7  kickos_armv8a_el0_sync_entry () at .../switch.S
 (gdb) p t->name
 $1 = "ping", '\000' <repeats 11 times>
@@ -662,13 +662,13 @@ and `continue`:
 
 ```
 Thread 2 hit Breakpoint 3, kickos_kernel_core_resched_if_owed () at .../sched.cc
-  1    Thread 1.1 (CPU#0 [halted ]) 0xffffff8040019ec4 in arch_idle_wait () at .../arch_armv8a.cc
+  1    Thread 1.1 (CPU#0 [running]) 0xffffff804001c920 in kickos_armv8a_gic_doorbell_send (cores=<optimized out>) at .../arch_arm64_gicv2.cc
 * 2    Thread 1.2 (CPU#1 [running]) kickos_kernel_core_resched_if_owed () at .../sched.cc
 (gdb) bt
 #0  kickos_kernel_core_resched_if_owed () at .../sched.cc
-#1  0xffffff8040019e98 in kickos_armv8a_irq () at .../arch_armv8a.cc
+#1  0xffffff804001a070 in kickos_armv8a_irq () at .../arch_armv8a.cc
 #2  0xffffff804001b838 in kickos_armv8a_irq_entry () at .../switch.S
-#3  0xffffff804000b38c in kickos::(anonymous namespace)::idle_entry () at .../kmain.cc
+#3  0xffffff804000b544 in kickos::(anonymous namespace)::idle_entry () at .../kmain.cc
 ```
 
 Core 1 was interrupted in its idle thread. Now read the cells (the anonymous-namespace names
@@ -731,8 +731,8 @@ unmaps the stack. `break arch_aspace_unmap`, `continue`, then
 
 ```
 Thread 4 hit Breakpoint 2, (anonymous namespace)::invalidate_page_if (va=va@entry=1077575680, resident=resident@entry=true) at .../aspace_walk.h
-  1    Thread 1.1 (CPU#0 [halted ]) 0xffffff8040019ec4 in arch_idle_wait () at .../arch_armv8a.cc
-  2    Thread 1.2 (CPU#1 [halted ]) 0xffffff8040019ec4 in arch_idle_wait () at .../arch_armv8a.cc
+  1    Thread 1.1 (CPU#0 [halted ]) 0xffffff804001a09c in arch_idle_wait () at .../arch_armv8a.cc
+  2    Thread 1.2 (CPU#1 [halted ]) 0xffffff804001a09c in arch_idle_wait () at .../arch_armv8a.cc
   3    Thread 1.3 (CPU#2 [running]) 0x00000000401050c0 in (anonymous namespace)::reader () at .../deadstack/main.cc
 * 4    Thread 1.4 (CPU#3 [running]) (anonymous namespace)::invalidate_page_if (...) at .../aspace_walk.h
 (gdb) x/5i $pc
@@ -767,8 +767,8 @@ then `break kickos_rv64_translation_rendezvous if peers != 0`, `continue`:
 
 ```
 Thread 1 hit Breakpoint 1, kickos_rv64_translation_rendezvous (peers=10) at .../klock_rv64imac.cc
-#1  (anonymous namespace)::walk_map (root=..., va=2152132608, pa=<optimized out>, pages=3, ...) at .../aspace_walk.h
-#2  arch_aspace_map (space=..., va=2152132608, pa=<optimized out>, pages=3, ...) at .../aspace_rv64imac.cc
+#1  (anonymous namespace)::walk_map (root=..., va=2152136704, pa=<optimized out>, pages=3, ...) at .../aspace_walk.h
+#2  arch_aspace_map (space=..., va=2152136704, pa=<optimized out>, pages=3, ...) at .../aspace_rv64imac.cc
 #3  kickos::ustack_alloc (d=<optimized out>, want=want@entry=12288) at .../ustack.cc
 ```
 
@@ -802,9 +802,9 @@ deadline, and the wake then places it like any other (Stop 9).
 
 ```
 * 1    Thread 1.1 (CPU#0 [running]) kickos::sched::wake (t=..., held=...) at .../sched.cc
-  2    Thread 1.2 (CPU#1 [halted ]) 0xffffff8040019ec4 in arch_idle_wait () at .../arch_armv8a.cc
-  3    Thread 1.3 (CPU#2 [halted ]) 0xffffff8040019ec4 in arch_idle_wait () at .../arch_armv8a.cc
-  4    Thread 1.4 (CPU#3 [halted ]) 0xffffff8040019ec4 in arch_idle_wait () at .../arch_armv8a.cc
+  2    Thread 1.2 (CPU#1 [halted ]) 0xffffff804001a09c in arch_idle_wait () at .../arch_armv8a.cc
+  3    Thread 1.3 (CPU#2 [halted ]) 0xffffff804001a09c in arch_idle_wait () at .../arch_armv8a.cc
+  4    Thread 1.4 (CPU#3 [halted ]) 0xffffff804001a09c in arch_idle_wait () at .../arch_armv8a.cc
 ```
 
 Then look at who is where (pool slot 2 is `ping`, slot 3 is `pong` in this image):
@@ -917,13 +917,13 @@ ampping: node 0 calls node 1 port 3
 ampping: node 0 done, 4 round(s) across the partition
 ```
 
-On the shared image (`hello` from `build/qemu-arm64-amp`, `-M virt,gic-version=3`),
+On the shared image (`hello` from `build/qemu-arm64-amp`, `-M virt,gic-version=3 -smp 4`),
 stop anywhere and look at a peer core:
 
 ```
 (gdb) thread 2
 (gdb) bt
-#0  0xffffff804001b334 in arch_idle_wait () at .../arch_armv8a.cc
+#0  0xffffff804001b46c in arch_idle_wait () at .../arch_armv8a.cc
 #1  (anonymous namespace)::Part::sleep () at .../klock_armv8a.cc
 #2  kickos::doorbell::park<(anonymous namespace)::Part> () at .../doorbell_protocol.h
 #3  kickos_armv8a_doorbell_park () at .../klock_armv8a.cc
@@ -973,16 +973,16 @@ one per image), `continue`:
 
 ```
 Thread 2 hit Breakpoint 2.2, kickos::amp::window_init () at .../ampwindow.cc
-  1    Thread 1.1 (CPU#0 [running]) kickos::(anonymous namespace)::ctz_word (v=<optimized out>) at .../frame.cc
+  1    Thread 1.1 (CPU#0 [running]) kickos::init::Walk::boot (this=this@entry=0x40335f10) at .../walk.cc
 * 2    Thread 1.2 (CPU#1 [running]) kickos::amp::window_init () at .../ampwindow.cc
 (gdb) bt
 #0  kickos::amp::window_init () at .../ampwindow.cc
-#1  0xffffff80440094d4 in kickos::kmain (argc=<optimized out>, argv=<optimized out>) at .../kmain.cc
-#2  0xffffff804401c724 in kickos_crt_tail () at .../crt_tail.h
+#1  0xffffff80440095f8 in kickos::kmain (argc=<optimized out>, argv=<optimized out>) at .../kmain.cc
+#2  0xffffff804401ca14 in kickos_crt_tail () at .../crt_tail.h
 ```
 
 CPU#1 is running the second kernel's own `kmain`, at `0xffffff8044...` addresses, while node 0
-carries on with its own boot (here in the frame allocator).
+carries on with its own boot (here in the init walk that composes the system).
 
 **Why, and the contract:** [design-multicore.md N6g and N6h](../design-multicore.md)
 
@@ -1037,7 +1037,7 @@ anything.
 ```
 Thread 1 hit Breakpoint 1.1, kickos::amp::send (to=1, port=3, tag=..., payload=..., len=len@entry=4) at .../ampwindow.cc
 * 1    Thread 1.1 (CPU#0 [running]) kickos::amp::send (to=1, port=3, ...) at .../ampwindow.cc
-  2    Thread 1.2 (CPU#1 [halted ]) 0xffffff804401ad54 in arch_idle_wait () at .../arch_armv8a.cc
+  2    Thread 1.2 (CPU#1 [halted ]) 0xffffff804401af8c in arch_idle_wait () at .../arch_armv8a.cc
 (gdb) p 'kickos::amp::(anonymous namespace)::g_window'.inbox[0][1][0].head
 $1 = {v = 0}
 (gdb) p &'kickos::amp::(anonymous namespace)::g_window'
@@ -1054,7 +1054,7 @@ $3 = {v = 1}
 (gdb) p 'kickos::amp::(anonymous namespace)::g_window'.inbox[0][1][0].tail
 $4 = {v = 0}
 (gdb) p tag
-$5 = (const kickos::amp::ReplyTag &) @0xffffff8044b24c78: {thread = 1, seq = 1}
+$5 = (const kickos::amp::ReplyTag &) @0xffffff8044b24c68: {thread = 1, seq = 1}
 ```
 
 One entry published by node 0, not yet taken by node 1. The tag names node 0's caller and its
@@ -1113,15 +1113,15 @@ caller, and `far_reply_land` copies the reply into its buffer.
 
 ```
 Thread 2 hit Breakpoint 1.2, kickos::endpoint_far_call_deliver (from=0, port=3, tag=..., len=4, slot=0, held=...) at .../syscall_ipc.cc
-  1    Thread 1.1 (CPU#0 [halted ]) 0xffffff804001ad44 in arch_idle_wait () at .../arch_armv8a.cc
+  1    Thread 1.1 (CPU#0 [halted ]) 0xffffff804001af7c in arch_idle_wait () at .../arch_armv8a.cc
 * 2    Thread 1.2 (CPU#1 [running]) kickos::endpoint_far_call_deliver (...) at .../syscall_ipc.cc
 (gdb) bt
 #0  kickos::endpoint_far_call_deliver (from=0, port=3, tag=..., len=4, slot=0, held=...)
 #1  kickos::amp::(anonymous namespace)::dispatch_call (me=1, from=0, ...) at .../ampwindow.cc
 #2  kickos::amp::node_service (held=..., held@entry=...) at .../ampwindow.cc
-#3  0xffffff804400df70 in kickos_amp_node_service () at .../held.h
-#4  0xffffff804401a7b8 in kickos_armv8a_gic_dispatch () at .../arch_arm64_gicv3.cc
-#5  0xffffff804401ad1c in kickos_armv8a_irq () at .../arch_armv8a.cc
+#3  0xffffff804400e0a4 in kickos_amp_node_service () at .../held.h
+#4  0xffffff804401a8b0 in kickos_armv8a_gic_dispatch () at .../arch_arm64_gicv3.cc
+#5  0xffffff804401af54 in kickos_armv8a_irq () at .../arch_armv8a.cc
 ```
 
 Node 0's caller is parked, so CPU#0 sleeps; CPU#1 is in its doorbell interrupt. Then `delete`,
@@ -1133,8 +1133,8 @@ server's own syscall (`endpoint_reply_recv`), copying the request out of the slo
 Thread 1 hit Breakpoint 3.1, kickos::(anonymous namespace)::far_reply_land (c=..., buf=buf@entry=1077129192) at .../syscall_ipc.cc
 (gdb) bt
 #0  kickos::(anonymous namespace)::far_reply_land (c=..., buf=buf@entry=1077129192)
-#1  0xffffff8040011170 in kickos::endpoint_call (cap=cap@entry=2, buf=buf@entry=1077129192, send_len=<optimized out>, recv_cap=4, timeout_us=500000) at .../syscall_ipc.cc
-#2  (anonymous namespace)::syscall_body (nr=46, a0=2, a1=1077129192, a2=2052, a3=500000) at .../syscall.cc
+#1  0xffffff80400112f8 in kickos::endpoint_call (cap=cap@entry=1, buf=buf@entry=1077129192, send_len=<optimized out>, recv_cap=4, timeout_us=500000) at .../syscall_ipc.cc
+#2  (anonymous namespace)::syscall_body (nr=46, a0=1, a1=1077129192, a2=2052, a3=500000) at .../syscall.cc
 (gdb) p c->name
 $1 = "main", '\000' <repeats 11 times>
 ```
@@ -1169,10 +1169,10 @@ then checks for parked console writers.
 `continue`. The first claim is node 0's, for its own banner, before node 1 is even released:
 
 ```
-Thread 1 hit Breakpoint 1.1, kickos::virt_arm64::console::compare_exchange (expected=expected@entry=@0xffffff8043fffe58: 0, desired=14134827565449217) at .../chip_virt_arm64.cc
+Thread 1 hit Breakpoint 1.1, kickos::virt_arm64::console::compare_exchange (expected=expected@entry=@0xffffff8043fffe58: 0, desired=15469883789672449) at .../chip_virt_arm64.cc
   2    Thread 1.2 (CPU#1 [halted ]) _start () at .../startup.S
 (gdb) p/x desired
-$1 = 0x32378d00000001
+$1 = 0x36f5c700000001
 (gdb) bt 3
 #0  kickos::virt_arm64::console::compare_exchange (...)
 #1  kickos::virt_arm64::console::Claim::try_acquire (this=... <(anonymous namespace)::g_claim>, budget=budget@entry=3125000) at .../console_claim.h
@@ -1180,7 +1180,7 @@ $1 = 0x32378d00000001
 ```
 
 The word was free (`expected` is 0). The new value's low half is `1`, node 0 plus one; its high
-half, `0x32378d`, is the deadline on the counter. `budget` is the 50 ms hold in counter ticks.
+half, `0x36f5c7`, is the deadline on the counter. `budget` is the 50 ms hold in counter ticks.
 Then `delete`, `break kickos::console_claim_rung`, `continue`: it fires on CPU#1, called from
 `kickos_amp_node_service` in node 1's doorbell interrupt. Without gdb, the two banners on the
 console arrive whole, one after the other.

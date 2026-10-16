@@ -71,10 +71,10 @@ kickos_x86_64_trap_common:
     jz      .Ltrap_same_level
     swapgs
 .Ltrap_same_level:
-/* Delivery leaves the direction flag as the interrupted code set it, and every C body below
- * this call is compiled to the SysV convention. tests/static/check_x86_64_entry_cld.sh reads
- * the assembled object for this instruction. */
-    cld
+/* Delivery keeps the interrupted DF and AC; AC set lifts SMAP. clac would #UD without SMAP.
+ * tests/static/check_x86_64_entry_cld.sh reads the assembled object for this pair. */
+    pushq   $2
+    popfq
     pushq   %rax
     pushq   %rbx
     pushq   %rcx

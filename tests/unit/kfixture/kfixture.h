@@ -67,11 +67,24 @@ namespace kickos
         extern uint32_t g_held_off;
         extern uint32_t g_console_noted;
         extern uint32_t g_console_reclaimed;
+        // The formats kprintf_fault was handed, oldest first, past the last one dropped. Reset
+        // clears them.
+        constexpr uint32_t FAULT_FMT_MAX = 8;
+        extern char const* g_fault_fmt[FAULT_FMT_MAX];
+        extern uint32_t g_fault_fmts;
         // What console_dark answers: the kernel console's dark window. Reset clears it.
         extern bool g_console_dark;
         // What console_window_held_outside answers. Reset clears it.
         extern bool g_console_window_held;
         extern uint32_t g_parked;
+        // arch_periph_disable's calls: the first PERIPH_RECORD_MAX bases in order, the count,
+        // and how many found the base still a device window of the current thread; and what it
+        // answers. Reset clears them and answers 0.
+        constexpr uint32_t PERIPH_RECORD_MAX = 4;
+        extern int g_periph_disable_rc;
+        extern uintptr_t g_periph_disabled[PERIPH_RECORD_MAX];
+        extern uint32_t g_periph_disables;
+        extern uint32_t g_periph_disables_held;
 
         // Fixture-owned TCB storage outside ThreadPool.
         constexpr int MAX_TEST_THREADS = 8;
@@ -126,6 +139,9 @@ namespace kickos
             DEFERRED
         };
         void set_swap_mode(SwapMode m);
+        // A DEFERRED swap's exception exit, as the calling core: parks the outgoing frame if a
+        // switch was booked and ends the lock span the booking left owed.
+        void exception_exit();
 
         extern uint32_t g_core;
 

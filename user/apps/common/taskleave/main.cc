@@ -33,7 +33,7 @@
 
 namespace
 {
-    // Main's semaphore, delegated to both members at their table index 2.
+    // Main's semaphore, delegated to both members as their kos::child_cap(0).
     constexpr int SIG = KOS_SPAWN_DELEGATED_CAP0;
 
     constexpr int ROUNDS = 8;

@@ -10,8 +10,9 @@
 // things have to happen, in order, and each is one line of kernel:
 //
 //   the ask          thread_cancel_kind publishes the reschedule against the victim's core.
-//   the displacement available_to refuses a slain, unclaimed current, so that core's pass
-//                    takes the victim off the core and owes itself one more pass.
+//   the displacement available_to refuses a slain, unclaimed thread whose frame the core holds,
+//                    so that core's pass takes the victim off the core and owes itself one more
+//                    pass.
 //   the claim        the pass it owed picks the victim, now merely READY, and redirects it.
 //
 // The self-owed pass is a cell and not a send: klock_resched_ask strips the caller's own bit
@@ -161,6 +162,35 @@ namespace kickos
             {
                 p.slayer->affinity = 1u << CORE_ME;
                 p.victim->affinity = 1u << CORE_PEER;
+            }
+
+            // As the peer core inside one exception: its swaps are booked, and performed only at
+            // the exit. Returns what the first pass seated, read before the second runs.
+            Thread* exception_as_peer(void (*first)(), void (*then)())
+            {
+                uint32_t const was = g_core;
+                g_core = CORE_PEER;
+                g_in_isr = true;
+                set_swap_mode(SwapMode::DEFERRED);
+                first();
+                Thread* const seated = kernel().current(CORE_PEER);
+                then();
+                exception_exit();
+                set_swap_mode(SwapMode::IMMEDIATE);
+                g_in_isr = false;
+                g_core = was;
+                return seated;
+            }
+
+            void dispatch_here()
+            {
+                kickos_kernel_core_resched_if_owed();
+            }
+
+            void pass_here()
+            {
+                IrqLock lock;
+                sched::reschedule(nullptr, lock);
             }
 
             // A thread that outranks the victim, READY on the peer's own structure: a thread is
@@ -487,6 +517,59 @@ namespace kickos
                 << "the victim runs something other than its own teardown";
             EXPECT_EQ(g_redirect_stack_top, reinterpret_cast<uintptr_t>(STACK_BASE) + STACK_SIZE)
                 << "at the TOP of its own stack, not at the depth it had reached";
+        }
+
+        // A second pass inside the exception that took the core off a running victim, as a
+        // timer interrupt waking a sleeper after its tick takes one. The victim's registers are
+        // still the frame the handler stands on until the exit parks them.
+        TEST_F(SlayPeer, a_later_pass_of_the_same_exception_never_rebuilds_the_frame_it_stands_on)
+        {
+            Placed p = place();
+            {
+                IrqLock lock;
+                thread_cancel_kind(p.victim, CANCEL_SLAY, lock);
+            }
+            Thread* const seated = exception_as_peer(dispatch_here, pass_here);
+
+            ASSERT_EQ(seated, p.peer_idle)
+                << "fixture: the exception's first pass took the core off the victim";
+            EXPECT_EQ(g_redirects, 0u)
+                << "a later pass of the exception re-picked the victim it had switched out and "
+                   "rebuilt its context, which is the frame the handler is still standing on";
+            EXPECT_EQ(kernel().current(CORE_PEER), p.peer_idle)
+                << "the exception booked the core back onto the victim it had just displaced";
+
+            dispatch_as(CORE_PEER);
+
+            EXPECT_EQ(kernel().current(CORE_PEER), p.victim)
+                << "the pass owed once the victim's frame was parked did not claim it";
+            EXPECT_EQ(g_redirect_target, p.victim) << "the rebuild named another thread";
+            EXPECT_EQ(g_redirect_stack_top, reinterpret_cast<uintptr_t>(STACK_BASE) + STACK_SIZE)
+                << "at the TOP of its own stack, not at the depth it had reached";
+        }
+
+        // The reverse order: a pass switches a slain READY victim in and rebuilds its context,
+        // then a later pass of the same exception runs before the exit enters it.
+        TEST_F(SlayPeer, a_victim_switched_in_earlier_in_the_exception_keeps_the_core)
+        {
+            Placed p = place();
+            {
+                IrqLock lock;
+                thread_cancel_kind(p.victim, CANCEL_SLAY, lock);
+            }
+            drain(CORE_PEER);
+            pass_as_peer();
+            ASSERT_EQ(kernel().current(CORE_PEER), p.peer_idle)
+                << "fixture: the victim's frame is parked and the peer runs idle";
+            settle();
+
+            Thread* const seated = exception_as_peer(pass_here, pass_here);
+
+            ASSERT_EQ(seated, p.victim) << "fixture: the first pass claimed the victim";
+            EXPECT_EQ(g_redirects, 1u) << "the victim's context was rebuilt twice in one exception";
+            EXPECT_EQ(kernel().current(CORE_PEER), p.victim)
+                << "a later pass switched out a victim whose claim had already fired, so a core "
+                   "taking two passes per exception books it in and out forever";
         }
 
         // The slay lands while the victim's core is already switching it out for a reason of

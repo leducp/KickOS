@@ -25,6 +25,13 @@
 #ifndef KICKOS_ARCH_RV64_TRAP_STACK_H
 #define KICKOS_ARCH_RV64_TRAP_STACK_H
 
+/* The image's startup on an unprivileged thread's OWN stack, which any thread of a space may
+ * carry (kickos_task_start): the unwind-table registration, the toolchain runtime's constructors
+ * and their malloc and libc-lock calls. 360 on every qemu-riscv64 preset's cxxtest, read off a
+ * painted stack the least a spawn admits, entry included. Reserved at 512;
+ * KICKOS_MIN_STACK_SIZE must hold it. An app's own deeper constructors are not in it. */
+#define KICKOS_RV64_TASK_START 512
+
 /* KICKOS_RV64_FRAME, the one frame every entry builds; arch_rv64imac.cc asserts the two agree. */
 #define KICKOS_RV64_TRAP_FRAME 256
 

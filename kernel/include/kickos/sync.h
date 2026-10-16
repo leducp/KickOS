@@ -7,6 +7,7 @@
 #ifndef KICKOS_SYNC_H
 #define KICKOS_SYNC_H
 
+#include <kickos/mutex.h>
 #include <kickos/thread.h>
 
 #include <kickos/sys/errno.h>
@@ -22,15 +23,6 @@ namespace kickos
     {
         int count = 0;
         List waiters;
-    };
-
-    // Priority-inheritance mutex (CAP_MUTEX). `owner != nullptr` is the whole lock state. An
-    // owner-died wake reaches the waiter only through its Thread::wait_result.
-    struct Mutex
-    {
-        Thread* owner = nullptr;
-        List waiters;
-        Mutex* next_held = nullptr; // intrusive link in the owner's held list
     };
 
     // Delivered as wait_result to a lock() caller woken by an owner that exited holding the

@@ -69,9 +69,15 @@ namespace kickos
         uint32_t g_held_off = 0;
         uint32_t g_console_noted = 0;
         uint32_t g_console_reclaimed = 0;
+        char const* g_fault_fmt[FAULT_FMT_MAX] = {};
+        uint32_t g_fault_fmts = 0;
         bool g_console_dark = false;
         bool g_console_window_held = false;
         uint32_t g_parked = 0;
+        uintptr_t g_periph_disabled[PERIPH_RECORD_MAX] = {};
+        uint32_t g_periph_disables = 0;
+        uint32_t g_periph_disables_held = 0;
+        int g_periph_disable_rc = 0;
         bool g_line_armed[KICKOS_MAX_IRQ] = {};
         int g_routed_armed = -1;
         uint32_t g_line_clears[KICKOS_MAX_IRQ] = {};
@@ -111,7 +117,10 @@ namespace kickos
 #if KICKOS_KERNEL_CORES > 1
             bool g_klock_held = false;
             SwapMode g_swap_mode = SwapMode::IMMEDIATE;
+            // A deferred swap's ends: the first `from` an exception booked, which is the frame
+            // the core stands on, and the last `to`.
             Thread* g_pending_from = nullptr;
+            Thread* g_pending_to = nullptr;
 #endif
         }
 
@@ -128,13 +137,37 @@ namespace kickos
                     g_parks_without_lock++;
                 }
                 g_pending_from = nullptr;
+                g_pending_to = nullptr;
                 kickos_switch_unlock();
+            }
+
+            // A booking back onto the frame the core stands on parks nothing and still ends the
+            // lock span.
+            void commit_pending()
+            {
+                if (g_pending_from == nullptr)
+                {
+                    return;
+                }
+                if (g_pending_to == g_pending_from)
+                {
+                    g_pending_from = nullptr;
+                    g_pending_to = nullptr;
+                    kickos_switch_unlock();
+                    return;
+                }
+                commit_park(g_pending_from);
             }
         }
 
         void set_swap_mode(SwapMode m)
         {
             g_swap_mode = m;
+        }
+
+        void exception_exit()
+        {
+            commit_pending();
         }
 
         bool klock_held()
@@ -249,7 +282,11 @@ namespace kickos
             }
             else
             {
-                g_pending_from = from;
+                if (g_pending_from == nullptr)
+                {
+                    g_pending_from = from;
+                }
+                g_pending_to = to;
             }
 #endif
             // Only RUNNING threads become READY on switch-out; blocked threads stay blocked.
@@ -272,10 +309,7 @@ namespace kickos
         {
             g_parked++;
 #if KICKOS_KERNEL_CORES > 1
-            if (g_pending_from != nullptr)
-            {
-                commit_park(g_pending_from);
-            }
+            commit_pending();
 #endif
             if (g_park_armed)
             {
@@ -357,6 +391,7 @@ namespace kickos
             g_core = 0;
             g_swap_mode = SwapMode::IMMEDIATE;
             g_pending_from = nullptr;
+            g_pending_to = nullptr;
             g_parks_committed = 0;
             g_parks_without_lock = 0;
             g_exit_window_opened = 0;
@@ -391,9 +426,17 @@ namespace kickos
             g_held_off = 0;
             g_console_noted = 0;
             g_console_reclaimed = 0;
+            g_fault_fmts = 0;
             g_console_dark = false;
             g_console_window_held = false;
             g_parked = 0;
+            for (uintptr_t& b : g_periph_disabled)
+            {
+                b = 0;
+            }
+            g_periph_disables = 0;
+            g_periph_disables_held = 0;
+            g_periph_disable_rc = 0;
             for (int line = 0; line < KICKOS_MAX_IRQ; line++)
             {
                 g_line_armed[line] = false;

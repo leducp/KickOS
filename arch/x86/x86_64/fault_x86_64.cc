@@ -17,6 +17,9 @@
 
 extern "C" bool kickos_fault_kill_thread(void* frame);
 extern "C" void kickos_fault_report_begin(void);
+// Defined per image: landed_kernel_x86_64.cc and nokernel_x86_64.cc.
+extern "C" void kickos_x86_64_fault_report_open(void);
+extern "C" [[noreturn]] void kickos_x86_64_fault_report_close(void);
 
 namespace
 {
@@ -177,6 +180,7 @@ namespace
     [[noreturn]] void report(kickos::x86_64::trap_frame* frame)
     {
         uint64_t const cr2 = read_cr2();
+        kickos_x86_64_fault_report_open();
 
         com1_puts("\n=== X86_64 EXCEPTION ===\n");
         com1_puts("  token=" KICKOS_X2_TOKEN "\n");
@@ -232,12 +236,7 @@ namespace
         com1_puts("\n");
 
         kickos::x86_64::desc_report();
-
-        com1_puts("  " KICKOS_X2_TOKEN " halting\n");
-        while (true)
-        {
-            __asm__ volatile("cli\n\thlt");
-        }
+        kickos_x86_64_fault_report_close();
     }
 }
 

@@ -6,6 +6,9 @@
 
 #include "selftest.h"
 
+#include <malloc.h>
+#include <stdlib.h>
+
 namespace selftest
 {
 #if KICKOS_HAVE_ASPACE
@@ -230,7 +233,7 @@ namespace selftest
     constexpr uint32_t SHARE_A = 0xC3A11CE0u; // written by main, read by the child
     constexpr uint32_t SHARE_B = 0xC3B00B1Eu; // written by the child, read by main
     // `arg` is where it maps the frame: a DIFFERENT address from main's, the holder choosing.
-    void share_child(void* arg) // caps: frame@2
+    void share_child(void* arg) // caps: frame@0
     {
         kos_cap_t space = KOS_CAP_NONE;
         (void)kos_aspace_self(&space);
@@ -250,7 +253,7 @@ namespace selftest
 
     constexpr int CH_PIN_FRAME = KOS_SPAWN_DELEGATED_CAP0 + 1;
     constexpr int CH_PIN_GATE = KOS_SPAWN_DELEGATED_CAP0 + 2;  // never posted
-    void pin_child(void*) // caps: E(SIGNAL)@2, frame@3, gate@4
+    void pin_child(void*) // caps: E(SIGNAL)@0, frame@1, gate@2
     {
         kos_cap_t space = KOS_CAP_NONE;
         uintptr_t va = 0;
@@ -260,14 +263,14 @@ namespace selftest
             rc = kos_frame_map(CH_PIN_FRAME, space, &va, 0);
         }
         kos_handle_close(CH_PIN_FRAME); // the mapping is now this task's only hold
-        (void)kos_send(2, &rc, sizeof(rc));
+        (void)kos_send(child_cap(0), &rc, sizeof(rc));
         // Alive until slain: the space gives the run's mapping back at its task's death.
         kos_sem_wait(CH_PIN_GATE, KOS_TIMEOUT_NONE);
     }
 
-    void ssr_worker(void*) // caps: gate@2
+    void ssr_worker(void*) // caps: gate@0
     {
-        kos_sem_wait(2, KOS_TIMEOUT_NONE);
+        kos_sem_wait(child_cap(0), KOS_TIMEOUT_NONE);
     }
 
     constexpr unsigned SSR_CYCLES = 8;
@@ -411,7 +414,7 @@ namespace selftest
         }
     }
 
-    void pool_stack_worker(void* arg) // caps: E(SIGNAL)@2
+    void pool_stack_worker(void* arg) // caps: E(SIGNAL)@0
     {
         // The stack's top granule, and the run below it of KICKOS_USER_STACK_SIZE rounded up
         // to whole granules; the guard is the granule under that.
@@ -708,26 +711,26 @@ namespace selftest
     // of the child's making, which outlives it and maps through that space before and after.
     // Its task outlives the one that made it, so nobody can slay it: main posts its gate on every
     // path once it may exist, and its other waits bound themselves.
-    void sd_grandchild(void*) // caps: report E(SIGNAL)@2, gate@3, run@4, space@5, held@6
+    void sd_grandchild(void*) // caps: report E(SIGNAL)@0, gate@1, run@2, space@3, held@4
     {
         uintptr_t at = 0;
-        int32_t rep = kos_frame_map(4, 5, &at, 0);
+        int32_t rep = kos_frame_map(child_cap(2), child_cap(3), &at, 0);
         if (rep == 0)
         {
-            rep = kos_frame_unmap(4, 5, at);
+            rep = kos_frame_unmap(child_cap(2), child_cap(3), at);
         }
-        (void)kos_sem_post(6);
-        (void)kos_send_timed(2, &rep, sizeof(rep), STALL_TOLERANT_US);
-        (void)kos_sem_wait(3, KOS_TIMEOUT_NONE);
+        (void)kos_sem_post(child_cap(4));
+        (void)kos_send_timed(child_cap(0), &rep, sizeof(rep), STALL_TOLERANT_US);
+        (void)kos_sem_wait(child_cap(1), KOS_TIMEOUT_NONE);
         at = 0;
-        rep = kos_frame_map(4, 5, &at, 0);
-        (void)kos_handle_close(4);
-        (void)kos_handle_close(5);
+        rep = kos_frame_map(child_cap(2), child_cap(3), &at, 0);
+        (void)kos_handle_close(child_cap(2));
+        (void)kos_handle_close(child_cap(3));
         // A call, so main counts the run's frames while this thread is parked and not exiting.
-        (void)kos_call_timed(2, &rep, sizeof(rep), sizeof(rep), STALL_TOLERANT_US);
+        (void)kos_call_timed(child_cap(0), &rep, sizeof(rep), sizeof(rep), STALL_TOLERANT_US);
     }
 
-    void sd_child(void*) // caps: report E(SIGNAL)@2, gate@3, run@4
+    void sd_child(void*) // caps: report E(SIGNAL)@0, gate@1, run@2
     {
         kos_cap_t space = KOS_CAP_NONE;
         kos_cap_t held = KOS_CAP_NONE;
@@ -737,9 +740,9 @@ namespace selftest
         {
             return;
         }
-        kos_cap_grant caps[] = {{2, KOS_CAP_SIGNAL},
-                                {3, CH_FULL},
-                                {4, KOS_CAP_TRANSFER},
+        kos_cap_grant caps[] = {{child_cap(0), KOS_CAP_SIGNAL},
+                                {child_cap(1), CH_FULL},
+                                {child_cap(2), KOS_CAP_TRANSFER},
                                 {space, KOS_CAP_TRANSFER},
                                 {held, CH_FULL}};
         if (kos::thread::create_caps(sd_grandchild, nullptr, "sdg", 10, caps, 5,
@@ -923,10 +926,10 @@ namespace selftest
         TAP_CHECK(roots1 == roots0);
     }
 
-    void sframe_worker(void*) // caps: E(SIGNAL)@2, gate@3
+    void sframe_worker(void*) // caps: E(SIGNAL)@0, gate@1
     {
-        reached(2);
-        kos_sem_wait(3, KOS_TIMEOUT_NONE); // held alive while main reads the pool
+        reached(child_cap(0));
+        kos_sem_wait(child_cap(1), KOS_TIMEOUT_NONE); // held alive while main reads the pool
     }
     void t_stack_is_frames()
     {
@@ -971,12 +974,12 @@ namespace selftest
     constexpr uint32_t SP_MAIN = 0x5BACEu;
     constexpr uint32_t SP_A = 0xA11CEu;
     constexpr uint32_t SP_B = 0xB0B0Bu;
-    void space_word_worker(void* arg) // caps: E(SIGNAL)@2, gate@3
+    void space_word_worker(void* arg) // caps: E(SIGNAL)@0, gate@1
     {
         volatile uint32_t* const slot = static_cast<volatile uint32_t*>(arg);
         g_sp_word = slot[SP_SEED];
-        reached(2);
-        kos_sem_wait(3, KOS_TIMEOUT_NONE); // both have written by now
+        reached(child_cap(0));
+        kos_sem_wait(child_cap(1), KOS_TIMEOUT_NONE); // both have written by now
         slot[SP_READ] = g_sp_word;
     }
 
@@ -1033,14 +1036,14 @@ namespace selftest
         PW_WORDS = 3
     };
     volatile uint32_t g_pw_word = 0u;
-    void pw_member(void* arg) // caps: E(SIGNAL)@2, gate@3
+    void pw_member(void* arg) // caps: E(SIGNAL)@0, gate@1
     {
         volatile uint64_t* const out = static_cast<volatile uint64_t*>(arg);
         uint32_t const mine = static_cast<uint32_t>(out[PW_SEED]);
         out[PW_ADDR] = reinterpret_cast<uintptr_t>(&g_pw_word);
         g_pw_word = mine;
-        reached(2);
-        kos_sem_wait(3, KOS_TIMEOUT_NONE); // both members have written by now
+        reached(child_cap(0));
+        kos_sem_wait(child_cap(1), KOS_TIMEOUT_NONE); // both members have written by now
         out[PW_READBACK] = g_pw_word;
     }
     void t_process_private_data()
@@ -1101,12 +1104,12 @@ namespace selftest
     // Two task siblings share one image. The writer, the task's entry, holds the task open
     // until the reader has read: its exit ends the task.
     volatile uint32_t g_sib_word = 0u;
-    void sib_writer(void* arg) // caps: E(SIGNAL)@2, park@3
+    void sib_writer(void* arg) // caps: E(SIGNAL)@0, park@1
     {
         g_sib_word = 0xBEEFu;
         static_cast<volatile uint64_t*>(arg)[0] = 1u;
-        reached(2);
-        kos_sem_wait(3, KOS_TIMEOUT_NONE);
+        reached(child_cap(0));
+        kos_sem_wait(child_cap(1), KOS_TIMEOUT_NONE);
     }
     void sib_reader(void* arg)
     {
@@ -1312,7 +1315,7 @@ namespace selftest
 
     // Park until main has joined the donor and exhausted available frames with churn. Its task
     // is the donor's, which main cannot slay, so its wait bounds itself.
-    void dx_borrower(void* arg) // caps: ep(WAIT)@2
+    void dx_borrower(void* arg) // caps: ep(WAIT)@0
     {
         volatile uint64_t* const blk = static_cast<volatile uint64_t*>(arg);
         char msg[sizeof(DxReport)] = {};
@@ -1335,7 +1338,7 @@ namespace selftest
     }
 
     // main joins the donor instead of waiting for a post.
-    void dx_donor(void* arg) // caps: ep(WAIT|TRANSFER)@2; arg is main's report block
+    void dx_donor(void* arg) // caps: ep(WAIT|TRANSFER)@0; arg is main's report block
     {
         volatile uint64_t* const out = static_cast<volatile uint64_t*>(arg);
         void* const blk = st_ram_own(DX_BLK);
@@ -1500,7 +1503,7 @@ namespace selftest
         RT_WORDS = 2
     };
     constexpr uintptr_t RT_PAGES = 3;
-    void rt_member(void*) // caps: E(SIGNAL)@2
+    void rt_member(void*) // caps: E(SIGNAL)@0
     {
         uint64_t rep[RT_WORDS] = {0, 0};
         uintptr_t const g = ASPACE_GRANULE;
@@ -1508,7 +1511,7 @@ namespace selftest
         void* const blk = st_ram_own(static_cast<size_t>(RT_PAGES * g));
         rep[RT_ADDR] = reinterpret_cast<uintptr_t>(blk);
         rep[RT_FREE] = mem_count(KOS_MEM_FRAMES_FREE);
-        (void)kos_send(2, rep, sizeof(rep));
+        (void)kos_send(child_cap(0), rep, sizeof(rep));
     }
     bool rt_cycle(kos_cap_t ep, uint64_t* rep)
     {
@@ -1563,7 +1566,7 @@ namespace selftest
     };
     constexpr uintptr_t FS_PAGES = 2;
     constexpr uint64_t FS_TOKEN = 0x5CB0BE5CB0BE5CB0ull;
-    void fs_member(void*) // caps: E(SIGNAL)@2
+    void fs_member(void*) // caps: E(SIGNAL)@0
     {
         uint64_t rep[FS_WORDS] = {0, 0};
         uintptr_t const g = ASPACE_GRANULE;
@@ -1587,7 +1590,7 @@ namespace selftest
                 w[i] = FS_TOKEN;
             }
         }
-        (void)kos_send(2, rep, sizeof(rep));
+        (void)kos_send(child_cap(0), rep, sizeof(rep));
     }
     bool fs_cycle(kos_cap_t ep, uint64_t* rep)
     {
@@ -1642,11 +1645,11 @@ namespace selftest
         LR_FRAMES1 = 5,
         LR_WORDS = 6
     };
-    void lr_parked(void*) // caps: gate@2
+    void lr_parked(void*) // caps: gate@0
     {
-        kos_sem_wait(2, KOS_TIMEOUT_NONE);
+        kos_sem_wait(child_cap(0), KOS_TIMEOUT_NONE);
     }
-    void lr_member(void*) // caps: E(SIGNAL)@2
+    void lr_member(void*) // caps: E(SIGNAL)@0
     {
         uint64_t rep[LR_WORDS] = {0, 0, 0, 0, 0, 0};
         uintptr_t const g = ASPACE_GRANULE;
@@ -1688,7 +1691,7 @@ namespace selftest
             }
             (void)kos_handle_close(gate);
         }
-        (void)kos_send(2, rep, sizeof(rep));
+        (void)kos_send(child_cap(0), rep, sizeof(rep));
     }
     bool lr_cycle(kos_cap_t ep, uint64_t* rep)
     {
@@ -1752,7 +1755,7 @@ namespace selftest
     {
         kos_exit(0);
     }
-    void ld_member(void*) // caps: E(SIGNAL)@2, done@3
+    void ld_member(void*) // caps: E(SIGNAL)@0, done@1
     {
         uint64_t rep[LD_WORDS] = {0, 0, 0};
         uintptr_t const g = ASPACE_GRANULE;
@@ -1770,7 +1773,7 @@ namespace selftest
         rep[LD_RC] = static_cast<uint64_t>(static_cast<uint32_t>(-rc));
         rep[LD_SPACES] = mem_count(KOS_MEM_SPACES_HELD);
         rep[LD_FRAMES] = mem_count(KOS_MEM_FRAMES_FREE);
-        (void)kos_send(2, rep, sizeof(rep));
+        (void)kos_send(child_cap(0), rep, sizeof(rep));
     }
     void t_spawn_refusal_frees_donor()
     {
@@ -1827,7 +1830,7 @@ namespace selftest
         *static_cast<volatile int32_t*>(arg) = kos_shutdown(0, KOS_SHUTDOWN_HALT);
         kos_exit(0);
     }
-    void hostile_sibling(void* arg) // caps: E(SIGNAL)@2, park@3
+    void hostile_sibling(void* arg) // caps: E(SIGNAL)@0, park@1
     {
         uintptr_t const top = reinterpret_cast<uintptr_t>(arg);
         volatile uint64_t* const w = reinterpret_cast<volatile uint64_t*>(top - HOSTILE_WINDOW);
@@ -1835,7 +1838,7 @@ namespace selftest
         {
             w[i] = HOSTILE_EL1H;
         }
-        reached(2);
+        reached(child_cap(0));
         kos_sem_wait(CH_HPARK, KOS_TIMEOUT_NONE);
         kos_exit(1); // unreachable: nothing posts that semaphore
     }
@@ -1949,32 +1952,32 @@ namespace selftest
         out[PI_RCAP] = g_pi_info.reply_cap;
     }
 
-    void pi_server(void* arg) // caps: E(WAIT)@2
+    void pi_server(void* arg) // caps: E(WAIT)@0
     {
         volatile uint64_t* const out = static_cast<volatile uint64_t*>(arg);
         pi_mine(out, '\0');
         struct kos_reply_recv_opts o;
-        kos_reply_recv_opts_init(&o, 2, 0, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&o, child_cap(0), 0, KOS_TIMEOUT_NONE);
         int32_t const n = kos_reply_recv(KOS_CAP_NONE, const_cast<char*>(&g_pi_msg[0]),
                                          kos_call_lens_pack(0, PI_MSG), &o);
         *const_cast<kos_recv_info*>(&g_pi_info) = o.info;
         pi_report(out, n, 'A');
     }
 
-    void pi_client(void* arg) // caps: E(SIGNAL)@2
+    void pi_client(void* arg) // caps: E(SIGNAL)@0
     {
         volatile uint64_t* const out = static_cast<volatile uint64_t*>(arg);
         pi_mine(out, 'A');
-        int32_t const n = kos_send(2, const_cast<char*>(&g_pi_msg[0]), PI_MSG);
+        int32_t const n = kos_send(child_cap(0), const_cast<char*>(&g_pi_msg[0]), PI_MSG);
         pi_report(out, n, 'A');
     }
 
-    void pi_call_server(void* arg) // caps: E(WAIT)@2
+    void pi_call_server(void* arg) // caps: E(WAIT)@0
     {
         volatile uint64_t* const out = static_cast<volatile uint64_t*>(arg);
         pi_mine(out, '\0');
         struct kos_reply_recv_opts o;
-        kos_reply_recv_opts_init(&o, 2, 0, KOS_TIMEOUT_NONE);
+        kos_reply_recv_opts_init(&o, child_cap(0), 0, KOS_TIMEOUT_NONE);
         int32_t const n = kos_reply_recv(KOS_CAP_NONE, const_cast<char*>(&g_pi_msg[0]),
                                          kos_call_lens_pack(0, PI_MSG), &o);
         *const_cast<kos_recv_info*>(&g_pi_info) = o.info;
@@ -1989,11 +1992,11 @@ namespace selftest
             kos_reply(g_pi_info.reply_cap, const_cast<char*>(&g_pi_msg[0]), PI_MSG)));
     }
 
-    void pi_call_client(void* arg) // caps: E(SIGNAL)@2
+    void pi_call_client(void* arg) // caps: E(SIGNAL)@0
     {
         volatile uint64_t* const out = static_cast<volatile uint64_t*>(arg);
         pi_mine(out, 'A');
-        int32_t const n = kos_call(2, const_cast<char*>(&g_pi_msg[0]), PI_MSG, PI_MSG);
+        int32_t const n = kos_call(child_cap(0), const_cast<char*>(&g_pi_msg[0]), PI_MSG, PI_MSG);
         pi_report(out, n, 'a'); // the REPLY, in its own copy of the one address
     }
 
@@ -2137,7 +2140,7 @@ namespace selftest
 
 #if KICKOS_FAULT_ISOLATION
     // Park on a semaphore that is never posted; only task-wide death can release it.
-    void fault_sibling(void*) // caps: park@2
+    void fault_sibling(void*) // caps: park@0
     {
         kos_sem_wait(KOS_SPAWN_DELEGATED_CAP0, KOS_TIMEOUT_NONE);
         kos_exit(1);
@@ -2220,7 +2223,7 @@ namespace selftest
         int32_t rounds;
         int32_t moved; // this thread's own move to core 1, where there is one
     };
-    void pw_cmos(void*) // caps: E(SIGNAL)@2, mine@3, theirs@4
+    void pw_cmos(void*) // caps: E(SIGNAL)@0, mine@1, theirs@2
     {
         PwSeen seen = {-99, -99, -99, 0, 0};
         seen.index = kos_port_reg_write(PW_CMOS, 0, 0x0au);
@@ -2228,43 +2231,44 @@ namespace selftest
         seen.unheld = kos_port_reg_write(PW_COM2, 0, 0);
         for (int i = 0; i < PW_ROUNDS; i++)
         {
-            kos_sem_wait(3, KOS_TIMEOUT_NONE);
+            kos_sem_wait(child_cap(1), KOS_TIMEOUT_NONE);
             (void)pw_inb(PW_CMOS + 1u);
             seen.rounds++;
-            kos_sem_post(4);
+            kos_sem_post(child_cap(2));
         }
-        kos_sem_wait(3, KOS_TIMEOUT_NONE);
+        kos_sem_wait(child_cap(1), KOS_TIMEOUT_NONE);
 #if KICKOS_KERNEL_CORES > 1
         seen.moved = kos::thread::pin(kos_thread_self(), 1);
 #endif
         (void)pw_inb(PW_CMOS + 1u);
         seen.rounds++;
-        (void)kos_send(2, &seen, sizeof(seen));
+        (void)kos_send(child_cap(0), &seen, sizeof(seen));
         kos_exit(0);
     }
-    void pw_com2(void*) // caps: E(SIGNAL)@2, mine@3, theirs@4
+    void pw_com2(void*) // caps: E(SIGNAL)@0, mine@1, theirs@2
     {
         int32_t rounds = 0;
         for (int i = 0; i < PW_ROUNDS; i++)
         {
-            kos_sem_wait(3, KOS_TIMEOUT_NONE);
+            kos_sem_wait(child_cap(1), KOS_TIMEOUT_NONE);
             (void)pw_inb(PW_COM2);
             rounds++;
             if (i + 1 < PW_ROUNDS)
             {
-                kos_sem_post(4);
+                kos_sem_post(child_cap(2));
             }
         }
-        (void)kos_send(2, &rounds, sizeof(rounds));
+        (void)kos_send(child_cap(0), &rounds, sizeof(rounds));
         (void)pw_inb(PW_CMOS + 1u);
-        (void)kos_send(2, &rounds, sizeof(rounds)); // unreachable: that port is not its own
+        // unreachable: that port is not its own
+        (void)kos_send(child_cap(0), &rounds, sizeof(rounds));
         kos_exit(0);
     }
-    void pw_index(void*) // caps: E(SIGNAL)@2
+    void pw_index(void*) // caps: E(SIGNAL)@0
     {
         pw_outb(PW_CMOS, 0x0au);
         char const x = 1;
-        (void)kos_send(2, &x, 1); // unreachable: the chip keeps the index closed
+        (void)kos_send(child_cap(0), &x, 1); // unreachable: the chip keeps the index closed
         kos_exit(0);
     }
     void pw_noop(void*) {}
@@ -2391,7 +2395,7 @@ namespace selftest
         uint32_t moved;
     };
     uintptr_t g_wa_addr = 0; // the holder's task's copy, which its sibling reads
-    void wa_holder(void*) // caps: E(SIGNAL)@2, hold@3
+    void wa_holder(void*) // caps: E(SIGNAL)@0, hold@1
     {
         kos_window at = {};
         WaSeen seen = {-99, -99, 0, 0};
@@ -2407,15 +2411,16 @@ namespace selftest
         }
         kos_window other = {};
         seen.other = kos_window_get(1, &other);
-        (void)kos_send(2, &seen, sizeof(seen));
-        kos_sem_wait(3, KOS_TIMEOUT_NONE);
+        (void)kos_send(child_cap(0), &seen, sizeof(seen));
+        kos_sem_wait(child_cap(1), KOS_TIMEOUT_NONE);
         kos_exit(0);
     }
-    void wa_sibling(void*) // caps: go@2, E(SIGNAL)@3
+    void wa_sibling(void*) // caps: go@0, E(SIGNAL)@1
     {
-        kos_sem_wait(2, KOS_TIMEOUT_NONE);
+        kos_sem_wait(child_cap(0), KOS_TIMEOUT_NONE);
         (void)*reinterpret_cast<volatile uint32_t*>(g_wa_addr);
-        (void)kos_send(3, "x", 1); // unreachable: the holder's exit took the mapping with it
+        // unreachable: the holder's exit took the mapping with it
+        (void)kos_send(child_cap(1), "x", 1);
         kos_exit(0);
     }
     void wa_noop(void*) {}
@@ -2598,7 +2603,7 @@ namespace selftest
     constexpr uint32_t UA_FILL = 0xCAC4ED00u;
     unsigned char* g_ua_dst[UA_ROUNDS] = {};
     Atomic<int32_t, Order::RELAXED> g_ua_got[UA_ROUNDS];
-    void ua_receiver(void*) // caps: E(WAIT)@2
+    void ua_receiver(void*) // caps: E(WAIT)@0
     {
         for (int r = 0; r < UA_ROUNDS; r++)
         {
@@ -2788,19 +2793,61 @@ namespace selftest
         ua_run();
     }
 
-    // New processes copy the saved startup globals, never a live process's mutable data.
+    // Each space constructs these at its startup: the image holds a zero word and a zero count.
+    volatile uint64_t g_ct_seed = 0x5EEDC7ull;
+    constexpr uint64_t CT_MASK = 0xA5A5ull;
+    constexpr uint64_t CT_WORD = 0x5EEDC7ull ^ CT_MASK;
+    uint64_t const g_ct_word = g_ct_seed ^ CT_MASK;
+    uint32_t g_ct_runs = 0;
+    __attribute__((constructor)) void ct_count()
+    {
+        g_ct_runs++;
+    }
+
+    // task_start_dead_starter's trap door: a starter holding a semaphore at its table's last
+    // slot parks inside the constructor walk until it is killed.
+    constexpr kos_cap_t DS_TRIGGER = KICKOS_CAP_CHILD_WIDTH - 1;
+    constexpr kos_cap_t DS_INSIDE = KICKOS_CAP_CHILD_WIDTH - 2;
+    __attribute__((constructor)) void ds_trap_door()
+    {
+        if (kos_sem_wait(DS_TRIGGER, 0) == 0)
+        {
+            (void)kos_sem_post(DS_INSIDE);
+            while (true)
+            {
+                (void)kos_sem_wait(DS_TRIGGER, KOS_TIMEOUT_NONE);
+            }
+        }
+    }
+
     volatile uint64_t g_dt_word = 0xC0FFEEull;
     constexpr uint64_t DT_A = 0xC0FFEEull;
     constexpr uint64_t DT_B = 0xBADBADull;
     enum
     {
         DT_VALUE = 0,
-        DT_WORDS = 1
+        DT_HEAP = 1,
+        DT_CTOR = 2,
+        DT_WORDS = 3
     };
     void dt_reader(void* arg)
     {
         volatile uint64_t* const out = static_cast<volatile uint64_t*>(arg);
         out[DT_VALUE] = g_dt_word;
+        out[DT_CTOR] = g_ct_word;
+        // An image with no heap answers null; what matters is that the call returns.
+        free(malloc(64));
+        out[DT_HEAP] = 1u;
+    }
+    // Holds its space's malloc lock across a write to static data until main lets it go.
+    void dt_holder(void*)
+    {
+        __malloc_lock(_REENT);
+        g_dt_word = DT_B;
+        kos_sem_post(CH_DONE);
+        (void)kos_sem_wait(CH_READY, KOS_TIMEOUT_NONE);
+        g_dt_word = DT_A;
+        __malloc_unlock(_REENT);
     }
     // A receiver parks, a sibling unmaps its buffer and sends: both must get EFAULT. The sender
     // buffer is separate to exclude overlap errors. Both are pinned and the receiver outranks
@@ -2815,7 +2862,7 @@ namespace selftest
     Atomic<int32_t, Order::RELAXED> g_ru_unmap{1};
     Atomic<int32_t, Order::RELAXED> g_ru_sent{1};
     Atomic<int32_t, Order::RELAXED> g_ru_got{99};
-    void ru_receiver(void* arg) // caps: E(WAIT)@2
+    void ru_receiver(void* arg) // caps: E(WAIT)@0
     {
         struct kos_reply_recv_opts opts = {};
         opts.timeout_us = STALL_TOLERANT_US;
@@ -2823,7 +2870,7 @@ namespace selftest
         opts.ep = CH_RU_EP;
         g_ru_got = kos_reply_recv(KOS_CAP_NONE, arg, kos_call_lens_pack(0, RU_LEN), &opts);
     }
-    void ru_puller(void* arg) // caps: E(SIGNAL)@2, frame@3, space@4
+    void ru_puller(void* arg) // caps: E(SIGNAL)@0, frame@1, space@2
     {
         g_ru_unmap = kos_frame_unmap(CH_RU_FRAME, CH_RU_SPACE,
                                      reinterpret_cast<uintptr_t>(arg));
@@ -2964,7 +3011,7 @@ namespace selftest
 
     // Parked on send_waiters before main receives, which reaches the receiver scan instead of
     // the fastpath.
-    void lu_caller(void*) // caps: E(SIGNAL)@2
+    void lu_caller(void*) // caps: E(SIGNAL)@0
     {
         g_lu_call = kos_call_timed(CH_LU_EP, g_lu_req, LU_LEN, LU_LEN, STALL_TOLERANT_US);
     }
@@ -2972,7 +3019,7 @@ namespace selftest
     // One receiver across the failures and the control, so they spend one cap budget. main maps
     // opts before each gate and unmaps it only once the receiver parked, so the failure is at
     // delivery and not at syscall entry.
-    void lu_receiver(void*) // caps: E(WAIT)@2, gate@3
+    void lu_receiver(void*) // caps: E(WAIT)@0, gate@1
     {
         for (uint32_t i = 0; i <= KICKOS_CAP_REPLY_MAX; i++)
         {
@@ -3119,12 +3166,13 @@ namespace selftest
         TAP_CHECK(b_ctl == static_cast<int32_t>(LU_LEN));
     }
 
-    // A task's static data is the image's as root held it at the first explicit task, the init
-    // creating main's, never a global main wrote since; the task after the write and its restart
-    // both read the image's value.
+    // Every space but the first starts from the image's pristine data, never from a live
+    // space's: a task created after main wrote a global, its restart, and a task a spawn builds
+    // while a sibling of main holds main's malloc lock across a write all read the image's value,
+    // and that last one's malloc does not wait on main's lock.
     void t_process_data_from_image()
     {
-        TAP_ASK(.workers = 1, .tasks = 1);
+        TAP_ASK(.workers = 2, .tasks = 1, .sems = 2);
         constexpr uint32_t FI_BLK = 8u * DT_WORDS;
         static_assert(FI_RAM.size[0] == FI_BLK);
         void* const blk = st_ram<FI_RAM, 0>();
@@ -3132,15 +3180,20 @@ namespace selftest
         TAP_CHECK(kos_mem_self_grant(blk, FI_BLK, 0) == 0);
         volatile uint64_t* const out = static_cast<volatile uint64_t*>(blk);
         kos_task_t t = KOS_TASK_NONE;
+        kos_cap_t held = KOS_CAP_NONE;
+        kos_cap_t go = KOS_CAP_NONE;
+        kos::thread::Handle holder;
         ArmHold hold;
-        TAP_HOLD(hold.task(&t));
+        TAP_HOLD(hold.task(&t) and hold.cap(&held) and hold.cap(&go) and hold.thread(&holder));
         TAP_CHECK(kos_task_create(blk, FI_BLK, 0, &t) == 0);
         TAP_CHECK(task_end(&t) == 0);
         g_dt_word = DT_B;
         uint64_t seen[2] = {0, 0};
+        uint64_t built[2] = {0, 0};
         for (int run = 0; run < 2; run++)
         {
             out[DT_VALUE] = 0;
+            out[DT_CTOR] = 0;
             TAP_CHECK(kos_task_create(blk, FI_BLK, 0, &t) == 0);
             auto const reader = kos::thread::create_caps(dt_reader, blk, "fiR", 10, nullptr, 0,
                                                          KOS_POLICY_FIFO, 0, nullptr, 0,
@@ -3148,13 +3201,175 @@ namespace selftest
             TAP_CHECK(reader.valid() and reader.join(STALL_TOLERANT_US) == 0);
             TAP_CHECK(task_end(&t) == 0);
             seen[run] = out[DT_VALUE];
+            built[run] = out[DT_CTOR];
         }
         g_dt_word = DT_A;
-        tap::diag("data from the image: first %u, restart %u",
-                  static_cast<unsigned>(seen[0]), static_cast<unsigned>(seen[1]));
+
+        TAP_CHECK(kos_sem_create(0, &held) == 0);
+        TAP_CHECK(kos_sem_create(0, &go) == 0);
+        kos_cap_grant caps[] = {{held, CH_FULL}, {go, CH_FULL}};
+        holder = kos::thread::create_caps(dt_holder, nullptr, "fiH", 10, caps, 2);
+        TAP_CHECK(holder.valid());
+        TAP_CHECK(kos_sem_wait(held, STALL_TOLERANT_US) == 0);
+        // Nothing here may allocate: the holder keeps main's malloc lock until `go`.
+        out[DT_VALUE] = 0;
+        out[DT_HEAP] = 0;
+        out[DT_CTOR] = 0;
+        auto const spawned = kos::thread::create(dt_reader, blk, "fiS", 10, KOS_POLICY_FIFO, 0,
+                                                 blk, FI_BLK);
+        bool const spawned_ran = spawned.valid() and spawned.join(STALL_TOLERANT_US) == 0;
+        uint64_t const spawned_saw = out[DT_VALUE];
+        uint64_t const spawned_heap = out[DT_HEAP];
+        uint64_t const spawned_built = out[DT_CTOR];
+        kos_sem_post(go);
+        TAP_CHECK(hold.joined());
+        tap::diag("data from the image: first %lx, restart %lx, spawned beside a held lock %lx",
+                  static_cast<unsigned long>(seen[0]), static_cast<unsigned long>(seen[1]),
+                  static_cast<unsigned long>(spawned_saw));
         TAP_CHECK(seen[0] == DT_A); // not main's DT_B
         TAP_CHECK(seen[1] == DT_A);
+        TAP_CHECK(built[0] == CT_WORD); // the image's zero: the startup never ran there
+        TAP_CHECK(built[1] == CT_WORD);
+        TAP_CHECK(spawned_ran);
+        TAP_CHECK(spawned_saw == DT_A); // not the holder's DT_B
+        TAP_CHECK(spawned_heap == 1u);
+        TAP_CHECK(spawned_built == CT_WORD);
+        TAP_CHECK(g_dt_word == DT_A);
     }
+
+    enum
+    {
+        TS_WORD = 0,
+        TS_RUNS = 1,
+        TS_LOW = 0,
+        TS_HIGH = 2,
+        TS_WORDS = 4
+    };
+    void ts_reader(void* arg)
+    {
+        volatile uint64_t* const out = static_cast<volatile uint64_t*>(arg);
+        out[TS_WORD] = g_ct_word;
+        out[TS_RUNS] = g_ct_runs;
+    }
+
+    // Two threads of one fresh task: the one seated second outranks the first, so it enters
+    // first and finds the space unstarted. Each must read constructed data, built once.
+    void t_task_start_once()
+    {
+        TAP_ASK(.workers = 2, .tasks = 1);
+        constexpr uint32_t TS_BLK = 8u * TS_WORDS;
+        static_assert(TS_RAM.size[0] == TS_BLK);
+        void* const blk = st_ram<TS_RAM, 0>();
+        TAP_CHECK(blk != nullptr);
+        TAP_CHECK(kos_mem_self_grant(blk, TS_BLK, 0) == 0);
+        volatile uint64_t* const out = static_cast<volatile uint64_t*>(blk);
+        for (uint32_t i = 0; i < TS_WORDS; i++)
+        {
+            out[i] = 0;
+        }
+        kos_task_t t = KOS_TASK_NONE;
+        kos::thread::Handle low;
+        kos::thread::Handle high;
+        ArmHold hold;
+        TAP_HOLD(hold.task(&t) and hold.thread(&low) and hold.thread(&high));
+        TAP_CHECK(kos_task_create(blk, TS_BLK, 0, &t) == 0);
+        low = kos::thread::create(ts_reader, const_cast<uint64_t*>(out + TS_LOW), "tsL",
+                                  TAP_PRIO_AFTER, KOS_POLICY_FIFO, 0, nullptr, 0, nullptr, 0,
+                                  nullptr, 0, nullptr, 0, 0, nullptr, t, TAP_PIN_CORE);
+        TAP_CHECK(low.valid());
+        high = kos::thread::create(ts_reader, const_cast<uint64_t*>(out + TS_HIGH), "tsH",
+                                   TAP_PRIO_PARKS, KOS_POLICY_FIFO, 0, nullptr, 0, nullptr, 0,
+                                   nullptr, 0, nullptr, 0, 0, nullptr, t, TAP_PIN_CORE);
+        TAP_CHECK(high.valid() and high.join(STALL_TOLERANT_US) == 0);
+        TAP_CHECK(low.join(STALL_TOLERANT_US) == 0);
+        tap::diag("task start: first in read %lx after %lu runs, the task's entry %lx after %lu",
+                  static_cast<unsigned long>(out[TS_HIGH + TS_WORD]),
+                  static_cast<unsigned long>(out[TS_HIGH + TS_RUNS]),
+                  static_cast<unsigned long>(out[TS_LOW + TS_WORD]),
+                  static_cast<unsigned long>(out[TS_LOW + TS_RUNS]));
+        TAP_CHECK(out[TS_HIGH + TS_WORD] == CT_WORD);
+        TAP_CHECK(out[TS_HIGH + TS_RUNS] == 1u);
+        TAP_CHECK(out[TS_LOW + TS_WORD] == CT_WORD);
+        TAP_CHECK(out[TS_LOW + TS_RUNS] == 1u);
+    }
+
+#if KICKOS_FAULT_ISOLATION
+    enum
+    {
+        DS_ENTRY = 0,
+        DS_STARTER = 1,
+        DS_AFTER = 2,
+        DS_WORDS = 3
+    };
+    void ds_mark(void* arg)
+    {
+        *static_cast<volatile uint64_t*>(arg) = 1u;
+    }
+
+    // The thread that started a space's constructors dies inside them: a later thread of that
+    // space finds the startup half done, and the task ends before any entry runs.
+    void t_task_start_dead_starter()
+    {
+        TAP_ASK(.workers = 3, .tasks = 1, .sems = 2, .notifies = 1);
+        constexpr uint32_t DS_BLK = 8u * DS_WORDS;
+        static_assert(DS_RAM.size[0] == DS_BLK);
+        void* const blk = st_ram<DS_RAM, 0>();
+        TAP_CHECK(blk != nullptr);
+        TAP_CHECK(kos_mem_self_grant(blk, DS_BLK, 0) == 0);
+        volatile uint64_t* const out = static_cast<volatile uint64_t*>(blk);
+        for (uint32_t i = 0; i < DS_WORDS; i++)
+        {
+            out[i] = 0;
+        }
+        kos_task_t t = KOS_TASK_NONE;
+        kos_cap_t trigger = KOS_CAP_NONE;
+        kos_cap_t inside = KOS_CAP_NONE;
+        kos_cap_t note = KOS_CAP_NONE;
+        kos::thread::Handle entry;
+        kos::thread::Handle starter;
+        kos::thread::Handle after;
+        ArmHold hold;
+        TAP_HOLD(hold.task(&t) and hold.cap(&trigger) and hold.cap(&inside)
+                  and hold.bound(&note) and hold.thread(&entry) and hold.thread(&starter)
+                  and hold.thread(&after));
+        TAP_CHECK(kos_sem_create(1, &trigger) == 0);
+        TAP_CHECK(kos_sem_create(0, &inside) == 0);
+        TAP_CHECK(kos_notify_create(&note) == 0 and kos_notify_bind(note) == 0);
+        TAP_CHECK(kos_task_create(blk, DS_BLK, 0, &t) == 0);
+        TAP_CHECK(kos_task_watch(t, note, KOS_CAP_NONE) == 0);
+        // The task's entry, which keeps the task alive past the starter and never runs first.
+        entry = kos::thread::create(ds_mark, const_cast<uint64_t*>(out + DS_ENTRY), "dsE",
+                                    TAP_PRIO_AFTER, KOS_POLICY_FIFO, 0, nullptr, 0, nullptr, 0,
+                                    nullptr, 0, nullptr, 0, 0, nullptr, t, TAP_PIN_CORE);
+        TAP_CHECK(entry.valid());
+        kos_cap_grant const caps[] = {{trigger, CH_FULL}, {inside, CH_FULL}};
+        uint16_t const dest[] = {DS_TRIGGER, DS_INSIDE};
+        starter = kos::thread::create(ds_mark, const_cast<uint64_t*>(out + DS_STARTER), "dsS",
+                                      TAP_PRIO_PARKS, KOS_POLICY_FIFO, 0, nullptr, 0, nullptr, 0,
+                                      nullptr, 0, caps, 2, 0, dest, t, TAP_PIN_CORE);
+        TAP_CHECK(starter.valid());
+        TAP_CHECK(kos_sem_wait(inside, STALL_TOLERANT_US) == 0);
+        TAP_CHECK(starter.kill() == 0 and starter.join(STALL_TOLERANT_US) == 0);
+        after = kos::thread::create(ds_mark, const_cast<uint64_t*>(out + DS_AFTER), "dsA",
+                                    TAP_PRIO_PARKS, KOS_POLICY_FIFO, 0, nullptr, 0, nullptr, 0,
+                                    nullptr, 0, nullptr, 0, 0, nullptr, t, TAP_PIN_CORE);
+        TAP_CHECK(after.valid());
+        bool const ended = task_dead(t, note);
+        char const* fate = "lived";
+        if (ended)
+        {
+            fate = "ended";
+        }
+        tap::diag("task start: a dead starter's task %s; entries run: %lu %lu %lu", fate,
+                  static_cast<unsigned long>(out[DS_ENTRY]),
+                  static_cast<unsigned long>(out[DS_STARTER]),
+                  static_cast<unsigned long>(out[DS_AFTER]));
+        TAP_CHECK(ended);
+        TAP_CHECK(out[DS_ENTRY] == 0u);
+        TAP_CHECK(out[DS_STARTER] == 0u);
+        TAP_CHECK(out[DS_AFTER] == 0u);
+    }
+#endif
 
     // Absolute words the link stores in the app's own data. Volatile, so each is read from
     // memory and not folded from its initializer.

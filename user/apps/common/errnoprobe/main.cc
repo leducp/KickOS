@@ -84,10 +84,9 @@ namespace
     // Root is a core's first thread, entered by arch_start with no switch, so only the FS base
     // that path wrote can hand libc this thread's state. The app's constructors run on root
     // before the init it then runs switches anything in, so the arm is one: strtok and strtol
-    // out of newlib, then which core entered root. Its line waits for main to print it.
+    // out of newlib, then which core entered root. Root prints the line itself: main's space
+    // starts from the image and runs these constructors again, on a thread a switch entered.
     // Not excluded: an interrupt switching root out and back in before the reads.
-    char g_first_line[96];
-
     __attribute__((constructor)) void arm_first_thread()
     {
         char buf[] = "kick os";
@@ -123,12 +122,14 @@ namespace
         {
             verdict = "THE CORE IS UNREADABLE";
         }
-        if (verdict[0] != 'o')
+        // Root's handle is the bare 0: slot 0, generation 0, never reclaimed.
+        if (kos_thread_self() != 0)
         {
-            g_bad++;
+            return;
         }
-        ksnprintf(g_first_line, sizeof(g_first_line), "[errnoprobe] F first core %d %s\n", core,
-                  verdict);
+        char line[96];
+        ksnprintf(line, sizeof(line), "[errnoprobe] F first core %d %s\n", core, verdict);
+        kos::print(line);
     }
 #endif
 
@@ -730,9 +731,6 @@ namespace
 int main(int, char**)
 {
     kos::print("[errnoprobe] start\n");
-#if defined(__x86_64__) && !KICKOS_ARCH_SIM
-    say(g_first_line);
-#endif
 
     arm_cooperative();
     arm_slot_reuse();

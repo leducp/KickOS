@@ -95,7 +95,7 @@ $2 = 4
 (gdb) p p->prio
 $3 = 10 '\n'
 (gdb) p $k->tasks[3]
-$4 = {domain = 0x20006428 <kickos::detail::g_instance+7288>, refcount = 0 '\000', creator_tag = 2 '\002',
+$4 = {domain = 0x20006470 <kickos::detail::g_instance+7360>, refcount = 0 '\000', creator_tag = 2 '\002',
   gen = 0, prio_ceiling = 31 '\037', marks = 0 '\000', ...}
 ```
 
@@ -109,11 +109,12 @@ Task handle 4 is `tasks[3]`: empty so far, created by `main` (kill tag 2).
 (on the f411, `arch/arm/chip/stm32f411/startup.S`); `arch/arm/armv7m/arch_armv7m.cc`, `HardFault_Handler`
 
 `faulter` runs unprivileged, in thread mode, on its own stack (the process stack pointer,
-PSP). It executes `udf #0`. The core cannot execute it, so it raises a **UsageFault**. On
-this build UsageFault is not enabled as its own exception: the PMSAv7 backend
-(`arch/arm/common/arch_arm_mpu_pmsav7.cc`) sets only `SHCSR_MEMFAULTENA` and
-`SHCSR_BUSFAULTENA` in `SCB_SHCSR`. A disabled fault **escalates** to HardFault, and the core
-records that it did (HFSR.FORCED).
+PSP). It executes `udf #0`. The core cannot execute it, so it raises a **UsageFault**. The
+core bring-up (`kickos_armv7m_init` in `arch/arm/armv7m/arch_armv7m.cc`) enables UsageFault and
+BusFault as exceptions of their own, and the PMSAv7 backend
+(`arch/arm/common/arch_arm_mpu_pmsav7.cc`) enables MemManage, all in `SCB_SHCSR`. Had one of
+them been left disabled, the fault would **escalate** to HardFault, and the core would record
+that it did (HFSR.FORCED).
 
 Before running a single instruction of the handler, the hardware does three things:
 
@@ -155,13 +156,13 @@ return.
 lr             0xfffffffd          -3
 psp            0x20029fd8          537042904
 control        0x1                 1
-xpsr           0x61000003          1627389955
+xpsr           0x61000006          1627389958
 (gdb) p/x *(unsigned*)0xE000ED28
 $1 = 0x10000
 (gdb) p/x *(unsigned*)0xE000ED2C
-$2 = 0x40000000
+$2 = 0x0
 (gdb) p/x *(unsigned*)0xE000ED24
-$3 = 0x30000
+$3 = 0x70008
 (gdb) x/8wx $psp
 0x20029fd8:	0x0000001b	0x00000000	0x00000001	0x00000003
 0x20029fe8:	0x0000000a	0x000014bd	0x00000108	0x61000000
@@ -172,9 +173,9 @@ $3 = 0x30000
 ```
 
 `CONTROL = 1`: nPRIV is set, the thread was unprivileged (exception entry does not change
-CONTROL). The low bits of xPSR say exception 3, HardFault. `0xE000ED28` is CFSR (`0x10000`,
-UNDEFINSTR), `0xE000ED2C` is HFSR (`0x40000000`, FORCED), `0xE000ED24` is SHCSR (MemManage and
-BusFault enabled, UsageFault not). The seventh word of the frame is the faulting PC, `0x108`,
+CONTROL). The low bits of xPSR say exception 6, UsageFault. `0xE000ED28` is CFSR (`0x10000`,
+UNDEFINSTR), `0xE000ED2C` is HFSR (`0x0`: nothing escalated), `0xE000ED24` is SHCSR (MemManage,
+BusFault and UsageFault enabled, `0x70000`, plus `0x8`, UsageFault active). The seventh word of the frame is the faulting PC, `0x108`,
 the `udf` in `faulter`. The eighth is the xPSR the thread had, whose exception number is 0:
 it was in thread mode.
 
@@ -195,7 +196,8 @@ contained:
     {
         return;
     }
-    kpanic_enter(); // mask IRQs + force the sync path + flush queued bytes, in order
+    kickos_fault_report_begin();
+    kpanic_enter();
 ```
 
 `kickos_fault_kill_thread` (`kernel/init/fault.cc`) is the kernel's half of the decision, and
@@ -259,7 +261,7 @@ $3 = false
 (gdb) break arch_fault_is_user_thread
 (gdb) continue
 (gdb) finish
-0x00005858 in kickos_fault_kill_thread (frame=0x20029fd8) at .../kernel/init/fault.cc:177
+0x000059d8 in kickos_fault_kill_thread (frame=0x20029fd8) at .../kernel/init/fault.cc:202
 Value returned is $4 = true
 ```
 
@@ -318,20 +320,20 @@ Step by step:
 ```
 (gdb) break kickos_fault_record
 (gdb) continue
-Breakpoint 1, kickos_fault_record (status_name=0xd915 "CFSR", status=65536, pc=264, addr=0, addr_valid=0) at .../kernel/init/fault.cc:53
+Breakpoint 1, kickos_fault_record (status_name=0xda19 "CFSR", status=65536, pc=264, addr=0, addr_valid=0) at .../kernel/init/fault.cc:66
 (gdb) break kickos_arm_fault_resume_privileged
 (gdb) continue
 (gdb) x/8wx $psp
 0x20029fd8:	0x20000c30	0x00000000	0x00000001	0x00000003
-0x20029fe8:	0x0000000a	0x000014bd	0x00001aa6	0x61000000
-(gdb) info symbol 0x1aa6
+0x20029fe8:	0x0000000a	0x000014bd	0x00001b0a	0x61000000
+(gdb) info symbol 0x1b0a
 kickos_armv7m_fault_stack_reset in section .text
 (gdb) p/x $k->currents.cells[0]->ctx.kernel_sp
 $1 = 0x20000c30
 ```
 
 Compare with Stop 2: the first word (r0) went from `0x1b` to `0x20000c30`, the thread's
-kernel stack top, and the seventh (PC) from `0x108` to `0x1aa6`, the stub.
+kernel stack top, and the seventh (PC) from `0x108` to `0x1b0a`, the stub.
 
 **Why, and the contract:** [Reference: invariants, `fault-kill-path-never-enters-panic` and `fault-record-is-printed-only-by-its-owner`](../reference/invariants.md),
 [Reference: porting, "Fault-isolation contract"](../reference/porting.md#fault-isolation-contract-a-faulting-thread-takes-its-task-and-nothing-beyond)
@@ -507,26 +509,25 @@ chunks: a big table must not keep interrupts masked for long. And `obj_ref_drop`
 parked on the object, the object is **leaked** (kept with one reference) rather than freed
 under the waiter.
 
-**Try it:** `faulter` holds one capability: slot 1, the C library lock it shares with every
-thread of the address space.
+**Try it:** `faulter` holds no capability at all. Its `printf` took the C library's lock, but
+that lock is no capability: it belongs to the image, and `exit_current` hands over any C library
+lock a dying thread holds before the sweep starts (`cap_libc_locks_release`).
 
 ```
 (gdb) break kickos::cap_teardown
 (gdb) continue
 (gdb) set $c = c
-(gdb) p $c->caps.chunk[0][1]
-$1 = {obj = 0, type = 2 '\002', seq_lo = 0 '\000', rights = 0 '\000', seq_hi = 0 '\000', gen = 0}
+(gdb) p $c->caps.chunk[0][0]@2
+$1 = {{obj = 0, type = 0 '\000', seq_lo = 0 '\000', rights = 0 '\000', seq_hi = 0 '\000', gen = 0},
+      {obj = 655363, type = 0 '\000', seq_lo = 0 '\000', rights = 0 '\000', seq_hi = 0 '\000', gen = 0}}
+(gdb) p $k->libc_locks[0].owner
+$2 = (kickos::Thread *) 0x0
 (gdb) p/d $k->mutex_refs[0]@3
-$2 = {3, 0, 0}
-(gdb) finish
-(gdb) p $c->caps.chunk[0][1]
-$3 = {obj = 0, type = 0 '\000', seq_lo = 0 '\000', rights = 0 '\000', seq_hi = 0 '\000', gen = 1}
-(gdb) p/d $k->mutex_refs[0]@3
-$4 = {2, 0, 0}
+$3 = {0, 0, 0}
 ```
 
-The lock had three holders (root, `main`, `faulter`) and has two now. The slot is empty, with
-a new generation.
+Both slots are empty (the second holds a free-list link), the C library's lock is free, and the
+mutex pool holds nothing: there is nothing for this sweep to release.
 
 To see a mutex force-unlocked, use the `selftest` image. Its test `t_mutex_owner_died`
 (`user/apps/common/selftest/main.cc`) has a thread `odOwn` exit while it holds a mutex that
@@ -537,7 +538,7 @@ reached it:
 ```
 (gdb) break kickos::mutex_force_unlock
 (gdb) continue
-Breakpoint 1, kickos::mutex_force_unlock (m=0x20004a1c <...>, dying=0x20004fe0 <...>, held=...) at .../kernel/sync/sync.cc:463
+Breakpoint 1, kickos::mutex_force_unlock (m=0x20004a00 <...>, dying=0x20005028 <...>, held=...) at .../kernel/sync/sync.cc:476
 (gdb) p dying->name
 $1 = "odOwn\000\000\000\000\000\000\000\000\000\000"
 (gdb) p dying->dying
@@ -549,7 +550,7 @@ $4 = "odWt", '\000' <repeats 11 times>
 (gdb) bt 5
 #0  kickos::mutex_force_unlock (...)
 #1  kickos::(anonymous namespace)::obj_close_protocol (closer=..., e=..., teardown=teardown@entry=true, held=...)
-#2  kickos::(anonymous namespace)::teardown_entry (c=..., i=i@entry=2, held=...)
+#2  kickos::(anonymous namespace)::teardown_entry (c=..., i=i@entry=1, held=...)
 #3  kickos::cap_teardown (c=...)
 #4  kickos::sched::exit_current (code=0, cause=<optimized out>, held=0x0)
 ```
@@ -662,12 +663,12 @@ $2 = 0 '\000'
 (gdb) break kickos::notify_raise
 (gdb) continue
 (gdb) bt 6
-#0  kickos::notify_raise (n=0x20006ee8 <...>, bit=1) at .../kernel/notify/notify.cc:173
+#0  kickos::notify_raise (n=0x20006f30 <...>, bit=1) at .../kernel/notify/notify.cc:173
 #1  kickos::(anonymous namespace)::watch_raise (t=...) at .../kernel/task/task.cc:99
 #2  kickos::(anonymous namespace)::mark_ended (t=..., held=..., latch=<optimized out>, code=139) at .../kernel/task/task.cc:130
 #3  kickos::(anonymous namespace)::mark_ended (...)
 #4  kickos::task_end (t=..., code=code@entry=139, ...) at .../kernel/task/task.cc:366
-#5  kickos::sched::exit_current (code=code@entry=139, cause=cause@entry=kickos::sched::EXIT_FAULTED, held=held@entry=0x0) at .../kernel/sched/sched.cc:933
+#5  kickos::sched::exit_current (code=code@entry=139, cause=cause@entry=kickos::sched::EXIT_FAULTED, held=held@entry=0x0) at .../kernel/sched/sched.cc:942
 (gdb) delete
 (gdb) break kickos::task_state_call
 (gdb) continue
@@ -718,7 +719,7 @@ $2 = 0
 (gdb) p/x task
 $3 = 0x4
 (gdb) p $k->tasks[3]
-$4 = {domain = 0x20006428 <...>, refcount = 0 '\000', creator_tag = 2 '\002', gen = 0, prio_ceiling = 31 '\037',
+$4 = {domain = 0x20006470 <...>, refcount = 0 '\000', creator_tag = 2 '\002', gen = 0, prio_ceiling = 31 '\037',
   marks = 12 '\f', ...}
 (gdb) finish
 Value returned is $5 = 0
@@ -790,13 +791,13 @@ $2 = 0x92
 (gdb) finish
 Value returned is $3 = false
 (gdb) continue
-Breakpoint 3, kpanic_enter () at .../kernel/init/console.cc:904
+Breakpoint 3, kpanic_enter () at .../kernel/init/console.cc:916
 (gdb) bt 3
-#0  kpanic_enter () at .../kernel/init/console.cc:904
-#1  0x00001cbc in kickos_armv7m_fault_report (frame=0x20027fe0, exc_return=4294967293) at .../arch/arm/armv7m/arch_armv7m.cc:412
+#0  kpanic_enter () at .../kernel/init/console.cc:916
+#1  0x00001d28 in kickos_armv7m_fault_report (frame=0x20027fe0, exc_return=4294967293) at .../arch/arm/armv7m/arch_armv7m.cc:451
 #2  <signal handler called>
 (gdb) continue
-Breakpoint 4, kfault_terminate () at .../arch/common/kfault_terminate_shutdown.cc:21
+Breakpoint 4, kfault_terminate () at .../arch/common/kfault_terminate_shutdown.cc:19
 ```
 
 (gdb shows the exception entry as `<signal handler called>`.)
@@ -827,14 +828,14 @@ can no longer vouch for its own state; containing a fault is for the case where 
 (gdb) break kickos_panic_report
 (gdb) break kfault_terminate
 (gdb) continue
-Breakpoint 1, kickos_panic_report (msg=0x200007b8 <...> "[panicgate] message on the wire", file=0x0, line=0) at .../kernel/init/console.cc:830
+Breakpoint 1, kickos_panic_report (msg=0x200007b8 <...> "[panicgate] message on the wire", file=0x0, line=0) at .../kernel/init/console.cc:842
 (gdb) bt 2
-#0  kickos_panic_report (msg=... "[panicgate] message on the wire", file=0x0, line=0) at .../kernel/init/console.cc:830
-#1  0x00004a64 in kickos::kpanic (msg=<optimized out>) at .../kernel/init/console.cc:772
+#0  kickos_panic_report (msg=... "[panicgate] message on the wire", file=0x0, line=0) at .../kernel/init/console.cc:842
+#1  0x00004b48 in kickos::kpanic (msg=<optimized out>) at .../kernel/init/console.cc:784
 (gdb) info registers sp
 sp             0x20004520          0x20004520 <kickos::g_kstack_report>
 (gdb) continue
-Breakpoint 2, kfault_terminate () at .../arch/common/kfault_terminate_shutdown.cc:21
+Breakpoint 2, kfault_terminate () at .../arch/common/kfault_terminate_shutdown.cc:19
 ```
 
 `0x20004520` is the top of `g_panic_stack` (it starts at `0x20004370` and is `0x1b0` bytes;

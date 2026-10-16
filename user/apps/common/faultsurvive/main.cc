@@ -14,7 +14,7 @@
 //      full, at a writable address, by a thread that really is unprivileged in thread mode, so
 //      every register-derived clause of the rule says yes and only the stack-bounds test can
 //      refuse it. On RX the frame goes to the ISP instead and the bounds test reads the USP the
-//      exit stub WOULD have run on.
+//      exit stub WOULD have run on. Above the stack where a stack limit refuses one below.
 //   3  the worker points SP at a word of MAIN's data and traps. A software trap prologue that
 //      stored the frame through the U-mode SP overwrites that word in privileged mode, where no
 //      protection applies; the bounds test refuses the SP before the first store. Main reads
@@ -30,6 +30,9 @@
 //      so this witnesses the REFUSAL and not the prologue live-lock a trapping core would take.
 //   6  the worker points SP where no memory answers (KICKOS_FS_NOWHERE) and traps: the
 //      stacking aborts, and a privileged read of that frame would fault again in handler mode.
+//   7  the overflow arm on a core with a stack limit, which stops a recursion first: SP aimed
+//      at an arena block above the stack that the worker holds no grant on, so the MPU aborts
+//      the stacking.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -94,10 +97,32 @@ namespace
 // BUILT ON armv8a, NEVER REGISTERED THERE: the sp this moves is SP_EL0 and the trap entry
 // builds its frame through SP_EL1, which EL0 cannot write, so no wild sp reaches a frame and
 // there is no stack-bounds refusal on that backend for this arm to witness.
+#if KICKOS_HAVE_STACK_LIMIT
+    constexpr uint32_t FS_OFF_STACK_SIZE = 2048;
+    constexpr uint32_t FS_OFF_SIZE = 512;
+    uintptr_t g_fs_offstack_top = 0;
+#else
     // Outside every thread stack, and inside the app's own granted data so the frame is really
-    // WRITTEN rather than faulting a second time. The whole frame has to land inside it: lx6's
-    // trap frame is 256 bytes, the widest.
+    // WRITTEN rather than faulting a second time. The whole frame has to land inside it: the
+    // M-profile entry frame is 8 words, 26 with an FP context; lx6's trap frame is 256 bytes,
+    // the widest elsewhere.
+#if defined(__thumb__) && defined(__ARM_FP)
+    alignas(16) volatile unsigned char g_offstack[104];
+#elif defined(__thumb__)
+    alignas(16) volatile unsigned char g_offstack[32];
+#else
     alignas(16) volatile unsigned char g_offstack[320];
+#endif
+#endif
+#endif
+
+#if KICKOS_FS_MODE == 7
+#if !KICKOS_HAVE_STACK_LIMIT || !KICKOS_MEMORY_ENFORCED
+#error "KICKOS_FS_MODE 7 is the MPU's stacking abort on a core with a stack limit"
+#endif
+    constexpr uint32_t FS_OFF_STACK_SIZE = 2048;
+    constexpr uint32_t FS_OFF_SIZE = 512;
+    uintptr_t g_fs_offstack_top = 0;
 #endif
 
 #if KICKOS_FS_MODE == 1
@@ -131,7 +156,11 @@ namespace
         g_sink = burn(4096, nullptr); // deeper than any thread stack in the tree
 #elif KICKOS_FS_MODE == 2
         // Top of the buffer: the frame is pushed DOWNWARDS from here.
+#if KICKOS_HAVE_STACK_LIMIT
+        uintptr_t const top = g_fs_offstack_top;
+#else
         uintptr_t const top = reinterpret_cast<uintptr_t>(&g_offstack[sizeof(g_offstack)]);
+#endif
 #if defined(__riscv)
         __asm volatile("mv sp, %0\n\t" KOS_TRAP_ILLEGAL_INSN ::"r"(top) : "memory");
 #elif defined(__RX__)
@@ -191,6 +220,8 @@ namespace
 #endif
 #elif KICKOS_FS_MODE == 6
         __asm volatile("mov sp, %0\n\t" KOS_TRAP_ILLEGAL_INSN ::"r"(KICKOS_FS_NOWHERE) : "memory");
+#elif KICKOS_FS_MODE == 7
+        __asm volatile("mov sp, %0\n\t" KOS_TRAP_ILLEGAL_INSN ::"r"(g_fs_offstack_top) : "memory");
 #else
         KOS_TRAP_ILLEGAL();
 #endif
@@ -236,6 +267,47 @@ int main(int, char**)
     stack = reinterpret_cast<void*>(lo);
     stack_size = FS_STACK_SIZE;
 #endif
+#if KICKOS_FS_MODE == 7
+    // Allocation order is the geometry: the bump allocator hands out increasing addresses.
+    stack = kos_ram_alloc(FS_OFF_STACK_SIZE);
+    void* const above = kos_ram_alloc(FS_OFF_SIZE);
+    if (stack == nullptr or above == nullptr)
+    {
+        kos::print("[fs] ERROR: the arena cannot spare the worker's stack and the block above\n");
+        return 1;
+    }
+    if (reinterpret_cast<uintptr_t>(above)
+        < reinterpret_cast<uintptr_t>(stack) + FS_OFF_STACK_SIZE)
+    {
+        kos::print("[fs] ERROR: the ungranted block is not above the worker's stack\n");
+        return 1;
+    }
+    stack_size = FS_OFF_STACK_SIZE;
+    g_fs_offstack_top = reinterpret_cast<uintptr_t>(above) + FS_OFF_SIZE;
+#endif
+#if KICKOS_FS_MODE == 2 && KICKOS_HAVE_STACK_LIMIT
+    // Allocation order is the geometry: the bump allocator hands out increasing addresses.
+    stack = kos_ram_alloc(FS_OFF_STACK_SIZE);
+    void* const off = kos_ram_alloc(FS_OFF_SIZE);
+    if (stack == nullptr or off == nullptr)
+    {
+        kos::print("[fs] ERROR: the arena cannot spare the worker's stack and its buffer\n");
+        return 1;
+    }
+    if (reinterpret_cast<uintptr_t>(off)
+        < reinterpret_cast<uintptr_t>(stack) + FS_OFF_STACK_SIZE)
+    {
+        kos::print("[fs] ERROR: the off-stack buffer is not above the worker's stack\n");
+        return 1;
+    }
+    stack_size = FS_OFF_STACK_SIZE;
+    g_fs_offstack_top = reinterpret_cast<uintptr_t>(off) + FS_OFF_SIZE;
+    kos::print("[fs] spawning the faulter\n");
+    kos::thread::Handle t = kos::thread::create(faulter, nullptr, "faulter", 10,
+                                                KOS_POLICY_FIFO, 0,
+                                                off, FS_OFF_SIZE, stack, stack_size);
+    int const rc = t.join(KOS_TIMEOUT_NONE);
+#else
     // THE FAULTER GETS A TASK OF ITS OWN, and that is the arm rather than a detail of it. A
     // fault ends the faulting thread's whole task, and a plain spawn is a thread OF THE
     // CALLER'S task, so a victim spawned the plain way would take main with it and this would
@@ -255,6 +327,7 @@ int main(int, char**)
     // Drops main's hold on a group that is already empty, so the slot goes back here rather
     // than at main's own exit.
     (void)kos_task_kill(victim);
+#endif
     kos::print("[fs] survivor ran after the fault\n");
 #if KICKOS_FS_MODE == 4
     // Both outcomes PRINT: a silent arm is indistinguishable from a deleted band check, a spawn

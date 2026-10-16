@@ -178,14 +178,16 @@ class Generated(unittest.TestCase):
     def test_family_exit_and_cpu(self):
         text = chip.generate(self.view())["chip.cmake"]
         self.assertIn("\nset(KICKOS_CHIP_EXITS_ON_FAULT OFF)\n", text)
+        self.assertIn("\nset(KICKOS_CHIP_STACK_LIMIT OFF)\n", text)
         self.assertNotIn("KICKOS_CHIP_FAMILY", text)
         self.assertNotIn("KICKOS_CHIP_CPU", text)
         self.write(self.path, SMALL.replace("family: none\nexits_on_fault: false\n",
-                                            "exits_on_fault: true\ncpu: m4\n"
+                                            "exits_on_fault: true\ncpu: m4\nstack_limit: true\n"
                                             "family: { dir: arm/chip/sm, sources: [arm/chip/sm/a.cc, common/b.S] }\n"))
         text = chip.generate(self.view())["chip.cmake"]
         for line in ("set(KICKOS_CHIP_EXITS_ON_FAULT ON)", "set(KICKOS_CHIP_FAMILY_DIR \"arm/chip/sm\")",
-                     "set(KICKOS_CHIP_FAMILY_SOURCES \"arm/chip/sm/a.cc;common/b.S\")", "set(KICKOS_CHIP_CPU \"m4\")"):
+                     "set(KICKOS_CHIP_FAMILY_SOURCES \"arm/chip/sm/a.cc;common/b.S\")", "set(KICKOS_CHIP_CPU \"m4\")",
+                     "set(KICKOS_CHIP_STACK_LIMIT ON)"):
             self.assertIn("\n%s\n" % line, text)
 
     def test_tree_family_exit_and_cpu(self):

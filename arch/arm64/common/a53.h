@@ -36,6 +36,10 @@ extern "C"
 
     // Panics where this core's MMU cannot run the port's translation regime.
     void kickos_armv8a_mmu_check(void);
+
+    // Keeps this core's EL1 out of user pages, in the form the boot core chose; panics on a
+    // core that cannot take it.
+    void kickos_armv8a_uguard_init(void);
 }
 
 namespace kickos::arm64

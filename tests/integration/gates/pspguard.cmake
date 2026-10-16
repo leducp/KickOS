@@ -8,7 +8,7 @@ if(NOT TARGET pspguard_svc)
   return()
 endif()
 foreach(_pg_image pspguard pspguard_svc pspguard_svcdepth pspguard_block pspguard_above
-                  pspguard_below pspguard_fp)
+                  pspguard_below pspguard_fp pspguard_svcstkof)
   if(TARGET ${_pg_image})
     kickos_emulator_judged(${_pg_image})
   endif()
@@ -44,6 +44,9 @@ set(_pg_macros NEST_SVC KERNEL_DEPTH_SVC)
 if(NOT KICKOS_KERNEL_STACKS)
   list(APPEND _pg_macros NEST_SVC_DISPATCH)
 endif()
+if(KICKOS_HAVE_STACK_LIMIT)
+  list(APPEND _pg_macros FRAME_MAX)
+endif()
 foreach(_pg_macro ${_pg_macros})
   file(STRINGS "${_pg_hdr}" _pg_hit
        REGEX "^#define ${_pg_pfx}_${_pg_macro} +[0-9]+$")
@@ -59,7 +62,17 @@ endforeach()
 # macro because the gate scrapes plain integers and cannot evaluate the header's #if. At
 # KICKOS_KERNEL_STACKS 1 the dispatch is on the kernel block and the site charges the window
 # alone; at 0 it charges the window plus the dispatch.
-if(KICKOS_KERNEL_STACKS)
+if(KICKOS_HAVE_STACK_LIMIT)
+  # The window's checked part must clear a limit SPLIM_ROOM above stack_lo.
+  file(STRINGS "${_pg_hdr}" _pg_hit REGEX "^#define KICKOS_ARMV7M_SPLIM_ROOM +[0-9]+$")
+  list(LENGTH _pg_hit _pg_n)
+  if(NOT _pg_n EQUAL 1)
+    message(FATAL_ERROR
+      "pspguard: KICKOS_ARMV7M_SPLIM_ROOM is not one plain integer in ${_pg_hdr}")
+  endif()
+  string(REGEX REPLACE "^.* " "" _pg_SPLIM_ROOM "${_pg_hit}")
+  math(EXPR _pg_svc_need "${_pg_NEST_SVC} - ${_pg_FRAME_MAX} + ${_pg_SPLIM_ROOM}")
+elseif(KICKOS_KERNEL_STACKS)
   set(_pg_svc_need "${_pg_NEST_SVC}")
 else()
   math(EXPR _pg_svc_need "${_pg_NEST_SVC_DISPATCH} + ${_pg_KERNEL_DEPTH_SVC}")
@@ -86,6 +99,29 @@ if(KICKOS_ARCH STREQUAL "armv6m")
       SCRIPT "${_pg_gate}" ARGS 6 32 PendSV "under stack_lo" ${_pg_banner} contained)
   endif()
   # The armv6m arm set ends here; everything below is the armv7m set.
+  return()
+endif()
+
+# A CORE WITH A STACK LIMIT refuses every in-stack PSP under stack_lo plus SPLIM_ROOM itself, at
+# the thread's own SP move or at the entry it provokes, so those arms are STKOF kills and PendSV
+# has no lower leg left to refuse them.
+if(KICKOS_HAVE_STACK_LIMIT)
+  set(_pg_stkof 0 none none ${_pg_banner} stkof)
+  kickos_add_qemu_test(TARGET pspguard SCRIPT "${_pg_gate}" ARGS 0 ${_pg_stkof})
+  kickos_add_qemu_test(TARGET pspguard_svc
+    SCRIPT "${_pg_gate}" ARGS 2 ${_pg_svc_need} SVCall "no room below" ${_pg_banner} contained)
+  kickos_add_qemu_test(TARGET pspguard_svcstkof SCRIPT "${_pg_gate}" ARGS 7 ${_pg_stkof})
+  kickos_add_qemu_test(TARGET pspguard_svcdepth
+    SCRIPT "${_pg_gate}" ARGS 5 ${_pg_svc_need} SVCall "no room below" ${_pg_banner} contained)
+  if(TARGET pspguard_block)
+    kickos_add_qemu_test(TARGET pspguard_block SCRIPT "${_pg_gate}" ARGS 6 ${_pg_stkof})
+  endif()
+  kickos_add_qemu_test(TARGET pspguard_above
+    SCRIPT "${_pg_gate}" ARGS 3 36 PendSV "at or above stack_hi" ${_pg_banner} contained)
+  kickos_add_qemu_test(TARGET pspguard_below SCRIPT "${_pg_gate}" ARGS 4 ${_pg_stkof})
+  if(TARGET pspguard_fp)
+    kickos_add_qemu_test(TARGET pspguard_fp SCRIPT "${_pg_gate}" ARGS 1 ${_pg_stkof})
+  endif()
   return()
 endif()
 

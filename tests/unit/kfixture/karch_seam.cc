@@ -272,6 +272,26 @@ extern "C"
 #endif
 }
 
+extern "C" int arch_periph_disable(uintptr_t base)
+{
+    using namespace kickos::testfix;
+    if (g_periph_disables < PERIPH_RECORD_MAX)
+    {
+        g_periph_disabled[g_periph_disables] = base;
+    }
+    g_periph_disables++;
+    kickos::Thread const* const c = kickos::kernel().current(kickos_kernel_core());
+    for (arch_mpu_region const& r : c->mpu)
+    {
+        if ((r.attr & ARCH_MPU_DEV) != 0 and r.base == base)
+        {
+            g_periph_disables_held++;
+            break;
+        }
+    }
+    return g_periph_disable_rc;
+}
+
 #if not KSEAM_REAL_CONSOLE
 void console_on_driver_death(kickos::Held)
 {
@@ -292,8 +312,13 @@ namespace kickos
     {
     }
 
-    void kprintf_fault(char const*, ...)
+    void kprintf_fault(char const* fmt, ...)
     {
+        if (testfix::g_fault_fmts < testfix::FAULT_FMT_MAX)
+        {
+            testfix::g_fault_fmt[testfix::g_fault_fmts] = fmt;
+            testfix::g_fault_fmts = testfix::g_fault_fmts + 1;
+        }
     }
 
     bool console_window_held_outside(Task const*)

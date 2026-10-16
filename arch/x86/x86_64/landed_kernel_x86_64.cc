@@ -27,6 +27,23 @@ namespace kickos
     int kmain(int argc, char** argv);
 }
 
+extern "C"
+{
+    void kpanic_enter(void);
+    [[noreturn]] void kfault_terminate(void);
+}
+
+// fault_x86_64.cc's report ends; nokernel_x86_64.cc defines the kernel-free pair.
+extern "C" void kickos_x86_64_fault_report_open(void)
+{
+    kpanic_enter();
+}
+
+extern "C" [[noreturn]] void kickos_x86_64_fault_report_close(void)
+{
+    kfault_terminate();
+}
+
 namespace
 {
     // The one stack the boot path and the idle thread run on.

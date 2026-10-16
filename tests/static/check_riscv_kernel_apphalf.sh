@@ -11,8 +11,9 @@
 # range; the app window is at 0x40000000, inside medlow's `lui`-reachable range, so the linker
 # REWRITES a kernel reference to an app-half symbol into `lui`+`addi` and the link succeeds,
 # with relaxation off as well: ld converts any out-of-range auipc a non-PIC link can reach
-# absolutely. At run time the read or write succeeds too: sstatus.SUM is set for the life of
-# kernel context and the running space maps the app's half U.
+# absolutely. At run time the read or write faults, sstatus.SUM being clear for the life of
+# kernel context while the running space maps the app's half U, but only on a path some run
+# reaches; the relocations show every such reference.
 #
 # The corpus is the kernel-side archives' RELOCATIONS. A relocation names the SYMBOL an
 # instruction operand resolves to, and relaxation rewrites the encoding without changing that

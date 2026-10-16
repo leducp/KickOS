@@ -109,6 +109,11 @@ namespace
         }
         desc_init_secondary();
         ring3_cpu_init();
+        if (not ring3_guard_matches_boot())
+        {
+            com1_puts("KickOS: q35 AP SMEP and SMAP are not the boot core's\n");
+            arch_shutdown(KICKOS_FATAL_STATUS);
+        }
         apic_init_secondary();
         __atomic_fetch_or(&g_online_mask, 1u << me, __ATOMIC_RELEASE);
         __atomic_store_n(&g_ap_arrived[me], 1u, __ATOMIC_RELEASE);

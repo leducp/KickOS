@@ -105,14 +105,17 @@ int kos_sem_post(kos_cap_t sem);
 // Possession IS the authority to lock and unlock (no rights split); create grants a
 // CAP_TRANSFER-only cap. A lower-priority holder contended by a higher-priority waiter is
 // boosted to the waiter's priority until it unlocks. Not recursive: locking a mutex you
-// already hold returns -KOS_EDEADLK.
+// already hold returns -KOS_EDEADLK. Lock and unlock also take KOS_CAP_LIBC_LOCK and
+// KOS_CAP_MALLOC_LOCK, the C library's two locks of the caller's own heap, which no table holds.
 int kos_mutex_create(kos_cap_t* out_cap); // -> 0, or -KOS_ENOMEM/-KOS_EMFILE/-KOS_EAGAIN/-KOS_EINVAL/-KOS_EFAULT
 // Acquire, waiting at most timeout_us relative microseconds for a holder to release it
 // (KOS_TIMEOUT_NONE: forever; zero: a try, which lends the holder no priority). ALL
 // error-shaped codes are negative (see <kickos/sys/errno.h>):
 //   0               acquired, protected state consistent
 //   -KOS_EOWNERDEAD acquired and the lock IS HELD, but the previous owner died holding it and
-//                   the state may be torn: repair the invariant, then unlock as normal
+//                   the state may be torn: repair the invariant, then unlock as normal. The
+//                   first take after the death answers it, a waiter's or a later lock's or try's,
+//                   and only that one
 //   -KOS_ETIMEDOUT  the time ran out, or a try found it held, NOT acquired
 //   -KOS_ECANCELED  the waiter was cancelled, NOT acquired
 //   -KOS_EBADF      bad/stale cap, NOT acquired
@@ -316,9 +319,9 @@ int kos_task_cores(kos_task_t task);
 // Members cannot supply separate mem_base; MMIO is per thread.
 // mem_flags must match every other mapping of the block: a self-grant, a window, or another
 // task's data; one with another memory type answers -KOS_EBUSY.
-// Where each task has an address space, the task's static data starts as root's stood at the
-// first kos_task_create, for every task and every restart, so a global root writes later
-// reaches none of them.
+// Where each task has an address space, the task's static data starts from the image and its
+// constructors run again there, for every task and every restart, so no global root or a
+// sibling writes reaches it.
 // Returns 0 and out_task, or -KOS_EPERM/EINVAL/ENOMEM/ENOTSUP/EFAULT/EBUSY with KOS_TASK_NONE.
 int kos_task_create(void* mem_base, uint32_t mem_size, uint32_t mem_flags,
                     kos_task_t* out_task);
@@ -571,6 +574,13 @@ uint32_t kos_periph_clock_hz(uintptr_t base);
 // Returns 0, -KOS_EPERM (caller does not hold that window), -KOS_EINVAL (no entry for
 // that base, including bases the chip refuses), or -KOS_ENOSYS (no chip backend).
 int kos_periph_enable(uintptr_t base);
+
+// Undo kos_periph_enable's supervisor-protect drop for the block at `base`, under the same
+// possession gate; the clock stays. Where the bus gates the block, it is unreachable from user
+// mode afterwards, its holder included, until the next kos_periph_enable. The holder's death
+// does the same.
+// Idempotent. Returns 0, -KOS_EPERM, -KOS_EINVAL or -KOS_ENOSYS as kos_periph_enable does.
+int kos_periph_disable(uintptr_t base);
 
 // Write a chip-allowlisted register at base+offset with kernel privilege.
 // Requires a live MMIO grant whose base matches exactly. Needed for registers

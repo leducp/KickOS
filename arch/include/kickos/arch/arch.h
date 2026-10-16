@@ -63,6 +63,12 @@
 #define KICKOS_ARCH_HAS_PORTS 0
 #endif
 
+// A translating arch whose hardware keeps privileged code out of user pages defines this in its
+// context.h, and arch_uaccess_guard with it.
+#ifndef KICKOS_ARCH_UGUARD
+#define KICKOS_ARCH_UGUARD 0
+#endif
+
 // A region arch defines this in its context.h where the chip puts a data cache over the arena,
 // and arch_dcache_invalidate with it, which kos_ram_alloc's clear calls.
 #ifndef KICKOS_ARCH_ARENA_DCACHE
@@ -257,6 +263,11 @@ void arch_context_seat_reent(struct arch_context* ctx, void* state);
 // Switch from from to to, immediately or at exception return. The scheduler
 // must allow deferred completion. Call with interrupts masked or from an ISR;
 // backends need not make the switch atomic.
+// Above one core the kernel lock is held from the booking to the exit that performs it, so no
+// peer sees a booked thread before its frame is parked. Two obligations follow: a booking back
+// onto the context the exception interrupted still owes kickos_switch_unlock, and every path
+// that enters a thread passes through kickos_switch_unlock or sched::start, which record the
+// thread the core now holds.
 void arch_switch(struct arch_context* from, struct arch_context* to);
 
 // Enter the first thread. boot is an optional context save slot that backends
@@ -305,6 +316,14 @@ uint32_t arch_periph_clock_hz(uintptr_t base);
 // Return 0, -KOS_EINVAL for an unknown base, -KOS_EIO for a block that never leaves reset, or
 // -KOS_ENOSYS without a backend.
 int arch_periph_enable(uintptr_t base);
+
+// Restore the bus supervisor protection arch_periph_enable removed for the same exact base. It
+// re-gates only and quiesces nothing: the module and its clock stay as they are, and the next
+// open's idle writes recover a module left mid-transfer. Idempotent. The kernel calls it, masked,
+// for every device window a dying thread drops, so a base it does not table is -KOS_EINVAL and
+// touches nothing.
+// Return 0, -KOS_EINVAL for an unknown base, or -KOS_ENOSYS without a backend.
+int arch_periph_disable(uintptr_t base);
 
 // Write value to a privileged register at base + offset. Both must match
 // the chip allowlist exactly. Validate alignment, overflow and ownership.
@@ -631,6 +650,19 @@ void arch_aspace_activate(struct arch_aspace* space);
 void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va, bool* uncached);
 void arch_aspace_release(struct arch_aspace* space, uintptr_t va);
 
+#if KICKOS_ARCH_UGUARD
+// The mechanism that makes a privileged access to a user page fault on every core of this
+// boot, for the banner. Valid once arch_init has returned.
+char const* arch_uaccess_guard(void);
+#endif
+
+#if defined(KICKOS_WITNESS_UACCESS) && KICKOS_WITNESS_UACCESS
+// The uaccess witness's timer arm: 1 where the context the timer interrupt being serviced
+// interrupted held the flag that lifts this arch's guard (x86_64: RFLAGS.AC), 0 where it did
+// not, -1 on an arch with no such flag. Only from the timer interrupt's own handling.
+int arch_witness_irq_lift_flag(void);
+#endif
+
 // Return the granule-aligned physical frame containing va; discard its page
 // offset. Return zero for unmapped or invalid addresses, so user mappings
 // must not use physical frame zero. Large-leaf backends must include the
@@ -641,6 +673,7 @@ arch_phys_addr_t arch_aspace_frame_at(struct arch_aspace* space, uintptr_t va);
 
 // The boot address-space handle. Switch to it before destroying the running
 // process space so the translation register cannot point at a freed root.
+// Where ring 0 is kept out of user pages, it maps nothing ring 0 could reach in the low half.
 struct arch_aspace* arch_aspace_boot(void);
 
 // The user offset: a task reaches a frame the kernel hands it, and the app window, at the
@@ -648,6 +681,12 @@ struct arch_aspace* arch_aspace_boot(void);
 // nonzero where the kernel's own mapping occupies them (x86_64, whose firmware identity map
 // is kernel half). Fixed from the first space's creation on.
 uintptr_t arch_aspace_user_offset(void);
+
+#if KICKOS_HAVE_ASPACE
+// Make the thread enter its entry with `value` as the second argument. Only on a context
+// arch_context_init has just built for an unprivileged thread, before its first switch-in.
+void arch_context_second_arg(struct arch_context* ctx, uintptr_t value);
+#endif
 
 // The part of the user half the kernel places spawn windows in, clear of the app window and of
 // every address a frame the kernel hands a task can take. Page-aligned; fixed once the first
@@ -837,7 +876,9 @@ void kickos_isr_fault(uintptr_t addr, int is_write);
 // Release the kernel lock inside the physical swap, after saving the outgoing
 // context and moving to the incoming stack. This prevents peers from choosing
 // a thread whose saved state is stale. Also raises this core's own doorbell for
-// pending work; a deferred ISR switch leaves this release to the swap.
+// pending work; a deferred ISR switch leaves this release to the swap, and one booked back onto
+// the interrupted context still ends the lock span here, whether or not the backend skips the
+// swap.
 void kickos_switch_unlock(void);
 
 // Whether this core's control block is published and holds a thread to run. An acquire: a
@@ -913,6 +954,12 @@ bool kickos_fault_below_stack(uintptr_t addr);
 // status_name labels the 64-bit status value. Read addr only when addr_valid.
 void kickos_fault_record(char const* status_name, uint64_t status,
                          uintptr_t pc, uintptr_t addr, int addr_valid);
+
+#if KICKOS_HAVE_STACK_LIMIT
+// The same, for a fault whose frame was never stacked, so no PC is known.
+void kickos_fault_record_no_pc(char const* status_name, uint64_t status,
+                               uintptr_t addr, int addr_valid);
+#endif
 
 // Where arch_fault_redirect_to_exit points the faulting thread. Runs privileged, in thread
 // mode, on that thread's own stack.

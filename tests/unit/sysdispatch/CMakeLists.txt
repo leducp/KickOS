@@ -28,7 +28,7 @@ kickos_add_kseam(kickos_kseam_sysdispatch
   EXTRA sys_seam.cc stub_seam.cc "${_common}/host_aspace.cc" "${_common}/host_frame_pool.cc"
         ${_sys_aspace}
   INCLUDES "${_k}/syscall" "${_common}" "${CMAKE_CURRENT_SOURCE_DIR}"
-  POSTURE KICKOS_HAVE_ASPACE=1 KICKOS_MAX_MUTEXES=24
+  POSTURE KICKOS_HAVE_ASPACE=1
           KICKOS_ARCH_ALIAS_DCACHE=1 KICKOS_ARCH_IRQ_WINDOW=1
           KSEAM_REAL_DOMAIN=1)
 set(_image_bytes 8192)
@@ -60,6 +60,21 @@ kickos_add_unit_test(NAME sys_shutdown
   SOURCES shutdown.cc "${PROJECT_SOURCE_DIR}/arch/common/kfault_terminate_shutdown.cc"
   INCLUDES "${PROJECT_SOURCE_DIR}/arch/common"
   LIBRARIES kickos_kseam_sysdispatch_region)
-foreach(_gate IN ITEMS sys_ram_clear spawn_unwind sys_shutdown)
+# The peripheral disable's possession gate and the seam's answer, over the fixture's recorder.
+kickos_add_unit_test(NAME sys_periph_disable SOURCES periph_disable.cc
+  LIBRARIES kickos_kseam_sysdispatch_region)
+# The witness call's authority gate, with the witness kernel's dispatch arm and without it.
+kickos_add_kseam(kickos_kseam_sysdispatch_region_witness
+  EXTRA region_seam.cc stub_seam.cc witness_seam.cc ${_sys_region}
+        "${_k}/syscall/syscall_witness.cc"
+  INCLUDES "${_k}/syscall" "${CMAKE_CURRENT_SOURCE_DIR}"
+  POSTURE KICKOS_WITNESS_UACCESS=1)
+kickos_add_unit_test(NAME sys_witness_on SOURCES witness_gate.cc
+  LIBRARIES kickos_kseam_sysdispatch_region_witness)
+target_compile_definitions(sys_witness_on PRIVATE KICKOS_WITNESS_UACCESS=1)
+kickos_add_unit_test(NAME sys_witness_off SOURCES witness_gate.cc
+  LIBRARIES kickos_kseam_sysdispatch_region)
+foreach(_gate IN ITEMS sys_ram_clear spawn_unwind sys_shutdown sys_periph_disable sys_witness_on
+                       sys_witness_off)
   target_link_options(${_gate} PRIVATE -Wl,--gc-sections)
 endforeach()

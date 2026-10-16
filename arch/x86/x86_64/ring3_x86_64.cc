@@ -8,6 +8,8 @@
 // memory carries the user bit CLEAR, and the permission ANDs down the walk. The kernel leaves
 // it that way: the firmware's map is the kernel half, supervisor-only, and a task reaches only
 // what its own space maps in the user half (docs/design-m10-kernel-share.md section 1).
+// The other direction is SMEP and SMAP, set on every core whose CPUID offers them and never
+// lifted: no kernel path reads, writes or runs a user page.
 
 #include <kickos/arch/desc.h>
 #include <kickos/arch/arch.h>
@@ -17,8 +19,6 @@
 
 #include <stddef.h>
 #include <stdint.h>
-
-extern "C" void kfault_terminate(void) __attribute__((noreturn));
 
 // switch.S. HIDDEN is load-bearing: -fpie emits a global-offset-table load for the address of
 // an external function and `ld -m i386pep` neither builds that table nor relaxes the form
@@ -42,8 +42,40 @@ namespace kickos::x86_64
 
         constexpr uint64_t cr4_smep = 1ull << 20;
         constexpr uint64_t cr4_smap = 1ull << 21;
+        static_assert((cr4_smep | cr4_smap) == cr4_guard, "ring3.h names the same two bits");
+        // CPUID leaf 7 subleaf 0, EBX (Intel SDM Vol 2A, CPUID).
+        constexpr uint32_t leaf7_ebx_smep = 1u << 7;
+        constexpr uint32_t leaf7_ebx_smap = 1u << 20;
+
+        // Asked of the core that sets the bits: the boot core's floor check says nothing of an AP.
+        uint64_t guard_offered(void)
+        {
+            uint32_t a = 0;
+            uint32_t b = 0;
+            uint32_t c = 0;
+            uint32_t d = 0;
+            __asm__ volatile("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(0u), "c"(0u));
+            if (a < 7)
+            {
+                return 0;
+            }
+            __asm__ volatile("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(7u), "c"(0u));
+            uint64_t bits = 0;
+            if ((b & leaf7_ebx_smep) != 0)
+            {
+                bits |= cr4_smep;
+            }
+            if ((b & leaf7_ebx_smap) != 0)
+            {
+                bits |= cr4_smap;
+            }
+            return bits;
+        }
 
         alignas(64) cpu_block g_cpu[KICKOS_KERNEL_CORES] = {};
+
+        // The boot core's CR4 as ring3_init read it back.
+        uint64_t g_boot_cr4 = 0;
 
         cpu_block& local_cpu(void)
         {
@@ -81,14 +113,6 @@ namespace kickos::x86_64
             (1ull << 8) | rflags_if | (1ull << 10) | (3ull << 12) | (1ull << 18);
         static_assert((fmask & fmask_required) == fmask_required,
                       "the syscall entry must start with TF, IF, DF, AC and IOPL clear");
-
-        [[noreturn]] void refuse(char const* what)
-        {
-            com1_puts("\nx86_64 ring3: ");
-            com1_puts(what);
-            com1_puts("\n");
-            kfault_terminate();
-        }
     }
 
     void ring3_cpu_init(void)
@@ -108,24 +132,21 @@ namespace kickos::x86_64
         write_msr(msr_lstar, reinterpret_cast<uint64_t>(&kickos_x86_64_syscall_entry));
         write_msr(msr_fmask, fmask);
         write_msr(msr_efer, read_msr(msr_efer) | efer_sce);
+        write_cr4(read_cr4() | guard_offered());
     }
 
     void ring3_init(void)
     {
-        uint64_t const cr4 = read_cr4();
-        if ((cr4 & cr4_smep) != 0)
-        {
-            refuse("supervisor-mode execution prevention is on and no arm here enables it");
-        }
-        if ((cr4 & cr4_smap) != 0)
-        {
-            refuse("supervisor-mode access prevention is on and no path here lifts it");
-        }
-
         // The gs pair. IA32_KERNEL_GS_BASE holds the per-core pointer while a thread runs at
         // ring 3 and swapgs is what brings it back; WRMSR is privileged, so ring 3 can change
         // the base it is holding but never the one the entry gets.
         ring3_cpu_init();
+        g_boot_cr4 = read_cr4();
+    }
+
+    bool ring3_guard_matches_boot(void)
+    {
+        return guard_matches(g_boot_cr4, read_cr4());
     }
 
     void cpu_set_kernel_sp(uint64_t top)
@@ -137,4 +158,24 @@ namespace kickos::x86_64
     {
         return local_cpu().kernel_sp;
     }
+}
+
+// Every core holds these: ap_main refuses one whose CR4 does not match the boot core's.
+extern "C" char const* arch_uaccess_guard(void)
+{
+    using namespace kickos::x86_64;
+    uint64_t const guard = g_boot_cr4 & cr4_guard;
+    if (guard == cr4_guard)
+    {
+        return "smep smap";
+    }
+    if (guard == cr4_smep)
+    {
+        return "smep";
+    }
+    if (guard == cr4_smap)
+    {
+        return "smap";
+    }
+    return "none";
 }

@@ -32,7 +32,7 @@ RULES = (
     "chip.granule-size", "chip.core-count", "chip.zero-size", "chip.device-unknown", "chip.register-outside", "chip.gate-straddle",
     "chip.gate-register",
     "chip.block-outside", "chip.line-range", "chip.link-duplicate", "chip.symbol-collision", "chip.reserved",
-    "chip.address-width", "chip.line-order", "form.text",
+    "chip.address-width", "chip.line-order", "chip.stack-limit-arch", "form.text",
     "board.name-mismatch", "board.name-collision", "board.chip-unknown", "board.chip-unreadable",
     "board.chip-folder", "board.device-unknown",
     "board.pin-unknown", "board.pin-function", "board.pin-not-gpio", "board.reserved-pin-used",

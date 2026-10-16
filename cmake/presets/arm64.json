@@ -115,6 +115,12 @@
       "cacheVariables": { "KICKOS_CONFIG_VARIANT": "amp3", "KICKOS_AMP_NODE_ID": "2" }
     },
     {
+      "name": "qemu-arm64-a710",
+      "displayName": "QEMU virt, four Cortex-A710 cores running the A53 image: hardware PAN, later ARMv8.x protection",
+      "inherits": "qemu-arm64",
+      "cacheVariables": { "KICKOS_CONFIG_VARIANT": "a710", "KICKOS_QEMU_CPU": "cortex-a710" }
+    },
+    {
       "name": "imx8mp-evk",
       "displayName": "NXP i.MX 8M Plus EVK (quad Cortex-A53, GIC-500, EL3 handover)",
       "inherits": "arm64-base",
@@ -138,6 +144,7 @@
     { "name": "qemu-arm64-amp3-n0", "configurePreset": "qemu-arm64-amp3-n0" },
     { "name": "qemu-arm64-amp3-n1", "configurePreset": "qemu-arm64-amp3-n1" },
     { "name": "qemu-arm64-amp3-n2", "configurePreset": "qemu-arm64-amp3-n2" },
+    { "name": "qemu-arm64-a710", "configurePreset": "qemu-arm64-a710" },
     { "name": "imx8mp-evk", "configurePreset": "imx8mp-evk" }
   ],
   "testPresets": [
@@ -157,6 +164,7 @@
     { "name": "qemu-arm64-amp3-n0", "configurePreset": "qemu-arm64-amp3-n0", "output": { "outputOnFailure": true } },
     { "name": "qemu-arm64-amp3-n1", "configurePreset": "qemu-arm64-amp3-n1", "output": { "outputOnFailure": true } },
     { "name": "qemu-arm64-amp3-n2", "configurePreset": "qemu-arm64-amp3-n2", "output": { "outputOnFailure": true } },
+    { "name": "qemu-arm64-a710", "configurePreset": "qemu-arm64-a710", "output": { "outputOnFailure": true } },
     { "name": "imx8mp-evk", "configurePreset": "imx8mp-evk", "output": { "outputOnFailure": true } }
   ]
 }

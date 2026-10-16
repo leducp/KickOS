@@ -8,6 +8,7 @@
 // reserving bytes below the thread pointer would put every offset wrong.
 #define KICKOS_ARCH_TLS_TCB 0
 #define KICKOS_ARCH_IRQ_WINDOW 1
+#define KICKOS_ARCH_UGUARD 1
 
 #include <stdint.h>
 

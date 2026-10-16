@@ -18,7 +18,7 @@
 #include <kickos/driver/uart.h>
 
 #include <kickos/io/mmio.h>   // r8
-#include <kickos/sys.h>       // kos_periph_enable, kos_periph_clock_hz
+#include <kickos/sys.h>       // kos_periph_enable/disable, kos_periph_clock_hz
 #include <kickos/sys/errno.h> // KOS_EPERM, KOS_ENOTSUP, KOS_EBUSY
 
 #include <regs/uart.h>
@@ -144,6 +144,23 @@ int32_t kos_uart_open(struct kos_uart* u, struct kos_uart_config const* cfg)
     {
         return -KOS_ENOTSUP;
     }
+    // Settled before the enable: every refusal after it must shut the slot again.
+    uint32_t sbr = 0u;
+    uint32_t brfa = 0u;
+    if (cfg->baud != 0u)
+    {
+        uint32_t const clk = kos_periph_clock_hz(cfg->base);
+        if (clk == 0u)
+        {
+            return -KOS_ENOSYS;
+        }
+        sbr = clk / (16u * cfg->baud);
+        if (sbr == 0u or sbr > 8191u)
+        {
+            return -KOS_ENOTSUP; // SBR 0 disables the generator (RM 52.3.1); 13 bits is the range
+        }
+        brfa = (clk * 2u) / cfg->baud - sbr * 32u;
+    }
 
     // Every register access below is supervisor-only and faults until this returns: the AIPS
     // slot resets with Supervisor-Protect set (RM 3.3.8.4, PACRN reset 0x4444_4444; RM 20.2.3
@@ -169,7 +186,10 @@ int32_t kos_uart_open(struct kos_uart* u, struct kos_uart_config const* cfg)
     }
     if (not drained)
     {
-        // Nothing in the channel has been written yet, so this leaves it as it was found.
+        // Nothing in the channel has been written yet, so this leaves it as it was found, the
+        // slot shut again; the refusal is the answer whatever the disable says.
+        (void)kos_periph_disable(u->base);
+        u->base = 0u;
         return -KOS_EBUSY;
     }
     r8(u->base + ru::C2_OFFSET) = 0u;
@@ -199,17 +219,6 @@ int32_t kos_uart_open(struct kos_uart* u, struct kos_uart_config const* cfg)
     }
     else
     {
-        uint32_t const clk = kos_periph_clock_hz(u->base);
-        if (clk == 0u)
-        {
-            return -KOS_ENOSYS;
-        }
-        uint32_t const sbr = clk / (16u * cfg->baud);
-        if (sbr == 0u or sbr > 8191u)
-        {
-            return -KOS_ENOTSUP; // SBR 0 disables the generator (RM 52.3.1); 13 bits is the range
-        }
-        uint32_t const brfa = (clk * 2u) / cfg->baud - sbr * 32u;
         r8(u->base + ru::BDH_OFFSET) =
             static_cast<uint8_t>(((sbr >> 8) & ru::BDH_SBR_MASK) | sbns);
         r8(u->base + ru::BDL_OFFSET) = static_cast<uint8_t>(sbr & 0xFFu);
@@ -314,10 +323,17 @@ int32_t kos_uart_flush(struct kos_uart* u)
 
 int32_t kos_uart_close(struct kos_uart* u)
 {
+    if (u->base == 0u)
+    {
+        return 0; // never opened, or already closed
+    }
     // TRUNCATES a frame still shifting, which is why the class contract puts flush before
     // close. C2 is writable at any time (RM 52.3.4).
     r8(u->base + ru::C2_OFFSET) = 0u;
-    return 0;
+    // Last: the store above needs the slot open.
+    int32_t const rc = kos_periph_disable(u->base);
+    u->base = 0u;
+    return rc;
 }
 
 }

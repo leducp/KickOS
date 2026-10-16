@@ -433,20 +433,13 @@ seats in it, or the thread whose spawn built an implicit task (`Thread::task_ent
 - **A window asked by its place.** `kos_window_get` (section 6) answers by the place each store
   records at the spawn, with the flags the window was spawned with even after a self-grant retypes
   its region.
-- **Reservations.** The entry flag in `spawn_masked`'s frame and the explicit task's seed
-  posture (`DOM_CALLER_TASK`) carried through the domain claim are on the spawn chain. x86
+- **Reservations.** The entry flag in `spawn_masked`'s frame is on the spawn chain. x86
   reserves SYSK at 1920 on one core and 2432 above it, and the spawn floor at 2752 and 3392
   (`arch/x86/x86_64/include/kickos/arch/x86_64_trap_stack.h`, `Kconfig`).
-- **Data from the image.** On a translating board an explicit task's space copies its static
-  data from one snapshot of root's, taken by the first explicit task's seed (`DOM_CALLER_TASK`),
-  so every task and every restart an init starts begins from the image's data as root held it
-  then and never from a global the init wrote since. An implicit task, the one a spawn creates,
-  copies its spawner's live data, root's or a task's, as the T6 template of `design-m6-mmu.md`
-  states: a global the spawner writes before the spawn is one the child reads, which the
-  selftest's IRQ driver arms rely on. The copy runs under the kernel lock while the spawner's other
-  threads keep running, so on more than one core it is consistent only where none of them writes
-  static data across the spawn. Root is the only snapshot source. A snapshot that cannot be taken
-  refuses the creation with `-KOS_ENOMEM`.
+- **Data from the image.** Superseded in M10.6.6: every space, explicit, restarted or built by
+  a spawn, copies the image's pristine data and runs the image's startup itself, so none starts
+  from a global its creator wrote (`space-data-starts-from-the-image`,
+  `docs/reference/invariants.md`).
 - **Every reservation zeroed.** `kos_ram_alloc` clears a region board's block after the bracket
   that recorded it, and cleans it to memory and invalidates its lines where the arch puts a data
   cache over the arena, as the frame pool already clears a translating board's.

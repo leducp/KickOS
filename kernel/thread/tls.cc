@@ -147,14 +147,16 @@ void* tls_carve(Thread const* t, void* stack_base, size_t stack_size)
     {
         return nullptr;
     }
-    // A mapped stack is named by a virtual address in the CHILD's space, which is not the
-    // running one at spawn, so the block is reached through the physical map.
     void* seat = stack_base;
-    void* const alias = ustack_kptr(reinterpret_cast<uintptr_t>(stack_base));
-    if (alias != nullptr)
+#if KICKOS_HAVE_ASPACE
+    // A user stack is named in the CHILD's space, not the running one, and ring 0 never writes
+    // through a user address: spawn admission refuses a stack the pool gives no alias.
+    if (not t->privileged)
     {
-        seat = alias;
+        seat = ustack_kptr(reinterpret_cast<uintptr_t>(stack_base));
+        KICKOS_ASSERT(seat != nullptr);
     }
+#endif
     tls_seat(seat);
     return seat;
 }

@@ -215,6 +215,9 @@ namespace kickos
         // seated_prio[c]: the priority core c's last pass seated, left high across a lowering so
         // that pass sees the drop. Written and read by c alone.
         uint8_t seated_prio[KICKOS_KERNEL_CORES] = {};
+        // on_cpu[c]: the thread whose registers core c holds; current runs ahead of it between a
+        // booked switch and its exit. Written and read by c alone.
+        Thread* on_cpu[KICKOS_KERNEL_CORES] = {};
 #endif
         PerCore<arch_context> boots;
 
@@ -259,6 +262,10 @@ namespace kickos
         // PI-mutex pool and its object-side refcount, same shape as the sems.
         SlotPool<Mutex, KICKOS_MAX_MUTEXES> mutexes;
         uint8_t mutex_refs[KICKOS_MAX_MUTEXES] = {};
+#if not KICKOS_HAVE_ASPACE
+        // The C library's locks: one image, so one heap and one stdio for every thread.
+        Mutex libc_locks[LIBC_LOCK_COUNT];
+#endif
         // Endpoint (IPC rendezvous) pool and its object-side refcount. recv_holders lives
         // solely in the Endpoint struct, and shares this ceiling because one obj_ref_inc
         // moves both counters or neither.

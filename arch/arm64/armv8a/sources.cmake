@@ -36,6 +36,7 @@ set(KICKOS_ARCH_SOURCES
   arm64/armv8a/arch_armv8a.cc
   common/arch_mpu_none.cc
   arm64/armv8a/aspace_armv8a.cc
+  arm64/armv8a/uguard_armv8a.cc
   arm64/armv8a/cache_armv8a.cc
   arm64/armv8a/vectors.S
   arm64/armv8a/switch.S

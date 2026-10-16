@@ -96,6 +96,10 @@ if(KICKOS_HAVE_ASPACE)
   add_subdirectory(kernelhalf)
   add_subdirectory(stackguard)
 endif()
+# Only the uaccess witness's scratch tree builds it: no other kernel answers its call.
+if(KICKOS_WITNESS_UACCESS)
+  add_subdirectory(uaccess)
+endif()
 # Sim only: each drives something that is only automatable on the host, a loopback "device"
 # that is the host wire, a published posture, or __builtin_trap.
 if(KICKOS_ARCH STREQUAL "sim")

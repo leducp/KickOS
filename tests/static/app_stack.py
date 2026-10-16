@@ -41,6 +41,7 @@ def die(msg):
 class Decl(object):
     def __init__(self, path, arch, kernel_cores=1):
         self.need = None                            # (header, frame macro, zone macro)
+        self.via = None                             # the symbol every entry is called from
         self.threads = []                           # (image, name, root spec, stack macro)
         self.images = set()                         # every image a thread of any arch names
         self.unsized = {}                           # symbol -> (bytes, [(callee, optional)])
@@ -63,6 +64,7 @@ class Decl(object):
                     if key not in fields:
                         die('%s: need wants header=, frame= and zone=' % where)
                 self.need = (fields['header'], fields['frame'], fields['zone'])
+                self.via = fields.get('via')
             elif kind == 'thread':
                 if 'root' not in fields or 'stack' not in fields:
                     die('%s: thread wants <arch> <image> <name> root=<symbol> stack=<macro>'
@@ -94,7 +96,7 @@ class Decl(object):
             die('%s declares app threads for %s and no need record, so there is no trap'
                 ' reservation to add below them' % (path, arch))
 
-    KEYS = {'need': (2, ('header', 'frame', 'zone'), ()),
+    KEYS = {'need': (2, ('header', 'frame', 'zone', 'via'), ()),
             'thread': (4, ('root', 'stack'), ()),
             'unsized': (4, ('calls',), ())}
 
@@ -304,6 +306,17 @@ def check_thread(build_dir, src_dir, decl, bindings, entries, preset, image, nam
     depth = walk.depth(key)
     reach = walk.reach([key])
 
+    # The frame every entry is called from stands below the root's for the thread's life.
+    via = 0
+    via_text = ''
+    if decl.via is not None:
+        vk = graph.resolve(decl.via)
+        if vk is None or vk not in graph.size:
+            die('%s/%s: via %s is no sized node of the units %s loads'
+                % (image, name, decl.via, map_path))
+        via = graph.size[vk]
+        via_text = ' + via %s %d' % (decl.via, via)
+
     header, frame_macro, zone_macro = decl.need
     entry = entries.get(graph.home[key])
     if entry is None:
@@ -313,13 +326,13 @@ def check_thread(build_dir, src_dir, decl, bindings, entries, preset, image, nam
     zone = evaluate(zone_macro, macros)
     stack = evaluate(stack_macro, macros)
     carve = tls_carve(map_path)
-    need = depth + frame + zone
+    need = via + depth + frame + zone
     usable = stack - carve
 
-    print('app_stack: %s/%s: depth %d + %s %d + %s %d = %d bytes, against %s %d less the'
+    print('app_stack: %s/%s: depth %d%s + %s %d + %s %d = %d bytes, against %s %d less the'
           ' tls carve %d = %d, headroom %d'
-          % (image, name, depth, frame_macro, frame, zone_macro, zone, need, stack_macro,
-             stack, carve, usable, usable - need))
+          % (image, name, depth, via_text, frame_macro, frame, zone_macro, zone, need,
+             stack_macro, stack, carve, usable, usable - need))
     print('  ' + ' -> '.join(walk.chain(key)))
 
     fails = []

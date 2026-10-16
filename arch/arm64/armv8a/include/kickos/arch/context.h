@@ -14,6 +14,7 @@
 // The kernel's own map of RAM is Normal write-back whatever a task's leaf says.
 #define KICKOS_ARCH_ALIAS_DCACHE 1
 #define KICKOS_ARCH_IRQ_WINDOW 1
+#define KICKOS_ARCH_UGUARD 1
 
 #include <stdint.h>
 

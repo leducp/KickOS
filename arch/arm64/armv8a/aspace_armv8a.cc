@@ -157,7 +157,8 @@ namespace
         return ASID_BITS_RECORDED;
     }
 
-    // Reserve ASID 0 for untagged roots. Residency also limits IDs to its row count.
+    // Reserve ASID 0 for untagged roots and the top one for the empty root. Residency also
+    // limits IDs to its row count.
     uint32_t asid_capacity()
     {
         unsigned const width = asid_width();
@@ -165,7 +166,17 @@ namespace
         {
             return 0;
         }
-        return (1u << width) - 1u;
+        return (1u << width) - 2u;
+    }
+
+    uint64_t empty_asid()
+    {
+        unsigned const width = asid_width();
+        if (width == 0)
+        {
+            return 0;
+        }
+        return (1ull << width) - 1u;
     }
 
     uint32_t asid_of(uint64_t ttbr)
@@ -271,34 +282,41 @@ namespace
         kickos_armv8a_isb();
     }
 
-    // The fault reporter needs the boot root's low-address device mappings.
-    uint64_t g_boot_ttbr0 = 0;
-    // Separate from the value: a boot TTBR0 of zero is valid.
-    bool g_boot_captured = false;
+    // Not the boot root, whose EL1-only low half PAN cannot police. Read-only: nothing maps here.
+    alignas(GRANULE) constexpr uint64_t g_empty_root[PTES] = {};
 
-    void capture_boot()
+    uint64_t* empty_root()
     {
-        if (not g_boot_captured)
-        {
-            g_boot_ttbr0 = kickos_armv8a_read_ttbr0_el1();
-            g_boot_captured = true;
-        }
+        return const_cast<uint64_t*>(g_empty_root);
     }
 
-    uint64_t* boot_root()
+    // Under an ASID no space is given: a walk of it caches nothing, and leaving it owes no sweep.
+    uint64_t empty_ttbr()
     {
-        return table_at(static_cast<arch_phys_addr_t>(g_boot_ttbr0 & DESC_OA_MASK));
+        uint64_t const root = static_cast<uint64_t>(phys_of(g_empty_root)) & DESC_OA_MASK;
+        return root | (empty_asid() << ASID_SHIFT);
     }
 
     // Call with interrupts masked. Flush locally when leaving ASID 0: its
     // translations are shared, and the boot root also has global low-half entries.
     // Switching between tagged roots needs no flush. Update the residency record after
-    // writing TTBR0.
+    // writing TTBR0. Under the reserved-root form the root being left is the cell's, never the
+    // register's, which at EL1 is always the empty root.
     void write_ttbr0(uint64_t ttbr)
     {
-        uint64_t const leaving = kickos_armv8a_read_ttbr0_el1();
-        kickos_armv8a_write_ttbr0_el1(ttbr);
-        kickos_armv8a_isb();
+        uint64_t leaving = 0;
+        if (kickos_armv8a_root_deferred())
+        {
+            uint64_t* const cell = kickos_armv8a_user_ttbr0_cell();
+            leaving = *cell;
+            *cell = ttbr;
+        }
+        else
+        {
+            leaving = kickos_armv8a_read_ttbr0_el1();
+            kickos_armv8a_write_ttbr0_el1(ttbr);
+            kickos_armv8a_isb();
+        }
         if (asid_of(leaving) == 0)
         {
             kickos_armv8a_tlbi_all_local();
@@ -517,8 +535,8 @@ void arch_aspace_destroy(struct arch_aspace* space)
         return;
     }
     uint64_t* const table = root_of(space);
-    // The boot root and its mappings are not owned by the frame pool.
-    if (table == boot_root())
+    // The empty root is no frame of the pool.
+    if (table == empty_root())
     {
         return;
     }
@@ -538,7 +556,7 @@ enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
                                         arch_phys_addr_t pa, size_t pages,
                                         uint32_t rights, enum arch_map_memtype type)
 {
-    if (space == nullptr or root_of(space) == boot_root() or not range_ok(va, pages))
+    if (space == nullptr or root_of(space) == empty_root() or not range_ok(va, pages))
     {
         return ARCH_ASPACE_EINVAL;
     }
@@ -556,7 +574,7 @@ enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
 
 enum arch_aspace_result arch_aspace_unmap(struct arch_aspace* space, uintptr_t va, size_t pages)
 {
-    if (space == nullptr or root_of(space) == boot_root() or not range_ok(va, pages))
+    if (space == nullptr or root_of(space) == empty_root() or not range_ok(va, pages))
     {
         return ARCH_ASPACE_EINVAL;
     }
@@ -565,24 +583,30 @@ enum arch_aspace_result arch_aspace_unmap(struct arch_aspace* space, uintptr_t v
 
 void arch_aspace_activate(struct arch_aspace* space)
 {
-    uint64_t const root = static_cast<uint64_t>(phys_of(root_of(space)));
-    uint64_t const ttbr =
-        root | (static_cast<uint64_t>(g_residency.identifier(root)) << ASID_SHIFT);
+    uint64_t ttbr = empty_ttbr();
+    if (root_of(space) != empty_root())
+    {
+        uint64_t const root = static_cast<uint64_t>(phys_of(root_of(space)));
+        ttbr = root | (static_cast<uint64_t>(g_residency.identifier(root)) << ASID_SHIFT);
+    }
     // Mask interrupts across the root write and any required invalidation.
     arch_irq_state_t const s = arch_irq_save();
-    capture_boot();
     write_ttbr0(ttbr);
     arch_irq_restore(s);
 }
 
-void kickos_armv8a_ttbr0_to_boot(void)
+// The register itself, whatever the form: the reporter never returns to EL0.
+void kickos_armv8a_ttbr0_to_empty(void)
 {
     arch_irq_state_t const s = arch_irq_save();
-    if (g_boot_ttbr0 != 0)
-    {
-        write_ttbr0(g_boot_ttbr0);
-    }
+    kickos_armv8a_write_ttbr0_el1(empty_ttbr());
+    kickos_armv8a_isb();
     arch_irq_restore(s);
+}
+
+uint64_t kickos_armv8a_empty_ttbr(void)
+{
+    return empty_ttbr();
 }
 
 // TTBR0 holds the whole user half, so a frame is reached at its physical address.
@@ -601,10 +625,7 @@ void arch_aspace_window_area(uintptr_t* base, size_t* size)
 
 struct arch_aspace* arch_aspace_boot(void)
 {
-    arch_irq_state_t const s = arch_irq_save();
-    capture_boot();
-    arch_irq_restore(s);
-    return reinterpret_cast<struct arch_aspace*>(boot_root());
+    return reinterpret_cast<struct arch_aspace*>(empty_root());
 }
 
 void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va, bool* uncached)

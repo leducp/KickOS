@@ -58,6 +58,10 @@
                         "       otherwise (mpu_overlap_expressible)",                  "P24")    \
     X(kMmuNoGranule,    "armv8a: the MMU offers no 4 KiB granule",                   "P25")       \
     X(kMmuPaNarrow,     "armv8a: the MMU's physical range is narrower than TCR_EL1.IPS", "P26")   \
+    X(kUguardMixed,     "armv8a: a core disagrees with the boot core on PAN",          "P28")   \
+    X(kUguardNotTaken,  "armv8a: PSTATE.PAN or SCTLR_EL1.SPAN did not take the write", "P29")   \
+    X(kUguardNoAsid,    "armv8a: no PAN and no ASID, so EL1 cannot be kept out of user pages", "P30") \
+    X(kSumNotCleared,   "rv64imac: sstatus.SUM did not take the clear",               "P31")   \
     X(kBannerRule,      "  ==============================================\n",        "\n")
 
 // The prose table is the only C++ in this header, and kickos/console_tx.h includes the header
@@ -86,6 +90,8 @@ namespace kickos
 #define KDIAG_F_BANNER_CPU   KICKOS_DIAG_PICK("   cpu     %s\n", "u %s\n")
 #define KDIAG_F_BANNER_MPU   KICKOS_DIAG_PICK("   mpu     %s\n", "m %s\n")
 #define KDIAG_F_BANNER_MMU   KICKOS_DIAG_PICK("   mmu     enforce\n", "M enforce\n")
+#define KDIAG_F_BANNER_UGUARD KICKOS_DIAG_PICK("   uaccess %s\n", "g %s\n")
+#define KDIAG_F_BANNER_WITNESS KICKOS_DIAG_PICK("   witness uaccess\n", "w uaccess\n")
 #define KDIAG_F_BANNER_SCHED KICKOS_DIAG_PICK("   sched   %s\n", "s %s\n")
 #define KDIAG_F_BANNER_BUILD KICKOS_DIAG_PICK("   build   %s\n", "t %s\n")
 #define KDIAG_F_BANNER_APP   KICKOS_DIAG_PICK("   app     %s\n", "p %s\n")
@@ -113,6 +119,7 @@ namespace kickos
 #define KDIAG_F_FAULT_PC_LOST KICKOS_DIAG_PICK("  PC lost to a later fault\n", "F1\n")
 #define KDIAG_F_FAULT_PC      KICKOS_DIAG_PICK("  PC=%p\n", "F2 %p\n")
 #define KDIAG_F_FAULT_PC_STAT KICKOS_DIAG_PICK("  PC=%p %s=0x%llx\n", "F3 %p %s %llx\n")
+#define KDIAG_F_FAULT_NO_PC   KICKOS_DIAG_PICK("  PC unknown %s=0x%llx\n", "F4 %s %llx\n")
 #define KDIAG_F_FAULT_ADDR    KICKOS_DIAG_PICK("  ADDR=%p\n", "ADDR=%p\n")
 
 // MPU fault report (kernel/init/console.cc).
@@ -126,6 +133,10 @@ namespace kickos
                                            "R2 %x %x %x %x %x\n")
 #define KDIAG_F_ARM_NOFRAME KICKOS_DIAG_PICK( \
     "  frame not read: its stacking or unstacking at 0x%x (%s) faulted\n", "R3 %x %s\n")
+#define KDIAG_F_ARM_UNVERIFIED KICKOS_DIAG_PICK( \
+    "  frame at its stack's limit 0x%x (%s): an entry that violated it stacked nothing, so the " \
+    "words below are unverified\n", \
+    "R5 %x %s\n")
 #define KDIAG_F_ARM_FRAME_FOREIGN KICKOS_DIAG_PICK( \
     "  frame not read: 0x%x (%s) is not on MSP or a stack this thread owns\n", "R4 %x %s\n")
 #define KDIAG_F_ARM_CFSR  KICKOS_DIAG_PICK("  CFSR=0x%x HFSR=0x%x\n", "CFSR=0x%x H=%x\n")

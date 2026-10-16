@@ -48,8 +48,7 @@ namespace kickos
         NONE,
         // A reservation's frames, cleared outside the lock and then reserved.
         CLEAR,
-        // A new space's copy of the image's static data, copied outside the lock from
-        // `staged_home`, or from the snapshot where that is null.
+        // A new space's copy of the pristine image of the static data.
         IMAGE
     };
 
@@ -67,7 +66,6 @@ namespace kickos
         // The pool had no run for the stage the call needed: the locked pass fails rather than
         // sending the call round.
         bool staged_short = false;
-        struct arch_aspace* staged_home = nullptr;
         bool active = false;
         // A spawn's parameters and window list, copied in once when the call enters: its plan
         // and its locked pass read these and never the caller's memory again.

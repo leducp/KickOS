@@ -41,6 +41,22 @@ namespace
         }
     }
 
+    constexpr uint32_t STKOF = 1u << 20;
+
+    TEST(V7mFaultFrame, AStkofFrameAtTheLimitWasNeverStacked)
+    {
+        EXPECT_TRUE(armv7m_stkof_frame_clamped(STKOF, 0x38028068u, 0x38028068u));
+        EXPECT_TRUE(armv7m_stkof_frame_clamped(STKOF | (1u << 1), 0x38028068u, 0x38028068u));
+    }
+
+    TEST(V7mFaultFrame, AStkofFrameAboveTheLimitOrAnotherFaultAtItIsStacked)
+    {
+        EXPECT_FALSE(armv7m_stkof_frame_clamped(STKOF, 0x38028070u, 0x38028068u));
+        EXPECT_FALSE(armv7m_stkof_frame_clamped(STKOF, 0x38028060u, 0x38028068u));
+        EXPECT_FALSE(armv7m_stkof_frame_clamped(0u, 0x38028068u, 0x38028068u));
+        EXPECT_FALSE(armv7m_stkof_frame_clamped(MSTKERR, 0x38028068u, 0x38028068u));
+    }
+
     constexpr uint32_t IACCVIOL = 1u << 0;
     constexpr uint32_t IBUSERR = 1u << 8;
     constexpr uint32_t PRECISERR = 1u << 9;

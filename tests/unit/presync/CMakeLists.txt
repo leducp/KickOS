@@ -19,7 +19,7 @@ kickos_add_unit_test(NAME presync_map
           "${PROJECT_SOURCE_DIR}/kernel/mem/vrange.cc"
           "${PROJECT_SOURCE_DIR}/kernel/init/instance.cc"
   INCLUDES "${PROJECT_SOURCE_DIR}/tests/unit/common"
-  POSTURE KICKOS_HAVE_ASPACE=1 KICKOS_MAX_MUTEXES=24
+  POSTURE KICKOS_HAVE_ASPACE=1
           KICKOS_ARCH_ALIAS_DCACHE=1 KICKOS_ARCH_IRQ_WINDOW=1)
 target_compile_options(presync_map PRIVATE -ffunction-sections -fdata-sections)
 target_link_options(presync_map PRIVATE -Wl,--gc-sections)
@@ -51,7 +51,7 @@ foreach(_alias IN ITEMS 1 0)
     INCLUDES "${PROJECT_SOURCE_DIR}/tests/unit/common"
     DEFINITIONS PRESYNC_STAGE_DATA_BYTES=${_stage_data_bytes}
                 PRESYNC_STAGE_TEXT_BYTES=${_stage_text_bytes}
-    POSTURE KICKOS_HAVE_ASPACE=1 KICKOS_MAX_MUTEXES=24
+    POSTURE KICKOS_HAVE_ASPACE=1
             KICKOS_ARCH_ALIAS_DCACHE=${_alias} KICKOS_ARCH_IRQ_WINDOW=1)
   target_compile_options(${_stage_name} PRIVATE -ffunction-sections -fdata-sections)
   target_link_options(${_stage_name} PRIVATE -Wl,--gc-sections)

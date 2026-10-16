@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   qemu-arm64
+   arch    armv8a
+   cpu     cortex-a53
+   mmu     enforce
+   uaccess ttbr0
+   sched   tickless
+
+libcrace: 4 workers x 3 rounds
+libcrace: a thread killed waiting for malloc ended alone
+libcrace: a thread killed holding the libc lock handed it over
+
+=== THREAD FAULT === thread 'mwaiter' killed, system continues
+  PC=0x401083e8 ESR_EL1=0x2000000
+libcrace: a malloc lock taken from a dead holder ended its task
+
+=== THREAD FAULT === thread 'mlater' killed, system continues
+  PC=0x401083e8 ESR_EL1=0x2000000
+libcrace: a malloc lock its holder died in unwatched ended the next taker's task
+libcrace: printf beside the malloc lock 1
+libcrace: a printf completed while malloc was held
+libcrace w3 i0 vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
+libcrace w0 i0 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+libcrace w2 i0 oooooooooooooooooooooooooooooooooooooooo
+libcrace w1 i0 hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh
+libcrace w3 i1 wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww
+libcrace w1 i1 iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii
+libcrace w2 i1 pppppppppppppppppppppppppppppppppppppppp
+libcrace w0 i1 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+libcrace w1 i2 jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj
+libcrace w1 done torn=0
+libcrace w3 i2 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+libcrace w3 done torn=0
+libcrace w0 i2 cccccccccccccccccccccccccccccccccccccccc
+libcrace w0 done torn=0
+libcrace w2 i2 qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq
+libcrace w2 done torn=0
+libcrace: all workers done

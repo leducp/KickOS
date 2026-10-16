@@ -187,6 +187,8 @@ namespace kickos
     extern "C" void kickos_switch_unlock(void)
     {
         KICKOS_BENCH_SWITCHED();
+        KernelCore const me = kickos_kernel_core();
+        kernel().on_cpu[me] = kernel().current(me);
         drop();
         span_end();
     }

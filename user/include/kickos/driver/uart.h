@@ -184,8 +184,10 @@ extern "C"
     // Quiesce the channel: transmit and receive off, every interrupt source this backend
     // armed disarmed. Returns 0, or a negative kos_errno. Idempotent.
     //
-    // RELEASES NOTHING: the MMIO grant and any ring block are still held after this returns.
-    // Flush FIRST, because stopping the channel truncates a frame that is still shifting.
+    // RELEASES NOTHING: the MMIO grant and any ring block are still held after this returns. A
+    // block the open enabled through kos_periph_enable is disabled again, which on a chip whose
+    // bus gates it per privilege makes its registers fault until the next open. Flush FIRST,
+    // because stopping the channel truncates a frame that is still shifting.
     int32_t kos_uart_close(struct kos_uart* u);
 
 #ifdef __cplusplus

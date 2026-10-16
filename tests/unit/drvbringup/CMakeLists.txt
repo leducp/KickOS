@@ -61,6 +61,28 @@ kickos_add_unit_test(NAME drv_usic_route
            "${PROJECT_BINARY_DIR}/generated/include")
 target_compile_options(drv_usic_route PRIVATE -include "${CMAKE_CURRENT_SOURCE_DIR}/usic_mmap.h")
 
+# The K64F DSPI engine's bound on a frame that never completes, its open and its close, over host
+# buffers for its window and ports. dspi_stall.cc answers dspi_rx_count, which is how a case
+# times a received frame. HOST-ONLY: dspi_stall.cc defines public kos_* names.
+kickos_add_unit_test(NAME drv_dspi_stall
+  SOURCES dspi_stall.cc
+          "${PROJECT_SOURCE_DIR}/system/driver/mk64f/k64dspi/spi_dspi.cc"
+  INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/dspi" "${PROJECT_SOURCE_DIR}/arch/arm/chip/mk64f/class"
+           "${PROJECT_SOURCE_DIR}/user/include" "${PROJECT_SOURCE_DIR}/system/include"
+           "${PROJECT_BINARY_DIR}/generated/include")
+target_compile_options(drv_dspi_stall PRIVATE -include "${CMAKE_CURRENT_SOURCE_DIR}/dspi_mmap.h")
+
+# The K64F UART backend's close and refused opens over a host buffer for its window. HOST-ONLY:
+# uart_k64_close.cc defines public kos_* names.
+kickos_add_unit_test(NAME drv_uart_k64_close
+  SOURCES uart_k64_close.cc
+          "${PROJECT_SOURCE_DIR}/system/driver/mk64f/uart_k64.cc"
+          "${PROJECT_SOURCE_DIR}/arch/arm/chip/mk64f/class/uart_class.cc"
+  INCLUDES "${PROJECT_SOURCE_DIR}/arch/arm/chip/mk64f"
+           "${PROJECT_SOURCE_DIR}/arch/arm/chip/mk64f/class"
+           "${PROJECT_SOURCE_DIR}/user/include" "${PROJECT_SOURCE_DIR}/system/include"
+           "${PROJECT_BINARY_DIR}/generated/include")
+
 # The driver witness's serve loop over its own two fakes: a reply to a caller whose timed call
 # expired is not the driver's failure. HOST-ONLY: serve_reply.cc defines public kos_* names.
 kickos_add_unit_test(NAME drv_witness_serve

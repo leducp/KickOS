@@ -71,10 +71,10 @@ the constructors, calls `arch_init` and enters `kmain`, exactly as in [Power-on]
 **Try it:** connect, then before `continue`:
 ```
 (gdb) x/4wx 0
-0x0:  0x20008000  0x00001b85  0x00001be1  0x00001d11
+0x0:  0x20008000  0x00001be9  0x00001c45  0x00001d79
 (gdb) info registers sp pc
 sp   0x20008000
-pc   0x1b84   <Reset_Handler()>
+pc   0x1be8   <Reset_Handler()>
 ```
 Word 0 is the top of the 32 KiB SRAM, and it is already in `sp`. Word 1 is `Reset_Handler` with
 bit 0 set (the Thumb bit), and the core has cleared it into `pc`.
@@ -224,7 +224,7 @@ thread, so stop there and look at that thread's saved frame. `break *kickos_arch
 `continue` twice (the first hit is the first thread):
 ```
 (gdb) p *g_arch_current.v_._M_b._M_p
-$2 = {sp = 536893376, npriv = 1, resting_npriv = 1, stack_lo = 536891392, stack_hi = 536893440, kernel_sp = 536874352}
+$2 = {sp = 536893376, npriv = 1, resting_npriv = 1, stack_lo = 536891392, stack_hi = 536893440, kernel_sp = 536874368}
 (gdb) x/16wx g_arch_current.v_._M_b._M_p->sp
 0x200057c0:  0x00000000  0x00000000  0x00000000  0x00000000
 0x200057d0:  0x00000000  0x00000000  0x00000000  0x00000000
@@ -268,7 +268,7 @@ arch_syscall:
 **Try it:** `break arch_start`, `continue`, `break SVC_Handler`, `continue`:
 ```
 (gdb) p/x *(unsigned*)($psp)@8
-$2 = {0x47, 0x0, 0x0, 0x0, 0x0, 0x15f9, 0x21ec, 0x41000000}
+$2 = {0x47, 0x0, 0x0, 0x0, 0x0, 0x15f9, 0x2258, 0x41000000}
 (gdb) info symbol *(unsigned*)($psp+20)
 kos_thread_self + 17 in section .text
 (gdb) info symbol *(unsigned*)($psp+24)
@@ -300,11 +300,11 @@ the block.
 **Try it:** `break arch_start`, `continue`, `break *syscall_dispatch`, `continue`:
 ```
 (gdb) info registers sp
-sp   0x20000660   <kickos::(anonymous namespace)::g_kstacks+880>
+sp   0x20000670   <kickos::(anonymous namespace)::g_kstacks+880>
 (gdb) p/x g_arch_current.v_._M_b._M_p->kernel_sp
-$1 = 0x20000670
+$1 = 0x20000680
 (gdb) x/4wx $sp
-0x20000660:  0x00000000  0x000015f9  0x20003f58  0x4b53464c
+0x20000670:  0x00000000  0x000015f9  0x20003f58  0x4b53464c
 ```
 `sp` is 16 bytes under the block top. The header reads: `a3` = 0, the return address (inside
 `kos_thread_self`), the thread's process stack pointer, and the pad word, which holds whatever
@@ -373,7 +373,7 @@ the crystal and so does not move when the CPU clock is changed.
 **Try it:** `break arch_timer_arm`, `continue`, `finish`:
 ```
 (gdb) x/3wx 0xE000E010
-0xe000e010:  0x00000007  0x0061a800  0x0061a443
+0xe000e010:  0x00000007  0x0061a800  0x0061a6ce
 ```
 SysTick `CTRL` = 7 (enabled, interrupt on, core clock), `LOAD` = 6 400 000 cycles, which is
 400 ms at the 16 MHz `SystemCoreClock` that `chip_nrf51.cc` sets, and `VAL` counting down from it.
@@ -405,7 +405,7 @@ overlap the highest-numbered one decides (`ARCH_MPU_OVERLAP_HIGHER`).
 **Try it:** on the micro:bit, `break *kickos_arch_mpu_commit`, `continue`:
 ```
 (gdb) x/i $pc
-=> 0x2272 <kickos_arch_mpu_commit>:  bx  lr
+=> 0x22de <kickos_arch_mpu_commit()>:  bx  lr
 ```
 The whole commit is one return.
 <!-- unverified: the RP2040 PMSAv6 commit; QEMU has no RP2040 model, so only the micro:bit's empty commit runs here -->
@@ -438,7 +438,7 @@ $1 = 0xfffffffd
 (gdb) break kickos_armv6m_fault_report
 (gdb) continue
 (gdb) p/x frame[0]@8
-$2 = {0x3f, 0x0, 0x3f, 0x2, 0x200009a0, 0x1329, 0xc8, 0x61000000}
+$2 = {0x3f, 0x0, 0x3f, 0x2, 0x200009b0, 0x1329, 0xc8, 0x61000000}
 ```
 The fault came from a thread on its process stack. The stacked `pc` (`0xc8`, inside
 `kickos_app_main`) is the illegal instruction the app executes on purpose; the console then

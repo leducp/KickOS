@@ -170,6 +170,16 @@ namespace kickos
         }
     }
 
+    // Outside the pool a frame is the host address it names, as the image's own frames are.
+    void* frame_pool_alias(arch_phys_addr_t frame)
+    {
+        if (testfix::host_pool_owns(frame))
+        {
+            return testfix::host_pool_bytes(frame, 1);
+        }
+        return reinterpret_cast<void*>(static_cast<uintptr_t>(frame));
+    }
+
     void* frame_pool_ptr(arch_phys_addr_t frame)
     {
         if (not testfix::host_pool_owns(frame) or not testfix::g_used[testfix::index_of(frame)])

@@ -2,7 +2,7 @@
 # Copyright (c) 2026 Philippe Leduc
 
 # KICKOS_HAVE_ASPACE=1 is set here: no board the host arch answers for translates, so the preset
-# never carries it, nor the mutex pool a translating board keeps a libc lock per task in.
+# never carries it.
 set(_aspace "${PROJECT_SOURCE_DIR}/kernel/mem/aspace.cc"
             "${PROJECT_SOURCE_DIR}/kernel/mem/vrange.cc")
 set_source_files_properties(${_aspace} DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -11,7 +11,7 @@ set(_leaves "${PROJECT_SOURCE_DIR}/tests/unit/common/aspace_leaves.cc")
 kickos_add_kseam(kickos_kseam_aspace
   EXTRA aspace_seam.cc ${_leaves} ${_aspace}
   POSTURE KICKOS_NUM_CORES=2 KICKOS_KERNEL_CORES=2 KICKOS_MULTICORE_MODEL_SHARED=1
-          KICKOS_HAVE_ASPACE=1 KICKOS_MAX_MUTEXES=24)
+          KICKOS_HAVE_ASPACE=1)
 kickos_add_unit_test(NAME leave_space SOURCES leave_space.cc
   LIBRARIES kickos_kseam_aspace)
 
@@ -20,11 +20,17 @@ kickos_add_unit_test(NAME leave_space SOURCES leave_space.cc
 kickos_add_kseam(kickos_kseam_aspace_one
   EXTRA aspace_seam.cc ${_leaves} ${_aspace}
   POSTURE KICKOS_NUM_CORES=1 KICKOS_KERNEL_CORES=1 KICKOS_MULTICORE_MODEL_SHARED=1
-          KICKOS_HAVE_ASPACE=1 KICKOS_MAX_MUTEXES=24)
+          KICKOS_HAVE_ASPACE=1)
 kickos_add_unit_test(NAME leave_space_one SOURCES leave_space_one.cc
+  LIBRARIES kickos_kseam_aspace_one)
+kickos_add_unit_test(NAME libc_locks_space SOURCES libc_locks_space.cc
+  LIBRARIES kickos_kseam_aspace_one)
+kickos_add_unit_test(NAME start_root_one SOURCES start_root_one.cc
   LIBRARIES kickos_kseam_aspace_one)
 target_link_options(leave_space PRIVATE -Wl,--gc-sections)
 target_link_options(leave_space_one PRIVATE -Wl,--gc-sections)
+target_link_options(libc_locks_space PRIVATE -Wl,--gc-sections)
+target_link_options(start_root_one PRIVATE -Wl,--gc-sections)
 
 # Outside the K-seam: the fixture defines domain_for itself, so the real domain.cc cannot link
 # beside it.

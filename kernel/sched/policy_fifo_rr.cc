@@ -122,15 +122,14 @@ namespace kickos
         // that core.
         bool available_to(Thread const* t, KernelCore core)
         {
+            // On on_cpu, not current: inside one exception current runs ahead of the frame the
+            // core stands on, and only a victim whose frame is live must lose the core first.
+            if (t == kernel().on_cpu[core] and thread_slay_claim_pending(t))
+            {
+                return false;
+            }
             if (t == kernel().current(core))
             {
-                // A slain thread must lose the core: a core re-picking its own running
-                // victim never takes one. Declining here keeps a victim preempted
-                // mid-teardown from being displaced by a claim that already fired.
-                if (thread_slay_claim_pending(t))
-                {
-                    return false;
-                }
                 // Re-masking a running thread is what stops its own core picking it again;
                 // reschedule() switches it away rather than unlinking it.
                 return sched_placeable_on(t, core);

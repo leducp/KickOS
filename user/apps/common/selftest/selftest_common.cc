@@ -98,9 +98,9 @@ namespace selftest
     // Above every batch an arm asks for: a crowd of one per kernel core plus one, or four.
     constexpr int POOL_PROBES_MAX = KICKOS_KERNEL_CORES + 4;
 
-    void pool_gated_worker(void*) // caps: gate@2
+    void pool_gated_worker(void*) // caps: gate@0
     {
-        kos_sem_wait(2, KOS_TIMEOUT_NONE);
+        kos_sem_wait(child_cap(0), KOS_TIMEOUT_NONE);
     }
 
     namespace

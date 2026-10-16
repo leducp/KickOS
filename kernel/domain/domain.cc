@@ -59,14 +59,9 @@ namespace kickos
 #endif
 
         // A fresh unprivileged domain, with the address space it needs where a backend
-        // translates, seeded for `caller`'s posture. On refusal the slot is left reinitialised
-        // and *err written.
-        Domain* claim_slot(uint32_t caller, Domain const* donor, int* err)
+        // translates. On refusal the slot is left reinitialised and *err written.
+        Domain* claim_slot(int* err)
         {
-#if not KICKOS_HAVE_ASPACE
-            (void)caller;
-            (void)donor;
-#endif
             Domain* d = free_slot();
             if (d == nullptr)
             {
@@ -93,13 +88,7 @@ namespace kickos
                 *err = KOS_ENOMEM;
                 return nullptr;
             }
-            struct arch_aspace* spawner = nullptr;
-            if (donor != nullptr)
-            {
-                spawner = donor->space;
-            }
-            bool const from_snapshot = (caller & DOM_CALLER_TASK) != 0;
-            if (not aspace_image_seed(d->space, &d->ranges, from_snapshot, spawner))
+            if (not aspace_image_seed(d->space, &d->ranges))
             {
                 (void)drop_space(d); // a space with no handoff yet: the edge is null
                 *err = KOS_ENOMEM;
@@ -255,6 +244,9 @@ namespace kickos
     Domain* domain_for(uint32_t caller, void* mem_base, size_t mem_size, uint32_t mem_attr,
                        Domain* donor, int* err)
     {
+#if not KICKOS_HAVE_ASPACE
+        (void)donor;
+#endif
         *err = 0;
         if ((caller & DOM_CALLER_PRIVILEGED) != 0)
         {
@@ -263,7 +255,7 @@ namespace kickos
         if (mem_base == nullptr or mem_size == 0)
         {
 #if KICKOS_HAVE_ASPACE
-            return claim_slot(caller, donor, err);
+            return claim_slot(err);
 #else
             return domain_default_user();
 #endif
@@ -276,7 +268,7 @@ namespace kickos
             *err = KOS_ENOTSUP;
             return nullptr;
         }
-        Domain* d = claim_slot(caller, donor, err);
+        Domain* d = claim_slot(err);
         if (d == nullptr)
         {
             return nullptr;

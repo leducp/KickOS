@@ -11,7 +11,13 @@
 //
 // App and libstdc++ global constructors run in the kernel root thread BEFORE
 // kickos_init_entry is entered, so a constructor cannot depend on anything init
-// brings up.
+// brings up. Where a backend translates, every other space starts from the image's pristine data
+// and runs them again, once, in whichever of its threads enters first (kickos_task_start), with
+// that thread's authority, priority and stack, before its entry. So a constructor must need no
+// authority a task lacks and must not wait on another thread of its space, which waits for it.
+// KICKOS_MIN_STACK_SIZE holds the toolchain runtime's startup (each translating arch's
+// <arch>_trap_stack.h TASK_START); an app whose own constructors go deeper sizes its stacks for
+// them.
 
 #ifndef KICKOS_SYS_INIT_H
 #define KICKOS_SYS_INIT_H
@@ -33,8 +39,9 @@ struct kos_table_task;
 void kickos_main(struct kos_table_task const* self);
 
 // The root thread's own entry, which kmain hands to thread_create. It walks the app's ctor window
-// at KICKOS_PRIO_MAX, the priority the kernel creates root at, and then calls kickos_init_entry
-// above, whose walk lowers root as its first act.
+// at KICKOS_PRIO_MAX, the priority the kernel creates root at (where a backend translates,
+// kickos_task_start below walks it first), and then calls kickos_init_entry above, whose walk
+// lowers root as its first act.
 //
 // MUST stay defined app-side (libkickos_user.a): root is UNPRIVILEGED from its first
 // instruction, so on a translating board this text is fetched at EL0, where kernel-half text is
@@ -44,6 +51,13 @@ void kickos_main(struct kos_table_task const* self);
 // address of a default-visibility external function GOT-indirect while `ld -m i386pep` builds no
 // global offset table (tools/check-x86_64-no-got.sh).
 void kickos_root_entry(void* arg) __attribute__((visibility("hidden")));
+
+// Where a backend translates, the entry the kernel gives every unprivileged thread, root's
+// included: runs the image's startup in the thread's space unless a thread of that space already
+// has, then entry(arg). A thread arriving while the startup runs blocks until it ends; one
+// arriving after its starter died inside it traps, ending its task. Same placement and visibility
+// rules as above.
+void kickos_task_start(void* arg, void (*entry)(void*)) __attribute__((visibility("hidden")));
 
 // The kernel -> init argument handoff. kmain fills it; the root thread reads it immediately before
 // calling kickos_init_entry above.

@@ -44,6 +44,10 @@ struct alignas(64) armv8a_percpu_block
     // PMCCNTR_EL0 at the switch window's open, read back at its close by the same core.
     uint32_t bench_sw_start;
 #endif
+
+    // Under the reserved-root form, the TTBR0_EL1 value the next eret to EL0 installs:
+    // arch_aspace_activate writes it, switch.S reads it.
+    uint64_t user_ttbr0;
 };
 
 extern struct armv8a_percpu_block kickos_armv8a_percpu[KICKOS_NUM_CORES];

@@ -27,6 +27,11 @@
 //      onto the caller's kernel block before calling anything. The claim is that the syscall
 //      RETURNS and the poisoned band below the parked PSP is intact.
 //
+//   7  a core with a stack limit only: the SVC's own entry stacking violates the limit, and the
+//      SVCall that entry left pending must not run in the dying thread's place.
+// On such a core modes 0, 1, 4 and 6 die by STKOF instead, and the wild thread gets a task of
+// its own so that the fault ends it and not main.
+//
 // Modes 0, 1, 3 and 4 provoke the switch with a HIGHER-priority ticker and not with a fault,
 // the store under test being the SWITCHER's; the ticker's counter advancing separates "PendSV
 // took the wild PSP" from "the loop merely spun". Modes 2 and 5 trap synchronously.
@@ -52,6 +57,15 @@
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 #include <kickos/libc/fmt.h>
+
+#if defined(KICKOS_ARMV7M_SPLIM) && KICKOS_ARMV7M_SPLIM
+#define PG_SPLIM 1
+#else
+#define PG_SPLIM 0
+#endif
+#if KICKOS_PSPGUARD_MODE == 7 && !PG_SPLIM
+#error "pspguard mode 7 needs a stack limit register for the SVC entry to violate"
+#endif
 
 // An undefined macro evaluates as 0 in the #if ladder below, i.e. as mode 0.
 #ifndef KICKOS_PSPGUARD_MODE
@@ -110,6 +124,15 @@ namespace
     constexpr uint32_t FP_POISON = 0x0FF5A1EDu;
     static_assert(FP_SAVE_OFF + FP_SAVE_LEN <= SP_OFFSET,
                   "the reservation must sit under the parked sp, or the loop below writes it");
+#if PG_SPLIM
+    // The entry violates the limit: SP is set to it and the kill rebuilds a frame there, so only
+    // the reservation's words under the limit are the lazy save's alone.
+    constexpr uint32_t FP_CHECK_LEN = KICKOS_ARMV7M_SPLIM_ROOM - FP_SAVE_OFF;
+    static_assert(FP_SAVE_OFF < KICKOS_ARMV7M_SPLIM_ROOM and FP_CHECK_LEN <= FP_SAVE_LEN,
+                  "the reservation must start under the limit for a lazy save to show");
+#else
+    constexpr uint32_t FP_CHECK_LEN = FP_SAVE_LEN;
+#endif
 #elif KICKOS_PSPGUARD_MODE == 6
     // THE BLOCK LEG'S ROOM BOUND, and the one arm whose target is not an offset from stack_lo:
     // it parks the PSP inside the thread's OWN KERNEL BLOCK, four bytes above the block's
@@ -150,8 +173,22 @@ namespace
     static_assert(BLOCK_PARK_UP - HW_FRAME < PG_PENDSV_PUSH + 4,
                   "a wrongly-accepted PSP would save ABOVE the canary, so the readback would "
                   "pass whatever the leg did");
+#elif KICKOS_PSPGUARD_MODE == 7
+    // The SVC's 32-byte frame would start 16 bytes under the limit.
+    constexpr uint32_t SP_OFFSET = KICKOS_ARMV7M_SPLIM_ROOM + 16;
+    static_assert(SP_OFFSET >= KICKOS_ARMV7M_SPLIM_ROOM
+                      and SP_OFFSET - 32u < KICKOS_ARMV7M_SPLIM_ROOM,
+                  "the move must clear the limit and the SVC entry must not");
 #elif KICKOS_PSPGUARD_MODE == 2
-#if defined(__ARM_ARCH) && (__ARM_ARCH >= 7)
+#if PG_SPLIM
+    // The hardware frame (32) above a PSP between the limit and the SVC site's need, so the
+    // entry stacks and the guard refuses.
+    constexpr uint32_t SP_OFFSET =
+        32u + (((KICKOS_ARMV7M_SPLIM_ROOM + KICKOS_ARMV7M_TRAP_NEED_SVC) / 2u + 7u) / 8u) * 8u;
+    static_assert(SP_OFFSET - 32u >= KICKOS_ARMV7M_SPLIM_ROOM
+                      and SP_OFFSET - 32u < KICKOS_ARMV7M_TRAP_NEED_SVC,
+                  "the SVC entry must clear the limit and leave the guard short of its need");
+#elif defined(__ARM_ARCH) && (__ARM_ARCH >= 7)
     // 32 (the hardware frame the SVC stacks) + 32 (less than the 36 the push needs).
     constexpr uint32_t SP_OFFSET = 64;
 #else
@@ -204,7 +241,7 @@ namespace
     // own failure instead of hanging the runner out to the ctest timeout.
     constexpr uint32_t SPIN_LIMIT = 20000000u;
 
-#if KICKOS_PSPGUARD_MODE != 2 && KICKOS_PSPGUARD_MODE != 5
+#if KICKOS_PSPGUARD_MODE != 2 && KICKOS_PSPGUARD_MODE != 5 && KICKOS_PSPGUARD_MODE != 7
     volatile uint32_t g_ticks = 0;
 
     void ticker(void*)
@@ -232,7 +269,7 @@ namespace
         volatile uint32_t const* const fpres =
             reinterpret_cast<volatile uint32_t*>(a->stack_lo + FP_SAVE_OFF);
         bool blown = false;
-        for (uint32_t i = 0; i < FP_SAVE_LEN / 4u; i++)
+        for (uint32_t i = 0; i < FP_CHECK_LEN / 4u; i++)
         {
             if (fpres[i] != FP_POISON)
             {
@@ -330,7 +367,7 @@ namespace
             band[i] = BAND_POISON;
         }
 #endif
-#if KICKOS_PSPGUARD_MODE == 2 || KICKOS_PSPGUARD_MODE == 5
+#if KICKOS_PSPGUARD_MODE == 2 || KICKOS_PSPGUARD_MODE == 5 || KICKOS_PSPGUARD_MODE == 7
         // svc_trampoline exits to the STACKED LR, so the return address is arranged here the way
         // arch_syscall_reg does. Nothing may touch memory between the SP move and its restore.
         uint32_t saved = 0;
@@ -488,7 +525,7 @@ int main(int, char**)
         kos::print("[pspguard] ERROR: no arm target computed\n");
         return 1;
     }
-#if KICKOS_PSPGUARD_MODE != 2 && KICKOS_PSPGUARD_MODE != 5
+#if KICKOS_PSPGUARD_MODE != 2 && KICKOS_PSPGUARD_MODE != 5 && KICKOS_PSPGUARD_MODE != 7
     kos::thread::Handle const tk = kos::thread::create(ticker, nullptr, "ticker", 20);
     if (not tk.valid())
     {
@@ -496,15 +533,35 @@ int main(int, char**)
         return 1;
     }
 #endif
+#if PG_SPLIM
+    // A spawn bringing its own memory already gets a task of its own.
+    kos_task_t victim = KOS_TASK_NONE;
+    if (mem == nullptr and kos_task_create(nullptr, 0, 0, &victim) != 0)
+    {
+        kos::print("[pspguard] ERROR: no task slot for the wild thread\n");
+        return 1;
+    }
+    kos::thread::Handle const w =
+        kos::thread::create(wild, &g_arm, "wild", 10, KOS_POLICY_FIFO, 0,
+                            mem, mem_size, st, STACK_BYTES,
+                            nullptr, 0, nullptr, 0, 0, nullptr, victim);
+#else
     kos::thread::Handle const w =
         kos::thread::create(wild, &g_arm, "wild", 10, KOS_POLICY_FIFO, 0,
                             mem, mem_size, st, STACK_BYTES);
+#endif
     if (not w.valid())
     {
         kos::print("[pspguard] ERROR: wild spawn refused\n");
         return 1;
     }
     w.join();
+#if PG_SPLIM
+    if (victim != KOS_TASK_NONE)
+    {
+        (void)kos_task_kill(victim);
+    }
+#endif
 #if KICKOS_PSPGUARD_MODE == 5
     // Reached only because the trap was ACCEPTED: a refusal that is not contained ends the
     // system, and a contained one slays the wild thread rather than returning it here.

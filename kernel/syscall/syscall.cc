@@ -518,14 +518,13 @@ uint64_t syscall_body(uintptr_t nr,
         {
             // mutex_lock takes its OWN lock and releases it before the resume barrier and the
             // wait_result read; a lock spanning the call would reintroduce the stale read on
-            // ARM. The caller's own cap pins the mutex across the resolve-to-call window.
-            // need == 0: possession is the authority.
+            // ARM. The caller's own cap, or for a libc lock its membership of the space, pins
+            // the mutex across the resolve-to-call window. Possession is the authority.
             Mutex* m;
             int err = 0;
             {
                 IrqLock lock;
-                m = static_cast<Mutex*>(
-                    cap_resolve_e(sched::current(), static_cast<uint32_t>(a0), CapType::CAP_MUTEX, 0, &err));
+                m = cap_resolve_mutex(sched::current(), static_cast<uint32_t>(a0), &err);
             }
             if (m == nullptr)
             {
@@ -538,8 +537,7 @@ uint64_t syscall_body(uintptr_t nr,
         {
             IrqLock lock;
             int err = 0;
-            Mutex* m = static_cast<Mutex*>(
-                cap_resolve_e(sched::current(), static_cast<uint32_t>(a0), CapType::CAP_MUTEX, 0, &err));
+            Mutex* m = cap_resolve_mutex(sched::current(), static_cast<uint32_t>(a0), &err);
             if (m == nullptr)
             {
                 return static_cast<uint64_t>(-err);
@@ -1142,6 +1140,15 @@ uint64_t syscall_body(uintptr_t nr,
             }
             return static_cast<uint64_t>(arch_periph_enable(a0));
         }
+        case KOS_SYS_PERIPH_DISABLE:
+        {
+            IrqLock lock;
+            if (not caller_holds_mmio_block(a0))
+            {
+                return static_cast<uint64_t>(-KOS_EPERM);
+            }
+            return static_cast<uint64_t>(arch_periph_disable(a0));
+        }
         case KOS_SYS_PERIPH_REG_WRITE:
         {
             // Checked before possession: the store is one 32-bit word, so an unaligned or
@@ -1269,6 +1276,12 @@ uint64_t syscall_body(uintptr_t nr,
         {
             return static_cast<uint64_t>(irq_raise(sched::current(), static_cast<uint32_t>(a0)));
         }
+#if KICKOS_WITNESS_UACCESS
+        case KOS_SYS_WITNESS_UACCESS:
+        {
+            return static_cast<uint64_t>(witness_uaccess(a0, a1, a2));
+        }
+#endif
 #if KICKOS_BENCH
         case KOS_SYS_BENCH:
         {

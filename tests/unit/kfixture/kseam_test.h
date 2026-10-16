@@ -115,6 +115,7 @@ namespace kickos
             }
             t->state.to<ThreadState::RUNNING>();
             k.current(core_at(core)) = t;
+            k.on_cpu[core_at(core)] = t;
             // What the core's last pass seated, or a later pass seating lower sees no drop.
             k.seated_prio[core] = t->prio;
             // Started, as its own first seat would publish it.

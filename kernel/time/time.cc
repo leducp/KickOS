@@ -12,6 +12,15 @@
 #include <kickos/ktrace.h>
 
 #include <kickos/sys/errno.h>
+#include <kickos/sys/witness.h>
+
+#if KICKOS_WITNESS_UACCESS
+namespace kickos
+{
+    // syscall_witness.cc: a ring-0 read the witness armed for the thread this interrupt took.
+    void witness_uaccess_timer(Thread const* c);
+}
+#endif
 
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
 #include <kickos/trace/record.h>
@@ -204,6 +213,9 @@ extern "C" void kickos_isr_timer(void)
 #endif
 #if KICKOS_BENCH_SCHED_ON
     uint32_t const bench_was = ::kickos_bench_reason_enter(::kickos::BR_TIMER);
+#endif
+#if KICKOS_WITNESS_UACCESS
+    ::kickos::witness_uaccess_timer(::kickos::sched::current());
 #endif
     ::kickos::ktime_on_timer();
 #if KICKOS_BENCH_SCHED_ON

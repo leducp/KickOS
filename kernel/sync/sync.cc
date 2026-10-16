@@ -340,6 +340,7 @@ namespace kickos
         m->owner = nullptr;
         m->waiters = List{};
         m->next_held = nullptr;
+        m->owner_died = false;
     }
 
     int mutex_lock(Mutex* m, uint32_t timeout_us)
@@ -359,6 +360,11 @@ namespace kickos
             {
                 m->owner = c;
                 held_push(c, m);
+                if (m->owner_died)
+                {
+                    m->owner_died = false;
+                    return static_cast<int>(MUTEX_OWNER_DIED);
+                }
                 return 0;
             }
             if (m->owner == c)
@@ -370,7 +376,8 @@ namespace kickos
                 return -KOS_ETIMEDOUT;
             }
             // Pass 1: cycle detection, READ ONLY, so a refusal writes no boost. The depth
-            // bound only stops the walk on a PRE-EXISTING foreign cycle.
+            // bound only stops the walk on a PRE-EXISTING foreign cycle, and counts threads, not
+            // pool mutexes: an acyclic chain visits each thread once.
             {
                 Thread* t = m->owner;
                 int depth = 0;
@@ -386,7 +393,7 @@ namespace kickos
                     }
                     t = t->wait_mutex()->owner;
                     depth++;
-                    if (depth > KICKOS_MAX_MUTEXES)
+                    if (depth > KICKOS_THREAD_SLOTS)
                     {
                         break;
                     }
@@ -410,7 +417,7 @@ namespace kickos
                     }
                     t = t->wait_mutex()->owner;
                     depth++;
-                    if (depth > KICKOS_MAX_MUTEXES)
+                    if (depth > KICKOS_THREAD_SLOTS)
                     {
                         break;
                     }
@@ -464,12 +471,14 @@ namespace kickos
     {
         // `dying` gets NO recompute: it stays boosted for the remainder of its own teardown,
         // a bounded inversion since the sweep is chunked. The waiter is woken with
-        // MUTEX_OWNER_DIED, the protected state may be inconsistent, but never stranded.
+        // MUTEX_OWNER_DIED, the protected state may be inconsistent, but never stranded; with no
+        // waiter the next take answers it instead.
         held_remove(dying, m);
         Thread* w = wq_pop_highest(m->waiters);
         if (w == nullptr)
         {
             m->owner = nullptr;
+            m->owner_died = true;
             return;
         }
         transfer_to(m, w, MUTEX_OWNER_DIED);

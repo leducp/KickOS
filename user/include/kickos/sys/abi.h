@@ -125,8 +125,10 @@ enum kos_syscall_nr
                                 //   -KOS_EBADF / -KOS_EDEADLK / -KOS_ECANCELED / -KOS_ETIMEDOUT (the
                                 //   time ran out, or a try found it held) NOT held (see the wrapper
                                 //   decl for the caveat).
-                                //   KOS_TIMEOUT_NONE waits forever, 0 is a try
-    KOS_SYS_MUTEX_UNLOCK = 25,  // (cap)  -> 0, -KOS_EBADF (bad cap), -KOS_EPERM (caller not owner)
+                                //   KOS_TIMEOUT_NONE waits forever, 0 is a try. The cap may
+                                //   also be KOS_CAP_LIBC_LOCK or KOS_CAP_MALLOC_LOCK
+    KOS_SYS_MUTEX_UNLOCK = 25,  // (cap)  -> 0, -KOS_EBADF (bad cap), -KOS_EPERM (caller not owner);
+                                //   the cap may be KOS_CAP_LIBC_LOCK or KOS_CAP_MALLOC_LOCK
     KOS_SYS_ENDPOINT_CREATE = 26, // (kos_cap_t* out) -> 0, or -KOS_E* (ENOMEM endpoint pool,
                                   //   EMFILE caller's cap table, EAGAIN task's endpoint
                                   //   budget, EINVAL/EFAULT)
@@ -366,9 +368,18 @@ enum kos_syscall_nr
                                //   KICKOS_PRIO_MIN to KICKOS_PRIO_MAX), -KOS_EPERM (above the
                                //   calling task's priority ceiling). The caller's OWN base
                                //   priority; an inherited boost above it stays.
-    KOS_SYS_TASK_NONBLOCK = 78  // (enum kos_nonblock_op) -> the calling task's O_NONBLOCK as
+    KOS_SYS_TASK_NONBLOCK = 78, // (enum kos_nonblock_op) -> the calling task's O_NONBLOCK as
                                 //   the op leaves it, 0 or 1, or -KOS_EINVAL (an unknown op, or
                                 //   a caller in no task). One flag per task, shared by its threads
+    KOS_SYS_PERIPH_DISABLE = 79, // (base) -> 0, -KOS_EPERM (caller holds no window at that base),
+                                //   -KOS_EINVAL (no table entry), -KOS_ENOSYS (no backend).
+                                //   KOS_SYS_PERIPH_ENABLE's undo, gated the same way
+    KOS_SYS_WITNESS_UACCESS = 80 // RESERVED for the uaccess witness (<kickos/sys/witness.h>):
+                                //   (op, uaddr, ns) -> the byte read, 0 after a write, or
+                                //   -KOS_EPERM (a caller without the whole authority word),
+                                //   -KOS_EINVAL (an unknown op), -KOS_ENOSYS (no address space
+                                //   to leave). Any kernel not built for the witness answers
+                                //   -KOS_EINVAL, as for an unknown number
 };
 // The raw console write's number, refused in an app as kos_kconsole_write is (<kickos/sys.h>).
 #if defined(main)
@@ -764,7 +775,8 @@ struct kos_thread_params
     void* stack_base;    // caller-owned thread stack; 0 => kernel default (KICKOS_USER_STACK_SIZE).
                          // Must be a block the CALLER'S TASK reserved with kos_ram_alloc, a
                          // sibling task's included. Under translation it must ALSO be
-                         // reachable in the task the child joins. App static data is neither.
+                         // reachable in the task the child joins. App static data is neither,
+                         // nor is the AMP user share: -KOS_EPERM.
                          // -KOS_EINVAL unless 16-aligned; where the thread pointer is SP masked
                          // (armv6m, armv7m, rxv3) and the image carves TLS, also unless it is
                          // KICKOS_TLS_STRIDE-aligned and stack_size is exactly one stride.

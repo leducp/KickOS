@@ -15,6 +15,7 @@
 #include <kickos/arch/percpu.h>
 #include <kickos/arch/rv64_doorbell.h>
 #include <kickos/arch/rv64_frame.h>
+#include <kickos/arch/rv64_uguard.h>
 #include <kickos/diag.h>
 #include <kickos/sys/atomic.h>
 
@@ -24,6 +25,7 @@
 namespace kickos
 {
     void kprintf(char const* fmt, ...);
+    void kpanic(char const* msg) __attribute__((noreturn));
 }
 extern "C" void kpanic_enter(void);
 extern "C" void kfault_terminate(void) __attribute__((noreturn));
@@ -365,6 +367,8 @@ static_assert(KICKOS_RV64_TRAP_STACK_SIZE % KICKOS_RV64_SP_ALIGN == 0,
               "the trap-stack top must land on the alignment the prologue requires");
 static_assert(KICKOS_RV64_TRAP_FRAME == KICKOS_RV64_FRAME,
               "rv64_trap_stack.h prices the frame every entry builds");
+static_assert(KICKOS_MIN_STACK_SIZE >= KICKOS_RV64_TASK_START,
+              "a thread on the least stack a spawn admits may run its space's startup");
 static_assert(KICKOS_MAX_SPAWN_GRANTS <= 9,
               "KICKOS_RV64_TRAP_DEPTH_SYSK was measured at a spawn staging 9 grants on the "
               "kernel block: re-measure with tests/static/check_trap_redzone.sh first");
@@ -448,6 +452,11 @@ void arch_context_init(struct arch_context* ctx,
     // The sp .Lrestore leaves on: the thread's own stack, whole.
     f[KICKOS_RV64_F_SP / 8] = top;
     ctx->sp = base;
+}
+
+void arch_context_second_arg(struct arch_context* ctx, uintptr_t value)
+{
+    reinterpret_cast<uint64_t*>(ctx->sp)[KICKOS_RV64_F_A1 / 8] = value;
 }
 
 void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
@@ -945,6 +954,23 @@ uint32_t arch_cpu_id(void)
 }
 #endif
 
+// The boot hart's sstatus as kickos_rv64_init read it back after clearing SUM.
+static uint64_t g_sum_readback = 0;
+static bool g_sum_recorded = false;
+
+char const* arch_uaccess_guard(void)
+{
+    return ::kickos::rv64::sum_posture(g_sum_readback);
+}
+
+#if defined(KICKOS_WITNESS_UACCESS) && KICKOS_WITNESS_UACCESS
+// No flag the interrupted context controls lifts this guard.
+int arch_witness_irq_lift_flag(void)
+{
+    return -1;
+}
+#endif
+
 // --- One-time core bring-up ------------------------------------------------
 void kickos_rv64_init(void)
 {
@@ -974,9 +1000,6 @@ void kickos_rv64_init(void)
         kfault_terminate();
     }
 
-    // SUM stays clear: the kernel reaches process memory only through the kaccess seam
-    // (kickos/aspace.h), and a dereference of a low-half pointer faults.
-
     // Confirms the drop startup.S performs; the probe needs the vector installed above.
     if (kickos_rv64_privilege_probe() == 0)
     {
@@ -998,6 +1021,23 @@ void kickos_rv64_init(void)
         kpanic_enter();
         ::kickos::kprintf("\n=== RISC-V S-TRAP (sstatus.UXL is not RV64) ===\n");
         kfault_terminate();
+    }
+
+    // Whatever firmware left: the kernel reaches process memory only through the kaccess seam,
+    // and with SUM clear a dereference of a low-half pointer faults.
+    __asm volatile("csrc sstatus, %0" ::"r"(static_cast<uint64_t>(KICKOS_RV64_SSTATUS_SUM))
+                   : "memory");
+    uint64_t sum_seen = 0;
+    __asm volatile("csrr %0, sstatus" : "=r"(sum_seen));
+    char const* const sum_why = ::kickos::rv64::sum_refusal(sum_seen);
+    if (sum_why != nullptr)
+    {
+        ::kickos::kpanic(sum_why);
+    }
+    if (not g_sum_recorded)
+    {
+        g_sum_readback = sum_seen;
+        g_sum_recorded = true;
     }
 
     // After the probe, whose trap leg clears sstatus.SIE and never srets it back, so it must

@@ -163,12 +163,12 @@ gdb-multiarch build/qemu/user/apps/common/hello/hello -ex 'target remote :1234'
 gdb shows where the core is held:
 
 ```
-Reset_Handler () at .../arch/arm/chip/mps2/chip_mps2.cc:112
-112	    kickos_ranges_init();
+kickos_armv7m_enable_fpu () at .../arch/arm/common/regs.h:130
+130	    kickos::arm::reg32(kickos::arm::SCB_CPACR) |= kickos::arm::CPACR_CP10_CP11_FULL;
 ```
 
-The core has not run an instruction, but gdb already shows it at `Reset_Handler` with a stack
-pointer. A Cortex-M core loads both from the first two words of its vector table when it
+The core has not run an instruction, but gdb already shows it inside `Reset_Handler` (the
+FPU enable is its first line, inlined) with a stack pointer. A Cortex-M core loads both from the first two words of its vector table when it
 leaves reset. [01, Stop 1](01-power-on.md) starts there.
 
 To rerun a recipe without typing it, put the commands in a file and run gdb in batch mode:

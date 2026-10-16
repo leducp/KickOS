@@ -432,6 +432,10 @@ def emit_cmake(view):
     if view.chip.exits_on_fault:
         exits = "ON"
     facts.append("set(KICKOS_CHIP_EXITS_ON_FAULT %s)\n" % exits)
+    stack_limit = "OFF"
+    if view.chip.stack_limit:
+        stack_limit = "ON"
+    facts.append("set(KICKOS_CHIP_STACK_LIMIT %s)\n" % stack_limit)
     if view.chip.family is not None:
         facts.append("set(KICKOS_CHIP_FAMILY_DIR \"%s\")\nset(KICKOS_CHIP_FAMILY_SOURCES \"%s\")\n"
                      % (view.chip.family[0], ";".join(view.chip.family[1])))

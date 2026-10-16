@@ -734,7 +734,8 @@ found it missing from the code as well as from here.** A frame the pool hands ou
 reservation or a user stack carries no earlier task's bytes: `frame_pool_alloc_user_run` clears
 every frame of the run through the pool's own kernel alias before answering, and a frame it cannot
 reach returns the whole run rather than a partly cleared one. Two callers keep the uncleared
-primitive on purpose, `data_copy` and `data_template_fill` overwriting every granule they take.
+primitive on purpose, `data_copy` and the first seed's capture of the image, each overwriting every
+granule it takes.
 The region fleet has no pool and the bump arena never frees, but the THREAD-STACK FREE LIST does
 re-hand a dead thread's block under a new thread's region, so the clear belongs at that pop too.
 The witness is a reused frame and not a fresh one: the arm asserts the second process landed on the
@@ -1131,22 +1132,18 @@ every process created afterwards. Making root the template also settles the two 
 was going to have, without a second mechanism for either -- `kickos_init_args` is written into
 app-side `.bss` before any space exists and is therefore in the template, and every ctor's output is
 in it too, because the copy is taken from what root has, not from what the linker laid down.
+*Superseded in M10.6.6:* the template is the image as the loader left it, captured at the first
+seed before root runs, and each space runs the constructors itself
+(`space-data-starts-from-the-image`, `docs/reference/invariants.md`).
 
 **AND THE TEMPLATE OUTLIVES ROOT, which M6.2's audit found it did not.** Releasing root's space
 cleared the record of which space held the image's own pages, so the next space seeded mapped those
 pages itself and became a second template: every process created after it copied a LIVE process's
-mutable globals rather than root's. Two properties now hold together. The source of a spawn is
-its spawner, root or a task, read live, so a global the spawner writes before a spawn is one the
-child reads out of its own copy, and the app's own drivers depend on exactly that. An explicit
-task's space copies the snapshot below instead, which the first explicit task's seed takes out of
-the live root (M10.4, `DOM_CALLER_TASK`), so every explicit task and its restarts start from
-root's data as it stood then. On root's way out, where no seed took it first, `aspace_release`
-freezes those pages into a snapshot of frames taken off the pool when root was seeded, with
-root's mappings still standing, and a space claimed with no spawner copies the snapshot. A seed
-reaching a lost home with no snapshot behind it is REFUSED. No process other than root is ever
-the snapshot's source. Witnessed by the host case
-`a_space_seeded_after_the_home_is_released_copies_the_snapshot` (tests/unit/presync), which
-releases the home and seeds a later space from the snapshot.
+mutable globals rather than root's. M10.6.6 removed the question with the live source: the
+first seed captures the image before anything runs, every later space copies that capture, and
+nothing writes it again, so releasing root's space changes nothing a later seed reads
+(`space-data-starts-from-the-image`, `docs/reference/invariants.md`). Witnessed by the host case
+`a_space_seeded_after_the_first_is_released_copies_the_image` (tests/unit/presync).
 
 *A space now knows which of its mappings it OWNS.* The range list carries two flags per entry,
 BORROWED and IMAGE (`kernel/include/kickos/vrange.h`), and `aspace_release` walks it: a borrowed

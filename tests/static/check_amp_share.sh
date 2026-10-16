@@ -4,7 +4,8 @@
 #
 # Gate on the configure-time refusals of an AMP partition's user share (cmake/amp_share.cmake): a
 # share past the region every node writes, an uncached share where the kernel's view has no type
-# of its own, and a share no one region describes, each refusal PAIRED WITH A CONTROL.
+# of its own, and a share no one region describes, and of several instances sharing one image's
+# heap with no address space between them, each refusal PAIRED WITH A CONTROL.
 #
 # The module is driven in SCRIPT MODE against the SAME functions the build calls.
 #
@@ -26,6 +27,9 @@ command -v "$CMAKE" >/dev/null 2>&1 || [ -x "$CMAKE" ] || fail "cmake not execut
 grep -q 'kickos_amp_share_check' "$SRC/cmake/amp_partition.cmake" \
     || fail "cmake/amp_partition.cmake does not call kickos_amp_share_check, so the refusals
     this gate exercises are wired to nothing"
+grep -q '^kickos_multi_instance_heap_check(' "$SRC/CMakeLists.txt" \
+    || fail "CMakeLists.txt does not call kickos_multi_instance_heap_check, so the multi-instance
+    refusal this gate exercises is wired to nothing"
 grep -q 'kickos_amp_share_granule_check' "$SRC/cmake/amp_partition.cmake" \
     || fail "cmake/amp_partition.cmake does not call kickos_amp_share_granule_check, so the
     granule refusal this gate exercises is wired to nothing"
@@ -103,5 +107,35 @@ expect_accept "whole granules" 0x4020 0x8000 OFF OFF 0x2007BFE0 32 0
 expect_refusal "pow2 unit, not a power" "$REGION" 0x3000 0x8000 OFF OFF 0x4087D000 8 1
 expect_refusal "pow2 unit, misaligned" "$REGION" 0x4000 0x8000 OFF OFF 0x4087A000 8 1
 expect_accept "pow2 unit, aligned power" 0x4000 0x8000 OFF OFF 0x4087C000 8 1
+
+MI_DRIVER="$TMP/drive_mi.cmake"
+cat >"$MI_DRIVER" <<EOF
+list(APPEND CMAKE_MODULE_PATH "$SRC/cmake")
+include(amp_share)
+kickos_multi_instance_heap_check(MULTI "\${MI_MULTI}" TRANSLATES "\${MI_TRANSLATES}"
+                                 ARCH "\${MI_ARCH}" ORIGIN "the fixture")
+message(STATUS "SHARE-ACCEPTED")
+EOF
+
+# <multi> <translates> <arch>
+mi_rc_of() {
+    "$CMAKE" "-DMI_MULTI=$1" "-DMI_TRANSLATES=$2" "-DMI_ARCH=$3" -P "$MI_DRIVER" >"$TMP/out" 2>&1
+}
+
+if mi_rc_of ON 0 armv8m; then
+    fail "several instances over one region image were ACCEPTED. $(cat "$TMP/out")"
+fi
+tr -s ' \n' '  ' <"$TMP/out" >"$TMP/flat"
+grep -q 'no lock would serialise them' "$TMP/flat" && grep -q 'the fixture' "$TMP/flat" \
+    || fail "the multi-instance refusal did not say why or name the configuration. Got:
+    $(cat "$TMP/out")"
+echo "amp_share: REFUSED several instances over one region image"
+for _mi in "OFF 0 armv8m" "ON 1 armv8a" "ON 0 sim"; do
+    # shellcheck disable=SC2086
+    mi_rc_of $_mi || fail "multi-instance control ($_mi) was REFUSED. $(cat "$TMP/out")"
+    grep -q 'SHARE-ACCEPTED' "$TMP/out" \
+        || fail "multi-instance control ($_mi) exited 0 without reaching the accept marker"
+    echo "amp_share: accepted multi-instance control ($_mi)"
+done
 
 echo "amp_share: OK"

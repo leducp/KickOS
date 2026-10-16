@@ -45,13 +45,21 @@ namespace
     }
 }
 
-// The four fixed-shape records, at arguments no target can exceed.
+// The five fixed-shape records, at arguments no target can exceed.
 TEST(FaultLine, every_fixed_record_fits_the_bound)
 {
     expect_fits(width(KDIAG_F_FAULT_PC_LOST));
     expect_fits(width(KDIAG_F_FAULT_PC, wild_ptr()));
     expect_fits(width(KDIAG_F_FAULT_PC_STAT, wild_ptr(), kStatus, ~0ull));
+    expect_fits(width(KDIAG_F_FAULT_NO_PC, kStatus, ~0ull));
     expect_fits(width(KDIAG_F_FAULT_ADDR, wild_ptr()));
+}
+
+// The ARM dump's note on a frame at its stack's limit goes out through kprintf, whose bound is
+// KICKOS_DIAG_LINE_MAX.
+TEST(FaultLine, the_unverified_frame_note_fits_a_kprintf_line)
+{
+    EXPECT_LT(width(KDIAG_F_ARM_UNVERIFIED, ~0u, "PSP"), static_cast<int>(KICKOS_DIAG_LINE_MAX));
 }
 
 // The banner is the only fault line with an unbounded argument, so the bound spends its whole

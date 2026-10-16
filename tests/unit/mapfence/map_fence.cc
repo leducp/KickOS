@@ -746,3 +746,19 @@ TEST_F(MapFence, AnEightBitFieldStillTagsBecauseTheRowCountIsTheNarrowerBound)
 
     arch_aspace_destroy(narrow);
 }
+
+// What kickos_rv64_init reads back after clearing sstatus.SUM: a hart that kept it refuses to
+// boot, and the banner names the guard from the same read-back.
+
+#include <kickos/arch/rv64_uguard.h>
+
+TEST(SumReadback, AClearSumIsTheGuardAndASetOneIsRefused)
+{
+    EXPECT_EQ(kickos::rv64::sum_refusal(0), nullptr);
+    EXPECT_STREQ(kickos::rv64::sum_posture(0), "sum clear");
+    EXPECT_STREQ(kickos::rv64::sum_refusal(KICKOS_RV64_SSTATUS_SUM), kickos::diag::kSumNotCleared);
+    EXPECT_STREQ(kickos::rv64::sum_posture(KICKOS_RV64_SSTATUS_SUM), "sum set");
+    // The bits either side of SUM (MXR at 19, bit 17) say nothing about it.
+    EXPECT_EQ(kickos::rv64::sum_refusal(KICKOS_RV64_SSTATUS_SUM << 1), nullptr);
+    EXPECT_EQ(kickos::rv64::sum_refusal(KICKOS_RV64_SSTATUS_SUM >> 1), nullptr);
+}

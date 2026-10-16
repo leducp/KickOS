@@ -116,6 +116,7 @@ namespace kickos
 
         // Without MEMFAULTENA an MPU violation escalates to HardFault.
         constexpr uintptr_t SCB_SHCSR = 0xE000ED24;
+        constexpr uint32_t SHCSR_SVCALLPENDED = 1u << 15;
         constexpr uint32_t SHCSR_MEMFAULTENA = 1u << 16;
         constexpr uint32_t SHCSR_BUSFAULTENA = 1u << 17;
         constexpr uint32_t SHCSR_USGFAULTENA = 1u << 18;

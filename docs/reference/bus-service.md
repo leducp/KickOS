@@ -152,6 +152,12 @@ refuse the probe unless it reads this.
 > `KOS_ETIMEDOUT` fits. The shipped RIICa engine already returns it on `ICSR2.NACKF`
 > (`system/driver/rx72m/i2c_riic.cc`), and a bus service serialising this contract puts the
 > same code in `kos_bus_rsp.status`.
+>
+> **A controller that stops moving bytes is `-KOS_EIO` too**, for the same reason: the client
+> named no deadline, so `KOS_ETIMEDOUT` would name one it never set. The K64F DSPI engine ends a
+> transfer once `KICKOS_POLL_SPIN_MAX` polls plus one frame's bus clocks, its CTAR delays
+> included, have moved no byte, with the module halted, both FIFOs flushed and the chip select
+> released, and the next transfer starts the module again.
 
 ## Chip-select policy (SPI, driver-internal)
 
