@@ -116,33 +116,15 @@ code between two instructions (Chapter 0.3), can arrive between the load and the
 store: the addition is three separate instructions, not one. Chapter 2.4, *An
 atomic buys definedness, not atomicity*, builds on that fact.
 
-## The stack and a call
+## A call and the stack
 
 `tick` returns through `lr`, so something must have put the return address
 there. That is the call instruction, `bl` (branch with link): it writes the
 address of the instruction after it into `lr`, then branches. `tick` calls
 nothing, so `lr` survives until its `bx lr`, and it never uses the stack.
 
-A function that calls other functions has a problem: `lr` holds only one
-address, and every `bl` replaces it. Take a function `step` that calls
-`read_pair` and then `tick`, and follow `lr`:
-
-1. Its caller, say `main`, runs `bl step`: `lr` now holds the address in `main`
-   where `step` must come back to.
-2. `step` runs `bl read_pair`: `lr` now holds an address inside `step`. The way
-   back to `main` is gone from `lr`.
-3. `read_pair` returns through `lr`, back into `step`. That part works.
-4. `step` runs `bl tick`, and `tick` returns into `step` the same way.
-5. `step` is done and must return to `main`, but `lr` holds an address inside
-   `step`. Returning through it would jump back into `step` itself.
-
-Each call and return works on its own; what breaks is `step`'s own way back,
-lost at its first call. So `step` copies `lr` into memory before that first
-`bl`, and reads it back to return. That memory is the **stack**: a region of
-SRAM that SP points into. Copying `lr` into another register only moves the
-problem: that register's old value belongs to the caller and would itself need
-saving, and calls can nest as deep as the program goes. Here is `step`, in
-another file:
+A function that calls other functions has a problem. Here is `step`, in another
+file, which calls `read_pair` and then `tick`:
 
 ```c
 void tick(void);
@@ -173,6 +155,26 @@ add   r0, r3         @ + pair[1]
 add   sp, #8         @ release pair
 pop   {r4, pc}       @ restore r4, and load the way back to main into PC
 ```
+
+`lr` holds only one address, and every `bl` replaces it. Follow `lr` as if `step`
+had no `push` and no `pop`:
+
+1. `step`'s caller, say `main`, runs `bl step`: `lr` now holds the address in
+   `main` where `step` must come back to.
+2. `step` runs `bl read_pair`: `lr` now holds an address inside `step`. The way
+   back to `main` is gone from `lr`.
+3. `read_pair` returns through `lr`, back into `step`. That part works.
+4. `step` runs `bl tick`, and `tick` returns into `step` the same way.
+5. `step` is done and must return to `main`, but `lr` holds an address inside
+   `step`. Returning through it would jump back into `step` itself.
+
+Each call and return works on its own; what breaks is `step`'s own way back,
+lost at its first call. So `step` copies `lr` into memory before that first
+`bl`, with the `push`, and reads it back to return, with the `pop`. That memory
+is the **stack**: a region of SRAM that SP points into. Copying `lr` into
+another register only moves the problem: that register's old value belongs to
+the caller and would itself need saving, and calls can nest as deep as the
+program goes.
 
 The block `step` owns on the stack is its **stack frame**: its saved registers,
 its return address and its locals. While `step` waits for `tick`, it looks like

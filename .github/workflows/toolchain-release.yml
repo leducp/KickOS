@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# The KickOS toolchain's release (docs/design-m10-toolchain.md section 1), published on the push
-# of its tag toolchain-<version>-<revision>, which must name conan/toolchain's version and
-# PACKAGE_REVISION. One artifact per toolchain, a family on a host, holding the one file of the
-# release it is named for: kickos-toolchain-<family>-<os>-<arch>.tgz, the uname spelling. One
-# artifact of the sources, which holds the sources and patches archive and the sha256 list of
-# every file. The release holds every file of every artifact.
+# Builds the KickOS toolchain release (docs/design-m10-toolchain.md section 1) and publishes it
+# when a tag toolchain-<version>-<revision> is pushed. The tag must match the version and
+# PACKAGE_REVISION in conan/toolchain.
+# Each family and host gets one artifact with one file, kickos-toolchain-<family>-<os>-<arch>.tgz,
+# where <os> and <arch> are what uname prints. One more artifact holds the archive of sources and
+# patches, and SHA256SUMS. The release gets every file of every artifact.
 
 name: Toolchain release
 
@@ -14,7 +14,7 @@ on:
   push:
     tags:
       - "toolchain-*"
-  # Builds every artifact and publishes nothing:
+  # A manual run builds every artifact but publishes nothing:
   # `gh workflow run toolchain-release.yml --ref <branch>`.
   workflow_dispatch:
 
@@ -26,7 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: The tag the recipe names
+      - name: Check the tag matches the recipe version
         env:
           EVENT: ${{ github.event_name }}
           TAG: ${{ github.ref_name }}
@@ -36,18 +36,18 @@ jobs:
           expected="toolchain-$version-$revision"
           pattern='^toolchain-[0-9]+\.[0-9]+\.[0-9]+-[0-9]+$'
           if ! [[ "$expected" =~ $pattern ]]; then
-            echo "conan/toolchain names the release $expected, not toolchain-x.y.z-n" >&2
+            echo "conan/toolchain/conanfile.py gives $expected; expected toolchain-x.y.z-n" >&2
             exit 1
           fi
           if [ "$EVENT" != push ]; then
             exit 0
           fi
           if ! [[ "$TAG" =~ $pattern ]]; then
-            echo "$TAG is not a release tag toolchain-x.y.z-n" >&2
+            echo "$TAG is not a release tag; expected toolchain-x.y.z-n" >&2
             exit 1
           fi
           if [ "$TAG" != "$expected" ]; then
-            echo "$TAG is not the release conan/toolchain names, $expected" >&2
+            echo "$TAG does not match conan/toolchain/conanfile.py, which expects $expected" >&2
             exit 1
           fi
 
@@ -56,8 +56,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The macOS label is pinned, not -latest, so the host a release is built on moves only
-        # when this line does.
+        # The macOS label is pinned, not -latest, so the build host changes only when this line
+        # changes.
         runner: [ubuntu-latest, macos-15]
         family: [arm-none-eabi, aarch64-none-elf, riscv64-none-elf, x86_64-elf,
                  xtensa-esp32-elf, rx-elf]
@@ -69,9 +69,9 @@ jobs:
         uses: ./.github/actions/build-tools
         with:
           packages: build-essential m4 curl xz-utils bzip2 flex bison
-      # The selected Xcode stays: its clang is the host compiler.
+      # Keep the selected Xcode: its clang is the host compiler.
       - if: runner.os == 'macOS'
-        name: Disk for the build, from every other Xcode and the Android SDK
+        name: Free disk space on macOS
         run: |
           df -h "$RUNNER_TEMP"
           developer=$(xcode-select -p)
@@ -85,9 +85,9 @@ jobs:
             sudo rm -rf "$ANDROID_HOME" || true
           fi
           df -h "$RUNNER_TEMP"
-      # macOS ships GNU make 3.81 and bison 2.3; the builds take Homebrew's.
+      # macOS ships GNU make 3.81 and bison 2.3, which are too old for the builds.
       - if: runner.os == 'macOS'
-        name: Homebrew's make, bison and flex
+        name: Install make, bison and flex from Homebrew
         run: |
           brew install make bison flex
           prefix=$(brew --prefix)
@@ -99,8 +99,8 @@ jobs:
           family: ${{ matrix.family }}
           build: "true"
           upload: "false"
-      # A copy: the cache the action filled saves the original when the job ends.
-      - name: The family's archive under its release name
+      # Copy the archive, do not move it: the action's cache saves the original when the job ends.
+      - name: Copy the archive to its release name
         id: archive
         env:
           FAMILY: ${{ matrix.family }}
@@ -121,12 +121,12 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
-      # Only for the sha256 list to cover them: they stay in their own artifacts.
+      # Download the packages so SHA256SUMS lists them. The sources artifact does not include them.
       - uses: actions/download-artifact@v4
         with:
           path: release
           merge-multiple: true
-      - name: Every source and patch in one archive, and the sha256 list
+      - name: Archive the sources and patches, and write SHA256SUMS
         run: tools/kickos-toolchain-release.sh release ""
       - uses: actions/upload-artifact@v4
         with:
@@ -148,15 +148,13 @@ jobs:
         with:
           path: release
           merge-multiple: true
-      - name: The release, with every file
+      - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
           (cd release && sha256sum -c --strict SHA256SUMS)
           rest="${TAG#toolchain-}"
-          notes="KickOS toolchain ${rest%-*}, packaging revision ${rest##*-}: one package per
-          family and host, and the archive of every pinned source and patch. SHA256SUMS lists
-          every file; docs/design-m10-toolchain.md describes them."
+          notes="KickOS toolchain ${rest%-*}, packaging revision ${rest##*-}."
           gh release create "$TAG" release/* --repo "$GITHUB_REPOSITORY" --title "$TAG" \
             --notes "$notes"
