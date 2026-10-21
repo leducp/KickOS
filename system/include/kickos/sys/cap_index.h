@@ -45,10 +45,4 @@ enum kos_cap_index
 // index and never seats a slot on it, so no table can mint this word at any width.
 #define KOS_CAP_AUTHORITY 0x7FFFFFFFu
 
-// The calling thread's address space's C library locks, which only the mutex lock and unlock
-// calls accept: no table holds them, so none can close, narrow or delegate one. The malloc lock
-// is its own; every other newlib lock is the libc lock. Same reserved index as above.
-#define KOS_CAP_LIBC_LOCK 0x7FFEFFFFu
-#define KOS_CAP_MALLOC_LOCK 0x7FFDFFFFu
-
 #endif

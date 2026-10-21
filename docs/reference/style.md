@@ -88,9 +88,10 @@ further down: it binds every tracked file.
     libcall on armv6m and rxv3 that a freestanding link cannot resolve, but that only rules
     out taking one from the toolchain -- a lock-bracketed RMW is implementable everywhere.
     It stays closed because the cheapest CORRECT mechanism differs per backend, so an RMW
-    belongs behind a per-arch seam like the MPU backends. One exists, for one site:
-    `arch_swap_u32` (`kickos/arch/atomic_swap.h`) on the arches that run a shared kernel above
-    one core, used only by the console's panic claim; the wrapper's surface stays closed.
+    belongs behind a per-arch seam like the MPU backends. Two exist: `arch_swap_u32`
+    (`kickos/arch/atomic_swap.h`) on the arches that run a shared kernel above one core, used
+    only by the console's panic claim, and `arch_cas_u32` (`kickos/arch/atomic_cas.h`) on every
+    arch, for a user lock word; the wrapper's surface stays closed.
     archived `M7_smp_candidate_spike.md` carries the measured costs and the one correctness rule such a
     seam would have to enforce, namely that `IrqLock`-bracketing is wrong on a dual-core part.
     The gate catches the named spellings outright (`.fetch_add(`, `.exchange(`,

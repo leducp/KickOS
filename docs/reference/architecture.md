@@ -549,9 +549,9 @@ is the form that waits. archived `M4_task_layer_record.md` is the record.
   error as the **negated** code `-KOS_E*`; a success -- a count, a byte-count -- is
   **non-negative**, so `rc < 0` is unambiguously an error and never aliases a valid count (counts
   and byte-counts stay small). **A handle is never a return value**, and that is what buys the
-  handle word its full width: every minting syscall -- `KOS_SYS_SEM_CREATE`, `KOS_SYS_MUTEX_CREATE`,
-  `KOS_SYS_ENDPOINT_CREATE`, `KOS_SYS_IRQ_CLAIM`, `KOS_SYS_THREAD_CREATE`
-  (`user/include/kickos/sys/abi.h`) -- returns a status and writes the handle through an
+  handle word its full width: every minting syscall (`KOS_SYS_SEM_CREATE`,
+  `KOS_SYS_ENDPOINT_CREATE`, `KOS_SYS_IRQ_CLAIM`, `KOS_SYS_THREAD_CREATE`,
+  `user/include/kickos/sys/abi.h`) returns a status and writes the handle through an
   out-parameter. So every handle class spends all 32 bits and a live handle may have bit 31 set:
   `cap.h`'s `KCAP_INDEX_BITS` / `KCAP_GEN_BITS`, the "NO SIGN TEST" notes on `free()` and
   `resolve()` in `kernel/include/kickos/slotpool.h`, and `ThreadPool::INDEX_BITS`. The code set
@@ -1014,6 +1014,13 @@ feeds the slave app.
   `sched::start` (`kernel/sched/sched.cc`) rewrite it at every switch, which is correct only while
   one core runs its readers. `errno` is that struct's first member, so this, and not a
   `thread_local`, is what makes `errno` follow the thread.
+  Beside that state the kernel seats each thread's own lock id, from which `kos_thread_self`
+  derives the caller's handle with one load and no kernel entry: the control block's second word
+  under `KICKOS_REENT_IN_TCB`, the second word of the FS cell on x86_64 (`%fs:8`), a word after the
+  `struct _reent` in rv64imac's slot element, which the first switch-in writes once the prime has
+  copied the state alone, one word rewritten beside `_impure_ptr` at every switch elsewhere, and
+  an instance-local word on the sim. The kernel never reads it back: every kernel path takes the
+  caller from the scheduler, so a thread that overwrites its copy misleads only itself.
   `_REENT_INIT_PTR` aims every copy's `_stdin`/`_stdout`/`_stderr` at the one global `__sf[3]`, so
   **stdio buffering stays process-wide** however many copies exist.
 - **The libc locks**: malloc's lock is its own, and every other newlib static lock and every
@@ -1021,18 +1028,20 @@ feeds the slave app.
   that allocates nothing never waits behind an allocation and nesting two stdio locks is
   recursion on one. A stdio call that allocates still waits on malloc's lock while it holds the
   libc lock. newlib takes malloc's lock inside the libc lock and never the reverse, and a thread
-  taking the libc lock while it holds malloc's traps. Owner and depth live in userspace, the
-  owner read through `kos_thread_self`; under each is a kernel mutex the heap's owner carries (a
-  translating board's `Domain`, a region board's image, which the configure refuses to share
-  between kernel instances), named by the pseudo-handles `KOS_CAP_LIBC_LOCK` and
-  `KOS_CAP_MALLOC_LOCK`, which only the mutex calls accept and which resolve against the caller's
-  own space. So priority inheritance holds. A holder that dies inside stdio hands the libc lock
-  over `-KOS_EOWNERDEAD`, which that lock takes as acquired; one that dies inside malloc leaves
-  the heap torn, and the malloc lock's next taker traps, ending its task. A try-acquire tries the
-  mutex with a zero deadline. There is one pair per address space, which is one per heap: a
-  region board's tasks share the image's, and any of their threads can take it, so one thread
-  can stall every task's stdio and malloc; a translating board gives each task its own. They
-  cost no capability slot, no mutex-pool slot and no task budget. The toolchain's newlib must be
+  taking the libc lock while it holds malloc's traps. Each is a mutex word (`kos_mutex_t`) in the
+  static data of the heap's owner, beside a depth only its holder writes; the owner is the word
+  itself, compared with the caller's seated lock id (`kickos_self_lock_id`), so neither a take, a
+  recursion nor a release enters the kernel unless another thread waits. So priority inheritance
+  holds. A holder that dies inside stdio leaves its dead id in the word, and the next take answers
+  `-KOS_EOWNERDEAD`, which that lock takes as acquired; one that dies inside malloc leaves the heap
+  torn, and the malloc lock's next taker traps, ending its task. A wait a kill cancelled asks again
+  through the contended entry alone (`kickos_mutex_lock_entry`), never the compare-and-swap, so the
+  thread dies at that entry. A try-acquire tries the mutex with a zero deadline. There is one pair
+  per address space, which is one per heap: a translating board starts each space's copy of the
+  image data at zero, so each task has its own; a region board's tasks share the image's, and any
+  of their threads can take it, so one thread can stall every task's stdio and malloc. Being
+  words, they cost no capability slot, no kernel object and no task budget, and
+  `kos_libc_lock` names each for a caller that must take one directly. The toolchain's newlib must be
   built with retargetable locking (release 1.1 on): the TU refuses to compile against one
   without it, and a link forces its object in ahead of libc's no-op defaults.
 
@@ -1137,8 +1146,8 @@ feeds the slave app.
 
 The object/credential model layered on the MPU enforcement. Enforcement is only meaningful once
 hardware constrains unprivileged userspace, so this model is designed against *all* object types
-that exist (semaphore, mutex, IRQ handle, memory grant), not over-fit to one. **Status: every
-`CapType` is live.** The SEMAPHORE, PI-MUTEX (`CAP_MUTEX`) and ENDPOINT/IPC (`CAP_ENDPOINT`) paths
+that exist (semaphore, IRQ handle, memory grant), not over-fit to one. **Status: every
+`CapType` is live.** The SEMAPHORE and ENDPOINT/IPC (`CAP_ENDPOINT`) paths
 landed at M3, silicon-validated under enforcement; `CAP_IRQ` (a tier-1 interrupt-line binding,
 minted by `irq_claim` -- see *Drivers & interrupts* above) and `CAP_REPLY` (the one-shot reply cap,
 minted by `cap_install_reply`) are equally live. `CAP_FRAME` (a RUN of physical frames) and
@@ -1191,8 +1200,7 @@ stale at its task's end, and the space gives back every run it maps at its task'
   refs at 1), never strands -- unreachable today (every parked waiter pins its own cap).
 - **Well-known reserved cap indices (`system/include/kickos/sys/cap_index.h`).** Indices
   `[0 .. KICKOS_CAP_FIRST_DYNAMIC)` (today `[0..1)`) are reserved well-known slots: index 0 =
-  `KOS_CAP_STDOUT` (the send-only console endpoint). The C library's locks hold no slot: they
-  are pseudo-handles the mutex calls resolve against the caller's heap owner. A service is reached by
+  `KOS_CAP_STDOUT` (the send-only console endpoint). A service is reached by
   path, never by a well-known index. Axis-3 authority is deliberately **not** one of them: the
   authority word names no pool object, holds no refcount and bumps no generation, so it lives in
   the TCB as `Thread::authority` (8 bits in existing padding) and costs no index on any board.
@@ -1202,7 +1210,7 @@ stale at its task's end, and the space gives back every run it maps at its task'
   slot. **The authority width is 8 bits**, bounded by
   `Thread::authority` and `kos_thread_params::authority` alike: six are defined, so a seventh and
   eighth cost nothing and a ninth widens both fields. An
-  **own-create** (`sem`/`mutex`/`endpoint` create) takes the head of the run's free list in O(1)
+  **own-create** (`sem`/`endpoint` create) takes the head of the run's free list in O(1)
   (`cap_install` -> `cap_run_peek_free`) and **allocates nothing**, refusing `-KOS_EMFILE` when the
   table is full. It can **never alias a reserved slot**, and not because of a scan floor: the
   reserved plane is simply never THREADED ONTO the list -- `cap_run_free_build` starts at
@@ -1256,12 +1264,19 @@ minimum that genuinely needs scheduler involvement: a cap-named **blocking wait/
 counting semaphore, i.e. the seL4-notification shape). Everything richer is built in userspace
 (mutual exclusion = a binary wait/wake; condvar / rwlock / barrier = userspace state + the
 primitive). Admission test for any *new kernel* sync primitive: does it require kernel state or a
-scheduler action userspace cannot safely perform? If not, it stays in userland. The one typed
-object justified beyond the primitive is a **priority-inheritance mutex** -- PI *is* a scheduler
-action (boost the holder to the highest waiter's priority, restore on release), so it cannot live
-in userspace; a mutex *without* PI earns nothing over a binary semaphore and must never be a
-distinct kernel object. **ISR asymmetry:** the wait/wake `post` is ISR-safe (an ISR readies a
-thread); the PI-mutex lock/unlock are thread-context only (an ISR owns no thread identity).
+scheduler action userspace cannot safely perform? If not, it stays in userland. The
+**priority-inheritance mutex** passes it only on contention: it is a word in user memory
+(`kos_mutex_t`) holding its holder's lock id, taken and released by a user-mode compare-and-swap
+with no kernel entry, and the kernel holds no object, capability or budget for it. The kernel is
+entered only to wait or to hand over, since PI *is* a scheduler action (boost the holder to the
+highest waiter's priority, restore on release), and keeps a record keyed on the word's physical
+address only while a thread waits (`KOS_SYS_MUTEX_LOCK` / `KOS_SYS_MUTEX_UNLOCK`, `kernel/sync/sync.cc`).
+It reads the owner from the word, resolves it to a live thread that could have written that
+memory, and treats anything else as a dead holder; the contract is the invariants
+`mutex-word-is-keyed-on-its-memory` and `mutex-owner-death-reaches-the-next-taker`. **ISR
+asymmetry:** the wait/wake `post` is ISR-safe (an ISR readies a thread); the PI-mutex lock/unlock
+are thread-context only (an ISR owns no thread identity), and no interrupt handler writes a mutex
+word.
 
 **Syscall-argument validation (the soundness floor).** Enforcement is only sound if the kernel
 never trusts a user pointer: copy-in user structs via a checked read, bound-check writable

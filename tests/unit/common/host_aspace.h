@@ -11,6 +11,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "acquire_holds.h"
+
 namespace kickos
 {
     namespace testfix
@@ -26,6 +28,9 @@ namespace kickos
         // arch_aspace_unmap calls that unmapped, and the pages they unmapped.
         extern uint32_t g_unmaps;
         extern size_t g_unmapped_pages;
+
+        // The arch_aspace_acquire holds not yet released.
+        extern AcquireHolds g_acquire_holds;
 
         // The `count` acquires of the page holding `va` that follow the next `after` answer
         // null, in any space, as they would once the page is unmapped.

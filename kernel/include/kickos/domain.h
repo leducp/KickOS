@@ -21,7 +21,6 @@
 
 #include <kickos/arch/arch.h>
 #include <kickos/config.h> // KICKOS_MPU_MAX_REGIONS
-#include <kickos/mutex.h>
 #include <kickos/vrange.h>
 
 namespace kickos
@@ -50,9 +49,6 @@ namespace kickos
         // What that space names, and the syscall entry's oracle. Seeded with the space and
         // thrown away with it.
         VirtualRanges ranges;
-        // The C library's locks for this space's one heap and stdio. Idle once the space has no
-        // member, since a member's exit hands over what it holds.
-        Mutex libc_locks[LIBC_LOCK_COUNT];
 #endif
         // Bumped on every claim and at its task's end and death, so a capability naming
         // (index, generation) cannot be answered by a later occupant or past its task. NOT reset

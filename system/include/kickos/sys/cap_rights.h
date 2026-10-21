@@ -7,7 +7,7 @@
 #ifndef KICKOS_SYS_CAP_RIGHTS_H
 #define KICKOS_SYS_CAP_RIGHTS_H
 
-// Object capability rights: the rights of a semaphore, mutex, endpoint or reply cap. A
+// Object capability rights: the rights of a semaphore, endpoint or reply cap. A
 // delegation NARROWS only: the child cap gets parent.rights & mask, and a mask adding a bit
 // the parent lacks is rejected, the one exception being KOS_CAP_WAIT from an endpoint cap
 // carrying KOS_CAP_HANDOUT. Delegating requires the parent cap carry KOS_CAP_TRANSFER.

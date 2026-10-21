@@ -42,6 +42,13 @@ namespace kickos
     // static-data extent (arch_user_data_writable), which is what the backends modelling
     // no static-data region rely on.
     bool user_writable_ok(uintptr_t ptr, size_t len);
+    // The same, for thread `c` rather than the caller.
+    bool thread_writable_ok(Thread const* c, uintptr_t ptr, size_t len);
+#if KICKOS_HAVE_ASPACE
+    // The same, with `found` what c's range list answers for [ptr, ptr + len), null for none.
+    bool thread_writable_found(Thread const* c, uintptr_t ptr, size_t len,
+                               VirtualRange const* found);
+#endif
 
     // The CONJUNCTION of the two above over one base: readable across `read_len` AND writable
     // across `write_len`, in one walk. For a buffer the kernel reads and then writes back.
@@ -163,6 +170,9 @@ namespace kickos
 #if KICKOS_WITNESS_UACCESS
     int64_t witness_uaccess(uintptr_t op, uintptr_t uaddr, uintptr_t ns);
 #endif
+#if KICKOS_WITNESS_REWIND
+    int64_t witness_rewinds();
+#endif
 
     // How many calls the trap-handler IPC fastpath COMPLETED; a refusal does not count.
     // Reads 0 on a backend with no fastpath.
@@ -173,11 +183,10 @@ namespace kickos
     // which is written on EVERY path (KCAP_INVALID on failure). A handle spends all 32
     // bits, so it cannot share the return value with an errno.
     //
-    // Each of the three creators here and irq_claim can answer with any of three exhaustion
+    // Each creator here and irq_claim can answer with any of three exhaustion
     // codes: -KOS_ENOMEM the pool, -KOS_EMFILE the caller's table, -KOS_EAGAIN the calling
     // task's ceiling for that pool while the pool still holds slots (task.h).
     int sem_create(int initial, uint32_t* out_cap);
-    int mutex_create(uint32_t* out_cap);
 
     // IPC endpoints (syscall_ipc.cc).
     // Call send/call/reply_recv without IrqLock. They lock internally and must
@@ -267,8 +276,6 @@ namespace kickos
     int thread_affinity(kos_thread_t thread);
     int task_cores(kos_task_t task);
 #endif
-    // The caller's own handle.
-    uint64_t thread_self();
     int task_sched_grant(kos_task_t task, uint8_t prio_ceiling, uint32_t core_mask);
     // The caller's own base priority. Takes the whole argument word, so a value that would
     // truncate into range is refused rather than read.

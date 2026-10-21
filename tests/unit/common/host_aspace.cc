@@ -109,6 +109,7 @@ namespace kickos
 {
     namespace testfix
     {
+        AcquireHolds g_acquire_holds;
         uint32_t g_unmaps = 0;
         size_t g_unmapped_pages = 0;
         size_t g_aspaces_live = 0;
@@ -140,6 +141,7 @@ namespace kickos
 
         void host_aspace_reset()
         {
+            g_acquire_holds = AcquireHolds{};
             g_unmaps = 0;
             g_unmapped_pages = 0;
             g_aspace_double_destroys = 0;
@@ -341,10 +343,14 @@ extern "C"
         {
             *uncached = l->type == ARCH_MAP_NOCACHE;
         }
+        kickos::testfix::g_acquire_holds.take(space, va);
         return frame_bytes(l->pa) + (va - l->va);
     }
 
-    void arch_aspace_release(struct arch_aspace*, uintptr_t) {}
+    void arch_aspace_release(struct arch_aspace* space, uintptr_t va)
+    {
+        kickos::testfix::g_acquire_holds.give(space, va);
+    }
 
     arch_phys_addr_t arch_aspace_frame_at(struct arch_aspace* space, uintptr_t va)
     {

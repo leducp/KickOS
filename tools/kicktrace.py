@@ -66,7 +66,7 @@ SYSCALL_NAME = {
     11: "notify_create", 12: "clock_now", 13: "ram_alloc", 14: "irq_claim",
     15: "notify_wait", 16: "irq_ack", 17: "handle_close",
     19: "diag_led_set", 20: "diag_led_toggle", 22: "cpu_clock_hz",
-    23: "mutex_create", 24: "mutex_lock", 25: "mutex_unlock", 26: "endpoint_create",
+    24: "mutex_lock", 25: "mutex_unlock", 26: "endpoint_create",
     27: "send", 28: "notify_bind", 29: "console_publish", 30: "cpu_clock_set",
     32: "periph_clock_hz", 33: "pinmux_set", 34: "call",
     35: "reply", 36: "shutdown", 37: "mem_self_grant", 38: "terminal_outcome",
@@ -80,10 +80,10 @@ SYSCALL_NAME = {
     61: "frame_unmap",
     63: "thread_set_affinity", 64: "task_sched_grant", 65: "core_current",
     66: "thread_affinity", 67: "task_cores", 68: "reply_recv",
-    69: "notify_badge", 70: "irq_bind_notify", 71: "thread_self",
+    69: "notify_badge", 70: "irq_bind_notify",
     72: "task_watch", 73: "task_state", 74: "window_get", 75: "port_reg_write",
     76: "task_exit_status", 77: "thread_set_priority", 78: "task_nonblock",
-    79: "periph_disable", 80: "witness_uaccess",
+    79: "periph_disable", 80: "witness_uaccess", 81: "witness_rewinds",
 }
 
 TRACE_MAGIC = 0x4B545243

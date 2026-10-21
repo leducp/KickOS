@@ -70,16 +70,14 @@ Most stubs live in `user/src/newlib_stubs.cc`; `_sbrk` lives separately in
 - **The C library takes two recursive locks per address space: malloc's, and
   one for everything else.** A recursive lock is a lock its holder may take
   again; an address space is a task's protected memory (Chapter 0.2). newlib's
-  retargetable locks (`__retarget_lock_*`, in `user/src/newlib_lock.cc`) map
-  malloc's lock to one kernel mutex and every other lock, each stream's
-  included, to a second, so a `printf` never waits behind another thread's
-  allocation, unless that `printf` must allocate itself. Both mutexes belong to
-  whatever owns the heap, the task's address space or the whole image, and are named by
-  `KOS_CAP_MALLOC_LOCK` and `KOS_CAP_LIBC_LOCK`, which are no capability: the
-  kernel resolves them against the calling thread's own space. The owner and
-  the depth live in the address space's own memory, so taking a lock the thread
-  already holds costs no syscall, and nesting two stdio locks is recursion on
-  the one. Threads of one address space share one heap and one `stdout`, so two
+  retargetable locks (`__retarget_lock_*`) map malloc's lock to one mutex and
+  every other lock, each stream's included, to a second, so a `printf` never
+  waits behind another thread's allocation, unless that `printf` must allocate
+  itself. Each mutex is a word in the static data of whatever owns the heap,
+  the task's address space or the whole image, so each address space has its
+  own pair. The word names its holder, and the depth sits beside it, so taking
+  a free lock, taking one the thread already holds and giving it back all cost
+  no syscall, and nesting two stdio locks is recursion on the one. Threads of one address space share one heap and one `stdout`, so two
   of them can `malloc` or `printf` at once safely.
   The exact contract is `libc-locks-belong-to-the-heap-owner` in
   `../reference/invariants.md`.
@@ -223,9 +221,10 @@ call draws on the pieces above in this order:
    allocator through `printf`. If `malloc` fails, newlib leaves `stdout`
    unbuffered and writes one byte at a time.
 4. **Locks.** `printf` brackets the stream with the address space's libc lock,
-   and `malloc` brackets the heap with its own lock inside it. Each first take
-   is one `kos_mutex_lock` syscall on a free mutex; the nested takes that follow
-   inside the same call are counted in the app's memory and cost no syscall.
+   and `malloc` brackets the heap with its own lock inside it. newlib asks the
+   OS for each lock, and KickOS takes a free one with no kernel entry; the nested
+   takes that follow inside the same call are counted in the app's memory and
+   cost no syscall either.
 5. **The newline flushes.** `stdout` is line-buffered, so the `\n` makes newlib
    flush the line in one call, `_write(1, "hello\n", 6)`.
 6. **The syscall seam.** `_write` hands the six bytes to

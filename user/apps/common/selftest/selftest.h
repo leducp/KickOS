@@ -221,8 +221,17 @@ namespace selftest
         ~ArmHold() { release(); }
 
         [[nodiscard]] bool cap(kos_cap_t* c) { return add(Kind::CAP, c) != nullptr; }
-        // Unlocked first: closing a mutex main holds is refused.
-        [[nodiscard]] bool owned(kos_cap_t* m) { return add(Kind::OWNED, m) != nullptr; }
+        // Unlocked first, so a thread parked on it can be joined.
+        [[nodiscard]] bool owned(kos_mutex_t* m)
+        {
+            Held* const h = add(Kind::OWNED, nullptr);
+            if (h == nullptr)
+            {
+                return false;
+            }
+            h->mutex = m;
+            return true;
+        }
         // Unbound first: closing a notification leaves main bound to it.
         [[nodiscard]] bool bound(kos_cap_t* n) { return add(Kind::BOUND, n) != nullptr; }
         [[nodiscard]] bool thread(kos::thread::Handle const* t)
@@ -288,6 +297,7 @@ namespace selftest
                 kos_cap_t* cap;
                 kos::thread::Handle const* thread;
                 kos_task_t* task;
+                kos_mutex_t* mutex;
             };
             kos_cap_t* space;
             uintptr_t const* va;
@@ -371,7 +381,6 @@ namespace selftest
         int workers = 0;
         int tasks = 0;
         int sems = 0;
-        int mutexes = 0;
         int endpoints = 0;
         int notifies = 0;
         int caps = 0;
@@ -697,6 +706,26 @@ namespace selftest
     KICKOS_SELFTEST_LOCAL void t_app_pointers_relocated();
 #endif
 
+    // selftest_word.cc
+    KICKOS_SELFTEST_LOCAL void t_mutex_static_parks();
+    KICKOS_SELFTEST_LOCAL void t_mutex_kill_pending();
+    KICKOS_SELFTEST_LOCAL void t_mutex_slain_holder();
+#if KICKOS_MEMORY_ENFORCED
+    inline constexpr RamAsk WFO_RAM = {64u};
+    KICKOS_SELFTEST_LOCAL void t_mutex_forged_foreign();
+#endif
+#if KICKOS_HAVE_ASPACE
+    inline constexpr RamAsk WWI_RAM = {ST_GRANULES(1)};
+    inline constexpr RamAsk WTW_RAM = {ST_GRANULES(1), ST_GRANULES(1)};
+    inline constexpr RamAsk WRT_RAM = {ST_GRANULES(1)};
+    KICKOS_SELFTEST_LOCAL void t_mutex_stack_word();
+    KICKOS_SELFTEST_LOCAL void t_mutex_window_shared();
+    KICKOS_SELFTEST_LOCAL void t_mutex_frame_two_addresses();
+    KICKOS_SELFTEST_LOCAL void t_mutex_window_forged();
+    KICKOS_SELFTEST_LOCAL void t_mutex_unmap_ends_wait();
+    KICKOS_SELFTEST_LOCAL void t_mutex_retype_ends_wait();
+#endif
+
 #if KICKOS_AMP_NODE
     constexpr uint32_t AG_BLK = 256;
     inline constexpr RamAsk AG_RAM = {AG_BLK};
@@ -715,6 +744,9 @@ namespace selftest
 #endif
 #if KICKOS_MEMORY_ENFORCED && KICKOS_AMP_USER_SHARE_SIZE != 0
     KICKOS_SELFTEST_LOCAL void t_amp_share_window();
+#endif
+#if KICKOS_HAVE_ASPACE and KICKOS_AMP_USER_SHARE_SIZE != 0
+    KICKOS_SELFTEST_LOCAL void t_amp_share_mutex();
 #endif
 #endif
 #endif

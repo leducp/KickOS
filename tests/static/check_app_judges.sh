@@ -347,6 +347,12 @@ tests/integration/check_qemu_cxxterm.sh|cxxterm.capture||panic|after|terminate: 
 tests/integration/check_libcrace.sh|libcrace.capture||start|drop|libcrace: 4 workers|
 tests/integration/check_libcrace.sh|libcrace.capture||malloc-kill|drop|killed waiting for malloc|
 tests/integration/check_libcrace.sh|libcrace.capture||libc-kill|drop|holding the libc lock handed|
+tests/integration/check_libcrace.sh|libcrace.capture||malloc-reask|drop|asked again at the kernel|
+tests/integration/check_libcrace.sh|libcrace.capture||malloc-reask|swap|asked again at the kernel and ended there|took the lock freed under it
+tests/integration/check_libcrace.sh|libcrace.capture||malloc-release|drop|killed while running released malloc|
+tests/integration/check_libcrace.sh|libcrace.capture||malloc-release|swap|released malloc, and its taker's task lived|died holding malloc, and its taker's task ended
+tests/integration/check_libcrace.sh|libcrace.capture||getenv-kill|drop|getenv with a kill pending took|
+tests/integration/check_libcrace.sh|libcrace.capture||getenv-kill|swap|took the free libc lock with no entry|died at the libc lock
 tests/integration/check_libcrace.sh|libcrace.capture||malloc-dead|drop|dead malloc holder arms did not run|
 tests/integration/check_libcrace.sh|libcrace.capture||malloc-dead|cache||KICKOS_LIBCRACE_DEAD_ARMS:INTERNAL=1
 tests/integration/check_libcrace.sh|libcrace.capture||malloc-wait|drop|a printf completed while malloc|

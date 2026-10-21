@@ -42,7 +42,6 @@ namespace kickos
     struct Thread;   // kickos/thread.h
     struct Task;     // kickos/task.h
     struct Endpoint; // kickos/endpoint.h
-    struct Mutex;    // kickos/mutex.h
 
     // A cap handle is (gen << KCAP_INDEX_BITS) | index. The split is FIXED fleet-wide and
     // never derived from KICKOS_MAX_HANDLES, so a per-board RAM decision cannot renumber
@@ -74,9 +73,6 @@ namespace kickos
     // could be narrowed as if it were the authority word.
     static_assert((KOS_CAP_AUTHORITY & KCAP_INDEX_MASK) == KCAP_RESERVED_INDEX,
                   "KOS_CAP_AUTHORITY must carry the reserved index");
-    static_assert((KOS_CAP_LIBC_LOCK & KCAP_INDEX_MASK) == KCAP_RESERVED_INDEX
-                      and (KOS_CAP_MALLOC_LOCK & KCAP_INDEX_MASK) == KCAP_RESERVED_INDEX,
-                  "a libc lock pseudo-handle must carry the reserved index");
 
     // CAP_REPLY names the parked caller by generational THREAD handle, and that handle gets
     // the WHOLE of CapEntry::obj. The caller's call_seq low byte rides the spare bits beside
@@ -103,7 +99,6 @@ namespace kickos
     {
         CAP_EMPTY = 0, // an unused slot: must be 0 so a zeroed TCB is an empty table
         CAP_SEM,
-        CAP_MUTEX,    // PI mutex object pool
         CAP_ENDPOINT, // synchronous IPC endpoint object pool
         CAP_REPLY,    // one-shot L4-style reply cap; obj NAMES the parked caller by
                       // generational thread handle (no object pool, no refcount)
@@ -660,16 +655,6 @@ namespace kickos
     // a send-only (CAP_SIGNAL) copy of the console endpoint at index 0. See D4.
     void cap_install_defaults(Thread* child, Held held);
 
-    // The libc lock a pseudo-handle names in `t`'s address space, or null for any other word or
-    // a thread with no space.
-    Mutex* cap_libc_lock(Thread const* t, uint32_t handle);
-    // The mutex `cap_handle` names for `c`: a libc lock, else a CAP_MUTEX capability. Null with
-    // *err set as cap_resolve_e sets it.
-    Mutex* cap_resolve_mutex(Thread* c, uint32_t cap_handle, int* err);
-    // Hands each libc lock `dying` holds to its next waiter, as a dead owner's. Before `dying`
-    // leaves its task, whose space holds the locks.
-    void cap_libc_locks_release(Thread* dying, Held held);
-
     // Move the kernel's stdout-target ref to `obj_handle` AND seat `publisher`'s own slot 0 on
     // it. Both refs are taken before either seat moves, and the new ones
     // before the old are dropped, so a re-publish of the same endpoint never transiently frees it
@@ -709,7 +694,7 @@ namespace kickos
 
     // Bump one reference to the object named by a global handle. The handle MUST resolve: the
     // caller validated it. `rights` is the cap's rights bits: the endpoint arm bumps
-    // recv_holders when they carry CAP_WAIT; the sem/mutex arms ignore it.
+    // recv_holders when they carry CAP_WAIT; the sem arm ignores it.
     //
     // False = REFUSED: a counter this bump would move is at its uint8_t ceiling, so neither moved.
     // True also covers "no counter to move".

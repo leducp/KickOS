@@ -45,7 +45,7 @@ which is what `design-m6-mmu.md` section 6 asks of every milestone that adds ker
 | `task_holds` | global | counts tasks, and tasks are a system-wide pool |
 | `sleepq` | **per-core** | bound to the per-core tickless timer |
 | `sems`, `sem_refs` | global | object pools are the shared namespace; a cap minted on one core resolves on the other |
-| `mutexes`, `mutex_refs` | global | same, and PI across cores requires one pool |
+| `mutex_records`, `mutex_active` | global | the records of the mutex words threads wait on, keyed on the word's memory: PI across cores requires one pool |
 | `endpoints`, `endpoint_refs` | global | same, and cross-core IPC is the stated goal |
 | `threads` (`ThreadPool`) | global | a TCB must be visible from any core |
 | `domains` | global | shared region sets referenced by threads on either core. `Domain::generation` rides with it, bumped on every claim so a capability naming a reclaimed slot is refused rather than answered by its next occupant, which is the ABA guard `ThreadPool` already uses |

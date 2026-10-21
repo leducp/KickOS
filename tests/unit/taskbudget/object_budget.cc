@@ -32,27 +32,24 @@ namespace kickos
             {
             };
 
-            static_assert(KICKOS_TASK_SEMAPHORE_BUDGET == 2,
+            static_assert(KICKOS_TASK_SEMAPHORE_BUDGET == 3,
                           "these arms count creates against the budget by hand; the posture "
                           "in this directory's CMakeLists.txt is what sets it");
             static_assert(KICKOS_MAX_SEMAPHORES > KICKOS_TASK_SEMAPHORE_BUDGET + 1,
                           "the semaphore arms must leave the pool slots to spare at the "
                           "refusal, or they would be measuring an exhausted pool");
-            static_assert(KICKOS_TASK_MUTEX_BUDGET < KICKOS_TASK_SEMAPHORE_BUDGET,
-                          "the mutex arm must sit at a DIFFERENT ceiling from the semaphore "
-                          "arms, or one figure standing for all four pools would redden "
-                          "nothing here");
-            static_assert(KICKOS_MAX_MUTEXES > KICKOS_TASK_MUTEX_BUDGET + 1,
-                          "and the mutex pool must keep slots free at that refusal, or the "
-                          "arm would be measuring an exhausted pool");
             static_assert(KICKOS_TASK_ENDPOINT_BUDGET == 2,
-                          "the recycled-slot arm counts two endpoint holds by hand");
-            static_assert(KICKOS_TASK_IRQ_HANDLE_BUDGET == 3,
+                          "the recycled-slot arm counts two endpoint holds by hand, and the "
+                          "endpoint ceiling must sit BELOW the semaphore one, or one figure "
+                          "standing for every pool would redden nothing here");
+            static_assert(KICKOS_MAX_ENDPOINTS > KICKOS_TASK_ENDPOINT_BUDGET + 1,
+                          "and the endpoint pool must keep slots free at that refusal, or the "
+                          "arm would be measuring an exhausted pool");
+            static_assert(KICKOS_TASK_IRQ_HANDLE_BUDGET == 4,
                           "the IRQ arm counts claims by hand, and its ceiling must be a THIRD "
                           "figure: at the semaphore or endpoint budget an IRQ ceiling reading "
                           "either of those pools would refuse in exactly the same place");
             static_assert(KICKOS_TASK_IRQ_HANDLE_BUDGET != KICKOS_TASK_SEMAPHORE_BUDGET
-                              and KICKOS_TASK_IRQ_HANDLE_BUDGET != KICKOS_TASK_MUTEX_BUDGET
                               and KICKOS_TASK_IRQ_HANDLE_BUDGET != KICKOS_TASK_ENDPOINT_BUDGET,
                           "and it must differ from every other budget in this posture, or the "
                           "IRQ arm passes for a kind literal naming the wrong pool");
@@ -76,7 +73,8 @@ namespace kickos
             constexpr int LINE_B = 12;
             constexpr int LINE_C = 13;
             constexpr int LINE_D = 14;
-            constexpr int IRQ_LINES[] = {LINE_A, LINE_B, LINE_C, LINE_D};
+            constexpr int LINE_E = 15;
+            constexpr int IRQ_LINES[] = {LINE_A, LINE_B, LINE_C, LINE_D, LINE_E};
             static_assert(static_cast<int>(sizeof(IRQ_LINES) / sizeof(IRQ_LINES[0]))
                               > KICKOS_TASK_IRQ_HANDLE_BUDGET,
                           "the IRQ ceiling arm needs a line for every claim inside the "
@@ -137,9 +135,34 @@ namespace kickos
                 return live_slots(kernel().irq_bindings);
             }
 
-            int live_mutexes()
+            int live_endpoints()
             {
-                return live_slots(kernel().mutexes);
+                return live_slots(kernel().endpoints);
+            }
+
+            // An endpoint from the pool with one reference, charged to nobody; -1 if the
+            // fixture handed back a slot outside the pool.
+            int referenced_endpoint()
+            {
+                int const idx = kernel().endpoints.index_of(endpoint());
+                if (idx < 0)
+                {
+                    ADD_FAILURE() << "fixture: an endpoint outside the pool";
+                    return -1;
+                }
+                kernel().endpoint_refs[idx] = 1;
+                return kernel().endpoints.handle_for(idx);
+            }
+
+            // An endpoint from the pool, charged to nobody, named in `holder`'s table.
+            int hold_endpoint(Thread* holder)
+            {
+                int const obj = referenced_endpoint();
+                uint32_t cap = KCAP_INVALID;
+                IrqLock lock;
+                EXPECT_EQ(cap_install(holder, obj, CapType::CAP_ENDPOINT, CAP_SIGNAL, &cap), 0)
+                    << "fixture: the endpoint capability was seated";
+                return obj;
             }
 
             void fill_to_the_ceiling(Thread* c, uint32_t* out)
@@ -546,16 +569,24 @@ namespace kickos
             TEST_F(TaskBudget, each_pool_kind_carries_its_own_ceiling)
             {
                 Thread* const c = creator_in_task(SLOT_FIRST, 0);
-                uint32_t cap = KCAP_INVALID;
-                ASSERT_EQ(mutex_create(&cap), 0);
-                ASSERT_EQ(live_mutexes(), 1);
+                for (int i = 0; i < KICKOS_TASK_ENDPOINT_BUDGET; i++)
+                {
+                    (void)hold_endpoint(c);
+                }
+                for (int i = 0; i < KICKOS_TASK_ENDPOINT_BUDGET; i++)
+                {
+                    uint32_t cap = KCAP_INVALID;
+                    kernel().current(kickos_kernel_core()) = c;
+                    ASSERT_EQ(sem_create(0, &cap), 0);
+                }
 
-                kernel().current(kickos_kernel_core()) = c;
-                EXPECT_EQ(mutex_create(&cap), -KOS_EAGAIN)
-                    << "the mutex budget refuses at one while the semaphore budget is two";
-                EXPECT_EQ(live_mutexes(), 1);
-                EXPECT_GT(KICKOS_MAX_MUTEXES - live_mutexes(), 0)
+                IrqLock lock;
+                EXPECT_FALSE(task_object_admit(CapType::CAP_ENDPOINT, c->task))
+                    << "the endpoint budget refuses at two while the semaphore budget is three";
+                EXPECT_GT(KICKOS_MAX_ENDPOINTS - live_endpoints(), 0)
                     << "the pool still has slots to spare, so this was not exhaustion";
+                EXPECT_TRUE(task_object_admit(CapType::CAP_SEM, c->task))
+                    << "the semaphores at the endpoint's ceiling are still below their own";
             }
 
             TEST_F(TaskBudget, a_second_tasks_creator_lands_while_the_first_is_at_its_ceiling)
@@ -573,8 +604,11 @@ namespace kickos
                 EXPECT_EQ(sem_create(0, &cap), 0)
                     << "one task at its ceiling must not deny another task's creator";
                 EXPECT_NE(cap, KCAP_INVALID);
-                kernel().current(kickos_kernel_core()) = second;
-                EXPECT_EQ(sem_create(0, &cap), 0) << "the ceiling is per task, not shared";
+                for (int i = 1; i < KICKOS_TASK_SEMAPHORE_BUDGET; i++)
+                {
+                    kernel().current(kickos_kernel_core()) = second;
+                    EXPECT_EQ(sem_create(0, &cap), 0) << "the ceiling is per task, not shared";
+                }
                 kernel().current(kickos_kernel_core()) = second;
                 EXPECT_EQ(sem_create(0, &cap), -KOS_EAGAIN)
                     << "and the second task is bounded by the same ceiling";
@@ -692,9 +726,12 @@ namespace kickos
                 ASSERT_EQ(live_sems(), 1) << "fixture: the copies are names, not objects";
 
                 uint32_t own = KCAP_INVALID;
-                kernel().current(kickos_kernel_core()) = holder;
-                EXPECT_EQ(sem_create(0, &own), 0)
-                    << "two names for one object leave the holder one slot of headroom";
+                for (int i = 1; i < KICKOS_TASK_SEMAPHORE_BUDGET; i++)
+                {
+                    kernel().current(kickos_kernel_core()) = holder;
+                    EXPECT_EQ(sem_create(0, &own), 0)
+                        << "several names for one object cost the holder one slot of its ceiling";
+                }
                 kernel().current(kickos_kernel_core()) = holder;
                 EXPECT_EQ(sem_create(0, &own), -KOS_EAGAIN)
                     << "and the second distinct slot is the ceiling";
@@ -782,7 +819,7 @@ namespace kickos
                     << "one distinct object past the ceiling refuses the whole list";
             }
 
-            // Use different semaphore and mutex budgets to check each limit independently.
+            // Use different semaphore and endpoint budgets to check each limit independently.
             TEST_F(TaskBudget, a_mixed_grant_list_is_measured_against_each_kinds_own_ceiling)
             {
                 Thread* const maker = creator_in_task(SLOT_FIRST, 0);
@@ -793,14 +830,15 @@ namespace kickos
                 // Allocate extra objects through the fixture without charging a task.
                 int spare_sem = 0;
                 (void)semaphore(&spare_sem);
-                int mtx[KICKOS_TASK_MUTEX_BUDGET + 1];
-                for (int i = 0; i < KICKOS_TASK_MUTEX_BUDGET + 1; i++)
+                int eps[KICKOS_TASK_ENDPOINT_BUDGET + 1];
+                for (int i = 0; i < KICKOS_TASK_ENDPOINT_BUDGET + 1; i++)
                 {
-                    (void)own_mutex(maker, &mtx[i]);
+                    eps[i] = referenced_endpoint();
+                    ASSERT_GE(eps[i], 0);
                 }
 
                 constexpr int LIST_MAX =
-                    KICKOS_TASK_SEMAPHORE_BUDGET + KICKOS_TASK_MUTEX_BUDGET + 2;
+                    KICKOS_TASK_SEMAPHORE_BUDGET + KICKOS_TASK_ENDPOINT_BUDGET + 2;
                 uint8_t types[LIST_MAX];
                 int objs[LIST_MAX];
                 int n = 0;
@@ -810,10 +848,11 @@ namespace kickos
                     objs[n] = object_of(maker, mine[i]);
                     n++;
                 }
-                for (int i = 0; i < KICKOS_TASK_MUTEX_BUDGET; i++)
+                for (int i = 0; i < KICKOS_TASK_ENDPOINT_BUDGET; i++)
                 {
-                    types[n] = kcap_grant_pack(static_cast<uint8_t>(CapType::CAP_MUTEX), CAP_WAIT);
-                    objs[n] = mtx[i];
+                    types[n] = kcap_grant_pack(static_cast<uint8_t>(CapType::CAP_ENDPOINT),
+                                               CAP_SIGNAL);
+                    objs[n] = eps[i];
                     n++;
                 }
                 int const mixed = n;
@@ -821,22 +860,23 @@ namespace kickos
                 IrqLock lock;
                 EXPECT_TRUE(task_object_admit_grants(destination, types, objs, mixed))
                     << "a whole ceiling of EACH kind is admissible into an empty task: this "
-                       "list is 2 semaphores and 1 mutex, and one figure standing for both "
-                       "would refuse the second semaphore at the mutex ceiling of one";
+                       "list is 3 semaphores and 2 endpoints, and one figure standing for both "
+                       "would refuse the third semaphore at the endpoint ceiling of two";
 
-                // Exceed only the mutex budget.
-                types[mixed] = kcap_grant_pack(static_cast<uint8_t>(CapType::CAP_MUTEX), CAP_WAIT);
-                objs[mixed] = mtx[KICKOS_TASK_MUTEX_BUDGET];
+                // Exceed only the endpoint budget.
+                types[mixed] =
+                    kcap_grant_pack(static_cast<uint8_t>(CapType::CAP_ENDPOINT), CAP_SIGNAL);
+                objs[mixed] = eps[KICKOS_TASK_ENDPOINT_BUDGET];
                 EXPECT_FALSE(task_object_admit_grants(destination, types, objs, mixed + 1))
-                    << "a second mutex is past the mutex ceiling of one, and the semaphore "
-                       "budget of two must not be the figure it is measured against";
+                    << "a third endpoint is past the endpoint ceiling of two, and the semaphore "
+                       "budget of three must not be the figure it is measured against";
 
                 // Exceed only the semaphore budget.
                 types[mixed] = kcap_grant_pack(static_cast<uint8_t>(CapType::CAP_SEM), CAP_WAIT);
                 objs[mixed] = spare_sem;
                 EXPECT_FALSE(task_object_admit_grants(destination, types, objs, mixed + 1))
-                    << "a third semaphore is past the semaphore ceiling of two, and the "
-                       "mutex budget of one must not be the figure it is measured against";
+                    << "a fourth semaphore is past the semaphore ceiling of three, and the "
+                       "endpoint budget of two must not be the figure it is measured against";
             }
 
             // An endpoint stays allocated and charged while the client holds a send capability,

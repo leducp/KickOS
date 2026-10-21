@@ -507,6 +507,13 @@ svc_trampoline:
     csrw    mstatus, t0
     lw      t0, F_MEPC(sp)
     csrw    mepc, t0
+    /* Breaks any reservation the resumed thread's LR left, so its SC fails: mret need not
+       (privileged ISA 3.3.2). It stores the slot's own value, a reservation possibly being
+       wider than the word. */
+    .if F_MEPC
+    .error "the SC below addresses the pc slot as (sp), which takes no offset"
+    .endif
+    sc.w    zero, t0, (sp)
     lw      ra,  F_RA(sp)
     lw      s0,  F_S0(sp)
     lw      s1,  F_S1(sp)

@@ -571,14 +571,6 @@ config KICKOS_MAX_SEMAPHORES
 	range 0 32
 	default 16
 
-config KICKOS_MAX_MUTEXES
-	int "CAP_MUTEX pool"
-	range 2 32
-	default 8
-	help
-	  The mutexes tasks create. The C library's locks are not drawn from it: each
-	  address space carries its own.
-
 config KICKOS_MAX_ENDPOINTS
 	int "IPC endpoint pool"
 	range 0 32
@@ -680,11 +672,11 @@ config KICKOS_TASK_SEMAPHORE_BUDGET
 	  -KOS_EAGAIN at the creator, which is neither -KOS_ENOMEM (the pool had a slot)
 	  nor -KOS_EMFILE (the caller's table had one).
 
-	  THESE SIX BUDGETS ARE THE WHOLE CEILING, one per charged pool. Each is checked
+	  THESE FIVE BUDGETS ARE THE WHOLE CEILING, one per charged pool. Each is checked
 	  at BUILD time against its own pool and must sit strictly below it, so no task can
 	  take a pool's last slot and a supervisor respawning a driver still finds one. A
 	  board that narrows a pool narrows the matching budget with it or the build fails
-	  naming both. That is why there are six figures and not one: the pools are sized
+	  naming both. That is why there are five figures and not one: the pools are sized
 	  apart on purpose, and a single budget would price a semaphore at an endpoint.
 
 	  WHAT THEY ARE FOR: without them a task's own-creates are bounded only by its
@@ -697,23 +689,13 @@ config KICKOS_TASK_SEMAPHORE_BUDGET
 
 	  A SELFTEST IMAGE NEEDS SIX HERE, and six is an arm's own demand: the suite's
 	  deadlock arm holds four semaphores plus the shared completion semaphore live at
-	  once. On a default-supply board with the other three budgets at their defaults, 5
+	  once. On a default-supply board with the other budgets at their defaults, 5
 	  turns mutex_deadlock into a SKIP the gate refuses, and 4 and 3 turn the
 	  capability-table arms RED instead, that fill reaching for semaphores before it
-	  falls back on mutexes.
+	  falls back on endpoints.
 
 	  Neither this nor the pool width stops N COLLUDING tasks from emptying a pool
 	  between them. Bounding that is a quota on the capability slab the caps live in.
-
-config KICKOS_TASK_MUTEX_BUDGET
-	int "Mutexes one task may hold"
-	range 1 31
-	default 7
-	help
-	  As KICKOS_TASK_SEMAPHORE_BUDGET, over the mutex pool: strictly below
-	  KICKOS_MAX_MUTEXES or the build fails. TWO is a selftest image's own demand, the
-	  deadlock arm holding two at once; below it mutex arms go RED on qemu rather than
-	  skipping, and the failures cascade into every later arm that wanted an object.
 
 config KICKOS_TASK_ENDPOINT_BUDGET
 	int "Endpoints one task may hold"

@@ -374,6 +374,13 @@ kickos_rv64_stvec:
     csrw    sstatus, t0
     ld      t0, F_SEPC(sp)
     csrw    sepc, t0
+    /* Breaks any reservation the resumed thread's LR left, so its SC fails: sret need not
+       (privileged ISA 3.3.2). It stores the slot's own value, a reservation possibly being
+       wider than the word. */
+    .if F_SEPC
+    .error "the SC below addresses the pc slot as (sp), which takes no offset"
+    .endif
+    sc.d    zero, t0, (sp)
     ld      ra,  F_RA(sp)
     ld      t0,  F_T0(sp)
     ld      t1,  F_T1(sp)

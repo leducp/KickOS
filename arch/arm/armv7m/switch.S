@@ -226,6 +226,7 @@ PendSV_Handler:
     push    {r0, lr}
     bl      kickos_arch_mpu_commit
     pop     {r0, lr}
+    clrex                           /* the incoming thread's cut STREX fails (DDI0403E A3.4.4) */
     cpsie   i                       /* pair consumed; never resume a thread masked */
     bx      lr                      /* EXC_RETURN -> resume incoming on PSP */
 
@@ -329,6 +330,7 @@ PendSV_Handler:
     push    {r0, lr}
     bl      kickos_arch_mpu_commit
     pop     {r0, lr}
+    clrex
     cpsie   i
     bx      lr                      /* EXC_RETURN -> resume incoming on PSP */
 #endif
@@ -455,6 +457,7 @@ SVC_Handler:
     push    {r0, lr}
     bl      kickos_arch_mpu_commit
     pop     {r0, lr}
+    clrex
     cpsie   i                       /* the pair is consumed */
     mov     r1, #0
     msr     basepri, r1             /* never resume a thread under the kernel lock */

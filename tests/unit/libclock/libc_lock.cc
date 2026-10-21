@@ -1,63 +1,117 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// newlib's locks over the address space's two kernel mutexes, the libc lock's and malloc's. The
-// kernel here is a host mutex per lock behind kos_mutex_lock/unlock that answers as the kernel
-// does: a holder relocking is -KOS_EDEADLK, a try on a mutex another thread holds -KOS_ETIMEDOUT,
-// a non-holder unlocking -KOS_EPERM. Each host thread is a KickOS thread of its own.
+// newlib's locks over the two mutex words of the address space, the libc lock's and malloc's,
+// taken through the real user/src/mutex.cc over a host compare-and-swap. The kernel here answers
+// the two contended entries as the kernel does: a dead holder's word is stolen with
+// -KOS_EOWNERDEAD, a try on a word another thread holds -KOS_ETIMEDOUT, a wait parks until an
+// unlock hands the word over, a non-holder unlocking -KOS_EPERM. Each host thread is a KickOS
+// thread of its own.
 
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <condition_variable>
 #include <csignal>
+#include <deque>
 #include <mutex>
 #include <thread>
 #include <vector>
 
 #include <unistd.h>
 
+#include <kickos/arch/arch.h>
 #include <kickos/sys.h>
+#include <kickos/sys/user_cas.h>
 
 #include <sys/lock.h>
 
+extern "C" uint32_t __real_kickos_user_cas(uint32_t* word, uint32_t expected, uint32_t desired);
+
 namespace
 {
-    struct KernelMutex
-    {
-        std::mutex m;
-        std::atomic<kos_thread_t> holder{KOS_THREAD_NONE};
-    };
-    KernelMutex g_libc;
-    KernelMutex g_malloc;
-    std::atomic<int> g_locks{0};
-    std::atomic<int> g_unlocks{0};
-    std::atomic<int> g_other_caps{0};
-    std::atomic<int> g_tries_refused{0};
-    // The kernel's answer to the next lock it grants, or -KOS_EBADF for no lock at the handle.
+    // An id no live thread carries: a holder that died.
+    constexpr uint32_t DEAD_ID = 0x7FFFFFF0u;
+    // An id a live thread elsewhere carries, which never releases.
+    constexpr uint32_t OTHER_ID = 0x7FFFFFF1u;
+
+    // The tallies, each written under g_tally.
+    std::mutex g_tally;
+    // The fake kernel's own exclusion, and the waiters it parks per word, in arrival order.
+    std::mutex g_kernel;
+    std::condition_variable g_handed;
+    std::deque<uint32_t> g_waiters_libc;
+    std::deque<uint32_t> g_waiters_malloc;
+
+    int g_locks = 0;
+    int g_unlocks = 0;
+    int g_other_words = 0;
+    int g_tries_refused = 0;
+    int g_cas_calls = 0;
+    // The kernel's answer to the next contended lock, when it is a refusal.
     std::atomic<int> g_lock_answer{0};
     std::atomic<int> g_unlock_answer{0};
-    // Cancelled waits the kernel answers before it grants, and every lock call it is asked.
+    // Cancelled waits the kernel answers before it grants, and every lock entry it is asked.
     std::atomic<int> g_cancels_before_grant{0};
-    std::atomic<int> g_lock_calls{0};
+    int g_lock_calls = 0;
     // A thread whose cancelled wait asks again this often is taken as ended at its entry.
     constexpr int CANCEL_ENTRIES_BOUND = 1000;
     constexpr int ENDED_AT_ENTRY = 42;
     // The unlocking thread is preempted on its way out, so a waiter runs before it returns.
     std::atomic<bool> g_preempt_after_unlock{false};
-    // Serialises the tallies a non-holder writes: the next thread handle and a stray cap.
-    std::mutex g_tally;
-    kos_thread_t g_next_thread = 1;
-    thread_local kos_thread_t t_self = KOS_THREAD_NONE;
+    uint32_t g_next_thread = 1;
+    thread_local uint32_t t_self = 0;
 
-    kos_thread_t self()
+    void bump(int& tally)
     {
-        if (t_self == KOS_THREAD_NONE)
+        std::lock_guard<std::mutex> const hold(g_tally);
+        tally = tally + 1;
+    }
+
+    int tally_of(int const& tally)
+    {
+        std::lock_guard<std::mutex> const hold(g_tally);
+        return tally;
+    }
+
+    uint32_t self()
+    {
+        if (t_self == 0)
         {
             std::lock_guard<std::mutex> const hold(g_tally);
             t_self = g_next_thread;
             g_next_thread = g_next_thread + 1;
         }
         return t_self;
+    }
+
+    uint32_t* libc_word()
+    {
+        return &kos_libc_lock(KOS_LIBC_LOCK_STDIO)->word;
+    }
+
+    uint32_t* malloc_word()
+    {
+        return &kos_libc_lock(KOS_LIBC_LOCK_MALLOC)->word;
+    }
+
+    uint32_t holder_of(uint32_t* word)
+    {
+        return __atomic_load_n(word, __ATOMIC_ACQUIRE) & ~KOS_MUTEX_WAITERS;
+    }
+
+    std::deque<uint32_t>* waiters_of(uint32_t* word)
+    {
+        if (word == libc_word())
+        {
+            return &g_waiters_libc;
+        }
+        if (word == malloc_word())
+        {
+            return &g_waiters_malloc;
+        }
+        bump(g_other_words);
+        return nullptr;
     }
 
     struct Named
@@ -100,117 +154,173 @@ namespace
         {
             g_lock_answer = 0;
             g_unlock_answer = 0;
-            g_other_caps = 0;
+            g_other_words = 0;
             g_cancels_before_grant = 0;
             g_lock_calls = 0;
+            g_cas_calls = 0;
+            *libc_word() = 0;
+            *malloc_word() = 0;
         }
         void TearDown() override
         {
-            EXPECT_EQ(g_libc.holder.load(), KOS_THREAD_NONE) << "an arm left the libc lock held";
-            EXPECT_EQ(g_malloc.holder.load(), KOS_THREAD_NONE)
-                << "an arm left the malloc lock held";
-            EXPECT_EQ(g_other_caps.load(), 0) << "a lock reached a mutex other than the two";
+            EXPECT_EQ(holder_of(libc_word()), 0u) << "an arm left the libc lock held";
+            EXPECT_EQ(holder_of(malloc_word()), 0u) << "an arm left the malloc lock held";
+            EXPECT_EQ(tally_of(g_other_words), 0) << "a lock reached a word other than the two";
         }
     };
 
     using LibcLockDeathTest = LibcLock;
-}
-
-extern "C" kos_thread_t kos_thread_self(void)
-{
-    return self();
-}
-
-namespace
-{
-    KernelMutex* kernel_mutex(kos_cap_t mtx)
-    {
-        if (mtx == KOS_CAP_LIBC_LOCK)
-        {
-            return &g_libc;
-        }
-        if (mtx == KOS_CAP_MALLOC_LOCK)
-        {
-            return &g_malloc;
-        }
-        std::lock_guard<std::mutex> const hold(g_tally);
-        g_other_caps.store(g_other_caps.load() + 1);
-        return nullptr;
-    }
 
     Named const& malloc_lock()
     {
         return g_static[3];
     }
-}
 
-extern "C" int kos_mutex_lock(kos_cap_t mtx, uint32_t timeout_us)
-{
-    KernelMutex* const k = kernel_mutex(mtx);
-    int const answer = g_lock_answer.load();
-    g_lock_calls.store(g_lock_calls.load() + 1);
-    if (k == nullptr or answer == -KOS_EBADF)
+    // The kernel's contended lock: a dead holder's word is stolen with -KOS_EOWNERDEAD, a held
+    // one parks the caller until an unlock hands the word over, a try answers at once.
+    int kernel_lock(uint32_t* word, uint32_t timeout_us)
     {
-        return -KOS_EBADF;
-    }
-    if (g_cancels_before_grant.load() > 0)
-    {
-        g_cancels_before_grant.store(g_cancels_before_grant.load() - 1);
-        return -KOS_ECANCELED;
-    }
-    if (answer == -KOS_ECANCELED)
-    {
-        if (g_lock_calls.load() >= CANCEL_ENTRIES_BOUND)
+        bump(g_lock_calls);
+        if (g_cancels_before_grant.load() > 0)
+        {
+            g_cancels_before_grant.store(g_cancels_before_grant.load() - 1);
+            return -KOS_ECANCELED;
+        }
+        int const answer = g_lock_answer.load();
+        if (answer == -KOS_ECANCELED and tally_of(g_lock_calls) >= CANCEL_ENTRIES_BOUND)
         {
             _exit(ENDED_AT_ENTRY);
         }
-        return -KOS_ECANCELED;
-    }
-    if (k->holder.load() == self())
-    {
-        return -KOS_EDEADLK;
-    }
-    if (timeout_us == 0)
-    {
-        if (not k->m.try_lock())
+        if (answer != 0)
         {
-            g_tries_refused.store(g_tries_refused.load() + 1);
-            return -KOS_ETIMEDOUT;
+            return answer;
+        }
+        std::unique_lock<std::mutex> hold(g_kernel);
+        std::deque<uint32_t>* const waiters = waiters_of(word);
+        if (waiters == nullptr)
+        {
+            return -KOS_EINVAL;
+        }
+        uint32_t const me = self();
+        while (true)
+        {
+            uint32_t const v = __atomic_load_n(word, __ATOMIC_ACQUIRE);
+            uint32_t const owner = v & ~KOS_MUTEX_WAITERS;
+            if (owner == 0 or owner == DEAD_ID)
+            {
+                uint32_t next = me;
+                if (not waiters->empty())
+                {
+                    next = next | KOS_MUTEX_WAITERS;
+                }
+                if (__real_kickos_user_cas(word, v, next) == v)
+                {
+                    bump(g_locks);
+                    if (owner == DEAD_ID)
+                    {
+                        return -KOS_EOWNERDEAD;
+                    }
+                    return 0;
+                }
+                continue;
+            }
+            if (owner == me)
+            {
+                return -KOS_EDEADLK;
+            }
+            if (timeout_us == 0)
+            {
+                bump(g_tries_refused);
+                return -KOS_ETIMEDOUT;
+            }
+            EXPECT_EQ(timeout_us, KOS_TIMEOUT_NONE) << "a libc lock waited with a deadline";
+            if (__real_kickos_user_cas(word, v, v | KOS_MUTEX_WAITERS) != v)
+            {
+                continue;
+            }
+            waiters->push_back(me);
+            g_handed.wait(hold, [&] { return holder_of(word) == me; });
+            bump(g_locks);
+            return 0;
         }
     }
-    else
+
+    // The kernel's unlock of a word with waiters: the first one is handed the word.
+    int kernel_unlock(uint32_t* word)
     {
-        EXPECT_EQ(timeout_us, KOS_TIMEOUT_NONE) << "a libc lock waited with a deadline";
-        k->m.lock();
+        if (g_unlock_answer.load() != 0)
+        {
+            return g_unlock_answer.load();
+        }
+        {
+            std::lock_guard<std::mutex> const hold(g_kernel);
+            std::deque<uint32_t>* const waiters = waiters_of(word);
+            if (waiters == nullptr)
+            {
+                return -KOS_EINVAL;
+            }
+            if (holder_of(word) != self())
+            {
+                return -KOS_EPERM;
+            }
+            uint32_t next = 0;
+            if (not waiters->empty())
+            {
+                next = waiters->front();
+                waiters->pop_front();
+                if (not waiters->empty())
+                {
+                    next = next | KOS_MUTEX_WAITERS;
+                }
+            }
+            __atomic_store_n(word, next, __ATOMIC_RELEASE);
+            bump(g_unlocks);
+        }
+        g_handed.notify_all();
+        if (g_preempt_after_unlock.load())
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        return 0;
     }
-    k->holder = self();
-    g_locks.store(g_locks.load() + 1);
-    return answer;
 }
 
-extern "C" int kos_mutex_unlock(kos_cap_t mtx)
+extern "C" uint32_t kickos_self_lock_id(void)
 {
-    KernelMutex* const k = kernel_mutex(mtx);
-    if (k == nullptr)
+    return self();
+}
+
+// The sim's own compare-and-swap, linked in, counting the takes and releases the fast path
+// completes alone (-Wl,--wrap in CMakeLists.txt).
+extern "C" uint32_t __wrap_kickos_user_cas(uint32_t* word, uint32_t expected, uint32_t desired)
+{
+    bump(g_cas_calls);
+    (void)waiters_of(word);
+    uint32_t const held = __real_kickos_user_cas(word, expected, desired);
+    if (held == expected and expected == 0)
     {
-        return -KOS_EBADF;
+        bump(g_locks);
     }
-    if (g_unlock_answer.load() != 0)
+    if (held == expected and desired == 0)
     {
-        return g_unlock_answer.load();
+        bump(g_unlocks);
     }
-    if (k->holder.load() != self())
+    return held;
+}
+
+extern "C" uintptr_t arch_syscall(uintptr_t nr, uintptr_t a0, uintptr_t a1, uintptr_t, uintptr_t)
+{
+    uint32_t* const word = reinterpret_cast<uint32_t*>(a0);
+    if (nr == KOS_SYS_MUTEX_LOCK)
     {
-        return -KOS_EPERM;
+        return static_cast<uintptr_t>(kernel_lock(word, static_cast<uint32_t>(a1)));
     }
-    k->holder = KOS_THREAD_NONE;
-    g_unlocks.store(g_unlocks.load() + 1);
-    k->m.unlock();
-    if (g_preempt_after_unlock.load())
+    if (nr == KOS_SYS_MUTEX_UNLOCK)
     {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        return static_cast<uintptr_t>(kernel_unlock(word));
     }
-    return 0;
+    ADD_FAILURE() << "the libc locks made syscall " << nr;
+    return static_cast<uintptr_t>(-KOS_ENOSYS);
 }
 
 TEST_F(LibcLock, every_newlib_lock_but_mallocs_is_the_libc_mutex)
@@ -231,11 +341,11 @@ TEST_F(LibcLock, every_newlib_lock_but_mallocs_is_the_libc_mutex)
         int const locks = g_locks;
         int const unlocks = g_unlocks;
         acquire(n);
-        EXPECT_EQ(g_libc.holder.load(), self());
-        EXPECT_EQ(g_malloc.holder.load(), KOS_THREAD_NONE);
-        EXPECT_EQ(g_locks.load(), locks + 1);
+        EXPECT_EQ(holder_of(libc_word()), self());
+        EXPECT_EQ(holder_of(malloc_word()), 0u);
+        EXPECT_EQ(tally_of(g_locks), locks + 1);
         release(n);
-        EXPECT_EQ(g_unlocks.load(), unlocks + 1);
+        EXPECT_EQ(tally_of(g_unlocks), unlocks + 1);
     }
     __retarget_lock_close_recursive(file_lock);
 }
@@ -243,8 +353,8 @@ TEST_F(LibcLock, every_newlib_lock_but_mallocs_is_the_libc_mutex)
 TEST_F(LibcLock, malloc_takes_a_mutex_of_its_own)
 {
     acquire(malloc_lock());
-    EXPECT_EQ(g_malloc.holder.load(), self());
-    EXPECT_EQ(g_libc.holder.load(), KOS_THREAD_NONE);
+    EXPECT_EQ(holder_of(malloc_word()), self());
+    EXPECT_EQ(holder_of(libc_word()), 0u);
     release(malloc_lock());
 }
 
@@ -264,7 +374,7 @@ TEST_F(LibcLock, a_file_lock_is_taken_while_another_thread_holds_malloc)
     });
     other.join();
     EXPECT_TRUE(printed.load());
-    EXPECT_EQ(g_malloc.holder.load(), self());
+    EXPECT_EQ(holder_of(malloc_word()), self());
     release(malloc_lock());
 }
 
@@ -279,16 +389,16 @@ TEST_F(LibcLock, nesting_two_libc_locks_is_recursion_on_one)
             acquire(n);
         }
     }
-    EXPECT_EQ(g_locks.load(), locks + 1);
+    EXPECT_EQ(tally_of(g_locks), locks + 1);
     for (Named const& n : g_static)
     {
         if (n.lock != malloc_lock().lock)
         {
-            EXPECT_EQ(g_unlocks.load(), unlocks);
+            EXPECT_EQ(tally_of(g_unlocks), unlocks);
             release(n);
         }
     }
-    EXPECT_EQ(g_unlocks.load(), unlocks + 1);
+    EXPECT_EQ(tally_of(g_unlocks), unlocks + 1);
 }
 
 TEST_F(LibcLock, malloc_inside_the_libc_lock_takes_both_mutexes)
@@ -296,12 +406,12 @@ TEST_F(LibcLock, malloc_inside_the_libc_lock_takes_both_mutexes)
     int const locks = g_locks;
     acquire(g_static[0]);
     acquire(malloc_lock());
-    EXPECT_EQ(g_locks.load(), locks + 2);
-    EXPECT_EQ(g_libc.holder.load(), self());
-    EXPECT_EQ(g_malloc.holder.load(), self());
+    EXPECT_EQ(tally_of(g_locks), locks + 2);
+    EXPECT_EQ(holder_of(libc_word()), self());
+    EXPECT_EQ(holder_of(malloc_word()), self());
     release(malloc_lock());
-    EXPECT_EQ(g_malloc.holder.load(), KOS_THREAD_NONE);
-    EXPECT_EQ(g_libc.holder.load(), self());
+    EXPECT_EQ(holder_of(malloc_word()), 0u);
+    EXPECT_EQ(holder_of(libc_word()), self());
     release(g_static[0]);
 }
 
@@ -313,10 +423,10 @@ TEST_F(LibcLock, the_depth_counts_down_to_the_unlock)
     acquire(malloc_lock());
     release(malloc_lock());
     release(malloc_lock());
-    EXPECT_EQ(g_malloc.holder.load(), self());
-    EXPECT_EQ(g_unlocks.load(), unlocks);
+    EXPECT_EQ(holder_of(malloc_word()), self());
+    EXPECT_EQ(tally_of(g_unlocks), unlocks);
     release(malloc_lock());
-    EXPECT_EQ(g_unlocks.load(), unlocks + 1);
+    EXPECT_EQ(tally_of(g_unlocks), unlocks + 1);
 }
 
 TEST_F(LibcLock, another_thread_waits_for_the_owner)
@@ -359,39 +469,43 @@ TEST_F(LibcLock, a_releaser_preempted_after_its_unlock_leaves_the_next_owner_who
 
 TEST_F(LibcLock, a_dead_owner_of_the_libc_lock_hands_it_over_held)
 {
-    g_lock_answer = -KOS_EOWNERDEAD;
+    *libc_word() = DEAD_ID;
     int const locks = g_locks;
     acquire(g_static[0]);
     acquire(g_static[1]);
-    EXPECT_EQ(g_libc.holder.load(), self());
-    EXPECT_EQ(g_locks.load(), locks + 1);
+    EXPECT_EQ(holder_of(libc_word()), self());
+    EXPECT_EQ(tally_of(g_locks), locks + 1);
     release(g_static[1]);
     release(g_static[0]);
 }
 
-TEST_F(LibcLock, a_cancelled_wait_asks_again_and_takes_the_lock_once)
+// The re-ask enters the kernel with no compare-and-swap of its own, so a killed waiter ends at
+// that entry and never takes a lock freed meanwhile with no entry at all.
+TEST_F(LibcLock, a_cancelled_wait_asks_again_at_the_entry_and_takes_the_lock_once)
 {
+    *libc_word() = DEAD_ID;
     g_cancels_before_grant = 1;
     int const locks = g_locks;
     acquire(g_static[0]);
-    EXPECT_EQ(g_lock_calls.load(), 2) << "the cancelled wait did not ask exactly once more";
-    EXPECT_EQ(g_locks.load(), locks + 1);
-    EXPECT_EQ(g_libc.holder.load(), self());
+    EXPECT_EQ(tally_of(g_lock_calls), 2) << "the cancelled wait did not ask exactly once more";
+    EXPECT_EQ(tally_of(g_cas_calls), 1) << "the re-ask went through the compare-and-swap";
+    EXPECT_EQ(tally_of(g_locks), locks + 1);
+    EXPECT_EQ(holder_of(libc_word()), self());
     release(g_static[0]);
-    EXPECT_EQ(g_libc.holder.load(), KOS_THREAD_NONE) << "the take left a depth other than one";
+    EXPECT_EQ(holder_of(libc_word()), 0u) << "the take left a depth other than one";
 }
 
 TEST_F(LibcLock, a_try_takes_a_free_lock)
 {
     int const locks = g_locks;
     EXPECT_EQ(__retarget_lock_try_acquire_recursive(&__lock___sfp_recursive_mutex), 1);
-    EXPECT_EQ(g_libc.holder.load(), self());
-    EXPECT_EQ(g_locks.load(), locks + 1);
+    EXPECT_EQ(holder_of(libc_word()), self());
+    EXPECT_EQ(tally_of(g_locks), locks + 1);
     EXPECT_EQ(__retarget_lock_try_acquire(&__lock___tz_mutex), 1) << "the owner's try is a nest";
-    EXPECT_EQ(g_locks.load(), locks + 1);
+    EXPECT_EQ(tally_of(g_locks), locks + 1);
     release(g_static[5]);
     release(g_static[0]);
-    EXPECT_EQ(g_libc.holder.load(), KOS_THREAD_NONE);
+    EXPECT_EQ(holder_of(libc_word()), 0u);
 }
 
 TEST_F(LibcLock, a_try_on_a_lock_another_thread_holds_fails_and_holds_nothing)
@@ -402,8 +516,8 @@ TEST_F(LibcLock, a_try_on_a_lock_another_thread_holds_fails_and_holds_nothing)
     std::thread other([&] { tried = __retarget_lock_try_acquire(&__lock___tz_mutex); });
     other.join();
     EXPECT_EQ(tried.load(), 0);
-    EXPECT_EQ(g_tries_refused.load(), refused + 1) << "the try never reached the kernel";
-    EXPECT_EQ(g_libc.holder.load(), self());
+    EXPECT_EQ(tally_of(g_tries_refused), refused + 1) << "the try never reached the kernel";
+    EXPECT_EQ(holder_of(libc_word()), self());
     release(g_static[1]);
     std::thread after([&] {
         tried = __retarget_lock_try_acquire_recursive(&__lock___sfp_recursive_mutex);
@@ -444,18 +558,20 @@ TEST_F(LibcLock, contending_threads_keep_a_shared_count_whole)
     EXPECT_EQ(count, THREADS * ROUNDS);
 }
 
-TEST_F(LibcLockDeathTest, a_missing_lock_traps)
+TEST_F(LibcLockDeathTest, a_kernel_refusal_traps)
 {
-    g_lock_answer = -KOS_EBADF;
+    *malloc_word() = OTHER_ID;
+    g_lock_answer = -KOS_EINVAL;
     EXPECT_EXIT(acquire(g_static[3]), ::testing::KilledBySignal(SIGILL), "");
     g_lock_answer = 0;
+    *malloc_word() = 0;
 }
 
 TEST_F(LibcLockDeathTest, a_dead_owner_of_the_malloc_lock_traps)
 {
-    g_lock_answer = -KOS_EOWNERDEAD;
+    *malloc_word() = DEAD_ID;
     EXPECT_EXIT(acquire(malloc_lock()), ::testing::KilledBySignal(SIGILL), "");
-    g_lock_answer = 0;
+    *malloc_word() = 0;
 }
 
 TEST_F(LibcLockDeathTest, the_libc_lock_taken_inside_mallocs_traps)
@@ -478,16 +594,20 @@ TEST_F(LibcLockDeathTest, the_libc_lock_taken_inside_mallocs_traps)
 // This kernel never grants, and stands for that end after a bound so the test cannot hang.
 TEST_F(LibcLockDeathTest, a_wait_cancelled_for_good_ends_at_an_entry_and_never_traps)
 {
+    *libc_word() = OTHER_ID;
     g_lock_answer = -KOS_ECANCELED;
     EXPECT_EXIT(acquire(g_static[0]), ::testing::ExitedWithCode(ENDED_AT_ENTRY), "");
     g_lock_answer = 0;
+    *libc_word() = 0;
 }
 
+// The release enters only for a word with waiters.
 TEST_F(LibcLockDeathTest, an_unlock_the_kernel_refuses_traps)
 {
     EXPECT_EXIT(
         {
             acquire(g_static[3]);
+            __atomic_store_n(malloc_word(), self() | KOS_MUTEX_WAITERS, __ATOMIC_RELEASE);
             g_unlock_answer = -KOS_EPERM;
             release(g_static[3]);
         },

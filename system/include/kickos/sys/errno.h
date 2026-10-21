@@ -12,7 +12,7 @@
 // Values mirror the common POSIX errno numbers, but only the MAGNITUDE is contract (the
 // sign is applied at the return site). Every code is returned NEGATIVE; there is no
 // positive success-variant. -KOS_EOWNERDEAD is the one a caller must special-case as
-// HELD: the mutex was ACQUIRED (see mutex_lock).
+// HELD: the mutex was ACQUIRED (see kos_mutex_lock).
 
 #ifndef KICKOS_SYS_ERRNO_H
 #define KICKOS_SYS_ERRNO_H
@@ -29,7 +29,7 @@ enum kos_errno
     KOS_ENOMEM = 12,     // allocation or MPU descriptor capacity exhausted
     KOS_EACCES = 13,     // the capability lacks a right the operation needs
     KOS_EFAULT = 14,     // user buffer/pointer not owned by the caller (isolation reject)
-    KOS_EBUSY = 16,      // resource held/in-use: close a mutex you own; claim an owned irq line
+    KOS_EBUSY = 16,      // resource held/in-use: claim an owned irq line
     KOS_EINVAL = 22,     // malformed argument: bad prio/stack/mask/count/irq line/alignment/size
     KOS_EMFILE = 24,     // capability table full; kos_call refers to the server's table
     KOS_EPIPE = 32,      // the server died holding the request, or a far node could not take it

@@ -56,8 +56,8 @@ is stopped in kernel code. Every recipe here stops in a kernel function unless i
 otherwise.
 
 Two decoding tables help with the output. `CapEntry::type` prints as a number:
-0 empty, 1 semaphore, 2 mutex, 3 endpoint, 4 reply, 5 IRQ, 6 frame, 7 address space,
-8 notification (`CapType` in `kernel/include/kickos/cap.h`). `CapEntry::rights` is a bit set:
+0 empty, 1 semaphore, 2 endpoint, 3 reply, 4 IRQ, 5 frame, 6 address space,
+7 notification (`CapType` in `kernel/include/kickos/cap.h`). `CapEntry::rights` is a bit set:
 1 `WAIT` (receive, or wait), 2 `SIGNAL` (send, or post), 4 `TRANSFER` (may be granted onward),
 8 `HANDOUT` (an endpoint only, see Stop 8).
 
@@ -90,7 +90,7 @@ which object, what kind of object, and what this thread may do with it.
 Read the fields one by one:
 
 - `obj` names the object. It is not a pointer either: it is the object's handle in a global
-  pool (one pool of endpoints, one of mutexes, and so on). That handle carries a second
+  pool (one pool of endpoints, one of semaphores, and so on). That handle carries a second
   generation, the object's own, so a slot that still names an object freed by someone else
   stops resolving.
 - `type` says which pool `obj` belongs to.
@@ -105,9 +105,9 @@ has generation 0, so on a fresh table the handle equals the index. That is why `
 
 One slot is reserved in every table (`system/include/kickos/sys/cap_index.h`): slot 0,
 `KOS_CAP_STDOUT`, the send-only console endpoint. Only the kernel fills it. Every other slot,
-from `KOS_CAP_FIRST_DYNAMIC` (1) up, is the thread's own. The C library's two locks are not in
-the table: user code names them by pseudo-handles that only the mutex calls accept
-([Mutex, Stop 2](04-mutex.md)).
+from `KOS_CAP_FIRST_DYNAMIC` (1) up, is the thread's own. A mutex is not in the table at all:
+it is a word in the memory of the threads that share it, the C library's two locks included
+([Mutex](04-mutex.md)).
 
 There is one more kind of power a thread can hold, and it is not in the table: the
 **authority word**, `Thread::authority`. It is a bit set of what the thread may ask the
@@ -295,8 +295,8 @@ the capability any more.
 
 ```
 (gdb) p *p
-$1 = {entry = 0x1a71 <kickos::init::task_trampoline(void*)>, arg = 0xf8e8 <kickos_table_image+32>,
-  name = 0xf920 <kickos_table_image+88> "main", prio = 2 '\002', policy = 0 '\000',
+$1 = {entry = 0x1a41 <kickos::init::task_trampoline(void*)>, arg = 0xfaa8 <kickos_table_image+32>,
+  name = 0xfae0 <kickos_table_image+88> "main", prio = 2 '\002', policy = 0 '\000',
   cap_count = 0 '\000', quantum_ns = 0, mem_base = 0x0, mem_size = 0, windows = 0x0,
   window_count = 0, stack_base = 0x0, stack_size = 0, caps = 0x0, cap_dest = 0x0,
   core_mask = 0, authority = 113, task = 3}
@@ -308,16 +308,16 @@ the init closes handle 2, its badged copy.
 
 ```
 (gdb) p c->caps.chunk[0][1]
-$2 = {obj = 0, type = 8 '\b', seq_lo = 0 '\000', rights = 7 '\a', seq_hi = 0 '\000', gen = 0}
+$2 = {obj = 0, type = 7 '\a', seq_lo = 0 '\000', rights = 7 '\a', seq_hi = 0 '\000', gen = 0}
 (gdb) p c->caps.chunk[0][2]
-$3 = {obj = 0, type = 8 '\b', seq_lo = 1 '\001', rights = 7 '\a', seq_hi = 0 '\000', gen = 0}
+$3 = {obj = 0, type = 7 '\a', seq_lo = 1 '\001', rights = 7 '\a', seq_hi = 0 '\000', gen = 0}
 (gdb) p $k->tasks[2]
-$4 = {domain = 0x20006470 <kickos::detail::g_instance+7360>, refcount = 1 '\001', creator_tag = 1 '\001',
+$4 = {domain = 0x20006668 <kickos::detail::g_instance+7848>, refcount = 1 '\001', creator_tag = 1 '\001',
   gen = 0, prio_ceiling = 12 '\f', marks = 0 '\000', watch_bit = 0 '\000', sweeping = 0 '\000',
   watch_notify = 1, watch_ep = 0, exit_status = 130}
 ```
 
-Slots 1 and 2 both name notification 0 (type 8). Slot 2 is the badged copy: its badge is
+Slots 1 and 2 both name notification 0 (type 7). Slot 2 is the badged copy: its badge is
 stored as bit + 1, so `seq_lo = 1` means bit 0. Task handle 3 names `tasks[2]` (the handle's
 index is biased by one). That task has one member (`main`), was created by the thread whose
 kill tag is 1 (root, slot 0), has its ceiling, and carries the watch.
@@ -387,13 +387,14 @@ Value returned is $3 = 0
 (gdb) p/x *out_cap
 $4 = 0x1
 (gdb) p $k->currents.cells[0]->caps.chunk[0][1]
-$5 = {obj = 0, type = 3 '\003', seq_lo = 0 '\000', rights = 15 '\017', seq_hi = 0 '\000', gen = 0}
+$5 = {obj = 0, type = 2 '\002', seq_lo = 0 '\000', rights = 15 '\017', seq_hi = 0 '\000', gen = 0}
 (gdb) p $k->currents.cells[0]->cap_free_head
 $6 = 3
 ```
 
 `main` gets handle 1: slot 1, generation 0. The entry names endpoint 0 (pool index 0,
-generation 0) with all four rights (15). The free head moved on to index 2.
+generation 0) with all four rights (15). The free head went from 2 to 3. The head is the slot
+number plus one, so it named slot 1 before the call and names slot 2 after it.
 
 **Why, and the contract:** [Book: Adding a kernel object type](../book/adding-a-kernel-object-type-the-additive-recipe.md),
 [Reference: architecture, "Object model, capabilities & IPC"](../reference/architecture.md#object-model-capabilities--ipc)
@@ -449,12 +450,12 @@ use that name is "I created it", checked by tag.
 (gdb) continue
 (gdb) continue
 (gdb) finish
-0x00006f14 in (anonymous namespace)::syscall_body (nr=51, a0=0, a1=0, a2=537034632, a3=0) at .../kernel/syscall/syscall.cc:1263
+0x00007272 in (anonymous namespace)::syscall_body (nr=51, a0=0, a1=0, a2=537034632, a3=0) at .../kernel/syscall/syscall.cc:1267
 Value returned is $1 = 0
 (gdb) p/x h
 $2 = 0x4
 (gdb) p $k->tasks[3]
-$3 = {domain = 0x20006470 <kickos::detail::g_instance+7360>, refcount = 0 '\000', creator_tag = 2 '\002',
+$3 = {domain = 0x20006668 <kickos::detail::g_instance+7848>, refcount = 0 '\000', creator_tag = 2 '\002',
   gen = 0, prio_ceiling = 12 '\f', marks = 0 '\000', watch_bit = 0 '\000', sweeping = 0 '\000',
   watch_notify = 0, watch_ep = 0, exit_status = 130}
 ```
@@ -731,20 +732,20 @@ stop:
 Then five times: `continue`, `p $k->currents.cells[0]->name`. Trimmed:
 
 ```
-Breakpoint 2, kickos::sched::add (t=t@entry=0x20005028 <kickos::detail::g_instance+2168>, ...)
+Breakpoint 2, kickos::sched::add (t=t@entry=0x20005188 <kickos::detail::g_instance+2504>, ...)
 $1 = "main", '\000' <repeats 11 times>
-Breakpoint 3, kickos::cap_console_publish_through (publisher=publisher@entry=0x20004ed8 <...>, ...)
+Breakpoint 3, kickos::cap_console_publish_through (publisher=publisher@entry=0x20005030 <...>, ...)
 $2 = "main", '\000' <repeats 11 times>
-Breakpoint 4, kickos::handle_close (c=0x20004ed8 <...>, cap_handle=cap_handle@entry=1, ...)
+Breakpoint 4, kickos::handle_close (c=0x20005030 <...>, cap_handle=cap_handle@entry=1, ...)
 $3 = "main", '\000' <repeats 11 times>
-Breakpoint 2, kickos::sched::add (t=t@entry=0x20005178 <kickos::detail::g_instance+2504>, ...)
+Breakpoint 2, kickos::sched::add (t=t@entry=0x200052e0 <kickos::detail::g_instance+2848>, ...)
 $4 = "main", '\000' <repeats 11 times>
-Breakpoint 5, kickos::cap_resolve_e (c=c@entry=0x20005028 <...>, cap_handle=cap_handle@entry=1, ...)
+Breakpoint 5, kickos::cap_resolve_e (c=c@entry=0x20005188 <...>, cap_handle=cap_handle@entry=1, ...)
 $5 = "sink", '\000' <repeats 11 times>
 ```
 
-`sink` (the TCB at `+2168`) is added first, but its first system call comes only after `main`
-has added `worker` (the TCB at `+2504`) and gone to sleep.
+`sink` (the TCB at `+2504`) is added first, but its first system call comes only after `main`
+has added `worker` (the TCB at `+2848`) and gone to sleep.
 
 **Why, and the contract:** [Reference: architecture, "Object model, capabilities & IPC"](../reference/architecture.md#object-model-capabilities--ipc)
 (the B1 wire contract and the reserved slots), [Reference: architecture, "Scheduler (the core constraint)"](../reference/architecture.md#scheduler-the-core-constraint)
@@ -776,16 +777,16 @@ $1 = kickos::CapType::CAP_ENDPOINT
 (gdb) p need
 $2 = 1 '\001'
 (gdb) p c->caps.chunk[0][1]
-$3 = {obj = 0, type = 3 '\003', seq_lo = 0 '\000', rights = 1 '\001', seq_hi = 0 '\000', gen = 0}
+$3 = {obj = 0, type = 2 '\002', seq_lo = 0 '\000', rights = 1 '\001', seq_hi = 0 '\000', gen = 0}
 (gdb) p/x c->authority
 $4 = 0x0
 (gdb) bt 4
-#0  kickos::cap_resolve_e (c=c@entry=0x20005028 <...>, cap_handle=cap_handle@entry=1, want=want@entry=kickos::CapType::CAP_ENDPOINT, need=need@entry=1 '\001', ...)
-#1  0x00007fa8 in kickos::endpoint_recv_locked (ask=<synthetic pointer>..., c=0x20005028 <...>, cap=1, ...)
+#0  kickos::cap_resolve_e (c=c@entry=0x20005188 <...>, cap_handle=cap_handle@entry=1, want=want@entry=kickos::CapType::CAP_ENDPOINT, need=need@entry=1 '\001', ...)
+#1  0x000082d0 in kickos::endpoint_recv_locked (ask=<synthetic pointer>..., c=0x20005188 <...>, cap=1, ...)
 #2  operator() (__closure=<synthetic pointer>) at .../kernel/syscall/syscall_ipc.cc:1057
 #3  kickos::endpoint_reply_recv (reply_cap=reply_cap@entry=4294967295, ...)
 (gdb) finish
-Value returned is $5 = (void *) 0x20004ad8 <kickos::detail::g_instance+808>
+Value returned is $5 = (void *) 0x20004c24 <kickos::detail::g_instance+1124>
 ```
 
 A receive needs `WAIT` (1), and `sink`'s slot 1 carries exactly that. `sink` has no
@@ -824,7 +825,7 @@ Value returned is $3 = 0
 (gdb) p/d $k->endpoint_refs[0]
 $4 = 4
 (gdb) p $k->currents.cells[0]->caps.chunk[0][0]
-$5 = {obj = 0, type = 3 '\003', seq_lo = 0 '\000', rights = 2 '\002', seq_hi = 0 '\000', gen = 0}
+$5 = {obj = 0, type = 2 '\002', seq_lo = 0 '\000', rights = 2 '\002', seq_hi = 0 '\000', gen = 0}
 ```
 
 `main`'s slot 0 is now a send-only (`SIGNAL`, 2) copy of endpoint 0, and the endpoint has two
@@ -837,7 +838,7 @@ more references. Later, at `worker`'s spawn:
 (gdb) p child->name
 $6 = "worker\000\000\000\000\000\000\000\000\000"
 (gdb) p child->caps.chunk[0][0]
-$7 = {obj = 0, type = 3 '\003', seq_lo = 0 '\000', rights = 2 '\002', seq_hi = 0 '\000', gen = 0}
+$7 = {obj = 0, type = 2 '\002', seq_lo = 0 '\000', rights = 2 '\002', seq_hi = 0 '\000', gen = 0}
 ```
 
 **Why, and the contract:** [Reference: console, "Capability handover"](../reference/console.md#capability-handover),
@@ -861,11 +862,7 @@ keeps the endpoint alive. `kos_handle_close(ep)` reaches `handle_close`:
         {
             return -KOS_EPERM; // the kernel's seat
         }
-        int const refused = obj_close_protocol(c, *e, /*teardown=*/false, held);
-        if (refused != 0)
-        {
-            return refused; // protocol refused the close (owner closing a held mutex -> -KOS_EBUSY)
-        }
+        obj_close_protocol(c, *e, /*teardown=*/false, held);
         CapEntry const detached = *e;
         // Vacated BEFORE the ref drops, so no stale handle resolves during the drop, and
         // after the copy above, whose obj the vacate overwrites.
@@ -877,8 +874,8 @@ keeps the endpoint alive. `kos_handle_close(ep)` reaches `handle_close`:
 Four steps:
 
 1. **Look up**, with the same `cap_lookup` as a resolve. A reserved slot cannot be closed.
-2. **The type's close protocol** (`obj_close_protocol`). Most types have nothing to do. A mutex
-   refuses the close if the caller owns it (`-KOS_EBUSY`: unlock first). An endpoint counts its
+2. **The type's close protocol** (`obj_close_protocol`). Most types have nothing to do, and none
+   refuses the close. An endpoint counts its
    receivers and its `HANDOUT` holders, so `endpoint_rights_dropped` takes this capability's
    rights off those counts; if it was the last receiver, every parked sender is answered at
    once rather than left waiting forever.
@@ -898,7 +895,7 @@ From the moment of step 3, handle 1 in `main` is stale. If `main` used it again,
 (gdb) break kickos::handle_close if $_streq(c->name, "main")
 (gdb) continue
 (gdb) p c->caps.chunk[0][1]
-$1 = {obj = 0, type = 3 '\003', seq_lo = 0 '\000', rights = 15 '\017', seq_hi = 0 '\000', gen = 0}
+$1 = {obj = 0, type = 2 '\002', seq_lo = 0 '\000', rights = 15 '\017', seq_hi = 0 '\000', gen = 0}
 (gdb) p/d $k->endpoint_refs[0]
 $2 = 4
 (gdb) p/d $k->endpoints.slots_[0].recv_holders

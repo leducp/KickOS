@@ -32,6 +32,30 @@ kickos_add_unit_test(NAME amp_share_window
           KICKOS_AMP_USER_SHARE_ADDR=0x40210000
           KICKOS_AMP_USER_SHARE_SIZE=0x10000)
 
+# A word in the share refused by every route a translating space maps it, over the REAL
+# kernel/syscall/word.cc and the write predicate in kernel/syscall/syscall_mem.cc. Linked with
+# --gc-sections: only what word_ref reaches needs a seam.
+kickos_add_unit_test(NAME amp_share_word
+  SOURCES share_word.cc "${PROJECT_SOURCE_DIR}/tests/unit/common/kpanic_seam.cc"
+          "${PROJECT_SOURCE_DIR}/kernel/syscall/word.cc"
+          "${PROJECT_SOURCE_DIR}/kernel/syscall/syscall_mem.cc"
+          "${PROJECT_SOURCE_DIR}/kernel/amp/ampshare.cc"
+          "${PROJECT_SOURCE_DIR}/kernel/mem/vrange.cc"
+          "${PROJECT_SOURCE_DIR}/kernel/init/instance.cc"
+  INCLUDES "${PROJECT_SOURCE_DIR}/kernel/syscall"
+  POSTURE KICKOS_HAVE_ASPACE=1
+          KICKOS_AMP_OWN_IMAGE=1
+          KICKOS_AMP_NODES=2
+          KICKOS_AMP_NODE_ID=0
+          KICKOS_AMP_PARTITION_BASE=0x40000000
+          KICKOS_AMP_NODE_SHARE=0x100000
+          KICKOS_AMP_SHARED_SIZE=0x20000
+          KICKOS_AMP_USER_SHARE_ADDR=0x40210000
+          KICKOS_AMP_USER_SHARE_SIZE=0x10000
+          KICKOS_ARCH_ALIAS_DCACHE=1 KICKOS_ARCH_IRQ_WINDOW=1)
+target_compile_options(amp_share_word PRIVATE -ffunction-sections -fdata-sections)
+target_link_options(amp_share_word PRIVATE -Wl,--gc-sections)
+
 # The share's one memory type in each backend's real type rule. The rule's TU is linked with
 # --gc-sections: only the rule's own callees need a seam.
 kickos_add_unit_test(NAME amp_share_type_aspace

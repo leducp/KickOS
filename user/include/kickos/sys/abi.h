@@ -39,6 +39,18 @@ typedef uint32_t kos_thread_t;
 // this word.
 #define KOS_THREAD_NONE 0xFFFFFFFFu
 
+// A mutex is a word in the memory of the threads that share it, with no kernel object and no
+// handle: bits 30..0 name its holder by the holder's lock id (an opaque value only the kernel
+// decodes), 0 meaning free, and KOS_MUTEX_WAITERS says a thread is or was parked on it, so its
+// release enters the kernel. Naturally aligned, in memory every sharer can write; a holder that
+// died leaves its id, and the next taker answers -KOS_EOWNERDEAD.
+typedef struct kos_mutex
+{
+    uint32_t word;
+} kos_mutex_t;
+#define KOS_MUTEX_INIT {0u}
+#define KOS_MUTEX_WAITERS 0x80000000u
+
 // A task handle: 16 generation bits over a BIASED index into the task pool, whose slots are
 // unrelated to either pool above. The bias is what makes the all-zero word unmintable.
 typedef uint32_t kos_task_t;
@@ -75,8 +87,8 @@ enum kos_syscall_nr
                                 //   -KOS_ETIMEDOUT/-KOS_ECANCELED
     KOS_SYS_SEM_POST = 6,       // (cap)   -> 0, or -KOS_EBADF/-KOS_EACCES, or -KOS_EOVERFLOW
                                 //   with no waiter and the count at KOS_SEM_COUNT_MAX
-    KOS_SYS_HANDLE_CLOSE = 17,  // (cap)   -> 0, -KOS_EBADF (bad cap), -KOS_EBUSY (own a held
-                                //   mutex), -KOS_EPERM (a reserved index)
+    KOS_SYS_HANDLE_CLOSE = 17,  // (cap)   -> 0, -KOS_EBADF (bad cap), -KOS_EPERM (a reserved
+                                //   index)
     KOS_SYS_THREAD_CREATE = 7,   // (kos_thread_params*, kos_thread_t* out) -> 0, or -KOS_E*
                                 //   (EINVAL/EFAULT/EPERM/EACCES/EBADF/EBUSY/ENOMEM/EAGAIN/
                                 //   EOVERFLOW/ENOTSUP). A RAM range it names, data grant,
@@ -118,17 +130,19 @@ enum kos_syscall_nr
     KOS_SYS_DIAG_LED_SET = 19,  // (on)                  -> 0 (kernel diagnostic LED)
     KOS_SYS_DIAG_LED_TOGGLE = 20, // ()                  -> 0 (kernel diagnostic LED)
     KOS_SYS_CPU_CLOCK_HZ = 22,  // ()  -> running core clock in Hz (u64), 0 if unknown (NO KOS_E*)
-    KOS_SYS_MUTEX_CREATE = 23,  // (kos_cap_t* out) -> 0, or -KOS_E* (ENOMEM mutex pool, EMFILE
-                                //   caller's cap table, EAGAIN task's mutex budget,
-                                //   EINVAL/EFAULT)
-    KOS_SYS_MUTEX_LOCK = 24,    // (cap, timeout_us) -> 0 held; -KOS_EOWNERDEAD held-but-owner-died;
-                                //   -KOS_EBADF / -KOS_EDEADLK / -KOS_ECANCELED / -KOS_ETIMEDOUT (the
-                                //   time ran out, or a try found it held) NOT held (see the wrapper
-                                //   decl for the caveat).
-                                //   KOS_TIMEOUT_NONE waits forever, 0 is a try. The cap may
-                                //   also be KOS_CAP_LIBC_LOCK or KOS_CAP_MALLOC_LOCK
-    KOS_SYS_MUTEX_UNLOCK = 25,  // (cap)  -> 0, -KOS_EBADF (bad cap), -KOS_EPERM (caller not owner);
-                                //   the cap may be KOS_CAP_LIBC_LOCK or KOS_CAP_MALLOC_LOCK
+    KOS_SYS_MUTEX_LOCK = 24,    // (kos_mutex_t*, timeout_us) -> 0 held; -KOS_EOWNERDEAD held,
+                                //   its holder having died; -KOS_ETIMEDOUT (the time ran out, or
+                                //   a try found it held) / -KOS_EDEADLK / -KOS_ECANCELED /
+                                //   -KOS_EINVAL (misaligned, not normal memory, the AMP share, or
+                                //   a word disagreeing with the waiters the kernel holds) /
+                                //   -KOS_EFAULT (a word the caller cannot write, or one whose
+                                //   page went away while it waited) NOT held. KOS_TIMEOUT_NONE
+                                //   waits forever, 0 is a try. kos_mutex_lock enters only on
+                                //   contention
+    KOS_SYS_MUTEX_UNLOCK = 25,  // (kos_mutex_t*) -> 0, -KOS_EPERM (caller not the holder),
+                                //   -KOS_EINVAL / -KOS_EFAULT (as the lock). Never the death
+                                //   point of a kill: the release completes, and the kill lands
+                                //   at the next entry
     KOS_SYS_ENDPOINT_CREATE = 26, // (kos_cap_t* out) -> 0, or -KOS_E* (ENOMEM endpoint pool,
                                   //   EMFILE caller's cap table, EAGAIN task's endpoint
                                   //   budget, EINVAL/EFAULT)
@@ -340,8 +354,6 @@ enum kos_syscall_nr
                                //   (a holding task's notification budget), EOVERFLOW (the
                                //   object's reference count is at its ceiling). ONE-WAY:
                                //   nothing detaches a live binding.
-    KOS_SYS_THREAD_SELF = 71,  // () -> the caller's own kos_thread_t, zero-extended to 64 bits,
-                               //   or -KOS_EINVAL to a caller no pool slot seats.
     KOS_SYS_TASK_WATCH = 72,   // (kos_task_t, notify_cap, ready_ep) -> 0, or -KOS_E*: EBADF
                                //   (stale task, or a cap naming nothing of its kind), EPERM
                                //   (not the creator), EACCES (notify cap lacks SIGNAL).
@@ -374,12 +386,17 @@ enum kos_syscall_nr
     KOS_SYS_PERIPH_DISABLE = 79, // (base) -> 0, -KOS_EPERM (caller holds no window at that base),
                                 //   -KOS_EINVAL (no table entry), -KOS_ENOSYS (no backend).
                                 //   KOS_SYS_PERIPH_ENABLE's undo, gated the same way
-    KOS_SYS_WITNESS_UACCESS = 80 // RESERVED for the uaccess witness (<kickos/sys/witness.h>):
+    KOS_SYS_WITNESS_UACCESS = 80, // RESERVED for the uaccess witness (<kickos/sys/witness.h>):
                                 //   (op, uaddr, ns) -> the byte read, 0 after a write, or
                                 //   -KOS_EPERM (a caller without the whole authority word),
                                 //   -KOS_EINVAL (an unknown op), -KOS_ENOSYS (no address space
                                 //   to leave). Any kernel not built for the witness answers
                                 //   -KOS_EINVAL, as for an unknown number
+    KOS_SYS_WITNESS_REWINDS = 81 // RESERVED for the rewind witness (<kickos/sys/witness.h>):
+                                //   () -> how many times the switcher has moved a stacked PC
+                                //   inside the user compare-and-swap's window back to its load
+                                //   since boot. Any kernel not built for the witness answers
+                                //   -KOS_EINVAL
 };
 // The raw console write's number, refused in an app as kos_kconsole_write is (<kickos/sys.h>).
 #if defined(main)

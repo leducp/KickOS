@@ -102,7 +102,8 @@ namespace
     // MXCSR's place in the legacy region, which XRSTOR reads whenever it restores SSE or AVX.
     constexpr size_t XSAVE_MXCSR = 24;
     // The cell at the top of an unprivileged thread's stack, aligned top minus 16, whose first
-    // word is the thread's struct _reent pointer and whose address is its FS base.
+    // word is the thread's struct _reent pointer, whose second is its lock id and whose address
+    // is its FS base.
     constexpr uintptr_t REENT_CELL = 16;
 
     // With no block seated every ring 3 entry would load a zero stack pointer. This fires if
@@ -371,10 +372,11 @@ void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
 
 #if KICKOS_REENT_PER_THREAD
 // The cell arch_context_init left above an unprivileged thread's return slot: its first word
-// becomes `state`, written through the kernel's view of the stack as the return slot is, and
-// its user address the FS base, where libc's __getreent reads it as %fs:0. A privileged
-// context has no cell and keeps fs_base 0: the kernel calls no libc.
-void arch_context_seat_reent(struct arch_context* ctx, void* state)
+// becomes `state` and its second the lock id `self`, written through the kernel's view of the
+// stack as the return slot is, and its user address the FS base, where libc's __getreent reads
+// %fs:0 and libkickos_user %fs:8. A privileged context has no cell and keeps fs_base 0: the
+// kernel calls no libc.
+void arch_context_seat_reent(struct arch_context* ctx, void* state, uint32_t self)
 {
     trap_frame const* const f = reinterpret_cast<trap_frame const*>(ctx->sp);
     if (f->cs != kickos::x86_64::sel_user_code)
@@ -382,8 +384,9 @@ void arch_context_seat_reent(struct arch_context* ctx, void* state)
         return;
     }
     uintptr_t const cell = (ctx->stack_hi & ~static_cast<uintptr_t>(15)) - REENT_CELL;
-    *reinterpret_cast<uint64_t*>(cell - kickos::x86_64::user_alias_offset()) =
-        reinterpret_cast<uint64_t>(state);
+    uint64_t* const word = reinterpret_cast<uint64_t*>(cell - kickos::x86_64::user_alias_offset());
+    word[0] = reinterpret_cast<uint64_t>(state);
+    word[1] = self;
     ctx->fs_base = cell;
 }
 #endif

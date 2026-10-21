@@ -59,12 +59,14 @@ extern "C"
         kickos::testfix::g_now_ns += kickos::testfix::g_seat_cost_ns;
     }
 
+#if KICKOS_HAVE_MPU
     // This fixture describes MPU regions but does not enforce them.
     uint32_t arch_mpu_encode(struct arch_mpu_region const*, size_t n, struct arch_mpu_encoded* out)
     {
         out->seated = (static_cast<uint32_t>(1) << n) - 1u;
         return out->seated;
     }
+#endif
 
     // IRQ tests inspect Kernel::irq_table; the default handler marks a free line.
     void arch_irq_mask(int line)

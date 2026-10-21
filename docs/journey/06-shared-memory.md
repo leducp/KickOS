@@ -108,10 +108,10 @@ touches the block itself.
 there.
 
 ```
-Breakpoint 1, kickos::ram_owner_alloc (owner=0x20006b88 <kickos::detail::g_instance+9176>, size=size@entry=8192) at .../kernel/mem/ramown.cc:55
-#1  0x00007142 in (anonymous namespace)::syscall_body (nr=13, a0=8192, ...) at .../kernel/syscall/syscall.cc:955
-#2  syscall_dispatch (nr=13, a0=8192, ...) at .../kernel/syscall/syscall.cc:400
-#3  0x0000239a in svc_trampoline () at .../arch/arm/armv7m/switch.S:537
+Breakpoint 1, kickos::ram_owner_alloc (owner=0x20006d80 <kickos::detail::g_instance+9664>, size=size@entry=8192) at .../kernel/mem/ramown.cc:55
+#1  0x000074d2 in (anonymous namespace)::syscall_body (nr=13, a0=8192, ...) at .../kernel/syscall/syscall.cc:940
+#2  syscall_dispatch (nr=13, a0=8192, ...) at .../kernel/syscall/syscall.cc:421
+#3  0x0000242e in svc_trampoline () at .../arch/arm/armv7m/switch.S:540
 ```
 
 **Why, and the contract:** [Book: The syscall path](../book/the-syscall-path-trap-dispatch-return.md),
@@ -243,10 +243,10 @@ the size the MPU row will really cover, never at the size the caller typed.
 **Try it:** `break kickos::ram_region_admit`, `continue`, then print the arguments and `finish`:
 
 ```
-Breakpoint 2, kickos::ram_region_admit (granter=0x20004ed8 <...>, base=base@entry=537034752, size=4096, attr=attr@entry=3, how=how@entry=kickos::RAM_ADMIT_GRANT) at .../kernel/thread/thread.cc:338
+Breakpoint 2, kickos::ram_region_admit (granter=0x20005030 <...>, base=base@entry=537034752, size=4096, attr=attr@entry=3, how=how@entry=kickos::RAM_ADMIT_GRANT) at .../kernel/thread/thread.cc:338
 (gdb) bt 3
-#1  ... kickos::(anonymous namespace)::spawn_grant_admit (p=...) at .../kernel/syscall/syscall_thread.cc:502
-#2  kickos::(anonymous namespace)::spawn_admit (p=...) at .../kernel/syscall/syscall_thread.cc:605
+#1  ... kickos::(anonymous namespace)::spawn_grant_admit (p=...) at .../kernel/syscall/syscall_thread.cc:509
+#2  kickos::(anonymous namespace)::spawn_admit (p=...) at .../kernel/syscall/syscall_thread.cc:612
 (gdb) finish
 Value returned is $7 = 0
 ```
@@ -279,10 +279,10 @@ Building a task is itself an authority (`AUTH_TASKS`), checked in `spawn_masked`
 **Try it:** `break kickos::domain_for if mem_size == 4096`, `continue`, `finish`:
 
 ```
-#1  0x00004234 in kickos::task_for (caller=caller@entry=0, mem_base=mem_base@entry=0x20028000, mem_size=mem_size@entry=4096, ...) at .../kernel/task/task.cc:194
-#2  0x00008a18 in kickos::spawn_masked (...) at .../kernel/syscall/syscall_thread.cc:919
+#1  0x0000431c in kickos::task_for (caller=caller@entry=0, mem_base=mem_base@entry=0x20028000, mem_size=mem_size@entry=4096, ...) at .../kernel/task/task.cc:194
+#2  0x00008cd0 in kickos::spawn_masked (...) at .../kernel/syscall/syscall_thread.cc:926
 (gdb) finish
-Value returned is $1 = (kickos::Domain *) 0x200064d8 <kickos::detail::g_instance+7464>
+Value returned is $1 = (kickos::Domain *) 0x200066d0 <kickos::detail::g_instance+7952>
 (gdb) p/x $->regions[0]
 $2 = {base = 0x20028000, size = 0x1000, attr = 0x3}
 ```
@@ -340,9 +340,9 @@ a simpler way to land on the worker is to stop at Stop 1 first, `delete`, then
 `break kickos::thread_regions_stage`, `continue`, `finish`:
 
 ```
-Breakpoint 2, kickos::thread_regions_stage (dom=0x200064d8 <...>, attr=..., stack_base=stack_base@entry=0x2002a000, stack_size=stack_size@entry=8192) at .../kernel/thread/thread.cc:487
+Breakpoint 2, kickos::thread_regions_stage (dom=0x200066d0 <...>, attr=..., stack_base=stack_base@entry=0x2002a000, stack_size=stack_size@entry=8192) at .../kernel/thread/thread.cc:487
 (gdb) finish
-Value returned is $1 = (const kickos::MpuSet *) 0x20004ce0 <kickos::detail::g_instance+1328>
+Value returned is $1 = (const kickos::MpuSet *) 0x20004e30 <kickos::detail::g_instance+1648>
 (gdb) set $s = $
 (gdb) p/x $s->regions_
 $2 = {{base = 0x0, size = 0x400000, attr = 0x5}, {base = 0x20010000, size = 0x10000, attr = 0x3},
@@ -428,13 +428,13 @@ is not mapped, and fault on it.
 `break arch_mpu_apply if image->rbar[2] == 0x20028000`, `continue`, `bt 4`:
 
 ```
-Breakpoint 3, arch_mpu_apply (regions=0x200050a0 <...>, n=4, image=0x20005104 <...>) at .../arch/common/arch_mpu_stash.cc:41
-#1  0x00002932 in kickos::(anonymous namespace)::switch_book (next=0x20005028 <...>, me=0, held=...) at .../kernel/sched/sched.cc:412
-#2  kickos::(anonymous namespace)::switch_to (me=0, held=..., next=0x20005028 <...>) at .../kernel/sched/sched.cc:514
-#3  kickos::(anonymous namespace)::pick_and_seat (held=..., woken=<optimized out>) at .../kernel/sched/sched.cc:564
+Breakpoint 3, arch_mpu_apply (regions=0x20005204 <...>, n=4, image=0x20005268 <...>) at .../arch/common/arch_mpu_stash.cc:41
+#1  0x000029ba in kickos::(anonymous namespace)::switch_book (next=0x20005188 <...>, me=0, held=...) at .../kernel/sched/sched.cc:430
+#2  kickos::(anonymous namespace)::switch_to (me=0, held=..., next=0x20005188 <...>) at .../kernel/sched/sched.cc:534
+#3  kickos::(anonymous namespace)::pick_and_seat (held=..., woken=<optimized out>) at .../kernel/sched/sched.cc:584
 ```
 
-The image pointer `0x20005104` points into the new thread's own control block: the spawn copied
+The image pointer `0x20005268` points into the new thread's own control block: the spawn copied
 the staged `MpuSet` of Stop 6 into `Thread::mpu`.
 
 **Why, and the contract:** [Book: Protection follows the CPU](../book/protection-follows-the-cpu-not-the-schedulers-intent.md),
@@ -482,9 +482,9 @@ the rows do not cover. That is how the kernel spends no rows on itself.
 `continue`, then look at the record before and after:
 
 ```
-Breakpoint 4, kickos_arm_mpu_program (img=0x20005104 <...>) at .../arch/arm/common/arch_arm_mpu_pmsav7.cc:87
-#1  0x0000244c in kickos_arch_mpu_commit () at .../arch/arm/common/kickos_arch_mpu_commit_default.cc:36
-#2  0x0000221a in PendSV_Handler () at .../arch/arm/armv7m/switch.S:227
+Breakpoint 4, kickos_arm_mpu_program (img=0x20005268 <...>) at .../arch/arm/common/arch_arm_mpu_pmsav7.cc:87
+#1  0x000024d4 in kickos_arch_mpu_commit () at .../arch/arm/common/kickos_arch_mpu_commit_default.cc:36
+#2  0x000022a2 in PendSV_Handler () at .../arch/arm/armv7m/switch.S:227
 (gdb) p/x g_mpu_held[0]
 $8 = {rbar = {0x0, 0x20010000, 0x20026000, 0x0, ...}, rasr = {0x603002b, 0x1303001f, 0x13030019, 0x0, ...}}
 (gdb) finish
@@ -549,15 +549,17 @@ switch that was already pending still finds its own thread's image in the stash.
 `p/x c->mpu.regions_`:
 
 ```
-Breakpoint 1, kickos::thread_self_grant (c=c@entry=0x20004ed8 <...>, base=base@entry=537083680, size=size@entry=16, attr=attr@entry=3) at .../kernel/thread/thread.cc:371
+Breakpoint 1, kickos::thread_self_grant (c=c@entry=0x20005030 <...>, base=base@entry=537083744, size=size@entry=16, attr=attr@entry=3) at .../kernel/thread/thread.cc:371
 (gdb) p/x c->mpu.regions_
 $3 = {{base = 0x0, size = 0x400000, attr = 0x5}, {base = 0x20010000, size = 0x10000, attr = 0x3},
-      {base = 0x20026000, size = 0x2000, attr = 0x3}, {base = 0x0, size = 0x0, attr = 0x0}, ...}
+      {base = 0x20026000, size = 0x2000, attr = 0x3}, {base = 0x20033d00, size = 0x40, attr = 0x3},
+      {base = 0x0, size = 0x0, attr = 0x0}, ...}
 (gdb) finish
 Value returned is $5 = 0
 (gdb) p/x c->mpu.regions_
 $6 = {{base = 0x0, size = 0x400000, attr = 0x5}, {base = 0x20010000, size = 0x10000, attr = 0x3},
-      {base = 0x20026000, size = 0x2000, attr = 0x3}, {base = 0x20033f20, size = 0x20, attr = 0x3}, ...}
+      {base = 0x20026000, size = 0x2000, attr = 0x3}, {base = 0x20033d00, size = 0x40, attr = 0x3},
+      {base = 0x20033f60, size = 0x20, attr = 0x3}, ...}
 ```
 
 The 16 bytes became a 32-byte row, the smallest PMSAv7 can describe.

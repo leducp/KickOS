@@ -14,7 +14,7 @@
 ## The goal: additivity that is real, not aspirational
 
 A microkernel's value is a small, auditable trusted core. That is only sustainable if
-extending the kernel with a new object -- a mutex, an endpoint, a memory grant -- does
+extending the kernel with a new object, such as an endpoint or a memory grant, does
 not ripple through the existing machinery. The promise is: **one pool, one refcount
 array, one resolve case, and one arm in each lifecycle step.** Nothing existing changes
 shape; each step merely gains a case.
@@ -40,10 +40,9 @@ does something *per type*, and none of them is the resolve chokepoint:
 2. **Reference down** -- when a capability is closed or torn down, the refcount must
    fall, and the object must be freed at zero.
 3. **The close-time protocol** -- some object types must *do something* when a
-   capability to them goes away, before the refcount drops. A semaphore does not; a
-   mutex must refuse closing a lock you own, and force-unlock if the owner died; an
+   capability to them goes away, before the refcount drops. A semaphore does not. An
    endpoint must wake blocked senders with a broken-pipe error when the last receiver
-   leaves.
+   leaves, and a reply capability must answer the caller still waiting on it.
 
 Left as scattered `if (type == ...)` tests, each new type edits each site, and the
 "additive" claim quietly becomes false.
@@ -84,10 +83,8 @@ the small `CapType` enum:
 void obj_ref_drop(CapEntry const& e, bool teardown);
 
 // The type-specific close/exit protocol, run BEFORE the ref drop at both call
-// sites. Returns 0, or a negative -KOS_E* to refuse the close (voluntary close
-// only), in the same taxonomy every syscall answers in, so the refusal travels
-// out unchanged.
-int  obj_close_protocol(Thread* closer, CapEntry const& e, bool teardown);
+// sites. It never refuses: the handle goes once the protocol has run.
+void obj_close_protocol(Thread* closer, CapEntry const& e, bool teardown);
 ```
 
 Each is a switch whose arms are the object types, with a debug-trapping `default`:
@@ -134,9 +131,7 @@ reference drop:
 ```
 handle_close(c, cap):
     e = lookup(c, cap)
-    rc = obj_close_protocol(c, *e, /*teardown=*/false)
-    if rc != 0:
-        return rc                 // -KOS_EBUSY: closing a mutex you own
+    obj_close_protocol(c, *e, /*teardown=*/false)
     detach the cap entry          // bump cap-gen, empty the slot
     obj_ref_drop(detached, false)
 
@@ -151,11 +146,15 @@ The `teardown` flag distinguishes a *voluntary* close (a running thread closing 
 its handles) from *exit teardown* (a dying thread's handles being reclaimed). Two
 behaviors depend on it:
 
-- Voluntary close may be **refused** (`return -1`); teardown never can -- a dying
-  thread's handles must all go.
-- The protocol's action differs. For a mutex, a voluntary close of a lock you own is
-  refused; at teardown the same owned mutex is force-unlocked and its waiter woken with
-  the owner-died status (Chapter 2.3). Same hook, both cases, one place.
+- A live closer may have been lent priority through what it closes, for instance as the
+  server of an endpoint. So after the protocol it recomputes its own priority, and gives up
+  the processor if a higher thread is now ready. A dying closer skips that: it will never
+  run again.
+- The refcount drop below may meet a thread still parked on the object only at teardown,
+  and there it leaks the object rather than strand that thread.
+
+The protocol never refuses a close: once it has run, the handle goes, on a voluntary close
+and at teardown alike. Same hook, both cases, one place.
 
 A semaphore's arm is simply `return 0` -- no protocol. That empty arm is the proof the
 hook costs nothing where it is not needed: a type that has no close-time work pays one
@@ -215,8 +214,9 @@ Given the three switches, adding a new capability type `CAP_X` is exactly:
 4. **One resolve case** in `cap_resolve_e` (Chapter 8.1): `if (want == CAP_X) return
    pool.resolve(...)`.
 
-Nothing existing changes shape. This is the mutex (Chapter 2.3) and the endpoint
-(Chapter 8.3) each landing as one instance of the same recipe.
+Nothing existing changes shape. This is the endpoint
+([Chapter 8.3](endpoints-synchronous-ipc-by-rendezvous.md)) and each type after it landing
+as one instance of the same recipe.
 
 Two guardrails are worth writing down because they bite silently otherwise:
 
@@ -250,7 +250,7 @@ protocol, the full stale-resolve-and-wake.
 
 **A type with no object at all** is the limit of that same direction, and arriving there
 is a signal rather than a milestone. If `obj` is unused, nothing is allocated, nothing
-can be freed, there are no waiters and no close could need to refuse anything, then
+can be freed, there are no waiters and no close has any work to do, then
 steps 1, 2 and 4 vanish and all three of step 3's arms are a bare `return` -- at which
 point the entry is a rights byte and a type inside an eight-byte struct, and the honest
 question is what it is doing in the table at all. A capability table earns its cost by
@@ -291,9 +291,11 @@ resolve case. The three switches are the invariant; the pool is the common case.
 - Why axis-3 authority is not in the capability table at all, and what test to apply
   before putting anything in it: Chapter 7.4,
   *[Privilege is three axes, not one bit](privilege-is-three-axes-not-one-bit.md)*.
-- The first two instances of the recipe: Chapter 2.3, *Priority inheritance* (the
-  mutex's close protocol and force-unlock), and Chapter 8.3, *Endpoints* (the
-  broken-pipe close protocol).
+- An instance of the recipe with a real close protocol: Chapter 8.3,
+  *[Endpoints](endpoints-synchronous-ipc-by-rendezvous.md)* (the broken-pipe close
+  protocol). A mutex is not an instance at all: it is a word in user memory with no kernel
+  object, so it needs no close and no refcount (Chapter 2.3,
+  *[Priority inheritance](priority-inheritance-lending-urgency.md)*).
 - The exact refcount, delegation, and teardown contract:
   `../reference/architecture.md` ("Object model, capabilities & IPC") and
   `kernel/syscall/cap.cc`.

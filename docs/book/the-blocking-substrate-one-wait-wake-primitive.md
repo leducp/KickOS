@@ -2,7 +2,7 @@
 <!-- Copyright (c) 2026 Philippe Leduc -->
 # The blocking substrate: one wait/wake primitive
 
-> The concept behind every blocking syscall in KickOS. A semaphore wait, a mutex
+> The concept behind every blocking syscall in KickOS. A semaphore wait, a contended mutex
 > lock, an endpoint receive -- all three park a thread and later wake it, and all
 > three do it through the *same* primitive. This chapter teaches that primitive and
 > the one subtle hazard it hides on a deferred-switch architecture. Points into
@@ -155,7 +155,7 @@ it, knows how to do:
 | object | what step 2 transfers |
 |--------|------------------------|
 | semaphore | nothing -- the token is handed implicitly; pop then wake |
-| mutex | ownership of the lock, plus the priority-inheritance bookkeeping (Chapter 2.3) |
+| mutex | ownership of the lock, written into the lock word as the new holder's id, plus the priority-inheritance bookkeeping ([Chapter 2.3](priority-inheritance-lending-urgency.md)) |
 | endpoint | the message bytes copied peer-to-peer, plus the byte count or an error status (Chapter 8.3) |
 
 Pop and wake are **deliberately separate calls.** Fusing them into a single

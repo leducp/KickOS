@@ -24,7 +24,7 @@ handle table names the parked caller by generational thread handle; the caller's
 parked TCB is the reply object.
 
 - **`CapType::CAP_REPLY`** (`kernel/include/kickos/cap.h`) -- one arm beside `CAP_SEM` /
-  `CAP_MUTEX` / `CAP_ENDPOINT` / `CAP_IRQ`.
+  `CAP_ENDPOINT` / `CAP_IRQ`.
 - **`CapEntry.obj` packing** (fits the frozen 8-byte `CapEntry`): `obj` holds
   `ThreadPool::handle_for(caller)` WHOLE and UNSHIFTED, all 32 bits of it
   (`gen:16 | index:16`, since `ThreadPool::INDEX_BITS` is 16) -- read it back with

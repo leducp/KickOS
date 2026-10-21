@@ -472,8 +472,8 @@ For `hello`'s `main`, slot 0 has never been filled.
 **Try it:** `break kickos::cap_resolve_e if cap_handle == 0`, `continue`:
 
 ```
-Breakpoint 1, kickos::cap_resolve_e (c=c@entry=0x20004ed8 <...>, cap_handle=cap_handle@entry=0,
-    want=want@entry=kickos::CapType::CAP_ENDPOINT, need=need@entry=2 '\002', err=...) at .../kernel/syscall/cap.cc:1010
+Breakpoint 1, kickos::cap_resolve_e (c=c@entry=0x20005030 <...>, cap_handle=cap_handle@entry=0,
+    want=want@entry=kickos::CapType::CAP_ENDPOINT, need=need@entry=2 '\002', err=...) at .../kernel/syscall/cap.cc:959
 (gdb) p c->name
 $1 = "main", '\000' <repeats 11 times>
 (gdb) p c->caps.chunk[0][0]
@@ -492,9 +492,9 @@ $5 = "ping", '\000' <repeats 11 times>
 (gdb) p c->caps.chunk[0][cap_handle]
 $6 = {obj = 1, type = 1 '\001', seq_lo = 0 '\000', rights = 7 '\a', seq_hi = 0 '\000', gen = 0}
 (gdb) finish
-Value returned is $7 = (void *) 0x200048f4 <kickos::detail::g_instance+324>
+Value returned is $7 = (void *) 0x20004904 <kickos::detail::g_instance+324>
 (gdb) p *(kickos::Semaphore*)$
-$8 = {count = 0, waiters = {head = 0x20005190 <kickos::detail::g_instance+2528>, tail = 0x20005190 <...>}}
+$8 = {count = 0, waiters = {head = 0x200052f8 <kickos::detail::g_instance+2872>, tail = 0x200052f8 <...>}}
 ```
 
 Slot 2 holds a semaphore (`type = 1`, `CAP_SEM`) with all three rights (wait, signal, transfer).
@@ -620,8 +620,8 @@ No exception return happens on the way out. The exception ended at Stop 4; this 
 function return in thread mode.
 
 **Try it:** the last `bx lr` has no symbol of its own. `disassemble svc_trampoline` and find the
-`bx lr` just before the `cpsid i`; in this build it is at 0x2500. While stopped inside the console
-write (Stop 10), `delete`, `break *0x2500`, `continue`, then:
+`bx lr` just before the `cpsid i`; in this build it is at 0x2594. While stopped inside the console
+write (Stop 10), `delete`, `break *0x2594`, `continue`, then:
 
 ```
 (gdb) info registers r0 r1 lr sp
@@ -673,7 +673,8 @@ through semihosting, and on the F411 `arch/arm/chip/stm32f411/chip_stm32f411.cc`
 ## Where to next
 
 - [3. Sleep](03-sleep.md): a syscall that blocks, the timer, and the wake.
-- [4. Mutex](04-mutex.md): a contended object, where the handle resolve and the park meet.
+- [4. Mutex](04-mutex.md): a word in user memory that the kernel reads only when it is contended,
+  and the park that follows.
 - [5. Call and reply](05-call-and-reply.md): the `KOS_SYS_CALL_REG` fast path that `SVC_Handler`
   tests for.
 - [8. Spawn and capabilities](08-spawn-and-caps.md): how slot 2 of `ping`'s table got its semaphore.

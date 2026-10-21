@@ -24,7 +24,7 @@ namespace kickos
             };
 
             Semaphore g_sem;
-            Mutex g_mutex;
+            uint32_t g_word = 0;
 
             // The dispatch's own shape: resolve and use under one bracket, handed down.
             void wait_on_the_semaphore()
@@ -36,7 +36,7 @@ namespace kickos
 
             void lock_the_mutex()
             {
-                (void)mutex_lock(&g_mutex, KOS_TIMEOUT_NONE);
+                (void)mutex_lock(reinterpret_cast<uintptr_t>(&g_word), KOS_TIMEOUT_NONE);
             }
         }
 
@@ -52,7 +52,7 @@ namespace kickos
         TEST_F(CancelledSyncPark, a_mutex_lock_sweeps_as_an_exit_does)
         {
             Sweep const reference = reference_sweep();
-            mutex_init(&g_mutex);
+            g_word = 0;
             Thread* const victim = cancelled_thread();
             Sweep const parked = sweep_of(lock_the_mutex);
             expect_same_sweep(reference, parked, victim);

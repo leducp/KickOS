@@ -260,16 +260,16 @@ lacks the 4 KiB granule or cannot output as many physical address bits as `TCR` 
 `continue`, `info registers sp VBAR_EL1`. You should see:
 
 ```
-pc             0xffffff8040019a18  0xffffff8040019a18 <kickos_arm64_boot_high>
+pc             0xffffff804001a220  0xffffff804001a220 <kickos_arm64_boot_high>
 sp             0x44000000          0x44000000
 SCTLR_EL1      0xc5183d            12916797
 TTBR0_EL1      0x40001000          1073745920
 TTBR1_EL1      0x40002000          1073750016
 TCR_EL1        0x12b5193519        80347739417
-VBAR_EL1       0x40017000          1073836032
+VBAR_EL1       0x40017800          1073838080
 ...
 sp             0xffffff8044000000  0xffffff8044000000
-VBAR_EL1       0xffffff8040017000  -548681977856
+VBAR_EL1       0xffffff8040017800  -548681975808
 ```
 
 At the first stop the PC is already high but SP and `VBAR_EL1` are still physical. At
@@ -535,8 +535,8 @@ empty root. The outgoing thread's own user code cannot run again before the swit
 `finish`, `info registers TTBR0_EL1`, `p/x kickos_armv8a_percpu[0].user_ttbr0`. You should see:
 
 ```
-#4  kickos::aspace_activate_for (t=t@entry=0xffffff8040313c58 <kickos::detail::g_instance+8032>) at .../kernel/mem/aspace.cc:1447
-#5  0xffffff80400160e0 in kickos::sched::start () at .../kernel/sched/sched.cc:727
+#4  kickos::aspace_activate_for (t=t@entry=0xffffff8040313bb8 <kickos::detail::g_instance+8368>) at .../kernel/mem/aspace.cc:1379
+#5  0xffffff8040016404 in kickos::sched::start () at .../kernel/sched/sched.cc:775
 TTBR0_EL1      0x40001000          1073745920
 ...
 TTBR0_EL1      0x40001000          1073745920
@@ -576,8 +576,8 @@ later trap from this thread lands on that block (Stop 9).
 `info registers pc cpsr sp SP_EL0 SP_EL1 TTBR0_EL1`, `p/x ($cpsr >> 2) & 3`. You should see:
 
 ```
-pc             0x40109664          0x40109664 <kickos_root_entry(void*)>
-cpsr           0x200               [ EL=0 D BTYPE=0 ]
+pc             0x40109744          0x40109744 <kickos_root_entry(void*)>
+cpsr           0x60000200          [ EL=0 D BTYPE=0 C Z ]
 sp             0x40342000          0x40342000
 SP_EL0         0x40342000          1077157888
 SP_EL1         0xffffff8040301080  -548678922112
@@ -640,34 +640,37 @@ so it can block like any kernel code. The result goes back into the saved `x0` a
 `RESTORE_FRAME_AND_ERET` returns to EL0. A class other than 0x15 goes to `.Lel0_fault` and
 `kickos_fault_kill_thread` ([chapter 9](09-fault-and-kill.md)).
 
-**Try it:** `break kickos_root_entry`, `continue`, `delete`, `break arch_syscall`, `continue`,
-`info registers x0`, `x/2i $pc`. Then `break kickos_armv8a_el0_sync_entry`, `continue`,
+**Try it:** `break kickos_app_main` (the hello app's `main`, [01, Stop 17](01-power-on.md#stop-17-the-first-instruction-of-main)), `continue`,
+`delete`, `break arch_syscall`, `continue`, `info registers x0`, `x/2i $pc`. Then
+`break kickos_armv8a_el0_sync_entry`, `continue`,
 `info registers pc sp cpsr ELR_EL1 SPSR_EL1 ESR_EL1`, `p/x $ESR_EL1 >> 26`. Then
 `break syscall_dispatch`, `continue`, `bt 3`, `info registers sp`. You should see:
 
 ```
-x0             0x47                71
+x0             0x1b                27
 => 0x40105040 <arch_syscall64>:	svc	#0x0
    0x40105044 <arch_syscall64+4>:	ret
 ...
-pc             0xffffff804001793c  0xffffff804001793c <kickos_armv8a_el0_sync_entry>
-sp             0xffffff8040301080  0xffffff8040301080 <kickos::(anonymous namespace)::g_kstacks+4096>
+pc             0xffffff804001813c  0xffffff804001813c <kickos_armv8a_el0_sync_entry>
+sp             0xffffff8040302080  0xffffff8040302080 <kickos::(anonymous namespace)::g_kstacks+8192>
 cpsr           0x3c5               [ SP EL=1 F I A D BTYPE=0 ]
 ELR_EL1        0x40105044          1074810948
-SPSR_EL1       0x60000200          1610613248
+SPSR_EL1       0x80000200          2147484160
 ESR_EL1        0x56000000          1442840576
 $1 = 0x15
 ...
-#0  syscall_dispatch (nr=71, a0=0, a1=0, a2=0, a3=0) at .../kernel/syscall/syscall.cc:371
-#1  0xffffff8040017a14 in kickos_armv8a_el0_sync_entry () at .../arch/arm64/armv8a/switch.S:252
-#2  0x00000000401071e0 in kos_thread_self () at .../user/src/syscall_stubs.cc:256
-sp             0xffffff8040300d60  0xffffff8040300d60 <kickos::(anonymous namespace)::g_kstacks+3296>
+#0  syscall_dispatch (nr=27, a0=0, a1=1074859327, a2=29, a3=0) at .../kernel/syscall/syscall.cc:392
+#1  0xffffff8040018214 in kickos_armv8a_el0_sync_entry () at .../arch/arm64/armv8a/switch.S:252
+#2  0x0000000040107118 in kos_send (ep=<optimized out>, buf=<optimized out>, len=<optimized out>) at .../user/src/syscall_stubs.cc:95
+sp             0xffffff8040301d60  0xffffff8040301d60 <kickos::(anonymous namespace)::g_kstacks+7392>
 ```
 
-Call 71 is `KOS_SYS_THREAD_SELF`. `ELR_EL1` is the instruction after the `svc`, and `SPSR_EL1`'s
-low four bits are 0 (EL0t). SP at entry is the top of the kernel block, and the dispatcher runs
-800 bytes lower: that is the frame `ENTER_FROM_EL0` pushed (31 general registers, the saved
-state, and all 32 vector registers). gdb even unwinds through the trap into the user caller.
+Call 27 is `KOS_SYS_SEND`: `main`'s first `kos::print` sends its 29 bytes to the endpoint at index
+0 of its table, its stdout. `ELR_EL1` is the instruction after the `svc`, and `SPSR_EL1`'s
+low four bits are 0 (EL0t). SP at entry is the top of the `main` thread's kernel block, and the
+dispatcher runs 800 bytes lower: that is the frame `ENTER_FROM_EL0` pushed (31 general
+registers, the saved state, and all 32 vector registers). gdb even unwinds through the trap into
+the user caller.
 
 **Why, and the contract:** [Book: The syscall path](../book/the-syscall-path-trap-dispatch-return.md),
 [Reference: User/kernel separation](../reference/architecture.md#userkernel-separation),
@@ -723,16 +726,16 @@ physical memory.
 `break arch_aspace_acquire`, `continue`, `bt 5`, `p/x va`, `finish`. You should see:
 
 ```
-#1  ... in kickos::(anonymous namespace)::access_copy (dspace=0xffffff8040325000, dst=dst@entry=1077157704, sspace=sspace@entry=0x0, ...)
-#2  ... in kickos::kaccess_to_user (dspace=<optimized out>, udst=udst@entry=1077157704, ...)
-#3  ... in kickos::cap_out_deliver (out=1077157704, ...)
-#4  ... in (anonymous namespace)::syscall_body (nr=11, a0=1077157704, ...)
-$1 = 0x40341f48
-Value returned is $2 = (void *) 0xffffff8040341f48
+#1  ... in kickos::(anonymous namespace)::access_copy (dspace=0xffffff8040325000, dst=dst@entry=1077157720, sspace=sspace@entry=0x0, ...)
+#2  ... in kickos::kaccess_to_user (dspace=<optimized out>, udst=udst@entry=1077157720, ...)
+#3  ... in kickos::cap_out_deliver (out=1077157720, ...)
+#4  ... in (anonymous namespace)::syscall_body (nr=11, a0=1077157720, ...)
+$1 = 0x40341f58
+Value returned is $2 = (void *) 0xffffff8040341f58
 ```
 
 Call 11 (`KOS_SYS_NOTIFY_CREATE`) returns a new handle through an out-pointer on root's stack,
-`0x40341f48`. The kernel writes it at `0xffffff8040341f48`: the same physical byte, through
+`0x40341f58`. The kernel writes it at `0xffffff8040341f58`: the same physical byte, through
 TTBR1.
 
 **Why, and the contract:** [Reference: The map editor's acquire pair](../reference/porting.md#the-map-editors-acquire-pair-arch_aspace_acquire-arch_aspace_release),
@@ -792,10 +795,10 @@ L3[318] = 0x006000004033ef43
 and on the Cortex-M4F:
 
 ```
-kickos::thread_self_grant (c=c@entry=0x20004d88 <kickos::detail::g_instance+1496>, base=base@entry=537018368, size=size@entry=64, attr=attr@entry=3)
+kickos::thread_self_grant (c=c@entry=0x20004ed8 <kickos::detail::g_instance+1816>, base=base@entry=537018368, size=size@entry=64, attr=attr@entry=3)
 #1  ... in (anonymous namespace)::syscall_body (nr=<optimized out>, a0=537018368, a1=64, ...)
 #2  syscall_dispatch (nr=<optimized out>, a0=537018368, a1=64, ...)
-#3  0x00018572 in svc_trampoline () at .../arch/arm/armv7m/switch.S:537
+#3  0x00018bfe in svc_trampoline () at .../arch/arm/armv7m/switch.S:540
 ```
 
 Same call number (37), same 64-byte grant. On one build it becomes a page-table leaf for a task,
@@ -850,26 +853,32 @@ Let it run: the selftest ends by itself. You should see lines like:
 ```
 activate space=0xffffff8040325000  TTBR0=0x40001000  cell before=0xffff00004001b000
 activate space=0xffffff8040353000  TTBR0=0xffff00004001b000  cell before=0x1000040325000
-activate space=0xffffff80403c0000  TTBR0=0xffff00004001b000  cell before=0x2000040353000
-activate space=0xffffff8040353000  TTBR0=0xffff00004001b000  cell before=0x30000403c0000
-activate space=0xffffff80403c0000  TTBR0=0xffff00004001b000  cell before=0x2000040353000
-activate space=0xffffff804001b000  TTBR0=0xffff00004001b000  cell before=0x30000403c0000
-destroy space=0xffffff80403c0000
+destroy space=0xffffff80403c7000
+activate space=0xffffff80403c7000  TTBR0=0xffff00004001b000  cell before=0x2000040353000
+activate space=0xffffff8040353000  TTBR0=0xffff00004001b000  cell before=0x30000403c7000
+activate space=0xffffff80403c7000  TTBR0=0xffff00004001b000  cell before=0x2000040353000
+activate space=0xffffff8040353000  TTBR0=0xffff00004001b000  cell before=0x30000403c7000
+destroy space=0xffffff80403c7000
+activate space=0xffffff80403c7000  TTBR0=0xffff00004001b000  cell before=0x2000040353000
+activate space=0xffffff8040353000  TTBR0=0xffff00004001b000  cell before=0x30000403c7000
+activate space=0xffffff80403c7000  TTBR0=0xffff00004001b000  cell before=0x2000040353000
+activate space=0xffffff804001b000  TTBR0=0xffff00004001b000  cell before=0x30000403c7000
+destroy space=0xffffff80403c7000
 activate space=0xffffff8040353000  TTBR0=0xffff00004001b000  cell before=0xffff00004001b000
 ...
-activate space=0xffffff80403c4000  TTBR0=0xffff00004001b000  cell before=0x2000040353000
-activate space=0xffffff804001b000  TTBR0=0xffff00004001b000  cell before=0x30000403c4000
+activate space=0xffffff80403cb000  TTBR0=0xffff00004001b000  cell before=0x2000040353000
+activate space=0xffffff804001b000  TTBR0=0xffff00004001b000  cell before=0x30000403cb000
 ```
 
 The register reads the empty root, `0x4001b000` under ASID `0xffff`, from the first trap on:
 EL1 never runs on a task's root. Read the top 16 bits of each "cell before" value: ASID 1 is
 root, ASID 2 the selftest's main task, ASID 3 a child task. When the child exits,
 `aspace_release` moves this core to the empty root (`0xffffff804001b000`) before it frees the
-child's tables. The next child, a different root at `0x403c4000`, gets ASID 3 again, because it
+child's tables. The next child, a different root at `0x403cb000`, gets ASID 3 again, because it
 was given back.
 
 Add a third logging breakpoint on `kickos::aspace_activate_for` and count. In one whole run it was
-reached 2180 times and `arch_aspace_activate` 247 times: `seat` skips every switch
+reached 3695 times and `arch_aspace_activate` 284 times: `seat` skips every switch
 that stays inside one task.
 
 **Why, and the contract:** [Book: Protection follows the CPU](../book/protection-follows-the-cpu-not-the-schedulers-intent.md),
@@ -923,20 +932,20 @@ the TLB.
 You should see:
 
 ```
-arch_aspace_unmap (space=0xffffff8040353000, va=1077616640, pages=3)
-#1  ... in kickos::ustack_free (..., base=1077616640, ...)
+arch_aspace_unmap (space=0xffffff8040353000, va=1077645312, pages=3)
+#1  ... in kickos::ustack_free (..., base=1077645312, ...)
 #2  ... in kickos::sched::exit_current (code=0, ...)
-$1 = 0x403b2000
+$1 = 0x403b9000
 L1[1] = 0x0000000040354003
 L2[1] = 0x0000000040356003
-L3[434] = 0x00600000403b2f43
+L3[441] = 0x00600000403b9f43
 Value returned is $3 = ARCH_ASPACE_OK
 L1[1] = 0x0000000040354003
 L2[1] = 0x0000000040356003
-L3[434] = 0x0000000000000000
+L3[441] = 0x0000000000000000
 ...
-(anonymous namespace)::invalidate_page (va=1077633024)
-#2  ... in (anonymous namespace)::remove_run (root=root@entry=0xffffff8040353000, va=va@entry=1077633024, pages=pages@entry=3, e=...)
+(anonymous namespace)::invalidate_page (va=1077661696)
+#2  ... in (anonymous namespace)::remove_run (root=root@entry=0xffffff8040353000, va=va@entry=1077661696, pages=pages@entry=3, e=...)
 => ...:	dsb	ishst
    ...:	lsr	x0, x0, #12
    ...:	tlbi	vaae1, x0
@@ -945,7 +954,7 @@ L3[434] = 0x0000000000000000
 ```
 
 A thread of the selftest's main task (`TTBR0` with ASID 2) exits, and `ustack_free` unmaps its
-three stack pages. The leaf that pointed at `0x403b2000` is zero after the unmap. `uwalk` reads
+three stack pages. The leaf that pointed at `0x403b9000` is zero after the unmap. `uwalk` reads
 the `user_ttbr0` cell, so it shows the space of the core's current task, which is the exiting
 thread's own here.
 

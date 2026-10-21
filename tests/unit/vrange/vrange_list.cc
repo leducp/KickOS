@@ -390,3 +390,29 @@ TEST(VRange, a_frame_cap_range_is_not_caller_nameable)
     // A handoff carries VR_BORROWED too and stays the borrower's to name.
     EXPECT_TRUE(kickos::vr_caller_nameable(v.at_base(BASE + 4 * G)));
 }
+
+TEST(VRange, a_range_grants_only_once_granted_and_only_its_rights)
+{
+    kickos::VirtualRanges v = made();
+    EXPECT_FALSE(kickos::vr_grants(nullptr, ARCH_MAP_R));
+    ASSERT_TRUE(v.reserve(BASE, 1));
+    EXPECT_FALSE(kickos::vr_grants(v.find(BASE, 4), ARCH_MAP_R));
+    ASSERT_TRUE(v.grant(BASE, 1, ARCH_MAP_R, ARCH_MAP_NORMAL));
+    EXPECT_TRUE(kickos::vr_grants(v.find(BASE, 4), ARCH_MAP_R));
+    EXPECT_FALSE(kickos::vr_grants(v.find(BASE, 4), ARCH_MAP_R | ARCH_MAP_W));
+}
+
+TEST(VRange, covers_finds_the_one_granted_entry_at_the_end_of_a_full_list)
+{
+    kickos::VirtualRanges v = made();
+    for (size_t i = 0; i + 1u < kickos::VirtualRanges::capacity(); i++)
+    {
+        ASSERT_TRUE(v.reserve(BASE + i * G, 1));
+    }
+    uintptr_t const last = BASE + (kickos::VirtualRanges::capacity() - 1u) * G;
+    ASSERT_TRUE(v.reserve(last, 1));
+    ASSERT_TRUE(v.grant(last, 1, ARCH_MAP_R | ARCH_MAP_W, ARCH_MAP_NORMAL));
+    EXPECT_TRUE(v.covers(last, 4, ARCH_MAP_W));
+    EXPECT_FALSE(v.covers(BASE, 4, ARCH_MAP_R)) << "a reserved entry admitted a pointer";
+    EXPECT_FALSE(v.covers(last + G, 4, ARCH_MAP_R)) << "past every entry";
+}

@@ -54,8 +54,12 @@ above the seam. You are answering a fixed questionnaire:
 4. How does a **system call** cross from user to kernel and back?
 5. What is a **critical section** (how do I mask interrupts)?
 6. Where does the **clock/timer** come from?
+7. How does user code do a **compare-and-swap**, and how does the kernel make one that
+   was cut short by a return to user mode fail? A core with no such instruction uses a
+   restartable sequence ([Chapter 2.4](an-atomic-buys-definedness-not-atomicity.md)).
 
-RISC-V answers all six with a handful of instructions. The interesting part is
+RISC-V answers all seven with a handful of instructions. For the last one, the
+kernel makes one dummy store-conditional on every return to user mode. The interesting part is
 the *design choices* -- because the ISA usually permits several, and only some
 compose well with a preemptive kernel.
 

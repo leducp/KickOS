@@ -44,6 +44,26 @@ namespace kickos
 
     namespace
     {
+#if KICKOS_HAVE_ASPACE
+        // aspace_cap_unmap, ending the mutex waits of `space` that named a word through it.
+        int frame_unmap_ending_waits(struct arch_aspace* space, VirtualRanges* ranges,
+                                     uintptr_t va, int run_obj, Held held)
+        {
+            VirtualRange const* const e = ranges->at_base(va);
+            size_t bytes = 0;
+            if (e != nullptr)
+            {
+                bytes = static_cast<size_t>(e->pages) * arch_aspace_granule();
+            }
+            int const rc = aspace_cap_unmap(space, ranges, va, run_obj);
+            if (rc == 0)
+            {
+                mutex_reach_lost(space, va, bytes, held);
+            }
+            return rc;
+        }
+#endif
+
         // The ring refuses an insert it cannot take WHOLE and a CRLF console spends two bytes
         // on a newline, so a chunk of N can need 2N and the smallest configured ring holds
         // 2 * (KICKOS_DIAG_LINE_MAX - 1). Anything wider than that is refused on a board at the
@@ -363,7 +383,8 @@ namespace
 // The death point of a cancelled thread. A cancel breaks the target's park, so it returns to
 // userspace with -KOS_ECANCELED and gets ONE window to clean up over memory it already holds;
 // its next syscall ends here. Checked on ENTRY and never on exit, which would pre-empt that
-// window.
+// window. A mutex unlock is no death point: a holder killed or slain while running releases, and
+// dies at its next entry or its claim, never holding a lock it was giving back.
 extern "C" uint64_t syscall_dispatch(uintptr_t nr,
                                      uintptr_t a0, uintptr_t a1,
                                      uintptr_t a2, uintptr_t a3)
@@ -371,7 +392,7 @@ extern "C" uint64_t syscall_dispatch(uintptr_t nr,
     Thread* const caller = sched::current();
     // Every thread starts behind sched::start, which seats current.
     KICKOS_ASSERT(caller != nullptr);
-    if (caller->cancel_kind != CANCEL_NONE and not caller->dying)
+    if (caller->cancel_kind != CANCEL_NONE and not caller->dying and nr != KOS_SYS_MUTEX_UNLOCK)
     {
         sched::exit_current(KOS_EXIT_CANCELLED, sched::EXIT_RETURN);
     }
@@ -503,46 +524,14 @@ uint64_t syscall_body(uintptr_t nr,
             }
             return 0;
         }
-        case KOS_SYS_MUTEX_CREATE:
-        {
-            int rc = cap_out_check(a0);
-            if (rc != 0)
-            {
-                return static_cast<uint64_t>(rc);
-            }
-            uint32_t h = KCAP_INVALID;
-            rc = mutex_create(&h);
-            return cap_out_deliver(a0, rc, h);
-        }
         case KOS_SYS_MUTEX_LOCK:
         {
-            // mutex_lock takes its OWN lock and releases it before the resume barrier and the
-            // wait_result read; a lock spanning the call would reintroduce the stale read on
-            // ARM. The caller's own cap, or for a libc lock its membership of the space, pins
-            // the mutex across the resolve-to-call window. Possession is the authority.
-            Mutex* m;
-            int err = 0;
-            {
-                IrqLock lock;
-                m = cap_resolve_mutex(sched::current(), static_cast<uint32_t>(a0), &err);
-            }
-            if (m == nullptr)
-            {
-                return static_cast<uint64_t>(-err);
-            }
             // -KOS_EOWNERDEAD is negative but still an ACQUIRE.
-            return static_cast<uint64_t>(mutex_lock(m, static_cast<uint32_t>(a1)));
+            return static_cast<uint64_t>(mutex_lock(a0, static_cast<uint32_t>(a1)));
         }
         case KOS_SYS_MUTEX_UNLOCK:
         {
-            IrqLock lock;
-            int err = 0;
-            Mutex* m = cap_resolve_mutex(sched::current(), static_cast<uint32_t>(a0), &err);
-            if (m == nullptr)
-            {
-                return static_cast<uint64_t>(-err);
-            }
-            return static_cast<uint64_t>(mutex_unlock(m)); // 0, or -KOS_EPERM if not owner (no panic)
+            return static_cast<uint64_t>(mutex_unlock(a0));
         }
         case KOS_SYS_ENDPOINT_CREATE:
         {
@@ -780,10 +769,6 @@ uint64_t syscall_body(uintptr_t nr,
             return static_cast<uint64_t>(
                 thread_join(static_cast<kos_thread_t>(a0), static_cast<uint32_t>(a1)));
         }
-        case KOS_SYS_THREAD_SELF:
-        {
-            return thread_self();
-        }
         case KOS_SYS_THREAD_SET_AFFINITY:
         {
             return static_cast<uint64_t>(
@@ -1019,7 +1004,8 @@ uint64_t syscall_body(uintptr_t nr,
                 }
                 if (nr == KOS_SYS_FRAME_UNMAP)
                 {
-                    return static_cast<uint64_t>(aspace_cap_unmap(sp, vr, a2, run_obj));
+                    return static_cast<uint64_t>(frame_unmap_ending_waits(sp, vr, a2, run_obj,
+                                                                          lock));
                 }
                 uint32_t attr = 0u;
                 if (not mem_flags_to_attr(static_cast<uint32_t>(a3), &attr))
@@ -1044,8 +1030,8 @@ uint64_t syscall_body(uintptr_t nr,
                 if (target != nullptr and fe != nullptr and domain_space(target) != nullptr
                     and domain_ranges_mut(target) != nullptr)
                 {
-                    (void)aspace_cap_unmap(domain_space(target), domain_ranges_mut(target), va,
-                                           fe->obj);
+                    (void)frame_unmap_ending_waits(domain_space(target),
+                                                   domain_ranges_mut(target), va, fe->obj, lock);
                 }
                 return static_cast<uint64_t>(-KOS_EFAULT);
             }
@@ -1096,12 +1082,30 @@ uint64_t syscall_body(uintptr_t nr,
             // reserved; the arena and natural-alignment arms below do not apply to frame-pool
             // frames. Its own already-mapped answer comes after that test: one here would
             // admit a frame capability's mapping.
-            int const grc = aspace_self_grant(domain_space(thread_domain(c)),
-                                              domain_ranges_mut(thread_domain(c)), base, size,
-                                              ARCH_MAP_R | ARCH_MAP_W, map_memtype_of(attr));
+            struct arch_aspace* const space = domain_space(thread_domain(c));
+            VirtualRanges* const ranges = domain_ranges_mut(thread_domain(c));
+            enum arch_map_memtype const type = map_memtype_of(attr);
+            // A retype in place releases nothing, but may take the write a waiter parked by.
+            VirtualRange const* before = nullptr;
+            if (ranges != nullptr)
+            {
+                before = ranges->find(base, size);
+            }
+            uintptr_t lost_base = 0;
+            size_t lost_bytes = 0;
+            if (before != nullptr
+                and aspace_remap_takes_write(*before, ARCH_MAP_R | ARCH_MAP_W,
+                                             static_cast<uint8_t>(type)))
+            {
+                lost_base = before->base;
+                lost_bytes = static_cast<size_t>(before->pages) * arch_aspace_granule();
+            }
+            int const grc = aspace_self_grant(space, ranges, base, size, ARCH_MAP_R | ARCH_MAP_W,
+                                              type);
             if (grc == 0)
             {
                 presync_commit();
+                mutex_reach_lost(space, lost_base, lost_bytes, lock);
             }
             // The range list already carries this mapping, at the EXACT extent, so there is no
             // region record beside it. That is what moves the -KOS_ENOMEM budget onto
@@ -1280,6 +1284,12 @@ uint64_t syscall_body(uintptr_t nr,
         case KOS_SYS_WITNESS_UACCESS:
         {
             return static_cast<uint64_t>(witness_uaccess(a0, a1, a2));
+        }
+#endif
+#if KICKOS_WITNESS_REWIND
+        case KOS_SYS_WITNESS_REWINDS:
+        {
+            return static_cast<uint64_t>(witness_rewinds());
         }
 #endif
 #if KICKOS_BENCH

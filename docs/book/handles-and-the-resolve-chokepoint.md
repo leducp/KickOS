@@ -42,8 +42,8 @@ reference to a kernel object.
   threads in one task share every byte of their granted memory and still hold entirely
   separate capability tables. Memory is the thing a group is formed to share; the right to
   name a kernel object is not, and it is handed to a thread at spawn.
-- **Typed.** An entry records what kind of object it names (semaphore, PI mutex, IPC
-  endpoint, interrupt binding, reply). A handle to a semaphore cannot be used where an
+- **Typed.** An entry records what kind of object it names (semaphore, IPC endpoint,
+  interrupt binding, notification, reply). A handle to a semaphore cannot be used where an
   endpoint is expected.
 - **Rights-bearing.** An entry carries a small set of rights bits (WAIT, SIGNAL,
   TRANSFER). Holding a handle is not blanket authority over the object; it is exactly the

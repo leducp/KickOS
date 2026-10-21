@@ -16,7 +16,7 @@ set(_sys_aspace "${_k}/syscall/syscall.cc" "${_k}/syscall/syscall_thread.cc"
                 "${_k}/syscall/syscall_mem.cc" "${_k}/syscall/syscall_obj.cc"
                 "${_k}/mem/aspace.cc" "${_k}/mem/vrange.cc" "${_k}/mem/ustack.cc"
                 "${_k}/domain/domain.cc" "${_k}/thread/thread.cc" "${_k}/thread/tls.cc"
-                "${_k}/grant/grant.cc")
+                "${_k}/grant/grant.cc" "${_k}/syscall/word.cc")
 set(_sys_region "${_k}/syscall/syscall.cc" "${_k}/syscall/syscall_thread.cc"
                 "${_k}/init/terminal.cc"
                 "${_k}/syscall/syscall_mem.cc" "${_k}/syscall/syscall_obj.cc"
@@ -38,9 +38,16 @@ kickos_add_unit_test(NAME sys_presync SOURCES presync_loop.cc
 kickos_add_unit_test(NAME sys_frame_space SOURCES frame_space.cc
   DEFINITIONS SYS_IMAGE_BYTES=${_image_bytes}
   LIBRARIES kickos_kseam_sysdispatch)
-foreach(_gate IN ITEMS sys_presync sys_frame_space)
+kickos_add_unit_test(NAME sys_word_ref SOURCES word_ref.cc
+  DEFINITIONS SYS_IMAGE_BYTES=${_image_bytes}
+  LIBRARIES kickos_kseam_sysdispatch)
+foreach(_gate IN ITEMS sys_presync sys_frame_space sys_word_ref)
   target_link_options(${_gate} PRIVATE -Wl,--gc-sections)
-  kickos_host_image(${_gate} TEXT g_sys_image 0 DATA g_sys_image ${_image_bytes})
+  set(_text g_sys_image 0)
+  if(_gate STREQUAL "sys_word_ref")
+    set(_text g_word_text 4096)
+  endif()
+  kickos_host_image(${_gate} TEXT ${_text} DATA g_sys_image ${_image_bytes})
   # The static regions a region backend names, which domain.cc's arch default still links: empty.
   target_link_options(${_gate} PRIVATE
     -Wl,--defsym=__kickos_code_start=g_sys_image -Wl,--defsym=__kickos_code_end=g_sys_image

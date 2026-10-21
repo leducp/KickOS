@@ -26,7 +26,9 @@
 # cmake/kernel_runtime*.syms. A hit on a mapped name means the rewrite did not reach this
 # archive; the fix is a kickos_privatise_runtime() call for the target that built it, or the
 # missing name in the map, never a de-typed construction. The names refused are every map's
-# left column, plus RUNTIME below.
+# left column, plus RUNTIME below, plus every name opening with a HELPERS prefix: an atomic
+# builtin compiles to a call of a libgcc or libatomic helper, which has no kernel twin, so the
+# kernel spells each atomic it needs inline (kickos/arch/atomic_*.h).
 #
 # SCOPE: the archives that hold kernel text (kernel, arch, chip). kickos_lib is app-side and
 # NOT scanned, and a region backend serves both privilege levels from one text mapping and has
@@ -76,6 +78,7 @@ WIDE_LIT="Symbol's Name"
 # a human reading. The RX ABI prefixes every C identifier with an underscore, so both spellings.
 RUNTIME='memcpy memset memmove memcmp strlen strnlen bcmp bzero __memcpy_chk __memset_chk
 kvsnprintf ksnprintf __clzdi2 __ctzdi2'
+HELPERS='__aarch64_cas __aarch64_swp __aarch64_ld __atomic_ __sync_'
 
 SYMS_DIR="$(dirname "$0")/../../cmake"
 : > "$TMP/banned"
@@ -121,14 +124,17 @@ scan_rel() { # <relocation-output> <archive-label> <hits-append>
 # the record is exactly three fields: prefix, `U` (or `w`, which binds the same way), name. The
 # member is the LAST colon-separated field, so a build path holding a colon does not shift it.
 scan_refs() { # <symfile> <archive label> <hits-append>
-    awk -v ban="$BANNED" -v arch="$2" '
+    awk -v ban="$BANNED" -v pre="$HELPERS" -v arch="$2" '
     BEGIN {
         n = split(ban, b, " ")
         for (i = 1; i <= n; i++) { bad[b[i]] = 1 }
+        np = split(pre, h, " ")
     }
     NF == 3 && ($2 == "U" || $2 == "w") {
         total++
-        if (!($3 in bad)) { next }
+        hit = ($3 in bad)
+        for (i = 1; i <= np && !hit; i++) { hit = (index($3, h[i]) == 1) }
+        if (!hit) { next }
         loc = $1
         sub(/:$/, "", loc)
         k = split(loc, p, ":")
@@ -152,6 +158,12 @@ cat > "$TMP/ctl.sym" <<'EOF'
 weird:path/libkickos_kernel.a:task.cc.obj:                 U memset
 libkickos_kernel.a:kstring.cc.obj:0000000000000000 T memset
 libkickos_kernel.a:tls.cc.obj:                 U kmemset
+libkickos_kernel.a:sync.cc.obj:                 U __aarch64_cas4_acq_rel
+libkickos_kernel.a:sync.cc.obj:                 U __aarch64_swp4_acq_rel
+libkickos_kernel.a:sync.cc.obj:                 U __aarch64_ldadd4_acq_rel
+libkickos_kernel.a:sync.cc.obj:                 U __atomic_compare_exchange_4
+libkickos_kernel.a:sync.cc.obj:                 U __sync_val_compare_and_swap_4
+libkickos_kernel.a:sync.cc.obj:                 U kickos__atomic_fence
 EOF
 : > "$TMP/ctl.hits"
 scan_rel "$TMP/ctl.rel" libkickos_kernel.a "$TMP/ctl.hits"
@@ -159,12 +171,17 @@ scan_refs "$TMP/ctl.sym" libkickos_kernel.a "$TMP/ctl.hits"
 _want='GOT libkickos_kernel.a(aspace.cc.obj) R_AARCH64_LD64_GOT_LO12_NC kickos_chip_window
 RELS 2
 RUNTIME libkickos_kernel.a(task.cc.obj) memset
-REFS 2'
+RUNTIME libkickos_kernel.a(sync.cc.obj) __aarch64_cas4_acq_rel
+RUNTIME libkickos_kernel.a(sync.cc.obj) __aarch64_swp4_acq_rel
+RUNTIME libkickos_kernel.a(sync.cc.obj) __aarch64_ldadd4_acq_rel
+RUNTIME libkickos_kernel.a(sync.cc.obj) __atomic_compare_exchange_4
+RUNTIME libkickos_kernel.a(sync.cc.obj) __sync_val_compare_and_swap_4
+REFS 8'
 [ "$(cat "$TMP/ctl.hits")" = "$_want" ] || {
     sed 's/^/      /' "$TMP/ctl.hits" >&2
     fail "the readers answered the above for the planted dumps rather than one GOT reference
-      in aspace.cc.obj and one memset in task.cc.obj, so a real reference would go unreported
-      or be blamed on the wrong object"
+      in aspace.cc.obj, one memset in task.cc.obj and one atomic helper per prefix in
+      sync.cc.obj, so a real reference would go unreported or be blamed on the wrong object"
 }
 
 # --- the archives -------------------------------------------------------------
@@ -205,9 +222,11 @@ if grep -q '^RUNTIME ' "$TMP/hits"; then
       privileged half and may not call app text, which carries privileged-execute-never.
       Either the target that built this archive has no kickos_privatise_runtime() call
       (cmake/kickos.cmake), or the name is missing from cmake/kernel_runtime.syms, or it is
-      an explicit call in the source that should read the kickos/kruntime.h name instead."
+      an explicit call in the source that should read the kickos/kruntime.h name instead. An
+      atomic helper is a builtin's call, which the inline form in kickos/arch/atomic_*.h
+      replaces."
 fi
 [ "$rc" -eq 0 ] || exit 1
 
 echo "PASS: $# archive(s) holding kernel text, $rels relocation record(s) with no GOT reference,
-  $refs undefined reference(s) with none to the app runtime"
+  $refs undefined reference(s) with none to the app runtime or an atomic helper"

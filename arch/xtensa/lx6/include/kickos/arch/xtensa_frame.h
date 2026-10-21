@@ -19,6 +19,7 @@
 #define F_LBEG 0x0C
 #define F_LEND 0x10
 #define F_LCNT 0x14
+#define F_SCOMPARE1 0x18
 
 #define F_A0      0x20
 #define F_AREG(n) (F_A0 + (n) * 4)

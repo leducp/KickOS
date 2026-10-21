@@ -176,7 +176,7 @@ if(_selftest_parts GREATER 1)
   list(APPEND _selftest_defs KICKOS_TAP_TERSE=1)
 endif()
 
-set(_selftest_srcs main.cc selftest_common.cc
+set(_selftest_srcs main.cc selftest_common.cc selftest_word.cc
                    "${PROJECT_SOURCE_DIR}/tests/tap/tap.cc")
 # Four blocks of arms sit in files of their own. Each still carries the `#if` its block had in
 # main.cc, so a file compiled where its guard is off is empty and costs only the header; the

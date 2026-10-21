@@ -139,86 +139,43 @@ namespace kos
         int err_ = -KOS_EBADF;
     };
 
-    // Owning priority-inheritance mutex: ctor creates, dtor closes its cap (last
-    // close frees the object). Non-copyable, movable (a moved-from handle is emptied
-    // so the dtor won't double-close). lock, try_lock_for and unlock return the raw syscall
-    // codes (see kos_mutex_lock). ROBUST-MUTEX CAVEAT:
-    // -KOS_EOWNERDEAD means the lock IS held (owner died), so do NOT treat every rc < 0 as
-    // "not acquired" or you strand the mutex; special-case rc == -KOS_EOWNERDEAD as held.
+    // Priority-inheritance mutex over a kos_mutex_t word it holds: no kernel object, so a
+    // static or a member costs only the word, and nothing is freed. Not copyable or movable,
+    // since the word's address is the mutex. lock, try_lock_for and unlock return the raw codes
+    // (see kos_mutex_lock). ROBUST-MUTEX CAVEAT: -KOS_EOWNERDEAD means the lock IS held (owner
+    // died), so do NOT treat every rc < 0 as "not acquired" or you strand the mutex;
+    // special-case rc == -KOS_EOWNERDEAD as held. Its storage must outlive every holder and
+    // waiter: the kernel writes the word at the next hand-over.
     class Mutex
     {
     public:
-        Mutex()
-        {
-            err_ = kos_mutex_create(&id_);
-        }
-        ~Mutex()
-        {
-            // Closing a mutex you still hold is refused (kos_handle_close -> -KOS_EBUSY),
-            // so destroying a locked kos::Mutex leaks its cap. Unlock it before letting it
-            // die.
-            if (id_ != KOS_CAP_NONE)
-            {
-                kos_handle_close(id_);
-            }
-        }
+        constexpr Mutex() = default;
 
         Mutex(Mutex const&) = delete;
         Mutex& operator=(Mutex const&) = delete;
 
-        Mutex(Mutex&& other) noexcept
-            : id_(other.id_), err_(other.err_)
-        {
-            other.id_ = KOS_CAP_NONE;
-        }
-        Mutex& operator=(Mutex&& other) noexcept
-        {
-            if (this != &other)
-            {
-                if (id_ != KOS_CAP_NONE)
-                {
-                    kos_handle_close(id_);
-                }
-                id_ = other.id_;
-                err_ = other.err_;
-                other.id_ = KOS_CAP_NONE;
-            }
-            return *this;
-        }
-
         int lock()
         {
-            return kos_mutex_lock(id_, KOS_TIMEOUT_NONE);
+            return kos_mutex_lock(&word_, KOS_TIMEOUT_NONE);
         }
-        // True with the mutex held; false when held elsewhere, or on a failed handle.
+        // True with the mutex held, a dead holder's stolen one included (-KOS_EOWNERDEAD); a
+        // caller that must see that death uses try_lock_for(0).
         bool try_lock()
         {
-            return kos_mutex_lock(id_, 0) == 0;
+            int const rc = kos_mutex_lock(&word_, 0);
+            return rc == 0 or rc == -KOS_EOWNERDEAD;
         }
         int try_lock_for(uint32_t timeout_us)
         {
-            return kos_mutex_lock(id_, timeout_us);
+            return kos_mutex_lock(&word_, timeout_us);
         }
         int unlock()
         {
-            return kos_mutex_unlock(id_);
-        }
-        kos_cap_t id() const
-        {
-            return id_;
-        }
-        bool valid() const
-        {
-            return id_ != KOS_CAP_NONE;
-        }
-        int error() const
-        {
-            return err_;
+            return kos_mutex_unlock(&word_);
         }
 
     private:
-        kos_cap_t id_ = KOS_CAP_NONE;
-        int err_ = -KOS_EBADF;
+        kos_mutex_t word_ = KOS_MUTEX_INIT;
     };
 
     // IRQ line capability (tier-1 userspace driver). Two ways in:

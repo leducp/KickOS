@@ -255,6 +255,23 @@ if(KICKOS_WITNESS_REPASS)
   add_compile_definitions(KICKOS_WITNESS_REPASS=1)
 endif()
 
+# A kernel built with this counts its switcher's rewinds of a user compare-and-swap and answers
+# the count to any caller, so only the rewind witness's scratch configure, which also passes the
+# marker below, may turn it on.
+option(KICKOS_WITNESS_REWIND "Count the switcher's user compare-and-swap rewinds, for the rewind witness" OFF)
+if(KICKOS_WITNESS_REWIND)
+  if(NOT "${KICKOS_WITNESS_REWIND_SCRATCH}" STREQUAL "check_rewind.sh")
+    message(FATAL_ERROR "KickOS: WITNESS_REWIND_REFUSED: KICKOS_WITNESS_REWIND builds a "
+      "kernel that counts its switcher's rewinds on purpose. Only the rewind witness, "
+      "tests/integration/check_rewind.sh or a bench capture it judges, configures it.")
+  endif()
+  if(NOT KICKOS_ARCH STREQUAL "armv6m" AND NOT KICKOS_ARCH STREQUAL "rxv3")
+    message(FATAL_ERROR "KICKOS_WITNESS_REWIND needs an arch whose switcher rewinds a user "
+      "compare-and-swap: armv6m or rxv3")
+  endif()
+  add_compile_definitions(KICKOS_WITNESS_REWIND=1)
+endif()
+
 option(KICKOS_SMP_TRACE "Record a per-core park/wake event ring for SMP diagnosis" OFF)
 if(KICKOS_SMP_TRACE)
   add_compile_definitions(KICKOS_SMP_TRACE=1)

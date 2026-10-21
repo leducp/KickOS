@@ -101,6 +101,12 @@ namespace kickos
         return testfix::space_of(d);
     }
 
+    // No windows at this posture: nothing for a death to unmap.
+    VirtualRanges const* domain_ranges(Domain const*)
+    {
+        return nullptr;
+    }
+
     void ustack_free(Domain* d, uintptr_t base, size_t bytes)
     {
         // This maintenance requires the old root to remain installed.

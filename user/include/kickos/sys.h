@@ -101,30 +101,47 @@ int kos_sem_wait(kos_cap_t sem, uint32_t timeout_us);
 // not banked.
 int kos_sem_post(kos_cap_t sem);
 
-// Priority-inheritance mutex. The handle is an OPAQUE per-THREAD CAPABILITY, as above.
-// Possession IS the authority to lock and unlock (no rights split); create grants a
-// CAP_TRANSFER-only cap. A lower-priority holder contended by a higher-priority waiter is
-// boosted to the waiter's priority until it unlocks. Not recursive: locking a mutex you
-// already hold returns -KOS_EDEADLK. Lock and unlock also take KOS_CAP_LIBC_LOCK and
-// KOS_CAP_MALLOC_LOCK, the C library's two locks of the caller's own heap, which no table holds.
-int kos_mutex_create(kos_cap_t* out_cap); // -> 0, or -KOS_ENOMEM/-KOS_EMFILE/-KOS_EAGAIN/-KOS_EINVAL/-KOS_EFAULT
-// Acquire, waiting at most timeout_us relative microseconds for a holder to release it
+// Priority-inheritance mutex: a kos_mutex_t (abi.h) in memory every thread sharing it can write,
+// statically KOS_MUTEX_INIT, with no kernel object, capability or create call. An uncontended
+// lock and unlock is a compare-and-swap in user mode; the kernel is entered only to wait or to
+// hand the lock to a waiter, and keeps state only while a thread waits. A word in memory two
+// address spaces share is one mutex across them. A lower-priority holder contended by a
+// higher-priority waiter is boosted to the waiter's priority until it unlocks. Not recursive:
+// locking a mutex you already hold returns -KOS_EDEADLK. A lock is a death point of
+// kos_thread_kill only when it enters the kernel, on a word held or left by a dead holder; an
+// unlock never is, for a kill or a slay alike: a holder that reaches it releases first.
+//
+// Acquire, waiting at most timeout_us relative microseconds for a holder to release it, counted
+// from the park, so re-reads of a word other threads keep changing are not charged to it
 // (KOS_TIMEOUT_NONE: forever; zero: a try, which lends the holder no priority). ALL
 // error-shaped codes are negative (see <kickos/sys/errno.h>):
 //   0               acquired, protected state consistent
-//   -KOS_EOWNERDEAD acquired and the lock IS HELD, but the previous owner died holding it and
+//   -KOS_EOWNERDEAD acquired and the lock IS HELD, but the previous holder died holding it and
 //                   the state may be torn: repair the invariant, then unlock as normal. The
 //                   first take after the death answers it, a waiter's or a later lock's or try's,
 //                   and only that one
 //   -KOS_ETIMEDOUT  the time ran out, or a try found it held, NOT acquired
 //   -KOS_ECANCELED  the waiter was cancelled, NOT acquired
-//   -KOS_EBADF      bad/stale cap, NOT acquired
 //   -KOS_EDEADLK    a lock the caller holds, or one whose wait would close a cycle, NOT acquired
-// A negative return does NOT uniformly mean "not held": treating every rc < 0 as a failed
-// acquire STRANDS the mutex on the -KOS_EOWNERDEAD path.
-int kos_mutex_lock(kos_cap_t mtx, uint32_t timeout_us);
-// 0, -KOS_EBADF (bad cap), or -KOS_EPERM (caller is not the owner). Only the owner unlocks.
-int kos_mutex_unlock(kos_cap_t mtx);
+//   -KOS_EINVAL     a misaligned word, one not in normal cacheable memory or in the AMP
+//                   partition's share, or a word whose bits disagree with the kernel's record
+//                   of its waiters, NOT acquired
+//   -KOS_EFAULT     a word the caller cannot write, or one whose memory left the caller's reach
+//                   while it waited, NOT acquired
+// A misplaced word may instead fault in the compare-and-swap, before any kernel entry. A
+// negative return does NOT uniformly mean "not held": treating every rc < 0 as a failed acquire
+// STRANDS the mutex on the -KOS_EOWNERDEAD path.
+int kos_mutex_lock(kos_mutex_t* m, uint32_t timeout_us);
+// 0, or -KOS_EPERM (the caller is not the holder), or -KOS_EINVAL / -KOS_EFAULT as above. Only
+// the holder unlocks.
+int kos_mutex_unlock(kos_mutex_t* m);
+// The C library's own two locks, in the caller's memory: what stdio and malloc take.
+enum kos_libc_lock
+{
+    KOS_LIBC_LOCK_STDIO,
+    KOS_LIBC_LOCK_MALLOC
+};
+kos_mutex_t* kos_libc_lock(enum kos_libc_lock which);
 
 // Synchronous IPC endpoint with per-thread capability handles. Create grants
 // full rights; send requires SIGNAL and receive requires WAIT. Both block for
@@ -223,8 +240,8 @@ int32_t kos_console_flush(uint32_t timeout_us);
 
 // Drop THIS thread's capability. Type-agnostic and refcounted: the underlying object is
 // destroyed only at the LAST close across all holders, and a close touches no waiters.
-// Returns 0, -KOS_EBADF (bad/stale cap), -KOS_EBUSY (a mutex you still hold; unlock it
-// first), or -KOS_EPERM (a reserved index below KOS_CAP_FIRST_DYNAMIC, the kernel's seat).
+// Returns 0, -KOS_EBADF (bad/stale cap), or -KOS_EPERM (a reserved index below
+// KOS_CAP_FIRST_DYNAMIC, the kernel's seat).
 int kos_handle_close(kos_cap_t cap);
 int kos_sem_destroy(kos_cap_t cap); // alias of kos_handle_close
 
@@ -283,8 +300,15 @@ int kos_thread_affinity(kos_thread_t thread);
 int kos_core_current(void);
 // The cores an explicit mask may name and a zero mask never gives: KICKOS_ISOLATED_CORES.
 #define KOS_ISOLATED_CORES ((uint32_t)KICKOS_ISOLATED_CORES)
-// The caller's own handle.
+// The caller's own handle, read from memory the kernel seats it in: no kernel entry, and so no
+// death point of kos_thread_kill.
 kos_thread_t kos_thread_self(void);
+// The caller's own lock id, the word kos_thread_self derives its handle from.
+uint32_t kickos_self_lock_id(void);
+// The contended entry of kos_mutex_lock alone, with no compare-and-swap first: a waiter whose
+// wait was cancelled asks again here, so the kernel ends it at an entry and it never takes a
+// lock freed meanwhile with no entry at all.
+int kickos_mutex_lock_entry(kos_mutex_t* m, uint32_t timeout_us);
 // Set the CALLING thread's base priority. Lowering is always allowed; raising is allowed up to
 // the calling task's priority ceiling (kos_task_sched_grant). A thread boosted by priority
 // inheritance keeps the boost: the call moves the base it falls back to once the boost ends. A

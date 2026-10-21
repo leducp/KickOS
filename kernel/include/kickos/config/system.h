@@ -22,11 +22,6 @@
 #define KICKOS_MAX_SEMAPHORES 16
 #endif
 
-// Priority-inheritance mutex pool (CAP_MUTEX objects; see sync.h).
-#ifndef KICKOS_MAX_MUTEXES
-#define KICKOS_MAX_MUTEXES 8
-#endif
-
 // Endpoint (IPC rendezvous) pool (CAP_ENDPOINT objects; see endpoint.h).
 // The u8 endpoint_refs counter bounds concurrent holders at runtime (obj_ref_inc
 // refuses at the ceiling); it is not a compile-time bound on this knob.
@@ -127,9 +122,6 @@
 // available in its corresponding global pool.
 #ifndef KICKOS_TASK_SEMAPHORE_BUDGET
 #define KICKOS_TASK_SEMAPHORE_BUDGET 15
-#endif
-#ifndef KICKOS_TASK_MUTEX_BUDGET
-#define KICKOS_TASK_MUTEX_BUDGET 7
 #endif
 #ifndef KICKOS_TASK_ENDPOINT_BUDGET
 #define KICKOS_TASK_ENDPOINT_BUDGET 3

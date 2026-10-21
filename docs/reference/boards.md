@@ -1122,7 +1122,7 @@ re-deriving the per-region counts as a whole-suite one.
   against `KICKOS_TASK_IRQ_HANDLE_BUDGET` (main holds no line between arms; a binding still
   retiring from the arm before is waited out by the ask, not predicted), the objects it asks for
   against main's task budgets
-  (`KICKOS_TASK_SEMAPHORE_BUDGET` less the two semaphores main holds for the run, and the mutex,
+  (`KICKOS_TASK_SEMAPHORE_BUDGET` less the two semaphores main holds for the run, and the
   endpoint and notification budgets), the capability slots either ask holds or its skip reason
   states against the table main has left (`tests/static/selftest_demands.py` reads the arms).
   The arena blocks the arms use are reserved at image start, and an image whose arena cannot back
@@ -1305,7 +1305,7 @@ a capture-tooling fault, not a board fault), and cost no press.
 the faulting context still live, and the `rebootdemo` witness above covers only thread mode on an
 ordered exit. Steps 1, 3 and 7 are exactly that bootrom call returning the board to BOOTSEL.
 
-**Owed to M10.6.8, on `picopi`, `pizero2350` and `teensy41`:** `selftest` and `bench`, configured
+**Owed to M10.6.9, on `picopi`, `pizero2350` and `teensy41`:** `selftest` and `bench`, configured
 with no `-D`, ask for the bootloader at their end and set it as their terminal outcome at their
 start: after the last TAP line (or the bench's `bench: done`) the board re-enumerates as its
 bootloader device (RP2040 `2e8a:0003`, RP2350 `2e8a:000f`, HalfKay `16c0:0478`) and the next image

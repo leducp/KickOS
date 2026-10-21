@@ -124,7 +124,10 @@ The order:
 2. **An arch declaration** in `arch/Kconfig`, with the capabilities the arch has.
 3. **The arch backend**, `arch/<family>/<arch>/`: the saved context, the context
    switch, the trap entry and the syscall path, the critical section, the panic
-   stack. Chapter 3.5 states what every backend owes here.
+   stack. Chapter 3.5 states what every backend owes here. A backend also owes user
+   code a compare-and-swap, and a promise that one in flight fails across any return to
+   user mode. A core with no such instruction uses a restartable sequence that the
+   switch rewinds ([Chapter 2.4](an-atomic-buys-definedness-not-atomicity.md)).
 4. **An emulated chip first.** A QEMU machine with a documented timer and a
    semihosting console lets you prove the switch and the trap before any real
    peripheral is in the way.

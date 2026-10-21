@@ -226,7 +226,7 @@ case CAP_ENDPOINT:   // obj_close_protocol arm; runs on close, narrow AND teardo
             while ((s = wq_pop_highest(ep->send_waiters)) != nullptr):
                 s->wait_result = answer
                 sched::wake(s)
-    return 0     // an endpoint NEVER refuses a close (unlike the mutex)
+    return 0     // a close is never refused
 ```
 
 `-EPIPE` keeps one meaning: the server died holding the request, which the reply
@@ -237,8 +237,9 @@ precisely because both run under the one `IrqLock`: a sender either parks while 
 endpoint has a receiver (and is later woken by the last close) or finds none and is answered
 at once. There is no window in between.
 
-Note the rights contrast with the mutex. For a mutex, possession *is* the authority --
-there is no meaningful send/receive split (Chapter 2.3). For an endpoint the split is
+Note the contrast with the mutex. A mutex has no capability and no rights at all: it is a
+word in user memory, and any thread that can write the word can take the lock
+([Chapter 2.3](priority-inheritance-lending-urgency.md)). For an endpoint the split is
 real and deniable: `CAP_SIGNAL` gates send, `CAP_WAIT` gates receive, and a server can
 hand a client a send-only capability. Rights are only ever interpreted through a type's
 own syscalls, so the same bits mean different things per type -- which is fine, as long

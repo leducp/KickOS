@@ -256,8 +256,9 @@ void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
 
 #if KICKOS_REENT_PER_THREAD and not KICKOS_REENT_IN_TCB
 // Make `state` the thread pointer this context resumes with, which is what __getreent returns.
-// Survives arch_ctx_redirect.
-void arch_context_seat_reent(struct arch_context* ctx, void* state);
+// Survives arch_ctx_redirect. A backend that keeps `state` in a cell of its own seats the lock
+// id `self` in that cell's next word; one whose thread pointer is the element itself ignores it.
+void arch_context_seat_reent(struct arch_context* ctx, void* state, uint32_t self);
 #endif
 
 // Switch from from to to, immediately or at exception return. The scheduler

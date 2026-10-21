@@ -129,6 +129,28 @@ PendSV_Handler:
 2:
     PSP_GUARD KICKOS_ARMV6M_TRAP_NEED_PENDSV, .Lpsp_wild
 3:
+    /* A thread switched out inside kickos_user_cas's restartable window resumes at its load,
+       or its store lands over whatever the next thread wrote. The bound is INCLUSIVE of the
+       store: a stacked PC on it means the store has not run. */
+    ldr     r1, [r0, #24]           /* the stacked PC */
+    ldr     r2, =kickos_user_cas_store
+    cmp     r1, r2
+    bhi     .Lpendsv_ucas_out
+    ldr     r2, =kickos_user_cas
+    lsrs    r2, r2, #1
+    lsls    r2, r2, #1              /* a stacked PC carries no Thumb bit */
+    cmp     r1, r2
+    blo     .Lpendsv_ucas_out
+    str     r2, [r0, #24]
+#if defined(KICKOS_WITNESS_REWIND) && KICKOS_WITNESS_REWIND
+    cmp     r1, r2
+    beq     .Lpendsv_ucas_out       /* already at the load: nothing moved */
+    ldr     r1, =g_kickos_witness_rewinds
+    ldr     r2, [r1]
+    adds    r2, r2, #1
+    str     r2, [r1]
+#endif
+.Lpendsv_ucas_out:
     subs    r0, #F_TRAP_FRAME       /* room for r4-r11 */
     str     r0, [r3]                /* outgoing->sp = base */
     stmia   r0!, {r4-r7}            /* [base..+12] = r4-r7 */

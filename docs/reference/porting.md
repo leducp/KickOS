@@ -402,6 +402,17 @@ so an arch taking it seats its thread pointer from the context, as armv8a and lx
 binds every caller-supplied stack), and the thread pointer itself where it does not (rv64imac, `arch_context_seat_reent`). **A new arch running one kernel on several
 cores owes a per-thread answer of that kind**, and `reent_per_thread_cores` is its witness.
 
+**The thread's own lock id rides with that answer**, and a port owes its place too, since
+`kos_thread_self` reads it with one load and no syscall (`kickos_self_lock_id`,
+`user/src/newlib_reent.cc`). Under `KICKOS_REENT_IN_TCB` it is the control block's second word,
+which `KICKOS_ARCH_TLS_TCB` must leave room for. Where the thread pointer is the slot element
+itself (rv64imac), the descriptor's `self` names a word after the `struct _reent` and the first
+switch-in writes it; the prime copies only `width` bytes, so the element's `stride` may exceed it.
+Where the arch keeps the state pointer in a cell of its own (x86_64's FS cell),
+`arch_context_seat_reent` receives the id and stores it in the cell's next word. At
+`KICKOS_REENT_PER_THREAD` 0 it is one word the switch rewrites beside the reentrant seat, with the
+same one-core limit.
+
 ### Adding a board/chip (the seven edit points)
 
 1. `boards/<board>/board.cmake` -- the board descriptor: one file setting
@@ -988,6 +999,76 @@ which halves it declares, so a marker set after that include arrives too late: t
 prototype is already declared and the `static inline` definition below it is then a
 `declared 'extern' and later 'static'` error. The header includes `arch.h` for
 `arch_irq_state_t`, so the order inside it is markers, then the include, then the bodies.
+
+### Compare-and-swap at both levels (`kickos_user_cas`, `arch_cas_u32`)
+
+A port owes two compare-and-swaps on a 32-bit word, each ordered as acquire and release against
+the threads of its kernel instance. On armv6m, rxv3 and v7-M, whose instances run on one core,
+program order gives that and the routines carry no barrier, so nothing outside the instance, a DMA
+master or another instance's core, is promised an order there. The user one is `kickos_user_cas` (`kickos/sys/user_cas.h`), a hand-written routine in
+`user/src/arch/<arch>/user_cas.S` (`user_cas.cc` on the sim) linked into `libkickos_user.a`; every
+uncontended `kos_mutex_lock` and `kos_mutex_unlock` is one call of it (`user/src/mutex.cc`), the C
+library's locks included, so the routine sits on a declared thread's stack and owes its frame a
+row in `tests/static/app_stack_roots.txt`. The kernel one is `arch_cas_u32` in the arch's
+`kickos/arch/atomic_cas.h`.
+
+**The kernel's is inline, never a builtin.** A `__atomic` or `__sync` builtin compiles to a call
+of a libgcc or libatomic helper on some targets (`__aarch64_cas4_acq_rel` on armv8a without LSE),
+which is app text on a split image, and no kernel twin exists. `tests/static/check_kernel_got.sh`
+refuses any `__aarch64_cas`, `__aarch64_swp`, `__aarch64_ld`, `__atomic_` or `__sync_` reference in
+the kernel, arch and chip archives wherever the image is split. A kernel that runs on one core
+includes `kickos/arch/atomic_cas_masked.h`: a load, a compare and a store with interrupts masked.
+An arch whose store can be lost (armv8a, rv64imac, lx6 above one core) writes one attempt,
+`arch_cas_u32_once`, and includes `kickos/arch/atomic_cas_bounded.h`, which makes at most
+`ARCH_CAS_U32_STORES` attempts and then answers false with `*expected` unchanged. It is called
+under the kernel lock on a word user code can write, so a word another core keeps writing must
+not hold that lock; its caller retries with the lock dropped. The host unit test
+`tests/unit/atomiccas` holds the sim's form, the masked one and the bounded loop to the contract:
+the store lands only on a match, a miss hands back the held value, and a store lost at every
+attempt ends the call at the bound with the word unchanged. Its kernel caller is
+`WordAccess::cas` (`kernel/include/kickos/word.h`), which reaches a user word through
+`arch_aspace_acquire`'s alias on a translating backend and at its address elsewhere, on a word
+`word_ref` has already admitted.
+
+**The return obligation** (`user-cas-fails-across-a-return` in `invariants.md`): a user sequence
+interrupted between its load and its store must fail its store when the kernel ran anything
+before resuming it, and no interrupt handler writes a lock word. The masked kernel form is correct
+only because of the first clause. How each arch meets it:
+
+| arch | user routine | the return |
+|---|---|---|
+| armv8a | LDAXR/STLXR, no LSE | nothing owed: an exception return clears the local monitor (DDI0487 B2.12.4), and every resume is an `eret` |
+| armv7m, ARMv8-M | LDREX/STREX, LDAEX/STLEX on v8-M Mainline | a `clrex` on every resume of another thread (PendSV, the IPC fastpath, the contained resume), beside exception entry clearing the local monitor (DDI0403E A3.4.4) |
+| rv32imac, rv64imac | LR/SC | an `sc` to the frame's pc slot on `.Lrestore`, storing that slot's own value: xRET need not clear a reservation (privileged ISA 3.3.2), and a reservation may be wider than the word |
+| lx6 | `wsr.scompare1`, S32C1I, ATOMCTL at RCW; no MEMW in either form, since S32C1I is both acquire and release (Xtensa ISA 4.3.13.5) | `SCOMPARE1` banked in the level-1 frame (`F_SCOMPARE1`): a handler taking the kernel lock rewrites it and may return with no switch |
+| armv6m, rxv3 | a restartable sequence: load, compare, branch, store | the switcher rewinds a stacked PC in `[kickos_user_cas, kickos_user_cas_store]` to `kickos_user_cas` (PendSV after its PSP checks, SWINT before it restores R14) |
+| x86_64, sim | one locked CMPXCHG | nothing owed |
+
+**A restartable sequence has three rules.** The window is ONE routine with two global symbols, the
+load at its entry and the store, and the bound includes the store: a stacked PC on the store means
+the store has not run. No instruction in the window may overwrite its own input, since a rewound
+thread runs it again on the registers the switch restored. Only the deferred switcher may switch a
+thread out at a PC in the window: the system-call paths switch one out at its trap instruction,
+which the window does not hold, and a fault, wild-stack or slay redirect kills it. The kernel's asm
+names the two symbols, which resolve because `kickos_user` sits in the kernel's
+`$<LINK_GROUP:RESCAN>`, and the routine is its own object so the link pulls it. An unprivileged
+thread cannot mask instead: `CPSID` is ignored unprivileged on ARMv6-M, and RX user mode cannot
+write the IPL.
+
+**What QEMU can show.** The `user_cas_switched_out` self-test arm runs two round-robin threads of
+one priority through `kickos_user_cas` on one core, sliced at one clock granule, and requires the
+word to equal the adds both saw succeed. Its failed compares show only that the threads
+interleaved, not that a switch landed inside the window. The rewind witness shows that: a kernel
+configured with `KICKOS_WITNESS_REWIND` (armv6m and rxv3, refused without the marker only
+`tests/integration/check_rewind.sh` passes, its banner saying `witness rewind`) counts each rewind
+that moves a stacked PC and answers the count through `KOS_SYS_WITNESS_REWINDS`, and its
+`ucasrewind` image runs the same two adders and requires at least one such rewind and the word
+equal to the adds. It is the `<board>_rewind` gate on armv6m: dropping the PC write goes red on the
+word, and an upper bound made exclusive goes red on the count. QEMU takes an interrupt at a
+translation-block end and the branch ends one, so the store is the only PC in the window a switch
+finds there, and a wrong lower bound stays green. rxv3 has no emulator: the same script
+judges its RX72M capture ([bench.md](bench.md), *`ucasrewind`*). Nothing here witnesses the RISC-V `sc` (QEMU's trap appears
+to drop the reservation), the lx6 bank, nor the armv7m `clrex`.
 
 ### Letting an interrupt in (`arch_irq_window`)
 
@@ -2084,7 +2165,6 @@ requirement, for a zero-skip run:
 | `KICKOS_MAX_THREADS` | 16 (`config/system.h`) | `thread.h` (`ThreadPool`) | **>= 4** | 2 |
 | `KICKOS_MAX_SEMAPHORES` | 16 (`system.h`) | `instance.h` (`sems`) | **>= 6** | 4 (f302) |
 | `KICKOS_CAP_TABLE_SUPPLY` | 16 (`system.h`) | per-thread cap table | **>= 11** | 8 |
-| `KICKOS_MAX_MUTEXES` | 8 (`system.h`) | `instance.h` (`mutexes`) | >= 3; the libc locks are not drawn from it | 4 (c8) |
 | `KICKOS_MAX_ENDPOINTS` | 4 (`system.h`) | `instance.h` (`endpoints`) | >= 1 | 4 |
 | `KICKOS_MAX_IRQ_HANDLES` | 8 (`system.h`) | `instance.h` (`irq_bindings`) | >= 1 | 4 (f302) |
 | `KICKOS_MAX_DOMAINS` | 20 translating / 18 region (`system.h`) | `instance.h` (`domains`) | a domain per live task plus the two immortal singletons on a translating board; one per thread at most on a region one | 4 |
@@ -2122,11 +2202,10 @@ from a negative spawn return instead would not say which limit was hit, because
 alike. The other 61 cases
 need no 4th worker, so a small part loses one chained-priority-inheritance case and
 one call/reply case, not the suite. The 6-semaphore peak is `mutex_deadlock`: two permanent
-plus the four semaphores `t_mutex_deadlock` creates, but on an 8-handle board the **cap
-table** binds first, since `KICKOS_CAP_FIRST_DYNAMIC 1`
-(`../../system/include/kickos/sys/cap_index.h`) plus the suite's two permanent caps
-leaves 5 free against the 6 that case wants live (rationale: `t_mutex_deadlock`'s refusal
-branch).
+plus the four semaphores `t_mutex_deadlock` creates. Its mutexes are words and hold no
+capability, so on an 8-handle board those four fit the 5 slots that `KICKOS_CAP_FIRST_DYNAMIC 1`
+(`../../system/include/kickos/sys/cap_index.h`) and the suite's two permanent caps leave free,
+and the semaphores are what binds.
 
 `f302nucleo` walked that ladder one knob at a time: at `KICKOS_MAX_THREADS=4` plus
 `KICKOS_USER_STACK_SIZE=1024` and the 2K heap still carved, which bought one more case
@@ -2212,12 +2291,8 @@ shared domain region and the two cross-domain buffers those four un-skipped case
 take. That is **a 32 KiB part**, and an enforcing chip pays an `.appdata` window
 besides, plus power-of-two natural alignment on every block where
 `arch_mpu_region_pow2()` is 1 (a base+limit backend pays only one granule per block). One of
-the five is not a RAM question at all: `mutex_deadlock` wants the suite's 3 OPTIONAL
-capabilities, so it needs a board whose `KICKOS_CAP_TABLE_SUPPLY` covers the demand
-of 9: 1 reserved (`KICKOS_CAP_FIRST_DYNAMIC`) + the suite's 5 mandatory peak + 3
-optional. Only `bluepill-c8` and `f302nucleo` still supply 8
-(`grep -rn KICKOS_CAP_TABLE_SUPPLY boards/`); `microbit` dropped its own and takes the default 16,
-so on that part the cap table is no longer what binds.
+the five is not a RAM question at all: `mutex_deadlock` wants six semaphores live, the suite's
+two and its own four, so it needs a board whose semaphore pool and task budget supply them.
 `f411disco` is the zero-skip
 witness (128 KiB SRAM, 0 skips), and it provisions `KICKOS_MAX_THREADS 8`
 (`../../boards/f411disco/configs/base/defconfig`), above the measured 4-thread
@@ -2269,15 +2344,10 @@ LINK time on every board (see *The SRAM model*). At the three slots that capture
 against an arena that backed exactly three stacks, the two remaining 4th-worker skips are
 honest under either reading. The `st` defconfig provisions two slots today.
 
-**`mutex_deadlock` is mislabelled differently, and no arena work will ever un-skip it**:
-its guard is cap-table and semaphore exhaustion, not memory at all. The two halves of a
-declared demand fail in different places, and this arm is the second kind. A **peak** that
-the board's supply cannot seat is a configure FATAL naming every term, so it never reaches
-a run at all. An **OPTIONAL** peak that does not fit is simply not granted: the width stays
-at the mandatory sum, configure announces the dropped slots and the app that declared them,
-and the arm that wanted them reclaims what it did get and skips itself
-(`cmake/cap_table.cmake`). Granting them here means raising `KICKOS_CAP_TABLE_SUPPLY`, and
-the board's defconfig records why that is not affordable on this part.
+**`mutex_deadlock` is mislabelled differently, and no arena work will un-skip it**: its
+guard is semaphore exhaustion, not memory at all. At that reading it also held two mutex
+capabilities, which the 8-slot cap table could not seat beside its semaphores. Its mutexes are
+words now and hold no capability, so a board un-skips it by supplying its six semaphores.
 
 The genuine 16 KiB limits that remain are small and specific: `irq_as_event` needs one
 4,096 B block, and `caller_stack`'s accept half needs 2,064 B.

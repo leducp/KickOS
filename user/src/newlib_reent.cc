@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// One struct _reent per thread slot, where libc finds the running thread's, the descriptor
-// that tells the kernel where both are, and the exit-time release of the scratch a _REENT_SMALL
-// libc allocates into a slot. The user side of kernel/include/kickos/reent.h; compiled on every
-// board but the sim, whose libc is the host's.
+// One struct _reent per thread slot, where libc finds the running thread's, the reader of the
+// running thread's seated lock id, the descriptor that tells the kernel where they are, and the
+// exit-time release of the scratch a _REENT_SMALL libc allocates into a slot. The user side of
+// kernel/include/kickos/reent.h; compiled on every board but the sim, whose libc is the host's.
 //
 // Newlib reaches its reentrant state as _REENT: __getreent() on lx6, armv8a and rv64imac,
 // and _impure_ptr on the single-core Cortex-M, RV32 and RX targets. Every cross target links
@@ -12,6 +12,7 @@
 
 #include <kickos/config/system.h> // KICKOS_THREAD_SLOTS, KICKOS_MAX_INSTANCES
 #include <kickos/reent.h>
+#include <kickos/sys.h>
 
 #include <malloc.h>
 #include <sys/reent.h>
@@ -22,7 +23,24 @@
 // ONE BANK OF KICKOS_THREAD_SLOTS PER INSTANCE: the kernel indexes this array as
 // instance * KICKOS_THREAD_SLOTS + slot, and the seam's count below must match this extent
 // or a short bank aliases silently onto the process-wide state.
+#if KICKOS_REENT_PER_THREAD and not KICKOS_REENT_IN_TCB and not defined(__x86_64__)
+// The thread pointer names the element: the lock id rides after the state.
+struct ReentSlot
+{
+    struct _reent r;
+    uintptr_t self;
+};
+static ReentSlot s_reent[KICKOS_MAX_INSTANCES * KICKOS_THREAD_SLOTS];
+#define KICKOS_REENT_SELF (&s_reent[0].self)
+#else
 static struct _reent s_reent[KICKOS_MAX_INSTANCES * KICKOS_THREAD_SLOTS];
+#if not KICKOS_REENT_PER_THREAD
+static uintptr_t s_self;
+#define KICKOS_REENT_SELF (&s_self)
+#else
+#define KICKOS_REENT_SELF nullptr
+#endif
+#endif
 
 // Every libc that asks __getreent ships none of its own (esp-elf's is a weak NULL), so this is
 // what makes stdio work at all.
@@ -47,6 +65,21 @@ extern "C" struct _reent* __getreent(void)
 }
 #endif
 
+extern "C" uint32_t kickos_self_lock_id(void)
+{
+#if KICKOS_REENT_IN_TCB
+    return static_cast<uint32_t>(static_cast<uintptr_t const*>(__builtin_thread_pointer())[1]);
+#elif KICKOS_REENT_PER_THREAD and defined(__x86_64__)
+    uintptr_t self;
+    __asm__("movq %%fs:8, %0" : "=r"(self));
+    return static_cast<uint32_t>(self);
+#elif KICKOS_REENT_PER_THREAD
+    return static_cast<uint32_t>(static_cast<ReentSlot const*>(__builtin_thread_pointer())->self);
+#else
+    return static_cast<uint32_t>(__atomic_load_n(&s_self, __ATOMIC_RELAXED));
+#endif
+}
+
 extern "C"
 {
 
@@ -63,6 +96,8 @@ KickosReentSeam const kickos_reent_seam = {
 #else
     &_impure_ptr,
 #endif
+    KICKOS_REENT_SELF,
+    sizeof(s_reent[0]),
     sizeof(struct _reent),
     KICKOS_MAX_INSTANCES * KICKOS_THREAD_SLOTS,
 };

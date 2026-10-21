@@ -178,7 +178,6 @@ namespace selftest
         enum class ObjectKind
         {
             SEM,
-            MUTEX,
             ENDPOINT,
             NOTIFY,
         };
@@ -191,10 +190,6 @@ namespace selftest
             case ObjectKind::SEM:
             {
                 return kos_sem_create(0, out);
-            }
-            case ObjectKind::MUTEX:
-            {
-                return kos_mutex_create(out);
             }
             case ObjectKind::ENDPOINT:
             {
@@ -229,7 +224,7 @@ namespace selftest
         constexpr int MAX = 16;
         constexpr int TASKS_MAX = 8;
         constexpr int CAPS_MAX = 8;
-        int total = want.sems + want.mutexes + want.endpoints + want.notifies;
+        int total = want.sems + want.endpoints + want.notifies;
         if (want.caps > 0 and want.notifies == 0)
         {
             total = total + 1;
@@ -259,14 +254,13 @@ namespace selftest
         kos_cap_t held[MAX];
         int n = 0;
         hold(want.sems, ObjectKind::SEM, "sems", held, &n, &r);
-        hold(want.mutexes, ObjectKind::MUTEX, "mutexes", held, &n, &r);
         hold(want.endpoints, ObjectKind::ENDPOINT, "endpoints", held, &n, &r);
         hold(want.notifies, ObjectKind::NOTIFY, "notifies", held, &n, &r);
         kos_cap_t copies[CAPS_MAX];
         int c = 0;
         if (r.rc == 0 and want.caps > 0)
         {
-            int source = want.sems + want.mutexes + want.endpoints;
+            int source = want.sems + want.endpoints;
             if (want.notifies == 0)
             {
                 source = n;
@@ -391,9 +385,9 @@ namespace selftest
         for (int i = 0; i < n_; i++)
         {
             Held const& h = held_[i];
-            if (h.kind == Kind::OWNED and *h.cap != KOS_CAP_NONE)
+            if (h.kind == Kind::OWNED)
             {
-                (void)kos_mutex_unlock(*h.cap);
+                (void)kos_mutex_unlock(h.mutex);
             }
             if (h.kind == Kind::BOUND and *h.cap != KOS_CAP_NONE)
             {
@@ -452,7 +446,8 @@ namespace selftest
         for (int i = 0; i < n_; i++)
         {
             Held const& h = held_[i];
-            if (h.kind != Kind::THREAD and h.kind != Kind::TASK and *h.cap != KOS_CAP_NONE)
+            if (h.kind != Kind::THREAD and h.kind != Kind::TASK and h.kind != Kind::OWNED
+                and *h.cap != KOS_CAP_NONE)
             {
                 (void)close(h.cap);
             }

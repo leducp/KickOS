@@ -13,9 +13,12 @@
 #include <kickos/sys/errno.h>
 #include <kickos/held.h>
 
+struct arch_aspace;
+
 namespace kickos
 {
     class IrqLock;
+    class VirtualRanges;
 
     // A wait queue is a List of BLOCKED threads, using the shared TCB link node: a thread
     // is on the ready list XOR on one of these.
@@ -154,28 +157,38 @@ namespace kickos
     // post is refused and the count left alone. The syscall reports -KOS_EOVERFLOW.
     bool sem_post(Semaphore* s);
 
-    // Priority-inheritance mutex, thread context only. The locking contract differs by call:
-    // mutex_unlock does its whole job under an IrqLock and nests fine under a caller-held
-    // one. mutex_force_unlock takes none of its own: caller holds the exclusion. mutex_lock
-    // must not be called with a caller-held IrqLock spanning it: it takes its own lock for
-    // the acquire/park only, then releases it and runs the resume barrier and wait_result
-    // read outside any lock. A spanning caller lock keeps BASEPRI raised past that read
-    // (see wq_confirm_resume).
-    void mutex_init(Mutex* m);
-    // KOS_TIMEOUT_NONE waits forever and 0 is a try.
-    // Returns 0 when locked; -KOS_EOWNERDEAD when handed the mutex by a dying owner, where
-    // the lock is held and this is not a failed acquire; -KOS_ETIMEDOUT when held elsewhere
-    // past the deadline, or at once for a try, which lends no priority; -KOS_ECANCELED when
-    // cancelled waiting; or -KOS_EDEADLK when the acquire would deadlock (self-lock or a wait
-    // cycle), refused without parking and without leaking a boost. The -KOS_EBADF bad-cap
-    // reject happens at the syscall resolve.
-    int mutex_lock(Mutex* m, uint32_t timeout_us);
-    // Hands off to the highest waiter, then recomputes the ex-owner's effective priority over
-    // what it still holds. Returns 0, or -KOS_EPERM if the caller is not the owner.
-    int mutex_unlock(Mutex* m);
-    // For a dying owner (Thread::dying, mid-cap_teardown): force-unlock, delivering
-    // MUTEX_OWNER_DIED to the woken waiter, leaving the dying thread's priority unrecomputed.
-    void mutex_force_unlock(Mutex* m, Thread* dying, Held held);
+    // The priority-inheritance mutex on a user word (kickos/sys/abi.h, kos_mutex_t), entered
+    // only on contention, thread context only. Both take their own IrqLock and must not be
+    // called under one: a retry drops it, and mutex_lock runs the resume barrier and the
+    // wait_result read outside it (see wq_confirm_resume).
+    //
+    // KOS_TIMEOUT_NONE waits forever and 0 is a try. Returns 0 when locked; -KOS_EOWNERDEAD
+    // when locked from a dead holder, where the lock is held and this is not a failed acquire;
+    // -KOS_ETIMEDOUT when held elsewhere past the deadline, or at once for a try, which lends no
+    // priority; -KOS_ECANCELED when cancelled waiting; -KOS_EDEADLK for a word the caller holds
+    // or a wait that would close a cycle, refused without parking or a boost; -KOS_EINVAL or
+    // -KOS_EFAULT for a word the caller may not name (word_ref); -KOS_EINVAL for a word that
+    // disagrees with the record of its waiters; -KOS_EFAULT for a wait whose word left the
+    // caller's reach.
+    int mutex_lock(uintptr_t va, uint32_t timeout_us);
+    // Hands the word to the highest waiter, then recomputes the ex-holder's effective priority
+    // over what it still holds. Returns 0, -KOS_EPERM if the caller is not the holder, or
+    // word_ref's refusal.
+    int mutex_unlock(uintptr_t va);
+    // `dying` is past Thread::dying and its unmaps: hand every record it holds to its top
+    // waiter with MUTEX_OWNER_DIED, leaving the dying thread's priority unrecomputed. A word it
+    // holds with no waiter keeps its id, which the next taker finds dead.
+    void mutex_owner_exit(Thread* dying, Held held);
+#if KICKOS_HAVE_ASPACE
+    // `space` no longer maps [base, base + bytes) for a writer: every waiter of that space
+    // parked through an address in it ends with -KOS_EFAULT. Caller holds IrqLock.
+    void mutex_reach_lost(struct arch_aspace* space, uintptr_t base, size_t bytes, Held held);
+    // The same, for every window `holder` (a thread slot index plus one) holds in `ranges`.
+    void mutex_windows_lost(struct arch_aspace* space, VirtualRanges const* ranges,
+                            uint16_t holder, Held held);
+#endif
+    // A waiter leaves the record it parked on: its last waiter frees it. Caller holds IrqLock.
+    void mutex_waiter_left(Mutex* m);
 
     // Link/unlink a CALL_REPLY_WAIT caller on the server's reply-donor list. Must be
     // called at every reply-cap mint site and at every site that consumes a CAP_REPLY

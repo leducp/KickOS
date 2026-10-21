@@ -198,6 +198,27 @@ _kickos_rx_pendsw:
     cmp     #KICKOS_RX_TRAP_REDZONE_PENDSW, r15
     bltu    .Lpendsw_bad_usp       /* frame + kernel descent would run off the bottom */
 .Lpendsw_usp_ok:
+    /* A thread switched out inside _kickos_user_cas's restartable window resumes at its load,
+       or its store lands over whatever the next thread wrote. The bound is INCLUSIVE of the
+       store: a stacked PC on it means the store has not run. [r0] holds R14 and 4[r0] R15,
+       so the interrupted PC is 8[r0] here. */
+    mov.l   8[r0], r14
+    mov.l   #_kickos_user_cas_store, r15
+    cmp     r15, r14               /* PC - store */
+    bgtu    .Lpendsw_ucas_out
+    mov.l   #_kickos_user_cas, r15
+    cmp     r15, r14               /* PC - load */
+    bltu    .Lpendsw_ucas_out
+    mov.l   r15, 8[r0]
+#if defined(KICKOS_WITNESS_REWIND) && KICKOS_WITNESS_REWIND
+    cmp     r15, r14
+    beq     .Lpendsw_ucas_out      /* already at the load: nothing moved */
+    mov.l   #_g_kickos_witness_rewinds, r15
+    mov.l   [r15], r14
+    add     #1, r14
+    mov.l   r14, [r15]
+#endif
+.Lpendsw_ucas_out:
     pop     r14                    /* restore the outgoing thread's R14 */
     /* A software interrupt's ICU.IR027 survives acceptance: without this write back-to-back
        switches re-trigger a stale SWINT and the switcher live-locks. */

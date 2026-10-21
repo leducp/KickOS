@@ -471,7 +471,7 @@ $9 = true
 
 ### Stop 7: exit, part two: release every capability
 **Where:** `kernel/syscall/cap.cc`, `cap_teardown`, `teardown_entry`, `obj_close_protocol`, `obj_ref_drop`;
-`kernel/sync/sync.cc`, `mutex_force_unlock`
+`kernel/sched/sched.cc`, `exit_current`; `kernel/sync/sync.cc`, `mutex_owner_exit`
 
 With the lock released, `exit_current` calls `cap_teardown`. It closes every capability the
 thread holds, through the same per-type protocol and reference drop as `handle_close`
@@ -490,12 +490,6 @@ thread holds, through the same per-type protocol and reference drop as `handle_c
 
 What `teardown = true` changes, type by type, in `obj_close_protocol`:
 
-- **A mutex the thread owns.** A voluntary close of an owned mutex is refused. On teardown the
-  kernel force-unlocks it instead (`mutex_force_unlock`): the highest waiter gets the mutex
-  and its `kos_mutex_lock` returns `-KOS_EOWNERDEAD`, so it knows the protected data may be
-  inconsistent. Nobody is left waiting on a dead owner.
-  [4. A mutex, Stop 12](04-mutex.md#stop-12-when-a-waiter-or-an-owner-goes-away) walks the waiter
-  side.
 - **An endpoint.** As on a close: if this was the last capability that could receive, every
   sender parked on it is answered at once.
 - **A reply capability.** If the thread was a server holding a caller's reply capability, the
@@ -509,9 +503,20 @@ chunks: a big table must not keep interrupts masked for long. And `obj_ref_drop`
 parked on the object, the object is **leaked** (kept with one reference) rather than freed
 under the waiter.
 
+A mutex is not in this list, because it is no capability: it is a word in user memory. The
+kernel knows of a held mutex only while a thread waits for it, as a record on the holder's held
+list, and `exit_current` empties that list before the sweep, in the locked section that marks
+the thread dying, after the thread's windows and stack are unmapped (`mutex_owner_exit`). Each
+record goes to its highest waiter: the kernel writes that waiter's id into the word, through the
+waiter's own view of it, and the waiter's `kos_mutex_lock` returns `-KOS_EOWNERDEAD`, so it
+knows the protected data may be inconsistent. Nobody is left waiting on a dead owner. A mutex
+the dying thread held with nobody waiting keeps its id in the word, and the next thread to take
+it finds that id dead and is told the same way.
+[4. A mutex](04-mutex.md) walks the waiter side.
+
 **Try it:** `faulter` holds no capability at all. Its `printf` took the C library's lock, but
-that lock is no capability: it belongs to the image, and `exit_current` hands over any C library
-lock a dying thread holds before the sweep starts (`cap_libc_locks_release`).
+that lock is no capability: it is a word in the image's data, and `printf` gave it back before
+the fault.
 
 ```
 (gdb) break kickos::cap_teardown
@@ -520,40 +525,76 @@ lock a dying thread holds before the sweep starts (`cap_libc_locks_release`).
 (gdb) p $c->caps.chunk[0][0]@2
 $1 = {{obj = 0, type = 0 '\000', seq_lo = 0 '\000', rights = 0 '\000', seq_hi = 0 '\000', gen = 0},
       {obj = 655363, type = 0 '\000', seq_lo = 0 '\000', rights = 0 '\000', seq_hi = 0 '\000', gen = 0}}
-(gdb) p $k->libc_locks[0].owner
-$2 = (kickos::Thread *) 0x0
-(gdb) p/d $k->mutex_refs[0]@3
-$3 = {0, 0, 0}
+(gdb) p $c->held_list
+$2 = (kickos::Mutex *) 0x0
+(gdb) p $k->mutex_active
+$3 = (kickos::Mutex *) 0x0
+(gdb) p/x '(anonymous namespace)::s_libc'
+$4 = {m = {word = 0x0}, depth = 0x0}
 ```
 
-Both slots are empty (the second holds a free-list link), the C library's lock is free, and the
-mutex pool holds nothing: there is nothing for this sweep to release.
+Both slots are empty (the second holds a free-list link). The thread holds no mutex record, and
+no thread waits on any mutex word (the kernel's list of live records, `mutex_active`, is empty).
+The C library's lock word reads 0: free. There is nothing for this sweep to release.
 
-To see a mutex force-unlocked, use the `selftest` image. Its test `t_mutex_owner_died`
+To see a mutex handed over at a death, use the `selftest` image. Its test `t_mutex_owner_died`
 (`user/apps/common/selftest/main.cc`) has a thread `odOwn` exit while it holds a mutex that
 `odWt` waits for. That is an ordinary exit, not a fault, but the teardown is the same code.
-Chapter 4 showed the waiter's side of this run; here the backtrace shows the teardown that
-reached it:
+Chapter 4 showed the waiter's side of this run. Here the backtrace shows the exit that reached
+it:
 
 ```
-(gdb) break kickos::mutex_force_unlock
+(gdb) break kickos::mutex_owner_exit if dying->held_list != 0
 (gdb) continue
-Breakpoint 1, kickos::mutex_force_unlock (m=0x20004a00 <...>, dying=0x20005028 <...>, held=...) at .../kernel/sync/sync.cc:476
+Breakpoint 1, kickos::mutex_owner_exit (dying=dying@entry=0x20005188 <kickos::detail::g_instance+2504>, held=held@entry=...) at .../kernel/sync/sync.cc:714
 (gdb) p dying->name
 $1 = "odOwn\000\000\000\000\000\000\000\000\000\000"
 (gdb) p dying->dying
 $2 = true
-(gdb) next
-(gdb) next
-(gdb) p w->name
-$4 = "odWt", '\000' <repeats 11 times>
-(gdb) bt 5
-#0  kickos::mutex_force_unlock (...)
-#1  kickos::(anonymous namespace)::obj_close_protocol (closer=..., e=..., teardown=teardown@entry=true, held=...)
-#2  kickos::(anonymous namespace)::teardown_entry (c=..., i=i@entry=1, held=...)
-#3  kickos::cap_teardown (c=...)
-#4  kickos::sched::exit_current (code=0, cause=<optimized out>, held=0x0)
+(gdb) p/x dying->lock_id
+$3 = 0x383
+(gdb) p $m = dying->held_list
+$4 = (kickos::Mutex *) 0x20004a00 <kickos::detail::g_instance+576>
+(gdb) p/x '(anonymous namespace)::g_od_m'
+$5 = {word = 0x80000383}
+(gdb) p &((kickos::Thread*)0)->link
+$6 = (kickos::ListNode *) 0x18
+(gdb) p $w = (kickos::Thread*)((char*)$m->waiters.head - 0x18)
+$7 = (kickos::Thread *) 0x200052e0 <kickos::detail::g_instance+2848>
+(gdb) p $w->name
+$8 = "odWt", '\000' <repeats 11 times>
+(gdb) p $w->wait_kind
+$9 = kickos::WAIT_MUTEX
+(gdb) p/x $w->wait_va
+$10 = 0x20010d84
+(gdb) p/x $w->lock_id
+$11 = 0x2c4
+(gdb) bt 3
+#0  kickos::mutex_owner_exit (dying=dying@entry=0x20005188 <...>, held=held@entry=...) at .../kernel/sync/sync.cc:714
+#1  kickos::sched::exit_current (code=0, cause=kickos::sched::EXIT_RETURN, held=0x0) at .../kernel/include/kickos/held.h:24
+#2  (anonymous namespace)::syscall_body (nr=<optimized out>, ...) at .../kernel/syscall/syscall.cc:835
+(gdb) finish
+(gdb) p $w->wait_result
+$12 = -130
+(gdb) p $w->state
+$13 = {v_ = kickos::ThreadState::READY}
+(gdb) p/x '(anonymous namespace)::g_od_m'
+$14 = {word = 0x2c4}
+(gdb) p $m->owner
+$15 = (kickos::Thread *) 0x0
+(gdb) p $k->mutex_active
+$16 = (kickos::Mutex *) 0x0
 ```
+
+Every exit calls `mutex_owner_exit`, so the condition skips the threads that die holding no
+record. `odOwn` dies with `dying` set, holding one record. The word holds `odOwn`'s lock id
+(`0x383`) with the top bit, `KOS_MUTEX_WAITERS`, set: a thread waits. `0x18` is the offset of
+`link` in a `Thread`, so `$w` is the thread at the head of the record's waiters: `odWt`, parked
+through the word's own address. After the walk, the word holds `odWt`'s lock id and no waiters
+bit, since nobody else waits. `odWt` is `READY`, with `-130`, `-KOS_EOWNERDEAD`, as its result.
+Its only waiter gone, the record is free again (no owner) and the kernel's list of records is
+empty. gdb shows the `exit_current` frame at a line of `held.h` because that code is inlined
+into it.
 
 **Why, and the contract:** [Book: Adding a kernel object type](../book/adding-a-kernel-object-type-the-additive-recipe.md)
 (the close protocol and the teardown flag), [Book: Priority inheritance](../book/priority-inheritance-lending-urgency.md)
@@ -858,8 +899,8 @@ own stack. Before anything is printed, the kernel decides from the CPU's privile
 status bits, the frame's position and the thread's state whether the fault is the thread's.
 If it is, the handler records the facts and rewrites the frame so that the exception return
 resumes the dying thread, privileged, in a stub that moves to its kernel stack and calls the
-one exit path. That path ends the task, closes every capability (force-unlocking mutexes,
-answering parked callers and senders), wakes joiners, marks the task dead, and raises the
+one exit path. That path ends the task, hands every mutex it holds that a thread waits on to that
+waiter, closes every capability (answering parked callers and senders), wakes joiners, marks the task dead, and raises the
 watch. The creator learns the exit status from the task; the init, if it watches, restarts or
 ends. The system keeps running. If any test fails, the same handler panics instead.
 

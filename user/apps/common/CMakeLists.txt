@@ -45,6 +45,7 @@ add_subdirectory(hello_c)
 add_subdirectory(selftest)
 add_subdirectory(stress)
 add_subdirectory(sched_exit)
+add_subdirectory(mutexbench)
 # Its only witness is the kernel block's high-water line, which a panic prints only where the
 # board carves the blocks and reports them.
 if(KICKOS_KERNEL_STACKS AND KICKOS_KSTACK_REPORT)
@@ -99,6 +100,10 @@ endif()
 # Only the uaccess witness's scratch tree builds it: no other kernel answers its call.
 if(KICKOS_WITNESS_UACCESS)
   add_subdirectory(uaccess)
+endif()
+# Only the rewind witness's scratch tree builds it: no other kernel answers its call.
+if(KICKOS_WITNESS_REWIND)
+  add_subdirectory(ucasrewind)
 endif()
 # Sim only: each drives something that is only automatable on the host, a loopback "device"
 # that is the host wire, a published posture, or __builtin_trap.

@@ -185,6 +185,56 @@ so the next reader does not mistake it for a guarantee the language made. The
 exact bound and its wording live with the type in
 `system/include/kickos/sys/atomic.h`.
 
+## A compare-and-swap on a core that has none
+
+One read-modify-write cannot be designed away: the lock itself. A mutex that lives in a word
+of user memory ([Chapter 2.3](priority-inheritance-lending-urgency.md)) is taken with a
+**compare-and-swap**. It reads the word, compares it with an expected value, and stores a new
+value only if the two match, as one indivisible step. Most of the fleet has instructions for
+it. For instance:
+
+- Arm cores from Armv7-M up have an exclusive load and an exclusive store.
+- RISC-V has a load-reserved and a store-conditional.
+- Xtensa LX6 has a conditional store that compares against a special register.
+- x86-64 has a locked compare-and-exchange.
+
+A pair of instructions fails its store when anything may have touched the word since the
+load, and the code then tries again. The kernel must make sure that a thread interrupted
+between the two can never complete a store based on a stale load. On some cores the exception
+return already does this. On others the kernel does it itself, for instance on RISC-V, where
+it makes one store-conditional of its own on every return to user mode.
+
+Armv6-M, for instance the Cortex-M0+, and RXv3 have neither a compare-and-swap instruction
+nor such a pair. And user code cannot mask
+interrupts to make a plain load, compare and store indivisible, because masking is a
+privileged act. So KickOS uses a **restartable sequence**. The user compare-and-swap is three
+instructions in one short routine: load the word, compare, store. On one core, the only thing
+that can come between the load and the store is the kernel switching this thread out and
+running another thread that writes the word. So the kernel's switch checks where it stopped
+the thread. When the saved program counter lies inside the window, from the load up to and
+including the store, the switch moves it back to the load. When the thread runs again, it
+reads the word afresh, so its store can never land over what another thread wrote meanwhile.
+
+Two facts make this safe:
+
+- No instruction in the window overwrites its own input, so starting the window again gives
+  the same result as running it once.
+- No interrupt handler writes a lock word. The rewind happens only at a switch, so a handler
+  that wrote the word and returned straight into the window would have its write lost under
+  the resumed store.
+
+The price is a few instructions in the switch path, paid on every switch on those two cores.
+
+**It is still not lock-free.** An operation is *lock-free* when it completes whatever the
+scheduling, with no help from any other party. The restartable sequence does not give that. It
+is indivisible only because the kernel cooperates, and only against the one other party it
+covers: another thread on the same core, which can run only after a switch. It does nothing
+against another core that writes the same word at the same moment. So the trait of the
+previous section is right to answer 0 on those two cores, and nothing here changes what the
+hardware can do. The sequence holds only for a lock word that the threads of one core share.
+On a chip whose cores each run their own kernel, the kernel refuses a lock word in the memory
+those cores share, as soon as a thread waits on it.
+
 ## Sixty-four bits is a different problem
 
 Width changes the answer, and not gradually. A relaxed 64-bit atomic load is a
@@ -306,7 +356,10 @@ right guard reports the whole operation set and so refuses those same boards for
 an operation they never use. A 64-bit field is a libcall everywhere and is a
 different problem. And a field with two writers was always a lock problem: the
 critical section is what serialises it, and once there is one, the atomic states
-nothing the lock was not already providing.
+nothing the lock was not already providing. The one read-modify-write that cannot be avoided
+is the lock's own compare-and-swap. Where a core has no instruction for it, the kernel makes a
+short user sequence indivisible against a switch, which holds on one core and is not
+lock-free.
 
 The counter case has a name in this tree, because a load-add-store pair is the one shape
 that recurs: a helper carries it, and the helper's contract is the single writer rather
@@ -314,6 +367,8 @@ than any atomicity. See [`../reference/style.md`](../reference/style.md) for the
 
 ## Where to go next
 
+- The lock word the compare-and-swap takes, and the kernel's part when it is held: Chapter
+  2.3, *[Priority inheritance](priority-inheritance-lending-urgency.md)*.
 - What a freestanding toolchain provides and what it does not, which is why
   `<atomic>` being in the subset matters: Chapter 0.6, *What's under #include:
   the C library and the C++ runtime*.
