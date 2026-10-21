@@ -72,7 +72,7 @@ isolation model exists to avoid. It also inverts blocking semantics in an awkwar
 thread that is blocking on my behalf", so there are two parked threads where there
 should be one. And the service thread would itself have to live in the kernel's
 protection domain, which is a hole in the microkernel claim taken on for no isolation
-gain (Chapter 7.4).
+gain ([Chapter 7.4](privilege-is-three-axes-not-one-bit.md)).
 
 The submission queue is excellent at amortising many requests and bad at the latency
 of one small operation, which is the shape almost every real-time syscall has. It also
@@ -106,7 +106,7 @@ That second one is why the obvious implementation is wrong. The obvious implemen
 dispatches inside the trap handler: the handler has the arguments, it is already
 privileged, so why leave? Because on a core where a switch requested from handler mode
 can only be *deferred* -- ARM's PendSV tail-chains after the handler returns, and the
-same shape holds for the RX and RISC-V software-interrupt switchers (Chapter 3.5's
+same shape holds for the RX and RISC-V software-interrupt switchers ([Chapter 3.5](context-switching-and-the-silicon-contract.md)'s
 deferred-switch axis) -- a blocking call made inside the handler would return to the
 caller first and switch away afterwards. The caller would run on, believing it had
 blocked, until the deferred switch fired. That is a lost-wakeup-class bug built into
@@ -158,7 +158,7 @@ the caller's own stack, with no saved register frame for a reply to land in and 
 stacked return address to redirect, so a fast path there would be the ordinary path
 wearing another name. Every other syscall number, on every port, takes the plain shape
 above. Read this as what it is: a measured exception to a rule, bought with hand-written
-assembly on the one path where the round trip is the whole point (Chapter 8.5), and not
+assembly on the one path where the round trip is the whole point ([Chapter 8.5](synchronous-call-and-reply.md)), and not
 as permission to do kernel work in a handler generally.
 
 Three details in that table are worth pulling out, because each teaches something the
@@ -250,7 +250,7 @@ application and the kernel; renumbering is a silent, spectacular failure mode.
 **A 64-bit argument is split into halves, deliberately.** `sleep_ns` takes low and high
 words. A 64-bit *result* needs no such treatment: it rides the ABI's own return-register
 pair through `arch_syscall64`, so the monotonic clock read has no out-pointer at all,
-and none of the pointer hazards below apply to it (Chapter 7.1 makes that the worked
+and none of the pointer hazards below apply to it ([Chapter 7.1](alignment-across-the-syscall-boundary.md) makes that the worked
 example of a guard with no subject). The reason for splitting the arguments is
 not the MCU's word size, it is *uniformity*: the fleet includes a 64-bit host sim, so an
 ABI that relied on `uintptr_t` being 64 bits wide would be a different ABI on different
@@ -297,7 +297,7 @@ Here is the inversion that makes syscall-boundary checking non-optional, and it 
 single most important idea in this chapter.
 
 `syscall_dispatch` runs **privileged**. It is therefore on the *bypass* side of the
-very protection unit that contains everybody else (Chapter 7.4, axis 2). Every value
+very protection unit that contains everybody else ([Chapter 7.4](privilege-is-three-axes-not-one-bit.md), axis 2). Every value
 the caller supplied is now in the hands of code the unit does not check. A bad value
 does not become a contained user-mode fault; it becomes a kernel action.
 
@@ -363,7 +363,7 @@ one.** Its saved CPU mode while parked inside a syscall is *privileged* -- it mu
 or the continuation would resume unprivileged and fault on the kernel data it was in
 the middle of touching. What it goes back to at the end is its resting mode, held
 separately in the saved context. That resting-versus-transient distinction is created here and
-consumed on the way out; Chapter 7.4 explains why it is an axis and Chapter 3.5 explains
+consumed on the way out; [Chapter 7.4](privilege-is-three-axes-not-one-bit.md) explains why it is an axis and [Chapter 3.5](context-switching-and-the-silicon-contract.md) explains
 where in the saved state it lives. On ARM there is one further detail that makes the
 handler-versus-thread-mode choice concrete: the deferred switch arrives as a *real
 exception preempting the trampoline's thread-mode code*, which is precisely the thing
@@ -461,7 +461,7 @@ the fallback, not the road.
 
 ## What it costs, and when not to use it
 
-A syscall is a trap, and a trap costs what Chapter 3.5's cost section describes: the
+A syscall is a trap, and a trap costs what [Chapter 3.5](context-switching-and-the-silicon-contract.md)'s cost section describes: the
 hardware entry, whatever register saving the core does not do for free, the trampoline
 redirect, and the return. For a control-plane operation -- create a thread, block on a
 semaphore, send a message -- that cost is irrelevant next to what the operation itself
@@ -496,7 +496,7 @@ only a purity argument. It is where the performance argument lands too.
   Chapter 7.4, *[Privilege is three axes, not one bit](privilege-is-three-axes-not-one-bit.md)*.
 - The handle-resolve chokepoint every object-naming syscall funnels through: Chapter
   8.1, *[Naming a kernel object](handles-and-the-resolve-chokepoint.md)*.
-- Each ISA's concrete trap entry, worked end to end: Chapter 4, *Per-ISA guided tour*,
+- Each ISA's concrete trap entry, worked end to end: [Chapter 4](one-kernel-many-isas.md), *Per-ISA guided tour*,
   and the fully worked port
   [`porting-a-new-isa-riscv.md`](porting-a-new-isa-riscv.md).
 - The exact contracts: [`../reference/invariants.md`](../reference/invariants.md)

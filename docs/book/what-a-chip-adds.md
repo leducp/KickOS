@@ -74,7 +74,7 @@ plain GPIO or one of several **alternate functions**. On the STM32F411, pins PA2
 PA3 become USART2's transmit and receive lines when their alternate-function field
 selects function 7. Other chips draw this differently: the RP2040 has a per-pin
 function select; the ESP32-C6 has a **GPIO matrix** that can route almost any
-peripheral signal to almost any pin. Chapter 8.4 shows why the mux matters to
+peripheral signal to almost any pin. [Chapter 8.4](the-fast-path-is-the-capability-gpio-direct-mmio.md) shows why the mux matters to
 isolation: on some chips the register that toggles a pin is separate from the one
 that muxes it, on others it is not.
 
@@ -91,7 +91,7 @@ KickOS keeps the ROM's divisor rather than recomputing it.
 
 ### The memory map and the interrupt lines
 
-Chapter 0.1 showed how to read a memory map. What changes per chip is every number in
+[Chapter 0.1](the-machine-underneath.md) showed how to read a memory map. What changes per chip is every number in
 it: where flash starts (`0x08000000` on the F411, an external QSPI flash behind an
 execute-in-place window at `0x10000000` on the RP2040), where SRAM starts and how big
 it is (`0x20000000`, 128 KiB on the F411; `0x40800000`, 512 KiB on the ESP32-C6), and
@@ -103,7 +103,7 @@ software programs that route.
 
 ### Where the protection hardware sits
 
-Chapter 3.7 develops this; the short form belongs here because it is a chip fact.
+[Chapter 3.7](peripheral-isolation-and-the-hardware-ceiling.md) develops this; the short form belongs here because it is a chip fact.
 A unit on the **CPU side** sees every access the core makes, so it can confine a
 thread to its own device registers: the F411's PMSAv7 MPU. A unit on the
 **bus-slave side** sees only the traffic to what it guards: the K64F's SYSMPU never
@@ -127,14 +127,14 @@ handler can run from flash at all. On the ESP32-C6 the ROM copies the image into
 and starts it there. Chips also differ in what they leave armed: the ESP32-C6's ROM
 arms watchdogs that reset the part within seconds, and the K64F's watchdog resets it
 about 238 ms after reset unless disabled first. A boot ROM is often also the way back
-into firmware download mode (Chapter 8.6).
+into firmware download mode ([Chapter 8.6](rebooting-into-the-bootloader-and-who-may-ask.md)).
 
 ### Errata and quirks
 
 A chip and its manual disagree. Vendors publish **errata sheets** for known silicon
 bugs, and porters collect the rest. In the F411's chip code: the core's cycle counter
 (DWT) is not the clock, because on parts in this fleet it can intermittently read
-garbage, which a wrap-extending clock turns into a jump of 2^32 ticks (Chapter 2.1);
+garbage, which a wrap-extending clock turns into a jump of 2^32 ticks ([Chapter 2.1](the-time-base-a-monotonic-clock-you-can-trust.md));
 and TIM2's low-power clock enable must stay set, or the clock stops when the idle
 thread executes `WFI`. On the K64F, the two watchdog unlock keys must land within 20
 bus cycles of each other, so the pair is one assembly block no optimisation level can

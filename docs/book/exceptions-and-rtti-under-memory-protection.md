@@ -6,7 +6,7 @@ Copyright (c) 2026 Philippe Leduc
 
 > A Chapter-7 companion (prereq: the C++ runtime chapter 0.6,
 > [`whats-under-include-libc-and-the-cxx-runtime.md`](whats-under-include-libc-and-the-cxx-runtime.md),
-> and the memory-protection idea of Chapter 7). That chapter taught *what* the C++
+> and the memory-protection idea of [Chapter 7](memory-protection.md)). That chapter taught *what* the C++
 > runtime is made of -- three stacked libraries -- and left memory protection to
 > this one: what a `throw`/`catch`/`dynamic_cast` actually touches *at runtime*, why a memory-protection unit makes it hard, and how an
 > UNPRIVILEGED thread reaches all of it without a fault. For the exact contract it binds
@@ -126,7 +126,7 @@ look for it.
 ### At the app boundary
 
 Only app code enables exceptions. The kernel, its libraries and the arch layer are
-compiled freestanding (Chapter 0.6), so their frames have no unwind tables. The kernel
+compiled freestanding ([Chapter 0.6](whats-under-include-libc-and-the-cxx-runtime.md)), so their frames have no unwind tables. The kernel
 enters app code only through `main` or a thread trampoline and never calls an app
 callback from an interrupt handler, so every app call chain starts at one of those
 entries. If an exception escapes the app's outermost frame, the unwinder's search phase
@@ -265,4 +265,4 @@ of the companion chapter
   [`whats-under-include-libc-and-the-cxx-runtime.md`](whats-under-include-libc-and-the-cxx-runtime.md).
 - Where the writable floor comes from and how the linker partitions one image:
   [*Where your RAM goes*](where-your-ram-goes-full-cxx-memory-floor-and-the-linker-split.md).
-- Memory protection itself: Chapter 7, *Memory protection*.
+- Memory protection itself: [Chapter 7](memory-protection.md), *Memory protection*.

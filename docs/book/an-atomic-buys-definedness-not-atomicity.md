@@ -6,8 +6,8 @@
 > the store it compiles to do not change; what `volatile` does and does not
 > promise; and where the honest dividing line runs, which is read-modify-write,
 > an instruction pair on part of this fleet and a library call on the rest. It
-> sits beside Chapter 0.6 (what is under `#include`, and what a freestanding
-> toolchain leaves you) and Chapter 3.8 (the ISR that posts what a thread will
+> sits beside [Chapter 0.6](whats-under-include-libc-and-the-cxx-runtime.md) (what is under `#include`, and what a freestanding
+> toolchain leaves you) and [Chapter 3.8](a-masked-interrupt-is-latched-not-lost.md) (the ISR that posts what a thread will
 > read). It points into [`../reference/style.md`](../reference/style.md) for the
 > house rule and the exact surface,
 > [`../reference/invariants.md`](../reference/invariants.md) for the fields whose
@@ -370,10 +370,10 @@ than any atomicity. See [`../reference/style.md`](../reference/style.md) for the
 - The lock word the compare-and-swap takes, and the kernel's part when it is held: Chapter
   2.3, *[Priority inheritance](priority-inheritance-lending-urgency.md)*.
 - What a freestanding toolchain provides and what it does not, which is why
-  `<atomic>` being in the subset matters: Chapter 0.6, *What's under #include:
+  `<atomic>` being in the subset matters: [Chapter 0.6](whats-under-include-libc-and-the-cxx-runtime.md), *What's under #include:
   the C library and the C++ runtime*.
 - The ISR-to-thread handoff these fields serve, and why the record has to be a
-  latch rather than a shared flag: Chapter 3.8, *A masked interrupt is latched,
+  latch rather than a shared flag: [Chapter 3.8](a-masked-interrupt-is-latched-not-lost.md), *A masked interrupt is latched,
   not lost*.
 - The exact rule, the surface the wrapper exposes, and where `volatile` remains
   correct: [`../reference/style.md`](../reference/style.md).

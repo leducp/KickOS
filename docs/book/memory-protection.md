@@ -15,7 +15,7 @@
 
 ## Why a kernel fences memory
 
-Chapter 0.1 described a microcontroller as one flat address space: every memory and
+[Chapter 0.1](the-machine-underneath.md) described a microcontroller as one flat address space: every memory and
 every device sits at a fixed address, and any instruction can name any address. With no
 protection, every program on the chip is in effect one program. A stray pointer in one
 thread can overwrite another thread's stack, the kernel's ready queue, or a device
@@ -28,7 +28,7 @@ The hardware checks every access against that description, and refuses one that 
 outside it. Three things follow, on any OS:
 
 - **Only privileged code may write the description.** If a program could edit its own
-  fence, the fence would mean nothing. This is why protection is kernel work (Chapter 0.2).
+  fence, the fence would mean nothing. This is why protection is kernel work ([Chapter 0.2](what-is-an-os-and-a-kernel.md)).
 - **The description changes with the running program.** Each program has its own fence,
   so the kernel reloads the hardware when it switches from one to another.
 - **A refused access is a trap.** The kernel then decides what dies: on KickOS, the
@@ -37,7 +37,7 @@ outside it. Three things follow, on any OS:
 ## Two kinds of hardware
 
 **Why there are two.** A protection unit sits between the core and the bus, and there are
-two ways to build one. Chapter 0.1 named them: the MPU of a microcontroller and the MMU
+two ways to build one. [Chapter 0.1](the-machine-underneath.md) named them: the MPU of a microcontroller and the MMU
 of an application processor. They differ in what they can describe, and that shapes
 everything else.
 
@@ -110,7 +110,7 @@ exactly (`arch_mpu_region_encodable`), to encode a whole region set into the uni
 words (`arch_mpu_encode`), and to install it. Installing is two steps: `arch_mpu_apply`
 names the incoming thread's set when the scheduler decides, and `kickos_arch_mpu_commit`
 writes it into the unit at the physical switch, where the outgoing thread has really
-stopped running. Chapter 7.5 explains why. The arch also rounds every RAM block to a size
+stopped running. [Chapter 7.5](protection-follows-the-cpu-not-the-schedulers-intent.md) explains why. The arch also rounds every RAM block to a size
 one row can describe (`arch_ram_region_size`) and lists the blocks it owns for life, which
 no grant may touch (`arch_reserved_blocks`). The kernel spends almost no rows on itself:
 privileged code reaches what the rows do not describe, through the ARM **background
@@ -163,7 +163,7 @@ protection is per page, and translation hides where a frame sits physically. Cha
 
 ### The f411 example: the regions of a hello
 
-The f411 example is a `main` that calls `printf("hello\n")` (Chapter 0.5 builds it). On the
+The f411 example is a `main` that calls `printf("hello\n")` ([Chapter 0.5](the-toolchain-from-source-to-a-running-image.md) builds it). On the
 STM32F411 its thread runs unprivileged under a PMSAv7 MPU, and the regions that matter are
 three, set by the linker script `arch/arm/chip/stm32f411/stm32f411.ld`:
 
@@ -177,7 +177,7 @@ Three of eight rows. The kernel's data, from `0x20000000` to `0x20008000`, is in
 `main` cannot touch it; the kernel reaches it through the background region. USART2, at
 `0x40004400`, is in no row either. That is why `printf` ends in a syscall: a store from `main`
 to the data register at `0x40004404` would fault, so the bytes go to the kernel, which writes
-the register itself (Chapter 0.2).
+the register itself ([Chapter 0.2](what-is-an-os-and-a-kernel.md)).
 
 Now install the package for `qemu-arm64`, a Cortex-A53 with an MMU, and build the same
 `main.c`. The task runs at EL0 in its own address space. Its code is mapped read and execute,

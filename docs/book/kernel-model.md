@@ -16,7 +16,7 @@
 
 ## Why a kernel needs a model of execution
 
-Chapter 0.2 said that a kernel shares the CPU among programs. Sharing is the whole
+[Chapter 0.2](what-is-an-os-and-a-kernel.md) said that a kernel shares the CPU among programs. Sharing is the whole
 problem of this part. A core runs one instruction stream at a time, and a system has
 more work than cores: a control loop, a UART driver, a logger, the app's `main`. The
 kernel must answer four questions, over and over:
@@ -53,7 +53,7 @@ Around the threads sit three more pieces:
 holds the saved context, the stack bounds, the priority, the scheduling policy, the
 protection regions, and the thread's own capability table. A **task** (`Task`,
 `kernel/include/kickos/task.h`) is KickOS's process: a group of threads that share one
-memory domain and live and die together. Chapter 7 covers the domain; this part only
+memory domain and live and die together. [Chapter 7](memory-protection.md) covers the domain; this part only
 needs the thread.
 
 A thread moves through a small set of states (`ThreadState`):
@@ -152,14 +152,14 @@ sorted list, and the one-shot is armed for the earliest of them, or for the end 
 running thread's quantum if that comes sooner. A system with nothing timed arms nothing
 and takes no timer interrupt at all.
 
-**The f411 example.** Chapter 0.3 met TIM2 on interrupt line 28: it is this chip's
+**The f411 example.** [Chapter 0.3](interrupts-and-traps.md) met TIM2 on interrupt line 28: it is this chip's
 `arch_clock_now`, a 32-bit counter whose wraps the TIM2 handler adds into a 64-bit
 count. The one-shot is a different timer, the core's own SysTick. So on the f411, "what
 time is it" and "wake me at T" are two peripherals, and the kernel above them only sees
 the two functions.
 
 A tickless kernel is exactly as trustworthy as its clock: a "now" that jumps forward
-once makes every armed deadline look already past. Chapter 2.1 explains why, and what a
+once makes every armed deadline look already past. [Chapter 2.1](the-time-base-a-monotonic-clock-you-can-trust.md) explains why, and what a
 porter checks before trusting a counter.
 
 ## Blocking and waking
@@ -192,10 +192,10 @@ never both. On top of that substrate the kernel offers only two kinds of synchro
   when a thread must wait for it.
 
 Condition variables, read-write locks and barriers are userspace libraries over those
-two. Endpoints (Chapter 8.3) and the notifications that carry interrupts to drivers
-(Chapter 3) park on the same substrate.
+two. Endpoints ([Chapter 8.3](endpoints-synchronous-ipc-by-rendezvous.md)) and the notifications that carry interrupts to drivers
+([Chapter 3](interrupt-model.md)) park on the same substrate.
 
-**The f411 example.** On their way out through the kernel console (Chapter 0.2), the
+**The f411 example.** On their way out through the kernel console ([Chapter 0.2](what-is-an-os-and-a-kernel.md)), the
 bytes of `printf("hello\n")` go into its transmit ring, which the USART2 transmit
 interrupt drains into the data register at `0x40004404`. If the ring has no room, the
 writing thread parks (`console_room_wait`, `kernel/thread/park.cc`). When the drain
@@ -244,17 +244,17 @@ Two consequences shape the rest of the kernel:
 - **A switch may wait for the lock.** On some architectures the context switch is
   *deferred*: the kernel requests it, and it happens when the lock opens. On Cortex-M
   that is the PendSV exception, at the lowest priority. A thread that has just parked is
-  therefore still running for a few instructions, which is a hazard Chapter 2.2 closes.
+  therefore still running for a few instructions, which is a hazard [Chapter 2.2](the-blocking-substrate-one-wait-wake-primitive.md) closes.
 
 **The f411 example.** The clock read itself is a critical section. TIM2's counter and
 the 64-bit wrap count are two values; the read takes them with interrupts masked, so the
-TIM2 handler cannot add a wrap between the two reads (Chapter 0.3).
+TIM2 handler cannot add a wrap between the two reads ([Chapter 0.3](interrupts-and-traps.md)).
 
 Not everything shared goes under the lock. A single word that one context writes and
 another reads, such as a console ring index the producer and the drain each advance,
-can be a C++ atomic instead. Chapter 2.4 explains what that atomic buys. On a multicore
+can be a C++ atomic instead. [Chapter 2.4](an-atomic-buys-definedness-not-atomicity.md) explains what that atomic buys. On a multicore
 part, KickOS keeps one kernel lock but gives each core its own ready queue, which is
-Chapter 2.5.
+[Chapter 2.5](one-lock-many-ready-queues.md).
 
 ## How the pieces fit: one sleep
 
@@ -320,7 +320,7 @@ section & interrupt-priority bands", "Deferred switch & blocking model", "Tickle
 - What a context switch saves, and why it is deferred on some cores: Chapter 3.5,
   *[Context switching and the silicon
   contract](context-switching-and-the-silicon-contract.md)*.
-- How an interrupt reaches a userspace driver: Chapter 3, the interrupt model.
+- How an interrupt reaches a userspace driver: [Chapter 3](interrupt-model.md), the interrupt model.
 - How a thread names a semaphore or an endpoint: Chapter 8.1, *[The handle and the resolve
   chokepoint](handles-and-the-resolve-chokepoint.md)*.
 - The code from the start: [Journey 3, Sleep](../journey/03-sleep.md).

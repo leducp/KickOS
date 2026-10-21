@@ -110,7 +110,7 @@ see before anything else works:
 Most of a chip is a description, and the code is a short list of things only code
 can say: register layouts, clock and init sequences, the mux. On the f411 the
 time base is TIM2, a 32-bit counter the chip extends to 64 bits in software;
-Chapter 2.1 explains why such a clock needs care. When two parts of one vendor
+[Chapter 2.1](the-time-base-a-monotonic-clock-you-can-trust.md) explains why such a clock needs care. When two parts of one vendor
 family share most of their bodies, a family directory such as
 `arch/arm/chip/stm32f1f3/` holds the shared unit, and each chip keeps what really
 differs.
@@ -124,7 +124,7 @@ The order:
 2. **An arch declaration** in `arch/Kconfig`, with the capabilities the arch has.
 3. **The arch backend**, `arch/<family>/<arch>/`: the saved context, the context
    switch, the trap entry and the syscall path, the critical section, the panic
-   stack. Chapter 3.5 states what every backend owes here. A backend also owes user
+   stack. [Chapter 3.5](context-switching-and-the-silicon-contract.md) states what every backend owes here. A backend also owes user
    code a compare-and-swap, and a promise that one in flight fails across any return to
    user mode. A core with no such instruction uses a restartable sequence that the
    switch rewinds ([Chapter 2.4](an-atomic-buys-definedness-not-atomicity.md)).

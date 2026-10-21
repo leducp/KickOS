@@ -2,7 +2,7 @@
 <!-- Copyright (c) 2026 Philippe Leduc -->
 # The interrupt model: the kernel takes it, a driver serves it
 
-> Chapter 0.3 showed how the CPU stops for an interrupt and enters a handler. This
+> [Chapter 0.3](interrupts-and-traps.md) showed how the CPU stops for an interrupt and enters a handler. This
 > chapter asks the question a microkernel adds: if drivers are unprivileged tasks,
 > who runs when their device interrupts? It lays out the general answers, then the
 > one KickOS chose: two tiers of handler behind one dispatch seam, with the console
@@ -33,7 +33,7 @@ The f411 example shows both sides. While the app's `printf("hello\n")` runs, two
 lines can fire on the STM32F411:
 
 - **TIM2, line 28.** The kernel's time base: its counter wraps about every 51
-  seconds, and the wrap must be counted (Chapter 0.3). Nothing outside the kernel
+  seconds, and the wrap must be counted ([Chapter 0.3](interrupts-and-traps.md)). Nothing outside the kernel
   needs TIM2, and nothing outside it may touch it.
 - **USART2, line 38.** The serial port. Its transmit-empty event says "give me the
   next byte", and its receive event says "a byte arrived". Both belong to whoever
@@ -68,7 +68,7 @@ The event form has two costs. Each interrupt now pays a context switch before th
 device is served. And the line must stay masked from the kernel's handler until the
 driver has served the device, because a device that still asserts its signal would
 otherwise interrupt again the moment the handler returns, and the driver would never
-run. That masked window has consequences of its own (Chapter 3.8).
+run. That masked window has consequences of its own ([Chapter 3.8](a-masked-interrupt-is-latched-not-lost.md)).
 
 ## What KickOS chose: two tiers
 
@@ -135,7 +135,7 @@ follows each one in the code.
 1. **Claim.** A bring-up task holding the `AUTH_IRQ` authority claims the line and
    receives a capability for it. From then on, every use of the line is checked by
    possession of that capability, and the bring-up task delegates it to the driver
-   (Chapter 8.0).
+   ([Chapter 8.0](authority-from-possession-or-from-identity.md)).
 2. **Bind.** The line capability is bound to a notification. A notification is a word
    of event bits with one waiting thread, so one driver can wait on several lines and
    a software "doorbell" at once and tell them apart by bit.
@@ -187,7 +187,7 @@ whatever the controller.
 
 That last rule is part of the seam, not a property every controller has for free. The
 NVIC and the GIC latch a pending bit in hardware. A chip whose lines are raised from
-software emulates the latch in its arch code. Chapter 3.8 explains why dropping
+software emulates the latch in its arch code. [Chapter 3.8](a-masked-interrupt-is-latched-not-lost.md) explains why dropping
 instead would break every driver's `wait`.
 
 ## The console: the one device the kernel keeps
@@ -232,16 +232,16 @@ urgent, the kernel switches to it before returning. On Cortex-M the switch is th
 lowest-priority exception, PendSV, which runs right after the device handler without
 returning to the interrupted thread in between. An event-based interrupt model is
 only as cheap as that switch, which is why the switch is written in assembly against
-a precise contract with each core (Chapter 3.5).
+a precise contract with each core ([Chapter 3.5](context-switching-and-the-silicon-contract.md)).
 
 The interrupted thread's stack carries that frame, so its size must account for it,
-and the kernel must be able to trust where it points (Chapter 3.6, and Chapter 7.7,
+and the kernel must be able to trust where it points ([Chapter 3.6](thread-stacks-and-the-kiss-tension.md), and Chapter 7.7,
 *[Whoever stacks the trap frame owns the bounds
 check](whoever-stacks-the-trap-frame-owns-the-bounds-check.md)*). The
 driver's access to its own registers depends on whether the protection unit can gate
-a peripheral at all (Chapter 3.7). And the syscall that `printf` ends in uses the
+a peripheral at all ([Chapter 3.7](peripheral-isolation-and-the-hardware-ceiling.md)). And the syscall that `printf` ends in uses the
 same entry machinery on purpose: a trap is an interrupt the program asks for, and its
-dispatch must run in a context that can block (Chapter 3.9).
+dispatch must run in a context that can block ([Chapter 3.9](the-syscall-path-trap-dispatch-return.md)).
 
 ## Reading map
 
@@ -288,5 +288,5 @@ vector per line.
 - How a driver received its line capability, and why that authority is a
   capability: Chapter 8.0, *[Authority comes from possession, or from
   identity](authority-from-possession-or-from-identity.md)*.
-- Each ISA's realisation of the first level and the switch: Chapter 4, starting from
+- Each ISA's realisation of the first level and the switch: [Chapter 4](one-kernel-many-isas.md), starting from
   *[Porting a new ISA: RISC-V](porting-a-new-isa-riscv.md)*.

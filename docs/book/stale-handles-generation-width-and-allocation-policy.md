@@ -4,7 +4,7 @@ Copyright (c) 2026 Philippe Leduc
 -->
 # A stale handle must not be usable: generations, width, and allocation policy
 
-> Chapter 8.1 introduced the generation counter as the *detector* half of the resolve
+> [Chapter 8.1](handles-and-the-resolve-chokepoint.md) introduced the generation counter as the *detector* half of the resolve
 > chokepoint and left it there. This chapter is the detector on its own terms: what a
 > generation actually buys, why "how many bits?" is the wrong first question, why several
 > counters of identical width are still not several equal defenses, and why the *allocation
@@ -132,7 +132,7 @@ arithmetic. It is a calling convention. Sign is not a budget the hardware impose
 bit somebody spent on signalling failure, and the moment failure gets a channel of its own
 the bit comes back. (It is not free even then -- once every bit of a handle can be live,
 "negative" is no longer available as an error test on one, so "no capability" has to become
-a *value* the codec provably cannot mint. Chapter 8.1 covers what that costs.)
+a *value* the codec provably cannot mint. [Chapter 8.1](handles-and-the-resolve-chokepoint.md) covers what that costs.)
 
 Now put the recovered bit against the service-life number, which is the whole reason for
 recovering it. Even if the index field were zero bits wide and the generation got the entire
@@ -408,7 +408,7 @@ What that does and does not mean has to be said plainly, because a short wrap di
 detector with poorer odds and not a hole. A reply is not admitted on the thread generation
 alone: the entry also carries the caller's call sequence, and a reply whose sequence does not
 match the one the parked thread is waiting on is refused -- an independent guard on the same
-path, and the reason those eight bits were worth somebody's packing. Behind both, Chapter 8.1's
+path, and the reason those eight bits were worth somebody's packing. Behind both, [Chapter 8.1](handles-and-the-resolve-chokepoint.md)'s
 split is doing its job: bounds, liveness, type and rights are what confine authority, and they
 owe nothing to any counter. The two facts have to be stated together rather than one standing
 in for the other: how far a counter goes is a question about *detection rates*, and it answers
@@ -456,7 +456,7 @@ available. The design space that real systems occupy:
 That last one is the calibration for everything above. A generation counter is a **detector**;
 the thing keeping a wrap from being a security event is the **boundary** -- per-task naming,
 type, and rights -- which owes nothing to any counter and does not weaken by one bit if the
-generation is narrow. Chapter 8.1 makes that split; this chapter is entirely about the
+generation is narrow. [Chapter 8.1](handles-and-the-resolve-chokepoint.md) makes that split; this chapter is entirely about the
 detector, and a detector is graded on probabilities, not guarantees.
 
 ## The transferable rule

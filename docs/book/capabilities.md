@@ -148,7 +148,7 @@ that was not already held.
 
 The gaps are deliberate. Capabilities move only at spawn: no system call copies
 one between two running threads, and a message carries bytes, not capabilities.
-There is no revocation of a copy already given away. Chapter 8.0 weighs that
+There is no revocation of a copy already given away. [Chapter 8.0](authority-from-possession-or-from-identity.md) weighs that
 choice: the derivation tree that would buy revocation costs more on a small part
 than the property is worth.
 

@@ -2,7 +2,7 @@
 <!-- Copyright (c) 2026 Philippe Leduc -->
 # Context switching and the silicon contract
 
-> The conceptual chapter behind Chapter 4, *One kernel, many ISAs*. It teaches
+> The conceptual chapter behind [Chapter 4](one-kernel-many-isas.md), *One kernel, many ISAs*. It teaches
 > *what* a context switch must preserve and *why* that forces assembly and a precise
 > CPU/silicon contract; each ISA's concrete realisation (register set, trap entry,
 > exception-return instruction) is walked in the Journey's arch chapters. Points into `../reference/invariants.md` for the exact, code-synced
@@ -167,7 +167,7 @@ dispatch latency).*
    identical. Reload the protection registers only when the incoming region set
    actually differs from what is programmed, and skip the ordering fence when nothing
    changed. (This lever only exists once protection is enforced on the switch; see
-   Chapter 7.5.)
+   [Chapter 7.5](protection-follows-the-cpu-not-the-schedulers-intent.md).)
 
 3. **Save floating-point lazily.** Where FP state is a separate register file gated
    by a mode bit, leave it disabled and let the first FP instruction trap in the
@@ -203,7 +203,7 @@ KickOS keeps that assembly to the bare minimum: on the chips brought up for
 memory-protection work (K64F, XMC, ESP32-C6) the `Reset_Handler` is *C* -- the
 assembly is only "set SP, jump here" -- and the C handler does the rest (init the
 data ranges, run the C++ constructors, call `arch_init`, enter `kmain`). That is why
-a cross-cutting change like the app-data range table (Chapter 7) could be dropped
+a cross-cutting change like the app-data range table ([Chapter 7](memory-protection.md)) could be dropped
 into a shared C function every chip calls, with no assembly churn.
 
 Some startups are irreducibly larger, and the reason is always the silicon:
@@ -230,4 +230,4 @@ exception vectors, the windowed handlers, and the context switch itself.
   arch chapters, [12](../journey/12-armv6m.md) to [17](../journey/17-xtensa.md). A fully worked port is
   [`porting-a-new-isa-riscv.md`](porting-a-new-isa-riscv.md).
 - The privilege/isolation half of a thread's context (which memory it may touch):
-  Chapter 7, *Memory protection*.
+  [Chapter 7](memory-protection.md), *Memory protection*.

@@ -7,7 +7,7 @@
 > In this chapter:
 >
 > - who the Book is written for;
-> - the example every Part 0 chapter follows;
+> - the example the first chapters follow;
 > - how the Book fits with the two other KickOS documents;
 > - which chapter to read next.
 
@@ -15,20 +15,21 @@
 
 The Book assumes a reader who can read C and a little C++, and who has compiled
 a program, linked it and put it on a board or run it. It does not assume a
-course on computer architecture or operating systems. Part 0 supplies both, one
-concept at a time:
+course on computer architecture or operating systems. The first part of the
+Book, **Part 0** (the chapters numbered 0.0 to 0.6), supplies both, one concept at
+a time:
 
-- Chapter 0.1 describes the machine: the processor, memory and devices.
-- Chapter 0.2 says what an operating system is, and which part of it is the
+- [Chapter 0.1](the-machine-underneath.md) describes the machine: the processor, memory and devices.
+- [Chapter 0.2](what-is-an-os-and-a-kernel.md) says what an operating system is, and which part of it is the
   kernel.
-- Chapter 0.3 shows how the hardware stops a running program to run the kernel.
-- Chapter 0.4 compares two ways to divide the work between the kernel and
+- [Chapter 0.3](interrupts-and-traps.md) shows how the hardware stops a running program to run the kernel.
+- [Chapter 0.4](monolithic-vs-microkernel.md) compares two ways to divide the work between the kernel and
   everything else.
-- Chapter 0.5 follows a program from source text to a running board.
-- Chapter 0.6 shows what a line such as `#include <stdio.h>` brings into the
+- [Chapter 0.5](the-toolchain-from-source-to-a-running-image.md) follows a program from source text to a running board.
+- [Chapter 0.6](whats-under-include-libc-and-the-cxx-runtime.md) shows what a line such as `#include <stdio.h>` brings into the
   program.
 
-Chapter 1 then says what KickOS is for and the principles it applies, and the
+[Chapter 1](overview-and-principles.md) then says what KickOS is for and the principles it applies, and the
 chapters after it take KickOS apart one design decision at a time.
 
 The Book teaches the general idea first, the way any operating system faces it,
@@ -40,16 +41,31 @@ names a chapter of Andrew S. Tanenbaum's *Modern Operating Systems*.
 Part 0 follows one small program throughout, **the f411 example**: an
 application whose `main` calls `printf("hello\n")`, running on the `f411disco`
 board, a development board built around the STM32F411 microcontroller. The
-text leaves the chip through USART2, the serial port the board uses as its
-console. Each chapter takes the slice of the example it needs:
+chip sends the text out through USART2, one of its serial ports.
 
-- Chapter 0.1 finds the serial port in the chip's memory.
-- Chapter 0.2 explains why `printf` must ask the kernel instead of writing to the
+Two words carry that output, and they are easy to mix up:
+
+- A **UART** (Universal Asynchronous Receiver-Transmitter) is a piece of hardware
+  inside the chip: a serial port that sends bytes one bit at a time over a wire.
+  On a development board, a small adapter carries those bytes to your computer,
+  where a terminal program receives them. When the bytes encode text, commonly as
+  ASCII or UTF-8, the terminal displays that text. ST calls its serial ports **USART** (Universal Synchronous/Asynchronous
+  Receiver-Transmitter), because they can also send a clock signal. This book uses
+  USART2 only as a plain UART.
+- The **console** is not hardware. It is the place where a program's text output
+  appears, like the terminal window a desktop program prints to. On this board the
+  console is carried by USART2, but another board could carry it on a different
+  UART, or over USB.
+
+Each chapter takes the slice of the example it needs:
+
+- [Chapter 0.1](the-machine-underneath.md) finds the serial port in the chip's memory.
+- [Chapter 0.2](what-is-an-os-and-a-kernel.md) explains why `printf` must ask the kernel instead of writing to the
   port itself.
-- Chapter 0.3 follows the program into the kernel, and a timer interrupting it.
-- Chapter 0.4 asks who owns the serial port.
-- Chapter 0.5 builds the example and puts it on the board.
-- Chapter 0.6 lists what `printf` pulls in from the C library.
+- [Chapter 0.3](interrupts-and-traps.md) follows the program into the kernel, and a timer interrupting it.
+- [Chapter 0.4](monolithic-vs-microkernel.md) asks who owns the serial port.
+- [Chapter 0.5](the-toolchain-from-source-to-a-running-image.md) builds the example and puts it on the board.
+- [Chapter 0.6](whats-under-include-libc-and-the-cxx-runtime.md) lists what `printf` pulls in from the C library.
 
 ## How a chapter is shaped
 
@@ -106,7 +122,7 @@ the Reference for the rule.
 | [09, fault and kill](../journey/09-fault-and-kill.md) | 7.4, [Privilege is three axes](privilege-is-three-axes-not-one-bit.md) |
 
 6. **Branch out.** The rest of the Book can be read in any order; each chapter
-   names what it builds on. A porter reads Chapter 6 and
+   names what it builds on. A porter reads [Chapter 6](porting-kickos.md) and
    [`../reference/porting.md`](../reference/porting.md) next.
 
 ## Where to go next
