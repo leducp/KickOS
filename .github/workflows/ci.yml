@@ -19,6 +19,62 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Every other job runs only when these outputs say the change can affect it. Keep the workflow
+  # triggered on every event: a job skipped by `if` passes a required check, a workflow that
+  # never ran leaves it pending.
+  changes:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    outputs:
+      tree: ${{ steps.scope.outputs.tree }}
+      doc_gates: ${{ steps.scope.outputs.doc_gates }}
+      host: ${{ steps.scope.outputs.host }}
+      arm: ${{ steps.scope.outputs.arm }}
+      arm64: ${{ steps.scope.outputs.arm64 }}
+      riscv: ${{ steps.scope.outputs.riscv }}
+      x86: ${{ steps.scope.outputs.x86 }}
+      xtensa: ${{ steps.scope.outputs.xtensa }}
+      rx: ${{ steps.scope.outputs.rx }}
+      bench: ${{ steps.scope.outputs.bench }}
+    steps:
+      # Without the base's history git cannot diff the range, and every job runs.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Classify the files the change touches
+        id: scope
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.event.after }}
+        run: |
+          set -o pipefail
+          case "$EVENT" in
+            pull_request) range="$PR_BASE...$PR_HEAD" ;;
+            push) range="$PUSH_BEFORE..$PUSH_AFTER" ;;
+            *) range=all ;;
+          esac
+          .github/scripts/ci-scope.sh "$range" | tee -a "$GITHUB_OUTPUT"
+
+  # The tree gates whose corpus holds a docs file. code-quality runs them on any other change.
+  doc-gates:
+    needs: changes
+    if: needs.changes.outputs.doc_gates == 'true'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run the gates that read the docs
+        run: |
+          rc=0
+          for g in doc_names ascii spdx dash_punct shell_special_names; do
+            echo "== $g"
+            tests/static/check_$g.sh || rc=1
+          done
+          exit "$rc"
+
   # One job per KickOS toolchain family (conan/toolchain): when the cache, keyed on the recipe's
   # files, lacks the family, it restores it from the release toolchain-<version>-<revision>, or
   # else builds it and uploads the archive as an artifact for that release. The jobs below
@@ -27,6 +83,8 @@ jobs:
   #
   # Build or restore arm-none-eabi, the family every Cortex-M board builds with.
   toolchain-arm-none-eabi:
+    needs: changes
+    if: needs.changes.outputs.arm == 'true' || needs.changes.outputs.bench == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 360
     steps:
@@ -41,6 +99,8 @@ jobs:
 
   # Build or restore aarch64-none-elf, the family the QEMU virt and i.MX 8M Plus boards build with.
   toolchain-aarch64-none-elf:
+    needs: changes
+    if: needs.changes.outputs.arm64 == 'true' || needs.changes.outputs.bench == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 360
     steps:
@@ -55,6 +115,8 @@ jobs:
 
   # Build or restore riscv64-none-elf, whose multilibs every RV32 and RV64 board builds with.
   toolchain-riscv64-none-elf:
+    needs: changes
+    if: needs.changes.outputs.riscv == 'true' || needs.changes.outputs.bench == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 360
     steps:
@@ -69,6 +131,8 @@ jobs:
 
   # Build or restore x86_64-elf, the family the q35 board builds with.
   toolchain-x86_64-elf:
+    needs: changes
+    if: needs.changes.outputs.x86 == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 360
     steps:
@@ -84,6 +148,8 @@ jobs:
   # Build or restore xtensa-esp32-elf, the family the ESP32 builds with. Espressif's sources are
   # git snapshots, without the parsers a release tarball ships generated.
   toolchain-xtensa-esp32-elf:
+    needs: changes
+    if: needs.changes.outputs.xtensa == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 360
     steps:
@@ -99,6 +165,8 @@ jobs:
   # Build or restore rx-elf, the family the RX72M builds with. The RX patches, in
   # conan/toolchain/patches, carry the parsers they change generated.
   toolchain-rx-elf:
+    needs: changes
+    if: needs.changes.outputs.rx == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 360
     steps:
@@ -113,6 +181,8 @@ jobs:
 
   # Run source-only checks once. Other jobs exclude the tree label.
   code-quality:
+    needs: changes
+    if: needs.changes.outputs.tree == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 20
     steps:
@@ -130,6 +200,8 @@ jobs:
 
   # Run the host suite, excluding the source-only checks above.
   sim:
+    needs: changes
+    if: needs.changes.outputs.host == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 40
     steps:
@@ -160,6 +232,8 @@ jobs:
   # ASan needs fiber-switch annotations for the sim's ucontext stacks.
   # Set flags in the environment so oot_export's child CMake also links UBSan.
   sim-ubsan:
+    needs: changes
+    if: needs.changes.outputs.host == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 40
     env:
@@ -180,7 +254,8 @@ jobs:
   # Build and boot the Cortex-M boards QEMU runs: the four MPS2 machines, enforcing and flat,
   # the AN386 on the periodic scheduler tick, and the micro:bit.
   qemu-arm:
-    needs: toolchain-arm-none-eabi
+    needs: [changes, toolchain-arm-none-eabi]
+    if: needs.changes.outputs.arm == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 40
     # Allow timeout headroom for loaded runners. These QEMU targets use a coarse
@@ -309,7 +384,8 @@ jobs:
 
   # Ubuntu includes qemu-system-aarch64 in qemu-system-arm.
   qemu-arm64:
-    needs: toolchain-aarch64-none-elf
+    needs: [changes, toolchain-aarch64-none-elf]
+    if: needs.changes.outputs.arm64 == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 40
     env:
@@ -359,7 +435,8 @@ jobs:
   # system, its restart witness with the init's stack depth, the line taker, the driver
   # restart witness and the console restart witness.
   qemu-arm64-smp:
-    needs: toolchain-aarch64-none-elf
+    needs: [changes, toolchain-aarch64-none-elf]
+    if: needs.changes.outputs.arm64 == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 40
     env:
@@ -413,7 +490,8 @@ jobs:
   # reserved-root form, and the core any later ARMv8.x protection is witnessed on. An emulator
   # without the model must fail this job, not skip it.
   qemu-arm64-a710:
-    needs: toolchain-aarch64-none-elf
+    needs: [changes, toolchain-aarch64-none-elf]
+    if: needs.changes.outputs.arm64 == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 40
     env:
@@ -450,7 +528,8 @@ jobs:
   # Exercise shared-kernel GICv3 doorbells. The other SMP job uses GICv2;
   # AMP builds use one kernel core and cannot cover this path.
   qemu-arm64-gicv3:
-    needs: toolchain-aarch64-none-elf
+    needs: [changes, toolchain-aarch64-none-elf]
+    if: needs.changes.outputs.arm64 == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 40
     env:
@@ -493,7 +572,8 @@ jobs:
   # kernels over a cached share.
   # Do not retry: console interleaving and publication races must remain visible.
   qemu-arm64-amp:
-    needs: toolchain-aarch64-none-elf
+    needs: [changes, toolchain-aarch64-none-elf]
+    if: needs.changes.outputs.arm64 == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 40
     env:
@@ -572,7 +652,8 @@ jobs:
   # rv32imac/ilp32, the riscv64-none-elf family's multilib, without PMP enforcement, and the RV32
   # boards built only.
   qemu-riscv:
-    needs: toolchain-riscv64-none-elf
+    needs: [changes, toolchain-riscv64-none-elf]
+    if: needs.changes.outputs.riscv == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 40
     env:
@@ -668,7 +749,8 @@ jobs:
   # RV32 is the emulated region board whose SP is not masked, so the init reserves each task's
   # stack there. Its one core runs the init's priority witness.
   qemu-riscv-mpu:
-    needs: toolchain-riscv64-none-elf
+    needs: [changes, toolchain-riscv64-none-elf]
+    if: needs.changes.outputs.riscv == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 40
     env:
@@ -704,7 +786,8 @@ jobs:
   # qemu-system-riscv. The SMP variant exercises address-space teardown while peers may still
   # hold a root page containing kernel mappings.
   qemu-riscv64:
-    needs: toolchain-riscv64-none-elf
+    needs: [changes, toolchain-riscv64-none-elf]
+    if: needs.changes.outputs.riscv == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 40
     env:
@@ -762,7 +845,8 @@ jobs:
   # Boot PE32+ through OVMF, linked by the KickOS toolchain's x86_64-elf ld under i386pep.
   # Require firmware and mtools so image tests cannot silently skip.
   qemu-x86_64:
-    needs: toolchain-x86_64-elf
+    needs: [changes, toolchain-x86_64-elf]
+    if: needs.changes.outputs.x86 == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 40
     env:
@@ -835,7 +919,8 @@ jobs:
 
   # Above one core, apart from the one-core job so that neither runs into the job bound.
   qemu-x86_64-smp:
-    needs: toolchain-x86_64-elf
+    needs: [changes, toolchain-x86_64-elf]
+    if: needs.changes.outputs.x86 == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 40
     env:
@@ -877,7 +962,8 @@ jobs:
   # Root on core 1: an application processor enters it as its first thread, and errnoprobe's
   # arm F reads libc there; a switch-in before it is not excluded.
   qemu-x86_64-ap:
-    needs: toolchain-x86_64-elf
+    needs: [changes, toolchain-x86_64-elf]
+    if: needs.changes.outputs.x86 == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 30
     env:
@@ -908,7 +994,8 @@ jobs:
   # Build LX6 application and selftest images. Run host checks for the
   # configuration, linker script and windowed ABI.
   xtensa:
-    needs: toolchain-xtensa-esp32-elf
+    needs: [changes, toolchain-xtensa-esp32-elf]
+    if: needs.changes.outputs.xtensa == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 40
     steps:
@@ -944,7 +1031,8 @@ jobs:
 
   # Build RX72M images and run host checks for each configuration. No emulator models the part.
   rx:
-    needs: toolchain-rx-elf
+    needs: [changes, toolchain-rx-elf]
+    if: needs.changes.outputs.rx == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 40
     strategy:
@@ -976,7 +1064,8 @@ jobs:
 
   # Build remaining ARM boards and run host checks for each configuration.
   build-boards:
-    needs: toolchain-arm-none-eabi
+    needs: [changes, toolchain-arm-none-eabi]
+    if: needs.changes.outputs.arm == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 40
     strategy:
@@ -1051,7 +1140,8 @@ jobs:
   # Build enforcing ARM variants to check app sections, grant symbols,
   # archive selectors, and arch_reserved_blocks.
   build-boards-mpu:
-    needs: toolchain-arm-none-eabi
+    needs: [changes, toolchain-arm-none-eabi]
+    if: needs.changes.outputs.arm == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 40
     strategy:
@@ -1097,7 +1187,8 @@ jobs:
 
   # Build RP2350 shared-image and separate-image configurations.
   pizero2350-amp:
-    needs: toolchain-arm-none-eabi
+    needs: [changes, toolchain-arm-none-eabi]
+    if: needs.changes.outputs.arm == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 40
     steps:
@@ -1138,7 +1229,8 @@ jobs:
   # sets its own limit. Four-core runs need sufficient host CPU time.
   # Adjust a gate's limit if needed rather than overriding all limits here.
   bench:
-    needs: [toolchain-arm-none-eabi, toolchain-aarch64-none-elf, toolchain-riscv64-none-elf]
+    needs: [changes, toolchain-arm-none-eabi, toolchain-aarch64-none-elf, toolchain-riscv64-none-elf]
+    if: needs.changes.outputs.bench == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 40
     steps:
