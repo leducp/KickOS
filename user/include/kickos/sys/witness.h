@@ -1,15 +1,21 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The uaccess witness's system call (KOS_SYS_WITNESS_UACCESS): a ring-0 access to a user
-// pointer, made on purpose. Only a kernel configured by tests/integration/check_uaccess.sh
-// carries it, and the banner of such a kernel says `witness uaccess`.
+// The witness kernels' system calls. KOS_SYS_WITNESS_UACCESS is a ring-0 access to a user
+// pointer, made on purpose: only a kernel configured by tests/integration/check_uaccess.sh
+// carries it, and its banner says `witness uaccess`. KOS_SYS_WITNESS_REWINDS answers the
+// switcher's rewind count: only a kernel configured by tests/integration/check_rewind.sh carries
+// it, and its banner says `witness rewind`.
 
 #ifndef KICKOS_SYS_WITNESS_H
 #define KICKOS_SYS_WITNESS_H
 
 #ifndef KICKOS_WITNESS_UACCESS
 #define KICKOS_WITNESS_UACCESS 0
+#endif
+
+#ifndef KICKOS_WITNESS_REWIND
+#define KICKOS_WITNESS_REWIND 0
 #endif
 
 // Each a ring-0 touch of uaddr at a different point. Append new values.

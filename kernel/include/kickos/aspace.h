@@ -39,8 +39,8 @@ namespace kickos
     [[nodiscard]] bool kaccess_to_user(UserOwner dspace, uintptr_t udst, void const* ksrc,
                                        size_t n);
 
-    // Copy one naturally aligned pointer-sized word through one acquire.
-    // Return false for misalignment or failed acquisition.
+    // Copy one pointer-sized word through one acquire; kword MUST be pointer-aligned.
+    // Return false for a misaligned udst or failed acquisition.
     [[nodiscard]] bool kaccess_word_to_user(UserOwner dspace, uintptr_t udst, void const* kword);
 
     // Copy between user ranges, each with its own space.
@@ -107,6 +107,22 @@ namespace kickos
     // `memtype`: one block mapped cacheable in one place and not in another is incoherent.
     bool aspace_frames_type_ok(arch_phys_addr_t pa, size_t pages, uint8_t memtype,
                                VirtualRange const* self);
+
+    // Whether `space`, whose list is `ranges`, maps the frame holding `pa` through a granted
+    // range with write. Stacks and the image are not asked: a stack's frames are mapped in its
+    // own space alone, and every space holds its own copy of the image data.
+    bool aspace_maps_writable(struct arch_aspace* space, VirtualRanges const* ranges,
+                              arch_phys_addr_t pa);
+
+    // Whether mapping granted range `e` again with `rights` and `memtype` takes from its space
+    // a write to normal memory that the range gave.
+    inline bool aspace_remap_takes_write(VirtualRange const& e, uint32_t rights, uint8_t memtype)
+    {
+        uint8_t const normal = static_cast<uint8_t>(ARCH_MAP_NORMAL);
+        bool const gave = e.state == VirtualState::Granted and (e.rights & ARCH_MAP_W) != 0
+                          and e.memtype == normal;
+        return gave and ((rights & ARCH_MAP_W) == 0 or memtype != normal);
+    }
 
     // Whether mapping `e`'s frames with `memtype` owes the kernel's cacheable view of them a
     // sync: a non-cacheable mapping, or any change of type over a granted range. A cacheable

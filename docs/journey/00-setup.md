@@ -212,7 +212,7 @@ and the syscall door sits beside them.
 | `kernel/mem/` | Memory protection | Who owns which arena block, and, on MMU targets, frames, address spaces and user stacks | 06, 10 |
 | `kernel/task/` | Memory protection | Tasks: the group of threads that share one memory domain | 08 |
 | `kernel/grant/` | Memory protection | Device windows and the kernel-reserved blocks a grant may not cover | 06, 07 |
-| `kernel/sync/` | IPC and synchronization | Semaphores, mutexes with priority inheritance, the wait queue; the kernel lock on multicore | 03, 04, 11 |
+| `kernel/sync/` | IPC and synchronization | Semaphores, the mutex's contended wait and its priority inheritance, the wait queue; the kernel lock on multicore | 03, 04, 11 |
 | `kernel/irq/` | Interrupts | Interrupts delivered as events to user space, and which core takes a line | 07 |
 | `kernel/notify/` | Interrupts | Notification objects (a word of pending bits) | 07 |
 | `kernel/syscall/` | The door; IPC | `syscall_dispatch` (`syscall.cc`), which routes each syscall number; the capability table (`cap.cc`), each thread's list of the kernel objects it may use, which every object-naming syscall checks; one file per syscall family, among them the message endpoints (`syscall_ipc.cc`) | 02, 05, 08 |

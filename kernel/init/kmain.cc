@@ -113,6 +113,9 @@ namespace kickos
 #else
             kprintf(KDIAG_F_BANNER_MPU, mpu);
 #endif
+#if KICKOS_WITNESS_REWIND
+            kprintf(KDIAG_F_BANNER_WITNESS_REWIND);
+#endif
             kprintf(KDIAG_F_BANNER_SCHED, sched);
             kprintf(KDIAG_F_BANNER_BUILD, kickos_build_time);
             // Read through the link-time word above and, where the image is split, through

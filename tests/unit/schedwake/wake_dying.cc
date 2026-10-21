@@ -399,8 +399,7 @@ TEST_F(SchedWake, the_exit_sweep_wakes_every_joiner_before_its_single_switch)
 // This arm drives the real cap_teardown: it puts a live CAP_WAIT entry through
 // obj_close_protocol's endpoint branch, so the wake comes from inside the sweep, from the one
 // site whose woken peer is not priority-bounded. A plain sender boosts nothing, where the
-// mutex force-unlock and the reply EPIPE both leave the dying thread boosted at or above the
-// peer they wake.
+// reply EPIPE leaves the dying thread boosted at or above the peer it wakes.
 //
 // The order is the whole assertion and it needs the reclaim token to state it: the switch count
 // is 1 either way, and the from/to pair is the same either way, because after a mid-sweep
@@ -439,29 +438,28 @@ TEST_F(SchedWake, a_plain_sender_epiped_by_the_sweep_preempts_it_mid_sweep)
 
 // The owner's boost is a snapshot taken when the waiter parked: mutex_lock raised the owner
 // then, and sched::set_prio on a BLOCKED thread propagates nothing, so a later boost of the
-// waiter never reaches the owner. mutex_force_unlock then wakes a peer that outranks the dying
-// thread, and the real sweep is what gets preempted.
-TEST_F(SchedWake, a_mutex_waiter_boosted_past_the_dying_owner_preempts_the_sweep)
+// waiter never reaches the owner. The dying owner hands the word over in exit_current's own
+// section, ahead of the sweep, and the waiter it wakes outranks it.
+TEST_F(SchedWake, a_mutex_waiter_boosted_past_the_dying_owner_is_handed_the_word)
 {
     Thread* c = running_thread();
     attach_caps(c, KICKOS_CAP_FIRST_DYNAMIC + 1);
     Thread* waiter = spawn(1, PRIO_DYING + 4); // boosted past the owner after parking
     spawn(2, PRIO_DYING - 1);                  // keeps k.live above zero
 
-    int mtx_handle = 0;
-    Mutex* m = own_mutex(c, &mtx_handle);
-    cap_install_at(c, KICKOS_CAP_FIRST_DYNAMIC, mtx_handle, CapType::CAP_MUTEX, CAP_WAIT, KCAP_BADGE_NONE);
+    uint32_t word = 0;
+    Mutex* m = own_mutex(c, &word);
     park_mutex_waiter(waiter, m);
     g_switches = 0;
     trace_reset();
 
     run_exit(0);
 
-    EXPECT_STREQ(trace(), "switch1>2 reclaim")
-        << "the force-unlock preempts the sweep it runs inside";
-    EXPECT_EQ(m->owner, waiter) << "ownership transferred to the woken waiter";
+    EXPECT_STREQ(trace(), "switch1>2 reclaim") << "the woken waiter outranks the dying owner";
+    EXPECT_EQ(word, waiter->lock_id) << "the word names the woken waiter, with no other waiter";
     EXPECT_EQ(waiter->wait_result, -KOS_EOWNERDEAD) << "and it was told the owner died";
-    EXPECT_EQ(c->held_list, nullptr) << "the dying thread released the mutex it held";
+    EXPECT_EQ(c->held_list, nullptr) << "the dying thread released the record it held";
+    EXPECT_EQ(kernel().mutex_active, nullptr) << "the emptied record was freed";
 }
 
 // A live cap on each side of a chunk boundary, woken from the first, so there is real work
@@ -474,7 +472,7 @@ TEST_F(SchedWake, a_preempted_sweep_resumes_and_finishes_the_next_chunk)
     uint32_t const width = KICKOS_CAP_FIRST_DYNAMIC + KCAP_TEARDOWN_CHUNK + 1;
     attach_caps(c, width);
     Thread* sender = spawn(1, PRIO_DYING + 3);
-    Thread* waiter = spawn(2, PRIO_DYING + 1);
+    Thread* last_sender = spawn(2, PRIO_DYING + 1);
     spawn(3, PRIO_DYING - 1); // keeps k.live above zero
 
     // The endpoint cap in the first chunk: its EPIPE drain is what preempts.
@@ -485,21 +483,24 @@ TEST_F(SchedWake, a_preempted_sweep_resumes_and_finishes_the_next_chunk)
     cap_install_at(c, KICKOS_CAP_FIRST_DYNAMIC, ep_handle, CapType::CAP_ENDPOINT, CAP_WAIT, KCAP_BADGE_NONE);
     park_plain_sender(sender, ep);
 
-    // The mutex cap in the last slot, past the boundary: only a resumed sweep reaches it.
-    int mtx_handle = 0;
-    Mutex* m = own_mutex(c, &mtx_handle);
-    cap_install_at(c, static_cast<int>(width) - 1, mtx_handle, CapType::CAP_MUTEX, CAP_WAIT, KCAP_BADGE_NONE);
-    park_mutex_waiter(waiter, m);
+    // A second endpoint cap in the last slot, past the boundary: only a resumed sweep reaches it.
+    Endpoint* last = endpoint();
+    int const last_handle = kernel().endpoints.handle_for(kernel().endpoints.index_of(last));
+    endpoint_server_set(last, c);
+    last->recv_holders = 1;
+    cap_install_at(c, static_cast<int>(width) - 1, last_handle, CapType::CAP_ENDPOINT, CAP_WAIT,
+                   KCAP_BADGE_NONE);
+    park_plain_sender(last_sender, last);
     g_switches = 0;
     trace_reset();
 
     run_exit(0);
 
-    EXPECT_EQ(m->owner, waiter) << "the cap past the chunk boundary was released too";
-    EXPECT_EQ(c->held_list, nullptr) << "the sweep completed its held list";
+    EXPECT_EQ(last->server, nullptr) << "the cap past the chunk boundary was released too";
     EXPECT_EQ(ep->server, nullptr) << "and the cap before the boundary was released";
     EXPECT_EQ(sender->wait_result, -KOS_ECONNREFUSED) << "the first chunk's sender was EPIPEd";
-    EXPECT_EQ(waiter->wait_result, -KOS_EOWNERDEAD) << "the last chunk's waiter was woken";
+    EXPECT_EQ(last_sender->wait_result, -KOS_ECONNREFUSED)
+        << "the last chunk's sender was woken";
     EXPECT_FALSE(cap_teardown_active()) << "the sweep balanced its depth across the boundary";
 }
 

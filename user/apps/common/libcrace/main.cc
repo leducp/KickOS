@@ -8,7 +8,9 @@
 // has its own, shared by its two threads. Main's task's workers start on a heap main has
 // exhausted, and a round the heap cannot serve waits for it. Before they start: a thread killed
 // while it waits for the malloc lock ends alone, and so does one that holds the libc lock and
-// hands it over; a malloc lock taken from a holder that died holding it ends the taker's task;
+// hands it over; a killed waiter asks again at the kernel and ends there; a holder killed while
+// it runs releases the malloc lock; getenv with a kill pending takes the free libc lock with no
+// kernel entry; a malloc lock taken from a holder that died holding it ends the taker's task;
 // and a printf completes while another thread of main's task holds the malloc lock.
 
 #include <kickos/config/priorities.h>
@@ -42,6 +44,7 @@ namespace
     constexpr kos_cap_t RELEASE = kos::child_cap(1);
     constexpr kos_cap_t ENTERING = kos::child_cap(0);
     constexpr kos_cap_t PRINTED = kos::child_cap(0);
+    constexpr kos_cap_t GO = kos::child_cap(0);
     constexpr uint32_t PRINT_WAIT_US = 3000000;
     constexpr uint8_t VICTIM_PRIO = KICKOS_PRIO_MAX;
 
@@ -96,7 +99,7 @@ namespace
 #endif
     }
 
-#if KICKOS_FAULT_ISOLATION and KICKOS_HAVE_ASPACE
+#if defined(_NEWLIB_VERSION) or (KICKOS_FAULT_ISOLATION and KICKOS_HAVE_ASPACE)
     void anchor(void*)
     {
         while (true)
@@ -106,11 +109,89 @@ namespace
     }
 #endif
 
+#if KICKOS_FAULT_ISOLATION and KICKOS_HAVE_ASPACE
+    // Never unlocks: a kill must find it at the re-wait, holding the malloc lock.
+    void dead_malloc_holder(void*)
+    {
+#if defined(_NEWLIB_VERSION)
+        __malloc_lock(_REENT);
+#endif
+        kos_sem_post(HELD);
+        while (true)
+        {
+            (void)kos_sem_wait(RELEASE, KOS_TIMEOUT_NONE);
+        }
+    }
+#endif
+
     void printer(void*)
     {
         printf("libcrace: printf beside the malloc lock %d\n", 1);
         kos_sem_post(PRINTED);
     }
+
+#if defined(_NEWLIB_VERSION)
+    uint32_t g_core_mask = 0;
+    uint32_t g_reask_took = 0;
+    bool g_reask_ran = false;
+    uint32_t g_release_go = 0;
+    uint32_t g_env_after_kill = 0;
+    char const* volatile g_env = nullptr;
+
+    void reask_victim(void*)
+    {
+        kos_sem_post(ENTERING);
+        void* volatile block = malloc(32);
+        __atomic_store_n(&g_reask_took, 1u, __ATOMIC_RELAXED);
+        free(block);
+    }
+
+    // At the victim's priority, so neither the victim's post nor its kill hands it the core: the
+    // victim, killed while it waits, runs again only once this holder has freed the lock.
+    void reask_holder(void*)
+    {
+        __malloc_lock(_REENT);
+        kos_cap_grant const caps[] = {{ENTERING, KOS_CAP_SIGNAL}};
+        auto victim = kos::thread::create_caps(reask_victim, nullptr, "mreask", VICTIM_PRIO, caps,
+                                               1, KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
+                                               KOS_TASK_NONE, nullptr, 0, g_core_mask);
+        bool parked = victim.valid() and kos_sem_wait(ENTERING, KOS_TIMEOUT_NONE) == 0;
+        bool const killed = victim.valid() and victim.kill() == 0;
+        __malloc_unlock(_REENT);
+        g_reask_ran = parked and killed and victim.join() == 0;
+    }
+
+    // Takes the malloc lock with no entry, then spins with none, so a kill finds it running.
+    void running_holder(void*)
+    {
+        __malloc_lock(_REENT);
+        kos_sem_post(HELD);
+        while (__atomic_load_n(&g_release_go, __ATOMIC_ACQUIRE) == 0)
+        {
+        }
+        __malloc_unlock(_REENT);
+        while (true)
+        {
+            kos_yield();
+        }
+    }
+
+    // In the holder's task, whose copy of the flag the holder reads.
+    void release_setter(void*)
+    {
+        (void)kos_sem_wait(GO, KOS_TIMEOUT_NONE);
+        __atomic_store_n(&g_release_go, 1u, __ATOMIC_RELEASE);
+    }
+
+    void getenv_after_kill(void*)
+    {
+        kos_sem_post(ENTERING);
+        (void)kos_sem_wait(RELEASE, KOS_TIMEOUT_NONE);
+        g_env = getenv("KICKOS_LIBCRACE_UNSET");
+        __atomic_store_n(&g_env_after_kill, 1u, __ATOMIC_RELAXED);
+        kos_yield();
+    }
+#endif
 
     // Holds the malloc lock in a thread of main's task and returns with `release` to end it.
     bool hold_malloc(kos::thread::Handle* holder, kos_cap_t* release)
@@ -221,16 +302,148 @@ namespace
     // libc of the sim takes no lock of ours.
     bool libc_lock_handed_over()
     {
-        int expected = 0;
 #if defined(_NEWLIB_VERSION)
-        expected = -KOS_EOWNERDEAD;
-#endif
-        if (kos_mutex_lock(KOS_CAP_LIBC_LOCK, 0) != expected)
+        kos_mutex_t* const lock = kos_libc_lock(KOS_LIBC_LOCK_STDIO);
+        if (kos_mutex_lock(lock, 0) != -KOS_EOWNERDEAD)
         {
             return false;
         }
-        return kos_mutex_unlock(KOS_CAP_LIBC_LOCK) == 0;
+        return kos_mutex_unlock(lock) == 0;
+#else
+        return true;
+#endif
     }
+
+#if defined(_NEWLIB_VERSION)
+    // A waiter of the malloc lock is killed and its holder frees the lock before the waiter runs
+    // again: *asked when the waiter ended at its next entry without taking it.
+    bool killed_waiter_asks_the_kernel(bool* asked)
+    {
+        *asked = false;
+        uint32_t core_mask = 0;
+        kos_cap_t entering = KOS_CAP_NONE;
+        if (not pin_main(&core_mask) or kos_sem_create(0, &entering) != 0)
+        {
+            return false;
+        }
+        g_core_mask = core_mask;
+        g_reask_took = 0;
+        g_reask_ran = false;
+        kos_cap_grant const caps[] = {
+            {entering, KOS_CAP_SIGNAL | KOS_CAP_WAIT | KOS_CAP_TRANSFER}};
+        auto holder = kos::thread::create_caps(reask_holder, nullptr, "mholder", VICTIM_PRIO, caps,
+                                               1, KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
+                                               KOS_TASK_NONE, nullptr, 0, core_mask);
+        bool const ran = holder.valid() and holder.join() == 0 and g_reask_ran;
+        *asked = __atomic_load_n(&g_reask_took, __ATOMIC_RELAXED) == 0;
+        kos_handle_close(entering);
+        unpin_main(core_mask);
+        return ran;
+    }
+
+    // In a task of its own, whose entry only anchors it: a holder of the malloc lock is killed
+    // while it runs, a taker parks behind it, and the holder releases. *lived when the taker took
+    // the lock and its task did not end.
+    bool running_killed_holder_releases(bool* lived)
+    {
+        *lived = false;
+        uint32_t core_mask = 0;
+        if (not pin_main(&core_mask))
+        {
+            return false;
+        }
+        kos_task_t task = KOS_TASK_NONE;
+        kos_cap_t held = KOS_CAP_NONE;
+        kos_cap_t go = KOS_CAP_NONE;
+        kos_cap_t entering = KOS_CAP_NONE;
+        bool ran = kos_task_create(nullptr, 0, 0, &task) == 0
+                   and kos_task_sched_grant(task, VICTIM_PRIO, 0) == 0
+                   and kos_sem_create(0, &held) == 0 and kos_sem_create(0, &go) == 0
+                   and kos_sem_create(0, &entering) == 0;
+        kos::thread::Handle base;
+        kos::thread::Handle holder;
+        kos::thread::Handle setter;
+        if (ran)
+        {
+            base = kos::thread::create_caps(anchor, nullptr, "manchor", WORKER_PRIO, nullptr, 0,
+                                            KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr, task);
+            kos_cap_grant const go_caps[] = {{go, KOS_CAP_WAIT}};
+            setter = kos::thread::create_caps(release_setter, nullptr, "mgo", WORKER_PRIO, go_caps,
+                                              1, KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr, task,
+                                              nullptr, 0, core_mask);
+            // Below main, so it holds the lock and spins only while main waits.
+            kos_cap_grant const caps[] = {{held, KOS_CAP_SIGNAL}};
+            holder = kos::thread::create_caps(running_holder, nullptr, "mrunner", KICKOS_PRIO_MIN,
+                                              caps, 1, KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
+                                              task, nullptr, 0, core_mask);
+            ran = base.valid() and setter.valid() and holder.valid()
+                  and kos_sem_wait(held, KOS_TIMEOUT_NONE) == 0 and holder.kill() == 0
+                  and kos_sem_post(go) == 0 and setter.join() == 0;
+        }
+        if (ran)
+        {
+            auto taker = spawn_parked(malloc_victim, "mtaker", task, core_mask, entering);
+            ran = taker.valid() and taker.join() == 0 and holder.join() == 0;
+        }
+        if (ran)
+        {
+            int status = 0;
+            *lived = kos_task_exit_status(task, &status) == -KOS_EBUSY;
+        }
+        if (task != KOS_TASK_NONE)
+        {
+            kos_task_kill(task);
+        }
+        if (base.valid())
+        {
+            base.join();
+        }
+        if (holder.valid())
+        {
+            holder.join();
+        }
+        if (setter.valid())
+        {
+            setter.join();
+        }
+        kos_handle_close(held);
+        kos_handle_close(go);
+        kos_handle_close(entering);
+        unpin_main(core_mask);
+        return ran;
+    }
+
+    // A thread killed out of its park reads the environment, whose lock is free: *read when it
+    // came back from getenv before it died.
+    bool getenv_with_a_kill_pending(bool* read)
+    {
+        *read = false;
+        uint32_t core_mask = 0;
+        kos_cap_t entering = KOS_CAP_NONE;
+        kos_cap_t release = KOS_CAP_NONE;
+        if (not pin_main(&core_mask) or kos_sem_create(0, &entering) != 0
+            or kos_sem_create(0, &release) != 0)
+        {
+            kos_handle_close(entering);
+            unpin_main(core_mask);
+            return false;
+        }
+        g_env_after_kill = 0;
+        kos_cap_grant const caps[] = {{entering, KOS_CAP_SIGNAL}, {release, KOS_CAP_WAIT}};
+        // The child outranks main on main's core, so main, woken by its post, runs again only
+        // once it has parked on `release`.
+        auto child = kos::thread::create_caps(getenv_after_kill, nullptr, "menv", VICTIM_PRIO,
+                                              caps, 2, KOS_POLICY_FIFO, 0, nullptr, 0, 0,
+                                              nullptr, KOS_TASK_NONE, nullptr, 0, core_mask);
+        bool const ran = child.valid() and kos_sem_wait(entering, KOS_TIMEOUT_NONE) == 0
+                         and child.kill() == 0 and child.join() == 0;
+        *read = __atomic_load_n(&g_env_after_kill, __ATOMIC_RELAXED) != 0;
+        kos_handle_close(entering);
+        kos_handle_close(release);
+        unpin_main(core_mask);
+        return ran;
+    }
+#endif
 
 #if KICKOS_FAULT_ISOLATION and KICKOS_HAVE_ASPACE
     // In a task of its own, whose entry only anchors it: a holder of the malloc lock is killed,
@@ -259,9 +472,9 @@ namespace
             base = kos::thread::create_caps(anchor, nullptr, "manchor", WORKER_PRIO, nullptr, 0,
                                             KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr, task);
             kos_cap_grant const caps[] = {{held, KOS_CAP_SIGNAL}, {release, KOS_CAP_WAIT}};
-            holder = kos::thread::create_caps(malloc_holder, nullptr, "mholder", WORKER_PRIO,
-                                              caps, 2, KOS_POLICY_FIFO, 0, nullptr, 0, 0,
-                                              nullptr, task);
+            holder = kos::thread::create_caps(dead_malloc_holder, nullptr, "mholder",
+                                              WORKER_PRIO, caps, 2, KOS_POLICY_FIFO, 0, nullptr,
+                                              0, 0, nullptr, task);
             ran = base.valid() and holder.valid() and kos_sem_wait(held, KOS_TIMEOUT_NONE) == 0;
         }
         if (ran and waiting)
@@ -450,6 +663,52 @@ int main(int, char**)
         return 1;
     }
     kos::print("libcrace: a thread killed holding the libc lock handed it over\n");
+#if defined(_NEWLIB_VERSION)
+    bool asked = false;
+    if (not killed_waiter_asks_the_kernel(&asked))
+    {
+        kos::print("libcrace: the killed waiter's re-ask arm was refused\n");
+        return 1;
+    }
+    if (asked)
+    {
+        kos::print("libcrace: a killed malloc waiter asked again at the kernel and ended there\n");
+    }
+    else
+    {
+        kos::print("libcrace: a killed malloc waiter took the lock freed under it\n");
+    }
+    bool lived = false;
+    if (not running_killed_holder_releases(&lived))
+    {
+        kos::print("libcrace: the running killed holder arm was refused\n");
+        return 1;
+    }
+    if (lived)
+    {
+        kos::print("libcrace: a holder killed while running released malloc, and its taker's "
+                   "task lived\n");
+    }
+    else
+    {
+        kos::print("libcrace: a holder killed while running died holding malloc, and its taker's "
+                   "task ended\n");
+    }
+    bool read = false;
+    if (not getenv_with_a_kill_pending(&read))
+    {
+        kos::print("libcrace: the getenv kill arm was refused\n");
+        return 1;
+    }
+    if (read)
+    {
+        kos::print("libcrace: getenv with a kill pending took the free libc lock with no entry\n");
+    }
+    else
+    {
+        kos::print("libcrace: getenv with a kill pending died at the libc lock\n");
+    }
+#endif
 #if KICKOS_FAULT_ISOLATION and KICKOS_HAVE_ASPACE
     bool dead_ended = false;
     if (not dead_malloc_holder_ends_the_takers_task(true, &dead_ended))

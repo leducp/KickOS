@@ -710,8 +710,8 @@ TRANSLATING = "protection:\n  enforced: true\n  window_rule: none\n  thread_wind
 def pools_of(threads, tasks, domains, endpoints, endpoint_budget, supply):
     """The pools a kernel build of the fleet's exports, as their figures."""
     return ("  KICKOS_MAX_THREADS: %d\n  KICKOS_MAX_TASKS: %d\n  KICKOS_MAX_DOMAINS: %d\n  KICKOS_MAX_SEMAPHORES: 16\n"
-            "  KICKOS_MAX_MUTEXES: 8\n  KICKOS_MAX_ENDPOINTS: %d\n  KICKOS_MAX_IRQ_HANDLES: 8\n  KICKOS_MAX_NOTIFY: 8\n"
-            "  KICKOS_TASK_SEMAPHORE_BUDGET: 15\n  KICKOS_TASK_MUTEX_BUDGET: 7\n  KICKOS_TASK_ENDPOINT_BUDGET: %d\n"
+            "  KICKOS_MAX_ENDPOINTS: %d\n  KICKOS_MAX_IRQ_HANDLES: 8\n  KICKOS_MAX_NOTIFY: 8\n"
+            "  KICKOS_TASK_SEMAPHORE_BUDGET: 15\n  KICKOS_TASK_ENDPOINT_BUDGET: %d\n"
             "  KICKOS_TASK_IRQ_HANDLE_BUDGET: 7\n  KICKOS_TASK_NOTIFY_BUDGET: 7\n  KICKOS_MAX_SPAWN_GRANTS: 6\n"
             "  KICKOS_CAP_TABLE_SUPPLY: %d\n  KICKOS_RAM_OWNER_SLOTS: 48\n  KICKOS_ASPACE_RANGES: 64\n"
             % (threads, tasks, domains, endpoints, endpoint_budget, supply))

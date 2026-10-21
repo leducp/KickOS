@@ -9,7 +9,8 @@ if(KICKOS_BUILD_UNIT_TESTS)
   #   The K-seam fixture (tests/unit/kfixture) over the kernel's stateful core, at a posture,
   #   with EXTRA translation units beside it. klock.cc is listed at every posture: below two
   #   kernel cores it compiles to nothing. A posture linking the real console.cc takes its
-  #   kpanic from there.
+  #   kpanic from there, and one linking the real word.cc or syscall_mem.cc its mutex word
+  #   access (word_seam.cc's definitions are weak).
   function(kickos_add_kseam name)
     cmake_parse_arguments(KS "" "" "POSTURE;EXTRA;INCLUDES" ${ARGN})
     set(_fx "${PROJECT_SOURCE_DIR}/tests/unit/kfixture")
@@ -19,7 +20,8 @@ if(KICKOS_BUILD_UNIT_TESTS)
       list(APPEND _common "${PROJECT_SOURCE_DIR}/tests/unit/common/kpanic_seam.cc")
     endif()
     kickos_add_kernel_host_lib(${name}
-      SOURCES "${_fx}/kfixture.cc" "${_fx}/karch_seam.cc" ${_common} ${KS_EXTRA}
+      SOURCES "${_fx}/kfixture.cc" "${_fx}/karch_seam.cc" "${_fx}/word_seam.cc" ${_common}
+        ${KS_EXTRA}
         "${_k}/sched/sched.cc" "${_k}/sched/policy_fifo_rr.cc" "${_k}/sync/sync.cc"
         "${_k}/sync/klock.cc" "${_k}/thread/park.cc" "${_k}/syscall/cap.cc"
         "${_k}/task/task.cc" "${_k}/irq/irq.cc" "${_k}/irq/irq_route.cc"
@@ -37,7 +39,7 @@ if(KICKOS_BUILD_UNIT_TESTS)
 
   # Independent targets; consumers of shared fixture libraries follow their providers.
   foreach(_unit IN ITEMS
-      ampconsole amphold ampreset ampshare ampwindow benchdist c6apm capreply captable consolebaud consoleline consoleown
+      ampconsole amphold ampreset ampshare ampwindow atomiccas benchdist c6apm capreply captable consolebaud consoleline consoleown
       consolepace consolering consoletxsmp ctxredirect dcacheplan
       deathspace doorbell drvbringup fastrefuse faultline frame fusedwake grantlookup grantnocache
       initwalk irqquiesce kstring
@@ -51,8 +53,8 @@ if(KICKOS_BUILD_UNIT_TESTS)
   # macros and avoid conflicts with preset definitions.
   add_subdirectory(kfixture)
   foreach(_unit IN ITEMS
-      cancelkind capbadge capprobe capsweep consolepub faultband faultrecord irqbindown libclock parkresult priodonor rangecheck rootslot
-      rrslice schedwake slayhook taskdeath taskpool v6mframe wildstack windowclose)
+      cancelkind capbadge capprobe capsweep consolepub faultband faultrecord irqbindown libclock lockid parkresult priodonor rangecheck rootslot
+      rrslice schedwake slayhook taskdeath taskpool v6mframe wildstack windowclose wordref)
     add_subdirectory(${_unit})
   endforeach()
 

@@ -100,8 +100,8 @@ math(EXPR _selftest_cap_seated
 # main holds for the run.
 set(_selftest_lifetime_sems 2) # g_lock and g_done
 foreach(_selftest_knob KICKOS_MAX_THREADS KICKOS_MAX_TASKS KICKOS_TASK_IRQ_HANDLE_BUDGET
-        KICKOS_MAX_SPAWN_GRANTS KICKOS_TASK_SEMAPHORE_BUDGET KICKOS_TASK_MUTEX_BUDGET
-        KICKOS_TASK_ENDPOINT_BUDGET KICKOS_TASK_NOTIFY_BUDGET)
+        KICKOS_MAX_SPAWN_GRANTS KICKOS_TASK_SEMAPHORE_BUDGET KICKOS_TASK_ENDPOINT_BUDGET
+        KICKOS_TASK_NOTIFY_BUDGET)
   if(NOT "${${_selftest_knob}}" MATCHES "^[0-9]+$")
     message(FATAL_ERROR "selftest: the generated configuration states no ${_selftest_knob}")
   endif()
@@ -109,7 +109,6 @@ endforeach()
 math(EXPR _selftest_workers "${KICKOS_MAX_THREADS} - 1")
 _selftest_main_caps("${KICKOS_MAX_SPAWN_GRANTS}" "${_selftest_cap_seated}" _selftest_caps)
 math(EXPR _selftest_sems "${KICKOS_TASK_SEMAPHORE_BUDGET} - ${_selftest_lifetime_sems}")
-set(_selftest_mutexes "${KICKOS_TASK_MUTEX_BUDGET}")
 # The guards an arm's registration sits under, as the compiler sees them.
 set(_selftest_guards --config "KICKOS_KERNEL_CORES=${KICKOS_KERNEL_CORES}")
 foreach(_selftest_knob KICKOS_HAVE_ASPACE KICKOS_HAVE_MPU KICKOS_MEMORY_ENFORCED
@@ -129,8 +128,8 @@ function(_selftest_pool_short driver_tasks out)
             "${PROJECT_SOURCE_DIR}/user/apps/common/selftest" ${_selftest_guards} --supply
             "workers=${_selftest_workers}" "tasks=${_tasks}"
             "irqs=${KICKOS_TASK_IRQ_HANDLE_BUDGET}" "caps=${_selftest_caps}"
-            "sems=${_selftest_sems}" "mutexes=${_selftest_mutexes}"
-            "endpoints=${KICKOS_TASK_ENDPOINT_BUDGET}" "notifies=${KICKOS_TASK_NOTIFY_BUDGET}"
+            "sems=${_selftest_sems}" "endpoints=${KICKOS_TASK_ENDPOINT_BUDGET}"
+            "notifies=${KICKOS_TASK_NOTIFY_BUDGET}"
     OUTPUT_VARIABLE _short
     ERROR_VARIABLE _err
     RESULT_VARIABLE _rc)

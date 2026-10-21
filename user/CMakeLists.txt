@@ -4,17 +4,19 @@
 # uart_service_dev.cc stays its own TU: merged into uart_service.cc it would make the ring side
 # undefined on a board with no UART class backend.
 # grant_lookup.cc stays its own TU: it names kickos_table, which only a system target defines.
-set(KICKOS_USER_SOURCES src/syscall_stubs.cc src/print.cc src/init_args.cc src/root_entry.cc
-                        src/console_ring.cc src/driver_service.cc src/uart_service.cc
-                        src/uart_service_dev.cc src/usb_cdc_service.cc src/grant_lookup.cc
-                        src/init_status.cc src/task_trampoline.cc src/console_flush.cc)
+set(KICKOS_USER_SOURCES src/syscall_stubs.cc src/mutex.cc src/print.cc src/init_args.cc
+                        src/root_entry.cc src/console_ring.cc src/driver_service.cc
+                        src/uart_service.cc src/uart_service_dev.cc src/usb_cdc_service.cc
+                        src/grant_lookup.cc src/init_status.cc src/task_trampoline.cc
+                        src/console_flush.cc)
 
 # newlib_sbrk.cc stays its own TU: merging it into newlib_stubs.cc disables the heapless-board
 # link error (-Wl,-u,_exit force-links that object everywhere). sim_exit.cc is separate so the
 # archive pulls it only for an app that calls exit().
 if(KICKOS_ARCH STREQUAL "sim")
-  list(APPEND KICKOS_USER_SOURCES src/sim_exit.cc)
+  list(APPEND KICKOS_USER_SOURCES src/sim_exit.cc src/arch/sim/user_cas.cc)
 else()
+  list(APPEND KICKOS_USER_SOURCES src/arch/${KICKOS_ARCH}/user_cas.S)
   list(APPEND KICKOS_USER_SOURCES src/newlib_stubs.cc src/newlib_sbrk.cc src/newlib_fcntl.cc)
   list(APPEND KICKOS_USER_SOURCES src/newlib_reent.cc src/newlib_lock.cc)
 endif()

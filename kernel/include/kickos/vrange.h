@@ -112,6 +112,13 @@ namespace kickos
         return e != nullptr and (e->flags & VR_NOT_RESERVED) == 0u;
     }
 
+    // Whether this range is granted with every right in `rights`. Total: a null entry grants
+    // nothing.
+    inline bool vr_grants(VirtualRange const* e, uint32_t rights)
+    {
+        return e != nullptr and e->state == VirtualState::Granted and (e->rights & rights) == rights;
+    }
+
     // The stored value is the slot plus one, hence the strict inequality.
     static_assert(static_cast<unsigned long long>(KICKOS_MAX_FRAME_RUNS) + 1ull
                       < 0x100000000ull,

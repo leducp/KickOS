@@ -127,8 +127,8 @@ with a single rule: never restore, always *recompute* the effective priority fro
 reasons to be boosted. KickOS extends that one function to also account for reply
 capabilities and queued callers, and routes the mutex path through it too. There is exactly
 one place that computes a thread's effective priority, and it looks at every source at once:
-the thread's base, the mutexes it holds, the callers behind its reply capabilities, and the
-callers queued on the endpoint it serves. Withdraw a donation and the recompute simply stops
+the thread's base, the mutexes it holds that others wait on, the callers behind its reply
+capabilities, and the callers queued on the endpoint it serves. Withdraw a donation and the recompute simply stops
 counting that source; anything else still boosting the thread survives. Two separate
 recompute paths would eventually disagree and let a driver deflate below a donation it still
 owes -- one funnel or the invariant rots.

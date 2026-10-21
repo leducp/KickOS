@@ -531,6 +531,11 @@ namespace kickos
 #endif
         t->spawner_tag = attr.spawner_tag;
         t->id = assign_thread_id();
+        int const pslot = kernel().threads.index_of(t);
+        if (pslot >= 0)
+        {
+            t->lock_id = kernel().threads.lock_id_for(pslot);
+        }
         // attr.name does not outlive this call: copy, never alias.
         size_t ni = 0;
         if (attr.name != nullptr)
@@ -674,10 +679,10 @@ namespace kickos
 #if KICKOS_REENT_IN_TCB
         if (tls_home != nullptr)
         {
-            reent_seat_tcb(tls_home, t->reent);
+            reent_seat_tcb(tls_home, t->reent, t->lock_id);
         }
 #elif KICKOS_REENT_PER_THREAD
-        arch_context_seat_reent(&t->ctx, t->reent);
+        arch_context_seat_reent(&t->ctx, t->reent, t->lock_id);
 #endif
 #endif
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY

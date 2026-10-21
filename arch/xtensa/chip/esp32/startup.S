@@ -163,6 +163,10 @@ _kickos_int_level1:
     s32i    a2, a1, F_LEND
     rsr.lcount a2
     s32i    a2, a1, F_LCNT
+    /* A handler taking the kernel lock rewrites SCOMPARE1, which an interrupted
+       kickos_user_cas has already loaded for its S32C1I. */
+    rsr.scompare1 a2
+    s32i    a2, a1, F_SCOMPARE1
     rsr.excsave1 a2               /* original a0 */
     s32i    a2, a1, F_A0
     addi    a2, a1, F_SIZE
@@ -303,6 +307,8 @@ _kickos_lx6_irq_restore:
 
     l32i    a2, a1, F_LCNT
     wsr.lcount a2
+    l32i    a2, a1, F_SCOMPARE1
+    wsr.scompare1 a2
     l32i    a2, a1, F_LEND
     wsr.lend a2
     l32i    a2, a1, F_LBEG

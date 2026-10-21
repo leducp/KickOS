@@ -251,7 +251,8 @@ Hidden allocation and long kernel paths make the worst case hard to state.
   quantum, rests on that clock.
 - **Priority inheritance** on the mutex, so a low-priority holder cannot block a
   high-priority waiter behind a medium one; call/reply lends the caller's priority
-  to the server the same way.
+  to the server the same way. The mutex is a word in user memory, so a free lock and
+  its unlock make no kernel entry.
 - **Static allocation first.** Kernel objects live in fixed pools, and a system can
   run with the heap disabled.
 - **A short kernel**, so the paths that run with interrupts masked stay short.

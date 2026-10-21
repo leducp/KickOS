@@ -14,6 +14,9 @@
 libcrace: 4 workers x 3 rounds
 libcrace: a thread killed waiting for malloc ended alone
 libcrace: a thread killed holding the libc lock handed it over
+libcrace: a killed malloc waiter asked again at the kernel and ended there
+libcrace: a holder killed while running released malloc, and its taker's task lived
+libcrace: getenv with a kill pending took the free libc lock with no entry
 
 === THREAD FAULT === thread 'mwaiter' killed, system continues
   PC=0x401083e8 ESR_EL1=0x2000000

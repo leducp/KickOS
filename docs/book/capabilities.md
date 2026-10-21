@@ -19,7 +19,7 @@
 
 Chapter 0.4, *[Monolithic vs microkernel](monolithic-vs-microkernel.md)*, moved
 the drivers out of the kernel and left a small core behind. That core owns a few
-kinds of **kernel object**: a semaphore, a mutex, an endpoint two tasks talk
+kinds of **kernel object**: a semaphore, an endpoint two tasks talk
 through, the binding of an interrupt line to a driver, a notification. An
 unprivileged thread cannot reach any of them in memory. It can only make a system
 call and ask the kernel to act for it. Every such call asks two questions:
@@ -126,7 +126,7 @@ A capability is created, passed down, narrowed and closed. No step adds a right
 that was not already held.
 
 - **Created.** A thread that creates an object (`kos_sem_create`,
-  `kos_mutex_create`, `kos_endpoint_create`) receives a capability with every
+  `kos_endpoint_create`) receives a capability with every
   right. The object lives exactly as long as some capability names it.
 - **Granted at spawn.** A spawn carries a list of source handles, each with a
   rights mask. The source must carry `KOS_CAP_TRANSFER`, and the child gets the

@@ -231,8 +231,11 @@ namespace kickos
                         }
                         case Edit::READ:
                         {
-                            (void)call_as(g_editor, KOS_SYS_THREAD_SELF);
                             g_seen.rc = 0;
+                            if (call_as(g_editor, KOS_SYS_CPU_CLOCK_HZ) != STUB_CPU_CLOCK_HZ)
+                            {
+                                g_seen.rc = -1;
+                            }
                             g_seen.live_after = main_record.live;
                             break;
                         }

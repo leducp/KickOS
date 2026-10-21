@@ -364,21 +364,23 @@ The return goes through the same restore path as a switch. The frame still holds
 `ecall` (which is always 4 bytes long). No "resting privilege" field is needed, unlike ARM's
 `resting_npriv`: the saved `MPP` is the caller's privilege.
 
-**Try it:** `break arch_start`, `continue`, `break svc_trampoline`, `continue`:
+**Try it:** `break kickos_app_main` (the hello app's `main`), `continue`, `delete`,
+`break svc_trampoline`, `continue`:
 ```
 (gdb) p $priv
 $1 = 3
 (gdb) p/x $mcause
 $2 = 0x8
 (gdb) info registers a0 sp
-a0   0x47
-sp   0x80040470   <kickos::(anonymous namespace)::g_kstacks+1056>
+a0   0x1b
+sp   0x80040910   <kickos::(anonymous namespace)::g_kstacks+2240>
 (gdb) x/2wx $sp
-0x80040470:  0x80002b3a  0x00000080
+0x80040910:  0x80002b3a  0x00000080
 (gdb) info symbol *(unsigned*)$sp
 arch_syscall64 in section .text
 ```
-Machine mode, on a kernel stack, `a0` = 71 (the same `kos_thread_self` as on ARM). The frame's
+Machine mode, on a kernel stack, `a0` = 27 (the same `kos_send` of `main`'s first `kos::print`
+as on ARM). The frame's
 `mepc` is the user stub's `ecall` and its `mstatus` says the caller was in user mode.
 
 **Why, and the contract:** [Book: The syscall path](../book/the-syscall-path-trap-dispatch-return.md),

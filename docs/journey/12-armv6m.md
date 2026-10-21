@@ -265,17 +265,19 @@ arch_syscall:
     bx      lr
 ```
 
-**Try it:** `break arch_start`, `continue`, `break SVC_Handler`, `continue`:
+**Try it:** `break kickos_app_main` (the hello app's `main`), `continue`, `delete`,
+`break SVC_Handler`, `continue`:
 ```
 (gdb) p/x *(unsigned*)($psp)@8
-$2 = {0x47, 0x0, 0x0, 0x0, 0x0, 0x15f9, 0x2258, 0x41000000}
+$1 = {0x1b, 0x0, 0xdee3, 0x1d, 0x0, 0x15c3, 0x2260, 0x1000000}
 (gdb) info symbol *(unsigned*)($psp+20)
-kos_thread_self + 17 in section .text
+kos_send + 19 in section .text
 (gdb) info symbol *(unsigned*)($psp+24)
 arch_syscall64 + 10 in section .text
 ```
-The stacked frame: `r0` = 71 (the syscall number of `kos_thread_self`), the stacked `lr` is the
-user caller, the stacked `pc` is the instruction after the `svc`.
+The stacked frame: `r0` = 27 (the syscall number of `kos_send`, which `main`'s first `kos::print`
+makes to its stdout endpoint at index 0), `r1`-`r3` its endpoint, buffer and 29 bytes, the
+stacked `lr` is the user caller, the stacked `pc` is the instruction after the `svc`.
 
 **Why, and the contract:** [Book: The syscall path](../book/the-syscall-path-trap-dispatch-return.md),
 [Reference: porting, the ARMv7-M syscall spike](../reference/porting.md)
@@ -297,18 +299,19 @@ argument), the address to return to, the process stack pointer to come back to, 
 alignment pad. A blocking syscall is frozen by PendSV below this header, so the header survives
 the block.
 
-**Try it:** `break arch_start`, `continue`, `break *syscall_dispatch`, `continue`:
+**Try it:** `break kickos_app_main`, `continue`, `delete`, `break *syscall_dispatch`,
+`continue`:
 ```
 (gdb) info registers sp
-sp   0x20000670   <kickos::(anonymous namespace)::g_kstacks+880>
+sp   0x200009f0   <kickos::(anonymous namespace)::g_kstacks+1776>
 (gdb) p/x g_arch_current.v_._M_b._M_p->kernel_sp
-$1 = 0x20000680
+$2 = 0x20000a00
 (gdb) x/4wx $sp
-0x20000670:  0x00000000  0x000015f9  0x20003f58  0x4b53464c
+0x200009f0:  0x00000000  0x000015c3  0x20004ef0  0x4b53464c
 ```
 `sp` is 16 bytes under the block top. The header reads: `a3` = 0, the return address (inside
-`kos_thread_self`), the thread's process stack pointer, and the pad word, which holds whatever
-was there before.
+`kos_send`), the thread's process stack pointer, and the pad word, which holds whatever was
+there before.
 
 **Why, and the contract:** [Reference: porting, thread pointer and kernel stacks](../reference/porting.md),
 [Book: Thread stacks](../book/thread-stacks-and-the-kiss-tension.md)

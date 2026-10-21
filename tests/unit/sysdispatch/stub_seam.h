@@ -22,6 +22,7 @@ namespace kickos
         // second argument it was given (0 if none).
         extern uintptr_t g_context_entry;
         extern uintptr_t g_second_arg;
+        constexpr uint64_t STUB_CPU_CLOCK_HZ = 64000000u;
     }
 }
 

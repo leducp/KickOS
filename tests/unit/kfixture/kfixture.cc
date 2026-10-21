@@ -23,6 +23,8 @@
 #include <kickos/sync.h>
 #include <kickos/time.h>
 
+#include <kickos/sys/abi.h>
+
 #include "kfixture.h"
 
 namespace kickos
@@ -409,6 +411,7 @@ namespace kickos
             new (&kernel()) Kernel{};
             new (&g_fx) Fixture{};
             g_in_isr = false;
+            g_word_fault = false;
             g_now_ns = 0;
             g_seat_cost_ns = 0;
             for (int i = 0; i < FIXTURE_DOMAIN_SLOTS; i++)
@@ -527,6 +530,9 @@ namespace kickos
             th->base_prio = prio;
             th->prio = prio;
             th->id = static_cast<uint16_t>(slot + 1);
+            // Outside the pool, so a word naming it resolves to no thread: generation 1, where
+            // seat_pool's slots stay at 0.
+            th->lock_id = lock_id_pack(1u, static_cast<uint32_t>(slot));
 #if KICKOS_KERNEL_CORES > 1
             // Supply the placement mask normally set by thread_create; zero is unschedulable.
             th->affinity = KICKOS_CORE_SET_ALL;
@@ -559,6 +565,7 @@ namespace kickos
             w->base_prio = prio;
             w->prio = prio;
             w->id = static_cast<uint16_t>(10 + slot);
+            w->lock_id = k.threads.lock_id_for(slot);
 #if KICKOS_KERNEL_CORES > 1
             // Supply the placement mask normally set by thread_create; zero is unschedulable.
             w->affinity = KICKOS_CORE_SET_ALL;
@@ -620,22 +627,36 @@ namespace kickos
             ep->send_waiters.push_back(&w->link);
         }
 
-        // Link manually because held_push is private to sync.cc; held_remove unlinks it.
-        Mutex* own_mutex(Thread* owner, int* out_handle)
+        // Linked by hand: the record pool and held_push are private to sync.cc.
+        Mutex* own_mutex(Thread* owner, uint32_t* word)
         {
-            int const i = kernel().mutexes.alloc();
-            Mutex* m = kernel().mutexes.at(i);
+            Kernel& k = kernel();
+            Mutex* m = nullptr;
+            for (Mutex& r : k.mutex_records)
+            {
+                if (r.owner == nullptr)
+                {
+                    m = &r;
+                    break;
+                }
+            }
             if (m == nullptr)
             {
-                printf("FIXTURE FAIL: mutex pool exhausted\n");
+                printf("FIXTURE FAIL: every mutex record is in use\n");
                 exit(1);
             }
             *m = Mutex{};
+            m->key = static_cast<arch_phys_addr_t>(reinterpret_cast<uintptr_t>(word));
             m->owner = owner;
             m->next_held = owner->held_list;
             owner->held_list = m;
-            kernel().mutex_refs[i] = 2;
-            *out_handle = kernel().mutexes.handle_for(i);
+            m->next_active = k.mutex_active;
+            if (k.mutex_active != nullptr)
+            {
+                k.mutex_active->prev_active = m;
+            }
+            k.mutex_active = m;
+            *word = owner->lock_id | KOS_MUTEX_WAITERS;
             return m;
         }
 
@@ -720,6 +741,7 @@ namespace kickos
             w->wait_queue = &m->waiters;
             w->wait_kind = WAIT_MUTEX;
             w->wait_obj = m;
+            w->wait_va = static_cast<uintptr_t>(m->key);
             w->wait_result = WAIT_RESULT_POISON;
             m->waiters.push_back(&w->link);
         }

@@ -285,6 +285,35 @@ fleet pass captures both builds and its table shows `chaincheck_float (flat)`. B
 
     VARIANT=flat TAG=<tag> APP=chaincheck_float tools/bench/bench.sh rx72m
 
+## `mutexbench`, the mutex as an application pays for it
+
+`mutexbench` (`user/apps/common/mutexbench/main.cc`) times an uncontended lock and unlock, the C
+library's locks under `malloc` and `getenv`, a bare system call, and the waiter's wait in a mutex
+handoff: alone, beside every other thread slot parked in pairs, and from another task through a
+memory window where the board has address spaces. It reads `kos_clock_now`, so it builds on every
+board, the 64 KiB-flash ones included, and needs no bench kernel; a `bench` variant adds the
+kernel's own rows over each handoff window. Each handoff row prints its p50, p99 and max and the
+round it came from, and a clock too coarse to time one handoff prints the round alone. Its rows
+are read, not judged (`kickos_unbooted`), so a capture takes no judge:
+
+    APP=mutexbench JUDGE=none CAP_SECS=90 VARIANT= tools/bench/bench.sh <board>
+
+A handoff is timed by a `kos_clock_now` on each side, which is a system call, so its figures
+compare only between trees whose clock read costs the same.
+
+## `ucasrewind`, the rewind witness
+
+On armv6m and rxv3 the switcher resumes a thread it took off the core inside `kickos_user_cas`'s
+window at the routine's load (`user-cas-fails-across-a-return` in
+[invariants.md](invariants.md)). `ucasrewind` (`user/apps/common/ucasrewind/main.cc`) is built only
+in a tree configured with `KICKOS_WITNESS_REWIND`, whose kernel counts each rewind that moves a
+stacked PC: two round-robin adders on one word must see at least one, and the word must equal the
+adds both saw succeed. `tests/integration/check_rewind.sh` holds it under the emulator gate on
+armv6m and over a capture alike. rxv3 has no QEMU machine, so its witness is the RX72M capture:
+
+    EXTRA_CMAKE="-DKICKOS_WITNESS_REWIND=ON -DKICKOS_WITNESS_REWIND_SCRATCH=check_rewind.sh" \
+        APP=ucasrewind JUDGE=tests/integration/check_rewind.sh VARIANT= tools/bench/bench.sh rx72m
+
 ## The report has to survive the console
 
 Every line the kernel side of the report prints goes out through `kprintf_paced`, which offers

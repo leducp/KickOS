@@ -131,24 +131,6 @@ namespace kickos
                 k.sems.free(obj_handle);
                 return;
             }
-            case CapType::CAP_MUTEX:
-            {
-                int const idx = obj_ref_last(k.mutexes, k.mutex_refs, obj_handle);
-                if (idx < 0)
-                {
-                    return;
-                }
-                Mutex const* const m = k.mutexes.at(idx);
-                if (leaks(not m->waiters.empty(), &k.mutex_refs[idx], teardown))
-                {
-                    return;
-                }
-                // An owner's own cap pins a ref through the close-of-owned refusal, and the exit
-                // path force-unlocks before this drop.
-                KICKOS_ASSERT(m->owner == nullptr);
-                k.mutexes.free(obj_handle);
-                return;
-            }
             case CapType::CAP_ENDPOINT:
             {
                 // recv_holders -> 0 has already emptied send_waiters, and a receiver parks only
@@ -245,13 +227,12 @@ namespace kickos
             }
             // This closer was the conventional server: drop the dangling pointer (else a
             // later D2 boost writes a reused TCB) and kill any lingering D2 donation. A dying
-            // closer is never rescheduled, so it skips its own recompute (mirrors
-            // mutex_force_unlock).
+            // closer is never rescheduled, so it skips its own recompute.
             if (ep->server == closer)
             {
                 endpoint_server_clear(ep);
                 // A live closer self-lowers: give up the CPU if a higher thread is now the
-                // top runnable, mirroring mutex_unlock's no-waiter path.
+                // top runnable.
                 if (not teardown)
                 {
                     uint8_t const np = thread_effective_prio(closer);
@@ -279,42 +260,26 @@ namespace kickos
             refuse_senders(ep, held);
         }
 
-        // Per-type close/exit protocol, run BEFORE detach + drop at both call sites.
-        // Returns 0, or a negative -KOS_E* to refuse a voluntary (non-teardown) close.
-        int obj_close_protocol(Thread* closer, CapEntry const& e, bool teardown, Held held)
+        // Per-type close/exit protocol, run BEFORE detach + drop at both call sites. No kind
+        // refuses a close.
+        void obj_close_protocol(Thread* closer, CapEntry const& e, bool teardown, Held held)
         {
             switch (static_cast<CapType>(e.type))
             {
             case CapType::CAP_SEM:
             {
-                return 0;
-            }
-            case CapType::CAP_MUTEX:
-            {
-                Mutex* m = kernel().mutexes.resolve(e.obj);
-                if (m == nullptr or m->owner != closer)
-                {
-                    return 0; // not the owner: an ordinary refcount close, no protocol
-                }
-                if (not teardown)
-                {
-                    return -KOS_EBUSY; // refuse a voluntary close of a mutex you OWN (unlock first)
-                }
-                // The owner is exiting. Force-unlock BEFORE the ref drop so a
-                // waiter is never stranded; the woken lock() caller gets OWNER_DIED.
-                mutex_force_unlock(m, closer, held);
-                return 0;
+                return;
             }
             case CapType::CAP_ENDPOINT:
             {
                 endpoint_rights_dropped(closer, e.obj, e.rights, teardown, held);
-                return 0; // endpoints NEVER refuse a close, unlike a mutex its owner holds
+                return;
             }
 #if KICKOS_HAVE_ASPACE
             case CapType::CAP_FRAME:
             case CapType::CAP_ASPACE:
             {
-                return 0; // neither parks a waiter, so a close strands nothing
+                return; // neither parks a waiter, so a close strands nothing
             }
 #endif
             case CapType::CAP_IRQ:
@@ -323,14 +288,14 @@ namespace kickos
                 // a capability naming this line neither reaches that waiter nor needs to know
                 // whether a WAIT-bearing alias survives in this table. The binding leaves its
                 // object's signaller chain at irq_ref_drop, once its own last reference goes.
-                return 0;
+                return;
             }
             case CapType::CAP_NOTIFY:
             {
                 // NOTHING, and not an oversight: the BIND holds a reference of its own, so
                 // the object outlives its last capability, and the bound thread is released
                 // by its own kos_notify_unbind or by notify_unbind_self at its death.
-                return 0;
+                return;
             }
             case CapType::CAP_REPLY:
             {
@@ -353,7 +318,7 @@ namespace kickos
                     {
                         sched::set_prio(closer, thread_effective_prio(closer), held);
                     }
-                    return 0;
+                    return;
                 }
 #endif
                 Thread* caller = cap_reply_caller(e);
@@ -381,11 +346,11 @@ namespace kickos
                 {
                     sched::wake(caller, held);
                 }
-                return 0;
+                return;
             }
             default:
             {
-                return 0;
+                return;
             }
             }
         }
@@ -415,16 +380,6 @@ namespace kickos
                     return false;
                 }
                 *refs = &kernel().sem_refs[idx];
-                return true;
-            }
-            case CapType::CAP_MUTEX:
-            {
-                int const idx = kernel().mutexes.live_index(obj_handle);
-                if (idx < 0)
-                {
-                    return false;
-                }
-                *refs = &kernel().mutex_refs[idx];
                 return true;
             }
             case CapType::CAP_ENDPOINT:
@@ -657,7 +612,6 @@ namespace kickos
         struct TaskObjectHolds
         {
             uint32_t sem;
-            uint32_t mutex;
             uint32_t endpoint;
             uint32_t irq;
             uint32_t notify;
@@ -714,11 +668,6 @@ namespace kickos
             {
                 return Op<Charged<KICKOS_TASK_SEMAPHORE_BUDGET, &Kernel::sems>>::on(&h->sem,
                                                                                     args...);
-            }
-            case CapType::CAP_MUTEX:
-            {
-                return Op<Charged<KICKOS_TASK_MUTEX_BUDGET, &Kernel::mutexes>>::on(&h->mutex,
-                                                                                   args...);
             }
             case CapType::CAP_ENDPOINT:
             {
@@ -1028,10 +977,6 @@ namespace kickos
         if (want == CapType::CAP_SEM)
         {
             p = kernel().sems.resolve(e->obj);
-        }
-        else if (want == CapType::CAP_MUTEX)
-        {
-            p = kernel().mutexes.resolve(e->obj);
         }
         else if (want == CapType::CAP_ENDPOINT)
         {
@@ -1420,11 +1365,7 @@ namespace kickos
         {
             return -KOS_EPERM; // the kernel's seat
         }
-        int const refused = obj_close_protocol(c, *e, /*teardown=*/false, held);
-        if (refused != 0)
-        {
-            return refused; // protocol refused the close (owner closing a held mutex -> -KOS_EBUSY)
-        }
+        obj_close_protocol(c, *e, /*teardown=*/false, held);
         CapEntry const detached = *e;
         // Vacated BEFORE the ref drops, so no stale handle resolves during the drop, and
         // after the copy above, whose obj the vacate overwrites.
@@ -1551,78 +1492,6 @@ namespace kickos
             obj_ref_drop(prior, /*teardown=*/false, held);
         }
         return true;
-    }
-
-    namespace
-    {
-        // The libc locks of the heap `t` allocates from, whose owner holds malloc's and stdio's
-        // state: the space on a translating board, the image on a region board, which the build
-        // refuses to share between instances.
-        Mutex* libc_heap_owner(Thread const* t)
-        {
-#if KICKOS_HAVE_ASPACE
-            Domain* const d = task_domain(t->task);
-            if (d == nullptr)
-            {
-                return nullptr;
-            }
-            return d->libc_locks;
-#else
-            (void)t;
-            return kernel().libc_locks;
-#endif
-        }
-    }
-
-    namespace
-    {
-        // Indexed by LibcLockIndex.
-        constexpr uint32_t LIBC_LOCK_HANDLES[LIBC_LOCK_COUNT] = {KOS_CAP_LIBC_LOCK,
-                                                                 KOS_CAP_MALLOC_LOCK};
-    }
-
-    Mutex* cap_libc_lock(Thread const* t, uint32_t handle)
-    {
-        for (int i = 0; i < LIBC_LOCK_COUNT; i++)
-        {
-            if (handle != LIBC_LOCK_HANDLES[i])
-            {
-                continue;
-            }
-            Mutex* const locks = libc_heap_owner(t);
-            if (locks == nullptr)
-            {
-                return nullptr;
-            }
-            return &locks[i];
-        }
-        return nullptr;
-    }
-
-    Mutex* cap_resolve_mutex(Thread* c, uint32_t cap_handle, int* err)
-    {
-        Mutex* const libc = cap_libc_lock(c, cap_handle);
-        if (libc != nullptr)
-        {
-            return libc;
-        }
-        return static_cast<Mutex*>(cap_resolve_e(c, cap_handle, CapType::CAP_MUTEX, 0, err));
-    }
-
-    void cap_libc_locks_release(Thread* dying, Held held)
-    {
-        Mutex* const locks = libc_heap_owner(dying);
-        if (locks == nullptr)
-        {
-            return;
-        }
-        for (int i = 0; i < LIBC_LOCK_COUNT; i++)
-        {
-            if (locks[i].owner == dying)
-            {
-                mutex_force_unlock(&locks[i], dying, held);
-            }
-        }
     }
 
     void cap_install_defaults(Thread* child, Held held)

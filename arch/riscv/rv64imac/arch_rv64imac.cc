@@ -478,7 +478,7 @@ void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
 }
 
 #if KICKOS_REENT_PER_THREAD
-void arch_context_seat_reent(struct arch_context* ctx, void* state)
+void arch_context_seat_reent(struct arch_context* ctx, void* state, uint32_t)
 {
     ctx->reent_tp = reinterpret_cast<uintptr_t>(state);
 }

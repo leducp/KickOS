@@ -820,7 +820,7 @@ exists to program. The A53 `virt` machine states no gate and emits none.
   RP2350 gains for UART0's reset bit, and reads UARTPERIPHID0 at offset 0xFE0, 0x11 on a PL011,
   judged by `tests/integration/check_pizero_amp_gate.sh`. Node 1's own refusal of that register
   is not witnessed: no composition grants the privileged thread the read needs, and the node hook
-  that would make it is owed (TODO.md, M10.6.8).
+  that would make it is owed (TODO.md, M10.6.9).
 
 The partition region and the crossings run in CI on `qemu-arm64-amp2`, `ampping`'s nodes calling
 across and exchanging through one region.

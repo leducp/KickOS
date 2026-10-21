@@ -344,8 +344,8 @@ namespace kickos
             Thread* const owner = seat_pool(SLOT_OTHER, PRIO_LOW);
             join_task(c, group);
             join_task(peer, group);
-            int handle = 0;
-            Mutex* const m = own_mutex(owner, &handle);
+            uint32_t word = 0;
+            Mutex* const m = own_mutex(owner, &word);
             park_mutex_waiter(peer, m);
             // The donation the real mutex_lock would have made.
             {
@@ -358,8 +358,11 @@ namespace kickos
 
             EXPECT_EQ(owner->prio, PRIO_LOW)
                 << "the owner falls back to its base priority once the waiter is gone";
-            EXPECT_TRUE(m->owner == owner) << "ownership is NOT transferred to a cancelled waiter";
+            EXPECT_EQ(word & ~KOS_MUTEX_WAITERS, owner->lock_id)
+                << "ownership is NOT transferred to a cancelled waiter";
             EXPECT_TRUE(m->waiters.head == nullptr) << "the waiter is off the mutex queue";
+            EXPECT_TRUE(kernel().mutex_active == nullptr and owner->held_list == nullptr)
+                << "the record its last waiter left is freed";
         }
 
         // ORDER, and this is the arm a counter cannot replace. The peer OUTRANKS the dying

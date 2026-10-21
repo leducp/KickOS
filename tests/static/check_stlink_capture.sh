@@ -36,6 +36,7 @@ declare -A SAMPLES=(
     [KDIAG_F_BANNER_MMU]='-'
     [KDIAG_F_BANNER_UGUARD]=$'pan\nttbr0\nsum clear\nsmep smap\nsmep\nsmap\nnone'
     [KDIAG_F_BANNER_WITNESS]='-'
+    [KDIAG_F_BANNER_WITNESS_REWIND]='-'
     [KDIAG_F_BANNER_KSTACK]=$'1024\t8\t8192'
 )
 CR=$(printf '\r')

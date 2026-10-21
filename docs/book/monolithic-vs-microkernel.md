@@ -243,12 +243,14 @@ protection](memory-protection.md)*.
 
 KickOS is a microkernel. Its kernel keeps what fails Liedtke's test: threads, tasks
 and the scheduler (`kernel/thread/`, `kernel/task/`, `kernel/sched/`); the time base
-(`kernel/time/`); semaphores and priority-inheritance mutexes (`kernel/sync/`);
+(`kernel/time/`); semaphores and the waiting half of the priority-inheritance mutex (`kernel/sync/`);
 endpoints and call/reply (`kernel/syscall/syscall_ipc.cc`); the capability table
 (`kernel/syscall/cap.cc`); protection domains and grants (`kernel/domain/`,
 `kernel/grant/`); and the interrupt entry (`kernel/irq/irq.cc`). The PI mutex shows
-the test at work: lending a thread a higher priority is a scheduler action that no
-user program can perform (Chapter 2.3, *[Priority
+the test at work. Taking a free mutex is one compare-and-swap on a word in user
+memory, so it stays out of the kernel. Lending a thread a higher priority is a
+scheduler action that no user program can perform, so the kernel takes part only
+when a thread waits (Chapter 2.3, *[Priority
 inheritance](priority-inheritance-lending-urgency.md)*). The only hardware the kernel
 drives itself is the system timer, the interrupt controller, the protection unit, and
 a debug console.

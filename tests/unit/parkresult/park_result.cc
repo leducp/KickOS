@@ -39,11 +39,16 @@ namespace kickos
             constexpr uint8_t PRIO_HOLDER = 5;
             constexpr uint8_t PRIO_WAITER = 6;
 
-            Mutex* g_mutex = nullptr;
+            uint32_t g_word = 0;
+
+            uintptr_t word_va()
+            {
+                return reinterpret_cast<uintptr_t>(&g_word);
+            }
 
             void unlock_the_mutex(Thread*)
             {
-                (void) mutex_unlock(g_mutex);
+                (void) mutex_unlock(word_va());
             }
 
             void cancel_the_waiter(Thread* parked)
@@ -88,14 +93,13 @@ namespace kickos
         {
             Thread* holder = nullptr;
             Thread* const waiter = seat_waiter_over_holder(&holder);
-            int handle = 0;
-            g_mutex = own_mutex(holder, &handle);
+            (void)own_mutex(holder, &g_word);
             wake_next_park(unlock_the_mutex);
 
-            int const rc = mutex_lock(g_mutex, KOS_TIMEOUT_NONE);
+            int const rc = mutex_lock(word_va(), KOS_TIMEOUT_NONE);
 
             EXPECT_EQ(rc, 0) << "the transfer said the lock was acquired";
-            EXPECT_EQ(g_mutex->owner, waiter) << "ownership moved to the woken waiter";
+            EXPECT_EQ(g_word, waiter->lock_id) << "ownership moved to the woken waiter";
             // The second switch is the waker's own: the new owner outranks the holder it
             // just reverted, so mutex_unlock's wake takes the CPU back.
             EXPECT_STREQ(trace(), "switch2>1 switch1>2") << "the park switched away and back";
@@ -106,16 +110,16 @@ namespace kickos
         {
             Thread* holder = nullptr;
             Thread* const waiter = seat_waiter_over_holder(&holder);
-            int handle = 0;
-            g_mutex = own_mutex(holder, &handle);
+            (void)own_mutex(holder, &g_word);
             wake_next_park(cancel_the_waiter);
 
-            int const rc = mutex_lock(g_mutex, KOS_TIMEOUT_NONE);
+            int const rc = mutex_lock(word_va(), KOS_TIMEOUT_NONE);
 
             EXPECT_EQ(rc, -KOS_ECANCELED) << "the cancel is what the return carries";
             EXPECT_NE(waiter->cancel_kind, CANCEL_NONE)
                 << "and the waiter is marked for its death point";
-            EXPECT_EQ(g_mutex->owner, holder) << "a cancelled waiter does not acquire the mutex";
+            EXPECT_EQ(g_word & ~KOS_MUTEX_WAITERS, holder->lock_id)
+                << "a cancelled waiter does not acquire the mutex";
             EXPECT_EQ(holder->prio, PRIO_HOLDER) << "the owner's boost is reverted with the wait";
         }
 
@@ -126,11 +130,10 @@ namespace kickos
         {
             Thread* holder = nullptr;
             seat_waiter_over_holder(&holder);
-            int handle = 0;
-            g_mutex = own_mutex(holder, &handle);
+            (void)own_mutex(holder, &g_word);
             wake_next_park(end_the_park_writing_nothing);
 
-            int const rc = mutex_lock(g_mutex, KOS_TIMEOUT_NONE);
+            int const rc = mutex_lock(word_va(), KOS_TIMEOUT_NONE);
 
             EXPECT_EQ(rc, static_cast<int>(WAIT_RESULT_POISON))
                 << "the return carries the fixture's poison, not a waker's answer";
@@ -162,10 +165,9 @@ namespace kickos
         {
             Thread* holder = nullptr;
             seat_waiter_over_holder(&holder);
-            int handle = 0;
-            g_mutex = own_mutex(holder, &handle);
+            (void)own_mutex(holder, &g_word);
 
-            KICKOS_EXPECT_FIXTURE_REFUSAL(mutex_lock(g_mutex, KOS_TIMEOUT_NONE),
+            KICKOS_EXPECT_FIXTURE_REFUSAL(mutex_lock(word_va(), KOS_TIMEOUT_NONE),
                                           "no waker armed for the park");
         }
     }

@@ -495,12 +495,12 @@ for the length of the call; [02](02-first-syscall.md) shows how. Its resting pri
 ```
 (gdb) break arch_context_init
 (gdb) continue
-Breakpoint 1, arch_context_init (ctx=0x20004b60 <kickos::detail::g_instance+944>,
-    entry=0x6ff9 <kickos::(anonymous namespace)::idle_entry(void*)>, arg=0x0,
+Breakpoint 1, arch_context_init (ctx=0x20004ca8 <kickos::detail::g_instance+1256>,
+    entry=0x70dd <kickos::(anonymous namespace)::idle_entry(void*)>, arg=0x0,
     stack_base=0x20020000, stack_size=512, privileged=1) at .../arch/arm/armv7m/arch_armv7m.cc:191
 (gdb) continue
-Breakpoint 1, arch_context_init (ctx=0x20004d88 <kickos::detail::g_instance+1496>,
-    entry=0xc755 <kickos_root_entry(void*)>, arg=0x0,
+Breakpoint 1, arch_context_init (ctx=0x20004ed8 <kickos::detail::g_instance+1816>,
+    entry=0xc91d <kickos_root_entry(void*)>, arg=0x0,
     stack_base=0x20022000, stack_size=8192, privileged=0) at .../arch/arm/armv7m/arch_armv7m.cc:191
 (gdb) break kickos::sched::start
 (gdb) continue
@@ -512,12 +512,12 @@ $1 = {sp = 0x20023fbc, npriv = 0x1, resting_npriv = 0x1, stack_lo = 0x20022000,
 0x20023fbc:	0x00000000	0x00000000	0x00000000	0x00000000
 0x20023fcc:	0x00000000	0x00000000	0x00000000	0x00000000
 0x20023fdc:	0xfffffffd	0x00000000	0x00000000	0x00000000
-0x20023fec:	0x00000000	0x00000000	0x00001833	0x0000c754
+0x20023fec:	0x00000000	0x00000000	0x00001803	0x0000c91c
 0x20023ffc:	0x01000000
 ```
 
 Read the dump from low to high: eight zeros (`r4`-`r11`), `EXC_RETURN` `0xfffffffd`, then the
-hardware frame: `r0`-`r3` and `r12` all 0, LR `0x1833`, PC `0xc754`, xPSR `0x01000000`. PC is
+hardware frame: `r0`-`r3` and `r12` all 0, LR `0x1803`, PC `0xc91c`, xPSR `0x01000000`. PC is
 `kickos_root_entry`. LR is `kickos_user_thread_return` (with the Thumb bit): an unprivileged
 thread whose entry function returns lands there, and it exits through a syscall, since such a
 thread cannot do the kernel's exit work itself. Root lives in thread slot 0.
@@ -580,17 +580,17 @@ Root gets all of them (`CAP_AUTH_ALL`). The init will hand each task only the bi
 composition lists. The comment in `kmain` gives the order: after `thread_create`, which zeroes
 the TCB, and before `sched::start`, so the word is in place before root's first instruction.
 
-The C library's locks are not seated anywhere. They belong to whatever owns the heap, here the
-whole image (`libc_locks` in the kernel instance), and user code names them by two fixed
-pseudo-handles that only the mutex calls accept (Stop 15 meets the first one).
+The C library's locks are not seated anywhere, and the kernel holds nothing for them. Each is a
+mutex word in the static data of whatever owns the heap, here the whole image, and the kernel
+hears of one only when a thread has to wait for it (Stop 15 meets the first one).
 
 **Try it:**
 
 ```
 (gdb) break kickos::cap_seat_authority
 (gdb) continue
-Breakpoint 1, kickos::cap_seat_authority (t=0x20004d88 <kickos::detail::g_instance+1496>,
-    auth=auth@entry=511) at .../kernel/syscall/cap.cc:1082
+Breakpoint 1, kickos::cap_seat_authority (t=0x20004ed8 <kickos::detail::g_instance+1816>,
+    auth=auth@entry=511) at .../kernel/syscall/cap.cc:1027
 (gdb) set $k = &kickos::detail::g_instance.per_instance[0]
 (gdb) p/x $k->threads.slots[0].authority
 $1 = 0x0
@@ -795,7 +795,7 @@ lr             0xfffffff9          -7
 (gdb) p g_arch_current
 $1 = {v_ = {_M_b = {_M_p = 0x0}}}
 (gdb) continue
-Breakpoint 2, kickos_arm_mpu_program (img=0x20004e64 <kickos::detail::g_instance+1716>) at
+Breakpoint 2, kickos_arm_mpu_program (img=0x20004fb8 <kickos::detail::g_instance+2040>) at
     .../arch/arm/common/arch_arm_mpu_pmsav7.cc:87
 (gdb) x/wx 0xE000ED94
 0xe000ed94:	0x00000000
@@ -826,16 +826,16 @@ instruction, so on boards with an MMU the kernel's text is not even mapped for i
 ```
 (gdb) break kickos_root_entry
 (gdb) continue
-Breakpoint 1, kickos_root_entry () at .../user/src/root_entry.cc:52
+Breakpoint 1, kickos_root_entry () at .../user/src/root_entry.cc:116
 (gdb) info registers pc sp msp psp control basepri
-pc             0xc754              0xc754 <kickos_root_entry(void*)>
+pc             0xc91c              0xc91c <kickos_root_entry(void*)>
 sp             0x20024000          0x20024000
 msp            0x203fff60          541065056
 psp            0x20024000          537018368
 control        0x3                 3
 basepri        0x0                 0
 (gdb) p kickos::detail::g_instance.per_instance[0].live
-Cannot access memory at address 0x200048bc
+Cannot access memory at address 0x200048cc
 ```
 
 `CONTROL = 3`: bit 0 (`nPRIV`) says unprivileged, bit 1 (`SPSEL`) says the thread stack, `PSP`.
@@ -849,21 +849,27 @@ isolation is real, and you just watched it refuse.
 
 ### Stop 15: the C and C++ runtime starts in user mode
 
-**Where:** `user/src/root_entry.cc`, `kickos_root_entry`; `arch/arm/common/cortexm.ld.h`,
+**Where:** `user/src/root_entry.cc`, `kickos_root_entry` and `image_start`; `arch/arm/common/cortexm.ld.h`,
 `.kickos_app_init_array`; `user/src/newlib_reent.cc`, `s_reent`; `user/src/newlib_sbrk.cc`,
 `_sbrk`; `user/src/newlib_lock.cc`; `kernel/thread/reent.cc`, `reent_seam_read`
 
 Root now does what a normal C runtime does before `main`: it runs the constructors. These are
-the ones Stop 3 kept out of the kernel's list.
+the ones Stop 3 kept out of the kernel's list. `kickos_root_entry` calls `image_start`, and
+`image_start` walks the list:
 
 ```c++
-    for (void (**fn)() = __kickos_app_init_array_start; fn != __kickos_app_init_array_end;
-         fn++)
+    void image_start()
     {
-        (*fn)();
+        for (void (**fn)() = __kickos_app_init_array_start; fn != __kickos_app_init_array_end;
+             fn++)
+        {
+            (*fn)();
+        }
     }
-    int const status = kickos_init_entry(kickos_init_args.argc, kickos_init_args.argv);
 ```
+
+Then `kickos_root_entry` calls `kickos_init_entry`. On a board with an MMU, `kickos_task_start`
+runs `image_start` instead, once for each space. See [10](10-the-mmu.md).
 
 They run unprivileged, on root's stack, at root's priority 31, one after another, with the
 kernel fully alive. So a constructor may make a syscall. In `hello` there are three, none from
@@ -877,12 +883,14 @@ That last one reads an environment variable (`getenv("GLIBCXX_TUNABLES")`) and t
   `struct _reent` and finds the current one through `_impure_ptr`. The array of these
   structures, one per thread slot, is `s_reent` in `user/src/newlib_reent.cc`, in app memory.
   The kernel read where it is at boot (`reent_seam_read` in `kmain`) and points `_impure_ptr`
-  at the incoming thread's entry on every switch.
+  at the incoming thread's entry on every switch, writing the incoming thread's own id into the
+  word beside it.
 - **The heap.** `malloc` grows the heap with `_sbrk`, a bump pointer over the unused part of
   the app data window (`_kickos_heap_start` to `_kickos_heap_limit`).
-- **The locks.** `getenv` takes newlib's libc lock and `malloc` its malloc lock, each a kernel
-  mutex the image owns (Stop 10). The lock glue asks who is running (`kos_thread_self`) and
-  locks the mutex (`kos_mutex_lock`): these are root's first two syscalls.
+- **The locks.** `getenv` takes newlib's libc lock and `malloc` its malloc lock, each a mutex
+  word in the image's static data (Stop 10). The lock glue reads who is running
+  (`kickos_self_lock_id`, a load of that seated id) and locks the word (`kos_mutex_lock`) with
+  one compare-and-swap in user mode: nobody else holds it, so none of this enters the kernel.
 
 **Try it:**
 
@@ -890,38 +898,49 @@ That last one reads an environment variable (`getenv("GLIBCXX_TUNABLES")`) and t
 (gdb) break kickos_root_entry
 (gdb) continue
 (gdb) x/3a &__kickos_app_init_array_start
-0x10ad8:	0xda01 <register_fini>	0xdfd5 <kickos_exception_report_install()>
-	0x39b1 <_GLOBAL__sub_I__ZN9__gnu_cxx9__freeresEv>
+0x10ccc:	0xdbc1 <register_fini>	0xe195 <kickos_exception_report_install()>
+	0x3a39 <_GLOBAL__sub_I__ZN9__gnu_cxx9__freeresEv>
 (gdb) p _impure_ptr
-$1 = (_reent *) 0x200105c0 <s_reent>
+$1 = (_reent *) 0x20010590 <s_reent>
 (gdb) break kos_mutex_lock
 (gdb) continue
-Breakpoint 2, kos_mutex_lock (mtx=2147418111, timeout_us=4294967295) at .../user/src/syscall_stubs.cc:85
+Breakpoint 2, kos_mutex_lock (m=0x20011adc <(anonymous namespace)::s_libc>, timeout_us=4294967295) at .../user/src/mutex.cc:22
 (gdb) bt
-#0  kos_mutex_lock (mtx=2147418111, timeout_us=4294967295) at .../user/src/syscall_stubs.cc:85
-#1  (anonymous namespace)::libc_lock_take (l=..., self=0, timeout_us=4294967295) at .../user/src/newlib_lock.cc:46
-#2  _findenv_r (reent_ptr=0x200105c0 <s_reent>, name=0x10554 "GLIBCXX_TUNABLES", ...) at .../newlib/libc/stdlib/getenv_r.c:84
+#0  kos_mutex_lock (m=0x20011adc <(anonymous namespace)::s_libc>, timeout_us=4294967295) at .../user/src/mutex.cc:22
+#1  (anonymous namespace)::libc_lock_take (l=..., timeout_us=4294967295) at .../user/src/newlib_lock.cc:47
+#2  _findenv_r (reent_ptr=0x20010590 <s_reent>, name=0x10720 "GLIBCXX_TUNABLES", ...) at .../newlib/libc/stdlib/getenv_r.c:84
 #3  getenv (name=<optimized out>) at .../newlib/libc/stdlib/getenv.c:82
 #4  _GLOBAL__sub_I__ZN9__gnu_cxx9__freeresEv ()
+(gdb) p *m
+$2 = {word = 0}
+(gdb) p $m = m
+(gdb) p/x s_self
+$4 = 0x1
+(gdb) finish
+Value returned is $5 = 0
+(gdb) p/x *$m
+$6 = {word = 0x1}
 (gdb) delete
 (gdb) break _sbrk
 (gdb) continue
 Breakpoint 3, _sbrk (incr=incr@entry=1112) at .../user/src/newlib_sbrk.cc:59
 (gdb) bt
 #0  _sbrk (incr=incr@entry=1112) at .../user/src/newlib_sbrk.cc:59
-#1  _sbrk_r (ptr=ptr@entry=0x200105c0 <s_reent>, incr=incr@entry=1112) at .../newlib/libc/reent/sbrkr.c:51
-#2  malloc_extend_top (reent_ptr=0x200105c0 <s_reent>, nb=<optimized out>) at .../newlib/libc/stdlib/_mallocr.c:2170
-#3  _malloc_r (reent_ptr=0x200105c0 <s_reent>, bytes=<optimized out>) at .../newlib/libc/stdlib/_mallocr.c:2585
+#1  _sbrk_r (ptr=ptr@entry=0x20010590 <s_reent>, incr=incr@entry=1112) at .../newlib/libc/reent/sbrkr.c:51
+#2  malloc_extend_top (reent_ptr=0x20010590 <s_reent>, nb=<optimized out>) at .../newlib/libc/stdlib/_mallocr.c:2170
+#3  _malloc_r (reent_ptr=0x20010590 <s_reent>, bytes=<optimized out>) at .../newlib/libc/stdlib/_mallocr.c:2585
 #4  _GLOBAL__sub_I__ZN9__gnu_cxx9__freeresEv ()
 (gdb) info registers control
 control        0x3                 3
 ```
 
-Root (slot 0) uses `s_reent[0]`. `mtx=2147418111` is `0x7FFEFFFF`, `KOS_CAP_LIBC_LOCK`: a
-pseudo-handle, not a slot of root's table. The libstdc++
+Root (slot 0) uses `s_reent[0]`. The lock `kos_mutex_lock` is handed is the libc lock's word,
+`s_libc` in the image's static data, not a slot of root's table. `s_self` is the word the kernel
+seats each running thread's lock id in, and root's is 1. The word was 0, free, and after the
+compare-and-swap it holds that 1: root holds the lock, and the kernel never saw it. The libstdc++
 pool constructor (`eh_alloc`) asks for its buffer, and the heap grows by 1112 bytes, all of it
-unprivileged. The walk through `kos_mutex_lock` into the kernel is [02](02-first-syscall.md)
-and [04](04-mutex.md).
+unprivileged. The walk through a contended `kos_mutex_lock` into the kernel is
+[04](04-mutex.md).
 
 **Why, and the contract:** [Book: what's under #include](../book/whats-under-include-libc-and-the-cxx-runtime.md),
 [Book: where your RAM goes](../book/where-your-ram-goes-full-cxx-memory-floor-and-the-linker-split.md),
@@ -976,26 +995,26 @@ the init, and both are FIFO, so it waits until the init blocks. The init blocks 
 ```
 (gdb) break kos_thread_create
 (gdb) continue
-Breakpoint 1, kos_thread_create (params=0x20023e18, out_thread=0x20023de4) at .../user/src/syscall_stubs.cc:378
+Breakpoint 1, kos_thread_create (params=0x20023e18, out_thread=0x20023de4) at .../user/src/syscall_stubs.cc:361
 (gdb) p *params
-$1 = {entry = 0x19f9 <kickos::init::task_trampoline(void*)>, arg = 0x10500 <kickos_table_image+32>,
-      name = 0x10538 <kickos_table_image+88> "main", prio = 2 '\002', policy = 0 '\000',
+$1 = {entry = 0x19c9 <kickos::init::task_trampoline(void*)>, arg = 0x106b0 <kickos_table_image+32>,
+      name = 0x106e8 <kickos_table_image+88> "main", prio = 2 '\002', policy = 0 '\000',
       cap_count = 0 '\000', ..., stack_base = 0x0, stack_size = 0, ..., authority = 81, task = 3}
 (gdb) break arch_context_init
 (gdb) continue
-Breakpoint 2, arch_context_init (ctx=0x20004ed8 <kickos::detail::g_instance+1832>,
-    entry=0x19f9 <kickos::init::task_trampoline(void*)>, arg=0x10500 <kickos_table_image+32>,
+Breakpoint 2, arch_context_init (ctx=0x20005030 <kickos::detail::g_instance+2160>,
+    entry=0x19c9 <kickos::init::task_trampoline(void*)>, arg=0x106b0 <kickos_table_image+32>,
     stack_base=0x20026000, stack_size=8192, privileged=0) at .../arch/arm/armv7m/arch_armv7m.cc:191
 (gdb) bt 6
 #0  arch_context_init (...) at .../arch/arm/armv7m/arch_armv7m.cc:191
-#1  kickos::thread_create (...) at .../kernel/thread/thread.cc:652
-#2  kickos::spawn_masked (...) at .../kernel/syscall/syscall_thread.cc:1133
-#3  kickos::thread_create_call (...) at .../kernel/syscall/syscall_thread.cc:1156
-#4  (anonymous namespace)::syscall_body (nr=7, ...) at .../kernel/syscall/syscall.cc:711
-#5  syscall_dispatch (nr=7, ...) at .../kernel/syscall/syscall.cc:400
+#1  kickos::thread_create (...) at .../kernel/thread/thread.cc:666
+#2  kickos::spawn_masked (...) at .../kernel/syscall/syscall_thread.cc:1141
+#3  kickos::thread_create_call (...) at .../kernel/syscall/syscall_thread.cc:1164
+#4  (anonymous namespace)::syscall_body (nr=7, ...) at .../kernel/syscall/syscall.cc:700
+#5  syscall_dispatch (nr=7, ...) at .../kernel/syscall/syscall.cc:421
 ```
 
-`authority = 81` is `0x51`: the three bits the composition lists, narrower than root's `0xff`.
+`authority = 81` is `0x51`: the three bits the composition lists, narrower than root's `0x1ff`.
 The stack is left to the kernel (`stack_base = 0x0`): on this board every thread stack is one
 power-of-two block from the arena, here `0x20026000`. The backtrace crosses the user/kernel
 line: the syscall entered the kernel and the dispatcher called the thread-creation code. This
@@ -1073,14 +1092,14 @@ Breakpoint 1, kickos_app_main () at .../user/apps/common/hello/main.cc:58
 #0  kickos_app_main () at .../user/apps/common/hello/main.cc:58
 #1  kickos_main (self=<optimized out>) at .../system/init/compose/main.cc:15
 #2  kickos::init::task_trampoline (self=<optimized out>) at .../user/src/task_trampoline.cc:16
-#3  kos_panic (msg=<optimized out>) at .../user/src/syscall_stubs.cc:410
+#3  kos_panic (msg=<optimized out>) at .../user/src/syscall_stubs.cc:393
 (gdb) info registers pc sp psp control
 pc             0x190               0x190 <kickos_app_main(int, char**)>
 sp             0x20027ff0          0x20027ff0
 psp            0x20027ff0          537034736
 control        0x3                 3
 (gdb) p _impure_ptr
-$1 = (_reent *) 0x20010700 <s_reent+320>
+$1 = (_reent *) 0x200106d0 <s_reent+320>
 ```
 
 This is the end of the walk: `main`, unprivileged (`CONTROL = 3`), on its own stack just below

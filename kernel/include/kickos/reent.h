@@ -15,6 +15,11 @@
 // control block under KICKOS_REENT_IN_TCB, as the thread pointer itself otherwise. Written once
 // at thread creation, with the descriptor's `seat` then null.
 //
+// Each thread's lock id (kickos/lock_id.h) is seated beside its state, one pointer-wide word:
+// `self` itself at KICKOS_REENT_PER_THREAD 0, rewritten with `seat` at every switch; the control
+// block's second word under KICKOS_REENT_IN_TCB; else the arch's own cell where `self` is null,
+// or `self`'s offset into each element, which the prime writes after copying only `width` bytes.
+//
 // The seam is DATA: where a translating backend splits the image every EL0-reachable leaf
 // carries privileged-execute-never, so the kernel may not call app text at all.
 //
@@ -29,6 +34,7 @@
 #define KICKOS_REENT_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 // Global scope: an elaborated `struct arch_aspace*` first seen inside namespace kickos would
 // declare a second, unrelated type.
@@ -52,7 +58,9 @@ extern "C"
         void* slots;   // element 0 of the per-thread-slot array
         void* shared;  // the process-wide state libc built for itself
         void* seat;    // address of the word libc resolves its state from
+        void* self;    // the lock-id word, or its place in element 0
         size_t stride; // one element's width
+        size_t width;  // the struct _reent at the start of each element
         int count;     // elements in `slots`
     };
 
@@ -72,23 +80,23 @@ namespace kickos
     // The state a pool slot owns, UNPRIMED. A negative index (idle) gets the process-wide state.
     void* reent_state_for_slot(int slot);
 
-    // SWITCH-IN AND NOWHERE ELSE: it writes hundreds of bytes into memory the INCOMING thread
-    // owns. `space` is the incoming thread's own, reached through the kaccess seam; null with
-    // no translating backend.
+    // SWITCH-IN AND NOWHERE ELSE, with kernel().current already the INCOMING thread: it writes
+    // hundreds of bytes into memory that thread owns. `space` is its own, reached through the
+    // kaccess seam; null with no translating backend.
     //
-    // A REFUSED WRITE SLAYS THE INCOMING THREAD AND MUST NOT PANIC: kernel().current is already
-    // that thread, and switch_book's claim three statements past the call redirects the resume.
+    // A REFUSED WRITE SLAYS THE INCOMING THREAD AND MUST NOT PANIC: switch_book's claim three
+    // statements past the call redirects the resume.
     // On sched::start's path nothing claims a resume, so a kill lands at its next syscall entry.
     void reent_prime(struct arch_aspace* space, void* state);
 
 #if KICKOS_REENT_IN_TCB
     // Make `state` the one libc resolves from for the thread whose TLS block starts at `tls`.
     // Only for a block thread_create carved: idle's thread pointer lands in a neighbour's.
-    void reent_seat_tcb(void* tls, void* state);
+    void reent_seat_tcb(void* tls, void* state, uint32_t self);
 #endif
 #if not KICKOS_REENT_PER_THREAD
     // Runs on EVERY switch.
-    void reent_seat(struct arch_aspace* space, void* state);
+    void reent_seat(struct arch_aspace* space, void* state, uint32_t self);
 #endif
 }
 

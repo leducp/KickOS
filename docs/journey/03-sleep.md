@@ -285,12 +285,12 @@ use it).
 (gdb) p kickos::sched::current()->state
 $4 = {v_ = kickos::ThreadState::BLOCKED}
 (gdb) finish
-kickos::park_queueless (c=c@entry=0x20005028 <kickos::detail::g_instance+2168>,
+kickos::park_queueless (c=c@entry=0x20005188 <kickos::detail::g_instance+2504>,
     kind=kind@entry=kickos::WAIT_SLEEP, obj=obj@entry=0x0, held=..., held@entry=...) at .../kernel/sync/sync.cc:83
 ```
 
 The state was already `BLOCKED` when the detach ran, as the comment requires. `ping`'s control block
-lives at 0x20005028, inside the kernel's one global instance, `g_instance`; keep that address for
+lives at 0x20005188, inside the kernel's one global instance, `g_instance`; keep that address for
 later stops.
 
 **Why, and the contract:** [Book: the blocking substrate](../book/the-blocking-substrate-one-wait-wake-primitive.md)
@@ -326,8 +326,8 @@ Then it calls `arch_switch`.
 **Try it:** `break arch_switch`, `continue`:
 
 ```
-Breakpoint 5, arch_switch (from=0x20005028 <kickos::detail::g_instance+2168>,
-    to=0x20005178 <kickos::detail::g_instance+2504>) at .../arch/arm/common/arch_arm_common.cc:86
+Breakpoint 5, arch_switch (from=0x20005188 <kickos::detail::g_instance+2504>,
+    to=0x200052e0 <kickos::detail::g_instance+2848>) at .../arch/arm/common/arch_arm_common.cc:86
 (gdb) p ((kickos::Thread*)to)->name
 $5 = "pong", '\000' <repeats 11 times>
 (gdb) p ((kickos::Thread*)to)->switch_count
@@ -405,16 +405,16 @@ while `ping` sleeps.
 registers (control, reload, current) at 0xE000E010:
 
 ```
-Breakpoint 6, arch_timer_arm (deadline_ns=440000000) at .../arch/arm/common/arch_arm_common.cc:126
-#0  arch_timer_arm (deadline_ns=440000000) at .../arch/arm/common/arch_arm_common.cc:126
-#1  0x00003b12 in kickos::(anonymous namespace)::switch_book (next=0x20005178 <...>, me=0, held=...) at .../sched.cc:432
+Breakpoint 6, arch_timer_arm (deadline_ns=430000000) at .../arch/arm/common/arch_arm_common.cc:126
+#0  arch_timer_arm (deadline_ns=430000000) at .../arch/arm/common/arch_arm_common.cc:126
+#1  0x00003b9e in kickos::(anonymous namespace)::switch_book (next=0x200052e0 <...>, me=0, held=...) at .../sched.cc:450
 (gdb) finish
 (gdb) x/3wx 0xE000E010
-0xe000e010:    0x00000007    0x00989680    0x009894c3
+0xe000e010:    0x00000007    0x00989680    0x00989452
 ```
 
 Control 7 is enable, interrupt, core clock. The reload 0x989680 is 10000000 cycles: 400 ms at 25
-MHz. The clock read 40 ms by the time the arm ran, and 440 - 40 = 400. The counter has already
+MHz. The clock read 30 ms by the time the arm ran, and 430 - 30 = 400. The counter has already
 started down.
 
 To watch the deduplication, trace every call instead of stopping. In a fresh session, after the
@@ -441,7 +441,7 @@ prints, in one run:
 
 ```
 rearm for pong
-arm 440000000
+arm 430000000
 rearm for idle
 
 Breakpoint 4, SysTick_Handler () at .../arch/arm/common/arch_arm_common.cc:240
@@ -533,18 +533,18 @@ running, so gdb can read kernel memory):
 #1  0x00006ffe in kickos::(anonymous namespace)::idle_entry () at .../kernel/init/kmain.cc:156
 (gdb) p kickos::sched::current()->name
 $8 = "idle", '\000' <repeats 11 times>
-(gdb) set $p = (kickos::Thread*)0x20005028
+(gdb) set $p = (kickos::Thread*)0x20005188
 (gdb) p/x $p->ctx
 $9 = {sp = 0x20000b94, npriv = 0x0, resting_npriv = 0x1, stack_lo = 0x20028000, stack_hi = 0x2002a000, kernel_sp = 0x20000c30}
 (gdb) info symbol *(unsigned*)($p->ctx.sp + 60)
 kickos::ktime_sleep_until(unsigned long long) + 100 in section .text
 (gdb) p ((struct kickos::Kernel*)&kickos::detail::g_instance)->sleepq->deadline_ns
-$10 = 440000000
+$10 = 430000000
 (gdb) p ((struct kickos::Kernel*)&kickos::detail::g_instance)->timer_armed_ns
-$11 = {440000000}
+$11 = {430000000}
 ```
 
-(These numbers are from a run where the deadline came out at 440 ms.) `ctx.sp` points into the
+(These numbers are from a run where the deadline came out at 430 ms.) `ctx.sp` points into the
 kernel stack. Nine software-saved words sit there, then the hardware frame, whose seventh word
 (offset 36 + 24 = 60) is the saved `pc`: `ktime_sleep_until + 100`, its closing brace, where the
 lock was released. `npriv = 0`: `ping` will resume privileged, mid-syscall, while its
@@ -616,8 +616,8 @@ interrupted, idle's loop. `xPSR` ends in 0xf, exception 15.
 `wake_no_resched`, `resched_after_wake`
 
 `thread_abort_park` is the general way to end a park from outside, used by timeouts and by kills.
-It looks at the wait edge to undo the park: for a semaphore or mutex wait it unlinks the thread
-from the object's queue, for an endpoint it also reverts priority donations. For `WAIT_SLEEP`
+It looks at the wait edge to undo the park: for a semaphore wait it unlinks the thread from the
+object's queue, and for a mutex or an endpoint it also reverts priority donations. For `WAIT_SLEEP`
 there is nothing to unlink, because the thread was on no wait queue. Then, for every kind:
 
 ```
@@ -642,13 +642,13 @@ returning to idle in between.
 `finish`, and read the interrupt control register `ICSR` at 0xE000ED04:
 
 ```
-Breakpoint 8, kickos::thread_abort_park (t=0x20005028 <kickos::detail::g_instance+2168>, result=-110, held=...)
+Breakpoint 8, kickos::thread_abort_park (t=0x20005188 <kickos::detail::g_instance+2504>, result=-110, held=...)
 (gdb) p t->name
 $13 = "ping", '\000' <repeats 11 times>
 (gdb) p t->wait_kind
 $14 = kickos::WAIT_SLEEP
 (gdb) continue
-Breakpoint 9, arch_switch (from=0x20004b60 <kickos::detail::g_instance+944>, to=0x20005028 <...+2168>)
+Breakpoint 9, arch_switch (from=0x20004ca8 <kickos::detail::g_instance+1256>, to=0x20005188 <...+2504>)
 (gdb) p ((kickos::Thread*)to)->name
 $15 = "ping", '\000' <repeats 11 times>
 (gdb) finish
@@ -657,7 +657,7 @@ $15 = "ping", '\000' <repeats 11 times>
 $16 = 0x1000e80f
 ```
 
-`result=-110` is `-KOS_ETIMEDOUT`. `from` is idle's context (0x20004b60), `to` is `ping`'s. In
+`result=-110` is `-KOS_ETIMEDOUT`. `from` is idle's context (0x20004ca8), `to` is `ping`'s. In
 `ICSR`, bit 28 (0x10000000) is PendSV pending, and the low byte 0x0f says the active exception is
 still SysTick.
 
@@ -684,15 +684,15 @@ for a sleep, reaching the deadline is the success. A semaphore wait or a send re
 no such check.
 
 **Try it:** the instruction after `bl syscall_dispatch` in `svc_trampoline` has no symbol;
-`disassemble svc_trampoline` shows it, at 0x24e2 in this build. gdb also needs to be told the
+`disassemble svc_trampoline` shows it, at 0x2576 in this build. gdb also needs to be told the
 language there, since the trampoline is assembly. After the SysTick stop:
 
 ```
 (gdb) delete
 (gdb) set language c++
-(gdb) break *0x24e2
+(gdb) break *0x2576
 (gdb) continue
-Breakpoint 4, svc_trampoline () at .../arch/arm/armv7m/switch.S:538
+Breakpoint 4, svc_trampoline () at .../arch/arm/armv7m/switch.S:541
 (gdb) p kickos::sched::current()->name
 $17 = "ping", '\000' <repeats 11 times>
 (gdb) p kickos::sched::current()->wait_result
@@ -708,7 +708,7 @@ $20 = 2
 
 `ping` is back, inside its trampoline, with the result 0 in `r0:r1` and the unread `-110` in
 `wait_result`. `switch_count` is 2: switched in once at its start, once now. `CONTROL` is 2,
-privileged. `break *0x2500` (the final `bx lr`) and `continue` shows `$control` back at 3 before
+privileged. `break *0x2594` (the final `bx lr`) and `continue` shows `$control` back at 3 before
 the return to `kos_sleep_ns`. The next line `ping` runs prints `ping 1`.
 
 **Why, and the contract:** [Book: the syscall path](../book/the-syscall-path-trap-dispatch-return.md)

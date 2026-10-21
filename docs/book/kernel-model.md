@@ -79,7 +79,7 @@ system. Each core also has an **idle thread** at the lowest priority, which runs
 when nothing else can, and puts the core to sleep until an interrupt arrives.
 
 The kernel's objects live in fixed pools sized at build time. Userspace never holds a
-pointer to one. It names a semaphore or a mutex through a **handle** in its capability
+pointer to one. It names a semaphore or an endpoint through a **handle** in its capability
 table, and the handle carries a generation, so a handle to an object that was freed and
 reused stops resolving instead of reaching the new occupant. Part 8 teaches handles;
 this part assumes them.
@@ -178,17 +178,18 @@ mechanism, and add only what is really their own.
 **What KickOS chose.** One mechanism, and few objects. Every blocking call parks the
 thread the same way, and every wake goes through the same protocol. The wait queue and
 the ready queue even share one link in the TCB: a thread is either ready or waiting,
-never both. On top of that substrate the kernel offers only two synchronization objects
-(`kernel/include/kickos/sync.h`):
+never both. On top of that substrate the kernel offers only two kinds of synchronization:
 
 - **The counting semaphore**, the general wait/wake object. Its `post` is safe from an
   interrupt handler, which is how an interrupt readies a thread.
-- **The priority-inheritance mutex**, the one object justified beyond the semaphore.
+- **The priority-inheritance mutex**, the one lock justified beyond the semaphore.
   It exists because of **priority inversion**: a low-priority thread holds a lock that
   a high-priority thread wants, and a medium-priority thread, unrelated to the lock,
   keeps the low one from running and releasing it. The cure, lending the holder the
-  waiter's priority, is a scheduler action that userspace cannot perform, so it must be
-  in the kernel. A lock without that is just a binary semaphore.
+  waiter's priority, is a scheduler action that user code cannot perform. A lock without
+  that is just a binary semaphore. The mutex is not a kernel object. It is a word in the
+  threads' own memory, taken and released in user mode, and the kernel takes part only
+  when a thread must wait for it.
 
 Condition variables, read-write locks and barriers are userspace libraries over those
 two. Endpoints (Chapter 8.3) and the notifications that carry interrupts to drivers
@@ -285,12 +286,13 @@ code, with gdb.
   the stale-read hazard of a deferred switch.
 - **2.3, *[Priority inheritance: lending a thread its blocker's
   urgency](priority-inheritance-lending-urgency.md)*.** Priority inversion, plain
-  inheritance against the priority ceiling, the boost along a chain of owners, and the
-  drop on unlock.
+  inheritance against the priority ceiling, the lock word that keeps a free mutex out of
+  the kernel, the boost along a chain of holders, the drop on unlock, and a holder that
+  dies.
 - **2.4, *[An atomic buys definedness, not
   atomicity](an-atomic-buys-definedness-not-atomicity.md)*.** What `volatile` and an
-  atomic each promise for a word two contexts share, and where an atomic stops being
-  enough and a lock begins.
+  atomic each promise for a word two contexts share, where an atomic stops being enough
+  and a lock begins, and how a core with no compare-and-swap still takes a lock word.
 - **2.5, *[One kernel lock, many ready queues](one-lock-many-ready-queues.md)*.** One
   ready queue or one per core, why that choice is separate from how the kernel is
   locked, and why KickOS pairs per-core queues with one lock.
@@ -301,8 +303,8 @@ The Journey walks the code these chapters explain:
 
 - [3. Sleep](../journey/03-sleep.md): the clock, the deadline, the park, the one-shot,
   idle and the wake, on one core.
-- [4. A mutex](../journey/04-mutex.md): the uncontended and contended lock, priority
-  inheritance and its chain, and the semaphore beside it.
+- [4. A mutex](../journey/04-mutex.md): the lock word taken in user mode, the contended
+  entry, priority inheritance and its chain, and the semaphore beside it.
 - [11. Multicore](../journey/11-multicore.md): per-core ready queues, the kernel lock,
   and a wake handed to another core.
 
@@ -319,6 +321,6 @@ section & interrupt-priority bands", "Deferred switch & blocking model", "Tickle
   *[Context switching and the silicon
   contract](context-switching-and-the-silicon-contract.md)*.
 - How an interrupt reaches a userspace driver: Chapter 3, the interrupt model.
-- How a thread names a semaphore or a mutex: Chapter 8.1, *[The handle and the resolve
+- How a thread names a semaphore or an endpoint: Chapter 8.1, *[The handle and the resolve
   chokepoint](handles-and-the-resolve-chokepoint.md)*.
 - The code from the start: [Journey 3, Sleep](../journey/03-sleep.md).

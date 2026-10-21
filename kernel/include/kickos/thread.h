@@ -12,6 +12,7 @@
 #include <kickos/config.h>
 #include <kickos/endpoint.h> // EP_SERVED_NONE
 #include <kickos/list.h>
+#include <kickos/lock_id.h>
 #include <kickos/mpuset.h>
 #include <kickos/notify.h> // KOS_NOTIFY_UNBOUND, and the Notification the wait edge names
 #include <kickos/slotpool.h> // the handle codec, slot_index_of
@@ -31,7 +32,7 @@ namespace kickos
 {
     struct Endpoint;   // kickos/endpoint.h
     struct Notification; // kickos/notify.h
-    struct Mutex;      // kickos/sync.h
+    struct Mutex;      // kickos/mutex.h
     struct Task;       // kickos/task.h
 
     enum class ThreadState : uint8_t
@@ -71,7 +72,7 @@ namespace kickos
     enum WaitKind : uint8_t
     {
         WAIT_NONE = 0,
-        WAIT_MUTEX,     // wait_obj: the Mutex. The PI chain-walk edge.
+        WAIT_MUTEX,     // wait_obj: the word's Mutex record. The PI chain-walk edge.
         WAIT_SEM,       // wait_obj: the Semaphore
         WAIT_NOTIFY, // wait_obj: the Notification; one bound waiter, no queue
         WAIT_EP_SEND,   // wait_obj: the Endpoint; on its send_waiters
@@ -261,8 +262,10 @@ namespace kickos
         // of the kill gate and must never alias; see kill_tag_of and the clear in
         // ThreadPool::alloc.
         uint16_t spawner_tag = 0;
-        // kstack_owned, cancel_kind and spawner_tag fit the padding before `task`; moving them
-        // grows every TCB.
+        // ThreadPool::lock_id_for at create, 0 outside the pool (idle).
+        uint32_t lock_id = 0;
+        // kstack_owned, cancel_kind and spawner_tag fit the padding before `task`, and lock_id
+        // too on a 64-bit target; moving them grows every TCB.
 
         // The task this thread belongs to, owner of the memory domain the group shares. That
         // domain's regions are copied into `mpu` below at create, plus this thread's own private
@@ -322,7 +325,10 @@ namespace kickos
         // Read it through the accessors below and never raw: an untagged cast is how a
         // mis-tagged park reaches the wrong type.
         void* wait_obj = nullptr;
-        // Head of the mutexes this thread OWNS, linked through Mutex::next_held;
+        // While parked on a mutex word, the address this thread named it by: a death hands the
+        // word over through it, and a call removing this thread's reach of it ends the wait.
+        uintptr_t wait_va = 0;
+        // Head of the mutex records this thread OWNS, linked through Mutex::next_held;
         // thread_effective_prio scans it. Touched only under IrqLock at the mutex
         // block/unblock sites.
         Mutex* held_list = nullptr;
@@ -451,10 +457,10 @@ namespace kickos
     // 32-bit target.
     constexpr size_t thread_scalar_bytes()
     {
-        size_t bytes = 112;
+        size_t bytes = 120;
         if (sizeof(void*) == 8)
         {
-            bytes = 168;
+            bytes = 176;
         }
 #if KCAP_RUN_CHUNKS > 1
         // cap_width + cap_reply_live, which a 64-bit TCB holds in tail padding it has anyway.
@@ -705,6 +711,9 @@ namespace kickos
         Thread slots[KICKOS_THREAD_SLOTS];
         int next = 0;
         uint16_t gen[KICKOS_THREAD_SLOTS] = {};
+        // The high half of a 32-bit generation whose low half is gen[]: step and revert the two
+        // only through gen_step and gen_unstep.
+        uint16_t gen_hi[KICKOS_THREAD_SLOTS] = {};
 
         // A CAP_REPLY carries this handle in CapEntry::obj, whole and unmasked (cap.h). At
         // 16 + 16 the fit is EXACT: a widening would truncate the GENERATION from the top and
@@ -787,7 +796,7 @@ namespace kickos
                             slots[j].spawner_tag = KILL_TAG_NONE;
                         }
                     }
-                    gen[s]++;
+                    gen_step(s);
                     return s;
                 }
             }
@@ -809,7 +818,7 @@ namespace kickos
         {
             if (slots[i].state == ThreadState::EXITED)
             {
-                gen[i]--;
+                gen_unstep(i);
                 return;
             }
             if (i == next - 1)
@@ -852,6 +861,31 @@ namespace kickos
         kos_thread_t handle_for(int index) const
         {
             return handle_pack(gen[index], static_cast<uint32_t>(index));
+        }
+
+        // The lock id of a live slot index, carrying its current generation.
+        uint32_t lock_id_for(int index) const
+        {
+            uint32_t const wide = (static_cast<uint32_t>(gen_hi[index]) << 16) | gen[index];
+            return lock_id_pack(wide, static_cast<uint32_t>(index));
+        }
+
+        void gen_step(int i)
+        {
+            gen[i]++;
+            if (gen[i] == 0)
+            {
+                gen_hi[i]++;
+            }
+        }
+
+        void gen_unstep(int i)
+        {
+            if (gen[i] == 0)
+            {
+                gen_hi[i]--;
+            }
+            gen[i]--;
         }
 
         // nullptr for a slot never allocated, or reclaimed under this handle. An EXITED slot

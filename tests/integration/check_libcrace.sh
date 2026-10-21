@@ -12,9 +12,11 @@
 # 'a' + (7w + i) mod 26. A line reaches the wire whole and exactly once, and every worker ends
 # reporting no block of its own torn. Before the workers start: a thread killed while it waits
 # for the malloc lock ends alone, its task going on, and so does one holding the libc lock, which
-# it hands over; a malloc lock taken from a holder that died holding it ends the taker's task,
-# whether the taker waited at the death or came after it;
-# and a printf completes while another thread holds the malloc lock.
+# it hands over; a killed waiter whose lock was freed under it asks again at the kernel and ends
+# there; a holder killed while it runs releases the malloc lock, and its taker's task lives; getenv
+# with a kill pending takes the free libc lock with no kernel entry; a malloc lock taken from a
+# holder that died holding it ends the taker's task, whether the taker waited at the death or
+# came after it; and a printf completes while another thread holds the malloc lock.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
@@ -44,6 +46,16 @@ if ! has_f "libcrace: a thread killed waiting for malloc ended alone"; then
 fi
 if ! has_f "libcrace: a thread killed holding the libc lock handed it over"; then
     cfail libc-kill "a thread killed holding the libc lock did not hand it over"
+fi
+if ! has_f "libcrace: a killed malloc waiter asked again at the kernel and ended there"; then
+    cfail malloc-reask "a killed malloc waiter took a lock freed under it without a kernel entry"
+fi
+if ! has_f "libcrace: a holder killed while running released malloc, and its taker's task lived"
+then
+    cfail malloc-release "a holder killed while running died holding malloc and ended its taker's task"
+fi
+if ! has_f "libcrace: getenv with a kill pending took the free libc lock with no entry"; then
+    cfail getenv-kill "getenv with a kill pending entered the kernel for a free libc lock"
 fi
 if [ "$dead" = 1 ]; then
     if ! has_f "libcrace: a malloc lock taken from a dead holder ended its task"; then
@@ -111,5 +123,5 @@ if ! has "libcrace: all workers done"; then
 fi
 status_clause "main returned 0" 0
 
-echo "PASS: killed malloc waiters ended alone, a dead malloc holder's lock ended its taker's task, a printf completed beside a held malloc lock, every worker line reached the wire whole and once, and no worker found a block torn"
+echo "PASS: killed malloc waiters ended alone, a killed waiter re-asked at the kernel, a running killed holder released malloc, getenv took a free lock with a kill pending, a dead malloc holder's lock ended its taker's task, a printf completed beside a held malloc lock, every worker line reached the wire whole and once, and no worker found a block torn"
 exit 0

@@ -227,12 +227,8 @@ namespace kickos
             Thread* const sender = endpoint_cap_with_sender(outer, KICKOS_CAP_FIRST_DYNAMIC, 1);
 
             // The LAST slot, past the boundary: only a resumed sweep reaches it.
-            Thread* const waiter = spawn(2, PRIO_PEER);
-            int mtx_handle = 0;
-            Mutex* const m = own_mutex(outer, &mtx_handle);
-            cap_install_at(outer, static_cast<int>(SWEEP_WIDTH) - 1, mtx_handle,
-                           CapType::CAP_MUTEX, CAP_WAIT, KCAP_BADGE_NONE);
-            park_mutex_waiter(waiter, m);
+            Thread* const last_sender =
+                endpoint_cap_with_sender(outer, static_cast<int>(SWEEP_WIDTH) - 1, 2);
 
             Thread* const inner = spawn(3, PRIO_SWEEPER);
             inner->dying = true;
@@ -252,8 +248,8 @@ namespace kickos
             EXPECT_EQ(g_switches, 0u) << "no woken peer outranked either sweeper";
             EXPECT_EQ(sender->wait_result, -KOS_ECONNREFUSED) << "the outer sweep's first chunk drained";
             EXPECT_EQ(inner_sender->wait_result, -KOS_ECONNREFUSED) << "and the inner sweep did its own";
-            EXPECT_EQ(m->owner, waiter) << "the cap past the boundary was released after the nest";
-            EXPECT_EQ(outer->held_list, nullptr) << "the outer sweep completed its held list";
+            EXPECT_EQ(last_sender->wait_result, -KOS_ECONNREFUSED)
+                << "the cap past the boundary was released after the nest";
             EXPECT_FALSE(cap_teardown_active()) << "both sweeps balanced their depth";
         }
 

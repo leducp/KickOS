@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The libc locks at the translating posture: each address space's Domain carries its own pair, a
-// member's death hands over what it holds of its Domain's, and a space with no member is left
-// with idle locks.
+// The libc locks' words at the translating posture, on host words whose key is their address: a
+// member's death hands a word with a waiter over to that waiter, and a word it held alone keeps
+// its dead id for the next taker.
 
 #include <kickos/cap.h>
 #include <kickos/domain.h>
@@ -12,6 +12,8 @@
 #include <kickos/sync.h>
 #include <kickos/task.h>
 #include <kickos/thread.h>
+
+#include <kickos/sys/abi.h>
 
 #include "aspace_seam.h"
 #include "kseam_test.h"
@@ -32,7 +34,7 @@ namespace kickos
                 }
             };
 
-            static_assert(KICKOS_HAVE_ASPACE, "the translating posture keys the locks on a Domain");
+            static_assert(KICKOS_HAVE_ASPACE, "the death walk runs after the translating unmaps");
 
             constexpr uint8_t PRIO_LOW = 4;
             constexpr uint8_t PRIO_MID = 5;
@@ -52,83 +54,59 @@ namespace kickos
                 install_for(t);
             }
 
-            bool idle(Mutex const* m)
+            uintptr_t va(uint32_t* word)
             {
-                return m->owner == nullptr and m->waiters.empty() and m->next_held == nullptr;
+                return reinterpret_cast<uintptr_t>(word);
             }
         }
 
-        TEST_F(LibcLocksSpace, two_spaces_name_two_distinct_pairs)
-        {
-            Task* const a = task(0);
-            Task* const b = task(1);
-            ASSERT_NE(task_domain(a), task_domain(b));
-            Thread* const ta = member_of(1, PRIO_MID, a);
-            Thread* const tb = member_of(2, PRIO_MID, b);
-            Mutex* const a_libc = cap_libc_lock(ta, KOS_CAP_LIBC_LOCK);
-            Mutex* const a_malloc = cap_libc_lock(ta, KOS_CAP_MALLOC_LOCK);
-            ASSERT_NE(a_libc, nullptr);
-            ASSERT_NE(a_malloc, nullptr);
-            EXPECT_NE(a_libc, a_malloc);
-            EXPECT_EQ(a_libc, &task_domain(a)->libc_locks[LIBC_LOCK_STDIO]);
-            EXPECT_EQ(a_malloc, &task_domain(a)->libc_locks[LIBC_LOCK_MALLOC]);
-            EXPECT_NE(cap_libc_lock(tb, KOS_CAP_LIBC_LOCK), a_libc);
-            EXPECT_NE(cap_libc_lock(tb, KOS_CAP_MALLOC_LOCK), a_malloc);
-        }
-
-        TEST_F(LibcLocksSpace, a_member_dying_inside_malloc_hands_its_spaces_lock_over)
+        TEST_F(LibcLocksSpace, a_member_dying_inside_malloc_hands_its_word_over)
         {
             (void)seat_pool(0, PRIO_LOW); // keeps k.live above zero
             Task* const group = task(0);
             Thread* const dying = member_of(1, PRIO_MID, group);
             Thread* const waiter = member_of(2, PRIO_HIGH, group);
             attach_caps(dying, KICKOS_CAP_CHILD_WIDTH);
-            Mutex* const mlock = cap_libc_lock(dying, KOS_CAP_MALLOC_LOCK);
+            uint32_t malloc_word = 0;
             run_as(dying);
-            ASSERT_EQ(mutex_lock(mlock, 0), 0);
-            park_mutex_waiter(waiter, mlock);
+            ASSERT_EQ(mutex_lock(va(&malloc_word), 0), 0);
+            park_mutex_waiter(waiter, own_mutex(dying, &malloc_word));
 
             run_exit(0);
 
-            EXPECT_EQ(mlock->owner, waiter);
+            EXPECT_EQ(malloc_word, waiter->lock_id) << "the death wrote another owner";
             EXPECT_EQ(waiter->wait_result, -KOS_EOWNERDEAD);
             EXPECT_EQ(dying->held_list, nullptr);
+            EXPECT_EQ(kernel().mutex_active, nullptr) << "the emptied record was kept";
         }
 
-        TEST_F(LibcLocksSpace, a_space_whose_last_member_died_holding_its_locks_marks_them)
+        // Nobody waited, so the kernel never knew of either word: each keeps the dead id, and
+        // the next taker of each steals it once.
+        TEST_F(LibcLocksSpace, a_space_whose_last_member_died_holding_its_words_leaves_its_id)
         {
             (void)seat_pool(0, PRIO_LOW);
             Task* const group = task(0);
-            Domain* const d = task_domain(group);
             Thread* const dying = member_of(1, PRIO_MID, group);
             attach_caps(dying, KICKOS_CAP_CHILD_WIDTH);
+            uint32_t libc_word = 0;
+            uint32_t malloc_word = 0;
             run_as(dying);
-            ASSERT_EQ(mutex_lock(cap_libc_lock(dying, KOS_CAP_LIBC_LOCK), 0), 0);
-            ASSERT_EQ(mutex_lock(cap_libc_lock(dying, KOS_CAP_MALLOC_LOCK), 0), 0);
+            ASSERT_EQ(mutex_lock(va(&libc_word), 0), 0);
+            ASSERT_EQ(mutex_lock(va(&malloc_word), 0), 0);
+            uint32_t const dead = dying->lock_id;
 
             run_exit(0);
 
             EXPECT_EQ(task_member_count(group), 0);
-            EXPECT_TRUE(idle(&d->libc_locks[LIBC_LOCK_STDIO]));
-            EXPECT_TRUE(idle(&d->libc_locks[LIBC_LOCK_MALLOC]));
-            EXPECT_TRUE(d->libc_locks[LIBC_LOCK_STDIO].owner_died);
-            EXPECT_TRUE(d->libc_locks[LIBC_LOCK_MALLOC].owner_died)
-                << "the death went unrecorded for want of a waiter";
-        }
+            EXPECT_EQ(libc_word, dead);
+            EXPECT_EQ(malloc_word, dead) << "the death went unrecorded for want of a waiter";
 
-        TEST_F(LibcLocksSpace, a_thread_with_no_space_names_no_libc_lock)
-        {
-            Thread* const t = seat_pool(1, PRIO_MID);
-            ASSERT_EQ(t->task, nullptr);
-            EXPECT_EQ(cap_libc_lock(t, KOS_CAP_LIBC_LOCK), nullptr);
-            EXPECT_EQ(cap_libc_lock(t, KOS_CAP_MALLOC_LOCK), nullptr);
-            int err = 0;
-            {
-                IrqLock lock;
-                EXPECT_EQ(cap_resolve_mutex(t, KOS_CAP_LIBC_LOCK, &err), nullptr);
-                cap_libc_locks_release(t, lock);
-            }
-            EXPECT_EQ(err, KOS_EBADF);
+            Thread* const later = member_of(2, PRIO_MID, task(1));
+            run_as(later);
+            EXPECT_EQ(mutex_lock(va(&libc_word), 0), -KOS_EOWNERDEAD);
+            EXPECT_EQ(mutex_lock(va(&malloc_word), KOS_TIMEOUT_NONE), -KOS_EOWNERDEAD);
+            EXPECT_EQ(mutex_unlock(va(&libc_word)), 0);
+            EXPECT_EQ(mutex_lock(va(&libc_word), 0), 0) << "the death was reported twice";
         }
     }
 }

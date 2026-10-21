@@ -62,6 +62,7 @@
     X(kUguardNotTaken,  "armv8a: PSTATE.PAN or SCTLR_EL1.SPAN did not take the write", "P29")   \
     X(kUguardNoAsid,    "armv8a: no PAN and no ASID, so EL1 cannot be kept out of user pages", "P30") \
     X(kSumNotCleared,   "rv64imac: sstatus.SUM did not take the clear",               "P31")   \
+    X(kMutexNoRecord,   "unreachable: a mutex waiter found every record in use",      "P32")   \
     X(kBannerRule,      "  ==============================================\n",        "\n")
 
 // The prose table is the only C++ in this header, and kickos/console_tx.h includes the header
@@ -92,6 +93,7 @@ namespace kickos
 #define KDIAG_F_BANNER_MMU   KICKOS_DIAG_PICK("   mmu     enforce\n", "M enforce\n")
 #define KDIAG_F_BANNER_UGUARD KICKOS_DIAG_PICK("   uaccess %s\n", "g %s\n")
 #define KDIAG_F_BANNER_WITNESS KICKOS_DIAG_PICK("   witness uaccess\n", "w uaccess\n")
+#define KDIAG_F_BANNER_WITNESS_REWIND KICKOS_DIAG_PICK("   witness rewind\n", "w rewind\n")
 #define KDIAG_F_BANNER_SCHED KICKOS_DIAG_PICK("   sched   %s\n", "s %s\n")
 #define KDIAG_F_BANNER_BUILD KICKOS_DIAG_PICK("   build   %s\n", "t %s\n")
 #define KDIAG_F_BANNER_APP   KICKOS_DIAG_PICK("   app     %s\n", "p %s\n")

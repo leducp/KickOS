@@ -6,6 +6,7 @@
 #include <kickos/sys.h>
 #include <kickos/libc/string.h>
 #include <kickos/arch/arch.h>
+#include <kickos/lock_id.h>
 
 #if KICKOS_LIBC_REENT
 #include <kickos/reent.h>
@@ -71,25 +72,6 @@ int kos_sem_wait(kos_cap_t sem, uint32_t timeout_us)
 int kos_sem_post(kos_cap_t sem)
 {
     return static_cast<int>(arch_syscall(KOS_SYS_SEM_POST, static_cast<uintptr_t>(sem), 0, 0, 0));
-}
-
-int kos_mutex_create(kos_cap_t* out_cap)
-{
-    cap_out_clear(out_cap);
-    return static_cast<int>(arch_syscall(KOS_SYS_MUTEX_CREATE,
-                                         reinterpret_cast<uintptr_t>(out_cap), 0, 0, 0));
-}
-
-int kos_mutex_lock(kos_cap_t mtx, uint32_t timeout_us)
-{
-    return static_cast<int>(arch_syscall(KOS_SYS_MUTEX_LOCK, static_cast<uintptr_t>(mtx),
-                                         static_cast<uintptr_t>(timeout_us), 0, 0));
-}
-
-int kos_mutex_unlock(kos_cap_t mtx)
-{
-    return static_cast<int>(arch_syscall(KOS_SYS_MUTEX_UNLOCK,
-                                         static_cast<uintptr_t>(mtx), 0, 0, 0));
 }
 
 int kos_endpoint_create(kos_cap_t* out_cap)
@@ -250,15 +232,16 @@ int kos_task_cores(kos_task_t task)
 #endif
 }
 
-// arch_syscall64: a handle may carry bit 31, which a 32-bit return cannot tell from an errno.
+#if KICKOS_ARCH_SIM
+uint32_t kickos_self_lock_id(void)
+{
+    return kickos::sim_self_seat.get();
+}
+#endif
+
 kos_thread_t kos_thread_self(void)
 {
-    uint64_t const r = arch_syscall64(KOS_SYS_THREAD_SELF, 0, 0, 0, 0);
-    if (r > 0xFFFFFFFFull)
-    {
-        return KOS_THREAD_NONE;
-    }
-    return static_cast<kos_thread_t>(r);
+    return kickos::lock_id_handle(kickos_self_lock_id());
 }
 
 int kos_task_nonblock(int op)

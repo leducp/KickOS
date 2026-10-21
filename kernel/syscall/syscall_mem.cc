@@ -19,6 +19,7 @@
 #include <kickos/sched.h>
 #include <kickos/task.h>
 #include <kickos/thread.h>
+#include <kickos/word.h>
 
 #include <kickos/sys/abi.h>
 #include <kickos/sys/atomic.h>
@@ -91,48 +92,69 @@ namespace kickos
 #endif
             return false;
         }
+
+        // On a translating backend a non-null `found` holds what c's range list answers for
+        // [ptr, ptr + len), asked in its stead.
+        bool thread_range_ok(Thread const* c, uintptr_t ptr, size_t len, uint32_t need,
+                             VirtualRange const* const* found = nullptr)
+        {
+            if (c == nullptr)
+            {
+                return false;
+            }
+            if (len == 0)
+            {
+                return true;
+            }
+            uintptr_t const end = ptr + len;
+            if (end < ptr)
+            {
+                return false; // address-space wrap
+            }
+            if ((need & ARCH_MPU_W) != 0 and read_only_overlaps(c, ptr, end))
+            {
+                return false;
+            }
+            for (arch_mpu_region const& r : c->mpu)
+            {
+                if ((r.attr & need) != need or not region_answers_pointers(r))
+                {
+                    continue;
+                }
+                uintptr_t const rend = r.base + r.size;
+                if (rend >= r.base and ptr >= r.base and end <= rend)
+                {
+                    return true;
+                }
+            }
+#if KICKOS_HAVE_ASPACE
+            VirtualRange const* e = nullptr;
+            if (found != nullptr)
+            {
+                e = *found;
+            }
+            else
+            {
+                VirtualRanges const* const ranges = domain_ranges(thread_domain(c));
+                if (ranges != nullptr)
+                {
+                    e = ranges->find(ptr, len);
+                }
+            }
+            if (vr_grants(e, map_rights_of(need)))
+            {
+                return true;
+            }
+#else
+            (void)found;
+#endif
+            return false;
+        }
     }
 
     bool user_range_ok(uintptr_t ptr, size_t len, uint32_t need)
     {
-        Thread* c = sched::current();
-        if (c == nullptr)
-        {
-            return false;
-        }
-        if (len == 0)
-        {
-            return true;
-        }
-        uintptr_t const end = ptr + len;
-        if (end < ptr)
-        {
-            return false; // address-space wrap
-        }
-        if ((need & ARCH_MPU_W) != 0 and read_only_overlaps(c, ptr, end))
-        {
-            return false;
-        }
-        for (arch_mpu_region const& r : c->mpu)
-        {
-            if ((r.attr & need) != need or not region_answers_pointers(r))
-            {
-                continue;
-            }
-            uintptr_t const rend = r.base + r.size;
-            if (rend >= r.base and ptr >= r.base and end <= rend)
-            {
-                return true;
-            }
-        }
-#if KICKOS_HAVE_ASPACE
-        VirtualRanges const* const ranges = domain_ranges(thread_domain(c));
-        if (ranges != nullptr and ranges->covers(ptr, len, map_rights_of(need)))
-        {
-            return true;
-        }
-#endif
-        return false;
+        return thread_range_ok(sched::current(), ptr, len, need);
     }
 
     bool user_range_typed_ok(uintptr_t ptr, size_t len, uint32_t need)
@@ -368,13 +390,35 @@ namespace kickos
         return arch_user_text_readable(ptr, len);
     }
 
+    namespace
+    {
+        bool thread_writable(Thread const* c, uintptr_t ptr, size_t len,
+                             VirtualRange const* const* found)
+        {
+            if (thread_range_ok(c, ptr, len, ARCH_MPU_W, found))
+            {
+                return true;
+            }
+            return arch_user_data_writable(ptr, len);
+        }
+    }
+
+    bool thread_writable_ok(Thread const* c, uintptr_t ptr, size_t len)
+    {
+        return thread_writable(c, ptr, len, nullptr);
+    }
+
+#if KICKOS_HAVE_ASPACE
+    bool thread_writable_found(Thread const* c, uintptr_t ptr, size_t len,
+                               VirtualRange const* found)
+    {
+        return thread_writable(c, ptr, len, &found);
+    }
+#endif
+
     bool user_writable_ok(uintptr_t ptr, size_t len)
     {
-        if (user_range_ok(ptr, len, ARCH_MPU_W))
-        {
-            return true;
-        }
-        return arch_user_data_writable(ptr, len);
+        return thread_writable_ok(sched::current(), ptr, len);
     }
 
     // Require both read and write validation, including architecture fallbacks.
@@ -677,7 +721,8 @@ namespace kickos
         {
             alias_sync(d, sizeof(void*));
         }
-        __builtin_memcpy(__builtin_assume_aligned(d, sizeof(void*)), kword, sizeof(void*));
+        __builtin_memcpy(__builtin_assume_aligned(d, sizeof(void*)),
+                         __builtin_assume_aligned(kword, sizeof(void*)), sizeof(void*));
         if (uncached)
         {
             alias_sync(d, sizeof(void*));
@@ -690,6 +735,30 @@ namespace kickos
 #endif
         return true;
     }
+
+#if KICKOS_HAVE_ASPACE
+    uint32_t* kaccess_word_get(WordRef const& w)
+    {
+        if ((w.va & (sizeof(uint32_t) - 1u)) != 0 or w.space == nullptr)
+        {
+            return nullptr;
+        }
+        bool uncached = false;
+        void* const p = arch_aspace_acquire(w.space, w.va, &uncached);
+        // A cacheable alias of an uncached word cannot be compared and swapped atomically.
+        if (p != nullptr and uncached)
+        {
+            arch_aspace_release(w.space, w.va);
+            return nullptr;
+        }
+        return static_cast<uint32_t*>(p);
+    }
+
+    void kaccess_word_put(WordRef const& w)
+    {
+        arch_aspace_release(w.space, w.va);
+    }
+#endif
 
     // Compare overlap only within the same space, which is every pair where the backend does
     // not translate. Return failure rather than asserting: user code can request overlap, and

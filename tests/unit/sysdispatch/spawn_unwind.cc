@@ -82,7 +82,10 @@ namespace kickos
                 was.mpu.clear();
                 uintptr_t const mark = reinterpret_cast<uintptr_t>(g_code);
                 ASSERT_TRUE(was.mpu.add(mark, sizeof(g_code), ARCH_MPU_R));
+                // At the wrap, so the claim carries into the high half the revert must undo too.
+                k.threads.gen[1] = 0xFFFFu;
                 uint16_t const gen = k.threads.gen[1];
+                uint16_t const gen_hi = k.threads.gen_hi[1];
 
                 // The child's task data reads the block its kernel stack will be: read-only
                 // under a writable stack is decided writable by the higher region.
@@ -106,6 +109,7 @@ namespace kickos
 
                 EXPECT_EQ(was.state, ThreadState::EXITED);
                 EXPECT_EQ(k.threads.gen[1], gen) << "the slot kept the claim's generation";
+                EXPECT_EQ(k.threads.gen_hi[1], gen_hi) << "the slot kept the claim's high half";
                 ASSERT_EQ(was.mpu.end() - was.mpu.begin(), 1) << "the slot's set was written";
                 EXPECT_EQ(was.mpu.begin()->base, mark);
 

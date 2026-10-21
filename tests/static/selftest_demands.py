@@ -27,8 +27,8 @@ import re
 import sys
 
 TAP_ADD_RE = re.compile(r'\bTAP_ADD\w*\(\s*"(\w+)"\s*,\s*(\w+)')
-POOLS = ('workers', 'tasks', 'irqs', 'caps', 'sems', 'mutexes', 'endpoints', 'notifies')
-OBJECTS = ('sems', 'mutexes', 'endpoints', 'notifies')
+POOLS = ('workers', 'tasks', 'irqs', 'caps', 'sems', 'endpoints', 'notifies')
+OBJECTS = ('sems', 'endpoints', 'notifies')
 FIELDS = ('workers', 'tasks') + OBJECTS + ('caps', 'irqs', 'irq_line')
 ASK_RE = re.compile(r'\bTAP_ASK(_LINE)?\s*\(')
 FIELD_RE = re.compile(r'^\s*\.(\w+)\s*=\s*(\w+)\s*$')
@@ -485,13 +485,13 @@ PLANTED = [
     '    TAP_ADD("h", t_h);\n#endif\n'
     '}\n']
 PLANTED_CONFIG = {'KICKOS_KERNEL_CORES': 2}
-ROOMY = {'workers': 5, 'tasks': 2, 'irqs': 2, 'caps': 6, 'sems': 2, 'mutexes': 1, 'endpoints': 1,
+ROOMY = {'workers': 5, 'tasks': 2, 'irqs': 2, 'caps': 6, 'sems': 2, 'endpoints': 1,
          'notifies': 1}
 
 
 def ask(workers=0, tasks=0, irqs=0, caps=0, sems=0, endpoints=0, notifies=0):
     return {'workers': workers, 'tasks': tasks, 'irqs': irqs, 'caps': caps, 'sems': sems,
-            'mutexes': 0, 'endpoints': endpoints, 'notifies': notifies}
+            'endpoints': endpoints, 'notifies': notifies}
 
 
 def self_test():

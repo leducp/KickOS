@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Cap-object creator syscalls: sem_create / mutex_create. Each admits the calling task
-// against its object ceiling, allocates from a global generational pool and installs the
-// owning cap in the creator's table.
+// The semaphore's creator syscall: admits the calling task against its object ceiling,
+// allocates from a global generational pool and installs the owning cap in the creator's table.
 
 #include <kickos/cap.h>
 #include <kickos/instance.h>
@@ -54,36 +53,6 @@ namespace kickos
         {
             kernel().sem_refs[i] = 0;
             kernel().sems.free(obj);
-            return rc;
-        }
-        return 0;
-    }
-
-    // Possession IS the lock/unlock authority (no WAIT/SIGNAL split), so the creator cap
-    // carries CAP_TRANSFER only and lock/unlock resolve with need == 0.
-    int mutex_create(uint32_t* out_cap)
-    {
-        IrqLock lock;
-        *out_cap = KCAP_INVALID;
-        Thread* c = sched::current();
-        if (not task_object_admit(CapType::CAP_MUTEX, c->task))
-        {
-            return -KOS_EAGAIN;
-        }
-        int const i = kernel().mutexes.alloc();
-        Mutex* const m = kernel().mutexes.at(i); // total over alloc()'s -1
-        if (m == nullptr)
-        {
-            return -KOS_ENOMEM;
-        }
-        mutex_init(m);
-        kernel().mutex_refs[i] = 1;
-        int const obj = kernel().mutexes.handle_for(i);
-        int const rc = cap_install(c, obj, CapType::CAP_MUTEX, CAP_TRANSFER, out_cap);
-        if (rc != 0)
-        {
-            kernel().mutex_refs[i] = 0;
-            kernel().mutexes.free(obj);
             return rc;
         }
         return 0;

@@ -219,10 +219,15 @@ namespace kickos
         void park_sleeper(Thread* w, uint64_t deadline_ns);
         // Park a plain sender without CALL_SEND_WAIT priority donation.
         void park_plain_sender(Thread* w, Endpoint* ep);
-        // Create a held mutex with two object references, including the waiter's.
-        // One reference would free it immediately after ownership transfer.
-        Mutex* own_mutex(Thread* owner, int* out_handle);
+        // The record of the host word `word` held by `owner`, as a first contended lock leaves
+        // it: the word names the owner with KOS_MUTEX_WAITERS set. A record lives only while it
+        // has a waiter, so park one on it before the kernel next acts on it.
+        Mutex* own_mutex(Thread* owner, uint32_t* word);
+        // Parked through the word's own address, which is its key at this posture.
         void park_mutex_waiter(Thread* w, Mutex* m);
+        // At a translating posture every hold of word_seam.cc fails while set, as a vanished
+        // page's does. Reset clears it.
+        extern bool g_word_fault;
         // Run sched::exit_current until its final park.
         void run_exit(int code);
         // run_exit for `t` from inside a run_in_chunk_gap action, as another core's or a

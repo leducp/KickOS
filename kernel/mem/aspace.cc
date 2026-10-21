@@ -443,6 +443,20 @@ namespace kickos
         return frame_pool_alias(app_pa(va));
     }
 
+    namespace
+    {
+        // A window or a capability run sits where the kernel chose; everything else a space
+        // maps sits at its frames' own address.
+        arch_phys_addr_t range_first_frame(struct arch_aspace* space, VirtualRange const* e)
+        {
+            if ((e->flags & (VR_WINDOW | VR_FRAMECAP)) != 0)
+            {
+                return arch_aspace_frame_at(space, e->base);
+            }
+            return aspace_frame_of(e->base);
+        }
+    }
+
     bool aspace_frames_type_ok(arch_phys_addr_t pa, size_t pages, uint8_t memtype,
                                VirtualRange const* self)
     {
@@ -474,13 +488,7 @@ namespace kickos
                 {
                     continue;
                 }
-                // A window or a capability run sits where the kernel chose; everything else a
-                // space maps sits at its frames' own address.
-                arch_phys_addr_t lo = aspace_frame_of(e->base);
-                if ((e->flags & (VR_WINDOW | VR_FRAMECAP)) != 0)
-                {
-                    lo = arch_aspace_frame_at(space, e->base);
-                }
+                arch_phys_addr_t const lo = range_first_frame(space, e);
                 arch_phys_addr_t const hi = lo + static_cast<arch_phys_addr_t>(e->pages) * g;
                 if (lo < end and pa < hi)
                 {
@@ -489,6 +497,29 @@ namespace kickos
             }
         }
         return true;
+    }
+
+    bool aspace_maps_writable(struct arch_aspace* space, VirtualRanges const* ranges,
+                              arch_phys_addr_t pa)
+    {
+        size_t const g = arch_aspace_granule();
+        for (size_t i = 0; space != nullptr and ranges != nullptr and i < VirtualRanges::capacity();
+             i++)
+        {
+            VirtualRange const* const e = ranges->at(i);
+            if (e == nullptr or (e->flags & VR_IMAGE) != 0 or e->state != VirtualState::Granted
+                or (e->rights & ARCH_MAP_W) == 0)
+            {
+                continue;
+            }
+            arch_phys_addr_t const lo = range_first_frame(space, e);
+            arch_phys_addr_t const hi = lo + static_cast<arch_phys_addr_t>(e->pages) * g;
+            if (lo != 0 and pa >= lo and pa < hi)
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
 #if KICKOS_PRESYNC

@@ -46,6 +46,7 @@ namespace kickos
 #if KICKOS_HAVE_ASPACE
             (void)k;
             // The windows went in after the stack, and go back before the task as it does.
+            // Both were mapped inside this spawn's one bracket, so no waiter parked on them.
             aspace_window_unmap_holder(domain_space(task_domain(tk)),
                                        domain_ranges_mut(task_domain(tk)),
                                        static_cast<uint16_t>(slot + 1));
@@ -1251,18 +1252,6 @@ namespace kickos
         // 0 (the target is gone and swept), -KOS_ETIMEDOUT (condemned but not yet gone), or
         // -KOS_ECANCELED (the caller was itself cancelled, e.g. by the victim's group cancel).
         return static_cast<int>(c->wait_result);
-    }
-
-    uint64_t thread_self()
-    {
-        IrqLock lock;
-        Kernel& k = kernel();
-        int const i = k.threads.index_of(sched::current());
-        if (i < 0)
-        {
-            return static_cast<uint64_t>(-KOS_EINVAL);
-        }
-        return k.threads.handle_for(i);
     }
 
     int thread_set_affinity(kos_thread_t thread, uint32_t core_mask)

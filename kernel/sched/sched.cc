@@ -26,6 +26,10 @@
 
 namespace kickos
 {
+#if KICKOS_ARCH_SIM
+    InstanceLocal<uint32_t> sim_self_seat = {};
+#endif
+
     namespace
     {
 
@@ -360,6 +364,9 @@ namespace kickos
         {
             kernel().current(me) = next;
             next->state.to<ThreadState::RUNNING>();
+#if KICKOS_ARCH_SIM
+            sim_self_seat.get() = next->lock_id;
+#endif
         }
 
 #if KICKOS_LIBC_REENT
@@ -376,7 +383,7 @@ namespace kickos
                     reent_prime(rspace, next->reent);
                 }
 #if not KICKOS_REENT_PER_THREAD
-                reent_seat(rspace, next->reent);
+                reent_seat(rspace, next->reent, next->lock_id);
 #endif
             }
         }
@@ -975,7 +982,6 @@ namespace kickos
                 // across one of those gaps is a wake into a thread already in teardown.
                 // Unconsumed bits are left pending for the next server.
                 notify_unbind_self(c);
-                cap_libc_locks_release(c, lock);
                 // A fault ends the group (task_end), and so does the entry's death by any cause.
                 // A cancelled thread latches nothing: the task keeps KOS_EXIT_CANCELLED.
                 if (cause == EXIT_FAULTED or c->task_entry)
@@ -991,13 +997,18 @@ namespace kickos
                 // Unmap this thread's windows, the shootdown included, before the release below
                 // frees a device for a second holder: a sibling keeps the space and must not
                 // keep the mapping.
-                aspace_window_unmap_holder(
-                    domain_space(thread_domain(c)), domain_ranges_mut(thread_domain(c)),
-                    static_cast<uint16_t>(kernel().threads.index_of(c) + 1));
+                uint16_t const holder = static_cast<uint16_t>(kernel().threads.index_of(c) + 1);
+                mutex_windows_lost(domain_space(thread_domain(c)), domain_ranges(thread_domain(c)),
+                                   holder, lock);
+                aspace_window_unmap_holder(domain_space(thread_domain(c)),
+                                           domain_ranges_mut(thread_domain(c)), holder);
                 // Release the user stack before task_release can destroy its space.
                 // Execution is on the kernel stack; no later code may touch the user stack.
                 if (c->kstack_owned)
                 {
+                    mutex_reach_lost(domain_space(thread_domain(c)),
+                                     reinterpret_cast<uintptr_t>(c->stack_base), c->stack_size,
+                                     lock);
                     ustack_free(thread_domain(c),
                                 reinterpret_cast<uintptr_t>(c->stack_base), c->stack_size);
                     c->stack_base = nullptr;
@@ -1010,6 +1021,9 @@ namespace kickos
                 aspace_install_boot();
 #endif
 #endif
+                // After the unmaps above, which ended the waits on words leaving with this
+                // thread: only words that stay are handed over.
+                mutex_owner_exit(c, lock);
                 // Release the device windows before teardown can wake a supervisor into a
                 // respawn that asks for them. No return to user code follows. Each block is
                 // re-gated while its window is still held, so no second holder is admitted first.

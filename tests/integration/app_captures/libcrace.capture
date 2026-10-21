@@ -13,6 +13,9 @@
 libcrace: 4 workers x 3 rounds
 libcrace: a thread killed waiting for malloc ended alone
 libcrace: a thread killed holding the libc lock handed it over
+libcrace: a killed malloc waiter asked again at the kernel and ended there
+libcrace: a holder killed while running released malloc, and its taker's task lived
+libcrace: getenv with a kill pending took the free libc lock with no entry
 libcrace: no task-private heap with a contained fault, so the dead malloc holder arms did not run
 libcrace: printf beside the malloc lock 1
 libcrace: a printf completed while malloc was held

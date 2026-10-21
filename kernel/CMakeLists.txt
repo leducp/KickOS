@@ -42,6 +42,7 @@ set(KICKOS_KERNEL_SOURCES
   syscall/syscall_ipc_fast.cc
   syscall/syscall_thread.cc
   syscall/cap.cc
+  syscall/word.cc
   irq/irq.cc
   notify/notify.cc
   irq/irq_route.cc)
@@ -54,6 +55,9 @@ endif()
 
 if(KICKOS_WITNESS_UACCESS)
   list(APPEND KICKOS_KERNEL_SOURCES syscall/syscall_witness.cc)
+endif()
+if(KICKOS_WITNESS_REWIND)
+  list(APPEND KICKOS_KERNEL_SOURCES syscall/syscall_witness_rewind.cc)
 endif()
 
 # The kernel's own copies of the runtime, under the private names cmake/kernel_runtime.syms lists.

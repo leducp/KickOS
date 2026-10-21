@@ -46,7 +46,7 @@ the journey with one real system built from the earlier pieces.
 | [`01-power-on.md`](01-power-on.md) | **Power-on**: from reset to the first unprivileged instruction of the application's `main` |
 | [`02-first-syscall.md`](02-first-syscall.md) | **The first syscall**: the trap, the dispatch, the handle resolve, and the way back to user mode |
 | [`03-sleep.md`](03-sleep.md) | **Sleep**: the time base, the one-shot timer, the park, and the wake |
-| [`04-mutex.md`](04-mutex.md) | **A mutex**: uncontended, contended, and with priority inheritance |
+| [`04-mutex.md`](04-mutex.md) | **A mutex**: a word taken in user mode, the contended entry, and priority inheritance |
 | [`05-call-and-reply.md`](05-call-and-reply.md) | **Call and reply**: endpoints, the rendezvous, the reply capability, and the register fast path |
 | [`06-shared-memory.md`](06-shared-memory.md) | **Shared memory**: arena blocks, grants, and MPU regions committed at the context switch |
 | [`07-interrupt-to-a-driver.md`](07-interrupt-to-a-driver.md) | **An interrupt to a driver in user space**: the vector, the notification, the mask, and the re-arm |

@@ -79,11 +79,13 @@ namespace kickos
             }
             case WAIT_MUTEX:
             {
-                // Unlinked first, so the funnel no longer counts this waiter.
+                // Unlinked first, so the funnel no longer counts this waiter. The word is never
+                // touched: a WAITERS bit left set costs its holder one unlock entry.
                 Mutex* const m = t->wait_mutex();
                 KICKOS_ASSERT(m != nullptr); // WAIT_MUTEX never parks without one
                 t->wait_queue->unlink(&t->link);
                 Thread* owner = m->owner;
+                mutex_waiter_left(m);
                 for (int depth = 0; owner != nullptr and depth <= KICKOS_THREAD_SLOTS; depth++)
                 {
                     uint8_t const p = thread_effective_prio(owner);

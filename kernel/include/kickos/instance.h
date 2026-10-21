@@ -259,13 +259,10 @@ namespace kickos
         // ceiling is enforced at the one increment site, obj_ref_inc, which refuses with
         // -KOS_EOVERFLOW rather than wrapping.
         uint8_t sem_refs[KICKOS_MAX_SEMAPHORES] = {};
-        // PI-mutex pool and its object-side refcount, same shape as the sems.
-        SlotPool<Mutex, KICKOS_MAX_MUTEXES> mutexes;
-        uint8_t mutex_refs[KICKOS_MAX_MUTEXES] = {};
-#if not KICKOS_HAVE_ASPACE
-        // The C library's locks: one image, so one heap and one stdio for every thread.
-        Mutex libc_locks[LIBC_LOCK_COUNT];
-#endif
+        // The records of the mutex words threads wait on (kickos/mutex.h), one per thread slot
+        // since each waiter parks on one, and the live ones listed for the keyed lookup.
+        Mutex mutex_records[KICKOS_THREAD_SLOTS];
+        Mutex* mutex_active = nullptr;
         // Endpoint (IPC rendezvous) pool and its object-side refcount. recv_holders lives
         // solely in the Endpoint struct, and shares this ceiling because one obj_ref_inc
         // moves both counters or neither.
@@ -379,7 +376,7 @@ namespace kickos
     // A hold set is 32 bits of pool slots (TaskObjectHolds, cap.h), so a wider pool would
     // carry slots no ceiling can see. The Kconfig ranges are narrowed to match; this is the
     // backstop for a board_config.h that defines a width directly.
-    static_assert(KICKOS_MAX_SEMAPHORES <= 32 and KICKOS_MAX_MUTEXES <= 32
+    static_assert(KICKOS_MAX_SEMAPHORES <= 32
                       and KICKOS_MAX_ENDPOINTS <= 32 and KICKOS_MAX_IRQ_HANDLES <= 32
                       and KICKOS_MAX_NOTIFY <= 32,
                   "a charged object pool is wider than a hold set's 32 bits: narrow the pool, "

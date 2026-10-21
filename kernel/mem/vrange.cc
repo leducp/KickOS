@@ -191,30 +191,10 @@ namespace kickos
         return nullptr;
     }
 
+    // No two live entries overlap, so the one find() answers is the only one that could.
     bool VirtualRanges::covers(uintptr_t addr, size_t len, uint32_t rights) const
     {
-        if (granule_ == 0 or len == 0)
-        {
-            return false;
-        }
-        uintptr_t const end = addr + len;
-        if (end < addr)
-        {
-            return false;
-        }
-        for (size_t i = 0; i < KICKOS_ASPACE_RANGES; i++)
-        {
-            if (ranges_[i].state != VirtualState::Granted)
-            {
-                continue;
-            }
-            if (addr >= ranges_[i].base and end <= end_of(ranges_[i])
-                and (ranges_[i].rights & rights) == rights)
-            {
-                return true;
-            }
-        }
-        return false;
+        return vr_grants(find(addr, len), rights);
     }
 
     size_t VirtualRanges::index_at(uintptr_t base) const

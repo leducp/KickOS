@@ -183,7 +183,7 @@ extern "C"
 
     uint64_t arch_cpu_clock_hz(void)
     {
-        unreached("arch_cpu_clock_hz");
+        return kickos::testfix::STUB_CPU_CLOCK_HZ;
     }
 
     uint32_t arch_periph_clock_hz(uintptr_t)

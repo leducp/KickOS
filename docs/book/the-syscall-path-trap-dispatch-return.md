@@ -402,10 +402,17 @@ Everything above describes *how* a syscall works. Which operations get to be sys
 at all is a separate decision, and in a microkernel it is the more consequential one.
 
 The whole surface is a few dozen numbers, several of them compiled out of production
-images: yield and sleep; create/wait/post on a semaphore, lock/unlock on a mutex,
-create/send/recv/call/reply on an endpoint, and one type-agnostic close; spawn and exit;
-register/wait/ack/attach on an interrupt line; a couple of clock reads; a small set of
-authority-gated machine operations (Chapter 7.4); and one debug console write.
+images:
+
+- yield and sleep
+- create, wait and post on a semaphore
+- the contended wait and the hand-over of a mutex
+- create, send, receive, call and reply on an endpoint, and one close for every type
+- spawn and exit
+- register, wait, acknowledge and attach on an interrupt line
+- a couple of clock reads
+- a small set of machine operations gated on authority ([Chapter 7.4](privilege-is-three-axes-not-one-bit.md))
+- one debug console write.
 
 There is no `open`, no `read`, no `socket`, no filesystem, no name service. The rule
 that produces that list is worth stating as a rule:
@@ -419,6 +426,23 @@ trap. The toolchain's libc still needs those symbols to link, so the bottom-edge
 file-descriptor operations exist as stubs; a real implementation belongs to whichever
 server owns the device, on the other side of an endpoint. That is not a limitation
 being apologised for -- it is the microkernel thesis applied to the syscall table.
+
+The rule also works inside a single operation. Some things the kernel *could* answer need
+nothing only the kernel has, and then they should not be syscalls at all. Two examples:
+
+- **A thread's own id.** A thread asking "who am I" needs no kernel action, only a value.
+  So the kernel writes each thread's id into user memory, where the thread reads it with one
+  load. For instance, on a board with one core the kernel rewrites one word of the program's
+  data at every switch. The kernel never reads that copy back, since it knows the running
+  thread from its own state, so a thread that overwrites its copy misleads only itself.
+- **A free lock.** Taking a mutex that nobody holds is one compare-and-swap on a word in the
+  threads' shared memory. Only a thread that must wait needs the scheduler, to park it and
+  to apply the priority it lends while it waits. So the mutex's syscalls are its contended half: the lock
+  enters the kernel only when the word is held, and the unlock only when a thread waits.
+  [Chapter 2.3](priority-inheritance-lending-urgency.md) teaches that split.
+
+In both cases the operation splits along the rule: the part that needs the kernel stays a
+syscall, and the rest is plain user code.
 
 The **one sanctioned kernel exception is the debug console write**, and its
 justification is specific rather than general. The console is the panic path and the
@@ -449,9 +473,14 @@ authority, so the operation needs no kernel involvement at all: the capability i
 fast path, and putting a syscall on top of it only re-pays a check that was already
 made at grant time. Chapter 8.4,
 *[The fast path is the capability](the-fast-path-is-the-capability-gpio-direct-mmio.md)*,
-works that argument through on a chip-select toggle with a 222 ns budget. The small
-syscall surface is not only a purity argument; it is where the performance argument
-lands too.
+works that argument through on a chip-select toggle with a 222 ns budget.
+
+A lock is the same kind of hot operation. The C library takes one on every `printf` and
+every `malloc`, and it almost always finds it free. If each take were a syscall, the trap
+would be nearly all of the cost of those calls. With the lock in a word of user memory, a
+free take costs one compare-and-swap, and only contention pays the trap
+([Chapter 2.3](priority-inheritance-lending-urgency.md)). The small syscall surface is not
+only a purity argument. It is where the performance argument lands too.
 
 ## Where to go next
 

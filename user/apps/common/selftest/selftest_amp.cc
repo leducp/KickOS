@@ -751,6 +751,48 @@ namespace selftest
     }
 #endif
 
+#if KICKOS_HAVE_ASPACE and KICKOS_AMP_USER_SHARE_SIZE != 0
+    // --- A mutex word in the share ---------------------------------------------------------
+    // Uncontended it is the user's own compare-and-swap; contended, the kernel refuses it by
+    // the frame the word sits in, whatever the range naming it, since another kernel's threads
+    // write the share and no record of this kernel's can name them.
+    Atomic<int32_t, Order::RELAXED> g_asm_rc{-99};
+    constexpr uint32_t ASM_REFUSED_US = 500000;
+    void asm_contender(void* arg)
+    {
+        g_asm_rc = kos_mutex_lock(static_cast<kos_mutex_t*>(arg), STALL_TOLERANT_US);
+    }
+    void t_amp_share_mutex()
+    {
+        size_t const g = arena_granule();
+        size_t size = 0;
+        uintptr_t const view = amp_share_view(&size);
+        TAP_CHECK(view != 0);
+        TAP_SKIP_UNLESS(g != 0 and size >= amp_share_lines(g) + 2u * g,
+                        "main's share holds no two granules past the nodes' lines");
+        TAP_ASK(.workers = 1);
+        auto* const m = reinterpret_cast<kos_mutex_t*>(view + amp_share_lines(g) + g);
+        m->word = 0;
+        g_asm_rc = -99;
+        kos::thread::Handle c;
+        ArmHold hold;
+        TAP_HOLD(hold.owned(m) and hold.thread(&c));
+        int const taken = kos_mutex_lock(m, 0);
+        c = kos::thread::create(asm_contender, m, "asmC", TAP_PRIO_PARKS, KOS_POLICY_FIFO, 0,
+                                nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0, 0, nullptr,
+                                KOS_TASK_NONE, TAP_PIN_CORE);
+        TAP_CHECK(c.valid());
+        // A refusal ends the contender at once; a park outlives the join and the unlock ends it.
+        (void)c.join(ASM_REFUSED_US);
+        int32_t const contended = g_asm_rc;
+        int const unlocked = kos_mutex_unlock(m);
+        TAP_CHECK(hold.joined());
+        TAP_CHECK(taken == 0 and unlocked == 0);
+        TAP_CHECK(contended == -KOS_EINVAL);
+        TAP_CHECK(m->word == 0);
+    }
+#endif
+
     // One node's write through its mapping of the share, read back through this node's: the
     // echo peer marks its line before it first receives, so a peer that answered has.
     void t_amp_share_crossing()
