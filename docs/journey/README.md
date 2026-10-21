@@ -118,6 +118,6 @@ and type the **Try it** commands. Some habits help:
 
 ## Conventions
 
-The journey follows the Book's conventions ([`../book/README.md`](../book/README.md)): ASCII
-only, no project-status language, and the code as it is. The source tree is the
-authority. If a stop and the code disagree, the code is right and the stop is a bug.
+The journey is ASCII only, has no project-status language, and shows the code as it is. The
+source tree is the authority. If a stop and the code disagree, the code is right and the stop is
+a bug.
