@@ -8,6 +8,8 @@ use_directory_urls: false
 theme:
   name: material
   features: [navigation.tabs, navigation.tabs.sticky, navigation.sections, navigation.top, navigation.indexes, search.highlight, content.code.copy]
+extra_javascript:
+  - javascripts/mermaid.mjs
 markdown_extensions:
   - admonition
   - attr_list
@@ -17,7 +19,11 @@ markdown_extensions:
       permalink: true
       slugify: !!python/object/apply:pymdownx.slugs.slugify {kwds: {case: lower}}
   - pymdownx.highlight
-  - pymdownx.superfences
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
 nav:
   - Home: README.md
   - The Book:

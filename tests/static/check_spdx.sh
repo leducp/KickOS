@@ -47,7 +47,7 @@ classify() {
         *.json)
             printf 'none\n' ;;
         # `//` or `/* */`.
-        *.c|*.cc|*.cpp|*.h|*.hh|*.hpp|*.S|*.inc|*.ld|*.lds)
+        *.c|*.cc|*.cpp|*.h|*.hh|*.hpp|*.S|*.inc|*.ld|*.lds|*.mjs)
             printf 'need\n' ;;
         # `<!-- -->`.
         *.md)

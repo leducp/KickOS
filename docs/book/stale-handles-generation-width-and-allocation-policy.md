@@ -40,13 +40,23 @@ Take an endpoint pool, handles that are bare slot indices, and an allocator that
 the lowest free slot. A worker creates an endpoint, delegates it to a helper, and later
 tears it down. An unrelated logger thread then creates one of its own.
 
-```
-t0  worker  endpoint_create()       -> slot 3 claimed, handle = 3
-t1  worker  delegates handle 3 to the helper, which stashes it in its own state
-t2  worker  closes its own name for it; it was the last one, so slot 3 is freed
-t3  logger  endpoint_create()       -> the lowest free slot is 3, handle = 3
-t4  logger  begins serving its own clients on handle 3
-t5  helper  receive(3)              -> resolves; the helper waits on the LOGGER's endpoint
+```mermaid
+sequenceDiagram
+    participant W as worker
+    participant H as helper
+    participant P as endpoint pool
+    participant L as logger
+    W->>P: t0 endpoint_create()
+    P-->>W: slot 3 claimed, handle = 3
+    W->>H: t1 delegates handle 3 to the helper
+    Note over H: stashes handle 3 in its own state
+    W->>P: t2 closes its own name for handle 3
+    Note over P: it was the last one, so slot 3 is freed
+    L->>P: t3 endpoint_create()
+    P-->>L: the lowest free slot is 3, handle = 3
+    Note over L: t4 begins serving its own clients on handle 3
+    H->>P: t5 receive(3)
+    Note over H,P: resolves, and the helper waits on the LOGGER's endpoint
 ```
 
 At t5 the helper is parked on an endpoint it was never given. Nobody sends to it for the
