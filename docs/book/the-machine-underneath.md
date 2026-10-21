@@ -6,10 +6,10 @@
 >
 > No hardware background is needed. You will learn:
 >
-> - how the core runs a line of C, one instruction at a time;
-> - what a function call leaves on the stack;
-> - how to read a chip's memory map and register table to drive a device;
-> - what a larger processor adds to a microcontroller.
+> - how the core runs a line of C, one instruction at a time
+> - what a function call leaves on the stack
+> - how to read a chip's memory map and register table to drive a device
+> - what a larger processor adds to a microcontroller
 
 ## The CPU core and its state
 
@@ -259,12 +259,12 @@ Most MCU block diagrams show the same basic parts:
   and returns responses.
 - **Memories:** flash for program code and SRAM for changing data and stacks.
 - **Peripherals:** the devices, among them:
-  - **timers**, which count clock ticks and can signal when a count is reached;
-  - **UARTs**, serial controllers that send and receive bytes over a wire;
-  - **GPIO** (general-purpose I/O), pins that software drives high or low, or reads;
-  - **ADCs** (analog-to-digital converters), which measure a voltage as a number;
+  - **timers**, which count clock ticks and can signal when a count is reached
+  - **UARTs**, serial controllers that send and receive bytes over a wire
+  - **GPIO** (general-purpose I/O), pins that software drives high or low, or reads
+  - **ADCs** (analog-to-digital converters), which measure a voltage as a number
   - **DMA engines** (direct memory access), which copy data between memory and a
-    peripheral without the core doing each load and store.
+    peripheral without the core doing each load and store
 
 Each memory and peripheral responds to its own range of addresses. The
 interconnect routes a core access to that range and returns a result or an error.

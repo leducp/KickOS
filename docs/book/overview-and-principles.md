@@ -6,9 +6,9 @@
 >
 > You will learn:
 >
-> - what KickOS sets out to be;
-> - the principles every later chapter applies, and why;
-> - where the Book and the Journey work out each one.
+> - what KickOS sets out to be
+> - the principles every later chapter applies, and why
+> - where the Book and the Journey work out each one
 
 *Further reading: Tanenbaum, Modern Operating Systems, ch.1 (section 1.4, the
 operating system zoo, from embedded and sensor-node systems to servers; section
@@ -203,13 +203,13 @@ boot.
 
 **What KickOS chose.** KickOS takes seL4's **design principles**:
 
-- a kernel small by nature;
+- a kernel small by nature
 - capability-based authority, through a per-thread table of typed,
-  rights-bearing capabilities named by handles;
-- drivers, file systems and network stacks as unprivileged servers reached by IPC;
-- synchronous endpoints with a one-shot reply capability;
+  rights-bearing capabilities named by handles
+- drivers, file systems and network stacks as unprivileged servers reached by IPC
+- synchronous endpoints with a one-shot reply capability
 - services wired at start by a root task that hands each thread the capabilities
-  it needs.
+  it needs
 
 It deliberately does **not** pursue formal verification, CapDL or proof engineering;
 its guarantees rest on a small kernel, review and tests. It also leaves out seL4

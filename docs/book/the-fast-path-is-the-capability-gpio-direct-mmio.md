@@ -53,8 +53,8 @@ resolve *is* the check that justifies letting an unprivileged thread affect a pi
 Put that next to the budget of the thing it is inside. A driver-owned CS brackets a transfer:
 assert, clock the bytes, release. Take a modest SPI at 72 MHz:
 
-- a **16-bit** frame is 16 / 72 MHz = **222 ns**;
-- a **16-byte** transfer is 128 / 72 MHz = **1.78 us**.
+- a **16-bit** frame is 16 / 72 MHz = **222 ns**
+- a **16-byte** transfer is 128 / 72 MHz = **1.78 us**
 
 The two edges of the CS are *serialized into the transaction* -- the assert must retire before
 the first clock, and the release gates the next transaction. Two syscalls at ~1 us each add
