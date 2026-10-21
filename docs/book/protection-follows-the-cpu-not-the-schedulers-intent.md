@@ -4,8 +4,8 @@
 
 > Where the per-thread MPU region set must be committed to hardware, and why that
 > point is the *physical* context switch and never the scheduler's logical decision
-> to switch. This chapter builds on Chapter 3.5 (the deferred switch -- a switch that
-> is requested now but completes later) and Chapter 7 (per-thread memory protection);
+> to switch. This chapter builds on [Chapter 3.5](context-switching-and-the-silicon-contract.md) (the deferred switch -- a switch that
+> is requested now but completes later) and [Chapter 7](memory-protection.md) (per-thread memory protection);
 > it is the timing rule that ties them together. It points into
 > `../reference/invariants.md` (`mpu-apply-on-every-switch-in`, `arch-switch-may-defer`,
 > `deferred-switch-lowest-band`) for the exact per-arch contract -- this chapter
@@ -13,10 +13,10 @@
 
 ## The resource that is keyed to "the current context"
 
-A thread's context is not only its registers and stack (Chapter 3.5). It is also the
+A thread's context is not only its registers and stack ([Chapter 3.5](context-switching-and-the-silicon-contract.md)). It is also the
 set of addresses it is *allowed* to touch: its code, its data, its own stack, and any
 region deliberately shared with it -- the MPU region set the hardware faults everything
-outside of (Chapter 7). That region set is a single hardware resource: the MPU holds
+outside of ([Chapter 7](memory-protection.md)). That region set is a single hardware resource: the MPU holds
 *one* active configuration at a time, and it means "these are the bounds of whatever is
 running right now."
 
@@ -34,7 +34,7 @@ ch.2 (the dispatcher) -- here the two meet.*
 ## Why: the logical switch and the physical switch are not the same instant
 
 On a naive mental model the context switch is atomic: the scheduler decides thread B
-should run, and thread B runs. On real silicon that is often false, and Chapter 3.5
+should run, and thread B runs. On real silicon that is often false, and [Chapter 3.5](context-switching-and-the-silicon-contract.md)
 already named why. A switch requested from an interrupt -- or from a thread while a
 critical section is held -- must not take effect until the interrupt and the lock have
 finished. So the architectures provide a *deferred* switch: a lowest-priority
@@ -91,7 +91,7 @@ What happens depends on whether protection is actually enforced:
   precisely because it is quiet.
 
 A concrete shape makes the window vivid. Take a chain of threads contending on a mutex
-(Chapter 2.3): a low-priority holder, and higher-priority threads spinning up behind it.
+([Chapter 2.3](priority-inheritance-lending-urgency.md)): a low-priority holder, and higher-priority threads spinning up behind it.
 Under that churn the scheduler is constantly deciding to switch while a critical section
 is held, so the switch is constantly deferred -- the window is open on almost every
 transition. The observable symptom is a hard fault whose fault address is a *stack*
@@ -115,7 +115,7 @@ logic:
   get a green wall of confidence.
 - On a slow core the same gap is *wide*. A Cortex-M0+ has no hardware divide, so the
   tickless time math -- the ns/cycle conversions the switch path does on the way through
-  (Chapter 2.1) -- is a long software routine. That stretches the window from a few
+  ([Chapter 2.1](the-time-base-a-monotonic-clock-you-can-trust.md)) -- is a long software routine. That stretches the window from a few
   instructions to many, and under scheduling churn the outgoing thread reliably touches
   its stack while the window is open. The slow board fails every time; the fast boards
   never did.
@@ -171,7 +171,7 @@ or a board with no MPU, needs no stash: the eager apply is already at the physic
 switch point, or there is nothing to commit. The stash-then-commit shape is exactly the
 correction for the arches where the two instants diverge.
 
-This is the same discipline Chapter 3.5's telemetry rule already follows from the other
+This is the same discipline [Chapter 3.5](context-switching-and-the-silicon-contract.md)'s telemetry rule already follows from the other
 direction: the switch record is emitted from the tids read out of the two contexts that
 *physically* swapped, never by re-reading the scheduler's decision, because a preempting
 ISR can rewrite the decision between the logical `switch_to` and the physical swap
@@ -206,10 +206,10 @@ names the seam each backend writes its root from.
 ## Where to go next
 
 - The deferred switch this chapter rests on -- why a switch requested now completes
-  later, and the lowest-priority trap that carries it: Chapter 3.5, *Context switching
+  later, and the lowest-priority trap that carries it: [Chapter 3.5](context-switching-and-the-silicon-contract.md), *Context switching
   and the silicon contract* (the deferred-switch axis).
-- What the region set *is* and how it is built per thread: Chapter 7, *Memory
-  protection*, and Chapter 3.7, *Peripheral isolation and the hardware ceiling* (what a
+- What the region set *is* and how it is built per thread: [Chapter 7](memory-protection.md), *Memory
+  protection*, and [Chapter 3.7](peripheral-isolation-and-the-hardware-ceiling.md), *Peripheral isolation and the hardware ceiling* (what a
   region can and cannot gate).
 - The exact, binding contract -- when `arch_mpu_apply` runs, that the switch may defer,
   and the priority band the commit sits in: `../reference/invariants.md`

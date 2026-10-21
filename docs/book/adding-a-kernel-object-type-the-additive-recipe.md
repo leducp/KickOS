@@ -2,7 +2,7 @@
 <!-- Copyright (c) 2026 Philippe Leduc -->
 # Adding a kernel object type: the additive recipe
 
-> Chapter 8.1 taught how a task *names* a kernel object -- the per-task handle and the
+> [Chapter 8.1](handles-and-the-resolve-chokepoint.md) taught how a task *names* a kernel object -- the per-task handle and the
 > resolve chokepoint -- and noted that the capability table itself is frozen: adding a
 > new object kind touches neither `CapEntry` nor any table operation. This chapter
 > teaches the other half: the object-*side* plumbing behind resolve -- how a new
@@ -19,7 +19,7 @@ not ripple through the existing machinery. The promise is: **one pool, one refco
 array, one resolve case, and one arm in each lifecycle step.** Nothing existing changes
 shape; each step merely gains a case.
 
-The capability table delivers half of this for free (Chapter 8.1): `CapEntry` is a
+The capability table delivers half of this for free ([Chapter 8.1](handles-and-the-resolve-chokepoint.md)): `CapEntry` is a
 fixed 8 bytes, and `cap_lookup` / `cap_install` / `handle_close` are type-agnostic. But
 a capability only *names* an object; something must own the object's storage and its
 lifetime. That is the object side, and left naive it is exactly where additivity leaks.
@@ -116,7 +116,7 @@ void obj_ref_drop(CapEntry const& e, bool teardown)
 The debug trap matters: an object type that reaches a lifecycle switch without an arm
 is a programming error, and it should fail loudly in development. In release the
 `default` simply returns, which *leaks* the object rather than freeing the wrong one --
-the same "rather miss than corrupt" instinct the ISR fail-safe follows in Chapter 8.1.
+the same "rather miss than corrupt" instinct the ISR fail-safe follows in [Chapter 8.1](handles-and-the-resolve-chokepoint.md).
 
 With the switches in place, the delegation site loses its per-type test entirely: it
 calls `obj_ref_inc(type, obj, rights)` unconditionally, and delegation is type-agnostic
@@ -162,7 +162,7 @@ hook costs nothing where it is not needed: a type that has no close-time work pa
 
 ## The refcount discipline: leak, never strand
 
-The reference count is a **global** property of the object slot (Chapter 8.1:
+The reference count is a **global** property of the object slot ([Chapter 8.1](handles-and-the-resolve-chokepoint.md):
 possession is per-task, liveness is global). Its discipline:
 
 - **create** sets refs to 1 and installs a full-rights capability into the creator's
@@ -211,7 +211,7 @@ Given the three switches, adding a new capability type `CAP_X` is exactly:
    That is the same additive shape with one extra guarantee, that an increment and the
    unwind of a partly-taken batch cannot drift apart, or move one of an endpoint's two
    counters without the other.
-4. **One resolve case** in `cap_resolve_e` (Chapter 8.1): `if (want == CAP_X) return
+4. **One resolve case** in `cap_resolve_e` ([Chapter 8.1](handles-and-the-resolve-chokepoint.md)): `if (want == CAP_X) return
    pool.resolve(...)`.
 
 Nothing existing changes shape. This is the endpoint
@@ -231,7 +231,7 @@ Two guardrails are worth writing down because they bite silently otherwise:
   cannot ship.
 - **`obj_ref_inc` carries the rights** even though most arms ignore them. A type whose
   object holds a count of holders-with-a-particular-right (an endpoint tracking its
-  receivers -- Chapter 8.3) reads the rights here; the delegation site already has them
+  receivers -- [Chapter 8.3](endpoints-synchronous-ipc-by-rendezvous.md)) reads the rights here; the delegation site already has them
   in hand, so it is a signature detail, not a new lookup.
 
 ## The degenerate case: a capability with no object
@@ -241,7 +241,7 @@ different degrees, and what the recipe does with them says more about its shape 
 the ordinary cases do.
 
 **A type whose `obj` names something that is not a pool slot.** The reply capability
-(Chapter 8.5) packs a *parked caller* into its `obj` word as a generational thread
+([Chapter 8.5](synchronous-call-and-reply.md)) packs a *parked caller* into its `obj` word as a generational thread
 handle. There is no reply pool and no reply refcount array, so steps 1, 2 and 4 do not
 apply -- but its close-time work is very real, because a reply capability that goes
 away without being used must wake the caller it named with a broken-pipe error. Its
@@ -287,7 +287,7 @@ resolve case. The three switches are the invariant; the pool is the common case.
 ## Where to go next
 
 - The naming side this completes -- the handle, resolve chokepoint, and boundary vs
-  detector: Chapter 8.1, *Naming a kernel object*.
+  detector: [Chapter 8.1](handles-and-the-resolve-chokepoint.md), *Naming a kernel object*.
 - Why axis-3 authority is not in the capability table at all, and what test to apply
   before putting anything in it: Chapter 7.4,
   *[Privilege is three axes, not one bit](privilege-is-three-axes-not-one-bit.md)*.

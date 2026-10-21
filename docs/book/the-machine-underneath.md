@@ -40,7 +40,7 @@ immediate execution state. The important ones are:
 Together these form the core's **machine state**, or *context*. The CPU executes
 one context at a time. An OS saves one thread's context to memory and loads
 another's so they can share a core; a **thread** is one flow of instructions the
-OS runs, and Chapter 0.2 teaches threads, processes and tasks. Chapter 3.5
+OS runs, and [Chapter 0.2](what-is-an-os-and-a-kernel.md) teaches threads, processes and tasks. [Chapter 3.5](context-switching-and-the-silicon-contract.md)
 (*Context switching and the silicon contract*) explains the switch itself.
 
 *Further reading: Tanenbaum, Modern Operating Systems, ch.1 (the processor, its
@@ -108,12 +108,12 @@ itself, so it costs no memory access. The variable costs two: one load to read
 it and one store to write it back. And the code first has to load the variable's
 *address*, because a 32-bit address does not fit inside a 16-bit instruction:
 the compiler places it in a data word next to the code, and the linker writes the
-real address there (Chapter 0.5 covers that step). `lr`, the **link register**,
+real address there ([Chapter 0.5](the-toolchain-from-source-to-a-running-image.md) covers that step). `lr`, the **link register**,
 holds the return address the call left there, and `bx lr` returns through it.
 
 This is why an **interrupt**, a hardware signal that makes the core run other
-code between two instructions (Chapter 0.3), can arrive between the load and the
-store: the addition is three separate instructions, not one. Chapter 2.4, *An
+code between two instructions ([Chapter 0.3](interrupts-and-traps.md)), can arrive between the load and the
+store: the addition is three separate instructions, not one. [Chapter 2.4](an-atomic-buys-definedness-not-atomicity.md), *An
 atomic buys definedness, not atomicity*, builds on that fact.
 
 ## A call and the stack
@@ -219,7 +219,7 @@ Application processors, such as those in phones and laptops, usually have a
 **memory management unit (MMU)**. It translates the *virtual* addresses a
 program uses into the *physical* addresses the bus routes; a **page table** maps
 each block of virtual addresses to a physical one. The OS can give each process,
-a running program with its own protected memory (Chapter 0.2), its own virtual
+a running program with its own protected memory ([Chapter 0.2](what-is-an-os-and-a-kernel.md)), its own virtual
 address space, at the cost of those tables and the hardware that walks them.
 
 A microcontroller typically puts its core, flash, SRAM, and devices on one chip.
@@ -233,10 +233,17 @@ It usually has:
 - **Usually no MMU.** Some MCUs have a **memory protection unit (MPU)** instead.
   It restricts access to a few address ranges without translating them.
 
+This book calls the **protection unit** the hardware that decides which memory a
+running program may touch. On most chips it is an MMU or an MPU inside the core.
+Some chips add more of it on the bus, outside the core. For instance, a bus bridge
+can refuse unprivileged accesses to some devices, and some protection units also
+check transfers made by other bus masters, such as a DMA controller that copies
+memory on its own.
+
 KickOS treats the MCU case as the base: threads share physical addresses, and an
 MPU draws protection boundaries around ranges. This is what "MPU-first" means.
 What an application processor adds is translation, and with it a private virtual
-space per task, KickOS's name for a process (Chapter 0.2). Chapter 7 (*Memory
+space per task, KickOS's name for a process ([Chapter 0.2](what-is-an-os-and-a-kernel.md)). [Chapter 7](memory-protection.md) (*Memory
 protection*) covers how KickOS uses each.
 
 *Further reading: Tanenbaum, Modern Operating Systems, ch.1 (kinds of systems)
@@ -261,7 +268,7 @@ Most MCU block diagrams show the same basic parts:
 
 Each memory and peripheral responds to its own range of addresses. The
 interconnect routes a core access to that range and returns a result or an error.
-An address with no responder may instead leave the access stalled, as Chapter 7.6
+An address with no responder may instead leave the access stalled, as [Chapter 7.6](memory-types-and-speculative-access.md)
 explains. Devices are thus reached by address, and a protection unit can guard
 only the traffic that passes through it.
 
@@ -277,7 +284,7 @@ code commonly accesses it through a pointer to a `volatile` register layout:
 
 Unlike RAM, **a device register can change state when read**. Reading a UART
 data register may remove a byte from its receive queue; reading a status register
-may clear flags. A write can issue a command. Chapter 7.6 (*The CPU reads ahead:
+may clear flags. A write can issue a command. [Chapter 7.6](memory-types-and-speculative-access.md) (*The CPU reads ahead:
 memory types and speculative access*) shows what that demands of the hardware.
 
 ## Buses and the interconnect: where a guard can sit
@@ -288,7 +295,7 @@ determines which accesses a protection unit can see. On the
 **CPU side**, before an access enters the fabric, a guard sees every address the
 core emits. On the **bus-slave side**, a guard sees only traffic to the memory or
 device in front of it. A slave-side guard on SRAM cannot protect a peripheral.
-Chapter 3.7 (*Peripheral isolation and the hardware ceiling*) follows this
+[Chapter 3.7](peripheral-isolation-and-the-hardware-ceiling.md) (*Peripheral isolation and the hardware ceiling*) follows this
 distinction across the KickOS fleet.
 
 ARM's common on-chip bus tiers give us names for parts of the fabric:
@@ -301,8 +308,8 @@ ARM's common on-chip bus tiers give us names for parts of the fabric:
 
 A **bridge** connects tiers; an AHB-to-APB bridge lets the main bus reach slower
 peripherals. It may also gate access. On some MCUs, the peripheral bridge rather
-than the core's MPU decides whether unprivileged code can touch a device. Chapter
-3.7 uses the K64F to show why that placement matters.
+than the core's MPU decides whether unprivileged code can touch a device. [Chapter
+3.7](peripheral-isolation-and-the-hardware-ceiling.md) uses the K64F to show why that placement matters.
 
 ## Memory types and the memory map
 
@@ -320,7 +327,7 @@ from it:
   instructions; **DTCM** holds data. Not every MCU has them.
 - **External memory.** Off-chip flash or RAM reached through a controller (QSPI
   flash or SDRAM). It offers more capacity at higher latency. An address window
-  can be larger than the memory fitted behind it; Chapter 7.6 shows why that
+  can be larger than the memory fitted behind it; [Chapter 7.6](memory-types-and-speculative-access.md) shows why that
   matters.
 
 *Further reading: Hennessy and Patterson, Computer Organization and Design, ch.5
@@ -328,7 +335,7 @@ from it:
 
 The **memory map** lists these memories and peripherals by address range. The
 **linker script**, the file that tells the linker where each part of the program
-goes (Chapter 0.5), uses it to place code and data; protection hardware uses it to define
+goes ([Chapter 0.5](the-toolchain-from-source-to-a-running-image.md)), uses it to place code and data; protection hardware uses it to define
 accessible ranges. Per-chip maps live in `../reference/boards.md`, and the
 region/domain contract lives in
 `../reference/architecture.md` ("Memory domains").

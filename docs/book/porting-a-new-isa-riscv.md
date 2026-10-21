@@ -240,7 +240,7 @@ has to absorb before an unfamiliar RISC-V core runs:
   single permissive bootstrap PMP entry (all memory, read/write/execute,
   user-accessible) that grants the same "unprivileged but unrestricted" posture
   ARM gives for free. Real per-task isolation narrows that entry per thread
-  (Chapter 7, *Memory protection*); the point here is the *polarity* difference,
+  ([Chapter 7](memory-protection.md), *Memory protection*); the point here is the *polarity* difference,
   which is easy to forget and produces a baffling first fault.
 - **No hardware float, and that is fine.** RV32IMAC has no F/D extension, so the
   compiler uses soft-float and the context switch banks no floating-point

@@ -6,8 +6,8 @@
 > unprivileged userspace servers, and the only way an isolated client reaches a server
 > is a kernel-mediated message. This chapter teaches KickOS's IPC primitive: the
 > endpoint, a synchronous rendezvous with a kernel-copied bounded payload. It builds on
-> Chapter 2.2 (the wait/wake substrate an endpoint parks on), Chapter 8.1 (the
-> capability that names it), and Chapter 8.2 (the additive object recipe it follows).
+> [Chapter 2.2](the-blocking-substrate-one-wait-wake-primitive.md) (the wait/wake substrate an endpoint parks on), [Chapter 8.1](handles-and-the-resolve-chokepoint.md) (the
+> capability that names it), and [Chapter 8.2](adding-a-kernel-object-type-the-additive-recipe.md) (the additive object recipe it follows).
 > It points into `../reference/architecture.md` ("Object model, capabilities & IPC")
 > for the exact contract and `../reference/porting.md` for the cross-domain-write
 > porting requirement.
@@ -17,7 +17,7 @@
 A monolithic kernel puts the disk driver, the TCP stack, and the filesystem *inside*
 the trusted kernel, where they call each other as ordinary functions. A microkernel
 does not: those services are unprivileged tasks in their own protection domains
-(Chapter 7), and a client in a different domain cannot call them directly -- the whole
+([Chapter 7](memory-protection.md)), and a client in a different domain cannot call them directly -- the whole
 point of the isolation is that it *cannot*. So the client and the server need a
 channel that crosses the domain boundary, and the only party both of them trust to
 carry a message across is the kernel.
@@ -42,7 +42,7 @@ That is real kernel state and real kernel storage, per channel, for a feature wh
 job is to stay minimal.
 
 **Synchronous rendezvous.** There is no kernel-side message storage at all. A send and
-a receive must *meet*: whoever arrives first parks (Chapter 2.2), and when the second
+a receive must *meet*: whoever arrives first parks ([Chapter 2.2](the-blocking-substrate-one-wait-wake-primitive.md)), and when the second
 arrives, the message is copied directly between the two threads' own buffers and both
 proceed. The kernel holds only "who is waiting," never the message itself. This is the
 seL4 endpoint shape.
@@ -52,13 +52,13 @@ seL4 endpoint shape.
 KickOS uses the synchronous rendezvous, for one decisive reason: **the parked side's
 own buffer is the storage.** A blocked thread is not running, so its message buffer does
 not change, and its memory cannot be taken away underneath the copy either. That second
-half rests on a property of the region set worth stating exactly (Chapter 7): a thread's
+half rests on a property of the region set worth stating exactly ([Chapter 7](memory-protection.md)): a thread's
 regions only ever **grow**, and only by a syscall the thread makes *itself*. Nothing
 shrinks a live thread's window, and no other thread can edit it. A parked thread makes no
 syscalls, so for as long as it sits on a queue its region set is frozen, and a buffer that
 was inside it when the park began is inside it when the copy runs. The kernel needs no
 message memory of its own; it needs only two wait queues and a small count. That matches the
-minimalism of the two-object synchronization surface (Chapter 2.3) and reuses the
+minimalism of the two-object synchronization surface ([Chapter 2.3](priority-inheritance-lending-urgency.md)) and reuses the
 blocking substrate wholesale.
 
 The object is correspondingly tiny:
@@ -77,7 +77,7 @@ struct Endpoint
 Two wait queues, and one count whose job appears below. The last two fields do not
 belong to the rendezvous at all and are worth naming so their absence from the rest of
 this chapter is not read as a claim: they record *who last received here*, which is the
-handle the call/reply layer of Chapter 8.5 needs to find a server from the outside. The
+handle the call/reply layer of [Chapter 8.5](synchronous-call-and-reply.md) needs to find a server from the outside. The
 link is intrusive so that finding every endpoint one thread serves costs a chain walk
 rather than a sweep of the endpoint pool with interrupts masked. There is a structural
 invariant worth stating: **the two queues are never both non-empty.** If a receiver is
@@ -135,9 +135,9 @@ struct IpcDesc
 ```
 
 This descriptor is the endpoint's "step 2" in the three-step wake protocol
-(Chapter 2.2): the arriving thread reads the parked peer's `IpcDesc`, does the copy,
+([Chapter 2.2](the-blocking-substrate-one-wait-wake-primitive.md)): the arriving thread reads the parked peer's `IpcDesc`, does the copy,
 writes the byte count into the peer's `wait_result`, and wakes it. On resume the parked
-thread reads only `wait_result` (after the confirm-resume barrier -- Chapter 2.2); it
+thread reads only `wait_result` (after the confirm-resume barrier -- [Chapter 2.2](the-blocking-substrate-one-wait-wake-primitive.md)); it
 never re-reads its own descriptor.
 
 Sketch of the send path (the receive path is its mirror):
@@ -179,12 +179,12 @@ The bound-checks run **up front, in the caller's context**, before the lock -- e
 buffer checked against *its own owner's* regions: the sender's buffer for read, the
 receiver's buffer (and any badge-out pointer) for write. An unchecked receive buffer
 would be a privileged-write oracle; the check is what closes it. (This is the
-syscall-argument validation floor -- Chapter 7.1 and the Reference's "Syscall-argument
+syscall-argument validation floor -- [Chapter 7.1](alignment-across-the-syscall-boundary.md) and the Reference's "Syscall-argument
 validation".)
 
 ## Three counts, three jobs: refs, recv_holders and handout_holders
 
-An endpoint follows the additive object recipe (Chapter 8.2), so it has the usual
+An endpoint follows the additive object recipe ([Chapter 8.2](adding-a-kernel-object-type-the-additive-recipe.md)), so it has the usual
 `endpoint_refs[]` refcount that governs *object lifetime* -- how many capabilities name
 it, freed at zero. But it *also* carries two holder counts, and conflating any of the three
 is the mistake to avoid.
@@ -210,7 +210,7 @@ Together they drive two behaviours a plain refcount cannot:
   must *not* trigger this; that is exactly why the counts are separate.
 - **The parked senders.** When the *last* receive-holder goes away -- closes its
   capability, narrows `CAP_WAIT` away, or exits -- any senders already parked would
-  otherwise wait forever. So the close protocol (Chapter 8.2) for an endpoint, on dropping
+  otherwise wait forever. So the close protocol ([Chapter 8.2](adding-a-kernel-object-type-the-additive-recipe.md)) for an endpoint, on dropping
   `recv_holders` to zero, wakes every parked sender with the same answer a new sender would
   get:
 
@@ -251,7 +251,7 @@ The endpoint is intentionally the smallest thing that is a real IPC primitive. T
 omissions are deliberate, not unfinished:
 
 - **No priority inheritance.** A thread parked on an endpoint carries an endpoint-kind
-  wait edge, not a mutex one, so the PI chain walk (Chapter 2.3) correctly stops at it -- a
+  wait edge, not a mutex one, so the PI chain walk ([Chapter 2.3](priority-inheritance-lending-urgency.md)) correctly stops at it -- a
   high-priority sender does *not* lend its urgency to a low-priority receiver. An endpoint
   is a rendezvous, not a lock: a plain send is owed nothing, so there is no transaction on
   whose behalf urgency could be lent. The mitigation is configuration: a server that must
@@ -263,7 +263,7 @@ omissions are deliberate, not unfinished:
   state, not the queue it is on.
 - **No call/reply in the primitive itself.** Send and receive are one-way, and neither
   carries the notion of a reply owed. Request-then-await-response is a *separate* layer
-  with its own syscalls and its own reply capability (Chapter 8.5); what the endpoint
+  with its own syscalls and its own reply capability ([Chapter 8.5](synchronous-call-and-reply.md)); what the endpoint
   omits is any awareness of it, which is what keeps a plain send/receive pair free of
   transaction state it would never use.
 - **No mutual exclusion, and no ordering beyond the rendezvous.** An endpoint moves one
@@ -305,17 +305,17 @@ The requirement this creates: **a future memory-protection backend that does not
 the kernel privileged background access to a parked peer's memory must arrange
 equivalent access before this pattern is sound.** A cross-domain rendezvous test, run
 under enforcement, is the guard that a new backend has not silently broken it. (See
-`../reference/porting.md` and Chapter 3.7, *Peripheral isolation & the hardware
+`../reference/porting.md` and [Chapter 3.7](peripheral-isolation-and-the-hardware-ceiling.md), *Peripheral isolation & the hardware
 ceiling*, for where protection backends differ.)
 
 ## Where to go next
 
 - The park/wake substrate an endpoint blocks on, and the confirm-resume barrier its
-  return value depends on: Chapter 2.2, *The blocking substrate*.
+  return value depends on: [Chapter 2.2](the-blocking-substrate-one-wait-wake-primitive.md), *The blocking substrate*.
 - The capability that names an endpoint, and the send/receive rights split:
-  Chapter 8.1, *Naming a kernel object*.
+  [Chapter 8.1](handles-and-the-resolve-chokepoint.md), *Naming a kernel object*.
 - The additive recipe the endpoint follows, and the close-protocol hook its broken-pipe
-  wake rides on: Chapter 8.2, *Adding a kernel object type*.
+  wake rides on: [Chapter 8.2](adding-a-kernel-object-type-the-additive-recipe.md), *Adding a kernel object type*.
 - The service-publication story an endpoint is one half of (endpoint control + shared
   memory data, naming/discovery, badged endpoints for authenticating callers):
   `../reference/architecture.md` ("Object model, capabilities & IPC", "Service

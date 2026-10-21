@@ -59,7 +59,7 @@ virtual address space. The kernel above the arch layer makes the same calls on b
 only the arch layer knows how to program the hardware. A chip declares which kind it
 has in its chip file, a region unit or an MMU, never both.
 
-**The f411 example, at the other end of the scale.** Chapter 0.5 built an
+**The f411 example, at the other end of the scale.** [Chapter 0.5](the-toolchain-from-source-to-a-running-image.md) built an
 application whose `main` calls `printf("hello\n")` and ran it on the `f411disco`
 board. There, the task's code, data and stack are MPU regions, and the text leaves
 through USART2. Install the package for `qemu-arm64` instead, a Cortex-A53 with an
@@ -76,7 +76,7 @@ The same reach applies to cores: one kernel can schedule several cores that shar
 memory (SMP), or several independent kernels can each own a core (AMP).
 
 **Where it is developed.** Chapter 3.7, *[Peripheral isolation and the hardware
-ceiling](peripheral-isolation-and-the-hardware-ceiling.md)*; Chapter 7, memory
+ceiling](peripheral-isolation-and-the-hardware-ceiling.md)*; [Chapter 7](memory-protection.md), memory
 protection, and its deep dives, in particular 7.5, *[Protection follows the
 CPU](protection-follows-the-cpu-not-the-schedulers-intent.md)*; Chapter 2.5, *[One
 kernel lock, many ready queues](one-lock-many-ready-queues.md)*. In the Journey:
@@ -111,7 +111,7 @@ the cost is concrete: a fault in a sensor driver must not stop the control loop.
   hardware cannot give what a configuration asks, KickOS **refuses rather than
   silently masks**: a build that asks for enforcement on a chip whose file declares
   no protection unit fails at configure time, instead of producing an image that only
-  looks protected. Chapter 3.7 applies the same rule to peripherals, stating the
+  looks protected. [Chapter 3.7](peripheral-isolation-and-the-hardware-ceiling.md) applies the same rule to peripherals, stating the
   isolation ceiling per chip rather than lowering it for the whole fleet.
 
 **Where it is developed.** Chapter 7.4, *[Privilege is three axes, not one
@@ -155,7 +155,7 @@ backends and chips changes over time, so the Book does not keep it;
 
 **Where it is developed.** Chapter 3.5, *[Context switching and the silicon
 contract](context-switching-and-the-silicon-contract.md)*, states the per-arch
-contract; Chapter 4, *[One kernel, many ISAs](one-kernel-many-isas.md)*, compares the families; Chapter 6 and *[Porting a new ISA:
+contract; Chapter 4, *[One kernel, many ISAs](one-kernel-many-isas.md)*, compares the families; [Chapter 6](porting-kickos.md) and *[Porting a new ISA:
 RISC-V](porting-a-new-isa-riscv.md)* show a port. In the Journey, chapters
 [12](../journey/12-armv6m.md) to [17](../journey/17-xtensa.md) walk the same stops on
 each CPU family and show what changes at each one.
@@ -224,7 +224,7 @@ a panic, a fault report or early boot print before any driver exists. The f411
 example uses both paths: its `printf` goes to the UART driver task when one serves
 standard output, and falls back to the kernel console when none does.
 
-**Where it is developed.** Chapter 0.4 compares the structures and says what KickOS
+**Where it is developed.** [Chapter 0.4](monolithic-vs-microkernel.md) compares the structures and says what KickOS
 takes from seL4; Chapter 3.9, *[The syscall path](the-syscall-path-trap-dispatch-return.md)*,
 covers the minimal surface; Chapters 8.3, *[Endpoints](endpoints-synchronous-ipc-by-rendezvous.md)*,
 and 8.5, *[Synchronous call/reply](synchronous-call-and-reply.md)*, cover IPC. In the

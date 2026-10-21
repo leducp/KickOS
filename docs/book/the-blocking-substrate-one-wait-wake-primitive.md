@@ -8,8 +8,8 @@
 > the one subtle hazard it hides on a deferred-switch architecture. Points into
 > `../reference/invariants.md` (the deferred-switch and switch-frame contracts) and
 > the sync code (`kernel/sync/sync.cc`, `kernel/sched/sched.cc`) for the exact
-> contract; Chapter 2 (kernel model) for `IrqLock` and the scheduler, and
-> Chapter 3.5 for why the switch behaves differently across ISAs.
+> contract; [Chapter 2](kernel-model.md) (kernel model) for `IrqLock` and the scheduler, and
+> [Chapter 3.5](context-switching-and-the-silicon-contract.md) for why the switch behaves differently across ISAs.
 
 ## What "blocking" actually is
 
@@ -39,7 +39,7 @@ happened.
 
 The fix is always the same: the *predicate that decides to block* and the *act of
 parking* must be one atomic step with respect to the waker. On a single-core kernel
-that atomic step is a critical section -- one continuous `IrqLock` (Chapter 2)
+that atomic step is a critical section -- one continuous `IrqLock` ([Chapter 2](kernel-model.md))
 spanning both the check and the park, so no waker can run in between.
 
 That fix is easy to state and easy to get subtly wrong, and there is one such fix per
@@ -65,7 +65,7 @@ new data structure at all.
 ## KickOS's choice: the waitq
 
 **A wait queue IS a list of blocked threads.** It is the same intrusive `List`
-(Chapter 2) the scheduler already uses, whose members happen to be threads in the
+([Chapter 2](kernel-model.md)) the scheduler already uses, whose members happen to be threads in the
 `BLOCKED` state. No new struct. The primitive is a *pair of operations* plus a
 *normative wake protocol*.
 
@@ -88,7 +88,7 @@ namespace kickos
 `wq_block` is the parking half: set the current thread's state to `BLOCKED`, detach it
 from the run queue, remember which queue it is on, push it onto that queue, and call
 `sched::reschedule()` to switch away. Those first two steps are in that order on
-purpose. The removal reads `state` to tell a park from a priority re-seat (Chapter 2.3),
+purpose. The removal reads `state` to tell a park from a priority re-seat ([Chapter 2.3](priority-inheritance-lending-urgency.md)),
 which is the difference between forfeiting the rest of a round-robin slice and keeping
 it, so `BLOCKED` has to be true before the removal runs. The detach then has to happen
 before the queue push, because the ready list and the wait queues share one link node in
@@ -130,7 +130,7 @@ rather than in each waker.
 `wq_pop_highest` scans for the highest priority *at pop time* rather than keeping the
 queue sorted. This is not laziness for its own sake: it is what lets a thread's
 priority change *while it is parked* without any re-queue work. Priority inheritance
-(Chapter 2.3) boosts a parked thread's priority precisely in that situation, and
+([Chapter 2.3](priority-inheritance-lending-urgency.md)) boosts a parked thread's priority precisely in that situation, and
 because the queue is unsorted and scanned at pop, the boost is simply visible the next
 time someone pops. A sorted queue would need to be re-sorted on every boost. Do not
 "optimize" the scan into a sorted insert -- it would break the cheapest correct
@@ -156,7 +156,7 @@ it, knows how to do:
 |--------|------------------------|
 | semaphore | nothing -- the token is handed implicitly; pop then wake |
 | mutex | ownership of the lock, written into the lock word as the new holder's id, plus the priority-inheritance bookkeeping ([Chapter 2.3](priority-inheritance-lending-urgency.md)) |
-| endpoint | the message bytes copied peer-to-peer, plus the byte count or an error status (Chapter 8.3) |
+| endpoint | the message bytes copied peer-to-peer, plus the byte count or an error status ([Chapter 8.3](endpoints-synchronous-ipc-by-rendezvous.md)) |
 
 Pop and wake are **deliberately separate calls.** Fusing them into a single
 `wake_one(q)` would leave no place for step 2, and every object that needed to hand
@@ -182,11 +182,11 @@ outside (a deadline, a cancellation) do not know which object the thread was par
 when they write their status into it. A private meaning for `1` on one object type is
 then a meaning that some other object's waker can produce by accident. One taxonomy
 removes the question by construction, and it costs nothing: the codes were needed at the
-syscall boundary anyway (Chapter 3.9), so the park reuses them rather than inventing a
+syscall boundary anyway ([Chapter 3.9](the-syscall-path-trap-dispatch-return.md)), so the park reuses them rather than inventing a
 second convention that has to be translated on the way out.
 
 There is exactly one wrinkle, and it belongs to the mutex: `-KOS_EOWNERDEAD` is
-negative and still means the lock was **acquired**. Chapter 2.3 spends a section on why,
+negative and still means the lock was **acquired**. [Chapter 2.3](priority-inheritance-lending-urgency.md) spends a section on why,
 and on the `if (rc < 0)` that strands a mutex forever.
 
 One rule makes this safe: **the waker writes `wait_result`; the sleeper never writes
@@ -217,7 +217,7 @@ really did stop and resume, and everything the waker wrote before waking us
 happened-before our read.
 
 On a deferred-switch architecture (ARM, and the same class of mechanism on RX and
-RISC-V -- see Chapter 3.5) it is false. There `arch_switch` does not switch; it only
+RISC-V -- see [Chapter 3.5](context-switching-and-the-silicon-contract.md)) it is false. There `arch_switch` does not switch; it only
 *pends* the switch (ARM PendSV), and `arch_irq_restore` carries no instruction
 barrier. So `wq_block` **returns on the still-current, not-yet-switched thread.** The
 actual context switch fires a few instructions later, when the outermost `IrqLock`
@@ -273,7 +273,7 @@ the deferred-switch subtlety is handled, and one field for delivering a result.
 A timed wait -- wake on the event *or* on a deadline -- is the sharpest test of whether
 one primitive was really enough, because it introduces a second waker that arrives from
 the timer rather than from the object. It needs no second primitive. The deadline goes
-on the tickless timer list (Chapter 2.1) alongside the queue membership, the expiry
+on the tickless timer list ([Chapter 2.1](the-time-base-a-monotonic-clock-you-can-trust.md)) alongside the queue membership, the expiry
 reuses the `wait_result` channel with one distinguishable value, and the unwind is an
 ordinary step-2 transfer run by the timer: retract the wait edge, deliver the timeout,
 wake. What the deadline *does* cost is the discipline of keeping the two memberships
@@ -284,10 +284,10 @@ park-to-park handoff will silently disarm a deadline that was meant to span both
 ## Where to go next
 
 - The mutex's step 2 -- ownership transfer plus priority inheritance:
-  Chapter 2.3, *Priority inheritance*.
-- The endpoint's step 2 -- the peer-to-peer message copy: Chapter 8.3, *Endpoints*.
+  [Chapter 2.3](priority-inheritance-lending-urgency.md), *Priority inheritance*.
+- The endpoint's step 2 -- the peer-to-peer message copy: [Chapter 8.3](endpoints-synchronous-ipc-by-rendezvous.md), *Endpoints*.
 - Why the switch is synchronous on the host but deferred on ARM/RX/RISC-V, and the
-  frame/return contracts behind it: Chapter 3.5, *Context switching and the silicon
+  frame/return contracts behind it: [Chapter 3.5](context-switching-and-the-silicon-contract.md), *Context switching and the silicon
   contract*, and `../reference/invariants.md` (deferred-switch, switch-frame).
 - The `IrqLock` critical-section model this rests on, and the scheduler it drives:
-  Chapter 2, *Kernel model*.
+  [Chapter 2](kernel-model.md), *Kernel model*.

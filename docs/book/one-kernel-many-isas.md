@@ -157,7 +157,7 @@ stack held in `mscratch` and checks the thread's pointer from there. x86_64's
 lands on the kernel's own stack pointer, and RXv3 pushes two words onto its
 interrupt stack.
 
-Chapter 3.5 prices the difference. Chapter 7.7, *[Whoever stacks the trap frame
+[Chapter 3.5](context-switching-and-the-silicon-contract.md) prices the difference. Chapter 7.7, *[Whoever stacks the trap frame
 owns the bounds check](whoever-stacks-the-trap-frame-owns-the-bounds-check.md)*,
 explains why whoever writes the frame must also check the stack it writes to.
 

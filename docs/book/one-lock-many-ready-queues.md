@@ -4,8 +4,8 @@
 
 > How a kernel decides which thread runs on which core, the different ways to
 > organise runnable threads, and why KickOS combines a ready queue per core
-> with one lock around shared kernel transactions. Builds on Chapter 2.2
-> (park and wake) and Chapter 3.5 (the saved switch frame). The exact rules
+> with one lock around shared kernel transactions. Builds on [Chapter 2.2](the-blocking-substrate-one-wait-wake-primitive.md)
+> (park and wake) and [Chapter 3.5](context-switching-and-the-silicon-contract.md) (the saved switch frame). The exact rules
 > live in [the architecture reference](../reference/architecture.md) and
 > [the scheduler invariants](../reference/invariants.md).
 

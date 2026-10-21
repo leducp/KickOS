@@ -23,7 +23,7 @@ Copyright (c) 2026 Philippe Leduc
 
 ## The problem: the frame has to go somewhere, and only one pointer is available
 
-A trap is an involuntary function call (Chapter 0.3). The core stops the running
+A trap is an involuntary function call ([Chapter 0.3](interrupts-and-traps.md)). The core stops the running
 instruction stream at an arbitrary instruction and transfers to a handler, and the
 handler needs the registers for its own work. So the interrupted values have to be
 written to memory before the handler can use those registers, and they have to be written
@@ -43,7 +43,7 @@ privilege, and no protection unit anywhere refuses it, because *moving* a pointe
 an access.
 
 So the trap frame is written through a pointer supplied by the untrusted party. That is
-the whole problem, and it is worth stating in the same shape as Chapter 3.9's
+the whole problem, and it is worth stating in the same shape as [Chapter 3.9](the-syscall-path-trap-dispatch-return.md)'s
 validate-then-use rule for syscall arguments:
 
 > The stack pointer at trap entry is a syscall argument that arrives before the syscall,
@@ -84,7 +84,7 @@ textbook definition of a privilege escalation primitive: an arbitrary write. Eve
 after it is a matter of what the attacker chooses to overwrite.
 
 And the escalation does not even need a kernel target. Thread stacks come from a bump
-allocator with no padding between equal-sized blocks (Chapter 3.6), so the memory
+allocator with no padding between equal-sized blocks ([Chapter 3.6](thread-stacks-and-the-kiss-tension.md)), so the memory
 immediately below one thread's stack base is *another thread's granted region*. A frame
 that lands there is written into memory a second unprivileged thread can read and write
 with ordinary stores, no privilege required. Two cooperating unprivileged threads are
@@ -106,7 +106,7 @@ addition is outside the guarantee.
 **Option 2: a trusted per-core trap stack.** The prologue's first act is to swap onto a
 stack the kernel owns, which no thread can name. Nothing untrusted is ever stored
 through. The cost is that the trap frame is then not on the thread's stack, which matters
-enormously for the syscall path: Chapter 3.9's contract
+enormously for the syscall path: [Chapter 3.9](the-syscall-path-trap-dispatch-return.md)'s contract
 (`syscall-in-priv-thread-context`) requires the kernel's dispatch to run on the *calling
 thread's own continuation*, so that a blocking syscall blocks by an ordinary context
 switch. A frame on a shared per-core stack cannot be frozen and resumed that way, because
@@ -176,7 +176,7 @@ thread's own memory. The entry check answered a question about the pointer *at e
 cannot answer a question about the memory *during the descent*, and those are different
 questions the moment a second thread can reach that memory.
 
-And a second thread can. Threads in a task share a memory domain by design (Chapter 7):
+And a second thread can. Threads in a task share a memory domain by design ([Chapter 7](memory-protection.md)):
 that is what a task *is*. So a sibling of the calling thread holds a legitimate,
 granted, read-write mapping of the very bytes the kernel's privileged dispatch is using as
 its stack. Nothing has been forged and no check has been evaded. The peer simply writes,
@@ -362,7 +362,7 @@ stack: the deferred-switch handler, which saves the full context (the register f
 floating-point status word, both accumulators, and the double-precision bank where the
 build has one, well over two hundred bytes), and the syscall trap.
 
-The syscall trap stacks almost nothing, and is the worse of the two. As Chapter 3.9
+The syscall trap stacks almost nothing, and is the worse of the two. As [Chapter 3.9](the-syscall-path-trap-dispatch-return.md)
 describes, it arranges a privileged thread-mode continuation by editing the stacked state
 and returning into it:
 
@@ -388,9 +388,9 @@ bounding the frame and bounding the descent is not a refinement but the entire q
 
 ### The two ports with no ring
 
-Xtensa LX6 and the host sim have no privilege split (Chapter 7.4, axis 1). There is no
+Xtensa LX6 and the host sim have no privilege split ([Chapter 7.4](privilege-is-three-axes-not-one-bit.md), axis 1). There is no
 privileged level for a controlled write to escalate *to*, so the class does not exist
-there. This is not a gap in those ports; it is the same observation Chapter 3.9 makes
+there. This is not a gap in those ports; it is the same observation [Chapter 3.9](the-syscall-path-trap-dispatch-return.md) makes
 about their syscall path, that the trap is a mechanism and not the boundary. It is worth
 naming explicitly all the same, because "this backend is not affected" is a claim that
 should rest on an argument rather than on nobody having thought about it.
@@ -489,7 +489,7 @@ to phrase the comparison as room-remaining rather than as an endpoint you comput
 Bound the frame correctly and a second hole is still open, and it is much deeper than the
 first.
 
-The reason is a deliberate design choice, and Chapter 3.9 argues for it at length: KickOS
+The reason is a deliberate design choice, and [Chapter 3.9](the-syscall-path-trap-dispatch-return.md) argues for it at length: KickOS
 runs `syscall_dispatch` on the calling thread's own continuation
 (`syscall-in-priv-thread-context`, and the `arch_syscall` contract in
 `arch/include/kickos/arch/arch.h`). The trap handler does not dispatch. It arranges a
@@ -528,7 +528,7 @@ and the bound disappears along with the class.
 
 It is a real option and it is what a general-purpose kernel does. The cost is what a
 small part cannot afford. A kernel stack per thread is `threads * depth` bytes of RAM
-reserved unconditionally, which is precisely the static-provisioning tax Chapter 3.6
+reserved unconditionally, which is precisely the static-provisioning tax [Chapter 3.6](thread-stacks-and-the-kiss-tension.md)
 rejects for user stacks, and for the same arithmetic: on a part with tens of kilobytes,
 provisioning a few hundred bytes per thread for a descent most threads never make is a
 visible fraction of the chip. Running on the caller's own stack costs zero bytes. What it
@@ -727,7 +727,7 @@ is a legal state is not a strict check, it is a bug with a security-shaped comme
 So the fleet declines the leg and records why beside the code, and
 `user/apps/common/pspguard/` writes a stack pointer with both low bits set and reads it
 back, so the architectural claim is *observed* on the part rather than quoted from a manual.
-Symmetry across a fleet is a strong default (it is the uniform-fleet thesis of Chapter 1),
+Symmetry across a fleet is a strong default (it is the uniform-fleet thesis of [Chapter 1](overview-and-principles.md)),
 and a leg that is provably inert on one member is one of the few places to break it
 deliberately.
 
@@ -760,7 +760,7 @@ Six, in the order they cost to learn:
    indirect call, a reachable cycle or a dynamic frame rather than reporting a number you
    cannot justify.
 
-The through-line is the one Chapter 3.9 states for syscall arguments and Chapter 7.4 states
+The through-line is the one [Chapter 3.9](the-syscall-path-trap-dispatch-return.md) states for syscall arguments and [Chapter 7.4](privilege-is-three-axes-not-one-bit.md) states
 for privilege: the kernel is on the wrong side of its own boundary, and the boundary is
 wherever untrusted data is *used*, not wherever it was declared. A stack pointer is data. It
 arrives earlier than anything else and it is used before any code has run, which is what

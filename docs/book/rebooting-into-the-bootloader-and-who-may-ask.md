@@ -299,7 +299,7 @@ question does not apply. Two consequences follow, and neither is a matter of tas
    and can refuse. And because there is no resource to narrow, the only dimensions such an
    authority has are holding it, not holding it, and having it taken away -- which is why
    making systemic authority *droppable data* rather than an identity bit is where the
-   value is (Chapter 7.4 again).
+   value is ([Chapter 7.4](privilege-is-three-axes-not-one-bit.md) again).
 
 Bootloader entry is the cleanest systemic act there is, which is what makes it a good
 teaching example rather than a special case. Its effect is not merely system-wide, it is

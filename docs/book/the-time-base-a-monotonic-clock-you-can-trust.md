@@ -2,7 +2,7 @@
 <!-- Copyright (c) 2026 Philippe Leduc -->
 # The time base: a monotonic clock you can trust
 
-> The conceptual chapter behind the "time" facet of the kernel model (Chapter 2).
+> The conceptual chapter behind the "time" facet of the kernel model ([Chapter 2](kernel-model.md)).
 > It teaches *what* a monotonic time base is, *why* a tickless kernel's every
 > timed decision rests on it, and the checklist a porter runs before trusting a
 > hardware timer as the authoritative clock. Each chip's concrete counter (which
@@ -111,8 +111,12 @@ The costs are structural, not incidental:
 - **Sometimes optional / trapping.** `rdcycle` from an unprivileged context may
   trap if the counter is not enabled (`[m|s]counteren`), and the cycle extension
   can be absent or restricted on a given implementation.
-- **Freezes on debug-halt / may stop in low-power.** A cycle counter that stops
-  when the core stops mis-measures any interval that spans a halt or a deep idle.
+- **Freezes on debug-halt and in low-power.** A cycle counter that stops
+  when the core stops mis-measures any interval that spans a halt or an idle. ARM's
+  `CYCCNT` counts processor clock cycles, and on an STM32F411 the `WFI` sleep stops
+  that clock, so the counter stands still exactly while the kernel idles. A
+  debugger can keep the clock running in sleep (ST's `DBGMCU_CR.DBG_SLEEP`), so the
+  counter behaves one way on the bench and another way in the field.
 
 ### 2. A periodic core tick
 
@@ -171,6 +175,19 @@ proposes as the authoritative clock:
 - Driven by a known, stable input rate derived from the clock tree.
 - Not shared with a driver that could reprogram it.
 
+**The f411 example.** The STM32F411 shows the pairing on real silicon. The
+one-shot is the core's own SysTick: the kernel arms it for the next deadline and
+re-arms it at every new one, and a deadline beyond its 24-bit range simply fires
+early and is re-armed for the rest. The clock is a different timer, TIM2, a
+32-bit counter that runs from boot and is never reloaded. The two cannot be one
+timer. A counter that is reloaded at every deadline loses the time it had already
+counted, so it cannot also say what time it is. And at the 84 MHz core clock,
+SysTick's 24 bits wrap about every 0.2 seconds, so extending it to 64 bits would
+take an interrupt five times a second, which is the periodic tick again. TIM2's
+32 bits wrap about every 51 seconds, and its overflow interrupt folds each wrap
+into the 64-bit count. The core's cycle counter was the other candidate, and the
+worked example below shows why it lost.
+
 The next section turns those requirements into the vetting checklist -- and first
 names the failure shape they exist to catch.
 
@@ -223,6 +240,70 @@ Both failure modes vanish if the counter is wide enough not to wrap in practice,
 or hardware-latched so the read is atomic and truthful. That is why the checklist
 below pushes hard toward wide, reliable, hardware-latched counters and treats
 software extension as a last resort with preconditions.
+
+### Extending in software, when you must
+
+When a part offers nothing wider than 32 bits, the extension can still be made sturdy.
+The fragile version above decides that a wrap happened by comparing two readings, so
+its state comes from the readings, and one bad reading stays in the high word forever.
+The sturdy version takes that decision away from the readers:
+
+- **Only the overflow interrupt advances the high word.** The counter's own overflow
+  flag says a wrap happened, so no reading is ever interpreted as one. The interrupt
+  clears the flag and advances the word with interrupts masked, so a reader that
+  interrupts it never sees the flag cleared and the word not yet advanced.
+- **A reader writes nothing.** It reads the high word, then the counter, then the high
+  word again, and starts over if the high word changed in between. The two halves it
+  returns were then valid at the same moment.
+- **A reader covers the one remaining window itself.** If interrupts are masked when it
+  reads, the counter may have wrapped while its overflow interrupt is still waiting to
+  run. The reader checks the timer's pending overflow flag: when the flag is set and
+  the counter reads low (in the lower half of its range), the high word is one
+  behind, and the reader adds it.
+
+```
+// The sturdy extension: the overflow interrupt owns the high word.
+static kickos::Atomic<uint32_t> g_high; // written by the overflow interrupt only
+
+void overflow_isr(void)
+{
+    uint32_t const saved = mask_interrupts();
+    clear_overflow_flag();
+    g_high.store(g_high.load() + 1);
+    restore_interrupts(saved);
+}
+
+uint64_t now_extended(void)
+{
+    while (true)
+    {
+        uint32_t high = g_high.load();
+        uint32_t low = read_hw_counter();
+        bool const pending = overflow_pending();
+        if (g_high.load() != high)
+        {
+            continue; // the interrupt ran meanwhile: read again
+        }
+        if (pending and low < 0x80000000u)
+        {
+            high = high + 1; // wrapped, and its interrupt has not run yet
+        }
+        return ((uint64_t)high << 32) | low;
+    }
+}
+```
+
+The loads must be real loads every time, which is why the high word is an atomic
+rather than a plain variable: a compiler is otherwise free to read it once and loop
+on a stale copy. No hardware barrier is needed on one core, since a core sees its own
+stores in order.
+
+What this buys: a bad reading produces one wrong value and is never latched, a
+reader running at any interrupt priority is safe because readers share no state
+and the interrupt's two stores are one step to them, and no reader has to mask
+interrupts. Only the overflow interrupt masks them, for two stores. Failure (b) still applies to the interrupt
+itself, more strictly: the "counter reads low" test is only right if the overflow
+interrupt is never kept waiting for half a wrap period or more.
 
 ### The checklist
 
@@ -346,5 +427,5 @@ divider -- checklist items 2, 3, and 5 in one place.
 - Each chip's concrete counter (peripheral, rate, latch strategy): Chapters 4 and
   5 (per-ISA and per-chip tours) over `arch/*/chip/*`.
 - The one-shot's other half -- how a deferred timer interrupt drives a switch on
-  the way out of an ISR: Chapter 3.5, *Context switching and the silicon
+  the way out of an ISR: [Chapter 3.5](context-switching-and-the-silicon-contract.md), *Context switching and the silicon
   contract* (the deferred-switch axis).

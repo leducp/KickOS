@@ -17,7 +17,7 @@ A microkernel's pitch is that a driver is just an unprivileged program: it is ha
 the registers of *its* device and nothing else, so a bug in it cannot corrupt the
 kernel or another driver. KickOS makes exactly this promise for memory -- a thread
 sees its own code, its own data, its own stack, and any region deliberately shared
-with it, and the MPU faults everything else (Chapter 7). The natural next step is to
+with it, and the MPU faults everything else ([Chapter 7](memory-protection.md)). The natural next step is to
 make a *peripheral* one more region in that set: grant the driver thread the device's
 register block, deny it to everyone else.
 

@@ -6,9 +6,9 @@
 >
 > You will learn:
 >
-> - what a thread and a task are;
-> - why one thread sometimes waits for another;
-> - why `printf` on a microcontroller has to ask the kernel;
+> - what a thread and a task are
+> - why one thread sometimes waits for another
+> - why `printf` on a microcontroller has to ask the kernel
 > - where the kernel sits in the KickOS source tree.
 >
 > *Further reading: Tanenbaum, Modern Operating Systems, ch.1 (sections 1.1 on what
@@ -17,7 +17,7 @@
 
 ## The problem: several programs, one machine
 
-Chapter 0.1 described the machine: one CPU core, some memory, and devices reached
+[Chapter 0.1](the-machine-underneath.md) described the machine: one CPU core, some memory, and devices reached
 by address. A small embedded product already runs several activities on it: a
 control loop that must run every millisecond, a communication stack that waits for
 packets, a logger, a user interface. Each is written as if it had the machine to
@@ -28,7 +28,7 @@ others: leave time for them, avoid their memory, agree on who programs the share
 timer and UART. One bug in any of them, a stray pointer or an endless loop, would
 bring down all of them.
 
-Take the f411 example from Chapter 0.1: an app on the STM32F411 calls
+Take the f411 example from [Chapter 0.1](the-machine-underneath.md): an app on the STM32F411 calls
 `printf("hello\n")`, and the bytes leave through USART2, whose registers start at
 `0x40004400`. The logger and the communication stack print through the same USART2.
 If each wrote its data register directly, their lines would interleave byte by byte,
@@ -62,7 +62,7 @@ ordinary code, no different in kind from an application.
 The **kernel** is the part that runs with the hardware's full powers. It is the
 only code that may reprogram the protection unit, mask interrupts (hold off the
 hardware signals that make the core run other code between two instructions,
-Chapter 0.3), or switch from one program to another. Everything else, called
+[Chapter 0.3](interrupts-and-traps.md)), or switch from one program to another. Everything else, called
 **userspace**, runs without those powers and must ask the kernel when it needs one
 of them. A **device driver**, the code that operates one device such as a UART, may
 sit on either side.
@@ -79,18 +79,18 @@ only needs the idea that a kernel exists, and that it is the privileged part.
 The problem above spoke of "activities". An OS needs two sharper words for them.
 
 A **thread** is one flow of instructions that the kernel can stop and later resume.
-It has its own context, the registers of Chapter 0.1 (PC, SP, the general-purpose
+It has its own context, the registers of [Chapter 0.1](the-machine-underneath.md) (PC, SP, the general-purpose
 registers, the flags, the privilege bit), and its own stack, for the reason
 Chapter 0.1's [*A call and the stack*](the-machine-underneath.md#a-call-and-the-stack)
-gives. To stop a thread, the kernel saves its context to memory; to resume it, the
+gives. To stop a thread, the kernel saves its context to memory. To resume it, the
 kernel loads that context back into the core. Moving the core from one thread to
-another this way is a **context switch** (Chapter 3.5). The thread cannot tell it
+another this way is a **context switch** ([Chapter 3.5](context-switching-and-the-silicon-contract.md)). The thread cannot tell it
 was stopped.
 
 At any moment a thread is in one of three states:
 
-- **running**: its context is in the core, executing;
-- **ready**: it could run, and waits only for a core;
+- **running**: its context is in the core, and it is executing.
+- **ready**: it could run, and waits only for a core.
 - **blocked**: it waits for something else, such as a byte, a timer or another
   thread, and must not run until that happens.
 
@@ -113,7 +113,7 @@ What a task's memory looks like depends on the hardware. An **address space** is
 the set of addresses a program can use, and what each of them reaches. On an
 application processor, the MMU gives each task its own numbering: the same virtual
 address can mean different memory in two tasks. On a microcontroller there is one
-flat numbering for everyone (Chapter 0.1), so a task's address space is not a
+flat numbering for everyone ([Chapter 0.1](the-machine-underneath.md)), so a task's address space is not a
 numbering of its own. It is the part of the one map that the MPU lets the task
 reach. KickOS calls that set of memory a **domain**, on both kinds of chip, so a
 later chapter that says "one per address space" means one per domain: per group of
@@ -127,7 +127,7 @@ the promise. If any program could reprogram the protection unit, the protection
 unit would protect nothing. So the line must be drawn by the hardware, which every
 program has to obey.
 
-The CPU does this with a **privilege mode**, the bit Chapter 0.1 listed among the
+The CPU does this with a **privilege mode**, the bit [Chapter 0.1](the-machine-underneath.md) listed among the
 core's registers:
 
 - In **privileged mode** the core may execute every instruction and access every
@@ -136,14 +136,14 @@ core's registers:
 - In **user mode** (unprivileged mode) the core refuses those operations. Depending
   on the instruction and the architecture, the attempt is either silently ignored
   or raises a **fault**: the core stops the program and enters the kernel at an
-  address the kernel chose in advance (Chapter 0.3). Either way, it does not take
+  address the kernel chose in advance ([Chapter 0.3](interrupts-and-traps.md)). Either way, it does not take
   effect.
 
 User mode alone is not enough. A program that cannot touch control registers could
 still overwrite the kernel's data with a store instruction. The second half of the
-enforcement is the protection unit (MPU or MMU, Chapter 0.1): the kernel programs it
+enforcement is the protection unit (MPU or MMU, [Chapter 0.1](the-machine-underneath.md)): the kernel programs it
 so that a user-mode access outside the program's own memory faults. The mode decides
-*which instructions* run; the protection unit decides *which addresses* a user-mode
+*which instructions* run, and the protection unit decides *which addresses* a user-mode
 access may reach. Only privileged code can change either one.
 
 Each architecture spells this differently. A Cortex-M core runs threads unprivileged
@@ -154,8 +154,8 @@ runs in ring 0 and user code in ring 3, and most systems leave rings 1 and 2 unu
 The idea is the same in all of them: at least two levels, a privileged one for the
 kernel and an unprivileged one for programs, and a transfer between them that the
 less privileged side cannot make on its own terms. The hardware only provides the
-levels; how much code an OS runs at the privileged one is its own design choice,
-the subject of Chapter 0.4.
+levels. How much code an OS runs at the privileged one is its own design choice,
+the subject of [Chapter 0.4](monolithic-vs-microkernel.md).
 
 Some cores have no privilege modes at all. Then a kernel can still organise the
 machine, but it cannot stop a buggy program from writing the kernel's memory.
@@ -195,7 +195,7 @@ the data register at `0x40004404` (base `0x40004400`, data register at offset
 `0x04`) faults. The app cannot own the UART unchecked, because the UART is shared.
 
 So `printf` has to go through someone who may touch the UART, and it ends in a
-syscall. newlib, the C library (Chapter 0.6), formats the text and calls `_write`,
+syscall. newlib, the C library ([Chapter 0.6](whats-under-include-libc-and-the-cxx-runtime.md)), formats the text and calls `_write`,
 and KickOS's `_write` hands the bytes to the kernel through the trap. What happens
 on the trap's far side depends on how the OS is built. There are two answers:
 
@@ -218,12 +218,12 @@ KickOS is a microkernel and gives its drivers the second answer. It keeps one sm
 exception, the **kernel console**: a minimal output path from the kernel to the
 UART, so the kernel can print before any driver runs, and so a program with no
 driver behind its output still prints. The f411 example's default build has no
-UART driver, so its `printf` ends there. Chapter 0.4 weighs the two answers.
+UART driver, so its `printf` ends there. [Chapter 0.4](monolithic-vs-microkernel.md) weighs the two answers.
 
 ## What a kernel must own
 
 If the kernel is the privileged part, what must be inside it? A useful rule, which
-Chapter 3.9 states for KickOS's own syscall list: *an operation belongs in the
+[Chapter 3.9](the-syscall-path-trap-dispatch-return.md) states for KickOS's own syscall list: *an operation belongs in the
 kernel only if it needs something only the kernel has.* Four things qualify on any
 machine.
 
@@ -247,13 +247,13 @@ running the waiter and resume it later, so blocking is kernel work.
 
 **Interrupts.** The table that tells the core where each interrupt's handler starts,
 and the interrupt controller that decides which signal the core takes, are privileged
-hardware (Chapter 0.3), so the first instruction of every interrupt handler runs in
+hardware ([Chapter 0.3](interrupts-and-traps.md)), so the first instruction of every interrupt handler runs in
 the kernel. The
 kernel may handle the event itself, or forward it to an unprivileged driver.
 
 Everything else, such as drivers, file systems, protocol stacks and console output,
 *can* run outside the kernel. Whether it *should* is the monolithic vs microkernel
-question of Chapter 0.4.
+question of [Chapter 0.4](monolithic-vs-microkernel.md).
 
 ## Waiting and sharing
 
@@ -264,11 +264,11 @@ running it until the event happens. The kernel marks it blocked, runs another re
 thread, and makes it ready again when the event comes. A blocked thread costs no CPU
 time at all.
 
-**The mutex.** Two threads share Chapter 0.1's `counter`, and both call `tick`,
+**The mutex.** Two threads share [Chapter 0.1](the-machine-underneath.md)'s `counter`, and both call `tick`,
 which adds 5 to it. `counter` starts at 0, so after both it should be 10. But
 `tick` is a load, an add and a store, and each thread works in its own registers.
 The kernel can stop thread A between its load and its store, when an interrupt
-arrives, and run thread B; on a multicore chip, B may even run at the same moment on
+arrives, and run thread B. On a multicore chip, B may even run at the same moment on
 another core:
 
 | Step | Thread A | Thread B | `counter` |
@@ -281,7 +281,7 @@ another core:
 B's update is lost. This is a **race**: the result depends on when the threads
 happen to be switched. The cure is a **mutex** (mutual exclusion lock). A thread
 **locks** it before touching `counter` and **unlocks** it after. Only one thread can
-hold it; a second thread that tries to lock blocks until the holder unlocks. The code
+hold it. A second thread that tries to lock blocks until the holder unlocks. The code
 between lock and unlock is a **critical section**: while one thread is inside it, no
 other thread can enter a section guarded by the same lock. In KickOS:
 
@@ -294,15 +294,15 @@ kos_mutex_unlock(m);
 Now step 2 cannot happen: B blocks in `kos_mutex_lock` until A has stored 5, then
 loads 5 and stores 10.
 
-**The semaphore.** A mutex protects data; a **semaphore** counts events. It holds a
-number. **Post** adds one; **wait** takes one, or blocks while the number is 0. A
+**The semaphore.** A mutex protects data, while a **semaphore** counts events. It holds a
+number. **Post** adds one. **Wait** takes one, or blocks while the number is 0. A
 thread that handles received bytes waits on a semaphore, and each time a byte
 arrives, the code that sees it posts. The thread sleeps while nothing comes, and no
 byte is missed if two arrive before it runs, since the count remembers both. KickOS
 spells them `kos_sem_wait` and `kos_sem_post`.
 
-A third way to cooperate, the **message**, copies data from one thread to another;
-Chapter 0.4 and Part 8 cover it. Chapter 2, *[The kernel model](kernel-model.md)*,
+A third way to cooperate, the **message**, copies data from one thread to another.
+[Chapter 0.4](monolithic-vs-microkernel.md) and Part 8 cover it. Chapter 2, *[The kernel model](kernel-model.md)*,
 teaches how KickOS blocks and wakes threads, and Chapter 2.2,
 *[The blocking substrate](the-blocking-substrate-one-wait-wake-primitive.md)*, the
 one mechanism behind all of these.
@@ -318,7 +318,7 @@ A **real-time OS (RTOS)** aims at something else: **determinism**. For a motor
 controller or a brake, a correct answer that arrives late is a wrong answer. What
 matters is not the average response time but the worst one, and the worst one must
 be **bounded**: known in advance, and short enough for the application. Hard real
-time means missing a deadline is a failure; soft real time means it degrades quality.
+time means missing a deadline is a failure. Soft real time means it degrades quality.
 
 That goal changes how a kernel is built:
 
@@ -329,18 +329,18 @@ That goal changes how a kernel is built:
 - **Short critical sections.** The kernel guards its own data by masking interrupts
   for a moment. While they are masked, an urgent event waits. Every masked section
   adds to the worst-case latency, so each must be short and of bounded length
-  (Chapter 0.3).
+  ([Chapter 0.3](interrupts-and-traps.md)).
 - **No unbounded work in the kernel.** A kernel path whose length depends on how many
   objects exist, or on a search that may retry forever, has no worst case to quote.
 - **No priority inversion.** A low-priority thread holding a lock can delay a
-  high-priority thread waiting for it; the kernel must bound that delay (Chapter 2.3,
+  high-priority thread waiting for it, and the kernel must bound that delay (Chapter 2.3,
   *[Priority inheritance](priority-inheritance-lending-urgency.md)*).
 - **Precise time.** A deadline is only as good as the clock that measures it
   (Chapter 2.1, *[The time base](the-time-base-a-monotonic-clock-you-can-trust.md)*).
 
 ## Why a kernel still matters on a microcontroller
 
-Chapter 0.1 showed that a microcontroller usually has one flat physical address
+[Chapter 0.1](the-machine-underneath.md) showed that a microcontroller usually has one flat physical address
 space and no MMU. Every address means the same thing to every thread. It is fair to
 ask what a kernel adds there. There are three common ways to build MCU firmware.
 

@@ -327,7 +327,7 @@ singletons `kmain` needs are constructed first. Every *other* constructor (the a
 `libstdc++`/`libsupc++`'s, KickCAT's) lands in `.kickos_app_init_array` and runs later
 from `root_entry`, the kernel's first thread, with the scheduler and clock fully live --
 because such a constructor may call a KickOS syscall (`kos_clock_now`), which needs a
-current thread to exist. The full "why" is in the boot-order section of Chapter 0.6; the
+current thread to exist. The full "why" is in the boot-order section of [Chapter 0.6](whats-under-include-libc-and-the-cxx-runtime.md); the
 linker's job is just to give the two groups separate homes with bracketing symbols the C
 runtime can walk.
 
@@ -445,4 +445,4 @@ not a silent leak.
 - The region-set model and the C++-under-MPU budget:
   [`../reference/architecture.md`](../reference/architecture.md) ("Memory domains", "C++ decisions").
 - The RISC-V `gp` anchor contract: [`../reference/porting.md`](../reference/porting.md) (RISC-V arch).
-- Memory protection and how regions are granted at spawn: Chapter 7, *Memory protection*.
+- Memory protection and how regions are granted at spawn: [Chapter 7](memory-protection.md), *Memory protection*.

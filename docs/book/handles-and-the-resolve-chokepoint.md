@@ -26,7 +26,7 @@ is checkable -- and it is **ambient**. The name is global, so any thread that ca
 forge the integer can name the object: `kos_sem_wait(4, ...)` from anywhere reaches
 semaphore 4. Isolation says a caller should touch only what it has been *given*; a global namespace
 anyone can enumerate is the opposite -- it is ambient authority, and ambient authority
-contradicts the isolation the MPU chapters (Chapter 7) work so hard to build. Fencing a
+contradicts the isolation the MPU chapters ([Chapter 7](memory-protection.md)) work so hard to build. Fencing a
 caller's *memory* while leaving the *object namespace* open would be half a boundary.
 
 ## What a handle is
@@ -70,10 +70,10 @@ struct CapEntry
 
 Read the four properties, then read the two fields that are not any of them. Type and
 rights each need three bits and are given a byte each, and the five and three bits left
-over are not padding: one capability type, the one-shot reply capability of Chapter 8.5,
+over are not padding: one capability type, the one-shot reply capability of [Chapter 8.5](synchronous-call-and-reply.md),
 needs somewhere to keep the call sequence that tells a late reply from a live one, and
 its `obj` field is already full to the last bit with a thread handle. Those spare bits
-are where that sequence goes. Chapter 8.7 works the case through, because the general
+are where that sequence goes. [Chapter 8.7](stale-handles-generation-width-and-allocation-policy.md) works the case through, because the general
 move is worth having: when a field is exactly full, look for unspent bits in its
 neighbours before concluding that the width is the constraint. For every other capability
 type the two are simply unused, which is why the entry still reads as the four properties
@@ -93,7 +93,7 @@ handle: it returns a **status** -- 0 or a negated error code -- and writes the h
 through an **out-parameter**, as in `kos_sem_create(int initial, kos_cap_t* out_cap)`
 (`user/include/kickos/sys.h`). With failure carried in the return value, the handle never
 has to reserve a bit to signal it, so a live handle may have bit 31 set and `h < 0` is *not*
-an error test on one. Chapter 8.7 works through what that extra bit is worth.
+an error test on one. [Chapter 8.7](stale-handles-generation-width-and-allocation-policy.md) works through what that extra bit is worth.
 
 It does cost something, though, and this is the part worth internalising: once every bit
 pattern can be a live handle, a sentinel can no longer be "a negative number". "No
@@ -300,7 +300,7 @@ Note what bar (1) is *not*. It is not "cannot wrap within the device's service l
 sounds like the natural criterion and it is not purchasable: a recycle is a couple of
 syscalls, so the counter can be driven around its whole cycle in seconds of dedicated churn
 regardless of how wide it is made, and no width a 32-bit handle can afford changes that.
-Chapter 8.7 works the arithmetic and shows why the escape probability is the criterion that
+[Chapter 8.7](stale-handles-generation-width-and-allocation-policy.md) works the arithmetic and shows why the escape probability is the criterion that
 survives it -- which is also why the honest form of a width decision is a probability you
 state, never the word "safe".
 
@@ -360,7 +360,7 @@ the exit-teardown path.
 
 ## Low barrier: no capability manifest (the anti-CapDL discipline)
 
-A word on usability, because it is a hard constraint (see the Book's README and Chapter 1).
+A word on usability, because it is a hard constraint (see the Book's README and [Chapter 1](overview-and-principles.md)).
 seL4-style systems make you author a capability graph up front (CapDL). KickOS deliberately
 does not. At spawn, the runtime wires a **sane default cap set** into the child's table in
 kernel code; a plain app writes **no** capability manifest and needs none. Explicit
@@ -447,7 +447,7 @@ confusing two of its own objects, and the kernel never so much as blinks.
 - What the generation is worth, why its width is not the criterion it looks like, and why the
   three counters in the system do not share a bit budget: Chapter 8.7,
   *[A stale handle must not be usable](stale-handles-generation-width-and-allocation-policy.md)*.
-- The isolation this completes on the memory side: Chapter 7, *Memory protection*.
+- The isolation this completes on the memory side: [Chapter 7](memory-protection.md), *Memory protection*.
 - Further reading: Tanenbaum, *Modern Operating Systems*, ch.1 (the protection boundary)
   and the capability-systems literature (Dennis and Van Horn; the seL4 and Zircon handle
   models) for the lineage of scoped, rights-bearing object references.

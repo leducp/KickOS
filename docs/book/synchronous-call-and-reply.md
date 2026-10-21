@@ -3,18 +3,18 @@
 # Synchronous call/reply: the reply capability
 
 > A device driver in a microkernel is an unprivileged server: a client asks it to do a
-> transaction and waits for the result. The endpoint of Chapter 8.3 gives one-way send and
+> transaction and waits for the result. The endpoint of [Chapter 8.3](endpoints-synchronous-ipc-by-rendezvous.md) gives one-way send and
 > one-way receive; a request-then-await-response needs a second half. This chapter teaches
 > that half -- the one-shot reply capability -- as a minimal delta over the rendezvous, why
 > it needs no new kernel object, why it must carry priority with it, and how a bus driver is
-> built from it. It builds on Chapter 8.3 (the endpoint it extends), Chapter 8.1 (the
-> handle that names the reply), Chapter 2.3 (the priority-donation vocabulary it reuses),
+> built from it. It builds on [Chapter 8.3](endpoints-synchronous-ipc-by-rendezvous.md) (the endpoint it extends), [Chapter 8.1](handles-and-the-resolve-chokepoint.md) (the
+> handle that names the reply), [Chapter 2.3](priority-inheritance-lending-urgency.md) (the priority-donation vocabulary it reuses),
 > and points into `../reference/ipc-call-reply.md` and `../reference/bus-service.md` for the
 > exact contracts.
 
 ## Why one-way messages are not enough
 
-The endpoint (Chapter 8.3) is deliberately one-way: a send meets a receive, one bounded
+The endpoint ([Chapter 8.3](endpoints-synchronous-ipc-by-rendezvous.md)) is deliberately one-way: a send meets a receive, one bounded
 copy happens, both proceed. That is the right primitive for a byte stream -- a console
 driver receives bytes a client sent and never "answers" a particular send.
 
@@ -49,7 +49,7 @@ caller. No per-client endpoint, no addressing convention, no trust.
 
 KickOS takes the reply capability, and pushes the observation to its conclusion: **there
 is no reply-object pool at all.** The reply capability is an ordinary entry in the
-server's handle table (Chapter 8.1) whose object field *names the parked caller* by its
+server's handle table ([Chapter 8.1](handles-and-the-resolve-chokepoint.md)) whose object field *names the parked caller* by its
 generational thread handle. The caller's own blocked control block is the reply object;
 the capability is the server's one-shot right to complete it.
 
@@ -60,7 +60,7 @@ This costs almost nothing and breaks no existing invariant:
   *some* naming of the reply anyway.
 - **It names by handle, not by address.** Like every capability, it stores a generational
   handle, never a raw pointer -- so it inherits the resolve chokepoint's staleness
-  guarantee (Chapter 8.1). If the caller somehow went away and its thread slot were
+  guarantee ([Chapter 8.1](handles-and-the-resolve-chokepoint.md)). If the caller somehow went away and its thread slot were
   reused, the generation would not match and the reply would resolve to nothing.
 - **It is rights-less and one-shot.** The capability carries no send/receive/transfer
   rights: it cannot be delegated, duplicated, or waited on -- only replied through once,
@@ -72,7 +72,7 @@ been picked up it is blocked but *queue-less*, bound to the reply capability rat
 the endpoint. Parking on no list at all is a general primitive rather than a special case
 built for this path: a thread waiting for another to exit, or for a task to empty, is
 queue-less in the same way. What they share is that the only thing able to find such a
-thread again is its wait edge (Chapter 2.2), so the edge has to name a kind that some waker
+thread again is its wait edge ([Chapter 2.2](the-blocking-substrate-one-wait-wake-primitive.md)), so the edge has to name a kind that some waker
 actually sweeps for. "Blocked" therefore does not imply "on a queue" anywhere in this
 kernel, and code that walks waiters must ask the edge rather than assume a list.
 
@@ -84,7 +84,7 @@ kernel copies the request into the server's buffer, mints the reply capability, 
 switches straight to the server. The server runs the transaction -- touching its device
 registers -- *under its own MMIO grant*, because it is an ordinary unprivileged thread
 whose memory-protection regions include exactly that device window and nothing else
-(Chapter 7). Then it replies, and the kernel switches straight back to the caller.
+([Chapter 7](memory-protection.md)). Then it replies, and the kernel switches straight back to the caller.
 
 KickOS also has a register form of this handoff, on the architectures with no address
 translation (Armv6-M, Armv7-M, RXv3 and RV32IMAC) and one kernel core: the whole call
@@ -100,7 +100,7 @@ that path gives the answer. `../reference/ipc-call-reply.md` has the exact contr
 So the request never passes through privileged code that "does the transaction on the
 client's behalf." The driver is not a syscall; it is a peer in another protection domain,
 reached by a message, doing the work under its own authority. The fast path and the
-isolation are the same thing: the capability *is* the fast path (Chapter 8.4 makes the
+isolation are the same thing: the capability *is* the fast path ([Chapter 8.4](the-fast-path-is-the-capability-gpio-direct-mmio.md) makes the
 same argument for a GPIO toggle). Nothing is gained by wrapping the driver in a kernel
 service -- that would only re-pay the boundary crossing and dissolve the isolation.
 
@@ -114,7 +114,7 @@ urgent work -- and the transaction stalls for as long as the medium thread wants
 The high-priority client is blocked the whole time. This is priority inversion, and on a
 bus doing cyclic real-time traffic it is fatal.
 
-The fix is the same idea as the priority-inheritance mutex (Chapter 2.3): while the driver
+The fix is the same idea as the priority-inheritance mutex ([Chapter 2.3](priority-inheritance-lending-urgency.md)): while the driver
 is serving a caller, it should run at the caller's priority. So a call *donates* the
 caller's urgency to the server across the handoff, and if a caller has to queue because the
 server is busy, it boosts the server the moment it enqueues -- not later. When the reply is
@@ -122,7 +122,7 @@ sent, the donation is withdrawn.
 
 The danger with any such scheme is withdrawing wrongly. If you "restore the server to its
 base priority" on reply, you clobber a boost it legitimately still holds -- from a mutex it
-owns, or another caller queued behind this one. Chapter 2.3 already solved this for mutexes
+owns, or another caller queued behind this one. [Chapter 2.3](priority-inheritance-lending-urgency.md) already solved this for mutexes
 with a single rule: never restore, always *recompute* the effective priority from all live
 reasons to be boosted. KickOS extends that one function to also account for reply
 capabilities and queued callers, and routes the mutex path through it too. There is exactly
@@ -176,7 +176,7 @@ often broken.
 ## The service model: a class, and a thread that speaks the wire
 
 With the primitive in hand, a driver is built in two layers, and the split is the same
-constructor-freedom boundary the driver model draws elsewhere (Chapter 3.7).
+constructor-freedom boundary the driver model draws elsewhere ([Chapter 3.7](peripheral-isolation-and-the-hardware-ceiling.md)).
 
 - **The class is the transaction engine.** Given a device register window and a request, it
   clocks the bytes: fill and drain the FIFO, assert and release chip-select, poll or wait
@@ -204,7 +204,7 @@ time.
 
 One question remains: how does a client come to hold a capability on the driver's endpoint
 in the first place? The answer ties straight back to the handle table and the resolve
-chokepoint (Chapter 8.1). Capabilities are distributed statically, at spawn. When init
+chokepoint ([Chapter 8.1](handles-and-the-resolve-chokepoint.md)). Capabilities are distributed statically, at spawn. When init
 brings up a bus service it creates the endpoint, then spawns the driver granted a
 receive-only capability on it and hands clients a send-bearing capability on the same
 endpoint by delegation -- each capability narrowed to exactly the rights that side needs
@@ -225,13 +225,13 @@ publication) and `../reference/bus-service.md`.
 ## Where to go next
 
 - The endpoint rendezvous this extends, and its deliberate one-way minimalism:
-  Chapter 8.3, *Endpoints: synchronous IPC by rendezvous*.
+  [Chapter 8.3](endpoints-synchronous-ipc-by-rendezvous.md), *Endpoints: synchronous IPC by rendezvous*.
 - The handle that names a reply, and the resolve chokepoint every use passes through:
-  Chapter 8.1, *Naming a kernel object*.
+  [Chapter 8.1](handles-and-the-resolve-chokepoint.md), *Naming a kernel object*.
 - The priority-donation vocabulary and the recompute-not-restore rule the funnel unifies:
-  Chapter 2.3, *Priority inheritance*.
+  [Chapter 2.3](priority-inheritance-lending-urgency.md), *Priority inheritance*.
 - Why a driver's device access is direct MMIO under its own grant, not a kernel call:
-  Chapter 8.4, *The fast path is the capability*.
+  [Chapter 8.4](the-fast-path-is-the-capability-gpio-direct-mmio.md), *The fast path is the capability*.
 - The exact numbers, error codes, donation contract, and limits:
   `../reference/ipc-call-reply.md`. The bus wire format and chip-select policy:
   `../reference/bus-service.md`.

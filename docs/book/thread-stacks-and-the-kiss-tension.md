@@ -11,14 +11,14 @@
 ## The problem
 
 Every thread needs a stack: a chunk of RAM for its call frames, locals, and (on a
-trap) its saved context. A thread is cheap to *describe* -- a small TCB (Chapter 2)
+trap) its saved context. A thread is cheap to *describe* -- a small TCB ([Chapter 2](kernel-model.md))
 -- but its stack is the real memory cost, kilobytes each. So the whole question of
 "how expensive is a thread" is really "who owns the stack, and when is it freed?"
 
 On a hosted OS this is a non-question: threads get stacks from a general heap backed
 by virtual memory, paged in on demand, freed on exit. KickOS has neither a heap that
 frees nor an MMU. Its RAM allocator is a **bump allocator** -- hand out the next
-bytes, never take them back (Chapter 2). That single constraint is what makes stack
+bytes, never take them back ([Chapter 2](kernel-model.md)). That single constraint is what makes stack
 ownership interesting, because the obvious answers both fail.
 
 *Further reading: Tanenbaum, Modern Operating Systems, ch.2 (thread implementation)
@@ -108,7 +108,7 @@ stacks the kernel *must* own are its own two threads -- **idle** and **root/main
 which are static, build-time-sized buffers. Every other stack is a userspace concern:
 an app can hand `spawn` its own buffer and control the memory entirely. The
 `KOS_STACK_DEFINE(name, size)` helper makes that correct-by-construction -- it aligns
-the buffer so it is a valid MPU region under enforcement (a pow2 base, Chapter 7),
+the buffer so it is a valid MPU region under enforcement (a pow2 base, [Chapter 7](memory-protection.md)),
 which a raw array would not be. Apps that want deterministic, self-owned memory use
 it; apps that just want a thread use the convenient path and get the free-list.
 

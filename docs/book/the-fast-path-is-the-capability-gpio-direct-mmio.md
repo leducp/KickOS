@@ -7,7 +7,7 @@
 > inside a bus transaction. The resolution turns on seeing that a granted MMIO window *is*
 > the authority -- the capability is the fast path, and a syscall on top of it only adds
 > cost the check has already paid for. Along the way it splits a pin's two jobs (configure
-> once, toggle often) and meets the same per-chip isolation ceiling Chapter 3.7 drew, now at
+> once, toggle often) and meets the same per-chip isolation ceiling [Chapter 3.7](peripheral-isolation-and-the-hardware-ceiling.md) drew, now at
 > pin granularity. Points into `../reference/architecture.md` ("Memory domains" -- the
 > peripheral-MMIO grant) for the exact contract.
 
@@ -48,7 +48,7 @@ section, resolving the caller's handle to check the pin is really theirs, the *o
 is the actual work, then the exception return. The single useful instruction is buried in a
 hundred-plus cycles of machinery, and **none of that machinery is removable** -- the handle
 resolve *is* the check that justifies letting an unprivileged thread affect a pin at all
-(Chapter 8.1). At a typical MCU clock this is on the order of a microsecond per toggle.
+([Chapter 8.1](handles-and-the-resolve-chokepoint.md)). At a typical MCU clock this is on the order of a microsecond per toggle.
 
 Put that next to the budget of the thing it is inside. A driver-owned CS brackets a transfer:
 assert, clock the bytes, release. Take a modest SPI at 72 MHz:
@@ -71,7 +71,7 @@ to be paid *per toggle*. It can be paid **once**, and the result made into a sta
 hardware itself enforces.
 
 KickOS already grants a driver its device's registers as an MMIO region the MPU maps into that
-one thread and no other (Chapter 3.7). That grant is a *capability*: possessing it is exactly
+one thread and no other ([Chapter 3.7](peripheral-isolation-and-the-hardware-ceiling.md)). That grant is a *capability*: possessing it is exactly
 the authority to touch those addresses, and the MPU is the thing that checks -- on every access,
 in hardware, at zero software cost. A pin's set/clear register is just one more address. So the
 move is to fold the pin's toggle register into the driver's grant. Then:
@@ -83,7 +83,7 @@ move is to fold the pin's toggle register into the driver's grant. Then:
   No trap, no kernel, no check *in software*, because the MPU has already drawn the boundary and
   re-checks it for free on every access.
 
-This is the general capability lesson (Chapter 8.1) turned to its performance edge: **the
+This is the general capability lesson ([Chapter 8.1](handles-and-the-resolve-chokepoint.md)) turned to its performance edge: **the
 capability is the fast path.** A capability is not a ticket you show the kernel each time you
 want in; it is the authority itself, and once you hold it the fast operation is *using* it
 directly. A syscall wrapped around a resource you already hold a capability to is pure overhead
@@ -104,7 +104,7 @@ a transfer. Two tools, chosen by the pin's job, not one tool forced onto both.
 
 ## The catch, again: you can only grant what the silicon can isolate
 
-Handing the driver its pin's toggle register *directly* re-opens the exact question Chapter 3.7
+Handing the driver its pin's toggle register *directly* re-opens the exact question [Chapter 3.7](peripheral-isolation-and-the-hardware-ceiling.md)
 asked about whole peripherals, now at pin granularity: can the hardware hand out *just* that
 authority and nothing more? Two properties pull apart, and keeping them distinct is the whole
 game:
@@ -134,7 +134,7 @@ happens is pure address arithmetic against the protection unit's minimum region:
 The tempting response to the awkward chips is to force *everyone* back through a kernel syscall
 so the escalation cannot happen. That trades the one thing you cannot afford -- the hot-path
 latency, on every chip -- to paper over one chip's layout. The right response is the same one
-Chapter 3.7 reached for whole peripherals: **state the ceiling per chip and accept it.** Where
+[Chapter 3.7](peripheral-isolation-and-the-hardware-ceiling.md) reached for whole peripherals: **state the ceiling per chip and accept it.** Where
 the silicon cannot isolate a pin's toggle from its mux, the honest grant is a *dedicated* block
 (arrange the board so the over-covered pins belong to that one driver anyway, and the extra
 authority has no victim) or a documented trusted over-grant. You degrade one chip's isolation
@@ -173,11 +173,11 @@ hide one chip's inability to draw a fine line.
 ## Where to go next
 
 - The peripheral-MMIO grant and the per-chip isolation ceiling this chapter extends to pins:
-  Chapter 3.7, *Peripheral isolation and the hardware ceiling*.
+  [Chapter 3.7](peripheral-isolation-and-the-hardware-ceiling.md), *Peripheral isolation and the hardware ceiling*.
 - Why a granted capability *is* authority (not a ticket re-checked each use), and the resolve
-  chokepoint a syscall pays: Chapter 8.1, *Naming a kernel object: the handle and the resolve
+  chokepoint a syscall pays: [Chapter 8.1](handles-and-the-resolve-chokepoint.md), *Naming a kernel object: the handle and the resolve
   chokepoint*.
-- The MPU that enforces the window for free on every access: Chapter 7, *Memory protection*.
+- The MPU that enforces the window for free on every access: [Chapter 7](memory-protection.md), *Memory protection*.
 - The exact grant contract and per-chip memory-domain matrix: `../reference/architecture.md`
   ("Memory domains").
 - Further reading: Tanenbaum, *Modern Operating Systems*, ch.1 (the cost of a mode switch) and
