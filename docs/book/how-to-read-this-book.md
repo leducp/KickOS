@@ -6,10 +6,10 @@
 >
 > In this chapter:
 >
-> - who the Book is written for;
-> - the example the first chapters follow;
-> - how the Book fits with the two other KickOS documents;
-> - which chapter to read next.
+> - who the Book is written for
+> - the example the first chapters follow
+> - how the Book fits with the two other KickOS documents
+> - which chapter to read next
 
 ## Who the Book is for
 

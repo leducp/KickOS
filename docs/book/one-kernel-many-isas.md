@@ -191,12 +191,12 @@ concepts. The seam is one header, `arch/include/kickos/arch/arch.h`. The kernel 
 members an ISA must answer are few and map onto the seven questions:
 
 - the context: `arch_context_init` builds a new thread's first frame, `arch_start`
-  enters the first thread, and `arch_switch` switches from one context to another;
-- privilege and traps: `arch_syscall` is the user-side trap stub;
-- the critical section: `arch_irq_save` and `arch_irq_restore`;
-- time: `arch_clock_now` reads the clock, and `arch_timer_arm` sets the next deadline;
+  enters the first thread, and `arch_switch` switches from one context to another
+- privilege and traps: `arch_syscall` is the user-side trap stub
+- the critical section: `arch_irq_save` and `arch_irq_restore`
+- time: `arch_clock_now` reads the clock, and `arch_timer_arm` sets the next deadline
 - protection: `arch_mpu_apply` on a region MPU, the `arch_aspace_*` members on page
-  tables.
+  tables
 
 Many other members exist, for consoles, caches, multicore and chip services, but
 most of them have a default under `arch/common/` that a port keeps unless its
@@ -291,12 +291,12 @@ walk on the Cortex-M4F ([Power-on](../journey/01-power-on.md), [The first
 syscall](../journey/02-first-syscall.md)) and shows what changes:
 
 - AArch64 and page tables: [10, The MMU](../journey/10-the-mmu.md), then
-  [11, Multicore](../journey/11-multicore.md);
-- ARMv6-M: [12](../journey/12-armv6m.md); ARMv8-M: [13](../journey/13-armv8m.md);
-- RISC-V, RV32 and RV64: [14](../journey/14-riscv.md);
-- x86_64: [15](../journey/15-x86_64.md);
-- RXv3: [16](../journey/16-rx.md);
-- Xtensa LX6: [17](../journey/17-xtensa.md).
+  [11, Multicore](../journey/11-multicore.md)
+- ARMv6-M: [12](../journey/12-armv6m.md); ARMv8-M: [13](../journey/13-armv8m.md)
+- RISC-V, RV32 and RV64: [14](../journey/14-riscv.md)
+- x86_64: [15](../journey/15-x86_64.md)
+- RXv3: [16](../journey/16-rx.md)
+- Xtensa LX6: [17](../journey/17-xtensa.md)
 
 **The contract (the Reference).**
 

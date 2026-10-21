@@ -166,10 +166,10 @@ The reference count is a **global** property of the object slot ([Chapter 8.1](h
 possession is per-task, liveness is global). Its discipline:
 
 - **create** sets refs to 1 and installs a full-rights capability into the creator's
-  table;
-- **delegate** increments (a child gains a named reference);
-- **close / teardown** decrements;
-- the object is freed when refs reaches **0** -- the last holder's close.
+  table
+- **delegate** increments (a child gains a named reference)
+- **close / teardown** decrements
+- the object is freed when refs reaches **0** -- the last holder's close
 
 The one dangerous case is freeing an object while a thread is still *parked* on it (on
 its wait queue). Freeing the slot out from under a blocked thread would leave that
