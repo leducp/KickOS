@@ -44,7 +44,7 @@ struct kos_seam_control
     bool console_publish_fails;
 
     // What the handover probe returns. 0 = the rendezvous completed.
-    int32_t send_timed_rc;
+    int32_t send_rc;
     // What a task slay returns. 0 = the task is gone.
     int slay_rc;
     // The console's task ended and a slain member still holds its window: a kernel console write

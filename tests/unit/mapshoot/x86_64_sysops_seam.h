@@ -39,6 +39,11 @@ namespace kickos
         // bit on every entry from the root to that leaf but the one at `clear_level` (0 for
         // none).
         void firmware_user_chain(int leaf_level, int clear_level, bool five_levels);
+        // Split the firmware's map over the RAM array down to 4 KiB leaves across the 2 MiB
+        // holding its start, and answer that 2 MiB's base.
+        uintptr_t firmware_split_ram();
+        // Clear the firmware's 4 KiB leaf at `page`, inside the 2 MiB firmware_split_ram split.
+        void firmware_clear_leaf(uintptr_t page);
         // Adopt the firmware root again, as it now stands.
         void adopt();
         // The attribute table the model-specific register holds from now on.

@@ -510,7 +510,7 @@ int main(int, char**)
         return 1;
     }
 
-    kos::Semaphore idle(0);
+    static kos::Semaphore idle(0);
     while (true)
     {
         idle.wait();

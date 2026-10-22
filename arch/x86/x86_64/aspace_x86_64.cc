@@ -85,6 +85,15 @@ namespace
     // The top of the conventional run, which is the widest output address this port programs.
     arch_phys_addr_t g_ram_hi = 0;
 
+    // The arena and the app window where aspace_init found the boot root mapping every byte at
+    // its own address; empty where it did not. Nothing edits the boot root after aspace_init.
+    struct IdentityRun
+    {
+        arch_phys_addr_t lo;
+        arch_phys_addr_t hi;
+    };
+    IdentityRun g_identity_runs[2] = {};
+
     // The leaf bits ARCH_MAP_NOCACHE selects under the PAT, which nothing writes after boot;
     // all ones where the PAT cannot encode it.
     uint64_t g_nocache_bits = ~0ull;
@@ -206,7 +215,7 @@ namespace
         return static_cast<int>(g_levels) - 1;
     }
 
-    bool is_leaf(uint64_t desc, int height)
+    __attribute__((always_inline)) inline bool is_leaf(uint64_t desc, int height)
     {
         if (height == 0)
         {
@@ -315,7 +324,8 @@ namespace
     // Walk any leaf size. Leave *pa unchanged on failure. A non-null `type` receives the
     // leaf's memory-type bits in their 4 KiB positions.
     __attribute__((always_inline)) inline bool walk(uint64_t const* root, uintptr_t va,
-                                                    arch_phys_addr_t* pa, uint64_t* type)
+                                                    arch_phys_addr_t* pa, uint64_t* type,
+                                                    uintptr_t* span = nullptr)
     {
         uint64_t const* table = root;
         for (int height = walk_top(); height >= 0; height--)
@@ -331,6 +341,10 @@ namespace
                 // gives the leaf's base and the offset inside it comes from `va`.
                 uintptr_t const inside = va & (span_at(height) - 1);
                 *pa = entry_pa(desc) + static_cast<arch_phys_addr_t>(inside & ~(GRANULE - 1));
+                if (span != nullptr)
+                {
+                    *span = span_at(height);
+                }
                 if (type != nullptr)
                 {
                     uint64_t bits = desc & (PTE_PWT | PTE_PCD);
@@ -363,6 +377,13 @@ namespace
 
     bool identity_maps(arch_phys_addr_t pa)
     {
+        for (IdentityRun const& r : g_identity_runs)
+        {
+            if (pa >= r.lo and pa < r.hi)
+            {
+                return true;
+            }
+        }
         if (g_boot_root == nullptr)
         {
             return false;
@@ -373,6 +394,24 @@ namespace
             return false;
         }
         return back == (pa & ~static_cast<arch_phys_addr_t>(GRANULE - 1));
+    }
+
+    // A leaf whose first byte the boot root maps at its own address maps all of it so.
+    IdentityRun identity_run(arch_phys_addr_t lo, arch_phys_addr_t hi)
+    {
+        arch_phys_addr_t at = lo & ~static_cast<arch_phys_addr_t>(GRANULE - 1);
+        while (at < hi)
+        {
+            arch_phys_addr_t back = 0;
+            uintptr_t span = 0;
+            if (not walk(g_boot_root, static_cast<uintptr_t>(at), &back, nullptr, &span)
+                or back != at)
+            {
+                return IdentityRun{};
+            }
+            at = (at & ~static_cast<arch_phys_addr_t>(span - 1u)) + span;
+        }
+        return IdentityRun{lo, hi};
     }
 
     // Slot presence, not descriptor equality: hardware sets accessed and dirty bits in each
@@ -637,7 +676,20 @@ namespace kickos::x86_64
         {
             refuse("the app window moved up by the user offset leaves the slots a space may map");
         }
+        aspace_identity_record(0, static_cast<arch_phys_addr_t>(ram_base), g_ram_hi);
+        aspace_identity_record(1, static_cast<arch_phys_addr_t>(app_lo),
+                               static_cast<arch_phys_addr_t>(app_hi));
         invalidate_all();
+    }
+
+    void aspace_identity_record(size_t run, arch_phys_addr_t lo, arch_phys_addr_t hi)
+    {
+        g_identity_runs[run] = identity_run(lo, hi);
+    }
+
+    bool aspace_identity_maps(arch_phys_addr_t pa)
+    {
+        return identity_maps(pa);
     }
 
     static arch_phys_addr_t aspace_frame_at_unchecked(struct arch_aspace* space, uintptr_t va)
@@ -791,8 +843,13 @@ struct arch_aspace* arch_aspace_boot(void)
     return reinterpret_cast<struct arch_aspace*>(g_boot_root);
 }
 
-void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va, bool* uncached)
+void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va, bool* uncached,
+                          arch_phys_addr_t* frame_out)
 {
+    if (frame_out != nullptr)
+    {
+        *frame_out = 0;
+    }
     if (space == nullptr)
     {
         return nullptr;
@@ -812,6 +869,10 @@ void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va, bool* uncache
     if (mapped)
     {
         reachable = identity_maps(frame);
+        if (frame_out != nullptr)
+        {
+            *frame_out = frame;
+        }
     }
     arch_irq_restore(s);
     if (not reachable)

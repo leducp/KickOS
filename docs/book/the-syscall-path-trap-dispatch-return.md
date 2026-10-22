@@ -82,7 +82,7 @@ underneath it, so it does not replace the trap; it sits on top of one.
 **KickOS uses the synchronous trap for every syscall**, and the decisive reason is not
 the switch count. It is that the kernel's blocking primitives are ordinary C functions
 that end in `arch_switch`. If the dispatch ran anywhere other than in the caller's own
-thread context, `sem_wait` could not simply block: it would need a continuation object,
+thread context, a semaphore's wait could not simply block: it would need a continuation object,
 a state machine, or a reply protocol. Running dispatch on the caller's own stack makes
 blocking free. That observation is load-bearing enough that it is written down as a
 contract every port must satisfy.
@@ -339,15 +339,16 @@ arm, and the `default` is a refusal rather than a surprise.
 
 ## Blocking syscalls are ordinary context switches
 
-Now the payoff of the thread-context contract. When dispatch calls `sem_wait` and the
-count is zero, `sem_wait` does exactly what it would do if the kernel had called it
-from anywhere else: it parks the thread on a wait queue and switches away (Chapter 2.2,
+Now the payoff of the thread-context contract. Take a semaphore with no unit left. Its
+wait enters the kernel's wait on the semaphore's word, and that function does exactly what
+it would do if the kernel had called it from anywhere else: it parks the thread on a wait
+queue and switches away (Chapter 2.2,
 *[The blocking substrate](the-blocking-substrate-one-wait-wake-primitive.md)*).
 
 Nothing about that is syscall-specific, and that is the point. The half-finished
 dispatch lives on the caller's own stack -- its ARM process stack, its RISC-V frame,
 its RX user stack -- so the frozen continuation *is* part of the thread's saved state.
-When the thread is scheduled again it resumes inside `sem_wait`, returns into the
+When the thread is scheduled again it resumes inside that wait, returns into the
 middle of the dispatch, finishes the syscall, and returns to userspace. No kernel-side
 state machine, no continuation objects, no reply protocol.
 
@@ -405,7 +406,7 @@ The whole surface is a few dozen numbers, several of them compiled out of produc
 images:
 
 - yield and sleep
-- create, wait and post on a semaphore
+- a wait on a word of user memory and a wake of its waiters, the contended half of a semaphore
 - the contended wait and the hand-over of a mutex
 - create, send, receive, call and reply on an endpoint, and one close for every type
 - spawn and exit
@@ -428,7 +429,7 @@ server owns the device, on the other side of an endpoint. That is not a limitati
 being apologised for -- it is the microkernel thesis applied to the syscall table.
 
 The rule also works inside a single operation. Some things the kernel *could* answer need
-nothing only the kernel has, and then they should not be syscalls at all. Two examples:
+nothing only the kernel has, and then they should not be syscalls at all. Four examples:
 
 - **A thread's own id.** A thread asking "who am I" needs no kernel action, only a value.
   So the kernel writes each thread's id into user memory, where the thread reads it with one
@@ -440,8 +441,19 @@ nothing only the kernel has, and then they should not be syscalls at all. Two ex
   to apply the priority it lends while it waits. So the mutex's syscalls are its contended half: the lock
   enters the kernel only when the word is held, and the unlock only when a thread waits.
   [Chapter 2.3](priority-inheritance-lending-urgency.md) teaches that split.
+- **A semaphore with a unit to take.** A semaphore is a count in the same kind of word. A wait
+  that finds a unit takes it with one compare-and-swap, and a post that finds no waiter adds it
+  the same way. Only a wait that must park, or a post that must hand its unit to a parked
+  thread, enters the kernel.
+- **The time.** Where the core lets unprivileged code read its counter, as 64-bit Arm, RISC-V
+  and x86 cores do, a thread reads the counter and scales it to nanoseconds itself. On a
+  microcontroller, where the kernel reads the timer, the clock read stays a syscall
+  ([Chapter 2.1](the-time-base-a-monotonic-clock-you-can-trust.md)). The number of the core a
+  thread runs on follows the same rule. On 64-bit Arm and x86 cores the kernel writes it once
+  per core into a register that a program can read and cannot change, so asking for it makes
+  no syscall.
 
-In both cases the operation splits along the rule: the part that needs the kernel stays a
+In each case the operation splits along the rule: the part that needs the kernel stays a
 syscall, and the rest is plain user code.
 
 The **one sanctioned kernel exception is the debug console write**, and its

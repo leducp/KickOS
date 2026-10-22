@@ -56,9 +56,9 @@ is stopped in kernel code. Every recipe here stops in a kernel function unless i
 otherwise.
 
 Two decoding tables help with the output. `CapEntry::type` prints as a number:
-0 empty, 1 semaphore, 2 endpoint, 3 reply, 4 IRQ, 5 frame, 6 address space,
-7 notification (`CapType` in `kernel/include/kickos/cap.h`). `CapEntry::rights` is a bit set:
-1 `WAIT` (receive, or wait), 2 `SIGNAL` (send, or post), 4 `TRANSFER` (may be granted onward),
+0 empty, 1 endpoint, 2 reply, 3 IRQ, 4 frame, 5 address space, 6 notification (`CapType` in
+`kernel/include/kickos/cap.h`). `CapEntry::rights` is a bit set:
+1 `WAIT` (receive, or wait), 2 `SIGNAL` (send, or signal), 4 `TRANSFER` (may be granted onward),
 8 `HANDOUT` (an endpoint only, see Stop 8).
 
 ### Stop 1: a capability is an 8-byte entry
@@ -90,11 +90,11 @@ which object, what kind of object, and what this thread may do with it.
 Read the fields one by one:
 
 - `obj` names the object. It is not a pointer either: it is the object's handle in a global
-  pool (one pool of endpoints, one of semaphores, and so on). That handle carries a second
+  pool (one pool of endpoints, one of notifications, and so on). That handle carries a second
   generation, the object's own, so a slot that still names an object freed by someone else
   stops resolving.
 - `type` says which pool `obj` belongs to.
-- `rights` are what the holder may do. A semaphore wait needs `WAIT`, a send needs `SIGNAL`.
+- `rights` are what the holder may do. A notification wait needs `WAIT`, a send needs `SIGNAL`.
 - `gen` is the slot's own generation. It goes up by one each time the slot is emptied.
 - `seq_lo`/`seq_hi` are spare bits. A notification capability keeps its badge there, and a
   reply capability its call sequence.
@@ -308,16 +308,16 @@ the init closes handle 2, its badged copy.
 
 ```
 (gdb) p c->caps.chunk[0][1]
-$2 = {obj = 0, type = 7 '\a', seq_lo = 0 '\000', rights = 7 '\a', seq_hi = 0 '\000', gen = 0}
+$2 = {obj = 0, type = 6 '\006', seq_lo = 0 '\000', rights = 7 '\a', seq_hi = 0 '\000', gen = 0}
 (gdb) p c->caps.chunk[0][2]
-$3 = {obj = 0, type = 7 '\a', seq_lo = 1 '\001', rights = 7 '\a', seq_hi = 0 '\000', gen = 0}
+$3 = {obj = 0, type = 6 '\006', seq_lo = 1 '\001', rights = 7 '\a', seq_hi = 0 '\000', gen = 0}
 (gdb) p $k->tasks[2]
 $4 = {domain = 0x20006668 <kickos::detail::g_instance+7848>, refcount = 1 '\001', creator_tag = 1 '\001',
   gen = 0, prio_ceiling = 12 '\f', marks = 0 '\000', watch_bit = 0 '\000', sweeping = 0 '\000',
   watch_notify = 1, watch_ep = 0, exit_status = 130}
 ```
 
-Slots 1 and 2 both name notification 0 (type 7). Slot 2 is the badged copy: its badge is
+Slots 1 and 2 both name notification 0 (type 6). Slot 2 is the badged copy: its badge is
 stored as bit + 1, so `seq_lo = 1` means bit 0. Task handle 3 names `tasks[2]` (the handle's
 index is biased by one). That task has one member (`main`), was created by the thread whose
 kill tag is 1 (root, slot 0), has its ceiling, and carries the watch.
@@ -387,7 +387,7 @@ Value returned is $3 = 0
 (gdb) p/x *out_cap
 $4 = 0x1
 (gdb) p $k->currents.cells[0]->caps.chunk[0][1]
-$5 = {obj = 0, type = 2 '\002', seq_lo = 0 '\000', rights = 15 '\017', seq_hi = 0 '\000', gen = 0}
+$5 = {obj = 0, type = 1 '\001', seq_lo = 0 '\000', rights = 15 '\017', seq_hi = 0 '\000', gen = 0}
 (gdb) p $k->currents.cells[0]->cap_free_head
 $6 = 3
 ```
@@ -777,7 +777,7 @@ $1 = kickos::CapType::CAP_ENDPOINT
 (gdb) p need
 $2 = 1 '\001'
 (gdb) p c->caps.chunk[0][1]
-$3 = {obj = 0, type = 2 '\002', seq_lo = 0 '\000', rights = 1 '\001', seq_hi = 0 '\000', gen = 0}
+$3 = {obj = 0, type = 1 '\001', seq_lo = 0 '\000', rights = 1 '\001', seq_hi = 0 '\000', gen = 0}
 (gdb) p/x c->authority
 $4 = 0x0
 (gdb) bt 4
@@ -825,7 +825,7 @@ Value returned is $3 = 0
 (gdb) p/d $k->endpoint_refs[0]
 $4 = 4
 (gdb) p $k->currents.cells[0]->caps.chunk[0][0]
-$5 = {obj = 0, type = 2 '\002', seq_lo = 0 '\000', rights = 2 '\002', seq_hi = 0 '\000', gen = 0}
+$5 = {obj = 0, type = 1 '\001', seq_lo = 0 '\000', rights = 2 '\002', seq_hi = 0 '\000', gen = 0}
 ```
 
 `main`'s slot 0 is now a send-only (`SIGNAL`, 2) copy of endpoint 0, and the endpoint has two
@@ -838,7 +838,7 @@ more references. Later, at `worker`'s spawn:
 (gdb) p child->name
 $6 = "worker\000\000\000\000\000\000\000\000\000"
 (gdb) p child->caps.chunk[0][0]
-$7 = {obj = 0, type = 2 '\002', seq_lo = 0 '\000', rights = 2 '\002', seq_hi = 0 '\000', gen = 0}
+$7 = {obj = 0, type = 1 '\001', seq_lo = 0 '\000', rights = 2 '\002', seq_hi = 0 '\000', gen = 0}
 ```
 
 **Why, and the contract:** [Reference: console, "Capability handover"](../reference/console.md#capability-handover),
@@ -895,7 +895,7 @@ From the moment of step 3, handle 1 in `main` is stale. If `main` used it again,
 (gdb) break kickos::handle_close if $_streq(c->name, "main")
 (gdb) continue
 (gdb) p c->caps.chunk[0][1]
-$1 = {obj = 0, type = 2 '\002', seq_lo = 0 '\000', rights = 15 '\017', seq_hi = 0 '\000', gen = 0}
+$1 = {obj = 0, type = 1 '\001', seq_lo = 0 '\000', rights = 15 '\017', seq_hi = 0 '\000', gen = 0}
 (gdb) p/d $k->endpoint_refs[0]
 $2 = 4
 (gdb) p/d $k->endpoints.slots_[0].recv_holders
@@ -996,6 +996,6 @@ protocol, then a new generation, then the reference.
    `main`'s full capability. Predict whether the spawn succeeds, then predict `sink`'s slot 1
    rights. Then narrow `main`'s capability to `KOS_CAP_SIGNAL | KOS_CAP_TRANSFER` first and
    predict again.
-3. **A stale handle.** After `kos_handle_close(ep)`, call `kos_send(ep, "x", 1)`. Predict the
+3. **A stale handle.** After `kos_handle_close(ep)`, call `kos_send(ep, "x", 1, 0)`. Predict the
    answer, then stop in `cap_lookup` and print `cap_handle >> 16` and the slot's `gen` to see
    which comparison refuses it.

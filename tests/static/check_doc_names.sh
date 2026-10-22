@@ -25,7 +25,7 @@
 #                A token whose spelling is not in the tree but whose UPPERCASED form is
 #                gets the sharper message: an ungreppable mis-spelling, not a dead
 #                name. Dropped:
-#                  - a trailing `*` or `_` (KOS_E*, KOS_SYS_SEM_*): a wildcard names
+#                  - a trailing `*` or `_` (KOS_E*, KOS_SYS_WORD_*): a wildcard names
 #                    a family, not a symbol.
 #                  - a final `_`-separated component of ONE character: metasyntactic
 #                    placeholders (CAP_X, KICKOS_MAX_X) and include guards

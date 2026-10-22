@@ -28,8 +28,6 @@ namespace
     // a reader that saw `done` must see every field written before it.
     using Flag = kickos::Atomic<unsigned, kickos::Order::ACQUIRE | kickos::Order::RELEASE>;
 
-    constexpr uint8_t CH_FULL = KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER;
-
     int g_bad = 0;
     // Sized for the widest line any arm emits: two %lx addresses at the full 16 digits a
     // 64-bit backend can produce, plus the longest verdict. A short buffer truncates the
@@ -352,6 +350,7 @@ namespace
         int client_after;
         int32_t call_rc;
         int32_t recv_rc;
+        int reply_rc;
         unsigned had_reply_cap;
         Flag server_done;
         Flag client_done;
@@ -360,9 +359,8 @@ namespace
     Fast g_fast = {};
 
     constexpr kos_cap_t FAST_EP = KOS_SPAWN_DELEGATED_CAP0;
-    constexpr kos_cap_t FAST_READY = KOS_SPAWN_DELEGATED_CAP0 + 1;
-    constexpr kos_cap_t FAST_SRV_DONE = KOS_SPAWN_DELEGATED_CAP0 + 2;
-    constexpr kos_cap_t FAST_CLI_DONE = KOS_SPAWN_DELEGATED_CAP0 + 1;
+    kos::Semaphore g_fast_ready;
+    kos::Semaphore g_fast_done;
 
     void fast_server(void*)
     {
@@ -370,7 +368,7 @@ namespace
         g_fast.server_provoked = provoke(1); // EINVAL
         unsigned char buf[KOS_CALL_REG_BYTES];
         struct kos_recv_info info = {0, KOS_CAP_NONE};
-        kos_sem_post(FAST_READY);
+        (void)g_fast_ready.post();
         struct kos_reply_recv_opts opts;
         kos_reply_recv_opts_init(&opts, FAST_EP, 0, KOS_TIMEOUT_NONE);
         g_fast.recv_rc = kos_reply_recv(KOS_CAP_NONE, buf, kos_call_lens_pack(0, sizeof(buf)), &opts);
@@ -380,10 +378,10 @@ namespace
         if (info.reply_cap != KOS_CAP_NONE)
         {
             g_fast.had_reply_cap = 1;
-            (void)kos_reply(info.reply_cap, buf, 4);
+            g_fast.reply_rc = kos_reply(info.reply_cap, buf, 4);
         }
         g_fast.server_done = 1;
-        kos_sem_post(FAST_SRV_DONE);
+        (void)g_fast_done.post();
     }
 
     void fast_client(void*)
@@ -391,10 +389,10 @@ namespace
         g_fast.client_addr = errno_addr();
         g_fast.client_provoked = provoke(0); // ERANGE
         unsigned char buf[KOS_CALL_REG_BYTES] = {1, 2, 3, 4};
-        g_fast.call_rc = kos_call(FAST_EP, buf, 4, 4);
+        g_fast.call_rc = kos_call(FAST_EP, buf, 4, 4, KOS_TIMEOUT_NONE);
         g_fast.client_after = errno;
         g_fast.client_done = 1;
-        kos_sem_post(FAST_CLI_DONE);
+        (void)g_fast_done.post();
     }
 
     void arm_fastpath()
@@ -405,16 +403,14 @@ namespace
             fault("[errnoprobe] C NO ENDPOINT\n");
             return;
         }
-        kos::Semaphore ready(0);
-        kos::Semaphore done(0);
-        kos_cap_grant scaps[] = {{ep, KOS_CAP_WAIT}, {ready.id(), CH_FULL}, {done.id(), CH_FULL}};
-        kos_cap_grant ccaps[] = {{ep, KOS_CAP_SIGNAL}, {done.id(), CH_FULL}};
+        kos_cap_grant scaps[] = {{ep, KOS_CAP_WAIT}};
+        kos_cap_grant ccaps[] = {{ep, KOS_CAP_SIGNAL}};
 
         // Server ABOVE the caller: the fastpath refuses a call that would need priority
         // donation, so a caller that outranked the server would silently take the generic
         // path and this arm would witness the wrong one.
         kos::thread::Handle const sv =
-            kos::thread::create_caps(fast_server, nullptr, "fpS", 12, scaps, 3);
+            kos::thread::create_caps(fast_server, nullptr, "fpS", 12, scaps, 1);
         if (not sv.valid())
         {
             fault("[errnoprobe] C SERVER SPAWN FAILED\n");
@@ -422,17 +418,17 @@ namespace
         }
         // Returns only once the server has posted, and the server posts from a priority main
         // cannot preempt, so by the time main runs again the server is parked in its recv.
-        ready.wait();
+        (void)g_fast_ready.wait();
 
         kos::thread::Handle const cl =
-            kos::thread::create_caps(fast_client, nullptr, "fpC", 10, ccaps, 2);
+            kos::thread::create_caps(fast_client, nullptr, "fpC", 10, ccaps, 1);
         if (not cl.valid())
         {
             fault("[errnoprobe] C CLIENT SPAWN FAILED\n");
             return;
         }
-        done.wait();
-        done.wait();
+        (void)g_fast_done.wait();
+        (void)g_fast_done.wait();
 
         char const* verdict = "ok";
         if (g_fast.server_done.load() == 0 or g_fast.client_done.load() == 0)
@@ -443,6 +439,11 @@ namespace
         else if (g_fast.had_reply_cap == 0)
         {
             verdict = "NO REPLY CAP, so this was not a call at all";
+            g_bad++;
+        }
+        else if (g_fast.reply_rc != 0)
+        {
+            verdict = "THE REPLY WAS REFUSED";
             g_bad++;
         }
         else if (g_fast.server_provoked != EINVAL or g_fast.client_provoked != ERANGE)
@@ -517,7 +518,7 @@ namespace
     // than passing.
     constexpr unsigned long PREEMPT_SPIN_LIMIT = 1000000000ul;
 
-    constexpr kos_cap_t PRE_DONE = KOS_SPAWN_DELEGATED_CAP0;
+    kos::Semaphore g_pre_done;
 
     void preempt_high(void*)
     {
@@ -535,7 +536,7 @@ namespace
         }
         g_pre.hi_provoked = provoke(1); // EINVAL, written while the low thread is mid-spin
         g_pre.hi_published = 1;
-        kos_sem_post(PRE_DONE);
+        (void)g_pre_done.post();
     }
 
     void preempt_low(void*)
@@ -557,17 +558,13 @@ namespace
         // the CPU away in between did so without being asked.
         g_pre.lo_after = errno;
         g_pre.lo_done = 1;
-        kos_sem_post(PRE_DONE);
+        (void)g_pre_done.post();
     }
 
     void arm_preemption()
     {
-        kos::Semaphore done(0);
-        kos_cap_grant caps[] = {{done.id(), CH_FULL}};
-        kos::thread::Handle const hi =
-            kos::thread::create_caps(preempt_high, nullptr, "prH", 20, caps, 1);
-        kos::thread::Handle const lo =
-            kos::thread::create_caps(preempt_low, nullptr, "prL", 8, caps, 1);
+        kos::thread::Handle const hi = kos::thread::create(preempt_high, nullptr, "prH", 20);
+        kos::thread::Handle const lo = kos::thread::create(preempt_low, nullptr, "prL", 8);
         if (not hi.valid() or not lo.valid())
         {
             fault("[errnoprobe] D SPAWN FAILED\n");
@@ -575,8 +572,8 @@ namespace
         }
         // Neither spawn preempted main, so the high thread runs first and is parked in its
         // sleep before the low one starts spinning.
-        done.wait();
-        done.wait();
+        (void)g_pre_done.wait();
+        (void)g_pre_done.wait();
 
         char const* verdict = "ok";
         if (g_pre.lo_done.load() == 0)

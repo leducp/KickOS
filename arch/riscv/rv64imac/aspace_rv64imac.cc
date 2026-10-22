@@ -643,11 +643,16 @@ struct arch_aspace* arch_aspace_boot(void)
     return reinterpret_cast<struct arch_aspace*>(g_boot_root);
 }
 
-void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va, bool* uncached)
+void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va, bool* uncached,
+                          arch_phys_addr_t* frame)
 {
     if (uncached != nullptr)
     {
         *uncached = false;
+    }
+    if (frame != nullptr)
+    {
+        *frame = 0;
     }
     if (space == nullptr or g_window_leaves == nullptr)
     {
@@ -668,6 +673,10 @@ void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va, bool* uncache
         return nullptr;
     }
     arch_phys_addr_t const out = entry_pa(*entry);
+    if (frame != nullptr)
+    {
+        *frame = out;
+    }
     if (in_kernel_window(out))
     {
         arch_irq_restore(s);

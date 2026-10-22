@@ -137,7 +137,7 @@ where the same allocator hands out the boot stacks.
 
 On PMSAv7 `arch_ram_region_size` rounds up to the next power of two, with a floor of 32 bytes.
 An 8 KiB request is already a power of two, so it stays 8 KiB, but it must start on an 8 KiB
-boundary. A 16-byte request (you will see one at Stop 10) becomes 32 bytes. The rounding is
+boundary. A 24-byte request (you will see one at Stop 10) becomes 32 bytes. The rounding is
 done here, at allocation, so a later grant of the whole block never has to round up into a
 neighbour.
 
@@ -515,7 +515,7 @@ background region. The process stack pointer is already inside `domainA`'s stack
 
 **Why, and the contract:** [Book: Protection follows the CPU](../book/protection-follows-the-cpu-not-the-schedulers-intent.md)
 ("The fix: commit protection in the switch epilogue"), [Reference: Invariants](../reference/invariants.md),
-`mpu-commit-writes-what-changed` and `mpu-bypass-windows-accepted`.
+`mpu-commit-writes-what-changed` and `pmsa-reprogram-keeps-the-fixed-rows`.
 
 ### Stop 10: granting a block to yourself
 **Where:** `kernel/syscall/syscall.cc`, `syscall_body` (the `KOS_SYS_MEM_SELF_GRANT` case);
@@ -524,7 +524,8 @@ background region. The process stack pointer is already inside `domainA`'s stack
 
 A thread that reserved a block and wants to use it itself calls `kos_mem_self_grant`. The
 `selftest` image does this in its `t_irqdrv` arm, which [07](07-interrupt-to-a-driver.md) walks:
-`main` reserves 16 bytes to play a fake device register and grants them to itself.
+`main` reserves 24 bytes, a fake device register block of 16 bytes and two semaphore words, and
+grants them to itself.
 
 `thread_self_grant` runs the same admission as Stop 4, then adds a row to the caller's own set.
 If a row already names exactly this base and size, it is changed in place (a "retype", for
@@ -545,11 +546,11 @@ caller's image there, commits, and puts the old value back, all with interrupts 
 switch that was already pending still finds its own thread's image in the stash.
 
 **Try it:** run the `selftest` image (`.../user/apps/common/selftest/selftest`).
-`break kickos::thread_self_grant if size == 16`, `continue`, `p/x c->mpu.regions_`, `finish`,
+`break kickos::thread_self_grant if size == 24`, `continue`, `p/x c->mpu.regions_`, `finish`,
 `p/x c->mpu.regions_`:
 
 ```
-Breakpoint 1, kickos::thread_self_grant (c=c@entry=0x20005030 <...>, base=base@entry=537083744, size=size@entry=16, attr=attr@entry=3) at .../kernel/thread/thread.cc:371
+Breakpoint 1, kickos::thread_self_grant (c=c@entry=0x20005030 <...>, base=base@entry=537083744, size=size@entry=24, attr=attr@entry=3) at .../kernel/thread/thread.cc:371
 (gdb) p/x c->mpu.regions_
 $3 = {{base = 0x0, size = 0x400000, attr = 0x5}, {base = 0x20010000, size = 0x10000, attr = 0x3},
       {base = 0x20026000, size = 0x2000, attr = 0x3}, {base = 0x20033d00, size = 0x40, attr = 0x3},
@@ -562,7 +563,7 @@ $6 = {{base = 0x0, size = 0x400000, attr = 0x5}, {base = 0x20010000, size = 0x10
       {base = 0x20033f60, size = 0x20, attr = 0x3}, ...}
 ```
 
-The 16 bytes became a 32-byte row, the smallest PMSAv7 can describe.
+The 24 bytes became a 32-byte row, the smallest PMSAv7 can describe.
 
 **Why, and the contract:** the `kos_mem_self_grant` comment in `user/include/kickos/sys.h`,
 [Reference: Invariants](../reference/invariants.md), `mpu-apply-on-every-switch-in` (why the
@@ -680,7 +681,7 @@ thread's own, at `0x2002bfd8`. `continue`, and the console shows the kill:
 ```
 
 **Why, and the contract:** [Book: Whoever stacks the trap frame owns the bounds check](../book/whoever-stacks-the-trap-frame-owns-the-bounds-check.md),
-[Reference: Invariants](../reference/invariants.md), `fault-exit-code-is-not-a-joiner-signal`.
+[Reference: Invariants](../reference/invariants.md), `fault-exit-status-reaches-the-creator`.
 
 ## What changes with an MMU
 

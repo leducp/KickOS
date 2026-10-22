@@ -32,7 +32,7 @@ extern "C" void app_main(kos_self_t const* self)
     while (true)
     {
         struct sample s = {};
-        int32_t const n = kos_call_timed(sensor, &s, 0u, sizeof(s), CALL_TIMEOUT_US);
+        int32_t const n = kos_call(sensor, &s, 0u, sizeof(s), CALL_TIMEOUT_US);
         // No answer is ever a park: each code says what became of the request. A motor
         // controller would brake on all three.
         if (n == -KOS_EPIPE)

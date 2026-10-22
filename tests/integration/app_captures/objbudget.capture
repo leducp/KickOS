@@ -18,6 +18,6 @@
 [objbudget]   task_create rc=0
 [objbudget]   the child task's endpoint_create rc=0
 [objbudget] ok - a task at its ceiling does not deny another task's endpoint_create
-[objbudget]   sem_create at the endpoint ceiling rc=0
-[objbudget] ok - the endpoint ceiling does not refuse a semaphore: the count is per pool
+[objbudget]   notify_create at the endpoint ceiling rc=0
+[objbudget] ok - the endpoint ceiling does not refuse a notification: the count is per pool
 [objbudget] PASS (5 arms)

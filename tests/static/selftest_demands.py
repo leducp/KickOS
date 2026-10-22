@@ -3,8 +3,7 @@
 #
 # What each selftest arm asks of the board's fixed pools, read off the arm itself: the workers
 # beside main, the tasks, objects, capability slots and IRQ line its TAP_ASK or TAP_ASK_LINE
-# states. Each ask holds what it probes, so a worker probe also takes one semaphore and one
-# capability slot for its gate, and the ask one slot per object and one for the line.
+# states. Each ask holds what it probes: one capability slot per object and one for the line.
 # tests/integration/gates/selftest.cmake expects an arm to skip wherever the posture provisions
 # less than that, so the expectation and the arm's own decision rest on one number.
 #
@@ -27,8 +26,8 @@ import re
 import sys
 
 TAP_ADD_RE = re.compile(r'\bTAP_ADD\w*\(\s*"(\w+)"\s*,\s*(\w+)')
-POOLS = ('workers', 'tasks', 'irqs', 'caps', 'sems', 'endpoints', 'notifies')
-OBJECTS = ('sems', 'endpoints', 'notifies')
+POOLS = ('workers', 'tasks', 'irqs', 'caps', 'endpoints', 'notifies')
+OBJECTS = ('endpoints', 'notifies')
 FIELDS = ('workers', 'tasks') + OBJECTS + ('caps', 'irqs', 'irq_line')
 ASK_RE = re.compile(r'\bTAP_ASK(_LINE)?\s*\(')
 FIELD_RE = re.compile(r'^\s*\.(\w+)\s*=\s*(\w+)\s*$')
@@ -407,9 +406,6 @@ def own_demand(body, consts):
             need['notifies'] = max(need['notifies'], 1)
         need['caps'] = max(need['caps'],
                            sum(ask[p] for p in OBJECTS) + ask['irqs'] + ask['caps'] + probe)
-        if ask['workers']:
-            need['sems'] = max(need['sems'], 1)
-            need['caps'] = max(need['caps'], 1)
     return need
 
 
@@ -463,14 +459,14 @@ PLANTED = [
     'void t_a()\n{\n    helper();\n}\n'
     'void t_b()\n{\n    TAP_ASK(.notifies = 1, .caps = 5);\n}\n'
     'void t_c()\n{\n    tap::skip("short of workers: %d of %d (%d)", 1, 9, -12);\n}\n'
-    'void t_d()\n{\n    TAP_ASK(.sems = 2, .endpoints = 1);\n}\n'
+    'void t_d()\n{\n    TAP_ASK(.endpoints = 2);\n}\n'
     'constexpr unsigned CROWD = KICKOS_KERNEL_CORES + 1u;\n'
     'constexpr int CROWD_MORE = CROWD + 1;\n'
     'void t_f()\n{\n    TAP_ASK(.workers = CROWD_MORE);\n}\n'
     'void t_g()\n{\n    TAP_ASK(.workers = 2);\n}\n'
     'void t_h()\n{\n    TAP_ASK(.workers = 2);\n}\n'
     'void t_i()\n{\n    kos_cap_t line = KOS_CAP_NONE;\n'
-    '    TAP_ASK_LINE(&line, .workers = 2, .tasks = 2, .sems = 1,\n'
+    '    TAP_ASK_LINE(&line, .workers = 2, .tasks = 2,\n'
     '                 .irq_line = KICKOS_IRQ_FREE_BASE + 3);\n}\n'
     'void t_j()\n{\n    TAP_ASK(.caps = 2);\n}\n'
     'void t_k()\n{\n    TAP_ASK(.notifies = 1, .caps = 2);\n}\n'
@@ -485,21 +481,20 @@ PLANTED = [
     '    TAP_ADD("h", t_h);\n#endif\n'
     '}\n']
 PLANTED_CONFIG = {'KICKOS_KERNEL_CORES': 2}
-ROOMY = {'workers': 5, 'tasks': 2, 'irqs': 2, 'caps': 6, 'sems': 2, 'endpoints': 1,
-         'notifies': 1}
+ROOMY = {'workers': 5, 'tasks': 2, 'irqs': 2, 'caps': 6, 'endpoints': 2, 'notifies': 1}
 
 
-def ask(workers=0, tasks=0, irqs=0, caps=0, sems=0, endpoints=0, notifies=0):
-    return {'workers': workers, 'tasks': tasks, 'irqs': irqs, 'caps': caps, 'sems': sems,
+def ask(workers=0, tasks=0, irqs=0, caps=0, endpoints=0, notifies=0):
+    return {'workers': workers, 'tasks': tasks, 'irqs': irqs, 'caps': caps,
             'endpoints': endpoints, 'notifies': notifies}
 
 
 def self_test():
     got = demands(PLANTED, PLANTED_CONFIG)
-    want = {'a': ask(workers=5, caps=1, sems=1), 'b': ask(caps=6, notifies=1),
-            'd': ask(caps=3, sems=2, endpoints=1), 'f': ask(workers=4, caps=1, sems=1),
-            'i': ask(workers=2, tasks=2, irqs=1, caps=2, sems=1),
-            'g': ask(workers=2, caps=1, sems=1), 'h': ask(workers=2, caps=1, sems=1),
+    want = {'a': ask(workers=5), 'b': ask(caps=6, notifies=1),
+            'd': ask(caps=2, endpoints=2), 'f': ask(workers=4),
+            'i': ask(workers=2, tasks=2, irqs=1, caps=1),
+            'g': ask(workers=2), 'h': ask(workers=2),
             'j': ask(caps=3, notifies=1), 'k': ask(caps=3, notifies=1),
             'l': ask(irqs=2, caps=2)}
     if got != want:
@@ -508,8 +503,7 @@ def self_test():
     if short(got, ROOMY):
         print('FAIL: a posture supplying every demand expects %s to skip' % short(got, ROOMY))
         return 1
-    # A semaphore budget one short of d's two, which a worker probe's gate alone still fits.
-    for pool, arms in (('sems', ['d']), ('caps', ['b']), ('endpoints', ['d']), ('workers', ['a']),
+    for pool, arms in (('caps', ['b']), ('endpoints', ['d']), ('workers', ['a']),
                        ('tasks', ['i']), ('irqs', ['l'])):
         posture = dict(ROOMY)
         posture[pool] = ROOMY[pool] - 1
@@ -532,9 +526,10 @@ def self_test():
         print('FAIL: a posture binding no line expects %s to skip, not i and l'
               % short(got, posture))
         return 1
-    for field, what in (('.sems = n', 'a field naming a runtime value'),
+    for field, what in (('.endpoints = n', 'a field naming a runtime value'),
                         ('.threads = 2', 'a field no ObjectDemand states'),
-                        ('.sems = count(2)', 'a field calling a function')):
+                        ('.sems = 1', 'a semaphore, which no pool holds'),
+                        ('.endpoints = count(2)', 'a field calling a function')):
         bad = ['void t_e()\n{\n    TAP_ASK(%s);\n}\n'
                'void reg()\n{\n    TAP_ADD("e", t_e);\n}\n' % field]
         try:

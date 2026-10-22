@@ -80,33 +80,42 @@ namespace selftest
     using kickos::Atomic;
     using kickos::Order;
 
-    extern KICKOS_SELFTEST_LOCAL kos_cap_t g_done; // shared completion counter (MAIN's cap; delegated to workers)
-    extern KICKOS_SELFTEST_LOCAL kos_cap_t g_lock; // binary semaphore = mutex over the event log (MAIN's cap)
+    // The run's completion counter and the event log's binary semaphore, which every thread of
+    // main's task reaches.
+    extern KICKOS_SELFTEST_LOCAL kos_sem_t g_done;
+    extern KICKOS_SELFTEST_LOCAL kos_sem_t g_lock;
     // main's own row of the system table: its declared priority, ceiling and authority.
     extern KICKOS_SELFTEST_LOCAL kos_self_t const* g_self;
     extern KICKOS_SELFTEST_LOCAL kos_thread_t g_main; // main's own thread
 
     // Well-known child cap indices: a fresh child table has cap-gen 0, so delegated cap i
-    // lands at KOS_SPAWN_DELEGATED_CAP0 + i. Every spawn must delegate in exactly this order.
-    // delegated FIRST to every worker
-    constexpr int CH_DONE = KOS_SPAWN_DELEGATED_CAP0;
-    // delegated SECOND (logging workers only)
-    constexpr int CH_LOCK = KOS_SPAWN_DELEGATED_CAP0 + 1;
-    constexpr int CH_AUX = KOS_SPAWN_DELEGATED_CAP0 + 2;
-    // IRQ-driver tests
-    constexpr int CH_READY = KOS_SPAWN_DELEGATED_CAP0 + 1;
-    // IRQ-driver tests: the LINE, for ack and discard
-    constexpr int CH_IRQ = KOS_SPAWN_DELEGATED_CAP0 + 2;
-    // IRQ-driver tests: the notification that line signals, which is what the driver binds and
-    // waits on
-    constexpr int CH_NOTE = KOS_SPAWN_DELEGATED_CAP0 + 3;
-    // main-to-child release, where the child has no other park between signaling readiness and
-    // waiting for release
-    constexpr int CH_REL = KOS_SPAWN_DELEGATED_CAP0 + 3;
+    // lands at KOS_SPAWN_DELEGATED_CAP0 + i. IRQ-driver tests delegate the LINE, for ack and
+    // discard, then the notification that line signals, which the driver binds and waits on.
+    constexpr int CH_IRQ = KOS_SPAWN_DELEGATED_CAP0;
+    constexpr int CH_NOTE = KOS_SPAWN_DELEGATED_CAP0 + 1;
     constexpr uint8_t CH_FULL =
         KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER;
     // A worker comment's `name@i` is its child_cap(i).
     using kos::child_cap;
+
+    // The semaphores main shares with a thread of another task. On a translating board they lie
+    // in a granule main holds for the run, which the child reaches through the window
+    // xsem_window() describes, passed at its spawn; elsewhere they are main's statics, which every
+    // task of the image reaches. An arm initialises each one it takes.
+    constexpr int XSEM_SLOTS = 8;
+    KICKOS_SELFTEST_LOCAL kos_sem_t* xsem(int i);
+    // Nothing to pass, size 0, where the statics serve; xsem_windows() is then 0, else 1.
+    KICKOS_SELFTEST_LOCAL kos_window xsem_window();
+    constexpr uint16_t xsem_windows()
+    {
+#if KICKOS_HAVE_ASPACE
+        return 1;
+#else
+        return 0;
+#endif
+    }
+    // The child's side of xsem(i), through its window `window` on a translating board.
+    KICKOS_SELFTEST_LOCAL kos_sem_t* xsem_child(int i, uint16_t window = 0);
 
 #if KICKOS_AMP_NODE && KICKOS_AMP_OWN_IMAGE
     constexpr bool SELFTEST_OWNS_RESET = KICKOS_AMP_NODE_ID == KICKOS_AMP_RESET_OWNER;
@@ -150,6 +159,12 @@ namespace selftest
     // What an ArmHold gives one slay to finish a teardown.
     constexpr uint32_t ARM_SLAY_US = 500000;
 
+    // A kos_task_state answer naming a task that has ended.
+    inline bool state_ended(int state)
+    {
+        return state >= 0 and (state & KOS_TASK_ENDED) != 0;
+    }
+
     // A thread handling a line does not migrate: above one kernel core a claim, and a wait, ack
     // or discard on a claimed line, is refused to a thread whose mask is not exactly the claim
     // core. irq_spawn makes such a thread pinned to TAP_PIN_CORE, and TAP_ADD_IRQ runs an arm
@@ -174,14 +189,14 @@ namespace selftest
     void main_pinned()
     {
         kos_thread_t const self = kos_thread_self();
-        int const rc = kos_thread_set_affinity(self, TAP_PIN_CORE);
-        if (rc != 0)
+        int const rc = kos_thread_affinity(self, TAP_PIN_CORE);
+        if (rc < 0)
         {
             tap::fail("main could not pin itself to TAP_PIN_CORE: %d", rc);
             return;
         }
         Arm();
-        (void)kos_thread_set_affinity(self, 0);
+        (void)kos_thread_affinity(self, 0);
     }
 #define TAP_ADD_IRQ(name, fn, ...) TAP_ADD(name, main_pinned<fn> __VA_OPT__(, ) __VA_ARGS__)
 #define TAP_ADD_PINNED(name, fn, ...) TAP_ADD(name, main_pinned<fn> __VA_OPT__(, ) __VA_ARGS__)
@@ -369,18 +384,17 @@ namespace selftest
     // main's free capability slots, or -1 where an object pool ran out before the table did.
     KICKOS_SELFTEST_LOCAL long cap_census();
     // What an arm holds at once: workers beside main, tasks out of the task pool, objects out of
-    // main's task budgets beside the two semaphores main holds for the run, capability slots
-    // beyond those objects', the IRQ lines it holds at once, and the one of them the ask claims
-    // and hands over. The slots are probed as badged copies of a notification, so an ask stating
-    // no notification also holds one for the probe. A line count is weighed against main's
-    // task's binding budget, which main spends on no line between arms.
+    // main's task budgets, capability slots beyond those objects', the IRQ lines it holds at
+    // once, and the one of them the ask claims and hands over. The slots are probed as badged
+    // copies of a notification, so an ask stating no notification also holds one for the probe.
+    // A line count is weighed against main's task's binding budget, which main spends on no line
+    // between arms.
     // tests/static/selftest_demands.py reads each field off TAP_ASK, so every field is a literal
     // or a named constant.
     struct ObjectDemand
     {
         int workers = 0;
         int tasks = 0;
-        int sems = 0;
         int endpoints = 0;
         int notifies = 0;
         int caps = 0;
@@ -709,6 +723,7 @@ namespace selftest
     // selftest_word.cc
     KICKOS_SELFTEST_LOCAL void t_mutex_static_parks();
     KICKOS_SELFTEST_LOCAL void t_mutex_kill_pending();
+    KICKOS_SELFTEST_LOCAL void t_sem_killed_poster();
     KICKOS_SELFTEST_LOCAL void t_mutex_slain_holder();
 #if KICKOS_MEMORY_ENFORCED
     inline constexpr RamAsk WFO_RAM = {64u};
@@ -758,6 +773,7 @@ namespace selftest
     KICKOS_SELFTEST_LOCAL void t_affinity_undriven_refused();
     KICKOS_SELFTEST_LOCAL void t_migrate_running();
     KICKOS_SELFTEST_LOCAL void t_resched_reaches_pinned_caller();
+    KICKOS_SELFTEST_LOCAL void t_sem_units_across_cores();
     KICKOS_SELFTEST_LOCAL void t_prio_self_lower_moves_waiter();
     KICKOS_SELFTEST_LOCAL void t_pin_cross_task_refused();
     KICKOS_SELFTEST_LOCAL void t_grant_narrows();

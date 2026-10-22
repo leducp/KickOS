@@ -121,11 +121,11 @@ int main(int, char**)
 #if KICKOS_KERNEL_CORES > 1
     // A line is claimed by a thread pinned where it runs; only the claim needs main there.
     kos_thread_t const self = kos_thread_self();
-    (void)kos_thread_set_affinity(self, 1u << 0);
+    (void)kos_thread_affinity(self, 1u << 0);
 #endif
     int const crc = kos_irq_claim(ARM_LINE, KOS_IRQ_EDGE, &irq);
 #if KICKOS_KERNEL_CORES > 1
-    (void)kos_thread_set_affinity(self, 0);
+    (void)kos_thread_affinity(self, 0);
 #endif
     harness.note_rc("main irq_claim", crc);
     harness.check(crc == 0, "main claims the line the arm will name");

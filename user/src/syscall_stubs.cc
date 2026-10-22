@@ -13,17 +13,23 @@
 #include <sys/reent.h>
 #endif
 
+#if KICKOS_CLOCK_USER and KICKOS_ARCH_SIM
+#include <time.h>
+#elif KICKOS_CLOCK_USER and defined(__riscv)
+#include <kickos/chip_limits.h>
+#elif KICKOS_CLOCK_USER and defined(__x86_64__)
+#include <kickos/sys/init.h>
+#endif
+
 extern "C"
 {
 
 // The byte-count returns are pinned at 4 bytes on every target (see sys.h). sizeof on a call
 // expression is unevaluated, so these pin the DECLARED return type without emitting a trap.
 static_assert(sizeof(kos_kconsole_write(nullptr, 0)) == 4, "must be exactly 4 bytes");
-static_assert(sizeof(kos_send(0, nullptr, 0)) == 4, "must be exactly 4 bytes");
-static_assert(sizeof(kos_send_timed(0, nullptr, 0, 0)) == 4, "must be exactly 4 bytes");
-static_assert(sizeof(kos_call(0, nullptr, 0, 0)) == 4, "must be exactly 4 bytes");
-static_assert(sizeof(kos_call_generic(0, nullptr, 0, 0)) == 4, "must be exactly 4 bytes");
-static_assert(sizeof(kos_call_timed(0, nullptr, 0, 0, 0)) == 4, "must be exactly 4 bytes");
+static_assert(sizeof(kos_send(0, nullptr, 0, 0)) == 4, "must be exactly 4 bytes");
+static_assert(sizeof(kos_call(0, nullptr, 0, 0, 0)) == 4, "must be exactly 4 bytes");
+static_assert(sizeof(kos_call_generic(0, nullptr, 0, 0, 0)) == 4, "must be exactly 4 bytes");
 
 // arch_syscall returns at REGISTER width, so the narrowing casts below truncate. They are
 // exact: a transferred count is bounded by KOS_EP_MSG_MAX / the kernel's 4096-byte console
@@ -55,25 +61,6 @@ static void cap_out_clear(kos_cap_t* out_cap)
     }
 }
 
-int kos_sem_create(int initial, kos_cap_t* out_cap)
-{
-    cap_out_clear(out_cap);
-    return static_cast<int>(arch_syscall(KOS_SYS_SEM_CREATE,
-                                         static_cast<uintptr_t>(initial),
-                                         reinterpret_cast<uintptr_t>(out_cap), 0, 0));
-}
-
-int kos_sem_wait(kos_cap_t sem, uint32_t timeout_us)
-{
-    return static_cast<int>(arch_syscall(KOS_SYS_SEM_WAIT, static_cast<uintptr_t>(sem),
-                                         static_cast<uintptr_t>(timeout_us), 0, 0));
-}
-
-int kos_sem_post(kos_cap_t sem)
-{
-    return static_cast<int>(arch_syscall(KOS_SYS_SEM_POST, static_cast<uintptr_t>(sem), 0, 0, 0));
-}
-
 int kos_endpoint_create(kos_cap_t* out_cap)
 {
     cap_out_clear(out_cap);
@@ -90,29 +77,22 @@ int kos_amp_count(uint32_t node, uint32_t which, uint32_t* out)
 }
 #endif
 
-int32_t kos_send(kos_cap_t ep, void const* buf, size_t len)
+int32_t kos_send(kos_cap_t ep, void const* buf, size_t len, uint32_t timeout_us)
 {
     return static_cast<int32_t>(arch_syscall(KOS_SYS_SEND,
-                                             static_cast<uintptr_t>(ep),
-                                             reinterpret_cast<uintptr_t>(buf),
-                                             static_cast<uintptr_t>(len), 0));
-}
-
-int32_t kos_send_timed(kos_cap_t ep, void const* buf, size_t len, uint32_t timeout_us)
-{
-    return static_cast<int32_t>(arch_syscall(KOS_SYS_SEND_TIMED,
                                              static_cast<uintptr_t>(ep),
                                              reinterpret_cast<uintptr_t>(buf),
                                              static_cast<uintptr_t>(len),
                                              static_cast<uintptr_t>(timeout_us)));
 }
 
-int32_t kos_call(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap)
+int32_t kos_call(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap, uint32_t timeout_us)
 {
 #if KICKOS_ARCH_HAS_IPC_FASTPATH
-    // The caller-side selection is SIZE only; the kernel's refusals are about STATE and
-    // live in the fastpath.
-    if (send_len <= (size_t)KOS_CALL_REG_BYTES and recv_cap <= (size_t)KOS_CALL_REG_BYTES)
+    // The caller-side selection is the deadline and the SIZE only; the kernel's refusals are
+    // about STATE and live in the fastpath.
+    if (timeout_us == KOS_TIMEOUT_NONE and send_len <= (size_t)KOS_CALL_REG_BYTES
+        and recv_cap <= (size_t)KOS_CALL_REG_BYTES)
     {
         uint32_t io[KOS_CALL_REG_WORDS + 3];
         unsigned char* const payload = reinterpret_cast<unsigned char*>(&io[3]);
@@ -145,22 +125,13 @@ int32_t kos_call(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap)
         }
     }
 #endif
-    return kos_call_generic(ep, buf, send_len, recv_cap);
+    return kos_call_generic(ep, buf, send_len, recv_cap, timeout_us);
 }
 
-int32_t kos_call_generic(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap)
+int32_t kos_call_generic(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap,
+                         uint32_t timeout_us)
 {
     return static_cast<int32_t>(arch_syscall(KOS_SYS_CALL,
-                                             static_cast<uintptr_t>(ep),
-                                             reinterpret_cast<uintptr_t>(buf),
-                                             static_cast<uintptr_t>(send_len),
-                                             static_cast<uintptr_t>(recv_cap)));
-}
-
-int32_t kos_call_timed(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap,
-                       uint32_t timeout_us)
-{
-    return static_cast<int32_t>(arch_syscall(KOS_SYS_CALL_TIMED,
                                              static_cast<uintptr_t>(ep),
                                              reinterpret_cast<uintptr_t>(buf),
                                              kos_call_lens_pack(send_len, recv_cap),
@@ -169,10 +140,10 @@ int32_t kos_call_timed(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap
 
 int kos_reply(kos_cap_t reply_cap, void const* buf, size_t len)
 {
-    return static_cast<int>(arch_syscall(KOS_SYS_REPLY,
+    return static_cast<int>(arch_syscall(KOS_SYS_REPLY_RECV,
                                          static_cast<uintptr_t>(reply_cap),
                                          reinterpret_cast<uintptr_t>(buf),
-                                         static_cast<uintptr_t>(len), 0));
+                                         kos_call_lens_pack(len, 0), 0));
 }
 
 int kos_console_publish(kos_cap_t ep, kos_task_t task)
@@ -181,40 +152,41 @@ int kos_console_publish(kos_cap_t ep, kos_task_t task)
                                          static_cast<uintptr_t>(task), 0, 0));
 }
 
-int kos_thread_kill(kos_thread_t thread)
+int kos_thread_cancel(kos_thread_t thread, enum kos_cancel kind, uint32_t timeout_us)
 {
-    return static_cast<int>(arch_syscall(KOS_SYS_THREAD_KILL,
-                                         static_cast<uintptr_t>(thread), 0, 0, 0));
-}
-
-int kos_thread_slay(kos_thread_t thread, uint32_t timeout_us)
-{
-    return static_cast<int>(arch_syscall(KOS_SYS_THREAD_SLAY,
+    return static_cast<int>(arch_syscall(KOS_SYS_THREAD_CANCEL,
                                          static_cast<uintptr_t>(thread),
-                                         static_cast<uintptr_t>(timeout_us), 0, 0));
+                                         static_cast<uintptr_t>(kind),
+                                         static_cast<uintptr_t>(timeout_us), 0));
 }
 
-int kos_thread_set_affinity(kos_thread_t thread, uint32_t core_mask)
-{
-    return static_cast<int>(arch_syscall(KOS_SYS_THREAD_SET_AFFINITY,
-                                         static_cast<uintptr_t>(thread),
-                                         static_cast<uintptr_t>(core_mask), 0, 0));
-}
-
-int kos_thread_affinity(kos_thread_t thread)
+int kos_thread_affinity(kos_thread_t thread, uint32_t core_mask)
 {
 #if KICKOS_KERNEL_CORES > 1
     return static_cast<int>(arch_syscall(KOS_SYS_THREAD_AFFINITY,
-                                         static_cast<uintptr_t>(thread), 0, 0, 0));
+                                         static_cast<uintptr_t>(thread),
+                                         static_cast<uintptr_t>(core_mask), 0, 0));
 #else
     (void)thread;
+    (void)core_mask;
     return -KOS_ENOSYS;
 #endif
 }
 
+// The kernel seats each core's index where these read it, once at bring-up.
 int kos_core_current(void)
 {
-#if KICKOS_KERNEL_CORES > 1
+#if KICKOS_KERNEL_CORES > 1 and defined(__aarch64__) and not KICKOS_ARCH_SIM
+    uint64_t core = 0;
+    __asm volatile("mrs %0, tpidrro_el0" : "=r"(core));
+    return static_cast<int>(core);
+#elif KICKOS_KERNEL_CORES > 1 and defined(__x86_64__) and not KICKOS_ARCH_SIM
+    uint32_t lo = 0;
+    uint32_t hi = 0;
+    uint32_t core = 0;
+    __asm volatile("rdtscp" : "=a"(lo), "=d"(hi), "=c"(core));
+    return static_cast<int>(core);
+#elif KICKOS_KERNEL_CORES > 1
     return static_cast<int>(arch_syscall(KOS_SYS_CORE_CURRENT, 0, 0, 0, 0));
 #else
     return 0;
@@ -280,12 +252,6 @@ int kos_task_create(void* mem_base, uint32_t mem_size, uint32_t mem_flags,
                                          static_cast<uintptr_t>(mem_flags)));
 }
 
-int kos_task_kill(kos_task_t task)
-{
-    return static_cast<int>(arch_syscall(KOS_SYS_TASK_KILL,
-                                         static_cast<uintptr_t>(task), 0, 0, 0));
-}
-
 int kos_task_watch(kos_task_t task, kos_cap_t notify_cap, kos_cap_t ready_ep)
 {
     return static_cast<int>(arch_syscall(KOS_SYS_TASK_WATCH, static_cast<uintptr_t>(task),
@@ -293,15 +259,9 @@ int kos_task_watch(kos_task_t task, kos_cap_t notify_cap, kos_cap_t ready_ep)
                                          static_cast<uintptr_t>(ready_ep), 0));
 }
 
-int kos_task_state(kos_task_t task)
+int kos_task_state(kos_task_t task, int* status)
 {
-    return static_cast<int>(arch_syscall(KOS_SYS_TASK_STATE, static_cast<uintptr_t>(task), 0, 0,
-                                         0));
-}
-
-int kos_task_exit_status(kos_task_t task, int* status)
-{
-    return static_cast<int>(arch_syscall(KOS_SYS_TASK_EXIT_STATUS, static_cast<uintptr_t>(task),
+    return static_cast<int>(arch_syscall(KOS_SYS_TASK_STATE, static_cast<uintptr_t>(task),
                                          reinterpret_cast<uintptr_t>(status), 0, 0));
 }
 
@@ -349,11 +309,6 @@ int kos_handle_close(kos_cap_t cap)
 {
     return static_cast<int>(arch_syscall(KOS_SYS_HANDLE_CLOSE,
                                          static_cast<uintptr_t>(cap), 0, 0, 0));
-}
-
-int kos_sem_destroy(kos_cap_t cap)
-{
-    return kos_handle_close(cap);
 }
 
 int kos_thread_create(struct kos_thread_params const* params, kos_thread_t* out_thread)
@@ -495,9 +450,72 @@ int kos_irq_raise(kos_cap_t irq_cap)
         arch_syscall(KOS_SYS_IRQ_RAISE, static_cast<uintptr_t>(irq_cap), 0, 0, 0));
 }
 
+#if KICKOS_CLOCK_USER
+static constexpr uint64_t CLOCK_NS_PER_SEC = 1000000000ull;
+#endif
+
+#if KICKOS_CLOCK_USER and defined(__riscv)
+static_assert(CLOCK_NS_PER_SEC % KICKOS_CHIP_TIMEBASE_HZ == 0,
+              "the kernel's clock scales the time CSR by a whole tick");
+static constexpr uint64_t CLOCK_NS_PER_TICK = CLOCK_NS_PER_SEC / KICKOS_CHIP_TIMEBASE_HZ;
+#endif
+
+#if KICKOS_CLOCK_USER and not KICKOS_ARCH_SIM and defined(__x86_64__)
+// The timestamp counter's rate. Zero until kickos_task_start seats it, and a read before that
+// divides by zero.
+static uint64_t s_clock_hz = 0;
+
+void kickos_clock_seat(void)
+{
+    s_clock_hz = arch_syscall64(KOS_SYS_CPU_CLOCK_HZ, 0, 0, 0, 0);
+}
+#endif
+
+// Each read below computes what the kernel's arch_clock_now computes from the same counter.
 uint64_t kos_clock_now(void)
 {
+#if not KICKOS_CLOCK_USER
     return arch_syscall64(KOS_SYS_CLOCK_NOW, 0, 0, 0, 0);
+#elif KICKOS_ARCH_SIM
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return static_cast<uint64_t>(ts.tv_sec) * CLOCK_NS_PER_SEC + static_cast<uint64_t>(ts.tv_nsec);
+#elif defined(__aarch64__)
+    uint64_t ticks = 0;
+    uint64_t hz = 0;
+    __asm volatile("isb; mrs %0, cntpct_el0" : "=r"(ticks));
+    __asm volatile("mrs %0, cntfrq_el0" : "=r"(hz));
+    return ticks * (CLOCK_NS_PER_SEC / hz);
+#elif defined(__riscv) and __riscv_xlen == 64
+    uint64_t ticks = 0;
+    __asm volatile("csrr %0, time" : "=r"(ticks));
+    return ticks * CLOCK_NS_PER_TICK;
+#elif defined(__riscv) and __riscv_xlen == 32
+    uint32_t hi = 0;
+    uint32_t lo = 0;
+    while (true)
+    {
+        uint32_t again = 0;
+        __asm volatile("rdtimeh %0" : "=r"(hi));
+        __asm volatile("rdtime %0" : "=r"(lo));
+        __asm volatile("rdtimeh %0" : "=r"(again));
+        if (again == hi)
+        {
+            break;
+        }
+    }
+    return ((static_cast<uint64_t>(hi) << 32) | lo) * CLOCK_NS_PER_TICK;
+#elif defined(__x86_64__)
+    uint32_t lo = 0;
+    uint32_t hi = 0;
+    __asm volatile("lfence\n\trdtsc" : "=a"(lo), "=d"(hi)::"memory");
+    uint64_t const tsc = (static_cast<uint64_t>(hi) << 32) | lo;
+    uint64_t const whole = tsc / s_clock_hz;
+    uint64_t const rest = tsc - (whole * s_clock_hz);
+    return (whole * CLOCK_NS_PER_SEC) + ((rest * CLOCK_NS_PER_SEC) / s_clock_hz);
+#else
+#error "KICKOS_CLOCK_USER is set on an arch with no user clock read"
+#endif
 }
 
 uint64_t kos_cpu_clock_hz(void)
@@ -584,11 +602,6 @@ int kos_mem_count(uint32_t which, uint32_t* out)
 void kos_kernel_diag_led_set(int on)
 {
     arch_syscall(KOS_SYS_DIAG_LED_SET, static_cast<uintptr_t>(on), 0, 0, 0);
-}
-
-void kos_kernel_diag_led_toggle(void)
-{
-    arch_syscall(KOS_SYS_DIAG_LED_TOGGLE, 0, 0, 0, 0);
 }
 
 #if KICKOS_BENCH

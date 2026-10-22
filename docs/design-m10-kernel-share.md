@@ -162,7 +162,7 @@ become ready.** The creator names the endpoint whose first receive marks readine
   by its creator until the creator releases it, which is what lets `kos_task_state` still answer
   for that instance and keeps its handle from being reused under the creator.
 - **A restart releases the dead instance first.** The init reads the empty state, releases its
-  hold with `kos_task_kill`, which on an empty task cancels nothing and frees the slot and its
+  hold with the task kill (formerly `kos_task_kill`), which on an empty task cancels nothing and frees the slot and its
   domain, and only then creates the new task. The kernel lifecycle does not change; the step is
   the init's, in `design-m10-composition.md`'s walk.
 - **Ready** raises the bits once, in `endpoint_recv_locked`, the first time a member waits on the
@@ -414,7 +414,7 @@ seats in it, or the thread whose spawn built an implicit task (`Thread::task_ent
   instruction of its own, one that never enters the kernel included. An entry that was itself
   cancelled ends nothing, its canceller's verb having stopped the group. A non-entry member's
   exit ends that member alone.
-- **Killed.** `kos_task_kill` stops every member the same way, a member spinning without a system
+- **Killed.** The task kill (formerly `kos_task_kill`) stops every member the same way, a member spinning without a system
   call included, and drops the creator's hold without waiting; `kos_task_slay` stops them and
   waits until every member is swept.
 - **No new member.** An ended task refuses every spawn into it with `-KOS_EBUSY`, live members or
@@ -426,7 +426,7 @@ seats in it, or the thread whose spawn built an implicit task (`Thread::task_ent
   task is dead; it answers at once only for a task with no member and none sweeping. A slot is
   seated again only once no member sweeps under it, so a restart into it counts no capability
   of the old instance in its budget.
-- **The status.** `kos_task_exit_status(task, &status)` answers the creator once the task has
+- **The status.** The exit-status read (formerly `kos_task_exit_status(task, &status)`) answers the creator once the task has
   ended: the entry's code, 0 when it returned, `KOS_EXIT_FAULT` after a fault, or
   `KOS_EXIT_CANCELLED` when every member was cancelled or the end was a cancelled thread's, in an
   `int` so a negative code is not an error.

@@ -100,6 +100,10 @@ namespace
         }
         if (seen == START_PRISTINE)
         {
+#if KICKOS_CLOCK_USER and defined(__x86_64__)
+            // Before RUNNING: a starter killed at this entry leaves the space pristine.
+            kickos_clock_seat();
+#endif
             __atomic_store_n(&s_start, START_RUNNING, __ATOMIC_RELAXED);
             image_start();
             __atomic_store_n(&s_start, START_DONE, __ATOMIC_RELEASE);

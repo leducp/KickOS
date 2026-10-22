@@ -257,8 +257,8 @@ extern "C" void k64dspi_watch_main(kos_self_t const* self)
     }
     (void)p.join();
     int status = 0;
-    rc = kos_task_exit_status(t, &status);
-    if (rc == 0 and status == KOS_EXIT_FAULT)
+    rc = kos_task_state(t, &status);
+    if (rc >= 0 and (rc & KOS_TASK_ENDED) != 0 and status == KOS_EXIT_FAULT)
     {
         kos::print("[k64dspi] PASS: the probe after the holder's end faulted\n");
     }

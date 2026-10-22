@@ -420,8 +420,10 @@ endfunction()
 #
 # +smep and +smap are not in x86-64-v3 either: qemu64 offers neither, and without them every gate
 # runs a kernel that can read, write and run user pages.
+#
+# +rdtscp is not in x86-64-v3 and the floor requires it: qemu64 lacks it.
 set(KICKOS_X86_64_QEMU_CPU
-    "qemu64,+ssse3,+sse4.1,+sse4.2,+popcnt,+cx16,+lahf-lm,+avx,+avx2,+bmi1,+bmi2,+fma,+f16c,+movbe,+abm,+xsave,+xsaveopt,+smep,+smap"
+    "qemu64,+ssse3,+sse4.1,+sse4.2,+popcnt,+cx16,+lahf-lm,+avx,+avx2,+bmi1,+bmi2,+fma,+f16c,+movbe,+abm,+xsave,+xsaveopt,+smep,+smap,+rdtscp"
     CACHE INTERNAL "The -cpu model every x86_64 emulation runs")
 
 # The processor a preset runs the board's image on instead of the one the board's emulator line

@@ -100,7 +100,11 @@ before one is asked for. Then `kickos_rv32_init` sets up the core, one CSR at a 
   **trap stack** `g_rv_trap_stack`. Stop 5 shows why.
 - `mie` enables three interrupt sources: machine software (the switch), machine timer, and
   supervisor software (a test channel for injected interrupts).
-- `mcounteren` lets user code read the cycle and time counters.
+- `mcounteren` lets the lower modes read the cycle and time counters. The `virt` core also has a
+  supervisor mode, and then a user-mode read needs `scounteren` as well, so `kickos_rv32_init`
+  writes it with the time bit alone when `misa` reports that mode. With both open, a thread reads
+  the time counter itself (`rdtimeh`, `rdtime`, `rdtimeh`, until the two high halves agree), so
+  `kos_clock_now` on this board makes no system call.
 - The **bootstrap PMP entry**. On ARM, an unprivileged thread with no MPU region can reach
   everything. RISC-V PMP is the other way round: once a core implements PMP, a user-mode access
   that matches no entry faults. Without this entry the first user thread could not fetch its
@@ -372,14 +376,14 @@ $1 = 3
 (gdb) p/x $mcause
 $2 = 0x8
 (gdb) info registers a0 sp
-a0   0x1b
+a0   0x32
 sp   0x80040910   <kickos::(anonymous namespace)::g_kstacks+2240>
 (gdb) x/2wx $sp
 0x80040910:  0x80002b3a  0x00000080
 (gdb) info symbol *(unsigned*)$sp
 arch_syscall64 in section .text
 ```
-Machine mode, on a kernel stack, `a0` = 27 (the same `kos_send` of `main`'s first `kos::print`
+Machine mode, on a kernel stack, `a0` = 50 (the same `kos_send` of `main`'s first `kos::print`
 as on ARM). The frame's
 `mepc` is the user stub's `ecall` and its `mstatus` says the caller was in user mode.
 
@@ -570,7 +574,7 @@ page `0x80014`. Then `break syscall_dispatch`, `continue`:
 (gdb) p/x $scause
 $2 = 0x8
 (gdb) bt 2
-#0  syscall_dispatch (nr=27, ...) at .../kernel/syscall/syscall.cc
+#0  syscall_dispatch (nr=50, ...) at .../kernel/syscall/syscall.cc
 #1  0xffffffff80001616 in kickos_rv64_stvec () at .../arch/riscv/rv64imac/switch.S
 ```
 The dispatch is called from the trap vector itself, with no trampoline between.

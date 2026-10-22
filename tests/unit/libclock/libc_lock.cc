@@ -97,7 +97,7 @@ namespace
 
     uint32_t holder_of(uint32_t* word)
     {
-        return __atomic_load_n(word, __ATOMIC_ACQUIRE) & ~KOS_MUTEX_WAITERS;
+        return __atomic_load_n(word, __ATOMIC_ACQUIRE) & ~KOS_WORD_WAITERS;
     }
 
     std::deque<uint32_t>* waiters_of(uint32_t* word)
@@ -205,13 +205,13 @@ namespace
         while (true)
         {
             uint32_t const v = __atomic_load_n(word, __ATOMIC_ACQUIRE);
-            uint32_t const owner = v & ~KOS_MUTEX_WAITERS;
+            uint32_t const owner = v & ~KOS_WORD_WAITERS;
             if (owner == 0 or owner == DEAD_ID)
             {
                 uint32_t next = me;
                 if (not waiters->empty())
                 {
-                    next = next | KOS_MUTEX_WAITERS;
+                    next = next | KOS_WORD_WAITERS;
                 }
                 if (__real_kickos_user_cas(word, v, next) == v)
                 {
@@ -234,7 +234,7 @@ namespace
                 return -KOS_ETIMEDOUT;
             }
             EXPECT_EQ(timeout_us, KOS_TIMEOUT_NONE) << "a libc lock waited with a deadline";
-            if (__real_kickos_user_cas(word, v, v | KOS_MUTEX_WAITERS) != v)
+            if (__real_kickos_user_cas(word, v, v | KOS_WORD_WAITERS) != v)
             {
                 continue;
             }
@@ -270,7 +270,7 @@ namespace
                 waiters->pop_front();
                 if (not waiters->empty())
                 {
-                    next = next | KOS_MUTEX_WAITERS;
+                    next = next | KOS_WORD_WAITERS;
                 }
             }
             __atomic_store_n(word, next, __ATOMIC_RELEASE);
@@ -607,7 +607,7 @@ TEST_F(LibcLockDeathTest, an_unlock_the_kernel_refuses_traps)
     EXPECT_EXIT(
         {
             acquire(g_static[3]);
-            __atomic_store_n(malloc_word(), self() | KOS_MUTEX_WAITERS, __ATOMIC_RELEASE);
+            __atomic_store_n(malloc_word(), self() | KOS_WORD_WAITERS, __ATOMIC_RELEASE);
             g_unlock_answer = -KOS_EPERM;
             release(g_static[3]);
         },

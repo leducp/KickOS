@@ -105,7 +105,7 @@ extern "C" void k64drv_main(kos_self_t const* self)
         // TCF is a level: cleared before the next wait rearms the edge-claimed line, with the
         // other CSR bits written as they stand.
         r32(win + CSR_OFFSET) = CSR_TCF | CSR_TIE | CSR_TEN;
-        kos::kernel_diag_led_toggle();
+        kos::kernel_diag_led((tick & 1) != 0);
         char s[48];
         ksnprintf(s, sizeof(s), "[k64drv] tick %d\n", tick);
         kos::print(s);

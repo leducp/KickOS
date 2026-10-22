@@ -214,6 +214,17 @@ so "which core am I" is always a register read, never a variable. Index 0 is ref
 boot core may be core 0, and a released core that believed it was would take the boot core's
 block and stack.
 
+A thread asks the same question with `kos_core_current`, and on this machine the answer costs no
+system call either. Later in its bring-up (`kickos_armv8a_percore_init`, in
+`arch/arm64/common/arch_arm64_a53.cc`) each core copies its index into TPIDRRO_EL0, a register
+that EL0 can read and cannot write, and the user stub (`user/src/syscall_stubs.cc`) reads it
+with `mrs tpidrro_el0`. The answer can be stale the moment it is read, because the thread may
+move to another core at the next instruction. The same function opens the clock to EL0 too: it
+writes CNTKCTL_EL1, so a thread reads the counter `CNTPCT_EL0` and its rate `CNTFRQ_EL0` itself,
+and `kos_clock_now` makes no system call on this machine either. Both settings are per core, so
+every core writes them as it comes up. A core that missed the clock setting would make a thread's
+first clock read there trap, and one that missed the index would answer the wrong core.
+
 TPIDR_EL1 is set to this core's per-CPU block *before* the MMU comes on, so there is no window
 in which an exception could read it unset. The stub then loads the boot core's register record
 (through its physical alias, since translation is still off), invalidates its own TLB and
@@ -488,9 +499,10 @@ large number counts every acquisition of the lock since reset.
 ### Stop 9: a wake chooses a core and hands the thread over
 **Where:** `kernel/sched/sched.cc`, `wake_no_resched`, `pick_and_seat`, `place`, `publish_ready`, `hand_to`, `ring_stage`; `kernel/include/kickos/sched.h`, `sched_home_for`; `kernel/sched/policy_fifo_rr.cc`, `policy_place`
 
-In `hello`, `pong` posts the semaphore `ping` waits on. On the reference walk the post readied
-`ping` and the scheduler then compared priorities. Here the question has a second half: *which
-core* should run `ping`?
+In `hello`, `pong` posts the semaphore `ping` waits on. `ping` is parked on the semaphore's
+word, so the post enters the kernel through the word wake (`KOS_SYS_WORD_WAKE`, 83), which hands
+`ping` its unit and readies it. On the reference walk the scheduler then compared priorities.
+Here the question has a second half: *which core* should run `ping`?
 
 `wake_no_resched` marks `ping` READY and gives it a first home with `sched_home_for`: the waker's
 own core if `ping`'s affinity mask allows it. (A thread's affinity is the set of cores it may run
@@ -535,24 +547,12 @@ each ring has one writer and one reader. `ring_stage` only *stages* the entry; i
 to the target yet.
 
 **Try it:** `break kickos::(anonymous namespace)::hand_to`, then `ignore 1 3` and `continue` to
-skip the boot-time spawns:
+skip the boot-time spawns. `p t->name` gives `"ping"`, and `home` is 1. `bt` reads, from the
+top: `hand_to`, `publish_ready` (with `me=0`), `place`, `pick_and_seat`, then the kernel's word
+wake (`wake_attempt`, where the compiler kept it out of line, and `kickos::word_wake`), under
+`syscall_dispatch` with `nr=83`, `a1=1` (wake one waiter) and `a2=1` (hand it one unit).
 
-```
-Thread 1 hit Breakpoint 1, kickos::(anonymous namespace)::hand_to (t=..., home=home@entry=1) at .../sched.cc
-(gdb) bt
-#0  kickos::(anonymous namespace)::hand_to (t=..., home=home@entry=1)
-#1  kickos::(anonymous namespace)::publish_ready (t=..., home=1, me=0)
-#2  kickos::(anonymous namespace)::place (t=t@entry=..., me=me@entry=0, held=...)
-#3  kickos::(anonymous namespace)::pick_and_seat (woken=..., held=...)
-#4  kickos::sem_post (s=...)
-#5  (anonymous namespace)::syscall_body (nr=6, a0=1, a1=0, a2=0, a3=0)
-#6  syscall_dispatch (nr=6, a0=1, a1=0, a2=0, a3=0)
-#7  kickos_armv8a_el0_sync_entry () at .../switch.S
-(gdb) p t->name
-$1 = "ping", '\000' <repeats 11 times>
-```
-
-A `sem_post` on core 0 woke `ping`, core 0 kept its own thread, and placement sent `ping` to
+`pong`'s post on core 0 woke `ping`, core 0 kept its own thread, and placement sent `ping` to
 idle core 1. Run `finish` (back into `place`) and `p t->state`: `kickos::ThreadState::HANDED`. The very first
 `hand_to` of the run (no `ignore`) is root spawning `main` the same way, from `sched::add`.
 
@@ -1066,7 +1066,7 @@ call sequence.
 ### Stop 17: a call that crosses kernels
 **Where:** `kernel/syscall/syscall_ipc.cc`, `endpoint_call` (the far arm), `endpoint_far_call_deliver`, `endpoint_far_reply_deliver`, `far_call_land`, `far_reply_land`; `arch/common/doorbell_protocol.cc`, `kickos_doorbell_service`; `kernel/amp/ampwindow.cc`, `kickos_amp_node_service`, `node_service`, `dispatch_call`
 
-The `ampping` app on node 0 calls node 1 with plain `kos_call_timed`, the call of
+The `ampping` app on node 0 calls node 1 with plain `kos_call`, the call of
 [Call and reply](05-call-and-reply.md). Locality never reaches the API: the app does not know the
 endpoint is far. In the kernel, `endpoint_call` resolves the capability as usual and then
 branches:
@@ -1140,7 +1140,7 @@ $1 = "main", '\000' <repeats 11 times>
 ```
 
 Node 0's `main` has woken inside the same `endpoint_call` that parked it, and copies the reply
-into its buffer. Its `kos_call_timed` returns and the console prints
+into its buffer. Its `kos_call` returns and the console prints
 `ping 1 -> pong 2 from node 1 (4 byte(s))`: node 1 returned the round number plus one.
 
 **Why, and the contract:** [Book: Synchronous call and reply](../book/synchronous-call-and-reply.md),

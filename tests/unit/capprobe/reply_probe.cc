@@ -40,6 +40,15 @@ namespace kickos
             // Two spare dynamic slots past the reply bound, so the bound is reachable with
             // the free list still non-empty; without the slack no arm can isolate one clause.
             constexpr uint32_t TABLE_WIDTH = KICKOS_CAP_FIRST_DYNAMIC + REPLY_MAX + 2;
+
+            // An endpoint's handle, to fill a table with: cap_install takes no reference on the
+            // object it names.
+            int endpoint_handle()
+            {
+                Endpoint* const ep = endpoint();
+                return static_cast<int>(
+                    kernel().endpoints.handle_for(kernel().endpoints.index_of(ep)));
+            }
             static_assert(TABLE_WIDTH <= KICKOS_MAX_HANDLES,
                           "the arms below ask the slab for a table wider than the codec's "
                           "ceiling, which cap_slab_attach asserts on");
@@ -142,7 +151,8 @@ namespace kickos
             int const client_obj = static_cast<int>(
                 kernel().threads.handle_for(kernel().threads.index_of(client)));
             uint32_t collide = KCAP_INVALID;
-            ASSERT_EQ(cap_install(server, client_obj, CapType::CAP_SEM, CAP_WAIT, &collide), 0);
+            ASSERT_EQ(cap_install(server, client_obj, CapType::CAP_ENDPOINT, CAP_WAIT, &collide),
+                      0);
             EXPECT_FALSE(cap_uninstall_reply(server, collide, client))
                 << "a capability of another type is not a reply to retract, whatever its obj";
 
@@ -172,12 +182,13 @@ namespace kickos
 
             uint32_t cap = KCAP_INVALID;
             ASSERT_EQ(cap_install_reply(server, client, &cap), 0);
-            int sem_handle = 0;
-            (void)semaphore(&sem_handle);
+            int const filler_obj = endpoint_handle();
             while (server->cap_free_head != KCAP_FREE_NONE)
             {
                 uint32_t filler = KCAP_INVALID;
-                ASSERT_EQ(cap_install(server, sem_handle, CapType::CAP_SEM, CAP_WAIT, &filler), 0);
+                ASSERT_EQ(cap_install(server, filler_obj, CapType::CAP_ENDPOINT, CAP_WAIT,
+                                      &filler),
+                          0);
             }
             ASSERT_TRUE(cap_uninstall_reply(server, cap, client));
             ASSERT_NE(server->cap_free_head, KCAP_FREE_NONE) << "the undo gave the slot back";
@@ -200,13 +211,12 @@ namespace kickos
             Thread* const server = seat_pool(SLOT_SERVER, PRIO);
             Thread* const client = seat_pool(SLOT_CLIENT, PRIO);
             attach_caps(server, TABLE_WIDTH);
-            int sem_handle = 0;
-            (void)semaphore(&sem_handle);
-            // cap_install takes no reference on the object it names.
+            int const filler_obj = endpoint_handle();
             while (server->cap_free_head != KCAP_FREE_NONE)
             {
                 uint32_t cap = KCAP_INVALID;
-                ASSERT_EQ(cap_install(server, sem_handle, CapType::CAP_SEM, CAP_WAIT, &cap), 0)
+                ASSERT_EQ(cap_install(server, filler_obj, CapType::CAP_ENDPOINT, CAP_WAIT, &cap),
+                          0)
                     << "the free list and cap_install must agree about what is left";
             }
             ASSERT_EQ(cap_reply_live(server), 0u)

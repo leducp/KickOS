@@ -24,6 +24,7 @@
 #include <kickos/io/mmio.h>
 #include <kickos/sys/abi.h>
 #include <kickos/arch/clk_q32.h> // KICKOS_NS_PER_SEC (canonical 1e9 ns/sec)
+#include <kickos/chip_limits.h>
 #include <kickos/arch/doorbell_protocol.h>
 #include <kickos/arch/rv64_doorbell.h>
 
@@ -90,8 +91,7 @@ namespace
     // boot_layout.ld.h because startup.S needs it too.
     constexpr uintptr_t CLINT_PA = KICKOS_RV64_CLINT_PA;
 
-    // The `virt` timebase, which both mtime and the time CSR are driven from.
-    constexpr uint64_t TIME_HZ = 10000000ull;
+    constexpr uint64_t TIME_HZ = KICKOS_CHIP_TIMEBASE_HZ;
     constexpr uint64_t NS_PER_TICK = kickos::KICKOS_NS_PER_SEC / TIME_HZ;
     static_assert(kickos::KICKOS_NS_PER_SEC % TIME_HZ == 0,
                   "a timebase that does not divide a second exactly makes NS_PER_TICK lossy");

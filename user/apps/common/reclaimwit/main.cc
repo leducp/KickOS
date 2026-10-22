@@ -64,18 +64,10 @@ namespace
 
     __attribute__((noreturn)) void park_forever(void)
     {
-        // Sleep fallback for an unmintable semaphore, which would otherwise spin failing
-        // syscalls.
-        kos_cap_t idle = KOS_CAP_NONE;
-        (void)kos_sem_create(0, &idle);
+        static kos_sem_t idle = KOS_SEM_INIT(0);
         while (true)
         {
-            if (idle == KOS_CAP_NONE)
-            {
-                kos_sleep_ns(1000000000ull);
-                continue;
-            }
-            (void)kos_sem_wait(idle, KOS_TIMEOUT_NONE);
+            (void)kos_sem_wait(&idle, KOS_TIMEOUT_NONE);
         }
     }
 
@@ -176,7 +168,8 @@ int main(int, char**)
     // Returns only once the driver has TAKEN the bytes, so the published route is served
     // and not merely created.
     char const served[] = "[reclaimwit] routed through the driver, which discards it\n";
-    int32_t const serve_rc = kos_send(KOS_CAP_STDOUT, served, sizeof(served) - 1u);
+    int32_t const serve_rc =
+        kos_send(KOS_CAP_STDOUT, served, sizeof(served) - 1u, KOS_TIMEOUT_NONE);
 
     // Forcible, not cooperative: the driver never gets the window in which it would have
     // quieted its device. 0 means the task is empty and swept, so the reclaim has already been
@@ -185,7 +178,7 @@ int main(int, char**)
 
     // The driver's task is dead and nothing holds WAIT or HANDOUT, so this refuses at once.
     char const dead = 'x';
-    int32_t const refused_rc = kos_send(KOS_CAP_STDOUT, &dead, 1);
+    int32_t const refused_rc = kos_send(KOS_CAP_STDOUT, &dead, 1, KOS_TIMEOUT_NONE);
 
     kos::print("[reclaimwit] LIVE kernel console after the driver died\n");
     print_rc("handle_close", close_rc);

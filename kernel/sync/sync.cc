@@ -101,69 +101,20 @@ namespace kickos
         return epoch;
     }
 
-    static_assert(KOS_SEM_COUNT_MAX <= INT_MAX,
-                  "KOS_SEM_COUNT_MAX must fit Semaphore::count (an int)");
-
-    void sem_init(Semaphore* s, int initial)
-    {
-        s->count = initial;
-        s->waiters = List{};
-    }
-
-    SemWait sem_wait(IrqLock& held, Semaphore* s, uint32_t timeout_us, uint32_t& epoch)
-    {
-        Thread* const c = sched::current();
-        ParkToken const ask = park_cancel_pending(c);
-        if (ask.cancelled())
-        {
-            sched::exit_current(KOS_EXIT_CANCELLED, sched::EXIT_RETURN, &held);
-        }
-        if (s->count > 0)
-        {
-            s->count--;
-            return SemWait::TAKEN;
-        }
-        if (timeout_us == 0)
-        {
-            return SemWait::EMPTY;
-        }
-        ktime_deadline_arm(c, timeout_us, held);
-        epoch = wq_block(ask)(s->waiters, WAIT_SEM, s, nullptr, held);
-        return SemWait::PARKED;
-    }
-
-    bool sem_post(Semaphore* s)
-    {
-        IrqLock lock;
-        Thread* w = wq_pop_highest(s->waiters);
-        if (w != nullptr)
-        {
-            w->wait_result = 0; // the token goes straight to the waiter, count stays put
-            sched::wake(w, lock);
-            return true;
-        }
-        if (s->count >= KOS_SEM_COUNT_MAX)
-        {
-            return false; // refuse rather than wrap a signed int (UB)
-        }
-        s->count++;
-        return true;
-    }
-
-    // sched::set_prio is the sole writer of an effective priority. Inheritance stops at
-    // semaphores: a thread blocked on a sem answers nullptr from wait_mutex(), so the chain
-    // walk stops there.
+    // sched::set_prio is the sole writer of an effective priority. Inheritance stops at a plain
+    // word: a thread parked on one answers nullptr from wait_mutex(), so the chain walk stops
+    // there.
     namespace
     {
-        void held_push(Thread* owner, Mutex* m)
+        void held_push(Thread* owner, WordRecord* m)
         {
             m->next_held = owner->held_list;
             owner->held_list = m;
         }
 
-        void held_remove(Thread* owner, Mutex* m)
+        void held_remove(Thread* owner, WordRecord* m)
         {
-            Mutex** pp = &owner->held_list;
+            WordRecord** pp = &owner->held_list;
             while (*pp != nullptr)
             {
                 if (*pp == m)
@@ -182,7 +133,7 @@ namespace kickos
         // a window in which a still-parked thread answers nullptr from wait_mutex() and the
         // chain walk stops short of it, losing a boost or a deadlock detection. w must be the
         // top waiter: no boost is recomputed for the waiters left behind it.
-        void transfer_to(Mutex* m, Thread* w, intptr_t status)
+        void transfer_to(WordRecord* m, Thread* w, intptr_t status)
         {
             m->owner = w;
             w->wait_result = status;
@@ -301,7 +252,7 @@ namespace kickos
     uint8_t thread_effective_prio(Thread* t)
     {
         uint8_t p = t->base_prio;
-        for (Mutex* h = t->held_list; h != nullptr; h = h->next_held)
+        for (WordRecord* h = t->held_list; h != nullptr; h = h->next_held)
         {
             Thread const* const w = wq_peek_highest(h->waiters);
             if (w != nullptr and w->prio > p)
@@ -340,11 +291,12 @@ namespace kickos
 
     namespace
     {
-        constexpr uint32_t WORD_OWNER = ~static_cast<uint32_t>(KOS_MUTEX_WAITERS);
+        // A PI word's holder id, a plain word's count.
+        constexpr uint32_t WORD_VALUE = ~static_cast<uint32_t>(KOS_WORD_WAITERS);
 
-        Mutex* record_find(arch_phys_addr_t key)
+        WordRecord* record_find(arch_phys_addr_t key)
         {
-            for (Mutex* m = kernel().mutex_active; m != nullptr; m = m->next_active)
+            for (WordRecord* m = kernel().word_active; m != nullptr; m = m->next_active)
             {
                 if (m->key == key)
                 {
@@ -354,37 +306,41 @@ namespace kickos
             return nullptr;
         }
 
-        // Never null: each waiter parks on one record, and a free record has no owner.
-        Mutex* record_take(arch_phys_addr_t key, Thread* owner)
+        // Never null: each waiter parks on one record. `owner` is a PI record's alone.
+        WordRecord* record_take(arch_phys_addr_t key, WordKind kind, Thread* owner)
         {
             Kernel& k = kernel();
-            for (Mutex& m : k.mutex_records)
+            for (WordRecord& m : k.word_records)
             {
-                if (m.owner == nullptr)
+                if (m.kind == WordKind::FREE)
                 {
                     m.key = key;
+                    m.kind = kind;
                     m.owner = owner;
                     m.waiters = List{};
                     m.prev_active = nullptr;
-                    m.next_active = k.mutex_active;
-                    if (k.mutex_active != nullptr)
+                    m.next_active = k.word_active;
+                    if (k.word_active != nullptr)
                     {
-                        k.mutex_active->prev_active = &m;
+                        k.word_active->prev_active = &m;
                     }
-                    k.mutex_active = &m;
-                    held_push(owner, &m);
+                    k.word_active = &m;
+                    if (kind == WordKind::PI)
+                    {
+                        held_push(owner, &m);
+                    }
                     return &m;
                 }
             }
-            KICKOS_UNREACHABLE(::kickos::diag::kMutexNoRecord);
+            KICKOS_UNREACHABLE(::kickos::diag::kWordNoRecord);
         }
 
-        // `m` has no waiter left and is off its owner's held list.
-        void record_free(Mutex* m)
+        // `m` has no waiter left and, a PI record, is off its owner's held list.
+        void record_free(WordRecord* m)
         {
             if (m->prev_active == nullptr)
             {
-                kernel().mutex_active = m->next_active;
+                kernel().word_active = m->next_active;
             }
             else
             {
@@ -399,6 +355,7 @@ namespace kickos
             m->next_held = nullptr;
             m->owner = nullptr;
             m->key = 0;
+            m->kind = WordKind::FREE;
         }
 
         // The live thread the id names, if it could have written the word: anything else is a
@@ -441,27 +398,27 @@ namespace kickos
                 sched::exit_current(KOS_EXIT_CANCELLED, sched::EXIT_RETURN, &lock);
             }
             WordRef w;
-            *rc = word_ref(c, va, &w);
-            if (*rc != 0)
-            {
-                return Attempt::ANSWERED;
-            }
-            Mutex* m = nullptr;
+            WordRecord* m = nullptr;
             Thread* t = nullptr;
             // The hold of the word ends before the park.
             {
-                WordAccess word(w);
-                if (not word.reached())
+                WordAccess word(c, va, &w);
+                *rc = word.status();
+                if (*rc != 0)
                 {
-                    *rc = -KOS_EFAULT;
                     return Attempt::ANSWERED;
                 }
                 uint32_t const v = word.load();
                 m = record_find(w.key);
+                if (m != nullptr and m->kind != WordKind::PI)
+                {
+                    *rc = -KOS_EINVAL;
+                    return Attempt::ANSWERED;
+                }
                 if (m != nullptr)
                 {
                     // The record is the authority: a word naming anyone else broke the protocol.
-                    if ((v & WORD_OWNER) != m->owner->lock_id)
+                    if ((v & WORD_VALUE) != m->owner->lock_id)
                     {
                         *rc = -KOS_EINVAL;
                         return Attempt::ANSWERED;
@@ -474,8 +431,8 @@ namespace kickos
                     // A writer cleared it; set again, it keeps the holder's release in the
                     // kernel.
                     uint32_t expected = v;
-                    if ((v & KOS_MUTEX_WAITERS) == 0
-                        and not word.cas(&expected, v | KOS_MUTEX_WAITERS))
+                    if ((v & KOS_WORD_WAITERS) == 0
+                        and not word.cas(&expected, v | KOS_WORD_WAITERS))
                     {
                         return Attempt::RETRY;
                     }
@@ -483,7 +440,7 @@ namespace kickos
                 }
                 else
                 {
-                    uint32_t const id = v & WORD_OWNER;
+                    uint32_t const id = v & WORD_VALUE;
                     if (id == c->lock_id)
                     {
                         *rc = -KOS_EDEADLK;
@@ -541,15 +498,15 @@ namespace kickos
                     }
                 }
                 uint32_t expected = v;
-                if (m == nullptr and (v & KOS_MUTEX_WAITERS) == 0
-                    and not word.cas(&expected, v | KOS_MUTEX_WAITERS))
+                if (m == nullptr and (v & KOS_WORD_WAITERS) == 0
+                    and not word.cas(&expected, v | KOS_WORD_WAITERS))
                 {
                     return Attempt::RETRY;
                 }
             }
             if (m == nullptr)
             {
-                m = record_take(w.key, t);
+                m = record_take(w.key, WordKind::PI, t);
             }
             c->wait_va = va;
             // Pass 2: the chain is now known acyclic. Stopping at the first holder already at
@@ -586,24 +543,24 @@ namespace kickos
         Attempt unlock_attempt(IrqLock& lock, Thread* c, uintptr_t va, int* rc)
         {
             WordRef w;
-            *rc = word_ref(c, va, &w);
-            if (*rc != 0)
+            WordRecord* m = nullptr;
             {
-                return Attempt::ANSWERED;
-            }
-            Mutex* m = nullptr;
-            {
-                WordAccess word(w);
-                if (not word.reached())
+                WordAccess word(c, va, &w);
+                *rc = word.status();
+                if (*rc != 0)
                 {
-                    *rc = -KOS_EFAULT;
                     return Attempt::ANSWERED;
                 }
                 uint32_t const v = word.load();
                 m = record_find(w.key);
+                if (m != nullptr and m->kind != WordKind::PI)
+                {
+                    *rc = -KOS_EINVAL;
+                    return Attempt::ANSWERED;
+                }
                 if (m == nullptr)
                 {
-                    if ((v & WORD_OWNER) != c->lock_id)
+                    if ((v & WORD_VALUE) != c->lock_id)
                     {
                         *rc = -KOS_EPERM;
                         return Attempt::ANSWERED;
@@ -629,7 +586,7 @@ namespace kickos
                 uint32_t handed = next->lock_id;
                 if (m->waiters.head != m->waiters.tail)
                 {
-                    handed = handed | KOS_MUTEX_WAITERS;
+                    handed = handed | KOS_WORD_WAITERS;
                 }
                 word.store(handed);
             }
@@ -648,6 +605,141 @@ namespace kickos
             }
             sched::wake(woken, lock);
             *rc = 0;
+            return Attempt::ANSWERED;
+        }
+
+        uint32_t waiters_of(WordRecord const* m)
+        {
+            uint32_t n = 0;
+            if (m == nullptr)
+            {
+                return 0;
+            }
+            for (ListNode const* l = m->waiters.head; l != nullptr; l = l->next)
+            {
+                n++;
+            }
+            return n;
+        }
+
+        struct WakePlan
+        {
+            uint32_t woken;
+            uint32_t handed;
+            uint32_t banked;
+            bool keep_bit;
+        };
+
+        WakePlan wake_plan(uint32_t parked, uint32_t n, uint32_t units)
+        {
+            WakePlan p{n, units, 0u, false};
+            if (parked < p.woken)
+            {
+                p.woken = parked;
+            }
+            if (p.woken < p.handed)
+            {
+                p.handed = p.woken;
+            }
+            // Non-zero only where the record empties: a unit banked beside a parked waiter is
+            // one a running taker could take first.
+            p.banked = units - p.handed;
+            p.keep_bit = p.woken < parked;
+            return p;
+        }
+
+        // The word a wake commits over `v`; false where the banked units carry out of the count.
+        bool word_after_wake(uint32_t v, WakePlan const& p, uint32_t* next)
+        {
+            uint32_t const count = v & WORD_VALUE;
+            if (p.banked > WORD_VALUE - count)
+            {
+                return false;
+            }
+            *next = count + p.banked;
+            if (p.keep_bit)
+            {
+                *next = *next | KOS_WORD_WAITERS;
+            }
+            return true;
+        }
+
+        // Every waiter popped is READY, its deadline dropped, before the one pass that may switch
+        // away: one still BLOCKED off its queue across that switch has no wait edge for an expiry
+        // or a kill to unwind, and a slain waker would never wake it.
+        void wake_popped(WordRecord* m, WakePlan const& p, Held held)
+        {
+            Thread* top = nullptr;
+            for (uint32_t i = 0; i < p.woken; i++)
+            {
+                Thread* const t = wq_pop_highest(m->waiters);
+                t->wait_result = 0;
+                if (i < p.handed)
+                {
+                    t->wait_result = 1;
+                }
+                if (not sched::wake_no_resched(t, held))
+                {
+                    continue;
+                }
+                // Popped highest first, so the first readied is the one the pass weighs.
+                if (top == nullptr)
+                {
+                    top = t;
+                    continue;
+                }
+#if KICKOS_KERNEL_CORES > 1
+                sched::place_ready(t, held);
+#endif
+            }
+            if (m != nullptr and m->waiters.empty())
+            {
+                record_free(m);
+            }
+            if (top != nullptr)
+            {
+                sched::resched_after_wake(top, held);
+            }
+        }
+
+        // Every decision on the word is made on the value the compare-and-swap commits over, and
+        // nobody is popped before it lands: a user fast path on another core moves the count
+        // between any load and any store.
+        Attempt wake_attempt(IrqLock& lock, Thread* c, uintptr_t va, uint32_t n, uint32_t units,
+                             int* rc)
+        {
+            WordRef w;
+            WordRecord* m = nullptr;
+            WakePlan p{};
+            {
+                WordAccess word(c, va, &w);
+                *rc = word.status();
+                if (*rc != 0)
+                {
+                    return Attempt::ANSWERED;
+                }
+                m = record_find(w.key);
+                if (m != nullptr and m->kind != WordKind::PLAIN)
+                {
+                    *rc = -KOS_EINVAL;
+                    return Attempt::ANSWERED;
+                }
+                p = wake_plan(waiters_of(m), n, units);
+                uint32_t const v = word.load();
+                uint32_t next = 0;
+                if (not word_after_wake(v, p, &next))
+                {
+                    *rc = -KOS_EOVERFLOW;
+                    return Attempt::ANSWERED;
+                }
+                uint32_t expected = v;
+                if (not word.cas(&expected, next))
+                {
+                    return Attempt::RETRY;
+                }
+            }
+            *rc = static_cast<int>(p.woken);
+            wake_popped(m, p, lock);
             return Attempt::ANSWERED;
         }
     }
@@ -697,11 +789,82 @@ namespace kickos
         }
     }
 
-    void mutex_waiter_left(Mutex* m)
+    int word_wait(uintptr_t va, uint32_t expected, uint32_t timeout_us)
+    {
+        Thread* const c = sched::current();
+        uint32_t epoch = 0;
+        {
+            IrqLock lock;
+            ParkToken const ask = park_cancel_pending(c);
+            if (ask.cancelled())
+            {
+                sched::exit_current(KOS_EXIT_CANCELLED, sched::EXIT_RETURN, &lock);
+            }
+            WordRef w;
+            WordRecord* m = nullptr;
+            {
+                WordAccess word(c, va, &w);
+                if (word.status() != 0)
+                {
+                    return word.status();
+                }
+                m = record_find(w.key);
+                if (m != nullptr and m->kind != WordKind::PLAIN)
+                {
+                    return -KOS_EINVAL;
+                }
+                if (word.load() != expected)
+                {
+                    return -KOS_EAGAIN;
+                }
+            }
+            // Before any deadline: ktime_deadline_arm treats only KOS_TIMEOUT_NONE as none.
+            if (timeout_us == 0)
+            {
+                return -KOS_ETIMEDOUT;
+            }
+            if (m == nullptr)
+            {
+                m = record_take(w.key, WordKind::PLAIN, nullptr);
+            }
+            c->wait_va = va;
+            ktime_deadline_arm(c, timeout_us, lock);
+            epoch = wq_block(ask)(m->waiters, WAIT_WORD, m, nullptr, lock);
+        }
+        wq_confirm_resume(c, epoch);
+        return static_cast<int>(c->wait_result);
+    }
+
+    int word_wake(uintptr_t va, uint32_t n, uint32_t units)
+    {
+        if (units > n)
+        {
+            return -KOS_EINVAL;
+        }
+        Thread* const c = sched::current();
+        while (true)
+        {
+            int rc = 0;
+            Attempt got = Attempt::RETRY;
+            {
+                IrqLock lock;
+                got = wake_attempt(lock, c, va, n, units, &rc);
+            }
+            if (got == Attempt::ANSWERED)
+            {
+                return rc;
+            }
+        }
+    }
+
+    void word_waiter_left(WordRecord* m)
     {
         if (m->waiters.empty())
         {
-            held_remove(m->owner, m);
+            if (m->kind == WordKind::PI)
+            {
+                held_remove(m->owner, m);
+            }
             record_free(m);
         }
     }
@@ -713,14 +876,14 @@ namespace kickos
         // MUTEX_OWNER_DIED, the protected state may be inconsistent, but never stranded.
         while (dying->held_list != nullptr)
         {
-            Mutex* const m = dying->held_list;
+            WordRecord* const m = dying->held_list;
             held_remove(dying, m);
             Thread* const next = wq_pop_highest(m->waiters);
             KICKOS_ASSERT(next != nullptr); // a record lives only while it has a waiter
             uint32_t handed = next->lock_id;
             if (not m->waiters.empty())
             {
-                handed = handed | KOS_MUTEX_WAITERS;
+                handed = handed | KOS_WORD_WAITERS;
             }
             // A waiter can always write its word: every call removing that reach ended the
             // waits through it first, so the store cannot fail.
@@ -740,13 +903,13 @@ namespace kickos
     }
 
 #if KICKOS_HAVE_ASPACE
-    void mutex_reach_lost(struct arch_aspace* space, uintptr_t base, size_t bytes, Held held)
+    void word_reach_lost(struct arch_aspace* space, uintptr_t base, size_t bytes, Held held)
     {
-        Mutex* m = kernel().mutex_active;
+        WordRecord* m = kernel().word_active;
         while (m != nullptr)
         {
             // Saved first: the abort frees a record its last waiter leaves.
-            Mutex* const next_record = m->next_active;
+            WordRecord* const next_record = m->next_active;
             ListNode* n = m->waiters.head;
             while (n != nullptr)
             {
@@ -763,10 +926,10 @@ namespace kickos
         }
     }
 
-    void mutex_windows_lost(struct arch_aspace* space, VirtualRanges const* ranges,
-                            uint16_t holder, Held held)
+    void word_windows_lost(struct arch_aspace* space, VirtualRanges const* ranges,
+                           uint16_t holder, Held held)
     {
-        if (kernel().mutex_active == nullptr or ranges == nullptr)
+        if (kernel().word_active == nullptr or ranges == nullptr)
         {
             return;
         }
@@ -776,7 +939,7 @@ namespace kickos
             VirtualRange const* const e = ranges->at(i);
             if (e != nullptr and (e->flags & VR_WINDOW) != 0 and e->holder == holder)
             {
-                mutex_reach_lost(space, e->base, static_cast<size_t>(e->pages) * g, held);
+                word_reach_lost(space, e->base, static_cast<size_t>(e->pages) * g, held);
             }
         }
     }

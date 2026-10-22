@@ -48,8 +48,8 @@ namespace
     // cannot be taken until the driver is back in kos_recv, past that drain.
     void drain_console()
     {
-        (void)kos_send(CH_EP, "", 0);
-        (void)kos_send(CH_EP, "", 0);
+        (void)kos_send(CH_EP, "", 0, KOS_TIMEOUT_NONE);
+        (void)kos_send(CH_EP, "", 0, KOS_TIMEOUT_NONE);
     }
 }
 

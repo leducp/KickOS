@@ -117,7 +117,7 @@ namespace
     void install_at(CapRun const& run, uint32_t index, uint16_t* head)
     {
         cap_run_free_unlink(run, index, head);
-        set_type(run, index, CapType::CAP_SEM);
+        set_type(run, index, CapType::CAP_ENDPOINT);
     }
     void close_at(CapRun const& run, uint32_t index, uint16_t* head)
     {

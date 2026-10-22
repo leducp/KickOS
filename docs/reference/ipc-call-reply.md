@@ -23,8 +23,8 @@ exploits this: **there is no reply-object pool.** A `CAP_REPLY` entry in the SER
 handle table names the parked caller by generational thread handle; the caller's own
 parked TCB is the reply object.
 
-- **`CapType::CAP_REPLY`** (`kernel/include/kickos/cap.h`) -- one arm beside `CAP_SEM` /
-  `CAP_ENDPOINT` / `CAP_IRQ`.
+- **`CapType::CAP_REPLY`** (`kernel/include/kickos/cap.h`) -- one arm beside `CAP_ENDPOINT` /
+  `CAP_IRQ` / `CAP_NOTIFY`.
 - **`CapEntry.obj` packing** (fits the frozen 8-byte `CapEntry`): `obj` holds
   `ThreadPool::handle_for(caller)` WHOLE and UNSHIFTED, all 32 bits of it
   (`gen:16 | index:16`, since `ThreadPool::INDEX_BITS` is 16) -- read it back with
@@ -40,7 +40,8 @@ parked TCB is the reply object.
   generation's storage width, so a handle carrying anything above the field fails to
   resolve rather than aliasing a live slot.
 - **`CapEntry.rights = 0`** -- no `WAIT` / `SIGNAL` / `TRANSFER`. A reply cap is not
-  delegable, not dupable, and usable only by `KOS_SYS_REPLY` and `KOS_SYS_HANDLE_CLOSE`.
+  delegable, not dupable, and usable only by the reply half of `KOS_SYS_REPLY_RECV` and by
+  `KOS_SYS_HANDLE_CLOSE`.
 - **No `ThreadPool` refcount.** The cap does NOT pin the caller's thread slot; staleness
   is generation-guarded (mirrors how thread handles already behave). `obj_ref_inc` /
   `obj_ref_drop` are no-ops for `CAP_REPLY`.
@@ -78,9 +79,10 @@ home and not two.
 `wq_confirm_resume` on EVERY return path. Without this an EPIPE-drained call would leave
 `CALL_SEND_WAIT` set and a later plain `kos_send` would be misread as a call.
 
-## `KOS_SYS_CALL = 34`
+## `KOS_SYS_CALL = 46`
 
-    kos_call(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap) -> int32_t
+    kos_call(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap,
+             uint32_t timeout_us) -> int32_t
 
 One buffer carries the request out and receives the reply back (**in-place**): the
 request is fully copied at rendezvous before the caller parks, so overwriting `buf` with
@@ -108,6 +110,7 @@ the reply is safe. A client wanting split tx/rx copies locally.
 | `-KOS_EPIPE` | the server died holding the request, mid-transaction |
 | `-KOS_EMFILE` | the server's handle table is full (no free slot to mint the reply cap) |
 | `-KOS_ENOTSUP` | the receiver took an info-less recv and cannot host a call |
+| `-KOS_ETIMEDOUT` | the deadline passed; no reply was received and none can arrive later |
 
 Both buffer bound-checks run up front, in caller context, once. Two paths:
 
@@ -122,23 +125,14 @@ Both buffer bound-checks run up front, in caller context, once. Two paths:
   conventional server now (D2) if this caller outranks it.
 - **No receiver**: answered at once with `-KOS_EAGAIN` or `-KOS_ECONNREFUSED`, parking nowhere.
 
-## `KOS_SYS_CALL_TIMED = 46`
+**The deadline.** `timeout_us` is RELATIVE microseconds, and `KOS_TIMEOUT_NONE` is no deadline.
 
-    kos_call_timed(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap,
-                   uint32_t timeout_us) -> int32_t
-
-`kos_call` with a deadline of `timeout_us` RELATIVE microseconds (`KOS_TIMEOUT_NONE` = no
-deadline, which is exactly `kos_call`). Same returns as `KOS_SYS_CALL`, plus:
-
-| Return | Meaning |
-|---|---|
-| `-KOS_ETIMEDOUT` | the deadline passed; no reply was received and none can arrive later |
-
-- **Its own syscall number, not a flag.** The trap frame carries four argument slots and
-  `kos_call` spends all four, so a deadline needs one freed. The stub packs `send_len` and
-  `recv_cap` into a single slot (`kos_call_lens_pack`, nine bits each, both bounded by
-  `KOS_EP_MSG_MAX`) and the dispatch arm unpacks. `kos_call` keeps its own number with the
-  lengths UNPACKED, so the untimed path pays no packing.
+- **The lengths share one argument slot.** The trap frame carries four argument slots, so a
+  deadline needs one freed: the stub packs `send_len` and `recv_cap` into a single slot
+  (`kos_call_lens_pack`, nine bits each, both bounded by `KOS_EP_MSG_MAX`) and the dispatch arm
+  unpacks. A `kos_call` of no deadline whose two lengths both fit `KOS_CALL_REG_BYTES` tries the
+  register form, `KOS_SYS_CALL_REG`, first, and reissues here where that is refused;
+  `kos_call_generic` is the same call issued straight to this trap.
 - The pack SATURATES each field at 511 rather than masking it. The kernel remains the sole
   validator, and a masked `512` would arrive as `0` and become a silent zero-length call; a
   saturated `511` is still above `KOS_EP_MSG_MAX`, so the `-KOS_EINVAL` still fires.
@@ -151,13 +145,15 @@ deadline, which is exactly `kos_call`). Same returns as `KOS_SYS_CALL`, plus:
   would reach across a containment boundary, so it is left alone; the residue is bounded by
   `KICKOS_CAP_REPLY_MAX` against `Thread::cap_reply_live`.
 
-## `KOS_SYS_REPLY = 35`
+## The reply alone: `KOS_SYS_REPLY_RECV` with no options
 
     kos_reply(kos_cap_t reply_cap, void const* buf, size_t len) -> int
 
-Completes a call: copy the reply into the parked caller's buffer and wake it. The cap is
-consumed on EVERY exit (one-shot). `len > KOS_EP_MSG_MAX` is clamped (the caller's
-`call_rx_cap` clamps it anyway).
+Completes a call: copy the reply into the parked caller's buffer and wake it. The stub issues
+`KOS_SYS_REPLY_RECV` with `lens` packing `len` and a receive capacity of 0, and `opts` null. The
+dispatch answers a null `opts` with the reply alone, at the top of the arm and before any of the
+receive's validation, so it receives nothing and never parks. The cap is consumed on EVERY exit
+(one-shot). `len > KOS_EP_MSG_MAX` is clamped (the caller's `call_rx_cap` clamps it anyway).
 
 | Return | Meaning |
 |---|---|
@@ -167,7 +163,7 @@ consumed on EVERY exit (one-shot). `len > KOS_EP_MSG_MAX` is clamped (the caller
 | `-KOS_ESRCH` | the caller is gone/aborted/reused (stale resolve); the cap is still consumed |
 
 `ESRCH` is REACHABLE by every route that ends a caller's reply wait before the reply: a
-`kos_call_timed` deadline, and a kill or slay of the parked caller (`thread_abort_park`, its
+`kos_call` deadline, and a kill or slay of the parked caller (`thread_abort_park`, its
 `WAIT_EP_REPLY` arm). The caller is unwound out of `CALL_REPLY_WAIT` and left `CALL_NONE`, its
 `call_seq` moved on, while the server keeps the reply cap it was minted; the server's eventual
 `kos_reply` then resolves the cap, finds no caller in `CALL_REPLY_WAIT`, consumes the cap and
@@ -187,7 +183,7 @@ the tree open-code that adjacency; the fused form pays one trap, one `IrqLock`, 
 `sched::current()` and one buffer validate where the pair pays two of each.
 
 - `lens` is `kos_call_lens_pack(reply_len, recv_cap)`, the nine-bits-each pack
-  `KOS_SYS_CALL_TIMED` established. Both halves CLAMP to `KOS_EP_MSG_MAX` rather than being
+  `KOS_SYS_CALL` established. Both halves CLAMP to `KOS_EP_MSG_MAX` rather than being
   refused, which is what the two syscalls this one replaced did: an over-length reply was
   clamped by the parked caller's own capacity anyway, and an over-length receive capacity was
   harmless. The pack SATURATES at 511 rather than masking, so a wild argument arrives above
@@ -197,6 +193,7 @@ the tree open-code that adjacency; the fused form pays one trap, one `IrqLock`, 
   the caller before this body parks, so nothing in flight reads `buf` afterwards.
 - `reply_cap == KOS_CAP_NONE` is the first pass of a loop, and the notify-only pass: nothing to
   answer, receive only.
+- `opts == NULL` is the reply alone, `kos_reply` (above): nothing is received.
 
 **`struct kos_reply_recv_opts`**, 24 bytes with the nested info at offset 16:
 
@@ -252,7 +249,7 @@ Receive-half returns, the whole set a receive can answer:
 |---|---|
 | `>= 0` | received byte count |
 | `-KOS_ENOTIFY` | no message; an accepted notification ended the wait and `opts->notify` carries its bits. NOT spelled EAGAIN: a code reading as "try again" invites a loop that never services the device |
-| `-KOS_EINVAL` | `opts` null or misaligned, or an undefined `flags` bit. NOT a length: both halves of `lens` clamp |
+| `-KOS_EINVAL` | `opts` misaligned, or an undefined `flags` bit. NOT a length: both halves of `lens` clamp |
 | `-KOS_EFAULT` | `opts` or `buf` not accessible, or a copy was refused |
 | `-KOS_EBADF` / `-KOS_EACCES` / `-KOS_EPERM` | bad endpoint cap, missing `CAP_WAIT`, or no caller context |
 | `-KOS_ETIMEDOUT` | `opts->timeout_us` passed |
@@ -331,7 +328,7 @@ no line attached is a complete notification.
   wait, the fused receive's wait over the object, `kos_irq_ack` and `kos_irq_discard` refuse
   `-KOS_EPERM` a caller whose OWN core mask is not exactly that claim core, a mask merely
   containing it included, even where its task's grant reaches it. The mask is never clamped or
-  rewritten: the thread pins itself with `kos_thread_self` and `kos_thread_set_affinity`, or is
+  rewritten: the thread pins itself with `kos_thread_self` and `kos_thread_affinity`, or is
   spawned pinned.
 - **The bind is explicit and it is the WAITER's.** `kos_notify_bind(notify_cap)` says "this
   thread is this object's one waiter". It cannot be done at the claim: a driver's lines are
@@ -357,7 +354,7 @@ no line attached is a complete notification.
   `-KOS_ECANCELED` first: a killed thread is owed that code from every later wait.
 - **Which waits ACCEPT a notification**: `KOS_SYS_NOTIFY_WAIT`, for the bits its mask names, and
   `KOS_SYS_REPLY_RECV`, for the bits its `notify` mask names. Nothing else. A bit set on a
-  thread parked in a mutex, a plain `sem_wait` or a call's reply wait is NOT a wake: those parks
+  thread parked in a mutex, a plain word wait or a call's reply wait is NOT a wake: those parks
   have no result channel for it, and the bits are collected by the thread's next accepting wait.
 - **The mask is not an authority test.** Every bit of the object belongs to its bound waiter, so
   a mask is what that waiter is willing to be woken for and nothing else; the BADGE on a
@@ -487,10 +484,9 @@ mint, so the retraction above is reached only where a real out-pointer was named
 already landed: a buffer the kernel answers `EFAULT` about holds a head of the new bytes over
 a tail of what it held, bounded by `KOS_EP_MSG_MAX`. That is why `0` is the wrong answer for
 a receiver -- `n == 0` is a valid zero-length signal, and it would describe an indeterminate
-buffer as an empty arrival. The residue is documented rather than engineered away, on
-`KOS_ETIMEDOUT`'s precedent (`invariants.md`, `syscall-return-abi`): the promise is that no
-party is told a transfer succeeded over a buffer in that state, not that the transaction was
-undone.
+buffer as an empty arrival. As with a timed call's timeout (`KOS_SYS_CALL` above), the
+promise is that no party is told a transfer succeeded over a buffer in that state, not that
+the transaction was undone (`invariants.md`, `syscall-return-abi`).
 
 The receive's own input words are outside this: the IN prefix of `kos_reply_recv_opts` is read
 in one copy of 4-aligned words before anything is committed, so a refusal there is a plain
@@ -559,7 +555,7 @@ drops its `WAIT` cap (waker-cleared discipline, like every wait edge).
 ## A FAR call -- the receiver is in another kernel
 
 Present only where `KICKOS_AMP_NODE`, and reached through the SAME `kos_call` /
-`kos_call_timed` / `kos_send`: locality never reaches the API
+`kos_send`: locality never reaches the API
 (`../design-multicore.md` N7). What decides it is the endpoint object, whose
 `far_node` (biased by one, so 0 is local) and `far_port` are the whole answer and
 have no flag beside them to disagree with. `endpoint_is_far` folds to a constant
@@ -912,8 +908,8 @@ The cap is consumed exactly once per unpark:
 | `kos_reply` success | consume, copy reply, wake | woken, reply bytes |
 | `kos_reply` to a stale caller | consume anyway, `-KOS_ESRCH` to server | n/a (already timed out) |
 | `kos_reply` on an abandoned cap whose caller is mid-call elsewhere | consume; the reply-waiter unlink misses, so complete as if gone | untouched: its live call is another server's |
-| `kos_call_timed` deadline expires in `CALL_SEND_WAIT` | timer unwinds `send_waiters`, reverts D2 | woken, `-KOS_ETIMEDOUT`, never taken |
-| `kos_call_timed` deadline expires in `CALL_REPLY_WAIT` | timer unwinds the donor list, reverts D3 | woken, `-KOS_ETIMEDOUT`; server keeps the cap |
+| `kos_call` deadline expires in `CALL_SEND_WAIT` | timer unwinds `send_waiters`, reverts D2 | woken, `-KOS_ETIMEDOUT`, never taken |
+| `kos_call` deadline expires in `CALL_REPLY_WAIT` | timer unwinds the donor list, reverts D3 | woken, `-KOS_ETIMEDOUT`; server keeps the cap |
 | second `kos_reply` / bad handle | resolve fails at lookup | unaffected |
 | server `handle_close`s the reply cap | `CAP_REPLY` close arm: EPIPE-wake caller, consume | woken, `-KOS_EPIPE` |
 | server dies mid-transaction (fault -> exit) | `cap_teardown` hits the same close arm | woken, `-KOS_EPIPE` |
@@ -946,17 +942,17 @@ walks a shorter chain and never a torn one.
   not re-boosted (the chain walk runs only at `mutex_lock`). No current consumer takes a
   mutex mid-transaction. A ~10-line fix (re-run `mutex_lock`'s pass-2 chain walk after the
   D2 raise) is banked for when one does.
-- **An UNTIMED call still parks indefinitely.** `kos_call` has no deadline; `kos_call_timed`
-  is the bounded form, and its deadline covers both phases (the wait on `send_waiters` and
+- **An UNTIMED call still parks indefinitely.** A `kos_call` of `KOS_TIMEOUT_NONE` has no
+  deadline; a finite timeout is the bounded form, and its deadline covers both phases (the wait on `send_waiters` and
   the wait for the reply). A timeout does not abort the transaction: a request a server has
   already taken stays taken, and that server still holds the reply cap.
 - **A caller may be root, and an UNTIMED root park is terminal for the whole system.** A pool
   caller holding a valid `CAP_SIGNAL` with no receiver ever parking is parked forever, and
   root is a pool thread like any other. Nothing else ends that park: root leaves
-  `spawner_tag` at `KILL_TAG_NONE` so `kos_thread_kill` refuses it `-KOS_EPERM`
+  `spawner_tag` at `KILL_TAG_NONE` so `kos_thread_cancel` refuses it `-KOS_EPERM`
   (`kernel/syscall/syscall_thread.cc`), and `kernel().live` never reaches 0 while root is
   parked, so shutdown never fires.
-  Where a worker's park costs one thread, root's costs the image. `kos_call_timed` is the
+  Where a worker's park costs one thread, root's costs the image. A timed call is the
   answer, and root is exactly where it is worth paying for.
 - **Root holding a mutex the service takes is an undetected deadlock.** Root locks a mutex,
   calls a service, and the service locks the same mutex: `mutex_lock`'s cycle-detection pass
@@ -976,7 +972,7 @@ walks a shorter chain and never a torn one.
   no bus-claim/session that spans multiple calls (a coherent multi-phase transaction is
   expressed as one call with multiple segments -- see `bus-service.md`).
 - **Call-cycle (A<->B) and self-call** (a caller holding the only `WAIT` cap) park forever
-  under `kos_call`: there is no cycle detection. `kos_call_timed` bounds the park without
+  under an untimed `kos_call`: there is no cycle detection. A timeout bounds the park without
   detecting the cycle.
 
 ## Cross-references

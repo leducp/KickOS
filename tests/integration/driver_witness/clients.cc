@@ -24,7 +24,7 @@ namespace
         while (true)
         {
             uint32_t served = 0;
-            int32_t const n = kos_call_timed(ep, &served, 0u, sizeof(served), CALL_TIMEOUT_US);
+            int32_t const n = kos_call(ep, &served, 0u, sizeof(served), CALL_TIMEOUT_US);
             if (n == -KOS_ECONNREFUSED)
             {
                 printf("%s: refused\n", who);
@@ -64,7 +64,7 @@ extern "C" void line_client_main(kos_self_t const* self)
     int32_t const answered = static_cast<int32_t>(sizeof(raised));
     for (uint32_t calls = 0; calls < LINE_CALLS; calls++)
     {
-        if (kos_call_timed(ep, &raised, 0u, sizeof(raised), CALL_TIMEOUT_US) == answered
+        if (kos_call(ep, &raised, 0u, sizeof(raised), CALL_TIMEOUT_US) == answered
             and raised != 0u)
         {
             printf("line: testline reports line 0 raised\n");

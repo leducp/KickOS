@@ -106,7 +106,7 @@ int32_t kos_spi_device_open(struct kos_spi_device* d, struct kos_spi_bus* b,
     wire.cs_index = cfg->cs_index;
     mem_copy(buf + sizeof(struct kos_bus_req), &wire, sizeof(wire));
 
-    int32_t const rc = kos_call(b->ep, buf, sizeof(buf), sizeof(buf));
+    int32_t const rc = kos_call(b->ep, buf, sizeof(buf), sizeof(buf), KOS_TIMEOUT_NONE);
     size_t off = 0u;
     int32_t const got = reply_payload(buf, rc, &off);
     if (got < 0)
@@ -163,7 +163,7 @@ int32_t kos_spi_transfer(struct kos_spi_device* d, struct kos_bus_seg const* seg
              static_cast<size_t>(nseg) * sizeof(struct kos_bus_seg));
     mem_copy(msg + framing, buf, len);
 
-    int32_t const rc = kos_call(b->ep, msg, framing + len, sizeof(msg));
+    int32_t const rc = kos_call(b->ep, msg, framing + len, sizeof(msg), KOS_TIMEOUT_NONE);
     size_t off = 0u;
     int32_t const got = reply_payload(msg, rc, &off);
     if (got < 0)

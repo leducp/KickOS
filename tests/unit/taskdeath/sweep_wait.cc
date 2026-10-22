@@ -167,8 +167,9 @@ namespace kickos
             Task* const group = task(0);
             Thread* const member = seat_pool(SLOT_LIGHT, PRIO_LOW);
             join_task(member, group);
-            Semaphore* const s = semaphore(nullptr);
-            park_sem_waiter(member, s);
+            static uint32_t word;
+            word = 0;
+            park_word_waiter(member, plain_word(&word));
 
             {
                 IrqLock lock;

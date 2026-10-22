@@ -78,7 +78,7 @@ namespace kickos
         int32_t watch_notify = 0;
         // The endpoint whose first receive means ready, biased the same way; compared only.
         int32_t watch_ep = 0;
-        // The status the task ended with, which kos_task_exit_status answers once it has ended.
+        // The status the task ended with, which kos_task_state answers once it has ended.
         int32_t exit_status = 0;
     };
 
@@ -164,12 +164,9 @@ namespace kickos
     // nothing of its kind), -KOS_EPERM (not the creator), -KOS_EACCES (the notification cap
     // lacks SIGNAL).
     int task_watch_call(kos_task_t task, uint32_t notify_cap, uint32_t ready_ep);
-    // KOS_TASK_LIVE | READY | DEAD | ENDED for the task `task` names, or -KOS_EBADF /
-    // -KOS_EPERM.
-    int task_state_call(kos_task_t task);
-    // 0 and the status the task `task` names ended with in *status, or -KOS_EBUSY until it has
-    // ended, -KOS_EBADF / -KOS_EPERM.
-    int task_exit_status_call(kos_task_t task, int32_t* status);
+    // KOS_TASK_LIVE | READY | DEAD | ENDED for the task `task` names, with *status the status
+    // it ended with where ENDED is set, or -KOS_EBADF / -KOS_EPERM.
+    int task_state_call(kos_task_t task, int32_t* status);
     // The task ends, its entry thread having died by any cause or a member faulted: it takes no
     // member from here on, the creator's watch is raised, and `code` is its status when `latch`
     // holds, the ending thread being uncancelled; otherwise it keeps KOS_EXIT_CANCELLED. A later

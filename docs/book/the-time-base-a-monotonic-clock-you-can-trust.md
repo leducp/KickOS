@@ -23,7 +23,7 @@ A scheduler needs to answer two questions about time, and only two:
 That pair -- a free-running *now* plus an arm-able *next-event* -- is the whole
 time base. Everything the kernel does with time is built from it: a `sleep(d)`
 is "arm the one-shot for `now() + d`"; a round-robin slice is "arm for `now() +
-quantum`"; a timed `sem_wait` is "arm for the nearest of my deadline and
+quantum`"; a timed semaphore wait is "arm for the nearest of my deadline and
 whatever was already pending." When an event fires, the kernel readies whatever
 was waiting on the earliest deadline, then re-arms the one-shot for the next.
 
@@ -419,8 +419,43 @@ as a template: the K64F chains two 32-bit PIT channels into a 64-bit free-runner
 and derives the PIT rate from the same bus-clock constant that programs the
 divider -- checklist items 2, 3, and 5 in one place.
 
+### Reading the clock without asking the kernel
+
+A thread asks for the time often: a timeout it computes itself, a measurement, a stamp on a log
+line. Where the clock exists only behind `arch_clock_now()`, each of those reads is a system call,
+a trap into the kernel and a return, which on a fast core costs far more than the counter read
+it wraps. Where the counter behind the clock is a register of the core, the core can usually let
+unprivileged code read it, and then a thread computes `now` itself. Three conditions make that
+safe to offer.
+
+- **The read is opened on every core before a thread runs there.** The opening is one privileged
+  register write at bring-up: ARMv8-A's `CNTKCTL_EL1`, RISC-V's counter-enable registers, x86's
+  `CR4.TSD` cleared. A core that misses it does not answer a wrong time; the read traps and the
+  thread's task ends, which is loud.
+- **The thread does the kernel's arithmetic on the kernel's counter.** Two clocks that disagree
+  by one tick are two clocks, and a deadline taken from one and kept by the other fails at a
+  boundary. So the rate the thread scales by is the kernel's own: a register user mode can read,
+  a constant the chip description states, or, where only the kernel knows it because it measured
+  it at boot, a value the kernel hands each program before any of its application code runs.
+- **The kernel trusts nothing the thread read.** Every deadline a thread passes the kernel is a
+  relative timeout, never an instant, so a wrong reading can only hurt the thread that made it.
+
+For the thread, the cost changes and the meaning does not: the same values at the same
+resolution. One consequence is easy to miss. A cooperative cancel lands when its target next
+enters the kernel, and a loop that only reads a user-mode clock never enters, so it is no longer
+a place such a cancel can land; a forced cancel still reaches it. And one thing is given away: the
+counter becomes a timing source every thread on that core can read. Because the opening is a
+per-core register, a kernel that wants to ration time can close it again for a thread at each
+switch, for one register write.
+
+Where the clock is a memory-mapped peripheral behind the protection unit, or the host's clock
+reached through the emulator, the read stays a system call. The function a program calls is the
+same either way.
+
 ## Where to go next
 
+- Which arches let a thread read the clock itself, and what a port owes for it:
+  `../reference/porting.md` ("The clock a thread reads itself").
 - The exact, binding seam and the tickless scheduler mechanics:
   `../reference/architecture.md` (`arch_timer_arm` / `arch_clock_now`, and the
   "Tickless" section -- delta list, minimum-delta guard).

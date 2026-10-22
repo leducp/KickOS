@@ -316,8 +316,13 @@ extern "C"
         return ARCH_ASPACE_OK;
     }
 
-    void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va, bool* uncached)
+    void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va, bool* uncached,
+                              arch_phys_addr_t* frame)
     {
+        if (frame != nullptr)
+        {
+            *frame = arch_aspace_frame_at(space, va);
+        }
         if (space == nullptr)
         {
             return nullptr;

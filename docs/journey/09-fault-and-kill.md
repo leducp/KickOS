@@ -371,7 +371,7 @@ then exits:
 ```
 
 `KOS_EXIT_FAULT` is 139. It is the exit status of the task, which the task's creator can read
-later (`kos_task_exit_status`), and of the whole program if this was the last thread.
+later (`kos_task_state`), and of the whole program if this was the last thread.
 
 **Try it:**
 
@@ -396,7 +396,7 @@ where the frame was (`0x20029fd8` + 32): the frame has been popped. One instruct
 the kernel block top, inside `g_kstacks`, the array of per-thread kernel stacks.
 
 **Why, and the contract:** [Reference: porting, "Fault-isolation contract"](../reference/porting.md#fault-isolation-contract-a-faulting-thread-takes-its-task-and-nothing-beyond),
-[Reference: invariants, `fault-exit-code-is-not-a-joiner-signal`](../reference/invariants.md)
+[Reference: invariants, `fault-exit-status-reaches-the-creator`](../reference/invariants.md)
 
 ### Stop 6: exit, part one: mark it dying, end the task
 **Where:** `kernel/sched/sched.cc`, `sched::exit_current`; `kernel/task/task.cc`, `task_end`,
@@ -467,7 +467,7 @@ $9 = true
 `KOS_TASK_ENDED` (`user/include/kickos/sys/abi.h`).
 
 **Why, and the contract:** [Reference: porting, "Fault-isolation contract"](../reference/porting.md#fault-isolation-contract-a-faulting-thread-takes-its-task-and-nothing-beyond)
-("The rule"), [Reference: invariants, `fault-exit-code-is-not-a-joiner-signal`](../reference/invariants.md)
+("The rule"), [Reference: invariants, `fault-exit-status-reaches-the-creator`](../reference/invariants.md)
 
 ### Stop 7: exit, part two: release every capability
 **Where:** `kernel/syscall/cap.cc`, `cap_teardown`, `teardown_entry`, `obj_close_protocol`, `obj_ref_drop`;
@@ -526,15 +526,15 @@ the fault.
 $1 = {{obj = 0, type = 0 '\000', seq_lo = 0 '\000', rights = 0 '\000', seq_hi = 0 '\000', gen = 0},
       {obj = 655363, type = 0 '\000', seq_lo = 0 '\000', rights = 0 '\000', seq_hi = 0 '\000', gen = 0}}
 (gdb) p $c->held_list
-$2 = (kickos::Mutex *) 0x0
-(gdb) p $k->mutex_active
-$3 = (kickos::Mutex *) 0x0
+$2 = (kickos::WordRecord *) 0x0
+(gdb) p $k->word_active
+$3 = (kickos::WordRecord *) 0x0
 (gdb) p/x '(anonymous namespace)::s_libc'
 $4 = {m = {word = 0x0}, depth = 0x0}
 ```
 
 Both slots are empty (the second holds a free-list link). The thread holds no mutex record, and
-no thread waits on any mutex word (the kernel's list of live records, `mutex_active`, is empty).
+no thread waits on any mutex word (the kernel's list of live records, `word_active`, is empty).
 The C library's lock word reads 0: free. There is nothing for this sweep to release.
 
 To see a mutex handed over at a death, use the `selftest` image. Its test `t_mutex_owner_died`
@@ -554,7 +554,7 @@ $2 = true
 (gdb) p/x dying->lock_id
 $3 = 0x383
 (gdb) p $m = dying->held_list
-$4 = (kickos::Mutex *) 0x20004a00 <kickos::detail::g_instance+576>
+$4 = (kickos::WordRecord *) 0x20004a00 <kickos::detail::g_instance+576>
 (gdb) p/x '(anonymous namespace)::g_od_m'
 $5 = {word = 0x80000383}
 (gdb) p &((kickos::Thread*)0)->link
@@ -582,13 +582,13 @@ $13 = {v_ = kickos::ThreadState::READY}
 $14 = {word = 0x2c4}
 (gdb) p $m->owner
 $15 = (kickos::Thread *) 0x0
-(gdb) p $k->mutex_active
-$16 = (kickos::Mutex *) 0x0
+(gdb) p $k->word_active
+$16 = (kickos::WordRecord *) 0x0
 ```
 
 Every exit calls `mutex_owner_exit`, so the condition skips the threads that die holding no
 record. `odOwn` dies with `dying` set, holding one record. The word holds `odOwn`'s lock id
-(`0x383`) with the top bit, `KOS_MUTEX_WAITERS`, set: a thread waits. `0x18` is the offset of
+(`0x383`) with the top bit, `KOS_WORD_WAITERS`, set: a thread waits. `0x18` is the offset of
 `link` in a `Thread`, so `$w` is the thread at the head of the record's waiters: `odWt`, parked
 through the word's own address. After the walk, the word holds `odWt`'s lock id and no waiters
 bit, since nobody else waits. `odWt` is `READY`, with `-130`, `-KOS_EOWNERDEAD`, as its result.
@@ -615,7 +615,7 @@ The last block of `exit_current`, under the lock again:
   the CPU.
 - `task_sweep_done`: this member's sweep is finished. If it was the last member and the last
   sweep, the task is **dead**.
-- Every thread parked waiting for this thread (in `kos_thread_join` or `kos_thread_slay`) and,
+- Every thread parked waiting for this thread (in `kos_thread_join` or a `kos_thread_cancel` with a timeout) and,
   if the task is dead, every thread parked waiting for the task to empty (`kos_task_slay`) is
   woken (`thread_abort_park`) with result 0.
   A joiner learns that the thread is gone, not how it died; the status is the creator's to
@@ -651,11 +651,11 @@ $6 = 12 '\f'
 `DEAD | ENDED` (12).
 
 **Why, and the contract:** [Book: The blocking substrate](../book/the-blocking-substrate-one-wait-wake-primitive.md)
-(the park and the wake), [Reference: invariants, `fault-exit-code-is-not-a-joiner-signal`](../reference/invariants.md)
+(the park and the wake), [Reference: invariants, `task-scoped-death-and-a-cancel-that-reaches-every-park`](../reference/invariants.md)
 
 ### Stop 9: whoever watches is told
-**Where:** `kernel/task/task.cc`, `task_watch_call`, `mark_ended`, `watch_raise`, `task_state_call`,
-`task_exit_status_call`; `system/init/compose/walk.cc`, `Walk::wake`, `Walk::death`, `Walk::end`
+**Where:** `kernel/task/task.cc`, `task_watch_call`, `mark_ended`, `watch_raise`,
+`task_state_call`; `system/init/compose/walk.cc`, `Walk::wake`, `Walk::death`, `Walk::end`
 
 `faulter`'s task had no watch: `main` waited by joining. The init, though, watches every task
 it starts ([Spawn and capabilities, Stop 4](08-spawn-and-caps.md)): `kos_task_watch` stores a
@@ -668,17 +668,19 @@ instruction. Everything up to here happens the same way, to `main`. Then the ini
 asks the kernel what happened:
 
 ```
-            int const state = kos_task_state(r.handle);
+            int status = 0;
+            int const state = kos_task_state(r.handle, &status);
             // ...
             bool const ended = (state & KOS_TASK_ENDED) != 0;
             if (i == ends_ and ended)
             {
                 ending = true;
+                ends_status = status;
                 continue;
             }
             if ((state & KOS_TASK_DEAD) != 0)
             {
-                check(kos_task_kill(r.handle), "kos_task_kill", i);
+                check(kos_task_slay(r.handle, 0), "kos_task_slay", i);
                 report(Report::Kind::RELEASED, i, nullptr, 0);
                 death(i);
                 continue;
@@ -687,8 +689,8 @@ asks the kernel what happened:
 
 The bit says only where to look; the task's state says what happened. `main` is the task the
 composition's `ends:` names, so its end is the end of the system: the init reads its exit
-status (`kos_task_exit_status`, 139) and calls `Walk::end`, which shuts down with that status.
-A task that is not `ends:` and is found `DEAD` is instead released with `kos_task_kill`, and
+status (`kos_task_state` writes it, 139) and calls `Walk::end`, which shuts down with that status.
+A task that is not `ends:` and is found `DEAD` is instead released with `kos_task_slay` of timeout 0, and
 `Walk::death` decides from its `restart_max` whether to start it again. A supervisor written
 by hand does the same with its own notification.
 
@@ -717,12 +719,8 @@ $2 = 0 '\000'
 $3 = "root", '\000' <repeats 11 times>
 (gdb) finish
 Value returned is $4 = 12
-(gdb) break kickos::task_exit_status_call
-(gdb) continue
-(gdb) finish
-Value returned is $5 = 0
 (gdb) p status
-$6 = 139
+$5 = 139
 (gdb) continue
 [Inferior 1 (process 1) exited with code 0213]
 ```
@@ -731,13 +729,13 @@ $6 = 139
 and status 139. gdb prints the exit code in octal: `0213` is 139.
 
 **Why, and the contract:** [Reference: invariants, "App entry & init seam"](../reference/invariants.md#app-entry--init-seam),
-[Reference: invariants, `fault-exit-code-is-not-a-joiner-signal`](../reference/invariants.md)
+[Reference: invariants, `fault-exit-status-reaches-the-creator`](../reference/invariants.md)
 
 ### Stop 10: the survivor runs on
-**Where:** `user/apps/common/faultsurvive/main.cc`, `main`; `kernel/syscall/syscall_thread.cc`, `task_kill`;
+**Where:** `user/apps/common/faultsurvive/main.cc`, `main`; `kernel/syscall/syscall_thread.cc`, `task_slay`;
 `kernel/task/task.cc`, `task_stop`, `task_drop_hold`, `free_task`
 
-Back on `faultsurvive`. `main`'s join returns 0. `main` then calls `kos_task_kill(victim)`.
+Back on `faultsurvive`. `main`'s join returns 0. `main` then calls `kos_task_slay(victim, 0)`.
 The task is already dead, so there is nobody to cancel (`task_stop` finds no member). What
 remains is the **creator's hold**: a task that its creator still names keeps its slot even
 with no member, so the creator can read its state and spawn into it again. `task_drop_hold`
@@ -751,7 +749,7 @@ checked by `task_created_by`.
 **Try it:**
 
 ```
-(gdb) break kickos::task_kill
+(gdb) break kickos::task_slay
 (gdb) continue
 (gdb) p $k->currents.cells[0]->name
 $1 = "main", '\000' <repeats 11 times>

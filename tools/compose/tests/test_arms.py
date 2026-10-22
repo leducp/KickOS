@@ -114,6 +114,8 @@ ARMS = [
     ("form.missing", "stm32f411/chip.yaml", [("family: none\n", "")], True),
     ("form.missing", "stm32f411/chip.yaml", [("exits_on_fault: false\n", "")], True),
     ("form.missing", "an505/chip.yaml", [("arch: armv7m\n", "")], True),
+    ("form.missing", "virt_rv64/chip.yaml",
+     [("timebase: { hz: { value: 10000000, ref: \"RISCV_ACLINT_DEFAULT_TIMEBASE_FREQ\" } }\n", "")], True),
     ("chip.stack-limit-arch", "rp2040/chip.yaml",
      [("exits_on_fault: false\n", "exits_on_fault: false\nstack_limit: true\n")], False),
     ("form.enum", "stm32f411/chip.yaml", [("family: none\n", "family: nil\n")], False),
@@ -181,6 +183,7 @@ ARMS = [
     ("form.missing", "stm32f411/chip.yaml", [("unit: pmsav7, granule: 32,", "unit: pmsav7,")], False),
     ("form.missing", "esp32c6/chip.yaml", [("      granule: 8\n", "")], True),
     ("chip.granule-size", "stm32f411/chip.yaml", [("granule: 32,", "granule: 24,")], False),
+    ("chip.granule-floor", "stm32f411/chip.yaml", [("unit: pmsav7, granule: 32,", "unit: pmsav6, granule: 32,")], False),
     ("chip.zero-size", "rx72m/chip.yaml", [("granule: 16,", "granule: 0,")], False),
     ("form.inapplicable", "virt_rv64/chip.yaml", [("page: 0x1000,", "page: 0x1000, granule: 0x1000,")], False),
     ("form.inapplicable", "nrf51/chip.yaml", [("{ unit: none,", "{ unit: none, granule: 32,")], False),
@@ -709,9 +712,9 @@ TRANSLATING = "protection:\n  enforced: true\n  window_rule: none\n  thread_wind
 
 def pools_of(threads, tasks, domains, endpoints, endpoint_budget, supply):
     """The pools a kernel build of the fleet's exports, as their figures."""
-    return ("  KICKOS_MAX_THREADS: %d\n  KICKOS_MAX_TASKS: %d\n  KICKOS_MAX_DOMAINS: %d\n  KICKOS_MAX_SEMAPHORES: 16\n"
+    return ("  KICKOS_MAX_THREADS: %d\n  KICKOS_MAX_TASKS: %d\n  KICKOS_MAX_DOMAINS: %d\n"
             "  KICKOS_MAX_ENDPOINTS: %d\n  KICKOS_MAX_IRQ_HANDLES: 8\n  KICKOS_MAX_NOTIFY: 8\n"
-            "  KICKOS_TASK_SEMAPHORE_BUDGET: 15\n  KICKOS_TASK_ENDPOINT_BUDGET: %d\n"
+            "  KICKOS_TASK_ENDPOINT_BUDGET: %d\n"
             "  KICKOS_TASK_IRQ_HANDLE_BUDGET: 7\n  KICKOS_TASK_NOTIFY_BUDGET: 7\n  KICKOS_MAX_SPAWN_GRANTS: 6\n"
             "  KICKOS_CAP_TABLE_SUPPLY: %d\n  KICKOS_RAM_OWNER_SLOTS: 48\n  KICKOS_ASPACE_RANGES: 64\n"
             % (threads, tasks, domains, endpoints, endpoint_budget, supply))

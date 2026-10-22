@@ -7,8 +7,8 @@
 //   * the SCOPE boundary. A FAULT ends the whole group, because siblings share the address
 //     space the faulting thread was writing and no caller is watching a fault, and so does the
 //     entry's death by any cause; either slays every other member. A non-entry member's
-//     cancel ends that member alone; the caller that wants the group has kos_task_kill and
-//     kos_task_slay, which cancel every member themselves. Both directions are asserted: a
+//     cancel ends that member alone; the caller that wants the group has kos_task_slay, which
+//     cancels every member itself. Both directions are asserted: a
 //     boundary tested one way passes with the group cancel deleted, and tested the other way
 //     passes with it unconditional.
 //   * the REACH of a cancel. Every park has to end, whatever the primitive under it, or a
@@ -54,6 +54,17 @@ namespace kickos
             constexpr uint8_t PRIO_LOW = 4;
             constexpr uint8_t PRIO_MID = 5;
             constexpr uint8_t PRIO_HIGH = 6;
+
+            uint32_t g_word = 0;
+
+            // `peer` parked on a plain word, as KOS_SYS_WORD_WAIT parks it.
+            WordRecord* park_on_word(Thread* peer)
+            {
+                g_word = 0;
+                WordRecord* const m = plain_word(&g_word);
+                park_word_waiter(peer, m);
+                return m;
+            }
         }
 
         // The SCOPE claim: even a death that ends its whole group reaches that group only.
@@ -86,8 +97,7 @@ namespace kickos
             Thread* const peer = seat_pool(SLOT_PEER, PRIO_LOW);
             join_task(c, group);
             join_task(peer, group);
-            Semaphore* const s = semaphore(nullptr);
-            park_sem_waiter(peer, s);
+            (void)park_on_word(peer);
             kernel().current(kickos_kernel_core()) = c;
 
             run_exit(0);
@@ -95,12 +105,12 @@ namespace kickos
             EXPECT_EQ(peer->cancel_kind, CANCEL_NONE)
                 << "a sibling's ordinary return is not a request for this thread to die";
             EXPECT_EQ(peer->state, ThreadState::BLOCKED) << "and it is left parked where it was";
-            EXPECT_EQ(peer->wait_kind, WAIT_SEM) << "with its wait edge intact";
+            EXPECT_EQ(peer->wait_kind, WAIT_WORD) << "with its wait edge intact";
             EXPECT_EQ(task_member_count(group), 1u) << "the group outlives the member that left";
         }
 
         // A COOPERATIVE KILL of a member other than the entry ends that member alone:
-        // kos_task_kill is the verb for the group and marks every member itself, so propagating
+        // kos_task_slay is the verb for the group and marks every member itself, so propagating
         // here would make a single-thread kill unexpressible.
         TEST_F(TaskDeath, a_cooperative_kill_spares_its_peers)
         {
@@ -109,8 +119,7 @@ namespace kickos
             Thread* const peer = seat_pool(SLOT_PEER, PRIO_LOW);
             join_task(c, group);
             join_task(peer, group);
-            Semaphore* const s = semaphore(nullptr);
-            park_sem_waiter(peer, s);
+            (void)park_on_word(peer);
             c->cancel_kind = CANCEL_KILL;
             kernel().current(kickos_kernel_core()) = c;
 
@@ -121,8 +130,8 @@ namespace kickos
             EXPECT_EQ(peer->state, ThreadState::BLOCKED) << "and leaves them parked";
         }
 
-        // A SLAY of a member other than the entry ends that member alone. kos_thread_slay and
-        // kos_task_slay are two syscalls, and the second cancels every member itself; making
+        // A SLAY of a member other than the entry ends that member alone. The thread and the task
+        // slay are two syscalls, and the second cancels every member itself; making
         // a member's slay reach the group would collapse them into one and leave "stop this
         // worker" unexpressible by its own parent.
         TEST_F(TaskDeath, a_slain_member_spares_its_peers)
@@ -132,8 +141,7 @@ namespace kickos
             Thread* const peer = seat_pool(SLOT_PEER, PRIO_LOW);
             join_task(c, group);
             join_task(peer, group);
-            Semaphore* const s = semaphore(nullptr);
-            park_sem_waiter(peer, s);
+            (void)park_on_word(peer);
             c->cancel_kind = CANCEL_SLAY;
             kernel().current(kickos_kernel_core()) = c;
 
@@ -154,8 +162,7 @@ namespace kickos
             Thread* const peer = seat_pool(SLOT_PEER, PRIO_LOW);
             join_task(c, group);
             join_task(peer, group);
-            Semaphore* const s = semaphore(nullptr);
-            park_sem_waiter(peer, s);
+            (void)park_on_word(peer);
             kernel().current(kickos_kernel_core()) = c;
 
             run_exit_faulted(0);
@@ -175,8 +182,7 @@ namespace kickos
             Thread* const peer = seat_pool(SLOT_PEER, PRIO_LOW);
             join_task(c, group);
             join_task(peer, group);
-            Semaphore* const s = semaphore(nullptr);
-            park_sem_waiter(peer, s);
+            (void)park_on_word(peer);
             kernel().current(kickos_kernel_core()) = c;
             c->cancel_kind = CANCEL_KILL;
             int32_t const before = group->exit_status;
@@ -222,8 +228,7 @@ namespace kickos
                 Thread* const peer = seat_pool(SLOT_PEER, PRIO_LOW);
                 join_task(c, group);
                 join_task(peer, group);
-                Semaphore* const s = semaphore(nullptr);
-                park_sem_waiter(peer, s);
+                (void)park_on_word(peer);
                 c->task_entry = true;
                 c->cancel_kind = kind;
                 kernel().current(kickos_kernel_core()) = c;
@@ -258,8 +263,7 @@ namespace kickos
             Thread* const peer = seat_pool(SLOT_PEER, PRIO_LOW);
             join_task(c, group);
             join_task(peer, group);
-            Semaphore* const s = semaphore(nullptr);
-            park_sem_waiter(peer, s);
+            (void)park_on_word(peer);
             kernel().current(kickos_kernel_core()) = c;
 
             run_exit_faulted(0);
@@ -271,23 +275,23 @@ namespace kickos
             EXPECT_EQ(peer->wait_kind, WAIT_NONE) << "the wait edge is cleared by the waker";
         }
 
-        // A SEMAPHORE park: the cancel must reach it, and must leave the count alone so a later
-        // post still hands its token to a genuine waiter.
-        TEST_F(TaskDeath, a_semaphore_park_is_reached_and_its_count_untouched)
+        // A plain word park: the cancel must reach it, free the record it empties, and leave the
+        // word alone, so a later wake still hands its unit to a genuine waiter.
+        TEST_F(TaskDeath, a_word_park_is_reached_and_its_word_untouched)
         {
             Task* const group = task(0);
             Thread* const c = seat_pool(SLOT_DYING, PRIO_MID);
             Thread* const peer = seat_pool(SLOT_PEER, PRIO_LOW);
             join_task(c, group);
             join_task(peer, group);
-            Semaphore* const s = semaphore(nullptr);
-            park_sem_waiter(peer, s);
+            (void)park_on_word(peer);
+            uint32_t const parked = g_word;
             kernel().current(kickos_kernel_core()) = c;
 
             run_exit_faulted(0);
 
-            EXPECT_EQ(s->count, 0) << "no token was minted to unpark the waiter";
-            EXPECT_TRUE(s->waiters.head == nullptr) << "the waiter is off the semaphore queue";
+            EXPECT_EQ(g_word, parked) << "the cancel wrote the word";
+            EXPECT_EQ(kernel().word_active, nullptr) << "the emptied record was kept";
             EXPECT_EQ(peer->wait_result, -KOS_ECANCELED)
                 << "the waker writes the reason even where the primitive cannot report it";
         }
@@ -345,7 +349,7 @@ namespace kickos
             join_task(c, group);
             join_task(peer, group);
             uint32_t word = 0;
-            Mutex* const m = own_mutex(owner, &word);
+            WordRecord* const m = own_mutex(owner, &word);
             park_mutex_waiter(peer, m);
             // The donation the real mutex_lock would have made.
             {
@@ -358,10 +362,10 @@ namespace kickos
 
             EXPECT_EQ(owner->prio, PRIO_LOW)
                 << "the owner falls back to its base priority once the waiter is gone";
-            EXPECT_EQ(word & ~KOS_MUTEX_WAITERS, owner->lock_id)
+            EXPECT_EQ(word & ~KOS_WORD_WAITERS, owner->lock_id)
                 << "ownership is NOT transferred to a cancelled waiter";
             EXPECT_TRUE(m->waiters.head == nullptr) << "the waiter is off the mutex queue";
-            EXPECT_TRUE(kernel().mutex_active == nullptr and owner->held_list == nullptr)
+            EXPECT_TRUE(kernel().word_active == nullptr and owner->held_list == nullptr)
                 << "the record its last waiter left is freed";
         }
 
@@ -377,8 +381,7 @@ namespace kickos
             Thread* const peer = seat_pool(SLOT_PEER, PRIO_HIGH);
             join_task(c, group);
             join_task(peer, group);
-            Semaphore* const s = semaphore(nullptr);
-            park_sem_waiter(peer, s);
+            (void)park_on_word(peer);
             kernel().current(kickos_kernel_core()) = c;
             trace_reset();
 
@@ -400,8 +403,7 @@ namespace kickos
             Thread* const peer = seat_pool(SLOT_PEER, PRIO_MID);
             join_task(c, group);
             join_task(peer, group);
-            Semaphore* const s = semaphore(nullptr);
-            park_sem_waiter(peer, s);
+            (void)park_on_word(peer);
             kernel().current(kickos_kernel_core()) = c;
             trace_reset();
 
@@ -507,7 +509,7 @@ namespace kickos
         }
 
         // task_cancel_group over a task nothing joined, and over a null task: both are the
-        // shapes an EMPTY explicit task presents, which is what kos_task_kill sees when its
+        // shapes an EMPTY explicit task presents, which is what kos_task_slay sees when its
         // group never got a member.
         TEST_F(TaskDeath, an_empty_group_cancels_nobody)
         {

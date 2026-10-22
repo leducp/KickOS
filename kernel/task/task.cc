@@ -318,7 +318,7 @@ namespace kickos
         return 0;
     }
 
-    int task_state_call(kos_task_t task)
+    int task_state_call(kos_task_t task, int32_t* status)
     {
         IrqLock lock;
         Task* const t = task_resolve(task);
@@ -335,27 +335,11 @@ namespace kickos
         {
             state |= KOS_TASK_LIVE;
         }
+        if ((state & KOS_TASK_ENDED) != 0)
+        {
+            *status = t->exit_status;
+        }
         return state;
-    }
-
-    int task_exit_status_call(kos_task_t task, int32_t* status)
-    {
-        IrqLock lock;
-        Task* const t = task_resolve(task);
-        if (t == nullptr)
-        {
-            return -KOS_EBADF;
-        }
-        if (not task_created_by(t, kernel().threads.kill_tag_of(sched::current())))
-        {
-            return -KOS_EPERM;
-        }
-        if ((t->marks & TASK_MARK_ENDED) == 0)
-        {
-            return -KOS_EBUSY;
-        }
-        *status = t->exit_status;
-        return 0;
     }
 
     void task_end(Task* t, int code, bool latch, Held held)

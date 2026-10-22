@@ -224,6 +224,9 @@ namespace fake
     std::vector<Call> const& calls();
     // The calls to `fn`, in order.
     std::vector<Call> calls_of(char const* fn);
+    // The task slays of a timeout other than 0, and those of 0, which release the task.
+    std::vector<Call> slays();
+    std::vector<Call> releases();
     // The names of the calls, in order, the ones in `fns` only.
     std::vector<std::string> sequence(std::vector<std::string> const& fns);
 

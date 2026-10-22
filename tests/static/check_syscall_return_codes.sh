@@ -360,7 +360,7 @@ st_expect "arm-with-no-entry" "$TMP/st/abi.missing" "$TMP/st/rec.plain" 2
 st_code "$TMP/st/rec.admit" 1 <<'EOF'
 int helper(uint32_t* out)
 {
-    if (not task_object_admit(CapType::CAP_SEM, c->task))
+    if (not task_object_admit(CapType::CAP_NOTIFY, c->task))
     {
         return -KOS_EAGAIN;
     }

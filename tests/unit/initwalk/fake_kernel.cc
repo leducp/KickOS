@@ -795,6 +795,32 @@ namespace fake
         return out;
     }
 
+    std::vector<Call> slays()
+    {
+        std::vector<Call> out;
+        for (Call const& c : calls_of("kos_task_slay"))
+        {
+            if (c.args[1] != 0u)
+            {
+                out.push_back(c);
+            }
+        }
+        return out;
+    }
+
+    std::vector<Call> releases()
+    {
+        std::vector<Call> out;
+        for (Call const& c : calls_of("kos_task_slay"))
+        {
+            if (c.args[1] == 0u)
+            {
+                out.push_back(c);
+            }
+        }
+        return out;
+    }
+
     std::vector<std::string> sequence(std::vector<std::string> const& fns)
     {
         std::vector<std::string> out;
@@ -1379,9 +1405,9 @@ kos_thread_t kos_thread_self(void)
     return INIT_THREAD;
 }
 
-int kos_thread_set_affinity(kos_thread_t thread, uint32_t core_mask)
+int kos_thread_affinity(kos_thread_t thread, uint32_t core_mask)
 {
-    size_t const call = record("kos_thread_set_affinity", {thread, core_mask});
+    size_t const call = record("kos_thread_affinity", {thread, core_mask});
     int const rc = scripted(call);
     if (rc != 1)
     {
@@ -1395,8 +1421,12 @@ int kos_thread_set_affinity(kos_thread_t thread, uint32_t core_mask)
     {
         return finish(call, -KOS_EBADF);
     }
+    if (core_mask == KOS_AFFINITY_QUERY)
+    {
+        return finish(call, static_cast<int>(g_affinity));
+    }
     g_affinity = core_mask;
-    return finish(call, 0);
+    return finish(call, static_cast<int>(core_mask));
 }
 
 int kos_thread_set_priority(uint8_t priority)
@@ -1711,11 +1741,16 @@ int kos_task_slay(kos_task_t task, uint32_t timeout_us)
     {
         return finish(call, err);
     }
-    // Forcible: every member stops, and the slay returns once each is swept, or at its timeout
-    // with the sweeps left to finish.
+    // Every member stops. A timeout of 0 drops the creator's hold at once: the slot stays taken,
+    // its handle unreused, until every member is swept. Any other returns once each is swept, or
+    // at its timeout with the sweeps left to finish.
+    if (timeout_us == 0u)
+    {
+        t->held = false;
+    }
     condemn(*t);
     end_members(*t);
-    if (sweeping(*t))
+    if (timeout_us != 0u and sweeping(*t))
     {
         advance(static_cast<uint64_t>(timeout_us) * 1000u);
         return finish(call, -KOS_ETIMEDOUT);
@@ -1725,30 +1760,7 @@ int kos_task_slay(kos_task_t task, uint32_t timeout_us)
     return finish(call, 0);
 }
 
-int kos_task_kill(kos_task_t task)
-{
-    size_t const call = record("kos_task_kill", {task});
-    int const rc = scripted(call);
-    if (rc != 1)
-    {
-        return finish(call, rc);
-    }
-    Task* t = nullptr;
-    int const err = resolve(task, &t);
-    if (err != 0)
-    {
-        return finish(call, err);
-    }
-    // Cancels the group and drops the creator's hold: the slot stays taken, its handle unreused,
-    // until every member is swept.
-    t->held = false;
-    condemn(*t);
-    end_members(*t);
-    release_if_done(*t);
-    return finish(call, 0);
-}
-
-int kos_task_state(kos_task_t task)
+int kos_task_state(kos_task_t task, int* status)
 {
     size_t const call = record("kos_task_state", {task});
     int const rc = scripted(call);
@@ -1766,29 +1778,11 @@ int kos_task_state(kos_task_t task)
     {
         return finish(call, -KOS_EPERM);
     }
+    if ((t->state & KOS_TASK_ENDED) != 0u and status != nullptr)
+    {
+        *status = t->status;
+    }
     return finish(call, static_cast<int>(t->state));
-}
-
-int kos_task_exit_status(kos_task_t task, int* status)
-{
-    size_t const call = record("kos_task_exit_status", {task});
-    int const rc = scripted(call);
-    if (rc != 1)
-    {
-        return finish(call, rc);
-    }
-    Task* t = nullptr;
-    int const err = resolve(task, &t);
-    if (err != 0)
-    {
-        return finish(call, err);
-    }
-    if ((t->state & KOS_TASK_ENDED) == 0u)
-    {
-        return finish(call, -KOS_EBUSY);
-    }
-    *status = t->status;
-    return finish(call, 0);
 }
 
 int kos_shutdown(int status, enum kos_shutdown_outcome outcome)
@@ -1804,9 +1798,9 @@ int kos_shutdown(int status, enum kos_shutdown_outcome outcome)
     throw Shutdown{status};
 }
 
-int32_t kos_send(kos_cap_t ep, void const* buf, size_t len)
+int32_t kos_send(kos_cap_t ep, void const* buf, size_t len, uint32_t timeout_us)
 {
-    size_t const call = record("kos_send", {ep, len});
+    size_t const call = record("kos_send", {ep, len, timeout_us});
     int const rc = scripted(call);
     if (rc != 1)
     {
@@ -1826,35 +1820,12 @@ int32_t kos_send(kos_cap_t ep, void const* buf, size_t len)
     }
     if (receiving(object))
     {
-        // A receiver seated and not vacated parks a plain send for good
-        // (kernel/syscall/syscall_ipc.cc).
-        throw Panic{"fake: a send parked on a console nothing receives"};
-    }
-    return finish(call, unserved(object));
-}
-
-int32_t kos_send_timed(kos_cap_t ep, void const* buf, size_t len, uint32_t timeout_us)
-{
-    size_t const call = record("kos_send_timed", {ep, len, timeout_us});
-    int const rc = scripted(call);
-    if (rc != 1)
-    {
-        return finish(call, rc);
-    }
-    if (ep != KOS_CAP_STDOUT or g_stdout < 0)
-    {
-        return finish(call, -KOS_EBADF);
-    }
-    size_t const object = static_cast<size_t>(g_stdout);
-    settle();
-    if (waits(object))
-    {
-        g_console.append(static_cast<char const*>(buf), len);
-        return finish(call, static_cast<int>(len));
-    }
-    if (receiving(object))
-    {
-        // Parked until its deadline, never for a deadline of 0 (kernel/syscall/syscall_ipc.cc).
+        // A receiver seated and not vacated parks a send until its deadline, never for a
+        // deadline of 0 (kernel/syscall/syscall_ipc.cc).
+        if (timeout_us == KOS_TIMEOUT_NONE)
+        {
+            throw Panic{"fake: a send parked on a console nothing receives"};
+        }
         advance(static_cast<uint64_t>(timeout_us) * 1000u);
         return finish(call, -KOS_ETIMEDOUT);
     }

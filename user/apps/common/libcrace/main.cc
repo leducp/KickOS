@@ -38,15 +38,90 @@ namespace
     constexpr int BLOCKS = 3;
     constexpr uint32_t QUANTUM_NS = 20000;
     constexpr uint8_t WORKER_PRIO = 10;
-    constexpr kos_cap_t DONE = kos::child_cap(0);
-    constexpr kos_cap_t STARVED = kos::child_cap(1);
-    constexpr kos_cap_t HELD = kos::child_cap(0);
-    constexpr kos_cap_t RELEASE = kos::child_cap(1);
-    constexpr kos_cap_t ENTERING = kos::child_cap(0);
-    constexpr kos_cap_t PRINTED = kos::child_cap(0);
-    constexpr kos_cap_t GO = kos::child_cap(0);
     constexpr uint32_t PRINT_WAIT_US = 3000000;
     constexpr uint8_t VICTIM_PRIO = KICKOS_PRIO_MAX;
+
+    // The semaphores between main and the threads it spawns. A task of a translating board holds
+    // its own copy of every static, so there they lie in a granule main reserves, which a thread
+    // of another task reaches through the first window of its spawn.
+    struct Gates
+    {
+        kos_sem_t done;
+        kos_sem_t starved;
+        kos_sem_t held;
+        kos_sem_t release;
+        kos_sem_t entering;
+        kos_sem_t printed;
+        kos_sem_t go;
+    };
+    Gates g_static_gates = {};
+    Gates* g_gates = &g_static_gates;
+#if KICKOS_HAVE_ASPACE
+    constexpr uint32_t GATES_BYTES = 4096;
+#endif
+
+    Gates* gates()
+    {
+#if KICKOS_HAVE_ASPACE
+        kos_window w = {};
+        if (kos_window_get(0, &w) == 0)
+        {
+            return reinterpret_cast<Gates*>(w.base);
+        }
+#endif
+        return g_gates;
+    }
+
+    // Every gate at 0, in main before any thread of the run exists.
+    bool gates_seat()
+    {
+#if KICKOS_HAVE_ASPACE
+        void* const page = kos_ram_alloc(GATES_BYTES);
+        if (page == nullptr or kos_mem_self_grant(page, GATES_BYTES, 0) != 0)
+        {
+            return false;
+        }
+        g_gates = static_cast<Gates*>(page);
+#endif
+        kos_sem_t* const all[] = {&g_gates->done, &g_gates->starved, &g_gates->held,
+                                  &g_gates->release, &g_gates->entering, &g_gates->printed,
+                                  &g_gates->go};
+        for (kos_sem_t* const g : all)
+        {
+            (void)kos_sem_init(g, 0);
+        }
+        return true;
+    }
+
+    // What a spawn into `task` passes for the gates: nothing for main's own task.
+    uint16_t gates_window(kos_task_t task, kos_window* w)
+    {
+        *w = {};
+#if KICKOS_HAVE_ASPACE
+        if (task != KOS_TASK_NONE)
+        {
+            w->base = reinterpret_cast<uintptr_t>(g_gates);
+            w->size = GATES_BYTES;
+            w->kind = KOS_WINDOW_MEMORY;
+            return 1;
+        }
+#else
+        (void)task;
+#endif
+        return 0;
+    }
+
+    // `entry` in `task`, reaching the gates.
+    kos::thread::Handle spawn_in(void (*entry)(void*), void* arg, char const* name, uint8_t prio,
+                                 kos_task_t task, uint32_t core_mask,
+                                 uint8_t policy = KOS_POLICY_FIFO, uint32_t quantum_ns = 0)
+    {
+        kos_window w;
+        uint16_t const windows = gates_window(task, &w);
+        return kos::thread::create(entry, arg, name, prio, policy, quantum_ns, nullptr, 0,
+                                   nullptr, 0, &w, windows, nullptr, 0, 0, nullptr, task,
+                                   core_mask);
+    }
 
     char letter(int w, int i)
     {
@@ -71,8 +146,8 @@ namespace
 #if defined(_NEWLIB_VERSION)
         __malloc_lock(_REENT);
 #endif
-        kos_sem_post(HELD);
-        kos_sem_wait(RELEASE, KOS_TIMEOUT_NONE);
+        kos_sem_post(&gates()->held);
+        kos_sem_wait(&gates()->release, KOS_TIMEOUT_NONE);
 #if defined(_NEWLIB_VERSION)
         __malloc_unlock(_REENT);
 #endif
@@ -80,7 +155,7 @@ namespace
 
     void malloc_victim(void*)
     {
-        kos_sem_post(ENTERING);
+        kos_sem_post(&gates()->entering);
         void* volatile block = malloc(32);
         free(block);
     }
@@ -91,7 +166,7 @@ namespace
 #if defined(_NEWLIB_VERSION)
         __env_lock(_REENT);
 #endif
-        kos_sem_post(ENTERING);
+        kos_sem_post(&gates()->entering);
         void* volatile block = malloc(32);
         free(block);
 #if defined(_NEWLIB_VERSION)
@@ -116,10 +191,11 @@ namespace
 #if defined(_NEWLIB_VERSION)
         __malloc_lock(_REENT);
 #endif
-        kos_sem_post(HELD);
+        Gates* const g = gates();
+        kos_sem_post(&g->held);
         while (true)
         {
-            (void)kos_sem_wait(RELEASE, KOS_TIMEOUT_NONE);
+            (void)kos_sem_wait(&g->release, KOS_TIMEOUT_NONE);
         }
     }
 #endif
@@ -127,7 +203,7 @@ namespace
     void printer(void*)
     {
         printf("libcrace: printf beside the malloc lock %d\n", 1);
-        kos_sem_post(PRINTED);
+        kos_sem_post(&gates()->printed);
     }
 
 #if defined(_NEWLIB_VERSION)
@@ -140,7 +216,7 @@ namespace
 
     void reask_victim(void*)
     {
-        kos_sem_post(ENTERING);
+        kos_sem_post(&gates()->entering);
         void* volatile block = malloc(32);
         __atomic_store_n(&g_reask_took, 1u, __ATOMIC_RELAXED);
         free(block);
@@ -151,12 +227,10 @@ namespace
     void reask_holder(void*)
     {
         __malloc_lock(_REENT);
-        kos_cap_grant const caps[] = {{ENTERING, KOS_CAP_SIGNAL}};
-        auto victim = kos::thread::create_caps(reask_victim, nullptr, "mreask", VICTIM_PRIO, caps,
-                                               1, KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
-                                               KOS_TASK_NONE, nullptr, 0, g_core_mask);
-        bool parked = victim.valid() and kos_sem_wait(ENTERING, KOS_TIMEOUT_NONE) == 0;
-        bool const killed = victim.valid() and victim.kill() == 0;
+        auto victim = spawn_in(reask_victim, nullptr, "mreask", VICTIM_PRIO, KOS_TASK_NONE,
+                               g_core_mask);
+        bool parked = victim.valid() and kos_sem_wait(&g_gates->entering, KOS_TIMEOUT_NONE) == 0;
+        bool const killed = victim.valid() and victim.cancel(KOS_CANCEL_KILL, 0) == 0;
         __malloc_unlock(_REENT);
         g_reask_ran = parked and killed and victim.join() == 0;
     }
@@ -165,7 +239,7 @@ namespace
     void running_holder(void*)
     {
         __malloc_lock(_REENT);
-        kos_sem_post(HELD);
+        kos_sem_post(&gates()->held);
         while (__atomic_load_n(&g_release_go, __ATOMIC_ACQUIRE) == 0)
         {
         }
@@ -179,55 +253,40 @@ namespace
     // In the holder's task, whose copy of the flag the holder reads.
     void release_setter(void*)
     {
-        (void)kos_sem_wait(GO, KOS_TIMEOUT_NONE);
+        (void)kos_sem_wait(&gates()->go, KOS_TIMEOUT_NONE);
         __atomic_store_n(&g_release_go, 1u, __ATOMIC_RELEASE);
     }
 
     void getenv_after_kill(void*)
     {
-        kos_sem_post(ENTERING);
-        (void)kos_sem_wait(RELEASE, KOS_TIMEOUT_NONE);
+        kos_sem_post(&gates()->entering);
+        (void)kos_sem_wait(&gates()->release, KOS_TIMEOUT_NONE);
         g_env = getenv("KICKOS_LIBCRACE_UNSET");
         __atomic_store_n(&g_env_after_kill, 1u, __ATOMIC_RELAXED);
         kos_yield();
     }
 #endif
 
-    // Holds the malloc lock in a thread of main's task and returns with `release` to end it.
-    bool hold_malloc(kos::thread::Handle* holder, kos_cap_t* release)
+    // Holds the malloc lock in a thread of main's task, ended by end_hold.
+    bool hold_malloc(kos::thread::Handle* holder)
     {
-        kos_cap_t held = KOS_CAP_NONE;
-        if (kos_sem_create(0, &held) != 0)
-        {
-            return false;
-        }
-        if (kos_sem_create(0, release) != 0)
-        {
-            kos_handle_close(held);
-            return false;
-        }
-        kos_cap_grant const caps[] = {{held, KOS_CAP_SIGNAL}, {*release, KOS_CAP_WAIT}};
-        *holder = kos::thread::create_caps(malloc_holder, nullptr, "mholder", WORKER_PRIO, caps, 2);
+        (void)kos_sem_init(&g_gates->held, 0);
+        (void)kos_sem_init(&g_gates->release, 0);
+        *holder = kos::thread::create(malloc_holder, nullptr, "mholder", WORKER_PRIO);
         bool holding = holder->valid();
-        if (holding and kos_sem_wait(held, KOS_TIMEOUT_NONE) != 0)
+        if (holding and kos_sem_wait(&g_gates->held, KOS_TIMEOUT_NONE) != 0)
         {
             holding = false;
-            kos_sem_post(*release);
+            kos_sem_post(&g_gates->release);
             holder->join();
-        }
-        kos_handle_close(held);
-        if (not holding)
-        {
-            kos_handle_close(*release);
         }
         return holding;
     }
 
-    void end_hold(kos::thread::Handle const& holder, kos_cap_t release)
+    void end_hold(kos::thread::Handle const& holder)
     {
-        kos_sem_post(release);
+        kos_sem_post(&g_gates->release);
         holder.join();
-        kos_handle_close(release);
     }
 
     // Pins main to the core it runs on. A one-core kernel has nothing to pin; any other refusal
@@ -235,13 +294,13 @@ namespace
     bool pin_main(uint32_t* core_mask)
     {
         int const core = kos_core_current();
-        int const rc = kos_thread_set_affinity(kos_thread_self(), 1u << core);
+        int const rc = kos_thread_affinity(kos_thread_self(), 1u << core);
         *core_mask = 0;
         if (rc == -KOS_ENOSYS)
         {
             return true;
         }
-        if (rc != 0)
+        if (rc < 0)
         {
             return false;
         }
@@ -253,22 +312,20 @@ namespace
     {
         if (core_mask != 0)
         {
-            kos_thread_set_affinity(kos_thread_self(), 0);
+            kos_thread_affinity(kos_thread_self(), 0);
         }
     }
 
     // The victim outranks main on main's core, so main, woken by its post, runs again only once
     // it has parked. Invalid when the spawn or the post fails.
     kos::thread::Handle spawn_parked(void (*entry)(void*), char const* name, kos_task_t task,
-                                     uint32_t core_mask, kos_cap_t entering)
+                                     uint32_t core_mask)
     {
-        kos_cap_grant const caps[] = {{entering, KOS_CAP_SIGNAL}};
-        auto victim = kos::thread::create_caps(entry, nullptr, name, VICTIM_PRIO, caps, 1,
-                                               KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr, task,
-                                               nullptr, 0, core_mask);
-        if (victim.valid() and kos_sem_wait(entering, KOS_TIMEOUT_NONE) != 0)
+        (void)kos_sem_init(&g_gates->entering, 0);
+        auto victim = spawn_in(entry, nullptr, name, VICTIM_PRIO, task, core_mask);
+        if (victim.valid() and kos_sem_wait(&g_gates->entering, KOS_TIMEOUT_NONE) != 0)
         {
-            victim.kill();
+            victim.cancel(KOS_CANCEL_KILL, 0);
             victim.join();
             return kos::thread::Handle();
         }
@@ -279,21 +336,19 @@ namespace
     bool kill_inside_malloc(void (*entry)(void*), char const* name)
     {
         kos::thread::Handle holder;
-        kos_cap_t release = KOS_CAP_NONE;
         uint32_t core_mask = 0;
-        kos_cap_t entering = KOS_CAP_NONE;
         if (not pin_main(&core_mask))
         {
             return false;
         }
         bool ended = false;
-        if (kos_sem_create(0, &entering) == 0 and hold_malloc(&holder, &release))
+        if (hold_malloc(&holder))
         {
-            auto victim = spawn_parked(entry, name, KOS_TASK_NONE, core_mask, entering);
-            ended = victim.valid() and victim.kill() == 0 and victim.join() == 0;
-            end_hold(holder, release);
+            auto victim = spawn_parked(entry, name, KOS_TASK_NONE, core_mask);
+            ended = victim.valid() and victim.cancel(KOS_CANCEL_KILL, 0) == 0
+                    and victim.join() == 0;
+            end_hold(holder);
         }
-        kos_handle_close(entering);
         unpin_main(core_mask);
         return ended;
     }
@@ -321,22 +376,18 @@ namespace
     {
         *asked = false;
         uint32_t core_mask = 0;
-        kos_cap_t entering = KOS_CAP_NONE;
-        if (not pin_main(&core_mask) or kos_sem_create(0, &entering) != 0)
+        if (not pin_main(&core_mask))
         {
             return false;
         }
+        (void)kos_sem_init(&g_gates->entering, 0);
         g_core_mask = core_mask;
         g_reask_took = 0;
         g_reask_ran = false;
-        kos_cap_grant const caps[] = {
-            {entering, KOS_CAP_SIGNAL | KOS_CAP_WAIT | KOS_CAP_TRANSFER}};
-        auto holder = kos::thread::create_caps(reask_holder, nullptr, "mholder", VICTIM_PRIO, caps,
-                                               1, KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
-                                               KOS_TASK_NONE, nullptr, 0, core_mask);
+        auto holder = spawn_in(reask_holder, nullptr, "mholder", VICTIM_PRIO, KOS_TASK_NONE,
+                               core_mask);
         bool const ran = holder.valid() and holder.join() == 0 and g_reask_ran;
         *asked = __atomic_load_n(&g_reask_took, __ATOMIC_RELAXED) == 0;
-        kos_handle_close(entering);
         unpin_main(core_mask);
         return ran;
     }
@@ -353,13 +404,10 @@ namespace
             return false;
         }
         kos_task_t task = KOS_TASK_NONE;
-        kos_cap_t held = KOS_CAP_NONE;
-        kos_cap_t go = KOS_CAP_NONE;
-        kos_cap_t entering = KOS_CAP_NONE;
+        (void)kos_sem_init(&g_gates->held, 0);
+        (void)kos_sem_init(&g_gates->go, 0);
         bool ran = kos_task_create(nullptr, 0, 0, &task) == 0
-                   and kos_task_sched_grant(task, VICTIM_PRIO, 0) == 0
-                   and kos_sem_create(0, &held) == 0 and kos_sem_create(0, &go) == 0
-                   and kos_sem_create(0, &entering) == 0;
+                   and kos_task_sched_grant(task, VICTIM_PRIO, 0) == 0;
         kos::thread::Handle base;
         kos::thread::Handle holder;
         kos::thread::Handle setter;
@@ -367,32 +415,30 @@ namespace
         {
             base = kos::thread::create_caps(anchor, nullptr, "manchor", WORKER_PRIO, nullptr, 0,
                                             KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr, task);
-            kos_cap_grant const go_caps[] = {{go, KOS_CAP_WAIT}};
-            setter = kos::thread::create_caps(release_setter, nullptr, "mgo", WORKER_PRIO, go_caps,
-                                              1, KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr, task,
-                                              nullptr, 0, core_mask);
+            setter = spawn_in(release_setter, nullptr, "mgo", WORKER_PRIO, task, core_mask);
             // Below main, so it holds the lock and spins only while main waits.
-            kos_cap_grant const caps[] = {{held, KOS_CAP_SIGNAL}};
-            holder = kos::thread::create_caps(running_holder, nullptr, "mrunner", KICKOS_PRIO_MIN,
-                                              caps, 1, KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
-                                              task, nullptr, 0, core_mask);
+            holder = spawn_in(running_holder, nullptr, "mrunner", KICKOS_PRIO_MIN, task,
+                              core_mask);
             ran = base.valid() and setter.valid() and holder.valid()
-                  and kos_sem_wait(held, KOS_TIMEOUT_NONE) == 0 and holder.kill() == 0
-                  and kos_sem_post(go) == 0 and setter.join() == 0;
+                  and kos_sem_wait(&g_gates->held, KOS_TIMEOUT_NONE) == 0
+                  and holder.cancel(KOS_CANCEL_KILL, 0) == 0
+                  and kos_sem_post(&g_gates->go) == 0 and setter.join() == 0;
         }
         if (ran)
         {
-            auto taker = spawn_parked(malloc_victim, "mtaker", task, core_mask, entering);
+            auto taker = spawn_parked(malloc_victim, "mtaker", task, core_mask);
             ran = taker.valid() and taker.join() == 0 and holder.join() == 0;
         }
         if (ran)
         {
-            int status = 0;
-            *lived = kos_task_exit_status(task, &status) == -KOS_EBUSY;
+            // A live task leaves the status untouched.
+            int status = -99;
+            int const state = kos_task_state(task, &status);
+            *lived = state >= 0 and (state & KOS_TASK_ENDED) == 0 and status == -99;
         }
         if (task != KOS_TASK_NONE)
         {
-            kos_task_kill(task);
+            kos_task_slay(task, 0);
         }
         if (base.valid())
         {
@@ -406,9 +452,6 @@ namespace
         {
             setter.join();
         }
-        kos_handle_close(held);
-        kos_handle_close(go);
-        kos_handle_close(entering);
         unpin_main(core_mask);
         return ran;
     }
@@ -419,27 +462,20 @@ namespace
     {
         *read = false;
         uint32_t core_mask = 0;
-        kos_cap_t entering = KOS_CAP_NONE;
-        kos_cap_t release = KOS_CAP_NONE;
-        if (not pin_main(&core_mask) or kos_sem_create(0, &entering) != 0
-            or kos_sem_create(0, &release) != 0)
+        if (not pin_main(&core_mask))
         {
-            kos_handle_close(entering);
-            unpin_main(core_mask);
             return false;
         }
+        (void)kos_sem_init(&g_gates->entering, 0);
+        (void)kos_sem_init(&g_gates->release, 0);
         g_env_after_kill = 0;
-        kos_cap_grant const caps[] = {{entering, KOS_CAP_SIGNAL}, {release, KOS_CAP_WAIT}};
         // The child outranks main on main's core, so main, woken by its post, runs again only
-        // once it has parked on `release`.
-        auto child = kos::thread::create_caps(getenv_after_kill, nullptr, "menv", VICTIM_PRIO,
-                                              caps, 2, KOS_POLICY_FIFO, 0, nullptr, 0, 0,
-                                              nullptr, KOS_TASK_NONE, nullptr, 0, core_mask);
-        bool const ran = child.valid() and kos_sem_wait(entering, KOS_TIMEOUT_NONE) == 0
-                         and child.kill() == 0 and child.join() == 0;
+        // once it has parked on the release gate.
+        auto child = spawn_in(getenv_after_kill, nullptr, "menv", VICTIM_PRIO, KOS_TASK_NONE,
+                              core_mask);
+        bool const ran = child.valid() and kos_sem_wait(&g_gates->entering, KOS_TIMEOUT_NONE) == 0
+                         and child.cancel(KOS_CANCEL_KILL, 0) == 0 and child.join() == 0;
         *read = __atomic_load_n(&g_env_after_kill, __ATOMIC_RELAXED) != 0;
-        kos_handle_close(entering);
-        kos_handle_close(release);
         unpin_main(core_mask);
         return ran;
     }
@@ -458,45 +494,41 @@ namespace
             return false;
         }
         kos_task_t task = KOS_TASK_NONE;
-        kos_cap_t held = KOS_CAP_NONE;
-        kos_cap_t release = KOS_CAP_NONE;
-        kos_cap_t entering = KOS_CAP_NONE;
+        (void)kos_sem_init(&g_gates->held, 0);
+        (void)kos_sem_init(&g_gates->release, 0);
         bool ran = kos_task_create(nullptr, 0, 0, &task) == 0
-                   and kos_task_sched_grant(task, VICTIM_PRIO, 0) == 0
-                   and kos_sem_create(0, &held) == 0 and kos_sem_create(0, &release) == 0
-                   and kos_sem_create(0, &entering) == 0;
+                   and kos_task_sched_grant(task, VICTIM_PRIO, 0) == 0;
         kos::thread::Handle base;
         kos::thread::Handle holder;
         if (ran)
         {
             base = kos::thread::create_caps(anchor, nullptr, "manchor", WORKER_PRIO, nullptr, 0,
                                             KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr, task);
-            kos_cap_grant const caps[] = {{held, KOS_CAP_SIGNAL}, {release, KOS_CAP_WAIT}};
-            holder = kos::thread::create_caps(dead_malloc_holder, nullptr, "mholder",
-                                              WORKER_PRIO, caps, 2, KOS_POLICY_FIFO, 0, nullptr,
-                                              0, 0, nullptr, task);
-            ran = base.valid() and holder.valid() and kos_sem_wait(held, KOS_TIMEOUT_NONE) == 0;
+            holder = spawn_in(dead_malloc_holder, nullptr, "mholder", WORKER_PRIO, task, 0);
+            ran = base.valid() and holder.valid()
+                  and kos_sem_wait(&g_gates->held, KOS_TIMEOUT_NONE) == 0;
         }
         if (ran and waiting)
         {
-            auto taker = spawn_parked(malloc_victim, "mwaiter", task, core_mask, entering);
-            ran = taker.valid() and holder.kill() == 0 and holder.join() == 0
+            auto taker = spawn_parked(malloc_victim, "mwaiter", task, core_mask);
+            ran = taker.valid() and holder.cancel(KOS_CANCEL_KILL, 0) == 0 and holder.join() == 0
                   and taker.join() == 0;
         }
         else if (ran)
         {
-            ran = holder.kill() == 0 and holder.join() == 0;
-            auto taker = spawn_parked(malloc_victim, "mlater", task, core_mask, entering);
+            ran = holder.cancel(KOS_CANCEL_KILL, 0) == 0 and holder.join() == 0;
+            auto taker = spawn_parked(malloc_victim, "mlater", task, core_mask);
             ran = ran and taker.valid() and taker.join() == 0;
         }
         if (ran)
         {
             int status = 0;
-            *ended = kos_task_exit_status(task, &status) == 0 and status == KOS_EXIT_FAULT;
+            int const state = kos_task_state(task, &status);
+            *ended = state >= 0 and (state & KOS_TASK_ENDED) != 0 and status == KOS_EXIT_FAULT;
         }
         if (task != KOS_TASK_NONE)
         {
-            kos_task_kill(task);
+            kos_task_slay(task, 0);
         }
         if (base.valid())
         {
@@ -506,9 +538,6 @@ namespace
         {
             holder.join();
         }
-        kos_handle_close(held);
-        kos_handle_close(release);
-        kos_handle_close(entering);
         unpin_main(core_mask);
         return ran;
     }
@@ -518,21 +547,14 @@ namespace
     bool print_beside_malloc()
     {
         kos::thread::Handle holder;
-        kos_cap_t release = KOS_CAP_NONE;
-        kos_cap_t printed = KOS_CAP_NONE;
-        if (kos_sem_create(0, &printed) != 0)
+        (void)kos_sem_init(&g_gates->printed, 0);
+        if (not hold_malloc(&holder))
         {
             return false;
         }
-        if (not hold_malloc(&holder, &release))
-        {
-            kos_handle_close(printed);
-            return false;
-        }
-        kos_cap_grant const caps[] = {{printed, KOS_CAP_SIGNAL}};
-        auto print = kos::thread::create_caps(printer, nullptr, "mprint", WORKER_PRIO, caps, 1);
+        auto print = kos::thread::create(printer, nullptr, "mprint", WORKER_PRIO);
         bool const started = print.valid();
-        if (started and kos_sem_wait(printed, PRINT_WAIT_US) == 0)
+        if (started and kos_sem_wait(&g_gates->printed, PRINT_WAIT_US) == 0)
         {
             kos::print("libcrace: a printf completed while malloc was held\n");
         }
@@ -540,12 +562,11 @@ namespace
         {
             kos::print("libcrace: a printf waited behind the malloc lock\n");
         }
-        end_hold(holder, release);
+        end_hold(holder);
         if (started)
         {
             print.join();
         }
-        kos_handle_close(printed);
         return started;
     }
 
@@ -609,6 +630,7 @@ namespace
     void worker(void* arg)
     {
         int const w = static_cast<int>(reinterpret_cast<uintptr_t>(arg));
+        Gates* const g = gates();
         int torn = 0;
         bool starved = false;
         for (int i = 0; i < ROUNDS; i++)
@@ -621,7 +643,7 @@ namespace
                 if (not starved)
                 {
                     starved = true;
-                    kos_sem_post(STARVED);
+                    kos_sem_post(&g->starved);
                 }
                 kos::sleep_ns(QUANTUM_NS);
             }
@@ -639,7 +661,7 @@ namespace
             }
         }
         printf("libcrace w%d done torn=%d\n", w, torn);
-        kos_sem_post(DONE);
+        kos_sem_post(&g->done);
         // The other task's entry returning would end its sibling with it.
         while (true)
         {
@@ -651,6 +673,11 @@ namespace
 int main(int, char**)
 {
     printf("libcrace: %d workers x %d rounds\n", WORKERS, ROUNDS);
+    if (not gates_seat())
+    {
+        kos::print("libcrace: setup refused\n");
+        return 1;
+    }
     if (not kill_inside_malloc(malloc_victim, "mvictim"))
     {
         kos::print("libcrace: the malloc kill arm was refused\n");
@@ -748,16 +775,12 @@ int main(int, char**)
         kos::print("libcrace: the printf beside malloc arm was refused\n");
         return 1;
     }
-    kos_cap_t done = KOS_CAP_NONE;
-    kos_cap_t starved = KOS_CAP_NONE;
     kos_task_t other = KOS_TASK_NONE;
-    if (kos_sem_create(0, &done) != 0 or kos_sem_create(0, &starved) != 0
-        or kos_task_create(nullptr, 0, 0, &other) != 0)
+    if (kos_task_create(nullptr, 0, 0, &other) != 0)
     {
         kos::print("libcrace: setup refused\n");
         return 1;
     }
-    kos_cap_grant const caps[] = {{done, KOS_CAP_SIGNAL}, {starved, KOS_CAP_SIGNAL}};
     Ballast* const ballast = exhaust_heap();
     int started = 0;
     for (int w = 0; w < WORKERS; w++)
@@ -767,9 +790,8 @@ int main(int, char**)
         {
             task = other;
         }
-        auto h = kos::thread::create_caps(worker, reinterpret_cast<void*>(static_cast<uintptr_t>(w)),
-                                          "racer", WORKER_PRIO, caps, 2, KOS_POLICY_RR, QUANTUM_NS,
-                                          nullptr, 0, 0, nullptr, task);
+        auto h = spawn_in(worker, reinterpret_cast<void*>(static_cast<uintptr_t>(w)), "racer",
+                          WORKER_PRIO, task, 0, KOS_POLICY_RR, QUANTUM_NS);
         if (h.valid())
         {
             started++;
@@ -777,12 +799,12 @@ int main(int, char**)
     }
     if (ballast != nullptr and started == WORKERS)
     {
-        kos_sem_wait(starved, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_gates->starved, KOS_TIMEOUT_NONE);
     }
     release_heap(ballast);
     for (int w = 0; w < started; w++)
     {
-        kos_sem_wait(done, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_gates->done, KOS_TIMEOUT_NONE);
     }
     if (started != WORKERS)
     {

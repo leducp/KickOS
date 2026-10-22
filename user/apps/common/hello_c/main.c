@@ -12,12 +12,9 @@
 
 static uint64_t const BEAT_NS = 400000000ull; // 0.4 s between hits
 
-static kos_cap_t g_ping = KOS_CAP_NONE; // MAIN's cap
-static kos_cap_t g_pong = KOS_CAP_NONE;
-
-// Both sems are delegated on every spawn; a fresh child table makes handle == index.
-static kos_cap_t const CH_PING = KOS_SPAWN_DELEGATED_CAP0;
-static kos_cap_t const CH_PONG = KOS_SPAWN_DELEGATED_CAP0 + 1;
+static kos_sem_t g_ping = KOS_SEM_INIT(1); // ping serves first
+static kos_sem_t g_pong = KOS_SEM_INIT(0);
+static kos_sem_t g_idle = KOS_SEM_INIT(0);
 
 static void say(char const* who, int n)
 {
@@ -32,10 +29,10 @@ static void ping(void* arg)
     (void)arg;
     while (true)
     {
-        kos_sem_wait(CH_PING, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_ping, KOS_TIMEOUT_NONE);
         kos_sleep_ns(BEAT_NS);
         say("ping", ++n);
-        kos_sem_post(CH_PONG);
+        kos_sem_post(&g_pong);
     }
 }
 
@@ -45,17 +42,15 @@ static void pong(void* arg)
     (void)arg;
     while (true)
     {
-        kos_sem_wait(CH_PONG, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_pong, KOS_TIMEOUT_NONE);
         kos_sleep_ns(BEAT_NS);
         say("pong", ++n);
-        kos_sem_post(CH_PING);
+        kos_sem_post(&g_ping);
     }
 }
 
 static int spawn(void (*entry)(void*), char const* name)
 {
-    struct kos_cap_grant caps[] = {{g_ping, KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER},
-                                   {g_pong, KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER}};
     struct kos_thread_params p = {0};
     // A null out-pointer is refused -KOS_EINVAL, so the sink is not optional.
     kos_thread_t h = KOS_THREAD_NONE;
@@ -63,31 +58,23 @@ static int spawn(void (*entry)(void*), char const* name)
     p.entry = entry;
     p.name = name;
     p.prio = 10;
-    p.caps = caps;
-    p.cap_count = 2;
     return kos_thread_create(&p, &h);
 }
 
 int main(int argc, char** argv)
 {
-    kos_cap_t idle = KOS_CAP_NONE;
-
     (void)argc;
     (void)argv;
 
     kos_print("hello from KickOS userspace!\n");
     kos_print("two threads play ping-pong. Press Ctrl+C to stop.\n\n");
 
-    (void)kos_sem_create(1, &g_ping); // ping serves first
-    (void)kos_sem_create(0, &g_pong);
-
     spawn(ping, "ping");
     spawn(pong, "pong");
 
     // A daemon: main never returns.
-    (void)kos_sem_create(0, &idle);
     while (true)
     {
-        kos_sem_wait(idle, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_idle, KOS_TIMEOUT_NONE);
     }
 }

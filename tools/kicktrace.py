@@ -61,29 +61,30 @@ ARCH_NAME = {0: "sim", 1: "armv7m", 2: "armv6m", 3: "xtensa", 4: "rx", 5: "riscv
 # which it mirrors by hand. Keep each label the enumerator suffix lowercased;
 # tests/unit/telemetry/check_idmap.py gates the numbers and the labels.
 SYSCALL_NAME = {
-    1: "kconsole_write", 2: "yield", 3: "sleep_ns", 4: "sem_create", 5: "sem_wait",
-    6: "sem_post", 7: "thread_create", 8: "exit", 9: "irq_raise", 10: "amp_count",
+    1: "kconsole_write", 2: "yield", 3: "sleep_ns", 7: "thread_create", 8: "exit",
+    9: "irq_raise", 10: "amp_count",
     11: "notify_create", 12: "clock_now", 13: "ram_alloc", 14: "irq_claim",
     15: "notify_wait", 16: "irq_ack", 17: "handle_close",
-    19: "diag_led_set", 20: "diag_led_toggle", 22: "cpu_clock_hz",
+    19: "diag_led_set", 22: "cpu_clock_hz",
     24: "mutex_lock", 25: "mutex_unlock", 26: "endpoint_create",
-    27: "send", 28: "notify_bind", 29: "console_publish", 30: "cpu_clock_set",
-    32: "periph_clock_hz", 33: "pinmux_set", 34: "call",
-    35: "reply", 36: "shutdown", 37: "mem_self_grant", 38: "terminal_outcome",
+    28: "notify_bind", 29: "console_publish", 30: "cpu_clock_set",
+    32: "periph_clock_hz", 33: "pinmux_set",
+    36: "shutdown", 37: "mem_self_grant", 38: "terminal_outcome",
     39: "periph_enable", 40: "cap_narrow", 41: "panic",
     42: "periph_reg_write", 43: "notify", 44: "irq_discard",
-    45: "thread_kill", 46: "call_timed", 47: "notify_unbind",
-    48: "thread_join", 50: "send_timed",
-    51: "task_create", 52: "task_kill", 53: "thread_slay",
+    46: "call", 47: "notify_unbind",
+    48: "thread_join", 50: "send",
+    51: "task_create", 53: "thread_cancel",
     54: "task_slay", 55: "bench", 56: "call_reg", 57: "mem_count",
     58: "aspace_self", 59: "frame_create", 60: "frame_map",
     61: "frame_unmap",
-    63: "thread_set_affinity", 64: "task_sched_grant", 65: "core_current",
-    66: "thread_affinity", 67: "task_cores", 68: "reply_recv",
+    63: "thread_affinity", 64: "task_sched_grant", 65: "core_current",
+    67: "task_cores", 68: "reply_recv",
     69: "notify_badge", 70: "irq_bind_notify",
-    72: "task_watch", 73: "task_state", 74: "window_get", 75: "port_reg_write",
-    76: "task_exit_status", 77: "thread_set_priority", 78: "task_nonblock",
+    72: "task_watch", 74: "window_get", 75: "port_reg_write",
+    76: "task_state", 77: "thread_set_priority", 78: "task_nonblock",
     79: "periph_disable", 80: "witness_uaccess", 81: "witness_rewinds",
+    82: "word_wait", 83: "word_wake",
 }
 
 TRACE_MAGIC = 0x4B545243
@@ -267,7 +268,7 @@ def stats(vals):
 
 def syscall_overheads(records, slices, ns, gaps, probe_ns=0.0):
     """True on-CPU cost of each syscall: the issuing thread's RUNNING time within
-    its SYSCALL_ENTER..EXIT window. A blocking syscall (sleep_ns, sem_wait) yields
+    its SYSCALL_ENTER..EXIT window. A blocking syscall (sleep_ns, word_wait) yields
     the CPU and resumes later, so its raw enter->exit SPAN includes that block and is
     not a cost; the window is intersected with the thread's run slices instead.
     Returns [(nr, overhead_ns)] (ENTER/EXIT matched per tid, FIFO; pairs straddling a

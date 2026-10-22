@@ -646,9 +646,12 @@ void arch_aspace_activate(struct arch_aspace* space);
 // On success a non-null `uncached` receives whether the leaf maps the page ARCH_MAP_NOCACHE
 // where the returned pointer may reach it cacheably: the caller then maintains the data cache
 // around its access. Always false where the two views take one type.
+// A non-null `frame` receives what arch_aspace_frame_at answers for va, from the same walk, and
+// also where the acquire answers null: 0 for an unmapped page, the frame for one it cannot reach.
 // ep_copy holds one page of each end at once, the deepest holder in the kernel.
 #define ARCH_ASPACE_ACQUIRE_MIN 2u
-void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va, bool* uncached);
+void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va, bool* uncached,
+                          arch_phys_addr_t* frame);
 void arch_aspace_release(struct arch_aspace* space, uintptr_t va);
 
 #if KICKOS_ARCH_UGUARD

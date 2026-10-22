@@ -647,7 +647,7 @@ so it can block like any kernel code. The result goes back into the saved `x0` a
 `break syscall_dispatch`, `continue`, `bt 3`, `info registers sp`. You should see:
 
 ```
-x0             0x1b                27
+x0             0x32                50
 => 0x40105040 <arch_syscall64>:	svc	#0x0
    0x40105044 <arch_syscall64+4>:	ret
 ...
@@ -659,13 +659,13 @@ SPSR_EL1       0x80000200          2147484160
 ESR_EL1        0x56000000          1442840576
 $1 = 0x15
 ...
-#0  syscall_dispatch (nr=27, a0=0, a1=1074859327, a2=29, a3=0) at .../kernel/syscall/syscall.cc:392
+#0  syscall_dispatch (nr=50, a0=0, a1=1074859327, a2=29, a3=4294967295) at .../kernel/syscall/syscall.cc:392
 #1  0xffffff8040018214 in kickos_armv8a_el0_sync_entry () at .../arch/arm64/armv8a/switch.S:252
-#2  0x0000000040107118 in kos_send (ep=<optimized out>, buf=<optimized out>, len=<optimized out>) at .../user/src/syscall_stubs.cc:95
+#2  0x0000000040107118 in kos_send (ep=<optimized out>, buf=<optimized out>, len=<optimized out>, timeout_us=<optimized out>) at .../user/src/syscall_stubs.cc:95
 sp             0xffffff8040301d60  0xffffff8040301d60 <kickos::(anonymous namespace)::g_kstacks+7392>
 ```
 
-Call 27 is `KOS_SYS_SEND`: `main`'s first `kos::print` sends its 29 bytes to the endpoint at index
+Call 50 is `KOS_SYS_SEND`: `main`'s first `kos::print` sends its 29 bytes to the endpoint at index
 0 of its table, its stdout. `ELR_EL1` is the instruction after the `svc`, and `SPSR_EL1`'s
 low four bits are 0 (EL0t). SP at entry is the top of the `main` thread's kernel block, and the
 dispatcher runs 800 bytes lower: that is the frame `ENTER_FROM_EL0` pushed (31 general

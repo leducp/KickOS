@@ -5,6 +5,7 @@
 
 #include "selftest.h"
 
+#include <kickos/arch/arch.h> // arch_syscall
 #include <kickos/config/priorities.h>
 
 #include <errno.h>
@@ -37,12 +38,19 @@ namespace selftest
     constexpr unsigned PL_SAMPLES = 64;
     constexpr uint32_t PL_ALL = ~0u >> (32 - KICKOS_KERNEL_CORES);
 
-    kos_cap_t g_pl_gate = KOS_CAP_NONE;
-
-    // Keeps its task non-empty until main posts the gate.
-    void pl_gate_worker(void*) // caps: gate@0
+    // Keeps its task non-empty until main posts xsem(0), reached through its first window.
+    void pl_gate_worker(void*)
     {
-        kos_sem_wait(child_cap(0), KOS_TIMEOUT_NONE);
+        kos_sem_wait(xsem_child(0), KOS_TIMEOUT_NONE);
+    }
+
+    // pl_gate_worker spawned into `t` at `prio`.
+    kos::thread::Handle pl_gate_spawn(char const* name, uint8_t prio, kos_task_t t)
+    {
+        kos_window const xw = xsem_window();
+        return kos::thread::create(pl_gate_worker, nullptr, name, prio, KOS_POLICY_FIFO, 0,
+                                   nullptr, 0, nullptr, 0, &xw, xsem_windows(), nullptr, 0, 0,
+                                   nullptr, t);
     }
 
     Atomic<uint32_t, Order::RELAXED> g_pl_go{0};
@@ -52,6 +60,8 @@ namespace selftest
     Atomic<uint32_t, Order::RELAXED> g_pl_aff{0};
     Atomic<uint32_t, Order::RELAXED> g_pl_cores{0};
     Atomic<int32_t, Order::RELAXED> g_pl_read{0}; // main's read of the worker's affinity
+    // Samples whose kos_core_current differed from the kernel's own answer read just after it.
+    Atomic<uint32_t, Order::RELAXED> g_pl_split{0};
 
     void pl_reset()
     {
@@ -62,6 +72,7 @@ namespace selftest
         g_pl_aff = 0;
         g_pl_cores = 0;
         g_pl_read = 0;
+        g_pl_split = 0;
     }
 
     // Bit 31 names no core: a kernel drives at most 31.
@@ -79,7 +90,7 @@ namespace selftest
 
     uint32_t pl_affinity()
     {
-        return static_cast<uint32_t>(kos_thread_affinity(kos_thread_self()));
+        return static_cast<uint32_t>(kos_thread_affinity(kos_thread_self(), KOS_AFFINITY_QUERY));
     }
 
     uint32_t pl_task_cores()
@@ -103,14 +114,21 @@ namespace selftest
         g_pl_aff = pl_affinity();
         g_pl_cores = pl_task_cores();
         uint32_t seen = 0;
+        uint32_t split = 0;
         for (unsigned i = 0; i < PL_SAMPLES; i++)
         {
             uint32_t const c = pl_core();
+            if (static_cast<int>(arch_syscall(KOS_SYS_CORE_CURRENT, 0, 0, 0, 0))
+                != kos_core_current())
+            {
+                split++;
+            }
             g_pl_core = c;
             seen |= 1u << c;
             kos_yield();
         }
         g_pl_seen = seen;
+        g_pl_split = split;
     }
 
     // pl_sample_worker created on `mask` (0: the task's default set), its affinity set to `to`
@@ -128,8 +146,8 @@ namespace selftest
         TAP_CHECK(w.valid());
         if (place)
         {
-            *placed = kos_thread_set_affinity(w.id(), to);
-            g_pl_read = kos_thread_affinity(w.id());
+            *placed = kos_thread_affinity(w.id(), to);
+            g_pl_read = kos_thread_affinity(w.id(), KOS_AFFINITY_QUERY);
         }
         g_pl_go = 1;
         TAP_CHECK(hold.joined());
@@ -193,32 +211,28 @@ namespace selftest
         TAP_CHECK(hold.joined());
     }
 
-    // Core 1, then the last core.
+    // Every core: a pinned worker's core read, user and kernel alike, names it.
     void t_pin_places()
     {
         TAP_ASK(.workers = 1);
-        uint32_t const last = static_cast<uint32_t>(KICKOS_KERNEL_CORES) - 1u;
-        uint32_t core = 1u;
-        while (true)
+        for (uint32_t core = 0; core < static_cast<uint32_t>(KICKOS_KERNEL_CORES); core++)
         {
             int rc = -99;
             pl_sample(0, true, 1u << core, &rc);
             int32_t const read = g_pl_read;
             uint32_t const aff = g_pl_aff;
             uint32_t const seen = g_pl_seen;
+            uint32_t const split = g_pl_split;
             tap::diag("pinned to core %u: read 0x%x, own affinity 0x%x, %u samples across a yield"
-                      " each: cores 0x%x",
+                      " each: cores 0x%x, %u disagreeing with the kernel's read",
                       static_cast<unsigned>(core), static_cast<unsigned>(read),
-                      static_cast<unsigned>(aff), PL_SAMPLES, static_cast<unsigned>(seen));
-            TAP_CHECK(rc == 0);
+                      static_cast<unsigned>(aff), PL_SAMPLES, static_cast<unsigned>(seen),
+                      static_cast<unsigned>(split));
+            TAP_CHECK(rc == read); // the setter answers the mask the read finds
             TAP_CHECK(read == static_cast<int32_t>(1u << core));
             TAP_CHECK(aff == (1u << core));
             TAP_CHECK(seen == (1u << core));
-            if (core == last)
-            {
-                break;
-            }
-            core = last;
+            TAP_CHECK(split == 0);
         }
     }
 
@@ -237,7 +251,7 @@ namespace selftest
         // Unpin is a mask of zero, resolved to the task's DEFAULT set, so it cannot be refused.
         // The default and not the grant: the grant names the isolated cores, which a thread that
         // never named one must not gain.
-        TAP_CHECK(rc == 0);
+        TAP_CHECK(rc >= 0 and rc == g_pl_read);
         TAP_CHECK(aff == (cores & ~iso));
     }
 
@@ -264,7 +278,7 @@ namespace selftest
             g_pl_stop = 1;
             (void)s.join(STALL_TOLERANT_US);
         }
-        (void)kos_send(child_cap(0), rep, sizeof(rep));
+        (void)kos_send(child_cap(0), rep, sizeof(rep), KOS_TIMEOUT_NONE);
     }
 
     void t_pin_beyond_grant_refused()
@@ -280,7 +294,7 @@ namespace selftest
         TAP_CHECK(rep[XS_CORES] == 0x1);
         TAP_CHECK(rep[XS_MADE] == 1);
         TAP_CHECK(rep[XS_ONE] == -KOS_EPERM);
-        TAP_CHECK(rep[XS_ZERO] == 0);
+        TAP_CHECK(rep[XS_ZERO] == 0x1);
     }
 
     void t_affinity_undriven_refused()
@@ -293,16 +307,16 @@ namespace selftest
         w = kos::thread::create(pl_park_worker, nullptr, "aundr", 9);
         TAP_CHECK(w.valid());
         uint32_t const undriven = 1u << static_cast<uint32_t>(KICKOS_KERNEL_CORES);
-        int const bad = kos_thread_set_affinity(w.id(), undriven);
+        int const bad = kos_thread_affinity(w.id(), undriven);
         // A mask is a set of acceptable cores: an undriven bit beside a driven one names the
         // driven one and is granted, so all ones is an ordinary request for the whole grant.
-        int const mixed = kos_thread_set_affinity(w.id(), undriven | 0x1u);
-        int const good = kos_thread_set_affinity(w.id(), 0x1u);
+        int const mixed = kos_thread_affinity(w.id(), undriven | 0x1u);
+        int const good = kos_thread_affinity(w.id(), 0x1u);
         g_pl_stop = 1;
         TAP_CHECK(hold.joined());
         TAP_CHECK(bad == -KOS_EINVAL);
-        TAP_CHECK(mixed == 0);
-        TAP_CHECK(good == 0);
+        TAP_CHECK(mixed == 0x1);
+        TAP_CHECK(good == 0x1);
     }
 
     // --- Placement: a running thread is re-placed under an affinity change ---------------
@@ -378,29 +392,27 @@ namespace selftest
                   static_cast<unsigned>(aff), static_cast<unsigned>(first),
                   static_cast<unsigned>(g_pl_mig_arrived.load()),
                   static_cast<unsigned>(last));
-        TAP_CHECK(dpin == 0);
+        TAP_CHECK(dpin == static_cast<int>(1u << PL_HOME));
         // The precondition: the spinner ran pinned to the source before the move.
         TAP_CHECK(aff == (1u << away));
         TAP_CHECK(first == away);
-        TAP_CHECK(rc == 0);
+        TAP_CHECK(rc == static_cast<int>(1u << PL_HOME));
         TAP_CHECK(g_pl_mig_arrived.load() == 1u);
     }
 
     void t_pin_cross_task_refused()
     {
-        TAP_ASK(.workers = 1, .tasks = 1, .sems = 1);
+        TAP_ASK(.workers = 1, .tasks = 1);
         kos_task_t t = KOS_TASK_NONE;
         kos::thread::Handle m;
         ArmHold hold;
-        TAP_HOLD(hold.cap(&g_pl_gate) and hold.task(&t) and hold.thread(&m));
-        TAP_CHECK(kos_sem_create(0, &g_pl_gate) == 0);
+        TAP_HOLD(hold.task(&t) and hold.thread(&m));
+        TAP_CHECK(kos_sem_init(xsem(0), 0) == 0);
         TAP_CHECK(kos_task_create(nullptr, 0, 0, &t) == 0);
-        kos_cap_grant caps[] = {{g_pl_gate, CH_FULL}};
-        m = kos::thread::create_caps(pl_gate_worker, nullptr, "xtask", 9, caps, 1,
-                                     KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr, t);
+        m = pl_gate_spawn("xtask", 9, t);
         TAP_CHECK(m.valid());
-        int const rc = kos_thread_set_affinity(m.id(), 0x1u);
-        kos_sem_post(g_pl_gate);
+        int const rc = kos_thread_affinity(m.id(), 0x1u);
+        kos_sem_post(xsem(0));
         TAP_CHECK(hold.joined());
         // main is unprivileged: a core its OWN grant holds does not make another task's thread
         // its to place.
@@ -418,9 +430,10 @@ namespace selftest
     {
         int32_t rep[GN_WORDS];
         rep[GN_CORES] = static_cast<int32_t>(kos_task_cores(KOS_TASK_NONE));
-        rep[GN_AFF] = static_cast<int32_t>(kos_thread_affinity(kos_thread_self()));
+        rep[GN_AFF] =
+            static_cast<int32_t>(kos_thread_affinity(kos_thread_self(), KOS_AFFINITY_QUERY));
         rep[GN_CORE] = static_cast<int32_t>(kos_core_current());
-        (void)kos_send(child_cap(0), rep, sizeof(rep));
+        (void)kos_send(child_cap(0), rep, sizeof(rep), KOS_TIMEOUT_NONE);
     }
 
     void t_grant_narrows()
@@ -470,7 +483,7 @@ namespace selftest
     {
         int32_t rep[GI_WORDS] = {1, 1,
                                  static_cast<int32_t>(kos_task_cores(KOS_TASK_NONE))};
-        (void)kos_send(child_cap(0), rep, sizeof(rep));
+        (void)kos_send(child_cap(0), rep, sizeof(rep), KOS_TIMEOUT_NONE);
     }
     void gi_worker(void*) // caps: E(SIGNAL)@0
     {
@@ -478,7 +491,7 @@ namespace selftest
         kos_task_t u = KOS_TASK_NONE;
         if (kos_task_create(nullptr, 0, 0, &u) != 0)
         {
-            (void)kos_send(child_cap(0), rep, sizeof(rep));
+            (void)kos_send(child_cap(0), rep, sizeof(rep), KOS_TIMEOUT_NONE);
             return;
         }
         rep[GI_MADE] = 1;
@@ -487,13 +500,13 @@ namespace selftest
                                           KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr, u);
         if (not c.valid())
         {
-            (void)kos_task_kill(u);
-            (void)kos_send(child_cap(0), rep, sizeof(rep));
+            (void)kos_task_slay(u, 0);
+            (void)kos_send(child_cap(0), rep, sizeof(rep), KOS_TIMEOUT_NONE);
             return;
         }
         // The CHILD answers on the same endpoint, so this thread sends nothing more.
         (void)c.join(STALL_TOLERANT_US);
-        (void)kos_task_kill(u);
+        (void)kos_task_slay(u, 0);
     }
     void t_grant_inherited_by_child_task()
     {
@@ -519,20 +532,18 @@ namespace selftest
 
     void t_grant_after_member_refused()
     {
-        TAP_ASK(.workers = 1, .tasks = 1, .sems = 1);
+        TAP_ASK(.workers = 1, .tasks = 1);
         kos_task_t t = KOS_TASK_NONE;
         kos::thread::Handle m;
         ArmHold hold;
-        TAP_HOLD(hold.cap(&g_pl_gate) and hold.task(&t) and hold.thread(&m));
-        TAP_CHECK(kos_sem_create(0, &g_pl_gate) == 0);
+        TAP_HOLD(hold.task(&t) and hold.thread(&m));
+        TAP_CHECK(kos_sem_init(xsem(0), 0) == 0);
         TAP_CHECK(kos_task_create(nullptr, 0, 0, &t) == 0);
         int const empty_ok = kos_task_sched_grant(t, 0, 0x3);
-        kos_cap_grant caps[] = {{g_pl_gate, CH_FULL}};
-        m = kos::thread::create_caps(pl_gate_worker, nullptr, "gbusy", 9, caps, 1,
-                                     KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr, t);
+        m = pl_gate_spawn("gbusy", 9, t);
         TAP_CHECK(m.valid());
         int const busy = kos_task_sched_grant(t, 0, 0x1);
-        kos_sem_post(g_pl_gate);
+        kos_sem_post(xsem(0));
         TAP_CHECK(hold.joined());
         TAP_CHECK(empty_ok == 0);
         // Thread::affinity is a subset of the set and nothing re-derives it, so narrowing under
@@ -576,7 +587,7 @@ namespace selftest
         w = kos::thread::create(pl_exit_worker, nullptr, "adead", 9);
         TAP_CHECK(w.valid());
         TAP_CHECK(hold.joined());
-        TAP_CHECK(kos_thread_set_affinity(w.id(), 0x1u) == -KOS_EBADF);
+        TAP_CHECK(kos_thread_affinity(w.id(), 0x1u) == -KOS_EBADF);
         TAP_CHECK(kos::thread::affinity(w.id()) == -KOS_EBADF);
         TAP_CHECK(kos_task_cores(0xFFFFFFFFu) == -KOS_EBADF);
     }
@@ -614,7 +625,7 @@ namespace selftest
         tap::diag("unpinned off isolated core %u: affinity 0x%x, cores seen 0x%x, isolated 0x%x",
                   static_cast<unsigned>(core), static_cast<unsigned>(aff),
                   static_cast<unsigned>(seen), static_cast<unsigned>(iso));
-        TAP_CHECK(rc == 0);
+        TAP_CHECK(rc >= 0 and rc == g_pl_read);
         TAP_CHECK(aff == (PL_ALL & ~iso));
         TAP_CHECK(seen != 0); // the denominator: a worker that never ran would satisfy the rest
         TAP_CHECK((seen & iso) == 0);
@@ -633,7 +644,7 @@ namespace selftest
         tap::diag("pinned to isolated core %u: affinity 0x%x, cores seen 0x%x",
                   static_cast<unsigned>(core), static_cast<unsigned>(aff),
                   static_cast<unsigned>(seen));
-        TAP_CHECK(rc == 0);
+        TAP_CHECK(rc >= 0 and rc == g_pl_read);
         TAP_CHECK(aff == (1u << core));
         TAP_CHECK(seen == (1u << core));
     }
@@ -653,7 +664,7 @@ namespace selftest
         tap::diag("isolated core named beside core 0: asked 0x%x, affinity 0x%x, cores seen 0x%x",
                   static_cast<unsigned>(mixed), static_cast<unsigned>(aff),
                   static_cast<unsigned>(seen));
-        TAP_CHECK(rc == 0);
+        TAP_CHECK(rc >= 0 and rc == g_pl_read);
         TAP_CHECK(aff == mixed);
         TAP_CHECK(seen != 0);
         TAP_CHECK((seen & ~mixed) == 0);
@@ -1034,13 +1045,13 @@ namespace selftest
     constexpr uint8_t XC_CALLER_PRIO = 20; // the thread the reply readies
     constexpr uint8_t XC_SERVER_PRIO = 12;
     kos_cap_t g_xc_ep = KOS_CAP_NONE;
-    kos_cap_t g_xc_gate = KOS_CAP_NONE;
+    kos_sem_t g_xc_gate = KOS_SEM_INIT(0);
     Atomic<uint32_t, Order::RELAXED> g_xc_stop{0};
     Atomic<uint32_t, Order::RELAXED> g_xc_spin_core{0xFFFFFFFFu};
     Atomic<int32_t, Order::RELAXED> g_xc_call_rc{-99};
     Atomic<int32_t, Order::RELAXED> g_xc_serve_rc{-99};
 
-    void xc_server(void*) // caps: E(WAIT)@0, gate@1
+    void xc_server(void*) // caps: E(WAIT)@0
     {
         char buf[16];
         struct kos_reply_recv_opts opts;
@@ -1053,7 +1064,7 @@ namespace selftest
             return;
         }
         // Reply only once the caller is parked for it and the spinner holds the caller's core.
-        kos_sem_wait(child_cap(1), KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_xc_gate, KOS_TIMEOUT_NONE);
         kos_cap_t const reply = opts.info.reply_cap;
         kos_reply_recv_opts_init(&opts, child_cap(0), 0, KOS_TIMEOUT_NONE);
         memcpy(buf, "pong!", 5);
@@ -1063,15 +1074,15 @@ namespace selftest
     {
         char buf[16];
         memcpy(buf, "ping", 4);
-        g_xc_call_rc = kos_call(child_cap(0), buf, 4, sizeof(buf));
+        g_xc_call_rc = kos_call(child_cap(0), buf, 4, sizeof(buf), KOS_TIMEOUT_NONE);
     }
     // The spinner yields its core only to a preemption and the reply follows its post, so the
     // core it posts from is held when the reply lands. A spin count cannot witness that: a
     // reschedule arriving before the first iteration leaves it at zero.
-    void xc_spinner(void*) // caps: gate@0
+    void xc_spinner(void*)
     {
         g_xc_spin_core = pl_core();
-        kos_sem_post(child_cap(0)); // the core is ours; the server may answer now
+        kos_sem_post(&g_xc_gate); // the core is ours; the server may answer now
         while (g_xc_stop.load() == 0)
         {
         }
@@ -1090,7 +1101,7 @@ namespace selftest
         }
         TAP_SKIP_UNLESS(away != 0,
                         "a cross-core wake needs a non-isolated core beside the boot core");
-        TAP_ASK(.workers = 3, .sems = 1, .endpoints = 1);
+        TAP_ASK(.workers = 3, .endpoints = 1);
         g_xc_stop = 0;
         g_xc_spin_core = 0xFFFFFFFFu;
         g_xc_call_rc = -99;
@@ -1099,14 +1110,13 @@ namespace selftest
         kos::thread::Handle cl;
         kos::thread::Handle sp;
         ArmHold hold;
-        TAP_HOLD(hold.cap(&g_xc_ep) and hold.cap(&g_xc_gate) and hold.thread(&sv)
-                 and hold.thread(&cl) and hold.thread(&sp));
+        TAP_HOLD(hold.cap(&g_xc_ep) and hold.thread(&sv) and hold.thread(&cl)
+                 and hold.thread(&sp));
         TAP_CHECK(kos_endpoint_create(&g_xc_ep) == 0);
-        TAP_CHECK(kos_sem_create(0, &g_xc_gate) == 0);
-        kos_cap_grant vcaps[] = {{g_xc_ep, KOS_CAP_WAIT}, {g_xc_gate, CH_FULL}};
+        TAP_CHECK(kos_sem_init(&g_xc_gate, 0) == 0);
+        kos_cap_grant vcaps[] = {{g_xc_ep, KOS_CAP_WAIT}};
         kos_cap_grant ccaps[] = {{g_xc_ep, KOS_CAP_SIGNAL}};
-        kos_cap_grant pcaps[] = {{g_xc_gate, CH_FULL}};
-        sv = kos::thread::create_caps(xc_server, nullptr, "xcS", XC_SERVER_PRIO, vcaps, 2,
+        sv = kos::thread::create_caps(xc_server, nullptr, "xcS", XC_SERVER_PRIO, vcaps, 1,
                                       KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
                                       KOS_TASK_NONE, nullptr, 0, 1u << PL_HOME);
         TAP_CHECK(sv.valid());
@@ -1115,7 +1125,7 @@ namespace selftest
                                       KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
                                       KOS_TASK_NONE, nullptr, 0, 1u << away);
         TAP_CHECK(cl.valid());
-        sp = kos::thread::create_caps(xc_spinner, nullptr, "xcP", XC_SPIN_PRIO, pcaps, 1,
+        sp = kos::thread::create_caps(xc_spinner, nullptr, "xcP", XC_SPIN_PRIO, nullptr, 0,
                                       KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
                                       KOS_TASK_NONE, nullptr, 0, 1u << away);
         TAP_CHECK(sp.valid());
@@ -1123,7 +1133,7 @@ namespace selftest
         int const cjoined = cl.join(STALL_TOLERANT_US);
         g_xc_stop = 1;
         // Releases the server from its final receive.
-        (void)kos_send_timed(g_xc_ep, "", 0, STALL_TOLERANT_US);
+        (void)kos_send(g_xc_ep, "", 0, STALL_TOLERANT_US);
         TAP_CHECK(hold.joined());
         uint32_t const spin_core = g_xc_spin_core;
         tap::diag("caller pinned to core %u under a spinner on core %u: join %d, call %d",
@@ -1132,6 +1142,149 @@ namespace selftest
         TAP_CHECK(spin_core == away);
         TAP_CHECK(cjoined == 0);
         TAP_CHECK(g_xc_call_rc.load() == 5);
+    }
+
+    // --- Units counted across cores --------------------------------------------------------
+    // Two posters pinned to one core and two takers pinned to another run rounds on one
+    // semaphore word, with a waiter parked on it from the start: every unit posted is taken
+    // exactly once. The posters wake the word in the kernel every time, and the takers take
+    // by tries that never enter it, so the kernel commits the count while the takers'
+    // compare-and-swaps on the other core move it.
+    constexpr uint32_t TC_ROUNDS = 200000;
+    constexpr uint8_t TC_PRIO = 10;
+    // Rounds enough for the race to land under emulation take seconds there.
+    constexpr uint32_t TC_BOUND_US = 12u * STALL_TOLERANT_US;
+    kos_sem_t g_tc_sem = KOS_SEM_INIT(0);
+    // Each thread's own count, by the index its spawn names: [0..1] the takers, [2..3] the
+    // posters, whose rounds are TC_ROUNDS plus their index less 2.
+    Atomic<uint32_t, Order::RELAXED> g_tc_done[4];
+    Atomic<uint32_t, Order::RELAXED> g_tc_refused[4];
+    Atomic<int32_t, Order::RELAXED> g_tc_first{-99};
+
+    void tc_poster(void* arg)
+    {
+        uintptr_t const me = reinterpret_cast<uintptr_t>(arg);
+        uint32_t const rounds = TC_ROUNDS + static_cast<uint32_t>(me - 2u);
+        uint32_t done = 0;
+        uint32_t refused = 0;
+        for (uint32_t i = 0; i < rounds; i++)
+        {
+            if (kos_word_wake(&g_tc_sem.word, 1u, 1u) >= 0)
+            {
+                done++;
+            }
+            else
+            {
+                refused++;
+            }
+        }
+        g_tc_done[me] = done;
+        g_tc_refused[me] = refused;
+    }
+    void tc_taker(void* arg)
+    {
+        uintptr_t const me = reinterpret_cast<uintptr_t>(arg);
+        uint32_t done = 0;
+        uint32_t refused = 0;
+        uint64_t const until = kos_clock_now() + uint64_t{TC_BOUND_US} * 1000u;
+        while (done < TC_ROUNDS)
+        {
+            int const rc = kos_sem_wait(&g_tc_sem, 0);
+            if (rc == 0)
+            {
+                done++;
+            }
+            else if (rc != -KOS_ETIMEDOUT or kos_clock_now() > until)
+            {
+                refused++;
+                break;
+            }
+        }
+        g_tc_done[me] = done;
+        g_tc_refused[me] = refused;
+    }
+    void tc_waiter(void*)
+    {
+        g_tc_first = kos_sem_wait(&g_tc_sem, TC_BOUND_US);
+    }
+    void t_sem_units_across_cores()
+    {
+        uint32_t const iso = KOS_ISOLATED_CORES;
+        uint32_t away = 0;
+        for (uint32_t c = 1; c < static_cast<uint32_t>(KICKOS_KERNEL_CORES); c++)
+        {
+            if ((iso & (1u << c)) == 0)
+            {
+                away = c;
+                break;
+            }
+        }
+        TAP_SKIP_UNLESS(away != 0, "a count across cores needs a non-isolated core beside core 0");
+        TAP_ASK(.workers = 5);
+        TAP_CHECK(kos_sem_init(&g_tc_sem, 0) == 0);
+        for (int i = 0; i < 4; i++)
+        {
+            g_tc_done[i] = 0;
+            g_tc_refused[i] = 0;
+        }
+        g_tc_first = -99;
+        uint32_t const home = 1u << PL_HOME;
+        uint32_t const peer = 1u << away;
+        kos::thread::Handle w;
+        kos::thread::Handle t[2];
+        kos::thread::Handle p[2];
+        ArmHold hold(TC_BOUND_US);
+        TAP_HOLD(hold.thread(&w) and hold.thread(&t[0]) and hold.thread(&t[1])
+                 and hold.thread(&p[0]) and hold.thread(&p[1]));
+        w = kos::thread::create_caps(tc_waiter, nullptr, "tcW", TC_PRIO + 1, nullptr, 0,
+                                     KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr, KOS_TASK_NONE,
+                                     nullptr, 0, peer);
+        TAP_CHECK(w.valid());
+        uint64_t const until = kos_clock_now() + uint64_t{STALL_TOLERANT_US} * 1000u;
+        while (g_tc_sem.word != KOS_WORD_WAITERS and kos_clock_now() < until)
+        {
+            kos_sleep_ns(PLACE_STEP_NS);
+        }
+        uint32_t const parked = g_tc_sem.word;
+        for (int i = 0; i < 2; i++)
+        {
+            void* const me = reinterpret_cast<void*>(static_cast<uintptr_t>(i));
+            t[i] = kos::thread::create_caps(tc_taker, me, "tcT", TC_PRIO, nullptr, 0,
+                                            KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
+                                            KOS_TASK_NONE, nullptr, 0, peer);
+            TAP_CHECK(t[i].valid());
+        }
+        for (int i = 0; i < 2; i++)
+        {
+            uintptr_t const me = 2u + static_cast<uintptr_t>(i);
+            p[i] = kos::thread::create_caps(tc_poster, reinterpret_cast<void*>(me), "tcP",
+                                            TC_PRIO, nullptr, 0, KOS_POLICY_FIFO, 0, nullptr, 0,
+                                            0, nullptr, KOS_TASK_NONE, nullptr, 0, home);
+            TAP_CHECK(p[i].valid());
+        }
+        uint64_t const t0 = kos_clock_now();
+        TAP_CHECK(hold.joined());
+        uint32_t const ms = static_cast<uint32_t>((kos_clock_now() - t0) / 1000000u);
+        uint32_t const left = g_tc_sem.word;
+        int const after = kos_sem_wait(&g_tc_sem, 0);
+        uint32_t const taken = g_tc_done[0].load() + g_tc_done[1].load();
+        uint32_t const posted = g_tc_done[2].load() + g_tc_done[3].load();
+        uint32_t refused = 0;
+        for (int i = 0; i < 4; i++)
+        {
+            refused += g_tc_refused[i].load();
+        }
+        tap::diag("units across cores: waiter %d, %u posted, %u taken, %u refused, word 0x%x, "
+                  "%u ms",
+                  static_cast<int>(g_tc_first.load()), static_cast<unsigned>(posted),
+                  static_cast<unsigned>(taken), static_cast<unsigned>(refused),
+                  static_cast<unsigned>(left), static_cast<unsigned>(ms));
+        TAP_CHECK(parked == KOS_WORD_WAITERS);
+        TAP_CHECK(g_tc_first.load() == 0);
+        TAP_CHECK(posted == 2u * TC_ROUNDS + 1u);
+        TAP_CHECK(taken == 2u * TC_ROUNDS);
+        TAP_CHECK(refused == 0u);
+        TAP_CHECK(left == 0u and after == -KOS_ETIMEDOUT);
     }
 
     // --- A caller that lowers itself takes a thread waiting on a peer core ------------------
@@ -1220,7 +1373,7 @@ namespace selftest
         uint32_t moved = 0;
         if (w.valid())
         {
-            widened = kos_thread_set_affinity(w.id(), (1u << away) | (1u << home));
+            widened = kos_thread_affinity(w.id(), (1u << away) | (1u << home));
             // W running before the lowering is a non-event: only a span can stand for it.
             pd_spin(nullptr, PD_SETTLE_NS);
             early = g_pd_ran.load();
@@ -1236,7 +1389,8 @@ namespace selftest
         tap::diag("main on core %u lowered with W behind a spinner on core %u: W ran on core %u",
                   static_cast<unsigned>(home), static_cast<unsigned>(away),
                   static_cast<unsigned>(g_pd_core.load()));
-        TAP_CHECK(raised == 0 and widened == 0 and lowered == 0 and restored == 0);
+        TAP_CHECK(raised == 0 and lowered == 0 and restored == 0);
+        TAP_CHECK(widened == static_cast<int>((1u << away) | (1u << home)));
         TAP_CHECK(g_pd_spin_core.load() == away);
         TAP_CHECK(early == 0);
         TAP_CHECK(moved == 1);
@@ -1671,7 +1825,10 @@ namespace selftest
                                            "reswt", 12);
             }
             TAP_CHECK(w[i].valid());
-            pinned |= kos::thread::pin(w[i].id(), core);
+            if (kos::thread::pin(w[i].id(), core) < 0)
+            {
+                pinned = 1;
+            }
         }
         g_re_go = 1;
         TAP_CHECK(hold.joined());
@@ -1761,7 +1918,7 @@ namespace selftest
             tap::diag("core %u: machine status word 0x%x, xcr0 0x%x, sampled on core %u",
                       static_cast<unsigned>(c), static_cast<unsigned>(msw),
                       static_cast<unsigned>(xcr0), static_cast<unsigned>(core));
-            if (rc == 0 and joined and core == c and (msw & FP_MSW_MASK) == FP_MSW_ENABLED
+            if (rc >= 0 and joined and core == c and (msw & FP_MSW_MASK) == FP_MSW_ENABLED
                 and xcr0 == FP_XCR0)
             {
                 enabled |= 1u << c;

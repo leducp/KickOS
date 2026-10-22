@@ -81,11 +81,11 @@ namespace kickos
             {
                 // Unlinked first, so the funnel no longer counts this waiter. The word is never
                 // touched: a WAITERS bit left set costs its holder one unlock entry.
-                Mutex* const m = t->wait_mutex();
+                WordRecord* const m = t->wait_mutex();
                 KICKOS_ASSERT(m != nullptr); // WAIT_MUTEX never parks without one
                 t->wait_queue->unlink(&t->link);
                 Thread* owner = m->owner;
-                mutex_waiter_left(m);
+                word_waiter_left(m);
                 for (int depth = 0; owner != nullptr and depth <= KICKOS_THREAD_SLOTS; depth++)
                 {
                     uint8_t const p = thread_effective_prio(owner);
@@ -94,7 +94,7 @@ namespace kickos
                         break;
                     }
                     sched::set_prio(owner, p, held);
-                    Mutex const* const next = owner->wait_mutex();
+                    WordRecord const* const next = owner->wait_mutex();
                     if (next == nullptr)
                     {
                         break;
@@ -103,12 +103,13 @@ namespace kickos
                 }
                 break;
             }
-            case WAIT_SEM:
+            case WAIT_WORD:
             {
-                // The count is untouched, so a later poster still hands its token to a
-                // genuine waiter.
-                KICKOS_ASSERT_EXCLUSION_HELD();
+                // The word is never touched: a stale waiters bit costs the next wake one entry.
+                WordRecord* const m = t->wait_word();
+                KICKOS_ASSERT(m != nullptr); // WAIT_WORD never parks without one
                 t->wait_queue->unlink(&t->link);
+                word_waiter_left(m);
                 break;
             }
             case WAIT_NOTIFY:

@@ -3,8 +3,8 @@
 
 # The per-task object budget, over a posture the preset cannot supply. Each macro is
 # load-bearing for a different arm:
-#   KICKOS_TASK_SEMAPHORE_BUDGET=3  the ceiling most arms count creates against by hand
-#   KICKOS_MAX_SEMAPHORES=8         wide enough that a task at its ceiling leaves slots free,
+#   KICKOS_TASK_NOTIFY_BUDGET=3     the ceiling most arms count creates against by hand
+#   KICKOS_MAX_NOTIFY=8             wide enough that a task at its ceiling leaves slots free,
 #                                   so an arm can tell a budget refusal from an exhausted
 #                                   pool, and that two tasks at their ceilings both fit
 #   KICKOS_TASK_ENDPOINT_BUDGET=2   a DIFFERENT ceiling on a second pool, so an arm reddens if
@@ -14,22 +14,15 @@
 #                                   IRQ kind ever resolves to another pool's figure
 #   KICKOS_MAX_IRQ_HANDLES=6        wider than that budget, so the IRQ refusal cannot be an
 #                                   exhausted binding pool either
-#   KICKOS_TASK_NOTIFY_BUDGET=5     a FOURTH distinct ceiling, so the notification arm reddens
-#                                   if that kind ever resolves to another pool's figure
-#   KICKOS_MAX_NOTIFY=7             wider than that budget, so its refusal cannot be an
-#                                   exhausted notification pool either
 # The pool sizes size `struct Kernel`, so they cannot be a bare DEFINITIONS on a target
 # linking the shared kickos_kseam: the fixture and the arm would disagree on the layout.
 kickos_add_kseam(kickos_kseam_budget
-  EXTRA "${PROJECT_SOURCE_DIR}/kernel/syscall/syscall_obj.cc"
-  POSTURE KICKOS_TASK_SEMAPHORE_BUDGET=3 KICKOS_MAX_SEMAPHORES=8
+  POSTURE KICKOS_TASK_NOTIFY_BUDGET=3 KICKOS_MAX_NOTIFY=8
           KICKOS_TASK_ENDPOINT_BUDGET=2
-          KICKOS_TASK_IRQ_HANDLE_BUDGET=4 KICKOS_MAX_IRQ_HANDLES=6
-          KICKOS_TASK_NOTIFY_BUDGET=5 KICKOS_MAX_NOTIFY=7)
+          KICKOS_TASK_IRQ_HANDLE_BUDGET=4 KICKOS_MAX_IRQ_HANDLES=6)
 
-# syscall_obj.cc is in that set and not in kickos_kseam's: sem_create is one of the charged
-# creators, and endpoint_create sits in syscall_ipc.cc with the whole far-IPC path behind it.
-# The endpoint creator's refusal is a board arm.
+# endpoint_create sits in syscall_ipc.cc with the whole far-IPC path behind it, so the endpoint
+# creator's refusal is a board arm.
 kickos_add_unit_test(NAME task_budget SOURCES object_budget.cc
   INCLUDES "${PROJECT_SOURCE_DIR}/kernel/syscall"
   LIBRARIES kickos_kseam_budget)

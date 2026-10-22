@@ -17,30 +17,25 @@ namespace
     constexpr uint64_t BEAT_NS = 1000000ull; // 1 ms
     constexpr uint64_t RUN_NS = 40000000ull; // main lets the workers run ~40 ms
 
-    kos::Semaphore* g_ping = nullptr;
-    kos::Semaphore* g_pong = nullptr;
-
-    // B1 well-known child cap indices: (ping_s, pong_s) delegated in that order.
-    constexpr int CH_PING = KOS_SPAWN_DELEGATED_CAP0;
-    constexpr int CH_PONG = KOS_SPAWN_DELEGATED_CAP0 + 1;
-    constexpr uint8_t CH_FULL = KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER;
+    kos::Semaphore g_ping(1); // ping serves first
+    kos::Semaphore g_pong;
 
     void ping(void*)
     {
         while (true)
         {
-            kos_sem_wait(CH_PING, KOS_TIMEOUT_NONE);
+            g_ping.wait();
             kos::sleep_ns(BEAT_NS);
-            kos_sem_post(CH_PONG);
+            g_pong.post();
         }
     }
     void pong(void*)
     {
         while (true)
         {
-            kos_sem_wait(CH_PONG, KOS_TIMEOUT_NONE);
+            g_pong.wait();
             kos::sleep_ns(BEAT_NS);
-            kos_sem_post(CH_PING);
+            g_ping.post();
         }
     }
     // Periodic sleeper: fixed-duration sleeps whose deadlines coalesce with the
@@ -58,14 +53,8 @@ int main(int, char**)
 {
     kos::print("tele_pingpong: bounded telemetry workload\n");
 
-    kos::Semaphore ping_s(1); // ping serves first
-    kos::Semaphore pong_s(0);
-    g_ping = &ping_s;
-    g_pong = &pong_s;
-
-    kos_cap_grant caps[] = {{ping_s.id(), CH_FULL}, {pong_s.id(), CH_FULL}};
-    kos::thread::create_caps(ping, nullptr, "ping", 10, caps, 2);
-    kos::thread::create_caps(pong, nullptr, "pong", 10, caps, 2);
+    kos::thread::create(ping, nullptr, "ping", 10);
+    kos::thread::create(pong, nullptr, "pong", 10);
     for (int i = 0; i < SLEEPERS; i++)
     {
         kos::thread::create(sleeper, nullptr, "sleeper", 5);

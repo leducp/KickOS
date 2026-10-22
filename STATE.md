@@ -19,31 +19,31 @@ A milestone's own section leaves this file once the milestone after it merges, a
 
 ## Where we are
 
-**M10 HAS MERGED THROUGH M10.6.6, AND M10.6, THE CLEANUP PASS, IS OPEN.** M9's answer is that
+**M10 HAS MERGED THROUGH M10.6.7, AND M10.6, THE CLEANUP PASS, IS OPEN.** M9's answer is that
 the one big kernel lock stays, with per-core ready queues and per-pair rings under it and CLH
 arbitration on x86_64 alone. M10 is static composition: a declared system, admitted on the host,
 and an init provider that stays resident. `roadmap.md`'s `### M10` section is the ledger and the
 only place its numbers are assigned; the sections at the bottom of this file say what each
 milestone's green runs do not.
 
-**M10.6.7, THE UNCONTENDED MUTEX, IS CLOSED ON ITS BRANCH AND WAITS FOR ITS SQUASH AND THE
-MAINTAINER'S PUSH; NEXT IS M10.6.8.** Its record is the M10.6.7 entry of `TODO.md`, and the
-M10.6.7 section at the bottom of this file says what its green runs do not. The tree requires
-toolchain 1.1, published as release `toolchain-1.1.0-1`.
+**M10.6.8, THE SYSCALL PASS, IS CLOSED AND READY TO MERGE; NEXT IS M10.6.9.** Its record is the
+M10.6.8 entry of `TODO.md`, and the M10.6.8 section at the bottom of this file says what its green
+runs do not. The tree requires toolchain 1.1, published as release `toolchain-1.1.0-1`.
 
-**THE ORDER IS LOCKED: M10.6.7, THEN M10.6.8, THEN M10.6.9, THEN M10.7** (maintainer, 2026-10-13,
-M10.6.7 inserted 2026-10-14, M10.6.8 2026-10-16); M10.6.7 is closed on its branch and M10.6.8 is next. M10.6.8
-is the syscall pass the inventory of 2026-10-16 found: what can leave the kernel does. M10.6.6 is the
-hardening, isolation as strong as the hardware permits, and the libc lock split, which is not
-measure-gated because malloc's hold time is unbounded. M10.6.7 is the uncontended mutex taking no
-syscall, numbered on the libc measurement and placed before the bench so one pass captures its
-images. Every silicon image has moved since the last bench pass and none of the moved images has
-run: M10.6.9's pass, `TODO.md`'s "THE BENCH PASS, BOARD BY BOARD", captures them, M10.6.6's and
-M10.6.7's included, with the ESP32 IRAM, the interrupt stacks and the C6 PLL riding the same
-passes. M10.7, the exit record, reconciles the references against what shipped, so it waits for
-the bench. The KickOS journey, its PL022 capstone and the docs site land as a maintainer PR
-outside the numbering now that M10.6.5 has merged; the lock-free yield and the shared sleep
-deadline are measure-first and carry no number.
+**THE ORDER IS LOCKED: M10.6.9, THEN M10.6.10, THEN M10.6.11, THEN M10.7** (maintainer,
+2026-10-13, M10.6.9 and M10.6.10 inserted 2026-10-21). M10.6.8's nonblocking flag stayed in the
+kernel and moves into libc with M10.6.9's per-task libc state. M10.6.9 makes a task on a region
+board the MPU equivalent of the MMU process and closes the kernel's isolation holes; the maintainer
+ruled that a board too small for that holds one task rather than lie about the isolation. M10.6.10
+is C++ and libc conformance: a toolchain release giving GCC a KickOS threads model, the C++
+exception state per thread, and the libc semantics a worker thread, the wall clock and entropy get
+wrong. Every silicon image has moved since the last bench pass and none of the moved images has
+run: M10.6.11's pass, `TODO.md`'s "THE BENCH PASS, BOARD BY BOARD", captures them, those of
+M10.6.6 to M10.6.10 included, with the ESP32 IRAM, the interrupt stacks and the C6 PLL riding the
+same passes. M10.7, the exit record, reconciles the references against what shipped, so it waits
+for the bench. The KickOS journey, its PL022 capstone and the docs site land as a maintainer PR
+outside the numbering; the lock-free yield and the shared sleep deadline are measure-first and
+carry no number.
 
 M7 is the multicore milestone and `docs/design-multicore.md` is its contract; every ruling and every
 freeze lives there, `roadmap.md` assigns the numbers, and `git log` carries the order things landed
@@ -1141,33 +1141,43 @@ missing from one of those QEMU captures under load is this, not a flake to re-ru
   and one TX_IDLE_NUM, the reset 256: the field reads 2 while the line shifts and 0 once the last
   frame is out. No other baud or idle count was run.
 
-## M10.6.7: the uncontended mutex, and what these green runs do NOT say
+## M10.6.8: the syscall pass, and what these green runs do NOT say
 
-- **THE CONTENDED HANDOFF IS SLOWER ON SILICON, AND THE MAINTAINER ACCEPTED IT (2026-10-20).** After
-  the three contended-path cuts the handoff p50 is still 6 to 16% above the base on f411disco,
-  rx72m and esp32-wroom while the round is flat or faster. Where those cycles go (the failed user
-  compare-and-swap on each side, the word's key, the kernel's write) is not separated, and the
-  figures include a clock system call on each side, so they compare only within M10.6.7.
-- **THE RISC-V DUMMY `sc` AND THE LX6 `SCOMPARE1` BANK HAVE NO WITNESS.** QEMU's trap drops the
-  reservation itself, and nothing emulates LX6; deleting either stays green everywhere. The arm
-  that would witness each is owed to M10.6.9.
-- **THE REWIND WITNESS IS ARMV6M UNDER QEMU ONLY.** QEMU takes interrupts at block ends, so the
-  store is the only PC in the window a switch finds there: a wrong lower bound stays green. The
-  RXv3 rewind has never been counted firing; its RX72M capture is owed.
-- **THE ARMV7-M `clrex` HAS NO RED ARM.** Every gate was green without it; it rests on the manual.
-- **NO SILICON RUN COVERS THE KERNEL-LOCK WAIT, ABOVE ONE CORE OR ARMV6M.** The silicon figures are
-  one-core tickless handoffs on f411disco, rx72m and esp32-wroom (`mpu off`, so no LX6 isolation).
-- **THE DEATH WALK'S AND THE END-OF-WAIT SCAN'S BOUNDS ARE STATED, NOT MEASURED.** A record now
-  leaves the active list in one step; the scan still reverts an owner chain per waiter it ends.
-- **ON REGION AND FLAT BOARDS A FORGED WORD BOOSTS AND PROBES ANY THREAD OF ANY TASK.** It lends the
-  waiter's priority across a task's ceiling and a try answers whether the named thread lives; the
-  posture is accepted there and stated in the invariant.
-- **ON THE SIM A RAW MUTEX CALL ON AN UNMAPPED WORD KILLS THE HOST PROCESS.** The sim admits any
-  aligned address outside its arena; the design accepted it.
-- **ON ARMV6M, RXV3 AND V7-M THE USER COMPARE-AND-SWAP CARRIES NO BARRIER.** It orders only the
-  threads of its own one-core instance; a DMA master is promised nothing.
-- **MUTEXBENCH FILLS THE 64 KIB-FLASH BOARDS TO WITHIN ABOUT 2 KIB.** Growth of the mutex or libc
-  path can push it off f302nucleo and bluepill-c8.
+- **THE CONTENDED SEMAPHORE IS SLOWER UNDER QEMU, AND WHETHER THAT IS ACCEPTED IS PENDING THE
+  MAINTAINER'S DECISION.** After the two cuts, the bench's context switches per second are 8 to 11%
+  lower on qemu-x86_64-smp2 and 12% lower on qemu-arm64-benchsmp than with the kernel semaphore.
+  A contended wait or post now names the word by its memory (a write check and a page walk) and
+  finds, takes and frees a record. On arm64 QEMU the time goes to pages more than instructions,
+  since each kernel entry empties QEMU's TLB; that is read from page counts, not a host profile.
+  Silicon ran one capture per board, before the cuts; the esp32-wroom handoff read 5% slower
+  there, not resolved.
+- **THE USER CLOCK AND THE CORE READ HAVE NEVER RUN ON ARMV8A OR X86 SILICON.** The imx8mp is
+  built, not run, no x86 run used KVM, and no RISC-V silicon board takes the user clock. Every
+  figure for them is QEMU's.
+- **TSC SKEW ACROSS CORES IS UNCHECKED.** A thread can now move to another core between two clock
+  reads with no kernel entry. The bracket arm runs pinned, so it cannot see skew.
+- **ABOVE ONE CORE, THAT A WORD WAKE PLACES EVERY WAITER IT READIES IS SHOWN BY READING ONLY.** No
+  arm has an idle peer core the wake must reach, and no image drives a wake of several waiters
+  against a timed or killed one: only a host unit sequences that window.
+- **A WORD WAKE HOLDS THE KERNEL LOCK OVER UP TO `KICKOS_THREAD_SLOTS` WAITERS.** It pops, readies
+  and places up to every waiter parked on the word and counts the list once more, and a retry
+  repeats both. Mutexbench's `sem-wake-crowd` row times one post with every spare thread parked,
+  on the sim and QEMU only, read and not judged.
+- **THE TIMED SEMAPHORE WAIT HAS NOT RUN ON SILICON.** Its single deadline is held by a host unit
+  over a scripted clock. The clock call it adds on boards that keep the call is not measured.
+- **THE RACE THAT WOULD LOSE A POST ACROSS CORES IS WITNESSED ON QEMU ONLY.** No silicon above
+  one core has run its arm.
+- **THE JOURNEY CAPTURES WERE EDITED BY TEXT, NOT RETAKEN.** The maintainer stopped the retakes
+  and asked for a light pass on the reference pages (2026-10-21), since M10.6.9 moves the same
+  code again. Every capture value the merged calls, the semaphore words and the removed capability
+  type changed was derived by hand; journey 11's stop 9 backtrace became prose and journey 02's
+  stop 8 success capture is gone. Only journey 04's stop 7 gdb session was retaken.
+- **SOME PATHS RUN ON NO PRESET.** The fix to the bench's push-probe skip path, the x86 clock seat
+  for a starter killed before its first instruction, and the LED set (QEMU has no LED). A cancel
+  that kills with a timeout cannot show its order on Cortex-M, where the switch waits for the
+  lock to drop, so its arm reddens on the sim, x86_64 and arm64 only.
+- **X86_64'S `thread_self` ROW READS SLOWER UNDER QEMU BECAUSE OF PLACEMENT, NOT CODE.** Its call
+  now crosses a 4 KiB page, which QEMU cannot chain; the instructions are the same.
 
 ## Where to go next
 

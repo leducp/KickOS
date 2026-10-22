@@ -2,7 +2,7 @@
 <!-- Copyright (c) 2026 Philippe Leduc -->
 # The blocking substrate: one wait/wake primitive
 
-> The concept behind every blocking syscall in KickOS. A semaphore wait, a contended mutex
+> The concept behind every blocking syscall in KickOS. A semaphore wait with no unit, a contended mutex
 > lock, an endpoint receive -- all three park a thread and later wake it, and all
 > three do it through the *same* primitive. This chapter teaches that primitive and
 > the one subtle hazard it hides on a deferred-switch architecture. Points into
@@ -13,7 +13,7 @@
 
 ## What "blocking" actually is
 
-A thread that calls `sem_wait` on an empty semaphore does not spin and it does not
+A thread that waits on an empty semaphore does not spin and it does not
 return. It *parks*: the kernel records that the thread is waiting, takes it off the
 run queue, and switches to someone else. Later, some other thread (or an interrupt)
 does the thing the parked thread was waiting for -- posts the semaphore, unlocks the
@@ -154,7 +154,7 @@ it, knows how to do:
 
 | object | what step 2 transfers |
 |--------|------------------------|
-| semaphore | nothing -- the token is handed implicitly; pop then wake |
+| plain word (a semaphore) | one unit or none: the woken thread's result says which, and the word's count grows only by the units no waiter takes |
 | mutex | ownership of the lock, written into the lock word as the new holder's id, plus the priority-inheritance bookkeeping ([Chapter 2.3](priority-inheritance-lending-urgency.md)) |
 | endpoint | the message bytes copied peer-to-peer, plus the byte count or an error status ([Chapter 8.3](endpoints-synchronous-ipc-by-rendezvous.md)) |
 
@@ -162,6 +162,40 @@ Pop and wake are **deliberately separate calls.** Fusing them into a single
 `wake_one(q)` would leave no place for step 2, and every object that needed to hand
 something over would have to fork the primitive to get it. Keeping the gap open is
 what lets one primitive serve three very different objects.
+
+### The plain word: a wait that checks the value under the lock
+
+A semaphore keeps its count in a word of the threads' own memory, not in the kernel. A wait
+that finds a unit takes it with one compare-and-swap, and a post that finds no waiter adds one
+the same way. Neither enters the kernel. The kernel is needed only when a thread must park, or
+when a post must wake a thread that is parked.
+
+That split brings the lost wakeup back in a new place. The waiter reads the word in user mode,
+sees no unit, and enters the kernel to park. Between that read and the park, another thread
+can post. So before it enters the kernel, the waiter sets one bit of the word, the waiters bit,
+with a compare-and-swap, and the wait call carries the value it has just written. A post that
+finds the bit set enters the kernel instead of adding to the count. Under the lock, the kernel
+reads the word again and parks the thread only if the word still holds the value the waiter
+wrote. If the word changed in between, the call returns at once and the waiter reads the word
+again. The check and the park are one step, as before. The only change is that the predicate
+lives in user memory.
+
+The wake carries units. A post asks the kernel to wake one waiter and to hand it one unit. In
+step 2 the kernel gives each woken thread its unit, and adds to the count in the word only the
+units that no waiter takes. So a post that finds a waiter never leaves its unit in the word,
+where a running thread could take it first. The unit goes straight to the highest-priority
+waiter.
+
+Threads on other cores change the word in user mode at any moment, so the kernel never writes
+it with a plain store. It writes the new value with a compare-and-swap, and it pops no waiter
+until that swap succeeds. If the swap fails, the kernel reads the word again and starts over.
+
+The kernel keeps no object for the word. It keeps a record, found by the word's physical
+address, only while a thread waits on it, and frees the record when its last waiter leaves.
+The priority-inheritance mutex uses the same records and the same wait queues
+([Chapter 2.3](priority-inheritance-lending-urgency.md)). A record is one kind or the other,
+and the kernel refuses a plain wait or wake on a word whose waiters wait for it as a mutex, and
+the reverse.
 
 ### The status channel: `wait_result`
 
@@ -173,8 +207,9 @@ values are **one fleet-wide namespace**, not a namespace per object type: a non-
 value is a success payload (a byte count, or plain `0`), and a failure is the negation
 of a code from the single error enum every syscall in the system shares. The mutex's
 owner-died status is `-KOS_EOWNERDEAD`, the endpoint's no-receiver status `-KOS_ECONNREFUSED`,
-and they cannot collide because they are two entries in one enum. A semaphore wait
-returns `void`, so it never reads the field.
+and they cannot collide because they are two entries in one enum. A wait on a plain word
+reads it too, and its success payload is a count like any other: the number of units the
+wake handed it, 1 or 0.
 
 Per-type namespaces would have been the easier design, and they are the wrong one. The
 field is shared, the wakers are shared, and the unwind paths that end a park from
@@ -254,8 +289,7 @@ return current->wait_result;         // now the waker's write is visible
 
 The waker's side stays simple and is the same on every architecture: under the lock,
 it writes `wait_result` and clears any per-thread "what am I blocked on" marker for
-the sleeper -- the sleeper touches neither. A semaphore wait skips all of this because
-it returns `void`: with no post-block read, there is nothing that can be stale.
+the sleeper; the sleeper touches neither.
 
 The transferable lesson: on a deferred-switch kernel, "the instruction after the
 block" is not a synchronization point. If you need to observe state the waker
@@ -264,7 +298,7 @@ produced, wait for the switch to have actually occurred before you look.
 ## Why this is enough (and not more)
 
 One primitive, two operations, a three-step wake protocol, and one confirm-resume
-barrier cover semaphores, priority-inheritance mutexes, and IPC endpoints without any
+barrier cover the plain word under every semaphore, priority-inheritance mutexes, and IPC endpoints without any
 of them forking the park/wake path. The parts that genuinely differ -- what a mutex
 does to priorities, how an endpoint copies bytes -- live entirely in step 2, where
 they belong. There is exactly one lost-wakeup discipline to get right, one place where

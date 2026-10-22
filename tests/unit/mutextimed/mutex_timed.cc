@@ -51,7 +51,7 @@ namespace kickos
             uint32_t g_word = 0;
             uint32_t g_tail_word = 0;
             uint32_t g_far_word = 0;
-            Mutex* g_tail_mutex = nullptr;
+            WordRecord* g_tail_mutex = nullptr;
             uint8_t g_holder_prio_parked = 0;
             uint8_t g_tail_prio_parked = 0;
             Thread* g_sleepq_while_parked = nullptr;
@@ -163,7 +163,7 @@ namespace kickos
             }
 
             // A second donor `prio` parked on `m`, its inheritance seated along the chain.
-            void donor_waits_on(Mutex* m, uint8_t prio)
+            void donor_waits_on(WordRecord* m, uint8_t prio)
             {
                 Thread* const donor = seat_pool(SLOT_DONOR, prio);
                 park_mutex_waiter(donor, m);
@@ -172,7 +172,7 @@ namespace kickos
                 while (t != nullptr)
                 {
                     sched::set_prio(t, thread_effective_prio(t), lock);
-                    Mutex const* const next = t->wait_mutex();
+                    WordRecord const* const next = t->wait_mutex();
                     if (next == nullptr)
                     {
                         break;
@@ -185,7 +185,7 @@ namespace kickos
             void tail_waits_on_the_far_owner()
             {
                 g_far = seat_pool(SLOT_FAR, PRIO_FAR);
-                Mutex* const far_mutex = own_mutex(g_far, &g_far_word);
+                WordRecord* const far_mutex = own_mutex(g_far, &g_far_word);
                 park_mutex_waiter(g_tail, far_mutex);
                 IrqLock lock;
                 sched::set_prio(g_far, thread_effective_prio(g_far), lock);
@@ -215,11 +215,11 @@ namespace kickos
             EXPECT_EQ(mutex_lock(va(&g_word), 0), -KOS_ETIMEDOUT);
             EXPECT_EQ(g_word, g_holder->lock_id);
             EXPECT_EQ(g_holder->prio, PRIO_HOLDER) << "a failed try boosted the holder";
-            EXPECT_EQ(kernel().mutex_active, nullptr) << "a failed try queued itself";
+            EXPECT_EQ(kernel().word_active, nullptr) << "a failed try queued itself";
             EXPECT_EQ(g_switches, 0u) << "a failed try switched away";
             EXPECT_EQ(kernel().sleepq, nullptr) << "a failed try armed a deadline";
 
-            Mutex* const m = own_mutex(g_holder, &g_word);
+            WordRecord* const m = own_mutex(g_holder, &g_word);
             donor_waits_on(m, PRIO_PARTIAL);
             Thread* const donor = thread_of(m->waiters.head);
 
@@ -237,14 +237,14 @@ namespace kickos
         TEST_F(MutexTimed, an_unlock_of_a_contended_word_by_a_non_holder_is_refused)
         {
             Thread* const waiter = seat_waiter_over_holder();
-            Mutex* const m = own_mutex(g_holder, &g_word);
+            WordRecord* const m = own_mutex(g_holder, &g_word);
             donor_waits_on(m, PRIO_PARTIAL);
             Thread* const donor = thread_of(m->waiters.head);
             uint32_t const held = g_word;
 
             EXPECT_EQ(mutex_unlock(va(&g_word)), -KOS_EPERM);
             EXPECT_EQ(g_word, held) << "a refused unlock wrote the word";
-            g_word = waiter->lock_id | KOS_MUTEX_WAITERS;
+            g_word = waiter->lock_id | KOS_WORD_WAITERS;
             EXPECT_EQ(mutex_unlock(va(&g_word)), -KOS_EPERM) << "the word, not the record, decided";
             EXPECT_EQ(m->owner, g_holder);
             EXPECT_EQ(g_holder->held_list, m);
@@ -256,7 +256,7 @@ namespace kickos
         TEST_F(MutexTimed, a_word_disagreeing_with_its_record_is_refused_and_left_alone)
         {
             Thread* const waiter = seat_waiter_over_holder();
-            Mutex* const m = own_mutex(g_holder, &g_word);
+            WordRecord* const m = own_mutex(g_holder, &g_word);
             donor_waits_on(m, PRIO_PARTIAL);
 
             g_word = 0;
@@ -277,12 +277,12 @@ namespace kickos
         TEST_F(MutexTimed, a_cleared_waiters_bit_is_set_again)
         {
             seat_waiter_over_holder();
-            Mutex* const m = own_mutex(g_holder, &g_word);
+            WordRecord* const m = own_mutex(g_holder, &g_word);
             donor_waits_on(m, PRIO_PARTIAL);
 
             g_word = g_holder->lock_id;
             EXPECT_EQ(mutex_lock(va(&g_word), 0), -KOS_ETIMEDOUT);
-            EXPECT_EQ(g_word, g_holder->lock_id | KOS_MUTEX_WAITERS);
+            EXPECT_EQ(g_word, g_holder->lock_id | KOS_WORD_WAITERS);
             EXPECT_EQ(m->waiters.head, m->waiters.tail) << "a failed try queued itself";
         }
 
@@ -291,7 +291,7 @@ namespace kickos
         {
             Thread* const waiter = seat_waiter_over_holder();
             uint32_t mine_word = 0;
-            Mutex* const mine = own_mutex(waiter, &mine_word);
+            WordRecord* const mine = own_mutex(waiter, &mine_word);
             park_mutex_waiter(g_holder, mine);
             uint32_t const held = mine_word;
 
@@ -310,9 +310,9 @@ namespace kickos
             EXPECT_EQ(mutex_lock(va(&g_word), TIMEOUT_US), -KOS_ETIMEDOUT);
             EXPECT_EQ(g_holder_prio_parked, PRIO_WAITER) << "the waiting form lent nothing";
             EXPECT_NE(g_sleepq_while_parked, nullptr) << "the wait armed no deadline";
-            EXPECT_EQ(g_word & ~KOS_MUTEX_WAITERS, g_holder->lock_id);
+            EXPECT_EQ(g_word & ~KOS_WORD_WAITERS, g_holder->lock_id);
             EXPECT_EQ(g_holder->prio, PRIO_HOLDER) << "the expired waiter's boost outlived it";
-            EXPECT_EQ(kernel().mutex_active, nullptr) << "the emptied record was kept";
+            EXPECT_EQ(kernel().word_active, nullptr) << "the emptied record was kept";
             EXPECT_EQ(g_holder->held_list, nullptr);
             EXPECT_EQ(waiter->wait_kind, WAIT_NONE);
             EXPECT_EQ(kernel().sleepq, nullptr);
@@ -395,7 +395,7 @@ namespace kickos
 
             EXPECT_EQ(mutex_lock(va(&g_word), TIMEOUT_US), 0);
             EXPECT_EQ(g_word, waiter->lock_id) << "the hand-over wrote another owner";
-            EXPECT_EQ(kernel().mutex_active, nullptr) << "the emptied record was kept";
+            EXPECT_EQ(kernel().word_active, nullptr) << "the emptied record was kept";
             EXPECT_EQ(g_holder->prio, PRIO_HOLDER);
             EXPECT_EQ(kernel().sleepq, nullptr) << "the granted waiter's deadline is still queued";
         }
@@ -455,16 +455,16 @@ namespace kickos
             EXPECT_EQ(mutex_lock(va(&word), TIMEOUT_US), -KOS_EOWNERDEAD);
             EXPECT_EQ(word, waiter->lock_id);
             EXPECT_EQ(built->prio, 0u) << "a thread being built was lent a priority";
-            EXPECT_EQ(kernel().mutex_active, nullptr);
+            EXPECT_EQ(kernel().word_active, nullptr);
             EXPECT_EQ(g_switches, 0u);
             EXPECT_EQ(mutex_unlock(va(&word)), 0);
         }
 
         // The active list in order from its head, as far as `room` records.
-        int active_records(Mutex** out, int room)
+        int active_records(WordRecord** out, int room)
         {
             int n = 0;
-            for (Mutex* m = kernel().mutex_active; m != nullptr and n < room; m = m->next_active)
+            for (WordRecord* m = kernel().word_active; m != nullptr and n < room; m = m->next_active)
             {
                 out[n] = m;
                 n = n + 1;
@@ -479,14 +479,14 @@ namespace kickos
             Thread* const holder = seat_pool(SLOT_TAIL, PRIO_FAR);
             Thread* waiters[3];
             uint32_t words[3] = {0, 0, 0};
-            Mutex* records[3];
+            WordRecord* records[3];
             for (int i = 0; i < 3; i++)
             {
                 waiters[i] = seat_pool(SLOT_FAR + i, PRIO_FAR);
                 records[i] = own_mutex(holder, &words[i]);
                 park_mutex_waiter(waiters[i], records[i]);
             }
-            Mutex* seen[4];
+            WordRecord* seen[4];
             ASSERT_EQ(active_records(seen, 4), 3);
             ASSERT_EQ(seen[0], records[2]);
             ASSERT_EQ(seen[1], records[1]);
@@ -511,7 +511,7 @@ namespace kickos
                 IrqLock lock;
                 thread_abort_park(waiters[2], -KOS_ECANCELED, lock);
             }
-            EXPECT_EQ(kernel().mutex_active, nullptr) << "the last record was kept";
+            EXPECT_EQ(kernel().word_active, nullptr) << "the last record was kept";
             EXPECT_EQ(holder->held_list, nullptr);
             for (int i = 0; i < 3; i++)
             {
@@ -520,7 +520,7 @@ namespace kickos
         }
 
         Thread* g_older_waiter = nullptr;
-        Mutex* g_older_seen[4];
+        WordRecord* g_older_seen[4];
         int g_older_seen_n = 0;
         arch_phys_addr_t g_older_seen_key = 0;
 
@@ -546,7 +546,7 @@ namespace kickos
             Thread* const other_holder = seat_pool(SLOT_TAIL, PRIO_FAR);
             g_older_waiter = seat_pool(SLOT_FAR, PRIO_FAR);
             uint32_t older_word = 0;
-            Mutex* const older = own_mutex(other_holder, &older_word);
+            WordRecord* const older = own_mutex(other_holder, &older_word);
             park_mutex_waiter(g_older_waiter, older);
             g_older_seen_n = 0;
             g_older_seen_key = 0;
@@ -556,7 +556,7 @@ namespace kickos
             ASSERT_EQ(g_older_seen_n, 1) << "the lock's record left the list with the older one";
             EXPECT_NE(g_older_seen[0], older);
             EXPECT_EQ(g_older_seen_key, static_cast<arch_phys_addr_t>(va(&g_word)));
-            EXPECT_EQ(kernel().mutex_active, nullptr) << "the emptied record was kept";
+            EXPECT_EQ(kernel().word_active, nullptr) << "the emptied record was kept";
         }
 
         // The holder waits on a word the waiter holds, so the waiter's lock closes a cycle.
@@ -564,7 +564,7 @@ namespace kickos
         {
             Thread* const waiter = seat_waiter_over_holder();
             uint32_t mine_word = 0;
-            Mutex* const mine = own_mutex(waiter, &mine_word);
+            WordRecord* const mine = own_mutex(waiter, &mine_word);
             park_mutex_waiter(g_holder, mine);
 
             EXPECT_EQ(mutex_lock(va(&g_word), TIMEOUT_US), -KOS_EDEADLK);
@@ -629,7 +629,7 @@ namespace kickos
         {
             Thread* const waiter = seat_waiter_over_holder();
             uint32_t mine_word = 0;
-            Mutex* const mine = own_mutex(waiter, &mine_word);
+            WordRecord* const mine = own_mutex(waiter, &mine_word);
             Thread* links[CHAIN];
             uint32_t words[CHAIN];
             seat_chain(links, words);

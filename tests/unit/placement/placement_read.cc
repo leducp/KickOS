@@ -50,24 +50,35 @@ namespace
 
 TEST_F(PlacementRead, affinity_reads_what_set_affinity_left)
 {
-    ASSERT_EQ(thread_set_affinity(handle(mate_), CORE_ONE), 0);
-    EXPECT_EQ(thread_affinity(handle(mate_)), static_cast<int>(CORE_ONE))
+    ASSERT_EQ(thread_affinity_call(handle(mate_), CORE_ONE), static_cast<int>(CORE_ONE));
+    EXPECT_EQ(thread_affinity_call(handle(mate_), KOS_AFFINITY_QUERY), static_cast<int>(CORE_ONE))
         << "the read answered another mask than the setter left";
-    EXPECT_EQ(thread_affinity(handle(main_)), static_cast<int>(main_->affinity));
+    EXPECT_EQ(thread_affinity_call(handle(main_), KOS_AFFINITY_QUERY),
+              static_cast<int>(main_->affinity));
 }
 
 TEST_F(PlacementRead, a_zero_request_reads_back_resolved)
 {
-    ASSERT_EQ(thread_set_affinity(handle(mate_), CORE_ONE), 0);
-    ASSERT_EQ(thread_set_affinity(handle(mate_), 0), 0);
-    EXPECT_EQ(thread_affinity(handle(mate_)), static_cast<int>(task_default_cores(mine_)));
+    ASSERT_EQ(thread_affinity_call(handle(mate_), CORE_ONE), static_cast<int>(CORE_ONE));
+    ASSERT_EQ(thread_affinity_call(handle(mate_), 0),
+              static_cast<int>(task_default_cores(mine_)));
+    EXPECT_EQ(thread_affinity_call(handle(mate_), KOS_AFFINITY_QUERY),
+              static_cast<int>(task_default_cores(mine_)));
+}
+
+TEST_F(PlacementRead, bit_31_alone_is_the_query_and_never_core_31)
+{
+    ASSERT_EQ(thread_affinity_call(handle(mate_), CORE_ONE), static_cast<int>(CORE_ONE));
+    EXPECT_EQ(thread_affinity_call(handle(mate_), 1u << 31), static_cast<int>(CORE_ONE))
+        << "a mask of bit 31 alone did not read the mask";
+    EXPECT_EQ(mate_->affinity, CORE_ONE) << "the query set a mask";
 }
 
 TEST_F(PlacementRead, another_task_s_thread_is_eperm)
 {
     Thread* const stranger = seat_pool(3, PRIO);
     join_task(stranger, task(1));
-    EXPECT_EQ(thread_affinity(handle(stranger)), -KOS_EPERM)
+    EXPECT_EQ(thread_affinity_call(handle(stranger), KOS_AFFINITY_QUERY), -KOS_EPERM)
         << "a caller read another task's placement";
 }
 
@@ -75,8 +86,8 @@ TEST_F(PlacementRead, an_exited_thread_is_ebadf)
 {
     kos_thread_t const h = handle(mate_);
     *reinterpret_cast<ThreadState*>(&mate_->state) = ThreadState::EXITED;
-    EXPECT_EQ(thread_affinity(h), -KOS_EBADF);
-    EXPECT_EQ(thread_affinity(KOS_THREAD_NONE), -KOS_EBADF);
+    EXPECT_EQ(thread_affinity_call(h, KOS_AFFINITY_QUERY), -KOS_EBADF);
+    EXPECT_EQ(thread_affinity_call(KOS_THREAD_NONE, KOS_AFFINITY_QUERY), -KOS_EBADF);
 }
 
 TEST_F(PlacementRead, task_none_names_the_caller_s_task)

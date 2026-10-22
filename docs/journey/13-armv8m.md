@@ -211,7 +211,7 @@ $1 = {sp = 939671484, npriv = 1, resting_npriv = 1, stack_lo = 939663360, stack_
 `MPU_CTRL` = 5 (`ENABLE` and `PRIVDEFENA`). Writing `MPU_RNR` from gdb is safe here: the
 commit sets it before every write. Stop 5 decodes the three descriptors.
 
-**Why, and the contract:** [Reference: invariants, `mpu-apply-on-every-switch-in` and `mpu-bypass-windows-accepted`](../reference/invariants.md),
+**Why, and the contract:** [Reference: invariants, `mpu-apply-on-every-switch-in` and `pmsa-reprogram-keeps-the-fixed-rows`](../reference/invariants.md),
 [Book: Protection follows the CPU](../book/protection-follows-the-cpu-not-the-schedulers-intent.md)
 
 ### Stop 5: reading a base-plus-limit descriptor

@@ -70,7 +70,7 @@ by its own mechanism:
   *U-mode* grant needs, and the L bit is never in the set. Machine mode therefore reaches
   all of memory. That is deliberate: it is how the backend produces the permissive
   privileged background the ARM ports get from the architecture (see
-  `mpu-bypass-windows-accepted`).
+  `mpu-apply-on-every-switch-in`).
 - **RX.** The RXv3 MPU has no supervisor permission field at all. It checks user-mode
   accesses and nothing else, so a supervisor access is unconditionally permitted whatever
   the region registers hold.
@@ -786,6 +786,6 @@ makes it the hardest instance of an otherwise familiar rule.
   [`porting-a-new-isa-riscv.md`](porting-a-new-isa-riscv.md).
 - The exact contracts: [`../reference/invariants.md`](../reference/invariants.md)
   (`fault-frame-untrusted-until-proved`, `syscall-in-priv-thread-context`,
-  `mpu-bypass-windows-accepted`) and [`../reference/porting.md`](../reference/porting.md)
+  `pmsa-reprogram-keeps-the-fixed-rows`) and [`../reference/porting.md`](../reference/porting.md)
   (what a new backend must implement, and what it must not trust).
 </content>

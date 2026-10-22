@@ -293,7 +293,7 @@ class Generated(unittest.TestCase):
         rules = {
             "xmc4800": (32, 1), "stm32f411": (32, 1), "mk64f": (32, 0), "esp32c6": (8, 1), "virt_rv32": (8, 1),
             "virt_arm64": (0, 0), "virt_rv64": (0, 0), "q35": (0, 0), "imx8mp": (0, 0), "stm32f103": (0, 0),
-            "stm32f302": (0, 0), "rp2040": (32, 1), "rp2350": (32, 0), "imxrt1062": (32, 1), "sam3x8e": (32, 1),
+            "stm32f302": (0, 0), "rp2040": (256, 1), "rp2350": (32, 0), "imxrt1062": (32, 1), "sam3x8e": (32, 1),
             "nrf51": (0, 0), "mps2": (32, 1), "an505": (32, 0), "rx72m": (16, 0), "esp32": (0, 0), "sim": None,
         }
         self.assertEqual(set(rules), set(ARCHES))
@@ -491,12 +491,14 @@ class Generated(unittest.TestCase):
                                       "PLIC_MX_BASE = 0x20001000u", "CLINT_BASE = 0x20001800u",
                                       "RTC_WDT_BASE = 0x600B1C00u", "UART0_TX_LINE = 16,", "enum kernel_line : int"],
             ("virt_rv32", "rv32imac"): ["#define KICKOS_MAX_IRQ 32", "#define KICKOS_CHIP_CYCCNT_HZ 0",
+                                        "#define KICKOS_CHIP_TIMEBASE_HZ 10000000",
                                         "CLINT_BASE = 0x2000000u"],
             ("virt_arm64", "armv8a"): ["#define KICKOS_MAX_IRQ 288", "#define KICKOS_IRQ_FREE_BASE 200",
                                        "#define KICKOS_CHIP_CYCCNT_HZ 0", "GICD_BASE = 0x8000000u",
                                        "GICR_BASE = 0x80A0000u", "UART0_BASE = 0x9000000u",
                                        "#define KICKOS_LAYOUT_DRAM_BASE 0x40000000"],
             ("virt_rv64", "rv64imac"): ["#define KICKOS_MAX_IRQ 32", "#define KICKOS_CHIP_CYCCNT_HZ 0",
+                                        "#define KICKOS_CHIP_TIMEBASE_HZ 10000000",
                                         "#define KICKOS_LAYOUT_DRAM_SIZE 0x4000000",
                                         "#define KICKOS_LAYOUT_TEST_FINISHER_BASE 0x100000"],
             ("q35", "x86_64"): ["#define KICKOS_MAX_IRQ 24", "COM1_BASE = 0x3F8u", "PIC_MASTER_BASE = 0x20u",

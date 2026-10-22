@@ -133,7 +133,7 @@ namespace
         g_core = was;
     }
 
-    // A task-mate's kos_thread_set_affinity, landing at the first lock release inside the call,
+    // A task-mate's kos_thread_affinity, landing at the first lock release inside the call,
     // and what the line showed at that instant.
     Thread* g_remask = nullptr;
     bool g_armed_at_gap = false;

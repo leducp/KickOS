@@ -3,7 +3,7 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # A slay whose victim is RUNNING on a peer core and makes no syscall. Boot the `slaypeer`
-# image and assert kos_thread_slay answered 0 within its own bound.
+# image and assert its slay answered 0 within its own bound.
 #
 # The bound is the image's, not this gate's: a kernel that never displaces the victim answers
 # -KOS_ETIMEDOUT (-110) and prints FAIL, so the failure arrives as a verdict with a reason

@@ -487,7 +487,7 @@ linked as the class.
   by GPIO, slot 0. The proxy frames it as a `KOS_BUS_OP_CONFIG` request: a 12-byte `kos_bus_req`
   header (`seat_req` writes `proto = KOS_BUS_SPI`, `op`, `device = 0`, `region_cap = -1`, meaning
   the payload is inline in the message) followed by a 12-byte `kos_bus_cfg`. It calls with
-  `kos_call(b->ep, buf, 24, 24)`. The service opens the device on its own engine (Stop 8 shows how
+  `kos_call(b->ep, buf, 24, 24, KOS_TIMEOUT_NONE)`. The service opens the device on its own engine (Stop 8 shows how
   the service dispatches) and replies the bit clock the controller will really run at; the proxy
   stores that in `d->hz` and returns it. The class contract forbids echoing the request back: if
   the far side reports 0 Hz, the proxy returns `-KOS_ENOTSUP`.
@@ -535,7 +535,7 @@ The proxy's transfer:
              static_cast<size_t>(nseg) * sizeof(struct kos_bus_seg));
     mem_copy(msg + framing, buf, len);
 
-    int32_t const rc = kos_call(b->ep, msg, framing + len, sizeof(msg));
+    int32_t const rc = kos_call(b->ep, msg, framing + len, sizeof(msg), KOS_TIMEOUT_NONE);
 ```
 
 The message is `kos_bus_req` (12 bytes), two `kos_bus_seg` (4 bytes each), then the 7 payload
@@ -897,7 +897,7 @@ reply is sent.
 **Try it:** on a board, in a scratch copy of the client, call the endpoint directly with a buffer
 the client was not granted, such as the kernel's `kickos::detail::g_instance` (`nm -C $PROXY`
 gives `1fff27d8 B kickos::detail::g_instance` on this build):
-`kos_call(ep, (void*)0x1fff27d8, 27, 256)`. Expect `-14` (`-KOS_EFAULT`), and the driver to stay
+`kos_call(ep, (void*)0x1fff27d8, 27, 256, KOS_TIMEOUT_NONE)`. Expect `-14` (`-KOS_EFAULT`), and the driver to stay
 parked: `break k64dspi_transfer` never fires for that call. <!-- unverified: needs a FRDM-K64F -->
 
 **Why, and the contract:** [Reference: ipc-call-reply, KOS_SYS_REPLY_RECV (the reply half's failures

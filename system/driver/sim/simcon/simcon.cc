@@ -189,7 +189,7 @@ namespace
 
 #if defined(KICKOS_SIMCON_IRQ_WEDGE) && KICKOS_SIMCON_IRQ_WEDGE
     // An IRQ thread that takes the register window and never sets the ready flag root
-    // waits on. It parks IN kos_notify_wait, the one wedge shape thread_kill can cancel, so
+    // waits on. It parks IN kos_notify_wait, the one wedge shape a kill can cancel, so
     // the window is actually released; a thread wedged before its first wait is marked and
     // does not die.
     void simconsole_wedge_thread(void*)

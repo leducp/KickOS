@@ -172,8 +172,13 @@ extern "C"
 
     // Fails outside the backed pages, so a range check never dereferences. Refuses a hold past
     // ARCH_ASPACE_ACQUIRE_MIN, as a windowed backend out of slots does.
-    void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va, bool* uncached)
+    void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va, bool* uncached,
+                              arch_phys_addr_t* frame)
     {
+        if (frame != nullptr)
+        {
+            *frame = 0;
+        }
         if (space == nullptr)
         {
             return nullptr;

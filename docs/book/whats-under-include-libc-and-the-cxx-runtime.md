@@ -185,9 +185,12 @@ KickOS's sibling project ([Chapter 1](overview-and-principles.md)):
 static nanoseconds start_time = now();
 ```
 
-`now()` reads the clock, and reading the clock is a system call. Right after reset
-no thread runs yet and the clock is not started, so this constructor cannot run
-there.
+`now()` reads the clock. On a microcontroller, reading the clock is a system call:
+the kernel reads the timer for the program. Right after reset no thread runs yet
+and the clock is not started, so this constructor cannot run there. On a core that
+lets a program read its counter itself, such as a 64-bit Arm, RISC-V or x86 core,
+reading the clock makes no system call
+([Chapter 2.1](the-time-base-a-monotonic-clock-you-can-trust.md)).
 
 KickOS therefore keeps two tables. The startup code walks the first one before the
 kernel starts, and it stays empty: the kernel's own globals need no constructor,

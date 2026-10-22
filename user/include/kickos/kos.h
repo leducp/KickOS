@@ -55,88 +55,48 @@ namespace kos
     {
         kos_kernel_diag_led_set(on);
     }
-    inline void kernel_diag_led_toggle()
-    {
-        kos_kernel_diag_led_toggle();
-    }
     [[noreturn]] inline void exit(int code)
     {
         kos_exit(code);
     }
 
-    // These wrappers carry both the handle and the code the create returned. `valid()` is
-    // the ONLY correct success test: there is no negative handle to compare against, and a
-    // live handle may look negative if cast to int.
-    //
-    // Owning counting semaphore: ctor creates, dtor closes its cap (last close frees
-    // the object). Non-copyable, movable (a moved-from handle is emptied so the dtor
-    // won't double-close).
+    // Counting semaphore over a kos_sem_t word it holds: no kernel object, so a static or a member
+    // costs only the word, and nothing is freed. Not copyable or movable, since the word's address
+    // is the semaphore. wait and post return the raw codes (see kos_sem_wait). A semaphore more
+    // than one thread touches lives in memory every one of them can write, never on a thread's
+    // stack: a region board gives each stack to its own thread.
     class Semaphore
     {
     public:
-        explicit Semaphore(int initial = 0)
+        // An initial count above KOS_SEM_COUNT_MAX does not compile in a constant initialisation
+        // and traps at run time.
+        constexpr explicit Semaphore(uint32_t initial = 0) : sem_{initial}
         {
-            err_ = kos_sem_create(initial, &id_);
-        }
-        ~Semaphore()
-        {
-            if (id_ != KOS_CAP_NONE)
+            if (initial > static_cast<uint32_t>(KOS_SEM_COUNT_MAX))
             {
-                kos_sem_destroy(id_);
+                __builtin_trap();
             }
         }
 
         Semaphore(Semaphore const&) = delete;
         Semaphore& operator=(Semaphore const&) = delete;
 
-        Semaphore(Semaphore&& other) noexcept
-            : id_(other.id_), err_(other.err_)
-        {
-            other.id_ = KOS_CAP_NONE;
-        }
-        Semaphore& operator=(Semaphore&& other) noexcept
-        {
-            if (this != &other)
-            {
-                if (id_ != KOS_CAP_NONE)
-                {
-                    kos_sem_destroy(id_);
-                }
-                id_ = other.id_;
-                err_ = other.err_;
-                other.id_ = KOS_CAP_NONE;
-            }
-            return *this;
-        }
-
-        // Return the syscall status (0, or a negative -KOS_E*). On a moved-from / failed /
-        // closed handle these do NOT block or signal: they return -KOS_EBADF, so a caller
-        // can tell a real wait/post from a no-op instead of proceeding as if synchronized.
-        // wait(0) is a try: it takes only a token already banked.
+        // wait(0) is a try: it takes only a unit already banked.
         int wait(uint32_t timeout_us = KOS_TIMEOUT_NONE)
         {
-            return kos_sem_wait(id_, timeout_us);
+            return kos_sem_wait(&sem_, timeout_us);
         }
         int post()
         {
-            return kos_sem_post(id_);
+            return kos_sem_post(&sem_);
         }
-        kos_cap_t id() const
+        kos_sem_t* native()
         {
-            return id_;
-        }
-        bool valid() const
-        {
-            return id_ != KOS_CAP_NONE;
-        }
-        int error() const
-        {
-            return err_;
+            return &sem_;
         }
 
     private:
-        kos_cap_t id_ = KOS_CAP_NONE;
-        int err_ = -KOS_EBADF;
+        kos_sem_t sem_;
     };
 
     // Priority-inheritance mutex over a kos_mutex_t word it holds: no kernel object, so a
@@ -178,6 +138,10 @@ namespace kos
         kos_mutex_t word_ = KOS_MUTEX_INIT;
     };
 
+    // The capability wrappers below carry both the handle and the code the create returned.
+    // `valid()` is the ONLY correct success test: there is no negative handle to compare
+    // against, and a live handle may look negative if cast to int.
+    //
     // IRQ line capability (tier-1 userspace driver). Two ways in:
     //   root:   auto irq = kos::Irq::claim(line);        // needs KOS_AUTH_IRQ
     //   driver: auto irq = kos::Irq::adopt(cap_index);   // a cap delegated at spawn
@@ -391,7 +355,7 @@ namespace kos::thread
     // live handle looks negative cast to int.
     //
     // NOT owning, unlike Semaphore: a thread handle names nothing to close, so there is no
-    // destructor and copying is free. kill() is COOPERATIVE (see kos_thread_kill).
+    // destructor and copying is free.
     class Handle
     {
     public:
@@ -413,22 +377,14 @@ namespace kos::thread
         {
             return err_;
         }
-        // Returns -KOS_EBADF on a failed create: KOS_THREAD_NONE names nothing to cancel.
-        int kill() const
+        // See kos_thread_cancel. Returns -KOS_EBADF on a failed create: KOS_THREAD_NONE names
+        // nothing to cancel.
+        int cancel(enum kos_cancel kind, uint32_t timeout_us) const
         {
-            return kos_thread_kill(id_);
-        }
-        // FORCIBLE, where kill() is cooperative, and it WAITS (see kos_thread_slay): 0 means
-        // gone, -KOS_ETIMEDOUT means condemned and irrevocably so with the capability sweep
-        // still outstanding. Unbounded by default, because a caller that wanted "accepted"
-        // rather than "gone" wanted kill().
-        int slay(uint32_t timeout_us = KOS_TIMEOUT_NONE) const
-        {
-            return kos_thread_slay(id_, timeout_us);
+            return kos_thread_cancel(id_, kind, timeout_us);
         }
         // Wait for the thread to be gone (see kos_thread_join): 0 also for a thread that
-        // had already exited, and -KOS_EBADF on a failed create. Unbounded by default, which
-        // is what a caller wants when it has just kill()ed a cooperative target.
+        // had already exited, and -KOS_EBADF on a failed create. Unbounded by default.
         int join(uint32_t timeout_us = KOS_TIMEOUT_NONE) const
         {
             return kos_thread_join(id_, timeout_us);
@@ -480,21 +436,22 @@ namespace kos::thread
         return Handle(h, rc);
     }
 
-    // Placement, spelled two ways over one kernel call. A mask of zero asks for the task's
-    // DEFAULT set, so unpin restores what a thread naming no core is given at spawn without
-    // userspace ever having to learn that set. All ones would be a wider request than the
-    // default: it names the isolated cores too.
+    // Placement, spelled two ways over one kernel call, each answering the mask the thread now
+    // runs on (see kos_thread_affinity). A mask of zero asks for the task's DEFAULT set, so
+    // unpin restores what a thread naming no core is given at spawn without userspace ever
+    // having to learn that set. All ones would be a wider request than the default: it names
+    // the isolated cores too.
     inline int pin(kos_thread_t thread, uint32_t core)
     {
-        if (core >= 32u)
+        if (core >= 31u)
         {
-            return -KOS_EINVAL; // 1u << core is undefined at the mask's width and past it
+            return -KOS_EINVAL; // bit 31 is the query, and 1u << core is undefined past it
         }
-        return kos_thread_set_affinity(thread, 1u << core);
+        return kos_thread_affinity(thread, 1u << core);
     }
     inline int unpin(kos_thread_t thread)
     {
-        return kos_thread_set_affinity(thread, 0);
+        return kos_thread_affinity(thread, 0);
     }
     // The core the caller ran on when the kernel read it; 0 on a one-core kernel.
     inline int core()
@@ -504,7 +461,7 @@ namespace kos::thread
     // The mask `thread` may run on, or a negative -KOS_E* (see kos_thread_affinity).
     inline int affinity(kos_thread_t thread)
     {
-        return kos_thread_affinity(thread);
+        return kos_thread_affinity(thread, KOS_AFFINITY_QUERY);
     }
 
     // Delegate a fixed cap list to the child (B1 default: cap i -> child index KOS_SPAWN_DELEGATED_CAP0 + i, and a

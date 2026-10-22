@@ -40,38 +40,21 @@ namespace
     constexpr uint64_t NAP_MIN_NS = 80000ull;    // 80 us
     constexpr uint64_t NAP_SPAN_NS = 400000ull;  // + up to 400 us
 
-    kos_cap_t g_done = KOS_CAP_NONE; // completion counter (each worker posts once at exit), MAIN's cap
-    kos_cap_t g_mtx = KOS_CAP_NONE;  // binary sem guarding the shared counters, MAIN's cap
-    kos_cap_t g_gate = KOS_CAP_NONE; // budget-probe gate (probers park here until released), MAIN's cap
-    kos_cap_t g_start = KOS_CAP_NONE; // posted once per pair once every worker exists, MAIN's cap
-
-    // Well-known child cap indices (fresh child table => handle == index; delegated
-    // cap i -> index KOS_SPAWN_DELEGATED_CAP0 + i). MAIN creates the sems and delegates them per spawn in a fixed
-    // order so the worker helpers can name them by these constants. Main closes its copies
-    // of a pair's two sems once the pair is spawned: its table is a child's, so it cannot
-    // hold every pair's at once.
-    // completion counter, delegated FIRST to every worker
-    constexpr int CH_DONE = KOS_SPAWN_DELEGATED_CAP0;
-    // counter mutex, delegated SECOND (all conservation workers)
-    constexpr int CH_MTX = KOS_SPAWN_DELEGATED_CAP0 + 1;
-    // ping-pong pair sem A (delegated THIRD to ping/pong)
-    constexpr int CH_A = KOS_SPAWN_DELEGATED_CAP0 + 2;
-    // ping-pong pair sem B (delegated FOURTH to ping/pong)
-    constexpr int CH_B = KOS_SPAWN_DELEGATED_CAP0 + 3;
-    // the start gate (delegated FIFTH, to ping alone)
-    constexpr int CH_START = KOS_SPAWN_DELEGATED_CAP0 + 4;
-    // budget-probe gate for the prober (done@2, gate@3)
-    constexpr int CH_GATE = KOS_SPAWN_DELEGATED_CAP0 + 1;
-    constexpr uint8_t CH_FULL = KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER;
+    kos_sem_t g_done = KOS_SEM_INIT(0);  // completion counter: each worker posts once at exit
+    kos_sem_t g_mtx = KOS_SEM_INIT(1);   // binary semaphore guarding the shared counters
+    kos_sem_t g_gate = KOS_SEM_INIT(0);  // budget-probe gate: probers park here until released
+    kos_sem_t g_start = KOS_SEM_INIT(0); // posted once per pair once every worker exists
+    // Each pair's two semaphores, ping and pong naming theirs by the pair's index.
+    kos_sem_t g_pair_a[MAX_PAIRS] = {};
+    kos_sem_t g_pair_b[MAX_PAIRS] = {};
 
     // Shared conservation counters (g_mtx serializes every access).
     long g_naps_done = 0;    // total sleeper wakes; expect sleepers*NAPS
     long g_handoffs = 0;     // total ping-pong handoffs; expect 2*pairs*ROUNDS
     long g_churn_runs = 0;   // total churn-worker runs; expect live*CHURN_GENERATIONS
 
-    // Worker threads only: names the counter mutex by its delegated cap.
-    void lock() { kos_sem_wait(CH_MTX, KOS_TIMEOUT_NONE); }
-    void unlock() { kos_sem_post(CH_MTX); }
+    void lock() { kos_sem_wait(&g_mtx, KOS_TIMEOUT_NONE); }
+    void unlock() { kos_sem_post(&g_mtx); }
 
     // Per-thread LCG (seeded off the thread index): deterministic, no shared state.
     uint32_t lcg(uint32_t* s)
@@ -80,41 +63,46 @@ namespace
         return *s;
     }
 
-    // arg = pair index (LCG seed only).
+    // arg = pair index.
     void ping(void* arg)
     {
         int i = static_cast<int>(reinterpret_cast<uintptr_t>(arg));
         uint32_t seed = 0x9E3779B9u ^ (static_cast<uint32_t>(i) * 2654435761u);
+        kos_sem_t* const a = &g_pair_a[i];
+        kos_sem_t* const b = &g_pair_b[i];
         // The kick: the token enters A only once every worker of the round exists.
-        kos_sem_wait(CH_START, KOS_TIMEOUT_NONE);
-        kos_sem_post(CH_A);
+        kos_sem_wait(&g_start, KOS_TIMEOUT_NONE);
+        kos_sem_post(a);
         for (int r = 0; r < ROUNDS; r++)
         {
-            kos_sem_wait(CH_A, KOS_TIMEOUT_NONE);
+            kos_sem_wait(a, KOS_TIMEOUT_NONE);
             // Occasional nap: interleave the sem path with the tickless one-shot.
             if ((r & 63) == 0)
             {
                 kos_sleep_ns(NAP_MIN_NS + (lcg(&seed) % NAP_SPAN_NS));
             }
-            kos_sem_post(CH_B);
+            kos_sem_post(b);
             lock();
             g_handoffs++;
             unlock();
         }
-        kos_sem_post(CH_DONE);
+        kos_sem_post(&g_done);
     }
 
-    void pong(void*)
+    void pong(void* arg)
     {
+        int i = static_cast<int>(reinterpret_cast<uintptr_t>(arg));
+        kos_sem_t* const a = &g_pair_a[i];
+        kos_sem_t* const b = &g_pair_b[i];
         for (int r = 0; r < ROUNDS; r++)
         {
-            kos_sem_wait(CH_B, KOS_TIMEOUT_NONE);
-            kos_sem_post(CH_A);
+            kos_sem_wait(b, KOS_TIMEOUT_NONE);
+            kos_sem_post(a);
             lock();
             g_handoffs++;
             unlock();
         }
-        kos_sem_post(CH_DONE);
+        kos_sem_post(&g_done);
     }
 
     void sleeper(void* arg)
@@ -128,7 +116,7 @@ namespace
             g_naps_done++;
             unlock();
         }
-        kos_sem_post(CH_DONE);
+        kos_sem_post(&g_done);
     }
 
     // Spawn/exit churn worker: bump the counter, signal done, return (the arch
@@ -141,15 +129,15 @@ namespace
         lock();
         g_churn_runs++;
         unlock();
-        kos_sem_post(CH_DONE);
+        kos_sem_post(&g_done);
     }
 
     // Budget probe: park on the gate until main releases it, then exit. Spawned
     // until one is refused, so the live count == the board's concurrent thread pool.
     void prober(void*)
     {
-        kos_sem_wait(CH_GATE, KOS_TIMEOUT_NONE);
-        kos_sem_post(CH_DONE);
+        kos_sem_wait(&g_gate, KOS_TIMEOUT_NONE);
+        kos_sem_post(&g_done);
     }
 
     // Concurrent thread budget = how many prober threads can be live at once. Root holds a
@@ -158,15 +146,10 @@ namespace
     // refused, then release + join them all, leaving the pool empty again.
     int probe_budget()
     {
-        if (kos_sem_create(0, &g_gate) != 0)
-        {
-            return 0;
-        }
-        kos_cap_grant caps[] = {{g_done, CH_FULL}, {g_gate, CH_FULL}};
         int n = 0;
         while (n < PROBE_MAX)
         {
-            auto t = kos::thread::create_caps(prober, nullptr, "probe", 4, caps, 2);
+            auto t = kos::thread::create(prober, nullptr, "probe", 4);
             if (not t.valid())
             {
                 break;
@@ -175,23 +158,19 @@ namespace
         }
         for (int i = 0; i < n; i++)
         {
-            kos_sem_post(g_gate); // release every parked prober
+            kos_sem_post(&g_gate); // release every parked prober
         }
         for (int i = 0; i < n; i++)
         {
-            kos_sem_wait(g_done, KOS_TIMEOUT_NONE); // join (also reclaims their slots)
+            kos_sem_wait(&g_done, KOS_TIMEOUT_NONE); // join (also reclaims their slots)
         }
-        kos_sem_destroy(g_gate);
-        g_gate = KOS_CAP_NONE;
         return n;
     }
 }
 
-// One full conservation round, repeatable: resets the accumulators, allocates THIS
-// round's per-pair sems, spawns + kicks + joins the conservation set, runs the churn
-// phase and checks exact conservation. A pair's sems go with the last of its two workers,
-// main having closed its copies at the spawn, so the sem pool returns to what it was on
-// entry. g_done/g_mtx/g_start are MAIN's and are NOT touched here (they self-balance: every
+// One full conservation round, repeatable: resets the accumulators and the per-pair
+// semaphores, spawns + kicks + joins the conservation set, runs the churn phase and checks
+// exact conservation. g_done/g_mtx/g_start are NOT reset here (they self-balance: every
 // worker posts g_done once and is joined; g_mtx is released as often as taken; g_start is
 // posted once per ping, which takes it once). Returns the failure count for this round.
 int run_stress_round(int pairs, int sleepers, int live)
@@ -206,17 +185,8 @@ int run_stress_round(int pairs, int sleepers, int live)
     // Mixed priorities straddling the sleepers' band; the last pair is RR.
     for (int i = 0; ok and i < pairs; i++)
     {
-        kos_cap_t pair_a = KOS_CAP_NONE;
-        kos_cap_t pair_b = KOS_CAP_NONE;
-        int const a_rc = kos_sem_create(0, &pair_a);
-        int const b_rc = kos_sem_create(0, &pair_b);
-        if (a_rc != 0 or b_rc != 0)
-        {
-            kos_handle_close(pair_a);
-            kos_handle_close(pair_b);
-            ok = false;
-            break;
-        }
+        (void)kos_sem_init(&g_pair_a[i], 0);
+        (void)kos_sem_init(&g_pair_b[i], 0);
         uint8_t prio = static_cast<uint8_t>(8 + i);
         uint8_t policy = KOS_POLICY_FIFO;
         uint32_t quantum = 0;
@@ -225,14 +195,10 @@ int run_stress_round(int pairs, int sleepers, int live)
             policy = KOS_POLICY_RR;
             quantum = 300000u; // 300 us
         }
-        kos_cap_grant pcaps[] = {{g_done, CH_FULL}, {g_mtx, CH_FULL},
-                                 {pair_a, CH_FULL}, {pair_b, CH_FULL}, {g_start, CH_FULL}};
-        auto a = kos::thread::create_caps(ping, reinterpret_cast<void*>(uintptr_t(i)), "ping",
-                                          prio, pcaps, 5, policy, quantum);
-        auto b = kos::thread::create_caps(pong, reinterpret_cast<void*>(uintptr_t(i)), "pong",
-                                          prio, pcaps, 4, policy, quantum);
-        kos_handle_close(pair_a);
-        kos_handle_close(pair_b);
+        auto a = kos::thread::create(ping, reinterpret_cast<void*>(uintptr_t(i)), "ping",
+                                     prio, policy, quantum);
+        auto b = kos::thread::create(pong, reinterpret_cast<void*>(uintptr_t(i)), "pong",
+                                     prio, policy, quantum);
         if (not a.valid() or not b.valid())
         {
             ok = false;
@@ -243,9 +209,8 @@ int run_stress_round(int pairs, int sleepers, int live)
     for (int i = 0; ok and i < sleepers; i++)
     {
         uint8_t prio = static_cast<uint8_t>(6 + (i % 6)); // 6..11, straddling the pairs
-        kos_cap_grant scaps[] = {{g_done, CH_FULL}, {g_mtx, CH_FULL}};
-        auto t = kos::thread::create_caps(sleeper, reinterpret_cast<void*>(uintptr_t(i)), "sleep",
-                                          prio, scaps, 2);
+        auto t = kos::thread::create(sleeper, reinterpret_cast<void*>(uintptr_t(i)), "sleep",
+                                     prio);
         if (not t.valid())
         {
             ok = false;
@@ -267,14 +232,14 @@ int run_stress_round(int pairs, int sleepers, int live)
     // Kick each pair once; the token then circulates ROUNDS times per side.
     for (int i = 0; i < pairs; i++)
     {
-        kos_sem_post(g_start);
+        kos_sem_post(&g_start);
     }
 
     // Join every worker. A lost wakeup / dropped deadline hangs here -> the harness
     // timeout catches it as a failure.
     for (int i = 0; i < spawned; i++)
     {
-        kos_sem_wait(g_done, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_done, KOS_TIMEOUT_NONE);
     }
 
     // Churn phase: the conservation workers above are all EXITED now, so their pool
@@ -288,8 +253,7 @@ int run_stress_round(int pairs, int sleepers, int live)
         int batch = 0;
         for (int b = 0; b < live; b++)
         {
-            kos_cap_grant ccaps[] = {{g_done, CH_FULL}, {g_mtx, CH_FULL}};
-            auto t = kos::thread::create_caps(churner, nullptr, "churn", 10, ccaps, 2);
+            auto t = kos::thread::create(churner, nullptr, "churn", 10);
             if (not t.valid())
             {
                 break;
@@ -298,7 +262,7 @@ int run_stress_round(int pairs, int sleepers, int live)
         }
         for (int b = 0; b < batch; b++)
         {
-            kos_sem_wait(g_done, KOS_TIMEOUT_NONE); // join only what this batch actually spawned
+            kos_sem_wait(&g_done, KOS_TIMEOUT_NONE); // join only what this batch actually spawned
         }
         if (batch != live)
         {
@@ -329,22 +293,11 @@ int main(int, char**)
 {
     kos::print("stress: scheduler + semaphore + tickless-timer conservation test\n");
 
-    int const done_rc = kos_sem_create(0, &g_done);
-    int const mtx_rc = kos_sem_create(1, &g_mtx);
-    int const start_rc = kos_sem_create(0, &g_start);
-    // Every create/spawn is checked: a board with a smaller thread/sem pool than
-    // this soak needs must SKIP cleanly, not hang a join on a thread that was never
-    // created or race on a counter whose mutex silently failed to allocate.
-    bool ok = (done_rc == 0 and mtx_rc == 0 and start_rc == 0);
-
     // Size the soak to this board's pool: probe the concurrent budget, then shrink the
     // footprint until the live set fits. Shrink order matters: sleepers go first, then
-    // pairs, so a small board keeps the ping-pong handoff coverage it is here for.
-    int budget = 0;
-    if (ok)
-    {
-        budget = probe_budget();
-    }
+    // pairs, so a small board keeps the ping-pong handoff coverage it is here for. A board too
+    // small even for that SKIPs rather than hang a join on a thread never created.
+    int const budget = probe_budget();
     int pairs = MAX_PAIRS;
     int sleepers = MAX_SLEEPERS;
     while (2 * pairs + sleepers > budget and sleepers > 0)
@@ -356,9 +309,9 @@ int main(int, char**)
         pairs--;
     }
     int live = 2 * pairs + sleepers; // conservation footprint == churn batch
-    if (not ok or budget < 2 or live > budget)
+    if (budget < 2 or live > budget)
     {
-        kos::print("STRESS SKIP (board thread/sem pool too small)\n# stress complete\n");
+        kos::print("STRESS SKIP (board thread pool too small)\n# stress complete\n");
         return 0;
     }
 

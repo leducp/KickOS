@@ -13,13 +13,13 @@ set(_k "${PROJECT_SOURCE_DIR}/kernel")
 set(_common "${PROJECT_SOURCE_DIR}/tests/unit/common")
 set(_sys_aspace "${_k}/syscall/syscall.cc" "${_k}/syscall/syscall_thread.cc"
                 "${_k}/init/terminal.cc"
-                "${_k}/syscall/syscall_mem.cc" "${_k}/syscall/syscall_obj.cc"
+                "${_k}/syscall/syscall_mem.cc"
                 "${_k}/mem/aspace.cc" "${_k}/mem/vrange.cc" "${_k}/mem/ustack.cc"
                 "${_k}/domain/domain.cc" "${_k}/thread/thread.cc" "${_k}/thread/tls.cc"
                 "${_k}/grant/grant.cc" "${_k}/syscall/word.cc")
 set(_sys_region "${_k}/syscall/syscall.cc" "${_k}/syscall/syscall_thread.cc"
                 "${_k}/init/terminal.cc"
-                "${_k}/syscall/syscall_mem.cc" "${_k}/syscall/syscall_obj.cc"
+                "${_k}/syscall/syscall_mem.cc"
                 "${_k}/mem/ramown.cc" "${_k}/thread/thread.cc" "${_k}/thread/tls.cc"
                 "${_k}/grant/grant.cc")
 set_source_files_properties(${_sys_aspace} ${_sys_region} DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -69,6 +69,9 @@ kickos_add_unit_test(NAME sys_shutdown
   LIBRARIES kickos_kseam_sysdispatch_region)
 # The peripheral disable's possession gate and the seam's answer, over the fixture's recorder.
 kickos_add_unit_test(NAME sys_periph_disable SOURCES periph_disable.cc
+  LIBRARIES kickos_kseam_sysdispatch_region)
+# The fused reply's null options, answered by the reply alone before any receive validation.
+kickos_add_unit_test(NAME sys_reply_alone SOURCES reply_alone.cc
   LIBRARIES kickos_kseam_sysdispatch_region)
 # The witness call's authority gate, with the witness kernel's dispatch arm and without it.
 kickos_add_kseam(kickos_kseam_sysdispatch_region_witness

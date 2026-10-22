@@ -39,17 +39,31 @@ typedef uint32_t kos_thread_t;
 // this word.
 #define KOS_THREAD_NONE 0xFFFFFFFFu
 
+// Bit 31 of a word the kernel waits on (a mutex's, a plain word's): a thread is or was parked
+// on it, so the word's release or wake enters the kernel. A plain word's value is bits 30..0
+// and a wake rewrites bit 31, so an update of the value masks to 31 bits and keeps bit 31.
+#define KOS_WORD_WAITERS 0x80000000u
+
 // A mutex is a word in the memory of the threads that share it, with no kernel object and no
 // handle: bits 30..0 name its holder by the holder's lock id (an opaque value only the kernel
-// decodes), 0 meaning free, and KOS_MUTEX_WAITERS says a thread is or was parked on it, so its
-// release enters the kernel. Naturally aligned, in memory every sharer can write; a holder that
-// died leaves its id, and the next taker answers -KOS_EOWNERDEAD.
+// decodes), 0 meaning free, and KOS_WORD_WAITERS says a thread is or was parked on it. Naturally
+// aligned, in memory every sharer can write; a holder that died leaves its id, and the next taker
+// answers -KOS_EOWNERDEAD.
 typedef struct kos_mutex
 {
     uint32_t word;
 } kos_mutex_t;
 #define KOS_MUTEX_INIT {0u}
-#define KOS_MUTEX_WAITERS 0x80000000u
+
+// A counting semaphore is a word in the memory of the threads that share it, with no kernel
+// object and no handle: bits 30..0 hold its count, and KOS_WORD_WAITERS says a thread is or was
+// parked on it. Naturally aligned, in memory every sharer can write, which a thread's stack is not
+// for any other thread.
+typedef struct kos_sem
+{
+    uint32_t word;
+} kos_sem_t;
+#define KOS_SEM_INIT(n) {(uint32_t)(n)}
 
 // A task handle: 16 generation bits over a BIASED index into the task pool, whose slots are
 // unrelated to either pool above. The bias is what makes the all-zero word unmintable.
@@ -61,7 +75,7 @@ typedef uint32_t kos_task_t;
 #define KOS_TASK_NONE 0u
 
 // KOS_EXIT_FAULT, from <kickos/sys/exit_status.h>, is the exit code a thread killed by a CPU fault
-// reports: its task's status (kos_task_exit_status), and the process status when it was the last
+// reports: its task's status (kos_task_state), and the process status when it was the last
 // thread live. A clean kos_exit(139) aliases it. KOS_EXIT_CANCELLED is the code a CANCELLED thread
 // reports: the kernel ends it, so it never picks a code of its own. Also the status of a task
 // whose members were all cancelled.
@@ -80,13 +94,6 @@ enum kos_syscall_nr
                                 //   awaits its reclaim
     KOS_SYS_YIELD = 2,          // ()                    -> 0
     KOS_SYS_SLEEP_NS = 3,       // (ns_lo, ns_hi)        -> 0
-    KOS_SYS_SEM_CREATE = 4,     // (initial, kos_cap_t* out) -> 0, or -KOS_E* (ENOMEM sem pool,
-                                //   EMFILE caller's cap table, EAGAIN task's sem budget,
-                                //   EINVAL/EFAULT)
-    KOS_SYS_SEM_WAIT = 5,       // (cap, timeout_us) -> 0, or -KOS_EBADF/-KOS_EACCES/
-                                //   -KOS_ETIMEDOUT/-KOS_ECANCELED
-    KOS_SYS_SEM_POST = 6,       // (cap)   -> 0, or -KOS_EBADF/-KOS_EACCES, or -KOS_EOVERFLOW
-                                //   with no waiter and the count at KOS_SEM_COUNT_MAX
     KOS_SYS_HANDLE_CLOSE = 17,  // (cap)   -> 0, -KOS_EBADF (bad cap), -KOS_EPERM (a reserved
                                 //   index)
     KOS_SYS_THREAD_CREATE = 7,   // (kos_thread_params*, kos_thread_t* out) -> 0, or -KOS_E*
@@ -110,7 +117,9 @@ enum kos_syscall_nr
     KOS_SYS_NOTIFY_CREATE = 11, // (kos_cap_t* out) -> 0, or -KOS_E* (ENOMEM notification
                                 //   pool, EMFILE caller's cap table, EAGAIN task's
                                 //   notification budget, EINVAL/EFAULT out-ptr, EPERM)
-    KOS_SYS_CLOCK_NOW = 12,     // ()  -> monotonic nanoseconds (u64, in registers; cannot fail)
+    KOS_SYS_CLOCK_NOW = 12,     // ()  -> monotonic nanoseconds (u64, in registers; cannot fail).
+                                //   Where KICKOS_CLOCK_USER is set kos_clock_now reads the same
+                                //   counter in user mode and does not make this call
     KOS_SYS_RAM_ALLOC = 13,     // (size)                -> user-RAM ptr, or 0/NULL on ANY failure
     KOS_SYS_IRQ_CLAIM = 14,     // (line, flags, kos_cap_t* out) -> 0, or -KOS_E*: EPERM (lacks
                                 //   KOS_AUTH_IRQ, or the arch dispatches the line to a kernel
@@ -128,13 +137,15 @@ enum kos_syscall_nr
     KOS_SYS_IRQ_ACK = 16,       // (irq_cap) -> 0, or -KOS_EBADF / -KOS_EACCES (cap lacks WAIT)
                                 //   / -KOS_EINVAL (the line signals no notification)
     KOS_SYS_DIAG_LED_SET = 19,  // (on)                  -> 0 (kernel diagnostic LED)
-    KOS_SYS_DIAG_LED_TOGGLE = 20, // ()                  -> 0 (kernel diagnostic LED)
-    KOS_SYS_CPU_CLOCK_HZ = 22,  // ()  -> running core clock in Hz (u64), 0 if unknown (NO KOS_E*)
+    KOS_SYS_CPU_CLOCK_HZ = 22,  // ()  -> running core clock in Hz (u64), 0 if unknown (NO KOS_E*).
+                                //   On x86_64 the timestamp counter's rate, the one the kernel's
+                                //   clock and kos_clock_now scale by
     KOS_SYS_MUTEX_LOCK = 24,    // (kos_mutex_t*, timeout_us) -> 0 held; -KOS_EOWNERDEAD held,
                                 //   its holder having died; -KOS_ETIMEDOUT (the time ran out, or
                                 //   a try found it held) / -KOS_EDEADLK / -KOS_ECANCELED /
-                                //   -KOS_EINVAL (misaligned, not normal memory, the AMP share, or
-                                //   a word disagreeing with the waiters the kernel holds) /
+                                //   -KOS_EINVAL (misaligned, not normal memory, the AMP share, a
+                                //   word disagreeing with the waiters the kernel holds, or a word
+                                //   threads wait on with KOS_SYS_WORD_WAIT) /
                                 //   -KOS_EFAULT (a word the caller cannot write, or one whose
                                 //   page went away while it waited) NOT held. KOS_TIMEOUT_NONE
                                 //   waits forever, 0 is a try. kos_mutex_lock enters only on
@@ -146,18 +157,6 @@ enum kos_syscall_nr
     KOS_SYS_ENDPOINT_CREATE = 26, // (kos_cap_t* out) -> 0, or -KOS_E* (ENOMEM endpoint pool,
                                   //   EMFILE caller's cap table, EAGAIN task's endpoint
                                   //   budget, EINVAL/EFAULT)
-    KOS_SYS_SEND = 27,          // (cap, buf, len) -> bytes transferred, or -KOS_E*: EINVAL (len
-                                //   above KOS_EP_MSG_MAX, rejected and never clamped), EFAULT
-                                //   (bad buffer), EBADF/EACCES (bad cap / no SIGNAL right),
-                                //   EAGAIN (no receiver while a KOS_CAP_HANDOUT holder
-                                //   remains, or a far endpoint's peer ring is full),
-                                //   ECONNREFUSED (no receiver and no such holder), either
-                                //   at once or on waking when the last receiver leaves;
-                                //   nothing sent. Parks indefinitely otherwise, and on the
-                                //   published console while its task lives, receiver or not,
-                                //   where a task that set O_NONBLOCK is answered ETIMEDOUT
-                                //   instead. EFAULT also answers a rendezvous copy refused at
-                                //   either end (sys.h)
     KOS_SYS_NOTIFY_BIND = 28,   // (notify_cap) -> 0, or -KOS_E*: EBADF, EACCES (cap lacks
                                 //   WAIT), EBUSY (another thread is bound, or the caller is
                                 //   already bound to a different object), EOVERFLOW (the
@@ -173,13 +172,6 @@ enum kos_syscall_nr
     KOS_SYS_CPU_CLOCK_SET = 30,  // (kos_pstate_t as u32) -> landed core Hz (u64); 0 == cannot-change
     KOS_SYS_PERIPH_CLOCK_HZ = 32, // (base) -> peripheral branch clock in Hz (u32), 0 if unknown (NO KOS_E*)
     KOS_SYS_PINMUX_SET = 33,  // (port, pin, func) -> 0, -KOS_EPERM (no KOS_AUTH_PINMUX), -KOS_EINVAL (range), -KOS_EBUSY (kernel-owned pin), -KOS_ENOSYS (no backend)
-    KOS_SYS_CALL = 34,        // (ep_cap, buf, send_len, recv_cap) -> reply bytes (>= 0), or -KOS_E* (EINVAL/EFAULT/EBADF/EACCES/ENOTSUP,
-                              //   EAGAIN no receiver while a KOS_CAP_HANDOUT holder remains,
-                              //   or a far endpoint's peer ring is full, and nothing was sent,
-                              //   ECONNREFUSED no receiver and no such holder, EPIPE the
-                              //   server died holding the request, EMFILE the SERVER's cap
-                              //   table has no slot for the reply cap)
-    KOS_SYS_REPLY = 35,       // (reply_cap, buf, len) -> 0, or -KOS_E* (EBADF bad/non-reply cap, ESRCH stale caller, EFAULT bad buffer)
     KOS_SYS_SHUTDOWN = 36,    // (status, enum kos_shutdown_outcome) -> does not return, or
                               //   -KOS_EPERM (no KOS_AUTH_SYSTEM, or KOS_AUTH_BOOTLOADER for that
                               //   outcome, or a reset asked on an AMP node that does not own it),
@@ -218,13 +210,15 @@ enum kos_syscall_nr
     KOS_SYS_IRQ_DISCARD = 44,  // (irq_cap) -> 0, or -KOS_EBADF / -KOS_EACCES (cap lacks WAIT).
                                //   Drops whatever the controller has latched for the line.
                                //   Neither masks nor unmasks.
-    KOS_SYS_THREAD_KILL = 45,  // (kos_thread_t) -> 0, -KOS_EBADF (bad/stale/exited handle),
-                               //   -KOS_EPERM (the caller did not spawn that thread),
-                               //   -KOS_EINVAL (naming yourself; that is KOS_SYS_EXIT).
-                               //   COOPERATIVE: the target is woken with -KOS_ECANCELED and
-                               //   exits itself.
-    KOS_SYS_CALL_TIMED = 46,   // (ep_cap, buf, kos_call_lens_pack(send_len, recv_cap),
-                               //   timeout_us) -> as KOS_SYS_CALL, plus -KOS_ETIMEDOUT
+    KOS_SYS_CALL = 46,         // (ep_cap, buf, kos_call_lens_pack(send_len, recv_cap),
+                               //   timeout_us) -> reply bytes (>= 0), or -KOS_E* (EINVAL/EFAULT/
+                               //   EBADF/EACCES/ENOTSUP, EAGAIN no receiver while a
+                               //   KOS_CAP_HANDOUT holder remains, or a far endpoint's peer ring
+                               //   is full, and nothing was sent, ECONNREFUSED no receiver and no
+                               //   such holder, EPIPE the server died holding the request, EMFILE
+                               //   the SERVER's cap table has no slot for the reply cap,
+                               //   ETIMEDOUT no reply came in time). KOS_TIMEOUT_NONE waits
+                               //   forever
     KOS_SYS_NOTIFY_UNBIND = 47, // (notify_cap) -> 0, or -KOS_E*: EBADF, EACCES (cap lacks
                                //   WAIT), EPERM (the caller is not the bound thread). Unconsumed
                                //   bits are LEFT pending for the next server.
@@ -234,10 +228,20 @@ enum kos_syscall_nr
                                //   while waiting), -KOS_EBADF (never allocated / reclaimed
                                //   under this handle), -KOS_EPERM (the caller did not spawn
                                //   it), -KOS_EDEADLK (naming yourself).
-    KOS_SYS_SEND_TIMED = 50,   // (cap, buf, len, timeout_us) -> as KOS_SYS_SEND, plus
-                               //   -KOS_ETIMEDOUT, at once for a timeout of 0, which never
-                               //   parks. A non-blocking task keeps a finite timeout on the
-                               //   console; KOS_TIMEOUT_NONE is a send of no timeout
+    KOS_SYS_SEND = 50,         // (cap, buf, len, timeout_us) -> bytes transferred, or -KOS_E*:
+                               //   EINVAL (len above KOS_EP_MSG_MAX, rejected and never
+                               //   clamped), EFAULT (bad buffer), EBADF/EACCES (bad cap / no
+                               //   SIGNAL right), EAGAIN (no receiver while a KOS_CAP_HANDOUT
+                               //   holder remains, or a far endpoint's peer ring is full),
+                               //   ECONNREFUSED (no receiver and no such holder), either at
+                               //   once or on waking when the last receiver leaves; nothing
+                               //   sent. ETIMEDOUT where the deadline passed with no receiver,
+                               //   at once for a timeout of 0, which never parks.
+                               //   KOS_TIMEOUT_NONE parks indefinitely, and on the published
+                               //   console while its task lives, receiver or not, where a task
+                               //   that set O_NONBLOCK is answered ETIMEDOUT instead; a finite
+                               //   timeout keeps its deadline there. EFAULT also answers a
+                               //   rendezvous copy refused at either end (sys.h)
     KOS_SYS_TASK_CREATE = 51,  // (mem_base, mem_size, kos_task_t* out, kos_mem_flags) -> 0,
                                //   or -KOS_E*: EPERM (no KOS_AUTH_TASKS, an inadmissible
                                //   shared grant, a range the caller never reserved, or a
@@ -252,20 +256,22 @@ enum kos_syscall_nr
                                //   flags, KOS_AUTH_TASKS, the range as KOS_SYS_THREAD_CREATE
                                //   admits one, the pools. The task is EMPTY:
                                //   kos_thread_params::task is what seats members.
-    KOS_SYS_TASK_KILL = 52,    // (kos_task_t) -> 0, -KOS_EBADF (never created / freed under
-                               //   this handle / an implicit task, which is unnameable),
-                               //   -KOS_EPERM (the caller did not create it). Slays every
-                               //   live member; the handle names nothing afterwards.
-    KOS_SYS_THREAD_SLAY = 53,  // (kos_thread_t, timeout_us) -> 0 (GONE: the target is EXITED
-                               //    and capability teardown finished), -KOS_ETIMEDOUT (termination
-                               //    committed, cleanup pending), -KOS_ECANCELED (caller cancelled;
-                               //    target still terminates), -KOS_EBADF, -KOS_EPERM (different parent),
-                               //    -KOS_EINVAL (self or idle). No cleanup window.
-    KOS_SYS_TASK_SLAY = 54,    // (kos_task_t, timeout_us) -> 0 (the group is EMPTY and its
-                               //   slot released), -KOS_ETIMEDOUT, -KOS_ECANCELED, -KOS_EBADF,
-                               //   -KOS_EPERM (the caller did not create it), -KOS_EINVAL (the
-                               //   caller is itself a member, which would wait on its own
-                               //   death).
+    KOS_SYS_THREAD_CANCEL = 53, // (kos_thread_t, enum kos_cancel, timeout_us) -> 0 (with a timeout
+                               //    of 0, the cancel is raised; otherwise the target is EXITED
+                               //    and its capability teardown finished), -KOS_ETIMEDOUT (the
+                               //    cancel raised, cleanup pending), -KOS_ECANCELED (caller
+                               //    cancelled; target still cancelled), -KOS_EBADF (bad, stale or
+                               //    exited handle), -KOS_EPERM (different parent), -KOS_EINVAL
+                               //    (self, idle, or an unknown kind). A timeout other than 0
+                               //    parks the caller before the cancel is raised
+    KOS_SYS_TASK_SLAY = 54,    // (kos_task_t, timeout_us) -> 0 (a timeout of 0: every live member
+                               //   is stopped and the creator's hold dropped, so the handle names
+                               //   nothing afterwards; otherwise the group is EMPTY and its slot
+                               //   released), -KOS_ETIMEDOUT, -KOS_ECANCELED, -KOS_EBADF (never
+                               //   created / freed under this handle / an implicit task, which is
+                               //   unnameable), -KOS_EPERM (the caller did not create it),
+                               //   -KOS_EINVAL (a timeout other than 0 from a caller that is
+                               //   itself a member, which would wait on its own death).
     KOS_SYS_BENCH = 55,        // (kos_bench_op, a0, a1) -> per-op (see enum kos_bench_op),
                                //   -KOS_EINVAL (bad op, bad line, no span open, or an
                                //   argument outside what the op admits), -KOS_ENOSYS (an op
@@ -313,11 +319,14 @@ enum kos_syscall_nr
                                //    -KOS_EBADF for an invalid cap, -KOS_EINVAL for a nontranslating space,
                                //    -KOS_EPERM for a range not mapped through KOS_SYS_FRAME_MAP.
                                //    Receivers using the unmapped range are woken with -KOS_EFAULT.
-    KOS_SYS_THREAD_SET_AFFINITY = 63, // (kos_thread_t, core mask) -> 0, or -KOS_EPERM
-                               //   (no allowed core or unauthorized cross-task access), -KOS_EINVAL
-                               //   (nonzero mask with no machine core), -KOS_EBADF, -KOS_ENOSYS
-                               //   (single-core kernel). Zero selects task defaults; a nonzero mask
-                               //   intersects the machine and task grant and may include isolated cores.
+    KOS_SYS_THREAD_AFFINITY = 63, // (kos_thread_t, core mask or KOS_AFFINITY_QUERY) -> the mask the
+                               //   thread now runs on (>= 0), or -KOS_EPERM (no allowed core or
+                               //   another task's thread), -KOS_EINVAL (nonzero mask with no
+                               //   machine core), -KOS_EBADF (bad or exited handle). Zero selects
+                               //   the task default; a nonzero mask intersects the machine and
+                               //   task grant and may include isolated cores; KOS_AFFINITY_QUERY
+                               //   sets nothing. Above one kernel core only: the stub answers
+                               //   -KOS_ENOSYS without trapping.
     KOS_SYS_TASK_SCHED_GRANT = 64, // (kos_task_t, priority ceiling, core mask) -> 0, or
                                //   -KOS_EPERM (either half wider than the creator's own
                                //   grant, or a caller that did not create the task),
@@ -328,10 +337,8 @@ enum kos_syscall_nr
                                //   alone.
     KOS_SYS_CORE_CURRENT = 65, // () -> the kernel core the caller ran on; cannot fail. Above
                                //   one kernel core only: the stub answers 0 without trapping.
-    KOS_SYS_THREAD_AFFINITY = 66, // (kos_thread_t) -> the thread's core mask, or -KOS_EBADF
-                               //   (bad or exited handle), -KOS_EPERM (another task's thread).
-                               //   Above one kernel core only: the stub answers -KOS_ENOSYS
-                               //   without trapping.
+                               //   On armv8a and x86_64 kos_core_current reads a register the
+                               //   kernel seats per core and does not make this call
     KOS_SYS_TASK_CORES = 67,   // (kos_task_t, KOS_TASK_NONE for the caller's) -> the task's core
                                //   grant, or -KOS_EBADF, -KOS_EPERM (a task the caller did not
                                //   create). Above one kernel core only, as above.
@@ -340,7 +347,9 @@ enum kos_syscall_nr
                                //   -KOS_ENOTIFY (a notification and no message), -KOS_EINVAL,
                                //   -KOS_EFAULT, -KOS_EPERM, -KOS_EACCES, -KOS_EBADF,
                                //   -KOS_ESRCH, -KOS_EMFILE, -KOS_ENOTSUP, -KOS_EPIPE,
-                               //   -KOS_ETIMEDOUT, -KOS_ECANCELED
+                               //   -KOS_ETIMEDOUT, -KOS_ECANCELED. A null opts replies and
+                               //   receives nothing: 0, or -KOS_EBADF (bad / non-reply cap),
+                               //   -KOS_ESRCH (stale caller), -KOS_EFAULT (bad buffer)
     KOS_SYS_NOTIFY_BADGE = 69, // (source notify_cap, bit, kos_cap_t* out) -> 0, or -KOS_E*:
                                //   EBADF, EINVAL (bit at or above 32, or a bad out-ptr),
                                //   EFAULT (out-ptr), EACCES (a badged source cannot mint),
@@ -361,8 +370,6 @@ enum kos_syscall_nr
                                //   is dead, its members' teardown done, and the first time a
                                //   member waits on ready_ep. KOS_CAP_NONE for notify_cap
                                //   disarms.
-    KOS_SYS_TASK_STATE = 73,   // (kos_task_t) -> enum kos_task_state bits, or -KOS_EBADF
-                               //   (stale task), -KOS_EPERM (not the creator).
     KOS_SYS_WINDOW_GET = 74,   // (index, struct kos_window* out) -> 0 with *out the index-th
                                //   window of the caller's spawn list, its base where the caller
                                //   reaches it, or -KOS_EINVAL (index past the list, or out),
@@ -372,10 +379,11 @@ enum kos_syscall_nr
                                //   chip does not keep for this write, a value outside its mask,
                                //   or past port 0xffff / a byte), -KOS_ENOSYS (an arch with no
                                //   ports).
-    KOS_SYS_TASK_EXIT_STATUS = 76, // (kos_task_t, int* status) -> 0 with *status the status the
-                               //   task ended with, or -KOS_EBUSY (not ended yet),
-                               //   -KOS_EBADF (stale task), -KOS_EPERM (not the creator),
-                               //   -KOS_EINVAL / -KOS_EFAULT (status).
+    KOS_SYS_TASK_STATE = 76,   // (kos_task_t, int* status or NULL) -> enum kos_task_state bits,
+                               //   with *status the status the task ended with where ENDED is
+                               //   set and status is not NULL, or -KOS_EBADF (stale task),
+                               //   -KOS_EPERM (not the creator), -KOS_EINVAL / -KOS_EFAULT
+                               //   (status).
     KOS_SYS_THREAD_SET_PRIORITY = 77, // (priority) -> 0, or -KOS_EINVAL (outside
                                //   KICKOS_PRIO_MIN to KICKOS_PRIO_MAX), -KOS_EPERM (above the
                                //   calling task's priority ceiling). The caller's OWN base
@@ -392,11 +400,27 @@ enum kos_syscall_nr
                                 //   -KOS_EINVAL (an unknown op), -KOS_ENOSYS (no address space
                                 //   to leave). Any kernel not built for the witness answers
                                 //   -KOS_EINVAL, as for an unknown number
-    KOS_SYS_WITNESS_REWINDS = 81 // RESERVED for the rewind witness (<kickos/sys/witness.h>):
+    KOS_SYS_WITNESS_REWINDS = 81, // RESERVED for the rewind witness (<kickos/sys/witness.h>):
                                 //   () -> how many times the switcher has moved a stacked PC
                                 //   inside the user compare-and-swap's window back to its load
                                 //   since boot. Any kernel not built for the witness answers
                                 //   -KOS_EINVAL
+    KOS_SYS_WORD_WAIT = 82,     // (uint32_t* word, expected, timeout_us) -> 1 woken with a unit,
+                                //   0 woken without one, -KOS_EAGAIN (the word is not
+                                //   `expected`, nothing parked), -KOS_ETIMEDOUT (at once for a
+                                //   timeout of 0), -KOS_ECANCELED, -KOS_EFAULT (a word the caller
+                                //   cannot write, or whose reach it lost while parked),
+                                //   -KOS_EINVAL (misaligned, not normal memory, the AMP share, or
+                                //   a word threads wait on as a mutex). A plain word: no owner,
+                                //   no priority inheritance
+    KOS_SYS_WORD_WAKE = 83      // (uint32_t* word, n, units) -> k, the waiters woken: the
+                                //   min(n, parked) highest, FIFO among equals, the first
+                                //   min(units, k) handed a unit (their wait answers 1). Units no
+                                //   waiter takes are added to bits 30..0, only once no waiter is
+                                //   left, and KOS_WORD_WAITERS is cleared when none is. Refused
+                                //   with nothing done: -KOS_EINVAL (units > n, or as the wait),
+                                //   -KOS_EFAULT, and -KOS_EOVERFLOW (the count would carry out
+                                //   of bit 30). Never a death point of a cancel
 };
 // The raw console write's number, refused in an app as kos_kconsole_write is (<kickos/sys.h>).
 #if defined(main)
@@ -421,6 +445,20 @@ enum kos_nonblock_op
     KOS_NONBLOCK_SET = 1,
     KOS_NONBLOCK_CLEAR = 2
 };
+
+// How KOS_SYS_THREAD_CANCEL ends a thread. A KILL is cooperative: a parked target is woken with
+// -KOS_ECANCELED and the target ends at its next system call, so one that makes none is not
+// reached. A SLAY is forced: the target runs no further instruction of its own and gets no
+// cleanup window.
+enum kos_cancel
+{
+    KOS_CANCEL_KILL = 0,
+    KOS_CANCEL_SLAY = 1
+};
+
+// The mask KOS_SYS_THREAD_AFFINITY takes to read a thread's mask and set nothing. Bit 31 never
+// names a core.
+#define KOS_AFFINITY_QUERY 0x80000000u
 
 // What KOS_SYS_TASK_STATE answers for the task a handle names.
 enum kos_task_state
@@ -655,8 +693,8 @@ typedef uint32_t kos_pstate_t;
 // timer floor is 20 us.
 #define KOS_TIMEOUT_NONE UINT32_MAX
 
-// KOS_SYS_CALL_TIMED packs both message lengths into ONE argument slot so the fourth can
-// carry the deadline. Nine bits each, both being bounded by KOS_EP_MSG_MAX.
+// KOS_SYS_CALL packs both message lengths into ONE argument slot so the fourth can carry the
+// deadline. Nine bits each, both being bounded by KOS_EP_MSG_MAX.
 #define KOS_CALL_LEN_BITS 9
 #define KOS_CALL_LEN_MASK ((1u << KOS_CALL_LEN_BITS) - 1u)
 KOS_STATIC_ASSERT((unsigned)KOS_EP_MSG_MAX < KOS_CALL_LEN_MASK,
@@ -690,8 +728,8 @@ static inline size_t kos_call_lens_recv(uintptr_t packed)
 #define KOS_CALL_REG_WORDS 5
 #define KOS_CALL_REG_BYTES (KOS_CALL_REG_WORDS * 4)
 
-// Counting-semaphore ceiling. sem_create refuses an initial outside [0, KOS_SEM_COUNT_MAX]
-// with -KOS_EINVAL; a post at the ceiling is refused with -KOS_EOVERFLOW.
+// The counting-semaphore ceiling: bits 30..0 of its word. kos_sem_init refuses an initial count
+// above it with -KOS_EINVAL, and a post at it is refused with -KOS_EOVERFLOW.
 #define KOS_SEM_COUNT_MAX 0x7FFFFFFF
 
 // 64-bit ARGUMENTS are passed as two uintptr_t halves, identically on 32-bit (ARM M-class)

@@ -63,7 +63,7 @@ namespace
     std::vector<fake::Call> probes()
     {
         std::vector<fake::Call> out;
-        for (fake::Call const& c : fake::calls_of("kos_send_timed"))
+        for (fake::Call const& c : fake::calls_of("kos_send"))
         {
             if (c.args[1] == 0u)
             {
@@ -152,7 +152,7 @@ namespace
             "kos_task_create", "kos_task_sched_grant", "kos_task_watch", "kos_console_publish", "kos_irq_claim",
             "kos_notify_create", "kos_notify_badge", "kos_irq_bind_notify", "kos_handle_close", "kos_thread_create",
             "kos_notify_badge", "kos_thread_create", "kos_handle_close", "kos_handle_close", "kos_handle_close",
-            "kos_cap_narrow", "kos_send_timed", "kos_handle_close", "kos_notify_badge"};
+            "kos_cap_narrow", "kos_send", "kos_handle_close", "kos_notify_badge"};
         EXPECT_EQ(start_of(0), expected);
         EXPECT_EQ(fake::calls_of("kos_endpoint_create").size(), 3u) << "every endpoint the init's, made at boot";
 
@@ -217,7 +217,7 @@ namespace
         EXPECT_EQ(spi.restarts_left, 0u);
         EXPECT_EQ(spi.state, 0u);
         EXPECT_TRUE(fake::spawned("bus").empty());
-        EXPECT_EQ(fake::calls_of("kos_task_slay").size(), 4u) << "each instance slain by the init";
+        EXPECT_EQ(fake::slays().size(), 4u) << "each instance slain by the init";
         EXPECT_EQ(status("sensor").state, kickos::init::STATUS_DEPENDENCY_DOWN);
         // health watches spi0 at bit 0 and sensor at bit 1, told of each.
         EXPECT_EQ(fake::calls_of("kos_notify").size(), 5u);
@@ -237,7 +237,7 @@ namespace
         ASSERT_EQ(outcome.kind, Outcome::Kind::IDLE) << outcome.message;
         EXPECT_EQ(fake::spawned("entry").size(), 2u) << "started again through its descriptor";
         EXPECT_EQ(fake::spawned("worker").size(), 2u);
-        EXPECT_EQ(fake::calls_of("kos_task_kill").size(), 2u);
+        EXPECT_EQ(fake::releases().size(), 2u);
         kickos::init::StatusFields const drv = status("drv");
         EXPECT_EQ(drv.deaths, 2u);
         EXPECT_EQ(drv.state, 0u);
@@ -260,15 +260,15 @@ namespace
                       []
                       {
                           EXPECT_EQ(fake::spawned("worker").size(), 1u) << "no restart while a member sweeps";
-                          EXPECT_TRUE(fake::calls_of("kos_task_kill").empty());
+                          EXPECT_TRUE(fake::releases().empty());
                           fake::sweep("worker");
                       },
                       step::ready_all(), step::nothing()});
         Outcome const outcome = run();
         ASSERT_EQ(outcome.kind, Outcome::Kind::IDLE) << outcome.message;
         EXPECT_EQ(fake::spawned("worker").size(), 2u);
-        EXPECT_EQ(fake::calls_of("kos_task_kill").size(), 1u);
-        EXPECT_TRUE(fake::calls_of("kos_task_slay").empty()) << "an ended task is never slain";
+        EXPECT_EQ(fake::releases().size(), 1u);
+        EXPECT_TRUE(fake::slays().empty()) << "an ended task is never slain";
         EXPECT_EQ(status("drv").deaths, 1u);
     }
 
@@ -301,7 +301,7 @@ namespace
             {
                 continue;
             }
-            auto const probe = std::find(publish, start.end(), "kos_send_timed");
+            auto const probe = std::find(publish, start.end(), "kos_send");
             if (probe != start.end())
             {
                 start.erase(probe + 1, start.end());
@@ -327,7 +327,7 @@ namespace
             "kos_task_create", "kos_task_sched_grant", "kos_task_watch", "kos_console_publish", "kos_irq_claim",
             "kos_notify_create", "kos_notify_badge", "kos_irq_bind_notify", "kos_handle_close", "kos_thread_create",
             "kos_notify_badge", "kos_thread_create", "kos_handle_close", "kos_handle_close", "kos_handle_close",
-            "kos_cap_narrow", "kos_send_timed"};
+            "kos_cap_narrow", "kos_send"};
         EXPECT_EQ(starts[0], expected);
         EXPECT_EQ(starts[1], expected) << "published before the claim, the receiver last, narrowed, probed";
 
@@ -386,7 +386,7 @@ namespace
         std::vector<fake::Call> const sent = probes();
         ASSERT_EQ(sent.size(), 1u);
         EXPECT_EQ(sent[0].result, -KOS_ETIMEDOUT) << "a fresh endpoint parks the probe until its deadline";
-        EXPECT_EQ(fake::calls_of("kos_task_slay").size(), 1u) << "the init slays the driver it handed over to";
+        EXPECT_EQ(fake::slays().size(), 1u) << "the init slays the driver it handed over to";
         EXPECT_EQ(status("console").deaths, 1u);
         EXPECT_EQ(status("console").state, 0u);
     }

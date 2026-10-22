@@ -26,12 +26,17 @@
 
 namespace
 {
-    // Delegated cap i lands at child table index KOS_SPAWN_DELEGATED_CAP0 + i. The child parks on CH_HOLD, which
-    // nobody posts, so its domain is still referenced when main makes the write below. It
-    // must not park on CH_DONE: until main is parked there, that wait takes back the child's
-    // own post and main waits forever.
-    constexpr int CH_DONE = KOS_SPAWN_DELEGATED_CAP0;
-    constexpr int CH_HOLD = KOS_SPAWN_DELEGATED_CAP0 + 1;
+    // The child reports down main's endpoint, its only delegated capability, then parks on
+    // g_hold, which nobody posts, so its domain is still referenced when main makes the write
+    // below. A word the child shares with main would be its own copy on a translating board.
+    constexpr kos_cap_t CH_DONE = KOS_SPAWN_DELEGATED_CAP0;
+    kos_sem_t g_hold = KOS_SEM_INIT(0);
+
+    void report_done()
+    {
+        uint8_t const mark = 1;
+        (void)kos_send(CH_DONE, &mark, sizeof(mark), KOS_TIMEOUT_NONE);
+    }
 
     void confined_child(void* arg)
     {
@@ -42,12 +47,12 @@ namespace
         if (*own != 0x1111)
         {
             kos::print("[rootfault] ERROR: the child's own write did not stick\n");
-            kos_sem_post(CH_DONE);
+            report_done();
             return;
         }
         kos::print("[rootfault] child: wrote my own granted region\n");
-        kos_sem_post(CH_DONE);
-        kos_sem_wait(CH_HOLD, KOS_TIMEOUT_NONE);
+        report_done();
+        kos_sem_wait(&g_hold, KOS_TIMEOUT_NONE);
         kos::print("[rootfault] ERROR: child unparked\n");
     }
 }
@@ -58,12 +63,10 @@ int main(int, char**)
     // is reported distinctly.
     void* rA = kos_ram_alloc(4096);
     kos_cap_t done = KOS_CAP_NONE;
-    kos_cap_t hold = KOS_CAP_NONE;
-    int const done_rc = kos_sem_create(0, &done);
-    int const hold_rc = kos_sem_create(0, &hold);
-    if (rA == nullptr or done_rc != 0 or hold_rc != 0)
+    int const done_rc = kos_endpoint_create(&done);
+    if (rA == nullptr or done_rc != 0)
     {
-        kos::print("[rootfault] ERROR: ram_alloc / sem_create refused (authority seat?)\n");
+        kos::print("[rootfault] ERROR: ram_alloc / endpoint_create refused (authority seat?)\n");
         return 1;
     }
 
@@ -71,14 +74,12 @@ int main(int, char**)
     // region, not a stray arena page. Main has not touched A at this point.
     kos_cap_grant caps[] = {
         { done, KOS_CAP_SIGNAL },
-        { hold, KOS_CAP_WAIT },
     };
     // The child outranks main on main's own core, so the yield below runs it until it blocks
-    // before main waits: the order in which a child parked on CH_DONE would take back its own
-    // post, so that mistake hangs every run instead of some.
+    // in its send before main receives.
     uint32_t core_mask = 0;
 #if KICKOS_KERNEL_CORES > 1
-    if (kos::thread::pin(kos_thread_self(), 0) != 0)
+    if (kos::thread::pin(kos_thread_self(), 0) < 0)
     {
         kos::print("[rootfault] ERROR: main could not pin itself\n");
         return 1;
@@ -86,7 +87,7 @@ int main(int, char**)
     core_mask = 1u;
 #endif
     auto const child = kos::thread::create_caps(confined_child, rA, "confined", 10,
-                                             caps, 2, KOS_POLICY_FIFO, 0,
+                                             caps, 1, KOS_POLICY_FIFO, 0,
                                              rA, 4096, 0, nullptr,
                                              KOS_TASK_NONE, nullptr, 0, core_mask);
     if (not child.valid())
@@ -95,7 +96,11 @@ int main(int, char**)
         return 1;
     }
     kos_yield();
-    kos_sem_wait(done, KOS_TIMEOUT_NONE); // the child wrote A: the control half passed
+    // The child wrote A: the control half passed.
+    uint8_t mark = 0;
+    struct kos_reply_recv_opts opts;
+    kos_reply_recv_opts_init(&opts, done, KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
+    (void)kos_reply_recv(KOS_CAP_NONE, &mark, kos_call_lens_pack(0, sizeof(mark)), &opts);
 
     // Announce BEFORE the poke, with the address: the armv7m dump reports MMFAR but
     // no thread name (kickos_armv7m_fault_report), so a capture cross-checks this line

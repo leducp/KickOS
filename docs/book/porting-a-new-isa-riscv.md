@@ -165,11 +165,11 @@ two-format design must: there are no edges, only one path.
 ## 4. The system call: privilege without losing your continuation
 
 A system call must (a) raise privilege and (b) let a *blocking* syscall (like
-`sem_wait`) suspend the calling thread and resume it later, right where it left
+a semaphore wait) suspend the calling thread and resume it later, right where it left
 off, returning the result to user code as if the call were an ordinary function.
 
 The tempting shortcut -- handle the syscall directly in the trap handler -- breaks
-(b). If `sem_wait` blocks while execution is "in the trap handler," the state that
+(b). If a semaphore wait blocks while execution is "in the trap handler," the state that
 would suspend and resume is the *handler's*, not a clean per-thread continuation. The
 kernel's blocking primitives assume they run in **thread context**.
 
@@ -256,8 +256,8 @@ linker script, a board's configuration. How much of that a given chip needs is a
 of the chip, not of the port. That distribution is itself the lesson: the part
 of a port that needs an ISA manual open is small and bounded.
 
-Everything above the seam -- the
-scheduler, semaphores, the syscall table, the tickless timer wheel -- is untouched
+Everything above the seam (the
+scheduler, the wait and wake, the syscall table, the tickless timer wheel) is untouched
 ISA-independent C. That ratio is the whole thesis of a portable microkernel: the
 ISA-specific surface is small, well-defined, and the same shape on every
 processor. Meet the questionnaire in section 1, respect the two couplings (single-frame

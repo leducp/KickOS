@@ -23,30 +23,17 @@ namespace kickos
             {
             };
 
-            Semaphore g_sem;
             uint32_t g_word = 0;
-
-            // The dispatch's own shape: resolve and use under one bracket, handed down.
-            void wait_on_the_semaphore()
-            {
-                IrqLock lock;
-                uint32_t epoch = 0;
-                (void) sem_wait(lock, &g_sem, KOS_TIMEOUT_NONE, epoch);
-            }
 
             void lock_the_mutex()
             {
                 (void)mutex_lock(reinterpret_cast<uintptr_t>(&g_word), KOS_TIMEOUT_NONE);
             }
-        }
 
-        TEST_F(CancelledSyncPark, a_semaphore_wait_sweeps_as_an_exit_does)
-        {
-            Sweep const reference = reference_sweep();
-            sem_init(&g_sem, 0);
-            Thread* const victim = cancelled_thread();
-            Sweep const parked = sweep_of(wait_on_the_semaphore);
-            expect_same_sweep(reference, parked, victim);
+            void wait_on_the_word()
+            {
+                (void)word_wait(reinterpret_cast<uintptr_t>(&g_word), 0u, KOS_TIMEOUT_NONE);
+            }
         }
 
         TEST_F(CancelledSyncPark, a_mutex_lock_sweeps_as_an_exit_does)
@@ -55,6 +42,15 @@ namespace kickos
             g_word = 0;
             Thread* const victim = cancelled_thread();
             Sweep const parked = sweep_of(lock_the_mutex);
+            expect_same_sweep(reference, parked, victim);
+        }
+
+        TEST_F(CancelledSyncPark, a_word_wait_sweeps_as_an_exit_does)
+        {
+            Sweep const reference = reference_sweep();
+            g_word = 0;
+            Thread* const victim = cancelled_thread();
+            Sweep const parked = sweep_of(wait_on_the_word);
             expect_same_sweep(reference, parked, victim);
         }
     }

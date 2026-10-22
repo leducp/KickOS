@@ -141,7 +141,7 @@ namespace tap
         // the wire in either posture, unlike a 1-byte probe.
         bool stdout_published()
         {
-            return kos_send(0, "", 0) >= 0;
+            return kos_send(0, "", 0, KOS_TIMEOUT_NONE) >= 0;
         }
     }
 

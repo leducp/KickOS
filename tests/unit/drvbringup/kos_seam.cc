@@ -296,9 +296,9 @@ extern "C"
         return 0;
     }
 
-    int kos_thread_kill(kos_thread_t thread)
+    int kos_thread_cancel(kos_thread_t thread, enum kos_cancel, uint32_t)
     {
-        note_id("kill", thread);
+        note_id("cancel", thread);
         return 0;
     }
 
@@ -370,7 +370,7 @@ extern "C"
         return 1u;
     }
 
-    int kos_thread_set_affinity(kos_thread_t, uint32_t core_mask)
+    int kos_thread_affinity(kos_thread_t, uint32_t core_mask)
     {
         if (g_seam.pin_fails)
         {
@@ -378,19 +378,18 @@ extern "C"
             return -KOS_EPERM;
         }
         note_id("pin", core_mask);
-        return 0;
+        return static_cast<int>(core_mask);
     }
 
-    int kos_task_slay(kos_task_t task, uint32_t)
+    int kos_task_slay(kos_task_t task, uint32_t timeout_us)
     {
+        if (timeout_us == 0u)
+        {
+            note_id("tkill", task);
+            return 0;
+        }
         note_id("tslay", task);
         return g_seam.slay_rc;
-    }
-
-    int kos_task_kill(kos_task_t task)
-    {
-        note_id("tkill", task);
-        return 0;
     }
 
     int kos_handle_close(kos_cap_t cap)
@@ -399,10 +398,10 @@ extern "C"
         return 0;
     }
 
-    int32_t kos_send_timed(kos_cap_t, void const*, size_t, uint32_t)
+    int32_t kos_send(kos_cap_t, void const*, size_t, uint32_t)
     {
         note("probe");
-        return g_seam.send_timed_rc;
+        return g_seam.send_rc;
     }
 
     // The notification bring_up creates for the whole driver, and the badged copies it mints

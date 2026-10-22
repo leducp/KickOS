@@ -559,7 +559,7 @@ int main(int, char**)
 #if PG_SPLIM
     if (victim != KOS_TASK_NONE)
     {
-        (void)kos_task_kill(victim);
+        (void)kos_task_slay(victim, 0);
     }
 #endif
 #if KICKOS_PSPGUARD_MODE == 5

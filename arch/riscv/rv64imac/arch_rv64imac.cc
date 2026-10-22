@@ -1040,6 +1040,10 @@ void kickos_rv64_init(void)
         g_sum_recorded = true;
     }
 
+    // scounteren.TM alone: U-mode reads the time CSR; the cycle and instret counters stay
+    // closed to it.
+    __asm volatile("csrw scounteren, %0" ::"r"(static_cast<uint64_t>(1u << 1)) : "memory");
+
     // After the probe, whose trap leg clears sstatus.SIE and never srets it back, so it must
     // run before any source can fire.
     uint64_t const sie = SIE_STIE | SIE_SSIE;

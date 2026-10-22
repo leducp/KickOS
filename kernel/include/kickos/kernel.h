@@ -77,7 +77,6 @@ namespace kickos
     // Kernel diagnostic LED: the board's single status LED. No-op on boards with no known LED.
     void kdiag_led_init(void);
     void kdiag_led_set(bool on);
-    void kdiag_led_toggle(void);
 
     // Leaves the thread INACTIVE: the caller publishes it with sched::add, under the same lock
     // that allocated it. A publish deferred past that lock leaves a child only a slay discards.

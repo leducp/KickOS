@@ -17,11 +17,6 @@
 #include <kickos/board_config.h>
 #endif
 
-// CAP_SEM object pool.
-#ifndef KICKOS_MAX_SEMAPHORES
-#define KICKOS_MAX_SEMAPHORES 16
-#endif
-
 // Endpoint (IPC rendezvous) pool (CAP_ENDPOINT objects; see endpoint.h).
 // The u8 endpoint_refs counter bounds concurrent holders at runtime (obj_ref_inc
 // refuses at the ceiling); it is not a compile-time bound on this knob.
@@ -120,9 +115,6 @@
 
 // Per-task limits for charged pools. Each must leave at least one slot
 // available in its corresponding global pool.
-#ifndef KICKOS_TASK_SEMAPHORE_BUDGET
-#define KICKOS_TASK_SEMAPHORE_BUDGET 15
-#endif
 #ifndef KICKOS_TASK_ENDPOINT_BUDGET
 #define KICKOS_TASK_ENDPOINT_BUDGET 3
 #endif

@@ -86,29 +86,23 @@ if(KICKOS_KERNEL_CORES GREATER 1 AND _selftest_movable LESS 1)
   list(APPEND KICKOS_EXPECT_SKIPS migrate_running)
 endif()
 
-# The capability slots main's table holds before any arm runs: the reserved ones, the crossings
-# its composition names, delegated from the first dynamic index and at most one per partition
-# port, and the two it holds for the run.
-set(_selftest_lifetime_caps 2) # g_lock and g_done, created by main and never closed
-math(EXPR _selftest_cap_seated
-  "${KICKOS_CAP_FIRST_DYNAMIC} + ${KICKOS_AMP_PORT_COUNT} + ${_selftest_lifetime_caps}")
+# The capability slots main's table holds before any arm runs: the reserved ones and the
+# crossings its composition names, delegated from the first dynamic index and at most one per
+# partition port.
+math(EXPR _selftest_cap_seated "${KICKOS_CAP_FIRST_DYNAMIC} + ${KICKOS_AMP_PORT_COUNT}")
 
 # Every arm that asks a pool for more than this posture provisions, by what the arm itself asks
 # for (tests/static/selftest_demands.py): the workers beside main, the tasks beside main's own and
 # the image's driver tasks, the IRQ lines main's task may bind, the capability slots beside the
-# seated ones, and the objects of each kind main's task budget leaves beside the two semaphores
-# main holds for the run.
-set(_selftest_lifetime_sems 2) # g_lock and g_done
+# seated ones, and the objects of each kind main's task budget leaves.
 foreach(_selftest_knob KICKOS_MAX_THREADS KICKOS_MAX_TASKS KICKOS_TASK_IRQ_HANDLE_BUDGET
-        KICKOS_MAX_SPAWN_GRANTS KICKOS_TASK_SEMAPHORE_BUDGET KICKOS_TASK_ENDPOINT_BUDGET
-        KICKOS_TASK_NOTIFY_BUDGET)
+        KICKOS_MAX_SPAWN_GRANTS KICKOS_TASK_ENDPOINT_BUDGET KICKOS_TASK_NOTIFY_BUDGET)
   if(NOT "${${_selftest_knob}}" MATCHES "^[0-9]+$")
     message(FATAL_ERROR "selftest: the generated configuration states no ${_selftest_knob}")
   endif()
 endforeach()
 math(EXPR _selftest_workers "${KICKOS_MAX_THREADS} - 1")
 _selftest_main_caps("${KICKOS_MAX_SPAWN_GRANTS}" "${_selftest_cap_seated}" _selftest_caps)
-math(EXPR _selftest_sems "${KICKOS_TASK_SEMAPHORE_BUDGET} - ${_selftest_lifetime_sems}")
 # The guards an arm's registration sits under, as the compiler sees them.
 set(_selftest_guards --config "KICKOS_KERNEL_CORES=${KICKOS_KERNEL_CORES}")
 foreach(_selftest_knob KICKOS_HAVE_ASPACE KICKOS_HAVE_MPU KICKOS_MEMORY_ENFORCED
@@ -128,7 +122,7 @@ function(_selftest_pool_short driver_tasks out)
             "${PROJECT_SOURCE_DIR}/user/apps/common/selftest" ${_selftest_guards} --supply
             "workers=${_selftest_workers}" "tasks=${_tasks}"
             "irqs=${KICKOS_TASK_IRQ_HANDLE_BUDGET}" "caps=${_selftest_caps}"
-            "sems=${_selftest_sems}" "endpoints=${KICKOS_TASK_ENDPOINT_BUDGET}"
+            "endpoints=${KICKOS_TASK_ENDPOINT_BUDGET}"
             "notifies=${KICKOS_TASK_NOTIFY_BUDGET}"
     OUTPUT_VARIABLE _short
     ERROR_VARIABLE _err

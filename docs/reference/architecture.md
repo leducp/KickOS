@@ -28,7 +28,7 @@ badged endpoints, static capability distribution) and **Zircon** (typed handles,
   share memory within a domain, domains are MPU-isolated from each other, and the MPU is
   reprogrammed on every context switch-in.
 - **Proper scheduling** -- event-driven FIFO scheduling that can switch on *any* event (yield,
-  block, semaphore post, device IRQ), **not** only a periodic tick. Round-robin is available;
+  block, word wake, device IRQ), **not** only a periodic tick. Round-robin is available;
   the tick is optional/forced, never the sole trigger -> a **tickless** core.
 - **First-class host/x86 "sim"** -- kernel + userspace as one Linux process for hardware-free,
   CI-friendly testing: the real kernel runs under CTest on the host, no board or emulator needed.
@@ -223,7 +223,7 @@ becoming a silent no-op.
 6. **Dual API in userspace.** A plain C syscall layer with ergonomic C++ RAII wrappers on top.
 7. **Instance-scoped state, no hard singletons.** Kernel + sim state hangs off an instance
    handle, so multiple `kernel+userspace` instances can run in one host process (the KickCAT
-   sim end-goal). Kernel **objects** (TCBs, semaphores) live in generational pools inside the instance, and the **runtime core**
+   sim end-goal). Kernel **objects** (TCBs, endpoints) live in generational pools inside the instance, and the **runtime core**
    (scheduler/time/syscall pools/sim arch) is aggregated into a `Kernel`/`Instance` struct reached
    via a compile-time-selectable `kernel()` accessor (a static singleton on MCU / for size;
    thread-local per instance for the multi-slave sim). Full multi-instance in the sim additionally
@@ -492,9 +492,10 @@ over another -- **the tick is not special.**
 **Triggers (all equal):**
 
 1. `thread_yield()` -- voluntary.
-2. Block on empty `sem_wait`/`mutex_lock`/endpoint recv -> wait queue -> reschedule.
-3. Wake from **thread** ctx: `sem_post` readies a waiter; if higher prio, reschedule now.
-4. Wake from **IRQ** ctx: an ISR posts -> mark reschedule-needed -> PendSV switches on IRQ exit.
+2. Block on a contended `word_wait`/`mutex_lock`/endpoint recv -> wait queue -> reschedule.
+3. Wake from **thread** ctx: `word_wake` readies a waiter; if higher prio, reschedule now.
+4. Wake from **IRQ** ctx: an ISR raises a notification -> mark reschedule-needed -> PendSV
+   switches on IRQ exit.
    **The headline "not the tick" path -- a device interrupt drives scheduling directly.**
 5. Timer expiry: a sleeping/timed-wait thread's deadline passes -> readied -> reschedule.
 6. RR slice expiry (RR only) -> reschedule among equal priority; each RR task has its own
@@ -511,10 +512,21 @@ compare that may already be in the past). Pure-FIFO with nothing time-pending =>
 zero timer interrupts. `CONFIG_KICKOS_SCHED_PERIODIC_TICK` (opt-in) forces a classic periodic tick.
 Idle thread at lowest prio: ARM `WFI`; sim `sigsuspend`.
 
-**Thread lifecycle past the exit -- cancel, join, wait-until-last.** `KOS_SYS_THREAD_KILL` is a
-COOPERATIVE cancel: it marks the target and wakes it out of WHATEVER park it is in -- the abort is
+**A round-robin quantum has no kernel floor.** The slice is stamped after the switch seats the
+incoming thread, but the comparator write, the switch and the exception return are charged to it,
+and on a deferred-switch arch the lock release, the PendSV entry, the context restore and the MPU
+commit too. A quantum shorter than that path starves the thread that carries it. The quantum is
+the caller's own, per thread, so the cost stays with that thread: a same-priority peer with a
+longer quantum still gets its whole slice, higher priorities and interrupts are untouched, and
+lower priorities starve as they do under any CPU-bound thread at that priority.
+
+**Thread lifecycle past the exit: cancel, join, wait-until-last.** `KOS_SYS_THREAD_CANCEL` takes
+a kind. `KOS_CANCEL_KILL` is a COOPERATIVE cancel: it marks the target and wakes it out of WHATEVER park it is in; the abort is
 TOTAL over `WaitKind` (`kernel/thread/park.cc`, `thread_abort_park`) and reports `-KOS_ECANCELED`
 where the primitive has a channel to report one; the target then runs its own `sched::exit_current`.
+`KOS_CANCEL_SLAY` also claims the target's next resume, so it runs no further instruction of its
+own. A timeout of 0 answers once the cancel is raised; any other parks the caller on the target
+BEFORE the cancel is raised, as a join parks, and answers once the target is gone.
 `KOS_SYS_THREAD_JOIN` OBSERVES the death, bounded by an optional `timeout_us`
 (`KOS_TIMEOUT_NONE` = none). The joiner parks **queue-less** tagged `WAIT_JOIN` with `wait_obj`
 naming the target TCB, and `sched::exit_current` sweeps the thread pool for that tag at every
@@ -527,11 +539,13 @@ point -- see `invariants.md` `join-accepts-the-unreclaimed-exit`.
 
 **Group death is the TASK layer's, not the thread's.** `KOS_SYS_TASK_CREATE` makes an EMPTY group
 holding a domain built from its own grant and `kos_thread_params::task` seats a member;
-`KOS_SYS_TASK_KILL` ends the whole group from a supervisor. From inside, the group ends when its
+`KOS_SYS_TASK_SLAY` ends the whole group from a supervisor. From inside, the group ends when its
 entry thread, the first member a non-member seated, exits on its own or when any member faults:
 the task reads ENDED and takes no new member. Either way the group ends as a process does: every
 other member is slain at once, a thread that never re-enters the kernel included, and runs no
-further instruction of its own. It is DEAD once every member's capability sweep is done.
+further instruction of its own. No member gets a cleanup window, so a device is left as its
+driver last touched it, and the next start of that driver programs it again. It is DEAD once every
+member's capability sweep is done.
 The gate there is CREATORSHIP rather than possession, the address space stays on `Domain`, and 0
 from a kill means the request was ACCEPTED and never that the group is gone; `KOS_SYS_TASK_SLAY`
 is the form that waits. archived `M4_task_layer_record.md` is the record.
@@ -549,7 +563,7 @@ is the form that waits. archived `M4_task_layer_record.md` is the record.
   error as the **negated** code `-KOS_E*`; a success -- a count, a byte-count -- is
   **non-negative**, so `rc < 0` is unambiguously an error and never aliases a valid count (counts
   and byte-counts stay small). **A handle is never a return value**, and that is what buys the
-  handle word its full width: every minting syscall (`KOS_SYS_SEM_CREATE`,
+  handle word its full width: every minting syscall (`KOS_SYS_NOTIFY_CREATE`,
   `KOS_SYS_ENDPOINT_CREATE`, `KOS_SYS_IRQ_CLAIM`, `KOS_SYS_THREAD_CREATE`,
   `user/include/kickos/sys/abi.h`) returns a status and writes the handle through an
   out-parameter. So every handle class spends all 32 bits and a live handle may have bit 31 set:
@@ -575,22 +589,22 @@ is the form that waits. archived `M4_task_layer_record.md` is the record.
   minted into the receiver). TWO conditions produce it, and the second has free slots: the run's
   free list is empty, or the thread already holds `KICKOS_CAP_REPLY_MAX` live `CAP_REPLY` entries;
   **`EOVERFLOW`** is a bounded counter already at its ceiling, refused rather than wrapped --
-  `sem_post` with no waiter at `KOS_SEM_COUNT_MAX` and the object-refcount ceiling behind
+  `KOS_SYS_WORD_WAKE` banking a unit past `KOS_SEM_COUNT_MAX` and the object-refcount ceiling behind
   `KOS_SYS_CONSOLE_PUBLISH` and a spawn's delegation batch (`kernel/syscall/syscall.cc`,
   `kernel/syscall/syscall_thread.cc`; documented per call in `user/include/kickos/sys.h`);
   **`ETIMEDOUT`** is a caller-supplied deadline that passed before the operation could happen,
-  and it promises that NOTHING happened for the caller: `KOS_SYS_SEND_TIMED`, `KOS_SYS_REPLY_RECV`,
-  `KOS_SYS_CALL_TIMED`, `KOS_SYS_SEM_WAIT` and `KOS_SYS_THREAD_JOIN` given a `timeout_us` other
-  than `KOS_TIMEOUT_NONE` expire with no peer, move no bytes, return no reply, take no token,
+  and it promises that NOTHING happened for the caller: `KOS_SYS_SEND`, `KOS_SYS_REPLY_RECV`,
+  `KOS_SYS_CALL`, `KOS_SYS_WORD_WAIT` and `KOS_SYS_THREAD_JOIN` given a `timeout_us` other
+  than `KOS_TIMEOUT_NONE` expire with no peer, move no bytes, return no reply, take no unit,
   and leave the joined thread running. `kernel/time/time.cc` decides only THAT a deadline
   expired and delegates each park's unwind to `thread_abort_park`
   (`kernel/thread/park.cc`), which unlinks the right queue and reverts the right
   donation; the deadline is cancelled in `sched::wake_no_resched`, the one unpark funnel, so a
   rendezvous that beats it can never also report it. ONE caveat, and it is the reason the promise is
-  worded per-caller: a `KOS_SYS_CALL_TIMED` whose request a server had already taken leaves
-  that server holding its reply capability, whose eventual `KOS_SYS_REPLY` answers `ESRCH`;
+  worded per-caller: a `KOS_SYS_CALL` whose request a server had already taken leaves
+  that server holding its reply capability, whose eventual reply answers `ESRCH`;
   and
-  **`ECANCELED`** is *this* thread having been cancelled by `KOS_SYS_THREAD_KILL` -- the wait it was
+  **`ECANCELED`** is *this* thread having been cancelled by `KOS_SYS_THREAD_CANCEL`: the wait it was
   in, or was about to enter, is abandoned and the thread is expected to exit itself
   (`kernel/thread/park.cc`'s `thread_cancel`/`thread_abort_park` sets `wait_result`, the death point
   is the next syscall ENTRY in `kernel/syscall/syscall.cc`, and `kernel/irq/irq.cc` refuses to
@@ -653,7 +667,11 @@ implied); ThreadX Modules and ChibiOS/SB are the loadable-code cousins.
   set is what denies a sibling another's stack, and it is a region-backend strengthening rather than
   the portable contract**: the floor is that a thread-scoped grant guarantees access to its HOLDER,
   and a translating backend maps a task's stacks task-wide, where a sibling reaches them
-  (`design-m6-mmu.md` F9).
+  (`design-m6-mmu.md` F9). A thread's thread-local block is carved from its own stack, so it is
+  private exactly as far as that stack is. A device window follows the same split: on a region
+  backend it is a region of its holder alone, while a translating backend maps it task-wide, so
+  every thread of the task reaches the registers and only the holder has the authority of the
+  peripheral system calls (`invariants.md`, `dev-window-access-is-thread-scoped-its-lifetime-task-scoped`).
 - **The kernel is a degenerate, static, privileged domain.** Its real protection is the ARM
   **background region** (`PRIVDEFENA`) / SYSMPU supervisor default, so it spends almost no
   explicit regions; MPU regions are spent describing what *unprivileged* code may reach.
@@ -1036,7 +1054,13 @@ feeds the slave app.
   `-KOS_EOWNERDEAD`, which that lock takes as acquired; one that dies inside malloc leaves the heap
   torn, and the malloc lock's next taker traps, ending its task. A wait a kill cancelled asks again
   through the contended entry alone (`kickos_mutex_lock_entry`), never the compare-and-swap, so the
-  thread dies at that entry. A try-acquire tries the mutex with a zero deadline. There is one pair
+  thread dies at that entry. A kill that lands before an uncontended take dies at the first system
+  call inside the section, holding the lock: inside stdio that is `_write`, and the libc lock's next
+  taker gets `-KOS_EOWNERDEAD`. malloc's section makes no system call (`_sbrk` is a user bump), so a
+  kill never ends a thread inside it. The space's startup is the same case: a starter that is not
+  its task's entry thread, killed before it takes the libc lock, dies at the first system call a
+  constructor makes with the space's start word half set, and the lock's next taker traps, ending
+  the task. A try-acquire tries the mutex with a zero deadline. There is one pair
   per address space, which is one per heap: a translating board starts each space's copy of the
   image data at zero, so each task has its own; a region board's tasks share the image's, and any
   of their threads can take it, so one thread can stall every task's stdio and malloc. Being
@@ -1146,8 +1170,8 @@ feeds the slave app.
 
 The object/credential model layered on the MPU enforcement. Enforcement is only meaningful once
 hardware constrains unprivileged userspace, so this model is designed against *all* object types
-that exist (semaphore, IRQ handle, memory grant), not over-fit to one. **Status: every
-`CapType` is live.** The SEMAPHORE and ENDPOINT/IPC (`CAP_ENDPOINT`) paths
+that exist (endpoint, notification, IRQ handle, memory grant), not over-fit to one. **Status:
+every `CapType` is live.** The ENDPOINT/IPC (`CAP_ENDPOINT`) path
 landed at M3, silicon-validated under enforcement; `CAP_IRQ` (a tier-1 interrupt-line binding,
 minted by `irq_claim` -- see *Drivers & interrupts* above) and `CAP_REPLY` (the one-shot reply cap,
 minted by `cap_install_reply`) are equally live. `CAP_FRAME` (a RUN of physical frames) and
@@ -1155,7 +1179,16 @@ minted by `cap_install_reply`) are equally live. `CAP_FRAME` (a RUN of physical 
 built only where the board translates; the two of them take the last values the type field holds,
 and `CAP_KIND_MAX` is what a third kind would fail against. Each object pool was added additively
 via the recipe in Book ch.8.2, and `CAP_ASPACE` adds none and holds no reference: its handle goes
-stale at its task's end, and the space gives back every run it maps at its task's death. The contract below is code-synced to `kernel/include/kickos/cap.h`,
+stale at its task's end, and the space gives back every run it maps at its task's death. A frame run is charged to the
+task that minted it for the run's whole life (`invariants.md`,
+`object-pool-keeps-a-slot-from-any-one-task`). When the minter dies, a task that holds a capability
+to the run or maps it keeps the run and is charged nothing for it; its capability table, its range
+list and the run pool bound what it can keep. The per-task admission walks the asking task's
+members' tables with interrupts masked: one compare per thread slot, then each member's table width
+in entry reads, each charged entry costing a `SlotPool::live_index` and each `CAP_IRQ` entry one more
+resolve and a `SlotPool::index_of`. That last one divides on the 64-bit targets, where
+`sizeof(Notification)` is 24, and not on the 32-bit ones, where it is 16. An attach pays the walk
+once per task slot (`KICKOS_MAX_TASKS`). The contract below is code-synced to `kernel/include/kickos/cap.h`,
 `kernel/syscall/cap.cc`, `kernel/syscall/syscall.cc`.
 
 - **Per-thread typed handle table, not global ids or fds.** A global object id every thread can name
@@ -1187,13 +1220,14 @@ stale at its task's end, and the space gives back every run it maps at its task'
   used under the SAME continuous lock** -- so a concurrent `handle_close` cannot free the object
   between resolve and use. Two independent generations guard it: per-thread **cap-gen**
   (use-after-close) plus global **object-gen** (use-after-destroy), both `uint16_t`.
-- **Rights are three bits, each enforced at a real site (no dead field):** `CAP_WAIT` (`sem_wait`),
-  `CAP_SIGNAL` (`sem_post`), `CAP_TRANSFER` (may be delegated). Memory R/W/X is NOT a cap right --
+- **Rights are three bits, each enforced at a real site (no dead field):** `CAP_WAIT` (endpoint
+  receive, notification bind and wait, IRQ ack, discard and bind), `CAP_SIGNAL` (endpoint send,
+  notification signal, IRQ raise), `CAP_TRANSFER` (may be delegated). Memory R/W/X is NOT a cap right --
   it lives in the MPU region descriptor and is enforced by hardware; duplicating it in the cap
   would be the forbidden checked-twice field.
-- **Lifecycle -- refcounted destroy-on-last-close.** `sem_create` allocates the object (refs = 1)
+- **Lifecycle: refcounted destroy-on-last-close.** `endpoint_create` allocates the object (refs = 1)
   and returns a full-rights (`WAIT|SIGNAL|TRANSFER`) cap handle into the creator's table.
-  `KOS_SYS_HANDLE_CLOSE(cap)` (type-agnostic, renamed from the old `sem_destroy`) drops MY handle:
+  `KOS_SYS_HANDLE_CLOSE(cap)` (type-agnostic) drops MY handle:
   bump the slot cap-gen, empty the entry, `refs--`; the object frees only at the LAST close
   (refs -> 0). Thread exit closes every held cap (`cap_teardown`, called from `exit_current`) so
   no thread leaks references. A teardown-close that would strand a parked waiter LEAKS (floors
@@ -1259,11 +1293,20 @@ stale at its task's end, and the space gives back every run it maps at its task'
   delegation. Do not resurrect CapDL-manifest-to-boot friction -- the exact seL4 pain KickOS
   exists to avoid.
 
-**Synchronization surface -- one blocking primitive, not an object zoo.** The kernel exposes the
-minimum that genuinely needs scheduler involvement: a cap-named **blocking wait/wake** object (the
-counting semaphore, i.e. the seL4-notification shape). Everything richer is built in userspace
-(mutual exclusion = a binary wait/wake; condvar / rwlock / barrier = userspace state + the
-primitive). Admission test for any *new kernel* sync primitive: does it require kernel state or a
+**Synchronization surface: one keyed word pair, not an object zoo.** The kernel exposes the
+minimum that genuinely needs scheduler involvement: a **wait and a wake keyed on a word of user
+memory** (`KOS_SYS_WORD_WAIT` / `KOS_SYS_WORD_WAKE`, `kernel/sync/sync.cc`), with no object,
+capability or budget, the kernel keeping a record keyed on the word's physical address only while
+a thread waits. The wake carries units it hands to the highest waiters and adds to the word only
+where none is left, so the counting semaphore (`kos_sem_t`, `user/src/sem.cc`) is a word whose
+uncontended wait and post never enter the kernel, and a contended post is one entry that hands its
+unit over. A last waiter that times out or is cancelled leaves the word as it is, its waiters bit
+included, so the next post enters the kernel once, finds no record and clears the bit.
+A shared word trusts every thread that can write it: one that clears the waiters bit under a parked
+waiter leaves the next posts in user mode, and that waiter waits for its deadline or a wake.
+Everything richer is built in userspace on the same pair (condvar / event / once =
+userspace state + a wake with no unit). A narrow-rights, one-way signal across domains is a
+notification, which stays a kernel object. Admission test for any *new kernel* sync primitive: does it require kernel state or a
 scheduler action userspace cannot safely perform? If not, it stays in userland. The
 **priority-inheritance mutex** passes it only on contention: it is a word in user memory
 (`kos_mutex_t`) holding its holder's lock id, taken and released by a user-mode compare-and-swap
@@ -1274,9 +1317,24 @@ address only while a thread waits (`KOS_SYS_MUTEX_LOCK` / `KOS_SYS_MUTEX_UNLOCK`
 It reads the owner from the word, resolves it to a live thread that could have written that
 memory, and treats anything else as a dead holder; the contract is the invariants
 `mutex-word-is-keyed-on-its-memory` and `mutex-owner-death-reaches-the-next-taker`. **ISR
-asymmetry:** the wait/wake `post` is ISR-safe (an ISR readies a thread); the PI-mutex lock/unlock
-are thread-context only (an ISR owns no thread identity), and no interrupt handler writes a mutex
-word.
+asymmetry:** an ISR readies a thread by raising a notification; the word pair and the PI-mutex
+lock/unlock are thread-context only (an ISR owns no thread identity), and no interrupt handler
+writes a user word.
+
+**What the mutex word reports, and to whom.** A holder's death reaches the next taker through the
+id the dead holder left in the word, with no robust list. The id carries the low 24 to 29 bits of
+its slot's 32-bit generation (`kernel/include/kickos/lock_id.h`), and `ThreadPool::alloc` reclaims
+the lowest exited slot first, so a word left untaken after its holder died names a live owner again
+once a later occupant of the same slot reaches the same truncated generation: 2^24 reuses of one
+slot on a 64-thread board and 2^29 on a small one, about 4.7 hours for a loop that spawns and joins
+1,000 threads a second. Waiters then park behind that thread and boost it, the libc locks, which
+have no timeout, hang their later callers, and that thread's own libc take sees itself as the holder
+and runs on the dead holder's depth. On a flat board, which enforces nothing, any task can write a
+word naming a live thread of another task. A lock of that word boosts the named thread to the
+waiter's priority, possibly above its own task's ceiling, for as long as the waiter waits; a forger
+that also holds a lock the named thread then takes closes a false cycle, so that take answers
+`-KOS_EDEADLK`, which the libc locks turn into a trap; and a try of the word tells the forger
+whether the thread lives (`-KOS_ETIMEDOUT`) or not (`-KOS_EOWNERDEAD`).
 
 **Syscall-argument validation (the soundness floor).** Enforcement is only sound if the kernel
 never trusts a user pointer: copy-in user structs via a checked read, bound-check writable
@@ -1326,7 +1384,7 @@ structs or a tiny IDL.
 **Sim (automated, CI -- `cmake --preset sim && ctest`):**
 
 - Two-thread FIFO ordering; higher-priority thread preempts on ready.
-- Semaphore post (thread-ctx *and* IRQ-ctx) triggers a switch **with the tick disabled**.
+- A word wake (thread-ctx) and a notification raise (IRQ-ctx) trigger a switch **with the tick disabled**.
 - RR round-robins equal-priority threads only when enabled.
 - `sleep`/timed-wait ordering via the tickless timer queue.
 - User-thread SVC roundtrip returns correct results.

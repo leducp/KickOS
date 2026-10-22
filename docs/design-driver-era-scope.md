@@ -556,8 +556,8 @@ above where they differ.
   large-transfer request speaks `{region-cap, offset, len}` and never a raw pointer: cheap now, an
   ABI break at M6 when a domain becomes a page-table root. This pulls the QW-3 DISCIPLINE, not the
   ring implementation, into the call/reply contract.
-- **Timed / abortable IPC -> EARLY-M4: CLOSED.** The primitive ships: `KOS_SYS_SEND_TIMED`,
-  `KOS_SYS_CALL_TIMED` and the timed receive, since folded into `KOS_SYS_REPLY_RECV`
+- **Timed / abortable IPC -> EARLY-M4: CLOSED.** The primitive ships: the timed send (formerly `KOS_SYS_SEND_TIMED`),
+  the timed call (formerly `KOS_SYS_CALL_TIMED`) and the timed receive, since folded into `KOS_SYS_REPLY_RECV`
   (`user/include/kickos/sys/abi.h`), dispatched in
   `kernel/syscall/syscall.cc`, with the park unwind in `kernel/thread/park.cc`
   (`thread_abort_park`). **The two items this entry named as blocked on it are no longer blocked

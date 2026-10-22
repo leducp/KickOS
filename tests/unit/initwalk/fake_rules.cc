@@ -246,10 +246,10 @@ namespace
     {
         kos_task_t const foreign = fake::foreign_task();
         int status = 0;
-        EXPECT_EQ(kos_task_state(foreign), -KOS_EPERM);
-        EXPECT_EQ(kos_task_kill(foreign), -KOS_EPERM);
+        EXPECT_EQ(kos_task_state(foreign, nullptr), -KOS_EPERM);
         EXPECT_EQ(kos_task_slay(foreign, 0u), -KOS_EPERM);
-        EXPECT_EQ(kos_task_exit_status(foreign, &status), -KOS_EPERM);
+        EXPECT_EQ(kos_task_slay(foreign, 1000u), -KOS_EPERM);
+        EXPECT_EQ(kos_task_state(foreign, &status), -KOS_EPERM);
         EXPECT_EQ(kos_task_sched_grant(foreign, 9u, 0u), -KOS_EPERM);
         EXPECT_EQ(spawn(params(foreign)), -KOS_EPERM);
     }
@@ -336,11 +336,11 @@ namespace
         with(c);
         kos_cap_t line = KOS_CAP_NONE;
         kos_thread_t const self = kos_thread_self();
-        ASSERT_EQ(kos_thread_set_affinity(self, 0x3u), 0);
+        ASSERT_EQ(kos_thread_affinity(self, 0x3u), 0x3);
         EXPECT_EQ(kos_irq_claim(6, 0u, &line), -KOS_EPERM);
-        ASSERT_EQ(kos_thread_set_affinity(self, 1u << 4), 0);
+        ASSERT_EQ(kos_thread_affinity(self, 1u << 4), 1 << 4);
         EXPECT_EQ(kos_irq_claim(6, 0u, &line), -KOS_EPERM);
-        ASSERT_EQ(kos_thread_set_affinity(self, 1u << 1), 0);
+        ASSERT_EQ(kos_thread_affinity(self, 1u << 1), 1 << 1);
         EXPECT_EQ(kos_irq_claim(6, 0u, &line), 0);
     }
 
@@ -364,9 +364,9 @@ namespace
         EXPECT_EQ(kos_task_slay(t, 1000u), -KOS_ETIMEDOUT);
         EXPECT_EQ(fake::now() - before, 1000000u) << "parked to its timeout";
         EXPECT_FALSE(fake::tasks().at(0).released);
-        EXPECT_EQ(kos_task_state(t) & KOS_TASK_DEAD, 0);
+        EXPECT_EQ(kos_task_state(t, nullptr) & KOS_TASK_DEAD, 0);
         fake::sweep("t");
-        EXPECT_NE(kos_task_state(t) & KOS_TASK_DEAD, 0);
+        EXPECT_NE(kos_task_state(t, nullptr) & KOS_TASK_DEAD, 0);
         EXPECT_EQ(kos_task_slay(t, 1000u), 0);
         EXPECT_TRUE(fake::tasks().at(0).released);
     }
@@ -379,14 +379,14 @@ namespace
         kos_task_t const t = task();
         ASSERT_EQ(spawn(params(t)), 0);
         fake::stall("t");
-        EXPECT_EQ(kos_task_kill(t), 0);
+        EXPECT_EQ(kos_task_slay(t, 0), 0);
         EXPECT_FALSE(fake::tasks().at(0).released) << "a member still sweeping";
-        EXPECT_GE(kos_task_state(t), 0) << "resolvable until its slot is freed";
-        EXPECT_EQ(kos_task_kill(t), -KOS_EBADF) << "the creator's hold is gone";
+        EXPECT_GE(kos_task_state(t, nullptr), 0) << "resolvable until its slot is freed";
+        EXPECT_EQ(kos_task_slay(t, 0), -KOS_EBADF) << "the creator's hold is gone";
         EXPECT_NE(task(), t) << "its handle is not handed out again yet";
         fake::sweep("t");
         EXPECT_TRUE(fake::tasks().at(0).released);
-        EXPECT_EQ(kos_task_state(t), -KOS_EBADF);
+        EXPECT_EQ(kos_task_state(t, nullptr), -KOS_EBADF);
         EXPECT_EQ(task(), t);
     }
 
@@ -403,11 +403,11 @@ namespace
         ASSERT_EQ(kos_cap_narrow(ep, KOS_CAP_SIGNAL | KOS_CAP_TRANSFER | KOS_CAP_HANDOUT), 0);
         fake::set_console_receives(false);
         uint64_t const before = fake::now();
-        EXPECT_EQ(kos_send_timed(KOS_CAP_STDOUT, "x", 1u, 1000u), -KOS_ETIMEDOUT);
+        EXPECT_EQ(kos_send(KOS_CAP_STDOUT, "x", 1u, 1000u), -KOS_ETIMEDOUT);
         EXPECT_EQ(fake::now() - before, 1000000u);
-        EXPECT_THROW(kos_send(KOS_CAP_STDOUT, "x", 1u), fake::Panic);
+        EXPECT_THROW(kos_send(KOS_CAP_STDOUT, "x", 1u, KOS_TIMEOUT_NONE), fake::Panic);
         fake::set_console_receives(true);
-        EXPECT_EQ(kos_send_timed(KOS_CAP_STDOUT, "x", 1u, 1000u), 1);
+        EXPECT_EQ(kos_send(KOS_CAP_STDOUT, "x", 1u, 1000u), 1);
     }
 
     TEST_F(Fake, a_console_flush_is_two_zero_length_sends_and_stops_at_a_failed_one)
@@ -421,9 +421,9 @@ namespace
         p.cap_count = 1;
         ASSERT_EQ(spawn(p), 0);
         ASSERT_EQ(kos_cap_narrow(ep, KOS_CAP_SIGNAL | KOS_CAP_TRANSFER | KOS_CAP_HANDOUT), 0);
-        size_t const before = fake::calls_of("kos_send_timed").size();
+        size_t const before = fake::calls_of("kos_send").size();
         EXPECT_EQ(kos_console_flush(1000u), 0);
-        std::vector<fake::Call> sends = fake::calls_of("kos_send_timed");
+        std::vector<fake::Call> sends = fake::calls_of("kos_send");
         ASSERT_EQ(sends.size(), before + 2u);
         for (size_t k = before; k < sends.size(); k++)
         {
@@ -431,7 +431,7 @@ namespace
         }
         fake::set_console_receives(false);
         EXPECT_EQ(kos_console_flush(1000u), -KOS_ETIMEDOUT);
-        EXPECT_EQ(fake::calls_of("kos_send_timed").size(), before + 3u);
+        EXPECT_EQ(fake::calls_of("kos_send").size(), before + 3u);
     }
 
     // The console's task ends first, so the endpoint answers as any other one does.
@@ -441,7 +441,7 @@ namespace
         ASSERT_EQ(kos_endpoint_create(&ep), 0);
         kos_task_t const served = task();
         ASSERT_EQ(kos_console_publish(ep, served), 0);
-        ASSERT_EQ(kos_task_kill(served), 0);
+        ASSERT_EQ(kos_task_slay(served, 0), 0);
         // The creator's WAIT goes before any receiver is seated.
         ASSERT_EQ(kos_cap_narrow(ep, KOS_CAP_SIGNAL | KOS_CAP_TRANSFER | KOS_CAP_HANDOUT), 0);
         kos_cap_grant const wait[] = {{ep, KOS_CAP_WAIT}};
@@ -451,28 +451,29 @@ namespace
         ASSERT_EQ(spawn(p), 0);
         fake::set_console_receives(false);
         uint64_t const before = fake::now();
-        EXPECT_EQ(kos_send_timed(KOS_CAP_STDOUT, "x", 1u, 1000u), -KOS_EAGAIN);
-        EXPECT_EQ(kos_send(KOS_CAP_STDOUT, "x", 1u), -KOS_EAGAIN);
+        EXPECT_EQ(kos_send(KOS_CAP_STDOUT, "x", 1u, 1000u), -KOS_EAGAIN);
+        EXPECT_EQ(kos_send(KOS_CAP_STDOUT, "x", 1u, KOS_TIMEOUT_NONE), -KOS_EAGAIN);
         EXPECT_EQ(fake::now(), before);
         fake::set_console_receives(true);
-        EXPECT_EQ(kos_send_timed(KOS_CAP_STDOUT, "x", 1u, 1000u), 1);
+        EXPECT_EQ(kos_send(KOS_CAP_STDOUT, "x", 1u, 1000u), 1);
 
         // The receiver dies, and the next one seated has not waited yet.
         fake::die("t");
-        EXPECT_EQ(kos_send_timed(KOS_CAP_STDOUT, "x", 1u, 1000u), -KOS_EAGAIN) << "a HANDOUT holder remains";
+        EXPECT_EQ(kos_send(KOS_CAP_STDOUT, "x", 1u, 1000u), -KOS_EAGAIN)
+            << "a HANDOUT holder remains";
         kos_thread_params q = params(task());
         q.caps = wait;
         q.cap_count = 1;
         ASSERT_EQ(spawn(q), 0);
         fake::set_console_receives(false);
-        EXPECT_EQ(kos_send_timed(KOS_CAP_STDOUT, "x", 1u, 1000u), -KOS_EAGAIN);
+        EXPECT_EQ(kos_send(KOS_CAP_STDOUT, "x", 1u, 1000u), -KOS_EAGAIN);
         EXPECT_EQ(fake::now(), before);
         fake::set_console_receives(true);
-        EXPECT_EQ(kos_send_timed(KOS_CAP_STDOUT, "x", 1u, 1000u), 1);
+        EXPECT_EQ(kos_send(KOS_CAP_STDOUT, "x", 1u, 1000u), 1);
         fake::set_console_receives(false);
-        EXPECT_EQ(kos_send_timed(KOS_CAP_STDOUT, "x", 1u, 1000u), -KOS_ETIMEDOUT);
+        EXPECT_EQ(kos_send(KOS_CAP_STDOUT, "x", 1u, 1000u), -KOS_ETIMEDOUT);
         EXPECT_EQ(fake::now() - before, 1000000u);
-        EXPECT_THROW(kos_send(KOS_CAP_STDOUT, "x", 1u), fake::Panic);
+        EXPECT_THROW(kos_send(KOS_CAP_STDOUT, "x", 1u, KOS_TIMEOUT_NONE), fake::Panic);
     }
 
     // While the task it was published for lives, the console parks a send with no receiver,
@@ -485,12 +486,13 @@ namespace
         ASSERT_EQ(kos_console_publish(ep, served), 0);
         ASSERT_EQ(kos_cap_narrow(ep, KOS_CAP_SIGNAL | KOS_CAP_TRANSFER | KOS_CAP_HANDOUT), 0);
         uint64_t const before = fake::now();
-        EXPECT_EQ(kos_send_timed(KOS_CAP_STDOUT, "x", 1u, 0u), -KOS_ETIMEDOUT);
+        EXPECT_EQ(kos_send(KOS_CAP_STDOUT, "x", 1u, 0u), -KOS_ETIMEDOUT);
         EXPECT_EQ(fake::now(), before) << "a send of no deadline parked";
-        EXPECT_THROW(kos_send(KOS_CAP_STDOUT, "x", 1u), fake::Panic);
+        EXPECT_THROW(kos_send(KOS_CAP_STDOUT, "x", 1u, KOS_TIMEOUT_NONE), fake::Panic);
         EXPECT_EQ(fake::reclaims(), 0u) << "the last WAIT going reclaimed the console";
-        ASSERT_EQ(kos_task_kill(served), 0);
-        EXPECT_EQ(kos_send(KOS_CAP_STDOUT, "x", 1u), -KOS_EAGAIN) << "a HANDOUT holder remains";
+        ASSERT_EQ(kos_task_slay(served, 0), 0);
+        EXPECT_EQ(kos_send(KOS_CAP_STDOUT, "x", 1u, KOS_TIMEOUT_NONE), -KOS_EAGAIN)
+            << "a HANDOUT holder remains";
         EXPECT_EQ(fake::reclaims(), 1u);
     }
 

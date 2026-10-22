@@ -80,4 +80,25 @@ namespace kickos
     {
     }
 #endif
+
+    __attribute__((weak)) int word_open(Thread const* c, uintptr_t va, WordRef* out,
+                                        uint32_t** word)
+    {
+        *word = nullptr;
+        int const rc = word_ref(c, va, out);
+        if (rc != 0)
+        {
+            return rc;
+        }
+#if KICKOS_HAVE_ASPACE
+        *word = kaccess_word_get(*out);
+        if (*word == nullptr)
+        {
+            return -KOS_EFAULT;
+        }
+#else
+        *word = reinterpret_cast<uint32_t*>(va);
+#endif
+        return 0;
+    }
 }

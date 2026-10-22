@@ -97,7 +97,7 @@ namespace selftest
             {
                 return got;
             }
-            got = kos_call_timed(ep, buf, len, len, left_us);
+            got = kos_call(ep, buf, len, len, left_us);
             // Empty: the peer is between its answer and its next wait, which node 0 cannot see.
             if (got != 0)
             {
@@ -347,7 +347,7 @@ namespace selftest
             }
             int64_t const sent0 = amp_count(AMP_SELF_ROW, KOS_AMP_COUNT_SENT);
             int64_t const refused0 = amp_count(AMP_SELF_ROW, KOS_AMP_COUNT_SEND_REFUSED);
-            int32_t const rc = kos_send(quiet, sbuf, sizeof(sbuf));
+            int32_t const rc = kos_send(quiet, sbuf, sizeof(sbuf), KOS_TIMEOUT_NONE);
             int64_t const sent1 = amp_count(AMP_SELF_ROW, KOS_AMP_COUNT_SENT);
             int64_t const refused1 = amp_count(AMP_SELF_ROW, KOS_AMP_COUNT_SEND_REFUSED);
             tap::diag("send to node %u: %ld, sent %ld->%ld, refused %ld->%ld",
@@ -390,7 +390,7 @@ namespace selftest
         {
             cbuf[i] = static_cast<char>(0x30u + i);
         }
-        int32_t const n = kos_call_timed(ep, cbuf, sizeof(cbuf), sizeof(cbuf), STALL_TOLERANT_US);
+        int32_t const n = kos_call(ep, cbuf, sizeof(cbuf), sizeof(cbuf), STALL_TOLERANT_US);
         tap::diag("far reply empty: node %u answered a refused call with %ld byte(s)",
                   static_cast<unsigned>(node), static_cast<long>(n));
         // Exactly zero: a caller nobody answered reads -KOS_ETIMEDOUT.
@@ -502,7 +502,7 @@ namespace selftest
             TAP_CHECK(kos_amp_port_is_local(node, unnamed) == 0);
         }
         char body[4] = {};
-        TAP_CHECK(kos_send(KOS_CAP_NONE, body, sizeof(body)) == -KOS_EBADF);
+        TAP_CHECK(kos_send(KOS_CAP_NONE, body, sizeof(body), KOS_TIMEOUT_NONE) == -KOS_EBADF);
         struct kos_reply_recv_opts uo;
         kos_reply_recv_opts_init(&uo, KOS_CAP_NONE, KOS_RECV_NO_INFO, STALL_TOLERANT_US);
         TAP_CHECK(kos_reply_recv(KOS_CAP_NONE, body, kos_call_lens_pack(0, sizeof(body)), &uo)
@@ -525,7 +525,7 @@ namespace selftest
     {
         volatile int64_t* const out = static_cast<volatile int64_t*>(arg);
         char body[4] = {};
-        out[AG_SEND] = kos_send_timed(static_cast<kos_cap_t>(out[AG_CROSSING]), body,
+        out[AG_SEND] = kos_send(static_cast<kos_cap_t>(out[AG_CROSSING]), body,
                                       sizeof(body), 0);
         out[AG_RAN] = 1;
     }
@@ -547,7 +547,7 @@ namespace selftest
         // The control: the same index resolves in main's own table, to a local crossing that
         // carries WAIT and no SIGNAL.
         char body[4] = {};
-        int32_t const mine = kos_send_timed(crossing, body, sizeof(body), 0);
+        int32_t const mine = kos_send(crossing, body, sizeof(body), 0);
         kos_task_t t = KOS_TASK_NONE;
         kos::thread::Handle w;
         ArmHold hold;
@@ -574,22 +574,23 @@ namespace selftest
     // the create after its close lands on a fresh slot instead of the freed one. main's
     // own AMP port capabilities count against its ceiling.
     constexpr int CH_FILL_REPORT = KOS_SPAWN_DELEGATED_CAP0;
-    constexpr int CH_FILL_GATE = KOS_SPAWN_DELEGATED_CAP0 + 1;
+    // Never posted: the filler's task waits on its own copy.
+    kos_sem_t g_fill_never = KOS_SEM_INIT(0);
 
-    // Fills after main has, so it also takes the slot main gave back.
-    void amp_pool_filler(void*) // caps: report@0, gate@1
+    // Fills after main has, so it also takes the slot main gave back; main's gate is xsem(0).
+    void amp_pool_filler(void*) // caps: report@0
     {
-        kos_sem_wait(CH_FILL_GATE, KOS_TIMEOUT_NONE);
+        kos_sem_wait(xsem_child(0), KOS_TIMEOUT_NONE);
         kos_cap_t mine[AMP_REUSE_SLOTS];
         int32_t n = 0;
         while (n < AMP_REUSE_SLOTS and kos_endpoint_create(&mine[n]) == 0)
         {
             n++;
         }
-        (void)kos_send(CH_FILL_REPORT, &n, sizeof(n));
-        // Never posted again: returning would end the task and free every slot it holds, so it
-        // parks here until main's hold slays the task.
-        kos_sem_wait(CH_FILL_GATE, KOS_TIMEOUT_NONE);
+        (void)kos_send(CH_FILL_REPORT, &n, sizeof(n), KOS_TIMEOUT_NONE);
+        // Returning would end the task and free every slot it holds, so it parks here until
+        // main's hold slays the task.
+        kos_sem_wait(&g_fill_never, KOS_TIMEOUT_NONE);
     }
 
     // A local port capability names a slot amp::port_bind also names, by index with no
@@ -601,23 +602,24 @@ namespace selftest
         // that receives on it may follow.
         kos_cap_t const local = amp_local_cap();
         TAP_SKIP_UNLESS(local != KOS_CAP_NONE, "the partition names this node no local port");
-        TAP_ASK(.workers = 1, .tasks = 1, .sems = 1, .endpoints = 1, .caps = 2);
+        TAP_ASK(.workers = 1, .tasks = 1, .endpoints = 1, .caps = 2);
         kos_cap_t report = KOS_CAP_NONE;
-        kos_cap_t gate = KOS_CAP_NONE;
         kos_cap_t probe = KOS_CAP_NONE;
         kos_cap_t reused = KOS_CAP_NONE;
         kos_task_t group = KOS_TASK_NONE;
         kos::thread::Handle filler;
         ArmHold hold;
-        TAP_HOLD(hold.cap(&report) and hold.cap(&gate) and hold.cap(&probe)
-                 and hold.cap(&reused) and hold.task(&group) and hold.thread(&filler));
+        TAP_HOLD(hold.cap(&report) and hold.cap(&probe) and hold.cap(&reused)
+                 and hold.task(&group) and hold.thread(&filler));
+        kos_sem_t* const gate = xsem(0);
         TAP_CHECK(kos_endpoint_create(&report) == 0);
-        TAP_CHECK(kos_sem_create(0, &gate) == 0);
+        TAP_CHECK(kos_sem_init(gate, 0) == 0);
         TAP_CHECK(kos_task_create(nullptr, 0, 0, &group) == 0);
-        kos_cap_grant caps[] = {{report, KOS_CAP_SIGNAL}, {gate, KOS_CAP_WAIT}};
-        filler = kos::thread::create_caps(amp_pool_filler, nullptr, "ampfill", 10, caps, 2,
-                                          KOS_POLICY_FIFO, 0, nullptr, 0,
-                                          KOS_AUTH_MEMORY, nullptr, group);
+        kos_cap_grant caps[] = {{report, KOS_CAP_SIGNAL}};
+        kos_window const xw = xsem_window();
+        filler = kos::thread::create(amp_pool_filler, nullptr, "ampfill", 10, KOS_POLICY_FIFO,
+                                     0, nullptr, 0, nullptr, 0, &xw, xsem_windows(), caps, 1,
+                                     KOS_AUTH_MEMORY, nullptr, group);
         TAP_CHECK(filler.valid());
 
         // No check from here until held[] is closed: one failing would leave the pool full
@@ -883,7 +885,7 @@ namespace selftest
                                      KOS_POLICY_FIFO, 0, nullptr, 0, KOS_AUTH_MEMORY);
         TAP_CHECK(w.valid());
         int64_t const fault0 = amp_count(AMP_SELF_ROW, KOS_AMP_COUNT_DELIVER_FAULT);
-        int32_t const got = kos_call_timed(far, req, AMP_FAR_LEN, AMP_FAR_LEN, STALL_TOLERANT_US);
+        int32_t const got = kos_call(far, req, AMP_FAR_LEN, AMP_FAR_LEN, STALL_TOLERANT_US);
         // The unmapper stores the sequence only after its unmap, so a word still short of it
         // here means the peer's own hold lapsed and it answered into a mapped page.
         bool const unmapped_first = release->load() == seq;

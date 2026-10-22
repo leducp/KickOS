@@ -92,29 +92,37 @@ namespace selftest
         TAP_CHECK(g_wsp_m.word == 0);
     }
 
-    // --- An uncontended lock and unlock is no death point ------------------------------------
-    // A thread a kill broke out of its park takes and gives back a free word with no kernel
-    // entry, and dies at the syscall after.
+    // Nothing posts it: a wait on it ends only by a cancel or a death.
+    kos_sem_t g_word_park = KOS_SEM_INIT(0);
+
+    // --- An uncontended lock, unlock, post and wait is no death point -------------------------
+    // A thread a kill broke out of its park takes and gives back a free mutex word, and posts a
+    // unit to a semaphore word and takes it back, with no kernel entry; it dies at the syscall
+    // after.
     kos_mutex_t g_wkp_m = KOS_MUTEX_INIT;
+    kos_sem_t g_wkp_sem = KOS_SEM_INIT(0);
     Atomic<int32_t, Order::RELAXED> g_wkp_wait{WORD_UNSET};
     Atomic<int32_t, Order::RELAXED> g_wkp_locked{WORD_UNSET};
     Atomic<int32_t, Order::RELAXED> g_wkp_unlocked{WORD_UNSET};
-    void wkp_worker(void*) // caps: done@0, park@1. Nothing posts the park.
+    Atomic<int32_t, Order::RELAXED> g_wkp_posted{WORD_UNSET};
+    Atomic<int32_t, Order::RELAXED> g_wkp_taken{WORD_UNSET};
+    void wkp_worker(void*)
     {
-        kos_sem_post(CH_DONE);
-        g_wkp_wait = kos_sem_wait(child_cap(1), KOS_TIMEOUT_NONE);
+        kos_sem_post(&g_done);
+        g_wkp_wait = kos_sem_wait(&g_word_park, KOS_TIMEOUT_NONE);
         g_wkp_locked = kos_mutex_lock(&g_wkp_m, KOS_TIMEOUT_NONE);
         g_wkp_unlocked = kos_mutex_unlock(&g_wkp_m);
+        g_wkp_posted = kos_sem_post(&g_wkp_sem);
+        g_wkp_taken = kos_sem_wait(&g_wkp_sem, KOS_TIMEOUT_NONE);
         kos_exit(0); // the death point
     }
     void t_mutex_kill_pending()
     {
-        TAP_ASK(.workers = 1, .sems = 1);
-        kos_cap_t park = KOS_CAP_NONE;
+        TAP_ASK(.workers = 1);
         kos::thread::Handle killed;
         ArmHold hold;
-        TAP_HOLD(hold.cap(&park) and hold.thread(&killed));
-        TAP_CHECK(kos_sem_create(0, &park) == 0);
+        TAP_HOLD(hold.thread(&killed));
+        TAP_CHECK(kos_sem_init(&g_word_park, 0) == 0);
         g_wkp_m.word = 0;
         g_wkp_wait = WORD_UNSET;
         for (int attempt = 0; attempt < WORD_STAGE_TRIES and g_wkp_wait != -KOS_ECANCELED;
@@ -122,11 +130,13 @@ namespace selftest
         {
             g_wkp_locked = WORD_UNSET;
             g_wkp_unlocked = WORD_UNSET;
-            kos_cap_grant const caps[2] = {{g_done, CH_FULL}, {park, CH_FULL}};
-            killed = kos::thread::create_caps(wkp_worker, nullptr, "wkpk", 10, caps, 2);
+            g_wkp_posted = WORD_UNSET;
+            g_wkp_taken = WORD_UNSET;
+            TAP_CHECK(kos_sem_init(&g_wkp_sem, 0) == 0);
+            killed = kos::thread::create_caps(wkp_worker, nullptr, "wkpk", 10, nullptr, 0);
             TAP_CHECK(killed.valid());
-            TAP_CHECK(kos_sem_wait(g_done, STALL_TOLERANT_US) == 0);
-            TAP_CHECK(killed.kill() == 0);
+            TAP_CHECK(kos_sem_wait(&g_done, STALL_TOLERANT_US) == 0);
+            TAP_CHECK(killed.cancel(KOS_CANCEL_KILL, 0) == 0);
             TAP_CHECK(thread_end(&killed) == 0);
         }
         if (g_wkp_wait != -KOS_ECANCELED)
@@ -137,7 +147,62 @@ namespace selftest
         TAP_CHECK(g_wkp_locked == 0);
         TAP_CHECK(g_wkp_unlocked == 0);
         TAP_CHECK(g_wkp_m.word == 0);
-        TAP_CHECK(hold.close(&park) == 0);
+        TAP_CHECK(g_wkp_posted == 0);
+        TAP_CHECK(g_wkp_taken == 0);
+        TAP_CHECK(g_wkp_sem.word == 0);
+    }
+
+    // --- A killed thread's post hands its unit over -------------------------------------------
+    // The poster takes the only unit, then parks; a peer parks on the empty word. Woken by a
+    // kill, the poster posts: the post enters the kernel to hand the unit to the peer, and that
+    // entry is no death point. The poster dies at its next entry.
+    kos_sem_t g_wkh_sem = KOS_SEM_INIT(1);
+    Atomic<int32_t, Order::RELAXED> g_wkh_took{WORD_UNSET};
+    Atomic<int32_t, Order::RELAXED> g_wkh_wait{WORD_UNSET};
+    Atomic<int32_t, Order::RELAXED> g_wkh_posted{WORD_UNSET};
+    Atomic<int32_t, Order::RELAXED> g_wkh_peer{WORD_UNSET};
+    void wkh_poster(void*)
+    {
+        g_wkh_took = kos_sem_wait(&g_wkh_sem, 0);
+        kos_sem_post(&g_done);
+        g_wkh_wait = kos_sem_wait(&g_word_park, KOS_TIMEOUT_NONE);
+        g_wkh_posted = kos_sem_post(&g_wkh_sem);
+        kos_exit(0); // the death point
+    }
+    void wkh_peer(void*)
+    {
+        g_wkh_peer = kos_sem_wait(&g_wkh_sem, STALL_TOLERANT_US);
+    }
+    void t_sem_killed_poster()
+    {
+        TAP_ASK(.workers = 2);
+        kos::thread::Handle poster;
+        kos::thread::Handle peer;
+        ArmHold hold;
+        TAP_HOLD(hold.thread(&poster) and hold.thread(&peer));
+        TAP_CHECK(kos_sem_init(&g_word_park, 0) == 0);
+        TAP_CHECK(kos_sem_init(&g_wkh_sem, 1) == 0);
+        g_wkh_took = WORD_UNSET;
+        g_wkh_wait = WORD_UNSET;
+        g_wkh_posted = WORD_UNSET;
+        g_wkh_peer = WORD_UNSET;
+        poster = word_spawn(wkh_poster, nullptr, "wkhP", TAP_PRIO_PARKS, nullptr, 0);
+        TAP_CHECK(poster.valid());
+        TAP_CHECK(kos_sem_wait(&g_done, STALL_TOLERANT_US) == 0);
+        TAP_CHECK(g_wkh_took == 0);
+        peer = word_spawn(wkh_peer, nullptr, "wkhQ", TAP_PRIO_PARKS, nullptr, 0);
+        TAP_CHECK(peer.valid() and word_parked());
+        uint32_t const contended = g_wkh_sem.word;
+        TAP_CHECK(poster.cancel(KOS_CANCEL_KILL, 0) == 0);
+        TAP_CHECK(hold.joined());
+        tap::diag("killed poster: word 0x%x before, park %ld, post %ld, peer %ld",
+                  static_cast<unsigned>(contended), static_cast<long>(g_wkh_wait.load()),
+                  static_cast<long>(g_wkh_posted.load()), static_cast<long>(g_wkh_peer.load()));
+        TAP_CHECK(contended == KOS_WORD_WAITERS);
+        TAP_CHECK(g_wkh_wait == -KOS_ECANCELED);
+        TAP_CHECK(g_wkh_posted == 0);
+        TAP_CHECK(g_wkh_peer == 0);
+        TAP_CHECK(g_wkh_sem.word == 0);
     }
 
     // --- A holder slain holding a word nobody waited on -------------------------------------
@@ -145,38 +210,35 @@ namespace selftest
     // the dead holder's slot, at a new generation, does not stand in for it.
     kos_mutex_t g_wsh_m = KOS_MUTEX_INIT;
     kos::Mutex g_wsh_wrapped;
-    void wsh_holder(void*) // caps: done@0, park@1
+    kos_sem_t g_wsh_park = KOS_SEM_INIT(0);
+    void wsh_holder(void*)
     {
         (void)kos_mutex_lock(&g_wsh_m, KOS_TIMEOUT_NONE);
         (void)g_wsh_wrapped.lock();
-        kos_sem_post(CH_DONE);
-        (void)kos_sem_wait(child_cap(1), KOS_TIMEOUT_NONE);
+        kos_sem_post(&g_done);
+        (void)kos_sem_wait(&g_wsh_park, KOS_TIMEOUT_NONE);
     }
-    void wsh_reuser(void*) // caps: park@0
+    void wsh_reuser(void*)
     {
-        (void)kos_sem_wait(child_cap(0), KOS_TIMEOUT_NONE);
+        (void)kos_sem_wait(&g_wsh_park, KOS_TIMEOUT_NONE);
     }
     void t_mutex_slain_holder()
     {
-        TAP_ASK(.workers = 2, .sems = 1);
-        kos_cap_t park = KOS_CAP_NONE;
+        TAP_ASK(.workers = 2);
         kos::thread::Handle holder;
         kos::thread::Handle reuser;
         g_wsh_m.word = 0;
         ArmHold hold;
-        TAP_HOLD(hold.owned(&g_wsh_m) and hold.cap(&park) and hold.thread(&holder)
-                 and hold.thread(&reuser));
-        TAP_CHECK(kos_sem_create(0, &park) == 0);
-        kos_cap_grant const hcaps[2] = {{g_done, CH_FULL}, {park, CH_FULL}};
-        holder = kos::thread::create_caps(wsh_holder, nullptr, "wshH", 10, hcaps, 2);
+        TAP_HOLD(hold.owned(&g_wsh_m) and hold.thread(&holder) and hold.thread(&reuser));
+        TAP_CHECK(kos_sem_init(&g_wsh_park, 0) == 0);
+        holder = kos::thread::create_caps(wsh_holder, nullptr, "wshH", 10, nullptr, 0);
         TAP_CHECK(holder.valid());
-        TAP_CHECK(kos_sem_wait(g_done, STALL_TOLERANT_US) == 0);
+        TAP_CHECK(kos_sem_wait(&g_done, STALL_TOLERANT_US) == 0);
         kos_thread_t const dead = holder.id();
-        TAP_CHECK(holder.slay(STALL_TOLERANT_US) == 0);
+        TAP_CHECK(holder.cancel(KOS_CANCEL_SLAY, STALL_TOLERANT_US) == 0);
         holder = kos::thread::Handle();
         // The lowest exited slot is the one the slay just emptied.
-        kos_cap_grant const rcaps[1] = {{park, CH_FULL}};
-        reuser = kos::thread::create_caps(wsh_reuser, nullptr, "wshR", 10, rcaps, 1);
+        reuser = kos::thread::create_caps(wsh_reuser, nullptr, "wshR", 10, nullptr, 0);
         TAP_CHECK(reuser.valid());
         bool const reused = (reuser.id() & 0xFFFFu) == (dead & 0xFFFFu);
         int const first = kos_mutex_lock(&g_wsh_m, 0);
@@ -190,7 +252,7 @@ namespace selftest
         {
             wrapped_unlocked = g_wsh_wrapped.unlock();
         }
-        kos_sem_post(park);
+        kos_sem_post(&g_wsh_park);
         TAP_CHECK(hold.joined());
         tap::diag("slain holder: slot reused %d, first take %d, second %d",
                   static_cast<int>(reused), first, second);
@@ -208,29 +270,31 @@ namespace selftest
     // The word names a live thread of another task, which cannot write main's block: the
     // kernel takes the id for a dead holder's, and boosts nobody.
     constexpr uint32_t WFO_WAIT_US = 500000;
-    void wfo_victim(void*) // caps: E(SIGNAL)@0, park@1
+    void wfo_victim(void*) // caps: E(SIGNAL)@0; the park at xsem(0)
     {
         uint32_t const id = kickos_self_lock_id();
-        (void)kos_send(child_cap(0), &id, sizeof(id));
-        (void)kos_sem_wait(child_cap(1), KOS_TIMEOUT_NONE);
+        (void)kos_send(child_cap(0), &id, sizeof(id), KOS_TIMEOUT_NONE);
+        (void)kos_sem_wait(xsem_child(0), KOS_TIMEOUT_NONE);
     }
     void t_mutex_forged_foreign()
     {
-        TAP_ASK(.workers = 1, .tasks = 1, .sems = 1, .endpoints = 1);
+        TAP_ASK(.workers = 1, .tasks = 1, .endpoints = 1);
         void* const blk = st_ram<WFO_RAM, 0>();
         TAP_CHECK(blk != nullptr);
         TAP_CHECK(kos_mem_self_grant(blk, 64, 0) == 0);
         kos_mutex_t* const m = static_cast<kos_mutex_t*>(blk);
         kos_cap_t ep = KOS_CAP_NONE;
-        kos_cap_t park = KOS_CAP_NONE;
         kos_task_t t = KOS_TASK_NONE;
         kos::thread::Handle v;
         ArmHold hold;
-        TAP_HOLD(hold.cap(&ep) and hold.cap(&park) and hold.task(&t) and hold.thread(&v));
-        TAP_CHECK(kos_endpoint_create(&ep) == 0 and kos_sem_create(0, &park) == 0);
+        TAP_HOLD(hold.cap(&ep) and hold.task(&t) and hold.thread(&v));
+        kos_sem_t* const park = xsem(0);
+        TAP_CHECK(kos_endpoint_create(&ep) == 0 and kos_sem_init(park, 0) == 0);
         TAP_CHECK(kos_task_create(nullptr, 0, 0, &t) == 0);
-        kos_cap_grant const caps[2] = {{ep, KOS_CAP_SIGNAL}, {park, KOS_CAP_WAIT}};
-        v = word_spawn(wfo_victim, nullptr, "wfoV", TAP_PRIO_PARKS, caps, 2, t);
+        kos_cap_grant const caps[1] = {{ep, KOS_CAP_SIGNAL}};
+        kos_window const xw = xsem_window();
+        v = word_spawn(wfo_victim, nullptr, "wfoV", TAP_PRIO_PARKS, caps, 1, t, &xw,
+                       xsem_windows());
         TAP_CHECK(v.valid());
         uint32_t id = 0;
         TAP_CHECK(report_await(ep, &id, sizeof(id)));
@@ -334,7 +398,7 @@ namespace selftest
                 (void)kos_mutex_unlock(m);
             }
         }
-        (void)kos_send(ep, &rep, sizeof(rep));
+        (void)kos_send(ep, &rep, sizeof(rep), KOS_TIMEOUT_NONE);
     }
 
     // --- One word through a parent's reservation and a child's window ------------------------
@@ -455,7 +519,13 @@ namespace selftest
     // the victim's, so it takes its own word as a dead holder's, and the victim's waiter is
     // still the one served.
     constexpr uint32_t WTW_WAIT_US = 1000000;
-    void wtw_holder(void*) // caps: E(SIGNAL)@0, release@1
+    // The holder's release, in the victim's block beside its word.
+    constexpr uintptr_t WTW_RELEASE_AT = 8;
+    kos_sem_t* wtw_release(uintptr_t block)
+    {
+        return reinterpret_cast<kos_sem_t*>(block + WTW_RELEASE_AT);
+    }
+    void wtw_holder(void*) // caps: E(SIGNAL)@0
     {
         WordRep rep = {WORD_UNSET, kickos_self_lock_id(), 0};
         kos_window at = {};
@@ -464,14 +534,14 @@ namespace selftest
             rep.base = at.base;
             rep.rc = kos_mutex_lock(word_at(at.base), 0);
         }
-        (void)kos_send(child_cap(0), &rep, sizeof(rep));
-        (void)kos_sem_wait(child_cap(1), KOS_TIMEOUT_NONE);
+        (void)kos_send(child_cap(0), &rep, sizeof(rep), KOS_TIMEOUT_NONE);
+        (void)kos_sem_wait(wtw_release(at.base), KOS_TIMEOUT_NONE);
         if (rep.rc == 0)
         {
             (void)kos_mutex_unlock(word_at(at.base));
         }
         // The task's entry: its end would slay the waiter before that reports.
-        (void)kos_sem_wait(child_cap(1), KOS_TIMEOUT_NONE);
+        (void)kos_sem_wait(wtw_release(at.base), KOS_TIMEOUT_NONE);
     }
     void wtw_waiter(void*) // caps: E(SIGNAL)@0
     {
@@ -484,7 +554,7 @@ namespace selftest
     }
     void t_mutex_window_forged()
     {
-        TAP_ASK(.workers = 4, .tasks = 2, .sems = 1, .endpoints = 1);
+        TAP_ASK(.workers = 4, .tasks = 2, .endpoints = 1);
         size_t const g = arena_granule();
         void* const vblk = st_ram<WTW_RAM, 0>();
         void* const fblk = st_ram<WTW_RAM, 1>();
@@ -493,26 +563,24 @@ namespace selftest
         static_cast<kos_mutex_t*>(vblk)->word = 0;
         static_cast<kos_mutex_t*>(fblk)->word = 0;
         kos_cap_t ep = KOS_CAP_NONE;
-        kos_cap_t release = KOS_CAP_NONE;
+        kos_sem_t* const release = wtw_release(reinterpret_cast<uintptr_t>(vblk));
         kos_task_t victim = KOS_TASK_NONE;
         kos_task_t forger = KOS_TASK_NONE;
         kos::thread::Handle vh;
         kos::thread::Handle vw;
         kos::thread::Handle fh;
         ArmHold hold;
-        TAP_HOLD(hold.cap(&ep) and hold.cap(&release) and hold.task(&victim)
-                 and hold.task(&forger) and hold.thread(&vh) and hold.thread(&vw)
-                 and hold.thread(&fh));
-        TAP_CHECK(kos_endpoint_create(&ep) == 0 and kos_sem_create(0, &release) == 0);
+        TAP_HOLD(hold.cap(&ep) and hold.task(&victim) and hold.task(&forger)
+                 and hold.thread(&vh) and hold.thread(&vw) and hold.thread(&fh));
+        TAP_CHECK(kos_endpoint_create(&ep) == 0 and kos_sem_init(release, 0) == 0);
         TAP_CHECK(kos_task_create(nullptr, 0, 0, &victim) == 0
                   and kos_task_create(nullptr, 0, 0, &forger) == 0);
         kos_window const vwin = {reinterpret_cast<uintptr_t>(vblk), static_cast<uint32_t>(g),
                                  KOS_WINDOW_MEMORY, 0};
         kos_window const fwin = {reinterpret_cast<uintptr_t>(fblk), static_cast<uint32_t>(g),
                                  KOS_WINDOW_MEMORY, 0};
-        kos_cap_grant const hcaps[2] = {{ep, KOS_CAP_SIGNAL}, {release, KOS_CAP_WAIT}};
         kos_cap_grant const caps[1] = {{ep, KOS_CAP_SIGNAL}};
-        vh = word_spawn(wtw_holder, nullptr, "wtwH", TAP_PRIO_PARKS, hcaps, 2, victim, &vwin, 1);
+        vh = word_spawn(wtw_holder, nullptr, "wtwH", TAP_PRIO_PARKS, caps, 1, victim, &vwin, 1);
         TAP_CHECK(vh.valid());
         WordRep held = {WORD_UNSET, 0, 0};
         TAP_CHECK(report_await(ep, &held, sizeof(held)));

@@ -269,7 +269,7 @@ namespace
 
     // =======================================================================================
     // The threaded arms. Core one runs on its own thread and stays inside the dispatch entry
-    // of the very line being torn down, its sem_post blocked on the kernel lock core zero
+    // of the very line being torn down, its notify_raise blocked on the kernel lock core zero
     // holds. Every observation core zero makes below is made while that is true.
 
     struct Cycle
@@ -294,7 +294,7 @@ namespace
             g_cyc.handoff_ok.store(false);
             return;
         }
-        kickos_isr_irq(line); // irq_event_isr -> notify_post -> IrqLock -> blocked on core zero
+        kickos_isr_irq(line); // irq_event_isr -> notify_raise -> IrqLock -> blocked on core zero
         g_cyc.peer_done.store(true);
     }
 
@@ -326,7 +326,7 @@ namespace
             g_cyc.teardown_returned.store(false);
 
             // The production route: irq_claim is what binds irq_event_isr, and only that
-            // handler reaches sem_post and so the lock. A hand-installed probe handler would
+            // handler reaches notify_raise and so the lock. A hand-installed probe handler would
             // never block, and the arm would prove nothing.
             //
             // Claimed on core one, the core the peer dispatches on: irq_event_isr drops a raise
@@ -410,7 +410,7 @@ namespace
         EXPECT_TRUE(g_cyc.slot_live_at_return.load())
             << "the slot went back to the pool while core one was inside the dispatch entry "
                "holding its address: the next delivery of a recycled slot writes another "
-               "driver's semaphore";
+               "driver's notification";
     }
 
     // Claim three, availability: the line and the slot both come back once the peer leaves. A
@@ -881,13 +881,13 @@ namespace
         // The stale dispatch ran its retired pair. The claim below is about ordering the rebind
         // against it, not about stopping it.
         ASSERT_TRUE(target_posted())
-            << "the retired handler never posted, so it never reached the controller either";
+            << "the retired handler never raised, so it never reached the controller either";
 
         EXPECT_TRUE(g_stale.rebind_rc.load() != 0
                     or kickos::irqfix::last_line_op(LINE_TARGET) == kickos::irqfix::OP_UNMASK)
             << "the rebind armed the line and a dispatch holding the RETIRED pair then masked "
                "it. The new owner is parked on a line nothing will raise and no ack of its own "
-               "can reopen, while the old semaphore took the post";
+               "can reopen, while the old notification took the raise";
     }
 
     // And the line is not lost either way: with the peer out, a refused rebind lifts, and an

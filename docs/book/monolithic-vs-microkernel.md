@@ -282,7 +282,7 @@ KickOS is a microkernel. Its kernel keeps what Liedtke's test says must stay in:
 
 - threads, tasks and the scheduler
 - the time base
-- semaphores and the waiting half of the priority-inheritance (PI) mutex
+- the waiting half of the semaphore and of the priority-inheritance (PI) mutex
 - endpoints and call/reply
 - the capability table
 - protection domains and grants
@@ -292,10 +292,11 @@ The PI mutex shows the test at work. Taking a free mutex is one atomic compare-a
 (CAS) on a word in user memory, so it stays out of the kernel. Lending a thread a higher
 priority is a scheduler action that no user program can perform, so the kernel takes
 part only when a thread waits (Chapter 2.3, *[Priority
-inheritance](priority-inheritance-lending-urgency.md)*). Apart from a few chip-wide
-settings that a thread with the right authority may ask for, such as pin muxing,
-the only hardware the kernel drives itself is the system timer, the interrupt
-controller, the protection unit, and a debug console.
+inheritance](priority-inheritance-lending-urgency.md)*). A semaphore follows the same
+test: a wait that finds a unit and a post that finds no waiter stay in user memory.
+Apart from a few chip-wide settings that a thread with the right authority may ask for,
+such as pin muxing, the only hardware the kernel drives itself is the system timer, the
+interrupt controller, the protection unit, and a debug console.
 
 Everything else lives in userspace. A device driver is an unprivileged task, granted
 its device's register window as a memory region and a capability on its interrupt

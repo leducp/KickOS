@@ -77,7 +77,7 @@ namespace kickos
             EXPECT_EQ(malloc_word, waiter->lock_id) << "the death wrote another owner";
             EXPECT_EQ(waiter->wait_result, -KOS_EOWNERDEAD);
             EXPECT_EQ(dying->held_list, nullptr);
-            EXPECT_EQ(kernel().mutex_active, nullptr) << "the emptied record was kept";
+            EXPECT_EQ(kernel().word_active, nullptr) << "the emptied record was kept";
         }
 
         // Nobody waited, so the kernel never knew of either word: each keeps the dead id, and

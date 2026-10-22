@@ -85,7 +85,7 @@ inline WriteResult stdout_write(char const* s, size_t total)
         {
             chunk = KOS_EP_MSG_MAX;
         }
-        int32_t const r = kos_send(0, s + sent, chunk);
+        int32_t const r = kos_send(0, s + sent, chunk, KOS_TIMEOUT_NONE);
         // A count short of the chunk, zero included, leaves the rest to be offered again. That
         // is no spin: the rendezvous consumed the receive, so the next send parks until the
         // driver receives again, or for a non-blocking task answers at once.

@@ -326,7 +326,7 @@ int main(int, char**)
     int const rc = t.join(KOS_TIMEOUT_NONE);
     // Drops main's hold on a group that is already empty, so the slot goes back here rather
     // than at main's own exit.
-    (void)kos_task_kill(victim);
+    (void)kos_task_slay(victim, 0);
 #endif
     kos::print("[fs] survivor ran after the fault\n");
 #if KICKOS_FS_MODE == 4

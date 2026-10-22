@@ -254,9 +254,7 @@ namespace
     }
 #endif
 
-    kos_cap_t g_done = KOS_CAP_NONE; // worker -> main handoff (MAIN's cap; delegated to the worker)
-    // B1: fresh child table => handle == index; the worker's delegated g_done is kos::child_cap(0).
-    constexpr int CH_DONE = KOS_SPAWN_DELEGATED_CAP0;
+    kos::Semaphore g_done;
 
     // UNPRIVILEGED: the whole full-C++ body runs here, under the MPU.
     void cxx_worker(void*)
@@ -271,7 +269,7 @@ namespace
             verdict = "ALL PASS\n";
         }
         kos::print(verdict);
-        kos_sem_post(CH_DONE);
+        (void)g_done.post();
     }
 }
 
@@ -282,20 +280,17 @@ int main(int, char**)
     test_task_start();
 #endif
 
-    (void)kos_sem_create(0, &g_done);
     // Default spawn => UNPRIVILEGED (privileged=false). prio 10 sits above main's 2, so the
     // worker runs to completion once main blocks on g_done. The stack is the board's own
     // KICKOS_USER_STACK_SIZE, demand-allocated from the app arena, so the EH unwind and the
     // libstdc++ working set are charged to that arena.
-    kos_cap_grant caps[] = {{g_done, KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER}};
-    auto w = kos::thread::create_caps(cxx_worker, nullptr, "cxxwork", 10, caps, 1);
+    auto w = kos::thread::create(cxx_worker, nullptr, "cxxwork", 10);
     if (not w.valid())
     {
         kos::print("SOME FAILED\n"); // spawn failure: fail loud, do not fall back to privileged
         return 1;
     }
-    kos_sem_wait(g_done, KOS_TIMEOUT_NONE);
-    kos_sem_destroy(g_done);
+    (void)g_done.wait();
 
     if (g_fails == 0)
     {

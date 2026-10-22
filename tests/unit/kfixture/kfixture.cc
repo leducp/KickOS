@@ -108,6 +108,7 @@ namespace kickos
             bool g_park_armed = false;
 
             ParkWaker g_park_waker = nullptr;
+            SwitchAction g_switch_action = nullptr;
 
             uint32_t g_irq_depth = 0;
             bool g_gap_watch = false;
@@ -296,6 +297,17 @@ namespace kickos
             {
                 resolve_park(from);
             }
+            if (g_switch_action != nullptr)
+            {
+                SwitchAction const fn = g_switch_action;
+                g_switch_action = nullptr;
+                fn();
+            }
+        }
+
+        void run_at_next_switch(SwitchAction fn)
+        {
+            g_switch_action = fn;
         }
 
         void note_ctx_redirect(Thread* t, void (*entry)(void* arg), void* base, size_t size)
@@ -377,6 +389,7 @@ namespace kickos
             g_gap_seen = 0;
             g_gap_at = 0;
             g_park_waker = nullptr;
+            g_switch_action = nullptr;
             if (g_irq_depth != 0)
             {
                 printf("FIXTURE FAIL: an IrqLock leaked (g_irq_depth=%u)\n", g_irq_depth);
@@ -627,37 +640,54 @@ namespace kickos
             ep->send_waiters.push_back(&w->link);
         }
 
-        // Linked by hand: the record pool and held_push are private to sync.cc.
-        Mutex* own_mutex(Thread* owner, uint32_t* word)
+        namespace
         {
-            Kernel& k = kernel();
-            Mutex* m = nullptr;
-            for (Mutex& r : k.mutex_records)
+            // Linked by hand: the record pool is private to sync.cc.
+            WordRecord* record_listed(uint32_t* word, WordKind kind)
             {
-                if (r.owner == nullptr)
+                Kernel& k = kernel();
+                WordRecord* m = nullptr;
+                for (WordRecord& r : k.word_records)
                 {
-                    m = &r;
-                    break;
+                    if (r.kind == WordKind::FREE)
+                    {
+                        m = &r;
+                        break;
+                    }
                 }
+                if (m == nullptr)
+                {
+                    printf("FIXTURE FAIL: every word record is in use\n");
+                    exit(1);
+                }
+                *m = WordRecord{};
+                m->key = static_cast<arch_phys_addr_t>(reinterpret_cast<uintptr_t>(word));
+                m->kind = kind;
+                m->next_active = k.word_active;
+                if (k.word_active != nullptr)
+                {
+                    k.word_active->prev_active = m;
+                }
+                k.word_active = m;
+                return m;
             }
-            if (m == nullptr)
-            {
-                printf("FIXTURE FAIL: every mutex record is in use\n");
-                exit(1);
-            }
-            *m = Mutex{};
-            m->key = static_cast<arch_phys_addr_t>(reinterpret_cast<uintptr_t>(word));
+        }
+
+        // held_push is private to sync.cc.
+        WordRecord* own_mutex(Thread* owner, uint32_t* word)
+        {
+            WordRecord* const m = record_listed(word, WordKind::PI);
             m->owner = owner;
             m->next_held = owner->held_list;
             owner->held_list = m;
-            m->next_active = k.mutex_active;
-            if (k.mutex_active != nullptr)
-            {
-                k.mutex_active->prev_active = m;
-            }
-            k.mutex_active = m;
-            *word = owner->lock_id | KOS_MUTEX_WAITERS;
+            *word = owner->lock_id | KOS_WORD_WAITERS;
             return m;
+        }
+
+        WordRecord* plain_word(uint32_t* word)
+        {
+            *word = *word | KOS_WORD_WAITERS;
+            return record_listed(word, WordKind::PLAIN);
         }
 
         Task* task(int slot)
@@ -690,35 +720,6 @@ namespace kickos
             task_ref(tk);
         }
 
-        Semaphore* semaphore(int* out_handle)
-        {
-            int const i = kernel().sems.alloc();
-            Semaphore* s = kernel().sems.at(i);
-            if (s == nullptr)
-            {
-                printf("FIXTURE FAIL: semaphore pool exhausted\n");
-                exit(1);
-            }
-            sem_init(s, 0);
-            kernel().sem_refs[i] = 1;
-            if (out_handle != nullptr)
-            {
-                *out_handle = kernel().sems.handle_for(i);
-            }
-            return s;
-        }
-
-        void park_sem_waiter(Thread* w, Semaphore* s)
-        {
-            testfix::seat_blocked(w);
-            detach_ready(w);
-            w->wait_queue = &s->waiters;
-            w->wait_kind = WAIT_SEM;
-            w->wait_obj = s;
-            w->wait_result = WAIT_RESULT_POISON;
-            s->waiters.push_back(&w->link);
-        }
-
         void park_sleeper(Thread* w, uint64_t deadline_ns)
         {
             testfix::seat_blocked(w);
@@ -734,12 +735,24 @@ namespace kickos
             w->on_timer = true;
         }
 
-        void park_mutex_waiter(Thread* w, Mutex* m)
+        void park_mutex_waiter(Thread* w, WordRecord* m)
         {
             testfix::seat_blocked(w);
             detach_ready(w);
             w->wait_queue = &m->waiters;
             w->wait_kind = WAIT_MUTEX;
+            w->wait_obj = m;
+            w->wait_va = static_cast<uintptr_t>(m->key);
+            w->wait_result = WAIT_RESULT_POISON;
+            m->waiters.push_back(&w->link);
+        }
+
+        void park_word_waiter(Thread* w, WordRecord* m)
+        {
+            testfix::seat_blocked(w);
+            detach_ready(w);
+            w->wait_queue = &m->waiters;
+            w->wait_kind = WAIT_WORD;
             w->wait_obj = m;
             w->wait_va = static_cast<uintptr_t>(m->key);
             w->wait_result = WAIT_RESULT_POISON;
