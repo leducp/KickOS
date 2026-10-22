@@ -58,13 +58,13 @@ needs the thread.
 
 A thread moves through a small set of states (`ThreadState`):
 
-```
-            wake (an object, a timer, a cancel)
-     +-------------------------------------------+
-     v                                           |
-  READY ---- picked ----> RUNNING ---- park ---> BLOCKED
-     ^                       |
-     +---- preempted --------+----- exit ----> EXITED
+```mermaid
+flowchart LR
+    READY -->|picked| RUNNING
+    RUNNING -->|park| BLOCKED
+    RUNNING -->|preempted| READY
+    RUNNING -->|exit| EXITED
+    BLOCKED -->|"wake (an object, a timer, a cancel)"| READY
 ```
 
 `BLOCKED` covers every kind of wait. A field on the thread, its wait kind, says which

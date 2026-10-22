@@ -157,17 +157,21 @@ addresses in one flat image and everything works. Protection splits the image in
 kernel side and an app side and gives the unprivileged thread reach into only its own
 regions. Now the placement of every writable byte is load-bearing:
 
-```
-   unprivileged thread's grants          the C++ runtime touches
-   ---------------------------           -----------------------
-   code region (RX)  ----------------->  .eh_frame / .exidx / .gcc_except_table   (read)
-                                         type_info, vtables (.rodata)             (read)
-                                         landing pads (.text)                     (execute)
-   data region (RW)  ----------------->  the libc heap arena (a bump span)         (write)
-                                         _impure_ptr, malloc bins (newlib reent)  (write)
-                                         eh_globals, emergency pool               (write)
-                                         FDE registry heads + node (DWARF only)   (write)
-   stack region (RW) ----------------->  local dtors run during cleanup           (read/write)
+```mermaid
+flowchart LR
+    subgraph grants["unprivileged thread's grants"]
+        code["code region (RX)"]
+        data["data region (RW)"]
+        stack["stack region (RW)"]
+    end
+    subgraph runtime["the C++ runtime touches"]
+        ro["read: .eh_frame, .exidx, .gcc_except_table<br>read: type_info, vtables (.rodata)<br>execute: landing pads (.text)"]
+        rw["write: the libc heap arena (a bump span)<br>write: _impure_ptr, malloc bins (newlib reent)<br>write: eh_globals, emergency pool<br>write: FDE registry heads and node (DWARF only)"]
+        st["read and write: local dtors run during cleanup"]
+    end
+    code --> ro
+    data --> rw
+    stack --> st
 ```
 
 The read-only tables and RTTI **already** live inside the per-app code region that is

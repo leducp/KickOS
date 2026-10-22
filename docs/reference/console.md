@@ -22,33 +22,24 @@ distinction -- much of the design below exists to protect the *debug* console's
 
 ## The pipeline
 
-```
-kprintf / kputs / kernel code          (kprintf formats into a 256B stack buffer)
-        |
-        v
-kconsole_write                 -- frontend, fans out to compile-time backends
-   +- RTT   (CONSOLE=rtt|both):  memcpy -> SEGGER control block, under IrqLock until PANICKED
-   \- chip  (CONSOLE=chip|both): RAW bytes, the CRLF expansion happening at the device end
-        v
-console_emit                   -- THE ownership guard
-   |   g_console_state ?                            (ownership axis, checked FIRST)
-   +- USER_OWNED  -> DROP  (a userspace driver owns the UART; RTT still carries it; a
-   |                         fault record goes to the driver, see "A fault record while a
-   |                         driver owns the console")
-   +- RECLAIMED   -> console_write_line_sync        (a driver death took it back)
-   +- PANICKED    -> the polled writer, no lock     (a panic took it back; uncounted)
-   \- KERNEL_OWNED -> console_tx_insert_line        (arch_console_write_retry on an
-        v                                            own-image AMP node sharing its UART)
-console_tx_insert_line(buf, n, CRLF)
-   +- != 0          -> the line is in the ring, return
-   +- unarmed ring  -> console_write_line_sync, no drain to race (before the ring is armed,
-   |                   and once a publish or a panic disarmed it)
-   \- refused       -> the line does not go out; answer 0, unless a fault record's: it
-                       makes room (console_tx_insert_record_line)
-        ... then the bytes leave ...
-[drain ISR]        console_tx_isr:        on a backend with a TX interrupt
-[producer drain]   drain_in_producer:     on a backend with none (irq_line < 0), by each
-                                          producer until its own line has left
+```mermaid
+flowchart TD
+    src["kprintf, kputs, kernel code (kprintf formats into a 256 B stack buffer)"]
+    src --> kw["kconsole_write: the frontend, fans out to the compile-time backends"]
+    kw -->|"RTT (CONSOLE=rtt or both)"| rtt["memcpy into the SEGGER control block, under IrqLock until PANICKED"]
+    kw -->|"chip (CONSOLE=chip or both)"| chip["RAW bytes, the CRLF expansion happening at the device end"]
+    chip --> emit{"console_emit, THE ownership guard: g_console_state? (the ownership axis, checked FIRST)"}
+    emit -->|USER_OWNED| drop["DROP: a userspace driver owns the UART, and RTT still carries it. A fault record goes to the driver, see 'A fault record while a driver owns the console'"]
+    emit -->|RECLAIMED| sync["console_write_line_sync (a driver death took it back)"]
+    emit -->|PANICKED| polled["the polled writer, no lock (a panic took it back, uncounted)"]
+    emit -->|KERNEL_OWNED| ins{"console_tx_insert_line(buf, n, CRLF)"}
+    emit -->|"KERNEL_OWNED, on an own-image AMP node sharing its UART"| retry["arch_console_write_retry"]
+    ins -->|"!= 0"| ring["the line is in the ring, return"]
+    ins -->|unarmed ring| unarmed["console_write_line_sync, no drain to race (before the ring is armed, and once a publish or a panic disarmed it)"]
+    ins -->|refused| refused["the line does not go out and the answer is 0, unless it is a fault record's line, which makes room (console_tx_insert_record_line)"]
+    ring --> leave(("then the bytes leave"))
+    leave -->|on a backend with a TX interrupt| isr["drain ISR: console_tx_isr"]
+    leave -->|on a backend with none, a negative irq_line| prod["producer drain: drain_in_producer, by each producer until its own line has left"]
 ```
 
 Source: `kernel/init/console.cc` (frontend + routing + panic), `kernel/init/console_tx.cc`
