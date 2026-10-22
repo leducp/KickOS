@@ -327,8 +327,8 @@ extern "C"
     // nothing across cores.
     //
     // Nothing orders that ISR mask against a waiter's unmask except the kernel lock's own
-    // chain: irq_event_isr masks, then sem_post takes IrqLock, and S32C1I plays both acquire
-    // and release (ISA summary 4.3.13.5, p.122). Dropping that lock from sem_post, or moving
+    // chain: irq_event_isr masks, then notify_raise takes IrqLock, and S32C1I plays both acquire
+    // and release (ISA summary 4.3.13.5, p.122). Dropping that lock from notify_raise, or moving
     // the mask after it, breaks this cell and reddens no arm. A release here would order the
     // wrong side.
     //

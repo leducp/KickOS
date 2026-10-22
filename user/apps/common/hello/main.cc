@@ -11,16 +11,8 @@ namespace
 {
     constexpr uint64_t BEAT_NS = 400000000ull; // 0.4 s between hits
 
-    // Bound in main(): a global kos::Semaphore would run its ctor, a syscall, before the
-    // scheduler.
-    kos::Semaphore* g_ping = nullptr;
-    kos::Semaphore* g_pong = nullptr;
-
-    // B1 well-known child cap indices (fresh child table => handle == index). Both players
-    // get (ping_sem, pong_sem) delegated in that order.
-    constexpr int CH_PING = KOS_SPAWN_DELEGATED_CAP0;
-    constexpr int CH_PONG = KOS_SPAWN_DELEGATED_CAP0 + 1;
-    constexpr uint8_t CH_FULL = KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER;
+    kos::Semaphore g_ping(1); // ping serves first
+    kos::Semaphore g_pong;
 
     void say(char const* who, int n)
     {
@@ -34,10 +26,10 @@ namespace
         int n = 0;
         while (true)
         {
-            kos_sem_wait(CH_PING, KOS_TIMEOUT_NONE);
+            g_ping.wait();
             kos::sleep_ns(BEAT_NS);
             say("ping", ++n);
-            kos_sem_post(CH_PONG);
+            g_pong.post();
         }
     }
     void pong(void*)
@@ -45,10 +37,10 @@ namespace
         int n = 0;
         while (true)
         {
-            kos_sem_wait(CH_PONG, KOS_TIMEOUT_NONE);
+            g_pong.wait();
             kos::sleep_ns(BEAT_NS);
             say("pong", ++n);
-            kos_sem_post(CH_PING);
+            g_ping.post();
         }
     }
 }
@@ -58,18 +50,12 @@ int main(int, char**)
     kos::print("hello from KickOS userspace!\n");
     kos::print("two threads play ping-pong; press Ctrl+C to stop.\n\n");
 
-    kos::Semaphore ping_sem(1); // ping serves first
-    kos::Semaphore pong_sem(0);
-    g_ping = &ping_sem;
-    g_pong = &pong_sem;
-
-    kos_cap_grant caps[] = {{ping_sem.id(), CH_FULL}, {pong_sem.id(), CH_FULL}};
-    kos::thread::create_caps(ping, nullptr, "ping", 10, caps, 2);
-    kos::thread::create_caps(pong, nullptr, "pong", 10, caps, 2);
+    kos::thread::create(ping, nullptr, "ping", 10);
+    kos::thread::create(pong, nullptr, "pong", 10);
 
     // A daemon: returning from main would exit, so main parks on a semaphore nobody posts
     // and the two players run until interrupted.
-    kos::Semaphore idle(0);
+    static kos::Semaphore idle;
     while (true)
     {
         idle.wait();

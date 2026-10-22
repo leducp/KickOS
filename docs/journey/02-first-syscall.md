@@ -19,8 +19,9 @@ chapter shows the code. It assumes you know how to boot an image and attach gdb
 ## The image and the syscall we follow
 
 We use the `hello` app on the `qemu` build (`user/apps/common/hello/main.cc`). Its `main` prints
-two lines, makes two semaphores, starts two threads called `ping` and `pong`, and parks. The very
-first thing it does is:
+two lines, starts two threads called `ping` and `pong`, and parks. The two threads take turns
+through two semaphores, which are words in the app's static data, not kernel objects. The very
+first thing `main` does is:
 
 ```
     kos::print("hello from KickOS userspace!\n");
@@ -65,7 +66,7 @@ side. Only if the send is refused for one of three "nobody is serving" reasons d
 to the kernel's own debug console:
 
 ```
-        int32_t const r = kos_send(0, s + sent, chunk);
+        int32_t const r = kos_send(0, s + sent, chunk, KOS_TIMEOUT_NONE);
         // ...
         if (r >= 0)
         {
@@ -86,7 +87,7 @@ the first syscall fail at Stop 8.
 **Try it:** `break kos_send`, `continue`, then `bt`. You stop in the stub, called from the print:
 
 ```
-#0  kos_send (ep=0, buf=0xf343, len=29) at .../user/src/syscall_stubs.cc:113
+#0  kos_send (ep=0, buf=0xf343, len=29, timeout_us=4294967295) at .../user/src/syscall_stubs.cc:113
 #1  0x00001930 in kickos::stdout_write (s=0xf343 "hello from KickOS userspace!\n", total=29) at .../emit.h:88
 #2  kos_print (s=0xf343 "hello from KickOS userspace!\n") at .../user/src/print.cc:11
 #3  0x0000019a in kos::print (...) at .../user/include/kickos/kos.h:23
@@ -105,23 +106,24 @@ path), [Reference: console](../reference/console.md)
 **Where:** `user/src/syscall_stubs.cc`, `kos_send`; `arch/arm/armv7m/switch.S`, `arch_syscall`
 
 Every syscall stub is the same shape: cast the arguments to plain words and call `arch_syscall`
-with the syscall number first. The number for a send is `KOS_SYS_SEND`, which is 27, from the
+with the syscall number first. The number for a send is `KOS_SYS_SEND`, which is 50, from the
 `kos_syscall_nr` enum in `user/include/kickos/sys/abi.h`. Those numbers are the ABI between a
-compiled app and the kernel and are never renumbered.
+compiled app and the kernel.
 
 ```
-int32_t kos_send(kos_cap_t ep, void const* buf, size_t len)
+int32_t kos_send(kos_cap_t ep, void const* buf, size_t len, uint32_t timeout_us)
 {
     return static_cast<int32_t>(arch_syscall(KOS_SYS_SEND,
                                              static_cast<uintptr_t>(ep),
                                              reinterpret_cast<uintptr_t>(buf),
-                                             static_cast<uintptr_t>(len), 0));
+                                             static_cast<uintptr_t>(len),
+                                             static_cast<uintptr_t>(timeout_us)));
 }
 ```
 
 `arch_syscall` takes five words. The ARM calling convention (AAPCS) passes the first four in
 `r0`-`r3` and the fifth on the stack, so on entry `r0` is the number, `r1` the handle, `r2` the
-buffer, `r3` the length, and the fifth word sits at `[sp]`. The stub's whole body is three
+buffer, `r3` the length, and the fifth word, the timeout, sits at `[sp]`. The stub's whole body is three
 instructions:
 
 ```
@@ -144,13 +146,14 @@ in memory the caller could change while the kernel reads it.
 **Try it:** `break arch_syscall`, `continue`, `info registers r0 r1 r2 r3`:
 
 ```
-r0             0x1b                27
+r0             0x32                50
 r1             0x0                 0
 r2             0xf343              62275
 r3             0x1d                29
 ```
 
-`x/2wx $sp` shows `0x00000000` first: the fifth argument, 0.
+`x/2wx $sp` shows `0xffffffff` first: the fifth argument, the timeout `KOS_TIMEOUT_NONE`, since
+`kos_print` waits for its reader.
 
 **Why, and the contract:** [Book: the syscall path](../book/the-syscall-path-trap-dispatch-return.md)
 ("The number and the arguments: a register ABI"), [Reference: invariants](../reference/invariants.md)
@@ -192,12 +195,12 @@ lr             0xfffffffd
 (gdb) p/x $xpsr
 $2 = 0x100000b
 (gdb) x/8wx $psp
-0x20027ed8:    0x0000001b    0x00000000    0x0000f343    0x0000001d
-0x20027ee8:    0x00000000    0x000016c7    0x0000253c    0x01000000
+0x20027ed8:    0x00000032    0x00000000    0x0000f343    0x0000001d
+0x20027ee8:    0xffffffff    0x000016c7    0x0000253c    0x01000000
 ```
 
-Read the frame left to right: `r0`=27 (the number), `r1`=0 (the handle), `r2`=0xf343 (the
-buffer), `r3`=29 (the length), `r12`=0 (the fifth argument), `lr`=0x16c7 (where `kos_send`
+Read the frame left to right: `r0`=50 (the number), `r1`=0 (the handle), `r2`=0xf343 (the
+buffer), `r3`=29 (the length), `r12`=0xffffffff (the fifth argument), `lr`=0x16c7 (where `kos_send`
 continues after its call to `arch_syscall`, with bit 0 set for Thumb), `pc`=0x253c (the `bx lr`
 right after the `svc`), `xPSR`=0x01000000 (Thumb bit, thread mode). The `PSP` moved down by 32
 bytes, one frame. `xPSR` ends in `0xb`, exception 11, and `EXC_RETURN` 0xfffffffd means "return to
@@ -226,7 +229,7 @@ so it is checked before anything else (Book: [Whoever stacks the trap frame owns
 
 Second it compares the stacked `r0` with 56. That is `KOS_SYS_CALL_REG`, the one syscall a
 Cortex-M build may finish inside the handler, an IPC fast path covered in
-[Call and reply](05-call-and-reply.md). Ours is 27, so it branches to the ordinary path.
+[Call and reply](05-call-and-reply.md). Ours is 50, so it branches to the ordinary path.
 
 Third, the ordinary path, which is the heart of the trick:
 
@@ -256,11 +259,11 @@ kernel data structure.
 
 ```
 (gdb) info registers r0 r1 r2 r3 r12 lr sp
-r0             0x1b                27
+r0             0x32                50
 r1             0x0                 0
 r2             0xf343              62275
 r3             0x1d                29
-r12            0x0                 0
+r12            0xffffffff          4294967295
 lr             0x16c7              5831
 sp             0x20027ef8          0x20027ef8
 (gdb) p $control
@@ -309,14 +312,14 @@ return to, and the user `PSP` to come back to. Then it calls `syscall_dispatch` 
 **Try it:** `break syscall_dispatch`, `continue`:
 
 ```
-Breakpoint 3, syscall_dispatch (nr=27, a0=0, a1=62275, a2=29, a3=0) at .../kernel/syscall/syscall.cc:371
+Breakpoint 3, syscall_dispatch (nr=50, a0=0, a1=62275, a2=29, a3=4294967295) at .../kernel/syscall/syscall.cc:371
 (gdb) info registers sp
 sp             0x20000830          0x20000830 <kickos::(anonymous namespace)::g_kstacks+2000>
 (gdb) x/4wx $sp
-0x20000830 <...g_kstacks+2000>:    0x00000000    0x000016c7    0x20027ef8    0x4b53464c
+0x20000830 <...g_kstacks+2000>:    0xffffffff    0x000016c7    0x20027ef8    0x4b53464c
 ```
 
-`sp` is now inside `g_kstacks`, the array of kernel blocks. The header reads: fifth argument 0,
+`sp` is now inside `g_kstacks`, the array of kernel blocks. The header reads: fifth argument 0xffffffff,
 return address 0x16c7, user `PSP` 0x20027ef8, and an alignment pad. `bt` shows
 `syscall_dispatch` called from `svc_trampoline`, and nothing above it: the user frames are on
 another stack. While you are stopped privileged, `p/x *(struct arch_context*)*(unsigned*)&g_arch_current`
@@ -339,17 +342,12 @@ kernel.
 
 ```
         case KOS_SYS_SEND:
-        case KOS_SYS_SEND_TIMED:
         {
             // No dispatch IrqLock: endpoint_send takes and releases its own around the
             // park, and a spanning caller lock would livelock ARM.
-            uint32_t timeout = KOS_TIMEOUT_NONE;
-            if (nr == KOS_SYS_SEND_TIMED)
-            {
-                timeout = static_cast<uint32_t>(a3);
-            }
             return static_cast<uint64_t>(endpoint_send(static_cast<uint32_t>(a0), a1,
-                                                       static_cast<size_t>(a2), timeout));
+                                                       static_cast<size_t>(a2),
+                                                       static_cast<uint32_t>(a3)));
         }
 ```
 
@@ -360,8 +358,8 @@ values (the clock read) and the ones that return a small signed count.
 `IrqLock` is the kernel's critical section: on Cortex-M it raises `BASEPRI` so that interrupts
 which could touch kernel state wait until it is released. You will see one in almost every case.
 
-**Try it:** at the `syscall_dispatch` stop, `info args` prints `nr = 27, a0 = 0, a1 = 62275, a2 = 29,
-a3 = 0`: the same five words, now C++ parameters.
+**Try it:** at the `syscall_dispatch` stop, `info args` prints `nr = 50, a0 = 0, a1 = 62275, a2 = 29,
+a3 = 4294967295`: the same five words, now C++ parameters.
 
 **Why, and the contract:** [Book: the syscall path](../book/the-syscall-path-trap-dispatch-return.md)
 ("Validate, then use"), [Reference: invariants](../reference/invariants.md)
@@ -482,24 +480,10 @@ $3 = {obj = 0, type = 0 '\000', seq_lo = 0 '\000', rights = 0 '\000', seq_hi = 0
 Value returned is $4 = (void *) 0x0
 ```
 
-`type = 0` is `CapType::CAP_EMPTY`. To see a resolve succeed, look at the `ping` thread a little
-later: `delete`, `break kos_sem_post`, `continue` (it stops with `sem=2`), then
-`break kickos::cap_resolve_e`, `continue`:
-
-```
-(gdb) p c->name
-$5 = "ping", '\000' <repeats 11 times>
-(gdb) p c->caps.chunk[0][cap_handle]
-$6 = {obj = 1, type = 1 '\001', seq_lo = 0 '\000', rights = 7 '\a', seq_hi = 0 '\000', gen = 0}
-(gdb) finish
-Value returned is $7 = (void *) 0x20004904 <kickos::detail::g_instance+324>
-(gdb) p *(kickos::Semaphore*)$
-$8 = {count = 0, waiters = {head = 0x200052f8 <kickos::detail::g_instance+2872>, tail = 0x200052f8 <...>}}
-```
-
-Slot 2 holds a semaphore (`type = 1`, `CAP_SEM`) with all three rights (wait, signal, transfer).
-The resolve returns the kernel's `Semaphore`, and its wait list already holds one thread: `pong`,
-waiting for this very post.
+`type = 0` is `CapType::CAP_EMPTY`. The threads of `hello` name no kernel object: its
+semaphores are words in its own memory, and nothing serves its stdout. A resolve that
+succeeds, on an endpoint a server was given, is in
+[5. Call and reply](05-call-and-reply.md), Stop 3.
 
 **Why, and the contract:** [Book: naming a kernel object](../book/handles-and-the-resolve-chokepoint.md),
 [Reference: architecture](../reference/architecture.md) ("Object model, capabilities & IPC")
@@ -677,7 +661,8 @@ through semihosting, and on the F411 `arch/arm/chip/stm32f411/chip_stm32f411.cc`
   and the park that follows.
 - [5. Call and reply](05-call-and-reply.md): the `KOS_SYS_CALL_REG` fast path that `SVC_Handler`
   tests for.
-- [8. Spawn and capabilities](08-spawn-and-caps.md): how slot 2 of `ping`'s table got its semaphore.
+- [8. Spawn and capabilities](08-spawn-and-caps.md): how a spawned thread's table gets its
+  capabilities.
 - [9. Fault and kill](09-fault-and-kill.md): what happens when the `PSP_GUARD` check fails.
 - [14. RISC-V](14-riscv.md): the same stops through `ecall` and a different trap entry;
   [13. ARMv8-M](13-armv8m.md) shows this chapter's trap running unchanged on a Cortex-M33.
@@ -685,9 +670,9 @@ through semihosting, and on the F411 `arch/arm/chip/stm32f411/chip_stm32f411.cc`
 ## Exercises
 
 1. `main`'s capability table has 10 slots (`p c->cap_width` at a `cap_resolve_e` stop). Predict
-   what `kos_send(40, "x", 1)` from `main` returns and which test in `cap_lookup` refuses it. Then
-   predict the answer for `(1u << 16) | 2`, which names slot 2 with the wrong generation, once
-   `main` has created its semaphores (slots 1 and 2). Check both with
+   what `kos_send(40, "x", 1, 0)` from `main` returns and which test in `cap_lookup` refuses it. Then
+   predict the answer for `(1u << 16) | 2`, which names slot 2 with generation 1. Slot 2 is
+   empty, so which test refuses it first, the empty slot or the generation? Check both with
    `break kickos::cap_resolve_e if cap_handle == 40` (and the second value) and `finish`.
 2. In a scratch app, write to a kernel address through the public fallback:
    `kickos::kconsole_offer(reinterpret_cast<char const*>(0x20004000), 4)` (the raw

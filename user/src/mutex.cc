@@ -25,7 +25,7 @@ int kos_mutex_lock(kos_mutex_t* m, uint32_t timeout_us)
     {
         return 0;
     }
-    if ((held & ~KOS_MUTEX_WAITERS) == self)
+    if ((held & ~KOS_WORD_WAITERS) == self)
     {
         return -KOS_EDEADLK;
     }
@@ -40,7 +40,7 @@ int kos_mutex_unlock(kos_mutex_t* m)
     {
         return 0;
     }
-    if ((held & ~KOS_MUTEX_WAITERS) != self)
+    if ((held & ~KOS_WORD_WAITERS) != self)
     {
         return -KOS_EPERM;
     }

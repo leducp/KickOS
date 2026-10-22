@@ -202,12 +202,32 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
   table that wraps the unbacked apertures as Device + XN + no-access, programmed *before* the
   I-cache is enabled. Runs `SystemCoreClock` at the ROM-default **396 MHz** -- the 600 MHz
   CCM/PLL tree is a follow-up, not a regression. Full story: `../design-teensy-mpu-hang.md`.
+  **The hardware floor:** the default memory map types the whole `0x6000_0000`-`0x9FFF_FFFF`
+  FlexSPI/SEMC range Normal, and only an MPU row can type its unbacked part Device, so the
+  enforcing build programs its fixed rows before the caches are on, and a build that enforces
+  nothing leaves the caches off. Inside HardFault and NMI handlers the MPU is off (`HFNMIENA` is
+  clear), so the default map applies there with the caches on.
 - **`f411disco` shares SPI1's PA5/PA6/PA7 with the onboard L3GD20 / I3G4250D gyro**, and the
   gyro's SDO sits on PA6, which is MISO. Its chip-select is **PE3**. Anything driving SPI1 here
   must preset PE3 HIGH (GPIOE output, through the pinmux seam) before any SCK activity, so the
   gyro stays deselected and its SDO tri-stated off MISO. Confirmed against the UM1842 pin table;
   `f411spi`'s task does exactly this. A gyro fighting for MISO with PE3 high means the preset
   did not take, not a wiring fault.
+- **On `xmc4800-relax` one USIC channel window cannot isolate its channel from the other.**
+  `KSCFG` is a channel register at channel base + `0x0C`, inside each channel's window and
+  writable from user mode, but `KSCFG.MODEN` gates the whole module (XMC4700/4800 RM, USIC V2.16,
+  section 18.9, p.18-165), and `FMR.SIOx` and `INPR`, also writable from the window, raise any of
+  the module's service-request lines. So the holder of one channel can stop or interrupt the other,
+  and no kernel check can prevent it without taking registers the driver needs for its own
+  bring-up. This is the hardware floor: two drivers on one USIC module trust each other, the chip
+  file marks each module `module_gate`, and a composition that splits one between tasks declares
+  `accepts: [coarse_gate]` on both. `arch_console_reclaim_window` returns channel 0 only, so a
+  channel 1 holder does not delay a console reclaim, and a reclaim that reprograms channel 0
+  cannot restore a module a channel 1 holder has gated.
+- **`f302nucleo` and `bluepill-c8` build with `KICKOS_TLS` off.** On an arch that derives the
+  thread pointer from SP every stack must be one power-of-two stride (invariant
+  `tls-thread-pointer-forces-a-pow2-stack-stride`), and on these 16 KiB and 20 KiB parts the
+  rounding costs a thread, so they keep the thread and give up `thread_local`.
 - **`imx8mp-evk` IS THE FLEET'S FIRST MODEL OF A REAL PART RATHER THAN OF A BOARD, and every
   number below is emulator-grade.** There is no i.MX8MP on this bench; the witness is
   `qemu-system-aarch64 -M imx8mp-evk` (11.1.0) and nothing else. The board is `arch/arm64` /
@@ -401,10 +421,12 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
     (`../../arch/x86/chip/q35/cpu.cmake`), threads get x87, SSE and AVX while the kernel half is
     compiled without them, and `efi_main` first runs a check compiled for the base level
     (`../../arch/x86/x86_64/floor_x86_64.cc`) that hands a processor below it back to firmware
-    with a line on firmware's console. Every emulation runs `qemu64` plus the level's features,
-    XSAVEOPT, without which QEMU 11.1's TCG spins on the write that enables XSAVE, and SMEP and
-    SMAP, which `qemu64` does not offer, `KICKOS_X86_64_QEMU_CPU` in `../../cmake/kickos.cmake`,
-    and `x86_64_x1_floor` boots plain `qemu64` and requires the refusal.
+    with a line on firmware's console. The floor also requires RDTSCP, which the level does not
+    name. Every emulation runs `qemu64` plus the level's features, XSAVEOPT, without which QEMU
+    11.1's TCG spins on the write that enables XSAVE, SMEP and SMAP, which `qemu64` does not
+    offer, and RDTSCP, `KICKOS_X86_64_QEMU_CPU` in `../../cmake/kickos.cmake`. `x86_64_x1_floor`
+    boots plain `qemu64` and `x86_64_x1_floor_rdtscp` that model without RDTSCP, and both require
+    the refusal.
   - **Its exit status crosses a seven-bit device.** `isa-debug-exit` reports `(status << 1) | 1`
     into an 8-bit process exit code, so only 0 through 127 round-trip and 139 arrives as 11.
     `arch_shutdown` therefore prints the full byte on the console as `KICKOS-EXIT status <n>`, and
@@ -541,9 +563,10 @@ Two independent causes, both measured on the ELF at the tip:
   **1,952 B remain**, below the 2,048 one spawned thread's stack needs
   (`boards/f302nucleo/configs/base/defconfig:9`). Every spawning case therefore fails on
   `w >= 0` / `drv >= 0` / `a >= 0 and b >= 0`.
-- **Object pools.** A zero-skip run needs `KICKOS_MAX_SEMAPHORES >= 6` (peak is
-  `mutex_deadlock`: two permanent plus four live); this chip provisions 4
-  (`boards/f302nucleo/configs/base/defconfig:6`). That is the `sem_destroy`
+- **Object pools.** A zero-skip run then needed a semaphore pool (since removed)
+  of at least 6 (peak was `mutex_deadlock`: two permanent
+  plus four live); this chip provisioned 4
+  (`boards/f302nucleo/configs/base/defconfig:6`). That is the `sem_destroy` (since removed)
   failure on `h >= 0`.
 
 Two further provisionings were flashed, which is the evidence that **no single knob fixes
@@ -553,7 +576,7 @@ it**:
 | --- | --- |
 | board defaults | 17 `ok` / 42 `not ok` / 10 skipped |
 | `-DKICKOS_MAX_THREADS=4` | 17 `ok` / 42 `not ok` / 10 skipped -- identical; the arena binds, not the pool |
-| `-DKICKOS_MAX_THREADS=4 -DKICKOS_USER_STACK_SIZE=1024` | 18 `ok` / 41 `not ok` / 11 skipped -- one case bought, then `sem_destroy` refuses on the semaphore pool |
+| `-DKICKOS_MAX_THREADS=4 -DKICKOS_USER_STACK_SIZE=1024` | 18 `ok` / 41 `not ok` / 11 skipped -- one case bought, then `sem_destroy` (since removed) refuses on the semaphore pool |
 
 In that last configuration one failure is **not** a resource refusal: `console_publish_priv`
 gets its worker spawned and then fails on `g_pub_rc == -KOS_EPERM`. Do not read that as an
@@ -1121,9 +1144,7 @@ re-deriving the per-region counts as a whole-suite one.
   for against `KICKOS_MAX_TASKS` less main's own and the image's driver tasks, the line it asks for
   against `KICKOS_TASK_IRQ_HANDLE_BUDGET` (main holds no line between arms; a binding still
   retiring from the arm before is waited out by the ask, not predicted), the objects it asks for
-  against main's task budgets
-  (`KICKOS_TASK_SEMAPHORE_BUDGET` less the two semaphores main holds for the run, and the
-  endpoint and notification budgets), the capability slots either ask holds or its skip reason
+  against main's endpoint and notification budgets, the capability slots either ask holds or its skip reason
   states against the table main has left (`tests/static/selftest_demands.py` reads the arms).
   The arena blocks the arms use are reserved at image start, and an image whose arena cannot back
   them leaves the arms out at build and lists them (`user/apps/common/selftest/arena_fit.py`),
@@ -1305,7 +1326,7 @@ a capture-tooling fault, not a board fault), and cost no press.
 the faulting context still live, and the `rebootdemo` witness above covers only thread mode on an
 ordered exit. Steps 1, 3 and 7 are exactly that bootrom call returning the board to BOOTSEL.
 
-**Owed to M10.6.9, on `picopi`, `pizero2350` and `teensy41`:** `selftest` and `bench`, configured
+**Owed to M10.6.11, on `picopi`, `pizero2350` and `teensy41`:** `selftest` and `bench`, configured
 with no `-D`, ask for the bootloader at their end and set it as their terminal outcome at their
 start: after the last TAP line (or the bench's `bench: done`) the board re-enumerates as its
 bootloader device (RP2040 `2e8a:0003`, RP2350 `2e8a:000f`, HalfKay `16c0:0478`) and the next image
@@ -2802,9 +2823,9 @@ left over.
   named the wrong resource eight times out of nine. The right-size recovered FOUR of the eight; the
   remaining four want more arena than right-sizing can free on a 16 KiB part, so they stay skipped --
   correctly, and still under the wrong label.
-- **Test 18 (`mutex_deadlock`) is mislabelled DIFFERENTLY, and no arena work will ever un-skip it.**
-  Its guard is the configured `KICKOS_MAX_HANDLES` (7 on the supply-7 boards, of which this is one)
-  or semaphore exhaustion, so it will keep skipping on this board however the stacks are sized.
+- **Test 18 (`mutex_deadlock`) was mislabelled DIFFERENTLY, and no arena work could un-skip it.**
+  Its guard was the configured `KICKOS_MAX_HANDLES` (7 on the supply-7 boards, of which this is one)
+  or semaphore exhaustion, so it kept skipping on this board however the stacks were sized.
   Anyone reading a residual `pool too small` there and reaching for more arena is chasing the wrong
   resource.
 
@@ -3004,7 +3025,7 @@ remedy is to let that run finish before arming. It is not a clobber, and it is n
 **The earlier pass of record, 2026-08-03, all six boards at ONE CLEAN COMMITTED TIP `9a00e73`** -- the
 finished tree: Stage 3's capability slab, Stage 4's per-grant destinations, the CRLF cook, the
 first-light markers, the `rxsci` TIE ordering fix, `KOS_SYS_IRQ_DISCARD`, the device-window console
-reclaim with `KOS_SYS_THREAD_KILL`, the stable `ktime_rearm` deadline, and `rx72m` under MPU
+reclaim with the thread kill, the stable `ktime_rearm` deadline, and `rx72m` under MPU
 enforcement. `257def0` was the five-board pass that preceded it; see the boundary table.
 
 | board | enforcement | plan | result | capture (`.session/logs/`) |
@@ -3090,7 +3111,7 @@ is closed for everything at or before `270b6fa`, and PARTIALLY at `124b68c` -- o
 | 2026-08-02 | `257def0` | The finished tree at `1..78` / `1..74`, five boards, zero failures. Also the pass that CAUGHT the `esp32-wroom` hang at `sleep_order` -- the Xtensa `CCOMPARE0` equality-match defect, fixed on its own merits at `b4e888d`. The boundary is closed as far as `257def0`. |
 | 2026-08-04 | `da716a8` | **The capability-table pass of RECORD, and the FIRST witness of the merged rework.** Two captures, `m472-{xmc,k64}-st`, both `1..79` with 79 ok and zero not-ok, skips or partials, at an 11-slot table under the retaining service list. Covers M4.7.1 and M4.7.2 together, because M4.7.1's own `c82af2c` run is not an ancestor of `master` and stamps a tree 26 code files away from what merged. First silicon for the segmented chunk decode being ASSERTED (`cap_chunk_span`) and for the capability generation-mismatch branch of `cap_lookup` being reached at all (`cap_gen_reuse`). Two boards, one ISA, one geometry: see the section above for what it does not cover. |
 | 2026-08-02 | `9a00e73` | Superseded as the pass of record by `da716a8` above for the capability subsystem; still the pass of record for the M4.6.1 IRQ and UART work on six boards. **The boundary is closed.** Seven captures on six boards, `m461n-*`, all at this clean tip, zero `not ok`: `xmc4800-relax` `1..78`, `frdmk64f` `1..78`, `esp32c6-wroom` `1..78`, **`rx72m` `1..78` under MPU ENFORCEMENT for the first time**, `esp32-wroom` `1..74`, `f302nucleo` `1..44` + `1..30`. First silicon for the `ktime_rearm` fix, including the two boards it most exposes: `esp32-wroom` (Xtensa, no dedup guard at all) and `rx72m` (software dedup on the deadline value). |
-| 2026-08-02 | `20f6d43` | Superseded as the pass of record by `9a00e73` above. Seven captures on six boards, `m461m-*`, all stamping this clean tip: `xmc4800-relax` `1..78`, `frdmk64f` `1..78`, `esp32c6-wroom` `1..78`, `esp32-wroom` `1..74`, `rx72m` `1..74`, all via their `*_uartirq` service lists with first-light markers on the wire; plus `f302nucleo` `1..44` + `1..30` as two images. Zero `not ok`. First silicon for: the device-window console reclaim, `KOS_SYS_THREAD_KILL`, the Xtensa CCOMPARE fix (`b4e888d`), the LX6 unroutable-source silencing, the selftest suite split, and the three arms it restored (`cap_dest` PASS, `cap_capacity` PARTIAL, `irq_discard` PASS). |
+| 2026-08-02 | `20f6d43` | Superseded as the pass of record by `9a00e73` above. Seven captures on six boards, `m461m-*`, all stamping this clean tip: `xmc4800-relax` `1..78`, `frdmk64f` `1..78`, `esp32c6-wroom` `1..78`, `esp32-wroom` `1..74`, `rx72m` `1..74`, all via their `*_uartirq` service lists with first-light markers on the wire; plus `f302nucleo` `1..44` + `1..30` as two images. Zero `not ok`. First silicon for: the device-window console reclaim, the thread kill, the Xtensa CCOMPARE fix (`b4e888d`), the LX6 unroutable-source silencing, the selftest suite split, and the three arms it restored (`cap_dest` PASS, `cap_capacity` PARTIAL, `irq_discard` PASS). |
 | 2026-08-02 | `b4e888d` | Witnessed at a clean tip by the `20f6d43` row above. `b4e888d` changed `arch_xtensa.cc` (`arch_timer_arm`, the CCOMPARE equality-match fix) and `selftest/main.cc`. Its OWN captures (`m461i-lx6-{1,2}`, `m461i-rx-{1,2,3}`, `m461j-rx`, `m461k-lx6`, `m461k-rx`) all stamp `cab37e6-dirty` and are named in no other tracked doc, so they identify no tree and cannot extend the boundary by themselves. |
 
 From `2fc7799` on there is only one posture to witness, so "both arms" stops being a thing a capture

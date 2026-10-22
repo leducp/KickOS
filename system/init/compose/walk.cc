@@ -41,7 +41,7 @@ namespace kickos::init
         void say(Message& m)
         {
             char const* const text = m.add("\n").text();
-            int32_t const sent = kos_send_timed(KOS_CAP_STDOUT, text, m.length(),
+            int32_t const sent = kos_send(KOS_CAP_STDOUT, text, m.length(),
                                                 kickos::driver::KOS_DRV_HANDOVER_PROBE_US);
             size_t done = 0;
             if (sent > 0)
@@ -480,9 +480,9 @@ namespace kickos::init
             }
             if (build_.multicore and not s.pinned)
             {
-                s.step = "kos_thread_set_affinity";
-                int const rc = kos_thread_set_affinity(kos_thread_self(), t.core_mask);
-                if (rc != 0)
+                s.step = "kos_thread_affinity";
+                int const rc = kos_thread_affinity(kos_thread_self(), t.core_mask);
+                if (rc < 0)
                 {
                     return rc;
                 }
@@ -623,7 +623,11 @@ namespace kickos::init
         }
         if (s.pinned)
         {
-            check(kos_thread_set_affinity(kos_thread_self(), 0u), "kos_thread_set_affinity", s.task);
+            int const unpinned = kos_thread_affinity(kos_thread_self(), 0u);
+            if (unpinned < 0)
+            {
+                check(unpinned, "kos_thread_affinity", s.task);
+            }
         }
         close(s.copy, "kos_handle_close of the badged copy", s.task);
     }
@@ -661,6 +665,7 @@ namespace kickos::init
         // The state says what happened and the bit only where to look: one wake may carry an
         // end, a death and a readiness, and tasks share a bit.
         bool ending = false;
+        int ends_status = 0;
         for (uint16_t i = 0; i < header_->task_count; i++)
         {
             TaskRecord& r = record(i);
@@ -672,7 +677,8 @@ namespace kickos::init
             {
                 continue;
             }
-            int const state = kos_task_state(r.handle);
+            int status = 0;
+            int const state = kos_task_state(r.handle, &status);
             if (state < 0)
             {
                 Message answer;
@@ -682,11 +688,12 @@ namespace kickos::init
             if (i == ends_ and ended)
             {
                 ending = true;
+                ends_status = status;
                 continue;
             }
             if ((state & KOS_TASK_DEAD) != 0)
             {
-                check(kos_task_kill(r.handle), "kos_task_kill", i);
+                check(kos_task_slay(r.handle, 0), "kos_task_slay", i);
                 report(Report::Kind::RELEASED, i, nullptr, 0);
                 death(i);
                 continue;
@@ -706,9 +713,7 @@ namespace kickos::init
         // After every death this wake carries.
         if (ending)
         {
-            int status = 0;
-            check(kos_task_exit_status(record(ends_).handle, &status), "kos_task_exit_status", ends_);
-            end(status);
+            end(ends_status);
         }
     }
 

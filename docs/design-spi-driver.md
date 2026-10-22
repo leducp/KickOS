@@ -67,7 +67,7 @@ Region budget (ARMv7-M PMSA, 8 max): code 1 + appdata 1 + stack 1 + SPI window 1
 folded in. Cheaper than the task #9 GPIO+timer example (5).
 
 ## Transfer model: IRQ-driven, tier-1 reused unchanged
-DECIDED: park the driver on a semaphore via the existing `irq_event_isr` -> `sem_post` pattern, with
+DECIDED: park the driver on the line's notification via the existing `irq_event_isr` -> `notify_raise` pattern, with
 no kernel change. REJECTED: polling, which burns the unprivileged thread's quantum.
 
 Wait on RX complete: RX-done implies TX shifted, so one wait covers full-duplex. The one

@@ -998,17 +998,17 @@ namespace kickos
                 // frees a device for a second holder: a sibling keeps the space and must not
                 // keep the mapping.
                 uint16_t const holder = static_cast<uint16_t>(kernel().threads.index_of(c) + 1);
-                mutex_windows_lost(domain_space(thread_domain(c)), domain_ranges(thread_domain(c)),
-                                   holder, lock);
+                word_windows_lost(domain_space(thread_domain(c)), domain_ranges(thread_domain(c)),
+                                  holder, lock);
                 aspace_window_unmap_holder(domain_space(thread_domain(c)),
                                            domain_ranges_mut(thread_domain(c)), holder);
                 // Release the user stack before task_release can destroy its space.
                 // Execution is on the kernel stack; no later code may touch the user stack.
                 if (c->kstack_owned)
                 {
-                    mutex_reach_lost(domain_space(thread_domain(c)),
-                                     reinterpret_cast<uintptr_t>(c->stack_base), c->stack_size,
-                                     lock);
+                    word_reach_lost(domain_space(thread_domain(c)),
+                                    reinterpret_cast<uintptr_t>(c->stack_base), c->stack_size,
+                                    lock);
                     ustack_free(thread_domain(c),
                                 reinterpret_cast<uintptr_t>(c->stack_base), c->stack_size);
                     c->stack_base = nullptr;

@@ -206,7 +206,7 @@ _blocked="$(after_line 'blocked line, written once')"
 [ -n "$_blocked" ] && [ "$_blocked" -gt "$_record" ] \
   || fail "case 3: the parked line reached the wire before the reclaim"
 has '\[drvdeath\] kill gate: EBADF/EPERM refused, root unkillable, spawner accepted' \
-  || fail "case 3: the thread_kill gate matrix did not pass"
+  || fail "case 3: the kill gate matrix did not pass"
 [ "$(count_of "$DEATH_LINE")" -eq 1 ] \
   || fail "case 3: the init did not report the driver's death exactly once on the reclaimed console"
 

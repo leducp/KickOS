@@ -288,8 +288,11 @@ fleet pass captures both builds and its table shows `chaincheck_float (flat)`. B
 ## `mutexbench`, the mutex as an application pays for it
 
 `mutexbench` (`user/apps/common/mutexbench/main.cc`) times an uncontended lock and unlock, the C
-library's locks under `malloc` and `getenv`, a bare system call, and the waiter's wait in a mutex
-handoff: alone, beside every other thread slot parked in pairs, and from another task through a
+library's locks under `malloc` and `getenv`, the bare system calls (`cpu_clock_hz`, `clock_now`,
+`core_current`; each is a user-mode read where the board has one), a semaphore's post and
+wait (`sem: post+wait`, an uncontended pair of compare-and-swaps in user mode with no kernel
+entry, so it times no system call and compares only with captures whose semaphore is a user
+word), a semaphore round trip between two threads, and the waiter's wait in a mutex handoff: alone, beside every other thread slot parked in pairs, and from another task through a
 memory window where the board has address spaces. It reads `kos_clock_now`, so it builds on every
 board, the 64 KiB-flash ones included, and needs no bench kernel; a `bench` variant adds the
 kernel's own rows over each handoff window. Each handoff row prints its p50, p99 and max and the
@@ -298,8 +301,9 @@ are read, not judged (`kickos_unbooted`), so a capture takes no judge:
 
     APP=mutexbench JUDGE=none CAP_SECS=90 VARIANT= tools/bench/bench.sh <board>
 
-A handoff is timed by a `kos_clock_now` on each side, which is a system call, so its figures
-compare only between trees whose clock read costs the same.
+A handoff is timed by a `kos_clock_now` on each side, a system call except where
+`KICKOS_CLOCK_USER` makes it a counter read (porting.md), so its figures compare only between
+trees whose clock read costs the same.
 
 ## `ucasrewind`, the rewind witness
 

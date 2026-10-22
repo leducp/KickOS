@@ -281,8 +281,9 @@ int arch_in_isr(void)
 
 // --- Trace clock --------------------------------------------------------------
 // 32-bit and wraps; the host reconstructs absolute time from the SESSION clock_hz anchors.
-// U-mode can read it only where kickos_rv32_init enabled mcounteren.CY. Without Zicntr rdcycle
-// is illegal in M-mode too; a chip whose counter is not rdcycle overrides this function.
+// A U-mode read traps where S-mode exists, scounteren opening the time CSR alone. Without
+// Zicntr rdcycle is illegal in M-mode too; a chip whose counter is not rdcycle overrides this
+// function.
 uint32_t arch_trace_now(void)
 {
     uint32_t v;
@@ -708,6 +709,14 @@ void kickos_rv32_init(void)
     if (arch_rv_has_mcounteren() != 0)
     {
         __asm volatile("csrw mcounteren, %0" ::"r"(0x7u) : "memory");
+        // Where S-mode exists a U-mode counter read also needs scounteren (privileged spec
+        // 3.1.11). TM alone: the time CSR, which KICKOS_CLOCK_USER reads.
+        uint32_t misa = 0;
+        __asm volatile("csrr %0, misa" : "=r"(misa));
+        if ((misa & (1u << ('S' - 'A'))) != 0)
+        {
+            __asm volatile("csrw scounteren, %0" ::"r"(1u << 1) : "memory");
+        }
     }
 
     // Permissive bootstrap PMP: ONE entry over the whole address space, R+W+X, U-accessible.

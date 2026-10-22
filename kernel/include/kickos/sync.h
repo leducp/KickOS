@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Kernel synchronization primitives: semaphores, priority-inheritance mutexes, and the
+// Kernel synchronization primitives: priority-inheritance mutexes, plain words, and the
 // wait-queue park and resume calls.
 
 #ifndef KICKOS_SYNC_H
 #define KICKOS_SYNC_H
 
-#include <kickos/mutex.h>
+#include <kickos/word_record.h>
 #include <kickos/thread.h>
 
 #include <kickos/sys/errno.h>
@@ -19,14 +19,6 @@ namespace kickos
 {
     class IrqLock;
     class VirtualRanges;
-
-    // A wait queue is a List of BLOCKED threads, using the shared TCB link node: a thread
-    // is on the ready list XOR on one of these.
-    struct Semaphore
-    {
-        int count = 0;
-        List waiters;
-    };
 
     // Delivered as wait_result to a lock() caller woken by an owner that exited holding the
     // mutex: the lock is held, but the protected invariant may be inconsistent. Negative and
@@ -138,25 +130,6 @@ namespace kickos
     // prevents reading pre-block state. It is a no-op on synchronous-switch backends.
     void wq_confirm_resume(Thread* c, uint32_t epoch);
 
-    enum class SemWait : uint8_t
-    {
-        TAKEN,
-        EMPTY,
-        PARKED,
-    };
-
-    void sem_init(Semaphore* s, int initial);
-    // `held` is the caller's outermost bracket, spanning the resolve that produced `s`; a
-    // cancel honoured here ends it (sched::exit_current). TAKEN with a token taken, EMPTY where
-    // `timeout_us` is 0 and no token is banked, or PARKED with `epoch` sampled: the caller then
-    // leaves `held`'s scope, calls wq_confirm_resume and reads wait_result (0 handed a token,
-    // -KOS_ETIMEDOUT expired, -KOS_ECANCELED cancelled).
-    SemWait sem_wait(IrqLock& held, Semaphore* s, uint32_t timeout_us, uint32_t& epoch);
-    // Hands the token to the highest-priority waiter, else banks it. Thread or ISR context.
-    // Returns false only with no waiter and the count already at KOS_SEM_COUNT_MAX, where the
-    // post is refused and the count left alone. The syscall reports -KOS_EOVERFLOW.
-    bool sem_post(Semaphore* s);
-
     // The priority-inheritance mutex on a user word (kickos/sys/abi.h, kos_mutex_t), entered
     // only on contention, thread context only. Both take their own IrqLock and must not be
     // called under one: a retry drops it, and mutex_lock runs the resume barrier and the
@@ -168,12 +141,12 @@ namespace kickos
     // priority; -KOS_ECANCELED when cancelled waiting; -KOS_EDEADLK for a word the caller holds
     // or a wait that would close a cycle, refused without parking or a boost; -KOS_EINVAL or
     // -KOS_EFAULT for a word the caller may not name (word_ref); -KOS_EINVAL for a word that
-    // disagrees with the record of its waiters; -KOS_EFAULT for a wait whose word left the
-    // caller's reach.
+    // disagrees with the record of its waiters, or whose record is a plain word's; -KOS_EFAULT for
+    // a wait whose word left the caller's reach.
     int mutex_lock(uintptr_t va, uint32_t timeout_us);
     // Hands the word to the highest waiter, then recomputes the ex-holder's effective priority
-    // over what it still holds. Returns 0, -KOS_EPERM if the caller is not the holder, or
-    // word_ref's refusal.
+    // over what it still holds. Returns 0, -KOS_EPERM if the caller is not the holder,
+    // -KOS_EINVAL for a plain word's record, or word_ref's refusal.
     int mutex_unlock(uintptr_t va);
     // `dying` is past Thread::dying and its unmaps: hand every record it holds to its top
     // waiter with MUTEX_OWNER_DIED, leaving the dying thread's priority unrecomputed. A word it
@@ -182,13 +155,27 @@ namespace kickos
 #if KICKOS_HAVE_ASPACE
     // `space` no longer maps [base, base + bytes) for a writer: every waiter of that space
     // parked through an address in it ends with -KOS_EFAULT. Caller holds IrqLock.
-    void mutex_reach_lost(struct arch_aspace* space, uintptr_t base, size_t bytes, Held held);
+    void word_reach_lost(struct arch_aspace* space, uintptr_t base, size_t bytes, Held held);
     // The same, for every window `holder` (a thread slot index plus one) holds in `ranges`.
-    void mutex_windows_lost(struct arch_aspace* space, VirtualRanges const* ranges,
-                            uint16_t holder, Held held);
+    void word_windows_lost(struct arch_aspace* space, VirtualRanges const* ranges,
+                           uint16_t holder, Held held);
 #endif
+    // The plain word pair (kickos/sys/abi.h, KOS_SYS_WORD_WAIT and KOS_SYS_WORD_WAKE), thread
+    // context only, each taking its own IrqLock: word_wake drops it to retry a lost
+    // compare-and-swap. A PI record's word answers -KOS_EINVAL to both, as a plain record's does
+    // to mutex_lock and mutex_unlock.
+    //
+    // word_wait parks the caller on the word's plain record while the word holds `expected`,
+    // asking for a pending cancel first. 1 woken with a unit, 0 woken without one, or the ABI's
+    // refusals.
+    int word_wait(uintptr_t va, uint32_t expected, uint32_t timeout_us);
+    // Wakes min(n, parked) waiters, the highest first and FIFO among equals, handing a unit to the
+    // first min(units, woken); the units left are added to the count only where no waiter
+    // remains. Answers how many it woke, or the ABI's refusals with nothing done.
+    int word_wake(uintptr_t va, uint32_t n, uint32_t units);
+
     // A waiter leaves the record it parked on: its last waiter frees it. Caller holds IrqLock.
-    void mutex_waiter_left(Mutex* m);
+    void word_waiter_left(WordRecord* m);
 
     // Link/unlink a CALL_REPLY_WAIT caller on the server's reply-donor list. Must be
     // called at every reply-cap mint site and at every site that consumes a CAP_REPLY

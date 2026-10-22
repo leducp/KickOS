@@ -32,7 +32,7 @@ namespace kickos
 {
     struct Endpoint;   // kickos/endpoint.h
     struct Notification; // kickos/notify.h
-    struct Mutex;      // kickos/mutex.h
+    struct WordRecord; // kickos/word_record.h
     struct Task;       // kickos/task.h
 
     enum class ThreadState : uint8_t
@@ -66,14 +66,13 @@ namespace kickos
     };
 
     // What a parked thread waits for, and the object owning the list it is on. Set at every park
-    // and cleared at every unpark: thread_kill dispatches on it, and a mis-tagged park unwinds the
+    // and cleared at every unpark: a cancel dispatches on it, and a mis-tagged park unwinds the
     // wrong list. WAIT_JOIN, WAIT_TASK_EMPTY and WAIT_CONSOLE are on no list at all, so the tag
     // is the only thing that finds them.
     enum WaitKind : uint8_t
     {
         WAIT_NONE = 0,
-        WAIT_MUTEX,     // wait_obj: the word's Mutex record. The PI chain-walk edge.
-        WAIT_SEM,       // wait_obj: the Semaphore
+        WAIT_MUTEX,     // wait_obj: the word's PI WordRecord. The PI chain-walk edge.
         WAIT_NOTIFY, // wait_obj: the Notification; one bound waiter, no queue
         WAIT_EP_SEND,   // wait_obj: the Endpoint; on its send_waiters
         WAIT_EP_RECV,   // wait_obj: the Endpoint; on its recv_waiters
@@ -85,6 +84,7 @@ namespace kickos
         WAIT_JOIN,      // wait_obj: the TARGET thread; queue-less on no list at all
         WAIT_TASK_EMPTY, // wait_obj: the TASK; queue-less on no list at all
         WAIT_CONSOLE,    // wait_obj: none; queue-less, a user kernel console write waiting to offer again
+        WAIT_WORD,       // wait_obj: the word's PLAIN WordRecord; on its waiters
     };
 
     // Has this thread been asked to die, and how. Zero == CANCEL_NONE, so the thread_create
@@ -252,7 +252,7 @@ namespace kickos
         // stack_base was demand-allocated by the kernel and must be harvested onto the free
         // list when this slot is reclaimed. A caller-owned stack is never harvested.
         bool kstack_owned = false;
-        // Cancellation request (KOS_SYS_THREAD_KILL), a CancelKind. One-way: set by the
+        // Cancellation request (KOS_SYS_THREAD_CANCEL), a CancelKind. One-way: set by the
         // killer, never cleared, honoured at the target's own death point, its next syscall
         // entry. CANCEL_SLAY is the exception: its claim is a switch into the target, so it
         // reaches a thread that never re-enters the kernel (thread_slay_claim_pending).
@@ -325,13 +325,13 @@ namespace kickos
         // Read it through the accessors below and never raw: an untagged cast is how a
         // mis-tagged park reaches the wrong type.
         void* wait_obj = nullptr;
-        // While parked on a mutex word, the address this thread named it by: a death hands the
+        // While parked on a user word, the address this thread named it by: a death hands the
         // word over through it, and a call removing this thread's reach of it ends the wait.
         uintptr_t wait_va = 0;
-        // Head of the mutex records this thread OWNS, linked through Mutex::next_held;
+        // Head of the mutex records this thread OWNS, linked through WordRecord::next_held;
         // thread_effective_prio scans it. Touched only under IrqLock at the mutex
         // block/unblock sites.
-        Mutex* held_list = nullptr;
+        WordRecord* held_list = nullptr;
 
         // Callers parked in CALL_REPLY_WAIT on a reply cap THIS thread holds: one entry per live
         // CAP_REPLY in its table, linked through the caller's own `link`. The donor enumeration
@@ -377,13 +377,21 @@ namespace kickos
 
         // The wait edge, narrowed to one kind each. TOTAL: every other kind answers
         // nullptr, which is what terminates the PI chain walk at a non-mutex park.
-        Mutex* wait_mutex() const
+        WordRecord* wait_mutex() const
         {
             if (wait_kind != WAIT_MUTEX)
             {
                 return nullptr;
             }
-            return static_cast<Mutex*>(wait_obj);
+            return static_cast<WordRecord*>(wait_obj);
+        }
+        WordRecord* wait_word() const
+        {
+            if (wait_kind != WAIT_WORD)
+            {
+                return nullptr;
+            }
+            return static_cast<WordRecord*>(wait_obj);
         }
         Endpoint* wait_endpoint() const
         {

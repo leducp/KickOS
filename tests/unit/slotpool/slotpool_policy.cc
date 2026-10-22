@@ -149,23 +149,22 @@ namespace
     }
 }
 
-// N=4: the endpoint-pool default, and the floor the 16-20 KiB boards cut their
-// semaphore and IRQ-handle pools to.
+// N=4: the endpoint-pool default, and the floor the 16-20 KiB boards cut their pools to.
 TEST(SlotPool, spread_pure_churn_tiny_board_pool)
 {
     spread_pure_churn<4>("tiny-board pool");
 }
 
-// N=8: the mutex and IRQ-handle default (config/system.h).
+// N=8: the IRQ-handle, notification and frame-run default (config/system.h).
 TEST(SlotPool, spread_pure_churn_mid_pool)
 {
     spread_pure_churn<8>("mid pool");
 }
 
-// N=16: the semaphore default (config/system.h).
-TEST(SlotPool, spread_pure_churn_default_sem_pool)
+// N=32: the widest pool any charged pool's knob allows (Kconfig).
+TEST(SlotPool, spread_pure_churn_widest_pool)
 {
-    spread_pure_churn<16>("default sem pool");
+    spread_pure_churn<32>("widest pool");
 }
 
 // The same measurement with part of the pool permanently occupied: the factor is the

@@ -24,7 +24,10 @@ namespace kickos
     namespace
     {
 #if KICKOS_HAVE_ASPACE
-        int word_key(Thread const* c, uintptr_t va, arch_phys_addr_t* key)
+        // The walk that names the frame also reaches it: *word is the held alias, null with
+        // nothing held where the page cannot be reached.
+        int word_key(Thread const* c, uintptr_t va, arch_phys_addr_t* key, UserOwner* owner,
+                     uint32_t** word)
         {
             Domain const* const d = thread_domain(c);
             struct arch_aspace* const space = domain_space(d);
@@ -47,18 +50,40 @@ namespace kickos
             {
                 return -KOS_EFAULT;
             }
-            uintptr_t const in = va & static_cast<uintptr_t>(g - 1u);
-            arch_phys_addr_t const frame = arch_aspace_frame_at(space, va - in);
+            bool uncached = false;
+            arch_phys_addr_t frame = 0;
+            void* const p = arch_aspace_acquire(space, va, &uncached, &frame);
+            *word = static_cast<uint32_t*>(p);
+            // A cacheable alias of an uncached word cannot be compared and swapped atomically.
+            if (p != nullptr and uncached)
+            {
+                arch_aspace_release(space, va);
+                *word = nullptr;
+            }
+            arch_phys_addr_t const at = frame + (va & static_cast<uintptr_t>(g - 1u));
+            int rc = 0;
             if (frame == 0)
             {
-                return -KOS_EFAULT;
+                rc = -KOS_EFAULT;
             }
-            if (e->memtype != static_cast<uint8_t>(ARCH_MAP_NORMAL))
+            else if (e->memtype != static_cast<uint8_t>(ARCH_MAP_NORMAL))
             {
-                return -KOS_EINVAL;
+                rc = -KOS_EINVAL;
             }
-            *key = frame + in;
-            return 0;
+#if KICKOS_AMP_SHARE
+            else if (amp_share_meets(at, at + sizeof(uint32_t)))
+            {
+                rc = -KOS_EINVAL;
+            }
+#endif
+            if (rc != 0 and *word != nullptr)
+            {
+                arch_aspace_release(space, va);
+                *word = nullptr;
+            }
+            *key = at;
+            *owner = space;
+            return rc;
         }
 #else
         bool word_writable(Thread const* t, uintptr_t va)
@@ -89,7 +114,8 @@ namespace kickos
             return false;
         }
 
-        int word_key(Thread const* c, uintptr_t va, arch_phys_addr_t* key)
+        int word_key(Thread const* c, uintptr_t va, arch_phys_addr_t* key, UserOwner* owner,
+                     uint32_t** word)
         {
             if (not word_writable(c, va))
             {
@@ -99,38 +125,65 @@ namespace kickos
             {
                 return -KOS_EINVAL;
             }
+#if KICKOS_AMP_SHARE
+            if (amp_share_meets(va, va + sizeof(uint32_t)))
+            {
+                return -KOS_EINVAL;
+            }
+#endif
             *key = va;
+            *owner = user_space_of(c);
+            *word = reinterpret_cast<uint32_t*>(va);
             return 0;
         }
 #endif
+
+        int word_name(Thread const* c, uintptr_t va, WordRef* out, uint32_t** word)
+        {
+            *word = nullptr;
+            if ((va & (sizeof(uint32_t) - 1u)) != 0)
+            {
+                return -KOS_EINVAL;
+            }
+            if (c == nullptr)
+            {
+                return -KOS_EFAULT;
+            }
+            arch_phys_addr_t key = 0;
+            UserOwner owner = nullptr;
+            int const rc = word_key(c, va, &key, &owner, word);
+            if (rc != 0)
+            {
+                return rc;
+            }
+            out->key = key;
+            out->space = owner;
+            out->va = va;
+            return 0;
+        }
     }
 
     int word_ref(Thread const* c, uintptr_t va, WordRef* out)
     {
-        if ((va & (sizeof(uint32_t) - 1u)) != 0)
+        uint32_t* word = nullptr;
+        int const rc = word_name(c, va, out, &word);
+#if KICKOS_HAVE_ASPACE
+        if (word != nullptr)
         {
-            return -KOS_EINVAL;
+            kaccess_word_put(*out);
         }
-        if (c == nullptr)
+#endif
+        return rc;
+    }
+
+    int word_open(Thread const* c, uintptr_t va, WordRef* out, uint32_t** word)
+    {
+        int const rc = word_name(c, va, out, word);
+        if (rc == 0 and *word == nullptr)
         {
             return -KOS_EFAULT;
         }
-        arch_phys_addr_t key = 0;
-        int const rc = word_key(c, va, &key);
-        if (rc != 0)
-        {
-            return rc;
-        }
-#if KICKOS_AMP_SHARE
-        if (amp_share_meets(key, key + sizeof(uint32_t)))
-        {
-            return -KOS_EINVAL;
-        }
-#endif
-        out->key = key;
-        out->space = user_space_of(c);
-        out->va = va;
-        return 0;
+        return rc;
     }
 
     WordRef word_ref_parked(Thread const* w, arch_phys_addr_t key)

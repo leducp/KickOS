@@ -19,12 +19,14 @@ UNITS = ("pmsav7", "pmsav8", "pmsav6", "pmp", "rxmpu", "sysmpu", "mprotect", "mm
 # power of two on its own alignment.
 REGION_UNITS = ("pmsav7", "pmsav8", "pmsav6", "pmp", "rxmpu", "sysmpu")
 POW2_UNITS = ("pmsav7", "pmsav6", "pmp")
+# The smallest region a unit encodes, where it is above the 32 bytes every unit names.
+UNIT_FLOOR = {"pmsav6": 256}
 
 CHIP_VERSIONS = (1,)
 BOARD_VERSIONS = (1,)
 CHIP_FIELDS = (
     "version", "chip", "manual", "arch", "protection", "cores", "clusters_coherent",
-    "partition_gate", "data_cache", "interrupts", "cycle_counter", "c", "reserved",
+    "partition_gate", "data_cache", "interrupts", "cycle_counter", "timebase", "c", "reserved",
     "devices", "memory", "pins", "esptool_image", "family", "exits_on_fault", "cpu",
     "stack_limit",
 )
@@ -46,6 +48,7 @@ MEMORY_FIELDS = ("size", "base", "at", "cluster", "arena", "link", "ref", "symbo
 LINE_CONDITIONS = ("doorbell",)
 INTERRUPT_FIELDS = ("count", "soft_only_from", "free_from", "vectors")
 CYCLE_COUNTER_FIELDS = ("hz", "glitches")
+TIMEBASE_FIELDS = ("hz",)
 # The kinds of `partition_gate`: a region gate per security mode, a register per peripheral, and
 # one the tree programs nowhere.
 GATE_KINDS = ("apm", "accessctrl", "rdc")
@@ -252,6 +255,8 @@ class Chip:
         # {field: value} and {field: ref} of `interrupts` and `cycle_counter`
         self.interrupts = {}
         self.cycle_counter = {}
+        # The rate of the counter the kernel's clock and a user read both count, or None.
+        self.timebase_hz = None
         self.refs = {}
         self.namespace = None
         self.line_enum = None
@@ -335,7 +340,15 @@ def check_chip(path, text, report):
             if "glitches" in counter:
                 chip.cycle_counter["glitches"], chip.refs["glitches"] = check_valued(
                     f, counter["glitches"], "`cycle_counter` glitches", f.boolean)
+    if "timebase" in top:
+        timebase = f.fields(top["timebase"], "`timebase`", TIMEBASE_FIELDS, ("hz",))
+        if timebase is not None and "hz" in timebase:
+            chip.timebase_hz, chip.refs["timebase_hz"] = check_valued(
+                f, timebase["hz"], "`timebase` hz", lambda node, what: f.integer(node, what, 32))
 
+    if chip.arch == "rv64imac" and chip.timebase_hz is None:
+        f.refuse(root, "form.missing",
+                 "an rv64imac chip needs `timebase`: the user clock reads the time CSR at its rate")
     translates = check_cores(f, top, root, chip)
     if "clusters_coherent" in top and not chip.multi_arch:
         f.refuse(top["clusters_coherent"], "form.inapplicable",
@@ -690,6 +703,10 @@ def check_protection(f, node, what, chip, view):
         granule = check_size(f, values["granule"], "%s `granule`" % what, 32)
         if granule is not None and granule & (granule - 1):
             f.refuse(values["granule"], "chip.granule-size", "%s `granule` %d is not a power of two" % (what, granule))
+            granule = None
+        if granule is not None and granule < UNIT_FLOOR.get(unit, 0):
+            f.refuse(values["granule"], "chip.granule-floor",
+                     "%s `granule` %d is below the %d bytes `%s` encodes" % (what, granule, UNIT_FLOOR[unit], unit))
             granule = None
         if granule is not None and unit is not None and unit not in REGION_UNITS:
             f.refuse(values["granule"], "form.inapplicable",

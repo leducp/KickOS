@@ -69,7 +69,7 @@ user task the init:
    declaration;
 4. arms the watch, `kos_task_watch(task, copy, served endpoint)`, with `KOS_CAP_NONE` for a task
    that serves nothing;
-5. for a task taking lines, pins itself to the task's core (`kos_thread_set_affinity` on
+5. for a task taking lines, pins itself to the task's core (the affinity setter (formerly `kos_thread_set_affinity`) on
    `kos_thread_self`, on a build of more than one kernel core) and claims each line edge
    (`kos_irq_claim`). The table carries no trigger, so a user task cannot take a level line; a
    packaged driver takes its trigger from its descriptor. Pinned, the init is starved by a
@@ -124,7 +124,7 @@ out again.
 
 A death is a task the wait finds dead, or a failed start (1.6). The init:
 
-1. releases the instance once it is dead: `kos_task_kill` drops the init's hold, and on a dead
+1. releases the instance once it is dead: the task kill (formerly `kos_task_kill`) drops the init's hold, and on a dead
    task, every member swept, that frees the slot and the domain. A failed start is slain with
    `kos_task_slay` and a 1000 us timeout; the slay returns 0 only
    once every member's teardown sweep has finished, the instance then released by the slay itself,
@@ -155,12 +155,12 @@ slain, or any of its members faults. The init acts on the ENDED bit and does not
 DEAD bit. By then the kernel has stopped every other member of the task, a thread spinning without a system call
 included, so a plain app whose `main` returns ends the system whatever its other threads were
 doing. It reads the status the
-kernel latched with `kos_task_exit_status(task, &status)` (section 7): 0 when the entry returned,
+kernel latched with the exit-status read (formerly `kos_task_exit_status(task, &status)`) (section 7): 0 when the entry returned,
 the code passed to `exit` or `kos_exit`, any `int` and negatives included, `KOS_EXIT_FAULT` after
 a fault, `KOS_EXIT_CANCELLED` when the entry was cancelled. An `ends` task marked
 dependency-down, or whose start fails, never runs its entry, and the system ends with
 `KOS_EXIT_CANCELLED`. Where a console driver holds stdout the init drains it with `kos_console_flush`, two
-zero-length `kos_send_timed` on `KOS_CAP_STDOUT`, each bounded by `KOS_DRV_HANDOVER_PROBE_US`
+zero-length the timed send (formerly `kos_send_timed`) on `KOS_CAP_STDOUT`, each bounded by `KOS_DRV_HANDOVER_PROBE_US`
 (1 s). A zero-length send to a console driver is a flush: the driver goes back to its receive
 only once its TX ring and the device's transmit path have drained, as far as the device can
 tell. That is the last stop bit leaving the pin on every UART, and on USB the host's
@@ -529,20 +529,20 @@ Four changes, each with its self-test arms:
    from the order of a store.
 2. **A task ends with its entry thread.** A task's entry thread is the first thread spawned into
    it. The task ends when that thread dies by any cause, a return, `exit(n)` or `kos_exit(n)`, a
-   fault, or `kos_thread_kill` or `kos_thread_slay` of the entry alone, or when any member
+   fault, or the thread kill (formerly `kos_thread_kill`) or the thread slay (formerly `kos_thread_slay`) of the entry alone, or when any member
    faults. The kernel then latches the status, sets the ENDED bit, raises the creator's watch and
    stops every other member at once with `CANCEL_SLAY`, whether or not a creator holds the task:
    as a process ends, no member runs a further instruction of its own, a member parked in a wait
    or spinning without a system call alike, and no member gets a cleanup window. A privileged
-   member is killed instead (`CANCEL_KILL`), as `kos_thread_slay` refuses one, and stops at its
+   member is killed instead (`CANCEL_KILL`), as the thread slay (formerly `kos_thread_slay`) refuses one, and stops at its
    next system call. Another thread's exit or cancel ends that thread alone. A task that has
    ended takes no new member, a spawn into it answering `-KOS_EBUSY`, so a restart is always a
-   new task. `kos_task_kill` stops a group the same way at its creator's request, and
+   new task. The task kill (formerly `kos_task_kill`) stops a group the same way at its creator's request, and
    `kos_task_slay` stops it and waits until every member is swept.
 3. **The end and death bits and the exit status.** `kos_task_state` carries the ENDED bit, set
    when the task ends, and the DEAD bit, which `task_report_death` sets, raising the creator's
    watch again, once every member's teardown sweep has finished; the LIVE bit drops before the
-   sweep. `kos_task_exit_status(task, &status)` writes the latched status and answers 0 once the
+   sweep. The exit-status read (formerly `kos_task_exit_status(task, &status)`) writes the latched status and answers 0 once the
    task has ended, `-KOS_EBUSY` before, for its creator only. The status is 0 when the entry
    returned, the code passed to `exit` or `kos_exit`, any `int`, `KOS_EXIT_FAULT` after a fault,
    and `KOS_EXIT_CANCELLED` when the entry was cancelled. The creator observes `KOS_EXIT_FAULT`

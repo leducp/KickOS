@@ -188,6 +188,8 @@ def limit_values(view):
         values.append(("KICKOS_CHIP_CYCCNT_HZ", chip.cycle_counter["hz"], chip.refs.get("hz")))
     if chip.cycle_counter.get("glitches"):
         values.append(("KICKOS_CHIP_CYCCNT_GLITCHES", 1, chip.refs.get("glitches")))
+    if chip.timebase_hz is not None:
+        values.append(("KICKOS_CHIP_TIMEBASE_HZ", chip.timebase_hz, chip.refs.get("timebase_hz")))
     values.append(("KICKOS_CHIP_DCACHE", int(chip.data_cache), None))
     rule = region_rule(view)
     if rule is not None:

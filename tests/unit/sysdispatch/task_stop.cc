@@ -57,7 +57,7 @@ TEST_F(TaskStop, a_kill_ends_the_console_task_before_its_member_runs)
     }
     ASSERT_EQ(ep->console, EP_CONSOLE_SERVED) << "fixture: the console is not served";
 
-    ASSERT_EQ(task_kill(task_handle(served)), 0);
+    ASSERT_EQ(task_slay(task_handle(served), 0u), 0);
     EXPECT_NE(member->state, ThreadState::EXITED) << "fixture: the member already died";
     EXPECT_TRUE(task_ended(served)) << "the kill did not end the task";
     EXPECT_EQ(ep->console, EP_CONSOLE_ENDED) << "the console outlives the kill of its task";

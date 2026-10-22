@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // Test object-budget errors through real syscalls, including endpoint creation.
-// The endpoint budget is reached before capability-table capacity; semaphore
+// The endpoint budget is reached before capability-table capacity; notification
 // allocation tests the reverse. A second task verifies that the shared pool
 // retains capacity beyond one task's budget. Self-test images only.
 
@@ -39,7 +39,7 @@ namespace
         {
             (void)kos_handle_close(ep);
         }
-        (void)kos_send(REPLY_EP, &rc, sizeof(rc));
+        (void)kos_send(REPLY_EP, &rc, sizeof(rc), KOS_TIMEOUT_NONE);
         kos_exit(0);
     }
 
@@ -131,13 +131,13 @@ int main(int, char**)
 
     // --- 5: the ceiling is PER POOL and not one budget across the kinds -------------
     // Still at the endpoint ceiling here. One shared count would refuse this too, and a
-    // supervisor that cannot take a semaphore because a driver took the endpoints is the same
-    // denial one pool away.
+    // supervisor that cannot take a notification because a driver took the endpoints is the
+    // same denial one pool away.
     kos_cap_t s = KOS_CAP_NONE;
-    int const other_kind = kos_sem_create(0, &s);
-    harness.note_rc("sem_create at the endpoint ceiling", other_kind);
+    int const other_kind = kos_notify_create(&s);
+    harness.note_rc("notify_create at the endpoint ceiling", other_kind);
     harness.check(other_kind == 0,
-                  "the endpoint ceiling does not refuse a semaphore: the count is per pool");
+                  "the endpoint ceiling does not refuse a notification: the count is per pool");
     if (other_kind == 0)
     {
         (void)kos_handle_close(s);
@@ -146,7 +146,7 @@ int main(int, char**)
     release_all();
     if (tk == 0)
     {
-        (void)kos_task_kill(group);
+        (void)kos_task_slay(group, 0);
     }
 
     return harness.verdict();

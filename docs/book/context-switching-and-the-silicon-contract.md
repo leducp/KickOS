@@ -19,7 +19,7 @@ plus the memory it is allowed to touch.
 A context switch, then, is the act of **freezing one thread's machine state into
 memory and thawing another's back into the CPU**, such that the resumed thread
 cannot tell it was ever stopped. Every scheduler decision, every blocking
-`sem_wait`, every preemption ultimately funnels into this one operation.
+semaphore wait, every preemption ultimately funnels into this one operation.
 
 The subtlety -- and the reason this chapter exists -- is that the switch runs *on
 the very CPU whose state it is rewriting*. It must save the outgoing registers using
@@ -144,7 +144,7 @@ dispatch latency).*
 **How to make a switch cheap.** Four levers, in the order they usually matter:
 
 1. **Save only what the path actually needs.** A *voluntary* switch (a thread
-   blocking in `sem_wait`, sleeping, yielding) reaches the switcher through an
+   blocking on a semaphore, sleeping, yielding) reaches the switcher through an
    ordinary function call, so the ABI has *already* spilled every caller-saved
    register the thread still cares about -- by definition, those registers are dead
    across a call. Such a switch needs to preserve only the callee-saved set. A

@@ -49,8 +49,11 @@ waiting part:
 **The kernel takes part in a mutex only when a thread must wait for it.**
 
 The test for any synchronization mechanism the kernel might offer is one question: does it
-need a scheduler action that user code cannot safely perform? The semaphore passes it,
-because a waiter must stop running. The mutex passes it only on contention. Condition
+need a scheduler action that user code cannot safely perform? The semaphore passes it only
+when a thread must wait for a unit, or when a post must wake a thread that waits. A free unit
+is one compare-and-swap in user mode, and the kernel's part is the plain wait and wake on the
+semaphore's word ([Chapter 2.2](the-blocking-substrate-one-wait-wake-primitive.md)). The mutex
+passes it the same way, only on contention, and adds the priority it lends. Condition
 variables, read-write locks, barriers and mailboxes are user libraries built over those two.
 
 ## The options for bounding inversion
@@ -236,7 +239,7 @@ on another mutex, the next link is that mutex's holder, and so on. The kernel fo
 through the parked
 thread's **wait edge**: two fields on each thread naming what kind of thing it waits for and
 which object. The walk asks the edge for a mutex record. A thread that waits on anything else,
-such as a semaphore, an endpoint or a sleep, answers none, and the walk stops there, since
+such as a plain word, an endpoint or a sleep, answers none, and the walk stops there, since
 such a wait has no holder to lend to.
 
 Two things can go wrong on that walk, and they force it to be **two passes**:
@@ -318,9 +321,12 @@ Three subtleties are worth keeping in mind:
   holder toward a waiter's priority. Once a holder in the chain is already at or above the
   caller's priority, every holder past it was raised to at least that level when its own
   waiter blocked (I2, by induction). No lower one is left.
-- **PI stops at semaphores.** A thread parked on a semaphore has a semaphore wait edge, so the
-  walk stops there. A semaphore has no holder to boost, so inheritance cannot pass through
-  it. This is the classic limit of PI, so state it and do not try to "fix" it. The same is
+- **PI stops at a plain word.** A thread parked on a semaphore waits on its plain word. Its
+  wait edge names a plain record, not a mutex record, so the walk stops there. A plain word
+  has no holder to boost, so inheritance cannot pass through it. This is the classic limit of
+  PI, so state it and do not try to "fix" it. The plain records and the mutex records are the
+  same structure, keyed the same way, but each record is one kind, and a word that has
+  waiters of one kind refuses a wait of the other. The same is
   true of a thread parked on an endpoint: its edge names an endpoint, not a holder. Call/reply
   donation is a separate mechanism that reaches the same priority function, not an extension of
   this walk.

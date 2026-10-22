@@ -30,15 +30,16 @@ nobody posts. The two threads hand a token back and forth:
         int n = 0;
         while (true)
         {
-            kos_sem_wait(CH_PING, KOS_TIMEOUT_NONE);
+            g_ping.wait();
             kos::sleep_ns(BEAT_NS);
             say("ping", ++n);
-            kos_sem_post(CH_PONG);
+            g_pong.post();
         }
     }
 ```
 
-`BEAT_NS` is 400000000, 0.4 s. `ping` gets the token first, so the first sleep in the image is
+`BEAT_NS` is 400000000, 0.4 s. `g_ping` and `g_pong` are two semaphores in the app's static
+data, `g_ping` starting at 1, so `ping` gets the token first and the first sleep in the image is
 `ping`'s. Boot it under gdb as in [Setup](00-setup.md):
 
 ```
@@ -269,8 +270,9 @@ holds only the thread (a timer, a kill) can still find and undo the park. `sched
 also enforces a rule: it panics if called from an interrupt handler, because there the switch
 would be deferred and the "blocked" thread would keep running.
 
-A semaphore wait or a message send calls `wq_block`, which is `park_queueless` plus a push onto
-the object's wait queue (a list of the threads waiting on that object) plus the reschedule. A
+A semaphore wait with no unit to take, or a message send, calls `wq_block`, which is
+`park_queueless` plus a push onto the object's wait queue (a list of the threads waiting on
+that object) plus the reschedule. A
 sleep has no object to wait on, so it uses `park_queueless` directly with `WAIT_SLEEP` and no
 queue. Its only list is the *sleep queue*, `Kernel::sleepq`: a singly linked list of every thread
 with a deadline, sorted soonest first and linked through `Thread::tnext`. `sleepq_insert` walks to
@@ -616,8 +618,9 @@ interrupted, idle's loop. `xPSR` ends in 0xf, exception 15.
 `wake_no_resched`, `resched_after_wake`
 
 `thread_abort_park` is the general way to end a park from outside, used by timeouts and by kills.
-It looks at the wait edge to undo the park: for a semaphore wait it unlinks the thread from the
-object's queue, and for a mutex or an endpoint it also reverts priority donations. For `WAIT_SLEEP`
+It looks at the wait edge to undo the park: for a wait on a semaphore's word it unlinks the
+thread from the word's queue and frees the word's record if that queue is now empty, and for a
+mutex or an endpoint it also reverts priority donations. For `WAIT_SLEEP`
 there is nothing to unlink, because the thread was on no wait queue. Then, for every kind:
 
 ```

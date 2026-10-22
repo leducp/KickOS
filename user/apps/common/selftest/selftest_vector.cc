@@ -44,11 +44,11 @@ namespace selftest
 
 extern "C"
 {
-    // Loads `load`, makes the syscall (nr, a0, a1) while holding it, and stores the state into
-    // `out`. Returns the syscall's result.
+    // Loads `load`, makes the syscall (nr, a0, a1, a2) while holding it, and stores the state
+    // into `out`. Returns the syscall's result.
     KICKOS_SELFTEST_LOCAL int selftest_vec_hold(selftest::VecImage const* load,
                                                     selftest::VecImage* out, uintptr_t nr,
-                                                    uintptr_t a0, uintptr_t a1);
+                                                    uintptr_t a0, uintptr_t a1, uintptr_t a2);
     // Loads `load` and spins, counting in *own, until *other moves or `bound` polls pass, then
     // stores the state into `out`. Returns 1 when *other moved.
     KICKOS_SELFTEST_LOCAL int selftest_vec_spin(selftest::VecImage const* load,
@@ -107,7 +107,7 @@ __asm__(".pushsection .text, \"ax\", @progbits\n"
         "    pushq %rbx\n    pushq %r12\n    movq %rdi, %rbx\n    movq %rsi, %r12\n"
         KOS_VEC_LOAD("%rbx")
         "    movq %rdx, %rdi\n    movq %rcx, %rsi\n    movq %r8, %rdx\n"
-        "    xorl %r10d, %r10d\n    xorl %r8d, %r8d\n    syscall\n"
+        "    movq %r9, %r10\n    xorl %r8d, %r8d\n    syscall\n"
         KOS_VEC_STORE("%r12")
         "    popq %r12\n    popq %rbx\n    ret\n"
 
@@ -185,32 +185,34 @@ namespace selftest
     }
 
     // --- one core, the voluntary switch -------------------------------------------------
-    // The holder parks on a semaphore with its pattern loaded. The poster, on the same core and
-    // below it, loads its own and posts, which switches it out in the syscall for the holder:
-    // the holder is restored over the poster's registers, and the poster after the holder is
-    // gone. Priority on that core alone parks the holder before the poster runs.
+    // The holder parks on a word with its pattern loaded. The poster, on the same core and below
+    // it, loads its own and wakes it with a unit, which switches it out in the syscall for the
+    // holder: the holder is restored over the poster's registers, and the poster after the
+    // holder is gone. Priority on that core alone parks the holder before the poster runs.
+    uint32_t g_vb_word = 0;
     VecImage g_vb_load[2];
     VecImage g_vb_seen[2];
     int32_t g_vb_rc[2];
     Atomic<uint32_t, Order::RELAXED> g_vb_holder_done{0};
     uint32_t g_vb_poster_after = 0;
 
-    void vb_holder(void*) // caps: S(WAIT)@0
+    void vb_holder(void*)
     {
-        g_vb_rc[0] = selftest_vec_hold(&g_vb_load[0], &g_vb_seen[0], KOS_SYS_SEM_WAIT,
-                                           KOS_SPAWN_DELEGATED_CAP0, KOS_TIMEOUT_NONE);
+        g_vb_rc[0] = selftest_vec_hold(&g_vb_load[0], &g_vb_seen[0], KOS_SYS_WORD_WAIT,
+                                       reinterpret_cast<uintptr_t>(&g_vb_word), 0,
+                                       KOS_TIMEOUT_NONE);
         g_vb_holder_done = 1;
     }
-    void vb_poster(void*) // caps: S(SIGNAL)@0
+    void vb_poster(void*)
     {
-        g_vb_rc[1] = selftest_vec_hold(&g_vb_load[1], &g_vb_seen[1], KOS_SYS_SEM_POST,
-                                           KOS_SPAWN_DELEGATED_CAP0, 0);
+        g_vb_rc[1] = selftest_vec_hold(&g_vb_load[1], &g_vb_seen[1], KOS_SYS_WORD_WAKE,
+                                       reinterpret_cast<uintptr_t>(&g_vb_word), 1, 1);
         g_vb_poster_after = g_vb_holder_done;
     }
 
     void t_vector_survives_block()
     {
-        TAP_ASK(.workers = 2, .sems = 1);
+        TAP_ASK(.workers = 2);
         vec_pattern(&g_vb_load[0], 1, 1, 0);
         vec_pattern(&g_vb_load[1], 2, 2, 2);
         memset(g_vb_seen, 0, sizeof(g_vb_seen));
@@ -218,19 +220,16 @@ namespace selftest
         g_vb_rc[1] = -1;
         g_vb_holder_done = 0;
         g_vb_poster_after = 0;
-        kos_cap_t s = KOS_CAP_NONE;
+        g_vb_word = 0;
         kos::thread::Handle h;
         kos::thread::Handle p;
         ArmHold hold;
-        TAP_HOLD(hold.cap(&s) and hold.thread(&h) and hold.thread(&p));
-        TAP_CHECK(kos_sem_create(0, &s) == 0);
-        kos_cap_grant const hcaps[] = {{s, KOS_CAP_WAIT}};
-        kos_cap_grant const pcaps[] = {{s, KOS_CAP_SIGNAL}};
-        h = kos::thread::create_caps(vb_holder, nullptr, "vbhold", TAP_PRIO_PARKS + 1, hcaps, 1,
+        TAP_HOLD(hold.thread(&h) and hold.thread(&p));
+        h = kos::thread::create_caps(vb_holder, nullptr, "vbhold", TAP_PRIO_PARKS + 1, nullptr, 0,
                                      KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
                                      KOS_TASK_NONE, nullptr, 0, TAP_PIN_CORE);
         TAP_CHECK(h.valid());
-        p = kos::thread::create_caps(vb_poster, nullptr, "vbpost", TAP_PRIO_PARKS, pcaps, 1,
+        p = kos::thread::create_caps(vb_poster, nullptr, "vbpost", TAP_PRIO_PARKS, nullptr, 0,
                                      KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
                                      KOS_TASK_NONE, nullptr, 0, TAP_PIN_CORE);
         TAP_CHECK(p.valid());
@@ -242,13 +241,13 @@ namespace selftest
                   static_cast<unsigned>(g_vb_seen[1].mxcsr),
                   static_cast<unsigned>(g_vb_seen[1].fcw),
                   static_cast<unsigned>(g_vb_poster_after));
-        TAP_CHECK(g_vb_rc[0] == 0 and g_vb_rc[1] == 0);
+        // The holder was handed the unit, and the wake woke one waiter.
+        TAP_CHECK(g_vb_rc[0] == 1 and g_vb_rc[1] == 1);
         // The poster was switched out for the holder, so both crossed a voluntary switch.
         TAP_CHECK(g_vb_poster_after == 1);
         TAP_CHECK(vec_same(g_vb_load[0], g_vb_seen[0]));
         TAP_CHECK(vec_same(g_vb_load[1], g_vb_seen[1]));
-        TAP_CHECK(kos_sem_destroy(s) == 0);
-        s = KOS_CAP_NONE;
+        TAP_CHECK(g_vb_word == 0u);
     }
 
     // --- one core, the interrupt-exit switch ----------------------------------------------
@@ -379,7 +378,7 @@ namespace selftest
         VecImage load;
         VecImage seen;
         vec_pattern(&load, 5, 3, 0);
-        (void)selftest_vec_hold(&load, &seen, KOS_SYS_CLOCK_NOW, 0, 0);
+        (void)selftest_vec_hold(&load, &seen, KOS_SYS_CLOCK_NOW, 0, 0, 0);
     }
 
     bool vec_clean_ok(VecVerdict const& v, char const* who)
@@ -439,7 +438,7 @@ namespace selftest
         TAP_CHECK(n == static_cast<int32_t>(sizeof(v)));
         TAP_CHECK(hold.joined());
         TAP_CHECK(vec_clean_ok(v, "another task"));
-        TAP_CHECK(kos_task_kill(task) == 0);
+        TAP_CHECK(kos_task_slay(task, 0) == 0);
         task = KOS_TASK_NONE;
         TAP_CHECK(kos_handle_close(ep) == 0);
         ep = KOS_CAP_NONE;
@@ -477,9 +476,11 @@ namespace selftest
         (void)kos_reply(call, &word, sizeof(word));
         kos_exit(1);
     }
-    void vf_sibling(void*) // caps: park@0
+    // Never posted: the sibling waits on its task's own copy.
+    kos_sem_t g_vf_never = KOS_SEM_INIT(0);
+    void vf_sibling(void*)
     {
-        kos_sem_wait(KOS_SPAWN_DELEGATED_CAP0, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_vf_never, KOS_TIMEOUT_NONE);
         kos_exit(1);
     }
 
@@ -493,26 +494,23 @@ namespace selftest
     {
         *verdict = -1;
         *word = 0;
-        kos_cap_t park = KOS_CAP_NONE;
         kos_cap_t ep = KOS_CAP_NONE;
         kos_task_t task = KOS_TASK_NONE;
         kos::thread::Handle sib;
         kos::thread::Handle vic;
         ArmHold hold;
-        TAP_HOLD(hold.cap(&park) and hold.cap(&ep) and hold.task(&task) and hold.thread(&sib)
-                 and hold.thread(&vic));
-        TAP_CHECK(kos_sem_create(0, &park) == 0);
+        TAP_HOLD(hold.cap(&ep) and hold.task(&task) and hold.thread(&sib) and hold.thread(&vic));
         TAP_CHECK(kos_endpoint_create(&ep) == 0);
         TAP_CHECK(kos_task_create(nullptr, 0, 0, &task) == 0);
-        kos_cap_grant const pcaps[] = {{park, KOS_CAP_WAIT}};
         kos_cap_grant const vcaps[] = {{ep, KOS_CAP_WAIT}};
         sib = kos::thread::create(vf_sibling, nullptr, "vfsib", 10, KOS_POLICY_FIFO, 0,
-                                  nullptr, 0, nullptr, 0, nullptr, 0, pcaps, 1, 0, nullptr, task);
+                                  nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0, 0, nullptr,
+                                  task);
         TAP_CHECK(sib.valid());
         vic = kos::thread::create(victim, nullptr, name, 10, KOS_POLICY_FIFO, 0, nullptr,
                                   0, nullptr, 0, nullptr, 0, vcaps, 1, 0, nullptr, task);
         TAP_CHECK(vic.valid());
-        int32_t const n = kos_call_timed(ep, word, 0, sizeof(*word), STALL_TOLERANT_US);
+        int32_t const n = kos_call(ep, word, 0, sizeof(*word), STALL_TOLERANT_US);
         int verdict_now = -1;
         if (n == -KOS_EPIPE)
         {
@@ -534,13 +532,11 @@ namespace selftest
                 verdict_now = 0;
             }
         }
-        int const killed = kos_task_kill(task);
+        int const killed = kos_task_slay(task, 0);
         task = KOS_TASK_NONE;
         int const closed = kos_handle_close(ep);
         ep = KOS_CAP_NONE;
-        int const freed = kos_handle_close(park);
-        park = KOS_CAP_NONE;
-        if (killed == 0 and closed == 0 and freed == 0)
+        if (killed == 0 and closed == 0)
         {
             *verdict = verdict_now;
         }
@@ -548,7 +544,7 @@ namespace selftest
 
     void t_vector_fault_contained()
     {
-        TAP_ASK(.workers = 2, .tasks = 1, .sems = 1, .endpoints = 1);
+        TAP_ASK(.workers = 2, .tasks = 1, .endpoints = 1);
         uint32_t word = 0;
         int mf = -1;
         vec_fault_kills(vf_mf_victim, "vfmf", "x87 divide by zero pending to FWAIT, #MF", &word,
@@ -580,8 +576,8 @@ namespace selftest
     void vm_mover(void*)
     {
         g_vm_core[0] = static_cast<uint32_t>(kos_core_current());
-        g_vm_rc = selftest_vec_hold(&g_vm_load, &g_vm_seen, KOS_SYS_THREAD_SET_AFFINITY,
-                                        kos_thread_self(), 1u << g_vm_away);
+        g_vm_rc = selftest_vec_hold(&g_vm_load, &g_vm_seen, KOS_SYS_THREAD_AFFINITY,
+                                        kos_thread_self(), 1u << g_vm_away, 0);
         g_vm_core[1] = static_cast<uint32_t>(kos_core_current());
     }
 
@@ -616,7 +612,7 @@ namespace selftest
                   static_cast<int>(g_vm_rc), static_cast<unsigned>(g_vm_core[0]),
                   static_cast<unsigned>(g_vm_core[1]), static_cast<unsigned>(g_vm_seen.mxcsr),
                   static_cast<unsigned>(g_vm_seen.fcw));
-        TAP_CHECK(g_vm_rc == 0);
+        TAP_CHECK(g_vm_rc == static_cast<int32_t>(1u << g_vm_away));
         TAP_CHECK(g_vm_core[0] == 0 and g_vm_core[1] == g_vm_away);
         TAP_CHECK(vec_same(g_vm_load, g_vm_seen));
     }
@@ -631,7 +627,7 @@ extern "C" void selftest_vec_clean_report(selftest::VecClean const* seen, void* 
         *static_cast<selftest::VecVerdict*>(arg) = v;
         return;
     }
-    (void)kos_send(KOS_SPAWN_DELEGATED_CAP0, &v, sizeof(v));
+    (void)kos_send(KOS_SPAWN_DELEGATED_CAP0, &v, sizeof(v), KOS_TIMEOUT_NONE);
 }
 
 #endif

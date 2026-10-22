@@ -18,10 +18,10 @@ useful model of object-specific rights. A real system must also decide how names
 delegation, revocation and permissions without a specific object work.
 
 ```
-              sem_A      endpoint_B   uart_window
-   task_1     wait,post  --           --
-   task_2     wait       send         --
-   driver     --         recv         read,write
+              notify_A      endpoint_B   uart_window
+   task_1     wait,signal   --           --
+   task_2     wait          send         --
+   driver     --            recv         read,write
 ```
 
 The matrix is almost entirely empty in any real system, so nobody stores it as a matrix. You

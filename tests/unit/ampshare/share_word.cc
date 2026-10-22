@@ -94,6 +94,25 @@ extern "C"
         }
         return 0;
     }
+
+    // Names the frame and reaches nothing: the gate asks only what word_ref answers.
+    void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va, bool* uncached,
+                              arch_phys_addr_t* frame)
+    {
+        if (uncached != nullptr)
+        {
+            *uncached = false;
+        }
+        if (frame != nullptr)
+        {
+            *frame = arch_aspace_frame_at(space, va);
+        }
+        return nullptr;
+    }
+
+    void arch_aspace_release(struct arch_aspace*, uintptr_t)
+    {
+    }
 }
 
 namespace kickos

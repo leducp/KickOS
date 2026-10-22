@@ -99,7 +99,7 @@ namespace kickos
                 ASSERT_NE(delegate_by_spawn(acap_), nullptr);
                 EXPECT_EQ(d_->refcount, held) << "the delegated copy took a hold on its space";
 
-                ASSERT_EQ(call_as(main_, KOS_SYS_TASK_KILL, handle_), 0u);
+                ASSERT_EQ(call_as(main_, KOS_SYS_TASK_SLAY, handle_), 0u);
                 exit_as(member_);
                 EXPECT_EQ(d_->space, nullptr) << "a space capability kept a dead task's space";
                 EXPECT_EQ(domain_spaces_held(), spaces_);
@@ -853,7 +853,7 @@ namespace kickos
                 kos_task_t const t = new_task(main_, 0, 0, 0);
                 ASSERT_NE(t, KOS_TASK_NONE);
                 EXPECT_EQ(count(KOS_MEM_SPACES_HELD), before + 1u);
-                ASSERT_EQ(call_as(main_, KOS_SYS_TASK_KILL, t), 0u);
+                ASSERT_EQ(call_as(main_, KOS_SYS_TASK_SLAY, t), 0u);
                 EXPECT_EQ(count(KOS_MEM_SPACES_HELD), before);
             }
 

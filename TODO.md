@@ -57,7 +57,7 @@ milestone does not close while any of them still composes a system.
       `drvdeath`, `rootfault`) declare their ending explicitly (**DONE AT M10.5.10**, `ends:
       main`). Run the fleet sweep and the silicon witnesses
       against the result. Owed: the esp32-wroom-smp silicon selftest and the pizero2350-amp2
-      partition's ACCESSCTRL gate capture, both in "M10.6.9: THE BENCH PASS, BOARD BY BOARD"
+      partition's ACCESSCTRL gate capture, both in "M10.6.11: THE BENCH PASS, BOARD BY BOARD"
       below.
 
 - [x] **M10.6.2: APPS BUILT BY BOARD NAME, AND APPS THAT BUILD AND NEVER RUN (found 2026-10-06, cut from
@@ -213,7 +213,7 @@ by ruling and sits in `roadmap.md`'s `Later`.
       2, 4, 6 and 7, red with the limits at zero; a privileged overflow on the main stack and on
       a kernel block ends in a STKOF panic on its own stack (`qemu_m33_splim_plant`, red with the
       live limit lifted). The ROM call restores the limits before SP and PRIMASK, held by a
-      link-time assert on the enforcing layouts. Owed: the silicon captures, in "M10.6.9: THE
+      link-time assert on the enforcing layouts. Owed: the silicon captures, in "M10.6.11: THE
       BENCH PASS, BOARD BY BOARD".
 - [ ] **MEASURE FIRST: ABOVE ONE KERNEL CORE, ONE SLEEPER'S DEADLINE FIRES ON EVERY CORE.** It
       carries no milestone number until a measurement argues for it (maintainer, 2026-10-13). The
@@ -240,7 +240,7 @@ by ruling and sits in `roadmap.md`'s `Later`.
       only for a held window), the holder's death closes the gate, and `kos_spi_bus_close` and
       the UART0 backend's close shut their slots. The disable re-gates the bus only. Witnessed by
       the `k64dspi_death` and `k64dspi_close` images judged by `check_k64dspi_witness.sh` and
-      by host cases, red without each half. The bench half is in "M10.6.9: THE BENCH PASS, BOARD
+      by host cases, red without each half. The bench half is in "M10.6.11: THE BENCH PASS, BOARD
       BY BOARD".
 - [x] **M10.6.6: K64F: `kos_spi_transfer` POLLS WITHOUT A BOUND.** The pump in `k64dspi/spi_dspi.cc` ends
       only when every byte pushed has been popped, so a frame that never completes (the module
@@ -338,7 +338,7 @@ tests, tools and apps, with no ratio (maintainer, 2026-10-09); no gate is writte
   - The C6 APM test's kernel blocks are read from the generated `chip_mmap.h` and include
     `gpio_matrix`; `Ree0PastNode0sGrantsIsCaught` now names the one block the open GPIO row
     covers.
-  - `KOS_SYS_SEM_WAIT` answers `-KOS_ECANCELED` to a cancelled waiter: `sem_post` writes the
+  - The semaphore wait (formerly `KOS_SYS_SEM_WAIT`) answers `-KOS_ECANCELED` to a cancelled waiter: `sem_post` writes the
     handed waiter's result, and the arm reads it after the resume barrier, outside the lock, as
     `mutex_lock` does (the `semtimed` table's `an_untimed_cancel_answers_ecanceled` row).
   - `domain_resolve` has no sign test; the null domain's handle is refused by its all-ones
@@ -540,7 +540,7 @@ tests, tools and apps, with no ratio (maintainer, 2026-10-09); no gate is writte
       with one fake arch, where 51 seam, fake and stub files total 9.2k lines and 30 `CMakeLists`
       name kernel sources 232 times; the ABI vocabularies; the handle codec; the park unwind; the
       app helpers), the emulator-witnessed arch folds next, and the silicon-only folds (the reset
-      tails, the pin guard on every chip, the semihosting chips, the F3/F4 GPIO) on M10.6.9's bench
+      tails, the pin guard on every chip, the semihosting chips, the F3/F4 GPIO) on M10.6.11's bench
       passes.
       **With it (maintainer, 2026-10-07), the gate audit's fifth wave:** the 15 gates a product
       type or token replaces (a lock-held token on the caller-held entries and the inject path,
@@ -583,9 +583,9 @@ tests, tools and apps, with no ratio (maintainer, 2026-10-09); no gate is writte
   - **Kept by their proofs:** `rv64_irq_fence` (a seq_cst word orders none of the plain data
     around it). `chip_divisor_rate` was kept here and later deleted: it stood in for an integration
     claim at the wrong level, by the shape of the code; the divisor arithmetic moved to the
-    `console_baud` unit suite and the claim to M10.6.9's bench. **Accepted, no holder:** a cast through a `LineCell`, a second `AspaceUnwritten`, a
+    `console_baud` unit suite and the claim to M10.6.11's bench. **Accepted, no holder:** a cast through a `LineCell`, a second `AspaceUnwritten`, a
     `Held` copied out of its bracket.
-  - **Owed to M10.6.9's bench:** the moved images, in "M10.6.9: THE BENCH PASS, BOARD BY BOARD"
+  - **Owed to M10.6.11's bench:** the moved images, in "M10.6.11: THE BENCH PASS, BOARD BY BOARD"
     below.
   - **Left:** the silicon folds (the reset tail on f411, mk64f, xmc4800, imxrt1062 and rp2350,
     whose images move once `Reset_Handler` reads as noreturn; the hand `.data`/`.bss` copies;
@@ -606,7 +606,7 @@ tests, tools and apps, with no ratio (maintainer, 2026-10-09); no gate is writte
     arm reddened only above one core and only through one `rep stos` the compiler chose), and
     `rv32_trap` and `rv64_wx` (no run reaches their remaining cases). `rx_dfpu_compare` is gone: a
     compiler patch is checked by whoever touches it, not by every RX configure. The silicon
-    proxies are in "M10.6.9: THE BENCH PASS, BOARD BY BOARD" below.
+    proxies are in "M10.6.11: THE BENCH PASS, BOARD BY BOARD" below.
   - **Close (2026-10-08):** product 135,677 to 132,749 lines, tests and tools 163,604 to 158,737,
     ratio 1.21 to 1.20; `tests/static` 28,689 to 24,284, `tests/unit` 48,776 to 49,065. Swept:
     the sim whole with UBSan, all 91 presets configured, one to three presets of every family
@@ -648,7 +648,7 @@ tests, tools and apps, with no ratio (maintainer, 2026-10-09); no gate is writte
     ESP32-C6 doorbells on the shared protocol, the rv32 CLINT through one body, the chips'
     register polls bounded through one helper, and the LX6 cycle clock gone.
   - `arch/`'s comments are cut to what the code needs.
-  - **Owed to M10.6.9's bench:** every silicon image, in "M10.6.9: THE BENCH PASS, BOARD BY
+  - **Owed to M10.6.11's bench:** every silicon image, in "M10.6.11: THE BENCH PASS, BOARD BY
     BOARD" below.
   - **Close (2026-10-13):** lines, master to M10.6.5: kernel 30,994 to 31,317, arch 62,195 to
     54,669, userspace 19,321 to 19,360, build 12,691 to 10,815, tests 102,975 to 106,882
@@ -716,7 +716,7 @@ tests, tools and apps, with no ratio (maintainer, 2026-10-09); no gate is writte
         the alias syncs get a data-integrity arm on imx8mp-evk on the production ABI; the RP2350
         doorbell service count and the C6 `bells=` row are dropped (the far rounds need the
         wake); the RP2350 ACCESSCTRL probe becomes a privileged thread in node 1's composition
-        whose production fault record is judged, or M10.6.9's `rp_node` hook if a composition
+        whose production fault record is judged, or M10.6.11's `rp_node` hook if a composition
         cannot grant one.
       - The arena arms reserve their blocks at image start under a link `ASSERT`, so their skips
         go rather than being derived.
@@ -773,7 +773,7 @@ tests, tools and apps, with no ratio (maintainer, 2026-10-09); no gate is writte
     the audit proposed measured longer than the cases and were not made. Counting each image's
     arms at compile time, in place of `selftest_demands.py` re-evaluating the guards, is asked
     of the maintainer.
-  - **Owed to M10.6.9's bench:** every selftest image and the silicon-only arms, in "M10.6.9: THE
+  - **Owed to M10.6.11's bench:** every selftest image and the silicon-only arms, in "M10.6.11: THE
     BENCH PASS, BOARD BY BOARD" below.
   - **Left:** the x86_64 spawn floor, the entry-return trampoline, `sti; hlt; cli` and the
     user-pointer oracle (**DONE AT M10.6.5**); empty page tables kept until a space dies, which the
@@ -805,7 +805,7 @@ tests, tools and apps, with no ratio (maintainer, 2026-10-09); no gate is writte
       made: each image's arena reserves the sum of its arms' asks, and bluepill-c8's ninth and
       tenth images already leave arms out, so merging them would leave out more.
 
-- [ ] **M10.6.9: WIDEN THE ESP32'S CODE SPACE BEYOND 128 KIB OF IRAM (maintainer, 2026-10-03; ASSIGNED TO
+- [ ] **M10.6.11: WIDEN THE ESP32'S CODE SPACE BEYOND 128 KIB OF IRAM (maintainer, 2026-10-03; ASSIGNED TO
       M10'S TAIL).** `arch/xtensa/chip/esp32/esp32.ld` links all code into the upper 128 KiB of
       internal SRAM0 (`0x4008_0000`) and all data into 192 KiB of SRAM2, executing nothing from
       flash. Two levers to verify against the ESP32 TRM (1.3.2, "Embedded Memory") and on silicon
@@ -827,20 +827,24 @@ tests, tools and apps, with no ratio (maintainer, 2026-10-09); no gate is writte
       its images in order; boards holding a common probe or console (`board_resources`) share a
       worker; the summary and exit status are as before. `check_bench_fleet.sh` plants two
       overlapping boards, a shared cable, a build after a flash and an out-of-order capture.
-      **Owed:** the remote mode against a bench host, in "M10.6.9: THE BENCH PASS, BOARD BY
+      **Owed:** the remote mode against a bench host, in "M10.6.11: THE BENCH PASS, BOARD BY
       BOARD" below.
 
-- [ ] **M10.6.9: THE 32-BIT CLOCKS GUESS THEIR WRAPS FROM THEIR READINGS (maintainer, 2026-10-17).**
+- [ ] **M10.6.11: THE 32-BIT CLOCKS GUESS THEIR WRAPS FROM THEIR READINGS (maintainer, 2026-10-17).**
       `stm32f411`'s TIM2, and the same shape on `sam3x8e`, `imxrt1062` and `rxv3`, extend a
       32-bit counter to 64 bits by counting a wrap whenever a reading is lower than the last one,
       under the interrupt mask. Correct today, since every reader masks and none runs above the
       mask, but one bad reading is latched into the high word forever. Move each to the form the
-      Book's time-base chapter teaches: the overflow interrupt alone advances the high word, a
+      Book's time-base chapter teaches: the overflow interrupt alone advances the high word, clearing
+      its flag and advancing the word with interrupts masked so a higher-priority reader never sees
+      one store without the other, a
       reader re-reads it until it is stable and adds a pending overflow when the counter reads
       low, and no reader writes state or masks. Silicon only, so its witness is this bench pass.
-- [ ] **M10.6.9: THE BENCH PASS, BOARD BY BOARD.** Every silicon image moved in M10.6.3 to M10.6.6
+      The same entry owns `cycle64-wrap-extend-atomic`'s old limit, removed from the invariant on
+      2026-10-21: a wrap not observed within one 2^32-cycle period is missed.
+- [ ] **M10.6.11: THE BENCH PASS, BOARD BY BOARD.** Every silicon image moved in M10.6.3 to M10.6.10
       (the selftest on the production ABI, the libc lock, the console core, the spawn and mutex
-      paths, the reset backends, the hardening), and no moved image has run on silicon. A full fleet pass
+      paths, the reset backends, the hardening, and what M10.6.8 to M10.6.10 change), and no moved image has run on silicon. A full fleet pass
       captures every image of every preset each board declares, the selftest, `chaincheck`,
       `libcrace` and `rebootdemo` among them; on a board with no bootloader return, `rebootdemo`
       prints the bootloader decline and boots again. Below, per board, what needs a check beyond a
@@ -868,6 +872,8 @@ tests, tools and apps, with no ratio (maintainer, 2026-10-09); no gate is writte
         - [ ] The UART IRQ console selftest still passes, now that `kos_uart_close` re-protects
               UART0 and the console driver's death closes its slot before the reclaim.
       - **teensy41:**
+        - [ ] The region rule's cache maintenance on the one board whose cache it acts on:
+              `uncached_grant_sync` on silicon (`kernel-alias-maintained-over-uncached-memory`).
         - [ ] The USB console selftest, `usbcdcwit` (the short accept under a full TX ring),
               `wallclock_usb` and the USB identity rows; a failed CDC bring-up traps.
         - [ ] `selftest` and `bench` end in HalfKay (`16c0:0478`) with no `-D`, the next image
@@ -1030,9 +1036,11 @@ tests, tools and apps, with no ratio (maintainer, 2026-10-09); no gate is writte
         - [ ] M10.6.7's owner-death walk measured against the bound its invariant states
               (`mutex-owner-death-reaches-the-next-taker`): one IrqLock section handing over a
               record per waiting slot, on the board with the most thread slots, with an instrument
-              still to write (a `bench` distribution around `mutex_owner_exit`).
+              still to write (a `bench` distribution around `mutex_owner_exit`). With it, the
+              end-of-wait scan's bound, about S^2 steps under the kernel lock for S thread slots
+              (found by the invariants audit, 2026-10-21).
 
-- [ ] **M10.6.9: BOUND THE INTERRUPT STACK ON ARMV7-M, ARMV6-M, RX AND LX6 (found closing M10.5).** The trap
+- [ ] **M10.6.11: BOUND THE INTERRUPT STACK ON ARMV7-M, ARMV6-M, RX AND LX6 (found closing M10.5).** The trap
       depth gate roots device ISRs only where they run on a thread's or a kernel stack it sizes; on
       these three the ISRs run on the main/interrupt stack, which the roots file declares unbounded,
       so no ISR chain is measured there (M10.5 added a wake to the console TX ISR's tail).
@@ -1083,7 +1091,7 @@ tests, tools and apps, with no ratio (maintainer, 2026-10-09); no gate is writte
       - Found: the RX newlib prints no C99 format (entry under the toolchain release). Nano reads
         `%lld` as `ld`, `%hhd` as `hd` and `%zu`, `%jd`, `%td` as their letters, and prints
         nothing for `%f` (microbit under QEMU): the profile as configured, not a defect.
-      - Owed: the silicon captures, in "M10.6.9: THE BENCH PASS, BOARD BY BOARD" below.
+      - Owed: the silicon captures, in "M10.6.11: THE BENCH PASS, BOARD BY BOARD" below.
 
 - [x] **M10.6.5: TWO THREADS PRINTING THROUGH stdio CORRUPT EACH OTHER'S LINES (found closing
       M10.6.3, older than it).** KickOS supplies no lock behind newlib's retargetable locking hooks, so
@@ -1115,7 +1123,7 @@ tests, tools and apps, with no ratio (maintainer, 2026-10-09); no gate is writte
       BETWEEN TASKS (found closing M10.5).** `examples/composition/systems/xmc4800-relax.yaml`
       gives USIC0 channel 0 to `console` and channel 1 to `spi0` and needs no `accepts`. But
       `KSCFG.MODEN`, inside each channel window, gates the whole module
-      (`dev-window-exclusivity-is-bounded-by-the-silicon` in `docs/reference/invariants.md`), and
+      (`docs/reference/boards.md`, the `xmc4800-relax` USIC caveat), and
       `FMR.SIOx` and `INPR`, also writable from the window, let either holder raise any USIC0
       service-request line, the other task's included. The chip file states none of it, and compose
       derives `coarse_gate` only from a device gate, a port bank or a shared page, so admission
@@ -2733,10 +2741,11 @@ was read or measured.
       values come from `boards/<board>/configs/<variant>/defconfig` and the only in-tree search
       left is the chip's own include dir. That does not change the conclusion here, because a
       consumer still cannot supply a board without editing the KickOS tree or carrying a patch
-      against a vendored copy, while `docs/book/README.md:26` says porting a CPU is "the
-      small arch/chip seam, not a kernel restructure". Shape of the fix: make the boards search
-      path a LIST a consumer can extend, and let the board include-dir lookup search the same
-      list. NOT M4.7 scope -- recorded so it does not evaporate. Read directly.
+      against a vendored copy, while `docs/book/overview-and-principles.md` says porters
+      "implement the small arch/chip seam described above, not a kernel restructure". Shape of
+      the fix: make the boards search path a LIST a consumer can extend, and let the board
+      include-dir lookup search the same list. NOT M4.7 scope -- recorded so it does not
+      evaporate. Read directly.
 - [ ] **The concurrent capability-teardown path is never exercised.**
       `kernel/include/kickos/cap.h:326-328` states that an RR slice expiring in `sched::tick_rr` is
       the only thing that switches a dying thread out at a chunk boundary, and so the only way two
@@ -2788,7 +2797,7 @@ hardware: `xmc4800-relax` `1..78`, `frdmk64f` `1..78`, `esp32c6-wroom` `1..78`, 
 itself -- no bench run kills a live console driver's service thread, so the deferred reclaim and the
 cancellation are proven only by `sim_driver_death` case 3 and its four mutation proofs.
 
-- [x] **M10.6.4: `kos_thread_kill` has NO fleet coverage.** Every refusal assertion -- bad handle, big
+- [x] **M10.6.4: the thread kill (formerly `kos_thread_kill`) has NO fleet coverage.** Every refusal assertion -- bad handle, big
       handle, a stranger's thread, spawner-accepts, exited-slot EBADF -- lives in the sim
       `drvdeath` app, so no non-sim board exercises the syscall at all. Adding a `thread_kill`
       selftest arm is one `TAP_ADD` line in a region of `user/apps/common/selftest/main.cc`; the
@@ -3270,7 +3279,7 @@ update `SystemCoreClock` in the same step so the ns<->tick math stays coherent.
 - [ ] *(optional perf)* STM32F411 84 -> 96/100 -- deliberate sweet-spot today; only if we
       want the true ceiling. F302 is HW-capped (Nucleo has no HSE crystal);
       K64F/RX72M/F103 already at max; ESP32/RP2040/XMC now at max (silicon-validated).
-- [ ] **M10.6.9: ESP32-C6: PLL bring-up 40 -> 160 MHz** (deferred out of M10.5 by the maintainer).
+- [ ] **M10.6.11: ESP32-C6: PLL bring-up 40 -> 160 MHz** (deferred out of M10.5 by the maintainer).
       KickOS sets no C6 clock tree, so every EN reset leaves the CPU on the 40 MHz crystal;
       the kernel reads the rate from PCR at boot, so the bring-up only has to switch the
       source. The C6 AMP judge accepts the crystal rate only and moves with it; the
@@ -3369,6 +3378,9 @@ below where they were previously mislabeled.
   subsume this free list. Until then, only default stacks are reclaimable. The allocator work
   should also reclaim the per-allocation ALIGNMENT RUN-UP, which is dropped on the floor today --
   see the M4.5.1 item above (it is why boot-stack allocation order is load-bearing).
+  Nothing frees an arena block's ownership record either, so a dead task's blocks stay spent and a
+  restart loop drains the arena: an open defect, removed from `arena-block-owner-is-the-reserving-task`
+  on 2026-10-21 (invariants audit).
 - **[anytime coherence -- NOT M2] user-pointer validation at the syscall boundary.** M2 is MPU
   *enforcement*; validating a user pointer is arch-neutral kernel logic that matters MORE at M1
   (no MPU to contain an OOB access -- see the `user-args-validated-at-boundary` invariant).
@@ -3512,7 +3524,8 @@ below where they were previously mislabeled.
     with no lock, so two threads growing the heap at once hand out the same page.
   - **C++ exception state.** The unwinder's per-thread state (`__cxa_eh_globals`) is reached
     through `__cxa_get_globals`, which is neither `_impure_ptr` nor a `thread_local` here, so a
-    throw crossing a switch is not covered by either mechanism.
+    throw crossing a switch is not covered by either mechanism. Superseded by M10.6.10's
+    exception-state entry.
   - **Safe reclaim.** A reused slot is re-initialised at the next spawn rather than run through
     `_reclaim_reent`, so the per-reent mprec/asctime scratch a `strtod`/`ctime` caller allocated is
     never returned to the arena. `_reclaim_reent` cannot simply be called on the death path: it
@@ -4503,7 +4516,8 @@ follows is what survived that.
       (`.session/logs/m483rxovf-*`, which reached `PC=0x0`). The real fix is a stub that never runs on
       the dying thread's stack, i.e. `docs/design-m4.7.9-fault-isolation.md` section 4.3, which
       already recorded that it "would survive 4.2" and is now measured on an ISA that needs it. It
-      would delete the rxv3 test, not tune it.
+      would delete the rxv3 test, not tune it. `fault-frame-untrusted-until-proved` called the
+      imprecise converse deliberate; that clause left the invariant on 2026-10-21 as this defect.
 
 - [ ] **On a FLAT rxv3 board nothing catches a wild SP that faults with a non-MPU cause.** The
       below-stack test is inside `#if KICKOS_HAVE_MPU` because it reads `MPESTS`/`MPDEA`, and the USP
@@ -4526,7 +4540,7 @@ follows is what survived that.
 ## Found landing task-layer steps 9.4 and 9.5 (2026-08-12)
 
 - [ ] **A cancelled thread that never re-enters the kernel is still unreachable.** The death point is
-      the syscall entry, so a pure compute loop survives a `kos_thread_kill` and a `kos_task_kill`
+      the syscall entry, so a pure compute loop survives a thread kill and a task slay
       indefinitely. Preemptive cancellation is the only fix and it is a much larger change: it needs a
       point at which one thread may run a stranger's `cap_teardown`. No in-tree thread shape has this
       problem (all of them loop through a syscall), so this is a documented floor rather than a live
@@ -4664,7 +4678,8 @@ follows is what survived that.
         restartable sequence on armv6m and RXv3, which have no user-mode compare-and-swap;
         `kos_thread_self` leaves the kernel, the kernel seating each thread's own id in user
         memory. A loop that only reads its own id stops being a cancellation point of
-        `kos_thread_kill`, as in POSIX; `kos_thread_slay` still reaches it.
+        the thread kill (formerly `kos_thread_kill`), as in POSIX; the thread slay
+        (formerly `kos_thread_slay`) still reaches it.
       - The Book and the Journey teach the word, the contended entry and the seated id.
 
       **LANDED:** a mutex is a `kos_mutex_t` word in memory its sharers can write, with no kernel
@@ -4689,13 +4704,13 @@ follows is what survived that.
         code changed, cause not identified.
       - **Accepted (maintainer, 2026-10-20):** the contended handoff's cost on silicon, as the
         price of the contended path in M10.6.7.
-      - **Owed to M10.6.9's bench pass** (in "THE BENCH PASS, BOARD BY BOARD"): the kernel-lock
+      - **Owed to M10.6.11's bench pass** (in "THE BENCH PASS, BOARD BY BOARD"): the kernel-lock
         wait on silicon, the handoff above one core on silicon, armv6m on silicon, the owner-death
         walk's time measured against its stated bound, the RX72M rewind capture, and the RISC-V
         dummy `sc` and the LX6 `SCOMPARE1` bank, which no emulator witnesses. What the green runs
         do not say is in STATE.md's M10.6.7 section.
 
-- [ ] **M10.6.8: THE SYSCALL PASS (maintainer, 2026-10-16).** An inventory of the 75 calls asked of
+- [x] **M10.6.8: THE SYSCALL PASS (maintainer, 2026-10-16).** An inventory of the 75 calls asked of
       each whether it can leave the kernel. Ruled: the clock read moves to user mode where the
       counter is user-readable (armv8a with `CNTKCTL_EL1.EL0PCTEN`, rv64 with `scounteren.TM`,
       x86_64, the sim, rv32 QEMU), after M10.6.7's after-run so that milestone keeps one yardstick,
@@ -4704,12 +4719,45 @@ follows is what survived that.
       create call, the pool and the capability; the redundant calls merge before the bench (the
       timed and untimed send and call, kill and slay into one cancel, task kill into slay, the task
       state into the exit status, the affinity read into its setter, the LED toggle into set, reply
-      into reply-and-receive). Also the per-task nonblocking flag into libc, and the current-core
-      read where it is cheap. Measure each before and after.
+      into reply-and-receive). Also the current-core read where it is cheap. Measure each before
+      and after. The per-task nonblocking flag stays in the kernel (maintainer, 2026-10-21) and
+      moves into libc with M10.6.9's per-task libc state. The source-compatibility alias of
+      `kos_handle_close` (formerly `kos_sem_destroy`) goes with the semaphore words (found by the
+      invariants audit, 2026-10-21). Measured before and after (2026-10-21, QEMU medians of five
+      runs, silicon one run): the clock read 4962 to 111 ns on qemu-arm64 and 1209 to 160 on
+      qemu-riscv, unmoved on the region boards, which keep the call; an uncontended semaphore post
+      and wait 95 to 99.9% faster on QEMU and 82 to 91% on f411disco, rx72m and esp32-wroom (10273
+      to 1131 ns on f411disco); the current-core read 6258 to 21 ns on qemu-arm64-smp. The
+      contended semaphore is slower: after two cuts, the bench window's switch rate is 8 to 11%
+      lower on qemu-x86_64-smp2 (23% before the cuts) and 12% lower on qemu-arm64-benchsmp, and
+      `sem-handoff` p50 6% higher on x86_64; whether that is accepted is the maintainer's decision,
+      pending. `thread_self`, `cpu_clock_hz`, `malloc+free` and `getenv` did not move beyond the
+      emulator's two-speed mode.
 
 
 - [ ] **The comment on the x86_64 IRQ trap depth quotes stale figures.** It gives 544 and 592 for
       `qemu-x86_64` and `qemu-x86_64-bench`; master measured 568 and 600 (found closing M10.6.7).
+
+- [ ] **Three comments in the red-zone indirect-call records cite evidence that no longer holds.**
+      One cites three lines of `console_tx.cc` and one a line of `chip_esp32.cc` for the
+      ConsoleTxBackend, and those lines now hold other code. The comment above the lx6 NONE block
+      says `task_object_admit_grants`' one `jx` is its switch's jump table, but no reclaimwit image
+      (esp32-wroom, -smp, -bench) shows a `jx` in that body; its record still resolves (found
+      2026-10-21).
+
+- [ ] **PERSISTENT STORAGE AND FILES: KEEP THE DOOR OPEN (maintainer, 2026-10-21).** Not numbered
+      yet, and it will come: an OS with no writable persistent storage is soon useless (an EEPROM or
+      flash over SPI, an SD card over uSDHC, a file system on top). Today newlib's file stubs ignore
+      the descriptor (every write goes to standard output, a read is end-of-file, there is no
+      `_open`). The shape that fits the microkernel: storage drivers and file systems are servers;
+      each task's runtime keeps a descriptor table in user space, an entry being a capability on a
+      server's endpoint plus the server's handle for the open file, guarded by the libc lock;
+      `open` reaches the file system by path; `read` and `write` are IPC calls, a large transfer
+      going through a shared memory grant; descriptors 0, 1 and 2 are ordinary entries on the
+      console. The console will take input too (stdin, for a shell, planned by the maintainer),
+      so descriptor 0 reads from the console server like any other file. The kernel question it
+      raises: handing a capability to a client inside an IPC reply (at `open`), with its rights,
+      revocation and what a task's death does to it. No design may close this door.
 
 - [ ] **MEASURE FIRST: A THREAD THAT NEVER USES THE FPU SAVES NO FPU STATE (maintainer, 2026-10-17).**
       armv8a and x86_64 save and restore the whole FPU state at every switch (an 832-byte XSAVE
@@ -4783,7 +4831,7 @@ follows is what survived that.
 - [ ] **M10.7: A far call answers empty where a local call waits.** The two paths of one call
       differ, an asymmetry of the ABI.
 - [ ] **M10.7: `errnoprobe` arm F no longer guards a switch-in.** The guard it exercised is gone.
-- [ ] **M10.6.9: `f302nucleo` and `bluepill-c8` carry no float `chaincheck`.** Only the integer
+- [ ] **M10.6.11: `f302nucleo` and `bluepill-c8` carry no float `chaincheck`.** Only the integer
       image runs there: the float image overflows their 64 KiB of flash.
 - [x] **M10.6.5: `task_sched_grant`'s last clause is probably unreachable.** Prove it or delete
       it. **LANDED:** proved and deleted; a task's priority ceiling narrows against its own grant
@@ -4809,3 +4857,375 @@ follows is what survived that.
       `deathspace` and `rangecheck` are one copy twice, and the same eight region stubs sit in
       `ramowner`, `grantnocache`, `ramalign`, `regionsync` and `ampshare`. **LANDED:** the three
       cases are gone, and the suites share one copy of the region and address-space stubs.
+
+## M10.6.9: MPU tasks as processes and the kernel isolation holes (maintainer, 2026-10-21)
+
+- [ ] **M10.6.9: ON AN MPU BOARD EVERY TASK CAN WRITE EVERY OTHER TASK'S STATIC DATA (maintainer,
+      2026-10-21).** RULED (maintainer, 2026-10-21): "we cannot let this situation continue: a
+      task is the MPU equivalent of the MMU process. I would rather prefer the system with low RAM
+      to hold only one task rather than lie to them about the isolation." An isolation defect, not
+      a posture. A region board's image is one link, so its static data is one window granted to
+      every task: a task can write another task's globals, C++ statics, singletons, `std::cout`
+      and heap, and the victim cannot tell. The kernel, each thread's stack and a task's own
+      grants are protected; the statics are not. The hardware is not the limit. Until then,
+      components that must not trust each other go on separate AMP nodes or a translating board.
+      - Studied 2026-10-21, read-only, nothing built: one image per task, a relink of the same
+        objects per task, its static data copied in from the image at spawn and restart and
+        granted to that task alone in place of the shared window, so the region count does not
+        change. It fixes app globals, C++ statics, `cout`, libc's state, both libc locks, the heap
+        and the nonblocking flag at once. Its price is flash per image, one live instance per
+        image, and a build that links once per task. Per-task data partitions in one link were
+        studied too: code two tasks share still writes one object, so newlib's globals cannot
+        move without a newlib patch. The architecture's "no loader and no per-process image"
+        line changes with it.
+      - Open for the milestone's start, each for the maintainer:
+        1. Dynamic tasks on a region board: refuse `kos_task_create` without an image, or let a
+           composition declare several instances of an entry.
+        2. The code region: the whole flash readable by every task, or a code region per image.
+        3. Flat boards and LX6: one image as today, or one image per task there too.
+        4. The sim: one host namespace per task (`dlmopen`), or the witness declared
+           inapplicable there.
+        5. The ABI: `kos_task_create` takes an image on every backend, or a separate spawn by
+           image.
+        6. Consent: whether a board may ever share statics between tasks by consent (the study
+           recommends never).
+        7. The ESP32-C6 code window: a PMP TOR pair, or user code run from flash, before that
+           board holds more than one large task.
+        8. Libc's per-thread state: in each thread's thread-local block, or an array per image
+           sized by the composition.
+      - Removed from `docs/reference/invariants.md` as defects (2026-10-21): on a region board a
+        forged mutex word boosts and probes a thread of another task, and closes a false cycle
+        through the image's libc lock; region boards stood outside
+        `space-data-starts-from-the-image`; and the image's libc locks are ambient there, so one
+        thread can stall every task's stdio and malloc.
+      - Witnesses, on QEMU in CI and on each region board's silicon: a cross-task write and read
+        of a global, a C++ static, `std::cout`, a malloc'd block, the libc lock word and
+        `environ`, each faulting, and a system call given that address answering `-KOS_EFAULT`;
+        a restarted task reading the image's value; red on the single-window layout.
+
+- [ ] **M10.6.9: A TASK ON AN MPU BOARD CAN STARVE ANOTHER TASK'S MALLOC (maintainer, 2026-10-21).** On
+      a region board the tasks of one image share one copy of its static data, so they share
+      libc's state: one heap (a bump arena over the unused end of the granted `.appdata` window,
+      with no per-task bound), the stdio buffers and the two libc locks, which are ambient there.
+      Task A can exhaust the heap so task B's `malloc` returns NULL, or hold malloc's lock and
+      stall B for as long as it likes. A console driver that takes the libc lock deadlocks
+      against a writer holding it across `_write`. Memory a task reserves through the kernel (its
+      arena blocks, charged to its own budget) is already its own. On a translating board each
+      space starts from its own pristine copy of the data, so nothing crosses. Costed 2026-10-21,
+      read-only, nothing compiled:
+      - Libc's state per task, statics still shared (the preferred first step): dlmalloc keeps its
+        state in fixed globals, so a per-task allocator (TLSF-class) replaces it, `free` routing by
+        address to the owning heap; a malloc lock per heap; each task's stdin, stdout and stderr
+        its own FILEs; O_NONBLOCK one word in the task's context. The context is found from the
+        seated lock id's slot bits with no system call; region boards need an entry trampoline
+        (`kickos_task_start` exists only with address spaces). About 1k lines, under 1 KiB of RAM
+        per task plus its heap, no net flash, nothing per switch, every board including those
+        with no MPU. Fixes heap and lock starvation and O_NONBLOCK; app globals, C++ statics,
+        `cout` and the EH globals stay shared, so the heaps cannot be MPU-confined yet.
+      - One image per task, linked separately: every ISA, no toolchain change, about 3-5k lines
+        (composition, a kernel record per image, spawn by image, `.data` copied at task start);
+        duplicates 20-140 KiB of flash per image; one instance of an image at a time; crosses the
+        "no loader, no per-process image" line in the architecture. Gives each task's heap MPU
+        confinement from its own data window. The study above recommends it.
+      - DECLINED (maintainer, 2026-10-21): a per-task copy of the statics through a base register.
+        GCC offers it on ARM only (r9 with `-msingle-pic-base`); RX's `-mpid` covers constant data
+        only, rv32 and Xtensa have nothing, so it would split the region boards by ISA.
+      - The nonblocking flag moves into libc with this work (maintainer, 2026-10-21); it stays in
+        the kernel until then.
+      - Each FILE on a lock of its own, the fuller form the 2026-10-13 ruling names, has no other
+        entry.
+      - Witness: A exhausts its heap and holds its malloc lock forever, and B's `malloc` and
+        `printf` still succeed.
+
+- [ ] **M10.6.9: ON A REGION BOARD, AUTH_MEMORY LETS A TASK MAP KERNEL RAM AS A DEVICE WINDOW (found
+      2026-10-21).** A RAM grant is confined to the user arena for every caller and kernel blocks
+      are nameable by nobody, but the region arm of `window_admit`
+      (`kernel/syscall/syscall_thread.cc`) asks only whether the range is admissible as a device
+      region, and that test (`kernel/grant/grant.cc`) never checks that the range is not RAM: the
+      reserved set holds only kernel-owned devices, and only translating builds get an aperture
+      allowlist. Every default composition gives `main` AUTH_MEMORY, so `main`, or any task given
+      it for one buffer, spawns a thread whose window covers the kernel's `.bss` and thread
+      control blocks, and rewrites them unprivileged. Second half: a DMA engine the chip file does
+      not mark `bus_master` needs AUTH_MEMORY alone (the STM32F411 DMA, the RP2040 and RP2350 DMA,
+      the RT1062 and K64F eDMA, the RX72M DMAC and DTC, the XMC4800 GPDMA). Not verified: whether
+      the ESP32-C6 APM blocks it for kernel SRAM.
+
+- [ ] **M10.6.9: ANY TASK CAN END THE SYSTEM THROUGH `kos_panic` (found 2026-10-21).** `kos_shutdown`
+      needs AUTH_SYSTEM, the bootloader outcome also AUTH_BOOTLOADER, and ending the system is a
+      right root holds. But the `KOS_SYS_PANIC` arm has no gate (`kernel/syscall/syscall.cc`) and
+      reaches `kpanic`, which applies the terminal outcome set at boot: a sandboxed driver with no
+      authority halts or resets every task, or drops the chip into its bootloader when the init
+      chose that outcome. `sys.h` says the call needs no authority so that root, which is
+      unprivileged, can report.
+
+- [ ] **M10.6.9: ONE TASK CAN TAKE EVERY THREAD SLOT (found 2026-10-21).** The pool budgets exist so a
+      supervisor respawning a driver still finds a slot, but the thread pool has no per-task quota
+      and a plain spawn needs no authority (`kernel/syscall/syscall_thread.cc`). One task spawns
+      until the pool is empty; then no driver can be restarted and no other task can create a
+      thread. A per-task thread budget, or a system bound, so a respawn always finds a slot.
+      Removed from `object-pool-keeps-a-slot-from-any-one-task` as a defect (2026-10-21): "IT
+      BOUNDS ONE TASK AND NOT THE SYSTEM" and "the thread pool carries no quota at all".
+
+- [ ] **M10.6.9: `kos_ram_alloc` HAS NO PER-TASK BOUND (found 2026-10-21).** It checks only
+      AUTH_MEMORY (`kernel/syscall/syscall.cc`), where a frame run has a ceiling: a driver given
+      AUTH_MEMORY for one DMA buffer empties the arena in one call. On a region board nothing is
+      ever freed either, so a driver restarted in a loop leaks its blocks every time (the general
+      freeing allocator, under "Later").
+
+- [ ] **M10.6.9: A TASK CAN MAKE THE KERNEL MASK INTERRUPTS FOR MILLISECONDS (found 2026-10-21).**
+      Interrupt latency is bounded by the kernel paths that run masked, but two console paths
+      write the wire masked for as long as a task asks:
+      - On a board with no console driver published, a fault record goes through the console,
+        and when the ring is full that path spins `arch_console_write_sync` under IrqLock
+        (`kernel/init/console_tx.cc`). A task that fills the ring with printf and then faults
+        threads in a loop masks interrupts for several ms per record line at 115200 baud.
+      - On an own-image AMP node every user stdout chunk is sent polled with interrupts masked
+        (`arch/arm/chip/rp2xxx/chip_rp2xxx.cc`, `arch/arm64/chip/virt_arm64/chip_virt_arm64.cc`),
+        up to 256 wire bytes, about 22 ms a chunk on the `pizero2350` AMP configurations. The
+        RP2350 claim under "The console collision class" says that path masks nothing.
+
+- [ ] **M10.6.9: ON A REGION BOARD A SYSCALL OUT-BUFFER CAN POINT INTO A DEVICE WINDOW (found
+      2026-10-21).** The pointer checks of `kernel/syscall/syscall_mem.cc` accept device regions
+      on builds that do not translate, and the copy is a privileged store. So the kernel writes
+      registers for a task past the privileged-write allowlist: an XMC USIC driver that passes its
+      window's `FDR` address as an IPC receive buffer gets bits written that
+      `KOS_SYS_PERIPH_REG_WRITE` would refuse.
+
+- [ ] **M10.6.9: A BUS SERVICE TRUSTS THE SLOT EACH CLIENT SENDS (found 2026-10-21).**
+      `docs/reference/bus-service.md` says one client reaches a bus service and the bring-up hands
+      its endpoint out once, but the composition puts no limit on how many tasks use one endpoint
+      (`tools/compose/kickos_compose/composition.py`) and the init gives a copy to every user
+      (`system/init/compose/walk.cc`). Two tasks that both declare `uses: /dev/spi0` reach each
+      other's device: B sends transfers on A's slot, reads A's flash or reconfigures it, and
+      nothing refuses it or warns. Badged endpoints sit under "Later" in `roadmap.md`.
+
+- [ ] **M10.6.9: CHECK WHETHER THE ESP32 CAN SPLIT USER FROM KERNEL (found 2026-10-21).** The LX6
+      port has no user/kernel split: `PS.UM` is 1 for kernel and thread alike, so a fault there
+      panics instead of killing its task. No record examines the ESP32's PID controller and its
+      MMU and MPU permission scheme. Establish from the ESP32 TRM whether they permit a user/kernel
+      split. If they do, the LX6 port owes the split. If they do not, it is the hardware floor
+      (maintainer, 2026-10-21) and `docs/reference/boards.md` states it.
+      Cortex-M0 without the privilege extension is a real floor.
+
+- [ ] **M10.6.9: CHECK THAT A CORTEX-M7 CANNOT SPECULATE INTO DEVICE OR UNBACKED MEMORY WHILE THE MPU
+      IS OFF (maintainer, 2026-10-21).** Not a defect and not an invariant: on the M7 the MPU is what
+      tells the core where a speculative access is not allowed, which is a hardware floor
+      (`docs/reference/boards.md`, `teensy41`). Check against the code and the Cortex-M7
+      documentation (TRM, ARMv7-M ARM, NXP ERR011573):
+      - the enforcing `teensy41` build programs fixed rows that type the unbacked FlexSPI and SEMC
+        bands Device, XN and no-access before the caches are on (`kickos_arm_mpu_fixed` and
+        `arch_init` in `arch/arm/chip/imxrt1062/chip_imxrt1062.cc`), and the PMSAv7 reprogram never
+        drops them;
+      - `MPU_CTRL` is written without `HFNMIENA`, so inside HardFault and NMI the MPU is off and the
+        default map types those bands Normal with the caches on: establish whether the M7 can
+        speculate into them there, and if it can, set `HFNMIENA` or give those handlers a path that
+        keeps the fixed rows;
+      - the PMSAv8 commit runs with the MPU off, and no PMSAv8 chip may declare fixed rows; confirm
+        no speculating core takes that backend.
+      Record the answer in `docs/reference/boards.md`.
+
+## M10.6.10: C++ and libc conformance (maintainer, 2026-10-21)
+
+Every toolchain family is configured `--disable-threads` (`conan/toolchain/conanfile.py`), so GCC
+reports "Thread model: single" on every target, and libstdc++, libsupc++ and libgcc compile their
+thread safety out while KickOS runs threads, SMP included. That breaks "Applications can use full
+C++" in the Book and "Userspace: full C++" in `docs/reference/architecture.md`. The fix is a
+toolchain release giving GCC a KickOS threads model. Found 2026-10-21 from the shipped 1.1.0-1
+archives (objdump, nm and readelf), nothing built.
+
+- [ ] **M10.6.10: THE C++ RUNTIME IS BUILT FOR ONE THREAD (found 2026-10-21).** Each needs its red arm,
+      one-core and SMP:
+      - Initialising a function-local static is not thread-safe, and neither is `std::call_once`.
+        `__cxa_guard_acquire` is a plain load, test and store and throws `recursive_init_error`
+        when it finds the initialisation in progress; `__cxa_guard_release` is one plain store
+        with no barrier; with no gthreads, a contended `once_flag` throws EDEADLK. Two threads
+        reaching `static Foo f;` at once both construct it, or one ends in terminate, and on an
+        armv8a or rv64 SMP reader the guard can be seen set before the object is written. The
+        DWARF unwinder also sorts its frame registry on first use with no lock (riscv64, xtensa,
+        x86_64), so two first throws at once can corrupt it.
+      - `std::shared_ptr` counts are not atomic: the default lock policy is single-threaded, so
+        two threads copying and dropping one pointer tear the count into a double free or a leak.
+      - `thread_local` destructors never run at thread exit: `__cxa_thread_atexit` pushes onto one
+        static list with no lock, run only from `atexit`, and the thread exit path
+        (`user/src/task_trampoline.cc`) never runs it. A thread_local string leaks at every thread
+        end, and a later `exit()` runs dead threads' destructors over TLS blocks newer threads now
+        use.
+      - On RX the SjLj exception chain is one global head for every thread: libgcc's
+        `_Unwind_SjLj_Register` and `_Unwind_SjLj_Unregister` push and pop a static with plain
+        moves. After A returns, the head points into A's dead frame, and the next throw from any
+        thread longjmps onto a foreign stack. The Book's SjLj section does not say so.
+
+- [ ] **M10.6.10: NO CONDITION VARIABLE, AND NO `std::mutex`, `std::condition_variable` OR
+      `std::thread` FOR AN APP (maintainer, 2026-10-21: add it).** The tree has no condition
+      variable at all, and the single thread model compiles libstdc++'s thread classes out. GCC's
+      threads layer asks the OS for a mutex, a recursive mutex, a condition variable, a once and
+      a thread-local key, so the KickOS threads model above needs each. The condition variable is
+      `kos_cond_t`: a sequence word plus the plain word wait and wake M10.6.8 landed, with no
+      kernel object (`wait` reads the sequence, releases the mutex, waits while the sequence is
+      unchanged and retakes the mutex; `signal` bumps it and wakes one; `broadcast` bumps it and
+      wakes all), with a timed wait. The sequence counts modulo 2^31 so it never touches the
+      waiters bit. The mutex and recursive mutex are the existing mutex words,
+      and the once is the corrected guard. Then `std::mutex`, `std::condition_variable` and
+      `std::thread` work for an app on every board. Red arms: a waiter woken by a signal sent
+      after it released the mutex, a broadcast reaching every waiter, a timed wait ending at its
+      deadline, and a killed waiter, one-core and SMP.
+- [ ] **M10.6.10: THE C++ EXCEPTION STATE IS ONE STATIC FOR EVERY THREAD (maintainer, 2026-10-21: fix
+      in the milestone after M10.6.8; placed in M10.6.10 by the sequence of the same day, with
+      the rest of the runtime's thread safety, since the state is per thread and not per
+      task).** Checked on the 1.1.0-1 toolchain: in every family's `libsupc++.a` (armv7m, armv6m,
+      aarch64, x86_64, rv32, RXv3, Xtensa) `eh_globals` is a plain 12-byte object, not
+      thread-local, so every thread and, on a region board, every task shares the chain of caught
+      exceptions and the uncaught count. The standard makes them per thread. A thread preempted
+      inside a `catch` can rethrow, or see through `std::current_exception`, an exception another
+      thread caught or already freed, and `std::uncaught_exceptions` counts other threads'
+      throws. The shape: strong `__cxa_get_globals` and `__cxa_get_globals_fast` returning a
+      per-thread block, so the linker leaves `eh_globals.o` out, as it already does
+      `vterminate.o`. Red arm: two threads each holding a caught exception while the other throws
+      and rethrows, one-core and SMP. Supersedes the "C++ exception state" bullet of the M4-era
+      reent item.
+
+- [ ] **M10.6.10: `abort`, A FAILED `assert` OR `std::terminate` IN A WORKER ENDS ONLY THAT THREAD (found
+      2026-10-21).** `abort` calls `raise`, which reaches a `_kill` stub returning -1, then `_exit`,
+      then `kos_exit` (`user/src/newlib_stubs.cc`), which ends one thread when it is not the
+      entry. An uncaught exception in a worker leaves its siblings running on the state it broke,
+      and a supervisor never sees the task die. The exit-scope ruling ("exit() scope is
+      CHIP-defined") covers `exit()` only.
+
+- [ ] **M10.6.10: `std::chrono::steady_clock` MOVES WITH THE WALL CLOCK (found 2026-10-21).** libstdc++'s
+      `steady_clock::now` calls `gettimeofday`, which returns `kos_clock_now()` plus the wall
+      offset (`user/src/newlib_stubs.cc`), while `is_steady` is true. `kos_clock_set_realtime`
+      then moves every std:: timeout and duration in the image. On a translating board the offset
+      belongs to each address space, so "Set the Unix-epoch wall clock" in `sys.h` sets only the
+      caller's task.
+
+- [ ] **M10.6.10: `getentropy` SUCCEEDS WITH BYTES DERIVED FROM THE CLOCK ON RISC-V AND X86_64 (found
+      2026-10-21).** `user/src/newlib_stubs.cc` fills the buffer from a generator seeded by
+      `kos_clock_now()` and returns 0, and newlib's `arc4random` and `std::random_device` seed from
+      it, so nonces and keys can be guessed and no error is reported. Xtensa and RX fail with
+      ENOSYS.
+
+## Found by the invariants audit (2026-10-21)
+
+Each stood in `docs/reference/invariants.md` as a limit with no maintainer ruling. An invariant
+states a guarantee, so the clause left it on 2026-10-21 and the defect is recorded here.
+
+- [ ] **OPEN QUESTION FOR THE MAINTAINER: SHOULD `AUTH_IRQ` NAME ITS LINES? (found 2026-10-21).**
+      Minting a `CAP_IRQ` needs `AUTH_IRQ`, and nothing names which lines, so a task holding it
+      claims any line that no driver holds and the kernel does not drive. The composition already
+      names each task's lines, so a per-line authority could come from it. The maintainer
+      (2026-10-21): possibly fine as it is, and not an invariant either way. Not a defect.
+
+- [ ] **A SEAM STORE TO A CLOCK-GATED BLOCK CAN END THE SYSTEM.** The privileged write seam requires a
+      tabled block to be clocked and no backend enforces it: a store to a gated block faults
+      inside the seam and terminates the system. Latent: USIC0 is ungated by
+      `kickos_xmc_usic_init()`, and a gated U1C0 or U2C0 entry would expose it. The seam checks
+      the gate, or the allowlist admits only blocks the kernel keeps clocked.
+
+- [ ] **A MISPLACED MUTEX WORD WORKS UNTIL ITS FIRST CONTENTION.** A word the user compare-and-swap
+      can operate but the kernel refuses (one in the AMP share, for one) takes and releases
+      uncontended and answers -KOS_EINVAL only when a second thread contends. The 2026-10-16
+      ruling refuses such words; the late refusal is unruled.
+
+- [ ] **ON THE SIM A RAW MUTEX CALL ON AN UNMAPPED WORD KILLS THE HOST PROCESS.** The sim admits any
+      aligned address outside its arena as a word and the kernel reads and writes it as given, so
+      a raw system call naming an unmapped or read-only one faults the host process. Every other
+      pointer syscall on the sim refuses host-heap memory.
+
+- [ ] **A FAILED HANDLE WRITE LEAVES AN UNNAMED CAPABILITY INSTALLED.** `cap_out_deliver` writes the
+      handle after the object exists and the capability is installed, so an EFAULT there leaves
+      the caller holding a capability at an index it was never told, reclaimed only when its
+      holder dies. An agent rejected undoing it, since a close cannot retract a thread already
+      running; no ruling. Install after the handle write, or undo per type, as the reply cap, the
+      frame-run and the own-space mints already do.
+
+- [ ] **A SUPERVISOR CALLER TRAPPING WITH THE MASK RAISED IS NEITHER CLEARED NOR REFUSED.** The ARM
+      and RX syscall slow paths do neither; the ARM IPC fastpath refuses on `ICSR.PENDSVSET`.
+      Latent: no such caller exists in the tree. Refuse it on the slow paths as the fastpath
+      does.
+
+- [ ] **THE PMSAV7 RECORD IS PER CORE BUT ITS SLOT BASE IS CHIP-WIDE.** `mpu_held_invalidate()` clears
+      only `arch_cpu_id()`'s record, while `g_fixed_count`, the first per-thread slot index, is
+      chip-wide, and the stash `g_pend_image` is one global. On a multicore PMSAv7 part where each
+      core ran the fixed-region init, a core's skip could compare the right words against the
+      wrong slots. Latent: the only chip declaring fixed rows is single-core. A per-core form of
+      both, or a build refusal of fixed rows on a multicore chip.
+
+- [ ] **THE LOCK-FREE AUTHORITY READ WAS NEVER REVISITED FOR SMP.** The authority check reads the
+      caller's own word with no IrqLock. The invariant said an SMP kernel must revisit that with
+      the rest of the IrqLock contract, and `docs/design-multicore.md` does not. Confirm the read
+      is safe above one core.
+
+- [ ] **A `KOS_DRV_EP_RETAIN` SEAT IS OUTSIDE THE BUILD'S ENDPOINT COUNT.** A driver an app brings up
+      under it keeps a further endpoint slot in root that no build can read, so root can boot
+      past its own ceiling on a board that configured and built cleanly.
+
+- [ ] **A CLOCK RETUNE IS REFUSED WHILE A DRIVER OWNS THE CONSOLE.** The retune returns the unchanged
+      rate unless the console is kernel-owned, since the kernel cannot re-derive a userspace
+      driver's baud. A retune that tells the console driver, or a ruling.
+
+- [ ] **A STORE INTO FRAMES WHOSE MAPPING THEIR OWNER IS CHANGING MAY BE LOST.** One the kernel
+      delivers into them for an IPC sender included; the loss stays inside the owning task's view
+      of its own frames. And bytes that share a cache line with a kernel copy are read back and
+      written back with it, so a task writing them from another core during the copy races the
+      kernel as it races a device on a line it shares with a DMA buffer.
+
+- [ ] **THE SCHEDULER EXCLUSION TOKEN IS COPYABLE AND STORABLE.** A `Held` shows its holder was handed
+      a lock, not that the lock is held now (`kernel/include/kickos/held.h`). A token that cannot
+      outlive its lock scope, or a ruling.
+
+- [ ] **A ROUND-ROBIN QUANTUM IS WALL-CLOCK, AND AN AGENT REFUSED CPU-TIME ACCOUNTING.** A thread
+      preempted inside its quantum loses that part of its slice: no equal-priority peer waits
+      longer than one quantum of real time, but no thread is promised its quantum of CPU. The
+      refusal (it needs a switch-out hook and a remaining-slice field, and weakens the peer bound
+      to "eventually") has no maintainer ruling; the 2026-10-13 ruling covers only the floor. Put
+      it to the maintainer.
+
+- [ ] **FAULT AND CONSOLE DIAGNOSTICS ARE LOST IN FIVE CASES.**
+      - In a double-fault race the first thread's PC is lost: the record prints `PC lost to a later
+        fault`.
+      - A fault record is lost when the held store has no room, on a console with no ring (an
+        own-image AMP node, the chips with no buffered backend), and when the system ends before
+        the console driver writes it.
+      - A console driver's own prints go to the kernel console, which drops them while that task
+        owns the UART.
+      - An ordinary line the console ring cannot take does not go out.
+      - A synchronous fault handler reading the clock between the three anchor stores of a retune
+        reads a torn anchor.
+
+- [ ] **A JOINER CANNOT READ A THREAD'S EXIT CODE.** `sched::exit_current`'s waiter sweep sets the join
+      wake result to 0 for every exit, clean or faulted; only a task's creator reads a status,
+      through `kos_task_state`. A join that delivers the code, or a ruling.
+
+- [ ] **TELEMETRY CANNOT BE ENABLED ON THE RV64 VIRT BOARD.** `CHIP_VIRT_RV64` selects no
+      `HAS_TRACE_CLOCK` (`arch/Kconfig`).
+
+- [ ] **ON THE MULTI-INSTANCE SIM A STATIC MUTEX WORD CONTENDED ACROSS INSTANCES RESOLVES A FOREIGN ID.**
+      App statics and the host heap are shared across the sim's kernels, so a word contended
+      across instances resolves another kernel's thread id against the local pool. Low.
+
+- [ ] **A DEAD PUBLISHED CONSOLE STAYS CHARGED TO EVERY HOLDER'S TASK.** The stdout seat names the
+      published endpoint, a dead one included, until the next publish, and each holder's task
+      pays for it until then. Low.
+
+- [ ] **A SECOND AUTHORITY NARROW ANSWERS -KOS_EBADF.** A narrow to 0 succeeds and leaves the word 0,
+      so a second one, which gives up nothing, is refused (`kernel/syscall/cap.cc`), where
+      narrowing an empty set elsewhere does nothing. Make it a no-op, or a ruling.
+
+- [ ] **PROPERTIES NO RUN WITNESSES.**
+      - On armv8a, that the reserved ASID keeps a stale user entry from hitting: QEMU's TLB is not
+        ASID-tagged. On x86_64, a real NMI or machine check at ring 3.
+      - The cache maintenance the region rule does on the Teensy 4.1, the one board whose cache it
+        acts on: it has no emulator, so the host gates and the build stand in. Its capture rides
+        M10.6.11's bench pass. No emulator models a data cache, so on every emulated board the
+        witness of the alias maintenance is the count of its calls, and the data arm
+        `uncached_alias_sync` can fail only on a real cache.
+      - The descriptor-budget refusal of the three region backends: no part in the fleet is near
+        either limit.
+      - The sim's `grant_reserved` 4 KiB case is vacuous: encodability already refuses it.
+      - A mutex word whose dead holder's id aliases a live thread after 2^24 to 2^29 reuses of one
+        slot (`docs/reference/architecture.md`, "What the mutex word reports, and to whom").
+      - A space's data copied while a sibling updates the heap: no arm can time the interleaving,
+        and the pristine source is what makes it irrelevant.
+      - A `KICKOS_TELEMETRY` gate around code that is not record emission: no gate compares a
+        telemetry-ON build's behaviour with a telemetry-OFF one, and every emulated tree runs
+        telemetry OFF.

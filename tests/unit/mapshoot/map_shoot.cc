@@ -287,7 +287,7 @@ TEST_F(MapShoot, ANullSpaceIsRefusedAndAnswersNothing)
     EXPECT_EQ(arch_aspace_map(nullptr, va, PA_A, 1, RIGHTS_DATA, ARCH_MAP_NORMAL),
               ARCH_ASPACE_EINVAL);
     EXPECT_EQ(arch_aspace_frame_at(nullptr, va), 0u);
-    EXPECT_EQ(arch_aspace_acquire(nullptr, va, nullptr), nullptr);
+    EXPECT_EQ(arch_aspace_acquire(nullptr, va, nullptr, nullptr), nullptr);
 }
 
 TEST_F(MapShoot, AMisalignedFrameAWrappingCountAndASlotBelowTheUserHalfAreRefused)
@@ -308,9 +308,9 @@ TEST_F(MapShoot, AnAddressOutsideTheUserHalfAnswersNoFrame)
 {
     uintptr_t const below = arch_aspace_user_offset() - arch_aspace_granule();
     EXPECT_EQ(arch_aspace_frame_at(space, below), 0u);
-    EXPECT_EQ(arch_aspace_acquire(space, below, nullptr), nullptr);
+    EXPECT_EQ(arch_aspace_acquire(space, below, nullptr, nullptr), nullptr);
     EXPECT_EQ(arch_aspace_frame_at(space, kernel_half_of(0x1000)), 0u);
-    EXPECT_EQ(arch_aspace_acquire(space, kernel_half_of(0x1000), nullptr), nullptr);
+    EXPECT_EQ(arch_aspace_acquire(space, kernel_half_of(0x1000), nullptr, nullptr), nullptr);
 }
 
 TEST_F(MapShoot, AFrameIsAnsweredForAnyByteOfItsPage)
@@ -471,12 +471,44 @@ TEST(AttributeTableInUse, LeavesAreBuiltFromTheLiveRegister)
             << "type " << i;
     }
     bool uncached = false;
-    ASSERT_NE(arch_aspace_acquire(space, va + g, &uncached), nullptr);
+    ASSERT_NE(arch_aspace_acquire(space, va + g, &uncached, nullptr), nullptr);
     EXPECT_TRUE(uncached);
-    ASSERT_NE(arch_aspace_acquire(space, va, &uncached), nullptr);
+    ASSERT_NE(arch_aspace_acquire(space, va, &uncached, nullptr), nullptr);
     EXPECT_FALSE(uncached);
 
     ASSERT_EQ(arch_aspace_unmap(space, va, 3), ARCH_ASPACE_OK);
     arch_aspace_destroy(space);
+    sysops_reset();
+}
+
+// The boot root's identity runs over the real walk: a run is recorded only where every leaf
+// maps at its own address, and a frame inside one is answered without a walk.
+constexpr uintptr_t PAGE = 4096;
+
+TEST(IdentityRun, AHoleInsideTheRangeRecordsNoRun)
+{
+    sysops_reset();
+    uintptr_t const base = firmware_split_ram();
+    uintptr_t const hole = base + 2 * PAGE;
+    firmware_clear_leaf(hole);
+    kickos::x86_64::aspace_identity_record(0, base, base + 4 * PAGE);
+    EXPECT_TRUE(kickos::x86_64::aspace_identity_maps(base));
+    EXPECT_FALSE(kickos::x86_64::aspace_identity_maps(hole))
+        << "a run recorded over the hole reaches a frame the boot root does not map";
+    EXPECT_TRUE(kickos::x86_64::aspace_identity_maps(hole + PAGE));
+    sysops_reset();
+}
+
+TEST(IdentityRun, AFrameInsideARecordedRunIsAnsweredWithoutAWalk)
+{
+    sysops_reset();
+    uintptr_t const base = firmware_split_ram();
+    kickos::x86_64::aspace_identity_record(0, base, base + 4 * PAGE);
+    firmware_clear_leaf(base + PAGE);
+    firmware_clear_leaf(base + 4 * PAGE);
+    EXPECT_TRUE(kickos::x86_64::aspace_identity_maps(base + PAGE))
+        << "the run was not recorded, so the frame was walked";
+    EXPECT_FALSE(kickos::x86_64::aspace_identity_maps(base + 4 * PAGE))
+        << "a frame past the run's end was not walked";
     sysops_reset();
 }

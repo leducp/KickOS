@@ -305,7 +305,7 @@ not: the ISR's mask is the one unlocked writer in the image. It is therefore an 
 buys the two things a plain byte does not, one indivisible access of a stated width and a compiler
 that may no longer cache the load across a branch nor sink or elide the store. Its ordering against
 the waiter's unmask is carried by the kernel lock's own causal chain: the ISR masks and then calls
-`sem_post`, which takes the lock, and `S32C1I` "plays the role of both acquire and release",
+`notify_raise`, which takes the lock, and `S32C1I` "plays the role of both acquire and release",
 requiring every ordinary store to have performed before its atomic pair performs (Xtensa ISA
 summary 4.3.13.5, p.122); the release is `S32RI`; the waiter takes the same lock before it
 unmasks.
@@ -1453,7 +1453,7 @@ beside it saying which.** A flag would be a second truth about the same fact: tw
 two to read, and a disagreement between them that no code could interpret.
 
 `kos::thread::pin` and `kos::thread::unpin` (`user/include/kickos/kos.h`) are SPELLINGS of
-`kos_thread_set_affinity`, not operations of their own. Every NONZERO set is
+the affinity setter (formerly `kos_thread_set_affinity`), not operations of their own. Every NONZERO set is
 `requested & task_core_set(task)`, and that intersection is what makes the operation total: it
 cannot produce a set outside the grant. **Unpin is `set_affinity(0)`**, and a zero mask is resolved
 to `task_default_cores` at the syscall boundary before that intersection runs, which is the same
@@ -1647,7 +1647,7 @@ because a task is one scheduling domain. A thread handling an IRQ uses the first
 `task_default_cores` (`kernel/task/task.cc`) is the task's grant less the isolated cores, and it is
 what a thread takes when it names no core: at `thread_create` with an empty `ThreadAttr::core_mask`,
 at the spawn boundary where `kos_thread_params::core_mask` is zero, and at
-`kos_thread_set_affinity` where the requested mask is zero, which is how `unpin` is spelled. Those
+the affinity setter (formerly `kos_thread_set_affinity`) where the requested mask is zero, which is how `unpin` is spelled. Those
 three are ONE authority called from three places, not three computations of the same set.
 
 **THE GUARANTEE, EXACTLY: nothing arrives on an isolated core by default, and only an explicit mask
@@ -1667,7 +1667,7 @@ isolated core, which is why `unpin` restores the default and not the grant.
 
 **An explicit mask names isolated cores freely** -- one, several, or only isolated ones. A grant of
 {2,3} on a four-core image is a reserved pool, which is the normal way to hand a real-time workload
-more than one core, and `kos_thread_set_affinity` over the same pair is placeable on both.
+more than one core, and the affinity setter (formerly `kos_thread_set_affinity`) over the same pair is placeable on both.
 
 A grant naming nothing BUT isolated cores answers itself: `task_default_cores` subtracts and finds
 nothing left, so it returns the grant. Its unpinned members are pinned by construction, which is
@@ -1676,13 +1676,13 @@ what the operator asked for by granting that set.
 ### One admission
 
 `sched_admit_mask` (`kernel/include/kickos/sched.h`) is the single gate every core mask passes
-through before it is stored anywhere: a spawn's `kos_thread_params::core_mask`, a
-`kos_thread_set_affinity`, and both halves of `kos_task_sched_grant` (the caller's grant in
+through before it is stored anywhere: a spawn's `kos_thread_params::core_mask`, an
+affinity setter call (formerly `kos_thread_set_affinity`), and both halves of `kos_task_sched_grant` (the caller's grant in
 `syscall_thread.cc`, the task's own in `task_sched_narrow`). It applies two clauses in order.
 
 It takes a REAL mask, empty being malformed, and a zero word means something different at each ABI
 that carries one, so each entry resolves its own before calling: the spawn boundary and
-`kos_thread_set_affinity` both resolve 0 to `task_default_cores`, and `kos_task_sched_grant` reads
+the affinity setter (formerly `kos_thread_set_affinity`) both resolve 0 to `task_default_cores`, and `kos_task_sched_grant` reads
 it as "leave this half alone".
 
 **The machine, then the grant.** A request is intersected with
@@ -1744,7 +1744,7 @@ bit would refuse that request on every board.
 Under one code a too-narrow grant becomes indistinguishable from a typo in a mask literal, and the
 reader debugging it widens the wrong thing: adds a core to a grant to fix a shifted constant, or
 edits a constant to fix an access decision. The split costs one comparison at the syscall boundary,
-and it is made at every entry that takes a mask: the spawn boundary, `kos_thread_set_affinity` and
+and it is made at every entry that takes a mask: the spawn boundary, the affinity setter (formerly `kos_thread_set_affinity`) and
 `kos_task_sched_grant` all range-check before they authority-check.
 
 ### What folds and what does not
@@ -1752,7 +1752,7 @@ and it is made at every entry that takes a mask: the spawn boundary, `kos_thread
 The placement half is entirely behind `#if KICKOS_KERNEL_CORES > 1` and contributes NOTHING to a
 single-core image. `Task::core_set`, `Thread::affinity`, `sched_placeable_on`, `sched::set_affinity`,
 `sched::add_idle`, `available_to`, the placement hooks, `Kernel::seated_prio`, the per-pair rings
-and cells, and `switch_book`'s mask test are all absent from such a build, `kos_thread_set_affinity` is
+and cells, and `switch_book`'s mask test are all absent from such a build, the affinity setter (formerly `kos_thread_set_affinity`) is
 `-KOS_ENOSYS`, and `kos_thread_self` still answers the caller's own handle.
 
 **The PRIORITY CEILING does not fold, and it is not meant to.** It is unconditional where the core

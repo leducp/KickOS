@@ -98,7 +98,6 @@ namespace kickos
     enum class CapType : uint8_t
     {
         CAP_EMPTY = 0, // an unused slot: must be 0 so a zeroed TCB is an empty table
-        CAP_SEM,
         CAP_ENDPOINT, // synchronous IPC endpoint object pool
         CAP_REPLY,    // one-shot L4-style reply cap; obj NAMES the parked caller by
                       // generational thread handle (no object pool, no refcount)
@@ -694,7 +693,7 @@ namespace kickos
 
     // Bump one reference to the object named by a global handle. The handle MUST resolve: the
     // caller validated it. `rights` is the cap's rights bits: the endpoint arm bumps
-    // recv_holders when they carry CAP_WAIT; the sem arm ignores it.
+    // recv_holders when they carry CAP_WAIT; every other arm ignores it.
     //
     // False = REFUSED: a counter this bump would move is at its uint8_t ceiling, so neither moved.
     // True also covers "no counter to move".

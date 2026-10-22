@@ -170,6 +170,12 @@ namespace kickos
         // Set the one-shot waker for the next park.
         void wake_next_park(ParkWaker fn);
 
+        // Run fn once at the next switch, as the incoming thread, once the outgoing frame is
+        // parked (above one core, IMMEDIATE mode, with the kernel lock released). One-shot;
+        // reset disarms it.
+        using SwitchAction = void (*)();
+        void run_at_next_switch(SwitchAction fn);
+
         // Run fn at the specified lock-free gap and trace gaps as gap<n>.
         // Capability teardown opens gaps before and after chunks. Ignore nested gaps
         // inside fn. One-shot; reset disables it.
@@ -212,19 +218,21 @@ namespace kickos
         Task* task(int slot);
         // Join through task_ref and store the task pointer used by membership scans.
         void join_task(Thread* t, Task* tk);
-        // Park on a semaphore. out_handle may be null.
-        Semaphore* semaphore(int* out_handle);
-        void park_sem_waiter(Thread* w, Semaphore* s);
         // A sleeper on the timer delta list. On no wait queue, so the tag is the only edge.
         void park_sleeper(Thread* w, uint64_t deadline_ns);
         // Park a plain sender without CALL_SEND_WAIT priority donation.
         void park_plain_sender(Thread* w, Endpoint* ep);
         // The record of the host word `word` held by `owner`, as a first contended lock leaves
-        // it: the word names the owner with KOS_MUTEX_WAITERS set. A record lives only while it
+        // it: the word names the owner with KOS_WORD_WAITERS set. A record lives only while it
         // has a waiter, so park one on it before the kernel next acts on it.
-        Mutex* own_mutex(Thread* owner, uint32_t* word);
+        WordRecord* own_mutex(Thread* owner, uint32_t* word);
         // Parked through the word's own address, which is its key at this posture.
-        void park_mutex_waiter(Thread* w, Mutex* m);
+        void park_mutex_waiter(Thread* w, WordRecord* m);
+        // The plain record of the host word `word`, as a first park leaves it: KOS_WORD_WAITERS
+        // set in the word, its count kept. Park a waiter on it before the kernel next acts on it.
+        WordRecord* plain_word(uint32_t* word);
+        // Parked as KOS_SYS_WORD_WAIT parks, through the word's own address.
+        void park_word_waiter(Thread* w, WordRecord* m);
         // At a translating posture every hold of word_seam.cc fails while set, as a vanished
         // page's does. Reset clears it.
         extern bool g_word_fault;

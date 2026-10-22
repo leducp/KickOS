@@ -1028,7 +1028,7 @@ the store lands only on a match, a miss hands back the held value, and a store l
 attempt ends the call at the bound with the word unchanged. Its kernel caller is
 `WordAccess::cas` (`kernel/include/kickos/word.h`), which reaches a user word through
 `arch_aspace_acquire`'s alias on a translating backend and at its address elsewhere, on a word
-`word_ref` has already admitted.
+`word_open` has admitted.
 
 **The return obligation** (`user-cas-fails-across-a-return` in `invariants.md`): a user sequence
 interrupted between its load and its store must fail its store when the kernel ran anything
@@ -1117,6 +1117,66 @@ its own it declares it, on the same two-arm shape: armv8a's
 `struct armv8a_percpu` (`arch/arm64/armv8a/include/kickos/arch/percpu.h`) is reached by an
 accessor that folds to the array's first element at one core and reads TPIDR_EL1 above one.
 That block is the arch's and not this seam's, the register it is reached through being A64's.
+
+### The clock a thread reads itself (`KICKOS_CLOCK_USER`)
+
+Where `KICKOS_CLOCK_USER` is set, `kos_clock_now` (`user/src/syscall_stubs.cc`) reads the counter
+`arch_clock_now` reads, in user mode, and makes no kernel entry. Everywhere else it is the
+`KOS_SYS_CLOCK_NOW` call. The kernel answers that call on every board, so a raw call and the user
+read both stay available where the knob is set.
+
+| arch | opened on every core at bring-up | the user read |
+|---|---|---|
+| armv8a | `CNTKCTL_EL1` written whole to `EL0PCTEN` (`kickos_armv8a_percore_init`) | `CNTPCT_EL0` times `1e9 / CNTFRQ_EL0` |
+| rv64imac | `scounteren` written to `TM` alone (`kickos_rv64_init`) | the `time` CSR times `1e9 / KICKOS_CHIP_TIMEBASE_HZ` |
+| rv32imac, chip `virt_rv32` | `scounteren.TM` beside `mcounteren` where `misa.S` is set (`kickos_rv32_init`) | `rdtimeh`, `rdtime`, `rdtimeh` until the high halves agree, times `1e9 / KICKOS_CHIP_TIMEBASE_HZ` |
+| x86_64 | `CR4.TSD` cleared (`ring3_cpu_init`) | `lfence; rdtsc`, scaled by the rate `KOS_SYS_CPU_CLOCK_HZ` answers |
+| sim | nothing | `clock_gettime(CLOCK_MONOTONIC)` |
+
+What a port that sets the knob owes:
+
+- **Every core opens the read before it runs a thread.** A core that skips it ends the first task
+  that reads the clock there. A register whose reset value is UNKNOWN is written whole, never
+  ORed: a stray `CNTKCTL_EL1.EL0PTEN` would hand user mode the kernel's own timer.
+- **The user read is the kernel's arithmetic on the kernel's counter**, so the two agree to the
+  nanosecond. The rate comes from a register user mode can read (`CNTFRQ_EL0`), from the chip
+  description (`timebase: { hz: ... }` in `chip.yaml`, generated as `KICKOS_CHIP_TIMEBASE_HZ`), or,
+  where only the kernel knows it (x86_64 measures the timestamp counter at boot), from
+  `kickos_clock_seat`, which `kickos_task_start` runs in each space before the image's startup, so
+  no app code reads the clock unseated.
+- **The routine is C++ with inline assembly**, never a `.S` of its own, so
+  `check_trap_redzone.sh` reads its frame from the compiler.
+- **An arch selects the knob in `arch/Kconfig`**; a chip whose arch does not, but whose core
+  offers the read, selects it itself (`CHIP_VIRT_RV32`, whose QEMU CPU has S-mode). A part whose
+  only clock is a peripheral behind the MPU, or the emulator's semihosting clock, keeps the call.
+
+What a caller sees: the same values at the same resolution. The read is no death point of a
+cooperative kill (`kos_thread_cancel` with `KOS_CANCEL_KILL`); a slay still ends a thread that only reads the clock. The
+counter becomes readable by every thread on those cores, and the kernel trusts nothing a user
+read answers: every timeout it takes is relative.
+
+The selftest witnesses both halves: `user_clock_agrees` brackets a raw `KOS_SYS_CLOCK_NOW` between
+two `kos_clock_now` reads on every kernel core, pinned there, and `clock_after_kill` shows a
+thread with a kill pending running past the read where the knob is set and dying at it where it
+is not.
+
+### The core a thread reads itself (`kos_core_current`)
+
+Above one kernel core, `kos_core_current` reads a register the kernel seats with the core's index
+once per core at bring-up, where the arch has one user mode can read and not write:
+
+| arch | seated at bring-up | the user read |
+|---|---|---|
+| armv8a | `TPIDRRO_EL0` (`kickos_armv8a_percore_init`) | `mrs tpidrro_el0` |
+| x86_64 | `IA32_TSC_AUX` (`ring3_cpu_init`) | `rdtscp`, the index in `ECX` |
+
+Every other arch keeps `KOS_SYS_CORE_CURRENT`, and at one kernel core the stub answers 0. RISC-V
+offers user mode no per-hart register that would not have to be stored on every switch. On x86_64
+the floor requires RDTSCP (`floor_x86_64.cc`), so the emulated model carries `+rdtscp` and
+`x86_64_x1_floor_rdtscp` boots it without, to be refused. As with the clock, every core seats its
+register before it runs a thread, the read is no death point of a kill, and the answer is stale on
+return by contract. The selftest's `pin_places` pins a worker on every core and compares the user
+read with the kernel's.
 
 ### The cross-core doorbell (`arch_ipi_send`, `arch_ipi_wait`, `arch_ipi_answered`, `arch_ipi_raise`)
 
@@ -1358,6 +1418,11 @@ windowed backend: `ACQUIRE_CAPACITY`, a per-core slot table, and the `static_ass
 figure. `arch/arm64/armv8a/aspace_armv8a.cc` carries the assert in the shape an UNBOUNDED port
 fills in, its acquire being an addition and its release a no-op.
 
+**The acquire names the frame it reached.** A non-null `frame` receives what `arch_aspace_frame_at`
+answers for the address, from the acquire's own walk, and it is written also where the acquire
+answers null: 0 for a page nothing maps, the frame for a page the backend cannot reach. The kernel
+names a user word and reaches it through one walk this way (`word_open`).
+
 **The acquire reports the page's type against the pointer's.** Where the returned pointer reaches
 the frame cacheably and the task's leaf maps it `ARCH_MAP_NOCACHE`, the backend says so through the
 acquire's `uncached` argument, read from the leaf the walk already holds: armv8a from `AttrIndx`,
@@ -1391,8 +1456,10 @@ backend whose hardware can enforce that makes a privileged access to a user-acce
 set once per core at bring-up and never lifted, and opts in by defining `KICKOS_ARCH_UGUARD` in
 its `context.h` and answering `arch_uaccess_guard()` with the form in force, which the banner prints
 on its `uaccess` line. The mechanism is the ISA's: rv64imac never sets `sstatus.SUM`; x86_64 sets
-CR4.SMEP and CR4.SMAP where CPUID leaf 7 offers them; armv8a has two forms, chosen per core at run
-time from `ID_AA64MMFR1_EL1.PAN` so one image serves both.
+CR4.SMEP and CR4.SMAP where CPUID leaf 7 offers them, and on a core that offers one or neither the
+banner names what is in force (`smep`, `smap` or `none`) and the hardware does not stop the rest;
+armv8a has two forms, chosen per core at run time from `ID_AA64MMFR1_EL1.PAN` so one image serves
+both.
 
 - **A flag the interrupted code controls must not reach ring 0.** x86_64's RFLAGS.AC lifts SMAP,
   ring 3 sets it with `popf`, and interrupt and exception delivery keep it: IA32_FMASK clears it
@@ -1577,10 +1644,13 @@ without it, the whole word was refused.
 can reach it"* -- though no backend CHECKS it. A store into a clock-gated block faults
 INSIDE the privileged store, in the kernel's own frame, and that reaches
 `kfault_terminate`: whole-system death from one syscall, i.e. an unprivileged caller's
-one-syscall system-kill primitive. Why no entry in the tree arms it today, and which one
-would: `invariants.md`, `privileged-write-seam-possession-and-allowlist`. A porter adding
-an entry for a block that can be gated must either ungate it at `arch_init` or have the
-backend check.
+one-syscall system-kill primitive. No entry in the tree reaches a gated block:
+`kickos_xmc_usic_init()` ungates USIC0 from `arch_init`, and an entry for U1C0 or U2C0 would
+need the same. A porter adding an entry for a block that can be gated must either ungate it at
+`arch_init` or have the backend check.
+
+**A caller reads the register back**, since the bus can discard a store silently, and its
+comparison masks the fields the hardware drives, such as XMC `FDR.RESULT[25:16]`.
 
 Returns 0, `-KOS_EPERM` (the possession gate above, decided in the syscall layer),
 `-KOS_EINVAL` (misaligned, wrapping, or not on the allowlist), or `-KOS_ENOSYS` (no
@@ -1705,7 +1775,7 @@ every spawn. At the `f302nucleo-st` provisioning the same 16 KiB part runs the s
 silicon at **63 ok / 0 not ok / 5 skipped**, plan `1..63` (measured at `124b68c`,
 `.session/m456-silicon/b5-nuc-selftest-after.log`). That provisioning is one file, the `st` variant's
 defconfig (`../../boards/f302nucleo/configs/st/defconfig`): self-test on,
-a zero heap, `KICKOS_MAX_SEMAPHORES 6`, `KICKOS_MAX_THREADS 2`, and the
+a zero heap, `KICKOS_MAX_THREADS 2`, and the
 stack sizes (`KICKOS_USER_STACK_SIZE 1024`, `KICKOS_ROOT_STACK_SIZE 1536`,
 `KICKOS_IDLE_STACK_SIZE 512`). **That capture was taken at three slots and the file states
 two**: the unconditional priority ceiling grew `Task` past the slack the third slot needed,
@@ -2163,7 +2233,6 @@ requirement, for a zero-skip run:
 | Knob | Default | Pool | Suite needs | Tight-board value |
 | --- | --- | --- | --- | --- |
 | `KICKOS_MAX_THREADS` | 16 (`config/system.h`) | `thread.h` (`ThreadPool`) | **>= 4** | 2 |
-| `KICKOS_MAX_SEMAPHORES` | 16 (`system.h`) | `instance.h` (`sems`) | **>= 6** | 4 (f302) |
 | `KICKOS_CAP_TABLE_SUPPLY` | 16 (`system.h`) | per-thread cap table | **>= 11** | 8 |
 | `KICKOS_MAX_ENDPOINTS` | 4 (`system.h`) | `instance.h` (`endpoints`) | >= 1 | 4 |
 | `KICKOS_MAX_IRQ_HANDLES` | 8 (`system.h`) | `instance.h` (`irq_bindings`) | >= 1 | 4 (f302) |
@@ -2171,7 +2240,7 @@ requirement, for a zero-skip run:
 | `KICKOS_MAX_TASKS` | 18 (`system.h`) | `instance.h` (`tasks`) | one per DISTINCT GROUP live at once, plus idle's and root's; nothing ties it to the thread count. A plain spawn joins the spawner's task and spends none, a spawn with its own grant or a privilege change spends one, and `kos_task_create` reserves one before any thread joins. A full pool makes the spawn answer -KOS_ENOMEM before any thread slot is claimed, which is the same code thread-pool exhaustion answers. `kernel/task/task.cc` asserts only boot's floor of 2 | 4 |
 
 The `Tight-board value` column is the chip default. The `f302nucleo` `st` variant
-overrides semaphores to 6 and threads to **3** -- not 4: it was
+overrides threads to **3**, not 4: it was
 cut at `124b68c` once the pool assert made the overcommit a link error, and any text citing
 `arm.json` for `KICKOS_MAX_THREADS=4` on this board is stale. The stack sizes are the
 board's own, in its base defconfig
@@ -2194,24 +2263,18 @@ worker: `call_infoless_revert`, four mutually-dependent workers spawned before a
 (`../../user/apps/common/selftest/main.cc`, `t_call_infoless_revert`), and `mutex_chain_boost`,
 a four-link boost chain (`t_mutex_chain` in the same file). **Both** ask first, with `TAP_ASK(.workers = 4, ...)`, and since
 that probe spawns four real threads it tests the arena as much as the pool. Asking first is
-not only about the message: each of the two now creates staging semaphores before its
-spawns, and a board too small to host the workers is also too small to supply those, so a
-probe is what keeps the outcome a skip rather than a create failure. Detecting the shortfall
+what keeps the outcome a skip rather than a spawn failure. Detecting the shortfall
 from a negative spawn return instead would not say which limit was hit, because
 `kos_thread_create` answers `-KOS_ENOMEM` for a full slot table and for a missing stack block
 alike. The other 61 cases
 need no 4th worker, so a small part loses one chained-priority-inheritance case and
-one call/reply case, not the suite. The 6-semaphore peak is `mutex_deadlock`: two permanent
-plus the four semaphores `t_mutex_deadlock` creates. Its mutexes are words and hold no
-capability, so on an 8-handle board those four fit the 5 slots that `KICKOS_CAP_FIRST_DYNAMIC 1`
-(`../../system/include/kickos/sys/cap_index.h`) and the suite's two permanent caps leave free,
-and the semaphores are what binds.
+one call/reply case, not the suite. `mutex_deadlock`'s mutexes and semaphores are words and hold no
+capability, so no object pool binds it.
 
 `f302nucleo` walked that ladder one knob at a time: at `KICKOS_MAX_THREADS=4` plus
 `KICKOS_USER_STACK_SIZE=1024` and the 2K heap still carved, which bought one more case
-(18 ok / 41 not ok / 11 skipped), `sem_destroy` then failed on a semaphore **handle**
-against `KICKOS_MAX_SEMAPHORES 4` (`t_sem_destroy`); adding a zero heap and
-`KICKOS_MAX_SEMAPHORES=6` is what took the run to 0 `not ok`. **A spawn failure is not
+(18 ok / 41 not ok / 11 skipped), the next refusal came from an object pool of 4, not from
+memory; adding a zero heap and a pool of 6 is what took the run to 0 `not ok`. **A spawn failure is not
 evidence that the thread pool is the limit; check the arena first, and expect the next pool
 behind it.** The runtime cannot tell you which one you hit -- `-KOS_ENOMEM` covers both --
 which is why the honest place to answer it is the link, and why `KICKOS_POOL_ARENA_ASSERT`
@@ -2291,8 +2354,8 @@ shared domain region and the two cross-domain buffers those four un-skipped case
 take. That is **a 32 KiB part**, and an enforcing chip pays an `.appdata` window
 besides, plus power-of-two natural alignment on every block where
 `arch_mpu_region_pow2()` is 1 (a base+limit backend pays only one granule per block). One of
-the five is not a RAM question at all: `mutex_deadlock` wants six semaphores live, the suite's
-two and its own four, so it needs a board whose semaphore pool and task budget supply them.
+the five, `mutex_deadlock`, was not a RAM question at all: it waited on an object pool, and its
+mutexes and semaphores are words, which no pool binds.
 `f411disco` is the zero-skip
 witness (128 KiB SRAM, 0 skips), and it provisions `KICKOS_MAX_THREADS 8`
 (`../../boards/f411disco/configs/base/defconfig`), above the measured 4-thread
@@ -2344,10 +2407,8 @@ LINK time on every board (see *The SRAM model*). At the three slots that capture
 against an arena that backed exactly three stacks, the two remaining 4th-worker skips are
 honest under either reading. The `st` defconfig provisions two slots today.
 
-**`mutex_deadlock` is mislabelled differently, and no arena work will un-skip it**: its
-guard is semaphore exhaustion, not memory at all. At that reading it also held two mutex
-capabilities, which the 8-slot cap table could not seat beside its semaphores. Its mutexes are
-words now and hold no capability, so a board un-skips it by supplying its six semaphores.
+**`mutex_deadlock` was mislabelled differently**: its guard was an object pool, not memory at
+all. Its mutexes and semaphores are words, which hold no capability and draw on no pool.
 
 The genuine 16 KiB limits that remain are small and specific: `irq_as_event` needs one
 4,096 B block, and `caller_stack`'s accept half needs 2,064 B.
@@ -2649,6 +2710,15 @@ The seam is the same on every chip (`{base, size, attr}`, `attr` = unprivileged 
 register encoding is not. These are the two encodings the Reference otherwise names only by
 symbol, and both are the fastest path to a correct backend for the next part in their family.
 
+**When the MPU is off on the ARM PMSA backends.** Both revisions enable the MPU as
+`MPU_CTRL_ENABLE | MPU_CTRL_PRIVDEFENA`, without `HFNMIENA`, so the MPU is off inside HardFault and
+NMI handlers, and the default memory map applies there, the chip fixed rows included. The PMSAv7
+reprogram keeps the MPU on and leaves per-thread slot `j` unmapped only between its `MPU_RASR = 0`
+and its rewrite; the PMSAv8 commit writes `MPU_CTRL = 0` and reprograms with the MPU off. Both run
+privileged with interrupts masked (`cpsid i`), on the PRIVDEFENA background. `kickos_arm_pmsav8_init`
+refuses fixed rows (invariant `pmsa-reprogram-keeps-the-fixed-rows`), so a PMSAv8 part that needs one,
+an anti-speculation wrap or a locked-down aperture, first needs a commit that keeps the MPU on.
+
 ### ARMv8-M PMSAv8 (Cortex-M33: `rp2350`, and the next nRF5340 / STM32U5 / STM32H5)
 
 `MPU_TYPE` (`0xE000ED90`), `MPU_CTRL` (`0xE000ED94`) and `MPU_RNR` (`0xE000ED98`) are
@@ -2731,7 +2801,8 @@ in its chip file (`an505`, `rp2350`), which `arch_armv7m.cc` holds against
   dropped. On the MSP the naked handler moves the report onto an array of its own, `MSPLIM` at
   its base, before any C runs: the main stack's base is the arena's top, so a report descending
   from there writes into the arena. The array is trap class `STKOF`, and a fault inside the
-  report, its own overflow included, restarts at its top and terminates.
+  report, its own overflow included, restarts at its top and terminates. A fault at HardFault
+  priority inside that terminal outcome locks the core up, which the architecture defines.
 - Both parts run Secure, so the `_S` registers are the live ones and no exception stacks the
   additional state context.
 
@@ -2803,7 +2874,9 @@ the chip code at the exact instruction that changes the divider, because every r
 elapses between the `SystemCoreClock` update and the anchor is priced wrong and frozen into the
 epoch permanently. Without the anchor, applying the new reciprocal to the whole accumulated tick
 count reprices ALL of history: at 144 -> 24 MHz the multiplier is 6x larger and `now` jumps
-forward by roughly `elapsed_since_boot * (ratio - 1)`.
+forward by roughly `elapsed_since_boot * (ratio - 1)`. With the anchor, `reprice()` captures
+`base_ns` under the old rate before the hardware moves, so only the ticks counted inside the masked
+retune window are priced at the wrong rate, and `now` keeps that small error as a fixed skew.
 
 | Chip | Monotonic counter | Its clock domain | Immune to a retune? |
 |---|---|---|---|

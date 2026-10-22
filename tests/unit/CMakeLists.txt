@@ -45,7 +45,7 @@ if(KICKOS_BUILD_UNIT_TESTS)
       initwalk irqquiesce kstring
       k64fsysmpu ktime mapexec mapfence mapshoot mpuoverlap mpuskip mtimeconv placeadmit presync ramalign ramowner regionsync
       reschedowed rp2350gate rp2xxxbringup slotpool
-      stdoutwrite taskbudget uartclass vrange windowholder)
+      stdoutwrite taskbudget uartclass usersem vrange windowholder)
     add_subdirectory(${_unit})
   endforeach()
 

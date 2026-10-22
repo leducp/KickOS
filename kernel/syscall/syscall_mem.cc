@@ -565,7 +565,7 @@ namespace kickos
                 bool d_uncached = false;
                 if (dspace != nullptr)
                 {
-                    d = arch_aspace_acquire(dspace, dst, &d_uncached);
+                    d = arch_aspace_acquire(dspace, dst, &d_uncached, nullptr);
                     if (d == nullptr)
                     {
                         return false;
@@ -576,7 +576,7 @@ namespace kickos
                 bool s_uncached = false;
                 if (sspace != nullptr)
                 {
-                    s = arch_aspace_acquire(sspace, src, &s_uncached);
+                    s = arch_aspace_acquire(sspace, src, &s_uncached, nullptr);
                     if (s == nullptr)
                     {
                         if (dspace != nullptr)
@@ -706,7 +706,7 @@ namespace kickos
 #if KICKOS_HAVE_ASPACE
         if (dspace != nullptr)
         {
-            d = arch_aspace_acquire(dspace, udst, &uncached);
+            d = arch_aspace_acquire(dspace, udst, &uncached, nullptr);
             if (d == nullptr)
             {
                 return false;
@@ -744,7 +744,7 @@ namespace kickos
             return nullptr;
         }
         bool uncached = false;
-        void* const p = arch_aspace_acquire(w.space, w.va, &uncached);
+        void* const p = arch_aspace_acquire(w.space, w.va, &uncached, nullptr);
         // A cacheable alias of an uncached word cannot be compared and swapped atomically.
         if (p != nullptr and uncached)
         {

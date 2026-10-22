@@ -21,7 +21,7 @@ namespace
 
 extern "C"
 {
-    int32_t kos_call(kos_cap_t, void* buf, size_t send_len, size_t)
+    int32_t kos_call(kos_cap_t, void* buf, size_t send_len, size_t, uint32_t)
     {
         return static_cast<int32_t>(
             kickos::console::serve_one<uart::Transport>(&g_sh, static_cast<uint8_t*>(buf),

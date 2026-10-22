@@ -36,7 +36,7 @@ namespace
     // The holder's lock id: the word names the caller only while the caller holds it.
     uint32_t holder_of(LibcLock const& l)
     {
-        return __atomic_load_n(&l.m.word, __ATOMIC_RELAXED) & ~KOS_MUTEX_WAITERS;
+        return __atomic_load_n(&l.m.word, __ATOMIC_RELAXED) & ~KOS_WORD_WAITERS;
     }
 
     // False only for a try that found the mutex held; any other refusal traps, and so does a

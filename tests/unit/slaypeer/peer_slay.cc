@@ -223,7 +223,7 @@ namespace kickos
             EXPECT_EQ(g_ipi_send_mask, 1u << CORE_PEER)
                 << "the victim spins at the unprivileged level on a core nobody told to "
                    "reschedule, so it is slain only when something unrelated displaces it, and "
-                   "kos_thread_slay's caller waits on that";
+                   "the slayer waits on that";
             EXPECT_NE(owed_at(CORE_PEER), 0)
                 << "the cell is what outlives the raise: an acquire loop's poll may absorb the "
                    "doorbell edge without entering a scheduler, and only the cell carries the "

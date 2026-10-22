@@ -329,7 +329,7 @@ tests/integration/check_qemu_hello.sh|hello.capture||cpu|swap|cpu     rxv3|cpu  
 tests/integration/check_qemu_hello.sh|hello.capture||cpu|drop|   cpu |
 tests/integration/check_qemu_hello.sh|hello.capture||panic|after|pong 4|KERNEL PANIC: planted
 tests/integration/check_stress.sh|stress.capture||start|drop|stress: scheduler|
-tests/integration/check_stress.sh|stress.capture||skip|swap|STRESS PASS|STRESS SKIP (board thread/sem pool too small)
+tests/integration/check_stress.sh|stress.capture||skip|swap|STRESS PASS|STRESS SKIP (board thread pool too small)
 tests/integration/check_stress.sh|stress.capture||error|after|stress: runnable|STRESS FAIL
 tests/integration/check_stress.sh|stress.capture||verdict|drop|STRESS PASS|
 tests/integration/check_stress.sh|stress.capture||panic|after|STRESS PASS|KERNEL PANIC: planted

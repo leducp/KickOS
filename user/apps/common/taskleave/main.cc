@@ -33,8 +33,9 @@
 
 namespace
 {
-    // Main's semaphore, delegated to both members as their kos::child_cap(0).
-    constexpr int SIG = KOS_SPAWN_DELEGATED_CAP0;
+    // The members' own: a fresh task's space starts from the image's pristine copy, and on a
+    // board that does not translate every round leaves it at 0.
+    kos_sem_t g_sig = KOS_SEM_INIT(0);
 
     constexpr int ROUNDS = 8;
 
@@ -46,13 +47,13 @@ namespace
     {
         // Releases the peer, then dies: the peer's own departure is what empties the group,
         // and it must land while this thread is still inside its own teardown.
-        kos_sem_post(SIG);
+        (void)kos_sem_post(&g_sig);
         kos_exit(0);
     }
 
     void closer(void*)
     {
-        kos_sem_wait(SIG, KOS_TIMEOUT_NONE);
+        (void)kos_sem_wait(&g_sig, KOS_TIMEOUT_NONE);
         kos_exit(0);
     }
 }
@@ -74,26 +75,17 @@ int main(int, char**)
             kos::print("[taskleave] ERROR: no task slot\n");
             return 1;
         }
-        kos_cap_t sig = KOS_CAP_NONE;
-        if (kos_sem_create(0, &sig) != 0)
-        {
-            kos::print("[taskleave] ERROR: sem_create refused\n");
-            return 1;
-        }
-        kos_cap_grant caps[] = {
-            { sig, KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER },
-        };
 
         // The closer first: the leaver runs on its own core and may be gone before a later
         // spawn, which would reclaim its slot and leave its handle stale for the join below.
-        auto const b = kos::thread::create_caps(closer, nullptr, "closer", 10, caps, 1,
+        auto const b = kos::thread::create_caps(closer, nullptr, "closer", 10, nullptr, 0,
                                                 KOS_POLICY_FIFO, 0,
                                                 nullptr, 0, 0, nullptr, group,
                                                 nullptr, 0, 1u << 1);
         // The closer cannot leave before the leaver exists, so the group's space is live here.
         uint32_t during = 0;
         int const during_rc = kos_mem_count(KOS_MEM_SPACES_HELD, &during);
-        auto const a = kos::thread::create_caps(leaver, nullptr, "leaver", 10, caps, 1,
+        auto const a = kos::thread::create_caps(leaver, nullptr, "leaver", 10, nullptr, 0,
                                                 KOS_POLICY_FIFO, 0,
                                                 nullptr, 0, KOS_AUTH_MEMORY, nullptr, group,
                                                 nullptr, 0, 1u << 0);
@@ -110,8 +102,7 @@ int main(int, char**)
             return 1;
         }
         // The group is empty, so this drops main's creator hold and releases the slot.
-        (void)kos_task_kill(group);
-        (void)kos_handle_close(sig);
+        (void)kos_task_slay(group, 0);
         if (during_rc != 0)
         {
             kos::print("[taskleave] ERROR: the live space count is unreadable\n");

@@ -43,9 +43,10 @@ namespace
                                    | (1u << 29);
     // Leaf 7 EBX: BMI1, AVX2, BMI2.
     constexpr uint32_t leaf7_ebx = (1u << 3) | (1u << 5) | (1u << 8);
-    // Leaf 0x80000001 ECX: LAHF/SAHF, LZCNT. EDX: SYSCALL/SYSRET.
+    // Leaf 0x80000001 ECX: LAHF/SAHF, LZCNT. EDX: SYSCALL/SYSRET, and RDTSCP, which
+    // kos_core_current reads and x86-64-v3 does not name.
     constexpr uint32_t ext1_ecx = (1u << 0) | (1u << 5);
-    constexpr uint32_t ext1_edx = 1u << 11;
+    constexpr uint32_t ext1_edx = (1u << 11) | (1u << 27);
 
     bool floor_met(void)
     {

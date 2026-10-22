@@ -91,6 +91,7 @@ metadata declares, as `lines: { irq: /dev/usic0/sr1 }`.
 | `pins` | mapping | no | each pin's functions |
 | `interrupts` | mapping | yes | `count`, the controller's line count; `soft_only_from`, the first line no hardware raises; `free_from`, the first line no device uses; `vectors`, the RX's INTB table size; each a number or `{ value: <number>, ref: <ref> }`. On a multi-architecture part the lines are source numbers, and the generator adds the built cluster's `line_offset` to each; every device's line is below `count` |
 | `cycle_counter` | mapping | no | `hz: 0` where the counter has no fixed rate, `glitches: true` where a read can glitch, each a value or `{ value: <value>, ref: <ref> }` |
+| `timebase` | mapping | no | `hz`, the rate of the counter the kernel's clock and a user-mode read both count, a value or `{ value: <value>, ref: <ref> }`; generated as `KICKOS_CHIP_TIMEBASE_HZ` |
 | `reserved` | `none` | no | stated by a part whose protecting unit holds no window for the kernel, which the tool otherwise refuses: a protecting part marks the devices the kernel holds `owner: kernel` |
 | `c` | mapping | no | `namespace`, the C++ namespace of the generated headers where it is not `kickos::<chip>`, `line_enum`, the line enum's declaration where it is not `irq_num`, as `node : int`, and `led: addressable` where the chip's code drives the kernel's LED as one sent its state as data rather than a `level` one |
 

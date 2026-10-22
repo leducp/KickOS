@@ -59,6 +59,11 @@ void kickos_root_entry(void* arg) __attribute__((visibility("hidden")));
 // rules as above.
 void kickos_task_start(void* arg, void (*entry)(void*)) __attribute__((visibility("hidden")));
 
+// Where the user clock scales a counter by a rate only the kernel knows (x86_64), seats that
+// rate in the caller's space. kickos_task_start runs it before the image's startup, so no app
+// code reads the clock unseated.
+void kickos_clock_seat(void) __attribute__((visibility("hidden")));
+
 // The kernel -> init argument handoff. kmain fills it; the root thread reads it immediately before
 // calling kickos_init_entry above.
 //

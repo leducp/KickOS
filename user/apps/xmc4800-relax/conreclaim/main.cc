@@ -24,7 +24,7 @@ int main(int, char**)
     fflush(stdout);
 
     struct kos_uart_rsp rsp = {};
-    int32_t const n = kos_call(KOS_CAP_STDOUT, &rsp, 0u, sizeof(rsp));
+    int32_t const n = kos_call(KOS_CAP_STDOUT, &rsp, 0u, sizeof(rsp), KOS_TIMEOUT_NONE);
     if (n != static_cast<int32_t>(sizeof(rsp)) or rsp.status != 0)
     {
         printf("[conreclaim] ERROR: the scramble request was answered %d, status %d\n",

@@ -227,7 +227,7 @@ kos_ack_drop_re() { # <core>
 SCHED_HEAD="# smp sched: "
 SCHED_TAIL=" core(s) in the scheduler"
 PEER_STUCK="KickOS: kernel core never reached its scheduler: core "
-NO_SPREAD="STRESS SKIP (board thread/sem pool too small)"
+NO_SPREAD="STRESS SKIP (board thread pool too small)"
 RUNNABLE="stress: runnable "
 for _m in "$SCHED_HEAD" "$SCHED_TAIL" "$PEER_STUCK" "$NO_SPREAD" "$RUNNABLE" "$STUB_SYM" "$CHAN_ITEMS"; do
     require_literal "$_m" "a gate marker"

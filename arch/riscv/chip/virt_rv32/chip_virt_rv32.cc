@@ -15,6 +15,7 @@
 
 #include <stdint.h>
 
+#include <kickos/chip_limits.h>
 #include <kickos/chip_mmap.h>
 #include <kickos/sys/abi.h>
 
@@ -35,7 +36,7 @@ namespace
     constexpr uintptr_t CLINT_MSIP = CLINT_BASE + 0x0000;
     constexpr uintptr_t CLINT_MTIMECMP = CLINT_BASE + 0x4000; // 64-bit
     constexpr uintptr_t CLINT_MTIME = CLINT_BASE + 0xBFF8;     // 64-bit
-    constexpr uint64_t MTIME_HZ = 10000000ull;
+    constexpr uint64_t MTIME_HZ = KICKOS_CHIP_TIMEBASE_HZ;
     constexpr uint64_t NS_PER_TICK = kickos::KICKOS_NS_PER_SEC / MTIME_HZ;
 }
 

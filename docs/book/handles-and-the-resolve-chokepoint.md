@@ -11,7 +11,7 @@ Copyright (c) 2026 Philippe Leduc
 > `kernel/syscall/syscall.cc`, `kernel/include/kickos/slotpool.h`.
 
 A microkernel spends its life doing things to objects on behalf of threads that cannot
-touch those objects directly: wait on *this* semaphore, post to *that* one, send on *that*
+touch those objects directly: wait on *this* notification, signal *that* one, send on *that*
 endpoint. So the very first question the kernel must answer, on every such syscall, is:
 **which object does this caller mean, and is it allowed to mean it?** Everything in this
 chapter is about the one place that question gets answered -- the *resolve chokepoint* --
@@ -23,8 +23,8 @@ the kernel correct and the part that merely helps an app find its own bugs.
 The simplest scheme that satisfies "no kernel pointer crosses the boundary" is a single
 kernel-wide pool of objects, named by an index into it. It is opaque, it is bounded, and it
 is checkable -- and it is **ambient**. The name is global, so any thread that can guess or
-forge the integer can name the object: `kos_sem_wait(4, ...)` from anywhere reaches
-semaphore 4. Isolation says a caller should touch only what it has been *given*; a global namespace
+forge the integer can name the object: `kos_send(4, ...)` from anywhere reaches
+endpoint 4. Isolation says a caller should touch only what it has been *given*; a global namespace
 anyone can enumerate is the opposite -- it is ambient authority, and ambient authority
 contradicts the isolation the MPU chapters ([Chapter 7](memory-protection.md)) work so hard to build. Fencing a
 caller's *memory* while leaving the *object namespace* open would be half a boundary.
@@ -42,8 +42,8 @@ reference to a kernel object.
   threads in one task share every byte of their granted memory and still hold entirely
   separate capability tables. Memory is the thing a group is formed to share; the right to
   name a kernel object is not, and it is handed to a thread at spawn.
-- **Typed.** An entry records what kind of object it names (semaphore, IPC endpoint,
-  interrupt binding, notification, reply). A handle to a semaphore cannot be used where an
+- **Typed.** An entry records what kind of object it names (IPC endpoint, interrupt
+  binding, notification, reply). A handle to a notification cannot be used where an
   endpoint is expected.
 - **Rights-bearing.** An entry carries a small set of rights bits (WAIT, SIGNAL,
   TRANSFER). Holding a handle is not blanket authority over the object; it is exactly the
@@ -90,7 +90,7 @@ target.
 That it is *unsigned*, with no sign bit held back, is a consequence of how the handle
 travels, and the two facts have to be read together. A minting syscall does not return the
 handle: it returns a **status** -- 0 or a negated error code -- and writes the handle
-through an **out-parameter**, as in `kos_sem_create(int initial, kos_cap_t* out_cap)`
+through an **out-parameter**, as in `kos_endpoint_create(kos_cap_t* out_cap)`
 (`user/include/kickos/sys.h`). With failure carried in the return value, the handle never
 has to reserve a bit to signal it, so a live handle may have bit 31 set and `h < 0` is *not*
 an error test on one. [Chapter 8.7](stale-handles-generation-width-and-allocation-policy.md) works through what that extra bit is worth.
@@ -117,18 +117,18 @@ also classified, because the two ways to fail are not the same news for the call
 right type, and `KOS_EACCES` for one that names it but lacks a required right
 (`kernel/syscall/cap.cc`).
 
-The shape, as `KOS_SYS_SEM_WAIT` has it (`kernel/syscall/syscall.cc`):
+The shape, as a notification's signal has it (`notify_signal`, `kernel/notify/notify.cc`):
 
 ```
 IrqLock lock;
 int err = 0;
-Semaphore* s = static_cast<Semaphore*>(
-    cap_resolve_e(sched::current(), handle, CapType::CAP_SEM, CAP_WAIT, &err));
-if (s == nullptr)
+Notification* n = static_cast<Notification*>(
+    cap_resolve_e(sched::current(), handle, CapType::CAP_NOTIFY, CAP_SIGNAL, &err));
+if (n == nullptr)
 {
     return -err;             // EBADF or EACCES: object untouched
 }
-sem_wait(s, timeout_us);     // use, under the SAME lock
+notify_raise(n, bit);        // use, under the SAME lock
 return 0;
 ```
 
@@ -168,7 +168,7 @@ Two properties make this a *chokepoint* and not merely a check:
 
 ## WRAP the global pools, do not replace them
 
-The per-thread table does **not** point straight at a `Semaphore*` or own the object. It
+The per-thread table does **not** point straight at an `Endpoint*` or own the object. It
 wraps: a cap entry stores a *global object handle*, and resolve is therefore **two-level**.
 Level one validates the cap entry in this thread's table -- index within the thread's own run,
 entry non-empty, cap generation matching, type as expected, rights sufficient (`cap_lookup`,
@@ -192,7 +192,7 @@ is the design error:
 
 > **Object liveness is a GLOBAL property. Capability possession is a PER-THREAD property.**
 
-A semaphore shared by three threads has *one* liveness fact and *one* refcount. Each thread
+An endpoint shared by three threads has *one* liveness fact and *one* refcount. Each thread
 has its *own* named, rights-scoped reference to it. If the cap pointed straight at the object
 (REPLACE), the object's liveness would have to live inside a per-thread table -- but no single
 per-thread table owns a shared object, so you would either lose the generation guard or
@@ -229,7 +229,7 @@ The cautionary example is worth spelling out. Suppose a worker calls a blocking 
 ignores the return value, and proceeds:
 
 ```
-kos_sem_wait(h, KOS_TIMEOUT_NONE);   // returns -KOS_EBADF because h did not resolve in THIS thread
+kos_notify_wait(h, mask, KOS_TIMEOUT_NONE, &bits);   // -KOS_EBADF: h did not resolve in THIS thread
 // ... worker runs on, believing it blocked, but it never did
 ```
 
@@ -348,12 +348,6 @@ door, after the handle table was introduced to remove it. So `kos_handle_close` 
 lifecycle op for every cap type, which works because a cap knows its own type; this is
 Zircon's `zx_handle_close` semantics.
 
-The one wrinkle worth knowing is a naming one: `kos_sem_destroy` still exists as a
-source-compatibility **alias** of `kos_handle_close` (`user/include/kickos/sys.h`). The
-spelling survived; the semantics above are what it does. A reader who assumes the name
-means what it says will expect the object gone after the call, and it is not gone while
-another holder remains.
-
 See `../reference/architecture.md` ("Object model, capabilities & IPC") and
 `kernel/syscall/cap.cc` for the refcount, the leak-don't-strand rule for parked waiters, and
 the exit-teardown path.
@@ -377,22 +371,24 @@ index into the current thread's table, and in interrupt context the current thre
 merely whichever one the interrupt happened to land on. Resolving a stored cap handle there
 would read a stranger's table.
 
-So the cap resolve is hoisted out of ISR context in both of the shapes KickOS offers, and
+So the cap resolve is hoisted out of ISR context. There are two ways to do that, and
 comparing them is the point of this section, because they answer the same impossibility
 differently.
 
-**Resolve once, re-resolve the global per fire.** Binding a semaphore to a line
-(`kernel/syscall/syscall.cc`) resolves the *capability* once at bind time, checks it carries
-the signal right, and stores the **global object handle** in the binding. The ISR then
-re-resolves that global against the object pool on every fire, and if the object is gone it
-**silently drops the post**. The generation check still runs; only its failure branch
-changes, because an interrupt has nowhere to return an error to. A torn-down binding degrades
-to "no post", never "wrong post".
+**Resolve once, re-resolve the global per fire.** A binding could resolve the *capability*
+once, at bind time, check that it carries the signal right, and store the **global object
+handle**. The ISR would then re-resolve that global against the object pool on every fire,
+and if the object were gone it would **silently drop the post**. The generation check would
+still run. Only its failure branch would change, because an interrupt has nowhere to return
+an error to. A torn-down binding would degrade to "no post", never "wrong post".
 
-**Resolve once, carry the pointer.** Claiming an interrupt line as a capability
-(`kernel/irq/irq.cc`) instead hands the first-level ISR the *address* of the binding it will
-post to, so the ISR does no lookup at all: mask the line, post, return. That buys the ISR's
-latency back, and it moves the hazard from a stale handle to a dangling pointer.
+**Resolve once, carry the pointer.** This is the shape KickOS uses. Binding a claimed
+interrupt line to a notification (`kernel/irq/irq.cc`) resolves the notification's capability
+once, at bind time, with the signal right required. The binding then holds a reference of its
+own on the object and keeps its *address*, and the line's dispatch entry holds the binding's
+address. So the first-level ISR does no lookup at all: mask the line, raise the notification,
+return. That buys the ISR's latency back, and it moves the hazard from a stale handle to a
+dangling pointer.
 
 The pair is the lesson. A check you cannot perform must be replaced either by a cheaper
 check whose failure direction you have chosen deliberately, or by a structure in which the
@@ -443,7 +439,7 @@ confusing two of its own objects, and the kernel never so much as blinks.
 - The generational pool level two rides on, and its ABA mechanics:
   `kernel/include/kickos/slotpool.h`.
 - The chokepoint itself: `cap_lookup` / `cap_resolve_e` in `kernel/syscall/cap.cc`, and a
-  caller of it in `KOS_SYS_SEM_WAIT` (`kernel/syscall/syscall.cc`).
+  caller of it in `notify_signal` (`kernel/notify/notify.cc`).
 - What the generation is worth, why its width is not the criterion it looks like, and why the
   three counters in the system do not share a bit budget: Chapter 8.7,
   *[A stale handle must not be usable](stale-handles-generation-width-and-allocation-policy.md)*.

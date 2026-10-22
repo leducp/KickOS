@@ -22,9 +22,11 @@ namespace
 
     void blinker(void*)
     {
+        bool on = false;
         while (true)
         {
-            kos_kernel_diag_led_toggle();
+            on = not on;
+            kos_kernel_diag_led_set(on);
             kos_sleep_ns(BLINK_NS);
         }
     }
@@ -37,10 +39,9 @@ int main(int, char**)
     kos::thread::create(blinker, nullptr, "blink", 10);
 
     // Main parks so the blinker owns the CPU; blocking here proves the switch.
-    kos_cap_t idle = KOS_CAP_NONE;
-    (void)kos_sem_create(0, &idle);
+    static kos_sem_t idle = KOS_SEM_INIT(0);
     while (true)
     {
-        kos_sem_wait(idle, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&idle, KOS_TIMEOUT_NONE);
     }
 }

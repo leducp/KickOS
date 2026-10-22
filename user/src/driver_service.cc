@@ -63,7 +63,7 @@ void console_start_failed(struct kos_driver_instance& in)
 int console_handover_finish(struct kos_driver_instance& in, char const* tag)
 {
     (void)kos_cap_narrow(in.endpoint, KOS_DRV_HANDOVER_KEPT);
-    int const probe = kos_send_timed(KOS_CAP_STDOUT, "", 0, KOS_DRV_HANDOVER_PROBE_US);
+    int const probe = kos_send(KOS_CAP_STDOUT, "", 0, KOS_DRV_HANDOVER_PROBE_US);
     if (probe >= 0)
     {
         return 0;
@@ -281,7 +281,7 @@ int instance_bring_up(Descriptor const& d, struct kos_driver_instance& in)
     uint8_t claimed = 0;
 #if KICKOS_KERNEL_CORES > 1
     kos_thread_t const self = kos_thread_self();
-    if (d.line_count != 0u and kos_thread_set_affinity(self, in.core_mask) != 0)
+    if (d.line_count != 0u and kos_thread_affinity(self, in.core_mask) < 0)
     {
         return instance_failed(d, in, line, 0, note, "ERROR: could not pin to the declared core\n");
     }
@@ -300,7 +300,7 @@ int instance_bring_up(Descriptor const& d, struct kos_driver_instance& in)
     // Only the claim needs this thread pinned; the waits are the driver threads'.
     if (d.line_count != 0u)
     {
-        (void)kos_thread_set_affinity(self, 0);
+        (void)kos_thread_affinity(self, 0);
     }
 #endif
     if (claimed != d.line_count)

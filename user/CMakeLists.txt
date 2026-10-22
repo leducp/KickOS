@@ -4,7 +4,7 @@
 # uart_service_dev.cc stays its own TU: merged into uart_service.cc it would make the ring side
 # undefined on a board with no UART class backend.
 # grant_lookup.cc stays its own TU: it names kickos_table, which only a system target defines.
-set(KICKOS_USER_SOURCES src/syscall_stubs.cc src/mutex.cc src/print.cc src/init_args.cc
+set(KICKOS_USER_SOURCES src/syscall_stubs.cc src/mutex.cc src/sem.cc src/print.cc src/init_args.cc
                         src/root_entry.cc src/console_ring.cc src/driver_service.cc
                         src/uart_service.cc src/uart_service_dev.cc src/usb_cdc_service.cc
                         src/grant_lookup.cc src/init_status.cc src/task_trampoline.cc

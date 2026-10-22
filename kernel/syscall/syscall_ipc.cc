@@ -963,7 +963,7 @@ namespace kickos
         // wrapping.
         reply_len = ipc_len_min(reply_len, KOS_EP_MSG_MAX);
         recv_cap = ipc_len_min(recv_cap, KOS_EP_MSG_MAX);
-        if (opts == 0 or (opts & (alignof(uint32_t) - 1)) != 0)
+        if ((opts & (alignof(uint32_t) - 1)) != 0)
         {
             return -KOS_EINVAL; // reject misalignment before privileged accesses
         }

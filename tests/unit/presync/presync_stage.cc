@@ -103,8 +103,13 @@ extern "C"
         return ARCH_ASPACE_OK;
     }
 
-    void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va, bool*)
+    void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va, bool*,
+                              arch_phys_addr_t* frame)
     {
+        if (frame != nullptr)
+        {
+            *frame = 0;
+        }
         g_holds.take(space, va);
         return reinterpret_cast<void*>(va);
     }

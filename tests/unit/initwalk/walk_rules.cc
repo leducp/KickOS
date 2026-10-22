@@ -378,7 +378,7 @@ namespace
             EXPECT_EQ(t->params.stack_size, sensor[0]->params.stack_size);
         }
         // Each instance a new task, the dead one released first.
-        EXPECT_EQ(fake::calls_of("kos_task_kill").size(), 4u);
+        EXPECT_EQ(fake::releases().size(), 4u);
         StatusFields const s = status("sensor");
         EXPECT_EQ(s.deaths, 4u);
         EXPECT_EQ(s.restarts_left, 0u);
@@ -494,14 +494,14 @@ namespace
                       []
                       {
                           EXPECT_EQ(starts("sensor"), 1u) << "held until its DEAD bit";
-                          EXPECT_TRUE(fake::calls_of("kos_task_kill").empty());
+                          EXPECT_TRUE(fake::releases().empty());
                           EXPECT_EQ(fake::console(), "");
                           fake::advance(10000000000ull);
                           fake::die("sensor");
                       }});
         expect_idle(run());
-        EXPECT_TRUE(fake::calls_of("kos_task_slay").empty());
-        EXPECT_EQ(fake::calls_of("kos_task_kill").size(), 1u);
+        EXPECT_TRUE(fake::slays().empty());
+        EXPECT_EQ(fake::releases().size(), 1u);
         EXPECT_EQ(starts("sensor"), 2u);
         EXPECT_EQ(status("sensor").deaths, 1u);
         for (fake::Call const& wait : fake::calls_of("kos_notify_wait"))
@@ -523,8 +523,8 @@ namespace
             ASSERT_EQ(outcome.kind, Outcome::Kind::SHUTDOWN) << outcome.message;
             EXPECT_EQ(outcome.status, code);
             // The init waits for no DEAD bit and kills nothing.
-            EXPECT_TRUE(fake::calls_of("kos_task_kill").empty());
-            EXPECT_TRUE(fake::calls_of("kos_task_slay").empty());
+            EXPECT_TRUE(fake::releases().empty());
+            EXPECT_TRUE(fake::slays().empty());
             EXPECT_NE(fake::instance("main")->state & KOS_TASK_LIVE, 0u);
         }
     }
@@ -570,7 +570,7 @@ namespace
         expect_idle(run());
 
         std::vector<std::string> const relevant = {
-            "kos_task_create", "kos_task_sched_grant", "kos_task_watch", "kos_thread_set_affinity", "kos_irq_claim",
+            "kos_task_create", "kos_task_sched_grant", "kos_task_watch", "kos_thread_affinity", "kos_irq_claim",
             "kos_thread_create", "kos_handle_close", "kos_task_slay"};
         std::vector<std::string> const seen = fake::sequence(relevant);
         // The sensor is the first task the walk creates.
@@ -580,7 +580,7 @@ namespace
         ASSERT_GE(seen.size(), expected.size());
         EXPECT_EQ(std::vector<std::string>(seen.begin(), seen.begin() + static_cast<ptrdiff_t>(expected.size())),
                   expected);
-        std::vector<fake::Call> const slays = fake::calls_of("kos_task_slay");
+        std::vector<fake::Call> const slays = fake::slays();
         ASSERT_FALSE(slays.empty());
         EXPECT_EQ(slays[0].args[0], fake::tasks()[0].handle);
         EXPECT_EQ(slays[0].args[1], kickos::init::SLAY_TIMEOUT_US);
@@ -604,14 +604,14 @@ namespace
         ::testing::Values(
             FailedStep{"kos_task_sched_grant", -KOS_EPERM, {"kos_task_sched_grant", "kos_handle_close"}},
             FailedStep{"kos_task_watch", -KOS_EACCES, {"kos_task_sched_grant", "kos_task_watch", "kos_handle_close"}},
-            FailedStep{"kos_thread_set_affinity", -KOS_EPERM,
-                       {"kos_task_sched_grant", "kos_task_watch", "kos_thread_set_affinity", "kos_handle_close"}},
+            FailedStep{"kos_thread_affinity", -KOS_EPERM,
+                       {"kos_task_sched_grant", "kos_task_watch", "kos_thread_affinity", "kos_handle_close"}},
             FailedStep{"kos_irq_claim", -KOS_EBUSY,
-                       {"kos_task_sched_grant", "kos_task_watch", "kos_thread_set_affinity", "kos_irq_claim",
-                        "kos_thread_set_affinity", "kos_handle_close"}},
+                       {"kos_task_sched_grant", "kos_task_watch", "kos_thread_affinity", "kos_irq_claim",
+                        "kos_thread_affinity", "kos_handle_close"}},
             FailedStep{"kos_thread_create", -KOS_ENOMEM,
-                       {"kos_task_sched_grant", "kos_task_watch", "kos_thread_set_affinity", "kos_irq_claim",
-                        "kos_thread_create", "kos_handle_close", "kos_thread_set_affinity", "kos_handle_close"}}),
+                       {"kos_task_sched_grant", "kos_task_watch", "kos_thread_affinity", "kos_irq_claim",
+                        "kos_thread_create", "kos_handle_close", "kos_thread_affinity", "kos_handle_close"}}),
         [](::testing::TestParamInfo<FailedStep> const& p)
         {
             return std::string{p.param.fn};
@@ -656,7 +656,7 @@ namespace
         std::vector<fake::Call> const sleeps = fake::calls_of("kos_sleep_ns");
         ASSERT_EQ(sleeps.size(), kickos::init::CLAIM_RETRIES);
         EXPECT_EQ(sleeps[0].args[0], kickos::init::CLAIM_RETRY_NS);
-        EXPECT_TRUE(fake::calls_of("kos_task_slay").empty());
+        EXPECT_TRUE(fake::slays().empty());
         EXPECT_EQ(starts("sensor"), 1u);
         EXPECT_EQ(status("sensor").deaths, 0u);
     }
@@ -667,7 +667,7 @@ namespace
         fake::refuse("kos_irq_claim", -KOS_EAGAIN, kickos::init::CLAIM_RETRIES + 1u);
         expect_idle(run());
         EXPECT_EQ(fake::calls_of("kos_sleep_ns").size(), kickos::init::CLAIM_RETRIES);
-        EXPECT_EQ(fake::calls_of("kos_task_slay").size(), 1u);
+        EXPECT_EQ(fake::slays().size(), 1u);
         EXPECT_EQ(status("sensor").deaths, 1u);
         EXPECT_EQ(starts("sensor"), 1u) << "its restart claims at once";
     }
@@ -707,7 +707,7 @@ namespace
             Refusal{"kos_handle_close", -KOS_EBADF, 0, "init: kos_handle_close of the badged copy for `sensor`"},
             Refusal{"kos_notify_wait", -KOS_EINVAL, 0, "init: kos_notify_wait answered -22"},
             Refusal{"kos_task_state", -KOS_EBADF, 0, "init: kos_task_state for `sensor` answered -9"},
-            Refusal{"kos_task_kill", -KOS_EPERM, 0, "init: kos_task_kill for `sensor` answered -1"},
+            Refusal{"kos_task_slay", -KOS_EPERM, 0, "init: kos_task_slay for `sensor` answered -1"},
             Refusal{"kos_notify", -KOS_EBADF, 0, "init: kos_notify for `health` answered -9"}),
         [](::testing::TestParamInfo<Refusal> const& p)
         {
@@ -879,15 +879,15 @@ namespace
         use("alarm");
         expect_idle(run());
         std::vector<std::string> const seen = fake::sequence(
-            {"kos_task_watch", "kos_thread_self", "kos_thread_set_affinity", "kos_irq_claim", "kos_thread_create",
+            {"kos_task_watch", "kos_thread_self", "kos_thread_affinity", "kos_irq_claim", "kos_thread_create",
              "kos_handle_close"});
         std::vector<std::string> const expected = {
-            "kos_task_watch", "kos_thread_self", "kos_thread_set_affinity", "kos_irq_claim", "kos_thread_create",
-            "kos_handle_close", "kos_thread_self", "kos_thread_set_affinity", "kos_handle_close"};
+            "kos_task_watch", "kos_thread_self", "kos_thread_affinity", "kos_irq_claim", "kos_thread_create",
+            "kos_handle_close", "kos_thread_self", "kos_thread_affinity", "kos_handle_close"};
         ASSERT_GE(seen.size(), expected.size());
         EXPECT_EQ(std::vector<std::string>(seen.begin(), seen.begin() + static_cast<ptrdiff_t>(expected.size())),
                   expected);
-        std::vector<fake::Call> const pins = fake::calls_of("kos_thread_set_affinity");
+        std::vector<fake::Call> const pins = fake::calls_of("kos_thread_affinity");
         ASSERT_EQ(pins.size(), 2u);
         EXPECT_EQ(pins[0].args[1], 1u << 1) << "the sensor's core";
         EXPECT_EQ(pins[1].args[1], 0u) << "the init's default set again";
@@ -929,7 +929,7 @@ namespace
         expect_idle(run());
         EXPECT_EQ(status("sensor").deaths, 1u);
         EXPECT_EQ(starts("sensor"), 1u);
-        EXPECT_EQ(fake::calls_of("kos_task_kill").size(), 1u);
+        EXPECT_EQ(fake::releases().size(), 1u);
         EXPECT_NE(fake::console().find("init: `sensor` keeps members past its slay\n"), std::string::npos);
     }
 
@@ -970,12 +970,12 @@ namespace
         }
         fake::script(steps);
         expect_idle(run());
-        std::vector<std::string> const seen = fake::sequence({"kos_task_kill", "kos_task_create"});
+        std::vector<std::string> const seen = fake::sequence({"kos_task_slay", "kos_task_create"});
         std::vector<std::string> const expected = {
-            "kos_task_create", "kos_task_create", "kos_task_create", "kos_task_kill", "kos_task_create",
-            "kos_task_kill", "kos_task_create", "kos_task_kill", "kos_task_create"};
+            "kos_task_create", "kos_task_create", "kos_task_create", "kos_task_slay", "kos_task_create",
+            "kos_task_slay", "kos_task_create", "kos_task_slay", "kos_task_create"};
         EXPECT_EQ(seen, expected);
-        std::vector<fake::Call> const kills = fake::calls_of("kos_task_kill");
+        std::vector<fake::Call> const kills = fake::releases();
         ASSERT_EQ(kills.size(), 3u);
         EXPECT_EQ(kills[0].args[0], fake::tasks()[0].handle);
     }
@@ -1171,7 +1171,7 @@ namespace
                     restarted = k;
                 }
             }
-            if (calls[k].fn == "kos_send_timed" and calls[k].args[1] != 0u and reported == calls.size())
+            if (calls[k].fn == "kos_send" and calls[k].args[1] != 0u and reported == calls.size())
             {
                 reported = k;
             }
@@ -1196,7 +1196,7 @@ namespace
         Outcome const outcome = run();
         ASSERT_EQ(outcome.kind, Outcome::Kind::IDLE) << outcome.message;
         size_t lines = 0;
-        for (fake::Call const& c : fake::calls_of("kos_send_timed"))
+        for (fake::Call const& c : fake::calls_of("kos_send"))
         {
             if (c.args[1] != 0u)
             {

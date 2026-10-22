@@ -26,9 +26,9 @@ lifetime. That is the object side, and left naive it is exactly where additivity
 
 ## Why the naive shape does not stay additive
 
-Start with a single object type -- a semaphore. The natural first cut hardcodes it:
-the refcount-drop function asserts the type is `CAP_SEM` and has one sem arm; the
-delegation path bumps the sem refcount with an `if (type == CAP_SEM)`. It works,
+Start with a single object type, say a notification. The natural first cut hardcodes it:
+the refcount-drop function asserts the type is the notification's and has one arm for it; the
+delegation path bumps its refcount with an `if` on that one type. It works,
 and it even predicts its own limit ("a future type reaching here without its own arm
 must trap").
 
@@ -40,7 +40,7 @@ does something *per type*, and none of them is the resolve chokepoint:
 2. **Reference down** -- when a capability is closed or torn down, the refcount must
    fall, and the object must be freed at zero.
 3. **The close-time protocol** -- some object types must *do something* when a
-   capability to them goes away, before the refcount drops. A semaphore does not. An
+   capability to them goes away, before the refcount drops. A frame run does not. An
    endpoint must wake blocked senders with a broken-pipe error when the last receiver
    leaves, and a reply capability must answer the caller still waiting on it.
 
@@ -95,14 +95,15 @@ void obj_ref_drop(CapEntry const& e, bool teardown)
     Kernel& k = kernel();
     switch (static_cast<CapType>(e.type))
     {
-    case CapType::CAP_SEM:
+    case CapType::CAP_ENDPOINT:
     {
-        int const idx = obj_ref_last(k.sems, k.sem_refs, e.obj);   // -1 unless the last ref
-        if (idx < 0 or leaks(not k.sems.at(idx)->waiters.empty(), &k.sem_refs[idx], teardown))
+        int const idx = obj_ref_last(k.endpoints, k.endpoint_refs, e.obj);   // -1 unless the last ref
+        if (idx < 0 or leaks(not k.endpoints.at(idx)->send_waiters.empty(),
+                             &k.endpoint_refs[idx], teardown))
         {
             return;
         }
-        k.sems.free(e.obj);
+        k.endpoints.free(e.obj);
         return;
     }
     // ... one arm per counted type, each the same three steps ...
@@ -156,7 +157,7 @@ behaviors depend on it:
 The protocol never refuses a close: once it has run, the handle goes, on a voluntary close
 and at teardown alike. Same hook, both cases, one place.
 
-A semaphore's arm is simply `return 0` -- no protocol. That empty arm is the proof the
+A frame run's arm is simply `return`, with no protocol. That empty arm is the proof the
 hook costs nothing where it is not needed: a type that has no close-time work pays one
 `return`.
 

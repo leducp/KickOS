@@ -128,10 +128,10 @@ namespace kickos
 
                 // A system call as `t`, which must give back every page it acquired.
                 static int32_t call_released(Thread* t, uintptr_t nr, uintptr_t a0,
-                                             uintptr_t a1 = 0)
+                                             uintptr_t a1 = 0, uintptr_t a2 = 0)
                 {
                     AcquireHolds const before = g_acquire_holds;
-                    int32_t const rc = err(call_as(t, nr, a0, a1));
+                    int32_t const rc = err(call_as(t, nr, a0, a1, a2));
                     expect_released(before);
                     return rc;
                 }
@@ -164,27 +164,39 @@ namespace kickos
                 // `waiter` parked through `va` on a record of the word `owner` holds, the key
                 // `owner` names. The fixture's own write lands in a stand-in: no record write
                 // reads the word.
-                static Mutex* park_on_word(Thread* owner, Thread* waiter, uintptr_t va,
+                static WordRecord* park_on_word(Thread* owner, Thread* waiter, uintptr_t va,
                                            uintptr_t owner_va)
                 {
                     WordRef const w = named(owner, owner_va);
-                    Mutex* const m = own_mutex(owner, &g_stand_in);
+                    WordRecord* const m = own_mutex(owner, &g_stand_in);
                     m->key = w.key;
                     park_mutex_waiter(waiter, m);
                     waiter->wait_va = va;
                     return m;
                 }
 
-                Mutex* park_on_mains_word(Thread* waiter, uintptr_t va)
+                WordRecord* park_on_mains_word(Thread* waiter, uintptr_t va)
                 {
                     return park_on_word(main_, waiter, va, va);
+                }
+
+                // `waiter` parked on the plain word `va` names for main, as KOS_SYS_WORD_WAIT
+                // leaves it.
+                WordRecord* park_plain(Thread* waiter, uintptr_t va)
+                {
+                    WordRef const w = named(main_, va);
+                    WordRecord* const m = plain_word(&g_stand_in);
+                    m->key = w.key;
+                    park_word_waiter(waiter, m);
+                    waiter->wait_va = va;
+                    return m;
                 }
 
                 static void expect_the_wait_ended(Thread* waiter, Thread* owner)
                 {
                     EXPECT_EQ(waiter->wait_kind, WAIT_NONE) << "the waiter is still parked";
                     EXPECT_EQ(waiter->wait_result, -KOS_EFAULT);
-                    EXPECT_EQ(kernel().mutex_active, nullptr) << "the emptied record was kept";
+                    EXPECT_EQ(kernel().word_active, nullptr) << "the emptied record was kept";
                     EXPECT_EQ(owner->held_list, nullptr);
                 }
 
@@ -557,14 +569,14 @@ namespace kickos
                 uintptr_t const win = window_of(waiter);
                 ASSERT_NE(win, 0u);
                 uint32_t* const word = host<uint32_t>(blk + AT);
-                *word = main_->lock_id | KOS_MUTEX_WAITERS;
-                Mutex* const m = park_on_word(main_, waiter, win + AT, blk + AT);
+                *word = main_->lock_id | KOS_WORD_WAITERS;
+                WordRecord* const m = park_on_word(main_, waiter, win + AT, blk + AT);
                 EXPECT_EQ(m->key, named(waiter, win + AT).key) << "two spaces, two keys";
                 EXPECT_EQ(call_released(main_, KOS_SYS_MUTEX_UNLOCK, blk + AT), 0);
                 EXPECT_EQ(*word, waiter->lock_id) << "the hand-over wrote another word or owner";
                 EXPECT_EQ(waiter->wait_kind, WAIT_NONE) << "the waiter is still parked";
                 EXPECT_EQ(waiter->wait_result, 0);
-                EXPECT_EQ(kernel().mutex_active, nullptr) << "the emptied record was kept";
+                EXPECT_EQ(kernel().word_active, nullptr) << "the emptied record was kept";
                 EXPECT_EQ(main_->held_list, nullptr);
             }
 
@@ -589,11 +601,11 @@ namespace kickos
                     << "the holder's own reservation did not make it a live holder";
                 EXPECT_EQ(*word, main_->lock_id) << "a failed try wrote the word";
 
-                *word = main_->lock_id | KOS_MUTEX_WAITERS;
+                *word = main_->lock_id | KOS_WORD_WAITERS;
                 (void)park_on_word(main_, waiter, window_of(waiter) + AT, blk + AT);
                 *word = main_->lock_id;
                 EXPECT_EQ(call_released(taker, KOS_SYS_MUTEX_LOCK, at, 0), -KOS_ETIMEDOUT);
-                EXPECT_EQ(*word, main_->lock_id | KOS_MUTEX_WAITERS)
+                EXPECT_EQ(*word, main_->lock_id | KOS_WORD_WAITERS)
                     << "the record's bit was not set again";
             }
 
@@ -628,6 +640,49 @@ namespace kickos
                 (void)park_on_mains_word(sibling, RUN_VA + AT);
                 ASSERT_EQ(call_as(main_, KOS_SYS_FRAME_UNMAP, run.fcap, run.acap, RUN_VA), 0u);
                 expect_the_wait_ended(sibling);
+            }
+
+            TEST_F(WordRefSpace, a_plain_waiter_through_a_frame_cap_word_ends_when_its_run_is_unmapped)
+            {
+                RunCaps const run = mint(1);
+                ASSERT_NE(run.obj, FRAME_RUN_NONE);
+                ASSERT_EQ(map_run(run, RUN_VA), 0);
+                Thread* const sibling = spawn_into(KOS_TASK_NONE);
+                ASSERT_NE(sibling, nullptr);
+                (void)park_plain(sibling, RUN_VA + AT);
+                ASSERT_EQ(call_as(main_, KOS_SYS_FRAME_UNMAP, run.fcap, run.acap, RUN_VA), 0u);
+                expect_the_wait_ended(sibling);
+            }
+
+            // A wake with a cancel pending on its caller completes, so the unit it carries
+            // reaches the waiter; the caller dies at its next entry. A mutex unlock likewise.
+            TEST_F(WordRefSpace, a_word_wake_and_a_mutex_unlock_are_no_death_point)
+            {
+                uintptr_t const blk = reserve(main_, G, 0);
+                ASSERT_NE(blk, 0u);
+                Thread* const sibling = spawn_into(KOS_TASK_NONE);
+                ASSERT_NE(sibling, nullptr);
+                uint32_t* const word = host<uint32_t>(blk + AT);
+                (void)park_plain(sibling, blk + AT);
+                *word = KOS_WORD_WAITERS;
+                uint32_t* const lock = host<uint32_t>(blk + 2u * AT);
+                *lock = main_->lock_id;
+                {
+                    IrqLock held;
+                    thread_cancel(main_, held);
+                }
+                ASSERT_EQ(main_->cancel_kind, CANCEL_KILL) << "fixture: no cancel is pending";
+
+                EXPECT_EQ(call_released(main_, KOS_SYS_WORD_WAKE, blk + AT, 1u, 1u), 1)
+                    << "the wake did not complete";
+                EXPECT_EQ(sibling->wait_kind, WAIT_NONE) << "the unit never reached the waiter";
+                EXPECT_EQ(sibling->wait_result, 1);
+                EXPECT_EQ(*word, 0u);
+                EXPECT_EQ(call_released(main_, KOS_SYS_MUTEX_UNLOCK, blk + 2u * AT), 0);
+                EXPECT_EQ(*lock, 0u);
+                EXPECT_NE(main_->state, ThreadState::EXITED);
+                EXPECT_EQ(main_->cancel_kind, CANCEL_KILL) << "the cancel did not stay pending";
+                main_->cancel_kind = CANCEL_NONE;
             }
 
             TEST_F(WordRefSpace, a_waiter_through_a_reservation_word_ends_when_it_is_retyped)
@@ -691,13 +746,13 @@ namespace kickos
                 ASSERT_NE(win, 0u);
                 ASSERT_NE(win, blk) << "fixture: the window landed at the donor's own address";
                 uint32_t* const word = host<uint32_t>(blk + AT);
-                *word = dying->lock_id | KOS_MUTEX_WAITERS;
+                *word = dying->lock_id | KOS_WORD_WAITERS;
                 (void)park_on_word(dying, waiter, win + AT, blk + AT);
                 exit_as(dying);
                 EXPECT_EQ(*word, waiter->lock_id) << "the death wrote another word or owner";
                 EXPECT_EQ(waiter->wait_kind, WAIT_NONE) << "the waiter is still parked";
                 EXPECT_EQ(waiter->wait_result, -KOS_EOWNERDEAD);
-                EXPECT_EQ(kernel().mutex_active, nullptr) << "the emptied record was kept";
+                EXPECT_EQ(kernel().word_active, nullptr) << "the emptied record was kept";
                 EXPECT_EQ(waiter->held_list, nullptr);
             }
 

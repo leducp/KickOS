@@ -178,16 +178,11 @@ namespace kickos
     // Reads 0 on a backend with no fastpath.
     uint32_t ipc_fast_taken_count();
 
-    // --- Cap-object creators (syscall_obj.cc) ----------------------------------
-    // Every minting call has one shape: a status return plus a handle out-parameter,
-    // which is written on EVERY path (KCAP_INVALID on failure). A handle spends all 32
-    // bits, so it cannot share the return value with an errno.
+    // Every minting call returns a status and writes its handle out-parameter on every path
+    // (KCAP_INVALID on failure): a handle spends all 32 bits. A charged create and irq_claim
+    // can answer -KOS_ENOMEM the pool, -KOS_EMFILE the caller's table, or -KOS_EAGAIN the
+    // calling task's ceiling for that pool while the pool still holds slots (task.h).
     //
-    // Each creator here and irq_claim can answer with any of three exhaustion
-    // codes: -KOS_ENOMEM the pool, -KOS_EMFILE the caller's table, -KOS_EAGAIN the calling
-    // task's ceiling for that pool while the pool still holds slots (task.h).
-    int sem_create(int initial, uint32_t* out_cap);
-
     // IPC endpoints (syscall_ipc.cc).
     // Call send/call/reply_recv without IrqLock. They lock internally and must
     // release it before the resume barrier; an outer lock would livelock ARM.
@@ -204,7 +199,8 @@ namespace kickos
                           uint32_t timeout_us);
     int endpoint_reply(uint32_t reply_cap, uintptr_t buf, size_t len);
     // KOS_SYS_REPLY_RECV. `lens` is kos_call_lens_pack(reply_len, recv_cap) and `opts` names a
-    // kos_reply_recv_opts the kernel reads and writes back.
+    // kos_reply_recv_opts the kernel reads and writes back; the dispatch answers a null one with
+    // endpoint_reply, so it never arrives here.
     int32_t endpoint_reply_recv(uint32_t reply_cap, uintptr_t buf, uintptr_t lens,
                                 uintptr_t opts);
 
@@ -230,16 +226,10 @@ namespace kickos
     // Same minting shape as the cap creators above: *out_thread is written on EVERY path
     // (KOS_THREAD_NONE on failure).
     int thread_create_call(kos_thread_params const* p, kos_thread_t* out_thread);
-    // Cancels a thread the caller spawned: marks it, and breaks whatever park it is in with
-    // -KOS_ECANCELED so it reaches its own death point. Returns 0, -KOS_EBADF, -KOS_EPERM or
-    // -KOS_EINVAL. Takes its own IrqLock.
-    int thread_kill(kos_thread_t thread);
-    // Creates an empty task holding a shared data region, and cancels a task's whole group.
-    // Both gate on the creator being the caller. *out_task is written on EVERY path
-    // (KOS_TASK_NONE on failure). Each takes its own IrqLock.
+    // Creates an empty task holding a shared data region, gated on the creator being the caller.
+    // *out_task is written on EVERY path (KOS_TASK_NONE on failure). Takes its own IrqLock.
     int task_create_call(void* mem_base, size_t mem_size, uint32_t mem_attr,
                          kos_task_t* out_task);
-    int task_kill(kos_task_t task);
 
 #if KICKOS_PRESYNC
     // Under the kernel lock, on a spawn's first round: its parameters and window list into the
@@ -261,25 +251,29 @@ namespace kickos
     // -KOS_EDEADLK.
     int thread_join(kos_thread_t thread, uint32_t timeout_us);
 
-    // The forcible half of the pair above, and both block on the same terms as thread_join:
-    // no caller-held IrqLock. A marked target executes no further unprivileged instruction.
-    // 0 means the target is gone; -KOS_ETIMEDOUT means the redirect is armed and irrevocable
-    // with the capability sweep unfinished.
-    int thread_slay(kos_thread_t thread, uint32_t timeout_us);
-    // Placement and the scheduling grant. Both are total over every posture: at one kernel
-    // core the placement call answers -KOS_ENOSYS and the grant carries its ceiling half only.
-    int thread_set_affinity(kos_thread_t thread, uint32_t core_mask);
+    // Cancels a thread the caller spawned with `kind`, a kos_cancel: a kill breaks whatever park
+    // it is in with -KOS_ECANCELED so it reaches its own death point, a slay also claims its next
+    // resume, so it executes no further unprivileged instruction. A timeout of 0 answers once
+    // the cancel is raised; any other blocks on the terms of thread_join, no caller-held IrqLock,
+    // and answers 0 once the target is gone, -KOS_ETIMEDOUT with the cancel irrevocable and the
+    // capability sweep unfinished.
+    int thread_cancel_call(kos_thread_t thread, uintptr_t kind, uint32_t timeout_us);
 #if KICKOS_KERNEL_CORES > 1
-    // The placement reads: each answers a mask, which cannot reach bit 31, or -KOS_E*. The
-    // thread read reaches what thread_set_affinity reaches, the task read what
-    // task_sched_grant reaches, KOS_TASK_NONE naming the caller's own task.
-    int thread_affinity(kos_thread_t thread);
+    // Placement, and the task's core read: each answers a mask, which cannot reach bit 31, or
+    // -KOS_E*. The thread call sets the mask it answers, or reads it for KOS_AFFINITY_QUERY,
+    // over a thread of the caller's task; the task read reaches what task_sched_grant reaches,
+    // KOS_TASK_NONE naming the caller's own task.
+    int thread_affinity_call(kos_thread_t thread, uint32_t core_mask);
     int task_cores(kos_task_t task);
 #endif
+    // The scheduling grant is total over every posture: at one kernel core it carries its
+    // ceiling half only.
     int task_sched_grant(kos_task_t task, uint8_t prio_ceiling, uint32_t core_mask);
     // The caller's own base priority. Takes the whole argument word, so a value that would
     // truncate into range is refused rather than read.
     int thread_set_priority(uintptr_t priority);
+    // Cancels a task's whole group, gated on the creator being the caller. A timeout of 0 drops
+    // the creator's hold and answers at once; any other blocks on the terms of thread_join.
     int task_slay(kos_task_t task, uint32_t timeout_us);
 }
 

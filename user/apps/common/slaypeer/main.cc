@@ -13,7 +13,7 @@
 // READY is claimed by the switch that starts it, and a victim sharing a core with a runnable
 // peer is claimed by the switch that peer takes anyway.
 //
-// WHAT THIS IMAGE ASSERTS is that kos_thread_slay RETURNS 0 within a bound. On a tree whose
+// WHAT THIS IMAGE ASSERTS is that a slay RETURNS 0 within a bound. On a tree whose
 // available_to admits a slain thread whose frame the core holds, the victim's core re-picks it on
 // every pass forever and the call answers -KOS_ETIMEDOUT, which is the control: the bound is what
 // turns a hang into a verdict.
@@ -69,14 +69,14 @@ namespace
             kos_exit(1);
         }
         kos_sleep_ns(SETTLE_NS);
-        g_slay_rc = kos_thread_slay(v.id(), SLAY_TIMEOUT_US);
+        g_slay_rc = kos_thread_cancel(v.id(), KOS_CANCEL_SLAY, SLAY_TIMEOUT_US);
         kos_exit(0);
     }
 }
 
 int main(int, char**)
 {
-    // The SLAYER is what spawns the victim: kos_thread_slay admits the spawner alone.
+    // The SLAYER is what spawns the victim: a cancel admits the spawner alone.
     auto const s = kos::thread::create(slayer, nullptr, "slayer", PRIO_SLAYER,
                                        KOS_POLICY_FIFO, 0,
                                        nullptr, 0, nullptr, 0, nullptr, 0,

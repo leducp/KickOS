@@ -29,8 +29,9 @@ alignment precondition, and the kernel did not pick the pointer.
 
 **The first question is therefore whether the pointer needs to exist at all**, and the cheapest
 guard is the one with no subject. A 64-bit scalar fits the return-register pair on every ISA in
-this fleet, so the monotonic clock read hands its value back in registers and has no out-pointer to
-align, to bound, or to reject. That is not an optimisation; it removes a whole failure mode from
+this fleet, so the monotonic clock read, on a board where it is a syscall, hands its value back in
+registers and has no out-pointer to align, to bound, or to reject. That is not an optimisation; it
+removes a whole failure mode from
 the ABI, and the next section is what that failure mode costs when it is left in.
 
 ## Alignment is a hardware property, and it is not uniform

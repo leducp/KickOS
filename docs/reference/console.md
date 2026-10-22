@@ -305,8 +305,8 @@ write is not. A thread spawned naming no task and no memory of its own joins its
 so threads never placed in tasks share their spawner's flag. The kernel reads the flag on the
 paths that would wait:
 
-- A send of no timeout on the published console that would park, `kos_send` or `kos_send_timed`
-  with `KOS_TIMEOUT_NONE`, is answered `-KOS_ETIMEDOUT` at once: a console whose task lives with no
+- A send of no timeout on the published console that would park, a `kos_send` with
+  `KOS_TIMEOUT_NONE`, is answered `-KOS_ETIMEDOUT` at once: a console whose task lives with no
   receiver taking a message now. A send with a finite timeout keeps it, `kos_console_flush`'s
   included, and a send on any other endpoint parks as before.
 - A kernel console write that would wait or have to try again is answered `-KOS_ETIMEDOUT`: the
@@ -701,6 +701,12 @@ first start did. A send answers `-KOS_ECONNREFUSED` only once the init drops the
 driver out of restarts; the seats still name it, so the next publish moves them. Neither drop tears
 the endpoint down, because the kernel holds its own
 `g_stdout_target` reference.
+
+**The handover ends only once the driver is proven to receive.** After the drop,
+`console_handover_finish` probes capability 0 with a zero-length rendezvous, which returns only
+once a receiver has taken it, and no client runs before it returns. A driver that hangs in its
+bring-up never takes the probe, so the probe parks and the boot stops there, visibly, instead of
+going on with a console that no receiver serves.
 
 **Two windows are dark on the wire, and output is lost in neither.** The first runs from the
 publish flip to the driver serving capability 0: `console_emit`'s chip path already drops (RTT

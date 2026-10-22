@@ -96,7 +96,8 @@ namespace
         p.first_ns = kos_clock_now();
         for (uint32_t i = 0; i < ROUNDS; ++i)
         {
-            int32_t const n = kos_call_generic(kos::child_cap(0), buf, g_len, g_len);
+            int32_t const n =
+                kos_call_generic(kos::child_cap(0), buf, g_len, g_len, KOS_TIMEOUT_NONE);
             if (n != static_cast<int32_t>(g_len)
                 or buf[0] != static_cast<unsigned char>(p.core))
             {

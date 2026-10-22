@@ -600,7 +600,7 @@ TEST_F(DrvInstance, a_restart_repeats_the_handover_and_a_failure_in_it_ends_its_
 
 TEST_F(DrvInstance, a_handover_probe_that_is_not_taken_is_a_failed_start)
 {
-    g_seam.send_timed_rc = -KOS_EAGAIN;
+    g_seam.send_rc = -KOS_EAGAIN;
     struct kos_driver_instance in = instance_of(k_two);
     EXPECT_EQ(drv::bring_up(k_two, &in), -KOS_EAGAIN);
     EXPECT_EQ(kos_seam_trace(), std::string{"taskmem90 grant90/9/0 watch90/8/7 pub7 claim10 claim11"
@@ -615,7 +615,7 @@ TEST_F(DrvInstance, a_handover_probe_that_is_not_taken_is_a_failed_start)
 // until that member exits, then lands.
 TEST_F(DrvInstance, a_report_after_a_slay_that_timed_out_waits_for_the_member_then_lands)
 {
-    g_seam.send_timed_rc = -KOS_ETIMEDOUT;
+    g_seam.send_rc = -KOS_ETIMEDOUT;
     g_seam.slay_rc = -KOS_ETIMEDOUT;
     g_seam.kconsole_dark = true;
     struct kos_driver_instance in = instance_of(k_two);

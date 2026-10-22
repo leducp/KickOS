@@ -19,23 +19,28 @@
 
 Chapter 0.4, *[Monolithic vs microkernel](monolithic-vs-microkernel.md)*, moved
 the drivers out of the kernel and left a small core behind. That core owns a few
-kinds of **kernel object**: a semaphore, an endpoint two tasks talk
-through, the binding of an interrupt line to a driver, a notification. An
-unprivileged thread cannot reach any of them in memory. It can only make a system
-call and ask the kernel to act for it. Every such call asks two questions:
+kinds of **kernel object**: an endpoint two tasks talk through, the binding of
+an interrupt line to a driver, a notification. An unprivileged thread cannot
+reach any of them in memory. It can only make a system call and ask the kernel
+to act for it. Every such call asks two questions:
 
 1. **Which object does the caller mean?** It must pass a number, because it
    cannot pass a pointer into kernel memory.
-2. **May the caller do this to that object?** Waiting on a semaphore and posting
-   to it are different powers.
+2. **May the caller do this to that object?** Waiting on a notification and
+   signalling it are different powers.
 
-The simplest answer is a global number: semaphore 3 is semaphore 3 for everyone.
+The simplest answer is a global number: endpoint 3 is endpoint 3 for everyone.
 Then anyone who can guess the number can use the object. That is **ambient
 authority**, power that comes from being there rather than from being given
 anything, and it is the opposite of the isolation the microkernel was built for.
 In a microkernel the questions are also on the hot path: every message between
 two tasks is a system call that names an endpoint. The answer must be cheap, and
 it must not be ambient.
+
+A semaphore and a mutex are not kernel objects, so neither question arises for
+them. Each is a word in memory that its threads share, and the memory is the
+authority: a thread that can write the word can wait on it and post to it, and a
+thread that cannot write it cannot use it.
 
 ## Two ways to answer: identity or possession
 
@@ -125,8 +130,8 @@ side, and how a new type is added without touching the table.
 A capability is created, passed down, narrowed and closed. No step adds a right
 that was not already held.
 
-- **Created.** A thread that creates an object (`kos_sem_create`,
-  `kos_endpoint_create`) receives a capability with every
+- **Created.** A thread that creates an object (`kos_endpoint_create`,
+  `kos_notify_create`) receives a capability with every
   right. The object lives exactly as long as some capability names it.
 - **Granted at spawn.** A spawn carries a list of source handles, each with a
   rights mask. The source must carry `KOS_CAP_TRANSFER`, and the child gets the

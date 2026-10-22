@@ -68,10 +68,9 @@ int main(int, char**)
 
     kos::thread::create(domainA_worker, rA, "domainA", 10, KOS_POLICY_FIFO, 0,
                         rA, REGION);
-    kos_cap_t idle = KOS_CAP_NONE;
-    (void)kos_sem_create(0, &idle);
+    static kos_sem_t idle = KOS_SEM_INIT(0);
     while (true)
     {
-        kos_sem_wait(idle, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&idle, KOS_TIMEOUT_NONE);
     }
 }

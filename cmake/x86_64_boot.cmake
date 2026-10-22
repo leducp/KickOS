@@ -235,6 +235,14 @@ if(KICKOS_BUILD_TESTS)
             "${KICKOS_X1_IMAGE}" "${PROJECT_BINARY_DIR}/x1floor-ctest")
   set_tests_properties(x86_64_x1_floor PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
 
+  # The emulated processor without RDTSCP alone, refused for that bit.
+  string(REPLACE ",+rdtscp" "" _x1_no_rdtscp "${KICKOS_X86_64_QEMU_CPU}")
+  add_test(NAME x86_64_x1_floor_rdtscp
+    COMMAND "${CMAKE_COMMAND}" -E env "KICKOS_X86_64_FLOOR_CPU=${_x1_no_rdtscp}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools/run-qemu-x86_64-floor.sh"
+            "${KICKOS_X1_IMAGE}" "${PROJECT_BINARY_DIR}/x1floor-rdtscp-ctest")
+  set_tests_properties(x86_64_x1_floor_rdtscp PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
+
   # One case per fault class rather than one over the ten: the report ends the image, so each
   # class is its own boot either way, and a failure then names the class. The `none` image is
   # the negative control and refuses a report.

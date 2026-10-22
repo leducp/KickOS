@@ -8,7 +8,8 @@ chip: rp2040
 manual: "RP2040 Datasheet, RP-008371-DS-1, build-version 3184e62"
 arch: armv6m
 # The unit sits on the CPU's access path, so a device window is enforced per task.
-protection: { unit: pmsav6, granule: 32, covers_devices: true, memory_type: true }
+# The smallest region is 256 bytes (datasheet 2.4 p.76, Table 117 MPU_RASR p.90).
+protection: { unit: pmsav6, granule: 256, covers_devices: true, memory_type: true }
 data_cache: false
 family: { dir: arm/chip/rp2xxx, sources: [arm/chip/rp2xxx/chip_rp2xxx.cc, arm/chip/rp2xxx/rom_call.S] }
 exits_on_fault: false

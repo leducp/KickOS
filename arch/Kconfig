@@ -254,6 +254,12 @@ config ARCH_SIM
 	bool
 	select ARCH_HAS_FAULT_ISOLATION
 
+# kos_clock_now reads the counter the kernel's clock reads, in user mode with no kernel entry.
+# Every core opens that read to user mode at bring-up.
+config KICKOS_CLOCK_USER
+	bool
+	default y if ARCH_ARMV8A || ARCH_RV64IMAC || ARCH_X86_64 || ARCH_SIM
+
 config KICKOS_ARCH
 	string
 	default "armv6m" if ARCH_ARMV6M
@@ -411,6 +417,7 @@ config CHIP_VIRT_RV32
 	select ARCH_RV32IMAC
 	select HAS_MPU
 	select HAS_TRACE_CLOCK
+	select KICKOS_CLOCK_USER
 
 # Interrupt: the die's GIC-500, SGIs 0..15 through ICC_SGI1R_EL1, with no version to choose.
 # Symmetric is the CLUSTER's: the four Cortex-A53s; the Cortex-M7 beside them has its own NVIC

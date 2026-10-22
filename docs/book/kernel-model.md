@@ -68,7 +68,7 @@ A thread moves through a small set of states (`ThreadState`):
 ```
 
 `BLOCKED` covers every kind of wait. A field on the thread, its wait kind, says which
-one: a semaphore, a mutex, an endpoint, a sleep, a join, and a few more.
+one: a word such as a semaphore's, a mutex, an endpoint, a sleep, a join, and a few more.
 
 Two kinds of thread are special. The **root thread** is the first one the kernel
 creates at boot. It is unprivileged from its first instruction, runs the image's global
@@ -79,7 +79,7 @@ system. Each core also has an **idle thread** at the lowest priority, which runs
 when nothing else can, and puts the core to sleep until an interrupt arrives.
 
 The kernel's objects live in fixed pools sized at build time. Userspace never holds a
-pointer to one. It names a semaphore or an endpoint through a **handle** in its capability
+pointer to one. It names an endpoint or a notification through a **handle** in its capability
 table, and the handle carries a generation, so a handle to an object that was freed and
 reused stops resolving instead of reaching the new occupant. Part 8 teaches handles;
 this part assumes them.
@@ -180,8 +180,13 @@ thread the same way, and every wake goes through the same protocol. The wait que
 the ready queue even share one link in the TCB: a thread is either ready or waiting,
 never both. On top of that substrate the kernel offers only two kinds of synchronization:
 
-- **The counting semaphore**, the general wait/wake object. Its `post` is safe from an
-  interrupt handler, which is how an interrupt readies a thread.
+- **A wait and a wake on a word of user memory**, the general pair. A thread asks the
+  kernel to park it while a word still holds the value it read, and another thread asks
+  the kernel to wake that word's waiters. The kernel keeps no object for the word. It
+  keeps a record only while a thread waits on it. The **counting semaphore** is built on
+  this pair: its count is the word, a wait that finds a unit and a post that finds no
+  waiter are each one compare-and-swap in user mode, and a post that finds a waiter hands
+  its unit to that waiter inside the kernel.
 - **The priority-inheritance mutex**, the one lock justified beyond the semaphore.
   It exists because of **priority inversion**: a low-priority thread holds a lock that
   a high-priority thread wants, and a medium-priority thread, unrelated to the lock,
@@ -193,7 +198,9 @@ never both. On top of that substrate the kernel offers only two kinds of synchro
 
 Condition variables, read-write locks and barriers are userspace libraries over those
 two. Endpoints ([Chapter 8.3](endpoints-synchronous-ipc-by-rendezvous.md)) and the notifications that carry interrupts to drivers
-([Chapter 3](interrupt-model.md)) park on the same substrate.
+([Chapter 3](interrupt-model.md)) park on the same substrate. An interrupt handler uses
+neither the word pair nor the mutex, since it is not a thread. It readies a thread by
+raising a notification.
 
 **The f411 example.** On their way out through the kernel console ([Chapter 0.2](what-is-an-os-and-a-kernel.md)), the
 bytes of `printf("hello\n")` go into its transmit ring, which the USART2 transmit
@@ -321,6 +328,6 @@ section & interrupt-priority bands", "Deferred switch & blocking model", "Tickle
   *[Context switching and the silicon
   contract](context-switching-and-the-silicon-contract.md)*.
 - How an interrupt reaches a userspace driver: [Chapter 3](interrupt-model.md), the interrupt model.
-- How a thread names a semaphore or an endpoint: Chapter 8.1, *[The handle and the resolve
+- How a thread names an endpoint or a notification: Chapter 8.1, *[The handle and the resolve
   chokepoint](handles-and-the-resolve-chokepoint.md)*.
 - The code from the start: [Journey 3, Sleep](../journey/03-sleep.md).

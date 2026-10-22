@@ -18,6 +18,8 @@ cores: { count: [1, 4], smp: true }
 
 # `rdcycle` under the emulator answers the host's tick source, so no rate converts a reading.
 cycle_counter: { hz: 0 }
+# The rate mtime and the time CSR count at.
+timebase: { hz: { value: 10000000, ref: "RISCV_ACLINT_DEFAULT_TIMEBASE_FREQ" } }
 family: none
 exits_on_fault: true
 

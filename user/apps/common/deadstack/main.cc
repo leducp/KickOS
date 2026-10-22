@@ -26,17 +26,16 @@ namespace
     volatile uintptr_t g_addr = 0;
     volatile uint32_t g_sink = 0;
 
-    // Main's semaphores, delegated to the victim: it posts READY once its page is published
-    // and leaves once GO is posted.
-    constexpr kos_cap_t READY = KOS_SPAWN_DELEGATED_CAP0;
-    constexpr kos_cap_t GO = KOS_SPAWN_DELEGATED_CAP0 + 1;
+    // The victim posts g_ready once its page is published and leaves once g_go is posted.
+    kos_sem_t g_ready = KOS_SEM_INIT(0);
+    kos_sem_t g_go = KOS_SEM_INIT(0);
 
     void victim(void*)
     {
         volatile uint32_t mark = MARK;
         g_addr = reinterpret_cast<uintptr_t>(&mark);
-        (void)kos_sem_post(READY);
-        (void)kos_sem_wait(GO, KOS_TIMEOUT_NONE);
+        (void)kos_sem_post(&g_ready);
+        (void)kos_sem_wait(&g_go, KOS_TIMEOUT_NONE);
     }
 
     void announce(int core)
@@ -103,14 +102,6 @@ namespace
 
 int main(int, char**)
 {
-    kos_cap_t ready = KOS_CAP_NONE;
-    kos_cap_t go = KOS_CAP_NONE;
-    if (kos_sem_create(0, &ready) != 0 or kos_sem_create(0, &go) != 0)
-    {
-        kos_print("[deadstack] ERROR: no semaphore\n");
-        return 1;
-    }
-    kos_cap_grant const caps[] = {{ready, KOS_CAP_SIGNAL}, {go, KOS_CAP_WAIT}};
     uint32_t victim_mask = 0;
 #if KICKOS_KERNEL_CORES > 1
     // Off main's core: the reader spins above main's priority and would starve it there.
@@ -124,12 +115,11 @@ int main(int, char**)
     uint32_t const core_victim = (static_cast<uint32_t>(here) + 2u) % KICKOS_KERNEL_CORES;
     victim_mask = 1u << core_victim;
 #endif
-    uint8_t const ncaps = static_cast<uint8_t>(sizeof(caps) / sizeof(caps[0]));
-    auto const v = kos::thread::create_caps(victim, nullptr, "victim", 10, caps, ncaps,
+    auto const v = kos::thread::create_caps(victim, nullptr, "victim", 10, nullptr, 0,
                                             KOS_POLICY_FIFO, 0, nullptr,
                                             0, 0, nullptr, KOS_TASK_NONE, nullptr, 0,
                                             victim_mask);
-    if (not v.valid() or kos_sem_wait(ready, KOS_TIMEOUT_NONE) != 0)
+    if (not v.valid() or kos_sem_wait(&g_ready, KOS_TIMEOUT_NONE) != 0)
     {
         kos_print("[deadstack] ERROR: the victim never published its page\n");
         return 1;
@@ -154,7 +144,7 @@ int main(int, char**)
         kos_sleep_ns(POLL_NS);
     }
     announce(static_cast<int>(core_reader));
-    (void)kos_sem_post(go);
+    (void)kos_sem_post(&g_go);
     if (v.join(KOS_TIMEOUT_NONE) != 0)
     {
         kos_print("[deadstack] ERROR: the victim never came back\n");
@@ -174,7 +164,7 @@ int main(int, char**)
     }
     announce(0);
     g_sink = *p;
-    (void)kos_sem_post(go);
+    (void)kos_sem_post(&g_go);
     if (v.join(KOS_TIMEOUT_NONE) != 0)
     {
         kos_print("[deadstack] ERROR: the victim never came back\n");

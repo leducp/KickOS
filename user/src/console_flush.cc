@@ -8,12 +8,12 @@
 // second is taken once the driver is back in its receive, past that drain.
 int32_t kos_console_flush(uint32_t timeout_us)
 {
-    int32_t const first = kos_send_timed(KOS_CAP_STDOUT, "", 0, timeout_us);
+    int32_t const first = kos_send(KOS_CAP_STDOUT, "", 0, timeout_us);
     if (first < 0)
     {
         return first;
     }
-    int32_t const second = kos_send_timed(KOS_CAP_STDOUT, "", 0, timeout_us);
+    int32_t const second = kos_send(KOS_CAP_STDOUT, "", 0, timeout_us);
     if (second < 0)
     {
         return second;

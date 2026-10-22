@@ -25,8 +25,8 @@ Part 0 teaches the basic ideas. The later parts show how KickOS is built. Start 
 | 0.6 | [What's under #include: the C library and the C++ runtime](whats-under-include-libc-and-the-cxx-runtime.md) | What the C library and the C++ runtime give a program, and what they need from the OS. |
 | 1 | [Overview and principles](overview-and-principles.md) | What KickOS is for, and the principles every later chapter applies. |
 | 2 | [The kernel model](kernel-model.md) | Threads, tasks, the scheduler, and how a thread waits and wakes. |
-| 2.1 | [The time base: a monotonic clock you can trust](the-time-base-a-monotonic-clock-you-can-trust.md) | Why a kernel needs a clock that never runs backwards, and how to get one. |
-| 2.2 | [The blocking substrate: one wait/wake primitive](the-blocking-substrate-one-wait-wake-primitive.md) | How one shared mechanism puts a thread to sleep and wakes it up. |
+| 2.1 | [The time base: a monotonic clock you can trust](the-time-base-a-monotonic-clock-you-can-trust.md) | Why a kernel needs a clock that never runs backwards, how to get one, and how a program can read it without calling the kernel. |
+| 2.2 | [The blocking substrate: one wait/wake primitive](the-blocking-substrate-one-wait-wake-primitive.md) | How one shared mechanism puts a thread to sleep and wakes it up, and how a semaphore in user memory waits on it. |
 | 2.3 | [Priority inheritance: lending a thread its blocker's urgency](priority-inheritance-lending-urgency.md) | What priority inversion is, and how a thread that holds a lock borrows the priority of a thread that waits for it. |
 | 2.4 | [An atomic buys definedness, not atomicity](an-atomic-buys-definedness-not-atomicity.md) | What `volatile` and atomic variables guarantee when threads share data, and what they do not. |
 | 2.5 | [One kernel lock, many ready queues](one-lock-many-ready-queues.md) | How a multicore scheduler keeps the ready threads of each core in their own list, under one kernel lock. |

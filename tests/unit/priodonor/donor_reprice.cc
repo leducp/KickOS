@@ -110,7 +110,7 @@ TEST_F(PrioDonor, a_mutex_waiter_raised_by_an_ipc_donation_still_reaches_the_own
     IrqLock lock;
     Thread* const owner = spawn(0, PRIO_DONEE);
     uint32_t word = 0;
-    Mutex* const m = own_mutex(owner, &word);
+    WordRecord* const m = own_mutex(owner, &word);
     Thread* const waiter = spawn(1, PRIO_DONOR);
     park_mutex_waiter(waiter, m);
     EXPECT_EQ(thread_effective_prio(owner), PRIO_DONEE);

@@ -73,7 +73,7 @@ namespace
 
     // The mode publishes the plain fields: on SMP its release/acquire orders the ARMED
     // metadata, PARKED readiness and the RAISED t0. Transitions are plain loads and stores: the
-    // benchmark's semaphore handshake serializes one armer, raiser, closer and reporter, and
+    // benchmark's handshake serializes one armer, raiser, closer and reporter, and
     // concurrent users are unsupported (docs/reference/bench.md). One core needs only compiler
     // ordering against interrupts.
 #if KICKOS_KERNEL_CORES > 1

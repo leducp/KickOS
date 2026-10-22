@@ -276,6 +276,32 @@ namespace kickos
             }
         }
 
+        uintptr_t firmware_split_ram()
+        {
+            uintptr_t const at = reinterpret_cast<uintptr_t>(g_ram);
+            uintptr_t const gib = at & ~((static_cast<uintptr_t>(1) << GIB_SHIFT) - 1u);
+            for (size_t i = 0; i < PTES; i++)
+            {
+                g_deeper[0][i] = (gib + (static_cast<uintptr_t>(i) << MIB2_SHIFT)) | PTE_P | PTE_RW
+                                 | PTE_PS;
+            }
+            g_firmware[1][(at >> GIB_SHIFT) & (PTES - 1u)] =
+                reinterpret_cast<uintptr_t>(g_deeper[0]) | PTE_P | PTE_RW;
+            uintptr_t const mib2 = at & ~((static_cast<uintptr_t>(1) << MIB2_SHIFT) - 1u);
+            for (size_t i = 0; i < PTES; i++)
+            {
+                g_deeper[1][i] = (mib2 + i * GRANULE) | PTE_P | PTE_RW;
+            }
+            g_deeper[0][(at >> MIB2_SHIFT) & (PTES - 1u)] =
+                reinterpret_cast<uintptr_t>(g_deeper[1]) | PTE_P | PTE_RW;
+            return mib2;
+        }
+
+        void firmware_clear_leaf(uintptr_t page)
+        {
+            g_deeper[1][(page >> 12) & (PTES - 1u)] = 0;
+        }
+
         void adopt()
         {
             kickos::x86_64::aspace_init(0, 0);

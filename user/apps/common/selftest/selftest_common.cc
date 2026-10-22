@@ -12,8 +12,8 @@
 
 namespace selftest
 {
-    kos_cap_t g_done = KOS_CAP_NONE; // shared completion counter (MAIN's cap; delegated to workers)
-    kos_cap_t g_lock = KOS_CAP_NONE; // binary semaphore = mutex over the event log (MAIN's cap)
+    kos_sem_t g_done = KOS_SEM_INIT(0);
+    kos_sem_t g_lock = KOS_SEM_INIT(1);
     kos_self_t const* g_self = nullptr;
     kos_thread_t g_main = KOS_THREAD_NONE;
 
@@ -30,7 +30,7 @@ namespace selftest
         int const rc = h->join(bound_us);
         if (rc != 0)
         {
-            int const slain = h->slay(ARM_SLAY_US);
+            int const slain = h->cancel(KOS_CANCEL_SLAY, ARM_SLAY_US);
             if (slain != 0 and slain != -KOS_EBADF)
             {
                 tap::fail("thread %u: join answered %d, slay %d", static_cast<unsigned>(h->id()),
@@ -98,9 +98,14 @@ namespace selftest
     // Above every batch an arm asks for: a crowd of one per kernel core plus one, or four.
     constexpr int POOL_PROBES_MAX = KICKOS_KERNEL_CORES + 4;
 
-    void pool_gated_worker(void*) // caps: gate@0
+    namespace
     {
-        kos_sem_wait(child_cap(0), KOS_TIMEOUT_NONE);
+        kos_sem_t g_probe_gate = KOS_SEM_INIT(0);
+    }
+
+    void pool_gated_worker(void*)
+    {
+        kos_sem_wait(&g_probe_gate, KOS_TIMEOUT_NONE);
     }
 
     namespace
@@ -131,20 +136,13 @@ namespace selftest
         // stack is free again.
         void workers_refusal(int n, Refusal* r)
         {
-            kos_cap_t gate = KOS_CAP_NONE;
-            int rc = kos_sem_create(0, &gate);
-            if (rc != 0)
-            {
-                note(r, rc, "sems", 0, 1);
-                return;
-            }
-            kos_cap_grant caps[] = {{gate, KOS_CAP_WAIT}};
+            int rc = kos_sem_init(&g_probe_gate, 0);
             kos::thread::Handle probes[POOL_PROBES_MAX];
             int got = 0;
             for (int i = 0; i < n; i++)
             {
                 probes[i] =
-                    kos::thread::create_caps(pool_gated_worker, nullptr, "probe", 10, caps, 1);
+                    kos::thread::create_caps(pool_gated_worker, nullptr, "probe", 10, nullptr, 0);
                 if (not probes[i].valid())
                 {
                     rc = probes[i].error();
@@ -155,13 +153,12 @@ namespace selftest
             note(r, rc, "workers", got, n);
             for (int i = 0; i < got; i++)
             {
-                kos_sem_post(gate);
+                kos_sem_post(&g_probe_gate);
             }
             for (int i = 0; i < got; i++)
             {
                 (void)probes[i].join();
             }
-            (void)kos_handle_close(gate);
         }
 
         // Microseconds left to `deadline`, 0 once it has passed.
@@ -177,7 +174,6 @@ namespace selftest
 
         enum class ObjectKind
         {
-            SEM,
             ENDPOINT,
             NOTIFY,
         };
@@ -187,10 +183,6 @@ namespace selftest
         {
             switch (kind)
             {
-            case ObjectKind::SEM:
-            {
-                return kos_sem_create(0, out);
-            }
             case ObjectKind::ENDPOINT:
             {
                 return kos_endpoint_create(out);
@@ -224,7 +216,7 @@ namespace selftest
         constexpr int MAX = 16;
         constexpr int TASKS_MAX = 8;
         constexpr int CAPS_MAX = 8;
-        int total = want.sems + want.endpoints + want.notifies;
+        int total = want.endpoints + want.notifies;
         if (want.caps > 0 and want.notifies == 0)
         {
             total = total + 1;
@@ -253,14 +245,13 @@ namespace selftest
         }
         kos_cap_t held[MAX];
         int n = 0;
-        hold(want.sems, ObjectKind::SEM, "sems", held, &n, &r);
         hold(want.endpoints, ObjectKind::ENDPOINT, "endpoints", held, &n, &r);
         hold(want.notifies, ObjectKind::NOTIFY, "notifies", held, &n, &r);
         kos_cap_t copies[CAPS_MAX];
         int c = 0;
         if (r.rc == 0 and want.caps > 0)
         {
-            int source = want.sems + want.endpoints;
+            int source = want.endpoints;
             if (want.notifies == 0)
             {
                 source = n;
@@ -425,7 +416,7 @@ namespace selftest
             {
                 continue;
             }
-            int const slain = h.thread->slay(ARM_SLAY_US);
+            int const slain = h.thread->cancel(KOS_CANCEL_SLAY, ARM_SLAY_US);
             if (slain != 0)
             {
                 tap::fail("ArmHold: slay of thread %u answered %d",
@@ -482,20 +473,13 @@ namespace selftest
         // before the first block, as arena_fit.py's ASSERT places them.
         bool seat_thread_stacks()
         {
-            kos_cap_t gate = KOS_CAP_NONE;
-            int const made = kos_sem_create(0, &gate);
-            if (made != 0)
-            {
-                tap::bail_out("the seat's gate answered %d", made);
-                return false;
-            }
-            kos_cap_grant caps[] = {{gate, KOS_CAP_WAIT}};
+            (void)kos_sem_init(&g_probe_gate, 0);
             kos::thread::Handle seated[KICKOS_SELFTEST_SEAT_WORKERS + 1];
             int n = 0;
             while (n < st_seat_workers and n < KICKOS_SELFTEST_SEAT_WORKERS)
             {
-                seated[n] = kos::thread::create_caps(pool_gated_worker, nullptr, "seat", 10, caps,
-                                                     1);
+                seated[n] = kos::thread::create_caps(pool_gated_worker, nullptr, "seat", 10,
+                                                     nullptr, 0);
                 if (not seated[n].valid())
                 {
                     break;
@@ -505,7 +489,7 @@ namespace selftest
             int const refused = seated[n].error();
             for (int i = 0; i < n; i++)
             {
-                kos_sem_post(gate);
+                kos_sem_post(&g_probe_gate);
             }
             int unjoined = 0;
             for (int i = 0; i < n; i++)
@@ -515,7 +499,6 @@ namespace selftest
                     unjoined++;
                 }
             }
-            (void)kos_handle_close(gate);
             if (n < st_seat_workers)
             {
                 tap::bail_out("the seat spawned %d of %d workers, then %d", n, st_seat_workers,
@@ -684,6 +667,50 @@ namespace selftest
 #endif
     }
 
+    namespace
+    {
+#if KICKOS_HAVE_ASPACE
+        uintptr_t g_xsem_page = 0;
+#else
+        kos_sem_t g_xsem[XSEM_SLOTS] = {};
+#endif
+    }
+
+    kos_sem_t* xsem(int i)
+    {
+#if KICKOS_HAVE_ASPACE
+        return reinterpret_cast<kos_sem_t*>(g_xsem_page) + i;
+#else
+        return &g_xsem[i];
+#endif
+    }
+
+    kos_window xsem_window()
+    {
+        kos_window w = {};
+#if KICKOS_HAVE_ASPACE
+        w.base = g_xsem_page;
+        w.size = static_cast<uint32_t>(ASPACE_GRANULE);
+        w.kind = KOS_WINDOW_MEMORY;
+#endif
+        return w;
+    }
+
+    kos_sem_t* xsem_child(int i, uint16_t window)
+    {
+#if KICKOS_HAVE_ASPACE
+        kos_window at = {};
+        if (kos_window_get(window, &at) != 0)
+        {
+            return nullptr;
+        }
+        return reinterpret_cast<kos_sem_t*>(at.base) + i;
+#else
+        (void)window;
+        return &g_xsem[i];
+#endif
+    }
+
     bool st_ram_seat()
     {
 #if KICKOS_SELFTEST_FIT
@@ -708,6 +735,7 @@ namespace selftest
         {
             return false;
         }
+        g_xsem_page = lo;
         uintptr_t const hi = seat_granule();
         if (hi == 0)
         {

@@ -444,6 +444,6 @@ instruction) ===` with `EXCCAUSE=0x0`, and the board stops.
 2. `arch_timer_arm` starts with a margin of at least `CCOMPARE_MIN_CYCLES` (64). If the code between
    the two `rd_ccount()` calls took 100 cycles, how many passes would the loop take for a 1-cycle
    delay? Predict, then check it on the board with a counter.
-3. A thread on this board calls `kos_sem_post` with a handle it never received. Follow the call
+3. A thread on this board calls `kos_notify` with a handle it never received. Follow the call
    from `arch_syscall` into `syscall_dispatch` and find where it is refused. Then say what the same
    thread could do instead, on this board, that the Cortex-M4 would stop.

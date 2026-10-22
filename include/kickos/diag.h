@@ -62,7 +62,7 @@
     X(kUguardNotTaken,  "armv8a: PSTATE.PAN or SCTLR_EL1.SPAN did not take the write", "P29")   \
     X(kUguardNoAsid,    "armv8a: no PAN and no ASID, so EL1 cannot be kept out of user pages", "P30") \
     X(kSumNotCleared,   "rv64imac: sstatus.SUM did not take the clear",               "P31")   \
-    X(kMutexNoRecord,   "unreachable: a mutex waiter found every record in use",      "P32")   \
+    X(kWordNoRecord,    "unreachable: a word waiter found every record in use",       "P32")   \
     X(kBannerRule,      "  ==============================================\n",        "\n")
 
 // The prose table is the only C++ in this header, and kickos/console_tx.h includes the header

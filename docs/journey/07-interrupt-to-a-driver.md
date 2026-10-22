@@ -32,7 +32,8 @@ arms, `t_irqdrv`, is a complete userspace driver with a pretend device:
 - the **interrupt line** is real: NVIC line 7 (`KICKOS_IRQ_FREE_BASE + 1`, from
   `user/include/kickos/sys/irq_free.h`), with its real vector, its real enable and pending bits,
   and the kernel's real entry path;
-- the **device** is a 16-byte block of RAM, granted to the driver as its data region;
+- the **device** is a 16-byte block of RAM, granted to the driver as its data region together
+  with the two semaphores the driver posts;
 - the **raise** is done by `main`, which writes a value into the block and then calls
   `kos_irq_raise`. That sets the line's pending bit in the NVIC, exactly where a device's
   interrupt signal would have set it.
@@ -44,27 +45,30 @@ real device does something different (Stop 11, servicing the registers), the sto
 The arm, trimmed:
 
 ```
-    void irq_driver(void*)
+    void irq_driver(void* mmio)
     {
         auto irq = kos::Irq::adopt(CH_IRQ);
         auto note = kos::Notification::adopt(CH_NOTE);
         note.bind();
-        volatile int* const dev = static_cast<volatile int*>(g_mmio);
-        kos_sem_post(CH_READY); // g_irq_ready: bound to the object + about to park
+        volatile int* const dev = static_cast<volatile int*>(mmio);
+        kos_sem_post(irqdrv_sem(mmio, IRQDRV_READY)); // bound to the object + about to park
         for (int i = 0; i < 3; i++)
         {
             note.wait(NOTE_ALL);
             dev[1 + i] = dev[0];
             irq.ack();
-            kos_sem_post(CH_DONE); // g_irqdrv_done
+            kos_sem_post(irqdrv_sem(mmio, IRQDRV_DONE));
         }
     }
 ```
 
 `main` claims line 7, creates a notification, binds the line to it, arms the line, spawns
-`irqdrv` with a wait-only copy of the line capability, the notification, and the 16-byte block,
+`irqdrv` with a wait-only copy of the line capability, the notification, and a 24-byte block,
 then three times writes `0x100 + i` into word 0 and raises the line. The driver copies word 0
-into word `1 + i` each time.
+into word `1 + i` each time. The block holds the 16-byte device and, after it, the driver's
+"ready" and "done" semaphores. The driver is a task of its own, and on a board where each task
+has its own address space, a semaphore in the app's static data would be the driver's private
+copy. A word in the block that both threads are granted is one semaphore for both.
 
 ```
 qemu-system-arm -M mps2-an386 -nographic -semihosting \
@@ -74,8 +78,8 @@ gdb-multiarch build/qemu/user/apps/common/selftest/selftest \
 ```
 
 The self-test runs about a hundred arms before this one. To get there quickly, every recipe below
-starts with `break kickos::thread_self_grant if size == 16`, `continue`, `delete`: that is
-`main` granting itself the 16-byte block at the top of `t_irqdrv` (it is
+starts with `break kickos::thread_self_grant if size == 24`, `continue`, `delete`: that is
+`main` granting itself the 24-byte block at the top of `t_irqdrv` (it is
 [06](06-shared-memory.md) Stop 10).
 
 ### Stop 1: the vector

@@ -36,22 +36,23 @@ which catches so much else, cannot see this at all.
 
 ### The interleaving, concretely
 
-Take a semaphore pool, handles that are bare slot indices, and an allocator that hands back
-the lowest free slot. A worker creates a semaphore, delegates it to a helper, and later
-tears it down; an unrelated logger thread creates one of its own.
+Take an endpoint pool, handles that are bare slot indices, and an allocator that hands back
+the lowest free slot. A worker creates an endpoint, delegates it to a helper, and later
+tears it down. An unrelated logger thread then creates one of its own.
 
 ```
-t0  worker  sem_create()            -> slot 3 claimed, handle = 3
+t0  worker  endpoint_create()       -> slot 3 claimed, handle = 3
 t1  worker  delegates handle 3 to the helper, which stashes it in its own state
 t2  worker  closes its own name for it; it was the last one, so slot 3 is freed
-t3  logger  sem_create()            -> the lowest free slot is 3, handle = 3
-t4  logger  begins using handle 3 for its own, unrelated semaphore
-t5  helper  sem_wait(3)             -> resolves; the helper blocks on the LOGGER's semaphore
+t3  logger  endpoint_create()       -> the lowest free slot is 3, handle = 3
+t4  logger  begins serving its own clients on handle 3
+t5  helper  receive(3)              -> resolves; the helper waits on the LOGGER's endpoint
 ```
 
-At t5 the helper is parked on a semaphore it was never given, that nobody will post for its
-sake, and that the logger is meanwhile signalling for reasons of its own. No check fired.
-This is **ABA**: slot 3 was A (the worker's semaphore), then B (free), then A again (the
+At t5 the helper is parked on an endpoint it was never given. Nobody sends to it for the
+helper's sake, and when the logger's clients send, the helper can take a message meant for
+the logger. No check fired.
+This is **ABA**: slot 3 was A (the worker's endpoint), then B (free), then A again (the
 logger's) -- and an observer holding only the index cannot distinguish the second A from the
 first. The classic instance of it is the lock-free stack whose CAS succeeds on a pointer
 that was popped and pushed back while the comparer was not looking; a slot pool is the same
@@ -119,7 +120,7 @@ Now look at where that 31 came from. Not from the register, which is 32 bits wid
 the machine, which has no opinion about sign. It came from a single interface decision --
 that one return register would carry both the handle and the error code -- and a different
 decision undoes it. A capability-minting syscall takes an out-parameter and returns a
-status: `kos_sem_create(int initial, kos_cap_t* out_cap)` returns 0 or a negated error and
+status: `kos_endpoint_create(kos_cap_t* out_cap)` returns 0 or a negated error and
 writes the handle through the pointer (`user/include/kickos/sys.h`). The handle no longer
 shares a register with the failure signal, so it is a full **unsigned 32 bits**, and all of
 them are spent: a fixed 16 index bits and 16 generation bits (`KCAP_INDEX_BITS`,
@@ -231,7 +232,7 @@ consequence, if it ever bites, is genuinely cross-task: a handle resolving to an
 *different* task created. The backstop bounds *when* a wrap can bite; it does nothing about
 *how badly*. This is also the handle furthest from any userspace convention: it is
 **kernel-internal**, because a create stores the pool handle inside a capability table entry
-and hands userspace the *capability* handle instead (`kernel/syscall/syscall_obj.cc`). That
+and hands userspace the *capability* handle instead (`notify_create`, `kernel/notify/notify.cc`). That
 freedom buys it no extra room -- the same 16 and 16, the same full word -- but it does show up
 in the code, in a place worth stopping at. The pool passes its handles around in a *signed*
 `int`, and neither `free` nor `resolve` is permitted to test that sign: both cast to

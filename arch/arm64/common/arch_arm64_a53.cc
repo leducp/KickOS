@@ -22,6 +22,8 @@ using kickos::arm64::SYS_EXIT;
 namespace
 {
     constexpr uint64_t CNTP_CTL_ENABLE = 1u << 0;
+    // CNTKCTL_EL1.EL0PCTEN: EL0 reads CNTPCT_EL0 and CNTFRQ_EL0.
+    constexpr uint64_t CNTKCTL_EL0PCTEN = 1u << 0;
     // PMCR_EL0: E enables the counters, C resets the cycle counter, D divides it by 64, LC puts
     // its overflow at bit 63.
     constexpr uint64_t PMCR_E = 1u << 0;
@@ -71,6 +73,18 @@ void kickos_armv8a_percore_init(void)
     // CNTP_CTL_EL0's reset value is UNKNOWN: an asserted timer would fire the moment this
     // core's PPI and DAIF open.
     timer_disable();
+
+    // Written whole: CNTKCTL_EL1 resets UNKNOWN, and a stray EL0PTEN would hand EL0 the
+    // kernel's own timer.
+    __asm volatile("msr cntkctl_el1, %0\n\tisb" ::"r"(CNTKCTL_EL0PCTEN) : "memory");
+
+#if KICKOS_KERNEL_CORES > 1
+    // EL0 reads TPIDRRO_EL0 and cannot write it: kos_core_current answers from it what
+    // KOS_SYS_CORE_CURRENT answers, kickos_kernel_core(), which is arch_cpu_id() only under the
+    // shared model.
+    static_assert(KICKOS_MULTICORE_MODEL_SHARED, "the seated id must be the kernel core's slot");
+    __asm volatile("msr tpidrro_el0, %0" ::"r"(static_cast<uint64_t>(arch_cpu_id())));
+#endif
 
 #if KICKOS_BENCH
     // PMCCNTR_EL0 is the bench cycle source (kickos/bench.h). PMCR_EL0.D divides the count by

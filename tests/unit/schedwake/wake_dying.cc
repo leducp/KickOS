@@ -448,7 +448,7 @@ TEST_F(SchedWake, a_mutex_waiter_boosted_past_the_dying_owner_is_handed_the_word
     spawn(2, PRIO_DYING - 1);                  // keeps k.live above zero
 
     uint32_t word = 0;
-    Mutex* m = own_mutex(c, &word);
+    WordRecord* m = own_mutex(c, &word);
     park_mutex_waiter(waiter, m);
     g_switches = 0;
     trace_reset();
@@ -459,7 +459,7 @@ TEST_F(SchedWake, a_mutex_waiter_boosted_past_the_dying_owner_is_handed_the_word
     EXPECT_EQ(word, waiter->lock_id) << "the word names the woken waiter, with no other waiter";
     EXPECT_EQ(waiter->wait_result, -KOS_EOWNERDEAD) << "and it was told the owner died";
     EXPECT_EQ(c->held_list, nullptr) << "the dying thread released the record it held";
-    EXPECT_EQ(kernel().mutex_active, nullptr) << "the emptied record was freed";
+    EXPECT_EQ(kernel().word_active, nullptr) << "the emptied record was freed";
 }
 
 // A live cap on each side of a chunk boundary, woken from the first, so there is real work

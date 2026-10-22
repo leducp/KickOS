@@ -120,17 +120,6 @@ namespace kickos
             int const obj_handle = e.obj;
             switch (static_cast<CapType>(e.type))
             {
-            case CapType::CAP_SEM:
-            {
-                int const idx = obj_ref_last(k.sems, k.sem_refs, obj_handle);
-                if (idx < 0
-                    or leaks(not k.sems.at(idx)->waiters.empty(), &k.sem_refs[idx], teardown))
-                {
-                    return;
-                }
-                k.sems.free(obj_handle);
-                return;
-            }
             case CapType::CAP_ENDPOINT:
             {
                 // recv_holders -> 0 has already emptied send_waiters, and a receiver parks only
@@ -266,10 +255,6 @@ namespace kickos
         {
             switch (static_cast<CapType>(e.type))
             {
-            case CapType::CAP_SEM:
-            {
-                return;
-            }
             case CapType::CAP_ENDPOINT:
             {
                 endpoint_rights_dropped(closer, e.obj, e.rights, teardown, held);
@@ -372,16 +357,6 @@ namespace kickos
             *handouts = nullptr;
             switch (type)
             {
-            case CapType::CAP_SEM:
-            {
-                int const idx = kernel().sems.live_index(obj_handle);
-                if (idx < 0)
-                {
-                    return false;
-                }
-                *refs = &kernel().sem_refs[idx];
-                return true;
-            }
             case CapType::CAP_ENDPOINT:
             {
                 int const idx = kernel().endpoints.live_index(obj_handle);
@@ -611,7 +586,6 @@ namespace kickos
         // One task's hold sets, a bit per slot of each charged pool.
         struct TaskObjectHolds
         {
-            uint32_t sem;
             uint32_t endpoint;
             uint32_t irq;
             uint32_t notify;
@@ -664,11 +638,6 @@ namespace kickos
         {
             switch (type)
             {
-            case CapType::CAP_SEM:
-            {
-                return Op<Charged<KICKOS_TASK_SEMAPHORE_BUDGET, &Kernel::sems>>::on(&h->sem,
-                                                                                    args...);
-            }
             case CapType::CAP_ENDPOINT:
             {
                 return Op<Charged<KICKOS_TASK_ENDPOINT_BUDGET, &Kernel::endpoints>>::on(
@@ -974,11 +943,7 @@ namespace kickos
         // WRAP: the stored global handle re-checks the object-gen in its own pool. A
         // stale object (freed under a still-live cap) stays EBADF (set above).
         void* p = nullptr;
-        if (want == CapType::CAP_SEM)
-        {
-            p = kernel().sems.resolve(e->obj);
-        }
-        else if (want == CapType::CAP_ENDPOINT)
+        if (want == CapType::CAP_ENDPOINT)
         {
             p = kernel().endpoints.resolve(e->obj);
         }

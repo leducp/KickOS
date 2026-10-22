@@ -30,6 +30,7 @@
 // ends the task while the window is still held: the reclaim writes the record, and a writer
 // parked across that end lands its line once, after it.
 
+#include <kickos/config/priorities.h> // KICKOS_PRIO_MIN
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 #include <kickos/sys/atomic.h>
@@ -61,11 +62,11 @@ namespace
 
     int send_until_refused()
     {
-        int rc = kos_send(KOS_CAP_STDOUT, "x", 1);
+        int rc = kos_send(KOS_CAP_STDOUT, "x", 1, KOS_TIMEOUT_NONE);
         for (int i = 0; i < REFUSED_TRIES and rc == -KOS_EAGAIN; i++)
         {
             kos_sleep_ns(REFUSED_STEP_NS);
-            rc = kos_send(KOS_CAP_STDOUT, "x", 1);
+            rc = kos_send(KOS_CAP_STDOUT, "x", 1, KOS_TIMEOUT_NONE);
         }
         return rc;
     }
@@ -108,14 +109,24 @@ namespace
 
     // The kill gate is PARENTHOOD, so witnessing a refusal needs a live thread this thread
     // did NOT spawn. Main spawns the child, hence a grandchild.
-    constexpr uint8_t CAP_FULL =
-        static_cast<uint8_t>(KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER);
-    constexpr int NEST_DONE = KOS_SPAWN_DELEGATED_CAP0;     // the child's gate back to main
-    constexpr int NEST_PARK = KOS_SPAWN_DELEGATED_CAP0 + 1; // what the grandchild and child wait on
-    constexpr int NEST_PROBE = KOS_SPAWN_DELEGATED_CAP0 + 2; // main's gate back to the child
+    kos_sem_t g_nest_done = KOS_SEM_INIT(0);  // the child's gate back to main
+    kos_sem_t g_nest_park = KOS_SEM_INIT(0);  // what the grandchild and child wait on
+    kos_sem_t g_nest_probe = KOS_SEM_INIT(0); // main's gate back to the child
 
     Atomic<kos_thread_t, Order::RELAXED> g_grandchild{KOS_THREAD_NONE};
     Atomic<int, Order::RELAXED> g_child_kill_rc{1}; // 1 == the child never got that far
+    Atomic<uint32_t, Order::RELAXED> g_spin_release{0u};
+    // The cancel of a target making no system call, its join, and its second cancel.
+    int g_spin_rc[3] = {1, 1, 0};
+
+    void spinner(void*)
+    {
+        while (g_spin_release == 0u)
+        {
+        }
+        kos_yield(); // its first entry since the kill: its death point
+        kos_exit(0);
+    }
     Atomic<int, Order::RELAXED> g_root_kill_rc{1};  // 1 == the child never got that far
 
     // Root, which runs the init, takes the FIRST slot the thread pool ever allocates, so it is
@@ -123,36 +134,32 @@ namespace
     // Change that encoding and this case silently names some other thread instead.
     constexpr kos_thread_t ROOT_THREAD = 0;
 
-    void nest_grandchild(void*) // caps: park@0
+    void nest_grandchild(void*)
     {
-        kos_sem_wait(KOS_SPAWN_DELEGATED_CAP0, KOS_TIMEOUT_NONE); // never posted: alive until its spawner cancels it
+        kos_sem_wait(&g_nest_park, KOS_TIMEOUT_NONE); // never posted: alive until its spawner cancels it
         kos_exit(0);
     }
 
-    void nest_child(void*) // caps: done@0, park@1, probe@2
+    void nest_child(void*)
     {
-        kos_cap_grant const caps[1] = {{NEST_PARK, KOS_CAP_WAIT}};
-        g_grandchild = kos::thread::create(nest_grandchild, nullptr, "nestgc", 9,
-                                           KOS_POLICY_FIFO, 0,
-                                           nullptr, 0, nullptr, 0, nullptr, 0, caps, 1)
-                           .id();
+        g_grandchild = kos::thread::create(nest_grandchild, nullptr, "nestgc", 9).id();
         // Root is unkillable: it leaves spawner_tag at KILL_TAG_NONE and kill_tag_of never
         // answers NONE.
-        g_root_kill_rc = kos_thread_kill(ROOT_THREAD);
-        kos_sem_post(NEST_DONE);
+        g_root_kill_rc = kos_thread_cancel(ROOT_THREAD, KOS_CANCEL_KILL, 0);
+        kos_sem_post(&g_nest_done);
         // Main's refuse-half probe needs the grandchild ALIVE, and a cancel reaches a
         // semaphore park, so the accept half below would otherwise race it dead. The gate
         // makes the order explicit instead of resting on cancellation being toothless.
-        kos_sem_wait(NEST_PROBE, KOS_TIMEOUT_NONE);
+        kos_sem_wait(&g_nest_probe, KOS_TIMEOUT_NONE);
         // The accept half of the gate: a spawner may cancel its own child. Main's
         // -KOS_EPERM below is the refuse half.
         kos_thread_t const gc = g_grandchild;
         if (gc != KOS_THREAD_NONE)
         {
-            g_child_kill_rc = kos_thread_kill(gc);
+            g_child_kill_rc = kos_thread_cancel(gc, KOS_CANCEL_KILL, 0);
         }
-        kos_sem_post(NEST_DONE);
-        kos_sem_wait(NEST_PARK, KOS_TIMEOUT_NONE); // never posted: alive until main cancels it
+        kos_sem_post(&g_nest_done);
+        kos_sem_wait(&g_nest_park, KOS_TIMEOUT_NONE); // never posted: alive until main cancels it
         kos_exit(0);
     }
 
@@ -163,44 +170,42 @@ namespace
     {
         // Both carry the reserved all-ones index (0x7fffffff at an aged generation), so
         // neither is mintable and both must fail to resolve.
-        *bad_handle_rc = kos_thread_kill(KOS_THREAD_NONE);
-        *big_handle_rc = kos_thread_kill(0x7fffffffu);
+        *bad_handle_rc = kos_thread_cancel(KOS_THREAD_NONE, KOS_CANCEL_KILL, 0);
+        *big_handle_rc = kos_thread_cancel(0x7fffffffu, KOS_CANCEL_KILL, 0);
         // 0 is never a legal answer for these, so an unrun matrix fails.
         *stranger_rc = 0;
         *child_kill_rc = 1;
         *child_twice_rc = 0;
-        kos_cap_t park = KOS_CAP_NONE;
-        kos_cap_t done = KOS_CAP_NONE;
-        kos_cap_t probe = KOS_CAP_NONE;
-        int const park_rc = kos_sem_create(0, &park);
-        int const done_rc = kos_sem_create(0, &done);
-        int const probe_rc = kos_sem_create(0, &probe);
-        if (park_rc != 0 or done_rc != 0 or probe_rc != 0)
-        {
-            return;
-        }
-        kos_cap_grant const caps[3] = {{done, CAP_FULL}, {park, CAP_FULL}, {probe, CAP_FULL}};
-        auto const child = kos::thread::create(nest_child, nullptr, "nestch", 9,
-                                               KOS_POLICY_FIFO, 0,
-                                               nullptr, 0, nullptr, 0, nullptr, 0, caps, 3);
+        auto const child = kos::thread::create(nest_child, nullptr, "nestch", 9);
         if (not child.valid())
         {
             return;
         }
-        kos_sem_wait(done, KOS_TIMEOUT_NONE); // the grandchild exists
+        kos_sem_wait(&g_nest_done, KOS_TIMEOUT_NONE); // the grandchild exists
         kos_thread_t const gc = g_grandchild;
         if (gc != KOS_THREAD_NONE)
         {
-            *stranger_rc = kos_thread_kill(gc);
+            *stranger_rc = kos_thread_cancel(gc, KOS_CANCEL_KILL, 0);
         }
-        kos_sem_post(probe); // probed: the child may now cancel it for real
-        kos_sem_wait(done, KOS_TIMEOUT_NONE);  // the child has tried its own cancel
+        kos_sem_post(&g_nest_probe); // probed: the child may now cancel it for real
+        kos_sem_wait(&g_nest_done, KOS_TIMEOUT_NONE); // the child has tried its own cancel
         // Cancellation, not destruction: the child wakes out of its park and exits itself. It
         // runs above main, so it has exited by the time this returns. Killing it TWICE must not
         // resolve: the slot is EXITED and the generation only bumps at reclaim, so the
         // resolver has to reject on state, not on generation.
-        *child_kill_rc = kos_thread_kill(child.id());
-        *child_twice_rc = kos_thread_kill(child.id());
+        *child_kill_rc = kos_thread_cancel(child.id(), KOS_CANCEL_KILL, 0);
+        *child_twice_rc = kos_thread_cancel(child.id(), KOS_CANCEL_KILL, 0);
+        // A kill of no timeout answers once raised and parks nothing: this target makes no
+        // system call until released, so a cancel that waited would answer -KOS_ETIMEDOUT.
+        kos::thread::Handle const spin =
+            kos::thread::create(spinner, nullptr, "nestsp", KICKOS_PRIO_MIN);
+        if (spin.valid())
+        {
+            g_spin_rc[0] = spin.cancel(KOS_CANCEL_KILL, 0);
+            g_spin_release = 1u;
+            g_spin_rc[1] = spin.join(WRITER_DONE_US);
+            g_spin_rc[2] = spin.cancel(KOS_CANCEL_KILL, 0);
+        }
     }
 }
 #endif
@@ -234,7 +239,7 @@ extern "C" void drvdeath_main(kos_self_t const* self)
 #if defined(KICKOS_SIMCON_WINDOW_THREAD) && KICKOS_SIMCON_WINDOW_THREAD
     // The receiver runs above main and has exited by now, and its task lives on: a send would
     // park, so a send of no deadline and a non-blocking write take nothing, at once.
-    int32_t const nowait_rc = kos_send_timed(KOS_CAP_STDOUT, "x", 1, 0);
+    int32_t const nowait_rc = kos_send(KOS_CAP_STDOUT, "x", 1, 0);
     int const nonblock_on = kos_task_nonblock(KOS_NONBLOCK_SET);
     kickos::WriteResult const tried = kickos::stdout_write("x", 1);
     int const nonblock_off = kos_task_nonblock(KOS_NONBLOCK_CLEAR);
@@ -252,7 +257,7 @@ extern "C" void drvdeath_main(kos_self_t const* self)
                                 nullptr, 0, nullptr, 0, nullptr, 0, nullptr,
                                 0, 0, nullptr, fault_task);
         faulted_rc = faulter.join(WRITER_DONE_US);
-        (void)kos_task_kill(fault_task);
+        (void)kos_task_slay(fault_task, 0);
     }
     // The receiver is gone but its task is not, so the console must still be USER_OWNED.
     // Absent on the wire == correct.
@@ -304,6 +309,11 @@ extern "C" void drvdeath_main(kos_self_t const* self)
     {
         kos_print("[drvdeath] ERROR: a spawner could not cancel its own child\n");
         exit(3);
+    }
+    if (g_spin_rc[0] != 0 or g_spin_rc[1] != 0 or g_spin_rc[2] != -KOS_EBADF)
+    {
+        kos_print("[drvdeath] ERROR: a kill of no timeout waited, or its target lived on\n");
+        exit(14);
     }
     if (child_twice_rc != -KOS_EBADF)
     {

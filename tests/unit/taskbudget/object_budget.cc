@@ -32,24 +32,24 @@ namespace kickos
             {
             };
 
-            static_assert(KICKOS_TASK_SEMAPHORE_BUDGET == 3,
+            static_assert(KICKOS_TASK_NOTIFY_BUDGET == 3,
                           "these arms count creates against the budget by hand; the posture "
                           "in this directory's CMakeLists.txt is what sets it");
-            static_assert(KICKOS_MAX_SEMAPHORES > KICKOS_TASK_SEMAPHORE_BUDGET + 1,
-                          "the semaphore arms must leave the pool slots to spare at the "
+            static_assert(KICKOS_MAX_NOTIFY > KICKOS_TASK_NOTIFY_BUDGET + 1,
+                          "the notification arms must leave the pool slots to spare at the "
                           "refusal, or they would be measuring an exhausted pool");
             static_assert(KICKOS_TASK_ENDPOINT_BUDGET == 2,
                           "the recycled-slot arm counts two endpoint holds by hand, and the "
-                          "endpoint ceiling must sit BELOW the semaphore one, or one figure "
+                          "endpoint ceiling must sit BELOW the notification one, or one figure "
                           "standing for every pool would redden nothing here");
             static_assert(KICKOS_MAX_ENDPOINTS > KICKOS_TASK_ENDPOINT_BUDGET + 1,
                           "and the endpoint pool must keep slots free at that refusal, or the "
                           "arm would be measuring an exhausted pool");
             static_assert(KICKOS_TASK_IRQ_HANDLE_BUDGET == 4,
                           "the IRQ arm counts claims by hand, and its ceiling must be a THIRD "
-                          "figure: at the semaphore or endpoint budget an IRQ ceiling reading "
+                          "figure: at the notification or endpoint budget an IRQ ceiling reading "
                           "either of those pools would refuse in exactly the same place");
-            static_assert(KICKOS_TASK_IRQ_HANDLE_BUDGET != KICKOS_TASK_SEMAPHORE_BUDGET
+            static_assert(KICKOS_TASK_IRQ_HANDLE_BUDGET != KICKOS_TASK_NOTIFY_BUDGET
                               and KICKOS_TASK_IRQ_HANDLE_BUDGET != KICKOS_TASK_ENDPOINT_BUDGET,
                           "and it must differ from every other budget in this posture, or the "
                           "IRQ arm passes for a kind literal naming the wrong pool");
@@ -65,7 +65,7 @@ namespace kickos
             // Leave room for delegated and newly created capabilities so tests reach
             // the object budget before the capability-table limit.
             constexpr uint32_t CAP_WIDTH =
-                KICKOS_CAP_FIRST_DYNAMIC + KICKOS_TASK_SEMAPHORE_BUDGET + 4;
+                KICKOS_CAP_FIRST_DYNAMIC + KICKOS_TASK_NOTIFY_BUDGET + 4;
 
             // Use a distinct line per binding, plus one beyond the IRQ budget.
             // These tests do not arm the lines.
@@ -120,11 +120,6 @@ namespace kickos
                 return n;
             }
 
-            int live_sems()
-            {
-                return live_slots(kernel().sems);
-            }
-
             int live_notifies()
             {
                 return live_slots(kernel().notifies);
@@ -138,6 +133,27 @@ namespace kickos
             int live_endpoints()
             {
                 return live_slots(kernel().endpoints);
+            }
+
+            // A notification created by the current thread, as the creator syscall makes it.
+            int create(uint32_t* cap)
+            {
+                return notify_create(kernel().current(kickos_kernel_core()), cap);
+            }
+
+            // A notification from the pool with one reference, charged to nobody, its handle in
+            // *out.
+            void notification(int* out)
+            {
+                int const i = kernel().notifies.alloc();
+                if (kernel().notifies.at(i) == nullptr)
+                {
+                    ADD_FAILURE() << "fixture: the notification pool is exhausted";
+                    *out = -1;
+                    return;
+                }
+                kernel().notify_refs[i] = 1;
+                *out = kernel().notifies.handle_for(i);
             }
 
             // An endpoint from the pool with one reference, charged to nobody; -1 if the
@@ -167,11 +183,11 @@ namespace kickos
 
             void fill_to_the_ceiling(Thread* c, uint32_t* out)
             {
-                for (int i = 0; i < KICKOS_TASK_SEMAPHORE_BUDGET; i++)
+                for (int i = 0; i < KICKOS_TASK_NOTIFY_BUDGET; i++)
                 {
                     uint32_t cap = KCAP_INVALID;
                     kernel().current(kickos_kernel_core()) = c;
-                    EXPECT_EQ(sem_create(0, &cap), 0)
+                    EXPECT_EQ(create(&cap), 0)
                         << "fixture: create " << i << " is inside the ceiling";
                     if (out != nullptr)
                     {
@@ -180,7 +196,7 @@ namespace kickos
                 }
             }
 
-            // Copy a semaphore capability using the same reference and install steps as spawn.
+            // Copy a notification capability using the same reference and install steps as spawn.
             uint32_t delegate(Thread* from, uint32_t cap, Thread* to)
             {
                 CapEntry const* const e = cap_lookup(from, cap);
@@ -192,8 +208,8 @@ namespace kickos
                 int const obj = e->obj;
                 uint32_t theirs = KCAP_INVALID;
                 IrqLock lock;
-                EXPECT_TRUE(obj_ref_inc(CapType::CAP_SEM, obj, 0));
-                EXPECT_EQ(cap_install(to, obj, CapType::CAP_SEM, 0, &theirs), 0);
+                EXPECT_TRUE(obj_ref_inc(CapType::CAP_NOTIFY, obj, 0));
+                EXPECT_EQ(cap_install(to, obj, CapType::CAP_NOTIFY, 0, &theirs), 0);
                 return theirs;
             }
 
@@ -212,16 +228,16 @@ namespace kickos
             {
                 Thread* const c = creator_in_task(SLOT_FIRST, 0);
                 fill_to_the_ceiling(c, nullptr);
-                ASSERT_EQ(live_sems(), KICKOS_TASK_SEMAPHORE_BUDGET);
+                ASSERT_EQ(live_notifies(), KICKOS_TASK_NOTIFY_BUDGET);
 
                 uint32_t cap = KCAP_INVALID;
                 kernel().current(kickos_kernel_core()) = c;
-                EXPECT_EQ(sem_create(0, &cap), -KOS_EAGAIN)
+                EXPECT_EQ(create(&cap), -KOS_EAGAIN)
                     << "past its ceiling a task is refused, and with the budget's own code";
                 EXPECT_EQ(cap, KCAP_INVALID) << "a refused create discloses no capability";
-                EXPECT_EQ(live_sems(), KICKOS_TASK_SEMAPHORE_BUDGET)
+                EXPECT_EQ(live_notifies(), KICKOS_TASK_NOTIFY_BUDGET)
                     << "and spends no pool slot on the way to the refusal";
-                EXPECT_GT(KICKOS_MAX_SEMAPHORES - live_sems(), 0)
+                EXPECT_GT(KICKOS_MAX_NOTIFY - live_notifies(), 0)
                     << "the pool still has slots to spare, so this was not exhaustion";
             }
 
@@ -577,16 +593,16 @@ namespace kickos
                 {
                     uint32_t cap = KCAP_INVALID;
                     kernel().current(kickos_kernel_core()) = c;
-                    ASSERT_EQ(sem_create(0, &cap), 0);
+                    ASSERT_EQ(create(&cap), 0);
                 }
 
                 IrqLock lock;
                 EXPECT_FALSE(task_object_admit(CapType::CAP_ENDPOINT, c->task))
-                    << "the endpoint budget refuses at two while the semaphore budget is three";
+                    << "the endpoint budget refuses at two while the notification budget is three";
                 EXPECT_GT(KICKOS_MAX_ENDPOINTS - live_endpoints(), 0)
                     << "the pool still has slots to spare, so this was not exhaustion";
-                EXPECT_TRUE(task_object_admit(CapType::CAP_SEM, c->task))
-                    << "the semaphores at the endpoint's ceiling are still below their own";
+                EXPECT_TRUE(task_object_admit(CapType::CAP_NOTIFY, c->task))
+                    << "the notifications at the endpoint's ceiling are still below their own";
             }
 
             TEST_F(TaskBudget, a_second_tasks_creator_lands_while_the_first_is_at_its_ceiling)
@@ -595,38 +611,38 @@ namespace kickos
                 fill_to_the_ceiling(first, nullptr);
                 uint32_t refused = KCAP_INVALID;
                 kernel().current(kickos_kernel_core()) = first;
-                ASSERT_EQ(sem_create(0, &refused), -KOS_EAGAIN);
+                ASSERT_EQ(create(&refused), -KOS_EAGAIN);
 
                 Thread* const second = creator_in_task(SLOT_SECOND, 1);
                 ASSERT_NE(second->task, first->task) << "fixture: two distinct groups";
 
                 uint32_t cap = KCAP_INVALID;
-                EXPECT_EQ(sem_create(0, &cap), 0)
+                EXPECT_EQ(create(&cap), 0)
                     << "one task at its ceiling must not deny another task's creator";
                 EXPECT_NE(cap, KCAP_INVALID);
-                for (int i = 1; i < KICKOS_TASK_SEMAPHORE_BUDGET; i++)
+                for (int i = 1; i < KICKOS_TASK_NOTIFY_BUDGET; i++)
                 {
                     kernel().current(kickos_kernel_core()) = second;
-                    EXPECT_EQ(sem_create(0, &cap), 0) << "the ceiling is per task, not shared";
+                    EXPECT_EQ(create(&cap), 0) << "the ceiling is per task, not shared";
                 }
                 kernel().current(kickos_kernel_core()) = second;
-                EXPECT_EQ(sem_create(0, &cap), -KOS_EAGAIN)
+                EXPECT_EQ(create(&cap), -KOS_EAGAIN)
                     << "and the second task is bounded by the same ceiling";
             }
 
             TEST_F(TaskBudget, a_create_and_destroy_loop_does_not_spend_the_budget)
             {
                 Thread* const c = creator_in_task(SLOT_FIRST, 0);
-                for (int i = 0; i < KICKOS_MAX_SEMAPHORES * 2; i++)
+                for (int i = 0; i < KICKOS_MAX_NOTIFY * 2; i++)
                 {
                     uint32_t cap = KCAP_INVALID;
                     kernel().current(kickos_kernel_core()) = c;
-                    ASSERT_EQ(sem_create(0, &cap), 0)
+                    ASSERT_EQ(create(&cap), 0)
                         << "iteration " << i << " was refused, so a release did not give the "
                                                 "budget back";
                     ASSERT_EQ(handle_close(c, cap, kickos::IrqLock()), 0);
                 }
-                EXPECT_EQ(live_sems(), 0) << "the loop leaves the pool as it found it";
+                EXPECT_EQ(live_notifies(), 0) << "the loop leaves the pool as it found it";
             }
 
             // IRQ release detaches the line; SMP also defers slot reuse until reclamation.
@@ -647,25 +663,25 @@ namespace kickos
             TEST_F(TaskBudget, a_delegated_object_counts_against_the_task_that_holds_it)
             {
                 Thread* const maker = creator_in_task(SLOT_FIRST, 0);
-                uint32_t mine[KICKOS_TASK_SEMAPHORE_BUDGET];
+                uint32_t mine[KICKOS_TASK_NOTIFY_BUDGET];
                 fill_to_the_ceiling(maker, mine);
                 Thread* const holder = creator_in_task(SLOT_SECOND, 1);
 
                 uint32_t cap = KCAP_INVALID;
                 kernel().current(kickos_kernel_core()) = holder;
-                ASSERT_EQ(sem_create(0, &cap), 0) << "fixture: the second task starts empty";
+                ASSERT_EQ(create(&cap), 0) << "fixture: the second task starts empty";
                 ASSERT_EQ(handle_close(holder, cap, kickos::IrqLock()), 0);
 
-                for (int i = 0; i < KICKOS_TASK_SEMAPHORE_BUDGET; i++)
+                for (int i = 0; i < KICKOS_TASK_NOTIFY_BUDGET; i++)
                 {
                     ASSERT_NE(delegate(maker, mine[i], holder), KCAP_INVALID)
                         << "fixture: delegation " << i;
                 }
 
                 kernel().current(kickos_kernel_core()) = holder;
-                EXPECT_EQ(sem_create(0, &cap), -KOS_EAGAIN)
+                EXPECT_EQ(create(&cap), -KOS_EAGAIN)
                     << "a task holding a ceiling of DELEGATED objects is at its ceiling";
-                EXPECT_GT(KICKOS_MAX_SEMAPHORES - live_sems(), 0)
+                EXPECT_GT(KICKOS_MAX_NOTIFY - live_notifies(), 0)
                     << "the pool still has slots to spare, so this was not exhaustion";
             }
 
@@ -677,9 +693,9 @@ namespace kickos
                 Task* const doomed_task = doomed->task;
                 Thread* const holder = creator_in_task(SLOT_SECOND, 1);
 
-                uint32_t mine[KICKOS_TASK_SEMAPHORE_BUDGET];
+                uint32_t mine[KICKOS_TASK_NOTIFY_BUDGET];
                 fill_to_the_ceiling(doomed, mine);
-                for (int i = 0; i < KICKOS_TASK_SEMAPHORE_BUDGET; i++)
+                for (int i = 0; i < KICKOS_TASK_NOTIFY_BUDGET; i++)
                 {
                     ASSERT_NE(delegate(doomed, mine[i], holder), KCAP_INVALID)
                         << "fixture: delegation " << i;
@@ -688,23 +704,23 @@ namespace kickos
                 kernel().current(kickos_kernel_core()) = doomed;
                 run_exit(0);
                 ASSERT_EQ(task_member_count(doomed_task), 0) << "fixture: the group emptied";
-                ASSERT_EQ(live_sems(), KICKOS_TASK_SEMAPHORE_BUDGET)
+                ASSERT_EQ(live_notifies(), KICKOS_TASK_NOTIFY_BUDGET)
                     << "fixture: the objects outlived their creator";
                 task_drop_hold(doomed_task, kickos::IrqLock());
 
                 uint32_t cap = KCAP_INVALID;
                 kernel().current(kickos_kernel_core()) = holder;
-                EXPECT_EQ(sem_create(0, &cap), -KOS_EAGAIN)
+                EXPECT_EQ(create(&cap), -KOS_EAGAIN)
                     << "the survivor still holds a ceiling of objects, whoever made them";
-                EXPECT_EQ(live_sems(), KICKOS_TASK_SEMAPHORE_BUDGET)
+                EXPECT_EQ(live_notifies(), KICKOS_TASK_NOTIFY_BUDGET)
                     << "and the refusal spent no slot";
 
                 Thread* const fresh = creator_in_task(SLOT_THIRD, 0);
                 ASSERT_EQ(fresh->task, doomed_task) << "fixture: the slot came back";
-                for (int i = 0; i < KICKOS_TASK_SEMAPHORE_BUDGET; i++)
+                for (int i = 0; i < KICKOS_TASK_NOTIFY_BUDGET; i++)
                 {
                     kernel().current(kickos_kernel_core()) = fresh;
-                    EXPECT_EQ(sem_create(0, &cap), 0)
+                    EXPECT_EQ(create(&cap), 0)
                         << "create " << i << " was refused, so the recycled slot inherited a "
                                              "dead task's charge";
                 }
@@ -717,23 +733,23 @@ namespace kickos
 
                 uint32_t cap = KCAP_INVALID;
                 kernel().current(kickos_kernel_core()) = maker;
-                ASSERT_EQ(sem_create(0, &cap), 0);
-                for (int i = 0; i < KICKOS_TASK_SEMAPHORE_BUDGET; i++)
+                ASSERT_EQ(create(&cap), 0);
+                for (int i = 0; i < KICKOS_TASK_NOTIFY_BUDGET; i++)
                 {
                     ASSERT_NE(delegate(maker, cap, holder), KCAP_INVALID)
                         << "fixture: copy " << i << " of ONE object";
                 }
-                ASSERT_EQ(live_sems(), 1) << "fixture: the copies are names, not objects";
+                ASSERT_EQ(live_notifies(), 1) << "fixture: the copies are names, not objects";
 
                 uint32_t own = KCAP_INVALID;
-                for (int i = 1; i < KICKOS_TASK_SEMAPHORE_BUDGET; i++)
+                for (int i = 1; i < KICKOS_TASK_NOTIFY_BUDGET; i++)
                 {
                     kernel().current(kickos_kernel_core()) = holder;
-                    EXPECT_EQ(sem_create(0, &own), 0)
+                    EXPECT_EQ(create(&own), 0)
                         << "several names for one object cost the holder one slot of its ceiling";
                 }
                 kernel().current(kickos_kernel_core()) = holder;
-                EXPECT_EQ(sem_create(0, &own), -KOS_EAGAIN)
+                EXPECT_EQ(create(&own), -KOS_EAGAIN)
                     << "and the second distinct slot is the ceiling";
             }
 
@@ -741,11 +757,11 @@ namespace kickos
             {
                 Thread* const maker = creator_in_task(SLOT_FIRST, 0);
                 Thread* const holder = creator_in_task(SLOT_SECOND, 1);
-                uint32_t mine[KICKOS_TASK_SEMAPHORE_BUDGET];
+                uint32_t mine[KICKOS_TASK_NOTIFY_BUDGET];
                 fill_to_the_ceiling(maker, mine);
 
-                uint32_t theirs[KICKOS_TASK_SEMAPHORE_BUDGET];
-                for (int i = 0; i < KICKOS_TASK_SEMAPHORE_BUDGET; i++)
+                uint32_t theirs[KICKOS_TASK_NOTIFY_BUDGET];
+                for (int i = 0; i < KICKOS_TASK_NOTIFY_BUDGET; i++)
                 {
                     theirs[i] = delegate(maker, mine[i], holder);
                     ASSERT_NE(theirs[i], KCAP_INVALID) << "fixture: delegation " << i;
@@ -753,13 +769,13 @@ namespace kickos
 
                 uint32_t cap = KCAP_INVALID;
                 kernel().current(kickos_kernel_core()) = holder;
-                ASSERT_EQ(sem_create(0, &cap), -KOS_EAGAIN) << "fixture: at the ceiling";
+                ASSERT_EQ(create(&cap), -KOS_EAGAIN) << "fixture: at the ceiling";
 
                 ASSERT_EQ(handle_close(holder, theirs[0], kickos::IrqLock()), 0);
-                ASSERT_EQ(live_sems(), KICKOS_TASK_SEMAPHORE_BUDGET)
+                ASSERT_EQ(live_notifies(), KICKOS_TASK_NOTIFY_BUDGET)
                     << "fixture: the maker's own capability keeps the object alive";
                 kernel().current(kickos_kernel_core()) = holder;
-                EXPECT_EQ(sem_create(0, &cap), 0)
+                EXPECT_EQ(create(&cap), 0)
                     << "the closed capability's slot came back to the holder's ceiling";
             }
 
@@ -772,9 +788,9 @@ namespace kickos
                 fill_to_the_ceiling(first, nullptr);
                 uint32_t cap = KCAP_INVALID;
                 kernel().current(kickos_kernel_core()) = sibling;
-                EXPECT_EQ(sem_create(0, &cap), -KOS_EAGAIN)
+                EXPECT_EQ(create(&cap), -KOS_EAGAIN)
                     << "a thread of a task at its ceiling is at that ceiling too";
-                EXPECT_GT(KICKOS_MAX_SEMAPHORES - live_sems(), 0)
+                EXPECT_GT(KICKOS_MAX_NOTIFY - live_notifies(), 0)
                     << "the pool still has slots to spare, so this was not exhaustion";
             }
 
@@ -782,54 +798,54 @@ namespace kickos
             {
                 Thread* const maker = creator_in_task(SLOT_FIRST, 0);
                 Task* const destination = task(1);
-                uint32_t mine[KICKOS_TASK_SEMAPHORE_BUDGET];
+                uint32_t mine[KICKOS_TASK_NOTIFY_BUDGET];
                 fill_to_the_ceiling(maker, mine);
 
                 // Pack kinds and rights as the spawn grant list does.
-                uint8_t types[KICKOS_TASK_SEMAPHORE_BUDGET + 1];
-                int objs[KICKOS_TASK_SEMAPHORE_BUDGET + 1];
-                for (int i = 0; i < KICKOS_TASK_SEMAPHORE_BUDGET; i++)
+                uint8_t types[KICKOS_TASK_NOTIFY_BUDGET + 1];
+                int objs[KICKOS_TASK_NOTIFY_BUDGET + 1];
+                for (int i = 0; i < KICKOS_TASK_NOTIFY_BUDGET; i++)
                 {
-                    types[i] = kcap_grant_pack(static_cast<uint8_t>(CapType::CAP_SEM), CAP_WAIT);
+                    types[i] = kcap_grant_pack(static_cast<uint8_t>(CapType::CAP_NOTIFY), CAP_WAIT);
                     objs[i] = object_of(maker, mine[i]);
                 }
                 // Allocate through the fixture without charging a task.
                 int extra = 0;
-                (void)semaphore(&extra);
+                (void)notification(&extra);
 
                 IrqLock lock;
                 EXPECT_TRUE(task_object_admit_grants(destination, types, objs,
-                                                     KICKOS_TASK_SEMAPHORE_BUDGET))
+                                                     KICKOS_TASK_NOTIFY_BUDGET))
                     << "a whole ceiling of distinct objects is admissible into an empty task";
 
-                for (int i = 0; i < KICKOS_TASK_SEMAPHORE_BUDGET; i++)
+                for (int i = 0; i < KICKOS_TASK_NOTIFY_BUDGET; i++)
                 {
-                    types[KICKOS_TASK_SEMAPHORE_BUDGET] = types[i];
-                    objs[KICKOS_TASK_SEMAPHORE_BUDGET] = objs[i];
+                    types[KICKOS_TASK_NOTIFY_BUDGET] = types[i];
+                    objs[KICKOS_TASK_NOTIFY_BUDGET] = objs[i];
                     EXPECT_TRUE(task_object_admit_grants(destination, types, objs,
-                                                         KICKOS_TASK_SEMAPHORE_BUDGET + 1))
+                                                         KICKOS_TASK_NOTIFY_BUDGET + 1))
                         << "a repeat of grant " << i << " names a slot the list already took";
                 }
 
-                types[KICKOS_TASK_SEMAPHORE_BUDGET] =
-                    kcap_grant_pack(static_cast<uint8_t>(CapType::CAP_SEM), CAP_WAIT);
-                objs[KICKOS_TASK_SEMAPHORE_BUDGET] = extra;
+                types[KICKOS_TASK_NOTIFY_BUDGET] =
+                    kcap_grant_pack(static_cast<uint8_t>(CapType::CAP_NOTIFY), CAP_WAIT);
+                objs[KICKOS_TASK_NOTIFY_BUDGET] = extra;
                 EXPECT_FALSE(task_object_admit_grants(destination, types, objs,
-                                                      KICKOS_TASK_SEMAPHORE_BUDGET + 1))
+                                                      KICKOS_TASK_NOTIFY_BUDGET + 1))
                     << "one distinct object past the ceiling refuses the whole list";
             }
 
-            // Use different semaphore and endpoint budgets to check each limit independently.
+            // Use different notification and endpoint budgets to check each limit independently.
             TEST_F(TaskBudget, a_mixed_grant_list_is_measured_against_each_kinds_own_ceiling)
             {
                 Thread* const maker = creator_in_task(SLOT_FIRST, 0);
                 Task* const destination = task(1);
-                uint32_t mine[KICKOS_TASK_SEMAPHORE_BUDGET];
+                uint32_t mine[KICKOS_TASK_NOTIFY_BUDGET];
                 fill_to_the_ceiling(maker, mine);
 
                 // Allocate extra objects through the fixture without charging a task.
-                int spare_sem = 0;
-                (void)semaphore(&spare_sem);
+                int spare_notify = 0;
+                (void)notification(&spare_notify);
                 int eps[KICKOS_TASK_ENDPOINT_BUDGET + 1];
                 for (int i = 0; i < KICKOS_TASK_ENDPOINT_BUDGET + 1; i++)
                 {
@@ -838,13 +854,13 @@ namespace kickos
                 }
 
                 constexpr int LIST_MAX =
-                    KICKOS_TASK_SEMAPHORE_BUDGET + KICKOS_TASK_ENDPOINT_BUDGET + 2;
+                    KICKOS_TASK_NOTIFY_BUDGET + KICKOS_TASK_ENDPOINT_BUDGET + 2;
                 uint8_t types[LIST_MAX];
                 int objs[LIST_MAX];
                 int n = 0;
-                for (int i = 0; i < KICKOS_TASK_SEMAPHORE_BUDGET; i++)
+                for (int i = 0; i < KICKOS_TASK_NOTIFY_BUDGET; i++)
                 {
-                    types[n] = kcap_grant_pack(static_cast<uint8_t>(CapType::CAP_SEM), CAP_WAIT);
+                    types[n] = kcap_grant_pack(static_cast<uint8_t>(CapType::CAP_NOTIFY), CAP_WAIT);
                     objs[n] = object_of(maker, mine[i]);
                     n++;
                 }
@@ -860,22 +876,22 @@ namespace kickos
                 IrqLock lock;
                 EXPECT_TRUE(task_object_admit_grants(destination, types, objs, mixed))
                     << "a whole ceiling of EACH kind is admissible into an empty task: this "
-                       "list is 3 semaphores and 2 endpoints, and one figure standing for both "
-                       "would refuse the third semaphore at the endpoint ceiling of two";
+                       "list is 3 notifications and 2 endpoints, and one figure standing for both "
+                       "would refuse the third notification at the endpoint ceiling of two";
 
                 // Exceed only the endpoint budget.
                 types[mixed] =
                     kcap_grant_pack(static_cast<uint8_t>(CapType::CAP_ENDPOINT), CAP_SIGNAL);
                 objs[mixed] = eps[KICKOS_TASK_ENDPOINT_BUDGET];
                 EXPECT_FALSE(task_object_admit_grants(destination, types, objs, mixed + 1))
-                    << "a third endpoint is past the endpoint ceiling of two, and the semaphore "
+                    << "a third endpoint is past the endpoint ceiling of two, and the notification "
                        "budget of three must not be the figure it is measured against";
 
-                // Exceed only the semaphore budget.
-                types[mixed] = kcap_grant_pack(static_cast<uint8_t>(CapType::CAP_SEM), CAP_WAIT);
-                objs[mixed] = spare_sem;
+                // Exceed only the notification budget.
+                types[mixed] = kcap_grant_pack(static_cast<uint8_t>(CapType::CAP_NOTIFY), CAP_WAIT);
+                objs[mixed] = spare_notify;
                 EXPECT_FALSE(task_object_admit_grants(destination, types, objs, mixed + 1))
-                    << "a fourth semaphore is past the semaphore ceiling of three, and the "
+                    << "a fourth notification is past the notification ceiling of three, and the "
                        "endpoint budget of two must not be the figure it is measured against";
             }
 
@@ -1060,11 +1076,11 @@ namespace kickos
 
                 void sibling_creates()
                 {
-                    while (g_admitted < KICKOS_MAX_SEMAPHORES)
+                    while (g_admitted < KICKOS_MAX_NOTIFY)
                     {
                         uint32_t cap = KCAP_INVALID;
                         kernel().current(kickos_kernel_core()) = g_sibling;
-                        g_last_rc = sem_create(0, &cap);
+                        g_last_rc = create(&cap);
                         if (g_last_rc != 0)
                         {
                             break;
@@ -1076,7 +1092,7 @@ namespace kickos
                     {
                         uint32_t cap = KCAP_INVALID;
                         kernel().current(kickos_kernel_core()) = g_stranger;
-                        g_stranger_rc = sem_create(0, &cap);
+                        g_stranger_rc = create(&cap);
                     }
                 }
             }
@@ -1086,7 +1102,7 @@ namespace kickos
                 Thread* const doomed = creator_in_task(SLOT_FIRST, 0);
                 Thread* const sibling = sibling_of(doomed, SLOT_SECOND);
                 fill_to_the_ceiling(doomed, nullptr);
-                ASSERT_EQ(live_sems(), KICKOS_TASK_SEMAPHORE_BUDGET)
+                ASSERT_EQ(live_notifies(), KICKOS_TASK_NOTIFY_BUDGET)
                     << "fixture: the group is at its ceiling before the death";
 
                 Thread* const stranger = creator_in_task(SLOT_THIRD, 1);
@@ -1106,7 +1122,7 @@ namespace kickos
                     << " creates while its own group's capabilities were merely unswept";
                 EXPECT_EQ(dyingwindow::g_last_rc, -KOS_EAGAIN)
                     << "and the refusal must be the budget's own code";
-                EXPECT_GT(KICKOS_MAX_SEMAPHORES - live_sems(), 0)
+                EXPECT_GT(KICKOS_MAX_NOTIFY - live_notifies(), 0)
                     << "and the pool was not exhausted by the teardown either";
                 EXPECT_EQ(dyingwindow::g_stranger_rc, 0)
                     << "another group's creator must still land: the bound is on the dying "

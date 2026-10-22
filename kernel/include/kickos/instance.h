@@ -3,7 +3,7 @@
 //
 // The instance-scoped kernel runtime core. Several kernel instances may co-reside in one
 // host process, one per simulated MCU, so nothing here may become a file-static. App-owned
-// objects (TCBs, semaphores) stay caller-owned; this holds only the runtime's own bookkeeping.
+// objects (TCBs) stay caller-owned; this holds only the runtime's own bookkeeping.
 // The sim arch backend keeps its own parallel SimInstance and never crosses the arch seam.
 //
 // State a module owns privately stays in that module and wraps in InstanceLocal
@@ -251,21 +251,15 @@ namespace kickos
         uint64_t timer_armed_ns[KICKOS_KERNEL_CORES] = {};
 
         // --- object pools ---
-        // Semaphore registry: a generational slot pool (see slotpool.h). Reached only
-        // through its own resolve(); the generation wraps every 2^16 destroys of one slot.
-        SlotPool<Semaphore, KICKOS_MAX_SEMAPHORES> sems;
-        // Object-side refcount owned by the cap layer: how many caps name slot i. alloc
-        // sets 1, delegate bumps, close decrements, and 0 frees the slot. The uint8_t
-        // ceiling is enforced at the one increment site, obj_ref_inc, which refuses with
-        // -KOS_EOVERFLOW rather than wrapping.
-        uint8_t sem_refs[KICKOS_MAX_SEMAPHORES] = {};
-        // The records of the mutex words threads wait on (kickos/mutex.h), one per thread slot
-        // since each waiter parks on one, and the live ones listed for the keyed lookup.
-        Mutex mutex_records[KICKOS_THREAD_SLOTS];
-        Mutex* mutex_active = nullptr;
-        // Endpoint (IPC rendezvous) pool and its object-side refcount. recv_holders lives
-        // solely in the Endpoint struct, and shares this ceiling because one obj_ref_inc
-        // moves both counters or neither.
+        // The records of the user words threads wait on, one per thread slot since each waiter
+        // parks on one, and the live ones listed for the keyed lookup.
+        WordRecord word_records[KICKOS_THREAD_SLOTS];
+        WordRecord* word_active = nullptr;
+        // Endpoint (IPC rendezvous) pool and its object-side refcount, owned by the cap layer:
+        // how many caps name slot i. alloc sets 1, delegate bumps, close decrements, and 0
+        // frees the slot; obj_ref_inc refuses with -KOS_EOVERFLOW at the uint8_t ceiling rather
+        // than wrapping. recv_holders lives solely in the Endpoint struct, and shares that
+        // ceiling because one obj_ref_inc moves both counters or neither.
         SlotPool<Endpoint, KICKOS_MAX_ENDPOINTS> endpoints;
         uint8_t endpoint_refs[KICKOS_MAX_ENDPOINTS] = {};
         // Idle's TCB; the thread pool below never seats it. Placed against an 8-aligned
@@ -376,8 +370,7 @@ namespace kickos
     // A hold set is 32 bits of pool slots (TaskObjectHolds, cap.h), so a wider pool would
     // carry slots no ceiling can see. The Kconfig ranges are narrowed to match; this is the
     // backstop for a board_config.h that defines a width directly.
-    static_assert(KICKOS_MAX_SEMAPHORES <= 32
-                      and KICKOS_MAX_ENDPOINTS <= 32 and KICKOS_MAX_IRQ_HANDLES <= 32
+    static_assert(KICKOS_MAX_ENDPOINTS <= 32 and KICKOS_MAX_IRQ_HANDLES <= 32
                       and KICKOS_MAX_NOTIFY <= 32,
                   "a charged object pool is wider than a hold set's 32 bits: narrow the pool, "
                   "or widen TaskObjectHolds in cap.h and this assert together");

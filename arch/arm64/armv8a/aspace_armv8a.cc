@@ -628,8 +628,13 @@ struct arch_aspace* arch_aspace_boot(void)
     return reinterpret_cast<struct arch_aspace*>(empty_root());
 }
 
-void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va, bool* uncached)
+void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va, bool* uncached,
+                          arch_phys_addr_t* frame)
 {
+    if (frame != nullptr)
+    {
+        *frame = 0;
+    }
     if (space == nullptr)
     {
         return nullptr;
@@ -654,6 +659,10 @@ void* arch_aspace_acquire(struct arch_aspace* space, uintptr_t va, bool* uncache
         return nullptr;
     }
     arch_phys_addr_t const out = static_cast<arch_phys_addr_t>(desc & DESC_OA_MASK);
+    if (frame != nullptr)
+    {
+        *frame = out;
+    }
     if (uncached != nullptr)
     {
         *uncached = ((desc >> 2) & 7u) == ATTR_NOCACHE;

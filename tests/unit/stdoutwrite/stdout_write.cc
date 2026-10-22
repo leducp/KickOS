@@ -140,25 +140,17 @@ namespace
 
 extern "C"
 {
-    int32_t kos_send(kos_cap_t ep, void const* buf, size_t len)
-    {
-        EXPECT_EQ(ep, KOS_CAP_STDOUT);
-        g_sends = g_sends + 1;
-        g_waiting_sends = g_waiting_sends + 1;
-        if (g_rendezvous)
-        {
-            return rendezvous(buf, len);
-        }
-        return take(g_send_script, g_endpoint, buf, len);
-    }
-
-    int32_t kos_send_timed(kos_cap_t ep, void const* buf, size_t len, uint32_t timeout_us)
+    int32_t kos_send(kos_cap_t ep, void const* buf, size_t len, uint32_t timeout_us)
     {
         EXPECT_EQ(ep, KOS_CAP_STDOUT);
         g_sends = g_sends + 1;
         if (timeout_us != 0u)
         {
             g_waiting_sends = g_waiting_sends + 1;
+        }
+        if (g_rendezvous and timeout_us == KOS_TIMEOUT_NONE)
+        {
+            return rendezvous(buf, len);
         }
         return take(g_send_script, g_endpoint, buf, len);
     }

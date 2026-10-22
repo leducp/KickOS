@@ -719,7 +719,7 @@ TEST_F(MapExec, TheEmptyRootIsOneHandleThatNothingMapsInto)
     EXPECT_NE(empty, elsewhere);
     EXPECT_EQ(arch_aspace_map(empty, VA_DEEP, PA_A, 1, RIGHTS_DATA, ARCH_MAP_NORMAL),
               ARCH_ASPACE_EINVAL);
-    EXPECT_EQ(arch_aspace_acquire(empty, VA_DEEP, nullptr), nullptr);
+    EXPECT_EQ(arch_aspace_acquire(empty, VA_DEEP, nullptr, nullptr), nullptr);
 }
 
 TEST_F(MapExec, TheEmptyRootRunsUnderTheTopIdentifierAndLeavingItSweepsNothing)

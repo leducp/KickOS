@@ -447,7 +447,7 @@ site x86_64 * kickos_isr_irq@1/1 irq.cc:irq_default_handler \
                                ?bench.cc:bench_irq_handler
 
 # --- armv7m: the IRQ table ------------------------------------------------------
-# armv7m pends PendSV and returns, so sem_post -> sched::wake -> ... -> arch_switch does not
+# armv7m pends PendSV and returns, so notify_raise -> sched::wake -> ... -> arch_switch does not
 # re-enter the scheduler on this stack.
 site armv7m * kickos_isr_irq@1/1 irq.cc:irq_default_handler \
                                  irq.cc:irq_event_isr \
@@ -886,7 +886,7 @@ site armv7m bluepill-c8-st console_tx.cc:drain_in_producer@2/2 chip_stm32f1f3.cc
 
 
 # --- armv6m: the IRQ table ------------------------------------------------------
-# armv6m pends PendSV and returns, so sem_post -> sched::wake -> ... -> arch_switch does not
+# armv6m pends PendSV and returns, so notify_raise -> sched::wake -> ... -> arch_switch does not
 # re-enter the scheduler on this stack.
 site armv6m * kickos_isr_irq@1/1 irq.cc:irq_default_handler \
                                  irq.cc:irq_event_isr \
@@ -1071,7 +1071,6 @@ site lx6 * kickos::domain_for@indirect           NONE reason: no indirect call i
 site lx6 * kickos::endpoint_reply_recv@indirect  NONE reason: no indirect call in the emitted body
 site lx6 * kickos::endpoint_slot_claim@indirect  NONE reason: no indirect call in the emitted body
 site lx6 * task.cc:task_seat@indirect           NONE reason: no indirect call in the emitted body
-site lx6 * kickos::task_object_admit_binding_notify@indirect NONE reason: no indirect call in the emitted body
 site lx6 * kickos::task_object_admit_grants@indirect NONE reason: its one jx is a jump table inside the body
 site lx6 * syscall_thread.cc:spawn_masked@indirect NONE reason: no indirect call in the emitted body
 site lx6 esp32-wroom-bench bench.cc:dist_reset_one@indirect NONE reason: no indirect call in the emitted body

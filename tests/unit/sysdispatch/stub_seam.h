@@ -7,6 +7,7 @@
 #ifndef KICKOS_TESTS_UNIT_SYSDISPATCH_STUB_SEAM_H
 #define KICKOS_TESTS_UNIT_SYSDISPATCH_STUB_SEAM_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 namespace kickos
@@ -23,6 +24,14 @@ namespace kickos
         extern uintptr_t g_context_entry;
         extern uintptr_t g_second_arg;
         constexpr uint64_t STUB_CPU_CLOCK_HZ = 64000000u;
+        // What the dispatch handed the reply alone (it answers -KOS_ESRCH), and how often the
+        // fused reply and receive was reached (it answers STUB_REPLY_RECV_RC).
+        extern uint32_t g_replies;
+        extern uint32_t g_reply_cap;
+        extern uintptr_t g_reply_buf;
+        extern size_t g_reply_len;
+        extern uint32_t g_reply_recvs;
+        constexpr int32_t STUB_REPLY_RECV_RC = 7;
     }
 }
 

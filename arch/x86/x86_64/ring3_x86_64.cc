@@ -37,9 +37,13 @@ namespace kickos::x86_64
         constexpr uint32_t msr_fmask = 0xc0000084;
         constexpr uint32_t msr_gs_base = 0xc0000101;
         constexpr uint32_t msr_kernel_gs_base = 0xc0000102;
+        // IA32_TSC_AUX, which RDTSCP answers in ECX at ring 3.
+        constexpr uint32_t msr_tsc_aux = 0xc0000103;
 
         constexpr uint64_t efer_sce = 1ull << 0;
 
+        // CR4.TSD set makes RDTSC and RDTSCP privileged.
+        constexpr uint64_t cr4_tsd = 1ull << 2;
         constexpr uint64_t cr4_smep = 1ull << 20;
         constexpr uint64_t cr4_smap = 1ull << 21;
         static_assert((cr4_smep | cr4_smap) == cr4_guard, "ring3.h names the same two bits");
@@ -125,6 +129,12 @@ namespace kickos::x86_64
         g_cpu[id].core_id = id;
         write_msr(msr_gs_base, reinterpret_cast<uint64_t>(&g_cpu[id]));
         write_msr(msr_kernel_gs_base, 0);
+#if KICKOS_KERNEL_CORES > 1
+        // kos_core_current answers from it what KOS_SYS_CORE_CURRENT answers,
+        // kickos_kernel_core(), which is arch_cpu_id() only under the shared model.
+        static_assert(KICKOS_MULTICORE_MODEL_SHARED, "the seated id must be the kernel core's slot");
+        write_msr(msr_tsc_aux, id);
+#endif
 
         uint64_t const star = (static_cast<uint64_t>((sel_user_data & ~3u) - 8) << 48)
                               | (static_cast<uint64_t>(sel_kernel_code) << 32);
@@ -132,7 +142,7 @@ namespace kickos::x86_64
         write_msr(msr_lstar, reinterpret_cast<uint64_t>(&kickos_x86_64_syscall_entry));
         write_msr(msr_fmask, fmask);
         write_msr(msr_efer, read_msr(msr_efer) | efer_sce);
-        write_cr4(read_cr4() | guard_offered());
+        write_cr4((read_cr4() & ~cr4_tsd) | guard_offered());
     }
 
     void ring3_init(void)

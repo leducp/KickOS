@@ -29,8 +29,8 @@ extern "C" int testfails_start(struct kos_driver_instance* instance)
     bool pinned = false;
     if (instance->core_mask != 0u)
     {
-        int const rc = kos_thread_set_affinity(kos_thread_self(), instance->core_mask);
-        if (rc != 0)
+        int const rc = kos_thread_affinity(kos_thread_self(), instance->core_mask);
+        if (rc < 0)
         {
             return rc;
         }
@@ -39,7 +39,7 @@ extern "C" int testfails_start(struct kos_driver_instance* instance)
     kos_sleep_ns(1000000ull);
     if (pinned)
     {
-        (void)kos_thread_set_affinity(kos_thread_self(), 0u);
+        (void)kos_thread_affinity(kos_thread_self(), 0u);
     }
     return drv::bring_up(k_desc, instance);
 }

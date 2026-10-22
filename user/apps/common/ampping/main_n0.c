@@ -3,8 +3,7 @@
 //
 // Node 0 of the ampping partition: it calls the first peer across the crossing its composition
 // uses, and reads every node's row of the partition region the partition build placed in the
-// user share. Locality never reaches the API (docs/design-multicore.md N7): this is
-// kos_call_timed.
+// user share. Locality never reaches the API (docs/design-multicore.md N7): this is kos_call.
 
 #include <iso646.h> // and / or / not are macros in C, not keywords
 #include <stdio.h>
@@ -108,14 +107,14 @@ void ampping_main(kos_self_t const* self)
         msg[1] = 0xA1u;
         msg[2] = 0xA2u;
         msg[3] = 0xA3u;
-        int32_t n = kos_call_timed(ep, msg, sizeof(msg), sizeof(msg), AMPPING_CALL_US);
+        int32_t n = kos_call(ep, msg, sizeof(msg), sizeof(msg), AMPPING_CALL_US);
         // The peer parks in its own time, so the first call can find no receiver (N6e). Zero is
         // the empty reply of a refusal past the take, not an answer.
         int tries = 1;
         while (n <= 0 and tries < AMPPING_TRIES)
         {
             kos_sleep_ns(AMPPING_SETTLE_NS);
-            n = kos_call_timed(ep, msg, sizeof(msg), sizeof(msg), AMPPING_CALL_US);
+            n = kos_call(ep, msg, sizeof(msg), sizeof(msg), AMPPING_CALL_US);
             tries++;
         }
         if (n <= 0)

@@ -13,6 +13,7 @@
 
 #include <kickos/arch/atomic_cas.h>
 #include <kickos/sys/atomic.h>
+#include <kickos/sys/errno.h>
 
 #include <stdint.h>
 
@@ -34,6 +35,11 @@ namespace kickos
     // the AMP partition's user share; -KOS_EFAULT for a word `c` cannot write. Caller holds
     // IrqLock.
     int word_ref(Thread const* c, uintptr_t va, WordRef* out);
+
+    // word_ref, and the word reached in the same walk of its page: 0 with *word the kernel's
+    // pointer to it, which kaccess_word_put(*out) gives back on a translating backend;
+    // word_ref's refusals, and -KOS_EFAULT where its page cannot be reached, with nothing held.
+    int word_open(Thread const* c, uintptr_t va, WordRef* out, uint32_t** word);
 
     // The reference through which parked thread `w` named the word keyed `key`
     // (Thread::wait_va), as word_ref answered it at the park.
@@ -60,10 +66,21 @@ namespace kickos
     class WordAccess
     {
       public:
+        // `c`'s hold on the word at `va`, named into *named: status() answers word_open.
+        __attribute__((always_inline)) WordAccess(Thread const* c, uintptr_t va, WordRef* named)
+            : word_(nullptr)
+        {
+            status_ = word_open(c, va, named, &word_);
+#if KICKOS_HAVE_ASPACE
+            ref_ = *named;
+#endif
+        }
+
 #if KICKOS_HAVE_ASPACE
         __attribute__((always_inline)) explicit WordAccess(WordRef const& w)
             : word_(kaccess_word_get(w)), ref_(w)
         {
+            status_ = reach_status();
         }
 
         __attribute__((always_inline)) ~WordAccess()
@@ -78,6 +95,7 @@ namespace kickos
         __attribute__((always_inline)) explicit WordAccess(WordRef const& w)
             : word_(reinterpret_cast<uint32_t*>(w.va))
         {
+            status_ = reach_status();
         }
 #endif
 
@@ -87,6 +105,12 @@ namespace kickos
         bool reached() const
         {
             return word_ != nullptr;
+        }
+
+        // 0 where the word is reached, else why not.
+        int status() const
+        {
+            return status_;
         }
 
         uint32_t load() const
@@ -107,10 +131,20 @@ namespace kickos
         }
 
       private:
+        int reach_status() const
+        {
+            if (word_ == nullptr)
+            {
+                return -KOS_EFAULT;
+            }
+            return 0;
+        }
+
         uint32_t* word_;
 #if KICKOS_HAVE_ASPACE
         WordRef ref_;
 #endif
+        int status_ = 0;
     };
 }
 

@@ -46,12 +46,17 @@ namespace kickos
 
     int32_t endpoint_reply_recv(uint32_t, uintptr_t, uintptr_t, uintptr_t)
     {
-        unreached("endpoint_reply_recv");
+        testfix::g_reply_recvs++;
+        return testfix::STUB_REPLY_RECV_RC;
     }
 
-    int32_t endpoint_reply(uint32_t, uintptr_t, size_t)
+    int endpoint_reply(uint32_t reply_cap, uintptr_t buf, size_t len)
     {
-        unreached("endpoint_reply");
+        testfix::g_replies++;
+        testfix::g_reply_cap = reply_cap;
+        testfix::g_reply_buf = buf;
+        testfix::g_reply_len = len;
+        return -KOS_ESRCH;
     }
 
     uint64_t cpu_clock_set(kos_pstate_t)
@@ -74,11 +79,6 @@ namespace kickos
         unreached("kdiag_led_set");
     }
 
-    void kdiag_led_toggle()
-    {
-        unreached("kdiag_led_toggle");
-    }
-
     bool console_window_withheld(uintptr_t, size_t, Task const*)
     {
         unreached("console_window_withheld");
@@ -90,6 +90,11 @@ namespace kickos
     namespace testfix
     {
         uint32_t g_reboot_outcome = REBOOT_NONE;
+        uint32_t g_replies = 0;
+        uint32_t g_reply_cap = 0;
+        uintptr_t g_reply_buf = 0;
+        size_t g_reply_len = 0;
+        uint32_t g_reply_recvs = 0;
         uint32_t g_console_drains = 0;
         uintptr_t g_context_entry = 0;
         uintptr_t g_second_arg = 0;
