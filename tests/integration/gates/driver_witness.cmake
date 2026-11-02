@@ -4,7 +4,8 @@
 # The driver witnesses, installed-package style, on the presets that name their systems, each a
 # path relative to the source root: tests/integration/check_driver_restart.sh, in which
 # KICKOS_WITNESS_ROOT_DEPTH (tests/integration/gates/composition_witness.cmake) measures the init's
-# depth too, tests/integration/check_console_restart.sh and tests/integration/check_driver_line.sh.
+# depth too, tests/integration/check_console_restart.sh, tests/integration/check_driver_line.sh
+# and tests/integration/check_driver_intask.sh.
 
 set(KICKOS_DRIVER_WITNESS_SYSTEM "" CACHE STRING
     "The driver restart witness's composition, relative to the source root, or empty for none")
@@ -12,9 +13,11 @@ set(KICKOS_CONSOLE_WITNESS_SYSTEM "" CACHE STRING
     "The console restart witness's composition, relative to the source root, or empty for none")
 set(KICKOS_DRIVER_LINE_SYSTEM "" CACHE STRING
     "The driver line witness's composition, relative to the source root, or empty for none")
+set(KICKOS_DRIVER_INTASK_SYSTEM "" CACHE STRING
+    "The in-task driver witness's composition, relative to the source root, or empty for none")
 
 if(KICKOS_DRIVER_WITNESS_SYSTEM STREQUAL "" AND KICKOS_CONSOLE_WITNESS_SYSTEM STREQUAL ""
-   AND KICKOS_DRIVER_LINE_SYSTEM STREQUAL "")
+   AND KICKOS_DRIVER_LINE_SYSTEM STREQUAL "" AND KICKOS_DRIVER_INTASK_SYSTEM STREQUAL "")
   return()
 endif()
 if(NOT KICKOS_TEST_DRIVERS)
@@ -57,4 +60,14 @@ if(NOT KICKOS_DRIVER_LINE_SYSTEM STREQUAL "")
   set_tests_properties(${_tag}_driver_line PROPERTIES SKIP_RETURN_CODE 77)
   kickos_boot_timeout(${_tag}_driver_line
     "${PROJECT_SOURCE_DIR}/tests/integration/check_driver_line.sh" WORK 300)
+endif()
+if(NOT KICKOS_DRIVER_INTASK_SYSTEM STREQUAL "")
+  add_test(NAME ${_tag}_driver_intask
+    COMMAND "${CMAKE_COMMAND}" -E env ${_dw_env} QEMU_MACHINE=${_dw_machine}
+            "${PROJECT_SOURCE_DIR}/tests/integration/check_driver_intask.sh"
+            "${PROJECT_BINARY_DIR}" "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}"
+            "${PROJECT_SOURCE_DIR}/${KICKOS_DRIVER_INTASK_SYSTEM}")
+  set_tests_properties(${_tag}_driver_intask PROPERTIES SKIP_RETURN_CODE 77)
+  kickos_boot_timeout(${_tag}_driver_intask
+    "${PROJECT_SOURCE_DIR}/tests/integration/check_driver_intask.sh" WORK 300)
 endif()

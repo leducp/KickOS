@@ -74,7 +74,7 @@ namespace
     }
 }
 
-extern "C" void f411spi_main(kos_self_t const* self)
+int main(int, char**)
 {
     // Deselect the gyro before any SCK activity: one call gates GPIOE's clock, presets PE3 high,
     // then switches it to output, so it never drives low.
@@ -85,8 +85,8 @@ extern "C" void f411spi_main(kos_self_t const* self)
     mux_pin("pinmux PA6/MISO", PORT_A, PIN_MISO, MUX_AF5);
     mux_pin("pinmux PA7/MOSI", PORT_A, PIN_MOSI, MUX_AF5);
 
-    kos_window_t const window = kos_grant_mmio(self, "/dev/spi1");
-    kos_line_t const line = kos_grant_irq(self, "irq");
+    kos_window_t const window = kos_grant_mmio("/dev/spi1");
+    kos_line_t const line = kos_grant_irq("irq");
     uintptr_t const win = reinterpret_cast<uintptr_t>(kos_window_addr(window));
     if (win == 0u or kos_window_size(window) < WINDOW_BYTES or line.cap == KOS_CAP_NONE)
     {

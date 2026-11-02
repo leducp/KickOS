@@ -88,26 +88,26 @@ int console_tx_armed(void);
 // A LINE THAT DOES NOT FIT IS REFUSED WHOLE AND DOES NOT GO OUT. The caller owes it NO
 // fallback and must not write it at the device: the drain is already a writer there, and the
 // two interleave mid-line. The kernel console is a debug facility, so a kernel line lost to
-// pressure is lost; the console syscall waits for room instead (console_room_wait).
+// pressure is lost; the console syscall and a fault record's line wait for room instead
+// (console_room_wait).
 int console_tx_insert_line(char const* buf, size_t n, int crlf);
 
-// One line of a fault record: what console_tx_insert_line answers, except that a full ring does
-// not refuse it. The oldest queued bytes go out through arch_console_write_sync under the mask
-// until the line fits, so the ring's order and its one writer stand. Under the mask it sends at
-// most the line's own expanded length of queued bytes, and at most one stall of the polled
-// writer; a backend with no TX interrupt drains the rest after the mask is dropped. Still 0 for
-// an unarmed ring, a line wider than the ring, and an insert or a record line it interrupted.
-int console_tx_insert_record_line(char const* buf, size_t n, int crlf);
+// The ring bytes a line takes once crlf expands each '\n' to CR+LF.
+uint32_t console_tx_line_needed(char const* buf, size_t n, int crlf);
 
-// A writer the ring refused, making room for its line. On a backend with no TX interrupt it
-// sends queued bytes itself, unmasked, until the line fits, never more than the line needs, and
-// answers 0; so does a ring with room or none armed. 1 on a backend whose TX interrupt drains it:
-// the writer waits for that drain (console_tx_room_want). Caller holds no lock.
-int console_tx_make_room(char const* buf, size_t n, int crlf);
+// A writer the ring refused, making room for a line of `needed` ring bytes. On a backend with no
+// TX interrupt it sends queued bytes itself, unmasked, until the line fits, never more than the
+// line needs, and answers 0; so does a ring with room or none armed. 1 on a backend whose TX
+// interrupt drains it: the writer waits for that drain (console_tx_room_want). Caller holds no
+// lock.
+int console_tx_make_room(uint32_t needed);
 
-// Nonzero where the ring lacks room for the line now, a writer then waiting until the drain
-// frees it (console_tx_room_freed). Caller holds IrqLock.
-int console_tx_room_want(char const* buf, size_t n, int crlf);
+// Nonzero where the ring lacks room for `needed` bytes now, a writer then waiting until the
+// drain frees it (console_tx_room_freed). Caller holds IrqLock.
+int console_tx_room_want(uint32_t needed);
+
+// The bytes that have left the ring since it was armed, modulo 2^32; 0 while it is not armed.
+uint32_t console_tx_sent(void);
 
 // The drain freed the room a waiting writer asked for, in console.cc: wakes every writer waiting
 // on the console.
@@ -128,6 +128,10 @@ void console_tx_wait_progress(void);
 // The synchronous line writer, in console.cc. Takes RAW bytes and expands '\n' to CR+LF
 // itself where the build asks for it, under one IrqLock held across the device writes.
 void console_write_line_sync(char const* buf, size_t n);
+
+// The same line for a writer the console serves without its ring, each wire byte its own masked
+// span: n, or 0 where another context is mid-line. A stalled channel drops the rest.
+int console_write_line_owned(char const* buf, size_t n);
 
 // Consumer (ISR context). Push ring bytes while a slot is free; disable the TX
 // IRQ once the ring empties, and wake the writers waiting for room once it has it. Bound to
@@ -179,7 +183,7 @@ char const* console_held_data(void);
 void console_held_take(uint32_t n);
 
 // Console device-ownership seam (state in console.cc). A kernel chip write is counted from
-// console_emit's state read to its leave, or kos_console_publish cannot drain it before handing
+// console_emit's state read to its leave, or a console create cannot drain it before handing
 // the UART over.
 int console_owner_is_kernel(void);   // nonzero while the kernel owns the UART (KERNEL_OWNED)
 void console_chip_writer_leave(void);
@@ -200,6 +204,8 @@ int console_chip_writers(void);      // in-flight kernel chip writers (console_p
 int console_handover_refused(void); // nonzero during a hand-off and after a panic
 void console_handover_begin(void);
 void console_owner_set_user(void);
+// The line the kernel's buffered drain is attached to, which begin detaches; -1 for none.
+int console_tx_line(void);
 
 // Driver-death reclaim, split in two so a REFUSAL survives the call that made it.
 //

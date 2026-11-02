@@ -70,6 +70,8 @@ namespace
 
     static_assert(drv::valid(k_desc), "the xmcssc descriptor is not a well-formed driver shape");
     static_assert(spi::desc_ok(k_desc), "the xmcssc cap positions do not match KOS_SPI_CAP_*");
+    static_assert(KICKOS_DRIVER_SLOTS == KOS_BUS_DEV_MAX,
+                  "the composition hands each client a mask of the slots serve_one keys");
 }
 
 extern "C"

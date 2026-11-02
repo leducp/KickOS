@@ -52,7 +52,7 @@ namespace harness
         c.limits.task_notifications = system.limits.task_notifications;
         c.limits.task_lines = system.limits.task_lines;
         c.kernel_cores = system.limits.kernel_cores;
-        drivers::behaviour = drivers::Behaviour{};
+        c.table = *system.table;
         return c;
     }
 
@@ -64,7 +64,6 @@ namespace harness
     Outcome run(systems::System const& system)
     {
         g_ran = &system;
-        fake::on_spawn = drivers::spawned;
         kickos::init::Walk walk{*system.table, system.build};
         try
         {
@@ -221,45 +220,4 @@ namespace step
         {
         };
     }
-}
-
-// Every entry the systems' tables name, which the walk never calls; drivers.cc defines the starts.
-extern "C"
-{
-    void sensor_main(kos_self_t const*)
-    {
-    }
-
-    void app_main(kos_self_t const*)
-    {
-    }
-
-    void health_main(kos_self_t const*)
-    {
-    }
-
-    void kickos_main(kos_self_t const*)
-    {
-    }
-
-    void slow_main(kos_self_t const*)
-    {
-    }
-
-    void mid_main(kos_self_t const*)
-    {
-    }
-
-    void late_main(kos_self_t const*)
-    {
-    }
-
-    void top_main(kos_self_t const*)
-    {
-    }
-
-    void watcher_main(kos_self_t const*)
-    {
-    }
-
 }

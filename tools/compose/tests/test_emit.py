@@ -2,6 +2,7 @@
 # Copyright (c) 2026 Philippe Leduc
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -12,11 +13,12 @@ import unittest
 from kickos_compose import descriptions, emit, partition, supply
 from kickos_compose.composition import Cache, admit_composition
 from kickos_compose.manifest import read_manifest
+
 from kickos_compose.subset import File, Report
 from kickos_compose.__main__ import REFUSED
 from test_arms import (
-    ARM64_AMP, ARM64_PAIR, C6_AMP, C6_PAIR, LOCAL, MANIFESTS, PLATFORM, RP_AMP, RP_PAIR, SYSTEMS, TREE, VIRTIO, mutate,
-    read, write,
+    ARM64_AMP, ARM64_PAIR, C6_AMP, C6_PAIR, LOCAL, MANIFESTS, ON_REQUEST_SERVING, PLATFORM, RP_AMP, RP_PAIR, SYSTEMS,
+    TREE, VIRTIO, mutate, read, write,
 )
 
 sys.path.insert(0, os.path.join(TREE, "tools", "manifest"))
@@ -50,20 +52,30 @@ class Emitted(unittest.TestCase):
         entry = [t for t in table.tasks if t.name == task][0]
         return table.grants[entry.first_grant:entry.first_grant + entry.grant_count]
 
-    def test_drivers_start_from_the_catalogue_and_take_no_slot(self):
+    def test_drivers_start_from_the_catalogue_at_their_entry_layout(self):
         refusals, table, path, manifest = self.table("xmc4800-relax.yaml")
         self.assertEqual(refusals, [])
         console, spi = table.tasks[0], table.tasks[1]
         self.assertEqual((console.entry, console.driver, spi.entry, spi.driver),
                          ("xmcuartirq_console_start", 1, "xmc_spi0_start", 0))
-        self.assertEqual((console.stack, console.cap_grant_count), (0, 0))
+        self.assertEqual((console.stack, console.cap_grant_count, spi.cap_grant_count), (0, 3, 2))
         grants = self.grants_of(table, "spi0")
         self.assertEqual([(g.kind, g.name, g.path, g.cap_slot) for g in grants],
                          [("window", "regs", "/dev/usic0/ch1", None), ("line", "irq", "/dev/usic0/sr1", None),
-                          ("endpoint_serve", "/svc/spi0", "/svc/spi0", None)])
+                          ("endpoint_serve", "/svc/spi0", "/svc/spi0", 0), ("notification", "notify", "notify", 1)])
         self.assertEqual((grants[0].base, grants[0].size), (0x40030200, 0x200))
-        self.assertEqual((grants[1].line, grants[1].line_index), (85, 1))
+        self.assertEqual((grants[1].line, grants[1].line_index, grants[1].trigger, grants[1].decl_slot),
+                         (85, 1, "edge", 2))
+        console_caps = [(g.kind, g.cap_slot, g.badge) for g in self.grants_of(table, "console") if g.cap_slot is not None]
+        self.assertEqual(console_caps, [("endpoint_serve", 2, 0), ("notification", 0, 0), ("notification", 3, 2)])
         self.assertEqual(table.externs[:2], [("xmcuartirq_console_start", "driver"), ("xmc_spi0_start", "driver")])
+        source = emit.render(table, "xmc4800-relax.yaml")
+        self.assertIn("{ .kind = KOS_DECL_LINE, .trigger = KOS_IRQ_EDGE, .line = 85, .line_index = 1, "
+                      ".slot = KOS_SPAWN_DELEGATED_CAP0 + 2 }", source)
+        every = source[source.index("#if KOS_TABLE_ALL\n"):source.index("#elif KOS_TABLE_ONE == 0\n")]
+        self.assertEqual(every.count(".notify = 2,"), 2, "each driver's lines bound to its second capability")
+        own = source[source.index("#elif KOS_TABLE_ONE == 1\n"):source.index("#elif KOS_TABLE_ONE == 2\n")]
+        self.assertEqual(own.count(".notify = 2,"), 1, "a task image's copy declares its own task alone")
 
     def test_a_driver_task_carries_its_ring_block_and_whether_it_takes_the_console(self):
         refusals, table, path, manifest = self.table("xmc4800-relax.yaml")
@@ -78,11 +90,13 @@ class Emitted(unittest.TestCase):
     def test_a_driver_s_lines_are_emitted_in_the_order_of_its_line_roles(self):
         refusals, table, path, manifest = self.table(
             "xmc4800-relax.yaml", [("    lines: { irq: /dev/usic0/sr1 }\n", "    lines: { err: /dev/usic0/sr2, irq: /dev/usic0/sr1 }\n")],
-            [("    windows: [regs]\n    lines: [irq]\n    threads:\n      - { name: bus,",
-              "    windows: [regs]\n    lines: [irq, err]\n    threads:\n      - { name: bus,")])
+            [("    windows: [regs]\n    lines: [irq]\n    triggers: [edge]\n    entry: [ep, notify, \"line:0\"]\n"
+              "    threads:\n      - { name: bus,",
+              "    windows: [regs]\n    lines: [irq, err]\n    triggers: [edge, level]\n"
+              "    entry: [ep, notify, \"line:0\", \"line:1\"]\n    threads:\n      - { name: bus,")])
         self.assertEqual(refusals, [])
-        lines = [(g.name, g.line) for g in self.grants_of(table, "spi0") if g.kind == "line"]
-        self.assertEqual(lines, [("irq", 85), ("err", 86)])
+        lines = [(g.name, g.line, g.trigger, g.decl_slot) for g in self.grants_of(table, "spi0") if g.kind == "line"]
+        self.assertEqual(lines, [("irq", 85, "edge", 2), ("err", 86, "level", 3)])
 
     def test_a_driver_task_restarts_and_holds_no_authority(self):
         refusals, table, path, manifest = self.table("xmc4800-relax.yaml")
@@ -206,19 +220,20 @@ class Emitted(unittest.TestCase):
         source, asserts, fragment, gate = self.system("qemu-arm64.yaml")
         self.assertIn("\nchar const kickos_link_one_system_target = 1;\n", source)
 
-    def test_each_reserved_stack_pays_the_thread_local_carve(self):
+    def test_each_reserved_stack_pays_its_own_image_s_thread_local_carve(self):
         source, asserts, fragment, gate = self.system("qemu-arm64.yaml")
-        stacks = [line for line in asserts.splitlines() if line.endswith("__kickos_tls_carve,")]
-        self.assertEqual(stacks, ["ASSERT(4096 >= 2816 + __kickos_tls_carve,",
-                                  "ASSERT(8192 >= 2816 + __kickos_tls_carve,",
-                                  "ASSERT(4096 >= 2816 + __kickos_tls_carve,"])
-        self.assertIn("task `app`'s 8192-byte stack cannot hold the linked image's thread-local block", asserts)
+        stacks = [line for line in asserts.splitlines() if line.endswith("_tls_carve,")]
+        self.assertEqual(stacks, ["ASSERT(4096 >= 2816 + __kickos_image1_tls_carve,",
+                                  "ASSERT(8192 >= 2816 + __kickos_image2_tls_carve,",
+                                  "ASSERT(4096 >= 2816 + __kickos_image3_tls_carve,"])
+        self.assertIn("task `app`'s 8192-byte stack cannot hold its image's thread-local block", asserts)
+        self.assertIn("PROVIDE(__kickos_image2_tls_carve = __kickos_tls_carve);", asserts)
         # A translating board places no task's stack in a region arena.
         self.assertNotIn("__kickos_ram_end", asserts)
 
     def test_a_masked_stack_is_the_chip_scripts_to_check_and_the_arena_is_replayed(self):
         source, asserts, fragment, gate = self.system("xmc4800-relax.yaml")
-        self.assertNotIn("__kickos_tls_carve", asserts)
+        self.assertNotIn("_tls_carve", asserts)
         placed = [line for line in asserts.splitlines() if line.startswith("__kickos_system_arena_")]
         self.assertEqual(placed[0], "__kickos_system_arena_0 = ALIGN(__kickos_ram_start, 0x200) + 0x200;")
         self.assertTrue(placed[1].startswith("__kickos_system_arena_1 = ALIGN(__kickos_system_arena_0, "))
@@ -254,7 +269,130 @@ class Emitted(unittest.TestCase):
             "qemu-arm64.yaml", [("board: qemu-arm64\n", ""), ("    priority: 8\n    ceiling: 8\n", "    priority: 8\n")],
             [("drivers:\n  xmcssc:", "default:\n  composition: %s\ndrivers:\n  xmcssc:" % default)])
         self.assertEqual([r.split(": ")[1] for r in refusals], ["form.missing"])
-        self.assertIn("task `app` runs an `entry`, so it needs `ceiling`", refusals[0])
+        self.assertIn("task `app` runs a `program`, so it needs `ceiling`", refusals[0])
+
+    def test_each_task_is_declared_in_table_order_with_its_static_grants(self):
+        edits = [("devices: [/dev/rtc]",
+                  VIRTIO % "bus_master, coarse_gate" + "\n    lines: { irq: /dev/virtio/3/irq }"),
+                 ("cache: cached", "cache: uncached"),
+                 ("    watches: [sensor]\n", "    watches: [sensor]\n    authority: [system, memory]\n")]
+        refusals, table, path, manifest = self.table("qemu-arm64.yaml", edits)
+        self.assertEqual(refusals, [])
+        decls = "\n".join(emit.render_decls(table, emit.declared_tasks(table)))
+        self.assertIn("    struct kos_task_decl decl[%d];" % len(table.tasks), decls)
+        sensor = [n for n, t in enumerate(table.tasks) if t.name == "sensor"][0]
+        held = emit.decl_grants(table, table.tasks[sensor])
+        self.assertEqual(sorted(g.kind for g in held), ["line", "window", "window"])
+        self.assertIn("{ .kind = KOS_DECL_DEVICE, .size = 0x200u, .base = 0x%Xu }" % (0x0A000000 + 31 * 0x200), decls)
+        self.assertIn("{ .kind = KOS_DECL_LINE, .line = %d, .line_index = 0 }" % (48 + 3), decls)
+        entry = decls.split("    .decl = {")[1].split("        [%d] = {" % sensor)[1].split("        },")[0]
+        self.assertIn(".priority = %d," % table.tasks[sensor].priority, entry)
+        self.assertIn(".ceiling = %d," % table.tasks[sensor].ceiling, entry)
+        self.assertIn(".grant_count = 3,", entry)
+        self.assertIn(".flags = KOS_DECL_RESTARTS,", entry)
+        self.assertIn(".grants = offsetof(struct kickos_image_decls, grant) + ", entry)
+        self.assertIn(".name = offsetof(struct kickos_image_decls, names) + ", entry)
+        report, (source, asserts, fragment, gate) = emit.emit_system(path, manifest)
+        self.assertIn("set(KICKOS_COMPOSE_DECLS %d)\n" % len(table.tasks), fragment)
+
+        refusals, table, path, manifest = self.table("xmc4800-relax.yaml")
+        self.assertEqual(refusals, [])
+        decls = "\n".join(emit.render_decls(table, emit.declared_tasks(table)))
+        self.assertIn(".flags = KOS_DECL_CONSOLE | KOS_DECL_DRIVER,", decls)
+
+    # The pools KICKOS_SYSTEM_POOLS takes, and the kind whose budgets each sums.
+    SIZED = (("threads", "THREADS"), ("endpoints", "ENDPOINTS"), ("notifies", "NOTIFICATIONS"),
+             ("irq_bindings", "IRQ_BINDINGS"), ("frame_runs", "FRAME_RUNS"), ("ram_owners", "RAM_BLOCKS"),
+             ("cap_slab", "CAP_SLOTS"))
+    POOLS = ("threads", "tasks", "domains", "endpoints", "notifies", "irq_bindings", "frame_runs", "ram_owners",
+             "cap_slab", "cap_dir", "width")
+    KINDS = ("THREADS", "RAM_BYTES", "RAM_BLOCKS", "PAGES", "ENDPOINTS", "NOTIFICATIONS", "IRQ_BINDINGS",
+             "FRAME_RUNS", "CAP_SLOTS")
+
+    def sized(self, name, edits=(), manifest_edits=()):
+        """(each pool's emitted size, each declaration's emitted budgets, the init's), read back from
+        the emitted C and fragment, never from the tool's model."""
+        refusals, table, path, manifest = self.table(name, edits, manifest_edits)
+        self.assertEqual(refusals, [])
+        report, (source, asserts, fragment, gate) = emit.emit_system(path, manifest)
+        pools = re.search(r'set\(KICKOS_COMPOSE_POOLS "([0-9;]*)"\)', fragment).group(1).split(";")
+        init = re.search(r'set\(KICKOS_COMPOSE_INIT_BUDGETS "([0-9;]*)"\)', fragment).group(1).split(";")
+        whole = source.split("#if KOS_TABLE_ALL\n")[1].split("#elif")[0]
+        decls = []
+        for width, block in re.findall(r"\.cap_width = (\d+),\s*\.budgets = \{(.*?)\}", whole, re.S):
+            decl = {kind: int(figure) for kind, figure in re.findall(r"\[KOS_BUDGET_(\w+)\] = (\d+)u", block)}
+            decl["WIDTH"] = int(width)
+            decls.append(decl)
+        return (dict(zip(self.POOLS, (int(n) for n in pools))), decls,
+                dict(zip(self.KINDS, (int(n) for n in init))), table)
+
+    def check_sums(self, name, edits=(), manifest_edits=(), reserve=None, cores=1, translating=False):
+        reserve = reserve or {}
+        pools, decls, init, table = self.sized(name, edits, manifest_edits)
+        for pool, kind in self.SIZED:
+            total = init[kind] + reserve.get(kind, 0) + sum(decl.get(kind, 0) for decl in decls)
+            if pool == "ram_owners" and translating:
+                total = 0
+            if pool == "frame_runs" and not translating:
+                total = 0
+            self.assertEqual(pools[pool], total, "%s is not the sum of the %s budgets" % (pool, kind))
+        self.assertEqual(pools["tasks"], cores + 1 + len(decls))
+        retained = 0
+        if translating:
+            retained = 1 + 2 * len(decls)
+        self.assertEqual(pools["domains"], 2 + len(decls) + retained)
+        # The init's table is its CAP_SLOTS budget, and a directory row seats the widest table any
+        # thread may ask: a declaration's whole budget, or the init's.
+        self.assertEqual(pools["width"], init["CAP_SLOTS"])
+        widest = max([init["CAP_SLOTS"]] + [decl["CAP_SLOTS"] for decl in decls])
+        self.assertEqual(pools["cap_dir"], min(widest, 248) // 8)
+        for decl in decls:
+            self.assertEqual(decl["WIDTH"] % 8, 0)
+            self.assertEqual(decl["CAP_SLOTS"] % 8, 0)
+            self.assertGreaterEqual(decl["CAP_SLOTS"], decl["WIDTH"] * decl["THREADS"])
+        return pools, decls, init
+
+    def test_every_pool_is_the_sum_of_its_budgets(self):
+        self.check_sums("xmc4800-relax.yaml")
+        self.check_sums("qemu-arm64.yaml", cores=4, translating=True)
+        self.check_sums("qemu-x86_64.yaml", cores=2, translating=True)
+
+    def test_a_stated_budget_default_and_reserve_size_the_pools(self):
+        edits = [("budgets: { threads: 1 }\n", "budgets: { threads: 3, notifications: 2 }\n"
+                  "reserve: { threads: 5, endpoints: 2, ram_blocks: 4 }\n"),
+                 ("    serves: /svc/sensor\n", "    serves: /svc/sensor\n    budgets: { threads: 6, endpoints: 9 }\n")]
+        pools, decls, init = self.check_sums("xmc4800-relax.yaml", edits,
+                                             reserve={"THREADS": 5, "ENDPOINTS": 2, "RAM_BLOCKS": 4})
+        threads = sorted(decl["THREADS"] for decl in decls)
+        # The two drivers' own thread counts, the defaulted tasks' 3, and the sensor's 6.
+        self.assertEqual(threads, [1, 2, 3, 3, 6])
+        self.assertIn(9, [decl["ENDPOINTS"] for decl in decls])
+        self.assertEqual(init["THREADS"], 1)
+
+    def test_a_default_below_what_a_task_holds_is_raised_to_it(self):
+        pools, decls, init = self.check_sums("xmc4800-relax.yaml",
+                                             manifest_edits=[("  endpoints: { default: 4,", "  endpoints: { default: 0,")])
+        # The sensor serves one endpoint and uses the bus's.
+        self.assertIn(2, [decl["ENDPOINTS"] for decl in decls])
+
+    def test_a_declaration_s_tables_are_whole_chunks_and_its_slots_default_to_its_threads(self):
+        edits = [("heap: 16384\n", "heap: 16384\ncaps: { width: 12 }\n"),
+                 ("    serves: /svc/sensor\n", "    serves: /svc/sensor\n    budgets: { threads: 6 }\n"
+                  "    caps: { width: 9, slots: 100 }\n")]
+        pools, decls, init = self.check_sums("xmc4800-relax.yaml", edits)
+        self.assertIn((16, 104), [(decl["WIDTH"], decl["CAP_SLOTS"]) for decl in decls])
+        # Every other task takes the composition's width, and a table of it per thread of its budget.
+        others = [(decl["WIDTH"], decl["CAP_SLOTS"]) for decl in decls if decl["CAP_SLOTS"] != 104]
+        self.assertEqual(sorted(set(width for width, slots in others)), [16])
+        self.assertTrue(all(slots == 16 * decl["THREADS"] for (width, slots), decl
+                            in zip(others, [decl for decl in decls if decl["CAP_SLOTS"] != 104])))
+
+    def test_the_init_s_table_is_what_it_holds_in_whole_chunks(self):
+        run = self.cost("qemu-x86_64.yaml")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        holds = int(re.search(r"^cap_slots (\d+)$", run.stdout, re.M).group(1))
+        pools, decls, init = self.check_sums("qemu-x86_64.yaml", cores=2, translating=True)
+        self.assertEqual(init["CAP_SLOTS"], (holds + 7) // 8 * 8)
 
     def test_the_fragment_names_the_driver_serving_stdout(self):
         refusals, table, path, manifest = self.table("xmc4800-relax.yaml")
@@ -288,59 +426,20 @@ class Emitted(unittest.TestCase):
         self.assertIn("is not the 65536-byte heap of %s, which" % path, asserts)
         self.assertIn("the 65536-byte heap of %s, its `heap`, is more than" % path, asserts)
 
-    def test_each_entry_is_declared_at_its_line_in_the_composition(self):
-        refusals, table, path, manifest = self.table("qemu-arm64.yaml")
-        report, (source, asserts, fragment, gate) = emit.emit_system(path, manifest, "system.c")
-        lines = source.splitlines()
-        composition = read(path).splitlines()
-        declared = [n for n, line in enumerate(lines) if line.startswith("extern void ")]
-        self.assertEqual(len(declared), 3)
-        for n in declared:
-            entry = lines[n][len("extern void "):lines[n].index("(")]
-            self.assertEqual(lines[n - 1], "#line %d \"%s\"" % (composition.index("    entry: " + entry) + 1, path))
-        resumed = declared[-1] + 1
-        self.assertEqual(lines[resumed], "#line %d \"system.c\"" % (resumed + 2))
+    def test_a_program_started_on_request_takes_the_endpoint_it_serves_from_its_creator(self):
+        refusals, table, path, manifest = self.table("qemu-arm64.yaml", [ON_REQUEST_SERVING])
+        self.assertEqual(refusals, [])
+        grants = self.grants_of(table, "spare")
+        self.assertEqual([(g.kind, g.path, g.cap_slot) for g in grants], [("endpoint_serve", "/svc/spare", 0)])
+        self.assertTrue([t for t in table.tasks if t.name == "spare"][0].on_request)
 
-    def test_the_asserts_spell_the_chip_scripts_symbols_with_the_abis_prefix(self):
-        prefixed = [('  symbol_prefix: ""\n', "  symbol_prefix: _\n")]
-        source, asserts, fragment, gate = self.system_heap((), prefixed)
-        self.assertIn("ASSERT(4096 >= 2816 + ___kickos_tls_carve,", asserts)
-        self.assertIn("ASSERT(__kickos_heap_limit - __kickos_heap_start >= 65536,", asserts)
-        refusals, table, path, manifest = self.table("xmc4800-relax.yaml", manifest_edits=prefixed)
-        report, (source, asserts, fragment, gate) = emit.emit_system(path, manifest)
-        self.assertIn("__kickos_system_arena_0 = ALIGN(___kickos_ram_start, 0x200) + 0x200;", asserts)
-        self.assertIn("ASSERT(__kickos_system_arena_0 <= ___kickos_ram_end,", asserts)
-        source, asserts, fragment, gate = self.system("xmc4800-relax.yaml")
-        self.assertIn("ALIGN(__kickos_ram_start, 0x200)", asserts)
-
-    def test_a_hosted_image_brings_no_chip_script_asserts(self):
-        report = Report()
-        path = os.path.join(TREE, "platform", "sim", "chip.yaml")
-        chip = descriptions.check_chip(path, read(path), report)
-        self.assertEqual([str(r) for r in report.refusals], [])
-        admitted = types.SimpleNamespace(chip=chip, heap=16384, manifest=None, tasks=[], shared=[],
-                                         translating=False)
-        asserts = emit.render_asserts(admitted, "composition.yaml")
-        self.assertIn("ASSERT(KICKOS_USER_HEAP_SIZE == 16384,", asserts)
-        for symbol in ("_kickos_heap_limit", "__kickos_ram_start", "__kickos_tls_carve"):
-            with self.subTest(symbol=symbol):
-                self.assertNotIn(symbol, asserts)
-
-    def test_the_link_refuses_a_heap_symbol_other_than_the_systems(self):
-        source, asserts, fragment, gate = self.system_heap([("heap: 65536\n", "heap: 0\n")])
-        self.assertIn("ASSERT(KICKOS_USER_HEAP_SIZE == 0,", asserts)
-        source, asserts, fragment, gate = self.system_heap(())
-        self.assertIn("ASSERT(KICKOS_USER_HEAP_SIZE == 65536,", asserts)
-
-    def test_the_fragment_names_the_drivers_and_the_packaged_main(self):
-        source, asserts, fragment, gate = self.system("xmc4800-relax.yaml")
-        self.assertIn('set(KICKOS_COMPOSE_DRIVERS "xmcuartirq;xmcssc")\n', fragment)
-        self.assertIn('set(KICKOS_COMPOSE_CLIENTS "kickos_spi_proxy")\n', fragment)
-        self.assertIn("set(KICKOS_COMPOSE_MAIN 0)\n", fragment)
-        source, asserts, fragment, gate = self.system("qemu-arm64.yaml", [("entry: app_main", "entry: kickos_main")])
-        self.assertIn('set(KICKOS_COMPOSE_DRIVERS "")\n', fragment)
-        self.assertIn('set(KICKOS_COMPOSE_CLIENTS "")\n', fragment)
-        self.assertIn("set(KICKOS_COMPOSE_MAIN 1)\n", fragment)
+    def test_a_program_task_runs_its_main_and_the_fragment_names_its_program(self):
+        edits = [("program: main", "program: app-prog"), ("program: health", "program: main")]
+        source, asserts, fragment, gate = self.system("qemu-x86_64.yaml", edits)
+        self.assertIn("extern int main(int argc, char** argv);\n", source)
+        self.assertEqual(source.count(".entry = { .program = main },"), 3)
+        self.assertEqual(source.count("KOS_TABLE_TASK_PROGRAM"), 3)
+        self.assertIn('set(KICKOS_COMPOSE_PROGRAMS "0|sensor|sensor;1|app|app-prog;2|health|main")\n', fragment)
 
     def test_the_fragment_lists_each_client_once_in_the_order_the_drivers_first_name_it(self):
         edits = [("    client: []\n", "    client: [kickos_zeta, kickos_spi_proxy]\n"),
@@ -391,8 +490,17 @@ class Emitted(unittest.TestCase):
     def test_cost_prints_what_the_init_spends(self):
         run = self.cost("qemu-x86_64.yaml")
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
-        self.assertEqual(run.stdout, "cap_slots 5\nendpoints 1\nnotifications 2\nthreads 3\ntasks 3\nirq_handles 0\ndomains 6\n"
+        self.assertEqual(run.stdout, "cap_slots 7\nendpoints 1\nnotifications 2\nthreads 3\ntasks 3\nirq_handles 0\ndomains 6\n"
                                      "reservations 6\nself_grants 2\n")
+
+    def test_the_init_holds_a_program_of_another_name_for_its_create(self):
+        tasks = (("sensor", "sensor"), ("app", "main"), ("health", "health"))
+        named = self.cost("qemu-x86_64.yaml", [("program: %s" % p, "program: %s-prog" % t) for t, p in tasks])
+        main = self.cost("qemu-x86_64.yaml", [("program: %s" % p, "program: main") for t, p in tasks if p != "main"])
+        self.assertEqual(named.returncode, 0, named.stdout + named.stderr)
+        self.assertEqual(main.returncode, 0, main.stdout + main.stderr)
+        self.assertIn("cap_slots 6\n", main.stdout)
+        self.assertIn("cap_slots 7\n", named.stdout)
 
     def test_cost_of_a_refused_composition_prints_its_refusals(self):
         run = self.cost("qemu-x86_64.yaml", [("devices: [/dev/cmos_rtc]", "devices: [/dev/cmos_rtc9]")])

@@ -31,7 +31,19 @@ kickos_add_kseam(kickos_kseam_sysdispatch
   POSTURE KICKOS_HAVE_ASPACE=1
           KICKOS_ARCH_ALIAS_DCACHE=1 KICKOS_ARCH_IRQ_WINDOW=1
           KSEAM_REAL_DOMAIN=1)
-set(_image_bytes 8192)
+set(KICKOS_SYSDISPATCH_IMAGE_BYTES 8192 CACHE INTERNAL "")
+set(_image_bytes ${KICKOS_SYSDISPATCH_IMAGE_BYTES})
+# The link of a gate over kickos_kseam_sysdispatch: its code span starts at `text`, `text_bytes`
+# long, and g_sys_image is its data. Also called from tests/unit/captable.
+function(kickos_sysdispatch_link gate text text_bytes)
+  target_link_options(${gate} PRIVATE -Wl,--gc-sections)
+  kickos_host_image(${gate} TEXT ${text} ${text_bytes} DATA g_sys_image ${KICKOS_SYSDISPATCH_IMAGE_BYTES})
+  # The static regions a region backend names, which domain.cc's arch default still links: empty.
+  target_link_options(${gate} PRIVATE
+    -Wl,--defsym=__kickos_code_start=g_sys_image -Wl,--defsym=__kickos_code_end=g_sys_image
+    -Wl,--defsym=__kickos_appdata_start=g_sys_image
+    -Wl,--defsym=__kickos_appdata_end=g_sys_image)
+endfunction()
 kickos_add_unit_test(NAME sys_presync SOURCES presync_loop.cc
   DEFINITIONS SYS_IMAGE_BYTES=${_image_bytes}
   LIBRARIES kickos_kseam_sysdispatch)
@@ -41,26 +53,27 @@ kickos_add_unit_test(NAME sys_frame_space SOURCES frame_space.cc
 kickos_add_unit_test(NAME sys_word_ref SOURCES word_ref.cc
   DEFINITIONS SYS_IMAGE_BYTES=${_image_bytes}
   LIBRARIES kickos_kseam_sysdispatch)
-foreach(_gate IN ITEMS sys_presync sys_frame_space sys_word_ref)
-  target_link_options(${_gate} PRIVATE -Wl,--gc-sections)
-  set(_text g_sys_image 0)
-  if(_gate STREQUAL "sys_word_ref")
-    set(_text g_word_text 4096)
-  endif()
-  kickos_host_image(${_gate} TEXT ${_text} DATA g_sys_image ${_image_bytes})
-  # The static regions a region backend names, which domain.cc's arch default still links: empty.
-  target_link_options(${_gate} PRIVATE
-    -Wl,--defsym=__kickos_code_start=g_sys_image -Wl,--defsym=__kickos_code_end=g_sys_image
-    -Wl,--defsym=__kickos_appdata_start=g_sys_image
-    -Wl,--defsym=__kickos_appdata_end=g_sys_image)
-endforeach()
+# The PAGES budget of every frame a space's task causes to exist, its tables included.
+kickos_add_unit_test(NAME sys_page_budget SOURCES page_budget.cc
+  DEFINITIONS SYS_IMAGE_BYTES=${_image_bytes}
+  LIBRARIES kickos_kseam_sysdispatch)
+kickos_sysdispatch_link(sys_presync g_sys_image 0)
+kickos_sysdispatch_link(sys_frame_space g_sys_image 0)
+kickos_sysdispatch_link(sys_word_ref g_word_text 4096)
+kickos_sysdispatch_link(sys_page_budget g_sys_image 0)
+# Two admissions of one budget, one parked at its first window outside the lock.
+kickos_add_unit_test(NAME sys_budget_race SOURCES budget_race.cc
+  DEFINITIONS SYS_IMAGE_BYTES=${_image_bytes}
+  LIBRARIES kickos_kseam_sysdispatch)
+kickos_sysdispatch_link(sys_budget_race g_sys_image 0)
 
 kickos_add_kseam(kickos_kseam_sysdispatch_region
   EXTRA region_seam.cc stub_seam.cc ${_sys_region}
   INCLUDES "${_k}/syscall" "${CMAKE_CURRENT_SOURCE_DIR}")
 kickos_add_unit_test(NAME sys_ram_clear SOURCES ram_clear.cc
   LIBRARIES kickos_kseam_sysdispatch_region)
-kickos_add_unit_test(NAME spawn_unwind SOURCES spawn_unwind.cc task_stop.cc
+kickos_add_unit_test(NAME spawn_unwind SOURCES spawn_unwind.cc task_stop.cc spawn_badge.cc program_create.cc
+  driver_create.cc
   LIBRARIES kickos_kseam_sysdispatch_region)
 # The fault dead-end of an emulated chip, whose arch_shutdown the seam answers.
 kickos_add_unit_test(NAME sys_shutdown
@@ -69,6 +82,9 @@ kickos_add_unit_test(NAME sys_shutdown
   LIBRARIES kickos_kseam_sysdispatch_region)
 # The peripheral disable's possession gate and the seam's answer, over the fixture's recorder.
 kickos_add_unit_test(NAME sys_periph_disable SOURCES periph_disable.cc
+  LIBRARIES kickos_kseam_sysdispatch_region)
+# The console write's wait flag, from the call's own argument.
+kickos_add_unit_test(NAME sys_kconsole_flags SOURCES kconsole_flags.cc
   LIBRARIES kickos_kseam_sysdispatch_region)
 # The fused reply's null options, answered by the reply alone before any receive validation.
 kickos_add_unit_test(NAME sys_reply_alone SOURCES reply_alone.cc
@@ -84,7 +100,7 @@ kickos_add_unit_test(NAME sys_witness_on SOURCES witness_gate.cc
 target_compile_definitions(sys_witness_on PRIVATE KICKOS_WITNESS_UACCESS=1)
 kickos_add_unit_test(NAME sys_witness_off SOURCES witness_gate.cc
   LIBRARIES kickos_kseam_sysdispatch_region)
-foreach(_gate IN ITEMS sys_ram_clear spawn_unwind sys_shutdown sys_periph_disable sys_witness_on
+foreach(_gate IN ITEMS sys_ram_clear spawn_unwind sys_shutdown sys_periph_disable sys_kconsole_flags sys_witness_on
                        sys_witness_off)
   target_link_options(${_gate} PRIVATE -Wl,--gc-sections)
 endforeach()

@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 
+#include "../common/seam_pools.h"
+
 #include <kickos/aspace.h>
 #include <kickos/instance.h>
 #include <kickos/irqlock.h>
 #include <kickos/reent.h>
+#include <kickos/sys/image.h>
 #include <kickos/sched.h>
 #include <kickos/task.h>
 #include <kickos/thread.h>
@@ -29,6 +32,7 @@ namespace
         uintptr_t dst = 0;
         size_t n = 0;
         uintptr_t word = 0;
+        void const* src = nullptr;
         Thread const* running = nullptr;
         bool seated = false;
     };
@@ -37,7 +41,8 @@ namespace
     Write g_writes[WRITES];
     int g_write_count = 0;
 
-    void record(struct arch_aspace* space, uintptr_t dst, size_t n, uintptr_t word)
+    void record(struct arch_aspace* space, uintptr_t dst, size_t n, uintptr_t word,
+                void const* src)
     {
         if (g_write_count >= WRITES)
         {
@@ -45,35 +50,21 @@ namespace
             return;
         }
         Thread const* const c = sched::current();
-        g_writes[g_write_count] = Write{space, dst, n, word, c, aspace_seated_for(c)};
+        g_writes[g_write_count] = Write{space, dst, n, word, src, c, aspace_seated_for(c)};
         g_write_count++;
     }
 
-    constexpr size_t STATE_BYTES = 64;
+    constexpr size_t STATE_BYTES = 32;
 
-    // The rv64 posture's element: the state, then the lock id outside the copied width.
-    struct Element
-    {
-        unsigned char state[STATE_BYTES];
-        uintptr_t self;
-    };
-    Element g_slots[KICKOS_MAX_INSTANCES * KICKOS_THREAD_SLOTS];
-    unsigned char g_shared[STATE_BYTES];
+    // A thread's carve, its state at the base and the cell the prime leaves alone above it.
+    unsigned char g_states[KICKOS_SEAM_THREAD_SLOTS][KICKOS_REENT_CARVE];
 }
 
 extern "C"
 {
-    KickosReentSeam const kickos_reent_seam = {
-        g_slots,
-        g_shared,
-        nullptr,
-        &g_slots[0].self,
-        sizeof(Element),
-        STATE_BYTES,
-        KICKOS_MAX_INSTANCES * KICKOS_THREAD_SLOTS,
-    };
-
     unsigned char g_reent_image[1];
+    // Image 0's window, all of it its libc state, the loader's frames at its own addresses.
+    unsigned char g_reent_data[STATE_BYTES];
 
     uintptr_t arch_aspace_user_offset(void)
     {
@@ -83,14 +74,35 @@ extern "C"
 
 namespace kickos
 {
-    void* frame_pool_alias(arch_phys_addr_t)
+    kos_image_header header_with_seam()
     {
-        return nullptr;
+        kos_image_header h{};
+        h.data_start = reinterpret_cast<uintptr_t>(g_reent_data);
+        h.data_end = h.data_start + STATE_BYTES;
+        h.data_load = h.data_start;
+        h.reent_template = h.data_start;
+        h.reent_width = STATE_BYTES;
+        return h;
     }
 
-    bool ep_copy(UserOwner dspace, uintptr_t dst, UserOwner, uintptr_t, size_t n)
+    // The one image's record the libc state is primed from.
+    kos_image_header const& image_record(size_t)
     {
-        record(dspace, dst, n, 0);
+        static kos_image_header const h = header_with_seam();
+        return h;
+    }
+
+    // The kernel's view of a frame, apart from every address a space names. Never dereferenced:
+    // kaccess_to_user is the gate's.
+    constexpr uintptr_t ALIAS = 0x1000;
+    void* frame_pool_alias(arch_phys_addr_t frame)
+    {
+        return reinterpret_cast<void*>(static_cast<uintptr_t>(frame) + ALIAS);
+    }
+
+    bool kaccess_to_user(UserOwner dspace, uintptr_t udst, void const* ksrc, size_t n)
+    {
+        record(dspace, udst, n, 0, ksrc);
         return true;
     }
 
@@ -98,7 +110,7 @@ namespace kickos
     {
         uintptr_t word = 0;
         __builtin_memcpy(&word, kword, sizeof(word));
-        record(dspace, udst, sizeof(word), word);
+        record(dspace, udst, sizeof(word), word, kword);
         return true;
     }
 }
@@ -116,7 +128,7 @@ namespace
         {
             KSeam::SetUp();
             aspace_seam_reset();
-            reent_seam_read();
+            reent_seam_read(0, header_with_seam());
             g_write_count = 0;
         }
 
@@ -136,7 +148,7 @@ namespace
             {
                 join_task(t, group);
             }
-            t->reent = &g_slots[slot];
+            t->reent = g_states[slot];
             t->reent_fresh = true;
             t->lock_id = kernel().threads.lock_id_for(slot);
             return t;
@@ -180,19 +192,18 @@ namespace
         switch_now();
         ASSERT_EQ(sched::current(), b);
 
-        // Per prime, the state's copy then the id.
-        ASSERT_EQ(g_write_count, 4);
+        // One copy per prime, the cell being create's to write.
+        ASSERT_EQ(g_write_count, 2);
         EXPECT_EQ(g_writes[0].running, a);
         EXPECT_EQ(g_writes[0].space, space_of(task_domain(first)));
         EXPECT_EQ(g_writes[0].dst, reinterpret_cast<uintptr_t>(a->reent));
-        EXPECT_EQ(g_writes[1].space, space_of(task_domain(first)));
         EXPECT_FALSE(a->reent_fresh);
-        EXPECT_EQ(g_writes[2].running, b);
-        EXPECT_EQ(g_writes[2].space, space_of(task_domain(second)));
-        EXPECT_EQ(g_writes[3].space, space_of(task_domain(second)));
+        EXPECT_EQ(g_writes[1].running, b);
+        EXPECT_EQ(g_writes[1].space, space_of(task_domain(second)));
+        EXPECT_EQ(g_writes[1].dst, reinterpret_cast<uintptr_t>(b->reent));
     }
 
-    TEST_F(ReentSeat, a_prime_seats_the_id_past_the_state_it_copies)
+    TEST_F(ReentSeat, a_prime_copies_the_state_alone)
     {
         Task* const group = task(0);
         ASSERT_NE(group, nullptr);
@@ -200,15 +211,14 @@ namespace
         switch_now();
         ASSERT_EQ(sched::current(), a);
 
-        ASSERT_EQ(g_write_count, 2);
+        ASSERT_EQ(g_write_count, 1);
         Write const& copy = g_writes[0];
-        Write const& id = g_writes[1];
-        uintptr_t const element = reinterpret_cast<uintptr_t>(&g_slots[1]);
-        EXPECT_EQ(copy.dst, element);
+        EXPECT_EQ(copy.dst, reinterpret_cast<uintptr_t>(g_states[1]));
+        EXPECT_EQ(reinterpret_cast<uintptr_t>(copy.src),
+                  reinterpret_cast<uintptr_t>(g_reent_data) + ALIAS)
+            << "primed from other bytes than the kernel's view of the loader's frames";
         EXPECT_EQ(copy.n, STATE_BYTES);
-        EXPECT_EQ(id.dst, reinterpret_cast<uintptr_t>(&g_slots[1].self));
-        EXPECT_EQ(id.word, a->lock_id);
-        EXPECT_NE(id.word, 0u);
-        EXPECT_LE(copy.dst + copy.n, id.dst) << "the state's copy reaches the id's word";
+        EXPECT_LE(copy.n, KICKOS_REENT_CARVE - 2 * sizeof(void*))
+            << "the state's copy reaches the cell";
     }
 }

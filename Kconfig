@@ -522,55 +522,6 @@ config KICKOS_MAX_INSTANCES
 	  send a core past the end of every instance-scoped array. instance_local.h holds
 	  that as a static assert.
 
-config KICKOS_MAX_THREADS
-	int "Static thread pool"
-	range 2 64
-	default 16
-
-config KICKOS_MAX_TASKS
-	int "Task pool"
-	range 2 256
-	default 18
-	help
-	  Slots in the task pool (task.h). A task is ONE memory domain and the threads that
-	  joined it, so this is a count of process-like groups and NOT of threads: nothing
-	  relates it to KICKOS_MAX_THREADS, and a board with many threads in few groups states
-	  a small figure here on purpose.
-
-	  A plain spawn joins the spawner's task and takes no slot. A spawn bringing its own
-	  data grant or changing privilege gets a task of its own, and kos_task_create reserves
-	  one before any thread joins it, so what this bounds is DISTINCT GROUPS live at once.
-
-	  KICKOS_KERNEL_CORES + 1 of the slots are boot's: each kernel core's idle task and
-	  root's. Past those, a spawn that finds the pool full answers -KOS_ENOMEM, the same
-	  code thread-pool exhaustion answers, and it is refused before any thread slot is
-	  claimed.
-
-config KICKOS_MAX_DOMAINS
-	int "Memory-domain pool"
-	range 3 256
-	default 20 if HAS_ASPACE
-	default 18
-	help
-	  Slots in the memory-domain pool (domain.h). TWO OF THEM ARE THE IMMORTAL SINGLETONS,
-	  the kernel domain and the default unprivileged one: domain_init pins them to the
-	  first two slots and free_slot never hands either out.
-
-	  A count of DOMAINS, not of descriptors: nothing here is paid out of
-	  KICKOS_MPU_MAX_REGIONS, which bounds how much ONE domain describes.
-
-	  THE TWO BACKENDS SPEND THEM DIFFERENTLY, which is why the default differs. A region
-	  backend reaches at most one distinct domain per thread, every no-grant task resolving
-	  to the shared singleton. A translating one spends one per TASK: a domain carries an
-	  address space there, so no two tasks may share one and the singleton is a template
-	  rather than a domain to join. Size a translating board for a domain per live task
-	  plus the two singletons; short of that a spawn answers -KOS_ENOMEM.
-
-config KICKOS_MAX_ENDPOINTS
-	int "IPC endpoint pool"
-	range 0 32
-	default 4
-
 config KICKOS_ASPACE_RANGES
 	int "Virtual ranges one address space can name"
 	range 8 256
@@ -587,10 +538,10 @@ config KICKOS_ASPACE_RANGES
 	  that surrenders the run's reference.
 
 	  A THREAD STACK is a PER-THREAD cost, taken when the stack is mapped and returned
-	  at thread exit. That is what makes this figure scale with KICKOS_MAX_THREADS, and
-	  vrange.h asserts the STRUCTURAL floor: the two the image spends, plus one per
-	  thread slot, plus a small margin. Raising the thread count on a translating board
-	  without raising this fails the BUILD rather than a spawn.
+	  at thread exit. That is what makes this figure scale with the thread pool, and the
+	  system's pools TU asserts the STRUCTURAL floor: the two the image spends, plus one
+	  per thread slot, plus a small margin. Raising the THREADS budgets on a translating
+	  board without raising this fails the BUILD rather than a spawn.
 
 	  THE DEFAULT IS SIZED AGAINST AN APP AND THE FLOOR IS NOT, which is why they are
 	  different figures. 96 is what the fleet's own selftest needs, with room: on
@@ -601,119 +552,105 @@ config KICKOS_ASPACE_RANGES
 	  Only a translating board keeps a range list at all, so no region board pays for
 	  this.
 
-config KICKOS_RAM_OWNER_SLOTS
-	int "Arena blocks whose owner the kernel records"
-	range 4 256
-	default 48
+menu "Default budgets"
+
+comment "The budget a task takes where its composition states none"
+
+config KICKOS_BUDGET_THREADS
+	int "Thread slots a task may occupy"
+	range 1 254
+	default 4
 	help
-	  Slots in the region backend's arena-ownership table (ramown.h): one per block
-	  kos_ram_alloc has handed out, carrying the task that reserved it. The admission
-	  paths that let a caller name a block (a spawn's mem_base, a caller-owned
-	  stack_base, kos_mem_self_grant) read it, so a range the calling task never
-	  reserved is refused instead of admitted on arena confinement alone.
+	  A task's THREADS budget: the thread pool slots its threads may occupy at once.
+	  A thread counts from its spawn until its slot can be reused, its capability
+	  sweep included. Over the budget a spawn answers -KOS_EAGAIN.
 
-	  A LIFETIME COST, and the only kind here. Nothing frees a record, exactly as the
-	  bump allocator never takes a block back, so this is how many distinct blocks the
-	  WHOLE IMAGE may reserve over its life and not a live-set figure. A dead task's
-	  records stay spent, and are nameable by nobody: the task handle they carry
-	  includes the slot's generation.
+	  The default seats a plain program: its entry and three threads it spawns. A
+	  task that runs more states its own figure in the composition.
 
-	  When it is full kos_ram_alloc answers NULL, which is what an exhausted arena
-	  answers too, that call returning a pointer with no route out for an errno. The
-	  arena is left untouched by the refusal, so a caller that keeps asking loses
-	  nothing more.
+	  The thread pool is the sum of every task's budget, the init's one slot and the
+	  composition's reserve, so a task within its budget always finds a slot. A
+	  packaged driver's default is its own thread count.
 
-	  23 IS THE DEMAND, not this default: that is what the fleet's own selftest reserves
-	  on the sim, whose arena is the roomiest region board's, bisected on the `selftest`
-	  gate, where 23 passes and 22 turns mem_self_grant into an unexpected SKIP. The rest
-	  of the 48 is margin for an app that reserves more, and an app reserving fewer
-	  blocks can go down to the floor. Sized as a knob because the table is kernel .bss and
-	  every byte of it is a byte of arena on a board whose arena base follows .bss.
+config KICKOS_BUDGET_RAM_BYTES
+	int "Bytes of kos_ram_alloc blocks a task may hold"
+	range 0 2147483647
+	default 2147483647
+	help
+	  A task's RAM_BYTES budget: the bytes of the blocks kos_ram_alloc reserved for it,
+	  each as the allocator rounded it. Over the budget kos_ram_alloc answers NULL.
 
-	  Only a board with live REGION descriptors builds the table, so neither a
-	  translating board nor a board with no protection pays for this.
+	  On a board that does not translate nothing frees a block, so the budget is a
+	  figure for the whole boot: every incarnation of a declared task draws on the
+	  same one, and a task that allocates at every start stops at it. On a translating
+	  board a task's blocks go with its space, so each incarnation has the whole budget.
 
-config KICKOS_MAX_FRAME_RUNS
-	int "Frame-run capability objects"
-	range 0 32
+	  A ceiling only: the arena is not sized from it. The default bounds a task by the
+	  arena alone, so a composition states the figure of each task it bounds.
+
+config KICKOS_BUDGET_RAM_BLOCKS
+	int "kos_ram_alloc blocks a task may hold"
+	range 0 65534
+	default KICKOS_ASPACE_RANGES if HAS_ASPACE
 	default 8
 	help
-	  How many frame RUNS may be named by a capability at once. A run, not a
-	  frame: the pool holds thousands of frames and a thread's capability table
-	  holds single digits, so the unit a capability names is the run the frame
-	  pool allocates. Only a translating board builds this pool.
+	  A task's RAM_BLOCKS budget: how many blocks kos_ram_alloc reserved for it, over
+	  the same lifetime as KICKOS_BUDGET_RAM_BYTES. On a board that does not translate
+	  the table that records each block's owner is the sum of every task's budget and
+	  the init's. On a translating board a block takes a range of the task's space,
+	  which holds KICKOS_ASPACE_RANGES, and no pool is sized from the budget.
 
-config KICKOS_MAX_IRQ_HANDLES
-	int "Tier-1 IRQ-as-event handles"
-	range 0 32
-	default 8
-
-config KICKOS_MAX_NOTIFY
-	int "Notification objects"
-	range 0 32
-	default 8
+config KICKOS_BUDGET_PAGES
+	int "Physical pages a task may cause to exist"
+	depends on HAS_ASPACE
+	range 0 2147483647
+	default 1024
 	help
-	  The pool behind CAP_NOTIFY. One object carries 32 badge bits and at most one
-	  bound waiter, so a server serving several lines needs one, not one per line.
-	  The ceiling of 32 is the hold set's width, as for every charged pool.
+	  A task's PAGES budget: the frames its space owns (its data, its stacks, its
+	  reservations and its page tables), those it holds staged for a reservation in
+	  progress, and every frame run its declaration minted until the run's last holder
+	  lets it go. Over the budget the allocation answers -KOS_EAGAIN, or NULL from
+	  kos_ram_alloc.
 
-config KICKOS_TASK_ENDPOINT_BUDGET
-	int "Endpoints one task may hold"
-	range 1 31
+config KICKOS_BUDGET_ENDPOINTS
+	int "Endpoints a task may hold"
+	range 0 65533
 	default 3
 	help
-	  The most endpoints ONE TASK may hold live at once, a delegated and a
-	  kernel-seated capability counting alongside an own-create. Refused with
-	  -KOS_EAGAIN at the creator, which is neither -KOS_ENOMEM (the pool had a slot)
-	  nor -KOS_EMFILE (the caller's table had one). Admission counts what each task
-	  holds, the init's AMP ports and served endpoints included, against it.
+	  A task's ENDPOINTS budget: the endpoints its threads hold at once, a delegated
+	  or kernel-seated capability counting as an own create does and one endpoint
+	  counting once however many capabilities name it. Over the budget a create or a
+	  delegation answers -KOS_EAGAIN. The endpoint pool is the sum of every task's
+	  budget, the init's and the reserve's.
 
-	  THESE FOUR BUDGETS ARE THE WHOLE CEILING, one per charged pool. Each is checked
-	  at BUILD time against its own pool and must sit strictly below it, so no task can
-	  take a pool's last slot and a supervisor respawning a driver still finds one. A
-	  board that narrows a pool narrows the matching budget with it or the build fails
-	  naming both. That is why there are four figures and not one: the pools are sized
-	  apart on purpose, and a single budget would price a notification at an endpoint.
-
-	  WHAT THEY ARE FOR: without them a task's own-creates are bounded only by its
-	  threads' capability tables, and a thread can spawn siblings to widen that bound,
-	  so one task can empty a pool. THE THREAT IS ACCIDENT: the party holding the slots
-	  is a well-behaved driver that died at its own legitimate maximum. It is NOT a
-	  bound on an adversary, task creation carrying no authority bit, and bounding that
-	  is a quota on task creation rather than anything here (the object-pool invariant
-	  in docs, and cap.h). THE POOL THIS ONE GUARDS IS THE RESPAWN'S, so the headroom it
-	  leaves is the endpoint a supervisor needs after a driver died holding its own.
-
-	  Neither this nor the pool width stops N COLLUDING tasks from emptying a pool
-	  between them. Bounding that is a quota on the capability slab the caps live in.
-
-config KICKOS_TASK_IRQ_HANDLE_BUDGET
-	int "Tier-1 IRQ bindings one task may hold"
-	range 1 31
+config KICKOS_BUDGET_NOTIFICATIONS
+	int "Notifications a task may hold"
+	range 0 65533
 	default 7
 	help
-	  As KICKOS_TASK_ENDPOINT_BUDGET, over the tier-1 IRQ binding pool: strictly below
-	  KICKOS_MAX_IRQ_HANDLES or the build fails. An in-kernel irq_attach takes no
-	  binding and does not spend this.
+	  As KICKOS_BUDGET_ENDPOINTS, over the notification pool. A notification bound to a
+	  thread or raised by a held IRQ binding counts as held.
 
-config KICKOS_TASK_NOTIFY_BUDGET
-	int "Notification objects one task may hold"
-	range 1 31
+config KICKOS_BUDGET_IRQ_BINDINGS
+	int "Tier-1 IRQ bindings a task may hold"
+	range 0 253
 	default 7
 	help
-	  As KICKOS_TASK_ENDPOINT_BUDGET, over the notification pool: strictly below
-	  KICKOS_MAX_NOTIFY or the build fails.
+	  As KICKOS_BUDGET_ENDPOINTS, over the IRQ binding pool. A line the task's
+	  declaration states counts one.
 
-config KICKOS_TASK_FRAME_RUN_BUDGET
-	int "Frame runs one task may mint"
-	range 1 31
+config KICKOS_BUDGET_FRAME_RUNS
+	int "Frame runs a task may mint"
+	depends on HAS_ASPACE
+	range 0 65533
 	default 7
 	help
-	  As KICKOS_TASK_ENDPOINT_BUDGET, over the frame-run pool: strictly below
-	  KICKOS_MAX_FRAME_RUNS or the build fails. CHARGED BY MINT AND NOT BY HOLD: a
-	  run counts against the task that minted it for the run's whole life, wherever it
-	  is mapped and whoever holds a capability to it, so a run delegated or mapped
-	  elsewhere charges its receiver nothing. Only a translating board builds the pool.
+	  A task's FRAME_RUNS budget: the frame runs its declaration minted that are still
+	  alive, wherever each is mapped and whoever holds it. Over the budget
+	  kos_frame_create answers -KOS_EAGAIN. The frame-run pool is the sum of every
+	  task's budget, the init's and the reserve's.
+
+endmenu
 
 config KICKOS_MAX_SPAWN_GRANTS
 	int "Caps one spawn may delegate"
@@ -725,9 +662,24 @@ config KICKOS_MAX_SPAWN_GRANTS
 	  each measured at a grant count, which the arch's trap header states, and the build
 	  refuses more until they are re-measured. lx6 runs a system call as a plain call on
 	  the caller's own stack, which no trap figure prices, so it refuses nothing here.
-	  The floor is 2, not 1: the child width is
-	  this plus the reserved index range, and a child keeping no slot of its own
-	  beside the reply peak is refused at configure.
+	  A spawn's capability table must seat its whole grant list above the reserved
+	  index range, or the spawn answers -KOS_EINVAL.
+
+config KICKOS_ARGV_MAX
+	int "Bytes of argv one task create copies"
+	range 16 1024
+	default 256
+	help
+	  The strings kos_task_create copies onto the entry thread's stack, each NUL
+	  included, and the longest name kos_program_find and an instance name take.
+
+config KICKOS_MAX_ARGC
+	int "Strings one task create copies"
+	range 1 256
+	default 32
+	help
+	  The longest argv kos_task_create takes. A longer one answers -KOS_EINVAL. The
+	  create reads each string with interrupts masked, so this bounds that window.
 
 config KICKOS_MAX_THREAD_WINDOWS
 	int "Windows one thread may hold"
@@ -739,14 +691,6 @@ config KICKOS_MAX_THREAD_WINDOWS
 	  KICKOS_MPU_MAX_REGIONS. A longer spawn list answers -KOS_ENOMEM. Costs
 	  .bss, not caller stack: thread_create_call stages the list in
 	  Kernel::window_stage, one entry per window.
-
-config KICKOS_CAP_TABLE_SUPPLY
-	int "Capability slots this board's RAM can back"
-	range 8 64
-	default 16
-	help
-	  SUPPLY, not demand. The width is summed from declared demand and refused
-	  above this.
 
 config KICKOS_USER_STACK_SIZE
 	int "Default spawned-thread stack"
@@ -797,9 +741,9 @@ config KICKOS_KERNEL_STACKS
 	default 0
 	help
 	  Whether THIS board carves the per-thread kernel stacks, as a number the generated
-	  header and the CMake fragment can carry, on the KICKOS_HAVE_MPU model. At 1 the
-	  KICKOS_THREAD_SLOTS blocks of KICKOS_KERNEL_STACK_SIZE are one array in kernel
-	  .bss, kmain arms each slot's canary and fill at init, and thread_create seats each
+	  header and the CMake fragment can carry, on the KICKOS_HAVE_MPU model. At 1 a
+	  block of KICKOS_KERNEL_STACK_SIZE per thread slot is one array in the system's
+	  pools, kmain arms each slot's canary and fill at init, and thread_create seats each
 	  pool thread's ctx.kernel_sp on its slot's block. At 0 the array is not compiled,
 	  every kernel_sp stays 0, and the arch entry keeps its red zone instead.
 
@@ -855,7 +799,7 @@ config KICKOS_KERNEL_STACK_SIZE
 
 	  NOT A KNOB, which is why it has no prompt. Every default below is what the arch's
 	  deepest transferred dispatch measures, a board may only RAISE it, and a raise buys
-	  nothing the gate asks for while costing KICKOS_THREAD_SLOTS bytes per byte.
+	  nothing the gate asks for while costing a byte per thread slot per byte.
 
 	  EVERY DEFAULT ABOVE FOLLOWS ITS ARCH'S DEPTH MACROS, on all four arches that carve
 	  a block: rv32imac, rxv3, armv7m and armv6m. The arch's trap-stack header declares the
@@ -873,7 +817,7 @@ config KICKOS_KERNEL_STACK_SIZE
 	  number. KICKOS_TELEMETRY compiles the trace emitters and the ring drain
 	  arch_shutdown runs, which the dispatch reaches through exit_current; it is the
 	  largest posture effect in the fleet. The blocks
-	  are per thread SLOT, so one byte here costs KICKOS_THREAD_SLOTS bytes of kernel
+	  are per thread SLOT, so one byte here costs a byte per thread slot of kernel
 	  .bss, and applying the telemetry figure fleet-wide fails to link the boards that
 	  have no telemetry variant. KICKOS_BENCH is a smaller class of the same kind: its
 	  arm prints from inside the dispatch, and no other preset carries that tail.
@@ -883,8 +827,8 @@ config KICKOS_KERNEL_STACK_SIZE
 	  own reading is lower. Tightening a board below its arch is a change to the assert
 	  and to what the depth macro means, not a defconfig line.
 
-	  WHICH BOARDS PAY. Only where KICKOS_KERNEL_STACKS is 1: the block is
-	  KICKOS_THREAD_SLOTS of this size in kernel .bss, and the banner reports slot size,
+	  WHICH BOARDS PAY. Only where KICKOS_KERNEL_STACKS is 1: the block is one of this
+	  size per thread slot in kernel .bss, and the banner reports slot size,
 	  slot count and their product. An arch that carves the blocks stops reserving a red
 	  zone for the dispatch, so no board ever holds both.
 

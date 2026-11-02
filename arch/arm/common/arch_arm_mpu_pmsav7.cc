@@ -166,7 +166,8 @@ extern "C" void kickos_arm_mpu_program(struct arch_mpu_encoded const* img)
     // Do not drop this because kickos_arm_mpu_fixed_init also enables the MPU: only imxrt1062
     // calls that, so on every other PMSAv7 chip this is the ONLY write that enables it. It
     // enables, so unlike a leading MPU_CTRL = 0 it cannot stop the chip fixed rows applying.
-    reg32(MPU_CTRL) = MPU_CTRL_ENABLE | MPU_CTRL_PRIVDEFENA;
+    // HFNMIENA keeps the fixed rows in force inside HardFault and NMI.
+    reg32(MPU_CTRL) = MPU_CTRL_ENABLE | MPU_CTRL_HFNMIENA | MPU_CTRL_PRIVDEFENA;
     barrier_dsb();
     barrier_isb();
 }
@@ -215,7 +216,7 @@ extern "C" void kickos_arm_mpu_fixed_init(void)
     }
     g_fixed_count = k;
     barrier_dsb();
-    reg32(MPU_CTRL) = MPU_CTRL_ENABLE | MPU_CTRL_PRIVDEFENA;
+    reg32(MPU_CTRL) = MPU_CTRL_ENABLE | MPU_CTRL_HFNMIENA | MPU_CTRL_PRIVDEFENA;
     barrier_dsb();
     barrier_isb();
 }

@@ -9,6 +9,8 @@
 
 #include <armv8a.ld.h>
 
+#if !KICKOS_IMAGE_PROGRAM
 #include <boot_arena.ld.h>
 KICKOS_BOOT_ARENA_ASSERT(__kickos_ram_start, __kickos_ram_end)
 KICKOS_POOL_ARENA_ASSERT(__kickos_ram_start, __kickos_ram_end)
+#endif

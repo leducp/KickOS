@@ -219,19 +219,3 @@ kickos_x86_64_syscall_entry:
 /* Into the frame, because the resume reloads rax from there. */
     movq    %rax, KOS_F_RAX(%rsp)
     jmp     kickos_x86_64_resume
-
-/* arch_syscall(nr, a0, a1, a2, a3), and arch_syscall64 is the same entry: the trap an
- * UNPRIVILEGED thread takes. .apptrap because a task fetches it and pe_image.ld claims this
- * archive's .text for the kernel's half. No privileged thread runs app code where the board
- * translates (docs/design-m6-mmu.md), so it carries no privileged branch.
- */
-    .pushsection .apptrap, "ax"
-    .balign 16
-    .globl arch_syscall
-    .globl arch_syscall64
-arch_syscall:
-arch_syscall64:
-    movq    %rcx, %r10
-    syscall
-    ret
-    .popsection

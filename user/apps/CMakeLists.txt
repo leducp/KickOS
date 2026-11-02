@@ -3,16 +3,25 @@
 
 # kickos_app_system(<app> COMPOSITION <file> [SYSTEM <system>])
 # kickos_app_system(<app> PARTITION <node0> <node1>... [SYSTEM <system>])
-#   Links <app> against KickOS::kernel and the system composed from <file>, or from this build's
-#   node of the partition the node compositions state, each relative to the app's sources.
-#   Images naming one SYSTEM share it. The root CMakeLists.txt composes every system once the
-#   manifest is written, which is after this tree.
+# kickos_app_system(<app> DEFAULT [SYSTEM <system>])
+#   Any form takes LOCAL_DRIVERS, which admits the composition against the manifest that also lists
+#   the tree's local drivers (kickos_add_driver LOCAL).
+#   Links <app> against KickOS::kickos and the system composed from <file>, or from this build's
+#   node of the partition the node compositions state, each relative to the app's sources, or
+#   from the board's default composition with its `program: main` bound to <app>. Images naming
+#   one SYSTEM share it. The root CMakeLists.txt composes every system once the manifest is
+#   written, which is after this tree.
 function(kickos_app_system app)
-  cmake_parse_arguments(KAS "" "SYSTEM;COMPOSITION" "PARTITION" ${ARGN})
-  if(KAS_UNPARSED_ARGUMENTS OR (NOT KAS_COMPOSITION AND NOT KAS_PARTITION)
-     OR (KAS_COMPOSITION AND KAS_PARTITION))
-    message(FATAL_ERROR "kickos_app_system(${app}): takes COMPOSITION <file> or PARTITION <node0> "
-      "<node1>..., then [SYSTEM <system>], not '${ARGN}'")
+  cmake_parse_arguments(KAS "DEFAULT;LOCAL_DRIVERS" "SYSTEM;COMPOSITION" "PARTITION" ${ARGN})
+  set(_forms 0)
+  foreach(_form IN ITEMS KAS_DEFAULT KAS_COMPOSITION KAS_PARTITION)
+    if(${_form})
+      math(EXPR _forms "${_forms} + 1")
+    endif()
+  endforeach()
+  if(KAS_UNPARSED_ARGUMENTS OR NOT _forms EQUAL 1)
+    message(FATAL_ERROR "kickos_app_system(${app}): takes COMPOSITION <file>, PARTITION <node0> "
+      "<node1>... or DEFAULT, then [SYSTEM <system>], not '${ARGN}'")
   endif()
   set(_system ${app}_system)
   if(KAS_SYSTEM)
@@ -29,6 +38,10 @@ function(kickos_app_system app)
   if(KAS_PARTITION)
     list(PREPEND _composition PARTITION)
   endif()
+  if(KAS_DEFAULT)
+    set(_composition "${PROJECT_BINARY_DIR}/export/boards/${KICKOS_BOARD}/composition.yaml"
+                     DEFAULT ${app})
+  endif()
   get_property(_known GLOBAL PROPERTY KICKOS_APP_SYSTEMS)
   if(_system IN_LIST _known)
     get_property(_was GLOBAL PROPERTY KICKOS_APP_SYSTEM_${_system})
@@ -40,7 +53,13 @@ function(kickos_app_system app)
     set_property(GLOBAL APPEND PROPERTY KICKOS_APP_SYSTEMS ${_system})
     set_property(GLOBAL PROPERTY KICKOS_APP_SYSTEM_${_system} "${_composition}")
   endif()
-  target_link_libraries(${app} PRIVATE KickOS::kernel ${_system})
+  # The DEFAULT binding links the system into <app> itself.
+  if(NOT KAS_DEFAULT)
+    target_link_libraries(${app} PRIVATE KickOS::kickos ${_system})
+  endif()
+  if(KAS_LOCAL_DRIVERS)
+    set_property(GLOBAL PROPERTY KICKOS_APP_SYSTEM_LOCAL_${_system} ON)
+  endif()
   set_target_properties(${app} PROPERTIES KICKOS_APP_SYSTEM ${_system})
 endfunction()
 

@@ -75,7 +75,7 @@ namespace kickos
             constexpr uint32_t TABLE_WIDTH = KICKOS_CAP_FIRST_DYNAMIC + REPLY_MAX + 2;
             // Exactly one dynamic slot, so one mint empties the free list.
             constexpr uint32_t TABLE_NARROW = KICKOS_CAP_FIRST_DYNAMIC + 1;
-            static_assert(TABLE_WIDTH <= KICKOS_MAX_HANDLES,
+            static_assert(TABLE_WIDTH <= KICKOS_SEAM_ROOT_WIDTH,
                           "the arms below ask the slab for a table wider than the codec's "
                           "ceiling, which cap_slab_attach asserts on");
 

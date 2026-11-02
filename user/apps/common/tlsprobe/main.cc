@@ -2,11 +2,19 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The thread_local witness: each thread reads back what IT wrote, the storage is at a DIFFERENT
-// address per thread, and a .tdata initialiser arrives.
+// address per thread, and a .tdata initialiser arrives. Each thread's libc state lies below its
+// thread-local storage and keeps the thread's own errno. Where the board holds a second task, main
+// creates its peer twice, the program tlsprobe_peer in an image of its own whose thread-local
+// storage is another span of the link's one thread-local segment (peer.cc).
 
+#include <kickos/chip_limits.h> // KICKOS_CHIP_ONE_TASK
 #include <kickos/kos.h>
 #include <kickos/libc/fmt.h>
 #include <kickos/sys/atomic.h>
+
+#include <errno.h>
+#include <stdlib.h>
+#include <sys/reent.h>
 
 namespace
 {
@@ -34,14 +42,21 @@ namespace
     // initialiser then proves nothing about any template.
     thread_local volatile unsigned g_seeded = 0xA5A5A5A5u;
     thread_local unsigned g_written = 0;
+    // Zero-initialised. Sized so each task image's block fits a 512-byte idle stack and the
+    // images' blocks together overflow it: the link holds idle to the init's block alone.
+    thread_local volatile unsigned g_main_pad[35];
 
-    // `done` PUBLISHES the four fields above it: the worker stores it last, main reads it first.
+    // `done` PUBLISHES the fields above it: the worker stores it last, main reads it first.
     struct Report
     {
         unsigned addr;
         unsigned sp;
         unsigned seeded;
         unsigned read_back;
+        unsigned zeroed;
+        unsigned state;
+        unsigned seeded_at;
+        int err;
         kickos::Atomic<unsigned, kickos::Order::ACQUIRE | kickos::Order::RELEASE> done;
     };
 
@@ -98,7 +113,8 @@ extern "C" [[noreturn]] void tlsprobe_edge_park(void)
 
 // An empty stack's SP sits at its block's exclusive top, which no C code reaches, so this
 // thread's entry is assembly. It keeps nothing on its own stack and never returns: an interrupt
-// taken while SP is at the top stacks its frame over this block's outermost frames.
+// taken while SP is at the top stacks its frame over this block's outermost frames. The thread
+// pointer is KICKOS_REENT_CARVE above the block's base, past the libc state.
 extern "C" void tlsprobe_edge(void*);
 __asm__(".syntax unified\n"
         ".pushsection .text.tlsprobe_edge, \"ax\", %progbits\n"
@@ -108,7 +124,8 @@ __asm__(".syntax unified\n"
         "tlsprobe_edge:\n"
         "    bl      __aeabi_read_tp\n"
         "    mov     r5, r0\n"
-        "    ldr     r4, =" TLSPROBE_XSTR(KICKOS_TLS_STRIDE) "\n"
+        "    ldr     r4, =" TLSPROBE_XSTR(KICKOS_TLS_STRIDE) " - "
+        TLSPROBE_XSTR(KICKOS_REENT_CARVE) "\n"
         "    adds    r0, r0, r4\n"
         "    ldr     r1, =" TLSPROBE_XSTR(TLSPROBE_KEEP_R1) "\n"
         "    ldr     r2, =" TLSPROBE_XSTR(TLSPROBE_KEEP_R2) "\n"
@@ -131,6 +148,26 @@ __asm__(".syntax unified\n"
 
 namespace
 {
+    int want_err(int k)
+    {
+        if ((k & 1) == 0)
+        {
+            return EINVAL;
+        }
+        return ERANGE;
+    }
+
+    // The lowest of the worker's thread_locals as it saw them.
+    unsigned tls_lo(Report const& r)
+    {
+        unsigned lo = r.addr;
+        if (r.seeded_at < lo)
+        {
+            lo = r.seeded_at;
+        }
+        return lo;
+    }
+
     void worker(void* arg)
     {
         int const k = static_cast<int>(reinterpret_cast<uintptr_t>(arg));
@@ -138,15 +175,30 @@ namespace
         // Read BEFORE the write, so a template that never arrived is visible as a wrong seed
         // rather than as a zero nobody can attribute.
         unsigned const seeded = g_seeded;
+        unsigned const zeroed = g_main_pad[0] | g_main_pad[34];
         g_seeded = 0;
         g_written = mine;
+        g_main_pad[0] = mine;
+        char* end = nullptr;
+        if ((k & 1) == 0)
+        {
+            (void)strtol("10", &end, 99);
+        }
+        else
+        {
+            (void)strtol("99999999999999999999999999", &end, 10);
+        }
         // A round trip through the scheduler: on an arch whose thread pointer is a register,
         // this is where a switch that forgot to restore it shows up.
         kos::sleep_ns(50000000ull);
+        g_report[k].err = errno;
+        g_report[k].state = static_cast<unsigned>(reinterpret_cast<uintptr_t>(_REENT));
+        g_report[k].seeded_at = static_cast<unsigned>(reinterpret_cast<uintptr_t>(&g_seeded));
         g_report[k].addr = static_cast<unsigned>(reinterpret_cast<uintptr_t>(&g_written));
         g_report[k].sp = read_sp();
         g_report[k].seeded = seeded;
         g_report[k].read_back = g_written;
+        g_report[k].zeroed = zeroed;
         g_report[k].done = 1;
         while (true)
         {
@@ -155,9 +207,72 @@ namespace
     }
 }
 
+#if not KICKOS_CHIP_ONE_TASK
+namespace
+{
+    // The peer's exit status, retried while its last incarnation's members are still dying, or a
+    // value no status takes. Main writes its own thread-local storage while the peer runs.
+    int run_peer(kos_program_t prog)
+    {
+        kos_task_params p{};
+        p.instance = "peer";
+        kos_task_t t = KOS_TASK_NONE;
+        int rc = -KOS_EAGAIN;
+        for (int tries = 0; rc == -KOS_EAGAIN and tries < 1000; tries++)
+        {
+            rc = kos_task_create(prog, &p, &t);
+            if (rc == -KOS_EAGAIN)
+            {
+                kos::sleep_ns(100000ull);
+            }
+        }
+        if (rc != 0)
+        {
+            return -1000 + rc;
+        }
+        for (unsigned i = 0; i < 1000u; i++)
+        {
+            g_written = 0x3A3A0000u + i;
+            int status = 0;
+            int const state = kos_task_state(t, &status);
+            if (state >= 0 and (state & KOS_TASK_DEAD) != 0)
+            {
+                return status;
+            }
+            kos::sleep_ns(1000000ull);
+        }
+        return -2000;
+    }
+}
+#endif
+
 int main(int, char**)
 {
     kos::print("[tlsprobe] start\n");
+    int bad = 0;
+    char b[96];
+#if not KICKOS_CHIP_ONE_TASK
+    {
+        int status[2] = {-3000, -3000};
+        kos_program_t prog = KOS_CAP_NONE;
+        if (kos_program_find("tlsprobe_peer", &prog) == 0)
+        {
+            status[0] = run_peer(prog);
+            status[1] = run_peer(prog);
+            (void)kos_handle_close(prog);
+        }
+        if (status[0] == 0 and status[1] == 0)
+        {
+            kos::print("[tlsprobe] peer PASS\n");
+        }
+        else
+        {
+            ksnprintf(b, sizeof(b), "[tlsprobe] peer FAIL %d then %d\n", status[0], status[1]);
+            kos::print(b);
+            bad++;
+        }
+    }
+#endif
 
     unsigned const main_addr = static_cast<unsigned>(reinterpret_cast<uintptr_t>(&g_written));
     {
@@ -183,8 +298,7 @@ int main(int, char**)
         if (stack != nullptr and kos_mem_self_grant(stack, CALLER_STACK, 0) == 0)
         {
             rc = kos::thread::create(worker, reinterpret_cast<void*>(static_cast<uintptr_t>(2)),
-                                     "tlsc", 10, KOS_POLICY_FIFO, 0, nullptr, 0, stack,
-                                     CALLER_STACK)
+                                     "tlsc", 10, KOS_POLICY_FIFO, 0, stack, CALLER_STACK)
                      .error();
         }
         char d[72];
@@ -214,8 +328,6 @@ int main(int, char**)
         kos::sleep_ns(20000000ull);
     }
 
-    int bad = 0;
-    char b[80];
     for (int k = 0; k < WORKERS; k++)
     {
         unsigned const want = 0xC0DE0000u + static_cast<unsigned>(k);
@@ -235,9 +347,30 @@ int main(int, char**)
             verdict = "TEMPLATE MISSING";
             bad++;
         }
+        else if (g_report[k].zeroed != 0u)
+        {
+            verdict = "ZERO-INITIALISED NOT ZERO";
+            bad++;
+        }
         else if (g_report[k].addr == main_addr)
         {
             verdict = "SHARED WITH MAIN";
+            bad++;
+        }
+        else if (g_report[k].err != want_err(k))
+        {
+            verdict = "ERRNO NOT ITS OWN";
+            bad++;
+        }
+        // The state sits below the thread pointer, so no part of it is a thread_local.
+        else if (g_report[k].state + KICKOS_REENT_CARVE > tls_lo(g_report[k]))
+        {
+            verdict = "STATE OVERLAPS THREAD_LOCAL";
+            bad++;
+        }
+        else if (tls_lo(g_report[k]) - g_report[k].state >= KICKOS_TLS_STRIDE)
+        {
+            verdict = "STATE NOT IN THE THREAD'S BLOCK";
             bad++;
         }
         // THE BLOCK MUST BE THE ONE THIS THREAD IS STANDING ON: a thread pointer derived from SP
@@ -256,9 +389,9 @@ int main(int, char**)
             bad++;
         }
 #endif
-        ksnprintf(b, sizeof(b), "[tlsprobe] w%d tp %x sp %x seed %x read %x %s\n", k,
-                  g_report[k].addr, g_report[k].sp, g_report[k].seeded,
-                  g_report[k].read_back, verdict);
+        ksnprintf(b, sizeof(b), "[tlsprobe] w%d tp %x sp %x seed %x read %x state %x %s\n",
+                  k, g_report[k].addr, g_report[k].sp, g_report[k].seeded,
+                  g_report[k].read_back, g_report[k].state, verdict);
         kos::print(b);
     }
     for (int i = 0; i < WORKERS; i++)

@@ -7,7 +7,6 @@
 # Renesas RX72M (RXv3).
 set(KICKOS_ARCH_SOURCES
   rx/rxv3/arch_rxv3.cc
-  rx/rxv3/emutls.cc
   common/arch_ram_common.cc
   common/startup_ranges.cc
   ${KICKOS_SEAM_DEFAULTS_COMMON}

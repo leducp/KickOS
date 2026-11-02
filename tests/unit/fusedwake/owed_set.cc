@@ -100,7 +100,7 @@ namespace
         {
             f->sender_buf[i] = static_cast<uint8_t>(i + 1);
         }
-        attach_caps(f->server, KICKOS_CAP_CHILD_WIDTH);
+        attach_caps(f->server, KICKOS_SEAM_CAP_WIDTH);
         // Block the clients before scheduling so a higher-priority client cannot
         // run ahead of the server during setup.
         for (Thread* t : {f->answered, f->sender})
@@ -157,7 +157,7 @@ namespace
         // Pinned where it runs: a line is claimed and waited on only by a thread that cannot
         // migrate.
         l->server->affinity = ON_ME;
-        attach_caps(l->server, KICKOS_CAP_CHILD_WIDTH);
+        attach_caps(l->server, KICKOS_SEAM_CAP_WIDTH);
         {
             IrqLock lock;
             sched::reschedule(nullptr, lock);

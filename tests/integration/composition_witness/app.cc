@@ -21,9 +21,13 @@ namespace
     constexpr unsigned FROZEN_AFTER = 20u;
 }
 
-extern "C" void app_main(kos_self_t const* self)
+extern "C" void witness_own_claim(char const* task, uint32_t id);
+extern "C" void witness_own_check(char const* task, uint32_t id);
+
+int main(int, char**)
 {
-    kos_cap_t const sensor = kos_grant_endpoint(self, "/svc/sensor");
+    witness_own_claim("app", 3u);
+    kos_cap_t const sensor = kos_grant_endpoint("/svc/sensor");
 
     uint32_t last = 0;
     unsigned same = 0;
@@ -61,6 +65,7 @@ extern "C" void app_main(kos_self_t const* self)
         {
             same = 0;
             last = s.value;
+            witness_own_check("app", 3u);
             printf("sensor: %lu from /svc/sensor\n", static_cast<unsigned long>(s.value));
         }
         kos_sleep_ns(PERIOD_NS);

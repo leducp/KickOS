@@ -14,11 +14,12 @@
 #     in file order, and one waiting on a server is skipped and revisited;
 #   * a device window or interrupt line held by two tasks, and the board's console device
 #     granted to any task but the one `stdout` names;
+#   * a use of a bus service that names no `slots`, and a slot two of its clients name;
 #   * `restart` on the task `ends` names, whose one exit ends the system;
 #   * a grant the platform cannot enforce, unless the limitation the chip file names is listed
 #     under `accepts`;
 #   * a task writing stdout declared before the task `stdout` names;
-#   * a priority outside the kernel build's range, an `entry` task stating no `ceiling` or one
+#   * a priority outside the kernel build's range, a `program` task stating no `ceiling` or one
 #     below its `priority`, and counts and sizes past what the kernel build exports, a supply
 #     refusal naming the Kconfig knob that would have to grow.
 
@@ -34,6 +35,10 @@ ends: never
 # The libc heap the image carves.
 heap: 16384
 
+# The threads a user task may hold, unless it states its own: its entry alone here. The
+# kernel sizes its thread pool, and the stacks it reserves, from these budgets.
+budgets: { threads: 1 }
+
 # Shared memory, declared once and mapped by the init into each task that lists it under
 # `maps`. Never mapped by hand: user code looks it up by name. The size rounds up to what the
 # protection unit grants, a power of two of at least 32 bytes on this MPU.
@@ -43,10 +48,10 @@ shared:
     cache: cached # shared by tasks of this image only, on coherent memory
 
 # Restart is a counter and nothing more. `restart: { max: N }` starts a dead task again from
-# its entry with the same grants, at most N times in the system's life; without it a task is
+# its main with the same grants, at most N times in the system's life; without it a task is
 # never restarted. Once the count is spent the task stays dead and the system carries on:
 # whether to stop is the user's call, made by a task that watches it. A restarted task's
-# stack is fresh and its globals are not, every app task sharing the image's data section.
+# stack and globals are fresh, its image starting over.
 
 tasks:
   # A driver shipped with the kernel package. `devices` grants the channel's register window.
@@ -72,20 +77,21 @@ tasks:
     restart: { max: 3 }
     accepts: [coarse_gate]
 
-  # User code from here on. `entry` is a symbol in this project's sources, and `ceiling` the
+  # User code from here on. `program` names an executable target of this project, and `ceiling` the
   # highest priority the task's threads may take, here the task's own.
   - name: sensor
-    entry: sensor_main
+    program: sensor
     stack: 2048
     priority: 9
     ceiling: 9
-    uses: [/svc/spi0]
+    # A bus client names the device slots it reaches, which no other client may name.
+    uses: [{ path: /svc/spi0, slots: [0] }]
     serves: /svc/sensor
     maps: { /shm/history: rw }
     restart: { max: 3 }
 
   - name: app
-    entry: app_main
+    program: main
     stack: 4096
     priority: 8
     ceiling: 8
@@ -94,7 +100,7 @@ tasks:
   # A user task told of every death among the tasks it watches, after the init has applied
   # their restart counters, and allowed to ask how many restarts each has left.
   - name: health
-    entry: health_main
+    program: health
     stack: 2048
     priority: 10
     ceiling: 10

@@ -479,8 +479,9 @@ void arch_init(void)
 // Chip fixed MPU regions, in the LOW slots; per-thread grants sit above them. ERR011573 /
 // Arm 1013783-B: the default map leaves 0x6000_0000-0x9FFF_FFFF Normal, so M7 speculation
 // past the populated flash, or into the unbacked SEMC aperture, hits an AHB slave that never
-// responds and stalls the core with NO fault. Both external bands are wrapped Device + XN +
-// no-access, and the populated flash overlaid as Normal cacheable priv-RO+X.
+// responds and stalls the core with NO fault. Both external bands, and their aliases in the
+// Code region (IMXRT1060RM Table 3-1, p.36), are wrapped Device + XN + no-access, and the
+// populated flash overlaid as Normal cacheable priv-RO+X.
 extern "C"
 {
     size_t kickos_arm_mpu_fixed(struct kickos_arm_mpu_fixed_region const** out)
@@ -491,12 +492,17 @@ extern "C"
                       "a PMSAv7 region is a power of two");
         // RASR.SIZE: a region of 2^(SIZE + 1) bytes.
         constexpr uint32_t SZ_512M = (29u - 1u) << 1;
+        constexpr uint32_t SZ_256M = (28u - 1u) << 1;
+        constexpr uint32_t SZ_128M = (27u - 1u) << 1;
         constexpr uint32_t SZ_FLASH = (__builtin_ctz(KICKOS_LAYOUT_FLEXSPI_FLASH_SIZE) - 1u) << 1;
-        constexpr uint32_t WRAP = MPU_RASR_ENABLE | SZ_512M | MPU_RASR_AP_NONE | MPU_RASR_XN | MPU_RASR_MEM_DEVICE;
+        constexpr uint32_t WRAP_ATTR = MPU_RASR_ENABLE | MPU_RASR_AP_NONE | MPU_RASR_XN | MPU_RASR_MEM_DEVICE;
+        constexpr uint32_t WRAP = WRAP_ATTR | SZ_512M;
         static kickos_arm_mpu_fixed_region const rows[] = {
             {FLASH, WRAP},                                                               // FlexSPI aperture wrap
             {FLASH, MPU_RASR_ENABLE | SZ_FLASH | MPU_RASR_AP_PRO | MPU_RASR_MEM_NORMAL}, // populated flash, RO+X
             {0x80000000u, WRAP},                                                         // SEMC aperture wrap
+            {0x08000000u, WRAP_ATTR | SZ_128M},                                          // FlexSPI alias wrap
+            {0x10000000u, WRAP_ATTR | SZ_256M},                                          // SEMC alias wrap
         };
         *out = rows;
         return sizeof(rows) / sizeof(rows[0]);

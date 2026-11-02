@@ -37,25 +37,16 @@ static void ampecho_hold(unsigned char const* view, unsigned char seq)
     }
 }
 
-void ampecho_spare(kos_self_t const* self)
-{
-    (void)self;
-    while (true)
-    {
-        kos_sleep_ns(1000000000ull);
-    }
-}
-
-void ampecho_main(kos_self_t const* self)
+int main(void)
 {
     kos_cap_t ep = KOS_CAP_NONE;
-    uint32_t const port = ampping_crossing(self, KOS_CAP_WAIT, KOS_AMP_NO_ENTRY, &ep);
+    uint32_t const port = ampping_crossing(KOS_CAP_WAIT, KOS_AMP_NO_ENTRY, &ep);
     if (port == KOS_AMP_NO_ENTRY or ep == KOS_CAP_NONE)
     {
         printf("ampecho: node %u serves no port\n", (unsigned)KOS_AMP_SELF_NODE);
         exit(1);
     }
-    kos_window_t const share = kos_grant_mem(self, "/shm/share");
+    kos_window_t const share = kos_grant_mem("/shm/share");
     unsigned char* const view = (unsigned char*)kos_window_addr(share);
     if (view != NULL and kos_window_size(share) >= (KOS_AMP_SELF_NODE + 1u) * AMP_SHARE_LINE)
     {

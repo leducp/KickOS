@@ -6,6 +6,7 @@
 #include <kickos/board_config.h>
 #include <kickos/config/priorities.h> // KICKOS_PRIO_MAX
 #include <kickos/sys/errno.h>
+#include <kickos/sys/uart.h> // kos_uart_req, KOS_UART_DRAIN
 
 #include <stdlib.h>
 #include <string.h>
@@ -336,7 +337,7 @@ namespace fake
             return full(g_config.cap_reserved + static_cast<uint32_t>(g_table.size()), g_config.limits.cap_table);
         }
 
-        kos_cap_t install(size_t object, uint32_t rights, int badge)
+        kos_cap_t install(size_t object, uint32_t rights, int64_t badge)
         {
             g_next_cap++;
             g_objects[object].refs++;
@@ -950,6 +951,11 @@ namespace fake
         g_config.console_receives = receives;
     }
 
+    void set_console_drain(int32_t status)
+    {
+        g_config.console_drain = status;
+    }
+
     int64_t stdout_object()
     {
         return g_stdout;
@@ -967,6 +973,10 @@ namespace fake
 }
 
 using namespace fake;
+
+// The image's own table, which only a driver task's entry thread reads (kickos_driver_task) and
+// the scripted kernel never runs.
+kos_table_header const* const kickos_table = nullptr;
 
 extern "C"
 {
@@ -1053,6 +1063,37 @@ int kos_notify_badge(kos_cap_t source_cap, uint32_t bit, kos_cap_t* out_cap)
         return finish(call, -KOS_EMFILE);
     }
     *out_cap = install(c->object, c->rights, static_cast<int>(bit));
+    return finish(call, 0);
+}
+
+int kos_endpoint_badge(kos_cap_t source_cap, uint32_t badge, kos_cap_t* out_cap)
+{
+    size_t const call = record("kos_endpoint_badge", {source_cap, badge});
+    *out_cap = KOS_CAP_NONE;
+    int const rc = scripted(call);
+    if (rc != 1)
+    {
+        return finish(call, rc);
+    }
+    if (badge == KOS_BADGE_NONE)
+    {
+        return finish(call, -KOS_EINVAL);
+    }
+    Cap const* const c = find_cap(source_cap);
+    if (c == nullptr or g_objects[c->object].kind != Kind::ENDPOINT)
+    {
+        return finish(call, -KOS_EBADF);
+    }
+    uint32_t const need = KOS_CAP_SIGNAL | KOS_CAP_HANDOUT;
+    if ((c->rights & need) != need)
+    {
+        return finish(call, -KOS_EACCES);
+    }
+    if (table_full())
+    {
+        return finish(call, -KOS_EMFILE);
+    }
+    *out_cap = install(c->object, c->rights & (KOS_CAP_SIGNAL | KOS_CAP_TRANSFER), badge);
     return finish(call, 0);
 }
 
@@ -1243,18 +1284,221 @@ int kos_mem_self_grant(void* base, size_t size, uint32_t flags)
     return finish(call, 0);
 }
 
-int kos_task_create(void* mem_base, uint32_t mem_size, uint32_t mem_flags, kos_task_t* out_task)
+static int create_task(void* mem_base, uint32_t mem_size, uint32_t mem_flags, uint16_t decl, kos_task_t* out_task,
+                       size_t call);
+static int spawn_thread(struct kos_thread_params const* params, kos_task_t into, kos_thread_t* out_thread,
+                        size_t call);
+static void publish(kos_cap_t ep, int64_t served_by);
+
+int kos_program_find(char const* name, kos_program_t* out_prog)
 {
-    size_t const call = record("kos_task_create", {reinterpret_cast<uintptr_t>(mem_base), mem_size, mem_flags});
+    size_t const call = record("kos_program_find", {});
+    g_calls[call].text = name;
+    *out_prog = KOS_CAP_NONE;
+    int const rc = scripted(call);
+    if (rc != 1)
+    {
+        return finish(call, rc);
+    }
+    if (table_full())
+    {
+        return finish(call, -KOS_EMFILE);
+    }
+    g_objects.push_back(Object{Kind::PROGRAM, 0u, 0u, -1, false, -1, 0u, false});
+    *out_prog = install(g_objects.size() - 1u, KOS_CAP_TRANSFER, -1);
+    return finish(call, 0);
+}
+
+// kernel/syscall/syscall_thread.cc, task_create_call: the named declaration, an empty task from it,
+// and its entry thread spawned into it at the declared priority with the declared authority.
+int kos_task_create(kos_program_t prog, struct kos_task_params const* params, kos_task_t* out_task)
+{
+    size_t const call = record("kos_task_create", {reinterpret_cast<uintptr_t>(params->block), params->size, prog,
+                                                   params->cap_count, params->window_count, params->flags});
+    if (params->instance != nullptr)
+    {
+        g_calls[call].text = params->instance;
+    }
     *out_task = KOS_TASK_NONE;
     int const rc = scripted(call);
     if (rc != 1)
     {
         return finish(call, rc);
     }
+    int64_t const program = object_of(prog);
+    if (program < 0 or g_objects[static_cast<size_t>(program)].kind != Kind::PROGRAM)
+    {
+        return finish(call, -KOS_EBADF);
+    }
+    if (g_config.table == nullptr or params->instance == nullptr)
+    {
+        return finish(call, -KOS_EINVAL);
+    }
+    auto const tasks = reinterpret_cast<kos_table_task const*>(g_config.table + 1);
+    auto const grants = reinterpret_cast<kos_table_grant const*>(tasks + g_config.table->task_count);
+    auto const refs = reinterpret_cast<kos_table_ref const*>(grants + g_config.table->grant_count);
+    auto const privs = reinterpret_cast<kos_table_priv const*>(refs + g_config.table->ref_count);
+    auto const regions = reinterpret_cast<kos_table_region const*>(privs + g_config.table->priv_count);
+    auto const strings = reinterpret_cast<char const*>(regions + g_config.table->region_count);
+    uint16_t decl = 0;
+    while (decl < g_config.table->task_count and std::string{&strings[tasks[decl].name]} != params->instance)
+    {
+        decl++;
+    }
+    if (decl == g_config.table->task_count)
+    {
+        return finish(call, -KOS_ENOENT);
+    }
+    kos_table_task const& t = tasks[decl];
+    bool const driver = t.driver != KOS_TABLE_NONE;
+    if (driver and params->window_count != 0u)
+    {
+        return finish(call, -KOS_EINVAL);
+    }
+    if ((t.authority & ~g_config.authority) != 0u)
+    {
+        return finish(call, -KOS_EPERM);
+    }
+    for (Task const& live : g_tasks)
+    {
+        if (live.decl == decl + 1 and not live.released and (live.state & KOS_TASK_DEAD) == 0u)
+        {
+            return finish(call, -KOS_EBUSY);
+        }
+    }
+    // A delegated capability's position in the create's list is its grant's among the task's
+    // grants that place one (tools/compose/kickos_compose/emit.py, render_decls).
+    int64_t ready = -1;
+    kos_cap_t ready_cap = KOS_CAP_NONE;
+    std::vector<kos_window> declared;
+    std::vector<int> lines;
+    uint16_t at = 0;
+    for (uint16_t k = 0; k < t.grant_count; k++)
+    {
+        kos_table_grant const& g = grants[t.first_grant + k];
+        if (driver and g.kind == KOS_GRANT_WINDOW)
+        {
+            declared.push_back(kos_window{static_cast<uintptr_t>(g.base), g.size, KOS_WINDOW_DEVICE, 0});
+        }
+        if (driver and g.kind == KOS_GRANT_LINE)
+        {
+            lines.push_back(g.line);
+        }
+        if (g.cap_slot == KOS_TABLE_NONE)
+        {
+            continue;
+        }
+        at++;
+        if (g.kind != KOS_GRANT_ENDPOINT_SERVE)
+        {
+            continue;
+        }
+        if (at > params->cap_count or params->caps == nullptr)
+        {
+            return finish(call, -KOS_EINVAL);
+        }
+        ready_cap = params->caps[at - 1u].source_cap;
+        ready = object_of(ready_cap);
+        if (ready < 0 or g_objects[static_cast<size_t>(ready)].kind != Kind::ENDPOINT)
+        {
+            return finish(call, -KOS_EINVAL);
+        }
+    }
+    // The declaration's lines, claimed by the kernel for the entry thread (kernel/irq/irq.cc,
+    // irq_declared_claim).
+    for (int line : lines)
+    {
+        for (Object const& o : g_objects)
+        {
+            if (o.kind == Kind::LINE and o.line == line and o.refs != 0u)
+            {
+                return finish(call, -KOS_EBUSY);
+            }
+        }
+    }
+    bool const console = driver and (t.flags & KOS_TABLE_TASK_CONSOLE) != 0u;
+    if (console)
+    {
+        Cap const* const c = find_cap(ready_cap);
+        if (c == nullptr or (c->rights & KOS_CAP_HANDOUT) == 0u)
+        {
+            return finish(call, -KOS_EACCES);
+        }
+    }
+    kos_task_t handle = KOS_TASK_NONE;
+    int const made = create_task(params->block, params->size, params->flags, decl + 1u, &handle, call);
+    if (made != 0)
+    {
+        return made;
+    }
+    kos_thread_params p = {};
+    p.name = params->instance;
+    p.prio = t.priority;
+    p.policy = KOS_POLICY_FIFO;
+    p.cap_count = params->cap_count;
+    p.caps = params->caps;
+    p.cap_dest = params->cap_dest;
+    p.windows = params->windows;
+    p.window_count = params->window_count;
+    if (driver)
+    {
+        p.windows = declared.data();
+        p.window_count = static_cast<uint16_t>(declared.size());
+    }
+    p.stack_base = params->stack;
+    p.stack_size = params->stack_size;
+    p.authority = t.authority;
+    kos_thread_t thread = KOS_THREAD_NONE;
+    int const spawned = spawn_thread(&p, handle, &thread, call);
+    Task* const task = find_task(handle);
+    if (spawned != 0)
+    {
+        task->held = false;
+        release_if_done(*task);
+        return spawned;
+    }
+    for (int line : lines)
+    {
+        size_t const object = make(Kind::LINE);
+        g_objects[object].line = line;
+        g_objects[object].refs = 1u;
+        g_threads.back().caps.push_back(Cap{KOS_CAP_NONE, object, ALL_RIGHTS, -1});
+    }
+    if (console)
+    {
+        publish(ready_cap, static_cast<int64_t>(task - g_tasks.data()));
+    }
+    task->decl = decl + 1;
+    task->ready_object = ready;
+    task->ready_seated = true;
+    *out_task = handle;
+    return finish(call, 0);
+}
+
+static int create_task(void* mem_base, uint32_t mem_size, uint32_t mem_flags, uint16_t decl, kos_task_t* out_task,
+                       size_t call)
+{
     if ((mem_flags & ~static_cast<uint32_t>(KOS_MEM_NOCACHE)) != 0u)
     {
         return finish(call, -KOS_EINVAL);
+    }
+    kos_table_task const* declared = nullptr;
+    if (decl != 0u)
+    {
+        if (g_config.table == nullptr or decl > g_config.table->task_count)
+        {
+            return finish(call, -KOS_EINVAL);
+        }
+        declared = reinterpret_cast<kos_table_task const*>(g_config.table + 1) + (decl - 1u);
+        // Against the creator's own grant (kernel/syscall/syscall_thread.cc, task_create_call).
+        if (declared->ceiling > g_config.init_ceiling)
+        {
+            return finish(call, -KOS_EPERM);
+        }
+        if (declared->core_mask != 0u and (declared->core_mask & core_set_all()) == 0u)
+        {
+            return finish(call, -KOS_EINVAL);
+        }
     }
     if (mem_base != nullptr)
     {
@@ -1290,64 +1534,25 @@ int kos_task_create(void* mem_base, uint32_t mem_size, uint32_t mem_flags, kos_t
     task.data_size = mem_size;
     task.ceiling = KICKOS_PRIO_MAX;
     task.core_mask = 0xFFFFFFFFu;
+    if (declared != nullptr)
+    {
+        task.ceiling = declared->ceiling;
+        if (declared->core_mask != 0u)
+        {
+            task.core_mask = declared->core_mask;
+        }
+        task.granted = true;
+    }
     task.watch_object = -1;
     task.watch_badge = -1;
     task.ready_object = -1;
     task.held = true;
     g_tasks.push_back(task);
     *out_task = task.handle;
-    return finish(call, 0);
-}
-
-int kos_task_sched_grant(kos_task_t task, uint8_t prio_ceiling, uint32_t core_mask)
-{
-    size_t const call = record("kos_task_sched_grant", {task, prio_ceiling, core_mask});
-    int const rc = scripted(call);
-    if (rc != 1)
+    if (g_calls[call].fn == "kos_task_create")
     {
-        return finish(call, rc);
+        return 0;
     }
-    Task* t = nullptr;
-    int const err = resolve(task, &t);
-    if (err != 0)
-    {
-        return finish(call, err);
-    }
-    if (not t->members.empty())
-    {
-        return finish(call, -KOS_EBUSY);
-    }
-    if (prio_ceiling > KICKOS_PRIO_MAX)
-    {
-        return finish(call, -KOS_EINVAL);
-    }
-    // Against the caller's own grant first (kernel/syscall/syscall_thread.cc:1148).
-    if (core_mask != 0u and (core_mask & core_set_all()) == 0u)
-    {
-        return finish(call, -KOS_EINVAL);
-    }
-    if (prio_ceiling != 0u and prio_ceiling > g_config.init_ceiling)
-    {
-        return finish(call, -KOS_EPERM);
-    }
-    // 0 leaves a field as it is; a grant only narrows.
-    if (prio_ceiling != 0u and prio_ceiling > t->ceiling)
-    {
-        return finish(call, -KOS_EPERM);
-    }
-    if (core_mask != 0u and (core_mask & ~t->core_mask) != 0u)
-    {
-        return finish(call, -KOS_EPERM);
-    }
-    if (prio_ceiling != 0u)
-    {
-        t->ceiling = prio_ceiling;
-    }
-    if (core_mask != 0u)
-    {
-        t->core_mask = core_mask;
-    }
-    t->granted = true;
     return finish(call, 0);
 }
 
@@ -1374,7 +1579,11 @@ int kos_task_watch(kos_task_t task, kos_cap_t notify_cap, kos_cap_t ready_ep)
     {
         return finish(call, -KOS_EACCES);
     }
-    int64_t ready = -1;
+    if (t->ready_seated and ready_ep != KOS_CAP_NONE)
+    {
+        return finish(call, -KOS_EINVAL);
+    }
+    int64_t ready = t->ready_object;
     if (ready_ep != KOS_CAP_NONE)
     {
         ready = object_of(ready_ep);
@@ -1383,6 +1592,10 @@ int kos_task_watch(kos_task_t task, kos_cap_t notify_cap, kos_cap_t ready_ep)
             return finish(call, -KOS_EBADF);
         }
     }
+    else if (not t->ready_seated)
+    {
+        ready = -1;
+    }
     t->watch_object = static_cast<int64_t>(n->object);
     t->watch_badge = n->badge;
     if (t->watch_badge < 0)
@@ -1390,6 +1603,11 @@ int kos_task_watch(kos_task_t task, kos_cap_t notify_cap, kos_cap_t ready_ep)
         t->watch_badge = 0;
     }
     t->ready_object = ready;
+    // kernel/task/task.cc, task_watch_call: what happened before the arming is raised as it arms.
+    if ((t->state & (KOS_TASK_ENDED | KOS_TASK_READY)) != 0u)
+    {
+        raise(*t);
+    }
     return finish(call, 0);
 }
 
@@ -1523,7 +1741,7 @@ uint64_t kos_clock_now(void)
 
 int kos_thread_create(struct kos_thread_params const* params, kos_thread_t* out_thread)
 {
-    size_t const call = record("kos_thread_create", {params->task, params->cap_count, params->window_count});
+    size_t const call = record("kos_thread_create", {params->cap_count, params->window_count});
     if (params->name != nullptr)
     {
         g_calls[call].text = params->name;
@@ -1534,8 +1752,15 @@ int kos_thread_create(struct kos_thread_params const* params, kos_thread_t* out_
     {
         return finish(call, rc);
     }
-    // kernel/syscall/syscall_thread.cc:390, before anything else is read.
-    if (params->prio < KICKOS_PRIO_MIN or params->prio > KICKOS_PRIO_MAX)
+    return spawn_thread(params, KOS_TASK_NONE, out_thread, call);
+}
+
+static int spawn_thread(struct kos_thread_params const* params, kos_task_t into, kos_thread_t* out_thread,
+                        size_t call)
+{
+    uint8_t const prio = params->prio;
+    // kernel/syscall/syscall_thread.cc, spawn_admit, before anything else is read.
+    if (prio < KICKOS_PRIO_MIN or prio > KICKOS_PRIO_MAX)
     {
         return finish(call, -KOS_EINVAL);
     }
@@ -1571,7 +1796,7 @@ int kos_thread_create(struct kos_thread_params const* params, kos_thread_t* out_
         return finish(call, -KOS_EINVAL);
     }
     Task* task = nullptr;
-    int const err = resolve(params->task, &task);
+    int const err = resolve(into, &task);
     if (err != 0)
     {
         return finish(call, err);
@@ -1580,7 +1805,7 @@ int kos_thread_create(struct kos_thread_params const* params, kos_thread_t* out_
     {
         return finish(call, -KOS_EBUSY);
     }
-    if (params->prio > task->ceiling)
+    if (prio > task->ceiling)
     {
         return finish(call, -KOS_EPERM);
     }
@@ -1687,6 +1912,12 @@ int kos_thread_create(struct kos_thread_params const* params, kos_thread_t* out_
         }
         thread.caps.push_back(Cap{static_cast<kos_cap_t>(KOS_SPAWN_DELEGATED_CAP0 + i), source->object,
                                   g.rights_mask, source->badge});
+        uint16_t dest = 0;
+        if (params->cap_dest != nullptr)
+        {
+            dest = params->cap_dest[i];
+        }
+        thread.dest.push_back(dest);
     }
     if (full(live_threads(), g_config.limits.threads))
     {
@@ -1707,7 +1938,7 @@ int kos_thread_create(struct kos_thread_params const* params, kos_thread_t* out_
         return finish(call, -KOS_EAGAIN);
     }
     thread.handle = static_cast<kos_thread_t>(0x1000u + g_threads.size());
-    thread.task = params->task;
+    thread.task = into;
     thread.owner = static_cast<size_t>(task - g_tasks.data());
     thread.name = params->name;
     thread.params = *params;
@@ -1723,6 +1954,10 @@ int kos_thread_create(struct kos_thread_params const* params, kos_thread_t* out_
     if (on_spawn)
     {
         on_spawn(g_threads.back());
+    }
+    if (g_calls[call].fn == "kos_task_create")
+    {
+        return 0;
     }
     return finish(call, 0);
 }
@@ -1832,41 +2067,54 @@ int32_t kos_send(kos_cap_t ep, void const* buf, size_t len, uint32_t timeout_us)
     return finish(call, unserved(object));
 }
 
-int kos_console_publish(kos_cap_t ep, kos_task_t task)
+// Only the published console's KOS_UART_DRAIN, answered as a console driver answers it.
+int32_t kos_call(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap, uint32_t timeout_us)
 {
-    size_t const call = record("kos_console_publish", {ep, task});
+    size_t const call = record("kos_call", {ep, send_len, timeout_us});
     int const rc = scripted(call);
     if (rc != 1)
     {
         return finish(call, rc);
     }
-    int64_t const object = object_of(ep);
-    if (object < 0 or g_objects[static_cast<size_t>(object)].kind != Kind::ENDPOINT)
+    if (ep != KOS_CAP_STDOUT or g_stdout < 0)
     {
         return finish(call, -KOS_EBADF);
     }
-    int64_t served_by = CONSOLE_SELF;
-    if (task != KOS_TASK_NONE)
+    struct kos_uart_req req = {};
+    if (send_len < sizeof(req) or recv_cap < sizeof(struct kos_uart_rsp))
     {
-        Task* t = nullptr;
-        int const err = resolve(task, &t);
-        if (err != 0)
-        {
-            return finish(call, err);
-        }
-        if ((t->state & KOS_TASK_ENDED) != 0u)
-        {
-            return finish(call, -KOS_EBUSY);
-        }
-        served_by = t - g_tasks.data();
+        throw Panic{"fake: a call on the console that is no drain"};
     }
-    // kernel/syscall/cap.cc, cap_console_publish_through: HANDOUT, and a holder without WAIT
-    // gains it and the endpoint receives.
+    memcpy(&req, buf, sizeof(req));
+    if (req.op != KOS_UART_DRAIN)
+    {
+        throw Panic{"fake: a call on the console that is no drain"};
+    }
+    size_t const object = static_cast<size_t>(g_stdout);
+    settle();
+    if (waits(object))
+    {
+        struct kos_uart_rsp rsp = {};
+        rsp.status = g_config.console_drain;
+        memcpy(buf, &rsp, sizeof(rsp));
+        return finish(call, static_cast<int>(sizeof(rsp)));
+    }
+    if (receiving(object))
+    {
+        if (timeout_us == KOS_TIMEOUT_NONE)
+        {
+            throw Panic{"fake: a call parked on a console nothing receives"};
+        }
+        advance(static_cast<uint64_t>(timeout_us) * 1000u);
+        return finish(call, -KOS_ETIMEDOUT);
+    }
+    return finish(call, unserved(object));
+}
+
+static void publish(kos_cap_t ep, int64_t served_by)
+{
+    int64_t const object = object_of(ep);
     Cap* const c = find_cap(ep);
-    if ((c->rights & KOS_CAP_HANDOUT) == 0u)
-    {
-        return finish(call, -KOS_EACCES);
-    }
     if ((c->rights & KOS_CAP_WAIT) == 0u)
     {
         c->rights = c->rights | KOS_CAP_WAIT;
@@ -1876,7 +2124,6 @@ int kos_console_publish(kos_cap_t ep, kos_task_t task)
     g_owner = Owner::USER;
     g_console_task = served_by;
     settle();
-    return finish(call, 0);
 }
 
 int kos_irq_bind_notify(kos_cap_t irq_cap, kos_cap_t notify_cap)
@@ -1917,7 +2164,7 @@ void kos_print(char const* s)
     finish(call, 0);
 }
 
-int32_t kos_kconsole_write(void const* buf, size_t len)
+int32_t kos_kconsole_write(void const* buf, size_t len, uint32_t)
 {
     size_t const call = record("kos_kconsole_write", {len});
     if (g_owner != Owner::USER)
@@ -1945,4 +2192,78 @@ void kos_exit(int code)
     throw Exit{code};
 }
 
+}
+
+namespace fake
+{
+    int empty_task(void* mem_base, uint32_t mem_size, kos_task_t* out_task)
+    {
+        size_t const call = record("fake_empty_task", {reinterpret_cast<uintptr_t>(mem_base), mem_size});
+        *out_task = KOS_TASK_NONE;
+        return create_task(mem_base, mem_size, 0u, 0u, out_task, call);
+    }
+
+    int spawn_into(struct kos_thread_params const* params, kos_task_t into, kos_thread_t* out_thread)
+    {
+        size_t const call = record("fake_spawn_into", {params->cap_count, params->window_count});
+        *out_thread = KOS_THREAD_NONE;
+        return spawn_thread(params, into, out_thread, call);
+    }
+
+    void narrow_task(kos_task_t task, uint8_t ceiling, uint32_t cores)
+    {
+        Task* t = nullptr;
+        if (resolve(task, &t) != 0)
+        {
+            return;
+        }
+        if (ceiling != 0u)
+        {
+            t->ceiling = ceiling;
+        }
+        if (cores != 0u)
+        {
+            t->core_mask = cores;
+        }
+        t->granted = true;
+    }
+
+    int publish_console(kos_cap_t ep, kos_task_t task)
+    {
+        size_t const call = record("publish_console", {ep, task});
+        int const rc = scripted(call);
+        if (rc != 1)
+        {
+            return finish(call, rc);
+        }
+        int64_t const object = object_of(ep);
+        if (object < 0 or g_objects[static_cast<size_t>(object)].kind != Kind::ENDPOINT)
+        {
+            return finish(call, -KOS_EBADF);
+        }
+        int64_t served_by = CONSOLE_SELF;
+        if (task != KOS_TASK_NONE)
+        {
+            Task* t = nullptr;
+            int const err = resolve(task, &t);
+            if (err != 0)
+            {
+                return finish(call, err);
+            }
+            if ((t->state & KOS_TASK_ENDED) != 0u)
+            {
+                return finish(call, -KOS_EBUSY);
+            }
+            served_by = t - g_tasks.data();
+        }
+        // kernel/syscall/cap.cc, cap_console_publish_through: HANDOUT, and a holder without WAIT
+        // gains it and the endpoint receives.
+        Cap* const c = find_cap(ep);
+        if ((c->rights & KOS_CAP_HANDOUT) == 0u)
+        {
+            return finish(call, -KOS_EACCES);
+        }
+        publish(ep, served_by);
+        return finish(call, 0);
+    }
 }

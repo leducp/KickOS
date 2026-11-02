@@ -87,7 +87,7 @@ extern "C"
         return ARCH_MPU_NOCACHE_ALREADY;
     }
 
-    size_t arch_domain_static_regions(struct arch_mpu_region*, size_t)
+    size_t arch_domain_static_regions(struct arch_mpu_region*, size_t, size_t)
     {
         return 0;
     }

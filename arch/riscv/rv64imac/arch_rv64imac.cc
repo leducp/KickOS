@@ -307,7 +307,7 @@ extern "C" void kickos_rv64_stvec(void);
 extern "C" void kickos_rv64_switch_now(struct arch_context* from, struct arch_context* to);
 extern "C" void kickos_rv64_start(struct arch_context* first);
 
-extern "C" void kickos_user_thread_return(void);
+extern "C" void (*kickos_image_thread_return)(void);
 
 extern "C"
 {
@@ -412,7 +412,8 @@ void arch_context_init(struct arch_context* ctx,
     ctx->tls_base = 0;
 #endif
 #if KICKOS_REENT_PER_THREAD
-    ctx->reent_tp = 0;
+    // The libc state's cell ends here, at the top of the carve below the stack.
+    ctx->reent_tp = ctx->stack_lo;
 #endif
     // Where this frame sits is the privilege boundary: it carries sstatus and sepc, so whoever
     // can write it chooses the level and PC of the sret, and a thread's own stack is writable
@@ -442,7 +443,7 @@ void arch_context_init(struct arch_context* ctx,
     }
     else
     {
-        ret = reinterpret_cast<uintptr_t>(&kickos_user_thread_return);
+        ret = reinterpret_cast<uintptr_t>(kickos_image_thread_return);
     }
 
     f[KICKOS_RV64_F_SEPC / 8] = reinterpret_cast<uint64_t>(entry);
@@ -476,13 +477,6 @@ void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
     ctx->reent_tp = reent_tp;
 #endif
 }
-
-#if KICKOS_REENT_PER_THREAD
-void arch_context_seat_reent(struct arch_context* ctx, void* state, uint32_t)
-{
-    ctx->reent_tp = reinterpret_cast<uintptr_t>(state);
-}
-#endif
 
 // From an ISR the switch is deferred to the interrupt's resume.
 //

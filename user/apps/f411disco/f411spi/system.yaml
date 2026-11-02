@@ -7,7 +7,7 @@ ends: f411spi
 
 tasks:
   - name: f411spi
-    entry: f411spi_main
+    program: main
     priority: 10
     ceiling: 10
     devices: [/dev/spi1]

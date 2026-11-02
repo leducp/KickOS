@@ -47,7 +47,7 @@ namespace
         darkseam::reset();
         g_park_kind = WAIT_NONE;
         g_writer = seat_pool(0, PRIO_WRITER);
-        attach_caps(g_writer, KICKOS_CAP_CHILD_WIDTH);
+        attach_caps(g_writer, KICKOS_SEAM_CAP_WIDTH);
         {
             IrqLock lock;
             sched::reschedule(nullptr, lock);

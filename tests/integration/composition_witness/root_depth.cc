@@ -14,9 +14,13 @@
 
 #include <kickos/board_config.h> // KICKOS_ROOT_STACK_SIZE
 #include <kickos/sys.h>
+#include <kickos/sys/image.h>
 
 #include <stdint.h>
 #include <stdio.h>
+
+// In the init's image where that is one of its own, which is where root runs.
+KOS_IMAGE_INIT_OBJECT()
 
 // A link symbol: its address is the size of the thread-local block.
 extern "C" char const __kickos_tls_carve[];

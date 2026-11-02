@@ -43,38 +43,39 @@
 #define KICKOS_RV64_TRAP_ENTRY_FRAME 0
 #define KICKOS_RV64_TRAP_NEED_USER 0
 
-/* IRQ and IRQK. 880 on qemu-riscv64-benchsmp and -benchsmp2, 816 smp, 624 bench, 592
- * qemu-riscv64 and sv48. The unexpected-cause report, whose console spins on the kernel lock
- * and services a route ask:
+/* IRQ and IRQK. 992 on qemu-riscv64-benchsmp and -benchsmp2, 880 smp, 816 bench, 768
+ * qemu-riscv64 and sv48. The unexpected-cause report, whose line ends its chip-writer bracket by
+ * waking the publisher it raced, the wake seating a thread whose reent state is primed through
+ * the space's tables:
  *   kickos_rv64_isr_dispatch[48] -> kprintf[352] -> console_emit[96]
- *   -> console_tx_insert_line[96] -> console_write_line_sync[64] -> klock_enter[32]
- *   -> arch_kernel_lock[32] -> kickos_doorbell_poll[32] -> kickos_doorbell_service[32]
- *   -> kickos_irq_route_service[64] -> arch_irq_unmask[16] */
-#define KICKOS_RV64_TRAP_DEPTH_IRQ 896
+ *   -> console_chip_writer_leave[32] -> console_dark_wake[32] -> wake[16]
+ *   -> resched_after_wake[16] -> pick_and_seat[80] -> reent_prime[48] -> kaccess_to_user[0]
+ *   -> access_copy[96] -> arch_aspace_acquire[96] -> walk_leaf[80] */
+#define KICKOS_RV64_TRAP_DEPTH_IRQ 1024
 
 /* An interrupt's whole extent below the sp it interrupts, FRAME + DEPTH_IRQ, which
  * arch_rv64imac.cc asserts: the frame term of every class an interrupt can land under. */
-#define KICKOS_RV64_TRAP_NEST 1152
+#define KICKOS_RV64_TRAP_NEST 1280
 
-/* The U-mode ecall and the U-mode fault on the block. 2016 on qemu-riscv64-benchsmp and
- * -benchsmp2, a spawn staging 9 grants and seeding the child's tables:
- *   syscall_dispatch[128] -> thread_create_call[32] -> spawn_masked[576] -> thread_create[144]
- *   -> task_for[32] -> domain_for[64] -> claim_slot[64] -> aspace_image_seed[160]
- *   -> arch_aspace_map[80] -> map_into[112]x4 -> kickos_frame_alloc[48] -> klock_enter
+/* The U-mode ecall and the U-mode fault on the block. 2064 on qemu-riscv64-benchsmp and
+ * -benchsmp2, a task create seeding the child's tables:
+ *   syscall_dispatch[160] -> task_create_call[208] -> spawn_locked[448] -> thread_create[144]
+ *   -> task_for[32] -> domain_for[64] -> claim_slot[64] -> aspace_image_seed[144]
+ *   -> arch_aspace_map[96] -> map_into[112]x4 -> kickos_frame_alloc[48] -> klock_enter
  *   -> ... -> arch_irq_unmask
- * 1792 on qemu-riscv64 and sv48. arch_rv64imac.cc refuses more than 9 grants. Reserved at 2304,
+ * 1856 on qemu-riscv64 and sv48. arch_rv64imac.cc refuses more than 9 grants. Reserved at 2304,
  * above the measurement. */
 #define KICKOS_RV64_TRAP_DEPTH_SYSK 2304
 
 /* An interrupt nested below arch_irq_window, the one place a system call opens interrupts on the
  * block: the U-mode entry's frame and an interrupt's whole extent, FRAME + NEST, which
  * arch_rv64imac.cc asserts. */
-#define KICKOS_RV64_TRAP_WINDOW 1408
+#define KICKOS_RV64_TRAP_WINDOW 1536
 
 /* The system call's descent to arch_irq_window, above SYSWIN's frame. 352 on
  * qemu-riscv64-bench, -benchsmp and -benchsmp2, 320 on qemu-riscv64, sv48 and smp:
  *   syscall_dispatch[144] -> presync_prepare[16] -> presync_run[192] -> arch_irq_window[0]
- * WINDOW + 1024 = 2432 against 4092 above the canary. */
+ * WINDOW + 1024 = 2560 against 4092 above the canary. */
 #define KICKOS_RV64_TRAP_DEPTH_SYSWIN 1024
 
 /* The per-hart trap stack: an S-mode exception's reporter, and the U-mode entry that found no
@@ -87,7 +88,7 @@
  *   kickos_thread_fault_exit[32] -> exit_current[128] -> aspace_window_unmap_holder[96]
  *   -> domain_release[16] -> drop_space[32] -> aspace_release[96] -> arch_aspace_destroy[48]
  *   -> free_subtree[80]x4 -> kickos_frame_free[48] -> klock_enter -> ... -> arch_irq_unmask
- * Reserved at 2048, as SYSK is; NEST + 2048 = 3200 is the block's deepest need. */
+ * Reserved at 2048, as SYSK is; NEST + 2048 = 3328 is the block's deepest need. */
 #define KICKOS_RV64_TRAP_DEPTH_EXITK 2048
 
 /* The same stubs through the switch: 1024 on the same two presets, down the same chain, and

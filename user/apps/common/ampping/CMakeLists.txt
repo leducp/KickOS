@@ -35,12 +35,11 @@ set(_ampping_gate gate_none.c)
 if(EXISTS "${_ampping_systems}/gate.c")
   set(_ampping_gate "${_ampping_systems}/gate.c")
 endif()
-add_library(ampping_app OBJECT main_n0.c main_serve.c crossing.c "${_ampping_gate}")
-target_include_directories(ampping_app PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(ampping_app PRIVATE KickOS::kernel)
+add_executable(ampping_n0 main_n0.c crossing.c "${_ampping_gate}")
+add_executable(ampserve main_serve.c crossing.c "${_ampping_gate}")
 foreach(_ampping ampping_n0 ampserve)
-  add_executable(${_ampping} $<TARGET_OBJECTS:ampping_app>)
-  target_link_libraries(${_ampping} PRIVATE KickOS::kernel ampping_system)
+  target_include_directories(${_ampping} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+  target_link_libraries(${_ampping} PRIVATE KickOS::kickos ampping_system)
   set_target_properties(${_ampping} PROPERTIES KICKOS_APP_SYSTEM ampping_system)
   kickos_emit_image(${_ampping})
 endforeach()
@@ -61,6 +60,11 @@ add_executable(ampecho main_echo.c crossing.c)
 target_include_directories(ampecho PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 kickos_app_system(ampecho PARTITION ${_ampecho_partition})
 kickos_emit_image(ampecho)
+# The task that never receives, the program ampecho_spare of the echo compositions' second task.
+# A node whose composition names no spare still builds it.
+add_executable(ampecho_spare main_spare.c)
+target_link_libraries(ampecho_spare PRIVATE kickos)
+kickos_program_link(ampecho_spare)
 
 # One entry per peer node in node order, which is the order build-partition.sh assigns them.
 # The same target repeats: what makes two peers different images is the node index their build

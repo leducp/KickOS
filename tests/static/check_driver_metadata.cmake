@@ -67,6 +67,14 @@ if(DEFINED CASE)
   elseif(CASE STREQUAL "client_no_target")
     kickos_driver_metadata(d _p _j _h ${_tail} CLIENT d_proxy ${_one})
     kickos_driver_clients_exist(d "${_j}")
+  elseif(CASE STREQUAL "barrier_no_waiter")
+    kickos_driver_metadata(d _p _j _h BLOCK 1024 POSTURE retain BARRIER 1 READY 0u START d_start ${_one})
+  elseif(CASE STREQUAL "window_past_entry")
+    kickos_driver_metadata(d _p _j _h ${_tail} WINDOWS regs THREAD irq ENTRY i ${_one} WINDOW regs)
+  elseif(CASE STREQUAL "entry_token_twice")
+    kickos_driver_metadata(d _p _j _h ${_tail} THREAD service ENTRY s CAPS ep:wait ep:signal)
+  elseif(CASE STREQUAL "authority_unknown")
+    kickos_driver_metadata(d _p _j _h ${_tail} AUTHORITY root ${_one})
   endif()
   return()
 endif()
@@ -87,7 +95,9 @@ endif()
 foreach(_check "windows;0;no" "lines;0;n" "lines;1;false" "lines;2;ignore" "threads;0;name;off"
                "threads;1;name;service" "threads;0;caps;4" "threads;0;badged;0" "threads;1;caps;2"
                "threads;1;badged;1" "threads;0;priority;1" "notifications;1" "start;uart_console_start"
-               "client;0;uart_proxy" "client;1;uart_stats" "receiver;service" "block_cache;cached")
+               "client;0;uart_proxy" "client;1;uart_stats" "receiver;service" "block_cache;cached"
+               "triggers;0;level" "triggers;1;edge" "triggers;2;edge" "entry;0;notify" "entry;1;line:0"
+               "entry;2;line:1" "entry;3;line:2" "entry;4;ep" "entry;5;doorbell")
   list(POP_BACK _check _want)
   string(JSON _got GET "${_json}" ${_check})
   if(NOT _got STREQUAL _want)
@@ -102,6 +112,8 @@ foreach(_want ".tag = \"[uart] \"" ".expected_base = 0x4000u" ".block_size = 102
               "{::kickos::driver::KOS_DRV_RES_NOTIFY, KOS_CAP_SIGNAL, ::kickos::driver::doorbell_badge(3)}"
               ".arg = ::kickos::driver::KOS_DRV_ARG_BLOCK" ".ep_posture = ::kickos::driver::KOS_DRV_EP_HANDOVER"
               ".block_init = block_init" "#define KICKOS_DRIVER_BLOCK_SIZE 1024u"
+              ".launch = kickos_driver_launch_uart"
+              "static ::kickos::driver::Launch kickos_driver_launch_uart[::kickos::driver::KOS_DRV_THREADS_MAX];"
               "extern \"C\" int uart_console_start(struct kos_driver_instance* instance);")
   string(FIND "${_header}" "${_want}" _at)
   if(_at EQUAL -1)
@@ -110,12 +122,18 @@ foreach(_want ".tag = \"[uart] \"" ".expected_base = 0x4000u" ".block_size = 102
 endforeach()
 
 kickos_driver_metadata(nocache _p _nocache_json _nocache_header TAG nc BLOCK 4096 BLOCK_CACHE uncached
-                       POSTURE retain BARRIER 1 READY 0u START nocache_start THREAD service ENTRY s CAPS ep:wait)
+                       POSTURE retain BARRIER none START nocache_start AUTHORITY memory irq
+                       THREAD service ENTRY s ARG block CAPS ep:wait)
 string(JSON _got GET "${_nocache_json}" block_cache)
 string(FIND "${_nocache_header}" ".block_flags = KOS_MEM_NOCACHE" _at)
 string(FIND "${_nocache_header}" ".tag = \"[nc] \"" _tag_at)
 if(NOT _got STREQUAL "uncached" OR _at EQUAL -1 OR _tag_at EQUAL -1)
   message(FATAL_ERROR "FAIL: BLOCK_CACHE uncached or TAG reached neither the entry ('${_got}') nor the header")
+endif()
+string(JSON _first GET "${_nocache_json}" authority 0)
+string(JSON _second GET "${_nocache_json}" authority 1)
+if(NOT _first STREQUAL "memory" OR NOT _second STREQUAL "irq")
+  message(FATAL_ERROR "FAIL: AUTHORITY reached the entry as '${_first}', '${_second}'")
 endif()
 
 # No CLIENT: nothing to link, so nothing to find. No block and no barrier: no latch is polled.
@@ -123,7 +141,7 @@ kickos_driver_metadata(clientless _p _clientless_json _clientless_header ${_tail
                        THREAD entry ENTRY e THREAD service ENTRY s CAPS ep:wait)
 kickos_driver_clients_exist(clientless "${_clientless_json}")
 foreach(_want ".ready_offset = ::kickos::driver::KOS_DRV_READY_NONE" ".barrier_after = 2" ".lines = {}"
-              ".caps = {}" ".block_init = nullptr" ".expected_base = 0,")
+              ".caps = {}" ".block_init = nullptr," ".launch = nullptr" ".expected_base = 0,")
   string(FIND "${_clientless_header}" "${_want}" _at)
   if(_at EQUAL -1)
     message(FATAL_ERROR "FAIL: the generated header lacks `${_want}`:\n${_clientless_header}")
@@ -132,6 +150,11 @@ endforeach()
 string(JSON _got GET "${_clientless_json}" notifications)
 if(NOT _got EQUAL 0)
   message(FATAL_ERROR "FAIL: a driver granting no notify declares ${_got} notifications")
+endif()
+string(JSON _entry GET "${_clientless_json}" entry)
+string(JSON _authority GET "${_clientless_json}" authority)
+if(NOT _entry STREQUAL "[ \"ep\" ]" OR NOT _authority STREQUAL "[]")
+  message(FATAL_ERROR "FAIL: an entry holding nothing lays out ${_entry} with authority ${_authority}")
 endif()
 
 kickos_driver_metadata(cased _cased_packaged _cased_json _cased_header ${_tail}
@@ -152,7 +175,11 @@ foreach(_case_rule "bare_thread;THREAD given with no role" "metadata_alone;besid
                    "no_posture;declares POSTURE" "no_barrier;declares BARRIER"
                    "barrier_no_ready;BARRIER 1 with READY" "ready_no_barrier;BARRIER none with READY"
                    "window_unheld;is held by 0"
-                   "window_twice;is held by 2"
+                   "window_twice;THREAD irq holds window"
+                   "window_past_entry;THREAD service holds window"
+                   "barrier_no_waiter;BARRIER 1 with 1 THREADs"
+                   "entry_token_twice;is granted ep twice"
+                   "authority_unknown;AUTHORITY 'root' is none of"
                    "window_undeclared;holds window 'regs'" "line_no_trigger;LINES entry 'irq'"
                    "grant_no_rights;grant 'ep' is not" "grant_undeclared;is granted 'irq'"
                    "no_geometry;no KICKOS_DRIVER_ENDPOINTS" "client_alone;beside its THREADs"

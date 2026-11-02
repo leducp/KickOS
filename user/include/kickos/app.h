@@ -2,21 +2,18 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The OS-agnostic application entry contract (dependency inversion, invariant #8). The app writes
-// a plain `int main(int argc, char** argv)`; linking KickOS::kernel, or the `kickos` and
-// `kickos_cxx` leaves, compiles it with -Dmain=kickos_app_main. Under a system target,
-// kickos_main (KickOS::main), the entry a composition names as `entry: kickos_main` and the
-// default composition names for its `main` task, calls kickos_app_main as that task's entry
-// thread and passes its return to exit(), so the system ends with it where the composition
-// `ends` on that task.
+// a plain `int main(int argc, char** argv)`. A program, the target a composition's `program:`
+// names, keeps it as main: its task's entry thread calls it and passes its return to exit(), so
+// the system ends with it where the composition `ends` on that task.
 //
-// App and library C++ global ctors run on MCU targets from the kernel's root thread before
-// kickos_app_main runs, on ONE thread in sequence, and before the init starts any task. An app
-// global ctor MUST NOT block (sleep/wait), or a higher-priority thread it already spawned may run
-// before the remaining globals are constructed. Do blocking work inside main.
+// App and library C++ global ctors run before main runs, on ONE thread in sequence:
+// the kernel's root thread before the init starts any task where one image holds the app and its
+// init, and otherwise each task's entry thread at every start of that task, in the task's own
+// image. An app global ctor MUST NOT block (sleep/wait),
+// or a higher-priority thread it already spawned may run before the remaining globals are
+// constructed. Do blocking work inside main.
 //
-// This declaration is force-included into every app TU by the build. extern "C" gives the
-// -Dmain-renamed C++ `main` C language linkage, so it resolves to the unmangled symbol the
-// kernel calls.
+// This header is force-included into every app TU by the build.
 
 #ifndef KICKOS_APP_H
 #define KICKOS_APP_H
@@ -27,8 +24,6 @@
 extern "C"
 {
 #endif
-
-int kickos_app_main(int argc, char** argv);
 
 // Per-app stamp: the image's name and its OWN source compile time, distinct from the banner's
 // `build` line, so two images built in the same second still differ. Weak, and allowlisted in
@@ -51,7 +46,7 @@ extern char const kickos_app_stamp[];
 // The two languages spell a PUBLIC const definition differently: `extern` on a definition with an
 // initialiser is a C diagnostic under -Wextra, and without `extern` a const at namespace scope is
 // internal in C++, which a weak symbol may not be.
-#if defined(main) && defined(KICKOS_APP_IMAGE)
+#if defined(KICKOS_APP_IMAGE)
 #ifdef __cplusplus
 #define KOS_APP_STAMP extern __attribute__((weak)) char const
 #else

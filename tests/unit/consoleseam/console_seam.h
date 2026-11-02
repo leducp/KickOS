@@ -23,6 +23,12 @@ namespace kickos
     struct Thread;
 }
 
+namespace ringleaves
+{
+    // What arch_in_isr answers (ring_leaves.cc).
+    extern bool g_in_isr;
+}
+
 namespace consoleseam
 {
     // Bytes the mock TX edge accepted, in wire order, over every transport.
@@ -80,17 +86,13 @@ namespace consoleseam
     // since reset(): a fault taken in the polled writer.
     void run_in_sync_write(uint32_t ordinal, void (*fn)(void));
 
-    // From now on arch_console_write_sync sends nothing and answers false: a wedged channel,
-    // each call one stall window of the polled writer.
-    void set_sync_stalls(bool stalls);
-
-    // The most such windows inside ONE contiguous masked span.
-    uint32_t max_masked_stalls();
+    // arch_console_write_sync calls since reset().
+    uint32_t sync_calls();
 
     // Called at the instant USER_OWNED is flipped.
     void note_commit();
 
-    // KOS_SYS_CONSOLE_PUBLISH's console sequence in its two halves: the lock-held one, which
+    // A console driver create's console sequence in its two halves: the lock-held one, which
     // also takes the drain ISR off its line, and the tail, run once no counted writer is left.
     void publish_begin();
     void publish_end();

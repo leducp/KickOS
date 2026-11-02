@@ -7,25 +7,17 @@
 #ifndef KICKOS_CONFIG_CAP_WIDTH_H
 #define KICKOS_CONFIG_CAP_WIDTH_H
 
-// Macros and not constexpr: cap.h picks its chunk geometry with an #if on the width.
-#define KICKOS_MAX_HANDLES @KICKOS_CAP_TABLE_SLOTS@
-
-// What EVERY spawned child gets; only root holds KICKOS_MAX_HANDLES. It is the GRANT-LIST
-// FLOOR and not a tuning knob: delegated cap i lands at child index KICKOS_CAP_FIRST_DYNAMIC + i
-// by default, so a narrower child table makes a full grant list unrepresentable and
-// thread_create_call refuses it.
-#define KICKOS_CAP_CHILD_WIDTH @KICKOS_CAP_TABLE_CHILD_WIDTH@
-
 // The most CONCURRENT inbound CAP_REPLY entries one thread may hold. Never below 1, or no
 // kos_call in the fleet could complete. It reserves NO slot: it bounds, it does not carve.
-#define KICKOS_CAP_REPLY_MAX @KICKOS_CAP_TABLE_REPLY_MAX@
+#define KICKOS_CAP_REPLY_MAX @KICKOS_CAP_REPLY_MAX@
 
-// The structural constants the width above is summed from. They are declared in
+// The structural constants of the capability table. They are declared in
 // cmake/cap_geometry.cmake, which is the side that has to read them, and emitted here for
 // C. They are not configuration: nothing selects one, Kconfig declares no symbol for any
 // of them, and no defconfig can state one.
 #define KICKOS_CAP_FIRST_DYNAMIC @KICKOS_CAP_FIRST_DYNAMIC@
 #define KCAP_CHUNK_TARGET @KICKOS_CAP_CHUNK_TARGET@
-#define KCAP_RUN_OFF_POOL @KICKOS_CAP_RUN_OFF_POOL@
+#define KCAP_ENTRY_BYTES @KICKOS_CAP_ENTRY_BYTES@
+#define KCAP_WIDTH_MAX @KICKOS_CAP_WIDTH_MAX@
 
 #endif

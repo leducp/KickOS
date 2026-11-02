@@ -324,8 +324,9 @@ and the linker is where they are separated. KickOS splits `.init_array` in two:
 The same closed-set colon selector routes the kernel/arch/chip/lib constructors into
 `.init_array`, which `Reset_Handler` runs **early**, before `kmain` -- so the kernel
 singletons `kmain` needs are constructed first. Every *other* constructor (the app's,
-`libstdc++`/`libsupc++`'s, KickCAT's) lands in `.kickos_app_init_array` and runs later
-from `root_entry`, the kernel's first thread, with the scheduler and clock fully live --
+`libstdc++`/`libsupc++`'s, KickCAT's) lands in its image's constructor window and runs
+later from the image's startup, in the image's first thread, with the scheduler and clock
+fully live --
 because such a constructor may call a KickOS syscall, which needs a current thread to
 exist. The clock read `kos_clock_now` is one on a microcontroller, where the kernel reads
 the timer for the program. On a core that lets a program read its counter, it makes no
@@ -433,7 +434,7 @@ To *author* a new chip's script, start from the nearest chip of its family. On C
 vector placement and its window sizes, while the build fills the arch and chip archive
 names into the colon selectors (`KICKOS_LD_ARCH_LIB`, `KICKOS_LD_CHIP_LIB`). `rx72m.ld`
 (RX MPU, SjLj, exact-size) is a whole script of its own. Either way, size
-`_appdata_size`/`_code_size` for the part and keep the `ASSERT`s. The isolation is only
+`_appdata_size` for the part and keep the `ASSERT`s. The isolation is only
 ever as good as the selector list being complete and the window being a shape the unit can
 grant -- both of which the `ASSERT`s check at link time so a mistake is a build failure,
 not a silent leak.

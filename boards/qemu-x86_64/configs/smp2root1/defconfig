@@ -6,10 +6,7 @@ CONFIG_KICKOS_CORES_TWO=y
 CONFIG_KICKOS_MULTICORE_SHARED=y
 CONFIG_KICKOS_MAX_SPAWN_GRANTS=9
 CONFIG_KICKOS_BENCH=y
-CONFIG_KICKOS_MAX_THREADS=32
-CONFIG_KICKOS_MAX_ENDPOINTS=16
-CONFIG_KICKOS_TASK_ENDPOINT_BUDGET=12
-CONFIG_KICKOS_CAP_TABLE_SUPPLY=32
+CONFIG_KICKOS_BUDGET_ENDPOINTS=12
 
 # Root on core 1, so an application processor enters it as its first thread through
 # arch_start while the boot core enters its idle: errnoprobe's arm F then reads libc on an

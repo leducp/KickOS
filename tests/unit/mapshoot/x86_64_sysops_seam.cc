@@ -39,7 +39,7 @@ namespace
     constexpr uint32_t MSR_PAT = 0x277;
 
     // The firmware's root and a level-3 table for each slot it identity-maps.
-    alignas(GRANULE) uint64_t g_firmware[4][PTES] = {};
+    alignas(GRANULE) uint64_t g_firmware[5][PTES] = {};
     // A level-2 and a level-1 table splitting the RAM array's leaf, and a five-level root.
     alignas(GRANULE) uint64_t g_deeper[3][PTES] = {};
 
@@ -86,10 +86,13 @@ namespace
 
 extern "C"
 {
-    // One byte both symbols name, so the app window is empty.
-    unsigned char kickos_seam_app_window[1] = {};
-    extern unsigned char __kickos_app_rom_start[1] __attribute__((alias("kickos_seam_app_window")));
-    extern unsigned char __kickos_app_sram_end[1] __attribute__((alias("kickos_seam_app_window")));
+    // One byte both symbols name, so the frames of the embedded programs are empty; their span
+    // is the program seam's (x86_64_no_program.cc, x86_64_program.cc).
+    unsigned char kickos_seam_image_frames[1] = {};
+    extern unsigned char __kickos_image0_load_start[1]
+        __attribute__((alias("kickos_seam_image_frames")));
+    extern unsigned char __kickos_images_load_end[1]
+        __attribute__((alias("kickos_seam_image_frames")));
 
     void kickos_x86_64_cpuid(uint32_t leaf, uint32_t, uint32_t* a, uint32_t* b, uint32_t* c,
                              uint32_t* d)
@@ -300,6 +303,11 @@ namespace kickos
         void firmware_clear_leaf(uintptr_t page)
         {
             g_deeper[1][(page >> 12) & (PTES - 1u)] = 0;
+        }
+
+        void firmware_identity_slot(uintptr_t addr)
+        {
+            identity_slot(addr, g_firmware[4]);
         }
 
         void adopt()

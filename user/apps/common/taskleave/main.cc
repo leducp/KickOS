@@ -3,7 +3,8 @@
 //
 // A TASK LOSES ITS LAST MEMBER WHILE A PEER CORE IS STILL INSIDE ITS OWN DEATH.
 //
-// Two members of one task, one pinned per core, both leaving. The first one to go runs its
+// Each round creates the peer program, whose task has two members, one pinned per core, both
+// leaving (peer.cc). The first one to go runs its
 // capability sweep, which drops the kernel lock between chunks, so it is preemptible and still
 // running; the second one's departure is what takes the task's refcount to zero and frees the
 // address space's tables.
@@ -22,8 +23,8 @@
 // THIS IS A CRASH DETECTOR AND NOT A NEGATIVE CONTROL: reverting the fix leaves it PASSING.
 // Whether the second member's release lands inside the first one's sweep is a race this image
 // cannot force: nothing in userspace observes when a peer is inside its own sweep, and
-// nothing it can mint widens that sweep either, cap_teardown's chunk count being fixed by the
-// child's table WIDTH (KICKOS_CAP_CHILD_WIDTH), which userspace cannot move. The
+// nothing it mints widens that sweep either, cap_teardown's chunk count being fixed by the
+// leaver's table width, which its spawn leaves at the declared one. The
 // deterministic arm for the ORDER is the host gate (tests/unit/deathspace, LeaveSpace), which
 // also holds that a destroy finds no peer core still holding the space.
 
@@ -31,31 +32,15 @@
 #include <kickos/sys.h>
 #include <kickos/libc/fmt.h>
 
+#include <kickos/apps/peer_run.h>
+
 namespace
 {
-    // The members' own: a fresh task's space starts from the image's pristine copy, and on a
-    // board that does not translate every round leaves it at 0.
-    kos_sem_t g_sig = KOS_SEM_INIT(0);
-
     constexpr int ROUNDS = 8;
 
     // A destroy can land after the group's last handle closes, from a reclamation.
     constexpr uint32_t SETTLE_POLLS = 200u;
     constexpr uint64_t SETTLE_NS = 1000u * 1000u;
-
-    void leaver(void*)
-    {
-        // Releases the peer, then dies: the peer's own departure is what empties the group,
-        // and it must land while this thread is still inside its own teardown.
-        (void)kos_sem_post(&g_sig);
-        kos_exit(0);
-    }
-
-    void closer(void*)
-    {
-        (void)kos_sem_wait(&g_sig, KOS_TIMEOUT_NONE);
-        kos_exit(0);
-    }
 }
 
 int main(int, char**)
@@ -66,42 +51,32 @@ int main(int, char**)
         kos::print("[taskleave] ERROR: the live space count is unreadable\n");
         return 1;
     }
+    kos_program_t prog = KOS_CAP_NONE;
+    if (kos_program_find("taskleave_peer", &prog) != 0)
+    {
+        kos::print("[taskleave] ERROR: no peer program\n");
+        return 1;
+    }
     int destroys = 0;
     for (int round = 0; round < ROUNDS; round++)
     {
+        // The peer parks its closer, so its space is live from here until its leaver runs.
+        kos_task_params params = {};
         kos_task_t group = KOS_TASK_NONE;
-        if (kos_task_create(nullptr, 0, 0, &group) != 0)
+        if (kickos::apps::create_peer(prog, params, &group) != 0)
         {
             kos::print("[taskleave] ERROR: no task slot\n");
             return 1;
         }
-
-        // The closer first: the leaver runs on its own core and may be gone before a later
-        // spawn, which would reclaim its slot and leave its handle stale for the join below.
-        auto const b = kos::thread::create_caps(closer, nullptr, "closer", 10, nullptr, 0,
-                                                KOS_POLICY_FIFO, 0,
-                                                nullptr, 0, 0, nullptr, group,
-                                                nullptr, 0, 1u << 1);
-        // The closer cannot leave before the leaver exists, so the group's space is live here.
         uint32_t during = 0;
         int const during_rc = kos_mem_count(KOS_MEM_SPACES_HELD, &during);
-        auto const a = kos::thread::create_caps(leaver, nullptr, "leaver", 10, nullptr, 0,
-                                                KOS_POLICY_FIFO, 0,
-                                                nullptr, 0, KOS_AUTH_MEMORY, nullptr, group,
-                                                nullptr, 0, 1u << 0);
-        if (not a.valid() or not b.valid())
+        // Unbounded: a bound here would turn the hazard's own symptom, a core walking freed
+        // tables, into a timeout report instead of a hang the gate names.
+        int status = 0;
+        while (kickos::apps::wait_dead(group, &status, 1000u) == -KOS_ETIMEDOUT)
         {
-            kos::print("[taskleave] ERROR: member spawn refused\n");
-            return 1;
         }
-        // Both, and unbounded: a bound here would turn the hazard's own symptom, a core
-        // walking freed tables, into a timeout report instead of a hang the gate names.
-        if (a.join(KOS_TIMEOUT_NONE) != 0 or b.join(KOS_TIMEOUT_NONE) != 0)
-        {
-            kos::print("[taskleave] ERROR: a member never came back\n");
-            return 1;
-        }
-        // The group is empty, so this drops main's creator hold and releases the slot.
+        // The group is dead, so this drops main's creator hold and releases the space.
         (void)kos_task_slay(group, 0);
         if (during_rc != 0)
         {
@@ -126,6 +101,7 @@ int main(int, char**)
             destroys++;
         }
     }
+    (void)kos_handle_close(prog);
 
     char msg[96];
     ksnprintf(msg, sizeof(msg), "[taskleave] space destroys: %d of %d rounds\n", destroys, ROUNDS);

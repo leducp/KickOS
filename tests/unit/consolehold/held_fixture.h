@@ -68,7 +68,7 @@ namespace heldfix
         console_held_take(static_cast<uint32_t>(n));
     }
 
-    // KOS_SYS_CONSOLE_PUBLISH's console sequence, with no writer in flight to drain.
+    // A console driver create's console sequence, with no writer in flight to drain.
     inline void publish()
     {
         consoleseam::publish_begin();

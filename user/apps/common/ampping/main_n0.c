@@ -47,11 +47,11 @@ static uint32_t ampping_server(uint32_t port)
     return KOS_AMP_NO_ENTRY;
 }
 
-void ampping_main(kos_self_t const* self)
+int main(void)
 {
     kos_cap_t ep = KOS_CAP_NONE;
-    uint32_t const port = ampping_crossing(self, KOS_CAP_SIGNAL, KOS_AMP_NO_ENTRY, &ep);
-    kos_window_t const region = kos_grant_mem(self, AMPBOOK_NAME);
+    uint32_t const port = ampping_crossing(KOS_CAP_SIGNAL, KOS_AMP_NO_ENTRY, &ep);
+    kos_window_t const region = kos_grant_mem(AMPBOOK_NAME);
     struct ampbook_row* const book = (struct ampbook_row*)kos_window_addr(region);
     if (port == KOS_AMP_NO_ENTRY or ep == KOS_CAP_NONE or book == NULL
         or kos_window_size(region) < KICKOS_AMP_NODES * sizeof(struct ampbook_row))
@@ -95,7 +95,7 @@ void ampping_main(kos_self_t const* self)
     }
     printf("ampping: %u of %u node app(s) alive on the port the partition names, own row %u\n", alive,
            (unsigned)KICKOS_AMP_NODES, own_row);
-    ampping_gate_report(self, book);
+    ampping_gate_report(book);
     printf("ampping: node %u calls node %u port %u\n", (unsigned)KOS_AMP_SELF_NODE, (unsigned)peer, (unsigned)port);
 
     unsigned answered = 0;

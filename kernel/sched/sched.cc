@@ -14,6 +14,7 @@
 #include <kickos/kernel.h>
 #include <kickos/instance.h>
 #include <kickos/domain.h>
+#include <kickos/image.h>
 #include <kickos/sync.h>
 #include <kickos/task.h>
 #include <kickos/time.h>
@@ -55,8 +56,8 @@ namespace kickos
             Kernel& k = kernel();
             uint32_t const me = kickos_kernel_core();
             uint32_t const s = k.sched_out[me].staged[to];
-            KICKOS_DEBUG_ASSERT(s - k.sched_in[to].tail[me].load() < SCHED_RING_DEPTH);
-            k.sched_slot[me][to][s & (SCHED_RING_DEPTH - 1u)] = entry;
+            KICKOS_DEBUG_ASSERT(s - k.sched_in[to].tail[me].load() <= k.sched_ring_mask());
+            k.sched_ring(me, to)[s & k.sched_ring_mask()] = entry;
             k.sched_out[me].staged[to] = s + 1u;
             k.sched_out[me].raise = k.sched_out[me].raise | (1u << to);
         }
@@ -68,7 +69,7 @@ namespace kickos
             KICKOS_DEBUG_ASSERT(k.threads.index_of(t) >= 0);
             t->queue_core = static_cast<uint8_t>(home);
             t->state.to<ThreadState::HANDED>();
-            ring_stage(home, static_cast<uint16_t>(t - &k.threads.slots[0]));
+            ring_stage(home, static_cast<uint16_t>(t - &k.threads.slots()[0]));
             KICKOS_BENCH_SCHED_COUNT(::kickos::BS_HANDOFF);
         }
 
@@ -114,7 +115,7 @@ namespace kickos
             }
             t->reseat_owed = 1u;
             ring_stage(t->queue_core,
-                       static_cast<uint16_t>(SCHED_ENTRY_RESEAT | (t - &k.threads.slots[0])));
+                       static_cast<uint16_t>(SCHED_ENTRY_RESEAT | (t - &k.threads.slots()[0])));
             KICKOS_BENCH_RESEAT_ASKED(t);
         }
 
@@ -244,7 +245,7 @@ namespace kickos
         void ring_apply(uint16_t entry, KernelCore me, bool place_it, Held held)
         {
             Kernel& k = kernel();
-            Thread* const t = &k.threads.slots[entry & ~SCHED_ENTRY_RESEAT];
+            Thread* const t = &k.threads.slots()[entry & ~SCHED_ENTRY_RESEAT];
             if ((entry & SCHED_ENTRY_RESEAT) != 0)
             {
                 // Linked on a peer since the request: the byte kept any later request out of
@@ -331,7 +332,7 @@ namespace kickos
                     in.cursor = static_cast<uint8_t>(from);
                     return true;
                 }
-                uint16_t const entry = k.sched_slot[from][me][tail & (SCHED_RING_DEPTH - 1u)];
+                uint16_t const entry = k.sched_ring(from, me)[tail & k.sched_ring_mask()];
                 // Retired before its thread is written, or a hand-on counts it twice.
                 in.tail[from].store(tail + 1u);
                 ring_apply(entry, me, place_it, held);
@@ -363,6 +364,9 @@ namespace kickos
         inline __attribute__((always_inline)) void seat_running(Thread* next, KernelCore me)
         {
             kernel().current(me) = next;
+#if defined(KICKOS_ARCH_CURRENT_ONE_READ)
+            arch_current_store(next);
+#endif
             next->state.to<ThreadState::RUNNING>();
 #if KICKOS_ARCH_SIM
             sim_self_seat.get() = next->lock_id;
@@ -377,13 +381,20 @@ namespace kickos
         {
             if (aspace_seated_with(rspace))
             {
+                size_t const image = task_image(next->task);
                 if (next->reent_fresh)
                 {
                     next->reent_fresh = false;
-                    reent_prime(rspace, next->reent);
+                    reent_prime(rspace, image, next->reent);
                 }
-#if not KICKOS_REENT_PER_THREAD
-                reent_seat(rspace, next->reent, next->lock_id);
+#if not KICKOS_REENT_PER_THREAD and KICKOS_INIT_IMAGE
+                Task const* const tk = next->task;
+                if (tk != nullptr and tk->reent_seat != nullptr)
+                {
+                    reent_seat(tk->reent_seat, next->reent);
+                }
+#elif not KICKOS_REENT_PER_THREAD
+                reent_seat(reinterpret_cast<void*>(image_record(image).reent_seat), next->reent);
 #endif
             }
         }
@@ -457,6 +468,9 @@ namespace kickos
                 KICKOS_DEBUG_ASSERT(not frame_live_on(next, me));
                 arch_ctx_redirect(&next->ctx, kickos_thread_slay_exit, next->stack_base,
                                   next->stack_size);
+                // The claim has fired: a pass taken before the stub's first instruction must
+                // keep this frame, or two victims on one core swap it at every pass.
+                next->dying = true;
             }
 #if KICKOS_ARCH_HAS_IPC_FASTPATH
             // A fastpath-parked thread has no kernel continuation to hand wait_result back
@@ -492,9 +506,9 @@ namespace kickos
             Thread* bad = nullptr;
             for (int s = 0; s < k.threads.next; s++)
             {
-                if (&k.threads.slots[s].ctx == offender)
+                if (&k.threads.slots()[s].ctx == offender)
                 {
-                    bad = &k.threads.slots[s];
+                    bad = &k.threads.slots()[s];
                     break;
                 }
             }
@@ -626,8 +640,8 @@ namespace kickos
             uint32_t const end = k.sched_out[p].staged[core];
             for (uint32_t i = k.sched_in[core].tail[p].load(); i != end; i++)
             {
-                uint16_t const e = k.sched_slot[p][core][i & (SCHED_RING_DEPTH - 1u)];
-                Thread const* const x = &k.threads.slots[e & ~SCHED_ENTRY_RESEAT];
+                uint16_t const e = k.sched_ring(p, core)[i & k.sched_ring_mask()];
+                Thread const* const x = &k.threads.slots()[e & ~SCHED_ENTRY_RESEAT];
                 if (x->queue_core == core and x->prio > lvl
                     and (x->state == ThreadState::HANDED or x->state == ThreadState::READY
                          or x->state == ThreadState::RUNNING))
@@ -664,6 +678,9 @@ namespace kickos
             Kernel& k = kernel();
             KernelCore const me = kickos_kernel_core();
             k.current(me) = nullptr;
+#if defined(KICKOS_ARCH_CURRENT_ONE_READ)
+            arch_current_store(nullptr);
+#endif
             k.idle(me) = nullptr;
             k.live = 0;
         }
@@ -848,8 +865,8 @@ namespace kickos
             {
                 ktime_deadline_cancel(t, held);
             }
-            // Every other state must be refused: EXITED is what ThreadPool::alloc reads as a
-            // free slot, so readying an exited thread takes that slot out of the pool for good.
+            // Every other state must be refused: an EXITED slot is listed reclaimable, so
+            // readying an exited thread runs it in a slot the next spawn hands to another.
             if (t->state != ThreadState::BLOCKED)
             {
                 KOS_TRACE(::kickos::KOS_TR_REFUSED, KOS_TRACE_ID(t),
@@ -956,23 +973,26 @@ namespace kickos
 
         void exit_current(int code, ExitCause cause, IrqLock* held)
         {
-            Thread* const c = kernel().current(kickos_kernel_core());
-#if KICKOS_KERNEL_STACKS
-            // Check the stack canary only after the thread has finished; do not print here,
-            // since this exit path sets the minimum stack size.
-            int const kslot = kernel().threads.index_of(c);
-            if (kslot >= 0 and not kstack_canary_intact(kslot))
-            {
-                kpanic(diag::kKstackOverflow);
-            }
-#endif
+            Thread* c = nullptr;
             // Save the task pointer across preemptible teardown. Identity remains valid
             // because task_resolve rejects slots without a creator.
             Task* left_task = nullptr;
             uint16_t left_gen = 0;
             bool emptied_task = false;
+            int slot = -1;
             {
                 IrqLock lock;
+                c = kernel().current(kickos_kernel_core());
+                slot = kernel().threads.index_of(c);
+#if KICKOS_KERNEL_STACKS
+                // Check the stack canary only after the thread has finished; do not print here,
+                // since this exit path sets the minimum stack size.
+                int const kslot = kernel().threads.index_of(c);
+                if (kslot >= 0 and not kstack_canary_intact(kslot))
+                {
+                    kpanic(diag::kKstackOverflow);
+                }
+#endif
                 // Not EXITED yet: EXITED makes the slot reclaimable, and the sweep below runs
                 // with interrupts unmasked between chunks. `state` cannot be the dying marker,
                 // a switch back in rewrites it to RUNNING.
@@ -983,10 +1003,15 @@ namespace kickos
                 // Unconsumed bits are left pending for the next server.
                 notify_unbind_self(c);
                 // A fault ends the group (task_end), and so does the entry's death by any cause.
-                // A cancelled thread latches nothing: the task keeps KOS_EXIT_CANCELLED.
-                if (cause == EXIT_FAULTED or c->task_entry)
+                // A cancelled entry latches nothing: the task keeps KOS_EXIT_CANCELLED. An
+                // essential thread's death latches a fault, which a task already ended keeps out.
+                if (cause == EXIT_FAULTED or c->task_role == TASK_ROLE_ENTRY)
                 {
                     task_end(c->task, code, c->cancel_kind == CANCEL_NONE, lock);
+                }
+                else if (c->task_role == TASK_ROLE_ESSENTIAL)
+                {
+                    task_end(c->task, KOS_EXIT_FAULT, true, lock);
                 }
 #if KICKOS_HAVE_ASPACE
 #if KICKOS_PRESYNC
@@ -1050,7 +1075,7 @@ namespace kickos
                 // until teardown finishes so still-open capabilities remain in the task budget.
                 if (emptied_task)
                 {
-                    c->task = nullptr;
+                    task_member_leave(c, slot);
                 }
                 // The creator's hold ends with the creator, keyed on the tag: a recycled pool
                 // slot answers kill_tag_of with its predecessor's, so a hold left behind is
@@ -1065,21 +1090,20 @@ namespace kickos
             }
             // Must close every cap the exiting thread holds before its slot is reclaimable,
             // else object references leak (destroy-on-last-close).
-            cap_teardown(c);
+            cap_teardown(c, left_task);
             {
                 IrqLock lock;
                 // The sweep is done, so no capability of this thread is seated any more and
                 // the name has nothing left to account for. Retiring it here rather than
                 // above is what keeps a sibling bounded across the sweep.
-                c->task = nullptr;
                 Kernel& k = kernel();
+                // The emptied run goes back with its CAP_SLOTS charge, so a spawn this lock
+                // admits next finds every chunk its task's budget backs.
+                task_run_leave(left_task, slot);
+                thread_cap_release(c);
+                task_member_leave(c, slot);
                 // Keep the kernel lock from publishing EXITED until the switch saves this frame.
-                c->state.to<ThreadState::EXITED>();
-                // Root's slot is never recycled, so release its empty capability directory here.
-                if (k.threads.is_root(c))
-                {
-                    thread_cap_release(c);
-                }
+                k.threads.retire(c);
                 // Retry deferred console reclaim after device holders exit and concurrent
                 // sweeps complete.
                 if (not cap_teardown_active())
@@ -1098,7 +1122,7 @@ namespace kickos
                 // task-empty waiters.
                 for (int s = 0; s < k.threads.next; s++)
                 {
-                    Thread* const w = &k.threads.slots[s];
+                    Thread* const w = &k.threads.slots()[s];
                     // A task-empty waiter only once the group is empty and swept, compared by
                     // pointer as membership is. The creator's watch is raised below the loop.
                     if (w->wait_join_target() == c
@@ -1127,7 +1151,18 @@ namespace kickos
 
         Thread* current()
         {
+#if defined(KICKOS_ARCH_CURRENT_ONE_READ)
+            return static_cast<Thread*>(arch_current_load());
+#elif KICKOS_KERNEL_CORES > 1
+            // The core index and its cell are two reads, and a preemptible caller moved to
+            // another core between them reads that core's thread.
+            arch_irq_state_t const s = arch_irq_save();
+            Thread* const t = kernel().current(kickos_kernel_core());
+            arch_irq_restore(s);
+            return t;
+#else
             return kernel().current(kickos_kernel_core());
+#endif
         }
         Thread* idle()
         {

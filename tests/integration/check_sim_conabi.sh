@@ -20,6 +20,10 @@ set -eu
 APP="${1:?usage: check_sim_conabi.sh <simconabi>}"
 [ -x "$APP" ] || fail "no simconabi image at $APP"
 
+# Its task `main` runs the program simconabi_main, whose main the image names after the task.
+nm --defined-only "$APP" | awk '$2 == "T" && $3 == "main_main" { f = 1 } END { exit !f }' \
+  || fail "$APP names no main_main, the main of the program its task main runs"
+
 echo "== running simconabi against the published console =="
 set +e
 OUT="$("$APP" 2>&1)"

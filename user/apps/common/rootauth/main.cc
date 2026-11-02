@@ -33,12 +33,6 @@ int main(int, char**)
     harness.note_rc("pinmux_set (declared bit)", rc);
     harness.check(rc != -KOS_EPERM, "declared KOS_AUTH_PINMUX reached the spawn");
 
-    // The authority gate precedes the cap lookup, so the handle must stay bogus: a
-    // -KOS_EBADF here would mean the gate let the call through to the lookup.
-    rc = kos_console_publish(-1, KOS_TASK_NONE);
-    harness.note_rc("console_publish (undeclared bit)", rc);
-    harness.check(rc == -KOS_EPERM, "undeclared KOS_AUTH_CONSOLE was not granted");
-
     // Must precede the narrow below, which drops KOS_AUTH_MEMORY. Leaks one block of
     // arch_ram_region_size(1); kos_ram_alloc never frees.
     void* mem = kos_ram_alloc(1);

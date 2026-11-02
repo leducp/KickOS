@@ -8,6 +8,8 @@
 #include <kickos/sync.h>
 #include <kickos/irqlock.h>
 #include <kickos/cap.h>
+#include <kickos/task.h>
+#include <kickos/chip_limits.h> // KICKOS_CHIP_ONE_TASK
 #include <kickos/thread.h> // Thread::affinity, what the claim and the wait admit
 #include <kickos/kernel.h> // KICKOS_ASSERT
 #include <kickos/debug.h>  // KICKOS_DEBUG_ASSERT
@@ -62,7 +64,11 @@ namespace kickos
         // Immutable from its publication to its reclamation.
         IrqDispatch g_pub[IRQ_PUB_SLOTS];
         uint8_t g_pub_state[IRQ_PUB_SLOTS] = {};
-        // The binding slot this record's grace period ALSO gates, or -1.
+        // What a record whose grace period gates no binding slot names. A handle, so compare
+        // against it and never test the sign (slotpool.h).
+        constexpr int PUB_BINDING_NONE = -1;
+
+        // The binding slot this record's grace period ALSO gates, or PUB_BINDING_NONE.
         int g_pub_binding[IRQ_PUB_SLOTS];
         // The line naming this record, or -1. Reclaiming the record is what frees that line.
         int g_pub_line[IRQ_PUB_SLOTS];
@@ -278,6 +284,35 @@ namespace kickos
             return true;
         }
 
+        // Binding slot `idx`, released, is paid for by `payer`'s record until its reclamation.
+        void retire_pay(int idx, Task const* payer)
+        {
+            HeadList* const retiring = task_irq_retiring(payer);
+            if (retiring == nullptr)
+            {
+                return;
+            }
+            Kernel& k = kernel();
+            IrqBinding* const b = k.irq_bindings.slot(idx);
+            b->payer = static_cast<uint8_t>(payer - k.tasks().begin() + 1);
+            retiring->push(&b->retiring);
+        }
+
+        // Binding slot `idx` leaves its payer's list. O(1).
+        void retire_unpay(int idx)
+        {
+            Kernel& k = kernel();
+            IrqBinding* const b = k.irq_bindings.slot(idx);
+            if (b->payer == 0)
+            {
+                return;
+            }
+            Task* const payer = &k.tasks()[b->payer - 1];
+            task_irq_retiring(payer)->unlink(&b->retiring);
+            b->payer = 0;
+            task_irq_retired(payer);
+        }
+
         void pub_reclaim(int slot)
         {
             if (g_pub_line[slot] >= 0)
@@ -285,18 +320,19 @@ namespace kickos
                 kernel().irq_table[g_pub_line[slot]].pub = IRQ_PUB_NONE;
             }
             g_pub_line[slot] = -1;
-            if (g_pub_binding[slot] >= 0)
+            if (g_pub_binding[slot] != PUB_BINDING_NONE)
             {
                 // No dispatch can still hold this slot's address, so the object pointer the
                 // ISR read out of it is now unreachable and the reference may go.
                 int const bidx = kernel().irq_bindings.live_index(g_pub_binding[slot]);
                 if (bidx >= 0)
                 {
+                    retire_unpay(bidx);
                     irq_detach_notify(bidx);
                 }
                 kernel().irq_bindings.free(g_pub_binding[slot]);
             }
-            g_pub_binding[slot] = -1;
+            g_pub_binding[slot] = PUB_BINDING_NONE;
             g_pub[slot].handler = nullptr;
             g_pub[slot].arg = nullptr;
             g_pub_state[slot] = PUB_FREE;
@@ -337,7 +373,7 @@ namespace kickos
         // The line keeps naming its record, marked retiring, until pub_reclaim frees it: a
         // claim of the line is refused until then, so no rebind can arm it under a dispatch
         // that has already read the record. That grace period also gates binding slot
-        // `binding_handle`, or nothing when it is -1.
+        // `binding_handle`, or nothing when it is PUB_BINDING_NONE.
         void line_release(int line, int binding_handle, Held held)
         {
             uint32_t const word = kernel().irq_table[line].pub.load();
@@ -348,7 +384,7 @@ namespace kickos
             }
             else
             {
-                if (binding_handle >= 0)
+                if (binding_handle != PUB_BINDING_NONE)
                 {
                     // Monotone: the record owes this slot until its reclamation, so a second
                     // release of the same line cannot drop it.
@@ -381,7 +417,7 @@ namespace kickos
             g_free_head = g_pub_link[i];
             g_pub_link[i] = -1;
             g_pub_state[i] = PUB_LIVE;
-            g_pub_binding[i] = -1;
+            g_pub_binding[i] = PUB_BINDING_NONE;
             g_pub_line[i] = -1;
             return i;
         }
@@ -411,7 +447,7 @@ namespace kickos
                 g_pub[i].handler = nullptr;
                 g_pub[i].arg = nullptr;
                 g_pub_state[i] = PUB_FREE;
-                g_pub_binding[i] = -1;
+                g_pub_binding[i] = PUB_BINDING_NONE;
                 g_pub_line[i] = -1;
                 g_pub_link[i] = -1;
             }
@@ -531,25 +567,157 @@ namespace kickos
         }
         IrqLock lock;
 #if KICKOS_KERNEL_CORES > 1
-        line_release(irq, -1, lock); // back to the null-object
+        line_release(irq, PUB_BINDING_NONE, lock); // back to the null-object
 #else
         set_default(irq); // the null-object, not a null slot
         irq_line_op(irq, LineOp::MASK, lock);
 #endif
     }
 
+    namespace
+    {
+        int claim_shape(int line, unsigned int flags)
+        {
+            if ((flags & ~static_cast<unsigned int>(KOS_IRQ_LEVEL)) != 0)
+            {
+                return -KOS_EINVAL;
+            }
+            return irq_line_admit(line);
+        }
+
+        // What a claim of `line` for task `t` asks past its shape before it spends anything.
+        // `freed`: the line is bound only to the kernel console's own handler, which the
+        // caller's publish detaches.
+        int claim_admit(int line, Task const* t, bool freed)
+        {
+#if KICKOS_KERNEL_CORES > 1
+            // Before the budget: a retirement whose grace period has elapsed returns its slot
+            // and its payer's charge.
+            pub_drain();
+#endif
+            // Before the binding pool and before the publication record: a task at its budget is
+            // refused without spending either. A null `t` is a declaration's create, whose lines
+            // its own budget admits.
+            if (t != nullptr and not task_admit(t, BudgetKind::IRQ_BINDINGS, 1))
+            {
+                return -KOS_EAGAIN; // this task holds its budget of bindings already
+            }
+            if (freed)
+            {
+                return 0;
+            }
+#if KICKOS_KERNEL_CORES > 1
+            if ((kernel().irq_table[line].pub.load() & IRQ_PUB_RETIRING) != 0)
+            {
+                return -KOS_EAGAIN; // released, but a dispatch on another core may still hold it
+            }
+#endif
+            // This is also what keeps the console line unclaimable until the kernel's own
+            // console_tx_deinit has detached it.
+            if (not line_unbound(line))
+            {
+                return -KOS_EBUSY;
+            }
+            return 0;
+        }
+
+        // The admitted claim, its capability installed in `holder` at `slot`, or at the head
+        // free slot for a negative one, and the line routed to `core`.
+        int claim_commit(Thread* holder, int line, unsigned int flags, uint32_t core, int slot,
+                         uint32_t* out_cap, IrqBinding** out)
+        {
+            Kernel& k = kernel();
+#if KICKOS_KERNEL_CORES > 1
+            // BEFORE the binding and the capability: the publication below must not be able to
+            // fail, or a refused claim would have to hand the binding back through the release
+            // path, which reads the line to find the record that owes it and would find none.
+            int const pub = pub_reserve();
+            if (pub < 0)
+            {
+                return -KOS_ENOMEM;
+            }
+#endif
+            int const i = k.irq_bindings.alloc(holder->task);
+            IrqBinding* b = k.irq_bindings.at(i); // total over alloc()'s refusals, below
+            if (b == nullptr)
+            {
+#if KICKOS_KERNEL_CORES > 1
+                pub_unreserve(pub);
+#endif
+                if (i == SLOT_OVER_BUDGET)
+                {
+                    return -KOS_EAGAIN;
+                }
+                return -KOS_ENOMEM;
+            }
+            b->notify = nullptr;
+            b->next_signaller = NOTIFY_SIGNALLER_NONE;
+            b->badge = 0;
+            b->line = line;
+            // The first wait over the line's bit arms it: a claim leaves it masked, so there is
+            // no window in which the line is armed and unowned.
+            b->needs_rearm = true;
+            b->armed_once = false;
+            b->trigger = IRQ_EDGE;
+            if ((flags & static_cast<unsigned int>(KOS_IRQ_LEVEL)) != 0)
+            {
+                b->trigger = IRQ_LEVEL;
+            }
+            k.irq_bindings.refs()[i] = 1; // the holder's cap is the first reference
+            int const obj = k.irq_bindings.handle_for(i);
+            // Install BEFORE attaching: a failure path must never leave a line bound to a slot
+            // that is about to be freed.
+            uint8_t const rights = CAP_WAIT | CAP_SIGNAL | CAP_TRANSFER;
+            uint32_t cap = KCAP_INVALID;
+            int rc = 0;
+            if (slot < 0)
+            {
+                rc = cap_install(holder, obj, CapType::CAP_IRQ, rights, &cap);
+            }
+            else if (cap_install_at(holder, slot, obj, CapType::CAP_IRQ, rights, KCAP_BADGE_NONE)
+                     == nullptr)
+            {
+                rc = -KOS_EINVAL;
+            }
+            if (rc != 0)
+            {
+                k.irq_bindings.refs()[i] = 0;
+                k.irq_bindings.free(obj);
+#if KICKOS_KERNEL_CORES > 1
+                pub_unreserve(pub);
+#endif
+                return rc;
+            }
+            // After the last exit that can fail: a refused claim must not leave the line routed
+            // to a core that owns nothing. The line is masked until the first wait arms it, so
+            // the route is programmed while nothing can be delivered against it.
+            arch_irq_route(line, core);
+#if KICKOS_KERNEL_CORES > 1
+            b->claim_core = static_cast<uint8_t>(core);
+#endif
+            // The ISR is handed the binding's ADDRESS, stable for the slot's life.
+#if KICKOS_KERNEL_CORES > 1
+            pub_commit(pub, line, irq_event_isr, b);
+#else
+            line_bind(line, irq_event_isr, b);
+#endif
+            *out_cap = cap;
+            *out = b;
+            return 0;
+        }
+
+        // Chains `b` onto notification `n`, object `obj`, raising `bit`.
+        int bind_chain(IrqBinding* b, Notification* n, int obj, uint8_t bit);
+    }
+
     int irq_claim(Thread* c, int line, unsigned int flags, uint32_t* out_cap)
     {
         IrqLock lock;
         *out_cap = KCAP_INVALID;
-        if ((flags & ~static_cast<unsigned int>(KOS_IRQ_LEVEL)) != 0)
+        int const shape = claim_shape(line, flags);
+        if (shape != 0)
         {
-            return -KOS_EINVAL;
-        }
-        int const admit = irq_line_admit(line);
-        if (admit != 0)
-        {
-            return admit;
+            return shape;
         }
 #if KICKOS_KERNEL_CORES > 1
         // Pinned to the core it runs on, which is the core the line is routed to. EPERM and
@@ -559,96 +727,49 @@ namespace kickos
             return -KOS_EPERM;
         }
 #endif
-        Kernel& k = kernel();
-        // Before the binding pool and before the publication record, as at the three object
-        // creators: a task at its ceiling is refused without spending either.
-        if (not task_object_admit(CapType::CAP_IRQ, c->task))
-        {
-            return -KOS_EAGAIN; // this task holds its ceiling of bindings already
-        }
-#if KICKOS_KERNEL_CORES > 1
-        // Before the allocation below: a retirement may still owe the pool the slot this claim
-        // is about to ask for.
-        pub_drain();
-        if ((k.irq_table[line].pub.load() & IRQ_PUB_RETIRING) != 0)
-        {
-            return -KOS_EAGAIN; // released, but a dispatch on another core may still hold it
-        }
-#endif
-        // This is also what keeps the console line unclaimable until the kernel's own
-        // console_tx_deinit has detached it.
-        if (not line_unbound(line))
-        {
-            return -KOS_EBUSY;
-        }
-#if KICKOS_KERNEL_CORES > 1
-        // BEFORE the binding and the capability: the publication below must not be able to fail,
-        // or a refused claim would have to hand the binding back through the release path, which
-        // reads the line to find the record that owes it and would find none.
-        int const pub = pub_reserve();
-        if (pub < 0)
-        {
-            return -KOS_ENOMEM;
-        }
-#endif
-        int const i = k.irq_bindings.alloc();
-        IrqBinding* b = k.irq_bindings.at(i); // total over alloc()'s -1: one refusal, below
-        if (b == nullptr)
-        {
-#if KICKOS_KERNEL_CORES > 1
-            pub_unreserve(pub);
-#endif
-            return -KOS_ENOMEM;
-        }
-        b->notify = nullptr;
-        b->next_signaller = NOTIFY_SIGNALLER_NONE;
-        b->badge = 0;
-        b->line = line;
-        // The first wait over the line's bit arms it: a claim leaves it masked, so there is no
-        // window in which the line is armed and unowned.
-        b->needs_rearm = true;
-        b->armed_once = false;
-        b->trigger = IRQ_EDGE;
-        if ((flags & static_cast<unsigned int>(KOS_IRQ_LEVEL)) != 0)
-        {
-            b->trigger = IRQ_LEVEL;
-        }
-        k.irq_refs[i] = 1; // the claimer's cap is the first reference
-        int const obj = k.irq_bindings.handle_for(i);
-        // Install BEFORE attaching: a failure path must never leave a line bound to a slot
-        // that is about to be freed.
-        uint32_t cap = KCAP_INVALID;
-        int const rc = cap_install(c, obj, CapType::CAP_IRQ,
-                                   CAP_WAIT | CAP_SIGNAL | CAP_TRANSFER, &cap);
+        int const rc = claim_admit(line, c->task, false);
         if (rc != 0)
         {
-            k.irq_refs[i] = 0;
-            k.irq_bindings.free(obj);
-#if KICKOS_KERNEL_CORES > 1
-            pub_unreserve(pub);
-#endif
             return rc;
         }
-        // After the last exit that can fail: a refused claim must not leave the line routed to
-        // a core that owns nothing. The line is masked until the first wait arms it, so the
-        // route is programmed while nothing can be delivered against it.
-        arch_irq_route(line, kickos_kernel_core());
-#if KICKOS_KERNEL_CORES > 1
-        b->claim_core = static_cast<uint8_t>(kickos_kernel_core());
-#endif
-        // The ISR is handed the binding's ADDRESS, stable for the slot's life.
-#if KICKOS_KERNEL_CORES > 1
-        pub_commit(pub, line, irq_event_isr, b);
-#else
-        line_bind(line, irq_event_isr, b);
-#endif
-        *out_cap = cap;
-        return 0;
+        IrqBinding* b = nullptr;
+        return claim_commit(c, line, flags, kickos_kernel_core(), -1, out_cap, &b);
     }
+
+#if !KICKOS_CHIP_ONE_TASK
+    int irq_declared_admit(int line, unsigned int flags, Task const* t, bool freed)
+    {
+        int const shape = claim_shape(line, flags);
+        if (shape != 0)
+        {
+            return shape;
+        }
+        return claim_admit(line, t, freed);
+    }
+
+    int irq_declared_claim(Thread* holder, int line, unsigned int flags, uint32_t core,
+                           uint16_t slot, Notification* n, int notify_obj, uint8_t bit)
+    {
+        int const rc = claim_admit(line, holder->task, false);
+        if (rc != 0)
+        {
+            return rc;
+        }
+        uint32_t cap = KCAP_INVALID;
+        IrqBinding* b = nullptr;
+        int const made = claim_commit(holder, line, flags, core, slot, &cap, &b);
+        if (made != 0)
+        {
+            return made;
+        }
+        // A refused bind leaves the claimed line with the holder, whose end releases it.
+        return bind_chain(b, n, notify_obj, bit);
+    }
+#endif
 
     namespace
     {
-        // Valid links are in [1, KICKOS_MAX_IRQ_HANDLES]; an invalid one returns null rather
+        // Valid links are in [1, the binding pool's count]; an invalid one returns null rather
         // than panic, keeping the interrupt-masked wait path safe. The null check also stops
         // GCC from adding an abort call on RX.
         IrqBinding* signaller_at(uint8_t ref)
@@ -668,6 +789,43 @@ namespace kickos
         IrqBinding* signaller_next(IrqBinding const* b)
         {
             return signaller_at(b->next_signaller);
+        }
+    }
+
+    namespace
+    {
+        int bind_chain(IrqBinding* b, Notification* n, int obj, uint8_t bit)
+        {
+            int const idx = kernel().irq_bindings.index_of(b);
+            if (idx < 0)
+            {
+                return -KOS_EBADF;
+            }
+#if KICKOS_KERNEL_CORES > 1
+            // One notification, one delivery core: this is the only insertion into a chain, and a
+            // binding's claim core is fixed for its life, so the head speaks for every signaller.
+            IrqBinding const* const head = signaller_first(n);
+            if (head != nullptr and head->claim_core != b->claim_core)
+            {
+                return -KOS_EPERM;
+            }
+#endif
+            // Signallers may share a badge bit; rearming visits every matching line.
+            // Check all tasks holding this IRQ before adding the notification to their holds.
+            if (not task_object_admit_binding_notify(idx, obj))
+            {
+                return -KOS_EAGAIN;
+            }
+            // The binding retains the notification independently of its capabilities.
+            if (not obj_ref_inc(CapType::CAP_NOTIFY, obj, 0))
+            {
+                return -KOS_EOVERFLOW;
+            }
+            b->badge = bit;
+            b->notify = n;
+            b->next_signaller = n->signallers;
+            n->signallers = notify_signaller_ref(idx);
+            return 0;
         }
     }
 
@@ -692,43 +850,13 @@ namespace kickos
             return -err;
         }
         CapEntry const* const ne = cap_lookup(c, notify_cap);
-        int const obj = static_cast<int>(ne->obj);
-        uint8_t const stored = cap_badge(*ne);
+        uint32_t const stored = cap_badge(*ne);
         uint8_t bit = 0;
         if (stored != KCAP_BADGE_NONE)
         {
             bit = static_cast<uint8_t>(stored - 1u);
         }
-        int const idx = kernel().irq_bindings.index_of(b);
-        if (idx < 0)
-        {
-            return -KOS_EBADF;
-        }
-#if KICKOS_KERNEL_CORES > 1
-        // One notification, one delivery core: this is the only insertion into a chain, and a
-        // binding's claim core is fixed for its life, so the head speaks for every signaller.
-        IrqBinding const* const head = signaller_first(n);
-        if (head != nullptr and head->claim_core != b->claim_core)
-        {
-            return -KOS_EPERM;
-        }
-#endif
-        // Signallers may share a badge bit; rearming visits every matching line.
-        // Check all tasks holding this IRQ before adding the notification to their holds.
-        if (not task_object_admit_binding_notify(idx, obj))
-        {
-            return -KOS_EAGAIN;
-        }
-        // The binding retains the notification independently of its capabilities.
-        if (not obj_ref_inc(CapType::CAP_NOTIFY, obj, 0))
-        {
-            return -KOS_EOVERFLOW;
-        }
-        b->badge = bit;
-        b->notify = n;
-        b->next_signaller = n->signallers;
-        n->signallers = notify_signaller_ref(idx);
-        return 0;
+        return bind_chain(b, n, static_cast<int>(ne->obj), bit);
     }
 
     void irq_signallers_rearm(Notification* n, uint32_t mask, Held held)
@@ -875,10 +1003,17 @@ namespace kickos
         return 0;
     }
 
+#if KICKOS_KERNEL_CORES > 1
+    void irq_retire_drain()
+    {
+        pub_drain();
+    }
+#endif
+
     void irq_ref_drop(int obj_handle, [[maybe_unused]] Held held)
     {
         Kernel& k = kernel();
-        int const idx = obj_ref_last(k.irq_bindings, k.irq_refs, obj_handle);
+        int const idx = obj_ref_last(k.irq_bindings, k.irq_bindings.refs(), obj_handle);
         if (idx < 0)
         {
             return;
@@ -892,14 +1027,12 @@ namespace kickos
         // binding's object pointer and must find the object still there.
         irq_unchain_signaller(idx);
         // Read before the release, which may return the slot to the pool.
-        int const line = k.irq_bindings.at(idx)->line;
-        // The budget comes back here and not at the pool free below, which above one
-        // kernel core happens later, from a reclamation: the binding is unreachable from
-        // this instant and holding its owner until the slot returns would keep charging a
-        // task for a line it no longer has.
+        int const line = k.irq_bindings.slot(idx)->line;
 #if KICKOS_KERNEL_CORES > 1
         // The slot returns with the record's grace period: a dispatch still reading that
-        // record is one still holding this slot's address as its pre-bound argument.
+        // record is one still holding this slot's address as its pre-bound argument. Until
+        // then the task that last held it pays for it.
+        retire_pay(idx, cap_drop_payer());
         line_release(line, obj_handle, held);
 #else
         // Detach before free: irq_event_isr holds this binding's address as its

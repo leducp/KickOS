@@ -241,7 +241,7 @@ The f411 example is a `main` that calls `printf("hello\n")`, linked with
 ```yaml
 tasks:
   - name: main
-    entry: kickos_main
+    program: main
     stack: 4096
     priority: 2
     ceiling: 31
@@ -274,9 +274,9 @@ the app, stores into the USART2 data register.
 Now give the app a console driver, as
 `user/apps/common/selftest/consoles/f411disco/f4uartirq.yaml` does. Its
 composition says `stdout: /svc/console`, and its `console` task holds
-`devices: [/dev/usart2]` and the line-38 interrupt. When the init starts that
-driver, the driver's endpoint is published as the console (`kos_console_publish`,
-which needs `KOS_AUTH_CONSOLE`), and every later thread gets a send-only copy in
+`devices: [/dev/usart2]` and the line-38 interrupt. When the init creates that
+driver's task, the create publishes the driver's endpoint as the console (which
+needs `KOS_AUTH_CONSOLE`), and every later thread gets a send-only copy in
 slot 0. The same `printf` now succeeds on its first send: the right to write the
 console is a capability the app possesses. The source does not change, and the
 app still holds no window on USART2. Only the driver does.

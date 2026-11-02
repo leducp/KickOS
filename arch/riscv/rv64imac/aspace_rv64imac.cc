@@ -340,8 +340,14 @@ namespace
 
     Edit edit_of(struct arch_aspace* space)
     {
-        Edit const e = {resident_anywhere(space), resident_peers(space), false, 0};
+        Edit const e = {resident_anywhere(space), false, resident_peers(space), 0, 0};
         return e;
+    }
+
+    void tables_moved(struct arch_aspace* space, Edit const& e)
+    {
+        uint32_t* const count = g_residency.tables(root_key(root_of(space)));
+        *count = *count + e.tables;
     }
 
     // Only the user half may be edited; kernel tables are shared.
@@ -555,7 +561,12 @@ struct arch_aspace* arch_aspace_create(void)
     }
     kickos_rv64_fence_w_w();
     // Destroy invalidates the old root before its frame or ASID can be reused.
-    g_residency.open(root_key(table), g_asid_capacity);
+    if (not g_residency.open(root_key(table), static_cast<uint32_t>(arch_aspace_create_pages()),
+                             g_asid_capacity))
+    {
+        kickos_frame_free(root);
+        return nullptr;
+    }
     return reinterpret_cast<struct arch_aspace*>(table);
 }
 
@@ -581,6 +592,29 @@ void arch_aspace_destroy(struct arch_aspace* space)
     kickos_frame_free(phys_of(table));
 }
 
+size_t arch_aspace_table_pages(struct arch_aspace* space)
+{
+    if (space == nullptr or root_of(space) == g_boot_root)
+    {
+        return 0;
+    }
+    return *g_residency.tables(root_key(root_of(space)));
+}
+
+size_t arch_aspace_create_pages(void)
+{
+    return 1;
+}
+
+size_t arch_aspace_map_tables(struct arch_aspace* space, uintptr_t va, size_t pages)
+{
+    if (space == nullptr or root_of(space) == g_boot_root or not range_ok(va, pages))
+    {
+        return 0;
+    }
+    return tables_needed(root_of(space), LEVEL_ROOT, va, pages);
+}
+
 enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
                                         arch_phys_addr_t pa, size_t pages,
                                         uint32_t rights, enum arch_map_memtype type)
@@ -598,7 +632,10 @@ enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
     {
         return ARCH_ASPACE_EINVAL;
     }
-    return walk_map(root_of(space), va, pa, pages, leaf, edit_of(space));
+    Edit e = edit_of(space);
+    enum arch_aspace_result const rc = walk_map(root_of(space), va, pa, pages, leaf, e);
+    tables_moved(space, e);
+    return rc;
 }
 
 enum arch_aspace_result arch_aspace_unmap(struct arch_aspace* space, uintptr_t va, size_t pages)
@@ -607,7 +644,10 @@ enum arch_aspace_result arch_aspace_unmap(struct arch_aspace* space, uintptr_t v
     {
         return ARCH_ASPACE_EINVAL;
     }
-    return walk_unmap(root_of(space), va, pages, edit_of(space));
+    Edit e = edit_of(space);
+    enum arch_aspace_result const rc = walk_unmap(root_of(space), va, pages, e);
+    tables_moved(space, e);
+    return rc;
 }
 
 void arch_aspace_activate(struct arch_aspace* space)

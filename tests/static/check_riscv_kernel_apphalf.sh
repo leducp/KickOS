@@ -47,7 +47,8 @@
 # being what would catch every control.
 #
 # usage: check_riscv_kernel_apphalf.sh <readelf> <allowlist> <image>... `--` <archive>...
-#   image    the linked ELF, read for the window bounds and the app-half symbol names
+#   image    the linked ELF, read for the window bounds and the app-half symbol names, with
+#            each program ELF its <image>.map names beside it (image_elf_set, tests/lib/gate.sh)
 #   archive  the KERNEL-side static libraries, read for their .rela.text* relocations
 
 set -eu
@@ -83,14 +84,27 @@ done
 
 [ -n "$IMAGES" ] || fail "no image given, so the app-half symbol set would be empty and every
       reference would read as clean"
+scratch_dir
+
+# Each program the kernel's link embeds holds its symbols in its own ELF alone.
+GIVEN="$IMAGES"
+IMAGES=""
+for I in $GIVEN; do
+    if [ -f "$I.map" ]; then
+        image_elf_set "$I" "$I.map" "$TMP/elfs"
+        while IFS= read -r E; do
+            IMAGES="$IMAGES $E"
+        done < "$TMP/elfs"
+    else
+        IMAGES="$IMAGES $I"
+    fi
+done
 [ -n "$ARCHIVES" ] || fail "no archive given after the separator, so nothing is scanned and the gate would
       pass vacuously"
 
 SCAN_REAL="$(dirname "$0")/riscv_apphalf.awk"
 [ -r "$SCAN_REAL" ] || fail "tests/static/riscv_apphalf.awk is unreadable, so neither the
       symbol table nor a relocation section can be read"
-
-scratch_dir
 
 # Every pattern the rule is made of, in one place, so a self-test arm can withdraw exactly one
 # of them. A literal dot is BRACKETED and never backslash-escaped: awk processes escape
@@ -196,9 +210,8 @@ pipeline() { # <image manifest> <archive manifest> <allowlist>
         "$TMP/apphalf.u" "$TMP/data"
     sort -u "$TMP/datahits.raw" > "$TMP/datahits"
 
-    sed -e 's/#.*//' -e 's/[[:space:]]*$//' "$3" | grep -v '^$' | sort -u > "$TMP/allowed"
-    require_nonempty "$TMP/allowed" "$3 holds no symbol, so every hit below would be
-      unlisted and the gate would be a list of names nobody wrote"
+    sed -e 's/#.*//' -e 's/[[:space:]]*$//' "$3" | { grep -v '^$' || true; } | sort -u \
+        > "$TMP/allowed"
 
     tool_out "$TMP/hits.raw" '' awk -F"$TAB" \
         'NR == FNR { app[$0] = 1; next } app[$2] { print $2 "\t" $4 "\t" $5 }' \
@@ -419,8 +432,8 @@ run_scenario localised "$ctldir/m_img" "$ctldir/m_french" "$ctldir/a_base" 1 '' 
     'the relocation parse is wrong'
 
 defaults 1 1 0
-run_scenario no_allowlist "$ctldir/m_img" "$ctldir/m_rel" "$ctldir/a_empty" 1 '' \
-    'holds no symbol'
+run_scenario no_allowlist "$ctldir/m_img" "$ctldir/m_rel" "$ctldir/a_empty" 1 '5 6 1 3 3 0' \
+    'no allowlist line names'
 
 # THE DEAD SCANNER, the one case a planted violation cannot reach: an awk that dies writes no
 # record, and a gate that reads its own empty output reports the absence it was testing for.

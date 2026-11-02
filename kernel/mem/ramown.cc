@@ -3,51 +3,55 @@
 
 #include <kickos/ramown.h>
 
-#if KICKOS_HAVE_MPU
+#if not KICKOS_HAVE_ASPACE
 
 #include <kickos/ampshare.h>
 #include <kickos/arch/arch.h>
-#include <kickos/instance_local.h>
+#include <kickos/budget.h>
+#include <kickos/kruntime.h> // kmemset
+#include <kickos/pools.h>
 #include <kickos/task.h> // task_handle: the owner's identity, index AND generation
 
 namespace kickos
 {
     namespace
     {
-        struct RamBlock
+        PoolSpan<RamBlock> blocks()
         {
-            uintptr_t base = 0;
-            // 0: a free slot. Every member's default is zero so the table stays in .bss, and a
-            // free slot spans nothing and names no task.
-            uint32_t size = 0;
-            kos_task_t owner = KOS_TASK_NONE;
-#if KICKOS_ARCH_ARENA_DCACHE
-            bool sync_owed = false;
-#endif
-        };
-
-        constinit InstanceLocal<RamBlock[KICKOS_RAM_OWNER_SLOTS]> g_owners = {};
-
-        RamBlock (&blocks())[KICKOS_RAM_OWNER_SLOTS]
-        {
-            return g_owners.get();
+            return pool_span(kickos_kernel_pools.ram_owners, kickos_kernel_pools.ram_owner_count);
         }
 
+        // The records below it are taken, the rest free: nothing frees a record.
+        constinit InstanceLocal<uint16_t> g_fresh = {0};
+
+        // The first free record, or nullptr when every one is taken. O(1).
         RamBlock* free_block()
         {
-            for (RamBlock& b : blocks())
+            PoolSpan<RamBlock> const all = blocks();
+            if (g_fresh.get() >= all.size())
             {
-                if (b.size == 0)
-                {
-                    return &b;
-                }
+                return nullptr;
             }
-            return nullptr;
+            return &all[g_fresh.get()];
         }
 
-        static_assert(KICKOS_RAM_OWNER_SLOTS > 0,
-                      "KICKOS_RAM_OWNER_SLOTS is 0: every kos_ram_alloc on this board would "
-                      "answer NULL, since a block whose owner cannot be recorded is refused");
+        // Whether `owner` may take one more block of `rsz` bytes.
+        bool admit(Task const* owner, size_t rsz)
+        {
+            return task_admit(owner, BudgetKind::RAM_BLOCKS, 1)
+                   and task_admit(owner, BudgetKind::RAM_BYTES, static_cast<uint32_t>(rsz));
+        }
+
+        // `b`, the record free_block answered, is `owner`'s, and its record pays for it from here
+        // on.
+        void record(Task const* owner, RamBlock* b, uintptr_t base, uint32_t size)
+        {
+            uint16_t* const head = task_ram_head(owner);
+            g_fresh.get()++;
+            *b = RamBlock{base, size, task_handle(owner)};
+            b->next = *head;
+            *head = static_cast<uint16_t>(b - blocks().begin() + 1);
+        }
     }
 
     void* ram_owner_alloc(Task const* owner, size_t size)
@@ -62,9 +66,13 @@ namespace kickos
         {
             return nullptr; // an extent RamBlock::size cannot hold, never a truncated one
         }
-        // The slot is found before the arena is spent: the allocator never takes a block back,
-        // so recording after allocating would drain the arena one lost block per call once the
-        // table filled.
+        // The budget and the slot before the arena is spent: the allocator never takes a block
+        // back, so recording after allocating would drain the arena one lost block per call once
+        // the table filled.
+        if (not admit(owner, rsz))
+        {
+            return nullptr;
+        }
         RamBlock* const slot = free_block();
         if (slot == nullptr)
         {
@@ -78,7 +86,7 @@ namespace kickos
         // The size the allocator reserved, the request rounded to a describable region:
         // recording the request would refuse a self-grant of the block at the extent the
         // descriptor covers.
-        *slot = RamBlock{reinterpret_cast<uintptr_t>(p), static_cast<uint32_t>(rsz), tag};
+        record(owner, slot, reinterpret_cast<uintptr_t>(p), static_cast<uint32_t>(rsz));
         return p;
     }
 
@@ -89,7 +97,7 @@ namespace kickos
         {
             return false;
         }
-        size_t const rsz = arch_ram_region_size(size);
+        size_t const rsz = ram_grant_extent(size);
         if (rsz == 0)
         {
             return false;
@@ -99,13 +107,13 @@ namespace kickos
         {
             return false; // the committed window wraps
         }
-        for (RamBlock const& b : blocks())
+        // The record's chain holds every incarnation's blocks; only this one's are nameable.
+        // O(the record's blocks).
+        RamBlock const* const all = blocks().begin();
+        for (uint16_t at = *task_ram_head(owner); at != 0; at = all[at - 1].next)
         {
-            if (b.size == 0 or b.owner != tag)
-            {
-                continue;
-            }
-            if (base >= b.base and last <= b.base + b.size - 1u)
+            RamBlock const& b = all[at - 1];
+            if (b.owner == tag and base >= b.base and last <= b.base + b.size - 1u)
             {
                 return true;
             }
@@ -148,25 +156,20 @@ namespace kickos
         {
             return false;
         }
+        if (not admit(owner, size))
+        {
+            return false;
+        }
         RamBlock* const b = free_block();
         if (b == nullptr)
         {
             return false;
         }
-        *b = RamBlock{base, static_cast<uint32_t>(size), tag};
+        record(owner, b, base, static_cast<uint32_t>(size));
         return true;
     }
 #endif
-}
 
-#endif // KICKOS_HAVE_MPU
-
-#if not KICKOS_HAVE_ASPACE
-
-#include <kickos/kruntime.h> // kmemset
-
-namespace kickos
-{
     void ram_block_clear(void* block, size_t extent)
     {
         kmemset(block, 0, extent);

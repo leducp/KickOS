@@ -3,21 +3,30 @@
 
 import os
 
-from ruamel.yaml.nodes import ScalarNode
+from ruamel.yaml.nodes import MappingNode, ScalarNode
 
 from .descriptions import PART, check_board, cluster_views, reaches, unit_views
-from .manifest import CORES, read_manifest
+from .manifest import BADGE_BITS, CORES, read_manifest
 from .region import ram_size
 from .supply import check_drivers, check_priorities, check_scheduling, check_supply
-from .subset import C_IDENTIFIER, FILE_NAME, IDENTIFIER, File, Report, index_below, line_of, read_utf8
+from .subset import FILE_NAME, IDENTIFIER, PROGRAM_NAME, File, Report, index_below, line_of, read_utf8
 
 COMPOSITION_VERSIONS = (1,)
-COMPOSITION_FIELDS = ("version", "board", "cluster", "stdout", "ends", "accepts", "heap", "init", "shared", "tasks")
+COMPOSITION_FIELDS = ("version", "board", "cluster", "stdout", "ends", "accepts", "heap", "init", "budgets", "caps",
+                      "reserve", "shared", "tasks")
 INIT_FIELDS = ("priority",)
 TASK_FIELDS = (
-    "name", "entry", "driver", "stack", "priority", "ceiling", "core", "devices", "lines", "serves", "uses",
-    "maps", "watches", "authority", "accepts", "restart",
+    "name", "program", "driver", "stack", "priority", "ceiling", "core", "devices", "lines", "serves", "uses",
+    "maps", "watches", "authority", "accepts", "restart", "start", "drivers", "budgets", "caps",
 )
+# A declaration's capability tables: the width each thread takes where its spawn asks none, and the
+# sum of the widths of its live threads, its CAP_SLOTS budget.
+CAPS_FIELDS = ("width", "slots")
+# The widest figure a budget states: a declaration carries each in 32 bits.
+BUDGET_BITS = 32
+# A packaged driver listed under a task's `drivers`, which runs as threads of that task.
+HOSTED_FIELDS = ("name", "driver", "priority", "devices", "lines", "serves", "accepts")
+USE_FIELDS = ("path", "slots")
 SHARED_FIELDS = ("name", "size", "cache", "partition")
 SHARED_REQUIRED = ("name", "size", "cache")
 AUTHORITIES = ("memory", "pinmux", "pstate", "irq", "system", "console", "tasks", "bus_master",
@@ -49,23 +58,6 @@ AMP_PORTS = 256
 AMP_PORT_REPLY = 1
 # KOS_TABLE_NONE, which no line of the table may be.
 LINE_NONE = 0xFFFF
-# What the emitted table's C source defines, and the prefixes its headers declare and define in.
-TABLE_NAMES = ("kickos_table", "kickos_table_image")
-ABI_PREFIXES = ("kos_", "KOS_", "KICKOS_")
-# C11 and C++20 keywords, and the C++ alternative tokens, none of which names a function.
-KEYWORDS = frozenset("""
-    alignas alignof and and_eq asm auto bitand bitor bool break case catch char char8_t char16_t
-    char32_t class compl concept const consteval constexpr constinit const_cast continue co_await
-    co_return co_yield decltype default delete do double dynamic_cast else enum explicit export
-    extern false float for friend goto if inline int long mutable namespace new noexcept not not_eq
-    nullptr operator or or_eq private protected public register reinterpret_cast requires restrict
-    return short signed sizeof static static_assert static_cast struct switch template this
-    thread_local throw true try typedef typeid typename union unsigned using virtual void volatile
-    wchar_t while xor xor_eq _Alignas _Alignof _Atomic _Bool _Complex _Generic _Imaginary
-    _Noreturn _Static_assert _Thread_local
-""".split())
-
-
 class Grant:
     def __init__(self, task, device, space, base, size, path, node):
         self.task = task
@@ -100,6 +92,8 @@ class Task:
         self.name_node = None
         self.serves = None
         self.uses = []
+        # Each used path whose use names device slots, mapped to (the slots, their node).
+        self.use_slots = {}
         self.watches = []
         self.maps = []
         self.grants = []
@@ -108,6 +102,8 @@ class Task:
         self.unresolved = False
         self.entry = False
         self.entry_name = None
+        # The CMake target a `program:` task runs, whose entry is its `main`.
+        self.program = None
         self.driver = None
         self.nodes = {}
         self.stack = None
@@ -121,8 +117,23 @@ class Task:
         # Each held authority's node, for a refusal that names its line.
         self.authority_nodes = {}
         self.restart_max = 0
+        self.on_request = False
+        # The task a driver listed under its `drivers` runs in, or None for a task of its own.
+        self.hosted = None
+        # The nodes of this task's `drivers`, and the Task of each.
+        self.driver_items = []
+        self.hosts = []
+        # Its `budgets`, by kind: (figure, node). The figure each kind takes once admitted, the
+        # composition's defaults and the build's applied.
+        self.stated = {}
+        self.budgets = {}
+        # Its `caps`, by field: (figure, node); and the width its threads take once admitted.
+        self.caps = {}
+        self.cap_width = None
 
     def label(self):
+        if self.hosted is not None:
+            return "driver `%s` of %s" % (self.name, self.hosted.label())
         if self.name is None:
             return "task %d" % (self.index + 1)
         return "task `%s`" % self.name
@@ -150,7 +161,7 @@ class Admitted:
     """What a composition checked against a manifest leaves for the emitter."""
 
     def __init__(self, root, tasks, shared, stdout, ends, heap, init_priority, chip, cluster, manifest, translating,
-                 accepts):
+                 accepts, sizing):
         self.root = root
         self.tasks = tasks
         self.shared = shared
@@ -171,6 +182,8 @@ class Admitted:
         self.accepts = accepts
         # Each partition region's offset in the user share, which the partition build places.
         self.offsets = {}
+        # The init's budgets and every pool's size (supply.Sizing).
+        self.sizing = sizing
 
 
 def admit(paths, platform, manifest_path=None):
@@ -247,18 +260,27 @@ def admit_composition(path, text, platform, report, cache, manifest, partition=F
     if base is not None:
         stack = base.stack
     init_priority, init_node = read_init(f, top)
+    defaults = read_budgets(f, top.get("budgets"), "the composition's `budgets`")
+    cap_defaults = read_caps(f, top.get("caps"), "the composition's `caps`")
+    reserve = read_budgets(f, top.get("reserve"), "the composition's `reserve`")
     shared = check_shared(f, top)
     tasks = []
     if "tasks" in top:
         items = f.sequence(top["tasks"], "`tasks`")
         for index, item in enumerate(items or ()):
             tasks.append(check_task(f, item, index, chip, cluster, board_less, stack))
-    named = name_tasks(f, tasks)
+    for host in list(tasks):
+        for node in host.driver_items:
+            tasks.append(check_hosted(f, node, len(tasks), host, chip, cluster))
+    # A driver inside a task is no task to watch or end on.
+    named = {name: task for name, task in name_tasks(f, tasks).items() if task.hosted is None}
     served = serve_endpoints(f, tasks)
     stdout = check_order(f, top, tasks, named, served, shared)
+    check_slot_owners(f, tasks)
     check_restart(f, top, named)
     if chip is not None:
         check_ownership(f, tasks, chip, cluster, board, stdout)
+        check_one_task(f, tasks, shared, chip)
     if chip is not None and manifest is not None:
         check_window_rule(f, top.get("board", root), chip, cluster, manifest)
         check_encoding(f, tasks, chip, cluster, manifest)
@@ -268,16 +290,48 @@ def admit_composition(path, text, platform, report, cache, manifest, partition=F
             if name not in needed:
                 unneeded(f, node, "the composition's", name)
         check_drivers(f, tasks, manifest)
+        check_slots(f, tasks, served)
         check_priorities(f, tasks, manifest)
         check_scheduling(f, top, tasks, stdout, manifest)
         init_priority = check_init_priority(f, root, init_priority, init_node, manifest)
         translating = any(unit.page is not None for view, unit in unit_views(chip, cluster))
-        check_supply(f, root, tasks, shared, chip, cluster, manifest, translating, region_size)
+        sizing = check_supply(f, root, tasks, shared, chip, cluster, manifest, translating, region_size, defaults,
+                              cap_defaults, reserve, stdout)
         check_ports(f, tasks, manifest)
         check_partitioned(f, tasks, shared, manifest, partition)
         return Admitted(root, tasks, shared, stdout, top.get("ends"), heap, init_priority, chip, cluster, manifest,
-                        translating, accepts)
+                        translating, accepts, sizing)
     return None
+
+
+def read_budgets(f, node, what):
+    """`node`'s budgets by kind as {kind: (figure, node)}, {} for none. Which kinds exist is the
+    kernel build's, checked against its manifest once the tasks are read (supply.check_budgets)."""
+    if node is None:
+        return {}
+    pairs = f.mapping(node, what)
+    budgets = {}
+    for name, (key, value) in (pairs or {}).items():
+        if f.name(key, "a kind in %s" % what, IDENTIFIER) is None:
+            continue
+        figure = f.integer(value, "%s `%s`" % (what, name), BUDGET_BITS)
+        if figure is not None:
+            budgets[name] = (figure, key)
+    return budgets
+
+
+def read_caps(f, node, what):
+    """`node`'s capability tables by field as {field: (figure, node)}, {} for none."""
+    if node is None:
+        return {}
+    values = f.fields(node, what, CAPS_FIELDS, ())
+    caps = {}
+    bits = {"width": 16, "slots": BUDGET_BITS}
+    for name, value in (values or {}).items():
+        figure = f.integer(value, "%s `%s`" % (what, name), bits[name])
+        if figure is not None:
+            caps[name] = (figure, value)
+    return caps
 
 
 def read_init(f, top):
@@ -375,8 +429,8 @@ def board_default(report, manifest):
         base.cluster = g.name(top["cluster"], "`cluster`", IDENTIFIER)
     for item in g.sequence(top["tasks"], "`tasks`") or ():
         values = g.mapping(item, "a task")
-        if values is not None and "entry" in values and "stack" in values:
-            base.stack = g.integer(values["stack"][1], "the entry task's stack", 32)
+        if values is not None and "program" in values and "stack" in values:
+            base.stack = g.integer(values["stack"][1], "the program task's stack", 32)
             break
     return base
 
@@ -562,11 +616,15 @@ def check_shared(f, top):
     return shared
 
 
-def check_task(f, item, index, chip, cluster, board_less, base_stack):
+def check_task(f, item, index, chip, cluster, board_less, base_stack, host=None):
     """The Task `item` declares; where `board_less`, an entry task stating no `stack` takes
-    `base_stack`."""
+    `base_stack`. With `host`, `item` is an entry of that task's `drivers`."""
     task = Task(index, item)
-    values = f.fields(item, "task %d" % (index + 1), TASK_FIELDS, ("name", "priority"))
+    task.hosted = host
+    if host is not None:
+        values = f.fields(item, "%s driver" % host.label(), HOSTED_FIELDS, ("driver", "serves", "priority"))
+    else:
+        values = f.fields(item, "task %d" % (index + 1), TASK_FIELDS, ("name", "priority"))
     if values is None:
         return task
     if "name" in values:
@@ -575,46 +633,43 @@ def check_task(f, item, index, chip, cluster, board_less, base_stack):
     what = task.label()
     task.nodes = values
 
-    if "entry" in values and "driver" in values:
-        f.refuse(values["driver"], "form.exclusive", "%s has both `entry` and `driver`; it runs one of the two" % what)
-    if "entry" not in values and "driver" not in values:
+    runs = [field for field in ("program", "driver") if field in values]
+    if len(runs) > 1:
+        f.refuse(values[runs[1]], "form.exclusive",
+                 "%s has both `%s` and `%s`; it runs one of them" % (what, runs[0], runs[1]))
+    if not runs:
         f.refuse(item, "form.missing",
-                 "%s needs `entry`, a symbol in the user's sources, or `driver`, one the package ships" % what)
-    if "entry" in values:
-        task.entry_name = f.name(values["entry"], "%s entry" % what, C_IDENTIFIER)
-        if task.entry_name in KEYWORDS:
-            f.refuse(values["entry"], "name.entry",
-                     "%s entry `%s` is a C or C++ keyword, which names no function" % (what, task.entry_name))
-            task.entry_name = None
-        elif task.entry_name is not None and table_name(task.entry_name):
-            f.refuse(values["entry"], "name.entry",
-                     "%s entry `%s` is a name the emitted table's C source defines, or of the kos_, KOS_ "
-                     "and KICKOS_ names its headers declare" % (what, task.entry_name))
-            task.entry_name = None
-        task.entry = task.entry_name is not None
+                 "%s needs `program`, a CMake target, or `driver`, one the package ships" % what)
+    program = "program" in values and "driver" not in values
+    if program:
+        task.program = f.name(values["program"], "%s program" % what, PROGRAM_NAME)
+    elif "program" in values:
+        values = dict(values)
+        values.pop("program")
+        task.nodes = values
+    if program:
+        task.entry_name = "main"
+        task.entry = True
         if "stack" not in values and "driver" not in values and not board_less:
-            f.refuse(item, "form.missing", "%s runs an `entry`, so it needs `stack`" % what)
+            f.refuse(item, "form.missing", "%s runs a `program`, so it needs `stack`" % what)
         elif "stack" not in values and "driver" not in values:
             task.stack = base_stack
-    if "driver" in values and "entry" not in values:
+    if "driver" in values:
         task.driver = f.name(values["driver"], "%s driver" % what, IDENTIFIER)
-    elif "driver" in values:
-        f.name(values["driver"], "%s driver" % what, IDENTIFIER)
-    if "driver" in values and "entry" not in values:
         for field in ("uses", "watches"):
             if field in values:
                 f.refuse(values[field], "form.inapplicable",
                          "%s runs a packaged driver, whose descriptor grants it only its own "
                          "capabilities, so it has no `%s`" % (what, field))
     if "driver" in values:
-        if "stack" in values and "entry" not in values:
+        if "stack" in values:
             f.refuse(values["stack"], "form.inapplicable",
                      "%s runs a packaged driver, whose stack its metadata states, so it has no `stack`" % what)
     if "stack" in values:
         task.stack = f.integer(values["stack"], "%s stack" % what, 32)
     if "priority" in values:
         task.priority = f.integer(values["priority"], "%s priority" % what, 8)
-    if "ceiling" in values and "driver" in values and "entry" not in values:
+    if "ceiling" in values and "driver" in values:
         f.refuse(values["ceiling"], "form.inapplicable",
                  "%s runs a packaged driver, whose ceiling is its priority plus its threads' highest "
                  "offset, so it has no `ceiling`" % what)
@@ -625,8 +680,8 @@ def check_task(f, item, index, chip, cluster, board_less, base_stack):
                      "%s ceiling %d, the highest priority its threads may take, is below its priority %d, which "
                      "its entry thread runs at; the usual value is the kernel build's top priority"
                      % (what, task.ceiling, task.priority))
-    elif "entry" in values and "driver" not in values:
-        f.refuse(item, "form.missing", "%s runs an `entry`, so it needs `ceiling`, the highest priority its threads "
+    elif program:
+        f.refuse(item, "form.missing", "%s runs a `program`, so it needs `ceiling`, the highest priority its threads "
                  "may take; the usual value is the kernel build's top priority" % what)
     if "core" in values:
         core = f.integer(values["core"], "%s core" % what, 16)
@@ -667,9 +722,7 @@ def check_task(f, item, index, chip, cluster, board_less, base_stack):
     if "uses" in values:
         items = f.sequence(values["uses"], "%s uses" % what)
         for node in items or ():
-            path = declared_path(f, node, "%s used endpoint" % what, "svc", True)
-            if path is not None:
-                task.uses.append((path, node))
+            check_use(f, node, task, what)
         unique(f, task.uses, "%s uses" % what)
     if "maps" in values:
         maps = f.mapping(values["maps"], "%s maps" % what)
@@ -706,11 +759,170 @@ def check_task(f, item, index, chip, cluster, board_less, base_stack):
         restart = f.fields(values["restart"], "%s restart" % what, ("max",), ("max",))
         if restart is not None and "max" in restart:
             task.restart_max = f.integer(restart["max"], "%s restart max" % what, 8)
+    if "start" in values:
+        task.on_request = f.enum(values["start"], "%s start" % what, ("init", "on_request")) == "on_request"
+    if "drivers" in values and ("driver" in values or task.on_request):
+        f.refuse(values["drivers"], "form.inapplicable",
+                 "%s runs no `entry` the init starts, so no driver runs as its threads and it has no "
+                 "`drivers`" % what)
+    elif "drivers" in values:
+        task.driver_items = f.sequence(values["drivers"], "%s drivers" % what) or []
+    if "budgets" in values:
+        task.stated = read_budgets(f, values["budgets"], "%s `budgets`" % what)
+    if "caps" in values:
+        task.caps = read_caps(f, values["caps"], "%s `caps`" % what)
+    if task.on_request:
+        # A task started on request serves the endpoint its creator passes it: a driver's
+        # declaration publishes it as the console, and a program's reports its first receive.
+        for field in ("driver", "serves", "uses", "maps", "devices", "lines", "watches", "restart"):
+            if field == "driver" or (field == "serves" and (program or "driver" in values)):
+                continue
+            if field in values:
+                f.refuse(values[field], "form.inapplicable",
+                         "%s starts on request, from a creator that passes it what it holds, so the init "
+                         "grants it nothing and it has no `%s`" % (what, field))
     return task
 
 
-def table_name(name):
-    return name in TABLE_NAMES or name.startswith(ABI_PREFIXES)
+def check_hosted(f, node, index, host, chip, cluster):
+    """The Task of entry `node` of `host`'s `drivers`, which runs on `host`'s core."""
+    task = check_task(f, node, index, chip, cluster, False, None, host)
+    host.hosts.append(task)
+    if task.driver is None:
+        return task
+    if task.name is None:
+        task.name = task.driver
+        task.name_node = task.nodes.get("driver", node)
+    task.core = host.core
+    if "core" in host.nodes:
+        task.nodes["core"] = host.nodes["core"]
+    return task
+
+
+def check_one_task(f, tasks, shared, chip):
+    """On a chip that holds one task, every packaged driver runs inside a task, and nothing needs a second one."""
+    if not chip.one_task:
+        return
+    first = None
+    for task in tasks:
+        if task.hosted is not None:
+            continue
+        if first is None:
+            first = task
+            continue
+        f.refuse(task.name_node or task.node, "supply.one-task",
+                 "%s is a second task beside %s, and chip `%s` holds one task beside the init"
+                 % (task.label(), first.label(), chip.name))
+    for task in tasks:
+        if task.watches:
+            f.refuse(task.nodes["watches"], "supply.one-task",
+                     "%s watches `%s`, and chip `%s` holds one task: a watch needs a second task"
+                     % (task.label(), task.watches[0][0], chip.name))
+        if task.driver is not None and task.hosted is None:
+            f.refuse(task.nodes["driver"], "driver.one-task",
+                     "%s runs driver `%s` as a task of its own, and chip `%s` holds one task, so the kernel "
+                     "starts no driver task: list `%s` under `drivers` of the task that uses it"
+                     % (task.label(), task.driver, chip.name, task.driver))
+    for name, region in shared.items():
+        f.refuse(region.node, "supply.one-task",
+                 "shared region `%s` needs a second task to share it, and chip `%s` holds one task"
+                 % (name, chip.name))
+
+
+def check_use(f, node, task, what):
+    """One item of `uses`: a path, or `{ path, slots }` naming the device slots of a bus it uses."""
+    path_node = node
+    slots = None
+    slots_node = None
+    if isinstance(node, MappingNode):
+        use = f.fields(node, "%s use" % what, USE_FIELDS, USE_FIELDS)
+        if use is None or "path" not in use or "slots" not in use:
+            return
+        path_node = use["path"]
+        slots_node = use["slots"]
+        slots = read_slots(f, slots_node, "%s slots" % what)
+    path = declared_path(f, path_node, "%s used endpoint" % what, "svc", True)
+    if path is None:
+        return
+    if slots_node is not None and amp_port(path) is not None:
+        f.refuse(slots_node, "form.inapplicable",
+                 "%s names slots of crossing `%s`, whose server runs on another node and is handed no "
+                 "client's badge" % (what, path))
+    elif slots_node is not None:
+        task.use_slots[path] = (slots or [], slots_node)
+    task.uses.append((path, path_node))
+
+
+def read_slots(f, node, what):
+    """The device slots a `slots` list names, each below the bits of a badge, or None once refused."""
+    items = f.sequence(node, what)
+    if items is None:
+        return None
+    if not items:
+        f.refuse(node, "form.range", "%s names no slot, so the badge it is handed reaches no device" % what)
+        return None
+    slots = []
+    seen = {}
+    for item in items:
+        slot = f.integer(item, "a slot in %s" % what, 8)
+        if slot is None:
+            continue
+        if slot >= BADGE_BITS:
+            f.refuse(item, "form.range",
+                     "%s names slot %d, and a client's slot mask is its %d-bit badge" % (what, slot, BADGE_BITS))
+        elif slot in seen:
+            f.refuse(item, "form.duplicate-entry", "%s lists slot %d twice, first on line %d" % (what, slot, seen[slot]))
+        else:
+            seen[slot] = line_of(item)
+            slots.append(slot)
+    if not slots:
+        return None
+    return slots
+
+
+def check_slot_owners(f, tasks):
+    """A device slot of a bus is one client's: the badge it is handed is the only thing the service
+    tells clients apart by."""
+    owners = {}
+    for task in tasks:
+        for path, (slots, node) in task.use_slots.items():
+            for slot in slots:
+                first = owners.get((path, slot))
+                if first is None:
+                    owners[(path, slot)] = (task, node)
+                    continue
+                f.refuse(node, "ownership.slot",
+                         "%s uses slot %d of `%s`, which %s uses on line %d, and a bus service hands one "
+                         "client each slot" % (task.label(), slot, path, first[0].label(), line_of(first[1])))
+
+
+def check_slots(f, tasks, served):
+    """Each use of a bus names its slots, within what the bus keys, and no other use names any."""
+    for task in tasks:
+        for path, node in task.uses:
+            server = served.get(path)
+            if server is None or amp_port(path) is not None:
+                continue
+            if server.driver is not None and server.catalogue is None:
+                continue
+            bus = 0
+            if server.catalogue is not None:
+                bus = server.catalogue.slots
+            named = task.use_slots.get(path)
+            if bus and named is None:
+                f.refuse(node, "form.missing",
+                         "%s uses `%s`, which %s serves keying each client's %d device slots on its badge, "
+                         "so the use is `{ path: %s, slots: [...] }`" % (task.label(), path, server.label(), bus, path))
+            elif not bus and named is not None:
+                f.refuse(named[1], "form.inapplicable",
+                         "%s names slots of `%s`, which %s serves keying nothing on a client's badge"
+                         % (task.label(), path, server.label()))
+            elif named is not None:
+                for slot in named[0]:
+                    if slot >= bus:
+                        f.refuse(named[1], "form.range",
+                                 "%s names slot %d of `%s`, which %s keys %d device slots of"
+                                 % (task.label(), slot, path, server.label(), bus))
 
 
 def from_cluster(cluster):
@@ -920,6 +1132,12 @@ def check_order(f, top, tasks, named, served, shared):
             server = served.get(path)
             if server is None:
                 f.refuse(node, "order.undeclared", "%s uses `%s`, which no task serves" % (task.label(), path))
+            elif server.hosted is not None and server.hosted is not task:
+                f.refuse(node, "order.hosted",
+                         "%s uses `%s`, which %s serves, and only the threads of the task a driver runs in "
+                         "reach it" % (task.label(), path, server.label()))
+            elif server.hosted is not None:
+                continue
             elif server.index >= task.index:
                 f.refuse(node, "order.forward",
                          "%s uses `%s`, which %s serves on line %d, not above it"
@@ -1047,6 +1265,9 @@ def check_restart(f, top, named):
     if ending is not None and ending.restart_max:
         f.refuse(ending.nodes["restart"], "restart.ends",
                  "%s ends the system, `ends` naming it, so it is never restarted" % ending.label())
+    if ending is not None and ending.on_request:
+        f.refuse(top["ends"], "form.inapplicable",
+                 "%s starts on request, and `ends` names a task the init starts" % ending.label())
 
 
 def check_ownership(f, tasks, chip, cluster, board, stdout):

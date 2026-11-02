@@ -17,7 +17,7 @@ shared:
 
 tasks:
   - name: echo
-    entry: ampecho_main
+    program: main
     priority: 5
     ceiling: 5
     serves: /amp/2

@@ -37,8 +37,8 @@ config ARCH_KERNEL_STACKS_MANDATORY
 	  expressible rather than a tautology. It carries BOTH paths under
 	  KICKOS_KERNEL_STACKS because stm32f302 and sam3x8e have no MPU and did not opt in:
 	  on a chip with no privilege boundary the transfer buys robustness rather than
-	  isolation, and the red zone buys the same robustness without KICKOS_THREAD_SLOTS
-	  blocks of kernel .bss. f302nucleo and due are those boards, and they must keep
+	  isolation, and the red zone buys the same robustness without a block of kernel
+	  .bss per thread slot. f302nucleo and due are those boards, and they must keep
 	  resolving 0.
 
 	  A NEW ARCH THAT WRITES ONLY THE TRANSFER SELECTS THIS. One that writes both paths
@@ -301,22 +301,13 @@ config KICKOS_LIBC_REENT
 	default 0 if ARCH_SIM
 	default 1
 
-# Where libc asks __getreent the thread pointer answers it: lx6 above one kernel core, and every
-# armv8a, rv64imac and x86_64 image, whose newlib the KickOS toolchain builds dynamic-reent.
-# Elsewhere one word is seated at every switch, which is correct only while one core runs its
+# Where libc asks __getreent the thread pointer answers it: every lx6, armv8a, rv64imac and
+# x86_64 image, whose newlib the KickOS toolchain builds dynamic-reent. Elsewhere libc reads
+# _impure_ptr, one word seated at every switch, which is correct only while one core runs its
 # readers.
 config KICKOS_REENT_PER_THREAD
 	int
-	default 1 if ARCH_RV64IMAC || ARCH_X86_64 || ARCH_ARMV8A
-	default 1 if ARCH_LX6 && KICKOS_KERNEL_CORES > 1
-	default 0
-
-# The reentrant state is the first word of the thread's TLS control block, so KICKOS_TLS must
-# carve it (CMakeLists.txt refuses KICKOS_TLS=n here).
-config KICKOS_REENT_IN_TCB
-	int
-	default 1 if ARCH_ARMV8A
-	default 1 if ARCH_LX6 && KICKOS_KERNEL_CORES > 1
+	default 1 if ARCH_RV64IMAC || ARCH_X86_64 || ARCH_ARMV8A || ARCH_LX6
 	default 0
 
 config KICKOS_ARCH_FAMILY

@@ -60,7 +60,7 @@ kickos_rp_rom_call:
 
     /* One slice per core of the part, so two cores' calls never share one. Touched by the call
      * above alone; 8-aligned, as AAPCS asks of sp at a call. */
-    .section .bss.kickos_rp_rom_stack, "aw", %nobits
+    .section .kickos_bss_last.rp_rom_stack, "aw", %nobits
     .balign 8
     .global kickos_rp_rom_stack
 kickos_rp_rom_stack:

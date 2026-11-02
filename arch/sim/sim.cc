@@ -868,12 +868,12 @@ int arch_sim_instance_run(int argc, char** argv)
 bool arch_console_write_sync(char const* buf, size_t n)
 {
 #if KICKOS_MULTI_INSTANCE
+    // A tail with no newline is tagged and written by arch_shutdown, which panic and fault reach:
+    // a line written a byte at a time stays one tagged line.
     for (size_t i = 0; i < n; i++)
     {
         sim_line_put(buf[i]);
     }
-    // Panic and fault do not return to a newline, so an unterminated tail would be lost.
-    sim_line_flush();
     return true;
 #else
     size_t off = 0;
@@ -913,9 +913,11 @@ void arch_context_init(struct arch_context* ctx,
 {
     SimContext* c = sc(ctx);
     // An MCU-sized caller stack would overflow the host: a host stack is substituted below
-    // this floor and never freed.
+    // the floor and never freed. A substituted stack is no memory the thread may name to a
+    // system call, and a create's argv comes off the top of a declared 64 KiB one.
+    constexpr size_t SIM_HOST_STACK_FLOOR = 32 * 1024;
     constexpr size_t SIM_HOST_MIN_STACK = 64 * 1024;
-    if (stack_size < SIM_HOST_MIN_STACK)
+    if (stack_size < SIM_HOST_STACK_FLOOR)
     {
         stack_base = malloc(SIM_HOST_MIN_STACK);
         stack_size = SIM_HOST_MIN_STACK;

@@ -103,9 +103,9 @@ must be **registered at runtime** by calling `__register_frame(&__eh_frame_start
 mallocs a `struct object` node and links it onto the FDE registry. On a hosted system the
 C runtime's `crtbegin`/`frame_dummy` does this before `main`; a freestanding KickOS image
 linked `-nostartfiles` has no `frame_dummy`, so **KickOS registers the frame itself, first
-thing on the root thread, ahead of the app's constructors** (a weak `__register_frame`
-resolved only in an image that carries the unwinder; see
-[`user/src/root_entry.cc`](../../user/src/root_entry.cc) and the `.eh_frame` homing in
+thing in the image's first thread, ahead of the image's constructors** (a weak
+`__register_frame` resolved only in an image that carries the unwinder; see
+[`user/src/image_start.cc`](../../user/src/image_start.cc) and the `.eh_frame` homing in
 [`arch/riscv/common/rv32imac.ld.h`](../../arch/riscv/common/rv32imac.ld.h), the RV32 body
 `esp32c6.ld` includes, which `KEEP`s the table in the code region and appends a `LONG(0)`
 CIE terminator to stand in for the `crtend` `__FRAME_END__` that is not linked). The

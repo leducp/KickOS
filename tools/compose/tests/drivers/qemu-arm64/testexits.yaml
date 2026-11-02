@@ -11,7 +11,7 @@ heap: 65536
 
 tasks:
   - name: main
-    entry: kickos_main
+    program: main
     stack: 20480
     priority: 2
     ceiling: 2

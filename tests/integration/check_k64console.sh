@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# A silicon capture of k64console (user/apps/frdmk64f/k64console): the constructor's line through
-# the kernel console, then the packaged k64uartirq's up line, then main's and the worker's lines
-# through it, in that order. A build with K64CONSOLE_SCRAMBLE_TEST is judged instead by its panic
+# A silicon capture of k64console (user/apps/frdmk64f/k64console): the packaged k64uartirq's up
+# line and the constructor's line, in either order, then main's and the worker's lines through the
+# driver, in that order. A build with K64CONSOLE_SCRAMBLE_TEST is judged instead by its panic
 # verdict reaching the wire after the driver came up, reclaimed from the published console.
 #
 #   KOS_CAPTURE=<log> check_k64console.sh <board-build> <kickos-source> <cmake>
@@ -20,17 +20,22 @@ judge_capture k64console
 if has_e '^\[k64console\] ERROR'; then
     jfail error "k64console reported an error"
 fi
+jafter driver-up 1 '[k64uartirq] device up (IRQ TX/RX)' "k64uartirq's up line"
+_up="$AT"
 jafter ctor-line 1 '[init] pre-publish ctor line' "constructor line"
-jafter driver-up "$AT" '[k64uartirq] device up (IRQ TX/RX)' "k64uartirq's up line"
+_from="$_up"
+if [ "$AT" -gt "$_from" ]; then
+    _from="$AT"
+fi
 if grep -q '^K64CONSOLE_SCRAMBLE_TEST:BOOL=ON' "$BUILD/CMakeCache.txt"; then
-    jafter verdict "$AT" 'KERNEL PANIC: [k64console] PASS: the dead channel came back' "reclaimed panic verdict"
+    jafter verdict "$_up" 'KERNEL PANIC: [k64console] PASS: the dead channel came back' "reclaimed panic verdict"
     echo "PASS: k64console's panic reached the wire out of the published console"
     exit 0
 fi
 jno_panic "a panic in k64console"
-jafter main-line "$AT" '[main] post-publish line via the userspace driver' "main's line through the driver"
+jafter main-line "$_from" '[main] post-publish line via the userspace driver' "main's line through the driver"
 for _i in 0 1 2 3 4; do
     jafter worker-line "$AT" "[worker] line $_i via the userspace console driver" "worker line $_i"
 done
 jafter worker-done "$AT" '[worker] done' "worker's last line"
-echo "PASS: k64console printed through the kernel, then through k64uartirq, in order"
+echo "PASS: k64console printed through k64uartirq once it was up, in order"

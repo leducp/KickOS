@@ -3,7 +3,11 @@
 
 #include "message.h"
 
+#include <kickos/sys/image.h>
+
 #include <stdint.h>
+
+KOS_IMAGE_INIT_OBJECT()
 
 namespace kickos::init
 {

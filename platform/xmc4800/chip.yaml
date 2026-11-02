@@ -19,6 +19,12 @@ family: none
 exits_on_fault: false
 interrupts: { count: { value: 112, ref: "4.1 Features, p.4-4" } }
 
+apertures:
+  - { window: [0x40000000, 0x8000000], ref: "Table 7-1 Memory Regions, Peripheral 0, p.7-3" }
+  - { window: [0x48000000, 0x8000000], ref: "Table 7-1 Memory Regions, Peripheral 1, p.7-3" }
+  - { window: [0x50000000, 0x8000000], ref: "Table 7-1 Memory Regions, Peripheral 2, p.7-3" }
+  - { window: [0x58000000, 0x8000000], ref: "Table 7-1 Memory Regions, Peripheral 3, p.7-3" }
+
 devices:
   # USIC0 is a MODULE of two channels. Each channel is its own register window, but the
   # module's service-request lines are shared: a channel raises whichever line its INPR
@@ -63,6 +69,12 @@ devices:
   port: { window: [0x48028000, 0x100], count: 10, stride: 0x100, ref: "Table 26-2, p.26-11" } # P0 to P9
   port14: { window: [0x48028E00, 0x100], ref: "Table 26-2, p.26-12" } # P14 and P15 are inputs only
   port15: { window: [0x48028F00, 0x100], ref: "Table 26-2, p.26-12" }
+
+  # The bus matrix's masters but the CPU (Figure 3-1 Multilayer Bus Matrix, p.3-2).
+  gpdma0: { window: [0x50014000, 0x4000], bus_master: true, ref: "Table 5-6 Registers Address Space, p.5-59" }
+  gpdma1: { window: [0x50018000, 0x8000], bus_master: true, ref: "Table 5-6 Registers Address Space, p.5-59" }
+  eth0: { window: [0x5000C000, 0x4000], bus_master: true, ref: "Table 7-2 Memory Map, p.7-6" }
+  usb0: { window: [0x50040000, 0x40000], bus_master: true, ref: "Table 7-2 Memory Map, p.7-6" }
 
   ccu40: { window: [0x4000C000, 0x4000], owner: kernel, ref: "Table 7-2 Memory Map, p.7-5" }
   # Clock gates, resets, PLL and RTC.

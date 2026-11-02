@@ -165,7 +165,7 @@ the bus/device split). What a driver CONTRACT looks like is section 3.
 - **Init service: CLOSED.** The entry seam and a default init ship
   (`system/include/kickos/sys/init.h`, `system/init/`): `kickos_init_entry`, an init-provider cache variable
   target knob, and a default body that walks the board's service list before the app's
-  `kickos_app_main`. It was settled EARLY on purpose, because the entry rename is a consumer-facing
+  the renamed app main. It was settled EARLY on purpose, because the entry rename is a consumer-facing
   breaking change that is cheap now and expensive later, and because it is what spawns
   drivers-with-caps in dependency order (3.1).
 - **Power-manager / clock-tree service: OPEN.** The userspace owner of the whole clock tree (PLL,

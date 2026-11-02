@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   f411disco
+   arch    armv7m
+   cpu     cortex-m4
+   mpu     enforce
+   sched   tickless
+
+mutexbench: the mutex and the C library's locks, as an application pays
+mutexbench: load: 5 threads, 1 load pairs, a crowd of 2
+  mutex: lock+unlock 120 ns/pair  (20000 pairs / 2 ms)
+  libc-lock: malloc+free 1450 ns/pair  (20000 pairs / 29 ms)
+  libc-lock: getenv 610 ns/call  (20000 calls / 12 ms)
+  syscall: thread_self 40 ns/call  (20000 calls / 0 ms)
+  syscall: cpu_clock_hz 980 ns/call  (20000 calls / 19 ms)
+  syscall: clock_now 90 ns/call  (20000 calls / 1 ms)
+  syscall: core_current 40 ns/call  (20000 calls / 0 ms)
+  sem: post+wait 70 ns/pair  (20000 pairs / 1 ms)
+  mutex-handoff-round: 6200 ns/round  (1000 rounds / 6 ms) [one core]
+  mutex-handoff: 2400/3100/5800 ns  (p50/p99/max, n=1000) [one core]
+  mutex-handoff-loaded-round: 6300 ns/round  (1000 rounds / 6 ms) [one core; 1 pairs parked]
+  mutex-handoff-loaded: 2450/3150/6000 ns  (p50/p99/max, n=1000) [one core; 1 pairs parked]
+  sem-handoff-round: 5100 ns/round  (1000 rounds / 5 ms) [one core]
+  sem-handoff: 5050/5400/7900 ns  (p50/p99/max, n=1000) [one core]
+  sem-wake-crowd: 1900/2300/4100 ns  (p50/p99/max, n=200) [2 waiters parked, one woken]
+  mutex-handoff-window: SKIP (no address spaces)
+mutexbench: done

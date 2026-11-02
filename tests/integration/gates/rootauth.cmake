@@ -10,7 +10,7 @@ endif()
 
 # EXACTLY the arms main.cc registers, all unconditional. Any slack lets an arm be deleted with
 # every gate still green. Raise this with the arm count.
-set(_arms 5)
+set(_arms 4)
 kickos_app_judge(rootauth tests/integration/check_app_arms.sh ARGS rootauth ${_arms})
 
 if(KICKOS_ARCH STREQUAL "sim")

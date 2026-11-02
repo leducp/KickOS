@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-# The panic-reporting arms riding the five `panicgate` images, one case per image.
+# The panic-reporting arms riding the six `panicgate` images, one case per image.
 
 if(NOT TARGET panicgate1)
   return()
@@ -35,11 +35,25 @@ set(_pg_absent_4 "CUTME")
 # the whole line: an unstripped message splits it, so the expected text never appears.
 set(_pg_re_5 "KERNEL PANIC: \\[panicgate\\] ctl\\?\\?\\?\\? end")
 set(_pg_txt_5 "KERNEL PANIC: [panicgate] ctl???? end")
+# Case 6: main reads the status and runs on, the record carries the message, and nothing ends
+# the system on the way.
+set(_pg_re_6 "\\[panicgate\\] the task ended with KOS_EXIT_PANIC, the system runs on")
+set(_pg_txt_6 "[panicgate] the task ended with KOS_EXIT_PANIC, the system runs on")
+set(_pg_absent_6 "KERNEL PANIC:")
+set(_pg_also_6 "[panicgate] task message")
 
-foreach(_case 1 2 3 4 5)
+foreach(_case 1 2 3 4 5 6)
+  # The panicking task is a program of its own, which a chip that holds one task has no task for.
+  if(_case EQUAL 6 AND KICKOS_CHIP_ONE_TASK)
+    kickos_inapplicable(panicgate6 "this board holds one task")
+    continue()
+  endif()
   set(_pg_args "${_pg_txt_${_case}}")
-  if(_pg_absent_${_case})
+  if(_pg_absent_${_case} OR _pg_also_${_case})
     list(APPEND _pg_args "${_pg_absent_${_case}}")
+  endif()
+  if(_pg_also_${_case})
+    list(APPEND _pg_args "${_pg_also_${_case}}")
   endif()
   kickos_app_judge(panicgate${_case} tests/integration/check_qemu_panicgate.sh ARGS ${_pg_args})
   if(KICKOS_ARCH STREQUAL "sim")
@@ -50,13 +64,17 @@ foreach(_case 1 2 3 4 5)
       TIMEOUT 15
       PASS_REGULAR_EXPRESSION "${_pg_re_${_case}}"
       FAIL_REGULAR_EXPRESSION "\\[panicgate\\] ERROR;=== SIM FAULT;CUTME")
+    if(_case EQUAL 6)
+      set_tests_properties(panicgate6 PROPERTIES
+        FAIL_REGULAR_EXPRESSION "\\[panicgate\\] ERROR;=== SIM FAULT;KERNEL PANIC")
+    endif()
   else()
     # Every board with an emulator takes this one call, under the derived
     # <board tag>_panicgate<case> name: the script, the expected text and the absent tail are
     # the same on all ten, so no board branch survives here.
     kickos_add_qemu_test(TARGET panicgate${_case}
       SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_panicgate.sh"
-      ARGS "${_pg_txt_${_case}}" "${_pg_absent_${_case}}")
+      ARGS "${_pg_txt_${_case}}" "${_pg_absent_${_case}}" "${_pg_also_${_case}}")
   endif()
 endforeach()
 

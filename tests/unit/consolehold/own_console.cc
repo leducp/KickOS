@@ -55,11 +55,11 @@ TEST_F(ConsoleOwnTask, a_driver_thread_spawned_after_the_publish_has_no_stdout_a
     run_isolated([]() {
         darkseam::reset();
         Thread* const member = seat_pool(0, PRIO_MEMBER);
-        attach_caps(member, KICKOS_CAP_CHILD_WIDTH);
+        attach_caps(member, KICKOS_SEAM_CAP_WIDTH);
         Thread* const client = seat_pool(1, PRIO_OTHER);
-        attach_caps(client, KICKOS_CAP_CHILD_WIDTH);
+        attach_caps(client, KICKOS_SEAM_CAP_WIDTH);
         Thread* const publisher = seat_pool(2, PRIO_OTHER);
-        attach_caps(publisher, KICKOS_CAP_CHILD_WIDTH);
+        attach_caps(publisher, KICKOS_SEAM_CAP_WIDTH);
         Task* const served = task(0);
         join_task(member, served);
         {
@@ -96,16 +96,16 @@ TEST_F(ConsoleOwnTask, a_publish_for_the_callers_own_task_leaves_its_stdout_empt
     run_isolated([]() {
         darkseam::reset();
         Thread* const publisher = seat_pool(0, PRIO_MEMBER);
-        attach_caps(publisher, KICKOS_CAP_CHILD_WIDTH);
+        attach_caps(publisher, KICKOS_SEAM_CAP_WIDTH);
         Task* const served = task(0);
         join_task(publisher, served);
         Endpoint* const ep = endpoint();
         int const idx = kernel().endpoints.index_of(ep);
-        uint32_t const refs_before = kernel().endpoint_refs[idx];
+        uint32_t const refs_before = kernel().endpoints.refs()[idx];
         ASSERT_TRUE(darkseam::publish(publisher, ep, served));
         EXPECT_EQ(stdout_type(publisher), static_cast<uint8_t>(CapType::CAP_EMPTY))
             << "the publisher's stdout names the console its own task serves";
-        EXPECT_EQ(kernel().endpoint_refs[idx], refs_before + 1u)
+        EXPECT_EQ(kernel().endpoints.refs()[idx], refs_before + 1u)
             << "the emptied seat kept its reference";
     });
 }

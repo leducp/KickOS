@@ -3,7 +3,7 @@
 
 # kickos_f4uartirq: the STM32F411/USART2 buffered IRQ-driven userspace UART driver (an
 # unprivileged IRQ thread owning the register window + an unprivileged service thread owning
-# the endpoint, plus the privileged one-shot bring-up; see f4uartirq.h).
+# the endpoint; see f4uartirq.h).
 #
 # Two sources: ../uart_stm32f4.cc is the chip backend of <kickos/driver/uart.h> and owns every
 # register, f4uartirq.cc is the service composed on it. The backend sits one level up because

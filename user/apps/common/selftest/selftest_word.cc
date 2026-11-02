@@ -24,16 +24,14 @@ namespace selftest
 #endif
         }
 
-        // Ordered against a pinned main by priority alone, in `task` and through `windows`.
+        // Ordered against a pinned main by priority alone, through `windows`.
         kos::thread::Handle word_spawn(void (*entry)(void*), void* arg, char const* name,
                                        uint8_t prio, kos_cap_grant const* caps, uint8_t count,
-                                       kos_task_t task = KOS_TASK_NONE,
                                        kos_window const* windows = nullptr,
                                        uint16_t window_count = 0)
         {
             return kos::thread::create(entry, arg, name, prio, KOS_POLICY_FIFO, 0, nullptr, 0,
-                                       nullptr, 0, windows, window_count, caps, count, 0, nullptr,
-                                       task, word_pin());
+                                       windows, window_count, caps, count, 0, nullptr, word_pin());
         }
 
         void word_witness(void*) {}
@@ -175,7 +173,8 @@ namespace selftest
     }
     void t_sem_killed_poster()
     {
-        TAP_ASK(.workers = 2);
+        // The poster, the peer, and word_parked's witness beside them.
+        TAP_ASK(.workers = 3);
         kos::thread::Handle poster;
         kos::thread::Handle peer;
         ArmHold hold;
@@ -270,32 +269,31 @@ namespace selftest
     // The word names a live thread of another task, which cannot write main's block: the
     // kernel takes the id for a dead holder's, and boosts nobody.
     constexpr uint32_t WFO_WAIT_US = 500000;
-    void wfo_victim(void*) // caps: E(SIGNAL)@0; the park at xsem(0)
+#if KICKOS_SELFTEST_PEER
+    int wfo_victim() // caps: E(SIGNAL)@0, its release N(WAIT)@1
     {
+        peer_seat(TAP_PRIO_PARKS, word_pin());
         uint32_t const id = kickos_self_lock_id();
         (void)kos_send(child_cap(0), &id, sizeof(id), KOS_TIMEOUT_NONE);
-        (void)kos_sem_wait(xsem_child(0), KOS_TIMEOUT_NONE);
+        peer_park(child_cap(1));
+        return 0;
     }
+#endif
     void t_mutex_forged_foreign()
     {
-        TAP_ASK(.workers = 1, .tasks = 1, .endpoints = 1);
+        TAP_ASK(.workers = 1, .tasks = 1, .endpoints = 1, .notifies = 1);
         void* const blk = st_ram<WFO_RAM, 0>();
         TAP_CHECK(blk != nullptr);
         TAP_CHECK(kos_mem_self_grant(blk, 64, 0) == 0);
         kos_mutex_t* const m = static_cast<kos_mutex_t*>(blk);
         kos_cap_t ep = KOS_CAP_NONE;
+        kos_cap_t park = KOS_CAP_NONE;
         kos_task_t t = KOS_TASK_NONE;
-        kos::thread::Handle v;
         ArmHold hold;
-        TAP_HOLD(hold.cap(&ep) and hold.task(&t) and hold.thread(&v));
-        kos_sem_t* const park = xsem(0);
-        TAP_CHECK(kos_endpoint_create(&ep) == 0 and kos_sem_init(park, 0) == 0);
-        TAP_CHECK(kos_task_create(nullptr, 0, 0, &t) == 0);
-        kos_cap_grant const caps[1] = {{ep, KOS_CAP_SIGNAL}};
-        kos_window const xw = xsem_window();
-        v = word_spawn(wfo_victim, nullptr, "wfoV", TAP_PRIO_PARKS, caps, 1, t, &xw,
-                       xsem_windows());
-        TAP_CHECK(v.valid());
+        TAP_HOLD(hold.cap(&ep) and hold.cap(&park) and hold.task(&t));
+        TAP_CHECK(kos_endpoint_create(&ep) == 0 and kos_notify_create(&park) == 0);
+        kos_cap_grant const caps[2] = {{ep, KOS_CAP_SIGNAL}, {park, KOS_CAP_WAIT}};
+        TAP_CHECK(PeerRun("wfo").caps(caps, 2).start(&t) == 0);
         uint32_t id = 0;
         TAP_CHECK(report_await(ep, &id, sizeof(id)));
         TAP_CHECK(id != 0);
@@ -304,7 +302,7 @@ namespace selftest
         int const rc = kos_mutex_lock(m, WFO_WAIT_US);
         uint64_t const took_us = (kos_clock_now() - t0) / 1000u;
         int const unlocked = kos_mutex_unlock(m);
-        kos_sem_post(park);
+        (void)kos_notify(park);
         TAP_CHECK(rc == -KOS_EOWNERDEAD);
         // No park, so no boost: the answer came before the deadline it would have waited out.
         TAP_CHECK(took_us < WFO_WAIT_US);
@@ -379,15 +377,13 @@ namespace selftest
         uint32_t id;
         uintptr_t base;
     };
-    // Reaches the word at its first window's base and reports, unlocking what it took.
-    void word_window_take(kos_cap_t ep, uint32_t timeout_us, uint32_t forge)
+    // Reaches the word at `base`, 0 for none, and reports, unlocking what it took.
+    void word_take_at(kos_cap_t ep, uintptr_t base, uint32_t timeout_us, uint32_t forge)
     {
-        WordRep rep = {WORD_UNSET, kickos_self_lock_id(), 0};
-        kos_window at = {};
-        if (kos_window_get(0, &at) == 0)
+        WordRep rep = {WORD_UNSET, kickos_self_lock_id(), base};
+        if (base != 0)
         {
-            rep.base = at.base;
-            kos_mutex_t* const m = word_at(at.base);
+            kos_mutex_t* const m = word_at(base);
             if (forge != 0)
             {
                 m->word = forge;
@@ -400,14 +396,30 @@ namespace selftest
         }
         (void)kos_send(ep, &rep, sizeof(rep), KOS_TIMEOUT_NONE);
     }
+    // word_take_at the first window's base.
+    void word_window_take(kos_cap_t ep, uint32_t timeout_us, uint32_t forge)
+    {
+        kos_window at = {};
+        if (kos_window_get(0, &at) != 0)
+        {
+            at.base = 0;
+        }
+        word_take_at(ep, at.base, timeout_us, forge);
+    }
 
     // --- One word through a parent's reservation and a child's window ------------------------
     // The window sits at a kernel-chosen address in the child's space, and the two addresses
     // name one word: the child waits on the parent and is handed it.
-    void wwi_child(void*) // caps: E(SIGNAL)@0
+#if KICKOS_SELFTEST_PEER
+    int wwi_child() // caps: E(SIGNAL)@0
     {
+        peer_seat(TAP_PRIO_PARKS, word_pin());
+        uint32_t const seated = 1;
+        (void)kos_send(child_cap(0), &seated, sizeof(seated), KOS_TIMEOUT_NONE);
         word_window_take(child_cap(0), STALL_TOLERANT_US, 0);
+        return 0;
     }
+#endif
     void t_mutex_window_shared()
     {
         TAP_ASK(.workers = 2, .tasks = 1, .endpoints = 1);
@@ -419,22 +431,21 @@ namespace selftest
         m->word = 0;
         kos_cap_t ep = KOS_CAP_NONE;
         kos_task_t t = KOS_TASK_NONE;
-        kos::thread::Handle c;
         ArmHold hold;
-        TAP_HOLD(hold.owned(m) and hold.cap(&ep) and hold.task(&t) and hold.thread(&c));
+        TAP_HOLD(hold.owned(m) and hold.cap(&ep) and hold.task(&t));
         TAP_CHECK(kos_endpoint_create(&ep) == 0);
-        TAP_CHECK(kos_task_create(nullptr, 0, 0, &t) == 0);
         TAP_CHECK(kos_mutex_lock(m, 0) == 0);
         kos_window const w = {reinterpret_cast<uintptr_t>(blk), static_cast<uint32_t>(g),
                               KOS_WINDOW_MEMORY, 0};
         kos_cap_grant const caps[1] = {{ep, KOS_CAP_SIGNAL}};
-        c = word_spawn(wwi_child, nullptr, "wwiC", TAP_PRIO_PARKS, caps, 1, t, &w, 1);
-        TAP_CHECK(c.valid() and word_parked());
+        TAP_CHECK(PeerRun("wwi").caps(caps, 1).windows(&w, 1).start(&t) == 0);
+        uint32_t seated = 0;
+        TAP_CHECK(report_await(ep, &seated, sizeof(seated)) and word_parked());
         // The child is parked on the word, so this unlock hands it over.
         int const unlocked = kos_mutex_unlock(m);
         WordRep rep = {WORD_UNSET, 0, 0};
         TAP_CHECK(report_await(ep, &rep, sizeof(rep)));
-        TAP_CHECK(hold.joined());
+        TAP_CHECK(peer_dead_status(t) == 0);
         tap::diag("window word: main 0x%lx, child 0x%lx, child's take %ld",
                   static_cast<unsigned long>(reinterpret_cast<uintptr_t>(blk)),
                   static_cast<unsigned long>(rep.base), static_cast<long>(rep.rc));
@@ -525,14 +536,30 @@ namespace selftest
     {
         return reinterpret_cast<kos_sem_t*>(block + WTW_RELEASE_AT);
     }
-    void wtw_holder(void*) // caps: E(SIGNAL)@0
+#if KICKOS_SELFTEST_PEER
+    // The word through its holder's window, which its task's space maps.
+    void wtw_waiter(void* base) // caps: E(SIGNAL)@0
     {
+        word_take_at(child_cap(0), reinterpret_cast<uintptr_t>(base), WTW_WAIT_US, 0);
+    }
+    // The victim's holder, its task's entry, with its waiter beside it.
+    int wtw_holder() // caps: E(SIGNAL)@0
+    {
+        peer_seat(TAP_PRIO_PARKS, word_pin());
         WordRep rep = {WORD_UNSET, kickos_self_lock_id(), 0};
         kos_window at = {};
         if (kos_window_get(0, &at) == 0)
         {
             rep.base = at.base;
             rep.rc = kos_mutex_lock(word_at(at.base), 0);
+        }
+        // Parks on the held word once this thread waits on main's receive.
+        kos_cap_grant const caps[1] = {{child_cap(0), KOS_CAP_SIGNAL}};
+        kos::thread::Handle const w =
+            word_spawn(wtw_waiter, reinterpret_cast<void*>(at.base), "wtwW", TAP_PRIO_PARKS, caps, 1);
+        if (not w.valid())
+        {
+            rep.rc = w.error();
         }
         (void)kos_send(child_cap(0), &rep, sizeof(rep), KOS_TIMEOUT_NONE);
         (void)kos_sem_wait(wtw_release(at.base), KOS_TIMEOUT_NONE);
@@ -542,19 +569,18 @@ namespace selftest
         }
         // The task's entry: its end would slay the waiter before that reports.
         (void)kos_sem_wait(wtw_release(at.base), KOS_TIMEOUT_NONE);
+        return 0;
     }
-    void wtw_waiter(void*) // caps: E(SIGNAL)@0
+    int wtw_forger(char const* id) // caps: E(SIGNAL)@0
     {
-        word_window_take(child_cap(0), WTW_WAIT_US, 0);
+        peer_seat(TAP_PRIO_PARKS + 1, word_pin());
+        word_window_take(child_cap(0), WTW_WAIT_US, static_cast<uint32_t>(peer_word(id)));
+        return 0;
     }
-    void wtw_forger(void* arg) // caps: E(SIGNAL)@0
-    {
-        word_window_take(child_cap(0), WTW_WAIT_US,
-                         static_cast<uint32_t>(reinterpret_cast<uintptr_t>(arg)));
-    }
+#endif
     void t_mutex_window_forged()
     {
-        TAP_ASK(.workers = 4, .tasks = 2, .endpoints = 1);
+        TAP_ASK(.workers = 1, .tasks = 2, .endpoints = 1, .peer_workers = 1);
         size_t const g = arena_granule();
         void* const vblk = st_ram<WTW_RAM, 0>();
         void* const fblk = st_ram<WTW_RAM, 1>();
@@ -566,39 +592,32 @@ namespace selftest
         kos_sem_t* const release = wtw_release(reinterpret_cast<uintptr_t>(vblk));
         kos_task_t victim = KOS_TASK_NONE;
         kos_task_t forger = KOS_TASK_NONE;
-        kos::thread::Handle vh;
-        kos::thread::Handle vw;
-        kos::thread::Handle fh;
         ArmHold hold;
-        TAP_HOLD(hold.cap(&ep) and hold.task(&victim) and hold.task(&forger)
-                 and hold.thread(&vh) and hold.thread(&vw) and hold.thread(&fh));
+        TAP_HOLD(hold.cap(&ep) and hold.task(&victim) and hold.task(&forger));
         TAP_CHECK(kos_endpoint_create(&ep) == 0 and kos_sem_init(release, 0) == 0);
-        TAP_CHECK(kos_task_create(nullptr, 0, 0, &victim) == 0
-                  and kos_task_create(nullptr, 0, 0, &forger) == 0);
         kos_window const vwin = {reinterpret_cast<uintptr_t>(vblk), static_cast<uint32_t>(g),
                                  KOS_WINDOW_MEMORY, 0};
         kos_window const fwin = {reinterpret_cast<uintptr_t>(fblk), static_cast<uint32_t>(g),
                                  KOS_WINDOW_MEMORY, 0};
         kos_cap_grant const caps[1] = {{ep, KOS_CAP_SIGNAL}};
-        vh = word_spawn(wtw_holder, nullptr, "wtwH", TAP_PRIO_PARKS, caps, 1, victim, &vwin, 1);
-        TAP_CHECK(vh.valid());
+        // The holder passes the endpoint on to its waiter.
+        kos_cap_grant const holder_caps[1] = {{ep, KOS_CAP_SIGNAL | KOS_CAP_TRANSFER}};
+        TAP_CHECK(PeerRun("wtwholder").caps(holder_caps, 1).windows(&vwin, 1).start(&victim) == 0);
         WordRep held = {WORD_UNSET, 0, 0};
         TAP_CHECK(report_await(ep, &held, sizeof(held)));
         TAP_CHECK(held.rc == 0 and held.id != 0);
-        // Parks on the victim's word before main resumes.
-        vw = word_spawn(wtw_waiter, nullptr, "wtwW", TAP_PRIO_PARKS, caps, 1, victim, &vwin, 1);
-        TAP_CHECK(vw.valid() and word_parked());
+        // The victim's waiter parks on its word before main resumes.
+        TAP_CHECK(word_parked());
         // Above the victim's waiter, so a record it shared would hand the victim's word to it.
-        fh = word_spawn(wtw_forger, reinterpret_cast<void*>(static_cast<uintptr_t>(held.id)),
-                        "wtwF", TAP_PRIO_PARKS + 1, caps, 1, forger, &fwin, 1);
-        TAP_CHECK(fh.valid());
+        PeerHex const id = peer_hex(held.id);
+        TAP_CHECK(PeerRun("wtwforger", id.s).caps(caps, 1).windows(&fwin, 1).start(&forger) == 0);
         WordRep forged = {WORD_UNSET, 0, 0};
         bool const heard_forged = report_await(ep, &forged, sizeof(forged));
         kos_sem_post(release);
         WordRep served = {WORD_UNSET, 0, 0};
         bool const heard_served = report_await(ep, &served, sizeof(served));
         kos_sem_post(release);
-        TAP_CHECK(hold.joined());
+        TAP_CHECK(peer_dead_status(victim) == 0 and peer_dead_status(forger) == 0);
         tap::diag("windows: victim 0x%lx, forger 0x%lx; forger %ld, victim's waiter %ld",
                   static_cast<unsigned long>(held.base), static_cast<unsigned long>(forged.base),
                   static_cast<long>(forged.rc), static_cast<long>(served.rc));
@@ -673,6 +692,35 @@ namespace selftest
         TAP_CHECK(joined and parked == WORD_UNSET);
         TAP_CHECK(retyped == 0 and restored == 0);
         TAP_CHECK(g_wrl_rc == -KOS_EFAULT);
+    }
+#endif
+
+#if KICKOS_SELFTEST_PEER
+    int peer_roles_word(int argc, char** argv)
+    {
+#if KICKOS_MEMORY_ENFORCED
+        if (argc == 2 and peer_is(argv[1], "wfo"))
+        {
+            return wfo_victim();
+        }
+#endif
+#if KICKOS_HAVE_ASPACE
+        if (argc == 2 and peer_is(argv[1], "wwi"))
+        {
+            return wwi_child();
+        }
+        if (argc == 2 and peer_is(argv[1], "wtwholder"))
+        {
+            return wtw_holder();
+        }
+        if (argc == 3 and peer_is(argv[1], "wtwforger"))
+        {
+            return wtw_forger(argv[2]);
+        }
+#endif
+        (void)argc;
+        (void)argv;
+        return PEER_WHAT;
     }
 #endif
 }

@@ -13,6 +13,10 @@
 #include <kickos/libc/fmt.h>
 #include <kickos/libc/string.h>
 
+#include <kickos/apps/peer_run.h>
+
+#include "callreply.h"
+
 #ifndef KICKOS_KERNEL_CORES
 #define KICKOS_KERNEL_CORES 1
 #endif
@@ -56,6 +60,7 @@ __asm__(".pushsection .text, \"ax\", @progbits\n"
 
 namespace
 {
+    using namespace bench;
     using kickos::Atomic;
     using kickos::Order;
 
@@ -133,10 +138,6 @@ namespace
 
     // A worker comment's `name@i` is its child_cap(i).
     using kos::child_cap;
-
-    // Both players on one core: the throughput row is the same-core handoff. Under a wider
-    // mask the placement invariant would spread the equal-priority pair across cores.
-    constexpr uint32_t PLAYER_CORES = 1u << 0;
 
     // A refused op returns -KOS_E*; the cycle ops answer 0 for "did not fire", so a
     // refusal must collapse to 0 for a caller's `!= 0` fired-check to hold.
@@ -406,9 +407,8 @@ namespace
         kos_irq_ack(irq);
         kos_cap_grant caps[] = {{irq, KOS_CAP_WAIT}, {note, KOS_CAP_WAIT}};
         auto w = kos::thread::create_caps(e2e_waiter, nullptr, "e2ewait", 15, caps, 2,
-                                          KOS_POLICY_FIFO, 0, nullptr, 0,
-                                          KOS_AUTH_MEMORY, nullptr, KOS_TASK_NONE, nullptr, 0,
-                                          E2E_LINE_CORES);
+                                          KOS_POLICY_FIFO, 0, KOS_AUTH_MEMORY, nullptr, nullptr,
+                                          0, E2E_LINE_CORES);
         kos_handle_close(note); // the waiter's bind and the line's attach both hold their own
         kos_handle_close(irq); // the waiter is the sole holder: its exit frees the line
         if (not w.valid())
@@ -576,143 +576,11 @@ namespace
 #endif
     }
 
-    // Both call/reply peers are SPAWNED, so the figure is worker-to-worker and not main's.
-    constexpr uint32_t CALLREPLY_REPS = 20000;
-
-    // Both peers outrank main (priority 2, its composition's), which joins them.
-    constexpr uint8_t CR_PRIO = 4;
-
-    // The caller's parameters travel in its thread argument, by value: a caller in another
-    // task runs on its own copy of the app's data where the board translates, taken when that
-    // task was created, so a global written afterwards never reaches it.
-    constexpr uintptr_t CR_LEN_MASK = 0x1FFu; // KOS_EP_MSG_MAX fits
-    // kos_call_generic, which issues KOS_SYS_CALL without attempting the register form.
-    constexpr uintptr_t CR_GENERIC = 1u << 9;
-    constexpr uintptr_t CR_DONATING = 1u << 10;
-    // A row name tools/bench/exit_rows.py does not read as the same-task row.
-    constexpr uintptr_t CR_XTASK = 1u << 11;
-    static_assert(KOS_EP_MSG_MAX <= CR_LEN_MASK, "a message length must fit its field");
-
-    void callreply_server(void*) // caps: E(WAIT)@0
-    {
-        unsigned char buf[KOS_EP_MSG_MAX];
-        struct kos_reply_recv_opts opts;
-        memset(&opts, 0, sizeof(opts));
-        opts.ep = child_cap(0);
-        opts.timeout_us = KOS_TIMEOUT_NONE;
-        kos_cap_t reply_cap = KOS_CAP_NONE;
-        size_t reply_len = 0;
-        for (uint32_t i = 0; i < CALLREPLY_REPS; i++)
-        {
-            opts.info.reply_cap = KOS_CAP_NONE;
-            long const n = kos_reply_recv(reply_cap, buf,
-                                          kos_call_lens_pack(reply_len, sizeof(buf)), &opts);
-            reply_cap = KOS_CAP_NONE;
-            if (n < 0 or opts.info.reply_cap == KOS_CAP_NONE)
-            {
-                // A reply-less message is measure_callreply's stop sentinel: a parked
-                // receiver pins its own WAIT cap, so nothing but a message ends that park.
-                break;
-            }
-            reply_cap = opts.info.reply_cap;
-            reply_len = static_cast<size_t>(n);
-        }
-        if (reply_cap != KOS_CAP_NONE)
-        {
-            kos_reply(reply_cap, buf, reply_len);
-        }
-    }
-    void callreply_caller(void* arg) // caps: E(SIGNAL)@0
-    {
-        uintptr_t const params = reinterpret_cast<uintptr_t>(arg);
-        unsigned char buf[KOS_EP_MSG_MAX];
-        size_t const len = static_cast<size_t>(params & CR_LEN_MASK);
-        for (unsigned i = 0; i < sizeof(buf); i++)
-        {
-            buf[i] = static_cast<unsigned char>(i);
-        }
-        // Selected OUTSIDE the timed loop, so neither arm carries the other's branch.
-        bool const generic = (params & CR_GENERIC) != 0;
-        int32_t const want = static_cast<int32_t>(len);
-        int32_t got = want;
-        uint64_t t0 = kos::clock_now();
-        uint32_t reps = 0;
-        if (generic)
-        {
-            while (reps < CALLREPLY_REPS)
-            {
-                got = kos_call_generic(child_cap(0), buf, len, len, KOS_TIMEOUT_NONE);
-                if (got != want)
-                {
-                    break;
-                }
-                reps++;
-            }
-        }
-        else
-        {
-            while (reps < CALLREPLY_REPS)
-            {
-                // In place: the reply lands back in the request buffer.
-                got = kos_call(child_cap(0), buf, len, len, KOS_TIMEOUT_NONE);
-                if (got != want)
-                {
-                    break;
-                }
-                reps++;
-            }
-        }
-        uint64_t d_ns = kos::clock_now() - t0;
-        if (reps != CALLREPLY_REPS)
-        {
-            char f[96];
-            ksnprintf(f, sizeof(f), "  call/reply: %u B FAIL: call %u answered %d\n",
-                      static_cast<unsigned>(len), static_cast<unsigned>(reps),
-                      static_cast<int>(got));
-            kos::print(f);
-        }
-
-        if (reps == CALLREPLY_REPS)
-        {
-            uint32_t rt_per_s = 0;
-            uint32_t ns_per_rt = 0;
-            if (d_ns != 0)
-            {
-                rt_per_s = static_cast<uint32_t>(
-                    static_cast<uint64_t>(CALLREPLY_REPS) * 1000000000ull / d_ns);
-                ns_per_rt = static_cast<uint32_t>(d_ns / CALLREPLY_REPS);
-            }
-            char const* row_name = "call/reply";
-            if ((params & CR_XTASK) != 0)
-            {
-                row_name = "xtask call/reply";
-            }
-            char const* shape = "";
-            if ((params & CR_DONATING) != 0)
-            {
-                shape = " [caller outranks server, D1 donates]";
-            }
-            char const* path = "";
-            if (generic)
-            {
-                path = " [generic path]";
-            }
-            char s[256];
-            ksnprintf(
-                s, sizeof(s),
-                "  %s: %u B  %u ns/round-trip  (%u round-trips/s over %u calls / %u ms)%s%s\n",
-                row_name, static_cast<unsigned>(len), static_cast<unsigned>(ns_per_rt),
-                static_cast<unsigned>(rt_per_s), static_cast<unsigned>(CALLREPLY_REPS),
-                static_cast<unsigned>(d_ns / 1000000ull), path, shape);
-            kos::print(s);
-        }
-    }
     // endpoint_call's D1 donation is guarded on caller_prio strictly greater than
     // server_prio, so an equal-priority step leaves that phase row with zero samples.
     // Both must stay above main (see CR_PRIO).
     void measure_callreply(uint32_t len, uint8_t caller_prio, uint8_t server_prio,
-                           uint32_t generic, kos_task_t server_task = KOS_TASK_NONE,
-                           kos_task_t caller_task = KOS_TASK_NONE)
+                           uint32_t generic)
     {
         uintptr_t params = len & CR_LEN_MASK;
         if (caller_prio > server_prio)
@@ -723,10 +591,6 @@ namespace
         {
             params |= CR_GENERIC;
         }
-        if (caller_task != KOS_TASK_NONE)
-        {
-            params |= CR_XTASK;
-        }
         kos_cap_t ep = KOS_CAP_NONE;
         if (kos_endpoint_create(&ep) != 0)
         {
@@ -735,13 +599,9 @@ namespace
         }
         kos_cap_grant scaps[] = {{ep, KOS_CAP_WAIT}};   // E(WAIT)@0
         kos_cap_grant ccaps[] = {{ep, KOS_CAP_SIGNAL}}; // E(SIGNAL)@0
-        auto sv = kos::thread::create_caps(callreply_server, nullptr, "cr_srv", server_prio, scaps, 1,
-                                           KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
-                                           server_task);
+        auto sv = kos::thread::create_caps(callreply_server, nullptr, "cr_srv", server_prio, scaps, 1);
         auto cl = kos::thread::create_caps(callreply_caller, reinterpret_cast<void*>(params),
-                                           "cr_cl", caller_prio, ccaps, 1,
-                                           KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
-                                           caller_task);
+                                           "cr_cl", caller_prio, ccaps, 1);
         if (not sv.valid() or not cl.valid())
         {
             // A lone peer holds its slot for the whole run unless drained HERE: the server
@@ -775,8 +635,6 @@ namespace
 
     // Every switch the cross-task rows drive goes from one task to another, which on a
     // translating board is a change of address space; every row above stays in main's task.
-    constexpr uint32_t XT_SPAN = 16;
-    constexpr uint32_t XT_ROUNDS = 20000;
     // A spawn costs orders of magnitude more than a switch, so fewer reps carry it.
     constexpr uint32_t SPAWN_REPS = 200;
 
@@ -802,158 +660,136 @@ namespace
         kos::print(s);
     }
 
-    // The two players' words. Each player runs in a task of its own, which on a translating
-    // board holds its own copy of every static, so there they lie in a granule main reserves and
-    // each player reaches through the first window of its spawn.
-    struct XtWords
+    // The peer program's tasks: a creating loop that waits for each to die.
+    struct XtPeers
     {
-        kos_sem_t leader;
-        kos_sem_t follower;
+        kos_program_t prog = KOS_CAP_NONE;
+        kos_task_t a = KOS_TASK_NONE;
+        kos_task_t b = KOS_TASK_NONE;
+
+        bool open()
+        {
+            return kos_program_find("bench_peer", &prog) == 0;
+        }
+
+        void close()
+        {
+            if (prog != KOS_CAP_NONE)
+            {
+                (void)kos_handle_close(prog);
+                prog = KOS_CAP_NONE;
+            }
+        }
     };
-    XtWords g_xt_static = {};
-#if KICKOS_HAVE_ASPACE
-    constexpr uint32_t XT_WORDS_BYTES = 4096;
-#endif
 
-    XtWords* xt_words()
+    void xt_wait(kos_task_t t)
     {
-#if KICKOS_HAVE_ASPACE
-        kos_window w = {};
-        if (kos_window_get(0, &w) != 0)
+        int status = 0;
+        while (kickos::apps::wait_dead(t, &status, 1000u) == -KOS_ETIMEDOUT)
         {
-            return nullptr;
-        }
-        return reinterpret_cast<XtWords*>(w.base);
-#else
-        return &g_xt_static;
-#endif
-    }
-
-    // The leader posts first and times the whole run.
-    void xt_player(void* leads)
-    {
-        XtWords* const w = xt_words();
-        if (w == nullptr)
-        {
-            return;
-        }
-        kos_sem_t* own = &w->follower;
-        kos_sem_t* peer = &w->leader;
-        if (leads != nullptr)
-        {
-            own = &w->leader;
-            peer = &w->follower;
-        }
-        uint64_t const t0 = kos::clock_now();
-        uint32_t r = 0;
-        for (; r < XT_ROUNDS; r++)
-        {
-            if (leads != nullptr)
-            {
-                if (kos_sem_post(peer) != 0 or kos_sem_wait(own, KOS_TIMEOUT_NONE) != 0)
-                {
-                    break;
-                }
-            }
-            else if (kos_sem_wait(own, KOS_TIMEOUT_NONE) != 0 or kos_sem_post(peer) != 0)
-            {
-                break;
-            }
-        }
-        uint64_t const d_ns = kos::clock_now() - t0;
-        if (leads != nullptr and r == XT_ROUNDS)
-        {
-            char s[160];
-            ksnprintf(s, sizeof(s), "  xtask ping-pong: %u ns/switch  (%u switches / %u ms)\n",
-                      static_cast<unsigned>(d_ns / (2ull * XT_ROUNDS)),
-                      static_cast<unsigned>(2u * XT_ROUNDS),
-                      static_cast<unsigned>(d_ns / 1000000ull));
-            row(s);
         }
     }
 
-    bool xt_task_pair(kos_task_t* a, kos_task_t* b)
-    {
-        *a = KOS_TASK_NONE;
-        *b = KOS_TASK_NONE;
-        if (kos_task_create(nullptr, 0, 0, a) != 0)
-        {
-            return false;
-        }
-        if (kos_task_create(nullptr, 0, 0, b) != 0)
-        {
-            (void)kos_task_slay(*a, KOS_TIMEOUT_NONE);
-            *a = KOS_TASK_NONE;
-            return false;
-        }
-        return true;
-    }
-
-    void xt_task_drop(kos_task_t t)
-    {
-        if (t != KOS_TASK_NONE)
-        {
-            (void)kos_task_slay(t, KOS_TIMEOUT_NONE);
-        }
-    }
-
+    // Both players run in a task of their own and meet in a block main reserves, which each
+    // reaches through the window of its create.
     void xt_pingpong()
     {
-        kos_task_t ta = KOS_TASK_NONE;
-        kos_task_t tb = KOS_TASK_NONE;
-        if (not xt_task_pair(&ta, &tb))
+        XtPeers peers;
+        if (not peers.open())
         {
-            row("  xtask ping-pong: SKIP (task pool too small)\n");
+            row("  xtask ping-pong: SKIP (no peer program)\n");
             return;
         }
-        XtWords* words = &g_xt_static;
-        kos_window win = {};
-        uint16_t windows = 0;
-#if KICKOS_HAVE_ASPACE
-        words = static_cast<XtWords*>(kos_ram_alloc(XT_WORDS_BYTES));
+        XtWords* const words = static_cast<XtWords*>(kos_ram_alloc(XT_WORDS_BYTES));
         if (words == nullptr or kos_mem_self_grant(words, XT_WORDS_BYTES, 0) != 0)
         {
             row("  xtask ping-pong: SKIP (no block for the words)\n");
-            xt_task_drop(ta);
-            xt_task_drop(tb);
+            peers.close();
             return;
         }
-        win = {reinterpret_cast<uintptr_t>(words), XT_WORDS_BYTES, KOS_WINDOW_MEMORY, 0};
-        windows = 1;
-#endif
         (void)kos_sem_init(&words->leader, 0);
         (void)kos_sem_init(&words->follower, 0);
-        auto pa = kos::thread::create(xt_player, reinterpret_cast<void*>(uintptr_t{1}), "xt_a",
-                                      CR_PRIO, KOS_POLICY_FIFO, 0, nullptr, 0, nullptr, 0, &win,
-                                      windows, nullptr, 0, 0, nullptr, ta, PLAYER_CORES);
-        auto pb = kos::thread::create(xt_player, nullptr, "xt_b", CR_PRIO, KOS_POLICY_FIFO, 0,
-                                      nullptr, 0, nullptr, 0, &win, windows, nullptr, 0, 0,
-                                      nullptr, tb, PLAYER_CORES);
-        if (pa.valid() and pb.valid())
+        kos_window const win = {reinterpret_cast<uintptr_t>(words), XT_WORDS_BYTES,
+                                KOS_WINDOW_MEMORY, 0};
+        // The follower first, so the leader's first post finds it parked or about to park.
+        char const* const follow_argv[] = {"xt_b", "follow", nullptr};
+        char const* const lead_argv[] = {"xt_a", "lead", nullptr};
+        kos_task_params pb = {};
+        pb.argv = follow_argv;
+        pb.windows = &win;
+        pb.window_count = 1;
+        kos_task_params pa = {};
+        pa.argv = lead_argv;
+        pa.windows = &win;
+        pa.window_count = 1;
+        int const rb = kickos::apps::create_peer(peers.prog, pb, &peers.b);
+        int const ra = kickos::apps::create_peer(peers.prog, pa, &peers.a);
+        if (ra == 0 and rb == 0)
         {
-            (void)pa.join(KOS_TIMEOUT_NONE);
-            (void)pb.join(KOS_TIMEOUT_NONE);
+            xt_wait(peers.a);
+            xt_wait(peers.b);
         }
         else
         {
-            row("  xtask ping-pong: SKIP (thread pool too small)\n");
+            row("  xtask ping-pong: SKIP (task pool too small)\n");
+            if (rb == 0)
+            {
+                (void)kos_task_slay(peers.b, KOS_TIMEOUT_NONE);
+            }
         }
-        xt_task_drop(ta);
-        xt_task_drop(tb);
+        peers.close();
     }
 
+    // The server and the caller are the two tasks' entries, over an endpoint main made.
     void xt_callreply()
     {
-        kos_task_t ts = KOS_TASK_NONE;
-        kos_task_t tc = KOS_TASK_NONE;
-        if (not xt_task_pair(&ts, &tc))
+        XtPeers peers;
+        if (not peers.open())
         {
-            row("  xtask call/reply: SKIP (task pool too small)\n");
+            row("  xtask call/reply: SKIP (no peer program)\n");
             return;
         }
-        measure_callreply(XT_SPAN, CR_PRIO, CR_PRIO, 0, ts, tc);
-        xt_task_drop(ts);
-        xt_task_drop(tc);
+        kos_cap_t ep = KOS_CAP_NONE;
+        if (kos_endpoint_create(&ep) != 0)
+        {
+            row("  xtask call/reply: SKIP (no endpoint)\n");
+            peers.close();
+            return;
+        }
+        kos_cap_grant const scaps[] = {{ep, KOS_CAP_WAIT}};   // E(WAIT)@0
+        kos_cap_grant const ccaps[] = {{ep, KOS_CAP_SIGNAL}}; // E(SIGNAL)@0
+        char len_text[16];
+        ksnprintf(len_text, sizeof(len_text), "%u",
+                  static_cast<unsigned>(XT_SPAN | CR_XTASK));
+        char const* const server_argv[] = {"cr_srv", "server", nullptr};
+        char const* const caller_argv[] = {"cr_cl", "caller", len_text, nullptr};
+        kos_task_params ps = {};
+        ps.argv = server_argv;
+        ps.caps = scaps;
+        ps.cap_count = 1;
+        kos_task_params pc = {};
+        pc.argv = caller_argv;
+        pc.caps = ccaps;
+        pc.cap_count = 1;
+        int const rs = kickos::apps::create_peer(peers.prog, ps, &peers.a);
+        int const rc = kickos::apps::create_peer(peers.prog, pc, &peers.b);
+        if (rs == 0 and rc == 0)
+        {
+            xt_wait(peers.b); // caller finished + printed
+            xt_wait(peers.a); // server ran all REPS and exited
+        }
+        else
+        {
+            row("  xtask call/reply: SKIP (task pool too small)\n");
+            unsigned char stop = 0;
+            if (rs == 0)
+            {
+                (void)kos_send(ep, &stop, 1, KOS_TIMEOUT_NONE);
+                xt_wait(peers.a);
+            }
+        }
+        (void)kos_handle_close(ep);
+        peers.close();
     }
 
     void spawn_child(void*)
@@ -994,25 +830,38 @@ namespace
         }
         spawn_line("thread", n, kos::clock_now() - t0);
 
+        XtPeers peers;
+        if (not peers.open())
+        {
+            row("  spawn/exit: task SKIP (no peer program)\n");
+            return;
+        }
+        char const* const exit_argv[] = {"sp_k", "exit", nullptr};
+        kos_task_params params = {};
+        params.argv = exit_argv;
         t0 = kos::clock_now();
         n = 0;
         for (; n < SPAWN_REPS; n++)
         {
             kos_task_t t = KOS_TASK_NONE;
-            if (kos_task_create(nullptr, 0, 0, &t) != 0)
+            if (kickos::apps::create_peer(peers.prog, params, &t) != 0)
             {
                 break;
             }
-            auto h = kos::thread::create_caps(spawn_child, nullptr, "sp_k", CR_PRIO, nullptr, 0,
-                                              KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
-                                              t);
-            bool const ran = h.valid() and h.join(KOS_TIMEOUT_NONE) == 0;
-            if (kos_task_slay(t, KOS_TIMEOUT_NONE) != 0 or not ran)
+            int status = 0;
+            int state = kos_task_state(t, &status);
+            while (state >= 0 and (state & KOS_TASK_DEAD) == 0)
+            {
+                kos_yield();
+                state = kos_task_state(t, &status);
+            }
+            if (state < 0)
             {
                 break;
             }
         }
         spawn_line("task", n, kos::clock_now() - t0);
+        peers.close();
     }
 }
 
@@ -1074,11 +923,9 @@ namespace
         (void)kos_sem_init(&g_w_b[i], 0);
         void* const arg = reinterpret_cast<void*>(static_cast<uintptr_t>(i));
         out->a = kos::thread::create_caps(w_player_a, arg, "w_a", W_PRIO, nullptr, 0,
-                                          KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
-                                          KOS_TASK_NONE, nullptr, 0, mask);
+                                          KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, mask);
         out->b = kos::thread::create_caps(w_player_b, arg, "w_b", W_PRIO, nullptr, 0,
-                                          KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
-                                          KOS_TASK_NONE, nullptr, 0, mask);
+                                          KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, mask);
         return out->a.valid() and out->b.valid();
     }
 
@@ -1300,17 +1147,15 @@ namespace
         kos::thread::Handle hs[6] = {};
         uint32_t k = 0;
         hs[k++] = kos::thread::create_caps(p_hog0, nullptr, "p_hog0", W_HOG_PRIO, nullptr, 0,
-                                           KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
-                                           KOS_TASK_NONE, nullptr, 0, 1u << 0);
+                                           KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, 1u << 0);
         hs[k++] = kos::thread::create_caps(p_hog1, nullptr, "p_hog1", W_HOG_PRIO, nullptr, 0,
-                                           KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
-                                           KOS_TASK_NONE, nullptr, 0, 1u << 1);
+                                           KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, 1u << 1);
         hs[k++] = kos::thread::create(p_moved, nullptr, "p_moved", W_MOVED_PRIO);
         for (uint32_t c = 2; c < n and k < 6; c++)
         {
-            hs[k++] = kos::thread::create_caps(p_spinner, nullptr, "p_spin", W_HOG_PRIO, nullptr, 0,
-                                               KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
-                                               KOS_TASK_NONE, nullptr, 0, 1u << c);
+            hs[k++] = kos::thread::create_caps(p_spinner, nullptr, "p_spin", W_HOG_PRIO, nullptr,
+                                               0, KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0,
+                                               1u << c);
         }
         bool all = true;
         for (uint32_t i = 0; i < k; i++)
@@ -1360,8 +1205,7 @@ namespace
     {
         g_w_stop = 0;
         auto t = kos::thread::create_caps(w_spinner, nullptr, "r_spin", W_MOVED_PRIO, nullptr, 0,
-                                          KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
-                                          KOS_TASK_NONE, nullptr, 0, 1u << 1);
+                                          KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, 1u << 1);
         if (not t.valid())
         {
             kos::print("  reseat-probe: SKIP (thread pool too small)\n");
@@ -1448,11 +1292,9 @@ int main(int, char**)
     // Players at prio 1 (KICKOS_PRIO_MIN), below main's prio 2, so the reporter preempts
     // them when player_b posts the gate.
     auto ra = kos::thread::create_caps(player_a, nullptr, "bench_a", 1, nullptr, 0,
-                                       KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
-                                       KOS_TASK_NONE, nullptr, 0, PLAYER_CORES);
+                                       KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, PLAYER_CORES);
     auto rb = kos::thread::create_caps(player_b, nullptr, "bench_b", 1, nullptr, 0,
-                                       KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
-                                       KOS_TASK_NONE, nullptr, 0, PLAYER_CORES);
+                                       KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, PLAYER_CORES);
     if (not ra.valid() or not rb.valid())
     {
         // Do not park here: on a board that returns to its bootloader a parked app costs a

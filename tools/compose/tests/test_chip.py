@@ -38,6 +38,8 @@ cycle_counter: { hz: 0, glitches: true }
 family: none
 exits_on_fault: false
 c: { namespace: kickos::sm, line_enum: "node : int" }
+apertures:
+  - { window: [0x40000000, 0x20000000], ref: "p.2" }
 devices:
   uart: { window: [0x40001000, 0x100], ref: "p.10", lines: { rx: 5, tx: { number: 6, ref: "p.11", symbol: UART_TX_IRQ } } }
   port: { window: [0x40002000, 0x100], count: 3, stride: 0x100, symbol: PORTA_BASE }
@@ -48,6 +50,10 @@ devices:
 memory:
   flash: { base: 0x08000000, size: 0x200000, symbol: FLASH_CACHED_BASE, link: { region: FLASH, access: rx } }
   sram: { base: 0x20000000, size: 0x20000, arena: true, link: { region: RAM, access: rwx } }
+"""
+
+SMALL_APERTURES = """apertures:
+  - { window: [0x40000000, 0x20000000], ref: "p.2" }
 """
 
 HAND_MMAP = """#include <stdint.h>
@@ -76,6 +82,7 @@ HAND_LIMITS = """#define KICKOS_MAX_IRQ 40
 #define KICKOS_CHIP_CYCCNT_HZ 0
 #define KICKOS_CHIP_CYCCNT_GLITCHES 1
 #define KICKOS_CHIP_DCACHE 1
+#define KICKOS_CHIP_ONE_TASK 0
 #define KICKOS_CHIP_REGION_GRANULE 32
 #define KICKOS_CHIP_REGION_POW2 1
 """
@@ -156,7 +163,8 @@ class Generated(unittest.TestCase):
         self.write(self.path, SMALL.replace("protection: { unit: pmsav7, granule: 32, covers_devices: true, "
                                             "memory_type: true }",
                                             "protection: { unit: none, privilege: false }\n"
-                                            "esptool_image: [--flash-mode, dio]"))
+                                            "esptool_image: [--flash-mode, dio]")
+                   .replace(SMALL_APERTURES, ""))
         board = os.path.join(self.platform, "small-board.yaml")
         self.write(board, "version: 1\nboard: small-board\nchip: small\nconsole: { semihosting: true }\n"
                           "emulator: { qemu: qemu-system-arm, machine: virt, gicv3_machine: \"virt,gic-version=3\",\n"
@@ -252,7 +260,7 @@ class Generated(unittest.TestCase):
     def test_tables_follow_ownership(self):
         rows = chip.table_rows(self.view())
         self.assertEqual([(b, s) for b, s, r in rows["reserved_blocks"]], [(0x50000000, 0x4000), (0x50010000, 0x1000)])
-        self.assertEqual(rows["window_apertures"], [])
+        self.assertEqual(rows["window_apertures"], [(0x40000000, 0x20000000, "p.2")])
         self.assertEqual(rows["bus_master_apertures"], [])
         self.assertEqual(rows["port_apertures"], [])
 
@@ -267,6 +275,15 @@ class Generated(unittest.TestCase):
         for name, value in (("imxrt1062", 1), ("stm32f302", 0)):
             view = self.view(os.path.join(PLATFORM, name, "chip.yaml"))
             self.assertIn(("KICKOS_CHIP_DCACHE", value, None), chip.limit_values(view), name)
+
+    def test_one_task_reaches_the_limits(self):
+        for name, value in (("imxrt1062", 0), ("stm32f103", 1), ("stm32f302", 1)):
+            view = self.view(os.path.join(PLATFORM, name, "chip.yaml"))
+            self.assertIn(("KICKOS_CHIP_ONE_TASK", value, None), chip.limit_values(view), name)
+            on = "OFF"
+            if value:
+                on = "ON"
+            self.assertIn("\nset(KICKOS_CHIP_ONE_TASK %s)\n" % on, chip.generate(view)["chip.cmake"], name)
 
     def test_tree_kernel_led(self):
         led = ("bluepill-c8", "f302nucleo", "blackpill", "f411disco", "picopi", "teensy41", "frdmk64f", "due",
@@ -331,10 +348,32 @@ class Generated(unittest.TestCase):
         rows = chip.table_rows(self.view(os.path.join(PLATFORM, "imx8mp", "chip.yaml"), "armv8a"))
         self.assertEqual([(b, s) for b, s, r in rows["bus_master_apertures"]],
                          [(0x30BD0000, 0x1000), (0x30BE0000, 0x1000)])
-        # A region chip's bus master has a row too, with no aperture beside it.
+        # A region chip's bus master has a row too, its window apertures the chip file's own.
         rows = chip.table_rows(self.view(os.path.join(PLATFORM, "imxrt1062", "chip.yaml"), "armv7m"))
-        self.assertEqual([(b, s) for b, s, r in rows["bus_master_apertures"]], [(0x402E0000, 0x200)])
-        self.assertEqual(rows["window_apertures"], [])
+        self.assertIn((0x402E0000, 0x200), [(b, s) for b, s, r in rows["bus_master_apertures"]])
+        self.assertIn((0x400E8000, 0x4000), [(b, s) for b, s, r in rows["bus_master_apertures"]])
+        self.assertEqual([(b, s) for b, s, r in rows["window_apertures"]],
+                         [(0x40000000, 0x400000), (0x42000000, 0x100000)])
+
+    def test_each_bus_master_the_manual_lists_is_marked(self):
+        masters = {
+            "stm32f411": ("dma1", "dma2"), "xmc4800": ("gpdma0", "gpdma1", "eth0", "usb0"),
+            "imxrt1062": ("edma", "dcp", "enet", "enet2", "usdhc1", "usdhc2", "csi", "lcdif", "pxp", "usb1"),
+            "rp2040": ("dma",), "rp2350": ("dma",), "mk64f": ("dma", "usbotg", "sdhc", "enet"),
+            "rx72m": ("dmac", "dtc", "exdmac", "edmac", "glcdc", "drw2d"),
+            "esp32c6": ("gdma", "sdio", "mem_monitor", "trace"), "sam3x8e": ("dmac", "uotghs", "emac", "uart"),
+            "an505": ("dma",), "virt_rv32": ("virtio",), "imx8mp": ("sdma1", "enet1"),
+        }
+        for name, devices in masters.items():
+            report = Report()
+            part, board = chip.read(os.path.join(PLATFORM, name, "chip.yaml"), report)
+            self.assertEqual([str(r) for r in report.refusals], [], name)
+            for device in devices:
+                self.assertTrue(part.devices[device].bus_master, "%s /dev/%s" % (name, device))
+            for device in part.devices.values():
+                if "dma" in device.name:
+                    self.assertTrue(device.bus_master, "%s /dev/%s" % (name, device.name))
+            self.assertTrue(part.apertures, name)
 
     def test_repeats_touching_are_one_row(self):
         text = SMALL.replace("  gap: { window: [0x40010000, 0x100], count: 2, stride: 0x400 }",

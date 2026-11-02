@@ -27,7 +27,7 @@ RUNTIME_ARCHIVES='(^|/)lib(kickos_[A-Za-z0-9_]+|(c|g|m|gcc|gcc_eh|stdc\+\+|supc\
 # member ends at its first `.a(...)`.
 nosys_members() {
     awk '/^Archive member included/ { on = 1; next }
-         on && /^(Discarded input sections|Memory Configuration|Allocating common symbols)/ { exit }
+         on && /^(Discarded input sections|Memory Configuration|Allocating common symbols)/ { on = 0 }
          on && /^[^ \t]/ {
              if (!match($0, /^[^(]*\.a\([^)]*\)/)) { member = ""; next }
              member = substr($0, 1, RLENGTH)
@@ -144,7 +144,11 @@ COUNT=0
 BAD=0
 while IFS= read -r MAP; do
     [ -f "$MAP" ] || fail "no link map at $MAP"
-    nosys_members "$MAP" "$TMP/nosys" \
+    image_map_set "$MAP" "$TMP/set"
+    while IFS= read -r _m; do
+        cat "$_m"
+    done < "$TMP/set" > "$TMP/all.map"
+    nosys_members "$TMP/all.map" "$TMP/nosys" \
         || fail "$MAP lists no member of the kernel archive taken, so the member list was not read"
     COUNT=$((COUNT + 1))
     if [ -s "$TMP/nosys" ]; then

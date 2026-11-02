@@ -57,8 +57,8 @@
 #include <fatal_status.ld.h>
 
 /* The app's half. Its text, rodata, data and bss link at KICKOS_RV64_APP_VA_BASE, which a
- * per-space root names and the boot root leaves empty. The app links low and loads high over
- * one uniform delta, __kickos_app_load_delta.
+ * per-space root names and the boot root leaves empty. Image 0 links low and loads high over
+ * one uniform delta, KICKOS_RV64_APP_LOAD_DELTA.
  *
  * The base is one whole level-2 slot, index 1, empty at every level in the boot tables, so a
  * space built by copying the boot root owns the subtree under it outright.

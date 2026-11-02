@@ -7,6 +7,8 @@
 // waker's ring toward the peer, the ring is published where the waker's lock span ends, and the
 // peer links the thread in the dispatch that enters its scheduler, or at its start.
 
+#include "../common/seam_pools.h"
+
 #include <kickos/arch/arch.h>
 #include <kickos/instance.h>
 #include <kickos/irqlock.h>
@@ -210,8 +212,8 @@ TEST_F(SchedRing, a_handoff_whose_mask_no_longer_names_its_target_is_handed_on)
 TEST_F(SchedRing, every_thread_in_flight_at_once_does_not_fill_one_ring)
 {
     Thread* const runner = runner_and_peer(true);
-    Thread* threads[KICKOS_THREAD_SLOTS] = {};
-    for (int s = 0; s < KICKOS_THREAD_SLOTS; s++)
+    Thread* threads[KICKOS_SEAM_THREAD_SLOTS] = {};
+    for (int s = 0; s < KICKOS_SEAM_THREAD_SLOTS; s++)
     {
         threads[s] = parked(s, PRIO_UNDER, runner, 1u << CORE_PEER);
     }
@@ -223,12 +225,13 @@ TEST_F(SchedRing, every_thread_in_flight_at_once_does_not_fill_one_ring)
             ASSERT_TRUE(sched::wake_no_resched(t, lock)) << "fixture: every thread was parked";
             sched::set_prio(t, PRIO_UNDER + 1u, lock);
         }
-        ASSERT_EQ(in_flight(CORE_ME, CORE_PEER), 2u * KICKOS_THREAD_SLOTS)
+        ASSERT_EQ(in_flight(CORE_ME, CORE_PEER), 2u * KICKOS_SEAM_THREAD_SLOTS)
             << "fixture: every pool thread is on one ring, handed and reseated";
-        EXPECT_LE(in_flight(CORE_ME, CORE_PEER), SCHED_RING_DEPTH) << "the ring overflowed";
+        EXPECT_LE(in_flight(CORE_ME, CORE_PEER), kernel().sched_ring_mask() + 1u)
+            << "the ring overflowed";
     }
 
-    for (int round = 0; round <= 2 * KICKOS_THREAD_SLOTS; round++)
+    for (int round = 0; round <= 2 * KICKOS_SEAM_THREAD_SLOTS; round++)
     {
         dispatch_as(CORE_PEER);
     }

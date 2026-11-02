@@ -7,7 +7,7 @@ ends: rxdrv
 
 tasks:
   - name: rxdrv
-    entry: rxdrv_main
+    program: main
     priority: 10
     ceiling: 10
     devices: [/dev/port]

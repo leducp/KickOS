@@ -9,7 +9,7 @@
 
 #include <stdint.h>
 
-#include <kickos/config/system.h> // KICKOS_THREAD_SLOTS
+#include <kickos/config/pool_abi.h> // KICKOS_THREAD_SLOT_CEILING (generated)
 #include <kickos/slotpool.h>
 
 #if KICKOS_ARCH_SIM
@@ -29,8 +29,8 @@ namespace kickos
         return bits;
     }
 
-    // Wide enough for slot + 1 == KICKOS_THREAD_SLOTS.
-    constexpr int LOCK_ID_SLOT_BITS = lock_id_width(KICKOS_THREAD_SLOTS);
+    // Wide enough for slot + 1 at the thread-slot ceiling, whatever a system's pool holds.
+    constexpr int LOCK_ID_SLOT_BITS = lock_id_width(KICKOS_THREAD_SLOT_CEILING);
     constexpr uint32_t LOCK_ID_SLOT_MASK = (1u << LOCK_ID_SLOT_BITS) - 1u;
     constexpr int LOCK_ID_GEN_BITS = 31 - LOCK_ID_SLOT_BITS;
     constexpr uint32_t LOCK_ID_GEN_MASK = (1u << LOCK_ID_GEN_BITS) - 1u;

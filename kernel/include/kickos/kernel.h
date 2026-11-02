@@ -50,8 +50,19 @@ namespace kickos
     void kprintf_paced(char const* fmt, ...) __attribute__((format(printf, 1, 2)));
 #endif
 
-    // A thread-fault record: the kprintf_fault lines a thread prints before its krecord_end.
-    void kprintf_fault(char const* fmt, ...) __attribute__((format(printf, 1, 2)));
+    // A thread-fault record: the kprintf_record lines a thread prints before its krecord_end.
+    // kprintf_record offers the line again while the kernel's own console has no room for it,
+    // until it goes or kconsole_record_wait gives it up; thread context, no lock held.
+    // kprintf_fault offers it once: 0 once the console took it, else the room its refusal
+    // waits for.
+    void kprintf_record(char const* fmt, ...) __attribute__((format(printf, 1, 2)));
+    uint32_t kprintf_fault(char const* fmt, ...) __attribute__((format(printf, 1, 2)));
+    // Waits, interrupts open, until a refused record line of `need` ring bytes may be offered
+    // again: for ring room, a peer node's claim, or another context to end its line. False
+    // where the line is to be dropped: the caller was cancelled, its own task holds the
+    // console's registers or the line, or a stall window passed with nothing leaving the ring.
+    // Thread context, no lock held.
+    bool kconsole_record_wait(uint32_t need);
     void krecord_end(void);
     // A thread slain inside its record, its kernel console write or its publish's drain never
     // reaches their ends: its open record is dropped, its chip-writer bracket left, and its
@@ -97,14 +108,15 @@ namespace kickos
     void thread_regions_boot(ThreadAttr& attr, void* stack_base, size_t stack_size);
 #endif
 
-    // True iff NO live thread holds a DEV region overlapping [base, base+size). A dying thread
-    // holds its windows until its exit releases them. Callers pass a non-wrapping window.
+    // True iff NO thread holds a DEV region overlapping [base, base+size). A thread holds its
+    // windows from its spawn, before it is added, until its exit releases them. Callers pass a
+    // non-wrapping window.
     bool dev_window_free(uintptr_t base, size_t size);
-    // True iff a live thread that is not a member of `t` holds a DEV region overlapping
+    // True iff a thread that is not a member of `t` holds a DEV region overlapping
     // [base, base+size).
     bool dev_window_held_outside(uintptr_t base, size_t size, Task const* t);
 
-    // Whether no held task domain and no live thread but `except` holds a data region over
+    // Whether no held task domain and no thread but `except` holds a data region over
     // [base, base+size) whose memory type differs from `attr`'s: one block cacheable for one
     // thread and not for another is incoherent. Caller holds IrqLock.
     bool memory_type_free(uintptr_t base, size_t size, uint32_t attr, Thread const* except);
@@ -128,8 +140,8 @@ namespace kickos
 #endif
 
 #if KICKOS_ARCH_HAS_PORTS
-    // Whether ports [base, base+count) lie inside one chip-stated aperture, and whether no live
-    // thread holds any of them.
+    // Whether ports [base, base+count) lie inside one chip-stated aperture, and whether no
+    // thread holds any of them, as dev_window_free asks.
     bool port_aperture_ok(uintptr_t base, size_t count);
     bool port_window_free(uintptr_t base, size_t count);
 #endif
@@ -175,6 +187,10 @@ extern "C" void kfault_terminate(void) __attribute__((noreturn));
 // ROOT, last-thread-out and the software fault reporter. Drains the console, then ends the
 // system via arch_shutdown: it halts, whatever terminal outcome is set.
 extern "C" void kickos_terminate(int status) __attribute__((noreturn));
+
+// A chip that holds one task only: KOS_SYS_EXIT with KOS_EXIT_IMAGE. Drains the console and
+// applies the terminal outcome, then halts with `status` where that returns.
+extern "C" void kickos_image_end(int status) __attribute__((noreturn));
 
 // Hands the chip to the terminal outcome KOS_SYS_TERMINAL_OUTCOME set: returns where none is
 // set, it is halt, its word does not check, or the chip has no entry for it. Every

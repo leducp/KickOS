@@ -15,9 +15,8 @@ namespace
     constexpr uint64_t PACE_NS = 20000000ull; // 20 ms
 }
 
-extern "C" void console_writer_main(kos_self_t const* self)
+int main(int, char**)
 {
-    (void)self;
     for (int k = 1; k <= LINES; k++)
     {
         printf("conwit: line %d out\n", k);

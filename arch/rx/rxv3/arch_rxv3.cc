@@ -229,7 +229,7 @@ extern "C"
 {
     // A user thread whose entry returns must trap out via the exit syscall: it cannot run
     // the kernel epilogue with PM=1.
-    void kickos_user_thread_return(void);
+    extern void (*kickos_image_thread_return)(void);
 
     extern uint32_t kickos_rx_timer_hz;
 
@@ -365,7 +365,7 @@ void arch_context_init(struct arch_context* ctx,
     if (not privileged)
     {
         psw = PSW_THREAD_USER;
-        ret = reinterpret_cast<uint32_t>(kickos_user_thread_return);
+        ret = reinterpret_cast<uint32_t>(kickos_image_thread_return);
     }
 
     *(--sp) = ret;                               // [+96] entry's eventual RTS target
@@ -1114,7 +1114,7 @@ __attribute__((interrupt)) void kickos_rx_timer_isr(void)
 // gates SCR.TIE, which re-arms the edge.
 //
 // The INTB slot is fixed in flash, so this vector is SHARED between two owners over the life
-// of the boot. Once kos_console_publish has run console_tx_deinit a raise here belongs to a
+// of the boot. Once a publish has run console_tx_deinit a raise here belongs to a
 // driver that claimed vector 87, and routing it to console_tx_isr would find an empty ring
 // and call the backend's irq_disable, clearing SCR.TIE behind the driver's back.
 __attribute__((interrupt)) void kickos_rx_console_txi_isr(void)

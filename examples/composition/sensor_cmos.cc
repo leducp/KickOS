@@ -39,18 +39,18 @@ namespace
     }
 }
 
-extern "C" void sensor_main(kos_self_t const* self)
+int main(int, char**)
 {
     // A port lookup answers the same handle as a memory one; its address is the first port.
-    kos_window_t const rtc_ports = kos_grant_ports(self, "/dev/cmos_rtc");
-    kos_window_t const history_window = kos_grant_mem(self, "/shm/history");
+    kos_window_t const rtc_ports = kos_grant_ports("/dev/cmos_rtc");
+    kos_window_t const history_window = kos_grant_mem("/shm/history");
     uintptr_t const base = reinterpret_cast<uintptr_t>(kos_window_addr(rtc_ports));
     auto const hist = static_cast<history*>(kos_window_addr(history_window));
-    kos_cap_t const served = kos_grant_endpoint(self, "/svc/sensor");
+    kos_cap_t const served = kos_grant_endpoint("/svc/sensor");
     if (kos_window_size(rtc_ports) <= DATA_OFFSET or hist == nullptr
         or kos_window_size(history_window) < sizeof(history))
     {
-        return;
+        return 0;
     }
 
     struct kos_reply_recv_opts opts;

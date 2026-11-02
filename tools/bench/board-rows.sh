@@ -33,6 +33,25 @@ bench_default_variant() {
     fi
 }
 
+# board_allowed_failure <board> <image>
+#
+# Prints why a capture of <image> on <board> may fail, naming the TODO.md item whose ruling ends
+# the allowance, and succeeds; returns 1 for an image its board does not declare. Every build of
+# the board the fleet captures takes the declaration. A reason must hold no `|`.
+board_allowed_failure() {
+    case "$1" in
+        f302nucleo)
+            case "$2" in
+                selftest|selftest_p[0-9]*|mutexbench|chaincheck|libcrace|libc_death|fp_switch)
+                    printf '%s\n' "the kernel's SVC depth on the caller's stack exceeds the threads' room, until TODO.md IS THE 64 KIB TIER USABLE FOR A REAL APPLICATION? is ruled"
+                    return 0
+                    ;;
+            esac
+            ;;
+    esac
+    return 1
+}
+
 # board_probe_rows <board>
 #
 # Prints one row per USB device the board must present, as

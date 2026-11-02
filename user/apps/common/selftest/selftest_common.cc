@@ -7,7 +7,7 @@
 #define KICKOS_SELFTEST_RAM_SEAT 1
 #include "selftest.h"
 
-#include <kickos/config/system.h> // KICKOS_TASK_IRQ_HANDLE_BUDGET
+#include <kickos/config/system.h> // KICKOS_BUDGET_IRQ_BINDINGS
 #include <kickos/config/priorities.h> // KICKOS_PRIO_MIN
 
 namespace selftest
@@ -92,6 +92,16 @@ namespace selftest
             return false;
         }
         kos_yield();
+        return kos_thread_set_priority(g_self->priority) == 0;
+    }
+
+    bool main_above(uint8_t prio)
+    {
+        return kos_thread_set_priority(prio) == 0;
+    }
+
+    bool main_back()
+    {
         return kos_thread_set_priority(g_self->priority) == 0;
     }
 
@@ -235,9 +245,9 @@ namespace selftest
             lines = 1;
         }
         Refusal r;
-        if (lines > KICKOS_TASK_IRQ_HANDLE_BUDGET)
+        if (lines > KICKOS_BUDGET_IRQ_BINDINGS)
         {
-            note(&r, -KOS_EAGAIN, "irqs", KICKOS_TASK_IRQ_HANDLE_BUDGET, lines);
+            note(&r, -KOS_EAGAIN, "irqs", KICKOS_BUDGET_IRQ_BINDINGS, lines);
         }
         if (r.rc == 0 and want.workers > 0)
         {
@@ -267,28 +277,15 @@ namespace selftest
                 }
             }
         }
-        kos_task_t tasks[TASKS_MAX];
-        int t = 0;
-        while (r.rc == 0 and t < want.tasks)
+        // The instances of stpeer are the tasks an arm creates, each holding its own record.
+        if (r.rc == 0 and want.tasks > KICKOS_SELFTEST_PEERS + KICKOS_SELFTEST_SERVERS)
         {
-            note(&r, kos_task_create(nullptr, 0, 0, &tasks[t]), "tasks", t, want.tasks);
-            if (r.rc == 0)
-            {
-                t = t + 1;
-            }
+            note(&r, -KOS_ENOMEM, "tasks", KICKOS_SELFTEST_PEERS + KICKOS_SELFTEST_SERVERS, want.tasks);
         }
         kos_cap_t claimed = KOS_CAP_NONE;
         if (r.rc == 0 and want.irq_line >= 0)
         {
             note(&r, irq_claim_await(want.irq_line, &claimed), "irq_line", 0, 1);
-        }
-        for (int i = 0; i < t; i++)
-        {
-            int const slain = kos_task_slay(tasks[i], ARM_SLAY_US);
-            if (slain != 0)
-            {
-                tap::diag("an ask's probe task slay answered %d", slain);
-            }
         }
         for (int i = 0; i < c; i++)
         {
@@ -313,6 +310,11 @@ namespace selftest
         if (r.rc != -KOS_EMFILE and r.rc != -KOS_EAGAIN and r.rc != -KOS_ENOMEM)
         {
             tap::fail("an ask's %s probe answered %d", r.pool, r.rc);
+            return true;
+        }
+        if (KICKOS_SELFTEST_PEERS + KICKOS_SELFTEST_SERVERS == 0 and r.pool[0] == 't')
+        {
+            tap::skip("this board holds one task");
             return true;
         }
         tap::skip("short of %s: %d of %d (%d)", r.pool, r.got, r.want, r.rc);
@@ -753,4 +755,129 @@ namespace selftest
     }
 
     kos_cap_t g_pl_ep = KOS_CAP_NONE;
+
+    kos_program_t g_peer_prog = KOS_CAP_NONE;
+
+    namespace
+    {
+        int create_waiting(kos_program_t prog, kos_task_params const& p, kos_task_t* t)
+        {
+            uint64_t const deadline = kos_clock_now() + 1000ull * STALL_TOLERANT_US;
+            while (true)
+            {
+                int const rc = kos_task_create(prog, &p, t);
+                if (rc != -KOS_EAGAIN or kos_clock_now() > deadline)
+                {
+                    return rc;
+                }
+                kos_sleep_ns(100000ull);
+            }
+        }
+    }
+
+    int peer_start(kos_task_params const& p, kos_task_t* t, kos_program_t prog)
+    {
+        // A chip holding one task declares no peer.
+        if (KICKOS_CHIP_ONE_TASK or p.instance != nullptr)
+        {
+            return create_waiting(prog, p, t);
+        }
+        // Named, so a peer whose last incarnation is still dying is waited out and never passed:
+        // the arm's i-th task at once is on peer<i>, the budget its ask sized.
+        // -KOS_EBUSY is also a busy block or window, refused on every peer alike.
+        kos_task_params named = p;
+        char name[] = "peer0";
+        named.instance = name;
+        for (int at = 0; at < SELFTEST_PEERS; at++)
+        {
+            name[4] = static_cast<char>('0' + at);
+            int const rc = create_waiting(prog, named, t);
+            if (rc == -KOS_ENOENT and at == 0)
+            {
+                return create_waiting(prog, p, t);
+            }
+            if (rc == -KOS_ENOENT)
+            {
+                break;
+            }
+            if (rc != -KOS_EBUSY)
+            {
+                return rc;
+            }
+        }
+        return -KOS_EBUSY;
+    }
+
+    int peer_dead_status(kos_task_t t, uint32_t bound_us)
+    {
+        uint64_t const deadline = kos_clock_now() + 1000ull * bound_us;
+        while (true)
+        {
+            int status = 0;
+            int const state = kos_task_state(t, &status);
+            if (state >= 0 and (state & KOS_TASK_DEAD) != 0)
+            {
+                return status;
+            }
+            if (kos_clock_now() > deadline)
+            {
+                return PEER_UNDEAD;
+            }
+            kos_sleep_ns(1000000ull);
+        }
+    }
+
+    PeerHex peer_hex(uintptr_t v)
+    {
+        static char const digits[] = "0123456789abcdef";
+        PeerHex h = {};
+        for (size_t i = 0; i < 2 * sizeof(uintptr_t); i++)
+        {
+            h.s[2 * sizeof(uintptr_t) - 1 - i] = digits[(v >> (4 * i)) & 0xFu];
+        }
+        return h;
+    }
+
+    uintptr_t peer_word(char const* s)
+    {
+        uintptr_t v = 0;
+        for (; *s != '\0'; s++)
+        {
+            uintptr_t d = static_cast<uintptr_t>(*s - '0');
+            if (*s >= 'a')
+            {
+                d = static_cast<uintptr_t>(*s - 'a' + 10);
+            }
+            v = v * 16u + d;
+        }
+        return v;
+    }
+
+#if KICKOS_SELFTEST_PEER
+    void peer_seat(uint8_t prio, uint32_t core_mask)
+    {
+        if (core_mask != 0)
+        {
+            (void)kos_thread_affinity(kos_thread_self(), core_mask);
+        }
+        (void)kos_thread_set_priority(prio);
+    }
+
+    void peer_park(kos_cap_t n)
+    {
+        (void)kos_notify_bind(n);
+        uint32_t bits = 0;
+        (void)kos_notify_wait(n, 0xFFFFFFFFu, KOS_TIMEOUT_NONE, &bits);
+    }
+#endif
+
+    bool peer_is(char const* got, char const* want)
+    {
+        if (got == nullptr)
+        {
+            return false;
+        }
+        size_t const n = strlen(want);
+        return strlen(got) == n and memcmp(got, want, n) == 0;
+    }
 }

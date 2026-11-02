@@ -5,146 +5,86 @@
 
 #if KICKOS_LIBC_REENT
 
-#include <kickos/config/system.h> // KICKOS_THREAD_SLOTS
-#include <kickos/instance_local.h>
-#include <kickos/kruntime.h>
 #include <kickos/aspace.h>
+#include <kickos/config/system.h> // KICKOS_STACK_ALIGN
+#include <kickos/image.h>
 #include <kickos/kernel.h>
+#include <kickos/kruntime.h>
+#include <kickos/sys/image.h>
 
 #if KICKOS_HAVE_ASPACE
 #include <kickos/domain.h>
 #include <kickos/sched.h>
 #endif
 
+#if KICKOS_HAVE_ASPACE and not KICKOS_REENT_PER_THREAD
+#error "the switch seats one word directly, which only a region backend's kernel can write"
+#endif
+
 namespace kickos
 {
     namespace
     {
-        KickosReentSeam s_seam = {};
-
-        // Namespace scope and volatile: a local volatile would not stop the address being
-        // materialised inline, which tests/static/check_riscv_kernel_apphalf.sh refuses.
-        KickosReentSeam const* const volatile s_seam_home = &kickos_reent_seam;
+        // The cell: the carve's last two words, the state's address then the lock id, which
+        // end where the TLS block starts.
+        constexpr size_t CELL = 2 * sizeof(void*);
+        static_assert(KICKOS_REENT_CARVE >= CELL, "the libc state carve ends in the cell");
+        static_assert(KICKOS_REENT_CARVE % KICKOS_STACK_ALIGN == 0,
+                      "the TLS block above the libc state starts on the stack alignment");
     }
 
-    void reent_seam_read(void)
+    void reent_seam_read(size_t, kos_image_header const& h)
     {
-        // Through the kernel's own alias where the image is split: the descriptor is app-side
-        // storage read before any address space exists.
-        KickosReentSeam const* src = s_seam_home;
-        KickosReentSeam const* const alias =
-            static_cast<KickosReentSeam const*>(aspace_image_alias(s_seam_home));
-        if (alias != nullptr)
+        // A prime copies `width` bytes from the carve's base, so a wider state runs into the
+        // cell and the lock id the kernel wrote there.
+        if (static_cast<size_t>(h.reent_width) > KICKOS_REENT_CARVE - CELL)
         {
-            src = alias;
-        }
-        s_seam = *src;
-
-        // The out-of-range fallback in reent_state_for_slot ALIASES the process-wide state, so a
-        // short descriptor would give two kernels' slots one errno with nothing to say so.
-        size_t const banked =
-            static_cast<size_t>(KICKOS_MAX_INSTANCES) * KICKOS_THREAD_SLOTS;
-        if (s_seam.count < 0 or static_cast<size_t>(s_seam.count) < banked)
-        {
-            kpanic("libc reentrant-state descriptor is short of "
-                   "KICKOS_MAX_INSTANCES * KICKOS_THREAD_SLOTS slots");
+            kpanic("libc reentrant state is wider than KICKOS_REENT_CARVE leaves below its cell");
         }
     }
 
-    void* reent_state_for_slot(int slot)
+    void* reent_shared_state(void)
     {
-        if (slot < 0)
-        {
-            return s_seam.shared;
-        }
-        size_t const index =
-            static_cast<size_t>(kickos_instance_index()) * KICKOS_THREAD_SLOTS
-            + static_cast<size_t>(slot);
-        if (index >= static_cast<size_t>(s_seam.count))
-        {
-            return s_seam.shared;
-        }
-        return static_cast<unsigned char*>(s_seam.slots) + index * s_seam.stride;
+        return reinterpret_cast<void*>(image_record(0).reent_template);
     }
 
-#if KICKOS_REENT_PER_THREAD and not KICKOS_REENT_IN_TCB
-#if not KICKOS_HAVE_ASPACE
-#error "the prime seats a per-thread element's id only through a translating backend"
-#endif
-    namespace
+    void reent_cell_seat(void* home, void* state, uint32_t self)
     {
-        // noinline, and re-deriving what reent_prime was handed: anything reent_prime keeps
-        // across its copy widens its frame on every interrupt route.
-        __attribute__((noinline)) void prime_self(void)
-        {
-            Thread* const t = sched::current();
-            uintptr_t const word = static_cast<uintptr_t>(t->lock_id);
-            uintptr_t const at = reinterpret_cast<uintptr_t>(t->reent)
-                + (reinterpret_cast<uintptr_t>(s_seam.self)
-                   - reinterpret_cast<uintptr_t>(s_seam.slots));
-            if (not kaccess_word_to_user(domain_space(thread_domain(t)), at, &word))
-            {
-                thread_cancel_escalate(t, CANCEL_SLAY);
-            }
-        }
+        unsigned char* const cell = static_cast<unsigned char*>(
+            __builtin_assume_aligned(home, sizeof(void*))) + (KICKOS_REENT_CARVE - CELL);
+        uintptr_t const id = static_cast<uintptr_t>(self);
+        __builtin_memcpy(cell, &state, sizeof(state));
+        __builtin_memcpy(cell + sizeof(void*), &id, sizeof(id));
     }
-#endif
 
-    void reent_prime(struct arch_aspace* space, void* state)
+    void reent_prime(struct arch_aspace* space, size_t image, void* state)
     {
-        // s_seam.shared MUST stay pristine: every later prime copies it.
+        kos_image_header const& h = image_record(image);
+        // From the image's copy of its .data, which no task writes: the live state may be a past
+        // incarnation's, or not yet copied in.
 #if KICKOS_HAVE_ASPACE
-        // ep_copy requires disjoint ends, which the slot array and the process-wide state are.
-        if (not ep_copy(space, reinterpret_cast<uintptr_t>(state), space,
-                        reinterpret_cast<uintptr_t>(s_seam.shared), s_seam.width))
+        void const* const pristine
+            = aspace_image_alias(image, reinterpret_cast<void const*>(h.reent_template));
+        if (pristine == nullptr
+            or not kaccess_to_user(space, reinterpret_cast<uintptr_t>(state), pristine,
+                                   static_cast<size_t>(h.reent_width)))
         {
             thread_cancel_escalate(sched::current(), CANCEL_SLAY);
-            return;
         }
 #else
         (void)space;
-        kmemcpy(state, s_seam.shared, s_seam.width);
-#endif
-#if KICKOS_REENT_PER_THREAD and not KICKOS_REENT_IN_TCB
-        if (s_seam.self != nullptr)
-        {
-            prime_self();
-        }
+        uintptr_t const pristine = h.data_load + (h.reent_template - h.data_start);
+        kmemcpy(state, reinterpret_cast<void const*>(pristine),
+                static_cast<size_t>(h.reent_width));
 #endif
     }
 
-#if KICKOS_REENT_IN_TCB
-    void reent_seat_tcb(void* tls, void* state, uint32_t self)
-    {
-        // TCB words 0 and 1: the TLS payload starts KICKOS_ARCH_TLS_TCB above the thread pointer.
-        static_assert(KICKOS_ARCH_TLS_TCB >= 2 * sizeof(void*),
-                      "the control block holds the reent pointer and the lock id");
-        void** const word = static_cast<void**>(__builtin_assume_aligned(tls, sizeof(void*)));
-        uintptr_t const id = static_cast<uintptr_t>(self);
-        __builtin_memcpy(word, &state, sizeof(state));
-        __builtin_memcpy(word + 1, &id, sizeof(id));
-    }
-#endif
 #if not KICKOS_REENT_PER_THREAD
-    void reent_seat(struct arch_aspace* space, void* state, uint32_t self)
+    void reent_seat(void* seat, void* state)
     {
-        uintptr_t const id = static_cast<uintptr_t>(self);
-#if KICKOS_HAVE_ASPACE
-        // A silent refusal here leaves the seat word naming the outgoing thread's block, so
-        // two processes resolve one errno and one stdio state through it.
-        if (not kaccess_word_to_user(space, reinterpret_cast<uintptr_t>(s_seam.seat), &state)
-            or not kaccess_word_to_user(space, reinterpret_cast<uintptr_t>(s_seam.self), &id))
-        {
-            thread_cancel_escalate(sched::current(), CANCEL_SLAY);
-        }
-#else
         // __builtin_memcpy: under -ffreestanding a plain memcpy lowers to a call on every switch.
-        (void)space;
-        void** const word =
-            static_cast<void**>(__builtin_assume_aligned(s_seam.seat, sizeof(void*)));
+        void** const word = static_cast<void**>(__builtin_assume_aligned(seat, sizeof(void*)));
         __builtin_memcpy(word, &state, sizeof(state));
-        __builtin_memcpy(__builtin_assume_aligned(s_seam.self, sizeof(id)), &id, sizeof(id));
-#endif
     }
 #endif
 }

@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// A K-seam case over the real system-call layer at the translating posture: one explicit task
-// whose main thread holds AUTH_MEMORY and AUTH_TASKS and a few user pages, the calls made as a
-// named thread through the real dispatch. Every space a case built goes back at its end.
+// A K-seam case over the real system-call layer at the translating posture: one task whose main
+// thread holds AUTH_MEMORY and AUTH_TASKS and a few user pages, the calls made as a named thread
+// through the real dispatch. A task of its own is an instance of the program `app` that main
+// creates. Every space a case built goes back at its end.
 
 #ifndef KICKOS_TESTS_UNIT_SYSDISPATCH_SYS_FIXTURE_H
 #define KICKOS_TESTS_UNIT_SYSDISPATCH_SYS_FIXTURE_H
+
+#include "../common/seam_pools.h"
 
 #include <kickos/aspace.h>
 #include <kickos/cap.h>
@@ -21,7 +24,9 @@
 #include <kickos/vrange.h>
 
 #include <kickos/sys/abi.h>
+#include <kickos/sys/image.h>
 
+#include <stddef.h>
 #include <string.h>
 
 #include "kseam_test.h"
@@ -53,6 +58,8 @@ namespace kickos
         inline constexpr size_t CAPS_AT = 2048;
         inline constexpr size_t DEST_AT = 2560;
         inline constexpr size_t VA_WORD_AT = 3072;
+        inline constexpr size_t TASK_PARAMS_AT = 3200;
+        inline constexpr size_t PROGRAM_AT = 3584;
         inline constexpr unsigned char DIRTY = 0xEE;
 
         inline Thread*& running()
@@ -102,6 +109,55 @@ namespace kickos
 
         inline HostPoolMark g_sys_suite_mark;
 
+        // The tasks a case may create: instances of `app`, started on request at main's priority,
+        // holding the memory authority their creator holds.
+        inline constexpr int PEERS = 6;
+        inline constexpr size_t PEER_NAME_BYTES = 6;
+        struct PeerDecls
+        {
+            kos_task_decl decl[PEERS];
+            char names[PEERS * PEER_NAME_BYTES];
+        };
+
+        inline PeerDecls make_peer_decls()
+        {
+            PeerDecls d = {};
+            for (int i = 0; i < PEERS; i++)
+            {
+                size_t const at = static_cast<size_t>(i) * PEER_NAME_BYTES;
+                memcpy(&d.names[at], "peer0", PEER_NAME_BYTES);
+                d.names[at + 4] = static_cast<char>('0' + i);
+                d.decl[i] = {static_cast<uint32_t>(offsetof(PeerDecls, names) + at),
+                             0u,
+                             0u,
+                             KOS_AUTH_MEMORY,
+                             1024u,
+                             0u,
+                             KOS_DECL_ON_REQUEST,
+                             MAIN_PRIO,
+                             MAIN_PRIO,
+                             0u,
+                             0u,
+                             KICKOS_SEAM_DECL_BUDGETS};
+            }
+            return d;
+        }
+
+        inline PeerDecls const& peer_decls()
+        {
+            static PeerDecls const d = make_peer_decls();
+            return d;
+        }
+
+        // A memory window over [base, base + bytes) of its creator's reservation, for a created
+        // task's entry thread.
+        struct PeerWindow
+        {
+            uintptr_t base = 0;
+            size_t bytes = 0;
+            uint8_t flags = 0;
+        };
+
         class SysFixture : public KSeam
         {
           protected:
@@ -109,7 +165,7 @@ namespace kickos
             {
                 memset(g_sys_image, 0x5A, SYS_IMAGE_BYTES);
                 static VirtualRanges root;
-                ASSERT_TRUE(aspace_image_seed(arch_aspace_create(), &root));
+                ASSERT_EQ(aspace_image_seed(nullptr, arch_aspace_create(), &root, 0), 0);
                 g_sys_suite_mark = host_pool_mark();
             }
 
@@ -117,6 +173,8 @@ namespace kickos
             {
                 KSeam::SetUp();
                 domain_init();
+                declare(peer_decls().decl, PEERS);
+                program("app", reinterpret_cast<uintptr_t>(&entry));
                 task_ = task(0);
                 seat_others();
                 main_ = member(1, MAIN_PRIO, task_);
@@ -125,6 +183,12 @@ namespace kickos
                 user_ = reserve(main_, USER_PAGES * G, 0);
                 ASSERT_NE(user_, 0u);
                 g_user_base = user_;
+                memcpy(host<char>(uva(MAIN_OUT, PROGRAM_AT)), "app", 4);
+                for (ProgramCap& c : progs_)
+                {
+                    c = {};
+                }
+                ASSERT_NE(program_for(main_), KCAP_INVALID);
                 sys_seam_reset();
             }
 
@@ -135,7 +199,7 @@ namespace kickos
                 sys_seam_reset();
                 running() = main_;
                 // The seam's spaces are few: every one a case built goes back here.
-                for (Domain& d : kernel().domains)
+                for (Domain& d : kernel().domains())
                 {
                     if (d.space != nullptr)
                     {
@@ -233,7 +297,7 @@ namespace kickos
                 {
                     return 0;
                 }
-                return kernel().frame_run_refs[idx];
+                return kernel().frame_runs.refs()[idx];
             }
 
             static bool frame_taken(arch_phys_addr_t pa)
@@ -327,37 +391,103 @@ namespace kickos
                 }
             }
 
-            int32_t create_task(Thread* t, uintptr_t base, size_t bytes, uintptr_t flags,
-                                kos_task_t* task_out)
+            // `t`'s capability on `app`, which it finds on its first create.
+            uint32_t program_for(Thread* t)
             {
-                uint32_t* const out = host<uint32_t>(uva(MAIN_OUT));
+                int const i = kernel().threads.index_of(t);
+                kos_thread_t const h = kernel().threads.handle_for(i);
+                if (progs_[i].thread != h)
+                {
+                    uint32_t* const out = host<uint32_t>(uva(MAIN_OUT, PROGRAM_AT + 8));
+                    *out = KCAP_INVALID;
+                    if (err(call_as(t, KOS_SYS_PROGRAM_FIND, uva(MAIN_OUT, PROGRAM_AT),
+                                    uva(MAIN_OUT, PROGRAM_AT + 8)))
+                        != 0)
+                    {
+                        return KCAP_INVALID;
+                    }
+                    progs_[i] = {h, *out};
+                }
+                return progs_[i].cap;
+            }
+
+            // The parameters of a create of `app` on `page`: `base`..`bytes` handed over where
+            // `bytes` is not 0, and the entry thread holding `w`.
+            kos_task_params* task_params(size_t page, uintptr_t base, size_t bytes,
+                                         uintptr_t flags, PeerWindow w = {})
+            {
+                kos_task_params* const p = host<kos_task_params>(uva(page, TASK_PARAMS_AT));
+                *p = {};
+                p->block = reinterpret_cast<void*>(base);
+                p->size = static_cast<uint32_t>(bytes);
+                p->flags = static_cast<uint32_t>(flags);
+                if (w.bytes != 0)
+                {
+                    *host<kos_window>(uva(page, WINDOWS_AT)) = {
+                        w.base, static_cast<uint32_t>(w.bytes), KOS_WINDOW_MEMORY, w.flags};
+                    p->windows = reinterpret_cast<kos_window const*>(uva(page, WINDOWS_AT));
+                    p->window_count = 1;
+                }
+                return p;
+            }
+
+            // The create the parameters on `page` name, made by `t`, the answer on `out_page`.
+            int32_t create_staged(Thread* t, size_t page, size_t out_page, kos_task_t* task_out)
+            {
+                uint32_t* const out = host<uint32_t>(uva(out_page));
                 *out = KOS_TASK_NONE;
                 int32_t const rc =
-                    err(call_as(t, KOS_SYS_TASK_CREATE, base, bytes, uva(MAIN_OUT), flags));
+                    err(call_as(t, KOS_SYS_TASK_CREATE, program_for(t), uva(page, TASK_PARAMS_AT),
+                                uva(out_page)));
                 *task_out = static_cast<kos_task_t>(*out);
                 return rc;
             }
 
-            kos_task_t new_task(Thread* t, uintptr_t base, size_t bytes, uintptr_t flags)
+            // A task `t` creates, an instance of `app` with `base`..`bytes` handed over where
+            // `bytes` is not 0, its entry thread holding `w`. The parameters are on `page`, the
+            // answer on `out_page`.
+            int32_t create_task(Thread* t, uintptr_t base, size_t bytes, uintptr_t flags,
+                                kos_task_t* task_out, PeerWindow w = {}, size_t page = MAIN_PARAMS,
+                                size_t out_page = MAIN_OUT)
+            {
+                task_params(page, base, bytes, flags, w);
+                return create_staged(t, page, out_page, task_out);
+            }
+
+            kos_task_t new_task(Thread* t, uintptr_t base, size_t bytes, uintptr_t flags,
+                                PeerWindow w = {})
             {
                 kos_task_t task_out = KOS_TASK_NONE;
-                if (create_task(t, base, bytes, flags, &task_out) != 0)
+                if (create_task(t, base, bytes, flags, &task_out, w) != 0)
                 {
                     return KOS_TASK_NONE;
                 }
                 return task_out;
             }
 
+            // The entry thread of the task `h` names, the one the create started.
+            static Thread* entry_of(kos_task_t h)
+            {
+                IrqLock lock;
+                Task* const tk = task_resolve(h);
+                for (Thread& th : kernel().threads.all())
+                {
+                    if (tk != nullptr and th.task == tk and th.task_role == TASK_ROLE_ENTRY)
+                    {
+                        return &th;
+                    }
+                }
+                return nullptr;
+            }
+
             // A params block on `page`, with one memory window over [base, base + bytes)
-            // when `bytes` is not 0, the child joining `into`.
-            uintptr_t spawn_params(size_t page, uintptr_t base, size_t bytes, uint8_t flags,
-                                   kos_task_t into)
+            // when `bytes` is not 0.
+            uintptr_t spawn_params(size_t page, uintptr_t base, size_t bytes, uint8_t flags)
             {
                 kos_thread_params* const p = host<kos_thread_params>(uva(page));
                 *p = {};
                 p->entry = entry;
                 p->prio = MAIN_PRIO;
-                p->task = into;
                 if (bytes != 0)
                 {
                     *host<kos_window>(uva(page, WINDOWS_AT)) = {
@@ -368,18 +498,9 @@ namespace kickos
                 return uva(page);
             }
 
-            uintptr_t window_spawn(uintptr_t base, size_t bytes, kos_task_t into)
+            uintptr_t window_spawn(uintptr_t base, size_t bytes)
             {
-                return spawn_params(MAIN_PARAMS, base, bytes, KOS_WINDOW_UNCACHED, into);
-            }
-
-            // A spawn of a child with a data grant, so the spawn builds a task.
-            uintptr_t building_spawn(uintptr_t grant)
-            {
-                uintptr_t const va = spawn_params(MAIN_PARAMS, 0, 0, 0, KOS_TASK_NONE);
-                params(va)->mem_base = reinterpret_cast<void*>(grant);
-                params(va)->mem_size = GRANT_BYTES;
-                return va;
+                return spawn_params(MAIN_PARAMS, base, bytes, KOS_WINDOW_UNCACHED);
             }
 
             static kos_thread_params* params(uintptr_t va)
@@ -401,6 +522,12 @@ namespace kickos
             Task* task_ = nullptr;
             Thread* main_ = nullptr;
             uintptr_t user_ = 0;
+            struct ProgramCap
+            {
+                kos_thread_t thread = KOS_THREAD_NONE;
+                uint32_t cap = KCAP_INVALID;
+            };
+            ProgramCap progs_[KICKOS_SEAM_THREAD_SLOTS] = {};
         };
     }
 }

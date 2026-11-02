@@ -4,7 +4,7 @@
 #
 # The x86_64 PE32+ UEFI image link, run as ld's PE+ emulation with no compiler driver.
 #
-#   x86_64-link.sh [--one-pass] <ld> <readelf> <objdump> <objcopy>
+#   x86_64-link.sh [--one-pass | --elf] <ld> <readelf> <objdump> <objcopy>
 #                  <link arguments...>
 #
 # Takes the compiler-driver spelling of a link: -Wl,a,b reaches ld as `a b`; -o, -L, -l and
@@ -12,10 +12,14 @@
 # here to consume it. Each -l is resolved here to the archive path ld is then handed, so that
 # tools/check-x86_64-no-got.sh and tools/check-x86_64-weak-undef.sh read exactly the files ld
 # links. The inputs are first pre-linked into one ELF object with --gc-sections, which the PE
-# emulation does not apply. An application image is then linked twice so that it carries a copy
-# of its own relocation directory (tools/x86_64-krel.sh), and <image>.map beside it names every
-# input as the two maps do together (tools/x86_64-map.awk). --one-pass is a single link, which
-# writes no map. A failed link leaves neither file.
+# emulation does not apply, and <image>.map beside the image names every input as the two maps
+# do together (tools/x86_64-map.awk), and <image>.elf its ELF twin for a debugger: the pre-linked
+# object linked again as ELF with each of its sections at the address the PE link gave it and
+# each script symbol at its value, since ld -m i386pep writes DWARF whose string and line offsets
+# are image addresses. --one-pass writes neither. A failed link leaves none of the three files.
+#
+# --elf links a program, an ELF executable at the address its own script states
+# (tools/image-link.py), with no pre-link, no guard and no map but the one its arguments name.
 set -u
 
 nl='
@@ -25,26 +29,26 @@ out=""
 fail() {
     echo "FAIL: x86_64-link: $*" >&2
     if [ -n "$out" ]; then
-        rm -f "$out" "$out.map"
+        rm -f "$out" "$out.map" "$out.elf"
     fi
     exit 1
 }
 
 cleanup() {
     if [ -n "$out" ]; then
-        rm -f "$out.first" "$out.krel.bin" "$out.krel.o" "$out.pre.ld" "$out.pre.o" \
-            "$out.premap" "$out.pemap"
+        rm -f "$out.pre.ld" "$out.pre.o" "$out.premap" "$out.pemap" "$out.twin.ld"
     fi
 }
 trap cleanup EXIT
 
 one_pass=0
-if [ "${1:-}" = "--one-pass" ]; then
-    one_pass=1
-    shift
-fi
-[ $# -ge 4 ] || fail "usage: x86_64-link.sh [--one-pass] <ld> <readelf> <objdump> <objcopy>" \
-    "<args...>"
+elf=0
+case "${1:-}" in
+    --one-pass) one_pass=1; shift ;;
+    --elf) elf=1; shift ;;
+esac
+[ $# -ge 4 ] || fail "usage: x86_64-link.sh [--one-pass | --elf] <ld> <readelf> <objdump>" \
+    "<objcopy> <args...>"
 LD="$1"; READELF="$2"; OBJDUMP="$3"; OBJCOPY="$4"
 shift 4
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -132,6 +136,7 @@ for t in $toks; do
             continue
             ;;
         L)
+            pargs="$pargs-L$nl$(absolute "$v")$nl"
             pending=""
             continue
             ;;
@@ -160,7 +165,7 @@ for t in $toks; do
     case "$v" in
         -o) pending="o"; continue ;;
         -L) pending="L"; continue ;;
-        -L*) continue ;;
+        -L*) pargs="$pargs-L$nl$(absolute "${v#-L}")$nl"; continue ;;
         -l) pending="l"; continue ;;
         -l*)
             f="$(resolve "${v#-l}")" || fail "$v: no such archive under the -L directories"
@@ -192,13 +197,24 @@ for t in $toks; do
 done
 [ -z "$pending" ] || fail "-$pending names nothing"
 [ -n "$out" ] || fail "no -o"
+rm -f "$out" "$out.map" "$out.elf"
+
+if [ "$elf" -eq 1 ]; then
+    IFS="$nl"
+    set -f
+    # shellcheck disable=SC2086
+    set -- $pargs $rargs
+    IFS="$old_ifs"
+    set +f
+    LC_ALL=C "$LD" -m elf_x86_64 --gc-sections -o "$out" "$@" || fail "ld refused the link"
+    exit 0
+fi
 [ -n "$pe_script" ] || fail "no -T names the PE section script"
-rm -f "$out" "$out.map"
 
 # The pre-link's own script, from the PE script's kernel claims: each archive or object
 # selector line becomes part of a .kickos.kernel.* section the PE script then places by name.
-# The app's constructors and the unwind tables are kept whole, the collection dropping an
-# orphan .eh_frame entirely.
+# The constructors, the unwind tables and the images' bytes are kept whole, the collection
+# dropping an orphan .eh_frame entirely and an embedded image nothing references.
 prelink_script="$out.pre.ld"
 awk '
     /^ *(KEEP \()?\*[^ ]*(\.a:|\.dir\/)\*\(/ {
@@ -220,6 +236,10 @@ awk '
         print "  .init_array : { KEEP (*(SORT(.init_array.*))) KEEP (*(.init_array)) }"
         print "  .fini_array : { KEEP (*(SORT(.fini_array.*))) KEEP (*(.fini_array)) }"
         print "  .eh_frame : { KEEP (*(.eh_frame .eh_frame.*)) }"
+        print "  .kickos_image0_text : { KEEP (*(.kickos_image0_text)) }"
+        print "  .kickos_image0_data : { KEEP (*(.kickos_image0_data)) }"
+        print "  .kickos_image0_bss : { KEEP (*(.kickos_image0_bss)) }"
+        print "  .kickos_images : { KEEP (*(.kickos_images)) }"
         print "}"
     }
 ' "$pe_script" > "$prelink_script" || fail "no kernel claim in $pe_script to pre-link by"
@@ -239,8 +259,7 @@ IFS="$nl"
 # shellcheck disable=SC2086
 set -- $premap $rargs
 IFS="$old_ifs"
-# -d places a COMMON symbol by its input's claim, so a kernel one cannot
-# reach the PE script's *(COMMON) in the app window.
+# -d places a COMMON symbol by its input's claim.
 LC_ALL=C "$LD" -m elf_x86_64 -r --force-group-allocation -d \
     --gc-sections -e efi_main -T "$prelink_script" \
     -o "$out.pre.o" "$@" || fail "ld refused the pre-link"
@@ -267,20 +286,37 @@ if [ "$one_pass" -eq 1 ]; then
     exit 0
 fi
 
-# The second link places the copy in .krel, after every section a fixup can sit in, so .reloc
-# comes out the same; the check refuses an image where it did not.
 # LC_ALL=C: the map is read by its English headings.
 # shellcheck disable=SC2086
-LC_ALL=C "$LD" $FIXED -o "$out.first" "$@" || fail "ld refused the first link"
-"$HERE/x86_64-krel.sh" extract "$OBJDUMP" "$OBJCOPY" "$out.first" "$out.krel.bin" \
-    || fail "no relocation directory to copy"
-"$OBJCOPY" -I binary -O elf64-x86-64 -B i386:x86-64 \
-    --rename-section .data=.krel,alloc,load,readonly,data,contents \
-    "$out.krel.bin" "$out.krel.o" || fail "objcopy refused the relocation copy"
-# shellcheck disable=SC2086
-LC_ALL=C "$LD" $FIXED -Map "$out.pemap" -o "$out" "$@" "$out.krel.o" \
-    || fail "ld refused the second link"
+LC_ALL=C "$LD" $FIXED -Map "$out.pemap" -o "$out" "$@" || fail "ld refused the link"
 awk -v pre="$out.pre.o" -f "$HERE/x86_64-map.awk" "$out.premap" "$out.pemap" > "$out.map" \
     || fail "could not write the link map"
-"$HERE/x86_64-krel.sh" check "$OBJDUMP" "$OBJCOPY" "$out.first" "$out" \
-    || fail "the second link moved the relocation directory"
+
+# The twin's script, from the PE map: a section of the pre-linked object as its own output
+# section at its address, a script symbol at its value. Its DWARF, placed by no rule, lands at
+# address 0 as an ELF debugger reads it.
+awk -v pre="$out.pre.o" '
+    function place(addr) {
+        if (sec != "" && sec !~ /^\.(z?debug|stab|comment)/ && !(sec in at)) {
+            at[sec] = addr; order[++n] = sec
+        }
+    }
+    /^Linker script and memory map/ { inmap = 1; next }
+    !inmap { next }
+    /^[^ ]/ { sec = ""; next }
+    /^ \.[^ ]+$/ { sec = $1; next }
+    /^ \.[^ ]+ +0x[0-9a-f]+ +0x[0-9a-f]+ / { sec = $1; if ($NF == pre) { place($2) }; next }
+    /^ *0x[0-9a-f]+ +0x[0-9a-f]+ / && $NF == pre { place($1); next }
+    /^ +0x[0-9a-f]+ +[A-Za-z_][A-Za-z0-9_.$]* = / { sym[$2] = $1 }
+    END {
+        if (n == 0) { exit 1 }
+        print "SECTIONS\n{"
+        for (i = 1; i <= n; i++) {
+            printf "  %s %s : { *(%s) }\n", order[i], at[order[i]], order[i]
+        }
+        print "}"
+        for (k in sym) { printf "%s = %s;\n", k, sym[k] }
+    }
+' "$out.pemap" > "$out.twin.ld" || fail "the PE map places no section of $out.pre.o"
+LC_ALL=C "$LD" -m elf_x86_64 -e efi_main --noinhibit-exec --unresolved-symbols=ignore-all \
+    -T "$out.twin.ld" -o "$out.elf" "$out.pre.o" || fail "ld refused the ELF twin"

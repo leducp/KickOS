@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-add_executable(errnoprobe main.cc)
-target_link_libraries(errnoprobe PRIVATE KickOS::kernel KickOS::system_default)
+add_executable(errnoprobe main.cc first_thread.cc)
+target_link_libraries(errnoprobe PRIVATE KickOS::kickos KickOS::system_default)
 kickos_emit_image(errnoprobe)

@@ -342,7 +342,7 @@ and `alignof` under each preset's flags). The size pin in
 `kernel/include/kickos/thread.h` is one assertion of exact size for every arch. It stays exact
 on the other arches, whose memory is counted in KiB; on x86 it becomes a ceiling,
 `sizeof(Thread)` at most 2 KiB, which catches an accidental large increase, and the measured size
-is recorded after the build. At the 32 threads of qemu-x86_64-smp12's `KICKOS_MAX_THREADS` the
+is recorded after the build. At the 32 threads of qemu-x86_64-smp12's `KICKOS_BUDGET_THREADS` the
 TCBs take about 27 KiB more at the estimate, and even at 2 KiB a Thread the slots would take about
 64 KiB. Each core's boot context in `kernel/include/kickos/instance.h` carries an area too, though
 `arch_start` abandons it on x86: about 10 KiB on twelve cores. Those areas stay in place this stage
@@ -568,14 +568,14 @@ answers it with `__builtin_thread_pointer()`, which on x86-64 GCC is a load of `
 word at the FS base must be the running thread's `struct _reent` pointer. `arch_context_init`
 reserves a 16-byte cell at the top of an unprivileged thread's own stack, the aligned top minus
 16, and puts the return slot below it, so the entry still sees `rsp` 8 modulo 16.
-`arch_context_seat_reent`, the hook RV64 implements and `kernel/thread/thread.cc` calls at create
+A seat hook, the one RV64 implements and `kernel/thread/thread.cc` calls at create
 after `arch_context_init`, writes the thread's `struct _reent` pointer into the cell's first word
 through the kernel's view of the stack, as the return slot is written today, and sets
 `arch_context::fs_base` to the cell's user address. A privileged context has no cell and keeps
 `fs_base` at 0: the kernel calls no libc (5.4). `arch_ctx_redirect` keeps `fs_base` across its
 rebuild, as RV64's keeps `reent_tp`. libc, `newlib_reent.cc` and the seam of
 `kernel/include/kickos/reent.h` keep their form; that header's statement that x86_64 links no C
-library goes. It is not `KICKOS_REENT_IN_TCB`: x86 selects no `ARCH_HAS_TLS`, its TLS is variant
+library goes. It is not the TLS control-block form: x86 selects no `ARCH_HAS_TLS`, its TLS is variant
 II, data below the thread pointer, which the `KICKOS_TLS` carve does not build, and `thread_local`
 on q35 is a later decision.
 
@@ -643,11 +643,11 @@ kernel half as an orphan section.
 `user/src/root_entry.cc` registers the tables only under `KICKOS_LINKER_WEAK_UNDEF`. On q35 the
 registration is a constructor of the highest priority in the `kickos_cxx_rt` object of
 `system/cxx/vterminate.cc`, which only full-C++ images link, and `SORT(.init_array.*)` runs it
-ahead of every other app constructor. The LSDAs' typeinfo pointers are absolute words in app data,
-which `app_relocate` already converts.
+ahead of every other app constructor. The LSDAs' typeinfo pointers are absolute words in program
+data, linked where every space maps them.
 
-**Full C++ takes a KickOS patch to binutils.** `app_relocate` converts the absolute words of the
-app window that carry a DIR64 base relocation, and the pinned `ld -m i386pep` writes none for an
+**Full C++ takes a KickOS patch to binutils.** Firmware moves exactly the absolute words of the
+PE32+ image that carry a DIR64 base relocation, and the pinned `ld -m i386pep` writes none for an
 absolute word naming a weak definition. Its base-relocation pass, `generate_reloc` in binutils
 2.47's `ld/pe-dll.c`, treats a symbol flagged weak at lines 1669 to 1692: where the symbol's hash
 entry is undefined weak it consults the COFF weak-external auxiliary entry, and otherwise it gives
@@ -726,8 +726,7 @@ function declared in such a region.
 
 **`-fno-pic` is out.** It removes the GOT, but every address taken in code becomes an
 `R_X86_64_32` or `R_X86_64_32S`, which `ld -m i386pep` turns into a HIGHLOW base relocation that
-`app_relocate` refuses, "a relocation record is not DIR64", and which cannot hold the user alias at
-all: linked at the selftest's rebased base of 1 TiB, the image stops at "relocation truncated to
+`tests/static/check_x86_64_app_split.py` refuses, and which cannot hold a user address at all: linked at the selftest's rebased base of 1 TiB, the image stops at "relocation truncated to
 fit", measured. `-mcmodel=large` would carry every address as a 64-bit immediate in text, each
 call's included, one DIR64 record per site of the app's code.
 
@@ -1067,7 +1066,7 @@ Every decision is accepted.
    `-march=x86-64-v3`, which the apps get.
 10. **Reentrancy through the FS base and a stack-top cell**, accepted, the first thread's setup
     and its tests explicit in 5.2, 5.5 and 5.6. TLS relocations are refused on q35 meanwhile;
-    against `KICKOS_TLS` on x86 with a variant II carve and `KICKOS_REENT_IN_TCB`, which would
+    against `KICKOS_TLS` on x86 with a variant II carve and the reent pointer in its control block, which would
     also bring `thread_local` to q35.
 11. **IA32_FS_BASE written in `publish_current`**, accepted: at every switch-in and at every
     core's first thread, never against a cached value, with the FS selector null, the base
@@ -1164,7 +1163,7 @@ Every decision is accepted.
 21. **A KickOS patch to binutils in the `x86_64-elf` recipe**, ruled (2026-10-01): one test in
     `generate_reloc` (binutils 2.47's `ld/pe-dll.c`, line 1691) accepts a weak definition,
     `bfd_link_hash_defweak`, beside a strong one, so `ld -m i386pep` gives the absolute words that
-    name it the DIR64 base relocation `app_relocate` moves by; an undefined weak symbol still gets
+    name it the DIR64 base relocation firmware moves by; an undefined weak symbol still gets
     none. It is `conan/toolchain/patches/kickos-x86_64-pe-defweak-reloc.patch`, vendored as the
     GCC patch of decision 18 is, for this family alone. Against a link step adding the missing
     records to the image's `.reloc` and its boot copy, and against `-fno-weak`. With it
@@ -1257,8 +1256,8 @@ template's member become `R_X86_64_PC32`, and the address of a function becomes 
 package's GCC loads it from the GOT. `-fno-pic` emits `R_X86_64_32` or `R_X86_64_32S` for every
 address taken, the personality routine's in `.eh_frame` included, and `-mcmodel=large` an
 `R_X86_64_64` in text for each; linked by `ld -m i386pep` at 0x400000 one becomes a HIGHLOW base
-relocation, and at 0x10000000000 "relocation truncated to fit". `arch/x86/x86_64/apprel_x86_64.cc`
-refuses every record but ABSOLUTE and DIR64.
+relocation, and at 0x10000000000 "relocation truncated to fit".
+`tests/static/check_x86_64_app_split.py` refuses every record but ABSOLUTE and DIR64.
 
 **The archives, classified.** Every GOT relocation of the five archives, by the type of its target
 where some archive defines it:

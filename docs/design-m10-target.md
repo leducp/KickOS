@@ -61,23 +61,16 @@ user task the init:
 
 1. mints a badged copy of the init's notification, the bit being the task's table index modulo 32
    (`kos_notify_badge`);
-2. creates the task (`kos_task_create`): with no memory on a region board, and on a translating
-   board with the task's stack block as its data region, which maps the block in the task's own
-   space;
-3. narrows the task's priority ceiling to its declared `ceiling`, and, for a declared `core`, its
-   core grant to that core (`kos_task_sched_grant`), so threads the task creates stay within its
-   declaration;
-4. arms the watch, `kos_task_watch(task, copy, served endpoint)`, with `KOS_CAP_NONE` for a task
-   that serves nothing;
-5. for a task taking lines, pins itself to the task's core (the affinity setter (formerly `kos_thread_set_affinity`) on
+2. for a task taking lines, pins itself to the task's core (the affinity setter on
    `kos_thread_self`, on a build of more than one kernel core) and claims each line edge
    (`kos_irq_claim`). The table carries no trigger, so a user task cannot take a level line; a
    packaged driver takes its trigger from its descriptor. Pinned, the init is starved by a
    thread at or above its priority on that core that never blocks, as any lower-priority thread is, timing being
    the user's to keep while M10 leaves the temporal half out of scope;
-6. spawns the task's entry thread (`kos_thread_create`) with these `kos_thread_params`:
-   - `entry` the library's trampoline and `arg` the task's table record, `self`;
-   - its name, its declared priority, FIFO;
+3. starts the task as the declared instance of its program, `kos_task_create(program, &params,
+   &task)` with the program the init found at boot (`kos_program_find`) and these
+   `kos_task_params`:
+   - `instance` the task's name;
    - `windows`: every window-kind grant in table order, a device as `KOS_WINDOW_DEVICE`, a port
      range as `KOS_WINDOW_PORTS`, a map as `KOS_WINDOW_MEMORY` with the grant's flags, and for a
      watcher the status grant at its table position as the watcher's own status block,
@@ -86,17 +79,24 @@ user task the init:
      `KOS_SPAWN_DELEGATED_CAP0 + i` as the table records: a served endpoint with WAIT (from the
      HANDOUT the init holds), a used endpoint with SIGNAL, `/init/events` with WAIT, a line with
      WAIT;
-   - `core_mask` and `authority` from the table, and `task` the one just created;
-   - the stack: none on a build that masks SP, which gives the thread one whole stride, the
-     composition's figure never handed over; elsewhere the reserved block at the declared `stack`;
-7. closes the lines it claimed, resets its affinity and closes the badged copy.
+   - `block`: no memory on a region board, and on a translating board the task's stack block as
+     its data region, which maps the block in the task's own space;
+   - `stack`: none on a build that masks SP, which gives the thread one whole stride, the
+     composition's figure never handed over; elsewhere the reserved block at the declared `stack`.
+   The kernel narrows the task's priority ceiling to its declared `ceiling`, and, for a declared
+   `core`, its core grant to that core, so threads the task creates stay within its declaration,
+   and starts its entry thread at the declared priority and authority, FIFO, its served endpoint
+   recorded as the one whose first receive makes the task ready;
+4. arms the watch, `kos_task_watch(task, copy, KOS_CAP_NONE)`, which reports an end or a
+   readiness that came before it;
+5. closes the lines it claimed, resets its affinity and closes the badged copy.
 
-A step from 3 on that fails, a failed start (1.6), unwinds what the start holds before the
-death is counted (1.4): the init closes the badged copy, and from step 5 on also closes the
-lines it claimed and, once pinned, resets its affinity.
+A step that fails, a failed start (1.6), unwinds what the start holds before the death is counted
+(1.4): the init closes the badged copy, the lines it claimed and, once pinned, resets its
+affinity. A refused watch panics the init: it leaves the task's death unreported.
 
-The trampoline calls the entry with `self` and ends the thread with `kos_exit(0)` when the entry
-returns; an entry ends with another code through `exit(n)` or `kos_exit(n)`. The entry thread
+`kickos_task_entry` calls the entry with `self` and ends the thread with `kos_exit(0)` when the
+entry returns; an entry ends with another code through `exit(n)` or `kos_exit(n)`. The entry thread
 carries the task: its exit ends the task, as a fault of any member does (section 7). A task that
 serves nothing is ready once spawned. A task spawned after a console driver's publish holds the
 console at index 0, which the kernel seats.
@@ -159,19 +159,17 @@ kernel latched with the exit-status read (formerly `kos_task_exit_status(task, &
 the code passed to `exit` or `kos_exit`, any `int` and negatives included, `KOS_EXIT_FAULT` after
 a fault, `KOS_EXIT_CANCELLED` when the entry was cancelled. An `ends` task marked
 dependency-down, or whose start fails, never runs its entry, and the system ends with
-`KOS_EXIT_CANCELLED`. Where a console driver holds stdout the init drains it with `kos_console_flush`, two
-zero-length the timed send (formerly `kos_send_timed`) on `KOS_CAP_STDOUT`, each bounded by `KOS_DRV_HANDOVER_PROBE_US`
-(1 s). A zero-length send to a console driver is a flush: the driver goes back to its receive
-only once its TX ring and the device's transmit path have drained, as far as the device can
-tell. That is the last stop bit leaving the pin on every UART, and on USB the host's
-acknowledgement of the last packet, a transfer ending on a full packet closed by a zero-length one. The driver bounds that wait itself, well under the probe, and goes back to its receive
-with bytes left rather than hang on a stuck device. So the second send is taken only once the
-first flush is over, and the last line has reached the wire before `kos_shutdown`. A send that
-fails ends the drain, so a hung console driver delays the ending by at most 2 s and never hangs
-it. It then
+`KOS_EXIT_CANCELLED`. Where a console driver holds stdout the init drains it with `kos_console_flush`, one
+`KOS_UART_DRAIN` call on `KOS_CAP_STDOUT` bounded by `KOS_DRV_HANDOVER_PROBE_US` (1 s). The driver
+replies once its TX ring and the device's transmit path have drained, as far as the device can
+tell, or once its own bound has expired, and the reply carries which. Drained is the last stop bit
+leaving the pin on every UART, and on USB the host's acknowledgement of the last packet, a
+transfer ending on a full packet closed by a zero-length one. The driver bounds that wait itself,
+well under the call's bound, rather than hang on a stuck device, so a hung console driver delays
+the ending by at most 1 s and never hangs it. It then
 calls `kos_shutdown(status)`, which its `KOS_AUTH_SYSTEM` allows. Nothing is torn down first, so
 no thread is classified as app or infrastructure. Admission refuses `restart` on the ending task.
-`kickos_main` is `exit(main(argc, argv))` running as the entry thread, so `main`'s return ends the
+A program's task runs `exit(main(argc, argv))` as its entry thread, so `main`'s return ends the
 system with its code.
 
 `kos_shutdown` drains the kernel console and calls the chip's shutdown with the status:
@@ -224,29 +222,25 @@ parks the init. Three results are not refusals:
 
 - **`kos_notify` answering `-KOS_EALREADY`**: the watcher has not taken the bit yet, which is
   success; it reads every record when it does.
-- **`kos_irq_claim` answering `-KOS_EAGAIN`**: the line is retiring from its last holder, which
-  every restart of a line taker meets on a build of more than one kernel core. The init sleeps
-  1 ms and claims again, at most 100 times, then counts a failed start.
-- **A failed start**: any step of a user task's start after `kos_task_create`, or a packaged
-  driver's `START` returning nonzero, its handover probe included. The task is not killed by the
-  step that failed; the init counts it as a death of that instance (1.4), so a task failing before
-  its first spawn is restarted while its count lasts and then marked dead for good, its watchers
-  told each time.
+- **`kos_irq_claim` answering `-KOS_EAGAIN`**, or a packaged driver's `kos_task_create`: the line
+  is retiring from its last holder, which every restart of a line taker meets on a build of more
+  than one kernel core. The init sleeps 1 ms and asks again, at most 100 times, then counts a
+  failed start.
+- **A failed start**: any step of a task's start, a packaged driver's create and its handover
+  probe included. The init counts it as a death of that instance (1.4), so a task failing to start
+  is restarted while its count lasts and then marked dead for good, its watchers told each time.
+  A driver whose `START` fails ends its own task, which is a death of that instance.
 
 ## 2. Packaged drivers through their descriptors
 
 A driver task's table entry names its `START`, declared on `kickos_add_driver`. To start it the
-init mints the badged copy of 1.2's first step, calls `START` with the instance it fills from the
-table, and closes the copy when `START` returns. The instance, `struct kos_driver_instance` in
-`<kickos/sys/driver_service.h>`, carries the task's name, its priority and its first window role's
-base and size, and is filled at each start from the init's record of the task and its table
-entry, so it adds nothing to the private record: the endpoint the init created at boot and the
-ring block of 1.1 with its memory type, both kept across restarts in the record, the
-table's lines by role, each as its number and its index among its device's lines, the core mask,
-whether the table names it the console driver, which the bring-up refuses unless its descriptor
-hands the console over, the badged copy of this start, and the task handle the bring-up writes
-back as soon as it creates it. The badged copy is not kept: the init passes it for that one start
-and closes it when `START` returns.
+init mints the badged copy of 1.2's first step, creates the notification the driver's lines and
+doorbell use and mints its doorbell copy, and creates the task from its declaration with
+`kos_task_create`: the ring block of 1.1 with its memory type, kept across restarts in the
+record, and the endpoint the init created at boot, the notification and the doorbell, each at the
+place the table states, which is the driver's entry thread layout. It closes the notification,
+the doorbell and the badged copy once the create returns, the task holding its own, and arms the
+watch.
 
 The table carries what the init needs of a driver that its catalogue entry states: the task's
 `block`, the ring block's bytes, which the init reserves at boot, and its `flags`, whose
@@ -254,31 +248,41 @@ The table carries what the init needs of a driver that its catalogue entry state
 at the end of its handover rather than at boot and drains at the ending (1.5), and whose
 `KOS_TABLE_TASK_BLOCK_UNCACHED` types the ring block `KOS_MEM_NOCACHE` in the init's self-grant. A
 driver task's line grants are emitted in the order of its line roles, which is the order of its
-descriptor's lines.
+descriptor's lines. The declaration carries the rest: the window, each line with its trigger and
+the place it is claimed into, the notification they are bound to, and the console.
 
-`bring_up` in `user/src/driver_service.cc`, given an instance, runs in the init's thread and:
+The create applies the declaration: it publishes a declared console (2.1), claims the declared
+lines into the entry thread at the descriptor's trigger, routed to the declared core and bound to
+the notification, line `i` on bit `i`, and seats the window on the entry thread. A claim answered
+`-KOS_EAGAIN`, the line retiring from the instance before, is tried again as 1.6 states. The entry
+thread, the descriptor's thread 0, runs `kickos_driver_task`, which hands `START` the instance,
+`struct kos_driver_instance` in `<kickos/sys/driver_service.h>`, filled from the task's table
+entry and the block its create names: the task's name, its priority and its first window role's
+base and size, the ring block, the table's lines by role, each as its number and its index among
+its device's lines, the core mask, and whether the table names it the console driver.
 
-1. lays out the kept ring block (`block_init`), creates the task with it (`kos_task_create`), and
-   narrows the task's priority ceiling to its priority plus its highest thread offset and its core
-   grant to the declared core;
-2. arms the watch with the badged copy of this start, the ready endpoint being the instance's;
-3. under handover, publishes the instance's endpoint (2.1);
-4. pins itself to the instance's core and claims the instance's lines at the descriptor's trigger,
-   whatever numbers the descriptor states. A claim answered `-KOS_EAGAIN`, the line retiring from
-   the instance before, is tried again as 1.6 states;
-5. creates the notification and binds each line to it;
-6. spawns each thread pinned to the declared core, with its window and its descriptor
-   capabilities, the endpoint coming from the instance;
-7. polls the readiness barrier between the spawns the descriptor names;
-8. closes the lines and the notification, the threads holding their own;
-9. under handover, finishes it (2.1).
+`bring_up` in `user/src/driver_service.cc`, given an instance, runs in that entry thread and:
 
-The endpoint is the instance's under either posture, so given an instance `out_ep` is neither
-checked nor written. Before step 1 the bring-up refuses an instance that is not its descriptor's:
-a ring block of another size or memory type than its descriptor's, or another count of lines. A
-thread that routes its device's events onto a line takes line 0's index from the instance. A step that fails closes what
-`bring_up` made, leaves the task and the endpoint to the init, and returns its code, a failed
-start (1.6). A driver's first descriptor thread is its entry thread.
+1. refuses an instance that is not its descriptor's: a ring block of another size or memory type
+   than its descriptor's, another count of lines, or a console the descriptor does not hand over;
+2. lays out the kept ring block (`block_init`);
+3. spawns each other thread into its own task, on the declared core, with its descriptor
+   capabilities delegated from the entry thread's places of them; a thread from the readiness
+   barrier on waits on the latch before its body, and traps past its budget;
+4. narrows the entry thread's own capabilities to thread 0's rights, closes the rest, raises
+   itself to thread 0's priority and runs thread 0's body.
+
+A thread that routes its device's events onto a line takes line 0's index from the instance. A
+refusal before the first spawn returns its code, which ends the entry thread and so the task; a
+step that fails after it traps. Either is a death of that instance (1.4).
+
+The readiness latch is a word of the ring block. The thread owning the device publishes the
+device half up with a release store and then wakes every thread parked on it
+(`kickos::driver::ready_publish`); a waiter reads it with an acquire load and, only while it reads
+below the state it waits for, parks on the word for what is left of its budget, reading it again
+after every return (`kickos::driver::ready_wait`). The service thread publishes a second state,
+service-ready, once it has read the device half up and just before its first receive
+(`kickos::driver::service_publish`), which the host of a driver inside a task waits for.
 
 Given an instance, a driver thread that fails ends its task by trapping: the kernel's fault path
 stops the rest of the group at once and the death reaches the init, whichever thread failed. The
@@ -299,35 +303,33 @@ posture until M10.5 are deleted.
 
 ### 2.1 The console handover
 
-A console driver restarts as any packaged driver does, and `bring_up` repeats the whole handover
-at every start of it:
+A console driver restarts as any packaged driver does, and every start of it repeats the whole
+handover:
 
-1. publishes the endpoint (`kos_console_publish`) before claiming the UART line, the publish
-   being what frees the line from the kernel's handler. The publish requires HANDOUT on the
-   init's capability, refuses one without it with `-KOS_EACCES`, and seats WAIT on it when it is
-   missing. At the first start the init still holds all four rights it created the endpoint with;
-   at a restart it holds SIGNAL, TRANSFER and HANDOUT, and the publish seats WAIT and makes the
-   endpoint receive, so every start goes on from the same state, the init holding WAIT and
-   HANDOUT (`docs/reference/console.md`, "Capability handover");
-2. claims, spawns up to the readiness barrier, polls it, spawns the receiver;
-3. narrows the init's capability to SIGNAL, TRANSFER and `KOS_CAP_HANDOUT`, dropping its receive
+1. the create publishes the endpoint before it claims the UART line, the publish being what frees
+   the line from the kernel's handler, and the driver's entry thread runs only once the kernel's
+   own console writers have drained. The publish requires HANDOUT on the init's capability,
+   refuses one without it with `-KOS_EACCES`, and seats WAIT on it when it is missing. At the
+   first start the init still holds all four rights it created the endpoint with; at a restart
+   it holds SIGNAL, TRANSFER and HANDOUT, and the publish seats WAIT and makes the endpoint
+   receive, so every start goes on from the same state, the init holding WAIT and HANDOUT
+   (`docs/reference/console.md`, "Capability handover");
+2. the init narrows its capability to SIGNAL, TRANSFER and `KOS_CAP_HANDOUT`, dropping its receive
    right, then probes once with a timed zero-length send on `KOS_CAP_STDOUT`, which completes
-   once the receiver takes it. A probe that does not complete is a failed start.
+   once the receiver takes it, its bound covering the receiver's readiness wait. A probe that does
+   not complete is a failed start: the init slays the task, whose end gives the kernel its console
+   back, and reports it there.
 
-A step that fails narrows the init's capability the same way before it prints or returns:
-`kickos::emit` is a blocking send on index 0, which parks while a WAIT holder exists with no
-receiver, so the init would otherwise park on its own endpoint. `console_handover_finish`
-narrows it, as `tests/unit/drvbringup/bringup_unwind.cc` expects.
+A create the kernel refuses publishes nothing; the init narrows its capability all the same
+before it reports, since a blocking send on index 0 parks while a WAIT holder exists with no
+receiver.
 
-A driver that dies before step 3, or a start that fails before its receiver exists, is reclaimed
-when the init drops its receive right, the last WAIT going, so the kernel console comes back; a
-driver that dies after it is reclaimed at its own death. With HANDOUT retained, a dead console
-receiver answers `-KOS_EAGAIN`, not `-KOS_ECONNREFUSED`: the probe sees `-KOS_EAGAIN`, and a
-writer's `_write` sends that chunk to the kernel console and keeps its capability. The next start
-publishes the endpoint again, and a write parks until the new receiver takes it; once the count is
-spent the init closes its own capability, the last HANDOUT goes, the next write gets
-`-KOS_ECONNREFUSED`, and the writer closes index 0. The comment on `console_handover_finish`
-states that.
+A driver that dies before step 2 is reclaimed at its task's end, which refuses the probe; a driver
+that dies after it is reclaimed at its own death. With HANDOUT retained, a dead console receiver
+answers `-KOS_EAGAIN`, not `-KOS_ECONNREFUSED`: a writer's `_write` sends that chunk to the kernel
+console and keeps its capability. The next start publishes the endpoint again, and a write parks
+until the new receiver takes it; once the count is spent the init closes its own capability, the
+last HANDOUT goes, the next write gets `-KOS_ECONNREFUSED`, and the writer closes index 0.
 
 ### 2.2 The stop step
 
@@ -350,7 +352,7 @@ change with its arm:
 | a console endpoint | held until handover ends | kept with HANDOUT for life, its receive right dropped at the end of handover | kept as a retained endpoint is |
 | domains on a region board | one per task with a ring block or a shared map | a map is a window, so only a ring block brings a domain | one per ring block |
 | the init's self-grants | not counted | its private block, each watcher's status block and each ring block, held for life | on a region board within what root's region set holds past its static regions and its stack, `KICKOS_MPU_MAX_REGIONS` less those, which the build derives from root's linker script and exports in the manifest's `init` section as `free_regions`; a self-grant spends a region whether or not the build enforces, root being unprivileged on every build; on a translating board a self-grant takes the range its reservation holds |
-| reservation records | not counted | its private block, each watcher's status block, each shared region, each ring block, and on a build that does not mask SP each user task's stack, once for life | against `KICKOS_RAM_OWNER_SLOTS` on a region board that enforces its unit, the only build that keeps the table; on a translating one against `KICKOS_ASPACE_RANGES` in the init's space, beside its image's two ranges and its root stack's; both knobs exported in the manifest's pools |
+| reservation records | not counted | its private block, each watcher's status block, each shared region, each ring block, and on a build that does not mask SP each user task's stack, once for life | against the RAM owner table size on a region board that enforces its unit, the only build that keeps the table; on a translating one against `KICKOS_ASPACE_RANGES` in the init's space, beside its image's two ranges and its root stack's; both knobs exported in the manifest's pools |
 | a task's own space | not counted | on a translating board two range records for its image, one per thread's stack, one per window, and one for its data mapping: a user task's stack block, on which its one thread runs, or a driver's ring block, its threads running on default stacks | within `KICKOS_ASPACE_RANGES` for each task |
 | the arena | idle, root, heap, regions, then each task's ring block and stacks | the boot stacks, then its reservations in the order of 1.1, then the kernel's default stacks, one size, in start order | that order, the heap leaving the replay for the link, which places it below the arena |
 | a watcher's windows | its devices and maps | its own status block too, read-only | the status grant the emitter writes, one window more, sized the count of tasks it watches times the manifest's status record size and rounded as a region is |
@@ -386,19 +388,20 @@ struct kos_task_status
     bool dependency_down;  /* never started: a server it uses is dead for good */
 };
 
-kos_cap_t kos_grant_endpoint(kos_self_t const* self, char const* name);
-kos_cap_t kos_grant_notify(kos_self_t const* self, char const* name);
-kos_window_t kos_grant_mmio(kos_self_t const* self, char const* name);
-kos_window_t kos_grant_mem(kos_self_t const* self, char const* name);
-kos_window_t kos_grant_ports(kos_self_t const* self, char const* name);
-kos_line_t kos_grant_irq(kos_self_t const* self, char const* name);
+kos_self_t const* kos_self(void);
+kos_cap_t kos_grant_endpoint(char const* name);
+kos_cap_t kos_grant_notify(char const* name);
+kos_window_t kos_grant_mmio(char const* name);
+kos_window_t kos_grant_mem(char const* name);
+kos_window_t kos_grant_ports(char const* name);
+kos_line_t kos_grant_irq(char const* name);
 void* kos_window_addr(kos_window_t window);
 uint32_t kos_window_size(kos_window_t window);
-int kos_task_status(kos_self_t const* self, uint32_t i, struct kos_task_status* out);
+int kos_task_status(uint32_t i, struct kos_task_status* out);
 ```
 
-- **A name** is a grant's `name` among `self`'s grants: the path, or the name the entry renamed it
-  to. Each lookup matches its kinds: an endpoint served or used, a notification, a device window,
+- **A name** is a grant's `name` among the grants of the caller's own declaration, `kos_self()`:
+  the path, or the name the composition renamed it to. Each lookup matches its kinds: an endpoint served or used, a notification, a device window,
   a region, a port range, a line.
 - **A capability** answers `KOS_SPAWN_DELEGATED_CAP0` plus the grant's place among the
   capability-bearing grants, from the table, with no system call.
@@ -438,7 +441,7 @@ asserts refuse any value but its own heap, so one that defines none fails its li
 **`kickos_compose(<system> <composition.yaml>)`** runs the host tool at configure, under `uv`
 from the package's `compose` folder, against the package's manifest. It writes the table's C
 source, a linker script of asserts (section 6), and a CMake fragment listing the drivers the
-composition names, whether `kickos_main` is named, and the heap. A refusal, the tool exiting 3,
+composition names, and the heap. A refusal, the tool exiting 3,
 fails the configure with the tool's `<file>:<line>: <rule>: <message>` lines; any other failure
 fails it saying the tool could not run, uv and Python 3.12 or newer being what it needs. A change to the composition, the manifest, a
 description or the tool configures again and runs the tool; a configure with none of them changed
@@ -448,8 +451,7 @@ does not. It then defines:
 - `<system>`, an interface library that depends on `KickOS::kernel` and carries, ahead of the
   kernel's group on the link line: the table's objects; the init's objects (`KickOS::init`); the
   walk's driver path, `KickOS::init_drivers` where a packaged driver is named and the trivial
-  `KickOS::init_no_drivers` where none is; those of `KickOS::main` where `kickos_main` is named;
-  each named packaged driver's archive, and the libraries its `CLIENT` declares for the tasks
+  `KickOS::init_no_drivers` where none is; each named packaged driver's archive, and the libraries its `CLIENT` declares for the tasks
   that use it; the heap as `--defsym=KICKOS_USER_HEAP_SIZE=<heap>`, the composition's `heap`; and
   the asserts script as a link input.
 
@@ -472,7 +474,7 @@ kickos_emit_image(app)
 **`KickOS::system_default`** is `kickos_compose` run by the kernel build on its export's default
 composition, after the manifest. Its objects and script are installed and the target exported.
 Every board has a default composition, and the configure refuses one without it. The default
-composition names `entry: kickos_main` and `ends` on it, and states the board's heap.
+composition names `program: main` and `ends` on it, and states the board's heap.
 
 **x86_64** links as every other board does since M10.5 (`docs/design-m10-fleet.md`, section 7):
 `KickOS::kernel` carries the kernel's group without the old init and with the C++ runtime, and
@@ -492,9 +494,9 @@ chip's. The tool writes its constants from the manifest, and its symbols are the
 spelled with the manifest's `symbol_prefix`:
 
 1. **The thread-local share of a stack.** For each user task on a build that does not mask SP, its
-   `stack` is at least `KICKOS_MIN_STACK_SIZE` plus `__kickos_tls_carve`, the block a stack pays
-   for the linked image's thread-local data, which `arch/common/sections.ld.h` defines from the
-   expression its carve assert already reads. Where SP is masked every thread gets one stride, and
+   `stack` is at least `KICKOS_MIN_STACK_SIZE` plus `__kickos_image<k>_tls_carve`, the block a
+   stack pays for the thread-local data of its own image, image k, which `arch/common/sections.ld.h`
+   defines from the expression its carve assert already reads. Where SP is masked every thread gets one stride, and
    the chip script's own assert on `KICKOS_USER_STACK_SIZE` is the check. Arm: a composition whose
    stack sits at the floor, linked with a thread-local object.
 2. **The arena fit, on a region board.** From the arena base the chip script places, the idle and
@@ -701,9 +703,9 @@ no margin.
 ## 9. What M10.4 uses and what it leaves to M10.5
 
 **Used.** The kernel's Kconfig as the manifest exports it: the pools and budgets,
-`KICKOS_CAP_TABLE_SUPPLY`, `KICKOS_MAX_SPAWN_GRANTS`, `KICKOS_MAX_THREAD_WINDOWS`,
+`KICKOS_MAX_SPAWN_GRANTS`, `KICKOS_MAX_THREAD_WINDOWS`,
 `KICKOS_USER_STACK_SIZE` for the default and masked stacks, `KICKOS_MIN_STACK_SIZE`,
-`KICKOS_ROOT_STACK_SIZE` for the init, the cores, `KICKOS_RAM_OWNER_SLOTS`,
+`KICKOS_ROOT_STACK_SIZE` for the init, the cores, the RAM owner table size,
 `KICKOS_ASPACE_RANGES`, and the `init` section's record sizes and free regions. On the
 CMake side: `kickos_add_driver` and its catalogue, `cmake/driver_geometry.cmake`, the manifest,
 `kickos_emit_image`, the x86_64 link rule, and the gate machinery of

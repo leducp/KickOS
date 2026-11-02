@@ -29,10 +29,10 @@ namespace
                   "active IPC pairs must fit the guest kernel cores");
     static_assert(REMOTE_PAIRS <= ACTIVE_PAIRS,
                   "remote IPC pairs must be a subset of active pairs");
-    static_assert(KICKOS_MAX_THREADS >= 2 * ACTIVE_PAIRS + 1,
-                  "main and two IPC peers per core must fit the thread pool");
-    static_assert(KICKOS_MAX_ENDPOINTS >= ACTIVE_PAIRS,
-                  "one independent endpoint per core must fit the endpoint pool");
+    static_assert(BENCH_MAIN_THREADS >= 2 * ACTIVE_PAIRS + 1,
+                  "main and two IPC peers per core must fit main's THREADS budget");
+    static_assert(KICKOS_BUDGET_ENDPOINTS >= ACTIVE_PAIRS,
+                  "one independent endpoint per core must fit main's ENDPOINTS budget");
 
     struct alignas(64) Pair
     {

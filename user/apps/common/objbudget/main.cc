@@ -6,12 +6,14 @@
 // allocation tests the reverse. A second task verifies that the shared pool
 // retains capacity beyond one task's budget. Self-test images only.
 
+#include <kickos/chip_limits.h> // KICKOS_CHIP_ONE_TASK
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 #include <kickos/sys/cap_index.h>
 #include <kickos/sys/errno.h>
 
 #include <kickos/apps/arm_count.h>
+#include <kickos/apps/peer_run.h>
 
 namespace
 {
@@ -22,26 +24,6 @@ namespace
     constexpr int HELD_MAX = 40;
     kos_cap_t held[HELD_MAX];
     int held_n = 0;
-
-    // THE CHILD ANSWERS DOWN AN ENDPOINT AND NOT THROUGH A GLOBAL. Its task holds an address
-    // space of its own on a translating board, so a global it writes is its own copy of the
-    // page and main reads the value it started with, which reads as a child that never ran.
-    // The endpoint is one MAIN already created and delegated SIGNAL-only, so the reporting
-    // channel costs the pool nothing and leaves main at its ceiling while the child creates.
-    // grants land at the child's kos::child_cap(0) .. kos::child_cap(cap_count - 1)
-    constexpr kos_cap_t REPLY_EP = KOS_SPAWN_DELEGATED_CAP0;
-
-    void child_creates_an_endpoint(void*)
-    {
-        kos_cap_t ep = KOS_CAP_NONE;
-        int rc = kos_endpoint_create(&ep);
-        if (rc == 0)
-        {
-            (void)kos_handle_close(ep);
-        }
-        (void)kos_send(REPLY_EP, &rc, sizeof(rc), KOS_TIMEOUT_NONE);
-        kos_exit(0);
-    }
 
     // Create endpoints until the kernel refuses, and answer the refusal.
     int fill_endpoints()
@@ -101,33 +83,80 @@ int main(int, char**)
     // --- 4: THE ITEM'S CLAIM. Another TASK's creator still lands --------------------
     // A task of its own and not a plain spawn: a plain spawn is a thread of THIS task and
     // would share this ceiling, so it could not tell a per-task bound from a global one.
-    kos_task_t group = KOS_TASK_NONE;
-    int const tk = kos_task_create(nullptr, 0, 0, &group);
-    harness.note_rc("task_create", tk);
+#if KICKOS_CHIP_ONE_TASK
+    harness.skip("a task at its ceiling does not deny another task's endpoint_create: this "
+                 "board holds one task");
+#else
     bool child_ok = false;
     int child_rc = 1;
-    if (tk == 0)
+    kos_program_t prog = KOS_CAP_NONE;
+    int const found = kos_program_find("objbudget_peer", &prog);
+    harness.note_rc("program_find", found);
+    if (found == 0)
     {
         kos_cap_grant caps[] = {
             { held[0], KOS_CAP_SIGNAL },
         };
-        auto const c = kos::thread::create_caps(child_creates_an_endpoint, nullptr, "objb", 10,
-                                                caps, 1, KOS_POLICY_FIFO, 0,
-                                                nullptr, 0,
-                                                KOS_AUTH_MEMORY, nullptr, group);
-        if (c.valid())
+        kos_task_params p = {};
+        p.caps = caps;
+        p.cap_count = 1;
+        kos_task_t t = KOS_TASK_NONE;
+        int const tk = kickos::apps::create_peer(prog, p, &t);
+        harness.note_rc("task_create", tk);
+        if (tk == 0)
         {
             struct kos_reply_recv_opts opts;
             kos_reply_recv_opts_init(&opts, held[0], KOS_RECV_NO_INFO, KOS_TIMEOUT_NONE);
             int32_t const got = kos_reply_recv(KOS_CAP_NONE, &child_rc,
                                                kos_call_lens_pack(0, sizeof(child_rc)), &opts);
-            (void)c.join(KOS_TIMEOUT_NONE);
+            int status = -1;
+            (void)kickos::apps::wait_dead(t, &status, 5000u);
             child_ok = got == static_cast<int32_t>(sizeof(child_rc)) and child_rc == 0;
         }
+        (void)kos_handle_close(prog);
         harness.note_rc("the child task's endpoint_create", child_rc);
     }
     harness.check(child_ok,
                   "a task at its ceiling does not deny another task's endpoint_create");
+#endif
+
+    // --- 6: a program's task is its own ------------------------------------------
+#if KICKOS_CHIP_ONE_TASK
+    harness.skip("a peer's statics start from its image at every create: this board holds one "
+                 "task");
+#else
+    {
+        kos_program_t peer_prog = KOS_CAP_NONE;
+        bool statics_ok = false;
+        if (kos_program_find("objbudget_peer", &peer_prog) == 0)
+        {
+            // Two creates of one instance: each starts from the image, so each counts one.
+            char const* const count_argv[] = {"peer", "count", nullptr};
+            kos_task_params cp = {};
+            cp.argv = count_argv;
+            int runs_ok = 0;
+            for (int i = 0; i < 2; i++)
+            {
+                kos_task_t t = KOS_TASK_NONE;
+                int status = -1;
+                if (kickos::apps::create_peer(peer_prog, cp, &t) == 0
+                    and kickos::apps::wait_dead(t, &status, 5000u) == 0 and status == 0)
+                {
+                    runs_ok = runs_ok + 1;
+                }
+            }
+            statics_ok = runs_ok == 2;
+            (void)kos_handle_close(peer_prog);
+        }
+#if KICKOS_ARCH_SIM
+        (void)statics_ok;
+        harness.skip("a peer's statics start from its image at every create: the sim starts a "
+                     "program's statics once");
+#else
+        harness.check(statics_ok, "a peer's statics start from its image at every create");
+#endif
+    }
+#endif
 
     // --- 5: the ceiling is PER POOL and not one budget across the kinds -------------
     // Still at the endpoint ceiling here. One shared count would refuse this too, and a
@@ -144,10 +173,5 @@ int main(int, char**)
     }
 
     release_all();
-    if (tk == 0)
-    {
-        (void)kos_task_slay(group, 0);
-    }
-
     return harness.verdict();
 }

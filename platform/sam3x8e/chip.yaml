@@ -16,11 +16,21 @@ exits_on_fault: false
 # A line is its peripheral's identifier.
 interrupts: { count: { value: 45, ref: "Table 9-1 Peripheral Identifiers, p.39" } }
 
+apertures:
+  - { window: [0x40000000, 0x20000000], ref: "Figure 7-1 SAM3X/A Product Mapping, Peripherals, p.31" }
+
 devices:
+  # Its PDC channel masters the bus from inside the window (Table 21-1 List of Bus Matrix
+  # Masters, p.323), as every PDC peripheral's does.
   uart:
     window: [0x400E0800, 0x140]
+    bus_master: true
     ref: "Figure 7-1 SAM3X/A Product Mapping, p.31"
     lines: { irq: { number: 8, ref: "Table 9-1 Peripheral Identifiers, p.38" } }
+  # The masters with no peripheral of their own (Table 21-1 List of Bus Matrix Masters, p.323).
+  dmac: { window: [0x400C4000, 0x4000], bus_master: true, ref: "Figure 7-1 SAM3X/A Product Mapping, p.31" }
+  uotghs: { window: [0x400AC000, 0x4000], bus_master: true, ref: "Figure 7-1 SAM3X/A Product Mapping, p.31" }
+  emac: { window: [0x400B0000, 0x4000], bus_master: true, ref: "Figure 7-1 SAM3X/A Product Mapping, p.31" }
   # Disabled at boot through its write-once mode register, then grantable.
   wdt: { window: [0x400E1A50, 0x10], ref: "Figure 7-1 SAM3X/A Product Mapping, p.31" }
 

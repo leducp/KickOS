@@ -302,16 +302,16 @@ int arch_console_write_retry(char const* buf, size_t n, bool* cr_pending)
     {
         return 0;
     }
-    // Masked as console_write_line_sync is, so a local ISR's output cannot land inside the
-    // line. Stops at the first byte the claim no longer covers: the count is what went out,
-    // and the rest is the caller's to offer again under a fresh claim.
-    arch_irq_state_t const irq = arch_irq_save();
+    // Stops at the first byte the claim no longer covers: the count is what went out, and the
+    // rest is the caller's to offer again under a fresh claim. Each byte is its own masked span:
+    // the kernel keeps this node's other contexts out of a line until it ends.
     bool const had_pending_cr = cr_pending != nullptr and *cr_pending;
-    size_t const landed = kickos::console_retry::write(
+    size_t const landed = kickos::console_retry::write_masked(
         buf, n, cr_pending, [](char c) { return console_put(c) == Put::STORED; });
     bool const ended_line = (landed != 0 and buf[landed - 1] == '\n') or
                             (had_pending_cr and cr_pending != nullptr and not *cr_pending and
                              landed == 0);
+    arch_irq_state_t const irq = arch_irq_save();
     kickos::rp2xxx::console_drop(ended_line);
     arch_irq_restore(irq);
     return static_cast<int>(landed);

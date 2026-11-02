@@ -85,9 +85,9 @@ namespace
     }
 }
 
-extern "C" void c6blink_main(kos_self_t const* self)
+int main(int, char**)
 {
-    kos_window_t const window = kos_grant_mmio(self, "/dev/gpio");
+    kos_window_t const window = kos_grant_mmio("/dev/gpio");
     uintptr_t const win = reinterpret_cast<uintptr_t>(kos_window_addr(window));
     if (win == 0u or kos_window_size(window) < WINDOW_BYTES)
     {

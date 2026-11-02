@@ -6,14 +6,14 @@
 
 #include <cstdio>
 
-static_assert(KICKOS_CAP_CHILD_WIDTH <= KICKOS_MAX_HANDLES,
+static_assert(KCAP_CHUNK_TARGET > KICKOS_CAP_FIRST_DYNAMIC,
               "the installed kickos/config/cap_width.h is the one the libraries were built "
               "with");
 
 // The one include compiling the installed kickos/board_config.h and the chip's headers.
 #include <kickos/config.h>
-#ifdef KICKOS_EXPECT_MAX_THREADS
-static_assert(KICKOS_MAX_THREADS == KICKOS_EXPECT_MAX_THREADS,
+#ifdef KICKOS_EXPECT_BUDGET_THREADS
+static_assert(KICKOS_BUDGET_THREADS == KICKOS_EXPECT_BUDGET_THREADS,
               "the installed provisioning is not the one the linked KickOS was built with");
 #endif
 #ifdef KICKOS_EXPECT_USER_STACK_SIZE

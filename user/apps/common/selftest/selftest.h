@@ -97,6 +97,13 @@ namespace selftest
         KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER;
     // A worker comment's `name@i` is its child_cap(i).
     using kos::child_cap;
+    // The capability-table width the calling task's threads take: its declaration's.
+    inline uint32_t table_width()
+    {
+        return kos_self()->cap_width;
+    }
+    // The most capabilities TableFill holds: a table past it is no selftest task's.
+    constexpr uint32_t TABLE_FILL_MAX = 32;
 
     // The semaphores main shares with a thread of another task. On a translating board they lie
     // in a granule main holds for the run, which the child reaches through the window
@@ -165,6 +172,103 @@ namespace selftest
         return state >= 0 and (state & KOS_TASK_ENDED) != 0;
     }
 
+    // --- stpeer ---------------------------------------------------------------------------
+    // The program of the instances peer0 to peer<KICKOS_SELFTEST_PEERS - 1>, the composition's
+    // `start: on_request` tasks, built from these sources with KICKOS_SELFTEST_PEER: its main
+    // runs the role argv[1] names, a function of the file whose arm starts it, and its exit
+    // status is the task's. The arm passes the objects and the block its role uses in its
+    // kos_task_params, and any word in argv (peer_hex).
+    constexpr int PEER_WHAT = 23; // no file carries the role argv[1] names
+    // The instances a composition declares at most, and their ceiling.
+    constexpr int SELFTEST_PEERS = 4;
+    constexpr uint8_t PEER_CEILING = 12;
+    // The authority a thread creating a peer holds: every bit the declarations name.
+    constexpr uint32_t PEER_CREATOR = KOS_AUTH_MEMORY | KOS_AUTH_TASKS | KOS_AUTH_IRQ;
+    static_assert(KICKOS_SELFTEST_PEERS >= 0 and KICKOS_SELFTEST_PEERS <= SELFTEST_PEERS);
+    // The handle main holds on stpeer for the run, or KOS_CAP_NONE where no peer is declared.
+    extern KICKOS_SELFTEST_LOCAL kos_program_t g_peer_prog;
+    // Starts the lowest-numbered of peer0 to peer3 not live with `p` through `prog`, waiting out
+    // one whose last incarnation is still dying instead of passing it, or p.instance, or for a
+    // program declaring no peer0 its lowest-numbered instance not live; the create's answer,
+    // -KOS_EBUSY where every peer is live, with *t. A handle is a thread's own: a thread other
+    // than main's finds its own.
+    KICKOS_SELFTEST_LOCAL int peer_start(kos_task_params const& p, kos_task_t* t,
+                                         kos_program_t prog = g_peer_prog);
+    // The task's end status once it is dead, or PEER_UNDEAD past `bound_us`.
+    constexpr int PEER_UNDEAD = -1000;
+    KICKOS_SELFTEST_LOCAL int peer_dead_status(kos_task_t t, uint32_t bound_us = STALL_TOLERANT_US);
+    // A word as argv carries it: lowercase hexadecimal, NUL-terminated.
+    struct PeerHex
+    {
+        char s[2 * sizeof(uintptr_t) + 1];
+    };
+    KICKOS_SELFTEST_LOCAL PeerHex peer_hex(uintptr_t v);
+    KICKOS_SELFTEST_LOCAL uintptr_t peer_word(char const* s);
+    KICKOS_SELFTEST_LOCAL bool peer_is(char const* got, char const* want);
+    // An arm's start of a peer: argv { "peer", role, args... } and the parameters it sets. Each
+    // string is read at start().
+    struct PeerRun
+    {
+        explicit PeerRun(char const* role, char const* a0 = nullptr, char const* a1 = nullptr,
+                         char const* a2 = nullptr)
+            : argv{"peer", role, a0, a1, a2, nullptr}
+        {
+        }
+        PeerRun& caps(kos_cap_grant const* c, uint8_t n)
+        {
+            p.caps = c;
+            p.cap_count = n;
+            return *this;
+        }
+        PeerRun& windows(kos_window const* w, uint16_t n)
+        {
+            p.windows = w;
+            p.window_count = n;
+            return *this;
+        }
+        PeerRun& block(void* b, uint32_t size, uint32_t flags = 0)
+        {
+            p.block = b;
+            p.size = size;
+            p.flags = flags;
+            return *this;
+        }
+        PeerRun& stack(void* base, uint32_t size)
+        {
+            p.stack = base;
+            p.stack_size = size;
+            return *this;
+        }
+        int start(kos_task_t* t, kos_program_t prog = g_peer_prog)
+        {
+            p.argv = argv;
+            return peer_start(p, t, prog);
+        }
+        char const* argv[6];
+        kos_task_params p{};
+    };
+#if KICKOS_SELFTEST_PEER
+    // The entry of a peer as the arm's spawn of its worker ran it: at `prio`, on `core_mask`
+    // (0: the declaration's cores).
+    KICKOS_SELFTEST_LOCAL void peer_seat(uint8_t prio, uint32_t core_mask = 0);
+    // Binds the notification at `n` and waits until it is raised.
+    KICKOS_SELFTEST_LOCAL void peer_park(kos_cap_t n);
+    // Each file's roles: the exit status of the one argv[1] names, or PEER_WHAT.
+    KICKOS_SELFTEST_LOCAL int peer_roles_word(int argc, char** argv);
+#if KICKOS_HAVE_ASPACE && KICKOS_FAULT_ISOLATION && defined(__x86_64__) && not KICKOS_ARCH_SIM
+    KICKOS_SELFTEST_LOCAL int peer_roles_vector(int argc, char** argv);
+#endif
+#if KICKOS_AMP_NODE
+    KICKOS_SELFTEST_LOCAL int peer_roles_amp(int argc, char** argv);
+#endif
+#if KICKOS_KERNEL_CORES > 1
+    KICKOS_SELFTEST_LOCAL int peer_roles_smp(int argc, char** argv);
+#endif
+#if KICKOS_HAVE_ASPACE
+    KICKOS_SELFTEST_LOCAL int peer_roles_aspace(int argc, char** argv);
+#endif
+#endif
+
     // A thread handling a line does not migrate: above one kernel core a claim, and a wait, ack
     // or discard on a claimed line, is refused to a thread whose mask is not exactly the claim
     // core. irq_spawn makes such a thread pinned to TAP_PIN_CORE, and TAP_ADD_IRQ runs an arm
@@ -175,14 +279,11 @@ namespace selftest
     inline kos::thread::Handle irq_spawn(void (*entry)(void*), void* arg, char const* name,
                                          uint8_t prio, kos_cap_grant const* caps, uint8_t count,
                                          uint8_t policy = KOS_POLICY_FIFO,
-                                         uint32_t quantum_ns = 0,
-                                         void* mem = nullptr, uint32_t mem_size = 0,
-                                         uint32_t authority = 0,
+                                         uint32_t quantum_ns = 0, uint32_t authority = 0,
                                          uint16_t const* cap_dest = nullptr)
     {
         return kos::thread::create_caps(entry, arg, name, prio, caps, count, policy, quantum_ns,
-                                        mem, mem_size, authority, cap_dest,
-                                        KOS_TASK_NONE, nullptr, 0, TAP_PIN_CORE);
+                                        authority, cap_dest, nullptr, 0, TAP_PIN_CORE);
     }
 
     template <void (*Arm)()>
@@ -374,6 +475,10 @@ namespace selftest
     // readied meanwhile. An absence check after it holds only for threads above that floor.
     // False when a priority change was refused.
     KICKOS_SELFTEST_LOCAL bool others_parked();
+    // Seats main at `prio`: a thread or task main creates below it runs only once main parks or
+    // main_back gives main its own priority again. False when the change was refused.
+    KICKOS_SELFTEST_LOCAL bool main_above(uint8_t prio);
+    KICKOS_SELFTEST_LOCAL bool main_back();
     // Joins *h within `bound_us` and slays it past that; answers the join. The handle is dropped
     // once the thread is gone, and kept for the arm's ArmHold after a refused slay, which fails
     // the arm.
@@ -400,6 +505,8 @@ namespace selftest
         int caps = 0;
         int irqs = 0;
         int irq_line = -1;
+        // Threads each task the arm creates spawns beside its entry, which sizes the peers.
+        int peer_workers = 0;
     };
     // Everything probed is given back except the line, which is handed over in *line: a line
     // given back is still retiring at its next claim. True once the arm is skipped, naming the
@@ -674,6 +781,7 @@ namespace selftest
     inline constexpr RamAsk FI_RAM = {24u};
     inline constexpr RamAsk TS_RAM = {32u};
     inline constexpr RamAsk DS_RAM = {24u};
+    inline constexpr RamAsk IF_RAM = {80u};
     KICKOS_SELFTEST_LOCAL void t_cap_map();
     KICKOS_SELFTEST_LOCAL void t_stack_slot_returns();
     KICKOS_SELFTEST_LOCAL void t_cap_map_over_stack();
@@ -694,7 +802,7 @@ namespace selftest
     KICKOS_SELFTEST_LOCAL void t_task_handoff_donor_exits();
     KICKOS_SELFTEST_LOCAL void t_reservation_teardown();
     KICKOS_SELFTEST_LOCAL void t_frame_scrub_cross_task();
-    KICKOS_SELFTEST_LOCAL void t_spawn_refusal_frees_task();
+    KICKOS_SELFTEST_LOCAL void t_spawn_budget_spares_a_create();
     KICKOS_SELFTEST_LOCAL void t_spawn_refusal_frees_donor();
     KICKOS_SELFTEST_LOCAL void t_parked_frame_hostile();
     KICKOS_SELFTEST_LOCAL void t_process_ipc_same_addr();
@@ -713,11 +821,17 @@ namespace selftest
     KICKOS_SELFTEST_LOCAL void t_frame_run_slot_recycle();
     KICKOS_SELFTEST_LOCAL void t_call_reply_undisclosed();
     KICKOS_SELFTEST_LOCAL void t_process_data_from_image();
+    KICKOS_SELFTEST_LOCAL void t_image_foreign_unmapped();
+    // peer0's half of t_image_foreign_unmapped, which its argv names.
+    KICKOS_SELFTEST_LOCAL void peer_foreign(char const* block_hex);
     KICKOS_SELFTEST_LOCAL void t_task_start_once();
 #if KICKOS_FAULT_ISOLATION
     KICKOS_SELFTEST_LOCAL void t_task_start_dead_starter();
 #endif
     KICKOS_SELFTEST_LOCAL void t_app_pointers_relocated();
+#if defined(__x86_64__)
+    KICKOS_SELFTEST_LOCAL void t_image_fixed_base();
+#endif
 #endif
 
     // selftest_word.cc
@@ -751,7 +865,6 @@ namespace selftest
     KICKOS_SELFTEST_LOCAL void t_amp_port_seating();
     KICKOS_SELFTEST_LOCAL void t_amp_port_unnamed();
     KICKOS_SELFTEST_LOCAL void t_amp_crossing_task_local();
-    KICKOS_SELFTEST_LOCAL void t_amp_local_port_slot_held();
 #if KICKOS_AMP_OWN_IMAGE
     KICKOS_SELFTEST_LOCAL void t_amp_share_crossing();
 #if KICKOS_HAVE_ASPACE
@@ -777,10 +890,6 @@ namespace selftest
     KICKOS_SELFTEST_LOCAL void t_prio_self_lower_moves_waiter();
     KICKOS_SELFTEST_LOCAL void t_pin_cross_task_refused();
     KICKOS_SELFTEST_LOCAL void t_grant_narrows();
-    KICKOS_SELFTEST_LOCAL void t_grant_second_narrow_only();
-    KICKOS_SELFTEST_LOCAL void t_grant_inherited_by_child_task();
-    KICKOS_SELFTEST_LOCAL void t_grant_after_member_refused();
-    KICKOS_SELFTEST_LOCAL void t_isolated_single_grant_ok();
     KICKOS_SELFTEST_LOCAL void t_affinity_dead_handle_refused();
     KICKOS_SELFTEST_LOCAL void t_isolated_unpinned_never();
     KICKOS_SELFTEST_LOCAL void t_isolated_unpin_excludes();

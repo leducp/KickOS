@@ -13,11 +13,21 @@ tasks:
     driver: simcon
     serves: /svc/console
     priority: 12
+    # Under the window knobs the driver's start spawns a window thread its descriptor does not
+    # list.
+    budgets: { threads: 3 }
 
   - name: main
-    entry: drvdeath_main
+    program: drvdeath
     priority: 2
     ceiling: 10
     uses: [/svc/console]
     watches: [simcon]
     authority: [memory, system, tasks]
+
+  # Started by main once the driver's receiver is gone; it faults at once.
+  - name: dfault
+    program: drvdeath_fault
+    priority: 9
+    ceiling: 9
+    start: on_request

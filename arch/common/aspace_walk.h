@@ -27,10 +27,13 @@ namespace
     {
         // Some core may hold translations of the space, the caller's included.
         bool resident;
-        // The other cores that may, sampled before the first store.
-        uint32_t peers;
         // A removed leaf owes the peers more than the translation maintenance.
         bool owed;
+        // The other cores that may hold them, sampled before the first store.
+        uint32_t peers;
+        // The tables linked less the tables given back, modulo 2^32, which the caller adds to
+        // the space's count.
+        uint32_t tables;
         // The first table taken out of the tree and not yet given back, or 0.
         arch_phys_addr_t detached;
     };
@@ -131,6 +134,63 @@ namespace
         return walk_leaf(root, va, &larger);
     }
 
+    // The pages [va, va + pages) spans under the entry at `height` holding `va`.
+    size_t pages_under(uintptr_t va, int height, size_t pages)
+    {
+        uintptr_t const span = span_at(height);
+        size_t here = static_cast<size_t>((((va + span) & ~(span - 1)) - va) / GRANULE);
+        if (here > pages)
+        {
+            here = pages;
+        }
+        return here;
+    }
+
+    // The table under `root`, at height `top`, whose entries at `height` hold `va`, or null
+    // where the walk meets no table on the way.
+    uint64_t const* table_holding(uint64_t const* root, int top, uintptr_t va, int height)
+    {
+        uint64_t const* table = root;
+        for (int h = top; h > height; h--)
+        {
+            uint64_t const desc = table[index_at(va, h)];
+            if ((desc & ENTRY_VALID) == 0 or not entry_table(desc, h))
+            {
+                return nullptr;
+            }
+            table = table_at(entry_pa(desc));
+        }
+        return table;
+    }
+
+    // The tables map_into would add under `root`, at height `top`, for [va, va + pages): at each
+    // height, one per entry the range spans that names no table yet. Iterative: the stack
+    // gates refuse recursion.
+    size_t tables_needed(uint64_t const* root, int top, uintptr_t va, size_t pages)
+    {
+        if (pages == 0)
+        {
+            return 0;
+        }
+        uintptr_t const last = va + static_cast<uintptr_t>(pages - 1u) * GRANULE;
+        size_t n = 0;
+        for (int h = top; h > 0; h--)
+        {
+            unsigned const shift = GRANULE_SHIFT + static_cast<unsigned>(h) * INDEX_BITS;
+            uintptr_t const chunks = (last >> shift) - (va >> shift) + 1u;
+            for (uintptr_t i = 0; i < chunks; i++)
+            {
+                uintptr_t const at = ((va >> shift) + i) << shift;
+                uint64_t const* const table = table_holding(root, top, at, h);
+                if (table == nullptr or (table[index_at(at, h)] & ENTRY_VALID) == 0)
+                {
+                    n++;
+                }
+            }
+        }
+        return n;
+    }
+
     // Frees every table under `table` and every output it names. Kept root slots stay.
     void free_subtree(uint64_t* table, int height, bool root)
     {
@@ -190,13 +250,9 @@ namespace
                 }
                 zero_table(table_at(frame));
                 link_table(&table[idx], frame, e);
+                e.tables = e.tables + 1u;
             }
-            uintptr_t const span = span_at(height);
-            size_t here = static_cast<size_t>((((va + span) & ~(span - 1)) - va) / GRANULE);
-            if (here > pages)
-            {
-                here = pages;
-            }
+            size_t const here = pages_under(va, height, pages);
             enum arch_aspace_result const rc =
                 map_into(table_at(entry_pa(table[idx])), height - 1, va, here, pa, attrs, e);
             if (rc != ARCH_ASPACE_OK)
@@ -277,13 +333,14 @@ namespace
             arch_phys_addr_t const table = e.detached;
             e.detached = table_at(table)[0];
             kickos_frame_free(table);
+            e.tables = e.tables - 1u;
         }
     }
 
     // Refuses a range a larger leaf covers, and one partly mapped, before any edit: an unwind
     // removes only leaves this call installed. A wholly mapped range is a remap.
     enum arch_aspace_result walk_map(uint64_t* root, uintptr_t va, arch_phys_addr_t pa,
-                                     size_t pages, uint64_t attrs, Edit e)
+                                     size_t pages, uint64_t attrs, Edit& e)
     {
         size_t mapped = 0;
         for (size_t i = 0; i < pages; i++)
@@ -312,7 +369,7 @@ namespace
         return ARCH_ASPACE_OK;
     }
 
-    enum arch_aspace_result walk_unmap(uint64_t* root, uintptr_t va, size_t pages, Edit e)
+    enum arch_aspace_result walk_unmap(uint64_t* root, uintptr_t va, size_t pages, Edit& e)
     {
         for (size_t i = 0; i < pages; i++)
         {

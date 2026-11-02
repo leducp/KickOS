@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Test per-thread errno across blocking switches, slot reuse, IPC fastpath,
+// Test per-thread errno across blocking switches, stack reuse, IPC fastpath,
 // and timer preemption. Use newlib strtol errors (ERANGE/EINVAL), not direct
 // assignments, to test libc state selection. Synchronize peers explicitly
 // and check required scheduling states. Also test that an exiting thread
@@ -70,66 +70,12 @@ namespace
     }
 
     // uintptr_t and not unsigned: on a 64-bit target a truncated address can make two
-    // distinct slots compare EQUAL, and arm B reads that equality as "the slot was not
+    // distinct states compare EQUAL, and arm B reads that equality as "the stack was
     // reused" and suppresses its own fault.
     uintptr_t errno_addr()
     {
         return reinterpret_cast<uintptr_t>(&errno);
     }
-
-#if defined(__x86_64__) && !KICKOS_ARCH_SIM
-    // --- arm F: libc on a core's first thread, before any switch ------------------------
-    // Root is a core's first thread, entered by arch_start with no switch, so only the FS base
-    // that path wrote can hand libc this thread's state. The app's constructors run on root
-    // before the init it then runs switches anything in, so the arm is one: strtok and strtol
-    // out of newlib, then which core entered root. Root prints the line itself: main's space
-    // starts from the image and runs these constructors again, on a thread a switch entered.
-    // Not excluded: an interrupt switching root out and back in before the reads.
-    __attribute__((constructor)) void arm_first_thread()
-    {
-        char buf[] = "kick os";
-        char const* const t0 = strtok(buf, " ");
-        char const* const t1 = strtok(nullptr, " ");
-        errno = 0;
-        char* end = nullptr;
-        (void)strtol("99999999999999999999999999", &end, 10);
-        int const e = errno;
-        struct _reent* const r = __getreent();
-        uintptr_t fs0 = 0;
-        __asm__ volatile("movq %%fs:0, %0" : "=r"(fs0));
-        int const core = kos_core_current();
-
-        char const* verdict = "ok";
-        if (t0 == nullptr or t1 == nullptr or strcmp(t0, "kick") != 0 or strcmp(t1, "os") != 0)
-        {
-            verdict = "STRTOK LOST ITS PLACE";
-        }
-        else if (e != ERANGE)
-        {
-            verdict = "STRTOL DID NOT SET ERRNO";
-        }
-        else if (reinterpret_cast<uintptr_t>(r) != fs0)
-        {
-            verdict = "__getreent IS NOT THE FS CELL'S WORD";
-        }
-        else if (r == _GLOBAL_REENT)
-        {
-            verdict = "LIBC RAN ON THE PROCESS-WIDE STATE";
-        }
-        else if (core < 0)
-        {
-            verdict = "THE CORE IS UNREADABLE";
-        }
-        // Root's handle is the bare 0: slot 0, generation 0, never reclaimed.
-        if (kos_thread_self() != 0)
-        {
-            return;
-        }
-        char line[96];
-        ksnprintf(line, sizeof(line), "[errnoprobe] F first core %d %s\n", core, verdict);
-        kos::print(line);
-    }
-#endif
 
     // --- arm A: a cooperative round trip that crossed a peer's write -------------------
 
@@ -172,7 +118,7 @@ namespace
         g_report[k].after_trip = errno;
         g_report[k].trips = trips;
         g_report[k].done = 1;
-        // Returning frees the slot, which is what arm B goes on to reuse.
+        // Returning frees the slot and the stack, which arm B goes on to reuse.
     }
 
     void arm_cooperative()
@@ -259,12 +205,11 @@ namespace
         }
     }
 
-    // --- arm B: a slot handed on to a new thread ---------------------------------------
+    // --- arm B: a stack handed on to a new thread --------------------------------------
     //
-    // The struct _reent array is indexed by THREAD SLOT, not by thread, so a slot's state
-    // outlives its occupant. ThreadPool::alloc hands out the lowest EXITED slot, so joining
-    // the first worker makes the second one land on the same index by construction; the arm
-    // asserts they did, or it would pass vacuously on a pool that never reused anything.
+    // A thread's struct _reent is the base of its stack, so the bytes outlive their occupant.
+    // Joining the first worker frees its stack, which the second one's spawn is handed again;
+    // the arm asserts it was, or it would pass vacuously on an arena that reused nothing.
 
     struct Reuse
     {
@@ -296,8 +241,8 @@ namespace
                 fault("[errnoprobe] B SPAWN FAILED\n");
                 return;
             }
-            // Joining is what frees the slot, and freeing it is the whole arm: without the
-            // join the second thread takes a fresh slot and witnesses nothing.
+            // Joining is what frees the stack, and freeing it is the whole arm: without the
+            // join the second thread takes a fresh stack and witnesses nothing.
             (void)h.join();
         }
 
@@ -327,7 +272,7 @@ namespace
         }
         if (g_reuse[0].addr != g_reuse[1].addr)
         {
-            fault("[errnoprobe] B THE SLOT WAS NOT REUSED, so this arm proves nothing\n");
+            fault("[errnoprobe] B THE STACK WAS NOT REUSED, so this arm proves nothing\n");
         }
     }
 

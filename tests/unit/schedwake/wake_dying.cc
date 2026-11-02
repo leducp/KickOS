@@ -308,9 +308,9 @@ TEST_F(SchedWake, a_wake_before_the_first_pick_does_not_switch)
     EXPECT_EQ(g_switches, 0u) << "a pre-start wake does not switch";
 }
 
-// EXITED is the ThreadPool's free marker (thread.h): the slot is reclaimable because the state
-// says so, and nothing else records it, so readying an exited thread does not merely resurrect
-// it, it takes the slot out of the pool with no way back.
+// EXITED is the ThreadPool's free marker (thread.h): a retired slot is listed reclaimable, so
+// readying an exited thread does not merely resurrect it, it runs a thread whose slot the next
+// claim hands to another.
 TEST_F(SchedWake, an_exited_thread_is_not_woken_and_its_slot_stays_free)
 {
     Thread* c = running_thread();
@@ -318,7 +318,7 @@ TEST_F(SchedWake, an_exited_thread_is_not_woken_and_its_slot_stays_free)
     // free-marker claim below would be about the retirement instead.
     Thread* dead = seat_pool(1, PRIO_DYING + 1);
     policy_on_remove(dead);
-    dead->state.to<ThreadState::EXITED>();
+    kernel().threads.retire(dead);
 
     {
         IrqLock lock;
@@ -329,7 +329,7 @@ TEST_F(SchedWake, an_exited_thread_is_not_woken_and_its_slot_stays_free)
     EXPECT_EQ(kernel().ready_bitmap[0] & (1u << dead->prio), 0u) << "and no ready list holds it";
     EXPECT_EQ(g_switches, 0u) << "nothing switched to it";
     EXPECT_EQ(kernel().current(kickos_kernel_core()), c) << "current is unchanged";
-    EXPECT_EQ(kernel().threads.alloc(), 1) << "the pool still reads the slot as free";
+    EXPECT_EQ(kernel().threads.alloc(nullptr), 1) << "the pool still reads the slot as free";
 }
 
 // The guard compares the effective priority: a dying thread routinely carries a
@@ -517,7 +517,7 @@ TEST_F(SchedWake, a_sender_is_not_epiped_while_another_receiver_holds_the_endpoi
     int const ep_handle = kernel().endpoints.handle_for(kernel().endpoints.index_of(ep));
     endpoint_server_set(ep, c);
     ep->recv_holders = 2; // a live peer still holds a WAIT cap on this endpoint
-    kernel().endpoint_refs[kernel().endpoints.index_of(ep)] = 2;
+    kernel().endpoints.refs()[kernel().endpoints.index_of(ep)] = 2;
     cap_install_at(c, KICKOS_CAP_FIRST_DYNAMIC, ep_handle, CapType::CAP_ENDPOINT, CAP_WAIT, KCAP_BADGE_NONE);
     park_plain_sender(sender, ep);
     g_switches = 0;

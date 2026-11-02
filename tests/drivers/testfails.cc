@@ -23,9 +23,9 @@ namespace
 
 extern "C" int testfails_start(struct kos_driver_instance* instance)
 {
-    // The init's thread parks on the core its watcher shares, the declared one or the only one,
-    // and resumes only once nothing above the init's priority is ready there: the watcher has
-    // read the attempt before this one and waits again. Any length of park orders it.
+    // The entry thread parks on the core its watcher shares, the declared one or the only one,
+    // and resumes only once nothing above its priority is ready there: the watcher has read the
+    // attempt before this one and waits again. Any length of park orders it.
     bool pinned = false;
     if (instance->core_mask != 0u)
     {

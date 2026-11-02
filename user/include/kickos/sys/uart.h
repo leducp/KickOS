@@ -31,7 +31,11 @@ enum kos_uart_op
     // Set write policy for the UNFRAMED console arm, from kos_uart_flags. Refused with
     // -KOS_ENOSYS by a service that has no unframed arm, so a mode can never be accepted
     // and then not applied.
-    KOS_UART_SET_MODE = 4
+    KOS_UART_SET_MODE = 4,
+    // Wait until every byte the service took before this request has left the device, as far as
+    // the device can tell, bounded inside the service: status 0 once drained, -KOS_EBUSY where
+    // the bound expired first.
+    KOS_UART_DRAIN = 5
 };
 
 // Frame format for KOS_UART_CONFIGURE. Chip-neutral by SHAPE: the driver maps these onto

@@ -222,65 +222,88 @@ extern "C" bool kickos_fault_kill_thread(void* frame)
     return true;
 }
 
+namespace
+{
+    // noinline: its locals stay off the frame exit_current descends from.
+    __attribute__((noinline)) void fault_record_print(::kickos::Thread const* c)
+    {
+        char const* who = "?";
+        if (c != nullptr)
+        {
+            who = c->name;
+        }
+        // Read before the first line: a line can wait for the console, and another thread's
+        // fault on this core rewrites the record meanwhile. uint64_t is `unsigned long` on a
+        // 64-bit target and `unsigned long long` on a 32-bit one, so the cast is what keeps ONE
+        // format string -Wformat-clean on both.
+        FaultRecord& r = fault_record();
+        bool const lost = r.valid and r.owner != c;
+        bool const owned = r.valid and r.owner == c;
+        char const* const status_name = r.status_name;
+        unsigned long long const status = static_cast<unsigned long long>(r.status);
+        void* const pc = reinterpret_cast<void*>(r.pc);
+        void* const addr = reinterpret_cast<void*>(r.addr);
+        bool const addr_valid = r.addr_valid;
+#if KICKOS_HAVE_STACK_LIMIT
+        bool const pc_valid = r.pc_valid;
+#endif
+        if (owned)
+        {
+            // Consumed, so a later kill that somehow reaches here without a fresh capture
+            // prints nothing rather than this fault's PC.
+            r.valid = false;
+        }
+        // kprintf_record, not kprintf: a published console DROPS the kernel chip path, and this
+        // record is the one line naming the dead thread on the boards whose composition carries
+        // a console driver.
+        ::kickos::kprintf_record(KDIAG_F_THREAD_FAULT, who);
+        if (lost)
+        {
+            // Left valid: the record belongs to a thread whose own stub has not run yet.
+            ::kickos::kprintf_record(KDIAG_F_FAULT_PC_LOST);
+            return;
+        }
+        if (not owned)
+        {
+            return;
+        }
+#if KICKOS_HAVE_STACK_LIMIT
+        if (not pc_valid)
+        {
+            ::kickos::kprintf_record(KDIAG_F_FAULT_NO_PC, status_name, status);
+        }
+        else if (status_name == nullptr)
+#else
+        if (status_name == nullptr)
+#endif
+        {
+            // status_name is null on v6-M, whose profile supplies the PC alone.
+            ::kickos::kprintf_record(KDIAG_F_FAULT_PC, pc);
+        }
+        else
+        {
+            ::kickos::kprintf_record(KDIAG_F_FAULT_PC_STAT, pc, status_name, status);
+        }
+        if (addr_valid)
+        {
+            ::kickos::kprintf_record(KDIAG_F_FAULT_ADDR, addr);
+        }
+    }
+}
+
 extern "C" void kickos_thread_fault_exit(void)
 {
     ::kickos::Thread* const c = ::kickos::sched::current();
 #if KICKOS_WITNESS_UACCESS
     ::kickos::witness_uaccess_fault_exit(c);
 #endif
-    char const* who = "?";
-    if (c != nullptr)
-    {
-        who = c->name;
 #if KICKOS_KERNEL_STACKS
-        // The stub completes the death on any stack, so this is the only witness that it runs
-        // where a domain sibling cannot rewrite its frames.
-        KICKOS_ASSERT(c->ctx.kernel_sp == 0
-                      or kickos_fault_frame_on_kernel_stack(__builtin_stack_address(), 0));
+    // The stub completes the death on any stack, so this is the only witness that it runs
+    // where a domain sibling cannot rewrite its frames.
+    KICKOS_ASSERT(c == nullptr or c->ctx.kernel_sp == 0
+                  or kickos_fault_frame_on_kernel_stack(__builtin_stack_address(), 0));
 #endif
-    }
-    // kprintf_fault, not kprintf: a published console DROPS the kernel chip path, and this
-    // record is the one line naming the dead thread on the boards whose composition carries a
-    // console driver.
-    ::kickos::kprintf_fault(KDIAG_F_THREAD_FAULT, who);
-    FaultRecord& r = fault_record();
-    if (r.valid and r.owner != c)
-    {
-        // Left valid: the record belongs to a thread whose own stub has not run yet.
-        ::kickos::kprintf_fault(KDIAG_F_FAULT_PC_LOST);
-    }
-    else if (r.valid)
-    {
-        // Consumed, so a later kill that somehow reaches here without a fresh capture
-        // prints nothing rather than this fault's PC.
-        r.valid = false;
-#if KICKOS_HAVE_STACK_LIMIT
-        if (not r.pc_valid)
-        {
-            ::kickos::kprintf_fault(KDIAG_F_FAULT_NO_PC, r.status_name,
-                                    static_cast<unsigned long long>(r.status));
-        }
-        else if (r.status_name == nullptr)
-#else
-        if (r.status_name == nullptr)
-#endif
-        {
-            // status_name is null on v6-M, whose profile supplies the PC alone.
-            ::kickos::kprintf_fault(KDIAG_F_FAULT_PC, reinterpret_cast<void*>(r.pc));
-        }
-        else
-        {
-            // uint64_t is `unsigned long` on a 64-bit target and `unsigned long long` on a
-            // 32-bit one, so the cast is what keeps ONE format string -Wformat-clean on both.
-            ::kickos::kprintf_fault(KDIAG_F_FAULT_PC_STAT, reinterpret_cast<void*>(r.pc),
-                                    r.status_name,
-                                    static_cast<unsigned long long>(r.status));
-        }
-        if (r.addr_valid)
-        {
-            ::kickos::kprintf_fault(KDIAG_F_FAULT_ADDR, reinterpret_cast<void*>(r.addr));
-        }
-    }
+    fault_record_print(c);
     ::kickos::krecord_end();
     ::kickos::sched::exit_current(KOS_EXIT_FAULT, ::kickos::sched::EXIT_FAULTED);
 }

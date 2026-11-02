@@ -1,0 +1,92 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# main and one peer program, each declaration running the role main or its name gives it, under
+# the budgets budgetwit.h states. On core 0, so a sweeper's members stay below every other task
+# here on the core they run on; the pager on any core, so its racers run at once where the
+# machine has two.
+
+version: 1
+stdout: kernel
+ends: main
+heap: 0
+
+tasks:
+  - name: main
+    program: budgetwit
+    priority: 14
+    ceiling: 31
+    core: 0
+    serves: /svc/report
+    authority: [memory, system, tasks]
+    budgets: { threads: 2 }
+
+  - name: server
+    program: budgetwit_peer
+    priority: 11
+    ceiling: 11
+    core: 0
+    uses: [/svc/report]
+    restart: { max: 1 }
+    budgets: { threads: 1, endpoints: 2 }
+
+  - name: hog
+    program: budgetwit_peer
+    priority: 11
+    ceiling: 11
+    core: 0
+    start: on_request
+    budgets: { threads: 4, endpoints: 3 }
+
+  - name: sibling
+    program: budgetwit_peer
+    priority: 11
+    ceiling: 11
+    core: 0
+    start: on_request
+    budgets: { threads: 4 }
+
+  - name: sweeper
+    program: budgetwit_peer
+    priority: 12
+    ceiling: 12
+    core: 0
+    start: on_request
+    # Its report and shared endpoints, and the wake endpoint of each child paused in its sweep
+    # and of the next.
+    budgets: { threads: 3, endpoints: 5 }
+
+  - name: widths
+    program: budgetwit_peer
+    priority: 11
+    ceiling: 11
+    core: 0
+    start: on_request
+    budgets: { threads: 6, notifications: 6 }
+    caps: { width: 8, slots: 48 }
+
+  - name: ram
+    program: budgetwit_peer
+    priority: 11
+    ceiling: 11
+    core: 0
+    start: on_request
+    authority: [memory]
+    budgets: { threads: 1, ram_bytes: 16384, ram_blocks: 3 }
+
+  - name: relaunch
+    program: budgetwit_peer
+    priority: 11
+    ceiling: 11
+    core: 0
+    start: on_request
+    authority: [memory]
+    budgets: { threads: 1, ram_bytes: 0x8000, ram_blocks: 2 }
+
+  - name: pager
+    program: budgetwit_peer
+    priority: 11
+    ceiling: 12
+    start: on_request
+    authority: [memory]
+    budgets: { threads: 3, pages: 128, frame_runs: 4 }

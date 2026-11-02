@@ -642,7 +642,12 @@ tool_out "$TMP/appdefs" '' awk -F'\t' '$4 == "object"' "$TMP/defs"
 napp=$(wc -l < "$TMP/appdefs" | tr -d ' ')
 
 # --- map: which archive members entered the link -----------------------------
-map_included "$MAP" "$TMP/included"
+# The image's own link took the user side's members, the final link the kernel's.
+image_map_set "$MAP" "$TMP/maps"
+while IFS= read -r _m; do
+    cat "$_m"
+done < "$TMP/maps" > "$TMP/all.map"
+map_included "$TMP/all.map" "$TMP/included"
 
 # --- the names the link asked for --------------------------------------------
 : > "$TMP/refs"
@@ -661,7 +666,7 @@ app_reach_scan "$TMP/obj_refs" "$TMP/class_syms" "$TMP/findreach"
 while IFS= read -r _msg; do
     bad "$_msg"
 done < "$TMP/findreach"
-map_undefined "$MAP" "$TMP/refs"
+map_undefined "$TMP/all.map" "$TMP/refs"
 sort -u "$TMP/refs" -o "$TMP/refs"
 require_nonempty "$TMP/refs" "no link-line object or included member refers to any name; the
       referenced-name inventory read nothing, so leg 2 would check nothing"

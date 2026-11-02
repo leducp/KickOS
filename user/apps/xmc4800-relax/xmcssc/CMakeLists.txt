@@ -11,6 +11,18 @@ kickos_app_system(xmcssc COMPOSITION systems/proxy.yaml)
 kickos_emit_image(xmcssc)
 kickos_app_judge(xmcssc tests/integration/check_xmcssc.sh)
 
+# Two clients of the packaged service on a device slot each, the second refused the first's: the
+# holder is the image xmcssc_slots, the intruder the program xmcssc_slots_intruder.
+add_executable(xmcssc_slots slots.cc)
+add_executable(xmcssc_slots_intruder slots_intruder.cc)
+foreach(_t xmcssc_slots xmcssc_slots_intruder)
+  target_include_directories(${_t} PRIVATE "${PROJECT_SOURCE_DIR}/user/apps/common/include")
+endforeach()
+target_link_libraries(xmcssc_slots_intruder PRIVATE kickos)
+kickos_app_system(xmcssc_slots COMPOSITION systems/slots.yaml)
+kickos_emit_image(xmcssc_slots)
+kickos_app_judge(xmcssc_slots tests/integration/check_spi_slots.sh ARGS xmcslots)
+
 add_executable(xmcssc_local main.cc)
 target_compile_definitions(xmcssc_local PRIVATE XMCSSC_LOCAL=1)
 target_link_libraries(xmcssc_local PRIVATE KickOS::kickos_spi_xmcssc)

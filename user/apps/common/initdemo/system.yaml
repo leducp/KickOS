@@ -10,7 +10,13 @@ ends: main
 
 tasks:
   - name: main
-    entry: kickos_main
+    program: main
     priority: 2
     ceiling: 12
     authority: [memory, system, console, tasks]
+
+  - name: sink
+    driver: appsink
+    serves: /svc/console
+    priority: 12
+    start: on_request

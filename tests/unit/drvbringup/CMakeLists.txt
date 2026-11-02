@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-# Failure-path gate for kickos::driver::bring_up. The choreography calls nothing but a
+# kickos::driver::bring_up as a driver task's entry thread runs it. It calls nothing but a
 # handful of extern "C" kos_* syscalls, so a host program drives the real bodies over the
 # recording fake in kos_seam.cc: no kernel, no scheduler, no image.
 #
@@ -39,8 +39,8 @@ kickos_add_unit_test(NAME drv_spi_serve
   INCLUDES "${PROJECT_SOURCE_DIR}/user/include" "${PROJECT_SOURCE_DIR}/system/include"
            "${PROJECT_BINARY_DIR}/generated/include")
 
-# A zero-length send to a buffered UART console is a flush: the service and IRQ loops of
-# uart_service.h on two host threads over a fake device. HOST-ONLY: uart_flush.cc defines public
+# KOS_UART_DRAIN on a buffered UART console answers the drain's result: the service and IRQ loops
+# of uart_service.h on two host threads over a fake device. HOST-ONLY: uart_flush.cc defines public
 # kos_* names.
 kickos_add_unit_test(NAME drv_uart_flush
   SOURCES uart_flush.cc

@@ -33,7 +33,8 @@ RULES = (
     "chip.register-outside", "chip.gate-straddle",
     "chip.gate-register",
     "chip.block-outside", "chip.line-range", "chip.link-duplicate", "chip.symbol-collision", "chip.reserved",
-    "chip.address-width", "chip.line-order", "chip.stack-limit-arch", "form.text",
+    "chip.address-width", "chip.line-order", "chip.stack-limit-arch", "chip.aperture-memory",
+    "chip.aperture-outside", "form.text",
     "board.name-mismatch", "board.name-collision", "board.chip-unknown", "board.chip-unreadable",
     "board.chip-folder", "board.device-unknown",
     "board.pin-unknown", "board.pin-function", "board.pin-not-gpio", "board.reserved-pin-used",
@@ -42,19 +43,21 @@ RULES = (
     "form.duplicate-entry", "form.scope",
     "name.board-unknown", "name.board-ambiguous", "name.cluster-unknown", "name.device-unknown",
     "name.line-unknown", "name.namespace", "name.reserved", "name.duplicate",
-    "order.undeclared", "order.forward",
+    "order.undeclared", "order.forward", "order.hosted",
     "ownership.device", "ownership.line", "ownership.gate", "ownership.kernel", "ownership.console",
+    "ownership.slot",
     "encoding.window", "encoding.budget", "encoding.page", "encoding.page-shared", "encoding.table",
     "encoding.watches", "restart.ends", "restart.no-isolation",
     "enforcement.no-protection", "enforcement.no-privilege-split", "enforcement.device-not-isolated",
     "enforcement.coarse-gate", "enforcement.port-bank", "enforcement.bus-master", "enforcement.unneeded",
     "memory.uncached", "memory.cached-incoherent",
-    "name.driver-unknown", "name.entry", "driver.line-role", "driver.line-name", "driver.window-role", "driver.port-window",
-    "driver.authority",
+    "name.driver-unknown", "driver.line-role", "driver.line-name", "driver.window-role", "driver.port-window",
+    "driver.authority", "driver.one-task",
     "scheduling.priority", "scheduling.ceiling", "scheduling.core", "scheduling.line-core",
-    "scheduling.stdout-order", "scheduling.console-driver", "scheduling.init-priority-range",
-    "supply.pool", "supply.budget", "supply.spawn-grants", "supply.cap-table", "supply.stack", "supply.arena",
-    "supply.size", "supply.init-windows", "supply.reservations", "supply.ranges",
+    "scheduling.stdout-order", "scheduling.console-driver", "scheduling.init-priority-range", "scheduling.hosted",
+    "supply.pool", "supply.budget", "supply.budget-kind", "supply.ceiling", "supply.spawn-grants", "supply.cap-width",
+    "supply.stack", "supply.arena", "supply.size", "supply.init-windows", "supply.hosted-block", "supply.ranges",
+    "supply.one-task",
     "manifest.cores", "manifest.amp", "manifest.window", "manifest.priority", "manifest.barrier",
     "manifest.description-path", "manifest.description-unknown", "manifest.default-path", "manifest.default-unknown",
     "manifest.bound", "manifest.console", "manifest.block-cache",
@@ -73,6 +76,8 @@ DECIMAL_DIGITS = 20
 
 IDENTIFIER = re.compile(r"[a-z][a-z0-9_]*")
 C_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# A CMake target name.
+PROGRAM_NAME = re.compile(r"[A-Za-z0-9_.+-]+")
 NAMESPACE = re.compile(r"kickos(::[a-z][a-z0-9_]*)+")
 LINE_ENUM = re.compile(r"[a-z_][a-z0-9_]*( : [a-z_][a-z0-9_]*( [a-z_][a-z0-9_]*)*)?")
 REGION = re.compile(r"[A-Z][A-Z0-9_]*")

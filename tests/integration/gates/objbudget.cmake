@@ -9,20 +9,35 @@ endif()
 
 # EXACTLY the arms main.cc registers, all unconditional. Any slack lets an arm be deleted with
 # every gate still green. Raise this with the arm count.
-set(_arms 5)
+set(_arms 6)
+# A chip that holds one task has no peer for the arms that need one: two named skips, two
+# arms fewer.
+set(_skip "")
+if(KICKOS_CHIP_ONE_TASK)
+  set(_arms 4)
+  set(_skip
+    "+skip - a task at its ceiling does not deny another task's endpoint_create: this board holds one task"
+    "+skip - a peer's statics start from its image at every create: this board holds one task")
+endif()
+# The sim starts a program's statics once, so the arm that sees them restart skips by name.
+if(KICKOS_ARCH STREQUAL "sim")
+  set(_arms 5)
+  set(_skip
+    "+skip - a peer's statics start from its image at every create: the sim starts a program's statics once")
+endif()
 # The refusal must be the BUDGET's. -KOS_ENOMEM (12) out of the ceiling create would mean the
 # pool ran dry, which is the denial the budget exists to prevent, and the app prints the code
 # it got before it judges it.
 set(_absent "endpoint_create at the ceiling rc=-12")
-kickos_app_judge(objbudget tests/integration/check_app_arms.sh ARGS objbudget ${_arms} "${_absent}")
+kickos_app_judge(objbudget tests/integration/check_app_arms.sh ARGS objbudget ${_arms} "${_absent}" ${_skip})
 
 if(KICKOS_ARCH STREQUAL "sim")
   add_test(NAME objbudget
     COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_app_arms.sh" "$<TARGET_FILE:objbudget>"
-            objbudget ${_arms} "${_absent}")
+            objbudget ${_arms} "${_absent}" ${_skip})
   kickos_boot_timeout(objbudget "${PROJECT_SOURCE_DIR}/tests/integration/check_app_arms.sh")
 else()
   kickos_add_qemu_test(TARGET objbudget
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_app_arms.sh"
-    ARGS objbudget ${_arms} "${_absent}")
+    ARGS objbudget ${_arms} "${_absent}" ${_skip})
 endif()

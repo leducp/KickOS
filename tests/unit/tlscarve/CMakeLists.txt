@@ -42,20 +42,20 @@ kickos_add_unit_test(NAME tls_carve_idle
   LIBRARIES kickos_kseam_smp
   DEFINITIONS TLSCARVE_STRIDE=4096u)
 
-# `reent` is the shared-kernel lx6 posture, the carve owed with no thread_local. Its mechanism is
-# read off ARCH_LX6 in arch/Kconfig, so a select of ARCH_TLS_FROM_SP there fails this target.
-file(READ "${PROJECT_SOURCE_DIR}/arch/Kconfig" _tlscarve_arch_kconfig)
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/arch/Kconfig")
-string(REGEX MATCH "\nconfig ARCH_LX6\n(\t[^\n]*\n)+" _tlscarve_lx6 "${_tlscarve_arch_kconfig}")
-if(_tlscarve_lx6 STREQUAL "")
-  message(FATAL_ERROR "tls_carve_reent: arch/Kconfig declares no `config ARCH_LX6` block")
-endif()
-set(_tlscarve_lx6_from_sp 0)
-if(_tlscarve_lx6 MATCHES "select ARCH_TLS_FROM_SP\n")
-  set(_tlscarve_lx6_from_sp 1)
-endif()
+# `reent` is a seating arch with a libc state carve and no thread_local, two kernel cores: a pool
+# thread's carve is the state alone and every idle's is nothing. `below` is a masking arch with a
+# thread_local: the template is seated past the state, which the carve leaves unwritten.
 kickos_add_unit_test(NAME tls_carve_reent
   SOURCES tlscarve_shim.cc tlscarve_reent.cc
   LIBRARIES kickos_kseam_smp
-  DEFINITIONS TLSCARVE_REENT_IN_TCB=1 TLSCARVE_STRIDE=4096u
-              TLSCARVE_FROM_SP=${_tlscarve_lx6_from_sp})
+  DEFINITIONS TLSCARVE_REENT_CARVE=96u TLSCARVE_STRIDE=4096u TLSCARVE_FROM_SP=0)
+kickos_add_unit_test(NAME tls_carve_below
+  SOURCES tlscarve_shim.cc tlscarve_below.cc
+  LIBRARIES kickos_kseam
+  DEFINITIONS TLSCARVE_REENT_CARVE=96u)
+
+# Two image records over one segment: each image's block, template and thread pointer bias.
+kickos_add_unit_test(NAME tls_carve_images
+  SOURCES tlscarve_shim.cc tlscarve_images.cc
+  LIBRARIES kickos_kseam
+  DEFINITIONS TLSCARVE_IMAGES=1 TLSCARVE_FROM_SP=0)

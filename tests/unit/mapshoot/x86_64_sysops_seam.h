@@ -44,6 +44,8 @@ namespace kickos
         uintptr_t firmware_split_ram();
         // Clear the firmware's 4 KiB leaf at `page`, inside the 2 MiB firmware_split_ram split.
         void firmware_clear_leaf(uintptr_t page);
+        // Map the whole top-level slot holding `addr` in the firmware's root, at its own address.
+        void firmware_identity_slot(uintptr_t addr);
         // Adopt the firmware root again, as it now stands.
         void adopt();
         // The attribute table the model-specific register holds from now on.

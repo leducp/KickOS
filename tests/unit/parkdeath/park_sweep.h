@@ -68,7 +68,7 @@ namespace kickos
             inline Thread* dying_thread(int slot)
             {
                 Thread* const t = seat_pool(slot, PRIO_DYING);
-                attach_caps(t, KICKOS_CAP_CHILD_WIDTH);
+                attach_caps(t, KICKOS_SEAM_CAP_WIDTH);
                 seat_running(t);
                 return t;
             }

@@ -387,31 +387,33 @@ costs a thread, turning the knob off costs a `thread_local` and keeps the thread
 mandatory kernel stack, which is why an arch selects that symbol only once its entry has no
 other path to compile.
 
-**`errno` is neither of these.** It is a member of newlib's reentrant state, one `struct _reent`
-per thread slot in the app-data window, and a per-thread `errno` follows that state and not a
-`thread_local`. Where libc finds the running thread's copy is per toolchain. A newlib that reads
-the global `_impure_ptr` directly (the pinned Cortex-M, RV32 and RX builds)
-has one such word per address space, which the kernel rewrites at every switch, so it is correct
-only while one core runs the threads sharing it. A newlib that asks `__getreent()` is answered per
-thread by the thread pointer (`KICKOS_REENT_PER_THREAD`): lx6 above one kernel core, armv8a and
-rv64imac. `cmake/cross_newlib.cmake` swaps each pinned package in for the toolchain's libc and
-refuses one with the wrong reentrancy mode. The
-answer is the first word of the TLS control block where the ABI reserves one
-(`KICKOS_REENT_IN_TCB`, which makes `KICKOS_TLS` mandatory and the carve non-zero in every image,
-so an arch taking it seats its thread pointer from the context, as armv8a and lx6 do, or the stride
-binds every caller-supplied stack), and the thread pointer itself where it does not (rv64imac, `arch_context_seat_reent`). **A new arch running one kernel on several
-cores owes a per-thread answer of that kind**, and `reent_per_thread_cores` is its witness.
+**`errno` is neither of these.** It is a member of newlib's reentrant state, and each pool
+thread's `struct _reent` is the base of its own stack block, below its TLS block. The carve is
+`KICKOS_REENT_CARVE` bytes, set per arch and newlib flavour in the root `CMakeLists.txt`, and
+`user/src/newlib_reent.cc` refuses a value that is not the linked newlib's `struct _reent` plus two
+words, rounded to the stack alignment. Those two words end the carve and end at the thread
+pointer: the state's address, then the thread's lock id, both written once by `thread_create`
+(`reent_cell_seat`). Every arch puts its thread pointer there: armv8a, lx6 and rv32imac seat it
+from the context, rv64imac seats `tp` and x86_64 the FS base, and on armv6m, armv7m and rxv3,
+whose thread pointer is SP masked to the stride, `__aeabi_read_tp` and the emutls leaf add
+`KICKOS_REENT_CARVE` to the masked base. So no state overlaps a `thread_local`, whatever the
+arch's TLS variant. Idle's stack carries no state: idle runs on the process-wide one.
 
-**The thread's own lock id rides with that answer**, and a port owes its place too, since
-`kos_thread_self` reads it with one load and no syscall (`kickos_self_lock_id`,
-`user/src/newlib_reent.cc`). Under `KICKOS_REENT_IN_TCB` it is the control block's second word,
-which `KICKOS_ARCH_TLS_TCB` must leave room for. Where the thread pointer is the slot element
-itself (rv64imac), the descriptor's `self` names a word after the `struct _reent` and the first
-switch-in writes it; the prime copies only `width` bytes, so the element's `stride` may exceed it.
-Where the arch keeps the state pointer in a cell of its own (x86_64's FS cell),
-`arch_context_seat_reent` receives the id and stores it in the cell's next word. At
-`KICKOS_REENT_PER_THREAD` 0 it is one word the switch rewrites beside the reentrant seat, with the
-same one-core limit.
+Where libc finds the running thread's copy is per toolchain. A newlib that reads the global
+`_impure_ptr` directly (the pinned Cortex-M, RV32 and RX builds) has one such word per address
+space, which the kernel rewrites at every switch, so it is correct only while one core runs the
+threads sharing it. A newlib that asks `__getreent()` (`KICKOS_REENT_PER_THREAD`: lx6, armv8a,
+rv64imac and x86_64) reads the cell below the thread pointer, x86_64 at `%fs:-16`.
+`cmake/cross_newlib.cmake` swaps each pinned package in for the toolchain's libc and refuses one
+with the wrong reentrancy mode. **A new arch running one kernel on several cores owes a per-thread
+answer of that kind**, and `reent_per_thread_cores` is its witness. A new arch owes its
+`KICKOS_REENT_CARVE` and a thread pointer at the top of the carve.
+
+**The thread's own lock id rides with that answer**: `kos_thread_self` reads it with one load and
+no syscall (`kickos_self_lock_id`, `user/src/newlib_reent.cc`). It is the cell's second word,
+below the thread pointer; at `KICKOS_REENT_PER_THREAD` 0 it is read through `_impure_ptr`, the
+word past the state that pointer names, with the same one-core limit. A prime copies only the
+descriptor's `width` bytes, and `reent_seam_read` refuses a width that runs into the cell.
 
 ### Adding a board/chip (the seven edit points)
 
@@ -464,7 +466,7 @@ same one-core limit.
    to mux; configure REFUSES a board with none. A wiring fact it has no field for, as the F411
    pair's crystal, stays in `boards/<board>/include/kickos/board_wiring.h`.
 7. `boards/<board>/composition.yaml` -- the default composition `KickOS::system_default` is
-   built from: the kernel console, one task `main` with `entry: kickos_main`, `ends: main`,
+   built from: the kernel console, one task `main` with `program: main`, `ends: main`,
    priority 2 under `ceiling: 31` and the board's heap, fitting every preset of the board.
    Configure REFUSES a board with none.
 
@@ -486,7 +488,7 @@ the kernel table and the vector table together and strand the lines above it, wi
 nothing to catch it. A configuration cannot set them, and a chip with no chip file is
 refused at configure.
 
-`board_config.h` holds the provisioning KNOBS: `KICKOS_MAX_THREADS`, the idle/root/user
+`board_config.h` holds the provisioning KNOBS: `KICKOS_BUDGET_THREADS`, the idle/root/user
 stack sizes sized to the chip's SRAM (too big and the link fails on the linker-script
 RAM `ASSERT`), and the pool sizes. **There is no such file in the source tree**: it is
 GENERATED into the build tree from the board's defconfig, and it is what the whole fleet
@@ -674,8 +676,9 @@ correctly. Measured on silicon: `sidata=40806810 sdata=40820000 ... src+1c=ee952
 dst+1c=00000000`. Because the corrupting bytes are uninitialised SRAM, the symptom varies
 by die and power-on history -- it presented as a board that reached `entry 0x40800000` and
 then went silent, and bisecting found nothing. The fix was to drop the `AT` and add
-`ASSERT(_sidata == _sdata)` so it cannot regress. `arch/xtensa/chip/esp32/esp32.ld`
-carried the same latent construct and took the same assert (image-neutral there).
+`ASSERT(_sidata == _sdata)` so it cannot regress. The ESP32's image is built from the
+ELF's load segments instead (`--use-segments` in `platform/esp32/chip.yaml`), which load
+each section at its LMA, and every task image's `.data` loads at a template that way.
 
 CORRECT case, and the trap: `arch/riscv/chip/virt_rv32/virt_rv32.ld` carries the SAME
 `> RAM AT > RAM` construct and the SAME divergence (`_sidata = 0x80010ce8` against
@@ -962,7 +965,10 @@ system does not survive does; an ordered end does what it asks and reads none of
 `kickos_terminal_outcome_apply` (kernel.h) hands the chip to it and returns where it is unset,
 halt, a word whose two halves disagree, or an outcome the chip lacks. The software fault reporter
 calls it after its drain, and so must every `kfault_terminate` a port defines, after its own drain
-and before it stops the core.
+and before it stops the core. On a chip that holds one task, the exit system call with
+`KOS_EXIT_IMAGE` takes it too (`kickos_image_end`): that chip's C library ends the whole image
+this way when the app calls `exit()` or a thread takes a libc lock from a dead holder
+(boards.md, the Minimum tier's one-task rule).
 
 ### The critical section (`arch_irq_save`, `arch_irq_restore`)
 
@@ -1347,15 +1353,14 @@ after these bullets.** The worst case each backend runs with interrupts masked:
   operations, and 9 lines a sweep at 32-byte lines, 27 operations.
 - armv8a, x86_64 and rv64imac clear a new reservation's frames (`kos_ram_alloc`) and copy the
   pristine image of the static data into a new space (a spawn that builds a task, an explicit
-  task) outside the kernel lock in the same way, one granule under the lock at a time with an
-  interrupt window after each, into a run no range names yet (`presync_run`). The source is
-  written once, before any space runs, so the copy is whole however it is interleaved. A run the
-  round does not take is freed the same way, a granule a window (`presync_release`). A call
-  refused its authority or its out-word stages nothing, and nor does a spawn its arguments
+  task, each from the image that task runs) outside the kernel lock in the same way, one granule
+  under the lock at a time with an interrupt window after each, into a run no range names yet
+  (`presync_run`). The source, the frames the loader put the image's window in, which no space
+  maps, is written once, before any space runs, so the copy is whole however it is interleaved.
+  A run the round does not take is freed the same way, a granule a window (`presync_release`). A
+  call refused its authority or its out-word stages nothing, and nor does a spawn its arguments
   refuse: its plan and its locked pass share one admission (`spawn_admit`), and only the grant
-  list's entries, the priority ceiling and the pools are left to the locked pass. The image
-  itself is captured once, under the lock, at the first space's seed, a copy the size of the
-  image's static data and no task's choice.
+  list's entries, the priority ceiling and the pools are left to the locked pass.
 
 Not covered, each running in one masked span that scales with a size a task chose: a mapping's
 page-table edit, under the kernel lock, one entry per granule of the mapping; the free of a run
@@ -1370,7 +1375,7 @@ system call's trampoline, with interrupts open.
 Nor is a new space's startup bounded, though it masks nothing: the first thread of a task that
 runs, one a spawn builds included, walks the image's constructors in `kickos_task_start` before
 its entry, preemptibly, at its own priority, for as long as the app's constructors take, and its
-task's other threads wait for it on the task's libc lock (`space-data-starts-from-the-image`).
+task's other threads wait for it on the task's libc lock (`task-data-starts-from-its-image`).
 
 **A store into frames whose mapping their owning task is changing may be lost.** From the call's
 entry to its return, a store the task's other threads make through one of its mappings of those
@@ -1775,7 +1780,7 @@ every spawn. At the `f302nucleo-st` provisioning the same 16 KiB part runs the s
 silicon at **63 ok / 0 not ok / 5 skipped**, plan `1..63` (measured at `124b68c`,
 `.session/m456-silicon/b5-nuc-selftest-after.log`). That provisioning is one file, the `st` variant's
 defconfig (`../../boards/f302nucleo/configs/st/defconfig`): self-test on,
-a zero heap, `KICKOS_MAX_THREADS 2`, and the
+a zero heap, `KICKOS_BUDGET_THREADS 2`, and the
 stack sizes (`KICKOS_USER_STACK_SIZE 1024`, `KICKOS_ROOT_STACK_SIZE 1536`,
 `KICKOS_IDLE_STACK_SIZE 512`). **That capture was taken at three slots and the file states
 two**: the unconditional priority ceiling grew `Task` past the slack the third slot needed,
@@ -1880,12 +1885,11 @@ multiples of that and a number between two of them cannot be a current reading.
 
 **A margin is not a spare-slot count, and QUOTING THE STRIDE ALONE IS WHAT MAKES TWO
 PARAGRAPHS DISAGREE.** Dividing a margin by the stride overestimates, because each added slot
-ALSO raises `__kickos_ram_start`. On both `f302nucleo` postures one slot costs the 1,024 B
-pool stride PLUS **960 B** of static `.bss` below the arena, so the step is **1,984 B**. The
-960 is the same on both and splits three ways: 392 B of `g_instance`, 56 B of the cap run
-(`kernel/syscall/cap.cc`) and the 512 B newlib reent bank the user library carries per slot.
-So `f302nucleo-st`'s 1,952 B margin buys no further thread -- it is 32 B short of one step --
-and `f302nucleo`'s 96 B is short by 1,888.
+ALSO raises `__kickos_ram_start`. On both `f302nucleo` postures one slot costs the 1,120 B
+pool stride, which carries the thread's libc state, PLUS the slot's static `.bss` below the
+arena: its share of `g_instance` and its cap run (`kernel/syscall/cap.cc`). Measured
+2026-10-22, `f302nucleo-st`'s worst image keeps 1,472 B, and `-DKICKOS_MAX_THREADS=4` fails the
+pool assert; `f302nucleo`'s keeps 2,976 B, and every image links at `-DKICKOS_MAX_THREADS=3`.
 
 Only where a large ROOT alignment absorbs the whole run-up do the margin and the slot count
 agree, and `frdmk64f` is that case: an 8,192 B root and pool alignment quantizes the
@@ -1948,11 +1952,11 @@ linker-script symbol, so the split is readable out of any linked ELF:
 - **static** -- `.data` plus real `.bss`, dominated by `kickos::detail::g_instance`,
   the kernel singleton holding every object pool
   (`kernel/include/kickos/instance.h:65-99`), and -- wherever `KICKOS_KERNEL_STACKS` is 1
-  -- by the per-thread kernel-stack array beside it, `KICKOS_THREAD_SLOTS` blocks of
+  -- by the per-thread kernel-stack array beside it, the thread slot count blocks of
   `KICKOS_KERNEL_STACK_SIZE` (`kernel/thread/thread.cc`, `KStackBlock`). That array is a
   FIRST-ORDER term on a small part, and it sits BELOW the arena, so raising the slot count
   shrinks the arena while raising the demand on it. `microbit` provisions four threads and
-  not eight for exactly that reason -- `KICKOS_THREAD_SLOTS` is `KICKOS_MAX_THREADS + 1`, so
+  not eight for exactly that reason -- the thread slot count is `KICKOS_BUDGET_THREADS + 1`, so
   that is five blocks of the armv6m 896 and not nine -- and its defconfig
   carries the derivation (`../../boards/microbit/configs/base/defconfig`).
 - **`.userheap`** -- the composition's `heap:`, carved *below* `__kickos_ram_start` by
@@ -2020,7 +2024,7 @@ is why N is a peak-concurrency figure while every `kos_ram_alloc` is permanent.
 
 **A SECOND LIFETIME BUDGET RUNS OUT WITH IT on a region board**, and a port has to provision
 both. Every block `kos_ram_alloc` hands out also spends a slot of the arena-ownership table
-(`kernel/include/kickos/ramown.h`, sized by `KICKOS_RAM_OWNER_SLOTS`), which records the task
+(`kernel/include/kickos/ramown.h`, sized by the RAM owner table size), which records the task
 that reserved it so that a caller naming a block is checked against what it reserved and not
 only against the arena's bounds (`invariants.md`,
 `arena-block-owner-is-the-reserving-task`). Nothing frees a slot either: a dead task's records
@@ -2045,7 +2049,7 @@ board.** `KICKOS_BOOT_ARENA_ASSERT` (`arch/common/boot_arena.ld.h`, fed by
 `cmake/boot_arena.cmake`) replays those two allocations including alignment padding.
 `KICKOS_POOL_ARENA_ASSERT` (same header) carries the same replay further, over the init's
 private block at one record, the least a system with a task reserves, then
-`KICKOS_MAX_THREADS` blocks of `align(KICKOS_USER_STACK_SIZE)`. Neither may be opted out
+`KICKOS_BUDGET_THREADS` blocks of `align(KICKOS_USER_STACK_SIZE)`. Neither may be opted out
 of by omission: a linker script carrying no invocation is a configure `FATAL_ERROR`, and
 that check reads the script this board actually links, so a BOARD-LOCAL override is covered
 like any chip script.
@@ -2063,7 +2067,7 @@ why the honest place to answer the question is the link.
 
 **Headroom is a LINK-TIME quantity, and whether it is also PER-IMAGE depends on the
 board.** Where `__kickos_ram_start` follows `.bss`, each app's static footprint moves the
-arena base and the FATTEST image is what caps `KICKOS_MAX_THREADS`: on `bluepill-c8-st`
+arena base and the FATTEST image is what caps `KICKOS_BUDGET_THREADS`: on `bluepill-c8-st`
 the images span 2,012 B of base, and the split `selftest_p5` is the binding one. Where an
 alignment window pins the base instead, every image on the board reports the SAME headroom
 -- that is `frdmk64f` at `KICKOS_HAVE_MPU=1`, where all images sit at `0x20014340`. Check
@@ -2078,33 +2082,30 @@ base.** Each has a different owner and the demand side may be blameless:
   `__kickos_ram_start`, so every byte of heap is a byte of arena. This was the WHOLE
   deficit on `bluepill-c8`: its heap was 8192, inherited from its
   128 KiB `stm32f411` sibling, on a part with 20 KiB of SRAM. Its thread provisioning
-  (`KICKOS_MAX_THREADS 2` x 2048) was never the problem.
+  (`KICKOS_BUDGET_THREADS 2` x 2048) was never the problem.
 - the `.appdata` enforcement window on an enforcing chip. `frdmk64f` WITHOUT the MPU has
-  **+49,152 B** of pool margin at `KICKOS_MAX_THREADS 16`; `KICKOS_HAVE_MPU=1` pins every
+  **+49,152 B** of pool margin at `KICKOS_BUDGET_THREADS 16`; `KICKOS_HAVE_MPU=1` pins every
   image's `__kickos_ram_start` at `0x20014320` and the window costs `hello` **94,336 B** of
   arena (`0x1fffd2a0` flat against `0x20014320` enforcing). There the
   demand side genuinely had to come down, which is why the enforcing variants provision
   **8** at 8192-byte stacks (`../../boards/frdmk64f/configs/base/defconfig`, `.../st/`)
-  while `flat` states no `KICKOS_MAX_THREADS` at all and keeps the default 16. The 8192 is
+  while `flat` states no `KICKOS_BUDGET_THREADS` at all and keeps the default 16. The 8192 is
   a power of two because `KICKOS_TLS` strides every stack by one, NOT because the
   SYSMPU granule asks for it -- that granule is 32 and this backend is the base+limit row
   of the table above.
 
 The model is validated against the real linker rather than by inspection, on both arena
 shapes, and re-swept 2026-09-04, when this board's suite was still three images.
-`f302nucleo-st` is provisioned at `KICKOS_MAX_THREADS=2`,
+`f302nucleo-st` is provisioned at `KICKOS_BUDGET_THREADS=2`,
 measured **+1,952 B** and linked, and FAILED at `-DKICKOS_MAX_THREADS=3` -- on the fattest
 image alone, every other image on the board still linking. At the four-image split the same
 board measures **+1,600 B**, and the fattest image is `selftest_p4`.
 
-**That step costs 1,984 B and not the 1,024 B of one pool stride, which is the whole reason
-a margin is not a slot count.** A slot also adds 960 B of static `.bss` BELOW the arena on
-this board -- 448 B of kernel state plus the 512 B newlib reent bank the user library carries
-per slot -- so `__kickos_ram_start` rises by that much and the demand and the supply move
-towards each other at once. 1,952 against 1,984 is 32 B over, and only the linker can see
-it: the pool arithmetic above prices the stride and never the `.bss` term. `f302nucleo` at
-the chip defaults pays the same 960 B against a 288 B margin, so there EVERY image fails
-at three slots rather than the fattest one alone.
+**That step costs more than one pool stride, which is the whole reason a margin is not a
+slot count.** A slot also adds its kernel state to the static `.bss` BELOW the arena on this
+board, so `__kickos_ram_start` rises by that much and the demand and the supply move towards
+each other at once, and only the linker can see it: the pool arithmetic above prices the
+stride and never the `.bss` term.
 
 `frdmk64f +MPU` is provisioned at 8 with **+24,576 B**; it links at 9, 10 and 11, and
 FAILS at `-DKICKOS_MAX_THREADS=12` -- at 11 `KICKOS_POOL_TOP` computes to exactly
@@ -2179,12 +2180,12 @@ Thread capacity that follows, each board with its own stack sizes:
 | `f411disco` `hello` | 2,048 | 4,096 | 4,096 | 101,664 | 24 | 8 | **8** |
 
 **The `f302nucleo` and `f411disco` rows predate the `124b68c` right-size** (which took
-`KICKOS_ROOT_STACK_SIZE` to 1,536 and `KICKOS_MAX_THREADS` to 3), and the `f302nucleo-st`
+`KICKOS_ROOT_STACK_SIZE` to 1,536 and `KICKOS_BUDGET_THREADS` to 3), and the `f302nucleo-st`
 row's N has since moved AGAIN, to **2**: the third slot's 1,984 B no longer fits the 1,952 B
 the arena leaves. Neither the N column nor the byte columns of those rows are current.
 **The `microbit` rows are worse than
 stale and their byte columns are struck out rather than carried**: that board moved to the
-32 KiB nRF51822 at four thread slots, and it also acquired `KICKOS_THREAD_SLOTS` kernel-stack
+32 KiB nRF51822 at four thread slots, and it also acquired the thread slot count kernel-stack
 blocks in `.bss` below the arena, so both the SRAM constant and every term derived from it
 changed. Only the part constant and the stated stack sizes are kept; re-link the board and
 read the rest. The `bluepill-c8` rows were re-linked at the M4.9.3 heap right-size and are
@@ -2200,7 +2201,7 @@ Four readings, and they are the point of the section:
 - **`f302nucleo` `selftest` is provisioning-bound, not part-bound.** At the chip defaults
   it gets zero threads, and on silicon the suite failed every spawning case (17 ok /
   42 not ok / 10 skipped) on `w >= 0` / `drv >= 0` assertions -- a negative spawn return,
-  which is what N=0 predicts. Raising `KICKOS_MAX_THREADS` to 4 alone moved the tally not
+  which is what N=0 predicts. Raising `KICKOS_BUDGET_THREADS` to 4 alone moved the tally not
   at all: the arena bound, not the pool. Surrendering the 2K heap carve and halving
   `KICKOS_USER_STACK_SIZE` to 1,024 takes the arena to 5,664 and N to 3, and the same
   part then runs the suite at 63 ok / 0 not ok / 5 skipped. Silicon-witnessed both ways,
@@ -2218,7 +2219,7 @@ Four readings, and they are the point of the section:
   SRAM, is usually what binds.** (`bluepill-c8` is build-only, so every N here is a model
   prediction, not a witness.)
 - On a comfortable board the constraint **inverts**: `f411disco`'s arena would hold 24
-  user stacks and `KICKOS_MAX_THREADS 8` is what caps it
+  user stacks and `KICKOS_BUDGET_THREADS 8` is what caps it
   (`../../boards/f411disco/configs/base/defconfig`). Above roughly 32 KiB of
   SRAM, provisioning is the knob and the part is not the limit.
 
@@ -2232,17 +2233,17 @@ requirement, for a zero-skip run:
 
 | Knob | Default | Pool | Suite needs | Tight-board value |
 | --- | --- | --- | --- | --- |
-| `KICKOS_MAX_THREADS` | 16 (`config/system.h`) | `thread.h` (`ThreadPool`) | **>= 4** | 2 |
-| `KICKOS_CAP_TABLE_SUPPLY` | 16 (`system.h`) | per-thread cap table | **>= 11** | 8 |
-| `KICKOS_MAX_ENDPOINTS` | 4 (`system.h`) | `instance.h` (`endpoints`) | >= 1 | 4 |
-| `KICKOS_MAX_IRQ_HANDLES` | 8 (`system.h`) | `instance.h` (`irq_bindings`) | >= 1 | 4 (f302) |
-| `KICKOS_MAX_DOMAINS` | 20 translating / 18 region (`system.h`) | `instance.h` (`domains`) | a domain per live task plus the two immortal singletons on a translating board; one per thread at most on a region one | 4 |
-| `KICKOS_MAX_TASKS` | 18 (`system.h`) | `instance.h` (`tasks`) | one per DISTINCT GROUP live at once, plus idle's and root's; nothing ties it to the thread count. A plain spawn joins the spawner's task and spends none, a spawn with its own grant or a privilege change spends one, and `kos_task_create` reserves one before any thread joins. A full pool makes the spawn answer -KOS_ENOMEM before any thread slot is claimed, which is the same code thread-pool exhaustion answers. `kernel/task/task.cc` asserts only boot's floor of 2 | 4 |
+| `KICKOS_BUDGET_THREADS` | 16 (`config/system.h`) | `thread.h` (`ThreadPool`) | **>= 4** | 2 |
+| a declaration's `caps` | the composer's | per-thread cap table | **>= 11** | 8 |
+| the endpoint pool size | 4 (`system.h`) | `instance.h` (`endpoints`) | >= 1 | 4 |
+| the IRQ binding pool size | 8 (`system.h`) | `instance.h` (`irq_bindings`) | >= 1 | 4 (f302) |
+| the domain pool size | 20 translating / 18 region (`system.h`) | `instance.h` (`domains`) | a domain per live task plus the two immortal singletons on a translating board; one per thread at most on a region one | 4 |
+| the task pool size | 18 (`system.h`) | `instance.h` (`tasks`) | one per DISTINCT GROUP live at once, plus idle's and root's; nothing ties it to the thread count. A plain spawn joins the spawner's task and spends none, a spawn with its own grant or a privilege change spends one, and the empty-task create reserves one before any thread joins, as `kos_task_create` does for the instance it starts. A full pool makes the spawn answer -KOS_ENOMEM before any thread slot is claimed, which is the same code thread-pool exhaustion answers. `kernel/task/task.cc` asserts only boot's floor of 2 | 4 |
 
 The `Tight-board value` column is the chip default. The `f302nucleo` `st` variant
 overrides threads to **3**, not 4: it was
 cut at `124b68c` once the pool assert made the overcommit a link error, and any text citing
-`arm.json` for `KICKOS_MAX_THREADS=4` on this board is stale. The stack sizes are the
+`arm.json` for `KICKOS_BUDGET_THREADS=4` on this board is stale. The stack sizes are the
 board's own, in its base defconfig
 (`KICKOS_USER_STACK_SIZE` 2048 -> **1024**, `KICKOS_ROOT_STACK_SIZE` 2048 -> **1536**),
 chosen against MEASURED paint-and-scan watermarks:
@@ -2250,15 +2251,10 @@ deepest pool worker 592 B, root 1,048 B, idle 76 B -- a 488 B (31.8%) margin on 
 root stack. That is the pattern to copy on a tight part: measure the watermark, then
 provision, rather than provisioning for comfort.
 
-The cap table is the one row that is NOT a board knob. A board states only
-`KICKOS_CAP_TABLE_SUPPLY`, and `KICKOS_MAX_HANDLES`, root's width, is exactly that supply
-(`cmake/cap_table.cmake`); admission counts what the init holds against it. Every spawned
-child gets the grant-list floor `KICKOS_MAX_SPAWN_GRANTS + 1`, and the configure refuses a
-board whose supply is below it.
-`cap.h` keeps both asserts (`KICKOS_MAX_HANDLES > KICKOS_CAP_FIRST_DYNAMIC`, and
-`KICKOS_MAX_SPAWN_GRANTS < KICKOS_MAX_HANDLES`) because `tests/unit/captable` substitutes a
-width no board configures. A build that misses the generated `kickos/config/cap_width.h`
-does not reach them: it fails on the missing include. The suite's own floor is measured off the suite's own call sites. **Two** of the 63 cases need a 4th concurrent
+The cap table is the one row that is NOT a board knob. A composition states each
+declaration's `caps: { width, slots }`, and root's width is what the composer computes the init
+holds. A thread takes its task's width unless its spawn asks another, and a spawn whose width
+cannot seat its grant list is refused. The suite's own floor is measured off the suite's own call sites. **Two** of the 63 cases need a 4th concurrent
 worker: `call_infoless_revert`, four mutually-dependent workers spawned before any join
 (`../../user/apps/common/selftest/main.cc`, `t_call_infoless_revert`), and `mutex_chain_boost`,
 a four-link boost chain (`t_mutex_chain` in the same file). **Both** ask first, with `TAP_ASK(.workers = 4, ...)`, and since
@@ -2271,7 +2267,7 @@ need no 4th worker, so a small part loses one chained-priority-inheritance case 
 one call/reply case, not the suite. `mutex_deadlock`'s mutexes and semaphores are words and hold no
 capability, so no object pool binds it.
 
-`f302nucleo` walked that ladder one knob at a time: at `KICKOS_MAX_THREADS=4` plus
+`f302nucleo` walked that ladder one knob at a time: at `KICKOS_BUDGET_THREADS=4` plus
 `KICKOS_USER_STACK_SIZE=1024` and the 2K heap still carved, which bought one more case
 (18 ok / 41 not ok / 11 skipped), the next refusal came from an object pool of 4, not from
 memory; adding a zero heap and a pool of 6 is what took the run to 0 `not ok`. **A spawn failure is not
@@ -2281,23 +2277,23 @@ which is why the honest place to answer it is the link, and why `KICKOS_POOL_ARE
 exists. Eight of `f302nucleo`'s nine pre-`124b68c` skips were arena starvation labelled
 "pool too small"; see *The 5 skips on a 16 KiB part*.
 
-`KICKOS_MAX_THREADS` counts **spawnable** threads only. The pool is one slot wider than the
-knob (`KICKOS_THREAD_SLOTS`, `kernel/include/kickos/config/system.h`): root claims one at boot
+`KICKOS_BUDGET_THREADS` counts **spawnable** threads only. The pool is one slot wider than the
+knob (the thread slot count, `kernel/include/kickos/config/system.h`): root claims one at boot
 and that slot is RETIRED for the life of the system -- `ThreadPool::alloc` skips `ROOT_INDEX`,
 so root's death does not give the slot back -- and a spawn therefore draws the full stated
 count whether root is alive or not.
-That is why `f302nucleo` runs a two-thread app at `KICKOS_MAX_THREADS 2`. Idle is the one
+That is why `f302nucleo` runs a two-thread app at `KICKOS_BUDGET_THREADS 2`. Idle is the one
 thread the pool does not seat; it runs on `Kernel::idle_tcb`
 (`kernel/include/kickos/instance.h`), handed to `thread_create` by pointer. The knob dominates static RAM: on `f302nucleo` `selftest` at
-`KICKOS_MAX_HANDLES=9` and heap 0, `g_instance` measures 2,448 bytes at 2 threads,
+a root width of 9 and heap 0, `g_instance` measures 2,448 bytes at 2 threads,
 3,296 at 4, 4,152 at 6 and 5,000 at 8 -- **about 424 bytes per slot**, because each slot
 buys a `Domain` too (`system.h:67`). **Those four figures hold one slot fewer than the same
 knob value gives today**: they were measured with root's TCB outside `g_instance`, so the
 slope carries and the base does not. **Do not correct them with the 424-byte slope**: that
 slope includes a `Domain` per slot, and seating root added a pool slot WITHOUT one, so the
 slope overshoots the real growth by roughly 165 bytes. They were also taken at a 9-slot cap table,
-a width no board in the fleet configures: `KICKOS_MAX_HANDLES` is not a per-chip knob, it
-is the board's supply described above, and part of the per-thread cost is the cap run itself,
+a width no board in the fleet configures: the root width is not a per-chip knob, it
+is the composition's described above, and part of the per-thread cost is the cap run itself,
 so neither the base nor the slope carries over to a table of another width unmeasured.
 
 Seating root in the pool itself cost almost nothing, measured on four boards. Static RAM is
@@ -2319,11 +2315,11 @@ arena cannot back are left out of the image and listed by the build
 ### Deriving the suite's SRAM figures
 
 Measured, not assumed -- but measured BEFORE the `124b68c` right-size, which took
-`KICKOS_ROOT_STACK_SIZE` to 1,536 and `KICKOS_MAX_THREADS` to 3. Every byte column below is
+`KICKOS_ROOT_STACK_SIZE` to 1,536 and `KICKOS_BUDGET_THREADS` to 3. Every byte column below is
 therefore the older link; the METHOD is what to reuse, and step 5 of the checklist is how.
 `f302nucleo` `selftest` at the then-shipped `f302nucleo-st` provisioning
 (then in `cmake/presets/arm.json`; the cap table was 9 slots wide, a width no
-board configures today -- `KICKOS_MAX_HANDLES` is the board's supply and no chip header
+board configures today -- the root width is the composition's and no chip header
 states it), `-Os`, no-MPU 16-byte granule. `g_instance` measures 3,336. **That figure and the
 `.data`/`.bss` breakdown below it hold one pool slot fewer than the same knob value gives
 today**, for the reason stated above, and the 424-byte slope must NOT be used to correct
@@ -2357,18 +2353,18 @@ besides, plus power-of-two natural alignment on every block where
 the five, `mutex_deadlock`, was not a RAM question at all: it waited on an object pool, and its
 mutexes and semaphores are words, which no pool binds.
 `f411disco` is the zero-skip
-witness (128 KiB SRAM, 0 skips), and it provisions `KICKOS_MAX_THREADS 8`
+witness (128 KiB SRAM, 0 skips), and it provisions `KICKOS_BUDGET_THREADS 8`
 (`../../boards/f411disco/configs/base/defconfig`), above the measured 4-thread
 peak, so 4 is a floor and not a fitted value.
 
 The 16 KiB result is not slack to spend elsewhere: raising only the thread pool on this
-part fails the **link** at `KICKOS_MAX_THREADS=12`, with `KICKOS_BOOT_ARENA_ASSERT`
+part fails the **link** at `KICKOS_BUDGET_THREADS=12`, with `KICKOS_BOOT_ARENA_ASSERT`
 reporting that the arena can no longer hold idle + root.
 
 ### The 5 skips on a 16 KiB part
 
 **The count below is the three-slot, two-image reading and is not today's.** At
-`KICKOS_MAX_THREADS 2` over four images `f302nucleo-st` measures 18 skips, nearly all of them a
+`KICKOS_BUDGET_THREADS 2` over four images `f302nucleo-st` measures 18 skips, nearly all of them a
 worker the board cannot seat beside root, and a `caller_stack` partial beside the partials every
 7-slot board reports. They are declared
 per region in `tests/integration/gates/selftest.cmake`, which is where the bench manifest reads
@@ -2441,11 +2437,11 @@ Given a new part's flash and SRAM, in order:
    `__kickos_ram_end`. They must sum to the part's SRAM. This is the measurement, and it
    costs one build.
 6. **Compute N** = `floor((arena - align(idle) - align(root)) / align(user))`, then
-   `N = min(N, KICKOS_MAX_THREADS)`. That is how many threads the board will host.
+   `N = min(N, KICKOS_BUDGET_THREADS)`. That is how many threads the board will host.
    Subtract any `kos_ram_alloc` the app makes first.
 7. **If N is short**, in decreasing order of yield: cut the composition's `heap:`, cut
-   `KICKOS_USER_STACK_SIZE`, cut `KICKOS_MAX_THREADS` (~424 bytes of static RAM each),
-   then the other pools. Do **not** raise `KICKOS_MAX_THREADS` to fix a spawn failure
+   `KICKOS_USER_STACK_SIZE`, cut `KICKOS_BUDGET_THREADS` (~424 bytes of static RAM each),
+   then the other pools. Do **not** raise `KICKOS_BUDGET_THREADS` to fix a spawn failure
    without checking the arena: on a tight part the arena is usually the binding term,
    and the raise spends static RAM to make the arena smaller.
 8. **A clean link proves that the boot stacks fit AND that the thread-stack pool fits**,
@@ -2553,7 +2549,7 @@ is needed. **Feasibility: confirmed.**
 - Kernel syscall work runs on a stack **the calling thread alone owns**, and
   `KICKOS_KERNEL_STACKS` says which of its two. At 1 the trampoline relocates
   `sp` onto that thread's `ctx.kernel_sp` -- its slot in the
-  `KICKOS_THREAD_SLOTS` x `KICKOS_KERNEL_STACK_SIZE` array in kernel `.bss`
+  the thread slot count x `KICKOS_KERNEL_STACK_SIZE` array in kernel `.bss`
   (`kernel/thread/thread.cc`, `KStackBlock`) -- and calls `syscall_dispatch`
   there, below a continuation header laid at the block's top; the only bytes it
   spends on the thread's own stack are the eight the transfer pushes inside the
@@ -2710,9 +2706,10 @@ The seam is the same on every chip (`{base, size, attr}`, `attr` = unprivileged 
 register encoding is not. These are the two encodings the Reference otherwise names only by
 symbol, and both are the fastest path to a correct backend for the next part in their family.
 
-**When the MPU is off on the ARM PMSA backends.** Both revisions enable the MPU as
-`MPU_CTRL_ENABLE | MPU_CTRL_PRIVDEFENA`, without `HFNMIENA`, so the MPU is off inside HardFault and
-NMI handlers, and the default memory map applies there, the chip fixed rows included. The PMSAv7
+**When the MPU is off on the ARM PMSA backends.** PMSAv7 enables the MPU as
+`MPU_CTRL_ENABLE | MPU_CTRL_HFNMIENA | MPU_CTRL_PRIVDEFENA`, so HardFault and NMI handlers keep it,
+the chip fixed rows included (`boards.md`, *Every PMSAv7 board*). PMSAv8 enables it without
+`HFNMIENA`, so the MPU is off inside those handlers there and the default memory map applies. The PMSAv7
 reprogram keeps the MPU on and leaves per-thread slot `j` unmapped only between its `MPU_RASR = 0`
 and its rewrite; the PMSAv8 commit writes `MPU_CTRL = 0` and reprograms with the MPU off. Both run
 privileged with interrupts masked (`cpsid i`), on the PRIVDEFENA background. `kickos_arm_pmsav8_init`
@@ -3039,8 +3036,8 @@ save-frame, deferred switch.
   unprivileged is unrestricted until the MPU clamps). So without this, an
   unprivileged thread can't fetch its first instruction. Per-task PMP enforcement
   landed at **M2**: `arch_mpu_apply` stashes the incoming set on switch-in and
-  `kickos_arch_mpu_commit` programs the NAPOT PMP entries from the `.Lswitch` epilogue after the
-  physical swap (the deferred-commit seam) (+ `arch_mpu_region_encodable` for the grant check) -- **enforced on qemu-riscv**; the
+  `kickos_arch_mpu_commit` programs the data and stack PMP entries (0..7, NAPOT) from the `.Lswitch` epilogue after the
+  physical swap (the deferred-commit seam) (+ `arch_mpu_region_encodable` for the grant check). The user code window is not in a thread's set: `kickos_rv32_init` writes it once as a TOR pair (entry 8 OFF at the first image's code, entry 9 TOR, R and X, at the end of the last image's), reads it back, and refuses the boot when the entries did not take. `arch_mpu_code_window_holds` lets the kernel's pointer checks accept a range inside it. **Enforced on qemu-riscv**; the
   ESP32-C6 image specifics (all-SRAM image, gp-relative small-data, code-from-RAM,
   and a separate APM/PMS bus permission unit) are still **blocked**, see
   `m2-readiness.md`. No F/D extension -> soft-float, so the switch banks no FP.

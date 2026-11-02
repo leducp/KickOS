@@ -15,21 +15,21 @@ init: { priority: 5 }
 
 tasks:
   - name: pulse
-    entry: prio_pulse_main
+    program: priority_pulse
     stack: 2048
     priority: 7
     ceiling: 7
     restart: { max: 1 }
 
   - name: high
-    entry: prio_high_main
+    program: priority_high
     stack: 4096
     priority: 6
     ceiling: 6
     watches: [pulse]
 
   - name: low
-    entry: prio_low_main
+    program: main
     stack: 4096
     priority: 4
     ceiling: 4

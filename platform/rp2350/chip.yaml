@@ -56,6 +56,10 @@ partition_gate:
     xip_qmi: 0xE4
     xip_aux: 0xE8
 
+apertures:
+  - { window: [0x40000000, 0x168000], ref: "Table 13 Address map, SYSINFO_BASE to TBMAN_BASE, pp.31-33" }
+  - { window: [0x50000000, 0x800000], ref: "Table 14 Address map, DMA_BASE to CORESIGHT_TRACE_BASE, p.33" }
+
 devices:
   # An APB window is a device's registers and the XOR, SET and CLR aliases above them.
   uart0:
@@ -75,6 +79,10 @@ devices:
     lines: { irq: { number: 14, ref: "Table 95 System-level interrupts, p.83" } }
     gate_register: 0x48
     blocks: { regs: { offset: 0x10000, symbol: USBCTRL_REGS_BASE, ref: "Table 14 Address map, p.33" } }
+
+  # The one manager beside the cores (2.1 Bus fabric, p.24). Its whole AHB slot, the registers'
+  # atomic aliases inside it.
+  dma: { window: [0x50000000, 0x100000], bus_master: true, ref: "Table 14 Address map, p.33" }
 
   clocks: { window: [0x40010000, 0x4000], owner: kernel, ref: "Table 13 Address map, p.32" }
   resets: { window: [0x40020000, 0x4000], owner: kernel, ref: "Table 13 Address map, p.32" }

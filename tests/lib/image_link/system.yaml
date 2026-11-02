@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# main, the image's own program, and peer, the program image_link_program, each in the image of
+# its own declaration.
+
+version: 1
+stdout: kernel
+ends: main
+heap: 0
+
+tasks:
+  - name: main
+    program: main
+    priority: 2
+    ceiling: 2
+    authority: [memory, system, tasks]
+    budgets: { threads: 1 }
+
+  - name: peer
+    program: image_link_program
+    priority: 3
+    ceiling: 3
+    budgets: { threads: 1 }

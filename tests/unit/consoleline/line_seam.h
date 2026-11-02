@@ -49,6 +49,10 @@ namespace consoleline
     void run_inside_the_copy(void (*fn)(void));
     bool copy_seat_fired();
 
+    // How deep the interrupt mask stands now, and how many times it was raised from open.
+    int mask_depth();
+    uint32_t mask_spans();
+
     // One line through a chip's console route: the ring takes it whole, or the refusal goes
     // straight at the device under one mask, with '\n' lowered as `crlf` asks. Returns what
     // console_tx_insert_line returned: n, or 0 for a refused line.

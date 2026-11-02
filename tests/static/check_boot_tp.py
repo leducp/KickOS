@@ -30,6 +30,7 @@ import bisect
 import re
 import subprocess
 import sys
+import tempfile
 
 INSN_RE = re.compile(r'^\s*([0-9a-f]+):\s+(\S+)\s*(.*)$')
 LABEL_RE = re.compile(r'^([0-9a-f]+) <(.+)>:$')
@@ -326,6 +327,15 @@ SYMTAB = '''
 '''
 
 
+def images_of(listing):
+    """The images a file of link maps names, one per map; none is refused."""
+    with open(listing) as f:
+        elves = [l.strip()[:-len('.map')] for l in f if l.strip().endswith('.map')]
+    if not elves:
+        raise Bad('%s names no link map, so the walk would pass vacuously' % listing)
+    return elves
+
+
 def control(name, arch, lines, want_read, want_unresolved=0, init=()):
     symtab = '\n'.join(l for l in SYMTAB.splitlines()
                        if l and '<%s>:' % l.split()[-1] in ''.join(lines))
@@ -405,7 +415,17 @@ def self_test():
     control('a64 seat', 'armv8a',
             a64_reset + ['    1004:\tmsr\ttpidr_el0, x1', '    1008:\tbl\t1030 <getreent>']
             + a64_end + a64_tail, False)
-    print('PASS: every planted boot read is reported and every seated or unreached one is not')
+    with tempfile.NamedTemporaryFile('w', suffix='.txt') as empty:
+        empty.write('\n')
+        empty.flush()
+        try:
+            images_of(empty.name)
+        except Bad:
+            pass
+        else:
+            raise Bad('control empty corpus: a list naming no link map is read as images')
+    print('PASS: every planted boot read is reported and every seated or unreached one is not,'
+          ' and a list of no image is refused')
 
 
 def main(argv):
@@ -418,8 +438,7 @@ def main(argv):
         objdump, arch = argv[1], argv[2]
         elves = argv[3:]
         if elves[0] == '--images':
-            with open(elves[1]) as f:
-                elves = [l.strip()[:-len('.map')] for l in f if l.strip().endswith('.map')]
+            elves = images_of(elves[1])
         if not elves:
             raise Bad('no image to read, so the walk would pass vacuously')
         if not check(objdump, arch, elves):

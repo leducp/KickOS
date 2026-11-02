@@ -26,24 +26,22 @@ and an init provider that stays resident. `roadmap.md`'s `### M10` section is th
 only place its numbers are assigned; the sections at the bottom of this file say what each
 milestone's green runs do not.
 
-**M10.6.8, THE SYSCALL PASS, IS CLOSED AND READY TO MERGE; NEXT IS M10.6.9.** Its record is the
-M10.6.8 entry of `TODO.md`, and the M10.6.8 section at the bottom of this file says what its green
-runs do not. The tree requires toolchain 1.1, published as release `toolchain-1.1.0-1`.
+**M10.6.9, TASKS AS PROCESSES, IS CLOSED AND READY TO MERGE; NEXT IS M10.6.10.** Its record is
+the M10.6.9 entry of `TODO.md`, and the M10.6.9 section at the bottom of this file says what its
+green runs do not. The tree requires toolchain 1.1, published as release `toolchain-1.1.0-1`.
 
-**THE ORDER IS LOCKED: M10.6.9, THEN M10.6.10, THEN M10.6.11, THEN M10.7** (maintainer,
-2026-10-13, M10.6.9 and M10.6.10 inserted 2026-10-21). M10.6.8's nonblocking flag stayed in the
-kernel and moves into libc with M10.6.9's per-task libc state. M10.6.9 makes a task on a region
-board the MPU equivalent of the MMU process and closes the kernel's isolation holes; the maintainer
-ruled that a board too small for that holds one task rather than lie about the isolation. M10.6.10
-is C++ and libc conformance: a toolchain release giving GCC a KickOS threads model, the C++
-exception state per thread, and the libc semantics a worker thread, the wall clock and entropy get
-wrong. Every silicon image has moved since the last bench pass and none of the moved images has
-run: M10.6.11's pass, `TODO.md`'s "THE BENCH PASS, BOARD BY BOARD", captures them, those of
-M10.6.6 to M10.6.10 included, with the ESP32 IRAM, the interrupt stacks and the C6 PLL riding the
-same passes. M10.7, the exit record, reconciles the references against what shipped, so it waits
-for the bench. The KickOS journey, its PL022 capstone and the docs site land as a maintainer PR
-outside the numbering; the lock-free yield and the shared sleep deadline are measure-first and
-carry no number.
+**THE ORDER IS LOCKED: M10.6.10, THEN M10.6.11, THEN M10.7** (maintainer, 2026-10-13, M10.6.9
+and M10.6.10 inserted 2026-10-21). M10.6.9 made a task on a region board the MPU equivalent of the
+MMU process, with its own libc state, nonblocking flag included, and closed the kernel's isolation
+holes; a board too small for that holds one task rather than lie about the isolation. M10.6.10 is
+C++ and libc conformance: a toolchain release giving GCC a KickOS threads model, the C++ exception
+state per thread, and the libc semantics a worker thread, the wall clock and entropy get wrong.
+M10.6.9's images ran on the boards the bench reached; M10.6.11's pass, `TODO.md`'s "THE BENCH
+PASS, BOARD BY BOARD", still captures every board, the absent ones and M10.6.10's images included,
+with the ESP32 IRAM, the interrupt stacks and the C6 PLL riding the same passes. M10.7, the exit
+record, reconciles the references against what shipped, so it waits for the bench. The KickOS
+journey, its PL022 capstone and the docs site land as a maintainer PR outside the numbering; the
+lock-free yield and the shared sleep deadline are measure-first and carry no number.
 
 M7 is the multicore milestone and `docs/design-multicore.md` is its contract; every ruling and every
 freeze lives there, `roadmap.md` assigns the numbers, and `git log` carries the order things landed
@@ -1141,43 +1139,31 @@ missing from one of those QEMU captures under load is this, not a flake to re-ru
   and one TX_IDLE_NUM, the reset 256: the field reads 2 while the line shifts and 0 once the last
   frame is out. No other baud or idle count was run.
 
-## M10.6.8: the syscall pass, and what these green runs do NOT say
+## M10.6.9: tasks as processes, and what these green runs do NOT say
 
-- **THE CONTENDED SEMAPHORE IS SLOWER UNDER QEMU, AND WHETHER THAT IS ACCEPTED IS PENDING THE
-  MAINTAINER'S DECISION.** After the two cuts, the bench's context switches per second are 8 to 11%
-  lower on qemu-x86_64-smp2 and 12% lower on qemu-arm64-benchsmp than with the kernel semaphore.
-  A contended wait or post now names the word by its memory (a write check and a page walk) and
-  finds, takes and frees a record. On arm64 QEMU the time goes to pages more than instructions,
-  since each kernel entry empties QEMU's TLB; that is read from page counts, not a host profile.
-  Silicon ran one capture per board, before the cuts; the esp32-wroom handoff read 5% slower
-  there, not resolved.
-- **THE USER CLOCK AND THE CORE READ HAVE NEVER RUN ON ARMV8A OR X86 SILICON.** The imx8mp is
-  built, not run, no x86 run used KVM, and no RISC-V silicon board takes the user clock. Every
-  figure for them is QEMU's.
-- **TSC SKEW ACROSS CORES IS UNCHECKED.** A thread can now move to another core between two clock
-  reads with no kernel entry. The bracket arm runs pinned, so it cannot see skew.
-- **ABOVE ONE CORE, THAT A WORD WAKE PLACES EVERY WAITER IT READIES IS SHOWN BY READING ONLY.** No
-  arm has an idle peer core the wake must reach, and no image drives a wake of several waiters
-  against a timed or killed one: only a host unit sequences that window.
-- **A WORD WAKE HOLDS THE KERNEL LOCK OVER UP TO `KICKOS_THREAD_SLOTS` WAITERS.** It pops, readies
-  and places up to every waiter parked on the word and counts the list once more, and a retry
-  repeats both. Mutexbench's `sem-wake-crowd` row times one post with every spare thread parked,
-  on the sim and QEMU only, read and not judged.
-- **THE TIMED SEMAPHORE WAIT HAS NOT RUN ON SILICON.** Its single deadline is held by a host unit
-  over a scripted clock. The clock call it adds on boards that keep the call is not measured.
-- **THE RACE THAT WOULD LOSE A POST ACROSS CORES IS WITNESSED ON QEMU ONLY.** No silicon above
-  one core has run its arm.
-- **THE JOURNEY CAPTURES WERE EDITED BY TEXT, NOT RETAKEN.** The maintainer stopped the retakes
-  and asked for a light pass on the reference pages (2026-10-21), since M10.6.9 moves the same
-  code again. Every capture value the merged calls, the semaphore words and the removed capability
-  type changed was derived by hand; journey 11's stop 9 backtrace became prose and journey 02's
-  stop 8 success capture is gone. Only journey 04's stop 7 gdb session was retaken.
-- **SOME PATHS RUN ON NO PRESET.** The fix to the bench's push-probe skip path, the x86 clock seat
-  for a starter killed before its first instruction, and the LED set (QEMU has no LED). A cancel
-  that kills with a timeout cannot show its order on Cortex-M, where the switch waits for the
-  lock to drop, so its arm reddens on the sim, x86_64 and arm64 only.
-- **X86_64'S `thread_self` ROW READS SLOWER UNDER QEMU BECAUSE OF PLACEMENT, NOT CODE.** Its call
-  now crosses a 4 KiB page, which QEMU cannot chain; the instructions are the same.
+- **THE IMAGES F302NUCLEO DECLARES ALLOWED TO FAIL DO FAIL ON SILICON.** Its blocking system calls
+  rest their continuation on the user stack, and each of those images stops with "wild PSP: no
+  room below in SVCall need=760". The capture judges them allowed, not passed. M10.6.10 retires
+  the board with the 32 KiB RAM / 128 KiB flash tier.
+- **NO BENCH PASS REACHED FRDMK64F, PICOPI, PIZERO2350, TEENSY41, BLUEPILL-C8, BLACKPILL OR DUE.**
+  Their M10.6.9 images are built and, where an emulator exists, run there only.
+- **A FAULT RECORD LANDING INSIDE ANOTHER THREAD'S LINE ON A CLAIMED CONSOLE IS HELD BY UNIT ARMS
+  ONLY.** Every silicon and emulator record started on its own line; no image forces the case and
+  no bench board claims its UART.
+- **EACH ESP32 CORE SEATS ITS EMPTY CURRENT THREAD BEFORE ITS DOORBELL IS ENABLED: READ FROM THE
+  DISASSEMBLY, NOT RUN.** Interrupts are closed on that path, so no arm can force the old order.
+- **THE C6 LP NODE'S IMAGE DATA FIX HAS ONLY A SILICON WITNESS.** No emulator runs the LP core;
+  the proof is the capture failing before the fix and passing after.
+- **ON ONE CORE, ONLY THE CROSS-TASK MEETING MAKES LIBCRACE'S TWO TASKS OVERLAP.** Its began and
+  raced lines are judged on the emulators, and on silicon on f411disco alone.
+- **THE STRESS GATE'S SMP BOUND IS A FLOOR SIZED FROM A LOADED HOST, NOT A PROGRESS CHECK.** A
+  bound that fails only on stalled output is later work for the maintainer. Likewise libcrace's
+  single-instruction variant runs the largest round robin quantum that still reddens the unfixed
+  trap return, with no slack measured beyond it.
+- **ON ESP32-WROOM-SMP THE SLAY TIMEOUT ARM SKIPS BY DESIGN:** a cross-thread progress order is not
+  a property of two kernel cores.
+- **THE DOCS PASS IS OWED AT THE END OF M10.** Journey, reference and Book text that M10.6.9 moved
+  were not updated (maintainer, docs deferred to the end of M10).
 
 ## Where to go next
 

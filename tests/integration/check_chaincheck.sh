@@ -8,10 +8,12 @@
 #   check_chaincheck.sh <chaincheck image> <half>
 #   KOS_CAPTURE=<log> check_chaincheck.sh <board-build> <kickos-source> <cmake> <half>
 #
-# <half> is `int`, `float` or `full`, one image each. The arm list is read off the app's
-# source (user/apps/common/chaincheck/main.c): an arm is a ck_* call opening its line with its
-# name literal, and the half it belongs to is the `#if CHAINCHECK_INT`, `_FLOAT` or `_FULL` it
-# sits under (`#if CHAINCHECK_FP`, which the two float halves share, names none). A
+# <half> is `int`, `core`, `print`, `float` or `full`, one image each. `int` is `core` and
+# `print` together, as one image carries them where the flash allows, and two images otherwise.
+# The arm list is read off the app's source (user/apps/common/chaincheck/main.c): an arm is a
+# ck_* call opening its line with its name literal, and the half it belongs to is the
+# `#if CHAINCHECK_CORE`, `_PRINT`, `_FLOAT` or `_FULL` it sits under (`#if CHAINCHECK_FP`, which
+# the two float halves share, names none). A
 # PASS is printed by whatever arms ran, so an arm the build dropped leaves the verdict green;
 # naming each one here is what keeps the coverage the claim makes.
 set -u
@@ -29,7 +31,7 @@ fi
 [ "$#" -eq 1 ] || fail "$usage (name the half the image carries)"
 named="$1"
 case "$named" in
-    int | float | full) ;;
+    int | core | print | float | full) ;;
     *) fail "unknown half '$named': $usage" ;;
 esac
 
@@ -46,7 +48,7 @@ awk -v tab="$TAB" '
         half_at[depth] = ""
         if ($0 ~ /^[ \t]*#[ \t]*if[ \t]+CHAINCHECK_FP[ \t]*$/) {
             half_at[depth] = "-"
-        } else if ($0 ~ /^[ \t]*#[ \t]*if[ \t]+CHAINCHECK_(INT|FLOAT|FULL)[ \t]*$/) {
+        } else if ($0 ~ /^[ \t]*#[ \t]*if[ \t]+CHAINCHECK_(CORE|PRINT|FLOAT|FULL)[ \t]*$/) {
             h = $0
             sub(/^.*CHAINCHECK_/, "", h)
             sub(/[ \t]*$/, "", h)
@@ -81,7 +83,7 @@ awk -v tab="$TAB" '
     || cfail source "$app holds an arm this judge cannot place"
 
 : > "$TMP/want"
-awk -F "$TAB" -v h="$named" '$1 == h { print $2 }' "$TMP/arms" >> "$TMP/want"
+awk -F "$TAB" -v h="$named" '$1 == h || (h == "int" && ($1 == "core" || $1 == "print")) { print $2 }' "$TMP/arms" >> "$TMP/want"
 
 want_n=$(wc -l < "$TMP/want")
 [ "$want_n" -gt 0 ] || fail "$app holds no arm for the half $named, so a PASS would cover nothing"

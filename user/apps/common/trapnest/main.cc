@@ -142,6 +142,7 @@ namespace
     // File-scope and not a local: the kernel reads this struct out of the caller's memory, and
     // the worker's sp is parked far from its own frames when the trap is taken.
     kos_thread_params g_tn_params = {};
+    kos_window g_tn_window = {};
     kos_thread_t g_tn_out = 0;
 
     void ticker(void*)
@@ -219,15 +220,18 @@ int main(int, char**)
     g_tn_stack_lo = lo;
 
     // WHERE the refusal happens decides the depth reached. A stack under the floor is refused
-    // near the TOP of thread_create_call; an INADMISSIBLE memory region is refused in
-    // spawn_grant_admit -> ram_region_admit -> grant_region_admissible, the deep end of the
+    // near the TOP of thread_create_call; an INADMISSIBLE memory window is refused in
+    // the window's ram_region_admit -> grant_region_admissible, the deep end of the
     // chain rv_trap_stack.h measures the syscall red zone against. So: a kernel-default stack,
     // and a region outside the arena.
     g_tn_params.entry = worker;
     g_tn_params.name = "tndeep";
     g_tn_params.prio = 10;
-    g_tn_params.mem_base = reinterpret_cast<void*>(0x1000u);
-    g_tn_params.mem_size = 64;
+    g_tn_window.base = 0x1000u;
+    g_tn_window.size = 64;
+    g_tn_window.kind = KOS_WINDOW_MEMORY;
+    g_tn_params.windows = &g_tn_window;
+    g_tn_params.window_count = 1;
 
     // Stop on claim failure or the raises will not exercise the trap path.
     kos_cap_t line = KOS_CAP_NONE;
@@ -252,10 +256,10 @@ int main(int, char**)
         kos::print("[trapnest] ERROR: ticker spawn refused\n");
         return 1;
     }
-    kos::thread::Handle const w = kos::thread::create_caps(
-        worker, nullptr, "tnwork", 10, wcaps, nwcaps, KOS_POLICY_FIFO, 0,
-        nullptr, 0, 0, nullptr, KOS_TASK_NONE,
-        reinterpret_cast<void*>(lo), TN_STACK_SIZE);
+    kos::thread::Handle const w = kos::thread::create_caps(worker, nullptr, "tnwork", 10, wcaps,
+                                                           nwcaps, KOS_POLICY_FIFO, 0, 0, nullptr,
+                                                           reinterpret_cast<void*>(lo),
+                                                           TN_STACK_SIZE);
     if (not w.valid())
     {
         kos::print("[trapnest] ERROR: worker spawn refused\n");

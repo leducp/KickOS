@@ -36,12 +36,24 @@ namespace seam
     // What a user entry saw, what it prints first, and the code it exits with itself, or -1 to
     // return.
     extern kos_self_t const* entered;
+    // The record an entry saw, copied, which outlives an entry frame its exit unwinds.
+    extern kos_table_task entered_record;
     extern char const* entry_print;
+    // Run as the entry is entered, with its `self`.
+    extern std::function<void(kos_self_t const*)> entry_seen;
     extern int entry_exit;
 
     struct Exit
     {
         int code;
+    };
+
+    // What an entry takes as `self`: a copy of its table record, and the argv its task started with.
+    struct TaskSelf
+    {
+        kos_table_task task;
+        int argc;
+        char** argv;
     };
 
     void reset();
@@ -50,6 +62,14 @@ namespace seam
 
     // The table record named `name`, which must exist.
     kos_self_t const* task(char const* name);
+    // The lookups of <kickos/sys.h> as the task `self` runs them, none for a null `self`.
+    kos_cap_t grant_endpoint(kos_self_t const* self, char const* name);
+    kos_cap_t grant_notify(kos_self_t const* self, char const* name);
+    kos_window_t grant_mmio(kos_self_t const* self, char const* name);
+    kos_window_t grant_mem(kos_self_t const* self, char const* name);
+    kos_window_t grant_ports(kos_self_t const* self, char const* name);
+    kos_line_t grant_irq(kos_self_t const* self, char const* name);
+    int task_status(kos_self_t const* self, uint32_t i, struct kos_task_status* out);
     // A task's place in the table.
     uint32_t index_of(char const* name);
     // Where task `name` sits among `watcher`'s watches, which indexes the watcher's status block.

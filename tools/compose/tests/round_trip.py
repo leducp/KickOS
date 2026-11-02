@@ -17,7 +17,8 @@ import tempfile
 import unittest
 
 from kickos_compose import emit, partition
-from test_arms import ARM64_AMP, ARM64_UNPINNED, MANIFESTS, PLATFORM, PONG, SYSTEMS, TREE, VIRTIO, mutate, read, write
+from test_arms import (ARM64_AMP, ARM64_UNPINNED, MANIFESTS, PLATFORM, PONG, SYSTEMS, TREE, VIRTIO, XMC_HOSTED, mutate, read,
+                       write)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOL = os.path.join(HERE, "..")
@@ -32,6 +33,9 @@ PARTITION_REGION = ("    cache: cached # shared by tasks of this image only, on 
 # The node 1 composition each partitioned variant is emitted with.
 PARTNERS = {"qemu-arm64-node.yaml": PONG % ("qemu-arm64", "", "uncached", 8192)}
 VARIANTS = [
+    ("xmc4800-relax.yaml", "xmc4800-hosted.yaml", XMC_HOSTED, None),
+    ("qemu-x86_64.yaml", "qemu-x86_64-programs.yaml",
+     [("program: main", "program: app-prog"), ("program: health", "program: main")], None),
     ("qemu-arm64.yaml", "qemu-arm64-variant.yaml", [
         ("devices: [/dev/rtc]", VIRTIO % "bus_master, coarse_gate" + "\n    lines: { irq: /dev/virtio/3/irq }"),
         ("cache: cached", "cache: uncached"),
@@ -43,8 +47,7 @@ VARIANTS = [
     ("qemu-arm64.yaml", "qemu-arm64-node.yaml", ARM64_UNPINNED + [
         PARTITION_REGION,
         ("    uses: [/svc/sensor]\n", "    uses: [/svc/sensor, /amp/3]\n    maps: { /shm/book: rw }\n"),
-    ], ARM64_AMP.replace("KICKOS_TASK_ENDPOINT_BUDGET: 3", "KICKOS_TASK_ENDPOINT_BUDGET: 4")
-     .replace("KICKOS_MAX_ENDPOINTS: 4", "KICKOS_MAX_ENDPOINTS: 5")),
+    ], ARM64_AMP),
 ]
 
 # Hand-written from the chip files and the compositions, never from the tool: each is (record,
@@ -59,15 +62,15 @@ EXPECTED = {
         ("priv", {"#": "0"}, {"offset": "0x10", "width": "4"}),
         ("priv", {"#": "1"}, {"offset": "0x14", "width": "4"}),
         ("priv", {"#": "2"}, {"offset": "0x40", "width": "4"}),
-        ("grant", {"kind": "endpoint_use", "path": "/svc/spi0"}, {"target": "1", "cap_slot": "cap0+0"}),
-        ("grant", {"kind": "endpoint_use", "path": "/svc/sensor"}, {"target": "2"}),
+        ("grant", {"kind": "endpoint_use", "path": "/svc/spi0"}, {"target": "1", "cap_slot": "cap0+0", "badge": "0x1"}),
+        ("grant", {"kind": "endpoint_use", "path": "/svc/sensor"}, {"target": "2", "badge": "0x0"}),
         ("task", {"name": "health"}, {"watches": "2+2", "authority": "-"}),
         ("ref", {"#": "2"}, {"task": "1"}),
         ("ref", {"#": "3"}, {"task": "2"}),
         ("task", {"name": "console"}, {"driver": "1", "entry": "xmcuartirq_console_start", "stack": "0",
                                        "block": "1024", "flags": "console"}),
         ("task", {"name": "spi0"}, {"driver": "0", "restart_max": "3", "block": "0", "flags": "-"}),
-        ("task", {"name": "sensor"}, {"block": "0", "flags": "-"}),
+        ("task", {"name": "sensor"}, {"block": "0", "flags": "program"}),
         ("task", {"#": "0"}, {"name": "console"}),
         ("string", {"offset": "0"}, {"text": "console"}),
         ("string", {"offset": "8"}, {"text": "regs"}),
@@ -77,6 +80,13 @@ EXPECTED = {
         ("grant", {"kind": "status"}, {"path": "/init/status", "flags": "ro", "cap_slot": "none", "window": "0",
                                        "size": "0x20"}),
         ("grant", {"kind": "region", "flags": "ro"}, {"window": "1"}),
+    ],
+    "xmc4800-hosted.yaml": [
+        ("task", {"#": "4"}, {"name": "xmcssc", "driver": "0", "flags": "hosted", "host": "1", "restart_max": "0"}),
+        ("task", {"name": "sensor"}, {"authority": "memory,irq", "uses": "0+0", "host": "none"}),
+        ("grant", {"kind": "endpoint_hosted"}, {"path": "/svc/spi0", "target": "4", "cap_slot": "cap0+2"}),
+        ("grant", {"kind": "line", "path": "/dev/usic0/sr1"}, {"cap_slot": "cap0+2", "flags": "-"}),
+        ("grant", {"kind": "line", "path": "/dev/usic0/sr0"}, {"cap_slot": "none"}),
     ],
     "qemu-arm64.yaml": [
         ("task", {"name": "app"}, {"core_mask": "0x4"}),
@@ -93,6 +103,11 @@ EXPECTED = {
         ("grant", {"path": "/dev/cmos_rtc"}, {"kind": "ports", "base": "0x70", "size": "0x2", "privs": "0+1",
                                              "window": "0"}),
         ("priv", {"#": "0"}, {"offset": "0x0", "width": "1"}),
+    ],
+    "qemu-x86_64-programs.yaml": [
+        ("task", {"name": "app"}, {"entry": "main", "flags": "program", "program": "app-prog"}),
+        ("task", {"name": "health"}, {"entry": "main", "flags": "program", "program": "-"}),
+        ("task", {"name": "sensor"}, {"entry": "main", "flags": "program", "program": "sensor"}),
     ],
     "qemu-arm64-variant.yaml": [
         ("task", {"name": "health"}, {"authority": "memory,system"}),
@@ -147,8 +162,8 @@ def stub_source(table):
             out.append("int %s(struct kos_driver_instance* instance)" % symbol)
             out.extend(["{", "    (void)instance;", "    return %d;" % (n + 1), "}", ""])
         else:
-            out.append("void %s(kos_self_t const* self)" % symbol)
-            out.extend(["{", "    (void)self;", "    entry_sink = %d;" % (n + 1), "}", ""])
+            # A program's entry is main, the walker's own.
+            out.extend(["int %s(int argc, char** argv);" % symbol, ""])
     out.append("struct entry_symbol const entry_symbols[] = {")
     for symbol, kind in table.externs:
         out.append("    {\"%s\", (uintptr_t)&%s}," % (symbol, symbol))
@@ -260,7 +275,11 @@ class RoundTrip(unittest.TestCase):
             sensor.block = 64
             cases = [("control", rendered, 0),
                      ("a user task's ring block", emit.render(table, "xmc4800-relax.yaml"), 1),
-                     ("an unknown task flag", rendered.replace(".flags = KOS_TABLE_TASK_CONSOLE,", ".flags = 4,"), 1),
+                     ("an unknown task flag", rendered.replace(".flags = KOS_TABLE_TASK_CONSOLE,", ".flags = 32,"), 1),
+                     ("a program named by a task running none",
+                      rendered.replace(".program = KOS_TABLE_NO_STRING,", ".program = 0,", 1), 1),
+                     ("a driver inside a task naming no task",
+                      rendered.replace(".flags = KOS_TABLE_TASK_CONSOLE,", ".flags = KOS_TABLE_TASK_HOSTED,"), 1),
                      ("an uncached block of no block",
                       rendered.replace(".flags = KOS_TABLE_TASK_CONSOLE,", ".flags = KOS_TABLE_TASK_BLOCK_UNCACHED,")
                       .replace(".block = 1024,", ".block = 0,"), 1)]
@@ -279,32 +298,6 @@ class RoundTrip(unittest.TestCase):
                     self.assertEqual(built.returncode, 0, built.stderr)
                     walk = subprocess.run([walker], capture_output=True, text=True)
                     self.assertEqual("faults=" in walk.stdout, faults != 0, walk.stdout[-200:])
-        finally:
-            shutil.rmtree(scratch)
-
-    def test_an_entry_declared_otherwise_is_reported_at_its_line_in_the_composition(self):
-        scratch = tempfile.mkdtemp(prefix="kickos-table-")
-        try:
-            shutil.copytree(PLATFORM, os.path.join(scratch, "platform"))
-            path = os.path.join(scratch, "qemu-arm64.yaml")
-            shutil.copyfile(os.path.join(SYSTEMS, "qemu-arm64.yaml"), path)
-            manifest = os.path.join(scratch, "manifest.yaml")
-            write(manifest, MANIFESTS["qemu-arm64.yaml"])
-            source = os.path.join(scratch, "table.c")
-            run = emit_with_seed([path], manifest, source, "0")
-            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
-            line = read(path).splitlines().index("    entry: sensor_main") + 1
-            # The app declaring the entry as something else, as a missing or mistyped one would be.
-            other = os.path.join(scratch, "other.h")
-            write(other, "extern int sensor_main;\n")
-            built = subprocess.run(
-                [COMPILER, "-std=c11", "-I", os.path.join(TREE, "user", "include"),
-                 "-I", os.path.join(TREE, "system", "include"), "-I", INCLUDE, "-include", other,
-                 "-c", source, "-o", source + ".o"], capture_output=True, text=True)
-            self.assertNotEqual(built.returncode, 0)
-            self.assertIn("%s:%d:" % (path, line), built.stderr)
-            # What follows the declarations is reported at its own line in the emitted source.
-            self.assertNotIn("%s:%d:" % (path, line + 1), built.stderr)
         finally:
             shutil.rmtree(scratch)
 

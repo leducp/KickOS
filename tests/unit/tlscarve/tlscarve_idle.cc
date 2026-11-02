@@ -59,13 +59,13 @@ namespace
 
 TEST(TlsCarveIdle, the_carve_is_non_empty_here)
 {
-    ASSERT_NE(kickos::tls_block_size(), 0u);
+    ASSERT_NE(kickos::tls_block_size(0), 0u);
 }
 
 TEST(TlsCarveIdle, an_idle_stack_is_refused_by_admission)
 {
     EXPECT_FALSE(kickos::tls_stack_admissible(reinterpret_cast<uintptr_t>(idle_base()),
-                                              IDLE_BYTES));
+                                              IDLE_BYTES, 0));
 }
 
 TEST(TlsCarveIdle, the_boot_core_idle_takes_its_stack_uncarved)
@@ -83,12 +83,12 @@ TEST(TlsCarveIdle, every_peer_core_idle_takes_its_stack_uncarved)
 
 TEST(TlsCarveIdle, a_pool_thread_on_an_idle_stack_is_refused)
 {
-    Thread const* const t = &kernel().threads.slots[ThreadPool::ROOT_INDEX + 1];
+    Thread const* const t = &kernel().threads.slots()[ThreadPool::ROOT_INDEX + 1];
     KICKOS_EXPECT_PANIC(kickos::tls_carve(t, idle_base(), IDLE_BYTES), "assert: admissible");
 }
 
 TEST(TlsCarveIdle, a_strided_block_is_carved_and_seated_at_its_base)
 {
-    Thread const* const root = &kernel().threads.slots[ThreadPool::ROOT_INDEX];
+    Thread const* const root = &kernel().threads.slots()[ThreadPool::ROOT_INDEX];
     EXPECT_EQ(kickos::tls_carve(root, g_strided, TLSCARVE_STRIDE), g_strided);
 }

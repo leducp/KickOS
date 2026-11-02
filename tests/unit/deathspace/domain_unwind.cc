@@ -72,6 +72,28 @@ namespace kickos
         return nullptr;
     }
 
+    // No space here is charged to a task record.
+    bool task_admit(Task const*, BudgetKind, uint32_t)
+    {
+        return true;
+    }
+
+    HeadList* task_domains_head(Task const*)
+    {
+        return nullptr;
+    }
+
+    // No create here stages an image.
+    Task* task_decl_record(size_t)
+    {
+        return nullptr;
+    }
+
+    ThreadLink* task_image_stager(Task const*)
+    {
+        return nullptr;
+    }
+
     // No space here maps a frame capability.
     void frame_run_release_by_slot(int)
     {
@@ -95,7 +117,7 @@ namespace
                 memset(g_image_data, IMAGE_DATA_FILL, sizeof(g_image_data));
                 kickos::testfix::host_aspace_tables_from_pool(true);
                 kickos::domain_init();
-                g_current = &kickos::kernel().threads.slots[0];
+                g_current = &kickos::kernel().threads.slots()[0];
             }
             int err = 0;
             s_root = kickos::domain_for(0, nullptr, 0, 0, nullptr, &err);
@@ -144,7 +166,9 @@ namespace
         // The calls kos_ram_alloc makes.
         static uintptr_t reserve_in(Domain* owner, size_t bytes)
         {
-            if (kickos::aspace_reserve_stage(kickos::domain_ranges(owner), bytes) == 0)
+            if (kickos::aspace_reserve_stage(kickos::domain_ranges(owner), bytes,
+                                             kickos::PresyncStage::RESERVE)
+                == 0)
             {
                 return 0;
             }
@@ -259,7 +283,7 @@ namespace
         spaces0_ = spaces_before;
     }
 
-    TEST_F(DomainBalance, unreferenced_creates_land_on_one_slot)
+    TEST_F(DomainBalance, released_unreferenced_creates_land_on_one_slot)
     {
         int err = 0;
         Domain* const first = kickos::domain_for(0, nullptr, 0, 0, nullptr, &err);
@@ -267,6 +291,7 @@ namespace
         size_t const one = host_pool_used();
         for (int i = 0; i < 3; i++)
         {
+            kickos::domain_release(first);
             Domain* const again = kickos::domain_for(0, nullptr, 0, 0, nullptr, &err);
             ASSERT_EQ(again, first);
             EXPECT_EQ(host_pool_used(), one) << "a reused slot stranded its previous space";

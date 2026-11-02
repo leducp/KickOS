@@ -172,6 +172,16 @@ namespace kickos
                 expect_agrees(BASE, 64, 64);
             }
 
+            // A copy into or out of a device window is a privileged access to its registers.
+            TEST_F(RangeCheck, a_device_region_answers_no_pointer)
+            {
+                grant(BASE, SPAN, ARCH_MPU_R | ARCH_MPU_W | ARCH_MPU_DEV);
+                EXPECT_FALSE(user_readable_ok(BASE, 64));
+                EXPECT_FALSE(user_writable_ok(BASE, 64));
+                EXPECT_FALSE(user_readable_and_writable_ok(BASE, 64, 64));
+                expect_agrees(BASE, 64, 64);
+            }
+
             // Two regions, each carrying one half. The separate checks accept, so the merged
             // walk must too: a merge that demanded ONE region carrying both bits would refuse
             // a range the caller can genuinely read and write.

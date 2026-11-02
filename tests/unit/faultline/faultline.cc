@@ -72,6 +72,16 @@ TEST(FaultLine, the_banner_holds_a_thirty_eight_character_thread_name)
     expect_fits(width(KDIAG_F_THREAD_FAULT, name.c_str()));
 }
 
+// A task's panic record: its banner at the same name bound, and its line at the longest message
+// the kernel keeps, 63 bytes.
+TEST(FaultLine, the_task_panic_record_fits_the_bound)
+{
+    std::string const name(38, 'n');
+    expect_fits(width(KDIAG_F_TASK_PANIC, name.c_str()));
+    std::string const msg(63, 'm');
+    expect_fits(width(KDIAG_F_TASK_PANIC_MSG, msg.c_str()));
+}
+
 // The positive control: without it every assertion above passes on a formatter that silently
 // reports the capacity instead of the true width.
 TEST(FaultLine, a_name_past_the_bound_is_reported_as_truncated)

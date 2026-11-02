@@ -32,6 +32,19 @@ namespace kickos
         extern size_t g_reply_len;
         extern uint32_t g_reply_recvs;
         constexpr int32_t STUB_REPLY_RECV_RC = 7;
+        // The wait flag the last console write reached the kernel console with, and how many
+        // reached it.
+        extern bool g_kconsole_waits;
+        extern uint32_t g_kconsole_writes;
+        // How many console handovers a create began and finished.
+        extern uint32_t g_handovers_begun;
+        extern uint32_t g_handovers_done;
+        // What console_owner_set_user runs once before it counts, a console driver's create
+        // standing past its publish with the lock released; null for nothing.
+        extern void (*g_handover_probe)(void);
+        // The one device aperture arch_window_apertures answers, which holds no console window.
+        constexpr uintptr_t STUB_DEVICE_BASE = 0x50000000u;
+        constexpr size_t STUB_DEVICE_SIZE = 0x1000u;
     }
 }
 

@@ -106,11 +106,9 @@ small, scoped version instead of the big, general one is the KISS move.
 The kernel owning stacks at all is itself a convenience, not a necessity. The only
 stacks the kernel *must* own are its own two threads -- **idle** and **root/main** --
 which are static, build-time-sized buffers. Every other stack is a userspace concern:
-an app can hand `spawn` its own buffer and control the memory entirely. The
-`KOS_STACK_DEFINE(name, size)` helper makes that correct-by-construction -- it aligns
-the buffer so it is a valid MPU region under enforcement (a pow2 base, [Chapter 7](memory-protection.md)),
-which a raw array would not be. Apps that want deterministic, self-owned memory use
-it; apps that just want a thread use the convenient path and get the free-list.
+an app can hand `spawn` its own buffer, taken from `kos_ram_alloc`, and control the memory
+entirely. Apps that want deterministic, self-owned memory use it; apps that just want a thread
+use the convenient path and get the free-list.
 
 ## The lesson
 

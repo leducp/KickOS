@@ -17,14 +17,14 @@ shared:
 
 tasks:
   - name: echo
-    entry: ampecho_main
+    program: main
     priority: 5
     ceiling: 5
     serves: /amp/3
     maps: { /shm/share: rw }
 
   - name: spare4
-    entry: ampecho_spare
+    program: ampecho_spare
     priority: 4
     ceiling: 4
     serves: /amp/4

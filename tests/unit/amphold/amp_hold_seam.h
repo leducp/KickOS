@@ -18,6 +18,8 @@ namespace kickos
         // Fired after far_hold_copy snapshots a slot, before its second liveness check.
         extern void (*g_after_snapshot)();
         extern uint32_t g_snapshot_hooks;
+        // The amp window's state as a cold boot finds it, before window_init.
+        void window_cold();
     }
 }
 

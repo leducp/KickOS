@@ -14,6 +14,8 @@
 
 #include <kickos/arch/arch.h>
 
+#include "regs.h"
+
 #include <gtest/gtest.h>
 
 extern "C"
@@ -25,6 +27,10 @@ extern "C"
 namespace
 {
     using kickos::testfix::g_mpu;
+
+    constexpr uint32_t MPU_CTRL_ENABLED = kickos::arm::MPU_CTRL_ENABLE
+                                          | kickos::arm::MPU_CTRL_HFNMIENA
+                                          | kickos::arm::MPU_CTRL_PRIVDEFENA;
 
     // Two sets of one domain, differing in the LAST-APPENDED slot alone: the thread stack,
     // which kernel/thread/thread.cc appends last. This is the shape the measurement behind
@@ -89,8 +95,22 @@ TEST_F(MpuSkip, a_total_commit_programs_every_descriptor)
         EXPECT_EQ(g_mpu.desc[i].rbar, a.rbar[i]) << "slot " << i;
         EXPECT_EQ(g_mpu.desc[i].rasr, a.rasr[i]) << "slot " << i;
     }
-    EXPECT_NE(g_mpu.ctrl & 1u, 0u); // MPU_CTRL_ENABLE
+    EXPECT_EQ(g_mpu.ctrl, MPU_CTRL_ENABLED);
     EXPECT_EQ(g_mpu.unknown_reads, 0u);
+}
+
+// The other enable, the one a chip declaring fixed rows reaches at boot: inside HardFault and
+// NMI those rows hold only with HFNMIENA.
+TEST_F(MpuSkip, the_fixed_rows_enable_keeps_the_mpu_in_hardfault_and_nmi)
+{
+    static kickos_arm_mpu_fixed_region const rows[1] = {{0x60000000u, 0x0300003Fu}};
+    kickos::testfix::mpu_reset(16);
+    kickos::testfix::mpu_set_fixed(rows, 1);
+    g_mpu.ctrl = 0;
+
+    kickos_arm_mpu_fixed_init();
+
+    EXPECT_EQ(g_mpu.ctrl, MPU_CTRL_ENABLED);
 }
 
 // The whole point: a switch between two threads of one domain rewrites the stack descriptor

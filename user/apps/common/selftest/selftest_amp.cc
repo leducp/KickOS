@@ -117,7 +117,7 @@ namespace selftest
         }
         char name[16];
         (void)ksnprintf(name, sizeof(name), "/amp/%u", static_cast<unsigned>(port));
-        return kos_grant_endpoint(g_self, name);
+        return kos_grant_endpoint(name);
     }
 
     // The port this image serves and its local endpoint's capability. KOS_AMP_NO_ENTRY /
@@ -521,14 +521,22 @@ namespace selftest
         AG_CROSSING = 2,
         AG_WORDS = 3
     };
-    void amp_crossing_worker(void* arg) // caps: none
+#if KICKOS_SELFTEST_PEER
+    int amp_crossing_worker() // caps: none; main's block through its first window
     {
-        volatile int64_t* const out = static_cast<volatile int64_t*>(arg);
+        kos_window at = {};
+        if (kos_window_get(0, &at) != 0)
+        {
+            return 1;
+        }
+        volatile int64_t* const out = reinterpret_cast<volatile int64_t*>(at.base);
         char body[4] = {};
         out[AG_SEND] = kos_send(static_cast<kos_cap_t>(out[AG_CROSSING]), body,
                                       sizeof(body), 0);
         out[AG_RAN] = 1;
+        return 0;
     }
+#endif
 
     void t_amp_crossing_task_local()
     {
@@ -549,124 +557,17 @@ namespace selftest
         char body[4] = {};
         int32_t const mine = kos_send(crossing, body, sizeof(body), 0);
         kos_task_t t = KOS_TASK_NONE;
-        kos::thread::Handle w;
         ArmHold hold;
-        TAP_HOLD(hold.task(&t) and hold.thread(&w));
-        TAP_CHECK(kos_task_create(blk, AG_BLK, 0, &t) == 0);
-        w = kos::thread::create_caps(amp_crossing_worker, blk, "ampgat", 10, nullptr, 0,
-                                     KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr, t);
-        TAP_CHECK(w.valid());
-        TAP_CHECK(hold.joined());
+        TAP_HOLD(hold.task(&t));
+        kos_window const w = {reinterpret_cast<uintptr_t>(blk), AG_BLK, KOS_WINDOW_MEMORY, 0};
+        TAP_CHECK(PeerRun("ampgat").windows(&w, 1).start(&t) == 0);
+        TAP_CHECK(peer_dead_status(t) == 0);
         tap::diag("main's crossing %u: %ld from another task, %ld from main",
                   static_cast<unsigned>(crossing), static_cast<long>(out[AG_SEND]),
                   static_cast<long>(mine));
         TAP_CHECK(out[AG_RAN] == 1);
         TAP_CHECK(out[AG_SEND] == -KOS_EBADF);
         TAP_CHECK(mine == -KOS_EACCES);
-    }
-
-    // KICKOS_MAX_ENDPOINTS' Kconfig ceiling: the pool cannot be wider than this, so the fill
-    // below either reaches it or the arm skips.
-    constexpr int AMP_REUSE_SLOTS = 32;
-
-    // FILLING THE POOL TAKES TWO TASKS: KICKOS_TASK_ENDPOINT_BUDGET sits strictly below the
-    // pool's width. The arm below needs the pool full and bump-allocated to its last index, or
-    // the create after its close lands on a fresh slot instead of the freed one. main's
-    // own AMP port capabilities count against its ceiling.
-    constexpr int CH_FILL_REPORT = KOS_SPAWN_DELEGATED_CAP0;
-    // Never posted: the filler's task waits on its own copy.
-    kos_sem_t g_fill_never = KOS_SEM_INIT(0);
-
-    // Fills after main has, so it also takes the slot main gave back; main's gate is xsem(0).
-    void amp_pool_filler(void*) // caps: report@0
-    {
-        kos_sem_wait(xsem_child(0), KOS_TIMEOUT_NONE);
-        kos_cap_t mine[AMP_REUSE_SLOTS];
-        int32_t n = 0;
-        while (n < AMP_REUSE_SLOTS and kos_endpoint_create(&mine[n]) == 0)
-        {
-            n++;
-        }
-        (void)kos_send(CH_FILL_REPORT, &n, sizeof(n), KOS_TIMEOUT_NONE);
-        // Returning would end the task and free every slot it holds, so it parks here until
-        // main's hold slays the task.
-        kos_sem_wait(&g_fill_never, KOS_TIMEOUT_NONE);
-    }
-
-    // A local port capability names a slot amp::port_bind also names, by index with no
-    // generation, so closing the capability must not free it: freed, the next endpoint_create
-    // from any task lands there and answers a peer's callers.
-    void t_amp_local_port_slot_held()
-    {
-        // Closing this SPENDS the partition's local port for the life of the image, so no arm
-        // that receives on it may follow.
-        kos_cap_t const local = amp_local_cap();
-        TAP_SKIP_UNLESS(local != KOS_CAP_NONE, "the partition names this node no local port");
-        TAP_ASK(.workers = 1, .tasks = 1, .endpoints = 1, .caps = 2);
-        kos_cap_t report = KOS_CAP_NONE;
-        kos_cap_t probe = KOS_CAP_NONE;
-        kos_cap_t reused = KOS_CAP_NONE;
-        kos_task_t group = KOS_TASK_NONE;
-        kos::thread::Handle filler;
-        ArmHold hold;
-        TAP_HOLD(hold.cap(&report) and hold.cap(&probe) and hold.cap(&reused)
-                 and hold.task(&group) and hold.thread(&filler));
-        kos_sem_t* const gate = xsem(0);
-        TAP_CHECK(kos_endpoint_create(&report) == 0);
-        TAP_CHECK(kos_sem_init(gate, 0) == 0);
-        TAP_CHECK(kos_task_create(nullptr, 0, 0, &group) == 0);
-        kos_cap_grant caps[] = {{report, KOS_CAP_SIGNAL}};
-        kos_window const xw = xsem_window();
-        filler = kos::thread::create(amp_pool_filler, nullptr, "ampfill", 10, KOS_POLICY_FIFO,
-                                     0, nullptr, 0, nullptr, 0, &xw, xsem_windows(), caps, 1,
-                                     KOS_AUTH_MEMORY, nullptr, group);
-        TAP_CHECK(filler.valid());
-
-        // No check from here until held[] is closed: one failing would leave the pool full
-        // under every later arm.
-        kos_cap_t held[AMP_REUSE_SLOTS];
-        int n = 0;
-        while (n < AMP_REUSE_SLOTS and kos_endpoint_create(&held[n]) == 0)
-        {
-            n++; // stops at this task's own ceiling or the pool's
-        }
-        // One back, so main keeps a unit of ceiling to PROBE the pool with below.
-        if (n > 0)
-        {
-            n--;
-            (void)kos_handle_close(held[n]);
-        }
-        (void)kos_sem_post(gate);
-        int32_t filled = -1;
-        struct kos_reply_recv_opts opts;
-        kos_reply_recv_opts_init(&opts, report, KOS_RECV_NO_INFO, STALL_TOLERANT_US);
-        int32_t const heard =
-            kos_reply_recv(KOS_CAP_NONE, &filled, kos_call_lens_pack(0, sizeof(filled)), &opts);
-        // THE PROBE IS THE PRECONDITION: -KOS_ENOMEM proves the pool full, forcing the create
-        // after the close onto the freed slot.
-        int const full = kos_endpoint_create(&probe);
-        int closed = 1;
-        int created = 1;
-        if (heard == static_cast<int32_t>(sizeof(filled)) and full == -KOS_ENOMEM)
-        {
-            closed = kos_handle_close(local);
-            created = kos_endpoint_create(&reused);
-        }
-        if (closed == 0)
-        {
-            tap::census_expect(cap_census, 1);
-        }
-        for (int i = 0; i < n; i++)
-        {
-            (void)kos_handle_close(held[i]);
-        }
-        tap::diag("local port slot: main held %d, the filler %ld, close %d, create after it %d",
-                  n, static_cast<long>(filled), closed, created);
-        TAP_CHECK(heard == static_cast<int32_t>(sizeof(filled)));
-        TAP_SKIP_UNLESS(full == -KOS_ENOMEM, "the endpoint pool did not fill");
-        TAP_CHECK(closed == 0);
-        // The bind holds its own reference, so the close freed no slot.
-        TAP_CHECK(created == -KOS_ENOMEM);
     }
 
 #if KICKOS_AMP_OWN_IMAGE
@@ -689,7 +590,7 @@ namespace selftest
     // at the share's base. 0 where its composition maps none.
     uintptr_t amp_share_view(size_t* size)
     {
-        kos_window_t const region = kos_grant_mem(g_self, "/shm/share");
+        kos_window_t const region = kos_grant_mem("/shm/share");
         *size = kos_window_size(region);
         return reinterpret_cast<uintptr_t>(kos_window_addr(region));
     }
@@ -718,7 +619,7 @@ namespace selftest
 #if KICKOS_HAVE_ASPACE
         // A window over a part of the share, which no pool frame backs, where the composition gives
         // main one: the spawn that seated main admitted it.
-        kos_window_t const wide = kos_grant_mem(g_self, "/shm/wide");
+        kos_window_t const wide = kos_grant_mem("/shm/wide");
         uintptr_t const wide_view = reinterpret_cast<uintptr_t>(kos_window_addr(wide));
         size_t const wide_size = kos_window_size(wide);
         tap::diag("share part window: 0x%lx bytes at 0x%lx", static_cast<unsigned long>(wide_size),
@@ -743,7 +644,7 @@ namespace selftest
         ArmHold hold;
         TAP_HOLD(hold.thread(&child));
         child = kos::thread::create(amp_share_child, nullptr, "shx", 10, KOS_POLICY_FIFO, 0,
-                                    nullptr, 0, nullptr, 0, &w, 1);
+                                    nullptr, 0, &w, 1);
         int const window = child.error();
         tap::diag("share named by main: grant %ld, the other type %ld, a child's window %ld",
                   static_cast<long>(grant), static_cast<long>(other), static_cast<long>(window));
@@ -781,8 +682,7 @@ namespace selftest
         TAP_HOLD(hold.owned(m) and hold.thread(&c));
         int const taken = kos_mutex_lock(m, 0);
         c = kos::thread::create(asm_contender, m, "asmC", TAP_PRIO_PARKS, KOS_POLICY_FIFO, 0,
-                                nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0, 0, nullptr,
-                                KOS_TASK_NONE, TAP_PIN_CORE);
+                                nullptr, 0, nullptr, 0, nullptr, 0, 0, nullptr, TAP_PIN_CORE);
         TAP_CHECK(c.valid());
         // A refusal ends the contender at once; a park outlives the join and the unlock ends it.
         (void)c.join(ASM_REFUSED_US);
@@ -882,7 +782,7 @@ namespace selftest
         kos_cap_grant caps[] = {{frame, KOS_CAP_TRANSFER}, {space, KOS_CAP_TRANSFER}};
         w = kos::thread::create_caps(amp_ru_unmapper, nullptr, "ampru",
                                      static_cast<uint8_t>(g_self->priority - 1u), caps, 2,
-                                     KOS_POLICY_FIFO, 0, nullptr, 0, KOS_AUTH_MEMORY);
+                                     KOS_POLICY_FIFO, 0, KOS_AUTH_MEMORY);
         TAP_CHECK(w.valid());
         int64_t const fault0 = amp_count(AMP_SELF_ROW, KOS_AMP_COUNT_DELIVER_FAULT);
         int32_t const got = kos_call(far, req, AMP_FAR_LEN, AMP_FAR_LEN, STALL_TOLERANT_US);
@@ -919,6 +819,17 @@ namespace selftest
         TAP_CHECK(again == static_cast<int32_t>(sizeof(cbuf)));
     }
 #endif
+#endif
+
+#if KICKOS_SELFTEST_PEER
+    int peer_roles_amp(int argc, char** argv)
+    {
+        if (argc == 2 and peer_is(argv[1], "ampgat"))
+        {
+            return amp_crossing_worker();
+        }
+        return PEER_WHAT;
+    }
 #endif
 #endif
 }

@@ -16,6 +16,9 @@ namespace
     constexpr uint32_t STATUS_RETRIES = 100u;
     constexpr uint64_t STATUS_RETRY_NS = 1000000ull;
 
+    // The caller's declaration index plus one, set by the task's start in its own image.
+    uintptr_t s_decl = 0u;
+
     kos_window_t const NO_WINDOW = {nullptr, 0u};
 
     struct Table
@@ -55,10 +58,10 @@ namespace
         return false;
     }
 
-    // The first grant of `self` named `name` whose kind is `kind` or `also`.
-    kos_table_grant const* find(Table const& t, kos_self_t const* self, char const* name,
-                                uint8_t kind, uint8_t also)
+    // The first grant of the caller's declaration named `name` whose kind is `kind` or `also`.
+    kos_table_grant const* find(Table const& t, char const* name, uint8_t kind, uint8_t also)
     {
+        kos_self_t const* const self = kos_self();
         if (self == nullptr or name == nullptr)
         {
             return nullptr;
@@ -74,10 +77,10 @@ namespace
         return nullptr;
     }
 
-    kos_cap_t cap_of(kos_self_t const* self, char const* name, uint8_t kind, uint8_t also)
+    kos_cap_t cap_of(char const* name, uint8_t kind, uint8_t also)
     {
         Table const t = table();
-        kos_table_grant const* const grant = find(t, self, name, kind, also);
+        kos_table_grant const* const grant = find(t, name, kind, also);
         if (grant == nullptr or grant->cap_slot == KOS_TABLE_NONE)
         {
             return KOS_CAP_NONE;
@@ -107,51 +110,65 @@ namespace
         return kos_window_t{reinterpret_cast<void*>(window.base), window.size};
     }
 
-    kos_window_t window_named(kos_self_t const* self, char const* name, uint8_t grant_kind,
-                              uint8_t window_kind)
+    kos_window_t window_named(char const* name, uint8_t grant_kind, uint8_t window_kind)
     {
         Table const t = table();
-        return window_of(t, find(t, self, name, grant_kind, grant_kind), window_kind);
+        return window_of(t, find(t, name, grant_kind, grant_kind), window_kind);
     }
 }
 
 extern "C"
 {
 
-kos_cap_t kos_grant_endpoint(kos_self_t const* self, char const* name)
+void kickos_self_enter(uintptr_t decl)
 {
-    kos_cap_t const cap = cap_of(self, name, KOS_GRANT_ENDPOINT_SERVE, KOS_GRANT_ENDPOINT_USE);
+    s_decl = decl + 1u;
+}
+
+kos_self_t const* kos_self(void)
+{
+    if (s_decl == 0u)
+    {
+        return nullptr;
+    }
+    auto const tasks = reinterpret_cast<kos_table_task const*>(kickos_table + 1);
+    return &tasks[s_decl - 1u];
+}
+
+kos_cap_t kos_grant_endpoint(char const* name)
+{
+    kos_cap_t const cap = cap_of(name, KOS_GRANT_ENDPOINT_SERVE, KOS_GRANT_ENDPOINT_USE);
     if (cap != KOS_CAP_NONE)
     {
         return cap;
     }
-    return cap_of(self, name, KOS_GRANT_PORT, KOS_GRANT_PORT);
+    return cap_of(name, KOS_GRANT_PORT, KOS_GRANT_PORT);
 }
 
-kos_cap_t kos_grant_notify(kos_self_t const* self, char const* name)
+kos_cap_t kos_grant_notify(char const* name)
 {
-    return cap_of(self, name, KOS_GRANT_NOTIFICATION, KOS_GRANT_NOTIFICATION);
+    return cap_of(name, KOS_GRANT_NOTIFICATION, KOS_GRANT_NOTIFICATION);
 }
 
-kos_window_t kos_grant_mmio(kos_self_t const* self, char const* name)
+kos_window_t kos_grant_mmio(char const* name)
 {
-    return window_named(self, name, KOS_GRANT_WINDOW, KOS_WINDOW_DEVICE);
+    return window_named(name, KOS_GRANT_WINDOW, KOS_WINDOW_DEVICE);
 }
 
-kos_window_t kos_grant_mem(kos_self_t const* self, char const* name)
+kos_window_t kos_grant_mem(char const* name)
 {
-    return window_named(self, name, KOS_GRANT_REGION, KOS_WINDOW_MEMORY);
+    return window_named(name, KOS_GRANT_REGION, KOS_WINDOW_MEMORY);
 }
 
-kos_window_t kos_grant_ports(kos_self_t const* self, char const* name)
+kos_window_t kos_grant_ports(char const* name)
 {
-    return window_named(self, name, KOS_GRANT_PORTS, KOS_WINDOW_PORTS);
+    return window_named(name, KOS_GRANT_PORTS, KOS_WINDOW_PORTS);
 }
 
-kos_line_t kos_grant_irq(kos_self_t const* self, char const* name)
+kos_line_t kos_grant_irq(char const* name)
 {
     Table const t = table();
-    kos_table_grant const* const grant = find(t, self, name, KOS_GRANT_LINE, KOS_GRANT_LINE);
+    kos_table_grant const* const grant = find(t, name, KOS_GRANT_LINE, KOS_GRANT_LINE);
     if (grant == nullptr or grant->cap_slot == KOS_TABLE_NONE)
     {
         return kos_line_t{KOS_CAP_NONE, KOS_TABLE_NONE};
@@ -159,8 +176,9 @@ kos_line_t kos_grant_irq(kos_self_t const* self, char const* name)
     return kos_line_t{grant->cap_slot, grant->line_index};
 }
 
-int kos_task_status(kos_self_t const* self, uint32_t i, struct kos_task_status* out)
+int kos_task_status(uint32_t i, struct kos_task_status* out)
 {
+    kos_self_t const* const self = kos_self();
     if (self == nullptr or out == nullptr or i >= self->watch_count)
     {
         return -KOS_EINVAL;

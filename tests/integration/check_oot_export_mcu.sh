@@ -17,13 +17,18 @@
 #     as a -T driver option alone does not create that edge, and the failure is
 #     silent: a stale image gets flashed;
 #   - kickos_emit_image() gives the plain path its deliverable;
+#   - an image of a consumer linking through nested INTERFACE targets, a STATIC library only a
+#     PRIVATE dependency names, an OBJECT library and a throw holds a symbol of each; where the
+#     package links an image on its own, the image object leaves only the stated bounds
+#     undefined and defines nothing global but its header;
 #   - no warning flag reaches the consumer's own TUs on either path (our hygiene
 #     policy is not part of the interface);
 #   - every installed header compiles standalone with the package's OWN cross
 #     compiler and its OWN definitions (check_public_headers.sh);
 #   - the single-board guard rejects a cross-board request at find_package time, and a package
 #     whose configuration names an arch its targets do not carry is refused there too;
-#   - a package whose descriptor fixes a micro:bit newlib profile refuses the other one.
+#   - a package whose descriptor fixes a micro:bit newlib profile refuses the other one;
+#   - a clean of the app removes every file its link wrote, each image's own among them.
 #
 # NOTHING HERE NAMES AN ARCH. The gate registers on one board per KICKOS_ARCH
 # (tests/integration/oot_arch_boards.txt), so the toolchain file, the ELF machine and the
@@ -60,12 +65,12 @@ BOARD_CFG="$KICKOS_BUILD/generated/include/kickos/board_config.h"
 knob() {
   awk -v k="$1" '$1 == "#define" && $2 == k { print $3; exit }' "$BOARD_CFG"
 }
-EXPECT_MAX_THREADS="$(knob KICKOS_MAX_THREADS)"
+EXPECT_BUDGET_THREADS="$(knob KICKOS_BUDGET_THREADS)"
 EXPECT_USER_STACK_SIZE="$(knob KICKOS_USER_STACK_SIZE)"
 EXPECT_BENCH="$(knob KICKOS_BENCH)"
 # An empty value passes as a -D nothing defines, and the example's #ifdef then skips the
 # assertion in silence.
-[ -n "$EXPECT_MAX_THREADS" ] || fail "$BOARD_CFG states no KICKOS_MAX_THREADS"
+[ -n "$EXPECT_BUDGET_THREADS" ] || fail "$BOARD_CFG states no KICKOS_BUDGET_THREADS"
 [ -n "$EXPECT_USER_STACK_SIZE" ] || fail "$BOARD_CFG states no KICKOS_USER_STACK_SIZE"
 [ -n "$EXPECT_BENCH" ] || fail "$BOARD_CFG states no KICKOS_BENCH"
 
@@ -78,6 +83,22 @@ installed_manifest "$KICKOS_BUILD" "$KICKOS_SRC" "$TMP/prefix"
 
 package_toolchain "$TMP/prefix"
 TC="$PACKAGE_TC"
+
+PKG_CFG="$TMP/prefix/lib/cmake/KickOS/KickOSConfig.cmake"
+# Whether an image is linked on its own first, so which form the arms below read.
+PKG_SPLIT="$(sed -n 's/^set(KICKOS_IMAGE_SPLIT \([A-Z]*\))$/\1/p' "$PKG_CFG")"
+case "$PKG_SPLIT" in
+  ON|OFF) ;;
+  *) fail "$PKG_CFG states KICKOS_IMAGE_SPLIT as '$PKG_SPLIT', not ON or OFF" ;;
+esac
+# Whether the init is an image of its own, which makes the app image 1, its header
+# kickos_image1_header and its bounds __kickos_image1_*.
+PKG_INIT="$(sed -n 's/^set(KICKOS_INIT_IMAGE \([A-Z]*\))$/\1/p' "$PKG_CFG")"
+case "$PKG_INIT" in
+  ON) APP_N=1; APP_HEADER=kickos_image1_header ;;
+  OFF) APP_N=0; APP_HEADER=kickos_image_header ;;
+  *) fail "$PKG_CFG states KICKOS_INIT_IMAGE as '$PKG_INIT', not ON or OFF" ;;
+esac
 
 DESC="$TMP/prefix/lib/cmake/KickOS/board.cmake"
 [ -f "$DESC" ] || fail "shipped board descriptor (board.cmake) missing from package"
@@ -102,13 +123,32 @@ WANT_MACHINE="$(sed -n 's/^ *Machine: *//p' "$TMP/ar_hdr" | sort -u)"
 [ "$(printf '%s\n' "$WANT_MACHINE" | wc -l | tr -d ' ')" = "1" ] \
   || fail "$(basename "$ARCH_AR") holds members of more than one machine: $WANT_MACHINE"
 
-# Board-agnostic: the package ships exactly one linker script. More than one and the relink
-# probe below would patch an arbitrary one, which is not necessarily the one that links. Both
-# shipped locations are searched: a script the exported target names as a -T option lands
-# beside the archives, and one a build recipe reads list-dir-relative lands beside that recipe.
+# Board-agnostic: the package ships exactly one linker script, and where its images are
+# programs embedded in the kernel's link, that script's program form <script>.program.ld beside
+# it, and where each declared task is an image of its own, the image template <script>.image.ld
+# beside it. Any other and the relink probe below would patch an arbitrary one, which is not
+# necessarily the one that links. Both shipped locations are searched: a script the exported
+# target names as a -T option lands beside the archives, and one a build recipe reads
+# list-dir-relative lands beside that recipe.
 LD=""
+PROGRAM_LD=""
+IMAGE_LD=""
 for _ld in "$TMP"/prefix/lib/kickos/*.ld "$TMP"/prefix/lib/cmake/KickOS/*.ld; do
   [ -f "$_ld" ] || continue
+  case "$_ld" in
+    *.program.ld)
+      [ -z "$PROGRAM_LD" ] || fail "package ships two program scripts ($(basename \
+"$PROGRAM_LD"), $(basename "$_ld"))"
+      PROGRAM_LD="$_ld"
+      continue
+      ;;
+    *.image.ld)
+      [ -z "$IMAGE_LD" ] || fail "package ships two image templates ($(basename \
+"$IMAGE_LD"), $(basename "$_ld"))"
+      IMAGE_LD="$_ld"
+      continue
+      ;;
+  esac
   if [ -n "$LD" ]; then
     fail "package ships several linker scripts ($(basename "$LD"), $(basename "$_ld")); \
 the relink probe cannot tell which one the link uses"
@@ -116,6 +156,14 @@ the relink probe cannot tell which one the link uses"
   LD="$_ld"
 done
 [ -n "$LD" ] || fail "shipped linker script missing from package"
+if [ -n "$PROGRAM_LD" ] && [ "${PROGRAM_LD%.program.ld}.ld" != "$LD" ]; then
+  fail "package ships $(basename "$PROGRAM_LD") beside $(basename "$LD"), the program form of \
+no script it links"
+fi
+if [ -n "$IMAGE_LD" ] && [ "${IMAGE_LD%.image.ld}.ld" != "$LD" ]; then
+  fail "package ships $(basename "$IMAGE_LD") beside $(basename "$LD"), the image template of \
+no script it links"
+fi
 
 # The consumer builds with the KickOS toolchain this build did, not whichever one the shell
 # running the gate sourced.
@@ -145,7 +193,7 @@ echo "== configuring out-of-tree MCU app with the shipped toolchain (no -DKICKOS
 "$CMAKE" -S "$KICKOS_SRC/examples/oot-mcu-app" -B "$TMP/build" -G "$GEN" \
   -DCMAKE_TOOLCHAIN_FILE="$TC" -DCMAKE_PREFIX_PATH="$TMP/prefix" \
   -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-  -DKICKOS_EXPECT_MAX_THREADS="$EXPECT_MAX_THREADS" \
+  -DKICKOS_EXPECT_BUDGET_THREADS="$EXPECT_BUDGET_THREADS" \
   -DKICKOS_EXPECT_USER_STACK_SIZE="$EXPECT_USER_STACK_SIZE" \
   -DKICKOS_EXPECT_BENCH="$EXPECT_BENCH" >/dev/null \
   || fail "out-of-tree MCU configure (find_package) failed"
@@ -248,19 +296,141 @@ fi
 
 echo "== the app links a system target =="
 if [ "$KIND" = elf ]; then
-  tool_out "$TMP/app_syms" "$READELF_SYM_RE" "$READELF" -sW "$APP"
-  awk '$5 == "GLOBAL" && $7 != "UND" && $8 ~ /^_?kickos_link_one_system_target$/ { found = 1 }
+  # Where the app is an image of its own link, the final link collects the unreferenced word,
+  # and the object or the program that link wrote carries it.
+  SYM_FILE="$APP"
+  if [ -n "$PROGRAM_LD" ]; then
+    SYM_FILE="$APP.kimg/image$APP_N.elf"
+  elif [ "$PKG_SPLIT" = ON ]; then
+    SYM_FILE="$APP.kimg/kickos_image$APP_N.o"
+    [ -f "$SYM_FILE" ] || fail "the package links its images on their own (KICKOS_IMAGE_SPLIT \
+ON), and the link of the out-of-tree app wrote no $(basename "$SYM_FILE")"
+  fi
+  tool_out "$TMP/app_syms" "$READELF_SYM_RE" "$READELF" -sW "$SYM_FILE"
+  awk '($5 == "GLOBAL" || $5 == "LOCAL") && $7 != "UND" && $8 ~ /^_?kickos_link_one_system_target$/ { found = 1 }
        END { exit !found }' "$TMP/app_syms" \
     || fail "the out-of-tree app defines no kickos_link_one_system_target, so it links no \
 system target"
 else
-  # readelf walks no symbol table in a PE32+ image.
-  [ -s "$EFI.map" ] || fail "no link map beside $EFI, so nothing here can tell which system \
+  # readelf walks no symbol table in a PE32+ image, and the program its link embeds is the
+  # image the system target is in.
+  SYS_MAP="$EFI.map"
+  if [ -n "$PROGRAM_LD" ]; then
+    SYS_MAP="$EFI.kimg/image$APP_N.map"
+  fi
+  [ -s "$SYS_MAP" ] || fail "no link map at $SYS_MAP, so nothing here can tell which system \
 target the image links"
-  grep -Eq '^[[:space:]]+0x[0-9a-fA-F]+[[:space:]]+kickos_link_one_system_target$' "$EFI.map" \
+  grep -Eq '^[[:space:]]+0x[0-9a-fA-F]+[[:space:]]+kickos_link_one_system_target$' "$SYS_MAP" \
     || fail "the out-of-tree app's link map defines no kickos_link_one_system_target, so it \
 links no system target"
 fi
+
+# A program's image replays CMake's own link command of the program, so an input only CMake's
+# closure names reaches the image. tests/lib/image_link's program reaches one symbol out of each
+# such input; which form its link has is what the package states, and reading the other form is
+# a failure.
+echo "== a program's image linked against the package holds every input CMake gave its link =="
+package_image "$KICKOS_BUILD" "$CMAKE" "$KICKOS_SRC/tests/lib/image_link" image_link
+# Image 1 runs main, the image's own program; image 2 runs image_link_program.
+ILK_N=$((APP_N + 1))
+ILK_HEADER_NAME="kickos_image${ILK_N}_header"
+ILK_OBJ="$TMP/image_link/image_link.kimg/kickos_image$ILK_N.o"
+ILK_SYMS="kickos_ilk_iface kickos_ilk_mid kickos_ilk_leaf kickos_ilk_object kickos_ilk_throw \
+__wrap___cxa_allocate_exception"
+if [ "$PKG_SPLIT" = ON ]; then
+  [ -f "$ILK_OBJ" ] || fail "the package links its images on their own (KICKOS_IMAGE_SPLIT \
+ON), and the link of image_link wrote no $(basename "$ILK_OBJ")"
+  case "$IMAGE" in
+    *.efi) fail "the package links its images on their own and image_link is a PE image" ;;
+  esac
+  ILK_FORM="image object $(basename "$ILK_OBJ")"
+  tool_out "$TMP/ilk_obj_syms" "$READELF_SYM_RE" "$READELF" -sW "$ILK_OBJ"
+  tool_out "$TMP/ilk_elf_syms" "$READELF_SYM_RE" "$READELF" -sW "$IMAGE"
+  # The symbol prefix the image's C names carry, read off its header.
+  ILK_HEADER="$(awk -v h="$ILK_HEADER_NAME" '$1 ~ /^[0-9]+:$/ && $5 == "GLOBAL" && $7 != "UND" \
+                     && ($8 == h || $8 == "_" h) { print $8; exit }' "$TMP/ilk_obj_syms")"
+  [ -n "$ILK_HEADER" ] || fail "$(basename "$ILK_OBJ") defines no global $ILK_HEADER_NAME"
+  ILK_PREFIX="${ILK_HEADER%"$ILK_HEADER_NAME"}"
+  # What tools/image-link.py lets an image leave to the final link: the bounds the installed
+  # image_names.txt renames, the build identifier and the kernel entries the package names.
+  PKG_NAMES="$TMP/prefix/lib/cmake/KickOS/image_names.txt"
+  [ -f "$PKG_NAMES" ] || fail "the package ships no image_names.txt"
+  PKG_ENTRIES="$(sed -n 's/^set(KICKOS_IMAGE_KERNEL_ENTRIES "\(.*\)")$/\1/p' "$PKG_CFG" \
+                   | tr ';' ' ')"
+  {
+    sed 's/#.*//' "$PKG_NAMES" \
+      | awk -v p="$ILK_PREFIX" -v n="$ILK_N" 'NF == 2 { print p "__kickos_image" n "_" $2 }'
+    echo "${ILK_PREFIX}__kickos_build_id"
+    for _e in $PKG_ENTRIES; do
+      echo "$ILK_PREFIX$_e"
+    done
+  } > "$TMP/ilk_allowed"
+  [ "$(wc -l < "$TMP/ilk_allowed")" -gt 1 ] || fail "$PKG_NAMES renames no bound"
+  # A strong reference is left only for a bound. A weak one stays unresolved: the final link
+  # defines it nowhere outside the image.
+  awk -v allowed="$TMP/ilk_allowed" '
+    BEGIN { while ((getline n < allowed) > 0) { ok[n] = 1 } }
+    $1 ~ /^[0-9]+:$/ && $7 == "UND" && $8 != "" && $5 == "GLOBAL" && !($8 in ok) { print $8 }' \
+    "$TMP/ilk_obj_syms" | sort -u > "$TMP/ilk_strong"
+  [ ! -s "$TMP/ilk_strong" ] || fail "$(basename "$ILK_OBJ") leaves to the final link what \
+no bound names: $(tr '\n' ' ' < "$TMP/ilk_strong")"
+  awk '$1 ~ /^[0-9]+:$/ && $7 == "UND" && $8 != "" && $5 == "WEAK" { print $8 }' \
+    "$TMP/ilk_obj_syms" | sort -u > "$TMP/ilk_weak"
+  awk '$1 ~ /^[0-9]+:$/ && $7 != "UND" && ($5 == "GLOBAL" || $5 == "WEAK") { print $8 }' \
+    "$TMP/ilk_elf_syms" | sort -u | comm -12 "$TMP/ilk_weak" - > "$TMP/ilk_weak_bound"
+  [ ! -s "$TMP/ilk_weak_bound" ] || fail "the final link of image_link resolves a weak \
+reference of the image outside it: $(tr '\n' ' ' < "$TMP/ilk_weak_bound")"
+  awk -v h="$ILK_HEADER" '$1 ~ /^[0-9]+:$/ && $7 != "UND" && $5 != "LOCAL" && $8 != h {
+                            print $8 }' "$TMP/ilk_obj_syms" | sort -u > "$TMP/ilk_global"
+  [ ! -s "$TMP/ilk_global" ] || fail "$(basename "$ILK_OBJ") defines non-local symbols beside \
+its header: $(sed -n '1,8p' "$TMP/ilk_global" | tr '\n' ' ')"
+  ILK_READ="$TMP/ilk_obj_syms"
+elif [ -n "$PROGRAM_LD" ]; then
+  ILK_PROG="$IMAGE.kimg/image$ILK_N.elf"
+  [ -f "$ILK_PROG" ] || fail "the package ships $(basename "$PROGRAM_LD") and the link of \
+image_link wrote no $(basename "$ILK_PROG")"
+  ILK_FORM="the program ELF $(basename "$ILK_PROG")"
+  tool_out "$TMP/ilk_elf_syms" "$READELF_SYM_RE" "$READELF" -sW "$ILK_PROG"
+  awk '$1 ~ /^[0-9]+:$/ && $7 == "UND" && $8 != "" && $5 == "GLOBAL" { print $8 }' \
+    "$TMP/ilk_elf_syms" | sort -u > "$TMP/ilk_strong"
+  [ ! -s "$TMP/ilk_strong" ] || fail "$(basename "$ILK_PROG") leaves strong references \
+undefined: $(tr '\n' ' ' < "$TMP/ilk_strong")"
+  ILK_READ="$TMP/ilk_elf_syms"
+else
+  [ ! -e "$ILK_OBJ" ] || fail "the package keeps its images in the kernel's link \
+(KICKOS_IMAGE_SPLIT OFF), and the link of image_link wrote $(basename "$ILK_OBJ")"
+  case "$IMAGE" in
+    *.efi)
+      ILK_FORM="the link map of $(basename "$IMAGE")"
+      [ -s "$IMAGE.map" ] || fail "no link map beside $IMAGE"
+      ILK_READ="$IMAGE.map" ;;
+    *)
+      ILK_FORM="the whole ELF $(basename "$IMAGE")"
+      tool_out "$TMP/ilk_elf_syms" "$READELF_SYM_RE" "$READELF" -sW "$IMAGE"
+      awk '$1 ~ /^[0-9]+:$/ && $7 == "UND" && $8 != "" && $5 == "GLOBAL" { print $8 }' \
+        "$TMP/ilk_elf_syms" | sort -u > "$TMP/ilk_strong"
+      [ ! -s "$TMP/ilk_strong" ] || fail "$(basename "$IMAGE") leaves strong references \
+undefined: $(tr '\n' ' ' < "$TMP/ilk_strong")"
+      ILK_READ="$TMP/ilk_elf_syms" ;;
+  esac
+fi
+# A readelf row defines a function by name; a link map lists a defined global at its address.
+ilk_defines() { # <symbol>
+  case "$ILK_READ" in
+    *.map)
+      grep -Eq "^[[:space:]]+0x[0-9a-fA-F]+[[:space:]]+_?$1\$" "$ILK_READ" ;;
+    *)
+      awk -v s="$1" '$1 ~ /^[0-9]+:$/ && $7 != "UND" && $4 == "FUNC" && ($8 == s || $8 == "_" s) {
+                       found = 1 }
+                     END { exit !found }' "$ILK_READ" ;;
+  esac
+}
+for _s in $ILK_SYMS; do
+  ilk_defines "$_s" \
+    || fail "$ILK_FORM defines no $_s, so the image misses part of what CMake gave the link \
+of image_link_program"
+done
+echo "   read $ILK_FORM: every contribution present"
 
 echo "== our warning policy must not reach the consumer's TUs =="
 if [ -f "$CDB" ]; then
@@ -297,9 +467,9 @@ echo "== an edited linker script must relink (not leave a stale image) =="
 #   PE:  the -Map file. ld writes no symbol table into a PE32+ image that readelf walks, and
 #        the map comes out of the same command as the image, so a link that did not re-run
 #        leaves the old map beside the old image.
-probe_seen() { # 0 when what the linker last wrote names the probe
-  if [ "$KIND" = elf ]; then
-    tool_out "$TMP/probe_out" "$READELF_SYM_RE" "$READELF" -sW "$APP"
+probe_seen() { # [<elf>]: 0 when what the linker last wrote names the probe
+  if [ "$KIND" = elf ] || [ -n "${1:-}" ]; then
+    tool_out "$TMP/probe_out" "$READELF_SYM_RE" "$READELF" -sW "${1:-$APP}"
   else
     [ -s "$EFI.map" ] || fail "no link map beside $EFI, so nothing here can tell a relink \
 from a stale image"
@@ -316,6 +486,23 @@ probe_seen \
   || fail "an edited linker script did NOT relink the out-of-tree app: a stale \
 image would be flashed (INTERFACE_LINK_DEPENDS on the exported target, or a DEPENDS on the \
 script in the image command, missing?)"
+# The program form links the image the kernel's link embeds, so its edit relinks both.
+if [ -n "$PROGRAM_LD" ]; then
+  PROGRAM="$APP.kimg/image$APP_N.elf"
+  if [ "$KIND" = pe ]; then
+    PROGRAM="$EFI.kimg/image$APP_N.elf"
+  fi
+  [ -f "$PROGRAM" ] || fail "the package ships $(basename "$PROGRAM_LD") and the app's \
+link wrote no $(basename "$PROGRAM")"
+  if probe_seen "$PROGRAM"; then
+    fail "probe symbol already in the program before its script's edit: the check proves nothing"
+  fi
+  printf '\n_kickos_relink_probe = 0xDEADBEEF;\n' >> "$PROGRAM_LD"
+  "$CMAKE" --build "$TMP/build" >/dev/null \
+    || fail "rebuild after the program script's edit failed"
+  probe_seen "$PROGRAM" \
+    || fail "an edited program script did NOT relink the out-of-tree app's image $APP_N"
+fi
 
 # Another REAL board, so the refusal is about the mismatch and not about a name no
 # descriptor anywhere would resolve.
@@ -376,5 +563,17 @@ $(sed -n '1,3p' "$TMP/profile.log" | tr '\n' ' ')"
   PROFILE_NOTE="; other newlib profile rejected"
 fi
 
-echo "PASS: out-of-tree MCU app built for $WANT_MACHINE, imaged as $KIND and relinked; \
-headers compile; no flags leaked; cross-board rejected$PROFILE_NOTE"
+echo "== a clean removes every file the app's link wrote =="
+OUT="$APP"
+if [ "$KIND" = pe ]; then
+  OUT="$EFI"
+fi
+"$CMAKE" --build "$TMP/build" --target clean >/dev/null || fail "the out-of-tree clean failed"
+# The configure writes <target>.kernel_objects beside the image, which a clean keeps.
+( cd "$TMP/build" && find . -maxdepth 1 -name "$(basename "$OUT")*" ! -name '*.kernel_objects' ) \
+  > "$TMP/unclean"
+[ ! -s "$TMP/unclean" ] || fail "a clean of the out-of-tree app leaves what its link wrote: \
+$(tr '\n' ' ' < "$TMP/unclean")"
+
+echo "PASS: out-of-tree MCU app built for $WANT_MACHINE, imaged as $KIND, relinked and cleaned; \
+headers compile; no flags leaked; cross-board rejected; image read from $ILK_FORM$PROFILE_NOTE"

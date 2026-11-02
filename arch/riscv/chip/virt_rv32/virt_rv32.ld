@@ -12,11 +12,9 @@
    LMA and the copy table does real work. */
 #define KICKOS_RV32_LOADS_AT_VMA 0
 
-/* Full C++ under PMP puts code and rodata just over 128K, and NAPOT admits no size between,
-   so the code region is 256K. */
-#ifndef KICKOS_CODE_SIZE
-#define KICKOS_CODE_SIZE 256K
-#endif
+/* QEMU caches no TLB entry for a 4 KiB page a PMP entry splits, so each access to it takes the
+   slow path; the kernel's hottest data follows the code window's end. */
+#define KICKOS_RV32_CODE_WINDOW_ALIGN 4096
 
 MEMORY
 {

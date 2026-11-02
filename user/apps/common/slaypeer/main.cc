@@ -59,10 +59,8 @@ namespace
     void slayer(void*)
     {
         auto const v = kos::thread::create(victim, nullptr, "victim", PRIO_VICTIM,
-                                           KOS_POLICY_FIFO, 0,
-                                           nullptr, 0, nullptr, 0, nullptr, 0,
-                                           nullptr, 0, 0, nullptr, KOS_TASK_NONE,
-                                           1u << CORE_VICTIM);
+                                           KOS_POLICY_FIFO, 0, nullptr, 0, nullptr, 0, nullptr, 0,
+                                           0, nullptr, 1u << CORE_VICTIM);
         if (not v.valid())
         {
             kos::print("[slaypeer] ERROR: victim spawn refused\n");
@@ -77,10 +75,8 @@ namespace
 int main(int, char**)
 {
     // The SLAYER is what spawns the victim: a cancel admits the spawner alone.
-    auto const s = kos::thread::create(slayer, nullptr, "slayer", PRIO_SLAYER,
-                                       KOS_POLICY_FIFO, 0,
-                                       nullptr, 0, nullptr, 0, nullptr, 0,
-                                       nullptr, 0, 0, nullptr, KOS_TASK_NONE,
+    auto const s = kos::thread::create(slayer, nullptr, "slayer", PRIO_SLAYER, KOS_POLICY_FIFO, 0,
+                                       nullptr, 0, nullptr, 0, nullptr, 0, 0, nullptr,
                                        1u << CORE_SLAYER);
     if (not s.valid())
     {

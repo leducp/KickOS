@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// A thread-fault record on the kernel's own console reaches the wire whole when the ring is
-// full: each of its lines makes room by sending the oldest queued bytes under the mask, never
-// more than the line's own length, and the queued lines go out first and unsplit, once each.
+// A thread-fault record on the kernel's own console behind a full ring: its line is refused
+// whole, as any line is, and nothing of it or of the queued lines is written at the device by
+// the refusal. The waiting is the caller's (kconsole_record_wait, room_wait.cc).
 
 #include "held_fixture.h"
 
@@ -29,239 +29,68 @@ namespace
         return queued;
     }
 
-    // Ordinary lines leaving at most `room` bytes free, as one lower writer's line.
-    std::string lower_lines(uint32_t room)
+    std::string head(char const* who)
     {
-        std::string queued;
-        for (char c = 'a'; queued.size() + 41u + room <= kRing - 1u; c++)
-        {
-            queued += std::string(40, c) + "\n";
-        }
-        return queued;
+        char b[96];
+        snprintf(b, sizeof(b), kHead, who);
+        return b;
     }
-
-    // A backend with no TX interrupt holds queued bytes only while the writer that queued them
-    // is preempted before its own drain: `body` runs in the gap after that writer's insert.
-    void queue_and_preempt(std::string const& queued, void (*body)(void))
-    {
-        consoleseam::run_in_gap(consoleseam::gap_count() + 1u, body);
-        EXPECT_EQ(console_tx_insert_line(queued.data(), queued.size(), 0),
-                  static_cast<int>(queued.size()));
-        ASSERT_TRUE(consoleseam::seat_fired()) << "the lower writer was never preempted";
-    }
-
-    int head_len(char const* who)
-    {
-        char head[96];
-        return snprintf(head, sizeof(head), kHead, who);
-    }
-
-    std::string g_seen;
-    std::string g_queued;
-    int g_nested = -1;
-    std::string const kNested = "nested\n";
-    std::string const kLine = "  record line\n";
-    std::string const kWide(kRing - 1u, 'x');
 }
 
-TEST(ConsoleRecordRoom, ARecordReachesTheWireWholeBehindAFullRing)
+// The ring has no room for the banner: the line is refused, its need is its own length, and
+// neither it nor a queued byte goes out through the polled writer.
+TEST(ConsoleRecordRoom, ARecordLineBehindAFullRingIsRefusedAndSendsNothing)
 {
     run_isolated([]() {
         consoleseam::reset(kRing);
         consoleseam::set_isr_runs_in_gap(false);
         std::string const queued = fill();
         ASSERT_FALSE(queued.empty());
-        ASSERT_LT(kRing - 1u - queued.size(), text("t1", 0x100u).size())
+        ASSERT_LT(kRing - 1u - queued.size(), head("t1").size())
             << "premise: the ring has no room for the record";
-
-        record("t1", 0x100u);
-        std::string const pushed = consoleseam::wire();
-        EXPECT_EQ(pushed, queued.substr(0, pushed.size()))
-            << "the room was made out of order, or out of another line";
-        char head[96];
-        int const head_len = snprintf(head, sizeof(head), kHead, "t1");
-        EXPECT_LE(consoleseam::max_masked_pushes(), static_cast<uint32_t>(head_len))
-            << "a record line masked more than its own length of wire time";
-
-        console_tx_flush_sync();
-        EXPECT_EQ(consoleseam::wire(), queued + text("t1", 0x100u));
-    });
-}
-
-// A line wider than the ring can never fit, and is refused before anything is sent for it.
-TEST(ConsoleRecordRoom, ALineWiderThanTheRingIsRefusedAndSendsNothing)
-{
-    run_isolated([]() {
-        consoleseam::reset(kRing);
-        consoleseam::set_isr_runs_in_gap(false);
-        ASSERT_FALSE(fill().empty());
         std::string const before = consoleseam::wire();
-        std::string const wide(kRing, 'x');
-        EXPECT_EQ(console_tx_insert_record_line(wide.data(), wide.size(), 0), 0);
-        EXPECT_EQ(consoleseam::wire(), before);
-    });
-}
 
-// A backend with no TX interrupt drains in its producer, and a record line runs that drain only
-// once the mask is dropped.
-TEST(ConsoleRecordRoom, NoTxInterruptDrainsTheRestUnmasked)
-{
-    run_isolated([]() {
-        consoleseam::reset(kRing, -1);
-        g_queued = lower_lines(0u);
-        queue_and_preempt(g_queued, []() {
-            ASSERT_LT(kRing - 1u - (g_queued.size() - consoleseam::wire().size()),
-                      static_cast<uint32_t>(head_len("t1")))
-                << "premise: the ring has no room for the record's first line";
-            record("t1", 0x100u);
-        });
-        EXPECT_LE(consoleseam::max_masked_pushes(), static_cast<uint32_t>(head_len("t1")))
-            << "a record line sent more than its own length under the mask";
+        uint32_t const need = kickos::kprintf_fault(kHead, "t1");
+        EXPECT_EQ(need, static_cast<uint32_t>(head("t1").size()));
+        EXPECT_EQ(consoleseam::sync_calls(), 0u) << "the refused record line used the polled writer";
+        EXPECT_EQ(consoleseam::wire(), before) << "the refused record line sent queued bytes";
+
         console_tx_flush_sync();
-        EXPECT_EQ(consoleseam::wire(), g_queued + text("t1", 0x100u));
+        EXPECT_EQ(consoleseam::wire(), queued) << "the refused line reached the ring";
     });
 }
 
-// The drain ISR running in every gap the record leaves takes the bytes the record did not.
-TEST(ConsoleRecordRoom, TheDrainIsrInTheGapsKeepsTheOrder)
+// Offered again once the drain made room, the line queues behind the lines ahead of it, whole.
+TEST(ConsoleRecordRoom, ARefusedRecordLineOfferedAgainFollowsTheQueuedLines)
 {
     run_isolated([]() {
         consoleseam::reset(kRing);
         consoleseam::set_isr_runs_in_gap(false);
         std::string const queued = fill();
-        consoleseam::set_isr_runs_in_gap(true);
-        consoleseam::set_gap_budget(4u);
-
-        record("t1", 0x100u);
-        EXPECT_LE(consoleseam::max_masked_pushes(), static_cast<uint32_t>(head_len("t1")));
+        ASSERT_NE(kickos::kprintf_fault(kHead, "t1"), 0u);
+        console_tx_isr();
+        EXPECT_EQ(kickos::kprintf_fault(kHead, "t1"), 0u);
         console_tx_flush_sync();
-        EXPECT_EQ(consoleseam::wire(), queued + text("t1", 0x100u));
+        EXPECT_EQ(consoleseam::wire(), queued + head("t1"));
+        EXPECT_EQ(consoleseam::sync_calls(), 0u);
     });
 }
 
-// The room counts the CR each '\n' gains.
-TEST(ConsoleRecordRoom, ACrlfLineMakesRoomForItsCarriageReturns)
+// A line with room goes at once, whatever is queued.
+TEST(ConsoleRecordRoom, ARecordLineWithRoomQueuesAtOnce)
 {
     run_isolated([]() {
         consoleseam::reset(kRing);
         consoleseam::set_isr_runs_in_gap(false);
-        std::string const queued = fill();
-        std::string const line = "ab\ncd\nef\n";
-        uint32_t const expanded = static_cast<uint32_t>(line.size()) + 3u;
-        ASSERT_LT(kRing - 1u - queued.size(), static_cast<size_t>(expanded));
-
-        EXPECT_EQ(console_tx_insert_record_line(line.data(), line.size(), 1),
-                  static_cast<int>(line.size()));
-        EXPECT_LE(consoleseam::max_masked_pushes(), expanded);
+        EXPECT_EQ(kickos::kprintf_fault(kPc, 0x100u), 0u);
         console_tx_flush_sync();
-        EXPECT_EQ(consoleseam::wire(), queued + "ab\r\ncd\r\nef\r\n");
+        EXPECT_EQ(consoleseam::wire(), "  PC=0x100\n");
     });
 }
 
-// A line as wide as the ring's whole room sends every queued byte first.
-TEST(ConsoleRecordRoom, ALineOfTheWholeRoomFollowsTheWholeRing)
+// The room a refusal waits for counts the CR each '\n' gains on a CRLF console.
+TEST(ConsoleRecordRoom, TheNeedCountsTheCarriageReturns)
 {
-    run_isolated([]() {
-        consoleseam::reset(kRing);
-        consoleseam::set_isr_runs_in_gap(false);
-        std::string const queued = fill();
-        std::string const line(kRing - 1u, 'z');
-        EXPECT_EQ(console_tx_insert_record_line(line.data(), line.size(), 0),
-                  static_cast<int>(line.size()));
-        console_tx_flush_sync();
-        EXPECT_EQ(consoleseam::wire(), queued + line);
-    });
-}
-
-// A producer drain holds no byte between its pushes: a record line arriving there makes its room
-// in ring order, after the line the drain is sending.
-TEST(ConsoleRecordRoom, ARecordBetweenAProducerDrainsPushesTakesItsRoomInOrder)
-{
-    run_isolated([]() {
-        consoleseam::reset(kRing, -1);
-        std::string const queued = lower_lines(64u);
-        // The insert's gap, then the one after the drain's first push.
-        consoleseam::run_in_gap(consoleseam::gap_count() + 2u, []() {
-            g_nested = console_tx_insert_record_line(kWide.data(), kWide.size(), 0);
-        });
-        EXPECT_EQ(console_tx_insert_line(queued.data(), queued.size(), 0),
-                  static_cast<int>(queued.size()));
-        ASSERT_TRUE(consoleseam::seat_fired());
-        EXPECT_EQ(g_nested, static_cast<int>(kWide.size()));
-        EXPECT_EQ(consoleseam::wire(), queued + kWide);
-    });
-}
-
-// A fault in the polled writer whose reporter offers a record line: refused, and the outer line
-// still follows every queued byte once.
-TEST(ConsoleRecordRoom, ARecordNestedInTheRoomIsRefused)
-{
-    run_isolated([]() {
-        consoleseam::reset(kRing);
-        consoleseam::set_isr_runs_in_gap(false);
-        std::string const queued = fill();
-        consoleseam::run_in_sync_write(1u, []() {
-            g_nested = console_tx_insert_record_line(kNested.data(), kNested.size(), 0);
-        });
-        std::string const line(64u, 'r');
-        EXPECT_EQ(console_tx_insert_record_line(line.data(), line.size(), 0),
-                  static_cast<int>(line.size()));
-        EXPECT_EQ(g_nested, 0);
-        console_tx_flush_sync();
-        EXPECT_EQ(consoleseam::wire(), queued + line);
-    });
-}
-
-// A panic flush taken in the polled writer sends each queued byte once: the rest of the run in
-// flight is not the flush's to send, and the interrupted record line moves no tail back when it
-// resumes.
-TEST(ConsoleRecordRoom, APanicFlushInTheRoomResendsNothing)
-{
-    run_isolated([]() {
-        consoleseam::reset(kRing);
-        consoleseam::set_isr_runs_in_gap(false);
-        std::string const queued = fill();
-        std::string const line(64u, 'r');
-        size_t const primed = consoleseam::wire().size();
-        size_t const run = line.size() - (kRing - 1u - (queued.size() - primed));
-        consoleseam::run_in_sync_write(1u, []() {
-            console_tx_flush_sync();
-            g_seen = consoleseam::wire();
-        });
-        EXPECT_EQ(console_tx_insert_record_line(line.data(), line.size(), 0),
-                  static_cast<int>(line.size()));
-        EXPECT_EQ(g_seen, queued.substr(0, primed + 1u) + queued.substr(primed + run));
-        console_tx_flush_sync();
-        EXPECT_EQ(consoleseam::wire(), g_seen + queued.substr(primed + 1u, run - 1u) + line);
-    });
-}
-
-// A wedged channel: every record line still queues, and each costs at most one stall window of
-// the polled writer under the mask, even where the room it makes wraps the ring's end.
-TEST(ConsoleRecordRoom, AWedgedChannelCostsOneStallPerLine)
-{
-    run_isolated([]() {
-        consoleseam::reset(kRing);
-        consoleseam::set_isr_runs_in_gap(false);
-        std::string const lead(kRing - 6u, 'y');
-        ASSERT_NE(console_tx_insert_line(lead.data(), lead.size(), 0), 0);
-        console_tx_flush_sync();
-        std::string const queued = fill();
-        ASSERT_LT(kRing - 1u - queued.size(), static_cast<size_t>(head_len("t1")))
-            << "premise: the record's first line needs room past the ring's end";
-        ASSERT_GT(static_cast<size_t>(head_len("t1")) - (kRing - 1u - queued.size()), 6u)
-            << "premise: the room the first line makes wraps the ring's end";
-
-        consoleseam::set_sync_stalls(true);
-        record("t1", 0x100u);
-        EXPECT_GE(consoleseam::max_masked_stalls(), 1u) << "premise: no line met the stall";
-        EXPECT_LE(consoleseam::max_masked_stalls(), 1u)
-            << "a record line spent more than one stall window under the mask";
-        consoleseam::set_sync_stalls(false);
-        console_tx_flush_sync();
-        std::string const sent = consoleseam::wire();
-        std::string const want = text("t1", 0x100u);
-        ASSERT_GE(sent.size(), want.size());
-        EXPECT_EQ(sent.substr(sent.size() - want.size()), want);
-    });
+    EXPECT_EQ(console_tx_line_needed("ab\ncd\n", 6, 1), 8u);
+    EXPECT_EQ(console_tx_line_needed("ab\ncd\n", 6, 0), 6u);
 }

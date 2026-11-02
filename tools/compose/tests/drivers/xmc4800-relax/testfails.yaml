@@ -12,7 +12,7 @@ accepts: [no_protection] # for the -flat build alone
 
 tasks:
   - name: main
-    entry: kickos_main
+    program: main
     stack: 4096
     priority: 2
     ceiling: 2

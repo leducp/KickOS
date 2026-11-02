@@ -11,11 +11,12 @@
 #   none      KickOS::kernel with no system target: the link names kickos_link_one_system_target,
 #             and no undefined symbol of the chip script's comes first
 #   two       two system targets: the symbol is defined twice
-#   entry     a composition naming an entry no source defines: the link names it
+#   program   a composition naming a program no target defines: the configure names it
 #   stack     a stack at KICKOS_MIN_STACK_SIZE in an image with a thread-local object: the
 #             thread-local assert
 #   arena     a stack the chip file's arena holds and the linked image's does not: the arena assert
-#   heap      a `heap` past what the image carves for it: the heap assert
+#   heap      a `heap` past what the image carves for it: the heap assert, or where each task's
+#             window carves its heap, one past the board's RAM: the arena replay
 #   noheap    a system target whose link defines no heap: the assert tying the heap to it
 #   refused   a task above the build's priority range: the configure fails with the tool's line,
 #             and says the tool refused it
@@ -30,7 +31,7 @@
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
 
-USAGE="usage: check_system_link.sh <kickos-build> <kickos-source> <cmake> none|two|entry|stack|arena|heap|noheap|refused|notool|nocc|rerun"
+USAGE="usage: check_system_link.sh <kickos-build> <kickos-source> <cmake> none|two|program|stack|arena|heap|noheap|refused|notool|nocc|rerun"
 KICKOS_BUILD="${1:?$USAGE}"
 KICKOS_SRC="${2:?$USAGE}"
 CMAKE="${3:?$USAGE}"
@@ -121,14 +122,14 @@ case "$ARM" in
         # would also collide on the init's two driver paths.
         cp "$DEFAULT" "$COMPOSITION"
         EXPECT='multiple definition of [^ ]*kickos_link_one_system_target' ;;
-    entry)
-        edited '^( *entry: *)kickos_main' '\1kickos_absent_entry'
-        # ld names the symbol as C spells it, with no ABI prefix (rx-elf's `_` included).
-        EXPECT="undefined reference to [\`']kickos_absent_entry'" ;;
+    program)
+        edited '^( *program: *)main' '\1kickos_absent_program'
+        EXPECT='which is no target of this project'
+        ALSO='runs program .kickos_absent_program.' ;;
     stack)
         PROBE_ARM=tls
         edited '^( *stack: *)[0-9]+' "\\1$(manifest_number min_stack)"
-        EXPECT="stack cannot hold the linked image's thread-local block" ;;
+        EXPECT="stack cannot hold its image's thread-local block" ;;
     arena)
         # S is the largest power of two that the chip file's arena base is aligned to and that
         # fits twice in that arena: admission places a stack of S, aligned to S, at base + S, and
@@ -169,8 +170,15 @@ $((BASE + 2 * S)), so a stack of $S need not fail on this board"
         edited '^( *stack: *)[0-9]+' "\\1$S"
         EXPECT="the arena cannot hold task .main.'s stack" ;;
     heap)
-        edited '^heap: *[0-9]+' 'heap: 1048576'
-        EXPECT="1048576-byte heap of [^ ]*composition[.]yaml, its .heap., is more than" ;;
+        if ls "$TMP"/prefix/lib/kickos/*.image.ld >/dev/null 2>&1; then
+            # Each task's window carves its whole heap, so one past the board's RAM leaves the
+            # arena no room.
+            edited '^heap: *[0-9]+' 'heap: 268435456'
+            EXPECT="the arena cannot hold idle's boot stack"
+        else
+            edited '^heap: *[0-9]+' 'heap: 1048576'
+            EXPECT="1048576-byte heap of [^ ]*composition[.]yaml, its .heap., is more than"
+        fi ;;
     noheap)
         PROBE_ARM=noheap
         cp "$DEFAULT" "$COMPOSITION"
@@ -201,7 +209,7 @@ else
     configure "$PROBE_ARM" "$COMPOSITION" "$TMP/build"
 fi
 CONFIGURED=$?
-if [ "$ARM" = refused ] || [ "$ARM" = notool ] || [ "$ARM" = nocc ]; then
+if [ "$ARM" = refused ] || [ "$ARM" = notool ] || [ "$ARM" = nocc ] || [ "$ARM" = program ]; then
     [ "$CONFIGURED" -ne 0 ] || fail "the $ARM arm configured"
     grep -qE "$EXPECT" "$TMP/build.configure.log" || {
         sed -n '/CMake Error/,$p' "$TMP/build.configure.log" | sed -n '1,20p' >&2
@@ -229,10 +237,10 @@ grep -qE "$EXPECT" "$TMP/build.log" || {
     fail "the $ARM arm's link failed without '$EXPECT' (see above)"
 }
 # Each system target names KickOS::init's objects, which the link takes once, so only the
-# symbols each system target emits collide: its table's and its USB console mark's, and on a
-# build carrying one its gate assignment's.
+# symbols each system target emits collide: its table's and its declarations', its USB console
+# mark's, and on a build carrying one its gate assignment's.
 if [ "$ARM" = two ] && grep 'multiple definition' "$TMP/build.log" \
-        | grep -qv 'definition of [^ ]*\(kickos_link_one_system_target\|kickos_table\|kickos_usb_device_console\|kickos_gate_rows\|kickos_gate_row_count\).'; then
+        | grep -qv 'definition of [^ ]*\(kickos_link_one_system_target\|kickos_table\|kickos_image_decls\|kickos_usb_device_console\|kickos_gate_rows\|kickos_gate_row_count\).'; then
     grep 'multiple definition' "$TMP/build.log" | sed -n '1,5p' >&2
     fail "the link took a system target's shared objects twice"
 fi

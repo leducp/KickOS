@@ -203,7 +203,7 @@ static uint32_t bit(bool predicate, uint32_t value)
     return 0;
 }
 
-#if CHAINCHECK_INT
+#if CHAINCHECK_CORE
 
 static void arith32(void)
 {
@@ -412,6 +412,10 @@ static void memory(void)
     ck_u64("strcmp compares bytes unsigned", bit(strcmp(a, b) > 0, 1), 1);
     ck_u64("strlen", strlen(a), 1);
 }
+
+#endif
+
+#if CHAINCHECK_PRINT
 
 static void print_int(void)
 {
@@ -843,11 +847,13 @@ int main(int argc, char** argv)
     (void)argc;
     (void)argv;
     fputs("[chaincheck] start\n", stdout);
-#if CHAINCHECK_INT
+#if CHAINCHECK_CORE
     arith32();
     arith64();
     bits();
     memory();
+#endif
+#if CHAINCHECK_PRINT
     print_int();
 #endif
 #if CHAINCHECK_FLOAT

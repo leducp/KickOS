@@ -19,9 +19,12 @@ import sys
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "compose"))
 
-from kickos_compose.manifest_fields import DRIVER_FIELDS, WINDOWS_KNOB, is_pool
+from kickos_compose.manifest_fields import BUDGET_KNOB, DRIVER_FIELDS, WINDOWS_KNOB, budget_kinds, is_pool
 
 MANIFEST_VERSION = 1
+# The one list of budget kinds, which the kernel's BudgetKind is generated from too.
+BUDGET_HEADER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "user", "include",
+                             "kickos", "sys", "budget.h")
 
 CONFIG_LINE = re.compile(r"CONFIG_(KICKOS_[A-Z0-9_]+)=(.*)")
 PLAIN = re.compile(r"[A-Za-z_][A-Za-z0-9_./-]*")
@@ -165,6 +168,29 @@ def manifest(facts, knobs):
         if is_pool(name):
             pools[name] = knob(knobs, name)
 
+    # Each kind as its default and the pool it sizes on this build, or `none` where the build
+    # charges no such kind: its knob exists only where the kind is charged. The RAM owner table
+    # is a board's that does not translate.
+    budgets = {}
+    built = {"ram_owners": knob(knobs, "KICKOS_HAVE_ASPACE", 0) == 0,
+             "frame_runs": knob(knobs, "KICKOS_HAVE_ASPACE", 0) != 0}
+    for kind, key, pool in budget_kinds(BUDGET_HEADER):
+        name = BUDGET_KNOB % kind
+        if kind == "CAP_SLOTS":
+            # A table of the default width, a full grant list above the reserved indices in whole
+            # chunks, for each thread of the default THREADS budget.
+            chunk = facts["abi"]["cap_chunk"]
+            width = facts["abi"]["cap_reserved"] + knob(knobs, "KICKOS_MAX_SPAWN_GRANTS")
+            width = (width + chunk - 1) // chunk * chunk
+            budgets[key] = {"default": width * knob(knobs, BUDGET_KNOB % "THREADS"), "pool": pool}
+            continue
+        if name not in knobs:
+            budgets[key] = "none"
+            continue
+        if not built.get(pool, True):
+            pool = "none"
+        budgets[key] = {"default": knob(knobs, name), "pool": pool}
+
     threads = {
         "priority": facts["priority"],
         "min_stack": knob(knobs, "KICKOS_MIN_STACK_SIZE"),
@@ -181,6 +207,8 @@ def manifest(facts, knobs):
         "target": target,
         "protection": protection,
         "pools": pools,
+        "budgets": budgets,
+        "ceilings": facts["ceilings"],
         "threads": threads,
         "init": facts["init"],
     }

@@ -52,7 +52,7 @@ namespace
         g_held_off = 0;
     }
 
-    // A console is always published, as kos_console_publish does; `published` says whether it
+    // A console is always published, as a console driver's create does; `published` says whether it
     // is the endpoint the driver serves.
     void stage(Console* c, bool published)
     {
@@ -60,7 +60,7 @@ namespace
         c->sender = seat_pool(1, PRIO_CLIENT);
         c->driver->affinity = 1u;
         c->sender->affinity = 1u;
-        attach_caps(c->driver, KICKOS_CAP_CHILD_WIDTH);
+        attach_caps(c->driver, KICKOS_SEAM_CAP_WIDTH);
         detach_ready(c->sender);
         testfix::seat_blocked(c->sender);
         {

@@ -50,7 +50,7 @@ namespace
         g_poke_writers = console_chip_writers();
     }
 
-    // KOS_SYS_CONSOLE_PUBLISH's console sequence, with no writer in flight to drain.
+    // A console driver create's console sequence, with no writer in flight to drain.
     void publish()
     {
         console_handover_begin();
@@ -71,7 +71,11 @@ extern "C"
     }
     void arch_irq_restore(arch_irq_state_t) {}
 
-    int console_tx_insert_line(char const*, size_t, int) { note_poke(); return 1; }
+    int console_tx_insert_line(char const*, size_t n, int)
+    {
+        note_poke();
+        return static_cast<int>(n);
+    }
     bool arch_console_write_sync(char const*, size_t)
     {
         note_poke();

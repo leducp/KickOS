@@ -174,15 +174,15 @@ namespace
     }
 }
 
-extern "C" void xmcssc_main(kos_self_t const* self)
+int main(int, char**)
 {
     struct kos_spi_bus_config bcfg;
     bcfg.notify_bit = 0;
 #if XMCSSC_LOCAL
     // The client owns the channel: the window and the USIC0 line its composition grants, and a
     // notification it binds the line to.
-    kos_window_t const window = kos_grant_mmio(self, "/dev/usic0/ch1");
-    kos_line_t const line = kos_grant_irq(self, "irq");
+    kos_window_t const window = kos_grant_mmio("/dev/usic0/ch1");
+    kos_line_t const line = kos_grant_irq("irq");
     uintptr_t const win = reinterpret_cast<uintptr_t>(kos_window_addr(window));
     if (win == 0u or kos_window_size(window) < U0C1_WINDOW or line.cap == KOS_CAP_NONE)
     {
@@ -213,7 +213,7 @@ extern "C" void xmcssc_main(kos_self_t const* self)
     bcfg.irq_index = line.index;
 #else
     // The client reaches the channel over the endpoint the packaged xmcssc serves.
-    kos_cap_t const ep = kos_grant_endpoint(self, "/svc/spi0");
+    kos_cap_t const ep = kos_grant_endpoint("/svc/spi0");
     if (ep == KOS_CAP_NONE)
     {
         kos::print("[xmcssc] ERROR: no /svc/spi0 endpoint\n");

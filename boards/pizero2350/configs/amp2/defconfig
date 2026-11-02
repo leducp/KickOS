@@ -35,15 +35,9 @@ CONFIG_KICKOS_AMP_NODE_CORES="0,1"
 # which is what gives an arm a far port to park a caller on.
 CONFIG_KICKOS_AMP_PORTS="0:2,1:3,1:4"
 
-CONFIG_KICKOS_MAX_ENDPOINTS=9
 # Include boot-installed ports in root's endpoint budget.
-CONFIG_KICKOS_TASK_ENDPOINT_BUDGET=8
+CONFIG_KICKOS_BUDGET_ENDPOINTS=8
 
-# Limit thread-stack demand to fit each 240 KiB node alongside the self-test heap.
-# The suite probes available worker capacity before running each test.
-CONFIG_KICKOS_MAX_THREADS=6
-CONFIG_KICKOS_MAX_TASKS=8
-CONFIG_KICKOS_MAX_DOMAINS=8
 
 CONFIG_KICKOS_USER_STACK_SIZE=8192
 CONFIG_KICKOS_IDLE_STACK_SIZE=512

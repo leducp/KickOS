@@ -16,6 +16,7 @@ include(cmake/init_geometry.cmake)
 include(cmake/stack_geometry.cmake)
 include(cmake/mpu_geometry.cmake)
 include(cmake/exit_geometry.cmake)
+include(cmake/pool_geometry.cmake)
 include(cmake/manifest.cmake)
 include(cmake/preset_key.cmake)
 
@@ -28,6 +29,44 @@ kickos_board_names(_kickos_board_names)
 list(JOIN _kickos_board_names "|" _kickos_board_help)
 set(KICKOS_BOARD "sim" CACHE STRING "Target board: ${_kickos_board_help}")
 kickos_load_board_descriptor("${KICKOS_BOARD}" KICKOS_ARCH KICKOS_CHIP KICKOS_ARCH_FAMILY)
+# Whether every image is linked on its own first, then placed by one final link
+# (tools/image-link.py). The board descriptor may keep its images in the kernel's own link.
+if(NOT DEFINED KICKOS_IMAGE_SPLIT)
+  set(KICKOS_IMAGE_SPLIT ON)
+  if(DEFINED KICKOS_BOARD_IMAGE_SPLIT)
+    set(KICKOS_IMAGE_SPLIT ${KICKOS_BOARD_IMAGE_SPLIT})
+  endif()
+  if(KICKOS_ARCH MATCHES "^(armv8a|rv64imac|x86_64)$")
+    set(KICKOS_IMAGE_SPLIT OFF)
+  endif()
+endif()
+# The sim's image table is the image link's own.
+if(KICKOS_ARCH STREQUAL "sim" AND NOT KICKOS_IMAGE_SPLIT)
+  message(FATAL_ERROR "KickOS: the sim links every image on its own first; KICKOS_IMAGE_SPLIT "
+    "cannot be OFF there")
+endif()
+# Whether every image is a program linked on its own at the fixed user base, whose loadable
+# bytes the kernel's own link embeds (tools/image-link.py).
+set(KICKOS_IMAGE_EMBED OFF)
+if(KICKOS_ARCH MATCHES "^(armv8a|rv64imac|x86_64)$")
+  set(KICKOS_IMAGE_EMBED ON)
+endif()
+# Whether the init is an image of its own and each declared task one more (tools/image-link.py):
+# wherever every image is linked on its own, placed by one final link or embedded as a program.
+set(KICKOS_INIT_IMAGE OFF)
+if(KICKOS_IMAGE_SPLIT OR KICKOS_IMAGE_EMBED)
+  set(KICKOS_INIT_IMAGE ON)
+endif()
+# lx6 has no privilege split, and its syscall entry is a call into the arch. The sim's user side
+# calls the kernel, and reads the thread's lock id seat and its kernel instance in place.
+set(KICKOS_IMAGE_KERNEL_ENTRIES "")
+if(KICKOS_ARCH STREQUAL "lx6")
+  set(KICKOS_IMAGE_KERNEL_ENTRIES arch_syscall arch_syscall64)
+elseif(KICKOS_ARCH STREQUAL "sim")
+  set(KICKOS_IMAGE_KERNEL_ENTRIES arch_syscall arch_syscall64 _ZN6kickos13sim_self_seatE
+                                  _ZN6kickos6detail16g_instance_indexE)
+endif()
+kickos_image_link_features()
 message(STATUS "KickOS: board=${KICKOS_BOARD} family=${KICKOS_ARCH_FAMILY} arch=${KICKOS_ARCH} chip=${KICKOS_CHIP}")
 
 include_directories("${PROJECT_SOURCE_DIR}/include")
@@ -353,17 +392,33 @@ endif()
 # The shipped arch.h reads the stride wherever the generated header turns KICKOS_TLS on.
 add_compile_definitions(${_kickos_tls_defs})
 
-if(KICKOS_REENT_IN_TCB AND NOT KICKOS_TLS)
+# lx6 and armv8a seat their thread pointer only where KICKOS_TLS carves a block; rv64imac and
+# x86_64 seat theirs on every build.
+if(KICKOS_REENT_PER_THREAD AND NOT KICKOS_TLS AND KICKOS_ARCH MATCHES "^(lx6|armv8a)$")
   message(FATAL_ERROR
-    "KickOS: KICKOS_TLS is off on arch '${KICKOS_ARCH}' with "
-    "KICKOS_KERNEL_CORES=${KICKOS_KERNEL_CORES}. There each thread reaches its libc "
-    "reentrant state through the first word of its TLS control block at the thread "
-    "pointer, and only KICKOS_TLS carves that block and seats the register. Set "
-    "KICKOS_TLS=y in boards/${KICKOS_BOARD}/configs/<variant>/defconfig.")
+    "KickOS: KICKOS_TLS is off on arch '${KICKOS_ARCH}'. There each thread reaches its libc "
+    "reentrant state through the cell below its thread pointer, and only KICKOS_TLS seats "
+    "the register. Set KICKOS_TLS=y in boards/${KICKOS_BOARD}/configs/<variant>/defconfig.")
+endif()
+# The bytes a pool thread's stack gives its libc state, immediately below its TLS block: the
+# linked newlib's struct _reent, then the two-word cell (the state's address and the lock id)
+# that ends at the thread pointer, rounded to the stack alignment. user/src/newlib_reent.cc
+# refuses a value that is not that sum.
+if(NOT KICKOS_LIBC_REENT)
+  set(KICKOS_REENT_CARVE 0)
+elseif(KICKOS_ARCH MATCHES "^(armv8a|rv64imac|x86_64)$")
+  set(KICKOS_REENT_CARVE 400)
+elseif(KICKOS_ARCH STREQUAL "lx6")
+  set(KICKOS_REENT_CARVE 256)
+elseif(KICKOS_NEWLIB_FLAVOR STREQUAL "nano")
+  set(KICKOS_REENT_CARVE 96)
+else()
+  set(KICKOS_REENT_CARVE 336)
 endif()
 add_compile_definitions(KICKOS_REENT_PER_THREAD=${KICKOS_REENT_PER_THREAD}
-                        KICKOS_REENT_IN_TCB=${KICKOS_REENT_IN_TCB}
-                        KICKOS_ARCH_SIM=${KICKOS_ARCH_SIM})
+                        KICKOS_REENT_CARVE=${KICKOS_REENT_CARVE}
+                        KICKOS_ARCH_SIM=${KICKOS_ARCH_SIM}
+                        KICKOS_INIT_IMAGE=$<BOOL:${KICKOS_INIT_IMAGE}>)
 
 # The chip file's facts: its protection unit, which Kconfig's selection is held to below, and
 # whether its cores have an unprivileged mode at all.
@@ -559,6 +614,18 @@ endif()
 # (kickos/sys/banner_identity.h) name too.
 set(KICKOS_BANNER_IDENTITY KICKOS_VERSION="${KICKOS_VERSION}" KICKOS_BOARD_NAME="${KICKOS_BOARD}")
 
+# The objects only the kernel's link takes, beside its archives: x86_64's UEFI handover and boot
+# tail, which an image's own link must not carry.
+set(KICKOS_IMAGE_KERNEL_OBJECT_TARGETS "")
+if(KICKOS_ARCH STREQUAL "x86_64")
+  set(KICKOS_IMAGE_KERNEL_OBJECT_TARGETS KickOS::kickos_x86_64_boot
+                                         KickOS::kickos_x86_64_landed_kernel)
+  if(KICKOS_KERNEL_CORES GREATER 1)
+    set(KICKOS_IMAGE_KERNEL_OBJECT_TARGETS KickOS::kickos_x86_64_boot_ap
+                                           KickOS::kickos_x86_64_landed_kernel)
+  endif()
+endif()
+
 foreach(_dir lib arch kernel user system)
   add_subdirectory(${_dir})
 endforeach()
@@ -575,28 +642,20 @@ endif()
 if(TARGET kickos_kernel)
   # Consumers link KickOS::kernel, never kickos_core directly.
   add_library(kickos_core INTERFACE)
-  # CMake forbids a library in two groups within one target; build a group
-  # for each configuration below. Members go by kickos_export_name.
-  set(_kickos_head_targets kickos_user kickos_kernel)
+  # CMake forbids a library in two groups within one target, so the kernel's group below takes
+  # these after kickos_kernel. Members go by kickos_export_name.
   set(_kickos_tail_targets kickos_arch_${KICKOS_ARCH} kickos_lib)
   if(KICKOS_CHIP AND TARGET kickos_chip_${KICKOS_CHIP})
     list(PREPEND _kickos_tail_targets kickos_chip_${KICKOS_CHIP})
   endif()
-  foreach(_kickos_part head tail)
-    set(_kickos_${_kickos_part}_names "")
-    foreach(_kickos_t IN LISTS _kickos_${_kickos_part}_targets)
-      kickos_export_name(${_kickos_t} _kickos_name)
-      list(APPEND _kickos_${_kickos_part}_names "${_kickos_name}")
-    endforeach()
+  set(_kickos_tail_names "")
+  foreach(_kickos_t IN LISTS _kickos_tail_targets)
+    kickos_export_name(${_kickos_t} _kickos_name)
+    list(APPEND _kickos_tail_names "${_kickos_name}")
   endforeach()
-  list(JOIN _kickos_head_names "," _kickos_head)
   list(JOIN _kickos_tail_names "," _kickos_tail_group)
-  set(_kickos_group "${_kickos_head},${_kickos_tail_group}")
   # Link the interface-only kickos_system outside the rescan group.
   target_link_libraries(kickos_core INTERFACE kickos_system)
-  # The app writes `int main`, renamed to the kernel-called symbol; app.h is force-included
-  # below so the renamed C++ main gets C linkage (unmangled).
-  target_compile_definitions(kickos_core INTERFACE main=kickos_app_main)
   # Evaluated for the consuming target, so each image's TUs name that image (app.h's stamp).
   target_compile_definitions(kickos_core INTERFACE
     "$<$<STREQUAL:$<TARGET_PROPERTY:TYPE>,EXECUTABLE>:KICKOS_APP_IMAGE=\"$<TARGET_PROPERTY:NAME>\">")
@@ -616,7 +675,9 @@ if(TARGET kickos_kernel)
     KICKOS_ARM_MPU_SYSMPU=3
     KICKOS_ARM_MPU=${_kickos_arm_mpu}
     KICKOS_ARCH_SIM=${KICKOS_ARCH_SIM}
+    KICKOS_INIT_IMAGE=$<BOOL:${KICKOS_INIT_IMAGE}>
     KICKOS_LIBC_REENT=${KICKOS_LIBC_REENT}
+    KICKOS_REENT_PER_THREAD=${KICKOS_REENT_PER_THREAD}
     KICKOS_LINKER_WEAK_UNDEF=${KICKOS_LINKER_WEAK_UNDEF}
     ${KICKOS_APP_BOOL_DEFS}
     ${_kickos_tls_defs}
@@ -640,53 +701,65 @@ if(TARGET kickos_kernel)
       # Every input section must be named by a rule in the chip script; an unnamed ALLOC
       # orphan lands at an address nobody chose. arch/common/sections.ld.h has the vocabulary.
       -Wl,--orphan-handling=error
-      # ARM's vector table (g_isr_vector) is a data object nothing references. RX pulls its
-      # vector tables via ENTRY(_start) + KEEP() and defines no such symbol to force.
-      "$<$<STREQUAL:${KICKOS_ARCH_FAMILY},arm>:-Wl,-u,g_isr_vector>"
-      $<$<BOOL:${KICKOS_NODE_VECTOR_FORCE_SYMBOL}>:-Wl,--require-defined=${KICKOS_NODE_VECTOR_FORCE_SYMBOL}>
-      # Defined only where idle's thread-local carve assert expands (arch/common/sections.ld.h).
-      "$<$<AND:$<BOOL:${KICKOS_TLS}>,$<NOT:$<BOOL:${KICKOS_TLS_FROM_SP}>>>:-Wl,--require-defined=${KICKOS_C_SYMBOL_PREFIX}__kickos_tls_idle_checked>"
       # Force libc stubs into the link. RX prefixes C symbols, so _exit becomes __exit.
       "$<$<STREQUAL:${KICKOS_ARCH_FAMILY},rx>:-Wl,-u,__exit>"
       "$<$<NOT:$<STREQUAL:${KICKOS_ARCH_FAMILY},rx>>:-Wl,-u,_exit>"
-      # A chip with a checksummed flash second stage (RP2040 boot2) must force its
-      # .boot2 blob object in too; nothing references it.
-      $<$<BOOL:${KICKOS_BOOT2_FORCE_SYMBOL}>:-Wl,-u,${KICKOS_BOOT2_FORCE_SYMBOL}>
       "$<BUILD_INTERFACE:SHELL:-T ${KICKOS_LINKER_SCRIPT}>"
       "$<INSTALL_INTERFACE:SHELL:-T $<INSTALL_PREFIX>/${CMAKE_INSTALL_LIBDIR}/kickos/${KICKOS_CHIP}.ld>")
     # Track the linker script as a dependency; -T alone does not trigger relinking.
     set_property(TARGET kickos_core APPEND PROPERTY INTERFACE_LINK_DEPENDS
       "$<BUILD_INTERFACE:${KICKOS_LINKER_SCRIPT}>"
       "$<INSTALL_INTERFACE:$<INSTALL_PREFIX>/${CMAKE_INSTALL_LIBDIR}/kickos/${KICKOS_CHIP}.ld>")
+    # The image template tools/image-link.py instantiates per image, which the linker itself
+    # refuses as it does the program script below.
+    if(KICKOS_IMAGE_TEMPLATE)
+      target_link_options(kickos_core INTERFACE
+        "$<BUILD_INTERFACE:-Wl,--kickos-image-template=${KICKOS_IMAGE_TEMPLATE}>"
+        "$<INSTALL_INTERFACE:-Wl,--kickos-image-template=$<INSTALL_PREFIX>/${CMAKE_INSTALL_LIBDIR}/kickos/${KICKOS_CHIP}.image.ld>")
+      set_property(TARGET kickos_core APPEND PROPERTY INTERFACE_LINK_DEPENDS
+        "$<BUILD_INTERFACE:${KICKOS_IMAGE_TEMPLATE}>"
+        "$<INSTALL_INTERFACE:$<INSTALL_PREFIX>/${CMAKE_INSTALL_LIBDIR}/kickos/${KICKOS_CHIP}.image.ld>")
+    endif()
+    # The program form of the script, read by tools/image-link.py and refused by the linker
+    # itself, so a link no launcher reads fails.
+    if(KICKOS_IMAGE_EMBED)
+      target_link_options(kickos_core INTERFACE
+        "$<BUILD_INTERFACE:-Wl,--kickos-image-program=${KICKOS_PROGRAM_SCRIPT}>"
+        "$<INSTALL_INTERFACE:-Wl,--kickos-image-program=$<INSTALL_PREFIX>/${CMAKE_INSTALL_LIBDIR}/kickos/${KICKOS_CHIP}.program.ld>")
+      set_property(TARGET kickos_core APPEND PROPERTY INTERFACE_LINK_DEPENDS
+        "$<BUILD_INTERFACE:${KICKOS_PROGRAM_SCRIPT}>"
+        "$<INSTALL_INTERFACE:$<INSTALL_PREFIX>/${CMAKE_INSTALL_LIBDIR}/kickos/${KICKOS_CHIP}.program.ld>")
+    endif()
   endif()
 
   # x86_64's link rule runs ld with no compiler driver (tools/x86_64-link.sh), so the PE section
-  # script, the exit stub and the boot and kernel-landing objects ride the leaves, and the tools
-  # that link runs are its dependencies.
+  # script, the program script, the exit stub and the boot and kernel-landing objects ride the
+  # leaves, and the tools that link runs are its dependencies. Only the kernel's link takes the
+  # objects (KICKOS_IMAGE_KERNEL_OBJECT_TARGETS).
   if(KICKOS_ARCH STREQUAL "x86_64")
     set(_kos_pe_script "${CMAKE_CURRENT_SOURCE_DIR}/arch/x86/x86_64/pe_image.ld")
     set(_kos_pe_script_installed "$<INSTALL_PREFIX>/${KICKOS_CMAKE_DIR}/pe_image.ld")
+    set(_kos_program_installed "$<INSTALL_PREFIX>/${KICKOS_CMAKE_DIR}/pe_image.program.ld")
     target_link_options(kickos_core INTERFACE
       "LINKER:-u,_exit"
       "$<BUILD_INTERFACE:LINKER:-T,${_kos_pe_script}>"
-      "$<INSTALL_INTERFACE:LINKER:-T,${_kos_pe_script_installed}>")
+      "$<INSTALL_INTERFACE:LINKER:-T,${_kos_pe_script_installed}>"
+      "$<BUILD_INTERFACE:-Wl,--kickos-image-program=${KICKOS_PROGRAM_SCRIPT}>"
+      "$<INSTALL_INTERFACE:-Wl,--kickos-image-program=${_kos_program_installed}>")
     set_property(TARGET kickos_core APPEND PROPERTY INTERFACE_LINK_DEPENDS
       "$<BUILD_INTERFACE:${_kos_pe_script}>"
-      "$<INSTALL_INTERFACE:${_kos_pe_script_installed}>")
-    foreach(_kos_tool x86_64-link.sh x86_64-krel.sh x86_64-map.awk check-x86_64-no-got.sh
+      "$<INSTALL_INTERFACE:${_kos_pe_script_installed}>"
+      "$<BUILD_INTERFACE:${KICKOS_PROGRAM_SCRIPT}>"
+      "$<INSTALL_INTERFACE:${_kos_program_installed}>")
+    foreach(_kos_tool x86_64-link.sh x86_64-map.awk check-x86_64-no-got.sh
                       check-x86_64-weak-undef.sh)
       set_property(TARGET kickos_core APPEND PROPERTY INTERFACE_LINK_DEPENDS
         "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/tools/${_kos_tool}>"
         "$<INSTALL_INTERFACE:$<INSTALL_PREFIX>/${KICKOS_CMAKE_DIR}/${_kos_tool}>")
     endforeach()
-    set(_kos_boot_target kickos_x86_64_boot)
-    if(KICKOS_KERNEL_CORES GREATER 1)
-      set(_kos_boot_target kickos_x86_64_boot_ap)
-    endif()
-    kickos_export_name(${_kos_boot_target} _kos_boot_name)
-    kickos_export_name(kickos_x86_64_landed_kernel _kos_landed_name)
-    target_link_libraries(kickos_core INTERFACE
-      "$<TARGET_OBJECTS:${_kos_boot_name}>" "$<TARGET_OBJECTS:${_kos_landed_name}>")
+    foreach(_kos_t IN LISTS KICKOS_IMAGE_KERNEL_OBJECT_TARGETS)
+      target_link_libraries(kickos_core INTERFACE "$<TARGET_OBJECTS:${_kos_t}>")
+    endforeach()
   endif()
   set(_kickos_scripted_link FALSE)
   if(NOT (KICKOS_ARCH STREQUAL "sim") AND (KICKOS_LINKER_SCRIPT OR KICKOS_ARCH STREQUAL "x86_64"))
@@ -701,6 +774,14 @@ if(TARGET kickos_kernel)
   if(TARGET kickos_string)
     kickos_export_name(kickos_string _kickos_string_name)
     target_link_libraries(kickos_kernel_leaf INTERFACE "$<TARGET_OBJECTS:${_kickos_string_name}>")
+  endif()
+  # Every executable linking the kernel is an image, and carries its header (<kickos/sys/image.h>).
+  target_sources(kickos_kernel_leaf INTERFACE
+    "$<$<STREQUAL:$<TARGET_PROPERTY:TYPE>,EXECUTABLE>:$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/user/src/image_header.c>$<INSTALL_INTERFACE:$<INSTALL_PREFIX>/${KICKOS_CMAKE_DIR}/image_header.c>>")
+  # And where the init is an image of its own, the init image's header beside it.
+  if(KICKOS_INIT_IMAGE)
+    target_sources(kickos_kernel_leaf INTERFACE
+      "$<$<STREQUAL:$<TARGET_PROPERTY:TYPE>,EXECUTABLE>:$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/user/src/init_image_header.c>$<INSTALL_INTERFACE:$<INSTALL_PREFIX>/${KICKOS_CMAKE_DIR}/init_image_header.c>>")
   endif()
   # Every system target's table defines the symbol (<kickos/sys/table.h>), so a link of none
   # fails naming it and a link of two fails on its second definition.
@@ -721,16 +802,23 @@ if(TARGET kickos_kernel)
   kickos_export_name(kickos_cxx_throw _kickos_cxx_throw_name)
   # Keep the MCU runtime in the rescan group so newlib can resolve _sbrk
   # from kickos_user after _sbrk_r is extracted.
+  # The user side's group first, then the kernel's. The kernel's archives ride KICKOS_KERNEL,
+  # whose bounds tell an image's own link which inputs are not the image's; kickos_lib is in
+  # both, and the image's copy is named by file.
+  kickos_export_name(kickos_user _kickos_user_lib)
+  kickos_export_name(kickos_kernel _kickos_kernel_lib)
+  kickos_export_name(kickos_lib _kickos_lib_name)
+  # The sim's C and C++ libraries are the host's, which the compiler driver adds. x86_64 has no
+  # driver, so its group names every library the image links.
+  set(_kickos_user_libc ",stdc++,supc++,c")
   if(KICKOS_ARCH STREQUAL "sim")
-    target_link_libraries(kickos_kernel_leaf INTERFACE "$<LINK_GROUP:RESCAN,${_kickos_group}>")
+    set(_kickos_user_libc "")
   elseif(KICKOS_ARCH STREQUAL "x86_64")
-    # No compiler driver appends the toolchain's libraries, so the group names them.
-    target_link_libraries(kickos_kernel_leaf INTERFACE
-      "$<LINK_GROUP:RESCAN,${_kickos_group},stdc++,supc++,c,m,gcc,${_kickos_cxx_throw_name}>")
-  else()
-    target_link_libraries(kickos_kernel_leaf INTERFACE
-      "$<LINK_GROUP:RESCAN,${_kickos_group},stdc++,supc++,c>")
+    set(_kickos_user_libc ",stdc++,supc++,c,m,gcc,${_kickos_cxx_throw_name}")
   endif()
+  target_link_libraries(kickos_kernel_leaf INTERFACE
+    "$<LINK_GROUP:RESCAN,${_kickos_user_lib},$<TARGET_FILE:${_kickos_lib_name}>${_kickos_user_libc}>"
+    "$<LINK_GROUP:KICKOS_KERNEL,${_kickos_kernel_lib},${_kickos_tail_group}>")
   # In-tree TUs get __KickOS__ from the add_compile_definitions above; this is what carries
   # it to find_package consumers.
   target_compile_definitions(kickos_core INTERFACE __KickOS__=1)
@@ -767,8 +855,37 @@ if(TARGET kickos_kernel)
     target_link_options(kickos_kernel_leaf INTERFACE "LINKER:--wrap=__cxa_allocate_exception")
   endif()
 
+  # KickOS::kickos (`kickos` in tree): a program's link interface, the kernel leaf's compile
+  # usage and its user runtime without the kernel. Each archive goes by file, so no kernel
+  # archive a user archive depends on reaches the program's own link.
+  add_library(kickos INTERFACE)
+  target_link_libraries(kickos INTERFACE kickos_core)
+  foreach(_kos_t kickos_user kickos_lib kickos_arch_${KICKOS_ARCH} kickos_kernel)
+    kickos_export_name(${_kos_t} _kos_name)
+    target_include_directories(kickos INTERFACE
+      "$<TARGET_PROPERTY:${_kos_name},INTERFACE_INCLUDE_DIRECTORIES>")
+  endforeach()
+  if(TARGET kickos_string)
+    target_link_libraries(kickos INTERFACE "$<TARGET_OBJECTS:${_kickos_string_name}>")
+  endif()
+  if(NOT KICKOS_ARCH STREQUAL "sim")
+    target_link_options(kickos INTERFACE
+      "LINKER:-u,${KICKOS_C_SYMBOL_PREFIX}__retarget_lock_acquire_recursive")
+  endif()
+  target_link_libraries(kickos INTERFACE
+    "$<LINK_GROUP:RESCAN,$<TARGET_FILE:${_kickos_user_lib}>,$<TARGET_FILE:${_kickos_lib_name}>${_kickos_user_libc}>")
+  if(TARGET kickos_cxx_rt)
+    target_compile_options(kickos INTERFACE "$<$<COMPILE_LANGUAGE:CXX>:-fexceptions;-frtti>")
+    if(NOT KICKOS_ARCH STREQUAL "x86_64")
+      target_link_libraries(kickos INTERFACE
+        "$<LINK_GROUP:RESCAN,stdc++,supc++,c,$<TARGET_FILE:${_kickos_user_name}>,${_kickos_cxx_throw_name}>")
+    endif()
+    target_link_libraries(kickos INTERFACE "$<TARGET_OBJECTS:${_kickos_cxx_rt_name}>")
+    target_link_options(kickos INTERFACE "LINKER:--wrap=__cxa_allocate_exception")
+  endif()
+
   # kickos_core is a link dependency of the leaf, so it must be in the export set.
-  kickos_export_targets(kickos_core kickos_kernel_leaf)
+  kickos_export_targets(kickos_core kickos_kernel_leaf kickos)
   if(TARGET kickos_cxx_rt)
     kickos_export_targets(kickos_cxx_rt kickos_cxx_throw)
   endif()
@@ -795,12 +912,9 @@ if(KICKOS_BUILD_TESTS AND TARGET kickos_kernel_leaf AND KICKOS_ARCH MATCHES "^(s
   add_subdirectory(tests/composition)
 endif()
 
-# Resolve after system providers and app demand declarations are available.
-kickos_cap_table_resolve(KICKOS_CAP_TABLE_SLOTS KICKOS_CAP_TABLE_CHILD_WIDTH
-                         KICKOS_CAP_TABLE_REPLY_MAX)
 # Every generated header the package installs.
 set(_kos_generated_headers board_config.h chip_mmap.h chip_limits.h config/mpu_geometry.h
-                           sys/exit_status.h)
+                           config/pool_abi.h sys/exit_status.h)
 foreach(_in kernel/include/kickos/config/cap_width.h kernel/include/kickos/config/amp_ports.h
             kernel/include/kickos/config/priorities.h kernel/include/kickos/config/stack_geometry.h
             user/include/kickos/sys/driver_geometry.h user/include/kickos/sys/table_version.h
@@ -833,7 +947,12 @@ if(TARGET kickos_kernel_leaf)
   get_property(_kickos_app_systems GLOBAL PROPERTY KICKOS_APP_SYSTEMS)
   foreach(_system IN LISTS _kickos_app_systems)
     get_property(_composition GLOBAL PROPERTY KICKOS_APP_SYSTEM_${_system})
-    kickos_compose(${_system} "${_composition}")
+    get_property(_local GLOBAL PROPERTY KICKOS_APP_SYSTEM_LOCAL_${_system})
+    set(_local_args "")
+    if(_local)
+      set(_local_args LOCAL_DRIVERS)
+    endif()
+    kickos_compose(${_system} "${_composition}" ${_local_args})
   endforeach()
 endif()
 # Every image this configure emits as `<image>|<stdout>|<judge>|<args>`: the stdout is `kernel`,
@@ -988,19 +1107,25 @@ install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/tools/compose/pyproject.toml"
               "${CMAKE_CURRENT_SOURCE_DIR}/tools/compose/uv.lock"
         DESTINATION "${KICKOS_CMAKE_DIR}/compose")
 
-# kickos.cmake include()s cap_table.cmake, driver_geometry.cmake, driver_metadata.cmake,
-# heap_symbol.cmake, qemu_cpu.cmake and compose.cmake list-dir-relative, so they must land
-# beside it.
+# kickos.cmake include()s driver_geometry.cmake, driver_metadata.cmake, heap_symbol.cmake,
+# qemu_cpu.cmake and compose.cmake list-dir-relative, so they must land
+# beside it, as must image_header.c, which KickOS::kernel compiles into every image, and the
+# image link with the names it renames.
 install(FILES
           "${CMAKE_CURRENT_BINARY_DIR}/KickOSConfig.cmake"
           "${CMAKE_CURRENT_BINARY_DIR}/KickOSConfigVersion.cmake"
           "${CMAKE_CURRENT_SOURCE_DIR}/cmake/kickos.cmake"
-          "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cap_table.cmake"
           "${CMAKE_CURRENT_SOURCE_DIR}/cmake/driver_geometry.cmake"
           "${CMAKE_CURRENT_SOURCE_DIR}/cmake/driver_metadata.cmake"
           "${CMAKE_CURRENT_SOURCE_DIR}/cmake/heap_symbol.cmake"
           "${CMAKE_CURRENT_SOURCE_DIR}/cmake/qemu_cpu.cmake"
           "${CMAKE_CURRENT_SOURCE_DIR}/cmake/compose.cmake"
+          "${CMAKE_CURRENT_SOURCE_DIR}/user/src/image_header.c"
+          "${CMAKE_CURRENT_SOURCE_DIR}/user/src/init_image_header.c"
+          "${CMAKE_CURRENT_SOURCE_DIR}/cmake/image_names.txt"
+          "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_names.txt"
+          "${CMAKE_CURRENT_SOURCE_DIR}/cmake/image_partial.lds"
+          "${CMAKE_CURRENT_SOURCE_DIR}/tools/image-link.py"
         DESTINATION "${KICKOS_CMAKE_DIR}")
 
 # Install the toolchain that configured this build, with board.cmake beside it.

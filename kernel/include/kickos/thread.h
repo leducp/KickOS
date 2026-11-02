@@ -14,6 +14,7 @@
 #include <kickos/list.h>
 #include <kickos/lock_id.h>
 #include <kickos/mpuset.h>
+#include <kickos/pools.h>
 #include <kickos/notify.h> // KOS_NOTIFY_UNBOUND, and the Notification the wait edge names
 #include <kickos/slotpool.h> // the handle codec, slot_index_of
 #include <kickos/task.h>
@@ -101,6 +102,16 @@ namespace kickos
         CANCEL_SLAY = 2
     };
 
+    // What a thread's exit, by any cause, does to its task.
+    enum TaskRole : uint8_t
+    {
+        TASK_ROLE_MEMBER = 0, // nothing
+        // The first member a non-member seats: the task ends with its code.
+        TASK_ROLE_ENTRY = 1,
+        // KOS_THREAD_ESSENTIAL: the task ends as a fault ends it.
+        TASK_ROLE_ESSENTIAL = 2
+    };
+
     struct Thread;
 
     // Thread::state. BLOCKED is written by park_queueless alone, which only a ParkToken
@@ -168,9 +179,10 @@ namespace kickos
         Atomic<uint32_t, Order::ACQUIRE | Order::RELEASE> switch_count = 0;
 
 #if KICKOS_LIBC_REENT
-        // This thread's struct _reent. switch_book stores it into libc's state word; nothing in
-        // the kernel dereferences it. It is the second half of the pad before deadline_ns;
-        // anywhere below costs 8.
+        // This thread's struct _reent: the base of its stack, or libc's shared state for idle.
+        // Where libc reads one word, switch_book stores it there; nothing in the kernel
+        // dereferences it. It is the second half of the pad before deadline_ns; anywhere below
+        // costs 8.
         void* reent = nullptr;
 #endif
 
@@ -178,8 +190,8 @@ namespace kickos
         bool on_timer = false;
 
 #if KICKOS_LIBC_REENT
-        // True while `reent` still holds whatever the previous occupant left. Cleared by the
-        // first switch-in, which is what primes it. It sits in on_timer's padding before `id` on
+        // True while `reent` still holds whatever its stack held. Cleared by the first switch-in,
+        // which is what primes it. It sits in on_timer's padding before `id` on
         // every target, so thread_scalar_bytes does not count it.
         bool reent_fresh = false;
 #endif
@@ -194,18 +206,18 @@ namespace kickos
         Policy policy = Policy::FIFO;
         ThreadStateCell state;
         bool privileged = false;
-        // Set once at the top of exit_current, never cleared: this thread is running its own
-        // capability teardown. `state` cannot serve as the marker, the sweep releasing IrqLock
-        // between chunks. Gates the cross-thread reply mint and the wake-during-teardown switch
-        // deferral, which is priority-conditional: sched::wake admits a strictly higher peer.
+        // Set where a slay claim rebuilds the context, or at the top of exit_current, and never
+        // cleared: this thread is on its way into its own capability teardown. `state` cannot
+        // serve as the marker, the sweep releasing IrqLock between chunks. Gates the
+        // cross-thread reply mint and the wake-during-teardown switch deferral, which is
+        // priority-conditional: sched::wake admits a strictly higher peer.
         bool dying = false;
         // Count of CAP_IRQ entries in this thread's table; cap_teardown's pre-pass is the only
         // reader and releases nothing at zero. Fits the padding before quantum_ns; moving it
         // grows every TCB.
         uint8_t cap_irq_live = 0;
-        // This thread is its task's entry, the first member a non-member seated or the thread
-        // whose spawn built its implicit task: its exit ends the group (task_end). Set at spawn.
-        bool task_entry = false;
+        // A TaskRole, set at spawn: whether this thread's exit ends its group (task_end).
+        uint8_t task_role = 0;
 
 #if KICKOS_KERNEL_CORES > 1
         // Allowed cores: one bit pins the thread, multiple bits allow migration.
@@ -259,8 +271,8 @@ namespace kickos
         uint8_t cancel_kind = CANCEL_NONE;
         // Who may cancel this thread: the kill tag of the thread that spawned it, or
         // KILL_TAG_NONE, which is 0 (ThreadPool is declared below this struct). It is the whole
-        // of the kill gate and must never alias; see kill_tag_of and the clear in
-        // ThreadPool::alloc.
+        // of the kill gate and must never alias; see kill_tag_of and the orphaning in
+        // ThreadPool::reclaim.
         uint16_t spawner_tag = 0;
         // ThreadPool::lock_id_for at create, 0 outside the pool (idle).
         uint32_t lock_id = 0;
@@ -286,7 +298,11 @@ namespace kickos
         {
             uintptr_t buf;       // this thread's own message buffer (already bound-checked)
             size_t    len;       // sender: bytes to send; receiver: buffer capacity
-            uintptr_t badge_out; // receiver only: where to store the badge (0 => none)
+            union
+            {
+                uintptr_t badge_out; // receiver: where to store the badge (0 => none)
+                uint32_t badge;      // sender: the badge of the capability it sends through
+            };
         };
         IpcDesc ipc = {};
 
@@ -299,7 +315,7 @@ namespace kickos
         // One bitfield byte, and it has to stay one: the four bytes here are saturated against
         // `wait_obj`'s alignment, so a separate byte for a flag would cost every TCB four.
         // CallState spends two bits; the console's flags take spare ones without growing any TCB.
-        uint8_t call_state : 5 = CALL_NONE;
+        uint8_t call_state : 4 = CALL_NONE;
         // Set only by the trap-handler IPC fastpath, which parks a caller with no kernel
         // continuation: nothing reads wait_result on that thread's behalf, so the switch that
         // resumes it stores the result into the saved frame. Cleared there, by the one writer.
@@ -312,6 +328,10 @@ namespace kickos
         // Inside the kernel console's chip-writer bracket in thread context, which a slay can end
         // before its leave (kconsole_slain). Written under IrqLock by the thread itself.
         uint8_t console_writing : 1 = 0;
+        // Inside its own fault record, from the record's first line to krecord_end or the slay
+        // (kconsole_slain): the record holds the console line ahead of every other thread's.
+        // Written under IrqLock by the thread itself.
+        uint8_t console_record : 1 = 0;
         WaitKind wait_kind = WAIT_NONE;
 #if KICKOS_AMP_NODE
         // The amp hold this thread must land or give back, biased by one so a fresh TCB holds
@@ -339,25 +359,32 @@ namespace kickos
         // server never strands a donor.
         HeadList reply_waiters;
 
-        // Per-THREAD capability table (cap.h). The run is reserved from the slab by the CALLER
-        // before thread_create, so an exhausted slab fails the spawn instead of leaving a
-        // half-built thread. thread_create's kmemset zeroes the directory and re-establishes it
-        // from ThreadAttr afterwards. Every scan site must be bounded by thread_cap_capacity and
-        // never by KICKOS_MAX_HANDLES: capacities differ per thread and 0 is legal.
-        CapRun caps = {};
+        // Its task's member list (task_member_join), and its spawner slot's `children`. `reclaim`
+        // holds its capability run on its task's run list from the attach to the end of its
+        // sweep (task_run_join), then the slot on the thread pool's reclaimable list while it is
+        // EXITED (ThreadPool::retire).
+        ListNode member;
+        ListNode reclaim;
+        ListNode child;
+        // The threads this slot's occupant spawned, through their `child`.
+        HeadList children;
+
+        // Per-THREAD capability table (cap.h): its slot's directory row, null for idle. The run
+        // is reserved from the slab by the CALLER before thread_create, so an exhausted slab
+        // fails the spawn instead of leaving a half-built thread. Every scan site must be
+        // bounded by thread_cap_capacity: capacities differ per thread and 0 is legal.
+        CapEntry** caps = nullptr;
         // Head of the run's free-slot list (cap.h), a slot index biased by one. KCAP_FREE_NONE
         // is 0, so the thread_create kmemset leaves it EMPTY and not "slot 0": a thread whose
         // list was never threaded refuses every mint.
         uint16_t cap_free_head = KCAP_FREE_NONE;
-#if KCAP_RUN_CHUNKS > 1
-        // This thread's addressable capacity, 0 when it holds no run. Root's is
-        // KICKOS_MAX_HANDLES and a spawned child's is narrower, so no reader may assume either.
+        // This thread's addressable capacity, 0 when it holds no run: root's the init's width,
+        // another's its task's declared width or the one its spawn asked, so no reader may assume
+        // one.
         uint16_t cap_width = 0;
-        // Live inbound CAP_REPLY entries, bounded by KICKOS_CAP_REPLY_MAX. Both fields land in
-        // the tail padding the chunk directory's second pointer creates; keep the uint16_t group
-        // CONTIGUOUS after `caps`.
+        // Live inbound CAP_REPLY entries, bounded by KICKOS_CAP_REPLY_MAX. Keep the uint16_t
+        // group CONTIGUOUS after `caps`.
         uint16_t cap_reply_live = 0;
-#endif
         // Endpoints where ep->server == this thread, chained through Endpoint::next_served
         // (endpoint.h). The SEND_WAIT donor enumeration for thread_effective_prio, which runs
         // interrupt-masked and may walk neither the capability table nor the endpoint pool.
@@ -460,43 +487,41 @@ namespace kickos
         return members + (alignof(uint64_t) - members % alignof(uint64_t)) % alignof(uint64_t);
     }
 
-    // deadline_ns onwards, minus the MPU set and the capability directory, at KCAP_RUN_CHUNKS 1
-    // on one kernel core. RXv3, which aligns uint64_t to 4, measures the same as every other
-    // 32-bit target.
+    // deadline_ns onwards, minus the MPU set and the capability directory pointer, on one
+    // kernel core. RXv3, which aligns uint64_t to 4, measures the same as every other 32-bit
+    // target.
     constexpr size_t thread_scalar_bytes()
     {
-        size_t bytes = 120;
+        size_t bytes = 148;
         if (sizeof(void*) == 8)
         {
-            bytes = 176;
+            bytes = 232;
         }
-#if KCAP_RUN_CHUNKS > 1
         // cap_width + cap_reply_live, which a 64-bit TCB holds in tail padding it has anyway.
         if (sizeof(void*) == 4)
         {
             bytes = bytes + 2 * sizeof(uint16_t);
         }
-#endif
 #if KICKOS_KERNEL_CORES > 1
         // Thread::affinity and the core bytes after it. The RXv3 figure is derived from the
         // alignment and not witnessed: no multicore RXv3 preset exists to measure.
         bytes = bytes + alignof(uint64_t);
 #endif
 #if KICKOS_AMP_NODE
-        // Thread::far_hold, in padding before wait_obj where a pointer is 8. A 32-bit TCB is
-        // closed, so it costs its width rounded up to uint64_t's alignment.
+        // Thread::far_hold, in padding before wait_obj where a pointer is 8. A 32-bit TCB pays its
+        // width, which the tail padding after the capability group then absorbs.
         if (sizeof(void*) == 4)
         {
-            bytes = bytes + alignof(uint64_t);
+            bytes = bytes + sizeof(uint32_t);
         }
 #endif
         return bytes;
     }
 
-    // Rounded to the TCB's alignment: a single-chunk run on a 16-byte-aligned host TCB leaves an
-    // alignment tail the measured scalar bytes do not carry.
+    // Rounded to the TCB's alignment: a 16-byte-aligned host TCB leaves an alignment tail the
+    // measured scalar bytes do not carry.
     constexpr size_t thread_members_bytes =
-        thread_head_bytes() + sizeof(MpuSet) + sizeof(CapRun) + thread_scalar_bytes();
+        thread_head_bytes() + sizeof(MpuSet) + sizeof(CapEntry**) + thread_scalar_bytes();
     constexpr size_t KICKOS_THREAD_EXPECTED_SIZE =
         (thread_members_bytes + alignof(Thread) - 1) / alignof(Thread) * alignof(Thread);
 
@@ -520,9 +545,8 @@ namespace kickos
                   "Thread grew tail padding beyond its alignment: the last member no longer "
                   "closes the struct, so the TCB now has slack a new member would land in for "
                   "free");
-    // One CAP_IRQ entry occupies one slot, so a thread's count is bounded by its own table and
-    // the widest table in the image is root's.
-    static_assert(KICKOS_MAX_HANDLES <= UINT8_MAX,
+    // One CAP_IRQ entry occupies one slot, so a thread's count is bounded by its own table.
+    static_assert(KCAP_WIDTH_CEILING <= UINT8_MAX,
                   "a thread could hold more CAP_IRQ entries than Thread::cap_irq_live can "
                   "count, and cap_teardown's pre-pass would skip a release it owes. The field "
                   "is a byte because that is what the TCB padding holds");
@@ -531,17 +555,7 @@ namespace kickos
     // else 0.
     inline uint32_t thread_cap_capacity(Thread const* t)
     {
-#if KCAP_RUN_CHUNKS == 1
-        // The flat run is one chunk of exactly KICKOS_MAX_HANDLES slots, so a held run IS the
-        // ceiling and there is nothing to store.
-        if (not cap_run_held(t->caps))
-        {
-            return 0;
-        }
-        return KICKOS_MAX_HANDLES;
-#else
         return t->cap_width; // 0 == no run: attach and detach keep the two in step
-#endif
     }
 
     // Return t's run to the slab and clear everything that travels with it: a stale width
@@ -549,19 +563,14 @@ namespace kickos
     // makes the slot's next occupant refuse its first caller. Caller holds IrqLock.
     inline void thread_cap_release(Thread* t)
     {
-#if KCAP_RUN_CHUNKS == 1
-        uint16_t width = 0;
-        cap_slab_detach(&t->caps, &t->cap_free_head, &width);
-#else
-        cap_slab_detach(&t->caps, &t->cap_free_head, &t->cap_width);
+        cap_slab_detach(t->caps, &t->cap_free_head, &t->cap_width);
         t->cap_reply_live = 0;
-#endif
     }
 
     // Whether `t`'s slay claim is still OUTSTANDING: it has been slain, and the claim, which is
     // a switch INTO it (kernel/sched/sched.cc, switch_book), has not fired. `dying` is what
-    // declines, being set once the victim is inside its own teardown. This must stay the one
-    // copy: the placement answer, the switch that owes the pass and the redirect that takes it
+    // declines, being set once the claim has rebuilt the victim's context. This must stay the
+    // one copy: the placement answer, the switch that owes the pass and the redirect that takes it
     // have to agree, and a second spelling beside them is the copy that goes stale.
     inline bool thread_slay_claim_pending(Thread const* t)
     {
@@ -596,6 +605,8 @@ namespace kickos
         uint32_t quantum_ns = 0;
         // Default false: an attr struct that forgets the field must not mint privilege.
         bool privileged = false;
+        // Bytes at the stack's top the initial stack pointer starts below: a create's argv.
+        uint16_t arg_bytes = 0;
 #if KICKOS_KERNEL_CORES > 1
         // Cores the new thread may run on, already admitted against `task`'s core set by the
         // caller: it is stored as the affinity verbatim, so a mask reaching outside that set
@@ -620,13 +631,13 @@ namespace kickos
         // the free list (harvest at reclaim). false for caller-owned and for the
         // arena-allocated idle/root stacks.
         bool kstack_owned = false;
-        // The new thread is its task's entry (Thread::task_entry).
-        bool task_entry = false;
-        // Pre-reserved capability run (cap_slab_attach): an exhausted slab must fail the spawn
-        // BEFORE anything is built. An empty directory is legal and means the thread holds no
-        // capabilities. The free-list head and the seated capacity travel with it: a run seated
-        // without its head refuses every mint.
-        CapRun cap_run = {};
+        // The new thread's TaskRole (Thread::task_role).
+        uint8_t task_role = 0;
+        // The new thread's slot's directory row, its run pre-reserved (cap_slab_attach): an
+        // exhausted slab must fail the spawn BEFORE anything is built. Null, or an empty row, is
+        // legal and means the thread holds no capabilities. The free-list head and the seated
+        // capacity travel with it: a run seated without its head refuses every mint.
+        CapEntry** cap_dir = nullptr;
         uint16_t cap_free_head = KCAP_FREE_NONE;
         uint16_t cap_width = 0;
 #if KICKOS_MEMORY_ENFORCED and KICKOS_HAVE_MPU and not KICKOS_HAVE_ASPACE
@@ -637,8 +648,8 @@ namespace kickos
     };
 
 #if KICKOS_KERNEL_STACKS
-    // The per-slot kernel-stack instrumentation. `index` is a POOL index, 0 to
-    // KICKOS_THREAD_SLOTS - 1; idle holds its TCB outside the pool and has no stack here.
+    // The per-slot kernel-stack instrumentation. `index` is a POOL index; idle holds its TCB
+    // outside the pool and has no stack here.
     //
     // Per slot and since boot. The block is armed once at init and never re-armed when a slot
     // changes hands: re-arming would erase the record of an overflow that had already happened.
@@ -649,13 +660,15 @@ namespace kickos
     size_t kstack_high_water(int index);
 #endif
 
-    // Static thread-slot pool. Bump-allocated, then EXITED slots reclaimed at spawn. Liveness is
-    // INTRINSIC: a slot is free iff its TCB state is EXITED. The per-slot generation bumps at
-    // RECLAIM and not at exit, so a handle to a just-exited-but-not-yet-reused slot still
-    // gen-matches and reuse invalidates it. Caller serializes (IrqLock).
+    // The thread-slot pool, its TCBs, generations and links in the pools' storage
+    // (<kickos/pools.h>). Bump-allocated, then reclaimed from the list of EXITED slots, the one that
+    // exited last first. Liveness is INTRINSIC: a slot is free iff its TCB state is EXITED, and retire()
+    // is where that is published. The per-slot generation bumps at RECLAIM and not at exit, so a
+    // handle to a just-exited-but-not-yet-reused slot still gen-matches and reuse invalidates it.
+    // Caller serializes (IrqLock).
     //
-    // KICKOS_THREAD_SLOTS, not KICKOS_MAX_THREADS: kmain claims one slot for root before any
-    // spawn can run, so a spawn still draws the full KICKOS_MAX_THREADS the board states.
+    // The pool holds root's slot beside every spawnable one: kmain claims it before any spawn
+    // can run.
     struct ThreadPool
     {
         static constexpr int INDEX_BITS = HANDLE_INDEX_BITS;
@@ -679,7 +692,7 @@ namespace kickos
         // discriminating silently, on the one path where a mistake completes a stranger's call.
         // The band lies below the all-ones index and the boot kill tag, so this bound is theirs
         // too: KOS_THREAD_NONE stays unmintable by ANY generation, and no slot's tag is idle's.
-        static_assert(KICKOS_THREAD_SLOTS < FAR_REPLY_BASE,
+        static_assert(KICKOS_THREAD_SLOT_CEILING < FAR_REPLY_BASE,
                       "the thread pool reaches into the reply-record band, so a far reply "
                       "capability could resolve to a local thread, or the pool would seat the "
                       "index KOS_THREAD_NONE reserves");
@@ -716,17 +729,37 @@ namespace kickos
             return static_cast<uint16_t>(index + 1);
         }
 
-        Thread slots[KICKOS_THREAD_SLOTS];
-        int next = 0;
-        uint16_t gen[KICKOS_THREAD_SLOTS] = {};
-        // The high half of a 32-bit generation whose low half is gen[]: step and revert the two
+        // The TCBs.
+        Thread* slots() const
+        {
+            return pool_local(kickos_kernel_pools.threads);
+        }
+        // Each slot's generation, of which a handle carries all 16 bits.
+        uint16_t* gen() const
+        {
+            return pool_local(kickos_kernel_pools.thread_gen);
+        }
+        // The high half of a 32-bit generation whose low half is gen(): step and revert the two
         // only through gen_step and gen_unstep.
-        uint16_t gen_hi[KICKOS_THREAD_SLOTS] = {};
+        uint16_t* gen_hi() const
+        {
+            return pool_local(kickos_kernel_pools.thread_gen_hi);
+        }
+        int count() const
+        {
+            return kickos_kernel_pools.thread_slots;
+        }
+        PoolSpan<Thread> all() const
+        {
+            return pool_span(kickos_kernel_pools.threads, count());
+        }
+
+        int next = 0;
 
         // A CAP_REPLY carries this handle in CapEntry::obj, whole and unmasked (cap.h). At
         // 16 + 16 the fit is EXACT: a widening would truncate the GENERATION from the top and
         // collapse cap_reply_caller's late-reply guard with nothing at runtime to report it.
-        static_assert(INDEX_BITS + 8 * sizeof(gen[0]) <= 8 * sizeof(CapEntry::obj),
+        static_assert(INDEX_BITS + 8 * sizeof(uint16_t) <= 8 * sizeof(CapEntry::obj),
                       "a thread handle no longer fits CAP_REPLY's obj word");
 
         // Free list of reclaimed kernel-default stacks: a SINGLE size class
@@ -759,74 +792,84 @@ namespace kickos
             return block;
         }
 
-        // Claim a slot: reclaim an EXITED one (bumping its generation to kill stale handles) or
-        // bump-allocate a fresh one. Returns the index, or -1 if full. Lowest-exited first, which
-        // holds `next` down: the scan below and the spawner_tag sweep are both bounded by it.
-        //
-        // EXITED is the only admissible key: the one state published with the kernel lock held
-        // through the swap that parks the dying thread's frame, so a holder of that lock reads
-        // it only with the occupant off-CPU.
-        [[nodiscard]] int alloc()
+        // Each slot's created-task head.
+        ThreadLinks* links() const
         {
-            for (int s = 0; s < next; s++)
+            return pool_local(kickos_kernel_pools.thread_links);
+        }
+
+        // Publish `t` EXITED, which makes its slot reclaimable, root's excepted. EXITED is the
+        // only admissible key: published with the kernel lock held through the swap that parks
+        // the dying thread's frame, so a holder of that lock reads it only with the occupant
+        // off-CPU. O(1).
+        void retire(Thread* t)
+        {
+            t->state.to<ThreadState::EXITED>();
+            int const s = index_of(t);
+            // Root's slot is retired, not free. Reclaiming it would hand root's index-derived
+            // kill tag and its is_root identity to a stranger, and would push root's
+            // KICKOS_ROOT_STACK_SIZE block onto a free list whose one size class is
+            // KICKOS_USER_STACK_SIZE.
+            if (s < 0 or s == ROOT_INDEX)
             {
-                // Root's slot is retired, not free. Reclaiming it would hand root's
-                // index-derived kill tag and its is_root identity to a stranger, and would push
-                // root's KICKOS_ROOT_STACK_SIZE block onto a free list whose one size class is
-                // KICKOS_USER_STACK_SIZE. Every action below is a reclaim-point action root
-                // will never reach here: a fourth one added there owes this slot an answer of
-                // its own, somewhere else.
-                if (s == ROOT_INDEX)
-                {
-                    continue;
-                }
-                if (slots[s].state == ThreadState::EXITED)
-                {
-                    // Harvest at the reclaim point: only by now is the thread provably off-CPU,
-                    // so writing the free-list link into its stack cannot race the final context
-                    // save. Ownership moves to the list, so a later reclaim never double-pushes.
-                    if (slots[s].kstack_owned)
-                    {
-                        stack_push(slots[s].stack_base);
-                        slots[s].kstack_owned = false;
-                    }
-                    // Same reclaim-point requirement as the stack: the thread is off-CPU and
-                    // cap_teardown has emptied every entry. cap_slab_detach clears the directory
-                    // and the free-list head as it returns each chunk.
-                    thread_cap_release(&slots[s]);
-                    // A slot's kill tag is index-derived and outlives its occupant: a child
-                    // still naming this tag must be orphaned before the slot changes hands, or
-                    // the new occupant inherits cancel authority over threads it never spawned.
-                    for (int j = 0; j < next; j++)
-                    {
-                        if (slots[j].spawner_tag == kill_tag_for_index(s))
-                        {
-                            slots[j].spawner_tag = KILL_TAG_NONE;
-                        }
-                    }
-                    gen_step(s);
-                    return s;
-                }
+                return;
             }
-            if (next >= KICKOS_THREAD_SLOTS)
+            reclaimable.push(&t->reclaim);
+        }
+
+        // Claim a slot charged to `charged`'s THREADS budget: reclaim the EXITED one that
+        // exited last (bumping its generation to kill stale handles) or bump-allocate a fresh
+        // one. Returns the index, SLOT_OVER_BUDGET when the budget refuses, or -1 if full.
+        // O(1) past the admission, plus the reclaimed slot's own children.
+        [[nodiscard]] int alloc(Task const* charged)
+        {
+            if (not task_admit(charged, BudgetKind::THREADS, 1))
+            {
+                return SLOT_OVER_BUDGET;
+            }
+            return claim();
+        }
+
+        // Root's slot, which kmain claims before root's task has a member: the init's THREADS
+        // budget is that slot.
+        [[nodiscard]] int claim_boot()
+        {
+            return claim();
+        }
+
+    private:
+        [[nodiscard]] int claim()
+        {
+            ListNode* const n = reclaimable.pop();
+            if (n != nullptr)
+            {
+                int const s = static_cast<int>(KICKOS_CONTAINER_OF(n, Thread, reclaim) - slots());
+                reclaim(s);
+                gen_step(s);
+                return s;
+            }
+            if (next >= count())
             {
                 return -1;
             }
             return next++;
         }
 
+    public:
         // Undo a slot claimed by alloc() when the spawn fails AFTER the claim. Must NOT burn a
         // generation and must NOT leave a hole alloc() would never revisit, so it mirrors
         // alloc()'s two cases:
         //   * a reclaimed EXITED slot: revert alloc()'s generation bump, so the prior occupant's
-        //     join-by-handle still resolves, and leave it EXITED and reclaimable.
+        //     join-by-handle still resolves, and leave it EXITED and first to be reclaimed.
         //   * a fresh bump slot, always the last one under the spawn lock: un-bump `next`, else
         //     it becomes a permanent hole.
         void release(int i)
         {
-            if (slots[i].state == ThreadState::EXITED)
+            if (slots()[i].state == ThreadState::EXITED)
             {
                 gen_unstep(i);
+                child_link(slots()[i].spawner_tag, i);
+                reclaimable.push(&slots()[i].reclaim);
                 return;
             }
             if (i == next - 1)
@@ -835,27 +878,39 @@ namespace kickos
             }
         }
 
-        // Index of a TCB in this pool, or -1 if it is not a pool slot (idle).
-        int index_of(Thread const* t) const
+        // Slot `child`, whose occupant `tag` spawned, joins that spawner slot's children. A tag
+        // naming no slot (KILL_TAG_NONE, the boot tag) links nothing. O(1).
+        void child_link(uint16_t tag, int child)
         {
-            return slot_index_of(slots, t);
+            if (tag == KILL_TAG_NONE or tag > count())
+            {
+                return;
+            }
+            slots()[tag - 1].children.push(&slots()[child].child);
+        }
+
+        // Index of a TCB in this pool, or -1 if it is not a pool slot (idle).
+        // Out of line, one body for the whole image.
+        __attribute__((noinline, noclone)) int index_of(Thread const* t) const
+        {
+            return slot_index_of<Thread>(slots(), count(), t);
         }
 
         // Root's slot: kmain claims it before any spawn can run, so it is index 0 on every
         // board and every boot (kmain asserts it). Root MAY reach EXITED, and the slot is
-        // still root's afterwards: alloc skips it, so no successor can answer this compare.
-        // Do NOT identify root by spawner_tag == KILL_TAG_NONE instead: alloc's sweep above
-        // clears a reclaimed slot's children to NONE, so that test names every orphan too.
+        // still root's afterwards: retire never lists it, so no successor can answer this
+        // compare. Do NOT identify root by spawner_tag == KILL_TAG_NONE instead: a reclaim
+        // clears the reclaimed slot's children to NONE, so that test names every orphan too.
         static constexpr int ROOT_INDEX = 0;
 
         bool is_root(Thread const* t) const
         {
-            return t == &slots[ROOT_INDEX];
+            return t == &slots()[ROOT_INDEX];
         }
 
         // The kill tag naming `t`: kill_tag_for_index of its slot if it is one of ours, else
         // the boot tag. Never KILL_TAG_NONE, so a thread with no spawner matches nobody.
-        uint16_t kill_tag_of(Thread const* t) const
+        __attribute__((noinline, noclone)) uint16_t kill_tag_of(Thread const* t) const
         {
             int const index = index_of(t);
             if (index < 0)
@@ -868,32 +923,39 @@ namespace kickos
         // The opaque handle for a live slot index, carrying its current generation.
         kos_thread_t handle_for(int index) const
         {
-            return handle_pack(gen[index], static_cast<uint32_t>(index));
+            return handle_pack(gen()[index], static_cast<uint32_t>(index));
         }
 
         // The lock id of a live slot index, carrying its current generation.
         uint32_t lock_id_for(int index) const
         {
-            uint32_t const wide = (static_cast<uint32_t>(gen_hi[index]) << 16) | gen[index];
-            return lock_id_pack(wide, static_cast<uint32_t>(index));
+            return lock_id_pack(wide_gen(index), static_cast<uint32_t>(index));
+        }
+
+        // A live slot index's whole generation, of which a handle carries the low 16 bits.
+        uint32_t wide_gen(int index) const
+        {
+            return (static_cast<uint32_t>(gen_hi()[index]) << 16) | gen()[index];
         }
 
         void gen_step(int i)
         {
-            gen[i]++;
-            if (gen[i] == 0)
+            uint16_t* const g = gen();
+            g[i]++;
+            if (g[i] == 0)
             {
-                gen_hi[i]++;
+                gen_hi()[i]++;
             }
         }
 
         void gen_unstep(int i)
         {
-            if (gen[i] == 0)
+            uint16_t* const g = gen();
+            if (g[i] == 0)
             {
-                gen_hi[i]--;
+                gen_hi()[i]--;
             }
-            gen[i]--;
+            g[i]--;
         }
 
         // nullptr for a slot never allocated, or reclaimed under this handle. An EXITED slot
@@ -901,12 +963,55 @@ namespace kickos
         Thread* resolve(kos_thread_t handle)
         {
             uint32_t const index = handle_index(handle);
-            if (index >= static_cast<uint32_t>(next) or gen[index] != handle_gen(handle))
+            if (index >= static_cast<uint32_t>(next) or gen()[index] != handle_gen(handle))
             {
                 return nullptr;
             }
-            return &slots[index];
+            return &slots()[index];
         }
+
+        // Slot `child` leaves its spawner slot's children, if it is listed there. O(1).
+        void child_unlink(int child)
+        {
+            Thread& c = slots()[child];
+            uint16_t const tag = c.spawner_tag;
+            if (tag == KILL_TAG_NONE or tag > count())
+            {
+                return;
+            }
+            HeadList& siblings = slots()[tag - 1].children;
+            if (siblings.holds(&c.child))
+            {
+                siblings.unlink(&c.child);
+            }
+        }
+
+        // The reclaim-point actions, each needing the occupant off-CPU and its sweep done.
+        void reclaim(int s)
+        {
+            Thread& t = slots()[s];
+            // Only by now is the thread provably off-CPU, so writing the free-list link into its
+            // stack cannot race the final context save. Ownership moves to the list, so a later
+            // reclaim never double-pushes.
+            if (t.kstack_owned)
+            {
+                stack_push(t.stack_base);
+                t.kstack_owned = false;
+            }
+            child_unlink(s);
+            // A slot's kill tag is index-derived and outlives its occupant: a child still naming
+            // this tag is orphaned before the slot changes hands, or the new occupant inherits
+            // cancel authority over threads it never spawned.
+            ListNode* n = t.children.pop();
+            while (n != nullptr)
+            {
+                KICKOS_CONTAINER_OF(n, Thread, child)->spawner_tag = KILL_TAG_NONE;
+                n = t.children.pop();
+            }
+        }
+
+        // The EXITED slots, the one that exited last first.
+        HeadList reclaimable;
     };
 }
 

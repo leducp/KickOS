@@ -299,17 +299,10 @@ kickos::notify_wait(...) + 196 in section .text
 ```
 (`0x8000de68` is `mepc`; `p/a $mepc` may print it without a name.) `MPP` = 3: the interrupted
 code was machine mode, on a kernel stack, inside `notify_wait`. Then watch a thread being
-restored: `delete`, `break *kickos_arch_mpu_commit if $mcause == 0x80000003`, `continue`:
-```
-(gdb) info registers sp
-sp   0x8005ff80
-(gdb) x/2wx $sp
-0x8005ff80:  0x80001c5e  0x00000080
-(gdb) info symbol *(unsigned*)$sp
-kickos::init::task_trampoline(void*) in section .text
-```
-`sp` is the incoming frame. Its first two words are `mepc` and `mstatus`: a fresh thread about
-to enter `task_trampoline` in user mode (`MPP` = 0, `MPIE` = 1).
+restored: `delete`, `break *kickos_arch_mpu_commit if $mcause == 0x80000003`, `continue`.
+`sp` is the incoming frame, and `x/2wx $sp` shows its first two words, `mepc` and `mstatus`. For a fresh thread
+`mepc` is the entry thread's function, `kickos_task_entry`, and `mstatus` has `MPP` = 0 and
+`MPIE` = 1: the thread will enter it in user mode.
 
 **Why, and the contract:** [Book: Porting a new ISA, the single-frame deferred switch](../book/porting-a-new-isa-riscv.md),
 [Reference: invariants, `switch-frame-matches-init` and `trap-return-atomic`](../reference/invariants.md)
@@ -368,7 +361,7 @@ The return goes through the same restore path as a switch. The frame still holds
 `ecall` (which is always 4 bytes long). No "resting privilege" field is needed, unlike ARM's
 `resting_npriv`: the saved `MPP` is the caller's privilege.
 
-**Try it:** `break kickos_app_main` (the hello app's `main`), `continue`, `delete`,
+**Try it:** `break main` (the hello app's `main`), `continue`, `delete`,
 `break svc_trampoline`, `continue`:
 ```
 (gdb) p $priv

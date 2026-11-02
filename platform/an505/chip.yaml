@@ -19,7 +19,19 @@ stack_limit: true
 
 interrupts: { count: { value: 140, ref: "QEMU 11.1 `info qtree`: armv7m_nvic num-irq" } }
 
-devices: {}
+# QEMU's `info mtree`: the peripheral region, the graphics and the LAN9118, at the non-secure
+# alias and then the secure one.
+apertures:
+  - { window: [0x40000000, 0x400000] }
+  - { window: [0x41000000, 0x140000] }
+  - { window: [0x42000000, 0x100] }
+  - { window: [0x50000000, 0x400000] }
+  - { window: [0x51000000, 0x140000] }
+  - { window: [0x52000000, 0x100] }
+
+# The four PL080 DMA controllers, at both aliases.
+devices:
+  dma: { window: [0x40110000, 0x4000], count: 2, stride: 0x10000000, bus_master: true }
 
 memory:
   code: { base: 0x10000000, size: 0x400000, link: { region: FLASH, access: rx } }

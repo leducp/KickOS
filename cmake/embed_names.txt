@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# What the kernel's link takes from the programs it embeds (tools/image-link.py --embed), one
+# `<kind> <kernel name> <program name>` per line, each where image 0's program defines it: a name
+# the kernel needs and the program lacks fails the kernel's link as undefined. copy: the kernel
+# names image 0's value. least, most: the least or the greatest value of every image. same: image
+# 0's value, which every image must state alike. alias: the kernel reads those bytes through its
+# own view of the frames image 0 is loaded in, the program's value plus
+# __kickos_image_kernel_alias. check: a kernel layout word each program states for itself,
+# asserted equal to the kernel's own.
+copy  __kickos_image0_header      kickos_image_header
+least __kickos_app_rom_start      __kickos_app_rom_start
+most  __kickos_app_rom_end        __kickos_app_rom_end
+least __kickos_app_sram_start     __kickos_app_sram_start
+most  __kickos_app_sram_end       __kickos_app_sram_end
+copy  __kickos_appbss_start       __kickos_appbss_start
+copy  __kickos_appbss_end         __kickos_appbss_end
+copy  _kickos_heap_start          _kickos_heap_start
+copy  _kickos_heap_limit          _kickos_heap_limit
+copy  __kickos_tls_segment_start  __kickos_tls_segment_start
+copy  __kickos_tls_segment_end    __kickos_tls_segment_end
+same  __global_pointer$           __global_pointer$
+alias __kickos_tdata_start        __kickos_tdata_start
+alias __kickos_tdata_end          __kickos_tdata_end
+alias __kickos_tbss_start         __kickos_tbss_start
+alias __kickos_tbss_end           __kickos_tbss_end
+check _sdata                      _sdata
+check _estack                     _estack
+check __kickos_rom_start          __kickos_rom_start
+check __kickos_ram_end            __kickos_ram_end

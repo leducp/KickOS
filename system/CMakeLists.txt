@@ -24,9 +24,11 @@ add_library(kickos_init_compose OBJECT
   init/compose/walk.cc
   init/compose/message.cc)
 # The walk's driver path, KickOS::init_drivers where the composition names a packaged driver and
-# KickOS::init_no_drivers where it names none.
-add_library(kickos_init_drivers OBJECT init/compose/driver_path.cc)
-add_library(kickos_init_no_drivers OBJECT init/compose/driver_path_none.cc)
+# KickOS::init_no_drivers where it names none, each with the bring-up a driver task runs in the
+# app's image.
+add_library(kickos_init_drivers OBJECT init/compose/driver_path.cc init/compose/driver_task.cc)
+add_library(kickos_init_no_drivers OBJECT init/compose/driver_path_none.cc
+                                          init/compose/driver_task_none.cc)
 foreach(_init kickos_init_compose kickos_init_drivers kickos_init_no_drivers)
   kickos_apply_freestanding(${_init})
   target_link_libraries(${_init} PRIVATE kickos_user)
@@ -36,15 +38,6 @@ set_target_properties(kickos_init_compose PROPERTIES EXPORT_NAME init)
 set_target_properties(kickos_init_drivers PROPERTIES EXPORT_NAME init_drivers)
 set_target_properties(kickos_init_no_drivers PROPERTIES EXPORT_NAME init_no_drivers)
 kickos_export_targets(kickos_init_compose kickos_init_drivers kickos_init_no_drivers)
-
-# KickOS::main: kickos_main, the entry of a composition's task that runs the app's main. A system
-# target carries its object where its composition names it.
-add_library(kickos_main_entry OBJECT init/compose/main.cc)
-kickos_apply_freestanding(kickos_main_entry)
-target_link_libraries(kickos_main_entry PRIVATE kickos_user)
-target_include_directories(kickos_main_entry PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
-set_target_properties(kickos_main_entry PROPERTIES EXPORT_NAME main)
-kickos_export_targets(kickos_main_entry)
 
 # ---------------------------------------------------------------------------
 # The SPI class backend for this image, which is the image posture's decision and not any

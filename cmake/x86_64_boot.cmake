@@ -13,12 +13,10 @@
 #     beside the chip's own definition of the same symbol and member order inside a group is
 #     what resolves that; linking the objects raw would be a duplicate definition.
 
-# The link tool and what it runs: the two guards before every link, and the relocation copy an
-# application image carries for the boot.
+# The link tool and what it runs: the two guards before every link, and the map it writes.
 set(KICKOS_X86_64_LINK "${CMAKE_CURRENT_SOURCE_DIR}/tools/x86_64-link.sh")
 set(KICKOS_NO_GOT "${CMAKE_CURRENT_SOURCE_DIR}/tools/check-x86_64-no-got.sh")
 set(KICKOS_WEAK_UNDEF "${CMAKE_CURRENT_SOURCE_DIR}/tools/check-x86_64-weak-undef.sh")
-set(KICKOS_X86_64_KREL "${CMAKE_CURRENT_SOURCE_DIR}/tools/x86_64-krel.sh")
 set(KICKOS_X86_64_MAP "${CMAKE_CURRENT_SOURCE_DIR}/tools/x86_64-map.awk")
 
 set(KICKOS_X86_64_DIR "${CMAKE_CURRENT_SOURCE_DIR}/arch/x86/x86_64")
@@ -26,14 +24,18 @@ set(KICKOS_Q35_DIR    "${CMAKE_CURRENT_SOURCE_DIR}/arch/x86/chip/q35")
 
 set(KICKOS_X86_64_PE_SCRIPT "${KICKOS_X86_64_DIR}/pe_image.ld")
 
-# A probe links no leaf, so it states the section script, the exit stub and the heap itself: it
-# carves none.
-kickos_heap_defsym(_kos_probe_heap 0)
+# A probe links no leaf and embeds no program, so it states the section script and the exit stub
+# itself, and its image fragments place nothing. ld reads the fragment's directory only if it
+# comes before the script.
+set(KICKOS_X86_64_NOIMAGE_DIR "${KICKOS_X86_64_DIR}/noimage")
 set(KICKOS_X86_64_PROBE_LINK "${KICKOS_X86_64_LINK}" --one-pass
     "${KICKOS_X86_64_LD}" "${CMAKE_READELF}" "${CMAKE_OBJDUMP}" "${CMAKE_OBJCOPY}"
-    "-Wl,-u,_exit" "-Wl,-T,${KICKOS_X86_64_PE_SCRIPT}" "-Wl,${_kos_probe_heap}")
+    "-Wl,-u,_exit" "-Wl,-L,${KICKOS_X86_64_NOIMAGE_DIR}" "-Wl,-T,${KICKOS_X86_64_PE_SCRIPT}")
 set(KICKOS_X86_64_PROBE_DEPENDS "${KICKOS_X86_64_LINK}" "${KICKOS_NO_GOT}" "${KICKOS_WEAK_UNDEF}"
-    "${KICKOS_X86_64_PE_SCRIPT}" "${KICKOS_X86_64_MAP}")
+    "${KICKOS_X86_64_PE_SCRIPT}" "${KICKOS_X86_64_MAP}"
+    "${KICKOS_X86_64_NOIMAGE_DIR}/kickos_image0.ld"
+    "${KICKOS_X86_64_NOIMAGE_DIR}/kickos_image_table.ld"
+    "${KICKOS_X86_64_NOIMAGE_DIR}/kickos_image_frames.ld")
 
 # One probe image from the OBJECT libraries named, and the chip and arch archives after them with
 # ARCHIVES. DEPENDS names the OBJECT FILES, not the targets: a DEPENDS on an OBJECT library alone
@@ -192,10 +194,11 @@ add_custom_target(x2-run
 # The guard's own positive control, registered here because the guard is this board's alone.
 # AR is not in the toolchain file's find_program set, CMake resolving it itself.
 if(KICKOS_BUILD_TESTS)
-  # The app window's link rules over every application image this tree links: no app
-  # relocation into the kernel's half, one DIR64 record per absolute word in the image, a kernel
-  # reference to an app symbol only where the allowlist says what the site does with it, and
-  # no script symbol re-based by a dropped section (docs/design-m10-kernel-share.md 1.3).
+  # The link rules over every application image this tree links: the embedded program is the
+  # program's own bytes at its own offsets, one DIR64 record per absolute kernel word and none
+  # in the program, a kernel reference to a program address only where the allowlist says what
+  # the site does with it, and no script symbol re-based by a dropped section
+  # (docs/design-m10-kernel-share.md 1.2).
   add_test(NAME x86_64_app_split
     COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_x86_64_app_split.py"
             --readelf "${CMAKE_READELF}" --objdump "${CMAKE_OBJDUMP}" --nm "${CMAKE_NM}"
@@ -322,6 +325,14 @@ foreach(_kos_t IN LISTS _kos_kernel_half _kos_probe_objects)
     "$<$<COMPILE_LANGUAGE:C,CXX>:${KICKOS_X86_64_KERNEL_FLAGS}>")
 endforeach()
 
+# The five-level entry a witness image's kernel link takes in place of the arch archive's
+# kickos_x86_64_paging_entry_default.cc (user/apps/common/selftest/CMakeLists.txt).
+add_library(kickos_x86_64_la57_witness OBJECT "${KICKOS_X86_64_DIR}/la57_witness_x86_64.cc")
+kickos_apply_freestanding(kickos_x86_64_la57_witness)
+target_include_directories(kickos_x86_64_la57_witness PRIVATE ${KICKOS_X86_64_INCLUDES})
+target_compile_options(kickos_x86_64_la57_witness PRIVATE
+  "$<$<COMPILE_LANGUAGE:C,CXX>:${KICKOS_X86_64_KERNEL_FLAGS}>")
+
 # kickos_core links the boot and landing objects (CMakeLists.txt), so an out-of-tree app links
 # them exactly as an in-tree one does: exported, they reach KickOSTargets as IMPORTED_OBJECTS.
 kickos_export_targets(kickos_x86_64_boot kickos_x86_64_boot_ap kickos_x86_64_landed_kernel)
@@ -330,5 +341,4 @@ kickos_export_targets(kickos_x86_64_boot kickos_x86_64_boot_ap kickos_x86_64_lan
 install(FILES "${KICKOS_X86_64_PE_SCRIPT}" "${KICKOS_X86_64_MAP}"
         DESTINATION "${KICKOS_CMAKE_DIR}")
 install(PROGRAMS "${KICKOS_X86_64_LINK}" "${KICKOS_NO_GOT}" "${KICKOS_WEAK_UNDEF}"
-                 "${KICKOS_X86_64_KREL}"
         DESTINATION "${KICKOS_CMAKE_DIR}")

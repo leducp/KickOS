@@ -7,4 +7,5 @@
 # case that matters is a thread index above 255, and no board configures that many slots.
 kickos_add_unit_test(NAME capreply_packing
   SOURCES capreply_packing.cc
-  INCLUDES "${PROJECT_SOURCE_DIR}/kernel/include" "${PROJECT_SOURCE_DIR}/system/include")
+  INCLUDES "${PROJECT_SOURCE_DIR}/kernel/include" "${PROJECT_SOURCE_DIR}/system/include"
+           "${PROJECT_SOURCE_DIR}/user/include")

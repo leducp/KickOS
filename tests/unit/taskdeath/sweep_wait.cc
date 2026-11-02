@@ -42,7 +42,7 @@ namespace kickos
             constexpr uint8_t PRIO_MID = 5;
 
             // Several chunks, so the sweep opens gaps past its first one.
-            constexpr uint32_t HEAVY_WIDTH = KICKOS_MAX_HANDLES;
+            constexpr uint32_t HEAVY_WIDTH = KICKOS_SEAM_ROOT_WIDTH;
             static_assert(HEAVY_WIDTH > 2 * KCAP_TEARDOWN_CHUNK,
                           "the heavy member's sweep must span three chunks");
             // The first gap closes the release bracket, before the sweep starts.
@@ -80,13 +80,12 @@ namespace kickos
                 IrqLock lock;
                 task_drop_hold(g_mid.group, lock);
                 int err = 0;
-                g_mid.restart = task_create(FIXTURE_TASK_TAG, nullptr, 0,
-                                            /*mem_attr=*/0u, /*donor=*/nullptr, &err);
+                g_mid.restart = kickos::testfix::task_held(FIXTURE_TASK_TAG, &err, lock);
                 g_mid.straggler = false;
                 Kernel& k = kernel();
                 for (int s = 0; g_mid.restart != nullptr and s < k.threads.next; s++)
                 {
-                    if (k.threads.slots[s].task == g_mid.restart)
+                    if (k.threads.slots()[s].task == g_mid.restart)
                     {
                         g_mid.straggler = true;
                     }
@@ -156,7 +155,7 @@ namespace kickos
             ASSERT_NE(g_mid.restart, nullptr) << "a spare slot took the restart";
             EXPECT_NE(g_mid.restart, group) << "not the slot the heavy member swept under";
             EXPECT_FALSE(g_mid.straggler) << "so no thread of the old instance counts in it";
-            Task const& slot = kernel().tasks[0];
+            Task const& slot = kernel().tasks()[0];
             EXPECT_EQ(slot.sweeping, 0u) << "and the slot is free once the sweep is done";
             EXPECT_EQ(slot.refcount, 0u);
         }
@@ -190,7 +189,7 @@ namespace kickos
             Thread* const entry = seat_pool(SLOT_HEAVY, PRIO_MID);
             Thread* const stray = seat_pool(SLOT_LIGHT, PRIO_LOW);
             join_task(entry, group);
-            entry->task_entry = true;
+            entry->task_role = kickos::TASK_ROLE_ENTRY;
             stray->task = group;
             kernel().current(kickos_kernel_core()) = entry;
 

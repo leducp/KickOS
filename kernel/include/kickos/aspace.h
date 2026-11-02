@@ -8,6 +8,7 @@
 #define KICKOS_ASPACE_H
 
 #include <kickos/arch/arch.h>
+#include <kickos/budget.h>
 #include <kickos/presync.h>
 #include <kickos/vrange.h>
 
@@ -21,6 +22,8 @@ namespace kickos
 {
     struct Thread;
     struct Domain;
+    struct Task;
+    struct ImageSpan; // kickos/image.h
     class MpuSet;
 
     // What answers for a user end: its space where the backend translates, else the thread
@@ -85,19 +88,45 @@ namespace kickos
         return static_cast<arch_phys_addr_t>(va - arch_aspace_user_offset());
     }
 
-    // Seed shared RX text, private RW data and matching validation ranges. The first space
-    // seeded maps the loader's data frames, after copying them as the pristine image every
-    // later space's data is copied from; no space's live data is ever a source. On failure,
-    // release the partially built space with aspace_release.
-    bool aspace_image_seed(struct arch_aspace* space, VirtualRanges* ranges);
+    // Seed image `image`'s shared RX text, its private RW data and matching validation ranges.
+    // The data is a copy of the frames the loader put the image's window in, which no space maps;
+    // no space's live data is ever a source. 0, -KOS_EAGAIN past `payer`'s PAGES budget, or
+    // -KOS_ENOMEM; on failure, release the partially built space with aspace_release.
+    int aspace_image_seed(Task const* payer, struct arch_aspace* space, VirtualRanges* ranges,
+                          size_t image);
 
-    // kickos_task_start where every space reaches it: the entry thread_create gives every
-    // unprivileged thread.
-    void (*aspace_task_start())(void*);
+    // Whether `payer` may take the table frames a map of [va, va + pages) adds to `space`. Every
+    // map site asks it before arch_aspace_map. Caller holds IrqLock.
+    bool aspace_tables_admit(Task const* payer, struct arch_aspace* space, uintptr_t va,
+                             size_t pages);
+
+    // What `d`'s space holds of `kind`: RAM_BLOCKS or RAM_BYTES of the reservations kos_ram_alloc
+    // made in it, PAGES of the frames it owns (its data copy, stacks and reservations) and of its
+    // tables. A space dies with its task's incarnation, so this is the incarnation's. O(the
+    // space's ranges, plus its tables' entries for PAGES). Null-safe: 0. Caller holds IrqLock.
+    uint32_t aspace_task_usage(Domain const* d, BudgetKind kind);
+
+    // Image `image`'s kickos_task_start where each space of it reaches it: the entry
+    // thread_create gives every unprivileged thread of that image.
+    void (*aspace_task_start(size_t image))(void*);
+
+    // The images the link states the frames of, which is every image the link holds.
+    size_t aspace_image_frames_count();
 
     // Unmap what the space borrows, return the frames of a reservation it never mapped, then
     // destroy it. The one sanctioned way to end a space; arch_aspace_destroy alone strands both.
-    void aspace_release(struct arch_aspace* space, VirtualRanges* ranges);
+    // `keep_lent` frees no frame of a lent reservation, which the space must not map.
+    void aspace_release(struct arch_aspace* space, VirtualRanges* ranges, bool keep_lent = false);
+
+    // Whether `e` is a reservation another space's handoff or memory window maps.
+    bool aspace_range_lent(VirtualRange const* e);
+    // At its task's death: end the space and everything in it but its lent reservations, which
+    // `ranges` alone goes on naming. Caller holds IrqLock.
+    void aspace_shed(struct arch_aspace* space, VirtualRanges* ranges);
+    // The pages a shed space's ranges still name.
+    uint32_t aspace_shed_pages(VirtualRanges const* ranges);
+    // Free the frames of the reservation in slot `i` a shed space names, and forget it.
+    void aspace_shed_free(VirtualRanges* ranges, size_t i);
 
     // Unmap every frame run the space maps and drop each mapping's reference. Caller holds
     // IrqLock.
@@ -150,8 +179,13 @@ namespace kickos
     // Note a span the locked pass will owe a sync. Frames outside the pool are not noted.
     void presync_note(arch_phys_addr_t pa, size_t pages);
 #endif
-    // Stage the copy of the pristine image that aspace_image_seed will map into a new space.
-    void presync_stage_image();
+    // Stage the copy of declaration `decl`'s image's pristine data that aspace_image_seed will
+    // map into its next space, charged to the declaration's record, which no other create may
+    // seat while it is staged. Past the record's PAGES budget, or while another create holds
+    // a stage for it, nothing is staged and the locked pass refuses.
+    void presync_stage_image(size_t decl);
+    // Whether a thread other than the caller holds an image stage for `t`'s record.
+    bool presync_image_staged_elsewhere(Task const* t);
     // No lock held: sync every noted frame, then fill the staged run.
     void presync_run();
     // The call completed: every other live record meeting what its locked pass mapped is dropped.
@@ -165,13 +199,19 @@ namespace kickos
     void presync_exit();
     // `t` is a slot's new occupant: its record is a new one.
     void presync_fresh(Thread const* t);
+    // What `t`'s members hold staged, which no range names yet, of `kind`: the PAGES of a
+    // reservation or a frame run, and the RAM_BLOCKS and RAM_BYTES of a reservation. A new
+    // space's staged data copy is the created task's, never its creator's. O(t's members).
+    // Caller holds IrqLock.
+    uint32_t presync_task_staged(Task const* t, BudgetKind kind);
 
-    // The frames of a reservation of `bytes`, staged for presync_run to clear; 0 when the pool
-    // has no run that long.
-    arch_phys_addr_t aspace_reserve_stage(VirtualRanges const* ranges, size_t bytes);
-    // Reserve the cleared run in `ranges`: its address, or 0 with the run left staged.
+    // The frames of `bytes`, staged for presync_run to clear: a RESERVE for kos_ram_alloc, a
+    // CLEAR for a frame run. 0 when the pool has no run that long.
+    arch_phys_addr_t aspace_reserve_stage(VirtualRanges const* ranges, size_t bytes,
+                                          PresyncStage stage);
+    // Reserve the cleared RESERVE run in `ranges`: its address, or 0 with the run left staged.
     uintptr_t aspace_reserve_commit(VirtualRanges* ranges);
-    // Hand the cleared run to the empty frame run `run_obj` instead: false, with the run left
+    // Hand the cleared CLEAR run to the empty frame run `run_obj`: false, with the run left
     // staged, unless every granule of it was cleared.
     bool aspace_reserve_run(int run_obj);
 
@@ -182,7 +222,7 @@ namespace kickos
                                 uint32_t rights, enum arch_map_memtype type);
     void aspace_cap_map_note(int run_obj, arch_phys_addr_t base, uint32_t pages,
                              enum arch_map_memtype type);
-    // A spawn's memory window or a task's data: a whole reservation of `own`'s at `base`.
+    // A task's declared block or data: a whole reservation of `own`'s at `base`.
     void aspace_reservation_note(VirtualRanges const* own, uintptr_t base, size_t bytes,
                                  enum arch_map_memtype type);
 #endif
@@ -190,22 +230,29 @@ namespace kickos
 
     // The self-grant: map a range the caller reserved, at the address it reserved.
     // -KOS_EPERM for an address this space never reserved, a cross-task self-grant included;
-    // -KOS_EBUSY when another mapping of its frames carries another memory type; 0 when the
-    // range is already mapped with these attributes.
-    int aspace_self_grant(struct arch_aspace* space, VirtualRanges* ranges, uintptr_t base,
-                          size_t size, uint32_t rights, enum arch_map_memtype type);
+    // -KOS_EBUSY when another mapping of its frames carries another memory type; -KOS_EAGAIN
+    // when `payer` cannot take the tables; 0 when the range is already mapped with these
+    // attributes.
+    int aspace_self_grant(Task const* payer, struct arch_aspace* space, VirtualRanges* ranges,
+                          uintptr_t base, size_t size, uint32_t rights,
+                          enum arch_map_memtype type);
 
-    // Return the kernel alias of one app-image byte, even before spaces exist.
-    // Return null outside the image or if no app window is configured.
-    void* aspace_image_alias(void const* app_ptr);
+    // Image `image`'s spans as its tasks reach them: its read-only image, its writable one, and
+    // its thread-local template.
+    void aspace_image_spans(size_t image, ImageSpan* code, ImageSpan* ram, ImageSpan* tls);
+
+    // Return the kernel alias of one byte of image `image`, even before spaces exist.
+    // Return null outside that image.
+    void* aspace_image_alias(size_t image, void const* app_ptr);
 
     // Map a capability-owned frame run at *at, or at the run's own address where *at is 0,
     // and record it as borrowed; on 0, *at is where it was mapped. The capability retains
     // frame ownership. Return -KOS_ENOMEM for unavailable space, -KOS_EINVAL for an invalid
-    // range, or -KOS_EBUSY where another mapping of the run carries another memory type.
-    int aspace_cap_map(struct arch_aspace* space, VirtualRanges* ranges, uintptr_t* at,
-                       int run_obj, arch_phys_addr_t base, uint32_t pages, uint32_t rights,
-                       enum arch_map_memtype type);
+    // range, -KOS_EBUSY where another mapping of the run carries another memory type, or
+    // -KOS_EAGAIN where `payer`, the space's, cannot take the tables.
+    int aspace_cap_map(Task const* payer, struct arch_aspace* space, VirtualRanges* ranges,
+                       uintptr_t* at, int run_obj, arch_phys_addr_t base, uint32_t pages,
+                       uint32_t rights, enum arch_map_memtype type);
 
     // Unmap a capability mapping and release its reference. Return -KOS_EPERM
     // unless both the mapping kind and run_obj match; VR_BORROWED alone is insufficient.
@@ -216,10 +263,11 @@ namespace kickos
     // a VR_WINDOW range held by `holder` (a thread slot index plus one) at `place` in its spawn
     // list. A memory window names the `donor` domain whose reservation it maps and holds a
     // reference on it until unmapped; a device window names none. -KOS_ENOMEM when the area,
-    // the list or the tables are full.
-    int aspace_window_map(struct arch_aspace* space, VirtualRanges* ranges, arch_phys_addr_t pa,
-                          size_t bytes, uint32_t rights, enum arch_map_memtype type,
-                          uint16_t holder, uint32_t place, Domain* donor);
+    // the list or the tables are full, -KOS_EAGAIN when `payer` cannot take the tables.
+    int aspace_window_map(Task const* payer, struct arch_aspace* space, VirtualRanges* ranges,
+                          arch_phys_addr_t pa, size_t bytes, uint32_t rights,
+                          enum arch_map_memtype type, uint16_t holder, uint32_t place,
+                          Domain* donor);
 
     // Unmap every window `holder` holds, completing the backend's shootdown, and release their
     // donors. A holder with none is a no-op.
@@ -233,10 +281,17 @@ namespace kickos
     // Map the donor's complete reservation at the same VA without taking ownership.
     // Require its exact base and rounded page count. Return -KOS_EPERM for a
     // missing reservation, -KOS_EBUSY where the frames are mapped with another memory type,
-    // or -KOS_ENOMEM if the destination cannot accept it.
-    int aspace_handoff(VirtualRanges const* donor, struct arch_aspace* space,
+    // -KOS_EAGAIN where `payer` cannot take the tables, or -KOS_ENOMEM if the destination
+    // cannot accept it.
+    int aspace_handoff(Task const* payer, VirtualRanges const* donor, struct arch_aspace* space,
                        VirtualRanges* ranges, uintptr_t base, size_t size,
                        enum arch_map_memtype type);
+
+    // Whether `e` is a handoff: frames another domain reserved.
+    bool aspace_range_handed_off(VirtualRange const* e);
+
+    // Unmap and forget the handoff `ranges` holds, freeing no frame.
+    void aspace_release_handoff(struct arch_aspace* space, VirtualRanges* ranges);
 
     // Install and return the thread's task space, skipping redundant root writes.
     // For spaceless threads, return null; SMP installs the boot root, while
@@ -263,7 +318,7 @@ namespace kickos
     inline bool aspace_seated_with(struct arch_aspace*) { return true; }
     inline bool aspace_seated_for(Thread const*) { return true; }
     inline void aspace_install_boot(void) {}
-    inline void* aspace_image_alias(void const*) { return nullptr; }
+    inline void* aspace_image_alias(size_t, void const*) { return nullptr; }
 
 #endif
 }

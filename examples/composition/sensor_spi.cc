@@ -38,21 +38,21 @@ namespace
     }
 }
 
-extern "C" void sensor_main(kos_self_t const* self)
+int main(int, char**)
 {
     // Both capabilities were delegated by the init before this task ran; the names are the
     // paths the composition declares. A name this task was not given answers KOS_CAP_NONE.
     struct kos_spi_bus_config bcfg = {};
-    bcfg.ep = kos_grant_endpoint(self, "/svc/spi0");
+    bcfg.ep = kos_grant_endpoint("/svc/spi0");
     bcfg.irq = KOS_CAP_NONE;
     bcfg.notify = KOS_CAP_NONE;
-    kos_cap_t const served = kos_grant_endpoint(self, "/svc/sensor");
+    kos_cap_t const served = kos_grant_endpoint("/svc/sensor");
     // Declared shared memory, mapped by the init before this task ran, never by hand.
-    kos_window_t const history_window = kos_grant_mem(self, "/shm/history");
+    kos_window_t const history_window = kos_grant_mem("/shm/history");
     auto const hist = static_cast<history*>(kos_window_addr(history_window));
     if (hist == nullptr or kos_window_size(history_window) < sizeof(history))
     {
-        return;
+        return 0;
     }
 
     struct kos_spi_bus bus;
@@ -66,12 +66,12 @@ extern "C" void sensor_main(kos_self_t const* self)
     // the restart policy in the composition decides what happens next.
     if (kos_spi_bus_open(&bus, &bcfg) != 0)
     {
-        return;
+        return 0;
     }
     // Answers the clock rate the device will actually run at, so success is a positive rate.
     if (kos_spi_device_open(&dev, &bus, &dcfg) <= 0)
     {
-        return;
+        return 0;
     }
 
     uint32_t counter = 0;

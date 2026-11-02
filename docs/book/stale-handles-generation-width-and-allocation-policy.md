@@ -250,7 +250,11 @@ in the code, in a place worth stopping at. The pool passes its handles around in
 and a `handle < 0` guard would from then on silently refuse to release live slots. What keeps
 a stray `-1` from resolving is not the sign but the **reserved all-ones index** the pool never
 seats, so no handle a live slot can mint carries it (`kernel/include/kickos/slotpool.h`).
-Escape probability, again one in 65536 per erroneous use.
+The handle carries 16 bits of a slot generation the pool counts in 32, and the capability entry
+keeps the whole 32 beside the handle and compares them on every lookup, so the entry, which is
+what a task actually spends, is refused for 2^32 reuses of the slot where the bare handle is for
+65536 (`cap_obj`, `kernel/syscall/cap.cc`). Escape probability, one in 2^32 per erroneous use
+of a capability.
 
 **The thread generation carried inside a reply capability** is the interesting one. A reply
 capability names the parked caller by its generational thread handle. That handle is held by
@@ -504,7 +508,7 @@ detector, and a detector is graded on probabilities, not guarantees.
   the call sequence that guards the same path independently: Chapter 8.5,
   *[Synchronous call/reply: the reply capability](synchronous-call-and-reply.md)*.
 - The exact widths and the handle codec: `kernel/include/kickos/cap.h` (`KCAP_GEN_BITS`,
-  `KCAP_INDEX_BITS`, `KICKOS_MAX_HANDLES`), the reply entry's call-sequence packing
+  `KCAP_INDEX_BITS`, the table widths), the reply entry's call-sequence packing
   (`KCAP_REPLY_SEQ_BITS`), the capability table's free list (`KCAP_FREE_NONE`), and the two
   pools -- `kernel/include/kickos/slotpool.h` and `kernel/include/kickos/thread.h`.
 - The contract these guards are part of: `../reference/architecture.md` ("Object model,

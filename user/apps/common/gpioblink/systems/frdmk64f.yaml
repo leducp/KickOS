@@ -13,7 +13,7 @@ accepts: [no_protection] # for the -flat build alone
 
 tasks:
   - name: main
-    entry: gpioblink_main
+    program: main
     stack: 8192
     priority: 10
     ceiling: 10

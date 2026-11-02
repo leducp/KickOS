@@ -446,8 +446,14 @@ namespace
 
     Edit edit_of(struct arch_aspace* space)
     {
-        Edit const e = {resident_anywhere(space), resident_peers(space), false, 0};
+        Edit const e = {resident_anywhere(space), false, resident_peers(space), 0, 0};
         return e;
+    }
+
+    void tables_moved(struct arch_aspace* space, Edit const& e)
+    {
+        uint32_t* const count = g_residency.tables(root_key(space));
+        *count = *count + e.tables;
     }
 
     // Reject the kernel half before walking: its index bits can alias user entries.
@@ -523,7 +529,12 @@ struct arch_aspace* arch_aspace_create(void)
     zero_table(table);
     kickos_armv8a_dsb_ishst();
     // Destroy invalidates the old root before its frame or ASID can be reused.
-    g_residency.open(static_cast<uint64_t>(root), asid_capacity());
+    if (not g_residency.open(static_cast<uint64_t>(root),
+                             static_cast<uint32_t>(arch_aspace_create_pages()), asid_capacity()))
+    {
+        kickos_frame_free(root);
+        return nullptr;
+    }
     // The kernel mappings stay in TTBR1. The handle is the user root table.
     return reinterpret_cast<struct arch_aspace*>(table);
 }
@@ -552,6 +563,29 @@ void arch_aspace_destroy(struct arch_aspace* space)
     instruction_side_rendezvous(peers);
 }
 
+size_t arch_aspace_table_pages(struct arch_aspace* space)
+{
+    if (space == nullptr or root_of(space) == empty_root())
+    {
+        return 0;
+    }
+    return *g_residency.tables(root_key(space));
+}
+
+size_t arch_aspace_create_pages(void)
+{
+    return 1;
+}
+
+size_t arch_aspace_map_tables(struct arch_aspace* space, uintptr_t va, size_t pages)
+{
+    if (space == nullptr or root_of(space) == empty_root() or not range_ok(va, pages))
+    {
+        return 0;
+    }
+    return tables_needed(root_of(space), HEIGHT_ROOT, va, pages);
+}
+
 enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
                                         arch_phys_addr_t pa, size_t pages,
                                         uint32_t rights, enum arch_map_memtype type)
@@ -569,7 +603,10 @@ enum arch_aspace_result arch_aspace_map(struct arch_aspace* space, uintptr_t va,
     {
         return ARCH_ASPACE_EINVAL;
     }
-    return walk_map(root_of(space), va, pa, pages, leaf, edit_of(space));
+    Edit e = edit_of(space);
+    enum arch_aspace_result const rc = walk_map(root_of(space), va, pa, pages, leaf, e);
+    tables_moved(space, e);
+    return rc;
 }
 
 enum arch_aspace_result arch_aspace_unmap(struct arch_aspace* space, uintptr_t va, size_t pages)
@@ -578,7 +615,10 @@ enum arch_aspace_result arch_aspace_unmap(struct arch_aspace* space, uintptr_t v
     {
         return ARCH_ASPACE_EINVAL;
     }
-    return walk_unmap(root_of(space), va, pages, edit_of(space));
+    Edit e = edit_of(space);
+    enum arch_aspace_result const rc = walk_unmap(root_of(space), va, pages, e);
+    tables_moved(space, e);
+    return rc;
 }
 
 void arch_aspace_activate(struct arch_aspace* space)

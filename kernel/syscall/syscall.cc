@@ -6,6 +6,7 @@
 #include <kickos/irq_route.h>
 #include <kickos/arch/arch.h>
 #include <kickos/ampwindow.h>
+#include <kickos/chip_limits.h> // KICKOS_CHIP_ONE_TASK
 #include <kickos/aspace.h>
 #include <kickos/bench.h>
 #include <kickos/cap.h>
@@ -68,12 +69,7 @@ namespace kickos
         // on a newline, so a chunk of N can need 2N and the smallest configured ring holds
         // 2 * (KICKOS_DIAG_LINE_MAX - 1). Anything wider than that is refused on a board at the
         // Kconfig floor however empty its ring is, and the caller reads that as a short write.
-        // The 128 caps what this frame costs on the arches no red-zone class walks.
-#if KICKOS_DIAG_LINE_MAX - 1 < 128
-        static constexpr size_t CONSOLE_CHUNK = KICKOS_DIAG_LINE_MAX - 1;
-#else
-        static constexpr size_t CONSOLE_CHUNK = 128;
-#endif
+        static constexpr size_t CONSOLE_CHUNK = KICKOS_KCONSOLE_CHUNK;
         static_assert(2u * CONSOLE_CHUNK <= KICKOS_CONSOLE_TX_SIZE - 1u,
                       "a chunk of all newlines must fit the ring, or a full-width write is "
                       "refused whatever the ring holds");
@@ -81,13 +77,12 @@ namespace kickos
         // noinline keeps the chunk buffer off syscall_dispatch's frame. The write(2) shape:
         // the bytes that went out, or with none, -KOS_EBUSY where the caller's stdout is served
         // again, -KOS_EFAULT where the buffer went away and -KOS_ECANCELED where the writer was
-        // cancelled waiting. A non-blocking task is answered -KOS_ETIMEDOUT where it would wait.
-        __attribute__((noinline)) int32_t console_write_user(uintptr_t buf, size_t len)
+        // cancelled waiting. With KOS_KCONSOLE_NOWAIT it answers -KOS_ETIMEDOUT where it would wait.
+        __attribute__((noinline)) int32_t console_write_user(uintptr_t buf, size_t len, bool wait)
         {
             char chunk[CONSOLE_CHUNK];
             Thread* const c = sched::current();
             UserOwner const space = user_space_of(c);
-            bool const wait = not task_nonblocking(c->task);
             if (len == 0)
             {
                 return 0;
@@ -129,63 +124,88 @@ namespace kickos
             return static_cast<int32_t>(done);
         }
 
-        // noinline is load-bearing: the message buffer must not widen syscall_dispatch's
-        // frame, which sits on the CALLING thread's stack and is sized by
-        // KICKOS_MIN_STACK_SIZE against the deepest ordinary dispatch.
-        __attribute__((noinline, noreturn)) void user_panic(uintptr_t msg)
+        // The caller's message, bounded to `cap` and NUL-terminated, with no control byte: it
+        // prints after a trusted prefix, and a newline would let the caller continue on fresh
+        // lines that read as kernel output.
+        void user_panic_text(char* buf, size_t cap, uintptr_t msg)
         {
-            char buf[64];
             buf[0] = '\0';
             UserOwner const space = user_space_of(sched::current());
-            if (msg != 0)
+            if (msg == 0)
             {
-                // Each source byte is checked before the privileged copy dereferences it, so
-                // the kernel neither faults on a bad pointer nor leaks another domain's page.
-                size_t i = 0;
-                for (; i + 1 < sizeof(buf); i++)
+                return;
+            }
+            // Each source byte is checked before the privileged copy dereferences it, so the
+            // kernel neither faults on a bad pointer nor leaks another domain's page.
+            size_t i = 0;
+            for (; i + 1 < cap; i++)
+            {
+                if (not user_readable_ok(msg + i, 1))
                 {
-                    if (not user_readable_ok(msg + i, 1))
-                    {
-                        break;
-                    }
-                    if (not kaccess_from_user(&buf[i], space, msg + i, 1))
-                    {
-                        break; // readable a moment ago, gone now: truncate here
-                    }
-                    if (buf[i] == '\0')
-                    {
-                        break;
-                    }
-                    // This message prints after the kernel's trusted "KERNEL PANIC: "
-                    // prefix, so no control byte may reach the console: a newline lets the
-                    // caller continue on fresh lines that read as kernel output.
-                    unsigned char const c = static_cast<unsigned char>(buf[i]);
-                    if (c < 0x20u or c == 0x7Fu)
-                    {
-                        buf[i] = '?';
-                    }
+                    break;
                 }
-                buf[i] = '\0';
-                // <kickos/sys.h> promises a visible truncation. The probe byte is the first
-                // one dropped: unreadable there means nothing was dropped.
-                if (i + 1 == sizeof(buf) and user_readable_ok(msg + i, 1))
+                if (not kaccess_from_user(&buf[i], space, msg + i, 1))
                 {
-                    char probe = '\0';
-                    // A refused probe leaves it NUL, so no marker is written: the kernel
-                    // cannot claim a truncation it could not read.
-                    if (kaccess_from_user(&probe, space, msg + i, 1) and probe != '\0')
-                    {
-                        buf[i - 3] = '.';
-                        buf[i - 2] = '.';
-                        buf[i - 1] = '.';
-                    }
+                    break; // readable a moment ago, gone now: truncate here
+                }
+                if (buf[i] == '\0')
+                {
+                    break;
+                }
+                unsigned char const c = static_cast<unsigned char>(buf[i]);
+                if (c < 0x20u or c == 0x7Fu)
+                {
+                    buf[i] = '?';
                 }
             }
+            buf[i] = '\0';
+            // <kickos/sys.h> promises a visible truncation. The probe byte is the first one
+            // dropped: unreadable there means nothing was dropped.
+            if (i + 1 == cap and user_readable_ok(msg + i, 1))
+            {
+                char probe = '\0';
+                // A refused probe leaves it NUL, so no marker is written: the kernel cannot
+                // claim a truncation it could not read.
+                if (kaccess_from_user(&probe, space, msg + i, 1) and probe != '\0')
+                {
+                    buf[i - 3] = '.';
+                    buf[i - 2] = '.';
+                    buf[i - 1] = '.';
+                }
+            }
+        }
+
+        constexpr size_t PANIC_MSG_BYTES = 64;
+
+        // noinline is load-bearing in both: the message buffer must not widen
+        // syscall_dispatch's frame, which sits on the CALLING thread's stack and is sized by
+        // KICKOS_MIN_STACK_SIZE against the deepest ordinary dispatch.
+        __attribute__((noinline, noreturn)) void user_panic_system(uintptr_t msg)
+        {
+            char buf[PANIC_MSG_BYTES];
+            user_panic_text(buf, sizeof(buf), msg);
             if (buf[0] == '\0')
             {
                 kpanic(diag::kUserPanicNoMsg);
             }
             kpanic(buf);
+        }
+
+        // Returns before the caller's death, so the buffer is off the stack the exit descends.
+        __attribute__((noinline)) void user_panic_record(uintptr_t msg)
+        {
+            char buf[PANIC_MSG_BYTES];
+            user_panic_text(buf, sizeof(buf), msg);
+            kprintf_record(KDIAG_F_TASK_PANIC, sched::current()->name);
+            if (buf[0] == '\0')
+            {
+                kprintf_record(KDIAG_F_TASK_PANIC_MSG, diag::kUserPanicNoMsg);
+            }
+            else
+            {
+                kprintf_record(KDIAG_F_TASK_PANIC_MSG, buf);
+            }
+            krecord_end();
         }
     }
 }
@@ -230,21 +250,6 @@ namespace
 {
     uint64_t syscall_body(uintptr_t nr, uintptr_t a0, uintptr_t a1,
                           uintptr_t a2, uintptr_t a3);
-
-    // kos_mem_flags -> the ARCH_MPU_* memory-type bits, ORed into *attr. False on an
-    // undefined bit: refused (-KOS_EINVAL), never masked off.
-    bool mem_flags_to_attr(uintptr_t flags, uint32_t* attr)
-    {
-        if ((flags & ~static_cast<uintptr_t>(KOS_MEM_FLAGS_ALL)) != 0)
-        {
-            return false;
-        }
-        if ((flags & static_cast<uintptr_t>(KOS_MEM_NOCACHE)) != 0)
-        {
-            *attr |= ARCH_MPU_NOCACHE;
-        }
-        return true;
-    }
 
 #if KICKOS_HAVE_ASPACE
     enum arch_map_memtype map_memtype_of(uint32_t attr)
@@ -314,10 +319,13 @@ namespace
             IrqLock lock;
             bool const entering = presync_begin();
             Thread* const c = sched::current();
-            uint32_t attr = 0u;
             if (nr == KOS_SYS_THREAD_CREATE and entering)
             {
                 spawn_presync_enter(reinterpret_cast<kos_thread_params const*>(a0));
+            }
+            if (nr == KOS_SYS_TASK_CREATE and entering)
+            {
+                task_spawn_presync_enter(a1);
             }
             if (c != nullptr and c->task != nullptr)
             {
@@ -332,16 +340,15 @@ namespace
                 }
 #else
                 (void)a2;
+                (void)a3;
 #endif
                 if (nr == KOS_SYS_THREAD_CREATE and cap_out_check(a1) == 0)
                 {
                     spawn_presync_plan();
                 }
-                else if (nr == KOS_SYS_TASK_CREATE and cap_out_check(a2) == 0
-                         and mem_flags_to_attr(a3, &attr))
+                else if (nr == KOS_SYS_TASK_CREATE and cap_out_check(a2) == 0)
                 {
-                    task_create_presync_plan(reinterpret_cast<void*>(a0),
-                                             static_cast<size_t>(a1), attr);
+                    task_spawn_presync_plan(static_cast<uint32_t>(a0));
                 }
             }
         }
@@ -431,6 +438,15 @@ extern "C" uint64_t syscall_dispatch(uintptr_t nr,
 
 namespace
 {
+// A create readies its thread without a scheduling pass: this is the pass, taken once the answer
+// is in the caller's out-word, so a created thread that outranks the caller runs at once.
+uint64_t created(uint64_t answer)
+{
+    IrqLock lock;
+    sched::reschedule(nullptr, lock);
+    return answer;
+}
+
 uint64_t syscall_body(uintptr_t nr,
                       uintptr_t a0, uintptr_t a1,
                       uintptr_t a2, uintptr_t a3)
@@ -448,12 +464,17 @@ uint64_t syscall_body(uintptr_t nr,
             {
                 len = MAX_CONSOLE_WRITE;
             }
+            if ((a2 & ~static_cast<uintptr_t>(KOS_KCONSOLE_NOWAIT)) != 0)
+            {
+                return static_cast<uint64_t>(-KOS_EINVAL);
+            }
             if (not user_readable_ok(a0, len))
             {
                 // NOT 0: a len-0 write legitimately returns 0.
                 return static_cast<uint64_t>(-KOS_EFAULT);
             }
-            return static_cast<uint64_t>(console_write_user(a0, len));
+            bool const wait = (a2 & KOS_KCONSOLE_NOWAIT) == 0;
+            return static_cast<uint64_t>(console_write_user(a0, len, wait));
         }
         case KOS_SYS_YIELD:
         {
@@ -501,6 +522,18 @@ uint64_t syscall_body(uintptr_t nr,
             uint32_t h = KCAP_INVALID;
             rc = endpoint_create(&h);
             return cap_out_deliver(a0, rc, h);
+        }
+        case KOS_SYS_ENDPOINT_BADGE:
+        {
+            int rc = cap_out_check(a2);
+            if (rc != 0)
+            {
+                return static_cast<uint64_t>(rc);
+            }
+            uint32_t h = KCAP_INVALID;
+            rc = endpoint_badge(sched::current(), static_cast<uint32_t>(a0),
+                                static_cast<uint32_t>(a1), &h);
+            return cap_out_deliver(a2, rc, h);
         }
 #if KICKOS_AMP_NODE
         case KOS_SYS_AMP_COUNT:
@@ -576,58 +609,6 @@ uint64_t syscall_body(uintptr_t nr,
             return static_cast<uint64_t>(endpoint_reply_recv(static_cast<uint32_t>(a0), a1, a2,
                                                              a3));
         }
-        case KOS_SYS_CONSOLE_PUBLISH:
-        {
-            Thread* c = sched::current();
-            // AUTH_CONSOLE is its own bit, not shutdown's.
-            if (not cap_check_authority(c, AUTH_CONSOLE))
-            {
-                return static_cast<uint64_t>(-KOS_EPERM);
-            }
-            {
-                IrqLock lock;
-                // The GLOBAL gen-encoded handle, NOT the pool index.
-                CapEntry* e = cap_lookup(c, static_cast<uint32_t>(a0));
-                if (e == nullptr or e->type != static_cast<uint8_t>(CapType::CAP_ENDPOINT)
-                    or kernel().endpoints.resolve(e->obj) == nullptr)
-                {
-                    return static_cast<uint64_t>(-KOS_EBADF);
-                }
-                Task* served_by = c->task;
-                if (static_cast<kos_task_t>(a1) != KOS_TASK_NONE)
-                {
-                    served_by = task_resolve(static_cast<kos_task_t>(a1));
-                    if (served_by == nullptr)
-                    {
-                        return static_cast<uint64_t>(-KOS_EBADF);
-                    }
-                    if (not task_created_by(served_by, kernel().threads.kill_tag_of(c)))
-                    {
-                        return static_cast<uint64_t>(-KOS_EPERM);
-                    }
-                }
-                if (task_ended(served_by) or console_handover_refused() != 0)
-                {
-                    return static_cast<uint64_t>(-KOS_EBUSY);
-                }
-                // Must precede the relinquish below: it is the last step that can fail, and a
-                // refusal has to leave a working console behind.
-                int const rc = cap_console_publish_through(c, e, served_by, lock);
-                if (rc != 0)
-                {
-                    return static_cast<uint64_t>(rc);
-                }
-                // Refuses every NEW kernel chip writer and gives up the ring, WITHOUT
-                // handing the device over: a writer already counted below may be mid-message
-                // with no buffered path left, and it finishes synchronously here.
-                console_handover_begin();
-            }
-            // With the lock RELEASED: a writer counted before the refusal above may be
-            // preempted below this publisher's priority.
-            console_publish_drain();
-            console_owner_set_user(); // must be LAST, and strictly after the drain
-            return 0;
-        }
         case KOS_SYS_CPU_CLOCK_SET:
         {
             // Out of the -KOS_E* scheme: a u64 Hz whose 0 sentinel already means
@@ -648,25 +629,29 @@ uint64_t syscall_body(uintptr_t nr,
             }
             kos_thread_t h = KOS_THREAD_NONE;
             rc = thread_create_call(reinterpret_cast<kos_thread_params const*>(a0), &h);
-            return cap_out_deliver(a1, rc, h);
+            return created(cap_out_deliver(a1, rc, h));
         }
         case KOS_SYS_TASK_CREATE:
         {
-            // A task handle spends the whole word, so it rides an out-parameter.
             int rc = cap_out_check(a2);
             if (rc != 0)
             {
                 return static_cast<uint64_t>(rc);
             }
-            uint32_t attr = 0u;
-            if (not mem_flags_to_attr(a3, &attr))
-            {
-                return static_cast<uint64_t>(-KOS_EINVAL);
-            }
             kos_task_t h = KOS_TASK_NONE;
-            rc = task_create_call(reinterpret_cast<void*>(a0), static_cast<size_t>(a1), attr,
-                                  &h);
-            return cap_out_deliver(a2, rc, h);
+            rc = task_create_call(static_cast<uint32_t>(a0), a1, &h);
+            return created(cap_out_deliver(a2, rc, h));
+        }
+        case KOS_SYS_PROGRAM_FIND:
+        {
+            int rc = cap_out_check(a1);
+            if (rc != 0)
+            {
+                return static_cast<uint64_t>(rc);
+            }
+            uint32_t h = KOS_CAP_NONE;
+            rc = program_find_call(a0, &h);
+            return cap_out_deliver(a1, rc, h);
         }
         case KOS_SYS_TASK_WATCH:
         {
@@ -716,12 +701,6 @@ uint64_t syscall_body(uintptr_t nr,
             return static_cast<uint64_t>(
                 thread_join(static_cast<kos_thread_t>(a0), static_cast<uint32_t>(a1)));
         }
-        case KOS_SYS_TASK_SCHED_GRANT:
-        {
-            return static_cast<uint64_t>(
-                task_sched_grant(static_cast<kos_task_t>(a0), static_cast<uint8_t>(a1),
-                                 static_cast<uint32_t>(a2)));
-        }
 #if KICKOS_KERNEL_CORES > 1
         case KOS_SYS_CORE_CURRENT:
         {
@@ -742,10 +721,6 @@ uint64_t syscall_body(uintptr_t nr,
         {
             return static_cast<uint64_t>(thread_set_priority(a0));
         }
-        case KOS_SYS_TASK_NONBLOCK:
-        {
-            return static_cast<uint64_t>(task_nonblock_call(static_cast<int>(a0)));
-        }
         case KOS_SYS_THREAD_CANCEL:
         {
             // UNGATED by authority, gated by parenthood inside (syscall_thread.cc). Blocks for
@@ -762,10 +737,17 @@ uint64_t syscall_body(uintptr_t nr,
         }
         case KOS_SYS_EXIT:
         {
+#if KICKOS_CHIP_ONE_TASK
+            // The init shares this image's C library, whose _exit asks for the image's end.
+            if (a1 == KOS_EXIT_IMAGE)
+            {
+                kickos_image_end(static_cast<int>(a0));
+            }
+#endif
             Thread* c = sched::current();
             // Root's exit ends the SYSTEM with root's status, hence AUTH_SYSTEM. Not
             // sched::exit_current, which would report that status to nobody and leave root's
-            // slot EXITED but unreclaimable (ThreadPool::alloc retires ROOT_INDEX).
+            // slot EXITED but unreclaimable (ThreadPool::retire never lists ROOT_INDEX).
             if (kernel().threads.is_root(c))
             {
                 if (not cap_check_authority(c, AUTH_SYSTEM))
@@ -855,9 +837,20 @@ uint64_t syscall_body(uintptr_t nr,
             {
                 IrqLock lock;
                 Thread* const c = sched::current();
+                size_t const g = arch_aspace_granule();
+                size_t const bytes = static_cast<size_t>(a0);
+                if (bytes == 0 or bytes > UINT32_MAX - g)
+                {
+                    return 0;
+                }
+                uint32_t const pages = static_cast<uint32_t>((bytes + g - 1u) / g);
                 if (not cap_check_authority(c, AUTH_MEMORY)
-                    or aspace_reserve_stage(domain_ranges(thread_domain(c)),
-                                            static_cast<size_t>(a0))
+                    or not task_admit(c->task, BudgetKind::RAM_BLOCKS, 1)
+                    or not task_admit(c->task, BudgetKind::RAM_BYTES,
+                                      static_cast<uint32_t>(pages * g))
+                    or not task_admit(c->task, BudgetKind::PAGES, pages)
+                    or aspace_reserve_stage(domain_ranges(thread_domain(c)), bytes,
+                                            PresyncStage::RESERVE)
                            == 0)
                 {
                     return 0;
@@ -956,8 +949,8 @@ uint64_t syscall_body(uintptr_t nr,
                 {
                     return static_cast<uint64_t>(-KOS_EINVAL);
                 }
-                mrc = aspace_cap_map(sp, vr, &va, run_obj, run->base, run->pages,
-                                     ARCH_MAP_R | ARCH_MAP_W, map_memtype_of(attr));
+                mrc = aspace_cap_map(domain_payer(target), sp, vr, &va, run_obj, run->base,
+                                     run->pages, ARCH_MAP_R | ARCH_MAP_W, map_memtype_of(attr));
                 if (mrc == 0)
                 {
                     presync_commit();
@@ -1044,8 +1037,8 @@ uint64_t syscall_body(uintptr_t nr,
                 lost_base = before->base;
                 lost_bytes = static_cast<size_t>(before->pages) * arch_aspace_granule();
             }
-            int const grc = aspace_self_grant(space, ranges, base, size, ARCH_MAP_R | ARCH_MAP_W,
-                                              type);
+            int const grc = aspace_self_grant(domain_payer(thread_domain(c)), space, ranges, base,
+                                              size, ARCH_MAP_R | ARCH_MAP_W, type);
             if (grc == 0)
             {
                 presync_commit();
@@ -1132,10 +1125,14 @@ uint64_t syscall_body(uintptr_t nr,
         }
         case KOS_SYS_PANIC:
         {
-            // UNGATED: kpanic masks IRQs and reads kernel .bss, so a thread running it from
-            // its own unprivileged frame would fault there and lose the diagnostic.
-            user_panic(a0);
-            return 0;
+            // Root's end is the system's end, whatever root holds.
+            Thread* const c = sched::current();
+            if (kernel().threads.is_root(c) or cap_check_authority(c, AUTH_SYSTEM))
+            {
+                user_panic_system(a0);
+            }
+            user_panic_record(a0);
+            sched::exit_current(KOS_EXIT_PANIC, sched::EXIT_FAULTED);
         }
         case KOS_SYS_NOTIFY_CREATE:
         {

@@ -67,11 +67,6 @@ static_assert(offsetof(struct arch_context, trace_tid) == 16,
 #if KICKOS_TLS
 static_assert(offsetof(struct arch_context, tls_base) == KICKOS_LX6_CTX_TLS_BASE,
               "SEAT_THREADPTR expects ctx.tls_base @KICKOS_LX6_CTX_TLS_BASE");
-
-namespace kickos
-{
-    size_t tls_block_size();
-}
 #endif
 
 namespace
@@ -488,12 +483,14 @@ void arch_context_init(struct arch_context* ctx,
     ctx->ps = 0;                                        // PS/PC live in the frame
     ctx->pc = 0;
     ctx->resume_kind = KICKOS_RESUME_IRQ;
-#if KICKOS_TLS
-    // The carve sits directly below the stack this is handed.
-    ctx->tls_base = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(stack_base)
-                                          - ::kickos::tls_block_size());
-#endif
 }
+
+#if KICKOS_TLS
+void arch_context_tls(struct arch_context* ctx, uintptr_t thread_pointer)
+{
+    ctx->tls_base = static_cast<uint32_t>(thread_pointer);
+}
+#endif
 
 // The redirected thread may have been saved as KICKOS_RESUME_COOP; arch_context_init must
 // overwrite resume_kind, or the switcher takes the retw path onto an INTERRUPT frame.
@@ -1115,6 +1112,11 @@ void kickos_lx6_init(void)
     // Before this core can take the kernel lock: arch_kernel_lock claims with S32C1I.
     atomctl_seat_or_refuse();
     wr_intenable(0);
+#if defined(KICKOS_ARCH_CURRENT_ONE_READ)
+    // MISC0 is undefined out of reset and every handler reads it: seated empty before any
+    // input below is enabled.
+    arch_current_store(nullptr);
+#endif
 #if KICKOS_NUM_CORES > 1
     // Seated before the route, which is what makes the input live.
     g_doorbell_cpu_int = kickos_lx6_doorbell_cpu_int();

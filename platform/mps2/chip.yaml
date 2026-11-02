@@ -15,6 +15,14 @@ exits_on_fault: true
 
 interrupts: { count: { value: 48, ref: "QEMU 11.1 `info qtree`: armv7m_nvic num-irq" } }
 
+# QEMU's `info mtree`: the CMSDK APB and AHB, extra peripheral and RESERVED 4 regions, the
+# LAN9118 of an385 and an386, VGA, and the LAN9118 of an500.
+apertures:
+  - { window: [0x40000000, 0x200000] }
+  - { window: [0x40200000, 0x100] }
+  - { window: [0x41000000, 0x200000] }
+  - { window: [0xA0000000, 0x100] }
+
 devices: {}
 
 memory:

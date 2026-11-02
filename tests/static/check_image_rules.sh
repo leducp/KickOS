@@ -13,7 +13,8 @@
 #                leaves that are X where it is executable and W where it is writable and not TLS
 #   rv64_gp      kernel .text names gp only to seat it: `auipc gp,0x0` then `ld gp,N(gp)`, or
 #                `li gp` or `mv gp`, and holds two such pairs at least. gp is the app's anchor
-#                and U-mode writes it
+#                and U-mode writes it. The read-only data the map places inside .text is not
+#                code, so a word of it decoding as an instruction naming gp is no finding
 #   rv32_trap    kickos_rv_mtvec holds KICKOS_MAX_IRQ slots, each a 4-byte `j` to a symbol's
 #                start, at BASE + 4*i; every target
 #                seats gp with the auipc/addi pair before its first transfer and names gp nowhere
@@ -27,8 +28,12 @@
 #                kickos_armv8a_percore_init take an ISB between the CNTP_CTL_EL0 disable and
 #                their next Device write or branch
 #   c6_hp        Reset_Handler calls mtime_rate_init before it names an init_array bound
-#   ctor         every .init_array input the map places lies in __init_array_start/_end or
-#                __kickos_app_init_array_start/_end, and none comes from a KickOS-owned object
+#   ctor         every .init_array input the map places lies in __init_array_start/_end,
+#                __kickos_app_init_array_start/_end or one image's __kickos_image<n>_ctor_start
+#                /_end, and none comes from a KickOS-owned object,
+#                read for an image linked on its own first from that image's own map, whose
+#                .init_array inputs add up to what the final map places of the image's object;
+#                a map stating either output section of the two windows nowhere is refused
 #   cpu_id       at one core no image defines arch_cpu_id
 #   arm64_share  in both boot roots' level-2 tables (kickos_arm64_ram_table and
 #                kickos_arm64_kernel_ram_table) every valid block holding part of the AMP user
@@ -138,9 +143,22 @@ ctl_rv64_wx() {
 
 rule_rv64_gp() {
     awk "$AWKLIB"'
+        FNR == NR {
+            at = ""
+            if (want && $1 ~ /^0x/) { at = $1; size = $2 }
+            want = 0
+            if ($1 ~ /^\.s?rodata/) {
+                if ($2 ~ /^0x/) { at = $2; size = $3 }
+                else want = 1
+            }
+            if (at != "") { lo[nr] = hex(substr(at, 11)); hi[nr] = lo[nr] + hex(size); nr++ }
+            next
+        }
         /^Disassembly of section / { text = ($4 == ".text:"); next }
         !text || !/^[ \t]*[0-9a-f]+:/ { next }
         {
+            a = $1; sub(/:$/, "", a); a = hex(substr(a, length(a) - 7))
+            for (r = 0; r < nr; r++) if (a >= lo[r] && a < hi[r]) next
             t = insn($0); m = t; sub(/ .*/, "", m); o = substr(t, length(m) + 2)
             anchor = (m == "auipc" && o == "gp,0x0")
             ok = anchor || ((m == "li" || m == "mv") && o ~ /^gp,/) \
@@ -153,7 +171,7 @@ rule_rv64_gp() {
         END {
             if (n < 200) print "only " n + 0 " instruction(s) in .text"
             if (pairs < 2) print "only " pairs + 0 " paired gp anchor(s) in .text"
-        }' "$D"
+        }' "$X" "$D"
 }
 ctl_rv64_gp() {
     awk '{ print } /^Disassembly of section \.text:/ { print "    0:\tld\ta0,0(gp)" }' "$D" > "$TMP/d.p"
@@ -278,12 +296,34 @@ ctl_c6_hp() {
 }
 
 rule_ctor() {
+    _wins="$(awk '$NF ~ /^_*kickos_image[0-9]+_ctor_(start|end)$/ {
+            n = $NF; sub(/^_*kickos_image/, "", n); k = n; sub(/_ctor_.*/, "", k)
+            if (n ~ /start$/) lo[k] = $1; else hi[k] = $1
+        }
+        END { for (k in lo) if (k in hi) printf "%s:%s:%s ", k, lo[k], hi[k] }' "$N")"
     awk -v ps="$(addr_of __init_array_start)" -v pe="$(addr_of __init_array_end)" \
         -v as="$(addr_of __kickos_app_init_array_start)" -v ae="$(addr_of __kickos_app_init_array_end)" \
+        -v wins="$_wins" \
         "$AWKLIB"'
-        BEGIN { if (ps == "" || pe == "" || as == "" || ae == "") print "a constructor window bound is missing" }
+        BEGIN {
+            if (ps == "" || pe == "" || as == "" || ae == "") print "a constructor window bound is missing"
+            nw = split(wins, w, " ")
+            for (i = 1; i <= nw; i++) { split(w[i], b, ":"); wlo[b[1]] = hex(b[2]); whi[b[1]] = hex(b[3]) }
+        }
+        FNR == 1 {
+            on = 0
+            img = ""
+            if (FILENAME ~ /\.kimg\/image[0-9]+\.map$/) {
+                img = FILENAME
+                sub(/\.map$/, "", img)
+                sub(/.*\.kimg\/image/, "", img)
+                own[img] += 0
+            }
+        }
         /^Linker script and memory map/ { on = 1; next }
         !on { next }
+        img == "" && /^\.init_array([ \t]|$)/ { win_k++ }
+        img == "" && /^\.kickos_(app|image[0-9]+)_init_array([ \t]|$)/ { win_a++ }
         pend != "" { name = pend; pend = ""; a = $1; s = $2; o = $3 }
         pend == "" && /^ \.init_array/ {
             if (NF == 1) { pend = $1; next }
@@ -295,12 +335,43 @@ rule_ctor() {
             e = x + hex(s)
             if (o ~ /libkickos_(kernel|arch_[a-z0-9]+|chip_[a-z0-9]+|lib)\.a|kickos_string\.dir\//)
                 print o " is KickOS-owned and holds a constructor"
-            if (!((x >= hex(ps) && e <= hex(pe)) || (x >= hex(as) && e <= hex(ae))))
-                print o ": " name " at " a " is in neither constructor window"
+            if (img != "") {
+                own[img] += hex(s)
+                name = ""
+                next
+            }
+            n = ""
+            if (o ~ /\/kickos_image[0-9]+\.o$/) {
+                n = o
+                sub(/.*\/kickos_image/, "", n)
+                sub(/\.o$/, "", n)
+                image[n] += hex(s)
+            }
+            if (n != "" && (n in wlo))
+                inside = x >= wlo[n] && e <= whi[n]
+            else
+                inside = (x >= hex(ps) && e <= hex(pe)) || (x >= hex(as) && e <= hex(ae))
+            if (!inside)
+                print o ": " name " at " a " is in no constructor window"
             name = ""
-        }' "$X"
+        }
+        END {
+            if (!win_k || !win_a) print "the map states no .init_array or no image constructor window output section"
+            for (n in image)
+                if (!(n in own)) print "image " n " places constructors and its own map is not read"
+            for (n in own)
+                if (own[n] != image[n] + 0)
+                    print "image " n "\047s own map holds " own[n] " byte(s) of .init_array and the final map places " image[n] + 0
+        }' "$X" $XI
 }
 ctl_ctor() {
+    if [ -n "$XI" ]; then
+        _first="${XI%% *}"
+        _p="$TMP/planted_$(basename "$_first")"
+        { cat "$_first"; printf ' .init_array    0x0        0x4 libkickos_kernel.a(planted.cc.obj)\n'; } > "$_p"
+        XI="$_p${XI#"$_first"}"
+        return
+    fi
     cp "$X" "$TMP/m.p"
     printf ' .init_array    0x%s        0x4 libkickos_kernel.a(planted.cc.obj)\n' \
         "$(addr_of __kickos_app_init_array_start)" >> "$TMP/m.p"
@@ -388,7 +459,10 @@ case "$RULE" in
             --stop-address="$(printf '0x%x' $((0x$_a + 0x$_z)))" > "$W" ;;
     ctor)
         X="$ELF.map"
-        [ -r "$X" ] || fail "no link map at $X" ;;
+        [ -r "$X" ] || fail "no link map at $X"
+        image_map_set "$X" "$TMP/maps"
+        XI="$(sed 1d "$TMP/maps" | tr '\n' ' ')"
+        XI="${XI% }" ;;
     arm64_share)
         SHARE_BASE="${1:?arm64_share takes the share's base}"
         SHARE_SIZE="${2:?arm64_share takes the share's size}"
@@ -402,7 +476,10 @@ case "$RULE" in
         done
         T1="$((0x$(addr_of kickos_arm64_ram_table)))"
         T2="$((0x$(addr_of kickos_arm64_kernel_ram_table)))" ;;
-    rv64_gp | a53_pmcr | arm64_entry | c6_hp | cpu_id) ;;
+    rv64_gp)
+        X="$ELF.map"
+        [ -r "$X" ] || fail "no link map at $X" ;;
+    a53_pmcr | arm64_entry | c6_hp | cpu_id) ;;
     *) fail "unknown rule '$RULE'. $_usage" ;;
 esac
 judge

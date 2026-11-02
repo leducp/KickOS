@@ -66,7 +66,7 @@ namespace kickos
             Task* const group = task(0);
             Thread* const dying = member_of(1, PRIO_MID, group);
             Thread* const waiter = member_of(2, PRIO_HIGH, group);
-            attach_caps(dying, KICKOS_CAP_CHILD_WIDTH);
+            attach_caps(dying, KICKOS_SEAM_CAP_WIDTH);
             uint32_t malloc_word = 0;
             run_as(dying);
             ASSERT_EQ(mutex_lock(va(&malloc_word), 0), 0);
@@ -87,7 +87,7 @@ namespace kickos
             (void)seat_pool(0, PRIO_LOW);
             Task* const group = task(0);
             Thread* const dying = member_of(1, PRIO_MID, group);
-            attach_caps(dying, KICKOS_CAP_CHILD_WIDTH);
+            attach_caps(dying, KICKOS_SEAM_CAP_WIDTH);
             uint32_t libc_word = 0;
             uint32_t malloc_word = 0;
             run_as(dying);

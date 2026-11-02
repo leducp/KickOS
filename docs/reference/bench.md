@@ -272,7 +272,9 @@ and classification, conversions, the libm basics with exact answers, and printf 
 It is one image per half, each carrying only its own arms: `chaincheck` (integer, every board),
 `chaincheck_float` (float compute, whose arms report their answers as bits) and
 `chaincheck_full` (float and C99 printf formats). The float image is not built on a chip whose
-flash is 64 KiB or less, which it overflows by 3 to 5 KiB. The full image is not built where
+flash is 64 KiB or less, which it overflows by 3 to 5 KiB. On such a chip the integer half is
+two images, `chaincheck` (arithmetic and memory arms, half `core`) and `chaincheck_print`
+(integer printf arms, half `print`); half `int` names both together. The full image is not built where
 newlib is the nano profile, which lacks doubles, `long long` and the C99 length modifiers.
 `tests/integration/check_chaincheck.sh <image> <half>` reads the half's arm list off the source
 and requires each arm's line by name, under the emulator gate

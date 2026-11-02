@@ -41,6 +41,7 @@
  */
 
 #include <kickos/arch/rx_trap_stack.h>
+#include <kickos/sys/image_offsets.h>
 #include <kickos/board_config.h>
 #include "chip_layout.h"
 
@@ -49,6 +50,45 @@
 #endif
 
     .text
+
+/* Rewinds the interrupted PC at 8[r0] to its image's _kickos_user_cas load when it lies in
+   [cas_start, cas_store] of any header the image table names, and goes to .Lpendsw_ucas_out.
+   Clobbers r14 and r15. */
+    .macro UCAS_REWIND
+    mov.l   #_g_kickos_ucas_span, r15
+    mov.l   4[r15], r15            /* the highest store of any image */
+    cmp     8[r0].l, r15           /* store - PC */
+    bltu    .Lpendsw_ucas_out
+    mov.l   #_g_kickos_ucas_span, r15
+    mov.l   [r15], r15             /* the lowest load of any image */
+    cmp     8[r0].l, r15           /* load - PC */
+    bgtu    .Lpendsw_ucas_out
+    mov.l   #___kickos_image_table, r14
+.Lpendsw_ucas_walk:
+    mov.l   #___kickos_image_table_end, r15
+    cmp     r15, r14               /* cursor - end */
+    bgeu    .Lpendsw_ucas_out
+    mov.l   [r14], r15             /* the header */
+    mov.l   KICKOS_IMAGE_HEADER_OFF_CAS_STORE[r15], r15
+    cmp     8[r0].l, r15           /* store - PC */
+    bltu    .Lpendsw_ucas_next
+    mov.l   [r14], r15
+    mov.l   KICKOS_IMAGE_HEADER_OFF_CAS_START[r15], r15
+    cmp     8[r0].l, r15           /* load - PC */
+    bgtu    .Lpendsw_ucas_next
+    mov.l   r15, 8[r0]
+#if defined(KICKOS_WITNESS_REWIND) && KICKOS_WITNESS_REWIND
+    beq     .Lpendsw_ucas_out      /* already at the load: nothing moved */
+    mov.l   #_g_kickos_witness_rewinds, r15
+    mov.l   [r15], r14
+    add     #1, r14
+    mov.l   r14, [r15]
+#endif
+    bra     .Lpendsw_ucas_out
+.Lpendsw_ucas_next:
+    add     #4, r14
+    bra     .Lpendsw_ucas_walk
+    .endm
 
 /* PSW bit masks (ISA UM sec.1.2.2.4): I=b16, U=b17, PM=b20. RX gas lexes a leading
  * "PSW"/"USP"/... as a control register, so these names avoid that. */
@@ -198,26 +238,11 @@ _kickos_rx_pendsw:
     cmp     #KICKOS_RX_TRAP_REDZONE_PENDSW, r15
     bltu    .Lpendsw_bad_usp       /* frame + kernel descent would run off the bottom */
 .Lpendsw_usp_ok:
-    /* A thread switched out inside _kickos_user_cas's restartable window resumes at its load,
-       or its store lands over whatever the next thread wrote. The bound is INCLUSIVE of the
-       store: a stacked PC on it means the store has not run. [r0] holds R14 and 4[r0] R15,
-       so the interrupted PC is 8[r0] here. */
-    mov.l   8[r0], r14
-    mov.l   #_kickos_user_cas_store, r15
-    cmp     r15, r14               /* PC - store */
-    bgtu    .Lpendsw_ucas_out
-    mov.l   #_kickos_user_cas, r15
-    cmp     r15, r14               /* PC - load */
-    bltu    .Lpendsw_ucas_out
-    mov.l   r15, 8[r0]
-#if defined(KICKOS_WITNESS_REWIND) && KICKOS_WITNESS_REWIND
-    cmp     r15, r14
-    beq     .Lpendsw_ucas_out      /* already at the load: nothing moved */
-    mov.l   #_g_kickos_witness_rewinds, r15
-    mov.l   [r15], r14
-    add     #1, r14
-    mov.l   r14, [r15]
-#endif
+    /* A thread switched out inside an image's _kickos_user_cas restartable window resumes at
+       its load, or its store lands over whatever the next thread wrote. The bound is INCLUSIVE
+       of the store: a stacked PC on it means the store has not run. [r0] holds R14 and 4[r0]
+       R15, so the interrupted PC is 8[r0] here. */
+    UCAS_REWIND
 .Lpendsw_ucas_out:
     pop     r14                    /* restore the outgoing thread's R14 */
     /* A software interrupt's ICU.IR027 survives acceptance: without this write back-to-back
@@ -730,46 +755,6 @@ _svc_trampoline:
     clrpsw  i
     clrpsw  u                  /* R0 = ISP */
     bsr.a   _kickos_rx_no_kernel_stack
-
-/* arch_syscall(nr, a0, a1, a2, a3): R1=nr R2=a0 R3=a1 R4=a2, [R0+4]=a3. INT     */
-/* preserves all GPRs, so no marshaling is needed. arch_syscall64 is the SAME    */
-/* trap: R1:R2 is the RX ABI's 8-byte return pair.                               */
-    .global _arch_syscall
-    .global _arch_syscall64
-_arch_syscall:
-_arch_syscall64:
-    int     #1                 /* SYSCALL_VECTOR (regs.h) */
-    rts                        /* return to caller, R1:R2 = result */
-
-/* int32_t arch_syscall_reg(uint32_t* io): R1 = io. INT preserves every GPR, so  */
-/* the payload rides R4-R8 straight into the trap and the trap's own frame build */
-/* is what stores it. R6-R8 are callee-saved and are banked here. RTE lands after */
-/* the INT whether the trap took the fastpath or ran the generic dispatch.        */
-    .global _arch_syscall_reg
-_arch_syscall_reg:
-    pushm   r6-r8
-    push.l  r1                 /* io, across the trap */
-    mov.l   4[r1], r2          /* io[1] = endpoint cap */
-    mov.l   8[r1], r3          /* io[2] = packed lengths */
-    mov.l   12[r1], r4         /* io[3..7] = the request payload */
-    mov.l   16[r1], r5
-    mov.l   20[r1], r6
-    mov.l   24[r1], r7
-    mov.l   28[r1], r8
-    mov.l   [r1], r1           /* nr, last: it overwrites the pointer */
-    int     #1                 /* SYSCALL_VECTOR (regs.h) */
-    /* R2-R6 carry the reply on the taken path and the untouched request on the declined one.
-       The stub reads them only when the result is not KOS_CALL_REG_FALLBACK, so the
-       unconditional store is observationally free on the declined path. */
-    mov.l   [r0], r14          /* io */
-    mov.l   r2, 4[r14]
-    mov.l   r3, 8[r14]
-    mov.l   r4, 12[r14]
-    mov.l   r5, 16[r14]
-    mov.l   r6, 20[r14]
-    add     #4, r0
-    popm    r6-r8
-    rts
 
 /* kickos_panic_stack_enter(msg, file, line, top): leave the interrupted stack for the
    reporter's own (arch.h). R1-R3 pass through untouched; R4 is the seat.

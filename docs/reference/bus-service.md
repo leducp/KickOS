@@ -185,17 +185,30 @@ and re-applies the named slot's profile at the head of every transfer, because a
 has a single live profile register set (DSPI `CTAR0`/`MCR`; USIC `SCTR`/`PCR`): a slot table
 that were only written at CONFIG time would still let the last CONFIG win.
 
-Slots are indexed by the CALLER's own `device` byte, so the slot table trusts the client.
-That holds because **one client reaches a bus service**: the client's cap is `KOS_CAP_SIGNAL`
-only, and spawn-time delegation refuses a source cap without `CAP_TRANSFER`
-(`ipc-call-reply.md`), so a client cannot pass its copy on -- the reachable set is exactly
-what the bring-up delegated, and the bring-up hands the endpoint out ONCE. Several devices behind one
-client is supported; several MUTUALLY-UNTRUSTING clients on one bus is NOT -- that needs
-badged endpoints (`badge` is `KOS_BADGE_NONE` today; see `roadmap.md`, service publication).
+**A client reaches the slots its BADGE names, and no other.** Each client of a bus holds a copy of
+the service endpoint carrying a badge (`kos_endpoint_badge`, `ipc-call-reply.md`, *The sender's
+badge*), and the badge is its slot mask: bit `d` grants slot `d`. The service reads the badge out
+of the `kos_recv_info` of every request and checks `req.device` against it
+(`kickos::spi::slot_granted`) before it reads anything else of the request's op, so a client
+naming a slot outside its mask is refused whatever it sends, and an unbadged client reaches no
+slot at all. The device byte still selects the profile: the badge decides who may name it.
 
-Refusals: `device >= KOS_BUS_DEV_MAX` is `status = -KOS_EINVAL`, and so is a
-`KOS_BUS_OP_XFER` naming an in-range slot that has had no `KOS_BUS_OP_CONFIG` yet -- there is
-no profile to apply, and a service must never clock a device on another device's profile.
+The composition hands out the masks. A use of a path whose server is a bus names its slots,
+`uses: [{ path: /svc/spi0, slots: [0] }]`; admission refuses a use of a bus that names none, a
+slot past the slots the driver declares (`kickos_add_driver(... SLOTS 4)`, `KICKOS_DRIVER_SLOTS`,
+which the service asserts equal to `KOS_BUS_DEV_MAX`), and a slot two clients name
+(`ownership.slot`). The init mints each client's copy with `kos_endpoint_badge` from the endpoint
+it keeps `HANDOUT` on, delegates it `SIGNAL` only, and closes its own copy once the spawn holds
+it, so it keeps no client's badge. A client cannot pass its copy on, spawn-time delegation
+refusing a source without `CAP_TRANSFER`, and a copy cannot mint another badge. Several devices
+behind one client are several slots of its mask; several mutually untrusting clients on one bus
+each hold slots of their own.
+
+Refusals: `device >= KOS_BUS_DEV_MAX` is `status = -KOS_EINVAL`; a slot outside the caller's
+badge is `-KOS_EACCES`, on `KOS_BUS_OP_CONFIG` and `KOS_BUS_OP_XFER` alike; and a
+`KOS_BUS_OP_XFER` naming a granted slot that has had no `KOS_BUS_OP_CONFIG` yet is
+`-KOS_EINVAL` -- there is no profile to apply, and a service must never clock a device on another
+device's profile.
 
 ## The `KOS_BUS_OP_CONFIG` op
 
@@ -229,9 +242,11 @@ under one SPI byte time -- so no dirty-tracking of the live slot is worth its st
 **The reply cap is consumed on EVERY loop path.** A malformed request (bad `proto` / `op`
 / `nseg`, segment lengths exceeding the message, a reply that would not fit the wire, a
 `region_cap != -1`) gets an immediate `kos_reply` carrying `status = -KOS_EINVAL` (or
-`-KOS_ENOSYS` for the region path). A leaked reply cap parks the client forever (until the
+`-KOS_ENOSYS` for the region path), and a slot outside the caller's badge one carrying
+`-KOS_EACCES`. A leaked reply cap parks the client forever (until the
 driver dies). The service loop is: `kos_reply_recv` a request, reading the `kos_recv_info`
-nested in its opts; if `reply_cap < 0` it is a plain send (not this protocol) -- ignore;
+nested in its opts; if `reply_cap` is `KOS_CAP_NONE` it is a plain send (not this protocol) --
+ignore;
 otherwise run the class transaction under the MMIO grant and answer a `kos_bus_rsp` on the
 next pass.
 
@@ -240,8 +255,9 @@ next pass.
 The service is a THIN TRANSPORT over the SPI class and there is no engine interface and no
 template: `kickos::spi::serve_loop(bus)` blocks on the delegated WAIT recv cap
 (`KOS_SPAWN_DELEGATED_CAP0`), drops plain sends (no reply cap), and hands every call to
-`serve_one`, which parses the `kos_bus_req` / `seg` / `cfg` framing, enforces the inline budget,
-routes `req.device` to its slot, calls the class, and builds the `kos_bus_rsp` reply OVER the
+`serve_one` with the badge its `kos_recv_info` carried, which parses the `kos_bus_req` / `seg` /
+`cfg` framing, enforces the inline budget, refuses a slot the badge does not grant, routes
+`req.device` to its slot, calls the class, and builds the `kos_bus_rsp` reply OVER the
 request in the loop's one buffer, ALWAYS answering a length (the invariant above: an arm
 answering zero would leak the reply capability). The LOOP completes the call, on the
 `KOS_SYS_REPLY_RECV` that takes the next request, and returns when its receive fails
@@ -262,21 +278,23 @@ reference services; a new bus driver writes an engine against `<kickos/driver/sp
 
 A bus service's whole bring-up is `kickos::driver::bring_up(desc, instance)` over a
 `constexpr Descriptor` authored in the driver's own TU, which is also the only TU that sees the
-chip's register directory. It creates the endpoint, claims its IRQ lines (the instance's, which its composition binds), creates
-ONE notification and attaches every line to it (line `i` on BIT `i`), mints a badged copy per
-signaller, and spawns each thread with its own MMIO window, memory grant and cap list, `caps[i]`
-landing at child cap index `KOS_SPAWN_DELEGATED_CAP0 + i`; a failing step traps
-the driver thread. A thread that routes its device's events onto one of the device's lines, as
+chip's register directory, run by the service task's entry thread, the descriptor's thread 0.
+The task's create has already claimed its IRQ lines (the ones its composition binds) into that
+thread and attached each to the ONE notification the init made for the start (line `i` on BIT
+`i`), seated its MMIO window on it, and delegated the endpoint, the notification and its doorbell
+copy at the places the entry thread's layout states. `bring_up` spawns every other thread into
+the task with its cap list, `caps[i]` landing at child cap index `KOS_SPAWN_DELEGATED_CAP0 + i`,
+then runs thread 0's body; a failing step traps the driver thread. A thread that routes its device's events onto one of the device's lines, as
 `xmcssc` programs a USIC channel's INPR, takes `KOS_DRV_ARG_LINE0_INDEX`: line 0's index among
 its device's lines, read back with `line_index_of`, which the engine is handed as
 `kos_spi_bus_config::irq_index`. A driver's badge space therefore starts at bit `line_count`, and leg L13 refuses
 a doorbell badge below it: a badge inside the lines' range would read as a device interrupt. A bus takes
 the `KOS_DRV_EP_RETAIN` posture: the init keeps SIGNAL, TRANSFER and HANDOUT on the endpoint, so
 it can delegate a narrowed copy per client, and never receives; a failing step traps the driver
-thread and never exits it. The privileged, per-class bring-up stays in the driver's
-start, ahead of `bring_up`: `k64dspi_spi_start` muxes the pins the board file wires to its DSPI
-there (`k64dspi_bus_mux`, reading the generated `board_buses.h`), on the init's thread, because
-the driver's own threads hold no `pinmux` authority.
+thread and never exits it. The per-class bring-up stays in the driver's start, ahead of
+`bring_up`: `k64dspi_spi_start` muxes the pins the board file wires to its DSPI there
+(`k64dspi_bus_mux`, reading the generated `board_buses.h`), with the `pinmux` authority its
+`kickos_add_driver` states for its entry thread.
 
 ## The client side is the CLASS, not a wrapper (`<kickos/driver/spi.h>`)
 

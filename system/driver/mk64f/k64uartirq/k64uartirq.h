@@ -11,10 +11,6 @@
 //   * a plain kos_send is raw console bytes (what libc stdio over cap 0 produces),
 //   * a kos_call is a <kickos/sys/uart.h> frame (WRITE / READ / STATS).
 //
-// ORDERING: the kernel's own console ring owns IRQ 31 until kos_console_publish runs
-// console_tx_deinit, and a claimed line is refused while any handler but the default is
-// attached (kernel/irq/irq.cc irq_claim), so the publish must precede the claim.
-//
 // The window grant is LOAD-BEARING: it authorises the kos_periph_enable that opens the
 // AIPS PACR, and it makes the window single-holder, so the service thread structurally
 // cannot poke the device. SYSMPU still enforces the memory isolation of the shared ring

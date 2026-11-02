@@ -39,7 +39,8 @@
 #
 # A link record narrows the corpus to the units the matching link maps LOAD: an object a LOAD
 # line names, or a member of a LOADed archive, the archive a target writes beside its CMakeFiles
-# directory. A glob matching no map, or a map with no LOAD line, is refused.
+# directory. A map counts only beside a file the build graph links. A glob matching no such map,
+# or a map with no LOAD line, is refused.
 #
 # A '?' before a root or an `exclude` marks it OPTIONAL: the symbol is compiled out under some
 # option, or absent from some boards' graphs, so its absence contributes 0 instead of failing.
@@ -161,6 +162,7 @@ root    rv32imac NESTED kickos_rv_contain_wild_sp
 # way into the console tail.
 root    rv32imac PANIC kickos_panic_report
 exclude rv32imac console_chip_writer_leave class=PANIC reason: a panic stores PANICKED before it prints, nothing leaves PANICKED, and a PANICKED writer is not counted, so no line of the panic leaves the bracket
+exclude rv32imac ?console.cc:line_wake class=PANIC reason: the line state is written only by a KERNEL_OWNED or RECLAIMED line, and a panic stores PANICKED before it prints, so no line of the panic wakes a writer parked on that state
 
 # Assembly and libgcc bodies have no .ci entry, so their frames are declared here. riscv gcc
 # reports 0 bytes (static) for a frameless leaf too, so 0 is the graph's own unit and no
@@ -210,6 +212,7 @@ root    rxv3 EXITK  kickos_thread_slay_exit
 # way into the console tail.
 root    rxv3 PANIC  kickos_panic_report
 exclude rxv3 console_chip_writer_leave class=PANIC reason: a panic stores PANICKED before it prints, nothing leaves PANICKED, and a PANICKED writer is not counted, so no line of the panic leaves the bracket
+exclude rxv3 ?console.cc:line_wake class=PANIC reason: the line state is written only by a KERNEL_OWNED or RECLAIMED line, and a panic stores PANICKED before it prints, so no line of the panic wakes a writer parked on that state
 
 # The taken fastpath switches, so it runs the same epilogue hooks the switcher does, and after
 # the transfer that epilogue is ALL it runs on a thread stack.
@@ -264,6 +267,7 @@ root    armv7m EXIT   kickos_thread_slay_exit
 # way into the console tail.
 root    armv7m PANIC  kickos_panic_report
 exclude armv7m console_chip_writer_leave class=PANIC reason: a panic stores PANICKED before it prints, nothing leaves PANICKED, and a PANICKED writer is not counted, so no line of the panic leaves the bracket
+exclude armv7m ?console.cc:line_wake class=PANIC reason: the line state is written only by a KERNEL_OWNED or RECLAIMED line, and a panic stores PANICKED before it prints, so no line of the panic wakes a writer parked on that state
 unsized armv7m kickos_panic_stack_enter 0 reason: switch.S, a limit write and an SP move that write no stack; bl leaves the return address in LR and the body never spills it
 unsized armv7m kickos_rp_rom_call 16 reason: rp2xxx/rom_call.S, push {r4-r6,lr}; the bootrom routine it calls runs on kickos_rp_rom_stack, which no class measures
 
@@ -307,6 +311,7 @@ root    armv6m EXITK  kickos_thread_slay_exit
 # way into the console tail.
 root    armv6m PANIC  kickos_panic_report
 exclude armv6m console_chip_writer_leave class=PANIC reason: a panic stores PANICKED before it prints, nothing leaves PANICKED, and a PANICKED writer is not counted, so no line of the panic leaves the bracket
+exclude armv6m ?console.cc:line_wake class=PANIC reason: the line state is written only by a KERNEL_OWNED or RECLAIMED line, and a panic stores PANICKED before it prints, so no line of the panic wakes a writer parked on that state
 unsized armv6m kickos_panic_stack_enter 0 reason: switch.S, six instructions that write no stack; bl leaves the return address in LR and the body never spills it
 unsized armv6m kickos_rp_rom_call 16 reason: rp2xxx/rom_call.S, push {r4-r6,lr}; the bootrom routine it calls runs on kickos_rp_rom_stack, which no class measures
 
@@ -366,6 +371,7 @@ root    armv8a FAULT   kickos_armv8a_exception
 root    armv8a IDLE    kmain.cc:idle_entry
 root    armv8a PANIC   kickos_panic_report
 exclude armv8a console_chip_writer_leave class=PANIC reason: a panic stores PANICKED before it prints, nothing leaves PANICKED, and a PANICKED writer is not counted, so no line of the panic leaves the bracket
+exclude armv8a ?console.cc:line_wake class=PANIC reason: the line state is written only by a KERNEL_OWNED or RECLAIMED line, and a panic stores PANICKED before it prints, so no line of the panic wakes a writer parked on that state
 
 exclude armv8a kickos_armv8a_switch_now class=IRQ,IRQK,EXITK reason: below kickos_armv8a_irq isr_depth is nonzero for the whole dispatch, so arch_switch takes its deferred arm and never calls the swap; the IRQ exit's unlock and bench close run inside the masked swap, and a swap reached from either would be a cycle SYSK refuses. EXITK prices an interrupt nested at the deepest byte, and none nests below a switch frame, arch_switch running under the kernel IrqLock; EXITKSW walks the swap instead
 
@@ -412,6 +418,7 @@ root    rv64imac SYSWIN  syscall_dispatch
 root    rv64imac NESTED  kickos_rv64_fault_report
 root    rv64imac NESTED  kickos_rv64_no_kernel_stack
 exclude rv64imac console_chip_writer_leave class=NESTED reason: both NESTED roots call kpanic_enter before their first print and return unprinted on the kill path, so their lines are PANICKED ones, never counted, and none leaves the bracket
+exclude rv64imac ?console.cc:line_wake class=NESTED reason: both NESTED roots call kpanic_enter before their first print, so their lines are PANICKED ones and none wakes a writer parked on the line state
 root    rv64imac EXITK   kickos_thread_fault_exit
 root    rv64imac EXITK   kickos_thread_slay_exit
 root    rv64imac EXITKSW kickos_thread_fault_exit
@@ -419,6 +426,7 @@ root    rv64imac EXITKSW kickos_thread_slay_exit
 root    rv64imac IDLE    kmain.cc:idle_entry
 root    rv64imac PANIC   kickos_panic_report
 exclude rv64imac console_chip_writer_leave class=PANIC reason: a panic stores PANICKED before it prints, nothing leaves PANICKED, and a PANICKED writer is not counted, so no line of the panic leaves the bracket
+exclude rv64imac ?console.cc:line_wake class=PANIC reason: the line state is written only by a KERNEL_OWNED or RECLAIMED line, and a panic stores PANICKED before it prints, so no line of the panic wakes a writer parked on that state
 
 exclude rv64imac kickos_rv64_switch_now class=IRQ,IRQK,EXITK reason: below .Lintr isr_depth is nonzero for the whole dispatch, so arch_switch books the target and never calls the swap. EXITK prices an interrupt nested at the deepest byte, and none nests below a switch frame, arch_switch running under the kernel IrqLock; EXITKSW walks the swap instead
 
@@ -454,7 +462,7 @@ recurse rv64imac aspace_rv64imac.cc:map_into 4 reason: one activation per level,
 # switch with nothing below it (x86_64_trap_stack.h).
 #
 # The build also compiles the kernel-free boot images' objects, whose declining stubs define
-# the kernel's own entry points, so the corpus is what the application images' maps LOAD.
+# the kernel's own entry points, so the corpus is what the application images' kernel maps LOAD.
 arch    x86_64 header=arch/x86/x86_64/include/kickos/arch/x86_64_trap_stack.h
 link    x86_64 maps=**/*.efi.map reason: tools/x86_64-link.sh writes one per application image, and a boot probe's single link writes none
 
@@ -473,6 +481,7 @@ root    x86_64 EXITKSW   kickos_thread_slay_exit
 root    x86_64 IDLE      kmain.cc:idle_entry
 root    x86_64 PANIC     kickos_panic_report
 exclude x86_64 console_chip_writer_leave class=PANIC reason: a panic stores PANICKED before it prints, nothing leaves PANICKED, and a PANICKED writer is not counted, so no line of the panic leaves the bracket
+exclude x86_64 ?console.cc:line_wake class=PANIC reason: the line state is written only by a KERNEL_OWNED or RECLAIMED line, and a panic stores PANICKED before it prints, so no line of the panic wakes a writer parked on that state
 
 exclude x86_64 kickos_x86_64_switch_now class=IRQ,IRQK,IST,EXITK reason: below kickos_x86_64_isr g_isr_depth is nonzero for the whole service, so arch_switch books the target and never calls the swap, and neither the containment call nor the report switches. EXITK prices an interrupt nested at the deepest byte, and none nests below a switch frame, arch_switch running under the kernel IrqLock; EXITKSW walks the swap instead
 
@@ -497,13 +506,13 @@ recurse x86_64 aspace_x86_64.cc:map_into 5 reason: one activation per level, the
 # within one.
 #
 # EVERY RECORD NAMES ITS SCOPE: a minimum is only a minimum over the presets actually swept.
-floor   armv7m   files=85 nodes=600 reason: all 32 declared armv7m presets swept 2026-10-13; smallest 158 files on due and 1190 nodes on bluepill-c8 and bluepill-c8-st, largest 200 files on bluepill-c8, f302nucleo and their -st presets and 1486 nodes on pizero2350-amp2-n0
+floor   armv7m   files=85 nodes=600 reason: all 31 declared armv7m presets swept 2026-10-13; smallest 158 files on due and 1190 nodes on bluepill-c8, largest 200 files on bluepill-c8, f302nucleo and f302nucleo-st and 1486 nodes on pizero2350-amp2-n0
 floor   armv6m   files=85 nodes=600 reason: all 3 declared armv6m presets swept 2026-10-13; smallest 162 files on picopi-flat and 1274 nodes on microbit, largest 171 files on microbit and 1396 nodes on picopi
 floor   rv32imac files=75 nodes=700 reason: all 8 declared rv32imac presets swept 2026-10-13; smallest 154 files/1326 nodes on qemu-riscv-flat, largest 213 files/1437 nodes on esp32c6-wroom-bench
 floor   rxv3     files=75 nodes=650 reason: all 3 declared rxv3 presets swept 2026-10-13; smallest 148 files/1325 nodes on rx72m-flat, largest 156 files/1441 nodes on rx72m-bench
 floor   armv8a   files=90 nodes=700 reason: all 16 declared armv8a presets swept 2026-09-26; smallest 134 files/1174 nodes on qemu-arm64, largest 142 files and 1360 nodes on qemu-arm64-benchsmp12
 floor   rv64imac files=90 nodes=700 reason: all 6 declared rv64imac presets swept 2026-09-25; smallest 133 files/1206 nodes on qemu-riscv64 and -sv48, largest 137 files on -benchsmp and -benchsmp2 and 1372 nodes on -benchsmp
-floor   x86_64   files=85 nodes=700 reason: all 6 declared x86_64 presets swept 2026-09-28, counted after the units no application map LOADs; smallest 116 files/1224 nodes on qemu-x86_64, largest 121 files on the four SMP presets and 1393 nodes on -smp4, -smp8 and -smp12
+floor   x86_64   files=60 nodes=550 reason: all 7 declared x86_64 presets swept 2026-10-23, counted after the units no kernel map LOADs, a program's own link being no part of it; smallest 81 files/752 nodes on qemu-x86_64, largest 82 files on -bench and the five SMP presets and 879 nodes on the SMP presets
 floor   lx6      files=75 nodes=650 reason: all 5 declared lx6 presets swept, the first three 2026-09-12, esp32-wroom-bench 2026-09-13 and esp32-wroom-benchsmp 2026-09-22; smallest 103 files/909 nodes on esp32-wroom, largest 127 files/1182 nodes on esp32-wroom-benchsmp
 root    lx6 PREEMPT kickos_lx6_dispatch_l1
 root    lx6 IDLE    kmain.cc:idle_entry
@@ -512,6 +521,7 @@ root    lx6 IDLE    kmain.cc:idle_entry
 # way into the console tail.
 root    lx6 PANIC   kickos_panic_report
 exclude lx6 console_chip_writer_leave class=PANIC reason: a panic stores PANICKED before it prints, nothing leaves PANICKED, and a PANICKED writer is not counted, so no line of the panic leaves the bracket
+exclude lx6 ?console.cc:line_wake class=PANIC reason: the line state is written only by a KERNEL_OWNED or RECLAIMED line, and a panic stores PANICKED before it prints, so no line of the panic wakes a writer parked on that state
 
 # Three nodes with no .ci entry. Measured from the xtensa-esp-elf 16.1.0 esp32 multilib: the
 # windowed ABI states a frame in the `entry` immediate, so each figure is that plus the deepest

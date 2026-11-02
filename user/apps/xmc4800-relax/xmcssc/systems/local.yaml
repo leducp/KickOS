@@ -10,7 +10,7 @@ ends: client
 
 tasks:
   - name: client
-    entry: xmcssc_main
+    program: main
     priority: 9
     ceiling: 9
     devices: [/dev/usic0/ch1]

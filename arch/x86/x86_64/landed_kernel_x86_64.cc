@@ -6,20 +6,22 @@
 // Do not zero .bss here: the PE loader already zero-fills it, and the handover TU's own
 // state is in .bss and still live at this call.
 
+#include <kickos/chip_com1.h>
 #include <kickos/chip_q35.h>
 
 #include <kickos/arch/arch.h>
-#include <kickos/arch/aspace.h>
 
 #include <stddef.h>
 #include <stdint.h>
 
 extern "C"
 {
-    // Only the kernel-owned ctors; pe_image.ld routes them here, and app and library ctors
-    // run later from kickos_root_entry.
+    // The kernel's constructors; a program's run from its own kickos_root_entry.
     extern void (*__init_array_start[])();
     extern void (*__init_array_end[])();
+    // The linker's own symbol for the image's first byte, taken PC-relative, so it is where
+    // firmware LOADED the image.
+    extern __attribute__((visibility("hidden"))) char __ImageBase[];
 }
 
 namespace kickos
@@ -49,15 +51,39 @@ namespace
     // The one stack the boot path and the idle thread run on.
     constexpr size_t boot_stack_bytes = 128 * 1024;
     alignas(16) uint8_t g_boot_stack[boot_stack_bytes];
+
+    // The script's absolute __kickos_link_image_base, as an immediate: firmware rewrites the
+    // loaded header's ImageBase to the address it chose, and relocates every other word.
+    uintptr_t link_image_base(void)
+    {
+        uintptr_t v = 0;
+        __asm__("movabsq $__kickos_link_image_base, %0" : "=r"(v));
+        return v;
+    }
+
+    // Zero where firmware placed the image at its preferred base and relocated nothing.
+    void report_load(void)
+    {
+        uintptr_t const base = reinterpret_cast<uintptr_t>(__ImageBase);
+        kickos::q35::com1_puts("x86_64 image: base=");
+        kickos::q35::com1_hex64(base);
+        kickos::q35::com1_puts(" load_delta=");
+        kickos::q35::com1_hex64(base - link_image_base());
+        kickos::q35::com1_puts("\n");
+    }
 }
+
+// The paging regime the kernel adopts: firmware's, unless a witness image moves it first
+// (kickos_x86_64_paging_entry_default.cc).
+extern "C" void kickos_x86_64_paging_entry(void);
 
 // A named extern "C" symbol so the switch below reaches it with a direct relative call: an
 // indirect call through its address is a GOT load, which tools/check-x86_64-no-got.sh refuses.
 extern "C" [[noreturn]] void kickos_x86_64_kernel_main(void)
 {
+    kickos_x86_64_paging_entry();
     arch_init();
-    // After aspace_init has measured the user offset, and before kmain seeds the first space.
-    kickos::x86_64::app_relocate();
+    report_load();
     kickos::kmain(0, nullptr);
     arch_shutdown(0);
 }

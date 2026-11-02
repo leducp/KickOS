@@ -60,6 +60,13 @@ _kernel_stack_size = 8K;
 _appdata_size = KICKOS_APPDATA_SIZE;
 #endif
 
+#ifdef KICKOS_NODE_VECTOR_FORCE_SYMBOL
+/* Node 1's table is referenced by nothing until the launch writes VTOR. */
+EXTERN(KICKOS_NODE_VECTOR_FORCE_SYMBOL)
+ASSERT(DEFINED(KICKOS_NODE_VECTOR_FORCE_SYMBOL),
+       "KickOS: node 1's vector table is in no input of this link")
+#endif
+
 SECTIONS
 {
     .text ORIGIN(FLASH) :

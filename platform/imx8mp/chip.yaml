@@ -45,6 +45,11 @@ interrupts:
   count: { value: 160, ref: "7.1.2 A53 Interrupts, p.947" }
   free_from: { value: 149, ref: "Table 7-1 Arm Domain Interrupt Summary, p.955" }
 
+# The M7's: the A53 translates, and its device windows lie in its devices' own.
+apertures:
+  - { window: [0x30000000, 0x1000000], ref: "2.3 Cortex-M7 Memory Map, AIPS-1, AIPS-2, AIPS-3 and AIPS-5, p.27" }
+  - { window: [0x32C00000, 0x400000], ref: "2.3 Cortex-M7 Memory Map, AIPS-4, p.27" }
+
 devices:
   uart1: { window: [0x30860000, 0x1000], ref: "Table 2-5 AIPS3 Memory Map, p.33" } # the A53 kernel's console
 

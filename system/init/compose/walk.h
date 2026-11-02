@@ -25,6 +25,7 @@ namespace kickos::init
         bool translating; // each task in a space of its own, its stack block its data region
         bool sp_masked;   // every thread stack one stride, which the kernel hands out
         bool multicore;   // more than one kernel core: a line's claimer pins itself to its core
+        char const* program; // the program the user tasks are instances of
     };
 
     // How long a slay waits for the group to empty (1.4).
@@ -90,6 +91,8 @@ namespace kickos::init
         TaskRecord& record(uint16_t i);
         // The init's notification, whose bit i%32 a watch on task i raises.
         kos_cap_t notify() const;
+        // The program every declared task is an instance of.
+        kos_program_t program() const;
 
         // Panics naming the kernel call, the task (KOS_TABLE_NONE for none) and its answer.
         [[noreturn]] void refused(char const* step, uint16_t task, char const* answer) const;
@@ -123,6 +126,9 @@ namespace kickos::init
             kos_cap_t copy;
             kos_cap_t lines[KICKOS_MAX_SPAWN_GRANTS];
             uint16_t line_count;
+            // The badged endpoint copies its badged uses are delegated from, in grant order.
+            kos_cap_t badged[KICKOS_MAX_SPAWN_GRANTS];
+            uint16_t badged_count;
             bool pinned;
             char const* step; // the step that failed
         };
@@ -134,8 +140,9 @@ namespace kickos::init
         bool serving(uint16_t i);
         void start(uint16_t i);
         int take_lines(Start& s);
+        int mint_uses(Start& s);
         int claim(uint16_t line, kos_cap_t* out);
-        int spawn(Start& s);
+        int create(Start& s);
         void release(Start& s);
         void failed(uint16_t i, kos_task_t handle, char const* step, int rc);
         void wake();
@@ -160,6 +167,7 @@ namespace kickos::init
         Build build_;
         uint16_t ends_;
         kos_cap_t notify_;
+        kos_program_t program_;
         PrivateRecord* private_;
         Report reports_[REPORTS];
         uint16_t report_count_;

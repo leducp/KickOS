@@ -3,6 +3,7 @@
 
 # These standalone programs and Python checks do not require GTest.
 add_subdirectory(telemetry)
+add_subdirectory(imagecxx)
 
 if(KICKOS_BUILD_UNIT_TESTS)
   # kickos_add_kseam(<name> [POSTURE <MACRO=VALUE>...] [EXTRA <cc...>] [INCLUDES <dirs...>])
@@ -26,6 +27,7 @@ if(KICKOS_BUILD_UNIT_TESTS)
         "${_k}/sync/klock.cc" "${_k}/thread/park.cc" "${_k}/syscall/cap.cc"
         "${_k}/task/task.cc" "${_k}/irq/irq.cc" "${_k}/irq/irq_route.cc"
         "${_k}/notify/notify.cc" "${_k}/init/instance.cc" "${_k}/init/fault.cc"
+        "${_k}/klib/slotpool.cc"
         "${PROJECT_SOURCE_DIR}/arch/common/arch_irq_line_core_default.cc"
       INCLUDES "${_fx}" ${KS_INCLUDES}
       POSTURE ${KS_POSTURE})
@@ -39,10 +41,10 @@ if(KICKOS_BUILD_UNIT_TESTS)
 
   # Independent targets; consumers of shared fixture libraries follow their providers.
   foreach(_unit IN ITEMS
-      ampconsole amphold ampreset ampshare ampwindow atomiccas benchdist c6apm capreply captable consolebaud consoleline consoleown
+      ampconsole amphold ampreset ampshare ampwindow atomiccas benchdist c6apm capreply consolebaud consoleline consoleown
       consolepace consolering consoletxsmp ctxredirect dcacheplan
       deathspace doorbell drvbringup fastrefuse faultline frame fusedwake grantlookup grantnocache
-      initwalk irqquiesce kstring
+      heapbreak imagecheck imagecrt0 initwalk irqquiesce kstring
       k64fsysmpu ktime mapexec mapfence mapshoot mpuoverlap mpuskip mtimeconv placeadmit presync ramalign ramowner regionsync
       reschedowed rp2350gate rp2xxxbringup slotpool
       stdoutwrite taskbudget uartclass usersem vrange windowholder)
@@ -61,6 +63,7 @@ if(KICKOS_BUILD_UNIT_TESTS)
   add_subdirectory(exitquiesce)
   add_subdirectory(reentseat)
   add_subdirectory(sysdispatch)
+  add_subdirectory(captable)
   foreach(_unit IN ITEMS consolehold irqlinecore parkdeath placement schedring semtimed mutextimed
       slaypeer tlscarve)
     add_subdirectory(${_unit})

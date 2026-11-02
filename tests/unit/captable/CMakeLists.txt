@@ -5,26 +5,21 @@
 # (stdint.h, config/system.h, sys/cap_index.h), so a host program uses the real cap_slot,
 # CapChunkList and free-slot list.
 #
-# FOUR EXECUTABLES from one source. The chunk geometry is chosen by an #if on the summed table
-# width, so one binary can only compile one of the paths; each case names the width it
-# wants and the chunk count it must land on, so a regression that collapsed the #if to one
-# path fails the geometry check instead of passing every half.
+# FOUR EXECUTABLES from one source. Each case names the widest table it wants, the chunk count it
+# must land on, and a narrower table beside it: a regression that collapsed every width to one chunk
+# count fails the geometry check instead of passing every half, and only a case where the two widths
+# differ exercises a partial take at all. Every width is whole chunks, as the kernel seats them.
 #
-# Each case also names the CHILD width: only a case where the two differ exercises a partial
-# take at all.
-#
-#   flat       7: the fleet's narrowest table (nrf51, stm32f103, stm32f302, bluepill-c8),
-#                 which must stay one exact-width chunk with no directory and no shift
-#   segmented 10: what the sim, qemu and qemu-riscv sum to
-#   deep      20: no image in the tree exceeds 16 slots, so without this the directory index
-#                 is never above 1 anywhere, and the mechanism is cut for thousands of chunks
-#   deeptail  20: a 3-chunk root directory against a 1-chunk child, so a partial take leaves
-#                 a TWO-entry tail to clear, which `segmented` (one entry) cannot catch
+#   flat       8: one chunk, every table alike
+#   segmented 16: two chunks beside one
+#   deep      24: three chunks, so the directory index passes 1
+#   deeptail  24: a 3-chunk directory against a 1-chunk run, so a partial take leaves a TWO-entry
+#                 tail to clear, which `segmented` (one entry) cannot catch
 #
 # All four binaries define the SAME gtest suite and case names, so TEST_PREFIX puts the
 # geometry on each ctest entry (flat.CapTable.geometry); without it four different geometries
 # would register under one name.
-foreach(_case flat:7:1:7 segmented:10:2:7 deep:20:3:20 deeptail:20:3:7)
+foreach(_case flat:8:1:8 segmented:16:2:8 deep:24:3:24 deeptail:24:3:8)
   string(REPLACE ":" ";" _parts "${_case}")
   list(GET _parts 0 _name)
   list(GET _parts 1 _width)
@@ -37,3 +32,18 @@ foreach(_case flat:7:1:7 segmented:10:2:7 deep:20:3:20 deeptail:20:3:7)
     DEFINITIONS CAPTABLE_GATE_WIDTH=${_width} CAPTABLE_GATE_CHUNKS=${_chunks}
                 CAPTABLE_GATE_CHILD=${_child})
 endforeach()
+
+# A capability of each kind kept across a generation wrap of its object's slot, over the real
+# capability, domain, task and system-call layers at the translating posture.
+kickos_add_unit_test(NAME captable_stale SOURCES stale_kinds.cc
+  DEFINITIONS SYS_IMAGE_BYTES=${KICKOS_SYSDISPATCH_IMAGE_BYTES}
+  LIBRARIES kickos_kseam_sysdispatch)
+kickos_sysdispatch_link(captable_stale g_sys_image 0)
+
+# A task's runs at mixed widths over a slab of exactly the init's width and the task's CAP_SLOTS:
+# the charge and the return at the end of the sweep, over the real exit path.
+kickos_add_kseam(kickos_kseam_captable
+  POSTURE KICKOS_SEAM_ROOT_WIDTH=8 KICKOS_SEAM_BUDGET_CAP_SLOTS=32 KICKOS_SEAM_CAP_SLOTS=40
+          KICKOS_SEAM_CAP_DIR=4)
+kickos_add_unit_test(NAME captable_run_return SOURCES run_return.cc
+  LIBRARIES kickos_kseam_captable)

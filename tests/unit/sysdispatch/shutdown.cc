@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// KOS_SYS_SHUTDOWN and KOS_SYS_TERMINAL_OUTCOME over the REAL kernel/syscall/syscall.cc: each
-// outcome is admitted only to a caller holding its authority, and a refusal changes nothing. A
-// case that sets the terminal outcome runs in a child process: it is set once per process.
+// KOS_SYS_SHUTDOWN, KOS_SYS_TERMINAL_OUTCOME and the system end of KOS_SYS_PANIC over the REAL
+// kernel/syscall/syscall.cc: each outcome is admitted only to a caller holding its authority, and
+// a refusal changes nothing. A case that sets the terminal outcome runs in a child process: it is
+// set once per process. A panic that ends only its task is panicgate's case 6.
 
 #include <kickos/cap.h>
 #include <kickos/instance.h>
@@ -15,7 +16,10 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
+
+#include <string>
 
 #include "kseam_test.h"
 #include "stub_seam.h"
@@ -30,6 +34,22 @@ namespace kickos
         namespace
         {
             constexpr int STATUS = 7;
+
+            // A death test reads its message as a regular expression, and the panic fallback
+            // text carries parentheses.
+            std::string literal(char const* text)
+            {
+                std::string out;
+                for (char const* c = text; *c != '\0'; c++)
+                {
+                    if (strchr("()[]{}.*+?^$|\\", *c) != nullptr)
+                    {
+                        out += '\\';
+                    }
+                    out += *c;
+                }
+                return out;
+            }
 
             class SysShutdown : public KSeam
             {
@@ -55,6 +75,13 @@ namespace kickos
                     cap_seat_authority(caller_, authority);
                     return static_cast<int32_t>(
                         syscall_dispatch(KOS_SYS_SHUTDOWN, STATUS, outcome, 0, 0));
+                }
+
+                void panic(Thread* t, uint32_t authority)
+                {
+                    kernel().current(kickos_kernel_core()) = t;
+                    cap_seat_authority(t, authority);
+                    (void)syscall_dispatch(KOS_SYS_PANIC, 0, 0, 0, 0);
                 }
 
                 // A refusal reaches neither the console drain nor the chip.
@@ -156,6 +183,20 @@ namespace kickos
                         exit(0);
                     },
                     ::testing::ExitedWithCode(0), "first 0 second -114");
+            }
+
+            // Root's end is the system's end, so root panics it holding nothing.
+            TEST_F(SysShutdown, a_panic_from_root_ends_the_system_without_system)
+            {
+                Thread* const root = seat_pool(0, 10);
+                ASSERT_TRUE(kernel().threads.is_root(root));
+                KICKOS_EXPECT_PANIC(panic(root, 0u), literal(diag::kUserPanicNoMsg));
+            }
+
+            TEST_F(SysShutdown, a_panic_with_system_ends_the_system)
+            {
+                ASSERT_FALSE(kernel().threads.is_root(caller_));
+                KICKOS_EXPECT_PANIC(panic(caller_, AUTH_SYSTEM), literal(diag::kUserPanicNoMsg));
             }
 
             // kfault_terminate is the dead-end every panic and fault ends in.

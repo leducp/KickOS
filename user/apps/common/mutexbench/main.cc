@@ -16,6 +16,12 @@
 #include <kickos/sys/driver_service.h>
 #include <kickos/libc/fmt.h>
 
+#if KICKOS_HAVE_ASPACE
+#include <kickos/apps/peer_run.h>
+#endif
+
+#include "handoff.h"
+
 #include <stdint.h>
 #include <stdlib.h>
 
@@ -32,7 +38,10 @@ namespace
     // Under a coarse clock, so a row spans many of its steps.
     constexpr uint32_t COARSE_REPS = 200000;
     constexpr uint32_t COARSE_ROUNDS = 20000;
-    constexpr uint32_t HANDOFFS = 1000;
+    using mutexbench::Handoff;
+    using mutexbench::waiter_run;
+    using mutexbench::WindowBlock;
+    using mutexbench::HANDOFFS;
     constexpr uint32_t MALLOC_BYTES = 32;
     // A clock stepping coarser than this cannot time one handoff, so only the round row prints.
     constexpr uint64_t COARSE_CLOCK_NS = 100000;
@@ -55,29 +64,20 @@ namespace
     constexpr uint32_t WAITER_CORES = 0;
 #endif
 
-    // Every thread slot but root's, the idle thread's and the handoff pair's, two per pair.
-    constexpr uint32_t load_pairs()
+    // main's THREADS budget seats its own entry and the handoff pair, then the load.
+    constexpr bool HANDOFF_SEATED = MUTEXBENCH_THREADS >= 3;
+    constexpr uint32_t spare_threads()
     {
-        if (KICKOS_MAX_THREADS + 1 < 4)
+        if (not HANDOFF_SEATED)
         {
             return 0;
         }
-        return (KICKOS_MAX_THREADS + 1 - 4) / 2;
+        return MUTEXBENCH_THREADS - 3;
     }
-    constexpr uint32_t LOAD_PAIRS = load_pairs();
-
-    // What a holder and a waiter share over one handoff run.
-    struct Handoff
-    {
-        kos_mutex_t m;
-        kos_sem_t go;
-        kos_sem_t done;
-        Atomic<uint32_t, Order::ACQUIRE | Order::RELEASE> enter;
-        Atomic<uint32_t, Order::RELAXED> taken;
-        uint32_t rounds;
-        // Written by the holder before its unlock, read by the waiter after its lock returns.
-        uint64_t t0;
-    };
+    // Two threads per pair.
+    constexpr uint32_t LOAD_PAIRS = spare_threads() / 2;
+    // The crowd stands beside main's entry, the settle witness and the poster.
+    constexpr uint32_t CROWD = spare_threads();
 
     kos::Mutex g_bench_m;
     Handoff g_ho = {KOS_MUTEX_INIT, KOS_SEM_INIT(0), KOS_SEM_INIT(0), 0, 0, HANDOFFS, 0};
@@ -255,37 +255,6 @@ namespace
         kos_sem_post(&ho->go);
     }
 
-    void waiter_run(Handoff* ho, uint32_t* wait)
-    {
-        uint32_t r = 0;
-        while (true)
-        {
-            kos_sem_wait(&ho->go, KOS_TIMEOUT_NONE);
-            if (r == ho->rounds)
-            {
-                return;
-            }
-            r++;
-            ho->enter = r;
-            if (kos_mutex_lock(&ho->m, KOS_TIMEOUT_NONE) != 0)
-            {
-                return;
-            }
-            uint64_t d = kos::clock_now() - ho->t0;
-            if (d > UINT32_MAX)
-            {
-                d = UINT32_MAX;
-            }
-            if (wait != nullptr)
-            {
-                wait[r - 1u] = static_cast<uint32_t>(d);
-            }
-            ho->taken = r;
-            (void)kos_mutex_unlock(&ho->m);
-            kos_sem_post(&ho->done);
-        }
-    }
-
     void waiter(void* arg)
     {
         waiter_run(static_cast<Handoff*>(arg), g_wait);
@@ -329,27 +298,6 @@ namespace
         }
     }
 
-#if KICKOS_HAVE_ASPACE
-    // The window leg's handoff and samples, in a block both tasks reach.
-    struct WindowBlock
-    {
-        Handoff ho;
-        uint32_t wait[HANDOFFS];
-    };
-
-    // In a child task, whose statics are its own copies: all it shares is in its window.
-    void window_waiter(void*)
-    {
-        kos_window at = {};
-        if (kos_window_get(0, &at) != 0)
-        {
-            return;
-        }
-        WindowBlock* const b = reinterpret_cast<WindowBlock*>(at.base);
-        waiter_run(&b->ho, b->wait);
-    }
-#endif
-
     void load_holder(void* arg)
     {
         kos_mutex_t* const m = static_cast<kos_mutex_t*>(arg);
@@ -376,8 +324,7 @@ namespace
     kos::thread::Handle g_load_t[2 * LOAD_PAIRS + 1];
     uint32_t g_load_threads = 0;
     uint32_t g_load_holders = 0;
-    // What refused the next pair, when fewer than LOAD_PAIRS stand.
-    char const* g_load_stop = "";
+    // The create that refused the next pair, when fewer than LOAD_PAIRS stand.
     int g_load_err = 0;
 
     // Parks up to LOAD_PAIRS holders on g_release, each with one waiter parked on its mutex, and
@@ -391,7 +338,6 @@ namespace
             auto h = kos::thread::create(load_holder, lm, "mx_lh", LOAD_PRIO);
             if (not h.valid())
             {
-                g_load_stop = "thread";
                 g_load_err = h.error();
                 break;
             }
@@ -402,7 +348,6 @@ namespace
             auto w = kos::thread::create(load_waiter, lm, "mx_lw", LOAD_PRIO);
             if (not w.valid())
             {
-                g_load_stop = "thread";
                 g_load_err = w.error();
                 break;
             }
@@ -436,11 +381,7 @@ namespace
         return wait[k - 1u];
     }
 
-    // Runs ho->rounds handoffs of ho->m between a fresh holder and waiter, the waiter's wait from
-    // the holder's unlock to its own lock returning, both clock reads included. The waiter runs
-    // `entry` in `task` with `win`. False when either thread could not spawn.
-    bool handoff_run(Handoff* ho, void (*entry)(void*), kos_task_t task, kos_window const* win,
-                     uint16_t win_count, uint64_t* d_ns)
+    void handoff_begin(Handoff* ho)
     {
         ho->enter = 0;
         ho->taken = 0;
@@ -449,13 +390,19 @@ namespace
 #if KICKOS_BENCH
         (void)kos_bench(KOS_BENCH_OP_RESET, 0, 0);
 #endif
+    }
+
+    // Runs ho->rounds handoffs of ho->m between a fresh holder and waiter, the waiter's wait from
+    // the holder's unlock to its own lock returning, both clock reads included. The waiter runs
+    // `entry`. False when either thread could not spawn.
+    bool handoff_run(Handoff* ho, void (*entry)(void*), uint64_t* d_ns)
+    {
+        handoff_begin(ho);
         uint64_t const t0 = kos::clock_now();
         auto w = kos::thread::create(entry, ho, "mx_w", WAITER_PRIO, KOS_POLICY_FIFO, 0, nullptr,
-                                     0, nullptr, 0, win, win_count, nullptr, 0, 0, nullptr, task,
-                                     WAITER_CORES);
+                                     0, nullptr, 0, nullptr, 0, 0, nullptr, WAITER_CORES);
         auto h = kos::thread::create_caps(holder, ho, "mx_h", HOLDER_PRIO, nullptr, 0,
-                                          KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
-                                          KOS_TASK_NONE, nullptr, 0, HOLDER_CORES);
+                                          KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, HOLDER_CORES);
         if (not w.valid() or not h.valid())
         {
             (void)w.cancel(KOS_CANCEL_KILL, 0);
@@ -475,6 +422,45 @@ namespace
         *d_ns = kos::clock_now() - t0;
         return true;
     }
+
+#if KICKOS_HAVE_ASPACE
+    // The same run with the waiter the entry of the peer program `prog`, reaching the handoff's
+    // word through `win`.
+    bool handoff_run_peer(Handoff* ho, kos_program_t prog, kos_window const* win,
+                          uint64_t* d_ns)
+    {
+        handoff_begin(ho);
+        uint64_t const t0 = kos::clock_now();
+        kos_task_params params = {};
+        params.windows = win;
+        params.window_count = 1;
+        kos_task_t peer = KOS_TASK_NONE;
+        int const created = kickos::apps::create_peer(prog, params, &peer);
+        auto h = kos::thread::create_caps(holder, ho, "mx_h", HOLDER_PRIO, nullptr, 0,
+                                          KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, HOLDER_CORES);
+        if (created != 0 or not h.valid())
+        {
+            (void)h.cancel(KOS_CANCEL_KILL, 0);
+            if (h.valid())
+            {
+                (void)h.join(KOS_TIMEOUT_NONE);
+            }
+            if (created == 0)
+            {
+                (void)kos_task_slay(peer, 0);
+            }
+            return false;
+        }
+        (void)h.join(KOS_TIMEOUT_NONE);
+        int status = 0;
+        while (kickos::apps::wait_dead(peer, &status, 1000u) == -KOS_ETIMEDOUT)
+        {
+        }
+        *d_ns = kos::clock_now() - t0;
+        (void)kos_task_slay(peer, 0);
+        return true;
+    }
+#endif
 
     // False where it printed a SKIP instead.
     bool samples_print(char const* row, char const* tag, uint64_t step, uint32_t* wait,
@@ -549,17 +535,35 @@ namespace
 
     void pairs_tag(char* tag, size_t size, uint32_t pairs)
     {
-        if (pairs == LOAD_PAIRS)
+        ksnprintf(tag, size, "%s; %u pairs parked", handoff_where(), static_cast<unsigned>(pairs));
+    }
+
+    // False where it printed why the row cannot run its declared load instead.
+    bool load_stood(char const* row, uint32_t pairs)
+    {
+        char s[128];
+        if (LOAD_PAIRS == 0)
         {
-            ksnprintf(tag, size, "%s; %u of %u pairs parked", handoff_where(),
-                      static_cast<unsigned>(pairs), static_cast<unsigned>(LOAD_PAIRS));
+            ksnprintf(s, sizeof(s), "  %s: SKIP (main's threads seat no load pair)\n", row);
+            kos::print(s);
+            return false;
         }
-        else
+        if (pairs != LOAD_PAIRS)
         {
-            ksnprintf(tag, size, "%s; %u of %u pairs parked, %s create %d", handoff_where(),
-                      static_cast<unsigned>(pairs), static_cast<unsigned>(LOAD_PAIRS), g_load_stop,
+            ksnprintf(s, sizeof(s), "  %s: FAIL (%u of %u pairs stood, thread create %d)\n", row,
+                      static_cast<unsigned>(pairs), static_cast<unsigned>(LOAD_PAIRS),
                       g_load_err);
+            kos::print(s);
+            return false;
         }
+        return true;
+    }
+
+    void refused_print(char const* row)
+    {
+        char s[96];
+        ksnprintf(s, sizeof(s), "  %s: FAIL (a thread main's budget seats was refused)\n", row);
+        kos::print(s);
     }
 
     // The same handoff while other pairs stand parked, each a holder with one waiter on its mutex.
@@ -568,19 +572,18 @@ namespace
         uint32_t const pairs = load_up();
         uint64_t d_ns = 0;
         bool ran = false;
-        if (pairs != 0)
+        if (pairs == LOAD_PAIRS and pairs != 0)
         {
-            ran = handoff_run(&g_ho, waiter, KOS_TASK_NONE, nullptr, 0, &d_ns);
+            ran = handoff_run(&g_ho, waiter, &d_ns);
         }
         load_down();
-        if (pairs == 0)
+        if (not load_stood("mutex-handoff-loaded", pairs))
         {
-            kos::print("  mutex-handoff-loaded: SKIP (no load pair could spawn)\n");
             return;
         }
         if (not ran)
         {
-            kos::print("  mutex-handoff-loaded: SKIP (thread pool too small)\n");
+            refused_print("mutex-handoff-loaded");
             return;
         }
         char tag[112];
@@ -633,36 +636,35 @@ namespace
         bool ok = b != nullptr and kos_mem_self_grant(b, sizeof(WindowBlock), 0) == 0;
         uint32_t free_slots = 0;
         ok = ok and kos_mem_count(KOS_MEM_RANGES_FREE, &free_slots) == 0;
-        kos_task_t task = KOS_TASK_NONE;
-        ok = ok and kos_task_create(nullptr, 0, 0, &task) == 0;
+        kos_program_t prog = KOS_CAP_NONE;
+        ok = ok and kos_program_find("mutexbench_peer", &prog) == 0;
         uint64_t d_ns = 0;
         bool ran = false;
-        if (ok and pairs != 0)
+        if (ok and pairs == LOAD_PAIRS and pairs != 0)
         {
             b->ho.rounds = HANDOFFS;
             kos_window const win = {reinterpret_cast<uintptr_t>(b),
                                     static_cast<uint32_t>(sizeof(WindowBlock)), KOS_WINDOW_MEMORY,
                                     0};
-            ran = handoff_run(&b->ho, window_waiter, task, &win, 1, &d_ns);
+            ran = handoff_run_peer(&b->ho, prog, &win, &d_ns);
         }
         load_down();
-        if (task != KOS_TASK_NONE)
+        if (prog != KOS_CAP_NONE)
         {
-            (void)kos_task_slay(task, 0);
+            (void)kos_handle_close(prog);
         }
         if (not ok)
         {
-            kos::print("  mutex-handoff-window: SKIP (no block or no task)\n");
+            kos::print("  mutex-handoff-window: SKIP (no block or no peer program)\n");
             return;
         }
-        if (pairs == 0)
+        if (not load_stood("mutex-handoff-window", pairs))
         {
-            kos::print("  mutex-handoff-window: SKIP (no load pair could spawn)\n");
             return;
         }
         if (not ran)
         {
-            kos::print("  mutex-handoff-window: SKIP (thread pool too small)\n");
+            refused_print("mutex-handoff-window");
             return;
         }
         char pt[112];
@@ -693,11 +695,9 @@ namespace
         ho->rounds = g_ho.rounds;
         uint64_t const t0 = kos::clock_now();
         auto w = kos::thread::create_caps(ponger, ho, "mx_sw", WAITER_PRIO, nullptr, 0,
-                                          KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
-                                          KOS_TASK_NONE, nullptr, 0, WAITER_CORES);
+                                          KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, WAITER_CORES);
         auto h = kos::thread::create_caps(pinger, ho, "mx_sh", HOLDER_PRIO, nullptr, 0,
-                                          KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
-                                          KOS_TASK_NONE, nullptr, 0, HOLDER_CORES);
+                                          KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, HOLDER_CORES);
         if (not w.valid() or not h.valid())
         {
             (void)w.cancel(KOS_CANCEL_KILL, 0);
@@ -710,7 +710,7 @@ namespace
             {
                 (void)h.join(KOS_TIMEOUT_NONE);
             }
-            kos::print("  sem-handoff: SKIP (thread pool too small)\n");
+            refused_print("sem-handoff");
             return;
         }
         (void)h.join(KOS_TIMEOUT_NONE);
@@ -784,8 +784,20 @@ namespace
     kos::thread::Handle crowd_spawn(void (*entry)(void*), char const* name, uint8_t prio)
     {
         return kos::thread::create_caps(entry, nullptr, name, prio, nullptr, 0, KOS_POLICY_FIFO,
-                                        0, nullptr, 0, 0, nullptr, KOS_TASK_NONE, nullptr, 0,
-                                        HOLDER_CORES);
+                                        0, 0, nullptr, nullptr, 0, HOLDER_CORES);
+    }
+
+    kos::thread::Handle g_crowd_t[CROWD + 1];
+
+    // Releases whatever of the crowd and its settle witness stands, when the poster cannot run.
+    void crowd_release()
+    {
+        g_crowd_stop = 1;
+        for (uint32_t i = 0; i < g_crowd_n; i++)
+        {
+            kos_sem_post(&g_crowd);
+        }
+        kos_sem_post(&g_settle_go);
     }
 
     void sem_crowd(uint64_t step)
@@ -795,6 +807,11 @@ namespace
             (void)samples_print("sem-wake-crowd", "", step, g_wait, 0);
             return;
         }
+        if (CROWD == 0)
+        {
+            kos::print("  sem-wake-crowd: SKIP (main's threads seat no crowd)\n");
+            return;
+        }
         g_crowd_stop = 0;
         g_crowd_taken = 0;
         (void)kos_sem_init(&g_crowd, 0);
@@ -802,27 +819,19 @@ namespace
         (void)kos_sem_init(&g_settled, 0);
         g_crowd_n = 0;
         auto s = crowd_spawn(settle_witness, "mx_cs", SETTLE_PRIO);
-        while (s.valid() and g_crowd_n < 2 * LOAD_PAIRS + 1)
+        while (s.valid() and g_crowd_n < CROWD)
         {
             auto w = crowd_spawn(crowd_waiter, "mx_cw", LOAD_PRIO);
             if (not w.valid())
             {
                 break;
             }
-            g_load_t[g_crowd_n] = w;
+            g_crowd_t[g_crowd_n] = w;
             g_crowd_n++;
         }
         kos::thread::Handle p;
-        if (s.valid())
+        if (s.valid() and g_crowd_n == CROWD)
         {
-            p = crowd_spawn(crowd_poster, "mx_cp", HOLDER_PRIO);
-        }
-        // The crowd took every slot: one of it gives its slot to the poster.
-        while (s.valid() and not p.valid() and g_crowd_n > 1)
-        {
-            g_crowd_n--;
-            (void)g_load_t[g_crowd_n].cancel(KOS_CANCEL_KILL, 0);
-            (void)g_load_t[g_crowd_n].join(KOS_TIMEOUT_NONE);
             p = crowd_spawn(crowd_poster, "mx_cp", HOLDER_PRIO);
         }
         if (p.valid())
@@ -831,12 +840,7 @@ namespace
         }
         else
         {
-            g_crowd_stop = 1;
-            for (uint32_t i = 0; i < g_crowd_n; i++)
-            {
-                kos_sem_post(&g_crowd);
-            }
-            kos_sem_post(&g_settle_go);
+            crowd_release();
         }
         if (s.valid())
         {
@@ -844,11 +848,19 @@ namespace
         }
         for (uint32_t i = 0; i < g_crowd_n; i++)
         {
-            (void)g_load_t[i].join(KOS_TIMEOUT_NONE);
+            (void)g_crowd_t[i].join(KOS_TIMEOUT_NONE);
+        }
+        if (not p.valid())
+        {
+            refused_print("sem-wake-crowd");
+            return;
         }
         if (g_crowd_taken != CROWD_ROUNDS)
         {
-            kos::print("  sem-wake-crowd: SKIP (thread pool too small)\n");
+            char s2[96];
+            ksnprintf(s2, sizeof(s2), "  sem-wake-crowd: SKIP (stopped after %u of %u)\n",
+                      static_cast<unsigned>(g_crowd_taken), static_cast<unsigned>(CROWD_ROUNDS));
+            kos::print(s2);
             return;
         }
         char tag[64];
@@ -867,10 +879,16 @@ namespace
             g_ho.rounds = COARSE_ROUNDS;
         }
         uint64_t d_ns = 0;
-        if (not handoff_run(&g_ho, waiter, KOS_TASK_NONE, nullptr, 0, &d_ns))
+        if (not HANDOFF_SEATED)
         {
             uncontended_print(reps);
-            kos::print("  mutex-handoff: SKIP (thread pool too small)\n");
+            kos::print("  mutex-handoff: SKIP (main's threads seat no handoff pair)\n");
+            return;
+        }
+        if (not handoff_run(&g_ho, waiter, &d_ns))
+        {
+            uncontended_print(reps);
+            refused_print("mutex-handoff");
             return;
         }
         uncontended_print(reps);
@@ -878,16 +896,17 @@ namespace
         // The rows drain on the console before the loaded window opens.
         kos::sleep_ns(QUIET_NS);
         handoff_loaded(step);
+        kos::sleep_ns(QUIET_NS);
+        sem_handoff(step);
+        kos::sleep_ns(QUIET_NS);
+        sem_crowd(step);
+        // Last: its fill leaves this space's range list full, and a spawn needs a range.
 #if KICKOS_HAVE_ASPACE
         kos::sleep_ns(QUIET_NS);
         handoff_window(step);
 #else
         kos::print("  mutex-handoff-window: SKIP (no address spaces)\n");
 #endif
-        kos::sleep_ns(QUIET_NS);
-        sem_handoff(step);
-        kos::sleep_ns(QUIET_NS);
-        sem_crowd(step);
     }
 }
 
@@ -905,6 +924,12 @@ int main(int, char**)
 {
     (void)kos_terminal_outcome(KOS_SHUTDOWN_BOOTLOADER);
     kos::print("mutexbench: the mutex and the C library's locks, as an application pays\n");
+    char load[128];
+    ksnprintf(load, sizeof(load),
+              "mutexbench: load: %u threads, %u load pairs, a crowd of %u\n",
+              static_cast<unsigned>(MUTEXBENCH_THREADS), static_cast<unsigned>(LOAD_PAIRS),
+              static_cast<unsigned>(CROWD));
+    kos::print(load);
     // The banner drains on the console before the first row starts.
     kos::sleep_ns(QUIET_NS);
     uint64_t const step = clock_step();

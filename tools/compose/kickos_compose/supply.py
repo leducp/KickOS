@@ -12,15 +12,8 @@ IMAGE_RANGES = 2
 
 
 def check_drivers(f, tasks, manifest):
-    starts = {}
-    for name, driver in manifest.drivers.items():
-        starts[driver.start] = name
     for task in tasks:
         task.catalogue = None
-        if task.entry_name in starts:
-            f.refuse(task.nodes["entry"], "name.entry",
-                     "%s entry `%s` is the start of packaged driver `%s`, which the init calls itself"
-                     % (task.label(), task.entry_name, starts[task.entry_name]))
         if task.driver is None:
             continue
         what = task.label()
@@ -109,6 +102,16 @@ def check_priorities(f, tasks, manifest):
                          "%s runs at priority %d%s outside the kernel build's range [%d, %d]"
                          % (task.label(), task.priority, thread, lo, hi))
                 break
+        if task.hosted is not None:
+            host = task.hosted
+            ceiling = host.ceiling
+            if ceiling is None:
+                ceiling = host.priority
+            run = [priority for name, priority, stack, caps in threads_of(task, manifest) if priority is not None]
+            if run and ceiling is not None and max(run) > ceiling:
+                f.refuse(task.nodes["priority"], "scheduling.hosted",
+                         "%s runs a thread at priority %d, and a driver inside a task runs within that task's "
+                         "ceiling %d" % (task.label(), max(run), ceiling))
         if task.ceiling is not None and not lo <= task.ceiling <= hi:
             f.refuse(task.nodes["ceiling"], "scheduling.ceiling",
                      "%s ceiling %d, the highest priority its threads may take, is outside the kernel build's "
@@ -120,17 +123,29 @@ class Held:
         self.endpoints = 0
         self.notifications = 0
         self.lines = 0
-        # Capabilities past one per object: a notification's badged copies.
+        # Capabilities past one per object: a notification's or an endpoint's badged copies.
         self.copies = 0
+        self.programs = 0
 
     def add(self, other):
         self.endpoints = self.endpoints + other.endpoints
         self.notifications = self.notifications + other.notifications
         self.lines = self.lines + other.lines
         self.copies = self.copies + other.copies
+        self.programs = self.programs + other.programs
 
     def caps(self):
-        return self.endpoints + self.notifications + self.lines + self.copies
+        return self.endpoints + self.notifications + self.lines + self.copies + self.programs
+
+
+def own_tasks(tasks):
+    """The tasks of their own, a driver listed under a task's `drivers` being its host's threads."""
+    return [task for task in tasks if task.hosted is None]
+
+
+def hosted_by(task, tasks):
+    """The drivers listed under `task`'s `drivers`."""
+    return [other for other in tasks if other.hosted is task]
 
 
 def copy(held):
@@ -150,17 +165,20 @@ def held_by(task):
         return held
     if task.serves is not None:
         held.endpoints = 1
-    held.endpoints = held.endpoints + len(task.uses)
+    # Its spawn passes it the endpoint of each driver it runs.
+    held.endpoints = held.endpoints + len(task.uses) + len(task.hosts)
     if task.watches:
         held.notifications = 1
     return held
 
 
 def kept_by_init(tasks, manifest):
-    """What the init holds for life: its notification, each AMP port, every endpoint it creates for a
-    served /svc path, a console driver's included, and each watcher's notification."""
+    """What the init holds for life: its notification, the program its tasks are instances of, each AMP
+    port, every endpoint it creates for a served /svc path, a console driver's included, and each
+    watcher's notification."""
     kept = Held()
     kept.notifications = 1
+    kept.programs = 1
     kept.endpoints = manifest.amp_ports
     for task in tasks:
         if task.catalogue is not None:
@@ -174,19 +192,27 @@ def kept_by_init(tasks, manifest):
 
 
 def start_of(task):
-    """What the init holds past what it keeps while it starts or restarts `task`: the task's lines and
-    the badged copy of the init's notification; for a driver with a notification, that notification
-    and the most badged copies of it one step of the bring-up holds, one while it binds a line or
-    those one thread's spawn mints."""
+    """What the init holds past what it keeps while it starts or restarts `task`: the badged copy of
+    the init's notification, and for a user task its lines, the badged copy of each endpoint whose
+    use names slots and the program it runs where that is not the executable's; for a driver with a
+    notification, that notification and its doorbell copy, which its create passes. A driver's lines
+    are claimed by its create, never in the init's table. The init never starts a driver inside a
+    task."""
     held = Held()
-    held.lines = len(task.lines)
+    if task.hosted is not None:
+        return held
     held.copies = 1
-    if task.catalogue is not None and task.catalogue.notifications:
+    if task.catalogue is None:
+        held.lines = len(task.lines)
+        held.copies = held.copies + len(task.use_slots)
+        # A program of another name than the executable's, found for the create alone.
+        if task.program is not None and task.program != "main":
+            held.programs = 1
+        return held
+    if task.catalogue.notifications:
         held.notifications = task.catalogue.notifications
-        minted = [badged for badged in task.catalogue.badged if badged is not None]
-        if task.lines:
-            minted.append(1)
-        held.copies = held.copies + max(minted + [0])
+        if "doorbell" in task.catalogue.entry:
+            held.copies = held.copies + 1
     return held
 
 
@@ -259,7 +285,7 @@ def init_reserved_blocks(tasks, shared, manifest):
                              "driver `%s`'s BLOCK" % task.driver))
     if manifest.stack_stride is None:
         for task in tasks:
-            if task.entry and task.stack is not None:
+            if task.entry and task.stack is not None and not task.on_request:
                 reserved.append(("%s's stack" % task.label(), task.stack, "its `stack`"))
     return reserved
 
@@ -290,7 +316,7 @@ def domain_count(tasks, translating):
     """The memory domains of the composition: the two the kernel keeps, and on a translating board
     the init's and one per task, on a region board one per ring block."""
     if translating:
-        return 2 + len(tasks) + 1
+        return 2 + len(own_tasks(tasks)) + 1
     return 2 + len([task for task in tasks if ring_block(task) is not None])
 
 
@@ -304,7 +330,7 @@ def init_figures(tasks, shared, manifest, translating):
         ("endpoints", kept_by_init(tasks, manifest).endpoints),
         ("notifications", notification_count(tasks, manifest)),
         ("threads", thread_count(tasks, manifest)),
-        ("tasks", len(tasks)),
+        ("tasks", len(own_tasks(tasks))),
         ("irq_handles", line_count(tasks)),
         ("domains", domain_count(tasks, translating)),
         ("reservations", len(init_reservations(tasks, shared, manifest))),
@@ -312,39 +338,265 @@ def init_figures(tasks, shared, manifest, translating):
     ]
 
 
-def check_supply(f, root, tasks, shared, chip, cluster, manifest, translating, region_size):
-    threads = thread_count(tasks, manifest)
-    kept = kept_by_init(tasks, manifest)
-    notifications = notification_count(tasks, manifest)
-    kernel = manifest.kernel_cores or 1
-    domains = domain_count(tasks, translating)
-    domain_prose = "the two the kernel keeps, the init's and one per task"
-    if not translating:
-        domain_prose = "the two the kernel keeps and one per ring block"
-    pools = [
-        ("KICKOS_MAX_TASKS", kernel + 1 + len(tasks), "each kernel core's idle, the init's, and one per task"),
-        ("KICKOS_MAX_THREADS", threads, "the threads of every task, the init's being root's own slot"),
-        ("KICKOS_MAX_DOMAINS", domains, domain_prose),
-        ("KICKOS_MAX_ENDPOINTS", kept.endpoints, "every served endpoint and each AMP port"),
-        ("KICKOS_MAX_NOTIFY", notifications, "the init's, one per watching task and each driver's"),
-        ("KICKOS_MAX_IRQ_HANDLES", line_count(tasks), "one per line a task takes"),
-    ]
-    for knob, used, prose in pools:
-        if knob in manifest.pools and used > manifest.pools[knob]:
-            f.refuse(root, "supply.pool",
-                     "the composition takes %d of %s's %d, %s, so %s would have to grow"
-                     % (used, knob, manifest.pools[knob], prose, knob))
+# Where a declaration's figures size nothing: what the kernel's pools TU takes, in
+# KICKOS_SYSTEM_POOLS order (<kickos/pool_storage.h>). `tasks` and `domains` follow the declared
+# tasks; every other pool is the sum of the budgets of the kind that names it.
+POOL_ORDER = ("threads", "tasks", "domains", "endpoints", "notifies", "irq_bindings", "frame_runs", "ram_owners",
+              "cap_slab")
+# The kinds whose pool is no pool of the system's TU.
+UNSIZED_POOLS = ("none",)
+# What one ceiling bounds, for a refusal that names it.
+CEILING_PROSE = {
+    "threads": "thread pool, KICKOS_THREAD_SLOT_CEILING",
+    "tasks": "task pool, KICKOS_TASK_SLOT_CEILING",
+    "domains": "domain pool, KICKOS_SLOT_POOL_CEILING",
+    "endpoints": "endpoint pool, KICKOS_SLOT_POOL_CEILING",
+    "notifies": "notification pool, KICKOS_SLOT_POOL_CEILING",
+    "irq_bindings": "IRQ binding pool, KICKOS_IRQ_BINDING_CEILING",
+    "frame_runs": "frame-run pool, KICKOS_SLOT_POOL_CEILING",
+    "ram_owners": "RAM owner table, KICKOS_SLOT_POOL_CEILING",
+}
 
-    budgets = (("endpoints", "KICKOS_TASK_ENDPOINT_BUDGET"), ("notifications", "KICKOS_TASK_NOTIFY_BUDGET"),
-               ("lines", "KICKOS_TASK_IRQ_HANDLE_BUDGET"))
-    for kind, knob in budgets:
-        task, peak = init_peak(tasks, manifest, lambda held, kind=kind: getattr(held, kind))
-        check_budget(f, root, "the init%s" % at_step(task), getattr(peak, kind), kind, knob, manifest)
+
+class Sizing:
+    """The init's budgets and the size of every pool, by kind and by pool name."""
+
+    def __init__(self):
+        self.init = {}
+        self.reserve = {}
+        self.pools = {}
+        # The chunks of a capability directory row: those of the widest table the system seats.
+        self.cap_dir = 0
+
+    def pool_sizes(self):
+        """The pools in KICKOS_SYSTEM_POOLS order."""
+        return [self.pools.get(name, 0) for name in POOL_ORDER]
+
+
+def consoles_of(tasks, stdout):
+    """The tasks that may serve the console: the one `stdout` names, and each console driver started on
+    request."""
+    consoles = [task for task in tasks if task.on_request and task.catalogue is not None
+                and task.catalogue.console]
+    if stdout is not None and stdout != "kernel":
+        consoles.append(stdout)
+    return consoles
+
+
+def task_needs(task, tasks, manifest, consoles):
+    """What `task` holds by kind as far as the composition states it, the drivers it runs as its
+    threads included, and the console endpoint the kernel seats as its standard output wherever a task
+    other than it may serve the console: the least a budget of each kind may be."""
+    held = held_by(task)
+    if consoles and task not in consoles:
+        held.endpoints = held.endpoints + 1
+    threads = len(threads_of(task, manifest))
+    for other in hosted_by(task, tasks):
+        driver = held_by(other)
+        driver.endpoints = 0
+        held.add(driver)
+        threads = threads + len(threads_of(other, manifest))
+    return {"threads": threads, "endpoints": held.endpoints, "notifications": held.notifications,
+            "irq_bindings": held.lines}
+
+
+def whole_chunks(slots, manifest):
+    """`slots` rounded up to the capability slab's chunk."""
+    chunk = manifest.cap_chunk
+    return (slots + chunk - 1) // chunk * chunk
+
+
+def init_width(tasks, manifest):
+    """The init's capability-table width: the reserved indices and the most it holds at once, in whole
+    chunks."""
+    task, peak = init_peak(tasks, manifest, Held.caps)
+    return whole_chunks((manifest.cap_reserved or 0) + peak.caps(), manifest)
+
+
+def default_width(manifest):
+    """The width a declaration's threads take where no `caps` states one: a full grant list above the
+    reserved indices, in whole chunks."""
+    grants = manifest.pools.get("KICKOS_MAX_SPAWN_GRANTS", 0)
+    return whole_chunks((manifest.cap_reserved or 0) + grants, manifest)
+
+
+def check_caps(f, task, tasks, manifest, cap_defaults):
+    """`task`'s capability-table width and its CAP_SLOTS budget, the sum of the widths of its live
+    threads: each as stated, else the composition's default, else default_width and a table of that
+    width for each thread of its THREADS budget, both in whole chunks."""
+    width, node = default_width(manifest), task.node
+    if "width" in task.caps:
+        width, node = task.caps["width"]
+    elif "width" in cap_defaults:
+        width, node = cap_defaults["width"]
+    width = whole_chunks(max(width, 1), manifest)
+    if manifest.cap_width_max is not None and width > manifest.cap_width_max:
+        f.refuse(node, "supply.cap-width",
+                 "%s takes capability tables %d slots wide, past the widest one thread seats, %d"
+                 % (task.label(), width, manifest.cap_width_max))
+    runs = threads_of(task, manifest)
+    for other in hosted_by(task, tasks):
+        runs = runs + threads_of(other, manifest)
+    for name, priority, stack, caps in runs:
+        need = (manifest.cap_reserved or 0) + (caps or 0)
+        if need > width:
+            f.refuse(node, "supply.cap-width",
+                     "%s takes capability tables %d slots wide, and its thread `%s` is passed %d capabilities "
+                     "above the %d reserved indices" % (task.label(), width, name, caps, manifest.cap_reserved or 0))
+    task.cap_width = width
+    least = width * max(1, len(runs))
+    if "slots" in task.caps:
+        slots, node = task.caps["slots"]
+        slots = whole_chunks(slots, manifest)
+        if slots < least:
+            f.refuse(node, "supply.budget",
+                     "%s states %d capability slots, and its %d threads at its width %d take %d"
+                     % (task.label(), slots, max(1, len(runs)), width, least))
+        return slots
+    if "slots" in cap_defaults:
+        return max(whole_chunks(cap_defaults["slots"][0], manifest), least)
+    return max(width * task.budgets.get("threads", 1), least)
+
+
+def init_budgets(tasks, shared, manifest, translating, rounded):
+    """The init's figure of each charged kind: what it holds at its peak, its one thread, every block
+    it reserves and the partition's share where the kernel seats it in root's own table; the build's
+    default for a kind the composition cannot price."""
+    figures = {}
+    for kind in manifest.budgets:
+        if kind.charged():
+            figures[kind.key] = 0
+    figures["threads"] = 1
+    # A line the init still holds also holds the notification its task binds to it before the
+    # init lets the line go.
+    for key, measure in (("endpoints", lambda held: held.endpoints),
+                         ("notifications", lambda held: held.notifications + held.lines),
+                         ("irq_bindings", lambda held: held.lines)):
+        task, peak = init_peak(tasks, manifest, measure)
+        figures[key] = measure(peak)
+    if manifest.cap_chunk is not None:
+        figures["cap_slots"] = init_width(tasks, manifest)
+    reserved = init_reservations(tasks, shared, manifest)
+    blocks = len(reserved)
+    sizes = sum(rounded(want) for want in reserved if want)
+    if not translating and manifest.amp_share:
+        blocks = blocks + share_seat(manifest)
+        sizes = sizes + manifest.amp_share
+    figures["ram_blocks"] = blocks
+    figures["ram_bytes"] = sizes
+    for kind in manifest.budgets:
+        if kind.key == "pages" and kind.charged():
+            figures["pages"] = kind.default
+    return {key: value for key, value in figures.items() if key in charged_keys(manifest)}
+
+
+def charged_keys(manifest):
+    return [kind.key for kind in manifest.budgets if kind.charged()]
+
+
+def check_budget_kinds(f, stated, what, manifest):
+    """Each kind `stated` names is one of the kernel build's."""
+    known = [kind.key for kind in manifest.budgets]
+    for name, (figure, node) in stated.items():
+        if name not in known:
+            f.refuse(node, "supply.budget-kind",
+                     "%s names budget `%s`, and the kernel build's kinds are %s" % (what, name, ", ".join(known)))
+
+
+def check_budgets(f, root, tasks, shared, manifest, translating, defaults, cap_defaults, reserve, rounded, stdout):
+    """Each task's budgets, the init's and the pools they size, every pool past its type ceiling
+    refused. `rounded` is the bytes the kernel records a reservation of a want at."""
+    sizing = Sizing()
+    check_budget_kinds(f, defaults, "the composition's `budgets`", manifest)
+    check_budget_kinds(f, reserve, "the composition's `reserve`", manifest)
+    own = own_tasks(tasks)
+    consoles = consoles_of(tasks, stdout)
+    for stated, what in [(defaults, "the composition's `budgets`")] + [(task.stated, task.label()) for task in own]:
+        if "cap_slots" in stated:
+            f.refuse(stated["cap_slots"][1], "supply.budget-kind",
+                     "%s names budget `cap_slots`, which a task states as `caps: { slots: N }`" % what)
+    for task in own:
+        check_budget_kinds(f, task.stated, task.label(), manifest)
+        needs = task_needs(task, tasks, manifest, consoles)
+        for kind in manifest.budgets:
+            if not kind.charged():
+                continue
+            if kind.key == "cap_slots":
+                if manifest.cap_chunk is not None:
+                    task.budgets[kind.key] = check_caps(f, task, tasks, manifest, cap_defaults)
+                continue
+            need = needs.get(kind.key, 0)
+            if kind.key in task.stated:
+                figure, node = task.stated[kind.key]
+                if figure < need:
+                    f.refuse(node, "supply.budget",
+                             "%s states a %s budget of %d, and it holds %d of them by its composition"
+                             % (task.label(), kind.key, figure, need))
+                task.budgets[kind.key] = figure
+                continue
+            figure = kind.default
+            if kind.key == "threads" and task.driver is not None:
+                figure = need
+            elif kind.key in defaults:
+                figure = defaults[kind.key][0]
+            task.budgets[kind.key] = max(figure, need)
+    sizing.init = init_budgets(tasks, shared, manifest, translating, rounded)
+    sizing.reserve = {name: figure for name, (figure, node) in reserve.items() if name in charged_keys(manifest)}
+    if "cap_slots" in sizing.reserve and manifest.cap_chunk is not None:
+        sizing.reserve["cap_slots"] = whole_chunks(sizing.reserve["cap_slots"], manifest)
+    for kind in manifest.budgets:
+        if not kind.charged() or kind.pool in UNSIZED_POOLS:
+            continue
+        total = sizing.init.get(kind.key, 0) + sizing.reserve.get(kind.key, 0)
+        total = total + sum(task.budgets.get(kind.key, 0) for task in own)
+        if kind.pool not in POOL_ORDER:
+            f.refuse(root, "supply.pool",
+                     "budget `%s` sizes pool `%s`, which no system's pools TU holds" % (kind.key, kind.pool))
+            continue
+        sizing.pools[kind.pool] = sizing.pools.get(kind.pool, 0) + total
+    kernel = manifest.kernel_cores or 1
+    sizing.pools["tasks"] = kernel + 1 + len(own)
+    sizing.pools["domains"] = 2 + len(own)
+    if translating:
+        # Root's, and for each task two spaces of tasks already dead that it may still hold: the
+        # one it borrows its block from and the one its entry thread's windows map.
+        sizing.pools["domains"] = sizing.pools["domains"] + 1 + 2 * len(own)
+    if manifest.cap_chunk is not None:
+        widest = max([sizing.init.get("cap_slots", 0)] + [task.budgets.get("cap_slots", 0) for task in own])
+        if manifest.cap_width_max is not None:
+            widest = min(widest, manifest.cap_width_max)
+        sizing.cap_dir = widest // manifest.cap_chunk
+    for name in POOL_ORDER:
+        ceiling = manifest.ceilings.get(name)
+        if ceiling is not None and sizing.pools.get(name, 0) > ceiling:
+            f.refuse(stating(root, name, own, defaults, reserve, manifest), "supply.ceiling",
+                     "the composition's budgets size the %s to %d, past its type ceiling %d (the %s)"
+                     % (name.replace("_", " "), sizing.pools[name], ceiling, CEILING_PROSE[name]))
+    return sizing
+
+
+def stating(root, pool, own, defaults, reserve, manifest):
+    """The node of the composition that states a budget sizing `pool`: the reserve's, else the
+    composition's defaults', else the first task's that states one; `root` where none does."""
+    keys = [kind.key for kind in manifest.budgets if kind.pool == pool]
+    for stated in [reserve, defaults] + [task.stated for task in own]:
+        for key in keys:
+            if key in stated:
+                return stated[key][1]
+    return root
+
+
+def check_supply(f, root, tasks, shared, chip, cluster, manifest, translating, region_size, defaults, cap_defaults,
+                 reserve, stdout):
+    def rounded(want):
+        if translating:
+            return region_size(want, chip, cluster, manifest)
+        return ram_size(want, manifest)
+
+    sizing = check_budgets(f, root, tasks, shared, manifest, translating, defaults, cap_defaults, reserve, rounded,
+                           stdout)
     bound = manifest.pools.get("KICKOS_MAX_SPAWN_GRANTS")
     for task in tasks:
-        held = held_by(task)
-        for kind, knob in budgets:
-            check_budget(f, task.node, task.label(), getattr(held, kind), kind, knob, manifest)
         for name, priority, stack, caps in threads_of(task, manifest):
             if bound is not None and caps is not None and caps > bound:
                 thread = ""
@@ -354,18 +606,7 @@ def check_supply(f, root, tasks, shared, chip, cluster, manifest, translating, r
                          "%s%s is spawned with %d capabilities, and one spawn delegates at most %d, so "
                          "KICKOS_MAX_SPAWN_GRANTS would have to grow" % (task.label(), thread, caps, bound))
         check_stack(f, task, manifest)
-
-    supply = manifest.pools.get("KICKOS_CAP_TABLE_SUPPLY")
-    if supply is not None and manifest.cap_reserved is not None:
-        task, peak = init_peak(tasks, manifest, Held.caps)
-        slots = manifest.cap_reserved + peak.caps()
-        if slots > supply:
-            f.refuse(root, "supply.cap-table",
-                     "the init's capability table needs %d slots%s: %d reserved, %d endpoints, %d "
-                     "notifications and their copies, and %d lines, and the board backs %d, so "
-                     "KICKOS_CAP_TABLE_SUPPLY would have to grow"
-                     % (slots, at_step(task), manifest.cap_reserved, peak.endpoints,
-                        peak.notifications + peak.copies, peak.lines, supply))
+        check_hosted_blocks(f, task, tasks, translating)
 
     for region in shared.values():
         if region.size is None:
@@ -379,22 +620,34 @@ def check_supply(f, root, tasks, shared, chip, cluster, manifest, translating, r
     reserved = init_reservations(tasks, shared, manifest)
     if translating:
         check_ranges(f, root, tasks, reserved, manifest)
-        return
+        return sizing
     windows = init_self_grants(tasks)
     if manifest.free_regions is not None and windows > manifest.free_regions:
         f.refuse(root, "supply.init-windows",
                  "the init self-grants %d regions, its private block, each watcher's status block and each "
                  "ring block, and root's region set, KICKOS_MPU_MAX_REGIONS less its static regions and its "
                  "stack, holds %d more" % (windows, manifest.free_regions))
-    slots = manifest.pools.get("KICKOS_RAM_OWNER_SLOTS")
-    seat = share_seat(manifest)
-    if manifest.enforced and slots is not None and len(reserved) + seat > slots:
-        f.refuse(root, "supply.reservations",
-                 "the init reserves %d arena blocks, its private block, each watcher's status block, each "
-                 "shared region, each ring block and each stack, beside the %d the kernel seats in root for "
-                 "the partition's user share, and the kernel records the owner of %d, so "
-                 "KICKOS_RAM_OWNER_SLOTS would have to grow" % (len(reserved), seat, slots))
     check_arena(f, root, shared, tasks, chip, cluster, manifest)
+    return sizing
+
+
+def check_hosted_blocks(f, task, tasks, translating):
+    """The ring block of a driver inside `task` is the task's own shared block, which a translating
+    build spends on its stack."""
+    held = [other for other in hosted_by(task, tasks) if ring_block(other) is not None]
+    limit = 1
+    if translating:
+        limit = 0
+    if len(held) > limit:
+        f.refuse(held[limit].nodes["driver"], "supply.hosted-block",
+                 "%s runs driver `%s`, whose ring block would be the task's shared block, and %s"
+                 % (held[limit].label(), held[limit].driver, hosted_block_prose(translating)))
+
+
+def hosted_block_prose(translating):
+    if translating:
+        return "on a build that translates that block is the task's stack and data"
+    return "the task has one, which another driver it runs takes"
 
 
 def check_ranges(f, root, tasks, reserved, manifest):
@@ -412,8 +665,11 @@ def check_ranges(f, root, tasks, reserved, manifest):
                  "block, each watcher's status block, each shared region, each ring block and each stack, "
                  "and a space holds %d, so KICKOS_ASPACE_RANGES would have to grow"
                  % (init, IMAGE_RANGES, seat, ranges))
-    for task in tasks:
+    for task in own_tasks(tasks):
         held = space_of(task)
+        for other in hosted_by(task, tasks):
+            if held is not None and space_of(other) is not None:
+                held = held + space_of(other) - IMAGE_RANGES
         if held is not None and held > ranges:
             f.refuse(task.node, "supply.ranges",
                      "%s's address space holds %d ranges, its image's %d, its data, each thread's stack and "
@@ -431,7 +687,9 @@ def space_of(task):
         return held
     if task.driver is not None:
         return None
-    held = IMAGE_RANGES + 1 + len(task.grants) + len(task.maps)
+    # The entry's stack is its data mapping; every other thread of its budget takes a stack.
+    threads = task.budgets.get("threads", 1)
+    held = IMAGE_RANGES + 1 + max(threads - 1, 0) + len(task.grants) + len(task.maps)
     if task.watches:
         held = held + 1
     return held
@@ -442,19 +700,6 @@ def ring_block(task):
     if task.catalogue is not None and isinstance(task.catalogue.block, int):
         return task.catalogue.block
     return None
-
-
-def at_step(task):
-    if task is None:
-        return ""
-    return " while it starts %s" % task.label()
-
-
-def check_budget(f, node, holder, used, kind, knob, manifest):
-    if knob in manifest.pools and used > manifest.pools[knob]:
-        f.refuse(node, "supply.budget",
-                 "%s holds %d %s, and %s lets one task hold %d, so it would have to grow"
-                 % (holder, used, kind, knob, manifest.pools[knob]))
 
 
 def check_stack(f, task, manifest):
@@ -486,7 +731,7 @@ def arena_blocks(tasks, shared, manifest):
               ("root's boot stack", manifest.root_stack, "KICKOS_ROOT_STACK_SIZE")]
     blocks.extend(init_reserved_blocks(tasks, shared, manifest))
     for task in tasks:
-        if task.entry and manifest.stack_stride is None:
+        if task.on_request or (task.entry and manifest.stack_stride is None):
             continue
         # arch_ram_alloc(KICKOS_USER_STACK_SIZE).
         for name, priority, stack, caps in threads_of(task, manifest):
@@ -531,6 +776,11 @@ def check_scheduling(f, top, tasks, stdout, manifest):
             f.refuse(task.nodes["core"], "scheduling.core",
                      "%s declares core %d, and the kernel build schedules %d core(s), 0 to %d"
                      % (task.label(), task.core, kernel, kernel - 1))
+        if task.hosted is None and task.core is None and kernel is not None and kernel > 1 and any(
+                other.hosted is task for other in tasks):
+            f.refuse(task.nodes["drivers"], "scheduling.hosted",
+                     "%s runs drivers as its threads on a build of %d kernel cores, so it declares the one "
+                     "`core` they and its entry run on" % (task.label(), kernel))
         if task.lines and task.core is None and kernel is not None and kernel > 1:
             f.refuse(task.nodes["lines"], "scheduling.line-core",
                      "%s takes a line on a build of %d kernel cores, so it declares the one `core` its "
@@ -544,14 +794,39 @@ def check_scheduling(f, top, tasks, stdout, manifest):
                      % (console.serves[0], console.label()))
             console = None
     for task in tasks:
+        if task.catalogue is not None and task.catalogue.console and task.hosted is not None:
+            f.refuse(task.nodes["driver"], "scheduling.console-driver",
+                     "%s runs driver `%s`, which takes the console, and the kernel closes the standard "
+                     "output of every thread of the task serving the console: it runs as a task of its own"
+                     % (task.label(), task.driver))
+            continue
+        if task.catalogue is not None and task.on_request:
+            if not task.catalogue.console or task.catalogue.windows or task.catalogue.lines:
+                f.refuse(task.nodes["driver"], "scheduling.console-driver",
+                         "%s runs driver `%s` on request, and a driver started on request takes the console "
+                         "and holds no window and no line" % (task.label(), task.driver))
+            continue
         if task.catalogue is not None and task.catalogue.console and stdout is not None and task is not stdout:
             f.refuse(task.nodes["driver"], "scheduling.console-driver",
                      "%s runs driver `%s`, which takes the console, and `stdout` does not name its endpoint"
                      % (task.label(), task.driver))
+    requested = [task for task in tasks if task.on_request and task.catalogue is not None
+                 and task.catalogue.console]
+    if requested and stdout is not None and stdout != "kernel":
+        f.refuse(requested[0].nodes["driver"], "scheduling.console-driver",
+                 "%s runs driver `%s` on request, and the console is %s's from the start: one task holds the "
+                 "console at a time" % (requested[0].label(), requested[0].driver, stdout.label()))
+    for extra in requested[1:]:
+        f.refuse(extra.nodes["driver"], "scheduling.console-driver",
+                 "%s runs driver `%s` on request, and %s could hold the console beside it: one task holds the "
+                 "console at a time" % (extra.label(), extra.driver, requested[0].label()))
     if console is None:
         return
+    first = console
+    if console.hosted is not None:
+        first = console.hosted
     for task in tasks:
-        if task.entry and task.index < console.index:
+        if task.entry and task.index < first.index:
             f.refuse(task.node, "scheduling.stdout-order",
                      "%s writes standard output and is declared before %s, which serves `stdout`"
                      % (task.label(), console.label()))

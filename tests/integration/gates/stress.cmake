@@ -19,7 +19,19 @@ if(KICKOS_ARCH STREQUAL "sim")
     COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_stress.sh" "$<TARGET_FILE:stress>")
   set_tests_properties(sim_stress PROPERTIES TIMEOUT 60)
 endif()
-kickos_add_qemu_test(TARGET stress SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_stress.sh")
+# Above one core a host CPU hog preempts the vCPU holding the kernel lock and the others wait on
+# it, so a loaded run has taken 178 s on rv64 and 610 s on arm64. The floor yields to a larger
+# QEMU_TIMEOUT.
+set(_stress_bound)
+if(KICKOS_NUM_CORES GREATER 1)
+  set(_stress_bound 1400)
+  if(NOT "$ENV{QEMU_TIMEOUT}" STREQUAL "" AND "$ENV{QEMU_TIMEOUT}" GREATER _stress_bound)
+    set(_stress_bound "$ENV{QEMU_TIMEOUT}")
+  endif()
+  set(_stress_bound BOUND ${_stress_bound})
+endif()
+kickos_add_qemu_test(TARGET stress SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_stress.sh"
+  ${_stress_bound})
 
 # Threads on every core, on THIS image and not the smallest one that boots the chip: the soak
 # holds more runnable threads than the machine has cores for its whole run, so a core running

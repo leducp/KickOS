@@ -8,6 +8,7 @@
 #include <kickos/ampshare.h>
 #include <kickos/arch/arch.h>
 #include <kickos/domain.h> // arch_domain_static_regions
+#include <kickos/image.h>
 #include <kickos/kernel.h> // KICKOS_ASSERT
 
 #include <span>
@@ -69,12 +70,10 @@ namespace kickos
         return false;
     }
 
-#if KICKOS_HAVE_ASPACE
-    bool grant_window_aperture_ok(uintptr_t base, size_t size)
+    bool grant_window_in_aperture(uintptr_t base, size_t size)
     {
-        size_t const g = arch_aspace_granule();
         uintptr_t const last = base + size - 1u;
-        if (size == 0 or last < base or (base % g) != 0 or (size % g) != 0)
+        if (size == 0 or last < base)
         {
             return false;
         }
@@ -86,6 +85,17 @@ namespace kickos
             }
         }
         return false;
+    }
+
+#if KICKOS_HAVE_ASPACE
+    bool grant_window_aperture_ok(uintptr_t base, size_t size)
+    {
+        size_t const g = arch_aspace_granule();
+        if ((base % g) != 0 or (size % g) != 0)
+        {
+            return false;
+        }
+        return grant_window_in_aperture(base, size);
     }
 
 #endif
@@ -133,7 +143,8 @@ namespace kickos
             {
                 return false;
             }
-            if (not arch_mpu_region_encodable(base, size))
+            if (not arch_mpu_region_encodable(base, size)
+                or not grant_window_in_aperture(base, size))
             {
                 return false;
             }
@@ -197,12 +208,33 @@ namespace kickos
         {
             KICKOS_ASSERT(not grant_hits_reserved(arch_ram_base(), ram_size));
         }
-        struct arch_mpu_region statics[KICKOS_MPU_MAX_REGIONS];
-        std::span const region_set{statics,
-                                   arch_domain_static_regions(statics, KICKOS_MPU_MAX_REGIONS)};
-        for (struct arch_mpu_region const& r : region_set)
+        // An aperture over grantable RAM would admit that RAM as a device window.
+        for (struct arch_reserved_block const& a : arch_window_apertures())
         {
-            KICKOS_ASSERT(not grant_hits_reserved(r.base, r.size));
+            uintptr_t const last = a.base + a.size - 1u;
+            KICKOS_ASSERT(a.size != 0 and last >= a.base);
+            if (ram_size != 0)
+            {
+                KICKOS_ASSERT(not grant_ranges_overlap(a.base, last, arch_ram_base(),
+                                                       arch_ram_base() + ram_size - 1u));
+            }
+        }
+        // Every image's static regions, as above.
+        for (size_t image = 0; image < image_count(); image++)
+        {
+            struct arch_mpu_region statics[KICKOS_MPU_MAX_REGIONS];
+            std::span const region_set{
+                statics, arch_domain_static_regions(statics, KICKOS_MPU_MAX_REGIONS, image)};
+            for (struct arch_mpu_region const& r : region_set)
+            {
+                KICKOS_ASSERT(not grant_hits_reserved(r.base, r.size));
+                for (struct arch_reserved_block const& a : arch_window_apertures())
+                {
+                    KICKOS_ASSERT(r.size == 0
+                                  or not grant_ranges_overlap(a.base, a.base + a.size - 1u,
+                                                              r.base, r.base + r.size - 1u));
+                }
+            }
         }
     }
 }

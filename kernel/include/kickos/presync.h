@@ -46,8 +46,10 @@ namespace kickos
     enum class PresyncStage : uint8_t
     {
         NONE,
-        // A reservation's frames, cleared outside the lock and then reserved.
+        // A frame run's frames, cleared outside the lock and then handed to the run.
         CLEAR,
+        // A kos_ram_alloc reservation's frames, cleared outside the lock and then reserved.
+        RESERVE,
         // A new space's copy of the pristine image of the static data.
         IMAGE
     };
@@ -61,6 +63,10 @@ namespace kickos
         arch_phys_addr_t staged = 0;
         uint32_t staged_pages = 0;
         PresyncStage stage = PresyncStage::NONE;
+        // The image an IMAGE stage copies the pristine data of, and the declaration whose next
+        // space it is for, plus one.
+        uint8_t staged_image = 0;
+        uint8_t staged_decl = 0;
         // Every granule of an IMAGE stage holds its source's bytes.
         bool staged_full = false;
         // The pool had no run for the stage the call needed: the locked pass fails rather than
@@ -73,6 +79,9 @@ namespace kickos
         bool has_windows = false;
         kos_thread_params params = {};
         kos_window windows[KICKOS_MAX_THREAD_WINDOWS] = {};
+        // A task create's, read the same way.
+        bool has_task_params = false;
+        kos_task_params task_params = {};
         // Set when the first span is noted, cleared by a completed call of another thread
         // that mapped a noted frame: only a live record excuses the locked pass.
         bool live = false;

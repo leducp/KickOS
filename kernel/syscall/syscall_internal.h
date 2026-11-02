@@ -188,6 +188,16 @@ namespace kickos
     // release it before the resume barrier; an outer lock would livelock ARM.
     // Untimed calls use KOS_TIMEOUT_NONE.
     int endpoint_create(uint32_t* out_cap);
+    // KOS_SYS_ENDPOINT_BADGE: a SIGNAL copy of `src_cap`, TRANSFER kept where it held it,
+    // carrying `badge`. The source must hold SIGNAL and HANDOUT, which no badged copy holds. Takes
+    // its own IrqLock.
+    int endpoint_badge(Thread* c, uint32_t src_cap, uint32_t badge, uint32_t* out_cap);
+    // The badge of the capability `cap` names in c's table. `cap` must have resolved in the
+    // same IrqLock hold.
+    inline uint32_t sender_badge(Thread const* c, uint32_t cap)
+    {
+        return cap_badge(*cap_slot(c->caps, cap & KCAP_INDEX_MASK));
+    }
 #if KICKOS_AMP_NODE
     // An endpoint whose receiver runs in another node's kernel, seated at boot. Caller holds
     // IrqLock.
@@ -222,14 +232,32 @@ namespace kickos
         t->call_state = CALL_REPLY_WAIT;
     }
 
+    // kos_mem_flags -> the ARCH_MPU_* memory-type bits, ORed into *attr. False on an
+    // undefined bit: refused (-KOS_EINVAL), never masked off.
+    inline bool mem_flags_to_attr(uintptr_t flags, uint32_t* attr)
+    {
+        if ((flags & ~static_cast<uintptr_t>(KOS_MEM_FLAGS_ALL)) != 0)
+        {
+            return false;
+        }
+        if ((flags & static_cast<uintptr_t>(KOS_MEM_NOCACHE)) != 0)
+        {
+            *attr |= ARCH_MPU_NOCACHE;
+        }
+        return true;
+    }
+
     // --- Thread lifecycle (syscall_thread.cc) ----------------------------------
     // Same minting shape as the cap creators above: *out_thread is written on EVERY path
     // (KOS_THREAD_NONE on failure).
     int thread_create_call(kos_thread_params const* p, kos_thread_t* out_thread);
-    // Creates an empty task holding a shared data region, gated on the creator being the caller.
-    // *out_task is written on EVERY path (KOS_TASK_NONE on failure). Takes its own IrqLock.
-    int task_create_call(void* mem_base, size_t mem_size, uint32_t mem_attr,
-                         kos_task_t* out_task);
+    // Creates an instance of program `prog` from the caller's struct kos_task_params at `params`
+    // and starts its entry thread. *out_task is written on EVERY path. Takes its own IrqLock,
+    // which a console create drops to drain the console's kernel writers.
+    int task_create_call(uint32_t prog, uintptr_t params, kos_task_t* out_task);
+    // Mints a program capability for the program named at `name`. *out_prog is written on EVERY
+    // path. Takes its own IrqLock.
+    int program_find_call(uintptr_t name, uint32_t* out_prog);
 
 #if KICKOS_PRESYNC
     // Under the kernel lock, on a spawn's first round: its parameters and window list into the
@@ -238,7 +266,9 @@ namespace kickos
     // Under the kernel lock: what the spawn or the task creation will owe a sync and stage, for
     // a call it would not refuse at once (aspace.h, presync_begin).
     void spawn_presync_plan();
-    void task_create_presync_plan(void* mem_base, size_t mem_size, uint32_t mem_attr);
+    // A task create's, as the spawn's two above, `prog` the program it names.
+    void task_spawn_presync_enter(uintptr_t params);
+    void task_spawn_presync_plan(uint32_t prog);
 #endif
 
     // Both BLOCK, so like the endpoint calls they must be reached with no caller-held
@@ -261,14 +291,11 @@ namespace kickos
 #if KICKOS_KERNEL_CORES > 1
     // Placement, and the task's core read: each answers a mask, which cannot reach bit 31, or
     // -KOS_E*. The thread call sets the mask it answers, or reads it for KOS_AFFINITY_QUERY,
-    // over a thread of the caller's task; the task read reaches what task_sched_grant reaches,
+    // over a thread of the caller's task; the task read reaches a task the caller created,
     // KOS_TASK_NONE naming the caller's own task.
     int thread_affinity_call(kos_thread_t thread, uint32_t core_mask);
     int task_cores(kos_task_t task);
 #endif
-    // The scheduling grant is total over every posture: at one kernel core it carries its
-    // ceiling half only.
-    int task_sched_grant(kos_task_t task, uint8_t prio_ceiling, uint32_t core_mask);
     // The caller's own base priority. Takes the whole argument word, so a value that would
     // truncate into range is refused rather than read.
     int thread_set_priority(uintptr_t priority);

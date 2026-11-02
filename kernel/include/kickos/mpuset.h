@@ -298,13 +298,14 @@ namespace kickos
             encode();
         }
 
-        // The linker script's regions, encodable by construction and never more than a fresh
-        // set holds.
-        void append_statics()
+        // The linker script's regions, image `image`'s window among them, encodable by
+        // construction and never more than a fresh set holds.
+        void append_statics(size_t image)
         {
             count_ = static_cast<uint8_t>(
                 count_
-                + arch_domain_static_regions(&regions_[count_], KICKOS_MPU_MAX_REGIONS - count_));
+                + arch_domain_static_regions(&regions_[count_], KICKOS_MPU_MAX_REGIONS - count_,
+                                             image));
             encode();
         }
 

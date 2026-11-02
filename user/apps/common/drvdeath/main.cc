@@ -30,6 +30,7 @@
 // ends the task while the window is still held: the reclaim writes the record, and a writer
 // parked across that end lands its line once, after it.
 
+#include <kickos/apps/peer_run.h>
 #include <kickos/config/priorities.h> // KICKOS_PRIO_MIN
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -98,13 +99,6 @@ namespace
     void blocked_writer(void*)
     {
         kos::print(BLOCKED_LINE);
-    }
-
-    // Its record is held for a driver that no longer receives, so only the reclaim writes it,
-    // and it writes it before it wakes anyone.
-    void fault_now(void*)
-    {
-        __builtin_trap();
     }
 
     // The kill gate is PARENTHOOD, so witnessing a refusal needs a live thread this thread
@@ -210,9 +204,9 @@ namespace
 }
 #endif
 
-extern "C" void drvdeath_main(kos_self_t const* self)
+int main(int, char**)
 {
-    kos_cap_t const events = kos_grant_notify(self, "/init/events");
+    kos_cap_t const events = kos_grant_notify("/init/events");
     if (kos_notify_bind(events) != 0)
     {
         kos::print("[drvdeath] ERROR: no /init/events to wait the driver's death on\n");
@@ -240,24 +234,27 @@ extern "C" void drvdeath_main(kos_self_t const* self)
     // The receiver runs above main and has exited by now, and its task lives on: a send would
     // park, so a send of no deadline and a non-blocking write take nothing, at once.
     int32_t const nowait_rc = kos_send(KOS_CAP_STDOUT, "x", 1, 0);
-    int const nonblock_on = kos_task_nonblock(KOS_NONBLOCK_SET);
+    kickos::stdout_nonblock() = 1u;
     kickos::WriteResult const tried = kickos::stdout_write("x", 1);
-    int const nonblock_off = kos_task_nonblock(KOS_NONBLOCK_CLEAR);
+    kickos::stdout_nonblock() = 0u;
     // A blocking writer parks: it outranks main, so it is in its send when this returns.
     kos::thread::Handle const writer =
         kos::thread::create(blocked_writer, nullptr, "dwriter", WRITER_PRIO);
     int const parked_rc = writer.join(WRITER_PARKED_US);
-    // A fault ends its thread's task, so the faulter gets one of its own.
-    kos_task_t fault_task = KOS_TASK_NONE;
-    int faulted_rc = kos_task_create(nullptr, 0, 0, &fault_task);
-    if (faulted_rc == 0)
+    // A fault ends its thread's task, so the faulter is a program of its own.
+    int faulted_rc = -KOS_ENOENT;
+    kos_program_t fault_prog = KOS_CAP_NONE;
+    if (kos_program_find("drvdeath_fault", &fault_prog) == 0)
     {
-        kos::thread::Handle const faulter =
-            kos::thread::create(fault_now, nullptr, "dfault", WRITER_PRIO, KOS_POLICY_FIFO, 0,
-                                nullptr, 0, nullptr, 0, nullptr, 0, nullptr,
-                                0, 0, nullptr, fault_task);
-        faulted_rc = faulter.join(WRITER_DONE_US);
-        (void)kos_task_slay(fault_task, 0);
+        kos_task_params fp = {};
+        kos_task_t fault_task = KOS_TASK_NONE;
+        faulted_rc = kickos::apps::create_peer(fault_prog, fp, &fault_task);
+        if (faulted_rc == 0)
+        {
+            int status = 0;
+            faulted_rc = kickos::apps::wait_dead(fault_task, &status, WRITER_DONE_US / 1000u);
+        }
+        (void)kos_handle_close(fault_prog);
     }
     // The receiver is gone but its task is not, so the console must still be USER_OWNED.
     // Absent on the wire == correct.
@@ -283,8 +280,7 @@ extern "C" void drvdeath_main(kos_self_t const* self)
     }
 
 #if defined(KICKOS_SIMCON_WINDOW_THREAD) && KICKOS_SIMCON_WINDOW_THREAD
-    if (nowait_rc != -KOS_ETIMEDOUT or nonblock_on != 1 or tried.sent != 0u
-        or tried.error != -KOS_ETIMEDOUT or nonblock_off != 0)
+    if (nowait_rc != -KOS_ETIMEDOUT or tried.sent != 0u or tried.error != -KOS_ETIMEDOUT)
     {
         kos_print("[drvdeath] ERROR: a write of no wait was not refused at once by a live "
                   "driver with no receiver\n");

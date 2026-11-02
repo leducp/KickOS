@@ -10,7 +10,7 @@ accepts: [no_protection, no_privilege_split]
 
 tasks:
   - name: main
-    entry: kickos_main
+    program: main
     stack: 2048
     priority: 2
     ceiling: 31

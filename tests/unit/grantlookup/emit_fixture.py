@@ -42,7 +42,7 @@ def main(argv):
         manifest = os.path.join(scratch, "manifest-%s.yaml" % fixture)
         write(manifest, MANIFESTS[golden])
         composition = os.path.join(scratch, "%s.yaml" % fixture)
-        write(composition, mutate(read(os.path.join(SYSTEMS, golden)), edits)[0])
+        write(composition, mutate(read(os.path.join(SYSTEMS, golden)), list(edits))[0])
         report, source = emit.emit(composition, manifest)
         for refusal in report.refusals:
             print(refusal, file=sys.stderr)

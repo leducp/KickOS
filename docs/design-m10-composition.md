@@ -86,7 +86,9 @@ metadata declares, as `lines: { irq: /dev/usic0/sr1 }`.
 | `exits_on_fault` | boolean | yes | whether `arch_shutdown` ends the run with a status the harness reads, so a fault exits rather than blinking the LED |
 | `cpu` | string | no | the core the boot banner names, where no compiler flag names one |
 | `stack_limit` | boolean | no | whether the core checks each stack pointer against a limit register (ARMv8-M Mainline's `PSPLIM` and `MSPLIM`), refused on a chip whose `arch` is not `armv7m`; absent is read as `false` |
+| `one_task` | boolean | no | whether the flash holds the kernel and one task, so a packaged driver runs as threads of the task its composition lists it under, the kernel builds no driver task start and the init builds no watch and no shared region; generated as `KICKOS_CHIP_ONE_TASK`; absent is read as `false` |
 | `devices` | mapping | yes | one entry per device, keyed by its name |
+| `apertures` | list | on a part with a core whose unit protects memory without translating | the bus windows a device window lies in, each a `window` (`[base, size]`) and its `ref`; none overlaps a `memory` entry, and every window of a device the kernel does not hold lies inside one |
 | `memory` | mapping | on a part with a core that does not translate | ordinary memory windows -- on-chip RAM, flash, apertures -- each a `size` and either a `base` or, where clusters' maps differ, `at`, one base per cluster, or neither for the arena of a part the host runs, which the host places and the link has no region for, and `cluster` on an entry one cluster alone reaches; for the part, or each of its clusters, that does not translate, exactly one entry it reaches is marked `arena: true`, the RAM its user arena is carved from |
 | `pins` | mapping | no | each pin's functions |
 | `interrupts` | mapping | yes | `count`, the controller's line count; `soft_only_from`, the first line no hardware raises; `free_from`, the first line no device uses; `vectors`, the RX's INTB table size; each a number or `{ value: <number>, ref: <ref> }`. On a multi-architecture part the lines are source numbers, and the generator adds the built cluster's `line_offset` to each; every device's line is below `count` |
@@ -189,21 +191,35 @@ both list.
 | `tasks` | list | yes | in declaration order; ready tasks start in that order |
 
 A composition naming no board takes what it leaves out of `cluster`, `heap` and `accepts`, and an
-`entry` task's `stack`, from the default composition of the build's board, the stack being that
-of the default's own `entry` task. What it states is admitted as it is under a named board, an
+`program` task's `stack`, from the default composition of the build's board, the stack
+being that of the default's own `program` task. What it states is admitted as it is under a named board, an
 empty `accepts` included, so the one file states only what its app adds to every board's default.
-An `entry` task's `ceiling` is never taken from the default: every such task states its own.
+A `program` task's `ceiling` is never taken from the default: every such task states its own.
 
-A task has a `name`; exactly one of `entry` (a symbol in the user's sources) and `driver` (a
-driver the package ships); `stack` and `priority`; on an `entry` task `ceiling`, the highest
+A task has a `name`; exactly one of `program` (a
+CMake target, an executable whose `main` is the task's entry; `main` names the executable
+linking the system, or the target `kickos_compose(... DEFAULT <target>)` names) and `driver` (a
+driver the package ships); `stack` and `priority`; on a `program` task `ceiling`, the highest
 priority the task's threads may take, at least its `priority` and within the kernel build's range,
 a packaged driver's being derived instead; optionally `core`; `devices`, a list of
 device paths, each a register window or a port range, so one task can hold a DMA engine beside
 its peripheral; `lines`, a mapping from the names the task looks up to line paths; `serves`, an
 endpoint path or a crossing `/amp/<port>` the partition names this node's; `uses`, endpoint paths
-or crossings; `maps`, shared region paths each `ro` or `rw`;
+or crossings, a use of a bus service written `{ path: <path>, slots: [<slot>...] }` with the
+device slots it reaches; `maps`, shared region paths each `ro` or `rw`;
 `watches`, task names; `authority`, the kernel authorities it holds; `accepts`, the grant-level
-limitations it runs with; and `restart: { max: N }`. A task name, a line name, a role name and a
+limitations it runs with; `restart: { max: N }`; and `start`, `init` (the default: the init starts
+it) or `on_request`: a creator holding `AUTH_TASKS` starts it with `kos_task_create`, and it holds
+only what that creator passes, so it takes no `uses`, `maps`, `devices`, `lines`, `watches` or
+`restart` and is never `ends`. The one `driver` it may run takes the console and holds no window and
+no line, and `serves` the endpoint its creator passes it: the kernel console serves until the
+create publishes the declared console through that capability, `stdout` stays `kernel`, and no
+other task takes the console beside it. A `program` may `serves` too: the create takes the
+endpoint from the creator's capabilities, and `kos_task_watch` reports the task's first receive
+on it. A task with neither `restart` nor
+`start: on_request` starts once: `kos_task_create` answers `-KOS_EPERM` for a second start, on
+every board. Where `.data` loads where it runs (RV32, the ESP32), only a task that may start again
+keeps a copy of its image's `.data`. A task name, a line name, a role name and a
 driver name are lowercase identifiers, `[a-z][a-z0-9_]*`; `core` is below 32, the table's
 `core_mask` being 32 bits, and every other integer is bounded by the width of the table field that
 carries it.
@@ -229,11 +245,29 @@ the driver's notification among them, and so the thread that receives on its end
 it uses a notification, its ring block, a power of two, the block's memory type, `BLOCK_CACHE
 cached` or `uncached`, and its initialiser, its endpoint posture, its readiness barrier and latch,
 whether it takes the console, `START`, the C function the init calls to bring it up, at which a
-driver task's `entry` points, and `CLIENT`, the libraries a task using it links, each a target the
-manifest's export refuses the driver for lacking. The build emits it twice, as the driver's
+driver task's `entry` points, `CLIENT`, the libraries a task using it links, each a target the
+manifest's export refuses the driver for lacking, and `SLOTS`, the device slots a bus service keys
+on each client's badge, which makes every use of it name its slots. The build emits it twice, as the driver's
 generated `Descriptor` and as its entry in the manifest's catalogue, since a value the build reads
 is never read back out of C. A driver task's `devices` bind in
 order to its window roles, as many as it declares, and its `lines` name exactly its line roles.
+
+A `program` task may list packaged drivers under `drivers`, each a mapping of `driver`, `serves`
+and `priority` and, as a driver task states them, `devices`, `lines`, `accepts` and `name`. Such
+a driver runs as threads of that task, on its core, which a build of more than one kernel core
+makes the task declare. Every thread of the driver runs within the task's `ceiling`, at any
+priority: the task's entry runs once the driver has taken a probe on its endpoint. The task holds the authority the bring-up
+needs: `memory` for the driver's windows and `irq` for its lines, beside what the driver's
+descriptor states. The ring block of one listed driver is the task's shared block, so a task lists
+at most one driver with a ring block, and none on a build that translates. A driver that takes the
+console runs as a task of its own, the kernel closing the standard output of every thread of the
+task serving the console. Its endpoint is used by that task alone. A
+listed driver has no `restart` and is never watched or `ends`: it lives and dies with its task,
+and the end of any of its threads that waits on one of its roles, by any cause, fails the task with
+`KOS_EXIT_FAULT`.
+On a chip whose file states `one_task: true`, every packaged driver is listed this way, and a
+driver declared as a task of its own is refused. So are `watches` and `shared` there, since each
+needs a second task.
 
 `stdout` names the endpoint served by a packaged driver that takes the console, or `kernel`. The
 board's console device is granted to that task alone, and to none while `stdout` is `kernel`.
@@ -297,8 +331,8 @@ contract between the two, a missing one being a link error naming it. Linking no
 is a link error too, the kernel referencing a symbol whose name is the message, and linking two
 is a duplicate symbol, so no system boots by accident. The checks that need the linked image
 become linker-script `ASSERT`s the system target brings, a post-build step being unable to ride a
-usage requirement. The file names a packaged entry, `entry: kickos_main`, which calls
-`main(argc, argv)`, runs `main` at priority 2 under `ceiling: 31`, so `main` may spawn threads
+usage requirement. The file names `program: main`, the executable's own `main`, which runs at priority 2
+under `ceiling: 31`, so `main` may spawn threads
 above itself, and declares `ends:` on that task. It is minimal, the kernel console and `main`,
 so one file fits every preset of its board, and it is the file a user copies to start
 composing. A CI gate admits every board's default against that board's manifest.
@@ -310,16 +344,17 @@ Each refusal names the rule it breaks, the rules of each class listed after it:
 - **Form**: an unknown field, an ambiguous scalar, a missing required field, a version the tool
   does not know. `form.*`.
 - **Order**: a `uses` or `watches` naming something not declared above it, so references point
-  backward and no dependency graph is solved; an `ends` naming no task. `order.undeclared`,
-  `order.forward`.
+  backward and no dependency graph is solved; an `ends` naming no task; a use of a driver listed
+  under another task's `drivers`. `order.undeclared`, `order.forward`, `order.hosted`.
 - **Restart**: `restart` on the task `ends` names, whose one exit ends the system, and on a
   packaged driver of a kernel build without fault isolation, the manifest's `protection` stating
   which, where a failing driver thread's trap ends the system. `restart.ends`,
   `restart.no-isolation`.
 - **Ownership**: a window, a line or a gate around them held twice; a kernel-owned device named
-  in a grant; the board's console device granted to a task `stdout` does not name. Within a chip
-  file, no window or port range overlaps another. `ownership.device`, `ownership.line`,
-  `ownership.gate`, `ownership.kernel`, `ownership.console`, `chip.overlap`.
+  in a grant; the board's console device granted to a task `stdout` does not name; a device slot
+  of a bus two of its clients name. Within a chip file, no window or port range overlaps another.
+  `ownership.device`, `ownership.line`, `ownership.gate`, `ownership.kernel`, `ownership.console`,
+  `ownership.slot`, `chip.overlap`.
 - **Encoding**: a table holding more than the 65,535 entries of a kind a 16-bit index reaches,
   or a value that reads as none where none may stand; a window the unit cannot encode and more
   windows for a task than `KICKOS_MAX_THREAD_WINDOWS`, its region budget, a watcher's
@@ -338,26 +373,31 @@ Each refusal names the rule it breaks, the rules of each class listed after it:
   refusal naming the Kconfig knob that would have to grow; a task's capability-bearing grants,
   all delegated at its spawn, against `KICKOS_MAX_SPAWN_GRANTS`; on a region board the init's
   self-grants against what root's region set holds past its static regions and its stack, and
-  its reservations against `KICKOS_RAM_OWNER_SLOTS` where the build enforces its unit; on a
+  its reservations against the RAM owner table size where the build enforces its unit; on a
   translating board each address space's range records, the init's and each task's, against
   `KICKOS_ASPACE_RANGES`; on a region board, the init's blocks, shared regions, ring blocks and
   stacks against the RAM the arena is carved from, the link checking the arena itself.
   `supply.pool`, `supply.budget`, `supply.cap-table`, `supply.spawn-grants`, `supply.stack`,
-  `supply.init-windows`, `supply.reservations`, `supply.ranges`, `supply.arena`, `supply.size`.
+  `supply.init-windows`, `supply.reservations`, `supply.ranges`, `supply.arena`, `supply.size`;
+  a second driver with a ring block under one task's `drivers`, or one on a build that
+  translates, `supply.hosted-block`; on a chip that holds one task, a second task beside the
+  init, a task's `watches` or a `shared` region, `supply.one-task`.
 - **Scheduling**: a task, or a packaged driver's thread at its priority plus its offset, outside
   the kernel build's priority range; a `ceiling` below its task's `priority` or outside that
   range, and one on a packaged driver, whose ceiling is its priority plus its threads' highest
   offset; a declared `core` the kernel build lacks; a task taking a
   line not on exactly one core; `stdout` naming an endpoint no console driver serves, or a console
-  driver whose endpoint `stdout` does not name; a task that writes standard output declared
+  driver whose endpoint `stdout` does not name, or one listed under a task's `drivers`; a task that writes standard output declared
   before the task `stdout` names; the init's priority, stated or defaulted, outside the kernel
   build's range. A thread at or above the init's priority that never blocks starves the init,
   which is the user's choice: the init then handles no death and does not end the system. A
   stdout writer above the driver thread receiving on the console's endpoint is the user's choice
   too: the rendezvous has no priority inheritance, so each of its writes waits until nothing
   above that receiver is ready, and it costs that writer alone the latency.
+  A driver listed under a task's `drivers` with a thread at or below that task's priority or
+  above its ceiling, or listed by a task stating no `core` on more than one kernel core.
   `scheduling.priority`, `scheduling.ceiling`, `scheduling.core`, `scheduling.line-core`, `scheduling.console-driver`,
-  `scheduling.stdout-order`, `scheduling.init-priority-range`.
+  `scheduling.stdout-order`, `scheduling.init-priority-range`, `scheduling.hosted`.
 - **Memory type**: a shared region's `cache` against who shares it, as the composition section
   states. `memory.uncached`, `memory.cached-incoherent`.
 - **Partition**: the node compositions admitted together by the partition build
@@ -372,7 +412,8 @@ Each refusal names the rule it breaks, the rules of each class listed after it:
 The descriptions' own rules are `chip.*` and `board.*`, a name that resolves to nothing or to two
 things is `name.*`, a packaged driver's roles and authority are `driver.*`, a port range among
 them included, since a driver's descriptor takes every window role as a device window
-(`driver.port-window`), and a manifest's own are `manifest.*`.
+(`driver.port-window`), and a driver task on a chip that holds one task (`driver.one-task`), and a
+manifest's own are `manifest.*`.
 
 ## The emitted table
 
@@ -401,20 +442,28 @@ task      name u32, block u32 (a packaged driver's ring block in bytes, or 0),
           task's `ceiling`, or a packaged driver's priority plus its highest thread offset),
           stack u32, priority u8, restart_max u8,
           flags u16 (console: a packaged driver that takes the console; block_uncached: its ring
-          block is self-granted KOS_MEM_NOCACHE),
+          block is self-granted KOS_MEM_NOCACHE; on_request; hosted: a driver listed under
+          task `host`'s `drivers`, placed after every task, with no declaration; program: its
+          entry is a program's `main(argc, argv)`),
           core_mask u32, authority u32 (the word the spawn seats),
           first_grant u16, grant_count u16, cap_grant_count u16,
           first_use u16, use_count u16      -> ref[]: the tasks whose endpoints it uses
           first_watch u16, watch_count u16  -> ref[]: the tasks it watches
+          host u16 (a hosted driver's task, or none),
+          program u32 (a program task's program, a string the init finds it by, or
+          0xFFFFFFFF for the executable's own)
 
 grant     kind u8 (endpoint_serve, endpoint_use, notification, window, ports, region, line,
-          status), flags u8 (ro, uncached), cap_slot u16 (the slot a capability-bearing grant
+          status, port, endpoint_hosted: the endpoint of hosted driver `target`, passed to its
+          host), flags u8 (ro, uncached; a packaged driver's line: level), cap_slot u16 (the slot a capability-bearing grant
           lands at, or none), name u32 (what the task looks it up by), path u32,
           target u16 (the served endpoint's task, or the region), window u16 (a window-kind
           grant's place in the spawn's window list, or none),
           base u64 (a window's PHYSICAL base, or a port range's first port),
           size u32 (bytes, or ports), line_index u16, line u16 (the source number the kernel
-          takes), priv_first u16, priv_count u16 -> priv[]: the privileged registers inside it
+          takes), priv_first u16, priv_count u16 -> priv[]: the privileged registers inside it,
+          badge u32 (an endpoint use's badge, a bus client's slot mask, which the init mints the
+          delegated copy with; 0 for none)
 
 ref       task u16
 priv      offset u16, width u8 (1, 2 or 4 bytes): left out of the task's direct reach; the
@@ -447,7 +496,7 @@ refused.
 
 A task's grants are contiguous and in declaration order: the order its entry writes its fields
 in, and each field's items in theirs. `serves` is an endpoint served, each of `uses` an endpoint
-used whose target is the serving task, `watches` one notification named `/init/events` and the
+used whose target is the serving task and whose badge is the slot mask its `slots` name, `watches` one notification named `/init/events` and the
 read-only status window `/init/status`, the watcher's own status block, a crossing served or used a
 `port` grant whose flags are the right the init delegates from the port the kernel seated in root,
 `KOS_CAP_WAIT` to its server and `KOS_CAP_SIGNAL` to a user, its base the port and its target the
@@ -492,12 +541,12 @@ installed beside the package's CMake files, where `kickos_compose` finds it.
 | `abi` | `table`, the version of the emitted table's layout; `cap_reserved`, the capability indices the kernel reserves in every table; `symbol_prefix`, what the link spells before a C name, `""` or rx-elf's `_` | declared in `cmake/manifest.cmake`, `KICKOS_CAP_FIRST_DYNAMIC` in `cmake/cap_geometry.cmake`, and the prefix in the toolchain file of an ABI that adds one |
 | `target` | board, chip, arch; cores, kernel cores, isolated cores; on an AMP node, its node, the partition's nodes, its ports and the bytes of its user share | the resolved Kconfig, and the node and port list as `tools/kconfig/genconfig.py` derives them |
 | `protection` | whether the build enforces its unit; the window rule, `pow2` (a power of two, naturally aligned), `granule` (a multiple of the smallest window, 16 bytes on a region build whose seam states no unit) or `none` (a translating build, whose page is its chip file's), and the smallest window, as the seams state them whether or not the build enforces, the kernel rounding every arena block and checking every device window by them either way; `KICKOS_MAX_THREAD_WINDOWS` as `thread_windows`; whether a fault ends its task rather than the system, as `fault_isolation` | `KICKOS_MEMORY_ENFORCED`, `KICKOS_FAULT_ISOLATION`, `KICKOS_HAVE_ASPACE`, the chip file's region rule, and the resolved Kconfig |
-| `pools` | every `KICKOS_MAX_*` but `KICKOS_MAX_THREAD_WINDOWS`, every `KICKOS_TASK_*_BUDGET`, `KICKOS_MAX_SPAWN_GRANTS`, `KICKOS_CAP_TABLE_SUPPLY`, `KICKOS_RAM_OWNER_SLOTS`, `KICKOS_ASPACE_RANGES` | the resolved Kconfig |
+| `pools` | every `KICKOS_MAX_*` but `KICKOS_MAX_THREAD_WINDOWS`, every `KICKOS_TASK_*_BUDGET`, `KICKOS_MAX_SPAWN_GRANTS`, the RAM owner table size, `KICKOS_ASPACE_RANGES` | the resolved Kconfig |
 | `threads` | the priority range; `KICKOS_MIN_STACK_SIZE` as `min_stack`; `KICKOS_USER_STACK_SIZE`, the stack a runtime spawn defaults to, as `user_stack`; the idle and root stacks; `KICKOS_STACK_ALIGN` as `stack_align`; `stack_stride`, the block every stack is where the thread pointer is SP masked, or `none` | declared in `cmake/sched_geometry.cmake` and `cmake/stack_geometry.cmake`, the stride as the top-level `CMakeLists.txt` derives it, and the resolved Kconfig |
 | `descriptions` | the board's chip and board files, by their path beside the manifest, on a board that has them; admission and emission against the manifest read the board and chip there and nowhere else | `platform/<chip>/<board>.yaml` and its chip file, copied beside the manifest |
 | `default` | `composition`, the board's default composition, by its path beside the manifest, on a board that has one, which needs its descriptions | `boards/<board>/composition.yaml`, copied beside the manifest |
 | `init` | `status_record_size`, one watched task's record in a watcher's status block, which sizes the watcher's `/init/status`; `private_record_size`, one record in its private block, which holds one per task and one per shared region; `free_regions`, the regions root's set holds past its static regions and its stack, which the init self-grants into on a region board | `cmake/init_geometry.cmake` beside `cmake/driver_geometry.cmake`; `KICKOS_MPU_MAX_REGIONS` in `cmake/mpu_geometry.cmake` less the static regions root's linker script bounds and its stack |
-| `drivers` | the packaged driver catalogue: window and line roles, threads with their priority offset, stack, capabilities and badged copies, the thread that receives, the endpoints and notifications each creates, ring block and its memory type (`block_cache`, `cached` or `uncached`), endpoint posture, readiness barrier, whether it takes the console and whether that console is a USB device controller (`usb_device`), its start, and the libraries its clients link | `kickos_add_driver`, and what the shared bring-up creates as `cmake/driver_geometry.cmake` declares it |
+| `drivers` | the packaged driver catalogue: window and line roles, threads with their priority offset, stack, capabilities and badged copies, the thread that receives, the endpoints and notifications each creates, ring block and its memory type (`block_cache`, `cached` or `uncached`), endpoint posture, readiness barrier, whether it takes the console and whether that console is a USB device controller (`usb_device`), its start, the libraries its clients link, and the device slots a bus service keys on a client's badge (`slots`, 0 for none) | `kickos_add_driver`, and what the shared bring-up creates as `cmake/driver_geometry.cmake` declares it |
 
 The catalogue lists the drivers this build declares, and a composition naming a `driver` the
 catalogue does not list is refused.
@@ -565,11 +614,11 @@ preserve a reservation's address.
 
 ## The lookups
 
-The init passes each task a `kos_self_t const* self` pointing to its table entry. Every
-lookup takes `self`, so one entry function can serve several task instances and find
-each instance's grants. Capabilities and windows are per thread, so the lookups answer for the
-task's entry thread, the one the init spawned. A thread the task creates may read `self`, but
-holds only what its own spawn delegates, which the entry passes it.
+`kos_self()` answers the table entry of the declaration the caller runs in, so one program can
+serve several task instances and find each instance's grants. Every lookup reads it. Capabilities
+and windows are per thread, so the lookups answer for the task's entry thread, the one the
+kernel started. A thread the task creates may read `kos_self()`, but holds only what its own
+spawn delegates, which the entry passes it.
 
 - `kos_grant_endpoint` and `kos_grant_notify` return `kos_cap_t`.
 - `kos_grant_mmio` and `kos_grant_mem` return `kos_window_t`; accessors provide the
@@ -577,11 +626,12 @@ holds only what its own spawn delegates, which the entry passes it.
   is its first port. Privileged ports remain outside the task's direct I/O grant and use
   `kos_port_reg_write`, subject to possession, register allowlist and value mask.
 - `kos_grant_irq` returns `kos_line_t`, including its capability and index within the
-  device. `kos_task_status(self, i, &status)` reports the i-th watched task's name,
-  liveness, deaths, restarts left and dependency-down state.
+  device. `kos_task_status(i, &status)` reports the i-th watched task's name,
+  liveness, deaths, restarts left and dependency-down state. On a chip that holds one task no
+  task watches, so it answers `-KOS_EINVAL` for every `i`.
 
 An absent grant returns an invalid handle whose accessors return null, zero or
-`KOS_CAP_NONE`. The table and `self` are readable conveniences, not authority: kernel
+`KOS_CAP_NONE`. The table and `kos_self()` are readable conveniences, not authority: kernel
 capabilities and mappings determine what a task can use. A caller substituting another
 task's entry gains no access.
 
@@ -615,8 +665,10 @@ makes.
    zeroed, so each region is zeroed once; create every served endpoint and keep it with HANDOUT and without WAIT;
    create each watcher's notification.
 2. Scan tasks in file order. Leave a task pending while an endpoint it `uses` is unready.
-   For a ready user task, create its kernel task, arm its watch, claim its lines, and spawn it
-   with its windows in table order and its capability-bearing grants in declaration order.
+   For a ready user task, create its kernel task, arm its watch, claim its lines, mint a copy of
+   the endpoint each badged use names carrying its badge, and spawn it with its windows in table
+   order and its capability-bearing grants in declaration order, a badged use delegated from its
+   copy, which the init closes once the spawn holds it.
 3. For a packaged driver, follow its exported `Descriptor` with the endpoint created at boot.
    If it takes the console, publish it before claiming the UART line, then claim and attach its
    lines, spawn its threads and wait at its readiness barrier. Complete console handover by
@@ -641,7 +693,7 @@ init spends exactly:
 - its threads: a user task's one, at its `stack`, or each thread a packaged driver's catalogue
   declares, on the kernel's default stack of `KICKOS_USER_STACK_SIZE`, each one whole stride where
   the thread pointer is SP masked; the init's own thread is root's slot, outside
-  `KICKOS_MAX_THREADS`;
+  `KICKOS_BUDGET_THREADS`;
 - the endpoint it serves, or a driver's catalogue endpoints, held for its users and by the init;
 - a notification when it watches, or a driver's catalogue notifications;
 - an IRQ binding per line, which the init claims and passes on at the spawn; a task taking a
@@ -660,7 +712,7 @@ driver's included, with HANDOUT, and each watcher's notification. While it start
 task it holds besides that task's lines and one badged copy of its own notification, and for a
 driver with a notification that notification and the most badged copies one step of its bring-up
 holds: one while it binds a line, or the most one thread's spawn mints, which the catalogue
-declares per thread. Its budgets and its capability table, within `KICKOS_CAP_TABLE_SUPPLY`, are
+declares per thread. Its budgets and its capability table, as wide as it holds, are
 counted at what it keeps plus the most one start holds, whatever order the starts come in.
 
 The init reserves, once for life, its private block, the task count plus the shared region
@@ -672,7 +724,7 @@ into root's region set, whose `KICKOS_MPU_MAX_REGIONS`
 root's code, its static data where the build carves that window, and its stack already hold, a
 self-grant spending a region whether or not the build enforces, root being unprivileged on every
 build; and where the build enforces its unit each reservation spends one of
-`KICKOS_RAM_OWNER_SLOTS`. On a translating
+the RAM owner table size. On a translating
 board its own space holds its image's two range records, its root stack's and one per
 reservation, a self-grant taking the range its reservation holds, within `KICKOS_ASPACE_RANGES`.
 

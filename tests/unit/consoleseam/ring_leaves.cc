@@ -8,9 +8,14 @@
 #include <kickos/console_tx.h>
 #include <kickos/irq.h>
 
+namespace ringleaves
+{
+    bool g_in_isr = false;
+}
+
 extern "C"
 {
-    int arch_in_isr(void) { return 0; }
+    int arch_in_isr(void) { return static_cast<int>(ringleaves::g_in_isr); }
     void arch_irq_mask(int) {}
     void arch_irq_unmask(int) {}
     void arch_irq_clear_pending(int) {}

@@ -149,7 +149,7 @@ class Genconfig(unittest.TestCase):
         header = read(os.path.join(self.fix, "include/kickos/board_config.h")).splitlines()
         # The NVIC line count is a chip constant in the chip's own chip_limits.h.
         self.assertFalse([l for l in header if l.startswith("#define KICKOS_MAX_IRQ ")])
-        for line in ("#define KICKOS_MAX_THREADS 8", "#define KICKOS_MIN_STACK_SIZE " + floors[0],
+        for line in ("#define KICKOS_BUDGET_ENDPOINTS 4", "#define KICKOS_MIN_STACK_SIZE " + floors[0],
                      "#define KICKOS_BOARD_CONFIG_H"):
             self.assertIn(line, header)
         frag = fragment(self.fix)
@@ -166,8 +166,8 @@ class Genconfig(unittest.TestCase):
         self.assertIn(FIX, read_back)
 
     def test_refusals(self):
-        self.refused(FIX, "CONFIG_KICKOS_MAX_THREADS=999",
-                     "outside the declared range [2, 64]: resolved to '16'")
+        self.refused(FIX, "CONFIG_KICKOS_BUDGET_THREADS=999",
+                     "outside the declared range [1, 254]: resolved to '4'")
         self.refused(FIX, "CONFIG_KICKOS_MAX_HANDLES=12", "no such symbol")
         # No symbol sets the interrupt-line count, so a request for one is refused outright.
         self.refused(FIX, "CONFIG_KICKOS_MAX_IRQ=64", "no such symbol")
@@ -175,7 +175,7 @@ class Genconfig(unittest.TestCase):
         self.refused(FIX, "CONFIG_KICKOS_ISOLATED_CORES=0x1",
                      "unmet dependency: KICKOS_MULTICORE_SHARED",
                      "A bitmask of cores subtracted from the DEFAULT core set")
-        self.refused(FIX, "KICKOS_MAX_THREADS=4", "not of the form CONFIG_<name>=<value>")
+        self.refused(FIX, "KICKOS_BUDGET_THREADS=4", "not of the form CONFIG_<name>=<value>")
 
     def test_accepted_overrides(self):
         self.assertIn("set(KICKOS_HAVE_MPU 0)", self.accepted(FIX, "CONFIG_MEMORY_MODEL_FLAT=y"))
@@ -261,7 +261,7 @@ class Genconfig(unittest.TestCase):
             if sym.type in (kconfiglib.BOOL, kconfiglib.TRISTATE):
                 value = "ON" if value == "y" else "OFF"
             offers.append("offer:%s=%s" % (sym.name, value))
-        self.assertIn("offer:KICKOS_MAX_THREADS=8", offers)
+        self.assertIn("offer:KICKOS_BUDGET_THREADS=4", offers)
         self.assertGreater(len(offers), 10)
         self.accepted(FIX, *offers)
 
@@ -374,8 +374,7 @@ class Genconfig(unittest.TestCase):
                 (["assert:KICKOS_AMP_PORTS=0:2,1:1"], "names port 1"),
                 (["assert:KICKOS_AMP_PORTS=0:0,1:3"], "names port 0 for this image's own node"),
                 (["assert:KICKOS_AMP_PORTS=0:2,1:32"], "31 is its last port"),
-                (["assert:KICKOS_AMP_PORTS=0:2,0:02"], "node 0 port 2 is named twice"),
-                (["assert:KICKOS_MAX_ENDPOINTS=3"], "names 3 crossing(s) and the board provisions 3")):
+                (["assert:KICKOS_AMP_PORTS=0:2,0:02"], "node 0 port 2 is named twice")):
             with self.subTest(requests=requests):
                 run, _ = gen(AMP_OWN, *requests)
                 self.assertNotEqual(run.returncode, 0, "%s was accepted" % requests)
@@ -393,7 +392,7 @@ class Genconfig(unittest.TestCase):
         node0 = fp()
         self.assertEqual(len(node0), 2)
         self.assertEqual(node0, fp("assert:KICKOS_AMP_NODE_ID=1"))
-        self.assertNotEqual(node0, fp("assert:KICKOS_MAX_THREADS=12"))
+        self.assertNotEqual(node0, fp("assert:KICKOS_BUDGET_THREADS=12"))
 
     def test_amp_seed_configures_a_peer_alike(self):
         run, out = gen(AMP_OWN, "assert:KICKOS_AMP_NODE_ID=1", "CONFIG_KICKOS_NEWLIB_NANO=n")
@@ -428,7 +427,7 @@ class Genconfig(unittest.TestCase):
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertIn("set(KICKOS_TLS OFF)", fragment(out))
         self.assertEqual(header_defines(out)["KICKOS_TLS"], "#define KICKOS_TLS 0")
-        self.refused(FIX, "offer:KICKOS_MAX_THREADS=999", "outside the declared range")
+        self.refused(FIX, "offer:KICKOS_BUDGET_THREADS=999", "outside the declared range")
 
 
 if __name__ == "__main__":

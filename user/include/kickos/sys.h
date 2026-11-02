@@ -32,11 +32,12 @@ extern "C"
 // the kernel's reclaim of the device not landed yet, until the reclaim or a publish. THE COUNT CAN
 // BE SHORT: the walk stops at the first byte the console cannot take. On an AMP UART, CR can
 // precede an uncounted newline; retrying from the reported count sends its LF without repeating
-// CR. A page unmapped mid-write stops it too, the chunks spanning no lock. A task that set
-// O_NONBLOCK (kos_task_nonblock) never waits: it is answered -KOS_ETIMEDOUT instead.
+// CR. A page unmapped mid-write stops it too, the chunks spanning no lock. With
+// KOS_KCONSOLE_NOWAIT in `flags` it never waits: it is answered -KOS_ETIMEDOUT instead, and any
+// other flag is refused -KOS_EINVAL.
 // It is the raw call: a line no route carries to the wire, a driver owning the UART or the
 // caller's own task holding it, is reported taken and dropped.
-int32_t kos_kconsole_write(void const* buf, size_t len);
+int32_t kos_kconsole_write(void const* buf, size_t len, uint32_t flags);
 // An app writes through kos_print or stdio. The raw call drops what no route carries and leaves
 // a short count's rest to its caller, so an app spells it only where its drop, its answer or its
 // wait is what the app measures, and states which at the call:
@@ -49,7 +50,7 @@ enum kos_kconsole_measure
     KOS_KCONSOLE_MEASURES_WAIT
 };
 #define KICKOS_KCONSOLE_MEASURED(what, buf, len)                                                  \
-    ((void)KOS_KCONSOLE_MEASURES_##what, kos_kconsole_write((buf), (len)))
+    ((void)KOS_KCONSOLE_MEASURES_##what, kos_kconsole_write((buf), (len), 0u))
 #ifdef __cplusplus
 extern "C++"
 {
@@ -61,22 +62,21 @@ extern "C++"
         // reach, named ahead of the poison.
         class KconsoleRaw
         {
-            static constexpr int32_t (*write)(void const*, size_t) = &kos_kconsole_write;
+            static constexpr int32_t (*write)(void const*, size_t, uint32_t) = &kos_kconsole_write;
             friend WriteResult kconsole_offer(char const* s, size_t n);
         };
     }
 }
 #endif
-// Every TU linking KickOS::kernel, executable or object library, in tree or out, has its main
-// renamed (<kickos/app.h>), and is an app's.
-#if defined(main)
+// Every TU of an image's executable target, in tree or out, is an app's (<kickos/app.h>).
+#if defined(KICKOS_APP_IMAGE)
 #pragma GCC poison kos_kconsole_write
 #endif
 
 // The whole of s to this thread's stdout, as libc's write(1) sends it (kickos::stdout_write,
 // sys/emit.h): through the published console where one serves this thread, else the kernel
-// console, waiting out a full ring and a dark window. A task that set O_NONBLOCK stops at the
-// first byte that would make it wait, and a refusal of either route ends it; the rest is dropped.
+// console, waiting out a full ring and a dark window. A task that set O_NONBLOCK (fcntl) stops at
+// the first byte that would make it wait, and a refusal of either route ends it; the rest is dropped.
 void kos_print(char const* s);
 
 void kos_yield(void);
@@ -161,6 +161,14 @@ kos_mutex_t* kos_libc_lock(enum kos_libc_lock which);
 // a peer and copy min(sent, capacity) bytes. Truncation is allowed.
 // Sends above KOS_EP_MSG_MAX fail with EINVAL; receive capacities are clamped.
 int kos_endpoint_create(kos_cap_t* out_cap); // -> 0, or -KOS_ENOMEM/-KOS_EMFILE/-KOS_EAGAIN/-KOS_EINVAL/-KOS_EFAULT
+// MINT a copy of `source_cap` carrying `badge`, which every message sent through the copy
+// delivers in kos_recv_info.badge, so a server tells its clients apart by what the minter gave
+// each. The copy holds the source's KOS_CAP_SIGNAL and KOS_CAP_TRANSFER and nothing else.
+// `source_cap` must hold KOS_CAP_SIGNAL and KOS_CAP_HANDOUT (-KOS_EACCES otherwise), which no
+// badged copy holds, so a badged holder cannot mint itself another client's badge. Also -KOS_EINVAL
+// (badge KOS_BADGE_NONE), -KOS_EBADF, -KOS_EFAULT, -KOS_EMFILE (the caller's cap table) or
+// -KOS_EOVERFLOW.
+int kos_endpoint_badge(kos_cap_t source_cap, uint32_t badge, kos_cap_t* out_cap);
 #if defined(KICKOS_AMP_NODE) && KICKOS_AMP_NODE
 // One of `node`'s window counts (enum kos_amp_count_id), as that node last wrote it, into *out: a
 // report, each count its own relaxed read. 0, or -KOS_E*: EINVAL (a null or misaligned out),
@@ -220,32 +228,12 @@ int kos_reply(kos_cap_t reply_cap, void const* buf, size_t len);
 int kos_reply_recv(kos_cap_t reply_cap, void* buf, uintptr_t lens,
                    struct kos_reply_recv_opts* opts);
 
-// Hand the kernel console UART over to a userspace driver serving endpoint `ep` from `task`:
-// KOS_TASK_NONE names the caller's own task, any other a task the caller created. That task's
-// end is the driver's death, and the kernel then takes the console back
-// (docs/reference/console.md).
-// Needs KOS_AUTH_CONSOLE and, on `ep`, KOS_CAP_HANDOUT. After this the kernel chip path drops
-// (RTT, if built, still carries kernel output) and libc stdout routes through the driver via
-// cap index 0, seated both into children spawned AFTER the publish and into the CALLER's own
-// table, except in a thread of the task that serves it: there cap 0 stays empty, and its stdout
-// takes the kernel console, which drops it while that task owns the UART. Through a capability without WAIT, `ep` gains WAIT and the endpoint counts as
-// receiving, as for its creator, so every publish leaves `ep` holding WAIT and HANDOUT: the
-// caller drops that WAIT once the driver's receiver holds its own (docs/reference/console.md).
-// Re-callable to re-point at a fresh driver: every cap 0 naming the console it replaces follows,
-// and a sender parked there is answered -KOS_EAGAIN. -> 0, -KOS_EPERM (no
-// KOS_AUTH_CONSOLE, or a task the caller did not create), -KOS_EBADF (bad / non-endpoint / stale
-// cap, or a task handle naming nothing), -KOS_EBUSY (a task that has already ended, the
-// console's registers held by a thread outside that task, another publish still handing the
-// console over, or a panic), -KOS_EACCES
-// (`ep` lacks HANDOUT, a WAIT-only cap included), or -KOS_EOVERFLOW (a reference or receiver
-// count is at its ceiling). A refusal publishes nothing and leaves the kernel console untouched.
-int kos_console_publish(kos_cap_t ep, kos_task_t task);
 // Wait until the console driver holding this thread's stdout has written every byte sent to it
-// before, as far as its device can tell: two zero-length sends on KOS_CAP_STDOUT, each bounded by
-// `timeout_us` as kos_send bounds it (docs/reference/console.md). Bytes stdio still buffers
-// were never sent: fflush(stdout) first. -> 0, or the failed send's -KOS_E*, after which the
-// second is not sent: EBADF where stdout is the kernel console, ETIMEDOUT where the driver took
-// neither in time.
+// before, as far as its device can tell: a KOS_UART_DRAIN call on KOS_CAP_STDOUT, the whole call
+// bounded by `timeout_us` as kos_call bounds it (docs/reference/console.md). Bytes stdio still
+// buffers were never sent: fflush(stdout) first. -> 0 once drained, the driver's -KOS_EBUSY where
+// its own bound expired first, or the call's -KOS_E*: EBADF where stdout is the kernel console,
+// ETIMEDOUT where no answer came in time, EIO for an answer shorter than a reply.
 int32_t kos_console_flush(uint32_t timeout_us);
 
 // Drop THIS thread's capability. Type-agnostic and refcounted: the underlying object is
@@ -259,8 +247,9 @@ int kos_handle_close(kos_cap_t cap);
 // to `*out_thread`, or a negative -KOS_E* (EINVAL/EFAULT malformed params or out-pointer,
 // EPERM authority, ownership or a priority ceiling, EACCES a grant whose source cap lacks
 // TRANSFER or a right it asks to pass on, EBADF a grant naming no live cap, EBUSY an MMIO window
-// a live thread holds, ENOMEM thread pool / stack arena / domain pool, EAGAIN a destination task
-// at one of its pool budgets, EOVERFLOW a delegated object's refcount at its ceiling).
+// a live thread holds, ENOMEM thread pool / stack arena / domain pool, EAGAIN the task at its
+// THREADS or PAGES budget or a destination task at one of its object budgets, EOVERFLOW a
+// delegated object's refcount at its ceiling).
 // `*out_thread` is ALWAYS written, KOS_THREAD_NONE on every failure, and the out-pointer is
 // validated BEFORE the child is created.
 int kos_thread_create(struct kos_thread_params const* params, kos_thread_t* out_thread);
@@ -311,7 +300,7 @@ uint32_t kickos_self_lock_id(void);
 // lock freed meanwhile with no entry at all.
 int kickos_mutex_lock_entry(kos_mutex_t* m, uint32_t timeout_us);
 // Set the CALLING thread's base priority. Lowering is always allowed; raising is allowed up to
-// the calling task's priority ceiling (kos_task_sched_grant). A thread boosted by priority
+// the calling task's declared priority ceiling. A thread boosted by priority
 // inheritance keeps the boost: the call moves the base it falls back to once the boost ends. A
 // lowering that lets a ready thread outrank the caller switches to it before this returns, the
 // caller queued behind the threads already ready at its new priority.
@@ -319,44 +308,53 @@ int kickos_mutex_lock_entry(kos_mutex_t* m, uint32_t timeout_us);
 // ceiling.
 int kos_thread_set_priority(uint8_t priority);
 
-// The calling TASK's O_NONBLOCK, one flag shared by all its threads, as fcntl's F_SETFL and
-// F_GETFL on fds 0 to 2 set and read it: `op` is a kos_nonblock_op. Set, the task's sends of no
-// timeout on the published console and its kernel console writes never wait, and are answered
-// -KOS_ETIMEDOUT where they would; a send with a finite timeout keeps it. Returns the flag as the
-// op leaves it, 0 or 1, or -KOS_EINVAL (an unknown op, or a caller in no task).
-int kos_task_nonblock(int op);
-
-// Set a created task's priority ceiling and core grant while it is empty.
-// May only narrow the caller's grant. Zero leaves that field unchanged.
-// Ignore cores absent from the machine before checking the subset.
-// Returns 0 or -KOS_E*: EPERM for wider grants or a different creator, EINVAL
-// for invalid ceiling or no machine core, EBADF for an invalid handle,
-// EBUSY if the task has a member.
-int kos_task_sched_grant(kos_task_t task, uint8_t prio_ceiling, uint32_t core_mask);
-// The core grant of `task`, KOS_TASK_NONE for the caller's own, as kos_task_sched_grant last left
-// it (every core of this kernel where it never narrowed). The mask (non-negative), or -KOS_E*:
+// The core grant of `task`, KOS_TASK_NONE for the caller's own, as its declaration gave it
+// (every core of this kernel where it declares none). The mask (non-negative), or -KOS_E*:
 // EBADF, EPERM (a task the caller did not create), ENOSYS (one-core kernel).
 int kos_task_cores(kos_task_t task);
 
-// Create an empty task with shared data and fault containment. mem_base/size
-// is a region granted read/write to each member, or 0/0 for no shared memory.
-// Apply the same memory checks as spawn. Only the creator may add members.
-// Members cannot supply separate mem_base; MMIO is per thread.
-// mem_flags must match every other mapping of the block: a self-grant, a window, or another
-// task's data; one with another memory type answers -KOS_EBUSY.
-// Where each task has an address space, the task's static data starts from the image and its
-// constructors run again there, for every task and every restart, so no global root or a
-// sibling writes reaches it.
-// Returns 0 and out_task, or -KOS_EPERM/EINVAL/ENOMEM/ENOTSUP/EFAULT/EBUSY with KOS_TASK_NONE.
-int kos_task_create(void* mem_base, uint32_t mem_size, uint32_t mem_flags,
+// A capability on the program named `name`, its CMake target. Returns 0 and *out_prog, or
+// -KOS_ENOENT (no such program), -KOS_EFAULT, -KOS_EINVAL (a name past KICKOS_ARGV_MAX) or
+// -KOS_EMFILE, with KOS_CAP_NONE. kos_handle_close closes it.
+int kos_program_find(char const* name, kos_program_t* out_prog);
+
+// Create an instance of `prog` and start its entry thread at the declared priority, with the
+// declaration's ceiling, cores and authority; params->caps and params->windows go to the entry
+// thread as a spawn's do. params->instance names the declared task to start; NULL starts the
+// lowest-numbered one the caller may start that is not live. The creator holds KOS_AUTH_TASKS
+// and every authority bit, the ceiling and the cores the declaration names; only the init
+// starts a task declared `start: init`. An instance is live from its create until it is dead.
+// A declaration naming a ready endpoint takes it from params->caps, and kos_task_watch reports
+// a first receive on it even when armed after it. A packaged driver's declaration takes no
+// params->windows: the kernel seats its device windows on the entry thread, claims its lines into
+// the entry thread's table at the slots it names, bound to the notification it names in
+// params->caps, and publishes a declared console through the creator's capability on the ready
+// endpoint, which then holds WAIT until the creator narrows it (kos_cap_narrow).
+// The task runs its declaration's own image, whose statics start from the image at every create,
+// and only its own threads add threads to it: kos_thread_create naming it from another task
+// answers -KOS_EPERM. A create ends the dead incarnation's creator hold, whose handle then answers
+// -KOS_EBADF. A declaration with neither `restart` nor `start: on_request` starts once: a create
+// of it after its first incarnation started answers -KOS_EPERM.
+// Returns 0 and out_task, or -KOS_ENOENT (no such instance), -KOS_EBUSY (it is live),
+// -KOS_ENOMEM (every instance the caller may start is live, or a pool), -KOS_EAGAIN (a declared
+// line still retiring from its last holder, the last incarnation's members still dying, or an
+// IRQ binding it released still retiring), -KOS_EPERM, -KOS_EINVAL, -KOS_EFAULT and the rest of
+// kos_thread_create's codes, with KOS_TASK_NONE. With no instance named and none startable:
+// -KOS_EAGAIN where one is still dying, else -KOS_ENOMEM where one the caller may start is live,
+// else the refusal naming the first one answers, and -KOS_ENOENT for a program that declares
+// none.
+int kos_task_create(kos_program_t prog, struct kos_task_params const* params,
                     kos_task_t* out_task);
 
 // Watch a task YOU created: `notify_cap`'s badge is raised when the task ends, when it is dead,
 // every member's teardown done, and the first time a member waits to receive on `ready_ep`
-// (KOS_CAP_NONE: no readiness). The watch names the notification object, not the capability:
+// (KOS_CAP_NONE: no readiness). For a task whose declaration names its own ready endpoint,
+// `ready_ep` is KOS_CAP_NONE (-KOS_EINVAL otherwise) and that endpoint is watched. A watch armed
+// after the task ended or became ready is raised at once. The watch names the notification
+// object, not the capability:
 // closing notify_cap does not end it, and it reaches whoever still holds or is bound to the object.
 // The task's slot being freed ends it, as does re-arming, or disarming with KOS_CAP_NONE. A
-// creator's hold keeps an empty task's slot: release it with kos_task_slay of timeout 0 before
+// creator's hold keeps the task's slot: release it with kos_task_slay of timeout 0 before
 // creating the next instance. Returns 0, -KOS_EBADF, -KOS_EPERM (not the creator) or -KOS_EACCES
 // (notify_cap lacks SIGNAL).
 int kos_task_watch(kos_task_t task, kos_cap_t notify_cap, kos_cap_t ready_ep);
@@ -381,11 +379,11 @@ int kos_task_state(kos_task_t task, int* status);
 int kos_window_get(uint32_t index, struct kos_window* out);
 
 // --- Lookups ------------------------------------------------------------------------------
-// What the init gave a task, found by name among the grants of `self`: the path, or the name
-// its entry renamed it to. Capabilities and windows are per thread, so a lookup answers for the
+// What the init gave a task, found by name among the grants of the caller's declaration (kos_self):
+// the path, or the name its program renamed it to. Capabilities and windows are per thread, so a lookup answers for the
 // task's entry thread, the one the init spawned: a thread the task creates holds only what its
 // own spawn delegates, which the entry passes it. An absent grant, a grant of another kind, a
-// null `self`, or a window this thread does not hold with the grant's kind, size and flags
+// caller outside a declared task, or a window this thread does not hold with the grant's kind, size and flags
 // answers an invalid handle: KOS_CAP_NONE, a window of null address and size 0, a line of
 // KOS_CAP_NONE at KOS_TABLE_NONE.
 
@@ -410,12 +408,14 @@ struct kos_task_status
     bool dependency_down; // never started: a server it uses is dead for good
 };
 
-kos_cap_t kos_grant_endpoint(kos_self_t const* self, char const* name); // served or used
-kos_cap_t kos_grant_notify(kos_self_t const* self, char const* name);
-kos_window_t kos_grant_mmio(kos_self_t const* self, char const* name);  // a device window
-kos_window_t kos_grant_mem(kos_self_t const* self, char const* name);   // a shared region
-kos_window_t kos_grant_ports(kos_self_t const* self, char const* name); // address: the first port
-kos_line_t kos_grant_irq(kos_self_t const* self, char const* name);
+// The declaration of the task the caller runs in, or NULL outside a declared task.
+kos_self_t const* kos_self(void);
+kos_cap_t kos_grant_endpoint(char const* name); // served or used
+kos_cap_t kos_grant_notify(char const* name);
+kos_window_t kos_grant_mmio(char const* name);  // a device window
+kos_window_t kos_grant_mem(char const* name);   // a shared region
+kos_window_t kos_grant_ports(char const* name); // address: the first port
+kos_line_t kos_grant_irq(char const* name);
 // Where this thread reaches the window: the physical base on a region board, where the kernel
 // mapped it on a translating one.
 static inline void* kos_window_addr(kos_window_t window)
@@ -427,8 +427,8 @@ static inline uint32_t kos_window_size(kos_window_t window)
 {
     return window.size;
 }
-// The i-th task `self` watches, the one bit i of /init/events stands for, read from record i of
-// its own /init/status. 0, -KOS_EINVAL (a null argument, i past the last, or no status window
+// The i-th task the caller's declaration watches, the one bit i of /init/events stands for, read from record i of
+// its own /init/status. 0, -KOS_EINVAL (a null `out`, i past the last, or no status window
 // held) or -KOS_EAGAIN (the init held the record mid-write through every retry), `out` then
 // untouched.
 // It names a function and its struct, as stat does, which GCC's -Wshadow reads in C++ as the
@@ -437,7 +437,7 @@ static inline uint32_t kos_window_size(kos_window_t window)
 _Pragma("GCC diagnostic push")
 _Pragma("GCC diagnostic ignored \"-Wshadow\"")
 #endif
-int kos_task_status(kos_self_t const* self, uint32_t i, struct kos_task_status* out);
+int kos_task_status(uint32_t i, struct kos_task_status* out);
 #if defined(__GNUC__)
 _Pragma("GCC diagnostic pop")
 #endif
@@ -457,9 +457,9 @@ int kos_port_reg_write(uint16_t base, uint16_t offset, uint8_t value);
 // A timeout of 0 drops your hold on the task at once, so the handle stops naming anything, and
 // answers 0: the stop is committed, not every member gone. Any other waits timeout_us relative
 // microseconds (KOS_TIMEOUT_NONE: forever) and answers 0 once the task is empty, every member's
-// teardown done, and released; an empty task whose members' teardown is done succeeds at once.
+// teardown done, and released.
 // ETIMEDOUT leaves termination pending and the handle valid for another wait. ECANCELED cancels
-// only the wait. Other errors: EBADF for invalid/implicit tasks, KOS_TASK_NONE included, EPERM
+// only the wait. Other errors: EBADF for an invalid task, KOS_TASK_NONE included, EPERM
 // for a different creator, EINVAL for a caller that is a member and waits. Error codes are
 // negative.
 int kos_task_slay(kos_task_t task, uint32_t timeout_us);
@@ -487,10 +487,11 @@ int kos_shutdown(int status, enum kos_shutdown_outcome outcome);
 // partition's reset owner), -KOS_EINVAL (unknown outcome), -KOS_EALREADY (already set this boot).
 int kos_terminal_outcome(enum kos_shutdown_outcome outcome);
 
-// End the system through the kernel's panic path, printing `msg`: mask interrupts, force the
-// console back to a polled channel, flush, print KERNEL PANIC. Does not return, needs no
-// authority, and is the only panic path open to an unprivileged thread. The reclaim happens
-// on EVERY posture, not only after a console handover.
+// Panic with `msg`. Does not return. From root, or from a thread holding KOS_AUTH_SYSTEM, it ends
+// the system through the kernel's panic path: mask interrupts, force the console back to a polled
+// channel, flush, print KERNEL PANIC. The reclaim happens on EVERY posture, not only after a
+// console handover. From any other thread it ends the caller's task with KOS_EXIT_PANIC, `msg`
+// going out as a fault record, and the system runs on.
 //
 // `msg` is copied into a bounded kernel buffer (longer messages are truncated) and checked
 // byte by byte, so an unreadable pointer costs the text, not the panic.
@@ -639,17 +640,18 @@ void kos_clock_set_realtime(uint64_t unix_ns);
 // Reserve page-aligned user RAM for this task; returns NULL on exhaustion.
 // Reservation alone grants no access. Pass it to spawn/task creation or
 // use kos_mem_self_grant. Other tasks cannot name this reservation directly.
-// On MMU systems the result is an unmapped task address; on MPU systems
-// it is an owned arena block. Either way its bytes are zero. A memory window
+// On MMU systems the result is an unmapped task address; elsewhere it is
+// an owned arena block. Either way its bytes are zero. A memory window
 // reaches it at the address kos_window_get answers, which a translating board
 // chooses.
-// NULL can mean exhausted memory or reservation records. Records are bounded
-// and not freed: per address space on MMU, per image on MPU.
+// NULL can mean exhausted memory or reservation records, or the task's RAM_BYTES or RAM_BLOCKS
+// budget. Records are not freed: per address space on MMU, where the budget is the incarnation's;
+// elsewhere per declaration, every incarnation's blocks counting against its budget for the boot.
 void* kos_ram_alloc(size_t size);
 
 // Grant access to RAM reserved by the caller's task. Requires AUTH_MEMORY.
-// On MPU systems, add a per-thread region rounded to arch_ram_region_size;
-// the rounded range must fit one owned reservation. On MMU systems, map
+// Without an MMU, add a per-thread region, rounded to arch_ram_region_size
+// on MPU systems; the range so committed must fit one owned reservation. On MMU systems, map
 // the whole reservation into the task's shared address space.
 // flags selects memory type. A type change must update the descriptor even
 // if the range is already accessible; identical grants consume no new entry.
@@ -665,11 +667,12 @@ int kos_mem_self_grant(void* base, size_t size, uint32_t flags);
 
 #if defined(KICKOS_HAVE_ASPACE) && KICKOS_HAVE_ASPACE
 // Mint a run of fresh, zeroed frames covering `bytes`, rounded up to whole pages, and a
-// capability naming it, carrying KOS_CAP_TRANSFER. The run is charged to the caller's task, one
-// of its KICKOS_TASK_FRAME_RUN_BUDGET, for the run's whole life, wherever it is mapped and
-// whoever holds it. 0, or in this order -KOS_E*: EPERM (no KOS_AUTH_MEMORY), EINVAL (a null or
-// misaligned out_frame), EFAULT (out_frame), EINVAL (a caller with no address space, bytes 0, or
-// more pages than a run can name), EAGAIN (the task's run budget), ENOMEM (the run pool), EMFILE
+// capability naming it, carrying KOS_CAP_TRANSFER. The run is charged to the caller's
+// declaration, one of its FRAME_RUNS budget and its pages of its PAGES budget, for the run's
+// whole life, wherever it is mapped and whoever holds it. 0, or in this order -KOS_E*: EPERM (no
+// KOS_AUTH_MEMORY), EINVAL (a null or misaligned out_frame), EFAULT (out_frame), EINVAL (a caller
+// with no address space, bytes 0, or more pages than a run can name), EAGAIN (the task's
+// FRAME_RUNS or PAGES budget), ENOMEM (the run pool), EMFILE
 // (the caller's cap table), ENOMEM (no free run that long in the pool, or one the kernel could
 // not clear).
 int kos_frame_create(size_t bytes, kos_cap_t* out_frame);

@@ -10,17 +10,23 @@ if(NOT EXISTS "${_mapshoot_backend}")
     "compiles the x86_64 backend's own translation unit; a moved file breaks it silently.")
 endif()
 
-kickos_add_kernel_host_lib(kickos_aspace_x86_64_host
-  SOURCES "${_mapshoot_backend}" x86_64_sysops_seam.cc
-          "${PROJECT_SOURCE_DIR}/tests/unit/common/sysops_seam.cc"
-  INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}" "${PROJECT_SOURCE_DIR}/tests/unit/common"
-           "${PROJECT_SOURCE_DIR}/arch/common"
-           "${PROJECT_SOURCE_DIR}/arch/x86/x86_64/include"
-           "${PROJECT_SOURCE_DIR}/arch/x86/chip/q35/include"
-  POSTURE KICKOS_NUM_CORES=2 KICKOS_KERNEL_CORES=2 KICKOS_MULTICORE_MODEL_SHARED=1
-          KICKOS_HAVE_ASPACE=1 KICKOS_X86_64_SYSOPS_FROM_SEAM=1)
+# One backend per program span: none, and a program at the fixed user base.
+foreach(_span no_program program)
+  kickos_add_kernel_host_lib(kickos_aspace_x86_64_${_span}_host
+    SOURCES "${_mapshoot_backend}" x86_64_sysops_seam.cc x86_64_${_span}.cc
+            "${PROJECT_SOURCE_DIR}/tests/unit/common/sysops_seam.cc"
+    INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}" "${PROJECT_SOURCE_DIR}/tests/unit/common"
+             "${PROJECT_SOURCE_DIR}/arch/common"
+             "${PROJECT_SOURCE_DIR}/arch/x86/x86_64/include"
+             "${PROJECT_SOURCE_DIR}/arch/x86/chip/q35/include"
+    POSTURE KICKOS_NUM_CORES=2 KICKOS_KERNEL_CORES=2 KICKOS_MULTICORE_MODEL_SHARED=1
+            KICKOS_HAVE_ASPACE=1 KICKOS_X86_64_SYSOPS_FROM_SEAM=1)
+endforeach()
 kickos_add_unit_test(NAME map_shoot SOURCES map_shoot.cc
-  LIBRARIES kickos_aspace_x86_64_host)
+  LIBRARIES kickos_aspace_x86_64_no_program_host)
+kickos_add_unit_test(NAME program_span SOURCES program_span.cc
+  INCLUDES "${PROJECT_SOURCE_DIR}/arch/x86/x86_64/include"
+  LIBRARIES kickos_aspace_x86_64_program_host)
 
 kickos_add_unit_test(NAME fault_frame SOURCES fault_frame.cc
   INCLUDES "${PROJECT_SOURCE_DIR}/arch/x86/x86_64/include")

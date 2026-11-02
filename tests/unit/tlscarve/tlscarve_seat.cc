@@ -44,8 +44,8 @@ TEST(TlsCarveSeat, the_carve_is_non_empty_here)
 {
     // Everything below is about a block being admitted DESPITE the stride, so a zero-size
     // carve would make tls_stack_admissible answer true unconditionally and gate nothing.
-    ASSERT_NE(kickos::tls_block_size(), 0u);
-    ASSERT_LT(kickos::tls_block_size(), TLSCARVE_STRIDE);
+    ASSERT_NE(kickos::tls_block_size(0), 0u);
+    ASSERT_LT(kickos::tls_block_size(0), TLSCARVE_STRIDE);
 }
 
 TEST(TlsCarveSeat, a_block_that_is_neither_strided_nor_a_power_of_two_is_admitted)
@@ -61,7 +61,7 @@ TEST(TlsCarveSeat, a_block_that_is_neither_strided_nor_a_power_of_two_is_admitte
     size_t const three_pages = 3u * 4096u;
     ASSERT_NE(three_pages, TLSCARVE_STRIDE);
     ASSERT_NE(three_pages & (three_pages - 1u), 0u);
-    EXPECT_TRUE(kickos::tls_stack_admissible(base, three_pages));
+    EXPECT_TRUE(kickos::tls_stack_admissible(base, three_pages, 0));
 }
 
 TEST(TlsCarveSeat, the_ABI_alignment_is_still_required)
@@ -69,14 +69,14 @@ TEST(TlsCarveSeat, the_ABI_alignment_is_still_required)
     // The stride goes and the arch's own floor does not: the carve is taken off the base, so
     // a base the ABI cannot seat an sp on stays refused.
     static_assert(KICKOS_STACK_ALIGN > 1, "there would be nothing left to require");
-    EXPECT_FALSE(kickos::tls_stack_admissible(0x40321000u + 1u, 3u * 4096u));
+    EXPECT_FALSE(kickos::tls_stack_admissible(0x40321000u + 1u, 3u * 4096u, 0));
 }
 
 TEST(TlsCarveSeat, a_block_no_larger_than_the_carve_is_still_refused)
 {
     // The one refusal BOTH halves owe: the carve comes off the block, so a block that is not
     // strictly larger than it leaves the thread no stack at all.
-    size_t const block = kickos::tls_block_size();
-    EXPECT_FALSE(kickos::tls_stack_admissible(0x40321000u, block));
-    EXPECT_TRUE(kickos::tls_stack_admissible(0x40321000u, block + KICKOS_STACK_ALIGN));
+    size_t const block = kickos::tls_block_size(0);
+    EXPECT_FALSE(kickos::tls_stack_admissible(0x40321000u, block, 0));
+    EXPECT_TRUE(kickos::tls_stack_admissible(0x40321000u, block + KICKOS_STACK_ALIGN, 0));
 }

@@ -18,7 +18,44 @@ tasks:
     priority: 30
 
   - name: main
-    entry: selftest_main
+    program: main
     priority: 2
     ceiling: 30
     authority: [memory, system, pinmux, irq, console, tasks, bus_master, bootloader]
+    # Every arena block of every arm is reserved at start, and a block is never freed.
+    budgets: { ram_blocks: 48 }
+
+  # Started by the arms, never by the init: each runs the role its argv names.
+  - name: peer0
+    program: stpeer
+    priority: 10
+    ceiling: 12
+    start: on_request
+    authority: [memory, tasks, irq]
+    budgets: { threads: 4 }
+
+  - name: peer1
+    program: stpeer
+    priority: 10
+    ceiling: 12
+    start: on_request
+    authority: [memory, tasks, irq]
+    budgets: { threads: 4 }
+
+  - name: peer2
+    program: stpeer
+    priority: 10
+    ceiling: 12
+    start: on_request
+    authority: [memory, tasks, irq]
+    budgets: { threads: 4 }
+
+  # On core 0 alone, a task narrower than the machine.
+  - name: peer3
+    program: stpeer
+    priority: 10
+    ceiling: 12
+    core: 0
+    start: on_request
+    authority: [memory, tasks, irq]
+    budgets: { threads: 4 }

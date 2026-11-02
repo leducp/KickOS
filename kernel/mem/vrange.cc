@@ -134,6 +134,25 @@ namespace kickos
         return true;
     }
 
+    uint16_t VirtualRanges::lend(uintptr_t base, bool more)
+    {
+        size_t const i = index_at(base);
+        if (i == KICKOS_ASPACE_RANGES)
+        {
+            return 0;
+        }
+        uint16_t& n = ranges_[i].lends;
+        if (more and n != UINT16_MAX)
+        {
+            n++;
+        }
+        else if (not more and n != 0)
+        {
+            n--;
+        }
+        return n;
+    }
+
     bool VirtualRanges::set_sync_owed(uintptr_t base, bool owed)
     {
         size_t const i = index_at(base);
@@ -152,8 +171,12 @@ namespace kickos
 
     bool VirtualRanges::release(uintptr_t base)
     {
-        size_t const i = index_at(base);
-        if (i == KICKOS_ASPACE_RANGES)
+        return release_at(index_at(base));
+    }
+
+    bool VirtualRanges::release_at(size_t i)
+    {
+        if (i >= KICKOS_ASPACE_RANGES or ranges_[i].state == VirtualState::Free)
         {
             return false;
         }

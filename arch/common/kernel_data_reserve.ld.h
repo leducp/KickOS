@@ -16,7 +16,7 @@
  * A chip states its reserve as a whole number of windows, through a KICKOS_KERNEL_DATA_RESERVE
  * default a preset can raise.
  *
- * THE PIN IS MAX(., _kernel_data_top) in the .appdata section's own ADDRESS expression, which
+ * THE PIN IS MAX(<.bss end>, _kernel_data_top) in the .appdata section's own ADDRESS expression, which
  * KICKOS_APPDATA_SECTION spells once; the section's body, region and AT clause stay per chip
  * after it. Two ld facts fix that spelling. A bare address fails the link with ld's
  * backwards-move error the moment kernel .bss overflows, and ld evaluates every ASSERT AFTER
@@ -46,14 +46,15 @@
            "KickOS: _kernel_data_top (the kernel data base plus _kernel_data_reserve) is not _appdata_size-aligned, so .appdata's own ALIGN moves the window off the address the reserve names (keep KICKOS_KERNEL_DATA_RESERVE a whole multiple of _appdata_size)")
 
 /* The pinned app window's section header, invoked inside SECTIONS after the kernel .bss whose
- * end it is handed. */
+ * end it is handed. That end and not `.`: image 0's code span may lie between the two, in
+ * another region. */
 #if KICKOS_HAVE_MPU
 #define KICKOS_APPDATA_SECTION(bss_end)        \
     KICKOS_KERNEL_DATA_RESERVE_ASSERT(bss_end) \
-    .appdata MAX(., _kernel_data_top) : ALIGN(_appdata_size)
+    .appdata MAX(bss_end, _kernel_data_top) : ALIGN(_appdata_size)
 #else
 #define KICKOS_APPDATA_SECTION(bss_end) \
-    .appdata MAX(., _kernel_data_top) : ALIGN(_appdata_size)
+    .appdata MAX(bss_end, _kernel_data_top) : ALIGN(_appdata_size)
 #endif
 
 #endif

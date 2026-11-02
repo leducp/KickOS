@@ -356,7 +356,7 @@ while IFS="$TAB" read -r cls frame_macro depth_macro onstack kstacks; do
     # A stack=kernel class spends the interrupted thread's own kernel block, so the floor
     # says nothing about it either. What it has to fit is that block minus the canary word,
     # and that is a clause of its own: raising the spawn floor would do nothing here, and the
-    # array is per thread SLOT, so a byte costs KICKOS_THREAD_SLOTS.
+    # array is per thread SLOT, so a byte costs one per slot.
     # A class the board does not compile is measured and not enforced, both halves. armv6m,
     # rv32imac and rxv3 rule that out in C with static_assert(KICKOS_KERNEL_STACKS != 0);
     # armv7m carries no such assert and must not, one of its chips resolving 0 on purpose.

@@ -11,6 +11,7 @@ stdout: /svc/console
 
 ends: never
 heap: 16384
+budgets: { threads: 1 }
 
 shared:
   - name: /shm/history
@@ -36,23 +37,25 @@ tasks:
     accepts: [coarse_gate]
 
   - name: sensor
-    entry: restart_sensor_main
+    program: restart_sensor
     stack: 2048
     priority: 9
     ceiling: 9
     serves: /svc/sensor
     maps: { /shm/history: rw }
     restart: { max: 2 }
+    # Room for the probe its narrowing arm asks for, so only the ceiling can refuse it.
+    budgets: { threads: 2 }
 
   - name: app
-    entry: app_main
+    program: main
     stack: 4096
     priority: 8
     ceiling: 8
     uses: [/svc/sensor]
 
   - name: health
-    entry: health_main
+    program: health
     stack: 2048
     priority: 10
     ceiling: 10

@@ -24,9 +24,9 @@
 #define TLSCARVE_FROM_SP 1
 #endif
 
-// 1 keeps the control block, which holds libc's reentrant-state pointer, with no thread_local.
-#ifndef TLSCARVE_REENT_IN_TCB
-#define TLSCARVE_REENT_IN_TCB 0
+// The libc state a pool thread's stack gives below its TLS block; 0 is the sim's.
+#ifndef TLSCARVE_REENT_CARVE
+#define TLSCARVE_REENT_CARVE 0u
 #endif
 
 #endif

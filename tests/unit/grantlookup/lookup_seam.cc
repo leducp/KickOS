@@ -4,6 +4,8 @@
 #include "lookup_seam.h"
 
 #include <kickos/sys/errno.h>
+#include <kickos/sys/init.h>
+#include <kickos/sys/task_enter.h>
 
 #include <gtest/gtest.h>
 
@@ -19,6 +21,8 @@ namespace seam
     std::vector<uint64_t> sleeps;
     std::function<void()> on_sleep;
     kos_self_t const* entered = nullptr;
+    kos_table_task entered_record = {};
+    std::function<void(kos_self_t const*)> entry_seen;
     char const* entry_print = nullptr;
     int entry_exit = -1;
 
@@ -30,6 +34,8 @@ namespace seam
         sleeps.clear();
         on_sleep = nullptr;
         entered = nullptr;
+        entered_record = {};
+        entry_seen = nullptr;
         entry_print = nullptr;
         entry_exit = -1;
     }
@@ -81,9 +87,73 @@ namespace seam
         return 0;
     }
 
+    namespace
+    {
+        uintptr_t index_of_record(kos_self_t const* self)
+        {
+            return static_cast<uintptr_t>(self - reinterpret_cast<kos_table_task const*>(kickos_table + 1));
+        }
+    }
+
     kos_self_t const* task(char const* name)
     {
         return reinterpret_cast<kos_table_task const*>(kickos_table + 1) + index_of(name);
+    }
+
+    namespace
+    {
+        // A null `self` is the unset word: the index plus one wraps to zero.
+        void run_as(kos_self_t const* self)
+        {
+            if (self == nullptr)
+            {
+                kickos_self_enter(~uintptr_t{0});
+                return;
+            }
+            kickos_self_enter(index_of_record(self));
+        }
+    }
+
+    kos_cap_t grant_endpoint(kos_self_t const* self, char const* name)
+    {
+        run_as(self);
+        return kos_grant_endpoint(name);
+    }
+
+    kos_cap_t grant_notify(kos_self_t const* self, char const* name)
+    {
+        run_as(self);
+        return kos_grant_notify(name);
+    }
+
+    kos_window_t grant_mmio(kos_self_t const* self, char const* name)
+    {
+        run_as(self);
+        return kos_grant_mmio(name);
+    }
+
+    kos_window_t grant_mem(kos_self_t const* self, char const* name)
+    {
+        run_as(self);
+        return kos_grant_mem(name);
+    }
+
+    kos_window_t grant_ports(kos_self_t const* self, char const* name)
+    {
+        run_as(self);
+        return kos_grant_ports(name);
+    }
+
+    kos_line_t grant_irq(kos_self_t const* self, char const* name)
+    {
+        run_as(self);
+        return kos_grant_irq(name);
+    }
+
+    int task_status(kos_self_t const* self, uint32_t i, struct kos_task_status* out)
+    {
+        run_as(self);
+        return kos_task_status(i, out);
     }
 
     StatusBlock::StatusBlock(uint32_t size)
@@ -126,6 +196,11 @@ namespace
     void enter(kos_self_t const* self)
     {
         seam::entered = self;
+        seam::entered_record = *self;
+        if (seam::entry_seen)
+        {
+            seam::entry_seen(self);
+        }
         if (seam::entry_print != nullptr)
         {
             printf("%s", seam::entry_print);
@@ -170,19 +245,70 @@ void kos_exit(int code)
     throw seam::Exit{code};
 }
 
-void sensor_main(kos_self_t const* self)
+// The host runs every constructor before main: no image startup to walk, and no image data a
+// start copies.
+void kickos_image_start_once(void)
 {
-    enter(self);
 }
 
-void app_main(kos_self_t const* self)
+void kickos_image_crt0(void)
 {
-    enter(self);
 }
 
-void health_main(kos_self_t const* self)
+// No arm here starts a packaged driver's task.
+void kickos_driver_task(kos_table_task const*, uintptr_t)
 {
-    enter(self);
+    throw seam::Exit{-1};
+}
+
+// Nor lists a driver under a task's `drivers`.
+void kickos_driver_hosted(kos_task_args const*)
+{
+}
+
+// The system's arguments, which a program without its own reaches.
+struct kos_init_args kickos_init_args = {0, nullptr};
+
+// A program image's start, which runs the program its table names: the compositions' `main` has none.
+void kickos_program_entry(void* args)
+{
+    auto const a = static_cast<kos_task_args*>(args);
+    kos_table_task const* const t = kickos_task_enter(a);
+    struct Program
+    {
+        char const* name;
+        void (*run)(kos_self_t const*);
+    };
+    static Program const programs[] = {
+        {nullptr, enter},
+        {"health", enter},
+        {"sensor", enter},
+    };
+    auto const tasks = reinterpret_cast<kos_table_task const*>(kickos_table + 1);
+    auto const grants = reinterpret_cast<kos_table_grant const*>(tasks + kickos_table->task_count);
+    auto const refs = reinterpret_cast<kos_table_ref const*>(grants + kickos_table->grant_count);
+    auto const privs = reinterpret_cast<kos_table_priv const*>(refs + kickos_table->ref_count);
+    auto const regions = reinterpret_cast<kos_table_region const*>(privs + kickos_table->priv_count);
+    auto const strings = reinterpret_cast<char const*>(regions + kickos_table->region_count);
+    char const* name = nullptr;
+    if (t->program != KOS_TABLE_NO_STRING)
+    {
+        name = &strings[t->program];
+    }
+    for (Program const& p : programs)
+    {
+        bool const same = (p.name == nullptr and name == nullptr)
+                          or (p.name != nullptr and name != nullptr and strcmp(p.name, name) == 0);
+        if (same)
+        {
+            seam::TaskSelf self = {*t, static_cast<int>(a->argc), a->argv};
+            p.run(&self.task);
+            fflush(stdout);
+            fflush(stderr);
+            kos_exit(0);
+        }
+    }
+    throw seam::Exit{-1};
 }
 
 }

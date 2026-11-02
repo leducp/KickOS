@@ -13,19 +13,28 @@
 // The kernel console alone is not enough: console_emit drops every byte handed to it once the
 // UART is USER_OWNED (kernel/init/console.cc). It answers -KOS_EBUSY where a publish landed
 // between the two and index 0 takes the line again, and the remainder is sent there. A task
-// that set O_NONBLOCK is answered -KOS_ETIMEDOUT by either where it would wait, and the write
-// stops there.
+// that set O_NONBLOCK (stdout_nonblock) is answered -KOS_ETIMEDOUT by either where it would
+// wait, and the write stops there.
 
 #ifndef KICKOS_SYS_EMIT_H
 #define KICKOS_SYS_EMIT_H
 
 #include <kickos/sys.h>
+#include <kickos/sys/atomic.h>
 
 #include <stddef.h>
 #include <stdint.h>
 
 namespace kickos
 {
+
+// This task's O_NONBLOCK on fds 0 to 2, set by fcntl (user/src/newlib_fcntl.cc). One word per
+// image, so a sibling task's flag is never this one.
+inline Atomic<uint32_t, Order::RELAXED>& stdout_nonblock()
+{
+    static Atomic<uint32_t, Order::RELAXED> flag{0u};
+    return flag;
+}
 
 // The bytes a write took, and where that is short of them all, the kernel's answer that stopped
 // it; error is 0 once every byte went.
@@ -42,9 +51,14 @@ struct WriteResult
 inline WriteResult kconsole_offer(char const* s, size_t n)
 {
     WriteResult r = {0, 0};
+    uint32_t flags = 0u;
+    if (stdout_nonblock() != 0u)
+    {
+        flags = KOS_KCONSOLE_NOWAIT;
+    }
     while (r.sent < n)
     {
-        int32_t const w = KconsoleRaw::write(s + r.sent, n - r.sent);
+        int32_t const w = KconsoleRaw::write(s + r.sent, n - r.sent, flags);
         if (w < 0)
         {
             r.error = w;
@@ -78,6 +92,11 @@ inline void kconsole_write_all(char const* s, size_t n)
 inline WriteResult stdout_write(char const* s, size_t total)
 {
     size_t sent = 0;
+    uint32_t timeout_us = KOS_TIMEOUT_NONE;
+    if (stdout_nonblock() != 0u)
+    {
+        timeout_us = 0u;
+    }
     while (sent < total)
     {
         size_t chunk = total - sent;
@@ -85,7 +104,7 @@ inline WriteResult stdout_write(char const* s, size_t total)
         {
             chunk = KOS_EP_MSG_MAX;
         }
-        int32_t const r = kos_send(0, s + sent, chunk, KOS_TIMEOUT_NONE);
+        int32_t const r = kos_send(0, s + sent, chunk, timeout_us);
         // A count short of the chunk, zero included, leaves the rest to be offered again. That
         // is no spin: the rendezvous consumed the receive, so the next send parks until the
         // driver receives again, or for a non-blocking task answers at once.

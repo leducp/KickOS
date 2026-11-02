@@ -39,6 +39,11 @@ function(_kos_chip_defines out symbol)
   set(${out} ${_defined} PARENT_SCOPE)
 endfunction()
 
+# The console driver reclaimwit and initdemo create on request, declared once.
+if(KICKOS_HAVE_LIBC AND NOT KICKOS_CHIP_ONE_TASK)
+  add_subdirectory(sinkdrv)
+endif()
+
 # --- Every posture ---------------------------------------------------------------------------
 add_subdirectory(hello)
 add_subdirectory(hello_c)
@@ -54,24 +59,35 @@ endif()
 
 add_subdirectory(fault)
 add_subdirectory(panicgate)
+# A task restarted from its own image, image 1, where the init is an image of its own.
+if(KICKOS_INIT_IMAGE AND NOT KICKOS_CHIP_ONE_TASK AND NOT KICKOS_ARCH STREQUAL "sim")
+  add_subdirectory(restartwit)
+endif()
 
 # --- A C library on the target -----------------------------------------------------------
 if(KICKOS_HAVE_LIBC)
   add_subdirectory(chaincheck)
   add_subdirectory(libc_exit)
-  add_subdirectory(libcrace)
+  # Not on the ESP32-C6 AMP nodes.
+  if(NOT (KICKOS_CHIP STREQUAL "esp32c6" AND KICKOS_AMP_NODE))
+    add_subdirectory(libcrace)
+  endif()
   add_subdirectory(sysdefault)
   add_subdirectory(rootfault)
   add_subdirectory(rootauth)
   add_subdirectory(reclaimwit)
   add_subdirectory(rebootdemo)
 endif()
+# The host libc of the sim takes none of KickOS's locks.
+if(KICKOS_HAVE_LIBC AND NOT KICKOS_ARCH STREQUAL "sim")
+  add_subdirectory(libc_death)
+endif()
 # objbudget fills main's endpoint budget and asks that the refusal be the budget's, so both the
 # pool and main's table must have room for that budget: the pool has none to spare where the
 # init seats the partition's ports in it first, and main's table is a spawn's width
 # (KICKOS_MAX_SPAWN_GRANTS + 1), part of it held from the start.
 if(KICKOS_HAVE_LIBC AND NOT KICKOS_AMP_PORTS
-   AND KICKOS_TASK_ENDPOINT_BUDGET LESS KICKOS_MAX_SPAWN_GRANTS)
+   AND KICKOS_BUDGET_ENDPOINTS LESS KICKOS_MAX_SPAWN_GRANTS)
   add_subdirectory(objbudget)
 endif()
 # mpu_fault grants a region to one thread of a task, which a backend that translates cannot:
@@ -81,6 +97,10 @@ if(KICKOS_HAVE_LIBC AND NOT KICKOS_HAVE_ASPACE)
 endif()
 
 # --- Memory enforcement --------------------------------------------------------------------
+# The RV32 PMP chips hold the user code window as a TOR pair the script bounds.
+if(KICKOS_HAVE_LIBC AND KICKOS_MEMORY_ENFORCED AND KICKOS_ARCH STREQUAL "rv32imac")
+  add_subdirectory(codewindow)
+endif()
 # specfault's verdict is that a read of an address nothing grants is DENIED. Where nothing
 # enforces memory the read is the bus's to answer: it returns on esp32-wroom, and faults on
 # f302nucleo only because no slave sits there, which is no claim of the kernel's.
@@ -139,6 +159,12 @@ endif()
 kickos_qemu_machine("${KICKOS_BOARD}" _kos_errno_env _kos_errno_machine)
 if(NOT _kos_errno_machine STREQUAL "")
   add_subdirectory(errnoprobe)
+endif()
+# The budgets' witnesses, eight declarations over two programs, on an emulator or the sim.
+# Not on the 32 KiB nRF51, whose arena seats fewer threads than its declarations' budgets.
+if(NOT KICKOS_CHIP_ONE_TASK AND NOT KICKOS_CHIP STREQUAL "nrf51"
+   AND (NOT _kos_errno_machine STREQUAL "" OR KICKOS_ARCH STREQUAL "sim"))
+  add_subdirectory(budgetwit)
 endif()
 
 # Per-thread stdout regression. newlib_stubs.cc (the _write under test) is compiled ONLY for

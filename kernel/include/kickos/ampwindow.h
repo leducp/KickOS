@@ -219,6 +219,9 @@ namespace kickos
             Atomic<uint32_t, Order::RELAXED> len;  // far: payload bytes, bounded before any copy
             Atomic<uint32_t, Order::RELAXED> port; // far: bounded against this node's own mint
             ReplyTag tag; // far: handed back to the taker, spent by nothing in this file
+            // far: the badge of the sender's capability, delivered to the receiver as it stands
+            // and spent by nothing in this file. KOS_BADGE_NONE on a reply.
+            uint32_t badge;
             uint8_t payload[SLOT_BYTES];
         };
 
@@ -279,8 +282,8 @@ namespace kickos
         //
         // THE LOCAL NODE IS REFUSED: node_service skips its own self-ring, so a self-send
         // fills four slots nothing will ever take.
-        Sent send(uint32_t to, uint32_t port, ReplyTag const& tag, void const* payload,
-                  uint32_t len);
+        Sent send(uint32_t to, uint32_t port, ReplyTag const& tag, uint32_t badge,
+                  void const* payload, uint32_t len);
 
         // Take one REPLY out of the ring `from` writes to THIS node and HOLD its slot; the local
         // node reads EMPTY, its self-ring being the one no service drains. On TOOK `*out_len`,
@@ -322,7 +325,7 @@ namespace kickos
         // IS OWED BY A TOOK ALONE: a malformed slot owes no reply, so it is dropped and the tail
         // advances whatever the reply ring holds.
         Verdict take_call(uint32_t from, uint32_t* out_len, uint32_t* out_port,
-                          ReplyTag* out_tag, uint32_t* out_slot);
+                          ReplyTag* out_tag, uint32_t* out_badge, uint32_t* out_slot);
 
         // A held call's record: the origin node and the reply token, stored verbatim and never
         // spent here. One per slot of every ordered pair, so the table is a build constant.
@@ -336,7 +339,8 @@ namespace kickos
         struct Inbound
         {
             ReplyTag tag;
-            uint16_t gen;
+            uint32_t badge; // the caller's, as its slot carried it
+            uint32_t gen; // a token carries its low 16 bits, a far reply capability all 32
             uint8_t from;
             uint8_t slot;
             uint8_t live;
@@ -364,11 +368,15 @@ namespace kickos
         // generation in its upper half and the flat table index in its lower, the encoding
         // kickos::ThreadPool::far_reply_handle carries through a reply capability.
         constexpr uint32_t FAR_RECORD_NONE = 0xFFFFFFFFu;
-        uint32_t inbound_seat(uint32_t from, uint32_t slot, ReplyTag const& tag);
+        uint32_t inbound_seat(uint32_t from, uint32_t slot, ReplyTag const& tag, uint32_t badge);
 
         // What record `token` names, or nullptr where it names nothing: an index outside the
         // table, a free record, or a record whose generation has moved past this token's.
         Inbound const* inbound_at(uint32_t token);
+
+        // The whole generation of the record `token` indexes, whether or not it still names it:
+        // every death moves it. 0 for an index outside the table.
+        uint32_t inbound_generation(uint32_t token);
 
         // Free the record `token` names WITHOUT answering and WITHOUT releasing its call slot.
         // For the one path that seats a record and then cannot hand anyone a capability for it:

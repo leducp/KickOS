@@ -5,6 +5,8 @@
 // wait that expires, and the waiting forms' grant, owner-died hand-over, refusals and priority
 // inheritance, each wake SEQUENCED from the park's own switch.
 
+#include "../common/seam_pools.h"
+
 #include <new>
 
 #include <kickos/instance.h>
@@ -41,7 +43,7 @@ namespace kickos
             constexpr int SLOT_FAR = 3;
             constexpr int SLOT_DONOR = 4;
             constexpr int SLOT_CHAIN = SLOT_DONOR + 1;
-            constexpr int CHAIN = KICKOS_THREAD_SLOTS - SLOT_CHAIN;
+            constexpr int CHAIN = KICKOS_SEAM_THREAD_SLOTS - SLOT_CHAIN;
             static_assert(CHAIN >= 3, "a chain needs a few thread slots past the fixture's own");
             constexpr uint32_t TIMEOUT_US = 1000;
 
@@ -447,7 +449,7 @@ namespace kickos
         TEST_F(MutexTimed, a_word_naming_a_slot_being_built_is_a_dead_holders)
         {
             Thread* const waiter = seat_waiter_over_holder();
-            Thread* const built = new (&kernel().threads.slots[SLOT_FAR]) Thread{};
+            Thread* const built = new (&kernel().threads.slots()[SLOT_FAR]) Thread{};
             built->lock_id = kernel().threads.lock_id_for(SLOT_FAR);
             ASSERT_TRUE(built->state == ThreadState::INACTIVE);
             uint32_t word = built->lock_id;

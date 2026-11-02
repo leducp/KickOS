@@ -15,11 +15,8 @@
 
 enum
 {
-    // The three ranges must stay disjoint: every expected trace string in the arms names caps,
-    // thread ids and task ids by their literal value.
-    KOS_SEAM_CAP_BASE = 10,
+    // The thread ids the seam hands out, which every expected trace string names by value.
     KOS_SEAM_THREAD_BASE = 50,
-    KOS_SEAM_TASK_BASE = 90,
     KOS_SEAM_TRACE_MAX = 512,
     KOS_SEAM_MSG_MAX = 512
 };
@@ -28,61 +25,39 @@ enum
 // only the failure it is about.
 struct kos_seam_control
 {
-    // 1-based ordinal of the call that fails; 0 = none ever fails. An ordinal beyond the
-    // number of calls made is silently no failure, so a stale knob reads as a happy path
-    // and NOT as a spurious red.
-    uint32_t irq_claim_fail_at;
-    bool notify_create_fails;
-    bool notify_badge_fails;
-    bool irq_bind_notify_fails;
+    // 1-based ordinal of the spawn that fails; 0 = none ever fails.
     uint32_t spawn_fail_at;
-
-    bool task_create_fails;
-    bool ram_alloc_fails;
-    bool self_grant_fails;
-    bool endpoint_create_fails;
-    bool console_publish_fails;
-
-    // What the handover probe returns. 0 = the rendezvous completed.
-    int32_t send_rc;
-    // What a task slay returns. 0 = the task is gone.
-    int slay_rc;
-    // The console's task ended and a slain member still holds its window: a kernel console write
-    // waits in the dark window until that member exits and the reclaim lands it.
-    bool kconsole_dark;
-
-    // Refusals of the calls a bring-up given an instance makes.
-    bool sched_grant_fails;
-    bool watch_fails;
-    bool pin_fails;
-    // How many claims answer -KOS_EAGAIN, the line retiring, before the next is taken.
-    uint32_t irq_claim_retiring;
-
-    // The readiness latch a spawned thread would set once it reaches its loop. Null, or
-    // latch_on_spawn false, models the thread that never got there.
-    volatile uint32_t* latch;
-    bool latch_on_spawn;
+    // What kos_thread_set_priority answers.
+    int set_priority_rc;
+    // A spawned thread runs at its spawn, before the spawner goes on, as one above the spawner's
+    // priority does.
+    bool run_on_spawn;
+    // A park on a word: the producer publishes it and wakes the parked thread, or nothing comes and
+    // the park lasts its whole timeout.
+    bool publish_on_park;
 };
 
 extern struct kos_seam_control g_seam;
 
-// Clears the control block, the trace and the arena. Every arm must call it first: the
-// arena is static and a cap counter that kept running would make each arm's oracle depend
-// on the arms before it.
+// kos_exit's code, thrown: the calling thread's end.
+struct kos_seam_exit
+{
+    int code;
+};
+
+// Clears the control block, the trace and the clock. Every arm must call it first.
 void kos_seam_reset();
 
-// The trace, rendered. Consecutive kos_sleep_ns calls collapse to one `sleep*N` token, and
-// must keep doing so: the readiness timeout makes KOS_DRV_READY_WAIT_MAX of them and an
-// uncollapsed trace overruns the buffer, turning that arm into a truncation.
+// The trace, rendered.
 char const* kos_seam_trace();
 
 // Everything kos_print and the kernel console took, concatenated.
 char const* kos_seam_msg();
 
-// The line the `i`-th claim taken or refused since the reset named, or -1 past the claims recorded.
-int kos_seam_claimed_line(uint32_t i);
-
 // The arg the `i`-th spawn since the reset handed its thread, or null past the spawns recorded.
 void* kos_seam_spawn_arg(uint32_t i);
+
+// Records `token` in the trace, as a thread body of an arm marks that it ran.
+void kos_seam_note(char const* token);
 
 #endif

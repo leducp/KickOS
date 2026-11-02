@@ -45,6 +45,11 @@ namespace
     uint32_t g_waiting[NODES] = {};
     // The order of the claim word's and the waiting words' accesses, the fences and the rings.
     std::string g_trace;
+    // The interrupt mask's depth, and the most bytes stored inside one masked span.
+    int g_mask_depth = 0;
+    uint32_t g_span_stores = 0;
+    uint32_t g_max_span_stores = 0;
+    uint32_t g_unmasked_stores = 0;
 
     uint64_t token(uint32_t deadline, uint32_t owner)
     {
@@ -76,6 +81,10 @@ namespace
             g_waiting[0] = 0;
             g_waiting[1] = 0;
             g_trace.clear();
+            g_mask_depth = 0;
+            g_span_stores = 0;
+            g_max_span_stores = 0;
+            g_unmasked_stores = 0;
         }
 
         console::Claim claim{SELF, NODES};
@@ -148,6 +157,15 @@ namespace kickos::virt_arm64::console
 
     void store(char c)
     {
+        if (g_mask_depth == 0)
+        {
+            g_unmasked_stores++;
+        }
+        g_span_stores++;
+        if (g_span_stores > g_max_span_stores)
+        {
+            g_max_span_stores = g_span_stores;
+        }
         g_wire.push_back(c);
     }
 
@@ -172,6 +190,37 @@ namespace kickos::virt_arm64::console
     {
         g_trace += "R" + std::to_string(node);
     }
+}
+
+extern "C"
+{
+    arch_irq_state_t arch_irq_save(void)
+    {
+        arch_irq_state_t const prior = static_cast<arch_irq_state_t>(g_mask_depth);
+        if (g_mask_depth == 0)
+        {
+            g_span_stores = 0;
+        }
+        g_mask_depth++;
+        return prior;
+    }
+
+    void arch_irq_restore(arch_irq_state_t state)
+    {
+        g_mask_depth = static_cast<int>(state);
+    }
+}
+
+// A user write and a kernel line each store one byte per masked span: interrupts are open
+// between two bytes of a line.
+TEST_F(VirtArm64Claim, EachByteOfALineIsItsOwnMaskedSpan)
+{
+    EXPECT_EQ(user("abc\n"), 4u);
+    EXPECT_EQ(kernel("de\n"), 3u);
+    EXPECT_EQ(g_wire, "abc\nde\n");
+    EXPECT_EQ(g_unmasked_stores, 0u) << "a byte was stored with interrupts open";
+    EXPECT_EQ(g_max_span_stores, 1u) << "a masked span carried more than one byte";
+    EXPECT_EQ(g_mask_depth, 0);
 }
 
 TEST_F(VirtArm64Claim, KernelLineRenewsAnEndedGrantNoPeerTook)

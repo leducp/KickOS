@@ -17,5 +17,5 @@ endif()
 
 kickos_compose(witness_system "${KICKOS_WITNESS_SYSTEM}")
 add_executable(console_witness writer.cc)
-target_link_libraries(console_witness PRIVATE KickOS::kernel witness_system)
+target_link_libraries(console_witness PRIVATE KickOS::kickos witness_system)
 kickos_emit_image(console_witness)

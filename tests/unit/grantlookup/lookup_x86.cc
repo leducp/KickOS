@@ -39,7 +39,7 @@ namespace
 
     TEST_F(Lookup, a_port_range_answers_its_first_port_and_count)
     {
-        kos_window_t const cmos = kos_grant_ports(seam::task("sensor"), "/dev/cmos_rtc");
+        kos_window_t const cmos = seam::grant_ports(seam::task("sensor"), "/dev/cmos_rtc");
         EXPECT_EQ(reinterpret_cast<uintptr_t>(kos_window_addr(cmos)), CMOS_FIRST_PORT);
         EXPECT_EQ(kos_window_size(cmos), CMOS_PORTS);
         EXPECT_EQ(seam::asked, std::vector<uint32_t>{1u});
@@ -48,25 +48,25 @@ namespace
     TEST_F(Lookup, each_window_kind_is_asked_at_its_own_place)
     {
         kos_self_t const* const sensor = seam::task("sensor");
-        EXPECT_EQ(reinterpret_cast<uintptr_t>(kos_window_addr(kos_grant_mmio(sensor, "/dev/hpet"))), HPET_MAPPED);
-        EXPECT_EQ(kos_window_addr(kos_grant_mem(sensor, "/shm/history")), g_history);
+        EXPECT_EQ(reinterpret_cast<uintptr_t>(kos_window_addr(seam::grant_mmio(sensor, "/dev/hpet"))), HPET_MAPPED);
+        EXPECT_EQ(kos_window_addr(seam::grant_mem(sensor, "/shm/history")), g_history);
         EXPECT_EQ(seam::asked, (std::vector<uint32_t>{0u, 2u}));
     }
 
     TEST_F(Lookup, a_port_range_and_a_device_window_are_not_each_other)
     {
         kos_self_t const* const sensor = seam::task("sensor");
-        expect_no_window(kos_grant_mmio(sensor, "/dev/cmos_rtc"));
-        expect_no_window(kos_grant_ports(sensor, "/dev/hpet"));
-        expect_no_window(kos_grant_mem(sensor, "/dev/cmos_rtc"));
+        expect_no_window(seam::grant_mmio(sensor, "/dev/cmos_rtc"));
+        expect_no_window(seam::grant_ports(sensor, "/dev/hpet"));
+        expect_no_window(seam::grant_mem(sensor, "/dev/cmos_rtc"));
     }
 
     TEST_F(Lookup, a_port_window_of_another_kind_or_count_answers_invalid)
     {
         seam::windows[1].kind = KOS_WINDOW_DEVICE;
-        expect_no_window(kos_grant_ports(seam::task("sensor"), "/dev/cmos_rtc"));
+        expect_no_window(seam::grant_ports(seam::task("sensor"), "/dev/cmos_rtc"));
         seam::windows[1].kind = KOS_WINDOW_PORTS;
         seam::windows[1].size = CMOS_PORTS + 1u;
-        expect_no_window(kos_grant_ports(seam::task("sensor"), "/dev/cmos_rtc"));
+        expect_no_window(seam::grant_ports(seam::task("sensor"), "/dev/cmos_rtc"));
     }
 }

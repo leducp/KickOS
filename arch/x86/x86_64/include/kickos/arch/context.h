@@ -66,9 +66,9 @@ struct arch_context
     // publishes it into TSS.rsp0 and the per-core block.
     uintptr_t kernel_sp;
 
-    // The user address of the cell at the top of an unprivileged thread's stack whose first
-    // word is its struct _reent pointer, which libc's __getreent reads at %fs:0; 0 for a
-    // privileged context, which has no cell. Every switch-in loads it into IA32_FS_BASE.
+    // The user address that ends an unprivileged thread's libc state carve, whose cell libc's
+    // __getreent reads at %fs:-16; 0 for a privileged context. Every switch-in loads it into
+    // IA32_FS_BASE.
     uintptr_t fs_base;
 
     // The port windows this thread holds, seated at spawn and dropped at its exit, and the

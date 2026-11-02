@@ -39,6 +39,10 @@ if [ "${LIST_IMAGES:-0}" = 1 ]; then
 fi
 if [ "${BUILD_ONLY:-0}" = 1 ]; then
     echo "build $1 $APP" >> "$FLEET_FIXTURE/events"
+    if [ -f "$FLEET_FIXTURE/$APP.nobuild" ]; then
+        echo "error: the planted build failure"
+        exit 1
+    fi
     exit 0
 fi
 echo "$1 ${VARIANT:--} $APP ${AMP_PARTITION:-0} $TAG" >> "$FLEET_FIXTURE/flashed"
@@ -58,6 +62,10 @@ if [ -f "$FLEET_FIXTURE/hold" ]; then
     sleep "$(cat "$FLEET_FIXTURE/hold")"
 fi
 echo "end $1" >> "$FLEET_FIXTURE/events"
+if [ -f "$FLEET_FIXTURE/$APP.fail" ]; then
+    cat "$FLEET_FIXTURE/$APP.fail"
+    exit 1
+fi
 if [ -f "$FLEET_FIXTURE/$APP.capture" ]; then
     . "$(dirname "$0")/rig.sh"
     rig_load "$TREE"
@@ -251,6 +259,50 @@ if grep -q '^f302nucleo st ' "$F/flashed"; then
     bad "the f302nucleo pass took its default variant a second time, as a variant of its own"
 fi
 
+# An image its board declares allowed to fail is owed when it fails, fails the pass when it passes,
+# and is NOT RUN when it was never captured; an undeclared failure still fails the pass.
+_allowed=$(. "$TMP/tools/bench/board-rows.sh" && board_allowed_failure f302nucleo mutexbench) \
+    || bad "f302nucleo does not declare mutexbench allowed to fail"
+{
+    printf 'hello|kernel|tests/integration/check_qemu_hello.sh|\n'
+    printf 'mutexbench|kernel|tests/integration/check_mutexbench.sh|\n'
+    printf 'selftest_p2|kernel|tests/integration/check_tap_stream.sh|\n'
+} > "$F/f302nucleo.images"
+printf 'FAIL: panic: the planted fault\n' > "$F/mutexbench.fail"
+printf 'plan: 1..5\nruns: 1\nok: 0\nnot ok: 0\n' > "$F/selftest_p2.out"
+fleet '0483:374b STLINK' f302nucleo
+got=$?
+[ "$got" -eq 3 ] || bad "a pass whose only failures its board allows exits $got, not 3"
+for img in mutexbench selftest_p2; do
+    grep -qxF "  $(printf '%-16s %-38s' f302nucleo "$img") failed, allowed to fail: $_allowed" "$TMP/fleet.out" \
+        || bad "the allowed failure of f302nucleo $img is not reported with its reason"
+done
+grep -q '^OWED: 2 image(s) failed as their board allows' "$TMP/fleet.out" \
+    || bad "the allowed failures are not counted as owed"
+printf 'FAIL: the planted hello failure\n' > "$F/hello.fail"
+fleet '0483:374b STLINK' f302nucleo
+got=$?
+[ "$got" -eq 1 ] || bad "an undeclared failure beside allowed ones exits $got, not 1"
+rm -f "$F/hello.fail" "$F/mutexbench.fail"
+printf 'plan: 1..5\nruns: 1\nok: 5\nnot ok: 0\n' > "$F/selftest_p2.out"
+fleet '0483:374b STLINK' f302nucleo
+got=$?
+[ "$got" -eq 1 ] || bad "a pass where images declared allowed to fail pass exits $got, not 1"
+for img in mutexbench selftest_p2; do
+    grep -qxF "  $(printf '%-16s %-38s' f302nucleo "$img") UNEXPECTED PASS: its board declares it allowed to fail: $_allowed" \
+        "$TMP/fleet.out" || bad "the unexpected pass of f302nucleo $img is not reported"
+done
+grep -q '^UNEXPECTED PASS: 2 image(s) passed' "$TMP/fleet.out" \
+    || bad "the unexpected passes are not summed"
+: > "$F/mutexbench.nobuild"
+printf 'FAIL: panic: the planted fault\n' > "$F/selftest_p2.fail"
+fleet '0483:374b STLINK' f302nucleo
+got=$?
+[ "$got" -eq 1 ] || bad "a pass that never captured a declared image exits $got, not 1"
+grep -qE '^  f302nucleo +mutexbench +NOT RUN$' "$TMP/fleet.out" \
+    || bad "a declared image that was never captured is not NOT RUN"
+rm -f "$F/mutexbench.nobuild" "$F/selftest_p2.fail" "$F/selftest_p2.out"
+
 # A capture whose judge rests on a bench fitting: the rig declares it or the clause is owed, and
 # no rig line at all declares nothing.
 # <rig line or empty>: rig_wired f411disco under a rig carrying it.
@@ -349,6 +401,7 @@ rm -f "$F/hold"
 
 [ "$rc" -eq 0 ] || exit 1
 echo "PASS: an absent board fails the pass; every declared variant is captured under its own tag"
-echo "  and label, a measurement posture is reported and not flashed; a loopback is judged only"
-echo "  where the rig declares its fitting; boards sharing nothing are captured at once and boards"
-echo "  sharing a cable one after the other, every image built first"
+echo "  and label, a measurement posture is reported and not flashed; a failure its board allows is"
+echo "  owed and a pass of it fails the pass; a loopback is judged only where the rig declares its"
+echo "  fitting; boards sharing nothing are captured at once and boards sharing a cable one after"
+echo "  the other, every image built first"

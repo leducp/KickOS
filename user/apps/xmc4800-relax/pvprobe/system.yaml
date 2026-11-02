@@ -7,7 +7,7 @@ ends: pvprobe
 
 tasks:
   - name: pvprobe
-    entry: pvprobe_main
+    program: main
     priority: 10
     ceiling: 10
     devices: [/dev/usic0/ch1]

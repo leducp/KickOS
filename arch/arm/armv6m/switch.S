@@ -20,6 +20,7 @@
  */
 
 #include <kickos/arch/armv6m_trap_stack.h>
+#include <kickos/sys/image_offsets.h>
 /* KICKOS_KERNEL_STACK_SIZE, which PendSV_Handler compares a PSP against. */
 #include <kickos/board_config.h>
 
@@ -71,6 +72,55 @@
    \bad is the refusal target, and the two sites pass DIFFERENT ones because the contained
    resume below reuses PendSV's restore half, whose telemetry tail pops a spill only the
    PendSV entry makes. */
+/* Rewinds the stacked PC at [r0, #24] to its image's kickos_user_cas load when it lies in
+   [cas_start, cas_store] of any header the image table names, and goes to .Lpendsv_ucas_out.
+   Clobbers r1, r2, r12 and lr, which the switch-in rebuilds. */
+    .macro UCAS_REWIND
+    ldr     r1, [r0, #24]           /* the stacked PC */
+    ldr     r2, =g_kickos_ucas_span
+    ldr     r2, [r2, #4]            /* the highest store of any image */
+    cmp     r1, r2
+    bhi     .Lpendsv_ucas_out
+    ldr     r2, =g_kickos_ucas_span
+    ldr     r2, [r2]                /* the lowest load of any image */
+    cmp     r1, r2
+    blo     .Lpendsv_ucas_out
+    ldr     r1, =__kickos_image_table
+.Lpendsv_ucas_walk:
+    ldr     r2, =__kickos_image_table_end
+    cmp     r1, r2
+    bhs     .Lpendsv_ucas_out
+    mov     r12, r1                 /* the table cursor */
+    ldr     r2, [r1]                /* the header */
+    mov     lr, r2
+    ldr     r1, [r0, #24]           /* the stacked PC */
+    adds    r2, #KICKOS_IMAGE_HEADER_OFF_CAS_STORE /* past a v6-M load's immediate */
+    ldr     r2, [r2]
+    cmp     r1, r2
+    bhi     .Lpendsv_ucas_next
+    mov     r2, lr
+    adds    r2, #KICKOS_IMAGE_HEADER_OFF_CAS_START
+    ldr     r2, [r2]
+    lsrs    r2, r2, #1
+    lsls    r2, r2, #1              /* a stacked PC carries no Thumb bit */
+    cmp     r1, r2
+    blo     .Lpendsv_ucas_next
+    str     r2, [r0, #24]
+#if defined(KICKOS_WITNESS_REWIND) && KICKOS_WITNESS_REWIND
+    cmp     r1, r2
+    beq     .Lpendsv_ucas_out       /* already at the load: nothing moved */
+    ldr     r1, =g_kickos_witness_rewinds
+    ldr     r2, [r1]
+    adds    r2, r2, #1
+    str     r2, [r1]
+#endif
+    b       .Lpendsv_ucas_out
+.Lpendsv_ucas_next:
+    mov     r1, r12
+    adds    r1, #4
+    b       .Lpendsv_ucas_walk
+    .endm
+
     .macro PSP_GUARD need, bad
     ldr     r2, =\need
     ldr     r1, [r3, #F_CTX_STACK_LO]
@@ -129,27 +179,10 @@ PendSV_Handler:
 2:
     PSP_GUARD KICKOS_ARMV6M_TRAP_NEED_PENDSV, .Lpsp_wild
 3:
-    /* A thread switched out inside kickos_user_cas's restartable window resumes at its load,
-       or its store lands over whatever the next thread wrote. The bound is INCLUSIVE of the
-       store: a stacked PC on it means the store has not run. */
-    ldr     r1, [r0, #24]           /* the stacked PC */
-    ldr     r2, =kickos_user_cas_store
-    cmp     r1, r2
-    bhi     .Lpendsv_ucas_out
-    ldr     r2, =kickos_user_cas
-    lsrs    r2, r2, #1
-    lsls    r2, r2, #1              /* a stacked PC carries no Thumb bit */
-    cmp     r1, r2
-    blo     .Lpendsv_ucas_out
-    str     r2, [r0, #24]
-#if defined(KICKOS_WITNESS_REWIND) && KICKOS_WITNESS_REWIND
-    cmp     r1, r2
-    beq     .Lpendsv_ucas_out       /* already at the load: nothing moved */
-    ldr     r1, =g_kickos_witness_rewinds
-    ldr     r2, [r1]
-    adds    r2, r2, #1
-    str     r2, [r1]
-#endif
+    /* A thread switched out inside an image's kickos_user_cas restartable window resumes at its
+       load, or its store lands over whatever the next thread wrote. The bound is INCLUSIVE of
+       the store: a stacked PC on it means the store has not run. */
+    UCAS_REWIND
 .Lpendsv_ucas_out:
     subs    r0, #F_TRAP_FRAME       /* room for r4-r11 */
     str     r0, [r3]                /* outgoing->sp = base */
@@ -479,77 +512,6 @@ arch_start:                         /* r0=boot (ignored), r1=first */
     dsb
     isb
     bx      lr
-
-/* ------------------------------------------------------------------------- */
-/* arch_syscall(nr, a0, a1, a2, a3): r0=nr r1=a0 r2=a1 r3=a2 [sp]=a3.          */
-/* Move a3 into r12 so the exception frame carries it (r12 can't be ldr'd on   */
-/* v6-M -> via a low reg). Result delivered in r0:r1 by svc_trampoline.        */
-/* arch_syscall64 is the SAME trap; r0:r1 is the AAPCS long long pair.         */
-    .thumb_func
-    .global arch_syscall64
-arch_syscall64:
-    .thumb_func
-    .global arch_syscall
-arch_syscall:
-    push    {r4}                    /* free a low reg (shifts [sp] a3 by +4) */
-    ldr     r4, [sp, #4]            /* a3 */
-    mov     r12, r4
-    pop     {r4}                    /* restore r4 + SP (8B aligned again) */
-    svc     #0
-    bx      lr
-
-/* ------------------------------------------------------------------------- */
-/* int32_t arch_syscall_reg(uint32_t* io): the register-carrying IPC trap.    */
-/* The hardware frame holds only five words, so the payload rides the CALLEE  */
-/* block instead: io[1..7] load r5-r11, which SVC_Handler stores contiguously */
-/* below the frame for the kernel leaf to read and write. r0 keeps the number */
-/* so a refusal reaching syscall_dispatch still answers on it; r4 is left     */
-/* alone because it is the result slot. On return io[1..5] take back r5-r9.   */
-/* v6-M reaches r8-r11 only through low registers, so both the save and the   */
-/* payload load go via r2/r3 and the reply store comes back the same way.     */
-/* ------------------------------------------------------------------------- */
-    .thumb_func
-    .global arch_syscall_reg
-arch_syscall_reg:
-    push    {r4-r7, lr}
-    mov     r4, r8
-    mov     r5, r9
-    mov     r6, r10
-    mov     r7, r11
-    push    {r0, r4-r7}             /* [sp] = io, then the caller's r8-r11 */
-    adds    r1, r0, #4              /* one walk up io: the 3-in-1 T1 add reaches #4, not #16 */
-    ldmia   r1!, {r5, r6, r7}       /* io[1], io[2], io[3] */
-    ldmia   r1!, {r2, r3}           /* io[4], io[5] */
-    mov     r8, r2
-    mov     r9, r3
-    ldmia   r1!, {r2, r3}           /* io[6], io[7] */
-    mov     r10, r2
-    mov     r11, r3
-    ldr     r0, [r0]                /* nr */
-    /* The two outcomes land at two different addresses, and nothing may run between the
-       SVC and the declined one: svc_trampoline exits to the STACKED LR, so the declined
-       arm resumes at whatever LR holds here. The taken path restores the hardware frame
-       and resumes at the SVC's own return address. */
-    ldr     r1, =.Lreg_declined
-    adds    r1, #1                  /* the trampoline exits with bx: Thumb bit required */
-    mov     lr, r1
-    svc     #0
-    ldr     r1, [sp]                /* taken: r4 = result, r5-r9 = the reply */
-    adds    r1, #4
-    stmia   r1!, {r5, r6, r7}
-    mov     r5, r8
-    mov     r6, r9
-    stmia   r1!, {r5, r6}
-    mov     r0, r4
-.Lreg_declined:                     /* r0 = the generic dispatch's KOS_CALL_REG_FALLBACK */
-    pop     {r1, r4-r7}             /* r1 discards io; r4-r7 carry the caller's r8-r11 */
-    mov     r8, r4
-    mov     r9, r5
-    mov     r10, r6
-    mov     r11, r7
-    pop     {r4-r7}
-    pop     {r1}
-    bx      r1
 
 /* kickos_panic_stack_enter(msg, file, line, top): leave the interrupted stack for the
    reporter's own (arch.h). r0-r2 pass through untouched; r3 is the seat and is reused as the

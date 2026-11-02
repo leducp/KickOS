@@ -19,7 +19,7 @@ tasks:
     restart: { max: 1 }
 
   - name: writer
-    entry: console_writer_main
+    program: main
     stack: 12288
     priority: 8
     ceiling: 8

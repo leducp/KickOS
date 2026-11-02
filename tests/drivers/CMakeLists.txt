@@ -1,16 +1,19 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-# Packaged drivers the driver witnesses compose (docs/design-m10-target.md, section 8): three
-# with no window and no line, testpl011, a console driver over a PL011's window that only the
-# console restart witness on QEMU `virt` composes, testline, whose lines only the line witness
-# on QEMU `virt` binds and whose raiser holds line 0 for SIGNAL alone, and testusic, a console
-# driver over an XMC4800 USIC channel that scrambles it on request, which only conreclaim
-# composes. Built under KICKOS_TEST_DRIVERS alone, which only
+# Packaged drivers the driver witnesses compose (docs/design-m10-target.md, section 8): four
+# with no window and no line, one of them settling before its first receive, testpl011, a console
+# driver over a PL011's window that only the console restart witness on QEMU `virt` composes,
+# testline, whose lines only the line witness on QEMU `virt` binds and whose raiser holds line 0
+# for SIGNAL alone, and testusic, a console driver over an XMC4800 USIC channel that scrambles it
+# on request, which only conreclaim composes. Built under KICKOS_TEST_DRIVERS alone, which only
 # a witness preset or an operator's configure sets: tests/integration/check_test_drivers_absent.sh
 # holds every other package to none.
 
 kickos_add_driver(testexits SOURCES testexits.cc BLOCK none BARRIER none POSTURE retain START testexits_start
+                  THREAD service ENTRY service CAPS ep:wait)
+
+kickos_add_driver(testlate SOURCES testlate.cc BLOCK none BARRIER none POSTURE retain START testlate_start
                   THREAD service ENTRY service CAPS ep:wait)
 
 kickos_add_driver(testtraps SOURCES testtraps.cc BLOCK none BARRIER none POSTURE retain START testtraps_start

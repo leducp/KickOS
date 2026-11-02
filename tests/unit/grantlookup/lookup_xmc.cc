@@ -49,26 +49,30 @@ namespace
 
     TEST_F(Lookup, a_used_endpoint_ahead_of_the_served_one_takes_the_first_slot)
     {
-        EXPECT_EQ(kos_grant_endpoint(seam::task("sensor"), "/svc/spi0"), CAP0 + 0u);
-        EXPECT_EQ(kos_grant_endpoint(seam::task("sensor"), "/svc/sensor"), CAP0 + 1u);
+        EXPECT_EQ(seam::grant_endpoint(seam::task("sensor"), "/svc/spi0"), CAP0 + 0u);
+        EXPECT_EQ(seam::grant_endpoint(seam::task("sensor"), "/svc/sensor"), CAP0 + 1u);
     }
 
     // The window a grant with no place would alias, KOS_TABLE_NONE taken as an index, answers
-    // here, so only a lookup that asks nothing refuses it.
-    TEST_F(Lookup, a_packaged_drivers_grants_answer_invalid)
+    // here, so only a lookup that asks nothing refuses it. The endpoint a driver serves is at its
+    // entry thread's place of it.
+    TEST_F(Lookup, a_packaged_drivers_grants_answer_invalid_but_its_served_endpoint)
     {
         seam::windows.assign(KOS_TABLE_NONE + 1u, seam::window(0, 0, KOS_WINDOW_MEMORY, 0));
         seam::windows[KOS_TABLE_NONE] = seam::window(0x40030000u, 0x200u, KOS_WINDOW_DEVICE, 0);
+        EXPECT_EQ(seam::grant_endpoint(seam::task("console"), "/svc/console"), CAP0 + 2u)
+            << "after the notification and the line thread 0 holds";
+        EXPECT_EQ(seam::grant_endpoint(seam::task("spi0"), "/svc/spi0"), CAP0 + 0u)
+            << "where thread 0 holds it";
         for (char const* name : {"console", "spi0"})
         {
             kos_self_t const* const driver = seam::task(name);
-            EXPECT_EQ(kos_grant_endpoint(driver, "/svc/console"), KOS_CAP_NONE);
-            EXPECT_EQ(kos_grant_endpoint(driver, "/svc/spi0"), KOS_CAP_NONE);
-            EXPECT_EQ(kos_grant_notify(driver, "/init/events"), KOS_CAP_NONE);
-            kos_line_t const irq = kos_grant_irq(driver, "irq");
+            EXPECT_EQ(seam::grant_endpoint(driver, "/svc/sensor"), KOS_CAP_NONE);
+            EXPECT_EQ(seam::grant_notify(driver, "/init/events"), KOS_CAP_NONE);
+            kos_line_t const irq = seam::grant_irq(driver, "irq");
             EXPECT_EQ(irq.cap, KOS_CAP_NONE);
             EXPECT_EQ(irq.index, KOS_TABLE_NONE);
-            kos_window_t const regs = kos_grant_mmio(driver, "regs");
+            kos_window_t const regs = seam::grant_mmio(driver, "regs");
             EXPECT_EQ(kos_window_addr(regs), nullptr);
             EXPECT_EQ(kos_window_size(regs), 0u);
         }
@@ -85,16 +89,16 @@ namespace
                                    kickos::init::StatusFields{3, 0, 0});
 
         struct kos_task_status st;
-        ASSERT_EQ(kos_task_status(seam::task("health"), 0, &st), 0);
+        ASSERT_EQ(seam::task_status(seam::task("health"), 0, &st), 0);
         EXPECT_STREQ(st.name, "spi0");
         EXPECT_TRUE(st.alive);
         EXPECT_EQ(st.deaths, 2u);
         EXPECT_EQ(st.restarts_left, 1u);
-        ASSERT_EQ(kos_task_status(seam::task("health"), 1, &st), 0);
+        ASSERT_EQ(seam::task_status(seam::task("health"), 1, &st), 0);
         EXPECT_STREQ(st.name, "sensor");
         EXPECT_FALSE(st.alive);
         EXPECT_FALSE(st.dependency_down);
         EXPECT_EQ(st.deaths, 3u);
-        EXPECT_EQ(kos_task_status(seam::task("health"), 2, &st), -KOS_EINVAL);
+        EXPECT_EQ(seam::task_status(seam::task("health"), 2, &st), -KOS_EINVAL);
     }
 }

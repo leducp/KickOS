@@ -21,8 +21,9 @@ structures or per-core block.
 half, shared by task roots; slot 0 stays unavailable to users. Empty slots from slot 1
 up form the user half. `arch_aspace_user_offset` supplies the offset U between a physical frame
 and its user address. Boot derives U from the firmware root and paging depth, then
-checks that the app image and frame pool fit in unmapped user slots without overflow.
-The other translating backends answer U=0 through the same arch hook.
+checks that the frame pool fits in unmapped user slots without overflow, and that the
+program's span at its fixed base lies in unmapped user slots apart from the pool's alias
+and the spawn windows. The other translating backends answer U=0 through the same arch hook.
 
 The kernel keeps its identity-mapped view of frames. RAM allocations, self-grants and
 user stacks use physical address + U in a task; the kernel accesses user memory through
@@ -34,46 +35,47 @@ The frame pool comes from the UEFI arena after early kernel allocations, includi
 idle's stack. `frame_pool_init` takes the remaining arena; `arch_ram_alloc` refuses
 further allocations from it. Task roots and page tables come from this pool.
 
-### 1.2 The split PE image
+### 1.2 The program and the PE image
 
-`pe_image.ld` places app code and data in page-aligned `.apptext`, `.appro`, `.appdata`
-and `.appbss` sections, apart from kernel, arch and chip code. Each section and
-`.kosinit` has a guard word so an empty section retains correct bounds under
-`ld -m i386pep`. Kernel runtime copies and code that refers to app storage use the
-split-image paths in `kernel/CMakeLists.txt` and `aspace_image_alias`.
+Every program links on its own as an ELF executable at the fixed user base
+`KICKOS_X86_64_PROGRAM_BASE` (`arch/x86/x86_64/program.ld`,
+`arch/x86/x86_64/include/kickos/arch/program_base.h`): top-level slot 254 of a four-level
+root, and slot 0 of a five-level one, which firmware's identity map takes. Where the adopted
+root maps the program's slot, each space holds its own copy of firmware's table under it, the
+user bit cleared on every copied entry, and maps the program in that table's empty entries; the
+boot refuses a table that maps the program's span. The program holds no relocation: every space
+maps it at the addresses it was linked at. Firmware here leaves five-level paging off, so the
+witness image `selftest_la57` enters it before the kernel adopts the regime
+(`arch/x86/x86_64/la57_witness_x86_64.cc`).
 
-The app-side `arch_syscall` body lives in app text. No privileged thread runs app-half
-code. User entry and return pointers gain U; kernel references that need the loader
-address keep it. `tests/static/check_x86_64_app_split.py` and its allowlist enumerate
-kernel-to-app references and reject app-to-kernel instruction or absolute-data
-references. The app uses PC-relative references and passes the no-GOT check.
+The kernel's PE32+ link (`pe_image.ld`) holds the program's text, data and bss as `.kimg0t`,
+`.kimg0d` and `.kimg0b`, each at the program's own offset from its first byte
+(`tools/image-link.py`). Firmware loads the image anywhere and applies its `DIR64` records to
+the kernel alone. `__kickos_app_load_delta`, the kernel's view of the program less its link
+address, is stated relative to `.kimg0t`, so its one word carries a record and firmware's pass
+moves it with the image. The program addresses the kernel names are absolute words no record
+moves. A PE32+ symbol table holds no 64-bit value, so ld drops those names from it.
 
-Firmware applies PE `DIR64` relocations to the loader address. Before the first task
-image is seeded, `app_relocate` adds U only to absolute words *located in app storage*
-and *targeting app code or data*. Kernel-located words stay at the loader address;
-app-to-kernel words are rejected. The pass also covers constructor and destructor
-arrays, temporarily clearing CR0.WP to update read-only pages and restoring it before
-any task runs. A retained, supervisor-readable relocation directory is checked
-against the PE directory and live input-object relocations; missing, orphan, unknown
-or malformed records fail the build or boot. The image links twice so the retained
-copy has the final directory's exact size. A zero-fixup app is valid only when both
-record sets are empty.
+The program's `arch_syscall` body lives in program text. No privileged thread runs program
+code. User stacks and arena frames take U; the program's addresses do not.
+`tests/static/check_x86_64_app_split.py` checks that the embedded bytes are the program's at
+its offsets, that no record lands in them, that every absolute kernel word has its record,
+and that the kernel names a program address only as an absolute word its allowlist names.
 
-The linker supplies loader-address app bounds and load delta. The x86 arch hook adds
-U for user mappings; resolving a loader frame uses `app_va + load_delta - U`.
-`aspace_image_seed` copies app data after relocation, so every task inherits the
-converted pointers.
+`ld -m i386pep` writes DWARF whose string and line offsets are image addresses, so
+`tools/x86_64-link.sh` also writes `<image>.elf`, an ELF twin of the kernel's link at the PE
+image's addresses, for a debugger.
 
 ### 1.3 Isolation, multicore and cost
 
-`ring3_init` grants no user access to the kernel half. User spaces map only their app
-image and granted memory. Kernel root entries are shared; an unmap shoots down cores
+`ring3_init` grants no user access to the kernel half. User spaces map only their program
+and granted memory. Kernel root entries are shared; an unmap shoots down cores
 holding the affected root before the frame is reused. The AP trampoline remains in
 the kernel half.
 
 A switch between spaces writes CR3. PCIDs and global kernel leaves are off, so this
 flushes translations, including the kernel half. Creating a space copies kernel root
-entries, maps app text and copies app data. PCIDs, global leaves and randomized
+entries, maps program text and copies program data. PCIDs, global leaves and randomized
 placement are separate later decisions; port grants and kernel-placed windows belong
 to sections 7 and 6.
 
@@ -127,7 +129,7 @@ served again answers "refused".** `Endpoint::recv_holders` counts WAIT-bearing c
 - **Clients** retain their endpoint capability on `-KOS_EAGAIN`; they close it on
   `-KOS_ECONNREFUSED`. Far AMP endpoints keep their existing codes because the wire carries no
   errno and a far node has no local receiver to count.
-- **Publishing the console.** `kos_console_publish` takes a capability holding HANDOUT on the
+- **Publishing the console.** the console publish call takes a capability holding HANDOUT on the
   endpoint and refuses `-KOS_EACCES` for one without it, a WAIT-only capability included. It
   seats WAIT on that capability when it does not hold it already, counted, and the endpoint
   receives as a fresh one does for its creator, so every publish leaves the publisher holding
@@ -458,7 +460,7 @@ caller's: a thread names no other.
 - **Range.** Outside `KICKOS_PRIO_MIN` to `KICKOS_PRIO_MAX` it answers `-KOS_EINVAL`, the whole
   argument word read, so a value whose low byte is in range is refused too. Priority 0 is idle's.
 - **Ceiling.** Lowering is always allowed. Raising is allowed up to the calling task's priority
-  ceiling, the half of `kos_task_sched_grant` that a spawn already checks, and past it answers
+  ceiling, the half of the task grant call that a spawn already checks, and past it answers
   `-KOS_EPERM`. A thread's base never sits above its task's ceiling, so the check refuses raises
   alone.
 - **Inheritance.** The call writes `Thread::base_prio` and recomputes the effective priority

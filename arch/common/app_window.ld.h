@@ -26,12 +26,13 @@
  * it, or to kernel .bss's end on a script that declares no pin, within the coarsest MPU granule
  * in the fleet (32 bytes, PMSAv8 and SysMPU): an .appdata aligned coarser and not pinned slides
  * a whole window with kernel .bss. A layout without the MPU carves no window and bases its heap
- * at `.`.
+ * at `.`. Where each declared task is an image of its own, no window is the app's alone:
+ * tools/image-link.py places every image's and holds each to its own asserts.
  */
-#if KICKOS_HAVE_MPU
+PROVIDE(_kernel_data_top = KICKOS_LD_C_SYM(_ebss));
+#if KICKOS_HAVE_MPU && !KICKOS_IMAGES_PLACED
 ASSERT(KICKOS_LD_C_SYM(_kickos_heap_start) == ALIGN(_appdata_used_end, 8),
        "KickOS: the app heap base is not ALIGN(_appdata_used_end, 8). ALIGN inside .appbss aligns RELATIVE to that section's start, so .appdata must close on ALIGN(8) to keep .appbss 8-aligned, and the base must be written as that expression (arch/common/app_window.ld.h)");
-PROVIDE(_kernel_data_top = KICKOS_LD_C_SYM(_ebss));
 ASSERT(ADDR(.appdata) - _kernel_data_top < 32,
        "KickOS: the app window does not start within 32 bytes above _kernel_data_top, which a script declaring no pin takes as kernel .bss's end, so it slides with kernel .bss and the user-RAM arena above it loses that slide. Open .appdata with KICKOS_APPDATA_SECTION (arch/common/kernel_data_reserve.ld.h)");
 #endif

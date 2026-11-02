@@ -45,7 +45,7 @@ _add_test(NAME board_predicates
                   ${_kos_gate_fragments} "${PROJECT_SOURCE_DIR}/user/apps/common/CMakeLists.txt"
           WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
 _add_test(NAME stamp_lines COMMAND python3 -B "${PROJECT_SOURCE_DIR}/tools/bench/test_stamp_lines.py")
-foreach(_check no_eh_runtime no_libnosys ctors_kept image_listing)
+foreach(_check no_eh_runtime no_libnosys ctors_kept image_listing esp_segments)
   _add_test(NAME ${_check}_controls
             COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_${_check}.sh" --self-test)
 endforeach()
@@ -55,10 +55,12 @@ _add_test(NAME string_provider_controls
 kickos_tree_gate(bench_banner_controls stlink_capture_controls selftest_demands_controls
                  boot_tp_controls board_predicates stamp_lines no_eh_runtime_controls
                  no_libnosys_controls ctors_kept_controls image_listing_controls
-                 string_provider_controls TIMEOUT 60)
+                 esp_segments_controls string_provider_controls TIMEOUT 60)
 
 _add_test(NAME trap_redzone_walk
           COMMAND python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/test_trap_redzone.py")
+_add_test(NAME image_link_exports
+          COMMAND python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/test_image_link.py")
 _add_test(NAME app_stack_control
           COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/check_app_stack.sh" "${CMAKE_CXX_COMPILER}"
           WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
@@ -79,8 +81,8 @@ _add_test(NAME driver_metadata
 _add_test(NAME qemu_cpu
           COMMAND "${CMAKE_COMMAND}" "-DKICKOS_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
                   -P "${CMAKE_CURRENT_SOURCE_DIR}/check_qemu_cpu.cmake")
-kickos_tree_gate(trap_redzone_walk app_stack_control gate_lib bench_fleet_controls
-                 preset_defconfig amp_share driver_metadata qemu_cpu)
+kickos_tree_gate(trap_redzone_walk image_link_exports app_stack_control gate_lib
+                 bench_fleet_controls preset_defconfig amp_share driver_metadata qemu_cpu)
 
 _add_test(NAME chip_protection
           COMMAND "${CMAKE_COMMAND}" "-DKICKOS_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
@@ -88,7 +90,6 @@ _add_test(NAME chip_protection
                   -P "${CMAKE_CURRENT_SOURCE_DIR}/check_chip_protection.cmake")
 _add_test(NAME selftest_partials
           COMMAND "${CMAKE_COMMAND}" "-DKICKOS_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
-                  "-DSCRATCH=${PROJECT_BINARY_DIR}/selftest_partials"
                   -P "${CMAKE_CURRENT_SOURCE_DIR}/check_selftest_partials.cmake")
 kickos_tree_gate(chip_protection selftest_partials TIMEOUT 60)
 

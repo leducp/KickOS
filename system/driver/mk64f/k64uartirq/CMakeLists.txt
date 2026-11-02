@@ -3,7 +3,7 @@
 
 # kickos_k64uartirq: the K64F/UART0 buffered IRQ-driven userspace UART driver (an
 # unprivileged IRQ thread owning the register window + an unprivileged service thread
-# owning the endpoint, plus the privileged one-shot bring-up; see k64uartirq.h).
+# owning the endpoint; see k64uartirq.h).
 #
 # TWO SOURCES. ../uart_k64.cc is the chip's ONE backend of the raw UART class
 # <kickos/driver/uart.h> and owns every register; k64uartirq.cc is the service composed on

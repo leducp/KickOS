@@ -42,7 +42,7 @@ class Decl(object):
     def __init__(self, path, arch, kernel_cores=1):
         self.need = None                            # (header, frame macro, zone macro)
         self.via = None                             # the symbol every entry is called from
-        self.threads = []                           # (image, name, root spec, stack macro)
+        self.threads = []                           # (image, name, root spec, stack macro, above)
         self.images = set()                         # every image a thread of any arch names
         self.unsized = {}                           # symbol -> (bytes, [(callee, optional)])
         for n, f, reason in T.records(path):
@@ -69,7 +69,8 @@ class Decl(object):
                 if 'root' not in fields or 'stack' not in fields:
                     die('%s: thread wants <arch> <image> <name> root=<symbol> stack=<macro>'
                         % where)
-                self.threads.append((f[2], f[3], fields['root'], fields['stack']))
+                above = [x for x in fields.get('above', '').split(',') if x]
+                self.threads.append((f[2], f[3], fields['root'], fields['stack'], above))
             elif kind == 'unsized':
                 if len(f) < 4:
                     die('%s: unsized wants <arch> <symbol> <bytes> [cores=1|cores>1]'
@@ -97,7 +98,7 @@ class Decl(object):
                 ' reservation to add below them' % (path, arch))
 
     KEYS = {'need': (2, ('header', 'frame', 'zone', 'via'), ()),
-            'thread': (4, ('root', 'stack'), ()),
+            'thread': (4, ('root', 'stack', 'above'), ()),
             'unsized': (4, ('calls',), ())}
 
     @staticmethod
@@ -122,6 +123,9 @@ class Decl(object):
         return fields
 
 
+IMAGE_OBJECT_RE = re.compile(r'/kickos_image([0-9]+)\.o$')
+
+
 class ImageGraph(T.Graph):
     """The corpus narrowed to one image, remembering which .ci defines each sized node."""
 
@@ -132,13 +136,33 @@ class ImageGraph(T.Graph):
 
     # The armv7m and RISC-V links name their inputs relative to the build directory, which is
     # where the linker ran; T.Graph reads only the absolute LOAD lines x86_64 writes.
+    # An image the final link names by the one object its own link wrote is the inputs that
+    # link's map loads (tools/image-link.py), image<n>.map beside that object.
     @staticmethod
     def load_set(ci_dir, pattern):
         path = os.path.join(ci_dir, pattern)
         loaded = set()
-        for line in open(path, errors='replace'):
-            if line.startswith('LOAD '):
-                loaded.add(os.path.realpath(os.path.join(ci_dir, line[len('LOAD '):].strip())))
+        maps = [path]
+        while maps:
+            one = maps.pop()
+            n = 0
+            for line in open(one, errors='replace'):
+                if not line.startswith('LOAD '):
+                    continue
+                n += 1
+                name = line[len('LOAD '):].strip()
+                m = IMAGE_OBJECT_RE.search(name)
+                if m:
+                    image_map = os.path.join(os.path.dirname(os.path.join(ci_dir, name)),
+                                             'image%s.map' % m.group(1))
+                    if not os.path.isfile(image_map):
+                        die('%s loads image %s and no map of it is beside it: %s'
+                            % (path, m.group(1), image_map))
+                    maps.append(image_map)
+                    continue
+                loaded.add(os.path.realpath(os.path.join(ci_dir, name)))
+            if n == 0:
+                die('NO LINK MAP: %s carries no LOAD line, so it names no input of its image' % one)
         if not loaded:
             die('NO LINK MAP: %s carries no LOAD line, so it names no input of its image' % path)
         return loaded
@@ -225,13 +249,25 @@ def evaluate(name, macros, seen=()):
         die('macro %s is "%s", which does not evaluate' % (name, text))
 
 
-def tls_carve(map_path):
+# The final link assigns the carve, or where image 0 is a program of its own link, that link,
+# whose map sits beside the image 0 object the final map LOADs.
+def tls_carve(ci_dir, map_path):
+    maps = [map_path]
+    kimg = os.path.realpath(map_path[:-len('.map')] + '.kimg')
     for line in open(map_path, errors='replace'):
-        m = CARVE_RE.match(line)
-        if m:
-            return int(m.group(1), 16)
+        if not line.startswith('LOAD '):
+            continue
+        obj = os.path.realpath(os.path.join(ci_dir, line[len('LOAD '):].strip()))
+        if obj == os.path.join(kimg, 'kickos_image0.o'):
+            maps.append(os.path.join(kimg, 'image0.map'))
+            break
+    for one in maps:
+        for line in open(one, errors='replace'):
+            m = CARVE_RE.match(line)
+            if m:
+                return int(m.group(1), 16)
     die('%s assigns no __kickos_tls_carve, so the bytes the image carves off a spawned stack'
-        ' are unknown' % map_path)
+        ' are unknown' % ' nor '.join(maps))
 
 
 # The images of <images> no CMakeLists.txt under <src>/user/apps names as a target, in the
@@ -252,24 +288,20 @@ def unnamed_images(src, images):
     return sorted(set(images) - named)
 
 
-# The map is named for the linked file, so an executable suffix (x86_64's .efi) comes before
-# .map.
+# The map beside the file the build graph builds for the image's target (KICKOS_IMAGE_MAP). A
+# reused tree also holds maps of an earlier build's links.
 def find_map(build_dir, image):
-    named = re.compile(re.escape(image) + r'(\.[A-Za-z0-9]+)?\.map$')
-    hits = []
-    for root, _dirs, files in os.walk(build_dir):
-        for f in files:
-            if named.match(f):
-                hits.append(os.path.join(root, f))
-    if len(hits) > 1:
-        die('%d link maps named %s.map under %s' % (len(hits), image, build_dir))
-    if hits:
-        return hits[0]
-    return None
+    linked = T.target_file(build_dir, image)
+    if linked is None:
+        return None
+    path = linked + '.map'
+    if not os.path.isfile(path):
+        die('NO LINK MAP: %s builds %s and no map of it is beside it' % (build_dir, linked))
+    return path
 
 
 def check_thread(build_dir, src_dir, decl, bindings, entries, preset, image, name, root,
-                 stack_macro):
+                 stack_macro, above=()):
     map_path = find_map(build_dir, image)
     if map_path is None:
         print('app_stack: %s/%s: not bounded on %s' % (image, name, preset))
@@ -316,6 +348,14 @@ def check_thread(build_dir, src_dir, decl, bindings, entries, preset, image, nam
                 % (image, name, decl.via, map_path))
         via = graph.size[vk]
         via_text = ' + via %s %d' % (decl.via, via)
+    # The frames between the entry and the root, each live while the root runs.
+    for sym in above:
+        ak = graph.resolve(sym)
+        if ak is None or ak not in graph.size:
+            die('%s/%s: above %s is no sized node of the units %s loads'
+                % (image, name, sym, map_path))
+        via += graph.size[ak]
+        via_text += ' + above %s %d' % (sym, graph.size[ak])
 
     header, frame_macro, zone_macro = decl.need
     entry = entries.get(graph.home[key])
@@ -325,7 +365,7 @@ def check_thread(build_dir, src_dir, decl, bindings, entries, preset, image, nam
     frame = evaluate(frame_macro, macros)
     zone = evaluate(zone_macro, macros)
     stack = evaluate(stack_macro, macros)
-    carve = tls_carve(map_path)
+    carve = tls_carve(build_dir, map_path)
     need = via + depth + frame + zone
     usable = stack - carve
 
@@ -395,9 +435,9 @@ def run(argv):
     bindings = T.read_bindings(opt['indirect'], opt['arch'], opt['preset'], cores)
     entries = compile_entries(opt['ci-dir'])
     fails = []
-    for image, name, root, stack in decl.threads:
+    for image, name, root, stack, above in decl.threads:
         fails += check_thread(opt['ci-dir'], opt['src'], decl, bindings, entries, opt['preset'],
-                              image, name, root, stack)
+                              image, name, root, stack, above)
     if fails:
         for f in fails:
             sys.stderr.write('FAIL: %s\n' % f)

@@ -39,10 +39,10 @@ int main(int, char**)
     kos::print("[stackdepth] panic arm only\n");
     kos_panic("[stackdepth] read the block out");
 #else
-    kos::print("[stackdepth] driving the grant-carrying spawn\n");
+    kos::print("[stackdepth] driving the window-carrying spawn\n");
 
-    // The grant is what reaches spawn_grant_admit -> ram_region_admit -> grant_region_admissible
-    // -> grant_hits_reserved. A spawn without one stops short of that subtree.
+    // The window is what reaches ram_region_admit -> grant_region_admissible ->
+    // grant_hits_reserved. A spawn without one stops short of that subtree.
     void* const block = kos_ram_alloc(SD_GRANT);
     if (block == nullptr)
     {
@@ -55,8 +55,12 @@ int main(int, char**)
     p.entry = worker;
     p.name = "sdw";
     p.prio = 10;
-    p.mem_base = block;
-    p.mem_size = SD_GRANT;
+    kos_window w = {};
+    w.base = reinterpret_cast<uintptr_t>(block);
+    w.size = SD_GRANT;
+    w.kind = KOS_WINDOW_MEMORY;
+    p.windows = &w;
+    p.window_count = 1;
 
     kos_thread_t t;
     int const rc = kos_thread_create(&p, &t);

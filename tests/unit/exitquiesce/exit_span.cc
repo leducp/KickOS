@@ -121,10 +121,10 @@ TEST_F(ExitQuiesce, a_reclaim_takes_the_slot_the_span_published)
     run_exit(0);
 
     ASSERT_EQ(c->state, ThreadState::EXITED);
-    uint16_t const gen_before = kernel().threads.gen[SLOT_DYING];
-    int const claimed = kernel().threads.alloc();
+    uint16_t const gen_before = kernel().threads.gen()[SLOT_DYING];
+    int const claimed = kernel().threads.alloc(nullptr);
     EXPECT_EQ(claimed, SLOT_DYING) << "the published slot is the one a spawn reclaims";
-    EXPECT_EQ(kernel().threads.gen[SLOT_DYING], static_cast<uint16_t>(gen_before + 1))
+    EXPECT_EQ(kernel().threads.gen()[SLOT_DYING], static_cast<uint16_t>(gen_before + 1))
         << "the reclaim burned a generation, which is what kills a stale handle";
 }
 
@@ -136,9 +136,9 @@ TEST_F(ExitQuiesce, a_reclaim_refuses_a_slot_the_span_has_not_published)
     Thread* c = dying_in_pool();
     c->dying = true;
 
-    uint16_t const gen_before = kernel().threads.gen[SLOT_DYING];
-    int const claimed = kernel().threads.alloc();
+    uint16_t const gen_before = kernel().threads.gen()[SLOT_DYING];
+    int const claimed = kernel().threads.alloc(nullptr);
     EXPECT_NE(claimed, SLOT_DYING) << "a thread still on the CPU may not have its slot handed out";
-    EXPECT_EQ(kernel().threads.gen[SLOT_DYING], gen_before) << "the refused slot kept its generation";
+    EXPECT_EQ(kernel().threads.gen()[SLOT_DYING], gen_before) << "the refused slot kept its generation";
     EXPECT_EQ(c->state, ThreadState::RUNNING) << "fixture: the arm never published the store";
 }

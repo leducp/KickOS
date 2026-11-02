@@ -43,14 +43,6 @@ namespace
         fflush(stdout);
     }
 
-    // A zero-length plain send on the console endpoint means FLUSH. TWICE: a plain send is
-    // released when the receiver TAKES it, so the first only starts the drain and the second
-    // cannot be taken until the driver is back in kos_recv, past that drain.
-    void drain_console()
-    {
-        (void)kos_send(CH_EP, "", 0, KOS_TIMEOUT_NONE);
-        (void)kos_send(CH_EP, "", 0, KOS_TIMEOUT_NONE);
-    }
 }
 
 int main(int, char**)
@@ -110,7 +102,7 @@ int main(int, char**)
     }
 
     // Before the counters are read, so tx_dropped has stopped moving.
-    drain_console();
+    (void)kos_console_flush(KOS_TIMEOUT_NONE);
 
     uint8_t st[sizeof(struct kos_uart_stats)];
     struct kos_uart_stats stats = {};

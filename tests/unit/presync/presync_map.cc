@@ -48,6 +48,7 @@ extern "C"
     size_t arch_aspace_granule(void) { return G; }
     uintptr_t arch_aspace_user_offset(void) { return 0; }
     arch_phys_addr_t arch_aspace_frame_at(struct arch_aspace*, uintptr_t) { return 0; }
+    size_t arch_aspace_map_tables(struct arch_aspace*, uintptr_t, size_t) { return 0; }
 
     enum arch_aspace_result arch_aspace_map(struct arch_aspace*, uintptr_t, arch_phys_addr_t,
                                             size_t, uint32_t, enum arch_map_memtype)
@@ -78,6 +79,9 @@ namespace kickos
     struct arch_aspace* domain_space(Domain const*) { return nullptr; }
     VirtualRanges const* domain_ranges(Domain const*) { return nullptr; }
     VirtualRanges* domain_ranges_mut(Domain*) { return nullptr; }
+    bool task_admit(Task const*, BudgetKind, uint32_t) { return true; }
+    Task* task_decl_record(size_t) { return nullptr; }
+    ThreadLink* task_image_stager(Task const*) { return nullptr; }
 
     bool frame_run_ref(int) { return true; }
     void frame_run_release(int) {}
@@ -105,12 +109,12 @@ namespace
             g_maps = 0;
         }
 
-        static Thread* a() { return &kickos::kernel().threads.slots[0]; }
-        static Thread* b() { return &kickos::kernel().threads.slots[1]; }
+        static Thread* a() { return &kickos::kernel().threads.slots()[0]; }
+        static Thread* b() { return &kickos::kernel().threads.slots()[1]; }
 
         static bool live(Thread const* t)
         {
-            return kickos::kernel().presync[kickos::kernel().threads.index_of(t)].live;
+            return kickos::kernel().presync()[kickos::kernel().threads.index_of(t)].live;
         }
 
         // One round of a call `t` makes: noting `pages` granules of the run when `note`, then
@@ -133,7 +137,7 @@ namespace
 
         int map_at(int which, uintptr_t* va, enum arch_map_memtype type)
         {
-            return kickos::aspace_cap_map(space_, &ranges_[which], va, which, RUN, PAGES,
+            return kickos::aspace_cap_map(nullptr, space_, &ranges_[which], va, which, RUN, PAGES,
                                           ARCH_MAP_R | ARCH_MAP_W, type);
         }
 
@@ -223,7 +227,7 @@ namespace
         g_current = a();
         kickos::presync_begin();
         uintptr_t va = VA_A;
-        EXPECT_EQ(kickos::aspace_cap_map(space_, &ranges_[0], &va, 0, POOL_HI, PAGES,
+        EXPECT_EQ(kickos::aspace_cap_map(nullptr, space_, &ranges_[0], &va, 0, POOL_HI, PAGES,
                                          ARCH_MAP_R | ARCH_MAP_W, ARCH_MAP_NOCACHE),
                   0);
         EXPECT_FALSE(end(a(), true));

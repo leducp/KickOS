@@ -249,7 +249,7 @@ and every architecture chapter.
 | Directory | What it holds |
 |---|---|
 | `user/include/kickos/` | The application API: `sys.h` (the C `kos_*` calls), `kos.h` (the C++ `kos::` wrappers), `app.h` (the `main` contract) |
-| `user/src/` | The syscall stubs (`syscall_stubs.cc`), the user side of the door: each `kos_*` call packs its arguments and calls `arch_syscall`, which executes the trap; the root thread's entry (`root_entry.cc`), the task entry (`task_trampoline.cc`), and the glue newlib needs: `_sbrk`, the libc lock, the per-thread `_reent`, the other stubs |
+| `user/src/` | The syscall stubs (`syscall_stubs.cc`), the user side of the door: each `kos_*` call packs its arguments and calls `arch_syscall`, which executes the trap; the root thread's entry (`root_entry.cc`), the task entry (`task_trampoline.cc`, `kickos_task_entry`), and the glue newlib needs: `_sbrk`, the libc lock, the per-thread `_reent`, the other stubs |
 | `user/lib/` | User-side libraries, such as the SPI proxy |
 | `user/apps/common/` | Applications built for every board: `hello`, `hello_c`, `selftest`, `stress`, the fault probes, and many small witnesses |
 | `user/apps/<board>/` | Demos for one board |

@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // kernel/init/console.cc and kernel/init/console_tx.cc in one program, driven through
-// kconsole_write, with kos_console_publish's console sequence transcribed below and seated
+// kconsole_write, with a console driver create's console sequence transcribed below and seated
 // in a mask gap of the writer it races.
 //
 // The line a byte must not cross is the END of the publish drain, not the ownership flip:
@@ -60,7 +60,7 @@ namespace
         return s;
     }
 
-    // KOS_SYS_CONSOLE_PUBLISH, lock-held half: everything the syscall does to the console
+    // A console driver create, lock-held half: everything the create does to the console
     // between installing the cap and releasing IrqLock.
     void publish_lock_held(void)
     {

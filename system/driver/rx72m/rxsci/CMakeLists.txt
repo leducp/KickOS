@@ -2,8 +2,7 @@
 # Copyright (c) 2026 Philippe Leduc
 
 # kickos_rxsci: the RX72M SCI6 buffered IRQ-driven userspace UART/console driver (an
-# unprivileged two-thread driver plus a privileged one-shot handover bring-up; see
-# rxsci.h). REGDIR carries the chip's clean-room mmap.h + regs/sci.h, register facts
+# unprivileged two-thread driver; see rxsci.h). REGDIR carries the chip's clean-room mmap.h + regs/sci.h, register facts
 # only, so they are not duplicated per driver.
 #
 # TWO SOURCES, and the split is the driver-model ruling: ../uart_sci.cc is the RX72M

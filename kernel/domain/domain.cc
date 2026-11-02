@@ -3,14 +3,19 @@
 
 #include <kickos/domain.h>
 
+#include <kickos/image.h>
+
 #include <kickos/aspace.h> // aspace_image_seed / aspace_release
+#include <kickos/budget.h>
 #include <kickos/grant.h> // grant_nocache_admissible
 #include <kickos/instance.h>
 #include <kickos/irqlock.h>
 #include <kickos/debug.h>  // KICKOS_DEBUG_ASSERT
 #include <kickos/kernel.h> // KICKOS_ASSERT
 #include <kickos/klink.h>
+#include <kickos/ramown.h> // ram_grant_extent
 #include <kickos/slotpool.h> // handle_pack / handle_index / handle_gen
+#include <kickos/task.h>     // task_domains_head
 
 #include <kickos/sys/errno.h>
 
@@ -24,44 +29,93 @@ namespace kickos
         // returns them.
         enum { KDOM_KERNEL_INDEX = 0, KDOM_DEFAULT_USER_INDEX = 1 };
 
-        static_assert(KICKOS_MAX_DOMAINS > KDOM_DEFAULT_USER_INDEX + 1,
-                      "the domain pool must seat both immortal singletons and still leave a "
-                      "slot free_slot can hand out");
+        // A claimed domain whose last reference went, or which was released unreferenced, heads
+        // the free list, once. O(1).
+        void free_put(Domain* d)
+        {
+            Kernel& k = kernel();
+            if (d->immortal or d->refcount != 0 or k.domain_free.holds(&d->free_node))
+            {
+                return;
+            }
+#if KICKOS_HAVE_ASPACE
+            domain_unpay(d);
+#endif
+            k.domain_free.push(&d->free_node);
+        }
 
+        // The slot freed last, else a never-claimed one. O(1).
         Domain* free_slot()
         {
             Kernel& k = kernel();
-            for (int i = 0; i < KICKOS_MAX_DOMAINS; i++)
+            ListNode* const n = k.domain_free.pop();
+            if (n != nullptr)
             {
-                Domain& d = k.domains[i];
-                if (not d.immortal and d.refcount == 0)
-                {
-                    return &d;
-                }
+                return KICKOS_CONTAINER_OF(n, Domain, free_node);
             }
-            return nullptr;
+            int const fresh = KDOM_DEFAULT_USER_INDEX + 1 + k.domain_fresh;
+            if (fresh >= k.domains().size())
+            {
+                return nullptr;
+            }
+            k.domain_fresh++;
+            return &k.domains()[fresh];
         }
 
 #if KICKOS_HAVE_ASPACE
+        // The base of the handoff `d` borrows, or 0.
+        uintptr_t handoff_base(Domain const* d)
+        {
+            for (size_t i = 0; i < VirtualRanges::capacity(); i++)
+            {
+                VirtualRange const* const e = d->ranges.at(i);
+                if (aspace_range_handed_off(e))
+                {
+                    return e->base;
+                }
+            }
+            return 0;
+        }
+
         // The edge is returned to the caller; a release here would recurse down a chain of
-        // borrowers.
+        // borrowers. The donor's lend ends once this space maps its frames no more.
         Domain* drop_space(Domain* d)
         {
             Domain* const donor = d->borrowed_from;
+            uintptr_t const lent = handoff_base(d);
             d->borrowed_from = nullptr;
             if (d->space != nullptr)
             {
                 aspace_release(d->space, &d->ranges);
                 d->space = nullptr;
+                // A spaceless domain naming ranges is a shed one.
+                d->ranges = VirtualRanges{};
+            }
+            else
+            {
+                // A shed space: what it still names is only its lent reservations.
+                for (size_t i = 0; i < VirtualRanges::capacity(); i++)
+                {
+                    aspace_shed_free(&d->ranges, i);
+                }
+            }
+            if (donor != nullptr)
+            {
+                domain_unlend(donor, lent);
             }
             return donor;
         }
 #endif
 
         // A fresh unprivileged domain, with the address space it needs where a backend
-        // translates. On refusal the slot is left reinitialised and *err written.
-        Domain* claim_slot(int* err)
+        // translates, seeded with image `image` and charged to task slot `payer`, or to none
+        // where it is negative. On refusal the slot is left reinitialised and *err written.
+        Domain* claim_slot(size_t image, int payer, int* err)
         {
+#if not KICKOS_HAVE_ASPACE
+            (void)image;
+            (void)payer;
+#endif
             Domain* d = free_slot();
             if (d == nullptr)
             {
@@ -75,23 +129,39 @@ namespace kickos
 #endif
             // Survives the reinitialisation and advances with it, or a capability naming this
             // slot's previous occupant resolves to the new one.
-            uint16_t const gen = static_cast<uint16_t>(d->generation + 1u);
+            uint32_t const gen = d->generation + 1u;
             *d = Domain{};
             d->generation = gen;
 #if KICKOS_HAVE_ASPACE
             // After the reinitialisation, so a cascade that frees further slots cannot find
             // this one half written.
             domain_release(stale_donor);
+            Task* t = nullptr;
+            if (payer >= 0 and payer < kernel().tasks().size())
+            {
+                t = &kernel().tasks()[payer];
+                domain_pay(d, t);
+            }
+            if (not task_admit(t, BudgetKind::PAGES,
+                               static_cast<uint32_t>(arch_aspace_create_pages())))
+            {
+                free_put(d);
+                *err = KOS_EAGAIN;
+                return nullptr;
+            }
             d->space = arch_aspace_create();
             if (d->space == nullptr)
             {
+                free_put(d);
                 *err = KOS_ENOMEM;
                 return nullptr;
             }
-            if (not aspace_image_seed(d->space, &d->ranges))
+            int const src = aspace_image_seed(t, d->space, &d->ranges, image);
+            if (src != 0)
             {
                 (void)drop_space(d); // a space with no handoff yet: the edge is null
-                *err = KOS_ENOMEM;
+                free_put(d);
+                *err = -src;
                 return nullptr;
             }
 #endif
@@ -102,11 +172,11 @@ namespace kickos
     void domain_init(void)
     {
         Kernel& k = kernel();
-        for (int i = 0; i < KICKOS_MAX_DOMAINS; i++)
+        for (Domain& d : k.domains())
         {
-            k.domains[i] = Domain{};
+            d = Domain{};
         }
-        Domain* const kdom = &k.domains[KDOM_KERNEL_INDEX];
+        Domain* const kdom = &k.domains()[KDOM_KERNEL_INDEX];
         kdom->privileged = true;
         kdom->immortal = true;
         size_t size = arch_ram_size();
@@ -117,7 +187,9 @@ namespace kickos
             kdom->regions[0].attr = ARCH_MPU_R | ARCH_MPU_W;
             kdom->region_count = 1;
         }
-        k.domains[KDOM_DEFAULT_USER_INDEX].immortal = true;
+        k.domains()[KDOM_DEFAULT_USER_INDEX].immortal = true;
+        k.domain_fresh = 0;
+        k.domain_free = HeadList{};
     }
 
     // Only domain_init and domain_for may touch regions[] directly; every reader outside this
@@ -139,17 +211,17 @@ namespace kickos
 
     Domain* domain_kernel(void)
     {
-        return &kernel().domains[KDOM_KERNEL_INDEX];
+        return &kernel().domains()[KDOM_KERNEL_INDEX];
     }
 
     Domain* domain_default_user(void)
     {
-        return &kernel().domains[KDOM_DEFAULT_USER_INDEX];
+        return &kernel().domains()[KDOM_DEFAULT_USER_INDEX];
     }
 
     // SlotPool's handle codec. An aged handle is negative, so no decoder may test its sign; -1,
-    // the null domain's handle, is refused by its all-ones index.
-    static_assert(KICKOS_MAX_DOMAINS < HANDLE_INDEX_MASK, "a domain index must never be all ones");
+    // the null domain's handle, is refused by its all-ones index, which the pool never reaches
+    // (<kickos/pool_storage.h>).
 
     int domain_handle(Domain const* d)
     {
@@ -157,20 +229,21 @@ namespace kickos
         {
             return -1;
         }
-        size_t const idx = static_cast<size_t>(d - &kernel().domains[0]);
-        return static_cast<int>(handle_pack(d->generation, static_cast<uint32_t>(idx)));
+        size_t const idx = static_cast<size_t>(d - &kernel().domains()[0]);
+        return static_cast<int>(
+            handle_pack(static_cast<uint16_t>(d->generation), static_cast<uint32_t>(idx)));
     }
 
     Domain* domain_resolve(int handle)
     {
         uint32_t const raw = static_cast<uint32_t>(handle);
         size_t const idx = handle_index(raw);
-        if (idx >= KICKOS_MAX_DOMAINS)
+        if (idx >= static_cast<size_t>(kernel().domains().size()))
         {
             return nullptr;
         }
-        Domain* d = &kernel().domains[idx];
-        if (d->generation != handle_gen(raw))
+        Domain* d = &kernel().domains()[idx];
+        if (static_cast<uint16_t>(d->generation) != handle_gen(raw))
         {
             return nullptr; // the slot has been reclaimed since this handle was minted
         }
@@ -226,13 +299,104 @@ namespace kickos
         }
     }
 
+    Domain* domain_retire_handoff(Domain* d)
+    {
+        if (d == nullptr or d->borrowed_from == nullptr)
+        {
+            return nullptr;
+        }
+        Domain* const donor = d->borrowed_from;
+        uintptr_t const lent = handoff_base(d);
+        aspace_release_handoff(d->space, &d->ranges);
+        d->borrowed_from = nullptr;
+        domain_unlend(donor, lent);
+        return donor;
+    }
+
+    void domain_unlend(Domain* d, uintptr_t base)
+    {
+        if (d == nullptr or base == 0)
+        {
+            return;
+        }
+        uint16_t const left = d->ranges.lend(base, false);
+        if (left == 0 and d->space == nullptr)
+        {
+            aspace_shed_free(&d->ranges, d->ranges.index_at(base));
+        }
+    }
+
+    void domain_shed(Domain* d)
+    {
+        if (d == nullptr or d->immortal or d->space == nullptr)
+        {
+            return;
+        }
+        aspace_shed(d->space, &d->ranges);
+        d->space = nullptr;
+    }
+
+    Task* domain_payer(Domain const* d)
+    {
+        if (d == nullptr or d->payer == 0)
+        {
+            return nullptr;
+        }
+        return &kernel().tasks()[d->payer - 1u];
+    }
+
+    void domain_pay(Domain* d, Task* t)
+    {
+        HeadList* const domains = task_domains_head(t);
+        if (d == nullptr or d->immortal or d->payer != 0 or domains == nullptr)
+        {
+            return;
+        }
+        d->payer = static_cast<uint8_t>(t - kernel().tasks().base + 1);
+        domains->push(&d->payer_node);
+    }
+
+    // O(1).
+    void domain_unpay(Domain* d)
+    {
+        Task* const t = domain_payer(d);
+        if (t == nullptr)
+        {
+            return;
+        }
+        task_domains_head(t)->unlink(&d->payer_node);
+        d->payer = 0;
+    }
+
+    uint32_t domain_pages_paid(Task const* t)
+    {
+        HeadList const* const domains = task_domains_head(t);
+        if (domains == nullptr)
+        {
+            return 0;
+        }
+        uint32_t pages = 0;
+        for (ListNode* n = domains->head; n != nullptr; n = n->next)
+        {
+            Domain const* const d = KICKOS_CONTAINER_OF(n, Domain, payer_node);
+            if (d->space == nullptr)
+            {
+                pages = pages + aspace_shed_pages(&d->ranges);
+            }
+            else
+            {
+                pages = pages + aspace_task_usage(d, BudgetKind::PAGES);
+            }
+        }
+        return pages;
+    }
+
     size_t domain_spaces_held(void)
     {
-        Kernel& k = kernel();
         size_t held = 0;
-        for (int i = 0; i < KICKOS_MAX_DOMAINS; i++)
+        for (Domain const& d : kernel().domains())
         {
-            if (k.domains[i].space != nullptr)
+            if (d.space != nullptr)
             {
                 held++;
             }
@@ -252,10 +416,12 @@ namespace kickos
         {
             return domain_kernel();
         }
+        size_t const image = (caller >> DOM_CALLER_IMAGE_SHIFT) & 0xFFu;
+        int const payer = static_cast<int>(caller >> DOM_CALLER_PAYER_SHIFT) - 1;
         if (mem_base == nullptr or mem_size == 0)
         {
 #if KICKOS_HAVE_ASPACE
-            return claim_slot(err);
+            return claim_slot(image, payer, err);
 #else
             return domain_default_user();
 #endif
@@ -268,7 +434,7 @@ namespace kickos
             *err = KOS_ENOTSUP;
             return nullptr;
         }
-        Domain* d = claim_slot(err);
+        Domain* d = claim_slot(image, payer, err);
         if (d == nullptr)
         {
             return nullptr;
@@ -282,8 +448,8 @@ namespace kickos
         {
             mtype = ARCH_MAP_NOCACHE;
         }
-        int const hrc = aspace_handoff(domain_ranges(donor), d->space, &d->ranges, base,
-                                       mem_size, mtype);
+        int const hrc = aspace_handoff(domain_payer(d), domain_ranges(donor), d->space,
+                                       &d->ranges, base, mem_size, mtype);
         if (hrc != 0)
         {
             domain_release(d);
@@ -293,23 +459,29 @@ namespace kickos
         // The lifetime edge, and the only place one is made. Without it the donor's last task
         // can exit, destroy its space and return every borrowed frame to the pool under a live
         // mapping. Taken only on success, so aspace_handoff's unwind arms surrender nothing.
-        KICKOS_DEBUG_ASSERT(d->borrowed_from == nullptr and d != donor);
-        d->borrowed_from = donor;
-        domain_ref(donor);
+        // A handoff passed on names the domain that reserved the frames, so a borrower holds
+        // only that one, never the domain it was passed through.
+        Domain* owner = donor;
+        VirtualRanges const* const lent = domain_ranges(donor);
+        if (lent != nullptr and aspace_range_handed_off(lent->at_base(base))
+            and donor->borrowed_from != nullptr)
+        {
+            owner = donor->borrowed_from;
+        }
+        KICKOS_DEBUG_ASSERT(d->borrowed_from == nullptr and d != owner);
+        d->borrowed_from = owner;
+        domain_ref(owner);
+        (void)owner->ranges.lend(base, true);
         // The range list carries the handoff with the exact extent, and is what the entry path
         // answers from on this backend.
 #else
         d->regions[0].base = base;
-        d->regions[0].size = arch_ram_region_size(mem_size);
+        d->regions[0].size = ram_grant_extent(mem_size);
         d->regions[0].attr = attr;
         d->region_count = 1;
 #endif
         return d;
     }
-
-    static_assert(2ull * KICKOS_MAX_TASKS + KICKOS_MAX_DOMAINS <= UINT16_MAX,
-                  "Domain::refcount is uint16_t and counts live tasks, creator holds and "
-                  "borrowers: twice the task pool plus the domain pool must fit it");
 
     uint16_t domain_refcount(Domain const* d)
     {
@@ -345,6 +517,7 @@ namespace kickos
             {
                 return;
             }
+            free_put(d);
 #if KICKOS_HAVE_ASPACE
             // drop_space hands back the donor whose reference the next turn of the loop drops;
             // reusing the slot without it would strand the root and its tables.
@@ -381,12 +554,19 @@ extern "C"
     extern unsigned char __kickos_appdata_start[] KICKOS_LINK_BOUND;
     extern unsigned char __kickos_appdata_end[] KICKOS_LINK_BOUND;
 
-    size_t arch_domain_static_regions(struct arch_mpu_region* out, size_t max)
+    // The data region is image `image`'s window, where the script carves the app one a window.
+    size_t arch_domain_static_regions(struct arch_mpu_region* out, size_t max, size_t image)
     {
         size_t n = 0;
         add_static(out, &n, max, __kickos_code_start, __kickos_code_end, ARCH_MPU_R | ARCH_MPU_X);
-        add_static(out, &n, max, __kickos_appdata_start, __kickos_appdata_end,
-                   ARCH_MPU_R | ARCH_MPU_W);
+        if (reinterpret_cast<uintptr_t>(__kickos_appdata_end)
+            > reinterpret_cast<uintptr_t>(__kickos_appdata_start))
+        {
+            kos_image_header const& h = kickos::image_record(image);
+            unsigned char const* const start
+                = reinterpret_cast<unsigned char const*>(h.window_start);
+            add_static(out, &n, max, start, start + h.window_size, ARCH_MPU_R | ARCH_MPU_W);
+        }
         return n;
     }
 }

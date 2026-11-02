@@ -19,7 +19,7 @@ foreach(_system IN LISTS _systems)
   list(APPEND _requests "${_system}=${_table}")
   list(APPEND _outputs "${_table}")
   set_source_files_properties("${_table}" PROPERTIES COMPILE_DEFINITIONS
-    "kickos_table=kickos_table_${_system};kickos_link_one_system_target=kickos_link_one_system_target_${_system};kickos_usb_device_console=kickos_usb_device_console_${_system}")
+    "kickos_table=kickos_table_${_system};kickos_link_one_system_target=kickos_link_one_system_target_${_system};kickos_usb_device_console=kickos_usb_device_console_${_system};kickos_image_decls=kickos_image_decls_${_system}")
 endforeach()
 list(JOIN _requests "," _requests)
 kickos_compose_inputs(_tool "${PROJECT_SOURCE_DIR}/tools/compose")
@@ -40,9 +40,7 @@ add_custom_command(
 set(_walk_sources
   "${PROJECT_SOURCE_DIR}/system/init/compose/walk.cc"
   "${PROJECT_SOURCE_DIR}/system/init/compose/message.cc"
-  "${PROJECT_SOURCE_DIR}/user/src/driver_service.cc"
   "${PROJECT_SOURCE_DIR}/user/src/init_status.cc"
-  "${PROJECT_SOURCE_DIR}/user/src/task_trampoline.cc"
   "${PROJECT_SOURCE_DIR}/user/src/console_flush.cc")
 set(_walk_includes "${CMAKE_CURRENT_SOURCE_DIR}" "${PROJECT_SOURCE_DIR}/system/init/compose"
   "${PROJECT_SOURCE_DIR}/user/include" "${PROJECT_SOURCE_DIR}/system/include"

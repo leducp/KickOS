@@ -32,7 +32,7 @@ scratch_dir
 
 echo "== building the line witness against the installed package =="
 package_image "$KICKOS_BUILD" "$CMAKE" "$KICKOS_SRC/tests/integration/driver_witness" driver_witness \
-    -DKICKOS_WITNESS_SYSTEM="$SYSTEM"
+    -DKICKOS_WITNESS_SYSTEM="$SYSTEM" -DKICKOS_WITNESS_MAIN=line_client
 
 echo "== running the line witness =="
 run_image "$IMAGE"

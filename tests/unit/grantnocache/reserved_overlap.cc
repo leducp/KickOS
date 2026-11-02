@@ -165,6 +165,29 @@ namespace
         EXPECT_TRUE(admitted(DEVICE, DEVICE_SIZE, DEV, true));
     }
 
+    TEST_F(ReservedOverlap, a_device_window_lies_inside_one_aperture)
+    {
+        uintptr_t const top = APERTURE_BASE + APERTURE_SIZE;
+        EXPECT_TRUE(admitted(top - DEVICE_SIZE, DEVICE_SIZE, DEV, true))
+            << "the aperture's last window";
+        EXPECT_FALSE(admitted(ARENA_BASE, DEVICE_SIZE, DEV, true)) << "the arena's RAM";
+        EXPECT_FALSE(admitted(top, DEVICE_SIZE, DEV, true)) << "past the aperture";
+        EXPECT_FALSE(admitted(APERTURE_BASE - DEVICE_SIZE, 2u * DEVICE_SIZE, DEV, true))
+            << "across its low edge";
+        EXPECT_TRUE(kickos::grant_window_in_aperture(APERTURE_BASE, APERTURE_SIZE));
+        EXPECT_FALSE(kickos::grant_window_in_aperture(APERTURE_BASE, 0u)) << "empty";
+        EXPECT_FALSE(kickos::grant_window_in_aperture(WRAPPING, WRAP_SIZE)) << "wrapping";
+    }
+
+    TEST_F(ReservedOverlap, a_chip_stating_no_aperture_admits_no_device_window)
+    {
+        struct arch_reserved_span const stated = g_region_seam.apertures;
+        g_region_seam.apertures = arch_reserved_span();
+        EXPECT_FALSE(admitted(DEVICE, DEVICE_SIZE, DEV, true));
+        g_region_seam.apertures = stated;
+        EXPECT_TRUE(admitted(DEVICE, DEVICE_SIZE, DEV, true));
+    }
+
     TEST_F(ReservedOverlap, a_ram_grant_is_one_region_inside_the_arena_for_every_caller)
     {
         uintptr_t const block = ARENA_BASE + 0x1000u;

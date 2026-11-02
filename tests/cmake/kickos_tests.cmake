@@ -95,7 +95,8 @@ endfunction()
 
 # ---------------------------------------------------------------------------
 # kickos_add_qemu_test([NAME <n>] TARGET <app> SCRIPT <sh>
-#                      [MACHINE <m>] [BOOTS <n>] [WORK <s>] [ARGS <arg...>])
+#                      [MACHINE <m>] [BOOTS <n>] [WORK <s>] [ARGS <arg...>]
+#                      [QEMU_ARGS <arg...>])
 #   Register a QEMU boot gate: run SCRIPT against the app's ELF and treat exit 77 as SKIP (a
 #   missing qemu-system is a skip, not a failure).
 #
@@ -108,11 +109,12 @@ endfunction()
 #   claim rather than its image).
 #   QEMU_MACHINE is always passed: check_fault_dump.sh reads an UNSET QEMU_MACHINE as "this
 #   is the sim, run natively". MACHINE overrides the board default. ARGS are extra script
-#   arguments after the ELF. BOOTS, WORK and BOUND size the TIMEOUT, see kickos_boot_timeout; BOUND
+#   arguments after the ELF. QEMU_ARGS are extra emulator arguments, after the board's own. BOOTS, WORK and BOUND size the TIMEOUT, see kickos_boot_timeout; BOUND
 #   is also exported to the script as its QEMU_TIMEOUT.
 # ---------------------------------------------------------------------------
 function(kickos_add_qemu_test)
-  cmake_parse_arguments(QT "" "NAME;TARGET;SCRIPT;MACHINE;BOOTS;WORK;BOUND" "ARGS" ${ARGN})
+  cmake_parse_arguments(QT "" "NAME;TARGET;SCRIPT;MACHINE;BOOTS;WORK;BOUND" "ARGS;QEMU_ARGS"
+                        ${ARGN})
   if(NOT QT_TARGET OR NOT QT_SCRIPT)
     message(FATAL_ERROR "kickos_add_qemu_test: TARGET and SCRIPT are required")
   endif()
@@ -128,6 +130,19 @@ function(kickos_add_qemu_test)
     set(_machine "${QT_MACHINE}")
   endif()
   list(APPEND _env QEMU_MACHINE=${_machine})
+  if(QT_QEMU_ARGS)
+    list(JOIN QT_QEMU_ARGS " " _more)
+    set(_extra "${_more}")
+    set(_kept)
+    foreach(_e IN LISTS _env)
+      if(_e MATCHES "^QEMU_EXTRA=(.*)$")
+        set(_extra "${CMAKE_MATCH_1} ${_more}")
+      else()
+        list(APPEND _kept "${_e}")
+      endif()
+    endforeach()
+    set(_env ${_kept} "QEMU_EXTRA=${_extra}")
+  endif()
   set(_bound)
   if(DEFINED QT_BOUND)
     list(APPEND _env QEMU_TIMEOUT=${QT_BOUND})
@@ -292,14 +307,15 @@ endfunction()
 #   translation unit MEANS, so they are carried by hand.
 #
 #   The posture is recorded on the target: kickos_add_unit_test scrubs a linking gate's
-#   directory for it, so a consumer states nothing.
+#   directory for it, so a consumer states nothing. The kernel's pools come with it, at the
+#   posture's sizes (tests/unit/common/pools_seam.cc).
 function(kickos_add_kernel_host_lib name)
   cmake_parse_arguments(KHL "" "" "SOURCES;INCLUDES;POSTURE" ${ARGN})
   if(NOT KHL_SOURCES)
     message(FATAL_ERROR "kickos_add_kernel_host_lib(${name}): SOURCES is required")
   endif()
   kickos_posture_scrub(_khl_defs ${KHL_POSTURE})
-  add_library(${name} OBJECT ${KHL_SOURCES})
+  add_library(${name} OBJECT ${KHL_SOURCES} "${PROJECT_SOURCE_DIR}/tests/unit/common/pools_seam.cc")
   target_compile_features(${name} PUBLIC ${KICKOS_CXX_STANDARD})
   target_include_directories(${name} PUBLIC
     $<TARGET_PROPERTY:kickos_kernel,INCLUDE_DIRECTORIES> ${KHL_INCLUDES})
@@ -307,6 +323,7 @@ function(kickos_add_kernel_host_lib name)
   target_compile_options(${name} PRIVATE ${KICKOS_WARN_FLAGS}
     -fno-exceptions -fno-rtti -fno-threadsafe-statics)
   set_property(TARGET ${name} PROPERTY KICKOS_POSTURE "${KHL_POSTURE}")
+  set_property(TARGET ${name} PROPERTY KICKOS_POOLS TRUE)
 endfunction()
 
 # ---------------------------------------------------------------------------
@@ -346,7 +363,21 @@ function(kickos_add_unit_test)
   if(_posture OR UT_KERNEL)
     kickos_posture_scrub(_ut_kernel_defs ${_posture})
   endif()
-  add_executable(${UT_NAME} ${UT_SOURCES})
+  # A gate compiling the kernel instance takes the kernel's pools beside it, unless a fixture
+  # library it links brings them.
+  set(_pools "")
+  if("${PROJECT_SOURCE_DIR}/kernel/init/instance.cc" IN_LIST UT_SOURCES)
+    set(_pools "${PROJECT_SOURCE_DIR}/tests/unit/common/pools_seam.cc")
+    foreach(_lib IN LISTS UT_LIBRARIES)
+      if(TARGET ${_lib})
+        get_target_property(_lib_pools ${_lib} KICKOS_POOLS)
+        if(_lib_pools)
+          set(_pools "")
+        endif()
+      endif()
+    endforeach()
+  endif()
+  add_executable(${UT_NAME} ${UT_SOURCES} ${_pools})
   target_link_libraries(${UT_NAME} PRIVATE ${UT_LIBRARIES} GTest::gtest_main)
   target_compile_features(${UT_NAME} PRIVATE ${KICKOS_CXX_STANDARD})
   target_compile_options(${UT_NAME} PRIVATE ${KICKOS_WARN_FLAGS})

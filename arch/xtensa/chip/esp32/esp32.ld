@@ -4,14 +4,15 @@
  * Linker script for the ESP32 (WROOM-32 module), Xtensa LX6. The image links
  * ENTIRELY into internal SRAM (no flash cache / XIP), so the ROM loader copies
  * every segment to its RAM load address and jumps: no second stage, no MMU
- * setup (see startup.S). Addresses are from the ESP32 TRM
- * 1.3.2 "Embedded Memory" (Table 1-3, internal SRAM address mapping):
+ * setup (see startup.S). Addresses are from the ESP32 TRM v5.8, Table 3.3-2
+ * "Embedded Memory Address Mapping":
  *
- *   Internal SRAM0 (IRAM, exec): 0x4007_0000 .. 0x4009_FFFF (192 KiB; the low
- *                                64 KiB is the cache region), so code links at
- *                                0x4008_0000.
- *   Internal SRAM2 (DRAM, data): 0x3FFA_E000 .. 0x3FFD_FFFF (200 KiB), so data
- *                                links at 0x3FFB_0000.
+ *   Internal SRAM1 (IRAM1, exec): the kernel's vectors and text, from 0x400A_0000,
+ *                                 the instruction alias of data 0x3FFF_FFFC down.
+ *   Internal SRAM0 (IRAM, exec):  every image's text, in the upper 128 KiB from
+ *                                 0x4008_0000 (the low 64 KiB is the cache region).
+ *   Internal SRAM2 (DRAM, data):  0x3FFA_E000 .. 0x3FFD_FFFF (200 KiB), so data
+ *                                 links at 0x3FFB_0000.
  *
  * IRAM is word-access only, so .rodata (byte-addressable strings/const data) lives
  * in DRAM, not with .text.
@@ -22,12 +23,13 @@
  */
 
 #include <chip_layout.h>
-#include <sections.ld.h>
+#include "esp32_image.ld.h"
 
 ENTRY(_start)
 
 MEMORY
 {
+    KICKOS_LINK_IRAM1
     KICKOS_LINK_IRAM
     KICKOS_LINK_DRAM
 }
@@ -45,40 +47,51 @@ _estack_core1 = _estack - _kernel_stack_size;
 SECTIONS
 {
     /* Xtensa exception/interrupt vectors at VECBASE. Must be 1 KiB aligned; the
-       startup sets wsr.vecbase to _kickos_vectors. Placed at IRAM origin. */
-    .vectors ORIGIN(IRAM) :
+       startup sets wsr.vecbase to _kickos_vectors. Placed at IRAM1 origin. */
+    .vectors ORIGIN(IRAM1) :
     {
         _kickos_vectors = .;
         KEEP(*(.vectors))
         . = ALIGN(4);
-    } > IRAM
+    } > IRAM1
 
     .text : ALIGN(4)
     {
-        *(.literal .literal.*)
-        *(.text .text.*)
+        KICKOS_KERNEL_SECTIONS(.literal .literal.*)
+        KICKOS_KERNEL_SECTIONS(.text .text.*)
         KICKOS_CODE_DEBRIS_SECTIONS
         . = ALIGN(4);
+    } > IRAM1
+
+#if KICKOS_IMAGES_PLACED
+    /* Every image's text, its code span, which tools/image-link.py writes per link
+       (KICKOS_ESP32_IMAGE_TEXT). IRAM is word-access only, so its header, rodata and the rest of
+       what it reads live in DRAM, past the kernel's. */
+    INCLUDE kickos_images_code.ld
+#else
+    /* An image's code span is its text, the app's then the init's where it is an image of its
+       own. IRAM is word-access only, so its header, rodata and the rest of what it reads live
+       in DRAM, past the kernel's. */
+    .kickos_app_text : ALIGN(4)
+    {
+        _app_text_start = .;
+        KICKOS_APP_SECTIONS(.literal .literal.*)
+        KICKOS_APP_SECTIONS(.text .text.*)
+        . = ALIGN(4);
+        _app_text_end = .;
     } > IRAM
+#endif
 
     .rodata : ALIGN(4)
     {
-        *(.rodata .rodata.*)
-        *(.rodata_wlog .rodata_wlog.*)
-        KEEP(*(.gcc_except_table .gcc_except_table.*))
-        /* DWARF EH, registered by the root thread (user/src/root_entry.cc): -nostartfiles
-           drops crtbegin's frame_dummy and crtend's terminator, so the table is kept whole and
-           ends in a zero-length CIE. */
-        . = ALIGN(4);
-        __eh_frame_start = .;
-        KEEP(*(.eh_frame))
-        LONG(0)
+        KICKOS_KERNEL_SECTIONS(.rodata .rodata.*)
+        KICKOS_KERNEL_SECTIONS(.rodata_wlog .rodata_wlog.*)
         . = ALIGN(4);
     } > DRAM
 
     /* Global ctors SPLIT: .init_array keeps ONLY the closed KickOS-owned set
        (kernel/arch/chip/lib), run early by Reset_Handler; other (app/lib) ctors
-       land in .kickos_app_init_array and run from root_entry with the kernel live.
+       land in each image's constructor window and run from its startup with the kernel live.
        The xtensa GCC, configured without --enable-initfini-array (conan/toolchain), emits
        .ctors: a table section no selector names is dropped by --gc-sections, constructor and
        all. SORT_BY_INIT_PRIORITY reads either spelling's priority for a forward walk. */
@@ -106,25 +119,62 @@ SECTIONS
         __kickos_app_fini_array_end = .;
     } > DRAM
 
+    KICKOS_IMAGE_TABLE(DRAM, LONG)
+
+#if KICKOS_IMAGES_PLACED
+    /* The kernel's own DWARF EH, kept whole and ended in a zero-length CIE, the thread-local
+       template of every image, then what the ROM loads of every image: header, rodata,
+       constructor window and .data template (KICKOS_ESP32_IMAGE), which tools/image-link.py
+       writes per link. Every byte the ROM loads in DRAM is one span up to the kernel's .data, so
+       esptool makes it one segment however many images there are. */
+    .kickos_kernel_eh_frame : ALIGN(4)
+    {
+        KEEP(KICKOS_KERNEL_SECTIONS(.eh_frame))
+        LONG(0)
+        . = ALIGN(8);
+    } > DRAM
+
+    KICKOS_TLS_TEMPLATE(DRAM)
+
+    INCLUDE kickos_images.ld
+#else
+    /* DWARF EH, registered by each image's startup (user/src/image_start.cc): -nostartfiles
+       drops crtbegin's frame_dummy and crtend's terminator, so each table is kept whole and
+       ends in a zero-length CIE. The kernel's own entries ride the app's. */
+    KICKOS_APP_HEADER(DRAM)
+    .kickos_app_rodata : ALIGN(4)
+    {
+        KICKOS_APP_SECTIONS(.rodata .rodata.*)
+        KICKOS_APP_SECTIONS(.rodata_wlog .rodata_wlog.*)
+        KEEP(KICKOS_APP_SECTIONS(.gcc_except_table .gcc_except_table.*))
+        . = ALIGN(4);
+        KICKOS_LD_APP_SYM(eh_frame) = .;
+        KEEP(KICKOS_APP_SECTIONS(.eh_frame))
+        KEEP(KICKOS_KERNEL_SECTIONS(.eh_frame))
+        LONG(0)
+        . = ALIGN(4);
+    } > DRAM
+    __eh_frame_start = KICKOS_LD_APP_SYM(eh_frame);
+
     KICKOS_TLS_TEMPLATE(DRAM)
 
     .kickos_app_init_array : ALIGN(4)
     {
-        __kickos_app_init_array_start = .;
-        KEEP(*(SORT_BY_INIT_PRIORITY(.init_array.*) SORT_BY_INIT_PRIORITY(.ctors.*)))
-        KEEP(*(.init_array .ctors))
-        __kickos_app_init_array_end = .;
+        KICKOS_LD_APP_SYM(ctor_start) = .;
+        KEEP(KICKOS_APP_SECTIONS(SORT_BY_INIT_PRIORITY(.init_array.*) SORT_BY_INIT_PRIORITY(.ctors.*)))
+        KEEP(KICKOS_APP_SECTIONS(.init_array .ctors))
+        KICKOS_LD_APP_SYM(ctor_end) = .;
     } > DRAM
+    __kickos_app_init_array_start = KICKOS_LD_APP_SYM(ctor_start);
+    __kickos_app_init_array_end = KICKOS_LD_APP_SYM(ctor_end);
+#endif
 
     _sidata = LOADADDR(.data);
 
-    /* NO `AT` clause: the ROM first-stage loader places each segment at its VMA, so a
-       load address that differs from the VMA is never written by anything and the
-       Reset_Handler copy would read uninitialized SRAM. Pinned by an ASSERT below. */
     .data : ALIGN(4)
     {
         _sdata = .;
-        *(.data .data.*)
+        KICKOS_KERNEL_SECTIONS(.data .data.*)
         . = ALIGN(4);
         _edata = .;
     } > DRAM
@@ -132,10 +182,35 @@ SECTIONS
     .bss (NOLOAD) : ALIGN(4)
     {
         _sbss = .;
-        *(.bss .bss.*)
-        *(COMMON)
+        KICKOS_KERNEL_SECTIONS(.bss .bss.*)
+        KICKOS_KERNEL_SECTIONS(COMMON)
         . = ALIGN(4);
         _ebss = .;
+    } > DRAM
+
+#if KICKOS_IMAGES_PLACED
+    /* Every image's window (KICKOS_ESP32_WINDOW), which tools/image-link.py writes per link,
+       image 1's named as the app's below. */
+    INCLUDE kickos_images_windows.ld
+    __eh_frame_start = KICKOS_LD_IMAGE_SYM(1, eh_frame);
+    __kickos_app_init_array_start = KICKOS_LD_IMAGE_SYM(1, ctor_start);
+    __kickos_app_init_array_end = KICKOS_LD_IMAGE_SYM(1, ctor_end);
+    _appdata_used_end = KICKOS_LD_IMAGE_SYM(1, bss_end);
+    _kickos_heap_start = KICKOS_LD_IMAGE_SYM(1, heap_start);
+    _kickos_heap_limit = KICKOS_LD_IMAGE_SYM(1, heap_end);
+#else
+    /* The app image's window, exact: .data, .bss and the heap. */
+    .appdata : ALIGN(8)
+    {
+        KICKOS_APP_SECTIONS(.data .data.*)
+        . = ALIGN(8);
+    } > DRAM
+
+    .appbss (ADDR(.appdata) + SIZEOF(.appdata)) (NOLOAD) : ALIGN(4)
+    {
+        KICKOS_APP_SECTIONS(.bss .bss.* COMMON)
+        . = ALIGN(4);
+        _appdata_used_end = .;
     } > DRAM
 
     .userheap (NOLOAD) :
@@ -146,6 +221,21 @@ SECTIONS
         _kickos_heap_limit = .;
     } > DRAM
 
+
+    KICKOS_LD_APP_SYM(code_start) = _app_text_start;
+    KICKOS_LD_APP_SYM(code_end) = _app_text_end;
+    KICKOS_LD_APP_SYM(window_start) = ADDR(.appdata);
+    KICKOS_LD_APP_SYM(window_end) = _kickos_heap_limit;
+    KICKOS_LD_APP_SYM(data_load) = LOADADDR(.appdata);
+    KICKOS_LD_APP_SYM(data_start) = ADDR(.appdata);
+    KICKOS_LD_APP_SYM(data_end) = ADDR(.appdata) + SIZEOF(.appdata);
+    KICKOS_LD_APP_SYM(bss_end) = _appdata_used_end;
+    KICKOS_LD_APP_SYM(heap_start) = _kickos_heap_start;
+    KICKOS_LD_APP_SYM(heap_end) = _kickos_heap_limit;
+#endif
+    KICKOS_IMAGE0_TLS()
+    KICKOS_IMAGE0_NAMES()
+
     /* User-RAM pool (arch_ram_alloc) between static data and the reserved stack. */
     . = ALIGN(16);
     __kickos_ram_start = .;
@@ -154,8 +244,12 @@ SECTIONS
     /* Chip memory extents read by the non-enforcing user-pointer admission
        (arch_ram_common.cc). Symbols only, no layout effect. */
     __kickos_rom_start = ORIGIN(IRAM);
-    __kickos_rom_end = ORIGIN(IRAM) + LENGTH(IRAM);
+    __kickos_rom_end = ORIGIN(IRAM1) + LENGTH(IRAM1);
     __kickos_sram_start = ORIGIN(DRAM);
+    KICKOS_IMAGE_BOUNDS(ORIGIN(IRAM), ORIGIN(IRAM) + LENGTH(IRAM),
+                        ORIGIN(IRAM1), ADDR(.text) + SIZEOF(.text),
+                        ORIGIN(DRAM), ORIGIN(DRAM) + LENGTH(DRAM),
+                        _sdata, _ebss, __kickos_ram_end, _estack, 1 - KICKOS_IMAGES_PLACED)
 
     /DISCARD/ : { *(.xtensa.info) *(.comment) *(.xt.*) }
 
@@ -165,6 +259,9 @@ SECTIONS
 KICKOS_STATIC_RELOC_ASSERT()
 KICKOS_TLS_ALIGN_ASSERT()
 KICKOS_TLS_FIT_ASSERT()
+#if KICKOS_IMAGES_PLACED
+INCLUDE kickos_images_asserts.ld
+#endif
 
 ASSERT(__kickos_ram_start <= __kickos_ram_end,
        "KickOS: static data overflows DRAM (no room for the user-RAM pool + stack)")
@@ -173,14 +270,6 @@ ASSERT(__kickos_ram_start <= __kickos_ram_end,
 KICKOS_BOOT_ARENA_ASSERT(__kickos_ram_start, __kickos_ram_end)
 
 KICKOS_POOL_ARENA_ASSERT(__kickos_ram_start, __kickos_ram_end)
-/* The bootable image is built from section VMAs (esptool elf2image) and the ROM
-   first-stage loader places every segment at its VMA, so a load address that differs
-   from the VMA is never written by anything. Reset_Handler's LMA->VMA copy would then
-   read uninitialized SRAM and overwrite the correctly loaded initialized data, silently
-   corrupting whatever global lands there. Any `AT` clause on a loadable section trips
-   this. */
-ASSERT(_sidata == _sdata,
-       "KickOS: .data LMA != VMA: the ROM loader places segments at their VMAs, so the LMA holds no image bytes (drop the AT clause)")
 
 KICKOS_FINI_EMPTY_ASSERT()
 
@@ -214,6 +303,23 @@ ASSERT(__kickos_ram_end >= KICKOS_ESP32_ISRAM_DATA_FLOOR && _estack <= KICKOS_ES
 
 ASSERT(_kickos_vectors >= KICKOS_ESP32_ISRAM_TEXT_FLOOR && ADDR(.text) + SIZEOF(.text) <= KICKOS_ESP32_ISRAM_TEXT_CEIL,
        "KickOS: kernel text leaves internal SRAM, or reaches into the SRAM0 cache pool. Both CPUs fetch it directly and neither can invalidate the other's copy; the only flush this part has discards dirty data")
+
+/* SRAM1 is one set of words on two buses, the instruction alias word-reversed against the data
+ * one (TRM v5.8 3.3.2.4). The ROM keeps its data and both CPUs' stacks at data 0x3FFE_0000 to
+ * 0x3FFE_7E30 (`__stack_app` in the ROM ELF), the alias of instruction 0x400B_81D0 up: the loader
+ * runs on them while it loads, and APP_CPU's ROM entry when core 1 is released.
+ */
+#define KICKOS_ESP32_SRAM1_DATA_FLOOR  0x3FFE0000
+#define KICKOS_ESP32_ROM_SRAM1_TEXT_FLOOR 0x400B81D0
+
+ASSERT(ADDR(.text) + SIZEOF(.text) <= KICKOS_ESP32_ROM_SRAM1_TEXT_FLOOR,
+       "KickOS: kernel text reaches the SRAM1 words the ROM loader runs on; the boot loads over the loader and never reaches _start")
+
+ASSERT(_estack <= KICKOS_ESP32_SRAM1_DATA_FLOOR,
+       "KickOS: data reaches SRAM1, whose words are the kernel text's and the ROM's")
+
+ASSERT(ORIGIN(IRAM) + LENGTH(IRAM) == ORIGIN(IRAM1),
+       "KickOS: IRAM and IRAM1 are not one span, which __kickos_rom_start/_end admit as code")
 
 /* The app windows this script does not carve, stated EMPTY rather than left absent:
    the kernel's references are strong, so an omitted bound is a link error. */

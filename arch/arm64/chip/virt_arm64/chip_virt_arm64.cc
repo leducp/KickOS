@@ -136,20 +136,27 @@ namespace
         return false;
     }
 
-    // Masked as console_write_line_sync is, so a local ISR's output cannot land inside the
-    // line.
+    // The writer masks each byte, not the line: the kernel keeps this node's other contexts out
+    // of a line until it ends.
     template<class Write>
-    int console_write_masked(size_t n, bool spin, Write write)
+    int console_write_claimed(size_t n, bool spin, Write write)
     {
         if (n == 0 or not console_claim_open(spin))
         {
             return 0;
         }
-        uint32_t const budget = console_hold_ticks();
-        arch_irq_state_t const irq = arch_irq_save();
-        size_t const landed = write(budget);
-        arch_irq_restore(irq);
-        return static_cast<int>(landed);
+        return static_cast<int>(write(console_hold_ticks()));
+    }
+
+    uint32_t ticks_to_us(uint32_t ticks)
+    {
+        uint64_t freq = 0;
+        __asm volatile("mrs %0, cntfrq_el0" : "=r"(freq));
+        if (freq == 0)
+        {
+            return ticks;
+        }
+        return static_cast<uint32_t>((uint64_t(ticks) * 1000000u + freq - 1u) / freq);
     }
 #endif
 
@@ -501,24 +508,22 @@ int arch_console_write_retry(char const* buf, size_t n, bool* cr_pending)
 {
     if (cr_pending == nullptr)
     {
-        return console_write_masked(
+        return console_write_claimed(
             n, true, [buf, n](uint32_t budget) { return g_claim.kernel_write(buf, n, budget); });
     }
-    return console_write_masked(n, false, [buf, n, cr_pending](uint32_t budget) {
+    return console_write_claimed(n, false, [buf, n, cr_pending](uint32_t budget) {
         return g_claim.user_write(buf, n, cr_pending, budget);
     });
 }
 
 uint32_t arch_console_claim_wait(void)
 {
-    uint32_t const ticks = g_claim.wait(console_hold_ticks());
-    uint64_t freq = 0;
-    __asm volatile("mrs %0, cntfrq_el0" : "=r"(freq));
-    if (freq == 0)
-    {
-        return ticks;
-    }
-    return static_cast<uint32_t>((uint64_t(ticks) * 1000000u + freq - 1u) / freq);
+    return ticks_to_us(g_claim.wait(console_hold_ticks()));
+}
+
+uint32_t arch_console_claim_left(void)
+{
+    return ticks_to_us(g_claim.left_ticks(console_hold_ticks()));
 }
 #endif
 

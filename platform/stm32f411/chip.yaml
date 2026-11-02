@@ -15,6 +15,13 @@ family: none
 exits_on_fault: false
 interrupts: { count: { value: 86, ref: "Table 37 Vector table, p.205" } }
 
+# The peripheral buses, each from its first device to its last.
+apertures:
+  - { window: [0x40000000, 0x7400], ref: "Table 1 APB1, p.39" }
+  - { window: [0x40010000, 0x5400], ref: "Table 1 APB2, p.39" }
+  - { window: [0x40020000, 0x6800], ref: "Table 1 AHB1, p.38" }
+  - { window: [0x50000000, 0x40000], ref: "Table 1 AHB2, p.38" }
+
 devices:
   # Windows are the minimal PMSAv7 cover of the registers a driver uses, not the device's
   # whole 1 KiB bus slot.
@@ -23,6 +30,9 @@ devices:
     ref: "Table 1, p.39"
     lines: { global: { number: 38, symbol: USART2_IRQ, ref: "Table 37 Vector table, p.204" } }
   spi1: { window: [0x40013000, 0x20], lines: { global: 35 }, ref: "Table 1, p.39" }
+  # The bus matrix's masters but the core (2.1 System architecture, p.36).
+  dma1: { window: [0x40026000, 0x400], bus_master: true, ref: "Table 1, p.38" }
+  dma2: { window: [0x40026400, 0x400], bus_master: true, ref: "Table 1, p.38" }
 
   tim2:
     window: [0x40000000, 0x400]

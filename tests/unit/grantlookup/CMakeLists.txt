@@ -34,7 +34,7 @@ foreach(_fixture IN LISTS _fixtures)
     SOURCES lookup_${_fixture}.cc lookup_seam.cc "${CMAKE_CURRENT_BINARY_DIR}/table_${_fixture}.c"
             "${PROJECT_SOURCE_DIR}/user/src/grant_lookup.cc"
             "${PROJECT_SOURCE_DIR}/user/src/init_status.cc"
-            "${PROJECT_SOURCE_DIR}/user/src/task_trampoline.cc"
+            "${PROJECT_SOURCE_DIR}/user/src/task_enter.cc"
     INCLUDES "${PROJECT_SOURCE_DIR}/user/include" "${PROJECT_SOURCE_DIR}/system/include"
              "${PROJECT_BINARY_DIR}/generated/include")
 endforeach()

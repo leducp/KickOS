@@ -22,8 +22,8 @@ namespace
     constexpr uint32_t ROUNDS = KICKOS_SMP_LOCK_ROUNDS;
     static_assert(ROUNDS > 0, "the lock benchmark needs at least one yield per core");
     constexpr uint64_t READY_LIMIT_NS = 5000000000ull;
-    static_assert(KICKOS_MAX_THREADS >= KICKOS_KERNEL_CORES + 1,
-                  "main and one worker per kernel core must fit the thread pool");
+    static_assert(BENCH_MAIN_THREADS >= KICKOS_KERNEL_CORES + 1,
+                  "main and one worker per kernel core must fit main's THREADS budget");
 
     struct alignas(64) Worker
     {

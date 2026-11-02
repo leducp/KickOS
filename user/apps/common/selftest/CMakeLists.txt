@@ -31,6 +31,18 @@ if(DEFINED KICKOS_CHIP_RESERVED_BLOCK0)
   list(APPEND _selftest_defs KICKOS_SELFTEST_RESERVED_BASE=${_selftest_reserved_base}
                              KICKOS_SELFTEST_RESERVED_SIZE=${_selftest_reserved_size})
 endif()
+# A region chip's first bus aperture, where the device window discoveries start, and its first
+# bus master.
+if(NOT KICKOS_CHIP_TRANSLATES)
+  if(DEFINED KICKOS_CHIP_APERTURE0)
+    list(GET KICKOS_CHIP_APERTURE0 0 _selftest_aperture_base)
+    list(APPEND _selftest_defs KICKOS_SELFTEST_DEV_BASE=${_selftest_aperture_base})
+  endif()
+  if(DEFINED KICKOS_CHIP_BUS_MASTER0)
+    list(GET KICKOS_CHIP_BUS_MASTER0 0 _selftest_bus_master_base)
+    list(APPEND _selftest_defs KICKOS_SELFTEST_REGION_BUS_MASTER=${_selftest_bus_master_base})
+  endif()
+endif()
 # The default stack size, below which the stack arms find a thread's guard.
 list(APPEND _selftest_defs KICKOS_SELFTEST_USER_STACK_SIZE=${KICKOS_USER_STACK_SIZE})
 # A bus master no driver of the selftest's composition holds: virtio-mmio slots 0 to 7.
@@ -43,7 +55,7 @@ endif()
 # run in the order one image would run them in. main.cc refuses a build whose count differs
 # from the one stated here, because a region no image carries runs nowhere and no plan check
 # can see it.
-set(_selftest_regions 10)
+set(_selftest_regions 15)
 
 # The images this board ships, as the first region of each: image i carries its first region up
 # to the next image's first less one, so the images are contiguous, in order, and cover every
@@ -51,27 +63,26 @@ set(_selftest_regions 10)
 # its own arms alone.
 #
 # A per-board property, not a fleet one, and the binding budget is a different one on each of them:
-# 64 KiB of FLASH on the two STM32 parts, the 128 KiB pow2 PMP code window (`_code_size` in
-# arch/riscv/chip/esp32c6/esp32c6.ld) on an enforcing ESP32-C6, whose next step up would take 128
+# 64 KiB of FLASH on the two STM32 parts, the 256 KiB pow2 PMP code window (`_code_size` in
+# arch/riscv/chip/esp32c6/esp32c6.ld) on an enforcing ESP32-C6, whose next step up would take 256
 # KiB straight off the thread arena, the 240 KiB node slice on the ESP32-C6's own-image AMP
-# partition, the arena that follows .bss on nrf51, and the 128 KiB IRAM every ESP32 instruction
-# runs from (`IRAM` in arch/xtensa/chip/esp32/esp32.ld), which the suite overruns beside a console
-# driver. The bench probes take the C6's code window past one more cut. None of these is a number
+# partition, and the arena that follows .bss on nrf51. The bench probes take the C6's code window
+# past one more cut. On the SMP ESP32 it is the 128 KiB of SRAM0 the task images share. None of these is a number
 # the build can read back from the board, so the cut is stated here and nowhere else: the chip,
 # KICKOS_HAVE_MPU, KICKOS_AMP_OWN_IMAGE and KICKOS_BENCH come from the board's own config, and
 # every gate takes the image list and each image's arm count off the targets below rather than
 # restating either.
 set(_selftest_firsts 1)
 if(KICKOS_CHIP STREQUAL "stm32f103" OR KICKOS_CHIP STREQUAL "stm32f302")
-  set(_selftest_firsts 1 2 3 4 5 6 7 8 9 10)
+  set(_selftest_firsts 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15)
 elseif(KICKOS_CHIP STREQUAL "nrf51")
-  set(_selftest_firsts 1 5 7 9 10)
+  set(_selftest_firsts 1 2 8 11 14 15)
+elseif(KICKOS_CHIP STREQUAL "esp32" AND KICKOS_KERNEL_CORES GREATER 1)
+  set(_selftest_firsts 1 15)
 elseif(KICKOS_CHIP STREQUAL "esp32c6" AND KICKOS_HAVE_MPU AND KICKOS_BENCH)
-  set(_selftest_firsts 1 3 5 7 10)
+  set(_selftest_firsts 1 5 8 11 15)
 elseif(KICKOS_CHIP STREQUAL "esp32c6" AND (KICKOS_HAVE_MPU OR KICKOS_AMP_OWN_IMAGE))
-  set(_selftest_firsts 1 4 7 10)
-elseif(KICKOS_CHIP STREQUAL "esp32")
-  set(_selftest_firsts 1 7)
+  set(_selftest_firsts 1 7 11 14)
 endif()
 set(_selftest_bound "")
 set(_selftest_prev 0)
@@ -130,10 +141,10 @@ if(_selftest_consoles)
   math(EXPR _selftest_main_endpoints "${_selftest_main_endpoints} + 1")
 endif()
 math(EXPR _selftest_endpoint_peak "${_selftest_main_endpoints} + 2")
-if(KICKOS_TASK_ENDPOINT_BUDGET LESS _selftest_endpoint_peak)
+if(KICKOS_BUDGET_ENDPOINTS LESS _selftest_endpoint_peak)
   message(FATAL_ERROR
     "selftest: main holds up to ${_selftest_main_endpoints} endpoint(s) and reply_abandoned_cap "
-    "creates 2 more, past KICKOS_TASK_ENDPOINT_BUDGET ${KICKOS_TASK_ENDPOINT_BUDGET}")
+    "creates 2 more, past KICKOS_BUDGET_ENDPOINTS ${KICKOS_BUDGET_ENDPOINTS}")
 endif()
 set(_selftest_images "")
 set(_selftest_region_lo "")
@@ -200,75 +211,6 @@ endif()
 # options and holds on a leaf that compiles with exceptions and RTTI.
 set_source_files_properties(${_selftest_srcs} PROPERTIES
   COMPILE_OPTIONS "$<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions;-fno-rtti>")
-
-# On a region board each image is linked twice: once with every arm, for its size, and once with
-# the arms that link's arena cannot back left out (arena_fit.py). The sources compile once.
-set(_img_index 0)
-foreach(_img IN LISTS _selftest_images)
-  list(GET _selftest_region_lo ${_img_index} _img_lo)
-  list(GET _selftest_region_hi ${_img_index} _img_hi)
-  list(GET _selftest_image_console ${_img_index} _img_console)
-  math(EXPR _img_index "${_img_index} + 1")
-  set(_img_left_out "${CMAKE_CURRENT_BINARY_DIR}/${_img}_left_out.cc")
-  if(_selftest_fit)
-    set(_img_compile ${_img}_core)
-    add_library(${_img_compile} OBJECT ${_selftest_srcs})
-    add_executable(${_img} $<TARGET_OBJECTS:${_img_compile}> "${_img_left_out}")
-  else()
-    set(_img_compile ${_img})
-    add_executable(${_img} ${_selftest_srcs} "${_img_left_out}")
-  endif()
-  if(_img_console STREQUAL "kernel" AND _selftest_partition)
-    kickos_app_system(${_img} PARTITION ${_selftest_partition} SYSTEM selftest_system)
-  elseif(_img_console STREQUAL "kernel" AND KICKOS_AMP_NODE)
-    kickos_app_system(${_img} COMPOSITION ${_selftest_amp_dir}/node0.yaml SYSTEM selftest_system)
-  elseif(_img_console STREQUAL "kernel")
-    kickos_app_system(${_img} COMPOSITION system.yaml SYSTEM selftest_system)
-  else()
-    kickos_app_system(${_img} COMPOSITION consoles/${KICKOS_BOARD}/${_img_console}.yaml
-                      SYSTEM selftest_${_img_console}_system)
-    target_compile_definitions(${_img_compile} PRIVATE KICKOS_SELFTEST_CONSOLE_DRIVER=1)
-  endif()
-  kickos_emit_image(${_img})
-  if(_selftest_fit)
-    get_target_property(_img_system ${_img} KICKOS_APP_SYSTEM)
-    target_link_libraries(${_img_compile} PRIVATE KickOS::kernel ${_img_system})
-    set_target_properties(${_img} PROPERTIES KICKOS_SELFTEST_CORE ${_img_compile})
-  endif()
-  target_include_directories(${_img_compile} PRIVATE "${PROJECT_SOURCE_DIR}/tests/tap")
-  target_compile_definitions(${_img_compile} PRIVATE ${_selftest_defs}
-    KICKOS_SELFTEST_FIRST_REGION=${_img_lo} KICKOS_SELFTEST_LAST_REGION=${_img_hi})
-  # Recorded on the target, so a gate picks an image's skip and partial sets by the regions
-  # it carries and its console, instead of by a name written out a second time.
-  set_target_properties(${_img} PROPERTIES
-    KICKOS_SELFTEST_FIRST_REGION "${_img_lo}" KICKOS_SELFTEST_LAST_REGION "${_img_hi}"
-    KICKOS_SELFTEST_CONSOLE "${_img_console}"
-    KICKOS_IMAGE_JUDGE tests/integration/check_tap_stream.sh)
-  # At the fleet Debug default this app's .text overflows the 64K-flash parts.
-  if(NOT KICKOS_ARCH STREQUAL "sim")
-    target_compile_options(${_img_compile} PRIVATE -Os)
-  endif()
-endforeach()
-set_property(GLOBAL PROPERTY KICKOS_SELFTEST_IMAGES "${_selftest_images}")
-set_property(GLOBAL PROPERTY KICKOS_SELFTEST_PARTS ${_selftest_parts})
-
-# The linked image, for the host gates that read it beside its map.
-foreach(_img IN LISTS _selftest_images)
-  set_target_properties(${_img} PROPERTIES KICKOS_IMAGE_ELF "$<TARGET_FILE:${_img}>")
-endforeach()
-if(KICKOS_ARCH STREQUAL "x86_64")
-  # OVMF places an image at its preferred base when it can, so every other image boots with
-  # firmware's relocation pass idle. 1 TiB is past any q35 RAM this tree boots, so firmware
-  # has to move this one, and the app window's words are then relocated twice.
-  add_executable(selftest_rebased $<TARGET_OBJECTS:selftest>)
-  set_target_properties(selftest_rebased PROPERTIES LINKER_LANGUAGE CXX
-    ADDITIONAL_CLEAN_FILES "$<TARGET_FILE:selftest_rebased>.map")
-  target_link_libraries(selftest_rebased PRIVATE $<TARGET_PROPERTY:selftest,LINK_LIBRARIES>)
-  target_link_options(selftest_rebased PRIVATE $<TARGET_PROPERTY:selftest,LINK_OPTIONS>
-                                               "LINKER:--image-base=0x10000000000")
-  set_target_properties(selftest PROPERTIES
-    KICKOS_REBASED_IMAGE_FILE "$<TARGET_FILE:selftest_rebased>")
-endif()
 
 # An arm whose body left main.cc has EXTERNAL linkage, so the compiler no longer reports it
 # unused when its TAP_ADD line goes. Every such arm is declared in selftest.h and registered in
@@ -354,11 +296,16 @@ set(_selftest_count "${PROJECT_SOURCE_DIR}/tests/static/selftest_demands.py"
     "${CMAKE_CURRENT_SOURCE_DIR}")
 # Undefined unless a definition below names it: no header defines it. The per-image
 # KICKOS_SELFTEST_CONSOLE_DRIVER is given to no count, so a guard reading it is refused.
-list(APPEND _selftest_count --undefined KICKOS_SELFTEST_SPARE_DEV)
+list(APPEND _selftest_count --undefined KICKOS_SELFTEST_SPARE_DEV --config KICKOS_SELFTEST_PEER=0)
 if(KICKOS_ARCH STREQUAL "x86_64")
   list(APPEND _selftest_count --config __x86_64__)
 else()
   list(APPEND _selftest_count --undefined __x86_64__)
+endif()
+if(KICKOS_CHIP_ONE_TASK)
+  list(APPEND _selftest_count --config KICKOS_CHIP_ONE_TASK=1)
+else()
+  list(APPEND _selftest_count --config KICKOS_CHIP_ONE_TASK=0)
 endif()
 get_directory_property(_selftest_dir_defs COMPILE_DEFINITIONS)
 foreach(_def IN LISTS _selftest_dir_defs _selftest_defs)
@@ -402,7 +349,274 @@ if(NOT _selftest_demands_rc EQUAL 0)
   message(FATAL_ERROR "selftest: the arms' asks could not be read: ${_selftest_demands_err}")
 endif()
 string(REGEX MATCHALL "[a-z0-9_]+ workers=[0-9]+" _selftest_workers_rows "${_selftest_demands}")
-math(EXPR _selftest_worker_pool "${KICKOS_MAX_THREADS} - 1")
+
+# <source>, a composition whose peers are its last tasks, cut to its first <count> peers in
+# <dir>, into <out>: main's THREADS budget <main_threads>, peer<i>'s the i-th of the list
+# <peer_threads>, stserve's 1. <served> is 1 where the instance of stserve is declared beside them.
+function(_selftest_part_composition source count served main_threads peer_threads dir out)
+  get_filename_component(_src "${source}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+  file(READ "${_src}" _text)
+  set(_cut "  - name: peer${count}\n")
+  if(count EQUAL 0)
+    set(_cut "  # Started by the arms")
+  endif()
+  string(FIND "${_text}" "${_cut}" _at)
+  if(NOT _at EQUAL -1)
+    string(SUBSTRING "${_text}" 0 ${_at} _text)
+  endif()
+  string(REGEX REPLACE "\n+$" "\n" _text "${_text}")
+  if(served)
+    string(APPEND _text "\n  # Started by task_watch_reports, which passes it the endpoint it serves.\n"
+"  - name: peers\n    program: stserve\n    priority: 10\n    ceiling: 12\n    serves: /svc/peers\n"
+"    start: on_request\n    authority: [memory, tasks, irq]\n    budgets: { threads: 4 }\n")
+  endif()
+  set(_stated "budgets: { threads: 4 }")
+  string(LENGTH "${_stated}" _stated_len)
+  set(_i 0)
+  foreach(_threads IN LISTS peer_threads)
+    string(FIND "${_text}" "  - name: peer${_i}\n" _p)
+    math(EXPR _i "${_i} + 1")
+    if(_p EQUAL -1)
+      continue()
+    endif()
+    string(SUBSTRING "${_text}" 0 ${_p} _head)
+    string(SUBSTRING "${_text}" ${_p} -1 _tail)
+    string(FIND "${_tail}" "${_stated}" _b)
+    string(SUBSTRING "${_tail}" 0 ${_b} _mid)
+    math(EXPR _b "${_b} + ${_stated_len}")
+    string(SUBSTRING "${_tail}" ${_b} -1 _tail)
+    set(_text "${_head}${_mid}budgets: { threads: ${_threads} }${_tail}")
+  endforeach()
+  string(REPLACE "${_stated}" "budgets: { threads: 1 }" _text "${_text}")
+  string(REPLACE "budgets: { ram_blocks: 48 }" "budgets: { threads: ${main_threads}, ram_blocks: 48 }"
+                 _text "${_text}")
+  file(RELATIVE_PATH _rel "${CMAKE_CURRENT_SOURCE_DIR}" "${_src}")
+  set(_dst "${dir}/${_rel}")
+  file(CONFIGURE OUTPUT "${_dst}" CONTENT "${_text}" @ONLY)
+  set(${out} "${_dst}" PARENT_SCOPE)
+endfunction()
+
+# The instances of stpeer <composition> declares, and those of stserve.
+function(_selftest_peers composition out)
+  file(STRINGS "${composition}" _rows REGEX "^[ \t]*program:[ \t]*stpeer[ \t]*$")
+  list(LENGTH _rows _n)
+  set(${out} ${_n} PARENT_SCOPE)
+endfunction()
+function(_selftest_servers composition out)
+  file(STRINGS "${composition}" _rows REGEX "^[ \t]*program:[ \t]*stserve[ \t]*$")
+  list(LENGTH _rows _n)
+  set(${out} ${_n} PARENT_SCOPE)
+endfunction()
+
+# The program the arms start as peer0 to peer3: the suite's own sources, whose main runs the
+# role its argv[1] names (main.cc) and carries no arm.
+if(NOT KICKOS_CHIP_ONE_TASK)
+  set(_peer_left_out "${CMAKE_CURRENT_BINARY_DIR}/stpeer_left_out.cc")
+  file(CONFIGURE OUTPUT "${_peer_left_out}" CONTENT
+"// GENERATED by user/apps/common/selftest/CMakeLists.txt for stpeer.
+namespace selftest
+{
+    extern __attribute__((visibility(\"hidden\"))) unsigned char const st_left_out[1] = {};
+    extern __attribute__((visibility(\"hidden\"))) int const st_seat_workers = 0;
+}
+")
+  # stserve is stpeer under a name of its own, so that a create of stpeer never takes the one
+  # instance declared to serve an endpoint.
+  foreach(_peer_program stpeer stserve)
+    add_executable(${_peer_program} ${_selftest_srcs} "${_peer_left_out}")
+    target_link_libraries(${_peer_program} PRIVATE kickos)
+    target_include_directories(${_peer_program} PRIVATE "${PROJECT_SOURCE_DIR}/tests/tap")
+    target_compile_definitions(${_peer_program} PRIVATE ${_selftest_defs} KICKOS_SELFTEST_PEER=1
+      KICKOS_SELFTEST_PEERS=0 KICKOS_SELFTEST_SERVERS=0 KICKOS_SELFTEST_FIRST_REGION=1
+      KICKOS_SELFTEST_LAST_REGION=${_selftest_regions} KICKOS_TAP_MAX_TESTS=1
+      KICKOS_SELFTEST_SEAT_WORKERS=0)
+    # The arms compile into the peer and run in none of its roles.
+    target_compile_options(${_peer_program} PRIVATE -Wno-unused-function)
+    if(NOT KICKOS_ARCH STREQUAL "sim")
+      target_compile_options(${_peer_program} PRIVATE -Os)
+    endif()
+  endforeach()
+endif()
+
+# On a region board each image is linked twice: once with every arm, for its size, and once with
+# the arms that link's arena cannot back left out (arena_fit.py). The sources compile once.
+set(_img_index 0)
+foreach(_img IN LISTS _selftest_images)
+  list(GET _selftest_region_lo ${_img_index} _img_lo)
+  list(GET _selftest_region_hi ${_img_index} _img_hi)
+  list(GET _selftest_image_console ${_img_index} _img_console)
+  math(EXPR _img_index "${_img_index} + 1")
+  set(_img_left_out "${CMAKE_CURRENT_BINARY_DIR}/${_img}_left_out.cc")
+  if(_selftest_fit)
+    set(_img_compile ${_img}_core)
+    add_library(${_img_compile} OBJECT ${_selftest_srcs})
+    add_executable(${_img} $<TARGET_OBJECTS:${_img_compile}> "${_img_left_out}")
+  else()
+    set(_img_compile ${_img})
+    add_executable(${_img} ${_selftest_srcs} "${_img_left_out}")
+  endif()
+  # An image declares only the peers its own arms hold at once, so its RAM pays for no other
+  # part's.
+  set(_img_served 0)
+  foreach(_region RANGE ${_img_lo} ${_img_hi})
+    if("task_watch_reports" IN_LIST _selftest_arm_names_r${_region})
+      set(_img_served 1)
+    endif()
+  endforeach()
+  # The peers its arms hold at once, the workers main spawns and those each peer spawns beside its
+  # entry, each the most one of its arms asks. An arm's i-th task at once lands on peer<i>.
+  set(_img_need 0)
+  set(_img_workers 0)
+  set(_img_peer_workers 0)
+  set(_img_peer_threads 1 1 1 1)
+  foreach(_region RANGE ${_img_lo} ${_img_hi})
+    foreach(_arm IN LISTS _selftest_arm_names_r${_region})
+      string(REGEX MATCH "(^|\n)${_arm} workers=([0-9]+) tasks=([0-9]+) [^\n]* peer_workers=([0-9]+)"
+             _m "${_selftest_demands}")
+      if(NOT _m)
+        continue()
+      endif()
+      set(_arm_workers ${CMAKE_MATCH_2})
+      set(_arm_tasks ${CMAKE_MATCH_3})
+      set(_arm_peer_workers ${CMAKE_MATCH_4})
+      if(_arm_workers GREATER _img_workers)
+        set(_img_workers ${_arm_workers})
+      endif()
+      if(_arm_peer_workers GREATER _img_peer_workers)
+        set(_img_peer_workers ${_arm_peer_workers})
+      endif()
+      math(EXPR _arm_peer_threads "${_arm_peer_workers} + 1")
+      set(_at 0)
+      while(_at LESS _arm_tasks AND _at LESS 4)
+        list(GET _img_peer_threads ${_at} _was)
+        if(_arm_peer_threads GREATER _was)
+          list(REMOVE_AT _img_peer_threads ${_at})
+          list(INSERT _img_peer_threads ${_at} ${_arm_peer_threads})
+        endif()
+        math(EXPR _at "${_at} + 1")
+      endwhile()
+      if(NOT _arm STREQUAL "task_watch_reports" AND _arm_tasks GREATER _img_need)
+        set(_img_need ${_arm_tasks})
+      endif()
+    endforeach()
+  endforeach()
+  # A chip that holds one task seats main at the board's default, and an arm asking more skips.
+  if(KICKOS_CHIP_ONE_TASK AND _img_workers GREATER_EQUAL KICKOS_BUDGET_THREADS)
+    math(EXPR _img_workers "${KICKOS_BUDGET_THREADS} - 1")
+  endif()
+  math(EXPR _img_main_threads "${_img_workers} + 1")
+  string(REPLACE ";" "" _img_peer_tag "${_img_peer_threads}")
+  set(_img_sys "_peers${_img_need}_t${_img_main_threads}_${_img_peer_tag}")
+  set(_img_dir "${CMAKE_CURRENT_BINARY_DIR}/${_img_sys}")
+  if(_img_served)
+    string(APPEND _img_dir "s")
+    string(APPEND _img_sys "_served")
+  endif()
+  if(_img_console STREQUAL "kernel" AND _selftest_partition)
+    set(_img_nodes "")
+    set(_img_node_at 0)
+    foreach(_node IN LISTS _selftest_partition)
+      set(_img_node_served 0)
+      if(_img_served AND _img_node_at EQUAL KICKOS_AMP_NODE_ID)
+        set(_img_node_served 1)
+      endif()
+      _selftest_part_composition("${_node}" ${_img_need} ${_img_node_served} ${_img_main_threads}
+                                 "${_img_peer_threads}" "${_img_dir}" _node)
+      list(APPEND _img_nodes "${_node}")
+      math(EXPR _img_node_at "${_img_node_at} + 1")
+    endforeach()
+    kickos_app_system(${_img} PARTITION ${_img_nodes} SYSTEM selftest${_img_sys}_system)
+  elseif(_img_console STREQUAL "kernel" AND KICKOS_AMP_NODE)
+    _selftest_part_composition(${_selftest_amp_dir}/node0.yaml ${_img_need} ${_img_served}
+                               ${_img_main_threads} "${_img_peer_threads}" "${_img_dir}" _c)
+    kickos_app_system(${_img} COMPOSITION "${_c}" SYSTEM selftest${_img_sys}_system)
+  elseif(_img_console STREQUAL "kernel" AND KICKOS_CHIP_ONE_TASK)
+    _selftest_part_composition(system_one_task.yaml 0 0 ${_img_main_threads} 1 "${_img_dir}" _c)
+    kickos_app_system(${_img} COMPOSITION "${_c}" SYSTEM selftest${_img_sys}_system)
+  elseif(_img_console STREQUAL "kernel")
+    _selftest_part_composition(system.yaml ${_img_need} ${_img_served} ${_img_main_threads}
+                               "${_img_peer_threads}" "${_img_dir}" _c)
+    kickos_app_system(${_img} COMPOSITION "${_c}" SYSTEM selftest${_img_sys}_system)
+  else()
+    _selftest_part_composition(consoles/${KICKOS_BOARD}/${_img_console}.yaml ${_img_need}
+                               ${_img_served} ${_img_main_threads} "${_img_peer_threads}"
+                               "${_img_dir}" _c)
+    kickos_app_system(${_img} COMPOSITION "${_c}" SYSTEM selftest_${_img_console}${_img_sys}_system)
+    target_compile_definitions(${_img_compile} PRIVATE KICKOS_SELFTEST_CONSOLE_DRIVER=1)
+  endif()
+  kickos_emit_image(${_img})
+  get_target_property(_img_system ${_img} KICKOS_APP_SYSTEM)
+  get_property(_img_composition GLOBAL PROPERTY KICKOS_APP_SYSTEM_${_img_system})
+  list(GET _img_composition 0 _img_first)
+  if(_img_first STREQUAL "PARTITION")
+    math(EXPR _img_at "${KICKOS_AMP_NODE_ID} + 1")
+    list(GET _img_composition ${_img_at} _img_composition)
+  endif()
+  _selftest_peers("${_img_composition}" _img_peers)
+  _selftest_servers("${_img_composition}" _img_servers)
+  math(EXPR _img_tasks "${_img_peers} + ${_img_servers}")
+  set_target_properties(${_img} PROPERTIES KICKOS_SELFTEST_PEERS ${_img_tasks}
+                        KICKOS_SELFTEST_WORKERS ${_img_workers}
+                        KICKOS_SELFTEST_PEER_WORKERS ${_img_peer_workers})
+  if(_selftest_fit)
+    target_link_libraries(${_img_compile} PRIVATE KickOS::kickos ${_img_system})
+    set_target_properties(${_img} PROPERTIES KICKOS_SELFTEST_CORE ${_img_compile})
+  endif()
+  target_include_directories(${_img_compile} PRIVATE "${PROJECT_SOURCE_DIR}/tests/tap")
+  target_compile_definitions(${_img_compile} PRIVATE ${_selftest_defs}
+    KICKOS_SELFTEST_FIRST_REGION=${_img_lo} KICKOS_SELFTEST_LAST_REGION=${_img_hi}
+    KICKOS_SELFTEST_PEER=0 KICKOS_SELFTEST_PEERS=${_img_peers}
+    KICKOS_SELFTEST_SERVERS=${_img_servers})
+  # Recorded on the target, so a gate picks an image's skip and partial sets by the regions
+  # it carries and its console, instead of by a name written out a second time.
+  set_target_properties(${_img} PROPERTIES
+    KICKOS_SELFTEST_FIRST_REGION "${_img_lo}" KICKOS_SELFTEST_LAST_REGION "${_img_hi}"
+    KICKOS_SELFTEST_CONSOLE "${_img_console}"
+    KICKOS_IMAGE_JUDGE tests/integration/check_tap_stream.sh)
+  # At the fleet Debug default this app's .text overflows the 64K-flash parts.
+  if(NOT KICKOS_ARCH STREQUAL "sim")
+    target_compile_options(${_img_compile} PRIVATE -Os)
+  endif()
+endforeach()
+set_property(GLOBAL PROPERTY KICKOS_SELFTEST_IMAGES "${_selftest_images}")
+set_property(GLOBAL PROPERTY KICKOS_SELFTEST_PARTS ${_selftest_parts})
+
+# The linked image, for the host gates that read it beside its map.
+foreach(_img IN LISTS _selftest_images)
+  set_target_properties(${_img} PROPERTIES KICKOS_IMAGE_ELF "$<TARGET_FILE:${_img}>")
+endforeach()
+if(KICKOS_ARCH STREQUAL "x86_64")
+  # OVMF places an image at its preferred base when it can, so every other image boots with
+  # firmware's relocation pass idle. 1 TiB is past any q35 RAM this tree boots, so firmware
+  # has to move this one, and with it the kernel's view of the program it embeds.
+  # Its own image header comes with KickOS::kernel, so selftest's is left out.
+  add_executable(selftest_rebased
+    "$<FILTER:$<TARGET_OBJECTS:selftest>,EXCLUDE,image_header[.]c[.]o>")
+  set_target_properties(selftest_rebased PROPERTIES LINKER_LANGUAGE CXX
+    ADDITIONAL_CLEAN_FILES "$<TARGET_FILE:selftest_rebased>.map")
+  target_link_libraries(selftest_rebased PRIVATE $<TARGET_PROPERTY:selftest,LINK_LIBRARIES>)
+  target_link_options(selftest_rebased PRIVATE $<TARGET_PROPERTY:selftest,LINK_OPTIONS>
+                                               "LINKER:--image-base=0x10000000000")
+  kickos_image_link(selftest_rebased)
+  set_target_properties(selftest PROPERTIES
+    KICKOS_REBASED_IMAGE_FILE "$<TARGET_FILE:selftest_rebased>")
+  # The same image whose kernel moves to five-level paging before it adopts the regime, as
+  # firmware that enables them leaves it.
+  add_executable(selftest_la57
+    "$<FILTER:$<TARGET_OBJECTS:selftest>,EXCLUDE,image_header[.]c[.]o>")
+  set_target_properties(selftest_la57 PROPERTIES LINKER_LANGUAGE CXX
+    ADDITIONAL_CLEAN_FILES "$<TARGET_FILE:selftest_la57>.map"
+    KICKOS_IMAGE_KERNEL_OBJECTS "$<TARGET_OBJECTS:kickos_x86_64_la57_witness>")
+  target_link_libraries(selftest_la57 PRIVATE $<TARGET_PROPERTY:selftest,LINK_LIBRARIES>)
+  target_link_options(selftest_la57 PRIVATE $<TARGET_PROPERTY:selftest,LINK_OPTIONS>)
+  add_dependencies(selftest_la57 kickos_x86_64_la57_witness)
+  set_property(TARGET selftest_la57 APPEND PROPERTY LINK_DEPENDS
+    "$<TARGET_OBJECTS:kickos_x86_64_la57_witness>")
+  kickos_image_link(selftest_la57)
+  set_target_properties(selftest PROPERTIES
+    KICKOS_LA57_IMAGE_FILE "$<TARGET_FILE:selftest_la57>")
+endif()
+
 
 # tap.cc sizes its registry from KICKOS_TAP_MAX_TESTS. Per IMAGE and not per board, so it
 # cannot go through _selftest_defs, which applies one list to every image. An arm the count
@@ -444,8 +658,9 @@ foreach(_img IN LISTS _selftest_images)
         set(_img_seat ${_workers})
       endif()
     endforeach()
-    if(_img_seat GREATER _selftest_worker_pool)
-      set(_img_seat ${_selftest_worker_pool})
+    get_target_property(_img_workers ${_img} KICKOS_SELFTEST_WORKERS)
+    if(_img_seat GREATER _img_workers)
+      set(_img_seat ${_img_workers})
     endif()
     set(_img_compile ${_img}_core)
     target_compile_definitions(${_img_compile} PRIVATE KICKOS_SELFTEST_SEAT_WORKERS=${_img_seat})
@@ -492,7 +707,9 @@ if(_selftest_fit)
     add_executable(${_sizing} $<TARGET_OBJECTS:${_img}_core>
                    "${CMAKE_CURRENT_BINARY_DIR}/${_img}_sizing_left_out.cc")
     get_target_property(_img_left_out_bytes ${_img} KICKOS_SELFTEST_LEFT_OUT_BYTES)
-    target_link_libraries(${_sizing} PRIVATE KickOS::kernel ${_img_system})
+    get_target_property(_img_workers ${_img} KICKOS_SELFTEST_WORKERS)
+    target_link_libraries(${_sizing} PRIVATE KickOS::kickos ${_img_system})
+    kickos_image_link(${_sizing})
     target_link_options(${_sizing} PRIVATE
       "LINKER:-T,${CMAKE_CURRENT_SOURCE_DIR}/arena_records.ld")
     set(_out "${CMAKE_CURRENT_BINARY_DIR}/${_img}")
@@ -500,7 +717,7 @@ if(_selftest_fit)
       OUTPUT "${_out}_left_out.cc" "${_out}_left_out.txt" "${_out}_arena_ask.ld"
       COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/arena_fit.py"
               "$<TARGET_FILE:${_sizing}>" "${CMAKE_NM}" "${CMAKE_OBJCOPY}"
-              "${_selftest_workers_file}" ${_selftest_worker_pool} ${_selftest_stack_align}
+              "${_selftest_workers_file}" ${_img_workers} ${_selftest_stack_align}
               ${_selftest_stack_stride} "prefix=${KICKOS_C_SYMBOL_PREFIX}" ${_img_left_out_bytes}
               ${_selftest_fit_refuses}
               "${_out}_left_out.cc" "${_out}_left_out.txt" "${_out}_arena_ask.ld" ${_img}

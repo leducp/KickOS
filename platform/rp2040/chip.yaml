@@ -19,6 +19,10 @@ interrupts:
   count: { value: 32, ref: "2.3.2 Interrupts, p.60" }
   soft_only_from: { value: 26, ref: "2.3.2 Interrupts, p.60" }
 
+apertures:
+  - { window: [0x40000000, 0x70000], ref: "2.2.2 Detail, SYSINFO_BASE to TBMAN_BASE, pp.25-26" }
+  - { window: [0x50000000, 0x500000], ref: "2.2.2 Detail, DMA_BASE to XIP_AUX_BASE, p.26" }
+
 devices:
   # An APB window is the device's whole 16 KiB slot: its registers and the XOR, SET and CLR
   # aliases above them.
@@ -33,6 +37,10 @@ devices:
     ref: "2.2.2 Detail, p.26"
     lines: { irq: { number: 5, ref: "Table 80 Interrupts, p.60" } }
     blocks: { regs: { offset: 0x10000, symbol: USBCTRL_REGS_BASE, ref: "2.2.2 Detail, p.26" } }
+
+  # The one master beside the cores (2.1 Bus Fabric, p.14). Its whole AHB-Lite slot, the
+  # registers' atomic aliases inside it.
+  dma: { window: [0x50000000, 0x100000], bus_master: true, ref: "2.2.2 Detail, p.26" }
 
   clocks: { window: [0x40008000, 0x4000], owner: kernel, ref: "2.2.2 Detail, p.25" }
   resets: { window: [0x4000C000, 0x4000], owner: kernel, ref: "2.2.2 Detail, p.25" }

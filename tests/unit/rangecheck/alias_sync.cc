@@ -14,6 +14,7 @@
 #include <kickos/aspace.h>
 #include <kickos/domain.h>
 #include <kickos/instance.h>
+#include <kickos/irqlock.h>
 #include <kickos/kernel.h>
 #include <kickos/thread.h>
 
@@ -280,18 +281,19 @@ namespace kickos
                 uintptr_t const base = reinterpret_cast<uintptr_t>(&g_mem[PAGE]);
                 g_data_regions = 1;
                 int err = 0;
+                IrqLock lock;
                 g_owed = false;
                 g_data_region = {base, PAGE, ARCH_MPU_R | ARCH_MPU_W | ARCH_MPU_NOCACHE};
-                Task* const nc = task_create(1, nullptr, 0, 0, nullptr, &err);
+                Task* const nc = kickos::testfix::task_held(1, &err, lock);
                 size_t const nc_ops = dcache_count();
                 int const nc_mark = g_marked;
                 dcache_reset(nullptr);
                 g_data_region = {base, PAGE, ARCH_MPU_R | ARCH_MPU_W};
-                Task* const plain = task_create(1, nullptr, 0, 0, nullptr, &err);
+                Task* const plain = kickos::testfix::task_held(1, &err, lock);
                 size_t const plain_ops = dcache_count();
                 dcache_reset(nullptr);
                 g_owed = true;
-                Task* const owed = task_create(1, nullptr, 0, 0, nullptr, &err);
+                Task* const owed = kickos::testfix::task_held(1, &err, lock);
                 g_owed = false;
                 g_data_regions = 0;
                 ASSERT_NE(nc, nullptr);

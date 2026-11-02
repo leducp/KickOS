@@ -9,6 +9,8 @@ set(KICKOS_KERNEL_SOURCES
   thread/reent.cc
   thread/park.cc
   domain/domain.cc
+  task/image.cc
+  task/image_check.cc
   task/task.cc
   grant/grant.cc
   ktrace/ktrace.cc
@@ -44,7 +46,8 @@ set(KICKOS_KERNEL_SOURCES
   syscall/word.cc
   irq/irq.cc
   notify/notify.cc
-  irq/irq_route.cc)
+  irq/irq_route.cc
+  klib/slotpool.cc)
 
 # Microbenchmark accumulator, paired with the cycle-counter bracket in switch.S. On M0 and
 # the sim it links but the cycle path is inert, switch.S bracketing nothing there.
@@ -72,14 +75,10 @@ kickos_apply_freestanding(kickos_kernel)
 
 if(KICKOS_HAVE_ASPACE)
   kickos_privatise_runtime(kickos_kernel)
-  # The kernel TUs that name the app's half. kmain reaches kickos_init_args and
-  # kickos_root_entry and holds weak externs for _kickos_heap_start/_limit and
-  # kickos_app_build_stamp; reent reaches kickos_reent_seam; aspace and domain hold only
-  # weak externs (the app rom/sram window and code/appdata bounds), whose GOT references
-  # are what one .got cannot serve from both halves.
+  # The kernel TUs that name the app's half. aspace and domain hold only weak externs (the app
+  # rom/sram window and code/appdata bounds), whose GOT references are what one .got cannot serve
+  # from both halves.
   kickos_split_image_tu(kickos_kernel
-    init/kmain.cc
-    thread/reent.cc
     mem/aspace.cc
     domain/domain.cc)
   # The word loops the included source carries are the memcpy/memset idiom, and the pass

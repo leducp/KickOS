@@ -91,14 +91,14 @@ because "we are seL4-like" otherwise reads as a promise that these are coming.
 - **No CNodes and no hierarchical CSpace.** A capability handle is one flat unsigned 32-bit word
   (`kos_cap_t`) packing a **16-bit** table index against a **16-bit** generation
   (`kernel/include/kickos/cap.h`). Both widths are FIXED fleet-wide and neither is derived from
-  `KICKOS_MAX_HANDLES`, so the same logical capability prints the same value on every board. The
+  a table width, so the same logical capability prints the same value on every board. The
   word is spendable in full because the handle no longer travels in an errno-carrying return: a
   minting syscall returns a status and writes the handle to an out-parameter. One index value is
   reserved -- the all-ones index is never a slot, which caps a table at `2^16 - 1` entries and is
   what makes `KOS_CAP_AUTHORITY` and `KOS_CAP_NONE` unmintable. **No board states a width at all**:
-  a board states only its `KICKOS_CAP_TABLE_SUPPLY`, and root, which is the init, gets a table exactly
-  that wide (`cmake/cap_table.cmake`), the supply admission counts what the init holds against. Every
-  spawned thread gets `KICKOS_CAP_CHILD_WIDTH`, the grant-list floor `KICKOS_MAX_SPAWN_GRANTS + 1`.
+  the composition states each declaration's `caps: { width, slots }`, and root, which is the init, gets a
+  table as wide as the composer computes it holds. Every
+  spawned thread gets its task's width unless its spawn asks another, within its task's slots.
   The fleet's root widths are the boards' supplies: 16 by default, 7 on `bluepill-c8` and
   `f302nucleo`, 32 on the x86_64 and arm64 bench presets that state it. Widening a table does not
   renumber anything.
@@ -106,25 +106,26 @@ because "we are seL4-like" otherwise reads as a promise that these are coming.
   space too large to index directly; at that size the guard/radix machinery would cost more than
   the space it organises. What actually keeps tables small is not the field width but the
   **static** allocation: one slab holds a run per possible thread. A run is NOT one width -- root
-  gets `KICKOS_MAX_HANDLES`, the board's supply, every spawned thread gets `KICKOS_CAP_CHILD_WIDTH` -- so the
-  slab is `((KICKOS_MAX_THREADS + 2) x child chunks + root's extra chunks) x 8 x 8` bytes of
+  gets the init's width, every spawned thread its task's -- so the
+  slab is `((KICKOS_BUDGET_THREADS + 2) x child chunks + root's extra chunks) x 8 x 16` bytes of
   `.bss`. Re-derive it from the `KickOS: cap table =` line at configure rather than from this
   formula.
 - **No derivation tree and no recursive revoke.** Refcounted last-close plus cap-generation
   staling already gives the property that matters (a revoked capability stops working, and a stale
   handle cannot be resurrected). A derivation tree buys *transitive* revoke, which needs
-  per-capability parentage, and `CapEntry` is a fully-spent 8 bytes with nowhere to put a parent
-  link: the object handle, type, rights and cap-gen, plus a `CAP_REPLY`'s 8-bit call sequence split
-  into the spare bits beside the type and the rights -- and a DEAD entry's `obj` word carries the
-  run's free-list links, so even an empty slot has nothing free. A problem a bigger table makes
+  per-capability parentage, and `CapEntry` is a fully-spent 16 bytes with nowhere to put a parent
+  link: the object handle, type, rights and cap-gen, a `CAP_REPLY`'s 8-bit call sequence split
+  into the spare bits beside the type and the rights, the 32-bit badge, and the pool slot's whole
+  32-bit generation beside the handle. A DEAD entry's `obj` word carries the run's free-list
+  links, so even an empty slot has nothing free. A problem a bigger table makes
   worse rather than better.
 - **No per-instance (per-pin, per-clock, per-line) capabilities.** Roughly **100 muxable pins** on
   the larger parts, and the cost is not addressing -- the index field would reach them -- it is
   that a run is **statically reserved for every possible thread**, in whole chunks: 100 slots rounds
   to 13 chunks = 104 reserved slots per run. Per-thread width does not rescue this -- the pins would
   be held by a driver thread, and a thread that holds them needs the width -- so at
-  `(KICKOS_MAX_THREADS + 2) x 104 x 8` bytes the table is **14,976 bytes** of
-  `.bss` at the fleet's `KICKOS_MAX_THREADS` of 16, and still 3,328 bytes on the two-thread tiny
+  `(KICKOS_BUDGET_THREADS + 2) x 104 x 8` bytes the table is **14,976 bytes** of
+  `.bss` at the fleet's `KICKOS_BUDGET_THREADS` of 16, and still 3,328 bytes on the two-thread tiny
   boards, against a measured boot arena of 6,560 bytes on `bluepill-c8` -- which those boards would
   never reach anyway, since their supply is 7 and configure refuses the sum outright. Worse, the
   requirement is per *thread*: a bring-up body
@@ -138,7 +139,7 @@ because "we are seL4-like" otherwise reads as a promise that these are coming.
 The common thread is that a run is statically reserved for every possible thread -- the TCB holds only
 the chunk *directory*, and the entries live in one slab carved at boot -- which is what holds the
 fleet's two configured ROOT widths at 7 and 10 slots regardless of what the handle codec
-could address. A spawned thread is narrower still: it gets `KICKOS_CAP_CHILD_WIDTH`. If that ever changes, two
+could address. A spawned thread gets its task's declared width. If that ever changes, two
 of the four deserve revisiting -- the CNode and per-instance bullets. The untyped-memory bullet
 never depended on table size at all, and the derivation-tree bullet gets *stronger* as tables
 grow. But the
@@ -259,7 +260,7 @@ Key borrowed ideas, attributed:
   every board: one kernel image, one privilege crossing, and no separately-loaded user binary. The
   region boards are PROTECTED in NuttX's own sense, MPU plus a trap; the translating boards keep the
   same build mode while drawing the boundary in page tables, which is not NuttX's `KERNEL` mode
-  because there is still no loader and no per-process image); the `make export`
+  because there is still no dynamic loader); the `make export`
   dependency-inversion packaging;
   the toolchain-libc lesson (below).
 - **Argon** -- dual C/C++ API; static object allocation; the critical-section split
@@ -352,9 +353,10 @@ KickOS/
            rv64imac/ chip/virt_rv64/ # RV64IMAC (supervisor mode, stvec, Sv39/Sv48 page tables)
     x86/   x86_64/ chip/q35/         # x86_64 UEFI application (PE32+): the syscall entry is
                                     #   SYSCALL/SYSRET, arch_init ADOPTS the translation regime
-                                    #   firmware already has live, and pe_image.ld places no
-                                    #   memory map (the linker's own default layout plus three
-                                    #   section wildcards)
+                                    #   firmware already has live, pe_image.ld places no memory
+                                    #   map (the linker's own default layout plus section
+                                    #   wildcards), and program.ld links a program at the fixed
+                                    #   user base
   kernel/
     include/kickos/                 # public kernel + syscall-number headers
     sched/  thread/  task/  sync/  time/  irq/  syscall/  init/  ktrace/  bench/  domain/  grant/
@@ -537,7 +539,8 @@ is non-transferable: there is no table entry for a `cap_grant` to copy, and it h
 nothing it did not already have. They decide ONE state oppositely, and that difference is the
 point -- see `invariants.md` `join-accepts-the-unreclaimed-exit`.
 
-**Group death is the TASK layer's, not the thread's.** `KOS_SYS_TASK_CREATE` makes an EMPTY group
+**Group death is the TASK layer's, not the thread's.** `KOS_SYS_TASK_CREATE` starts a declared
+instance of a program with its entry thread; the empty-task create syscall makes an EMPTY group
 holding a domain built from its own grant and `kos_thread_params::task` seats a member;
 `KOS_SYS_TASK_SLAY` ends the whole group from a supervisor. From inside, the group ends when its
 entry thread, the first member a non-member seated, exits on its own or when any member faults:
@@ -569,7 +572,7 @@ is the form that waits. archived `M4_task_layer_record.md` is the record.
   out-parameter. So every handle class spends all 32 bits and a live handle may have bit 31 set:
   `cap.h`'s `KCAP_INDEX_BITS` / `KCAP_GEN_BITS`, the "NO SIGN TEST" notes on `free()` and
   `resolve()` in `kernel/include/kickos/slotpool.h`, and `ThreadPool::INDEX_BITS`. The code set
-  mirrors POSIX magnitudes AND meanings -- `EPERM` `ESRCH` `EIO` `EBADF` `EAGAIN` `ENOMEM` `EACCES`
+  mirrors POSIX magnitudes AND meanings -- `EPERM` `ENOENT` `ESRCH` `EIO` `EBADF` `EAGAIN` `ENOMEM` `EACCES`
   `EFAULT` `EBUSY` `EINVAL` `EMFILE` `EPIPE` `EDEADLK` `ENOSYS` `EOVERFLOW` `ENOTSUP` `ETIMEDOUT`
   `ECONNREFUSED`
   `ECANCELED`: `EAGAIN` means a later try may succeed (I2C arbitration loss can follow partial
@@ -590,7 +593,7 @@ is the form that waits. archived `M4_task_layer_record.md` is the record.
   free list is empty, or the thread already holds `KICKOS_CAP_REPLY_MAX` live `CAP_REPLY` entries;
   **`EOVERFLOW`** is a bounded counter already at its ceiling, refused rather than wrapped --
   `KOS_SYS_WORD_WAKE` banking a unit past `KOS_SEM_COUNT_MAX` and the object-refcount ceiling behind
-  `KOS_SYS_CONSOLE_PUBLISH` and a spawn's delegation batch (`kernel/syscall/syscall.cc`,
+  the console publish syscall and a spawn's delegation batch (`kernel/syscall/syscall.cc`,
   `kernel/syscall/syscall_thread.cc`; documented per call in `user/include/kickos/sys.h`);
   **`ETIMEDOUT`** is a caller-supplied deadline that passed before the operation could happen,
   and it promises that NOTHING happened for the caller: `KOS_SYS_SEND`, `KOS_SYS_REPLY_RECV`,
@@ -634,14 +637,19 @@ is the form that waits. archived `M4_task_layer_record.md` is the record.
   so a reserved arena page stands in for it, and that one boundary is hardware-only. Nor can it
   separate an instance's threads inside the C library: it runs them on one host thread, and the
   host libc's stdio and malloc locks key on that thread, so the libc locks have no sim counterpart
-  and the `libcrace` witness is declared inapplicable there.
+  and the `libcrace` witness is declared inapplicable there. Each image is still a link of its own
+  (`tools/image-link.py --host`): a relocatable link of its inputs, every symbol made local but its
+  header and its `main`, renamed `<name>_main`, then one host link with the kernel, so no two
+  images share a static. The host C and C++ runtime stays one per process.
 
 ---
 
 ## Memory domains (the isolation unit)
 
 The unit of memory isolation is a **memory domain** -- a lightweight "process" in the
-memory-boundary sense only: no `fork`, no `exec`, no loader and no per-process image. What backs the
+memory-boundary sense only: no `fork`, no `exec` and no dynamic loader. A task runs a program: on a
+region or flat board each declared task is an image of its own, placed at build time; on a
+translating board a program's image backs every space that runs it. What backs the
 boundary depends on the part. Where the chip carries region descriptors the domain carries a region
 set and every domain lives in ONE physical address space; where the chip translates, the domain
 carries a page-table root and the boundary IS a virtual address space. Ring 0 reaches a task's memory
@@ -717,6 +725,15 @@ aperture, so a granted peripheral window is a genuine per-thread capability and 
 peripheral access faults. A bus-slave-side unit (K64F SYSMPU) never sees the peripheral bridge, so
 it cannot gate peripherals at all -- a separate, coarser authority does, and that authority is not
 per-thread. (Narrative + the worked K64F bring-up: `../book/peripheral-isolation-and-the-hardware-ceiling.md`.)
+
+**A device window lies inside one of the chip's bus apertures on every enforcing backend.** On a
+region chip the apertures are the chip file's `apertures:` rows, the manual's peripheral bus
+windows; on a translating one they are its grantable devices' own windows. No aperture holds RAM,
+so a task holding `AUTH_MEMORY` can never map kernel RAM as a device window (`-KOS_EINVAL`), and a
+chip file without `apertures:` is refused. A window over a device the chip file marks
+`bus_master` also needs `AUTH_BUS_MASTER` (`-KOS_EPERM`): every DMA engine and every other block
+that writes memory by physical address is listed and marked. A device window is also never the
+buffer of a kernel copy: a system call's pointer into one answers `-KOS_EFAULT`.
 
 | Chip / unit | MPU covers MMIO? | Separate peripheral gate | Per-thread MMIO isolation | Evidence |
 |---|---|---|---|---|
@@ -892,9 +909,9 @@ API. Two flavors:
 - **Userspace drivers (unprivileged -- the goal)** -- a user task granted, at creation:
   (1) **MMIO** -- the device register block added to its MPU regions (device attrs, RW,
   no-execute); (2) **IRQ-as-event** -- a `CAP_IRQ` capability on the line, minted by a
-  bring-up path holding `AUTH_IRQ` (`kos_irq_claim`) and DELEGATED to the driver at spawn, which
-  binds the line to a notification (`kos_irq_bind_notify`) and then loops `kos_notify_wait` /
-  service.
+  creator holding `AUTH_IRQ` (`kos_irq_claim`, or a packaged driver's create, which binds each
+  declared line itself) and DELEGATED to the driver at spawn, which binds the line to a
+  notification (`kos_irq_bind_notify`) and then loops `kos_notify_wait` / service.
   The kernel's generic ISR stub masks the line, raises the binding's bit in that notification,
   flags reschedule -> PendSV switches to the now-ready driver task; the next `kos_notify_wait`
   re-arms the consumed line, so no explicit ack is needed (`kos_irq_ack` stays an OPTIONAL early
@@ -927,9 +944,9 @@ never the reverse.** A driver is packaged as an in-process CLASS, as a shared SE
   nothing beyond the register work.
 - **Service.** A thread that owns exactly ONE class instance plus the peripheral capability, and
   multiplexes clients over a `CAP_ENDPOINT` (call/reply, reply-cap). Sharing and arbitration live
-  here and ONLY here. The badge that would let it authenticate MUTUALLY-UNTRUSTING clients is not
-  in effect yet (`badge` is `KOS_BADGE_NONE`, see *Service publication* below), so a shipped
-  service today fronts one client's several devices, not several clients.
+  here and ONLY here. It tells its clients apart by the badge on each one's copy of its endpoint
+  (*Service publication* below), so a bus service fronts several mutually untrusting clients, each
+  on device slots of its own ([bus-service.md](bus-service.md), *Device slots*).
 
 The class is written first and DEFINES the API; the service is a transport over that same API and
 is not allowed to invent its own.
@@ -1000,8 +1017,8 @@ feeds the slave app.
 
 - **Kernel**: freestanding C++ -- `-ffreestanding -fno-exceptions -fno-rtti
   -fno-threadsafe-statics -fno-use-cxa-atexit`. Bring-up runs only the KickOS-owned
-  `.init_array` set before `kmain`; every other constructor runs from the root thread with the
-  kernel live (`ctors-run-before-init-entry` in `invariants.md`).
+  `.init_array` set before `kmain`; every other constructor runs from its image's first thread
+  with the kernel live (`ctors-run-before-their-image-entry` in `invariants.md`).
   Of the usual ABI stubs only `__dso_handle` exists (`user/src/newlib_stubs.cc`, and it is in
   `tests/static/weak_allowlist.txt`): `-fno-use-cxa-atexit` removes the need for `__cxa_atexit`, and
   `__cxa_pure_virtual` is never emitted because nothing declares a pure virtual. **`operator
@@ -1021,23 +1038,20 @@ feeds the slave app.
   syscalls: the same seam under both the sim's host `libstdc++` and a target full-C++ app's
   pinned newlib -- one newlib seam fleet-wide. (The full seam detail: `docs/design-kickcat-k64f.md`.)
 - **Per-thread reentrant state**: on every board but the sim, whose libc is the host's, gives every
-  thread slot its own `struct _reent`, primed at the thread's first switch-in, and points libc at
-  the running thread's copy. Under `KICKOS_REENT_PER_THREAD` libc calls `__getreent()` and the
-  thread pointer answers it, written once by `thread_create` and never by a switch: through the
-  first word of the thread's TLS control block on armv8a and on lx6 above one kernel core
-  (`KICKOS_REENT_IN_TCB`, which rides on `KICKOS_TLS`), and as `tp` itself on rv64imac, which
-  resumes every thread with it. armv8a, rv64imac and lx6 get that hook from the KickOS
-  toolchain's dynamic-reent newlib. Elsewhere libc reads one word
-  (`&_impure_ptr`, or the word behind `__getreent` on lx6 at one core), and `switch_book` and
-  `sched::start` (`kernel/sched/sched.cc`) rewrite it at every switch, which is correct only while
-  one core runs its readers. `errno` is that struct's first member, so this, and not a
-  `thread_local`, is what makes `errno` follow the thread.
-  Beside that state the kernel seats each thread's own lock id, from which `kos_thread_self`
-  derives the caller's handle with one load and no kernel entry: the control block's second word
-  under `KICKOS_REENT_IN_TCB`, the second word of the FS cell on x86_64 (`%fs:8`), a word after the
-  `struct _reent` in rv64imac's slot element, which the first switch-in writes once the prime has
-  copied the state alone, one word rewritten beside `_impure_ptr` at every switch elsewhere, and
-  an instance-local word on the sim. The kernel never reads it back: every kernel path takes the
+  pool thread its own `struct _reent` at the base of its own stack block, below its TLS block, so
+  it can overlap no `thread_local`. It is primed at the thread's first switch-in from the image's
+  copy of libc's process-wide state, as the image's `.data` holds it before any start; idle runs on
+  image 0's live process-wide state. The carve ends in a two-word
+  cell that ends at the thread pointer, the state's address then the thread's lock id, both
+  written once by `thread_create`. Under `KICKOS_REENT_PER_THREAD` (armv8a, rv64imac, lx6 and
+  x86_64, whose KickOS-toolchain newlib is dynamic-reent) libc calls `__getreent()`, which reads
+  that cell, and no switch writes anything. Elsewhere libc reads one word, `&_impure_ptr`, and
+  `switch_book` and `sched::start` (`kernel/sched/sched.cc`) rewrite it at every switch, which is
+  correct only while one core runs its readers. `errno` is that struct's first member, so this,
+  and not a `thread_local`, is what makes `errno` follow the thread.
+  `kos_thread_self` derives the caller's handle from the cell's lock id with one load and no
+  kernel entry (read through `_impure_ptr` where libc reads that word), and from an
+  instance-local word on the sim. The kernel never reads it back: every kernel path takes the
   caller from the scheduler, so a thread that overwrites its copy misleads only itself.
   `_REENT_INIT_PTR` aims every copy's `_stdin`/`_stdout`/`_stderr` at the one global `__sf[3]`, so
   **stdio buffering stays process-wide** however many copies exist.
@@ -1050,17 +1064,18 @@ feeds the slave app.
   static data of the heap's owner, beside a depth only its holder writes; the owner is the word
   itself, compared with the caller's seated lock id (`kickos_self_lock_id`), so neither a take, a
   recursion nor a release enters the kernel unless another thread waits. So priority inheritance
-  holds. A holder that dies inside stdio leaves its dead id in the word, and the next take answers
-  `-KOS_EOWNERDEAD`, which that lock takes as acquired; one that dies inside malloc leaves the heap
-  torn, and the malloc lock's next taker traps, ending its task. A wait a kill cancelled asks again
-  through the contended entry alone (`kickos_mutex_lock_entry`), never the compare-and-swap, so the
-  thread dies at that entry. A kill that lands before an uncontended take dies at the first system
-  call inside the section, holding the lock: inside stdio that is `_write`, and the libc lock's next
-  taker gets `-KOS_EOWNERDEAD`. malloc's section makes no system call (`_sbrk` is a user bump), so a
-  kill never ends a thread inside it. The space's startup is the same case: a starter that is not
-  its task's entry thread, killed before it takes the libc lock, dies at the first system call a
-  constructor makes with the space's start word half set, and the lock's next taker traps, ending
-  the task. A try-acquire tries the mutex with a zero deadline. There is one pair
+  holds. A holder that dies holding either lock leaves its dead id in the word and what the lock
+  guards torn: a heap, a `FILE`, the environment, the exit-handler table or stdio's set-up. So the
+  next take answers `-KOS_EOWNERDEAD` and traps its taker, ending its task; on a chip that holds
+  one task, whose init shares the image's libc, it ends the whole image (boards.md). A wait a kill
+  cancelled asks again through the contended entry alone (`kickos_mutex_lock_entry`), never the
+  compare-and-swap, so the thread dies at that entry. A kill that lands before an uncontended take
+  dies at the first system call inside the section, holding the lock: inside stdio that is
+  `_write`, and the libc lock's next taker traps. malloc's section makes no system call (`_sbrk`
+  is a user bump), so a kill never ends a thread inside it. The space's startup is the same case:
+  a starter that is not its task's entry thread, killed before it takes the libc lock, dies at the
+  first system call a constructor makes, and the lock's next taker traps, ending the task. A
+  try-acquire tries the mutex with a zero deadline. There is one pair
   per address space, which is one per heap: a translating board starts each space's copy of the
   image data at zero, so each task has its own; a region board's tasks share the image's, and any
   of their threads can take it, so one thread can stall every task's stdio and malloc. Being
@@ -1105,7 +1120,9 @@ feeds the slave app.
   target_link_libraries(my_slave PRIVATE KickOS::kernel KickOS::system_default)
   ```
   The exported `KickOS::kernel` INTERFACE target carries the component link group + flags (sim:
-  host libc threads) with no init in its archive group, and is full C++ on every board.
+  host libc threads) with no init in its archive group, and is full C++ on every board. On the
+  sim the package makes the image link the default linker launcher, so a plain executable
+  linking `KickOS::kernel` is an image too, and any other link runs unchanged.
   `KickOS::kernel` links beside exactly
   one system target, which carries the init, the emitted table and the heap:
   `kickos_compose(<system> <composition.yaml>)` makes one, `kickos_compose(<system> PARTITION
@@ -1123,11 +1140,10 @@ feeds the slave app.
   firmware loads is a PE32+ UEFI application, which the compiler driver cannot link, so the
   installed `cmake/toolchain-x86_64-uefi.cmake` sets the executable link rule to
   `tools/x86_64-link.sh` and the suffix to `.efi`. That tool takes the driver's `-Wl,` spelling,
-  runs the two guards over every input, links twice with `ld -m i386pep` so the image carries a
-  copy of its relocation directory, and writes `<image>.map`; the section script and the boot
-  and kernel-landing objects ride the exported leaves, so `kickos_emit_image()` only checks the
-  image's leaves there. The order of an image's objects lays out its app half, and nothing
-  depends on it. An app whose sources call a driver class
+  runs the two guards over every input, links the kernel with `ld -m i386pep`, and writes
+  `<image>.map` and `<image>.elf`, an ELF twin of the PE image whose DWARF a debugger can read;
+  the section scripts and the boot and kernel-landing objects ride the exported leaves. An app
+  whose sources call a driver class
   adds `kickos_link_class_backends(<target> <class>...)` before its `target_link_libraries` line: an
   app names the class (it is already in its `#include` list); the backend and its position
   ahead of the rescan group come from `kickos_select_class_backend`, called by
@@ -1141,6 +1157,118 @@ feeds the slave app.
   thing in the tree that reads an installed package from outside.
   KickOS's own warning flags are **never** part of that interface -- they are this project's
   hygiene policy, applied `PRIVATE` to targets we own, and a consumer's diagnostics stay theirs.
+- **Programs.** A composition's task runs `program: <target>` or `driver:`. A program is an executable whose
+  `main(argc, argv)` is the task's entry, its return passed to `exit()`. A program links `KickOS::kickos` (`kickos` in
+  tree): the user headers and runtime, without the kernel. A program's `main` stays `main`;
+  any other target linking `KickOS::kernel` is compiled with `-Dmain=the renamed app main`.
+  `program: main` is the executable
+  linking the system, or the target `kickos_compose(<system> <file> DEFAULT <target>)` names,
+  which that call links the system into, and `kickos_emit_image(<system>)` then emits that
+  target. `kickos_compose` resolves each other name to its target once the directory ends, so a
+  program may be declared after the system. A program that is the executable linking the system
+  runs from that link's own objects. Any other is linked through `tools/image-link.py --program`:
+  its own link writes its relocatable link and records CMake's link command beside it, and the
+  final link of each system running it replays that command for each task running it, with the
+  task's declaration and header, the system's objects every task image takes
+  (`KOS_IMAGE_SYSTEM_OBJECT`) and the system's driver and client archives. On the sim a
+  program's `main` is renamed `<task>_main` there. The init finds a program by the name its
+  table states for the task, and the executable's own by the executable's name. A board linking
+  one image, a 64 KiB one, runs as a program only the executable linking the system.
+- **Images.** An image is the user code of one link with its own copy of everything it links:
+  its statics, its heap, its libc state, its constructors. Where the init is an image of its own
+  (`KICKOS_INIT_IMAGE`: region and flat boards, the ESP32, the RX and the sim) an app is two:
+  image 0, the init (`KickOS::init`, its driver path, its own copy of the table and its header,
+  program `init`), and image 1, every other object of the link, whose program is the app's
+  target. A 64 KiB board and a translating one link one image, the whole app with its init; on a
+  translating board every space starts from its own copy of that image's data. Each image starts
+  with a header (`user/include/kickos/sys/image.h`) that the final link fills in.
+  Before root is created the kernel checks every header in place (`kernel/task/image_check.cc`),
+  and a malformed one panics naming the field. Root starts from image 0's header and runs image
+  0's code over image 0's window. Every other task runs its creator's image, or the image of the
+  program its create names; its threads get that image's window as their data region, are primed
+  from that image's libc state and return into that image's exit path. An image's constructors
+  run once, in the first of its threads to enter it (`kickos_image_start_once`): the init's in
+  root before the walk, the app's in the entry thread of the first task the init starts. The app's
+  header points at the image's declarations, one per task of the composition in its table order,
+  which the composer emits beside the table: name, priority, ceiling, cores, stack, authority,
+  and the device windows, port windows and lines; the declarations of every image are numbered in
+  image order. The boot check holds each to the priority range, the
+  machine's cores and the device arm a spawn admits a window with. A declaration is
+  `start: init`, which only the init starts, or `start: on_request`, which any creator holding
+  `AUTH_TASKS` starts.
+- **Programs and their instances.** `kos_program_find(name, &prog)` mints a `CAP_PROGRAM`
+  capability on the image whose program, its CMake target, is `name` (`-KOS_ENOENT` for none).
+  `kos_task_create(prog, &params, &task)` (`struct kos_task_params`) starts a declared instance:
+  `params.instance` names it, or NULL takes the lowest-numbered one the caller may start that is
+  not live. An instance is live from its create until its task is dead, and a second create of it
+  answers `-KOS_EBUSY`; with none left the call answers `-KOS_ENOMEM`. A declaration with neither
+  `restart` nor `start: on_request` starts once: a create of it after its first incarnation started
+  answers `-KOS_EPERM`, on every board. The creator holds
+  `AUTH_TASKS` and every authority bit the declaration names (`-KOS_EPERM`, never narrowed), and
+  its ceiling and cores. The kernel builds the task with the declaration's ceiling and cores and
+  starts its entry thread at the declared priority, with the declared authority and the caller's
+  `params.caps` and `params.windows` delegated as a spawn's are. The entry is the image header's
+  `decl_start`, `kickos_task_entry`, and its argument is a `struct kos_task_args` at the top of
+  its own stack: argc, the declaration's index, the shared block `params.block` names, the argv
+  vector and its strings, which the kernel copies from the caller, one copy per string, at most
+  `KICKOS_ARGV_MAX` bytes; with no argv it is `{ instance name }`. A declaration naming a ready
+  endpoint takes it from `params.caps`, so `kos_task_watch` reports a first receive on it whenever
+  the watch is armed, and a watch armed after the task ended raises at once. A declared device,
+  line or console asks the creator for `AUTH_MEMORY`, `AUTH_IRQ` or `AUTH_CONSOLE`.
+- **A packaged driver's create.** Its declaration's device windows are the entry thread's, and
+  the caller passes none (`-KOS_EINVAL`). A declared console is published through the caller's
+  capability on the ready endpoint, which holds WAIT until the caller narrows it, and the entry
+  thread runs only once the kernel's own console writers have drained. Each declared line is
+  claimed into the entry thread's table at the index its grant names, at its trigger, routed to
+  the declared core and bound to the notification the declaration names in `params.caps`, line
+  `k` raising bit `k`. Every refusal it can know comes before the publish: a line still retiring
+  from its last holder answers `-KOS_EAGAIN`, a line held `-KOS_EBUSY`. The entry thread runs
+  `kickos_driver_task`, which hands the driver's `START` the `kos_driver_instance` its table
+  record and block make.
+  A kernel built for a chip that holds one task (`KICKOS_CHIP_ONE_TASK`, from its chip file's
+  `one_task`) leaves this path out and answers a packaged driver's declaration `-KOS_ENOSYS`.
+- **A driver inside a task.** A driver listed under a task's `drivers` has a table record, flagged
+  `KOS_TABLE_TASK_HOSTED` and naming its host, and no declaration. The init never starts it, but
+  reserves its ring block and creates the host with that block as the task's shared block. The
+  host's entry thread brings the driver up before the task's own entry: it takes the endpoint the
+  init passed it, makes the notification and its doorbell, claims each line and binds it to its
+  bit, then calls the driver's `START`. The bring-up spawns every descriptor thread from that
+  layout, thread 0 with the driver's windows and authority. A driver with a readiness latch is
+  waited on until the latch reads service-ready, which its service thread publishes once the
+  device half is up and just before its first receive. The host then sends the endpoint a
+  zero-length probe, bounded as a console handover's is, and a receive is the only thing that
+  takes it, so the task's entry runs only once the driver serves, whatever the priorities. Each
+  driver thread that waits on one of its roles, a service or IRQ worker, is spawned
+  `KOS_THREAD_ESSENTIAL`: its end by any cause, a return, `kos_exit` or a cancel, ends the host
+  task as a fault does, with `KOS_EXIT_FAULT`, so no task outlives a driver it runs. A failed
+  start or probe ends the host task. Its diagnostics go to the kernel console, or to a
+  console task already serving stdout, never to the endpoint of the driver being started. A console driver is never listed this way: the kernel closes the standard output of
+  every thread of the task that serves the console.
+  `kickos_emit_image()`, or `kickos_image_link()` for a link nobody emits, makes
+  `tools/image-link.py` the target's linker launcher, so an image link starts from CMake's own
+  link command. On region and flat boards, the ESP32 and the RX, the tool links each image on its
+  own first (`-r`) and makes every symbol local but the header, image 1's renamed
+  `kickos_image1_header`. An object marked `KOS_IMAGE_INIT_OBJECT()` goes to image 0 alone, one
+  marked `KOS_IMAGE_BOTH_OBJECT()` and every archive to every image, one marked
+  `KOS_IMAGE_TASK_OBJECT(k)` (the table copy and header the composer generates for declaration
+  `k`) to image `k + 1` alone, and any other object to every task image, so declared task `k` runs
+  image `k + 1`, which holds the whole app. A link holding no marked object is one image. One
+  final link then places them with the kernel, each image's window sized from what it holds, its
+  `.data`, its `.bss` and the composition's heap, rounded to the protection unit's rule, and that
+  ELF is the one a debugger loads. The bounds the final link states for image `n` are
+  renamed from `cmake/image_names.txt` to `__kickos_image<n>_*`, and no other reference of an
+  image may resolve to the kernel or to another image. The images share the link's one
+  thread-local segment: each image's part is its own span of it at its own offset, and its
+  threads' thread pointer sits that far below their block. On armv8a, rv64imac and x86_64 each image is a program of its own
+  link at the fixed user base, `<app>.image<n>.elf`, the same partition giving the init's and
+  one per declared task, and the kernel's link embeds their loadable bytes (`cmake/embed_names.txt`
+  names what the kernel takes from the programs): image 0's where its program was linked, every
+  later image's text and window on pages of their own in `.kickos_images`, with the table of
+  where each one's frames are (`__kickos_image_frames`). On x86_64 the PE32+ image holds image 0
+  one section per part, at the program's own offsets, and the later images in `.kimgs`, wherever
+  firmware loads it. A space maps its own image alone. `tools/gdb/kickos.py` loads the symbols of
+  the program the stopped task runs beside the kernel's. The 64 KiB boards
+  (`KICKOS_BOARD_IMAGE_SPLIT OFF`) still link their one image in the kernel's own link.
 - **Declaring a driver.** The installed package's `kickos.cmake` gives a driver its single shape:
   `kickos_add_driver(<name> [SOURCES] [CLASS] [REGDIR] [THREAD ...]...)`, a freestanding,
   exported driver-lib linking `kickos_user`, its `.data`/`.bss` landing app-side, and with a `THREAD`
@@ -1148,9 +1276,12 @@ feeds the slave app.
   of `<kickos/driver/declared/<name>.h>`, and the export manifest's catalogue. Every driver a service
   list carries is packaged. A line role is named after the chip file's line it binds, except on a
   module whose channels share their lines, as the XMC's USIC is, where the role is `irq`. A
-  composition binds each role to a line, and the init hands the driver's `START` a
-  `kos_driver_instance` carrying each line as its number and its index among its device's lines:
-  `bring_up` claims the instance's lines. The `KICKOS_BOARD` cache-var help and the
+  composition binds each role to a line, and the driver's `START`, in the task's entry thread, is
+  handed a `kos_driver_instance` carrying each line as its number and its index among its
+  device's lines, which the create claimed. `bring_up` spawns the descriptor's other threads into
+  the task, delegating each its roles from the entry thread's layout, the threads past `BARRIER`
+  waiting on the readiness latch, then runs thread 0's body. `AUTHORITY` names what the entry
+  thread itself runs with; the threads it spawns hold none. The `KICKOS_BOARD` cache-var help and the
   MPU-enforcement board list are **derived from globs** over `boards/*/board.cmake`, so neither
   goes stale against the fleet.
 - **Declaring a QEMU test.** The test helpers are the tree's own, in the uninstalled
@@ -1188,7 +1319,7 @@ members' tables with interrupts masked: one compare per thread slot, then each m
 in entry reads, each charged entry costing a `SlotPool::live_index` and each `CAP_IRQ` entry one more
 resolve and a `SlotPool::index_of`. That last one divides on the 64-bit targets, where
 `sizeof(Notification)` is 24, and not on the 32-bit ones, where it is 16. An attach pays the walk
-once per task slot (`KICKOS_MAX_TASKS`). The contract below is code-synced to `kernel/include/kickos/cap.h`,
+once per task slot (the task pool size). The contract below is code-synced to `kernel/include/kickos/cap.h`,
 `kernel/syscall/cap.cc`, `kernel/syscall/syscall.cc`.
 
 - **Per-thread typed handle table, not global ids or fds.** A global object id every thread can name
@@ -1199,14 +1330,15 @@ once per task slot (`KICKOS_MAX_TASKS`). The contract below is code-synced to `k
   (`KCAP_CHUNK_TARGET`, 8) compiles a FLAT path with no directory, no shift and no mask, and its
   run is exactly the declared width; wider tables reserve a ceiling count of chunks, so the last
   chunk's tail is paid for and unaddressable. **The width is per TASK, not per image**: root gets
-  the board's supply, every spawned thread gets `KICKOS_CAP_CHILD_WIDTH`, and the slab is carved from both
-  classes rather than from the widest. Root's table is exactly `KICKOS_CAP_TABLE_SUPPLY` wide and
-  admission counts the init's holdings against it; the grant-list floor `KICKOS_MAX_SPAWN_GRANTS + 1`
+  the init's width, every spawned thread its task's, and the slab is the sum of every
+  declaration's slots rather than the widest times the pool. Root's table is what the init holds; the grant-list floor `KICKOS_MAX_SPAWN_GRANTS + 1`
   is the child width, and a board whose supply is below it fails the configure. Do not recompute the
   `.bss` cost: the `KickOS: cap table =` configure line is the authority. A `CapEntry` is
-  8 bytes and **fully spent**: the global object handle, `CapType`, the rights bits, the cap-gen,
-  and -- packed into the spare bits beside the type and the rights -- a `CAP_REPLY`'s 8-bit call
-  sequence (`KCAP_REPLY_SEQ_LO_BITS` / `KCAP_REPLY_SEQ_HI_BITS`, seated by `cap_reply_seq_seat`).
+  16 bytes and **fully spent**: the global object handle and the whole 32-bit generation of the
+  pool slot it names, checked on every lookup (`cap_obj`), `CapType`, the rights bits, the
+  cap-gen, a `CAP_REPLY`'s 8-bit call sequence packed into the spare bits beside the type and the
+  rights (`KCAP_REPLY_SEQ_LO_BITS` / `KCAP_REPLY_SEQ_HI_BITS`, seated by `cap_reply_seq_seat`), and
+  the 32-bit badge of an endpoint or a notification capability (`cap_badge_seat`).
   Even an empty slot's spare word is spoken for: a DEAD entry's `obj` holds the run's free-list
   links. That is why there is nowhere to put a parent link. Handles are **opaque** to
   userspace (never assume an array index). The table is a pure per-thread naming+rights layer that
@@ -1275,7 +1407,7 @@ once per task slot (`KICKOS_MAX_TASKS`). The contract below is code-synced to `k
   parent.rights & mask`; a mask adding a bit the parent lacks is rejected, never widened); the
   WHOLE list is validated before the child slot is claimed (no half-populated child, no dangling
   ref bumps). An endpoint's HANDOUT is the one right that lets a delegation seat WAIT the source
-  lacks, so `kos_console_publish` seating WAIT on its HANDOUT-only publisher amplifies nothing:
+  lacks, so a publish seating WAIT on its HANDOUT-only publisher amplifies nothing:
   that holder could already seat WAIT on any thread it spawns.
 - **Resolution is cold-path.** A handle is bound to its target at arm time; an ISR **never**
   resolves a cap -- `irq_claim` allocates the `IrqBinding` ONCE and hands `irq_event_isr` that
@@ -1347,15 +1479,16 @@ closes the confused-deputy path a whole-arena syscall raise would leave open.
 drivers cannot share one peripheral, a three-state ownership axis `g_console_state`
 (KERNEL_OWNED / USER_OWNED / RECLAIMED) gates `console_emit` ahead of its buffered-vs-sync
 decision: in USER_OWNED the kernel touches the device on no path (RTT still carries kernel
-output). The syscall `kos_console_publish`, gated on `AUTH_CONSOLE`, performs the handover -- it
-**relinquishes** the buffered path via `console_tx_deinit` (flush, disable the TX interrupt,
-detach/NVIC-mask, disarm), takes a kernel ref on the userspace driver's stdout endpoint, then
-flips the state to USER_OWNED last; a stale chip writer that raced the flip is drained (via the
-`g_chip_writers` count, with the publisher yielding at lowered priority so a lower-priority
-writer can finish) before publish returns. The publisher names the endpoint through a capability
-holding HANDOUT, and the publish seats WAIT on it when it is missing, so the init publishes a
-restarted console driver's endpoint again and repeats the first handover (see
-[console.md](console.md), "Capability handover"). The **field panic path reclaims** the UART:
+output). A console driver's create, gated on `AUTH_CONSOLE`, performs the handover, as
+the console publish call does for an empty task an app fills -- it **relinquishes** the buffered
+path via `console_tx_deinit` (flush, disable the TX interrupt, detach/NVIC-mask, disarm), takes a
+kernel ref on the userspace driver's stdout endpoint, then flips the state to USER_OWNED last; a
+stale chip writer that raced the flip is drained (via the `g_chip_writers` count, with the
+publisher yielding at lowered priority so a lower-priority writer can finish) before the driver's
+entry thread runs and the call returns. The publisher names the endpoint through a capability
+holding HANDOUT, and the publish seats WAIT on it when it is missing, so the init creates a
+restarted console driver again and repeats the first handover (see [console.md](console.md),
+"Capability handover"). The **field panic path reclaims** the UART:
 `kpanic_enter` calls `arch_console_reclaim` and flips to RECLAIMED, and `kickos_isr_fault`
 funnels through `kpanic_enter` so a terminal fault in the driver still reclaims and polled-prints;
 the diag LED stays the always-present 1-bit last resort. A chip `arch_console_reclaim` body
@@ -1374,7 +1507,9 @@ shared-memory grant (data)**. How a client finds and may invoke a server across 
 (a dynamic name server is an optional later layer); (2) **capability delegation** -- IPC that
 carries a capability hands the client its endpoint cap; (3) **badged endpoints** -- a distinctly
 badged cap per client lets the server authenticate callers without a separate identity path (the
-object-side twin of authenticated grant ownership); (4) an **interface convention** -- message
+object-side twin of authenticated grant ownership): `kos_endpoint_badge` mints it, every message
+delivers it in `kos_recv_info.badge`, and the init mints the badges a composition declares
+([ipc-call-reply.md](ipc-call-reply.md), *The sender's badge*); (4) an **interface convention** -- message
 structs or a tiny IDL.
 
 ---

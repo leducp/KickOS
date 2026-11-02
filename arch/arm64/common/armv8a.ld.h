@@ -11,6 +11,11 @@
  * TTBR1 translates, with an LMA back in DRAM; the app's text, rodata, data and bss link low,
  * where a per-process TTBR0 root can name them and VMA == LMA.
  *
+ * Two forms, by KICKOS_IMAGE_PROGRAM: the program form links an image on its own into APPTEXT
+ * and APPDATA; the kernel form links the kernel and places the loadable bytes tools/image-link.py
+ * hands it, image 0's where the image was linked (<kickos_image0.ld>) and every later image's in
+ * .kickos_images.
+ *
  * The kernel-side TUs that name the app's half are built -mcmodel=large (kickos_split_image_tu,
  * cmake/kickos.cmake), the halves being 2^40 apart where adrp spans 4 GiB. That leaves the one
  * .got to the app: a GOT slot is reached by adrp, so a GOT with users in both halves could not
@@ -24,10 +29,6 @@
 
 #include <sections.ld.h>
 
-/* ENTRY anchors the startup object against --gc-sections; it is in the identity-linked
- * section, so the ELF entry field is a physical address.
- */
-ENTRY(_start)
 
 #if KICKOS_AMP_OWN_IMAGE
 #include <amp_partition.ld.h>
@@ -84,72 +85,22 @@ MEMORY
 #endif
 }
 
-_estack = ORIGIN(RAM) + LENGTH(RAM);
 #include <kickos/arch/core_stack.ld.h>
-_kernel_stack_size = KICKOS_ARMV8A_CORE_STACK;
 
-/* Read by the startup code to reach a physical address from a high one before the MMU is on. */
-__kickos_arm64_va_base = KICKOS_ARM64_VA_BASE;
+#if KICKOS_IMAGE_PROGRAM
+
+ENTRY(kickos_root_entry)
 
 SECTIONS
 {
-    /* VMA == LMA: the entry is taken untranslated, and a descriptor names its output by
-       physical address. The catch-alls below would take both input sections, so this output
-       section stays first in script order. */
-    .text.init ORIGIN(BOOT) : ALIGN(8)
+    /* The header first, so the image's code span starts at the region origin. */
+    .kickos_image0_header ORIGIN(APPTEXT) : ALIGN(8)
     {
-        KEEP(*(.text.init))
-        . = ALIGN(8);
-        KEEP(*(.rodata.init))
-        . = ALIGN(4096);
-        KEEP(*(.rodata.mmu_ident))
-    } > BOOT
+        __kickos_image0_code_start = .;
+        KEEP(*(.kickos_image_header))
+    } > APPTEXT
 
-    /* The closed kernel set is named here and the app catch-alls below take everything else,
-       so an archive nobody listed lands app-side. The `archive:member` colon syntax is
-       required: this binutils matches a member basename inside EXCLUDE_FILE, not an archive
-       name. */
-    .text : AT(ADDR(.text) - KICKOS_ARM64_VA_BASE) ALIGN(8)
-    {
-        *libkickos_kernel.a:*(.text .text.*)
-        *KICKOS_LD_ARCH_LIB:*(.text .text.*)
-        *KICKOS_LD_CHIP_LIB:*(.text .text.*)
-        KICKOS_CODE_DEBRIS_SECTIONS
-        *libkickos_kernel.a:*(.rodata .rodata.*)
-        *KICKOS_LD_ARCH_LIB:*(.rodata .rodata.*)
-        *KICKOS_LD_CHIP_LIB:*(.rodata .rodata.*)
-        . = ALIGN(8);
-    } > KTEXT
-
-    /* The selector list is the kernel text list exactly: Reset_Handler walks this array at EL1,
-       so a ctor whose text lands app-side would be walked as a privileged fetch of an EL0
-       page. Every other ctor lands in .kickos_app_init_array and runs from kickos_root_entry.
-
-       (READONLY) because the input sections carry SHF_WRITE, which would flag the kernel's
-       code segment writable as well as executable. */
-    .init_array (READONLY) : AT(ADDR(.init_array) - KICKOS_ARM64_VA_BASE) ALIGN(8)
-    {
-        __init_array_start = .;
-        KEEP(*libkickos_kernel.a:*(SORT(.init_array.*) .init_array))
-        KEEP(*KICKOS_LD_ARCH_LIB:*(SORT(.init_array.*) .init_array))
-        KEEP(*KICKOS_LD_CHIP_LIB:*(SORT(.init_array.*) .init_array))
-        __init_array_end = .;
-    } > KTEXT
-
-    .kickos_app_fini_array (READONLY) :
-        AT(ADDR(.kickos_app_fini_array) - KICKOS_ARM64_VA_BASE) ALIGN(8)
-    {
-        __kickos_app_fini_array_start = .;
-        KEEP(*(SORT(.fini_array.*)))
-        KEEP(*(.fini_array))
-        __kickos_app_fini_array_end = .;
-    } > KTEXT
-
-    /* Read by kernel text, so it stays in the kernel's half. */
-    KICKOS_TLS_TEMPLATE(KTEXT)
-
-    /* App-side because kickos_root_entry walks it unprivileged. First in APPTEXT, so the
-       window's low bound can name the region origin whether or not it is empty. */
+    /* kickos_root_entry walks it unprivileged. */
     .kickos_app_init_array (READONLY) : ALIGN(8)
     {
         __kickos_app_init_array_start = .;
@@ -158,23 +109,14 @@ SECTIONS
         __kickos_app_init_array_end = .;
     } > APPTEXT
 
-    /* No AT(): VMA == LMA.
-
-       .apptrap is the EL0 trap leaf (arch/arm64/armv8a/switch.S); `.text.*` would capture it
-       kernel-side.
-
-       The .got is the app's alone: AArch64 reaches a weak undefined symbol GOT-indirect
-       (R_AARCH64_ADR_GOT_PAGE), and the kernel side emits no GOT reference under
-       -mcmodel=large. */
     .apptext : ALIGN(8)
     {
-        *(.apptrap)
         *(.text .text.*)
+        *(.iplt) *(.rela.iplt)
         *(.rodata .rodata.*)
-        /* DWARF EH unwind and landing-pad tables for the full-C++ opt-in, app-side because an
-           FDE reaches the code it describes with a 32-bit PC-relative field
-           (R_AARCH64_PREL32). The LONG(0) is the zero-length CIE terminator crtend would
-           supply, and crtend is not linked under -nostartfiles. */
+        /* DWARF EH unwind and landing-pad tables for the full-C++ opt-in. The LONG(0) is the
+           zero-length CIE terminator crtend would supply, and crtend is not linked under
+           -nostartfiles. */
         *(.gcc_except_table .gcc_except_table.*)
         . = ALIGN(8);
         __eh_frame_start = .;
@@ -183,40 +125,22 @@ SECTIONS
         . = ALIGN(8);
     } > APPTEXT
 
-    /* Every kernel section carries the same VMA-to-LMA delta, so this is _sdata and the copy
-       Reset_Handler runs is a self-copy. */
-    _sidata = LOADADDR(.data) + KICKOS_ARM64_VA_BASE;
+    /* The kernel seeds each thread's block from these bytes through its own alias of them. */
+    KICKOS_TLS_TEMPLATE(APPTEXT)
 
-    /* The 2 MiB boundary is the APPDATA origin, not an ALIGN here: with an explicit `> RAM` a
-       location-counter assignment moves nothing. */
-    .data : AT(ADDR(.data) - KICKOS_ARM64_VA_BASE) ALIGN(8)
+    .kickos_app_fini_array (READONLY) : ALIGN(8)
     {
-        _sdata = .;
-        *libkickos_kernel.a:*(.data .data.*)
-        *KICKOS_LD_ARCH_LIB:*(.data .data.*)
-        *KICKOS_LD_CHIP_LIB:*(.data .data.*)
-        . = ALIGN(8);
-        _edata = .;
-    } > RAM
+        __kickos_app_fini_array_start = .;
+        KEEP(*(SORT(.fini_array.*)))
+        KEEP(*(.fini_array))
+        __kickos_app_fini_array_end = .;
+    } > APPTEXT
 
-    .bss (NOLOAD) : AT(ADDR(.bss) - KICKOS_ARM64_VA_BASE) ALIGN(8)
-    {
-        _sbss = .;
-        *libkickos_kernel.a:*(.bss .bss.*)
-        *KICKOS_LD_ARCH_LIB:*(.bss .bss.*)
-        *KICKOS_LD_CHIP_LIB:*(.bss .bss.*)
-        *libkickos_kernel.a:*(COMMON)
-        *KICKOS_LD_ARCH_LIB:*(COMMON)
-        *KICKOS_LD_CHIP_LIB:*(COMMON)
-        . = ALIGN(8);
-        _ebss = .;
-    } > RAM
-
-    /* Identity-linked like the app's text; Reset_Handler zeroes .appbss off its two symbols. */
+    /* AArch64 reaches a weak undefined symbol GOT-indirect (R_AARCH64_ADR_GOT_PAGE), and a
+       writable input section makes the output section writable. */
     .appdata : ALIGN(8)
     {
-        /* Not in .apptext: a writable input section makes the output section writable. */
-        *(.got) *(.got.plt)
+        *(.got) *(.got.plt) *(.igot.plt)
         __kickos_appdata_load_start = .;
         *(.data .data.*)
         . = ALIGN(8);
@@ -232,8 +156,6 @@ SECTIONS
         __kickos_appbss_end = .;
     } > APPDATA
 
-    /* App-side: user/src/newlib_sbrk.cc names _kickos_heap_start from app text, which cannot
-       adrp to the kernel's half. */
     .userheap (NOLOAD) :
     {
         . = ALIGN(8);
@@ -241,6 +163,158 @@ SECTIONS
         . += KICKOS_USER_HEAP_SIZE;
         _kickos_heap_limit = .;
     } > APPDATA
+
+    __kickos_app_rom_start = ORIGIN(APPTEXT);
+    __kickos_app_rom_end = ADDR(.kickos_app_fini_array) + SIZEOF(.kickos_app_fini_array);
+    __kickos_app_sram_start = ADDR(.appdata);
+    __kickos_app_sram_end = _kickos_heap_limit;
+
+    __kickos_image0_code_end = __kickos_app_rom_end;
+    __kickos_image0_window_start = ADDR(.appdata);
+    __kickos_image0_window_end = _kickos_heap_limit;
+    __kickos_image0_data_load = ADDR(.appdata);
+    __kickos_image0_data_start = ADDR(.appdata);
+    __kickos_image0_data_end = ADDR(.appdata) + SIZEOF(.appdata);
+    __kickos_image0_bss_end = __kickos_appbss_end;
+    __kickos_image0_heap_start = _kickos_heap_start;
+    __kickos_image0_heap_end = _kickos_heap_limit;
+    __kickos_image0_ctor_start = __kickos_app_init_array_start;
+    __kickos_image0_ctor_end = __kickos_app_init_array_end;
+    __kickos_image0_eh_frame = __eh_frame_start;
+    KICKOS_IMAGE0_TLS()
+    KICKOS_IMAGE0_OWN_NAMES()
+
+    /* The kernel's layout words an image may name, each asserted against the kernel's own by
+       the kernel's link (tools/image-link.py). */
+    PROVIDE(_sdata = ORIGIN(RAM));
+    PROVIDE(_estack = ORIGIN(RAM) + LENGTH(RAM));
+    PROVIDE(__kickos_ram_end = ORIGIN(RAM) + LENGTH(RAM) - KICKOS_ARMV8A_CORE_STACK);
+    PROVIDE(__kickos_rom_start = KICKOS_ARM64_VA_BASE + KICKOS_ARM64_DRAM_BASE);
+
+    /DISCARD/ : { *(.comment) *(.note.gnu.build-id) *(.ARM.attributes) }
+
+    KICKOS_NONALLOC_SECTIONS
+}
+
+KICKOS_STATIC_RELOC_ASSERT()
+KICKOS_TLS_ALIGN_ASSERT()
+KICKOS_TLS_FIT_ASSERT()
+KICKOS_FINI_EMPTY_ASSERT()
+KICKOS_HEAP_MIN_ASSERT()
+
+ASSERT(ADDR(.appdata) - KICKOS_ARM64_DRAM_BASE == KICKOS_ARM64_CODE_BLOCK,
+       "KickOS: app .data is not at the 2 MiB boundary the level-2 map splits on; it would be linked into the read-only executable block")
+
+#else
+/* ENTRY anchors the startup object against --gc-sections; it is in the identity-linked
+ * section, so the ELF entry field is a physical address.
+ */
+ENTRY(_start)
+
+_estack = ORIGIN(RAM) + LENGTH(RAM);
+_kernel_stack_size = KICKOS_ARMV8A_CORE_STACK;
+
+/* Read by the startup code to reach a physical address from a high one before the MMU is on. */
+__kickos_arm64_va_base = KICKOS_ARM64_VA_BASE;
+
+/* The kernel's view of an image address: the high alias of the frame the image was loaded in. */
+__kickos_image_kernel_alias = KICKOS_ARM64_VA_BASE;
+
+SECTIONS
+{
+    /* VMA == LMA: the entry is taken untranslated, and a descriptor names its output by
+       physical address. The catch-alls below would take both input sections, so this output
+       section stays first in script order. */
+    .text.init ORIGIN(BOOT) : ALIGN(8)
+    {
+        KEEP(*(.text.init))
+        . = ALIGN(8);
+        KEEP(*(.rodata.init))
+        . = ALIGN(4096);
+        KEEP(*(.rodata.mmu_ident))
+    } > BOOT
+
+    /* The closed kernel set first, then the rest of the kernel's link. The `archive:member`
+       colon syntax is required: this binutils matches a member basename inside EXCLUDE_FILE,
+       not an archive name. */
+    .text : AT(ADDR(.text) - KICKOS_ARM64_VA_BASE) ALIGN(8)
+    {
+        *libkickos_kernel.a:*(.text .text.*)
+        *KICKOS_LD_ARCH_LIB:*(.text .text.*)
+        *KICKOS_LD_CHIP_LIB:*(.text .text.*)
+        *(.text .text.*)
+        KICKOS_CODE_DEBRIS_SECTIONS
+        *libkickos_kernel.a:*(.rodata .rodata.*)
+        *KICKOS_LD_ARCH_LIB:*(.rodata .rodata.*)
+        *KICKOS_LD_CHIP_LIB:*(.rodata .rodata.*)
+        *(.rodata .rodata.*)
+        . = ALIGN(8);
+    } > KTEXT
+
+    /* Reset_Handler walks this array at EL1. (READONLY) because the input sections carry
+       SHF_WRITE, which would flag the kernel's code segment writable as well as executable. */
+    .init_array (READONLY) : AT(ADDR(.init_array) - KICKOS_ARM64_VA_BASE) ALIGN(8)
+    {
+        __init_array_start = .;
+        KEEP(*libkickos_kernel.a:*(SORT(.init_array.*) .init_array))
+        KEEP(*KICKOS_LD_ARCH_LIB:*(SORT(.init_array.*) .init_array))
+        KEEP(*KICKOS_LD_CHIP_LIB:*(SORT(.init_array.*) .init_array))
+        KEEP(*(SORT(.init_array.*) .init_array))
+        __init_array_end = .;
+    } > KTEXT
+
+    /* Every image's header, and per image where a space maps it from (tools/image-link.py). */
+    .kickos_image_table (READONLY) : AT(ADDR(.kickos_image_table) - KICKOS_ARM64_VA_BASE) ALIGN(8)
+    {
+        __kickos_image_table = .;
+        INCLUDE kickos_image_table.ld
+        __kickos_image_table_end = .;
+        __kickos_image_frames = .;
+        INCLUDE kickos_image_frames.ld
+        __kickos_image_frames_end = .;
+    } > KTEXT
+
+    /* Image 0's loadable bytes where its own link put them, and its bounds. */
+    INCLUDE kickos_image0.ld
+
+    /* Every kernel section carries the same VMA-to-LMA delta, so this is _sdata and the copy
+       Reset_Handler runs is a self-copy. */
+    _sidata = LOADADDR(.data) + KICKOS_ARM64_VA_BASE;
+
+    /* The 2 MiB boundary is the APPDATA origin, not an ALIGN here: with an explicit `> RAM` a
+       location-counter assignment moves nothing. */
+    .data : AT(ADDR(.data) - KICKOS_ARM64_VA_BASE) ALIGN(8)
+    {
+        _sdata = .;
+        *libkickos_kernel.a:*(.data .data.*)
+        *KICKOS_LD_ARCH_LIB:*(.data .data.*)
+        *KICKOS_LD_CHIP_LIB:*(.data .data.*)
+        *(.data .data.*)
+        . = ALIGN(8);
+        _edata = .;
+    } > RAM
+
+    /* Every image past image 0, its text and its window each on pages of their own. */
+    .kickos_images : AT(ADDR(.kickos_images) - KICKOS_ARM64_VA_BASE) ALIGN(4096)
+    {
+        KEEP(*(.kickos_images))
+        . = ALIGN(4096);
+    } > RAM
+
+    .bss (NOLOAD) : AT(ADDR(.bss) - KICKOS_ARM64_VA_BASE) ALIGN(8)
+    {
+        _sbss = .;
+        *libkickos_kernel.a:*(.bss .bss.*)
+        *KICKOS_LD_ARCH_LIB:*(.bss .bss.*)
+        *KICKOS_LD_CHIP_LIB:*(.bss .bss.*)
+        *(.bss .bss.*)
+        *libkickos_kernel.a:*(COMMON)
+        *KICKOS_LD_ARCH_LIB:*(COMMON)
+        *KICKOS_LD_CHIP_LIB:*(COMMON)
+        *(COMMON)
+        . = ALIGN(8);
+        _ebss = .;
+    } > RAM
 
     /* Page-aligned because a descriptor's output address is. */
     .framepool (NOLOAD) : AT(ADDR(.framepool) - KICKOS_ARM64_VA_BASE) ALIGN(4096)
@@ -268,13 +342,6 @@ SECTIONS
     __kickos_rom_end = ADDR(.data);
     __kickos_sram_start = ADDR(.data);
 
-    /* The app's own low window, the second admitted extent: a syscall pointer into app rodata
-       or app .data lands here and not in the pair above. */
-    __kickos_app_rom_start = ORIGIN(APPTEXT);
-    __kickos_app_rom_end = ADDR(.apptext) + SIZEOF(.apptext);
-    __kickos_app_sram_start = ADDR(.appdata);
-    __kickos_app_sram_end = _kickos_heap_limit;
-
 #if KICKOS_AMP_OWN_IMAGE
     KICKOS_AMP_SHARED_SECTION(SHARED)
 #endif
@@ -285,29 +352,21 @@ SECTIONS
 }
 
 KICKOS_STATIC_RELOC_ASSERT()
-KICKOS_TLS_ALIGN_ASSERT()
-KICKOS_TLS_FIT_ASSERT()
 
 /* The W^X split, on the load addresses: the two code regions end where the writable side
-   begins. */
+   begins, and the image's code and data sit on their own side of it. */
 ASSERT(ORIGIN(APPTEXT) + LENGTH(APPTEXT) == KICKOS_ARM64_DRAM_BASE + KICKOS_ARM64_CODE_BLOCK,
        "KickOS: the two code regions do not end at the 2 MiB boundary the level-2 map splits on")
-ASSERT(ADDR(.appdata) - KICKOS_ARM64_DRAM_BASE == KICKOS_ARM64_CODE_BLOCK,
-       "KickOS: app .data is not at the 2 MiB boundary the level-2 map splits on; it would be linked into the read-only executable block")
+ASSERT(__kickos_app_rom_start == ORIGIN(APPTEXT)
+       && __kickos_app_rom_end <= ORIGIN(APPTEXT) + LENGTH(APPTEXT)
+       && __kickos_app_sram_start == ORIGIN(APPDATA)
+       && __kickos_app_sram_end <= ORIGIN(APPDATA) + LENGTH(APPDATA),
+       "KickOS: image 0 is not linked in the APPTEXT and APPDATA regions this kernel maps it from")
 ASSERT(LOADADDR(.data) - KICKOS_ARM64_DRAM_BASE >= KICKOS_ARM64_CODE_BLOCK,
        "KickOS: kernel .data is below the 2 MiB boundary the level-2 map splits on; it would be linked into the read-only executable block")
 
 ASSERT(__kickos_ram_start <= __kickos_ram_end,
        "KickOS: static data overflows RAM (no room for the user-RAM pool + boot stack)")
-
-KICKOS_FINI_EMPTY_ASSERT()
-
-/* An empty kernel .bss means the closed-set selectors matched nothing, kernel writable state
-   having been linked into the app's low window; an empty app side is legitimate. */
-ASSERT(_ebss > _sbss,
-       "KickOS: kernel .bss empty: closed-set archive selector matched nothing (renamed lib?)")
-
-KICKOS_HEAP_MIN_ASSERT()
 
 #if KICKOS_AMP_OWN_IMAGE
 /* The bounds are the partition's own constants, not this script's regions: an assert reading
@@ -327,7 +386,9 @@ ASSERT(__kickos_amp_chip_end > __kickos_amp_chip_start,
 
 KICKOS_APP_CODE_WINDOW_NONE()
 KICKOS_APP_DATA_WINDOW_NONE()
-/* The app is loaded at the virtual addresses it was linked for. */
-__kickos_app_load_delta = 0;
+
+INCLUDE kickos_image0_checks.ld
+
+#endif
 
 #endif

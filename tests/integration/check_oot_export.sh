@@ -33,11 +33,11 @@ BOARD_CFG="$KICKOS_BUILD/generated/include/kickos/board_config.h"
 knob() {
   awk -v k="$1" '$1 == "#define" && $2 == k { print $3; exit }' "$BOARD_CFG"
 }
-EXPECT_MAX_THREADS="$(knob KICKOS_MAX_THREADS)"
+EXPECT_BUDGET_THREADS="$(knob KICKOS_BUDGET_THREADS)"
 EXPECT_USER_STACK_SIZE="$(knob KICKOS_USER_STACK_SIZE)"
 # An empty value passes as a -D nothing defines, and the example's #ifdef then skips the
 # assertion in silence.
-[ -n "$EXPECT_MAX_THREADS" ] || fail "$BOARD_CFG states no KICKOS_MAX_THREADS"
+[ -n "$EXPECT_BUDGET_THREADS" ] || fail "$BOARD_CFG states no KICKOS_BUDGET_THREADS"
 [ -n "$EXPECT_USER_STACK_SIZE" ] || fail "$BOARD_CFG states no KICKOS_USER_STACK_SIZE"
 
 echo "== installing KickOS package to $TMP/prefix =="
@@ -53,7 +53,7 @@ package_names "$KICKOS_BUILD" "$KICKOS_SRC" "$CMAKE" "$TMP/prefix" "$TMP/names"
 echo "== configuring out-of-tree app via find_package(KickOS) =="
 "$CMAKE" -S "$KICKOS_SRC/examples/oot-app" -B "$TMP/build" -G "$GEN" \
   -DCMAKE_PREFIX_PATH="$TMP/prefix" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-  -DKICKOS_EXPECT_MAX_THREADS="$EXPECT_MAX_THREADS" \
+  -DKICKOS_EXPECT_BUDGET_THREADS="$EXPECT_BUDGET_THREADS" \
   -DKICKOS_EXPECT_USER_STACK_SIZE="$EXPECT_USER_STACK_SIZE" >/dev/null \
   || fail "out-of-tree configure (find_package) failed"
 
@@ -72,6 +72,40 @@ package_defs "$TMP/build/compile_commands.json" "$TMP/defs"
   "$TMP/defs" \
   || fail "the installed headers do not compile at the level the package advertises"
 
+# The raw kernel console write is poisoned in an app TU, under the definitions the package
+# puts on the app's compile line; the measured macro is the spelling that still compiles.
+echo "== an app TU that writes the kernel console raw does not compile =="
+set --
+while IFS= read -r _d; do
+  set -- "$@" "$_d"
+done < "$TMP/defs"
+app_tu() { # <tag> <C++ source> <compiler argument>... -> 0 when it compiles
+  _at_tag="$1"
+  _at_src="$2"
+  shift 2
+  printf '%s\n' "$_at_src" | "${CXX:-g++}" -std=c++17 -fsyntax-only "$@" \
+    -I"$TMP/prefix/include" -x c++ - 2>"$TMP/raw_$_at_tag.err"
+}
+app_tu measured '#include <kickos/sys.h>
+int f() { return KICKOS_KCONSOLE_MEASURED(DROP, "x", 1); }' "$@" || {
+  sed -n '1,4p' "$TMP/raw_measured.err" >&2
+  fail "an app TU writing through KICKOS_KCONSOLE_MEASURED does not compile, so the refusals
+      below would be the probe's own"
+}
+for _raw in 'call:#include <kickos/sys.h>
+int f() { return kos_kconsole_write("x", 1, 0); }' 'number:#include <kickos/sys/abi.h>
+int f() { return KOS_SYS_KCONSOLE_WRITE; }'; do
+  _tag="${_raw%%:*}"
+  if app_tu "$_tag" "${_raw#*:}" "$@"; then
+    fail "an app TU writing the kernel console raw ($_tag) compiles, so the poison in
+      <kickos/sys.h> and <kickos/sys/abi.h> is keyed on nothing an app TU defines"
+  fi
+  grep -q 'poisoned' "$TMP/raw_$_tag.err" || {
+    sed -n '1,4p' "$TMP/raw_$_tag.err" >&2
+    fail "an app TU writing the kernel console raw ($_tag) is refused, but not by the poison"
+  }
+done
+
 # Our warning flags are this project's hygiene policy and not part of the interface, so
 # nothing on the exported targets may carry one.
 echo "== our warning policy must not reach the consumer's TUs =="
@@ -88,7 +122,7 @@ fi
 
 echo "== the app links a system target =="
 tool_out "$TMP/app_syms" '^ *[0-9]+: ' "${READELF:-readelf}" -sW "$APP"
-awk '$5 == "GLOBAL" && $7 != "UND" && $8 ~ /^kickos_link_one_system_target$/ { found = 1 }
+awk '($5 == "GLOBAL" || $5 == "LOCAL") && $7 != "UND" && $8 ~ /^kickos_link_one_system_target$/ { found = 1 }
      END { exit !found }' "$TMP/app_syms" \
   || fail "the out-of-tree app defines no kickos_link_one_system_target, so it links no system \
 target and the run below would not witness the default composition"

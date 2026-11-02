@@ -19,7 +19,13 @@ set(KICKOS_CAP_FIRST_DYNAMIC 1)
 # Changing it moves KCAP_CHUNK_SHIFT (cap.h), and so which boards compile the flat decode.
 set(KICKOS_CAP_CHUNK_TARGET 8)
 
-# The runs held by something that is NOT a thread-pool slot: just the one thread_create_call holds
-# in its ThreadAttr until thread_create takes it over. Root's slot accounts for root's run,
-# and idle holds none. A new kind of holder is a term here.
-set(KICKOS_CAP_RUN_OFF_POOL 1)
+# The widest capability table one thread may seat, in slots: whole chunks, and within the byte
+# the kernel counts a table's IRQ capabilities in (KCAP_WIDTH_CEILING, cap.h).
+set(KICKOS_CAP_WIDTH_MAX 248)
+
+# The most concurrent inbound reply capabilities one thread may hold. It reserves no slot, and
+# a thread that may hold none could never serve a kos_call.
+set(KICKOS_CAP_REPLY_MAX 1)
+
+# The bytes of one capability entry. cap.h asserts sizeof(CapEntry) against it.
+set(KICKOS_CAP_ENTRY_BYTES 16)

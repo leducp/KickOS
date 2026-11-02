@@ -304,7 +304,7 @@ namespace
 #endif
 }
 
-extern "C" void k64dspi_main(kos_self_t const* self)
+int main(int, char**)
 {
     struct kos_spi_bus_config bcfg;
     bcfg.irq = KOS_CAP_NONE; // the DSPI pump polls its FIFOs
@@ -312,7 +312,7 @@ extern "C" void k64dspi_main(kos_self_t const* self)
     bcfg.notify_bit = 0;
     bcfg.irq_index = 0u;
 #if KICKOS_SPI_LOCAL
-    kos_window_t const window = kos_grant_mmio(self, "/dev/dspi0");
+    kos_window_t const window = kos_grant_mmio("/dev/dspi0");
     uintptr_t const win = reinterpret_cast<uintptr_t>(kos_window_addr(window));
     if (win == 0u or kos_window_size(window) < kickos::mk64f::mmap::DSPI0_SIZE)
     {
@@ -330,7 +330,7 @@ extern "C" void k64dspi_main(kos_self_t const* self)
     bcfg.base = win;
     bcfg.ep = KOS_CAP_NONE;
 #else
-    kos_cap_t const ep = kos_grant_endpoint(self, "/svc/spi0");
+    kos_cap_t const ep = kos_grant_endpoint("/svc/spi0");
     if (ep == KOS_CAP_NONE)
     {
         kos::print("[k64dspi] ERROR: no /svc/spi0 endpoint\n");

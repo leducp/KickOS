@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-# tests/drivers ships with no package that leaves KICKOS_TEST_DRIVERS off
+# tests/drivers, and the drivers apps declare LOCAL, ship with no package
 # (tests/integration/check_test_drivers_absent.sh).
 
 if(KICKOS_TEST_DRIVERS)

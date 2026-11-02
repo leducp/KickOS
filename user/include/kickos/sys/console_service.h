@@ -6,9 +6,9 @@
 // Transport must provide:
 //   MODE_REQUIRED: mode bits that cannot be cleared.
 //   flush(Shared*): drain the ring and the device's transmit path, bounded; 0 once drained,
-//     -KOS_EBUSY when the bound expired first.
+//     -KOS_EBUSY when the bound expired first. KOS_UART_DRAIN answers it.
 //   tx_lost(Shared const*): transport TX losses added to reported drops.
-// Shared must contain tx, rx, stats, mode, tx_buf, and rx_buf.
+// Shared must contain tx, rx, stats, mode, tx_buf, rx_buf, and the readiness latch `ready`.
 
 #ifndef KICKOS_SYS_CONSOLE_SERVICE_H
 #define KICKOS_SYS_CONSOLE_SERVICE_H
@@ -20,6 +20,7 @@
 #include <kickos/sys/byte_ring.h>
 #include <kickos/sys/bytes.h> // mem_copy, mem_zero
 #include <kickos/sys/console_ring.h>
+#include <kickos/sys/driver_service.h> // service_publish
 #include <kickos/sys/errno.h>
 #include <kickos/sys/serve.h>
 #include <kickos/sys/uart.h>
@@ -127,6 +128,10 @@ size_t serve_one(Shared* sh, uint8_t* buf, size_t n)
         // TE/RE are set.
         return reply_status(buf, -KOS_ENOSYS, 0);
     }
+    case KOS_UART_DRAIN:
+    {
+        return reply_status(buf, Transport::flush(sh), 0);
+    }
     default:
     {
         return reply_status(buf, -KOS_EINVAL, 0);
@@ -136,7 +141,8 @@ size_t serve_one(Shared* sh, uint8_t* buf, size_t n)
 
 // Recv/dispatch loop with the CONSOLE arm. This endpoint carries TWO protocols: a kos_call is
 // a kos_uart_req frame, a plain send is raw console bytes, and only an info-bearing recv tells
-// them apart. Returns the receive's failure, only once the endpoint dies.
+// them apart. Returns the receive's failure, only once the endpoint dies. Its caller has read the
+// device half up on the latch, which this publishes service-ready before the first receive.
 template <typename Transport, typename Shared>
 int32_t console_serve_loop(Shared* sh)
 {
@@ -146,6 +152,7 @@ int32_t console_serve_loop(Shared* sh)
     // Send this reply when receiving the next request.
     kos_cap_t reply_cap = KOS_CAP_NONE;
     size_t reply_len = 0;
+    (void)driver::service_publish(&sh->ready);
     while (true)
     {
         // reply_cap SEATED: the kernel writes it only where the copy out succeeds, and a
@@ -170,11 +177,9 @@ int32_t console_serve_loop(Shared* sh)
             reply_cap = opts.info.reply_cap;
             continue;
         }
-        // A zero-length plain send is a FLUSH: its sender learns it finished when its next
-        // send is taken.
+        // A zero-length plain send is a readiness probe and carries nothing.
         if (n == 0)
         {
-            (void)Transport::flush(sh);
             continue;
         }
         uint32_t const took =

@@ -6,6 +6,8 @@
 // name the word, which thread could hold it, and the kernel's access to it. Every memory a
 // thread reaches is built by the real calls that build it.
 
+#include "../common/seam_pools.h"
+
 #include <kickos/sync.h>
 #include <kickos/word.h>
 
@@ -65,19 +67,35 @@ namespace kickos
                     return arch_aspace_frame_at(domain_space(thread_domain(t)), va);
                 }
 
-                // A thread spawned into `into`, or into main's own task for KOS_TASK_NONE, holding
-                // one memory window over [base, base + bytes) when `bytes` is not 0.
-                Thread* spawn_into(kos_task_t into, uintptr_t base = 0, size_t bytes = 0,
-                                   uint8_t flags = 0)
+                // A thread spawned into main's own task, holding one memory window over
+                // [base, base + bytes) when `bytes` is not 0.
+                Thread* spawn_sibling(uintptr_t base = 0, size_t bytes = 0, uint8_t flags = 0)
                 {
                     kos_thread_t h = KOS_THREAD_NONE;
-                    if (spawn(main_, spawn_params(MAIN_PARAMS, base, bytes, flags, into),
-                              MAIN_OUT, &h)
+                    if (spawn(main_, spawn_params(MAIN_PARAMS, base, bytes, flags), MAIN_OUT, &h)
                         != 0)
                     {
                         return nullptr;
                     }
                     return kernel().threads.resolve(h);
+                }
+
+                // The entry thread of a task main creates, holding one memory window over
+                // [base, base + bytes) of main's reservation when `bytes` is not 0.
+                Thread* spawn_peer(uintptr_t base = 0, size_t bytes = 0, uint8_t flags = 0)
+                {
+                    kos_task_t const t = new_task(main_, 0, 0, 0, PeerWindow{base, bytes, flags});
+                    if (t == KOS_TASK_NONE)
+                    {
+                        return nullptr;
+                    }
+                    return entry_of(t);
+                }
+
+                // Another thread of `tk`, with no window of its own.
+                Thread* joined(Task* tk)
+                {
+                    return member(KICKOS_SEAM_THREAD_SLOTS - 1, MAIN_PRIO, tk);
                 }
 
                 // Where `t` reaches its first window.
@@ -240,9 +258,7 @@ namespace kickos
             {
                 uintptr_t const blk = reserve(main_, G, 0);
                 ASSERT_NE(blk, 0u);
-                kos_task_t const into = new_task(main_, 0, 0, 0);
-                ASSERT_NE(into, KOS_TASK_NONE);
-                Thread* const child = spawn_into(into, blk, G);
+                Thread* const child = spawn_peer(blk, G);
                 ASSERT_NE(child, nullptr);
                 uintptr_t const win = window_of(child);
                 ASSERT_NE(win, 0u);
@@ -262,7 +278,7 @@ namespace kickos
                 ASSERT_NE(blk, 0u);
                 kos_task_t const into = new_task(main_, blk, G, 0);
                 ASSERT_NE(into, KOS_TASK_NONE);
-                Thread* const member = spawn_into(into);
+                Thread* const member = entry_of(into);
                 ASSERT_NE(member, nullptr);
                 ASSERT_NE(domain_space(thread_domain(member)), domain_space(thread_domain(main_)));
                 WordRef const donor = named(main_, blk + AT);
@@ -280,9 +296,7 @@ namespace kickos
                 RunCaps const run = mint(1);
                 ASSERT_NE(run.obj, FRAME_RUN_NONE);
                 ASSERT_EQ(map_run(run, RUN_VA), 0);
-                kos_task_t const into = new_task(main_, 0, 0, 0);
-                ASSERT_NE(into, KOS_TASK_NONE);
-                Thread* const member = spawn_into(into);
+                Thread* const member = spawn_peer();
                 ASSERT_NE(member, nullptr);
                 WordRef const w = named(main_, RUN_VA + AT);
                 EXPECT_FALSE(holds(member, w)) << "a space that maps nothing of it held it";
@@ -302,7 +316,7 @@ namespace kickos
             // sibling's stack through the stack range itself, and never its guard.
             TEST_F(WordRefSpace, a_sibling_s_stack_is_nameable_and_its_guard_is_not)
             {
-                Thread* const sib = spawn_into(KOS_TASK_NONE);
+                Thread* const sib = spawn_sibling();
                 ASSERT_NE(sib, nullptr);
                 ASSERT_EQ(thread_domain(sib), thread_domain(main_));
                 uintptr_t const lo = reinterpret_cast<uintptr_t>(sib->stack_base);
@@ -356,11 +370,9 @@ namespace kickos
                 }
                 ASSERT_NE(d, nullptr) << "fixture: no writable image data";
                 uintptr_t const va = d->base + AT;
-                kos_task_t const into = new_task(main_, 0, 0, 0);
-                ASSERT_NE(into, KOS_TASK_NONE);
-                Thread* const other = spawn_into(into);
+                Thread* const other = spawn_peer();
                 ASSERT_NE(other, nullptr);
-                Thread* const sib = spawn_into(KOS_TASK_NONE);
+                Thread* const sib = spawn_sibling();
                 ASSERT_NE(sib, nullptr);
                 WordRef const mine = named(main_, va);
                 WordRef const theirs = named(other, va);
@@ -373,9 +385,7 @@ namespace kickos
             {
                 uintptr_t const blk = reserve(main_, G, 0);
                 ASSERT_NE(blk, 0u);
-                kos_task_t const into = new_task(main_, 0, 0, 0);
-                ASSERT_NE(into, KOS_TASK_NONE);
-                Thread* const reader = spawn_into(into, blk, G, KOS_WINDOW_RO);
+                Thread* const reader = spawn_peer(blk, G, KOS_WINDOW_RO);
                 ASSERT_NE(reader, nullptr);
                 uintptr_t const win = window_of(reader);
                 ASSERT_NE(win, 0u);
@@ -408,9 +418,7 @@ namespace kickos
                 WordRef w;
                 EXPECT_EQ(ref(main_, unc + AT, &w), -KOS_EINVAL) << "an uncached reservation";
 
-                kos_task_t const into = new_task(main_, 0, 0, 0);
-                ASSERT_NE(into, KOS_TASK_NONE);
-                Thread* const child = spawn_into(into, unc, G, KOS_WINDOW_UNCACHED);
+                Thread* const child = spawn_peer(unc, G, KOS_WINDOW_UNCACHED);
                 ASSERT_NE(child, nullptr);
                 EXPECT_EQ(ref(child, window_of(child) + AT, &w), -KOS_EINVAL)
                     << "an uncached window";
@@ -478,9 +486,7 @@ namespace kickos
             {
                 uintptr_t const blk = reserve(main_, G, 0);
                 ASSERT_NE(blk, 0u);
-                kos_task_t const into = new_task(main_, 0, 0, 0);
-                ASSERT_NE(into, KOS_TASK_NONE);
-                Thread* const child = spawn_into(into, blk, G);
+                Thread* const child = spawn_peer(blk, G);
                 ASSERT_NE(child, nullptr);
                 WordRef const w = named(child, window_of(child) + AT);
                 uint32_t* const donor = host<uint32_t>(blk + AT);
@@ -538,9 +544,7 @@ namespace kickos
             {
                 uintptr_t const blk = reserve(main_, G, 0);
                 ASSERT_NE(blk, 0u);
-                kos_task_t const into = new_task(main_, 0, 0, 0);
-                ASSERT_NE(into, KOS_TASK_NONE);
-                Thread* const reader = spawn_into(into, blk, G, KOS_WINDOW_RO);
+                Thread* const reader = spawn_peer(blk, G, KOS_WINDOW_RO);
                 ASSERT_NE(reader, nullptr);
                 expect_untouched(reader, window_of(reader) + AT, host<uint32_t>(blk + AT),
                                  -KOS_EFAULT);
@@ -562,9 +566,7 @@ namespace kickos
             {
                 uintptr_t const blk = reserve(main_, G, 0);
                 ASSERT_NE(blk, 0u);
-                kos_task_t const into = new_task(main_, 0, 0, 0);
-                ASSERT_NE(into, KOS_TASK_NONE);
-                Thread* const waiter = spawn_into(into, blk, G);
+                Thread* const waiter = spawn_peer(blk, G);
                 ASSERT_NE(waiter, nullptr);
                 uintptr_t const win = window_of(waiter);
                 ASSERT_NE(win, 0u);
@@ -586,11 +588,9 @@ namespace kickos
             {
                 uintptr_t const blk = reserve(main_, G, 0);
                 ASSERT_NE(blk, 0u);
-                kos_task_t const into = new_task(main_, 0, 0, 0);
-                ASSERT_NE(into, KOS_TASK_NONE);
-                Thread* const taker = spawn_into(into, blk, G);
+                Thread* const taker = spawn_peer(blk, G);
                 ASSERT_NE(taker, nullptr);
-                Thread* const waiter = spawn_into(into, blk, G);
+                Thread* const waiter = joined(taker->task);
                 ASSERT_NE(waiter, nullptr);
                 uintptr_t const at = window_of(taker) + AT;
                 ASSERT_NE(at, AT);
@@ -602,7 +602,7 @@ namespace kickos
                 EXPECT_EQ(*word, main_->lock_id) << "a failed try wrote the word";
 
                 *word = main_->lock_id | KOS_WORD_WAITERS;
-                (void)park_on_word(main_, waiter, window_of(waiter) + AT, blk + AT);
+                (void)park_on_word(main_, waiter, window_of(taker) + AT, blk + AT);
                 *word = main_->lock_id;
                 EXPECT_EQ(call_released(taker, KOS_SYS_MUTEX_LOCK, at, 0), -KOS_ETIMEDOUT);
                 EXPECT_EQ(*word, main_->lock_id | KOS_WORD_WAITERS)
@@ -613,13 +613,11 @@ namespace kickos
             {
                 uintptr_t const blk = reserve(main_, G, 0);
                 ASSERT_NE(blk, 0u);
-                kos_task_t const into = new_task(main_, 0, 0, 0);
-                ASSERT_NE(into, KOS_TASK_NONE);
-                Thread* const dead = spawn_into(KOS_TASK_NONE);
+                Thread* const dead = spawn_sibling();
                 ASSERT_NE(dead, nullptr);
                 uint32_t const dead_id = dead->lock_id;
                 exit_as(dead);
-                Thread* const taker = spawn_into(into, blk, G);
+                Thread* const taker = spawn_peer(blk, G);
                 ASSERT_NE(taker, nullptr);
                 uint32_t* const word = host<uint32_t>(blk + AT);
                 *word = dead_id;
@@ -635,7 +633,7 @@ namespace kickos
                 RunCaps const run = mint(1);
                 ASSERT_NE(run.obj, FRAME_RUN_NONE);
                 ASSERT_EQ(map_run(run, RUN_VA), 0);
-                Thread* const sibling = spawn_into(KOS_TASK_NONE);
+                Thread* const sibling = spawn_sibling();
                 ASSERT_NE(sibling, nullptr);
                 (void)park_on_mains_word(sibling, RUN_VA + AT);
                 ASSERT_EQ(call_as(main_, KOS_SYS_FRAME_UNMAP, run.fcap, run.acap, RUN_VA), 0u);
@@ -647,7 +645,7 @@ namespace kickos
                 RunCaps const run = mint(1);
                 ASSERT_NE(run.obj, FRAME_RUN_NONE);
                 ASSERT_EQ(map_run(run, RUN_VA), 0);
-                Thread* const sibling = spawn_into(KOS_TASK_NONE);
+                Thread* const sibling = spawn_sibling();
                 ASSERT_NE(sibling, nullptr);
                 (void)park_plain(sibling, RUN_VA + AT);
                 ASSERT_EQ(call_as(main_, KOS_SYS_FRAME_UNMAP, run.fcap, run.acap, RUN_VA), 0u);
@@ -660,7 +658,7 @@ namespace kickos
             {
                 uintptr_t const blk = reserve(main_, G, 0);
                 ASSERT_NE(blk, 0u);
-                Thread* const sibling = spawn_into(KOS_TASK_NONE);
+                Thread* const sibling = spawn_sibling();
                 ASSERT_NE(sibling, nullptr);
                 uint32_t* const word = host<uint32_t>(blk + AT);
                 (void)park_plain(sibling, blk + AT);
@@ -689,7 +687,7 @@ namespace kickos
             {
                 uintptr_t const blk = reserve(main_, G, 0);
                 ASSERT_NE(blk, 0u);
-                Thread* const sibling = spawn_into(KOS_TASK_NONE);
+                Thread* const sibling = spawn_sibling();
                 ASSERT_NE(sibling, nullptr);
                 (void)park_on_mains_word(sibling, blk + AT);
                 ASSERT_EQ(call_as(main_, KOS_SYS_MEM_SELF_GRANT, blk, G, KOS_MEM_NOCACHE), 0u);
@@ -700,9 +698,9 @@ namespace kickos
             // ended before the death walk could store through an unmapped page.
             TEST_F(WordRefSpace, a_waiter_on_a_word_in_a_dying_holder_s_stack_ends_with_it)
             {
-                Thread* const dying = spawn_into(KOS_TASK_NONE);
+                Thread* const dying = spawn_sibling();
                 ASSERT_NE(dying, nullptr);
-                Thread* const sibling = spawn_into(KOS_TASK_NONE);
+                Thread* const sibling = spawn_sibling();
                 ASSERT_NE(sibling, nullptr);
                 ASSERT_TRUE(dying->kstack_owned) << "fixture: the stack is not the kernel's";
                 uintptr_t const va =
@@ -716,13 +714,12 @@ namespace kickos
             {
                 uintptr_t const blk = reserve(main_, G, 0);
                 ASSERT_NE(blk, 0u);
-                kos_task_t const into = new_task(main_, 0, 0, 0);
-                ASSERT_NE(into, KOS_TASK_NONE);
-                // The task's entry first: its death would end the task and every wait in it.
-                Thread* const member = spawn_into(into);
-                ASSERT_NE(member, nullptr);
-                Thread* const dying = spawn_into(into, blk, G);
+                Thread* const dying = spawn_peer(blk, G);
                 ASSERT_NE(dying, nullptr);
+                // The entry's death would end the task and every wait in it.
+                dying->task_role = TASK_ROLE_MEMBER;
+                Thread* const member = joined(dying->task);
+                ASSERT_NE(member, nullptr);
                 uintptr_t const win = window_of(dying);
                 ASSERT_NE(win, 0u);
                 (void)park_on_word(dying, member, win + AT, win + AT);
@@ -736,11 +733,9 @@ namespace kickos
             {
                 uintptr_t const blk = reserve(main_, G, 0);
                 ASSERT_NE(blk, 0u);
-                kos_task_t const into = new_task(main_, 0, 0, 0);
-                ASSERT_NE(into, KOS_TASK_NONE);
-                Thread* const waiter = spawn_into(into, blk, G);
+                Thread* const waiter = spawn_peer(blk, G);
                 ASSERT_NE(waiter, nullptr);
-                Thread* const dying = spawn_into(KOS_TASK_NONE);
+                Thread* const dying = spawn_sibling();
                 ASSERT_NE(dying, nullptr);
                 uintptr_t const win = window_of(waiter);
                 ASSERT_NE(win, 0u);

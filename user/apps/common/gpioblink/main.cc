@@ -105,7 +105,7 @@ namespace
 
 #endif
 
-extern "C" void gpioblink_main(kos_self_t const* self)
+int main(int, char**)
 {
     printf("[gpioblink] driving port %u pin %u via a direct MMIO grant\n",
            static_cast<unsigned>(PORT), static_cast<unsigned>(PIN));
@@ -113,7 +113,7 @@ extern "C" void gpioblink_main(kos_self_t const* self)
 
     int const mux_rc = kos_pinmux_set(PORT, PIN, MUX);
     uintptr_t const win =
-        reinterpret_cast<uintptr_t>(kos_window_addr(kos_grant_mmio(self, KICKOS_GPIOBLINK_DEVICE)));
+        reinterpret_cast<uintptr_t>(kos_window_addr(kos_grant_mmio(KICKOS_GPIOBLINK_DEVICE)));
     if (mux_rc != 0 or win == 0u)
     {
         printf("[gpioblink] ERROR: pinmux rc %d, window %s\n", mux_rc,

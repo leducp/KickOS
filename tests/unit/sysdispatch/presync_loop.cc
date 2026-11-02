@@ -52,7 +52,7 @@ namespace kickos
                     printf("FIXTURE FAIL: a thread outside the pool has no presync record\n");
                     exit(1);
                 }
-                return kernel().presync[i];
+                return kernel().presync()[i];
             }
 
             // presync_drop, which aspace.cc keeps file-local.
@@ -68,7 +68,7 @@ namespace kickos
             int live_notifications()
             {
                 int n = 0;
-                for (uint8_t const r : kernel().notify_refs)
+                for (uint8_t const r : PoolSpan<uint8_t>{kernel().notifies.refs(), kernel().notifies.count()})
                 {
                     if (r != 0)
                     {
@@ -81,7 +81,7 @@ namespace kickos
             int created_tasks()
             {
                 int n = 0;
-                for (Task const& t : kernel().tasks)
+                for (Task const& t : kernel().tasks())
                 {
                     if (t.creator_tag != ThreadPool::KILL_TAG_NONE)
                     {
@@ -185,34 +185,35 @@ namespace kickos
                         case Edit::FAULTED_OUT:
                         case Edit::FAILED_SPAWN:
                         {
-                            kos_task_t const t = new_task(g_editor, 0, 0, 0);
-                            uintptr_t const p = spawn_params(EDIT_PARAMS, blk_, bytes_,
-                                                             KOS_WINDOW_UNCACHED, t);
+                            kos_task_params* const tp =
+                                task_params(EDIT_PARAMS, 0, 0, 0,
+                                            PeerWindow{blk_, bytes_, KOS_WINDOW_UNCACHED});
                             if (edit_ == Edit::FAILED_SPAWN)
                             {
-                                // A destination past the child's table fails the spawn after
+                                // A destination past the child's table fails the create after
                                 // its window is mapped.
                                 uintptr_t const caps = uva(EDIT_PARAMS, CAPS_AT);
                                 uintptr_t const dest = uva(EDIT_PARAMS, DEST_AT);
                                 *host<kos_cap_grant>(caps) = {ed_run_.acap, KOS_CAP_TRANSFER};
                                 *host<uint16_t>(dest) = PAST_CHILD_TABLE;
-                                params(p)->caps = reinterpret_cast<kos_cap_grant const*>(caps);
-                                params(p)->cap_dest = reinterpret_cast<uint16_t const*>(dest);
-                                params(p)->cap_count = 1;
+                                tp->caps = reinterpret_cast<kos_cap_grant const*>(caps);
+                                tp->cap_dest = reinterpret_cast<uint16_t const*>(dest);
+                                tp->cap_count = 1;
                             }
                             if (edit_ == Edit::FAULTED_OUT)
                             {
                                 refuse_acquire(uva(EDIT_OUT), 1);
                             }
-                            kos_thread_t child = KOS_THREAD_NONE;
-                            g_seen.rc = spawn(g_editor, p, EDIT_OUT, &child);
+                            kos_task_t child = KOS_TASK_NONE;
+                            g_seen.rc = create_staged(g_editor, EDIT_PARAMS, EDIT_OUT, &child);
                             g_seen.live_after = main_record.live;
                             break;
                         }
                         case Edit::HANDOFF:
                         {
                             kos_task_t t = KOS_TASK_NONE;
-                            g_seen.rc = create_task(g_editor, blk_, bytes_, KOS_MEM_NOCACHE, &t);
+                            g_seen.rc = create_task(g_editor, blk_, bytes_, KOS_MEM_NOCACHE, &t,
+                                                    {}, EDIT_PARAMS, EDIT_OUT);
                             g_seen.live_after = main_record.live;
                             break;
                         }
@@ -242,9 +243,8 @@ namespace kickos
                         case Edit::FLIP:
                         {
                             kos_thread_params* const p = params(uva(MAIN_PARAMS));
-                            p->task = KOS_TASK_NONE;
-                            p->mem_base = reinterpret_cast<void*>(blk_);
-                            p->mem_size = static_cast<uint32_t>(bytes_);
+                            p->prio = 1;
+                            p->window_count = 0;
                             g_seen.rc = 0;
                             g_seen.live_after = main_record.live;
                             break;
@@ -261,7 +261,12 @@ namespace kickos
                     g_seen.ran = true;
                     g_seen.live_before = record_of(g_main).live;
                     uint32_t const s0 = g_syncs;
+                    // The editor preempts main for the edit: a create's pass meets it running.
+                    policy_on_ready(g_editor);
+                    g_editor->state.to<ThreadState::RUNNING>();
                     g_case->edit();
+                    detach_ready(g_editor);
+                    seat_blocked(g_editor);
                     g_seen.syncs = g_syncs - s0;
                 }
 
@@ -350,12 +355,10 @@ namespace kickos
             TEST_F(SysPresync, a_window_spawn_whose_record_drops_syncs_again_each_round)
             {
                 uintptr_t const blk = reserve_only(PAGES * G);
-                kos_task_t const into = new_task(g_main, 0, 0, 0);
                 ASSERT_NE(blk, 0u);
-                ASSERT_NE(into, KOS_TASK_NONE);
                 drop_records();
                 kos_thread_t child = KOS_THREAD_NONE;
-                EXPECT_EQ(spawn(g_main, window_spawn(blk, PAGES * G, into), MAIN_OUT, &child), 0);
+                EXPECT_EQ(spawn(g_main, window_spawn(blk, PAGES * G), MAIN_OUT, &child), 0);
                 EXPECT_NE(child, KOS_THREAD_NONE);
                 expect_rounds_dropped(PAGES);
             }
@@ -393,12 +396,10 @@ namespace kickos
             TEST_F(SysPresync, a_handoff_completed_in_the_window_sends_a_window_spawn_round)
             {
                 uintptr_t const blk = reserve_only(PAGES * G);
-                kos_task_t const into = new_task(g_main, 0, 0, 0);
                 ASSERT_NE(blk, 0u);
-                ASSERT_NE(into, KOS_TASK_NONE);
                 arm(Edit::HANDOFF, blk, PAGES * G);
                 kos_thread_t child = KOS_THREAD_NONE;
-                EXPECT_EQ(spawn(g_main, window_spawn(blk, PAGES * G, into), MAIN_OUT, &child), 0);
+                EXPECT_EQ(spawn(g_main, window_spawn(blk, PAGES * G), MAIN_OUT, &child), 0);
                 expect_seen(0, false, 1, "the editor's completed handoff dropped it");
             }
 
@@ -453,20 +454,16 @@ namespace kickos
             TEST_F(SysPresync, params_rewritten_in_the_window_change_nothing_the_spawn_does)
             {
                 uintptr_t const blk = reserve_only(PAGES * G);
-                uintptr_t const grant = reserve_only(G);
-                kos_task_t const into = new_task(g_main, 0, 0, 0);
                 ASSERT_NE(blk, 0u);
-                ASSERT_NE(grant, 0u);
-                ASSERT_NE(into, KOS_TASK_NONE);
-                uintptr_t const p = window_spawn(blk, PAGES * G, into);
-                arm(Edit::FLIP, grant, G);
+                uintptr_t const p = window_spawn(blk, PAGES * G);
+                arm(Edit::FLIP, 0, 0);
                 kos_thread_t child = KOS_THREAD_NONE;
                 EXPECT_EQ(spawn(g_main, p, MAIN_OUT, &child), 0);
                 EXPECT_TRUE(g_seen.ran);
                 EXPECT_EQ(rounds(), 0u);
                 Thread const* const t = kernel().threads.resolve(child);
                 ASSERT_NE(t, nullptr);
-                EXPECT_EQ(t->task, task_resolve(into)) << "the child joined the task first named";
+                EXPECT_EQ(t->base_prio, MAIN_PRIO) << "the child took the priority first named";
             }
 
             enum class Slain
@@ -482,7 +479,7 @@ namespace kickos
               protected:
                 Thread* spawn_member()
                 {
-                    uintptr_t const p = spawn_params(EDIT_PARAMS, 0, 0, 0, KOS_TASK_NONE);
+                    uintptr_t const p = spawn_params(EDIT_PARAMS, 0, 0, 0);
                     params(p)->authority = KOS_AUTH_MEMORY | KOS_AUTH_TASKS;
                     kos_thread_t child = KOS_THREAD_NONE;
                     if (spawn(g_main, p, EDIT_OUT, &child) != 0)
@@ -609,37 +606,33 @@ namespace kickos
                 EXPECT_EQ(g_syncs, PAGES) << "the slot's next thread inherited a round";
             }
 
-            TEST_F(SysPresync, a_spawn_whose_params_were_unreadable_at_entry_fails_without_a_round)
+            TEST_F(SysPresync, a_create_whose_params_were_unreadable_at_entry_fails_without_a_round)
             {
                 uintptr_t const grant = reserve_only(G);
                 ASSERT_NE(grant, 0u);
-                uintptr_t const p = building_spawn(grant);
+                task_params(MAIN_PARAMS, grant, G, 0);
                 sys_seam_reset();
-                refuse_acquire(p, 1);
-                kos_thread_t child = KOS_THREAD_NONE;
-                EXPECT_EQ(spawn(g_main, p, MAIN_OUT, &child), -KOS_EFAULT)
+                refuse_acquire(uva(MAIN_PARAMS, TASK_PARAMS_AT), 1);
+                kos_task_t t = KOS_TASK_NONE;
+                EXPECT_EQ(create_staged(g_main, MAIN_PARAMS, MAIN_OUT, &t), -KOS_EFAULT)
                     << "the locked pass read them again";
-                EXPECT_EQ(child, KOS_THREAD_NONE);
+                EXPECT_EQ(t, KOS_TASK_NONE);
                 EXPECT_EQ(g_windows, 0u);
                 EXPECT_EQ(host_pool_attempts(), 0u);
             }
 
-            TEST_F(SysPresync, a_spawn_whose_window_list_was_unreadable_at_entry_fails)
+            TEST_F(SysPresync, a_create_whose_window_list_was_unreadable_at_entry_fails)
             {
                 uintptr_t const grant = reserve_only(G);
                 uintptr_t const target = reserve_only(G);
                 ASSERT_NE(grant, 0u);
                 ASSERT_NE(target, 0u);
-                uintptr_t const p = building_spawn(grant);
-                uintptr_t const w = uva(MAIN_WINDOWS);
-                *host<kos_window>(w) = {target, static_cast<uint32_t>(G), KOS_WINDOW_MEMORY, 0};
-                params(p)->windows = reinterpret_cast<kos_window const*>(w);
-                params(p)->window_count = 1;
+                task_params(MAIN_PARAMS, grant, G, 0, PeerWindow{target, G, 0});
                 sys_seam_reset();
-                refuse_acquire(w, 1);
-                kos_thread_t child = KOS_THREAD_NONE;
-                EXPECT_EQ(spawn(g_main, p, MAIN_OUT, &child), -KOS_EFAULT);
-                EXPECT_EQ(child, KOS_THREAD_NONE);
+                refuse_acquire(uva(MAIN_PARAMS, WINDOWS_AT), 1);
+                kos_task_t t = KOS_TASK_NONE;
+                EXPECT_EQ(create_staged(g_main, MAIN_PARAMS, MAIN_OUT, &t), -KOS_EFAULT);
+                EXPECT_EQ(t, KOS_TASK_NONE);
                 EXPECT_EQ(g_syncs, 0u);
             }
 
@@ -647,13 +640,13 @@ namespace kickos
             {
                 uintptr_t const grant = reserve_only(G);
                 ASSERT_NE(grant, 0u);
-                uintptr_t const p = building_spawn(grant);
                 sys_seam_reset();
-                kos_thread_t child = KOS_THREAD_NONE;
-                ASSERT_EQ(spawn(g_main, p, MAIN_OUT, &child), 0);
+                kos_task_t t = KOS_TASK_NONE;
+                ASSERT_EQ(create_task(g_main, grant, G, 0, &t), 0);
                 EXPECT_EQ(g_context_entry, reinterpret_cast<uintptr_t>(kickos_task_start));
-                EXPECT_EQ(g_second_arg, reinterpret_cast<uintptr_t>(params(p)->entry));
-                uintptr_t const q = spawn_params(MAIN_PARAMS, 0, 0, 0, KOS_TASK_NONE);
+                EXPECT_EQ(g_second_arg, reinterpret_cast<uintptr_t>(&entry));
+                uintptr_t const q = spawn_params(MAIN_PARAMS, 0, 0, 0);
+                kos_thread_t child = KOS_THREAD_NONE;
                 ASSERT_EQ(spawn(g_main, q, MAIN_OUT, &child), 0);
                 EXPECT_EQ(g_context_entry, reinterpret_cast<uintptr_t>(kickos_task_start))
                     << "a member of a running space skipped the startup's once-guard";
@@ -664,15 +657,15 @@ namespace kickos
             {
                 uintptr_t const grant = reserve_only(G);
                 ASSERT_NE(grant, 0u);
-                uintptr_t const p = building_spawn(grant);
+                uintptr_t const p = spawn_params(MAIN_PARAMS, 0, 0, 0);
                 sys_seam_reset();
-                kos_thread_t child = KOS_THREAD_NONE;
                 kos_task_t t = KOS_TASK_NONE;
                 cap_seat_authority(g_main, AUTH_MEMORY);
-                EXPECT_EQ(create_task(g_main, 0, 0, 0, &t), -KOS_EPERM);
-                EXPECT_EQ(spawn(g_main, p, MAIN_OUT, &child), -KOS_EPERM);
+                EXPECT_EQ(create_task(g_main, grant, G, 0, &t), -KOS_EPERM);
                 cap_seat_authority(g_main, AUTH_MEMORY | AUTH_TASKS);
-                EXPECT_EQ(err(call_as(g_main, KOS_SYS_TASK_CREATE, 0, 0, 0, 0)), -KOS_EINVAL);
+                EXPECT_EQ(err(call_as(g_main, KOS_SYS_TASK_CREATE, program_for(g_main),
+                                      uva(MAIN_PARAMS, TASK_PARAMS_AT), 0)),
+                          -KOS_EINVAL);
                 EXPECT_EQ(err(call_as(g_main, KOS_SYS_THREAD_CREATE, p, 0)), -KOS_EINVAL);
                 EXPECT_EQ(host_pool_attempts(), 0u) << "a refused call took a run";
                 EXPECT_EQ(g_windows, 0u);
@@ -684,11 +677,6 @@ namespace kickos
                 p->window_count = 1;
             }
 
-            void unmapped_grant(kos_thread_params* p, uintptr_t)
-            {
-                p->mem_base = reinterpret_cast<void*>(UNMAPPED);
-            }
-
             void undefined_authority(kos_thread_params* p, uintptr_t)
             {
                 p->authority = UNDEFINED_AUTHORITY;
@@ -698,18 +686,6 @@ namespace kickos
             {
                 p->stack_base = reinterpret_cast<void*>(grant + KICKOS_STACK_ALIGN / 2u);
                 p->stack_size = KICKOS_USER_STACK_SIZE;
-            }
-
-            void part_of_the_grant(kos_thread_params* p, uintptr_t grant)
-            {
-                p->mem_base = reinterpret_cast<void*>(grant + GRANT_BYTES / 4u);
-                p->mem_size = GRANT_BYTES / 2u;
-            }
-
-            void part_of_the_grant_and_unmapped_window_list(kos_thread_params* p, uintptr_t grant)
-            {
-                part_of_the_grant(p, grant);
-                unmapped_window_list(p, grant);
             }
 
             struct Malformed
@@ -725,16 +701,12 @@ namespace kickos
                 ASSERT_NE(grant, 0u);
                 Malformed const cases[] = {
                     {"window list", -KOS_EFAULT, unmapped_window_list},
-                    {"data grant", -KOS_EPERM, unmapped_grant},
                     {"authority", -KOS_EINVAL, undefined_authority},
                     {"stack", -KOS_EINVAL, misaligned_stack},
-                    {"part of a reservation", -KOS_EPERM, part_of_the_grant},
-                    {"part of a reservation and a window list", -KOS_EFAULT,
-                     part_of_the_grant_and_unmapped_window_list},
                 };
                 for (Malformed const& m : cases)
                 {
-                    uintptr_t const p = building_spawn(grant);
+                    uintptr_t const p = spawn_params(MAIN_PARAMS, 0, 0, 0);
                     m.shape(params(p), grant);
                     sys_seam_reset();
                     kos_thread_t child = KOS_THREAD_NONE;
@@ -743,18 +715,53 @@ namespace kickos
                 }
             }
 
-            TEST_F(SysPresync, a_stage_a_spawn_refused_past_its_arguments_never_took_is_freed)
+            TEST_F(SysPresync, a_create_its_arguments_refuse_leaves_nothing_staged)
             {
                 uintptr_t const grant = reserve_only(G);
                 ASSERT_NE(grant, 0u);
-                uintptr_t const p = building_spawn(grant);
+                struct
+                {
+                    char const* what;
+                    int32_t rc;
+                    uintptr_t base;
+                    size_t bytes;
+                    uintptr_t window;
+                } const cases[] = {
+                    {"window list", -KOS_EFAULT, grant, G, UNMAPPED},
+                    {"data block", -KOS_EPERM, UNMAPPED, G, 0},
+                    {"part of a reservation", -KOS_EPERM, grant + GRANT_BYTES / 4u,
+                     GRANT_BYTES / 2u, 0},
+                    {"part of a reservation and a window list", -KOS_EPERM,
+                     grant + GRANT_BYTES / 4u, GRANT_BYTES / 2u, UNMAPPED},
+                };
+                size_t const before = host_pool_used();
+                for (auto const& c : cases)
+                {
+                    kos_task_params* const tp = task_params(MAIN_PARAMS, c.base, c.bytes, 0);
+                    if (c.window != 0)
+                    {
+                        tp->windows = reinterpret_cast<kos_window const*>(c.window);
+                        tp->window_count = 1;
+                    }
+                    sys_seam_reset();
+                    kos_task_t t = KOS_TASK_NONE;
+                    EXPECT_EQ(create_staged(g_main, MAIN_PARAMS, MAIN_OUT, &t), c.rc) << c.what;
+                    EXPECT_EQ(host_pool_used(), before) << c.what;
+                }
+            }
+
+            TEST_F(SysPresync, a_stage_a_create_refused_past_its_arguments_never_took_is_freed)
+            {
+                uintptr_t const grant = reserve_only(G);
+                ASSERT_NE(grant, 0u);
+                kos_task_params* const tp = task_params(MAIN_PARAMS, grant, G, 0);
                 *host<kos_cap_grant>(uva(MAIN_PARAMS, CAPS_AT)) = {NO_SUCH_CAP, KOS_CAP_SIGNAL};
-                params(p)->caps = reinterpret_cast<kos_cap_grant const*>(uva(MAIN_PARAMS, CAPS_AT));
-                params(p)->cap_count = 1;
+                tp->caps = reinterpret_cast<kos_cap_grant const*>(uva(MAIN_PARAMS, CAPS_AT));
+                tp->cap_count = 1;
                 size_t const before = host_pool_used();
                 sys_seam_reset();
-                kos_thread_t child = KOS_THREAD_NONE;
-                EXPECT_EQ(spawn(g_main, p, MAIN_OUT, &child), -KOS_EBADF);
+                kos_task_t t = KOS_TASK_NONE;
+                EXPECT_EQ(create_staged(g_main, MAIN_PARAMS, MAIN_OUT, &t), -KOS_EBADF);
                 EXPECT_NE(host_pool_attempts(), 0u) << "the copy was staged";
                 EXPECT_EQ(host_pool_used(), before);
             }
@@ -892,12 +899,11 @@ namespace kickos
                 ASSERT_EQ(call_as(g_main, KOS_SYS_FRAME_MAP, run.fcap, run.acap,
                                   va_word(RUN_VA), 0), 0u);
                 kos_thread_t child = KOS_THREAD_NONE;
-                EXPECT_EQ(spawn(g_main, spawn_params(MAIN_PARAMS, RUN_VA, PAGES * G, 0,
-                                                     KOS_TASK_NONE),
+                EXPECT_EQ(spawn(g_main, spawn_params(MAIN_PARAMS, RUN_VA, PAGES * G, 0),
                                 MAIN_OUT, &child),
                           -KOS_EPERM)
                     << "a spawn window over a frame capability's mapping was admitted";
-                uintptr_t const p = spawn_params(MAIN_PARAMS, 0, 0, 0, KOS_TASK_NONE);
+                uintptr_t const p = spawn_params(MAIN_PARAMS, 0, 0, 0);
                 params(p)->stack_base = reinterpret_cast<void*>(RUN_VA);
                 params(p)->stack_size = PAGES * G;
                 EXPECT_EQ(spawn(g_main, p, MAIN_OUT, &child), -KOS_EPERM)
@@ -911,30 +917,35 @@ namespace kickos
             TEST_F(SysPresync, a_caller_stack_in_a_reservation_has_a_kernel_alias_and_is_admitted)
             {
                 uintptr_t const own = reserve(g_main, CALLER_PAGES * G, 0);
-                uintptr_t const handed = reserve_only(CALLER_PAGES * G);
+                uintptr_t const handed = reserve_only((CALLER_PAGES + 1u) * G);
                 ASSERT_NE(own, 0u);
                 ASSERT_NE(handed, 0u);
-                kos_task_t const into = new_task(g_main, handed, CALLER_PAGES * G, 0);
-                ASSERT_NE(into, KOS_TASK_NONE);
                 struct
                 {
                     char const* what;
                     uintptr_t base;
-                    kos_task_t into;
                 } const cases[] = {
-                    {"own reservation", own, KOS_TASK_NONE},
-                    {"own reservation off its granule", own + 64u, KOS_TASK_NONE},
-                    {"a block handed to the task joined", handed + 64u, into},
+                    {"own reservation", own},
+                    {"own reservation off its granule", own + 64u},
                 };
                 for (auto const& c : cases)
                 {
                     EXPECT_NE(ustack_kptr(c.base), nullptr) << c.what;
-                    uintptr_t const p = spawn_params(MAIN_PARAMS, 0, 0, 0, c.into);
+                    uintptr_t const p = spawn_params(MAIN_PARAMS, 0, 0, 0);
                     params(p)->stack_base = reinterpret_cast<void*>(c.base);
                     params(p)->stack_size = CALLER_STACK;
                     kos_thread_t child = KOS_THREAD_NONE;
                     EXPECT_EQ(spawn(g_main, p, MAIN_OUT, &child), 0) << c.what;
                 }
+                EXPECT_NE(ustack_kptr(handed + 64u), nullptr) << "a block handed to the task";
+                // The entry's argv block comes off the top of its stack.
+                kos_task_params* const tp =
+                    task_params(MAIN_PARAMS, handed, (CALLER_PAGES + 1u) * G, 0);
+                tp->stack = reinterpret_cast<void*>(handed + 64u);
+                tp->stack_size = CALLER_STACK + 128u;
+                kos_task_t t = KOS_TASK_NONE;
+                EXPECT_EQ(create_staged(g_main, MAIN_PARAMS, MAIN_OUT, &t), 0)
+                    << "a block handed to the task joined";
             }
 
             // As the AMP share is in its init's space.
@@ -946,7 +957,7 @@ namespace kickos
                 ASSERT_TRUE(r->reserve(va, CALLER_PAGES, VR_SHARE));
                 ASSERT_TRUE(r->grant(va, CALLER_PAGES, ARCH_MAP_R | ARCH_MAP_W, ARCH_MAP_NORMAL));
                 ASSERT_EQ(ustack_kptr(va + 64u), nullptr);
-                uintptr_t const p = spawn_params(MAIN_PARAMS, 0, 0, 0, KOS_TASK_NONE);
+                uintptr_t const p = spawn_params(MAIN_PARAMS, 0, 0, 0);
                 params(p)->stack_base = reinterpret_cast<void*>(va + 64u);
                 params(p)->stack_size = CALLER_STACK;
                 sys_seam_reset();
@@ -961,16 +972,14 @@ namespace kickos
             {
                 constexpr uint32_t WIDE = 32;
                 uintptr_t const wide = reserve_only(WIDE * G);
-                kos_task_t const into = new_task(g_main, 0, 0, 0);
                 ASSERT_NE(wide, 0u);
-                ASSERT_NE(into, KOS_TASK_NONE);
                 sys_seam_reset();
                 EXPECT_EQ(call_as(g_main, KOS_SYS_MEM_SELF_GRANT, wide, WIDE * G,
                                   KOS_MEM_NOCACHE),
                           0u);
                 EXPECT_EQ(g_syncs, WIDE) << "self-grant";
                 kos_thread_t child = KOS_THREAD_NONE;
-                EXPECT_EQ(spawn(g_main, window_spawn(wide, WIDE * G, into), MAIN_OUT, &child), 0);
+                EXPECT_EQ(spawn(g_main, window_spawn(wide, WIDE * G), MAIN_OUT, &child), 0);
                 EXPECT_EQ(g_syncs, 2u * WIDE) << "window";
                 EXPECT_NE(new_task(g_main, wide, WIDE * G, KOS_MEM_NOCACHE), KOS_TASK_NONE);
                 EXPECT_EQ(g_syncs, 3u * WIDE) << "task data";
@@ -982,35 +991,29 @@ namespace kickos
                 constexpr uint32_t TD = 3;
                 uintptr_t const held = reserve_only(TD * G);
                 uintptr_t const data = reserve_only(TD * G);
-                kos_task_t const t = new_task(g_main, 0, 0, 0);
-                kos_task_t const later = new_task(g_main, 0, 0, 0);
                 ASSERT_NE(held, 0u);
                 ASSERT_NE(data, 0u);
+                kos_task_t const t = new_task(g_main, 0, 0, 0,
+                                              PeerWindow{held, TD * G, KOS_WINDOW_UNCACHED});
                 ASSERT_NE(t, KOS_TASK_NONE);
-                ASSERT_NE(later, KOS_TASK_NONE);
-                kos_thread_t holder = KOS_THREAD_NONE;
-                ASSERT_EQ(spawn(g_main, window_spawn(held, TD * G, t), MAIN_OUT, &holder), 0);
                 kos_task_t const d = new_task(g_main, data, TD * G, KOS_MEM_NOCACHE);
                 ASSERT_NE(d, KOS_TASK_NONE);
                 sys_seam_reset();
-                Thread* const h = kernel().threads.resolve(holder);
+                Thread* const h = entry_of(t);
                 ASSERT_NE(h, nullptr);
                 exit_as(h);
                 EXPECT_EQ(call_as(g_main, KOS_SYS_TASK_SLAY, t), 0u);
+                exit_as(entry_of(d));
                 EXPECT_EQ(call_as(g_main, KOS_SYS_TASK_SLAY, d), 0u);
                 EXPECT_EQ(g_syncs, 0u) << "a teardown syncs nothing of its own";
                 EXPECT_EQ(call_as(g_main, KOS_SYS_MEM_SELF_GRANT, held, TD * G, 0), 0u);
                 EXPECT_EQ(g_syncs, TD) << "after a window";
                 EXPECT_EQ(call_as(g_main, KOS_SYS_MEM_SELF_GRANT, data, TD * G, 0), 0u);
                 EXPECT_EQ(g_syncs, 2u * TD) << "after a task's data";
-                kos_thread_t second = KOS_THREAD_NONE;
-                EXPECT_EQ(spawn(g_main, spawn_params(MAIN_PARAMS, held, TD * G, 0, later),
-                                MAIN_OUT, &second),
-                          0);
+                kos_task_t const later = new_task(g_main, 0, 0, 0, PeerWindow{held, TD * G, 0});
+                ASSERT_NE(later, KOS_TASK_NONE);
                 EXPECT_EQ(g_syncs, 2u * TD) << "a second cacheable mapping";
-                Thread* const s2 = kernel().threads.resolve(second);
-                ASSERT_NE(s2, nullptr);
-                exit_as(s2);
+                exit_as(entry_of(later));
                 EXPECT_EQ(call_as(g_main, KOS_SYS_TASK_SLAY, later), 0u);
                 EXPECT_EQ(call_as(g_main, KOS_SYS_MEM_SELF_GRANT, held, TD * G, KOS_MEM_NOCACHE),
                           0u);

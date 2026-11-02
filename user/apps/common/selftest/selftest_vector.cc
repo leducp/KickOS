@@ -226,12 +226,10 @@ namespace selftest
         ArmHold hold;
         TAP_HOLD(hold.thread(&h) and hold.thread(&p));
         h = kos::thread::create_caps(vb_holder, nullptr, "vbhold", TAP_PRIO_PARKS + 1, nullptr, 0,
-                                     KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
-                                     KOS_TASK_NONE, nullptr, 0, TAP_PIN_CORE);
+                                     KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, TAP_PIN_CORE);
         TAP_CHECK(h.valid());
         p = kos::thread::create_caps(vb_poster, nullptr, "vbpost", TAP_PRIO_PARKS, nullptr, 0,
-                                     KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
-                                     KOS_TASK_NONE, nullptr, 0, TAP_PIN_CORE);
+                                     KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, TAP_PIN_CORE);
         TAP_CHECK(p.valid());
         TAP_CHECK(hold.joined());
         tap::diag("holder rc %d mxcsr 0x%x fcw 0x%x, poster rc %d mxcsr 0x%x fcw 0x%x, "
@@ -304,14 +302,16 @@ namespace selftest
         kos::thread::Handle w[2];
         ArmHold hold(VEC_SPIN_JOIN_US);
         TAP_HOLD(hold.thread(&w[0]) and hold.thread(&w[1]));
+        // Above the spinners until both exist, or the first spins alone to its bound.
+        TAP_CHECK(main_above(TAP_PRIO_PARKS + 1));
         for (uintptr_t i = 0; i < 2; i++)
         {
             w[i] = kos::thread::create_caps(vp_spinner, reinterpret_cast<void*>(i), "vpspin",
-                                            TAP_PRIO_PARKS, nullptr, 0, KOS_POLICY_RR, quantum,
-                                            nullptr, 0, 0, nullptr, KOS_TASK_NONE,
-                                            nullptr, 0, TAP_PIN_CORE);
-            TAP_CHECK(w[i].valid());
+                                            TAP_PRIO_PARKS, nullptr, 0, KOS_POLICY_RR, quantum, 0,
+                                            nullptr, nullptr, 0, TAP_PIN_CORE);
         }
+        TAP_CHECK(main_back());
+        TAP_CHECK(w[0].valid() and w[1].valid());
         TAP_CHECK(hold.joined());
         tap::diag("spinners saw the other count: %d %d; mxcsr 0x%x 0x%x, fcw 0x%x 0x%x",
                   static_cast<int>(g_vp_moved[0]), static_cast<int>(g_vp_moved[1]),
@@ -404,7 +404,7 @@ namespace selftest
 
     void t_vector_starts_clean()
     {
-        TAP_ASK(.workers = 1, .tasks = 1, .endpoints = 1);
+        TAP_ASK(.workers = 1, .tasks = 1, .endpoints = 1, .peer_workers = 1);
         // A thread in the slot a patterned thread vacated: the pool hands the freed slot back.
         kos::thread::Handle prev;
         TAP_CHECK(vec_run(&prev, vec_patterned, nullptr, "vcpat"));
@@ -420,23 +420,18 @@ namespace selftest
         // A thread of another task, whose verdict comes back over an endpoint.
         kos_cap_t ep = KOS_CAP_NONE;
         kos_task_t task = KOS_TASK_NONE;
-        kos::thread::Handle other;
         ArmHold hold;
-        TAP_HOLD(hold.cap(&ep) and hold.task(&task) and hold.thread(&other));
+        TAP_HOLD(hold.cap(&ep) and hold.task(&task));
         TAP_CHECK(kos_endpoint_create(&ep) == 0);
-        TAP_CHECK(kos_task_create(nullptr, 0, 0, &task) == 0);
-        kos_cap_grant const caps[] = {{ep, KOS_CAP_SIGNAL}};
-        other = kos::thread::create(selftest_vec_clean_entry, nullptr, "vctask", TAP_PRIO_PARKS,
-                                    KOS_POLICY_FIFO, 0, nullptr, 0, nullptr, 0, nullptr, 0,
-                                    caps, 1, 0, nullptr, task);
-        TAP_CHECK(other.valid());
+        kos_cap_grant const caps[] = {{ep, KOS_CAP_SIGNAL | KOS_CAP_TRANSFER}};
+        TAP_CHECK(PeerRun("vclean").caps(caps, 1).start(&task) == 0);
         VecVerdict v;
         memset(&v, 0xA5, sizeof(v));
         struct kos_reply_recv_opts o;
         kos_reply_recv_opts_init(&o, ep, KOS_RECV_NO_INFO, STALL_TOLERANT_US);
         int32_t const n = kos_reply_recv(KOS_CAP_NONE, &v, kos_call_lens_pack(0, sizeof(v)), &o);
         TAP_CHECK(n == static_cast<int32_t>(sizeof(v)));
-        TAP_CHECK(hold.joined());
+        TAP_CHECK(peer_dead_status(task) == 0);
         TAP_CHECK(vec_clean_ok(v, "another task"));
         TAP_CHECK(kos_task_slay(task, 0) == 0);
         task = KOS_TASK_NONE;
@@ -448,6 +443,7 @@ namespace selftest
     // The divide-by-zero flag of MXCSR and of the x87 status word.
     constexpr uint32_t VEC_ZE = 1u << 2;
 
+#if KICKOS_SELFTEST_PEER
     // Takes main's call, so a death from here on answers it -KOS_EPIPE. KOS_CAP_NONE when no
     // call came.
     kos_cap_t vf_take_call()
@@ -476,6 +472,20 @@ namespace selftest
         (void)kos_reply(call, &word, sizeof(word));
         kos_exit(1);
     }
+    // A thread of the peer's task as main's spawn starts one, reporting on the endpoint the
+    // peer passes on.
+    int vc_task() // caps: E(SIGNAL | TRANSFER)@0
+    {
+        kos_cap_grant const caps[] = {{child_cap(0), KOS_CAP_SIGNAL}};
+        kos::thread::Handle t = kos::thread::create_caps(selftest_vec_clean_entry, nullptr,
+                                                         "vctask", TAP_PRIO_PARKS, caps, 1);
+        if (not t.valid())
+        {
+            return 1;
+        }
+        return t.join(STALL_TOLERANT_US);
+    }
+
     // Never posted: the sibling waits on its task's own copy.
     kos_sem_t g_vf_never = KOS_SEM_INIT(0);
     void vf_sibling(void*)
@@ -483,42 +493,44 @@ namespace selftest
         kos_sem_wait(&g_vf_never, KOS_TIMEOUT_NONE);
         kos_exit(1);
     }
+    // The victim, named for the fault it takes, beside the entry parked as its sibling.
+    int vf_task(void (*victim)(void*), char const* name) // caps: E(WAIT | TRANSFER)@0
+    {
+        kos_cap_grant const caps[] = {{child_cap(0), KOS_CAP_WAIT}};
+        kos::thread::Handle const vic = kos::thread::create_caps(victim, nullptr, name, 10, caps, 1);
+        if (not vic.valid())
+        {
+            return 1;
+        }
+        vf_sibling(nullptr);
+        return 1;
+    }
+#endif
 
     // Each victim's task holds a sibling parked on a semaphore nobody posts, so only the task's
     // death releases it: a fault the kernel took for a kernel bug ends the image instead. The
     // victim divides holding main's call, so its death answers the call -KOS_EPIPE and a divide
     // that raised nothing answers it with the flags the divide set. *verdict: 1 when the task
     // died, 0 when the divide raised nothing and set the flag, -1 otherwise.
-    void vec_fault_kills(void (*victim)(void*), char const* name, char const* what,
-                         uint32_t* word, int* verdict)
+    void vec_fault_kills(char const* victim, char const* what, uint32_t* word, int* verdict)
     {
         *verdict = -1;
         *word = 0;
         kos_cap_t ep = KOS_CAP_NONE;
         kos_task_t task = KOS_TASK_NONE;
-        kos::thread::Handle sib;
-        kos::thread::Handle vic;
         ArmHold hold;
-        TAP_HOLD(hold.cap(&ep) and hold.task(&task) and hold.thread(&sib) and hold.thread(&vic));
+        TAP_HOLD(hold.cap(&ep) and hold.task(&task));
         TAP_CHECK(kos_endpoint_create(&ep) == 0);
-        TAP_CHECK(kos_task_create(nullptr, 0, 0, &task) == 0);
-        kos_cap_grant const vcaps[] = {{ep, KOS_CAP_WAIT}};
-        sib = kos::thread::create(vf_sibling, nullptr, "vfsib", 10, KOS_POLICY_FIFO, 0,
-                                  nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0, 0, nullptr,
-                                  task);
-        TAP_CHECK(sib.valid());
-        vic = kos::thread::create(victim, nullptr, name, 10, KOS_POLICY_FIFO, 0, nullptr,
-                                  0, nullptr, 0, nullptr, 0, vcaps, 1, 0, nullptr, task);
-        TAP_CHECK(vic.valid());
+        kos_cap_grant const vcaps[] = {{ep, KOS_CAP_WAIT | KOS_CAP_TRANSFER}};
+        TAP_CHECK(PeerRun(victim).caps(vcaps, 1).start(&task) == 0);
         int32_t const n = kos_call(ep, word, 0, sizeof(*word), STALL_TOLERANT_US);
         int verdict_now = -1;
         if (n == -KOS_EPIPE)
         {
-            int const vj = vic.join(STALL_TOLERANT_US);
-            int const sj = sib.join(STALL_TOLERANT_US);
-            tap::diag("%s: call %d, victim join %d, parked sibling join %d", what,
-                      static_cast<int>(n), vj, sj);
-            if (vj == 0 and sj == 0)
+            int const status = peer_dead_status(task);
+            tap::diag("%s: call %d, the task with its parked sibling dead with %d", what,
+                      static_cast<int>(n), status);
+            if (status == KOS_EXIT_FAULT)
             {
                 verdict_now = 1;
             }
@@ -532,8 +544,7 @@ namespace selftest
                 verdict_now = 0;
             }
         }
-        int const killed = kos_task_slay(task, 0);
-        task = KOS_TASK_NONE;
+        int const killed = task_end(&task);
         int const closed = kos_handle_close(ep);
         ep = KOS_CAP_NONE;
         if (killed == 0 and closed == 0)
@@ -544,14 +555,13 @@ namespace selftest
 
     void t_vector_fault_contained()
     {
-        TAP_ASK(.workers = 2, .tasks = 1, .endpoints = 1);
+        TAP_ASK(.tasks = 1, .endpoints = 1, .peer_workers = 1);
         uint32_t word = 0;
         int mf = -1;
-        vec_fault_kills(vf_mf_victim, "vfmf", "x87 divide by zero pending to FWAIT, #MF", &word,
-                        &mf);
+        vec_fault_kills("vfmf", "x87 divide by zero pending to FWAIT, #MF", &word, &mf);
         TAP_CHECK(mf == 1);
         int xm = -1;
-        vec_fault_kills(vf_xm_victim, "vfxm", "SSE divide by zero, #XM", &word, &xm);
+        vec_fault_kills("vfxm", "SSE divide by zero, #XM", &word, &xm);
         TAP_CHECK(xm >= 0);
         if (xm == 0)
         {
@@ -604,8 +614,7 @@ namespace selftest
         ArmHold hold;
         TAP_HOLD(hold.thread(&t));
         t = kos::thread::create_caps(vm_mover, nullptr, "vmmove", TAP_PRIO_PARKS, nullptr, 0,
-                                     KOS_POLICY_FIFO, 0, nullptr, 0, 0, nullptr,
-                                     KOS_TASK_NONE, nullptr, 0, TAP_PIN_CORE);
+                                     KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, TAP_PIN_CORE);
         TAP_CHECK(t.valid());
         TAP_CHECK(hold.joined());
         tap::diag("re-pin rc %d, core %u before and %u after, mxcsr 0x%x fcw 0x%x",
@@ -615,6 +624,25 @@ namespace selftest
         TAP_CHECK(g_vm_rc == static_cast<int32_t>(1u << g_vm_away));
         TAP_CHECK(g_vm_core[0] == 0 and g_vm_core[1] == g_vm_away);
         TAP_CHECK(vec_same(g_vm_load, g_vm_seen));
+    }
+#endif
+
+#if KICKOS_SELFTEST_PEER
+    int peer_roles_vector(int argc, char** argv)
+    {
+        if (argc == 2 and peer_is(argv[1], "vclean"))
+        {
+            return vc_task();
+        }
+        if (argc == 2 and peer_is(argv[1], "vfmf"))
+        {
+            return vf_task(vf_mf_victim, "vfmf");
+        }
+        if (argc == 2 and peer_is(argv[1], "vfxm"))
+        {
+            return vf_task(vf_xm_victim, "vfxm");
+        }
+        return PEER_WHAT;
     }
 #endif
 }

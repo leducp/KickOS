@@ -11,6 +11,8 @@
 // SERVICE IS DRIVEN FROM A PARK'S WAKER, which is where a doorbell lands on a parked thread;
 // what the waker reads of the thread's buffer is the state the masked body left.
 
+#include "../common/seam_pools.h"
+
 #include <string.h>
 
 #include <kickos/ampwindow.h>
@@ -75,11 +77,13 @@ namespace kickos
                                 r.slot[i].len.store(0u);
                                 r.slot[i].port.store(amp::PORT_MAX);
                                 r.slot[i].tag = amp::ReplyTag{};
+                                r.slot[i].badge = 0u;
                                 memset(r.slot[i].payload, 0, sizeof(r.slot[i].payload));
                             }
                         }
                     }
                 }
+                amphold::window_cold();
                 amp::window_init();
             }
 
@@ -210,7 +214,7 @@ namespace kickos
             Thread* seat_receiver(int slot, uint8_t prio, uint32_t* out_ep)
             {
                 Thread* const r = seat_pool(slot, prio);
-                attach_caps(r, KICKOS_CAP_CHILD_WIDTH);
+                attach_caps(r, KICKOS_SEAM_CAP_WIDTH);
                 IrqLock lock;
                 sched::reschedule(nullptr, lock);
                 EXPECT_EQ(amp_port_bind_local(r, PORT_SERVED, out_ep), 0);
@@ -370,7 +374,7 @@ namespace kickos
 
         TEST_F(AmpHold, no_far_reply_band_handle_resolves_to_a_local_thread)
         {
-            for (int i = 0; i < KICKOS_THREAD_SLOTS; i++)
+            for (int i = 0; i < KICKOS_SEAM_THREAD_SLOTS; i++)
             {
                 Thread* const t = seat_pool(i, PRIO_RECEIVER);
                 IrqLock lock;
@@ -378,7 +382,7 @@ namespace kickos
                 policy_on_remove(t);
                 t->call_state = CALL_REPLY_WAIT;
             }
-            ASSERT_EQ(kernel().threads.next, KICKOS_THREAD_SLOTS);
+            ASSERT_EQ(kernel().threads.next, KICKOS_SEAM_THREAD_SLOTS);
 
             IrqLock lock;
             for (uint32_t rec = 0; rec < ThreadPool::FAR_REPLY_RECORDS; rec++)
@@ -699,7 +703,7 @@ namespace kickos
             Thread* seat_caller(int slot, uint8_t prio, uint32_t* out_far)
             {
                 Thread* const c = seat_pool(slot, prio);
-                attach_caps(c, KICKOS_CAP_CHILD_WIDTH);
+                attach_caps(c, KICKOS_SEAM_CAP_WIDTH);
                 IrqLock lock;
                 sched::reschedule(nullptr, lock);
                 EXPECT_EQ(amp_endpoint_mint(c, PEER, PORT_FAR, CAP_SIGNAL, out_far), 0);
@@ -1101,7 +1105,7 @@ namespace kickos
         TEST_F(AmpHold, the_far_mint_refuses_the_reply_port_and_mints_a_service)
         {
             Thread* const c = seat_pool(1, PRIO_RECEIVER);
-            attach_caps(c, KICKOS_CAP_CHILD_WIDTH);
+            attach_caps(c, KICKOS_SEAM_CAP_WIDTH);
             IrqLock lock;
             uint32_t cap = 0u;
             EXPECT_EQ(amp_endpoint_mint(c, PEER, amp::PORT_REPLY, CAP_SIGNAL, &cap), -KOS_EINVAL);
@@ -1132,7 +1136,7 @@ namespace kickos
                 ASSERT_NE(far_ep, nullptr);
                 ASSERT_TRUE(endpoint_is_far(far_ep));
                 Endpoint* filler = nullptr;
-                while (endpoint_slot_claim(&filler) >= 0)
+                while (endpoint_slot_claim(nullptr, &filler) >= 0)
                 {
                 }
                 ASSERT_EQ(handle_close(c, far, lock), 0);
@@ -1181,7 +1185,7 @@ namespace kickos
             {
                 memset(&g_fs, 0, sizeof(g_fs));
                 g_fs.c = seat_pool(1, PRIO_RECEIVER);
-                attach_caps(g_fs.c, KICKOS_CAP_CHILD_WIDTH);
+                attach_caps(g_fs.c, KICKOS_SEAM_CAP_WIDTH);
                 g_fs.ep = endpoint();
                 g_fs.ep->recv_holders = 1;
                 int const obj =
@@ -1189,7 +1193,7 @@ namespace kickos
                 ASSERT_EQ(cap_install(g_fs.c, obj, CapType::CAP_ENDPOINT, CAP_SIGNAL, &g_fs.cap),
                           0);
                 g_fs.w = spawn(0, PRIO_RECEIVER);
-                attach_caps(g_fs.w, KICKOS_CAP_CHILD_WIDTH);
+                attach_caps(g_fs.w, KICKOS_SEAM_CAP_WIDTH);
                 {
                     IrqLock lock;
                     testfix::seat_blocked(g_fs.w);
@@ -1254,6 +1258,30 @@ namespace kickos
             EXPECT_EQ(c->call_state, CALL_REPLY_WAIT);
             EXPECT_EQ(amp::counts(ME).reply_drop.load(), drops + 1u);
             EXPECT_EQ(reply_ring().tail.v.load(), tail_before + 1u);
+        }
+
+        // A local port's binding names its endpoint by slot index, so closing the capability
+        // leaves the slot live and bound, and no later claim is handed it.
+        TEST_F(AmpHold, closing_a_local_port_capability_keeps_its_slot_from_every_later_claim)
+        {
+            uint32_t ep = KCAP_INVALID;
+            Thread* const r = seat_receiver(0, PRIO_RECEIVER, &ep);
+            uint16_t const bound = amp::port_endpoint(PORT_SERVED);
+            ASSERT_NE(bound, amp::EP_BOUND_NONE);
+            IrqLock lock;
+            ASSERT_EQ(handle_close(r, ep, lock), 0);
+            EXPECT_EQ(kernel().endpoints.refs()[bound], 1u);
+            EXPECT_EQ(amp::port_endpoint(PORT_SERVED), bound);
+            int claimed = 0;
+            Endpoint* filler = nullptr;
+            int at = endpoint_slot_claim(nullptr, &filler);
+            while (kernel().endpoints.at(at) != nullptr)
+            {
+                EXPECT_NE(at, static_cast<int>(bound));
+                claimed++;
+                at = endpoint_slot_claim(nullptr, &filler);
+            }
+            EXPECT_GT(claimed, 0);
         }
     }
 }

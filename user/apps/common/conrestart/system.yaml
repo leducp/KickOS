@@ -16,7 +16,7 @@ tasks:
     restart: { max: 1 }
 
   - name: main
-    entry: conrestart_main
+    program: conrestart
     priority: 2
     ceiling: 10
     uses: [/svc/console]

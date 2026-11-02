@@ -195,9 +195,14 @@ reading the clock makes no system call
 KickOS therefore keeps two tables. The startup code walks the first one before the
 kernel starts, and it stays empty: the kernel's own globals need no constructor,
 and the link fails if one appears there. Every constructor of the application and
-of the C and C++ libraries goes into the second table. The root thread, the first
-unprivileged thread ([Chapter 0.5](the-toolchain-from-source-to-a-running-image.md)), walks it after the clock and the scheduler have
-started, and before the application's `main` runs.
+of the C and C++ libraries goes into the second table, and each image of a program
+has one of its own. The first thread to enter an image walks its table, after the
+clock and the scheduler have started and before that thread's own entry runs. For
+the init's image that is the root thread, the first unprivileged thread
+([Chapter 0.5](the-toolchain-from-source-to-a-running-image.md)). For the
+application's image it is the first of its tasks to start, and its other tasks wait
+until the walk is done. Where the init and the application share one image, the root
+thread walks that one table before the application's `main` runs.
 
 Where each task has an address space of its own, each task starts from a fresh
 copy of the program's data, as a new process does on a desktop. So each task walks
@@ -267,8 +272,8 @@ shows how the linker script places each byte and where the heap's span comes fro
 - [*Exceptions and RTTI under memory protection*](exceptions-and-rtti-under-memory-protection.md)
   and [*Where your RAM goes*](where-your-ram-goes-full-cxx-memory-floor-and-the-linker-split.md)
   place the runtime under memory protection and measure its memory cost.
-- [*Power-on*](../journey/01-power-on.md) in the Journey runs the application's
-  constructors on the root thread, in a debugger.
+- [*Power-on*](../journey/01-power-on.md) in the Journey runs the constructors in a
+  debugger.
 - The exact C++ rules: the [architecture reference](../reference/architecture.md)
   ("C++ decisions").
 - Where `_write`'s bytes go, exactly: the [console reference](../reference/console.md).

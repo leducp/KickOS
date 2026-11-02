@@ -36,7 +36,7 @@ namespace
     Thread* seat_holder(int slot)
     {
         Thread* const t = seat_pool(slot, PRIO);
-        attach_caps(t, KICKOS_CAP_CHILD_WIDTH);
+        attach_caps(t, KICKOS_SEAM_CAP_WIDTH);
         {
             IrqLock lock;
             sched::reschedule(nullptr, lock);

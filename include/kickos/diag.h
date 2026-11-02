@@ -6,10 +6,10 @@
 //
 // The FAULT BANNERS tests/lib/panic.ere matches are raw kprintf literals at their emit sites and
 // have no terse variant. Do not restate that set here: tests/static/check_panic_banners.sh
-// derives it from the emit sites and is the only place it is written down. Two entries below
+// derives it from the emit sites and is the only place it is written down. Three entries below
 // bear on it: KDIAG_F_MPU_FAULT's fixed prefix IS matched and is spelled identically in both
-// columns, and KDIAG_F_THREAD_FAULT deliberately is not, gates asserting it is present while
-// asserting no panic occurred.
+// columns, and KDIAG_F_THREAD_FAULT and KDIAG_F_TASK_PANIC deliberately are not, gates asserting
+// them present while asserting no panic occurred.
 
 #ifndef KICKOS_DIAG_H
 #define KICKOS_DIAG_H
@@ -63,6 +63,7 @@
     X(kUguardNoAsid,    "armv8a: no PAN and no ASID, so EL1 cannot be kept out of user pages", "P30") \
     X(kSumNotCleared,   "rv64imac: sstatus.SUM did not take the clear",               "P31")   \
     X(kWordNoRecord,    "unreachable: a word waiter found every record in use",       "P32")   \
+    X(kPmpCodeWindow,   "rv32imac: the PMP did not take the user code window",        "P33")   \
     X(kBannerRule,      "  ==============================================\n",        "\n")
 
 // The prose table is the only C++ in this header, and kickos/console_tx.h includes the header
@@ -107,6 +108,14 @@ namespace kickos
 #ifndef KICKOS_DIAG_LINE_MAX
 #define KICKOS_DIAG_LINE_MAX 256
 #endif
+// The bytes of a user console write the kernel takes as one whole insert: a write no longer than
+// this reaches the wire unbroken beside any other writer's. The 128 caps the syscall frame that
+// holds a chunk on the arches no red-zone class walks.
+#if KICKOS_DIAG_LINE_MAX - 1 < 128
+#define KICKOS_KCONSOLE_CHUNK (KICKOS_DIAG_LINE_MAX - 1)
+#else
+#define KICKOS_KCONSOLE_CHUNK 128
+#endif
 
 // Thread fault (kernel/init/fault.cc). The reporter formats into a stack array of exactly
 // KDIAG_FAULT_LINE_MAX bytes, on a descent the trap red-zone gate measures as EXITK (and as
@@ -123,6 +132,11 @@ namespace kickos
 #define KDIAG_F_FAULT_PC_STAT KICKOS_DIAG_PICK("  PC=%p %s=0x%llx\n", "F3 %p %s %llx\n")
 #define KDIAG_F_FAULT_NO_PC   KICKOS_DIAG_PICK("  PC unknown %s=0x%llx\n", "F4 %s %llx\n")
 #define KDIAG_F_FAULT_ADDR    KICKOS_DIAG_PICK("  ADDR=%p\n", "ADDR=%p\n")
+// A kos_panic that ends only its caller's task (kernel/syscall/syscall.cc), on the same record
+// path and bound. Not a fault banner: the system runs on.
+#define KDIAG_F_TASK_PANIC     KICKOS_DIAG_PICK("\n=== TASK PANIC === thread '%s' ended its task\n", \
+                                                "\n=== TASK PANIC === thread '%s'\n")
+#define KDIAG_F_TASK_PANIC_MSG KICKOS_DIAG_PICK("  %s\n", "%s\n")
 
 // MPU fault report (kernel/init/console.cc).
 #define KDIAG_F_MPU_FAULT KICKOS_DIAG_PICK("\nMPU FAULT: thread '%s' attempted %s at %p, reported\n", \

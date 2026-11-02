@@ -14,7 +14,7 @@ tasks:
     priority: 12
 
   - name: main
-    entry: kickos_main
+    program: simconabi_main
     priority: 2
     ceiling: 2
     authority: [memory, system, tasks]

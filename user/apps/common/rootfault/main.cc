@@ -38,9 +38,16 @@ namespace
         (void)kos_send(CH_DONE, &mark, sizeof(mark), KOS_TIMEOUT_NONE);
     }
 
-    void confined_child(void* arg)
+    void confined_child(void*)
     {
-        volatile int* own = static_cast<volatile int*>(arg); // -> region A (granted)
+        kos_window w = {};
+        if (kos_window_get(0, &w) != 0)
+        {
+            kos::print("[rootfault] ERROR: the child's window is unreadable\n");
+            report_done();
+            return;
+        }
+        volatile int* own = reinterpret_cast<volatile int*>(w.base); // region A (window)
         *own = 0x1111;                                       // granted -> must succeed
         // The marker below is the gate's CONTROL, so it must witness the write's EFFECT
         // and not merely its position in program order: read the cell back first.
@@ -70,8 +77,8 @@ int main(int, char**)
         return 1;
     }
 
-    // Hand A to an UNPRIVILEGED child in a task of its own: A becomes a live foreign domain's
-    // region, not a stray arena page. Main has not touched A at this point.
+    // Hand A to an UNPRIVILEGED child thread as its own window: A becomes a live foreign
+    // thread's region, not a stray arena page. Main has not touched A at this point.
     kos_cap_grant caps[] = {
         { done, KOS_CAP_SIGNAL },
     };
@@ -86,10 +93,13 @@ int main(int, char**)
     }
     core_mask = 1u;
 #endif
-    auto const child = kos::thread::create_caps(confined_child, rA, "confined", 10,
-                                             caps, 1, KOS_POLICY_FIFO, 0,
-                                             rA, 4096, 0, nullptr,
-                                             KOS_TASK_NONE, nullptr, 0, core_mask);
+    kos_window win = {};
+    win.base = reinterpret_cast<uintptr_t>(rA);
+    win.size = 4096;
+    win.kind = KOS_WINDOW_MEMORY;
+    auto const child = kos::thread::create(confined_child, nullptr, "confined", 10,
+                                           KOS_POLICY_FIFO, 0, nullptr, 0, &win, 1, caps, 1, 0,
+                                           nullptr, core_mask);
     if (not child.valid())
     {
         kos::print("[rootfault] ERROR: child spawn refused\n");

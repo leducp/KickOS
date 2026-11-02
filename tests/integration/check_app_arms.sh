@@ -14,7 +14,7 @@
 # come from different code paths, a counter against one emit per arm, so a mismatch means
 # output was lost between them and the count cannot be trusted.
 #
-#   check_app_arms.sh <elf> <prefix> <exact-arm-count> [must-be-absent...]
+#   check_app_arms.sh <elf> <prefix> <exact-arm-count> [must-be-absent... | +must-be-present...]
 #   KOS_CAPTURE=<log> check_app_arms.sh <board-build> <kickos-source> <cmake> <prefix> <exact-arm-count>
 #     [must-be-absent...]
 
@@ -43,9 +43,18 @@ fi
 # so the marker alone is not the verdict.
 assert_no_panic "$prefix panicked (before or after its verdict)"
 for absent in "$@"; do
-    if has "$absent"; then
-        cfail absent "$prefix printed '$absent'"
-    fi
+    case "$absent" in
+        +*)
+            if ! has "${absent#+}"; then
+                cfail skip "$prefix did not print the expected '${absent#+}'"
+            fi
+            ;;
+        *)
+            if has "$absent"; then
+                cfail absent "$prefix printed '$absent'"
+            fi
+            ;;
+    esac
 done
 
 arms="$(printf '%s\n' "$OUT" | grep -c "\[$prefix\] ok - ")"

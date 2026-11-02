@@ -51,15 +51,20 @@ namespace
     }
 }
 
-extern "C" void restart_sensor_main(kos_self_t const* self)
+extern "C" void witness_own_claim(char const* task, uint32_t id);
+extern "C" void witness_own_check(char const* task, uint32_t id);
+
+int main(int, char**)
 {
-    kos_window_t const history_window = kos_grant_mem(self, "/shm/history");
+    kos_self_t const* const self = kos_self();
+    witness_own_claim("sensor", 1u);
+    kos_window_t const history_window = kos_grant_mem("/shm/history");
     auto const hist = static_cast<history*>(kos_window_addr(history_window));
-    kos_cap_t const served = kos_grant_endpoint(self, "/svc/sensor");
+    kos_cap_t const served = kos_grant_endpoint("/svc/sensor");
     if (hist == nullptr or kos_window_size(history_window) < sizeof(history))
     {
         puts("sensor: no /shm/history window");
-        return;
+        return 0;
     }
 
     ask(static_cast<uint8_t>(self->priority + 1u), self->core_mask,
@@ -100,5 +105,6 @@ extern "C" void restart_sensor_main(kos_self_t const* self)
         history_append(hist, value);
         count++;
     }
+    witness_own_check("sensor", 1u);
     kos_reply(reply, &s, sizeof(s));
 }

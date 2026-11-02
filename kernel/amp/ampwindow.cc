@@ -146,7 +146,7 @@ namespace kickos
                     return nullptr;
                 }
                 Inbound& r = (&g_inbound[0][0][0])[index];
-                if (r.live == 0u or r.gen != token_gen(token))
+                if (r.live == 0u or static_cast<uint16_t>(r.gen) != token_gen(token))
                 {
                     return nullptr;
                 }
@@ -159,7 +159,7 @@ namespace kickos
             {
                 r.live = 0u;
                 r.pending = Inbound::PENDING_NONE;
-                r.gen = static_cast<uint16_t>(r.gen + 1u);
+                r.gen++;
             }
 
             // A record whose answer the reply ring refused. The TOKEN dies as it does in any
@@ -169,7 +169,7 @@ namespace kickos
             {
                 r.pending = state;
                 r.defers = 0u;
-                r.gen = static_cast<uint16_t>(r.gen + 1u);
+                r.gen++;
             }
 
             // One writer per row, so a load and a store rather than an increment
@@ -246,7 +246,7 @@ namespace kickos
                     }
                     ReplyTag const tag = r.tag;
                     count_up(g_counts[me].reply_unsent);
-                    if (send(from, PORT_REPLY, tag, nullptr, 0u) == Sent::OK)
+                    if (send(from, PORT_REPLY, tag, KOS_BADGE_NONE, nullptr, 0u) == Sent::OK)
                     {
                         record_drop(r);
                         continue;
@@ -278,13 +278,13 @@ namespace kickos
             // the life of the image. Past the receiver's pop the call IS a record, whose answer
             // is owed through inbound_reply wherever it is refused.
             bool dispatch_call(uint32_t me, uint32_t from, uint32_t port, ReplyTag const& tag,
-                               uint32_t len, uint32_t slot, Held held)
+                               uint32_t badge, uint32_t len, uint32_t slot, Held held)
             {
                 void const* echo = nullptr;
                 uint32_t answer_len = 0u;
                 if (port_endpoint(port) != EP_BOUND_NONE)
                 {
-                    if (endpoint_far_call_deliver(from, port, tag, len, slot, held))
+                    if (endpoint_far_call_deliver(from, port, tag, badge, len, slot, held))
                     {
                         return true;
                     }
@@ -295,7 +295,7 @@ namespace kickos
                     echo = ring_for(Class::CALL, me, from).slot[slot & RING_MASK].payload;
                     answer_len = len;
                 }
-                (void)send(from, PORT_REPLY, tag, echo, answer_len);
+                (void)send(from, PORT_REPLY, tag, KOS_BADGE_NONE, echo, answer_len);
                 return false;
             }
         }
@@ -407,7 +407,7 @@ namespace kickos
             // The ring is a parameter so the selftest forge can run this arithmetic over a ring
             // no node produces into and no service drains, rather than over a live peer's.
             Sent send_on(Ring& r, uint32_t me, uint32_t to, uint32_t port, ReplyTag const& tag,
-                         void const* payload, uint32_t len)
+                         uint32_t badge, void const* payload, uint32_t len)
             {
                 uint32_t head = r.head.v.load();
                 // FAR: the consumer owns this index. A producer that believed it would compute
@@ -439,6 +439,7 @@ namespace kickos
                 Slot& s = r.slot[head & RING_MASK];
                 s.port.store(port);
                 s.tag = tag;
+                s.badge = badge;
                 s.len.store(len);
                 if (len != 0u)
                 {
@@ -455,8 +456,8 @@ namespace kickos
             }
         }
 
-        Sent send(uint32_t to, uint32_t port, ReplyTag const& tag, void const* payload,
-                  uint32_t len)
+        Sent send(uint32_t to, uint32_t port, ReplyTag const& tag, uint32_t badge,
+                  void const* payload, uint32_t len)
         {
             uint32_t const me = self();
             if (not is_peer(to))
@@ -475,7 +476,8 @@ namespace kickos
                 return Sent::LENGTH;
             }
 
-            return send_on(ring_for(class_of(port), to, me), me, to, port, tag, payload, len);
+            return send_on(ring_for(class_of(port), to, me), me, to, port, tag, badge, payload,
+                           len);
         }
 
         namespace
@@ -756,7 +758,7 @@ namespace kickos
         }
 
         Verdict take_call(uint32_t from, uint32_t* out_len, uint32_t* out_port,
-                          ReplyTag* out_tag, uint32_t* out_slot)
+                          ReplyTag* out_tag, uint32_t* out_badge, uint32_t* out_slot)
         {
             uint32_t const me = self();
             if (not is_peer(from))
@@ -803,6 +805,7 @@ namespace kickos
             *out_len = len;
             *out_port = port;
             *out_tag = s.tag;
+            *out_badge = s.badge;
             *out_slot = at & RING_MASK;
             count_up(g_counts[me].took);
             return Verdict::TOOK;
@@ -828,7 +831,7 @@ namespace kickos
                     {
                         continue;
                     }
-                    if (send(from, PORT_REPLY, r.tag, nullptr, 0u) != Sent::OK)
+                    if (send(from, PORT_REPLY, r.tag, KOS_BADGE_NONE, nullptr, 0u) != Sent::OK)
                     {
                         r.defers = static_cast<uint8_t>(r.defers + 1u);
                         if (r.defers < DEFER_PASSES)
@@ -924,7 +927,8 @@ namespace kickos
                     uint32_t port = PORT_MAX;
                     uint32_t slot = 0;
                     ReplyTag tag = {};
-                    Verdict const v = take_call(from, &len, &port, &tag, &slot);
+                    uint32_t badge = KOS_BADGE_NONE;
+                    Verdict const v = take_call(from, &len, &port, &tag, &badge, &slot);
                     if (v == Verdict::EMPTY or v == Verdict::DEPTH or v == Verdict::RESERVE)
                     {
                         break;
@@ -934,7 +938,7 @@ namespace kickos
                     {
                         continue;
                     }
-                    if (not dispatch_call(me, from, port, tag, len, slot, held))
+                    if (not dispatch_call(me, from, port, tag, badge, len, slot, held))
                     {
                         release_call(from, slot);
                     }
@@ -942,7 +946,7 @@ namespace kickos
             }
         }
 
-        uint32_t inbound_seat(uint32_t from, uint32_t slot, ReplyTag const& tag)
+        uint32_t inbound_seat(uint32_t from, uint32_t slot, ReplyTag const& tag, uint32_t badge)
         {
             uint32_t const me = self();
             if (from >= NODE_MAX)
@@ -955,17 +959,28 @@ namespace kickos
                 return FAR_RECORD_NONE;
             }
             r.tag = tag;
+            r.badge = badge;
             r.from = static_cast<uint8_t>(from);
             r.slot = static_cast<uint8_t>(slot & RING_MASK);
             r.live = 1u;
             // The generation is not touched here: it counts deaths, so a seat inherits the
             // count the last death left, which a holder of the dead record does not carry.
-            return record_token(record_index(me, from, slot), r.gen);
+            return record_token(record_index(me, from, slot), static_cast<uint16_t>(r.gen));
         }
 
         Inbound const* inbound_at(uint32_t token)
         {
             return record_of(token);
+        }
+
+        uint32_t inbound_generation(uint32_t token)
+        {
+            uint32_t const index = token_index(token);
+            if (index >= RECORD_MAX)
+            {
+                return 0;
+            }
+            return (&g_inbound[0][0][0])[index].gen;
         }
 
         void inbound_forget(uint32_t token)
@@ -990,7 +1005,7 @@ namespace kickos
             uint32_t const from = r->from;
             uint32_t const slot = r->slot;
             ReplyTag const tag = r->tag;
-            if (send(from, PORT_REPLY, tag, payload, len) == Sent::OK)
+            if (send(from, PORT_REPLY, tag, KOS_BADGE_NONE, payload, len) == Sent::OK)
             {
                 record_drop(*r);
                 release_call(from, slot);

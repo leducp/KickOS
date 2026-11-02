@@ -2,33 +2,29 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The libc reentrant-state seam. The kernel never names struct _reent and includes no newlib
-// header: the user side STATES where the state lives, in a descriptor of plain pointers and
-// widths.
+// header: the image header (<kickos/sys/image.h>) STATES where libc's own state lives, as plain
+// addresses and a width.
 //
 // The sim's libc is the HOST's and owns its own state, so nothing below is compiled there; do
-// NOT answer that posture with a descriptor of zero slots, whose seat word is an address the
-// kernel would still write through.
+// NOT answer that posture with an empty descriptor, whose seat word is an address the kernel
+// would still write through.
 //
-// At KICKOS_REENT_PER_THREAD 0 libc resolves from ONE word the kernel rewrites at every
-// switch, correct only while one core runs the threads that share it. At 1 libc calls
-// __getreent and the thread pointer answers it: through the first word of the thread's TLS
-// control block under KICKOS_REENT_IN_TCB, as the thread pointer itself otherwise. Written once
-// at thread creation, with the descriptor's `seat` then null.
-//
-// Each thread's lock id (kickos/lock_id.h) is seated beside its state, one pointer-wide word:
-// `self` itself at KICKOS_REENT_PER_THREAD 0, rewritten with `seat` at every switch; the control
-// block's second word under KICKOS_REENT_IN_TCB; else the arch's own cell where `self` is null,
-// or `self`'s offset into each element, which the prime writes after copying only `width` bytes.
+// Each pool thread's state is the first KICKOS_REENT_CARVE bytes of its stack block, below its
+// TLS block (kickos/tls.h). The carve ends in the CELL, two pointer-wide words that end where
+// the TLS block starts: the state's address, then the thread's lock id (kickos/lock_id.h). Both
+// are written once at thread creation. At KICKOS_REENT_PER_THREAD 1 libc calls __getreent,
+// which reads the cell below the block, the thread pointer plus the image's offset in the
+// thread-local segment. At 0 libc reads ONE word per image, `seat`, which the kernel
+// rewrites at every switch, correct only while one core runs the threads that share it; the
+// lock id is then read through that word.
 //
 // The seam is DATA: where a translating backend splits the image every EL0-reachable leaf
 // carries privileged-execute-never, so the kernel may not call app text at all.
 //
 // EVERY WRITE IS A kmemcpy AND NEVER A TYPED STORE. struct _reent is in scope only on the user
-// side, so a kernel store through void** asserts an effective type the object does not have; and
-// on Xtensa the word libc resolves from is a file-scoped static, which LTO may fold against a
-// definition an aliased store never touched.
+// side, so a kernel store through void** asserts an effective type the object does not have.
 //
-// The descriptor is read ONCE at boot into storage of the kernel's own.
+// The header's fields are read in place from each image's published record.
 
 #ifndef KICKOS_REENT_H
 #define KICKOS_REENT_H
@@ -42,43 +38,28 @@ struct arch_aspace;
 
 #if KICKOS_LIBC_REENT
 
-// THE ARRAY BEHIND THE SEAM IS BANKED BY INSTANCE, one bank of KICKOS_THREAD_SLOTS each: a
-// thread slot number is a coordinate inside ONE kernel, so two co-resident kernels resolving
-// the same slot to the same struct _reent would share one errno. reent_seam_read PANICS on a
-// descriptor short of KICKOS_MAX_INSTANCES banks, because the out-of-range fallback below is
-// the process-wide state, which ALIASES rather than refuses.
-
 extern "C"
 {
-    // EVERY MEMBER IS void*/size_t/int SO THE APP CAN INITIALISE IT STATICALLY. A cast here
-    // would make the object dynamically initialised, and a user-side ctor runs from
-    // root_entry, after the kernel has already read this.
-    struct KickosReentSeam
-    {
-        void* slots;   // element 0 of the per-thread-slot array
-        void* shared;  // the process-wide state libc built for itself
-        void* seat;    // address of the word libc resolves its state from
-        void* self;    // the lock-id word, or its place in element 0
-        size_t stride; // one element's width
-        size_t width;  // the struct _reent at the start of each element
-        int count;     // elements in `slots`
-    };
-
-    extern KickosReentSeam const kickos_reent_seam;
-
     // User side, defined only where libc builds per-thread scratch on the heap on first use.
     // The exit stub runs it before the trap because nothing after that can: the kernel reaches
     // neither the heap nor the allocator, and the next prime overwrites the pointers.
     void kickos_reent_release(void);
 }
 
+struct kos_image_header;
+
 namespace kickos
 {
-    // Must precede the first thread_create.
-    void reent_seam_read(void);
+    // Must precede the first thread_create, over image `image`'s published header, each image in
+    // turn. Panics on a state wider than the carve leaves below its cell.
+    void reent_seam_read(size_t image, kos_image_header const& h);
 
-    // The state a pool slot owns, UNPRIMED. A negative index (idle) gets the process-wide state.
-    void* reent_state_for_slot(int slot);
+    // The state idle runs on: image 0's, the image of the task the boot seats it in.
+    void* reent_shared_state(void);
+
+    // Writes the cell of a pool thread whose stack block the kernel reaches at `home`, whose
+    // state is `state` in the thread's own view.
+    void reent_cell_seat(void* home, void* state, uint32_t self);
 
     // SWITCH-IN AND NOWHERE ELSE, with kernel().current already the INCOMING thread: it writes
     // hundreds of bytes into memory that thread owns. `space` is its own, reached through the
@@ -87,16 +68,13 @@ namespace kickos
     // A REFUSED WRITE SLAYS THE INCOMING THREAD AND MUST NOT PANIC: switch_book's claim three
     // statements past the call redirects the resume.
     // On sched::start's path nothing claims a resume, so a kill lands at its next syscall entry.
-    void reent_prime(struct arch_aspace* space, void* state);
+    // The state is primed from image `image`'s, the thread's own.
+    void reent_prime(struct arch_aspace* space, size_t image, void* state);
 
-#if KICKOS_REENT_IN_TCB
-    // Make `state` the one libc resolves from for the thread whose TLS block starts at `tls`.
-    // Only for a block thread_create carved: idle's thread pointer lands in a neighbour's.
-    void reent_seat_tcb(void* tls, void* state, uint32_t self);
-#endif
 #if not KICKOS_REENT_PER_THREAD
-    // Runs on EVERY switch.
-    void reent_seat(struct arch_aspace* space, void* state, uint32_t self);
+    // Runs on EVERY switch, into `seat`, the word the incoming thread's task caches for its
+    // image (Task::reent_seat).
+    void reent_seat(void* seat, void* state);
 #endif
 }
 

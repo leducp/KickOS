@@ -3,7 +3,7 @@
 //
 // newlib's fcntl for the console's fds. NOT compiled for the sim, where host glibc provides it.
 
-#include <kickos/sys.h>
+#include <kickos/sys/emit.h>
 
 #include <errno.h>
 #include <fcntl.h>
@@ -11,18 +11,8 @@
 
 namespace
 {
-    int refused(int rc)
-    {
-        errno = EINVAL;
-        if (rc == -KOS_ENOSYS)
-        {
-            errno = ENOSYS;
-        }
-        return -1;
-    }
-
-    // fds 0 to 2 share one description, the console, whose O_NONBLOCK is the calling task's
-    // (kos_task_nonblock).
+    // fds 0 to 2 share one description, the console, whose O_NONBLOCK is this task's
+    // (kickos::stdout_nonblock).
     int fd_fcntl(int fd, int cmd, va_list ap)
     {
         if (fd < 0 or fd > 2)
@@ -34,17 +24,12 @@ namespace
         {
             case F_GETFL:
             {
-                int const nonblock = kos_task_nonblock(KOS_NONBLOCK_GET);
-                if (nonblock < 0)
-                {
-                    return refused(nonblock);
-                }
                 int access = O_WRONLY;
                 if (fd == 0)
                 {
                     access = O_RDONLY;
                 }
-                if (nonblock > 0)
+                if (kickos::stdout_nonblock() != 0u)
                 {
                     return access | O_NONBLOCK;
                 }
@@ -52,16 +37,12 @@ namespace
             }
             case F_SETFL:
             {
-                int op = KOS_NONBLOCK_CLEAR;
+                uint32_t flag = 0u;
                 if ((va_arg(ap, int) & O_NONBLOCK) != 0)
                 {
-                    op = KOS_NONBLOCK_SET;
+                    flag = 1u;
                 }
-                int const rc = kos_task_nonblock(op);
-                if (rc < 0)
-                {
-                    return refused(rc);
-                }
+                kickos::stdout_nonblock() = flag;
                 return 0;
             }
             case F_GETFD:

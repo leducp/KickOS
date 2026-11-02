@@ -9,6 +9,7 @@
 #include <kickos/debug.h> // KICKOS_DEBUG_ASSERT
 #include <kickos/domain.h>
 #include <kickos/grant.h>
+#include <kickos/image.h>
 #include <kickos/instance.h>
 #include <kickos/irqlock.h>
 #include <kickos/kruntime.h>
@@ -48,24 +49,19 @@ namespace kickos
                       "the canary and the high-water scan would run off the block");
         constexpr size_t KSTACK_WORDS = KICKOS_KERNEL_STACK_SIZE / sizeof(uint32_t);
         static_assert(KSTACK_WORDS >= 2, "KICKOS_KERNEL_STACK_SIZE holds only the canary");
-        static_assert(KICKOS_KERNEL_STACK_SIZE % KICKOS_STACK_ALIGN == 0,
-                      "KICKOS_KERNEL_STACK_SIZE must be a multiple of KICKOS_STACK_ALIGN, or "
-                      "slot i's stack top is misaligned for every odd i");
 
-        // Kernel .bss, below __kickos_ram_start, so Rule 7 keeps every RAM grant clear of it
-        // and the arch's stack alignment is all these need. Per instance, as struct Kernel is:
+        // The pools' storage, kernel .bss below __kickos_ram_start, so Rule 7 keeps every RAM
+        // grant clear of it and the arch's stack alignment is all these need. Per instance:
         // the multi-instance sim hosts one kernel per emulated MCU.
-        struct KStackBlock
+        unsigned char* kstack_block(int index)
         {
-            alignas(KICKOS_STACK_ALIGN)
-                unsigned char slot[KICKOS_THREAD_SLOTS][KICKOS_KERNEL_STACK_SIZE];
-        };
-        constinit ::kickos::InstanceLocal<KStackBlock> g_kstacks = {};
+            return pool_local(kickos_kernel_pools.kstacks) + static_cast<size_t>(index) * KICKOS_KERNEL_STACK_SIZE;
+        }
 
         uint32_t* kstack_words(int index)
         {
-            KICKOS_ASSERT(index >= 0 and index < KICKOS_THREAD_SLOTS);
-            return reinterpret_cast<uint32_t*>(g_kstacks.get().slot[index]);
+            KICKOS_ASSERT(index >= 0 and index < kickos_kernel_pools.thread_slots);
+            return reinterpret_cast<uint32_t*>(kstack_block(index));
         }
 #endif
     }
@@ -94,12 +90,11 @@ namespace kickos
     {
         // Never through kstack_words: that asserts, an assert reaches kpanic, and kpanic
         // reads this. An out-of-range slot answers 0 rather than recursing.
-        if (index < 0 or index >= KICKOS_THREAD_SLOTS)
+        if (index < 0 or index >= kickos_kernel_pools.thread_slots)
         {
             return 0;
         }
-        uint32_t const* const w =
-            reinterpret_cast<uint32_t const*>(g_kstacks.get().slot[index]);
+        uint32_t const* const w = reinterpret_cast<uint32_t const*>(kstack_block(index));
         size_t i = 1;
         while (i < KSTACK_WORDS and w[i] == KSTACK_FILL)
         {
@@ -111,19 +106,19 @@ namespace kickos
 
     // One holder per device window, matched on RANGES and not on region slots, so equal,
     // containing and straddling requests all refuse while an adjacent window stays
-    // admissible. A holder counts until its exit drops its device regions, before the
-    // teardown can wake a supervisor into a respawn. Check and commit both sit inside
-    // thread_create_call's function-scope IrqLock. A null `outside` asks about every holder: a
-    // thread whose task is gone has already dropped its device regions.
+    // admissible. A holder counts from its spawn, a deferred start included, until its exit
+    // drops its device regions, before the teardown can wake a supervisor into a respawn. Check
+    // and commit both sit inside thread_create_call's function-scope IrqLock. A null `outside`
+    // asks about every holder: a thread whose task is gone has already dropped its device
+    // regions.
     bool dev_window_held_outside(uintptr_t base, size_t size, Task const* outside)
     {
         uintptr_t const last = base + size - 1u;
         Kernel& k = kernel();
         for (int i = 0; i < k.threads.next; i++)
         {
-            Thread const& t = k.threads.slots[i];
-            if (t.state == ThreadState::EXITED or t.state == ThreadState::INACTIVE
-                or t.task == outside)
+            Thread const& t = k.threads.slots()[i];
+            if (t.state == ThreadState::EXITED or t.task == outside)
             {
                 continue;
             }
@@ -157,9 +152,8 @@ namespace kickos
         Kernel& k = kernel();
         // A task holds its data region with no member yet, so the held domains are asked too.
         // The kernel's own spans the arena and maps nothing for a task.
-        for (int d = 0; d < KICKOS_MAX_DOMAINS; d++)
+        for (Domain const& dom : k.domains())
         {
-            Domain const& dom = k.domains[d];
             if (dom.privileged or (dom.refcount == 0 and not dom.immortal))
             {
                 continue;
@@ -176,9 +170,8 @@ namespace kickos
         }
         for (int i = 0; i < k.threads.next; i++)
         {
-            Thread const& t = k.threads.slots[i];
-            if (&t == except or t.state == ThreadState::EXITED
-                or t.state == ThreadState::INACTIVE)
+            Thread const& t = k.threads.slots()[i];
+            if (&t == except or t.state == ThreadState::EXITED)
             {
                 continue;
             }
@@ -219,8 +212,8 @@ namespace kickos
         Kernel& k = kernel();
         for (int i = 0; i < k.threads.next; i++)
         {
-            Thread const& t = k.threads.slots[i];
-            if (t.state == ThreadState::EXITED or t.state == ThreadState::INACTIVE)
+            Thread const& t = k.threads.slots()[i];
+            if (t.state == ThreadState::EXITED)
             {
                 continue;
             }
@@ -301,7 +294,7 @@ namespace kickos
                 uint32_t rights = ARCH_MPU_R | ARCH_MPU_W | ARCH_MPU_DEV;
                 if (w.kind == KOS_WINDOW_MEMORY)
                 {
-                    size = arch_ram_region_size(w.size);
+                    size = ram_grant_extent(w.size);
                     rights = window_memory_attr(w.flags);
                 }
                 fitted = set.add_window(w.base, size, rights, static_cast<uint8_t>(i), w.flags)
@@ -339,11 +332,11 @@ namespace kickos
         {
             return -KOS_ENOTSUP;
         }
-        // Admitted at the extent the descriptor commits: rounded up after admission, it could
-        // cover a neighbour the request did not. PMSAv7's MPU_RBAR masks the base down to the
-        // region size, so an unaligned base would start the window below what was named.
-        size_t const rsz = arch_ram_region_size(size);
-        if (not arch_ram_region_admissible(base, rsz))
+        // Admitted at the extent the grant commits: rounded up after admission, it could cover
+        // a neighbour the request did not. PMSAv7's MPU_RBAR masks the base down to the region
+        // size, so an unaligned base would start the window below what was named.
+        size_t const rsz = ram_grant_extent(size);
+        if (not ram_grant_shaped(base, rsz))
         {
             return -KOS_EINVAL;
         }
@@ -373,7 +366,7 @@ namespace kickos
         {
             return arc;
         }
-        size_t const rsz = arch_ram_region_size(size);
+        size_t const rsz = ram_grant_extent(size);
 #if KICKOS_MEMORY_ENFORCED and KICKOS_HAVE_MPU
         if (not c->mpu.retyping_expressible(base, rsz, attr))
         {
@@ -433,13 +426,14 @@ namespace kickos
     //
     // Portable code may rely only on the floor, that a thread-scoped grant reaches its HOLDER; a
     // region backend also makes the stack private, and a translating backend maps it task-wide.
-    static bool thread_regions_assemble(MpuSet& set, Domain const* dom, ThreadAttr const& attr,
-                                        void* stack_base, size_t stack_size)
+    static bool thread_regions_assemble(MpuSet& set, Domain const* dom, Task const* task,
+                                        ThreadAttr const& attr, void* stack_base,
+                                        size_t stack_size)
     {
         set.clear();
         if (not attr.privileged)
         {
-            set.append_statics();
+            set.append_statics(task_image(task));
         }
         // The whole set MUST fit: a truncated set that drops the thread's own stack would fault
         // it on its own memory.
@@ -476,7 +470,7 @@ namespace kickos
         {
             caller |= DOM_CALLER_PRIVILEGED;
         }
-        return task_for(caller, nullptr, 0, nullptr, &derr);
+        return task_for(caller, &derr);
     }
 
 #if KICKOS_MEMORY_ENFORCED and KICKOS_HAVE_MPU and not KICKOS_HAVE_ASPACE
@@ -484,7 +478,8 @@ namespace kickos
                                        void* stack_base, size_t stack_size)
     {
         MpuSet& set = kernel().spawn_regions;
-        bool const fitted = thread_regions_assemble(set, dom, attr, stack_base, stack_size);
+        bool const fitted
+            = thread_regions_assemble(set, dom, attr.task, attr, stack_base, stack_size);
         KICKOS_ASSERT(fitted);
         return &set;
     }
@@ -505,8 +500,13 @@ namespace kickos
     }
 #endif
 
-    // Code, static data, the task's data region and the stack come first.
+    // Code (unless the unit holds it apart), static data, the task's data region and the stack
+    // come first.
+#ifdef ARCH_MPU_CODE_WINDOW_FIXED
+    static_assert(KICKOS_MAX_THREAD_WINDOWS + 3 <= KICKOS_MPU_MAX_REGIONS,
+#else
     static_assert(KICKOS_MAX_THREAD_WINDOWS + 4 <= KICKOS_MPU_MAX_REGIONS,
+#endif
                   "a thread's full window list would not fit its region set");
 
     void thread_create(Thread* t, void (*entry)(void*), void* arg,
@@ -522,19 +522,18 @@ namespace kickos
 #if KICKOS_PRESYNC
         presync_fresh(t);
 #endif
-        // Must follow the kmemset, which would otherwise zero the chunk directory AND the
+        // Must follow the kmemset, which would otherwise zero the directory pointer AND the
         // free-list head the caller already reserved and threaded.
-        t->caps = attr.cap_run;
+        t->caps = attr.cap_dir;
         t->cap_free_head = attr.cap_free_head;
-#if KCAP_RUN_CHUNKS > 1
         t->cap_width = attr.cap_width;
-#endif
         t->spawner_tag = attr.spawner_tag;
         t->id = assign_thread_id();
         int const pslot = kernel().threads.index_of(t);
         if (pslot >= 0)
         {
             t->lock_id = kernel().threads.lock_id_for(pslot);
+            kernel().threads.child_link(attr.spawner_tag, pslot);
         }
         // attr.name does not outlive this call: copy, never alias.
         size_t ni = 0;
@@ -555,15 +554,16 @@ namespace kickos
         t->stack_base = stack_base;
         t->stack_size = stack_size;
         t->kstack_owned = attr.kstack_owned;
-        t->task_entry = attr.task_entry;
+        t->task_role = attr.task_role;
 
         // A reference on the task is held for the thread's lifetime and released at exit
         // (sched::exit_current).
-        t->task = attr.task;
-        if (t->task == nullptr)
+        Task* tk = attr.task;
+        if (tk == nullptr)
         {
-            t->task = thread_task_resolve(attr);
+            tk = thread_task_resolve(attr);
         }
+        task_member_join(tk, t, pslot);
         task_ref(t->task);
 #if KICKOS_KERNEL_CORES > 1
         // AFTER the task is resolved, which is what the default set is read from. idle and
@@ -592,7 +592,7 @@ namespace kickos
         KICKOS_ASSERT(attr.regions != nullptr);
         t->mpu = *attr.regions;
 #else
-        bool const fitted = thread_regions_assemble(t->mpu, thread_domain(t), attr,
+        bool const fitted = thread_regions_assemble(t->mpu, thread_domain(t), t->task, attr,
                                                     stack_base, stack_size);
         KICKOS_ASSERT(fitted);
 #endif
@@ -617,17 +617,17 @@ namespace kickos
         }
 #endif
 
-        // The TLS carve comes off the low end of the thread's own stack, inside the region
-        // added above, and raising stack_lo past it keeps the thread's SP out of its own
-        // thread_local storage.
-        void* const tls_home = tls_carve(t, stack_base, stack_size);
+        // The carve comes off the low end of the thread's own stack, inside the region added
+        // above, and raising stack_lo past it keeps the thread's SP out of its own libc state
+        // and thread_local storage.
+        void* const carve_home = tls_carve(t, stack_base, stack_size);
         void* ustack = stack_base;
         size_t usize = stack_size;
-        if (tls_home != nullptr)
+        if (carve_home != nullptr)
         {
-            size_t const tls = tls_block_size();
-            ustack = static_cast<unsigned char*>(stack_base) + tls;
-            usize = stack_size - tls;
+            size_t const carve = tls_carve_size(t);
+            ustack = static_cast<unsigned char*>(stack_base) + carve;
+            usize = stack_size - carve;
         }
 #if KICKOS_KERNEL_STACKS
         // Seated before arch_context_init, which reads it: a backend may build the thread's
@@ -656,14 +656,26 @@ namespace kickos
 #endif
         void (*first)(void*) = entry;
 #if KICKOS_HAVE_ASPACE
-        // Every unprivileged thread, root's included, enters through the image's startup,
+        // Every unprivileged thread, root's included, enters through its image's startup,
         // which runs once per space.
         if (not attr.privileged)
         {
-            first = aspace_task_start();
+            first = aspace_task_start(task_image(t->task));
         }
 #endif
-        arch_context_init(&t->ctx, first, arg, ustack, usize, attr.privileged);
+#if KICKOS_INIT_IMAGE
+        // An unprivileged thread returns from its entry into its own image's exit path.
+        image_thread_return_select(task_image(t->task));
+#endif
+        arch_context_init(&t->ctx, first, arg, ustack, usize - attr.arg_bytes, attr.privileged);
+#if KICKOS_TLS and not KICKOS_TLS_FROM_SP
+        // The TLS block sits directly below the stack, its pointer biased by the image's offset.
+        {
+            size_t const image = task_image(t->task);
+            uintptr_t const block = reinterpret_cast<uintptr_t>(ustack) - tls_block_size(image);
+            arch_context_tls(&t->ctx, tls_thread_pointer(image, block));
+        }
+#endif
 #if KICKOS_HAVE_ASPACE
         if (not attr.privileged)
         {
@@ -671,19 +683,16 @@ namespace kickos
         }
 #endif
 #if KICKOS_LIBC_REENT
-        // Selection only: priming happens at this thread's first switch-in, and the shared
-        // state is never primed, being what every prime copies from.
-        int const rslot = kernel().threads.index_of(t);
-        t->reent = reent_state_for_slot(rslot);
-        t->reent_fresh = rslot >= 0;
-#if KICKOS_REENT_IN_TCB
-        if (tls_home != nullptr)
+        // Selection only: priming happens at this thread's first switch-in. Idle runs on the
+        // shared state, which is what every prime copies from.
+        t->reent = reent_shared_state();
+        t->reent_fresh = false;
+        if (carve_home != nullptr and kernel().threads.index_of(t) >= 0)
         {
-            reent_seat_tcb(tls_home, t->reent, t->lock_id);
+            t->reent = stack_base;
+            t->reent_fresh = true;
+            reent_cell_seat(carve_home, stack_base, t->lock_id);
         }
-#elif KICKOS_REENT_PER_THREAD
-        arch_context_seat_reent(&t->ctx, t->reent, t->lock_id);
-#endif
 #endif
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
         arch_trace_stamp_id(&t->ctx, t->id);

@@ -11,7 +11,8 @@
 //     next->ctx, so a rebuild of prev there is overwritten with no symptom.
 //   * `dying` declines it, so a victim preempted mid-cap_teardown is not restarted from the
 //     top of a sweep over a table that is already partly empty.
-//   * the rebuild is idempotent: applied again before the stub runs, it changes nothing.
+//   * the rebuild sets `dying`: switched in again before the stub runs, the victim resumes
+//     the frame it was given, and no pass reads its claim as still outstanding.
 //
 // What this gate reads is WHICH context was named and WHEN. That the rebuilt frame lands on
 // the stub, privileged, is qemu's and qemu-riscv's to witness, per backend.
@@ -209,10 +210,10 @@ namespace kickos
                 << "`dying` is the window's existing marker and no fourth flag is needed";
         }
 
-        // The other half of the guard: it must be `dying` that declines, not the FIRST
-        // rebuild having happened. Before the stub makes progress the rebuild is idempotent
-        // in its values, so repeating it is correct.
-        TEST_F(SlayHook, a_rebuild_repeats_while_the_stub_has_not_started)
+        // The rebuild itself sets `dying`. A pass taken before the stub's first instruction
+        // that still read the claim as outstanding would decline the victim's live frame and
+        // owe itself another pass, and two victims on one core then swap it forever.
+        TEST_F(SlayHook, a_rebuilt_victim_switched_in_again_is_not_rebuilt)
         {
             Thread* const r = running_thread();
             Thread* const v = victim_at(PRIO_HIGH);
@@ -222,17 +223,17 @@ namespace kickos
                 IrqLock lock;
                 sched::reschedule(nullptr, lock);       // switch to the victim, rebuild #1
             }
+            EXPECT_TRUE(v->dying) << "the claim fired and the victim does not say so";
             kernel().current(kickos_kernel_core()) = r;      // the fixture never switches, so put the runner back
             r->state.to<ThreadState::RUNNING>();
             v->state.to<ThreadState::READY>();
             {
                 IrqLock lock;
-                sched::reschedule(nullptr, lock);       // pick the victim again, rebuild #2
+                sched::reschedule(nullptr, lock);       // pick the victim again
             }
 
-            EXPECT_EQ(g_redirects, 2u)
-                << "an absolute entry and an absolute stack top make a second rebuild a "
-                   "no-op in its values, so nothing has to remember the first";
+            EXPECT_EQ(kernel().current(kickos_kernel_core()), v) << "fixture: it was switched in";
+            EXPECT_EQ(g_redirects, 1u) << "a claim that has fired was taken again";
         }
     }
 }

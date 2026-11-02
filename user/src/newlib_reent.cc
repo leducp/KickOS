@@ -1,106 +1,95 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// One struct _reent per thread slot, where libc finds the running thread's, the reader of the
-// running thread's seated lock id, the descriptor that tells the kernel where they are, and the
-// exit-time release of the scratch a _REENT_SMALL libc allocates into a slot. The user side of
-// kernel/include/kickos/reent.h; compiled on every board but the sim, whose libc is the host's.
+// Where libc finds the running thread's struct _reent, the reader of the running thread's lock
+// id, and the exit-time release of the scratch a _REENT_SMALL libc allocates into a thread's
+// state. The user side of kernel/include/kickos/reent.h; compiled on every board but the sim,
+// whose libc is the host's.
 //
-// Newlib reaches its reentrant state as _REENT: __getreent() on lx6, armv8a and rv64imac,
-// and _impure_ptr on the single-core Cortex-M, RV32 and RX targets. Every cross target links
-// the KickOS toolchain's own newlib; errno is a member of that state.
+// Each thread's state is the base of its own stack block, and the cell that ends the carve
+// names it. Newlib reaches the state as _REENT: __getreent() on lx6, armv8a, rv64imac and
+// x86_64, and _impure_ptr on the single-core Cortex-M, RV32 and RX targets. Every cross target
+// links the KickOS toolchain's own newlib; errno is a member of that state.
 
-#include <kickos/config/system.h> // KICKOS_THREAD_SLOTS, KICKOS_MAX_INSTANCES
+#include <kickos/config/system.h> // KICKOS_STACK_ALIGN
 #include <kickos/reent.h>
 #include <kickos/sys.h>
 
 #include <malloc.h>
 #include <sys/reent.h>
 
-// UNPRIVILEGED APP MEMORY, granted R/W to every unprivileged thread, so a peer can scribble
-// another thread's errno: naming, not isolation.
-//
-// ONE BANK OF KICKOS_THREAD_SLOTS PER INSTANCE: the kernel indexes this array as
-// instance * KICKOS_THREAD_SLOTS + slot, and the seam's count below must match this extent
-// or a short bank aliases silently onto the process-wide state.
-#if KICKOS_REENT_PER_THREAD and not KICKOS_REENT_IN_TCB and not defined(__x86_64__)
-// The thread pointer names the element: the lock id rides after the state.
-struct ReentSlot
-{
-    struct _reent r;
-    uintptr_t self;
-};
-static ReentSlot s_reent[KICKOS_MAX_INSTANCES * KICKOS_THREAD_SLOTS];
-#define KICKOS_REENT_SELF (&s_reent[0].self)
-#else
-static struct _reent s_reent[KICKOS_MAX_INSTANCES * KICKOS_THREAD_SLOTS];
-#if not KICKOS_REENT_PER_THREAD
-static uintptr_t s_self;
-#define KICKOS_REENT_SELF (&s_self)
-#else
-#define KICKOS_REENT_SELF nullptr
-#endif
+#if KICKOS_REENT_PER_THREAD and not defined(__x86_64__)
+// This image's offset in the link's one thread-local segment: the thread pointer sits that far
+// below the cell (<kickos/sys/image.h>).
+extern "C" char const __kickos_image_tls_offset[];
 #endif
 
+namespace
+{
+    // The carve's last two words, ending where the thread's TLS block starts. The kernel writes
+    // both at thread creation, in this order.
+    struct ReentCell
+    {
+        struct _reent* state;
+        uintptr_t self;
+    };
+
+    static_assert(KICKOS_REENT_CARVE
+                      == ((sizeof(struct _reent) + sizeof(ReentCell) + (KICKOS_STACK_ALIGN - 1u))
+                          & ~static_cast<size_t>(KICKOS_STACK_ALIGN - 1u)),
+                  "KICKOS_REENT_CARVE in arch/Kconfig is not this newlib's struct _reent plus "
+                  "the cell, rounded to the stack alignment");
+
+#if not defined(__x86_64__)
+    ReentCell const* running_cell()
+    {
+#if KICKOS_REENT_PER_THREAD
+        unsigned char const* const tp
+            = static_cast<unsigned char const*>(__builtin_thread_pointer());
+        return reinterpret_cast<ReentCell const*>(
+                   tp + reinterpret_cast<uintptr_t>(__kickos_image_tls_offset))
+               - 1;
+#else
+        unsigned char const* const state = reinterpret_cast<unsigned char const*>(_impure_ptr);
+        return reinterpret_cast<ReentCell const*>(state + KICKOS_REENT_CARVE) - 1;
+#endif
+    }
+#endif
+}
+
+// %fs:0 holds no self pointer, so x86_64 reads the cell at its negative offsets from the FS base.
+#if defined(__x86_64__)
+extern "C" struct _reent* __getreent(void)
+{
+    struct _reent* state;
+    __asm__("movq %%fs:-16, %0" : "=r"(state));
+    return state;
+}
+
+extern "C" uint32_t kickos_self_lock_id(void)
+{
+    uintptr_t self;
+    __asm__("movq %%fs:-8, %0" : "=r"(self));
+    return static_cast<uint32_t>(self);
+}
+#else
 // Every libc that asks __getreent ships none of its own (esp-elf's is a weak NULL), so this is
 // what makes stdio work at all.
-#if KICKOS_REENT_IN_TCB
-// The first word of the running thread's TLS control block.
+#if KICKOS_REENT_PER_THREAD
 extern "C" struct _reent* __getreent(void)
 {
-    return *static_cast<struct _reent* const*>(__builtin_thread_pointer());
-}
-#elif KICKOS_REENT_PER_THREAD
-// The thread pointer itself, which the kernel resumes every thread with.
-extern "C" struct _reent* __getreent(void)
-{
-    return static_cast<struct _reent*>(__builtin_thread_pointer());
-}
-#elif defined(__XTENSA__)
-static struct _reent* s_current = _GLOBAL_REENT;
-
-extern "C" struct _reent* __getreent(void)
-{
-    return s_current;
+    return running_cell()->state;
 }
 #endif
 
 extern "C" uint32_t kickos_self_lock_id(void)
 {
-#if KICKOS_REENT_IN_TCB
-    return static_cast<uint32_t>(static_cast<uintptr_t const*>(__builtin_thread_pointer())[1]);
-#elif KICKOS_REENT_PER_THREAD and defined(__x86_64__)
-    uintptr_t self;
-    __asm__("movq %%fs:8, %0" : "=r"(self));
-    return static_cast<uint32_t>(self);
-#elif KICKOS_REENT_PER_THREAD
-    return static_cast<uint32_t>(static_cast<ReentSlot const*>(__builtin_thread_pointer())->self);
-#else
-    return static_cast<uint32_t>(__atomic_load_n(&s_self, __ATOMIC_RELAXED));
-#endif
+    return static_cast<uint32_t>(running_cell()->self);
 }
+#endif
 
 extern "C"
 {
-
-// NO CAST IN ANY INITIALISER. Every member takes the implicit conversion to void*, so this
-// is statically initialised; a cast would sink it into a ctor, and this file's ctors run
-// from root_entry, long after the kernel has read the descriptor.
-KickosReentSeam const kickos_reent_seam = {
-    s_reent,
-    _GLOBAL_REENT,
-#if KICKOS_REENT_PER_THREAD
-    nullptr,
-#elif defined(__XTENSA__)
-    &s_current,
-#else
-    &_impure_ptr,
-#endif
-    KICKOS_REENT_SELF,
-    sizeof(s_reent[0]),
-    sizeof(struct _reent),
-    KICKOS_MAX_INSTANCES * KICKOS_THREAD_SLOTS,
-};
 
 #ifdef _REENT_SMALL
 // Not _reclaim_reent: it skips the state _impure_ptr names, which on the static-reent targets

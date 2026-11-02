@@ -134,7 +134,7 @@ namespace kickos
             ASSERT_NE(group, nullptr);
             Thread* const dying = member_of(SLOT_DYING, PRIO_MID, group);
             own_stack(dying);
-            attach_caps(dying, KICKOS_CAP_CHILD_WIDTH);
+            attach_caps(dying, KICKOS_SEAM_CAP_WIDTH);
             ASSERT_EQ(task_member_count(group), 1);
 
             run_as(dying);

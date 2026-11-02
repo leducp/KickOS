@@ -101,11 +101,11 @@ namespace kickos
         }
 
         // No two memory types share a byte, so any region meeting the word decides its type.
-        bool word_region_typed(Thread const* t, uintptr_t va)
+        bool word_region_typed(Thread const* t, uintptr_t va, uint32_t types)
         {
             for (arch_mpu_region const& r : t->mpu)
             {
-                if ((r.attr & (ARCH_MPU_NOCACHE | ARCH_MPU_DEV)) != 0 and r.size != 0
+                if ((r.attr & types) != 0 and r.size != 0
                     and va <= r.base + (r.size - 1u) and r.base <= va + (sizeof(uint32_t) - 1u))
                 {
                     return true;
@@ -117,11 +117,16 @@ namespace kickos
         int word_key(Thread const* c, uintptr_t va, arch_phys_addr_t* key, UserOwner* owner,
                      uint32_t** word)
         {
+            // Ahead of the write check, which a device region never answers.
+            if (word_region_typed(c, va, ARCH_MPU_DEV))
+            {
+                return -KOS_EINVAL;
+            }
             if (not word_writable(c, va))
             {
                 return -KOS_EFAULT;
             }
-            if (word_region_typed(c, va))
+            if (word_region_typed(c, va, ARCH_MPU_NOCACHE))
             {
                 return -KOS_EINVAL;
             }

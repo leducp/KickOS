@@ -6,17 +6,25 @@
 # QEMU.
 #
 #   check_libcrace.sh <libcrace image> [<runs the dead malloc holder arms, default 1>]
+#                     [<one task>] [<unbuffered stdout>]
 #   KOS_CAPTURE=<log> check_libcrace.sh <board-build> <kickos-source> <cmake>
 #
 # Every worker line is one known text: `libcrace w<w> i<i> ` and forty copies of one letter,
 # 'a' + (7w + i) mod 26. A line reaches the wire whole and exactly once, and every worker ends
-# reporting no block of its own torn. Before the workers start: a thread killed while it waits
+# reporting no block of its own torn and a run that overlapped every other worker of its task;
+# every worker says it began before any worker, of either task, is done.
+# Before the workers start: a thread killed while it waits
 # for the malloc lock ends alone, its task going on, and so does one holding the libc lock, which
 # it hands over; a killed waiter whose lock was freed under it asks again at the kernel and ends
 # there; a holder killed while it runs releases the malloc lock, and its taker's task lives; getenv
 # with a kill pending takes the free libc lock with no kernel entry; a malloc lock taken from a
 # holder that died holding it ends the taker's task, whether the taker waited at the death or
-# came after it; and a printf completes while another thread holds the malloc lock.
+# came after it; a printf completes while another thread holds the malloc lock; and main's heap
+# runs out at the end of its window.
+#
+# On the microbit stdout is unbuffered, so the two tasks' lines meet on the console a byte at a
+# time. There the lines are not judged whole: every worker still reports no block of its own
+# torn and an overlapped run, and each reports. A report is one write, so it reaches the wire whole and ends its line.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
@@ -24,16 +32,25 @@ set -u
 : "${QEMU_TIMEOUT:=240}"
 
 dead=1
+one_task=0
+unbuffered=0
 if judging_capture; then
     dead=0
     build="${1:?usage: KOS_CAPTURE=<log> check_libcrace.sh <board-build> <kickos-source> <cmake>}"
     if grep -q '^KICKOS_LIBCRACE_DEAD_ARMS:INTERNAL=1$' "$build/CMakeCache.txt" 2>/dev/null; then
         dead=1
     fi
+    one_task="$(sed -n 's/^KICKOS_LIBCRACE_ONE_TASK:INTERNAL=\([0-9]\)$/\1/p' "$build/CMakeCache.txt" 2>/dev/null)"
+    one_task="${one_task:-0}"
+    if grep -q '^KICKOS_LIBCRACE_UNBUFFERED:INTERNAL=1$' "$build/CMakeCache.txt" 2>/dev/null; then
+        unbuffered=1
+    fi
     judge_capture libcrace
 else
-    run_image "${1:?usage: check_libcrace.sh <libcrace.elf> [<dead arms>]}" > /dev/null
+    run_image "${1:?usage: check_libcrace.sh <libcrace.elf> [<dead arms>] [<one task>]}" > /dev/null
     dead="${2:-1}"
+    one_task="${3:-0}"
+    unbuffered="${4:-0}"
 fi
 
 assert_no_panic "panic while the workers raced"
@@ -50,7 +67,12 @@ fi
 if ! has_f "libcrace: a killed malloc waiter asked again at the kernel and ended there"; then
     cfail malloc-reask "a killed malloc waiter took a lock freed under it without a kernel entry"
 fi
-if ! has_f "libcrace: a holder killed while running released malloc, and its taker's task lived"
+if [ "$one_task" = 1 ]; then
+    if ! has_f "libcrace: skip - a holder killed while running released malloc, and its taker's task "\
+"lived: this board holds one task"; then
+        cfail malloc-release "the arm that needs a peer task did not skip by name on a board that holds one"
+    fi
+elif ! has_f "libcrace: a holder killed while running released malloc, and its taker's task lived"
 then
     cfail malloc-release "a holder killed while running died holding malloc and ended its taker's task"
 fi
@@ -72,6 +94,9 @@ fi
 if ! has_f "libcrace: a printf completed while malloc was held"; then
     cfail malloc-wait "a printf waited behind another thread's malloc lock, or never ran beside it"
 fi
+if ! has_f "libcrace: main's heap ran out at its end"; then
+    cfail heap-end "main's heap ran out short of the end of its window"
+fi
 verdict="$(printf '%s\n' "$OUT" | awk -v shape="$shape" '
     function found(what) { out = what; exit }
     BEGIN { split(shape, s, " "); workers = s[1]; rounds = s[2] }
@@ -84,9 +109,13 @@ verdict="$(printf '%s\n' "$OUT" | awk -v shape="$shape" '
             if (seen[w, i]++) { found("duplicated " $0) }
             next
         }
-        if (match($0, /^libcrace w[0-9]+ done torn=[0-9]+$/)) {
+        if (match($0, /^libcrace w[0-9]+ began$/)) {
+            next
+        }
+        if (match($0, /^libcrace w[0-9]+ done torn=[0-9]+ raced=[01]$/)) {
             w = substr($2, 2) + 0
             if ($4 != "torn=0") { found("heap worker " w " found " substr($4, 6) " block(s) torn") }
+            if ($5 != "raced=1") { found("raced worker " w " ran no block beside every other racer of its task") }
             done[w] = 1
             next
         }
@@ -102,6 +131,24 @@ verdict="$(printf '%s\n' "$OUT" | awk -v shape="$shape" '
         }
         print "whole"
     }')"
+if [ "$unbuffered" = 1 ]; then
+    workers="${shape%% *}"
+    if printf '%s\n' "$OUT" | grep -q 'done torn=[1-9]'; then
+        cfail heap "a heap worker found a block of its own torn"
+    fi
+    # The other task's bytes can come ahead of a report on its line.
+    w=0
+    while [ "$w" -lt "$workers" ]; do
+        if ! has_e "libcrace w$w done torn=0 raced=[01]\$"; then
+            cfail lost "worker $w never reported its blocks whole"
+        fi
+        if ! has_e "libcrace w$w done torn=0 raced=1\$"; then
+            cfail raced "worker $w ran no block beside every other racer of its task"
+        fi
+        w=$((w + 1))
+    done
+    verdict=whole
+fi
 case "$verdict" in
     whole)
         ;;
@@ -114,14 +161,50 @@ case "$verdict" in
     heap\ *)
         cfail heap "${verdict#heap }"
         ;;
+    raced\ *)
+        cfail raced "${verdict#raced }"
+        ;;
     *)
         cfail lost "${verdict#lost }"
         ;;
 esac
+# Each began and done line is one write, whole even where the other task's bytes come ahead of it
+# on its line, and the wire carries them in the order they were written: a worker's began coming
+# after another's done is a run that overlapped nothing of that worker's.
+apart="$(printf '%s\n' "$OUT" | awk -v workers="${shape%% *}" '
+    match($0, /libcrace w[0-9]+ began$/) {
+        w = substr($0, RSTART + 10) + 0
+        began[w] = NR
+    }
+    match($0, /libcrace w[0-9]+ done torn=/) {
+        w = substr($0, RSTART + 10) + 0
+        done[w] = NR
+    }
+    END {
+        for (a = 0; a < workers; a++) {
+            if (!(a in began)) { print "worker " a " never said it began"; exit }
+            for (b = 0; b < workers; b++) {
+                if (a != b && (b in done) && began[a] > done[b]) {
+                    print "worker " a " began after worker " b " was done"; exit
+                }
+            }
+        }
+    }')"
+if [ -n "$apart" ]; then
+    cfail overlap "$apart"
+fi
 if ! has "libcrace: all workers done"; then
     cfail done "main never saw every worker finish"
 fi
 status_clause "main returned 0" 0
 
-echo "PASS: killed malloc waiters ended alone, a killed waiter re-asked at the kernel, a running killed holder released malloc, getenv took a free lock with a kill pending, a dead malloc holder's lock ended its taker's task, a printf completed beside a held malloc lock, every worker line reached the wire whole and once, and no worker found a block torn"
+lines="every worker line reached the wire whole and once"
+if [ "$unbuffered" = 1 ]; then
+    lines="every worker reported (stdout is unbuffered here, so lines are not judged whole)"
+fi
+dead_holder="a dead malloc holder's lock ended its taker's task"
+if [ "$dead" != 1 ]; then
+    dead_holder="the dead malloc holder arms are not built here"
+fi
+echo "PASS: killed malloc waiters ended alone, a killed waiter re-asked at the kernel, a running killed holder released malloc, getenv took a free lock with a kill pending, $dead_holder, a printf completed beside a held malloc lock, main's heap ran out at its end, $lines, no worker found a block torn, and every worker began before any was done"
 exit 0

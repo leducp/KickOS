@@ -7,6 +7,8 @@
 
 #include "owner_instances.h"
 
+#include "../common/seam_pools.h"
+
 #include <kickos/instance_local.h>
 #include <kickos/ramown.h>
 #include <kickos/task.h>
@@ -17,6 +19,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "ram_seam.h"
 
 namespace
 {
@@ -68,7 +71,7 @@ namespace
     size_t fill()
     {
         size_t seated = 0;
-        while (seated <= KICKOS_RAM_OWNER_SLOTS
+        while (seated <= KICKOS_SEAM_RAM_OWNERS
                and kickos::ram_owner_alloc(&kickos::g_task, MIN_REGION) != nullptr)
         {
             seated++;
@@ -78,12 +81,12 @@ namespace
 
     TEST(OwnerInstances, AFullTableInOneInstanceLeavesTheNextOneItsOwn)
     {
-        ASSERT_GE(ARENA_SIZE / MIN_REGION, 2u * KICKOS_RAM_OWNER_SLOTS + 1u)
+        ASSERT_GE(ARENA_SIZE / MIN_REGION, 2u * KICKOS_SEAM_RAM_OWNERS + 1u)
             << "this fixture's arena cannot back two tables, so a refusal would be the arena's";
         unsigned const before = kickos::instance_select(1u);
-        EXPECT_EQ(fill(), static_cast<size_t>(KICKOS_RAM_OWNER_SLOTS));
+        EXPECT_EQ(fill(), static_cast<size_t>(KICKOS_SEAM_RAM_OWNERS));
         (void)kickos::instance_select(2u);
-        EXPECT_EQ(fill(), static_cast<size_t>(KICKOS_RAM_OWNER_SLOTS))
+        EXPECT_EQ(fill(), static_cast<size_t>(KICKOS_SEAM_RAM_OWNERS))
             << "the second instance found the first one's records";
         (void)kickos::instance_select(before);
     }

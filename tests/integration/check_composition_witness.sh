@@ -20,7 +20,8 @@
 #            comes ahead of the next instance's first reading, or its `sensor: gone for good`.
 #            `sensor: restarting` is a call answered -KOS_EAGAIN while a restarted instance has
 #            not yet first received. Health's lines are ordered against the app's only where the
-#            death orders them, since above one core the two print at once.
+#            death orders them, since above one core the two print at once. Fails on any task's
+#            `statics not its own`: a word of own.cc set at a task's start, or by another task.
 #            With `depth`, root's stack is filled and scanned while the init runs, and the run
 #            passes on the init's high-water mark leaving at least KICKOS_MIN_STACK_SIZE of
 #            KICKOS_ROOT_STACK_SIZE free above the thread-local block.
@@ -195,7 +196,7 @@ require_numbered 'sensor: ([0-9]+) from /svc/sensor' "reading" 1 2 3 4 5 6 7 8 9
 assert_no_panic "a panic in the restart witness"
 for _line in '^=== THREAD FAULT ===' '^sensor: no reading' '^sensor: died holding the request' \
              '^sensor: measurement frozen' '^sensor: a thread .* was not refused' \
-             '^sensor: no /shm/history window'; do
+             '^sensor: no /shm/history window' '^[a-z]*: statics not its own'; do
     if has "$_line"; then
         fail "the capture holds a '$_line' line"
     fi

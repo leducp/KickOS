@@ -62,13 +62,14 @@ namespace
 
     static_assert(drv::valid(k_desc), "the k64dspi descriptor is not a well-formed driver shape");
     static_assert(spi::desc_ok(k_desc), "the k64dspi cap positions do not match KOS_SPI_CAP_*");
+    static_assert(KICKOS_DRIVER_SLOTS == KOS_BUS_DEV_MAX,
+                  "the composition hands each client a mask of the slots serve_one keys");
 }
 
 extern "C"
 {
     int k64dspi_spi_start(struct kos_driver_instance* instance)
     {
-        // Here, on the init's thread: the driver's threads hold no pinmux authority.
         int32_t const muxed = k64dspi_bus_mux(instance->mmio_base);
         if (muxed != 0)
         {

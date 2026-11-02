@@ -7,8 +7,8 @@
 // The short-accept arms run the endpoint's rendezvous instead of a send script. A non-blocking
 // task's kernel answers -KOS_ETIMEDOUT where a blocking one would wait. libc's _write is the
 // stubs' own body, compiled in under the shim's names.
-// The stubs' fstat: newlib reads st_mode to decide line buffering and st_blksize as a buffer
-// size, so a field left as the caller's stack bytes makes stdout's buffering vary.
+// The stubs' fstat: newlib reads st_mode to decide line buffering, so a field left as the
+// caller's stack bytes makes stdout's buffering vary.
 
 #include <gtest/gtest.h>
 
@@ -91,6 +91,13 @@ namespace
         g_waiting_sends = 0;
         g_waiting_kconsole = 0;
         g_rendezvous = false;
+        kickos::stdout_nonblock() = 0u;
+    }
+
+    void reset_nonblocking(std::deque<int32_t> sends, std::deque<int32_t> kconsole)
+    {
+        reset(std::move(sends), std::move(kconsole));
+        kickos::stdout_nonblock() = 1u;
     }
 
     // The driver has posted the first capacity of `receives` before the writer starts.
@@ -155,10 +162,13 @@ extern "C"
         return take(g_send_script, g_endpoint, buf, len);
     }
 
-    int32_t kos_kconsole_write(void const* buf, size_t len)
+    int32_t kos_kconsole_write(void const* buf, size_t len, uint32_t flags)
     {
         g_kconsole_writes = g_kconsole_writes + 1;
-        g_waiting_kconsole = g_waiting_kconsole + 1;
+        if ((flags & KOS_KCONSOLE_NOWAIT) == 0u)
+        {
+            g_waiting_kconsole = g_waiting_kconsole + 1;
+        }
         return take(g_kconsole_script, g_kconsole, buf, len);
     }
 
@@ -264,7 +274,8 @@ namespace
         EXPECT_EQ(g_kconsole_writes, 0);
     }
 
-    // An empty line is no chunk at all, so nothing is sent: a zero-length send is the flush.
+    // An empty line is no chunk at all, so nothing is sent: a zero-length send is the readiness
+    // probe.
     TEST(StdoutWrite, AnEmptyLineSendsNothing)
     {
         reset({}, {});
@@ -306,16 +317,17 @@ namespace
     // nothing taken, and the kernel console never asked.
     TEST(StdoutNonblocking, AConsoleNobodyReceivesOnTakesNothing)
     {
-        reset({-KOS_ETIMEDOUT}, {});
+        reset_nonblocking({-KOS_ETIMEDOUT}, {});
         expect_result(kickos::stdout_write("line\n", 5), 0u, -KOS_ETIMEDOUT);
         EXPECT_EQ(g_endpoint, "");
         EXPECT_EQ(g_kconsole_writes, 0);
+        EXPECT_EQ(g_waiting_sends, 0);
     }
 
     // A receiver taking part of a message, then none being there for the rest: the short count.
     TEST(StdoutNonblocking, APartialAcceptIsTheShortCount)
     {
-        reset({2, -KOS_ETIMEDOUT}, {});
+        reset_nonblocking({2, -KOS_ETIMEDOUT}, {});
         expect_result(kickos::stdout_write("line\n", 5), 2u, -KOS_ETIMEDOUT);
         EXPECT_EQ(g_endpoint, "li");
         EXPECT_EQ(g_sends, 2);
@@ -325,15 +337,17 @@ namespace
     // console answers that it would wait. Nothing is written and nothing retried.
     TEST(StdoutNonblocking, TheDarkWindowTakesNothing)
     {
-        reset({-KOS_EAGAIN}, {-KOS_ETIMEDOUT});
+        reset_nonblocking({-KOS_EAGAIN}, {-KOS_ETIMEDOUT});
         expect_result(kickos::stdout_write("line\n", 5), 0u, -KOS_ETIMEDOUT);
         EXPECT_EQ(g_kconsole_writes, 1);
+        EXPECT_EQ(g_waiting_sends, 0);
+        EXPECT_EQ(g_waiting_kconsole, 0);
     }
 
     // A console nobody published takes what fits on the kernel console, and the rest would wait.
     TEST(StdoutNonblocking, TheKernelConsoleTakesWhatFits)
     {
-        reset({-KOS_EBADF}, {3, -KOS_ETIMEDOUT});
+        reset_nonblocking({-KOS_EBADF}, {3, -KOS_ETIMEDOUT});
         expect_result(kickos::stdout_write("line\n", 5), 3u, -KOS_ETIMEDOUT);
         EXPECT_EQ(g_kconsole, "lin");
     }
@@ -341,7 +355,7 @@ namespace
     // A publish landing between the two sends the line to the endpoint after all.
     TEST(StdoutNonblocking, ARepublishSendsTheLineToTheEndpoint)
     {
-        reset({-KOS_EAGAIN, TAKE_ALL}, {-KOS_EBUSY});
+        reset_nonblocking({-KOS_EAGAIN, TAKE_ALL}, {-KOS_EBUSY});
         expect_result(kickos::stdout_write("line\n", 5), 5u, 0);
         EXPECT_EQ(g_endpoint, "line\n");
     }
@@ -466,9 +480,10 @@ namespace
     // A non-blocking task stops at the first byte that would make it wait.
     TEST(KosPrint, ANonBlockingTaskStopsWhereItWouldWait)
     {
-        reset({-KOS_EBADF}, {2, -KOS_ETIMEDOUT});
+        reset_nonblocking({-KOS_EBADF}, {2, -KOS_ETIMEDOUT});
         kos_print("line\n");
         EXPECT_EQ(g_kconsole, "li");
+        EXPECT_EQ(g_waiting_kconsole, 0);
         EXPECT_TRUE(g_kconsole_script.empty());
     }
 
@@ -484,7 +499,7 @@ namespace
         EXPECT_EQ(st.st_blocks, 0);
     }
 
-    TEST(NewlibStubs, FstatReportsTheConsoleAsACharacterDeviceWithNothingElseSet)
+    TEST(NewlibStubs, FstatReportsTheConsoleAsACharacterDeviceOneChunkWide)
     {
         for (int fd = 0; fd < 3; ++fd)
         {

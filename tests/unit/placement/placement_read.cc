@@ -106,8 +106,11 @@ TEST_F(PlacementRead, a_task_the_caller_did_not_create_is_eperm)
     EXPECT_EQ(task_cores(task_handle(theirs)), -KOS_EPERM)
         << "the caller read a grant it did not create";
     int err = 0;
-    Task* const made =
-        task_create(kernel().threads.kill_tag_of(main_), nullptr, 0, 0u, nullptr, &err);
+    Task* made = nullptr;
+    {
+        IrqLock lock;
+        made = task_held(kernel().threads.kill_tag_of(main_), &err, lock);
+    }
     ASSERT_NE(made, nullptr) << err;
     {
         IrqLock lock;
