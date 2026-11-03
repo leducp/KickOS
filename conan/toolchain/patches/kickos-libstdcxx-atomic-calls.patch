@@ -1,0 +1,56 @@
+SPDX-License-Identifier: GPL-3.0-or-later
+Copyright (c) 2026 Philippe Leduc
+
+KickOS: count libstdc++'s references through the __atomic calls on armv6m and RX.
+
+Against GCC 16.2.0, upstream or after the GNURX patches and kickos-rx-irq-atomics.patch, with -p1
+in the GCC tree, for the arm-none-eabi and rx-elf families, before kickos-gcc-threads.patch. Neither
+armv6m nor RX has a compare-and-swap instruction in user mode, so GCC makes every read-modify-write
+of _Atomic_word a call of __atomic_fetch_add_4, and libstdc++'s configure, finding the call in its
+probe, counts references under one global mutex. The KickOS user runtime defines those calls on both
+as loops over its restartable compare-and-swap. Under the kickos threads model, a multilib whose
+compiler defines __ARM_ARCH_6M__ or __RX__ therefore takes the atomic builtins for _Atomic_word, so
+its reference counts make the calls; every other multilib is configured as upstream configures it.
+The generated configure carries the change its input does. This modifies the vendored compiler, so
+it carries GCC's licence, not KickOS's.
+
+--- a/libstdc++-v3/acinclude.m4
++++ b/libstdc++-v3/acinclude.m4
+@@ -3813,6 +3813,17 @@
+   CXXFLAGS="$old_CXXFLAGS"
+   AC_LANG_RESTORE
+ 
++  # KickOS: the user runtime defines the __atomic calls GCC makes on armv6m and
++  # RX, whose user mode has no compare-and-swap instruction.
++  if test x"$target_thread_file" = xkickos \
++     && test x"$glibcxx_cv_atomic_word" != xyes; then
++    case `$CXX $CXXFLAGS -dM -E -x c++ /dev/null 2>/dev/null` in
++      *"#define __ARM_ARCH_6M__ 1"* | *"#define __RX__ 1"*)
++	glibcxx_cv_atomic_word=yes
++	;;
++    esac
++  fi
++
+   # Set atomicity_dir to builtins if the test above passes,
+   # or if the builtins were already chosen (e.g. by configure.host).
+   if test "$glibcxx_cv_atomic_word" = yes \
+--- a/libstdc++-v3/configure
++++ b/libstdc++-v3/configure
+@@ -16514,6 +16514,17 @@
+ ac_compiler_gnu=$ac_cv_c_compiler_gnu
+ 
+ 
++  # KickOS: the user runtime defines the __atomic calls GCC makes on armv6m and
++  # RX, whose user mode has no compare-and-swap instruction.
++  if test x"$target_thread_file" = xkickos \
++     && test x"$glibcxx_cv_atomic_word" != xyes; then
++    case `$CXX $CXXFLAGS -dM -E -x c++ /dev/null 2>/dev/null` in
++      *"#define __ARM_ARCH_6M__ 1"* | *"#define __RX__ 1"*)
++	glibcxx_cv_atomic_word=yes
++	;;
++    esac
++  fi
++
+   # Set atomicity_dir to builtins if the test above passes,
+   # or if the builtins were already chosen (e.g. by configure.host).
+   if test "$glibcxx_cv_atomic_word" = yes \
