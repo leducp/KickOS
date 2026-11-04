@@ -7,12 +7,7 @@
 if(NOT TARGET tlsprobe)
   return()
 endif()
-# A chip that holds one task runs the probe without its peer.
-if(KICKOS_CHIP_ONE_TASK)
-  kickos_app_judge(tlsprobe tests/integration/check_qemu_tlsprobe.sh ARGS --alone)
-else()
-  kickos_app_judge(tlsprobe tests/integration/check_qemu_tlsprobe.sh)
-endif()
+kickos_app_judge(tlsprobe tests/integration/check_qemu_tlsprobe.sh)
 if(TARGET tlsprobe_wide)
   kickos_app_judge(tlsprobe_wide tests/integration/check_qemu_tlsprobe.sh
                    ARGS --image=tlsprobe_wide)
@@ -22,7 +17,7 @@ kickos_add_qemu_test(TARGET tlsprobe
   SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_tlsprobe.sh")
 
 # Its two programs' mains in the merged ELF, where every image sits at an address of its own.
-if(KICKOS_IMAGE_SPLIT AND NOT KICKOS_CHIP_ONE_TASK)
+if(NOT KICKOS_IMAGE_EMBED)
   find_program(KICKOS_GDB NAMES gdb-multiarch)
   set(_tlsprobe_gdb gdb-multiarch)
   if(KICKOS_GDB)

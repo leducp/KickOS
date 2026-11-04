@@ -51,8 +51,8 @@ shift 14
 # entries does not see.
 #
 # And node 0's KICKOS_* cache entries: a knob that is no Kconfig symbol at all reaches the build
-# as a cache variable and appears in no .config. KICKOS_APPDATA_SIZE is one, stated in a preset
-# and read by the linker script. Loaded as -D, so applied after the seed; genconfig.py refuses a
+# as a cache variable and appears in no .config. KICKOS_KERNEL_DATA_RESERVE is one, stated in a
+# preset and read by the linker script. Loaded as -D, so applied after the seed; genconfig.py refuses a
 # configure where a name present in both disagrees.
 #
 # KICKOS_AMP_NODE_ID is left out of both, being the only thing a node may differ in, and so is

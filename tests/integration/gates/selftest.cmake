@@ -155,6 +155,9 @@ if(KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
   if(KICKOS_HAVE_ASPACE)
     list(APPEND KICKOS_EXPECT_SKIPS amp_far_reply_unmapped)
   endif()
+  if(KICKOS_AMP_CLOCK_SHARED)
+    list(APPEND KICKOS_EXPECT_SKIPS amp_far_wall)
+  endif()
 endif()
 
 # Every name a permission set states must be an arm main.cc registers, or the set permits
@@ -548,7 +551,7 @@ endif()
 # to choose from; a partial list reads a backend as absent. add_test does NOT split a
 # $<TARGET_OBJECTS:> expansion, so they arrive as one semicolon-joined argument.
 set(_seam_archives "$<TARGET_FILE:kickos_kernel>" "$<TARGET_FILE:kickos_lib>"
-                   "$<TARGET_FILE:kickos_user>"
+                   "$<TARGET_FILE:kickos_user_${KICKOS_LIBC_DEFAULT}>"
                    "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>")
 if(KICKOS_CHIP AND TARGET kickos_chip_${KICKOS_CHIP})
   list(APPEND _seam_archives "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>")
@@ -631,17 +634,14 @@ endif()
 # own ASSERT(_ebss > _sbss) still true.
 #
 # The window bounds and the privileged set both differ by board shape, so both are arguments.
-# MPU boards carve one writable window and select kernel/arch/chip/lib kernel-side. Where images
-# are linked on their own first, each image links its own lib and none of the other three.
+# MPU boards carve one writable window and select kernel/arch/chip/lib kernel-side. Each image
+# links its own lib and none of the other three.
 if(KICKOS_HAVE_MPU AND NOT KICKOS_ARCH STREQUAL "sim")
-  set(_appdata_image_archives "")
-  if(KICKOS_IMAGE_SPLIT)
-    set(_appdata_image_archives
-        "--"
-        "$<TARGET_FILE:kickos_kernel>"
-        "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>"
-        "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>")
-  endif()
+  set(_appdata_image_archives
+      "--"
+      "$<TARGET_FILE:kickos_kernel>"
+      "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>"
+      "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>")
   add_test(
     NAME    appdata_no_kernel
     COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_appdata_no_kernel.sh"

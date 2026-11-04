@@ -7,7 +7,7 @@
 # that module's too: the units of the build's own compile database, and no other.
 #
 # From the declared roots, following direct edges and the indirect edges bound in the bindings
-# file, no path reaches kpanic or kpanic_at.
+# file, no path reaches kpanic.
 
 import collections
 import os

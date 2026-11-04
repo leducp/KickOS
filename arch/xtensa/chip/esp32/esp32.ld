@@ -63,24 +63,10 @@ SECTIONS
         . = ALIGN(4);
     } > IRAM1
 
-#if KICKOS_IMAGES_PLACED
     /* Every image's text, its code span, which tools/image-link.py writes per link
        (KICKOS_ESP32_IMAGE_TEXT). IRAM is word-access only, so its header, rodata and the rest of
        what it reads live in DRAM, past the kernel's. */
     INCLUDE kickos_images_code.ld
-#else
-    /* An image's code span is its text, the app's then the init's where it is an image of its
-       own. IRAM is word-access only, so its header, rodata and the rest of what it reads live
-       in DRAM, past the kernel's. */
-    .kickos_app_text : ALIGN(4)
-    {
-        _app_text_start = .;
-        KICKOS_APP_SECTIONS(.literal .literal.*)
-        KICKOS_APP_SECTIONS(.text .text.*)
-        . = ALIGN(4);
-        _app_text_end = .;
-    } > IRAM
-#endif
 
     .rodata : ALIGN(4)
     {
@@ -121,7 +107,6 @@ SECTIONS
 
     KICKOS_IMAGE_TABLE(DRAM, LONG)
 
-#if KICKOS_IMAGES_PLACED
     /* The kernel's own DWARF EH, kept whole and ended in a zero-length CIE, the thread-local
        template of every image, then what the ROM loads of every image: header, rodata,
        constructor window and .data template (KICKOS_ESP32_IMAGE), which tools/image-link.py
@@ -137,37 +122,6 @@ SECTIONS
     KICKOS_TLS_TEMPLATE(DRAM)
 
     INCLUDE kickos_images.ld
-#else
-    /* DWARF EH, registered by each image's startup (user/src/image_start.cc): -nostartfiles
-       drops crtbegin's frame_dummy and crtend's terminator, so each table is kept whole and
-       ends in a zero-length CIE. The kernel's own entries ride the app's. */
-    KICKOS_APP_HEADER(DRAM)
-    .kickos_app_rodata : ALIGN(4)
-    {
-        KICKOS_APP_SECTIONS(.rodata .rodata.*)
-        KICKOS_APP_SECTIONS(.rodata_wlog .rodata_wlog.*)
-        KEEP(KICKOS_APP_SECTIONS(.gcc_except_table .gcc_except_table.*))
-        . = ALIGN(4);
-        KICKOS_LD_APP_SYM(eh_frame) = .;
-        KEEP(KICKOS_APP_SECTIONS(.eh_frame))
-        KEEP(KICKOS_KERNEL_SECTIONS(.eh_frame))
-        LONG(0)
-        . = ALIGN(4);
-    } > DRAM
-    __eh_frame_start = KICKOS_LD_APP_SYM(eh_frame);
-
-    KICKOS_TLS_TEMPLATE(DRAM)
-
-    .kickos_app_init_array : ALIGN(4)
-    {
-        KICKOS_LD_APP_SYM(ctor_start) = .;
-        KEEP(KICKOS_APP_SECTIONS(SORT_BY_INIT_PRIORITY(.init_array.*) SORT_BY_INIT_PRIORITY(.ctors.*)))
-        KEEP(KICKOS_APP_SECTIONS(.init_array .ctors))
-        KICKOS_LD_APP_SYM(ctor_end) = .;
-    } > DRAM
-    __kickos_app_init_array_start = KICKOS_LD_APP_SYM(ctor_start);
-    __kickos_app_init_array_end = KICKOS_LD_APP_SYM(ctor_end);
-#endif
 
     _sidata = LOADADDR(.data);
 
@@ -188,7 +142,6 @@ SECTIONS
         _ebss = .;
     } > DRAM
 
-#if KICKOS_IMAGES_PLACED
     /* Every image's window (KICKOS_ESP32_WINDOW), which tools/image-link.py writes per link,
        image 1's named as the app's below. */
     INCLUDE kickos_images_windows.ld
@@ -198,41 +151,6 @@ SECTIONS
     _appdata_used_end = KICKOS_LD_IMAGE_SYM(1, bss_end);
     _kickos_heap_start = KICKOS_LD_IMAGE_SYM(1, heap_start);
     _kickos_heap_limit = KICKOS_LD_IMAGE_SYM(1, heap_end);
-#else
-    /* The app image's window, exact: .data, .bss and the heap. */
-    .appdata : ALIGN(8)
-    {
-        KICKOS_APP_SECTIONS(.data .data.*)
-        . = ALIGN(8);
-    } > DRAM
-
-    .appbss (ADDR(.appdata) + SIZEOF(.appdata)) (NOLOAD) : ALIGN(4)
-    {
-        KICKOS_APP_SECTIONS(.bss .bss.* COMMON)
-        . = ALIGN(4);
-        _appdata_used_end = .;
-    } > DRAM
-
-    .userheap (NOLOAD) :
-    {
-        . = ALIGN(8);
-        _kickos_heap_start = .;
-        . += KICKOS_USER_HEAP_SIZE;
-        _kickos_heap_limit = .;
-    } > DRAM
-
-
-    KICKOS_LD_APP_SYM(code_start) = _app_text_start;
-    KICKOS_LD_APP_SYM(code_end) = _app_text_end;
-    KICKOS_LD_APP_SYM(window_start) = ADDR(.appdata);
-    KICKOS_LD_APP_SYM(window_end) = _kickos_heap_limit;
-    KICKOS_LD_APP_SYM(data_load) = LOADADDR(.appdata);
-    KICKOS_LD_APP_SYM(data_start) = ADDR(.appdata);
-    KICKOS_LD_APP_SYM(data_end) = ADDR(.appdata) + SIZEOF(.appdata);
-    KICKOS_LD_APP_SYM(bss_end) = _appdata_used_end;
-    KICKOS_LD_APP_SYM(heap_start) = _kickos_heap_start;
-    KICKOS_LD_APP_SYM(heap_end) = _kickos_heap_limit;
-#endif
     KICKOS_IMAGE0_TLS()
     KICKOS_IMAGE0_NAMES()
 
@@ -249,7 +167,7 @@ SECTIONS
     KICKOS_IMAGE_BOUNDS(ORIGIN(IRAM), ORIGIN(IRAM) + LENGTH(IRAM),
                         ORIGIN(IRAM1), ADDR(.text) + SIZEOF(.text),
                         ORIGIN(DRAM), ORIGIN(DRAM) + LENGTH(DRAM),
-                        _sdata, _ebss, __kickos_ram_end, _estack, 1 - KICKOS_IMAGES_PLACED)
+                        _sdata, _ebss, __kickos_ram_end, _estack, 0)
 
     /DISCARD/ : { *(.xtensa.info) *(.comment) *(.xt.*) }
 
@@ -259,9 +177,7 @@ SECTIONS
 KICKOS_STATIC_RELOC_ASSERT()
 KICKOS_TLS_ALIGN_ASSERT()
 KICKOS_TLS_FIT_ASSERT()
-#if KICKOS_IMAGES_PLACED
 INCLUDE kickos_images_asserts.ld
-#endif
 
 ASSERT(__kickos_ram_start <= __kickos_ram_end,
        "KickOS: static data overflows DRAM (no room for the user-RAM pool + stack)")

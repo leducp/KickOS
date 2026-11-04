@@ -275,6 +275,8 @@ extern "C"
 
     void xtensa_switch(struct arch_context* from, struct arch_context* to);
     void _thread_trampoline(void);
+    void kickos_thread_return(void);
+    extern void (*kickos_image_thread_return)(void);
 
 #if KICKOS_BENCH
     // switch.S reads it through PERCPU_CELL.
@@ -455,8 +457,6 @@ void arch_context_init(struct arch_context* ctx,
                        void* stack_base, size_t stack_size,
                        int privileged)
 {
-    (void)privileged; // LX6 runs every thread at one privilege level
-
     uintptr_t top = reinterpret_cast<uintptr_t>(stack_base) + stack_size;
     top &= ~static_cast<uintptr_t>(15);        // ABI 16-byte stack alignment
 
@@ -476,6 +476,14 @@ void arch_context_init(struct arch_context* ctx,
     set(f_areg(1), static_cast<uint32_t>(top));
     set(f_areg(6), reinterpret_cast<uint32_t>(entry));  // a6 -> trampoline a2
     set(f_areg(7), reinterpret_cast<uint32_t>(arg));    // a7 -> trampoline a3
+    // a8 -> trampoline a4, where entry returns to. Every thread runs at one privilege level, and
+    // an unprivileged one's return is its image's exit path.
+    uint32_t ret = reinterpret_cast<uint32_t>(kickos_thread_return);
+    if (not privileged)
+    {
+        ret = reinterpret_cast<uint32_t>(kickos_image_thread_return);
+    }
+    set(f_areg(8), ret);
     // a0/a4 already 0: a0 is discarded by the entry rotation, and a4 becomes the
     // trampoline's a0 (its return address), where 0 is the safe outermost value.
 

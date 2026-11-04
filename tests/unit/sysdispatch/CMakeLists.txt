@@ -16,12 +16,12 @@ set(_sys_aspace "${_k}/syscall/syscall.cc" "${_k}/syscall/syscall_thread.cc"
                 "${_k}/syscall/syscall_mem.cc"
                 "${_k}/mem/aspace.cc" "${_k}/mem/vrange.cc" "${_k}/mem/ustack.cc"
                 "${_k}/domain/domain.cc" "${_k}/thread/thread.cc" "${_k}/thread/tls.cc"
-                "${_k}/grant/grant.cc" "${_k}/syscall/word.cc")
+                "${_k}/grant/grant.cc" "${_k}/syscall/word.cc" "${_k}/time/realtime.cc")
 set(_sys_region "${_k}/syscall/syscall.cc" "${_k}/syscall/syscall_thread.cc"
                 "${_k}/init/terminal.cc"
                 "${_k}/syscall/syscall_mem.cc"
                 "${_k}/mem/ramown.cc" "${_k}/thread/thread.cc" "${_k}/thread/tls.cc"
-                "${_k}/grant/grant.cc")
+                "${_k}/grant/grant.cc" "${_k}/time/realtime.cc")
 set_source_files_properties(${_sys_aspace} ${_sys_region} DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
   PROPERTIES COMPILE_OPTIONS "-ffreestanding;-ffunction-sections;-fdata-sections")
 kickos_add_kseam(kickos_kseam_sysdispatch
@@ -80,6 +80,12 @@ kickos_add_unit_test(NAME sys_shutdown
   SOURCES shutdown.cc "${PROJECT_SOURCE_DIR}/arch/common/kfault_terminate_shutdown.cc"
   INCLUDES "${PROJECT_SOURCE_DIR}/arch/common"
   LIBRARIES kickos_kseam_sysdispatch_region)
+# The wall clock's set, gated on AUTH_REALTIME alone, and its read over the monotonic clock.
+kickos_add_unit_test(NAME sys_realtime SOURCES wall_clock.cc
+  LIBRARIES kickos_kseam_sysdispatch_region)
+# A join of a thread that has already exited, by a sibling and by another task's thread.
+kickos_add_unit_test(NAME sys_thread_join SOURCES thread_join.cc
+  LIBRARIES kickos_kseam_sysdispatch_region)
 # The peripheral disable's possession gate and the seam's answer, over the fixture's recorder.
 kickos_add_unit_test(NAME sys_periph_disable SOURCES periph_disable.cc
   LIBRARIES kickos_kseam_sysdispatch_region)
@@ -100,7 +106,7 @@ kickos_add_unit_test(NAME sys_witness_on SOURCES witness_gate.cc
 target_compile_definitions(sys_witness_on PRIVATE KICKOS_WITNESS_UACCESS=1)
 kickos_add_unit_test(NAME sys_witness_off SOURCES witness_gate.cc
   LIBRARIES kickos_kseam_sysdispatch_region)
-foreach(_gate IN ITEMS sys_ram_clear spawn_unwind sys_shutdown sys_periph_disable sys_kconsole_flags sys_witness_on
+foreach(_gate IN ITEMS sys_ram_clear spawn_unwind sys_shutdown sys_realtime sys_thread_join sys_periph_disable sys_kconsole_flags sys_witness_on
                        sys_witness_off)
   target_link_options(${_gate} PRIVATE -Wl,--gc-sections)
 endforeach()

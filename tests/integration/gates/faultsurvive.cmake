@@ -9,16 +9,6 @@ if(NOT TARGET faultsurvive)
   return()
 endif()
 
-# The faulter is a program of its own, which a chip that holds one task has no task for.
-if(KICKOS_CHIP_ONE_TASK)
-  foreach(_fs_target faultsurvive faultsurvive_ovf faultsurvive_off)
-    if(TARGET ${_fs_target})
-      kickos_inapplicable(${_fs_target} "this board holds one task")
-    endif()
-  endforeach()
-  return()
-endif()
-
 set(_fs_outcome terminated)
 if(KICKOS_ARCH STREQUAL "rv32imac")
   set(_fs_outcome contained)

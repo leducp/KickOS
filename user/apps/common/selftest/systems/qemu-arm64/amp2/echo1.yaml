@@ -20,6 +20,7 @@ tasks:
     program: main
     priority: 5
     ceiling: 5
+    authority: [realtime]
     serves: /amp/3
     maps: { /shm/share: rw }
 

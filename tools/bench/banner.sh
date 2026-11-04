@@ -25,40 +25,13 @@
 # of an archived campaign runs on.
 BANNER_COMMIT_RE='commit +[A-Za-z0-9._/+-]+'
 
-# A board under KICKOS_DIAG_TERSE prints the banner's short column (include/kickos/diag.h): a
-# title row `K <version>` and a commit row `c <label>`. Each is the WHOLE line, so both are held
-# to the line's start and end, and a commit row counts only after a short title: a prose row
-# that lost bytes still reads `   c <hash>` and is recovered below as damaged, never taken here.
-# <log> [title|commit]: the label of the last short commit row after the last short title, or
-# with `title`/`commit` the line number of the last short row of that kind.
-banner_terse() {
-  awk -v want="${2:-label}" '
-      { sub(/\r$/, "") }
-      /^K [0-9]+\.[^ ]*$/ { terse = 1; title = NR; label = ""; next }
-      terse && /^c [A-Za-z0-9._\/+-]+$/ { label = substr($0, 3); row = NR }
-      END {
-        if (want == "title" && title != "") { print title }
-        if (want == "commit" && row != "") { print row }
-        if (want == "label" && label != "") { print label }
-      }' "$1"
-}
-
 # A commit row is read only after the last boot's title, so a boot that lost its own row is
 # recovered below as damaged rather than credited with an earlier boot's label.
 banner_label() { # <log> [expected label]
   _bl_from=$(grep -anE 'KickOS +[0-9]+\.' "$1" | tail -1 | cut -d: -f1)
-  _bl_tt=$(banner_terse "$1" title)
-  if [ -n "$_bl_tt" ] && { [ -z "$_bl_from" ] || [ "$_bl_tt" -gt "$_bl_from" ]; }; then
-    _bl_from=$_bl_tt
-  fi
   _bl=$(tail -n +"${_bl_from:-1}" "$1" | grep -aoE "$BANNER_COMMIT_RE" | tail -1)
   if [ -n "$_bl" ]; then
     printf '%s\n' "${_bl##* }"
-    return 0
-  fi
-  _bl=$(banner_terse "$1")
-  if [ -n "$_bl" ]; then
-    printf '%s\n' "$_bl"
     return 0
   fi
   # THE SUFFIX MUST BE RECOVERED WITH THE HASH, and its absence must not read as clean.
@@ -104,14 +77,6 @@ banner_label() { # <log> [expected label]
 bench_boot_start() { # <log>
   _bs_t=$(grep -anE 'KickOS +[0-9]+\.' "$1" | tail -1 | cut -d: -f1)
   _bs_c=$(grep -anE "$BANNER_COMMIT_RE" "$1" | tail -1 | cut -d: -f1)
-  _bs_tt=$(banner_terse "$1" title)
-  if [ -n "$_bs_tt" ] && { [ -z "$_bs_t" ] || [ "$_bs_tt" -gt "$_bs_t" ]; }; then
-    _bs_t=$_bs_tt
-  fi
-  _bs_tc=$(banner_terse "$1" commit)
-  if [ -n "$_bs_tc" ] && { [ -z "$_bs_c" ] || [ "$_bs_tc" -gt "$_bs_c" ]; }; then
-    _bs_c=$_bs_tc
-  fi
   if [ -z "$_bs_c" ]; then
     # The same banner-block restriction banner_label recovers under: a boot start found on a
     # line that label search will not read leaves the slice beginning after its own banner.
@@ -136,18 +101,13 @@ bench_boot_start() { # <log>
   printf '%s\n' "$_bs_t"
 }
 
-# The row <macro> of include/kickos/diag.h <diag> prints with <value>, in column <terse> (0 the
-# prose, 1 the short), without its newline.
-identity_row() { # <diag> <macro> <terse> <value>
-  _ir_def=$(grep -E "^#define $2 +KICKOS_DIAG_PICK\(\".*\", \".*\"\)$" "$1")
+# The row <macro> of include/kickos/diag.h <diag> prints with <value>, without its newline.
+identity_row() { # <diag> <macro> <value>
+  _ir_def=$(grep -E "^#define $2 +\".*\"$" "$1")
   [ -n "$_ir_def" ] || return 1
-  _ir_col=1
-  if [ "$3" = 1 ]; then
-    _ir_col=2
-  fi
-  _ir_fmt=$(sed -E "s/^#define $2 +KICKOS_DIAG_PICK\(\"(.*)\", \"(.*)\"\)$/\\$_ir_col/" <<< "$_ir_def")
+  _ir_fmt=$(sed -E "s/^#define $2 +\"(.*)\"$/\\1/" <<< "$_ir_def")
   # shellcheck disable=SC2059
-  printf "$_ir_fmt" "$4"
+  printf "$_ir_fmt" "$3"
 }
 
 # A USB device console's capture: its last identity block (kickos/sys/banner_identity.h), the
@@ -155,17 +115,17 @@ identity_row() { # <diag> <macro> <terse> <value>
 # names the flashed image, so it stands in for the kernel banner that console never carries. The
 # rows are rendered here from kbanner's own formats; an empty <app> is an image with no app stamp,
 # whose block has no app row. Prints the refusal and returns 1 otherwise.
-identity_verdict() { # <log> <diag> <terse 0|1> <version> <board> <label> <build> <app>
-  _iv_t=$(identity_row "$2" KDIAG_F_BANNER_NAME "$3" '%s') || { echo "no title format in $2"; return 1; }
-  _iv_b=$(identity_row "$2" KDIAG_F_BANNER_BOARD "$3" "$5") || { echo "no board format in $2"; return 1; }
-  _iv_u=$(identity_row "$2" KDIAG_F_BANNER_BUILD "$3" "$7") || { echo "no build format in $2"; return 1; }
+identity_verdict() { # <log> <diag> <version> <board> <label> <build> <app>
+  _iv_t=$(identity_row "$2" KDIAG_F_BANNER_NAME '%s') || { echo "no title format in $2"; return 1; }
+  _iv_b=$(identity_row "$2" KDIAG_F_BANNER_BOARD "$4") || { echo "no board format in $2"; return 1; }
+  _iv_u=$(identity_row "$2" KDIAG_F_BANNER_BUILD "$6") || { echo "no build format in $2"; return 1; }
   _iv_a=""
-  if [ -n "$8" ]; then
-    _iv_a=$(identity_row "$2" KDIAG_F_BANNER_APP "$3" "$8") || { echo "no app format in $2"; return 1; }
+  if [ -n "$7" ]; then
+    _iv_a=$(identity_row "$2" KDIAG_F_BANNER_APP "$7") || { echo "no app format in $2"; return 1; }
   fi
-  _iv_c=$(identity_row "$2" KDIAG_F_BANNER_COMMIT "$3" "$6") || { echo "no commit format in $2"; return 1; }
+  _iv_c=$(identity_row "$2" KDIAG_F_BANNER_COMMIT "$5") || { echo "no commit format in $2"; return 1; }
   # shellcheck disable=SC2059
-  _iv_title=$(printf "$_iv_t" "$4")
+  _iv_title=$(printf "$_iv_t" "$3")
   # The last line a title of any version renders, so a stale image's block is the one judged.
   _iv_at=$(tr -d '\r' < "$1" | KOS_IV_FMT="$_iv_t" awk '
       BEGIN { f = ENVIRON["KOS_IV_FMT"]; i = index(f, "%s"); pre = substr(f, 1, i - 1)

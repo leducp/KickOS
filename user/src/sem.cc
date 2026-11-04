@@ -31,6 +31,15 @@ int kos_word_wait(uint32_t* word, uint32_t expected, uint32_t timeout_us)
                                          static_cast<uintptr_t>(timeout_us), 0));
 }
 
+int kos_word_wait_realtime(uint32_t* word, uint32_t expected, uint64_t unix_ns)
+{
+    uint64_t const at = kos_limit_realtime(unix_ns);
+    return static_cast<int>(arch_syscall(KOS_SYS_WORD_WAIT, reinterpret_cast<uintptr_t>(word),
+                                         static_cast<uintptr_t>(expected),
+                                         static_cast<uintptr_t>(kos_u64_lo(at)),
+                                         static_cast<uintptr_t>(kos_u64_hi(at))));
+}
+
 int kos_word_wake(uint32_t* word, uint32_t n, uint32_t units)
 {
     return static_cast<int>(arch_syscall(KOS_SYS_WORD_WAKE, reinterpret_cast<uintptr_t>(word),

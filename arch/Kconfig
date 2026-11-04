@@ -35,11 +35,10 @@ config ARCH_KERNEL_STACKS_MANDATORY
 
 	  ARMV7M DELIBERATELY DOES NOT SELECT IT, and that is what makes the distinction
 	  expressible rather than a tautology. It carries BOTH paths under
-	  KICKOS_KERNEL_STACKS because stm32f302 and sam3x8e have no MPU and did not opt in:
-	  on a chip with no privilege boundary the transfer buys robustness rather than
-	  isolation, and the red zone buys the same robustness without a block of kernel
-	  .bss per thread slot. f302nucleo and due are those boards, and they must keep
-	  resolving 0.
+	  KICKOS_KERNEL_STACKS because sam3x8e has no MPU and did not opt in: on a chip
+	  with no privilege boundary the transfer buys robustness rather than isolation,
+	  and the red zone buys the same robustness without a block of kernel .bss per
+	  thread slot. due is that board, and it must keep resolving 0.
 
 	  A NEW ARCH THAT WRITES ONLY THE TRANSFER SELECTS THIS. One that writes both paths
 	  does not, and then the red zone is what its unconverted boards depend on.
@@ -361,14 +360,6 @@ config CHIP_SAM3X8E
 	bool
 	select ARCH_ARMV7M
 
-config CHIP_STM32F103
-	bool
-	select ARCH_ARMV7M
-
-config CHIP_STM32F302
-	bool
-	select ARCH_ARMV7M
-
 config CHIP_STM32F411
 	bool
 	select ARCH_ARMV7M
@@ -479,8 +470,6 @@ config KICKOS_CHIP
 	default "rp2040" if CHIP_RP2040
 	default "rp2350" if CHIP_RP2350
 	default "sam3x8e" if CHIP_SAM3X8E
-	default "stm32f103" if CHIP_STM32F103
-	default "stm32f302" if CHIP_STM32F302
 	default "stm32f411" if CHIP_STM32F411
 	default "xmc4800" if CHIP_XMC4800
 	default "esp32" if CHIP_ESP32

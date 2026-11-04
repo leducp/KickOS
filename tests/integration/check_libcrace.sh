@@ -6,7 +6,6 @@
 # QEMU.
 #
 #   check_libcrace.sh <libcrace image> [<runs the dead malloc holder arms, default 1>]
-#                     [<one task>] [<unbuffered stdout>]
 #   KOS_CAPTURE=<log> check_libcrace.sh <board-build> <kickos-source> <cmake>
 #
 # Every worker line is one known text: `libcrace w<w> i<i> ` and forty copies of one letter,
@@ -14,17 +13,20 @@
 # reporting no block of its own torn and a run that overlapped every other worker of its task;
 # every worker says it began before any worker, of either task, is done.
 # Before the workers start: a thread killed while it waits
-# for the malloc lock ends alone, its task going on, and so does one holding the libc lock, which
+# for the malloc lock ends alone, its task going on, and so does one holding stdout's lock, which
 # it hands over; a killed waiter whose lock was freed under it asks again at the kernel and ends
 # there; a holder killed while it runs releases the malloc lock, and its taker's task lives; getenv
 # with a kill pending takes the free libc lock with no kernel entry; a malloc lock taken from a
 # holder that died holding it ends the taker's task, whether the taker waited at the death or
-# came after it; a printf completes while another thread holds the malloc lock; and main's heap
+# came after it; a printf completes while another thread holds the malloc lock; a stream closed
+# and its slot reused while fflush(NULL) waits for its lock leaves that lock whole to the waiter;
+# an exit handler takes a lock its holder keeps while it registers a handler; and main's heap
 # runs out at the end of its window.
 #
-# On the microbit stdout is unbuffered, so the two tasks' lines meet on the console a byte at a
-# time. There the lines are not judged whole: every worker still reports no block of its own
-# torn and an overlapped run, and each reports. A report is one write, so it reaches the wire whole and ends its line.
+# Main says whether its stdout is buffered. Where it is not (the microbit's heap is short of the
+# buffer newlib asks for), the two tasks' lines meet on the console a byte at a time, and the lines
+# are not judged whole: every worker still reports no block of its own torn and an overlapped run,
+# and each reports. A report is one write, so it reaches the wire whole and ends its line.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
@@ -32,7 +34,6 @@ set -u
 : "${QEMU_TIMEOUT:=240}"
 
 dead=1
-one_task=0
 unbuffered=0
 if judging_capture; then
     dead=0
@@ -40,17 +41,10 @@ if judging_capture; then
     if grep -q '^KICKOS_LIBCRACE_DEAD_ARMS:INTERNAL=1$' "$build/CMakeCache.txt" 2>/dev/null; then
         dead=1
     fi
-    one_task="$(sed -n 's/^KICKOS_LIBCRACE_ONE_TASK:INTERNAL=\([0-9]\)$/\1/p' "$build/CMakeCache.txt" 2>/dev/null)"
-    one_task="${one_task:-0}"
-    if grep -q '^KICKOS_LIBCRACE_UNBUFFERED:INTERNAL=1$' "$build/CMakeCache.txt" 2>/dev/null; then
-        unbuffered=1
-    fi
     judge_capture libcrace
 else
-    run_image "${1:?usage: check_libcrace.sh <libcrace.elf> [<dead arms>] [<one task>]}" > /dev/null
+    run_image "${1:?usage: check_libcrace.sh <libcrace.elf> [<dead arms>]}" > /dev/null
     dead="${2:-1}"
-    one_task="${3:-0}"
-    unbuffered="${4:-0}"
 fi
 
 assert_no_panic "panic while the workers raced"
@@ -58,21 +52,21 @@ shape="$(printf '%s\n' "$OUT" | sed -n 's/^libcrace: \([0-9][0-9]*\) workers x \
 if [ -z "$shape" ]; then
     cfail start "main never announced its workers"
 fi
+if has_f "libcrace: main's stdout is unbuffered"; then
+    unbuffered=1
+elif ! has_f "libcrace: main's stdout is buffered"; then
+    cfail stdout "main never said whether its stdout is buffered"
+fi
 if ! has_f "libcrace: a thread killed waiting for malloc ended alone"; then
     cfail malloc-kill "a thread killed waiting for the malloc lock took its task down with it"
 fi
-if ! has_f "libcrace: a thread killed holding the libc lock handed it over"; then
-    cfail libc-kill "a thread killed holding the libc lock did not hand it over"
+if ! has_f "libcrace: a thread killed holding stdout's lock handed it over"; then
+    cfail libc-kill "a thread killed holding stdout's lock did not hand it over"
 fi
 if ! has_f "libcrace: a killed malloc waiter asked again at the kernel and ended there"; then
     cfail malloc-reask "a killed malloc waiter took a lock freed under it without a kernel entry"
 fi
-if [ "$one_task" = 1 ]; then
-    if ! has_f "libcrace: skip - a holder killed while running released malloc, and its taker's task "\
-"lived: this board holds one task"; then
-        cfail malloc-release "the arm that needs a peer task did not skip by name on a board that holds one"
-    fi
-elif ! has_f "libcrace: a holder killed while running released malloc, and its taker's task lived"
+if ! has_f "libcrace: a holder killed while running released malloc, and its taker's task lived"
 then
     cfail malloc-release "a holder killed while running died holding malloc and ended its taker's task"
 fi
@@ -93,6 +87,16 @@ elif ! has_f "libcrace: no task-private heap with a contained fault, so the dead
 fi
 if ! has_f "libcrace: a printf completed while malloc was held"; then
     cfail malloc-wait "a printf waited behind another thread's malloc lock, or never ran beside it"
+fi
+if ! has_f "libcrace: fclose and fflush(NULL) raced to their ends"; then
+    cfail fclose-walk "fclose and fflush(NULL) on one stream never both ended"
+fi
+if ! has_f "libcrace: a failing freopen and a walk locking every stream raced to their ends"; then
+    cfail freopen-walk "a failing freopen and __fp_lock_all never both ended"
+fi
+if ! has_f "libcrace: an exit handler took a lock its holder kept while it registered a handler"
+then
+    cfail exit-handler "an exit handler waited behind the atexit lock for a lock its holder kept"
 fi
 if ! has_f "libcrace: main's heap ran out at its end"; then
     cfail heap-end "main's heap ran out short of the end of its window"
@@ -206,5 +210,5 @@ dead_holder="a dead malloc holder's lock ended its taker's task"
 if [ "$dead" != 1 ]; then
     dead_holder="the dead malloc holder arms are not built here"
 fi
-echo "PASS: killed malloc waiters ended alone, a killed waiter re-asked at the kernel, a running killed holder released malloc, getenv took a free lock with a kill pending, $dead_holder, a printf completed beside a held malloc lock, main's heap ran out at its end, $lines, no worker found a block torn, and every worker began before any was done"
+echo "PASS: fclose against fflush(NULL) and an exit handler against a registration ran to their ends, killed malloc waiters ended alone, a killed waiter re-asked at the kernel, a running killed holder released malloc, getenv took a free lock with a kill pending, $dead_holder, a printf completed beside a held malloc lock, main's heap ran out at its end, $lines, no worker found a block torn, and every worker began before any was done"
 exit 0

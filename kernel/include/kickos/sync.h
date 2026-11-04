@@ -12,6 +12,7 @@
 
 #include <kickos/sys/errno.h>
 #include <kickos/held.h>
+#include <kickos/time.h>
 
 struct arch_aspace;
 
@@ -143,15 +144,16 @@ namespace kickos
     // called under one: a retry drops it, and mutex_lock runs the resume barrier and the
     // wait_result read outside it (see wq_confirm_resume).
     //
-    // KOS_TIMEOUT_NONE waits forever and 0 is a try. Returns 0 when locked; -KOS_EOWNERDEAD
-    // when locked from a dead holder, where the lock is held and this is not a failed acquire;
-    // -KOS_ETIMEDOUT when held elsewhere past the deadline, or at once for a try, which lends no
-    // priority; -KOS_ECANCELED when cancelled waiting; -KOS_EDEADLK for a word the caller holds
-    // or a wait that would close a cycle, refused without parking or a boost; -KOS_EINVAL or
-    // -KOS_EFAULT for a word the caller may not name (word_ref); -KOS_EINVAL for a word that
-    // disagrees with the record of its waiters, or whose record is a plain word's; -KOS_EFAULT for
-    // a wait whose word left the caller's reach.
-    int mutex_lock(uintptr_t va, uint32_t timeout_us);
+    // KOS_TIMEOUT_NONE waits forever, and 0 or a passed realtime deadline is a try. Returns 0
+    // when locked; -KOS_EOWNERDEAD when locked from a dead holder, where the lock is held and
+    // this is not a failed acquire; -KOS_ETIMEDOUT when held elsewhere past the deadline, or at
+    // once for a try, which lends no priority; -KOS_ECANCELED when cancelled waiting;
+    // -KOS_EDEADLK for a word the caller holds or a wait that would close a cycle, refused
+    // without parking or a boost; -KOS_EINVAL or -KOS_EFAULT for a word the caller may not name
+    // (word_ref); -KOS_EINVAL for a limit the ABI does not define, or a word that disagrees with
+    // the record of its waiters, or whose record is a plain word's; -KOS_EFAULT for a wait whose
+    // word left the caller's reach.
+    int mutex_lock(uintptr_t va, WaitLimit limit);
     // Hands the word to the highest waiter, then recomputes the ex-holder's effective priority
     // over what it still holds. Returns 0, -KOS_EPERM if the caller is not the holder,
     // -KOS_EINVAL for a plain word's record, or word_ref's refusal.
@@ -176,7 +178,7 @@ namespace kickos
     // word_wait parks the caller on the word's plain record while the word holds `expected`,
     // asking for a pending cancel first. 1 woken with a unit, 0 woken without one, or the ABI's
     // refusals.
-    int word_wait(uintptr_t va, uint32_t expected, uint32_t timeout_us);
+    int word_wait(uintptr_t va, uint32_t expected, WaitLimit limit);
     // Wakes min(n, parked) waiters, the highest first and FIFO among equals, handing a unit to the
     // first min(units, woken); the units left are added to the count only where no waiter
     // remains. Answers how many it woke, or the ABI's refusals with nothing done.

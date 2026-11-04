@@ -14,7 +14,7 @@ scratch_dir
 rc=0
 . tools/bench/reset-boot.sh
 
-# Every format kbanner() prints, both columns, rendered: the first is the title, the rest are rows
+# Every format kbanner() prints, rendered: the first is the title, the rest are rows
 # the cut must recognise, so a boot that lost its head past any of them is not taken for none.
 KBANNER=$(awk '/void kbanner\(\)/ { on = 1 }
     on { print; o = gsub(/[{]/, "&"); c = gsub(/[}]/, "&"); d += o - c; if (o > 0) { s = 1 } if (s && d == 0) { exit } }' \
@@ -43,9 +43,9 @@ CR=$(printf '\r')
 nrows=0
 for i in "${!MACROS[@]}"; do
     m=${MACROS[$i]}
-    def=$(grep -E "^#define $m +KICKOS_DIAG_PICK\(\".*\", \".*\"\)$" include/kickos/diag.h)
+    def=$(grep -E "^#define $m +\".*\"$" include/kickos/diag.h)
     if [ -z "$def" ]; then
-        bad "kbanner() prints $m, which include/kickos/diag.h does not define as a two-column pick"
+        bad "kbanner() prints $m, which include/kickos/diag.h does not define as one literal"
         continue
     fi
     arg=$(grep -oE "$m, *[A-Za-z_][A-Za-z0-9_]*" <<< "$KBANNER" | head -n1 | sed -E 's/.*, *//')
@@ -61,41 +61,39 @@ for i in "${!MACROS[@]}"; do
         bad "the gate has no rendering of $m, which kbanner() prints"
         continue
     fi
-    for col in 1 2; do
-        fmt=$(sed -E "s/^#define $m +KICKOS_DIAG_PICK\(\"(.*)\", \"(.*)\"\)$/\\$col/" <<< "$def")
-        nconv=$(grep -oE '%[a-z]' <<< "$fmt" | wc -l)
-        while IFS= read -r tuple; do
-            args=()
-            if [ "$tuple" != "-" ]; then
-                IFS=$'\t' read -ra args <<< "$tuple"
-            fi
-            if [ "${#args[@]}" -ne "$nconv" ]; then
-                bad "the rendering '$tuple' of $m does not fit its format '$fmt'"
-                continue
-            fi
-            # shellcheck disable=SC2059
-            row=$(printf "$fmt" "${args[@]}")
-            for line in "$row" "$row$CR"; do
-                if [ "$i" -eq 0 ]; then
-                    grep -qE "$RESET_BOOT_TITLE_RE" <<< "$line" \
-                        || bad "RESET_BOOT_TITLE_RE does not match the title '$row'"
-                    if grep -qE "$RESET_BOOT_ROW_RE" <<< "$line"; then
-                        bad "RESET_BOOT_ROW_RE matches the title '$row'"
-                    fi
-                else
-                    grep -qE "$RESET_BOOT_ROW_RE" <<< "$line" \
-                        || bad "RESET_BOOT_ROW_RE does not match the banner row '$row' ($m)"
-                    if grep -qE "$RESET_BOOT_TITLE_RE" <<< "$line"; then
-                        bad "RESET_BOOT_TITLE_RE matches the banner row '$row' ($m)"
-                    fi
+    fmt=$(sed -E "s/^#define $m +\"(.*)\"$/\\1/" <<< "$def")
+    nconv=$(grep -oE '%[a-z]' <<< "$fmt" | wc -l)
+    while IFS= read -r tuple; do
+        args=()
+        if [ "$tuple" != "-" ]; then
+            IFS=$'\t' read -ra args <<< "$tuple"
+        fi
+        if [ "${#args[@]}" -ne "$nconv" ]; then
+            bad "the rendering '$tuple' of $m does not fit its format '$fmt'"
+            continue
+        fi
+        # shellcheck disable=SC2059
+        row=$(printf "$fmt" "${args[@]}")
+        for line in "$row" "$row$CR"; do
+            if [ "$i" -eq 0 ]; then
+                grep -qE "$RESET_BOOT_TITLE_RE" <<< "$line" \
+                    || bad "RESET_BOOT_TITLE_RE does not match the title '$row'"
+                if grep -qE "$RESET_BOOT_ROW_RE" <<< "$line"; then
+                    bad "RESET_BOOT_ROW_RE matches the title '$row'"
                 fi
-            done
-            nrows=$((nrows + 1))
-        done <<< "$renders"
-    done
+            else
+                grep -qE "$RESET_BOOT_ROW_RE" <<< "$line" \
+                    || bad "RESET_BOOT_ROW_RE does not match the banner row '$row' ($m)"
+                if grep -qE "$RESET_BOOT_TITLE_RE" <<< "$line"; then
+                    bad "RESET_BOOT_TITLE_RE matches the banner row '$row' ($m)"
+                fi
+            fi
+        done
+        nrows=$((nrows + 1))
+    done <<< "$renders"
 done
 [ "$nrows" -gt 0 ] || fail "rendered no banner row"
-for line in '[blink] tick 41' 'ok 1 - case' '1..3' '# done' '[hello] up' 'not ok 2' 'a' 'h' 'c'; do
+for line in '[blink] tick 41' 'ok 1 - case' '1..3' '# done' '[hello] up' 'not ok 2'; do
     if grep -qE "$RESET_BOOT_ROW_RE|$RESET_BOOT_TITLE_RE" <<< "$line"; then
         bad "an ordinary line is taken for a banner row: '$line'"
     fi
@@ -163,14 +161,17 @@ fi
 
 # The earlier image prints on past the reset point until the connect stops it.
 tail_of_earlier late
-printf 'ck 43\r\n[blink] tick 44\r\nK 0.5.1\r\n\r\nb f302nucleo\r\nc 0355b756\r\n[hello] up\r\n' >> "$TMP/late"
-cut_log late "$SIZE" || bad "a terse boot after the earlier image's last lines is refused: $(cat "$TMP/why")"
-head -n 1 "$TMP/late" | grep -q '^K 0.5.1' \
-    || bad "the cut does not start at the terse title: $(head -n 1 "$TMP/late")"
+printf 'ck 43\r\n[blink] tick 44\r\n' >> "$TMP/late"
+banner "$TMP/late" "$TITLE" "$COMMIT"
+printf '[hello] up\r\n' >> "$TMP/late"
+cut_log late "$SIZE" || bad "a boot after the earlier image's last lines is refused: $(cat "$TMP/why")"
+if grep -q 'tick 44' "$TMP/late"; then
+    bad "the earlier image's lines past the reset point survive the cut"
+fi
 
 # A boot whose head landed ahead of the reset point: what follows it is no whole banner.
 tail_of_earlier headless
-printf '\r\nm off\r\ns tickless\r\nc 0355b756\r\nh 1\r\n\r\n[hello] up\r\n' >> "$TMP/headless"
+printf '\r\n   mpu     off\r\n   sched   tickless\r\n   commit  0355b756\r\n   heap    1 KiB available\r\n\r\n[hello] up\r\n' >> "$TMP/headless"
 if cut_log headless "$SIZE"; then
     bad "a capture whose boot lost its banner title ahead of the reset point is kept headless"
 fi
@@ -179,7 +180,7 @@ grep -q 'arrived without its banner title' "$TMP/why" \
 
 # A damaged title is refused even where a later boot's whole one would anchor a cut, which would
 # hide the first boot.
-for name in damaged notitle onlycommit nobanner tailrows tailrowsfull; do
+for name in damaged notitle onlycommit nobanner tailrows; do
     tail_of_earlier "$name"
 done
 banner "$TMP/damaged" '   KckOS 0.5.1  -  micrkernel RTOS' '   cmmit  0355b756'
@@ -192,11 +193,9 @@ banner "$TMP/nobanner" '   KckOS 0.5.1  -  micrkernel RTOS' '   cmmit  0355b756'
 printf '1..3\r\nok 1\r\n' >> "$TMP/nobanner"
 banner "$TMP/nobanner" "$TITLE" "$COMMIT"
 # Lost through its commit row: only the heap and kernel-stack rows are left of that boot.
-printf 'h 64\r\nk 1024 8 8192\r\n\r\n[hello] up\r\n' >> "$TMP/tailrows"
+printf '   heap    64 KiB available\r\n   kstack  1024 B x 8 = 8192 B\r\n\r\n' >> "$TMP/tailrows"
 banner "$TMP/tailrows" "$TITLE" "$COMMIT"
-printf '   heap    64 KiB available\r\n   kstack  1024 B x 8 = 8192 B\r\n\r\n' >> "$TMP/tailrowsfull"
-banner "$TMP/tailrowsfull" "$TITLE" "$COMMIT"
-for name in damaged notitle onlycommit nobanner tailrows tailrowsfull; do
+for name in damaged notitle onlycommit nobanner tailrows; do
     if cut_log "$name" "$SIZE"; then
         bad "the $name capture, whose boot after the reset lost its title, is not refused"
     fi

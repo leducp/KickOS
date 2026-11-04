@@ -17,19 +17,17 @@
 #include <kickos/sys/budget.h>
 
 #define KOS_IMAGE_MAGIC 0x474d494bu // "KIMG" little-endian
-#define KOS_IMAGE_VERSION 5u
+#define KOS_IMAGE_VERSION 6u
 
 // The section the header object places it in, KEEP'd first in the image by the final script.
 #define KOS_IMAGE_HEADER_SECTION ".kickos_image_header"
 
-// Where the init is an image of its own (KICKOS_INIT_IMAGE), the image link puts an object
-// marked KOS_IMAGE_INIT_OBJECT() in the init's image alone, one marked KOS_IMAGE_BOTH_OBJECT()
-// in every image, one marked KOS_IMAGE_TASK_OBJECT(k) in the image of declaration k alone, one
-// marked KOS_IMAGE_SYSTEM_OBJECT() in the image of every declaration, a program's included, and
-// any other in the image of every declaration not running a program of another target. Each
-// names a local absolute symbol and costs no byte. Written at file scope, with no semicolon after
-// it; k is an integer literal or a macro expanding to one.
-#if KICKOS_INIT_IMAGE
+// The image link puts an object marked KOS_IMAGE_INIT_OBJECT() in the init's image alone, one
+// marked KOS_IMAGE_BOTH_OBJECT() in every image, one marked KOS_IMAGE_TASK_OBJECT(k) in the image
+// of declaration k alone, one marked KOS_IMAGE_SYSTEM_OBJECT() in the image of every declaration, a
+// program's included, and any other in the image of every declaration not running a program of
+// another target. Each names a local absolute symbol and costs no byte. Written at file scope, with
+// no semicolon after it; k is an integer literal or a macro expanding to one.
 #define KOS_IMAGE_INIT_OBJECT() __asm__(".set __kickos_image_init_object, 1");
 #define KOS_IMAGE_BOTH_OBJECT() __asm__(".set __kickos_image_both_object, 1");
 #define KOS_IMAGE_SYSTEM_OBJECT() __asm__(".set __kickos_image_system_object, 1");
@@ -38,13 +36,6 @@
 #define KOS_IMAGE_TASK_OBJECT(k) __asm__(".set __kickos_image_task_object, " KOS_IMAGE_TASK_STR(k));
 // In a task image's object, beside KOS_IMAGE_TASK_OBJECT: that task is restarted or created on request.
 #define KOS_IMAGE_RESTARTS_OBJECT() __asm__(".set __kickos_image_task_restarts, 1");
-#else
-#define KOS_IMAGE_INIT_OBJECT()
-#define KOS_IMAGE_BOTH_OBJECT()
-#define KOS_IMAGE_SYSTEM_OBJECT()
-#define KOS_IMAGE_TASK_OBJECT(k)
-#define KOS_IMAGE_RESTARTS_OBJECT()
-#endif
 
 #ifdef __cplusplus
 extern "C"
@@ -139,6 +130,7 @@ struct kos_image_header
     uintptr_t decl_start;     // a declared task's entry thread's, which takes struct kos_task_args
     uintptr_t reent_template; // libc's state in .data; the image's copy of it primes each thread
     uintptr_t reent_width;
+    uintptr_t reent_carve;    // what a pool thread's stack gives that state, its cell included
     uintptr_t reent_seat;     // the word the kernel seats at each switch, 0 where none is
     uintptr_t needs;          // shared code images this image calls into
     uintptr_t needs_count;
@@ -155,8 +147,8 @@ struct kos_image_header
 // The image's own header, in the image.
 extern struct kos_image_header const kickos_image_header;
 
-// Where the init is an image of its own, the program name of the app's images beside it, in the
-// init's image, and the same name in each of the app's.
+// The program name of the app's images beside it, in the init's image, and the same name in
+// each of the app's.
 extern char const kickos_init_app_program[];
 extern char const kickos_image_program[];
 

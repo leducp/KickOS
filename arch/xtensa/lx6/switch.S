@@ -231,7 +231,7 @@ arch_start:
 /* base-save-area linkage when a deep non-blocking call chain wraps WindowBase       */
 /* around the whole 64-AR file. Without it the frame is a phantom with no caller     */
 /* linkage and the wrap corrupts a saved PC (Xtensa ISA, Windowed Register Option).  */
-/* If entry returns, route to kickos_thread_return (noreturn).                       */
+/* If entry returns, route to the frame's a8, now a4 (noreturn).                     */
 /* ------------------------------------------------------------------------- */
     .align 4
     .global _thread_trampoline
@@ -240,7 +240,7 @@ _thread_trampoline:
     entry   a1, 32                /* open a real CALL4 frame: a2=entry, a3=arg */
     mov     a10, a3               /* arg -> first C argument (call8 window) */
     callx8  a2                    /* entry(arg) */
-    call8   kickos_thread_return  /* noreturn */
+    callx8  a4                    /* noreturn */
     .size _thread_trampoline, .-_thread_trampoline
 
 /* ------------------------------------------------------------------------- */

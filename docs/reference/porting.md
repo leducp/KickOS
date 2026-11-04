@@ -90,7 +90,7 @@ so take the class's printed depth on a real board rather than copying another ar
 
 Two chips of one vendor family may share a translation unit. It sits in a family directory
 beside the chip directories, named for exactly the parts it covers
-(`arch/arm/chip/stm32f1f3/`, shared by `stm32f103` and `stm32f302`), and each chip opts in
+(`arch/arm/chip/rp2xxx/`, shared by `rp2040` and `rp2350`), and each chip opts in
 by naming it in its chip file, `family: { dir: <dir>, sources: [<files>] }`, each path below
 `arch/`.
 
@@ -521,11 +521,11 @@ what differs from the declared defaults. Any other setting is the YAML's: the ch
 board file or the composition, which the compose tool emits for the build (a chip's family
 sources, whether a fault exits, its banner core). CMake holds what neither can: the build
 graph itself, the toolchain's flags, and a figure CMake computes from both, such as the TLS
-stride. So almost nothing about a board's provisioning is stated in CMake. The exceptions are
-`KICKOS_APPDATA_SIZE` and `KICKOS_KERNEL_DATA_RESERVE`: they are CMake cache variables that
-no Kconfig symbol declares, read by the chip linker scripts alone, which state a per-chip
-`#ifndef` default and take a preset's value over it. So they appear in no `.config` and the
-AMP configuration fingerprint cannot see them. `arch/CMakeLists.txt` builds the define list
+stride. So almost nothing about a board's provisioning is stated in CMake. The exception is
+`KICKOS_KERNEL_DATA_RESERVE`: a CMake cache variable that no Kconfig symbol declares, read by
+the chip linker scripts alone, which state a per-chip `#ifndef` default and take a preset's
+value over it. So it appears in no `.config` and the AMP configuration fingerprint cannot see
+it. `arch/CMakeLists.txt` builds the define list
 for the script's cpp as an explicit allowlist, so a new one of these reaches the script only
 when a line there passes it. A preset's value lands in `CMakeCache.txt` as
 `NAME:UNINITIALIZED`, which means REMOVING an override later needs the build tree deleted,
@@ -550,10 +550,8 @@ scripts that carry the pow2 window. Read the reserve a chip needs from its WIDES
 one link: on `rx72m` the kernel `.bss` differs between images of the same preset, and a reserve
 sampled from a narrow one is too low.
 
-The rule, both ld facts below, the pin and the three ASSERTs live once in
-`arch/common/kernel_data_reserve.ld.h`, which every enforcing script includes and invokes as
-`KICKOS_KERNEL_DATA_RESERVE_DECL(<base>)` and as `KICKOS_APPDATA_SECTION(<bss end>)` in place
-of the `.appdata` section header. A script states only its reserve default, its kernel-data base
+The declared base lives once in `arch/common/kernel_data_reserve.ld.h`, which every enforcing
+script includes and invokes as `KICKOS_KERNEL_DATA_RESERVE_DECL(<base>)`. A script states only its reserve default, its kernel-data base
 and its `.bss` end symbol. `arch/common/app_window.ld.h`, which the build preprocesses after
 every chip script whatever it includes, refuses a window that does not start at
 `_kernel_data_top`, or within 32 bytes of kernel `.bss` on a script that declares none, and a
@@ -632,7 +630,7 @@ so what happens to the rest depends on who put the name there:
   state.
 - A name Kconfig does not declare at all is DROPPED, because the same namespace carries
   the build-graph switches (`KICKOS_BUILD_TESTS`, `KICKOS_BUILD_APPS`, `KICKOS_SMP_TRACE`),
-  the interpreter and toolchain locations, and `KICKOS_APPDATA_SIZE` above. CMake's own
+  the interpreter and toolchain locations, and `KICKOS_KERNEL_DATA_RESERVE` above. CMake's own
   non-fatal "manually-specified variables were not used" notice is what still reports one
   that is neither a knob nor a switch, so a typo is visible but not fatal. A candidate's
   value is read through its cache `VALUE` property for exactly that reason: dereferencing
@@ -965,10 +963,7 @@ system does not survive does; an ordered end does what it asks and reads none of
 `kickos_terminal_outcome_apply` (kernel.h) hands the chip to it and returns where it is unset,
 halt, a word whose two halves disagree, or an outcome the chip lacks. The software fault reporter
 calls it after its drain, and so must every `kfault_terminate` a port defines, after its own drain
-and before it stops the core. On a chip that holds one task, the exit system call with
-`KOS_EXIT_IMAGE` takes it too (`kickos_image_end`): that chip's C library ends the whole image
-this way when the app calls `exit()` or a thread takes a libc lock from a dead holder
-(boards.md, the Minimum tier's one-task rule).
+and before it stops the core.
 
 ### The critical section (`arch_irq_save`, `arch_irq_restore`)
 
@@ -1924,9 +1919,8 @@ fourteen real boards (archived `M4.5_footprint_meas.md` s.3):
 
 So the kernel plus a small app costs **18.7 to 23.0 KiB at `-Os`**, of which the kernel core is
 a flat ~12.5 KiB across boards (archived `M4.5_footprint_meas.md` s.4). A 32 KiB part holds
-that with room for an app, but **no chip in the tree declares one**: the smallest FLASH
-regions are 64K, on `stm32f302` (`arch/arm/chip/stm32f302/stm32f302.ld:13`) and
-`stm32f103` (`arch/arm/chip/stm32f103/stm32f103.ld:17`). The 32 KiB run floor is derived
+that with room for an app, but **no chip in the tree declares one**: the floor is 128 KiB of
+flash (boards.md, *Minimum configuration*). The 32 KiB run floor is derived
 from the measured `hello` sizes, not witnessed on a part.
 
 The two non-ARM ISAs cost 1.0 to 2.3 KiB more than the ARM maximum. `esp32c6-wroom`
@@ -1960,13 +1954,13 @@ linker-script symbol, so the split is readable out of any linked ELF:
   that is five blocks of the armv6m 896 and not nine -- and its defconfig
   carries the derivation (`../../boards/microbit/configs/base/defconfig`).
 - **`.userheap`** -- the composition's `heap:`, carved *below* `__kickos_ram_start` by
-  `stm32f302.ld` through the `KICKOS_USER_HEAP_SIZE` link symbol, so it trades against the
+  the chip's linker script through the `KICKOS_USER_HEAP_SIZE` link symbol, so it trades against the
   arena 1:1.
 - **arena** -- `[__kickos_ram_start, __kickos_ram_end)`
-  (`arch/arm/chip/stm32f302/stm32f302.ld:110-111`), the MPU-governed user-RAM pool.
+  (`arch/arm/common/cortexm.ld.h`), the MPU-governed user-RAM pool.
   **Every thread stack comes from here**, as does every `kos_ram_alloc`.
 - **`_kernel_stack_size`** -- the MSP/boot stack, taken off the top
-  (`arch/arm/chip/stm32f302/stm32f302.ld:18`, 2K there; `__kickos_ram_end = _estack -
+  (`arch/arm/chip/stm32f411/stm32f411.ld:22`, 8K there; `__kickos_ram_end = _estack -
   _kernel_stack_size`).
 
 `arm-none-eabi-size` reports `.userheap` inside its `bss` column (the section is
@@ -2207,7 +2201,7 @@ Four readings, and they are the point of the section:
   part then runs the suite at 63 ok / 0 not ok / 5 skipped. Silicon-witnessed both ways,
   measured at `124b68c`. That reading predates `9da898e`, which split this board's suite; it is
   SIX images today, so the board emits no single `1..63` plan; read the plan sizes off the
-  configure line (see `boards.md`, *The selftest ships as SEVERAL images on five boards*).
+  configure line (see `boards.md`, *The selftest ships as SEVERAL images on three boards*).
 - **SRAM size is not the ranking.** `bluepill-c8` has 4 KiB *more* SRAM than `f302nucleo`
   and used to host *fewer* threads, missing `hello`'s second stack by 96 bytes, purely
   because its heap carve was 8K against f302's 2K. That 8K was inherited from its

@@ -125,6 +125,36 @@ namespace kickos
                     ::testing::ExitedWithCode(1), "kickos_terminate\\(7\\) ended the arm");
             }
 
+            // `worker` joins root's task, beside root.
+            void seat_roots_worker(Thread* worker, uint32_t root_authority)
+            {
+                Thread* const root = seat_pool(ThreadPool::ROOT_INDEX, 10);
+                cap_seat_authority(root, root_authority);
+                Task* const tk = task(0);
+                join_task(root, tk);
+                join_task(worker, tk);
+                cap_seat_authority(worker, 0u);
+            }
+
+            TEST_F(SysShutdown, a_task_exit_of_roots_task_ends_the_system_with_its_status)
+            {
+                seat_roots_worker(caller_, AUTH_SYSTEM);
+                EXPECT_EXIT(
+                    {
+                        dup2(STDERR_FILENO, STDOUT_FILENO);
+                        (void)syscall_dispatch(KOS_SYS_EXIT, 3, KOS_EXIT_TASK, 0, 0);
+                    },
+                    ::testing::ExitedWithCode(1), "kickos_terminate\\(3\\) ended the arm");
+            }
+
+            TEST_F(SysShutdown, a_task_exit_of_roots_task_is_refused_as_roots_exit_without_system)
+            {
+                seat_roots_worker(caller_, CAP_AUTH_ALL & ~AUTH_SYSTEM);
+                KICKOS_EXPECT_PANIC(
+                    (void)syscall_dispatch(KOS_SYS_EXIT, 3, KOS_EXIT_TASK, 0, 0),
+                    diag::kRootExitRefused);
+            }
+
             TEST_F(SysShutdown, reboot_is_refused_eperm_without_system)
             {
                 EXPECT_EQ(shutdown(CAP_AUTH_ALL & ~AUTH_SYSTEM, KOS_SHUTDOWN_REBOOT), -KOS_EPERM);

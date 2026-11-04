@@ -32,8 +32,9 @@ void free(void*);
 void kickos_heap_seat(void);
 static char* s_brk = _kickos_heap_start;
 
-// Unserialised: two preempted threads can both pass the bounds check and return the same
-// prev. The window is granted to every unprivileged thread, so no task boundary confines it.
+// Unserialised: newlib calls it under malloc's lock, and a direct sbrk() outside that lock can
+// return the prev another caller got. The window is granted to every unprivileged thread, so no
+// task boundary confines it.
 static void* heap_bump(intptr_t incr)
 {
     // The sum is taken on integers: forming s_brk + incr first is undefined as soon as it

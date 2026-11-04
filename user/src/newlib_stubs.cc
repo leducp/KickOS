@@ -6,18 +6,83 @@
 // sim, where host glibc already provides these symbols.
 
 #include <kickos/arch/arch.h>
-#include <kickos/chip_limits.h> // KICKOS_CHIP_ONE_TASK
 #include <kickos/sys.h>
 #include <kickos/sys/emit.h>
 
 #include <errno.h>
+#include <limits.h>
+#include <signal.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/stat.h>
 #include <sys/time.h>
+#include <time.h>
+
+// newlib states the POSIX clocks only where the toolchain configures them.
+#ifndef CLOCK_MONOTONIC
+#define CLOCK_MONOTONIC ((clockid_t)4)
+#endif
+
+// POSIX.1-2024's <limits.h> value, which newlib does not state.
+#ifndef GETENTROPY_MAX
+#define GETENTROPY_MAX 256
+#endif
+
+extern "C"
+{
+int clock_gettime(clockid_t id, struct timespec* ts);
+int clock_settime(clockid_t id, struct timespec const* ts);
+int nanosleep(struct timespec const* req, struct timespec* rem);
+#if defined(__x86_64__)
+bool kickos_user_rdseed_present(void);
+// One RDSEED; false when the processor has no seed ready.
+bool kickos_user_rdseed(uint64_t* word);
+#endif
+}
 
 namespace
 {
+    constexpr uint64_t NS_PER_SEC = 1000000000ull;
+
+    // A time a timespec names in nanoseconds, saturated at the largest; false for a negative
+    // time or a nanosecond field outside [0, 1e9).
+    bool timespec_ns(struct timespec const* ts, uint64_t* ns)
+    {
+        if (ts->tv_sec < 0 or ts->tv_nsec < 0 or ts->tv_nsec >= static_cast<long>(NS_PER_SEC))
+        {
+            return false;
+        }
+        uint64_t const sec = static_cast<uint64_t>(ts->tv_sec);
+        uint64_t const nsec = static_cast<uint64_t>(ts->tv_nsec);
+        *ns = UINT64_MAX;
+        if (sec <= (UINT64_MAX - nsec) / NS_PER_SEC)
+        {
+            *ns = sec * NS_PER_SEC + nsec;
+        }
+        return true;
+    }
+
+#if defined(__x86_64__)
+    // A seed not ready is a delay, never a failure: the draw repeats until it is.
+    void rdseed_fill(unsigned char* out, size_t len)
+    {
+        size_t done = 0;
+        while (done < len)
+        {
+            uint64_t word = 0;
+            while (not kickos_user_rdseed(&word))
+            {
+                __asm__ volatile("pause");
+            }
+            for (uint32_t byte = 0; byte < 8 and done < len; byte++)
+            {
+                out[done] = static_cast<unsigned char>(word >> (8u * byte));
+                done = done + 1;
+            }
+        }
+    }
+#endif
+
     int posix_errno(int32_t error)
     {
         switch (error)
@@ -79,6 +144,12 @@ int _read(int, char*, int)
 {
     return 0;
 }
+// No path names a file: fopen, freopen and the rest fail as for a file that does not exist.
+int _open(char const*, int, ...)
+{
+    errno = ENOENT;
+    return -1;
+}
 int _close(int)
 {
     return -1;
@@ -103,85 +174,143 @@ int _getpid(void)
 {
     return 1;
 }
-int _kill(int, int)
+
+void _exit(int code) __attribute__((noreturn));
+
+// A signal to the caller's own process takes its default action, newlib's raise() having run
+// any handler: the task ends with 128 + sig where that action ends a process, so abort() ends it
+// with 134. No signal reaches another process.
+int _kill(int pid, int sig)
 {
-    return -1;
+    if (sig < 0 or sig >= NSIG)
+    {
+        errno = EINVAL;
+        return -1;
+    }
+    if (pid != _getpid() and pid != 0)
+    {
+        errno = ESRCH;
+        return -1;
+    }
+    switch (sig)
+    {
+        case 0:
+        case SIGCHLD:
+        case SIGCONT:
+        case SIGURG:
+        case SIGWINCH:
+        {
+            return 0;
+        }
+        case SIGSTOP:
+        case SIGTSTP:
+        case SIGTTIN:
+        case SIGTTOU:
+        {
+            errno = EINVAL;
+            return -1;
+        }
+        default:
+        {
+            _exit(128 + sig);
+        }
+    }
 }
 
-#if defined(__riscv) || defined(__x86_64__)
-// Required to LINK the RISC-V full-C++ image: KEEPing .eh_frame (DWARF EH) retains the
-// libc arc4random/getentropy FDEs, which pin the getentropy dependency chain against
-// --gc-sections, so _getentropy must resolve; the x86_64 image is linked without
-// --gc-sections at all. NOT a cryptographic source: KickOS exposes no HW RNG, and this is
-// seeded off the monotonic clock only so the buffer is non-constant. Callers needing real
-// entropy must wait for an RNG driver. Not ARM, which uses EHABI .ARM.exidx, keeps no
-// .eh_frame, and never pulls this chain.
+// RDSEED where the x86_64 processor offers it; no other source is reached. arc4random raises
+// SIGKILL when this fails.
 int _getentropy(void* buf, size_t len)
 {
-    uint64_t x = kos_clock_now();
-    unsigned char* p = static_cast<unsigned char*>(buf);
-    for (size_t i = 0; i < len; i++)
+#if defined(__x86_64__)
+    if (kickos_user_rdseed_present())
     {
-        x = x * 6364136223846793005ull + 1442695040888963407ull;
-        p[i] = static_cast<unsigned char>(x >> 56);
+        if (len > GETENTROPY_MAX)
+        {
+            errno = EINVAL;
+            return -1;
+        }
+        rdseed_fill(static_cast<unsigned char*>(buf), len);
+        return 0;
     }
-    return 0;
-}
-#elif defined(__XTENSA__) or defined(__RX__)
-// libstdc++'s std::random_device and libc's arc4random reach getentropy, and no entropy
-// source exists here.
-int _getentropy(void*, size_t)
-{
+#else
+    (void)buf;
+    (void)len;
+#endif
     errno = ENOSYS;
     return -1;
 }
-#endif
 
-// Wall-clock offset over the monotonic kos_clock_now(): unix_ns = now() + offset. Wall time
-// reads boot-relative until kos_clock_set_realtime syncs it.
-static uint64_t s_wall_offset_ns = 0;
-
-void kos_clock_set_realtime(uint64_t unix_ns)
-{
-    s_wall_offset_ns = unix_ns - kos_clock_now();
-}
-
-// Backs newlib's gettimeofday(), and so std::chrono::system_clock::now(). This
-// toolchain's libstdc++ implements steady_clock::now() the same way, also through
-// gettimeofday, so steady_clock is NOT monotonic here: code needing monotonic time must
-// bypass libc and call kos_clock_now() directly (see kickcat's OS/KickOS/Time.cc).
+// Backs time().
 int _gettimeofday(struct timeval* tv, void*)
 {
-    uint64_t wall_ns = kos_clock_now() + s_wall_offset_ns;
-    tv->tv_sec = static_cast<time_t>(wall_ns / 1000000000ull);
-    tv->tv_usec = static_cast<suseconds_t>((wall_ns % 1000000000ull) / 1000ull);
+    if (tv != nullptr)
+    {
+        uint64_t const ns = kos_clock_realtime();
+        tv->tv_sec = static_cast<time_t>(ns / NS_PER_SEC);
+        tv->tv_usec = static_cast<suseconds_t>((ns % NS_PER_SEC) / 1000u);
+    }
     return 0;
 }
 
-#if KICKOS_CHIP_ONE_TASK
-// The init shares this image's C library, so the whole image ends.
-void _exit(int code)
+int clock_gettime(clockid_t id, struct timespec* ts)
 {
-    arch_syscall(KOS_SYS_EXIT, static_cast<uintptr_t>(code), KOS_EXIT_IMAGE, 0, 0);
-    while (true)
+    uint64_t ns = 0;
+    if (id == CLOCK_REALTIME)
     {
+        ns = kos_clock_realtime();
     }
+    else if (id == CLOCK_MONOTONIC)
+    {
+        ns = kos_clock_now();
+    }
+    else
+    {
+        errno = EINVAL;
+        return -1;
+    }
+    ts->tv_sec = static_cast<time_t>(ns / NS_PER_SEC);
+    ts->tv_nsec = static_cast<long>(ns % NS_PER_SEC);
+    return 0;
 }
 
-// newlib's exit() would run the image's exit handlers and flush its streams, the init's too.
-void exit(int code)
+int clock_settime(clockid_t id, struct timespec const* ts)
 {
-    _exit(code);
+    uint64_t ns = 0;
+    if (id != CLOCK_REALTIME or not timespec_ns(ts, &ns))
+    {
+        errno = EINVAL;
+        return -1;
+    }
+    int const rc = kos_clock_set_realtime(ns);
+    if (rc != 0)
+    {
+        errno = posix_errno(rc);
+        return -1;
+    }
+    return 0;
 }
-#else
+
+// The sleep is never broken, so `rem` is never written.
+int nanosleep(struct timespec const* req, struct timespec*)
+{
+    uint64_t ns = 0;
+    if (not timespec_ns(req, &ns))
+    {
+        errno = EINVAL;
+        return -1;
+    }
+    kos_sleep_ns(ns);
+    return 0;
+}
+
+// The whole task ends, its other threads stopped, with `code` its status.
 void _exit(int code)
 {
-    kos_exit(code);
+    arch_syscall(KOS_SYS_EXIT, static_cast<uintptr_t>(code), KOS_EXIT_TASK, 0, 0);
     while (true)
     {
     }
 }
-#endif
 
 // It must STAY empty: every chip .ld routes the app .fini_array into a section of its own
 // and ASSERTs it empty, and newlib's own array bounds are weak-undefined in these images,
@@ -199,6 +328,7 @@ void _fini(void)
 // unaliased, stdout is lost silently.
 int write(int fd, char const* buf, int len) __attribute__((alias("_write")));
 int read(int, char*, int) __attribute__((alias("_read")));
+int open(char const*, int, ...) __attribute__((alias("_open")));
 int close(int) __attribute__((alias("_close")));
 int isatty(int) __attribute__((alias("_isatty")));
 int lseek(int, int, int) __attribute__((alias("_lseek")));
@@ -209,10 +339,8 @@ int gettimeofday(struct timeval* tv, void*) __attribute__((alias("_gettimeofday"
 int getentropy(void* buf, size_t len) __attribute__((alias("_getentropy")));
 #endif
 
-#ifdef __RX__
-// SjLj atexit/EH registration references __dso_handle and the RX libc may not provide
-// one. Weak on purpose (allowlisted in tests/static/weak_allowlist.txt) so a libc that ships
-// its own keeps ownership of the handle the atexit registrations key on.
+// The handle the C++ runtime's atexit registrations key on, which no KickOS image's start files
+// define. Weak (allowlisted in tests/static/weak_allowlist.txt) so a libc that ships its own
+// keeps it.
 __attribute__((weak)) void* __dso_handle = nullptr;
-#endif
 }

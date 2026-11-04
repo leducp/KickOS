@@ -46,7 +46,7 @@ if(KICKOS_AMP_NODE AND KICKOS_AMP_OWN_IMAGE)
     KICKOS_AMP_TEXT_BASE=${KICKOS_AMP_TEXT_BASE}
     KICKOS_AMP_TEXT_SHARE=${KICKOS_AMP_TEXT_SHARE})
   # The fingerprint covers the Kconfig half alone: two images differing only in a cache entry
-  # that is no Kconfig symbol, KICKOS_APPDATA_SIZE among them, carry the same one.
+  # that is no Kconfig symbol, KICKOS_KERNEL_DATA_RESERVE among them, carry the same one.
   # build-partition.sh covers that half by configuring every peer from node 0's cache entries.
   add_link_options("LINKER:--defsym=kickos_amp_config_fp_hi=0x${KICKOS_AMP_CONFIG_FP_HI}"
                    "LINKER:--defsym=kickos_amp_config_fp_lo=0x${KICKOS_AMP_CONFIG_FP_LO}")

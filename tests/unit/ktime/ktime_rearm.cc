@@ -99,6 +99,19 @@ namespace kickos
     }
 
 
+    // realtime.cc is not linked here, and no arm here parks toward the wall clock.
+    uint64_t realtime_now()
+    {
+        fprintf(stderr, "realtime_now: no wall clock in this gate\n");
+        abort();
+    }
+
+    void realtime_deadline_arm(Thread*, uint64_t, Held)
+    {
+        fprintf(stderr, "realtime_deadline_arm: no wall clock in this gate\n");
+        abort();
+    }
+
     uint32_t park_queueless(Thread* c, WaitKind kind, void* obj, Held)
     {
         c->state.block();

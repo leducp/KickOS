@@ -20,6 +20,7 @@ copy  _kickos_heap_start          _kickos_heap_start
 copy  _kickos_heap_limit          _kickos_heap_limit
 copy  __kickos_tls_segment_start  __kickos_tls_segment_start
 copy  __kickos_tls_segment_end    __kickos_tls_segment_end
+copy  __kickos_reent_carve        __kickos_reent_carve
 same  __global_pointer$           __global_pointer$
 alias __kickos_tdata_start        __kickos_tdata_start
 alias __kickos_tdata_end          __kickos_tdata_end

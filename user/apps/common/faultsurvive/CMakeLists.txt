@@ -3,26 +3,20 @@
 
 # faultsurvive_image(<target> <mode> [<definition>...])
 #   One image of the family: main.cc as <target>, and its faulter peer.cc as <target>_peer, both
-#   built for fault mode <mode>. A chip that holds one task has no task for the faulter and runs
-#   main alone, which skips.
+#   built for fault mode <mode>.
 function(faultsurvive_image target mode)
   add_executable(${target} main.cc)
   target_include_directories(${target} PRIVATE "${PROJECT_SOURCE_DIR}/user/apps/common/include")
   target_compile_definitions(${target} PRIVATE KICKOS_FS_MODE=${mode} ${ARGN}
                              "KICKOS_FS_PEER=\"${target}_peer\"")
-  if(KICKOS_CHIP_ONE_TASK)
-    target_link_libraries(${target} PRIVATE KickOS::kickos KickOS::system_default)
-  else()
-    add_executable(${target}_peer peer.cc)
-    target_include_directories(${target}_peer PRIVATE
-                               "${PROJECT_SOURCE_DIR}/user/apps/common/include")
-    target_link_libraries(${target}_peer PRIVATE kickos)
-    target_compile_definitions(${target}_peer PRIVATE KICKOS_FS_MODE=${mode} ${ARGN})
-    set(FS_APP ${target})
-    configure_file("${CMAKE_CURRENT_SOURCE_DIR}/system.yaml.in"
-                   "${CMAKE_CURRENT_BINARY_DIR}/${target}.yaml" @ONLY)
-    kickos_app_system(${target} COMPOSITION "${CMAKE_CURRENT_BINARY_DIR}/${target}.yaml")
-  endif()
+  add_executable(${target}_peer peer.cc)
+  target_include_directories(${target}_peer PRIVATE "${PROJECT_SOURCE_DIR}/user/apps/common/include")
+  target_link_libraries(${target}_peer PRIVATE kickos)
+  target_compile_definitions(${target}_peer PRIVATE KICKOS_FS_MODE=${mode} ${ARGN})
+  set(FS_APP ${target})
+  configure_file("${CMAKE_CURRENT_SOURCE_DIR}/system.yaml.in"
+                 "${CMAKE_CURRENT_BINARY_DIR}/${target}.yaml" @ONLY)
+  kickos_app_system(${target} COMPOSITION "${CMAKE_CURRENT_BINARY_DIR}/${target}.yaml")
   kickos_emit_image(${target})
 endfunction()
 

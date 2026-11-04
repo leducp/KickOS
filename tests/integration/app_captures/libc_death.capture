@@ -11,7 +11,7 @@
    sched   tickless
 
 libc_death: start
-libc_death: the victim died inside printf holding the libc lock
+libc_death: the victim died inside printf holding stdout's lock
 
 === THREAD FAULT === thread 'main' killed, system continues
   PC=0xffc00682 MPESTS=0x6

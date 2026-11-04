@@ -23,11 +23,7 @@ extern "C"
         build.translating = KICKOS_HAVE_ASPACE != 0;
         build.sp_masked = KICKOS_TLS != 0 and KICKOS_TLS_FROM_SP != 0;
         build.multicore = KICKOS_KERNEL_CORES > 1;
-#if KICKOS_INIT_IMAGE
         build.program = kickos_init_app_program;
-#else
-        build.program = reinterpret_cast<char const*>(kickos_image_header.program);
-#endif
         kickos::init::Walk walk{kickos_table, build};
         walk.run();
     }

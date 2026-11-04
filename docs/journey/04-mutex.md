@@ -298,7 +298,8 @@ kernel's mutex code did not run for either call.
 
 ### Stop 4: the C library's locks are two words
 **Where:** `user/src/newlib_lock.cc`, `LibcLock`, `s_libc`, `s_malloc`, `holder_of`,
-`libc_lock_take`, `libc_lock_acquire`, `libc_lock_release`, `kos_libc_lock`;
+`libc_lock_take`, `libc_lock_acquire`, `libc_lock_release`, `kos_libc_malloc_lock`,
+`kos_libc_file_lock`;
 `user/include/kickos/sys.h`, `kickos_mutex_lock_entry`
 
 The C library (newlib) protects its own shared state, the `FILE` buffers and the heap, with locks.
@@ -347,8 +348,8 @@ no entry at all, a lock that was freed meanwhile. Any other refusal traps the th
 `-KOS_EOWNERDEAD` on either lock: a heap, a stream or an environment that a dead thread left half
 edited would corrupt every later call silently. Taking the libc lock while
 holding malloc's traps too, since newlib never takes them in that order. A program that needs the
-word itself, for instance to try it, gets it from `kos_libc_lock(KOS_LIBC_LOCK_STDIO)` or
-`kos_libc_lock(KOS_LIBC_LOCK_MALLOC)`.
+word itself, for instance to try it, gets it from `kos_libc_file_lock(stream)` or
+`kos_libc_malloc_lock()`.
 
 **Try it:** on `libcrace`, `break kos_mutex_lock`, `continue`, `bt 7`:
 

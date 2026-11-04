@@ -96,13 +96,13 @@ load plain 'picotool v1.1.2 (Linux, GNU-12.2.0, Release)' '' \
     || bad "a load with no window to erase is refused over picotool 1.x: $(tail -n 1 "$TMP/plain.out")"
 
 # A route whose load erases nothing refuses windows to erase.
-printf 'RIG_CONSOLE_F302NUCLEO=%s\n' "$TMP/no-such-console" > "$TMP/rig.conf"
+printf 'RIG_CONSOLE_F411DISCO=%s\n' "$TMP/no-such-console" > "$TMP/rig.conf"
 if PEER_ERASE='0x10100000:0x10200000' KICKOS_RIG="$TMP/rig.conf" BENCH_HOST= \
-       bash tools/bench/bench-capture.sh f302nucleo planted "$TMP/image" "$TMP/st.log" \
+       bash tools/bench/bench-capture.sh f411disco planted "$TMP/image" "$TMP/st.log" \
        > "$TMP/st.out" 2>&1; then
-    bad "an f302nucleo capture with peer windows to erase is accepted"
-elif ! grep -qF "and f302nucleo's load erases none" "$TMP/st.out"; then
-    bad "an f302nucleo capture with peer windows to erase is refused, but not for them: $(grep REFUSING "$TMP/st.out")"
+    bad "an f411disco capture with peer windows to erase is accepted"
+elif ! grep -qF "and f411disco's load erases none" "$TMP/st.out"; then
+    bad "an f411disco capture with peer windows to erase is refused, but not for them: $(grep REFUSING "$TMP/st.out")"
 fi
 
 loads=$(grep -c 'tools/flash-picotool.sh' tools/bench/bench-capture.sh)

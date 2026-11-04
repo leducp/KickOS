@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The GPIO register shapes the STM32 F1, F3 and F4 parts share: a pair of words with four bits
-// per pin (CRL/CRH, AFRL/AFRH), and BSRR's set and reset halves.
+// The STM32 GPIO register shapes: a pair of words with four bits per pin (AFRL/AFRH), and
+// BSRR's set and reset halves.
 
 #ifndef KICKOS_ARCH_ARM_COMMON_STM32_GPIO_H
 #define KICKOS_ARCH_ARM_COMMON_STM32_GPIO_H

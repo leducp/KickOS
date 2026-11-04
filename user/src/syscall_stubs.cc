@@ -308,10 +308,14 @@ int kos_thread_create(struct kos_thread_params const* params, kos_thread_t* out_
 
 void kos_exit(int code)
 {
+#if KICKOS_LIBC_REENT
+    kickos_thread_dtors_run();
+    kickos_keys_thread_end();
+#endif
 #if KICKOS_LIBC_REENT && defined(_REENT_SMALL)
     kickos_reent_release();
 #endif
-    arch_syscall(KOS_SYS_EXIT, static_cast<uintptr_t>(code), 0, 0, 0);
+    arch_syscall(KOS_SYS_EXIT, static_cast<uintptr_t>(code), KOS_EXIT_THREAD, 0, 0);
     __builtin_unreachable();
 }
 
@@ -508,6 +512,17 @@ uint64_t kos_clock_now(void)
 #else
 #error "KICKOS_CLOCK_USER is set on an arch with no user clock read"
 #endif
+}
+
+uint64_t kos_clock_realtime(void)
+{
+    return arch_syscall64(KOS_SYS_CLOCK_REALTIME, 0, 0, 0, 0);
+}
+
+int kos_clock_set_realtime(uint64_t unix_ns)
+{
+    return static_cast<int>(arch_syscall(KOS_SYS_CLOCK_SET_REALTIME, kos_u64_lo(unix_ns),
+                                         kos_u64_hi(unix_ns), 0, 0));
 }
 
 uint64_t kos_cpu_clock_hz(void)

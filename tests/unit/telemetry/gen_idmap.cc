@@ -62,6 +62,8 @@ int main()
     KOS_SYS_ENDPOINT_BADGE,
     KOS_SYS_TASK_CREATE,
     KOS_SYS_PROGRAM_FIND,
+    KOS_SYS_CLOCK_REALTIME,
+    KOS_SYS_CLOCK_SET_REALTIME,
     };
     for (kos_syscall_nr s : calls)
     {

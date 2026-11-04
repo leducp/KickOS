@@ -839,6 +839,10 @@ namespace selftest
     KICKOS_SELFTEST_LOCAL void t_mutex_kill_pending();
     KICKOS_SELFTEST_LOCAL void t_sem_killed_poster();
     KICKOS_SELFTEST_LOCAL void t_mutex_slain_holder();
+    KICKOS_SELFTEST_LOCAL void t_cond_signal_wakes();
+    KICKOS_SELFTEST_LOCAL void t_cond_broadcast_all();
+    KICKOS_SELFTEST_LOCAL void t_cond_timed_wait();
+    KICKOS_SELFTEST_LOCAL void t_cond_killed_waiter();
 #if KICKOS_MEMORY_ENFORCED
     inline constexpr RamAsk WFO_RAM = {64u};
     KICKOS_SELFTEST_LOCAL void t_mutex_forged_foreign();
@@ -870,6 +874,9 @@ namespace selftest
 #if KICKOS_HAVE_ASPACE
     KICKOS_SELFTEST_LOCAL void t_amp_far_reply_unmapped();
 #endif
+#if KICKOS_AMP_CLOCK_SHARED
+    KICKOS_SELFTEST_LOCAL void t_amp_far_wall();
+#endif
 #if KICKOS_MEMORY_ENFORCED && KICKOS_AMP_USER_SHARE_SIZE != 0
     KICKOS_SELFTEST_LOCAL void t_amp_share_window();
 #endif
@@ -887,6 +894,7 @@ namespace selftest
     KICKOS_SELFTEST_LOCAL void t_migrate_running();
     KICKOS_SELFTEST_LOCAL void t_resched_reaches_pinned_caller();
     KICKOS_SELFTEST_LOCAL void t_sem_units_across_cores();
+    KICKOS_SELFTEST_LOCAL void t_cond_turns_across_cores();
     KICKOS_SELFTEST_LOCAL void t_prio_self_lower_moves_waiter();
     KICKOS_SELFTEST_LOCAL void t_pin_cross_task_refused();
     KICKOS_SELFTEST_LOCAL void t_grant_narrows();

@@ -18,10 +18,8 @@ have JLinkExe || die "JLinkExe not on PATH (install SEGGER's J-Link Software Pac
 case "$FL_BOARD" in
     frdmk64f)             dev=MK64FN1M0xxx12 ;;  # Kinetis (verified)
     xmc4800-relax)        dev=XMC4800-2048   ;;  # XMC (verified)
-    bluepill|bluepill-c8) dev=STM32F103C8    ;;
     blackpill)            dev=STM32F411CE    ;;
     f411disco)            dev=STM32F411VE    ;;
-    f302nucleo)           dev=STM32F302R8    ;;
     microbit)             dev=nRF51822_xxAA  ;;
     rx72m)                dev=R5F572MNDxBD   ;;
     picopi)               dev=RP2040_M0_0    ;;  # RP2040 core0; J-Link drives the QSPI loader

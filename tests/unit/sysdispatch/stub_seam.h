@@ -23,6 +23,8 @@ namespace kickos
         // second argument it was given (0 if none).
         extern uintptr_t g_context_entry;
         extern uintptr_t g_second_arg;
+        // What arch_clock_now answers.
+        extern uint64_t g_clock_now;
         constexpr uint64_t STUB_CPU_CLOCK_HZ = 64000000u;
         // What the dispatch handed the reply alone (it answers -KOS_ESRCH), and how often the
         // fused reply and receive was reached (it answers STUB_REPLY_RECV_RC).

@@ -112,7 +112,7 @@ can say: register layouts, clock and init sequences, the mux. On the f411 the
 time base is TIM2, a 32-bit counter the chip extends to 64 bits in software;
 [Chapter 2.1](the-time-base-a-monotonic-clock-you-can-trust.md) explains why such a clock needs care. When two parts of one vendor
 family share most of their bodies, a family directory such as
-`arch/arm/chip/stm32f1f3/` holds the shared unit, and each chip keeps what really
+`arch/arm/chip/rp2xxx/` holds the shared unit, and each chip keeps what really
 differs.
 
 ### A new ISA

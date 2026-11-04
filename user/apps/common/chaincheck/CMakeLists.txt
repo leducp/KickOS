@@ -3,9 +3,10 @@
 
 # One image per half, each carrying only its own arms: the integer half, the float half, and
 # the float and C99 printf half. Newlib's nano profile prints no double, no long long and no C99
-# length modifier, so the full-printf image is not built there. The float image overflows a
-# 64 KiB flash, so a chip stating no more than that gets no float image, and its integer half
-# is cut in two images: the arithmetic and memory arms, and the integer printf arms.
+# length modifier, so the full-printf image links the full profile on every board. The float
+# image overflows a 64 KiB flash, so a chip stating no more than that gets no float image, and
+# its integer half is cut in two images: the arithmetic and memory arms, and the integer printf
+# arms.
 function(chaincheck_image name core print float full)
   add_executable(${name} main.c)
   target_link_libraries(${name} PRIVATE KickOS::kickos KickOS::system_default)
@@ -34,6 +35,5 @@ else()
   chaincheck_image(chaincheck 1 1 0 0)
   chaincheck_image(chaincheck_float 0 0 1 0)
 endif()
-if(NOT KICKOS_NEWLIB_NANO)
-  chaincheck_image(chaincheck_full 0 0 0 1)
-endif()
+chaincheck_image(chaincheck_full 0 0 0 1)
+kickos_image_libc(chaincheck_full full)

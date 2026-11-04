@@ -25,12 +25,11 @@ set(KICKOS_ARCH_FAMILY "arm64" CACHE STRING "KickOS ISA family (arm|rx|xtensa|ri
 kickos_toolchain_package(aarch64-none-elf)
 
 include("${CMAKE_CURRENT_LIST_DIR}/cross_newlib.cmake")
-kickos_require_toolchain_newlib("arm64" "${CMAKE_C_COMPILER}" dynamic ${_kos_cpu})
+kickos_require_toolchain_newlib("arm64" "${CMAKE_C_COMPILER}" ${_kos_cpu})
 
 # The same ${_kos_cpu} on compile AND link picks the matching multilib (libgcc/newlib/
 # libstdc++).
 string(JOIN " " _kos_common ${_kos_cpu} -ffunction-sections -fdata-sections)
 kickos_toolchain_flags_init("${_kos_common}")
-kickos_toolchain_newlib_flags()
 
 kickos_toolchain_bare_metal_rules()

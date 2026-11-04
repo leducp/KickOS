@@ -12,4 +12,4 @@ tasks:
     program: main
     priority: 2
     ceiling: 2
-    authority: [memory, pinmux, pstate, irq, system, console, tasks, bus_master, bootloader]
+    authority: [memory, pinmux, pstate, irq, system, console, tasks, bus_master, bootloader, realtime]

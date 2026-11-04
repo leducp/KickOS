@@ -387,14 +387,12 @@ namespace kickos
                     next->reent_fresh = false;
                     reent_prime(rspace, image, next->reent);
                 }
-#if not KICKOS_REENT_PER_THREAD and KICKOS_INIT_IMAGE
+#if not KICKOS_REENT_PER_THREAD
                 Task const* const tk = next->task;
                 if (tk != nullptr and tk->reent_seat != nullptr)
                 {
                     reent_seat(tk->reent_seat, next->reent);
                 }
-#elif not KICKOS_REENT_PER_THREAD
-                reent_seat(reinterpret_cast<void*>(image_record(image).reent_seat), next->reent);
 #endif
             }
         }
@@ -1002,10 +1000,11 @@ namespace kickos
                 // across one of those gaps is a wake into a thread already in teardown.
                 // Unconsumed bits are left pending for the next server.
                 notify_unbind_self(c);
-                // A fault ends the group (task_end), and so does the entry's death by any cause.
-                // A cancelled entry latches nothing: the task keeps KOS_EXIT_CANCELLED. An
-                // essential thread's death latches a fault, which a task already ended keeps out.
-                if (cause == EXIT_FAULTED or c->task_role == TASK_ROLE_ENTRY)
+                // A fault or a task-scope exit ends the group (task_end), and so does the entry's
+                // death by any cause. A cancelled entry latches nothing: the task keeps
+                // KOS_EXIT_CANCELLED. An essential thread's death latches a fault, which a task
+                // already ended keeps out.
+                if (cause == EXIT_FAULTED or cause == EXIT_TASK or c->task_role == TASK_ROLE_ENTRY)
                 {
                     task_end(c->task, code, c->cancel_kind == CANCEL_NONE, lock);
                 }

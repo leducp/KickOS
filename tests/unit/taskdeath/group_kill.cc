@@ -5,10 +5,10 @@
 //
 // Three claims, and only one of them is a counter:
 //   * the SCOPE boundary. A FAULT ends the whole group, because siblings share the address
-//     space the faulting thread was writing and no caller is watching a fault, and so does the
-//     entry's death by any cause; either slays every other member. A non-entry member's
-//     cancel ends that member alone; the caller that wants the group has kos_task_slay, which
-//     cancels every member itself. Both directions are asserted: a
+//     space the faulting thread was writing and no caller is watching a fault, and so do a
+//     task-scope exit and the entry's death by any cause; each slays every other member. A
+//     non-entry member's cancel ends that member alone; the caller that wants the group has
+//     kos_task_slay, which cancels every member itself. Both directions are asserted: a
 //     boundary tested one way passes with the group cancel deleted, and tested the other way
 //     passes with it unconditional.
 //   * the REACH of a cancel. Every park has to end, whatever the primitive under it, or a
@@ -216,6 +216,29 @@ namespace kickos
                    "instruction of its own";
             EXPECT_TRUE(task_ended(group));
             EXPECT_EQ(group->exit_status, 5) << "the entry's code is the task's status";
+        }
+
+        // A TASK-SCOPE exit of a member other than the entry, the C library's _exit, ends the
+        // task as a fault does, and its code is the task's status: abort() from a worker reads
+        // 128 + SIGABRT.
+        TEST_F(TaskDeath, a_task_scope_exit_slays_its_peers_and_latches_its_status)
+        {
+            constexpr int ABORT_STATUS = 134;
+            Task* const group = task(0);
+            Thread* const c = seat_pool(SLOT_DYING, PRIO_MID);
+            Thread* const peer = seat_pool(SLOT_PEER, PRIO_LOW);
+            join_task(c, group);
+            join_task(peer, group);
+            (void)park_on_word(peer);
+            kernel().current(kickos_kernel_core()) = c;
+
+            run_exit_as(ABORT_STATUS, sched::EXIT_TASK);
+
+            EXPECT_EQ(peer->cancel_kind, CANCEL_SLAY)
+                << "a worker's task-scope exit slays the group";
+            EXPECT_NE(peer->state, ThreadState::BLOCKED) << "and the peer's park ends";
+            EXPECT_TRUE(task_ended(group)) << "the task has ended, so a spawn is refused";
+            EXPECT_EQ(group->exit_status, ABORT_STATUS) << "the exit's code is the task's status";
         }
 
         // A cancelled ENTRY ends its task as its return would: the peer is slain, and the task

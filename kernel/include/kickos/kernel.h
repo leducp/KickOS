@@ -78,13 +78,6 @@ namespace kickos
     // Unrecoverable error: report and halt the system.
     void kpanic(char const* msg) __attribute__((noreturn));
 
-#if KICKOS_DIAG_TERSE
-    // The terse assert terminal. file and line arrive SEPARATELY: the file string is then one
-    // literal per translation unit that every assert in it shares, and the line never becomes a
-    // string at all.
-    void kpanic_at(char const* file, unsigned line) __attribute__((noreturn));
-#endif
-
     // Kernel diagnostic LED: the board's single status LED. No-op on boards with no known LED.
     void kdiag_led_init(void);
     void kdiag_led_set(bool on);
@@ -188,26 +181,12 @@ extern "C" void kfault_terminate(void) __attribute__((noreturn));
 // system via arch_shutdown: it halts, whatever terminal outcome is set.
 extern "C" void kickos_terminate(int status) __attribute__((noreturn));
 
-// A chip that holds one task only: KOS_SYS_EXIT with KOS_EXIT_IMAGE. Drains the console and
-// applies the terminal outcome, then halts with `status` where that returns.
-extern "C" void kickos_image_end(int status) __attribute__((noreturn));
-
 // Hands the chip to the terminal outcome KOS_SYS_TERMINAL_OUTCOME set: returns where none is
 // set, it is halt, its word does not check, or the chip has no entry for it. Every
 // kfault_terminate and the software fault reporter call it once the console is drained; it takes
 // no lock and prints nothing.
 extern "C" void kickos_terminal_outcome_apply(void);
 
-#if KICKOS_DIAG_TERSE
-#define KICKOS_ASSERT(cond)                               \
-    do                                                    \
-    {                                                     \
-        if (not(cond))                                    \
-        {                                                 \
-            ::kickos::kpanic_at(__FILE_NAME__, __LINE__); \
-        }                                                 \
-    } while (0)
-#else
 #define KICKOS_ASSERT(cond)                     \
     do                                          \
     {                                           \
@@ -216,7 +195,6 @@ extern "C" void kickos_terminal_outcome_apply(void);
             ::kickos::kpanic("assert: " #cond); \
         }                                       \
     } while (0)
-#endif
 
 // A state the code believes cannot occur, where kpanic marks one it refuses to continue from;
 // the two spellings stay apart so the first kind is greppable. Takes a diag.h catalogue entry,

@@ -27,7 +27,6 @@
 #     compiler and its OWN definitions (check_public_headers.sh);
 #   - the single-board guard rejects a cross-board request at find_package time, and a package
 #     whose configuration names an arch its targets do not carry is refused there too;
-#   - a package whose descriptor fixes a micro:bit newlib profile refuses the other one;
 #   - a clean of the app removes every file its link wrote, each image's own among them.
 #
 # NOTHING HERE NAMES AN ARCH. The gate registers on one board per KICKOS_ARCH
@@ -85,20 +84,15 @@ package_toolchain "$TMP/prefix"
 TC="$PACKAGE_TC"
 
 PKG_CFG="$TMP/prefix/lib/cmake/KickOS/KickOSConfig.cmake"
-# Whether an image is linked on its own first, so which form the arms below read.
-PKG_SPLIT="$(sed -n 's/^set(KICKOS_IMAGE_SPLIT \([A-Z]*\))$/\1/p' "$PKG_CFG")"
-case "$PKG_SPLIT" in
+# Whether each image is a program the kernel's link embeds, or an object one final link places,
+# so which form the arms below read.
+PKG_EMBED="$(sed -n 's/^set(KICKOS_IMAGE_EMBED \([A-Z]*\))$/\1/p' "$PKG_CFG")"
+case "$PKG_EMBED" in
   ON|OFF) ;;
-  *) fail "$PKG_CFG states KICKOS_IMAGE_SPLIT as '$PKG_SPLIT', not ON or OFF" ;;
+  *) fail "$PKG_CFG states KICKOS_IMAGE_EMBED as '$PKG_EMBED', not ON or OFF" ;;
 esac
-# Whether the init is an image of its own, which makes the app image 1, its header
-# kickos_image1_header and its bounds __kickos_image1_*.
-PKG_INIT="$(sed -n 's/^set(KICKOS_INIT_IMAGE \([A-Z]*\))$/\1/p' "$PKG_CFG")"
-case "$PKG_INIT" in
-  ON) APP_N=1; APP_HEADER=kickos_image1_header ;;
-  OFF) APP_N=0; APP_HEADER=kickos_image_header ;;
-  *) fail "$PKG_CFG states KICKOS_INIT_IMAGE as '$PKG_INIT', not ON or OFF" ;;
-esac
+# The init is image 0 and the app image 1.
+APP_N=1
 
 DESC="$TMP/prefix/lib/cmake/KickOS/board.cmake"
 [ -f "$DESC" ] || fail "shipped board descriptor (board.cmake) missing from package"
@@ -125,8 +119,8 @@ WANT_MACHINE="$(sed -n 's/^ *Machine: *//p' "$TMP/ar_hdr" | sort -u)"
 
 # Board-agnostic: the package ships exactly one linker script, and where its images are
 # programs embedded in the kernel's link, that script's program form <script>.program.ld beside
-# it, and where each declared task is an image of its own, the image template <script>.image.ld
-# beside it. Any other and the relink probe below would patch an arbitrary one, which is not
+# it, and where one final link places its images, the image template <script>.image.ld beside
+# it. Any other and the relink probe below would patch an arbitrary one, which is not
 # necessarily the one that links. Both shipped locations are searched: a script the exported
 # target names as a -T option lands beside the archives, and one a build recipe reads
 # list-dir-relative lands beside that recipe.
@@ -296,15 +290,14 @@ fi
 
 echo "== the app links a system target =="
 if [ "$KIND" = elf ]; then
-  # Where the app is an image of its own link, the final link collects the unreferenced word,
-  # and the object or the program that link wrote carries it.
-  SYM_FILE="$APP"
-  if [ -n "$PROGRAM_LD" ]; then
-    SYM_FILE="$APP.kimg/image$APP_N.elf"
-  elif [ "$PKG_SPLIT" = ON ]; then
+  # The final link collects the unreferenced word, so the object or the program the app
+  # image's own link wrote carries it.
+  if [ "$PKG_EMBED" = OFF ]; then
     SYM_FILE="$APP.kimg/kickos_image$APP_N.o"
-    [ -f "$SYM_FILE" ] || fail "the package links its images on their own (KICKOS_IMAGE_SPLIT \
-ON), and the link of the out-of-tree app wrote no $(basename "$SYM_FILE")"
+    [ -f "$SYM_FILE" ] || fail "the package places its images in one final link, and the link \
+of the out-of-tree app wrote no $(basename "$SYM_FILE")"
+  else
+    SYM_FILE="$APP.kimg/image$APP_N.elf"
   fi
   tool_out "$TMP/app_syms" "$READELF_SYM_RE" "$READELF" -sW "$SYM_FILE"
   awk '($5 == "GLOBAL" || $5 == "LOCAL") && $7 != "UND" && $8 ~ /^_?kickos_link_one_system_target$/ { found = 1 }
@@ -337,11 +330,11 @@ ILK_HEADER_NAME="kickos_image${ILK_N}_header"
 ILK_OBJ="$TMP/image_link/image_link.kimg/kickos_image$ILK_N.o"
 ILK_SYMS="kickos_ilk_iface kickos_ilk_mid kickos_ilk_leaf kickos_ilk_object kickos_ilk_throw \
 __wrap___cxa_allocate_exception"
-if [ "$PKG_SPLIT" = ON ]; then
-  [ -f "$ILK_OBJ" ] || fail "the package links its images on their own (KICKOS_IMAGE_SPLIT \
-ON), and the link of image_link wrote no $(basename "$ILK_OBJ")"
+if [ "$PKG_EMBED" = OFF ]; then
+  [ -f "$ILK_OBJ" ] || fail "the package places its images in one final link, and the link of \
+image_link wrote no $(basename "$ILK_OBJ")"
   case "$IMAGE" in
-    *.efi) fail "the package links its images on their own and image_link is a PE image" ;;
+    *.efi) fail "the package places its images in one final link and image_link is a PE image" ;;
   esac
   ILK_FORM="image object $(basename "$ILK_OBJ")"
   tool_out "$TMP/ilk_obj_syms" "$READELF_SYM_RE" "$READELF" -sW "$ILK_OBJ"
@@ -380,10 +373,12 @@ no bound names: $(tr '\n' ' ' < "$TMP/ilk_strong")"
     "$TMP/ilk_elf_syms" | sort -u | comm -12 "$TMP/ilk_weak" - > "$TMP/ilk_weak_bound"
   [ ! -s "$TMP/ilk_weak_bound" ] || fail "the final link of image_link resolves a weak \
 reference of the image outside it: $(tr '\n' ' ' < "$TMP/ilk_weak_bound")"
-  awk -v h="$ILK_HEADER" '$1 ~ /^[0-9]+:$/ && $7 != "UND" && $5 != "LOCAL" && $8 != h {
-                            print $8 }' "$TMP/ilk_obj_syms" | sort -u > "$TMP/ilk_global"
+  ILK_CARVE="${ILK_PREFIX}__kickos_image${ILK_N}_reent_carve"
+  awk -v h="$ILK_HEADER" -v c="$ILK_CARVE" '$1 ~ /^[0-9]+:$/ && $7 != "UND" && $5 != "LOCAL" \
+                            && $8 != h && $8 != c { print $8 }' "$TMP/ilk_obj_syms" \
+    | sort -u > "$TMP/ilk_global"
   [ ! -s "$TMP/ilk_global" ] || fail "$(basename "$ILK_OBJ") defines non-local symbols beside \
-its header: $(sed -n '1,8p' "$TMP/ilk_global" | tr '\n' ' ')"
+its header and its libc carve: $(sed -n '1,8p' "$TMP/ilk_global" | tr '\n' ' ')"
   ILK_READ="$TMP/ilk_obj_syms"
 elif [ -n "$PROGRAM_LD" ]; then
   ILK_PROG="$IMAGE.kimg/image$ILK_N.elf"
@@ -397,22 +392,7 @@ image_link wrote no $(basename "$ILK_PROG")"
 undefined: $(tr '\n' ' ' < "$TMP/ilk_strong")"
   ILK_READ="$TMP/ilk_elf_syms"
 else
-  [ ! -e "$ILK_OBJ" ] || fail "the package keeps its images in the kernel's link \
-(KICKOS_IMAGE_SPLIT OFF), and the link of image_link wrote $(basename "$ILK_OBJ")"
-  case "$IMAGE" in
-    *.efi)
-      ILK_FORM="the link map of $(basename "$IMAGE")"
-      [ -s "$IMAGE.map" ] || fail "no link map beside $IMAGE"
-      ILK_READ="$IMAGE.map" ;;
-    *)
-      ILK_FORM="the whole ELF $(basename "$IMAGE")"
-      tool_out "$TMP/ilk_elf_syms" "$READELF_SYM_RE" "$READELF" -sW "$IMAGE"
-      awk '$1 ~ /^[0-9]+:$/ && $7 == "UND" && $8 != "" && $5 == "GLOBAL" { print $8 }' \
-        "$TMP/ilk_elf_syms" | sort -u > "$TMP/ilk_strong"
-      [ ! -s "$TMP/ilk_strong" ] || fail "$(basename "$IMAGE") leaves strong references \
-undefined: $(tr '\n' ' ' < "$TMP/ilk_strong")"
-      ILK_READ="$TMP/ilk_elf_syms" ;;
-  esac
+  fail "the package embeds its images and ships no program script"
 fi
 # A readelf row defines a function by name; a link map lists a defined global at its address.
 ilk_defines() { # <symbol>
@@ -541,28 +521,6 @@ tr -s ' \n' '  ' < "$TMP/archless.log" | grep -q 'provides no KickOS::kickos_arc
   || fail "the arch-less configure failed for another reason: \
 $(sed -n '/CMake Error/,$p' "$TMP/archless.log" | sed -n '1,6p' | tr '\n' ' ')"
 
-PKG_NEWLIB="$(sed -n 's/^set(KICKOS_PACKAGE_NEWLIB \([a-z]*\)).*/\1/p' "$DESC" | head -1)"
-PROFILE_NOTE=""
-if [ -n "$PKG_NEWLIB" ]; then
-  if [ "$PKG_NEWLIB" = nano ]; then
-    OTHER_FULL=ON
-  else
-    OTHER_FULL=OFF
-  fi
-  echo "== profile guard: a $PKG_NEWLIB package must refuse KICKOS_FULL_NEWLIB=$OTHER_FULL =="
-  if "$CMAKE" -S "$KICKOS_SRC/examples/oot-mcu-app" -B "$TMP/profile" -G "$GEN" \
-       -DCMAKE_TOOLCHAIN_FILE="$TC" -DCMAKE_PREFIX_PATH="$TMP/prefix" \
-       -DKICKOS_FULL_NEWLIB="$OTHER_FULL" >"$TMP/profile.log" 2>&1; then
-    fail "a $PKG_NEWLIB package configured a consumer with KICKOS_FULL_NEWLIB=$OTHER_FULL \
-(the package's newlib profile guard is gone)"
-  fi
-  grep -q "this KickOS package was built with $PKG_NEWLIB newlib" "$TMP/profile.log" \
-    || fail "the other-profile configure failed without naming the package's $PKG_NEWLIB \
-profile, so it failed for some other reason than the profile guard: \
-$(sed -n '1,3p' "$TMP/profile.log" | tr '\n' ' ')"
-  PROFILE_NOTE="; other newlib profile rejected"
-fi
-
 echo "== a clean removes every file the app's link wrote =="
 OUT="$APP"
 if [ "$KIND" = pe ]; then
@@ -576,4 +534,4 @@ fi
 $(tr '\n' ' ' < "$TMP/unclean")"
 
 echo "PASS: out-of-tree MCU app built for $WANT_MACHINE, imaged as $KIND, relinked and cleaned; \
-headers compile; no flags leaked; cross-board rejected; image read from $ILK_FORM$PROFILE_NOTE"
+headers compile; no flags leaked; cross-board rejected; image read from $ILK_FORM"

@@ -1254,13 +1254,6 @@ namespace kickos
     {
         kickos_panic_stack_enter(msg, nullptr, 0, panic_stack_top());
     }
-
-#if KICKOS_DIAG_TERSE
-    void kpanic_at(char const* file, unsigned line)
-    {
-        kickos_panic_stack_enter(nullptr, file, line, panic_stack_top());
-    }
-#endif
 }
 
 // Entered by kickos_panic_stack_enter with the stack already moved, so it starts at the top of
@@ -1325,35 +1318,7 @@ extern "C" void kickos_panic_report(char const* msg, char const* file, unsigned 
     }
 #endif
     kickos::kputs("\nKERNEL PANIC: ");
-#if !KICKOS_DIAG_TERSE
-    (void)file;
-    (void)line;
-#endif
-#if KICKOS_DIAG_TERSE
-    // kputs plus a hand-rolled decimal: kfmt_vsnprintf's 256-byte frame would be most of what
-    // this stack has to hold, and the boards selecting this posture are the small ones.
-    if (file != nullptr)
-    {
-        kickos::kputs("assert ");
-        kickos::kputs(file);
-        kickos::kputs(":");
-        char digits[12];
-        size_t n = sizeof(digits) - 1;
-        digits[n] = '\0';
-        unsigned value = line;
-        do
-        {
-            n = n - 1;
-            digits[n] = static_cast<char>('0' + (value % 10));
-            value = value / 10;
-        } while (value != 0 and n != 0);
-        kickos::kputs(&digits[n]);
-    }
-    else
-#endif
-    {
-        kickos::kputs(msg);
-    }
+    kickos::kputs(msg);
     kickos::kputs("\n");
 #if KICKOS_KERNEL_STACKS && KICKOS_KSTACK_REPORT
     kickos::kputs(kickos::kstack_report_text());

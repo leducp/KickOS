@@ -663,10 +663,8 @@ namespace kickos
             first = aspace_task_start(task_image(t->task));
         }
 #endif
-#if KICKOS_INIT_IMAGE
         // An unprivileged thread returns from its entry into its own image's exit path.
         image_thread_return_select(task_image(t->task));
-#endif
         arch_context_init(&t->ctx, first, arg, ustack, usize - attr.arg_bytes, attr.privileged);
 #if KICKOS_TLS and not KICKOS_TLS_FROM_SP
         // The TLS block sits directly below the stack, its pointer biased by the image's offset.
@@ -691,7 +689,8 @@ namespace kickos
         {
             t->reent = stack_base;
             t->reent_fresh = true;
-            reent_cell_seat(carve_home, stack_base, t->lock_id);
+            reent_cell_seat(carve_home, stack_base, t->lock_id,
+                            tls_libc_carve(task_image(t->task)));
         }
 #endif
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY

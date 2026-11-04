@@ -26,12 +26,14 @@ and an init provider that stays resident. `roadmap.md`'s `### M10` section is th
 only place its numbers are assigned; the sections at the bottom of this file say what each
 milestone's green runs do not.
 
-**M10.6.9, TASKS AS PROCESSES, IS CLOSED AND READY TO MERGE; NEXT IS M10.6.10.** Its record is
-the M10.6.9 entry of `TODO.md`, and the M10.6.9 section at the bottom of this file says what its
-green runs do not. The tree requires toolchain 1.1, published as release `toolchain-1.1.0-1`.
+**M10.6.10, C++ AND LIBC CONFORMANCE, IS CLOSED AND READY TO MERGE; NEXT IS M10.6.11.** Its
+record is the M10.6.10 entry of `TODO.md`, and the M10.6.10 section at the bottom of this file
+says what its green runs do not. **The tree requires toolchain 1.2.0, and its release
+`toolchain-1.2.0-1` must be published from this tree's recipe before the merge:** CI downloads
+it, and every green run of the milestone was on a local build of that recipe.
 
-**THE ORDER IS LOCKED: M10.6.10, THEN M10.6.11, THEN M10.7** (maintainer, 2026-10-13, M10.6.9
-and M10.6.10 inserted 2026-10-21). M10.6.9 made a task on a region board the MPU equivalent of the
+**THE ORDER IS LOCKED: M10.6.11, THEN M10.7** (maintainer, 2026-10-13, M10.6.9 and M10.6.10
+inserted 2026-10-21). M10.6.9 made a task on a region board the MPU equivalent of the
 MMU process, with its own libc state, nonblocking flag included, and closed the kernel's isolation
 holes; a board too small for that holds one task rather than lie about the isolation. M10.6.10 is
 C++ and libc conformance: a toolchain release giving GCC a KickOS threads model, the C++ exception
@@ -1139,31 +1141,28 @@ missing from one of those QEMU captures under load is this, not a flake to re-ru
   and one TX_IDLE_NUM, the reset 256: the field reads 2 while the line shifts and 0 once the last
   frame is out. No other baud or idle count was run.
 
-## M10.6.9: tasks as processes, and what these green runs do NOT say
+## M10.6.10: C++ and libc conformance, and what these green runs do NOT say
 
-- **THE IMAGES F302NUCLEO DECLARES ALLOWED TO FAIL DO FAIL ON SILICON.** Its blocking system calls
-  rest their continuation on the user stack, and each of those images stops with "wild PSP: no
-  room below in SVCall need=760". The capture judges them allowed, not passed. M10.6.10 retires
-  the board with the 32 KiB RAM / 128 KiB flash tier.
-- **NO BENCH PASS REACHED FRDMK64F, PICOPI, PIZERO2350, TEENSY41, BLUEPILL-C8, BLACKPILL OR DUE.**
-  Their M10.6.9 images are built and, where an emulator exists, run there only.
-- **A FAULT RECORD LANDING INSIDE ANOTHER THREAD'S LINE ON A CLAIMED CONSOLE IS HELD BY UNIT ARMS
-  ONLY.** Every silicon and emulator record started on its own line; no image forces the case and
-  no bench board claims its UART.
-- **EACH ESP32 CORE SEATS ITS EMPTY CURRENT THREAD BEFORE ITS DOORBELL IS ENABLED: READ FROM THE
-  DISASSEMBLY, NOT RUN.** Interrupts are closed on that path, so no arm can force the old order.
-- **THE C6 LP NODE'S IMAGE DATA FIX HAS ONLY A SILICON WITNESS.** No emulator runs the LP core;
-  the proof is the capture failing before the fix and passing after.
-- **ON ONE CORE, ONLY THE CROSS-TASK MEETING MAKES LIBCRACE'S TWO TASKS OVERLAP.** Its began and
-  raced lines are judged on the emulators, and on silicon on f411disco alone.
-- **THE STRESS GATE'S SMP BOUND IS A FLOOR SIZED FROM A LOADED HOST, NOT A PROGRESS CHECK.** A
-  bound that fails only on stalled output is later work for the maintainer. Likewise libcrace's
-  single-instruction variant runs the largest round robin quantum that still reddens the unfixed
-  trap return, with no slack measured beyond it.
-- **ON ESP32-WROOM-SMP THE SLAY TIMEOUT ARM SKIPS BY DESIGN:** a cross-thread progress order is not
-  a property of two kernel cores.
-- **THE DOCS PASS IS OWED AT THE END OF M10.** Journey, reference and Book text that M10.6.9 moved
-  were not updated (maintainer, docs deferred to the end of M10).
+- **EVERY GREEN RUN WAS ON A LOCAL BUILD OF THE 1.2.0 RECIPE, NOT ON THE RELEASE.** The release
+  must be built from the same recipe; a recipe edit after the runs orphans them.
+- **NO BENCH PASS REACHED FRDMK64F, PICOPI, PIZERO2350, TEENSY41, BLACKPILL OR DUE.** Their
+  M10.6.10 images are built and, where an emulator exists, run there only. microbit has no unit.
+- **ON THE C6 AMP PAIR, NODE 1'S IMAGES RAN ON SILICON ONLY AS NODE 0'S PEER.** Node 0 releases
+  node 1, so no capture boots node 1 alone: node 1's cxxtest and libcmix are linked, never run,
+  and its RAM margin is a link figure.
+- **A WALL-CLOCK SET MOVING A WAITER RUNS ON QEMU ONLY.** The cross-node arm (`amp_far_wall`)
+  ran on qemu-arm64; pizero2350-amp2 was not reached. wallwait is built only where an emulator runs, and the silicon cxxtest timed lines
+  never set the clock.
+- **RX'S ATOMICS HAVE ONLY A SILICON WITNESS.** No emulator runs RX: the proof is rx72m's cxxtest
+  failing its shared_ptr line on the old toolchain and passing on 1.2.0, and uatomic's lost
+  update count.
+- **`getentropy` FROM RDSEED RAN ON QEMU ONLY**, with and without the feature; no x86_64 silicon
+  exists here.
+- **NO ARM HOLDS THE SHARED WALL CLOCK'S READ BOUND ITSELF, NOR `quick_exit`, NOR AN `exit()`
+  THAT FINDS A SIBLING ALREADY CANCELLED.** No seam forces a peer to move under every read, no
+  app calls `quick_exit`, and the dispatch fixture exposes no armed park for the last.
+- **THE DOCS PASS IS OWED AT THE END OF M10.** The stale lines are listed under the M10.7 exit
+  record in `TODO.md`.
 
 ## Where to go next
 

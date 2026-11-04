@@ -14,8 +14,9 @@ kickos_add_unit_test(NAME cancelled_park_smp SOURCES sync_park.cc
   LIBRARIES kickos_kseam_smp
   TEST_PREFIX smp.)
 
-# The K-seam with the real time.cc in place of the seam's ktime stubs.
-kickos_add_kseam(kickos_kseam_time EXTRA "${PROJECT_SOURCE_DIR}/kernel/time/time.cc")
+# The K-seam with the real time.cc and realtime.cc in place of the seam's ktime stubs.
+kickos_add_kseam(kickos_kseam_time EXTRA "${PROJECT_SOURCE_DIR}/kernel/time/time.cc"
+  "${PROJECT_SOURCE_DIR}/kernel/time/realtime.cc")
 target_compile_definitions(kickos_kseam_time PRIVATE KFIXTURE_REAL_TIME=1)
 kickos_add_unit_test(NAME cancelled_timed_park SOURCES timed_park.cc
   LIBRARIES kickos_kseam_time)

@@ -8,7 +8,11 @@
 
 extern "C"
 {
-struct __lock;
+struct __lock
+{
+    __UINT32_TYPE__ __word;
+    __UINT32_TYPE__ __depth;
+};
 typedef struct __lock* _LOCK_T;
 
 extern struct __lock __lock___sfp_recursive_mutex;

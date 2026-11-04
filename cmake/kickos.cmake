@@ -49,20 +49,15 @@ set(KICKOS_IMAGE_NAMES "${CMAKE_CURRENT_LIST_DIR}/image_names.txt")
 set(KICKOS_IMAGE_EMBED_NAMES "${CMAKE_CURRENT_LIST_DIR}/embed_names.txt")
 
 # kickos_image_link_features()
-#   The KICKOS_KERNEL link group the kernel's archives ride. Where every image is linked on its
-#   own first (KICKOS_IMAGE_SPLIT, KICKOS_IMAGE_EMBED), its bounds tell tools/image-link.py which
-#   inputs are the kernel's, and a link no launcher reads fails on them, naming kickos_image_link.
+#   The KICKOS_KERNEL link group the kernel's archives ride. Its bounds tell tools/image-link.py
+#   which inputs are the kernel's, and a link no launcher reads fails on them, naming
+#   kickos_image_link.
 macro(kickos_image_link_features)
   foreach(_kos_lang C CXX ASM)
     set(CMAKE_${_kos_lang}_LINK_GROUP_USING_KICKOS_KERNEL_SUPPORTED TRUE)
-    if(KICKOS_IMAGE_SPLIT OR KICKOS_IMAGE_EMBED)
-      set(CMAKE_${_kos_lang}_LINK_GROUP_USING_KICKOS_KERNEL
-          "LINKER:--kickos-image-link-needs-kickos_image_link,--start-group"
-          "LINKER:--end-group,--kickos-image-link-end")
-    else()
-      set(CMAKE_${_kos_lang}_LINK_GROUP_USING_KICKOS_KERNEL
-          "LINKER:--start-group" "LINKER:--end-group")
-    endif()
+    set(CMAKE_${_kos_lang}_LINK_GROUP_USING_KICKOS_KERNEL
+        "LINKER:--kickos-image-link-needs-kickos_image_link,--start-group"
+        "LINKER:--end-group,--kickos-image-link-end")
   endforeach()
 endmacro()
 
@@ -250,9 +245,9 @@ endfunction()
 
 # ---------------------------------------------------------------------------
 # kickos_image_link(<target>)
-#   Links <target>, an executable linking KickOS::kernel, as images and a final link: where
-#   KICKOS_IMAGE_SPLIT or KICKOS_IMAGE_EMBED is on, tools/image-link.py is its linker launcher,
-#   and under KICKOS_IMAGE_EMBED image 0 is also <target>.kimg/image0.elf. kickos_emit_image calls
+#   Links <target>, an executable linking KickOS::kernel, as images and a final link:
+#   tools/image-link.py is its linker launcher, and under KICKOS_IMAGE_EMBED image 0 is also
+#   <target>.kimg/image0.elf. kickos_emit_image calls
 #   it; an image no one emits, a sizing link say, calls it itself. Properties set before it: a
 #   KICKOS_IMAGE_KERNEL_NAMES names kernel symbols the image names directly, on a board that
 #   enforces nothing; a KICKOS_IMAGE_KERNEL_OBJECTS names objects the final link takes for the
@@ -260,9 +255,6 @@ endfunction()
 #   command and only the final link takes them.
 # ---------------------------------------------------------------------------
 function(kickos_image_link target)
-  if(NOT KICKOS_IMAGE_SPLIT AND NOT KICKOS_IMAGE_EMBED)
-    return()
-  endif()
   find_program(KICKOS_PYTHON3 NAMES python3 REQUIRED)
   get_target_property(_calls ${target} KICKOS_IMAGE_KERNEL_NAMES)
   if(NOT _calls)
@@ -331,6 +323,35 @@ function(kickos_program_link target)
                                                             "${KICKOS_IMAGE_NAMES}")
   set_property(TARGET ${target} APPEND PROPERTY ADDITIONAL_CLEAN_FILES
     "$<TARGET_FILE:${target}>.kprog")
+endfunction()
+
+# ---------------------------------------------------------------------------
+# kickos_image_libc(<executable> full|nano)
+#   The newlib profile every image of <executable> links and each of its TUs compiles against,
+#   with the KickOS user library and libstdc++ of that profile. An executable naming none takes
+#   nano where the board's descriptor names KICKOS_BOARD_NEWLIB or its configuration sets
+#   KICKOS_LIBC_NANO_DEFAULT, full elsewhere. A library the executable links compiles against its
+#   own KICKOS_LIBC.
+# ---------------------------------------------------------------------------
+function(kickos_image_libc target profile)
+  if(NOT TARGET ${target})
+    message(FATAL_ERROR "kickos_image_libc(${target}): no such target")
+  endif()
+  get_target_property(_type ${target} TYPE)
+  if(NOT _type STREQUAL "EXECUTABLE")
+    message(FATAL_ERROR "kickos_image_libc(${target}): ${target} is a ${_type}; an image is an "
+      "executable, add_executable(${target} ...)")
+  endif()
+  if(NOT profile MATCHES "^(full|nano)$")
+    message(FATAL_ERROR "kickos_image_libc(${target}): '${profile}' is no newlib profile; name "
+      "full or nano")
+  endif()
+  if(NOT profile IN_LIST KICKOS_LIBC_PROFILES)
+    message(FATAL_ERROR "kickos_image_libc(${target}): the KickOS ${KICKOS_ARCH_FAMILY} "
+      "toolchain carries no ${profile} newlib for board '${KICKOS_BOARD}', only "
+      "'${KICKOS_LIBC_PROFILES}'")
+  endif()
+  set_target_properties(${target} PROPERTIES KICKOS_LIBC ${profile})
 endfunction()
 
 # ---------------------------------------------------------------------------
@@ -575,8 +596,10 @@ endfunction()
 # runs a kernel that can read, write and run user pages.
 #
 # +rdtscp is not in x86-64-v3 and the floor requires it: qemu64 lacks it.
+#
+# +rdseed is not in x86-64-v3 either: getentropy draws from it where CPUID reports it.
 set(KICKOS_X86_64_QEMU_CPU
-    "qemu64,+ssse3,+sse4.1,+sse4.2,+popcnt,+cx16,+lahf-lm,+avx,+avx2,+bmi1,+bmi2,+fma,+f16c,+movbe,+abm,+xsave,+xsaveopt,+smep,+smap,+rdtscp"
+    "qemu64,+ssse3,+sse4.1,+sse4.2,+popcnt,+cx16,+lahf-lm,+avx,+avx2,+bmi1,+bmi2,+fma,+f16c,+movbe,+abm,+xsave,+xsaveopt,+smep,+smap,+rdtscp,+rdseed"
     CACHE INTERNAL "The -cpu model every x86_64 emulation runs")
 
 # The processor a preset runs the board's image on instead of the one the board's emulator line

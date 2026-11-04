@@ -29,33 +29,16 @@ kickos_board_names(_kickos_board_names)
 list(JOIN _kickos_board_names "|" _kickos_board_help)
 set(KICKOS_BOARD "sim" CACHE STRING "Target board: ${_kickos_board_help}")
 kickos_load_board_descriptor("${KICKOS_BOARD}" KICKOS_ARCH KICKOS_CHIP KICKOS_ARCH_FAMILY)
-# Whether every image is linked on its own first, then placed by one final link
-# (tools/image-link.py). The board descriptor may keep its images in the kernel's own link.
-if(NOT DEFINED KICKOS_IMAGE_SPLIT)
-  set(KICKOS_IMAGE_SPLIT ON)
-  if(DEFINED KICKOS_BOARD_IMAGE_SPLIT)
-    set(KICKOS_IMAGE_SPLIT ${KICKOS_BOARD_IMAGE_SPLIT})
-  endif()
-  if(KICKOS_ARCH MATCHES "^(armv8a|rv64imac|x86_64)$")
-    set(KICKOS_IMAGE_SPLIT OFF)
-  endif()
+# The init is an image of its own and each declared task one more, each linked on its own
+# (tools/image-link.py). KICKOS_IMAGE_EMBED: each is a program at the fixed user base, whose
+# loadable bytes the kernel's own link embeds; otherwise one final link places them all.
+if(DEFINED KICKOS_IMAGE_SPLIT AND NOT KICKOS_IMAGE_SPLIT)
+  message(FATAL_ERROR "KickOS: KICKOS_IMAGE_SPLIT=OFF is not supported: every board links each "
+    "image on its own")
 endif()
-# The sim's image table is the image link's own.
-if(KICKOS_ARCH STREQUAL "sim" AND NOT KICKOS_IMAGE_SPLIT)
-  message(FATAL_ERROR "KickOS: the sim links every image on its own first; KICKOS_IMAGE_SPLIT "
-    "cannot be OFF there")
-endif()
-# Whether every image is a program linked on its own at the fixed user base, whose loadable
-# bytes the kernel's own link embeds (tools/image-link.py).
 set(KICKOS_IMAGE_EMBED OFF)
 if(KICKOS_ARCH MATCHES "^(armv8a|rv64imac|x86_64)$")
   set(KICKOS_IMAGE_EMBED ON)
-endif()
-# Whether the init is an image of its own and each declared task one more (tools/image-link.py):
-# wherever every image is linked on its own, placed by one final link or embedded as a program.
-set(KICKOS_INIT_IMAGE OFF)
-if(KICKOS_IMAGE_SPLIT OR KICKOS_IMAGE_EMBED)
-  set(KICKOS_INIT_IMAGE ON)
 endif()
 # lx6 has no privilege split, and its syscall entry is a call into the arch. The sim's user side
 # calls the kernel, and reads the thread's lock id seat and its kernel instance in place.
@@ -133,11 +116,6 @@ if(EXISTS "${KICKOS_DEFCONFIG}")
     string(REPLACE ";" "\\;" _kcfg_val "${_kcfg_val}")
     list(APPEND _kcfg_req "${_kcfg_shape}:${_kcfg_v}=${_kcfg_val}")
   endforeach()
-  if(KICKOS_NEWLIB_FLAVOR STREQUAL "nano")
-    list(APPEND _kcfg_req "CONFIG_KICKOS_NEWLIB_NANO=y")
-  else()
-    list(APPEND _kcfg_req "CONFIG_KICKOS_NEWLIB_NANO=n")
-  endif()
 
   kickos_kconfig_generate("${CMAKE_CURRENT_SOURCE_DIR}" "${KICKOS_DEFCONFIG}"
                           "${PROJECT_BINARY_DIR}/generated" "${_kcfg_req}")
@@ -400,25 +378,61 @@ if(KICKOS_REENT_PER_THREAD AND NOT KICKOS_TLS AND KICKOS_ARCH MATCHES "^(lx6|arm
     "reentrant state through the cell below its thread pointer, and only KICKOS_TLS seats "
     "the register. Set KICKOS_TLS=y in boards/${KICKOS_BOARD}/configs/<variant>/defconfig.")
 endif()
-# The bytes a pool thread's stack gives its libc state, immediately below its TLS block: the
-# linked newlib's struct _reent, then the two-word cell (the state's address and the lock id)
-# that ends at the thread pointer, rounded to the stack alignment. user/src/newlib_reent.cc
-# refuses a value that is not that sum.
-if(NOT KICKOS_LIBC_REENT)
-  set(KICKOS_REENT_CARVE 0)
-elseif(KICKOS_ARCH MATCHES "^(armv8a|rv64imac|x86_64)$")
-  set(KICKOS_REENT_CARVE 400)
-elseif(KICKOS_ARCH STREQUAL "lx6")
-  set(KICKOS_REENT_CARVE 256)
-elseif(KICKOS_NEWLIB_FLAVOR STREQUAL "nano")
-  set(KICKOS_REENT_CARVE 96)
-else()
-  set(KICKOS_REENT_CARVE 336)
+# The bytes a pool thread's stack gives its libc state, immediately below its TLS block, per
+# newlib profile: that profile's struct _reent, measured from the toolchain, then the cell that
+# ends at the thread pointer, rounded to the stack alignment. The cell holds the threads layer's
+# key values, the generation each was set under and its running-once list, the C++ exception
+# state (three words on the ARM EH ABI, two elsewhere) and the thread_local destructor list, then
+# the state's address and the lock id. user/src/newlib_reent.cc refuses a carve that is not that
+# sum, and an image's header carries its own (KICKOS_REENT_CARVE_<profile>).
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/cross_newlib.cmake")
+set(KICKOS_THREAD_KEYS 4)
+set(_kos_eh_words 2)
+if(KICKOS_ARCH MATCHES "^armv[67]m$")
+  set(_kos_eh_words 3)
 endif()
+math(EXPR KICKOS_REENT_CELL_WORDS "2 * ${KICKOS_THREAD_KEYS} + 4 + ${_kos_eh_words}")
+if(NOT DEFINED KICKOS_LIBC_PROFILES)
+  set(KICKOS_LIBC_PROFILES full)
+  set(KICKOS_LIBC_DEFAULT full)
+endif()
+if(KICKOS_LIBC_NANO_DEFAULT)
+  if(NOT "nano" IN_LIST KICKOS_LIBC_PROFILES)
+    message(FATAL_ERROR "KickOS: configuration '${KICKOS_CONFIG_VARIANT}' of board "
+      "'${KICKOS_BOARD}' sets KICKOS_LIBC_NANO_DEFAULT, and the toolchain carries only "
+      "'${KICKOS_LIBC_PROFILES}' for its flags")
+  endif()
+  set(KICKOS_LIBC_DEFAULT nano)
+endif()
+foreach(_kos_profile IN LISTS KICKOS_LIBC_PROFILES)
+  set(KICKOS_REENT_STATE_${_kos_profile} 0)
+  set(KICKOS_REENT_CARVE_${_kos_profile} 0)
+  if(KICKOS_LIBC_REENT)
+    kickos_reent_state(${_kos_profile} KICKOS_REENT_STATE_${_kos_profile})
+    math(EXPR KICKOS_REENT_CARVE_${_kos_profile}
+         "(${KICKOS_REENT_STATE_${_kos_profile}} + ${KICKOS_REENT_CELL_WORDS} * ${CMAKE_SIZEOF_VOID_P} + ${KICKOS_STACK_ALIGN} - 1) / ${KICKOS_STACK_ALIGN} * ${KICKOS_STACK_ALIGN}")
+  endif()
+endforeach()
+# The kernel refuses an image header that states a larger carve.
+set(KICKOS_REENT_CARVE_MAX 0)
+foreach(_kos_profile IN LISTS KICKOS_LIBC_PROFILES)
+  if(KICKOS_REENT_CARVE_${_kos_profile} GREATER KICKOS_REENT_CARVE_MAX)
+    set(KICKOS_REENT_CARVE_MAX ${KICKOS_REENT_CARVE_${_kos_profile}})
+  endif()
+endforeach()
+# An image's profile is its target's KICKOS_LIBC (kickos_image_libc), the configuration's where
+# unset.
+set(_kos_default_nano 0)
+if(KICKOS_LIBC_DEFAULT STREQUAL "nano")
+  set(_kos_default_nano 1)
+endif()
+set(KICKOS_LIBC_IS_NANO
+    "$<OR:$<STREQUAL:$<TARGET_PROPERTY:KICKOS_LIBC>,nano>,$<AND:$<STREQUAL:$<TARGET_PROPERTY:KICKOS_LIBC>,>,${_kos_default_nano}>>")
 add_compile_definitions(KICKOS_REENT_PER_THREAD=${KICKOS_REENT_PER_THREAD}
-                        KICKOS_REENT_CARVE=${KICKOS_REENT_CARVE}
-                        KICKOS_ARCH_SIM=${KICKOS_ARCH_SIM}
-                        KICKOS_INIT_IMAGE=$<BOOL:${KICKOS_INIT_IMAGE}>)
+                        KICKOS_REENT_CELL_WORDS=${KICKOS_REENT_CELL_WORDS}
+                        KICKOS_REENT_CARVE_MAX=${KICKOS_REENT_CARVE_MAX}
+                        KICKOS_THREAD_KEYS=${KICKOS_THREAD_KEYS}
+                        KICKOS_ARCH_SIM=${KICKOS_ARCH_SIM})
 
 # The chip file's facts: its protection unit, which Kconfig's selection is held to below, and
 # whether its cores have an unprivileged mode at all.
@@ -546,6 +560,7 @@ add_compile_definitions(KICKOS_ROOT_CORE_MASK=${KICKOS_ROOT_CORE_MASK})
 add_compile_definitions(KICKOS_AMP_NODE=${KICKOS_AMP_NODE})
 add_compile_definitions(KICKOS_AMP_NODES=${KICKOS_AMP_NODES})
 add_compile_definitions(KICKOS_AMP_OWN_IMAGE=${KICKOS_AMP_OWN_IMAGE})
+add_compile_definitions(KICKOS_AMP_CLOCK_SHARED=${KICKOS_AMP_CLOCK_SHARED})
 
 # The lines of the devices the chip file gives the kernel, which irq_line_admit refuses and
 # irq_kernel_line_reserved claims; a doorbell's only where one rings.
@@ -675,9 +690,10 @@ if(TARGET kickos_kernel)
     KICKOS_ARM_MPU_SYSMPU=3
     KICKOS_ARM_MPU=${_kickos_arm_mpu}
     KICKOS_ARCH_SIM=${KICKOS_ARCH_SIM}
-    KICKOS_INIT_IMAGE=$<BOOL:${KICKOS_INIT_IMAGE}>
     KICKOS_LIBC_REENT=${KICKOS_LIBC_REENT}
     KICKOS_REENT_PER_THREAD=${KICKOS_REENT_PER_THREAD}
+    KICKOS_REENT_CELL_WORDS=${KICKOS_REENT_CELL_WORDS}
+    KICKOS_THREAD_KEYS=${KICKOS_THREAD_KEYS}
     KICKOS_LINKER_WEAK_UNDEF=${KICKOS_LINKER_WEAK_UNDEF}
     ${KICKOS_APP_BOOL_DEFS}
     ${_kickos_tls_defs}
@@ -771,6 +787,23 @@ if(TARGET kickos_kernel)
   add_library(kickos_kernel_leaf INTERFACE)
   set_target_properties(kickos_kernel_leaf PROPERTIES EXPORT_NAME kernel)
   target_link_libraries(kickos_kernel_leaf INTERFACE kickos_core)
+  # What of an image follows its newlib profile: nano.specs on its compile and its link, which
+  # puts the nano newlib.h first and links libc_nano.a and libstdc++_nano.a, and its libc carve.
+  set(_kickos_libc_carve "${KICKOS_REENT_CARVE_full}")
+  if("nano" IN_LIST KICKOS_LIBC_PROFILES)
+    set(_kickos_libc_carve
+        "$<IF:${KICKOS_LIBC_IS_NANO},${KICKOS_REENT_CARVE_nano},${KICKOS_REENT_CARVE_full}>")
+  endif()
+  foreach(_kos_t kickos_kernel_leaf kickos)
+    if(_kos_t STREQUAL "kickos")
+      add_library(kickos INTERFACE)
+    endif()
+    target_compile_definitions(${_kos_t} INTERFACE "KICKOS_REENT_CARVE=${_kickos_libc_carve}")
+    if("nano" IN_LIST KICKOS_LIBC_PROFILES)
+      target_compile_options(${_kos_t} INTERFACE "$<${KICKOS_LIBC_IS_NANO}:--specs=nano.specs>")
+      target_link_options(${_kos_t} INTERFACE "$<${KICKOS_LIBC_IS_NANO}:--specs=nano.specs>")
+    endif()
+  endforeach()
   if(TARGET kickos_string)
     kickos_export_name(kickos_string _kickos_string_name)
     target_link_libraries(kickos_kernel_leaf INTERFACE "$<TARGET_OBJECTS:${_kickos_string_name}>")
@@ -778,11 +811,9 @@ if(TARGET kickos_kernel)
   # Every executable linking the kernel is an image, and carries its header (<kickos/sys/image.h>).
   target_sources(kickos_kernel_leaf INTERFACE
     "$<$<STREQUAL:$<TARGET_PROPERTY:TYPE>,EXECUTABLE>:$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/user/src/image_header.c>$<INSTALL_INTERFACE:$<INSTALL_PREFIX>/${KICKOS_CMAKE_DIR}/image_header.c>>")
-  # And where the init is an image of its own, the init image's header beside it.
-  if(KICKOS_INIT_IMAGE)
-    target_sources(kickos_kernel_leaf INTERFACE
-      "$<$<STREQUAL:$<TARGET_PROPERTY:TYPE>,EXECUTABLE>:$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/user/src/init_image_header.c>$<INSTALL_INTERFACE:$<INSTALL_PREFIX>/${KICKOS_CMAKE_DIR}/init_image_header.c>>")
-  endif()
+  # And the init image's header beside it.
+  target_sources(kickos_kernel_leaf INTERFACE
+    "$<$<STREQUAL:$<TARGET_PROPERTY:TYPE>,EXECUTABLE>:$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/user/src/init_image_header.c>$<INSTALL_INTERFACE:$<INSTALL_PREFIX>/${KICKOS_CMAKE_DIR}/init_image_header.c>>")
   # Every system target's table defines the symbol (<kickos/sys/table.h>), so a link of none
   # fails naming it and a link of two fails on its second definition.
   target_link_options(kickos_kernel_leaf INTERFACE
@@ -805,7 +836,22 @@ if(TARGET kickos_kernel)
   # The user side's group first, then the kernel's. The kernel's archives ride KICKOS_KERNEL,
   # whose bounds tell an image's own link which inputs are not the image's; kickos_lib is in
   # both, and the image's copy is named by file.
-  kickos_export_name(kickos_user _kickos_user_lib)
+  # A rescan group naming the user archive, once per profile, each kept only for an image of
+  # that profile (user/CMakeLists.txt): @USER@ in <group> is that profile's archive.
+  function(_kickos_profile_groups out group)
+    set(_groups "")
+    foreach(_p IN LISTS KICKOS_LIBC_PROFILES)
+      string(REPLACE "@USER@" "KickOS::kickos_user_${_p}" _g "${group}")
+      list(LENGTH KICKOS_LIBC_PROFILES _n)
+      if(_n GREATER 1 AND _p STREQUAL "nano")
+        set(_g "$<${KICKOS_LIBC_IS_NANO}:${_g}>")
+      elseif(_n GREATER 1)
+        set(_g "$<$<NOT:${KICKOS_LIBC_IS_NANO}>:${_g}>")
+      endif()
+      list(APPEND _groups "${_g}")
+    endforeach()
+    set(${out} "${_groups}" PARENT_SCOPE)
+  endfunction()
   kickos_export_name(kickos_kernel _kickos_kernel_lib)
   kickos_export_name(kickos_lib _kickos_lib_name)
   # The sim's C and C++ libraries are the host's, which the compiler driver adds. x86_64 has no
@@ -816,15 +862,17 @@ if(TARGET kickos_kernel)
   elseif(KICKOS_ARCH STREQUAL "x86_64")
     set(_kickos_user_libc ",stdc++,supc++,c,m,gcc,${_kickos_cxx_throw_name}")
   endif()
-  target_link_libraries(kickos_kernel_leaf INTERFACE
-    "$<LINK_GROUP:RESCAN,${_kickos_user_lib},$<TARGET_FILE:${_kickos_lib_name}>${_kickos_user_libc}>"
+  _kickos_profile_groups(_kickos_user_group
+    "$<LINK_GROUP:RESCAN,@USER@,$<TARGET_FILE:${_kickos_lib_name}>${_kickos_user_libc}>")
+  target_link_libraries(kickos_kernel_leaf INTERFACE ${_kickos_user_group}
     "$<LINK_GROUP:KICKOS_KERNEL,${_kickos_kernel_lib},${_kickos_tail_group}>")
   # In-tree TUs get __KickOS__ from the add_compile_definitions above; this is what carries
   # it to find_package consumers.
   target_compile_definitions(kickos_core INTERFACE __KickOS__=1)
   if(NOT (KICKOS_ARCH STREQUAL "sim"))
-    # Link the custom terminate handler as an object before libstdc++.
-    add_library(kickos_cxx_rt OBJECT system/cxx/vterminate.cc)
+    # Link the custom terminate handler and the per-thread exception state as objects before
+    # libstdc++.
+    add_library(kickos_cxx_rt OBJECT system/cxx/vterminate.cc system/cxx/eh_globals.cc)
     target_compile_features(kickos_cxx_rt PRIVATE cxx_std_20)
     target_compile_options(kickos_cxx_rt PRIVATE ${KICKOS_WARN_FLAGS} -fno-exceptions -fno-rtti)
     # An object library links nothing: kickos_user/kickos_kernel here are usage
@@ -838,18 +886,19 @@ if(TARGET kickos_kernel)
     target_link_libraries(kickos_cxx_throw_objects PRIVATE kickos_core kickos_user kickos_kernel)
     add_library(kickos_cxx_throw STATIC $<TARGET_OBJECTS:kickos_cxx_throw_objects>)
 
-    kickos_export_name(kickos_user _kickos_user_name)
     kickos_export_name(kickos_cxx_rt _kickos_cxx_rt_name)
     # Full C++: omitting -nostdlib++ lets the g++ driver auto-link the toolchain
     # libstdc++/libsupc++ (EH, RTTI, new/delete) over newlib.
     target_compile_options(kickos_kernel_leaf INTERFACE
       "$<$<COMPILE_LANGUAGE:CXX>:-fexceptions;-frtti>")
     # A second rescan group, one layer out: the driver-appended libstdc++'s operator new
-    # must reach down to `_sbrk`. Listed after kickos_core so the core group resolves first.
+    # must reach down to `_sbrk`, and libgcc's unwinder to the threads layer. Listed after
+    # kickos_core so the core group resolves first.
     # x86_64 has no driver, and its first group holds the C++ libraries.
     if(NOT KICKOS_ARCH STREQUAL "x86_64")
-      target_link_libraries(kickos_kernel_leaf INTERFACE
-        "$<LINK_GROUP:RESCAN,stdc++,supc++,c,${_kickos_user_name},${_kickos_cxx_throw_name}>")
+      _kickos_profile_groups(_kickos_cxx_group
+        "$<LINK_GROUP:RESCAN,stdc++,supc++,c,gcc,@USER@,${_kickos_cxx_throw_name}>")
+      target_link_libraries(kickos_kernel_leaf INTERFACE ${_kickos_cxx_group})
     endif()
     target_link_libraries(kickos_kernel_leaf INTERFACE "$<TARGET_OBJECTS:${_kickos_cxx_rt_name}>")
     target_link_options(kickos_kernel_leaf INTERFACE "LINKER:--wrap=__cxa_allocate_exception")
@@ -858,7 +907,6 @@ if(TARGET kickos_kernel)
   # KickOS::kickos (`kickos` in tree): a program's link interface, the kernel leaf's compile
   # usage and its user runtime without the kernel. Each archive goes by file, so no kernel
   # archive a user archive depends on reaches the program's own link.
-  add_library(kickos INTERFACE)
   target_link_libraries(kickos INTERFACE kickos_core)
   foreach(_kos_t kickos_user kickos_lib kickos_arch_${KICKOS_ARCH} kickos_kernel)
     kickos_export_name(${_kos_t} _kos_name)
@@ -870,15 +918,18 @@ if(TARGET kickos_kernel)
   endif()
   if(NOT KICKOS_ARCH STREQUAL "sim")
     target_link_options(kickos INTERFACE
-      "LINKER:-u,${KICKOS_C_SYMBOL_PREFIX}__retarget_lock_acquire_recursive")
+      "LINKER:-u,${KICKOS_C_SYMBOL_PREFIX}__retarget_lock_acquire_recursive"
+      "LINKER:--wrap=sysconf" "LINKER:--wrap=exit")
   endif()
-  target_link_libraries(kickos INTERFACE
-    "$<LINK_GROUP:RESCAN,$<TARGET_FILE:${_kickos_user_lib}>,$<TARGET_FILE:${_kickos_lib_name}>${_kickos_user_libc}>")
+  _kickos_profile_groups(_kickos_user_group
+    "$<LINK_GROUP:RESCAN,$<TARGET_FILE:@USER@>,$<TARGET_FILE:${_kickos_lib_name}>${_kickos_user_libc}>")
+  target_link_libraries(kickos INTERFACE ${_kickos_user_group})
   if(TARGET kickos_cxx_rt)
     target_compile_options(kickos INTERFACE "$<$<COMPILE_LANGUAGE:CXX>:-fexceptions;-frtti>")
     if(NOT KICKOS_ARCH STREQUAL "x86_64")
-      target_link_libraries(kickos INTERFACE
-        "$<LINK_GROUP:RESCAN,stdc++,supc++,c,$<TARGET_FILE:${_kickos_user_name}>,${_kickos_cxx_throw_name}>")
+      _kickos_profile_groups(_kickos_cxx_group
+        "$<LINK_GROUP:RESCAN,stdc++,supc++,c,gcc,$<TARGET_FILE:@USER@>,${_kickos_cxx_throw_name}>")
+      target_link_libraries(kickos INTERFACE ${_kickos_cxx_group})
     endif()
     target_link_libraries(kickos INTERFACE "$<TARGET_OBJECTS:${_kickos_cxx_rt_name}>")
     target_link_options(kickos INTERFACE "LINKER:--wrap=__cxa_allocate_exception")
@@ -1162,7 +1213,8 @@ if(NOT KICKOS_ARCH STREQUAL "sim")
   list(REMOVE_DUPLICATES _kos_tc_install)
   install(FILES ${_kos_tc_install} DESTINATION "${KICKOS_CMAKE_DIR}")
 # The CPU baseline is baked in: a package has no arch/ tree for the toolchain file to read a
-# cpu.cmake out of. Only the knobs the descriptor leaves to the chip are appended.
+# cpu.cmake out of. Only the knobs the descriptor leaves to the chip are appended. So is the nano
+# newlib default of a configuration that sets it.
   set(_kos_baked "${PROJECT_BINARY_DIR}/generated/board.cmake")
   file(READ "${CMAKE_CURRENT_SOURCE_DIR}/boards/${KICKOS_BOARD}/board.cmake" _kos_desc)
   set(_kos_bake "")
@@ -1179,16 +1231,12 @@ if(NOT KICKOS_ARCH STREQUAL "sim")
       "# comes from arch/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/cpu.cmake.\n"
       "${_kos_bake}")
   endif()
-  if(KICKOS_BOARD_NEWLIB STREQUAL "nano")
-    if(KICKOS_FULL_NEWLIB)
-      set(_kos_package_newlib full)
-    else()
-      set(_kos_package_newlib nano)
-    endif()
+  if(KICKOS_LIBC_DEFAULT STREQUAL "nano"
+     AND NOT _kos_desc MATCHES "(^|\n)set\\(KICKOS_BOARD_NEWLIB[ \t]")
     string(APPEND _kos_desc
-      "\n# Appended at install: the newlib profile this package's libraries were built with,\n"
-      "# the only one the shipped toolchain file accepts.\n"
-      "set(KICKOS_PACKAGE_NEWLIB ${_kos_package_newlib})\n")
+      "\n# Appended at install: the newlib default of the configuration this package was built\n"
+      "# with.\n"
+      "set(KICKOS_BOARD_NEWLIB \"nano\")\n")
   endif()
   kickos_write_if_changed("${_kos_baked}" "${_kos_desc}")
   install(FILES "${_kos_baked}" DESTINATION "${KICKOS_CMAKE_DIR}")

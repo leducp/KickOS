@@ -6,8 +6,7 @@
 # that holds a capture to them (tools/bench/banner.sh identity_verdict):
 #   - the rows are kbanner's own: the same formats over the same version, board and app stamp,
 #     and a build time and commit the stamp writes from the values it gives the kernel's;
-#   - user/src/banner_identity.cc, compiled here in both diag columns, with and without an app
-#     stamp, prints exactly the rows the verdict renders, and the stamps the route reads back
+#   - user/src/banner_identity.cc, compiled here with and without an app stamp, prints exactly the rows the verdict renders, and the stamps the route reads back
 #     out of that image are the ones it printed;
 #   - every row at its widest renders whole into BANNER_IDENTITY_MAX, the buffer a USB device
 #     console holds the rows in;
@@ -114,30 +113,28 @@ for app in 0 1; do
         stamp=$STAMP
         stamp_obj="$TMP/stamp_usbcdcwit.o"
     fi
-    for terse in 0 1; do
-        bin="$TMP/render$terse$app"
-        "$CXX" -std=c++17 -Iinclude -Iuser/include -Ilib/include -DKICKOS_DIAG_TERSE="$terse" \
-            -DKICKOS_LINKER_WEAK_UNDEF=1 '-DKICKOS_VERSION="0.5.1"' '-DKICKOS_BOARD_NAME="picopi"' \
-            "$TMP/main$app.cc" "$RENDER" $stamp_obj -o "$bin" 2> "$TMP/cc.err" \
-            || fail "the renderer does not build on this host: $(head -n 5 "$TMP/cc.err")"
-        "$bin" > "$TMP/rows$terse$app" || fail "the renderer did not run"
-        {
-            printf '\n'
-            printf '%s\n' "$(identity_row "$DIAG" KDIAG_F_BANNER_NAME "$terse" 0.5.1)"
-            printf '%s\n' "$(identity_row "$DIAG" KDIAG_F_BANNER_BOARD "$terse" picopi)"
-            printf '%s\n' "$(identity_row "$DIAG" KDIAG_F_BANNER_BUILD "$terse" "$BUILT")"
-            if [ -n "$stamp" ]; then
-                printf '%s\n' "$(identity_row "$DIAG" KDIAG_F_BANNER_APP "$terse" "$stamp")"
-            fi
-            printf '%s\n' "$(identity_row "$DIAG" KDIAG_F_BANNER_COMMIT "$terse" 0123abcd-dirty)"
-        } > "$TMP/want$terse$app"
-        cmp -s "$TMP/rows$terse$app" "$TMP/want$terse$app" \
-            || bad "column $terse, app stamp $app: the image prints [$(cat "$TMP/rows$terse$app")], the verdict renders [$(cat "$TMP/want$terse$app")]"
-    done
+    bin="$TMP/render$app"
+    "$CXX" -std=c++17 -Iinclude -Iuser/include -Ilib/include \
+        -DKICKOS_LINKER_WEAK_UNDEF=1 '-DKICKOS_VERSION="0.5.1"' '-DKICKOS_BOARD_NAME="picopi"' \
+        "$TMP/main$app.cc" "$RENDER" $stamp_obj -o "$bin" 2> "$TMP/cc.err" \
+        || fail "the renderer does not build on this host: $(head -n 5 "$TMP/cc.err")"
+    "$bin" > "$TMP/rows$app" || fail "the renderer did not run"
+    {
+        printf '\n'
+        printf '%s\n' "$(identity_row "$DIAG" KDIAG_F_BANNER_NAME 0.5.1)"
+        printf '%s\n' "$(identity_row "$DIAG" KDIAG_F_BANNER_BOARD picopi)"
+        printf '%s\n' "$(identity_row "$DIAG" KDIAG_F_BANNER_BUILD "$BUILT")"
+        if [ -n "$stamp" ]; then
+            printf '%s\n' "$(identity_row "$DIAG" KDIAG_F_BANNER_APP "$stamp")"
+        fi
+        printf '%s\n' "$(identity_row "$DIAG" KDIAG_F_BANNER_COMMIT 0123abcd-dirty)"
+    } > "$TMP/want$app"
+    cmp -s "$TMP/rows$app" "$TMP/want$app" \
+        || bad "app stamp $app: the image prints [$(cat "$TMP/rows$app")], the verdict renders [$(cat "$TMP/want$app")]"
     # What the route reads back out of the image is what the image printed.
-    got=$(image_string "$TMP/render0$app" kickos_build_time)
+    got=$(image_string "$TMP/render$app" kickos_build_time)
     [ "$got" = "$BUILT" ] || bad "the build stamp read out of the image is [$got], not [$BUILT]"
-    if got=$(image_string "$TMP/render0$app" kickos_app_stamp); then
+    if got=$(image_string "$TMP/render$app" kickos_app_stamp); then
         [ "$got" = "$stamp" ] || bad "the app stamp read out of the image is [$got], not [$stamp]"
     elif [ -n "$stamp" ]; then
         bad "no app stamp is read out of an image that defines one"
@@ -163,27 +160,25 @@ LONG_STAMP=$(stamp_of "$(widest i 45)")
         '    fwrite(out, 1, n, stdout);' '    if (n != sizeof(out) - 1u)' '    {' \
         '        return 2;' '    }' '    return 0;' '}'
 } > "$TMP/mainlong.cc"
-for terse in 0 1; do
-    "$CXX" -std=c++17 -Iinclude -Iuser/include -Ilib/include -DKICKOS_DIAG_TERSE="$terse" \
-        -DKICKOS_LINKER_WEAK_UNDEF=1 "-DKICKOS_VERSION=\"$LONG_VERSION\"" \
-        "-DKICKOS_BOARD_NAME=\"$LONG_BOARD\"" "$TMP/mainlong.cc" "$RENDER" \
-        "$TMP/stamp_$(widest i 45).o" -o "$TMP/renderlong$terse" 2> "$TMP/cc.err" \
-        || fail "the renderer does not build at the widest rows: $(head -n 5 "$TMP/cc.err")"
-    "$TMP/renderlong$terse" > "$TMP/rowslong$terse"
-    long_rc=$?
-    {
-        printf '\n'
-        printf '%s\n' "$(identity_row "$DIAG" KDIAG_F_BANNER_NAME "$terse" "$LONG_VERSION")"
-        printf '%s\n' "$(identity_row "$DIAG" KDIAG_F_BANNER_BOARD "$terse" "$LONG_BOARD")"
-        printf '%s\n' "$(identity_row "$DIAG" KDIAG_F_BANNER_BUILD "$terse" "$BUILT")"
-        printf '%s\n' "$(identity_row "$DIAG" KDIAG_F_BANNER_APP "$terse" "$LONG_STAMP")"
-        printf '%s\n' "$(identity_row "$DIAG" KDIAG_F_BANNER_COMMIT "$terse" "$LONG_COMMIT")"
-    } > "$TMP/wantlong$terse"
-    cmp -s "$TMP/rowslong$terse" "$TMP/wantlong$terse" \
-        || bad "column $terse, every row at its widest: the image prints [$(cat "$TMP/rowslong$terse")], the verdict renders [$(cat "$TMP/wantlong$terse")]"
-    [ "$long_rc" -eq 0 ] \
-        || bad "column $terse: the widest rows do not fill BANNER_IDENTITY_MAX to its NUL, so the buffer is not sized from them"
-done
+"$CXX" -std=c++17 -Iinclude -Iuser/include -Ilib/include \
+    -DKICKOS_LINKER_WEAK_UNDEF=1 "-DKICKOS_VERSION=\"$LONG_VERSION\"" \
+    "-DKICKOS_BOARD_NAME=\"$LONG_BOARD\"" "$TMP/mainlong.cc" "$RENDER" \
+    "$TMP/stamp_$(widest i 45).o" -o "$TMP/renderlong" 2> "$TMP/cc.err" \
+    || fail "the renderer does not build at the widest rows: $(head -n 5 "$TMP/cc.err")"
+"$TMP/renderlong" > "$TMP/rowslong"
+long_rc=$?
+{
+    printf '\n'
+    printf '%s\n' "$(identity_row "$DIAG" KDIAG_F_BANNER_NAME "$LONG_VERSION")"
+    printf '%s\n' "$(identity_row "$DIAG" KDIAG_F_BANNER_BOARD "$LONG_BOARD")"
+    printf '%s\n' "$(identity_row "$DIAG" KDIAG_F_BANNER_BUILD "$BUILT")"
+    printf '%s\n' "$(identity_row "$DIAG" KDIAG_F_BANNER_APP "$LONG_STAMP")"
+    printf '%s\n' "$(identity_row "$DIAG" KDIAG_F_BANNER_COMMIT "$LONG_COMMIT")"
+} > "$TMP/wantlong"
+cmp -s "$TMP/rowslong" "$TMP/wantlong" \
+    || bad "every row at its widest: the image prints [$(cat "$TMP/rowslong")], the verdict renders [$(cat "$TMP/wantlong")]"
+[ "$long_rc" -eq 0 ] \
+    || bad "the widest rows do not fill BANNER_IDENTITY_MAX to its NUL, so the buffer is not sized from them"
 
 [ "$rc" -eq 0 ] || exit 1
 echo "PASS: a USB console's identity rows are kbanner's, rendered as the route's verdict renders them"

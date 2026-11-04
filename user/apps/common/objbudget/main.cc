@@ -6,7 +6,6 @@
 // allocation tests the reverse. A second task verifies that the shared pool
 // retains capacity beyond one task's budget. Self-test images only.
 
-#include <kickos/chip_limits.h> // KICKOS_CHIP_ONE_TASK
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 #include <kickos/sys/cap_index.h>
@@ -83,10 +82,6 @@ int main(int, char**)
     // --- 4: THE ITEM'S CLAIM. Another TASK's creator still lands --------------------
     // A task of its own and not a plain spawn: a plain spawn is a thread of THIS task and
     // would share this ceiling, so it could not tell a per-task bound from a global one.
-#if KICKOS_CHIP_ONE_TASK
-    harness.skip("a task at its ceiling does not deny another task's endpoint_create: this "
-                 "board holds one task");
-#else
     bool child_ok = false;
     int child_rc = 1;
     kos_program_t prog = KOS_CAP_NONE;
@@ -118,13 +113,8 @@ int main(int, char**)
     }
     harness.check(child_ok,
                   "a task at its ceiling does not deny another task's endpoint_create");
-#endif
 
     // --- 6: a program's task is its own ------------------------------------------
-#if KICKOS_CHIP_ONE_TASK
-    harness.skip("a peer's statics start from its image at every create: this board holds one "
-                 "task");
-#else
     {
         kos_program_t peer_prog = KOS_CAP_NONE;
         bool statics_ok = false;
@@ -156,7 +146,6 @@ int main(int, char**)
         harness.check(statics_ok, "a peer's statics start from its image at every create");
 #endif
     }
-#endif
 
     // --- 5: the ceiling is PER POOL and not one budget across the kinds -------------
     // Still at the endpoint ceiling here. One shared count would refuse this too, and a

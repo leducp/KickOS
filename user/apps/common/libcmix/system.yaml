@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# main, and the peer, a program of its own linking the other newlib profile, which main runs once
+# and whose exit status it reads.
+
+version: 1
+stdout: kernel
+ends: main
+heap: 2048
+
+tasks:
+  - name: main
+    program: libcmix
+    priority: 10
+    ceiling: 20
+    authority: [tasks]
+    budgets: { threads: 2 }
+
+  - name: peer
+    program: libcmix_peer
+    priority: 10
+    ceiling: 20
+    start: on_request
+    budgets: { threads: 2 }

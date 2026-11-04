@@ -37,13 +37,15 @@ enum kos_cap_authority
     KOS_AUTH_CONSOLE = 1 << 5, // creating a console driver
     KOS_AUTH_TASKS = 1 << 6,   // kos_task_create, and a spawn that builds a task of its own
     KOS_AUTH_BUS_MASTER = 1 << 7, // a spawn's device window over a device that masters the bus
-    KOS_AUTH_BOOTLOADER = 1 << 8  // kos_shutdown into the chip's bootloader, beside KOS_AUTH_SYSTEM
+    KOS_AUTH_BOOTLOADER = 1 << 8, // kos_shutdown into the chip's bootloader, beside KOS_AUTH_SYSTEM
+    KOS_AUTH_REALTIME = 1 << 9    // kos_clock_set_realtime
 };
 
 // The only place the full set is written. It must name every authority bit:
 // cap_seat_authority masks a seated word to it.
 #define KOS_AUTH_ALL                                                                           \
     (KOS_AUTH_MEMORY | KOS_AUTH_PINMUX | KOS_AUTH_PSTATE | KOS_AUTH_IRQ | KOS_AUTH_SYSTEM     \
-     | KOS_AUTH_CONSOLE | KOS_AUTH_TASKS | KOS_AUTH_BUS_MASTER | KOS_AUTH_BOOTLOADER)
+     | KOS_AUTH_CONSOLE | KOS_AUTH_TASKS | KOS_AUTH_BUS_MASTER | KOS_AUTH_BOOTLOADER           \
+     | KOS_AUTH_REALTIME)
 
 #endif

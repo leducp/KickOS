@@ -8,6 +8,11 @@
 
 #include <kickos/libc/fmt.h>
 
+#if KICKOS_AMP_NODE and KICKOS_AMP_OWN_IMAGE and KICKOS_AMP_CLOCK_SHARED
+#include <bits/gthr.h>
+#include <errno.h>
+#endif
+
 namespace selftest
 {
 #if KICKOS_AMP_NODE
@@ -819,6 +824,87 @@ namespace selftest
         TAP_CHECK(again == static_cast<int32_t>(sizeof(cbuf)));
     }
 #endif
+#endif
+
+#if KICKOS_AMP_OWN_IMAGE and KICKOS_AMP_CLOCK_SHARED
+    // --- A peer's set of the shared wall clock ends a realtime wait here -------------------
+    // The echo peer sets the wall clock a day ahead on a call marked AMP_WALL_MARK, then holds the
+    // call until node 0 stores the call's sequence at AMP_WALL_HOLD_WORD of its own line, answering
+    // the set's code in the reply's third byte and whether the store came in its fourth
+    // (user/apps/common/ampping/main_echo.c). A waiter woken by the reply's own doorbell is late.
+    constexpr uint8_t AMP_WALL_MARK = 0xD1u;
+    constexpr uintptr_t AMP_WALL_HOLD_WORD = 8u;
+    constexpr uint64_t AMP_WALL_AHEAD_NS = 3600000000000ull;
+    // Main's sleep between starting the waiter and its call; the waiter parks inside it.
+    constexpr uint64_t AMP_WALL_SETTLE_NS = 300000000ull;
+    constexpr uint64_t AMP_WALL_ENDED_MAX_NS = 1000000000ull;
+    __gthread_cond_t g_awall_cond = __GTHREAD_COND_INIT;
+    __gthread_mutex_t g_awall_mutex = __GTHREAD_MUTEX_INIT;
+    uintptr_t g_awall_hold = 0;
+    uint32_t g_awall_seq = 0;
+    int g_awall_rc = -1;
+    uint64_t g_awall_ended = 0;
+
+    // The system_clock wait the C++ runtime makes, an hour ahead.
+    void amp_wall_waiter(void*)
+    {
+        (void)__gthread_mutex_lock(&g_awall_mutex);
+        uint64_t const at = kos_clock_realtime() + AMP_WALL_AHEAD_NS;
+        __gthread_time_t abs;
+        abs.tv_sec = static_cast<time_t>(at / 1000000000u);
+        abs.tv_nsec = static_cast<long>(at % 1000000000u);
+        int const rc = __gthread_cond_timedwait(&g_awall_cond, &g_awall_mutex, &abs);
+        g_awall_ended = kos_clock_now();
+        (void)__gthread_mutex_unlock(&g_awall_mutex);
+        g_awall_rc = rc;
+        reinterpret_cast<Atomic<uint32_t, Order::RELEASE>*>(g_awall_hold)->store(g_awall_seq);
+    }
+
+    void t_amp_far_wall()
+    {
+        uint32_t far_node = 0;
+        kos_cap_t const far = amp_far_answered(&far_node);
+        TAP_SKIP_UNLESS(far != KOS_CAP_NONE and amp_peer_kernel_live(far_node),
+                        "no peer kernel answers a far call on this partition");
+        size_t size = 0;
+        uintptr_t const view = amp_share_view(&size);
+        TAP_CHECK(view != 0 and size >= AMP_SHARE_LINE);
+        TAP_ASK(.workers = 1);
+        auto* const release =
+            reinterpret_cast<Atomic<uint32_t, Order::RELEASE>*>(view + AMP_WALL_HOLD_WORD);
+        uint32_t const seq = ((g_awall_seq + 1u) & 0x7Fu) | 0x80u;
+        g_awall_seq = seq;
+        release->store(seq ^ 0xFFu);
+        g_awall_hold = view + AMP_WALL_HOLD_WORD;
+        g_awall_rc = -1;
+        kos::thread::Handle w;
+        ArmHold hold;
+        TAP_HOLD(hold.thread(&w));
+        w = kos::thread::create(amp_wall_waiter, nullptr, "ampwall", TAP_PRIO_PARKS,
+                                KOS_POLICY_FIFO, 0, nullptr, 0, nullptr, 0, nullptr, 0, 0, nullptr,
+                                TAP_PIN_CORE);
+        TAP_CHECK(w.valid());
+        kos_sleep_ns(AMP_WALL_SETTLE_NS);
+        unsigned char req[AMP_FAR_LEN] = {};
+        req[0] = AMP_WALL_MARK;
+        req[1] = static_cast<unsigned char>(seq);
+        uint64_t const called = kos_clock_now();
+        int32_t const got = amp_echo_call(far, req, sizeof(req));
+        bool const joined = hold.joined();
+        // Released whatever happened, so a failure here leaves the peer echoing.
+        release->store(seq);
+        long long const after = static_cast<long long>(g_awall_ended - called);
+        tap::diag("far wall: node %u, call %ld, set %d, seen %d, wait %d, ended %lld ns after "
+                  "the call", static_cast<unsigned>(far_node), static_cast<long>(got),
+                  static_cast<int>(static_cast<signed char>(req[2])), static_cast<int>(req[3]),
+                  g_awall_rc, after);
+        TAP_CHECK(got == static_cast<int32_t>(sizeof(req)));
+        TAP_CHECK(req[2] == 0);
+        TAP_CHECK(joined and g_awall_rc == ETIMEDOUT);
+        TAP_CHECK(g_awall_ended > called and g_awall_ended - called < AMP_WALL_ENDED_MAX_NS);
+        // The peer saw the waiter end inside its hold, before its reply rang this node.
+        TAP_CHECK(req[3] == 1);
+    }
 #endif
 
 #if KICKOS_SELFTEST_PEER

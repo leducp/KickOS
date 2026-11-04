@@ -25,13 +25,8 @@ MEMORY
 _estack = ORIGIN(RAM) + LENGTH(RAM);
 _kernel_stack_size = 16K;
 
-/* PMSAv8 is 32-byte granular; the window stays pow2 to match the chip default. Its pad is the
-   newlib heap: 64K covers the selftest image's app-side .bss plus the cxxtest heap peak. */
+/* Kernel .data/.bss below the images' windows (kernel_data_reserve.ld.h). */
 #if KICKOS_HAVE_MPU
-#ifndef KICKOS_APPDATA_SIZE
-#define KICKOS_APPDATA_SIZE 64K
-#endif
-_appdata_size = KICKOS_APPDATA_SIZE;
 #ifndef KICKOS_KERNEL_DATA_RESERVE
 #define KICKOS_KERNEL_DATA_RESERVE 64K
 #endif
@@ -54,7 +49,7 @@ SECTIONS
     KICKOS_CORTEXM_EH
     KICKOS_CORTEXM_EXIDX
     KICKOS_INIT_TABLES(FLASH)
-    KICKOS_CORTEXM_DATA(KICKOS_APPDATA_SECTION(_ebss))
+    KICKOS_CORTEXM_DATA()
 
 #if KICKOS_HAVE_MPU
     /* The whole flash as the app's RX region, kernel code included. */

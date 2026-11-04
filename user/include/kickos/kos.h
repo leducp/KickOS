@@ -45,9 +45,13 @@ namespace kos
     {
         return kos_periph_clock_hz(base);
     }
-    inline void clock_set_realtime(uint64_t unix_ns)
+    inline uint64_t clock_realtime()
     {
-        kos_clock_set_realtime(unix_ns);
+        return kos_clock_realtime();
+    }
+    inline int clock_set_realtime(uint64_t unix_ns)
+    {
+        return kos_clock_set_realtime(unix_ns);
     }
     // Borrow the kernel's diagnostic LED (see kos_kernel_diag_led_set): a shared
     // status pin, not an app-owned device; provisional until caps land.

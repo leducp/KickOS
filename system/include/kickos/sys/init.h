@@ -11,8 +11,8 @@
 //
 // An image's global constructors run once, in whichever of its threads enters it first, with
 // that thread's authority, priority and stack, before its entry: the init's in the kernel root
-// thread BEFORE kickos_init_entry is entered, and where the init is an image of its own the
-// app's in the entry thread of the first task the init starts (kickos_image_start_once). Where a
+// thread BEFORE kickos_init_entry is entered, and the app's in the entry thread of the first
+// task the init starts (kickos_image_start_once). Where a
 // backend translates, every other space starts from the image's pristine data and runs them
 // again, once, in whichever of its threads enters first (kickos_task_start). So a constructor
 // cannot depend on anything init brings up, must need no authority a task lacks and must not
@@ -59,9 +59,8 @@ void kickos_task_start(void* arg, void (*entry)(void*)) __attribute__((visibilit
 // kickos_task_start. Same placement and visibility rules as above.
 void kickos_image_start_once(void) __attribute__((visibility("hidden")));
 
-// Where each declared task runs an image of its own and no backend translates, the image's .data
-// copied from its template and its .bss zeroed, which its entry thread runs first at every start
-// of the task.
+// Where no backend translates, the image's .data copied from its template and its .bss zeroed,
+// which its entry thread runs first at every start of the task.
 void kickos_image_crt0(void) __attribute__((visibility("hidden")));
 
 // Where the user clock scales a counter by a rate only the kernel knows (x86_64), seats that

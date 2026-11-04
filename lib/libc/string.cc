@@ -7,9 +7,7 @@
 
 // Linked into every image: KOS_IMAGE_BOTH_OBJECT of <kickos/sys/image.h>, outside this
 // library's include path.
-#if KICKOS_INIT_IMAGE
 __asm__(".set __kickos_image_both_object, 1");
-#endif
 
 // Not compiled for the host sim. These are global symbols with default visibility, so a
 // definition here PREEMPTS the host libc's for the whole process, the C++ runtime and

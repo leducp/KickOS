@@ -33,17 +33,12 @@
 #endif
 #define KICKOS_TLS_FROM_SP TLSCARVE_FROM_SP
 
-// The sim carves no libc state. Only tls.cc reads the macro, so the override moves no layout.
-#ifdef KICKOS_REENT_CARVE
-#undef KICKOS_REENT_CARVE
-#endif
-#define KICKOS_REENT_CARVE TLSCARVE_REENT_CARVE
-
 #include "../../../kernel/thread/tls.cc"
 
 // The image record tls.cc reads, as the link's script states it from the four symbols a case
-// fabricates: one image, whose part is the whole segment. A case that states images of its own
-// defines TLSCARVE_IMAGES and its own image_record.
+// fabricates: one image, whose part is the whole segment, and whose libc state carve is
+// TLSCARVE_REENT_CARVE. A case that states images of its own defines TLSCARVE_IMAGES and its own
+// image_record.
 #ifndef TLSCARVE_IMAGES
 extern "C"
 {
@@ -62,6 +57,7 @@ namespace kickos
         size_t const tbss = static_cast<size_t>(__kickos_tbss_end - __kickos_tbss_start);
         h.tls_template = reinterpret_cast<uintptr_t>(__kickos_tdata_start);
         h.tls_offset = 0;
+        h.reent_carve = TLSCARVE_REENT_CARVE;
         h.tls_init = tdata;
         h.tls_total = 0;
         if (tdata + tbss != 0)

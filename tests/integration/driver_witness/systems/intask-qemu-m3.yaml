@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# testlate running as threads of the one task that uses it, as on a chip that holds one task,
-# below the task's priority.
+# testlate running as threads of the one task that uses it, below the task's priority.
 
 version: 1
 board: qemu-m3

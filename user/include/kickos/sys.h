@@ -142,13 +142,44 @@ int kos_mutex_lock(kos_mutex_t* m, uint32_t timeout_us);
 // 0, or -KOS_EPERM (the caller is not the holder), or -KOS_EINVAL / -KOS_EFAULT as above. Only
 // the holder unlocks.
 int kos_mutex_unlock(kos_mutex_t* m);
-// The C library's own two locks, in the caller's memory: what stdio and malloc take.
-enum kos_libc_lock
-{
-    KOS_LIBC_LOCK_STDIO,
-    KOS_LIBC_LOCK_MALLOC
-};
-kos_mutex_t* kos_libc_lock(enum kos_libc_lock which);
+// Condition variable: a kos_cond_t (abi.h) in memory every thread sharing it can write,
+// statically KOS_COND_INIT, with no kernel object, capability or create call, used with a
+// kos_mutex_t. A signal or a broadcast with no thread waiting is a compare-and-swap in user mode;
+// the kernel is entered only to wait or to wake a waiter. A signal wakes the highest waiter, FIFO
+// among equals, and a broadcast every waiter. A word in memory two address spaces share is one
+// condition across them.
+//
+// Release m, which the caller holds, wait for a signal or a broadcast at most timeout_us relative
+// microseconds counted from the park (KOS_TIMEOUT_NONE: forever; zero: release and re-take
+// only), then re-take m however long that takes. A signal sent after the release and before the
+// park still ends the wait. A return of 0 does not prove a signal: test the predicate again.
+//   0               woken, or spuriously, m held
+//   -KOS_ETIMEDOUT  the time ran out, m held
+//   -KOS_EOWNERDEAD m held, but a holder died holding it meanwhile: as kos_mutex_lock
+//   -KOS_EPERM      the caller does not hold m: nothing waited, m untouched
+//   -KOS_EINVAL / -KOS_EFAULT  a word the kernel refuses: the condition's with m held, m's
+//                   re-take without it
+// A wait is a death point of a kill: a waiter cancelled while parked ends at the re-take's
+// kernel entry, so it never takes m on its way out and leaves the condition usable.
+int kos_cond_wait(kos_cond_t* c, kos_mutex_t* m, uint32_t timeout_us);
+// kos_word_wait, kos_mutex_lock and kos_cond_wait toward a deadline on the wall clock, `unix_ns`
+// Unix-epoch nanoseconds (abi.h, KOS_TIMEOUT_REALTIME) in place of a timeout: the wait ends once
+// kos_clock_realtime reads it, a set of the wall clock while it waits moving it as POSIX
+// clock_settime asks, and one already reached waits as a timeout of 0.
+int kos_word_wait_realtime(uint32_t* word, uint32_t expected, uint64_t unix_ns);
+int kos_mutex_lock_realtime(kos_mutex_t* m, uint64_t unix_ns);
+int kos_cond_wait_realtime(kos_cond_t* c, kos_mutex_t* m, uint64_t unix_ns);
+// Wake one waiter, or every waiter. 0, or -KOS_EINVAL / -KOS_EFAULT for a word the kernel
+// refuses. Never a death point of a cancel. A signal sent without holding the mutex may wake a
+// thread that began its wait after the signal, in place of one already waiting.
+int kos_cond_signal(kos_cond_t* c);
+int kos_cond_broadcast(kos_cond_t* c);
+
+// The C library's locks, in the caller's memory: malloc's, and the one a stream holds. Each is
+// a recursive lock over a mutex word, which a caller may try or watch.
+struct __sFILE;
+kos_mutex_t* kos_libc_malloc_lock(void);
+kos_mutex_t* kos_libc_file_lock(struct __sFILE* stream);
 
 // Capability creation returns status and writes out_cap (KOS_CAP_NONE on failure).
 // Handles use all 32 bits and are local to a thread; delegate them through
@@ -257,7 +288,12 @@ int kos_thread_create(struct kos_thread_params const* params, kos_thread_t* out_
 // End the CALLING thread with `code`, or the whole system when the caller is root: root's
 // exit is a halting kos_shutdown(code), exactly as returning from main is, so plain C exit() and
 // abort() from main end the system with children still alive. Root therefore needs
-// KOS_AUTH_SYSTEM to call this at all (see <kickos/sys/init.h>) and panics without it.
+// KOS_AUTH_SYSTEM to call this at all (see <kickos/sys/init.h>) and panics without it. The
+// caller's thread_local objects are destroyed first, as when its entry function returns. The C
+// library's exit(), _exit() and abort() end the caller's whole TASK instead, from any thread:
+// exit() destroys the caller's thread_local objects, then runs the task's atexit handlers and
+// flushes its streams in the caller, and abort(), a failed assert() and std::terminate give the
+// task status 134.
 void kos_exit(int code) __attribute__((noreturn));
 
 // Cancel a thread created by the caller, by `kind`:
@@ -299,6 +335,7 @@ uint32_t kickos_self_lock_id(void);
 // wait was cancelled asks again here, so the kernel ends it at an entry and it never takes a
 // lock freed meanwhile with no entry at all.
 int kickos_mutex_lock_entry(kos_mutex_t* m, uint32_t timeout_us);
+int kickos_mutex_lock_entry_realtime(kos_mutex_t* m, uint64_t unix_ns);
 // Set the CALLING thread's base priority. Lowering is always allowed; raising is allowed up to
 // the calling task's declared priority ceiling. A thread boosted by priority
 // inheritance keeps the boost: the call moves the base it falls back to once the boost ends. A
@@ -464,11 +501,12 @@ int kos_port_reg_write(uint16_t base, uint16_t offset, uint8_t value);
 // negative.
 int kos_task_slay(kos_task_t task, uint32_t timeout_us);
 
-// Wait for a thread created by the caller, with a relative microsecond
-// timeout or KOS_TIMEOUT_NONE. Returns 0 if exited, including before this call.
-// Returns -KOS_E*: ETIMEDOUT if still running, ECANCELED if the caller is
-// cancelled, EBADF for an invalid/reused slot, EPERM for a different parent,
-// EDEADLK for self. Handles remain valid after exit until the slot is reused.
+// Wait for a thread of the caller's task, or one the caller created, with a relative
+// microsecond timeout or KOS_TIMEOUT_NONE, until it is gone by any path: its slot and its
+// task's thread budget are free again on return. Returns 0 if exited, including before this
+// call, whoever asks. Returns -KOS_E*: ETIMEDOUT if still running, ECANCELED if the caller is
+// cancelled, EBADF for an invalid/reused slot, EPERM for another task's running thread the caller
+// did not create, EDEADLK for self. Handles remain valid after exit until the slot is reused.
 int kos_thread_join(kos_thread_t thread, uint32_t timeout_us);
 
 // End the WHOLE system with `status`, by `outcome`: drain the kernel console, then halt
@@ -630,12 +668,14 @@ int kos_pinmux_set(uint32_t port, uint32_t pin, uint32_t func);
 // driver owns the console (a retune would garble a baud the kernel cannot relocate).
 uint64_t kos_cpu_clock_set(kos_pstate_t pstate);
 
-// Set the Unix-epoch wall clock: unix_ns is the current time, and the offset
-// stored is unix_ns - kos_clock_now(). Backs newlib's _gettimeofday (see
-// newlib_stubs.cc), so std::chrono::system_clock::now() reads true epoch time
-// after this is called; default offset 0 leaves wall time reading boot-relative.
-// Does NOT affect kos_clock_now(): that stays a pure monotonic counter.
-void kos_clock_set_realtime(uint64_t unix_ns);
+// The wall clock in Unix-epoch nanoseconds: kos_clock_now() plus one offset the kernel keeps for
+// every task, and on an AMP partition whose nodes read one counter for every node; it reads
+// boot-relative until a set. gettimeofday, time and clock_gettime(CLOCK_REALTIME) read it;
+// kos_clock_now and clock_gettime(CLOCK_MONOTONIC) never move with it.
+uint64_t kos_clock_realtime(void);
+
+// Set the wall clock to unix_ns. 0, or -KOS_EPERM (no KOS_AUTH_REALTIME).
+int kos_clock_set_realtime(uint64_t unix_ns);
 
 // Reserve page-aligned user RAM for this task; returns NULL on exhaustion.
 // Reservation alone grants no access. Pass it to spawn/task creation or

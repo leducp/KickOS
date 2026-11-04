@@ -185,11 +185,7 @@ namespace kickos
     {
         static constexpr uint32_t DIR_LENGTH = DirLength;
         static constexpr uint32_t CAP_CHUNKS = CapSlots / KCAP_CHUNK_SLOTS;
-#if KICKOS_INIT_IMAGE
         static constexpr int IMAGES = Tasks + 1;
-#else
-        static constexpr int IMAGES = 1;
-#endif
 #if KICKOS_KERNEL_CORES > 1
         static constexpr uint32_t RING_DEPTH = sched_ring_depth_for(2u * Threads);
 #endif

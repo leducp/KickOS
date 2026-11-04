@@ -46,7 +46,7 @@ namespace
         uint32_t mask = 0;
         Atomic<uint32_t, Order::RELAXED> head = 0; // bytes queued; written by a producer
         Atomic<uint32_t, Order::RELAXED> tail = 0; // bytes drained; written by the drain OR a producer
-        int irq_line = -1;
+        int irq_line = 0; // read only while armed; any nonzero default moves the ring into .data
         bool armed = false;
         // Set across an insert's copy. A synchronous CPU fault is not gated by the mask and its
         // reporter writes to this same console: a nested insert would build its line at a head

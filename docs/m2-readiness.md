@@ -249,8 +249,8 @@ Per-board `_appdata_size` default: the full-C++ silicon chips (rp2040, esp32c6, 
 and qemu-virt default `_appdata_size` to **32K** under `KICKOS_HAVE_MPU` -- enough for the
 app statics + libstdc++/unwind writable state + the RISC-V gp small-data window (~18K
 measured on all three), with the remaining pad serving as the libc heap (there is no
-separate heap-size number; the window `KICKOS_APPDATA_SIZE` is the one knob). So `-DKICKOS_HAVE_MPU=1`
-links every app **including cxxtest** with NO manual `-DKICKOS_APPDATA_SIZE`; a tight
+separate heap-size number; the window size is the one knob). So `-DKICKOS_HAVE_MPU=1`
+links every app **including cxxtest** with NO manual window size; a tight
 freestanding demo can still override the size down. imxrt1062 (teensy41) keeps a
 128K default and fail-closes its base alignment (`ALIGN(_appdata_size)`).
 

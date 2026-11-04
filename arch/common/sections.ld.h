@@ -98,23 +98,27 @@
  * argument after the region is the template's AT(), where it loads elsewhere than it links.
  */
 #if KICKOS_IMAGES_PLACED
-/* One image per declared task beside the init's. Each image's own relocatable link places its
- * .tbss in its .tdata as zeros (cmake/image_partial.lds), so every image's thread-local storage is
- * one span of .tdata: image 1's, then each later task image's in turn, which tools/image-link.py
- * writes per link (kickos_images_tdata.ld), then the init's. Each image's span starts on 8
- * bytes, the most a thread_local may ask (KICKOS_TLS_ALIGN_ASSERT), so its offset in the segment
- * keeps every alignment of its own. .tbss is left empty.
+/* One image per declared task beside the init's. Every image's thread-local storage is one span
+ * of .tdata, its .tdata then its .tbss: image 1's, then each later task image's in turn, which
+ * tools/image-link.py writes per link (kickos_images_tdata.ld), then the init's. Each image's span
+ * starts on 8 bytes, the most a thread_local may ask (KICKOS_TLS_ALIGN_ASSERT), so its offset in
+ * the segment keeps every alignment of its own. .tbss is left empty. Only an image's .tdata part
+ * is its template: with no .tdata anywhere the section holds no bytes at all.
  */
 #define KICKOS_TLS_TEMPLATE(region, ...)                                      \
     .tdata : __VA_ARGS__ ALIGN(8)                                             \
     {                                                                         \
         __kickos_tdata_start = .;                                             \
         KICKOS_IMAGE1_SECTIONS(.tdata .tdata.* .gnu.linkonce.td.*)            \
+        __kickos_tls1_tbss_start = .;                                         \
+        KICKOS_IMAGE1_SECTIONS(.tbss .tbss.* .gnu.linkonce.tb.* .tcommon)     \
         __kickos_tls1_tdata_end = .;                                          \
         INCLUDE kickos_images_tdata.ld                                        \
         . = ALIGN(8);                                                         \
         __kickos_tls0_tdata_start = .;                                        \
         KICKOS_IMAGE0_SECTIONS(.tdata .tdata.* .gnu.linkonce.td.*)            \
+        __kickos_tls0_tbss_start = .;                                         \
+        KICKOS_IMAGE0_SECTIONS(.tbss .tbss.* .gnu.linkonce.tb.* .tcommon)     \
         __kickos_tdata_end = .;                                               \
     } > region                                                                \
     .tbss (NOLOAD) :                                                          \
@@ -131,6 +135,8 @@
     . = ALIGN(8);                                                             \
     __kickos_tls##n##_tdata_start = .;                                        \
     *kickos_image##n.o(.tdata .tdata.* .gnu.linkonce.td.*)                    \
+    __kickos_tls##n##_tbss_start = .;                                         \
+    *kickos_image##n.o(.tbss .tbss.* .gnu.linkonce.tb.* .tcommon)             \
     __kickos_tls##n##_tdata_end = .;
 #else
 #define KICKOS_TLS_TEMPLATE(region, ...)                                      \
@@ -165,16 +171,15 @@
  * with block = align_up(TCB + span, KICKOS_STACK_ALIGN). An unrounded `<=` admits a payload
  * that rounds up to exactly the stride, which links and is then refused at every spawn.
  *
- * A POOL THREAD'S STACK PAYS KICKOS_REENT_CARVE, its libc state, below the block, and idle's
- * pays the block alone. A default stack pays the carve on top of its floor, as a spawn charges a
- * caller's stack: the user and root stacks keep KICKOS_MIN_STACK_SIZE above it, and where the
- * thread pointer is SEATED idle's stack keeps the arch's KICKOS_ARCH_IDLE_FLOOR
+ * A POOL THREAD'S STACK PAYS ITS IMAGE'S LIBC STATE, KICKOS_REENT_CARVE_OF(n), below the block, and
+ * idle's pays the block alone. A default stack pays the carve on top of its floor, as a spawn
+ * charges a caller's stack: the user and root stacks keep KICKOS_MIN_STACK_SIZE above it, and where
+ * the thread pointer is SEATED idle's stack keeps the arch's KICKOS_ARCH_IDLE_FLOOR
  * (<kickos/arch/idle_floor.h>) above its block, or the thread overruns its stack on its first
- * interrupt. kernel/init/kmain.cc holds each stack to the libc state alone, a constant. A
- * masking arch refuses idle's stack and carves nothing.
+ * interrupt. A masking arch refuses idle's stack and carves nothing.
  *
  * EACH STACK PAYS ITS OWN IMAGE'S BLOCK: root's and idle's image 0's, a thread's of a task image
- * that image's. Where each image is linked on its own first, image n's block is sized from its
+ * that image's. Where the final link places every image, image n's block is sized from its
  * own __kickos_image<n>_tls_total, and the image template's asserts part holds the stride and the
  * user stack to it (KICKOS_TLS_IMAGE_FIT_ASSERT); elsewhere the link holds one image, the whole
  * segment. A task program's own link (__kickos_task_program, tools/image-link.py) holds no root
@@ -195,6 +200,16 @@
 #else
 #define KICKOS_TLS_IMAGE_BLOCK(n) KICKOS_TLS_BLOCK
 #endif
+/* Image n's libc state, sized by the newlib profile it links: the absolute symbol its user
+ * library defines, which tools/image-link.py renames per image where the final link places
+ * every image, and which a link of one image reads as its own. */
+#if !KICKOS_LIBC_REENT
+#define KICKOS_REENT_CARVE_OF(n) 0
+#elif KICKOS_IMAGES_PLACED
+#define KICKOS_REENT_CARVE_OF(n) KICKOS_LD_IMAGE_SYM(n, reent_carve)
+#else
+#define KICKOS_REENT_CARVE_OF(n) KICKOS_LD_C_SYM(__kickos_reent_carve)
+#endif
 #define KICKOS_TLS_CLEARS(size, floor, reent, block)                          \
     ((size) >= (floor) + (reent) + (block))
 #define KICKOS_TLS_CARVE_ASSERT(size, floor, reent, block, tls_msg)           \
@@ -213,28 +228,28 @@
 #define KICKOS_TLS_IDLE_ASSERT()
 #endif
 
-/* __kickos_tls_carve: the most a pool thread's stack pays, its libc state and the thread-local
- * block of the whole segment, as KICKOS_TLS_CARVE_ASSERT counts it. Image n's own,
+/* __kickos_tls_carve: image 0's libc state and the thread-local block of the whole segment, as
+ * KICKOS_TLS_CARVE_ASSERT counts it. Image n's own,
  * __kickos_image<n>_tls_carve, is what a thread of image n pays; a system target's asserts read
  * those. A comparison is 0 or 1.
  */
 #if KICKOS_TLS
 #define KICKOS_TLS_CARVE_SYMBOL()                                             \
-    KICKOS_LD_C_SYM(__kickos_tls_carve) = KICKOS_REENT_CARVE + KICKOS_TLS_BLOCK;
-#define KICKOS_TLS_CARVE_OF(n) (KICKOS_REENT_CARVE + KICKOS_TLS_IMAGE_BLOCK(n))
+    KICKOS_LD_C_SYM(__kickos_tls_carve) = KICKOS_REENT_CARVE_OF(0) + KICKOS_TLS_BLOCK;
+#define KICKOS_TLS_CARVE_OF(n) (KICKOS_REENT_CARVE_OF(n) + KICKOS_TLS_IMAGE_BLOCK(n))
 #else
 #define KICKOS_TLS_CARVE_SYMBOL()                                             \
-    KICKOS_LD_C_SYM(__kickos_tls_carve) = KICKOS_REENT_CARVE;
-#define KICKOS_TLS_CARVE_OF(n) KICKOS_REENT_CARVE
+    KICKOS_LD_C_SYM(__kickos_tls_carve) = KICKOS_REENT_CARVE_OF(0);
+#define KICKOS_TLS_CARVE_OF(n) KICKOS_REENT_CARVE_OF(n)
 #endif
 
 #if KICKOS_TLS
 /* Image n's stride and default user stack, each holding the libc state and image n's block. */
 #define KICKOS_TLS_IMAGE_FIT_ASSERT(n)                                        \
-    ASSERT(KICKOS_REENT_CARVE + KICKOS_TLS_IMAGE_BLOCK(n) < KICKOS_TLS_STRIDE, \
+    ASSERT(KICKOS_REENT_CARVE_OF(n) + KICKOS_TLS_IMAGE_BLOCK(n) < KICKOS_TLS_STRIDE, \
            "KickOS: the libc state, an image's thread_local template and the ABI bias below the thread pointer do not fit one KICKOS_TLS_STRIDE, so no thread's stack can hold them and every spawn would be refused. Declare fewer or smaller thread_local objects, or raise this board's stack size (which is the stride) in boards/<board>/configs/<variant>/defconfig.") \
     KICKOS_TLS_CARVE_ASSERT(KICKOS_USER_STACK_SIZE, KICKOS_MIN_STACK_SIZE,    \
-                            KICKOS_REENT_CARVE, KICKOS_TLS_IMAGE_BLOCK(n),    \
+                            KICKOS_REENT_CARVE_OF(n), KICKOS_TLS_IMAGE_BLOCK(n), \
            "KickOS: KICKOS_USER_STACK_SIZE cannot hold a thread's libc state and its image's thread-local block (its thread_local template plus KICKOS_ARCH_TLS_TCB) above KICKOS_MIN_STACK_SIZE, so a thread on the default stack runs below the arch's syscall stack floor. Declare fewer or smaller thread_local objects, or raise KICKOS_USER_STACK_SIZE in boards/<board>/configs/<variant>/defconfig.")
 #if KICKOS_IMAGES_PLACED
 #define KICKOS_TLS_ONE_IMAGE_FIT_ASSERT()
@@ -243,22 +258,35 @@
 #endif
 #define KICKOS_TLS_FIT_ASSERT()                                               \
     KICKOS_TLS_CARVE_SYMBOL()                                                 \
-    ASSERT(KICKOS_REENT_CARVE + KICKOS_TLS_BLOCK == 0                         \
-               || !KICKOS_TLS_CLEARS(0, 0, KICKOS_REENT_CARVE, KICKOS_TLS_BLOCK), \
+    ASSERT(KICKOS_REENT_CARVE_OF(0) + KICKOS_TLS_BLOCK == 0                   \
+               || !KICKOS_TLS_CLEARS(0, 0, KICKOS_REENT_CARVE_OF(0), KICKOS_TLS_BLOCK), \
            "KickOS: KICKOS_TLS_CLEARS admits a stack with no room for the libc state and the thread-local block, so no carve assert below it can fire") \
     KICKOS_TLS_ONE_IMAGE_FIT_ASSERT()                                         \
     KICKOS_TLS_ROOT_CARVE_ASSERT(KICKOS_ROOT_STACK_SIZE, KICKOS_MIN_STACK_SIZE, \
-                                 KICKOS_REENT_CARVE,                          \
+                                 KICKOS_REENT_CARVE_OF(0),                    \
            "KickOS: KICKOS_ROOT_STACK_SIZE cannot hold root's libc state and thread-local block (image 0's thread_local template plus KICKOS_ARCH_TLS_TCB) above KICKOS_MIN_STACK_SIZE, so root runs below the arch's syscall stack floor. Declare fewer or smaller thread_local objects, or raise KICKOS_ROOT_STACK_SIZE in boards/<board>/configs/<variant>/defconfig.") \
     KICKOS_TLS_IDLE_ASSERT()
 #else
-#define KICKOS_TLS_IMAGE_FIT_ASSERT(n)
+#define KICKOS_TLS_IMAGE_FIT_ASSERT(n)                                        \
+    KICKOS_TLS_CARVE_ASSERT(KICKOS_USER_STACK_SIZE, KICKOS_MIN_STACK_SIZE,    \
+                            KICKOS_REENT_CARVE_OF(n), 0,                      \
+           "KickOS: KICKOS_USER_STACK_SIZE cannot hold a thread's libc state above KICKOS_MIN_STACK_SIZE, so a thread on the default stack runs below the arch's syscall stack floor. Raise it in boards/<board>/configs/<variant>/defconfig.")
+#if KICKOS_IMAGES_PLACED
+#define KICKOS_TLS_ONE_IMAGE_FIT_ASSERT()
+#else
+#define KICKOS_TLS_ONE_IMAGE_FIT_ASSERT() KICKOS_TLS_IMAGE_FIT_ASSERT(0)
+#endif
 #define KICKOS_TLS_FIT_ASSERT()                                               \
     KICKOS_TLS_CARVE_SYMBOL()                                                 \
     ASSERT(SIZEOF(.tdata) == 0,                                               \
            "KickOS: this image declares a thread_local with KICKOS_TLS=n, and on this arch that links silently into storage every thread shares. Set KICKOS_TLS=y in boards/<board>/configs/<variant>/defconfig, or remove the thread_local.")   \
     ASSERT(SIZEOF(.tbss) == 0,                                                \
-           "KickOS: this image declares a thread_local with KICKOS_TLS=n, and on this arch that links silently into storage every thread shares. Set KICKOS_TLS=y in boards/<board>/configs/<variant>/defconfig, or remove the thread_local.")
+           "KickOS: this image declares a thread_local with KICKOS_TLS=n, and on this arch that links silently into storage every thread shares. Set KICKOS_TLS=y in boards/<board>/configs/<variant>/defconfig, or remove the thread_local.") \
+    KICKOS_TLS_ONE_IMAGE_FIT_ASSERT()                                         \
+    ASSERT(DEFINED(__kickos_task_program)                                     \
+               || KICKOS_TLS_CLEARS(KICKOS_ROOT_STACK_SIZE, KICKOS_MIN_STACK_SIZE, \
+                                    KICKOS_REENT_CARVE_OF(0), 0),             \
+           "KickOS: KICKOS_ROOT_STACK_SIZE cannot hold root's libc state above KICKOS_MIN_STACK_SIZE, so root runs below the arch's syscall stack floor. Raise it in boards/<board>/configs/<variant>/defconfig.")
 #endif
 
 /* THE SAME FAIL-CLOSED QUESTION WHERE THE ARCH HAS NO TLS SECTIONS AT ALL. GNURX emits
@@ -306,7 +334,7 @@
 
 /* Copy and zero tables read by kickos_ranges_init from flash, before .data exists. Copy
  * triples are {src,dst,len}, zero pairs {dst,len}. The images' ranges come first, the app's
- * .appdata and, where the init is an image of its own, the init's. Each zero range covers its
+ * .appdata and, where the final link places every image, the init's. Each zero range covers its
  * image's whole window past the loaded data: the pre-bss alignment gap, the bss and the heap, so
  * no stale read-back is left anywhere in the window. A later task image's start stub copies and
  * zeroes its own at every start.
@@ -368,12 +396,11 @@
     KICKOS_LD_C_SYM(__kickos_app_sram_end) = 0;                               \
     KICKOS_LD_C_SYM(__kickos_app_load_delta) = 0;
 
-/* THE IMAGES. Each input section is the kernel's or an image's. Where every image is linked on
- * its own first (KICKOS_IMAGE_SPLIT), each image is the one object tools/image-link.py wrote for
- * it and the kernel is every other input: image 0 the init's and image k + 1 declaration k's
- * where the init is an image of its own (KICKOS_IMAGES_PLACED), image 0 the whole app's otherwise.
- * Without the split image 0 is every input outside the kernel's closed set of archives, which is
- * then selected first. KICKOS_APP_IMAGE_N is image 1, the first declaration's, or the one image,
+/* THE IMAGES. Each input section is the kernel's or an image's. Where the final link places every
+ * image (KICKOS_IMAGES_PLACED), each image is the one object tools/image-link.py wrote for it and
+ * the kernel is every other input: image 0 the init's and image k + 1 declaration k's. Otherwise
+ * image 0 is every input outside the kernel's closed set of archives, which is then selected
+ * first. KICKOS_APP_IMAGE_N is image 1, the first declaration's, or the one image,
  * KICKOS_APP_SECTIONS its inputs.
  *
  * EXCLUDE_FILE in front of the pattern, never inside its section list: there it binds only the
@@ -385,9 +412,6 @@
 #define KICKOS_KERNEL_SECTIONS(...) EXCLUDE_FILE(*kickos_image*.o) *(__VA_ARGS__)
 #define KICKOS_APP_IMAGE_N 1
 #define KICKOS_APP_SECTIONS KICKOS_IMAGE1_SECTIONS
-#elif KICKOS_IMAGE_SPLIT
-#define KICKOS_IMAGE0_SECTIONS(...) *kickos_image0.o(__VA_ARGS__)
-#define KICKOS_KERNEL_SECTIONS(...) EXCLUDE_FILE(*kickos_image0.o) *(__VA_ARGS__)
 #else
 #define KICKOS_IMAGE0_SECTIONS(...) *(__VA_ARGS__)
 #define KICKOS_KERNEL_SECTIONS(...)                                           \
@@ -419,7 +443,7 @@
 #define KICKOS_IMAGE_WINDOW_ASSERT(n)                                         \
     ASSERT(KICKOS_LD_IMAGE_SYM(n, window_start)                               \
                % (KICKOS_LD_IMAGE_SYM(n, window_end) - KICKOS_LD_IMAGE_SYM(n, window_start)) == 0, \
-           "KickOS: an image's window does not start on a multiple of its own power-of-two size, being larger than the window it follows, which ends where it starts (raise KICKOS_APPDATA_SIZE)")
+           "KickOS: an image's window does not start on a multiple of its own power-of-two size, being larger than the window it follows, which ends where it starts: tools/image-link.py places the windows largest first, each its image's .data, .bss and heap rounded up to a power of two")
 #elif KICKOS_HAVE_MPU
 #define KICKOS_IMAGE_WINDOW_END(start)                                        \
     . = MAX(., (start) + ALIGN(. - (start), KICKOS_CHIP_REGION_GRANULE));
@@ -437,7 +461,7 @@
 #endif
 
 /* The table of image headers kernel/task/image.cc walks at boot, in the kernel's rodata: where
- * the init is an image of its own, every task image's after image 0's, which
+ * the final link places every image, every task image's after image 0's, which
  * kickos_images_table.ld holds (KICKOS_IMAGE_N_ENTRY in its family's word).
  */
 #if KICKOS_IMAGES_PLACED
@@ -469,7 +493,7 @@
         KICKOS_LD_C_SYM(__kickos_image1_code_start) = .;                      \
         KEEP(KICKOS_IMAGE1_SECTIONS(.kickos_image_header))                    \
     } > region
-/* The app's header, image 1's where the init is an image of its own. */
+/* The app's header, image 1's where the final link places every image. */
 #if KICKOS_IMAGES_PLACED
 #define KICKOS_APP_HEADER KICKOS_IMAGE1_HEADER
 #else
@@ -520,25 +544,30 @@
               * (MAX(ABSOLUTE(__kickos_tdata_end), ABSOLUTE(__kickos_tbss_end))  \
                  - ABSOLUTE(__kickos_tdata_start));
 #if KICKOS_IMAGES_PLACED
-/* Image n's TLS fields, over its span [start, end) of .tdata, its .tbss in it. ABSOLUTE: each bound
- * is a symbol of an output section, which ld would otherwise take as an offset into it. */
-#define KICKOS_IMAGE_SPAN_TLS(n, start, end)                                  \
-    KICKOS_LD_IMAGE_SYM(n, tls_init) = (SIZEOF(.tdata) != 0)                  \
+/* Image n's TLS fields, over its span [start, end) of .tdata, its .tbss from tbss on. ABSOLUTE:
+ * each bound is a symbol of an output section, which ld would otherwise take as an offset into it.
+ */
+#define KICKOS_IMAGE_SPAN_TLS(n, start, tbss, end)                            \
+    KICKOS_LD_IMAGE_SYM(n, tls_total) = (SIZEOF(.tdata) != 0)                 \
         * (ABSOLUTE(end) - ABSOLUTE(start));                                  \
+    KICKOS_LD_IMAGE_SYM(n, tls_init) = (SIZEOF(.tdata) != 0)                  \
+        * (ABSOLUTE(tbss) - ABSOLUTE(start));                                 \
     KICKOS_LD_IMAGE_SYM(n, tls_template) = __kickos_tdata_start               \
-        + (KICKOS_LD_IMAGE_SYM(n, tls_init) != 0)                             \
+        + (KICKOS_LD_IMAGE_SYM(n, tls_total) != 0)                            \
             * (ABSOLUTE(start) - ABSOLUTE(__kickos_tdata_start));             \
     KICKOS_LD_IMAGE_SYM(n, tls_offset) =                                      \
         KICKOS_LD_IMAGE_SYM(n, tls_template) - __kickos_tdata_start;          \
-    KICKOS_LD_IMAGE_SYM(n, tls_total) = KICKOS_LD_IMAGE_SYM(n, tls_init);     \
     KICKOS_LD_IMAGE_SYM(n, tls_align) = KICKOS_TLS_ALIGN_OF_SEGMENT;
 #define KICKOS_IMAGES_TLS()                                                   \
     KICKOS_IMAGE_TLS_SEGMENT()                                                \
-    KICKOS_IMAGE_SPAN_TLS(1, __kickos_tdata_start, __kickos_tls1_tdata_end)   \
-    KICKOS_IMAGE_SPAN_TLS(0, __kickos_tls0_tdata_start, __kickos_tdata_end)
+    KICKOS_IMAGE_SPAN_TLS(1, __kickos_tdata_start, __kickos_tls1_tbss_start,  \
+                          __kickos_tls1_tdata_end)                            \
+    KICKOS_IMAGE_SPAN_TLS(0, __kickos_tls0_tdata_start, __kickos_tls0_tbss_start, \
+                          __kickos_tdata_end)
 /* A later task image n's, over the bounds KICKOS_IMAGE_N_TDATA states. */
 #define KICKOS_IMAGE_N_TLS(n)                                                 \
-    KICKOS_IMAGE_SPAN_TLS(n, __kickos_tls##n##_tdata_start, __kickos_tls##n##_tdata_end)
+    KICKOS_IMAGE_SPAN_TLS(n, __kickos_tls##n##_tdata_start, __kickos_tls##n##_tbss_start, \
+                          __kickos_tls##n##_tdata_end)
 #else
 #define KICKOS_IMAGES_TLS()                                                   \
     KICKOS_IMAGE_TLS_SEGMENT()                                                \
@@ -592,7 +621,7 @@
     KICKOS_LD_IMAGE_SYM(n, code_window_start) = KICKOS_LD_C_SYM(__kickos_code_start); \
     KICKOS_LD_IMAGE_SYM(n, code_window_end) = KICKOS_LD_C_SYM(__kickos_code_end);
 
-/* Image 1's names, the app's; where the init is an image of its own, every image's are stated
+/* Image 1's names, the app's; where the final link places every image, every image's are stated
  * with its window (kickos_images.ld). */
 #if KICKOS_IMAGES_PLACED
 #define KICKOS_IMAGE0_NAMES()                                                 \

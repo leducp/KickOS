@@ -26,4 +26,4 @@ tasks:
     stack: 8192
     priority: 2
     ceiling: 2
-    authority: [memory, system, tasks]
+    authority: [memory, system, tasks, realtime]

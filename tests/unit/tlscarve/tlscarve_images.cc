@@ -119,3 +119,20 @@ TEST(TlsCarveImages, an_app_thread_reads_the_app_template_and_a_zeroed_rest)
         EXPECT_EQ(first[k], 0u) << "segment byte " << k << " past the app's template";
     }
 }
+
+// Each image's libc state is its own newlib profile's, as its header states it: a pool thread of
+// either image pays that image's state and that image's block.
+TEST(TlsCarveImages, each_image_pays_the_libc_state_its_own_header_states)
+{
+    seat_records();
+    constexpr size_t NANO = 144u;
+    constexpr size_t FULL = 384u;
+    g_headers[0].reent_carve = NANO;
+    g_headers[1].reent_carve = FULL;
+    EXPECT_EQ(kickos::tls_libc_carve(0), NANO);
+    EXPECT_EQ(kickos::tls_libc_carve(1), FULL);
+    EXPECT_EQ(kickos::tls_pool_carve_size(0), NANO + kickos::tls_block_size(0));
+    EXPECT_EQ(kickos::tls_pool_carve_size(1), FULL + kickos::tls_block_size(1));
+    g_headers[0].reent_carve = 0;
+    g_headers[1].reent_carve = 0;
+}

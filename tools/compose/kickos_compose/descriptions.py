@@ -31,7 +31,7 @@ CHIP_FIELDS = (
     "version", "chip", "manual", "arch", "protection", "cores", "clusters_coherent",
     "partition_gate", "data_cache", "interrupts", "cycle_counter", "timebase", "c", "reserved",
     "devices", "memory", "pins", "esptool_image", "family", "exits_on_fault", "cpu",
-    "stack_limit", "apertures", "one_task",
+    "stack_limit", "apertures",
 )
 FAMILY_FIELDS = ("dir", "sources")
 # A path below arch/, one name per level and no level above it.
@@ -285,8 +285,6 @@ class Chip:
         self.cpu = None
         # Whether the core checks each stack pointer against a limit register.
         self.stack_limit = False
-        # Whether the flash holds the kernel and one task, so every packaged driver runs inside it.
-        self.one_task = False
         # [(base, size, ref)] of the bus apertures a device window lies in, in the chip file's order,
         # and each as a Window.
         self.apertures = []
@@ -328,8 +326,6 @@ def check_chip(path, text, report):
         chip.cpu = f.name(top["cpu"], "`cpu`", IDENTIFIER)
     if "stack_limit" in top:
         chip.stack_limit = f.boolean(top["stack_limit"], "`stack_limit`") is True
-    if "one_task" in top:
-        chip.one_task = f.boolean(top["one_task"], "`one_task`") is True
     if "family" in top:
         chip.family = check_family(f, top["family"])
     if "arch" in top:

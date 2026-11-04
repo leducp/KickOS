@@ -22,13 +22,8 @@ MEMORY
 _estack = ORIGIN(RAM) + LENGTH(RAM);
 _kernel_stack_size = 8K;
 
-/* PMSA needs the app window pow2-sized and aligned to its size. Its pad is the newlib heap:
-   a 32K window leaves about 14K, room for the cxxtest and printf peaks of about 5.9K each. */
+/* Kernel .data/.bss below the images' windows (kernel_data_reserve.ld.h). */
 #if KICKOS_HAVE_MPU
-#ifndef KICKOS_APPDATA_SIZE
-#define KICKOS_APPDATA_SIZE 32K
-#endif
-_appdata_size = KICKOS_APPDATA_SIZE;
 #ifndef KICKOS_KERNEL_DATA_RESERVE
 #define KICKOS_KERNEL_DATA_RESERVE 32K
 #endif
@@ -59,7 +54,7 @@ SECTIONS
     KICKOS_CORTEXM_CTORS
     KICKOS_CORTEXM_EXIDX
     KICKOS_INIT_TABLES(FLASH)
-    KICKOS_CORTEXM_DATA(KICKOS_APPDATA_SECTION(_ebss))
+    KICKOS_CORTEXM_DATA()
 
     /* The whole flash, one pow2 PMSA region: an unprivileged thread fetches its code and reads
        flash rodata, kernel code included. */

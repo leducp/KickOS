@@ -67,15 +67,11 @@ namespace kickos
 #endif
 #endif
 
-        // The images a link may hold: where the init is an image of its own, the init's and one
-        // per declared task, which the task pool bounds.
+        // The images a link may hold: the init's and one per declared task, which the task pool
+        // bounds.
         size_t images_max()
         {
-#if KICKOS_INIT_IMAGE
             return static_cast<size_t>(kickos_kernel_pools.task_count) + 1u;
-#else
-            return 1;
-#endif
         }
 
 #if KICKOS_IMAGE_CAS

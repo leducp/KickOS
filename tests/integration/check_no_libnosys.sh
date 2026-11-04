@@ -5,8 +5,9 @@
 # Every libc system call an image makes reaches KickOS's porting layer (user/src/newlib_stubs.cc):
 # every archive member the link map lists taken comes from KickOS or the compiler's own runtime, so
 # no libnosys or other libgloss stub is. A libnosys write drops stdout without a word, and the image
-# still runs. --images reads every map a list file names, one per line. --self-test reads planted
-# maps.
+# still runs. Nor is a member of the C++ runtime that KickOS replaces: the terminate handler, and
+# the exception state and thread_local destructor list every thread keeps for itself.
+# --images reads every map a list file names, one per line. --self-test reads planted maps.
 #
 # The map's headings are matched in English: a binutils built with NLS writes them in the link's
 # locale, which fails this read loudly as a member list not read.
@@ -20,6 +21,7 @@ set -u
 
 # Matched by file name alone, so a stub archive named like one of these passes.
 RUNTIME_ARCHIVES='(^|/)lib(kickos_[A-Za-z0-9_]+|(c|g|m|gcc|gcc_eh|stdc\+\+|supc\+\+)(_nano)?)\.a\('
+REPLACED_MEMBERS='(^|/)lib(stdc\+\+|supc\+\+)(_nano)?\.a\((vterminate|eh_globals|atexit_thread)\.o\)'
 
 # <map> <out>: each member the map lists taken from an archive outside RUNTIME_ARCHIVES, with the
 # symbol that took it; status 2 when the member list was not read. A member line is the member,
@@ -45,6 +47,7 @@ nosys_members() {
     # no longer understands.
     grep -q 'libkickos_kernel\.a(' "$TMP/members" || return 2
     grep -vE "$RUNTIME_ARCHIVES" "$TMP/members" > "$2"
+    grep -E "$REPLACED_MEMBERS" "$TMP/members" >> "$2"
     return 0
 }
 
@@ -105,6 +108,12 @@ if [ "${1:-}" = --self-test ]; then
     finds unlisted '/opt/vendor/lib/libcs3.a(write.o) <- (write)'
     plant lookalike '/opt/gcc/lib/libcrdimon.a(write.o)'
     finds lookalike '/opt/gcc/lib/libcrdimon.a(write.o) <- (write)'
+    plant ehglobals '/opt/gcc/lib/thumb/libsupc++.a(eh_globals.o)    eh_throw.o (__cxa_get_globals)'
+    finds ehglobals '/opt/gcc/lib/thumb/libsupc++.a(eh_globals.o) <- (__cxa_get_globals)'
+    plant threadexit '/opt/gcc/lib/libstdc++_nano.a(atexit_thread.o)    main.o (__cxa_thread_atexit)'
+    finds threadexit '/opt/gcc/lib/libstdc++_nano.a(atexit_thread.o) <- (__cxa_thread_atexit)'
+    plant terminate '/opt/gcc/lib/libstdc++.a(vterminate.o)'
+    finds terminate '/opt/gcc/lib/libstdc++.a(vterminate.o) <- (write)'
     grep -v 'libkickos_kernel' "$TMP/none.map" > "$TMP/unread.map"
     if nosys_members "$TMP/unread.map" "$TMP/nosys"; then
         fail "a map taking no kernel member was read as a member list"
@@ -126,8 +135,9 @@ if [ "${1:-}" = --self-test ]; then
     echo "$TMP/nosys.map" > "$TMP/nosys.list"
     refuses "$TMP/nosys.list" "not on the runtime list" "a map taking a libnosys member"
     echo "PASS: the read finds a member of an archive off the runtime list in either map form,"
-    echo "  through a spaced path, and none in a map taking only runtime archives; --images"
-    echo "  refuses a missing map, an empty list and a stub member, each by name"
+    echo "  through a spaced path, a runtime member KickOS replaces, and none in a map taking only"
+    echo "  runtime archives; --images refuses a missing map, an empty list and a stub member, each"
+    echo "  by name"
     exit 0
 fi
 
@@ -158,7 +168,8 @@ while IFS= read -r MAP; do
     fi
 done < "$TMP/maps"
 if [ "$BAD" -ne 0 ]; then
-    fail "$BAD of $COUNT image(s) take a member of an archive not on the runtime list: one
-  outside KickOS and the compiler's runtime answered a symbol, which KickOS must define first"
+    fail "$BAD of $COUNT image(s) take a member of an archive not on the runtime list, or a runtime
+  member KickOS replaces: it answered a symbol which KickOS must define first"
 fi
-echo "PASS: none of $COUNT image(s) takes a member of an archive outside KickOS and the runtime"
+echo "PASS: none of $COUNT image(s) takes a member of an archive outside KickOS and the runtime,"
+echo "  nor a runtime member KickOS replaces"

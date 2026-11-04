@@ -32,9 +32,9 @@ namespace kickos
     {
         // Sorted ascending by deadline, singly-linked through tnext, rooted at the kernel.
 
-        void sleepq_insert(Thread* t)
+        // From `*pp` on, which no later deadline precedes; answers the link after `t`.
+        Thread** sleepq_insert_from(Thread** pp, Thread* t)
         {
-            Thread** pp = &kernel().sleepq;
             while (*pp != nullptr and (*pp)->deadline_ns <= t->deadline_ns)
             {
                 pp = &(*pp)->tnext;
@@ -42,6 +42,33 @@ namespace kickos
             t->tnext = *pp;
             *pp = t;
             t->on_timer = true;
+            return &t->tnext;
+        }
+
+        void sleepq_insert(Thread* t, bool wall)
+        {
+            (void)sleepq_insert_from(&kernel().sleepq, t);
+            t->timer_wall = wall;
+        }
+
+        // `d` moved by `by`, held inside [0, UINT64_MAX].
+        uint64_t shifted(uint64_t d, int64_t by)
+        {
+            if (by < 0)
+            {
+                uint64_t const back = static_cast<uint64_t>(-(by + 1)) + 1u;
+                if (back >= d)
+                {
+                    return 0;
+                }
+                return d - back;
+            }
+            uint64_t const ahead = static_cast<uint64_t>(by);
+            if (ahead > UINT64_MAX - d)
+            {
+                return UINT64_MAX;
+            }
+            return d + ahead;
         }
 
         void sleepq_remove(Thread* t)
@@ -56,6 +83,7 @@ namespace kickos
                 *pp = t->tnext;
                 t->tnext = nullptr;
                 t->on_timer = false;
+                t->timer_wall = false;
             }
         }
     }
@@ -132,19 +160,83 @@ namespace kickos
         }
         c->deadline_ns = ktime_floored(ktime_now(), deadline_ns);
         park_queueless(ask)(c, WAIT_SLEEP, nullptr, lock);
-        sleepq_insert(c);
+        sleepq_insert(c, false);
         sched::reschedule(nullptr, lock); // its switch arms the timer for the incoming thread
     }
 
-    void ktime_deadline_arm(Thread* t, uint32_t timeout_us, Held)
+    void ktime_deadline_arm(Thread* t, uint32_t timeout_us, Held held)
     {
         if (timeout_us == KOS_TIMEOUT_NONE)
         {
             return;
         }
         uint64_t const now = ktime_now();
-        t->deadline_ns = ktime_floored(now, now + static_cast<uint64_t>(timeout_us) * 1000u);
-        sleepq_insert(t);
+        uint64_t const deadline = now + static_cast<uint64_t>(timeout_us) * 1000u;
+        ktime_deadline_arm_at(t, ktime_floored(now, deadline), false, held);
+    }
+
+    void ktime_deadline_arm_at(Thread* t, uint64_t deadline_ns, bool wall, Held)
+    {
+        t->deadline_ns = deadline_ns;
+        sleepq_insert(t, wall);
+    }
+
+    bool ktime_limit_passed(WaitLimit limit)
+    {
+        if (limit.on_wall())
+        {
+            return limit.unix_ns() <= realtime_now();
+        }
+        return limit.lo == 0u;
+    }
+
+    void ktime_limit_arm(Thread* t, WaitLimit limit, Held held)
+    {
+        if (limit.on_wall())
+        {
+            realtime_deadline_arm(t, limit.unix_ns(), held);
+            return;
+        }
+        ktime_deadline_arm(t, limit.lo, held);
+    }
+
+    void ktime_wall_shift(int64_t by_ns, Held held)
+    {
+        if (by_ns == 0)
+        {
+            return;
+        }
+        uint64_t const now = ktime_now();
+        // The marked deadlines leave the queue in its order, which one shift and one floor keep.
+        Thread* moved = nullptr;
+        Thread** tail = &moved;
+        Thread** pp = &kernel().sleepq;
+        while (*pp != nullptr)
+        {
+            Thread* const t = *pp;
+            if (not t->timer_wall)
+            {
+                pp = &t->tnext;
+                continue;
+            }
+            *pp = t->tnext;
+            t->deadline_ns = ktime_floored(now, shifted(t->deadline_ns, by_ns));
+            t->tnext = nullptr;
+            *tail = t;
+            tail = &t->tnext;
+        }
+        if (moved == nullptr)
+        {
+            return;
+        }
+        pp = &kernel().sleepq;
+        while (moved != nullptr)
+        {
+            Thread* const t = moved;
+            moved = t->tnext;
+            pp = sleepq_insert_from(pp, t);
+        }
+        ktime_rearm(sched::current(), held);
     }
 
     void ktime_deadline_cancel(Thread* t, Held)

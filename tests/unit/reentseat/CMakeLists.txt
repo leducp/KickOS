@@ -12,7 +12,7 @@ kickos_add_kseam(kickos_kseam_reent
         "${PROJECT_SOURCE_DIR}/tests/unit/common/aspace_leaves.cc" ${_reent}
   INCLUDES "${PROJECT_SOURCE_DIR}/tests/unit/deathspace"
   POSTURE KICKOS_HAVE_ASPACE=1 KICKOS_LIBC_REENT=1 KICKOS_REENT_PER_THREAD=1
-          KICKOS_REENT_CARVE=64)
+          KICKOS_REENT_CARVE=160 KICKOS_REENT_CARVE_MAX=160)
 kickos_add_unit_test(NAME reent_seat SOURCES reent_seat.cc
   LIBRARIES kickos_kseam_reent)
 target_link_options(reent_seat PRIVATE -Wl,--gc-sections)
@@ -23,7 +23,7 @@ kickos_host_image(reent_seat TEXT g_reent_image 0 DATA g_reent_data 32)
 kickos_add_kseam(kickos_kseam_reent_word
   EXTRA "${PROJECT_SOURCE_DIR}/kernel/thread/reent.cc"
   POSTURE KICKOS_HAVE_ASPACE=0 KICKOS_LIBC_REENT=1 KICKOS_REENT_PER_THREAD=0
-          KICKOS_REENT_CARVE=64)
+          KICKOS_REENT_CARVE=160 KICKOS_REENT_CARVE_MAX=160)
 kickos_add_unit_test(NAME reent_word SOURCES reent_word.cc
   LIBRARIES kickos_kseam_reent_word)
 
@@ -31,6 +31,6 @@ kickos_add_unit_test(NAME reent_word SOURCES reent_word.cc
 kickos_add_kseam(kickos_kseam_reent_cell
   EXTRA "${PROJECT_SOURCE_DIR}/kernel/thread/reent.cc"
   POSTURE KICKOS_HAVE_ASPACE=0 KICKOS_LIBC_REENT=1 KICKOS_REENT_PER_THREAD=1
-          KICKOS_REENT_CARVE=64)
+          KICKOS_REENT_CARVE=160 KICKOS_REENT_CARVE_MAX=160)
 kickos_add_unit_test(NAME reent_cell SOURCES reent_cell.cc
   LIBRARIES kickos_kseam_reent_cell)

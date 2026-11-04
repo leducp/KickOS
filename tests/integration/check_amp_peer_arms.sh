@@ -3,8 +3,9 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # Runs the arms that need a peer that is running against one: amp_far_call, amp_far_reply_empty,
-# amp_share_crossing and amp_far_reply_unmapped. Each decides at RUNTIME whether it has one: an
-# echo crossing answers by itself, a service crossing once the peer's own serviced count moved.
+# amp_share_crossing, amp_far_reply_unmapped and amp_far_wall. Each decides at RUNTIME whether it
+# has one: an echo crossing answers by itself, a service crossing once the peer's own serviced
+# count moved.
 #
 # Any `not ok` line in the capture fails the gate, listed arm or not, a `# TODO` failure being
 # the harness's permitted one. The named set adds what a `not ok` cannot show: that each of these
@@ -40,7 +41,7 @@ here="$(dirname "$0")"
 . "$here/../lib/gate.sh"
 : "${QEMU_TIMEOUT:=120}"
 
-ARMS="amp_far_call amp_far_reply_empty amp_share_crossing amp_far_reply_unmapped"
+ARMS="amp_far_call amp_far_reply_empty amp_share_crossing amp_far_reply_unmapped amp_far_wall"
 
 # `ok N - <arm>` with no SKIP directive: a skipped arm reports `ok` too, so the directive is
 # what has to be excluded.

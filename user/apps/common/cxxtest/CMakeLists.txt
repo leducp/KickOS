@@ -3,7 +3,7 @@
 
 # A throw, RTTI and libstdc++ over newlib, in the C++ KickOS::kernel compiles an app with. Where
 # each task has a space, its peer runs the same checks in a space of its own.
-add_executable(cxxtest main.cc)
+add_executable(cxxtest main.cc threads.cc)
 target_include_directories(cxxtest PRIVATE "${PROJECT_SOURCE_DIR}/user/apps/common/include")
 if(KICKOS_HAVE_ASPACE)
   add_executable(cxxtest_peer peer.cc)

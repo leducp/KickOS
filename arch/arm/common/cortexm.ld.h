@@ -111,14 +111,10 @@ EXTERN(g_isr_vector)
     __kickos_app_init_array_end = KICKOS_LD_APP_SYM(ctor_end);                \
     KICKOS_IMAGE0_TLS()
 
-/* Where the init is an image of its own: every image's asserts, which tools/image-link.py writes
+/* Every image's asserts, which tools/image-link.py writes
  * per link with their code spans and windows (KICKOS_CORTEXM_IMAGE_CODE, KICKOS_CORTEXM_IMAGE).
  */
-#if KICKOS_IMAGES_PLACED
 #define KICKOS_CORTEXM_IMAGES_ASSERTS() INCLUDE kickos_images_asserts.ld
-#else
-#define KICKOS_CORTEXM_IMAGES_ASSERTS()
-#endif
 
 /* Image n's code span: its header, text and rodata, unwind tables and constructor window, then
  * the room its window's .data loads into. The image template (image.ld) instantiates it. */
@@ -207,42 +203,9 @@ EXTERN(g_isr_vector)
                         _sdata, _ebss, __kickos_ram_end, _estack, 0)          \
     KICKOS_IMAGE0_NAMES()
 
-/* The app image's window after its code span: .data, .bss, then the heap. */
-#define KICKOS_CORTEXM_APP_WINDOW_SYMBOLS(end)                                \
-    KICKOS_LD_APP_SYM(window_start) = ADDR(.appdata);                         \
-    KICKOS_LD_APP_SYM(window_end) = (end);                                    \
-    KICKOS_LD_APP_SYM(data_load) = LOADADDR(.appdata);                        \
-    KICKOS_LD_APP_SYM(data_start) = ADDR(.appdata);                           \
-    KICKOS_LD_APP_SYM(data_end) = ADDR(.appdata) + SIZEOF(.appdata);          \
-    KICKOS_LD_APP_SYM(bss_end) = _appdata_used_end;                           \
-    KICKOS_LD_APP_SYM(heap_start) = _kickos_heap_start;                       \
-    KICKOS_LD_APP_SYM(heap_end) = _kickos_heap_limit;                         \
-    KICKOS_LD_APP_SYM(code_end) = LOADADDR(.appdata) + SIZEOF(.appdata);
-
-/* KICKOS_CORTEXM_DATA(appdata_head) lays out the kernel's writable state, the app image's code
- * span and then its window, then the init image's where it is one of its own; appdata_head opens
- * the app window's output section, KICKOS_APPDATA_SECTION(_ebss) on a pow2 PMSA or
- * `.appdata : ALIGN(32)` on an MPU with a 32-byte granule.
- *
- * Under the MPU the selection is INVERTED: the kernel's inputs are captured FIRST, in script
- * order, into the kernel .data/.bss at the RAM base, and the .appdata/.appbss sections take
- * the app image's. EXCLUDE_FILE cannot stand in for the colon syntax over an archive member: this
- * binutils does not match archive members inside it.
- *
- * .appbss is based at the window start plus SIZEOF(.appdata) and not at the location counter:
- * an EMPTY .appdata does not carry its ALIGN forward, and .appbss would fall below the window.
- * The pad is MAX(., ...) because ld evaluates ASSERTs after layout, and a pad moving backwards
- * would fail the link ahead of the overflow assert. The newlib heap IS the window pad, its base
- * aligned relative to .appbss (app_window.ld.h).
- *
- * Without the MPU the window is exact: .data, .bss and a heap of KICKOS_USER_HEAP_SIZE, kept
- * even at zero length since _sbrk is force-linked into every image and names its start.
- */
-#if KICKOS_IMAGES_PLACED
-/* Where the init is an image of its own: the kernel's writable state, the thread-local template
- * of every image, then every image's code span and every image's window, which
- * tools/image-link.py writes per link (kickos_images_code.ld, kickos_images.ld), image 1's named
- * as the app's below. appdata_head is not read: no window is the app's alone. */
+/* KICKOS_CORTEXM_DATA() lays out the kernel's writable state, the thread-local template of every
+ * image, then every image's code span and every image's window, which tools/image-link.py writes
+ * per link (kickos_images_code.ld, kickos_images.ld), image 1's named as the app's below. */
 #if KICKOS_HAVE_MPU
 #define KICKOS_CORTEXM_APP_WINDOW_NAMES()                                     \
     __kickos_appdata_start = KICKOS_LD_IMAGE_SYM(1, window_start);            \
@@ -250,7 +213,7 @@ EXTERN(g_isr_vector)
 #else
 #define KICKOS_CORTEXM_APP_WINDOW_NAMES()
 #endif
-#define KICKOS_CORTEXM_DATA(appdata_head)                                     \
+#define KICKOS_CORTEXM_DATA()                                                 \
     _sidata = LOADADDR(.data);                                                \
     .data : ALIGN(4)                                                          \
     {                                                                         \
@@ -281,86 +244,6 @@ EXTERN(g_isr_vector)
     _kickos_heap_start = KICKOS_LD_IMAGE_SYM(1, heap_start);                  \
     _kickos_heap_limit = KICKOS_LD_IMAGE_SYM(1, heap_end);                    \
     KICKOS_CORTEXM_ARENA
-#elif KICKOS_HAVE_MPU
-#define KICKOS_CORTEXM_DATA(appdata_head)                                     \
-    _sidata = LOADADDR(.data);                                                \
-    .data : ALIGN(4)                                                          \
-    {                                                                         \
-        _sdata = .;                                                           \
-        KICKOS_KERNEL_SECTIONS(.data .data.*)                                 \
-        . = ALIGN(4);                                                         \
-        _edata = .;                                                           \
-    } > RAM AT > FLASH                                                        \
-    .bss (NOLOAD) : ALIGN(4)                                                  \
-    {                                                                         \
-        _sbss = .;                                                            \
-        KICKOS_KERNEL_SECTIONS(.bss .bss.*)                                   \
-        KICKOS_KERNEL_SECTIONS(COMMON)                                        \
-        KICKOS_KERNEL_SECTIONS(.kickos_bss_last.*)                            \
-        . = ALIGN(4);                                                         \
-        _ebss = .;                                                            \
-    } > RAM                                                                   \
-    KICKOS_CORTEXM_APP_CODE                                                   \
-    appdata_head                                                              \
-    {                                                                         \
-        __kickos_appdata_start = .;                                           \
-        KICKOS_APP_SECTIONS(.data .data.*)                                    \
-        . = ALIGN(8);                                                         \
-        __kickos_appdata_load_end = .;                                        \
-    } > RAM AT > FLASH                                                        \
-    .appbss (__kickos_appdata_start + SIZEOF(.appdata)) (NOLOAD) : ALIGN(4)   \
-    {                                                                         \
-        KICKOS_APP_SECTIONS(.bss .bss.* COMMON)                               \
-        . = ALIGN(4);                                                         \
-        _appdata_used_end = .;                                                \
-        . = MAX(., __kickos_appdata_start + _appdata_size);                   \
-        __kickos_appdata_end = .;                                             \
-        _kickos_heap_start = ALIGN(_appdata_used_end, 8);                     \
-        _kickos_heap_limit = __kickos_appdata_end;                            \
-    } > RAM                                                                   \
-    KICKOS_CORTEXM_APP_WINDOW_SYMBOLS(__kickos_appdata_end)                   \
-    KICKOS_CORTEXM_ARENA
-#else
-#define KICKOS_CORTEXM_DATA(appdata_head)                                     \
-    _sidata = LOADADDR(.data);                                                \
-    .data : ALIGN(4)                                                          \
-    {                                                                         \
-        _sdata = .;                                                           \
-        KICKOS_KERNEL_SECTIONS(.data .data.*)                                 \
-        . = ALIGN(4);                                                         \
-        _edata = .;                                                           \
-    } > RAM AT > FLASH                                                        \
-    .bss (NOLOAD) : ALIGN(4)                                                  \
-    {                                                                         \
-        _sbss = .;                                                            \
-        KICKOS_KERNEL_SECTIONS(.bss .bss.*)                                   \
-        KICKOS_KERNEL_SECTIONS(COMMON)                                        \
-        KICKOS_KERNEL_SECTIONS(.kickos_bss_last.*)                            \
-        . = ALIGN(4);                                                         \
-        _ebss = .;                                                            \
-    } > RAM                                                                   \
-    KICKOS_CORTEXM_APP_CODE                                                   \
-    .appdata : ALIGN(8)                                                       \
-    {                                                                         \
-        KICKOS_APP_SECTIONS(.data .data.*)                                    \
-        . = ALIGN(8);                                                         \
-    } > RAM AT > FLASH                                                        \
-    .appbss (ADDR(.appdata) + SIZEOF(.appdata)) (NOLOAD) : ALIGN(4)           \
-    {                                                                         \
-        KICKOS_APP_SECTIONS(.bss .bss.* COMMON)                               \
-        . = ALIGN(4);                                                         \
-        _appdata_used_end = .;                                                \
-    } > RAM                                                                   \
-    .userheap (NOLOAD) :                                                      \
-    {                                                                         \
-        . = ALIGN(8);                                                         \
-        _kickos_heap_start = .;                                               \
-        . += KICKOS_USER_HEAP_SIZE;                                           \
-        _kickos_heap_limit = .;                                               \
-    } > RAM                                                                   \
-    KICKOS_CORTEXM_APP_WINDOW_SYMBOLS(_kickos_heap_limit)                     \
-    KICKOS_CORTEXM_ARENA
-#endif
 
 #define KICKOS_CORTEXM_DISCARD                                                \
     /DISCARD/ : { *(.ARM.attributes) }                                        \
@@ -368,16 +251,8 @@ EXTERN(g_isr_vector)
 
 /* An empty kernel .bss means the kernel's selectors matched nothing, kernel writable state
  * having leaked into the app window; an empty .appdata is legitimate. */
-#if KICKOS_IMAGES_PLACED && KICKOS_HAVE_MPU
+#if KICKOS_HAVE_MPU
 #define KICKOS_CORTEXM_WINDOW_ASSERTS()                                       \
-    ASSERT(_ebss > _sbss,                                                     \
-           "KickOS: kernel .bss empty: closed-set archive selector matched nothing (renamed lib?)")
-#elif KICKOS_HAVE_MPU
-#define KICKOS_CORTEXM_WINDOW_ASSERTS()                                       \
-    ASSERT(_appdata_used_end <= __kickos_appdata_start + _appdata_size,       \
-           "KickOS: app .data/.bss overflow _appdata_size (raise KICKOS_APPDATA_SIZE)") \
-    ASSERT(ADDR(.appbss) >= __kickos_appdata_start,                           \
-           "KickOS: .appbss placed below the app-data window base (empty .appdata alignment-drop regression)") \
     ASSERT(_ebss > _sbss,                                                     \
            "KickOS: kernel .bss empty: closed-set archive selector matched nothing (renamed lib?)")
 #else

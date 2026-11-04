@@ -415,8 +415,9 @@ class Emitted(unittest.TestCase):
         refusals, table, path, manifest = self.table("xmc4800-relax.yaml")
         report, (source, asserts, fragment, gate) = emit.emit_system(path, manifest)
         self.assertIn("ASSERT(_kickos_heap_limit - _kickos_heap_start >= 16384,", asserts)
-        self.assertIn("state a smaller `heap` in %s, or link a kernel package built to carve more, whose "
-                      "KICKOS_APPDATA_SIZE is that span where the heap is the app window's pad" % path, asserts)
+        self.assertIn("the %d-byte heap of %s, its `heap`, is more than the image carves from "
+                      "_kickos_heap_start to _kickos_heap_limit, which the kernel package's linker script "
+                      "carves at KICKOS_USER_HEAP_SIZE" % (16384, path), asserts)
         self.assertIn("link exactly one system target, and define no KICKOS_USER_HEAP_SIZE of the app's own", asserts)
 
     def test_the_asserts_cite_the_composition_by_its_path(self):

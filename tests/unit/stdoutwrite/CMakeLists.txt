@@ -5,8 +5,10 @@
 # against a scripted kernel: the answers a send and the kernel console give across a console
 # driver's restart. user/src/newlib_stubs.cc comes in under prefixed names (newlib_stubs_shim.cc):
 # the sim build links the host libc in its place, so only a host program can call its bodies.
+# newlib_clock.cc holds its clocks against a scripted clock, and newlib_entropy.cc its getentropy
+# against a scripted RDSEED.
 kickos_add_unit_test(NAME stdout_write
-  SOURCES stdout_write.cc newlib_stubs_shim.cc "${PROJECT_SOURCE_DIR}/user/src/print.cc"
+  SOURCES stdout_write.cc newlib_clock.cc newlib_entropy.cc newlib_stubs_shim.cc "${PROJECT_SOURCE_DIR}/user/src/print.cc"
   INCLUDES "${PROJECT_SOURCE_DIR}/user/include" "${PROJECT_SOURCE_DIR}/system/include"
            "${PROJECT_SOURCE_DIR}/lib/include" "${PROJECT_BINARY_DIR}/generated/include"
   KERNEL)

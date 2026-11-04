@@ -32,6 +32,29 @@ int kos_mutex_lock(kos_mutex_t* m, uint32_t timeout_us)
     return kickos_mutex_lock_entry(m, timeout_us);
 }
 
+int kickos_mutex_lock_entry_realtime(kos_mutex_t* m, uint64_t unix_ns)
+{
+    uint64_t const at = kos_limit_realtime(unix_ns);
+    return static_cast<int>(arch_syscall(KOS_SYS_MUTEX_LOCK, reinterpret_cast<uintptr_t>(&m->word),
+                                         static_cast<uintptr_t>(kos_u64_lo(at)),
+                                         static_cast<uintptr_t>(kos_u64_hi(at)), 0));
+}
+
+int kos_mutex_lock_realtime(kos_mutex_t* m, uint64_t unix_ns)
+{
+    uint32_t const self = kickos_self_lock_id();
+    uint32_t const held = kickos_user_cas(&m->word, 0u, self);
+    if (held == 0u)
+    {
+        return 0;
+    }
+    if ((held & ~KOS_WORD_WAITERS) == self)
+    {
+        return -KOS_EDEADLK;
+    }
+    return kickos_mutex_lock_entry_realtime(m, unix_ns);
+}
+
 int kos_mutex_unlock(kos_mutex_t* m)
 {
     uint32_t const self = kickos_self_lock_id();

@@ -25,21 +25,29 @@ namespace kickos
 {
     namespace
     {
-        // The cell: the carve's last two words, the state's address then the lock id, which
-        // end where the TLS block starts.
-        constexpr size_t CELL = 2 * sizeof(void*);
-        static_assert(KICKOS_REENT_CARVE >= CELL, "the libc state carve ends in the cell");
-        static_assert(KICKOS_REENT_CARVE % KICKOS_STACK_ALIGN == 0,
-                      "the TLS block above the libc state starts on the stack alignment");
+        // The cell: the carve's last KICKOS_REENT_CELL_WORDS words, ending where the TLS block
+        // starts. The user runtime's own words, then the state's address, then the lock id.
+        constexpr size_t CELL = KICKOS_REENT_CELL_WORDS * sizeof(void*);
+        constexpr size_t RUNTIME_WORDS = KICKOS_REENT_CELL_WORDS - 2;
     }
 
     void reent_seam_read(size_t, kos_image_header const& h)
     {
+        size_t const carve = static_cast<size_t>(h.reent_carve);
+        if (carve < CELL or carve % KICKOS_STACK_ALIGN != 0)
+        {
+            kpanic("an image's libc state carve is off the stack alignment or holds no cell");
+        }
+        // Every stack sum the kernel forms with the carve rests on this bound.
+        if (carve > KICKOS_REENT_CARVE_MAX)
+        {
+            kpanic("an image's libc state carve is larger than every profile's");
+        }
         // A prime copies `width` bytes from the carve's base, so a wider state runs into the
         // cell and the lock id the kernel wrote there.
-        if (static_cast<size_t>(h.reent_width) > KICKOS_REENT_CARVE - CELL)
+        if (static_cast<size_t>(h.reent_width) > carve - CELL)
         {
-            kpanic("libc reentrant state is wider than KICKOS_REENT_CARVE leaves below its cell");
+            kpanic("libc reentrant state is wider than its image's carve leaves below its cell");
         }
     }
 
@@ -48,13 +56,16 @@ namespace kickos
         return reinterpret_cast<void*>(image_record(0).reent_template);
     }
 
-    void reent_cell_seat(void* home, void* state, uint32_t self)
+    void reent_cell_seat(void* home, void* state, uint32_t self, size_t carve)
     {
         unsigned char* const cell = static_cast<unsigned char*>(
-            __builtin_assume_aligned(home, sizeof(void*))) + (KICKOS_REENT_CARVE - CELL);
+            __builtin_assume_aligned(home, sizeof(void*))) + (carve - CELL);
         uintptr_t const id = static_cast<uintptr_t>(self);
-        __builtin_memcpy(cell, &state, sizeof(state));
-        __builtin_memcpy(cell + sizeof(void*), &id, sizeof(id));
+        // A reused stack block still holds its last thread's words.
+        kmemset(cell, 0, RUNTIME_WORDS * sizeof(void*));
+        unsigned char* const seat = cell + RUNTIME_WORDS * sizeof(void*);
+        __builtin_memcpy(seat, &state, sizeof(state));
+        __builtin_memcpy(seat + sizeof(void*), &id, sizeof(id));
     }
 
     void reent_prime(struct arch_aspace* space, size_t image, void* state)

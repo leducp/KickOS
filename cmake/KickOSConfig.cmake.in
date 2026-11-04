@@ -53,12 +53,9 @@ else()
   endforeach()
 endif()
 
-# Whether this package's images are linked on their own first, whether the init is an image of
-# its own, the kernel entries an image calls instead of trapping, and the objects only the
-# kernel's link takes.
-set(KICKOS_IMAGE_SPLIT @KICKOS_IMAGE_SPLIT@)
+# Whether this package's images are programs the kernel's link embeds, the kernel entries an
+# image calls instead of trapping, and the objects only the kernel's link takes.
 set(KICKOS_IMAGE_EMBED @KICKOS_IMAGE_EMBED@)
-set(KICKOS_INIT_IMAGE @KICKOS_INIT_IMAGE@)
 set(KICKOS_IMAGE_KERNEL_ENTRIES "@KICKOS_IMAGE_KERNEL_ENTRIES@")
 set(KICKOS_IMAGE_KERNEL_OBJECT_TARGETS "@KICKOS_IMAGE_KERNEL_OBJECT_TARGETS@")
 

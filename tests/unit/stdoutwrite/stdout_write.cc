@@ -178,12 +178,8 @@ extern "C"
         return 0;
     }
 
-    uint64_t kos_clock_now(void)
-    {
-        return 1;
-    }
-
-    void kos_exit(int)
+    // _exit's only call, KOS_SYS_EXIT.
+    uintptr_t arch_syscall(uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t)
     {
         abort();
     }

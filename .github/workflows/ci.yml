@@ -354,8 +354,7 @@ jobs:
             --preset qemu-m3 --no-tests=error --output-on-failure --repeat until-pass:2
           tests/ci/ctest_named.sh 'mpu_fault|rootfault' \
             --preset qemu-m3 --no-tests=error --output-on-failure --repeat until-pass:2
-          # Require the board-specific diagnostic-format test to remain registered.
-          tests/ci/ctest_named.sh '^qemu_m3_diag_terse$|^qemu_m3_sysdefault$|qemu_m3_sysdefault_spin|qemu_m3_sysdefault_fault|qemu_m3_sysdefault_no_eh_runtime|qemu_m3_sysdefault_no_driver_path|^qemu_m3_cxxterm$|qemu_m3_cxxterm_eh_control|qemu_m3_nvic' --preset qemu-m3 --no-tests=error --output-on-failure
+          tests/ci/ctest_named.sh '^qemu_m3_sysdefault$|qemu_m3_sysdefault_spin|qemu_m3_sysdefault_fault|qemu_m3_sysdefault_no_eh_runtime|qemu_m3_sysdefault_no_driver_path|^qemu_m3_cxxterm$|qemu_m3_cxxterm_eh_control|qemu_m3_nvic' --preset qemu-m3 --no-tests=error --output-on-failure
       # Test privilege rings with MPU enforcement disabled.
       - name: ARM ring-only run gates (no PMSA enforcement)
         if: startsWith(matrix.part, 'flat-')
@@ -377,10 +376,6 @@ jobs:
             t=$(printf '%s' "$b" | tr - _)
             tests/ci/ctest_named.sh "^${t}_sysdefault\$|${t}_sysdefault_spin|${t}_sysdefault_fault|${t}_sysdefault_no_eh_runtime|${t}_sysdefault_no_driver_path|^${t}_cxxterm\$|${t}_cxxterm_eh_control|${t}_nvic" \
               --preset "$b-flat" --no-tests=error --output-on-failure
-            # The flat M3 build also registers the diagnostic-format test.
-            if [ "$b" = qemu-m3 ]; then
-              tests/ci/ctest_named.sh '^qemu_m3_diag_terse$' --preset "$b-flat" --no-tests=error --output-on-failure
-            fi
             # The flat M33 build registers the stack-limit gates too, all but the MPU-only ones.
             if [ "$b" = qemu-m33 ]; then
               out=$(tests/ci/ctest_named.sh '^qemu_m33_faultoverflow$|^qemu_m33_pspguard$|^qemu_m33_pspguard_svcstkof$' \
@@ -739,7 +734,7 @@ jobs:
           esac
           # Build both C6 AMP nodes and their one-flash partition; silicon capture stays on the bench.
           cmake --preset esp32c6-wroom-amp2-n0
-          cmake --build --preset esp32c6-wroom-amp2-n0 --target amp_partition kickos_system_default_table
+          cmake --build --preset esp32c6-wroom-amp2-n0
           ctest --test-dir build/esp32c6-wroom-amp2-n0 -L host -LE tree --no-tests=error --output-on-failure
           out=$(tests/ci/ctest_named.sh 'esp32c6_wroom_system_link_none|esp32c6_wroom_system_link_two|esp32c6_wroom_system_link_program|esp32c6_wroom_system_link_refused|esp32c6_wroom_system_link_notool|esp32c6_wroom_system_link_nocc|esp32c6_wroom_system_link_rerun|esp32c6_wroom_system_link_noheap|esp32c6_wroom_system_link_stack|esp32c6_wroom_system_link_arena' \
             --test-dir build/esp32c6-wroom-amp2-n0 --no-tests=error --output-on-failure 2>&1) || { printf '%s\n' "$out"; exit 1; }
@@ -1093,13 +1088,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        preset: [frdmk64f-flat, f411disco-flat, blackpill-flat, bluepill-c8, picopi-flat,
-                 f302nucleo, due, xmc4800-relax-flat, qemu-telem, teensy41-flat,
-                 pizero2350-flat]
-        # The board whose suite needs pools of its own builds that provisioning too.
-        include:
-          - preset: f302nucleo
-            st: f302nucleo-st
+        preset: [frdmk64f-flat, f411disco-flat, blackpill-flat, picopi-flat, due,
+                 xmc4800-relax-flat, qemu-telem, teensy41-flat, pizero2350-flat]
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/kconfiglib
@@ -1124,9 +1114,7 @@ jobs:
               xmc4800-relax-flat) printf '%s' 'xmc4800_relax_system_link_none|xmc4800_relax_system_link_two|xmc4800_relax_system_link_program|xmc4800_relax_system_link_refused|xmc4800_relax_system_link_notool|xmc4800_relax_system_link_nocc|xmc4800_relax_system_link_rerun|xmc4800_relax_system_link_noheap' ;;
               qemu-telem) printf '%s' 'qemu_system_link_none|qemu_system_link_two|qemu_system_link_program|qemu_system_link_refused|qemu_system_link_notool|qemu_system_link_nocc|qemu_system_link_rerun|qemu_system_link_noheap' ;;
               blackpill-flat) printf '%s' 'blackpill_system_link_none|blackpill_system_link_two|blackpill_system_link_program|blackpill_system_link_refused|blackpill_system_link_notool|blackpill_system_link_nocc|blackpill_system_link_rerun|blackpill_system_link_noheap' ;;
-              bluepill-c8) printf '%s' 'bluepill_c8_system_link_none|bluepill_c8_system_link_two|bluepill_c8_system_link_program|bluepill_c8_system_link_refused|bluepill_c8_system_link_notool|bluepill_c8_system_link_nocc|bluepill_c8_system_link_rerun|bluepill_c8_system_link_noheap' ;;
               picopi-flat) printf '%s' 'picopi_system_link_none|picopi_system_link_two|picopi_system_link_program|picopi_system_link_refused|picopi_system_link_notool|picopi_system_link_nocc|picopi_system_link_rerun|picopi_system_link_noheap' ;;
-              f302nucleo|f302nucleo-st) printf '%s' 'f302nucleo_system_link_none|f302nucleo_system_link_two|f302nucleo_system_link_program|f302nucleo_system_link_refused|f302nucleo_system_link_notool|f302nucleo_system_link_nocc|f302nucleo_system_link_rerun|f302nucleo_system_link_noheap' ;;
               due) printf '%s' 'due_system_link_none|due_system_link_two|due_system_link_program|due_system_link_refused|due_system_link_notool|due_system_link_nocc|due_system_link_rerun|due_system_link_noheap' ;;
               teensy41-flat) printf '%s' 'teensy41_system_link_none|teensy41_system_link_two|teensy41_system_link_program|teensy41_system_link_refused|teensy41_system_link_notool|teensy41_system_link_nocc|teensy41_system_link_rerun|teensy41_system_link_noheap' ;;
               pizero2350-flat) printf '%s' 'pizero2350_system_link_none|pizero2350_system_link_two|pizero2350_system_link_program|pizero2350_system_link_refused|pizero2350_system_link_notool|pizero2350_system_link_nocc|pizero2350_system_link_rerun|pizero2350_system_link_noheap' ;;
@@ -1136,14 +1124,6 @@ jobs:
           ctest --test-dir build/${{ matrix.preset }} -L host -LE tree --no-tests=error --output-on-failure
           names=$(links ${{ matrix.preset }})
           tests/ci/ctest_named.sh "$names" --test-dir build/${{ matrix.preset }} --no-tests=error --output-on-failure
-          # The larger selftest images also check flash capacity.
-          if [ -n "${{ matrix.st }}" ]; then
-            cmake --preset ${{ matrix.st }}
-            cmake --build --preset ${{ matrix.st }}
-            ctest --test-dir build/${{ matrix.st }} -L host -LE tree --no-tests=error --output-on-failure
-            names=$(links ${{ matrix.st }})
-            tests/ci/ctest_named.sh "$names" --test-dir build/${{ matrix.st }} --no-tests=error --output-on-failure
-          fi
       # Run telemetry containment and PendSV-tail trace checks under QEMU.
       - if: matrix.preset == 'qemu-telem'
         name: telemetry image arms (-L host selects them away)

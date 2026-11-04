@@ -8,12 +8,11 @@
  * The __kickos_image_* bounds are the final link's. Where the image is linked on its own first
  * (tools/image-link.py), each is renamed to that image's own before the final link.
  *
- * Where the init is an image of its own (KICKOS_INIT_IMAGE), init_image_header.c compiles this
- * as the init's header (KICKOS_IMAGE_INIT): root's entry, no declaration. Each declared task's
- * image then carries its own, compiled beside its table copy by its system target with
- * KICKOS_IMAGE_TASK, its declaration's index: that declaration alone, started at its entry. The
- * executable's own copy then only names the program, unless the task runs a program of another
- * target, which KICKOS_IMAGE_PROGRAM_NAME names.
+ * init_image_header.c compiles this as the init's header (KICKOS_IMAGE_INIT): root's entry, no
+ * declaration. Each declared task's image carries its own, compiled beside its table copy by its
+ * system target with KICKOS_IMAGE_TASK, its declaration's index: that declaration alone, started
+ * at its entry. The executable's own copy only names the program, unless the task runs a program
+ * of another target, which KICKOS_IMAGE_PROGRAM_NAME names.
  */
 
 #include <kickos/sys/image.h>
@@ -34,7 +33,7 @@
 #define KICKOS_IMAGE_INIT 0
 #endif
 
-#if KICKOS_INIT_IMAGE and not defined(KICKOS_IMAGE_TASK) and not KICKOS_IMAGE_INIT
+#if not defined(KICKOS_IMAGE_TASK) and not KICKOS_IMAGE_INIT
 char const kickos_image_program[] = KICKOS_APP_IMAGE;
 #else
 
@@ -63,13 +62,14 @@ extern char __kickos_image_eh_frame[];
 extern char __kickos_build_id[];
 #endif
 
+#if KICKOS_LIBC_REENT
+/* Absolute, from the user library of the newlib profile the image links (newlib_reent.cc). */
+extern char __kickos_reent_width[];
+extern char __kickos_reent_carve[];
+#endif
+
 void kickos_user_thread_return(void);
 
-/* The system target's table defines them, one per task it declares, and the target states their
- * count. With no system target the link fails naming kickos_link_one_system_target. */
-#ifndef KICKOS_IMAGE_DECL_COUNT
-#define KICKOS_IMAGE_DECL_COUNT 0
-#endif
 #if KICKOS_IMAGE_INIT
 #define KOS_IMAGE_DECLS 0
 KOS_IMAGE_INIT_OBJECT()
@@ -77,7 +77,7 @@ char const kickos_init_app_program[] = KICKOS_APP_IMAGE;
 #define KOS_IMAGE_PROGRAM kos_image_program
 static char const kos_image_program[] = "init";
 #define KOS_IMAGE_START kickos_root_entry
-#elif defined(KICKOS_IMAGE_TASK)
+#else
 #define KOS_IMAGE_DECLS 1
 KOS_IMAGE_TASK_OBJECT(KICKOS_IMAGE_TASK)
 #ifdef KICKOS_IMAGE_PROGRAM_NAME
@@ -91,11 +91,6 @@ static char const kos_image_program[] = KICKOS_IMAGE_PROGRAM_NAME;
 #else
 #define KOS_IMAGE_START kickos_task_entry
 #endif
-#else
-#define KOS_IMAGE_DECLS KICKOS_IMAGE_DECL_COUNT
-#define KOS_IMAGE_PROGRAM kos_image_program
-static char const kos_image_program[] = KICKOS_APP_IMAGE;
-#define KOS_IMAGE_START kickos_root_entry
 #endif
 void kickos_task_entry(void* args);
 void kickos_program_entry(void* args);
@@ -145,7 +140,8 @@ struct kos_image_header const kickos_image_header = {
     .start = (uintptr_t)KOS_IMAGE_START,
 #if KICKOS_LIBC_REENT
     .reent_template = (uintptr_t)_GLOBAL_REENT,
-    .reent_width = sizeof(struct _reent),
+    .reent_width = (uintptr_t)__kickos_reent_width,
+    .reent_carve = (uintptr_t)__kickos_reent_carve,
 #if not KICKOS_REENT_PER_THREAD
     .reent_seat = (uintptr_t)&_impure_ptr,
 #endif

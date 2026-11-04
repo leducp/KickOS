@@ -17,10 +17,9 @@ extern "C" void kickos_self_enter(uintptr_t decl) __attribute__((visibility("hid
 extern "C" kos_table_task const* kickos_task_enter(kos_task_args const* args)
     __attribute__((visibility("hidden")));
 
-// The entry thread of a task whose image holds a packaged driver or every task, the decl_start of
-// such an image: runs its start as kickos_task_enter, which hands a packaged driver's record to
-// kickos_driver_task. Where one image holds every task, a program's record then goes to
-// kickos_program_run.
+// The entry thread of a task whose image holds a packaged driver, the decl_start of such an
+// image: runs its start as kickos_task_enter, which hands a packaged driver's record to
+// kickos_driver_task.
 extern "C" [[noreturn]] void kickos_task_entry(void* args) __attribute__((visibility("hidden")));
 
 // The entry thread of a program's task, the decl_start of a program's own image: runs its start

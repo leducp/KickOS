@@ -45,7 +45,7 @@ _add_test(NAME board_predicates
                   ${_kos_gate_fragments} "${PROJECT_SOURCE_DIR}/user/apps/common/CMakeLists.txt"
           WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
 _add_test(NAME stamp_lines COMMAND python3 -B "${PROJECT_SOURCE_DIR}/tools/bench/test_stamp_lines.py")
-foreach(_check no_eh_runtime no_libnosys ctors_kept image_listing esp_segments)
+foreach(_check no_eh_runtime no_libnosys ctors_kept image_listing esp_segments libc_profile)
   _add_test(NAME ${_check}_controls
             COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_${_check}.sh" --self-test)
 endforeach()
@@ -55,7 +55,8 @@ _add_test(NAME string_provider_controls
 kickos_tree_gate(bench_banner_controls stlink_capture_controls selftest_demands_controls
                  boot_tp_controls board_predicates stamp_lines no_eh_runtime_controls
                  no_libnosys_controls ctors_kept_controls image_listing_controls
-                 esp_segments_controls string_provider_controls TIMEOUT 60)
+                 esp_segments_controls string_provider_controls libc_profile_controls
+                 TIMEOUT 60)
 
 _add_test(NAME trap_redzone_walk
           COMMAND python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/test_trap_redzone.py")
@@ -134,10 +135,6 @@ if(_trap_stack_header)
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/check_trap_redzone.sh" "${PROJECT_SOURCE_DIR}"
                     "${CMAKE_COMMAND}" "${_fs_preset_key}" "${KICKOS_ARCH}")
   kickos_host_gate(trap_redzone TIMEOUT 1800)
-  # The callgraph scratch tree must use the same explicit comparison profile.
-  if(KICKOS_FULL_NEWLIB)
-    set_tests_properties(trap_redzone PROPERTIES ENVIRONMENT "KICKOS_FULL_NEWLIB=ON")
-  endif()
   if(KICKOS_HAVE_ASPACE)
     set_property(TEST trap_redzone APPEND PROPERTY ENVIRONMENT "KICKOS_CONSOLE_REACH=1")
   endif()

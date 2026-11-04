@@ -15,14 +15,6 @@
 namespace kickos
 {
 
-namespace
-{
-    // Zero where no libc state is carved (KICKOS_LIBC_REENT 0).
-    constexpr size_t REENT_CARVE = KICKOS_REENT_CARVE;
-    static_assert(REENT_CARVE % KICKOS_STACK_ALIGN == 0,
-                  "the TLS block above the libc state starts on the stack alignment");
-}
-
 #if KICKOS_TLS
 
 namespace
@@ -97,7 +89,12 @@ void tls_seat(void*, size_t)
 
 #endif
 
-#if KICKOS_TLS or KICKOS_REENT_CARVE
+#if KICKOS_TLS or KICKOS_LIBC_REENT
+
+size_t tls_libc_carve(size_t image)
+{
+    return static_cast<size_t>(image_record(image).reent_carve);
+}
 
 namespace
 {
@@ -156,7 +153,7 @@ namespace
 
 size_t tls_pool_carve_size(size_t image)
 {
-    return REENT_CARVE + tls_block_size(image);
+    return tls_libc_carve(image) + tls_block_size(image);
 }
 
 size_t tls_carve_size(Thread const* t)
@@ -206,6 +203,11 @@ void* tls_carve(Thread const* t, void* stack_base, size_t stack_size)
 }
 
 #else
+
+size_t tls_libc_carve(size_t)
+{
+    return 0;
+}
 
 size_t tls_pool_carve_size(size_t)
 {

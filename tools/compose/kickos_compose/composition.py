@@ -30,7 +30,7 @@ USE_FIELDS = ("path", "slots")
 SHARED_FIELDS = ("name", "size", "cache", "partition")
 SHARED_REQUIRED = ("name", "size", "cache")
 AUTHORITIES = ("memory", "pinmux", "pstate", "irq", "system", "console", "tasks", "bus_master",
-               "bootloader")
+               "bootloader", "realtime")
 NOT_NEEDED = {
     "no_protection": ("a build that enforces nothing or a unit `none`, and every unit here translates, "
                       "which no build turns off"),
@@ -280,7 +280,6 @@ def admit_composition(path, text, platform, report, cache, manifest, partition=F
     check_restart(f, top, named)
     if chip is not None:
         check_ownership(f, tasks, chip, cluster, board, stdout)
-        check_one_task(f, tasks, shared, chip)
     if chip is not None and manifest is not None:
         check_window_rule(f, top.get("board", root), chip, cluster, manifest)
         check_encoding(f, tasks, chip, cluster, manifest)
@@ -797,36 +796,6 @@ def check_hosted(f, node, index, host, chip, cluster):
     if "core" in host.nodes:
         task.nodes["core"] = host.nodes["core"]
     return task
-
-
-def check_one_task(f, tasks, shared, chip):
-    """On a chip that holds one task, every packaged driver runs inside a task, and nothing needs a second one."""
-    if not chip.one_task:
-        return
-    first = None
-    for task in tasks:
-        if task.hosted is not None:
-            continue
-        if first is None:
-            first = task
-            continue
-        f.refuse(task.name_node or task.node, "supply.one-task",
-                 "%s is a second task beside %s, and chip `%s` holds one task beside the init"
-                 % (task.label(), first.label(), chip.name))
-    for task in tasks:
-        if task.watches:
-            f.refuse(task.nodes["watches"], "supply.one-task",
-                     "%s watches `%s`, and chip `%s` holds one task: a watch needs a second task"
-                     % (task.label(), task.watches[0][0], chip.name))
-        if task.driver is not None and task.hosted is None:
-            f.refuse(task.nodes["driver"], "driver.one-task",
-                     "%s runs driver `%s` as a task of its own, and chip `%s` holds one task, so the kernel "
-                     "starts no driver task: list `%s` under `drivers` of the task that uses it"
-                     % (task.label(), task.driver, chip.name, task.driver))
-    for name, region in shared.items():
-        f.refuse(region.node, "supply.one-task",
-                 "shared region `%s` needs a second task to share it, and chip `%s` holds one task"
-                 % (name, chip.name))
 
 
 def check_use(f, node, task, what):

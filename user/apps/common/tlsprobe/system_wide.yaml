@@ -7,7 +7,7 @@
 version: 1
 stdout: kernel
 ends: main
-heap: 0
+heap: 1024
 
 tasks:
   - name: main

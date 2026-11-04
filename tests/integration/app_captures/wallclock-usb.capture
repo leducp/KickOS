@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
+# Composed: the mark 3 line and its arrival stamp are planted into a capture of a build that
+# predates the wall-clock set.
 
    KickOS 0.5.1  -  microkernel RTOS
    board   pizero2350
@@ -7,4 +9,5 @@
 [wallclock] mark 0, sleeping 5000000000 ns
 [wallclock] mark 1, the kernel clock advanced 5000031725 ns, sleeping 5000000000 ns
 [wallclock] mark 2, the kernel clock advanced 5000025108 ns
+[wallclock] mark 3, a set a day ahead answered 0, the steady clock advanced 1000012345 ns over a sleep of 1000000000 ns, the wall clock 86401000012345 ns
 [wallclock] done

@@ -86,6 +86,7 @@ SYSCALL_NAME = {
     79: "periph_disable", 80: "witness_uaccess", 81: "witness_rewinds",
     82: "word_wait", 83: "word_wake", 84: "endpoint_badge",
     85: "task_create", 86: "program_find",
+    87: "clock_realtime", 88: "clock_set_realtime",
 }
 
 TRACE_MAGIC = 0x4B545243

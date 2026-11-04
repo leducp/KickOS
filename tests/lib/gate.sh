@@ -665,6 +665,10 @@ C compiler, so its installation cannot be looked for in the package"
     _pn_ninja="$(sed -n 's/^CMAKE_MAKE_PROGRAM:[^=]*=//p' "$_pn_dir/CMakeCache.txt")"
     [ -x "$_pn_ninja" ] || fail "the probe's cache names no usable ninja ($_pn_ninja)"
     _pn_rt="$(find "$_pn_prefix" -name 'vterminate.*' | head -n 1)"
+    if [ -n "$_pn_rt" ] && [ -z "$(find "$_pn_prefix" -name 'eh_globals.*' | head -n 1)" ]; then
+        fail "the package ships the C++ runtime's terminate handler without its per-thread \
+exception state"
+    fi
     require_nonempty "$_pn_dir/link_targets" "the probe defined no image to read a link line of"
     while read -r _pn_t; do
         "$_pn_ninja" -C "$_pn_dir" -t commands "$_pn_t" >"$_pn_dir.$_pn_t" \
@@ -679,6 +683,11 @@ C compiler, so its installation cannot be looked for in the package"
             case "$_pn_link" in
                 *vterminate*) ;;
                 *) fail "the link line of $_pn_t carries no C++ runtime object: $_pn_link" ;;
+            esac
+            case "$_pn_link" in
+                *eh_globals*) ;;
+                *) fail "the link line of $_pn_t carries no per-thread exception state:
+  $_pn_link" ;;
             esac
         fi
     done < "$_pn_dir/link_targets"

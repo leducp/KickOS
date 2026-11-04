@@ -113,7 +113,24 @@ milestone does not close while any of them still composes a system.
 
 - [ ] **M10.7: THE EXIT RECORD.** Reconcile `roadmap.md`, `docs/reference/architecture.md`,
       `docs/reference/invariants.md` and `STATE.md` against what shipped, and record what the green
-      runs do not say.
+      runs do not say. Lines M10.6.9 and M10.6.10 left stale, docs being deferred to the end of M10:
+      - invariants.md: `timer-min-delta-guard` calls a deadline immutable, and a wall-clock set
+        now moves a realtime one; the one-task clauses; the mechanism lines of
+        `task-data-starts-from-its-image`, of the cap table's dynamic slot and of the "two
+        recursive locks"; the device-window sentence on the LX6, where windows are task-wide.
+      - docs/reference/style.md: the `_4` read-modify-write line on armv6m and rxv3 (the user
+        atomics library now answers it). porting.md: RX user mode cannot write PSW.I either, the
+        restartable-sequence paragraph, the "declared reserve" section, and the M10.6.10 libc
+        lines. boards.md: the retired full-newlib knob, the microbit package guard and the
+        amp2 THREADS line. bench.md: the terse-diagnostics line. architecture.md: the join
+        gate, which any thread of the target's task now passes.
+      - The Book: the atomics page's RXv3 row and its link-failure and lock-table paragraphs, and
+        the SjLj section. A user-facing line that, on a region board, a sync object on a
+        thread's stack faults any other thread that touches it, one of the same task included.
+      - The journey: stop 08's create comment and stop 09's diagnostics lines.
+      - roadmap.md's M10.6.10 row, against what shipped.
+      - The boot banner (maintainer, 2026-11-03): its version (the project's 0.5.1) and its text
+        are out of date.
 
 **DEFERRED UNTIL A CONSUMER NEEDS ONE, AND NOT WORK OF THIS MILESTONE.** The seal, a
 create-suspended spawn, and an authority for placing a thread of another task, a dynamic mint and
@@ -330,31 +347,58 @@ by ruling and sits in `roadmap.md`'s `Later`.
       one host thread every KickOS thread runs on, so M10.6.10 declares its threaded C++ arms
       inapplicable there. Move the sim's user side to newlib and the KickOS threads model, so it runs
       the runtime the boards ship; until then every gap against a board is a defect, not a difference.
+      The time calls are such a gap (found by the M10.6.10 review): on the sim `clock_gettime`,
+      `gettimeofday`, `time` and `clock_settime` are the host's, so a wall clock set through KickOS
+      never reaches them, and `abort` ends the host process. A fix that interposes them must still
+      pass `CLOCK_MONOTONIC` to the host, which the sim kernel itself reads.
+
+## M11, at its start: code that runs from RAM (maintainer, 2026-11-03)
+
+- [ ] **M11, FIRST: RAM-RESIDENT CODE LIMITS WHAT A NODE OR A SMALL BOARD CAN RUN.** Where the code
+      is copied to RAM, each byte of text is a byte the arena loses, so an image's code caps its
+      thread pool. The ESP32-C6 AMP nodes link `cxxtest` only on nano newlib, with 1,776 B to spare
+      on the HP node (measured 2026-11-03). Code runs from RAM today on two boards. On
+      `esp32c6-wroom` (rv32imac) every configuration links the kernel and every image into the
+      512 KiB HP SRAM, the LP core's node included, and the flash cache is unused. On
+      `esp32-wroom` (Xtensa LX6) the kernel's text is in SRAM1 and every image's in SRAM0, with the
+      flash cache off. Every Cortex-M board and `rx72m` execute from flash (`picopi`, `pizero2350`
+      and `teensy41` through their XIP caches). The emulated `qemu-riscv` and the MMU boards load
+      into DRAM, their only memory. So the concern is not one arch: rv32imac and Xtensa today, and
+      any later chip whose loader copies the image to RAM. Two levers:
+      - **Uneven AMP node slices.** The C6 `amp2` configuration gives the LP-core node the same
+        240 KiB as the HP node, since `KICKOS_AMP_NODE_SHARE` is one value for every node (the
+        `pizero2350` and `qemu-arm64` partitions too). A size per node gives the RAM to the node
+        that runs the larger images.
+      - **Execute code from flash through the chip's cache (XIP)** instead of copying it to RAM,
+        leaving RAM to data and stacks. The protection windows over each image's code then cover
+        its flash address. On the ESP32 it is the second half of "M10.6.11: ESP32 CODE PAST SRAM0
+        AND SRAM1" below.
 
 ## M10.6 -- the cleanup pass (maintainer, 2026-10-06)
 
-- [ ] **END OF M10.6.10: AUDIT THE KERNEL'S FLASH (maintainer, 2026-10-29).** Before the 64 KiB tier
-      ruling below, which it feeds, and before M10.6.11's bench pass, so the bench captures whatever it
-      slims. The baseline, `f302nucleo-st` libcrace at the end of M10.6.9: the kernel's own objects
-      take 36.7 KB of flash (31.9 KB on master before M10.6.9), arch and chip 4.9 KB. The largest are
-      the thread syscalls 4.7 KB, capabilities 4.3 KB, the console and its transmit path 4.6 KB
-      together, IPC 2.7 KB, sync 2.6 KB, task records 2.6 KB. M10.6.9's growth: the thread syscalls
-      +1.5 KB, task records +1.1 KB, the boot image check +0.5 KB (new), the flat boards' shared RAM
-      owner path +0.4 KB, capabilities +0.3 KB. Measure per object, then cut at the same features:
-      the console first (what must stay in the kernel, what moves to user space), then each large
-      object. No LTO (maintainer, 2026-10-28).
-- [ ] **AFTER M10.6.10: IS THE 64 KIB TIER USABLE FOR A REAL APPLICATION? (maintainer, 2026-10-28).**
-      `f302nucleo` and `bluepill-c8` carry flash fights in every step, one-task special cases in the
-      kernel, the composer and the judges, declared skips and stack tuning. If they cannot host a real
-      application, that cost buys nothing. Test, once shared libc and the program model are settled: a
-      realistic small app on `f302nucleo` (a UART driver, a sensor read over SPI or I2C, a control loop,
-      a log line) with its real margins. If 16 KiB RAM / 64 KiB flash is not enough, the same app's
-      measured need sets the low tier: the smallest common RAM/flash pairing that holds it with room
-      to grow (the 32 KiB tier `microbit` stands for is the first candidate), and the boards below it
-      go, with the one-task model if no board left needs it. Until this ruling the bench fleet allows
-      the `f302nucleo` selftest parts, mutexbench, chaincheck, libcrace, libc_death and fp_switch to
-      fail, as the kernel's SVC depth on the caller's stack exceeds the threads' room (760 B at the
-      end of M10.6.9, 696 on master); the ruling removes that declaration either way.
+- [x] **M10.6.10: AUDIT THE KERNEL'S FLASH (maintainer, 2026-10-29).** Measured per object on
+      `f302nucleo-st` (2026-10-31): the kernel's own objects take 37.6 KB, 5.5 KB over master, and
+      that growth is features (tasks built from program declarations with argv 1.6 KB, per-task
+      budgets and runs 1.1 KB, image records and the boot image check 0.7 KB, the fault record's
+      console line 0.6 KB). Cuts at the same features on every board come to about 0.2 KB; the one
+      larger cut, compiling the console hand-over out on one-task chips (about 2.2 KB), went with
+      the tier ruling below.
+- [x] **RULED (maintainer, 2026-10-31): THE LOW TIER IS 32 KiB RAM / 128 KiB FLASH.** A realistic
+      small app (polled I2C read, 10 ms control loop, printf log line) fits `f302nucleo` only as one
+      stack-tuned thread with about 480 B of arena and 8.3 KiB of flash left, and `bluepill-c8` with
+      8.4 KiB of flash left and no room for a first real driver. `f302nucleo` and `bluepill-c8` go
+      in M10.6.10, with the one-task model and every path no remaining board needs, and with them
+      the bench fleet's allowed `f302nucleo` failures.
+- [ ] **AFTER M10: WHERE THE PROGRAM MODEL LIVES (maintainer, 2026-10-31: kept as is, may change).**
+      The kernel holds it today: declarations read from the image, program lookup by name, instance
+      choice, start-once and restart, argv copied from the creator, and the boot image check. For
+      it: one party nobody bypasses enforces the declaration, and an on-request start is one
+      syscall with no server in its path. Against it: user strings, argv and image headers parsed
+      privileged, on the syscall descent the trap red zone prices, and a program loaded later from
+      storage would need a second path. The split to weigh: the kernel keeps a generic create with
+      explicit parameters bounded by what the caller holds; the init, as the loader, reads the
+      declarations and keeps names, instances, start rules and argv, so an on-request start becomes
+      IPC to it. Decide with the first loader or storage work.
 
 M10.6 cleans up before the exit record; its steps are in `roadmap.md`. The entries below, and the
 ones elsewhere in this file tagged `M10.6.<n>`, are its work. M10's tail (maintainer, 2026-10-03)
@@ -1609,17 +1653,18 @@ Both were considered while `include/kickos/diag.h` was built and both were decli
 not deferred for lack of time. Recorded so the next reader does not re-derive the reasoning and
 "finish the job".
 
-- [ ] **Driver bring-up prose is NOT in the catalogue, and a second table would be a different
+- [x] **Driver bring-up prose is NOT in the catalogue, and a second table would be a different
       mechanism wearing the same name.** `system/` carries 76 `kos::print`, 5 `emit`, 7 `win_puts`
       and 7 `wire_puts` sites, worth 755 bytes on xmc4800-relax hello_c per
       archived `M4.7.9_footprint_meas.md`. It earns **zero** on both boards that select the
       short column: neither bluepill-c8 nor f302nucleo links a driver archive at all. It also goes
       through the userspace `kos::print` rather than `kputs`, and lives in `kickos_system` rather
       than the kernel, so it cannot share the kernel catalogue's include or its emit path.
-      Becomes worth doing only if a driver-carrying board ever selects `KICKOS_DIAG_TERSE`; until
+      Becomes worth doing only if a driver-carrying board ever selects the short column; until
       then the saving is hypothetical and the second table is pure surface.
+      **CLOSED (M10.6.10):** the short column is removed.
 
-- [ ] **`KICKOS_DEBUG_ASSERT` still stringifies its whole condition** (`kernel/include/kickos/debug.h`,
+- [x] **`KICKOS_DEBUG_ASSERT` still stringifies its whole condition** (`kernel/include/kickos/debug.h`,
       9 sites), so it is the one diagnostic the short column does not reach. Left alone because
       `KICKOS_DEBUG` is `n` on every board and in every preset: wiring a short arm now would add an
       `#if` branch that NOTHING compiles, which is the exact shape that let the bounded-waits knob's
@@ -1628,6 +1673,7 @@ not deferred for lack of time. Recorded so the next reader does not re-derive th
       preset, this needs the same treatment `KICKOS_ASSERT` got: drop the condition text and pass
       `__FILE_NAME__` and `__LINE__` as SEPARATE arguments (measured 4x better than one joined
       `"file:line"` literal, see the capture).
+      **CLOSED (M10.6.10):** the short column is removed, and `KICKOS_ASSERT` keeps its condition text.
 
 ## M4.7.4 -- delete the legacy management (nothing is released before the ABI freeze)
 
@@ -3183,8 +3229,7 @@ here because they are pre-existing isolation facts, not things that pass created
       backend for it, so it builds `KICKOS_HAVE_MPU=0` while still inheriting ARM's fallback
       `arch_mpu_min_region()` of 32 (`arch/seam_defaults.cmake`) -- costing 3,808 bytes
       of measured over-alignment on a part that enforces nothing. It is the third member of the class
-      `stm32f103` and `stm32f302` just left, both of which now override to 0 in
-      `arch/arm/chip/stm32f103/chip_stm32f103.cc` and `arch/arm/chip/stm32f302/chip_stm32f302.cc`.
+      `stm32f103` and `stm32f302` just left, both of which overrode to 0 in their chip files.
       **PARKED by the maintainer for a concrete
       reason: the physical Arduino Due unit is dead** (`docs/reference/boards.md`), so nothing on this
       chip can ever be witnessed -- do not pick it up expecting to validate it. The class itself is
@@ -3194,7 +3239,7 @@ here because they are pre-existing isolation facts, not things that pass created
       by 96 bytes.** This is a **MODEL PREDICTION, not a witness** -- the board has no physical unit
       and can never be flashed. Arena 6,560, minus idle 512 and root 2,048, leaves 4,000 against the
       4,096 that two 2,048-byte stacks need. The cause is the carve rather than the part: 8 K
-      `.userheap` (`arch/arm/chip/stm32f103/stm32f103.ld:27`) where `f302nucleo` now takes 2 K, plus the
+      `.userheap` (the `stm32f103` linker script) where `f302nucleo` now takes 2 K, plus the
       board raising ROOT/USER to 2048 over the chip default of 1024
       (`boards/bluepill-c8/configs/base/defconfig:9`, `:11`). Full arithmetic and its
       provenance are already in `docs/reference/boards.md`; the fix is cutting the carve. The
@@ -4354,6 +4399,12 @@ harmless, and a rate is what tells them apart.
 
 ## exit() scope is CHIP-defined, not app-defined (ruled 2026-08-07)
 
+**SUPERSEDED (maintainer, 2026-10-29, M10.6.10 D4):** `exit()` from any thread ends its TASK, as
+POSIX says: the task's atexit handlers and stdio flush run in the caller, then the task ends with
+the code. `kos_exit` stays the thread's exit. The premise below, a thread as the unit of
+isolation, gave way to tasks as processes on every backend in M10.6.9. The text is kept as the
+record of the earlier ruling.
+
 The ruling: on an MCU a thread IS the unit of isolation, so a thread and a process are the same
 thing and `exit()` in a thread ends that thread. On an A-class part with an MMU and real processes,
 `exit()` from any thread ends the WHOLE PROCESS, which is what POSIX says. So the scope follows the
@@ -4537,7 +4588,7 @@ follows is what survived that.
       manifest, so f302nucleo and microbit are treated alike.
 - [ ] **The K-seam fixture only ever compiles the SIM posture.** It takes `kickos_kernel`'s
       `COMPILE_DEFINITIONS` verbatim and registers only under `KICKOS_ARCH STREQUAL "sim"`, so a
-      SEGMENTED capability table (more than one chunk, which `frdmk64f` runs), `KICKOS_DIAG_TERSE`,
+      SEGMENTED capability table (more than one chunk, which `frdmk64f` runs),
       and every non-sim cap geometry never reach a K-seam arm. That compounds with the chunk-boundary
       arm: flat-versus-segmented teardown IS a chunk-boundary property.
 - [ ] **Splitting `user/src/syscall_stubs.cc` per subsystem breaks the U-seam shadow protection
@@ -5172,15 +5223,34 @@ C++" in the Book and "Userspace: full C++" in `docs/reference/architecture.md`. 
 toolchain release giving GCC a KickOS threads model. Found 2026-10-21 from the shipped 1.1.0-1
 archives (objdump, nm and readelf), nothing built.
 
-- [ ] **M10.6.10: LIBC CODE IS COPIED INTO EVERY TASK IMAGE (maintainer, 2026-10-22).** With one image
+- [x] **M10.6.10: LIBC CODE IS COPIED INTO EVERY TASK IMAGE (maintainer, 2026-10-22).** With one image
       per task (M10.6.9), each image links its own newlib, about 20 KiB of flash for printf and more
       for iostream, which bounds the task count on the smaller enforcing parts. The toolchain release
       ships a newlib that reaches its globals through the per-task context the kernel seats
       (`_impure_ptr`), so libc code is stored once in flash and shared by every image, each task's
       libc data staying in its own window. Witness: two task images and one copy of libc's code in
       the merged image, each task's heap, FILEs and locks still its own.
+      **DROPPED (maintainer, 2026-11-01): libc stays linked into each image.** The shared runtime
+      was prototyped on arm-none-eabi (f411disco, picopi): every writable newlib global moved by a
+      newlib patch into a per-task block, reached as the task's block plus the global's offset. It
+      saved about 1.8 KB per extra selftest image and 46 KB per image that prints and allocates,
+      but cost a 1.5 kline newlib patch carried across every newlib upgrade, malloc and free 21%
+      and printf 5% slower on silicon, the union of every image's libc state in each task's block
+      (+1 to +3 KiB on a light image), and isolation of libc state held by the patch's completeness
+      instead of by separate links. The 46 KB was full newlib's formatter, not libc: an image
+      calling only `snprintf("%d")` and `printf("%s")` links 39.3 KB of newlib, 3.8 KB of libgcc
+      and 2.5 KB of libc RAM, and 5.5 KB, 0.9 KB and 0.4 KB with nano, with no sharing at all.
+- [x] **M10.6.10: EACH IMAGE CHOOSES ITS LIBC PROFILE (maintainer, 2026-11-01).** An image that
+      needs a basic printf and little else of libc links nano; one that uses libc, a shell for
+      example, links full. Full is the default, since nano's printf prints nothing for a float
+      unless the image asks for float formatting; an image opts into nano, and a board's
+      descriptor may make nano its default (microbit). The toolchain builds nano for every
+      region family (arm, riscv, rx, xtensa), not arm alone. Witness: one system whose images
+      link different profiles, each running its libc arms.
+      **RULED (maintainer, 2026-11-03):** a configuration may make nano its images' default too,
+      and the ESP32-C6 AMP configuration does (`KICKOS_LIBC_NANO_DEFAULT`).
 
-- [ ] **M10.6.10: SPLIT LIBC'S ONE LOCK PER SUBSYSTEM AND PER FILE (maintainer, 2026-10-23).** newlib
+- [x] **M10.6.10: SPLIT LIBC'S ONE LOCK PER SUBSYSTEM AND PER FILE (maintainer, 2026-10-23).** newlib
       already names a lock per subsystem (sfp, atexit, at_quick_exit, env, tz, dd_hash,
       arc4random) and asks one per FILE (`__retarget_lock_init_recursive`); `user/src/newlib_lock.cc`
       maps all but malloc's onto one lock. Before splitting (reviewed 2026-10-23, pinned newlib
@@ -5191,7 +5261,8 @@ archives (objdump, nm and readelf), nothing built.
       atexit to drop its lock around callbacks, keep the standard streams' locks static, and witness
       each opposite order.
 
-- [ ] **M10.6.10: REVISIT THE ONE-TASK 64 KIB PARTS ONCE LIBC IS SHARED (maintainer, 2026-10-23).**
+- [x] **M10.6.10: REVISIT THE ONE-TASK 64 KIB PARTS ONCE LIBC IS SHARED (maintainer, 2026-10-23).**
+      **CLOSED (M10.6.10): both parts are retired with the 32 KiB / 128 KiB tier ruling.**
       bluepill-c8 and f302nucleo are one-task chips (`one_task: true` in their chip files): one task
       beside the init sharing its image, drivers inside the task, the kernel console. Measured in
       M10.6.9: the init as its own image and the app as a second one missed 64 KiB by about 1.3 to
@@ -5205,7 +5276,7 @@ archives (objdump, nm and readelf), nothing built.
       service chain kept off the libc lock and off the console, a truthful drain and an orderly
       shutdown (reviewed 2026-10-23); revisit with the libc changes.
 
-- [ ] **M10.6.10: THE C++ RUNTIME IS BUILT FOR ONE THREAD (found 2026-10-21).** Each needs its red arm,
+- [x] **M10.6.10: THE C++ RUNTIME IS BUILT FOR ONE THREAD (found 2026-10-21).** Each needs its red arm,
       one-core and SMP:
       - Initialising a function-local static is not thread-safe, and neither is `std::call_once`.
         `__cxa_guard_acquire` is a plain load, test and store and throws `recursive_init_error`
@@ -5217,17 +5288,18 @@ archives (objdump, nm and readelf), nothing built.
         x86_64), so two first throws at once can corrupt it.
       - `std::shared_ptr` counts are not atomic: the default lock policy is single-threaded, so
         two threads copying and dropping one pointer tear the count into a double free or a leak.
-      - `thread_local` destructors never run at thread exit: `__cxa_thread_atexit` pushes onto one
-        static list with no lock, run only from `atexit`, and the thread exit path
-        (user/src/task_enter.cc) never runs it. A thread_local string leaks at every thread
-        end, and a later `exit()` runs dead threads' destructors over TLS blocks newer threads now
-        use.
+      - **Done at M10.6.10**: each thread's `thread_local` destructors run at its own exit, and
+        `exit()` runs its caller's first. `thread_local` destructors never run at thread exit:
+        `__cxa_thread_atexit` pushes onto one static list with no lock, run only from `atexit`,
+        and the thread exit path (user/src/task_enter.cc) never runs it. A thread_local string
+        leaks at every thread end, and a later `exit()` runs dead threads' destructors over TLS
+        blocks newer threads now use.
       - On RX the SjLj exception chain is one global head for every thread: libgcc's
         `_Unwind_SjLj_Register` and `_Unwind_SjLj_Unregister` push and pop a static with plain
         moves. After A returns, the head points into A's dead frame, and the next throw from any
         thread longjmps onto a foreign stack. The Book's SjLj section does not say so.
 
-- [ ] **M10.6.10: NO CONDITION VARIABLE, AND NO `std::mutex`, `std::condition_variable` OR
+- [x] **M10.6.10: NO CONDITION VARIABLE, AND NO `std::mutex`, `std::condition_variable` OR
       `std::thread` FOR AN APP (maintainer, 2026-10-21: add it).** The tree has no condition
       variable at all, and the single thread model compiles libstdc++'s thread classes out. GCC's
       threads layer asks the OS for a mutex, a recursive mutex, a condition variable, a once and
@@ -5241,13 +5313,15 @@ archives (objdump, nm and readelf), nothing built.
       `std::thread` work for an app on every board. Red arms: a waiter woken by a signal sent
       after it released the mutex, a broadcast reaching every waiter, a timed wait ending at its
       deadline, and a killed waiter, one-core and SMP.
-- [ ] **M10.6.10: THE C++ EXCEPTION STATE IS ONE STATIC FOR EVERY THREAD (maintainer, 2026-10-21: fix
+- [x] **M10.6.10: THE C++ EXCEPTION STATE IS ONE STATIC FOR EVERY THREAD (maintainer, 2026-10-21: fix
       in the milestone after M10.6.8; placed in M10.6.10 by the sequence of the same day, with
       the rest of the runtime's thread safety, since the state is per thread and not per
-      task).** Checked on the 1.1.0-1 toolchain: in every family's `libsupc++.a` (armv7m, armv6m,
-      aarch64, x86_64, rv32, RXv3, Xtensa) `eh_globals` is a plain 12-byte object, not
-      thread-local, so every thread and, on a region board, every task shares the chain of caught
-      exceptions and the uncaught count. The standard makes them per thread. A thread preempted
+      task).** **DONE AT M10.6.10**: each thread's caught chain and uncaught count are in its own
+      libc state, and no image links `eh_globals.o`. Checked on the 1.1.0-1 toolchain: in every
+      family's `libsupc++.a` (armv7m, armv6m, aarch64, x86_64, rv32, RXv3, Xtensa) `eh_globals` is
+      a plain 12-byte object, not thread-local, so every thread and, on a region board, every task
+      shares the chain of caught exceptions and the uncaught count. The standard makes them per
+      thread. A thread preempted
       inside a `catch` can rethrow, or see through `std::current_exception`, an exception another
       thread caught or already freed, and `std::uncaught_exceptions` counts other threads'
       throws. The shape: strong `__cxa_get_globals` and `__cxa_get_globals_fast` returning a
@@ -5256,25 +5330,88 @@ archives (objdump, nm and readelf), nothing built.
       and rethrows, one-core and SMP. Supersedes the "C++ exception state" bullet of the M4-era
       reent item.
 
-- [ ] **M10.6.10: `abort`, A FAILED `assert` OR `std::terminate` IN A WORKER ENDS ONLY THAT THREAD (found
-      2026-10-21).** `abort` calls `raise`, which reaches a `_kill` stub returning -1, then `_exit`,
-      then `kos_exit` (`user/src/newlib_stubs.cc`), which ends one thread when it is not the
-      entry. An uncaught exception in a worker leaves its siblings running on the state it broke,
+- [x] **M10.6.10: `abort`, A FAILED `assert` OR `std::terminate` IN A WORKER ENDS ONLY THAT THREAD (found
+      2026-10-21).** **DONE AT M10.6.10**: a signal whose default action ends a process ends the
+      task with 128 + sig, so these end it with 134 (ruled D5), and `exit()` from a worker ends
+      the task (ruled D4). `abort` calls `raise`, which reaches a `_kill` stub returning -1, then
+      `_exit`, then `kos_exit` (`user/src/newlib_stubs.cc`), which ends one thread when it is not
+      the entry. An uncaught exception in a worker leaves its siblings running on the state it broke,
       and a supervisor never sees the task die. The exit-scope ruling ("exit() scope is
       CHIP-defined") covers `exit()` only.
 
-- [ ] **M10.6.10: `std::chrono::steady_clock` MOVES WITH THE WALL CLOCK (found 2026-10-21).** libstdc++'s
+- [x] **M10.6.10: `std::chrono::steady_clock` MOVES WITH THE WALL CLOCK (found 2026-10-21).** libstdc++'s
       `steady_clock::now` calls `gettimeofday`, which returns `kos_clock_now()` plus the wall
       offset (`user/src/newlib_stubs.cc`), while `is_steady` is true. `kos_clock_set_realtime`
       then moves every std:: timeout and duration in the image. On a translating board the offset
       belongs to each address space, so "Set the Unix-epoch wall clock" in `sys.h` sets only the
       caller's task.
+      **TREE SIDE LANDED:** the kernel keeps the wall clock, one per kernel instance and one per
+      partition where the AMP nodes read one counter (qemu-arm64, pizero2350; esp32c6's HP and LP
+      read two, so one per node there), set behind `KOS_AUTH_REALTIME`. `clock_gettime` serves
+      `CLOCK_MONOTONIC` and `CLOCK_REALTIME`, and `gettimeofday` is the wall clock.
+      **TOOLCHAIN SIDE LANDED:** the 1.2.0 libstdc++ reads `steady_clock::now` from
+      `clock_gettime(CLOCK_MONOTONIC)` and `system_clock::now` from `CLOCK_REALTIME`, and cxxtest
+      runs a timed `condition_variable::wait_for` and timed locks. A timed wait waits on the
+      clock its deadline names, and a set of the wall clock moves every wait whose deadline is on
+      it, across the nodes of a partition too.
 
-- [ ] **M10.6.10: `getentropy` SUCCEEDS WITH BYTES DERIVED FROM THE CLOCK ON RISC-V AND X86_64 (found
+- [x] **M10.6.10: `getentropy` SUCCEEDS WITH BYTES DERIVED FROM THE CLOCK ON RISC-V AND X86_64 (found
       2026-10-21).** `user/src/newlib_stubs.cc` fills the buffer from a generator seeded by
       `kos_clock_now()` and returns 0, and newlib's `arc4random` and `std::random_device` seed from
       it, so nonces and keys can be guessed and no error is reported. Xtensa and RX fail with
       ENOSYS.
+      **LANDED:** -1 with ENOSYS wherever the part has no entropy source (ruling D7 (a),
+      2026-10-29), and RDSEED on an x86_64 that has it (maintainer, 2026-11-03).
+
+- [ ] **`getentropy` HAS NO SOURCE ON ANY BOARD (ruling D7 (a), 2026-10-29).** The chips with a true
+      random generator: nRF51 (RNG), RP2350 (TRNG), ESP32 and ESP32-C6 (RNG), K64F (RNGA), RT1062
+      (TRNG), and RDSEED on x86_64. Until then `arc4random` raises SIGKILL on its first draw.
+      **X86_64 LANDED (maintainer, 2026-11-03: real entropy where the hardware has it, never
+      invented):** RDSEED where CPUID reports it, drawn again until ready; EINVAL for a request
+      over GETENTROPY_MAX (256); ENOSYS without it. The emulated processor offers it.
+
+## Found by the M10.6.10 review (2026-11-02)
+
+Defects the ten-angle review of M10.6.10 found that the milestone did not introduce.
+
+- [ ] **A WORD BROADCAST IS QUADRATIC WITH INTERRUPTS MASKED.** `wake_popped` in
+      `kernel/sync/sync.cc` pops each waiter with `wq_pop_highest`, which scans the whole queue,
+      all under the waker's `IrqLock`. A broadcast to n waiters of one condition variable is n
+      scans of up to n waiters, so its masked time grows with the square of the waiter count,
+      bounded only by the thread pool. The C++ condition variable's `notify_all` is a new caller.
+      No test pins the broadcast's worst case.
+
+- [ ] **`task_cancel_group`'S MASKED WALK HAS NO IRQ-OFF MEASUREMENT.** In `kernel/thread/park.cc` it
+      walks every thread slot under the caller's `IrqLock` and slays each member of the task.
+      `exit()`, `abort()` and an uncaught exception now reach it from any thread of a task. No
+      interrupts-off figure exists for the largest pool on the slowest board: owed a bench
+      measurement, not a code change.
+
+- [ ] **A TOOLCHAIN WITHOUT THE BOARD'S MULTILIB PASSES THE FULL NEWLIB CHECK.**
+      `kickos_require_toolchain_newlib` (`cmake/cross_newlib.cmake`) finds the full profile's
+      `libc.a` with `-print-file-name`, which falls back to the default multilib's directory. A
+      toolchain built without the board's multilib (riscv without rv32, for one) passes the
+      refusal that names a missing multilib, and the failure comes at the first link, where ld
+      skips the incompatible archive. Look the archive up with `_kickos_multilib_file`, as the
+      nano branch does.
+
+- [ ] **THE FULL NEWLIB PROFILE LEAKS A DEAD THREAD'S DTOA LISTS.** `user/src/newlib_reent.cc`
+      releases a thread's libc scratch at its exit only under `_REENT_SMALL`, the nano profile. In
+      the full profile `struct _reent` keeps `_result`, `_p5s`, `_freelist` (a calloc'd array and
+      its Bigints) and `_cvtbuf` as heap pointers, which the next thread in the slot loses when
+      its state is primed from the template. A full-profile image whose workers each format a
+      double or call `strtod` and then exit, again and again, shrinks its heap until `malloc`
+      fails (x86_64, aarch64, or a full image beside a nano one). `errnoprobe` skips `strtod` on
+      the full profile, so no arm sees it.
+
+- [ ] **`_close` FAILS WITHOUT SETTING `errno`.** `user/src/newlib_stubs.cc` returns -1 and leaves
+      errno as it was, so `fclose(stdout)`, `close(1)` and a failed `std::ofstream` close report
+      a stale errno. POSIX names EBADF.
+
+- [ ] **THE CONSOLE LOOKS LIKE A SEEKABLE TERMINAL FILE.** In `user/src/newlib_stubs.cc` `_lseek`
+      answers 0 to every seek and `_isatty` 1 for every descriptor. `fseek(stdout, 100, SEEK_SET)`
+      succeeds while `ftell` stays 0, so the usual fseek and ftell size probe takes the console
+      for an empty file. A terminal answers a seek with ESPIPE.
 
 ## Found by the invariants audit (2026-10-21)
 

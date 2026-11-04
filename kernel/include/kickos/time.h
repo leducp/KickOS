@@ -25,6 +25,11 @@ namespace kickos
     uint64_t cpu_clock_set(kos_pstate_t target);
     uint64_t ktime_now(); // monotonic nanoseconds
 
+    // The wall clock in Unix-epoch nanoseconds (kernel/time/realtime.cc), and its set: 0, or
+    // -KOS_EPERM where `caller` lacks AUTH_REALTIME.
+    uint64_t realtime_now();
+    int32_t realtime_set(Thread* caller, uint64_t unix_ns);
+
     // Sleep the current thread until absolute `deadline_ns` (monotonic). Blocks.
     void ktime_sleep_until(uint64_t deadline_ns);
     void ktime_sleep_ns(uint64_t ns);
@@ -46,6 +51,63 @@ namespace kickos
     // park on some OTHER queue can be unwound when the deadline passes. KOS_TIMEOUT_NONE arms
     // nothing.
     void ktime_deadline_arm(Thread* t, uint32_t timeout_us, Held held);
+
+    // A timed wait's limit as KOS_SYS_MUTEX_LOCK and KOS_SYS_WORD_WAIT take it (abi.h,
+    // KOS_TIMEOUT_REALTIME). A bare timeout converts to one.
+    struct WaitLimit
+    {
+        uint32_t lo = KOS_TIMEOUT_NONE;
+        uint32_t hi = 0;
+
+        constexpr WaitLimit(uint32_t timeout_us) : lo(timeout_us)
+        {
+        }
+
+        constexpr WaitLimit(uint32_t limit_lo, uint32_t limit_hi) : lo(limit_lo), hi(limit_hi)
+        {
+        }
+
+        static constexpr WaitLimit realtime(uint64_t unix_ns)
+        {
+            return WaitLimit(static_cast<uint32_t>(unix_ns),
+                             static_cast<uint32_t>(unix_ns >> 32) | KOS_TIMEOUT_REALTIME);
+        }
+
+        constexpr bool valid() const
+        {
+            return hi == 0u or (hi & KOS_TIMEOUT_REALTIME) != 0u;
+        }
+
+        constexpr bool on_wall() const
+        {
+            return (hi & KOS_TIMEOUT_REALTIME) != 0u;
+        }
+
+        constexpr uint64_t unix_ns() const
+        {
+            return (static_cast<uint64_t>(hi & ~KOS_TIMEOUT_REALTIME) << 32) | lo;
+        }
+    };
+
+    // Whether `limit` allows no wait at all: a timeout of 0, or a realtime deadline the wall
+    // clock has reached.
+    bool ktime_limit_passed(WaitLimit limit);
+    // ktime_deadline_arm for any valid limit. A realtime one is kept on the monotonic timeline,
+    // marked, and moved by every set of the wall clock while it is queued.
+    void ktime_limit_arm(Thread* t, WaitLimit limit, Held held);
+
+    // Queue `t` for the monotonic `deadline_ns`, already floored, marked as a realtime deadline
+    // where `wall`.
+    void ktime_deadline_arm_at(Thread* t, uint64_t deadline_ns, bool wall, Held held);
+    // Move every marked deadline by `by_ns`, floored at now, and rearm this core's timer if any
+    // moved. One pass over the delta list.
+    void ktime_wall_shift(int64_t by_ns, Held held);
+    // The marked deadline for wall time `unix_ns`, keyed to this node's view of the wall clock,
+    // queued for `t` (kernel/time/realtime.cc).
+    void realtime_deadline_arm(Thread* t, uint64_t unix_ns, Held held);
+    // Where KICKOS_AMP_CLOCK_SHARED: key this node's marked deadlines to the partition's newest
+    // wall clock. The doorbell service calls it, a peer's set ringing every other node.
+    void realtime_rekey(Held held);
 
     // Drop `t`'s deadline, if it has one. AT AN UNPARK AND NOWHERE ELSE: a pop is not
     // necessarily an unpark, and a park-to-park migration must keep its deadline.

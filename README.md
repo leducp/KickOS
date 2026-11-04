@@ -37,7 +37,7 @@ third-party kernel code. Register definitions come from hardware manuals.
 
 ## Supported targets
 
-The tree defines 24 targets: 14 MCU boards, eight QEMU targets, the i.MX8MP EVK target and
+The tree defines 22 targets: 12 MCU boards, eight QEMU targets, the i.MX8MP EVK target and
 Linux sim. Build support, emulator tests and hardware validation are separate. Check the
 [board reference](docs/reference/boards.md) for validation status, memory requirements,
 console pins and wiring.
@@ -51,8 +51,6 @@ console pins and wiring.
 | `blackpill` | STM32F411 / Cortex-M4F | PMSAv7 |
 | `teensy41` | i.MX RT1062 / Cortex-M7 | PMSAv7 |
 | `pizero2350` | RP2350 / Cortex-M33 | PMSAv8 |
-| `f302nucleo` | STM32F302R8 / Cortex-M4 | None |
-| `bluepill-c8` | STM32F103C8 / Cortex-M3 | None |
 | `due` | AT91SAM3X8E / Cortex-M3 | None |
 | `qemu`, `qemu-m7`, `qemu-m3` | QEMU MPS2 an386 / an500 / an385 | PMSAv7 |
 | `qemu-m33` | QEMU MPS2 an505 / Cortex-M33 | PMSAv8 |
@@ -79,10 +77,9 @@ console pins and wiring.
 The `imx8mp-evk` target has local QEMU tests but no CI job or hardware validation. The
 `microbit` QEMU tests use 32 KiB of RAM; they do not represent a physical micro:bit v1.
 
-For a new MCU target, the board reference gives a 64 KiB flash / 16 KiB RAM minimum and a
-128 KiB / 32 KiB recommended configuration. Actual requirements depend on thread count,
-stacks, capability tables and enabled features. Small targets split the self-test across
-multiple images.
+For a new MCU target, the board reference gives a minimum of 32 KiB of RAM and 128 KiB of
+flash. Actual requirements depend on thread count, stacks, capability tables and enabled
+features. Small targets split the self-test across multiple images.
 
 ## Building
 

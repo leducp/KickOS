@@ -3,17 +3,18 @@
 //
 // The thread_local witness: each thread reads back what IT wrote, the storage is at a DIFFERENT
 // address per thread, and a .tdata initialiser arrives. Each thread's libc state lies below its
-// thread-local storage and keeps the thread's own errno. Where the board holds a second task, main
+// thread-local storage and keeps the thread's own errno. A thread_local's destructor runs once at
+// its own thread's end, and exit() runs only main's. Where the board holds a second task, main
 // creates its peer twice, the program tlsprobe_peer in an image of its own whose thread-local
 // storage is another span of the link's one thread-local segment (peer.cc).
 
-#include <kickos/chip_limits.h> // KICKOS_CHIP_ONE_TASK
 #include <kickos/kos.h>
 #include <kickos/libc/fmt.h>
 #include <kickos/sys/atomic.h>
 
 #include <errno.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/reent.h>
 
 namespace
@@ -42,9 +43,33 @@ namespace
     // initialiser then proves nothing about any template.
     thread_local volatile unsigned g_seeded = 0xA5A5A5A5u;
     thread_local unsigned g_written = 0;
-    // Zero-initialised. Sized so each task image's block fits a 512-byte idle stack and the
-    // images' blocks together overflow it: the link holds idle to the init's block alone.
-    thread_local volatile unsigned g_main_pad[35];
+
+    // A thread's first use of any thread_local below registers the destructors of both, in this
+    // order, so at main's exit() main's t_named is destroyed before its t_verdict, which prints
+    // the verdict once main arms it. Nothing atexit registered has run yet.
+    struct Verdict
+    {
+        int bad = -1;
+        ~Verdict();
+    };
+    thread_local Verdict t_verdict;
+
+    // Counts its destructor's runs on the thread it names, and returns its name to the heap.
+    struct Named
+    {
+        char* name = nullptr;
+        int slot = -1;
+        void set(char const* what, int which);
+        ~Named();
+    };
+    thread_local Named t_named;
+
+    // Zero-initialised. Sized with the two above so each task image's block fits a 512-byte idle
+    // stack and the images' blocks together overflow it: the link holds idle to the init's block
+    // alone.
+    constexpr unsigned PAD_WORDS
+        = 35u - (sizeof(Named) + sizeof(Verdict) + sizeof(void*)) / sizeof(unsigned);
+    thread_local volatile unsigned g_main_pad[PAD_WORDS];
 
     // `done` PUBLISHES the fields above it: the worker stores it last, main reads it first.
     struct Report
@@ -82,6 +107,65 @@ namespace
     }
 
     Report g_report[WORKERS] = {};
+
+    // Set once main has read every report: each worker then ends by returning.
+    kickos::Atomic<unsigned, kickos::Order::ACQUIRE | kickos::Order::RELEASE> g_release{0};
+    // Each worker's, then main's.
+    kickos::Atomic<unsigned, kickos::Order::ACQUIRE | kickos::Order::RELEASE>
+        g_dtor_runs[WORKERS + 1] = {};
+
+    void Named::set(char const* what, int which)
+    {
+        name = static_cast<char*>(malloc(strlen(what) + 1u));
+        if (name != nullptr)
+        {
+            strcpy(name, what);
+        }
+        slot = which;
+    }
+
+    Named::~Named()
+    {
+        free(name);
+        if (slot >= 0)
+        {
+            g_dtor_runs[slot] = g_dtor_runs[slot] + 1u;
+        }
+    }
+
+    Verdict::~Verdict()
+    {
+        if (bad < 0)
+        {
+            return;
+        }
+        int b = bad;
+        char d[96];
+        for (int k = 0; k < WORKERS; k++)
+        {
+            if (g_dtor_runs[k] != 1u)
+            {
+                ksnprintf(d, sizeof(d),
+                          "[tlsprobe] at exit() w%d's thread_local destructor ran %u times\n", k,
+                          static_cast<unsigned>(g_dtor_runs[k]));
+                kos::print(d);
+                b++;
+            }
+        }
+        if (g_dtor_runs[WORKERS] != 1u)
+        {
+            kos::print("[tlsprobe] exit() did not run main's thread_local destructor\n");
+            b++;
+        }
+        if (b == 0)
+        {
+            kos::print("[tlsprobe] PASS\n");
+        }
+        else
+        {
+            kos::print("[tlsprobe] FAIL\n");
+        }
+    }
 
 #if defined(__arm__) and defined(KICKOS_TLS_STRIDE)
 #define TLSPROBE_EDGE 1
@@ -175,7 +259,8 @@ namespace
         // Read BEFORE the write, so a template that never arrived is visible as a wrong seed
         // rather than as a zero nobody can attribute.
         unsigned const seeded = g_seeded;
-        unsigned const zeroed = g_main_pad[0] | g_main_pad[34];
+        unsigned const zeroed = g_main_pad[0] | g_main_pad[PAD_WORDS - 1u];
+        t_named.set("tlsprobe worker thread", k);
         g_seeded = 0;
         g_written = mine;
         g_main_pad[0] = mine;
@@ -200,14 +285,13 @@ namespace
         g_report[k].read_back = g_written;
         g_report[k].zeroed = zeroed;
         g_report[k].done = 1;
-        while (true)
+        while (g_release == 0)
         {
-            kos::sleep_ns(1000000000ull);
+            kos::sleep_ns(10000000ull);
         }
     }
 }
 
-#if not KICKOS_CHIP_ONE_TASK
 namespace
 {
     // The peer's exit status, retried while its last incarnation's members are still dying, or a
@@ -244,14 +328,12 @@ namespace
         return -2000;
     }
 }
-#endif
 
 int main(int, char**)
 {
     kos::print("[tlsprobe] start\n");
     int bad = 0;
     char b[96];
-#if not KICKOS_CHIP_ONE_TASK
     {
         int status[2] = {-3000, -3000};
         kos_program_t prog = KOS_CAP_NONE;
@@ -272,7 +354,6 @@ int main(int, char**)
             bad++;
         }
     }
-#endif
 
     unsigned const main_addr = static_cast<unsigned>(reinterpret_cast<uintptr_t>(&g_written));
     {
@@ -440,14 +521,35 @@ int main(int, char**)
     ksnprintf(b, sizeof(b), "[tlsprobe] main addr %x read %x\n", main_addr, g_written);
     kos::print(b);
 
-    if (bad == 0)
+    g_release = 1;
+    for (int spin = 0; spin < 200; spin++)
     {
-        kos::print("[tlsprobe] PASS\n");
+        int ended = 0;
+        for (int k = 0; k < WORKERS; k++)
+        {
+            ended += static_cast<int>(g_dtor_runs[k] != 0u);
+        }
+        if (ended == WORKERS)
+        {
+            break;
+        }
+        kos::sleep_ns(20000000ull);
     }
-    else
+    for (int k = 0; k < WORKERS; k++)
     {
-        kos::print("[tlsprobe] FAIL\n");
+        char const* verdict = "ok";
+        if (g_dtor_runs[k] != 1u)
+        {
+            verdict = "NOT ONCE AT ITS END";
+            bad++;
+        }
+        ksnprintf(b, sizeof(b), "[tlsprobe] w%d thread_local destructor runs %u %s\n", k,
+                  static_cast<unsigned>(g_dtor_runs[k]), verdict);
+        kos::print(b);
     }
+
+    t_named.set("tlsprobe main thread", WORKERS);
+    t_verdict.bad = bad;
     // Returning from main is a kos_shutdown(0), which is what ends the qemu run.
     return 0;
 }
