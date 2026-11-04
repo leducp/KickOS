@@ -252,12 +252,17 @@ jobs:
       - run: ctest --test-dir build/sim-ubsan -LE tree --no-tests=error --output-on-failure
 
   # Build and boot the Cortex-M boards QEMU runs: the four MPS2 machines, enforcing and flat,
-  # the AN386 on the periodic scheduler tick, and the micro:bit.
+  # the AN386 on the periodic scheduler tick, and the micro:bit, one job each.
   qemu-arm:
     needs: [changes, toolchain-arm-none-eabi]
     if: needs.changes.outputs.arm == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [an386, an386-tick, m33, m7, m3, flat-qemu, flat-qemu-m33, flat-qemu-m7,
+               flat-qemu-m3, microbit]
     # Allow timeout headroom for loaded runners. These QEMU targets use a coarse
     # semihosting clock; arch_idle_wait spins to keep it advancing.
     env:
@@ -281,6 +286,7 @@ jobs:
       # Retry only polled ARM gates: the coarse clock and runner load can delay output.
       # Each attempt still has its own timeout.
       - name: armv7m (mps2-an386)
+        if: matrix.part == 'an386'
         run: |
           cmake --preset qemu
           cmake --build --preset qemu
@@ -299,6 +305,7 @@ jobs:
             *Skipped*) echo "a required gate SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
       - name: armv7m with the periodic scheduler tick (mps2-an386)
+        if: matrix.part == 'an386-tick'
         run: |
           cmake --preset qemu-tick
           cmake --build --preset qemu-tick
@@ -308,6 +315,7 @@ jobs:
             --preset qemu-tick --no-tests=error --output-on-failure --repeat until-pass:2
       # Cover PMSAv8 on M33, the larger M7 MPU, and the soft-float M3 switch path.
       - name: armv8-m mainline (mps2-an505, Cortex-M33)
+        if: matrix.part == 'm33'
         run: |
           cmake --preset qemu-m33
           cmake --build --preset qemu-m33
@@ -325,6 +333,7 @@ jobs:
             *Skipped*) echo "a stack-limit gate SKIPPED, which ctest reports as success"; exit 1 ;;
           esac
       - name: armv7m (mps2-an500, Cortex-M7)
+        if: matrix.part == 'm7'
         run: |
           cmake --preset qemu-m7
           cmake --build --preset qemu-m7
@@ -335,6 +344,7 @@ jobs:
             --preset qemu-m7 --no-tests=error --output-on-failure --repeat until-pass:2
           tests/ci/ctest_named.sh '^qemu_m7_sysdefault$|qemu_m7_sysdefault_spin|qemu_m7_sysdefault_fault|qemu_m7_sysdefault_no_eh_runtime|qemu_m7_sysdefault_no_driver_path|^qemu_m7_cxxterm$|qemu_m7_cxxterm_eh_control|qemu_m7_nvic' --preset qemu-m7 --no-tests=error --output-on-failure
       - name: armv7m soft-float (mps2-an385, Cortex-M3)
+        if: matrix.part == 'm3'
         run: |
           cmake --preset qemu-m3
           cmake --build --preset qemu-m3
@@ -348,9 +358,12 @@ jobs:
           tests/ci/ctest_named.sh '^qemu_m3_diag_terse$|^qemu_m3_sysdefault$|qemu_m3_sysdefault_spin|qemu_m3_sysdefault_fault|qemu_m3_sysdefault_no_eh_runtime|qemu_m3_sysdefault_no_driver_path|^qemu_m3_cxxterm$|qemu_m3_cxxterm_eh_control|qemu_m3_nvic' --preset qemu-m3 --no-tests=error --output-on-failure
       # Test privilege rings with MPU enforcement disabled.
       - name: ARM ring-only run gates (no PMSA enforcement)
+        if: startsWith(matrix.part, 'flat-')
+        env:
+          PART: ${{ matrix.part }}
         run: |
           # Flat builds do not register mpu_fault or rootfault.
-          for b in qemu qemu-m33 qemu-m7 qemu-m3; do
+          for b in "${PART#flat-}"; do
             if [ "$b" = qemu-m3 ]; then
               flat_polled='hello|reclaimwit_park'
             else
@@ -379,6 +392,7 @@ jobs:
             fi
           done
       - name: armv6m (microbit)
+        if: matrix.part == 'microbit'
         run: |
           cmake --preset microbit
           cmake --build --preset microbit
