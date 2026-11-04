@@ -21,7 +21,7 @@ namespace
     constexpr uint32_t BAUD = 115200u;
 }
 
-// RM0008 / RM0365 / RM0383, OVER8=0: BRR = USARTDIV x 16 = fck / baud, rounded to nearest.
+// RM0383, OVER8=0: BRR = USARTDIV x 16 = fck / baud, rounded to nearest.
 TEST(ConsoleBaud, stm32_usart_brr)
 {
     struct Case
@@ -31,9 +31,6 @@ TEST(ConsoleBaud, stm32_usart_brr)
         char const* what;
     };
     Case const cases[] = {
-        {72000000u, 625u, "F103 PCLK2 on the PLL"},
-        {8000000u, 69u, "F103 and F302 on the HSI fallback"},
-        {32000000u, 278u, "F302 PCLK1 on the PLL"},
         {42000000u, 365u, "F411 PCLK1 on the PLL"},
         {16000000u, 139u, "F411 on the HSI fallback"},
         {BAUD * 100u + BAUD / 2u, 101u, "exactly half rounds up"},

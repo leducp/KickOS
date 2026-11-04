@@ -38,6 +38,9 @@
 #   arm64_share  in both boot roots' level-2 tables (kickos_arm64_ram_table and
 #                kickos_arm64_kernel_ram_table) every valid block holding part of the AMP user
 #                share selects the MAIR_EL1 slot given, and those blocks cover the whole share
+#   rx_user_psw  no .kickos_image<n>_text instruction is clrpsw i, setpsw i or an mvtc to psw:
+#                user mode ignores a write to PSW.I without a trap, so an interrupt mask
+#                there masks nothing
 #
 # usage: check_image_rules.sh <rule> <objdump> <elf> [arg]...
 #   The nm and readelf beside <objdump> read the symbols and sections.
@@ -426,6 +429,32 @@ ctl_arm64_share() {
     W="$TMP/w.p"
 }
 
+rule_rx_user_psw() {
+    awk "$AWKLIB"'
+        /^Disassembly of section / {
+            s = $4
+            sub(/:$/, "", s)
+            u = (s ~ /^\.kickos_image[0-9]+_text$/)
+            n += u
+            b = ""
+            next
+        }
+        /^[0-9a-f]+ <.*>:$/ { x = $2; gsub(/[<>:]/, "", x); if (x !~ /^\.L/) b = x; next }
+        !u || !/^[ \t]*[0-9a-f]+:/ { next }
+        { t = insn($0); k++ }
+        t ~ /^(clrpsw|setpsw) i$/ || t ~ /^mvtc [^,]+, ?psw$/ { print s ": " b ": " t }
+        END {
+            if (!n) print "no .kickos_image<n>_text section"
+            else if (!k) print "no instruction in " n " .kickos_image<n>_text section(s)"
+        }' "$D"
+}
+ctl_rx_user_psw() {
+    awk '{ print }
+        !p && /^Disassembly of section \.kickos_image[0-9]+_text:/ { print "    0:\tclrpsw\ti"; p = 1 }' \
+        "$D" > "$TMP/d.p"
+    D="$TMP/d.p"
+}
+
 judge() { # <rule>
     "rule_$RULE" > "$TMP/found"
     if [ -s "$TMP/found" ]; then
@@ -479,7 +508,7 @@ case "$RULE" in
     rv64_gp)
         X="$ELF.map"
         [ -r "$X" ] || fail "no link map at $X" ;;
-    a53_pmcr | arm64_entry | c6_hp | cpu_id) ;;
+    a53_pmcr | arm64_entry | c6_hp | cpu_id | rx_user_psw) ;;
     *) fail "unknown rule '$RULE'. $_usage" ;;
 esac
 judge

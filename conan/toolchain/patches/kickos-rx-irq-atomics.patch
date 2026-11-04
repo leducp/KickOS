@@ -1,0 +1,86 @@
+SPDX-License-Identifier: GPL-3.0-or-later
+Copyright (c) 2026 Philippe Leduc
+
+KickOS: call __atomic_*_4 for a 32-bit atomic read-modify-write on RX unless -mirq-atomics asks for
+the inline form.
+
+Against GCC 16.2.0 with gnurx-gcc-16.2.0.patch, kickos-rx-multilib.patch and
+kickos-rx-dfpu-compare.patch applied, with -p1 in the GCC tree, for the rx-elf family alone. The RX
+backend expands a 32-bit fetch-and-op or op-and-fetch as mvfc psw, clrpsw i, the load, the
+operation and the store, then mvtc psw. In user mode the CPU ignores both writes to PSW.I without a
+trap, so that sequence is a plain read-modify-write a timer interrupt can split. The patch adds
+-mirq-atomics, off by default, and expands those five patterns only under it. Without it GCC calls
+__atomic_fetch_<op>_4, or __sync_fetch_and_<op>_4 for a __sync builtin, as it already does for the
+8- and 16-bit forms. An exchange stays an inline xchg, and a load or store a plain mov.
+libstdc++'s configure then finds a call in its _Atomic_word probe.
+This modifies the vendored compiler, so it carries GCC's licence, not KickOS's.
+
+--- a/gcc/config/rx/rx.md
++++ b/gcc/config/rx/rx.md
+@@ -3735,6 +3735,9 @@
+    (set_attr "timings" "22")]
+ )
+ 
++;; KickOS: interrupt masking is ignored in user mode, so each read-modify-write
++;; below is atomic in supervisor mode alone, and is expanded only under
++;; -mirq-atomics.  Without it, GCC calls __atomic_fetch_<op>_4.
+ ;; read - modify - write - return old value
+ (define_expand "atomic_fetch_<fetchop_name>si"
+   [(set (match_operand:SI 0 "register_operand")
+@@ -3742,7 +3745,7 @@
+    (set (match_dup 1)
+ 	(FETCHOP:SI (match_dup 1) (match_operand:SI 2 "rx_source_operand")))
+    (match_operand:SI 3 "const_int_operand")]		;; memory model
+-  ""
++  "TARGET_IRQ_ATOMICS"
+ {
+   {
+     rx_atomic_sequence seq (current_function_decl);
+@@ -3764,7 +3767,7 @@
+ 	(not:SI (and:SI (match_dup 1)
+ 			(match_operand:SI 2 "rx_source_operand"))))
+    (match_operand:SI 3 "const_int_operand")]		;; memory model
+-  ""
++  "TARGET_IRQ_ATOMICS"
+ {
+   {
+     rx_atomic_sequence seq (current_function_decl);
+@@ -3790,7 +3793,7 @@
+    (set (match_dup 1)
+ 	(FETCHOP_NO_MINUS:SI (match_dup 1) (match_dup 2)))
+    (match_operand:SI 3 "const_int_operand")]		;; memory model
+-  ""
++  "TARGET_IRQ_ATOMICS"
+ {
+   {
+     rx_atomic_sequence seq (current_function_decl);
+@@ -3809,7 +3812,7 @@
+    (set (match_dup 1)
+ 	(minus:SI (match_dup 1) (match_dup 2)))
+    (match_operand:SI 3 "const_int_operand")]		;; memory model
+-  ""
++  "TARGET_IRQ_ATOMICS"
+ {
+   {
+     rx_atomic_sequence seq (current_function_decl);
+@@ -3828,7 +3831,7 @@
+    (set (match_dup 1)
+ 	(not:SI (and:SI (match_dup 1) (match_dup 2))))
+    (match_operand:SI 3 "const_int_operand")]		;; memory model
+-  ""
++  "TARGET_IRQ_ATOMICS"
+ {
+   {
+     rx_atomic_sequence seq (current_function_decl);
+--- a/gcc/config/rx/rx.opt
++++ b/gcc/config/rx/rx.opt
+@@ -244,3 +244,9 @@
+ mprotect-zone
+ Target Mask(PROTECT_ZONE)
+ Enables the use of Renesas PROTECT_ZONE.
++
++;---------------------------------------------------
++
++mirq-atomics
++Target Mask(IRQ_ATOMICS)
++Expand a 32-bit atomic read-modify-write inline with interrupts masked, which is atomic in supervisor mode only.

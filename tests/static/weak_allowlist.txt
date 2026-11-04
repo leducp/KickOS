@@ -46,6 +46,19 @@ _kickos_c6_txidle_probe
 # none.
 kickos_heap_seat
 _kickos_heap_seat
+# user/src/newlib_reent.cc defines it empty; user/src/gthr.cc, which only an image that creates
+# a key links, defines the real one.
+kickos_keys_thread_end
+_kickos_keys_thread_end
+# user/src/newlib_reent.cc defines it empty; user/src/thread_atexit.cc, which only an image with
+# a thread_local destructor links, defines the real one.
+kickos_thread_dtors_run
+_kickos_thread_dtors_run
+
+# --- compiler-emitted beside a landing pad -----------------------------------
+# The personality pointer a DWARF unwinder reads, merged across translation units. The threads
+# layer's once (user/src/gthr_once.cc) is built with exceptions.
+DW.ref.__gxx_personality_v0
 
 # --- toolchain-owned, present only in the final image -------------------------
 # Emitted by libgcc / newlib / libstdc++ or by the host glibc CRT.

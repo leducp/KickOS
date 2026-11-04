@@ -984,9 +984,9 @@ def heap_asserts(admitted, name, hosted):
         out.append("ASSERT(%s - %s >= %d," % (c_symbol(manifest, "_kickos_heap_limit"),
                                               c_symbol(manifest, "_kickos_heap_start"), admitted.heap))
         out.append("       \"KickOS: the %d-byte heap of %s, its `heap`, is more than the image carves from "
-                   "_kickos_heap_start to _kickos_heap_limit: state a smaller `heap` in %s, or link a kernel "
-                   "package built to carve more, whose KICKOS_APPDATA_SIZE is that span where the heap is the app "
-                   "window's pad\")" % (admitted.heap, name, name))
+                   "_kickos_heap_start to _kickos_heap_limit, which the kernel package's linker script carves "
+                   "at KICKOS_USER_HEAP_SIZE: link a kernel package whose script carves the heap at "
+                   "KICKOS_USER_HEAP_SIZE\")" % (admitted.heap, name))
     return out
 
 

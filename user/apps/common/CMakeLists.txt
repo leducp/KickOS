@@ -40,7 +40,7 @@ function(_kos_chip_defines out symbol)
 endfunction()
 
 # The console driver reclaimwit and initdemo create on request, declared once.
-if(KICKOS_HAVE_LIBC AND NOT KICKOS_CHIP_ONE_TASK)
+if(KICKOS_HAVE_LIBC)
   add_subdirectory(sinkdrv)
 endif()
 
@@ -59,8 +59,8 @@ endif()
 
 add_subdirectory(fault)
 add_subdirectory(panicgate)
-# A task restarted from its own image, image 1, where the init is an image of its own.
-if(KICKOS_INIT_IMAGE AND NOT KICKOS_CHIP_ONE_TASK AND NOT KICKOS_ARCH STREQUAL "sim")
+# A task restarted from its own image, image 1.
+if(NOT KICKOS_ARCH STREQUAL "sim")
   add_subdirectory(restartwit)
 endif()
 
@@ -82,6 +82,14 @@ endif()
 if(KICKOS_HAVE_LIBC AND NOT KICKOS_ARCH STREQUAL "sim")
   add_subdirectory(libc_death)
 endif()
+# The sim's std::atomic is the host's.
+if(KICKOS_HAVE_LIBC AND NOT KICKOS_ARCH STREQUAL "sim")
+  add_subdirectory(uatomic)
+endif()
+# One system whose two images link the two newlib profiles, where the toolchain carries both.
+if(KICKOS_HAVE_LIBC AND "nano" IN_LIST KICKOS_LIBC_PROFILES)
+  add_subdirectory(libcmix)
+endif()
 # objbudget fills main's endpoint budget and asks that the refusal be the budget's, so both the
 # pool and main's table must have room for that budget: the pool has none to spare where the
 # init seats the partition's ports in it first, and main's table is a spawn's width
@@ -102,8 +110,7 @@ if(KICKOS_HAVE_LIBC AND KICKOS_MEMORY_ENFORCED AND KICKOS_ARCH STREQUAL "rv32ima
   add_subdirectory(codewindow)
 endif()
 # specfault's verdict is that a read of an address nothing grants is DENIED. Where nothing
-# enforces memory the read is the bus's to answer: it returns on esp32-wroom, and faults on
-# f302nucleo only because no slave sits there, which is no claim of the kernel's.
+# enforces memory the read is the bus's to answer, which is no claim of the kernel's.
 if(KICKOS_MEMORY_ENFORCED)
   add_subdirectory(specfault)
 endif()
@@ -162,7 +169,7 @@ if(NOT _kos_errno_machine STREQUAL "")
 endif()
 # The budgets' witnesses, eight declarations over two programs, on an emulator or the sim.
 # Not on the 32 KiB nRF51, whose arena seats fewer threads than its declarations' budgets.
-if(NOT KICKOS_CHIP_ONE_TASK AND NOT KICKOS_CHIP STREQUAL "nrf51"
+if(NOT KICKOS_CHIP STREQUAL "nrf51"
    AND (NOT _kos_errno_machine STREQUAL "" OR KICKOS_ARCH STREQUAL "sim"))
   add_subdirectory(budgetwit)
 endif()
@@ -261,11 +268,15 @@ _kos_chip_defines(_kos_clock_set arch_cpu_clock_set)
 if(KICKOS_CLOCK_RETUNE_TEST AND _kos_clock_set AND KICKOS_HAVE_MPU)
   add_subdirectory(clockretune)
 endif()
-# Arch-neutral (clock_now plus sleep_ns only), so it builds for any board.
-# Its judge times a capture's arrival stamps, so it is built where a board is captured, not run
-# under an emulator.
-if(_kos_errno_machine STREQUAL "" AND NOT KICKOS_ARCH STREQUAL "sim" AND NOT KICKOS_AMP_NODE)
+# Arch-neutral, so it builds for any board. A capture's judge also times it by the arrival stamps
+# on the capture host; under an emulator the kernel clock alone times it.
+if(NOT KICKOS_ARCH STREQUAL "sim" AND NOT KICKOS_AMP_NODE)
   add_subdirectory(wallclock)
+endif()
+# Its only witness is a QEMU gate, and its waiter a C++ thread, which needs the heap cxxtest needs.
+if(KICKOS_HAVE_LIBC AND NOT _kos_errno_machine STREQUAL "" AND NOT KICKOS_AMP_NODE
+   AND _kos_heap GREATER_EQUAL 6136)
+  add_subdirectory(wallwait)
 endif()
 if(KICKOS_CLOCKSOAK_TEST)
   add_subdirectory(clocksoak)

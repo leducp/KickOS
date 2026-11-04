@@ -387,8 +387,8 @@ namespace kickos
 
         // One attempt of mutex_lock, under `lock`. Every refusal and retry precedes the record
         // being taken, and taking it leads only to the park.
-        Attempt lock_attempt(IrqLock& lock, Thread* c, uintptr_t va, uint32_t timeout_us,
-                             int* rc, uint32_t* epoch)
+        Attempt lock_attempt(IrqLock& lock, Thread* c, uintptr_t va, WaitLimit limit, int* rc,
+                             uint32_t* epoch)
         {
             // Ahead of the donation walk below, whose boosts an exit taken at the park would
             // leave seated on this caller's behalf with the caller gone.
@@ -465,9 +465,9 @@ namespace kickos
                         return Attempt::ANSWERED;
                     }
                 }
-                // Before any deadline: ktime_deadline_arm treats only KOS_TIMEOUT_NONE as none,
+                // Before any deadline: ktime_limit_arm treats only KOS_TIMEOUT_NONE as none,
                 // and would park a try until the next expiry.
-                if (timeout_us == 0)
+                if (ktime_limit_passed(limit))
                 {
                     *rc = -KOS_ETIMEDOUT;
                     return Attempt::ANSWERED;
@@ -535,7 +535,7 @@ namespace kickos
             }
             // WAIT_MUTEX is what puts c on the chain walk above for the next blocker. A waker
             // transfers the record and writes wait_result.
-            ktime_deadline_arm(c, timeout_us, lock);
+            ktime_limit_arm(c, limit, lock);
             *epoch = wq_block(ask)(m->waiters, WAIT_MUTEX, m, nullptr, lock);
             return Attempt::PARKED;
         }
@@ -744,8 +744,12 @@ namespace kickos
         }
     }
 
-    int mutex_lock(uintptr_t va, uint32_t timeout_us)
+    int mutex_lock(uintptr_t va, WaitLimit limit)
     {
+        if (not limit.valid())
+        {
+            return -KOS_EINVAL;
+        }
         Thread* const c = sched::current();
         uint32_t epoch = 0;
         while (true)
@@ -754,7 +758,7 @@ namespace kickos
             Attempt got = Attempt::RETRY;
             {
                 IrqLock lock;
-                got = lock_attempt(lock, c, va, timeout_us, &rc, &epoch);
+                got = lock_attempt(lock, c, va, limit, &rc, &epoch);
             }
             if (got == Attempt::ANSWERED)
             {
@@ -789,8 +793,12 @@ namespace kickos
         }
     }
 
-    int word_wait(uintptr_t va, uint32_t expected, uint32_t timeout_us)
+    int word_wait(uintptr_t va, uint32_t expected, WaitLimit limit)
     {
+        if (not limit.valid())
+        {
+            return -KOS_EINVAL;
+        }
         Thread* const c = sched::current();
         uint32_t epoch = 0;
         {
@@ -818,8 +826,8 @@ namespace kickos
                     return -KOS_EAGAIN;
                 }
             }
-            // Before any deadline: ktime_deadline_arm treats only KOS_TIMEOUT_NONE as none.
-            if (timeout_us == 0)
+            // Before any deadline: ktime_limit_arm treats only KOS_TIMEOUT_NONE as none.
+            if (ktime_limit_passed(limit))
             {
                 return -KOS_ETIMEDOUT;
             }
@@ -828,7 +836,7 @@ namespace kickos
                 m = record_take(w.key, WordKind::PLAIN, nullptr);
             }
             c->wait_va = va;
-            ktime_deadline_arm(c, timeout_us, lock);
+            ktime_limit_arm(c, limit, lock);
             epoch = wq_block(ask)(m->waiters, WAIT_WORD, m, nullptr, lock);
         }
         wq_confirm_resume(c, epoch);

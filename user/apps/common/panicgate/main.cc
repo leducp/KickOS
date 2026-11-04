@@ -18,7 +18,6 @@
 // Case 3 discriminates only while main is UNPRIVILEGED: a privileged caller passes
 // user_readable_ok wholesale.
 
-#include <kickos/chip_limits.h> // KICKOS_CHIP_ONE_TASK
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 
@@ -52,11 +51,6 @@ namespace
     int task_case()
     {
         kos::print("[panicgate] case 6: a task without the system authority panics\n");
-#if KICKOS_CHIP_ONE_TASK
-        kos::print("[panicgate] skip - the panicking task needs a task of its own and this board "
-                   "holds one task\n");
-        return 0;
-#else
         kos_program_t prog = KOS_CAP_NONE;
         if (kos_program_find("panicgate_peer", &prog) != 0)
         {
@@ -96,7 +90,6 @@ namespace
         (void)kos_task_slay(t, 0);
         kos::print("[panicgate] the task ended with KOS_EXIT_PANIC, the system runs on\n");
         return 0;
-#endif
     }
 #endif
 }

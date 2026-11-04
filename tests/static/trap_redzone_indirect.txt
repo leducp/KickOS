@@ -832,47 +832,6 @@ site armv7m pizero2350-flat console_tx.cc:drain_in_producer@1/2 chip_rp2xxx.cc:t
 site armv7m pizero2350-flat console_tx.cc:drain_in_producer@2/2 chip_rp2xxx.cc:tx_push
 
 
-site armv7m f302nucleo console_tx.cc:wait_slot@1/1  chip_stm32f1f3.cc:stm32_tx_slot_free
-site armv7m f302nucleo console_tx_flush_sync@2/2 chip_stm32f1f3.cc:stm32_tx_push
-site armv7m f302nucleo console_tx_isr@1/3           chip_stm32f1f3.cc:stm32_tx_slot_free
-site armv7m f302nucleo console_tx_isr@2/3           chip_stm32f1f3.cc:stm32_tx_push
-site armv7m f302nucleo console_tx_isr@3/3           chip_stm32f1f3.cc:stm32_tx_irq_disable
-site armv7m f302nucleo console_tx_flush_sync@1/2    chip_stm32f1f3.cc:stm32_tx_irq_disable
-site armv7m f302nucleo console_tx_deinit@1/1        chip_stm32f1f3.cc:stm32_tx_irq_disable
-site armv7m f302nucleo console_tx.cc:insert_locked@1/3 chip_stm32f1f3.cc:stm32_tx_irq_enable
-site armv7m f302nucleo console_tx.cc:insert_locked@2/3 chip_stm32f1f3.cc:stm32_tx_slot_free
-site armv7m f302nucleo console_tx.cc:insert_locked@3/3 chip_stm32f1f3.cc:stm32_tx_push
-site armv7m f302nucleo console_tx.cc:drain_in_producer@1/2 chip_stm32f1f3.cc:stm32_tx_slot_free
-site armv7m f302nucleo console_tx.cc:drain_in_producer@2/2 chip_stm32f1f3.cc:stm32_tx_push
-
-site armv7m f302nucleo-st console_tx.cc:wait_slot@1/1  chip_stm32f1f3.cc:stm32_tx_slot_free
-site armv7m f302nucleo-st console_tx_flush_sync@2/2 chip_stm32f1f3.cc:stm32_tx_push
-site armv7m f302nucleo-st console_tx_isr@1/3           chip_stm32f1f3.cc:stm32_tx_slot_free
-site armv7m f302nucleo-st console_tx_isr@2/3           chip_stm32f1f3.cc:stm32_tx_push
-site armv7m f302nucleo-st console_tx_isr@3/3           chip_stm32f1f3.cc:stm32_tx_irq_disable
-site armv7m f302nucleo-st console_tx_flush_sync@1/2    chip_stm32f1f3.cc:stm32_tx_irq_disable
-site armv7m f302nucleo-st console_tx_deinit@1/1        chip_stm32f1f3.cc:stm32_tx_irq_disable
-site armv7m f302nucleo-st console_tx.cc:insert_locked@1/3 chip_stm32f1f3.cc:stm32_tx_irq_enable
-site armv7m f302nucleo-st console_tx.cc:insert_locked@2/3 chip_stm32f1f3.cc:stm32_tx_slot_free
-site armv7m f302nucleo-st console_tx.cc:insert_locked@3/3 chip_stm32f1f3.cc:stm32_tx_push
-site armv7m f302nucleo-st console_tx.cc:drain_in_producer@1/2 chip_stm32f1f3.cc:stm32_tx_slot_free
-site armv7m f302nucleo-st console_tx.cc:drain_in_producer@2/2 chip_stm32f1f3.cc:stm32_tx_push
-
-site armv7m bluepill-c8 console_tx.cc:wait_slot@1/1  chip_stm32f1f3.cc:stm32_tx_slot_free
-site armv7m bluepill-c8 console_tx_flush_sync@2/2 chip_stm32f1f3.cc:stm32_tx_push
-site armv7m bluepill-c8 console_tx_isr@1/3           chip_stm32f1f3.cc:stm32_tx_slot_free
-site armv7m bluepill-c8 console_tx_isr@2/3           chip_stm32f1f3.cc:stm32_tx_push
-site armv7m bluepill-c8 console_tx_isr@3/3           chip_stm32f1f3.cc:stm32_tx_irq_disable
-site armv7m bluepill-c8 console_tx_flush_sync@1/2    chip_stm32f1f3.cc:stm32_tx_irq_disable
-site armv7m bluepill-c8 console_tx_deinit@1/1        chip_stm32f1f3.cc:stm32_tx_irq_disable
-site armv7m bluepill-c8 console_tx.cc:insert_locked@1/3 chip_stm32f1f3.cc:stm32_tx_irq_enable
-site armv7m bluepill-c8 console_tx.cc:insert_locked@2/3 chip_stm32f1f3.cc:stm32_tx_slot_free
-site armv7m bluepill-c8 console_tx.cc:insert_locked@3/3 chip_stm32f1f3.cc:stm32_tx_push
-site armv7m bluepill-c8 console_tx.cc:drain_in_producer@1/2 chip_stm32f1f3.cc:stm32_tx_slot_free
-site armv7m bluepill-c8 console_tx.cc:drain_in_producer@2/2 chip_stm32f1f3.cc:stm32_tx_push
-
-
-
 # --- armv6m: the IRQ table ------------------------------------------------------
 # armv6m pends PendSV and returns, so notify_raise -> sched::wake -> ... -> arch_switch does not
 # re-enter the scheduler on this stack.
@@ -1100,3 +1059,23 @@ site armv8a * ?kickos::driver::bring_up@2/2 ?appsink.cc:service reason: the desc
 site x86_64 * ?kickos_driver_task@1/1 ?appsink_start reason: the driver's start, which t->entry.driver names in the table the composition emits
 site x86_64 * ?kickos::driver::bring_up@1/2 NONE reason: appsink declares no ring block, so block_init is never called
 site x86_64 * ?kickos::driver::bring_up@2/2 ?appsink.cc:service reason: the descriptor's thread 0 entry
+
+# --- A key's destructor at a thread's end (user/src/gthr.cc) ----------------------------------
+site armv7m * ?gthr.cc:run_destructors@1/1 NONE reason: a key and its destructor are the C++ runtime's, whose code is the toolchain's and in no graph here
+site armv6m * ?gthr.cc:run_destructors@1/1 NONE reason: a key and its destructor are the C++ runtime's, whose code is the toolchain's and in no graph here
+site rv32imac * ?gthr.cc:run_destructors@1/1 NONE reason: a key and its destructor are the C++ runtime's, whose code is the toolchain's and in no graph here
+site rxv3 * ?gthr.cc:run_destructors@1/1 NONE reason: a key and its destructor are the C++ runtime's, whose code is the toolchain's and in no graph here
+site lx6 * ?gthr.cc:run_destructors@1/1 NONE reason: a key and its destructor are the C++ runtime's, whose code is the toolchain's and in no graph here
+site rv64imac * ?gthr.cc:run_destructors@1/1 NONE reason: a key and its destructor are the C++ runtime's, whose code is the toolchain's and in no graph here
+site armv8a * ?gthr.cc:run_destructors@1/1 NONE reason: a key and its destructor are the C++ runtime's, whose code is the toolchain's and in no graph here
+site x86_64 * ?gthr.cc:run_destructors@1/1 NONE reason: a key and its destructor are the C++ runtime's, whose code is the toolchain's and in no graph here
+
+# --- A thread_local destructor at a thread's end (user/src/thread_atexit.cc) ---------------------
+site armv7m * ?thread_atexit.cc:run_list@1/1 NONE reason: only a thread that used a thread_local with a destructor has one to run, and no thread declared here uses one
+site armv6m * ?thread_atexit.cc:run_list@1/1 NONE reason: only a thread that used a thread_local with a destructor has one to run, and no thread declared here uses one
+site rv32imac * ?thread_atexit.cc:run_list@1/1 NONE reason: only a thread that used a thread_local with a destructor has one to run, and no thread declared here uses one
+site rxv3 * ?thread_atexit.cc:run_list@1/1 NONE reason: only a thread that used a thread_local with a destructor has one to run, and no thread declared here uses one
+site lx6 * ?thread_atexit.cc:run_list@1/1 NONE reason: only a thread that used a thread_local with a destructor has one to run, and no thread declared here uses one
+site rv64imac * ?thread_atexit.cc:run_list@1/1 NONE reason: only a thread that used a thread_local with a destructor has one to run, and no thread declared here uses one
+site armv8a * ?thread_atexit.cc:run_list@1/1 NONE reason: only a thread that used a thread_local with a destructor has one to run, and no thread declared here uses one
+site x86_64 * ?thread_atexit.cc:run_list@1/1 NONE reason: only a thread that used a thread_local with a destructor has one to run, and no thread declared here uses one

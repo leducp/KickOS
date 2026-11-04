@@ -7,7 +7,6 @@
 #
 #   tools/bench/bench.sh xmc4800-relax [jlink-sn]
 #   tools/bench/bench.sh frdmk64f      [jlink-sn]
-#   tools/bench/bench.sh f302nucleo
 #   tools/bench/bench.sh rx72m
 #   tools/bench/bench.sh esp32c6-wroom
 #   tools/bench/bench.sh esp32-wroom
@@ -41,8 +40,7 @@
 # host is ssh_config's: a port is passed only where the rig names one, so an ssh alias
 # carrying its own Port and User works as itself.
 #
-# VARIANT names the preset variant, bench_default_variant's (board-rows.sh) when unset; set empty
-# it builds the board's own preset.
+# VARIANT names the preset variant; unset or empty, it builds the board's own preset.
 #
 # PACKAGE_PROJECT names a consumer project, relative to the tree, built against the board build's
 # installed package as the golden and composition gates build one (tests/lib/package_image.sh);
@@ -143,7 +141,7 @@ if [ -z "$SN" ] && [ "${LIST_IMAGES:-0}" != "1" ]; then
 fi
 # The preset variant. The variant is part of the BUILD DIR so a bench capture and a selftest
 # capture at one TAG cannot share a tree.
-VARIANT="${VARIANT-$(bench_default_variant . "$BOARD")}"
+VARIANT="${VARIANT-}"
 PRESET="$BOARD"
 BUILD="build/$TAG-$BOARD"
 if [ -n "$VARIANT" ]; then
@@ -397,21 +395,19 @@ if [ "${CONSOLE_PIN:-0}" = "1" ]; then
 fi
 
 # A USB device console never carries the kernel banner, so the route holds the identity rows
-# the image prints once the host configures it to the flashed image: version and diag column from
-# the build's cache and board config, commit from its stamp, build and app stamps from the image.
+# the image prints once the host configures it to the flashed image: version from the build's
+# cache, commit from its stamp, build and app stamps from the image.
 route_identity() {
   [ "$CONSOLE_USB_CDC" = "1" ] || return 0
-  local version terse built app why
+  local version built app why
   version=$(sed -n 's/^CMAKE_PROJECT_VERSION:STATIC=//p' "$BUILD/CMakeCache.txt" | tail -1)
-  terse=$(awk '$1 == "#define" && $2 == "KICKOS_DIAG_TERSE" { print $3; exit }' \
-            "$BUILD/generated/include/kickos/board_config.h")
-  [ -n "$version" ] && [ -n "$terse" ] || { echo "REFUSING: $BUILD states no version or no \
-KICKOS_DIAG_TERSE, so the identity rows cannot be rendered" >&2; return 1; }
+  [ -n "$version" ] || { echo "REFUSING: $BUILD states no version, so the identity rows cannot \
+be rendered" >&2; return 1; }
   built=$(image_string "$IMG" kickos_build_time)
   [ -n "$built" ] || { echo "REFUSING: $IMG holds no kickos_build_time, so the identity rows \
 cannot be held to it" >&2; return 1; }
   app=$(image_string "$IMG" kickos_app_stamp)
-  if ! why=$(identity_verdict "$LOG" include/kickos/diag.h "$terse" "$version" "$BOARD" \
+  if ! why=$(identity_verdict "$LOG" include/kickos/diag.h "$version" "$BOARD" \
                "$EXPECT_COMMIT" "$built" "$app"); then
     echo "REFUSING: $LOG is not a capture of the flashed image: $why" >&2
     return 1

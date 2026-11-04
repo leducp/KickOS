@@ -2,29 +2,24 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# The C library's own exit() on one boot of libc_exit (natively for the sim, on QEMU when
-# QEMU_MACHINE is set).
+# The C library's exit() and abort() in a worker, on one boot of libc_exit or libc_exit_abort
+# (natively for the sim, on QEMU when QEMU_MACHINE is set).
 #
-#   check_libc_exit.sh <libc_exit image> [--atexit | --image]
-#   KOS_CAPTURE=<log> check_libc_exit.sh <board-build> <kickos-source> <cmake> [--atexit | --image]
+#   check_libc_exit.sh <image> [--atexit | --abort]
+#   KOS_CAPTURE=<log> check_libc_exit.sh <board-build> <kickos-source> <cmake> [--atexit | --abort]
 #
-# A capture carries no exit status, so main's exit() ending the system is the emulator's claim.
+# A capture carries no exit status, so the system's end status is the emulator's claim.
 #
-# The WORKER's marker alone would pass on a libc exit() that never reached the kernel, so
-# main's survival is the required half: KOS_SYS_EXIT ends only the calling thread unless the
-# caller is its task's entry, and nothing else in the image produces a line after a worker's
-# exit. Main's own exit() then has to end the SYSTEM carrying its status, its task's end being
-# what the default composition `ends` on, so 7 is the witness: 3 means the worker's exit took
-# the image down with it, 124 means nobody's did.
+# The worker's exit() ends its whole task, so main never prints past it, and the default
+# composition ends the system with the task's status: 3, the worker's code. 7 means main survived
+# and exited itself, 124 that nobody's exit ended anything. The worker leaves text in stdout's
+# buffer first, which exit() flushes.
 #
-# --atexit, where the libc's own exit() runs the image's handlers, which the sim's routing onto
-# KOS_SYS_EXIT does not: main registers one only after the worker exited, so its line after
-# main's own is main's exit() running it, and not the worker's, which would have consumed it.
+# --atexit, where the libc's own exit() runs the task's handlers, which the sim's routing onto
+# KOS_SYS_EXIT does not: the handler main registered before the spawn runs in the worker's exit().
 #
-# --image, on a chip that holds one task, where the init shares the image's libc: the worker's
-# exit() ends the whole image with its status, running no exit handler and flushing no stream, so
-# main's handler registered before the spawn never runs, the worker's unflushed text never
-# reaches the wire and main never prints again.
+# --abort, on libc_exit_abort: the worker's abort() ends the task with 134 (128 + SIGABRT),
+# running no exit handler and flushing no stream.
 
 set -u
 . "$(dirname "$0")/../lib/gate.sh"
@@ -35,58 +30,49 @@ if judging_capture; then
     shift 3
     judge_capture libc_exit
 else
-    elf="${1:?usage: check_libc_exit.sh <libc_exit.elf> [--atexit | --image]}"
+    elf="${1:?usage: check_libc_exit.sh <image> [--atexit | --abort]}"
     shift
     run_image "$elf"
 fi
 atexit=0
 [ "${1:-}" = "--atexit" ] && atexit=1
-image=0
-[ "${1:-}" = "--image" ] && image=1
+abort=0
+[ "${1:-}" = "--abort" ] && abort=1
 
 assert_no_panic "panic on the exit() path"
 if has "worker spawn refused"; then
-    cfail spawn "the worker could not be spawned; the thread-exit arm witnessed nothing"
+    cfail spawn "the worker could not be spawned; the exit arm witnessed nothing"
 fi
-if ! has "worker: exit()"; then
-    cfail worker "the worker never reached its exit()"
+if has "main: survived the worker"; then
+    cfail survived "the worker's end left main running: it ended only the worker"
 fi
-if [ "$image" -eq 1 ]; then
-    if has "main: survived worker exit()"; then
-        cfail image "the worker's exit() ended only the worker, where the init shares the image's libc"
+if [ "$abort" -eq 1 ]; then
+    has "worker: abort()" || cfail worker "the worker never reached its abort()"
+    if has "main: atexit handler"; then
+        cfail handlers "the worker's end ran the task's exit handlers"
     fi
-    if has "main: early atexit handler"; then
-        cfail handlers "the worker's exit() ran the image's exit handlers"
+    if has "worker: buffered"; then
+        cfail flushed "the worker's end flushed the task's streams"
     fi
-    if has "worker: unflushed"; then
-        cfail flushed "the worker's exit() flushed the image's streams"
-    fi
-    status_clause "the worker's exit() ended the image with status 3" 3
-    echo "PASS: a worker's exit() ended the whole image, with no exit handler and no flush"
+    status_clause "the worker's abort() ended the task, and the system, with status 134" 134
+    echo "PASS: a worker's abort() ended its task with status 134, with no exit handler and no flush"
     exit 0
 fi
-if ! has "main: survived worker exit()"; then
-    cfail survived "the worker's exit() did not reach KOS_SYS_EXIT (it ended the image, or main died)"
-fi
-if ! has "main: exit()"; then
-    cfail main-exit "main never reached its own exit()"
+has "worker: exit()" || cfail worker "the worker never reached its exit()"
+if ! has "worker: buffered"; then
+    cfail unflushed "the worker's exit() did not flush the text it left in stdout's buffer"
 fi
 if [ "$atexit" -eq 1 ]; then
-    if ! printf '%s\n' "$OUT" | sed -n '/^main: exit()$/,$p' | grep -q '^main: atexit handler$'
+    if ! printf '%s\n' "$OUT" | sed -n '/^worker: exit()$/,$p' | grep -q '^main: atexit handler$'
     then
-        cfail atexit "main's exit() ran no atexit handler registered after the worker's exit, or ran it
-  before main reached its own exit()"
+        cfail atexit "the worker's exit() ran no atexit handler main registered, or ran it before
+  the worker reached its exit()"
     fi
 fi
-status_clause "main's exit() ended the system with status 7" 7
-
-if judging_capture; then
-    echo "PASS: a worker's exit() ended only the worker, and main reached its own exit()"
-    exit 0
-fi
+status_clause "the worker's exit() ended the task, and the system, with status 3" 3
 if [ "$atexit" -eq 1 ]; then
-    echo "PASS: exit() reached KOS_SYS_EXIT from a worker and from main, main's after its own atexit handler, carrying its status"
+    echo "PASS: a worker's exit() ran the task's handler, flushed its streams and ended the task with its status"
     exit 0
 fi
-echo "PASS: exit() reached KOS_SYS_EXIT from a worker and from main, carrying its status"
+echo "PASS: a worker's exit() flushed the task's streams and ended the task with its status"
 exit 0

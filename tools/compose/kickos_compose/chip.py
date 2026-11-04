@@ -191,7 +191,6 @@ def limit_values(view):
     if chip.timebase_hz is not None:
         values.append(("KICKOS_CHIP_TIMEBASE_HZ", chip.timebase_hz, chip.refs.get("timebase_hz")))
     values.append(("KICKOS_CHIP_DCACHE", int(chip.data_cache), None))
-    values.append(("KICKOS_CHIP_ONE_TASK", int(chip.one_task), None))
     rule = region_rule(view)
     if rule is not None:
         values.append(("KICKOS_CHIP_REGION_GRANULE", rule[0], None))
@@ -446,10 +445,6 @@ def emit_cmake(view):
     if view.chip.stack_limit:
         stack_limit = "ON"
     facts.append("set(KICKOS_CHIP_STACK_LIMIT %s)\n" % stack_limit)
-    one_task = "OFF"
-    if view.chip.one_task:
-        one_task = "ON"
-    facts.append("set(KICKOS_CHIP_ONE_TASK %s)\n" % one_task)
     if view.chip.family is not None:
         facts.append("set(KICKOS_CHIP_FAMILY_DIR \"%s\")\nset(KICKOS_CHIP_FAMILY_SOURCES \"%s\")\n"
                      % (view.chip.family[0], ";".join(view.chip.family[1])))

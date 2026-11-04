@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The diagnostic catalogue: every kernel and arch message in both of its forms, prose and short
-// code. KICKOS_DIAG_TERSE picks the column.
+// The diagnostic catalogue: every kernel and arch message.
 //
-// The FAULT BANNERS tests/lib/panic.ere matches are raw kprintf literals at their emit sites and
-// have no terse variant. Do not restate that set here: tests/static/check_panic_banners.sh
-// derives it from the emit sites and is the only place it is written down. Three entries below
-// bear on it: KDIAG_F_MPU_FAULT's fixed prefix IS matched and is spelled identically in both
-// columns, and KDIAG_F_THREAD_FAULT and KDIAG_F_TASK_PANIC deliberately are not, gates asserting
-// them present while asserting no panic occurred.
+// The FAULT BANNERS tests/lib/panic.ere matches are raw kprintf literals at their emit sites. Do
+// not restate that set here: tests/static/check_panic_banners.sh derives it from the emit sites
+// and is the only place it is written down. Three entries below bear on it: KDIAG_F_MPU_FAULT's
+// fixed prefix IS matched, and KDIAG_F_THREAD_FAULT and KDIAG_F_TASK_PANIC deliberately are not,
+// gates asserting them present while asserting no panic occurred.
 
 #ifndef KICKOS_DIAG_H
 #define KICKOS_DIAG_H
@@ -18,90 +16,92 @@
 #include <kickos/board_config.h>
 #endif
 
-#ifndef KICKOS_DIAG_TERSE
-#define KICKOS_DIAG_TERSE 0
-#endif
-
-#if KICKOS_DIAG_TERSE
-#define KICKOS_DIAG_PICK(full, terse) terse
-#else
-#define KICKOS_DIAG_PICK(full, terse) full
-#endif
-
-// Panic and diagnostic prose. Reached as ::kickos::diag::<name>. The short column is the grep
-// key: P<nn> is unique to one row and to one message.
-#define KICKOS_DIAG_MSG_TABLE(X)                                                                  \
-    X(kBootIdleStack,   "kmain: no arena for the idle stack",                        "P01")       \
-    X(kBootRootStack,   "kmain: no arena for the root stack",                        "P02")       \
-    X(kBootRootRun,     "kmain: no capability run for root",                         "P03")       \
-    X(kConsoleAttach,   "console_buffer_init: irq_attach failed",                    "P04")       \
-    X(kBlockInIsr,      "kickos: blocking operation from ISR context",               "P05")       \
-    X(kResumeNoSwitch,  "wq_confirm_resume: switch never landed",                    "P06")       \
-    X(kUserPanicNoMsg,  "user panic (no readable message)",                          "P08")       \
-    X(kRootExitRefused, "root: exit shutdown refused",                               "P10")       \
-    X(kPastExitCurrent, "unreachable: thread continued past exit_current",           "P11")       \
-    X(kRebootRp2040,    "arch_reboot: rp2040 _reset_to_usb_boot returned",           "P13")       \
-    X(kRebootRp2350,    "arch_reboot: rp2350 bootrom reboot returned",               "P14")       \
-    X(kRebootImxrt,     "arch_reboot: imxrt1062 bkpt resumed (no MKL02?)",           "P15")       \
-    X(kResetNotTaken,   "arch_reboot: the reset was requested and did not take",     "P27")       \
-    X(kParkNoKind,      "unreachable: park abort on a thread with no wait edge",     "P16")       \
-    X(kKstackOverflow,  "kernel stack canary broken on this thread's slot",          "P17")       \
-    X(kBootFramePool,   "kmain: the frame carve is too small to describe",           "P18")       \
-    X(kBootAmpPort,     "kmain: a port CONFIG_KICKOS_AMP_PORTS names could not be seated \n"      \
-                        "       into root; this node could not serve or reach it",       "P19")    \
-    X(kBootAmpSlot,     "kmain: a partition port landed off its derived capability slot \n"       \
-                        "       (a dynamic install into root ran before the partition's)", "P20")  \
-    X(kBootAmpShare,    "kmain: the partition's user share could not be seated into root \n"    \
-                        "       (KICKOS_AMP_USER_SHARE_SIZE not whole granules?)",       "P22")    \
-    X(kDcacheWraps,     "arch_dcache: a maintenance range wraps the address space", "P23")       \
-    X(kBootRegionsOverlap, "kmain: idle's or root's regions overlap where the MPU decides \n"   \
-                        "       otherwise (mpu_overlap_expressible)",                  "P24")    \
-    X(kMmuNoGranule,    "armv8a: the MMU offers no 4 KiB granule",                   "P25")       \
-    X(kMmuPaNarrow,     "armv8a: the MMU's physical range is narrower than TCR_EL1.IPS", "P26")   \
-    X(kUguardMixed,     "armv8a: a core disagrees with the boot core on PAN",          "P28")   \
-    X(kUguardNotTaken,  "armv8a: PSTATE.PAN or SCTLR_EL1.SPAN did not take the write", "P29")   \
-    X(kUguardNoAsid,    "armv8a: no PAN and no ASID, so EL1 cannot be kept out of user pages", "P30") \
-    X(kSumNotCleared,   "rv64imac: sstatus.SUM did not take the clear",               "P31")   \
-    X(kWordNoRecord,    "unreachable: a word waiter found every record in use",       "P32")   \
-    X(kPmpCodeWindow,   "rv32imac: the PMP did not take the user code window",        "P33")   \
-    X(kBannerRule,      "  ==============================================\n",        "\n")
-
-// The prose table is the only C++ in this header, and kickos/console_tx.h includes the header
-// from a C-facing one to reach KICKOS_DIAG_LINE_MAX, so the block is guarded rather than the
-// whole file being C++ only (tests/static/check_public_headers.sh).
+// Panic and diagnostic prose, reached as ::kickos::diag::<name>. kickos/console_tx.h includes
+// this header from a C-facing one to reach KICKOS_DIAG_LINE_MAX, so the block is guarded rather
+// than the whole file being C++ only (tests/static/check_public_headers.sh).
 #ifdef __cplusplus
 namespace kickos
 {
     namespace diag
     {
-#define KICKOS_DIAG_DEFINE(name, full, terse) inline constexpr char const name[] = KICKOS_DIAG_PICK(full, terse);
-        KICKOS_DIAG_MSG_TABLE(KICKOS_DIAG_DEFINE)
-#undef KICKOS_DIAG_DEFINE
+        inline constexpr char const kBootIdleStack[] = "kmain: no arena for the idle stack";
+        inline constexpr char const kBootRootStack[] = "kmain: no arena for the root stack";
+        inline constexpr char const kBootRootRun[] = "kmain: no capability run for root";
+        inline constexpr char const kConsoleAttach[] = "console_buffer_init: irq_attach failed";
+        inline constexpr char const kBlockInIsr[] = "kickos: blocking operation from ISR context";
+        inline constexpr char const kResumeNoSwitch[] = "wq_confirm_resume: switch never landed";
+        inline constexpr char const kUserPanicNoMsg[] = "user panic (no readable message)";
+        inline constexpr char const kRootExitRefused[] = "root: exit shutdown refused";
+        inline constexpr char const kPastExitCurrent[] =
+            "unreachable: thread continued past exit_current";
+        inline constexpr char const kRebootRp2040[] =
+            "arch_reboot: rp2040 _reset_to_usb_boot returned";
+        inline constexpr char const kRebootRp2350[] = "arch_reboot: rp2350 bootrom reboot returned";
+        inline constexpr char const kRebootImxrt[] =
+            "arch_reboot: imxrt1062 bkpt resumed (no MKL02?)";
+        inline constexpr char const kResetNotTaken[] =
+            "arch_reboot: the reset was requested and did not take";
+        inline constexpr char const kParkNoKind[] =
+            "unreachable: park abort on a thread with no wait edge";
+        inline constexpr char const kKstackOverflow[] =
+            "kernel stack canary broken on this thread's slot";
+        inline constexpr char const kBootFramePool[] =
+            "kmain: the frame carve is too small to describe";
+        inline constexpr char const kBootAmpPort[] =
+            "kmain: a port CONFIG_KICKOS_AMP_PORTS names could not be seated \n"
+            "       into root; this node could not serve or reach it";
+        inline constexpr char const kBootAmpSlot[] =
+            "kmain: a partition port landed off its derived capability slot \n"
+            "       (a dynamic install into root ran before the partition's)";
+        inline constexpr char const kBootAmpShare[] =
+            "kmain: the partition's user share could not be seated into root \n"
+            "       (KICKOS_AMP_USER_SHARE_SIZE not whole granules?)";
+        inline constexpr char const kDcacheWraps[] =
+            "arch_dcache: a maintenance range wraps the address space";
+        inline constexpr char const kBootRegionsOverlap[] =
+            "kmain: idle's or root's regions overlap where the MPU decides \n"
+            "       otherwise (mpu_overlap_expressible)";
+        inline constexpr char const kMmuNoGranule[] = "armv8a: the MMU offers no 4 KiB granule";
+        inline constexpr char const kMmuPaNarrow[] =
+            "armv8a: the MMU's physical range is narrower than TCR_EL1.IPS";
+        inline constexpr char const kUguardMixed[] =
+            "armv8a: a core disagrees with the boot core on PAN";
+        inline constexpr char const kUguardNotTaken[] =
+            "armv8a: PSTATE.PAN or SCTLR_EL1.SPAN did not take the write";
+        inline constexpr char const kUguardNoAsid[] =
+            "armv8a: no PAN and no ASID, so EL1 cannot be kept out of user pages";
+        inline constexpr char const kSumNotCleared[] =
+            "rv64imac: sstatus.SUM did not take the clear";
+        inline constexpr char const kWordNoRecord[] =
+            "unreachable: a word waiter found every record in use";
+        inline constexpr char const kPmpCodeWindow[] =
+            "rv32imac: the PMP did not take the user code window";
+        inline constexpr char const kBannerRule[] =
+            "  ==============================================\n";
     }
 }
 #endif
 
 // These stay macros: format(printf) checks the argument list only against a literal AT THE CALL
-// SITE, so a constexpr array would silently retire -Wformat on every one of them. The terse
-// column keeps the arity and every conversion specifier; only prose is cut.
+// SITE, so a constexpr array would silently retire -Wformat on every one of them.
 
 // Boot banner.
-#define KDIAG_F_BANNER_NAME  KICKOS_DIAG_PICK("   KickOS %s  -  microkernel RTOS\n", "K %s\n")
-#define KDIAG_F_BANNER_BOARD KICKOS_DIAG_PICK("   board   %s\n", "b %s\n")
-#define KDIAG_F_BANNER_ARCH  KICKOS_DIAG_PICK("   arch    %s\n", "a %s\n")
-#define KDIAG_F_BANNER_CPU   KICKOS_DIAG_PICK("   cpu     %s\n", "u %s\n")
-#define KDIAG_F_BANNER_MPU   KICKOS_DIAG_PICK("   mpu     %s\n", "m %s\n")
-#define KDIAG_F_BANNER_MMU   KICKOS_DIAG_PICK("   mmu     enforce\n", "M enforce\n")
-#define KDIAG_F_BANNER_UGUARD KICKOS_DIAG_PICK("   uaccess %s\n", "g %s\n")
-#define KDIAG_F_BANNER_WITNESS KICKOS_DIAG_PICK("   witness uaccess\n", "w uaccess\n")
-#define KDIAG_F_BANNER_WITNESS_REWIND KICKOS_DIAG_PICK("   witness rewind\n", "w rewind\n")
-#define KDIAG_F_BANNER_SCHED KICKOS_DIAG_PICK("   sched   %s\n", "s %s\n")
-#define KDIAG_F_BANNER_BUILD KICKOS_DIAG_PICK("   build   %s\n", "t %s\n")
-#define KDIAG_F_BANNER_APP   KICKOS_DIAG_PICK("   app     %s\n", "p %s\n")
-#define KDIAG_F_BANNER_COMMIT KICKOS_DIAG_PICK("   commit  %s\n", "c %s\n")
-#define KDIAG_F_BANNER_HEAP  KICKOS_DIAG_PICK("   heap    %u KiB available\n", "h %u\n")
-#define KDIAG_F_BANNER_NOHEAP KICKOS_DIAG_PICK("   heap    none\n", "h 0\n")
-#define KDIAG_F_BANNER_KSTACK KICKOS_DIAG_PICK("   kstack  %u B x %u = %u B\n", "k %u %u %u\n")
+#define KDIAG_F_BANNER_NAME  "   KickOS %s  -  microkernel RTOS\n"
+#define KDIAG_F_BANNER_BOARD "   board   %s\n"
+#define KDIAG_F_BANNER_ARCH  "   arch    %s\n"
+#define KDIAG_F_BANNER_CPU   "   cpu     %s\n"
+#define KDIAG_F_BANNER_MPU   "   mpu     %s\n"
+#define KDIAG_F_BANNER_MMU   "   mmu     enforce\n"
+#define KDIAG_F_BANNER_UGUARD "   uaccess %s\n"
+#define KDIAG_F_BANNER_WITNESS "   witness uaccess\n"
+#define KDIAG_F_BANNER_WITNESS_REWIND "   witness rewind\n"
+#define KDIAG_F_BANNER_SCHED "   sched   %s\n"
+#define KDIAG_F_BANNER_BUILD "   build   %s\n"
+#define KDIAG_F_BANNER_APP   "   app     %s\n"
+#define KDIAG_F_BANNER_COMMIT "   commit  %s\n"
+#define KDIAG_F_BANNER_HEAP  "   heap    %u KiB available\n"
+#define KDIAG_F_BANNER_NOHEAP "   heap    none\n"
+#define KDIAG_F_BANNER_KSTACK "   kstack  %u B x %u = %u B\n"
 
 // The ordinary kprintf line buffer, and what the console TX ring is sized from
 // (kickos/console_tx.h). A line past it truncates.
@@ -125,58 +125,51 @@ namespace kickos
 #define KDIAG_FAULT_LINE_MAX 96
 // The room a held fault record reserves: its banner, a PC line and an ADDR line.
 #define KDIAG_FAULT_RECORD_MAX (3 * (KDIAG_FAULT_LINE_MAX - 1))
-#define KDIAG_F_THREAD_FAULT KICKOS_DIAG_PICK("\n=== THREAD FAULT === thread '%s' killed, system continues\n", \
-                                              "\n=== THREAD FAULT === thread '%s' killed\n")
-#define KDIAG_F_FAULT_PC_LOST KICKOS_DIAG_PICK("  PC lost to a later fault\n", "F1\n")
-#define KDIAG_F_FAULT_PC      KICKOS_DIAG_PICK("  PC=%p\n", "F2 %p\n")
-#define KDIAG_F_FAULT_PC_STAT KICKOS_DIAG_PICK("  PC=%p %s=0x%llx\n", "F3 %p %s %llx\n")
-#define KDIAG_F_FAULT_NO_PC   KICKOS_DIAG_PICK("  PC unknown %s=0x%llx\n", "F4 %s %llx\n")
-#define KDIAG_F_FAULT_ADDR    KICKOS_DIAG_PICK("  ADDR=%p\n", "ADDR=%p\n")
+#define KDIAG_F_THREAD_FAULT "\n=== THREAD FAULT === thread '%s' killed, system continues\n"
+#define KDIAG_F_FAULT_PC_LOST "  PC lost to a later fault\n"
+#define KDIAG_F_FAULT_PC      "  PC=%p\n"
+#define KDIAG_F_FAULT_PC_STAT "  PC=%p %s=0x%llx\n"
+#define KDIAG_F_FAULT_NO_PC   "  PC unknown %s=0x%llx\n"
+#define KDIAG_F_FAULT_ADDR    "  ADDR=%p\n"
 // A kos_panic that ends only its caller's task (kernel/syscall/syscall.cc), on the same record
 // path and bound. Not a fault banner: the system runs on.
-#define KDIAG_F_TASK_PANIC     KICKOS_DIAG_PICK("\n=== TASK PANIC === thread '%s' ended its task\n", \
-                                                "\n=== TASK PANIC === thread '%s'\n")
-#define KDIAG_F_TASK_PANIC_MSG KICKOS_DIAG_PICK("  %s\n", "%s\n")
+#define KDIAG_F_TASK_PANIC     "\n=== TASK PANIC === thread '%s' ended its task\n"
+#define KDIAG_F_TASK_PANIC_MSG "  %s\n"
 
 // MPU fault report (kernel/init/console.cc).
-#define KDIAG_F_MPU_FAULT KICKOS_DIAG_PICK("\nMPU FAULT: thread '%s' attempted %s at %p, reported\n", \
-                                           "\nMPU FAULT: thread '%s' attempted %s at %p\n")
-#define KDIAG_F_MPU_FAULT_STACK KICKOS_DIAG_PICK("  its stack %p-%p\n", "st %p %p\n")
+#define KDIAG_F_MPU_FAULT "\nMPU FAULT: thread '%s' attempted %s at %p, reported\n"
+#define KDIAG_F_MPU_FAULT_STACK "  its stack %p-%p\n"
 
 // ARM fault dumps.
-#define KDIAG_F_ARM_REGS1 KICKOS_DIAG_PICK("  PC=0x%x LR=0x%x xPSR=0x%x (%s)\n", "R1 %x %x %x %s\n")
-#define KDIAG_F_ARM_REGS2 KICKOS_DIAG_PICK("  R0=0x%x R1=0x%x R2=0x%x R3=0x%x R12=0x%x\n", \
-                                           "R2 %x %x %x %x %x\n")
-#define KDIAG_F_ARM_NOFRAME KICKOS_DIAG_PICK( \
-    "  frame not read: its stacking or unstacking at 0x%x (%s) faulted\n", "R3 %x %s\n")
-#define KDIAG_F_ARM_UNVERIFIED KICKOS_DIAG_PICK( \
+#define KDIAG_F_ARM_REGS1 "  PC=0x%x LR=0x%x xPSR=0x%x (%s)\n"
+#define KDIAG_F_ARM_REGS2 "  R0=0x%x R1=0x%x R2=0x%x R3=0x%x R12=0x%x\n"
+#define KDIAG_F_ARM_NOFRAME "  frame not read: its stacking or unstacking at 0x%x (%s) faulted\n"
+#define KDIAG_F_ARM_UNVERIFIED \
     "  frame at its stack's limit 0x%x (%s): an entry that violated it stacked nothing, so the " \
-    "words below are unverified\n", \
-    "R5 %x %s\n")
-#define KDIAG_F_ARM_FRAME_FOREIGN KICKOS_DIAG_PICK( \
-    "  frame not read: 0x%x (%s) is not on MSP or a stack this thread owns\n", "R4 %x %s\n")
-#define KDIAG_F_ARM_CFSR  KICKOS_DIAG_PICK("  CFSR=0x%x HFSR=0x%x\n", "CFSR=0x%x H=%x\n")
-#define KDIAG_F_ARM_MMFAR KICKOS_DIAG_PICK("  MMFAR=0x%x\n", "MMFAR=0x%x\n")
-#define KDIAG_F_ARM_BFAR  KICKOS_DIAG_PICK("  BFAR=0x%x\n", "BFAR=0x%x\n")
-#define KDIAG_F_ARM_IMPRECISE KICKOS_DIAG_PICK( \
-    "  (imprecise bus fault: PC/regs are post-fault, not the culprit)\n", "R6\n")
+    "words below are unverified\n"
+#define KDIAG_F_ARM_FRAME_FOREIGN \
+    "  frame not read: 0x%x (%s) is not on MSP or a stack this thread owns\n"
+#define KDIAG_F_ARM_CFSR  "  CFSR=0x%x HFSR=0x%x\n"
+#define KDIAG_F_ARM_MMFAR "  MMFAR=0x%x\n"
+#define KDIAG_F_ARM_BFAR  "  BFAR=0x%x\n"
+#define KDIAG_F_ARM_IMPRECISE "  (imprecise bus fault: PC/regs are post-fault, not the culprit)\n"
 
 // RISC-V trap dump.
-#define KDIAG_F_RV_CAUSE  KICKOS_DIAG_PICK("  mcause=0x%x mepc=0x%x\n", "V1 %x %x\n")
-#define KDIAG_F_RV_STATUS KICKOS_DIAG_PICK("  mtval=0x%x mstatus=0x%x\n", "V2 %x mstatus=0x%x\n")
+#define KDIAG_F_RV_CAUSE  "  mcause=0x%x mepc=0x%x\n"
+#define KDIAG_F_RV_STATUS "  mtval=0x%x mstatus=0x%x\n"
 
 // RISC-V supervisor trap dump (rv64imac). The conversions are %lx: at XLEN 64 a CSR does not fit
 // an int.
-#define KDIAG_F_RV64_CAUSE  KICKOS_DIAG_PICK("  scause=0x%lx sepc=0x%lx\n", "W1 %lx %lx\n")
-#define KDIAG_F_RV64_STATUS KICKOS_DIAG_PICK("  stval=0x%lx sstatus=0x%lx\n", "W2 %lx %lx\n")
-#define KDIAG_F_RV64_FRAME  KICKOS_DIAG_PICK("  SP=0x%lx RA=0x%lx\n", "W3 %lx %lx\n")
-#define KDIAG_F_RV64_FROM   KICKOS_DIAG_PICK("  taken from %s-mode\n", "W4 %s\n")
+#define KDIAG_F_RV64_CAUSE  "  scause=0x%lx sepc=0x%lx\n"
+#define KDIAG_F_RV64_STATUS "  stval=0x%lx sstatus=0x%lx\n"
+#define KDIAG_F_RV64_FRAME  "  SP=0x%lx RA=0x%lx\n"
+#define KDIAG_F_RV64_FROM   "  taken from %s-mode\n"
 
 // AArch64 EL1 exception dump. The conversions are %lx: a register does not fit an int.
-#define KDIAG_F_A64_VECTOR KICKOS_DIAG_PICK("  vector=%s LR=0x%lx\n", "A1 %s %lx\n")
-#define KDIAG_F_A64_SYND   KICKOS_DIAG_PICK("  ESR=0x%lx ELR=0x%lx\n", "A2 %lx %lx\n")
-#define KDIAG_F_A64_SPSR   KICKOS_DIAG_PICK("  SPSR=0x%lx\n", "A3 %lx\n")
-#define KDIAG_F_A64_FAR    KICKOS_DIAG_PICK("  FAR=0x%lx\n", "A4 %lx\n")
-#define KDIAG_F_A64_FAR_NA KICKOS_DIAG_PICK("  FAR not valid for this exception class\n", "A5\n")
+#define KDIAG_F_A64_VECTOR "  vector=%s LR=0x%lx\n"
+#define KDIAG_F_A64_SYND   "  ESR=0x%lx ELR=0x%lx\n"
+#define KDIAG_F_A64_SPSR   "  SPSR=0x%lx\n"
+#define KDIAG_F_A64_FAR    "  FAR=0x%lx\n"
+#define KDIAG_F_A64_FAR_NA "  FAR not valid for this exception class\n"
 
 #endif

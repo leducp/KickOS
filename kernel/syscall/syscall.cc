@@ -6,7 +6,7 @@
 #include <kickos/irq_route.h>
 #include <kickos/arch/arch.h>
 #include <kickos/ampwindow.h>
-#include <kickos/chip_limits.h> // KICKOS_CHIP_ONE_TASK
+#include <kickos/chip_limits.h> // KICKOS_MAX_IRQ
 #include <kickos/aspace.h>
 #include <kickos/bench.h>
 #include <kickos/cap.h>
@@ -496,7 +496,8 @@ uint64_t syscall_body(uintptr_t nr,
         case KOS_SYS_MUTEX_LOCK:
         {
             // -KOS_EOWNERDEAD is negative but still an ACQUIRE.
-            return static_cast<uint64_t>(mutex_lock(a0, static_cast<uint32_t>(a1)));
+            return static_cast<uint64_t>(mutex_lock(
+                a0, WaitLimit(static_cast<uint32_t>(a1), static_cast<uint32_t>(a2))));
         }
         case KOS_SYS_MUTEX_UNLOCK:
         {
@@ -505,7 +506,8 @@ uint64_t syscall_body(uintptr_t nr,
         case KOS_SYS_WORD_WAIT:
         {
             return static_cast<uint64_t>(
-                word_wait(a0, static_cast<uint32_t>(a1), static_cast<uint32_t>(a2)));
+                word_wait(a0, static_cast<uint32_t>(a1),
+                          WaitLimit(static_cast<uint32_t>(a2), static_cast<uint32_t>(a3))));
         }
         case KOS_SYS_WORD_WAKE:
         {
@@ -737,20 +739,18 @@ uint64_t syscall_body(uintptr_t nr,
         }
         case KOS_SYS_EXIT:
         {
-#if KICKOS_CHIP_ONE_TASK
-            // The init shares this image's C library, whose _exit asks for the image's end.
-            if (a1 == KOS_EXIT_IMAGE)
-            {
-                kickos_image_end(static_cast<int>(a0));
-            }
-#endif
             Thread* c = sched::current();
-            // Root's exit ends the SYSTEM with root's status, hence AUTH_SYSTEM. Not
-            // sched::exit_current, which would report that status to nobody and leave root's
-            // slot EXITED but unreclaimable (ThreadPool::retire never lists ROOT_INDEX).
-            if (kernel().threads.is_root(c))
+            Thread* const root = &kernel().threads.slots()[ThreadPool::ROOT_INDEX];
+            // Root's exit, or a task-scope exit of root's task, ends the SYSTEM with its status,
+            // hence root's AUTH_SYSTEM. Not sched::exit_current, which would report that status to
+            // nobody and leave root's slot EXITED but unreclaimable (ThreadPool::retire never
+            // lists ROOT_INDEX). A cancelled member dies cancelled, keeping the status its
+            // task's end latched.
+            bool const roots_task = a1 == KOS_EXIT_TASK and c->task != nullptr
+                                    and c->task == root->task and c->cancel_kind == CANCEL_NONE;
+            if (kernel().threads.is_root(c) or roots_task)
             {
-                if (not cap_check_authority(c, AUTH_SYSTEM))
+                if (not cap_check_authority(root, AUTH_SYSTEM))
                 {
                     // kos_exit is noreturn and _exit spins after it, so a returned refusal
                     // would loop root forever with nothing on the wire.
@@ -758,7 +758,12 @@ uint64_t syscall_body(uintptr_t nr,
                 }
                 kickos_terminate(static_cast<int>(a0));
             }
-            sched::exit_current(static_cast<int>(a0), sched::EXIT_RETURN);
+            sched::ExitCause cause = sched::EXIT_RETURN;
+            if (a1 == KOS_EXIT_TASK)
+            {
+                cause = sched::EXIT_TASK;
+            }
+            sched::exit_current(static_cast<int>(a0), cause);
             return 0;
         }
         case KOS_SYS_SHUTDOWN:
@@ -799,6 +804,17 @@ uint64_t syscall_body(uintptr_t nr,
             // No user pointer and no way to fail: every value in the u64 range is a valid
             // instant, so this arm is OUT of the -KOS_E* scheme.
             return arch_clock_now();
+        }
+        case KOS_SYS_CLOCK_REALTIME:
+        {
+            // Out of the -KOS_E* scheme as the monotonic clock is.
+            return realtime_now();
+        }
+        case KOS_SYS_CLOCK_SET_REALTIME:
+        {
+            return static_cast<uint64_t>(realtime_set(
+                sched::current(),
+                kos_u64_join(static_cast<uint32_t>(a0), static_cast<uint32_t>(a1))));
         }
         case KOS_SYS_CPU_CLOCK_HZ:
         {

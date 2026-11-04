@@ -80,6 +80,8 @@
         __kickos_amp_chip_start = .;                                          \
         KEEP(*(.amp_shared.chip))                                             \
         __kickos_amp_chip_end = .;                                            \
+        . = ALIGN(64);                                                        \
+        KEEP(*(.amp_shared.clock))                                            \
         KEEP(*(.amp_shared.diag))                                             \
         __kickos_amp_shared_end = .;                                          \
     } > region

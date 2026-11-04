@@ -15,7 +15,7 @@
 // The wrap period is per board (2^32/timer_hz for the 32-bit v7-M timers; the 64-bit
 // TIMG0/CCU4/PIT/CLINT boards never wrap in practice, so the soak degrades to a pure
 // rate/monotonicity + idle-keeps-counting run). Set it with -DKICKOS_CLOCKSOAK_WRAP_MS
-// (default 60000): F411 TIM2 ~= 51 s, F302 ~= 67 s, F103 chain ~= 59 s, SAM3X TC0 ~= 102 s.
+// (default 60000): F411 TIM2 ~= 51 s, SAM3X TC0 ~= 102 s.
 //
 // Runs as the default composition's main, single-shot: it returns, so the shutdown its
 // task's end leads to flushes the console. Uses only clock_now/sleep_ns.

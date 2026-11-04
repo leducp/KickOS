@@ -182,7 +182,9 @@ if(KICKOS_BUILD_TESTS AND NOT (KICKOS_ARCH STREQUAL "sim"))
   # switch seats its word. x86_64 builds no newlib_reent.cc, and the gate refuses a scan that
   # names a missing member.
   if(NOT KICKOS_ARCH STREQUAL "x86_64")
-    list(APPEND _no_tls_scan "$<TARGET_FILE:kickos_user>::newlib_reent.cc.obj")
+    foreach(_p IN LISTS KICKOS_LIBC_PROFILES)
+      list(APPEND _no_tls_scan "$<TARGET_FILE:kickos_user_${_p}>::newlib_reent.cc.obj")
+    endforeach()
   endif()
   add_test(
     NAME    no_privileged_tls
@@ -371,6 +373,10 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
   if(EXISTS "${CMAKE_SOURCE_DIR}/boards/${KICKOS_BOARD}/${KICKOS_CHIP}.ld")
     set(_ld "${CMAKE_SOURCE_DIR}/boards/${KICKOS_BOARD}/${KICKOS_CHIP}.ld")
   endif()
+  set(_ld_stack_defs -DKICKOS_LIBC_REENT=${KICKOS_LIBC_REENT}
+                     -DKICKOS_USER_STACK_SIZE=${KICKOS_USER_STACK_SIZE}
+                     -DKICKOS_ROOT_STACK_SIZE=${KICKOS_ROOT_STACK_SIZE}
+                     -DKICKOS_MIN_STACK_SIZE=${KICKOS_MIN_STACK_SIZE})
   # A chip may ship no script: x86_64 is a PE32+ UEFI image linked by its own `ld -m i386pep`
   # command, not through the driver the -T below reaches.
   if(EXISTS "${_ld}")
@@ -385,12 +391,6 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
     if(KICKOS_NODE_VECTOR_FORCE_SYMBOL)
       list(APPEND _ld_defs -DKICKOS_NODE_VECTOR_FORCE_SYMBOL=${KICKOS_NODE_VECTOR_FORCE_SYMBOL})
     endif()
-    # Whether every image is linked on its own first (tools/image-link.py).
-    if(KICKOS_IMAGE_SPLIT)
-      list(APPEND _ld_defs -DKICKOS_IMAGE_SPLIT=1)
-    else()
-      list(APPEND _ld_defs -DKICKOS_IMAGE_SPLIT=0)
-    endif()
     if(KICKOS_IMAGE_EMBED)
       list(APPEND _ld_defs -DKICKOS_IMAGE_EMBED=1)
     else()
@@ -399,7 +399,7 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
     # Whether the final link places the init's image and each declared task's beside the kernel,
     # and the protection unit's region rule an image's window is shaped to. An embedded image is
     # a program the kernel's link holds, which no script of the chip places.
-    if(KICKOS_INIT_IMAGE AND NOT KICKOS_IMAGE_EMBED)
+    if(NOT KICKOS_IMAGE_EMBED)
       list(APPEND _ld_defs -DKICKOS_IMAGES_PLACED=1)
     else()
       list(APPEND _ld_defs -DKICKOS_IMAGES_PLACED=0)
@@ -447,24 +447,18 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
       string(REGEX REPLACE "^#define[ \t]+KICKOS_ARCH_TLS_TCB[ \t]+([0-9]+).*" "\\1" _tls_tcb "${_tls_tcb_line}")
       list(APPEND _ld_defs -DKICKOS_ARCH_TLS_TCB=${_tls_tcb} -DKICKOS_TLS_STRIDE=${_tls_stride}
                            -DKICKOS_STACK_ALIGN=${KICKOS_STACK_ALIGN})
-      # KICKOS_TLS_CARVE_ASSERT's stacks and floors, and what the arch's
-      # <kickos/arch/idle_floor.h> reads.
+      # What the arch's <kickos/arch/idle_floor.h> reads.
       list(APPEND _ld_defs -DKICKOS_TLS_FROM_SP=${KICKOS_TLS_FROM_SP}
                            -DKICKOS_IDLE_STACK_SIZE=${KICKOS_IDLE_STACK_SIZE}
-                           -DKICKOS_USER_STACK_SIZE=${KICKOS_USER_STACK_SIZE}
-                           -DKICKOS_ROOT_STACK_SIZE=${KICKOS_ROOT_STACK_SIZE}
-                           -DKICKOS_MIN_STACK_SIZE=${KICKOS_MIN_STACK_SIZE}
                            -DKICKOS_KERNEL_CORES=${KICKOS_KERNEL_CORES})
     else()
       list(APPEND _ld_defs -DKICKOS_TLS=0)
     endif()
-    # What a pool thread's stack gives its libc state below the TLS block (__kickos_tls_carve).
-    list(APPEND _ld_defs -DKICKOS_REENT_CARVE=${KICKOS_REENT_CARVE})
+    # KICKOS_TLS_CARVE_ASSERT's stacks and floors, and whether a pool thread's stack gives its
+    # libc state below the TLS block (KICKOS_REENT_CARVE_OF).
+    list(APPEND _ld_defs ${_ld_stack_defs})
     # Unset keeps the chip script's freestanding default; a full-C++ build needs a larger
     # window for the heap and libstdc++/unwind state.
-    if(DEFINED KICKOS_APPDATA_SIZE)
-      list(APPEND _ld_defs -DKICKOS_APPDATA_SIZE=${KICKOS_APPDATA_SIZE})
-    endif()
     # Room an enforcing script keeps for kernel .data/.bss below the pow2-aligned app window.
     # A kernel .bss past the chip default raises it here, or a whole window of arena is lost to
     # the alignment.
@@ -514,7 +508,7 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
     # tools/image-link.py instantiates per image of each link: the chip's own beside its script,
     # or its family's.
     set(_ld_template "")
-    if(_rc EQUAL 0 AND KICKOS_INIT_IMAGE AND NOT KICKOS_IMAGE_EMBED)
+    if(_rc EQUAL 0 AND NOT KICKOS_IMAGE_EMBED)
       set(_ld_dir "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}")
       set(_ld_template_src "${_ld_dir}/${KICKOS_CHIP}.image.ld")
       if(NOT EXISTS "${_ld_template_src}")
@@ -635,7 +629,7 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
     # that script's program form beside it.
     set(_ld "${CMAKE_CURRENT_SOURCE_DIR}/x86/x86_64/program.ld")
     set(_ld_program "${CMAKE_CURRENT_BINARY_DIR}/pe_image.program.ld")
-    set(_ld_defs -DKICKOS_TLS=0 -DKICKOS_REENT_CARVE=${KICKOS_REENT_CARVE})
+    set(_ld_defs -DKICKOS_TLS=0 -DKICKOS_IMAGES_PLACED=0 ${_ld_stack_defs})
     if(DEFINED KICKOS_HEAP_MIN)
       list(APPEND _ld_defs -DKICKOS_HEAP_MIN=${KICKOS_HEAP_MIN})
     endif()

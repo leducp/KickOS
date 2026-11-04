@@ -17,7 +17,7 @@
  *      (ctx.kernel_sp) before dispatching, so the dispatch is a requirement on
  *      KICKOS_KERNEL_STACK_SIZE. Every HAS_MPU armv7m chip.
  *   0  THE RED ZONE. svc_trampoline dispatches on the caller's PSP and the SVC site refuses
- *      a PSP without room for all of it. stm32f302 and sam3x8e, which have no MPU.
+ *      a PSP without room for all of it. sam3x8e, which has no MPU.
  *
  * Four classes, separated by WHICH STACK they land on:
  *   PENDSV  the switcher's push on the interrupted thread's stack. PendSV_Handler runs in
@@ -157,8 +157,7 @@
 
 /* KICKOS_TELEMETRY is the knob: the trace emitters and arch_shutdown's ring drain are compiled
  * by nothing else, and one fleet-wide figure would make every non-telemetry board reserve
- * a block per thread slot of a tail its image does not contain. bluepill-c8 has 3 slots
- * and 224 spare bytes per slot, so the telemetry figure fails to link it.
+ * a block per thread slot of a tail its image does not contain.
  *
  * KICKOS_BENCH is a smaller knob of the same kind, its arm printing from inside the dispatch:
  * 832 enforced against 672 measured. Off both, 768 enforced against 568 on the ordinary
@@ -338,8 +337,7 @@
  * class EXITK  frame=KICKOS_ARMV7M_TRAP_NEST_EXIT depth=KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_EXITK stack=kernel
  *
  * EXIT is the fallback where KICKOS_KERNEL_STACKS resolves 0: both stubs stay on the thread's
- * own stack. KICKOS_KERNEL_STACKS needs the chip's HAS_MPU, which stm32f103, stm32f302 and
- * sam3x8e do not select.
+ * own stack. KICKOS_KERNEL_STACKS needs the chip's HAS_MPU, which sam3x8e does not select.
  *
  * class EXIT   frame=KICKOS_ARMV7M_TRAP_NEST_EXIT depth=KICKOS_ARMV7M_TRAP_KERNEL_DEPTH_EXIT kstacks=0
  *

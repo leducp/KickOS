@@ -34,8 +34,7 @@ namespace kickos
     }
 }
 
-// `msg` is a diag:: catalogue entry, never a sentence: KICKOS_DIAG_TERSE picks the column and a
-// hardcoded sentence would gate the verbose build only.
+// `msg` is a diag:: catalogue entry, never a sentence.
 #define KICKOS_EXPECT_PANIC(stmt, msg)                                                            \
     EXPECT_DEATH(                                                                                 \
         {                                                                                         \

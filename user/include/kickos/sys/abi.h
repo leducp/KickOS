@@ -65,6 +65,16 @@ typedef struct kos_sem
 } kos_sem_t;
 #define KOS_SEM_INIT(n) {(uint32_t)(n)}
 
+// A condition variable is a word in the memory of the threads that share it, with no kernel
+// object and no handle: bits 30..0 count its signals and broadcasts modulo 2^31, and
+// KOS_WORD_WAITERS says a thread is or was parked on it. Naturally aligned, in memory every
+// sharer can write. All zero is its initial state.
+typedef struct kos_cond
+{
+    uint32_t word;
+} kos_cond_t;
+#define KOS_COND_INIT {0u}
+
 // A task handle: 16 generation bits over a BIASED index into the task pool, whose slots are
 // unrelated to either pool above. The bias is what makes the all-zero word unmintable.
 typedef uint32_t kos_task_t;
@@ -81,10 +91,12 @@ typedef kos_cap_t kos_program_t;
 // thread live. A clean kos_exit(139) aliases it. KOS_EXIT_CANCELLED is the code a CANCELLED thread
 // reports: the kernel ends it, so it never picks a code of its own. Also the status of a task
 // whose members were all cancelled. KOS_EXIT_PANIC is the status of a task one of whose threads
-// called kos_panic without KOS_AUTH_SYSTEM.
+// called kos_panic without KOS_AUTH_SYSTEM, and of one whose thread called abort().
 
-// KOS_SYS_EXIT's scope: the whole image, on a chip that holds one task (_exit's call there).
-#define KOS_EXIT_IMAGE 1u
+// KOS_SYS_EXIT's scope: the calling thread (kos_exit), or its whole task (_exit, so exit(),
+// abort() and a fatal signal).
+#define KOS_EXIT_THREAD 0u
+#define KOS_EXIT_TASK 1u
 
 enum kos_syscall_nr
 {
@@ -113,12 +125,11 @@ enum kos_syscall_nr
                                 //   priority, the stack, the data grant, the windows, the
                                 //   authority word, the capabilities
     KOS_SYS_EXIT = 8,           // (code, scope)         -> does not return. Ends the calling
-                                //   thread, or the SYSTEM when the caller is root, which
-                                //   needs KOS_AUTH_SYSTEM for it and panics without. On a
-                                //   chip that holds one task, scope KOS_EXIT_IMAGE from any
-                                //   caller ends the whole image through the terminal outcome,
-                                //   halting with code where that returns; elsewhere scope is
-                                //   not read
+                                //   thread (KOS_EXIT_THREAD), or with KOS_EXIT_TASK its task
+                                //   as a member's fault does, every other member stopped and
+                                //   code the task's status. Ends the SYSTEM when the caller is
+                                //   root, which needs KOS_AUTH_SYSTEM for it and panics
+                                //   without
     KOS_SYS_IRQ_RAISE = 9,      // (irq_cap) -> 0, or -KOS_EBADF (no live line), -KOS_EACCES (cap
                                 //   lacks SIGNAL), -KOS_ENOTSUP (a line the controller cannot
                                 //   raise from software, or a banked one)
@@ -151,16 +162,18 @@ enum kos_syscall_nr
     KOS_SYS_CPU_CLOCK_HZ = 22,  // ()  -> running core clock in Hz (u64), 0 if unknown (NO KOS_E*).
                                 //   On x86_64 the timestamp counter's rate, the one the kernel's
                                 //   clock and kos_clock_now scale by
-    KOS_SYS_MUTEX_LOCK = 24,    // (kos_mutex_t*, timeout_us) -> 0 held; -KOS_EOWNERDEAD held,
-                                //   its holder having died; -KOS_ETIMEDOUT (the time ran out, or
-                                //   a try found it held) / -KOS_EDEADLK / -KOS_ECANCELED /
-                                //   -KOS_EINVAL (misaligned, not normal memory, the AMP share, a
-                                //   word disagreeing with the waiters the kernel holds, or a word
-                                //   threads wait on with KOS_SYS_WORD_WAIT) /
+    KOS_SYS_MUTEX_LOCK = 24,    // (kos_mutex_t*, limit lo, limit hi) -> 0 held;
+                                //   -KOS_EOWNERDEAD held, its holder having died;
+                                //   -KOS_ETIMEDOUT (the time ran out, or a try found it held) /
+                                //   -KOS_EDEADLK / -KOS_ECANCELED / -KOS_EINVAL (misaligned, not
+                                //   normal memory, the AMP share, a word disagreeing with the
+                                //   waiters the kernel holds, a word threads wait on with
+                                //   KOS_SYS_WORD_WAIT, or a limit hi the ABI does not define) /
                                 //   -KOS_EFAULT (a word the caller cannot write, or one whose
-                                //   page went away while it waited) NOT held. KOS_TIMEOUT_NONE
-                                //   waits forever, 0 is a try. kos_mutex_lock enters only on
-                                //   contention
+                                //   page went away while it waited) NOT held. The limit is
+                                //   KOS_TIMEOUT_REALTIME's: KOS_TIMEOUT_NONE waits forever, 0 and
+                                //   a passed realtime deadline are a try. kos_mutex_lock enters
+                                //   only on contention
     KOS_SYS_MUTEX_UNLOCK = 25,  // (kos_mutex_t*) -> 0, -KOS_EPERM (caller not the holder),
                                 //   -KOS_EINVAL / -KOS_EFAULT (as the lock). Never the death
                                 //   point of a kill: the release completes, and the kill lands
@@ -231,8 +244,8 @@ enum kos_syscall_nr
                                //   INCLUDING a target that had already exited),
                                //   -KOS_ETIMEDOUT, -KOS_ECANCELED (the CALLER was cancelled
                                //   while waiting), -KOS_EBADF (never allocated / reclaimed
-                               //   under this handle), -KOS_EPERM (the caller did not spawn
-                               //   it), -KOS_EDEADLK (naming yourself).
+                               //   under this handle), -KOS_EPERM (another task's thread
+                               //   the caller did not spawn), -KOS_EDEADLK (naming yourself).
     KOS_SYS_SEND = 50,         // (cap, buf, len, timeout_us) -> bytes transferred, or -KOS_E*:
                                //   EINVAL (len above KOS_EP_MSG_MAX, rejected and never
                                //   clamped), EFAULT (bad buffer), EBADF/EACCES (bad cap / no
@@ -387,13 +400,15 @@ enum kos_syscall_nr
                                 //   inside the user compare-and-swap's window back to its load
                                 //   since boot. Any kernel not built for the witness answers
                                 //   -KOS_EINVAL
-    KOS_SYS_WORD_WAIT = 82,     // (uint32_t* word, expected, timeout_us) -> 1 woken with a unit,
-                                //   0 woken without one, -KOS_EAGAIN (the word is not
-                                //   `expected`, nothing parked), -KOS_ETIMEDOUT (at once for a
-                                //   timeout of 0), -KOS_ECANCELED, -KOS_EFAULT (a word the caller
-                                //   cannot write, or whose reach it lost while parked),
-                                //   -KOS_EINVAL (misaligned, not normal memory, the AMP share, or
-                                //   a word threads wait on as a mutex). A plain word: no owner,
+    KOS_SYS_WORD_WAIT = 82,     // (uint32_t* word, expected, limit lo, limit hi) -> 1 woken
+                                //   with a unit, 0 woken without one, -KOS_EAGAIN (the word is
+                                //   not `expected`, nothing parked), -KOS_ETIMEDOUT (at once for
+                                //   a timeout of 0 or a passed realtime deadline),
+                                //   -KOS_ECANCELED, -KOS_EFAULT (a word the caller cannot write,
+                                //   or whose reach it lost while parked), -KOS_EINVAL
+                                //   (misaligned, not normal memory, the AMP share, a word threads
+                                //   wait on as a mutex, or a limit hi the ABI does not define).
+                                //   The limit is KOS_TIMEOUT_REALTIME's. A plain word: no owner,
                                 //   no priority inheritance
     KOS_SYS_WORD_WAKE = 83,     // (uint32_t* word, n, units) -> k, the waiters woken: the
                                 //   min(n, parked) highest, FIFO among equals, the first
@@ -430,20 +445,23 @@ enum kos_syscall_nr
                                 //   EAGAIN (a declared line still retiring from its last holder,
                                 //   an IRQ binding the last incarnation released still retiring,
                                 //   or as KOS_SYS_THREAD_CREATE), EACCES, EOVERFLOW, ENOTSUP and
-                                //   EMFILE as KOS_SYS_THREAD_CREATE, ENOSYS (a packaged driver's
-                                //   declaration on a chip that holds one task,
-                                //   KICKOS_CHIP_ONE_TASK). A packaged driver's
+                                //   EMFILE as KOS_SYS_THREAD_CREATE. A packaged driver's
                                 //   declaration publishes its console through the creator's
                                 //   capability at `ready`, which keeps WAIT, then claims its
                                 //   lines for the entry thread, bound to the notification at
                                 //   `notify`, and seats its device windows on it. Starts the
                                 //   instance's entry thread. With no instance named and none
                                 //   startable, the refusal <kickos/sys.h> states.
-    KOS_SYS_PROGRAM_FIND = 86   // (char const* name, kos_program_t* out) -> 0, or -KOS_E*:
+    KOS_SYS_PROGRAM_FIND = 86,  // (char const* name, kos_program_t* out) -> 0, or -KOS_E*:
                                 //   ENOENT (no program of that name), EFAULT (the name or the
                                 //   out-pointer), EINVAL (a name past KICKOS_ARGV_MAX), EMFILE
                                 //   (caller's cap table). MINTS a program capability with
                                 //   TRANSFER
+    KOS_SYS_CLOCK_REALTIME = 87,  // () -> Unix-epoch nanoseconds (u64, in registers; cannot
+                                  //   fail): the monotonic clock plus the offset the last
+                                  //   KOS_SYS_CLOCK_SET_REALTIME stored, none before it
+    KOS_SYS_CLOCK_SET_REALTIME = 88 // (ns_lo, ns_hi) -> 0, or -KOS_EPERM (no KOS_AUTH_REALTIME).
+                                    //   The wall clock reads ns from now on
 };
 // The raw console write's number, refused in an app as kos_kconsole_write is (<kickos/sys.h>).
 #if defined(KICKOS_APP_IMAGE)
@@ -709,6 +727,13 @@ typedef uint32_t kos_pstate_t;
 // timer floor is 20 us.
 #define KOS_TIMEOUT_NONE UINT32_MAX
 
+// The limit KOS_SYS_MUTEX_LOCK and KOS_SYS_WORD_WAIT take, two words (lo, hi). A hi of 0 makes lo
+// a timeout as above. A hi carrying KOS_TIMEOUT_REALTIME makes the pair, that bit cleared, an
+// absolute CLOCK_REALTIME deadline in Unix-epoch nanoseconds: a set of the wall clock while the
+// caller waits moves it, so the wait ends when the wall clock reads it. Any other hi is refused
+// -KOS_EINVAL.
+#define KOS_TIMEOUT_REALTIME 0x80000000u
+
 // KOS_SYS_CALL packs both message lengths into ONE argument slot so the fourth can carry the
 // deadline. Nine bits each, both being bounded by KOS_EP_MSG_MAX.
 #define KOS_CALL_LEN_BITS 9
@@ -763,6 +788,17 @@ static inline uint32_t kos_u64_hi(uint64_t v)
 static inline uint64_t kos_u64_join(uint32_t lo, uint32_t hi)
 {
     return ((uint64_t)hi << 32) | (uint64_t)lo;
+}
+// The limit pair (KOS_TIMEOUT_REALTIME) for the wall-clock deadline `unix_ns`, hi in the top
+// word. A deadline past the 63 bits the pair holds is the latest one it holds.
+static inline uint64_t kos_limit_realtime(uint64_t unix_ns)
+{
+    uint64_t const latest = ((uint64_t)1 << 63) - 1u;
+    if (unix_ns > latest)
+    {
+        unix_ns = latest;
+    }
+    return ((uint64_t)KOS_TIMEOUT_REALTIME << 32) | unix_ns;
 }
 
 enum kos_policy
@@ -826,7 +862,9 @@ enum kos_thread_flags
 {
     // The thread's end by any cause, its entry's return, kos_exit or a cancel, ends its task as a
     // fault does, the task's status KOS_EXIT_FAULT, unless the task has already ended.
-    KOS_THREAD_ESSENTIAL = 1u << 0
+    KOS_THREAD_ESSENTIAL = 1u << 0,
+    // The thread starts at its creator's base priority, and `prio` is not read.
+    KOS_THREAD_INHERIT_PRIO = 1u << 1
 };
 
 struct kos_thread_params

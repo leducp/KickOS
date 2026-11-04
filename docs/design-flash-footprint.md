@@ -36,7 +36,7 @@ scheduled here.
 8,192 bytes of SRAM on `bluepill-c8`, 40 percent of the part's RAM, and no app on the freestanding
 leaf references it. It is kept anyway because it buys stdio BUFFERING and `malloc`, and surrendering
 it costs exactly those. It is not required for `printf` or `std::cout`: newlib falls back to
-unbuffered stdio when the buffer malloc fails (`arch/arm/chip/stm32f302/stm32f302.ld`, the `.userheap` carve), which
+unbuffered stdio when the buffer malloc fails (the chip linker script's `.userheap` carve), which
 is why `nrf51` ships a zero carve and still prints. The standard-API rule therefore survives a
 heapless profile; see `reference/porting.md`. The ruling is per board through the existing
 `KICKOS_USER_HEAP_SIZE` knob, at the price of the buffering guarantee.

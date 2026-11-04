@@ -121,8 +121,7 @@ witness * console_held_append reason: the hold a record line takes where a publi
 witness * console_chip_writer_leave reason: the end of the kernel chip write's bracket, reached where the console is the kernel's
 
 # --- what it must never reach --------------------------------------------------
-forbid  * _ZN6kickos6kpanicEPKc reason: the panic terminal. It prints through kprintf, so an edge into it from this route is the cycle, and KICKOS_ASSERT and KICKOS_UNREACHABLE both expand to it where KICKOS_DIAG_TERSE is 0
-forbid  * ?_ZN6kickos9kpanic_atEPKcj reason: the terse assert terminal, the second door into the same tail. OPTIONAL because it is only defined under KICKOS_DIAG_TERSE, which is 0 on every preset registered above
+forbid  * _ZN6kickos6kpanicEPKc reason: the panic terminal. It prints through kprintf, so an edge into it from this route is the cycle, and KICKOS_ASSERT and KICKOS_UNREACHABLE both expand to it
 
 # --- what the graph does not know ----------------------------------------------
 # A reachable node with no "bytes (static)" has no out-edges here, so anything it calls is

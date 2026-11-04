@@ -1080,7 +1080,8 @@ feeds the slave app.
   image data at zero, so each task has its own; a region board's tasks share the image's, and any
   of their threads can take it, so one thread can stall every task's stdio and malloc. Being
   words, they cost no capability slot, no kernel object and no task budget, and
-  `kos_libc_lock` names each for a caller that must take one directly. The toolchain's newlib must be
+  `kos_libc_malloc_lock` and `kos_libc_file_lock` name each for a caller that must take one
+  directly. The toolchain's newlib must be
   built with retargetable locking (release 1.1 on): the TU refuses to compile against one
   without it, and a link forces its object in ahead of libc's no-op defaults.
 
@@ -1172,16 +1173,14 @@ feeds the slave app.
   task's declaration and header, the system's objects every task image takes
   (`KOS_IMAGE_SYSTEM_OBJECT`) and the system's driver and client archives. On the sim a
   program's `main` is renamed `<task>_main` there. The init finds a program by the name its
-  table states for the task, and the executable's own by the executable's name. A board linking
-  one image, a 64 KiB one, runs as a program only the executable linking the system.
+  table states for the task, and the executable's own by the executable's name.
 - **Images.** An image is the user code of one link with its own copy of everything it links:
-  its statics, its heap, its libc state, its constructors. Where the init is an image of its own
-  (`KICKOS_INIT_IMAGE`: region and flat boards, the ESP32, the RX and the sim) an app is two:
-  image 0, the init (`KickOS::init`, its driver path, its own copy of the table and its header,
-  program `init`), and image 1, every other object of the link, whose program is the app's
-  target. A 64 KiB board and a translating one link one image, the whole app with its init; on a
-  translating board every space starts from its own copy of that image's data. Each image starts
-  with a header (`user/include/kickos/sys/image.h`) that the final link fills in.
+  its statics, its heap, its libc state, its constructors. The init is an image of its own, so an
+  app is two: image 0, the init (`KickOS::init`, its driver path, its own copy of the table and
+  its header, program `init`), and image 1, every other object of the link, whose program is the
+  app's target. On a translating board every space starts from its own copy of its image's data.
+  Each image starts with a header (`user/include/kickos/sys/image.h`) that the final link fills
+  in.
   Before root is created the kernel checks every header in place (`kernel/task/image_check.cc`),
   and a malformed one panics naming the field. Root starts from image 0's header and runs image
   0's code over image 0's window. Every other task runs its creator's image, or the image of the
@@ -1225,8 +1224,6 @@ feeds the slave app.
   from its last holder answers `-KOS_EAGAIN`, a line held `-KOS_EBUSY`. The entry thread runs
   `kickos_driver_task`, which hands the driver's `START` the `kos_driver_instance` its table
   record and block make.
-  A kernel built for a chip that holds one task (`KICKOS_CHIP_ONE_TASK`, from its chip file's
-  `one_task`) leaves this path out and answers a packaged driver's declaration `-KOS_ENOSYS`.
 - **A driver inside a task.** A driver listed under a task's `drivers` has a table record, flagged
   `KOS_TABLE_TASK_HOSTED` and naming its host, and no declaration. The init never starts it, but
   reserves its ring block and creates the host with that block as the task's shared block. The
@@ -1267,8 +1264,7 @@ feeds the slave app.
   where each one's frames are (`__kickos_image_frames`). On x86_64 the PE32+ image holds image 0
   one section per part, at the program's own offsets, and the later images in `.kimgs`, wherever
   firmware loads it. A space maps its own image alone. `tools/gdb/kickos.py` loads the symbols of
-  the program the stopped task runs beside the kernel's. The 64 KiB boards
-  (`KICKOS_BOARD_IMAGE_SPLIT OFF`) still link their one image in the kernel's own link.
+  the program the stopped task runs beside the kernel's.
 - **Declaring a driver.** The installed package's `kickos.cmake` gives a driver its single shape:
   `kickos_add_driver(<name> [SOURCES] [CLASS] [REGDIR] [THREAD ...]...)`, a freestanding,
   exported driver-lib linking `kickos_user`, its `.data`/`.bss` landing app-side, and with a `THREAD`

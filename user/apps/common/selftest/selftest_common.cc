@@ -314,7 +314,7 @@ namespace selftest
         }
         if (KICKOS_SELFTEST_PEERS + KICKOS_SELFTEST_SERVERS == 0 and r.pool[0] == 't')
         {
-            tap::skip("this board holds one task");
+            tap::skip("this image declares no peer");
             return true;
         }
         tap::skip("short of %s: %d of %d (%d)", r.pool, r.got, r.want, r.rc);
@@ -777,8 +777,7 @@ namespace selftest
 
     int peer_start(kos_task_params const& p, kos_task_t* t, kos_program_t prog)
     {
-        // A chip holding one task declares no peer.
-        if (KICKOS_CHIP_ONE_TASK or p.instance != nullptr)
+        if (p.instance != nullptr)
         {
             return create_waiting(prog, p, t);
         }

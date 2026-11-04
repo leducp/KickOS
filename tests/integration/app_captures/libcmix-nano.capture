@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   microbit
+   arch    armv6m
+   cpu     cortex-m0
+   mpu     off
+   sched   tickless
+   build   2026-11-02 23:50:29 +0100
+   app     libcmix Nov  2 2026 23:50:53 +0100
+   commit  b33a2e9cb-dirty
+   heap    2 KiB available
+   kstack  896 B x 5 = 4480 B
+
+libcmix main: start
+libcmix main: ok printf
+libcmix main: profile nano
+libcmix main: ok profile
+libcmix main: ok malloc
+libcmix main: ok file_lock
+libcmix main: thread profile nano
+libcmix main: ok thread
+libcmix peer: start
+libcmix peer: ok printf
+libcmix peer: profile full
+libcmix peer: ok profile
+libcmix peer: ok malloc
+libcmix peer: ok file_lock
+libcmix peer: thread profile full
+libcmix peer: ok thread
+libcmix peer: done
+libcmix peer: static destructor
+libcmix main: peer status 5
+libcmix main: ok peer_exit
+libcmix main: done
+libcmix main: atexit

@@ -11,6 +11,7 @@
 #include <stdint.h>
 #include <sys/stat.h>
 #include <sys/time.h>
+#include <time.h>
 #include <unistd.h>
 
 #define _exit kos_ut_exit
@@ -25,7 +26,9 @@
 #define kill kos_ut_plain_kill
 #define gettimeofday kos_ut_plain_gettimeofday
 #define getentropy kos_ut_plain_getentropy
-#define kos_clock_set_realtime kos_ut_clock_set_realtime
+#define clock_gettime kos_ut_clock_gettime
+#define clock_settime kos_ut_clock_settime
+#define nanosleep kos_ut_nanosleep
 #define __dso_handle kos_ut_dso_handle
 
 #include "../../../user/src/newlib_stubs.cc"

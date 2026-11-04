@@ -175,8 +175,8 @@ owns, buses and parts) and the build descriptor, configurations and default
 composition in `boards/<board>/`. The kernel above all three calls one seam,
 `arch/include/kickos/arch/arch.h`, and a chip answers the part of it that is its own:
 `arch_init`, the console, the clock read, the pin mux, the diagnostic LED. Two chips
-of one vendor family can share a body (`arch/arm/chip/stm32f1f3/` for the STM32F103
-and F302, `arch/arm/chip/rp2xxx/` for the RP2040 and RP2350) without either becoming
+of one vendor family can share a body (`arch/arm/chip/rp2xxx/` for the RP2040 and
+RP2350) without either becoming
 an `#ifdef` of the other.
 
 **The chip file is the truth for the memory map and the resources.** Every address,

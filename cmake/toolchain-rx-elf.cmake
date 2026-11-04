@@ -28,13 +28,12 @@ set(KICKOS_C_SYMBOL_PREFIX "_" CACHE INTERNAL "What the link spells before a C n
 kickos_toolchain_package(rx-elf)
 
 include("${CMAKE_CURRENT_LIST_DIR}/cross_newlib.cmake")
-kickos_require_toolchain_newlib("rx" "${CMAKE_C_COMPILER}" static ${_kos_cpu})
+kickos_require_toolchain_newlib("rx" "${CMAKE_C_COMPILER}" ${_kos_cpu})
 
 # RX instructions are always little-endian; only *data* endianness is selectable and GNU RX
 # defaults to little-endian, matching the MDE option word the linker script emits (spike
 # sec.1, sec.6).
 string(JOIN " " _kos_common ${_kos_cpu} -ffunction-sections -fdata-sections)
 kickos_toolchain_flags_init("${_kos_common}")
-kickos_toolchain_newlib_flags()
 
 kickos_toolchain_bare_metal_rules()

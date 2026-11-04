@@ -22,8 +22,8 @@ COMPILER = [shutil.which("g++") or "g++"]
 # The arch each described chip builds for, and on a multi-architecture part the one cluster it picks.
 ARCHES = {
     "xmc4800": "armv7m", "stm32f411": "armv7m", "mk64f": "armv7m", "esp32c6": "rv32imac", "virt_rv32": "rv32imac",
-    "virt_arm64": "armv8a", "virt_rv64": "rv64imac", "q35": "x86_64", "imx8mp": "armv8a", "stm32f103": "armv7m",
-    "stm32f302": "armv7m", "rp2040": "armv6m", "rp2350": "armv7m", "imxrt1062": "armv7m",
+    "virt_arm64": "armv8a", "virt_rv64": "rv64imac", "q35": "x86_64", "imx8mp": "armv8a",
+    "rp2040": "armv6m", "rp2350": "armv7m", "imxrt1062": "armv7m",
     "sam3x8e": "armv7m", "nrf51": "armv6m", "mps2": "armv7m", "an505": "armv7m", "rx72m": "rxv3",
     "esp32": "lx6", "sim": "sim",
 }
@@ -82,7 +82,6 @@ HAND_LIMITS = """#define KICKOS_MAX_IRQ 40
 #define KICKOS_CHIP_CYCCNT_HZ 0
 #define KICKOS_CHIP_CYCCNT_GLITCHES 1
 #define KICKOS_CHIP_DCACHE 1
-#define KICKOS_CHIP_ONE_TASK 0
 #define KICKOS_CHIP_REGION_GRANULE 32
 #define KICKOS_CHIP_REGION_POW2 1
 """
@@ -201,11 +200,9 @@ class Generated(unittest.TestCase):
     def test_tree_family_exit_and_cpu(self):
         semihost = ("common", "common/semihost_console.cc")
         rp = ("arm/chip/rp2xxx", "arm/chip/rp2xxx/chip_rp2xxx.cc;arm/chip/rp2xxx/rom_call.S")
-        stm = ("arm/chip/stm32f1f3", "arm/chip/stm32f1f3/chip_stm32f1f3.cc")
         families = {"an505": ("arm/chip/mps2", "arm/chip/mps2/chip_mps2.cc;arm/chip/mps2/startup.S;"
                                                "common/semihost_console.cc"),
-                    "mps2": semihost, "nrf51": semihost, "virt_rv32": semihost, "rp2040": rp, "rp2350": rp,
-                    "stm32f103": stm, "stm32f302": stm}
+                    "mps2": semihost, "nrf51": semihost, "virt_rv32": semihost, "rp2040": rp, "rp2350": rp}
         exits = ("an505", "mps2", "nrf51", "virt_rv32", "virt_rv64", "virt_arm64", "imx8mp")
         for name, arch in ARCHES.items():
             path = os.path.join(TREE, "platform", name, "chip.yaml")
@@ -227,7 +224,6 @@ class Generated(unittest.TestCase):
     def test_tree_reserved_blocks(self):
         for name, count, first in (("sim", 0, None), ("mps2", 0, None),
                                    ("xmc4800", 3, "0x4000C000 0x4000"),
-                                   ("stm32f302", 4, "0x40000000 0x400"),
                                    ("esp32c6", 14, "0x60091040 0xFC0"), ("rx72m", 7, "0x8C100 0x100")):
             path = os.path.join(TREE, "platform", name, "chip.yaml")
             text = chip.generate(self.view(path, ARCHES[name]))["chip.cmake"]
@@ -240,7 +236,6 @@ class Generated(unittest.TestCase):
     def test_tree_kernel_lines(self):
         for name, lines, doorbell in (
                 ("sim", "", ""), ("mps2", "", ""), ("stm32f411", "TIM2_IRQ=28", ""),
-                ("stm32f103", "TIM3_GLOBAL=29", ""), ("stm32f302", "TIM2_GLOBAL=28", ""),
                 ("sam3x8e", "TC0_IRQ=27", ""),
                 ("rx72m", "CMTW_CMWI0=30;ICU_GROUPBL2=107;ICU_GROUPBL0=110;ICU_GROUPBL1=111;"
                           "ICU_GROUPAL0=112;ICU_GROUPAL1=113", ""),
@@ -272,21 +267,12 @@ class Generated(unittest.TestCase):
         self.assertEqual(rows["bus_master_apertures"], [])
 
     def test_data_cache_reaches_the_limits(self):
-        for name, value in (("imxrt1062", 1), ("stm32f302", 0)):
+        for name, value in (("imxrt1062", 1), ("stm32f411", 0)):
             view = self.view(os.path.join(PLATFORM, name, "chip.yaml"))
             self.assertIn(("KICKOS_CHIP_DCACHE", value, None), chip.limit_values(view), name)
 
-    def test_one_task_reaches_the_limits(self):
-        for name, value in (("imxrt1062", 0), ("stm32f103", 1), ("stm32f302", 1)):
-            view = self.view(os.path.join(PLATFORM, name, "chip.yaml"))
-            self.assertIn(("KICKOS_CHIP_ONE_TASK", value, None), chip.limit_values(view), name)
-            on = "OFF"
-            if value:
-                on = "ON"
-            self.assertIn("\nset(KICKOS_CHIP_ONE_TASK %s)\n" % on, chip.generate(view)["chip.cmake"], name)
-
     def test_tree_kernel_led(self):
-        led = ("bluepill-c8", "f302nucleo", "blackpill", "f411disco", "picopi", "teensy41", "frdmk64f", "due",
+        led = ("blackpill", "f411disco", "picopi", "teensy41", "frdmk64f", "due",
                "xmc4800-relax", "esp32-wroom", "esp32c6-wroom")
         boards = [path for path in glob.glob(os.path.join(PLATFORM, "*", "*.yaml"))
                   if os.path.basename(path) != "chip.yaml"]
@@ -309,8 +295,8 @@ class Generated(unittest.TestCase):
     def test_tree_region_rule(self):
         rules = {
             "xmc4800": (32, 1), "stm32f411": (32, 1), "mk64f": (32, 0), "esp32c6": (8, 1), "virt_rv32": (8, 1),
-            "virt_arm64": (0, 0), "virt_rv64": (0, 0), "q35": (0, 0), "imx8mp": (0, 0), "stm32f103": (0, 0),
-            "stm32f302": (0, 0), "rp2040": (256, 1), "rp2350": (32, 0), "imxrt1062": (32, 1), "sam3x8e": (32, 1),
+            "virt_arm64": (0, 0), "virt_rv64": (0, 0), "q35": (0, 0), "imx8mp": (0, 0),
+            "rp2040": (256, 1), "rp2350": (32, 0), "imxrt1062": (32, 1), "sam3x8e": (32, 1),
             "nrf51": (0, 0), "mps2": (32, 1), "an505": (32, 0), "rx72m": (16, 0), "esp32": (0, 0), "sim": None,
         }
         self.assertEqual(set(rules), set(ARCHES))

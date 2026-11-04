@@ -36,6 +36,7 @@ set(KICKOS_KERNEL_SOURCES
   amp/ampshare.cc
   sync/smptrace.cc
   time/time.cc
+  time/realtime.cc
   time/clock_select.cc
   syscall/syscall.cc
   syscall/syscall_mem.cc

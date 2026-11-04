@@ -2,10 +2,10 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The per-thread carve off the LOW end of the thread's own stack, so it costs no MPU
-// descriptor of its own: a pool thread's libc state first (KICKOS_REENT_CARVE bytes, whose
-// last two words are the cell that ends where the TLS block starts), then the TLS block, which
-// the thread pointer names less the image's offset (tls_thread_pointer). Idle's stack carries
-// the TLS block alone.
+// descriptor of its own: a pool thread's libc state first (tls_libc_carve bytes, whose last
+// KICKOS_REENT_CELL_WORDS words are the cell that ends where the TLS block starts), then the TLS
+// block, which the thread pointer names less the image's offset (tls_thread_pointer). Idle's
+// stack carries the TLS block alone.
 //
 // Whether the thread pointer is derived by masking SP down to the stride (plus the libc
 // state) or SEATED from the thread's own context is per arch (ARCH_TLS_FROM_SP); a seating
@@ -33,6 +33,10 @@ size_t tls_block_size(size_t image);
 // The thread pointer of a thread of image `image` whose TLS block starts at `block`: below it
 // by the image's offset in the segment, so that the image's own offsets land in its block.
 uintptr_t tls_thread_pointer(size_t image, uintptr_t block);
+
+// What a pool thread of image `image` gives its libc state below the TLS block, from the image's
+// header: zero where the image carves none.
+size_t tls_libc_carve(size_t image);
 
 // What a pool thread's stack pays: its libc state and the TLS block.
 size_t tls_pool_carve_size(size_t image);

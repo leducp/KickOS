@@ -9,14 +9,15 @@
 // where it is unbuffered (microbit) the two tasks' lines mix there. Main's task's workers start on
 // a heap main has exhausted to the end of its window, and a round the heap cannot serve waits for
 // it. Before they start: a thread killed while it waits for the malloc lock ends alone, and so
-// does one that holds the libc lock and hands it over; a killed waiter asks again at the kernel
+// does one that holds stdout's lock and hands it over; a killed waiter asks again at the kernel
 // and ends there; a holder killed while it runs releases the malloc lock; getenv with a kill
 // pending takes the free libc lock with no kernel entry; a malloc lock taken from a holder that
-// died holding it ends the taker's task; and a printf completes while another thread of main's
-// task holds the malloc lock.
+// died holding it ends the taker's task; a printf completes while another thread of main's task
+// holds the malloc lock; a stream closed and its slot reused while fflush(NULL) waits for its
+// lock leaves that lock whole to the waiter; and an exit handler takes a stream's lock its holder
+// keeps while it registers a handler.
 
 #include <kickos/apps/peer_run.h>
-#include <kickos/chip_limits.h> // KICKOS_CHIP_ONE_TASK
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 
@@ -27,14 +28,21 @@
 extern "C" char _kickos_heap_start[];
 extern "C" char _kickos_heap_limit[];
 extern "C" void* _sbrk(intptr_t incr);
+// newlib's own stream walk (stdio/findfp.c) and its exit handler table, which no header declares.
+extern "C" void __fp_lock_all(void);
+extern "C" void __fp_unlock_all(void);
+extern "C" int __cxa_atexit(void (*fn)(void*), void* arg, void* dso);
+extern "C" void __cxa_finalize(void* dso);
 #endif
 
 namespace
 {
     using namespace libcrace;
 
-    // The racing workers of main's task: the others run in the peer's, where there is one.
+    // The racing workers of main's task: the others run in the peer's.
     constexpr int MAIN_WORKERS = static_cast<int>(TASK_RACERS);
+    // How long main waits for an arm's threads.
+    constexpr uint32_t ARM_WAIT_US = 20000000;
 
     // The sim's host libc has no lock to hold.
     void malloc_holder(void*)
@@ -49,17 +57,16 @@ namespace
 #endif
     }
 
-    // The env lock is the libc lock.
-    void libc_holder_victim(void*)
+    void file_holder_victim(void*)
     {
 #if defined(_NEWLIB_VERSION)
-        __env_lock(_REENT);
+        flockfile(stdout);
 #endif
         kos_sem_post(&gates()->entering);
         void* volatile block = malloc(32);
         free(block);
 #if defined(_NEWLIB_VERSION)
-        __env_unlock(_REENT);
+        funlockfile(stdout);
 #endif
     }
 
@@ -149,12 +156,12 @@ namespace
         return ended;
     }
 
-    // The killed holder's death reaches the next take of the libc lock, which holds it; the host
+    // The killed holder's death reaches the next take of stdout's lock, which holds it; the host
     // libc of the sim takes no lock of ours.
-    bool libc_lock_handed_over()
+    bool file_lock_handed_over()
     {
 #if defined(_NEWLIB_VERSION)
-        kos_mutex_t* const lock = kos_libc_lock(KOS_LIBC_LOCK_STDIO);
+        kos_mutex_t* const lock = kos_libc_file_lock(stdout);
         if (kos_mutex_lock(lock, 0) != -KOS_EOWNERDEAD)
         {
             return false;
@@ -211,7 +218,185 @@ namespace
     }
 #endif
 
-#if not KICKOS_CHIP_ONE_TASK
+#if defined(_NEWLIB_VERSION)
+
+    // A stream on the console whose buffer comes from the heap, so its close, or a failing
+    // reopen, frees it holding the stream's lock.
+    FILE* heap_buffered_stream()
+    {
+        FILE* const f = fdopen(1, "w");
+        if (f != nullptr and setvbuf(f, nullptr, _IOFBF, 32) != 0)
+        {
+            (void)fclose(f);
+            return nullptr;
+        }
+        return f;
+    }
+
+    // True once a thread waits on `m`, within the arms' bound.
+    bool parked_on(kos_mutex_t const* m)
+    {
+        for (uint32_t waited = 0; waited < ARM_WAIT_US; waited += 1000u)
+        {
+            if ((__atomic_load_n(&m->word, __ATOMIC_ACQUIRE) & KOS_WORD_WAITERS) != 0)
+            {
+                return true;
+            }
+            kos::sleep_ns(1000000ull);
+        }
+        return false;
+    }
+
+    FILE* g_order_stream = nullptr;
+    kos_sem_t g_order_done = KOS_SEM_INIT(0);
+    bool g_order_ok = false;
+
+    // Closes the stream, then opens one, in its slot on one core. Above one core the walker
+    // flushing the closed stream may mark it a moment, and the open takes the next slot.
+    void order_closer(void*)
+    {
+        (void)fclose(g_order_stream);
+        FILE* const again = fdopen(1, "w");
+        g_order_ok = again != nullptr;
+        if (again != nullptr)
+        {
+            (void)fclose(again);
+        }
+        kos_sem_post(&g_order_done);
+    }
+
+    // Reopens the stream for reading, which its write-only descriptor refuses: freopen then
+    // takes sfp's lock holding the stream's and releases the stream.
+    void order_reopener(void*)
+    {
+        g_order_ok = freopen(nullptr, "r", g_order_stream) == nullptr;
+        kos_sem_post(&g_order_done);
+    }
+
+    void order_walker(void*)
+    {
+        __fp_lock_all();
+        __fp_unlock_all();
+        kos_sem_post(&g_order_done);
+    }
+
+    void order_flusher(void*)
+    {
+        (void)fflush(nullptr);
+        kos_sem_post(&g_order_done);
+    }
+
+    // `holder` parks inside its call on the free of the stream's buffer, holding the stream's
+    // lock, behind main's hold of malloc's; `walker` then parks on the stream's lock; main frees
+    // malloc's. True when both ended within the bound, the holder's call did what it should
+    // and the stream's lock is free.
+    bool race_orders(void (*holder)(void*), void (*walker)(void*))
+    {
+        g_order_stream = heap_buffered_stream();
+        if (g_order_stream == nullptr)
+        {
+            return false;
+        }
+        kos_mutex_t const* const lock = kos_libc_file_lock(g_order_stream);
+        (void)kos_sem_init(&g_order_done, 0);
+        g_order_ok = false;
+        __malloc_lock(_REENT);
+        auto th = spawn_in(holder, nullptr, "morder", WORKER_PRIO, 0);
+        bool ran = th.valid() and parked_on(kos_libc_malloc_lock());
+        kos::thread::Handle tw;
+        if (ran)
+        {
+            tw = spawn_in(walker, nullptr, "mwalk", WORKER_PRIO, 0);
+            ran = tw.valid() and parked_on(lock);
+        }
+        __malloc_unlock(_REENT);
+        for (int k = 0; k < 2 and ran; k++)
+        {
+            ran = kos_sem_wait(&g_order_done, ARM_WAIT_US) == 0;
+        }
+        if (not ran)
+        {
+            return false;
+        }
+        th.join();
+        tw.join();
+        return g_order_ok and (__atomic_load_n(&lock->word, __ATOMIC_ACQUIRE) == 0u);
+    }
+
+    // The exit handler's dso, which only this arm's handler names. The registrar's atexit also
+    // makes newlib-nano's __cxa_atexit register at all, which it does only beside atexit.
+    char g_exit_dso;
+    kos_sem_t g_exit_holds = KOS_SEM_INIT(0);
+    kos_sem_t g_exit_running = KOS_SEM_INIT(0);
+    kos_sem_t g_exit_registered = KOS_SEM_INIT(0);
+    bool g_exit_took = false;
+    bool g_exit_ran = false;
+    constexpr int EXIT_TRY_POLLS = 2000;
+
+    uint32_t volatile g_exit_noop_ran = 0;
+
+    // Not empty: the compiler drops a registration of an empty function.
+    void exit_noop()
+    {
+        g_exit_noop_ran = 1u;
+    }
+
+    // Runs under __cxa_finalize: tries stdout's lock, which the registrar holds until its own
+    // registration returns, for a bounded time.
+    void exit_handler(void*)
+    {
+        g_exit_ran = true;
+        kos_sem_post(&g_exit_running);
+        for (int i = 0; i < EXIT_TRY_POLLS and not g_exit_took; i++)
+        {
+            if (ftrylockfile(stdout) == 0)
+            {
+                g_exit_took = true;
+                funlockfile(stdout);
+            }
+            else
+            {
+                kos::sleep_ns(1000000ull);
+            }
+        }
+    }
+
+    void exit_registrar(void*)
+    {
+        flockfile(stdout);
+        kos_sem_post(&g_exit_holds);
+        (void)kos_sem_wait(&g_exit_running, ARM_WAIT_US);
+        (void)atexit(exit_noop);
+        funlockfile(stdout);
+        kos_sem_post(&g_exit_registered);
+    }
+
+    // An exit handler takes a lock a thread holds while that thread registers a handler: *took
+    // when the handler took it, so neither waited on the other. False where the arm was refused.
+    bool exit_handler_takes_a_held_lock(bool* took)
+    {
+        g_exit_took = false;
+        g_exit_ran = false;
+        if (__cxa_atexit(exit_handler, nullptr, &g_exit_dso) != 0)
+        {
+            return false;
+        }
+        auto registrar = spawn_in(exit_registrar, nullptr, "mexit", WORKER_PRIO, 0);
+        if (not registrar.valid() or kos_sem_wait(&g_exit_holds, KOS_TIMEOUT_NONE) != 0)
+        {
+            return false;
+        }
+        __cxa_finalize(&g_exit_dso);
+        bool const ran = kos_sem_wait(&g_exit_registered, ARM_WAIT_US) == 0;
+        if (ran)
+        {
+            registrar.join();
+        }
+        *took = g_exit_took;
+        return ran and g_exit_ran;
+    }
+#endif
+
     // The peer program run with a role, whose task's exit status is the answer.
     class PeerRun
     {
@@ -272,7 +457,6 @@ namespace
         }
         return run.finish();
     }
-#endif
 
     // The printf allocates nothing: main's first printf gave stdout its buffer.
     bool print_beside_malloc()
@@ -372,18 +556,29 @@ namespace
 int main(int, char**)
 {
     printf("libcrace: %d workers x %d rounds\n", WORKERS, ROUNDS);
+#if defined(_NEWLIB_VERSION)
+    // newlib gave stdout its buffer at that first write, or none where the heap could not.
+    if ((stdout->_flags & __SNBF) != 0)
+    {
+        kos::print("libcrace: main's stdout is unbuffered\n");
+    }
+    else
+    {
+        kos::print("libcrace: main's stdout is buffered\n");
+    }
+#endif
     gates_seat();
     if (not kill_inside_malloc(malloc_victim, "mvictim"))
     {
         return refused("malloc kill");
     }
     kos::print("libcrace: a thread killed waiting for malloc ended alone\n");
-    if (not kill_inside_malloc(libc_holder_victim, "mlibc") or not libc_lock_handed_over())
+    if (not kill_inside_malloc(file_holder_victim, "mfile") or not file_lock_handed_over())
     {
-        kos::print("libcrace: a thread killed holding the libc lock kept it\n");
+        kos::print("libcrace: a thread killed holding stdout's lock kept it\n");
         return 1;
     }
-    kos::print("libcrace: a thread killed holding the libc lock handed it over\n");
+    kos::print("libcrace: a thread killed holding stdout's lock handed it over\n");
 #if defined(_NEWLIB_VERSION)
     bool asked = false;
     if (not killed_waiter_asks_the_kernel(&asked))
@@ -398,10 +593,6 @@ int main(int, char**)
     {
         kos::print("libcrace: a killed malloc waiter took the lock freed under it\n");
     }
-#if KICKOS_CHIP_ONE_TASK
-    kos::print("libcrace: skip - a holder killed while running released malloc, and its taker's "
-               "task lived: this board holds one task\n");
-#else
     int const released = run_peer("release");
     if (released != 0 and released != KOS_EXIT_FAULT)
     {
@@ -417,7 +608,6 @@ int main(int, char**)
         kos::print("libcrace: a holder killed while running died holding malloc, and its taker's "
                    "task ended\n");
     }
-#endif
     bool read = false;
     if (not getenv_with_a_kill_pending(&read))
     {
@@ -469,6 +659,37 @@ int main(int, char**)
     {
         return refused("printf beside malloc");
     }
+#if defined(_NEWLIB_VERSION)
+    if (not race_orders(order_closer, order_flusher))
+    {
+        kos::print("libcrace: fclose and fflush(NULL) never both ended\n");
+        return 1;
+    }
+    kos::print("libcrace: fclose and fflush(NULL) raced to their ends\n");
+    if (not race_orders(order_reopener, order_walker))
+    {
+        kos::print("libcrace: a failing freopen and a walk locking every stream never both "
+                   "ended\n");
+        return 1;
+    }
+    kos::print("libcrace: a failing freopen and a walk locking every stream raced to their "
+               "ends\n");
+    bool took = false;
+    if (not exit_handler_takes_a_held_lock(&took))
+    {
+        kos::print("libcrace: the exit handler arm was refused\n");
+        return 1;
+    }
+    if (took)
+    {
+        kos::print("libcrace: an exit handler took a lock its holder kept while it registered "
+                   "a handler\n");
+    }
+    else
+    {
+        kos::print("libcrace: an exit handler waited behind the atexit lock\n");
+    }
+#endif
     Ballast* const ballast = exhaust_heap();
 #if defined(_NEWLIB_VERSION)
     report_heap_end();
@@ -479,7 +700,6 @@ int main(int, char**)
     kos_cap_t meet_main = KOS_CAP_NONE;
     kos_cap_t meet_peer = KOS_CAP_NONE;
     int started = 0;
-#if not KICKOS_CHIP_ONE_TASK
     if (kos_notify_create(&meet_main) != 0 or kos_notify_create(&meet_peer) != 0)
     {
         kos::print("libcrace: no notification for the two tasks' racers to meet on\n");
@@ -497,7 +717,6 @@ int main(int, char**)
     {
         (void)kos_notify(meet_main);
     }
-#endif
     uint32_t main_started = 0;
     for (int w = 0; w < MAIN_WORKERS; w++)
     {
@@ -520,7 +739,6 @@ int main(int, char**)
     {
         kos_sem_wait(&g_gates->done, KOS_TIMEOUT_NONE);
     }
-#if not KICKOS_CHIP_ONE_TASK
     if (racers.running())
     {
         if (racers.finish() != 0)
@@ -530,7 +748,6 @@ int main(int, char**)
     }
     (void)kos_handle_close(meet_main);
     (void)kos_handle_close(meet_peer);
-#endif
     if (started != WORKERS)
     {
         kos::print("libcrace: spawn refused\n");

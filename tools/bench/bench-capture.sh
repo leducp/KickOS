@@ -282,10 +282,10 @@ case $BOARD in
     FLASH_PORT="$PORT" FLASH_IMAGE="$IMG" "$ROOT/tools/flash.sh" "$BOARD" "$APP" || refuse "the flash failed"
     "$PYBIN" "$HERE/cap_esp.py" "$PORT" "$LOG" "${CAP_SECS:-40}" '^1\.\.[0-9]+' > /dev/null 2>&1
     ;;
-  f302nucleo|f411disco)
-    # One arm, two consoles. f302nucleo's is the ST-Link V2.1's own VCOM; f411disco's probe
-    # is a V2 with NO VCP, so its console is a separate FTDI named by RIG_CONSOLE_F411DISCO
-    # and the stty re-arm below is what keeps that cable from returning EOF at once.
+  f411disco)
+    # The probe is an ST-Link V2 with NO VCP, so the console is a separate FTDI named by
+    # RIG_CONSOLE_F411DISCO and the stty re-arm below is what keeps that cable from returning
+    # EOF at once.
     #
     # THE WRITE'S OWN BOOT IS NOT READ: it starts without a reset and under halting debug, and
     # in some runs faults at once and halts on a vector catch. A reset under the armed reader
@@ -295,7 +295,7 @@ case $BOARD in
     # recipe are one command.
     #
     # FLASH_TOOL IS PINNED, not left to the dispatcher: candidates_for() offers "stlink jlink"
-    # for stm32f302 and takes the first on PATH, so on a host without stlink-tools this would
+    # for stm32f411 and takes the first on PATH, so on a host without stlink-tools this would
     # silently become a J-Link SWD flash, a different recipe reached by accident. Pinning it
     # keeps the missing-tool case a named refusal.
     command -v st-flash > /dev/null || refuse "st-flash not on PATH (apt install stlink-tools)"
@@ -577,7 +577,7 @@ case "$LABEL" in
     BANNER="commit $LABEL"
     # A label recovered with its `-dirty` intact is verified; it still arrived damaged and the
     # line says so, which the UNVERIFIED spelling above already carries for the other case.
-    if ! grep -aqE "$BANNER_COMMIT_RE" "$LOG" && [ -z "$(banner_terse "$LOG")" ]; then
+    if ! grep -aqE "$BANNER_COMMIT_RE" "$LOG"; then
       BANNER="$BANNER (banner damaged in transit)"
     fi
     ;;
@@ -854,8 +854,7 @@ bench_expect_arch() { # <board.cmake> [configured arch]
 }
 
 # <log>. The arch the last boot's banner names, or nothing where the line is gone or damaged.
-# Both banner columns (include/kickos/diag.h): `   arch    rxv3` and the terse `a rxv3`. The
-# line stands above the commit line the slice is cut at, so it is read off the whole log up to
+# The line stands above the commit line the slice is cut at, so it is read off the whole log up to
 # the boot start.
 #
 # THIS IS A CROSS-CHECK AND NEVER THE SOURCE: an absent line says nothing, and only a line naming
@@ -865,7 +864,6 @@ bench_banner_arch() { # <log>
   sed -n "1,$(bench_boot_start "$1")p" "$1" | awk '
       { gsub(/\r/, "") }
       /^   arch +[A-Za-z0-9_]+ *$/ { a = $2 }
-      /^a [A-Za-z0-9_]+ *$/ { a = $2 }
       END { print a }'
 }
 
@@ -1276,15 +1274,6 @@ bench_controls() {
   ctl_head "$CTL/damaged" "${EXPECT_COMMIT%-dirty}" 84000000 "   c "
   ctl_window "$CTL/damaged" 50 50
   printf 'bench: done\r\n' >> "$CTL/damaged"
-  # THE SHORT COLUMN a KICKOS_DIAG_TERSE board prints, whole and undamaged, and the same commit
-  # row under a prose title or with its own `c ` lost, both of which read as damage.
-  sed -e 's|^   KickOS 0.5.1  -  microkernel RTOS|K 0.5.1|' -e 's|^   commit  |c |' \
-    "$CTL/good" > "$CTL/terse"
-  ctl_head "$CTL/tersenotitle" "${EXPECT_COMMIT%-dirty}" 84000000 "c "
-  ctl_window "$CTL/tersenotitle" 50 50
-  printf 'bench: done\r\n' >> "$CTL/tersenotitle"
-  sed -e 's|^   KickOS 0.5.1  -  microkernel RTOS|K 0.5.1|' -e 's|^c ||' "$CTL/tersenotitle" \
-    > "$CTL/tersebare"
   # A table the console could not take whole: every line after it still arrives, so the
   # sentinel is there and only the header's own count says anything is missing.
   sed '/^    ARCH_SWITCH/d' "$CTL/good" > "$CTL/dropped"
@@ -1509,35 +1498,30 @@ EOF
   # report still passes, and the one that also lost its watch is still refused.
   sed '/^   arch /d' "$CTL/fpwatch" > "$CTL/rxnoarch"
   sed '/^   arch /d' "$CTL/fplost" > "$CTL/rxnoarchfp"
-  # THE TERSE BANNER COLUMN, read as the full one is.
-  sed 's|^   arch    rxv3|a rxv3|' "$CTL/fpwatch" > "$CTL/rxterse"
-  sed 's|^   arch    rxv3|a rxv3|' "$CTL/fplost" > "$CTL/rxterselost"
-  # A BANNER NAMING ANOTHER ARCH than the capture was asked to run, in either column and from
-  # either side: every row the rxv3 report owes is present, so only the cross-check refuses it.
+  # A BANNER NAMING ANOTHER ARCH than the capture was asked to run: every row the rxv3 report
+  # owes is present, so only the cross-check refuses it.
   sed 's|^   arch    rxv3|   arch    armv7m|' "$CTL/fpwatch" > "$CTL/rxcontra"
-  sed 's|^   arch    rxv3|a armv7m|' "$CTL/fpwatch" > "$CTL/rxcontraterse"
   # Another arch's report carrying neither row, which it owes neither of.
   sed '/^  switch-mean: /d' "$CTL/fpother" > "$CTL/armbare"
 
   # <plant>:<the arch it is judged as>. A report of no arch's shape is judged as armv7m, an arch
   # that owes neither RX row, so each of them reads on the one difference it plants.
-  for _c in good:armv7m terse:armv7m twowin:armv7m threewin:armv7m nocyc:armv7m notitle:armv7m \
+  for _c in good:armv7m twowin:armv7m threewin:armv7m nocyc:armv7m notitle:armv7m \
             mean:armv7m \
-            fpwatch:rxv3 fpother:armv7m rxnoarch:rxv3 rxterse:rxv3 armbare:armv7m; do
+            fpwatch:rxv3 fpother:armv7m rxnoarch:rxv3 armbare:armv7m; do
     _ca=${_c#*:}
     bench_verdict "$CTL/${_c%%:*}" "$EXPECT_COMMIT" "$CTL/${_c%%:*}.slice" "$_ca" 2>/dev/null \
       || { rm -rf "$CTL"; refuse "the bench verdict refuses a planted '${_c%%:*}' report judged
   as ${_ca:-no arch}, which is a complete one, so it would refuse captures this bench legitimately
   takes"; }
   done
-  for _c in cut:armv7m flip:armv7m other:armv7m damaged:armv7m tersenotitle:armv7m \
-            tersebare:armv7m dropped:armv7m \
+  for _c in cut:armv7m flip:armv7m other:armv7m damaged:armv7m dropped:armv7m \
             nopasses:armv7m winlost:armv7m winbody:armv7m winnosw:armv7m twoprobe:armv7m \
             noloc:armv7m shortsweep:armv7m longsweep:armv7m malformed:armv7m locshort:armv7m \
             noswitch:armv7m reboot:armv7m rebootdropped:armv7m rebootdamaged:armv7m \
             meanlost:armv7m meann:armv7m meanmax:armv7m twomean:armv7m meanbad:armv7m \
             fpmis:rxv3 fplost:rxv3 fptwo:rxv3 fpbad:rxv3 fpsum:rxv3 fpnone:rxv3 rxnomean:rxv3 \
-            rxnoarchfp:rxv3 rxterselost:rxv3 rxcontra:rxv3 rxcontraterse:rxv3 fpwatch:armv7m \
+            rxnoarchfp:rxv3 rxcontra:rxv3 fpwatch:armv7m \
             fpwatch:; do
     _ca=${_c#*:}
     if bench_verdict "$CTL/${_c%%:*}" "$EXPECT_COMMIT" "$CTL/${_c%%:*}.slice" "$_ca" \
@@ -1597,12 +1581,11 @@ EOF
   fi
 
   rm -rf "$CTL"
-  echo "control: the bench verdict passes a complete report at the expected commit, the same" >&2
-  echo "  under the terse banner column, one carrying two accounted windows, one carrying" >&2
-  echo "  three, one whose switch row sampled nothing and carries no end-to-end denominator," >&2
+  echo "control: the bench verdict passes a complete report at the expected commit, one" >&2
+  echo "  carrying two accounted windows, one carrying three, one whose switch row sampled nothing and carries no end-to-end denominator," >&2
   echo "  and one whose banner title was lost and whose commit line stands in for it; it" >&2
   echo "  refuses a truncated one, one whose dirty state disagrees, one from another commit, one" >&2
-  echo "  whose banner arrived damaged in either column, one whose phase table lost a row, one" >&2
+  echo "  whose banner arrived damaged, one whose phase table lost a row, one" >&2
   echo "  carrying no end-to-end denominator beside a switch row" >&2
   echo "  that sampled, one whose SECOND window lost its accounting, one whose SECOND window" >&2
   echo "  lost its end-to-end block whole and kept the accounting, one whose SECOND window of" >&2
@@ -1615,13 +1598,13 @@ EOF
   echo "  carrying a switch-mean row in each of three windows, and refuses one whose SECOND" >&2
   echo "  window lost it, one over another n than its switch row, one above that row's max," >&2
   echo "  two in one window, and one that does not read as a mean. It passes an rxv3 report" >&2
-  echo "  whose fastpath watch counts no misaligned entry, the same with its arch line gone or" >&2
-  echo "  in the terse column, and another arch's that carries no watch and no mean; it" >&2
-  echo "  refuses an rxv3 report whose watch counts misaligned entries, one that lost the" >&2
-  echo "  watch, also with its arch line gone or terse, one carrying two, one that does not" >&2
+  echo "  whose fastpath watch counts no misaligned entry, the same with its arch line gone," >&2
+  echo "  and another arch's that carries no watch and no mean; it refuses an rxv3 report" >&2
+  echo "  whose watch counts misaligned entries, one that lost the watch, also with its arch" >&2
+  echo "  line gone, one carrying two, one that does not" >&2
   echo "  read as N of M over saves and restores, one whose counts do not add up, one whose" >&2
-  echo "  watch saw no entry, one that lost every mean, one whose banner names another arch" >&2
-  echo "  in either column, the complete rxv3 report judged as armv7m, and any report judged" >&2
+  echo "  watch saw no entry, one that lost every mean, one whose banner names another arch," >&2
+  echo "  the complete rxv3 report judged as armv7m, and any report judged" >&2
   echo "  as no arch; the expected arch resolves from the build, the board, or both agreeing," >&2
   echo "  and is refused where they disagree or neither names one. The cycle judgement" >&2
   echo "  passes a live counter over three windows, refuses one live in its first window and" >&2
@@ -1630,14 +1613,10 @@ EOF
   echo "  passing the live last boot it is handed" >&2
 }
 
-# Same damage, same recovery: the posture line reaches the f302nucleo log as "m off".
-# NO `$` ANCHOR. Every console line here ends CRLF, and GNU grep counts the CR as part of the
+# The banner's posture line. NO `$` ANCHOR. Every console line here ends CRLF, and GNU grep counts the CR as part of the
 # line while this box's grep (ugrep) does not, so an anchored pattern passes a local test and
 # fails on the bench host against byte-identical input.
 MPU=$(grep -aoE '(mpu +(enforce|off)|mmu +enforce)' "$LOG" | tail -1)
-if [ -z "$MPU" ]; then
-  MPU=$(grep -aoE '^(m (enforce|off)|M enforce)' "$LOG" | tail -1)
-fi
 
 printf 'bytes:  %s\n' "$BYTES"
 printf 'runs:   %s\n' "$RUNS"

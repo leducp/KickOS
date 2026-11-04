@@ -1,22 +1,31 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
-0.104117	ESP-ROM:esp32c6-20220919
-0.104848	Build:Sep 19 2022
-0.105579	rst:0x1 (POWERON),boot:0x6c (SPI_FAST_FLASH_BOOT)
-0.107041	  ==============================================
-0.107772	   KickOS 0.5.1  -  microkernel RTOS
-0.108503	  ==============================================
-0.109234	   board   esp32c6-wroom
-0.109965	   arch    rv32imac
-0.110696	   cpu     esp32c6
-0.111427	   mpu     pmp
-0.112158	   sched   tickless
-0.112889	   build   2026-10-06 12:00:00 +0200
-0.113620	   app     Oct  6 2026 12:00:01 +0200
-0.114351	   commit  65fa3473
-0.115082	   heap    15 KiB available
-0.115813	   kstack  1008 B x 9 = 9072 B
-1.217408	[wallclock] mark 0, sleeping 5000000000 ns
-6.219733	[wallclock] mark 1, the kernel clock advanced 5000031725 ns, sleeping 5000000000 ns
-11.222058	[wallclock] mark 2, the kernel clock advanced 5000025108 ns
-11.226916	[wallclock] done
+9.101149	ESP-ROM:esp32c6-20220919
+9.116259	Build:Sep 19 2022
+9.116259	rst:0x1 (POWERON),boot:0xc (SPI_FAST_FLASH_BOOT)
+9.116259	SPIWP:0xee
+9.116259	mode:DIO, clock div:2
+9.116259	load:0x40800000,len:0x200e0
+9.176545	SHA-256 comparison failed:
+9.176545	Calculated: 19be8d1d9ac55cbee215b7039688278502a184c01631fc77d80f513264a02526
+9.187977	Expected: ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+9.187977	Attempting to boot anyway...
+9.187977	entry 0x40800000
+9.199718	  ==============================================
+9.199718	   KickOS 0.5.1  -  microkernel RTOS
+9.199718	  ==============================================
+9.209540	   board   esp32c6-wroom
+9.209540	   arch    rv32imac
+9.209540	   cpu     rv32imac_zicsr
+9.209540	   mpu     enforce
+9.209540	   sched   tickless
+9.221796	   build   2026-11-03 03:53:29 +0100
+9.221796	   app     wallclock Nov  3 2026 03:33:07 +0100
+9.221796	   commit  e44871acd
+9.221796	   heap    29 KiB available
+9.227028	   kstack  1184 B x 5 = 5920 B
+9.227028	[wallclock] mark 0, sleeping 5000000000 ns
+14.220668	[wallclock] mark 1, the kernel clock advanced 5000039925 ns, sleeping 5000000000 ns
+19.218760	[wallclock] mark 2, the kernel clock advanced 5000039925 ns
+20.228872	[wallclock] mark 3, a set a day ahead answered 0, the steady clock advanced 1000057000 ns over a sleep of 1000000000 ns, the wall clock 86401000055575 ns
+20.228872	[wallclock] done

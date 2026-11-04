@@ -32,8 +32,8 @@ fi
 # where NRST is wired by construction; a bare 4-pin SWD header carries the pin but not the
 # signal, so elsewhere it takes an extra wire and STLINK_UNDER_RESET to match.
 case "$FL_BOARD" in
-    f411disco|f302nucleo) FL_UR=(--connect-under-reset) ;;
-    *)                    FL_UR=() ;;
+    f411disco) FL_UR=(--connect-under-reset) ;;
+    *)         FL_UR=() ;;
 esac
 [ "${STLINK_UNDER_RESET:-}" = "1" ] && FL_UR=(--connect-under-reset)
 [ "${STLINK_UNDER_RESET:-}" = "0" ] && FL_UR=()

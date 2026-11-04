@@ -187,7 +187,9 @@ namespace kickos
 #endif
 
         uint64_t deadline_ns = 0;
-        bool on_timer = false;
+        uint8_t on_timer : 1 = 0;
+        // deadline_ns is a realtime deadline, which a set of the wall clock moves.
+        uint8_t timer_wall : 1 = 0;
 
 #if KICKOS_LIBC_REENT
         // True while `reent` still holds whatever its stack held. Cleared by the first switch-in,

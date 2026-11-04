@@ -162,9 +162,8 @@ int arch_reboot(uint32_t outcome);
 void kickos_panic_stack_enter(char const* msg, char const* file, unsigned line,
                               uintptr_t top) __attribute__((noreturn));
 
-// Panic reporter, entered on the panic stack. Exactly one of msg and file
-// is non-null; line is meaningful only with file. A refusal under no lock passes both, file
-// being a tag of console.cc's and line its value.
+// Panic reporter, entered on the panic stack. msg is never null. file is null, or a tag of
+// console.cc's marking a refusal under no lock, with line its value.
 void kickos_panic_report(char const* msg, char const* file,
                          unsigned line) __attribute__((noreturn));
 

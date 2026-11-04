@@ -64,8 +64,7 @@ bail="$(printf '%s\n' "$out" | sed -n 's/^.*\(Bail out!.*\)$/\1/p' | head -1)"
 # not finished: rx72m's uartirq capture reads `ok 1`, the record, then `04 - irq_discard`, and
 # the numbering clause below reads 103->1.
 #
-# Held to exactly what kernel/init/fault.cc emits, in one column of include/kickos/diag.h: the
-# banner, then at most one PC line, then an ADDR line only after a PC. The record opens with its
+# Held to exactly what kernel/init/fault.cc emits (include/kickos/diag.h): the banner, then at most one PC line, then an ADDR line only after a PC. The record opens with its
 # own newline, so one landing between two lines leaves an empty line before its banner and
 # nothing to join; a non-empty line there is the head the record cut. The thread must be on the
 # expected-fault list, and the head and the line after the record must make a whole test-point
@@ -78,34 +77,23 @@ rejoin_fault_splits() { # <expected fault names> [notes]
         function tap_line(s) {
             return s ~ /^(not )?ok [1-9][0-9]* - [A-Za-z0-9_]+( # .*)?$/
         }
-        # The column the banner is written in (1 full, 2 terse), or 0; sets nm.
+        # 1 for a fault banner, else 0; sets nm.
         function banner(s,   r) {
-            if (s ~ /^=== THREAD FAULT === thread [\047][^\047]*[\047] killed, system continues$/) {
-                c = 1
-            } else if (s ~ /^=== THREAD FAULT === thread [\047][^\047]*[\047] killed$/) {
-                c = 2
-            } else {
+            if (s !~ /^=== THREAD FAULT === thread [\047][^\047]*[\047] killed, system continues$/) {
                 return 0
             }
             r = substr(s, index(s, "thread \047") + 8)
             nm = substr(r, 1, index(r, "\047") - 1)
-            return c
+            return 1
         }
         # 1 for the lost-PC line, 2 for a PC an ADDR may follow, 0 for neither.
-        function pc_line(s, c) {
-            if (c == 1) {
-                if (s == "  PC lost to a later fault") return 1
-                if (s ~ /^  PC=0x[0-9a-f]+( [A-Za-z_][A-Za-z0-9_]*=0x[0-9a-f]+)?$/) return 2
-            } else {
-                if (s == "F1") return 1
-                if (s ~ /^F2 0x[0-9a-f]+$/) return 2
-                if (s ~ /^F3 0x[0-9a-f]+ [A-Za-z_][A-Za-z0-9_]* [0-9a-f]+$/) return 2
-            }
+        function pc_line(s) {
+            if (s == "  PC lost to a later fault") return 1
+            if (s ~ /^  PC=0x[0-9a-f]+( [A-Za-z_][A-Za-z0-9_]*=0x[0-9a-f]+)?$/) return 2
             return 0
         }
-        function addr_line(s, c) {
-            if (c == 1) return s ~ /^  ADDR=0x[0-9a-f]+$/
-            return s ~ /^ADDR=0x[0-9a-f]+$/
+        function addr_line(s) {
+            return s ~ /^  ADDR=0x[0-9a-f]+$/
         }
         BEGIN {
             k = split(ENVIRON["KOS_REJOIN_NAMES"], _w, " ")
@@ -116,11 +104,11 @@ rejoin_fault_splits() { # <expected fault names> [notes]
             i = 1
             while (i <= n) {
                 e = 0
-                if (i + 2 <= n && line[i] != "" && (c = banner(line[i + 1])) && (nm in want)) {
+                if (i + 2 <= n && line[i] != "" && banner(line[i + 1]) && (nm in want)) {
                     e = i + 1
-                    p = pc_line(line[e + 1], c)
+                    p = pc_line(line[e + 1])
                     if (p) e++
-                    if (p == 2 && addr_line(line[e + 1], c)) e++
+                    if (p == 2 && addr_line(line[e + 1])) e++
                     if (e + 1 > n || line[e + 1] == "" || !tap_line(line[i] line[e + 1])) e = 0
                 }
                 if (!e) {
@@ -160,16 +148,6 @@ $_rj_record
 ok 105 - irq_autorearm" ] \
     || fail "the fault-split re-join does not restore a planted line split by an expected
   thread's whole record (got:
-$_probe)"
-_rj_terse="=== THREAD FAULT === thread 'wro' killed
-F3 0xffc01602 MPESTS 6
-ADDR=0x30040"
-_probe="$(printf 'ok 1\n%s\n04 - irq_discard\n' "$_rj_terse" | rejoin_fault_splits wro)"
-[ "$_probe" = "ok 104 - irq_discard
-
-$_rj_terse" ] \
-    || fail "the fault-split re-join does not restore a planted line split by a whole record in
-  the terse column (got:
 $_probe)"
 for _rj_case in \
     "nothing: the record landed between two lines|ok 104 - irq_discard

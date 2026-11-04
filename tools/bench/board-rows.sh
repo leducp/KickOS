@@ -23,35 +23,6 @@
 # onboard probes do, so a wildcard row for one of those boards reports the other board's
 # probe as its own.
 
-# bench_default_variant <tree> <board>
-#
-# The preset variant a board's capture builds where the caller names none, bench.sh's and the
-# fleet pass's first: `st` on a board whose tree carries one, its base preset elsewhere.
-bench_default_variant() {
-    if [ -d "$1/boards/$2/configs/st" ]; then
-        printf 'st\n'
-    fi
-}
-
-# board_allowed_failure <board> <image>
-#
-# Prints why a capture of <image> on <board> may fail, naming the TODO.md item whose ruling ends
-# the allowance, and succeeds; returns 1 for an image its board does not declare. Every build of
-# the board the fleet captures takes the declaration. A reason must hold no `|`.
-board_allowed_failure() {
-    case "$1" in
-        f302nucleo)
-            case "$2" in
-                selftest|selftest_p[0-9]*|mutexbench|chaincheck|libcrace|libc_death|fp_switch)
-                    printf '%s\n' "the kernel's SVC depth on the caller's stack exceeds the threads' room, until TODO.md IS THE 64 KIB TIER USABLE FOR A REAL APPLICATION? is ruled"
-                    return 0
-                    ;;
-            esac
-            ;;
-    esac
-    return 1
-}
-
 # board_probe_rows <board>
 #
 # Prints one row per USB device the board must present, as
@@ -74,9 +45,6 @@ board_probe_rows() {
             printf '045b:82a0|-|the E2 Lite\n'
             printf '0403:6001|vid|an FTDI for the SCI6 console\n'
             ;;
-        f302nucleo)
-            printf '0483:374b|-|the ST-Link V2.1\n'
-            ;;
         f411disco)
             printf '0483:3748|-|the ST-Link V2, which carries no VCP\n'
             ;;
@@ -88,10 +56,6 @@ board_probe_rows() {
             # wedges the part on reflash. Other Espressif parts present it too, so it names
             # no chip on its own and is no evidence about this board.
             printf '1a86:55d3|-|the CH343P\n'
-            ;;
-        bluepill-c8)
-            printf 'a standalone J-Link presents 1366:*, which the xmc4800-relax and frdmk64f probes present too\n'
-            return 2
             ;;
         blackpill)
             printf 'an ST-Link V2 presents 0483:3748, which the f411disco probe presents too\n'
@@ -123,7 +87,6 @@ console_row() {
     CONSOLE_RIGKEY="RIG_CONSOLE_$(printf '%s' "$board" | tr 'a-z-' 'A-Z_')"
     case $board in
         xmc4800-relax|frdmk64f) CONSOLE_PORT="/dev/serial/by-id/usb-SEGGER_J-Link_${sn}-if00" ;;
-        f302nucleo)             CONSOLE_PATTERN="/dev/serial/by-id/usb-STMicroelectronics_STM32_STLink_*-if02" ;;
         esp32c6-wroom)          CONSOLE_PATTERN="/dev/serial/by-id/usb-1a86_USB_Single_Serial_*" ;;
         esp32-wroom)            CONSOLE_PATTERN="/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0" ;;
         f411disco|rx72m|picopi|pizero2350|teensy41) ;;

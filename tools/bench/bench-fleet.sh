@@ -11,11 +11,9 @@
 #   TAG=<tag> tools/bench/bench-fleet.sh rx72m xmc4800-relax
 #
 # Exit status: 0 when every image is captured and nothing is owed; 1 on a failed capture, an absent
-# board, an image not run or one no judge names, or a capture passing that its board declares
-# allowed to fail (board_allowed_failure in board-rows.sh); 3 when every capture passed or failed
-# as its board allows and the pass still owes a witness: an allowed failure, an emulator-judged
-# image on a board with no emulator, a human-judged one, or a clause a capture judge could not
-# evaluate.
+# board, or an image not run or one no judge names; 3 when every capture passed and the pass still
+# owes a witness: an emulator-judged image on a board with no emulator, a human-judged one, or a
+# clause a capture judge could not evaluate.
 #
 # REMOTE MODE, when the bench is not on this box:
 #   BENCH_HOST=<bench-host> BENCH_PORT=<port> TAG=<tag> tools/bench/bench-fleet.sh
@@ -49,7 +47,7 @@ TAG="${TAG:-m475}"
 OUTDIR="$RIG_SESSION/logs"
 mkdir -p "$OUTDIR"
 
-ALL="rx72m f302nucleo f411disco esp32c6-wroom esp32-wroom xmc4800-relax frdmk64f"
+ALL="rx72m f411disco esp32c6-wroom esp32-wroom xmc4800-relax frdmk64f"
 WANT="${*:-$ALL}"
 
 # WHICH IMAGES A BOARD'S BUILD SHIPS, asked of the tree one board at a time, as bench.sh's
@@ -73,10 +71,9 @@ images_for() { # <board> <stderr out> [variant]
 }
 
 # EVERY VARIANT A BOARD DECLARES, read off the tree's presets, `<board>-<variant>` each, or
-# status 1 where the tree cannot list them. The default variant is bench.sh's own
-# (bench_default_variant), the one the pass below takes first; every other one is a build of its
-# own, and a capture of one of its images lands under that variant's tag, so two builds' logs of
-# one image never share a name.
+# status 1 where the tree cannot list them. The base preset is the one the pass below takes first;
+# every variant is a build of its own, and a capture of one of its images lands under that
+# variant's tag, so two builds' logs of one image never share a name.
 variants_of() { # <board>
   local presets
   presets=$(cd "${TREE:-$RIG_TREE}" && cmake --list-presets=configure 2>/dev/null) || return 1
@@ -205,8 +202,8 @@ bench_one() {
   mpu=$(sed -n 's/^mpu: *//p'    "$out" | tr -s ' ')
   rm -f "$out"
   # A capture holding TWO plan lines ran the suite twice inside one window, so every
-  # count is a sum over both runs, so it reads as a pass with inflated numbers. That is
-  # how f302nucleo's counts were inflated twice. bench-capture.sh refuses on it, which
+  # count is a sum over both runs, so it reads as a pass with inflated numbers.
+  # bench-capture.sh refuses on it, which
   # lands in the rc branch above; this states the count so the table never carries a
   # sum silently even if that refusal is ever loosened.
   record "$label" "$plan runs=$runs ok=$okc notok=$notokc skip=$skipc part=$partc [$mpu] $banner"
@@ -288,16 +285,13 @@ join_worker() { # <board> <probe-serial>
 # One worker's captures, in the order they were queued. Its findings go to $WORK/<worker>.<name>,
 # since a background worker's variables die with it.
 worker() { # <worker>
-  local board img label judge variant amp sn why
+  local board img label judge variant amp sn
   RESULTS=""
   COVERED=""
   PARTLY=""
-  ALLOWED=""
-  UNEXPECTED=""
   FAILED=0
   while IFS='|' read -r board img label judge variant amp sn <&4; do
     [ -n "$board" ] && [ "${WORKER_OF[$board]}" = "$1" ] || continue
-    why=$(board_allowed_failure "$board" "$img")
     if bench_one "$board" "$img" "$sn" "$board/$label" "$judge" "$variant" "$amp"; then
       COVERED="$COVERED$board $label
 "
@@ -305,15 +299,6 @@ worker() { # <worker>
         PARTLY="$PARTLY$board|$label|$NOT_EVALUATED
 "
       fi
-      if [ -n "$why" ]; then
-        record "$board/$label" "UNEXPECTED PASS: its board declares it allowed to fail: $why"
-        UNEXPECTED="$UNEXPECTED$board|$label|$why
-"
-      fi
-    elif [ -n "$why" ]; then
-      record "$board/$label" "ALLOWED TO FAIL: $why"
-      ALLOWED="$ALLOWED$board|$label|$why
-"
     else
       FAILED=1
     fi
@@ -323,8 +308,6 @@ JOBS
   printf '%s' "$RESULTS" > "$WORK/$1.RESULTS"
   printf '%s' "$COVERED" > "$WORK/$1.COVERED"
   printf '%s' "$PARTLY" > "$WORK/$1.PARTLY"
-  printf '%s' "$ALLOWED" > "$WORK/$1.ALLOWED"
-  printf '%s' "$UNEXPECTED" > "$WORK/$1.UNEXPECTED"
   printf '%s' "$FAILED" > "$WORK/$1.FAILED"
 }
 
@@ -338,8 +321,6 @@ EMULATOR_OWED=""
 HUMAN_OWED=""
 VOID=""
 PARTLY=""
-ALLOWED=""
-UNEXPECTED=""
 MEASURED=""
 JOBS=""
 for board in $WANT; do
@@ -402,8 +383,7 @@ ROWS
     continue
   fi
   for variant in $VARIANTS; do
-    if [ "$variant" = "$(bench_default_variant "${TREE:-$RIG_TREE}" "$board")" ] \
-      || partition_part "$variant" "$VARIANTS"; then
+    if partition_part "$variant" "$VARIANTS"; then
       continue
     fi
     if partition_first "$variant"; then
@@ -491,7 +471,7 @@ for w in $WORKERS; do
   done
   echo "=== worker:$members"
   cat "$WORK/$w.out"
-  for part in RESULTS COVERED PARTLY ALLOWED UNEXPECTED; do
+  for part in RESULTS COVERED PARTLY; do
     if [ -s "$WORK/$w.$part" ]; then
       printf -v "$part" '%s%s\n' "${!part}" "$(cat "$WORK/$w.$part")"
     fi
@@ -524,17 +504,10 @@ row_rest() { # <rows> <board> <label>
 }
 UNCOVERED=0
 CLAUSES=0
-ALLOWED_FAILS=0
-UNEXPECTED_PASSES=0
 while read -r board img; do
   [ -n "$board" ] || continue
   partly=$(row_rest "$PARTLY" "$board" "$img")
-  allowed=$(row_rest "$ALLOWED" "$board" "$img")
-  unexpected=$(row_rest "$UNEXPECTED" "$board" "$img")
-  if [ -n "$allowed" ]; then
-    printf '  %-16s %-38s failed, allowed to fail: %s\n' "$board" "$img" "$allowed"
-    ALLOWED_FAILS=$((ALLOWED_FAILS + 1))
-  elif [ -n "$partly" ]; then
+  if [ -n "$partly" ]; then
     printf '  %-16s %-38s captured, partly owed: %s\n' "$board" "$img" "$partly"
     CLAUSES=$((CLAUSES + $(printf '%s\n' "$partly" | tr ';' '\n' | grep -c .)))
   elif printf '%s' "$COVERED" | grep -qxF "$board $img"; then
@@ -542,11 +515,6 @@ while read -r board img; do
   else
     printf '  %-16s %-38s NOT RUN\n' "$board" "$img"
     UNCOVERED=$((UNCOVERED + 1))
-  fi
-  if [ -n "$unexpected" ]; then
-    printf '  %-16s %-38s UNEXPECTED PASS: its board declares it allowed to fail: %s\n' \
-      "$board" "$img" "$unexpected"
-    UNEXPECTED_PASSES=$((UNEXPECTED_PASSES + 1))
   fi
 done <<OWED
 $OWED
@@ -602,11 +570,6 @@ if [ "$HUMANS" -ne 0 ]; then
   echo "OWED: $HUMANS human-judged image(s) carry a verdict only a person reads, which this pass"
   echo "  cannot see and covers none of."
 fi
-if [ "$ALLOWED_FAILS" -ne 0 ]; then
-  echo
-  echo "OWED: $ALLOWED_FAILS image(s) failed as their board allows, each until the TODO.md item its"
-  echo "  reason names is ruled."
-fi
 if [ "$CLAUSES" -ne 0 ]; then
   echo
   echo "OWED: $CLAUSES clause(s) of captured images' verdicts: an exit status or the system ending,"
@@ -622,21 +585,15 @@ if [ "$UNCOVERED" -ne 0 ]; then
   echo "INCOMPLETE: $UNCOVERED image(s) a board ships were not captured, or no judge names them, so"
   echo "  this pass does not cover those boards."
 fi
-if [ "$UNEXPECTED_PASSES" -ne 0 ]; then
-  echo
-  echo "UNEXPECTED PASS: $UNEXPECTED_PASSES image(s) passed that their board declares allowed to fail:"
-  echo "  remove each from board_allowed_failure in tools/bench/board-rows.sh."
-fi
-if [ $((ABSENT + UNCOVERED + UNEXPECTED_PASSES)) -ne 0 ]; then
+if [ $((ABSENT + UNCOVERED)) -ne 0 ]; then
   exit 1
 fi
 if [ "$FAILED" -ne 0 ]; then
   exit 1
 fi
-if [ $((NOWITNESS + HUMANS + CLAUSES + ALLOWED_FAILS)) -ne 0 ]; then
+if [ $((NOWITNESS + HUMANS + CLAUSES)) -ne 0 ]; then
   echo
-  echo "OWED: every capture passed or failed as its board allows, and the pass still owes the"
-  echo "  witnesses above."
+  echo "OWED: every capture passed, and the pass still owes the witnesses above."
   exit 3
 fi
 exit 0

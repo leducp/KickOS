@@ -47,7 +47,7 @@ RIG_CONSOLE_PIZERO2350=/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_YYYYYYYY*
 #   teensy41    LPUART6 ("Serial1"). FTDI RX on PIN 1; pin 0 is the board's own RX.
 RIG_CONSOLE_TEENSY41=/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_YYYYYYYY*
 # f411disco's ST-Link is a V2 with no VCP, so its console is a separate FTDI rather than the
-# probe's own VCOM (f302nucleo's V2.1 does carry one and needs no row here).
+# probe's own VCOM.
 RIG_CONSOLE_F411DISCO=/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_ZZZZZZZZ*
 #
 # SEVERAL ROWS MAY NAME ONE CABLE, as the two above do: a bench with fewer FTDIs than
@@ -89,7 +89,6 @@ RIG_REMOTE_PYBIN=/home/USER/.local/share/uv/tools/esptool/bin/python
 # RIG_STLINK_<BOARD> with the board upper-cased and '-' as '_'. st-info --probe prints
 # the serials next to the chip each one is attached to.
 #RIG_STLINK_F411DISCO=30FF6C065647373735081143
-#RIG_STLINK_F302NUCLEO=0675FF494849887767183343
 
 # --- which unit a probe vid:pid means -----------------------------------------
 # Only needed once MORE THAN ONE DEVICE shares a vid:pid, which is what makes the serial a

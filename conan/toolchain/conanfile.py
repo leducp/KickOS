@@ -25,11 +25,22 @@ from conan.tools.files import copy, download, replace_in_file, save, unzip
 # multilib directory lacks either archive or either still holds one; `guards` names scripts in
 # tools/, which the recipe also exports, each run with the package's own readelf over every
 # archive the package installs, and the package fails where one refuses a member; `nano` is
-# the extra newlib profile a family ships, installed
-# beside the full one as nano.specs expects: libc_nano.a, libg_nano.a, libstdc++_nano.a and
-# libsupc++_nano.a in every multilib directory, and newlib.h under include/newlib-nano.
+# the extra newlib profile a family ships, installed beside the full one as nano.specs expects:
+# libc_nano.a, libg_nano.a, libstdc++_nano.a and libsupc++_nano.a in every multilib directory,
+# and newlib.h under include/newlib-nano; `nano_specs` installs NANO_SPECS as nano.specs in every
+# multilib directory, in place of the family's own, with `nano_lib` ending its lib spec.
+NANO = ["--enable-newlib-retargetable-locking", "--enable-newlib-reent-check-verify",
+        "--disable-newlib-fseek-optimization", "--disable-newlib-fvwrite-in-streamio",
+        "--disable-newlib-mb", "--enable-newlib-nano-formatted-io",
+        "--enable-newlib-nano-malloc", "--disable-newlib-unbuf-stream-opt",
+        "--disable-newlib-io-c99-formats", "--disable-newlib-io-long-long",
+        "--enable-newlib-reent-small", "--disable-newlib-register-fini",
+        "--disable-newlib-wide-orient"]
+
 FAMILIES = {
+    # armv6m has no compare-and-swap, and its reference counts call the user runtime's atomics.
     "arm-none-eabi": {
+        "patches": {"gcc": ["kickos-libstdcxx-atomic-calls"]},
         "gcc": ["--with-multilib-list=rmprofile"],
         "cflags": "-g -O2 -ffunction-sections -fdata-sections",
         "newlib": ["--enable-newlib-retargetable-locking", "--enable-newlib-reent-check-verify",
@@ -39,13 +50,7 @@ FAMILIES = {
         # program for: a missing archive fails the package, not a board's first link.
         "check": [["-mcpu=cortex-m0", "-mfloat-abi=soft", "-mthumb"],
                   ["-mcpu=cortex-m4", "-mfpu=fpv4-sp-d16", "-mfloat-abi=softfp", "-mthumb"]],
-        "nano": ["--enable-newlib-retargetable-locking", "--enable-newlib-reent-check-verify",
-                 "--disable-newlib-fseek-optimization", "--disable-newlib-fvwrite-in-streamio",
-                 "--enable-lite-exit", "--disable-newlib-mb", "--enable-newlib-nano-formatted-io",
-                 "--enable-newlib-nano-malloc", "--disable-newlib-unbuf-stream-opt",
-                 "--disable-newlib-io-c99-formats", "--disable-newlib-io-long-long",
-                 "--enable-newlib-reent-small", "--disable-newlib-register-fini",
-                 "--disable-newlib-wide-orient"],
+        "nano": NANO,
     },
     "aarch64-none-elf": {
         "gcc": [],
@@ -53,14 +58,15 @@ FAMILIES = {
         "newlib": ["--enable-newlib-retargetable-locking", "--enable-newlib-reent-check-verify",
                    "--enable-newlib-io-long-long", "--enable-newlib-io-c99-formats",
                    "--enable-newlib-register-fini", "--enable-newlib-mb"],
-        "dynamic_reent": "1",
         "check": [["-mcpu=cortex-a53"]],
     },
     # One compiler for both widths: rv64 is the default multilib, rv32 the other, every library
-    # medany, which rv64's image window needs and rv32's does not mind.
+    # medany, which rv64's image window needs and rv32's does not mind. Both have the A
+    # extension, so shared_ptr counts are atomic, where libstdc++'s RISC-V default keeps a
+    # mutex for another OS's ABI.
     "riscv64-none-elf": {
         "gcc": ["--with-arch=rv64imac_zicsr_zmmul_zaamo_zalrsc_zca", "--with-abi=lp64",
-                "--with-cmodel=medany",
+                "--with-cmodel=medany", "--with-libstdcxx-lock-policy=atomic",
                 "--with-multilib-generator=rv64imac_zicsr_zmmul_zaamo_zalrsc_zca-lp64--;"
                 "rv32imac_zicsr-ilp32--"],
         "cflags": "-g -Os -ftls-model=local-exec -ffunction-sections -fdata-sections",
@@ -68,10 +74,11 @@ FAMILIES = {
                    "--enable-newlib-io-long-long", "--enable-newlib-io-c99-formats",
                    "--enable-newlib-register-fini", "--enable-newlib-mb",
                    "--enable-newlib-atexit-dynamic-alloc"],
-        "dynamic_reent": "defined(__riscv) && __riscv_xlen == 64",
         "check": [["-march=rv32imac_zicsr", "-mabi=ilp32"],
                   ["-march=rv64imac_zicsr_zmmul_zaamo_zalrsc_zca", "-mabi=lp64",
                    "-mcmodel=medany"]],
+        "nano": NANO,
+        "nano_specs": True,
     },
     # x86_64's binutils also writes PE32+, the UEFI image q35 boots. The libraries are
     # position-independent, as every x86_64 image is relocated, and keep no red zone, as a
@@ -99,7 +106,6 @@ FAMILIES = {
                    "--disable-newlib-register-fini", "--enable-newlib-mb"],
         "drop": ["libc_a-init.o", "libc_a-fini.o"],
         "guards": ["check-x86_64-no-got.sh", "check-x86_64-weak-undef.sh"],
-        "dynamic_reent": "1",
         "check": [["-march=x86-64-v3"]],
         "link": ["-nostartfiles"],
     },
@@ -125,19 +131,23 @@ FAMILIES = {
                    "--enable-newlib-io-long-long", "--enable-newlib-io-pos-args",
                    "--disable-newlib-wide-orient"],
         "config_h": "#define __BUFSIZ__ 128",
-        "dynamic_reent": "1",
         "check": [["-mlongcalls"]],
         "link": ["-nostartfiles"],
+        "nano": NANO,
+        "nano_specs": True,
     },
     # The common sources with Renesas's changes ported onto them, as upstream's GCC and binutils
     # know no RXv3 or double-precision FPU. The multilib patch keeps four of GNURX's 104
     # multilibs; -misa=v3 -mdfpu selects 64-bit-double/dfpu/rxv3, as -mdfpu makes doubles
-    # 64-bit. KickOS's compare patch, last, corrects GNURX's unordered double-precision
-    # branches. Each touched file is a generated one the patches carry, made newer than its
-    # inputs so that no maintainer tool runs. newlib's register_fini stays off: it needs `_fini`,
-    # which RX's crt0 lacks.
+    # 64-bit. KickOS's compare patch corrects GNURX's unordered double-precision branches, its
+    # atomics patch calls __atomic_*_4 for a 32-bit read-modify-write, as the inline form masks
+    # interrupts, which user mode ignores, and the last counts libstdc++'s references through
+    # those calls, which the user runtime defines. Each touched file is a generated one the
+    # patches carry, made newer than its inputs so that no maintainer tool runs. newlib's
+    # register_fini stays off: it needs `_fini`, which RX's crt0 lacks.
     "rx-elf": {
-        "patches": {"gcc": ["gnurx-gcc", "rx-multilib", "kickos-rx-dfpu-compare"],
+        "patches": {"gcc": ["gnurx-gcc", "rx-multilib", "kickos-rx-dfpu-compare",
+                            "kickos-rx-irq-atomics", "kickos-libstdcxx-atomic-calls"],
                     "binutils": ["gnurx-binutils"],
                     "newlib": ["gnurx-newlib"]},
         "touch": {"gcc": ["configure", "gcc/configure"],
@@ -150,24 +160,58 @@ FAMILIES = {
                    "--enable-newlib-io-long-long", "--enable-newlib-io-c99-formats",
                    "--disable-newlib-register-fini", "--enable-newlib-mb"],
         "check": [["-misa=v3", "-mdfpu"]],
+        "nano": NANO,
+        # The full lib spec's default linker script, which GNURX's nano.specs drops.
+        "nano_specs": True,
+        "nano_lib": "%{!T*: %{msim:%Trx-sim.ld}%{!msim:%Trx.ld}}",
     },
 }
 
-# Where `dynamic_reent` holds, every _REENT use calls __getreent(), which KickOS answers per
-# thread. A condition rather than a define: newlib's multilib build compiles every multilib
-# against this one header, so a family whose multilibs differ in reentrancy decides it per
-# multilib here.
+# Every _REENT use calls __getreent(), which KickOS answers per thread, on every family.
 DYNAMIC_REENT = """
-/* KickOS: dynamic reentrancy where the multilib compiled is one the toolchain marks so. */
-#if {condition}
+/* KickOS: dynamic reentrancy. */
 #ifndef __DYNAMIC_REENT__
 #define __DYNAMIC_REENT__
 #endif
-#endif
 """
+
+# newlib's libgloss/arm/elf-nano.specs less its rdimon lines: the nano header first, and the nano
+# archives in place of the full ones.
+NANO_SPECS = """%rename link                nano_link
+%rename link_gcc_c_sequence                nano_link_gcc_c_sequence
+%rename cpp_unique_options                nano_cpp_unique_options
+
+*cpp_unique_options:
+-isystem =/include/newlib-nano %(nano_cpp_unique_options)
+
+*nano_libc:
+-lc_nano
+
+*nano_libgloss:
+%{specs=nosys.specs:-lnosys}
+
+*link_gcc_c_sequence:
+%(nano_link_gcc_c_sequence) --start-group %G %(nano_libc) %(nano_libgloss) --end-group
+
+*link:
+%(nano_link) %:replace-outfile(-lc -lc_nano) %:replace-outfile(-lg -lg_nano) \
+%:replace-outfile(-lstdc++ -lstdc++_nano) %:replace-outfile(-lsupc++ -lsupc++_nano)
+
+*lib:
+%{!shared:%{g*:-lg_nano} %{!p:%{!pg:-lc_nano}}%{p:-lc_p}%{pg:-lc_p}}
+"""
+
+# The predefined macros of the multilibs whose KickOS user runtime defines the __atomic calls a
+# read-modify-write makes there, as kickos-libstdcxx-atomic-calls.patch reads them.
+USER_ATOMICS = ("__ARM_ARCH_6M__", "__RX__")
 
 # Every component a family builds, and the source key each takes unless the family names another.
 COMPONENTS = ("gcc", "binutils", "newlib")
+
+# The patches every family applies after its own, and the generated files they carry, made newer
+# than their inputs: the KickOS threads model in GCC, and newlib's locks.
+COMMON = {"patches": {"gcc": ["kickos-gcc-threads"], "newlib": ["kickos-newlib-locks"]},
+          "touch": {"gcc": ["gcc/configure", "libgcc/configure", "libstdc++-v3/configure"]}}
 PREREQUISITES = ("gmp", "mpfr", "mpc", "isl")
 
 # Every guard a family names, exported for every family, as the recipe revision is one for all.
@@ -175,8 +219,152 @@ GUARDS = sorted({g for family in FAMILIES.values() for g in family.get("guards",
 
 PREFIX = "kickos-toolchain-"
 
+# The program every check multilib links, full and nano: an exception, the C++ thread library and
+# a FILE opened and closed. It stands in for the KickOS user runtime, and for __dso_handle where
+# no crtbegin.o gives one. It compiles only where the threads model is kickos, the newlib lock is
+# the KickOS lock, reentrancy is dynamic and the newlib header is the profile's own
+# (KICKOS_CHECK_NANO), and links only where every gthreads operation is a __kickos_gthr_* call and
+# every FILE lock is a struct __lock in the FILE.
+CHECK = r"""
+#include <reent.h>
+#include <stdio.h>
+#include <sys/lock.h>
+#include <time.h>
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
+#include <stdexcept>
+#include <string>
+#include <thread>
+
+#if not defined(_GLIBCXX_HAS_GTHREADS) or not defined(_GLIBCXX_GCC_GTHR_KICKOS_H)
+#error "the threads model is not kickos"
+#endif
+#if not defined(__DYNAMIC_REENT__)
+#error "reentrancy is not dynamic"
+#endif
+#if defined(_NANO_FORMATTED_IO) != KICKOS_CHECK_NANO
+#error "the newlib header is not the profile's"
+#endif
+
+static_assert(sizeof(__gthread_mutex_t) == 4 and alignof(__gthread_mutex_t) == 4, "mutex");
+static_assert(sizeof(__gthread_recursive_mutex_t) == 8, "recursive mutex");
+static_assert(sizeof(__gthread_cond_t) == 4 and sizeof(__gthread_once_t) == 4, "cond, once");
+static_assert(sizeof(__gthread_key_t) == 4 and sizeof(__gthread_t) == 4, "key, thread");
+static_assert(sizeof(struct __lock) == 8 and alignof(struct __lock) == 4, "newlib lock");
+static_assert(__is_same(_flock_t, struct __lock), "FILE lock");
+
+extern "C" {
+struct _reent* __getreent(void) { return &_impure_data; }
+
+#define G(name, ...) int __kickos_gthr_##name(__VA_ARGS__) { return 0; }
+G(once, __gthread_once_t*, void (*)(void))
+G(key_create, __gthread_key_t*, void (*)(void*))
+G(key_delete, __gthread_key_t)
+G(setspecific, __gthread_key_t, const void*)
+G(mutex_destroy, __gthread_mutex_t*)
+G(mutex_lock, __gthread_mutex_t*)
+G(mutex_trylock, __gthread_mutex_t*)
+G(mutex_timedlock, __gthread_mutex_t*, const __gthread_time_t*)
+G(mutex_clocklock, __gthread_mutex_t*, __clockid_t, const __gthread_time_t*)
+G(mutex_unlock, __gthread_mutex_t*)
+G(recursive_mutex_destroy, __gthread_recursive_mutex_t*)
+G(recursive_mutex_lock, __gthread_recursive_mutex_t*)
+G(recursive_mutex_trylock, __gthread_recursive_mutex_t*)
+G(recursive_mutex_timedlock, __gthread_recursive_mutex_t*, const __gthread_time_t*)
+G(recursive_mutex_clocklock, __gthread_recursive_mutex_t*, __clockid_t, const __gthread_time_t*)
+G(recursive_mutex_unlock, __gthread_recursive_mutex_t*)
+G(cond_destroy, __gthread_cond_t*)
+G(cond_broadcast, __gthread_cond_t*)
+G(cond_signal, __gthread_cond_t*)
+G(cond_wait, __gthread_cond_t*, __gthread_mutex_t*)
+G(cond_timedwait, __gthread_cond_t*, __gthread_mutex_t*, const __gthread_time_t*)
+G(cond_clockwait, __gthread_cond_t*, __gthread_mutex_t*, __clockid_t, const __gthread_time_t*)
+G(cond_wait_recursive, __gthread_cond_t*, __gthread_recursive_mutex_t*)
+G(create, __gthread_t*, void* (*)(void*), void*)
+G(join, __gthread_t, void**)
+G(detach, __gthread_t)
+G(yield, void)
+#if defined(__ARM_ARCH_6M__) or defined(__RX__)
+#define KICKOS_CHECK_STR2(x) #x
+#define KICKOS_CHECK_STR(x) KICKOS_CHECK_STR2(x)
+unsigned kickos_check_fetch_add_4(volatile void*, unsigned, int)
+    __asm__(KICKOS_CHECK_STR(__USER_LABEL_PREFIX__) "__atomic_fetch_add_4");
+unsigned kickos_check_fetch_add_4(volatile void* p, unsigned v, int)
+{
+    unsigned volatile* w = static_cast<unsigned volatile*>(p);
+    unsigned const was = *w;
+    *w = was + v;
+    return was;
+}
+#endif
+void* __kickos_gthr_getspecific(__gthread_key_t) { return 0; }
+__gthread_t __kickos_gthr_self(void) { return 1; }
+int clock_gettime(clockid_t, struct timespec* ts) { ts->tv_sec = 0; ts->tv_nsec = 0; return 0; }
+int nanosleep(const struct timespec*, struct timespec*) { return 0; }
+long sysconf(int) { return 1; }
+[[gnu::weak]] void* __dso_handle = &__dso_handle;
+
+struct __lock __lock___sfp_recursive_mutex;
+struct __lock __lock___atexit_recursive_mutex;
+struct __lock __lock___at_quick_exit_mutex;
+struct __lock __lock___malloc_recursive_mutex;
+struct __lock __lock___env_recursive_mutex;
+struct __lock __lock___tz_mutex;
+struct __lock __lock___dd_hash_mutex;
+struct __lock __lock___arc4random_mutex;
+void __retarget_lock_init(_LOCK_T*) {}
+void __retarget_lock_init_recursive(_LOCK_T*) {}
+void __retarget_lock_close(_LOCK_T) {}
+void __retarget_lock_close_recursive(_LOCK_T) {}
+void __retarget_lock_acquire(_LOCK_T l) { l->__word = 1; }
+void __retarget_lock_acquire_recursive(_LOCK_T l) { l->__depth++; }
+int __retarget_lock_try_acquire(_LOCK_T l) { l->__word = 1; return 1; }
+int __retarget_lock_try_acquire_recursive(_LOCK_T l) { l->__depth++; return 1; }
+void __retarget_lock_release(_LOCK_T l) { l->__word = 0; }
+void __retarget_lock_release_recursive(_LOCK_T l) { l->__depth--; }
+}
+
+static int run() {
+  try { throw std::runtime_error(std::string("k")); }
+  catch (const std::exception& e) { if (e.what()[0] != 'k') { return 1; } }
+  std::mutex m;
+  std::condition_variable cv;
+  std::once_flag once;
+  int calls = 0;
+  std::call_once(once, [&] { calls++; });
+  std::thread worker([&] {
+    std::lock_guard<std::mutex> hold(m);
+    calls++;
+    cv.notify_one();
+  });
+  {
+    std::unique_lock<std::mutex> hold(m);
+    cv.wait_for(hold, std::chrono::milliseconds(1), [&] { return calls == 2; });
+  }
+  worker.join();
+  std::timed_mutex timed;
+  std::recursive_timed_mutex rtimed;
+  if (not timed.try_lock_for(std::chrono::milliseconds(1))
+      or not rtimed.try_lock_until(std::chrono::system_clock::now())) {
+    return 1;
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  std::this_thread::yield();
+  static std::string guarded(std::chrono::steady_clock::now().time_since_epoch().count() & 1, 'k');
+  FILE* f = fopen("k", "r");
+  if (f) { fclose(f); }
+  if (calls != 2 or guarded.size() > 1) { return 1; }
+  return 0;
+}
+
+int main() { return run(); }
+extern "C" [[gnu::weak]] void _start() { run(); }
+"""
+
 # This version's release is the tag toolchain-<version>-<PACKAGE_REVISION>. The shell tools and
-# the release workflow read this line and `version` by pattern.
+# the release workflow read this line and `version` by pattern, and conan/toolchains reads
+# `version`.
 PACKAGE_REVISION = 1
 
 # The GitHub release's one archive of every pinned source and patch (design section 1). A source
@@ -196,7 +384,7 @@ class KickOSToolchain(ConanFile):
     built it is no part of what it is.
     """
 
-    version = "1.1.0"
+    version = "1.2.0"
     license = "GPL-3.0-or-later WITH GCC-exception-3.1 AND BSD-3-Clause (newlib COPYING.NEWLIB)"
     description = "The KickOS cross toolchain for one target family"
     package_type = "application"
@@ -233,10 +421,19 @@ class KickOSToolchain(ConanFile):
     def _key(self, component):
         return FAMILIES[self._target()].get("sources", {}).get(component, component)
 
+    def _patches(self, component):
+        family = FAMILIES[self._target()]
+        return (family.get("patches", {}).get(component, [])
+                + COMMON["patches"].get(component, []))
+
+    def _touched(self, component):
+        family = FAMILIES[self._target()]
+        return family.get("touch", {}).get(component, []) + COMMON["touch"].get(component, [])
+
     def _sources(self):
         family = FAMILIES[self._target()]
         overlay = ["xtensa-overlays"] if "overlay" in family else []
-        patches = [k for c in COMPONENTS for k in family.get("patches", {}).get(c, [])]
+        patches = [k for c in COMPONENTS for k in self._patches(c)]
         return [self._key(c) for c in COMPONENTS] + list(PREREQUISITES) + overlay + patches
 
     def _archive(self, key):
@@ -347,11 +544,11 @@ class KickOSToolchain(ConanFile):
                 for tree, where in family["overlay"].items():
                     shutil.copytree(os.path.join(overlays, tree),
                                     os.path.join(self.source_folder, where), dirs_exist_ok=True)
-            for component, keys in family.get("patches", {}).items():
+            for component in COMPONENTS:
                 tree = os.path.join(self.source_folder, component)
-                for key in keys:
+                for key in self._patches(component):
                     self._patch(key, tree)
-                for generated in family.get("touch", {}).get(component, []):
+                for generated in self._touched(component):
                     if os.path.isfile(os.path.join(tree, generated)):
                         os.utime(os.path.join(tree, generated))
         finally:
@@ -496,22 +693,19 @@ class KickOSToolchain(ConanFile):
             self._make(gcc, "all-gcc", env=env)
             self._make(gcc, "install-strip-gcc", env=env)
 
-        addition = ""
-        if "dynamic_reent" in family:
-            addition += DYNAMIC_REENT.format(condition=family["dynamic_reent"])
+        addition = DYNAMIC_REENT
         if "config_h" in family:
             addition += f"\n/* KickOS: the family's own configuration. */\n{family['config_h']}\n"
         config_h = os.path.join(src, "newlib", "newlib", "libc", "include", "sys", "config.h")
         with open(config_h) as f:
             text = f.read()
-        if addition and "/* KickOS: " not in text:
+        if "/* KickOS: " not in text:
             replace_in_file(self, config_h, "\n#endif /* __SYS_CONFIG_H__ */",
                             addition + "\n#endif /* __SYS_CONFIG_H__ */")
         # GETREENT_PROVIDED on the command line: getreent.c tests it before it includes any
-        # header. It leaves libc no fallback __getreent, which a static multilib never calls.
+        # header. It leaves libc no fallback __getreent: the KickOS runtime defines it.
         newlib_env = dict(env)
-        if "dynamic_reent" in family:
-            newlib_env["CFLAGS_FOR_TARGET"] += " -DGETREENT_PROVIDED"
+        newlib_env["CFLAGS_FOR_TARGET"] += " -DGETREENT_PROVIDED"
         if "newlib_include" in family:
             newlib_env["CFLAGS_FOR_TARGET"] += " -I" + os.path.join(src, family["newlib_include"])
 
@@ -524,7 +718,7 @@ class KickOSToolchain(ConanFile):
 
         def newlib_nano():
             where = os.path.join(self.build_folder, "newlib-nano")
-            self._newlib(where, nano, family["nano"], env)
+            self._newlib(where, nano, family["nano"], newlib_env)
             shutil.rmtree(where)
 
         nano = os.path.join(self.build_folder, "nano-stage")
@@ -550,14 +744,26 @@ class KickOSToolchain(ConanFile):
             self._make(gcc, "install-strip", env=env)
 
         shutil.rmtree(gcc)
+        nano_cxx = os.path.join(self.build_folder, "nano-cxx-stage")
         if "nano" in family:
             self._install_nano_cxx(stage)
             shutil.rmtree(nano)
-            shutil.rmtree(os.path.join(self.build_folder, "nano-cxx-stage"))
         with self._timed("checks"):
             self._check_dropped(stage, family.get("drop", []))
             self._check_guards(stage, family.get("guards", []))
+            self._check_thread_model(stage)
+            self._check_reent(stage)
+            self._check_lock_policy(stage, stage)
+            self._check_random_device(stage, stage)
+            self._check_clock_waits(stage, stage)
+            if "nano" in family:
+                self._check_lock_policy(stage, nano_cxx)
+                self._check_random_device(stage, nano_cxx)
+                self._check_clock_waits(stage, nano_cxx)
+                self._check_nano(stage)
             self._check_links(stage, "nano" in family)
+        if "nano" in family:
+            shutil.rmtree(nano_cxx)
 
     def _reconfigure_gcc(self, gcc, env):
         # GCC's configure, run before newlib was in the sysroot, took the target to have no C
@@ -654,7 +860,7 @@ class KickOSToolchain(ConanFile):
         # package: nano.specs names its header as =/include/newlib-nano.
         return [f"--target={self._target()}", f"--prefix={prefix}", "--with-newlib",
                 f"--with-sysroot={sysroot}", "--with-native-system-header-dir=/include",
-                "--disable-shared", "--disable-threads", "--disable-nls", "--disable-libssp",
+                "--disable-shared", "--enable-threads=kickos", "--disable-nls", "--disable-libssp",
                 "--disable-libgomp", "--disable-libquadmath", "--disable-libstdcxx-pch",
                 "--enable-checking=release", *FAMILIES[self._target()]["gcc"]]
 
@@ -666,6 +872,14 @@ class KickOSToolchain(ConanFile):
         overrides = ["-C", gcc, f"prefix={os.path.join(self.build_folder, 'nano-cxx-stage')}",
                      f"TARGET_SUBDIR={target}-nano",
                      f"SYSROOT_CFLAGS_FOR_TARGET=--sysroot={os.path.join(nano, target)}"]
+        # Each multilib's configure tests the threads model's header in libgcc's build folder
+        # beside its own, which only the other target directory holds.
+        libgcc = os.path.join(gcc, target)
+        for header in glob.glob(os.path.join(libgcc, "**", "libgcc", "gthr-default.h"),
+                                recursive=True):
+            mirror = os.path.join(gcc, f"{target}-nano", os.path.relpath(header, libgcc))
+            os.makedirs(os.path.dirname(mirror), exist_ok=True)
+            shutil.copyfile(header, mirror)
         where = os.path.join(self.build_folder, "nano-cxx")
         self._make(where, *overrides, *built, "all-target-libstdc++-v3", env=env)
         self._make(where, *overrides, "-o", "install-target-libgcc",
@@ -682,25 +896,161 @@ class KickOSToolchain(ConanFile):
             shutil.copyfile(os.path.join(here, "libsupc++.a"),
                             os.path.join(dest, "libsupc++_nano.a"))
 
+    def _check_thread_model(self, stage):
+        gcc = os.path.join(stage, "bin", f"{self._target()}-gcc")
+        out = subprocess.run([gcc, "-v"], capture_output=True, text=True, check=True)
+        if "Thread model: kickos\n" not in out.stderr:
+            raise ConanInvalidConfiguration(f"{gcc} -v names no kickos thread model")
+
+    def _check_reent(self, stage):
+        # Every member reaches its struct _reent through __getreent(), none through _impure_ptr,
+        # spelled with the target's prefix to C names.
+        target = self._target()
+        nm = os.path.join(stage, "bin", f"{target}-nm")
+        gcc = os.path.join(stage, "bin", f"{target}-gcc")
+        macros = subprocess.run([gcc, "-E", "-dM", "-x", "c", os.devnull], capture_output=True,
+                                text=True, check=True).stdout
+        prefix = ""
+        for line in macros.splitlines():
+            if line.startswith("#define __USER_LABEL_PREFIX__ "):
+                prefix = line.split(" ", 2)[2].strip()
+        impure = f" U {prefix}_impure_ptr"
+        roots = [os.path.join(stage, target, "lib"), os.path.join(stage, "lib", "gcc", target)]
+        for archive in sorted(a for root in roots
+                              for a in glob.glob(os.path.join(root, "**", "*.a"), recursive=True)):
+            out = subprocess.run([nm, "-A", archive], capture_output=True, text=True, check=True)
+            users = [line.split(":")[1] for line in out.stdout.splitlines()
+                     if line.endswith(impure)]
+            if users:
+                raise ConanInvalidConfiguration(
+                    f"{archive} reaches _impure_ptr from {', '.join(sorted(set(users)))}")
+
+    def _cxx_configs(self, stage, headers):
+        # Each multilib's flags and its c++config.h, in the libstdc++ whose headers the prefix
+        # `headers` holds.
+        target = self._target()
+        gcc = os.path.join(stage, "bin", f"{target}-gcc")
+        out = subprocess.run([gcc, "-print-multi-lib"], capture_output=True, text=True,
+                             check=True)
+        version = subprocess.run([gcc, "-dumpversion"], capture_output=True, text=True,
+                                 check=True).stdout.strip()
+        configs = []
+        for line in out.stdout.split():
+            where, flags = line.split(";", 1)
+            configs.append((["-" + f for f in flags.split("@") if f],
+                            os.path.normpath(os.path.join(headers, target, "include", "c++",
+                                                          version, target, where, "bits",
+                                                          "c++config.h"))))
+        return configs
+
+    def _check_lock_policy(self, stage, headers):
+        # shared_ptr counts take the atomic lock policy in every multilib whose compiler has the
+        # compare-and-swap libstdc++ asks for. In every other, a 4-byte read-modify-write is a
+        # call, and a reference count is one of those calls where the KickOS user runtime
+        # defines them (USER_ATOMICS) and an update under libstdc++'s mutex elsewhere.
+        gcc = os.path.join(stage, "bin", f"{self._target()}-gcc")
+        probe = "int w; int f(int v) { return __atomic_fetch_add(&w, v, __ATOMIC_ACQ_REL); }"
+        for flags, config in self._cxx_configs(stage, headers):
+            macros = subprocess.run([gcc, *flags, "-E", "-dM", "-x", "c", os.devnull],
+                                    capture_output=True, text=True, check=True).stdout
+            swap = all(f"#define __GCC_HAVE_SYNC_COMPARE_AND_SWAP_{n} 1" in macros
+                       for n in (2, 4))
+            calls = any(f"#define {m} 1" in macros for m in USER_ATOMICS)
+            with open(config) as f:
+                text = f.read()
+            atomic = "\n#define _GLIBCXX_HAVE_ATOMIC_LOCK_POLICY 1\n" in text
+            builtins = "\n#define _GLIBCXX_ATOMIC_WORD_BUILTINS 1\n" in text
+            if swap and not atomic:
+                raise ConanInvalidConfiguration(
+                    f"{config}: shared_ptr counts take a mutex where the multilib has a "
+                    "compare-and-swap")
+            if atomic and not swap:
+                raise ConanInvalidConfiguration(
+                    f"{config}: shared_ptr counts are atomic where the multilib has no "
+                    "compare-and-swap")
+            if swap:
+                continue
+            asm = subprocess.run([gcc, *flags, "-O2", "-S", "-o", "-", "-x", "c", "-"],
+                                 input=probe, capture_output=True, text=True, check=True).stdout
+            if "__atomic_fetch_add_4" not in asm:
+                raise ConanInvalidConfiguration(
+                    f"{config}: a 4-byte read-modify-write is inline where the multilib has no "
+                    "compare-and-swap")
+            if calls and not builtins:
+                raise ConanInvalidConfiguration(
+                    f"{config}: reference counts take libstdc++'s mutex where the KickOS user "
+                    "runtime defines the __atomic calls")
+            if builtins and not calls:
+                raise ConanInvalidConfiguration(
+                    f"{config}: reference counts call __atomic builtins the KickOS user runtime "
+                    "does not define")
+
+    def _check_random_device(self, stage, headers):
+        # std::random_device draws from getentropy and from nothing else, in every multilib.
+        others = ("_GLIBCXX_HAVE_ARC4RANDOM", "_GLIBCXX_X86_RDRAND", "_GLIBCXX_X86_RDSEED",
+                  "_GLIBCXX_USE_DEV_RANDOM")
+        for _, config in self._cxx_configs(stage, headers):
+            with open(config) as f:
+                text = f.read()
+            if "\n#define _GLIBCXX_HAVE_GETENTROPY 1\n" not in text:
+                raise ConanInvalidConfiguration(f"{config}: std::random_device has no getentropy")
+            found = [m for m in others if f"\n#define {m} " in text]
+            if found:
+                raise ConanInvalidConfiguration(
+                    f"{config}: std::random_device also draws from {', '.join(found)}")
+
+    def _check_clock_waits(self, stage, headers):
+        # A timed mutex and a condition variable wait on the clock their deadline names, through
+        # the threads model's clock waits, in every multilib.
+        wanted = ("_GLIBCXX_USE_PTHREAD_COND_CLOCKWAIT", "_GLIBCXX_USE_PTHREAD_MUTEX_CLOCKLOCK")
+        for _, config in self._cxx_configs(stage, headers):
+            with open(config) as f:
+                text = f.read()
+            missing = [m for m in wanted if f"\n#define {m} 1\n" not in text]
+            if missing:
+                raise ConanInvalidConfiguration(
+                    f"{config}: no clock wait, {', '.join(missing)} undefined")
+
+    def _check_nano(self, stage):
+        # Every multilib directory holds the nano archives, and nano.specs where the family
+        # installs its own.
+        names = ["libc_nano.a", "libg_nano.a", "libstdc++_nano.a", "libsupc++_nano.a"]
+        if FAMILIES[self._target()].get("nano_specs"):
+            names.append("nano.specs")
+        for where in self._multilib_dirs(stage):
+            missing = [n for n in names if not os.path.isfile(os.path.join(where, n))]
+            if missing:
+                raise ConanInvalidConfiguration(f"{where} lacks {', '.join(missing)}")
+
     def _check_links(self, stage, nano):
+        # Each profile links its own C and C++ archives and none of the other's, as the link map
+        # names the archives that gave a member.
         target = self._target()
         where = os.path.join(self.build_folder, "check")
         os.makedirs(where, exist_ok=True)
         source = os.path.join(where, "check.cc")
-        # __getreent is the runtime's where the libc is dynamic-reent, and unused elsewhere.
-        save(self, source, "#include <reent.h>\n#include <stdexcept>\n#include <string>\n"
-             "extern \"C\" struct _reent* __getreent(void) { return _impure_ptr; }\n"
-             "static int run() { try { throw std::runtime_error(std::string(\"k\")); }\n"
-             "  catch (const std::exception& e) { return e.what()[0] == 'k' ? 0 : 1; } }\n"
-             "int main() { return run(); }\n"
-             "extern \"C\" [[gnu::weak]] void _start() { run(); }\n")
+        save(self, source, CHECK)
         cxx = os.path.join(stage, "bin", f"{target}-g++")
-        profiles = [[]] + ([["--specs=nano.specs"]] if nano else [])
+        full = ["libc.a", "libstdc++.a"]
+        small = ["libc_nano.a", "libstdc++_nano.a"]
+        profiles = [(["-DKICKOS_CHECK_NANO=0"], full, small)]
+        if nano:
+            profiles.append((["-DKICKOS_CHECK_NANO=1", "--specs=nano.specs"], small, full))
+        link_map = os.path.join(where, "check.map")
         for flags in FAMILIES[target].get("check", [[]]):
-            for profile in profiles:
-                self._run([cxx, *flags, *profile, *FAMILIES[target].get("link", []),
-                           "--specs=nosys.specs", source,
-                           "-o", os.path.join(where, "check.elf")], where)
+            for profile, wanted, unwanted in profiles:
+                argv = [cxx, *flags, *profile, *FAMILIES[target].get("link", []),
+                        "--specs=nosys.specs", source, "-o", os.path.join(where, "check.elf"),
+                        f"-Wl,-Map={link_map}"]
+                self._run(argv, where)
+                with open(link_map) as f:
+                    used = {os.path.basename(line.split("(", 1)[0]) for line in f
+                            if not line[:1].isspace() and ".a(" in line}
+                faults = [f"no member of {a}" for a in wanted if a not in used]
+                faults += [f"members of {a}" for a in unwanted if a in used]
+                if faults:
+                    raise ConanInvalidConfiguration(
+                        f"{' '.join(argv)} linked {' and '.join(faults)}")
 
     def _install_nano(self, nano, stage):
         target = self._target()
@@ -712,6 +1062,11 @@ class KickOSToolchain(ConanFile):
             shutil.copyfile(libc, os.path.join(dest, "libc_nano.a"))
             shutil.copyfile(os.path.join(os.path.dirname(libc), "libg.a"),
                             os.path.join(dest, "libg_nano.a"))
+            if FAMILIES[target].get("nano_specs"):
+                specs = NANO_SPECS
+                if "nano_lib" in FAMILIES[target]:
+                    specs = f"{specs.rstrip()} {FAMILIES[target]['nano_lib']}\n"
+                save(self, os.path.join(dest, "nano.specs"), specs)
         header = os.path.join(stage, target, "include", "newlib-nano")
         os.makedirs(header, exist_ok=True)
         shutil.copyfile(os.path.join(nano, target, "include", "newlib.h"),

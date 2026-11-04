@@ -28,13 +28,8 @@ MEMORY
 _estack = ORIGIN(RAM) + LENGTH(RAM);
 _kernel_stack_size = 8K;
 
-/* PMSA needs the app window pow2-sized and its base ALIGNED to its size: the encoder checks
-   the size only, and the hardware snaps a misaligned base DOWN onto kernel RAM. */
+/* Kernel .data/.bss below the images' windows (kernel_data_reserve.ld.h). */
 #if KICKOS_HAVE_MPU
-#ifndef KICKOS_APPDATA_SIZE
-#define KICKOS_APPDATA_SIZE 128K
-#endif
-_appdata_size = KICKOS_APPDATA_SIZE;
 #ifndef KICKOS_KERNEL_DATA_RESERVE
 #define KICKOS_KERNEL_DATA_RESERVE 128K
 #endif
@@ -75,7 +70,7 @@ SECTIONS
     KICKOS_CORTEXM_CTORS
     KICKOS_CORTEXM_EXIDX
     KICKOS_INIT_TABLES(FLASH)
-    KICKOS_CORTEXM_DATA(KICKOS_APPDATA_SECTION(_ebss))
+    KICKOS_CORTEXM_DATA()
 
     /* The FlexSPI XIP window as the app's RX region. */
     __kickos_code_start = ORIGIN(FLASH);

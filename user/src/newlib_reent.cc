@@ -7,9 +7,10 @@
 // whose libc is the host's.
 //
 // Each thread's state is the base of its own stack block, and the cell that ends the carve
-// names it. Newlib reaches the state as _REENT: __getreent() on lx6, armv8a, rv64imac and
-// x86_64, and _impure_ptr on the single-core Cortex-M, RV32 and RX targets. Every cross target
-// links the KickOS toolchain's own newlib; errno is a member of that state.
+// names it. Newlib reaches the state through __getreent() on every target: the running thread's
+// cell on lx6, armv8a, rv64imac and x86_64, and the _impure_ptr the kernel seats at each switch
+// on the single-core Cortex-M, RV32 and RX targets. Every cross target links the KickOS
+// toolchain's own newlib; errno is a member of that state.
 
 #include <kickos/config/system.h> // KICKOS_STACK_ALIGN
 #include <kickos/reent.h>
@@ -26,19 +27,22 @@ extern "C" char const __kickos_image_tls_offset[];
 
 namespace
 {
-    // The carve's last two words, ending where the thread's TLS block starts. The kernel writes
-    // both at thread creation, in this order.
+    // The carve's last words, ending where the thread's TLS block starts. The kernel writes
+    // them at thread creation, the runtime's words zero.
     struct ReentCell
     {
+        KickosThreadWords words;
         struct _reent* state;
         uintptr_t self;
     };
+    static_assert(sizeof(ReentCell) == KICKOS_REENT_CELL_WORDS * sizeof(void*),
+                  "the cell is the KICKOS_REENT_CELL_WORDS words the kernel seats");
 
     static_assert(KICKOS_REENT_CARVE
                       == ((sizeof(struct _reent) + sizeof(ReentCell) + (KICKOS_STACK_ALIGN - 1u))
                           & ~static_cast<size_t>(KICKOS_STACK_ALIGN - 1u)),
-                  "KICKOS_REENT_CARVE in arch/Kconfig is not this newlib's struct _reent plus "
-                  "the cell, rounded to the stack alignment");
+                  "KICKOS_REENT_CARVE in the root CMakeLists.txt is not this newlib's struct "
+                  "_reent plus the cell, rounded to the stack alignment");
 
 #if not defined(__x86_64__)
     ReentCell const* running_cell()
@@ -56,6 +60,19 @@ namespace
     }
 #endif
 }
+
+#define KOS_REENT_STR2(x) #x
+#define KOS_REENT_STR(x) KOS_REENT_STR2(x)
+#define KOS_REENT_SYM(name) KOS_REENT_STR(__USER_LABEL_PREFIX__) #name
+
+// What the image header carries of this profile, as absolute symbols: each image's header takes
+// its user library's, so the header compiles the same for either profile.
+asm(".globl " KOS_REENT_SYM(__kickos_reent_width) "\n\t"
+    ".set " KOS_REENT_SYM(__kickos_reent_width) ", %c0\n\t"
+    ".globl " KOS_REENT_SYM(__kickos_reent_carve) "\n\t"
+    ".set " KOS_REENT_SYM(__kickos_reent_carve) ", %c1"
+    :
+    : "i"(sizeof(struct _reent)), "i"(KICKOS_REENT_CARVE));
 
 // %fs:0 holds no self pointer, so x86_64 reads the cell at its negative offsets from the FS base.
 #if defined(__x86_64__)
@@ -80,6 +97,11 @@ extern "C" struct _reent* __getreent(void)
 {
     return running_cell()->state;
 }
+#else
+extern "C" struct _reent* __getreent(void)
+{
+    return _impure_ptr;
+}
 #endif
 
 extern "C" uint32_t kickos_self_lock_id(void)
@@ -88,12 +110,28 @@ extern "C" uint32_t kickos_self_lock_id(void)
 }
 #endif
 
+// The running thread's cell ends its carve, whose base is its state on every target.
+extern "C" KickosThreadWords* kickos_thread_words(void)
+{
+    unsigned char* const state = reinterpret_cast<unsigned char*>(__getreent());
+    return &(reinterpret_cast<ReentCell*>(state + KICKOS_REENT_CARVE) - 1)->words;
+}
+
+// The threads layer (gthr.cc), which an image that creates a key links, defines the real one.
+extern "C" __attribute__((weak)) void kickos_keys_thread_end(void)
+{
+}
+
+// thread_atexit.cc, which an image with a thread_local destructor links, defines the real one.
+extern "C" __attribute__((weak)) void kickos_thread_dtors_run(void)
+{
+}
+
 extern "C"
 {
 
 #ifdef _REENT_SMALL
-// Not _reclaim_reent: it skips the state _impure_ptr names, which on the static-reent targets
-// is the caller's own, and it runs the stdio cleanup hook, which closes the FILEs every thread
+// Not _reclaim_reent: it runs the stdio cleanup hook, which closes the FILEs every thread
 // shares. The signal table stays for the reason _reclaim_reent gives.
 void kickos_reent_release(void)
 {

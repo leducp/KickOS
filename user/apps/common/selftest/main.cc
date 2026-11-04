@@ -12,7 +12,7 @@
 #if defined(__aarch64__)
 #include <kickos/arch/gic_ppi.h>
 #endif
-#include <kickos/chip_limits.h> // KICKOS_CHIP_ONE_TASK
+#include <kickos/chip_limits.h> // KICKOS_IRQ_FREE_BASE
 #include <kickos/config/priorities.h> // KICKOS_PRIO_MIN
 #include <kickos/sys/driver_service.h>
 #include <kickos/sys/image.h>
@@ -2304,11 +2304,11 @@ namespace
 
     // Where no region descriptor shapes a stack.
 #if !KICKOS_MEMORY_ENFORCED
-    constexpr uint32_t CSTK_BLOCK = KICKOS_MIN_STACK_SIZE + CSTK_CARVE_LEAST + 48u;
     // Neither a power of two nor stride-aligned, and 16 past a 32-byte boundary: with no region
     // descriptor and no thread_local declared, spawn owes it the ABI's alignment and nothing
     // more on every arch. The worker runs the deepest kernel dispatch on it, hence the floor.
-    constexpr uint32_t CSTK_ODD = CSTK_BLOCK - 32u;
+    constexpr uint32_t CSTK_ODD = ((KICKOS_MIN_STACK_SIZE + CSTK_CARVE_LEAST + 31u) & ~31u) + 16u;
+    constexpr uint32_t CSTK_BLOCK = CSTK_ODD + 32u;
     static_assert(CSTK_ODD >= KICKOS_MIN_STACK_SIZE + CSTK_CARVE_LEAST,
                   "below the per-arch stack floor");
     static_assert((CSTK_ODD & (CSTK_ODD - 1u)) != 0u, "a power of two proves nothing here");
@@ -2415,7 +2415,7 @@ namespace
         }
         else
         {
-            tap::partial("data-region half not run: this board holds one task");
+            tap::partial("data-region half not run: this image declares no peer");
         }
         // The stack under a window of the same spawn.
         int wrc = want;
@@ -7126,17 +7126,37 @@ namespace
     // caps: none. Exists only to occupy a slot and free it again.
     void join_probe(void*) {}
 
-    void join_stranger(void*)
+    // A sibling is admitted where main created it and not main: the join parks on main, which
+    // outlives the bound. Issued from a CHILD because main naming itself is the -KOS_EDEADLK case
+    // below and would witness nothing about the gate.
+    constexpr uint32_t JOIN_SIBLING_US = 2000;
+    void join_sibling(void*)
     {
-        // main is the init's child and not this thread's. Issued from a CHILD because main
-        // naming itself is the -KOS_EDEADLK case below and would witness nothing about the gate.
         char c = 'x';
-        if (kos_thread_join(g_main, JOIN_GENEROUS_US) == -KOS_EPERM)
+        int const rc = kos_thread_join(g_main, JOIN_SIBLING_US);
+        if (rc == -KOS_ETIMEDOUT)
+        {
+            c = 'T';
+        }
+        else if (rc == -KOS_EPERM)
         {
             c = 'P';
         }
         log_put(c);
     }
+
+#if KICKOS_SELFTEST_PEER
+    // A thread of another task, which main's task did not create either, names main.
+    int join_foreign_task(char const* who)
+    {
+        if (kos_thread_join(static_cast<kos_thread_t>(peer_word(who)), JOIN_GENEROUS_US)
+            == -KOS_EPERM)
+        {
+            return 0;
+        }
+        return 1;
+    }
+#endif
 
     void t_thread_join()
     {
@@ -7168,10 +7188,21 @@ namespace
         TAP_CHECK(kos_thread_join(KOS_THREAD_NONE, JOIN_GENEROUS_US) == -KOS_EBADF);
         TAP_CHECK(kos_thread_join(0x7fffffffu, JOIN_GENEROUS_US) == -KOS_EBADF);
         TAP_CHECK(kos_thread_join(g_main, JOIN_GENEROUS_US) == -KOS_EDEADLK);
-        s = kos::thread::create_caps(join_stranger, nullptr, "jstr", 10, nullptr, 0);
+        s = kos::thread::create_caps(join_sibling, nullptr, "jsib", 10, nullptr, 0);
         TAP_CHECK(s.valid());
         TAP_CHECK(hold.joined());
-        TAP_CHECK(log_eq("P")); // parenthood is the whole gate, and nothing delegates it
+        TAP_CHECK(log_eq("T")); // the task is the gate, not parenthood
+    }
+
+    void t_join_foreign_task()
+    {
+        TAP_ASK(.tasks = 1);
+        kos_task_t t = KOS_TASK_NONE;
+        ArmHold hold;
+        TAP_HOLD(hold.task(&t));
+        PeerHex const main_id = peer_hex(g_main);
+        TAP_CHECK(PeerRun("jft", main_id.s).start(&t) == 0);
+        TAP_CHECK(peer_dead_status(t) == 0);
     }
 
     // --- Join: a handle whose slot changed hands --------------------------------
@@ -7730,7 +7761,6 @@ namespace
         return 0;
     }
 #endif
-#if not KICKOS_CHIP_ONE_TASK
     void t_peer_start_waits_out_dying()
     {
         TAP_ASK(.tasks = 1, .notifies = 1, .peer_workers = 1);
@@ -7775,7 +7805,6 @@ namespace
         TAP_CHECK(started == 0 and stale == -KOS_EBADF);
         TAP_CHECK(status == 0);
     }
-#endif
 
     // --- A task is dead only once its members' teardown is done --------------------------
     // A creator calls the endpoint the entry alone receives on. The entry fills its table and
@@ -9675,7 +9704,6 @@ namespace selftest
     }
 }
 
-#if !KICKOS_CHIP_ONE_TASK
 // --- The program API ----------------------------------------------------------------------
 // peer0 to peer3, declared `start: on_request` over stpeer, each run an image of their own:
 // argv[1] names what it does, and its exit status reports it.
@@ -9888,6 +9916,10 @@ namespace
             return 0;
         }
 #endif
+        if (argc == 3 and peer_is(role, "jft"))
+        {
+            return join_foreign_task(a0);
+        }
         if (argc == 3 and peer_is(role, "xg"))
         {
             xg_worker(at);
@@ -10164,17 +10196,17 @@ namespace
         TAP_CHECK(g_pa_data == 42u and g_pa_bss == 43u and g_pa_cxx.value == 44u);
 #if PA_REGION_BOARD
         // Another task's state is outside a thread's region set: a global, a C++ static, its
-        // stdout, the last word of its window, where its heap ends, its two libc lock words and
-        // its environment. A write faults the writer's task, and a system call handed the
-        // address answers -KOS_EFAULT.
+        // stdout, the last word of its window, where its heap ends, the lock words of its stdout
+        // and its malloc, and its environment. A write faults the writer's task, and a system
+        // call handed the address answers -KOS_EFAULT.
         kos_image_header const& own = kickos_image_header;
         uintptr_t const targets[] = {
             reinterpret_cast<uintptr_t>(&g_pa_data),
             reinterpret_cast<uintptr_t>(&g_pa_cxx.value),
             reinterpret_cast<uintptr_t>(stdout),
             own.window_start + own.window_size - sizeof(uint32_t),
-            reinterpret_cast<uintptr_t>(kos_libc_lock(KOS_LIBC_LOCK_STDIO)),
-            reinterpret_cast<uintptr_t>(kos_libc_lock(KOS_LIBC_LOCK_MALLOC)),
+            reinterpret_cast<uintptr_t>(kos_libc_file_lock(stdout)),
+            reinterpret_cast<uintptr_t>(kos_libc_malloc_lock()),
             reinterpret_cast<uintptr_t>(&environ),
         };
         for (uintptr_t const target : targets)
@@ -10316,7 +10348,6 @@ namespace
         TAP_CHECK(prev == KOS_TASK_NONE or kos_task_slay(prev, 0) == 0);
     }
 }
-#endif
 
 namespace
 {
@@ -10380,13 +10411,6 @@ int main(int, char**)
     TAP_ADD("mutex_pi_donation", t_mutex_pi);
     TAP_ADD("mutex_chain_boost", t_mutex_chain);
     TAP_ADD_PINNED("mutex_owner_died", t_mutex_owner_died);
-#undef TAP_ADD
-// Region 3.
-#if KICKOS_SELFTEST_REGION(3)
-#define TAP_ADD(name, ...) TAP_ADD_LIVE(name, __VA_ARGS__)
-#else
-#define TAP_ADD(name, ...) TAP_ADD_ELIDED(name, __VA_ARGS__)
-#endif
     TAP_ADD("mutex_deadlock", t_mutex_deadlock);
     TAP_ADD("mutex_multi_held", t_mutex_multi_held);
     TAP_ADD("mutex_unlock_errors", t_mutex_unlock_errors);
@@ -10395,13 +10419,10 @@ int main(int, char**)
     TAP_ADD("mutex_kill_pending", t_mutex_kill_pending);
     TAP_ADD_PINNED("sem_killed_poster", t_sem_killed_poster);
     TAP_ADD("mutex_slain_holder", t_mutex_slain_holder);
-#undef TAP_ADD
-// Region 4.
-#if KICKOS_SELFTEST_REGION(4)
-#define TAP_ADD(name, ...) TAP_ADD_LIVE(name, __VA_ARGS__)
-#else
-#define TAP_ADD(name, ...) TAP_ADD_ELIDED(name, __VA_ARGS__)
-#endif
+    TAP_ADD_PINNED("cond_signal_wakes", t_cond_signal_wakes);
+    TAP_ADD_PINNED("cond_broadcast_all", t_cond_broadcast_all);
+    TAP_ADD("cond_timed_wait", t_cond_timed_wait);
+    TAP_ADD_PINNED("cond_killed_waiter", t_cond_killed_waiter);
 #if KICKOS_MEMORY_ENFORCED
     TAP_ADD_PINNED("mutex_forged_foreign", t_mutex_forged_foreign, WFO_RAM);
 #endif
@@ -10412,8 +10433,8 @@ int main(int, char**)
     TAP_ADD("endpoint_rights", t_endpoint_rights);
     TAP_ADD_PINNED("endpoint_handout", t_endpoint_handout);
 #undef TAP_ADD
-// Region 5.
-#if KICKOS_SELFTEST_REGION(5)
+// Region 3.
+#if KICKOS_SELFTEST_REGION(3)
 #define TAP_ADD(name, ...) TAP_ADD_LIVE(name, __VA_ARGS__)
 #else
 #define TAP_ADD(name, ...) TAP_ADD_ELIDED(name, __VA_ARGS__)
@@ -10425,21 +10446,14 @@ int main(int, char**)
     TAP_ADD("timed_arg_refusals", t_timed_arg_refusals);
     TAP_ADD("call_timeout_pending", t_call_timeout_pending);
     TAP_ADD("call_timeout_revert", t_call_timeout_revert);
-#undef TAP_ADD
-// Region 6.
-#if KICKOS_SELFTEST_REGION(6)
-#define TAP_ADD(name, ...) TAP_ADD_LIVE(name, __VA_ARGS__)
-#else
-#define TAP_ADD(name, ...) TAP_ADD_ELIDED(name, __VA_ARGS__)
-#endif
     TAP_ADD_PINNED("call_timeout_reply", t_call_timeout_reply);
     TAP_ADD_PINNED("reply_stale_caller", t_reply_stale_caller);
     TAP_ADD("reply_abandoned_cap", t_reply_abandoned_cap);
     TAP_ADD("call_infoless_revert", t_call_infoless_revert);
     TAP_ADD("call_close_reply", t_call_close_reply);
 #undef TAP_ADD
-// Region 7.
-#if KICKOS_SELFTEST_REGION(7)
+// Region 4.
+#if KICKOS_SELFTEST_REGION(4)
 #define TAP_ADD(name, ...) TAP_ADD_LIVE(name, __VA_ARGS__)
 #else
 #define TAP_ADD(name, ...) TAP_ADD_ELIDED(name, __VA_ARGS__)
@@ -10453,8 +10467,8 @@ int main(int, char**)
     TAP_ADD_PINNED("call_reg_fastpath", t_call_reg_fastpath);
     TAP_ADD_PINNED("call_from_root", t_call_from_root);
 #undef TAP_ADD
-// Region 8.
-#if KICKOS_SELFTEST_REGION(8)
+// Region 5.
+#if KICKOS_SELFTEST_REGION(5)
 #define TAP_ADD(name, ...) TAP_ADD_LIVE(name, __VA_ARGS__)
 #else
 #define TAP_ADD(name, ...) TAP_ADD_ELIDED(name, __VA_ARGS__)
@@ -10470,13 +10484,6 @@ int main(int, char**)
 #endif
     TAP_ADD("cap_gen_reuse", t_cap_gen_reuse);
     TAP_ADD("cap_child_width", t_cap_child_width);
-#undef TAP_ADD
-// Region 9.
-#if KICKOS_SELFTEST_REGION(9)
-#define TAP_ADD(name, ...) TAP_ADD_LIVE(name, __VA_ARGS__)
-#else
-#define TAP_ADD(name, ...) TAP_ADD_ELIDED(name, __VA_ARGS__)
-#endif
     TAP_ADD("cap_reply_bound_fast", t_cap_reply_bound_fast);
     TAP_ADD("cap_reply_bound_slow", t_cap_reply_bound_slow);
     TAP_ADD_PINNED("cap_reply_release_close", t_cap_reply_release_close);
@@ -10490,19 +10497,13 @@ int main(int, char**)
     TAP_ADD("periph_reg_write_mask", t_periph_reg_write_mask);
     TAP_ADD("window_list", t_window_list);
 #endif
-#undef TAP_ADD
-// Region 10.
-#if KICKOS_SELFTEST_REGION(10)
-#define TAP_ADD(name, ...) TAP_ADD_LIVE(name, __VA_ARGS__)
-#else
-#define TAP_ADD(name, ...) TAP_ADD_ELIDED(name, __VA_ARGS__)
-#endif
     TAP_ADD_PINNED("thread_join", t_thread_join);
     TAP_ADD("join_stale_gen", t_join_stale_gen);
+    TAP_ADD("join_foreign_task", t_join_foreign_task);
     TAP_ADD_PINNED("join_timeout", t_join_timeout);
 #undef TAP_ADD
-// Region 11.
-#if KICKOS_SELFTEST_REGION(11)
+// Region 6.
+#if KICKOS_SELFTEST_REGION(6)
 #define TAP_ADD(name, ...) TAP_ADD_LIVE(name, __VA_ARGS__)
 #else
 #define TAP_ADD(name, ...) TAP_ADD_ELIDED(name, __VA_ARGS__)
@@ -10510,22 +10511,13 @@ int main(int, char**)
     TAP_ADD_PINNED("task_dead_after_every_sweep", t_task_dead_after_every_sweep);
     TAP_ADD_PINNED("task_exit_entry_return", t_task_exit_entry_return);
     TAP_ADD("task_exit_member_exit", t_task_exit_member_exit);
-#if not KICKOS_CHIP_ONE_TASK
     TAP_ADD_PINNED("peer_start_waits_out_dying", t_peer_start_waits_out_dying);
-#endif
     TAP_ADD("prio_ceiling_refused", t_prio_ceiling_refused);
     TAP_ADD("task_dead_after_sweep", t_task_dead_after_sweep);
     TAP_ADD("task_handles", t_task_handles);
     TAP_ADD("task_creator_gate", t_task_creator_gate);
     TAP_ADD_PINNED("task_group_kill", t_task_group_kill);
     TAP_ADD("prio_self_ceiling", t_prio_self_ceiling);
-#undef TAP_ADD
-// Region 12.
-#if KICKOS_SELFTEST_REGION(12)
-#define TAP_ADD(name, ...) TAP_ADD_LIVE(name, __VA_ARGS__)
-#else
-#define TAP_ADD(name, ...) TAP_ADD_ELIDED(name, __VA_ARGS__)
-#endif
     TAP_ADD("thread_slay_window", t_thread_slay_window);
     TAP_ADD_PINNED("thread_slay_raise", t_thread_slay_raise);
     TAP_ADD("thread_self_after_kill", t_thread_self_after_kill);
@@ -10537,13 +10529,6 @@ int main(int, char**)
     TAP_ADD("task_slay_gate", t_task_slay_gate);
     TAP_ADD("task_slay_after_every_sweep", t_task_slay_after_every_sweep);
     TAP_ADD_PINNED("arm_hold", t_arm_hold);
-#undef TAP_ADD
-// Region 13.
-#if KICKOS_SELFTEST_REGION(13)
-#define TAP_ADD(name, ...) TAP_ADD_LIVE(name, __VA_ARGS__)
-#else
-#define TAP_ADD(name, ...) TAP_ADD_ELIDED(name, __VA_ARGS__)
-#endif
     TAP_ADD_IRQ("irq_thread_ctx", t_irq);
     TAP_ADD_IRQ("irq_as_event", t_irqdrv, IRQDRV_RAM);
     TAP_ADD_IRQ("irq_mask_coalesce", t_irq_mask);
@@ -10561,8 +10546,8 @@ int main(int, char**)
     TAP_ADD("irq_reclaim_stale_raise", t_irq_reclaim_stale_raise);
 #endif
 #undef TAP_ADD
-// Region 14.
-#if KICKOS_SELFTEST_REGION(14)
+// Region 7.
+#if KICKOS_SELFTEST_REGION(7)
 #define TAP_ADD(name, ...) TAP_ADD_LIVE(name, __VA_ARGS__)
 #else
 #define TAP_ADD(name, ...) TAP_ADD_ELIDED(name, __VA_ARGS__)
@@ -10593,8 +10578,8 @@ int main(int, char**)
     TAP_ADD_PINNED("uncached_grant_sync", t_uncached_grant_sync, UG_RAM);
 #endif
 #undef TAP_ADD
-// Region 15.
-#if KICKOS_SELFTEST_REGION(15)
+// Region 8.
+#if KICKOS_SELFTEST_REGION(8)
 #define TAP_ADD(name, ...) TAP_ADD_LIVE(name, __VA_ARGS__)
 #else
 #define TAP_ADD(name, ...) TAP_ADD_ELIDED(name, __VA_ARGS__)
@@ -10672,6 +10657,7 @@ int main(int, char**)
     TAP_ADD("migrate_running", t_migrate_running);
     TAP_ADD("resched_reaches_pinned_caller", t_resched_reaches_pinned_caller);
     TAP_ADD("sem_units_across_cores", t_sem_units_across_cores);
+    TAP_ADD("cond_turns_across_cores", t_cond_turns_across_cores);
     TAP_ADD("prio_self_lower_moves_waiter", t_prio_self_lower_moves_waiter);
     TAP_ADD("pin_cross_task_refused", t_pin_cross_task_refused);
     TAP_ADD("grant_narrows", t_grant_narrows);
@@ -10721,13 +10707,15 @@ int main(int, char**)
 #if KICKOS_HAVE_ASPACE
     TAP_ADD("amp_far_reply_unmapped", t_amp_far_reply_unmapped);
 #endif
+#if KICKOS_AMP_CLOCK_SHARED
+    TAP_ADD("amp_far_wall", t_amp_far_wall);
+#endif
 #endif
     TAP_ADD("amp_crossing_task_local", t_amp_crossing_task_local, AG_RAM);
 #endif
     TAP_ADD("ipc_one_buffer_both_ends", t_ipc_one_buffer_both_ends);
     TAP_ADD("confused_deputy", t_confused_deputy, CD_RAM);
     TAP_ADD("mem_self_grant", t_selfgrant, SG_ASK);
-#if !KICKOS_CHIP_ONE_TASK
     TAP_ADD("program_api", t_program_api);
     TAP_ADD("image_statics", t_image_statics);
     TAP_ADD("image_preempts_creator", t_image_preempts_creator);
@@ -10736,12 +10724,11 @@ int main(int, char**)
 #if not KICKOS_ARCH_SIM
     TAP_ADD("image_nonblock", t_image_nonblock);
 #endif
-#endif
 #undef TAP_ADD
 // A region this file cuts but the build does not know about is elided from EVERY image and
 // runs nowhere, which no plan check can see.
-#if KICKOS_SELFTEST_REGIONS != 15
-#error "this file cuts the registry into fifteen regions; say so in its CMakeLists"
+#if KICKOS_SELFTEST_REGIONS != 8
+#error "this file cuts the registry into eight regions; say so in its CMakeLists"
 #endif
 
     if (not st_ram_seat())

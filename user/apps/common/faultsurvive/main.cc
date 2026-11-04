@@ -36,7 +36,6 @@
 //      the stacking.
 
 #include <kickos/apps/peer_run.h>
-#include <kickos/chip_limits.h> // KICKOS_CHIP_ONE_TASK
 #include <kickos/kos.h>
 #include <kickos/libc/fmt.h>
 #include <kickos/sys.h>
@@ -63,10 +62,6 @@ extern "C" char const __kickos_tls_carve[];
 
 int main(int, char**)
 {
-#if KICKOS_CHIP_ONE_TASK
-    kos::print("[fs] skip - the faulter needs a task of its own and this board holds one task\n");
-    return 0;
-#endif
     void* stack = nullptr;
     uint32_t stack_size = 0;
     void* block = nullptr;

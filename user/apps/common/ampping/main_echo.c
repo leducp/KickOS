@@ -2,7 +2,8 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // Echo calls on the crossing this node's composition serves, the first partition port named
-// for it. The node's other ports are served by tasks that never receive, for amp_far_reply_empty.
+// for it; a marked call is held first, or sets the wall clock and is held. The node's other ports
+// are served by tasks that never receive, for amp_far_reply_empty.
 
 #include <iso646.h> // and / or / not are macros in C, not keywords
 #include <stdbool.h>
@@ -25,16 +26,26 @@
 #define AMP_HOLD_WORD 8u
 #define AMP_HOLD_NS (2000ull * 1000ull * 1000ull)
 #define AMP_HOLD_POLL_NS (1000ull * 1000ull)
+// A call whose first byte is AMP_WALL_MARK sets the wall clock a day ahead, then is held as an
+// AMP_HOLD_MARK call is, and answered with the set's code in its third byte and whether node 0's
+// store came in its fourth. amp_far_wall states the same.
+#define AMP_WALL_MARK 0xD1u
+#define AMP_WALL_DAY_NS (86400ull * 1000000000ull)
 
-static void ampecho_hold(unsigned char const* view, unsigned char seq)
+// True once node 0 stored `seq`, false after AMP_HOLD_NS without it.
+static bool ampecho_hold(unsigned char const* view, unsigned char seq)
 {
     uint64_t waited = 0;
-    while (view != NULL and waited < AMP_HOLD_NS
-           and __atomic_load_n((uint32_t const*)(view + AMP_HOLD_WORD), __ATOMIC_ACQUIRE) != seq)
+    while (view != NULL and waited < AMP_HOLD_NS)
     {
+        if (__atomic_load_n((uint32_t const*)(view + AMP_HOLD_WORD), __ATOMIC_ACQUIRE) == seq)
+        {
+            return true;
+        }
         kos_sleep_ns(AMP_HOLD_POLL_NS);
         waited += AMP_HOLD_POLL_NS;
     }
+    return false;
 }
 
 int main(void)
@@ -90,7 +101,12 @@ int main(void)
         }
         if (got >= 2 and msg[0] == AMP_HOLD_MARK)
         {
-            ampecho_hold(view, msg[1]);
+            (void)ampecho_hold(view, msg[1]);
+        }
+        if (got >= 4 and msg[0] == AMP_WALL_MARK)
+        {
+            msg[2] = (unsigned char)kos_clock_set_realtime(kos_clock_realtime() + AMP_WALL_DAY_NS);
+            msg[3] = (unsigned char)ampecho_hold(view, msg[1]);
         }
         // The caller's own bytes, unchanged: the far-call arms check the payload.
         (void)kos_reply(info.reply_cap, msg, (size_t)got);

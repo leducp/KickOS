@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The mutex word: where it may live, what the kernel's contended entry takes from it, and the
-// waits a removed mapping ends.
+// waits a removed mapping ends; and the condition variable on the plain word pair.
 
 #include "selftest.h"
 
@@ -262,6 +262,174 @@ namespace selftest
         TAP_CHECK(g_wsh_m.word == 0);
         TAP_CHECK(wrapped and wrapped_unlocked == 0);
         TAP_SKIP_UNLESS(reused, "the slain holder's slot went to no new thread");
+    }
+
+    // --- A condition variable ---------------------------------------------------------------
+    // Waiters above main park in the wait; main then sets the predicate under the mutex and
+    // signals or broadcasts, so each waiter takes the mutex back from main.
+    constexpr int CV_WAITERS = 3;
+    constexpr int32_t CV_NOT_HELD = -98;
+    constexpr uint32_t CV_TIMEOUT_US = 20000;
+    kos_cond_t g_cv = KOS_COND_INIT;
+    kos_mutex_t g_cv_m = KOS_MUTEX_INIT;
+    // Written under g_cv_m.
+    uint32_t g_cv_go = 0;
+    Atomic<int32_t, Order::RELAXED> g_cv_rc[CV_WAITERS];
+
+    void cv_reset()
+    {
+        g_cv = KOS_COND_INIT;
+        g_cv_m = KOS_MUTEX_INIT;
+        g_cv_go = 0;
+        for (int i = 0; i < CV_WAITERS; i++)
+        {
+            g_cv_rc[i] = WORD_UNSET;
+        }
+    }
+
+    void* cv_arg(int i)
+    {
+        return reinterpret_cast<void*>(static_cast<uintptr_t>(i));
+    }
+
+    void cv_waiter(void* arg)
+    {
+        uintptr_t const me = reinterpret_cast<uintptr_t>(arg);
+        int32_t rc = kos_mutex_lock(&g_cv_m, KOS_TIMEOUT_NONE);
+        while (rc == 0 and g_cv_go == 0)
+        {
+            rc = kos_cond_wait(&g_cv, &g_cv_m, STALL_TOLERANT_US);
+        }
+        if ((g_cv_m.word & ~KOS_WORD_WAITERS) != kickos_self_lock_id())
+        {
+            rc = CV_NOT_HELD;
+        }
+        else
+        {
+            (void)kos_mutex_unlock(&g_cv_m);
+        }
+        g_cv_rc[me] = rc;
+    }
+
+    // Under the mutex, so the woken waiters retake it from main.
+    void cv_release(bool all)
+    {
+        TAP_CHECK(kos_mutex_lock(&g_cv_m, 0) == 0);
+        g_cv_go = 1;
+        if (all)
+        {
+            TAP_CHECK(kos_cond_broadcast(&g_cv) == 0);
+        }
+        else
+        {
+            TAP_CHECK(kos_cond_signal(&g_cv) == 0);
+        }
+        TAP_CHECK(kos_mutex_unlock(&g_cv_m) == 0);
+    }
+
+    void t_cond_signal_wakes()
+    {
+        TAP_ASK(.workers = 2);
+        cv_reset();
+        kos::thread::Handle w;
+        ArmHold hold;
+        TAP_HOLD(hold.thread(&w));
+        w = word_spawn(cv_waiter, cv_arg(0), "cvS", TAP_PRIO_PARKS, nullptr, 0);
+        TAP_CHECK(w.valid() and word_parked());
+        uint32_t const parked = g_cv.word;
+        cv_release(false);
+        TAP_CHECK(hold.joined());
+        tap::diag("signal: word 0x%x parked, waiter %ld", static_cast<unsigned>(parked),
+                  static_cast<long>(g_cv_rc[0].load()));
+        TAP_CHECK(parked == KOS_WORD_WAITERS);
+        TAP_CHECK(g_cv_rc[0] == 0);
+        TAP_CHECK(g_cv.word == 1u);
+        TAP_CHECK(g_cv_m.word == 0);
+    }
+
+    void t_cond_broadcast_all()
+    {
+        TAP_ASK(.workers = 4);
+        cv_reset();
+        kos::thread::Handle w[CV_WAITERS];
+        ArmHold hold;
+        TAP_HOLD(hold.thread(&w[0]) and hold.thread(&w[1]) and hold.thread(&w[2]));
+        for (int i = 0; i < CV_WAITERS; i++)
+        {
+            w[i] = word_spawn(cv_waiter, cv_arg(i), "cvB", TAP_PRIO_PARKS, nullptr, 0);
+            TAP_CHECK(w[i].valid());
+        }
+        TAP_CHECK(word_parked());
+        uint32_t const parked = g_cv.word;
+        cv_release(true);
+        TAP_CHECK(hold.joined());
+        tap::diag("broadcast: word 0x%x parked, waiters %ld %ld %ld",
+                  static_cast<unsigned>(parked), static_cast<long>(g_cv_rc[0].load()),
+                  static_cast<long>(g_cv_rc[1].load()), static_cast<long>(g_cv_rc[2].load()));
+        TAP_CHECK(parked == KOS_WORD_WAITERS);
+        for (int i = 0; i < CV_WAITERS; i++)
+        {
+            TAP_CHECK(g_cv_rc[i] == 0);
+        }
+        TAP_CHECK(g_cv.word == 1u);
+    }
+
+    // The expired waiter leaves its bit set for the next signal to clear.
+    void t_cond_timed_wait()
+    {
+        cv_reset();
+        TAP_CHECK(kos_cond_wait(&g_cv, &g_cv_m, 0) == -KOS_EPERM);
+        TAP_CHECK(kos_mutex_lock(&g_cv_m, 0) == 0);
+        uint64_t const t0 = kos_clock_now();
+        int const rc = kos_cond_wait(&g_cv, &g_cv_m, CV_TIMEOUT_US);
+        uint64_t const waited_us = (kos_clock_now() - t0) / 1000u;
+        uint32_t const holder = g_cv_m.word;
+        TAP_CHECK(kos_mutex_unlock(&g_cv_m) == 0);
+        uint32_t const left = g_cv.word;
+        TAP_CHECK(kos_cond_signal(&g_cv) == 0);
+        tap::diag("timed wait: %d after %lu us, word 0x%x", rc, static_cast<unsigned long>(waited_us),
+                  static_cast<unsigned>(left));
+        TAP_CHECK(rc == -KOS_ETIMEDOUT);
+        TAP_CHECK(waited_us >= CV_TIMEOUT_US);
+        TAP_CHECK(waited_us < STALL_TOLERANT_US);
+        TAP_CHECK(holder == kickos_self_lock_id());
+        TAP_CHECK(left == KOS_WORD_WAITERS);
+        TAP_CHECK(g_cv.word == 1u);
+    }
+
+    // The killed waiter dies at its re-take's entry, never holding the mutex, and a later
+    // waiter on the same condition is signalled as usual.
+    void cv_killed(void*)
+    {
+        (void)kos_mutex_lock(&g_cv_m, KOS_TIMEOUT_NONE);
+        g_cv_rc[0] = kos_cond_wait(&g_cv, &g_cv_m, KOS_TIMEOUT_NONE);
+        kos_exit(0);
+    }
+    void t_cond_killed_waiter()
+    {
+        TAP_ASK(.workers = 2);
+        cv_reset();
+        kos::thread::Handle k;
+        kos::thread::Handle w;
+        ArmHold hold;
+        TAP_HOLD(hold.thread(&k) and hold.thread(&w));
+        k = word_spawn(cv_killed, nullptr, "cvK", TAP_PRIO_PARKS, nullptr, 0);
+        TAP_CHECK(k.valid() and word_parked());
+        uint32_t const parked = g_cv.word;
+        TAP_CHECK(k.cancel(KOS_CANCEL_KILL, STALL_TOLERANT_US) == 0);
+        uint32_t const left = g_cv_m.word;
+        w = word_spawn(cv_waiter, cv_arg(1), "cvW", TAP_PRIO_PARKS, nullptr, 0);
+        TAP_CHECK(w.valid() and word_parked());
+        cv_release(false);
+        TAP_CHECK(hold.joined());
+        tap::diag("killed waiter: word 0x%x parked, mutex 0x%x after, killed %ld, next %ld",
+                  static_cast<unsigned>(parked), static_cast<unsigned>(left),
+                  static_cast<long>(g_cv_rc[0].load()), static_cast<long>(g_cv_rc[1].load()));
+        TAP_CHECK(parked == KOS_WORD_WAITERS);
+        TAP_CHECK(g_cv_rc[0] == WORD_UNSET);
+        TAP_CHECK(left == 0);
+        TAP_CHECK(g_cv_rc[1] == 0);
+        TAP_CHECK(g_cv.word == 1u);
     }
 
 #if KICKOS_MEMORY_ENFORCED

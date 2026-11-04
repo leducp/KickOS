@@ -3,12 +3,15 @@
 //
 // The kernel clock held against a clock outside the chip: three marks a requested sleep apart,
 // which tests/integration/check_wallclock.sh times between the second and third by the capture
-// host's own arrival stamps. A USB device console loses the first.
+// host's own arrival stamps. A USB device console loses the first. Then the steady clock across a
+// wall-clock set a day ahead, made between its two reads: it advances by the sleep alone.
 
 #include <kickos/kos.h>
 #include <kickos/libc/fmt.h>
 
 #include <stdint.h>
+
+#include <chrono>
 
 namespace
 {
@@ -21,11 +24,35 @@ namespace
         kos::sleep_ns(SLEEP_NS);
         return kos::clock_now() - from;
     }
+
+    constexpr uint64_t DAY_NS = 86400000000000ull;
+    constexpr uint64_t SET_SLEEP_NS = 1000000000ull;
+
+    struct AcrossSet
+    {
+        int set;
+        uint64_t steady;
+        uint64_t wall;
+    };
+
+    AcrossSet steady_across_set()
+    {
+        AcrossSet r;
+        uint64_t const wall_from = kos::clock_realtime();
+        auto const from = std::chrono::steady_clock::now();
+        r.set = kos::clock_set_realtime(wall_from + DAY_NS);
+        kos::sleep_ns(SET_SLEEP_NS);
+        auto const to = std::chrono::steady_clock::now();
+        r.wall = kos::clock_realtime() - wall_from;
+        r.steady = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(to - from).count());
+        return r;
+    }
 }
 
 int main(int, char**)
 {
-    char line[160];
+    char line[192];
     ksnprintf(line, sizeof(line), "[wallclock] mark 0, sleeping %llu ns\n",
               static_cast<unsigned long long>(SLEEP_NS));
     kos::print(line);
@@ -37,6 +64,14 @@ int main(int, char**)
     took = timed_sleep();
     ksnprintf(line, sizeof(line), "[wallclock] mark 2, the kernel clock advanced %llu ns\n",
               static_cast<unsigned long long>(took));
+    kos::print(line);
+    AcrossSet const across = steady_across_set();
+    ksnprintf(line, sizeof(line),
+              "[wallclock] mark 3, a set a day ahead answered %d, the steady clock advanced %llu ns"
+              " over a sleep of %llu ns, the wall clock %llu ns\n",
+              across.set, static_cast<unsigned long long>(across.steady),
+              static_cast<unsigned long long>(SET_SLEEP_NS),
+              static_cast<unsigned long long>(across.wall));
     kos::print(line);
     kos::print("[wallclock] done\n");
     return 0;

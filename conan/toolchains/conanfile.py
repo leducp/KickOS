@@ -2,6 +2,7 @@
 # Copyright (c) 2026 Philippe Leduc
 
 import os
+import re
 
 from conan import ConanFile
 from conan.errors import ConanInvalidConfiguration
@@ -14,7 +15,8 @@ PREFIX = "kickos-toolchain-"
 
 
 class KickOSToolchains(ConanFile):
-    """The KickOS toolchain a tree uses: every family it builds for, from conan/toolchain.
+    """The KickOS toolchain a tree uses: every family it builds for, from conan/toolchain at
+    the version that recipe states.
 
     The output folder holds kickos-toolchain.cmake, one bin directory per family, which the
     toolchain files read through KICKOS_TOOLCHAIN, and kickos-toolchain.sh, which sets that
@@ -37,9 +39,19 @@ class KickOSToolchains(ConanFile):
                 f"{', '.join(FAMILIES)}")
         return chosen
 
+    def _version(self):
+        recipe = os.path.normpath(os.path.join(self.recipe_folder, "..", "toolchain",
+                                               "conanfile.py"))
+        with open(recipe) as f:
+            found = re.findall(r'^    version = "(.*)"$', f.read(), re.MULTILINE)
+        if len(found) != 1:
+            raise ConanInvalidConfiguration(f"{recipe} must state one version, not {len(found)}")
+        return found[0]
+
     def requirements(self):
+        version = self._version()
         for family in self._families():
-            self.requires(f"{PREFIX}{family}/1.1.0")
+            self.requires(f"{PREFIX}{family}/{version}")
 
     def generate(self):
         lines = ["# Written by conan/toolchains: one bin directory per KickOS toolchain family.\n"]

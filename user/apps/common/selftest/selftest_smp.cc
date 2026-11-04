@@ -1169,6 +1169,110 @@ namespace selftest
         TAP_CHECK(left == 0u and after == -KOS_ETIMEDOUT);
     }
 
+    // --- A condition variable across cores ------------------------------------------------
+    // Two threads on two cores hand a turn back and forth through one condition and its mutex,
+    // one signalling under the mutex and the other after its release. A wake lost between a
+    // waiter's release and its park shows as a wait that ran out with the turn its own.
+    constexpr uint32_t CX_ROUNDS = 2000;
+    constexpr uint8_t CX_PRIO = 10;
+    constexpr uint32_t CX_STALL_US = STALL_TOLERANT_US / 5u;
+    constexpr uint32_t CX_BOUND_US = 4u * STALL_TOLERANT_US;
+    kos_cond_t g_cx_cond = KOS_COND_INIT;
+    kos_mutex_t g_cx_m = KOS_MUTEX_INIT;
+    // Written under g_cx_m.
+    uint32_t g_cx_turn = 0;
+    Atomic<uint32_t, Order::RELAXED> g_cx_done[2];
+    Atomic<uint32_t, Order::RELAXED> g_cx_stalls[2];
+    Atomic<int32_t, Order::RELAXED> g_cx_rc[2];
+
+    void cx_player(void* arg)
+    {
+        uint32_t const me = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(arg));
+        uint32_t done = 0;
+        uint32_t stalls = 0;
+        int rc = 0;
+        while (rc == 0 and done < CX_ROUNDS)
+        {
+            rc = kos_mutex_lock(&g_cx_m, KOS_TIMEOUT_NONE);
+            while (rc == 0 and g_cx_turn != me)
+            {
+                rc = kos_cond_wait(&g_cx_cond, &g_cx_m, CX_STALL_US);
+                if (rc == -KOS_ETIMEDOUT)
+                {
+                    stalls++;
+                    rc = 0;
+                }
+            }
+            if (rc != 0)
+            {
+                break;
+            }
+            g_cx_turn = 1u - me;
+            done++;
+            if (me == 0)
+            {
+                rc = kos_cond_signal(&g_cx_cond);
+                (void)kos_mutex_unlock(&g_cx_m);
+            }
+            else
+            {
+                (void)kos_mutex_unlock(&g_cx_m);
+                rc = kos_cond_signal(&g_cx_cond);
+            }
+        }
+        g_cx_done[me] = done;
+        g_cx_stalls[me] = stalls;
+        g_cx_rc[me] = rc;
+    }
+    void t_cond_turns_across_cores()
+    {
+        uint32_t const iso = KOS_ISOLATED_CORES;
+        uint32_t away = 0;
+        for (uint32_t c = 1; c < static_cast<uint32_t>(KICKOS_KERNEL_CORES); c++)
+        {
+            if ((iso & (1u << c)) == 0)
+            {
+                away = c;
+                break;
+            }
+        }
+        TAP_SKIP_UNLESS(away != 0, "turns across cores need a non-isolated core beside core 0");
+        TAP_ASK(.workers = 2);
+        g_cx_cond = KOS_COND_INIT;
+        g_cx_m = KOS_MUTEX_INIT;
+        g_cx_turn = 0;
+        for (int i = 0; i < 2; i++)
+        {
+            g_cx_done[i] = 0;
+            g_cx_stalls[i] = 0;
+            g_cx_rc[i] = -99;
+        }
+        kos::thread::Handle p[2];
+        ArmHold hold(CX_BOUND_US);
+        TAP_HOLD(hold.thread(&p[0]) and hold.thread(&p[1]));
+        uint32_t const cores[2] = {1u << PL_HOME, 1u << away};
+        for (int i = 0; i < 2; i++)
+        {
+            void* const me = reinterpret_cast<void*>(static_cast<uintptr_t>(i));
+            p[i] = kos::thread::create_caps(cx_player, me, "cxP", CX_PRIO, nullptr, 0,
+                                            KOS_POLICY_FIFO, 0, 0, nullptr, nullptr, 0, cores[i]);
+            TAP_CHECK(p[i].valid());
+        }
+        uint64_t const t0 = kos_clock_now();
+        TAP_CHECK(hold.joined());
+        uint32_t const ms = static_cast<uint32_t>((kos_clock_now() - t0) / 1000000u);
+        tap::diag("turns across cores: %u and %u rounds, %u and %u stalls, rc %d %d, %u ms",
+                  static_cast<unsigned>(g_cx_done[0].load()),
+                  static_cast<unsigned>(g_cx_done[1].load()),
+                  static_cast<unsigned>(g_cx_stalls[0].load()),
+                  static_cast<unsigned>(g_cx_stalls[1].load()), static_cast<int>(g_cx_rc[0].load()),
+                  static_cast<int>(g_cx_rc[1].load()), static_cast<unsigned>(ms));
+        TAP_CHECK(g_cx_rc[0].load() == 0 and g_cx_rc[1].load() == 0);
+        TAP_CHECK(g_cx_done[0].load() == CX_ROUNDS and g_cx_done[1].load() == CX_ROUNDS);
+        TAP_CHECK(g_cx_stalls[0].load() == 0u and g_cx_stalls[1].load() == 0u);
+        TAP_CHECK(g_cx_m.word == 0u);
+    }
+
     // --- A caller that lowers itself takes a thread waiting on a peer core ------------------
     // main raises itself on its core B, then readies W behind an equal-priority spinner pinned
     // to core A, W's mask naming A and B. main's level holds W on A until main lowers itself below

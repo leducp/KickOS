@@ -10,24 +10,24 @@
 #                         --link <command...>
 #   python3 image-link.py --program [--host] <names file> --link <command...>
 #
-# The link command is CMake's own, whole. Every input outside the kernel's link group is an
-# image's: image 0's alone, or where an object marks itself the init's (KOS_IMAGE_INIT_OBJECT,
-# <kickos/sys/image.h>) one image per declared task beside the init's. Then the init's objects
-# are image 0's, an object marked KOS_IMAGE_TASK_OBJECT(k) is image k + 1's, the objects marked
-# KOS_IMAGE_BOTH_OBJECT, every archive and every flag are every image's, and every other object
-# is every task image's. Each image is linked on its own first with -r, its references to the
-# bounds the final link states renamed to its own (<names file>, `<name> <field>` per line, to
-# __kickos_image<n>_<field>) and every symbol it defines made local but its header, image n's
-# renamed kickos_image<n>_header past image 0. The final link then takes the command's kernel
-# group, its linker scripts and the images' objects, and writes the command's output. No
-# reference an image leaves undefined may resolve there to a definition of the kernel's or of
-# another image's, except those bounds and a <kernel entry> the arch calls instead of trapping;
-# one --gc-sections drops, and none the link cannot resolve, is refused by the link itself.
+# The link command is CMake's own, whole. Every input outside the kernel's link group is an image's:
+# the init's, which an object marks (KOS_IMAGE_INIT_OBJECT, <kickos/sys/image.h>), and one image per
+# declared task beside it. The init's objects are image 0's, an object marked
+# KOS_IMAGE_TASK_OBJECT(k) is image k + 1's, the objects marked KOS_IMAGE_BOTH_OBJECT, every archive
+# and every flag are every image's, and every other object is every task image's. Each image is
+# linked on its own first with -r, its references to the bounds the final link states renamed to its
+# own (<names file>, `<name> <field>` per line, to __kickos_image<n>_<field>) and every symbol it
+# defines made local but its header, image n's renamed kickos_image<n>_header past image 0. The
+# final link then takes the command's kernel group, its linker scripts and the images' objects, and
+# writes the command's output. No reference an image leaves undefined may resolve there to a
+# definition of the kernel's or of another image's, except those bounds and a <kernel entry> the
+# arch calls instead of trapping; one --gc-sections drops, and none the link cannot resolve, is
+# refused by the link itself.
 # <kernel objects file> lists, one per line, the objects the final link takes for the kernel
 # beside its group: its copy of what the images link too.
 #
-# Where there are task images, the chip script INCLUDEs what this writes beside the output for
-# every image, from the image template the command names as -Wl,--kickos-image-template=<template>
+# The chip script INCLUDEs what this writes beside the output for every image, from the image
+# template the command names as -Wl,--kickos-image-template=<template>
 # (arch/<family>/common/image.ld or <chip>.image.ld beside the chip script, run through cpp): their
 # code spans (kickos_images_code.ld), their windows (kickos_images.ld, or where the template has a
 # window part what precedes them there and the windows in kickos_images_windows.ld), their
@@ -103,6 +103,7 @@ SYSTEM_ARCHIVE = '--kickos-image-system-archive='
 TASK_OBJECT = '__kickos_image_task_object'
 RESTARTS_OBJECT = '__kickos_image_task_restarts'
 HEADER = 'kickos_image_header'
+REENT_CARVE = '__kickos_reent_carve'
 TEMPLATE = '--kickos-image-template='
 TASK_PROGRAM = '--kickos-image-task-program='
 RECORD = '.kprog'
@@ -203,8 +204,6 @@ def program_parts(nm, parts, image_inputs, programs, flags, kernel_only=()):
     A program image's inputs are the program's, never the command's."""
     if not programs:
         return {}
-    if len(parts) == 1:
-        fail('the link names programs and its system declares no task image')
     own = {}
     system = []
     for t in image_inputs:
@@ -277,11 +276,11 @@ def program_main(argv, cmd):
 
 
 def partition(nm, image_inputs):
-    """[image inputs]: one image, or where an object marks itself the init's
-    (KOS_IMAGE_INIT_OBJECT, <kickos/sys/image.h>) the init's and one per declared task. Then the
-    init's objects are image 0's, an object marked KOS_IMAGE_TASK_OBJECT(k) is image k + 1's
-    alone, the objects marked for every image, every archive and every flag are every image's,
-    and every other object is every task image's. Each image keeps the command's order."""
+    """[image inputs]: the init's, which an object marks (KOS_IMAGE_INIT_OBJECT,
+    <kickos/sys/image.h>), and one per declared task. The init's objects are image 0's, an
+    object marked KOS_IMAGE_TASK_OBJECT(k) is image k + 1's alone, the objects marked for every
+    image, every archive and every flag are every image's, and every other object is every task
+    image's. Each image keeps the command's order."""
     kinds = []
     init = False
     tasks = 0
@@ -304,7 +303,8 @@ def partition(nm, image_inputs):
         else:
             kinds.append(('tasks', None))
     if not init:
-        return [image_inputs], set()
+        fail('no input marks itself the init\'s image (KOS_IMAGE_INIT_OBJECT): the link does '
+             'not link KickOS::kernel')
     # With no system target, one image beside the init's, whose own link refuses it.
     tasks = max(tasks, 1)
     parts = [[] for _ in range(tasks + 1)]
@@ -1183,8 +1183,8 @@ def main(argv):
     sweep_image_maps(kimg)
     if os.path.exists(out):
         os.remove(out)
-    if len(parts) > 1 and template is None:
-        fail('the link holds task images and names no -Wl,' + TEMPLATE + '<template>')
+    if template is None:
+        fail('the link names no -Wl,' + TEMPLATE + '<template>')
 
     generic = {}
     with open(names_file) as fh:
@@ -1195,9 +1195,7 @@ def main(argv):
     partial_script = os.path.join(os.path.dirname(os.path.abspath(names_file)), 'image_partial.lds')
     # Two images may each carry an inline function: a COMDAT group the final link would keep in
     # one image only, leaving the other's references in a discarded section.
-    groups = []
-    if len(parts) > 1:
-        groups = ['-Wl,--force-group-allocation']
+    groups = ['-Wl,--force-group-allocation']
     objs = []
     allowed = set()
     undefined = set()
@@ -1222,13 +1220,17 @@ def main(argv):
         with open(names, 'w') as fh:
             for name, field in sorted(generic.items()):
                 fh.write(prefix + name + ' ' + prefix + own + field + '\n')
-        # Each header keeps a name of its own, image 0's the generic one.
+        # Each header keeps a name of its own, image 0's the generic one. So does the libc
+        # carve the image's user library defines, which the chip script reads per image.
         header = prefix + HEADER
         keep = ['--keep-global-symbol=' + header]
         if n > 0:
             header = prefix + 'kickos_image%d_header' % n
             keep = ['--redefine-sym=' + prefix + HEADER + '=' + header,
                     '--keep-global-symbol=' + header]
+        carve = prefix + own + 'reent_carve'
+        keep += ['--redefine-sym=' + prefix + REENT_CARVE + '=' + carve,
+                 '--keep-global-symbol=' + carve]
         run([objcopy, '--redefine-syms=' + names] + keep + [raw, obj],
             'objcopy over image %d' % n)
         objs.append(obj)
@@ -1244,26 +1246,25 @@ def main(argv):
             + kernel_objects + ['-o', out] + kernel_inputs, 'the final link', moves)
 
     pin = 0
-    if len(parts) > 1:
-        frag, rule = read_template(template)
-        enforced, pow2, granule = rule
-        count = len(parts)
-        placed = list(range(count))
-        aligns = {n: granule for n in placed}
-        if enforced and pow2:
-            write_fragments(kimg, frag, count, placed, aligns, False, restarts)
-            final_link(moves=False)
-            sizes = windows(nm, out, count)
-            end = code_end(nm, out)
-            if end is not None:
-                # Where code runs from the RAM the data follows, the data stays where the code
-                # ended in the last link, so no section start moves between passes; a window
-                # placement that relaxes the code less moves the end, and the link repeats.
-                pin = (end + 7) & ~7
-            os.remove(out)
-            placed = sorted(placed, key=lambda n: (-sizes[n], n))
-            aligns = sizes
-        write_fragments(kimg, frag, count, placed, aligns, True, restarts)
+    frag, rule = read_template(template)
+    enforced, pow2, granule = rule
+    count = len(parts)
+    placed = list(range(count))
+    aligns = {n: granule for n in placed}
+    if enforced and pow2:
+        write_fragments(kimg, frag, count, placed, aligns, False, restarts)
+        final_link(moves=False)
+        sizes = windows(nm, out, count)
+        end = code_end(nm, out)
+        if end is not None:
+            # Where code runs from the RAM the data follows, the data stays where the code
+            # ended in the last link, so no section start moves between passes; a window
+            # placement that relaxes the code less moves the end, and the link repeats.
+            pin = (end + 7) & ~7
+        os.remove(out)
+        placed = sorted(placed, key=lambda n: (-sizes[n], n))
+        aligns = sizes
+    write_fragments(kimg, frag, count, placed, aligns, True, restarts)
     if pin == 0:
         final_link()
     else:

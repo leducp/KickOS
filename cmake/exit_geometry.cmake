@@ -12,6 +12,6 @@ set(KOS_EXIT_FAULT 139)
 # were all cancelled.
 set(KOS_EXIT_CANCELLED 130)
 # A task one of whose threads called kos_panic without the authority to end the system, 128 +
-# SIGABRT. A clean kos_exit(134) aliases it.
+# SIGABRT. abort() in any thread of a task gives it too, and a clean kos_exit(134) aliases it.
 set(KOS_EXIT_PANIC 134)
 kickos_emit_geometry(kickos/sys/exit_status.h KOS_EXIT_FAULT KOS_EXIT_CANCELLED KOS_EXIT_PANIC)

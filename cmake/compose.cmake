@@ -10,26 +10,23 @@
 #   refusal fails the configure with the tool's `<file>:<line>: <rule>: <message>` lines. The
 #   tool runs again only when the composition, the manifest, a description or default composition
 #   beside it, or the tool itself changed. It defines:
-#     <system>_table  an object library of the emitted table, compiled as C;
-#     <system>_init_table  where the init is an image of its own (KICKOS_INIT_IMAGE), the
-#                     init image's copy of it, which names no entry and declares no task;
-#     <system>_task<k>  there too, for each declaration k, the copy and the image header of
-#                     that task's own image, which name its entry alone and declare it alone;
+#     <system>_init_table  an object library of the init image's copy of the emitted table,
+#                     compiled as C, which names no entry and declares no task;
+#     <system>_task<k>  for each declaration k, the copy and the image header of that task's
+#                     own image, which name its entry alone and declare it alone;
 #     <system>        an interface library linking KickOS::kernel, carrying ahead of the kernel's
-#                     group the table's objects, or its init copy's and its task copies' where
-#                     the init is an image of its own, KickOS::init's,
+#                     group its init copy's and its task copies' objects, KickOS::init's,
 #                     KickOS::init_drivers' where the composition names a packaged driver and
 #                     KickOS::init_no_drivers' where it names none, each named packaged
 #                     driver's archive and the libraries its CLIENT declares for the tasks
 #                     using it, the
 #                     link-time asserts script as a link input, and KICKOS_USER_HEAP_SIZE, a
-#                     link symbol and a compile definition, from the composition's `heap`, and
-#                     KICKOS_IMAGE_DECL_COUNT, the number of declarations its table emits; on
+#                     link symbol and a compile definition, from the composition's `heap`; on
 #                     node 0 of a partition, or on a chip stating a
 #                     partition gate, the gate assignment too; and in a kernel link group, the
 #                     archive of what the kernel reads of the system.
-#   EXPORT_NAME installs them under KickOS::<name>, KickOS::<name>_table and
-#   KickOS::<name>_init_table.
+#   EXPORT_NAME installs them under KickOS::<name>, KickOS::<name>_init_table and
+#   KickOS::<name>_task<k>.
 #
 #   Each `program:` the composition names is an executable target, resolved once the directory
 #   ends, so it may be declared after the system, and compiled with its main as main. `program:
@@ -234,46 +231,41 @@ function(kickos_compose system)
       "`heap:` of ${_what}")
   endif()
 
-  add_library(${system}_table OBJECT "${_dir}/table.c")
-  # The include directories and definitions an app TU sees; a program's main is main.
-  target_link_libraries(${system}_table PRIVATE KickOS::kernel)
-  # Where the init is an image of its own, its own copy of the table, which names no entry, and
-  # each declared task's image its own copy and header.
-  set(_task_tables "")
-  if(KICKOS_INIT_IMAGE)
-    add_library(${system}_init_table OBJECT "${_dir}/table.c")
-    target_link_libraries(${system}_init_table PRIVATE KickOS::kernel)
-    target_compile_definitions(${system}_init_table PRIVATE KOS_TABLE_INIT_IMAGE)
-    get_property(_image_header GLOBAL PROPERTY KICKOS_COMPOSE_IMAGE_HEADER)
-    set(_ks "")
-    if(KICKOS_COMPOSE_DECLS GREATER 0)
-      math(EXPR _last "${KICKOS_COMPOSE_DECLS} - 1")
-      foreach(_k RANGE 0 ${_last})
-        list(APPEND _ks ${_k})
-      endforeach()
-    endif()
-    foreach(_k IN LISTS _ks)
-      add_library(${system}_task${_k} OBJECT "${_dir}/table.c" "${_image_header}")
-      target_link_libraries(${system}_task${_k} PRIVATE KickOS::kernel)
-      target_compile_definitions(${system}_task${_k} PRIVATE KOS_TABLE_IMAGE_TASK=${_k}
-                                                             KICKOS_IMAGE_TASK=${_k})
-      # A program's image starts at its main and names its program; another task's names the
-      # executable's.
-      foreach(_row IN LISTS _programs)
-        string(REPLACE "|" ";" _row "${_row}")
-        list(GET _row 0 _pk)
-        list(GET _row 2 _program)
-        if(_pk EQUAL _k)
-          target_compile_definitions(${system}_task${_k} PRIVATE KICKOS_IMAGE_TASK_PROGRAM=1)
-        endif()
-        if(_pk EQUAL _k AND NOT _program STREQUAL "main")
-          target_compile_definitions(${system}_task${_k} PRIVATE
-                                     "KICKOS_IMAGE_PROGRAM_NAME=\"${_program}\"")
-        endif()
-      endforeach()
-      list(APPEND _task_tables ${system}_task${_k})
+  # The init's copy of the table, which names no entry, and each declared task's image its own
+  # copy and header. The include directories and definitions an app TU sees.
+  add_library(${system}_init_table OBJECT "${_dir}/table.c")
+  target_link_libraries(${system}_init_table PRIVATE KickOS::kernel)
+  target_compile_definitions(${system}_init_table PRIVATE KOS_TABLE_INIT_IMAGE)
+  get_property(_image_header GLOBAL PROPERTY KICKOS_COMPOSE_IMAGE_HEADER)
+  set(_ks "")
+  if(KICKOS_COMPOSE_DECLS GREATER 0)
+    math(EXPR _last "${KICKOS_COMPOSE_DECLS} - 1")
+    foreach(_k RANGE 0 ${_last})
+      list(APPEND _ks ${_k})
     endforeach()
   endif()
+  set(_task_tables "")
+  foreach(_k IN LISTS _ks)
+    add_library(${system}_task${_k} OBJECT "${_dir}/table.c" "${_image_header}")
+    target_link_libraries(${system}_task${_k} PRIVATE KickOS::kernel)
+    target_compile_definitions(${system}_task${_k} PRIVATE KOS_TABLE_IMAGE_TASK=${_k}
+                                                           KICKOS_IMAGE_TASK=${_k})
+    # A program's image starts at its main and names its program; another task's names the
+    # executable's.
+    foreach(_row IN LISTS _programs)
+      string(REPLACE "|" ";" _row "${_row}")
+      list(GET _row 0 _pk)
+      list(GET _row 2 _program)
+      if(_pk EQUAL _k)
+        target_compile_definitions(${system}_task${_k} PRIVATE KICKOS_IMAGE_TASK_PROGRAM=1)
+      endif()
+      if(_pk EQUAL _k AND NOT _program STREQUAL "main")
+        target_compile_definitions(${system}_task${_k} PRIVATE
+                                   "KICKOS_IMAGE_PROGRAM_NAME=\"${_program}\"")
+      endif()
+    endforeach()
+    list(APPEND _task_tables ${system}_task${_k})
+  endforeach()
   # What of the system the kernel reads, the console's kind, the gate assignment and the storage
   # of its pools, is an archive in a kernel link group, which the chip member asking for it is in.
   if(NOT KICKOS_COMPOSE_USB_DEVICE_CONSOLE MATCHES "^[01]$")
@@ -319,29 +311,23 @@ function(kickos_compose system)
   add_library(${system} INTERFACE)
   set_target_properties(${system} PROPERTIES KICKOS_SYSTEM_STDOUT "${KICKOS_COMPOSE_STDOUT}")
 
-  set(_table_name ${system}_table)
   set(_init_table_name ${system}_init_table)
   set(_asserts "${_dir}/asserts.ld")
   if(KC_EXPORT_NAME)
-    set_target_properties(${system}_table PROPERTIES EXPORT_NAME ${KC_EXPORT_NAME}_table)
     set_target_properties(${system} PROPERTIES EXPORT_NAME ${KC_EXPORT_NAME})
-    kickos_export_targets(${system}_table ${system})
-    kickos_export_name(${system}_table _table_name)
-    if(KICKOS_INIT_IMAGE)
-      set_target_properties(${system}_init_table PROPERTIES
-        EXPORT_NAME ${KC_EXPORT_NAME}_init_table)
-      kickos_export_targets(${system}_init_table)
-      kickos_export_name(${system}_init_table _init_table_name)
-      set(_exported "")
-      foreach(_t IN LISTS _task_tables)
-        string(REPLACE "${system}_" "${KC_EXPORT_NAME}_" _export "${_t}")
-        set_target_properties(${_t} PROPERTIES EXPORT_NAME ${_export})
-        kickos_export_targets(${_t})
-        kickos_export_name(${_t} _name)
-        list(APPEND _exported ${_name})
-      endforeach()
-      set(_task_tables ${_exported})
-    endif()
+    kickos_export_targets(${system})
+    set_target_properties(${system}_init_table PROPERTIES EXPORT_NAME ${KC_EXPORT_NAME}_init_table)
+    kickos_export_targets(${system}_init_table)
+    kickos_export_name(${system}_init_table _init_table_name)
+    set(_exported "")
+    foreach(_t IN LISTS _task_tables)
+      string(REPLACE "${system}_" "${KC_EXPORT_NAME}_" _export "${_t}")
+      set_target_properties(${_t} PROPERTIES EXPORT_NAME ${_export})
+      kickos_export_targets(${_t})
+      kickos_export_name(${_t} _name)
+      list(APPEND _exported ${_name})
+    endforeach()
+    set(_task_tables ${_exported})
     install(FILES "${_asserts}" DESTINATION "${CMAKE_INSTALL_LIBDIR}/kickos/${KC_EXPORT_NAME}")
     set(_asserts_link
       "$<BUILD_INTERFACE:${_asserts}>"
@@ -350,12 +336,7 @@ function(kickos_compose system)
     set(_asserts_link "${_asserts}")
   endif()
 
-  set(_objects KickOS::init)
-  if(KICKOS_INIT_IMAGE)
-    list(APPEND _objects ${_init_table_name} ${_task_tables})
-  else()
-    list(APPEND _objects ${_table_name})
-  endif()
+  set(_objects KickOS::init ${_init_table_name} ${_task_tables})
   if(KICKOS_COMPOSE_DRIVERS)
     list(APPEND _objects KickOS::init_drivers)
   else()
@@ -377,15 +358,7 @@ function(kickos_compose system)
                                             ${_gate_links})
   kickos_heap_defsym(_heap "${KICKOS_COMPOSE_HEAP}")
   target_link_options(${system} INTERFACE "LINKER:${_heap}")
-  # Where no launcher takes the kernel's groups as one (kickos_image_link_features), the system's
-  # group comes ahead of the kernel's, whose archives alone name the pools' storage: the link asks
-  # for it by name.
-  if(NOT KICKOS_IMAGE_SPLIT AND NOT KICKOS_IMAGE_EMBED)
-    target_link_options(${system} INTERFACE
-      "LINKER:--require-defined=${KICKOS_C_SYMBOL_PREFIX}kickos_kernel_pools")
-  endif()
-  target_compile_definitions(${system} INTERFACE KICKOS_USER_HEAP_SIZE=${KICKOS_COMPOSE_HEAP}
-                                                  KICKOS_IMAGE_DECL_COUNT=${KICKOS_COMPOSE_DECLS})
+  target_compile_definitions(${system} INTERFACE KICKOS_USER_HEAP_SIZE=${KICKOS_COMPOSE_HEAP})
   set_property(TARGET ${system} APPEND PROPERTY INTERFACE_LINK_DEPENDS ${_asserts_link})
 
   # The programs the system runs. `main` no DEFAULT binds is the executable linking the system,
@@ -407,13 +380,11 @@ function(kickos_compose system)
     endif()
     # Read by tools/image-link.py, and refused by the linker itself, so a link no launcher
     # reads fails.
-    if(KICKOS_INIT_IMAGE)
-      target_link_options(${system} INTERFACE
-        "-Wl,--kickos-image-task-program=${_k}:${_task}:${_rec}")
-    endif()
+    target_link_options(${system} INTERFACE
+      "-Wl,--kickos-image-task-program=${_k}:${_task}:${_rec}")
   endforeach()
   # A program's image takes the system's archives after its program's own inputs.
-  if(KICKOS_INIT_IMAGE AND _programs)
+  if(_programs)
     foreach(_a IN LISTS _archives)
       target_link_options(${system} INTERFACE "-Wl,--kickos-image-system-archive=$<TARGET_FILE:${_a}>")
     endforeach()
@@ -460,11 +431,6 @@ function(_kickos_compose_bind system)
     get_target_property(_links ${_program} LINK_LIBRARIES)
     if(_links AND system IN_LIST _links)
       continue()
-    endif()
-    if(NOT KICKOS_INIT_IMAGE)
-      message(FATAL_ERROR "kickos_compose(${system}): task `${_task}` of ${_what} runs program "
-        "`${_program}`, and this board links one image, so the only program a system runs is the "
-        "executable linking it")
     endif()
     kickos_program_link(${_program})
   endforeach()

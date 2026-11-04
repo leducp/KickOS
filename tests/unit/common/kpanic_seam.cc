@@ -16,12 +16,4 @@ namespace kickos
         fprintf(stderr, "KERNEL PANIC: %s\n", msg);
         exit(1);
     }
-
-#if KICKOS_DIAG_TERSE
-    void kpanic_at(char const* file, unsigned line)
-    {
-        fprintf(stderr, "KERNEL PANIC: %s:%u\n", file, line);
-        exit(1);
-    }
-#endif
 }

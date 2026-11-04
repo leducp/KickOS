@@ -7,7 +7,6 @@
 #include "message.h"
 
 #include <kickos/amp.h>
-#include <kickos/chip_limits.h> // KICKOS_CHIP_ONE_TASK
 #include <kickos/sys/driver_service.h> // KOS_DRV_HANDOVER_PROBE_US
 #include <kickos/sys/emit.h> // kconsole_write_all
 #include <kickos/sys/errno.h>
@@ -25,25 +24,6 @@ namespace kickos::init
         }
 
         static_assert(Message::CAPACITY <= KOS_EP_MSG_MAX, "a diagnostic line is one send");
-
-        // A chip that holds one task composes no watcher and no shared region (supply.one-task).
-        uint16_t watches_of(kos_table_task const& t)
-        {
-            if (KICKOS_CHIP_ONE_TASK)
-            {
-                return 0u;
-            }
-            return t.watch_count;
-        }
-
-        uint16_t regions_of(kos_table_header const& h)
-        {
-            if (KICKOS_CHIP_ONE_TASK)
-            {
-                return 0u;
-            }
-            return h.region_count;
-        }
 
         // The capability the kernel seated in root for crossing `port` of `node`, or KOS_CAP_NONE.
         kos_cap_t seated_port(uint64_t node, uint64_t port)
@@ -216,7 +196,7 @@ namespace kickos::init
         check(kos_program_find(build_.program, &program_), "kos_program_find", KOS_TABLE_NONE);
 
         // The order of the reservations is the arena's, which admission replays.
-        uint32_t const private_size = (count + regions_of(*header_)) * KICKOS_INIT_PRIVATE_RECORD_SIZE;
+        uint32_t const private_size = (count + header_->region_count) * KICKOS_INIT_PRIVATE_RECORD_SIZE;
         private_ = static_cast<PrivateRecord*>(reserve(private_size, "kos_ram_alloc of the private block",
                                                        KOS_TABLE_NONE));
         check(kos_mem_self_grant(private_, private_size, 0u), "kos_mem_self_grant of the private block",
@@ -238,7 +218,7 @@ namespace kickos::init
         // Each watcher's own status block holds the tasks it watches alone, in `watches` order.
         for (uint16_t i = 0; i < count; i++)
         {
-            uint32_t const status_size = watches_of(tasks_[i]) * KICKOS_INIT_STATUS_RECORD_SIZE;
+            uint32_t const status_size = tasks_[i].watch_count * KICKOS_INIT_STATUS_RECORD_SIZE;
             if (status_size == 0u)
             {
                 continue;
@@ -248,12 +228,12 @@ namespace kickos::init
             check(kos_mem_self_grant(r.status, status_size, 0u), "kos_mem_self_grant of the status block", i);
             // status_write keeps the count's parity, so a count left odd would hold every
             // reader off for good.
-            for (uint16_t k = 0; k < watches_of(tasks_[i]); k++)
+            for (uint16_t k = 0; k < tasks_[i].watch_count; k++)
             {
                 StatusWriter::clear(&r.status[k]);
             }
         }
-        for (uint16_t r = 0; r < regions_of(*header_); r++)
+        for (uint16_t r = 0; r < header_->region_count; r++)
         {
             if ((regions_[r].flags & KOS_TABLE_REGION_PARTITION) != 0u)
             {
@@ -303,7 +283,7 @@ namespace kickos::init
         }
         for (uint16_t i = 0; i < count; i++)
         {
-            if (watches_of(tasks_[i]) != 0u)
+            if (tasks_[i].watch_count != 0u)
             {
                 check(kos_notify_create(&record(i).notify), "kos_notify_create", i);
             }
@@ -591,13 +571,13 @@ namespace kickos::init
                 {
                     w.kind = KOS_WINDOW_PORTS;
                 }
-                else if (not KICKOS_CHIP_ONE_TASK and g.kind == KOS_GRANT_REGION)
+                else if (g.kind == KOS_GRANT_REGION)
                 {
                     w.base = reinterpret_cast<uintptr_t>(private_[header_->task_count + g.target].region);
                     w.size = regions_[g.target].size;
                     w.kind = KOS_WINDOW_MEMORY;
                 }
-                else if (not KICKOS_CHIP_ONE_TASK and g.kind == KOS_GRANT_STATUS)
+                else if (g.kind == KOS_GRANT_STATUS)
                 {
                     w.base = reinterpret_cast<uintptr_t>(r.status);
                     w.kind = KOS_WINDOW_MEMORY;
@@ -839,7 +819,7 @@ namespace kickos::init
         for (uint16_t w = 0; w < header_->task_count; w++)
         {
             kos_table_task const& t = tasks_[w];
-            for (uint16_t k = 0; k < watches_of(t); k++)
+            for (uint16_t k = 0; k < t.watch_count; k++)
             {
                 if (refs_[t.first_watch + k].task == i)
                 {
@@ -892,7 +872,7 @@ namespace kickos::init
         for (uint16_t w = 0; w < header_->task_count; w++)
         {
             kos_table_task const& t = tasks_[w];
-            for (uint16_t k = 0; k < watches_of(t); k++)
+            for (uint16_t k = 0; k < t.watch_count; k++)
             {
                 if (refs_[t.first_watch + k].task != i)
                 {

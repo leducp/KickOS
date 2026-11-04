@@ -9,7 +9,7 @@
 
 // The switch rewinds a thread it finds inside any image's user CAS window, reading each header
 // of the link's table at these offsets.
-#define KICKOS_IMAGE_HEADER_OFF_CAS_START 140
-#define KICKOS_IMAGE_HEADER_OFF_CAS_STORE 144
+#define KICKOS_IMAGE_HEADER_OFF_CAS_START 144
+#define KICKOS_IMAGE_HEADER_OFF_CAS_STORE 148
 
 #endif

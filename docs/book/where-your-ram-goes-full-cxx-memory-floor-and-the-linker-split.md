@@ -80,7 +80,7 @@ There is no separate heap-size number to provision. The app's dynamic memory is 
 **whatever RAM is left inside the app's data window after its statics** -- so the single
 per-board knob is the *window*, and the heap falls out of it.
 
-On an enforcement (MPU) chip that knob is **`KICKOS_APPDATA_SIZE`**, and it does double
+On an enforcement (MPU) chip that knob is **the app window's size**, and it does double
 duty: it is the *isolation boundary* -- the granted, MPU-shaped data region an unprivileged
 thread may touch -- **and** the whole writable RAM budget for the app side. The app's
 `.data`/`.bss` are laid down at the bottom of the window; everything above them, up to the
@@ -110,7 +110,7 @@ Because the heap is a remainder, the two ways to get it wrong are distinct and l
 different times:
 
 - **Statics too big for the window.** The app's `.data`/`.bss` overflow
-  `KICKOS_APPDATA_SIZE` before the heap even begins. This is a **link error** -- the script
+  the window before the heap even begins. This is a **link error** -- the script
   `ASSERT`s `_appdata_used_end <= window_end` and prints "raise it to the next pow2." The
   fix is to grow the window (or shrink the statics), never to truncate.
 - **A heap-hungry app on a too-tight window.** The statics fit, but at runtime the app

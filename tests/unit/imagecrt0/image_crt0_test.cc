@@ -8,8 +8,8 @@
 
 #include <stdint.h>
 
-#if not (KICKOS_INIT_IMAGE and not KICKOS_HAVE_ASPACE)
-#error "kickos_image_crt0 exists only where each task runs an image and no backend translates"
+#if KICKOS_HAVE_ASPACE
+#error "kickos_image_crt0 exists only where no backend translates"
 #endif
 
 // The image's whole .bss is kmain's arguments: the copy and the zeroing run over them.

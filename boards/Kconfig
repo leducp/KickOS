@@ -13,10 +13,6 @@ config BOARD_BLACKPILL
 	bool "blackpill (WeAct STM32F411)"
 	select CHIP_STM32F411
 
-config BOARD_BLUEPILL_C8
-	bool "bluepill-c8 (STM32F103C8)"
-	select CHIP_STM32F103
-
 config BOARD_DUE
 	bool "due (Arduino Due, SAM3X8E)"
 	select CHIP_SAM3X8E
@@ -28,10 +24,6 @@ config BOARD_ESP32_WROOM
 config BOARD_ESP32C6_WROOM
 	bool "esp32c6-wroom (RV32IMAC)"
 	select CHIP_ESP32C6
-
-config BOARD_F302NUCLEO
-	bool "f302nucleo (Nucleo-64 STM32F302)"
-	select CHIP_STM32F302
 
 config BOARD_F411DISCO
 	bool "f411disco (STM32F411 Discovery)"
@@ -109,11 +101,9 @@ endchoice
 config KICKOS_BOARD
 	string
 	default "blackpill" if BOARD_BLACKPILL
-	default "bluepill-c8" if BOARD_BLUEPILL_C8
 	default "due" if BOARD_DUE
 	default "esp32-wroom" if BOARD_ESP32_WROOM
 	default "esp32c6-wroom" if BOARD_ESP32C6_WROOM
-	default "f302nucleo" if BOARD_F302NUCLEO
 	default "f411disco" if BOARD_F411DISCO
 	default "frdmk64f" if BOARD_FRDMK64F
 	default "imx8mp-evk" if BOARD_IMX8MP_EVK

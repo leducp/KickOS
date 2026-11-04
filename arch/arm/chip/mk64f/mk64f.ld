@@ -30,15 +30,6 @@ MEMORY
 _estack = ORIGIN(RAM) + LENGTH(RAM);
 _kernel_stack_size = 8K;
 
-/* SYSMPU is 32-byte granular with an arbitrary base: the app window needs no pow2 size or
-   base, only a 32-byte multiple. */
-#if KICKOS_HAVE_MPU
-#ifndef KICKOS_APPDATA_SIZE
-#define KICKOS_APPDATA_SIZE 128K
-#endif
-_appdata_size = KICKOS_APPDATA_SIZE;
-#endif
-
 SECTIONS
 {
     .isr_vector ORIGIN(FLASH) :
@@ -61,7 +52,7 @@ SECTIONS
     KICKOS_CORTEXM_CTORS
     KICKOS_CORTEXM_EXIDX
     KICKOS_INIT_TABLES(FLASH)
-    KICKOS_CORTEXM_DATA(.appdata : ALIGN(32))
+    KICKOS_CORTEXM_DATA()
 
     /* The whole flash as the app's RX region, read through the core's code bus. */
     __kickos_code_start = ORIGIN(FLASH);

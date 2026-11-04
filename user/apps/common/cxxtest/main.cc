@@ -3,8 +3,8 @@
 //
 // Full-C++ opt-in smoke test: proves the toolchain's libstdc++/libsupc++
 // over newlib actually EXECUTES on the MCU: exceptions (throw/catch, EH
-// unwind), STL (std::vector, std::string over the heap), and RTTI
-// (dynamic_cast + typeid). Built ONLY under the kickos_cxx opt-in (see
+// unwind), STL (std::vector, std::string over the heap), RTTI (dynamic_cast +
+// typeid), and the runtime's state shared by threads (threads.cc). Built ONLY under the kickos_cxx opt-in (see
 // CMakeLists.txt). Prints one PASS/FAIL line per check then returns (clean
 // exit -> QEMU SYS_EXIT).
 //
@@ -28,9 +28,17 @@
 #include "peer.h"
 #endif
 
+#include "threads.h"
+
+#include <errno.h>
+#include <string.h>
+#include <unistd.h>
+
 #include <exception>
+#include <random>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <typeinfo>
 #include <vector>
 
@@ -40,7 +48,7 @@ namespace
 
     void report(char const* what, bool ok)
     {
-        char b[64];
+        char b[96];
         char const* tag = "PASS";
         if (not ok)
         {
@@ -165,6 +173,63 @@ namespace
         report("typeid reflects dynamic type", typeid_ok);
     }
 
+    // Not a multiple of the 8-byte RDSEED word.
+    constexpr size_t ENTROPY_PROBE = 37;
+
+    // A source's checks, kept out of test_entropy's frame for the boards that have none.
+    __attribute__((noinline)) void test_entropy_source(unsigned char const* first)
+    {
+        unsigned char second[ENTROPY_PROBE] = {};
+        bool const differ = getentropy(second, sizeof(second)) == 0
+                            and memcmp(first, second, sizeof(second)) != 0;
+        report("getentropy fills two requests with different bytes", differ);
+
+        unsigned char most[257] = {};
+        errno = 0;
+        bool const bounded = getentropy(most, 256) == 0 and getentropy(most, 257) == -1
+                             and errno == EINVAL;
+        report("getentropy serves 256 bytes and refuses 257 with EINVAL", bounded);
+
+        bool drew = false;
+        try
+        {
+            std::random_device device;
+            (void)device();
+            (void)device();
+            drew = true;
+        }
+        catch (std::exception const&)
+        {
+        }
+        report("random_device constructs and draws from getentropy", drew);
+    }
+
+    // The answer picks the branch; the judge requires the lines of the one the board owes.
+    void test_entropy()
+    {
+        unsigned char first[ENTROPY_PROBE] = {};
+        errno = 0;
+        int const rc = getentropy(first, sizeof(first));
+        if (not (rc == -1 and errno == ENOSYS))
+        {
+            report("getentropy answers a request from its source", rc == 0);
+            test_entropy_source(first);
+            return;
+        }
+        report("getentropy refuses with ENOSYS", true);
+        bool refused = false;
+        try
+        {
+            std::random_device device;
+            (void)device();
+        }
+        catch (std::system_error const& e)
+        {
+            refused = e.code().value() == ENOSYS;
+        }
+        report("random_device refuses to construct with no source", refused);
+    }
+
 #if KICKOS_HAVE_ASPACE
     constexpr uint32_t TK_FILL = 0x5AA5C33Cu;
     constexpr uint32_t TK_STACK_MAX = KICKOS_MIN_STACK_SIZE + 1024u;
@@ -256,11 +321,10 @@ namespace
     }
 #endif
 
-    // Where the init's statics are its own, an image of its own or a space of its own, root's
-    // startup is the init's alone, and the app's constructors run in the entry thread of the
-    // app's first task, which here is main's: the thread this word names. The host runs a sim
+    // Root's startup is the init's alone, and the app's constructors run in the entry thread of
+    // the app's first task, which here is main's: the thread this word names. The host runs a sim
     // image's before the kernel boots.
-#if (KICKOS_INIT_IMAGE or KICKOS_HAVE_ASPACE) and not KICKOS_ARCH_SIM
+#if not KICKOS_ARCH_SIM
 #define CXXTEST_OWN_STARTUP 1
     kos_thread_t g_ctor_thread = KOS_THREAD_NONE;
 
@@ -288,9 +352,12 @@ namespace
     // UNPRIVILEGED: the whole full-C++ body runs here, under the MPU.
     void cxx_worker(void*)
     {
+        cxxtest_first_throws(report);
         test_exceptions();
         test_stl();
         test_rtti();
+        test_entropy();
+        cxxtest_threads(report);
 
         char const* verdict = "SOME FAILED\n";
         if (g_fails == 0)

@@ -9,7 +9,7 @@
 #include <kickos/irqlock.h>
 #include <kickos/cap.h>
 #include <kickos/task.h>
-#include <kickos/chip_limits.h> // KICKOS_CHIP_ONE_TASK
+#include <kickos/chip_limits.h> // KICKOS_MAX_IRQ
 #include <kickos/thread.h> // Thread::affinity, what the claim and the wait admit
 #include <kickos/kernel.h> // KICKOS_ASSERT
 #include <kickos/debug.h>  // KICKOS_DEBUG_ASSERT
@@ -736,7 +736,6 @@ namespace kickos
         return claim_commit(c, line, flags, kickos_kernel_core(), -1, out_cap, &b);
     }
 
-#if !KICKOS_CHIP_ONE_TASK
     int irq_declared_admit(int line, unsigned int flags, Task const* t, bool freed)
     {
         int const shape = claim_shape(line, flags);
@@ -765,7 +764,6 @@ namespace kickos
         // A refused bind leaves the claimed line with the holder, whose end releases it.
         return bind_chain(b, n, notify_obj, bit);
     }
-#endif
 
     namespace
     {

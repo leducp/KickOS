@@ -111,6 +111,7 @@ namespace kickos
         uint32_t g_console_drains = 0;
         uintptr_t g_context_entry = 0;
         uintptr_t g_second_arg = 0;
+        uint64_t g_clock_now = 0;
     }
 }
 
@@ -166,7 +167,7 @@ extern "C"
 
     uint64_t arch_clock_now(void)
     {
-        return 0;
+        return kickos::testfix::g_clock_now;
     }
 
     void* kmemcpy(void* dst, void const* src, size_t n)

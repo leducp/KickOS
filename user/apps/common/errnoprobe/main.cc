@@ -588,10 +588,6 @@ namespace
         g_tok[1] = ' '; // strtok overwrote it last round
         (void)strtok(g_tok, " ");
         (void)rand();
-#if !KICKOS_DIAG_TERSE
-        // A board short enough of flash to take the terse diagnostic column has none for these:
-        // full newlib's localtime and asctime bring its formatted I/O along, and nano's strtod
-        // its floating-point conversion.
         time_t const t = 0;
         (void)asctime(localtime(&t));
 #if defined(_REENT_SMALL) && KICKOS_USER_HEAP_SIZE >= 2048
@@ -599,7 +595,6 @@ namespace
         // the heap, and nothing hands those back. With the calls above this conversion takes
         // 1,628 B of Arm nano heap, which a smaller carve refuses with an assertion.
         (void)strtod("1.25e300", nullptr);
-#endif
 #endif
         g_took = heap_in_use() - before;
         g_reclaim_ran = g_reclaim_ran.load() + 1u;

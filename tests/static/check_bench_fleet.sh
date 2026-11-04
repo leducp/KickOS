@@ -88,15 +88,13 @@ cat > "$TMP/tree/CMakePresets.json" <<'EOF'
     { "name": "rx72m-flat", "generator": "Ninja", "binaryDir": "b1" },
     { "name": "esp32c6-wroom-amp2-n0", "generator": "Ninja", "binaryDir": "b2" },
     { "name": "esp32c6-wroom-amp2-n1", "generator": "Ninja", "binaryDir": "b3" },
-    { "name": "f302nucleo-st", "generator": "Ninja", "binaryDir": "b4" },
     { "name": "esp32-wroom-smp", "generator": "Ninja", "binaryDir": "b5" },
     { "name": "esp32-wroom-bench", "generator": "Ninja", "binaryDir": "b6" }
   ]
 }
 EOF
 printf 'RIG_SESSION=%s\nRIG_TREE=%s\n' "$TMP/session" "$TMP/tree" > "$TMP/rig.conf"
-mkdir -p "$TMP/tree/boards/esp32-wroom/configs/bench" "$TMP/tree/boards/f302nucleo/configs/st" \
-    "$TMP/tree/boards/rx72m/configs/base"
+mkdir -p "$TMP/tree/boards/esp32-wroom/configs/bench" "$TMP/tree/boards/rx72m/configs/base"
 printf 'CONFIG_KICKOS_BENCH=y\n' > "$TMP/tree/boards/esp32-wroom/configs/bench/defconfig"
 
 F="$TMP/fixture"
@@ -204,16 +202,6 @@ grep -q '^rx72m  *REFUSED (the tree was not able to list its presets' "$TMP/flee
     || bad "a tree whose presets cannot be listed is not reported"
 cp "$TMP/presets.keep" "$TMP/tree/CMakePresets.json"
 
-# The default variant is a board's `st` where its tree carries one and its base elsewhere, and
-# bench.sh and the fleet pass both read it there.
-dv=$(. "$TMP/tools/bench/board-rows.sh" && bench_default_variant "$TMP/tree" f302nucleo)
-[ "$dv" = st ] || bad "a board carrying an st config defaults to [$dv], not st"
-dv=$(. "$TMP/tools/bench/board-rows.sh" && bench_default_variant "$TMP/tree" rx72m)
-[ -z "$dv" ] || bad "a board carrying no st config defaults to [$dv], not its base"
-[ -d "$TMP/tree/boards/rx72m" ] || bad "the base-default case names a board the fixture tree lacks"
-grep -qF 'VARIANT="${VARIANT-$(bench_default_variant . "$BOARD")}"' tools/bench/bench.sh \
-    || bad "bench.sh does not default its variant to bench_default_variant"
-
 # Every variant the tree declares for a board, each under its own tag; a measurement posture is
 # reported and not flashed.
 {
@@ -247,61 +235,6 @@ got=$?
 [ "$got" -eq 1 ] || bad "a pass where an smp image names no judge exits $got, not 1"
 grep -qE '^  esp32-wroom +slaypeer \(smp\) +NO JUDGE$' "$TMP/fleet.out" \
     || bad "an smp image that names no judge is not reported NO JUDGE"
-
-# A board whose default is its st variant captures it once, and not again as a variant.
-printf 'hello|kernel|tests/integration/check_qemu_hello.sh|\n' > "$F/f302nucleo.images"
-fleet '0483:374b STLINK' f302nucleo
-got=$?
-[ "$got" -eq 0 ] || bad "a pass over a board whose default is its st variant exits $got, not 0"
-grep -qxF 'f302nucleo - hello 0 planted' "$F/flashed" \
-    || bad "the f302nucleo pass did not take its default variant"
-if grep -q '^f302nucleo st ' "$F/flashed"; then
-    bad "the f302nucleo pass took its default variant a second time, as a variant of its own"
-fi
-
-# An image its board declares allowed to fail is owed when it fails, fails the pass when it passes,
-# and is NOT RUN when it was never captured; an undeclared failure still fails the pass.
-_allowed=$(. "$TMP/tools/bench/board-rows.sh" && board_allowed_failure f302nucleo mutexbench) \
-    || bad "f302nucleo does not declare mutexbench allowed to fail"
-{
-    printf 'hello|kernel|tests/integration/check_qemu_hello.sh|\n'
-    printf 'mutexbench|kernel|tests/integration/check_mutexbench.sh|\n'
-    printf 'selftest_p2|kernel|tests/integration/check_tap_stream.sh|\n'
-} > "$F/f302nucleo.images"
-printf 'FAIL: panic: the planted fault\n' > "$F/mutexbench.fail"
-printf 'plan: 1..5\nruns: 1\nok: 0\nnot ok: 0\n' > "$F/selftest_p2.out"
-fleet '0483:374b STLINK' f302nucleo
-got=$?
-[ "$got" -eq 3 ] || bad "a pass whose only failures its board allows exits $got, not 3"
-for img in mutexbench selftest_p2; do
-    grep -qxF "  $(printf '%-16s %-38s' f302nucleo "$img") failed, allowed to fail: $_allowed" "$TMP/fleet.out" \
-        || bad "the allowed failure of f302nucleo $img is not reported with its reason"
-done
-grep -q '^OWED: 2 image(s) failed as their board allows' "$TMP/fleet.out" \
-    || bad "the allowed failures are not counted as owed"
-printf 'FAIL: the planted hello failure\n' > "$F/hello.fail"
-fleet '0483:374b STLINK' f302nucleo
-got=$?
-[ "$got" -eq 1 ] || bad "an undeclared failure beside allowed ones exits $got, not 1"
-rm -f "$F/hello.fail" "$F/mutexbench.fail"
-printf 'plan: 1..5\nruns: 1\nok: 5\nnot ok: 0\n' > "$F/selftest_p2.out"
-fleet '0483:374b STLINK' f302nucleo
-got=$?
-[ "$got" -eq 1 ] || bad "a pass where images declared allowed to fail pass exits $got, not 1"
-for img in mutexbench selftest_p2; do
-    grep -qxF "  $(printf '%-16s %-38s' f302nucleo "$img") UNEXPECTED PASS: its board declares it allowed to fail: $_allowed" \
-        "$TMP/fleet.out" || bad "the unexpected pass of f302nucleo $img is not reported"
-done
-grep -q '^UNEXPECTED PASS: 2 image(s) passed' "$TMP/fleet.out" \
-    || bad "the unexpected passes are not summed"
-: > "$F/mutexbench.nobuild"
-printf 'FAIL: panic: the planted fault\n' > "$F/selftest_p2.fail"
-fleet '0483:374b STLINK' f302nucleo
-got=$?
-[ "$got" -eq 1 ] || bad "a pass that never captured a declared image exits $got, not 1"
-grep -qE '^  f302nucleo +mutexbench +NOT RUN$' "$TMP/fleet.out" \
-    || bad "a declared image that was never captured is not NOT RUN"
-rm -f "$F/mutexbench.nobuild" "$F/selftest_p2.fail" "$F/selftest_p2.out"
 
 # A capture whose judge rests on a bench fitting: the rig declares it or the clause is owed, and
 # no rig line at all declares nothing.

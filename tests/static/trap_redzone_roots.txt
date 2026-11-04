@@ -506,7 +506,7 @@ recurse x86_64 aspace_x86_64.cc:map_into 5 reason: one activation per level, the
 # within one.
 #
 # EVERY RECORD NAMES ITS SCOPE: a minimum is only a minimum over the presets actually swept.
-floor   armv7m   files=85 nodes=600 reason: all 31 declared armv7m presets swept 2026-10-13; smallest 158 files on due and 1190 nodes on bluepill-c8, largest 200 files on bluepill-c8, f302nucleo and f302nucleo-st and 1486 nodes on pizero2350-amp2-n0
+floor   armv7m   files=85 nodes=600 reason: the armv7m presets swept 2026-10-13; smallest 158 files on due, largest 1486 nodes on pizero2350-amp2-n0
 floor   armv6m   files=85 nodes=600 reason: all 3 declared armv6m presets swept 2026-10-13; smallest 162 files on picopi-flat and 1274 nodes on microbit, largest 171 files on microbit and 1396 nodes on picopi
 floor   rv32imac files=75 nodes=700 reason: all 8 declared rv32imac presets swept 2026-10-13; smallest 154 files/1326 nodes on qemu-riscv-flat, largest 213 files/1437 nodes on esp32c6-wroom-bench
 floor   rxv3     files=75 nodes=650 reason: all 3 declared rxv3 presets swept 2026-10-13; smallest 148 files/1325 nodes on rx72m-flat, largest 156 files/1441 nodes on rx72m-bench

@@ -395,7 +395,7 @@ class Genconfig(unittest.TestCase):
         self.assertNotEqual(node0, fp("assert:KICKOS_BUDGET_THREADS=12"))
 
     def test_amp_seed_configures_a_peer_alike(self):
-        run, out = gen(AMP_OWN, "assert:KICKOS_AMP_NODE_ID=1", "CONFIG_KICKOS_NEWLIB_NANO=n")
+        run, out = gen(AMP_OWN, "assert:KICKOS_AMP_NODE_ID=1")
         self.assertEqual(run.returncode, 0, run.stderr)
         seed = read(os.path.join(out, "amp-peer-seed.cmake")).splitlines()
         self.assertEqual(seed[0], "# Written by node 1's configure. Read by tools/amp/build-partition.sh.")
@@ -405,18 +405,17 @@ class Genconfig(unittest.TestCase):
                      'set(KICKOS_AMP_USER_SHARE_UNCACHED ON CACHE BOOL "" FORCE)',
                      'set(KICKOS_MULTI_INSTANCE OFF CACHE BOOL "" FORCE)'):
             self.assertIn(line, seed)
-        # Each node names these itself: build-partition.sh the board and the node, the build the
-        # newlib flavour.
-        for name in ("KICKOS_AMP_NODE_ID", "KICKOS_BOARD", "KICKOS_NEWLIB_NANO"):
+        # Each node names these itself, as build-partition.sh does.
+        for name in ("KICKOS_AMP_NODE_ID", "KICKOS_BOARD"):
             self.assertFalse([l for l in seed if l.startswith("set(%s " % name)], name)
         # Node 0 configured from the seed, as build-partition.sh configures a peer, resolves alike.
         offers = []
         for line in seed[1:]:
             name, value = re.fullmatch(r'set\((\w+) "?(.*?)"? CACHE \w+ "" FORCE\)', line).groups()
             offers.append("offer:%s=%s" % (name, value))
-        run, peer = gen(AMP_OWN, "assert:KICKOS_AMP_NODE_ID=0", "CONFIG_KICKOS_NEWLIB_NANO=n", *offers)
+        run, peer = gen(AMP_OWN, "assert:KICKOS_AMP_NODE_ID=0", *offers)
         self.assertEqual(run.returncode, 0, run.stderr)
-        run, node0 = gen(AMP_OWN, "assert:KICKOS_AMP_NODE_ID=0", "CONFIG_KICKOS_NEWLIB_NANO=n")
+        run, node0 = gen(AMP_OWN, "assert:KICKOS_AMP_NODE_ID=0")
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertEqual(read(os.path.join(peer, ".config")), read(os.path.join(node0, ".config")))
 

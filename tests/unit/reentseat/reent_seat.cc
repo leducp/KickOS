@@ -82,6 +82,7 @@ namespace kickos
         h.data_load = h.data_start;
         h.reent_template = h.data_start;
         h.reent_width = STATE_BYTES;
+        h.reent_carve = KICKOS_REENT_CARVE;
         return h;
     }
 
@@ -218,7 +219,7 @@ namespace
                   reinterpret_cast<uintptr_t>(g_reent_data) + ALIAS)
             << "primed from other bytes than the kernel's view of the loader's frames";
         EXPECT_EQ(copy.n, STATE_BYTES);
-        EXPECT_LE(copy.n, KICKOS_REENT_CARVE - 2 * sizeof(void*))
+        EXPECT_LE(copy.n, KICKOS_REENT_CARVE - KICKOS_REENT_CELL_WORDS * sizeof(void*))
             << "the state's copy reaches the cell";
     }
 }

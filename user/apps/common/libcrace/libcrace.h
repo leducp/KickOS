@@ -8,7 +8,6 @@
 #define KICKOS_USER_APPS_COMMON_LIBCRACE_LIBCRACE_H
 
 #include <kickos/board_config.h>
-#include <kickos/chip_limits.h> // KICKOS_CHIP_ONE_TASK
 #include <kickos/config/priorities.h>
 #include <kickos/kos.h>
 #include <kickos/libc/fmt.h>
@@ -59,24 +58,18 @@ namespace libcrace
         return g_gates;
     }
 
-    // The racers of each task: all of them where a chip holds one task, else half in main's and
-    // half in the peer's. How many of this task's have run their first block and ended.
-#if KICKOS_CHIP_ONE_TASK
-    constexpr uint32_t TASK_RACERS = WORKERS;
-#else
+    // The racers of each task, half in main's and half in the peer's. How many of this task's have
+    // run their first block and ended.
     constexpr uint32_t TASK_RACERS = WORKERS / 2;
-#endif
     inline uint32_t g_began = 0;
     inline uint32_t g_ended = 0;
 
-#if not KICKOS_CHIP_ONE_TASK
     // Each racer holds, at these slots, the notification its task's racers wait on and the one the
     // other task's wait on. A task's last racer to run its first block signals the other task and
     // waits for it, so no racer of either task runs a second block before every racer of both has
     // run its first.
     constexpr kos_cap_t MEET_OWN = KOS_SPAWN_DELEGATED_CAP0;
     constexpr kos_cap_t MEET_OTHER = KOS_SPAWN_DELEGATED_CAP0 + 1;
-#endif
 
     // Every gate and count at 0, before any thread of the run exists.
     inline void gates_seat()
@@ -115,7 +108,6 @@ namespace libcrace
             kos_sem_wait(&g_gates->begun, KOS_TIMEOUT_NONE);
             return;
         }
-#if not KICKOS_CHIP_ONE_TASK
         uint32_t bits = 0;
         (void)kos_notify(MEET_OTHER);
         if (kos_notify_bind(MEET_OWN) == 0)
@@ -123,7 +115,6 @@ namespace libcrace
             (void)kos_notify_wait(MEET_OWN, 1u, KOS_TIMEOUT_NONE, &bits);
             (void)kos_notify_unbind(MEET_OWN);
         }
-#endif
         for (uint32_t k = 1; k < TASK_RACERS; k++)
         {
             kos_sem_post(&g_gates->begun);
@@ -139,20 +130,14 @@ namespace libcrace
                                    nullptr, 0, nullptr, 0, 0, nullptr, core_mask);
     }
 
-    // A racer of this task, holding `own` at MEET_OWN and `other` at MEET_OTHER where two tasks
-    // race.
-    inline kos::thread::Handle spawn_racer(void (*entry)(void*), int w,
-                                           [[maybe_unused]] kos_cap_t own,
-                                           [[maybe_unused]] kos_cap_t other)
+    // A racer of this task, holding `own` at MEET_OWN and `other` at MEET_OTHER.
+    inline kos::thread::Handle spawn_racer(void (*entry)(void*), int w, kos_cap_t own,
+                                           kos_cap_t other)
     {
         void* const arg = reinterpret_cast<void*>(static_cast<uintptr_t>(w));
-#if KICKOS_CHIP_ONE_TASK
-        return spawn_in(entry, arg, "racer", WORKER_PRIO, 0, KOS_POLICY_RR, QUANTUM_NS);
-#else
         kos_cap_grant const meet[2] = {{own, KOS_CAP_WAIT}, {other, KOS_CAP_SIGNAL}};
         return kos::thread::create(entry, arg, "racer", WORKER_PRIO, KOS_POLICY_RR, QUANTUM_NS,
                                    nullptr, 0, nullptr, 0, meet, 2);
-#endif
     }
 
     inline char letter(int w, int i)

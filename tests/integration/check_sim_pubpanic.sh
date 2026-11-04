@@ -14,7 +14,7 @@
 #
 # The sim is the fleet's one platform that is both BUFFERED and hardware-free, so a buffered
 # terminal report is witnessed here; every other panic gate runs semihosted and unbuffered.
-# Case 2 covers the f302nucleo defect shape: a fault reporter that produces no dump.
+# Case 2 covers a fault reporter that produces no dump.
 #
 # The load-bearing anti-vacuity assertion is the NEGATIVE one: the app's raw kernel console
 # witness must be ABSENT. console_emit drops kernel-console writes while the console is
@@ -88,7 +88,7 @@ if [ "$OUTCOME" = panic ]; then
     common_asserts "case 2"
     COUNT="$(count_of '=== SIM FAULT (illegal instruction)')"
     [ "$COUNT" -ne 0 ] \
-      || fail "case 2: the fault dump never reached the wire (the f302nucleo defect shape)"
+      || fail "case 2: the fault dump never reached the wire"
     [ "$COUNT" -eq 1 ] \
       || fail "case 2: the fault dump appeared $COUNT times (ring re-pushed?)"
     [ "$RC" -eq "$FAULT_STATUS" ] \

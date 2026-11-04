@@ -12,6 +12,5 @@
 
 KickOS libc exit() regression
 worker: exit()
-main: survived worker exit()
-main: exit()
 main: atexit handler
+worker: buffered

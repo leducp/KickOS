@@ -30,8 +30,8 @@ if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
 fi
 OUT="$1"
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-ALL=$(sed -n '/^FAMILIES = (/,/)$/p' "$ROOT/conan/toolchains/conanfile.py" | tr -d '\n" ' \
-    | sed 's/^FAMILIES=(\(.*\))$/\1/; s/,$//')
+ALL=$(awk '/^FAMILIES = \(/ { on = 1 } on { print } on && /\)$/ { exit }' \
+    "$ROOT/conan/toolchains/conanfile.py" | tr -d '\n" ' | sed 's/^FAMILIES=(\(.*\))$/\1/; s/,$//')
 FAMILIES="${2-$ALL}"
 VERSION=$(sed -n 's/^    version = "\(.*\)"$/\1/p' "$ROOT/conan/toolchain/conanfile.py")
 REVISION=$(sed -n 's/^PACKAGE_REVISION = \([0-9]*\)$/\1/p' "$ROOT/conan/toolchain/conanfile.py")

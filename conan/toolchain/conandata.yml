@@ -72,6 +72,17 @@ sources:
   kickos-rx-dfpu-compare:
     filename: "kickos-rx-dfpu-compare.patch"
     sha256: "4f7fb1d821867aa2bdc96b5c27cf17395a56363594770b70ad1d30bdab4edfde"
+  # KickOS's own change to the RX atomics, which calls __atomic_fetch_<op>_4 for a 32-bit
+  # read-modify-write unless -mirq-atomics asks for the interrupt-masking inline form, as user
+  # mode ignores the mask.
+  kickos-rx-irq-atomics:
+    filename: "kickos-rx-irq-atomics.patch"
+    sha256: "1ab9df8527ec005ec4182bc8ba8bfc9d6dde56b919753af8c9f8179e12c870ff"
+  # KickOS's own change to libstdc++'s configure, which counts references through the __atomic
+  # calls the user runtime defines on armv6m and RX, whose user mode has no compare-and-swap.
+  kickos-libstdcxx-atomic-calls:
+    filename: "kickos-libstdcxx-atomic-calls.patch"
+    sha256: "b8368c0aa1155b20e206736f43a663bb1881a247799db3194f6cef6c7190c681"
   # KickOS's own change to the x86_64-elf GCC, which binds every symbol but a weak one locally
   # under -fpie, so neither the libraries nor an image reach a global offset table PE32+ cannot
   # hold (design section 5.5).
@@ -83,3 +94,13 @@ sources:
   kickos-x86_64-pe-defweak-reloc:
     filename: "kickos-x86_64-pe-defweak-reloc.patch"
     sha256: "d26b92b35f6265a5dc46c4732de6cb65aa46a1e754a5205d9bfd59c5d9d169d1"
+  # KickOS's own threads model, which every family's GCC takes: the gthreads layouts, every
+  # operation a call into the KickOS user runtime.
+  kickos-gcc-threads:
+    filename: "kickos-gcc-threads.patch"
+    sha256: "a05ba19c84d06d64d5a2bbd43e1050090118fd3d4ee408f081014bc5cb749636"
+  # KickOS's own newlib locks, which every family takes: the lock complete, each FILE's in the
+  # FILE, the lock orders a split takes, and atexit functions run unlocked.
+  kickos-newlib-locks:
+    filename: "kickos-newlib-locks.patch"
+    sha256: "20c406ad0b3f8618a46d32b95e0b19dde99f2e1efe19e24f9f26c8da0d9819c2"

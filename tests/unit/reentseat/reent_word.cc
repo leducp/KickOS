@@ -25,7 +25,7 @@ using namespace kickos::testfix;
 namespace
 {
     // Exactly what the carve leaves below its cell, the widest state the descriptor read admits.
-    constexpr size_t STATE_BYTES = KICKOS_REENT_CARVE - 2 * sizeof(void*);
+    constexpr size_t STATE_BYTES = KICKOS_REENT_CARVE - KICKOS_REENT_CELL_WORDS * sizeof(void*);
     unsigned char g_states[KICKOS_SEAM_THREAD_SLOTS][KICKOS_REENT_CARVE];
     unsigned char g_shared[STATE_BYTES];
     void* g_seat = nullptr;
@@ -41,6 +41,7 @@ namespace
         h.reent_template = reinterpret_cast<uintptr_t>(g_shared);
         h.reent_seat = reinterpret_cast<uintptr_t>(&g_seat);
         h.reent_width = STATE_BYTES;
+        h.reent_carve = KICKOS_REENT_CARVE;
         return h;
     }
 }

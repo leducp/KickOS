@@ -11,7 +11,7 @@
    sched   tickless
 
 libc_death: start
-libc_death: the victim died inside printf holding the libc lock
+libc_death: the victim died inside printf holding stdout's lock
 
 === XTENSA EXCEPTION (illegal instruction) ===
   EXCCAUSE=0 PC=0x400d1234

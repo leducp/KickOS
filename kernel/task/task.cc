@@ -136,13 +136,9 @@ namespace kickos
             *t = Task{};
             t->gen = gen;
             t->domain = d;
-#if KICKOS_INIT_IMAGE
             t->image = static_cast<uint8_t>(image);
 #if KICKOS_LIBC_REENT and not KICKOS_REENT_PER_THREAD
             t->reent_seat = reinterpret_cast<void*>(image_record(image).reent_seat);
-#endif
-#else
-            (void)image;
 #endif
             // A task whose members are all cancelled ends with this status.
             t->exit_status = KOS_EXIT_CANCELLED;
@@ -564,14 +560,10 @@ namespace kickos
 
     size_t task_image(Task const* t)
     {
-#if KICKOS_INIT_IMAGE
         if (t != nullptr)
         {
             return t->image;
         }
-#else
-        (void)t;
-#endif
         return 0;
     }
 

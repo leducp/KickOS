@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# main, the creator, and the peer whose worker throws, a program of its own, which main creates.
+
+version: 1
+stdout: kernel
+ends: main
+
+tasks:
+  - name: main
+    program: cxxterm_worker
+    priority: 2
+    ceiling: 31
+    authority: [tasks]
+    budgets: { threads: 1 }
+
+  - name: peer
+    program: cxxterm_worker_peer
+    priority: 10
+    ceiling: 10
+    start: on_request
+    budgets: { threads: 3 }

@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-# Judged only from a capture route that stamps each line's arrival on the host.
+# Judged from a capture route that stamps each line's arrival on the host, and booted under QEMU
+# (tests/integration/gates/wallclock.cmake).
 add_executable(wallclock main.cc)
-target_link_libraries(wallclock PRIVATE KickOS::kickos KickOS::system_default)
+kickos_app_system(wallclock COMPOSITION system.yaml)
 kickos_emit_image(wallclock)
 kickos_app_judge(wallclock tests/integration/check_wallclock.sh)
 

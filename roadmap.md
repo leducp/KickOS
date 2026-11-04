@@ -1010,7 +1010,7 @@ symbol, so the figure stays a chip figure and no board file gains one.
 **THE DIRECTION M8.5 NAMED DOES NOT PAY, AND THE LINK IS WHAT SAYS SO.** App statics already
 fill 7,864 of the 16,384, so a 4 KiB window fails the link on the window-overflow ASSERT, and an
 8 KiB window LINKS GREEN, but only with `KICKOS_KERNEL_DATA_RESERVE` moved to 24K alongside
-`KICKOS_APPDATA_SIZE`: the reserve's own over-generous-window ASSERT refuses the 32K default
+the window size: the reserve's own over-generous-window ASSERT refuses the 32K default
 once the window shrinks to 8K. That gives a pad of 328 bytes on `selftest` and at most 2,744 on
 any image in the preset. The pad is the newlib heap and every thread shares it: newlib seats one
 `struct _reent` per thread slot -- 9 here, 4,608 bytes of the window -- and each slot's first

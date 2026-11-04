@@ -1,0 +1,525 @@
+SPDX-License-Identifier: BSD-3-Clause
+Copyright (c) 2026 Philippe Leduc
+
+KickOS: newlib's locks as KickOS locks, each FILE with its own, and the orders a split takes.
+
+Against newlib 4.5.0.20241231, applied with -p1 in the newlib tree after any family patch, for
+every family. With retargetable locking, struct __lock is complete: the KickOS mutex word, then
+the depth its holder has taken it to. A static lock stays a named object of that type and a
+FILE's lock is one held in the FILE, which _flockfile and _funlockfile pass by address. A FILE's
+lock is unheld from its storage's making and never set again, so neither opening nor closing a
+FILE touches it; only a FILE on the stack sets its own. __fp_lock_all takes sfp, then tries the
+lock of every FILE slot, and on one held elsewhere lets all go, waits for that one and starts
+again, so no FILE opens, closes or reopens until __fp_unlock_all. __call_exitprocs runs each
+function without the atexit lock and reads the table again after it, and clears a removed slot's
+kind. The headers state the monotonic
+clock and declare clock_gettime and nanosleep, which the KickOS user runtime defines, without the
+POSIX timers, and _reclaim_reent names the global reent rather than _impure_ptr. This modifies the
+vendored C library, so it carries newlib's licence, not KickOS's.
+
+--- a/newlib/libc/include/sys/features.h
++++ b/newlib/libc/include/sys/features.h
+@@ -570,6 +570,11 @@
+ 
+ #endif /* __CYGWIN__ */
+ 
++/* KickOS: its user runtime serves the monotonic clock.  */
++#ifndef _POSIX_MONOTONIC_CLOCK
++#define _POSIX_MONOTONIC_CLOCK		200112L
++#endif
++
+ #ifdef __cplusplus
+ }
+ #endif
+--- a/newlib/libc/include/sys/lock.h
++++ b/newlib/libc/include/sys/lock.h
+@@ -30,7 +30,14 @@
+ extern "C" {
+ #endif
+ 
+-struct __lock;
++/* KickOS: a lock is its mutex word, then the depth its holder has taken it
++   to.  A static lock is a named object of this type, and a FILE holds its
++   own.  All zero bits is an unheld lock.  */
++struct __lock
++{
++  __UINT32_TYPE__ __word;
++  __UINT32_TYPE__ __depth;
++};
+ typedef struct __lock * _LOCK_T;
+ #define _LOCK_RECURSIVE_T _LOCK_T
+ 
+--- a/newlib/libc/include/sys/reent.h
++++ b/newlib/libc/include/sys/reent.h
+@@ -33,8 +33,13 @@
+ 
+ #ifndef __machine_flock_t_defined
+ #include <sys/lock.h>
++#ifdef _RETARGETABLE_LOCKING
++/* Embedded: _flockfile and _funlockfile pass its address as a _LOCK_T.  */
++typedef struct __lock _flock_t;
++#else
+ typedef _LOCK_RECURSIVE_T _flock_t;
+ #endif
++#endif
+ 
+ #ifndef __Long
+ #define __Long __int32_t
+--- a/newlib/libc/include/sys/stdio.h
++++ b/newlib/libc/include/sys/stdio.h
+@@ -10,7 +10,7 @@
+    set then do nothing as lock is not initialised. */
+ #if !defined(_flockfile)
+ #ifndef __SINGLE_THREAD__
+-#  define _flockfile(fp) (((fp)->_flags & __SSTR) ? 0 : __lock_acquire_recursive((fp)->_lock))
++#  define _flockfile(fp) (((fp)->_flags & __SSTR) ? 0 : __lock_acquire_recursive(&(fp)->_lock))
+ #else
+ #  define _flockfile(fp)	((void) 0)
+ #endif
+@@ -18,7 +18,7 @@
+ 
+ #if !defined(_funlockfile)
+ #ifndef __SINGLE_THREAD__
+-#  define _funlockfile(fp) (((fp)->_flags & __SSTR) ? 0 : __lock_release_recursive((fp)->_lock))
++#  define _funlockfile(fp) (((fp)->_flags & __SSTR) ? 0 : __lock_release_recursive(&(fp)->_lock))
+ #else
+ #  define _funlockfile(fp)	((void) 0)
+ #endif
+--- a/newlib/libc/include/time.h
++++ b/newlib/libc/include/time.h
+@@ -194,6 +194,21 @@
+ #endif
+ #endif /* _POSIX_TIMERS */
+ 
++#if !defined(_POSIX_TIMERS)
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/* KickOS: the clocks and the sleep its user runtime defines, without the
++   timers _POSIX_TIMERS would also claim.  */
++int clock_gettime (clockid_t clock_id, struct timespec *tp);
++int nanosleep (const struct timespec  *rqtp, struct timespec *rmtp);
++
++#ifdef __cplusplus
++}
++#endif
++#endif /* !_POSIX_TIMERS */
++
+ #if defined(_POSIX_CLOCK_SELECTION)
+ 
+ #ifdef __cplusplus
+--- a/newlib/libc/misc/lock.c
++++ b/newlib/libc/misc/lock.c
+@@ -85,10 +85,6 @@
+ 
+ #include <sys/lock.h>
+ 
+-struct __lock {
+-  char unused;
+-};
+-
+ struct __lock __lock___sfp_recursive_mutex;
+ struct __lock __lock___atexit_recursive_mutex;
+ struct __lock __lock___at_quick_exit_mutex;
+--- a/newlib/libc/reent/reent.c
++++ b/newlib/libc/reent/reent.c
+@@ -31,7 +31,7 @@
+ _reclaim_reent (struct _reent *ptr)
+ {
+ #ifndef _REENT_THREAD_LOCAL
+-  if (ptr != _impure_ptr)
++  if (ptr != _GLOBAL_REENT)
+ #endif
+     {
+       /* used by mprec routines. */
+--- a/newlib/libc/stdio/fclose.c
++++ b/newlib/libc/stdio/fclose.c
+@@ -105,9 +105,6 @@
+   fp->_flags = 0;		/* release this FILE for reuse */
+   if (!(fp->_flags2 & __SNLK))
+     _funlockfile (fp);
+-#ifndef __SINGLE_THREAD__
+-  __lock_close_recursive (fp->_lock);
+-#endif
+ 
+   __sfp_lock_release ();
+ #ifdef _STDIO_WITH_THREAD_CANCELLATION_SUPPORT
+--- a/newlib/libc/stdio/findfp.c
++++ b/newlib/libc/stdio/findfp.c
+@@ -23,6 +23,8 @@
+ #include <errno.h>
+ #include <string.h>
+ #include <fcntl.h>
++#include <iso646.h>
++#include <stdbool.h>
+ #include <sys/lock.h>
+ #include "local.h"
+ 
+@@ -88,10 +90,6 @@
+ #else /* _STDIO_CLOSE_STD_STREAMS */
+   ptr->_close = NULL;
+ #endif /* _STDIO_CLOSE_STD_STREAMS */
+-#ifndef __SINGLE_THREAD__
+-  if (ptr == &__sf[0] || ptr == &__sf[1] || ptr == &__sf[2])
+-    __lock_init_recursive (ptr->_lock);
+-#endif
+ #ifdef __SCLE
+   if (__stextmode (ptr->_file))
+     ptr->_flags |= __SCLE;
+@@ -197,9 +195,9 @@
+   fp->_file = -1;		/* no file */
+   fp->_flags = 1;		/* reserve this slot; caller sets real flags */
+   fp->_flags2 = 0;
+-#ifndef __SINGLE_THREAD__
+-  __lock_init_recursive (fp->_lock);
+-#endif
++  /* KickOS: a FILE's lock is unheld from its storage's making (__sf's
++     static zero, sfmoreglue's memset) and is never set again: a walker
++     may still hold the lock of a slot being reused.  */
+   _newlib_sfp_lock_end ();
+ 
+   fp->_p = NULL;		/* no current pointer */
+@@ -275,37 +273,76 @@
+   __lock_release_recursive (__sfp_recursive_mutex);
+ }
+ 
+-/* Walkable file locking routine.  */
+-static int
+-__fp_lock (struct _reent * ptr __unused, FILE * fp)
++/* KickOS: sfp, then every FILE slot, free ones included, so no FILE opens,
++   closes or reopens until __fp_unlock_all.  Each slot's lock is tried with
++   sfp held, since its holder may be waiting for sfp (fclose, a failing
++   freopen): on one held elsewhere the walk lets go of everything, waits for
++   that one alone and starts again.  */
++static FILE *
++__fp_trylock_slots (void)
+ {
+-  if (!(fp->_flags2 & __SNLK))
+-    _flockfile (fp);
++  struct _glue *g;
++  FILE *fp;
++  int n;
+ 
+-  return 0;
++  for (g = &__sglue; g != NULL; g = g->_next)
++    {
++      for (fp = g->_iobs, n = g->_niobs; --n >= 0; fp++)
++	{
++	  if (not __lock_try_acquire_recursive (&fp->_lock))
++	    {
++	      return fp;
++	    }
++	}
++    }
++  return NULL;
+ }
+ 
+-/* Walkable file unlocking routine.  */
+-static int
+-__fp_unlock (struct _reent * ptr __unused, FILE * fp)
++/* Every slot's lock before `upto', every slot's for NULL.  */
++static void
++__fp_unlock_slots (FILE *upto)
+ {
+-  if (!(fp->_flags2 & __SNLK))
+-    _funlockfile (fp);
++  struct _glue *g;
++  FILE *fp;
++  int n;
+ 
+-  return 0;
++  for (g = &__sglue; g != NULL; g = g->_next)
++    {
++      for (fp = g->_iobs, n = g->_niobs; --n >= 0; fp++)
++	{
++	  if (fp == upto)
++	    {
++	      return;
++	    }
++	  __lock_release_recursive (&fp->_lock);
++	}
++    }
+ }
+ 
+ void
+ __fp_lock_all (void)
+ {
+-  __sfp_lock_acquire ();
+-  (void) _fwalk_sglue (NULL, __fp_lock, &__sglue);
++  FILE *busy;
++
++  while (true)
++    {
++      __sfp_lock_acquire ();
++      busy = __fp_trylock_slots ();
++      if (busy == NULL)
++	{
++	  return;
++	}
++      __fp_unlock_slots (busy);
++      __sfp_lock_release ();
++      __lock_acquire_recursive (&busy->_lock);
++      __lock_release_recursive (&busy->_lock);
++    }
+ }
+ 
+ void
+ __fp_unlock_all (void)
+ {
+-  (void) _fwalk_sglue (NULL, __fp_unlock, &__sglue);
++  __fp_unlock_slots (NULL);
+   __sfp_lock_release ();
+ }
+ #endif
+--- a/newlib/libc/stdio/fmemopen.c
++++ b/newlib/libc/stdio/fmemopen.c
+@@ -287,9 +287,6 @@
+     {
+       _newlib_sfp_lock_start ();
+       fp->_flags = 0;		/* release */
+-#ifndef __SINGLE_THREAD__
+-      __lock_close_recursive (fp->_lock);
+-#endif
+       _newlib_sfp_lock_end ();
+       return NULL;
+     }
+--- a/newlib/libc/stdio/fopen.c
++++ b/newlib/libc/stdio/fopen.c
+@@ -130,9 +130,6 @@
+     {
+       _newlib_sfp_lock_start (); 
+       fp->_flags = 0;		/* release */
+-#ifndef __SINGLE_THREAD__
+-      __lock_close_recursive (fp->_lock);
+-#endif
+       _newlib_sfp_lock_end (); 
+       return NULL;
+     }
+--- a/newlib/libc/stdio/fopencookie.c
++++ b/newlib/libc/stdio/fopencookie.c
+@@ -216,9 +216,6 @@
+     {
+       _newlib_sfp_lock_start ();
+       fp->_flags = 0;		/* release */
+-#ifndef __SINGLE_THREAD__
+-      __lock_close_recursive (fp->_lock);
+-#endif
+       _newlib_sfp_lock_end ();
+       return NULL;
+     }
+--- a/newlib/libc/stdio/freopen.c
++++ b/newlib/libc/stdio/freopen.c
+@@ -208,9 +208,6 @@
+       _REENT_ERRNO(ptr) = e;	/* restore in case _close clobbered */
+       if (!(oflags2 & __SNLK))
+ 	_funlockfile (fp);
+-#ifndef __SINGLE_THREAD__
+-      __lock_close_recursive (fp->_lock);
+-#endif
+       __sfp_lock_release ();
+ #ifdef _STDIO_WITH_THREAD_CANCELLATION_SUPPORT
+       pthread_setcancelstate (__oldcancel, &__oldcancel);
+--- a/newlib/libc/stdio/funopen.c
++++ b/newlib/libc/stdio/funopen.c
+@@ -211,9 +211,6 @@
+     {
+       _newlib_sfp_lock_start ();
+       fp->_flags = 0;		/* release */
+-#ifndef __SINGLE_THREAD__
+-      __lock_close_recursive (fp->_lock);
+-#endif
+       _newlib_sfp_lock_end ();
+       return NULL;
+     }
+--- a/newlib/libc/stdio/local.h
++++ b/newlib/libc/stdio/local.h
+@@ -42,6 +42,10 @@
+ #define _STDIO_CLOSE_PER_REENT_STD_STREAMS
+ #endif
+ 
++/* KickOS: the lock of a FILE on the stack, unheld from this store on.  A
++   FILE's lock is in the FILE and needs no retiring.  */
++#define __flock_init(fp) ((fp)->_lock = (_flock_t) { 0 })
++
+ /* The following macros are supposed to replace calls to _flockfile/_funlockfile
+    and __sfp_lock_acquire/__sfp_lock_release.  In case of multi-threaded
+    environments using pthreads, it's not sufficient to lock the stdio functions
+--- a/newlib/libc/stdio/open_memstream.c
++++ b/newlib/libc/stdio/open_memstream.c
+@@ -310,9 +310,6 @@
+     {
+       _newlib_sfp_lock_start ();
+       fp->_flags = 0;		/* release */
+-#ifndef __SINGLE_THREAD__
+-      __lock_close_recursive (fp->_lock);
+-#endif
+       _newlib_sfp_lock_end ();
+       return NULL;
+     }
+@@ -335,9 +332,6 @@
+     {
+       _newlib_sfp_lock_start ();
+       fp->_flags = 0;		/* release */
+-#ifndef __SINGLE_THREAD__
+-      __lock_close_recursive (fp->_lock);
+-#endif
+       _newlib_sfp_lock_end ();
+       _free_r (ptr, c);
+       return NULL;
+--- a/newlib/libc/stdio/vfprintf.c
++++ b/newlib/libc/stdio/vfprintf.c
+@@ -223,7 +223,7 @@
+ 	fake._bf._size = fake._w = sizeof (buf);
+ 	fake._lbfsize = 0;	/* not actually used, but Just In Case */
+ #ifndef __SINGLE_THREAD__
+-	__lock_init_recursive (fake._lock);
++	__flock_init (&fake);
+ #endif
+ 
+ 	/* do the work, then copy any error status */
+@@ -233,9 +233,6 @@
+ 	if (fake._flags & __SERR)
+ 		fp->_flags |= __SERR;
+ 
+-#ifndef __SINGLE_THREAD__
+-	__lock_close_recursive (fake._lock);
+-#endif
+ 	return (ret);
+ }
+ #endif /* _UNBUF_STREAM_OPT */
+--- a/newlib/libc/stdio/vfwprintf.c
++++ b/newlib/libc/stdio/vfwprintf.c
+@@ -195,7 +195,7 @@
+ 	fake._bf._size = fake._w = sizeof (buf);
+ 	fake._lbfsize = 0;	/* not actually used, but Just In Case */
+ #ifndef __SINGLE_THREAD__
+-	__lock_init_recursive (fake._lock);
++	__flock_init (&fake);
+ #endif
+ 
+ 	/* do the work, then copy any error status */
+@@ -205,9 +205,6 @@
+ 	if (fake._flags & __SERR)
+ 		fp->_flags |= __SERR;
+ 
+-#ifndef __SINGLE_THREAD__
+-	__lock_close_recursive (fake._lock);
+-#endif
+ 	return (ret);
+ }
+ #endif /* _UNBUF_STREAM_OPT */
+--- a/newlib/libc/stdio64/fopen64.c
++++ b/newlib/libc/stdio64/fopen64.c
+@@ -81,9 +81,6 @@
+     {
+       _newlib_sfp_lock_start ();
+       fp->_flags = 0;		/* release */
+-#ifndef __SINGLE_THREAD__
+-      __lock_close_recursive (fp->_lock);
+-#endif
+       _newlib_sfp_lock_end ();
+       return NULL;
+     }
+--- a/newlib/libc/stdio64/freopen64.c
++++ b/newlib/libc/stdio64/freopen64.c
+@@ -209,9 +209,6 @@
+       _REENT_ERRNO(ptr) = e;	/* restore in case _close clobbered */
+       if (!(oflags2 & __SNLK))
+ 	_funlockfile (fp);
+-#ifndef __SINGLE_THREAD__
+-      __lock_close_recursive (fp->_lock);
+-#endif
+       __sfp_lock_release ();
+ #if !defined (__SINGLE_THREAD__) && defined (_POSIX_THREADS)
+       pthread_setcancelstate (__oldcancel, &__oldcancel);
+--- a/newlib/libc/stdlib/__call_atexit.c
++++ b/newlib/libc/stdlib/__call_atexit.c
+@@ -3,6 +3,7 @@
+  */
+ 
+ 
++#include <iso646.h>
+ #include <stdlib.h>
+ #include <reent.h>
+ #include <sys/lock.h>
+@@ -73,6 +74,8 @@
+   register int n;
+   int i;
+   void (*fn) (void);
++  int kind;
++  void *arg;
+ 
+ 
+ #ifndef __SINGLE_THREAD__
+@@ -92,17 +95,31 @@
+ #endif
+       for (n = p->_ind - 1; n >= 0; n--)
+ 	{
+-	  int ind;
+-
+ 	  i = 1 << n;
+ 
+ 	  /* Skip functions not from this dso.  */
+ 	  if (d && (!args || args->_dso_handle[n] != d))
+ 	    continue;
+ 
++	  /* KickOS: the kind and argument are read, and the slot's kind bits
++	     cleared, before the slot is freed for reuse.  */
++	  fn = p->_fns[n];
++	  kind = 0;
++	  arg = NULL;
++	  if (args and (args->_fntypes & i) != 0)
++	    {
++	      arg = args->_fnargs[n];
++	      kind = 1;
++	      if ((args->_is_cxa & i) != 0)
++		{
++		  kind = 2;
++		}
++	      args->_fntypes &= ~i;
++	      args->_is_cxa &= ~i;
++	    }
++
+ 	  /* Remove the function now to protect against the
+ 	     function calling exit recursively.  */
+-	  fn = p->_fns[n];
+ 	  if (n == p->_ind - 1)
+ 	    p->_ind--;
+ 	  else
+@@ -112,21 +129,22 @@
+ 	  if (!fn)
+ 	    continue;
+ 
+-	  ind = p->_ind;
+-
+-	  /* Call the function.  */
+-	  if (!args || (args->_fntypes & i) == 0)
++	  /* KickOS: the function runs without the lock, so it may register,
++	     exit or take any other lock, and the table is read again after
++	     it.  */
++#ifndef __SINGLE_THREAD__
++	  __lock_release_recursive(__atexit_recursive_mutex);
++#endif
++	  if (kind == 0)
+ 	    fn ();
+-	  else if ((args->_is_cxa & i) == 0)
+-	    (*((void (*)(int, void *)) fn))(code, args->_fnargs[n]);
++	  else if (kind == 1)
++	    (*((void (*)(int, void *)) fn))(code, arg);
+ 	  else
+-	    (*((void (*)(void *)) fn))(args->_fnargs[n]);
+-
+-	  /* The function we called call atexit and registered another
+-	     function (or functions).  Call these new functions before
+-	     continuing with the already registered functions.  */
+-	  if (ind != p->_ind || *lastp != p)
+-	    goto restart;
++	    (*((void (*)(void *)) fn))(arg);
++#ifndef __SINGLE_THREAD__
++	  __lock_acquire_recursive(__atexit_recursive_mutex);
++#endif
++	  goto restart;
+ 	}
+ 
+ #if !defined (_ATEXIT_DYNAMIC_ALLOC) || !defined (MALLOC_PROVIDED)

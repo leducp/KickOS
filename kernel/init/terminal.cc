@@ -3,7 +3,6 @@
 
 #include <kickos/ampwindow.h>
 #include <kickos/arch/arch.h>
-#include <kickos/chip_limits.h> // KICKOS_CHIP_ONE_TASK
 #include <kickos/console_tx.h>
 #include <kickos/cap.h>
 #include <kickos/irqlock.h>
@@ -69,13 +68,3 @@ extern "C" void kickos_terminal_outcome_apply(void)
     }
     (void)arch_reboot(v - 1u);
 }
-
-#if KICKOS_CHIP_ONE_TASK
-extern "C" void kickos_image_end(int status)
-{
-    console_tx_flush_sync();
-    arch_console_flush_sync();
-    kickos_terminal_outcome_apply();
-    arch_shutdown(status);
-}
-#endif

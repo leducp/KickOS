@@ -11,14 +11,23 @@
 #
 # Needs kickos_kseam_time (tests/unit/parkdeath) to exist before this directory is added.
 kickos_add_kseam(kickos_kseam_time_smp EXTRA "${PROJECT_SOURCE_DIR}/kernel/time/time.cc"
+  "${PROJECT_SOURCE_DIR}/kernel/time/realtime.cc"
   POSTURE KICKOS_NUM_CORES=2 KICKOS_KERNEL_CORES=2 KICKOS_MULTICORE_MODEL_SHARED=1)
 target_compile_definitions(kickos_kseam_time_smp PRIVATE KFIXTURE_REAL_TIME=1)
 kickos_add_unit_test(NAME word_timed SOURCES word_timed.cc
   LIBRARIES kickos_kseam_time)
+# A wait toward a realtime deadline across a set of the wall clock, and the delta list's order
+# after each set.
+kickos_add_unit_test(NAME word_wall SOURCES word_wall.cc
+  LIBRARIES kickos_kseam_time)
+kickos_add_unit_test(NAME word_wall_smp SOURCES word_wall.cc
+  LIBRARIES kickos_kseam_time_smp
+  TEST_PREFIX smp.)
 kickos_add_unit_test(NAME word_timed_smp SOURCES word_timed.cc
   LIBRARIES kickos_kseam_time_smp
   TEST_PREFIX smp.)
-kickos_add_kseam(kickos_kseam_time_bounded EXTRA "${PROJECT_SOURCE_DIR}/kernel/time/time.cc")
+kickos_add_kseam(kickos_kseam_time_bounded EXTRA "${PROJECT_SOURCE_DIR}/kernel/time/time.cc"
+  "${PROJECT_SOURCE_DIR}/kernel/time/realtime.cc")
 target_compile_definitions(kickos_kseam_time_bounded PRIVATE KFIXTURE_REAL_TIME=1)
 kickos_add_unit_test(NAME word_timed_bounded SOURCES word_timed.cc TEST_PREFIX bounded.
   DEFINITIONS WORDTIMED_BOUNDED=1

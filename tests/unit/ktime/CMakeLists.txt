@@ -20,3 +20,10 @@ kickos_add_unit_test(NAME ktime_rearm
   SOURCES ktime_rearm.cc "${PROJECT_SOURCE_DIR}/kernel/time/time.cc"
   INCLUDES $<TARGET_PROPERTY:kickos_kernel,INCLUDE_DIRECTORIES>
   DEFINITIONS $<TARGET_PROPERTY:kickos_kernel,COMPILE_DEFINITIONS>)
+
+# The wall clock one partition keeps across its nodes, over the REAL kernel/time/realtime.cc: two
+# nodes as two instances of one program, and a node's set stopped inside its writes.
+kickos_add_unit_test(NAME wall_shared
+  SOURCES wall_shared.cc "${PROJECT_SOURCE_DIR}/kernel/time/realtime.cc"
+  POSTURE KICKOS_AMP_CLOCK_SHARED=1 KICKOS_AMP_NODES=2 KICKOS_MULTI_INSTANCE=1
+          KICKOS_MAX_INSTANCES=2)

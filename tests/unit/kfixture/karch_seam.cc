@@ -455,6 +455,7 @@ namespace kickos
     void ktime_deadline_cancel(Thread* t, Held)
     {
         t->on_timer = false;
+        t->timer_wall = false;
     }
 
     // No clock runs here. Tests trigger expiry with thread_abort_park.
@@ -464,6 +465,33 @@ namespace kickos
         {
             t->on_timer = true;
         }
+    }
+
+    bool ktime_limit_passed(WaitLimit limit)
+    {
+        return not limit.on_wall() and limit.lo == 0u;
+    }
+
+    void ktime_deadline_arm_at(Thread* t, uint64_t deadline_ns, bool wall, Held)
+    {
+        t->deadline_ns = deadline_ns;
+        t->on_timer = true;
+        t->timer_wall = wall;
+    }
+
+    void ktime_limit_arm(Thread* t, WaitLimit limit, Held held)
+    {
+        if (limit.on_wall())
+        {
+            ktime_deadline_arm_at(t, 0u, true, held);
+            return;
+        }
+        ktime_deadline_arm(t, limit.lo, held);
+    }
+
+    // No deadline is queued here to move.
+    void ktime_wall_shift(int64_t, Held)
+    {
     }
 #endif
 }

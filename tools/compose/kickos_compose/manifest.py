@@ -16,7 +16,7 @@ from .subset import C_IDENTIFIER, FILE_NAME, IDENTIFIER, File, Report, line_of, 
 MANIFEST_VERSIONS = (1,)
 # The authority bits a driver's entry may run with, by name (<kickos/sys/cap_rights.h>).
 DRIVER_AUTHORITIES = ("memory", "pinmux", "pstate", "irq", "system", "console", "tasks", "bus_master",
-                      "bootloader")
+                      "bootloader", "realtime")
 MANIFEST_FIELDS = ("version", "abi", "target", "protection", "pools", "budgets", "ceilings", "threads", "init",
                    "descriptions", "default", "drivers")
 BUDGET_FIELDS = ("default", "pool")

@@ -53,13 +53,6 @@ MEMORY
 _estack = ORIGIN(RAM) + LENGTH(RAM);
 _kernel_stack_size = 8K;
 
-#if KICKOS_HAVE_MPU
-#ifndef KICKOS_APPDATA_SIZE
-#define KICKOS_APPDATA_SIZE 128K
-#endif
-_appdata_size = KICKOS_APPDATA_SIZE;
-#endif
-
 #ifdef KICKOS_NODE_VECTOR_FORCE_SYMBOL
 /* Node 1's table is referenced by nothing until the launch writes VTOR. */
 EXTERN(KICKOS_NODE_VECTOR_FORCE_SYMBOL)
@@ -81,7 +74,7 @@ SECTIONS
     KICKOS_CORTEXM_CTORS
     KICKOS_CORTEXM_EXIDX
     KICKOS_INIT_TABLES(FLASH)
-    KICKOS_CORTEXM_DATA(.appdata : ALIGN(32))
+    KICKOS_CORTEXM_DATA()
 
     /* The whole flash window as the app's RX region. */
     __kickos_code_start = ORIGIN(FLASH);

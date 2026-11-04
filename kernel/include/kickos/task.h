@@ -9,10 +9,10 @@
 // no slot here. A program's create (task_create_declared) seats a declaration's instance, whose
 // entry thread is its first member. The kernel's own idle and root take theirs through task_for.
 //
-// Two deaths end the group from a member's own exit: a FAULT, and the death by any cause of the
-// task's ENTRY thread, the first member a non-member seats. The first of them gives the task its
-// status, and an ended task takes no member. A cancel of any other member ends that member alone; a caller that wants the group
-// calls task_cancel_group itself.
+// Three deaths end the group from a member's own exit: a FAULT, a task-scope exit (_exit), and the
+// death by any cause of the task's ENTRY thread, the first member a non-member seats. The first of
+// them gives the task its status, and an ended task takes no member. A cancel of any other member
+// ends that member alone; a caller that wants the group calls task_cancel_group itself.
 //
 // A task owns a DEV window's LIFETIME and never its ACCESS: the window is a region of the asking
 // THREAD, and the group cancel is what returns it.
@@ -101,10 +101,8 @@ namespace kickos
         // Members released and still sweeping their capabilities: the death is reported once
         // the task is empty and this is back to zero.
         TaskThreads sweeping = 0;
-#if KICKOS_INIT_IMAGE
         // The image whose code and data its threads run (<kickos/image.h>).
         uint8_t image = 0;
-#endif
 #if KICKOS_KERNEL_CORES > 1
         uint32_t core_set = 0;
 #endif
@@ -116,17 +114,14 @@ namespace kickos
         int32_t watch_ep = 0;
         // The status the task ended with, which kos_task_state answers once it has ended.
         int32_t exit_status = 0;
-#if KICKOS_INIT_IMAGE
         // Its image's word the switch seats with the running thread's libc state, null where
         // libc asks for its state instead (reent_seat in <kickos/sys/image.h>).
         void* reent_seat = nullptr;
-#endif
     };
 
-    // What a task pool slot is priced at, on a 32-bit target at one kernel core: 36 bytes, 44
-    // where each declared task runs an image of its own, and one core-set word more above one
-    // core. MEASURE ON A 32-BIT TARGET if this fires: a host build prices the tail differently,
-    // so a host measurement cannot settle it.
+    // What a task pool slot is priced at, on a 32-bit target at one kernel core: 44 bytes, and
+    // one core-set word more above one core. MEASURE ON A 32-BIT TARGET if this fires: a host
+    // build prices the tail differently, so a host measurement cannot settle it.
     constexpr size_t task_scalar_bytes()
     {
         size_t raw = sizeof(Domain*) + sizeof(ListNode) + sizeof(HeadList)
@@ -135,9 +130,7 @@ namespace kickos
                      + sizeof(Task::watch_bit) + sizeof(Task::sweeping)
                      + sizeof(Task::watch_notify)
                      + sizeof(Task::watch_ep) + sizeof(Task::exit_status);
-#if KICKOS_INIT_IMAGE
         raw = raw + sizeof(Task::image) + sizeof(Task::reent_seat);
-#endif
 #if KICKOS_KERNEL_CORES > 1
         raw = raw + sizeof(Task::core_set);
 #endif
@@ -224,11 +217,11 @@ namespace kickos
     // KOS_TASK_LIVE | READY | DEAD | ENDED for the task `task` names, with *status the status
     // it ended with where ENDED is set, or -KOS_EBADF / -KOS_EPERM.
     int task_state_call(kos_task_t task, int32_t* status);
-    // The task ends, its entry thread having died by any cause or a member faulted: it takes no
-    // member from here on, the creator's watch is raised, and `code` is its status when `latch`
-    // holds, the ending thread being uncancelled; otherwise it keeps KOS_EXIT_CANCELLED. A later
-    // end raises and latches nothing. Every other member is slain (CANCEL_SLAY), with or without
-    // a creator.
+    // The task ends, its entry thread having died by any cause, or a member faulted or exited
+    // with the task scope: it takes no member from here on, the creator's watch is raised, and
+    // `code` is its status when `latch` holds, the ending thread being uncancelled; otherwise it
+    // keeps KOS_EXIT_CANCELLED. A later end raises and latches nothing. Every other member is
+    // slain (CANCEL_SLAY), with or without a creator.
     void task_end(Task* t, int code, bool latch, Held held);
     // Kill and slay: `t` ends now, before its members have run to their deaths, and every member
     // is stopped.

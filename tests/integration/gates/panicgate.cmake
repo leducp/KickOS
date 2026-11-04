@@ -11,18 +11,9 @@ endif()
 # with -F. Keep them in step.
 set(_pg_re_1 "KERNEL PANIC: \\[panicgate\\] message on the wire")
 set(_pg_txt_1 "KERNEL PANIC: [panicgate] message on the wire")
-# Cases 2 and 3 are the only ones whose text the KERNEL supplies, so the only ones
-# KICKOS_DIAG_TERSE rewrites: kUserPanicNoMsg is P08 in diag.h. Both columns are spelled
-# unconditionally, the terse arm at the foot of this file passing both to a tree of its own.
-set(_pg_terse_2 "KERNEL PANIC: P08")
-set(_pg_full_2 "KERNEL PANIC: user panic (no readable message)")
-if(KICKOS_DIAG_TERSE)
-  set(_pg_re_2 "KERNEL PANIC: P08")
-  set(_pg_txt_2 "${_pg_terse_2}")
-else()
-  set(_pg_re_2 "KERNEL PANIC: user panic \\(no readable message\\)")
-  set(_pg_txt_2 "${_pg_full_2}")
-endif()
+# Cases 2 and 3 carry the text the KERNEL supplies: diag.h's kUserPanicNoMsg.
+set(_pg_re_2 "KERNEL PANIC: user panic \\(no readable message\\)")
+set(_pg_txt_2 "KERNEL PANIC: user panic (no readable message)")
 set(_pg_re_3 "${_pg_re_2}")
 set(_pg_txt_3 "${_pg_txt_2}")
 # Case 4 ends in the literal truncation marker, so the dots are escaped in the regex:
@@ -43,11 +34,6 @@ set(_pg_absent_6 "KERNEL PANIC:")
 set(_pg_also_6 "[panicgate] task message")
 
 foreach(_case 1 2 3 4 5 6)
-  # The panicking task is a program of its own, which a chip that holds one task has no task for.
-  if(_case EQUAL 6 AND KICKOS_CHIP_ONE_TASK)
-    kickos_inapplicable(panicgate6 "this board holds one task")
-    continue()
-  endif()
   set(_pg_args "${_pg_txt_${_case}}")
   if(_pg_absent_${_case} OR _pg_also_${_case})
     list(APPEND _pg_args "${_pg_absent_${_case}}")
@@ -77,21 +63,3 @@ foreach(_case 1 2 3 4 5 6)
       ARGS "${_pg_txt_${_case}}" "${_pg_absent_${_case}}" "${_pg_also_${_case}}")
   endif()
 endforeach()
-
-# The short column read off a wire rather than off a defconfig. Every board that resolves this
-# posture for its flash budget (docs/reference/boards.md) ships no emulator, so the five cases
-# above never read it; mps2-an385 has the Cortex-M3 of the smallest of them, and the arm forces
-# the knob on a tree of its own to reach it.
-#
-# ONLY where the knob resolves off: this tree's own case 2 then asserts the prose while the arm
-# asserts the short code, so ONE preset witnesses both columns, and the tree the arm configures
-# cannot register the arm a second time.
-if(KICKOS_QEMU_MACHINE STREQUAL "mps2-an385" AND NOT KICKOS_DIAG_TERSE)
-  kickos_add_qemu_test(NAME "${_tag}_diag_terse" TARGET panicgate2
-    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_diag_terse.sh"
-    BOOTS 2 WORK 900
-    ARGS "${CMAKE_COMMAND}" "${PROJECT_SOURCE_DIR}" "${CMAKE_GENERATOR}"
-         "${CMAKE_TOOLCHAIN_FILE}" "${CMAKE_BUILD_TYPE}"
-         "${KICKOS_BOARD}" "${KICKOS_CONFIG_VARIANT}"
-         "${_pg_terse_2}" "${_pg_full_2}")
-endif()

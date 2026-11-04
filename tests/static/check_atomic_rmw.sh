@@ -4,9 +4,10 @@
 #
 # The no-RMW rule for portable target code. An RMW on a
 # 32-bit atomic is a `__atomic_fetch_add_4`-class LIBCALL on armv6m and rxv3 and inline on
-# armv7m, xtensa and the host, so an RMW written against the sim or a Cortex-M4 board builds
-# and links green, and only picopi or microbit refuses it, at LINK time: a freestanding link
-# has no libatomic. `is_always_lock_free` cannot express the rule either: it is 0 on armv6m
+# armv7m, xtensa and the host. The user library answers that call with a loop over the user
+# compare-and-swap, which kernel code may not run, so an RMW written against the sim or a
+# Cortex-M4 board builds green and is wrong only in an armv6m or rxv3 kernel. RX's inline form,
+# under -mirq-atomics, masks interrupts, which user mode ignores. `is_always_lock_free` cannot express the rule either: it is 0 on armv6m
 # and rxv3 even where the load and the store are inline plain instructions.
 # The replacement is a load/store pair under whatever already serialises the field:
 #   x.store(x.load(std::memory_order_relaxed) + 1u, std::memory_order_relaxed);
@@ -16,7 +17,8 @@
 #
 #   corpus     tracked *.c, *.cc, *.cpp, *.h, *.hh, *.hpp, *.inc, *.h.in and *.S, except
 #              x86-only arch code and the host-only m941 lock probe, whose hardware atomics
-#              do not link into armv6m or rxv3. Source
+#              do not link into armv6m or rxv3, and the uatomic app, whose RMWs are the user
+#              atomics it witnesses. Source
 #              only: a scan of the markdown tree would report the prose stating the rule.
 #
 #   comments   tests/lib/strip_comments.awk blanks `//`, `/* */` and every literal BEFORE
@@ -315,8 +317,10 @@ NEGK="$(awk '{ s += $1 } END { print s + 0 }' "$TMP/st/nw/kept")"
 # --- the corpus ---------------------------------------------------------------------------
 corpus_sources "$TMP/all"
 # x86-only lock and interrupt state require hardware RMWs, and the host probe models one.
-# Neither source can reach the small MCUs whose libatomic absence this gate enforces.
-grep -vE '^(arch/x86/|tools/bench/m941_lock_scaling[.]cc$)' "$TMP/all" > "$TMP/portable"
+# Neither source can reach the small MCUs whose libatomic absence this gate enforces. uatomic
+# is user code racing the RMWs the user library provides.
+grep -vE '^(arch/x86/|tools/bench/m941_lock_scaling[.]cc$|user/apps/common/uatomic/main[.]cc$)' \
+    "$TMP/all" > "$TMP/portable"
 N="$(wc -l < "$TMP/portable" | tr -d ' ')"
 
 detect "$TMP/portable" "$TMP/w"
@@ -360,8 +364,8 @@ if [ -s "$TMP/w/findings" ]; then
         echo "" >&2
     fi
     echo "FAIL: $(wc -l < "$TMP/w/findings" | tr -d ' ') atomic read-modify-write(s)." >&2
-    echo "      An RMW is a libatomic call on armv6m and rxv3 and a link failure there, while" >&2
-    echo "      armv7m, xtensa and the sim inline it and link green. Write the load/store pair" >&2
+    echo "      An RMW is an atomics library call on armv6m and rxv3, which only user code may" >&2
+    echo "      make, while armv7m, xtensa and the sim inline it. Write the load/store pair" >&2
     echo "      under whatever already serialises the field:" >&2
     echo "        x.store(x.load(std::memory_order_relaxed) + 1u, std::memory_order_relaxed);" >&2
     echo "      Two real writers need the lock fixed, not an RMW." >&2

@@ -447,30 +447,3 @@ namespace kickos
         return 0;
     }
 }
-
-#if KICKOS_LIBC_REENT
-namespace kickos
-{
-    namespace
-    {
-        // What a default stack pays above its floor with no thread_local declared: its libc
-        // state, a constant. The template's share is the link's (KICKOS_TLS_CARVE_ASSERT in
-        // arch/common/sections.ld.h).
-        constexpr bool carves(size_t stack)
-        {
-            return stack >= KICKOS_MIN_STACK_SIZE + KICKOS_REENT_CARVE;
-        }
-        static_assert(not carves(KICKOS_MIN_STACK_SIZE),
-                      "carves() admits a stack at its floor, so no assert below can fire");
-        static_assert(carves(KICKOS_USER_STACK_SIZE),
-                      "KICKOS_USER_STACK_SIZE cannot hold a thread's libc state above "
-                      "KICKOS_MIN_STACK_SIZE, so a thread on the default stack runs below the "
-                      "arch's syscall stack floor. Raise it in "
-                      "boards/<board>/configs/<variant>/defconfig.");
-        static_assert(carves(KICKOS_ROOT_STACK_SIZE),
-                      "KICKOS_ROOT_STACK_SIZE cannot hold root's libc state above "
-                      "KICKOS_MIN_STACK_SIZE, so root runs below the arch's syscall stack "
-                      "floor. Raise it in boards/<board>/configs/<variant>/defconfig.");
-    }
-}
-#endif

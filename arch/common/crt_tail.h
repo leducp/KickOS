@@ -21,12 +21,10 @@ extern "C"
     extern uint32_t __kickos_image0_data_start[];
     extern uint32_t __kickos_image0_data_end[];
     extern uint32_t __kickos_image0_window_end[];
-#if KICKOS_INIT_IMAGE
     extern uint32_t __kickos_image1_data_load[];
     extern uint32_t __kickos_image1_data_start[];
     extern uint32_t __kickos_image1_data_end[];
     extern uint32_t __kickos_image1_window_end[];
-#endif
 }
 
 // An image's .data from its load image, then the rest of its window zeroed.
@@ -50,10 +48,8 @@ inline __attribute__((always_inline)) void kickos_crt_images_data(void)
 {
     kickos_crt_image_data(__kickos_image0_data_load, __kickos_image0_data_start,
                           __kickos_image0_data_end, __kickos_image0_window_end);
-#if KICKOS_INIT_IMAGE
     kickos_crt_image_data(__kickos_image1_data_load, __kickos_image1_data_start,
                           __kickos_image1_data_end, __kickos_image1_window_end);
-#endif
 }
 
 // ALWAYS inlined: the image rules read the constructor loop as part of Reset_Handler's own body.

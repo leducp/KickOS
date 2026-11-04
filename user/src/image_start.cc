@@ -84,7 +84,7 @@ namespace
     uint32_t s_start = START_PRISTINE;
 }
 
-#if KICKOS_INIT_IMAGE and not KICKOS_HAVE_ASPACE
+#if not KICKOS_HAVE_ASPACE
 // The entry thread is its task's only thread here, and the task the image's only one, so nothing
 // reads the data while it is copied. The copy overwrites the libc state word the kernel seats at
 // each switch and the arguments kmain published at boot, which are put back after it.

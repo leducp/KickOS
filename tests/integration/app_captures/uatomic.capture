@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+# Captured on rx72m; the NUL byte the reset left ahead of the banner is cut.
+
+  ==============================================
+   KickOS 0.5.1  -  microkernel RTOS
+  ==============================================
+   board   rx72m
+   arch    rxv3
+   cpu     rxv3
+   mpu     enforce
+   sched   tickless
+   build   2026-11-03 14:12:56 +0100
+   app     uatomic Nov  3 2026 14:12:58 +0100
+   commit  897453721
+   heap    16 KiB available
+   kstack  1120 B x 5 = 5600 B
+
+uatomic: 3 workers, quantum 1734 ns
+uatomic: worker 0 ran 23552 rounds, interleaved 1374 times
+uatomic: worker 1 ran 23552 rounds, interleaved 1374 times
+uatomic: worker 2 ran 23552 rounds, interleaved 1373 times
+uatomic: ok int 70656
+uatomic: ok byte 0
+uatomic: ok half 60416
+uatomic: done

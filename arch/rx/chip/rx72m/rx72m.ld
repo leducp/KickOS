@@ -41,23 +41,10 @@ MEMORY
 _istack = ORIGIN(RAM) + LENGTH(RAM);   /* boot/interrupt stack (ISP): top of SRAM */
 _kernel_stack_size = 8K;               /* ISP (boot/ISR) stack reservation */
 
-/* App-owned globals get their own MPU region so an unprivileged thread reaches its
-   own .data/.bss but not the kernel's. The RX MPU takes arbitrary 16-byte-page
-   bounds, but the shared alloc/linker path shapes regions as a power of two, so the
-   app data is padded up to this pow2 size; a real app whose globals exceed it trips
-   the ASSERT below. Keep it pow2. Gated on KICKOS_HAVE_MPU (the script is
-   cpp-preprocessed). The window pad (window minus app statics + runtime) IS the newlib
-   heap: a 32K window leaves ~14K, which cxxtest's measured peak (~4.2K-5.9K) and
-   printf fit. */
+/* Kernel .data/.bss below the images' windows (kernel_data_reserve.ld.h). The kernel's
+   .data/.bss passes 32K by about a kilobyte: the per-thread kernel stacks and the kernel
+   singleton. */
 #if KICKOS_HAVE_MPU
-#ifndef KICKOS_APPDATA_SIZE
-#define KICKOS_APPDATA_SIZE 32K
-#endif
-_appdata_size = KICKOS_APPDATA_SIZE;
-/* Room for kernel .data/.bss below the app window; see kernel_data_reserve.ld.h. */
-/* Two 32K windows, not one: this chip's kernel .data/.bss passes the first by about a
-   kilobyte, and the overshoot is the per-thread kernel stacks and the kernel singleton,
-   which are the board's advertised capability rather than slack. */
 #ifndef KICKOS_KERNEL_DATA_RESERVE
 #define KICKOS_KERNEL_DATA_RESERVE 64K
 #endif
@@ -173,7 +160,6 @@ SECTIONS
     KICKOS_IMAGE_TABLE(ROM, LONG)
     ___kickos_kernel_code_end = .;
 
-#if KICKOS_IMAGES_PLACED
     /* The thread-local template of every image, then every image's code span and every image's
        window, which tools/image-link.py writes per link (KICKOS_RX_IMAGE_CODE, KICKOS_RX_IMAGE),
        image 1's named as the app's below. */
@@ -200,113 +186,6 @@ SECTIONS
     __kickos_heap_limit = KICKOS_LD_IMAGE_SYM(1, heap_end);
     ___kickos_emutls_v_start = KICKOS_LD_IMAGE_SYM(1, emutls_start);
     ___kickos_emutls_v_end = KICKOS_LD_IMAGE_SYM(1, emutls_end);
-#else
-    /* The app image's code span, then its window, then the init's where it is an image of
-       its own. */
-    KICKOS_APP_HEADER(ROM)
-    .kickos_app_text : ALIGN(4)
-    {
-        KICKOS_RX_IMAGE_TEXT(KICKOS_APP_SECTIONS)
-    } > ROM
-
-    KICKOS_TLS_TEMPLATE(ROM)
-
-    /* The RX psABI prefixes a C identifier with an extra leading underscore, so C's
-       __kickos_tdata_start is asm ___kickos_tdata_start. The shared template spells the
-       asm names every other backend needs; these four are what the RX compiler emits. */
-    ___kickos_tdata_start = __kickos_tdata_start;
-    ___kickos_tdata_end = __kickos_tdata_end;
-    ___kickos_tbss_start = __kickos_tbss_start;
-    ___kickos_tbss_end = __kickos_tbss_end;
-
-    .kickos_app_init_array : ALIGN(4)
-    {
-        KICKOS_LD_APP_SYM(ctor_start) = .;
-        KEEP(KICKOS_APP_SECTIONS(SORT(.init_array.*)))
-        KEEP(KICKOS_APP_SECTIONS(.init_array))
-        KICKOS_LD_APP_SYM(ctor_end) = .;
-    } > ROM
-    ___kickos_app_init_array_start = KICKOS_LD_APP_SYM(ctor_start);
-    ___kickos_app_init_array_end = KICKOS_LD_APP_SYM(ctor_end);
-
-#if KICKOS_HAVE_MPU
-    /* App-granted RW window: pow2 MPU region based at _kernel_data_top, so kernel .bss
-       growth moves neither this window nor the arena above it. KICKOS_APPDATA_SECTION
-       carries the pin and its ASSERTs; kernel_data_reserve.ld.h says why. The
-       section-level ALIGN keeps the base pow2-aligned when the reserve is overflowed.
-       .appdata is loaded from ROM; the gap past it + .appbss + the pad are zeroed. */
-    KICKOS_APPDATA_SECTION(__ebss)
-#else
-    .appdata : ALIGN(8)
-#endif
-    {
-        ___kickos_appdata_start = .;
-        /* The emutls control blocks, gathered so user/src/arch/rxv3/emutls.cc can index a
-           thread_local by its position here instead of caching a pointer in the block.
-           They must be CONTIGUOUS and on a 16-byte grid; the override rejects an anchor
-           that is neither. -fdata-sections is what gives each one its own section, so a
-           TU built without it lands in the catch-all below and is refused at runtime
-           rather than shared. */
-        ___kickos_emutls_v_start = .;
-        KICKOS_APP_SECTIONS(SORT_BY_NAME(.data.__emutls_v.*))
-        ___kickos_emutls_v_end = .;
-        KICKOS_APP_SECTIONS(.data .data.*)
-        KICKOS_APP_SECTIONS(D D_1 D_2)    /* RX-native initialized data */
-        . = ALIGN(8);
-        ___kickos_appdata_load_end = .;
-    } > RAM AT > ROM
-
-    /* Pin the base to the window (start + SIZEOF .appdata), NOT the default location
-       counter: an EMPTY .appdata (an app with no initialized globals) does not carry
-       its ALIGN(_appdata_size) forward, so a defaulted .appbss falls back to
-       kernel-.bss-end, BELOW the granted window, and every app-global access faults. */
-    .appbss (___kickos_appdata_start + SIZEOF(.appdata)) (NOLOAD) : ALIGN(4)
-    {
-        KICKOS_APP_SECTIONS(.bss .bss.* COMMON)
-        KICKOS_APP_SECTIONS(B B_1 B_2)    /* RX-native bss */
-        . = ALIGN(4);
-        _appdata_used_end = .;
-#if KICKOS_HAVE_MPU
-        /* MAX, not a bare set: ASSERTs are evaluated after layout, so a backwards move
-           fails the link before the overflow ASSERT below can print. */
-        . = MAX(., ___kickos_appdata_start + _appdata_size); /* pad the block up to pow2 */
-        ___kickos_appdata_end = .;
-        /* The newlib heap IS the window pad: [ALIGN(used_end,8), window end). That ALIGN is
-           relative to this section's start, which is why .appdata closes on ALIGN(8);
-           app_window.ld.h holds the rule. Double underscore: C `_kickos_heap_*` gains
-           the RX one-underscore psABI prefix. */
-        __kickos_heap_start = ALIGN(_appdata_used_end, 8);
-        __kickos_heap_limit = ___kickos_appdata_end;
-#endif
-    } > RAM
-
-#if !KICKOS_HAVE_MPU
-    /* Non-enforcement build: the newlib heap is an explicit section carved from RAM
-       before the thread arena. RX prepends one underscore, so the C `_kickos_heap_*`
-       resolves to the double-underscore symbols defined here. */
-    .userheap (NOLOAD) :
-    {
-        . = ALIGN(8);
-        __kickos_heap_start = .;
-        . += KICKOS_USER_HEAP_SIZE;
-        __kickos_heap_limit = .;
-    } > RAM
-#endif
-
-    KICKOS_LD_APP_SYM(window_start) = ADDR(.appdata);
-    KICKOS_LD_APP_SYM(window_end) = __kickos_heap_limit;
-    KICKOS_LD_APP_SYM(data_load) = LOADADDR(.appdata);
-    KICKOS_LD_APP_SYM(data_start) = ADDR(.appdata);
-    KICKOS_LD_APP_SYM(data_end) = ADDR(.appdata) + SIZEOF(.appdata);
-    KICKOS_LD_APP_SYM(bss_end) = _appdata_used_end;
-    KICKOS_LD_APP_SYM(heap_start) = __kickos_heap_start;
-    KICKOS_LD_APP_SYM(heap_end) = __kickos_heap_limit;
-    KICKOS_LD_APP_SYM(code_end) = LOADADDR(.appdata) + SIZEOF(.appdata);
-    KICKOS_LD_APP_SYM(eh_frame) = 0;
-    KICKOS_LD_APP_SYM(emutls_start) = ___kickos_emutls_v_start;
-    KICKOS_LD_APP_SYM(emutls_end) = ___kickos_emutls_v_end;
-
-#endif
     KICKOS_IMAGE0_TLS()
     KICKOS_IMAGE0_NAMES()
 
@@ -359,16 +238,7 @@ KICKOS_BOOT_ARENA_ASSERT(___kickos_ram_start, ___kickos_ram_end)
 KICKOS_POOL_ARENA_ASSERT(___kickos_ram_start, ___kickos_ram_end)
 KICKOS_FINI_EMPTY_ASSERT()
 
-/* App globals must fit the pow2 region. If this trips, raise _appdata_size to the
-   next power of two (it is the app's MPU-granted .data/.bss window). */
 #if KICKOS_HAVE_MPU
-#if !KICKOS_IMAGES_PLACED
-ASSERT(_appdata_used_end <= ___kickos_appdata_start + _appdata_size,
-       "KickOS: app .data/.bss overflow _appdata_size (raise it to the next pow2)")
-/* Lower bound: an empty .appdata dropping its ALIGN would place .appbss below the base. */
-ASSERT(ADDR(.appbss) >= ___kickos_appdata_start,
-       "KickOS: .appbss placed below the app-data window base (empty .appdata alignment-drop regression)")
-#endif
 /* Selector-mismatch guard. The inverted scheme captures the CLOSED KickOS-owned set
    into kernel .data/.bss and lets .appdata/.appbss catch the rest, so a broken selector
    shows up as an EMPTY KERNEL side (kernel writable state silently leaked into the app
@@ -378,9 +248,7 @@ ASSERT(ADDR(.appbss) >= ___kickos_appdata_start,
 ASSERT(__ebss > __sbss,
        "KickOS: kernel .bss empty: closed-set archive selector matched nothing (renamed lib?)")
 #endif
-#if KICKOS_IMAGES_PLACED
 INCLUDE kickos_images_asserts.ld
-#endif
 
 KICKOS_HEAP_MIN_ASSERT()
 

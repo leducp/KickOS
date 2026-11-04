@@ -6,7 +6,6 @@
 #include <kickos/ampshare.h>
 #include <kickos/arch/arch.h>
 #include <kickos/cap.h>
-#include <kickos/chip_limits.h> // KICKOS_CHIP_ONE_TASK
 #include <kickos/config.h>
 #include <kickos/console_tx.h>
 #include <kickos/domain.h>
@@ -400,6 +399,16 @@ namespace kickos
             return 0;
         }
 
+        // The priority a spawn seats: the caller's own base where it asks to inherit it.
+        uint8_t spawn_prio(kos_thread_params const* p)
+        {
+            if ((p->flags & KOS_THREAD_INHERIT_PRIO) != 0u)
+            {
+                return sched::current()->base_prio;
+            }
+            return p->prio;
+        }
+
         // The stack a spawn names, for a child joining `into`. Validated before the slot claim,
         // or a bad stack leaks a slot.
         int spawn_stack_admit(kos_thread_params const* p, Task const* into)
@@ -507,7 +516,7 @@ namespace kickos
         // pass's.
         int spawn_authority_admit(kos_thread_params const* p)
         {
-            if ((p->flags & ~KOS_THREAD_ESSENTIAL) != 0u)
+            if ((p->flags & ~(KOS_THREAD_ESSENTIAL | KOS_THREAD_INHERIT_PRIO)) != 0u)
             {
                 return -KOS_EINVAL;
             }
@@ -549,7 +558,8 @@ namespace kickos
         {
             // prio indexes the ready lists and drives a 1u<<prio bitmap shift, so an
             // out-of-range value is an OOB write and UB. Priority 0 is idle's alone.
-            if (p->prio < KICKOS_PRIO_MIN or p->prio > KICKOS_PRIO_MAX)
+            uint8_t const prio = spawn_prio(p);
+            if (prio < KICKOS_PRIO_MIN or prio > KICKOS_PRIO_MAX)
             {
                 return -KOS_EINVAL;
             }
@@ -898,7 +908,7 @@ namespace kickos
         {
             tk = spawner->task;
         }
-        bool const driver_entry = KICKOS_CHIP_ONE_TASK == 0 and args != nullptr and args->driver;
+        bool const driver_entry = args != nullptr and args->driver;
         int const arc = spawn_admit(p, tk, driver_entry);
         if (arc != 0)
         {
@@ -1024,7 +1034,8 @@ namespace kickos
             return -KOS_EBUSY;
         }
         // A priority inheritance boost is not bounded by this ceiling (sched::set_prio).
-        if (p->prio > task_prio_ceiling(tk))
+        uint8_t const prio = spawn_prio(p);
+        if (prio > task_prio_ceiling(tk))
         {
             return -KOS_EPERM;
         }
@@ -1072,7 +1083,7 @@ namespace kickos
         {
             attr.name = kname;
         }
-        attr.prio = p->prio;
+        attr.prio = prio;
         attr.policy = Policy::FIFO;
         if (p->policy == KOS_POLICY_RR)
         {
@@ -1618,7 +1629,6 @@ namespace kickos
         uint32_t decl_authority(kos_task_decl const& d)
         {
             uint32_t need = d.authority;
-#if !KICKOS_CHIP_ONE_TASK
             kos_decl_grant const* const g = image_decl_grants(&d);
             for (uint16_t k = 0; k < d.grant_count; k++)
             {
@@ -1635,7 +1645,6 @@ namespace kickos
             {
                 need = need | AUTH_CONSOLE;
             }
-#endif
             return need;
         }
 
@@ -1812,7 +1821,6 @@ namespace kickos
             return 0;
         }
 
-#if !KICKOS_CHIP_ONE_TASK
         // The entry thread's destination of each delegated capability, as spawn_locked places it.
         int create_dests(Thread* c, kos_task_params const& tp, uint16_t* out)
         {
@@ -2061,8 +2069,6 @@ namespace kickos
             return 0;
         }
 
-#endif
-
         // argv measured, or the instance's name where the caller passes none.
         int argv_in(Thread* c, kos_task_params const& tp, kos_task_decl const& d, ArgBlock* a)
         {
@@ -2163,12 +2169,6 @@ namespace kickos
             }
             kos_task_decl const& d = *image_decl(static_cast<size_t>(sel));
             bool const driver = (d.flags & KOS_DECL_DRIVER) != 0;
-#if KICKOS_CHIP_ONE_TASK
-            if (driver)
-            {
-                return -KOS_ENOSYS;
-            }
-#endif
             int ready = -1;
             if (d.ready != 0)
             {
@@ -2205,7 +2205,6 @@ namespace kickos
             p.stack_base = tp.stack;
             p.stack_size = tp.stack_size;
             p.authority = d.authority;
-#if !KICKOS_CHIP_ONE_TASK
             if (driver)
             {
                 rc = driver_admit(c, tp, d, &p);
@@ -2214,7 +2213,6 @@ namespace kickos
                     return rc;
                 }
             }
-#endif
             Task* t = nullptr;
             rc = task_build(c, tp.block, tp.size, attr, static_cast<size_t>(sel), lock, &t);
             if (rc != 0)
@@ -2233,7 +2231,6 @@ namespace kickos
                 task_ready_seat(t, ready);
             }
             out->handle = task_handle(t);
-#if !KICKOS_CHIP_ONE_TASK
             if (not driver)
             {
                 task_mark_started(t);
@@ -2264,9 +2261,6 @@ namespace kickos
                 task_mark_started(t);
                 sched::add(held, lock);
             }
-#else
-            task_mark_started(t);
-#endif
             return 0;
         }
     }
@@ -2424,14 +2418,16 @@ namespace kickos
             {
                 return -KOS_EDEADLK; // nothing would ever wake this park
             }
-            if (not caller_spawned(t, c))
-            {
-                return -KOS_EPERM;
-            }
-            // Its exit sweep has already run, so a park here would never be woken.
+            // Its exit sweep has already run, so a park here would never be woken. Ahead of the
+            // task check: an exited thread names no task, and thread_cancel_call already answers
+            // its exit to any caller.
             if (t->state == ThreadState::EXITED)
             {
                 return 0;
+            }
+            if (not caller_spawned(t, c) and (t->task == nullptr or t->task != c->task))
+            {
+                return -KOS_EPERM;
             }
             epoch = park_queueless(ask)(c, WAIT_JOIN, t, lock);
             ktime_deadline_arm(c, timeout_us, lock);

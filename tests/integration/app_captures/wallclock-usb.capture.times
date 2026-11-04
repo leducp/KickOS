@@ -6,4 +6,5 @@
 1.404310	[wallclock] mark 0, sleeping 5000000000 ns
 6.219733	[wallclock] mark 1, the kernel clock advanced 5000031725 ns, sleeping 5000000000 ns
 11.222058	[wallclock] mark 2, the kernel clock advanced 5000025108 ns
-11.226916	[wallclock] done
+12.227104	[wallclock] mark 3, a set a day ahead answered 0, the steady clock advanced 1000012345 ns over a sleep of 1000000000 ns, the wall clock 86401000012345 ns
+12.231962	[wallclock] done

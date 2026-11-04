@@ -27,7 +27,7 @@ set(KICKOS_ARCH_FAMILY "xtensa" CACHE STRING "KickOS arch family (arm|xtensa)")
 kickos_toolchain_package(xtensa-esp32-elf)
 
 include("${CMAKE_CURRENT_LIST_DIR}/cross_newlib.cmake")
-kickos_require_toolchain_newlib("xtensa" "${CMAKE_C_COMPILER}" dynamic)
+kickos_require_toolchain_newlib("xtensa" "${CMAKE_C_COMPILER}")
 
 # Emit NO -mabi flag, so the windowed esp32 multilib is selected for compile AND link.
 # -mlongcalls: let the assembler relax calls that exceed the +/-512 KB call range.
@@ -42,6 +42,5 @@ kickos_require_toolchain_newlib("xtensa" "${CMAKE_C_COMPILER}" dynamic)
 string(JOIN " " _kos_common -mlongcalls -mtext-section-literals -mserialize-volatile
        -ffunction-sections -fdata-sections)
 kickos_toolchain_flags_init("${_kos_common}")
-kickos_toolchain_newlib_flags()
 
 kickos_toolchain_bare_metal_rules()

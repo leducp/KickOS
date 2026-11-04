@@ -150,7 +150,8 @@ namespace kickos
         AUTH_CONSOLE = KOS_AUTH_CONSOLE,
         AUTH_TASKS = KOS_AUTH_TASKS,
         AUTH_BUS_MASTER = KOS_AUTH_BUS_MASTER,
-        AUTH_BOOTLOADER = KOS_AUTH_BOOTLOADER
+        AUTH_BOOTLOADER = KOS_AUTH_BOOTLOADER,
+        AUTH_REALTIME = KOS_AUTH_REALTIME
     };
 
     // arch_periph_enable carries NO authority bit and must not be given one: it is gated on

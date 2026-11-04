@@ -6,12 +6,10 @@
 // names, keeps it as main: its task's entry thread calls it and passes its return to exit(), so
 // the system ends with it where the composition `ends` on that task.
 //
-// App and library C++ global ctors run before main runs, on ONE thread in sequence:
-// the kernel's root thread before the init starts any task where one image holds the app and its
-// init, and otherwise each task's entry thread at every start of that task, in the task's own
-// image. An app global ctor MUST NOT block (sleep/wait),
-// or a higher-priority thread it already spawned may run before the remaining globals are
-// constructed. Do blocking work inside main.
+// App and library C++ global ctors run before main runs, on ONE thread in sequence: each task's
+// entry thread at every start of that task, in the task's own image. An app global ctor MUST NOT
+// block (sleep/wait), or a higher-priority thread it already spawned may run before the
+// remaining globals are constructed. Do blocking work inside main.
 //
 // This header is force-included into every app TU by the build.
 

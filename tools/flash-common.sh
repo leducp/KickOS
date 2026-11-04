@@ -40,7 +40,7 @@ _bf() {
 candidates_for() {
     case "$1" in
         esp32*)                        echo "esptool" ;;
-        stm32f103|stm32f302|stm32f411) echo "stlink jlink" ;;
+        stm32f411)                     echo "stlink jlink" ;;
         # picotool ONLY: J-Link SWD of an RP2xxx is flaky (RP2040 gates the DAP once
         # both cores WFI; boot2 is not re-run on an SWD reset). BOOTSEL always
         # recovers the board.
@@ -90,8 +90,7 @@ flash_resolve() {
     fi
 
     # Build dir defaults to build/<board>; override with FLASH_BUILD to flash a
-    # variant preset's output (e.g. FLASH_BUILD=build/f302nucleo-st for the selftest's own
-    # provisioning on a board whose base cannot seat it).
+    # variant preset's output (e.g. FLASH_BUILD=build/f411disco-bench).
     local bd="${FLASH_BUILD:-$FL_ROOT/build/$FL_BOARD}"
     # kickos_emit_image outputs: ELF, .hex, .bin, and .app.bin for Espressif.
     # In-tree apps are looked up with _app_base (board-specific dir, then common/).

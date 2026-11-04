@@ -107,10 +107,10 @@ ARMS = [
     ("form.name", "rp2040/chip.yaml", [("dir: arm/chip/rp2xxx,", "dir: ../rp2xxx,")], False),
     ("form.missing", "rp2040/chip.yaml",
      [("sources: [arm/chip/rp2xxx/chip_rp2xxx.cc, arm/chip/rp2xxx/rom_call.S] }", "sources: [] }")], False),
-    ("form.missing", "stm32f103/chip.yaml",
-     [("family: { dir: arm/chip/stm32f1f3, sources: [arm/chip/stm32f1f3/chip_stm32f1f3.cc] }",
-       "family: { dir: arm/chip/stm32f1f3 }")], False),
-    ("form.unknown-field", "stm32f103/chip.yaml", [("family: { dir:", "family: { include: x, dir:")], False),
+    ("form.missing", "rp2040/chip.yaml",
+     [("family: { dir: arm/chip/rp2xxx, sources: [arm/chip/rp2xxx/chip_rp2xxx.cc, arm/chip/rp2xxx/rom_call.S] }",
+       "family: { dir: arm/chip/rp2xxx }")], False),
+    ("form.unknown-field", "rp2040/chip.yaml", [("family: { dir:", "family: { include: x, dir:")], False),
     ("form.missing", "stm32f411/chip.yaml", [("family: none\n", "")], True),
     ("form.missing", "stm32f411/chip.yaml", [("exits_on_fault: false\n", "")], True),
     ("form.missing", "an505/chip.yaml", [("arch: armv7m\n", "")], True),
@@ -245,7 +245,6 @@ ARMS = [
     ("board.pin-reused", "stm32f411/f411disco.yaml",
      [("    pins: [PA5, PA6, PA7]\n", "    pins: [PA5, PA6, PA7]\n  baro:\n    bus: /dev/spi1\n    chip_select: PE3\n"
                                      "    pins: [PA5, PA6, PA7]\n")], False),
-    ("board.pin-signal", "stm32f302/f302nucleo.yaml", [("pins: { tx: PA2, rx: PA3 }", "pins: { tx: PA3, rx: PA2 }")], False),
     ("board.pin-signal", "stm32f411/f411disco.yaml", [("pins: { tx: PA2, rx: PA3 }", "pins: { tx: PA3, rx: PA2 }")], False),
     ("board.memory-overlap", "rp2040/picopi.yaml", [("    base: 0x10000000\n", "    base: 0x20000000\n")], False),
     ("board.link-duplicate", "rp2040/picopi.yaml",
@@ -253,7 +252,7 @@ ARMS = [
     ("board.symbol-collision", "rp2040/picopi.yaml", [("  xip_flash:\n", "  sram:\n")], False),
     ("form.exclusive", "sim/chip.yaml",
      [("  console:\n    host: true\n", "  console:\n    host: true\n    window: [0x1000, 0x100]\n")], False),
-    ("form.inapplicable", "stm32f103/chip.yaml", [("  usart1:\n", "  console: { host: true }\n  usart1:\n")], False),
+    ("form.inapplicable", "stm32f411/chip.yaml", [("  usart2:\n", "  console: { host: true }\n  usart2:\n")], False),
     ("form.inapplicable", "sim/chip.yaml",
      [("arena: { size: 0x200000, arena: true }",
        "arena: { size: 0x200000, arena: true, link: { region: RAM, access: rwx } }")], False),
@@ -292,8 +291,8 @@ ARMS = [
     ("form.missing", "mps2/chip.yaml",
      [("apertures:\n  - { window: [0x40000000, 0x200000] }\n  - { window: [0x40200000, 0x100] }\n"
        "  - { window: [0x41000000, 0x200000] }\n  - { window: [0xA0000000, 0x100] }\n", "apertures: []\n")], False),
-    ("form.inapplicable", "stm32f302/chip.yaml",
-     [("exits_on_fault: false\n", "exits_on_fault: false\napertures:\n  - { window: [0x40000000, 0x1000] }\n")], False),
+    ("form.inapplicable", "esp32/chip.yaml",
+     [("exits_on_fault: false\n", "exits_on_fault: false\napertures:\n  - { window: [0x3FF40000, 0x1000] }\n")], False),
     ("chip.aperture-memory", "stm32f411/chip.yaml",
      [("- { window: [0x50000000, 0x40000]", "- { window: [0x20000000, 0x40000]")], False),
     ("chip.aperture-outside", "stm32f411/chip.yaml",
@@ -1572,35 +1571,6 @@ tasks:
     accepts: [device_not_isolated, coarse_gate]
 """
 
-# A bluepill-c8 system whose one task runs a packaged driver as its own threads.
-ONE_TASK_SYSTEM = """version: 1
-board: bluepill-c8
-stdout: kernel
-ends: main
-heap: 2048
-accepts: [no_protection]
-tasks:
-  - name: main
-    program: main_main
-    stack: 2048
-    priority: 2
-    ceiling: 31
-    drivers:
-      - { driver: testexits, serves: /svc/exits, priority: 10 }
-    uses: [/svc/exits]
-"""
-# The same driver as a task of its own, which a one-task chip refuses.
-ONE_TASK_DRIVER_TASK = ("  - name: main\n", "  - name: exits\n    driver: testexits\n    serves: /svc/exits\n    priority: 10\n"
-                        "  - name: main\n")
-ONE_TASK_HOSTED = ("    drivers:\n      - { driver: testexits, serves: /svc/exits, priority: 10 }\n", "")
-# A second task watching the first, and a region shared between tasks: each needs a second task.
-ONE_TASK_WATCH = ("    uses: [/svc/exits]\n", "    uses: [/svc/exits]\n  - name: mon\n    program: mon_main\n"
-                  "    stack: 1024\n    priority: 3\n    ceiling: 3\n    watches: [main]\n")
-ONE_TASK_SECOND = ("    uses: [/svc/exits]\n", "    uses: [/svc/exits]\n  - name: spare\n    program: spare_main\n"
-                   "    stack: 1024\n    priority: 3\n    ceiling: 3\n")
-ONE_TASK_SHARED = [("tasks:\n", "shared:\n  - name: /shm/buf\n    size: 64\n    cache: cached\ntasks:\n"),
-                   ("    uses: [/svc/exits]\n", "    uses: [/svc/exits]\n    maps: { /shm/buf: rw }\n")]
-
 RX_SYSTEM = """version: 1
 board: rx72m
 stdout: kernel
@@ -2133,23 +2103,6 @@ SCENARIOS = [
     ("name.board-ambiguous", ambiguous_board),
     ("form.unknown-field", broken_board),
     (None, on_imx([], [])),
-    (None, composed("bluepill-c8.yaml", ONE_TASK_SYSTEM, [], [])),
-    ("driver.one-task", composed("bluepill-c8.yaml", ONE_TASK_SYSTEM, [ONE_TASK_DRIVER_TASK, ONE_TASK_HOSTED],
-                                 [("    driver: testexits", "driver.one-task"), ("  - name: main", "supply.one-task")])),
-    (None, composed("bluepill-c8.yaml", ONE_TASK_SYSTEM, [ONE_TASK_DRIVER_TASK, ONE_TASK_HOSTED], [],
-                    platform_edits=(("stm32f103/chip.yaml", [("one_task: true\n", "")]),))),
-    ("supply.one-task", composed("bluepill-c8.yaml", ONE_TASK_SYSTEM, [ONE_TASK_SECOND],
-                                 [("  - name: spare", "supply.one-task")])),
-    (None, composed("bluepill-c8.yaml", ONE_TASK_SYSTEM, [ONE_TASK_SECOND], [],
-                    platform_edits=(("stm32f103/chip.yaml", [("one_task: true\n", "")]),))),
-    ("supply.one-task", composed("bluepill-c8.yaml", ONE_TASK_SYSTEM, [ONE_TASK_WATCH],
-                                 [("  - name: mon", "supply.one-task"), ("    watches: ", "supply.one-task")])),
-    (None, composed("bluepill-c8.yaml", ONE_TASK_SYSTEM, [ONE_TASK_WATCH], [],
-                    platform_edits=(("stm32f103/chip.yaml", [("one_task: true\n", "")]),))),
-    ("supply.one-task", composed("bluepill-c8.yaml", ONE_TASK_SYSTEM, ONE_TASK_SHARED,
-                                 [("  - name: /shm/buf", "supply.one-task")])),
-    (None, composed("bluepill-c8.yaml", ONE_TASK_SYSTEM, ONE_TASK_SHARED, [],
-                    platform_edits=(("stm32f103/chip.yaml", [("one_task: true\n", "")]),))),
     ("form.missing", on_imx([("cluster: a53\n", "")], [("version: ", "form.missing")])),
     ("name.cluster-unknown", on_imx([("cluster: a53", "cluster: m4")], [("cluster: ", "name.cluster-unknown")])),
     ("name.device-unknown", on_imx([("[/dev/sai5, /dev/sai6]", "[/dev/sai5, /dev/sai6, /dev/mu1_b]")],

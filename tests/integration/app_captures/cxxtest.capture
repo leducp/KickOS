@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
+# Captured on rx72m; the NUL byte the reset left ahead of the banner is cut.
 
   ==============================================
    KickOS 0.5.1  -  microkernel RTOS
@@ -9,8 +10,16 @@
    cpu     rxv3
    mpu     enforce
    sched   tickless
+   build   2026-11-03 14:12:05 +0100
+   app     cxxtest Nov  3 2026 14:12:06 +0100
+   commit  897453721
+   heap    16 KiB available
+   kstack  1120 B x 5 = 5600 B
 
 KickOS full-C++ opt-in test
+PASS: app constructors ran in main's thread
+PASS: app statics in the app image's window
+PASS: two threads' first throws at once are both caught
 PASS: exception caught by exact type
 PASS: exception caught by std::exception base
 PASS: stack unwind runs local dtors
@@ -20,4 +29,29 @@ PASS: virtual dispatch picks override
 PASS: dynamic_cast to real type succeeds
 PASS: dynamic_cast to wrong type yields nullptr
 PASS: typeid reflects dynamic type
+PASS: getentropy refuses with ENOSYS
+PASS: random_device refuses to construct with no source
+PASS: a static two threads reach at once is built once
+PASS: a contended call_once runs once and every caller sees its effect
+PASS: a call_once whose function threw runs again, then never
+PASS: a shared_ptr two threads copy and drop keeps its count
+PASS: two std::threads take turns over a condition variable
+PASS: a timed condition wait ends at its deadline
+PASS: a timed lock of a held mutex ends at its deadline
+PASS: a recursive timed lock waits until every level is released
+PASS: a recursive wait held two deep gives both levels back
+PASS: a std::thread runs at its creator's priority
+PASS: a thread inheriting its priority ignores the one it names
+PASS: each thread rethrows its own caught exception while another holds one
+PASS: each thread counts only its own uncaught exception
+PASS: a deleted key's index serves a new key
+PASS: a value a deleted key left behind is never the new key's
+PASS: a thread a non-creator joined has its slot free again
+PASS: a join returns for a thread that ended by kos_exit
+PASS: a join returns for a thread its creator cancelled
+PASS: a new thread's thread_locals start zeroed and are built for it
+PASS: a thread_local destructor a key destructor registers runs
+PASS: a detached thread that starts and detaches threads keeps its own record
+PASS: a detached thread that returned leaves no record behind
+PASS: hardware_concurrency counts the task's cores
 ALL PASS
